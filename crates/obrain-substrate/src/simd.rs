@@ -90,6 +90,9 @@ pub fn decay_u16x8_scalar(values: &mut [u16; 8], factor_q16: u16) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[inline]
+// Register-only intrinsics are safe inside a matching #[target_feature]
+// fn on recent toolchains — `unsafe {}` kept for older toolchains (MSRV).
+#[allow(unused_unsafe)]
 unsafe fn decay_u16x8_sse2(values: &mut [u16; 8], factor_q16: u16) {
     use core::arch::x86_64::{
         __m128i, _mm_loadu_si128, _mm_mulhi_epu16, _mm_set1_epi16, _mm_storeu_si128,
