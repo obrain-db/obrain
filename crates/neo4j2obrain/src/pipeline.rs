@@ -1075,7 +1075,7 @@ fn stage_derive_coact(substrate: &Arc<SubstrateStore>, stats: &mut PipelineStats
             continue;
         }
         // Sort by centrality DESC, take top-k.
-        members.sort_by(|a, b| b.1.cmp(&a.1));
+        members.sort_by_key(|m| std::cmp::Reverse(m.1));
         let top: Vec<obrain_common::NodeId> = members
             .into_iter()
             .take(COACT_TOP_K)
@@ -1171,14 +1171,14 @@ fn stage_seed_engrams(substrate: &Arc<SubstrateStore>, stats: &mut PipelineStats
     // strongest semantic signal.
     let mut communities: Vec<(u32, Vec<(obrain_common::NodeId, u16)>)> =
         by_community.into_iter().collect();
-    communities.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    communities.sort_by_key(|c| std::cmp::Reverse(c.1.len()));
 
     let mut clusters: Vec<Vec<obrain_common::NodeId>> = Vec::new();
     for (_cid, mut members) in communities.into_iter() {
         if members.len() < MIN_COMMUNITY_SIZE_FOR_ENGRAM {
             continue;
         }
-        members.sort_by(|a, b| b.1.cmp(&a.1));
+        members.sort_by_key(|m| std::cmp::Reverse(m.1));
         let cluster: Vec<obrain_common::NodeId> = members
             .into_iter()
             .take(ENGRAM_TOP_K)
