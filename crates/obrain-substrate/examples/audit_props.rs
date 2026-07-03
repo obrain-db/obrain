@@ -266,11 +266,7 @@ fn print_hist(title: &str, hist: &HashMap<String, KeyStats>) {
     let mut rows: Vec<_> = hist.iter().collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.1.total_bytes));
     for (k, s) in rows.iter().take(30) {
-        let avg = if s.count > 0 {
-            s.total_bytes / s.count
-        } else {
-            0
-        };
+        let avg = s.total_bytes.checked_div(s.count).unwrap_or(0);
         println!(
             "{:<28}  {:>12}  {:>16}  {:>10}  {:>12}",
             truncate(k, 28),
