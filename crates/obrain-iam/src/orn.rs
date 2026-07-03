@@ -447,13 +447,8 @@ fn path_parts_match(pattern: &[&str], value: &[&str]) -> bool {
         (Some(&"*"), Some(_)) => path_parts_match(&pattern[1..], &value[1..]),
 
         // Literal match
-        (Some(p), Some(v)) => {
-            if *p == *v {
-                path_parts_match(&pattern[1..], &value[1..])
-            } else {
-                false
-            }
-        }
+        (Some(p), Some(v)) if *p == *v => path_parts_match(&pattern[1..], &value[1..]),
+        (Some(_), Some(_)) => false,
 
         // One side exhausted, other not → no match
         _ => false,
