@@ -53,7 +53,23 @@ rsync -a \
 # path-depends on obrain-cognitive (ldleiden/retrieval benches) and
 # targets the local prod bases — private by nature.
 
-for f in "${PRIVATE_FILES[@]}"; do rm -f "$OUT/$f"; done
+# Module files are STUBBED, not deleted: `cargo fmt` resolves every `mod`
+# declaration regardless of cfg-gating, so a missing file breaks the
+# public CI's format check. Integration tests are auto-discovered → safe
+# to delete outright.
+for f in "${PRIVATE_FILES[@]}"; do
+  case "$f" in
+    */tests/*) rm -f "$OUT/$f" ;;
+    *)
+      cat > "$OUT/$f" <<'STUB'
+//! Reserved for the obrain-cognitive layer (closed source).
+//!
+//! This stub keeps the module tree resolvable for rustfmt; the feature
+//! that would compile this module is not available in the public build.
+STUB
+      ;;
+  esac
+done
 
 echo "==> workflows: replace monorepo CI with a public-safe one"
 # The monorepo workflows use --all-features (would enable the stripped

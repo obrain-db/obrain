@@ -623,11 +623,11 @@ fn stage_fill_embeddings(
         let mut skipped_existing = 0u64;
         let mut skipped_short = 0u64;
         for nid in &all_nodes {
-            if let Some(Value::Vector(arc)) = substrate.get_node_property(*nid, &emb_key) {
-                if arc.len() == L2_DIM {
-                    skipped_existing += 1;
-                    continue;
-                }
+            if let Some(Value::Vector(arc)) = substrate.get_node_property(*nid, &emb_key)
+                && arc.len() == L2_DIM
+            {
+                skipped_existing += 1;
+                continue;
             }
             for tk in &text_keys {
                 if let Some(Value::String(s)) = substrate.get_node_property(*nid, tk) {

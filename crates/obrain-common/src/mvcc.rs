@@ -981,7 +981,7 @@ impl VersionIndex {
 
         // Keep cold sorted by epoch (descending = most recent first)
         self.cold
-            .sort_by(|a, b| b.epoch.as_u64().cmp(&a.epoch.as_u64()));
+            .sort_by_key(|r| std::cmp::Reverse(r.epoch.as_u64()));
 
         self.recalculate_latest_epoch();
     }
@@ -1008,7 +1008,7 @@ impl VersionIndex {
     pub fn add_cold(&mut self, cold_ref: ColdVersionRef) {
         self.cold.push(cold_ref);
         self.cold
-            .sort_by(|a, b| b.epoch.as_u64().cmp(&a.epoch.as_u64()));
+            .sort_by_key(|r| std::cmp::Reverse(r.epoch.as_u64()));
         self.recalculate_latest_epoch();
     }
 
