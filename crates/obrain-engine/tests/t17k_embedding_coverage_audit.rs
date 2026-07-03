@@ -82,7 +82,7 @@ fn audit_embedding_coverage_on_all_bases() {
                 .into_iter()
                 .map(|(k, (c, kind))| (k, c, kind))
                 .collect();
-            rows.sort_by(|a, b| b.1.cmp(&a.1));
+            rows.sort_by_key(|r| std::cmp::Reverse(r.1));
             for (k, count, kind) in rows.iter().take(20) {
                 let pct = (*count as f64) * 100.0 / (sample_size as f64);
                 let kind_str = match kind {

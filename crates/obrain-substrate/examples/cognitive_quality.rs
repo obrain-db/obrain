@@ -298,7 +298,7 @@ fn render_community_section(live_nodes: &[(u32, &NodeRecord)], live_edges: &[&Ed
 
     // Top-K largest.
     let mut sorted: Vec<(u32, usize)> = by_community.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.1));
     println!("### Top {} largest communities", TOP_K_COMMUNITIES);
     println!();
     println!("| Rank | community_id | size | % of live nodes |");
@@ -439,7 +439,7 @@ fn render_engrams_section(
             engrams.push((eid, members));
         }
     }
-    engrams.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    engrams.sort_by_key(|e| std::cmp::Reverse(e.1.len()));
 
     // Count ENGRAM_SEED flagged nodes.
     let seed_flagged = live_nodes

@@ -264,7 +264,7 @@ fn print_hist(title: &str, hist: &HashMap<String, KeyStats>) {
         "key", "count", "total_bytes", "avg", "max_bytes"
     );
     let mut rows: Vec<_> = hist.iter().collect();
-    rows.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.1.total_bytes));
     for (k, s) in rows.iter().take(30) {
         let avg = if s.count > 0 {
             s.total_bytes / s.count
