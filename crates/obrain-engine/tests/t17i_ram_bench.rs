@@ -30,10 +30,7 @@ fn current_rss_mb() -> f64 {
         return -1.0;
     };
     let s = String::from_utf8_lossy(&o.stdout);
-    s.trim()
-        .parse::<f64>()
-        .map(|kb| kb / 1024.0)
-        .unwrap_or(-1.0)
+    s.trim().parse::<f64>().map_or(-1.0, |kb| kb / 1024.0)
 }
 
 fn measure(name: &str, path: std::path::PathBuf) {
