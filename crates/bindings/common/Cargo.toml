@@ -1,0 +1,38 @@
+[package]
+name = "obrain-bindings-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared abstractions for Obrain language bindings"
+
+[dependencies]
+obrain-engine = { path = "../../obrain-engine", default-features = false }
+obrain-common = { path = "../../obrain-common" }
+
+serde_json = "1.0"
+
+[features]
+default = ["embedded"]
+gql = ["obrain-engine/gql"]
+cypher = ["obrain-engine/cypher"]
+sparql = ["obrain-engine/sparql", "obrain-engine/rdf"]
+gremlin = ["obrain-engine/gremlin"]
+graphql = ["obrain-engine/graphql"]
+sql-pgq = ["obrain-engine/sql-pgq"]
+vector-index = ["obrain-engine/vector-index"]
+text-index = ["obrain-engine/text-index"]
+hybrid-search = ["obrain-engine/hybrid-search"]
+cdc = ["obrain-engine/cdc"]
+algos = ["obrain-engine/algos"]
+rdf = ["obrain-engine/rdf"]
+languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
+ai = ["vector-index", "text-index", "hybrid-search", "cdc"]
+storage = ["obrain-engine/storage"]
+# Named profiles
+embedded = ["gql", "ai", "algos", "obrain-engine/parallel", "obrain-engine/regex"]
+browser = ["gql", "obrain-engine/regex-lite"]
+full = ["languages", "ai", "algos", "rdf"]
+
+[lints]
+workspace = true

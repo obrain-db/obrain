@@ -1,0 +1,184 @@
+"""GraphQL implementation of filter and direct lookup tests.
+
+Tests filter operations and direct lookup APIs with GraphQL for setup/verification.
+
+Supports equality, range (age_gt/age_lt suffixes), string, and compound filters.
+"""
+
+import pytest
+
+from tests.bases.test_filters import BaseFilterAndLookupTest
+
+
+class TestGraphQLFilters(BaseFilterAndLookupTest):
+    """GraphQL implementation of filter and lookup tests."""
+
+    def _execute_graphql(self, db, query: str):
+        """Execute GraphQL query, skip if not supported."""
+        try:
+            return db.execute_graphql(query)
+        except AttributeError:
+            pytest.skip("GraphQL support not available")
+            return None
+        except NotImplementedError:
+            pytest.skip("GraphQL not implemented")
+            return None
+
+    def create_person_nodes(self, db, count: int = 1000) -> list:
+        """Create Person nodes using direct API (faster than queries)."""
+        cities = ["NYC", "LA", "Chicago", "Boston", "Utrecht"]
+        node_ids = []
+
+        for i in range(count):
+            node = db.create_node(
+                ["Person"],
+                {
+                    "name": f"Person{i}",
+                    "age": i % 100,  # Ages 0-99, cycling
+                    "city": cities[i % len(cities)],
+                },
+            )
+            node_ids.append(node.id)
+
+        return node_ids
+
+    def filter_by_age_equals(self, db, age: int) -> list:
+        """Filter using GraphQL argument."""
+        result = self._execute_graphql(
+            db,
+            f"""
+            query {{
+                person(age: {age}) {{
+                    name
+                    age
+                }}
+            }}
+            """,
+        )
+        return list(result)
+
+    def filter_by_age_range(self, db, min_age: int, max_age: int) -> list:
+        """Filter using GraphQL range arguments (age_gt/age_lt suffixes)."""
+        result = self._execute_graphql(
+            db,
+            f"""
+            query {{
+                person(age_gt: {min_age}, age_lt: {max_age}) {{
+                    name
+                    age
+                }}
+            }}
+            """,
+        )
+        return list(result)
+
+    def filter_by_city(self, db, city: str) -> list:
+        """Filter using GraphQL string argument."""
+        result = self._execute_graphql(
+            db,
+            f"""
+            query {{
+                person(city: "{city}") {{
+                    name
+                    city
+                }}
+            }}
+            """,
+        )
+        return list(result)
+
+    def filter_compound_and(self, db, city: str, min_age: int) -> list:
+        """Filter using multiple GraphQL arguments (implicit AND)."""
+        result = self._execute_graphql(
+            db,
+            f"""
+            query {{
+                person(city: "{city}", age_gt: {min_age}) {{
+                    name
+                    city
+                    age
+                }}
+            }}
+            """,
+        )
+        return list(result)
+
+
+class TestGraphQLFilterVerification:
+    """Additional GraphQL-specific filter tests with verification."""
+
+    def _execute_graphql(self, db, query: str):
+        """Execute GraphQL query, skip if not supported."""
+        try:
+            return db.execute_graphql(query)
+        except AttributeError:
+            pytest.skip("GraphQL support not available")
+            return None
+        except NotImplementedError:
+            pytest.skip("GraphQL not implemented")
+            return None
+
+    def test_filter_with_nested_query(self, db):
+        """Test filtering with nested query."""
+        alix = db.create_node(["User"], {"name": "Alix", "age": 30})
+        gus = db.create_node(["User"], {"name": "Gus", "age": 25})
+        vincent = db.create_node(["User"], {"name": "Vincent", "age": 35})
+
+        db.create_edge(alix.id, gus.id, "friends", {})
+        db.create_edge(alix.id, vincent.id, "friends", {})
+
+        result = self._execute_graphql(
+            db,
+            """
+            query {
+                user(name: "Alix") {
+                    name
+                    friends(age_gt: 30) {
+                        name
+                    }
+                }
+            }
+            """,
+        )
+        rows = list(result)
+        assert len(rows) >= 1, "Should find Alix"
+
+    def test_filter_multiple_types(self, db):
+        """Test filtering across multiple node types."""
+        alix = db.create_node(["User"], {"name": "Alix", "age": 30})
+        post = db.create_node(["Post"], {"title": "Hello", "views": 100})
+        db.create_edge(alix.id, post.id, "authored", {})
+
+        result = self._execute_graphql(
+            db,
+            """
+            query {
+                user(age: 30) {
+                    name
+                    authored {
+                        title
+                    }
+                }
+            }
+            """,
+        )
+        rows = list(result)
+        assert len(rows) >= 1, "Should find Alix with her post"
+
+    def test_filter_with_limit(self, db):
+        """Test filtering with limit."""
+        for i in range(10):
+            db.create_node(["User"], {"name": f"User{i}", "age": 30})
+
+        result = self._execute_graphql(
+            db,
+            """
+            query {
+                user(age: 30, first: 5) {
+                    name
+                }
+            }
+            """,
+        )
+        rows = list(result)
+        assert len(rows) <= 5, "Should limit results to 5"

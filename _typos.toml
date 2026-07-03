@@ -1,0 +1,27 @@
+# typos configuration
+# https://github.com/crate-ci/typos
+
+[files]
+extend-exclude = [
+    ".venv/",
+    "target/",
+    "*.lock",
+    ".benchmarks/",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+]
+
+[default.extend-words]
+# "fof" = friend-of-friend (standard graph query pattern)
+fof = "fof"
+fofName = "fofName"
+# "ue" appears in test comment "key=val=ue" (split-at-first-equals test)
+ue = "ue"
+# "$nin" = "not in" filter operator (MongoDB-style)
+nin = "nin"
+
+[default.extend-identifiers]
+abd = "abd"         # Levenshtein distance test input
+Plase = "Plase"     # fuzzy-match test input
+INSERTs = "INSERTs" # plural of SQL INSERT keyword

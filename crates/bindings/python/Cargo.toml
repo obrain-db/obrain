@@ -1,0 +1,53 @@
+[package]
+name = "obrain-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python bindings for Obrain graph database"
+
+[lib]
+name = "obrain"
+crate-type = ["cdylib"]
+doc = false
+
+[dependencies]
+obrain-engine = { path = "../../obrain-engine" }
+obrain-core = { path = "../../obrain-core" }
+obrain-common = { path = "../../obrain-common" }
+obrain-adapters = { path = "../../obrain-adapters" }
+obrain-bindings-common = { path = "../common" }
+
+pyo3 = { workspace = true, features = ["extension-module"] }
+pyo3-async-runtimes = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+default = ["embedded"]
+gql = ["obrain-engine/gql"]
+cypher = ["obrain-engine/cypher"]
+sparql = ["obrain-engine/sparql", "obrain-engine/rdf"]
+gremlin = ["obrain-engine/gremlin"]
+graphql = ["obrain-engine/graphql"]
+sql-pgq = ["obrain-engine/sql-pgq"]
+vector-index = ["obrain-engine/vector-index"]
+text-index = ["obrain-engine/text-index"]
+hybrid-search = ["obrain-engine/hybrid-search"]
+cdc = ["obrain-engine/cdc"]
+embed = ["obrain-engine/embed"]
+algos = ["obrain-engine/algos"]
+rdf = ["obrain-engine/rdf"]
+languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
+ai = ["vector-index", "text-index", "hybrid-search", "cdc"]
+storage = ["obrain-engine/storage"]
+cognitive = ["algos"]
+cognitive-fabric = ["cognitive"]
+cognitive-full = ["cognitive"]
+# Named profiles
+embedded = ["gql", "ai", "algos", "obrain-engine/parallel", "obrain-engine/regex"]
+full = ["languages", "ai", "algos", "rdf"]
+
+[lints]
+workspace = true

@@ -1,0 +1,129 @@
+[package]
+name = "obrain-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Query engine and database management for Obrain"
+
+[dependencies]
+obrain-common.workspace = true
+obrain-core = { workspace = true, default-features = false }
+obrain-adapters = { workspace = true, default-features = false }
+obrain-substrate = { workspace = true }
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Data structures
+arcstr.workspace = true
+smallvec.workspace = true
+hashbrown.workspace = true
+indexmap.workspace = true
+
+# Concurrency
+parking_lot.workspace = true
+crossbeam = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+
+# Memory mapping
+memmap2 = { workspace = true, optional = true }
+
+# Serialization
+serde.workspace = true
+bincode.workspace = true
+
+# Regex for SPARQL FILTER (use regex-lite for smaller WASM builds)
+regex = { workspace = true, optional = true }
+regex-lite = { workspace = true, optional = true }
+
+# Cryptographic hashes for SPARQL hash functions (optional, RDF only)
+md5 = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+# Tracing
+tracing.workspace = true
+
+# Cognitive subsystems (optional)
+obrain-reactive = { workspace = true, optional = true }
+
+# Embedding (optional, for ONNX embedding generation)
+ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+hf-hub = { version = "0.5", optional = true }
+libc = "0.2.185"
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+serde_json = "1"
+tokio.workspace = true
+
+[features]
+default = ["gql", "parallel", "wal", "spill", "mmap", "regex"]
+regex = ["dep:regex", "obrain-core/regex"]
+regex-lite = ["dep:regex-lite", "obrain-core/regex-lite"]
+gql = ["obrain-adapters/gql"]
+cypher = ["obrain-adapters/cypher"]
+sparql = ["obrain-adapters/sparql"]
+gremlin = ["obrain-adapters/gremlin"]
+graphql = ["obrain-adapters/graphql"]
+sql-pgq = ["obrain-adapters/sql-pgq"]  # SQL/PGQ (SQL:2023 GRAPH_TABLE)
+rdf = ["obrain-core/rdf", "obrain-adapters/rdf", "md5", "sha1", "sha2"]  # RDF graph model and planner
+parallel = ["rayon", "crossbeam", "obrain-core/parallel", "obrain-adapters/parallel"]  # Parallel execution
+algos = ["obrain-adapters/algos"]  # Graph algorithm plugin (SSSP, PageRank, etc.)
+wal = ["obrain-adapters/wal"]  # Write-ahead log storage
+# T17 final cutover (2026-04-23): `obrain-file` feature removed — substrate
+# is the single storage backend. The legacy single-file `.obrain` format
+# (v1 bincode snapshot, v2 mmap) is archived; users with legacy files run
+# `obrain-migrate` once to convert to substrate, then open via
+# `ObrainDB::open`/`open_substrate`.
+spill = ["obrain-core/spill"]  # Disk spilling for out-of-core execution
+mmap = ["obrain-core/mmap"]  # File-backed vector storage
+temporal = ["obrain-core/temporal"]  # Append-only versioned properties
+tiered-storage = ["obrain-core/tiered-storage"]  # Hot/cold tiered storage with mmap epoch files
+# T17 cutover: substrate is now the single storage backend — obrain-substrate
+# is an unconditional dep (see [dependencies] above). The former
+# `substrate-backend` and `legacy-backend` feature flags were removed.
+# Convenience groups
+languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]  # All query language parsers
+ai = ["vector-index", "text-index", "hybrid-search", "cdc"]  # All AI/RAG features
+storage = ["wal", "spill", "mmap"]  # Persistent storage (WAL, disk spill, mmap)
+
+# Named profiles (ecosystem-aligned)
+embedded = ["gql", "ai", "algos", "parallel", "regex", "jsonl-import"]  # Python libs, MCP, in-process
+browser = ["gql", "regex-lite"]  # WASM / obrain-web
+server = ["full", "metrics"]  # obrain-server
+full = ["languages", "ai", "rdf", "parallel", "algos", "storage", "jsonl-import", "parquet-import"]
+
+# Data import
+jsonl-import = ["obrain-core/jsonl-import"]  # JSON Lines file import
+parquet-import = ["obrain-core/parquet-import"]  # Apache Parquet file import
+
+# Search & AI features
+vector-index = ["obrain-core/vector-index"]  # HNSW vector index for k-NN search
+text-index = ["obrain-core/text-index"]  # BM25 inverted index for full-text search
+hybrid-search = ["obrain-core/hybrid-search", "text-index", "vector-index"]  # Combined text + vector search
+cdc = []  # Change data capture with history API
+reactive = []  # Reactive mutation event bus (post-commit hook for obrain-reactive)
+cognitive = ["reactive", "dep:obrain-reactive"]  # Cognitive engine (energy + synapses) — substrate routing is the T17 default backing
+cognitive-fabric = ["cognitive"]  # + fabric, co-change, GDS
+cognitive-full = ["cognitive", "kernel"]  # All cognitive subsystems
+cognitive-engram = ["cognitive"]  # Engram subsystem (Layer 0: Hebbian + FSRS)
+kernel = ["cognitive"]  # Kernel embeddings (reactive, incremental)
+metrics = []  # Lock-free query, transaction, and session metrics
+embed = ["ort", "tokenizers", "hf-hub"]  # ONNX embedding generation (opt-in, adds ~17MB)
+
+# Testing utilities (zero overhead when disabled)
+testing-crash-injection = ["obrain-core/testing-crash-injection"]  # Crash injection for recovery testing
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "query_bench"
+harness = false

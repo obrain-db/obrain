@@ -1,0 +1,77 @@
+# Codecov configuration
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...90"
+
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 2%
+    patch:
+      default:
+        target: 90%
+        threshold: 5%
+
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+ignore:
+  - "**/tests/**"
+  - "**/benches/**"
+  - "crates/bindings/python/**"
+  - "crates/bindings/node/**"
+  - "crates/bindings/wasm/**"
+  - "crates/bindings/go/**"
+  - "**/build.rs"
+  - "scripts/**"
+  - "docs/**"
+  - "examples/**"
+
+# Per-crate component tracking
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        informational: true
+  individual_components:
+    - component_id: obrain-common
+      name: Common (types, allocators, hashing)
+      paths:
+        - crates/common/src/**
+    - component_id: obrain-core
+      name: Core (storage, indexes, execution)
+      paths:
+        - crates/core/src/**
+    - component_id: obrain-adapters
+      name: Adapters (parsers, algorithms, plugins)
+      paths:
+        - crates/adapters/src/**
+    - component_id: obrain-engine
+      name: Engine (database, sessions, transactions)
+      paths:
+        - crates/engine/src/**
+    - component_id: obrain-reactive
+      name: Reactive (event bus, scheduler, instrumented store)
+      paths:
+        - crates/obrain-reactive/src/**
+    - component_id: obrain-cognitive
+      name: Cognitive (energy, synapses, fabric, memory, episodic)
+      paths:
+        - crates/obrain-cognitive/src/**

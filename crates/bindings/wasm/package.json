@@ -1,0 +1,40 @@
+{
+  "name": "@obrain-db/wasm",
+  "type": "module",
+  "version": "0.5.24",
+  "description": "WebAssembly bindings for Obrain - a high-performance embeddable graph database",
+  "keywords": [
+    "graph",
+    "database",
+    "gql",
+    "cypher",
+    "sparql",
+    "knowledge-graph",
+    "wasm",
+    "webassembly"
+  ],
+  "author": "S.T. Grond",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/this-rs/obrain.git",
+    "directory": "crates/bindings/wasm"
+  },
+  "homepage": "https://obrain.dev",
+  "bugs": {
+    "url": "https://github.com/this-rs/obrain/issues"
+  },
+  "main": "obrain_wasm.js",
+  "types": "obrain_wasm.d.ts",
+  "files": [
+    "obrain_wasm.js",
+    "obrain_wasm.d.ts",
+    "obrain_wasm_bg.js",
+    "obrain_wasm_bg.wasm",
+    "obrain_wasm_bg.wasm.d.ts"
+  ],
+  "sideEffects": [
+    "./obrain_wasm.js",
+    "./snippets/*"
+  ]
+}

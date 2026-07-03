@@ -1,0 +1,1228 @@
+{
+  "dialect": {
+    "name": "ObrainDB",
+    "version": "0.5.22",
+    "language": "GQL",
+    "standard": "ISO/IEC 39075:2024",
+    "homepage": "https://obrain.dev",
+    "repository": "https://github.com/this-rs/obrain"
+  },
+  "generated": "2026-03-14T15:38:27Z",
+  "summary": {
+    "total_features": 151,
+    "supported": 126,
+    "partial": 1,
+    "not_supported": 24,
+    "tested": 30
+  },
+  "features": [
+    {
+      "id": "G002",
+      "name": "Different-edges match mode",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G003",
+      "name": "Explicit REPEATABLE ELEMENTS",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G004",
+      "name": "Path variables",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G005",
+      "name": "Path search prefix in path pattern",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G006",
+      "name": "KEEP clause: path mode prefix",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G007",
+      "name": "KEEP clause: path search prefix",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G010",
+      "name": "Explicit WALK keyword",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G011",
+      "name": "Advanced path modes: TRAIL",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G012",
+      "name": "Advanced path modes: SIMPLE",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G013",
+      "name": "Advanced path modes: ACYCLIC",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G014",
+      "name": "Explicit PATH/PATHS keywords",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G015",
+      "name": "All path search: explicit ALL keyword",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G016",
+      "name": "Any path search",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G017",
+      "name": "All shortest path search",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G018",
+      "name": "Any shortest path search",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G019",
+      "name": "Counted shortest path search",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G020",
+      "name": "Counted shortest group search",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G030",
+      "name": "Path multiset alternation",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "G031",
+      "name": "Path multiset alternation: var-length operands",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G032",
+      "name": "Path pattern union",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "G033",
+      "name": "Path pattern union: var-length operands",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G035",
+      "name": "Quantified paths",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G036",
+      "name": "Quantified edges",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G037",
+      "name": "Questioned paths",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G038",
+      "name": "Parenthesized path pattern expression",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G039",
+      "name": "Simplified path pattern: full defaulting",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "G041",
+      "name": "Non-local element pattern predicates",
+      "category": "Pattern Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G043",
+      "name": "Complete full edge patterns",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G044",
+      "name": "Basic abbreviated edge patterns",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G045",
+      "name": "Complete abbreviated edge patterns",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G046",
+      "name": "Relaxed topological consistency: adjacent vertex",
+      "category": "Pattern Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G047",
+      "name": "Relaxed topological consistency: concise edge",
+      "category": "Pattern Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G048",
+      "name": "Parenthesized path: subpath variable declaration",
+      "category": "Pattern Features",
+      "status": "partial",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "G049",
+      "name": "Parenthesized path: path mode prefix",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "G050",
+      "name": "Parenthesized path: WHERE clause",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "G051",
+      "name": "Parenthesized path: non-local predicates",
+      "category": "Pattern Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G060",
+      "name": "Bounded graph pattern quantifiers",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G061",
+      "name": "Unbounded graph pattern quantifiers",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G074",
+      "name": "Label expression: wildcard label",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G080",
+      "name": "Simplified path pattern: basic defaulting",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 3
+    },
+    {
+      "id": "G081",
+      "name": "Simplified path pattern: full overrides",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G082",
+      "name": "Simplified path pattern: basic overrides",
+      "category": "Pattern Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G100",
+      "name": "ELEMENT_ID function",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G110",
+      "name": "IS DIRECTED predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G111",
+      "name": "IS LABELED predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G112",
+      "name": "IS SOURCE / IS DESTINATION predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "G113",
+      "name": "ALL_DIFFERENT predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "G114",
+      "name": "SAME predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "G115",
+      "name": "PROPERTY_EXISTS predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "GA01",
+      "name": "IEEE 754 floating point operations",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GA03",
+      "name": "Explicit ordering of nulls",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 3
+    },
+    {
+      "id": "GA04",
+      "name": "Universal comparison",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GA05",
+      "name": "Cast specification",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GA06",
+      "name": "Value type predicate",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GA07",
+      "name": "Ordering by discarded binding variables",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GA08",
+      "name": "GQL-status objects with diagnostic records",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GA09",
+      "name": "Comparison of paths",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GB01",
+      "name": "Long identifiers",
+      "category": "Lexical Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GB02",
+      "name": "Double minus sign comments",
+      "category": "Lexical Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GB03",
+      "name": "Double solidus comments",
+      "category": "Lexical Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GC01",
+      "name": "Graph schema management",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GC02",
+      "name": "Schema management: IF [NOT] EXISTS",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GC03",
+      "name": "Graph type: IF [NOT] EXISTS",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GC04",
+      "name": "Graph management",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GC05",
+      "name": "Graph management: IF [NOT] EXISTS",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GD01",
+      "name": "Updatable graphs",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GD02",
+      "name": "Graph label set changes",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GD03",
+      "name": "DELETE: subquery support",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GD04",
+      "name": "DELETE: simple expression support",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GE01",
+      "name": "Graph reference value expressions",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE02",
+      "name": "Binding table reference value expressions",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE03",
+      "name": "Let-binding in expressions",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE04",
+      "name": "Graph parameters",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE05",
+      "name": "Binding table parameters",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE06",
+      "name": "Path value construction",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE07",
+      "name": "Boolean XOR",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE08",
+      "name": "Reference parameters",
+      "category": "Predicate & Expression Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GE09",
+      "name": "Horizontal aggregation",
+      "category": "Predicate & Expression Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GF01",
+      "name": "Enhanced numeric functions",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 3
+    },
+    {
+      "id": "GF02",
+      "name": "Trigonometric functions",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GF03",
+      "name": "Logarithmic functions",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "GF04",
+      "name": "Enhanced path functions",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 9
+    },
+    {
+      "id": "GF05",
+      "name": "Multi-character TRIM function",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 3
+    },
+    {
+      "id": "GF06",
+      "name": "Explicit TRIM function",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GF10",
+      "name": "Advanced aggregates: general set functions",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 4
+    },
+    {
+      "id": "GF11",
+      "name": "Advanced aggregates: binary set functions",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 10
+    },
+    {
+      "id": "GF12",
+      "name": "CARDINALITY function",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "GF13",
+      "name": "SIZE function",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GF20",
+      "name": "Aggregate functions in sort keys",
+      "category": "Function Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "GG01",
+      "name": "Graph with open graph type",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GG02",
+      "name": "Graph with closed graph type",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GG03",
+      "name": "Graph type inline specification",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 4
+    },
+    {
+      "id": "GG04",
+      "name": "Graph type like a graph",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GG20",
+      "name": "Explicit element type names",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GG21",
+      "name": "Explicit element type key label sets",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GG22",
+      "name": "Element type key label set inference",
+      "category": "Catalog & Graph Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GG24",
+      "name": "Relaxed structural consistency",
+      "category": "Catalog & Graph Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GL01",
+      "name": "Hexadecimal literals",
+      "category": "Lexical Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 2
+    },
+    {
+      "id": "GL02",
+      "name": "Octal literals",
+      "category": "Lexical Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GL03",
+      "name": "Binary literals",
+      "category": "Lexical Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GL11",
+      "name": "Opt-out character escaping",
+      "category": "Lexical Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GL12",
+      "name": "SQL datetime and interval formats",
+      "category": "Lexical Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GP01",
+      "name": "Inline procedure",
+      "category": "Procedure Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GP02",
+      "name": "Inline procedure with implicit nested variable scope",
+      "category": "Procedure Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GP04",
+      "name": "Named procedure calls",
+      "category": "Procedure Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GP05",
+      "name": "Procedure-local value variable definitions",
+      "category": "Procedure Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GP17",
+      "name": "Binding variable definition block",
+      "category": "Procedure Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GP18",
+      "name": "Catalog and data statement mixing",
+      "category": "Procedure Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ01",
+      "name": "USE graph clause",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ02",
+      "name": "OTHERWISE",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ03",
+      "name": "UNION",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ04",
+      "name": "EXCEPT DISTINCT",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ05",
+      "name": "EXCEPT ALL",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ06",
+      "name": "INTERSECT DISTINCT",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ07",
+      "name": "INTERSECT ALL",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ08",
+      "name": "FILTER statement",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ09",
+      "name": "LET statement",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ10",
+      "name": "FOR statement: list value support",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ11",
+      "name": "FOR statement: WITH ORDINALITY",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ12",
+      "name": "ORDER BY: OFFSET clause",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ13",
+      "name": "ORDER BY: LIMIT clause",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ14",
+      "name": "Complex expressions in sort keys",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ15",
+      "name": "GROUP BY clause",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ18",
+      "name": "Scalar subqueries",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ20",
+      "name": "Advanced linear composition (NEXT)",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ21",
+      "name": "OPTIONAL: multiple MATCH statements",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ22",
+      "name": "EXISTS predicate: multiple MATCH",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GQ24",
+      "name": "FOR statement: WITH OFFSET",
+      "category": "Query Composition Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS01",
+      "name": "Session-local graph parameters",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS03",
+      "name": "Session-local value parameters",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS04",
+      "name": "SESSION RESET: all characteristics",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS05",
+      "name": "SESSION RESET: session schema",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS06",
+      "name": "SESSION RESET: session graph",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS07",
+      "name": "SESSION RESET: time zone",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GS15",
+      "name": "SESSION SET: time zone displacement",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GT01",
+      "name": "Explicit transaction commands",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GT02",
+      "name": "Specified transaction characteristics",
+      "category": "Session & Transaction Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GT03",
+      "name": "Use of multiple graphs in a transaction",
+      "category": "Session & Transaction Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV12",
+      "name": "64-bit signed integer numbers",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV24",
+      "name": "64-bit floating point numbers",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV39",
+      "name": "Temporal: date, local datetime/time",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV40",
+      "name": "Temporal: zoned datetime/time",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV41",
+      "name": "Temporal: duration",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV45",
+      "name": "Record types",
+      "category": "Value Type Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV50",
+      "name": "List value types",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV55",
+      "name": "Path value types",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": true,
+      "test_count": 1
+    },
+    {
+      "id": "GV60",
+      "name": "Graph reference value types",
+      "category": "Value Type Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV61",
+      "name": "Binding table reference value types",
+      "category": "Value Type Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV65",
+      "name": "Dynamic union types",
+      "category": "Value Type Features",
+      "status": "not_supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV68",
+      "name": "Dynamic property value types",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    },
+    {
+      "id": "GV90",
+      "name": "Explicit value type nullability",
+      "category": "Value Type Features",
+      "status": "supported",
+      "tested": false,
+      "test_count": 0
+    }
+  ]
+}

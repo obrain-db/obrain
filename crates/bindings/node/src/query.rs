@@ -1,0 +1,203 @@
+//! Query results for the Node.js API.
+
+use napi::bindgen_prelude::*;
+use napi::sys;
+use napi_derive::napi;
+
+use obrain_common::types::Value;
+
+use crate::graph::{JsEdge, JsNode};
+use crate::types;
+
+/// Results from a query - access rows, nodes, and edges.
+#[napi]
+pub struct QueryResult {
+    pub(crate) columns: Vec<String>,
+    pub(crate) rows: Vec<Vec<Value>>,
+    pub(crate) nodes: Vec<JsNode>,
+    pub(crate) edges: Vec<JsEdge>,
+    pub(crate) execution_time_ms: Option<f64>,
+    pub(crate) rows_scanned: Option<u64>,
+}
+
+#[napi]
+impl QueryResult {
+    /// Get column names.
+    #[napi(getter)]
+    pub fn columns(&self) -> Vec<String> {
+        self.columns.clone()
+    }
+
+    /// Get number of rows.
+    #[napi(getter)]
+    pub fn length(&self) -> u32 {
+        self.rows.len() as u32
+    }
+
+    /// Query execution time in milliseconds (if available).
+    #[napi(getter, js_name = "executionTimeMs")]
+    pub fn execution_time_ms(&self) -> Option<f64> {
+        self.execution_time_ms
+    }
+
+    /// Number of rows scanned during execution (if available).
+    #[napi(getter, js_name = "rowsScanned")]
+    pub fn rows_scanned(&self) -> Option<f64> {
+        self.rows_scanned.map(|r| r as f64)
+    }
+
+    /// Get a single row by index as a plain object.
+    #[napi]
+    pub fn get(&self, env: Env, index: u32) -> Result<Object<'_>> {
+        let idx = index as usize;
+        if idx >= self.rows.len() {
+            return Err(napi::Error::new(
+                napi::Status::InvalidArg,
+                "Row index out of range",
+            ));
+        }
+        self.row_to_object(env.raw(), idx)
+    }
+
+    /// Get all rows as an array of objects.
+    #[napi(js_name = "toArray")]
+    pub fn to_array(&self, env: Env) -> Result<Vec<Object<'_>>> {
+        let mut result = Vec::with_capacity(self.rows.len());
+        for i in 0..self.rows.len() {
+            result.push(self.row_to_object(env.raw(), i)?);
+        }
+        Ok(result)
+    }
+
+    /// Get first column of first row (single value).
+    #[napi]
+    pub fn scalar(&self, env: Env) -> Result<Unknown<'_>> {
+        if self.rows.is_empty() {
+            return Err(napi::Error::new(
+                napi::Status::GenericFailure,
+                "No rows in result",
+            ));
+        }
+        if self.columns.is_empty() {
+            return Err(napi::Error::new(
+                napi::Status::GenericFailure,
+                "No columns in result",
+            ));
+        }
+        types::value_to_js(env.raw(), &self.rows[0][0])
+    }
+
+    /// Get nodes found in the result.
+    #[napi]
+    pub fn nodes(&self) -> Vec<JsNode> {
+        self.nodes.clone()
+    }
+
+    /// Get edges found in the result.
+    #[napi]
+    pub fn edges(&self) -> Vec<JsEdge> {
+        self.edges.clone()
+    }
+
+    /// Returns the result formatted as a Unicode table.
+    #[napi(js_name = "toString")]
+    pub fn to_string_js(&self) -> String {
+        obrain_common::fmt::format_result_table(
+            &self.columns,
+            &self.rows,
+            self.execution_time_ms,
+            None,
+        )
+    }
+
+    /// Get all rows as an array of arrays (no column names).
+    #[napi]
+    pub fn rows(&self, env: Env) -> Result<Object<'_>> {
+        let env_raw = env.raw();
+        let mut arr = std::ptr::null_mut();
+        // SAFETY: env_raw is valid; napi_create_array_with_length writes to our out-pointer
+        types::check_napi(unsafe {
+            sys::napi_create_array_with_length(env_raw, self.rows.len(), &raw mut arr)
+        })?;
+        for (i, row) in self.rows.iter().enumerate() {
+            let mut row_arr = std::ptr::null_mut();
+            // SAFETY: env_raw is valid; napi_create_array_with_length writes to our out-pointer
+            types::check_napi(unsafe {
+                sys::napi_create_array_with_length(env_raw, row.len(), &raw mut row_arr)
+            })?;
+            for (j, val) in row.iter().enumerate() {
+                let napi_val = types::value_to_napi(env_raw, val)?;
+                // SAFETY: env_raw, row_arr, and napi_val are valid napi values
+                types::check_napi(unsafe {
+                    sys::napi_set_element(env_raw, row_arr, j as u32, napi_val)
+                })?;
+            }
+            // SAFETY: env_raw, arr, and row_arr are valid napi values
+            types::check_napi(unsafe { sys::napi_set_element(env_raw, arr, i as u32, row_arr) })?;
+        }
+        Ok(Object::from_raw(env_raw, arr))
+    }
+}
+
+impl QueryResult {
+    /// Convert a row to a JS object with column names as keys.
+    fn row_to_object(&self, env: sys::napi_env, idx: usize) -> Result<Object<'_>> {
+        let row = &self.rows[idx];
+        let mut raw_obj = std::ptr::null_mut();
+        // SAFETY: env is valid; napi_create_object writes to our out-pointer
+        types::check_napi(unsafe { sys::napi_create_object(env, &raw mut raw_obj) })?;
+        let mut obj = Object::from_raw(env, raw_obj);
+        for (col, val) in self.columns.iter().zip(row.iter()) {
+            let val_raw = types::value_to_napi(env, val)?;
+            // SAFETY: env and val_raw are valid napi values produced by value_to_napi
+            let val_unknown = unsafe { Unknown::from_raw_unchecked(env, val_raw) };
+            obj.set_named_property(col, val_unknown)?;
+        }
+        Ok(obj)
+    }
+
+    pub fn new(
+        columns: Vec<String>,
+        rows: Vec<Vec<Value>>,
+        nodes: Vec<JsNode>,
+        edges: Vec<JsEdge>,
+    ) -> Self {
+        Self {
+            columns,
+            rows,
+            nodes,
+            edges,
+            execution_time_ms: None,
+            rows_scanned: None,
+        }
+    }
+
+    pub fn with_metrics(
+        columns: Vec<String>,
+        rows: Vec<Vec<Value>>,
+        nodes: Vec<JsNode>,
+        edges: Vec<JsEdge>,
+        execution_time_ms: Option<f64>,
+        rows_scanned: Option<u64>,
+    ) -> Self {
+        Self {
+            columns,
+            rows,
+            nodes,
+            edges,
+            execution_time_ms,
+            rows_scanned,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            execution_time_ms: None,
+            rows_scanned: None,
+        }
+    }
+}
