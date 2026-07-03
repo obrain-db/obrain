@@ -1,5 +1,9 @@
 //! Additional tests for Scheduler — BatchConfig, lazy startup, Debug, config accessors,
 //! and edge cases.
+// duration_suboptimal_units (clippy ≥ 1.96 only, hence unknown_lints):
+// tests intentionally use raw second counts for readability against the
+// BatchConfig API, which takes Durations.
+#![allow(unknown_lints, clippy::duration_suboptimal_units)]
 
 use async_trait::async_trait;
 use obrain_common::types::NodeId;
