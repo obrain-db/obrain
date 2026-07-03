@@ -471,9 +471,7 @@ impl KernelManager {
 
 /// Get approximate CPU count (fallback to 4 if unavailable).
 fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
+    std::thread::available_parallelism().map_or(4, |n| n.get())
 }
 
 // ============================================================================
