@@ -1,0 +1,60 @@
+[package]
+name = "obrain-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "WebAssembly bindings for Obrain graph database"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+obrain-engine = { workspace = true, features = ["gql", "regex-lite"] }
+obrain-core = { workspace = true, default-features = false, optional = true }
+obrain-common.workspace = true
+obrain-reactive = { workspace = true, optional = true }
+obrain-bindings-common = { path = "../common", default-features = false }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+
+# Better panic messages in browser console
+console_error_panic_hook = "0.1"
+
+# Serialization (for snapshot export/import)
+serde.workspace = true
+serde_json = "1.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[features]
+default = ["browser"]
+gql = ["obrain-engine/gql"]
+cypher = ["obrain-engine/cypher"]
+rdf = ["obrain-engine/rdf", "dep:obrain-core", "obrain-core/rdf"]
+sparql = ["obrain-engine/sparql", "rdf"]
+gremlin = ["obrain-engine/gremlin"]
+graphql = ["obrain-engine/graphql"]
+sql-pgq = ["obrain-engine/sql-pgq"]
+vector-index = ["obrain-engine/vector-index"]
+text-index = ["obrain-engine/text-index"]
+hybrid-search = ["obrain-engine/hybrid-search"]
+languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
+ai = ["vector-index", "text-index", "hybrid-search"]
+# Cognitive features (energy scoring, synapses, activation)
+cognitive = ["dep:obrain-reactive"]
+# Named profiles
+browser = ["gql", "obrain-engine/regex-lite"]  # GQL + regex-lite (~507 KB gzip)
+full = ["languages", "ai"]  # All languages + AI search
+
+[lints]
+workspace = true

@@ -1,0 +1,53 @@
+[package]
+name = "obrain-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Node.js/TypeScript bindings for Obrain graph database"
+
+[lib]
+crate-type = ["cdylib"]
+doc = false
+
+[dependencies]
+obrain-engine = { path = "../../obrain-engine" }
+obrain-core = { path = "../../obrain-core" }
+obrain-common = { path = "../../obrain-common" }
+obrain-adapters = { path = "../../obrain-adapters" }
+obrain-bindings-common = { path = "../common" }
+
+napi = { version = "3", default-features = false, features = ["napi9", "async", "serde-json", "error_anyhow"] }
+napi-derive = "3.5.2"
+parking_lot.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde_json = "1.0"
+
+[build-dependencies]
+napi-build = "2"
+
+[features]
+default = ["embedded"]
+gql = ["obrain-engine/gql"]
+cypher = ["obrain-engine/cypher"]
+sparql = ["obrain-engine/sparql", "obrain-engine/rdf"]
+gremlin = ["obrain-engine/gremlin"]
+graphql = ["obrain-engine/graphql"]
+sql-pgq = ["obrain-engine/sql-pgq"]
+vector-index = ["obrain-engine/vector-index"]
+text-index = ["obrain-engine/text-index"]
+hybrid-search = ["obrain-engine/hybrid-search"]
+cdc = ["obrain-engine/cdc"]
+embed = ["obrain-engine/embed"]
+algos = ["obrain-engine/algos"]
+rdf = ["obrain-engine/rdf"]
+languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
+ai = ["vector-index", "text-index", "hybrid-search", "cdc"]
+storage = ["obrain-engine/storage"]
+# Named profiles
+embedded = ["gql", "ai", "algos", "obrain-engine/parallel", "obrain-engine/regex"]
+full = ["languages", "ai", "algos", "rdf"]
+
+[lints]
+workspace = true

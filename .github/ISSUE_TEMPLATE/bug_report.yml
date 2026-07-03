@@ -1,0 +1,36 @@
+name: Bug Report
+description: Report a bug in Obrain
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+      placeholder: |
+        When I do X, Y happens instead of Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: Minimal code or steps to reproduce the issue.
+      placeholder: |
+        ```rust
+        let db = ObrainDB::open("test")?;
+        // ...
+        ```
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Obrain version and language (Rust/Python/Node.js)
+      placeholder: "0.4.0, Python"
+    validations:
+      required: false

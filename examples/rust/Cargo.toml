@@ -1,0 +1,67 @@
+[package]
+name = "obrain-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+obrain = { path = "../../crates/obrain", default-features = false, features = ["embedded"] }
+
+[[bin]]
+name = "basic"
+path = "basic.rs"
+
+[[bin]]
+name = "transactions"
+path = "transactions.rs"
+
+[[bin]]
+name = "parameterized"
+path = "parameterized.rs"
+
+[[bin]]
+name = "vector_search"
+path = "vector_search.rs"
+
+[[bin]]
+name = "algorithms"
+path = "algorithms.rs"
+
+[[bin]]
+name = "persistence"
+path = "persistence.rs"
+required-features = ["storage"]
+
+[[bin]]
+name = "social_network"
+path = "social_network.rs"
+
+[[bin]]
+name = "knowledge_base"
+path = "knowledge_base.rs"
+
+[[bin]]
+name = "iot_stream"
+path = "iot_stream.rs"
+
+[[bin]]
+name = "multi_language"
+path = "multi_language.rs"
+required-features = ["full"]
+
+[[bin]]
+name = "migrate-v2"
+path = "migrate_v2.rs"
+required-features = ["storage"]
+
+[[bin]]
+name = "bench-load"
+path = "bench_load.rs"
+required-features = ["storage"]
+
+[features]
+default = []
+storage = ["obrain/storage", "obrain/tiered-storage"]
+full = ["obrain/full"]

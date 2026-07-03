@@ -1,0 +1,201 @@
+//! Scan operator for reading data from storage.
+
+use super::{Operator, OperatorResult};
+use crate::execution::DataChunk;
+use crate::graph::GraphStore;
+use obrain_common::types::{EpochId, LogicalType, NodeId, TransactionId};
+use std::sync::Arc;
+
+/// A scan operator that reads nodes from storage.
+pub struct ScanOperator {
+    /// The store to scan from.
+    store: Arc<dyn GraphStore>,
+    /// Label filter (None = all nodes).
+    label: Option<String>,
+    /// Current position in the scan.
+    position: usize,
+    /// Batch of node IDs to scan.
+    batch: Vec<NodeId>,
+    /// Whether the scan is exhausted.
+    exhausted: bool,
+    /// Chunk capacity.
+    chunk_capacity: usize,
+    /// Optional row cap. When set, the scan uses the LIMIT-aware
+    /// `nodes_by_label_capped` variant which stops as soon as `max_rows`
+    /// matches are collected. Set by `plan_limit` when the parent
+    /// operator is a simple `Limit(N) → NodeScan(label)` (no Sort, no
+    /// Filter in between).
+    max_rows: Option<usize>,
+    /// Transaction ID for MVCC visibility (None = use current epoch).
+    transaction_id: Option<TransactionId>,
+    /// Epoch for version visibility.
+    viewing_epoch: Option<EpochId>,
+}
+
+impl ScanOperator {
+    /// Creates a new scan operator for all nodes.
+    pub fn new(store: Arc<dyn GraphStore>) -> Self {
+        Self {
+            store,
+            label: None,
+            position: 0,
+            batch: Vec::new(),
+            exhausted: false,
+            chunk_capacity: 2048,
+            max_rows: None,
+            transaction_id: None,
+            viewing_epoch: None,
+        }
+    }
+
+    /// Creates a new scan operator for nodes with a specific label.
+    pub fn with_label(store: Arc<dyn GraphStore>, label: impl Into<String>) -> Self {
+        Self {
+            store,
+            label: Some(label.into()),
+            position: 0,
+            batch: Vec::new(),
+            exhausted: false,
+            chunk_capacity: 2048,
+            max_rows: None,
+            transaction_id: None,
+            viewing_epoch: None,
+        }
+    }
+
+    /// Sets an explicit row cap. Lets the underlying store stop scanning
+    /// as soon as `max` matches are found (via `nodes_by_label_capped`).
+    /// Use this when the plan knows a LIMIT is coming and there's no Sort
+    /// or Filter that would need the full result set.
+    pub fn with_max_rows(mut self, max: usize) -> Self {
+        self.max_rows = Some(max);
+        self
+    }
+
+    /// Sets the chunk capacity.
+    pub fn with_chunk_capacity(mut self, capacity: usize) -> Self {
+        self.chunk_capacity = capacity;
+        self
+    }
+
+    /// Sets the transaction context for MVCC visibility.
+    ///
+    /// When set, the scan will only return nodes visible to this transaction.
+    pub fn with_transaction_context(
+        mut self,
+        epoch: EpochId,
+        transaction_id: Option<TransactionId>,
+    ) -> Self {
+        self.viewing_epoch = Some(epoch);
+        self.transaction_id = transaction_id;
+        self
+    }
+
+    fn load_batch(&mut self) {
+        if !self.batch.is_empty() || self.exhausted {
+            return;
+        }
+
+        // Get nodes. When we have transaction context, use all_node_ids()
+        // to include uncommitted/PENDING versions (nodes_by_label already
+        // returns unfiltered IDs from the label index, but node_ids()
+        // pre-filters by epoch which excludes PENDING nodes).
+        //
+        // LIMIT-aware fast path : when self.max_rows is set AND there's
+        // no transaction context (no MVCC filter that could drop rows),
+        // ask the store for AT MOST that many node IDs. Saves an O(N)
+        // scan on big labels (681K ChatEvents → microseconds).
+        let all_ids = match &self.label {
+            Some(label) => {
+                // Use the capped variant when we have a row cap AND there is
+                // no active transaction. `viewing_epoch=Some(EpochId(0))` is
+                // the read-only baseline — visibility filtering on baseline
+                // nodes is a no-op (TOMBSTONED is already filtered inside
+                // nodes_by_label_capped), so the cap is safe.
+                //
+                // Only fall back to the full scan when `transaction_id` is
+                // Some, which is the case for queries inside an explicit
+                // MVCC transaction where visibility might drop matches.
+                if let Some(max) = self.max_rows {
+                    if self.transaction_id.is_none() {
+                        self.store.nodes_by_label_capped(label, max)
+                    } else {
+                        self.store.nodes_by_label(label)
+                    }
+                } else {
+                    self.store.nodes_by_label(label)
+                }
+            }
+            None if self.viewing_epoch.is_some() => self.store.all_node_ids(),
+            None => self.store.node_ids(),
+        };
+
+        // Filter by visibility if we have tx context.
+        // Uses batch methods that hold a single lock for all IDs instead of
+        // acquiring/releasing per node (avoids N+1 lock pattern).
+        self.batch = if let Some(epoch) = self.viewing_epoch {
+            if let Some(tx) = self.transaction_id {
+                self.store
+                    .filter_visible_node_ids_versioned(&all_ids, epoch, tx)
+            } else {
+                self.store.filter_visible_node_ids(&all_ids, epoch)
+            }
+        } else {
+            all_ids
+        };
+
+        if self.batch.is_empty() {
+            self.exhausted = true;
+        }
+    }
+}
+
+impl Operator for ScanOperator {
+    fn next(&mut self) -> OperatorResult {
+        self.load_batch();
+
+        if self.exhausted || self.position >= self.batch.len() {
+            return Ok(None);
+        }
+
+        // Create output chunk with node IDs
+        let schema = [LogicalType::Node];
+        let mut chunk = DataChunk::with_capacity(&schema, self.chunk_capacity);
+
+        let end = (self.position + self.chunk_capacity).min(self.batch.len());
+        let count = end - self.position;
+
+        {
+            // Column 0 guaranteed to exist: chunk created with single-column schema above
+            let col = chunk
+                .column_mut(0)
+                .expect("column 0 exists: chunk created with single-column schema");
+            for i in self.position..end {
+                col.push_node_id(self.batch[i]);
+            }
+        }
+
+        chunk.set_count(count);
+        self.position = end;
+
+        Ok(Some(chunk))
+    }
+
+    fn reset(&mut self) {
+        self.position = 0;
+        self.batch.clear();
+        self.exhausted = false;
+    }
+
+    fn name(&self) -> &'static str {
+        "Scan"
+    }
+}
+
+// Tests relocated to `crates/obrain-substrate/tests/operators_scan.rs`
+// (T17 Step 3 W2 Class-2 migration — decision `b1dfe229`). obrain-core cannot
+// take obrain-substrate as a dev-dep (dev-dep cycle, gotcha `598dda40`), so
+// the LPG-era fixtures are rebuilt against SubstrateStore in an integration
+// test of obrain-substrate.
+#[cfg(test)]
+mod tests {}
