@@ -1250,7 +1250,7 @@ impl ValueSizeStats {
 
     fn top_report(&self, n: usize) -> String {
         let mut entries: Vec<(&String, &(usize, u64))> = self.per_key.iter().collect();
-        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1.0));
         entries
             .iter()
             .take(n)
@@ -1698,7 +1698,7 @@ fn flush_edge_props_chunk(
     // EDGE_PROPS_BATCH edges).
     let mut scratch: Vec<(String, Value)> = Vec::with_capacity(8);
 
-    for ((_old_id, new_id), props) in pairs.iter().zip(props_batch.into_iter()) {
+    for ((_old_id, new_id), props) in pairs.iter().zip(props_batch) {
         // Non-cognitive props → split between column-bound (vectors
         // + oversize strings + oversize bytes) and streamed
         // substrate.props entry (everything else). See the twin comment
@@ -1768,7 +1768,7 @@ fn phase_cognitive(
     for chunk in ids.chunks(COG_BATCH) {
         // Parallel arrays: chunk[i] ↔ props[i] ↔ new_ids[i]
         let props = legacy.get_nodes_properties_selective_batch(chunk, &keys);
-        for (old_id, map) in chunk.iter().zip(props.into_iter()) {
+        for (old_id, map) in chunk.iter().zip(props) {
             let Some(&new_id) = node_map.get(&old_id.as_u64()) else {
                 pb.inc(1);
                 continue;
@@ -1829,7 +1829,7 @@ fn phase_tiers(
     let ids = legacy.all_node_ids();
     for chunk in ids.chunks(TIERS_BATCH) {
         let props = legacy.get_nodes_properties_selective_batch(chunk, &key_slice);
-        for (old_id, mut map) in chunk.iter().zip(props.into_iter()) {
+        for (old_id, mut map) in chunk.iter().zip(props) {
             let Some(&new_id) = node_map.get(&old_id.as_u64()) else {
                 continue;
             };
