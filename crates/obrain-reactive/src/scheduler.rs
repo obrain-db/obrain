@@ -234,7 +234,9 @@ mod native {
         loop {
             // Effectively infinite when no pending events. `from_secs(3600)`
             // kept: `Duration::from_hours` is unstable at our MSRV.
-            #[allow(clippy::duration_suggests_new_constructor)]
+            // (unknown_lints allowed: duration_suboptimal_units only exists
+            // on clippy ≥ 1.96 — older toolchains would flag the allow.)
+            #[allow(unknown_lints, clippy::duration_suboptimal_units)]
             let timeout = flush_deadline.map_or(Duration::from_secs(3600), |d| {
                 d.saturating_duration_since(tokio::time::Instant::now())
             });
