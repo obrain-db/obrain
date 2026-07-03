@@ -131,10 +131,8 @@ impl EventFilter {
                 GraphEvent::NodeCreated {
                     labels: node_labels,
                     ..
-                } => {
-                    if !node_labels.iter().any(|l| labels.contains(l.as_str())) {
-                        return false;
-                    }
+                } if !node_labels.iter().any(|l| labels.contains(l.as_str())) => {
+                    return false;
                 }
                 // Non-node events pass label filter (OR semantics: label filter
                 // only constrains node events)
@@ -145,10 +143,10 @@ impl EventFilter {
         // Check edge type filter
         if let Some(ref edge_types) = self.edge_types {
             match event {
-                GraphEvent::EdgeCreated { edge_type, .. } => {
-                    if !edge_types.contains(edge_type.as_str()) {
-                        return false;
-                    }
+                GraphEvent::EdgeCreated { edge_type, .. }
+                    if !edge_types.contains(edge_type.as_str()) =>
+                {
+                    return false;
                 }
                 _ => {}
             }
@@ -157,10 +155,8 @@ impl EventFilter {
         // Check property key filter
         if let Some(ref props) = self.properties {
             match event {
-                GraphEvent::PropertySet { key, .. } => {
-                    if !props.contains(key.as_str()) {
-                        return false;
-                    }
+                GraphEvent::PropertySet { key, .. } if !props.contains(key.as_str()) => {
+                    return false;
                 }
                 // Non-property events pass this filter
                 _ => {}

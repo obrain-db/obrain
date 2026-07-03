@@ -831,7 +831,7 @@ impl HnswIndex {
                 distance: fc.distance,
             })
             .collect();
-        result_vec.sort_by(|a, b| OrderedFloat(a.distance).cmp(&OrderedFloat(b.distance)));
+        result_vec.sort_by_key(|a| OrderedFloat(a.distance));
         result_vec
     }
 
@@ -945,7 +945,7 @@ impl HnswIndex {
                 distance: fc.distance,
             })
             .collect();
-        result_vec.sort_by(|a, b| OrderedFloat(a.distance).cmp(&OrderedFloat(b.distance)));
+        result_vec.sort_by_key(|a| OrderedFloat(a.distance));
         result_vec
     }
 
@@ -999,7 +999,7 @@ impl HnswIndex {
 
         // Sort by distance
         let mut sorted: Vec<_> = distances.to_vec();
-        sorted.sort_by(|a, b| OrderedFloat(a.1).cmp(&OrderedFloat(b.1)));
+        sorted.sort_by_key(|a| OrderedFloat(a.1));
 
         *neighbors = sorted.into_iter().take(m).map(|(id, _)| id).collect();
     }
