@@ -135,7 +135,7 @@ fn bench_megalaw_retrieval_steps() {
         let deg = store.neighbors(nid, Direction::Both).len();
         degree_samples.push((nid.as_u64(), deg));
     }
-    degree_samples.sort_by(|a, b| b.1.cmp(&a.1));
+    degree_samples.sort_by_key(|d| std::cmp::Reverse(d.1));
     for &(nid, deg) in degree_samples.iter().take(5) {
         println!("    node {} : degree {}", nid, deg);
     }
