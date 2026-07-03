@@ -232,9 +232,12 @@ mod native {
         );
 
         loop {
+            // Effectively infinite when no pending events. `from_secs(3600)`
+            // kept: `Duration::from_hours` is unstable at our MSRV.
+            #[allow(clippy::duration_suggests_new_constructor)]
             let timeout = flush_deadline.map_or(Duration::from_secs(3600), |d| {
                 d.saturating_duration_since(tokio::time::Instant::now())
-            }); // effectively infinite when no pending events
+            });
 
             tokio::select! {
                 biased;
