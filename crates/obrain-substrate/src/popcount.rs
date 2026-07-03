@@ -87,6 +87,10 @@ pub fn xor_popcount_t1_scalar(corpus: &[Tier1], q: &Tier1, out: &mut [u32]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512vpopcntdq")]
 #[inline]
+// Register-only intrinsics (xor/popcnt/reduce) are safe inside a matching
+// #[target_feature] fn on recent toolchains, making some `unsafe {}` blocks
+// redundant there — but they are still required on older toolchains (MSRV).
+#[allow(unused_unsafe)]
 unsafe fn xor_popcount_t1_avx512(corpus: &[Tier1], q: &Tier1, out: &mut [u32]) {
     use core::arch::x86_64::{
         _mm512_loadu_si512, _mm512_popcnt_epi64, _mm512_reduce_add_epi64, _mm512_xor_si512,
@@ -109,6 +113,8 @@ unsafe fn xor_popcount_t1_avx512(corpus: &[Tier1], q: &Tier1, out: &mut [u32]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512vpopcntdq")]
 #[inline]
+// See xor_popcount_t1_avx512 — toolchain-dependent intrinsic safety.
+#[allow(unused_unsafe)]
 unsafe fn xor_popcount_t0_avx512(corpus: &[Tier0], q: Tier0, out: &mut [u32]) {
     use core::arch::x86_64::{_mm_loadu_si128, _mm_storeu_si128, _mm_xor_si128};
     // Tier0 is 16 B (128 bits) — too small to fill a zmm by itself, so
