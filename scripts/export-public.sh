@@ -135,10 +135,13 @@ find "$OUT/crates" -name Cargo.toml -exec sed -i '' \
   -e 's/"obrain-rag\/[a-zA-Z0-9_-]*"//g' \
   {} +
 
-# neo4j2obrain: the public importer defaults to no cognitive stage 4
+# neo4j2obrain: the public importer defaults to no cognitive stage 4.
+# The feature stays DECLARED (empty) so `cfg(feature = "cognitive-init")`
+# remains a valid, never-true cfg (unexpected_cfgs is deny in CI).
 sed -i '' 's/^default = \["cognitive-init"\]/default = []/' \
   "$OUT/crates/neo4j2obrain/Cargo.toml"
-sed -i '' '/^cognitive-init = /d' "$OUT/crates/neo4j2obrain/Cargo.toml"
+sed -i '' 's/^cognitive-init = .*/cognitive-init = []/' \
+  "$OUT/crates/neo4j2obrain/Cargo.toml"
 
 echo "==> anti-leak audit"
 # Cargo.toml must be completely clean.
@@ -166,8 +169,14 @@ echo "    manifests clean; gated references confined to known mixed files"
 if [[ "$VERIFY" == 1 ]]; then
   echo "==> gates: cargo check --workspace (default features)"
   (cd "$OUT" && cargo check --workspace 2>&1 | tail -2)
-  echo "==> gates: engine + cli with cypher"
-  (cd "$OUT" && cargo check -p obrain-engine -p obrain-cli --features "obrain-engine/cypher" 2>&1 | tail -2)
+  echo "==> gates: clippy STABLE on the export (exactly what the public CI runs)"
+  # Feature unification differs between the private and public workspaces
+  # after scrubbing — lints must be checked on THIS tree, with the same
+  # latest-stable toolchain as the CI runner (NB: Homebrew cargo shadows
+  # rustup: use `rustup run stable`, never `cargo +stable`).
+  (cd "$OUT" && rustup run stable cargo clippy --workspace --all-targets \
+      --features "obrain-engine/cypher,obrain-engine/algos" -- -D warnings 2>&1 \
+    | grep -cE "^error" | { read -r n; echo "    clippy(stable) errors: $n"; [ "$n" = "0" ]; })
   echo "==> gates: quick engine test slice"
   (cd "$OUT" && cargo test -p obrain-engine --test gql_order_by_limit 2>&1 | grep "test result")
 fi

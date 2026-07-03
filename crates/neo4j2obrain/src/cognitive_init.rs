@@ -19,6 +19,7 @@
 //! All three stages degrade gracefully on an empty graph (zero counts,
 //! no errors).
 
+#[cfg(feature = "cognitive-init")]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ use obrain_adapters::plugins::algorithms::pagerank;
 #[cfg(feature = "cognitive-init")]
 use obrain_cognitive::community::{Graph, LeidenConfig, leiden_batch};
 use obrain_common::NodeId;
+#[cfg(feature = "cognitive-init")]
 use obrain_core::graph::Direction;
 use obrain_core::graph::traits::GraphStore;
 use obrain_substrate::SubstrateStore;
