@@ -23,6 +23,7 @@ neo4j-bolt = ["neo4rs", "tokio", "chrono"]
 # cognitive crates (repo split, plan ad63daf1): without it, stage 4 is
 # a warned no-op (community_id column left empty; stages 5-6 unaffected —
 # they only use public crates).
+cognitive-init = []
 # ONNX embedding computation for stage 2 (fill missing `_st_embedding`).
 # Off by default so the hermetic workspace build does not pull the
 # ~17 MB ort transitive closure. Enable for production imports;
