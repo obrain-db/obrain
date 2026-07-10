@@ -29,7 +29,7 @@ serde_json = "1"
 is-terminal = "0.4"
 
 # REPL
-rustyline = "17"
+rustyline = "18"
 
 # Progress bars
 indicatif = "0.18"
