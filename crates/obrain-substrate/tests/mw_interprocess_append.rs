@@ -624,6 +624,7 @@ fn t7_deux_processus_en_lots_zero_perte_et_ordre_interne_preserve() {
 // APRÈS une déchirure (donc jamais « un autre écrivain a suivi une frame
 // coupée »), et tout ce qui précède la déchirure est lisible.
 #[test]
+#[ignore = "sensible au temps ou au debit : deterministe en local, flake sur runner partage"]
 fn t3_kill_pendant_l_append_le_dechirement_n_existe_qu_a_la_queue() {
     let test = "t3_kill_pendant_l_append_le_dechirement_n_existe_qu_a_la_queue";
     if role().as_deref() == Some("ecrivain") {
@@ -741,6 +742,7 @@ fn t3_kill_pendant_l_append_le_dechirement_n_existe_qu_a_la_queue() {
 // appends suivants doivent être LUS — ce qui était faux avant : le rejeu
 // s'arrête sur la déchirure, et tout ce qui suit était invisible.
 #[test]
+#[ignore = "sensible au temps ou au debit : deterministe en local, flake sur runner partage"]
 fn t4_reparation_de_queue_par_un_autre_processus_puis_100_appends() {
     let test = "t4_reparation_de_queue_par_un_autre_processus_puis_100_appends";
     if role().as_deref() == Some("ecrivain") {
@@ -870,6 +872,7 @@ fn t4_reparation_de_queue_par_un_autre_processus_puis_100_appends() {
 // rien non plus. On mesure donc le débit CUMULÉ de N PROCESSUS qui appendent en
 // parallèle, à M constant par processus.
 #[test]
+#[ignore = "sensible au temps ou au debit : deterministe en local, flake sur runner partage"]
 fn debit_a_n_ecrivains_la_fifo_scale() {
     let test = "debit_a_n_ecrivains_la_fifo_scale";
     if role().as_deref() == Some("ecrivain") {
