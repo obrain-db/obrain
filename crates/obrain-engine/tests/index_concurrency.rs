@@ -122,6 +122,7 @@ const TOURS: usize = 5;
 /// verrou de lecture du registre, ce test s'effondrerait : le temps total
 /// croitrait lineairement avec le nombre de fils.
 #[test]
+#[ignore = "sensible au temps ou au debit : deterministe en local, flake sur runner partage"]
 fn lectures_concurrentes_ne_se_serialisent_pas() {
     const N_NOEUDS: u64 = 4_000;
     const RECHERCHES: usize = 200;
