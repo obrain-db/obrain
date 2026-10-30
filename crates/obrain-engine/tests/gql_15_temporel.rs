@@ -326,12 +326,28 @@ fn typé_franchissement_de_rang_avec_precisions_opposees() {
     // de fraction change d'un couple à l'autre — 9, 3, 1, 6, 2, 9 — pour que la
     // colonne globale ne soit jamais à précision uniforme.
     let couples = [
-        ("seconde", "2026-01-01T09:59:59.999999999Z", "2026-01-01T10:00:00Z"),
+        (
+            "seconde",
+            "2026-01-01T09:59:59.999999999Z",
+            "2026-01-01T10:00:00Z",
+        ),
         ("minute", "2026-01-01T10:00:59.999Z", "2026-01-01T10:01:00Z"),
         ("heure", "2026-01-01T10:59:59.9Z", "2026-01-01T11:00:00Z"),
-        ("jour", "2026-01-01T23:59:59.999999Z", "2026-01-02T00:00:00Z"),
-        ("millénaire", "1999-12-31T23:59:59.99Z", "2000-01-01T00:00:00Z"),
-        ("époque", "1969-12-31T23:59:59.999999999Z", "1970-01-01T00:00:00Z"),
+        (
+            "jour",
+            "2026-01-01T23:59:59.999999Z",
+            "2026-01-02T00:00:00Z",
+        ),
+        (
+            "millénaire",
+            "1999-12-31T23:59:59.99Z",
+            "2000-01-01T00:00:00Z",
+        ),
+        (
+            "époque",
+            "1969-12-31T23:59:59.999999999Z",
+            "1970-01-01T00:00:00Z",
+        ),
     ];
     let toutes: Vec<String> = couples
         .iter()
@@ -340,12 +356,26 @@ fn typé_franchissement_de_rang_avec_precisions_opposees() {
     exiger_precisions_melangees(&toutes);
 
     for (rang, avant, apres) in couples {
-        let label = format!("F{}", rang.chars().filter(char::is_ascii_alphanumeric).collect::<String>());
-        exec(&s, &format!("INSERT (:{label} {{k:'avant', at: DATETIME '{avant}'}})"));
-        exec(&s, &format!("INSERT (:{label} {{k:'apres', at: DATETIME '{apres}'}})"));
+        let label = format!(
+            "F{}",
+            rang.chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>()
+        );
+        exec(
+            &s,
+            &format!("INSERT (:{label} {{k:'avant', at: DATETIME '{avant}'}})"),
+        );
+        exec(
+            &s,
+            &format!("INSERT (:{label} {{k:'apres', at: DATETIME '{apres}'}})"),
+        );
 
         assert_eq!(
-            cles(&s, &format!("MATCH (n:{label}) RETURN n.k ORDER BY n.at ASC")),
+            cles(
+                &s,
+                &format!("MATCH (n:{label}) RETURN n.k ORDER BY n.at ASC")
+            ),
             vec!["avant".to_string(), "apres".to_string()],
             "franchissement de {rang} : « {avant} » ({} décimales) précède \
              « {apres} » (0 décimale) — le tri doit être chronologique, pas lexicographique",
@@ -456,7 +486,11 @@ fn typé_borne_tronquee_ne_perd_aucune_ligne() {
         ("r4", "2026-01-01T10:00:00.999999Z"),
         ("r5", "2026-01-01T10:00:01Z"),
     ];
-    exiger_precisions_melangees(&jeu.iter().map(|(_, e)| (*e).to_string()).collect::<Vec<_>>());
+    exiger_precisions_melangees(
+        &jeu.iter()
+            .map(|(_, e)| (*e).to_string())
+            .collect::<Vec<_>>(),
+    );
     for (k, e) in jeu {
         exec(&s, &format!("INSERT (:BO {{k:'{k}', at: DATETIME '{e}'}})"));
     }
@@ -622,10 +656,10 @@ fn date_impossible_nest_jamais_un_instant() {
     let s = db.session();
 
     for ecriture in [
-        "2026-13-45T99:99:99Z",  // mois 13, jour 45, heure 99
-        "2026-02-30T10:00:00Z",  // 30 février
-        "2026-01-01T24:00:00Z",  // heure 24
-        "2026-01-01T10:00:60Z",  // seconde 60
+        "2026-13-45T99:99:99Z", // mois 13, jour 45, heure 99
+        "2026-02-30T10:00:00Z", // 30 février
+        "2026-01-01T24:00:00Z", // heure 24
+        "2026-01-01T10:00:60Z", // seconde 60
         "pas-une-date",
         "2026-01-01T10:00:00.-1Z", // fraction négative
     ] {
@@ -709,10 +743,7 @@ fn divergence_le_verdict_depend_de_lecriture_de_loffset_zero() {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
 
-    let en_z = scalaire(
-        &s,
-        "'2026-01-01T10:00:00Z' < '2026-01-01T10:00:00.000001Z'",
-    );
+    let en_z = scalaire(&s, "'2026-01-01T10:00:00Z' < '2026-01-01T10:00:00.000001Z'");
     let en_plus = scalaire(
         &s,
         "'2026-01-01T10:00:00+00:00' < '2026-01-01T10:00:00.000001+00:00'",
@@ -744,7 +775,10 @@ fn divergence_borne_tronquee_sur_chaines_exclut_des_lignes() {
     let corpus = corpus_production(0);
     charger_chaines(&s, "BT", &corpus);
 
-    let tronquee = cles_triees(&s, "MATCH (n:BT) WHERE n.at >= '2026-01-01T10:00:00Z' RETURN n.k");
+    let tronquee = cles_triees(
+        &s,
+        "MATCH (n:BT) WHERE n.at >= '2026-01-01T10:00:00Z' RETURN n.k",
+    );
     let neuf = cles_triees(
         &s,
         "MATCH (n:BT) WHERE n.at >= '2026-01-01T10:00:00.000000000Z' RETURN n.k",
@@ -780,12 +814,12 @@ fn divergence_chaines_fuseaux_melanges() {
     // Corpus produit par le code de production, à trois décalages, précisions
     // mélangées ; l'ordre chronologique est celui de r0 à r5.
     let instants = [
-        (ANCRE - 1_000_000, 0),        // r0  09:59:59Z
-        (ANCRE - 500_000, 2 * 3600),   // r1  11:59:59.5+02:00
-        (ANCRE, -5 * 3600),            // r2  05:00:00-05:00
-        (ANCRE + 1, 2 * 3600),         // r3  12:00:00.000001+02:00
-        (ANCRE + 123_000, 0),          // r4  10:00:00.123Z
-        (ANCRE + 1_000_000, -5 * 3600),// r5  05:00:01-05:00
+        (ANCRE - 1_000_000, 0),         // r0  09:59:59Z
+        (ANCRE - 500_000, 2 * 3600),    // r1  11:59:59.5+02:00
+        (ANCRE, -5 * 3600),             // r2  05:00:00-05:00
+        (ANCRE + 1, 2 * 3600),          // r3  12:00:00.000001+02:00
+        (ANCRE + 123_000, 0),           // r4  10:00:00.123Z
+        (ANCRE + 1_000_000, -5 * 3600), // r5  05:00:01-05:00
     ];
     let corpus: Vec<(i64, String)> = instants
         .iter()
@@ -911,7 +945,10 @@ fn divergence_order_by_zoned_datetime_est_inerte() {
     );
     // Inséré à l'envers : si le tri est inerte, ASC rendra r3..r0.
     for (k, e) in chronologie.iter().rev() {
-        exec(&s, &format!("INSERT (:ZO {{k:'{k}', at: ZONED DATETIME '{e}'}})"));
+        exec(
+            &s,
+            &format!("INSERT (:ZO {{k:'{k}', at: ZONED DATETIME '{e}'}})"),
+        );
     }
 
     let asc = cles(&s, "MATCH (n:ZO) RETURN n.k ORDER BY n.at ASC");
@@ -949,7 +986,10 @@ fn divergence_min_max_zoned_datetime_rend_un_entier() {
     ];
     exiger_precisions_melangees(&jeu.iter().map(|e| (*e).to_string()).collect::<Vec<_>>());
     for (i, e) in jeu.iter().enumerate() {
-        exec(&s, &format!("INSERT (:MM {{k:'r{i}', at: ZONED DATETIME '{e}'}})"));
+        exec(
+            &s,
+            &format!("INSERT (:MM {{k:'r{i}', at: ZONED DATETIME '{e}'}})"),
+        );
     }
 
     let rows = exec(&s, "MATCH (n:MM) RETURN min(n.at) AS mn, max(n.at) AS mx");
@@ -961,8 +1001,16 @@ fn divergence_min_max_zoned_datetime_rend_un_entier() {
     );
     let attendu_mn = ZonedDatetime::parse(jeu[0]).expect("écriture de fixture valide");
     let attendu_mx = ZonedDatetime::parse(jeu[2]).expect("écriture de fixture valide");
-    assert_eq!(mn, &Value::ZonedDatetime(attendu_mn), "min = l'instant le plus ancien");
-    assert_eq!(mx, &Value::ZonedDatetime(attendu_mx), "max = l'instant le plus récent");
+    assert_eq!(
+        mn,
+        &Value::ZonedDatetime(attendu_mn),
+        "min = l'instant le plus ancien"
+    );
+    assert_eq!(
+        mx,
+        &Value::ZonedDatetime(attendu_mx),
+        "max = l'instant le plus récent"
+    );
 }
 
 /// **D5.** Une colonne mélangeant horodatages typés et dates en chaîne doit
@@ -975,9 +1023,15 @@ fn divergence_colonne_mixte_horodatage_et_chaine_nest_pas_triee() {
     let s = db.session();
 
     // r0 < r1 < r2 chronologiquement ; r1 est une CHAÎNE, r0 et r2 des instants.
-    exec(&s, "INSERT (:MI {k:'r2', at: DATETIME '2026-01-01T10:00:00.5Z'})");
+    exec(
+        &s,
+        "INSERT (:MI {k:'r2', at: DATETIME '2026-01-01T10:00:00.5Z'})",
+    );
     exec(&s, "INSERT (:MI {k:'r1', at: '2026-01-01T09:00:00Z'})");
-    exec(&s, "INSERT (:MI {k:'r0', at: DATETIME '2026-01-01T08:00:00.000001Z'})");
+    exec(
+        &s,
+        "INSERT (:MI {k:'r0', at: DATETIME '2026-01-01T08:00:00.000001Z'})",
+    );
 
     let asc = cles(&s, "MATCH (n:MI) RETURN n.k ORDER BY n.at ASC");
     // Contrainte minimale : les deux valeurs de MÊME type doivent être ordonnées
@@ -1013,7 +1067,11 @@ fn divergence_nanosecondes_tronquees_deux_instants_deviennent_egaux() {
         ("r2", "2026-01-01T10:00:00.000000999Z"),
         ("r3", "2026-01-01T10:00:00.000001Z"),
     ];
-    exiger_precisions_melangees(&jeu.iter().map(|(_, e)| (*e).to_string()).collect::<Vec<_>>());
+    exiger_precisions_melangees(
+        &jeu.iter()
+            .map(|(_, e)| (*e).to_string())
+            .collect::<Vec<_>>(),
+    );
     for (k, e) in jeu {
         exec(&s, &format!("INSERT (:NS {{k:'{k}', at: DATETIME '{e}'}})"));
     }
@@ -1047,10 +1105,22 @@ fn divergence_ecritures_malformees_acceptees_comme_instants() {
 
     // Aucune de ces écritures n'est du RFC 3339.
     for (ecriture, pourquoi) in [
-        ("2026-01-01T10:00:00.+5Z", "une fraction ne commence pas par un signe"),
-        ("2026-01-01T+10:00:00Z", "un champ heure ne commence pas par un signe"),
-        ("+2026-01-01T10:00:00Z", "un millésime ne commence pas par un signe"),
-        ("2026-01-01T10:00Z", "les secondes ne sont pas facultatives en RFC 3339"),
+        (
+            "2026-01-01T10:00:00.+5Z",
+            "une fraction ne commence pas par un signe",
+        ),
+        (
+            "2026-01-01T+10:00:00Z",
+            "un champ heure ne commence pas par un signe",
+        ),
+        (
+            "+2026-01-01T10:00:00Z",
+            "un millésime ne commence pas par un signe",
+        ),
+        (
+            "2026-01-01T10:00Z",
+            "les secondes ne sont pas facultatives en RFC 3339",
+        ),
     ] {
         let v = scalaire(&s, &format!("DATETIME '{ecriture}'"));
         assert!(
@@ -1094,8 +1164,14 @@ fn divergence_date_illisible_degradee_en_chaine_sans_erreur() {
 
     // Et la conséquence : dégradée en chaîne, elle traverse tous les filtres
     // temporels sans jamais lever d'alerte.
-    exec(&s, &format!("INSERT (:IL {{k:'illisible', at: DATETIME '{illisible}'}})"));
-    exec(&s, "INSERT (:IL {k:'bon', at: DATETIME '2026-01-01T10:00:00.5Z'})");
+    exec(
+        &s,
+        &format!("INSERT (:IL {{k:'illisible', at: DATETIME '{illisible}'}})"),
+    );
+    exec(
+        &s,
+        "INSERT (:IL {k:'bon', at: DATETIME '2026-01-01T10:00:00.5Z'})",
+    );
     let hors_borne = cles_triees(
         &s,
         "MATCH (n:IL) WHERE n.at >= DATETIME '1970-01-01T00:00:00Z' RETURN n.k",

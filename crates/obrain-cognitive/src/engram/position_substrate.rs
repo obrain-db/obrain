@@ -179,7 +179,10 @@ impl SubstratePositionProvider {
                     // garde-fou d'allocation : une colonne à 256 dimensions est
                     // une donnée légitime, pas une erreur de format.
                     if v.len() > POS_DIM_MAX {
-                        return Err(PosError::BadDimension { got: v.len(), expected: POS_DIM_MAX });
+                        return Err(PosError::BadDimension {
+                            got: v.len(),
+                            expected: POS_DIM_MAX,
+                        });
                     }
                     dim = Some(v.len());
                 }
@@ -187,7 +190,10 @@ impl SubstratePositionProvider {
                     // Two different feature spaces in one base. Refuse: keeping
                     // either one would make the load depend on enumeration order,
                     // and mixing coordinates silently mis-aligns positions.
-                    return Err(PosError::InconsistentDimensions { expected: d, got: v.len() });
+                    return Err(PosError::InconsistentDimensions {
+                        expected: d,
+                        got: v.len(),
+                    });
                 }
                 Some(_) => {}
             }
@@ -266,8 +272,8 @@ impl PositionProvider for SubstratePositionProvider {
 mod tests {
     use super::*;
     use crate::engram::position::SlicePositionProvider;
-    use std::sync::Arc;
     use obrain_core::graph::GraphStoreMut;
+    use std::sync::Arc;
 
     fn store_with_positions(dim: usize, nodes: usize) -> (SubstrateStore, Vec<NodeId>) {
         let store = SubstrateStore::open_tempfile().unwrap();
@@ -275,8 +281,14 @@ mod tests {
         for i in 0..nodes {
             let id = store.create_node(&["N"]);
             // Non-zero, non-negative, distinguishable per node.
-            let v: Vec<f32> = (0..dim).map(|j| 0.05 + (i as f32) * 0.01 + (j as f32) * 0.001).collect();
-            store.set_node_property(id, DEFAULT_POSITION_KEY, Value::Vector(Arc::from(v.as_slice())));
+            let v: Vec<f32> = (0..dim)
+                .map(|j| 0.05 + (i as f32) * 0.01 + (j as f32) * 0.001)
+                .collect();
+            store.set_node_property(
+                id,
+                DEFAULT_POSITION_KEY,
+                Value::Vector(Arc::from(v.as_slice())),
+            );
             ids.push(id);
         }
         store.flush().unwrap();
@@ -311,7 +323,10 @@ mod tests {
         let (store, ids) = store_with_positions(8, 3);
         let orphan = store.create_node(&["N"]); // jamais écrit
         let p = SubstratePositionProvider::load(&store, DEFAULT_POSITION_KEY).unwrap();
-        assert!(p.position(orphan).is_none(), "un nœud sans position doit rendre None");
+        assert!(
+            p.position(orphan).is_none(),
+            "un nœud sans position doit rendre None"
+        );
         assert_eq!(p.len(), 3);
         for id in &ids {
             assert!(p.position(*id).is_some());
@@ -322,13 +337,25 @@ mod tests {
     fn zero_vectors_are_absent_not_at_the_origin() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let real = store.create_node(&["N"]);
-        store.set_node_property(real, DEFAULT_POSITION_KEY, Value::Vector(Arc::from([0.3f32; 4].as_slice())));
+        store.set_node_property(
+            real,
+            DEFAULT_POSITION_KEY,
+            Value::Vector(Arc::from([0.3f32; 4].as_slice())),
+        );
         let zeroed = store.create_node(&["N"]);
-        store.set_node_property(zeroed, DEFAULT_POSITION_KEY, Value::Vector(Arc::from([0.0f32; 4].as_slice())));
+        store.set_node_property(
+            zeroed,
+            DEFAULT_POSITION_KEY,
+            Value::Vector(Arc::from([0.0f32; 4].as_slice())),
+        );
         store.flush().unwrap();
         let p = SubstratePositionProvider::load(&store, DEFAULT_POSITION_KEY).unwrap();
         assert_eq!(p.len(), 1);
-        assert_eq!(p.skipped_zero(), 1, "le tout-zéro doit être compté comme absent");
+        assert_eq!(
+            p.skipped_zero(),
+            1,
+            "le tout-zéro doit être compté comme absent"
+        );
         assert!(p.position(zeroed).is_none());
         assert_eq!(p.position(real).unwrap(), &[0.3, 0.3, 0.3, 0.3]);
     }
@@ -350,15 +377,27 @@ mod tests {
     fn a_second_dimension_does_not_land_in_the_column() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let a = store.create_node(&["N"]);
-        store.set_node_property(a, DEFAULT_POSITION_KEY, Value::Vector(Arc::from([0.1f32; 8].as_slice())));
+        store.set_node_property(
+            a,
+            DEFAULT_POSITION_KEY,
+            Value::Vector(Arc::from([0.1f32; 8].as_slice())),
+        );
         let b = store.create_node(&["N"]);
-        store.set_node_property(b, DEFAULT_POSITION_KEY, Value::Vector(Arc::from([0.1f32; 5].as_slice())));
+        store.set_node_property(
+            b,
+            DEFAULT_POSITION_KEY,
+            Value::Vector(Arc::from([0.1f32; 5].as_slice())),
+        );
         store.flush().unwrap();
 
         let p = SubstratePositionProvider::load(&store, DEFAULT_POSITION_KEY)
             .expect("la base ne présente pas de dimensions mixtes : une seule a été retenue");
         assert_eq!(p.dim(), 8);
-        assert_eq!(p.len(), 1, "seul le nœud à la dimension de la colonne est présent");
+        assert_eq!(
+            p.len(),
+            1,
+            "seul le nœud à la dimension de la colonne est présent"
+        );
         assert!(p.position(a).is_some());
         assert!(
             p.position(b).is_none(),
@@ -423,20 +462,31 @@ mod tests {
         }
         presente.flush().unwrap();
         let p = SubstratePositionProvider::load(&presente, DEFAULT_POSITION_KEY).unwrap();
-        assert_eq!(p.len(), avec, "le chargement doit être COMPLET, pas limité à l'échantillon");
+        assert_eq!(
+            p.len(),
+            avec,
+            "le chargement doit être COMPLET, pas limité à l'échantillon"
+        );
         assert_eq!(p.dim(), 6);
 
         // seuil élevé : la même base est alors traitée comme absente
         let strict =
             SubstratePositionProvider::load_with_coverage(&presente, DEFAULT_POSITION_KEY, 0.9)
                 .unwrap();
-        assert!(strict.is_empty(), "sous le seuil demandé, la colonne compte comme absente");
+        assert!(
+            strict.is_empty(),
+            "sous le seuil demandé, la colonne compte comme absente"
+        );
 
         // seuil nul : balayage exhaustif, même résultat que le chemin sondé
         let exhaustif =
             SubstratePositionProvider::load_with_coverage(&presente, DEFAULT_POSITION_KEY, 0.0)
                 .unwrap();
-        assert_eq!(exhaustif.len(), avec, "seuil 0 => balayage complet, même compte");
+        assert_eq!(
+            exhaustif.len(),
+            avec,
+            "seuil 0 => balayage complet, même compte"
+        );
         println!(
             "sonde de couverture : absente en {dt:?} (au lieu d'un balayage de 700 nœuds) ; \
              présente => {avec} positions chargées"
@@ -464,8 +514,14 @@ mod tests {
             let start = if label == "A" { 1 } else { 101 };
             for i in 0..count {
                 let id = store.create_node(&["N"]);
-                let v: Vec<f32> = (0..dim).map(|j| base + (i as f32) * 0.001 + (j as f32) * 0.0001).collect();
-                store.set_node_property(id, DEFAULT_POSITION_KEY, Value::Vector(Arc::from(v.as_slice())));
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| base + (i as f32) * 0.001 + (j as f32) * 0.0001)
+                    .collect();
+                store.set_node_property(
+                    id,
+                    DEFAULT_POSITION_KEY,
+                    Value::Vector(Arc::from(v.as_slice())),
+                );
                 made.push((start + i, id));
             }
         }
@@ -482,8 +538,7 @@ mod tests {
         let spectral = SpectralEncoder::new();
         let mk = |keys: &[usize]| {
             let id = eng_store.next_id();
-            let ens: Vec<(NodeId, f64)> =
-                keys.iter().map(|k| (by_label[k], 1.0)).collect();
+            let ens: Vec<(NodeId, f64)> = keys.iter().map(|k| (by_label[k], 1.0)).collect();
             let sig = spectral.encode(&ens);
             let mut e = Engram::new(id, ens);
             e.spectral_signature = sig.clone();
@@ -499,19 +554,12 @@ mod tests {
         let engine = RecallEngine::new();
         let legacy = engine.recall(&eng_store, &cues, &index, &spectral, 10);
         let conf = |rs: &[crate::engram::recall::RecallResult], id| -> f64 {
-            rs.iter().find(|r| r.engram_id == id).map_or(0.0, |r| r.confidence)
+            rs.iter()
+                .find(|r| r.engram_id == id)
+                .map_or(0.0, |r| r.confidence)
         };
         let with_pos = engine
-            .recall_with_position(
-                &eng_store,
-                &cues,
-                &index,
-                &spectral,
-                10,
-                &provider,
-                1,
-                0.5,
-            )
+            .recall_with_position(&eng_store, &cues, &index, &spectral, 10, &provider, 1, 0.5)
             .expect("provider substrate complet : aucune erreur");
 
         let (ly, lz) = (conf(&legacy, y), conf(&legacy, z));
@@ -520,8 +568,14 @@ mod tests {
             "bout en bout substrate — Y (même région, nœuds disjoints) {ly:.4} -> {ny:.4} ; \
              Z (autre région) {lz:.4} -> {nz:.4}"
         );
-        assert!(ny > ly, "la voie position doit élever Y (substrate) : {ly:.4} -> {ny:.4}");
-        assert!(ny > nz, "la région A doit passer devant la région B : {ny:.4} vs {nz:.4}");
+        assert!(
+            ny > ly,
+            "la voie position doit élever Y (substrate) : {ly:.4} -> {ny:.4}"
+        );
+        assert!(
+            ny > nz,
+            "la région A doit passer devant la région B : {ny:.4} vs {nz:.4}"
+        );
         assert!(with_pos.iter().any(|r| r.engram_id == y));
         let _ = x;
     }

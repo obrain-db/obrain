@@ -205,8 +205,7 @@ impl Enfant {
             if let Some(reste) = l.strip_prefix("STATS ") {
                 for champ in reste.split_whitespace() {
                     if let Some((k, v)) = champ.split_once('=') {
-                        *stats.entry(k.to_string()).or_insert(0) +=
-                            v.parse::<u64>().unwrap_or(0);
+                        *stats.entry(k.to_string()).or_insert(0) += v.parse::<u64>().unwrap_or(0);
                     }
                 }
             }
@@ -571,10 +570,15 @@ fn t7_deux_processus_en_lots_zero_perte_et_ordre_interne_preserve() {
     }
 
     let audit = auditer(&wal);
-    let attendus: HashSet<(u8, u64)> = (1..=2u8).flat_map(|t| (0..m).map(move |s| (t, s))).collect();
+    let attendus: HashSet<(u8, u64)> = (1..=2u8)
+        .flat_map(|t| (0..m).map(move |s| (t, s)))
+        .collect();
     let vus: HashSet<(u8, u64)> = audit.frames.iter().copied().collect();
     assert!(audit.erreurs == 0 && audit.trou.is_none() && !audit.queue_incomplete);
-    assert_eq!(audit.taille_fichier, audit.octets_frames, "EOF == somme exacte");
+    assert_eq!(
+        audit.taille_fichier, audit.octets_frames,
+        "EOF == somme exacte"
+    );
     assert_eq!(vus.len(), audit.frames.len(), "aucun doublon");
     assert_eq!(vus, attendus, "zéro perte, lot par lot");
 
@@ -682,8 +686,7 @@ fn t3_kill_pendant_l_append_le_dechirement_n_existe_qu_a_la_queue() {
             let brut = std::fs::read(&wal).unwrap();
             let queue = &brut[audit.dernier_bon as usize..];
             assert!(
-                obrain_substrate::wal::WalRecord::decode(queue).is_err()
-                    || queue.len() < 28,
+                obrain_substrate::wal::WalRecord::decode(queue).is_err() || queue.len() < 28,
                 "round {round} : la queue déchirée ne doit pas décoder comme une frame"
             );
         } else {
@@ -693,7 +696,10 @@ fn t3_kill_pendant_l_append_le_dechirement_n_existe_qu_a_la_queue() {
             );
         }
         // (d) Zéro perte : tout ce qui a été écrit ENTIER est lisible.
-        assert!(!audit.frames.is_empty(), "round {round} : rien n'a été écrit");
+        assert!(
+            !audit.frames.is_empty(),
+            "round {round} : rien n'a été écrit"
+        );
 
         // ── (e) LA LEÇON DU ROUND PRÉCÉDENT : ON RÉPARE AVANT DE REPARTIR ────
         //
@@ -764,7 +770,10 @@ fn t4_reparation_de_queue_par_un_autre_processus_puis_100_appends() {
     enfant.tuer();
 
     let avant = auditer(&wal);
-    assert!(avant.frames.len() >= 1, "l'écrivain mort a laissé des frames");
+    assert!(
+        avant.frames.len() >= 1,
+        "l'écrivain mort a laissé des frames"
+    );
     assert_eq!(avant.octets_frames, avant.dernier_bon);
 
     // (2) On FABRIQUE la déchirure si le noyau n'en a pas laissé : un `kill -9`
@@ -809,7 +818,10 @@ fn t4_reparation_de_queue_par_un_autre_processus_puis_100_appends() {
         .unwrap()
         .expect("une queue à réparer, forcément");
     assert_eq!(rep.avant, dechire.taille_fichier);
-    assert_eq!(rep.apres, dechire.dernier_bon, "retour au dernier bord de frame");
+    assert_eq!(
+        rep.apres, dechire.dernier_bon,
+        "retour au dernier bord de frame"
+    );
     assert_eq!(w.offset(), rep.apres);
 
     for i in 0..100u64 {
@@ -820,10 +832,16 @@ fn t4_reparation_de_queue_par_un_autre_processus_puis_100_appends() {
 
     // (4) Tout est lisible : les frames du mort + les 100 du vivant.
     let apres = auditer(&wal);
-    assert_eq!(apres.erreurs, 0, "aucune erreur de décodage après réparation");
+    assert_eq!(
+        apres.erreurs, 0,
+        "aucune erreur de décodage après réparation"
+    );
     assert!(!apres.queue_incomplete, "plus aucune déchirure");
     assert!(apres.trou.is_none(), "et aucun trou");
-    assert_eq!(apres.taille_fichier, apres.octets_frames, "EOF == somme exacte");
+    assert_eq!(
+        apres.taille_fichier, apres.octets_frames,
+        "EOF == somme exacte"
+    );
     assert_eq!(apres.taille_fichier, attendu_fin);
     let du_mort = apres.frames.iter().filter(|(t, _)| *t == 1).count();
     let du_vivant = apres.frames.iter().filter(|(t, _)| *t == 2).count();
@@ -902,7 +920,10 @@ fn debit_a_n_ecrivains_la_fifo_scale() {
         let audit = auditer(&wal);
         let total = n as u64 * m;
         assert_eq!(audit.frames.len() as u64, total, "N={n} : zéro perte");
-        assert_eq!(audit.taille_fichier, audit.octets_frames, "N={n} : EOF exact");
+        assert_eq!(
+            audit.taille_fichier, audit.octets_frames,
+            "N={n} : EOF exact"
+        );
         assert!(!audit.queue_incomplete);
         assert_eq!(audit.erreurs, 0);
         mesures.push((n, total, total as f64 / ecoule));

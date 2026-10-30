@@ -85,9 +85,9 @@ pub use load_data::{LoadDataFormat, LoadDataOperator};
 pub use map_collect::MapCollectOperator;
 pub use merge::{MergeConfig, MergeOperator, MergeRelationshipConfig, MergeRelationshipOperator};
 pub use mutation::{
-    AddLabelOperator, ConstraintValidator, CreateEdgeOperator, CreateExternalEdgeOperator, CreateNodeOperator,
-    DeleteEdgeOperator, DeleteNodeOperator, PropertySource, RemoveLabelOperator,
-    SetPropertyOperator,
+    AddLabelOperator, ConstraintValidator, CreateEdgeOperator, CreateExternalEdgeOperator,
+    CreateNodeOperator, DeleteEdgeOperator, DeleteNodeOperator, PropertySource,
+    RemoveLabelOperator, SetPropertyOperator,
 };
 pub use parameter_scan::{ParameterScanOperator, ParameterState};
 pub use project::{ProjectExpr, ProjectOperator};

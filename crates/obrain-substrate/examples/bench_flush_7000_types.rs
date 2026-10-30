@@ -45,8 +45,14 @@ fn main() {
     let propre = samples[samples.len() / 2];
 
     println!("types d'arêtes        : {n_types}");
-    println!("flush initial (sale)  : {:>9.1} ms  (O(E_types) msync, payé une fois)", premier.as_secs_f64() * 1000.0);
-    println!("flush propre (médiane): {:>9.1} ms  (0 colonne typée persistée, dict sauté)", propre);
+    println!(
+        "flush initial (sale)  : {:>9.1} ms  (O(E_types) msync, payé une fois)",
+        premier.as_secs_f64() * 1000.0
+    );
+    println!(
+        "flush propre (médiane): {:>9.1} ms  (0 colonne typée persistée, dict sauté)",
+        propre
+    );
     println!(
         "gain périodique       : ~{:.0} ms → {:.0} ms (≈ {:>4.0}×)",
         n_types as f64 * 0.83,

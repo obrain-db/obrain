@@ -132,7 +132,8 @@ pub const NODE_ALLOC_PAGE_BYTES: usize = 20480;
 // Compile-time sanity checks: adjust together if NodeRecord grows.
 // La page d'allocation est un multiple entier de pages OS ET de records —
 // zero slack dans les deux directions.
-const _: [(); 1] = [(); (NODES_PER_PAGE as usize * NodeRecord::SIZE == NODE_ALLOC_PAGE_BYTES) as usize];
+const _: [(); 1] =
+    [(); (NODES_PER_PAGE as usize * NodeRecord::SIZE == NODE_ALLOC_PAGE_BYTES) as usize];
 const _: [(); 1] = [(); (NODE_ALLOC_PAGE_BYTES % 4096 == 0) as usize];
 
 /// Identifiants de tenant reserves (jalon 2, RFC principal-natif-v2 §4-J2 / A5).
@@ -667,7 +668,10 @@ mod tests {
         // zero octet perdu (arbitrage RFC §4-J2).
         assert_eq!(NODES_PER_PAGE, 512);
         assert_eq!(NODE_ALLOC_PAGE_BYTES, 20480);
-        assert_eq!(NODES_PER_PAGE as usize * NodeRecord::SIZE, NODE_ALLOC_PAGE_BYTES);
+        assert_eq!(
+            NODES_PER_PAGE as usize * NodeRecord::SIZE,
+            NODE_ALLOC_PAGE_BYTES
+        );
         assert_eq!(NODE_ALLOC_PAGE_BYTES % 4096, 0);
         // tenant_id vit aux octets 32..36 — les champs v2 n'ont PAS bouge
         // (le tenant s'ajoute en QUEUE : first_prop_off reste a 14, flags

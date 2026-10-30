@@ -430,13 +430,13 @@ pub fn comparer_total(a: &Value, b: &Value) -> Ordering {
         }
         (Value::Vector(a), Value::Vector(b)) => {
             for (x, y) in a.iter().zip(b.iter()) {
-                let o = x.partial_cmp(y).unwrap_or_else(|| {
-                    match (x.is_nan(), y.is_nan()) {
+                let o = x
+                    .partial_cmp(y)
+                    .unwrap_or_else(|| match (x.is_nan(), y.is_nan()) {
                         (true, true) => Ordering::Equal,
                         (true, false) => Ordering::Greater,
                         _ => Ordering::Less,
-                    }
-                });
+                    });
                 if o != Ordering::Equal {
                     return o;
                 }
@@ -487,8 +487,14 @@ mod tests {
             cmp_i64_f64(9_007_199_254_740_993, 9_007_199_254_740_992.0),
             Some(Ordering::Greater)
         );
-        assert_eq!(cmp_i64_f64(i64::MAX, 9_223_372_036_854_775_808.0), Some(Ordering::Less));
-        assert_eq!(cmp_i64_f64(i64::MIN, -9_223_372_036_854_775_808.0), Some(Ordering::Equal));
+        assert_eq!(
+            cmp_i64_f64(i64::MAX, 9_223_372_036_854_775_808.0),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            cmp_i64_f64(i64::MIN, -9_223_372_036_854_775_808.0),
+            Some(Ordering::Equal)
+        );
         assert_eq!(cmp_i64_f64(0, f64::INFINITY), Some(Ordering::Less));
         assert_eq!(cmp_i64_f64(0, f64::NEG_INFINITY), Some(Ordering::Greater));
         assert_eq!(cmp_i64_f64(3, 3.5), Some(Ordering::Less));
@@ -518,7 +524,10 @@ mod tests {
         assert_eq!(egaler(&nan, &nan), Some(false));
         // Au tri : NaN > inf > 1.0 > Int64(1) == Float64(1.0), NaN == NaN.
         assert_eq!(comparer_total(&nan, &nan), Ordering::Equal);
-        assert_eq!(comparer_total(&nan, &Value::Float64(f64::INFINITY)), Ordering::Greater);
+        assert_eq!(
+            comparer_total(&nan, &Value::Float64(f64::INFINITY)),
+            Ordering::Greater
+        );
         assert_eq!(comparer_total(&Value::Int64(7), &nan), Ordering::Less);
         assert_eq!(egalite_structurelle(&nan, &nan), true);
     }
@@ -530,12 +539,21 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            egaler(&Value::Float64(f64::INFINITY), &Value::Float64(f64::INFINITY)),
+            egaler(
+                &Value::Float64(f64::INFINITY),
+                &Value::Float64(f64::INFINITY)
+            ),
             Some(true)
         );
-        assert_eq!(egaler(&Value::Float64(-0.0), &Value::Float64(0.0)), Some(true));
         assert_eq!(
-            egaler(&Value::Int64(9_007_199_254_740_993), &Value::Float64(9_007_199_254_740_992.0)),
+            egaler(&Value::Float64(-0.0), &Value::Float64(0.0)),
+            Some(true)
+        );
+        assert_eq!(
+            egaler(
+                &Value::Int64(9_007_199_254_740_993),
+                &Value::Float64(9_007_199_254_740_992.0)
+            ),
             Some(false)
         );
     }
@@ -610,6 +628,9 @@ mod tests {
     fn egalite_temporelle_reflexive() {
         let t = Value::Timestamp(crate::types::Timestamp::from_micros(1_000_001));
         assert_eq!(egaler(&t, &t.clone()), Some(true));
-        assert_eq!(comparer(&t, &t.clone()), Comparaison::Ordonnees(Ordering::Equal));
+        assert_eq!(
+            comparer(&t, &t.clone()),
+            Comparaison::Ordonnees(Ordering::Equal)
+        );
     }
 }

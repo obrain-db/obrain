@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use web_time::SystemTime;
 use std::time::Duration;
+use web_time::SystemTime;
 
 // ---------------------------------------------------------------------------
 // ActivationStep

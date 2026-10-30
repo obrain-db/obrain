@@ -54,7 +54,10 @@ fn resultats_scores(db: &ObrainDB, requete: &str) -> Vec<(u64, f64)> {
 }
 
 fn resultats(db: &ObrainDB, requete: &str) -> Vec<u64> {
-    resultats_scores(db, requete).into_iter().map(|(id, _)| id).collect()
+    resultats_scores(db, requete)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// Le classement COMPARABLE : l'ensemble des `(nœud, score)`.
@@ -109,7 +112,11 @@ fn une_reouverture_sans_ecriture_CHARGE_l_index() {
     );
     // Et un document unique (aucune égalité possible) doit sortir en TÊTE.
     let unique = resultats(&db, "tomates");
-    assert_eq!(unique.len(), 1, "« tomates » n'apparaît que dans un document");
+    assert_eq!(
+        unique.len(),
+        1,
+        "« tomates » n'apparaît que dans un document"
+    );
     db.close().expect("close");
 }
 
@@ -214,7 +221,10 @@ fn l_index_charge_et_l_index_reconstruit_donnent_le_meme_classement() {
         db_b.close().expect("close");
         (apres, avant, temoin)
     };
-    assert_eq!(classement_charge, avant, "chargé == construit sur la même base");
+    assert_eq!(
+        classement_charge, avant,
+        "chargé == construit sur la même base"
+    );
     assert_eq!(
         classement_charge, temoin,
         "chargé == témoin construit sur une base identique"

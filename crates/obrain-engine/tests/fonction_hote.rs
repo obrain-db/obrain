@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use obrain_adapters::plugins::{PluginRegistry, UserDefinedFunction, registre_global};
-use obrain_common::types::{Value as TValue, NodeId};
+use obrain_common::types::{NodeId, Value as TValue};
 use obrain_engine::ObrainDB;
 
 /// Une fonction de test : `double(x)` rend `2 * x` pour un entier.
@@ -117,8 +117,14 @@ fn le_registre_est_unique_par_processus() {
     registre_global().register_udf(Arc::new(Double));
     let avant = registre_global().list_udfs().len();
     let apres = PluginRegistry::new().list_udfs().len();
-    assert!(avant >= 1, "le registre du processus porte au moins l'UDF de test");
-    assert_eq!(apres, 0, "un registre NEUF est vide — le global est bien partagé");
+    assert!(
+        avant >= 1,
+        "le registre du processus porte au moins l'UDF de test"
+    );
+    assert_eq!(
+        apres, 0,
+        "un registre NEUF est vide — le global est bien partagé"
+    );
 }
 
 #[test]

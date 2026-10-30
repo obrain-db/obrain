@@ -158,14 +158,15 @@ const TAILLE_BLOC_ALLOCATION: u64 = 256;
 const VALID_KINDS: &[u8] = &[
     // (jalon 2) 0x04/0x05 = NodeInsertV3/NodeUpdateV3 (trames tenant).
     0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
-    0x26, 0x27, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x50,
-    0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
+    0x26, 0x27, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x50, 0x51, 0x52,
+    0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
 ];
 
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::file::SubstrateFile;
 use crate::meta::meta_flags;
 use crate::page::PropertyEntry;
+use crate::principal::PrincipalSubstrat;
 use crate::props_codec::{decode_value, encode_value};
 use crate::props_index::{
     CLE_MAX, CLE_MIN, DELAI_MIN_RECONSTRUCTION, EntreeIndex, PropsIndexZone, SEUIL_FUSION,
@@ -179,7 +180,6 @@ use crate::props_zone::{
     PROPS_V2_FILENAME, PROPS_V2_MIGRATION_ACHEVEE_FILENAME, PropsZone, decode_page_id,
     encode_page_id,
 };
-use crate::principal::PrincipalSubstrat;
 use crate::record::{
     EdgeRecord, NODES_PER_PAGE, NodeRecord, PackedScarUtilAff, SIMPLEX_HYPEREDGE_MAX_MEMBERS,
     SIMPLEX_HYPEREDGE_MIN_MEMBERS, U48, edge_flags, f32_to_q1_15, simplex_flags, simplex_kind,
@@ -596,7 +596,10 @@ impl LabelRegistry {
                 "LabelRegistry : le bit {bit} porte déjà {:?}, on refuse d'y \
                  inscrire {name:?} — deux libellés pour un bit rendraient les \
                  `label_bitset` ambigus",
-                self.par_bit.get(&bit).map(ArcStr::to_string).unwrap_or_default()
+                self.par_bit
+                    .get(&bit)
+                    .map(ArcStr::to_string)
+                    .unwrap_or_default()
             )));
         }
         self.name_to_bit.insert(name.clone(), bit);
@@ -713,7 +716,11 @@ impl LabelRegistry {
     /// écrits dans les données.
     fn names(&self) -> Vec<String> {
         let mut par_bit = self.par_bit.clone();
-        let haut = par_bit.keys().copied().max().map_or(0, |b| usize::from(b) + 1);
+        let haut = par_bit
+            .keys()
+            .copied()
+            .max()
+            .map_or(0, |b| usize::from(b) + 1);
         (0..haut)
             .map(|i| {
                 par_bit
@@ -798,7 +805,10 @@ impl EdgeTypeRegistry {
             return Err(SubstrateError::Internal(format!(
                 "EdgeTypeRegistry : l'id {id} porte déjà {:?}, on refuse d'y inscrire \
                  {name:?}",
-                self.par_id.get(&id).map(ArcStr::to_string).unwrap_or_default()
+                self.par_id
+                    .get(&id)
+                    .map(ArcStr::to_string)
+                    .unwrap_or_default()
             )));
         }
         let name: ArcStr = name.into();
@@ -845,7 +855,11 @@ impl EdgeTypeRegistry {
     /// processus) part comme chaîne vide, relue comme « pas de nom à cet id ».
     fn names(&self) -> Vec<String> {
         let mut par_id = self.par_id.clone();
-        let haut = par_id.keys().copied().max().map_or(0, |i| usize::from(i) + 1);
+        let haut = par_id
+            .keys()
+            .copied()
+            .max()
+            .map_or(0, |i| usize::from(i) + 1);
         (0..haut)
             .map(|i| {
                 par_id
@@ -934,7 +948,10 @@ impl PropertyKeyRegistry {
                 "PropertyKeyRegistry : l'id {id} porte déjà {:?}, on refuse d'y \
                  inscrire {name:?} — deux clés au même identifiant rendraient les \
                  pages de propriétés illisibles",
-                self.par_id.get(&id).map(ArcStr::to_string).unwrap_or_default()
+                self.par_id
+                    .get(&id)
+                    .map(ArcStr::to_string)
+                    .unwrap_or_default()
             )));
         }
         let name: ArcStr = name.into();
@@ -989,7 +1006,11 @@ impl PropertyKeyRegistry {
     /// [`crate::dict::DictSnapshot`] — un TROU part comme chaîne vide.
     fn names(&self) -> Vec<String> {
         let mut par_id = self.par_id.clone();
-        let haut = par_id.keys().copied().max().map_or(0, |i| usize::from(i) + 1);
+        let haut = par_id
+            .keys()
+            .copied()
+            .max()
+            .map_or(0, |i| usize::from(i) + 1);
         (0..haut)
             .map(|i| {
                 par_id
@@ -2637,8 +2658,7 @@ impl SubstrateStore {
         };
 
         const LOT: usize = 1024;
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-            FxHashMap::default();
+        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
         let mut tomb: FxHashSet<u16> = FxHashSet::default();
         let mut out: Vec<NodeId> = Vec::new();
         let mut noeuds = 0usize;
@@ -2733,8 +2753,7 @@ impl SubstrateStore {
         // Assez grand pour amortir la prise de verrou, assez petit pour
         // qu un écrivain n attende jamais longtemps.
         const LOT: usize = 1024;
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-            FxHashMap::default();
+        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
         let mut tomb: FxHashSet<u16> = FxHashSet::default();
         let mut entrees = 0usize;
         let mut noeuds = 0usize;
@@ -2760,10 +2779,8 @@ impl SubstrateStore {
                 let mut vus = 0usize;
                 {
                     let pz = pz_lock.read();
-                    let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-                        FxHashMap::default();
-                    let mut tomb: FxHashSet<u16> =
-                        FxHashSet::default();
+                    let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
+                    let mut tomb: FxHashSet<u16> = FxHashSet::default();
                     for (slot, head) in lot {
                         live.clear();
                         tomb.clear();
@@ -3211,22 +3228,22 @@ impl SubstrateStore {
         let mut vus: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let mut off = 0usize;
         while off + crate::wal::WAL_HEADER_SIZE <= data.len() {
-            let ln =
-                u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-                    as usize;
+            let ln = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+                as usize;
             // Préfiltre identique à `merge_wal_inline_props` : réservés nuls
             // + trame dans les bornes. Toute anomalie DANS la fenêtre =
             // inexpliquable (on refuse, on ne resynchronise pas : la fenêtre
             // est récente et doit être intègre).
-            if data[off + 6] != 0 || data[off + 7] != 0 || off + crate::wal::WAL_HEADER_SIZE + ln > data.len()
+            if data[off + 6] != 0
+                || data[off + 7] != 0
+                || off + crate::wal::WAL_HEADER_SIZE + ln > data.len()
             {
                 return None;
             }
-            let (rec, consomme) =
-                match crate::wal::WalRecord::decode(&data[off..]) {
-                    Ok(v) => v,
-                    Err(_) => return None,
-                };
+            let (rec, consomme) = match crate::wal::WalRecord::decode(&data[off..]) {
+                Ok(v) => v,
+                Err(_) => return None,
+            };
             match rec.payload {
                 WalPayload::HilbertRepermute { .. }
                 | WalPayload::HilbertRepermuteV2 { .. }
@@ -3291,8 +3308,7 @@ impl SubstrateStore {
         const LOT: usize = 1024;
         let mut par_slot: std::collections::HashMap<u32, std::collections::HashMap<u16, Value>> =
             std::collections::HashMap::with_capacity(tetes.len());
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-            FxHashMap::default();
+        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
         let mut tomb: FxHashSet<u16> = FxHashSet::default();
         for lot in tetes.chunks(LOT) {
             live.clear();
@@ -3454,8 +3470,7 @@ impl SubstrateStore {
                 for e in idx.iter() {
                     let h = Self::hachage_cle_egalite(e.key());
                     for id in e.value() {
-                        entrees
-                            .push(crate::props_eq_index::EntreeEgalite::new(h, id.0 as u32));
+                        entrees.push(crate::props_eq_index::EntreeEgalite::new(h, id.0 as u32));
                     }
                 }
             }
@@ -3479,8 +3494,6 @@ impl SubstrateStore {
         zone_lock.write().fusionner(&series, offset, pages)
     }
 
-
-
     /// (NS-PARTOUT) Persiste les zones d'index SUR-LE-CHAMP après une
     /// construction : `create_property_index` bâtissait en RAM et
     /// remettait la persistance au prochain `flush()`/`close()` — qu'un
@@ -3494,7 +3507,10 @@ impl SubstrateStore {
         let t = std::time::Instant::now();
         let r = self.fusionner_index_egalite();
         if std::env::var("OBRAIN_INDEX_PROF").is_ok() {
-            eprintln!("[prof]     index : persistance {:.2}s", t.elapsed().as_secs_f64());
+            eprintln!(
+                "[prof]     index : persistance {:.2}s",
+                t.elapsed().as_secs_f64()
+            );
         }
         if let Err(e) = r {
             tracing::warn!(erreur = %e,
@@ -3536,11 +3552,13 @@ impl SubstrateStore {
         // c'est l'acte de maintenance qui rend ORDER BY/min/max instantanes.
         let n_ord = self.rebatir_ord_valeur(&proprietes);
         if n_ord > 0 {
-            tracing::info!(n_ord, "index ordonne-valeur (NATIF-J6) rebati par index rebuild");
+            tracing::info!(
+                n_ord,
+                "index ordonne-valeur (NATIF-J6) rebati par index rebuild"
+            );
         }
         proprietes.len()
     }
-
 
     /// L'index ordonné peut-il répondre pour `propriete` ? Rend son
     /// identifiant interne si oui, `None` si l'appelant doit BALAYER.
@@ -3632,8 +3650,7 @@ impl SubstrateStore {
         let t = web_time::Instant::now();
         let tetes = self.tetes_de_chaines_v2();
         const LOT: usize = 1024;
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-            FxHashMap::default();
+        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
         let mut tomb: FxHashSet<u16> = FxHashSet::default();
         let mut recolte: Vec<EntreeIndex> = Vec::new();
         let mut entrees = 0usize;
@@ -3694,7 +3711,9 @@ impl SubstrateStore {
             if !recolte_inline.is_empty() {
                 entrees += recolte_inline.len();
                 let mut tam = self.tampon_ordonne.lock();
-                tam.entry(prop_key_id).or_default().append(&mut recolte_inline);
+                tam.entry(prop_key_id)
+                    .or_default()
+                    .append(&mut recolte_inline);
             }
         }
         self.ordonne_deborde.remove(&prop_key_id);
@@ -3950,8 +3969,7 @@ impl SubstrateStore {
         }
         let tetes = self.tetes_de_chaines_v2();
         const LOT: usize = 1024;
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-            FxHashMap::default();
+        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
         let mut tomb: FxHashSet<u16> = FxHashSet::default();
         let mut recolte: Vec<(Value, u32)> = Vec::new();
         let mut couverts: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -4230,8 +4248,7 @@ impl SubstrateStore {
 
         // ── B. traversee par lots (`props_zone` relache entre deux lots) ──
         const LOT: usize = 1024;
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> =
-            FxHashMap::default();
+        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
         let mut tomb: FxHashSet<u16> = FxHashSet::default();
         let mut out: Vec<NodeId> = Vec::new();
         let mut noeuds = 0usize;
@@ -4668,12 +4685,7 @@ impl SubstrateStore {
     /// Déclare (ou remplace) un type. Idempotent par `(genre, nom)` : l'ordre du
     /// fichier ne porte pas de sémantique, un `CREATE OR REPLACE` réécrit la
     /// même ligne.
-    pub fn declarer_type(
-        &self,
-        genre: &str,
-        nom: &str,
-        definition: &str,
-    ) -> SubstrateResult<()> {
+    pub fn declarer_type(&self, genre: &str, nom: &str, definition: &str) -> SubstrateResult<()> {
         let mut decls = self.declarations_type();
         decls.retain(|d| !(d.genre == genre && d.nom == nom));
         decls.push(DeclarationType {
@@ -4701,11 +4713,8 @@ impl SubstrateStore {
     /// Retire la declaration d'une procedure. Idempotent.
     pub fn retirer_declaration_procedure(&self, name: &str) -> SubstrateResult<()> {
         let decls = self.declarations_procedure();
-        let restantes: Vec<DeclarationProcedure> = decls
-            .iter()
-            .filter(|d| d.name != name)
-            .cloned()
-            .collect();
+        let restantes: Vec<DeclarationProcedure> =
+            decls.iter().filter(|d| d.name != name).cloned().collect();
         if restantes.len() == decls.len() {
             return Ok(());
         }
@@ -5327,7 +5336,8 @@ impl SubstrateStore {
         // (2026-09-05) Marque le store lecture seule : l'auto-guérison
         // des colonnes de degrés typées (qui écrit dans les sidecars)
         // est réservée aux stores en écriture.
-        s.read_only.store(true, std::sync::atomic::Ordering::Relaxed);
+        s.read_only
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(s)
     }
 
@@ -6429,9 +6439,9 @@ impl SubstrateStore {
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(crate::props_trigram_index::SEUIL_DEFAUT);
-                Some(RwLock::new(crate::props_trigram_index::TrigrammesDeStore::new(
-                    seuil,
-                )))
+                Some(RwLock::new(
+                    crate::props_trigram_index::TrigrammesDeStore::new(seuil),
+                ))
             },
             trigrammes_construits: DashMap::new(),
             trigrammes_refuses: DashMap::new(),
@@ -6606,10 +6616,9 @@ impl SubstrateStore {
                 .next_node_id
                 .fetch_max(b.noeud().min(u64::from(u32::MAX)) as u32, Ordering::AcqRel);
             store.next_edge_id.fetch_max(b.arete(), Ordering::AcqRel);
-            store.next_engram_id.fetch_max(
-                b.engram().min(u64::from(u16::MAX)) as u16,
-                Ordering::AcqRel,
-            );
+            store
+                .next_engram_id
+                .fetch_max(b.engram().min(u64::from(u16::MAX)) as u16, Ordering::AcqRel);
         }
         store.relever_filigranes_des_zones();
 
@@ -7035,8 +7044,7 @@ impl SubstrateStore {
         // est nécessaire ou si elle serait un no-op payé à chaque ouverture.
         // L'offset passé est celui du dernier flush (même repli que le rejeu
         // si le WAL a été tronqué depuis).
-        let fenetre_structurelle =
-            store.merge_wal_inline_props(snapshot.wal_offset_at_flush);
+        let fenetre_structurelle = store.merge_wal_inline_props(snapshot.wal_offset_at_flush);
 
         // Aretes inter-bases (V1) : snapshot sidecar puis fenetre WAL,
         // meme sequence que les proprietes inline. Jamais fatal.
@@ -7143,9 +7151,7 @@ impl SubstrateStore {
                  encore exacts, verification pleine sautee (scan O(N+E) non paye)"
             );
         } else {
-            store
-                .verifications_pleines
-                .fetch_add(1, Ordering::Relaxed);
+            store.verifications_pleines.fetch_add(1, Ordering::Relaxed);
             let avant_n = store.total_live_nodes.load(Ordering::Relaxed);
             let avant_e = store.total_live_edges.load(Ordering::Relaxed);
             if let Err(e) = store.rebuild_counts_only() {
@@ -8367,12 +8373,19 @@ impl SubstrateStore {
         // qui ferme la fenêtre « pair a interné entre notre lecture et notre
         // verrou » — le cas exact que `cac14c72` détecte.
         let (pl_pre, pt_pre, pc_pre) = lire_partages();
-        snapshot.labels =
-            fusionner_noms("labels", &snapshot.labels, &snapshot.labels, &pl_pre)?;
-        snapshot.edge_types =
-            fusionner_noms("edge_types", &snapshot.edge_types, &snapshot.edge_types, &pt_pre)?;
-        snapshot.prop_keys =
-            fusionner_noms("prop_keys", &snapshot.prop_keys, &snapshot.prop_keys, &pc_pre)?;
+        snapshot.labels = fusionner_noms("labels", &snapshot.labels, &snapshot.labels, &pl_pre)?;
+        snapshot.edge_types = fusionner_noms(
+            "edge_types",
+            &snapshot.edge_types,
+            &snapshot.edge_types,
+            &pt_pre,
+        )?;
+        snapshot.prop_keys = fusionner_noms(
+            "prop_keys",
+            &snapshot.prop_keys,
+            &snapshot.prop_keys,
+            &pc_pre,
+        )?;
         let (tmp_pre, octets_pre) = snapshot.persist_tmp(&path)?;
         // Le verrou est pris APRÈS le garde du substrat (relâché ci-dessus) : on ne
         // tient donc jamais un mutex de CE processus en attendant un pair, et un
@@ -8430,20 +8443,11 @@ impl SubstrateStore {
                 // l'ÉTENDRE — et le processus au registre le plus court amputait le
                 // dictionnaire en écrivant (voir `fusionner_noms`).
                 let (pl, pt, pc) = lire_partages();
-                snapshot.labels =
-                    fusionner_noms("labels", &disque.labels, &snapshot.labels, &pl)?;
-                snapshot.edge_types = fusionner_noms(
-                    "edge_types",
-                    &disque.edge_types,
-                    &snapshot.edge_types,
-                    &pt,
-                )?;
-                snapshot.prop_keys = fusionner_noms(
-                    "prop_keys",
-                    &disque.prop_keys,
-                    &snapshot.prop_keys,
-                    &pc,
-                )?;
+                snapshot.labels = fusionner_noms("labels", &disque.labels, &snapshot.labels, &pl)?;
+                snapshot.edge_types =
+                    fusionner_noms("edge_types", &disque.edge_types, &snapshot.edge_types, &pt)?;
+                snapshot.prop_keys =
+                    fusionner_noms("prop_keys", &disque.prop_keys, &snapshot.prop_keys, &pc)?;
             }
 
             // (iv) Le résultat fusionné == notre tmp pré-fsyncé ? `rename` direct
@@ -8689,9 +8693,7 @@ impl SubstrateStore {
     /// les AUTRES CHECKPOINTEURS. Les appends concurrents, eux, ne le voient
     /// jamais — c'est tout l'objet de la pièce 1 (la troncature est rendue
     /// récupérable par l'écrivain qui la subit, `wal_io::append_sous_verrou`).
-    pub fn checkpoint_elu(
-        &self,
-    ) -> SubstrateResult<crate::checkpoint::CheckpointOutcome> {
+    pub fn checkpoint_elu(&self) -> SubstrateResult<crate::checkpoint::CheckpointOutcome> {
         use crate::checkpoint::CheckpointOutcome;
         // ── L'ÉLECTION D'ABORD, LE FLUSH ENSUITE ────────────────────────────
         // Le `flush()` ci-dessous est inconditionnel dans `checkpoint()` : ici il
@@ -10071,7 +10073,11 @@ impl SubstrateStore {
         let global = self.interne_global(Espace::Cles, key)?;
         let id = {
             let mut reg = self.prop_keys.write();
-            self.inscrire_avec_global(global, |i| reg.interner_a(key, i), |g| u16::try_from(g).ok())?
+            self.inscrire_avec_global(
+                global,
+                |i| reg.interner_a(key, i),
+                |g| u16::try_from(g).ok(),
+            )?
         };
         if neuf {
             let nom = key.to_string();
@@ -10174,7 +10180,8 @@ impl SubstrateStore {
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != node_rec.first_prop_off {
-            self.writer.update_node_first_prop_off(slot, nouvelle_tete_u48)?;
+            self.writer
+                .update_node_first_prop_off(slot, nouvelle_tete_u48)?;
         }
         // ── (2026-08-20) L'INDEX ORDONNÉ SE NOURRIT ICI, ET NON DANS
         //    `set_node_property` ──
@@ -10277,7 +10284,6 @@ impl SubstrateStore {
                 self.ordonnees_vierges.insert(property.to_string(), ());
             }
         }
-
     }
 
     /// La REVÉRIFICATION, partagée par les deux sources de candidats (le fichier
@@ -10700,7 +10706,8 @@ impl SubstrateStore {
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != node_rec.first_prop_off {
-            self.writer.update_node_first_prop_off(slot, nouvelle_tete_u48)?;
+            self.writer
+                .update_node_first_prop_off(slot, nouvelle_tete_u48)?;
         }
         Ok(())
     }
@@ -11049,14 +11056,18 @@ impl SubstrateStore {
     /// projection : on reprojette (sous verrou d'écriture, seulement si la
     /// zone a vraiment grandi) et l'appelant réessaie UNE fois.
     fn reprojeter_si_zone_agrandie(&self) -> bool {
-        let Some(l) = self.props_zone.as_ref() else { return false };
+        let Some(l) = self.props_zone.as_ref() else {
+            return false;
+        };
         if !l.read().a_grandi_sur_disque() {
             return false;
         }
         match l.write().rafraichir_projection() {
             Ok(g) => {
                 if g {
-                    tracing::info!("zone de propriétés agrandie par un autre processus — reprojetée");
+                    tracing::info!(
+                        "zone de propriétés agrandie par un autre processus — reprojetée"
+                    );
                 }
                 g
             }
@@ -11069,9 +11080,9 @@ impl SubstrateStore {
 
     fn lookup_node_property_v2(&self, id: NodeId, key: &str) -> Option<Option<Value>> {
         match self.lookup_node_property_v2_une_fois(id, key, false) {
-            Err(()) if self.reprojeter_si_zone_agrandie() => {
-                self.lookup_node_property_v2_une_fois(id, key, true).unwrap_or(None)
-            }
+            Err(()) if self.reprojeter_si_zone_agrandie() => self
+                .lookup_node_property_v2_une_fois(id, key, true)
+                .unwrap_or(None),
             Err(()) => None,
             Ok(r) => r,
         }
@@ -11085,7 +11096,9 @@ impl SubstrateStore {
         dernier_essai: bool,
     ) -> Result<Option<Option<Value>>, ()> {
         let hors_limites = |e: &dyn std::fmt::Display| e.to_string().contains("out of range");
-        let Some(pz_lock) = self.props_zone.as_ref() else { return Ok(None) };
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Ok(None);
+        };
         let slot = id.0 as u32;
         let node_rec = match self.writer.read_node(slot) {
             Ok(Some(rec)) => rec,
@@ -11098,7 +11111,9 @@ impl SubstrateStore {
         } else {
             Some(node_rec.first_prop_off.to_u64())
         };
-        let Some(prop_key_id) = self.prop_keys.read().lookup(key) else { return Ok(None) };
+        let Some(prop_key_id) = self.prop_keys.read().lookup(key) else {
+            return Ok(None);
+        };
         let pz = pz_lock.read();
         let entry = match pz.get_latest_for_key_unite(tete_brute, prop_key_id) {
             Ok(Some(e)) => e,
@@ -11212,7 +11227,8 @@ impl SubstrateStore {
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != edge_rec.first_prop_off {
-            self.writer.update_edge_first_prop_off(slot, nouvelle_tete_u48)?;
+            self.writer
+                .update_edge_first_prop_off(slot, nouvelle_tete_u48)?;
         }
         Ok(())
     }
@@ -11261,7 +11277,8 @@ impl SubstrateStore {
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != edge_rec.first_prop_off {
-            self.writer.update_edge_first_prop_off(slot, nouvelle_tete_u48)?;
+            self.writer
+                .update_edge_first_prop_off(slot, nouvelle_tete_u48)?;
         }
         Ok(())
     }
@@ -11431,7 +11448,8 @@ impl SubstrateStore {
         let hw = self.edge_slot_high_water();
         for idx in 1..hw {
             if let Ok(Some(rec)) = self.writer.read_edge(idx) {
-                if rec.flags & crate::record::edge_flags::TOMBSTONED != 0 || rec.edge_type != part_of
+                if rec.flags & crate::record::edge_flags::TOMBSTONED != 0
+                    || rec.edge_type != part_of
                 {
                     continue;
                 }
@@ -11468,7 +11486,11 @@ impl SubstrateStore {
     pub fn messages_de_session(&self, session_slot: u32) -> Vec<u64> {
         if self.count_messages_de_session(session_slot).is_some() {
             if let Some(rp) = self.reverse_part_of.read().as_ref() {
-                return rp.par_session.get(&session_slot).cloned().unwrap_or_default();
+                return rp
+                    .par_session
+                    .get(&session_slot)
+                    .cloned()
+                    .unwrap_or_default();
             }
         }
         Vec::new()
@@ -11830,11 +11852,17 @@ impl SubstrateStore {
         premier_slot: u32,
         props: &'v [Vec<(&'v str, Value)>],
         cles: &std::collections::HashMap<&str, u16>,
-    ) -> SubstrateResult<(Vec<(u32, crate::record::U48)>, Vec<(u32, &'v str, &'v Value)>, u64)> {
-        use crate::page::{PropertyEntry as E, PropertyPage as P, PropertyValue as PV, OwnerKind};
+    ) -> SubstrateResult<(
+        Vec<(u32, crate::record::U48)>,
+        Vec<(u32, &'v str, &'v Value)>,
+        u64,
+    )> {
+        use crate::page::{OwnerKind, PropertyEntry as E, PropertyPage as P, PropertyValue as PV};
         use rayon::prelude::*;
-        const UTILE_TAS: usize = crate::heap::HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>();
-        const UTILE_PAGE: usize = crate::page::PAGE_SIZE - core::mem::size_of::<crate::page::PropertyPageHeader>();
+        const UTILE_TAS: usize =
+            crate::heap::HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>();
+        const UTILE_PAGE: usize =
+            crate::page::PAGE_SIZE - core::mem::size_of::<crate::page::PropertyPageHeader>();
 
         // Ce que le lot écrit lui-même ; le reste part au chemin unitaire.
         enum Genre<'a> {
@@ -11844,7 +11872,9 @@ impl SubstrateStore {
         }
         fn genre(v: &Value) -> Genre<'_> {
             match v {
-                Value::String(t) if t.len() <= BLOB_COLUMN_THRESHOLD_BYTES => Genre::Chaine(t.as_bytes()),
+                Value::String(t) if t.len() <= BLOB_COLUMN_THRESHOLD_BYTES => {
+                    Genre::Chaine(t.as_bytes())
+                }
                 Value::Null => Genre::Scalaire(PV::Null),
                 Value::Bool(b) => Genre::Scalaire(PV::Bool(*b)),
                 Value::Int64(x) => Genre::Scalaire(PV::I64(*x)),
@@ -11914,15 +11944,25 @@ impl SubstrateStore {
         let (fin_pages, fin_tas) = (bp, bt);
 
         // ── Passe B : construire avec les numéros globaux ────────────────
-        type Sortie<'v> = (Vec<u8>, Vec<u8>, Vec<(u32, crate::record::U48)>, Vec<(u32, &'v str, &'v Value)>, u64, u32, u32);
+        type Sortie<'v> = (
+            Vec<u8>,
+            Vec<u8>,
+            Vec<(u32, crate::record::U48)>,
+            Vec<(u32, &'v str, &'v Value)>,
+            u64,
+            u32,
+            u32,
+        );
         let sorties: Vec<SubstrateResult<Sortie<'v>>> = sous
             .par_iter()
             .enumerate()
             .map(|(i, sp)| {
                 let (base_pages, base_tas) = bases[i];
                 let slot0 = premier_slot + (i * taille_sp) as u32;
-                let mut o_pages: Vec<u8> = Vec::with_capacity(comptes[i].0 as usize * crate::page::PAGE_SIZE);
-                let mut o_tas: Vec<u8> = Vec::with_capacity(comptes[i].1 as usize * crate::heap::HEAP_PAGE_SIZE);
+                let mut o_pages: Vec<u8> =
+                    Vec::with_capacity(comptes[i].0 as usize * crate::page::PAGE_SIZE);
+                let mut o_tas: Vec<u8> =
+                    Vec::with_capacity(comptes[i].1 as usize * crate::heap::HEAP_PAGE_SIZE);
                 let mut tetes = Vec::with_capacity(sp.len());
                 let mut differees = Vec::new();
                 let mut ecrites = 0u64;
@@ -11940,7 +11980,10 @@ impl SubstrateStore {
                             }
                             Genre::Scalaire(pv) => pv,
                             Genre::Chaine(b) => {
-                                let off = match page_tas.as_mut().and_then(|(_, p)| p.append(b).map(|o| (p.header.page_id, o))) {
+                                let off = match page_tas
+                                    .as_mut()
+                                    .and_then(|(_, p)| p.append(b).map(|o| (p.header.page_id, o)))
+                                {
                                     Some(x) => x,
                                     None => {
                                         if let Some((_, mut pleine)) = page_tas.take() {
@@ -11951,13 +11994,18 @@ impl SubstrateStore {
                                         n_tas += 1;
                                         let mut neuve = crate::heap::HeapPage::new(id);
                                         let o = neuve.append(b).ok_or_else(|| {
-                                            SubstrateError::Internal("chaîne plus grande qu'une page de tas".into())
+                                            SubstrateError::Internal(
+                                                "chaîne plus grande qu'une page de tas".into(),
+                                            )
                                         })?;
                                         page_tas = Some((id, neuve));
                                         (id, o)
                                     }
                                 };
-                                PV::StringRef(crate::page::HeapRef { page_id: off.0, offset: off.1 })
+                                PV::StringRef(crate::page::HeapRef {
+                                    page_id: off.0,
+                                    offset: off.1,
+                                })
                             }
                         };
                         let entree = E::new(cles[k], pv);
@@ -11973,7 +12021,9 @@ impl SubstrateStore {
                             precedente = Some(idx);
                             page = P::with_owner(slot, OwnerKind::Node);
                             page.append_entry(&entree).map_err(|e| {
-                                SubstrateError::Internal(format!("entrée refusée sur page vide : {e:?}"))
+                                SubstrateError::Internal(format!(
+                                    "entrée refusée sur page vide : {e:?}"
+                                ))
                             })?;
                         }
                         vide = false;
@@ -12015,7 +12065,9 @@ impl SubstrateStore {
             differees.extend(di);
             ecrites += ec;
         }
-        pz_lock.write().ecrire_blocs_en_lot(&blocs_p, &blocs_t, fin_pages, fin_tas)?;
+        pz_lock
+            .write()
+            .ecrire_blocs_en_lot(&blocs_p, &blocs_t, fin_pages, fin_tas)?;
         Ok((tetes, differees, ecrites))
     }
 
@@ -12093,7 +12145,9 @@ impl SubstrateStore {
                     }
                 }
             }
-            let utile_tas = (crate::heap::HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>()) as u64;
+            let utile_tas = (crate::heap::HEAP_PAGE_SIZE
+                - core::mem::size_of::<crate::heap::HeapPageHeader>())
+                as u64;
             let pages_tas = octets_tas / utile_tas + octets_tas / utile_tas / 8 + 2;
             {
                 let mut pz = pz_lock.write();
@@ -12105,7 +12159,8 @@ impl SubstrateStore {
                 let mut tampon = crate::props_zone::TamponPages::default();
                 for (i, liste) in props.iter().enumerate() {
                     let slot = premier_slot + i as u32;
-                    let mut page = crate::page::PropertyPage::with_owner(slot, crate::page::OwnerKind::Node);
+                    let mut page =
+                        crate::page::PropertyPage::with_owner(slot, crate::page::OwnerKind::Node);
                     let mut vide = true;
                     let mut tete: Option<u32> = None;
                     for (k, v) in liste {
@@ -12135,7 +12190,10 @@ impl SubstrateStore {
                             Ok(_) => vide = false,
                             Err(crate::page::PropertyCodecError::PageFull { .. }) if !vide => {
                                 tete = Some(pz.poser_page_remplie(&mut page, tete, &mut tampon)?);
-                                page = crate::page::PropertyPage::with_owner(slot, crate::page::OwnerKind::Node);
+                                page = crate::page::PropertyPage::with_owner(
+                                    slot,
+                                    crate::page::OwnerKind::Node,
+                                );
                                 match page.append_entry(&entree) {
                                     Ok(_) => vide = false,
                                     Err(_) => differees.push((slot, *k, v)),
@@ -12631,9 +12689,7 @@ impl SubstrateStore {
         let max_degree = rows.max_degree;
         let n = 1u32 << order;
         // Grille EXACTE (mapping monotone) des bornes — pas d'arrondi.
-        let gx = |c: u16| -> u32 {
-            ((u32::from(c) * (n - 1).max(1)) / u16::MAX as u32).min(n - 1)
-        };
+        let gx = |c: u16| -> u32 { ((u32::from(c) * (n - 1).max(1)) / u16::MAX as u32).min(n - 1) };
         let gy = |d: u32| -> u32 {
             ((d.min(max_degree) * (n - 1).max(1)) / max_degree.max(1)).min(n - 1)
         };
@@ -12961,10 +13017,10 @@ impl SubstrateStore {
         // découverte par nœud perdrait ce slot).
         let sub = self.writer.substrate();
         let sub_guard = sub.lock();
-        let mut inc = sub_guard
-            .open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
-        let mut posts = sub_guard
-            .open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
+        let mut inc =
+            sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
+        let mut posts =
+            sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
         crate::synapse_incidence::SynapseIncidenceZone::append(
             &mut inc,
             &mut posts,
@@ -12989,10 +13045,10 @@ impl SubstrateStore {
     pub fn synapse_edges_of(&self, node: NodeId) -> SubstrateResult<Vec<EdgeId>> {
         let sub = self.writer.substrate();
         let sub_guard = sub.lock();
-        let inc = sub_guard
-            .open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
-        let posts = sub_guard
-            .open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
+        let inc =
+            sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
+        let posts =
+            sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
         let ids =
             crate::synapse_incidence::SynapseIncidenceZone::postings(&inc, &posts, node.0 as u32)?;
         drop(sub_guard);
@@ -13018,10 +13074,10 @@ impl SubstrateStore {
             .map_err(|e| SubstrateError::Internal(format!("synapse slot: {e}")))?;
         let sub = self.writer.substrate();
         let sub_guard = sub.lock();
-        let mut inc = sub_guard
-            .open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
-        let mut posts = sub_guard
-            .open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
+        let mut inc =
+            sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
+        let mut posts =
+            sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
         let mut out = Vec::with_capacity(entries.len());
         for &(src, dst, w) in entries {
             let id = self.allocate_edge_id();
@@ -13108,7 +13164,10 @@ impl SubstrateStore {
         }
         // Slow-path: take the write lock and intern — l'id vient de la table
         // partagée (Phase B, pièce 3), comme tout internement de type d'arête.
-        let global = self.interne_global(crate::registres_partages::Espace::Types, crate::record::COACT_EDGE_TYPE_NAME)?;
+        let global = self.interne_global(
+            crate::registres_partages::Espace::Types,
+            crate::record::COACT_EDGE_TYPE_NAME,
+        )?;
         let mut reg = self.edge_types.write();
         self.inscrire_avec_global(
             global,
@@ -13206,10 +13265,8 @@ impl SubstrateStore {
                 ));
             }
             let id = brut as u16;
-            self.next_engram_id.store(
-                id.checked_add(1).unwrap_or(0),
-                Ordering::Release,
-            );
+            self.next_engram_id
+                .store(id.checked_add(1).unwrap_or(0), Ordering::Release);
             return Ok(id);
         }
         loop {
@@ -14665,7 +14722,8 @@ impl SubstrateStore {
         let prop_key_id = match self.prop_keys.read().lookup(key) {
             Some(id) => id,
             None => {
-                let global = match self.interne_global(crate::registres_partages::Espace::Cles, key) {
+                let global = match self.interne_global(crate::registres_partages::Espace::Cles, key)
+                {
                     Ok(g) => g,
                     Err(e) => {
                         tracing::error!(
@@ -14677,7 +14735,11 @@ impl SubstrateStore {
                     }
                 };
                 let mut reg = self.prop_keys.write();
-                match self.inscrire_avec_global(global, |i| reg.interner_a(key, i), |g| u16::try_from(g).ok()) {
+                match self.inscrire_avec_global(
+                    global,
+                    |i| reg.interner_a(key, i),
+                    |g| u16::try_from(g).ok(),
+                ) {
                     Ok(id) => id,
                     Err(e) => {
                         tracing::error!(
@@ -14803,7 +14865,11 @@ impl SubstrateStore {
         };
         let prop_key_id = {
             let mut reg = self.prop_keys.write();
-            match self.inscrire_avec_global(global, |i| reg.interner_a(key, i), |g| u16::try_from(g).ok()) {
+            match self.inscrire_avec_global(
+                global,
+                |i| reg.interner_a(key, i),
+                |g| u16::try_from(g).ok(),
+            ) {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(
@@ -14952,10 +15018,8 @@ impl SubstrateStore {
             Ok(Some(f)) => {
                 if let Some(b) = &self.borne_allocation {
                     b.publier_filigrane_noeuds(f);
-                    self.next_node_id.fetch_max(
-                        b.noeud().min(u64::from(u32::MAX)) as u32,
-                        Ordering::AcqRel,
-                    );
+                    self.next_node_id
+                        .fetch_max(b.noeud().min(u64::from(u32::MAX)) as u32, Ordering::AcqRel);
                 } else {
                     self.next_node_id
                         .fetch_max(f.min(u64::from(u32::MAX)) as u32, Ordering::AcqRel);
@@ -15343,7 +15407,6 @@ impl SubstrateStore {
         Some(arc)
     }
 
-
     /// Resolve an edge-type `ArcStr` from an `EdgeRecord.edge_type` id via
     /// the in-memory [`EdgeTypeRegistry`]. Falls back to `__UNKNOWN_{id}`
     /// on dict/zone drift — matches `rebuild_from_zones` behaviour so any
@@ -15389,7 +15452,11 @@ impl SubstrateStore {
         let global = self.interne_global(Espace::Types, name)?;
         let id = {
             let mut reg = self.edge_types.write();
-            self.inscrire_avec_global(global, |i| reg.interner_a(name, i), |g| u16::try_from(g).ok())?
+            self.inscrire_avec_global(
+                global,
+                |i| reg.interner_a(name, i),
+                |g| u16::try_from(g).ok(),
+            )?
         };
         if neuf {
             if let Err(e) = self
@@ -15634,8 +15701,7 @@ impl SubstrateStore {
             }
             let want_nf =
                 Self::edge_slot_to_offset(EdgeId(*want_next_from.get(&slot).unwrap_or(&0)));
-            let want_nt =
-                Self::edge_slot_to_offset(EdgeId(*want_next_to.get(&slot).unwrap_or(&0)));
+            let want_nt = Self::edge_slot_to_offset(EdgeId(*want_next_to.get(&slot).unwrap_or(&0)));
             let mut changed = false;
             if rec.next_from != want_nf {
                 rec.next_from = want_nf;
@@ -15663,9 +15729,8 @@ impl SubstrateStore {
             let Some(mut nr) = self.writer.read_node(nid as u32)? else {
                 continue;
             };
-            let want = Self::edge_slot_to_offset(EdgeId(
-                *want_first_off.get(&(nid as u32)).unwrap_or(&0),
-            ));
+            let want =
+                Self::edge_slot_to_offset(EdgeId(*want_first_off.get(&(nid as u32)).unwrap_or(&0)));
             if nr.first_edge_off != want {
                 nr.first_edge_off = want;
                 first_off_fixed += 1;
@@ -16077,10 +16142,8 @@ impl SubstrateStore {
                     match crate::props_codec::decode_value(&pz, &entry.value) {
                         Ok(v) => ops.push((key, Some(v))),
                         Err(err) => {
-                            let total = self
-                                .props_decode_echecs
-                                .fetch_add(1, Ordering::Relaxed)
-                                + 1;
+                            let total =
+                                self.props_decode_echecs.fetch_add(1, Ordering::Relaxed) + 1;
                             if Self::palier_de_journal(total) {
                                 tracing::warn!(
                                     node_id = id.0,
@@ -16770,10 +16833,7 @@ impl SubstrateStore {
     /// une arete vers un noeud non migre n'existe pas, pour personne).
     /// Extremite hors zone : conservee (comportement historique — la
     /// marche ne testait rien).
-    fn filtrer_paires_par_extremite(
-        &self,
-        paires: Vec<(NodeId, EdgeId)>,
-    ) -> Vec<(NodeId, EdgeId)> {
+    fn filtrer_paires_par_extremite(&self, paires: Vec<(NodeId, EdgeId)>) -> Vec<(NodeId, EdgeId)> {
         if paires.is_empty() {
             return paires;
         }
@@ -16862,12 +16922,14 @@ impl SubstrateStore {
         let hw = self.next_node_id.load(Ordering::Acquire);
         let portee = self.portee_tenant();
         let mut n = 0usize;
-        let _ = self.writer.for_each_node_record_annulable(hw, |_slot, rec| {
-            if rec.est_visible_pour(portee) && mask.is_none_or(|m| rec.label_bitset & m != 0) {
-                n += 1;
-            }
-            true
-        });
+        let _ = self
+            .writer
+            .for_each_node_record_annulable(hw, |_slot, rec| {
+                if rec.est_visible_pour(portee) && mask.is_none_or(|m| rec.label_bitset & m != 0) {
+                    n += 1;
+                }
+                true
+            });
         n
     }
 
@@ -17593,7 +17655,13 @@ impl GraphStore for SubstrateStore {
         let mut restants: Vec<usize> = Vec::with_capacity(ids.len());
         if let Some(spec) = self.blob_columns.spec_for(key, EntityKind::Node) {
             let slots: Vec<Option<u32>> = (0..ids.len())
-                .map(|i| if vivants[i] { Some(ids[i].0 as u32) } else { None })
+                .map(|i| {
+                    if vivants[i] {
+                        Some(ids[i].0 as u32)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             let valeurs = self.blob_columns.read_values_avec_spec(spec, &slots);
             for (i, v) in valeurs.into_iter().enumerate() {
@@ -17811,8 +17879,7 @@ impl GraphStore for SubstrateStore {
         // Un vecteur de verdicts PAR PRÉDICAT, rempli en UNE traversée : c'est
         // ce qui évite les N traversées qu'une demande séparée imposait
         // (`n.name CONTAINS 'a' OR n.name CONTAINS 'b'` = 2 à 4 fois le coût).
-        let mut out: Vec<Vec<Option<bool>>> =
-            vec![vec![None; ids.len()]; predicats.len()];
+        let mut out: Vec<Vec<Option<bool>>> = vec![vec![None; ids.len()]; predicats.len()];
         if self.vec_columns.spec_for(key, EntityKind::Node).is_some() {
             return Some(out);
         }
@@ -17823,7 +17890,13 @@ impl GraphStore for SubstrateStore {
         let mut restants: Vec<usize> = Vec::with_capacity(ids.len());
         if let Some(spec) = self.blob_columns.spec_for(key, EntityKind::Node) {
             let slots: Vec<Option<u32>> = (0..ids.len())
-                .map(|i| if vivants[i] { Some(ids[i].0 as u32) } else { None })
+                .map(|i| {
+                    if vivants[i] {
+                        Some(ids[i].0 as u32)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             let par_predicat = self
                 .blob_columns
@@ -18798,7 +18871,6 @@ impl GraphStore for SubstrateStore {
             .get_or_init(|| self.verifier_adjacence_entrante())
     }
 
-
     // -- Scans --
     //
     // T17e Phase 3: the scans iterate the slot range `1..high_water_mark`
@@ -19282,19 +19354,14 @@ impl GraphStore for SubstrateStore {
     /// candidat tel quel — chacun repasse par `get_node_property`, primitive de
     /// lecture qui applique le filtre par principal (jalon `b742447b`). Ce qui
     /// sort est à la fois exact (valeur courante) et visible.
-    fn find_nodes_by_property_contains(
-        &self,
-        property: &str,
-        needle: &str,
-    ) -> Option<Vec<NodeId>> {
+    fn find_nodes_by_property_contains(&self, property: &str, needle: &str) -> Option<Vec<NodeId>> {
         if needle.is_empty() {
             // `x CONTAINS ''` est vrai de toute chaîne : un balayage par
             // nature, pas une affaire d'index.
             return None;
         }
         let cle = PropertyKey::new(property);
-        let candidats =
-            self.noeuds_par_predicat_texte(&cle, &PredicatTexte::Contient(needle))?;
+        let candidats = self.noeuds_par_predicat_texte(&cle, &PredicatTexte::Contient(needle))?;
         let mut out: Vec<NodeId> = candidats
             .into_iter()
             .filter(|id| {
@@ -19308,7 +19375,6 @@ impl GraphStore for SubstrateStore {
         out.dedup();
         Some(out)
     }
-
 
     // ── NATIF-J6 : index ordonne PAR VALEUR (min/max O(1), ORDER BY LIMIT k
     // O(k)). Surcharge du defaut `None` du trait. La valeur retournee par
@@ -19441,7 +19507,9 @@ impl GraphStore for SubstrateStore {
             let g = zone.read();
             if g.fiable() {
                 candidats.extend(
-                    g.entrees_serie(pk).into_iter().map(|e| NodeId(u64::from(e.slot))),
+                    g.entrees_serie(pk)
+                        .into_iter()
+                        .map(|e| NodeId(u64::from(e.slot))),
                 );
             }
         }
@@ -19717,7 +19785,9 @@ impl GraphStore for SubstrateStore {
             for lot in hits.chunks(LOT_REVERIF) {
                 let valeurs = self.get_node_property_batch(lot, &key);
                 out.extend(lot.iter().zip(valeurs).filter_map(|(id, v)| {
-                    v.as_ref().is_some_and(|v| dans_les_bornes(v)).then_some(*id)
+                    v.as_ref()
+                        .is_some_and(|v| dans_les_bornes(v))
+                        .then_some(*id)
                 }));
             }
         }
@@ -20812,36 +20882,36 @@ impl SubstrateStore {
     /// hold read locks for concurrent atomic increments, or write locks
     /// for grow/persist.
     /// FAUT-IL JOURNALISER le N-ième échec de décodage de propriété ?
-///
-/// Défaut mesuré : le message partait **une fois par nœud et par propriété** —
-/// 6 039 lignes au démarrage, qui noient tout ce qu'on cherche. Un journal qu'on
-/// ne peut plus lire ne sert à rien : on agrège donc sur une échelle
-/// logarithmique (1, 2, 3, puis 10, 20, 50, 100, 200, 500, …).
-///
-/// On garde ainsi le PREMIER cas avec son détail (nœud, clé, erreur) — celui qui
-/// permet de diagnostiquer — et on voit la CROISSANCE sans la répétition. Les
-/// paliers serrés au début (1, 2, 3) sont voulus : deux ou trois exemples disent
-/// s'il s'agit d'un défaut systématique ou d'un cas isolé.
-fn palier_de_journal(n: u64) -> bool {
-    if n <= 3 {
-        return true;
-    }
-    let mut p: u64 = 10;
-    while p <= n {
-        for m in [1u64, 2, 5] {
-            if n == p.saturating_mul(m) {
-                return true;
-            }
+    ///
+    /// Défaut mesuré : le message partait **une fois par nœud et par propriété** —
+    /// 6 039 lignes au démarrage, qui noient tout ce qu'on cherche. Un journal qu'on
+    /// ne peut plus lire ne sert à rien : on agrège donc sur une échelle
+    /// logarithmique (1, 2, 3, puis 10, 20, 50, 100, 200, 500, …).
+    ///
+    /// On garde ainsi le PREMIER cas avec son détail (nœud, clé, erreur) — celui qui
+    /// permet de diagnostiquer — et on voit la CROISSANCE sans la répétition. Les
+    /// paliers serrés au début (1, 2, 3) sont voulus : deux ou trois exemples disent
+    /// s'il s'agit d'un défaut systématique ou d'un cas isolé.
+    fn palier_de_journal(n: u64) -> bool {
+        if n <= 3 {
+            return true;
         }
-        p = match p.checked_mul(10) {
-            Some(v) => v,
-            None => return false,
-        };
+        let mut p: u64 = 10;
+        while p <= n {
+            for m in [1u64, 2, 5] {
+                if n == p.saturating_mul(m) {
+                    return true;
+                }
+            }
+            p = match p.checked_mul(10) {
+                Some(v) => v,
+                None => return false,
+            };
+        }
+        false
     }
-    false
-}
 
-/// LA COLONNE GÉNÉRIQUE PROUVE-T-ELLE SA COHÉRENCE AVEC LE GRAPHE ?
+    /// LA COLONNE GÉNÉRIQUE PROUVE-T-ELLE SA COHÉRENCE AVEC LE GRAPHE ?
     ///
     /// Défaut mesuré le 2026-09-12, sur `runtime-dev` : `out_degree` annonçait
     /// **48 253 968** arêtes sortantes pour un nœud dont le comptage réel donne
@@ -21084,10 +21154,7 @@ fn palier_de_journal(n: u64) -> bool {
         if self.total_live_edges.load(Ordering::Relaxed) == 0 {
             return;
         }
-        if self
-            .degrees_health_checked
-            .swap(true, Ordering::Relaxed)
-        {
+        if self.degrees_health_checked.swap(true, Ordering::Relaxed) {
             return;
         }
         let cellule = self.degrees();
@@ -21405,7 +21472,6 @@ fn palier_de_journal(n: u64) -> bool {
         }
     }
 
-
     /// (2026-09-01) Remède définitif aux colonnes de degrés PÉRIMÉES.
     ///
     /// Les sidecars `substrate.degrees.node*.u32` (T5 générique +
@@ -21447,7 +21513,6 @@ fn palier_de_journal(n: u64) -> bool {
         let _ = self.typed_degrees();
         Ok(0)
     }
-
 
     /// T17i T1 — one-shot rebuild that populates a given registry from
     /// the substrate edge zone. Called by `ensure_initialized` when no
@@ -21494,7 +21559,11 @@ fn palier_de_journal(n: u64) -> bool {
     /// les paires `(src, dst)` telles que `src -[A]-> x -[B]-> dst`
     /// (2-hop), contiguës dans la zone `substrate.jump.<A>_<B>`.
     /// Idempotent (réécrit toute la zone). Retourne les stats.
-    pub fn materialize_jump(&self, edge_type_a: &str, edge_type_b: &str) -> SubstrateResult<crate::jump::JumpStats> {
+    pub fn materialize_jump(
+        &self,
+        edge_type_a: &str,
+        edge_type_b: &str,
+    ) -> SubstrateResult<crate::jump::JumpStats> {
         let Some(type_a) = self.edge_types.read().id_for(edge_type_a) else {
             return Err(SubstrateError::WalBadFrame(format!(
                 "materialize_jump: type d'arête inconnu: {edge_type_a}"
@@ -21519,7 +21588,12 @@ fn palier_de_journal(n: u64) -> bool {
     /// FORME UNIFICATRICE — lit les `dst` 2-hop d'une source via la zone
     /// jump (lecture contiguë, O(résultat)). `None` si la zone est absente
     /// ou la source sans paires.
-    pub fn jump_pairs(&self, edge_type_a: &str, edge_type_b: &str, source: u32) -> SubstrateResult<Option<Vec<u32>>> {
+    pub fn jump_pairs(
+        &self,
+        edge_type_a: &str,
+        edge_type_b: &str,
+        source: u32,
+    ) -> SubstrateResult<Option<Vec<u32>>> {
         let name = crate::jump::zone_name(edge_type_a, edge_type_b);
         let sub = self.writer.substrate();
         let guard = sub.lock();
@@ -21541,7 +21615,8 @@ fn palier_de_journal(n: u64) -> bool {
 
     /// T17h T8 — query out-degree for `(node, edge_type)`. Returns 0
     /// if the type has no column (rare type never edged).
-    pub fn out_degree_by_type(&self, node: NodeId, edge_type: &str) -> u32 {        let reg = self.edge_types.read();
+    pub fn out_degree_by_type(&self, node: NodeId, edge_type: &str) -> u32 {
+        let reg = self.edge_types.read();
         let Some(id) = reg.id_for(edge_type) else {
             return 0;
         };
@@ -23440,10 +23515,8 @@ mod tests {
         assert_eq!(carte.get(&mk("k1")).and_then(Value::as_int64), Some(11));
 
         // Un tombstone TERMINAL retire réellement la clef.
-        let carte2 = property_map_depuis_ops(vec![
-            (mk("x"), Some(Value::from(1i64))),
-            (mk("x"), None),
-        ]);
+        let carte2 =
+            property_map_depuis_ops(vec![(mk("x"), Some(Value::from(1i64))), (mk("x"), None)]);
         assert!(carte2.is_empty());
 
         // L'itération sort triée (invariant de `from_sorted_pairs`).
@@ -23969,7 +24042,10 @@ mod tests {
         // DRY-RUN : diagnostique, n'ecrit rien.
         let diag = s.rebuild_edge_chains(true).unwrap();
         assert!(diag.dry_run);
-        assert!(diag.next_from_fixed >= 1, "le dry-run voit >=1 next_from faux");
+        assert!(
+            diag.next_from_fixed >= 1,
+            "le dry-run voit >=1 next_from faux"
+        );
         let mut encore = 0u64;
         s.walk_outgoing_chain(a, |_r, _id| encore += 1);
         assert_eq!(encore, malade, "dry-run ne doit RIEN ecrire");
@@ -23994,7 +24070,10 @@ mod tests {
         let encore2 = s.rebuild_edge_chains(false).unwrap();
         assert_eq!(encore2.next_from_fixed, 0, "idempotent: next_from");
         assert_eq!(encore2.next_to_fixed, 0, "idempotent: next_to");
-        assert_eq!(encore2.first_edge_off_fixed, 0, "idempotent: first_edge_off");
+        assert_eq!(
+            encore2.first_edge_off_fixed, 0,
+            "idempotent: first_edge_off"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -24027,7 +24106,11 @@ mod tests {
         s.prefetch_community_centered(99, 1, 5).unwrap();
         // Le préfetch ne mute rien.
         let before = s.window_query_2d(1, 0, u16::MAX, 0, u32::MAX).unwrap();
-        assert_eq!(before.len(), 10, "préfetche ne doit pas altérer les données");
+        assert_eq!(
+            before.len(),
+            10,
+            "préfetche ne doit pas altérer les données"
+        );
     }
 
     /// RFC §16.1 — équivalence ingestion zone-direct vs chemin unitaire :
@@ -24085,51 +24168,54 @@ mod tests {
                 .map(|a| a.to_string())
                 .unwrap_or_default()
         };
-        let collect_out = |s: &SubstrateStore| -> std::collections::BTreeMap<u32, Vec<(u32, String)>> {
-            let mut out = std::collections::BTreeMap::new();
-            for node in 1..=4u32 {
-                let rec = s.writer().read_node(node).unwrap().unwrap();
-                let mut cur = rec.first_edge_off.to_u64() / EdgeRecord::SIZE as u64;
-                let mut v = Vec::new();
-                while cur != 0 {
-                    let e = s.writer().read_edge(cur).unwrap().unwrap();
-                    v.push((e.dst, type_name(s, e.edge_type)));
-                    cur = e.next_from.to_u64() / EdgeRecord::SIZE as u64;
+        let collect_out =
+            |s: &SubstrateStore| -> std::collections::BTreeMap<u32, Vec<(u32, String)>> {
+                let mut out = std::collections::BTreeMap::new();
+                for node in 1..=4u32 {
+                    let rec = s.writer().read_node(node).unwrap().unwrap();
+                    let mut cur = rec.first_edge_off.to_u64() / EdgeRecord::SIZE as u64;
+                    let mut v = Vec::new();
+                    while cur != 0 {
+                        let e = s.writer().read_edge(cur).unwrap().unwrap();
+                        v.push((e.dst, type_name(s, e.edge_type)));
+                        cur = e.next_from.to_u64() / EdgeRecord::SIZE as u64;
+                    }
+                    v.sort();
+                    out.insert(node, v);
                 }
-                v.sort();
-                out.insert(node, v);
-            }
-            out
-        };
+                out
+            };
         assert_eq!(collect_out(&s_u), collect_out(&s_b), "chaînes sortantes");
 
         // Chaînes entrantes : marcher next_to depuis la tête (plus grand id
         // du dst), reconstruite par scan simple des ids.
-        let collect_in = |s: &SubstrateStore| -> std::collections::BTreeMap<u32, Vec<(u32, String)>> {
-            let mut out = std::collections::BTreeMap::new();
-            let m = s.next_edge_id.load(Ordering::Acquire);
-            // tête par dst = plus grand id d'arête avec ce dst.
-            let mut head: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
-            for id in 1..m {
-                if let Ok(Some(e)) = s.writer().read_edge(id) {
-                    head.insert(e.dst, id);
-                }
-            }
-            for dst in 1..=4u32 {
-                let mut v = Vec::new();
-                if let Some(&hid) = head.get(&dst) {
-                    let mut cur = hid;
-                    while cur != 0 {
-                        let e = s.writer().read_edge(cur).unwrap().unwrap();
-                        v.push((e.src, type_name(s, e.edge_type)));
-                        cur = e.next_to.to_u64() / EdgeRecord::SIZE as u64;
+        let collect_in =
+            |s: &SubstrateStore| -> std::collections::BTreeMap<u32, Vec<(u32, String)>> {
+                let mut out = std::collections::BTreeMap::new();
+                let m = s.next_edge_id.load(Ordering::Acquire);
+                // tête par dst = plus grand id d'arête avec ce dst.
+                let mut head: std::collections::HashMap<u32, u64> =
+                    std::collections::HashMap::new();
+                for id in 1..m {
+                    if let Ok(Some(e)) = s.writer().read_edge(id) {
+                        head.insert(e.dst, id);
                     }
                 }
-                v.sort();
-                out.insert(dst, v);
-            }
-            out
-        };
+                for dst in 1..=4u32 {
+                    let mut v = Vec::new();
+                    if let Some(&hid) = head.get(&dst) {
+                        let mut cur = hid;
+                        while cur != 0 {
+                            let e = s.writer().read_edge(cur).unwrap().unwrap();
+                            v.push((e.src, type_name(s, e.edge_type)));
+                            cur = e.next_to.to_u64() / EdgeRecord::SIZE as u64;
+                        }
+                    }
+                    v.sort();
+                    out.insert(dst, v);
+                }
+                out
+            };
         assert_eq!(collect_in(&s_u), collect_in(&s_b), "chaînes entrantes");
         let _ = td2;
     }
@@ -24139,7 +24225,11 @@ mod tests {
         let (td, s) = store();
         let sub = s.writer().substrate();
         let sub = sub.lock();
-        assert_eq!(sub.read_zgrid(), None, "store neuf : pas de grille persistée");
+        assert_eq!(
+            sub.read_zgrid(),
+            None,
+            "store neuf : pas de grille persistée"
+        );
         assert!(!td.path().join("kb").join(crate::file::zone::ZGRID).exists());
     }
 
@@ -24152,7 +24242,11 @@ mod tests {
             sub.write_zgrid(4, 32).unwrap();
         }
         let sub = sub.lock();
-        assert_eq!(sub.read_zgrid(), Some((4, 32)), "roundtrip order/max_degree");
+        assert_eq!(
+            sub.read_zgrid(),
+            Some((4, 32)),
+            "roundtrip order/max_degree"
+        );
     }
 
     #[test]
@@ -24169,14 +24263,18 @@ mod tests {
         let s = SubstrateStore::open(&path).unwrap();
         let sub = s.writer().substrate();
         let sub = sub.lock();
-        assert_eq!(sub.read_zgrid(), Some((6, 4096)), "grille persistée lisible au reopen");
+        assert_eq!(
+            sub.read_zgrid(),
+            Some((6, 4096)),
+            "grille persistée lisible au reopen"
+        );
     }
 
     // -------------------------------------------------------------------
     // RFC zorder-superposition D3b — voie accélérée zruns
     // -------------------------------------------------------------------
 
-        /// SÉLECTEUR ADAPTATIF — résultat IDENTIQUE quelle que soit la sélection
+    /// SÉLECTEUR ADAPTATIF — résultat IDENTIQUE quelle que soit la sélection
     /// (scan vs zruns) : communauté ≥ seuil (zruns réellement actif) → les
     /// deux voies rendent exactement les mêmes résultats sur des fenêtres
     /// variées (le régime scan des petites communautés est couvert par les
@@ -24190,7 +24288,12 @@ mod tests {
             let mut updates = Vec::new();
             let mut ids: Vec<u64> = Vec::new();
             let mut st: u64 = 42;
-            let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
+            let mut rnd = move || {
+                st ^= st << 13;
+                st ^= st >> 7;
+                st ^= st << 17;
+                st
+            };
             for _ in 0..700u32 {
                 let id = s.create_node_in_community(&["L"], 1);
                 ids.push(id.0);
@@ -24201,17 +24304,27 @@ mod tests {
             for _ in 0..400usize {
                 let a = ids[(rnd() % ids.len() as u64) as usize];
                 let b = ids[(rnd() % ids.len() as u64) as usize];
-                if a != b { let _ = s.create_synapse_slot(NodeId(a), NodeId(b), 0.9); }
+                if a != b {
+                    let _ = s.create_synapse_slot(NodeId(a), NodeId(b), 0.9);
+                }
             }
             s.flush().unwrap();
         }
         let deg_file = path.join(crate::degree_column::DEGREE_COLUMN_FILENAME);
-        if deg_file.exists() { std::fs::remove_file(&deg_file).unwrap(); }
+        if deg_file.exists() {
+            std::fs::remove_file(&deg_file).unwrap();
+        }
         let s = SubstrateStore::open(&path).unwrap();
         s.repermuter_par_hilbert(4, 128).unwrap();
         let (first, last) = s.community_slot_range(1).unwrap();
-        assert!(last - first + 1 >= 512, "communauté assez grande pour zruns");
-        assert!(s.community_zrows(1, first, last).unwrap().is_some(), "zruns actif");
+        assert!(
+            last - first + 1 >= 512,
+            "communauté assez grande pour zruns"
+        );
+        assert!(
+            s.community_zrows(1, first, last).unwrap().is_some(),
+            "zruns actif"
+        );
         let windows = [
             (0u16, u16::MAX, 0u32, u32::MAX),
             (0u16, u16::MAX, 1u32, 1u32),
@@ -24275,18 +24388,23 @@ mod tests {
             "zruns actif après bulk sort"
         );
         // Oracle : (centralité q16, degré) de chaque slot vivant de la communauté.
-        let live: std::collections::HashSet<u64> =
-            s.node_ids().iter().map(|n| n.0).collect();
+        let live: std::collections::HashSet<u64> = s.node_ids().iter().map(|n| n.0).collect();
         let mut oracle: Vec<(u64, u16, u32)> = Vec::new();
         for slot in first..=last {
             if !live.contains(&u64::from(slot)) {
                 continue;
             }
-            let Some(rec) = s.writer().read_node(slot).unwrap() else { continue };
+            let Some(rec) = s.writer().read_node(slot).unwrap() else {
+                continue;
+            };
             if rec.is_tombstoned() {
                 continue;
             }
-            oracle.push((u64::from(slot), rec.centrality_cached, s.out_degree(NodeId(u64::from(slot)))));
+            oracle.push((
+                u64::from(slot),
+                rec.centrality_cached,
+                s.out_degree(NodeId(u64::from(slot))),
+            ));
         }
         let mut st2: u64 = 0xFEED_FACE_CAFE_0001;
         let mut rnd2 = move || {
@@ -24297,15 +24415,17 @@ mod tests {
         };
         for q in 0..250usize {
             let (mut a, mut b) = ((rnd2() % 65_536) as u16, (rnd2() % 65_536) as u16);
-            if a > b { std::mem::swap(&mut a, &mut b); }
+            if a > b {
+                std::mem::swap(&mut a, &mut b);
+            }
             let mut dl = (rnd2() % 130) as u32;
             let dh = dl + (rnd2() % 40) as u32;
-            if q % 7 == 0 { dl = dl.saturating_add(1000); } // au-delà du max
+            if q % 7 == 0 {
+                dl = dl.saturating_add(1000);
+            } // au-delà du max
             let mut attendu: Vec<u32> = oracle
                 .iter()
-                .filter(|(_, c, d)| {
-                    *c >= a && *c <= b && *d >= dl && *d <= dh
-                })
+                .filter(|(_, c, d)| *c >= a && *c <= b && *d >= dl && *d <= dh)
                 .map(|(slot, _, _)| *slot as u32)
                 .collect();
             attendu.sort_unstable();
@@ -24313,14 +24433,15 @@ mod tests {
             let scan = s.window_query_2d(1, a, b, dl, dh).unwrap();
             assert_eq!(fast, scan, "q{q}: zruns != scan c=[{a},{b}] d=[{dl},{dh}]");
             assert_eq!(
-                attendu, scan,
+                attendu,
+                scan,
                 "q{q}: scan != oracle c=[{a},{b}] d=[{dl},{dh}] ({} slots)",
                 oracle.len()
             );
         }
     }
 
-#[test]
+    #[test]
     fn window_sorted_zruns_equals_scan_after_bulk_sort() {
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
@@ -24368,17 +24489,15 @@ mod tests {
             (0u16, u16::MAX, 1u32, 1u32),
             (0u16, u16::MAX, 33u32, u32::MAX), // d_lo > max_degree (32) → rangée saturée
             (0u16, u16::MAX, 1000u32, u32::MAX),
-            (0u16, 0u16, 0u32, u32::MAX),       // centralité 0 seulement
+            (0u16, 0u16, 0u32, u32::MAX), // centralité 0 seulement
             (65_535u16, 65_535u16, 0u32, u32::MAX), // au-delà du max présent (59000)
-            (0u16, 65_535u16, 0u32, 0u32),      // degré 0 (dernier nœud de la chaîne)
+            (0u16, 65_535u16, 0u32, 0u32), // degré 0 (dernier nœud de la chaîne)
             (0u16, u16::MAX, u32::MAX, u32::MAX), // d_lo == d_hi == MAX → vide
             (29_000u16, 31_000u16, 1u32, 1u32), // bande centrale fine
-            (5_000u16, 5_000u16, 1u32, 1u32),   // cellule fine
+            (5_000u16, 5_000u16, 1u32, 1u32), // cellule fine
         ];
         for &(c_lo, c_hi, d_lo, d_hi) in windows.iter() {
-            let fast = s
-                .window_query_2d_sorted(1, c_lo, c_hi, d_lo, d_hi)
-                .unwrap();
+            let fast = s.window_query_2d_sorted(1, c_lo, c_hi, d_lo, d_hi).unwrap();
             let scan = s.window_query_2d(1, c_lo, c_hi, d_lo, d_hi).unwrap();
             assert_eq!(
                 fast, scan,
@@ -24395,7 +24514,10 @@ mod tests {
         let rec = s.writer().read_node(c0[0]).unwrap().unwrap();
         assert_eq!(rec.centrality_cached, 0, "le slot retourné a bien q16 == 0");
         let over = s.window_query_2d(1, 60_000, u16::MAX, 0, u32::MAX).unwrap();
-        assert!(over.is_empty(), "aucune centralité >= 60000 (max présent 59000)");
+        assert!(
+            over.is_empty(),
+            "aucune centralité >= 60000 (max présent 59000)"
+        );
     }
 
     #[test]
@@ -24429,12 +24551,11 @@ mod tests {
             s.community_zrows(1, first, last).unwrap().is_none(),
             "sans tri : pas de zruns (flag/zgrid absents)"
         );
-        for (c_lo, c_hi, d_lo, d_hi) in
-            [(0u16, u16::MAX, 0u32, u32::MAX), (20_000, 40_000, 0, u32::MAX)]
-        {
-            let fast = s
-                .window_query_2d_sorted(1, c_lo, c_hi, d_lo, d_hi)
-                .unwrap();
+        for (c_lo, c_hi, d_lo, d_hi) in [
+            (0u16, u16::MAX, 0u32, u32::MAX),
+            (20_000, 40_000, 0, u32::MAX),
+        ] {
+            let fast = s.window_query_2d_sorted(1, c_lo, c_hi, d_lo, d_hi).unwrap();
             let scan = s.window_query_2d(1, c_lo, c_hi, d_lo, d_hi).unwrap();
             assert_eq!(fast, scan, "repli scan attendu (store non trié)");
         }
@@ -25684,7 +25805,6 @@ mod tests {
             "le balayage ne compte que les creneaux ALLOUES : 10 noeuds, 10 comptes"
         );
 
-
         // Les compteurs PAR ETIQUETTE, eux, restent justes : un trou porte
         // `label_bitset == 0`, donc il n'allume aucun bit. C'est precisement
         // pourquoi la somme des compteurs de labels ne peut pas servir a
@@ -25738,7 +25858,11 @@ mod tests {
             // Les valeurs JUSTES, relevees avant le mensonge.
             let n = s.total_live_nodes.load(Ordering::Relaxed);
             let e = s.total_live_edges.load(Ordering::Relaxed);
-            assert_eq!((n, e), (3, 3), "temoin : la base est bien celle qu'on croit");
+            assert_eq!(
+                (n, e),
+                (3, 3),
+                "temoin : la base est bien celle qu'on croit"
+            );
             assert_eq!(s.label_live_counts[bit_a].load(Ordering::Relaxed), 2);
 
             // ── LE MENSONGE, avant le flush qui le persiste. ──
@@ -25915,12 +26039,7 @@ mod tests {
         /// justement une des choses qu'on veut pouvoir suspecter.
         fn balayer(
             s: &SubstrateStore,
-        ) -> (
-            u64,
-            [u64; 64],
-            u64,
-            std::collections::HashMap<u16, u64>,
-        ) {
+        ) -> (u64, [u64; 64], u64, std::collections::HashMap<u16, u64>) {
             let mut noeuds = 0u64;
             let mut par_bit = [0u64; 64];
             let borne_n = s.next_node_id.load(Ordering::Acquire);
@@ -25992,8 +26111,7 @@ mod tests {
             }
             // Les deux sens : un type dont le compteur a derive, ET un type
             // que le compteur ignore alors qu'il porte des aretes vivantes.
-            let mut tous: std::collections::HashSet<u16> =
-                par_type.keys().copied().collect();
+            let mut tous: std::collections::HashSet<u16> = par_type.keys().copied().collect();
             for e in s.edge_type_live_counts.iter() {
                 tous.insert(*e.key());
             }
@@ -27269,7 +27387,10 @@ mod tests {
         let s = SubstrateStore::open_read_only(&path).unwrap();
         // RO : pas de guérison possible → colonne déclarée NON fiable.
         let rel = GraphStore::typed_degree_reliable(&s, "TOUCHES");
-        assert!(!rel, "store RO avec sidecar périmé → typed_degree_reliable=false");
+        assert!(
+            !rel,
+            "store RO avec sidecar périmé → typed_degree_reliable=false"
+        );
         // La fiabilité est mémorisée (une seule vérification par store).
         assert!(!GraphStore::typed_degree_reliable(&s, "TOUCHES"));
         // La colonne physique reste fausse (0) — c'est le pré-filtre qui ne
@@ -27434,8 +27555,14 @@ mod tests {
         let eps = s.edge_endpoints_by_id(e).expect("extrémités");
         assert_eq!(eps, (a, b), "extrémités (src, dst)");
         // Id hors registre → None.
-        assert!(s.edge_endpoints_by_id(obrain_common::types::EdgeId(u64::MAX)).is_none());
-        assert!(s.edge_endpoints_by_id(obrain_common::types::EdgeId(0)).is_none());
+        assert!(
+            s.edge_endpoints_by_id(obrain_common::types::EdgeId(u64::MAX))
+                .is_none()
+        );
+        assert!(
+            s.edge_endpoints_by_id(obrain_common::types::EdgeId(0))
+                .is_none()
+        );
         // Après suppression (tombstone) → None.
         s.delete_edge(e);
         assert!(
@@ -28149,10 +28276,14 @@ mod tests {
         // n'est servi deux fois.
         std::thread::scope(|scope| {
             let a = scope.spawn(|| {
-                (0..20_000).map(|_| s.allocate_node_id()).collect::<Vec<_>>()
+                (0..20_000)
+                    .map(|_| s.allocate_node_id())
+                    .collect::<Vec<_>>()
             });
             let b = scope.spawn(|| {
-                (0..20_000).map(|_| s.allocate_node_id()).collect::<Vec<_>>()
+                (0..20_000)
+                    .map(|_| s.allocate_node_id())
+                    .collect::<Vec<_>>()
             });
             let a = a.join().expect("thread A");
             let b = b.join().expect("thread B");
@@ -29696,7 +29827,9 @@ mod tests {
                 0,
                 "X doit avoir une chaîne (tête non nulle) avant le déplacement"
             );
-            s.writer().write_node(y.0 as u32, rec_x).expect("move record");
+            s.writer()
+                .write_node(y.0 as u32, rec_x)
+                .expect("move record");
             // L'état post-remap est là : le slot Y porte un record dont la tête
             // pointe sur des pages stampées X (≠ Y).
             (s, x, y)
@@ -29775,7 +29908,10 @@ mod tests {
                     .unwrap_or(false)
             })
             .collect();
-        assert!(ids.len() >= n as usize, "tous les nœuds vivants après remap");
+        assert!(
+            ids.len() >= n as usize,
+            "tous les nœuds vivants après remap"
+        );
         // Relecture AVANT toute écriture : rien ne doit manquer (lectures
         // owner-agnostiques — état pré-fix déjà correct).
         let mut avant: Vec<i64> = ids
@@ -29800,10 +29936,14 @@ mod tests {
         // présent partout.
         let mut apres: Vec<i64> = ids
             .iter()
-            .map(|id| match s.get_node_property(*id, &PropertyKey::new("p0")) {
-                Some(Value::Int64(x)) => x,
-                other => panic!("p0 perdu après écriture post-remap sur le nœud {id:?} : {other:?}"),
-            })
+            .map(
+                |id| match s.get_node_property(*id, &PropertyKey::new("p0")) {
+                    Some(Value::Int64(x)) => x,
+                    other => {
+                        panic!("p0 perdu après écriture post-remap sur le nœud {id:?} : {other:?}")
+                    }
+                },
+            )
             .collect();
         apres.sort_unstable();
         assert_eq!(
@@ -29819,12 +29959,12 @@ mod tests {
             );
             assert_eq!(
                 s.get_node_property(*id, &PropertyKey::new("p1")),
-                Some(Value::Int64((match s
-                    .get_node_property(*id, &PropertyKey::new("p0"))
-                {
-                    Some(Value::Int64(x)) => x,
-                    _ => unreachable!(),
-                }) * 1000)),
+                Some(Value::Int64(
+                    (match s.get_node_property(*id, &PropertyKey::new("p0")) {
+                        Some(Value::Int64(x)) => x,
+                        _ => unreachable!(),
+                    }) * 1000
+                )),
                 "p1 cohérent avec p0 sur {id:?}"
             );
         }
@@ -29860,7 +30000,9 @@ mod tests {
                 .read_node(x.0 as u32)
                 .expect("read x")
                 .expect("record x présent");
-            s.writer().write_node(y.0 as u32, rec_x).expect("move record");
+            s.writer()
+                .write_node(y.0 as u32, rec_x)
+                .expect("move record");
             (td, s, y)
         };
         // Garde le TempDir vivant (le marqueur `migration_v2_achevee` est un
@@ -29953,8 +30095,7 @@ mod tests {
         }
         // Suppression sous env (tombstone sur chaîne packée) + lecture.
         assert!(
-            s2.remove_node_property(node_id, "p1")
-                .is_some(),
+            s2.remove_node_property(node_id, "p1").is_some(),
             "remove sous env=1 doit retirer la prop"
         );
         assert_eq!(
@@ -30050,14 +30191,26 @@ mod tests {
                 0,
                 "tête d'arête attendue en slot packé sous env=1"
             );
-            assert_eq!(s.get_edge_property(e, &PropertyKey::new("ep0")), Some(Value::Int64(7)));
+            assert_eq!(
+                s.get_edge_property(e, &PropertyKey::new("ep0")),
+                Some(Value::Int64(7))
+            );
             s.flush().unwrap();
         }
         let s2 = SubstrateStore::open(&path).unwrap();
-        assert_eq!(s2.get_edge_property(edge_id, &PropertyKey::new("ep0")), Some(Value::Int64(7)));
-        assert_eq!(s2.get_edge_property(edge_id, &PropertyKey::new("ep1")), Some(Value::Int64(8)));
+        assert_eq!(
+            s2.get_edge_property(edge_id, &PropertyKey::new("ep0")),
+            Some(Value::Int64(7))
+        );
+        assert_eq!(
+            s2.get_edge_property(edge_id, &PropertyKey::new("ep1")),
+            Some(Value::Int64(8))
+        );
         s2.remove_edge_property(edge_id, "ep0");
-        assert_eq!(s2.get_edge_property(edge_id, &PropertyKey::new("ep0")), None);
+        assert_eq!(
+            s2.get_edge_property(edge_id, &PropertyKey::new("ep0")),
+            None
+        );
         unsafe {
             std::env::remove_var("OBRAIN_PROPS_SLOTS_512");
         }
@@ -30093,7 +30246,11 @@ mod tests {
             }
             // une arête d'un AUTRE type vers a : ne doit pas compter.
             let _ = s.create_edge(derniere, a, "AUTRE");
-            assert_eq!(s.count_messages_de_session(s1), Some(3), "3 messages PART_OF vers s1");
+            assert_eq!(
+                s.count_messages_de_session(s1),
+                Some(3),
+                "3 messages PART_OF vers s1"
+            );
             assert_eq!(s.count_messages_de_session(s2), Some(2), "2 vers s2");
             assert_eq!(s.messages_de_session(s1).len(), 3, "liste = 3 ids");
             // incrémental : suppression d'une arête PART_OF (la 1ʳᵉ vers s1)
@@ -30101,13 +30258,20 @@ mod tests {
             assert!(s.delete_edge(EdgeId(e0)), "delete_edge réussi");
             assert_eq!(s.count_messages_de_session(s1), Some(2), "2 après delete");
             let liste = s.messages_de_session(s1);
-            assert!(!liste.contains(&e0), "l'arête supprimée a disparu de la map");
+            assert!(
+                !liste.contains(&e0),
+                "l'arête supprimée a disparu de la map"
+            );
             s.flush().unwrap();
         }
         // Réouverture : la reconstruction lazy (scan) doit retomber exactement
         // sur l'état hooké (2 + 2).
         let s = SubstrateStore::open(&path).unwrap();
-        assert_eq!(s.count_messages_de_session(s1), Some(2), "après reopen : 2 (scan == hooks)");
+        assert_eq!(
+            s.count_messages_de_session(s1),
+            Some(2),
+            "après reopen : 2 (scan == hooks)"
+        );
         assert_eq!(s.count_messages_de_session(s2), Some(2), "après reopen : 2");
     }
 
@@ -33676,9 +33840,7 @@ mod tests {
     /// l'index de propriété `q`, puis flush (ancres posées). Rend la baseline
     /// + les 2 nœuds écrits APRÈS le flush — l'état « fenêtre sale ».
     #[allow(clippy::type_complexity)]
-    fn scenario_ouverture_apres_ecritures(
-        root: &std::path::Path,
-    ) -> (Vec<NodeId>, NodeId, NodeId) {
+    fn scenario_ouverture_apres_ecritures(root: &std::path::Path) -> (Vec<NodeId>, NodeId, NodeId) {
         let s = SubstrateStore::create(root).unwrap();
         let mut anciens = Vec::new();
         for i in 0..12i64 {
@@ -33796,12 +33958,7 @@ mod tests {
 
         let s2 = SubstrateStore::open(&root).unwrap();
         assert!(
-            !s2
-                .index_egalite
-                .as_ref()
-                .unwrap()
-                .read()
-                .fiable(),
+            !s2.index_egalite.as_ref().unwrap().read().fiable(),
             "extension refusée (base illisible) ⇒ l'index reste NON FIABLE"
         );
         // La reconstruction par processus a bien eu lieu : la carte de
@@ -33850,7 +34007,8 @@ mod tests {
             "aucune reconstruction : la carte RAM reste vide"
         );
         assert_eq!(
-            s2.find_nodes_by_property("q", &Value::String("propre-03".into())).len(),
+            s2.find_nodes_by_property("q", &Value::String("propre-03".into()))
+                .len(),
             1
         );
     }
@@ -36384,10 +36542,16 @@ mod tests {
         let proccat = racine.join("substrate.proccat");
         assert!(proccat.is_file(), "substrate.proccat doit exister");
         let contenu = std::fs::read_to_string(&proccat).unwrap();
-        assert!(contenu.contains("bonjour"), "corps GQL persisté : {contenu}");
+        assert!(
+            contenu.contains("bonjour"),
+            "corps GQL persisté : {contenu}"
+        );
 
         // OR REPLACE : remplacer par nom, pas de doublon.
-        let v2 = DeclarationProcedure { body: "RETURN 'v2' AS msg".to_string(), ..decl.clone() };
+        let v2 = DeclarationProcedure {
+            body: "RETURN 'v2' AS msg".to_string(),
+            ..decl.clone()
+        };
         s2.declarer_procedure(v2.clone()).unwrap();
         let lues2 = s2.declarations_procedure();
         assert_eq!(lues2.len(), 1, "OR REPLACE ne doit pas creer de doublon");
@@ -36453,7 +36617,11 @@ mod tests {
             raison.contains("IMPOSSIBLE"),
             "la raison doit nommer l'impossibilité, pas une imprécision : {raison}"
         );
-        assert_eq!(s.out_degree(a), 1_000_002, "en mémoire, la corruption est là");
+        assert_eq!(
+            s.out_degree(a),
+            1_000_002,
+            "en mémoire, la corruption est là"
+        );
     }
 
     /// LA DÉTECTION À LA RÉOUVERTURE — sans réparation automatique.
@@ -36494,7 +36662,8 @@ mod tests {
         // La lecture déclenche la vérification une fois — et elle DOIT voir.
         let lu = s2.out_degree(a);
         assert!(
-            s2.incoherence_colonne_degres(&s2.degrees().read()).is_some(),
+            s2.incoherence_colonne_degres(&s2.degrees().read())
+                .is_some(),
             "une colonne impossible doit être DÉTECTÉE à la réouverture"
         );
         assert!(
@@ -36530,7 +36699,8 @@ mod tests {
         assert_eq!(s2.edge_count(), 2);
         assert_eq!(s2.out_degree(a), 1, "colonne juste, servie telle quelle");
         assert!(
-            s2.incoherence_colonne_degres(&s2.degrees().read()).is_none(),
+            s2.incoherence_colonne_degres(&s2.degrees().read())
+                .is_none(),
             "et toujours jugée cohérente après reconstruction éventuelle"
         );
     }
@@ -36575,15 +36745,34 @@ mod sonde_v3_replay {
         }
         let s = SubstrateStore::open(&chemin).unwrap();
         let rec = s.writer.read_node(slot).unwrap();
-        eprintln!("[sonde] record: {:?}", rec.as_ref().map(|r| (r.flags, r.tenant_id, r.label_bitset)));
+        eprintln!(
+            "[sonde] record: {:?}",
+            rec.as_ref().map(|r| (r.flags, r.tenant_id, r.label_bitset))
+        );
         assert!(rec.is_some(), "le record du noeud doit exister apres rejeu");
         let rec = rec.unwrap();
-        eprintln!("[sonde] is_live={} tombstoned={}", rec.is_live(), rec.is_tombstoned());
-        assert!(rec.is_live(), "le noeud rejoue doit etre VIVANT (flags {:#x}, tenant {})", rec.flags, rec.tenant_id);
+        eprintln!(
+            "[sonde] is_live={} tombstoned={}",
+            rec.is_live(),
+            rec.is_tombstoned()
+        );
+        assert!(
+            rec.is_live(),
+            "le noeud rejoue doit etre VIVANT (flags {:#x}, tenant {})",
+            rec.flags,
+            rec.tenant_id
+        );
         let ids = s.node_ids();
-        assert!(ids.iter().any(|i| i.0 as u32 == slot), "node_ids doit contenir le noeud rejoue");
+        assert!(
+            ids.iter().any(|i| i.0 as u32 == slot),
+            "node_ids doit contenir le noeud rejoue"
+        );
         let v = s.get_node_property(NodeId(u64::from(slot)), &PropertyKey::new("rang"));
         eprintln!("[sonde] rang = {v:?}");
-        assert_eq!(v, Some(Value::Int64(7_777)), "la prop ecrite sans flush doit etre relue");
+        assert_eq!(
+            v,
+            Some(Value::Int64(7_777)),
+            "la prop ecrite sans flush doit etre relue"
+        );
     }
 }

@@ -99,7 +99,12 @@ fn compteurs(c: &mut Criterion) {
 
     sess.execute("MATCH (n) RETURN count(n)").unwrap();
     g.bench_function("noeuds_gql", |b| {
-        b.iter(|| black_box(sess.execute(black_box("MATCH (n) RETURN count(n)")).unwrap()));
+        b.iter(|| {
+            black_box(
+                sess.execute(black_box("MATCH (n) RETURN count(n)"))
+                    .unwrap(),
+            )
+        });
     });
     g.bench_function("noeuds_direct", |b| {
         b.iter(|| black_box(db.node_count()));
@@ -208,7 +213,8 @@ fn enveloppe_rw_contre_ro(c: &mut Criterion) {
         let db = ObrainDB::open(&chemin).unwrap();
         let s = db.session();
         for i in 0..64 {
-            s.execute(&format!("INSERT (:Echantillon {{i: {i}}})")).unwrap();
+            s.execute(&format!("INSERT (:Echantillon {{i: {i}}})"))
+                .unwrap();
         }
         s.execute("RETURN 1").unwrap();
         g.bench_function("return_1_ouvert_en_ecriture", |b| {

@@ -51,7 +51,12 @@ fn scalaire(db: &ObrainDB, requete: &str) -> i64 {
     let r = db.session().execute(requete).unwrap_or_else(|e| {
         panic!("requête refusée : {requete}\n  {e:?}");
     });
-    assert_eq!(r.rows.len(), 1, "{requete} doit rendre UNE ligne : {:?}", r.rows);
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "{requete} doit rendre UNE ligne : {:?}",
+        r.rows
+    );
     match r.rows[0].first() {
         Some(Value::Int64(n)) => *n,
         autre => panic!("{requete} : entier attendu, obtenu {autre:?}"),
@@ -81,9 +86,18 @@ fn count_r_sans_type_egale_la_verite() {
 #[test]
 fn count_r_avec_un_type_egale_la_verite() {
     let db = monter();
-    assert_eq!(scalaire(&db, "MATCH ()-[r:LIE]->() RETURN count(r) AS n"), 4);
-    assert_eq!(scalaire(&db, "MATCH ()-[r:AUTRE]->() RETURN count(r) AS n"), 2);
-    assert_eq!(scalaire(&db, "MATCH ()-[r:RARE]->() RETURN count(r) AS n"), 1);
+    assert_eq!(
+        scalaire(&db, "MATCH ()-[r:LIE]->() RETURN count(r) AS n"),
+        4
+    );
+    assert_eq!(
+        scalaire(&db, "MATCH ()-[r:AUTRE]->() RETURN count(r) AS n"),
+        2
+    );
+    assert_eq!(
+        scalaire(&db, "MATCH ()-[r:RARE]->() RETURN count(r) AS n"),
+        1
+    );
 }
 
 /// Un type jamais interné doit rendre ZÉRO, pas une erreur et pas un total.
@@ -140,7 +154,10 @@ fn le_raccourci_suit_les_suppressions() {
         6,
         "le compteur doit suivre la suppression"
     );
-    assert_eq!(scalaire(&db, "MATCH ()-[r:RARE]->() RETURN count(r) AS n"), 0);
+    assert_eq!(
+        scalaire(&db, "MATCH ()-[r:RARE]->() RETURN count(r) AS n"),
+        0
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -225,7 +242,11 @@ fn le_compte_de_noeuds_suit_une_augmentation_puis_une_diminution() {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
 
-    assert_eq!(scalaire(&db, "MATCH (n) RETURN count(n) AS n"), 0, "base vide");
+    assert_eq!(
+        scalaire(&db, "MATCH (n) RETURN count(n) AS n"),
+        0,
+        "base vide"
+    );
 
     for i in 0..6 {
         s.execute(&format!("INSERT (:N {{id: {i}}})")).unwrap();
@@ -271,8 +292,10 @@ fn le_compte_par_label_suit_les_variations_et_ne_deborde_pas_sur_les_voisins() {
     assert_eq!(scalaire(&db, "MATCH (n:Beta) RETURN count(n) AS n"), 3);
     assert_eq!(scalaire(&db, "MATCH (n) RETURN count(n) AS n"), 8);
 
-    s.execute("MATCH (n:Alpha {id: 0}) DETACH DELETE n").unwrap();
-    s.execute("MATCH (n:Alpha {id: 1}) DETACH DELETE n").unwrap();
+    s.execute("MATCH (n:Alpha {id: 0}) DETACH DELETE n")
+        .unwrap();
+    s.execute("MATCH (n:Alpha {id: 1}) DETACH DELETE n")
+        .unwrap();
 
     assert_eq!(
         scalaire(&db, "MATCH (n:Alpha) RETURN count(n) AS n"),

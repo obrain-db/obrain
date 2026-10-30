@@ -764,11 +764,18 @@ impl WalRecord {
         // soit le chemin — c'est ce qui garantit que `FLAG_SYNC_ATTENDU` est une
         // demande adressée à l'écrivain, jamais un état du journal.
         let flags = flags & !Self::FLAG_SYNC_ATTENDU;
-        encoder_frame(out, lsn, self.timestamp, flags, self.payload.kind() as u8, |o| {
-            bincode::serde::encode_into_std_write(&self.payload, o, cfg)
-                .map(|_| ())
-                .map_err(|e| SubstrateError::WalEncode(e.to_string()))
-        })
+        encoder_frame(
+            out,
+            lsn,
+            self.timestamp,
+            flags,
+            self.payload.kind() as u8,
+            |o| {
+                bincode::serde::encode_into_std_write(&self.payload, o, cfg)
+                    .map(|_| ())
+                    .map_err(|e| SubstrateError::WalEncode(e.to_string()))
+            },
+        )
     }
 
     /// Octet de drapeaux ÉCRIT SUR DISQUE : `FLAG_SYNC_ATTENDU` est une demande
@@ -781,7 +788,6 @@ impl WalRecord {
     pub fn exige_sync(&self) -> bool {
         self.flags & Self::FLAG_SYNC_ATTENDU != 0
     }
-
 
     /// Decode a record from `bytes`. Returns the decoded record and the number of bytes
     /// consumed.
@@ -944,7 +950,10 @@ fn encoder_frame(
     // pré-réservé, donc aucun réalloc) et on y DÉCALE le payload d'un memmove.
     out.resize(debut + WAL_HEADER_SIZE + payload_len, 0);
     if payload_len > 0 {
-        out.copy_within(debut + 24..debut + 24 + payload_len, debut + WAL_HEADER_SIZE);
+        out.copy_within(
+            debut + 24..debut + 24 + payload_len,
+            debut + WAL_HEADER_SIZE,
+        );
     }
     out[debut + 24..debut + 28].copy_from_slice(&crc.to_le_bytes()); // 24..28
     debug_assert_eq!(out.len(), debut + WAL_HEADER_SIZE + payload_len);
@@ -1018,7 +1027,6 @@ impl PropSetInlineRef<'_> {
         )
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1181,22 +1189,54 @@ mod tests {
         // produit EXACTEMENT les octets d'encode (1 alloc). Testé sur un
         // échantillon de variantes de payload.
         let payloads = [
-            WalPayload::NodeInsert { node_id: 7, label_bitset: 0xDEAD },
-            WalPayload::NodeUpdate { node_id: 3, label_bitset: 1, energy: 2, scar_util_affinity: 3, centrality_cached: 4, flags: 5, community_id: 6 },
-            WalPayload::KeyIntern { key_id: 99, name: "label".into() },
-            WalPayload::PropSet { node_id: 1, key_id: 4, value: PropValue::I64(7) },
+            WalPayload::NodeInsert {
+                node_id: 7,
+                label_bitset: 0xDEAD,
+            },
+            WalPayload::NodeUpdate {
+                node_id: 3,
+                label_bitset: 1,
+                energy: 2,
+                scar_util_affinity: 3,
+                centrality_cached: 4,
+                flags: 5,
+                community_id: 6,
+            },
+            WalPayload::KeyIntern {
+                key_id: 99,
+                name: "label".into(),
+            },
+            WalPayload::PropSet {
+                node_id: 1,
+                key_id: 4,
+                value: PropValue::I64(7),
+            },
             WalPayload::Checkpoint { at_lsn: 55 },
             WalPayload::NoOp,
         ];
         for payload in payloads {
-            let rec = WalRecord { lsn: 123, timestamp: 1_700_000_000, flags: WalRecord::FLAG_COMMIT, payload };
+            let rec = WalRecord {
+                lsn: 123,
+                timestamp: 1_700_000_000,
+                flags: WalRecord::FLAG_COMMIT,
+                payload,
+            };
             let expected = rec.encode().unwrap();
             let mut buf = Vec::new();
             rec.encode_into(&mut buf).unwrap();
-            assert_eq!(buf, expected, "encode_into diverge d'encode pour {:?}", rec.payload);
+            assert_eq!(
+                buf, expected,
+                "encode_into diverge d'encode pour {:?}",
+                rec.payload
+            );
             // Buffer réutilisé : le second encode écrase proprement.
             buf.clear();
-            let autre = WalRecord { lsn: 999, timestamp: 2, flags: 0, payload: WalPayload::NoOp };
+            let autre = WalRecord {
+                lsn: 999,
+                timestamp: 2,
+                flags: 0,
+                payload: WalPayload::NoOp,
+            };
             autre.encode_into(&mut buf).unwrap();
             assert_eq!(buf, autre.encode().unwrap());
         }
@@ -1410,7 +1450,9 @@ mod tests {
     // garde-fou du format, pas un détail d'implémentation.
     #[test]
     fn crc_une_passe_egale_le_crc_en_deux_tranches() {
-        for taille_payload in [0usize, 1, 2, 3, 4, 7, 15, 16, 17, 63, 64, 65, 255, 4096, 100_000] {
+        for taille_payload in [
+            0usize, 1, 2, 3, 4, 7, 15, 16, 17, 63, 64, 65, 255, 4096, 100_000,
+        ] {
             let mut frame = Vec::new();
             frame.extend_from_slice(&[0xA5u8; 24]); // en-tête
             frame.extend_from_slice(&vec![0x5Au8; taille_payload]); // payload contigu
@@ -1448,7 +1490,11 @@ mod tests {
         for (node_id, key, valeur) in [
             (0u32, "", Vec::new()),
             (7u32, "k", vec![1u8, 2, 3]),
-            (4_294_967_295u32, "une-cle-un-peu-plus-longue", vec![0u8; 300]),
+            (
+                4_294_967_295u32,
+                "une-cle-un-peu-plus-longue",
+                vec![0u8; 300],
+            ),
             (42u32, "clé-utf8-éàü", (0..255u8).collect::<Vec<u8>>()),
         ] {
             let possede = WalRecord {
@@ -1479,8 +1525,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(
-                attendu,
-                obtenu,
+                attendu, obtenu,
                 "les deux encodages divergent (node_id={node_id}, clé={key:?}) — \
                  l'index serde de PropSetInline a-t-il bougé dans WalPayload ?"
             );

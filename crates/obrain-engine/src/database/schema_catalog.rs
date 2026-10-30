@@ -84,26 +84,24 @@ impl super::ObrainDB {
                         }
                     }
                 }
-                GENRE_ARETE => {
-                    match serde_json::from_str::<EdgeTypeDefinition>(&decl.definition) {
-                        Ok(def) => {
-                            let nom = def.name.clone();
-                            let _ = self.catalog.drop_edge_type_def(&nom);
-                            if let Err(e) = self.catalog.register_edge_type_def(def) {
-                                tracing::warn!(erreur = %e, nom = %nom,
+                GENRE_ARETE => match serde_json::from_str::<EdgeTypeDefinition>(&decl.definition) {
+                    Ok(def) => {
+                        let nom = def.name.clone();
+                        let _ = self.catalog.drop_edge_type_def(&nom);
+                        if let Err(e) = self.catalog.register_edge_type_def(def) {
+                            tracing::warn!(erreur = %e, nom = %nom,
                                     "hydratation de type d'arête échouée — ignorée");
-                                ignorees += 1;
-                            } else {
-                                aretes += 1;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(erreur = %e, nom = %decl.nom,
-                                "définition de type d'arête illisible — ignorée");
                             ignorees += 1;
+                        } else {
+                            aretes += 1;
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(erreur = %e, nom = %decl.nom,
+                                "définition de type d'arête illisible — ignorée");
+                        ignorees += 1;
+                    }
+                },
                 autre => {
                     tracing::warn!(genre = %autre, "genre de type inconnu — ignoré");
                     ignorees += 1;

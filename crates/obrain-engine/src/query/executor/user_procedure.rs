@@ -140,16 +140,16 @@ impl UserProcedureOperator {
         // Aretes inter-bases (V2) : le corps voit les bases attachees.
         .with_session_context(self.session_context.clone());
 
-        let physical = planner.plan(&logical_plan).map_err(|e| {
-            erreur_de_corps(&e, format!("Failed to plan procedure body: {e}"))
-        })?;
+        let physical = planner
+            .plan(&logical_plan)
+            .map_err(|e| erreur_de_corps(&e, format!("Failed to plan procedure body: {e}")))?;
 
         // Execute
         let executor = crate::query::executor::Executor::with_columns(physical.columns().to_vec());
         let mut root_op = physical.into_operator();
-        let result: QueryResult = executor.execute(root_op.as_mut()).map_err(|e| {
-            erreur_de_corps(&e, format!("Procedure execution failed: {e}"))
-        })?;
+        let result: QueryResult = executor
+            .execute(root_op.as_mut())
+            .map_err(|e| erreur_de_corps(&e, format!("Procedure execution failed: {e}")))?;
 
         // Map result columns to expected return columns, handling YIELD filtering
         let column_indices = if let Some(ref yields) = self.yield_columns {
@@ -302,7 +302,10 @@ mod tests {
         assert!(!panne.is_cancelled());
         match erreur_de_corps(&panne, "Procedure execution failed: boum".to_string()) {
             OperatorError::Execution(m) => {
-                assert!(m.contains("Procedure execution failed"), "contexte perdu : {m}");
+                assert!(
+                    m.contains("Procedure execution failed"),
+                    "contexte perdu : {m}"
+                );
             }
             autre => panic!("une panne ne doit pas devenir une annulation : {autre:?}"),
         }

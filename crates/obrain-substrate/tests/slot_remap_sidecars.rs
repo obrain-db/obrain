@@ -87,11 +87,18 @@ fn populate(store: &SubstrateStore, n: u32, seed: u64) -> Vec<(u32, u16)> {
         centralities.push((slot, marker));
         nodes.push((slot, marker));
 
-        store.set_node_property(node, "embedding_vec", Value::Vector(vec_for(marker as u64).into()));
+        store.set_node_property(
+            node,
+            "embedding_vec",
+            Value::Vector(vec_for(marker as u64).into()),
+        );
         store.set_node_property(node, "body", Value::String(body_for(marker as u64).into()));
     }
     store.writer().update_community_batch(communities).unwrap();
-    store.writer().update_centrality_batch(centralities).unwrap();
+    store
+        .writer()
+        .update_centrality_batch(centralities)
+        .unwrap();
 
     // Arêtes : le nœud de marqueur m a un out-degré déterministe m % 4,
     // réparti sur deux types d'arêtes (degrés totaux + typés).
@@ -118,7 +125,9 @@ fn populate(store: &SubstrateStore, n: u32, seed: u64) -> Vec<(u32, u16)> {
     store.set_engram_members(1, &e1).unwrap();
     store.set_engram_members(2, &e2).unwrap();
     for nid in e1.iter().chain(e2.iter()) {
-        store.add_engram_bit(*nid, if e1.contains(nid) { 1 } else { 2 }).unwrap();
+        store
+            .add_engram_bit(*nid, if e1.contains(nid) { 1 } else { 2 })
+            .unwrap();
     }
 
     // Tier0 : table slot_to_offset dont les VALEURS sont les slots nœuds,
@@ -133,14 +142,8 @@ fn populate(store: &SubstrateStore, n: u32, seed: u64) -> Vec<(u32, u16)> {
             .iter()
             .map(|(_, m)| Tier0([*m as u64, (*m as u64) << 32]))
             .collect();
-        tier_persist::write_tier_zone::<Tier0>(
-            &mut zf,
-            TierMagic::Tier0,
-            n,
-            Some(&s2o),
-            &records,
-        )
-        .unwrap();
+        tier_persist::write_tier_zone::<Tier0>(&mut zf, TierMagic::Tier0, n, Some(&s2o), &records)
+            .unwrap();
     }
 
     nodes
@@ -293,7 +296,11 @@ fn t1_propriete_la_donnee_suit_le_noeud() {
             let Some(Value::Vector(v)) = store.get_node_property(nid, &pk_vec) else {
                 panic!("seed {seed} marqueur {marker}: embedding absent")
             };
-            assert_eq!(v.as_ref(), &vec_for(marker as u64)[..], "seed {seed}: veccol");
+            assert_eq!(
+                v.as_ref(),
+                &vec_for(marker as u64)[..],
+                "seed {seed}: veccol"
+            );
 
             // blobcol
             let Some(Value::String(s)) = store.get_node_property(nid, &pk_body) else {
@@ -325,7 +332,10 @@ fn t1_propriete_la_donnee_suit_le_noeud() {
         let (mut b, mut a) = (engram1_before.clone(), engram1_after.clone());
         b.sort_unstable();
         a.sort_unstable();
-        assert_eq!(b, a, "seed {seed}: la liste de membres ne suit pas les nœuds");
+        assert_eq!(
+            b, a,
+            "seed {seed}: la liste de membres ne suit pas les nœuds"
+        );
 
         // degrés (totaux + typés) : lus directement dans les fichiers
         // (CRC déjà valide — le remap écrit l'en-tête en dernier).
@@ -362,10 +372,9 @@ fn t1_propriete_la_donnee_suit_le_noeud() {
 
             // tier0 : table slot_to_offset remappée, records INTACTS.
             let zf = guard.open_zone(Zone::Tier0).unwrap();
-            let (tn, s2o, records) =
-                tier_persist::read_tier_zone::<Tier0>(&zf, TierMagic::Tier0)
-                    .unwrap()
-                    .expect("tier0 illisible après remap (CRC)");
+            let (tn, s2o, records) = tier_persist::read_tier_zone::<Tier0>(&zf, TierMagic::Tier0)
+                .unwrap()
+                .expect("tier0 illisible après remap (CRC)");
             assert_eq!(tn, nodes.len() as u32);
             let s2o = s2o.unwrap();
             for (dense, &(_, marker)) in nodes.iter().enumerate() {
@@ -407,8 +416,14 @@ fn t4_golden_vector_top_k_avant_apres() {
     // Les offsets de tie-break changent avec la permutation — DOCUMENTÉ :
     // le tri secondaire `(sim desc, offset asc)` départage les ex æquo
     // par slot, et les slots viennent d'être réassignés.
-    let sims_avant: Vec<f32> = avant.iter().map(|(_, s)| s.expect("score NULL inattendu")).collect();
-    let sims_apres: Vec<f32> = apres.iter().map(|(_, s)| s.expect("score NULL inattendu")).collect();
+    let sims_avant: Vec<f32> = avant
+        .iter()
+        .map(|(_, s)| s.expect("score NULL inattendu"))
+        .collect();
+    let sims_apres: Vec<f32> = apres
+        .iter()
+        .map(|(_, s)| s.expect("score NULL inattendu"))
+        .collect();
     for (i, (a, b)) in sims_avant.iter().zip(sims_apres.iter()).enumerate() {
         assert!(
             (a - b).abs() < 1e-6,
@@ -452,7 +467,10 @@ fn compact_community_relocations_partielles_remappe_les_sidecars() {
         !result.relocations.is_empty(),
         "aucune relocation — test non probant"
     );
-    assert!(result.new_node_hw > hw_avant, "hw doit croître (plage fraîche)");
+    assert!(
+        result.new_node_hw > hw_avant,
+        "hw doit croître (plage fraîche)"
+    );
 
     // Le store n'a pas d'API de publication de compaction (le warden
     // actuel ne passe que par bulk_sort), donc son allocateur ignore le
@@ -597,7 +615,10 @@ fn second_tri_est_un_noop_et_les_sidecars_restent_corrects() {
     // unitaires d'epoch dans slot_remap.rs).
     store.repermuter_par_hilbert(6, 32).unwrap();
     let after_second = markers_by_slot(&store);
-    assert_eq!(after_first, after_second, "le second tri devait être un no-op");
+    assert_eq!(
+        after_first, after_second,
+        "le second tri devait être un no-op"
+    );
 
     let pk = obrain_common::types::PropertyKey::new("embedding_vec");
     for &(_, marker) in &nodes {
@@ -626,7 +647,10 @@ fn tombstones_ne_decalent_pas_la_donnee_des_vivants() {
     let mut vivants: Vec<(u32, u16)> = Vec::new();
     for &(slot, marker) in &nodes {
         if marker % 4 == 0 {
-            assert!(store.delete_node(NodeId(slot as u64)), "suppression refusée");
+            assert!(
+                store.delete_node(NodeId(slot as u64)),
+                "suppression refusée"
+            );
         } else {
             vivants.push((slot, marker));
         }
@@ -685,11 +709,19 @@ fn colonnes_multiples_suivent_et_colonne_arete_reste_intacte() {
         let Some(Value::Vector(aux)) = store.get_node_property(nid, &pk_aux) else {
             panic!("marqueur {marker}: vec_aux absent")
         };
-        assert_eq!(aux.as_ref(), &vec![marker as f32; 8][..], "vec_aux non remappée");
+        assert_eq!(
+            aux.as_ref(),
+            &vec![marker as f32; 8][..],
+            "vec_aux non remappée"
+        );
         let Some(Value::Vector(v)) = store.get_node_property(nid, &pk_vec) else {
             panic!("marqueur {marker}: embedding_vec absent")
         };
-        assert_eq!(v.as_ref(), &vec_for(marker as u64)[..], "embedding_vec non remappée");
+        assert_eq!(
+            v.as_ref(),
+            &vec_for(marker as u64)[..],
+            "embedding_vec non remappée"
+        );
     }
 
     // La colonne d'arêtes est inchangée : même slot d'arête, même valeur.
@@ -821,10 +853,7 @@ fn rejeu_depuis_offset_de_checkpoint_apres_un_tri_termine() {
         offset_rejeu = store.offset_wal_du_dernier_flush();
         assert!(offset_rejeu > 0, "un checkpoint de prod n'est jamais a 0");
 
-        attendu = nodes
-            .iter()
-            .map(|&(_, m)| (m, vec_for(m as u64)))
-            .collect();
+        attendu = nodes.iter().map(|&(_, m)| (m, vec_for(m as u64))).collect();
 
         // « Crash » : on lâche le store sans flush final.
         drop(store);
@@ -848,9 +877,8 @@ fn rejeu_depuis_offset_de_checkpoint_apres_un_tri_termine() {
                 .get(marker)
                 .unwrap_or_else(|| panic!("passe {passe}: marqueur {marker} disparu"));
             assert_eq!(
-                col.read_slot_f32(*slot).unwrap_or_else(|| panic!(
-                    "passe {passe}: marqueur {marker} hors colonne"
-                )),
+                col.read_slot_f32(*slot)
+                    .unwrap_or_else(|| panic!("passe {passe}: marqueur {marker} hors colonne")),
                 &embedding[..],
                 "passe {passe}: l'embedding du marqueur {marker} ne suit plus son noeud \
                  apres un rejeu depuis un offset de checkpoint"
@@ -888,10 +916,7 @@ fn rejeu_multi_generations_deux_tris_successifs() {
         };
         assert_eq!(epoch, 2, "deux tris => deux generations d'epoch");
 
-        attendu = nodes
-            .iter()
-            .map(|&(_, m)| (m, vec_for(m as u64)))
-            .collect();
+        attendu = nodes.iter().map(|&(_, m)| (m, vec_for(m as u64))).collect();
         drop(store);
     }
 

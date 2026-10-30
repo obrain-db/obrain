@@ -4,8 +4,8 @@
 //!  A comptes (scan) · U mises à jour d'entités EXISTANTES (legacy) · C
 //!  créations packées (nœuds+arêtes) · D suppressions (legacy+pack) ·
 //!  cycles de réouverture ×3 avec parité des comptes · re-lectures contrôle.
+use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
 use obrain_core::graph::{GraphStore, GraphStoreMut};
-use obrain_common::types::{NodeId, EdgeId, PropertyKey, Value};
 use obrain_substrate::SubstrateStore;
 use std::path::Path;
 
@@ -55,7 +55,11 @@ fn main() {
         let s = SubstrateStore::open(Path::new(base)).expect("open U");
         let nodes = live_nodes(&s);
         let edges = live_edges(&s);
-        println!("[U] scan : n={} e={} (re-baseline exacte attendue)", nodes.len(), edges.len());
+        println!(
+            "[U] scan : n={} e={} (re-baseline exacte attendue)",
+            nodes.len(),
+            edges.len()
+        );
         assert_eq!(nodes.len() as u64, n0, "compte n stable après open");
         assert_eq!(edges.len() as u64, e0, "compte e stable après open");
         let k = nodes.len().min(150);
@@ -63,13 +67,21 @@ fn main() {
             let key = format!("mU_{i}");
             s.set_node_property(id, &key, Value::Int64(i as i64));
             let got = s.get_node_property(id, &PropertyKey::new(&key));
-            assert_eq!(got, Some(Value::Int64(i as i64)), "relecture mU {i} (nœud {})", id.0);
+            assert_eq!(
+                got,
+                Some(Value::Int64(i as i64)),
+                "relecture mU {i} (nœud {})",
+                id.0
+            );
         }
         let ke = edges.len().min(80);
         for (i, &id) in edges.iter().take(ke).enumerate() {
             let key = format!("mE_{i}");
             s.set_edge_property(id, &key, Value::Int64((i as i64) * 2));
-            assert_eq!(s.get_edge_property(id, &PropertyKey::new(&key)), Some(Value::Int64((i as i64) * 2)));
+            assert_eq!(
+                s.get_edge_property(id, &PropertyKey::new(&key)),
+                Some(Value::Int64((i as i64) * 2))
+            );
         }
         println!("[U] {k} nœuds + {ke} arêtes existants mis à jour + relus (legacy)");
     }
@@ -95,12 +107,25 @@ fn main() {
         // relecture échantillon packé
         let ids = live_nodes(&s);
         let pack_node = ids.iter().rev().find(|id| {
-            s.writer().read_node(id.0 as u32).map(|r| r.map(|rec| rec.first_prop_off.to_u64() & (1 << 47) != 0).unwrap_or(false)).unwrap_or(false)
+            s.writer()
+                .read_node(id.0 as u32)
+                .map(|r| {
+                    r.map(|rec| rec.first_prop_off.to_u64() & (1 << 47) != 0)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
         });
         assert!(pack_node.is_some(), "au moins un nœud packé présent");
         let pn = *pack_node.unwrap();
-        assert_eq!(s.get_node_property(pn, &PropertyKey::new("mC_0")), Some(Value::Int64(1 + 39)), "relecture prop packée");
-        println!("[C] 40 nœuds+arêtes packés créés, tête slot vérifiée (ex. nœud {})", pn.0);
+        assert_eq!(
+            s.get_node_property(pn, &PropertyKey::new("mC_0")),
+            Some(Value::Int64(1 + 39)),
+            "relecture prop packée"
+        );
+        println!(
+            "[C] 40 nœuds+arêtes packés créés, tête slot vérifiée (ex. nœud {})",
+            pn.0
+        );
     }
 
     // Phase D — suppressions (legacy mU + pack mC).
@@ -115,14 +140,30 @@ fn main() {
                 assert_eq!(s.get_node_property(id, &PropertyKey::new(&key)), None);
             }
         }
-        let pack_qc: Vec<NodeId> = nodes.iter().copied().filter(|id| {
-            s.writer().read_node(id.0 as u32).map(|r| r.map(|rec| rec.label_bitset & (1 << 0) != 0).unwrap_or(false)).unwrap_or(false)
-        }).collect();
+        let pack_qc: Vec<NodeId> = nodes
+            .iter()
+            .copied()
+            .filter(|id| {
+                s.writer()
+                    .read_node(id.0 as u32)
+                    .map(|r| {
+                        r.map(|rec| rec.label_bitset & (1 << 0) != 0)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
         // (repérage MigQC par label brut peu fiable — on retire par 'a' si présent)
         for id in nodes.iter() {
-            if s.get_node_property(*id, &PropertyKey::new("mC_0")).is_some() {
+            if s.get_node_property(*id, &PropertyKey::new("mC_0"))
+                .is_some()
+            {
                 let _ = s.remove_node_property(*id, "mC_0");
-                assert_eq!(s.get_node_property(*id, &PropertyKey::new("mC_0")), None, "remove pack");
+                assert_eq!(
+                    s.get_node_property(*id, &PropertyKey::new("mC_0")),
+                    None,
+                    "remove pack"
+                );
             }
         }
         println!("[D] suppressions legacy + pack effectuées et vérifiées");
@@ -143,12 +184,18 @@ fn main() {
             let b = s.get_node_property(*id, &PropertyKey::new("mC_2"));
             matches!((a, b), (Some(Value::Int64(x)), Some(Value::Int64(y))) if y == x + 1)
         });
-        assert!(pack_ok, "cycle {c} : au moins un nœud packé avec mC_1/mC_2 cohérents (persistance)");
+        assert!(
+            pack_ok,
+            "cycle {c} : au moins un nœud packé avec mC_1/mC_2 cohérents (persistance)"
+        );
         // Contrôle legacy non retiré (mU_99 posé si l'échantillon le couvrait).
         let _ = ids.iter().any(|id| {
-            s.get_node_property(*id, &PropertyKey::new("mU_99")).is_some()
+            s.get_node_property(*id, &PropertyKey::new("mU_99"))
+                .is_some()
         });
-        println!("[E] réouverture {c}/3 : n={n} (attendu {attendu_n}) e={e} (attendu {attendu_e}) — OK");
+        println!(
+            "[E] réouverture {c}/3 : n={n} (attendu {attendu_n}) e={e} (attendu {attendu_e}) — OK"
+        );
     }
     println!("=== MIGRATION TERMINÉE : toutes phases OK (A,U,C,D,E×3) sur {base} ===");
 }

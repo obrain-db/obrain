@@ -22,8 +22,8 @@
 //! OBRAIN_TRIGRAMMES=0 …   # le MÊME binaire, sans l'index : le témoin
 //! ```
 
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_engine::ObrainDB;
 
@@ -103,12 +103,20 @@ fn main() {
     println!("store  : {store_path}");
     println!(
         "index  : {}",
-        if index_actif { "ACTIF (défaut)" } else { "ÉTEINT (témoin OBRAIN_TRIGRAMMES=0)" }
+        if index_actif {
+            "ACTIF (défaut)"
+        } else {
+            "ÉTEINT (témoin OBRAIN_TRIGRAMMES=0)"
+        }
     );
     println!("tours  : {tours}");
     println!(
         "mode   : {}",
-        if lecture_seule { "LECTURE SEULE (store vivant)" } else { "écriture" }
+        if lecture_seule {
+            "LECTURE SEULE (store vivant)"
+        } else {
+            "écriture"
+        }
     );
     println!();
     println!(
@@ -140,7 +148,8 @@ fn main() {
         // manqué tant que le CLI était cassé par une édition concurrente.
         let montrer = std::env::var("OBRAIN_BANC_VALEURS").is_ok_and(|v| v == "1");
         let mut valeur = String::new();
-        if montrer && let Ok(r) = db.session().execute(q)
+        if montrer
+            && let Ok(r) = db.session().execute(q)
             && let Some(l) = r.rows.first()
             && let Some(c) = l.first()
         {
@@ -161,7 +170,10 @@ fn main() {
         }
         temps.sort();
         let min = temps.first().copied().unwrap_or(Duration::ZERO);
-        let med = temps.get(temps.len() / 2).copied().unwrap_or(Duration::ZERO);
+        let med = temps
+            .get(temps.len() / 2)
+            .copied()
+            .unwrap_or(Duration::ZERO);
         println!(
             "  {nom:<32} {:>9.1} ms {:>8.2} ms {:>8.2} ms {:>8}{valeur}",
             premier.0.as_secs_f64() * 1e3,

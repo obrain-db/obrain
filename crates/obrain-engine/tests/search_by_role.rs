@@ -56,9 +56,7 @@ fn search_by_role_retrouve_le_jumeau_structurel_cross_contenu() {
         let k1 = clique5(&db, "L1");
         let k2 = clique5(&db, "L2");
         let (sc, _leaves) = star(&db, "L3");
-        let rows = db
-            .search_by_role(k1[0], 100, None)
-            .expect("search_by_role");
+        let rows = db.search_by_role(k1[0], 100, None).expect("search_by_role");
         // Le hub k1[0] retrouve au moins un hub de l'autre K5 (rôle identique,
         // contenu différent : labels L1 vs L2).
         let twin = rows
@@ -69,7 +67,10 @@ fn search_by_role_retrouve_le_jumeau_structurel_cross_contenu() {
         // d'égalité exacte — on vérifie que le jumeau (même rôle, contenu
         // différent : L1 vs L2) est DISTINCTIVEMENT plus proche que la forme
         // différente (étoile).
-        let sc_row = rows.iter().find(|r| r.node_id == sc).expect("étoile présente");
+        let sc_row = rows
+            .iter()
+            .find(|r| r.node_id == sc)
+            .expect("étoile présente");
         assert!(
             twin.distance + 0.02 < sc_row.distance,
             "jumeau K5→K5 (dist {}) nettement plus proche que l'étoile (dist {})",
@@ -94,9 +95,7 @@ fn search_by_role_label_filtre_les_candidats() {
     let k1 = clique5(&db, "L1");
     let k2 = clique5(&db, "L2");
     // Depuis un hub L1, candidats restreints à L2 → tous les retours sont L2.
-    let rows = db
-        .search_by_role(k1[0], 20, Some("L2"))
-        .expect("label L2");
+    let rows = db.search_by_role(k1[0], 20, Some("L2")).expect("label L2");
     assert!(!rows.is_empty(), "des candidats L2");
     for r in &rows {
         assert!(

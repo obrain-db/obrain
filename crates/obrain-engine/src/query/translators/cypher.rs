@@ -694,8 +694,8 @@ impl CypherTranslator {
                 variable: target_var.clone(),
                 label: target_label,
                 input: Some(Box::new(plan)),
-            pushdown_hint: None,
-        });
+                pushdown_hint: None,
+            });
 
             // Apply property filters on the target node if any
             for (key, value) in &rel.target.properties {

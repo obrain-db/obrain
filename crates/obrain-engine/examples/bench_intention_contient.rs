@@ -56,8 +56,8 @@
 //! OBRAIN_LECTURE_SEULE=1     # ouvre en verrou PARTAGÉ (store vivant)
 //! ```
 
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_common::types::{PropertyKey, Value};
 use obrain_core::graph::GraphStore;
@@ -75,8 +75,15 @@ impl Stats {
     fn new(mut tours: Vec<Duration>, premier: Duration) -> Self {
         tours.sort();
         let min = tours.first().copied().unwrap_or(Duration::ZERO);
-        let mediane = tours.get(tours.len() / 2).copied().unwrap_or(Duration::ZERO);
-        Self { premier, min, mediane }
+        let mediane = tours
+            .get(tours.len() / 2)
+            .copied()
+            .unwrap_or(Duration::ZERO);
+        Self {
+            premier,
+            min,
+            mediane,
+        }
     }
 
     fn ms(d: Duration) -> f64 {
@@ -185,13 +192,18 @@ fn main() {
 
     // UN SEUL texte de requête pour la boucle GQL. Le second texte (`RETURN
     // id(n)`) n'est PAS mesuré : il ne sert qu'à la comparaison des lignes.
-    let texte_count = format!("MATCH (n) WHERE n.{propriete} CONTAINS '{aiguille}' RETURN count(n)");
+    let texte_count =
+        format!("MATCH (n) WHERE n.{propriete} CONTAINS '{aiguille}' RETURN count(n)");
     let texte_ids = format!("MATCH (n) WHERE n.{propriete} CONTAINS '{aiguille}' RETURN id(n)");
 
     println!("store    : {store_path}");
     println!(
         "ouverture: {}",
-        if lecture_seule { "LECTURE SEULE (verrou partagé)" } else { "écriture (copie)" }
+        if lecture_seule {
+            "LECTURE SEULE (verrou partagé)"
+        } else {
+            "écriture (copie)"
+        }
     );
     println!("propriete: {propriete}   aiguille: {aiguille:?}   mode: {mode}");
     println!("tours    : {tours}");
@@ -263,11 +275,16 @@ fn main() {
         g.ligne("TEXTE (session.execute)", &format!("lignes={compte}"));
     }
     if let Some(p) = &prim {
-        p.ligne("INTENTION (db.contient)", &format!("lignes={}", ids_prim.len()));
+        p.ligne(
+            "INTENTION (db.contient)",
+            &format!("lignes={}", ids_prim.len()),
+        );
     }
     println!();
     println!("  « analyse »  = lexer/parseur/plan logique, SEUL (aucune exécution) ;");
-    println!("  « sonde »    = l'accès à l'index de sous-chaînes, SEUL — les DEUX chemins le paient ;");
+    println!(
+        "  « sonde »    = l'accès à l'index de sous-chaînes, SEUL — les DEUX chemins le paient ;"
+    );
     println!("  « TEXTE » et « INTENTION » sont les appels complets, premiers tours compris.");
     println!("  Pour séparer planification physique et exécution de la ligne TEXTE :");
     println!("      OBRAIN_PHASES=1 … --example bench_intention_contient -- <STORE> <TOURS> …");
@@ -291,7 +308,10 @@ fn main() {
     let identiques = refs == notres;
 
     println!();
-    println!("  comptes : count(n) = {compte}   |   primitive = {}", ids_prim.len());
+    println!(
+        "  comptes : count(n) = {compte}   |   primitive = {}",
+        ids_prim.len()
+    );
     println!(
         "  lignes  : id(n) = {} distincts   |   primitive = {} distincts",
         refs.len(),
@@ -299,8 +319,16 @@ fn main() {
     );
     println!(
         "  VERDICT : comptes {} — lignes {} (ensemble d'identifiants comparé, pas seulement le nombre)",
-        if compte as usize == ids_prim.len() { "IDENTIQUES" } else { "DIFFERENTS" },
-        if identiques { "IDENTIQUES" } else { "DIFFERENTES" }
+        if compte as usize == ids_prim.len() {
+            "IDENTIQUES"
+        } else {
+            "DIFFERENTS"
+        },
+        if identiques {
+            "IDENTIQUES"
+        } else {
+            "DIFFERENTES"
+        }
     );
     if !identiques {
         let manquants: Vec<&i64> = refs.difference(&notres).take(5).collect();

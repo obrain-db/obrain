@@ -48,7 +48,9 @@ pub struct CdcObserver {
 impl CdcObserver {
     /// Crée l'observateur branché sur le journal CDC de la base.
     pub fn new(log: Arc<CdcLog>) -> Self {
-        Self { log: Arc::downgrade(&log) }
+        Self {
+            log: Arc::downgrade(&log),
+        }
     }
 
     fn record(&self, entity_id: EntityId, epoch: u64) {

@@ -26,9 +26,9 @@
 use std::collections::BTreeSet;
 
 use obrain_common::types::Value;
-use obrain_engine::database::contient::RouteContient;
-use obrain_engine::database::QueryResult;
 use obrain_engine::ObrainDB;
+use obrain_engine::database::QueryResult;
+use obrain_engine::database::contient::RouteContient;
 
 const PROP: &str = "txt";
 
@@ -61,7 +61,10 @@ fn peupler(d: &ObrainDB) {
     for (i, t) in CORPUS.iter().enumerate() {
         s.create_node_with_props(
             &["S"],
-            [(PROP, Value::String((*t).into())), ("rang", Value::Int64(i as i64))],
+            [
+                (PROP, Value::String((*t).into())),
+                ("rang", Value::Int64(i as i64)),
+            ],
         );
     }
     // Valeur NON textuelle : `as_str()?` rend NULL, donc aucune ligne — même
@@ -81,8 +84,9 @@ fn identifiants(r: &QueryResult) -> Vec<i64> {
     r.rows
         .iter()
         .map(|l| {
-            l[0].as_int64()
-                .unwrap_or_else(|| panic!("la primitive doit rendre des identifiants, pas {:?}", l[0]))
+            l[0].as_int64().unwrap_or_else(|| {
+                panic!("la primitive doit rendre des identifiants, pas {:?}", l[0])
+            })
         })
         .collect()
 }
@@ -125,8 +129,8 @@ fn oracle(aiguille: &str) -> BTreeSet<&'static str> {
 }
 
 const AIGUILLES: &[&str] = &[
-    "ixgbe_read",   // sous-chaîne à cheval — le piège de tokenisation
-    "obrain-iam",   // le terme de la mesure
+    "ixgbe_read", // sous-chaîne à cheval — le piège de tokenisation
+    "obrain-iam", // le terme de la mesure
     "iam",
     "",
     "\u{e9}acteur", // aiguille multi-octets entière
@@ -170,8 +174,12 @@ fn la_primitive_rend_ce_que_gql_rend() {
                     .expect("valeur texte")
             })
             .collect();
-        let attendu_owned: BTreeSet<String> = attendu_textes.iter().map(|s| (*s).to_string()).collect();
-        assert_eq!(textes, attendu_owned, "oracle `str::contains` ≠ primitive sur {aiguille:?}");
+        let attendu_owned: BTreeSet<String> =
+            attendu_textes.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(
+            textes, attendu_owned,
+            "oracle `str::contains` ≠ primitive sur {aiguille:?}"
+        );
     }
 }
 
@@ -215,9 +223,22 @@ fn la_route_change_la_reponse_non() {
             .contient_avec_route(PROP, aiguille, None)
             .map(|r| (identifiants(&r.result), r.route))
             .expect("primitive");
-        assert_eq!(r1, reference, "route {} ≠ GQL sur {aiguille:?}", route1.nom());
-        assert_eq!(r2, reference, "route {} ≠ GQL sur {aiguille:?}", route2.nom());
-        assert_eq!(r1, r2, "deux appels identiques ont divergé sur {aiguille:?}");
+        assert_eq!(
+            r1,
+            reference,
+            "route {} ≠ GQL sur {aiguille:?}",
+            route1.nom()
+        );
+        assert_eq!(
+            r2,
+            reference,
+            "route {} ≠ GQL sur {aiguille:?}",
+            route2.nom()
+        );
+        assert_eq!(
+            r1, r2,
+            "deux appels identiques ont divergé sur {aiguille:?}"
+        );
     }
 
     // Sur un terme SÉLECTIF, l'index doit servir (sinon la primitive n'aurait
@@ -298,7 +319,11 @@ fn la_garde_de_cout_rend_la_main_au_balayage() {
         .expect("primitive");
     unsafe { std::env::remove_var("OBRAIN_TEXTE_CANDIDATS_MAX") };
     assert_eq!(route, RouteContient::Balayage, "plafond à 0 ⇒ balayage");
-    assert_eq!(r, ids_gql(&d, "ixgbe_read"), "le balayage doit rendre les mêmes lignes");
+    assert_eq!(
+        r,
+        ids_gql(&d, "ixgbe_read"),
+        "le balayage doit rendre les mêmes lignes"
+    );
 }
 
 // ══════════════ 3. les écritures d'après : rien n'est cru sur parole ══════════════
@@ -319,7 +344,11 @@ fn une_ecriture_apres_coup_est_vue() {
     // Et un nœud qui matche, SUPPRIMÉ après.
     let id_supprime = {
         let gql = ids_gql(&d, "r\u{e9}acteur");
-        assert_eq!(gql.len(), 1, "le corpus doit porter exactement un « réacteur »");
+        assert_eq!(
+            gql.len(),
+            1,
+            "le corpus doit porter exactement un « réacteur »"
+        );
         gql[0]
     };
     d.session()
@@ -373,7 +402,13 @@ fn le_contrat_de_retour_est_celui_de_l_existant() {
     let r = d.contient(PROP, "iam").expect("primitive");
     assert_eq!(r.columns, vec!["n".to_string()]);
     assert_eq!(r.column_types.len(), r.columns.len());
-    assert!(r.execution_time_ms.is_some(), "la primitive mesure son execution");
-    assert!(r.rows_scanned.is_some(), "la primitive dit ce qu'elle a examine");
+    assert!(
+        r.execution_time_ms.is_some(),
+        "la primitive mesure son execution"
+    );
+    assert!(
+        r.rows_scanned.is_some(),
+        "la primitive dit ce qu'elle a examine"
+    );
     assert_eq!(r.rows.len(), ids_gql(&d, "iam").len());
 }

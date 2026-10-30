@@ -31,17 +31,26 @@ fn vector_search_latency_scale_20k() {
         v
     }
     let queries: Vec<Vec<f32>> = (0..200).map(|q| qvec(q)).collect();
-    let _ = db.vector_search("Doc", "emb", &queries[0], 5, None, None).unwrap();
+    let _ = db
+        .vector_search("Doc", "emb", &queries[0], 5, None, None)
+        .unwrap();
     let t1 = web_time::Instant::now();
     let mut hits = 0usize;
     for q in &queries {
-        hits += db.vector_search("Doc", "emb", q, 5, None, None).unwrap().len();
+        hits += db
+            .vector_search("Doc", "emb", q, 5, None, None)
+            .unwrap()
+            .len();
     }
     let avg_us = t1.elapsed().as_micros() as f64 / queries.len() as f64;
-    eprintln!("vector_search @ {n} vecteurs : {avg_us:.1} µs/requête (k=5, 200 requêtes, {hits} hits)");
+    eprintln!(
+        "vector_search @ {n} vecteurs : {avg_us:.1} µs/requête (k=5, 200 requêtes, {hits} hits)"
+    );
     assert!(hits > 0);
     // Sanité top-1 : la requête du vecteur du doc 0 renvoie le cluster du doc 0.
-    let res = db.vector_search("Doc", "emb", &qvec(0), 1, None, None).unwrap();
+    let res = db
+        .vector_search("Doc", "emb", &qvec(0), 1, None, None)
+        .unwrap();
     let top1 = db.get_node(res[0].0).unwrap();
     let uid = match top1
         .properties
@@ -50,15 +59,25 @@ fn vector_search_latency_scale_20k() {
         Some(Value::Int64(x)) => *x,
         _ => -1,
     };
-    assert!(uid >= 0 && uid < 200, "top-1 doit être dans le cluster 0, got {uid}");
+    assert!(
+        uid >= 0 && uid < 200,
+        "top-1 doit être dans le cluster 0, got {uid}"
+    );
     eprintln!("vector scale smoke OK — top-1 cohérent (cluster 0)");
 }
 
-#[cfg(all(feature = "vector-index", feature = "text-index", feature = "hybrid-search"))]
+#[cfg(all(
+    feature = "vector-index",
+    feature = "text-index",
+    feature = "hybrid-search"
+))]
 #[test]
 fn hybrid_latency_scale_20k() {
     let db = ObrainDB::new_in_memory();
-    let topics = ["graph", "vector", "search", "memory", "storage", "wal", "mmap", "spread", "engram", "index"];
+    let topics = [
+        "graph", "vector", "search", "memory", "storage", "wal", "mmap", "spread", "engram",
+        "index",
+    ];
     let n = 20_000usize;
     let t0 = web_time::Instant::now();
     for i in 0..n {
@@ -87,7 +106,15 @@ fn hybrid_latency_scale_20k() {
         })
         .collect();
     let _ = db
-        .hybrid_search("Doc", "text", "emb", &queries[0].0, Some(&queries[0].1), 5, None)
+        .hybrid_search(
+            "Doc",
+            "text",
+            "emb",
+            &queries[0].0,
+            Some(&queries[0].1),
+            5,
+            None,
+        )
         .unwrap();
     let t1 = web_time::Instant::now();
     let mut hits = 0usize;
@@ -106,11 +133,16 @@ fn hybrid_latency_scale_20k() {
     let per = topics.len() as i64; // 2000 docs/cluster
     for (qi, (qt, qv)) in queries.iter().enumerate() {
         let cluster = qi % topics.len();
-        let res = db.hybrid_search("Doc", "text", "emb", qt, Some(qv), 5, None).unwrap();
+        let res = db
+            .hybrid_search("Doc", "text", "emb", qt, Some(qv), 5, None)
+            .unwrap();
         let mut ok = 0usize;
         for (id, _) in res {
             let n = db.get_node(id).unwrap();
-            let uid = match n.properties.get(&obrain_common::types::PropertyKey::new("uid")) {
+            let uid = match n
+                .properties
+                .get(&obrain_common::types::PropertyKey::new("uid"))
+            {
                 Some(Value::Int64(x)) => *x,
                 _ => -1,
             };
@@ -121,14 +153,26 @@ fn hybrid_latency_scale_20k() {
         p5 += ok as f64 / 5.0;
         r5 += ok as f64 / 2000.0; // rappel sur l'ensemble du cluster (borne)
     }
-    eprintln!("hybrid qualité (vérité terrain cluster) : precision@5 = {:.3}, recall@5(vs cluster) = {:.4}", p5 / queries.len() as f64, r5 / queries.len() as f64);
+    eprintln!(
+        "hybrid qualité (vérité terrain cluster) : precision@5 = {:.3}, recall@5(vs cluster) = {:.4}",
+        p5 / queries.len() as f64,
+        r5 / queries.len() as f64
+    );
     // Sanité : requête cluster 0 → top-1 dans cluster 0.
     let res = db
-        .hybrid_search("Doc", "text", "emb", &format!("{} tokens", topics[0]), Some(&{
-            let mut v = vec![0.0f32; 64];
-            v[0] = 1.0;
-            v
-        }), 1, None)
+        .hybrid_search(
+            "Doc",
+            "text",
+            "emb",
+            &format!("{} tokens", topics[0]),
+            Some(&{
+                let mut v = vec![0.0f32; 64];
+                v[0] = 1.0;
+                v
+            }),
+            1,
+            None,
+        )
         .unwrap();
     let top1 = db.get_node(res[0].0).unwrap();
     let uid = match top1
@@ -138,11 +182,18 @@ fn hybrid_latency_scale_20k() {
         Some(Value::Int64(x)) => *x,
         _ => -1,
     };
-    assert!(uid >= 0 && (uid as usize) % topics.len() == 0, "top-1 cluster 0, got {uid}");
+    assert!(
+        uid >= 0 && (uid as usize) % topics.len() == 0,
+        "top-1 cluster 0, got {uid}"
+    );
     eprintln!("hybrid scale smoke OK — top-1 cluster cohérent");
 }
 
-#[cfg(all(feature = "vector-index", feature = "text-index", feature = "hybrid-search"))]
+#[cfg(all(
+    feature = "vector-index",
+    feature = "text-index",
+    feature = "hybrid-search"
+))]
 #[test]
 fn topological_rerank_synthetic_c2() {
     // C2 « RAG topologique » v1 (RFC §17) : le reranking par voisinage de
@@ -170,9 +221,15 @@ fn topological_rerank_synthetic_c2() {
             db.set_node_property(
                 d,
                 "text",
-                obrain_common::types::Value::String(format!("k{c} alpha beta gamma").as_str().into()),
+                obrain_common::types::Value::String(
+                    format!("k{c} alpha beta gamma").as_str().into(),
+                ),
             );
-            db.set_node_property(d, "uid", obrain_common::types::Value::Int64((c * per + i) as i64));
+            db.set_node_property(
+                d,
+                "uid",
+                obrain_common::types::Value::Int64((c * per + i) as i64),
+            );
             docs.push(d);
         }
     }
@@ -189,7 +246,10 @@ fn topological_rerank_synthetic_c2() {
         .expect("index");
     let uid_of = |nid: obrain_common::types::NodeId| -> i64 {
         let n = db.get_node(nid).unwrap();
-        match n.properties.get(&obrain_common::types::PropertyKey::new("uid")) {
+        match n
+            .properties
+            .get(&obrain_common::types::PropertyKey::new("uid"))
+        {
             Some(obrain_common::types::Value::Int64(x)) => *x,
             _ => -1,
         }
@@ -236,8 +296,18 @@ fn topological_rerank_synthetic_c2() {
     };
     let p_base = avg_p(false);
     let p_topo = avg_p(true);
-    eprintln!("C2 topo-rerank : precision@5 hybride seul = {p_base:.3} | hybride+topologie = {p_topo:.3}");
-    assert!(p_topo > p_base + 0.05, "le reranking topologique doit améliorer la précision");
-    assert!(p_topo >= 0.9, "précision finale attendue ≥ 0,9, got {p_topo}");
-    eprintln!("C2 v1 OK — le contexte structural améliore la précision (vérifié, vérité terrain cluster)");
+    eprintln!(
+        "C2 topo-rerank : precision@5 hybride seul = {p_base:.3} | hybride+topologie = {p_topo:.3}"
+    );
+    assert!(
+        p_topo > p_base + 0.05,
+        "le reranking topologique doit améliorer la précision"
+    );
+    assert!(
+        p_topo >= 0.9,
+        "précision finale attendue ≥ 0,9, got {p_topo}"
+    );
+    eprintln!(
+        "C2 v1 OK — le contexte structural améliore la précision (vérifié, vérité terrain cluster)"
+    );
 }

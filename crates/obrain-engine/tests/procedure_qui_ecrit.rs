@@ -70,7 +70,11 @@ fn antivacuite_la_procedure_ecrit_bien_sans_jeton() {
     let (_td, db) = base();
     let r = db.session().execute("CALL copie()");
     assert!(r.is_ok(), "CALL doit reussir sans jeton : {r:?}");
-    assert_eq!(copies(&db), NOEUDS, "la procedure doit copier tous les noeuds");
+    assert_eq!(
+        copies(&db),
+        NOEUDS,
+        "la procedure doit copier tous les noeuds"
+    );
 }
 
 /// Jeton arme AVANT le depart : la meme forme que le temoin d ecriture
@@ -266,7 +270,10 @@ fn les_cognitives_qui_ecrivent_sont_classees_ecriture() {
         ["obrain", "engrams", "forget"].as_slice(),
         ["engrams", "forget"].as_slice(),
     ] {
-        assert!(mute_nom(nom), "`{nom:?}` ECRIT et doit etre classee ecriture");
+        assert!(
+            mute_nom(nom),
+            "`{nom:?}` ECRIT et doit etre classee ecriture"
+        );
     }
     for requete in [
         "CALL obrain.cognitive.reinforce(1, 2)",
@@ -338,6 +345,9 @@ fn temoins_les_integrees_qui_lisent_restent_des_lectures() {
 /// lecture ordinaire d une ecriture ordinaire.
 #[test]
 fn antivacuite_la_classification_distingue_encore_lecture_et_ecriture() {
-    assert!(!mute("MATCH (n) RETURN count(n)"), "une lecture reste lecture");
+    assert!(
+        !mute("MATCH (n) RETURN count(n)"),
+        "une lecture reste lecture"
+    );
     assert!(mute("CREATE (n:X {v: 1})"), "une ecriture reste ecriture");
 }

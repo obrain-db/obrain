@@ -687,7 +687,10 @@ fn la_division_de_la_borne_basse_par_moins_un_est_signalee() {
     {
         let mut s = db.session();
         s.begin_transaction().unwrap();
-        let _ = s.create_node_with_props(&["Q"], [("a", Value::Int64(i64::MIN)), ("b", Value::Int64(-1))]);
+        let _ = s.create_node_with_props(
+            &["Q"],
+            [("a", Value::Int64(i64::MIN)), ("b", Value::Int64(-1))],
+        );
         s.commit().unwrap();
     }
     let q = "MATCH (q:Q) RETURN q.a / q.b";
@@ -885,7 +888,10 @@ fn le_souspassement_va_au_zero_du_bon_signe() {
     }
     let v = lignes(&db, "MATCH (s:S) RETURN s.v / 2")[0][0].clone();
     let f = flottant(&v, "s.v / 2");
-    assert_eq!(f, 0.0, "la moitié du plus petit sous-normal souspasse à zéro");
+    assert_eq!(
+        f, 0.0,
+        "la moitié du plus petit sous-normal souspasse à zéro"
+    );
     assert!(
         f.is_sign_negative(),
         "et c'est le zéro NÉGATIF : le signe survit au souspassement — \
@@ -1102,11 +1108,7 @@ fn le_type_du_litteral_survit_a_l_ecriture() {
 
     // Et la différence de type se voit à l'usage : la division tranche.
     let d = lignes(&db, "MATCH (l:L) RETURN l.entier / 4, l.flottant / 4");
-    assert_eq!(
-        d[0][0],
-        Value::Int64(0),
-        "2 / 4 sur des exacts tronque à 0"
-    );
+    assert_eq!(d[0][0], Value::Int64(0), "2 / 4 sur des exacts tronque à 0");
     assert_eq!(
         flottant(&d[0][1], "2.0 / 4"),
         0.5,

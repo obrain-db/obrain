@@ -1027,7 +1027,8 @@ mod tests {
         z2.confronter_ancres(150, 6);
         assert!(!z2.fiable());
         assert!(
-            z2.etendre_apres_fenetre(&[(1u16, serie(3))], 150, 6).is_err(),
+            z2.etendre_apres_fenetre(&[(1u16, serie(3))], 150, 6)
+                .is_err(),
             "CRC faux sur le base ⇒ extension REFUSÉE, jamais béni"
         );
         assert!(!z2.fiable());
@@ -1042,7 +1043,10 @@ mod tests {
         ord.fusionner(
             &[(
                 1u16,
-                vec![crate::props_index::EntreeIndex::new([1u8; crate::props_index::LARGEUR_CLE], 1)],
+                vec![crate::props_index::EntreeIndex::new(
+                    [1u8; crate::props_index::LARGEUR_CLE],
+                    1,
+                )],
             )],
             5,
             5,

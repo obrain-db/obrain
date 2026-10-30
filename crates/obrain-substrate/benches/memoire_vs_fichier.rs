@@ -175,28 +175,34 @@ fn banc_lecture(c: &mut Criterion) {
             })
         });
 
-        g.bench_function(BenchmarkId::new("hydratation_complete", support.nom()), |b| {
-            let mut i = 0usize;
-            b.iter(|| {
-                let id = ids[i % ids.len()];
-                i += 1;
-                black_box(terrain.store.get_node(id))
-            })
-        });
+        g.bench_function(
+            BenchmarkId::new("hydratation_complete", support.nom()),
+            |b| {
+                let mut i = 0usize;
+                b.iter(|| {
+                    let id = ids[i % ids.len()];
+                    i += 1;
+                    black_box(terrain.store.get_node(id))
+                })
+            },
+        );
     }
 
     // CONTRÔLE À BLANC, sur le bras de lecture le plus sensible.
     let terrain = Terrain::monter(Support::Memoire, n);
     let ids = terrain.ids.clone();
     let k = cle("rang");
-    g.bench_function(BenchmarkId::new("propriete_unitaire_controle", "memoire"), |b| {
-        let mut i = 0usize;
-        b.iter(|| {
-            let id = ids[i % ids.len()];
-            i += 1;
-            black_box(terrain.store.get_node_property(id, &k))
-        })
-    });
+    g.bench_function(
+        BenchmarkId::new("propriete_unitaire_controle", "memoire"),
+        |b| {
+            let mut i = 0usize;
+            b.iter(|| {
+                let id = ids[i % ids.len()];
+                i += 1;
+                black_box(terrain.store.get_node_property(id, &k))
+            })
+        },
+    );
     g.finish();
 }
 

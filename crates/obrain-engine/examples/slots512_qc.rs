@@ -12,13 +12,21 @@ fn qc(db: &ObrainDB, tag: &str) {
     let s = db.session();
     let t0 = Instant::now();
     let nodes = match s.execute("MATCH (n) RETURN count(n)") {
-        Ok(r) => r.rows.first().map(|row| format!("{:?}", row)).unwrap_or_else(|| "?".into()),
+        Ok(r) => r
+            .rows
+            .first()
+            .map(|row| format!("{:?}", row))
+            .unwrap_or_else(|| "?".into()),
         Err(e) => format!("ERR {e:?}"),
     };
     let t_n = t0.elapsed().as_secs_f64();
     let t1 = Instant::now();
     let edges = match s.execute("MATCH ()-[r]->() RETURN count(r)") {
-        Ok(r) => r.rows.first().map(|row| format!("{:?}", row)).unwrap_or_else(|| "?".into()),
+        Ok(r) => r
+            .rows
+            .first()
+            .map(|row| format!("{:?}", row))
+            .unwrap_or_else(|| "?".into()),
         Err(e) => format!("ERR {e:?}"),
     };
     let t_e = t1.elapsed().as_secs_f64();
@@ -29,7 +37,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let base = args.first().expect("usage: qcbase <base_dir>");
     println!("=== QC slots512 sur copie : {base} ===");
-    unsafe { std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1"); }
+    unsafe {
+        std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
+    }
     assert!(PropsZone::slots_512_actifs(), "porte env ouverte");
     // Phase 1 — baseline (lecture seule en pratique).
     {
@@ -59,8 +69,13 @@ fn main() {
         let db = ObrainDB::open_substrate(base).expect("reopen");
         qc(&db, "reopen");
         let s = db.session();
-        let r = s.execute("MATCH (n:SlotsQC) RETURN count(n)").expect("count contrôle");
-        println!("[QC] nœuds SlotsQC après réouverture : {:?}", r.rows.first());
+        let r = s
+            .execute("MATCH (n:SlotsQC) RETURN count(n)")
+            .expect("count contrôle");
+        println!(
+            "[QC] nœuds SlotsQC après réouverture : {:?}",
+            r.rows.first()
+        );
         for id in &controles {
             let q = format!("MATCH (n:SlotsQC {{tag: '{id}'}}) RETURN n.c, n.pack");
             let _ = s.execute(&q).expect("read contrôle");

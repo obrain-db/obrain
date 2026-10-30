@@ -31,9 +31,7 @@ fn stats(label: &str, mut ns: Vec<u128>) {
     let mean_us = sum as f64 / n.max(1) as f64 / 1000.0;
     let p50 = ns[n / 2] as f64 / 1000.0;
     let p95 = ns[(n as f64 * 0.95) as usize] as f64 / 1000.0;
-    println!(
-        "  {label:<28} n={n:<5} moy={mean_us:>7.2} µs  p50={p50:>6.2} µs  p95={p95:>6.2} µs"
-    );
+    println!("  {label:<28} n={n:<5} moy={mean_us:>7.2} µs  p50={p50:>6.2} µs  p95={p95:>6.2} µs");
 }
 
 fn main() {

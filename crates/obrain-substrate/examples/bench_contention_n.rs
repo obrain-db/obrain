@@ -19,9 +19,9 @@ use std::time::Instant;
 const NOEUDS_PAR_ECRIVAIN: u64 = 20_000;
 
 fn enfant(dir: &str, n: u64) -> ! {
-    use std::io::Write as _;
     use obrain_core::graph::GraphStoreMut as _;
     use obrain_substrate::SubstrateStore;
+    use std::io::Write as _;
     let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write");
     let t0 = Instant::now();
     let mut ids = Vec::with_capacity(n as usize);
@@ -91,7 +91,11 @@ fn balayage(dir: &PathBuf) {
         let base = *reference.get_or_insert_with(|| ops_s);
         println!(
             "║ {:>4} ║ {:>9.0}   ║ {:>9.0}   ║ {:>10.0}  ║ ×{:<16.2} ║",
-            n, noeuds_s, ops_s, ms, ops_s / base
+            n,
+            noeuds_s,
+            ops_s,
+            ms,
+            ops_s / base
         );
     }
     println!("╚══════╩═════════════╩═════════════╩═════════════╩══════════════════════╝");

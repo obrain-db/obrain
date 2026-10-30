@@ -323,7 +323,11 @@ impl ActivationSource for CausalAwareActivationSource {
         // (2026-08-31) LOOKUP O(1) dans le cache de paires causales (construit
         // en une passe, voir `causal_pairs()`) au lieu d'un `edges_from(Both)`
         // par paire — O(degré²) → O(1) par arête visitée.
-        let canonical = if from.0 <= to.0 { (from, to) } else { (to, from) };
+        let canonical = if from.0 <= to.0 {
+            (from, to)
+        } else {
+            (to, from)
+        };
         if self.has_causal_pair(canonical) {
             EdgeClass::Causal
         } else {
@@ -381,13 +385,7 @@ pub fn spread(
     for &(node_id, energy) in sources {
         *activation.entry(node_id).or_insert(0.0) += energy;
         queue.push_back((node_id, energy, 0));
-        mark_visited(
-            node_id,
-            0,
-            max_hop,
-            &mut visited_dense,
-            &mut visited_sparse,
-        );
+        mark_visited(node_id, 0, max_hop, &mut visited_dense, &mut visited_sparse);
     }
 
     let max_nodes = config.max_activated_nodes;
@@ -419,13 +417,7 @@ pub fn spread(
             // Only enqueue if not yet visited at this hop depth
             let next_hop = hop + 1;
             if next_hop < config.max_hops
-                && !was_visited(
-                    neighbor,
-                    next_hop,
-                    max_hop,
-                    &visited_dense,
-                    &visited_sparse,
-                )
+                && !was_visited(neighbor, next_hop, max_hop, &visited_dense, &visited_sparse)
             {
                 mark_visited(
                     neighbor,
@@ -475,7 +467,9 @@ fn was_visited(
     }
     let plan = (hop as usize) * max_hop;
     let bit = (id as usize) + plan;
-    dense.get(bit / 64).is_some_and(|w| (w >> (bit % 64)) & 1 == 1)
+    dense
+        .get(bit / 64)
+        .is_some_and(|w| (w >> (bit % 64)) & 1 == 1)
 }
 
 /// Marque (node_id, hop) comme visité. Si un id dépasse la borne dense,

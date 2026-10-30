@@ -250,5 +250,5 @@ impl CommunityWarden {
 // above is misaligned. Same assertion as in record.rs, kept here to
 // document the coupling for warden maintainers. (jalon 2 : la page
 // d'allocation est 20 480 o = 512 records de 40 o — plus la page OS.)
-const _: [(); 1] =
-    [(); ((crate::record::NODE_ALLOC_PAGE_BYTES / NodeRecord::SIZE) == NODES_PER_PAGE as usize) as usize];
+const _: [(); 1] = [(); ((crate::record::NODE_ALLOC_PAGE_BYTES / NodeRecord::SIZE)
+    == NODES_PER_PAGE as usize) as usize];

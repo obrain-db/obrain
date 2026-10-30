@@ -36,7 +36,11 @@ fn p4_double_rejeu_idempotent_ids_et_filigrane() {
     }
     {
         let store = SubstrateStore::open(tmp.path()).expect("reouverture 1");
-        let mut v: Vec<u64> = store.external_edges_from(a).iter().map(|e| e.id.0).collect();
+        let mut v: Vec<u64> = store
+            .external_edges_from(a)
+            .iter()
+            .map(|e| e.id.0)
+            .collect();
         v.sort_unstable();
         assert_eq!(v, attendu, "premier rejeu : les deux aretes, memes ids");
         assert_eq!(store.external_edge_count(), 2);
@@ -44,7 +48,11 @@ fn p4_double_rejeu_idempotent_ids_et_filigrane() {
     }
     {
         let store = SubstrateStore::open(tmp.path()).expect("reouverture 2");
-        let mut v: Vec<u64> = store.external_edges_from(a).iter().map(|e| e.id.0).collect();
+        let mut v: Vec<u64> = store
+            .external_edges_from(a)
+            .iter()
+            .map(|e| e.id.0)
+            .collect();
         v.sort_unstable();
         assert_eq!(
             v, attendu,
@@ -169,7 +177,9 @@ fn p4_sidecar_bruit_jamais_fatal() {
         drop(store);
     }
     let chemin = tmp.path().join("substrate.extedges");
-    let bruit: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+    let bruit: Vec<u8> = (0..4096u32)
+        .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+        .collect();
     std::fs::write(&chemin, &bruit).expect("ecrire bruit");
     let store = SubstrateStore::open(tmp.path()).expect("ouverture JAMAIS fatale");
     // La fenetre WAL (non checkpointee ici) re-fusionne ce qu'elle couvre :

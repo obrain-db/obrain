@@ -35,10 +35,8 @@ fn using_base_alias_dans_ref_et_in() {
     let (alpha, _beta) = deux_bases();
     let s = alpha.session();
     // ref(alias, clef) en ecriture.
-    s.execute(
-        "USING BASE b AS \"beta\" MATCH (a:Note) CREATE (a)-[:CITE]->(ref(b, \"doc_1\"))",
-    )
-    .expect("using base + ref(alias)");
+    s.execute("USING BASE b AS \"beta\" MATCH (a:Note) CREATE (a)-[:CITE]->(ref(b, \"doc_1\"))")
+        .expect("using base + ref(alias)");
     let store = alpha.graph_store();
     {
         use obrain_core::graph::GraphStore;
@@ -109,8 +107,14 @@ fn le_health_expose_les_compteurs_inter_bases() {
     }
     let sante = alpha.inter_base_health();
     assert_eq!(sante.external_edge_count, 1);
-    assert!(sante.dangling_refs >= 1, "la pendante doit se voir au health");
-    assert!(sante.access_denied_refs >= 1, "le refus doit se voir au health");
+    assert!(
+        sante.dangling_refs >= 1,
+        "la pendante doit se voir au health"
+    );
+    assert!(
+        sante.access_denied_refs >= 1,
+        "le refus doit se voir au health"
+    );
     // Instantane SANS remise a zero : une seconde lecture rend au moins autant.
     let sante2 = alpha.inter_base_health();
     assert!(sante2.dangling_refs >= sante.dangling_refs);
@@ -149,7 +153,9 @@ fn la_recherche_federee_fusionne_et_etiquette() {
     beta.session()
         .execute("INSERT (:Doc {texte: 'les connaissances du graphe prive'})")
         .expect("insert beta");
-    alpha.create_text_index("Doc", "texte").expect("index alpha");
+    alpha
+        .create_text_index("Doc", "texte")
+        .expect("index alpha");
     beta.create_text_index("Doc", "texte").expect("index beta");
 
     let resultats = ObrainDB::text_search_federated(
@@ -192,7 +198,11 @@ fn la_recherche_federee_respecte_les_droits_et_les_bases_mal_equipees() {
         Box::new(|_, slug: &str| slug != "privee"),
     ));
     let resultats = ObrainDB::text_search_federated(
-        &[("alpha", &alpha), ("privee", &privee), ("vide", &sans_index)],
+        &[
+            ("alpha", &alpha),
+            ("privee", &privee),
+            ("vide", &sans_index),
+        ],
         Some(&ctx),
         "Doc",
         "texte",

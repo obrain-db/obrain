@@ -4,8 +4,8 @@
 
 use obrain_cognitive::scar::{Scar, ScarConfig, ScarId, ScarReason, ScarStore};
 use obrain_common::types::NodeId;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 // ---------------------------------------------------------------------------
 // ScarId Display

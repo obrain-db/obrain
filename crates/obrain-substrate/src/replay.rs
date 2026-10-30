@@ -2074,15 +2074,12 @@ mod tests {
                 old_slots.len()
             );
             assert!(
-                label_to_new
-                    .insert(rec.label_bitset, new)
-                    .is_none(),
+                label_to_new.insert(rec.label_bitset, new).is_none(),
                 "label {} présent deux fois parmi les nouveaux slots",
                 rec.label_bitset
             );
         }
-        let mut map_old_new: std::collections::HashMap<u32, u32> =
-            std::collections::HashMap::new();
+        let mut map_old_new: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for (i, &old) in old_slots.iter().enumerate() {
             let label = (i as u64) + 1;
             let new = *label_to_new
@@ -2431,9 +2428,19 @@ mod tests {
                 crate::record::NODES_ZONE_V3_MAGIC,
                 "le slot 0 d'une zone v3 porte le marqueur de stride dans son label_bitset"
             );
-            assert_ne!(slot0.label_bitset, 0, "c'est bien ce non-zéro qui trompait l'audit");
-            assert_eq!(slot0.first_prop_off.to_u64(), 0, "la sentinelle ne porte aucune propriété");
-            assert!(!slot0.is_live(), "et elle n'est vivante pour aucun chemin de lecture");
+            assert_ne!(
+                slot0.label_bitset, 0,
+                "c'est bien ce non-zéro qui trompait l'audit"
+            );
+            assert_eq!(
+                slot0.first_prop_off.to_u64(),
+                0,
+                "la sentinelle ne porte aucune propriété"
+            );
+            assert!(
+                !slot0.is_live(),
+                "et elle n'est vivante pour aucun chemin de lecture"
+            );
         }
 
         // ── L'ASSERTION QUI COMPTE ─────────────────────────────────────────
@@ -2444,7 +2451,10 @@ mod tests {
             "un store NEUF ne peut pas porter de coquille : la seule chose que \
              l'audit voyait était la sentinelle de sa propre zone"
         );
-        assert_eq!(stats.dangling_prop_anchors, 0, "et rien ne pend dans une zone neuve");
+        assert_eq!(
+            stats.dangling_prop_anchors, 0,
+            "et rien ne pend dans une zone neuve"
+        );
     }
 
     /// LE VRAI POSITIF QUI COMPTE : la signature de coquille du 25/07. Le WAL

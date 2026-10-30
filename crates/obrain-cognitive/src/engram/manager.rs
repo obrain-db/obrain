@@ -364,9 +364,7 @@ impl EngramManager {
         for (_, w) in &mut attention {
             *w /= total_weight;
         }
-        attention.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        attention.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let ids: Vec<EngramId> = attention.iter().map(|(id, _)| *id).collect();
         let surprise =

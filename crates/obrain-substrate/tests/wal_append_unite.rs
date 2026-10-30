@@ -26,7 +26,10 @@ fn record(tag: u8, seq: u64, taille_payload: usize) -> WalRecord {
     // variable interdit de calculer une position à partir d'un compte.
     let mut value = Vec::with_capacity(taille_payload);
     value.push(tag);
-    value.extend(std::iter::repeat_n((seq % 251) as u8, taille_payload.saturating_sub(1)));
+    value.extend(std::iter::repeat_n(
+        (seq % 251) as u8,
+        taille_payload.saturating_sub(1),
+    ));
     WalRecord {
         lsn: 0, // écrasé par l'append (ancre + position)
         timestamp: 0,
@@ -93,7 +96,11 @@ fn t6_offset_bit_identique_et_ancre_de_durabilite() {
             attendu,
             "la taille RÉELLE du fichier est l'arbitre"
         );
-        assert_eq!(w.ancre(), ANCRE_INITIALE, "pas de troncature → ancre stable");
+        assert_eq!(
+            w.ancre(),
+            ANCRE_INITIALE,
+            "pas de troncature → ancre stable"
+        );
     }
 
     // (2) Chaque frame porte `lsn = ancre + position`.
@@ -155,7 +162,9 @@ fn t7_group_commit_un_seul_write_et_ordre_preserve() {
     let (_, l0) = w.append(record(9, 0, 32)).unwrap();
     let base = l0 as u64;
 
-    let lot: Vec<WalRecord> = (1..=64u64).map(|s| record(7, s, 40 + (s as usize % 13))).collect();
+    let lot: Vec<WalRecord> = (1..=64u64)
+        .map(|s| record(7, s, 40 + (s as usize % 13)))
+        .collect();
     let (pos, len) = w.append_batch(lot).unwrap();
     assert_eq!(pos, base, "le lot commence à la position courante");
 
@@ -324,7 +333,10 @@ fn queue_dechiree_tout_append_est_refuse_jusqu_a_reparation() {
         "le refus doit nommer le remède : {texte}"
     );
 
-    assert!(w.reparer_queue().unwrap().is_none(), "queue saine, rien à faire");
+    assert!(
+        w.reparer_queue().unwrap().is_none(),
+        "queue saine, rien à faire"
+    );
     assert!(w.queue_a_repairer().is_none(), "le drapeau est levé");
     w.append(record(1, 2, 16)).unwrap();
     let (v, queue, trou) = lus(&wal);
@@ -412,7 +424,10 @@ fn cas_2_reancrage_en_avant_quand_le_side_car_manque() {
             lsn_max_fichier,
         }) => {
             assert_eq!(ancre_avant, ANCRE_INITIALE);
-            assert_eq!(lsn_max_fichier, lsn_max, "le fichier a été MESURÉ, pas deviné");
+            assert_eq!(
+                lsn_max_fichier, lsn_max,
+                "le fichier a été MESURÉ, pas deviné"
+            );
             assert_eq!(ancre_apres, lsn_max + 1);
             assert_eq!(w.ancre(), ancre_apres);
         }

@@ -15,12 +15,12 @@ use super::common::{
 };
 use crate::query::plan::{
     self as plan, AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp,
-    CallProcedureOp, CreateEdgeOp, CreateExternalEdgeOp, CreateNodeOp, DeleteNodeOp, EntityKind, ExceptOp,
-    ExpandDirection, ExpandOp, HorizontalAggregateOp, IntersectOp, JoinCondition, JoinOp, JoinType,
-    LeftJoinOp, LoadDataFormat, LoadDataOp, LogicalExpression, LogicalOperator, LogicalPlan,
-    MergeOp, MergeRelationshipOp, NodeScanOp, NullsOrdering, OtherwiseOp, ParameterScanOp,
-    PathMode, ProcedureYield, ProjectOp, Projection, RemoveLabelOp, ReturnItem, SetPropertyOp,
-    ShortestPathOp, SortKey, SortOrder, UnaryOp, UnionOp, UnwindOp,
+    CallProcedureOp, CreateEdgeOp, CreateExternalEdgeOp, CreateNodeOp, DeleteNodeOp, EntityKind,
+    ExceptOp, ExpandDirection, ExpandOp, HorizontalAggregateOp, IntersectOp, JoinCondition, JoinOp,
+    JoinType, LeftJoinOp, LoadDataFormat, LoadDataOp, LogicalExpression, LogicalOperator,
+    LogicalPlan, MergeOp, MergeRelationshipOp, NodeScanOp, NullsOrdering, OtherwiseOp,
+    ParameterScanOp, PathMode, ProcedureYield, ProjectOp, Projection, RemoveLabelOp, ReturnItem,
+    SetPropertyOp, ShortestPathOp, SortKey, SortOrder, UnaryOp, UnionOp, UnwindOp,
 };
 #[cfg(test)]
 use crate::query::plan::{FilterOp, LimitOp, SkipOp};
@@ -1290,12 +1290,12 @@ impl GqlTranslator {
             ast::Expression::Literal(ast::Literal::Integer(n)) if *n >= 0 => {
                 Ok(plan::CountExpr::Literal(*n as usize))
             }
-            ast::Expression::Literal(ast::Literal::Integer(n)) => Err(Error::Query(
-                QueryError::new(
+            ast::Expression::Literal(ast::Literal::Integer(n)) => {
+                Err(Error::Query(QueryError::new(
                     QueryErrorKind::Semantic,
                     format!("{clause} must be a non-negative integer, got {n}"),
-                ),
-            )),
+                )))
+            }
             // `SKIP -1` parse en Unary(Neg, 1) : refus avec le même message
             // clair que le littéral négatif absorbé.
             ast::Expression::Unary {
@@ -2276,16 +2276,15 @@ impl GqlTranslator {
                                      peut s'enchainer apres une cible d'une autre base",
                                 )));
                             }
-                            let edge_type =
-                                edge.types.first().cloned().ok_or_else(|| {
-                                    Error::Query(QueryError::new(
-                                        QueryErrorKind::Semantic,
-                                        "une arete inter-bases exige un type : \
+                            let edge_type = edge.types.first().cloned().ok_or_else(|| {
+                                Error::Query(QueryError::new(
+                                    QueryErrorKind::Semantic,
+                                    "une arete inter-bases exige un type : \
                                          CREATE (a)-[:TYPE]->(ref(...))",
-                                    ))
-                                })?;
-                            plan = Some(LogicalOperator::CreateExternalEdge(
-                                CreateExternalEdgeOp {
+                                ))
+                            })?;
+                            plan =
+                                Some(LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
                                     from_variable: current_src.clone(),
                                     edge_type,
                                     to_host: reference.host.clone(),
@@ -2293,8 +2292,7 @@ impl GqlTranslator {
                                     to_key: reference.key.clone(),
                                     merge: false,
                                     input: Box::new(plan.unwrap_or(LogicalOperator::Empty)),
-                                },
-                            ));
+                                }));
                             last_variable.clone_from(&current_src);
                             break;
                         }
@@ -3677,8 +3675,7 @@ mod tests {
     /// `Join(Inner)` avec des conditions, jamais un `Join(Cross)` vide.
     #[test]
     fn test_inter_match_correlation_joins_on_shared_vars() {
-        let query =
-            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) MATCH (c:Person)-[:KNOWS]->(a:Person) RETURN a";
+        let query = "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) MATCH (c:Person)-[:KNOWS]->(a:Person) RETURN a";
         let plan = translate(query).expect("translate");
         // Parcourt l'arbre : doit trouver un Join avec conditions (pas Cross vide).
         fn has_correlated_join(op: &LogicalOperator) -> bool {

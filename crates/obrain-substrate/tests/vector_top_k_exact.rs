@@ -73,12 +73,19 @@ fn cosine(q: &[f32], v: &[f32]) -> f32 {
 }
 
 fn as_list(v: &[f32]) -> Value {
-    Value::List(v.iter().map(|f| Value::Float64(*f as f64)).collect::<Vec<_>>().into())
+    Value::List(
+        v.iter()
+            .map(|f| Value::Float64(*f as f64))
+            .collect::<Vec<_>>()
+            .into(),
+    )
 }
 
 fn poser(store: &SubstrateStore, n: NodeId, v: &[f32], mode: Stockage) {
     match mode {
-        Stockage::Veccol => store.set_node_property(n, "embedding", Value::Vector(v.to_vec().into())),
+        Stockage::Veccol => {
+            store.set_node_property(n, "embedding", Value::Vector(v.to_vec().into()))
+        }
         Stockage::Liste => store.set_node_property(n, "embedding", as_list(v)),
     }
 }
@@ -174,12 +181,23 @@ fn parallele_egale_reference_serie() {
     }
     let query = vec_for(999);
     let k = 12;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_eq!(actual.len(), k);
     assert_meme_classement(&actual, &attendu);
     for (n, _) in &actual {
-        assert!(!autres.contains(&n.0), "un noeud d'un autre label a fui : {}", n.0);
+        assert!(
+            !autres.contains(&n.0),
+            "un noeud d'un autre label a fui : {}",
+            n.0
+        );
     }
 }
 
@@ -194,12 +212,23 @@ fn filtre_identique_des_deux_cotes() {
         poser(&store, n, &e, Stockage::Veccol);
         connus.push((n, e, Stockage::Veccol));
     }
-    let exclus: HashSet<u64> = connus.iter().map(|(n, _, _)| n.0).filter(|o| o % 3 == 0).collect();
+    let exclus: HashSet<u64> = connus
+        .iter()
+        .map(|(n, _, _)| n.0)
+        .filter(|o| o % 3 == 0)
+        .collect();
     let exclus2 = exclus.clone();
     let filtre = move |n: NodeId| !exclus2.contains(&n.0);
     let query = vec_for(7);
     let k = 15;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, &filtre);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        &filtre,
+    );
     let attendu = reference_top_k(&connus, &query, k, &filtre);
     assert_meme_classement(&actual, &attendu);
     for (n, _) in &actual {
@@ -227,11 +256,22 @@ fn veccol_tout_zero_sans_liste_est_absent() {
     }
     let query = vec_for(3);
     let k = 40;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_meme_classement(&actual, &attendu);
     for (n, _) in &actual {
-        assert!(!zeros.contains(&n.0), "veccol tout-zéro sans List remonté : {}", n.0);
+        assert!(
+            !zeros.contains(&n.0),
+            "veccol tout-zéro sans List remonté : {}",
+            n.0
+        );
     }
     assert_eq!(actual.len(), 30);
 }
@@ -254,7 +294,14 @@ fn tout_zero_avec_liste_rend_zero_fini() {
     }
     let query = vec_for(4);
     let k = 20;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_meme_classement(&actual, &attendu);
     let entree_z = actual.iter().find(|(n, _)| *n == z);
@@ -283,26 +330,61 @@ fn dimensions_mixtes_emises_dans_le_bloc_null_de_tete() {
             dim_courte.push(n.0);
         } else {
             let e = vec_for(i);
-            poser(&store, n, &e, if i % 2 == 0 { Stockage::Veccol } else { Stockage::Liste });
-            connus.push((n, e, if i % 2 == 0 { Stockage::Veccol } else { Stockage::Liste }));
+            poser(
+                &store,
+                n,
+                &e,
+                if i % 2 == 0 {
+                    Stockage::Veccol
+                } else {
+                    Stockage::Liste
+                },
+            );
+            connus.push((
+                n,
+                e,
+                if i % 2 == 0 {
+                    Stockage::Veccol
+                } else {
+                    Stockage::Liste
+                },
+            ));
         }
     }
     let query = vec_for(999);
     let k = 30; // assez grand pour englober le bloc NULL
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_meme_classement(&actual, &attendu);
     // Le bloc NULL est présent, EN TÊTE (NULLS FIRST), offset asc.
-    let bloc_null_actual: Vec<u64> = actual.iter().filter(|(_, s)| s.is_none()).map(|(n, _)| n.0).collect();
+    let bloc_null_actual: Vec<u64> = actual
+        .iter()
+        .filter(|(_, s)| s.is_none())
+        .map(|(n, _)| n.0)
+        .collect();
     let mut attendu_bloc_null = dim_courte.clone();
     attendu_bloc_null.sort_unstable();
-    assert_eq!(bloc_null_actual, attendu_bloc_null, "bloc NULL = tous les dim≠, offset asc");
+    assert_eq!(
+        bloc_null_actual, attendu_bloc_null,
+        "bloc NULL = tous les dim≠, offset asc"
+    );
     assert!(
-        actual[..bloc_null_actual.len()].iter().all(|(_, s)| s.is_none()),
+        actual[..bloc_null_actual.len()]
+            .iter()
+            .all(|(_, s)| s.is_none()),
         "le bloc NULL ouvre la liste (NULLS FIRST)"
     );
     assert!(
-        actual[bloc_null_actual.len()..].iter().all(|(_, s)| s.is_some()),
+        actual[bloc_null_actual.len()..]
+            .iter()
+            .all(|(_, s)| s.is_some()),
         "puis uniquement des scores finis"
     );
 }
@@ -330,9 +412,19 @@ fn similarite_non_finie_dans_le_bloc_null_deterministe() {
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     let mut precedent: Option<Vec<u64>> = None;
     for _ in 0..6 {
-        let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+        let actual = store.vector_top_k(
+            "EpisodicLesson",
+            "embedding",
+            "embedding",
+            &query,
+            k,
+            |_| true,
+        );
         assert_meme_classement(&actual, &attendu);
-        let entree_p = actual.iter().find(|(n, _)| *n == p).expect("le pathologique est émis");
+        let entree_p = actual
+            .iter()
+            .find(|(n, _)| *n == p)
+            .expect("le pathologique est émis");
         assert_eq!(entree_p.1, None, "similarité non finie → bloc NULL (None)");
         let ids: Vec<u64> = actual.iter().map(|(n, _)| n.0).collect();
         if let Some(prev) = &precedent {
@@ -357,8 +449,18 @@ fn tie_break_deterministe() {
     }
     assert!(a.0 < b.0);
     for _ in 0..8 {
-        let r = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, 2, |_| true);
-        assert_eq!(r[0].0, a, "à égalité de score, le plus petit offset d'abord");
+        let r = store.vector_top_k(
+            "EpisodicLesson",
+            "embedding",
+            "embedding",
+            &query,
+            2,
+            |_| true,
+        );
+        assert_eq!(
+            r[0].0, a,
+            "à égalité de score, le plus petit offset d'abord"
+        );
         assert_eq!(r[1].0, b);
     }
 }
@@ -375,7 +477,14 @@ fn k_superieur_aux_candidats() {
         connus.push((n, e, Stockage::Veccol));
     }
     let query = vec_for(1);
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, 100, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        100,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, 100, |_| true);
     assert_eq!(actual.len(), 5);
     assert_meme_classement(&actual, &attendu);
@@ -394,7 +503,14 @@ fn embeddings_en_liste_non_migres_sont_couverts() {
     }
     let query = vec_for(5);
     let k = 12;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_eq!(actual.len(), k);
     assert_meme_classement(&actual, &attendu);
@@ -415,16 +531,30 @@ fn etat_mixte_veccol_et_liste_aucun_noeud_manque() {
     for i in 0..80u64 {
         let n = store.create_node(&["EpisodicLesson"]);
         let e = vec_for(i);
-        let mode = if i % 2 == 0 { Stockage::Veccol } else { Stockage::Liste };
+        let mode = if i % 2 == 0 {
+            Stockage::Veccol
+        } else {
+            Stockage::Liste
+        };
         poser(&store, n, &e, mode);
         connus.push((n, e, mode));
     }
     let k = 20;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_eq!(actual.len(), k);
     assert_meme_classement(&actual, &attendu);
-    assert_eq!(actual[0].0, temoin, "le témoin List (cosinus 1.0) doit être #1");
+    assert_eq!(
+        actual[0].0, temoin,
+        "le témoin List (cosinus 1.0) doit être #1"
+    );
 }
 
 /// Clés distinctes = schéma recall réel (embedding_vec / embedding).
@@ -450,9 +580,19 @@ fn cles_distinctes_embedding_vec_et_embedding() {
         }
     }
     let k = 15;
-    let actual = store.vector_top_k("EpisodicLesson", "embedding_vec", "embedding", &query, k, |_| true);
+    let actual = store.vector_top_k(
+        "EpisodicLesson",
+        "embedding_vec",
+        "embedding",
+        &query,
+        k,
+        |_| true,
+    );
     let attendu = reference_top_k(&connus, &query, k, |_| true);
     assert_eq!(actual.len(), k);
     assert_meme_classement(&actual, &attendu);
-    assert_eq!(actual[0].0, temoin, "témoin non migré (List sous `embedding`) doit être #1");
+    assert_eq!(
+        actual[0].0, temoin,
+        "témoin non migré (List sous `embedding`) doit être #1"
+    );
 }

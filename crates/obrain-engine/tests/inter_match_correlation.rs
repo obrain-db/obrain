@@ -53,11 +53,15 @@ fn graph_avec_homonymes() -> ObrainDB {
     }
     // dup_1 -> x -> dup_1 (un triangle avec un homonyme)
     session
-        .execute("MATCH (a:Function {name: 'dup'}), (b:Function {name: 'x'}) CREATE (a)-[:CALLS]->(b)")
+        .execute(
+            "MATCH (a:Function {name: 'dup'}), (b:Function {name: 'x'}) CREATE (a)-[:CALLS]->(b)",
+        )
         .expect("edge dup->x");
     // Le second "dup" n'a PAS d'arête — seul le premier forme un triangle via x.
     session
-        .execute("MATCH (a:Function {name: 'x'}), (b:Function {name: 'dup'}) CREATE (a)-[:CALLS]->(b)")
+        .execute(
+            "MATCH (a:Function {name: 'x'}), (b:Function {name: 'dup'}) CREATE (a)-[:CALLS]->(b)",
+        )
         .expect("edge x->dup");
     db
 }

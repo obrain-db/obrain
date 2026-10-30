@@ -199,7 +199,10 @@ pub fn poser_allocated_zone_nodes(dir: &Path, borne_slots: Option<u32>) -> Subst
     } else {
         NoeudV2::SIZE
     };
-    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&chemin)?;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&chemin)?;
     let mut bytes = Vec::new();
     f.read_to_end(&mut bytes)?;
     let n_slots = (bytes.len() / stride) as u32;
@@ -376,11 +379,17 @@ pub fn migrer_repertoire_avec_table(dir: &Path, table: &[Migration]) -> Substrat
         }
         if v > SUBSTRATE_FORMAT_VERSION {
             // Store d'un binaire plus recent : refus propre, rien touche.
-            return Err(SubstrateError::UnsupportedVersion(v, SUBSTRATE_FORMAT_VERSION));
+            return Err(SubstrateError::UnsupportedVersion(
+                v,
+                SUBSTRATE_FORMAT_VERSION,
+            ));
         }
         let Some(m) = table.iter().find(|m| m.de == v) else {
             // Version ancienne sans chemin : refus propre, rien touche.
-            return Err(SubstrateError::UnsupportedVersion(v, SUBSTRATE_FORMAT_VERSION));
+            return Err(SubstrateError::UnsupportedVersion(
+                v,
+                SUBSTRATE_FORMAT_VERSION,
+            ));
         };
         debug_assert!(
             m.de < m.vers && m.vers <= SUBSTRATE_FORMAT_VERSION,
@@ -404,7 +413,9 @@ pub fn lire_version_meta(dir: &Path) -> SubstrateResult<u32> {
     if tete[..8] != SUBSTRATE_MAGIC {
         return Err(SubstrateError::BadMagic);
     }
-    Ok(u32::from_le_bytes(tete[8..12].try_into().expect("4 octets")))
+    Ok(u32::from_le_bytes(
+        tete[8..12].try_into().expect("4 octets"),
+    ))
 }
 
 /// Ecrit `format_version` dans le header (write + fsync) — le point de

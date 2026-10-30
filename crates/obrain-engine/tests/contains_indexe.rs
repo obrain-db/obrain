@@ -96,7 +96,11 @@ fn le_resultat_indexe_est_celui_du_balayage() {
     peupler(&d);
     for needle in ["ixgbe_read", "read", "net.ixgbe", "\u{e9}acteur", "zzz"] {
         let temoin = textes(&d, &contains_q(needle));
-        assert_eq!(temoin, attendus(needle), "le témoin lui-même diverge ({needle})");
+        assert_eq!(
+            temoin,
+            attendus(needle),
+            "le témoin lui-même diverge ({needle})"
+        );
         d.create_property_index("qualified_name");
         let indexe = textes(&d, &contains_q(needle));
         assert_eq!(indexe, temoin, "scan vs index divergent sur {needle:?}");
@@ -183,7 +187,12 @@ fn contains_avec_limit_ne_sous_livre_pas() {
              RETURN n.qualified_name ORDER BY n.qualified_name LIMIT {k}"
         );
         let r = textes(&d, &q);
-        assert_eq!(r.len(), k, "sous-livraison : {} lignes pour LIMIT {k}", r.len());
+        assert_eq!(
+            r.len(),
+            k,
+            "sous-livraison : {} lignes pour LIMIT {k}",
+            r.len()
+        );
         assert_eq!(r, attendus("ixgbe_read")[..k].to_vec());
     }
 }
@@ -220,7 +229,10 @@ fn apres_reouverture_l_index_sert_et_les_ecritures_de_session_aussi() {
         d.close().unwrap();
     }
     let d = ObrainDB::open(&chemin).unwrap();
-    assert_eq!(textes(&d, &contains_q("ixgbe_read")), attendus("ixgbe_read"));
+    assert_eq!(
+        textes(&d, &contains_q("ixgbe_read")),
+        attendus("ixgbe_read")
+    );
     // Écritures post-fusion, dans la session rouverte.
     let s = d.session();
     s.execute("INSERT (:S {qualified_name: 'drivers.net.neuf.ixgbe_read_batch'})")
@@ -235,8 +247,7 @@ fn apres_reouverture_l_index_sert_et_les_ecritures_de_session_aussi() {
     let mut attendu = attendus("ixgbe_read");
     attendu.push("drivers.net.neuf.ixgbe_read_batch".into());
     attendu.retain(|q| {
-        q != "drivers.net.ixgbe.ixgbe_main.ixgbe_read_reg"
-            && q != "drivers.net.mixgbe_ready.helper"
+        q != "drivers.net.ixgbe.ixgbe_main.ixgbe_read_reg" && q != "drivers.net.mixgbe_ready.helper"
     });
     attendu.sort();
     assert_eq!(

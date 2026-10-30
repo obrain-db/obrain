@@ -5,8 +5,8 @@
 //! cross-session decay calculation.
 
 use obrain_cognitive::store_trait::{epoch_to_instant, now_epoch_secs};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 // ---------------------------------------------------------------------------
 // epoch_to_instant — basic round-trip

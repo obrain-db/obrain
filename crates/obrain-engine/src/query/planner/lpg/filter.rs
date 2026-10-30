@@ -3,12 +3,12 @@
 use std::collections::HashSet;
 
 use super::{
-    ApplyOperator, Arc, BinaryOp, EmptyOperator, ExpandDirection, ExpandOp,
-    ExpressionPredicate, FilterExpression, FilterOp, FilterOperator, GraphStore,
-    HashAggregateOperator, HashJoinOperator, HashMap, IndexSeekJoinOperator, JoinOp, JoinType,
-    LogicalExpression, LogicalOperator, LogicalType, NestedLoopJoinOperator, NodeId,
-    NodeListOperator, NodeScanOp, Operator, PathMode, PhysicalAggregateExpr, PhysicalJoinType,
-    RangeBounds, Result, UnaryOp, Value, convert_binary_op, convert_filter_expression
+    ApplyOperator, Arc, BinaryOp, EmptyOperator, ExpandDirection, ExpandOp, ExpressionPredicate,
+    FilterExpression, FilterOp, FilterOperator, GraphStore, HashAggregateOperator,
+    HashJoinOperator, HashMap, IndexSeekJoinOperator, JoinOp, JoinType, LogicalExpression,
+    LogicalOperator, LogicalType, NestedLoopJoinOperator, NodeId, NodeListOperator, NodeScanOp,
+    Operator, PathMode, PhysicalAggregateExpr, PhysicalJoinType, RangeBounds, Result, UnaryOp,
+    Value, convert_binary_op, convert_filter_expression,
 };
 
 use obrain_core::execution::operators::{DistinctOperator, UnionOperator};
@@ -79,13 +79,10 @@ impl super::Planner {
     /// UNION + DISTINCT pour la sémantique OR. Sûr : ne s'applique qu'au cas
     /// détecté par `exists_under_or` (les OR purement scalaires restent sur
     /// le filtre unitaire).
-    fn plan_or_with_exists(
-        &self,
-        filter: &FilterOp,
-    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+    fn plan_or_with_exists(&self, filter: &FilterOp) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        use crate::query::plan::LogicalOperator;
         use obrain_common::utils::error::QueryError;
         use obrain_common::utils::error::QueryErrorKind;
-        use crate::query::plan::LogicalOperator;
         let clauses = Self::dnf_clauses(&filter.predicate);
         if clauses.len() < 2 || clauses.len() > 32 {
             return Err(QueryError::new(
@@ -161,9 +158,11 @@ impl super::Planner {
     fn exists_under_or(expr: &LogicalExpression) -> bool {
         match expr {
             LogicalExpression::ExistsSubquery(_) => false, // seul, pas sous OR
-            LogicalExpression::Binary { op: BinaryOp::Or, left, right } => {
-                Self::expr_contains_exists(left) || Self::expr_contains_exists(right)
-            }
+            LogicalExpression::Binary {
+                op: BinaryOp::Or,
+                left,
+                right,
+            } => Self::expr_contains_exists(left) || Self::expr_contains_exists(right),
             LogicalExpression::Binary {
                 op: BinaryOp::And,
                 left,
@@ -720,12 +719,10 @@ impl super::Planner {
             LogicalExpression::Binary { left, right, .. } => {
                 Self::variables_du_predicat(left, vars) && Self::variables_du_predicat(right, vars)
             }
-            LogicalExpression::Unary { operand, .. } => {
-                Self::variables_du_predicat(operand, vars)
+            LogicalExpression::Unary { operand, .. } => Self::variables_du_predicat(operand, vars),
+            LogicalExpression::FunctionCall { args, .. } => {
+                args.iter().all(|a| Self::variables_du_predicat(a, vars))
             }
-            LogicalExpression::FunctionCall { args, .. } => args
-                .iter()
-                .all(|a| Self::variables_du_predicat(a, vars)),
             LogicalExpression::List(items) => {
                 items.iter().all(|i| Self::variables_du_predicat(i, vars))
             }
@@ -753,8 +750,7 @@ impl super::Planner {
                     .as_ref()
                     .map_or(true, |o| Self::variables_du_predicat(o, vars))
                     && when_clauses.iter().all(|(c, r)| {
-                        Self::variables_du_predicat(c, vars)
-                            && Self::variables_du_predicat(r, vars)
+                        Self::variables_du_predicat(c, vars) && Self::variables_du_predicat(r, vars)
                     })
                     && else_clause
                         .as_ref()
@@ -2080,9 +2076,11 @@ impl super::Planner {
         // remplace par la NodeList INDEXEE, croisee avec l'input — meme
         // forme de jointure que plan_node_scan.
         let (scan_variable, scan_label, scan_input) = match filter.input.as_ref() {
-            LogicalOperator::NodeScan(scan) => {
-                (scan.variable.clone(), scan.label.clone(), scan.input.as_deref())
-            }
+            LogicalOperator::NodeScan(scan) => (
+                scan.variable.clone(),
+                scan.label.clone(),
+                scan.input.as_deref(),
+            ),
             _ => return Ok(None),
         };
 
@@ -2122,9 +2120,7 @@ impl super::Planner {
             // (k=1 dans le cas MERGE-par-id !). node_has_label est le test
             // de bit pur T13, déjà surchargé côté substrate : O(k) réel.
             if let Some(label) = &scan_label {
-                nodes.retain(|n| {
-                    self.store.node_has_label(*n, label).unwrap_or(false)
-                });
+                nodes.retain(|n| self.store.node_has_label(*n, label).unwrap_or(false));
             }
 
             // ── LA MÊME GARDE QUE LE CHEMIN DE TEXTE (2026-09-14) ────────
@@ -2143,8 +2139,11 @@ impl super::Planner {
             // nœuds. `OBRAIN_EGALITE_CANDIDATS_MAX` (pour cent) le règle pour
             // la mesure. On rend `Ok(None)` : le chemin d'origine — balayage
             // compris, revérifié — reprend INCHANGÉ.
-            if trop_de_candidats(nodes.len(), self.store.node_count(), "OBRAIN_EGALITE_CANDIDATS_MAX")
-            {
+            if trop_de_candidats(
+                nodes.len(),
+                self.store.node_count(),
+                "OBRAIN_EGALITE_CANDIDATS_MAX",
+            ) {
                 tracing::debug!(
                     candidats = nodes.len(),
                     "égalité indexée : trop de candidats — la main au balayage"
@@ -2406,11 +2405,7 @@ impl super::Planner {
 
     /// Collecte les propriétés testées par `IS NOT NULL` sur `variable`, dans
     /// l'ordre du texte, à travers les conjonctions.
-    fn collecte_existence(
-        expr: &LogicalExpression,
-        variable: &str,
-        out: &mut Vec<String>,
-    ) {
+    fn collecte_existence(expr: &LogicalExpression, variable: &str, out: &mut Vec<String>) {
         match expr {
             LogicalExpression::Binary {
                 left,
@@ -2424,7 +2419,10 @@ impl super::Planner {
                 op: UnaryOp::IsNotNull,
                 operand,
             } => {
-                if let LogicalExpression::Property { variable: v, property } = operand.as_ref()
+                if let LogicalExpression::Property {
+                    variable: v,
+                    property,
+                } = operand.as_ref()
                     && v == variable
                     && !out.iter().any(|p| p == property)
                 {
@@ -2769,8 +2767,7 @@ impl super::Planner {
                 op: BinaryOp::And,
                 right,
             } => {
-                if let Some((prop, key, rem)) =
-                    Self::split_correlated_equality(left, scan_variable)
+                if let Some((prop, key, rem)) = Self::split_correlated_equality(left, scan_variable)
                 {
                     let remaining = match rem {
                         Some(r) => LogicalExpression::Binary {
@@ -3327,10 +3324,7 @@ impl super::Planner {
         if *variable != scan.variable {
             return Ok(None);
         }
-        let Some(mut nodes) = self
-            .store
-            .find_nodes_by_property_contains(property, needle)
-        else {
+        let Some(mut nodes) = self.store.find_nodes_by_property_contains(property, needle) else {
             return Ok(None);
         };
 
@@ -3600,10 +3594,7 @@ impl super::Planner {
     }
 
     /// Aplatit un arbre de `AND` en ses conjoints, dans l'ordre d'écriture.
-    fn aplatir_conjonctions<'a>(
-        expr: &'a LogicalExpression,
-        out: &mut Vec<&'a LogicalExpression>,
-    ) {
+    fn aplatir_conjonctions<'a>(expr: &'a LogicalExpression, out: &mut Vec<&'a LogicalExpression>) {
         match expr {
             LogicalExpression::Binary {
                 left,
@@ -3638,14 +3629,12 @@ impl super::Planner {
         out: &mut Vec<(String, BinaryOp, String)>,
     ) -> bool {
         match expr {
-            LogicalExpression::Binary {
-                left,
-                op,
-                right,
-            } if matches!(
-                op,
-                BinaryOp::Contains | BinaryOp::StartsWith | BinaryOp::EndsWith
-            ) => {
+            LogicalExpression::Binary { left, op, right }
+                if matches!(
+                    op,
+                    BinaryOp::Contains | BinaryOp::StartsWith | BinaryOp::EndsWith
+                ) =>
+            {
                 let op = *op;
                 let _ = op;
                 if let (
@@ -3837,9 +3826,7 @@ pub fn successeur_de_prefixe(prefixe: &str) -> Option<String> {
 /// ne change pas en cours de route.
 fn prefixe_intervalle_actif() -> bool {
     static ACTIF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ACTIF.get_or_init(|| {
-        std::env::var("OBRAIN_PREFIXE_INTERVALLE").map_or(true, |v| v != "0")
-    })
+    *ACTIF.get_or_init(|| std::env::var("OBRAIN_PREFIXE_INTERVALLE").map_or(true, |v| v != "0"))
 }
 
 /// `OBRAIN_PLAN_ELAGAGE=0` rend la main aux heuristiques de planification qui

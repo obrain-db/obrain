@@ -72,9 +72,8 @@ fn bench_sessions_concurrentes(c: &mut Criterion) {
                 let td = tempfile::tempdir().unwrap();
                 let chemin = td.path().join("s-group");
                 // Group commit : fsync explicit, par rafale — la cible Phase A.
-                let db = Arc::new(
-                    ObrainDB::open_substrate_with_mode(&chemin, SyncMode::Group).unwrap(),
-                );
+                let db =
+                    Arc::new(ObrainDB::open_substrate_with_mode(&chemin, SyncMode::Group).unwrap());
                 let depart = Instant::now();
                 let mut handles = Vec::new();
                 for t in 0..NTHREADS {

@@ -420,8 +420,7 @@ fn non_ascii_suit_les_points_de_code_sans_collation() {
     // La comparaison doit se faire par point de code entier, jamais par octet
     // isolé : 'é' fait deux octets (0xC3 0xA9) et '😀' quatre.
     assert_eq!(
-        keys(&s, "MATCH (n:U) RETURN n.v ORDER BY n.v ASC")
-            .len(),
+        keys(&s, "MATCH (n:U) RETURN n.v ORDER BY n.v ASC").len(),
         4,
         "les quatre valeurs doivent rester comparables entre elles"
     );
@@ -546,7 +545,11 @@ fn bornes_i64_exactes() {
         "> i64::MAX-1 ne doit rendre que i64::MAX"
     );
     assert_eq!(
-        keys(&s, "MATCH (n:B) WHERE n.v >= -9223372036854775807 RETURN n.k").len(),
+        keys(
+            &s,
+            "MATCH (n:B) WHERE n.v >= -9223372036854775807 RETURN n.k"
+        )
+        .len(),
         4,
         ">= la borne basse doit rendre toutes les lignes"
     );
@@ -583,7 +586,9 @@ fn propriete_absente_ne_satisfait_aucune_comparaison() {
     // Une propriété absente vaut NULL. Toute comparaison rend UNKNOWN, et
     // WHERE ne retient que TRUE : la ligne 'sans' ne doit apparaître NULLE
     // PART — ni dans `=`, ni dans `<>`, ni dans les inégalités, ni dans NOT.
-    for pred in ["n.v = 5", "n.v <> 5", "n.v < 5", "n.v <= 5", "n.v > 5", "n.v >= 5"] {
+    for pred in [
+        "n.v = 5", "n.v <> 5", "n.v < 5", "n.v <= 5", "n.v > 5", "n.v >= 5",
+    ] {
         let r = keys(&s, &format!("MATCH (n:P) WHERE {pred} RETURN n.k"));
         assert!(
             !r.contains(&"sans".to_string()),
@@ -652,11 +657,7 @@ fn and_avec_unknown_issu_dune_comparaison() {
 
 #[test]
 fn where_filtre_l_unknown_mais_return_doit_le_projeter() {
-    let db = base(&[
-        "INSERT (:P {k: 'sans'})",
-        "INSERT (:P {k: 'avec', v: 9})",
-    ])
-    .0;
+    let db = base(&["INSERT (:P {k: 'sans'})", "INSERT (:P {k: 'avec', v: 9})"]).0;
     let s = db.session();
 
     // WHERE ne retient que TRUE.
@@ -672,7 +673,11 @@ fn where_filtre_l_unknown_mais_return_doit_le_projeter() {
     let r = s
         .execute("MATCH (n:P) WHERE n.k = 'sans' RETURN n.v > 5")
         .expect("requête refusée");
-    assert_eq!(r.rows.len(), 1, "la ligne doit être projetée, seul son calcul est indéterminé");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "la ligne doit être projetée, seul son calcul est indéterminé"
+    );
     assert_eq!(
         r.rows[0][0],
         Value::Null,
@@ -740,7 +745,11 @@ fn le_est_lt_ou_eq_meme_sur_nan() {
     faux(&s, "0.0/0.0 >= 1.0");
     // L'identité qui doit tenir pour TOUT couple de valeurs :
     // (a <= b) ≡ (a < b) OR (a = b)
-    for (a, b) in [("0.0/0.0", "0.0/0.0"), ("0.0/0.0", "1.0"), ("1.0", "0.0/0.0")] {
+    for (a, b) in [
+        ("0.0/0.0", "0.0/0.0"),
+        ("0.0/0.0", "1.0"),
+        ("1.0", "0.0/0.0"),
+    ] {
         assert_eq!(
             scalar(&s, &format!("{a} <= {b}")),
             scalar(&s, &format!("({a} < {b}) OR ({a} = {b})")),
@@ -898,7 +907,10 @@ fn unknown_or_true_vaut_true() {
     // Et une disjonction dont l'autre branche est un prédicat ordinaire vrai
     // pour la ligne indéterminée doit, elle aussi, la retenir.
     assert_eq!(
-        keys(&s, "MATCH (n:P) WHERE (n.v > 5) OR (n.k = 'sans') RETURN n.k"),
+        keys(
+            &s,
+            "MATCH (n:P) WHERE (n.v > 5) OR (n.k = 'sans') RETURN n.k"
+        ),
         vec!["avec", "sans"],
         "une branche vraie suffit : la comparaison indéterminée ne doit pas \
          annuler la disjonction"
@@ -1067,7 +1079,10 @@ fn where_applique_la_meme_table_que_return() {
         (format!("NOT {U}"), "NOT U"),
     ] {
         let projete = ternaire(&s, &expr);
-        let filtre = keys(&s, &format!("MATCH (n:P) WHERE n.k = 'sans' AND ({expr}) RETURN n.k"));
+        let filtre = keys(
+            &s,
+            &format!("MATCH (n:P) WHERE n.k = 'sans' AND ({expr}) RETURN n.k"),
+        );
         let attendu: Vec<String> = if projete == Value::Bool(true) {
             vec!["sans".to_string()]
         } else {

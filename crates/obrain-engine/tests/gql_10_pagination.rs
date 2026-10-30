@@ -121,7 +121,11 @@ fn limit_zero_sous_order_by_rend_zero_ligne() {
     let r = s
         .execute("MATCH (n:Page) RETURN n.v AS v ORDER BY n.v ASC LIMIT 0")
         .unwrap();
-    assert_eq!(r.rows.len(), 0, "ORDER BY … LIMIT 0 ne peut servir aucune ligne");
+    assert_eq!(
+        r.rows.len(),
+        0,
+        "ORDER BY … LIMIT 0 ne peut servir aucune ligne"
+    );
 }
 
 /// `SKIP 0` est l'identité : la fenêtre commence au premier rang.
@@ -609,7 +613,8 @@ fn semer_avec_nulls(pleines: i64, vides: i64) -> ObrainDB {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
     for i in 0..vides {
-        s.execute(&format!("INSERT (:Rk {{nom: 'vide{i}'}})")).unwrap();
+        s.execute(&format!("INSERT (:Rk {{nom: 'vide{i}'}})"))
+            .unwrap();
     }
     for r in 1..=pleines {
         s.execute(&format!("INSERT (:Rk {{nom: 'plein{r}', rank: {r}}})"))
@@ -669,8 +674,7 @@ fn classe_desc_nulls_last_aucune_fenetre_de_tete_ne_perd_de_ligne_pleine() {
             let obtenu = col0_opt(&r);
 
             // k <= PLEINES : la fenêtre de tête est entièrement pleine.
-            let attendu: Vec<Option<i64>> =
-                (0..k).map(|i| Some(PLEINES - i as i64)).collect();
+            let attendu: Vec<Option<i64>> = (0..k).map(|i| Some(PLEINES - i as i64)).collect();
 
             if obtenu != attendu {
                 let nulls_servis = obtenu.iter().filter(|o| o.is_none()).count();
@@ -1033,7 +1037,11 @@ fn skip_un_sur_agregat_scalaire_ne_sert_rien() {
     let r = s
         .execute("MATCH (n:Page) RETURN count(n) AS c SKIP 1")
         .unwrap();
-    assert_eq!(r.rows.len(), 0, "un agrégat scalaire n'a qu'une ligne à sauter");
+    assert_eq!(
+        r.rows.len(),
+        0,
+        "un agrégat scalaire n'a qu'une ligne à sauter"
+    );
 }
 
 /// LE CAS QUI COMPTE : agrégat GROUPÉ sous fenêtre.
@@ -1080,9 +1088,7 @@ fn fenetre_sur_agregat_groupe_decoupe_les_groupes_avec_leurs_comptes_complets() 
     }
 
     let r = s
-        .execute(
-            "MATCH (n:Grp2) RETURN n.g AS g, count(n) AS c ORDER BY g ASC SKIP 1 LIMIT 2",
-        )
+        .execute("MATCH (n:Grp2) RETURN n.g AS g, count(n) AS c ORDER BY g ASC SKIP 1 LIMIT 2")
         .unwrap();
 
     assert_eq!(r.rows.len(), 2);
@@ -1134,7 +1140,8 @@ fn semer_peu_de_distincts() -> ObrainDB {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
     for i in 0..40i64 {
-        s.execute(&format!("INSERT (:Ds {{v: {}}})", i / 10)).unwrap();
+        s.execute(&format!("INSERT (:Ds {{v: {}}})", i / 10))
+            .unwrap();
     }
     db
 }
@@ -1291,7 +1298,11 @@ fn chemin_rapide_honore_le_skip_et_rend_des_pages_disjointes() {
         .unwrap();
 
     assert_eq!(p1.rows.len(), 5);
-    assert_eq!(p2.rows.len(), 5, "SKIP 5 LIMIT 5 sur 50 nœuds sert 5 lignes");
+    assert_eq!(
+        p2.rows.len(),
+        5,
+        "SKIP 5 LIMIT 5 sur 50 nœuds sert 5 lignes"
+    );
 
     let a: std::collections::HashSet<i64> = col0(&p1).into_iter().collect();
     let b: std::collections::HashSet<i64> = col0(&p2).into_iter().collect();
@@ -1333,7 +1344,11 @@ fn chemin_rapide_et_chemin_normal_servent_des_fenetres_de_meme_calibre() {
         let brut = v.len();
         v.sort_unstable();
         v.dedup();
-        assert_eq!(v.len(), brut, "chemin {nom} : lignes en double dans la fenêtre");
+        assert_eq!(
+            v.len(),
+            brut,
+            "chemin {nom} : lignes en double dans la fenêtre"
+        );
         for x in &v {
             assert!((0..50).contains(x), "chemin {nom} : valeur {x} hors semis");
         }
@@ -1389,9 +1404,7 @@ fn le_raccourci_ne_contamine_pas_le_total() {
     let s = db.session();
 
     s.execute("MATCH (n:Page) RETURN n.v AS v LIMIT 3").unwrap();
-    let total = s
-        .execute("MATCH (n:Page) RETURN count(n) AS c")
-        .unwrap();
+    let total = s.execute("MATCH (n:Page) RETURN count(n) AS c").unwrap();
     assert_eq!(
         as_i64(&total.rows[0][0]),
         50,
@@ -1483,9 +1496,7 @@ fn offset_puis_fetch_first_composent_la_fenetre_normative() {
     let s = db.session();
 
     let r = s
-        .execute(
-            "MATCH (n:Page) RETURN n.v AS v ORDER BY n.v ASC OFFSET 7 FETCH FIRST 3 ROWS ONLY",
-        )
+        .execute("MATCH (n:Page) RETURN n.v AS v ORDER BY n.v ASC OFFSET 7 FETCH FIRST 3 ROWS ONLY")
         .unwrap();
     assert_eq!(
         col0(&r),
@@ -1552,7 +1563,11 @@ fn distinct_avec_skip_et_limit_sans_order_by_reste_sur_les_valeurs_distinctes() 
     let mut v = col0(&r);
     v.sort_unstable();
     v.dedup();
-    assert_eq!(v.len(), 2, "les deux lignes servies doivent être distinctes");
+    assert_eq!(
+        v.len(),
+        2,
+        "les deux lignes servies doivent être distinctes"
+    );
 }
 
 /// Sème `n` nœuds `:Vrac` directement, sans passer par le planificateur.
@@ -1599,7 +1614,11 @@ fn limit_tranche_un_lot_plus_grand_que_la_fenetre() {
     let brut = v.len();
     v.sort_unstable();
     v.dedup();
-    assert_eq!(v.len(), brut, "aucune ligne servie deux fois dans le lot tranché");
+    assert_eq!(
+        v.len(),
+        brut,
+        "aucune ligne servie deux fois dans le lot tranché"
+    );
     for x in &v {
         assert!((0..3000).contains(x), "valeur {x} hors du semis");
     }

@@ -90,7 +90,12 @@ fn arg_bool(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<boo
 
 #[cfg(feature = "cdc")]
 #[cfg(feature = "cdc")]
-fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usize) -> Result<usize> {
+fn arg_usize(
+    arguments: &[LogicalExpression],
+    i: usize,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
     match arguments.get(i) {
         None => Ok(default),
         Some(LogicalExpression::Literal(Value::Int64(v))) if *v >= 0 => Ok(*v as usize),

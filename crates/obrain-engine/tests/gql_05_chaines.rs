@@ -151,17 +151,26 @@ fn egalite_de_chaines_est_sensible_a_la_casse() {
 
     // chemin ÉVALUATEUR (projection)
     assert_eq!(
-        lignes(&db, "MATCH (n:S) RETURN n.nom, n.nom = 'alpha' AS eq ORDER BY n.nom")
-            .iter()
-            .filter(|l| l[1] == VRAI)
-            .count(),
+        lignes(
+            &db,
+            "MATCH (n:S) RETURN n.nom, n.nom = 'alpha' AS eq ORDER BY n.nom"
+        )
+        .iter()
+        .filter(|l| l[1] == VRAI)
+        .count(),
         1,
         "un seul des trois nœuds est égal à 'alpha'"
     );
 
     // chemin PLANIFICATEUR (WHERE avec label → values_equal_coerced)
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom = 'alpha' RETURN n.nom"), ["alpha"]);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom = 'ALPHA' RETURN n.nom"), ["ALPHA"]);
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom = 'alpha' RETURN n.nom"),
+        ["alpha"]
+    );
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom = 'ALPHA' RETURN n.nom"),
+        ["ALPHA"]
+    );
 }
 
 #[test]
@@ -171,8 +180,14 @@ fn egalite_de_la_chaine_vide() {
     let db = db_avec(&["", "a"]);
     assert_eq!(valeur(&db, "MATCH (n:S) RETURN '' = '' AS r LIMIT 1"), VRAI);
     assert_eq!(lignes(&db, "MATCH (n:S {nom: ''}) RETURN n.nom").len(), 1);
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom = '' RETURN n.nom").len(), 1);
-    assert_eq!(lignes(&db, "MATCH (n) WHERE n.nom = '' RETURN n.nom").len(), 1);
+    assert_eq!(
+        lignes(&db, "MATCH (n:S) WHERE n.nom = '' RETURN n.nom").len(),
+        1
+    );
+    assert_eq!(
+        lignes(&db, "MATCH (n) WHERE n.nom = '' RETURN n.nom").len(),
+        1
+    );
 }
 
 #[test]
@@ -185,8 +200,14 @@ fn egalite_ne_normalise_pas_unicode() {
     let decompose = "cafe\u{301}";
     let db = db_avec(&[precompose, decompose]);
 
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom = 'caf\u{e9}' RETURN n.nom").len(), 1);
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom = 'cafe\u{301}' RETURN n.nom").len(), 1);
+    assert_eq!(
+        lignes(&db, "MATCH (n:S) WHERE n.nom = 'caf\u{e9}' RETURN n.nom").len(),
+        1
+    );
+    assert_eq!(
+        lignes(&db, "MATCH (n:S) WHERE n.nom = 'cafe\u{301}' RETURN n.nom").len(),
+        1
+    );
     assert_eq!(lignes(&db, "MATCH (n:S) RETURN n.nom").len(), 2);
 }
 
@@ -219,7 +240,10 @@ fn egalite_chaine_contre_nombre_ne_depend_pas_de_la_presence_dun_label() {
         sans_label.len(),
         "le label ne doit pas changer le verdict d'une égalité"
     );
-    assert!(avec_label.is_empty(), "'5' n'est pas égal au nombre 5 : l'égalité ne coerce pas");
+    assert!(
+        avec_label.is_empty(),
+        "'5' n'est pas égal au nombre 5 : l'égalité ne coerce pas"
+    );
 }
 
 // ═══════════════ GROUPE 2 — ORDRE LEXICOGRAPHIQUE ════════════════════
@@ -233,25 +257,53 @@ fn ordre_est_lexicographique_sans_derive_numerique_sur_les_deux_chemins() {
     let db = db_avec(&["10", "9", "2", "1e5"]);
 
     // chemin PLANIFICATEUR — plan_range_filter
-    let mut avant_9 = textes(&db, "MATCH (n:S) WHERE n.nom < '9' RETURN n.nom ORDER BY n.nom");
+    let mut avant_9 = textes(
+        &db,
+        "MATCH (n:S) WHERE n.nom < '9' RETURN n.nom ORDER BY n.nom",
+    );
     avant_9.sort();
-    assert_eq!(avant_9, ["10", "1e5", "2"], "ordre par caractères, pas par valeur numérique");
+    assert_eq!(
+        avant_9,
+        ["10", "1e5", "2"],
+        "ordre par caractères, pas par valeur numérique"
+    );
 
     // chemin ÉVALUATEUR — compare_values
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '10' < '9' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '1e5' < '2' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '9' < '10' AS r LIMIT 1"), FAUX);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '10' < '9' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '1e5' < '2' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '9' < '10' AS r LIMIT 1"),
+        FAUX
+    );
     // pas de dérive scientifique : '1e5' n'est pas 100000
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '1e5' < '99' AS r LIMIT 1"), VRAI);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '1e5' < '99' AS r LIMIT 1"),
+        VRAI
+    );
 }
 
 #[test]
 fn un_prefixe_precede_ce_quil_prefixe() {
     let db = db_unaire();
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' < 'abcd' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '' < 'a' AS r LIMIT 1"), VRAI);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abc' < 'abcd' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '' < 'a' AS r LIMIT 1"),
+        VRAI
+    );
     assert_eq!(valeur(&db, "MATCH (n:S) RETURN '' < '' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abcd' < 'abc' AS r LIMIT 1"), FAUX);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abcd' < 'abc' AS r LIMIT 1"),
+        FAUX
+    );
 }
 
 #[test]
@@ -348,13 +400,25 @@ fn ordre_suit_les_points_de_code_y_compris_hors_du_plan_multilingue_de_base() {
     // (0xD800-0xDFFF < 0xFFFF). Ici l'ordre doit être celui des points
     // de code — U+FFFF avant U+10000.
     let db = db_avec(&[
-        "\u{7f}", "\u{80}", "\u{7ff}", "\u{800}", "\u{ffff}", "\u{10000}", "\u{1f600}",
+        "\u{7f}",
+        "\u{80}",
+        "\u{7ff}",
+        "\u{800}",
+        "\u{ffff}",
+        "\u{10000}",
+        "\u{1f600}",
         "\u{10ffff}",
     ]);
     assert_eq!(
         textes(&db, "MATCH (n:S) RETURN n.nom ORDER BY n.nom"),
         [
-            "\u{7f}", "\u{80}", "\u{7ff}", "\u{800}", "\u{ffff}", "\u{10000}", "\u{1f600}",
+            "\u{7f}",
+            "\u{80}",
+            "\u{7ff}",
+            "\u{800}",
+            "\u{ffff}",
+            "\u{10000}",
+            "\u{1f600}",
             "\u{10ffff}"
         ],
         "ordre par points de code, pas par unités UTF-16"
@@ -378,9 +442,18 @@ fn ordre_mele_z_et_decalages_horaires_reste_lexicographique() {
     // '+01:00' à préfixe égal — l'ordre chronologique est cassé si la
     // colonne mêle les deux écritures.
     let db = db_unaire();
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '+' < '.' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '.' < '0' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '0' < 'Z' AS r LIMIT 1"), VRAI);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '+' < '.' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '.' < '0' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '0' < 'Z' AS r LIMIT 1"),
+        VRAI
+    );
     let db2 = db_avec(&["2026-01-01T00:00:00+01:00", "2026-01-01T00:00:00Z"]);
     assert_eq!(
         textes(&db2, "MATCH (n:S) RETURN n.nom ORDER BY n.nom")[0],
@@ -425,7 +498,10 @@ fn comparaison_chaine_contre_nombre_rend_le_meme_verdict_dans_where_et_en_projec
     par_filtre.sort();
     let mut attendu = par_projection;
     attendu.sort();
-    assert_eq!(par_filtre, attendu, "WHERE doit sélectionner ce que la projection déclare vrai");
+    assert_eq!(
+        par_filtre, attendu,
+        "WHERE doit sélectionner ce que la projection déclare vrai"
+    );
 }
 
 // CORRIGÉ par ce commit (correctif E, comparateur canonique value_cmp) — défaut d'origine : `WHERE n.nom > 1` retient 'alpha' : une comparaison INCONNUE passe le filtre
@@ -496,30 +572,78 @@ fn aiguille_vide_est_contenue_partout() {
     // La chaîne vide est préfixe, suffixe et sous-chaîne de toute chaîne,
     // y compris d'elle-même.
     let db = db_unaire();
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' CONTAINS '' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' STARTS WITH '' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' ENDS WITH '' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '' CONTAINS '' AS r LIMIT 1"), VRAI);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '' STARTS WITH '' AS r LIMIT 1"), VRAI);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abc' CONTAINS '' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abc' STARTS WITH '' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abc' ENDS WITH '' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '' CONTAINS '' AS r LIMIT 1"),
+        VRAI
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '' STARTS WITH '' AS r LIMIT 1"),
+        VRAI
+    );
 }
 
 #[test]
 fn contains_starts_ends_sont_sensibles_a_la_casse() {
     let db = db_avec(&["abc", "ABC"]);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'ABC' CONTAINS 'b' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' CONTAINS 'B' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'ABC' STARTS WITH 'a' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'ABC' ENDS WITH 'c' AS r LIMIT 1"), FAUX);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom STARTS WITH 'a' RETURN n.nom"), ["abc"]);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'ABC' CONTAINS 'b' AS r LIMIT 1"),
+        FAUX
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abc' CONTAINS 'B' AS r LIMIT 1"),
+        FAUX
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'ABC' STARTS WITH 'a' AS r LIMIT 1"),
+        FAUX
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'ABC' ENDS WITH 'c' AS r LIMIT 1"),
+        FAUX
+    );
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom STARTS WITH 'a' RETURN n.nom"),
+        ["abc"]
+    );
 }
 
 #[test]
 fn une_aiguille_plus_longue_que_la_botte_ne_correspond_pas() {
     let db = db_unaire();
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' CONTAINS 'abcd' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' STARTS WITH 'abcd' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN 'abc' ENDS WITH 'zabc' AS r LIMIT 1"), FAUX);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN '' CONTAINS 'a' AS r LIMIT 1"), FAUX);
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN 'abc' CONTAINS 'abcd' AS r LIMIT 1"),
+        FAUX
+    );
+    assert_eq!(
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN 'abc' STARTS WITH 'abcd' AS r LIMIT 1"
+        ),
+        FAUX
+    );
+    assert_eq!(
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN 'abc' ENDS WITH 'zabc' AS r LIMIT 1"
+        ),
+        FAUX
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN '' CONTAINS 'a' AS r LIMIT 1"),
+        FAUX
+    );
 }
 
 #[test]
@@ -531,21 +655,33 @@ fn contains_travaille_sur_les_points_de_code_pas_sur_les_graphemes() {
     // un piège qui doit être écrit noir sur blanc.
     let db = db_unaire();
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN 'caf\u{e9}' CONTAINS '\u{e9}' AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN 'caf\u{e9}' CONTAINS '\u{e9}' AS r LIMIT 1"
+        ),
         VRAI
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN 'cafe\u{301}' CONTAINS '\u{e9}' AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN 'cafe\u{301}' CONTAINS '\u{e9}' AS r LIMIT 1"
+        ),
         FAUX,
         "la forme décomposée ne contient pas le caractère précomposé"
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN 'cafe\u{301}' CONTAINS '\u{301}' AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN 'cafe\u{301}' CONTAINS '\u{301}' AS r LIMIT 1"
+        ),
         VRAI
     );
     // et la sous-chaîne trouvée ne coupe jamais un caractère en deux
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN 'caf\u{e9}' CONTAINS 'f\u{e9}' AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN 'caf\u{e9}' CONTAINS 'f\u{e9}' AS r LIMIT 1"
+        ),
         VRAI
     );
 }
@@ -618,8 +754,14 @@ fn like_est_ancre_aux_deux_extremites() {
     let db = db_avec(&["abc"]);
     assert!(lignes(&db, "MATCH (n:S) WHERE n.nom LIKE 'b' RETURN n.nom").is_empty());
     assert!(lignes(&db, "MATCH (n:S) WHERE n.nom LIKE 'ab' RETURN n.nom").is_empty());
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom LIKE '%b%' RETURN n.nom"), ["abc"]);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'abc' RETURN n.nom"), ["abc"]);
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom LIKE '%b%' RETURN n.nom"),
+        ["abc"]
+    );
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'abc' RETURN n.nom"),
+        ["abc"]
+    );
 }
 
 #[test]
@@ -655,8 +797,14 @@ fn like_reconnait_un_pourcent_litteral_echappe() {
 #[test]
 fn like_est_sensible_a_la_casse() {
     let db = db_avec(&["abc", "ABC"]);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a%' RETURN n.nom"), ["abc"]);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'A%' RETURN n.nom"), ["ABC"]);
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a%' RETURN n.nom"),
+        ["abc"]
+    );
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'A%' RETURN n.nom"),
+        ["ABC"]
+    );
 }
 
 #[test]
@@ -676,8 +824,14 @@ fn like_traite_les_metacaracteres_dexpression_reguliere_comme_litteraux() {
     // 'a.c' reconnaîtrait 'abc', ce qui est le symptôme classique d'une
     // implémentation qui délègue à une expression régulière sans échapper.
     let db = db_avec(&["a.c", "abc", "a+c", "aXc", "a[b]c"]);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a.c' RETURN n.nom"), ["a.c"]);
-    assert_eq!(textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a+c' RETURN n.nom"), ["a+c"]);
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a.c' RETURN n.nom"),
+        ["a.c"]
+    );
+    assert_eq!(
+        textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a+c' RETURN n.nom"),
+        ["a+c"]
+    );
     assert_eq!(
         textes(&db, "MATCH (n:S) WHERE n.nom LIKE 'a[b]c' RETURN n.nom"),
         ["a[b]c"]
@@ -721,7 +875,9 @@ fn echappements_simples_dans_un_litteral() {
     let bs = as_();
     let db = db_unaire();
     let un = |suite: &str, attendu: char| {
-        let q = format!("MATCH (n:S) RETURN '{bs}{suite}' AS r, char_length('{bs}{suite}') AS l LIMIT 1");
+        let q = format!(
+            "MATCH (n:S) RETURN '{bs}{suite}' AS r, char_length('{bs}{suite}') AS l LIMIT 1"
+        );
         let l = lignes(&db, &q);
         assert_eq!(l[0][0], Value::String(attendu.to_string().into()), "{q}");
         assert_eq!(l[0][1], Value::Int64(1), "{q}");
@@ -777,7 +933,10 @@ fn une_apostrophe_doublee_ne_tronque_pas_la_chaine_en_silence() {
     // MESURE : `RETURN 'it''s' AS dq` → String("it"), colonne nommée
     // `String("it")`.
     let db = db_unaire();
-    match db.session().execute("MATCH (n:S) RETURN 'it''s' AS dq LIMIT 1") {
+    match db
+        .session()
+        .execute("MATCH (n:S) RETURN 'it''s' AS dq LIMIT 1")
+    {
         Err(_) => {} // refus franc : acceptable
         Ok(r) => assert_eq!(
             r.rows[0][0],
@@ -808,11 +967,34 @@ fn une_chaine_portant_un_octet_nul_traverse_le_moteur_intacte() {
     // chaîne C — la longueur doit compter les caractères APRÈS le nul.
     let avec_nul = "nul\u{0}apres";
     let db = db_avec(&[avec_nul]);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN char_length(n.nom) AS l"), Value::Int64(9));
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN octet_length(n.nom) AS l"), Value::Int64(9));
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom STARTS WITH 'nul' RETURN n.nom").len(), 1);
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom ENDS WITH 'apres' RETURN n.nom").len(), 1);
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN n.nom"), Value::String(avec_nul.into()));
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN char_length(n.nom) AS l"),
+        Value::Int64(9)
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN octet_length(n.nom) AS l"),
+        Value::Int64(9)
+    );
+    assert_eq!(
+        lignes(
+            &db,
+            "MATCH (n:S) WHERE n.nom STARTS WITH 'nul' RETURN n.nom"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        lignes(
+            &db,
+            "MATCH (n:S) WHERE n.nom ENDS WITH 'apres' RETURN n.nom"
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN n.nom"),
+        Value::String(avec_nul.into())
+    );
 }
 
 // ══════ GROUPE 6 — LONGUEURS, UNICODE, NORMALISATION, CASSE ══════════
@@ -820,20 +1002,35 @@ fn une_chaine_portant_un_octet_nul_traverse_le_moteur_intacte() {
 #[test]
 fn char_length_compte_les_caracteres() {
     let db = db_unaire();
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN char_length('abc') AS l LIMIT 1"), Value::Int64(3));
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN char_length('') AS l LIMIT 1"), Value::Int64(0));
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN char_length('caf\u{e9}') AS l LIMIT 1"),
+        valeur(&db, "MATCH (n:S) RETURN char_length('abc') AS l LIMIT 1"),
+        Value::Int64(3)
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN char_length('') AS l LIMIT 1"),
+        Value::Int64(0)
+    );
+    assert_eq!(
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN char_length('caf\u{e9}') AS l LIMIT 1"
+        ),
         Value::Int64(4),
         "un é précomposé est UN caractère"
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN char_length('cafe\u{301}') AS l LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN char_length('cafe\u{301}') AS l LIMIT 1"
+        ),
         Value::Int64(5),
         "un é décomposé est DEUX caractères"
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN char_length('\u{1f600}') AS l LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN char_length('\u{1f600}') AS l LIMIT 1"
+        ),
         Value::Int64(1),
         "un caractère hors BMP est UN caractère, pas deux unités UTF-16"
     );
@@ -842,13 +1039,22 @@ fn char_length_compte_les_caracteres() {
 #[test]
 fn octet_length_compte_les_octets_utf8() {
     let db = db_unaire();
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN octet_length('abc') AS l LIMIT 1"), Value::Int64(3));
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN octet_length('caf\u{e9}') AS l LIMIT 1"),
+        valeur(&db, "MATCH (n:S) RETURN octet_length('abc') AS l LIMIT 1"),
+        Value::Int64(3)
+    );
+    assert_eq!(
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN octet_length('caf\u{e9}') AS l LIMIT 1"
+        ),
         Value::Int64(5)
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN octet_length('\u{1f600}') AS l LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN octet_length('\u{1f600}') AS l LIMIT 1"
+        ),
         Value::Int64(4)
     );
 }
@@ -875,7 +1081,10 @@ fn size_dune_chaine_est_coherent_avec_le_decoupage_en_caracteres() {
         &db,
         "MATCH (n:S) RETURN size('caf\u{e9}') AS n, char_length(left('caf\u{e9}', size('caf\u{e9}'))) AS m LIMIT 1",
     );
-    assert_eq!(l[0][0], l[0][1], "size(s) doit compter ce que left(s, size(s)) rend");
+    assert_eq!(
+        l[0][0], l[0][1],
+        "size(s) doit compter ce que left(s, size(s)) rend"
+    );
     assert_eq!(l[0][0], Value::Int64(4));
 }
 
@@ -966,7 +1175,10 @@ fn normalize_produit_une_chaine_effectivement_normalisee() {
     // `normalize(x) IS NFC NORMALIZED` vaut FAUX.
     let db = db_avec(&["cafe\u{301}"]);
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN normalize(n.nom) IS NFC NORMALIZED AS r"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN normalize(n.nom) IS NFC NORMALIZED AS r"
+        ),
         VRAI,
         "la sortie de normalize doit satisfaire IS NFC NORMALIZED"
     );
@@ -984,22 +1196,34 @@ fn le_changement_de_casse_unicode_nest_ni_reversible_ni_conservateur_en_longueur
     // devient deux) et ne redescend pas.
     let db = db_unaire();
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN toupper('stra\u{df}e') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN toupper('stra\u{df}e') AS r LIMIT 1"
+        ),
         Value::String("STRASSE".into())
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN tolower(toupper('stra\u{df}e')) AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN tolower(toupper('stra\u{df}e')) AS r LIMIT 1"
+        ),
         Value::String("strasse".into()),
         "l'aller-retour de casse n'est pas l'identité"
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN char_length(toupper('stra\u{df}e')) AS l LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN char_length(toupper('stra\u{df}e')) AS l LIMIT 1"
+        ),
         Value::Int64(7),
         "la longueur change : 6 caractères deviennent 7"
     );
     // le changement de casse ne normalise pas davantage
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN toupper('cafe\u{301}') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN toupper('cafe\u{301}') AS r LIMIT 1"
+        ),
         Value::String("CAFE\u{301}".into())
     );
 }
@@ -1008,7 +1232,10 @@ fn le_changement_de_casse_unicode_nest_ni_reversible_ni_conservateur_en_longueur
 fn substring_left_et_right_decoupent_en_caracteres() {
     let db = db_unaire();
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN substring('\u{1f600}abc', 0, 2) AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN substring('\u{1f600}abc', 0, 2) AS r LIMIT 1"
+        ),
         Value::String("\u{1f600}a".into()),
         "le découpage ne coupe pas un caractère hors BMP en deux"
     );
@@ -1085,7 +1312,10 @@ fn split_et_string_join_font_un_aller_retour_fidele() {
         );
     }
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN size(split('a,b,,c', ',')) AS l LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN size(split('a,b,,c', ',')) AS l LIMIT 1"
+        ),
         Value::Int64(4),
         "un séparateur doublé produit un élément vide, il ne disparaît pas"
     );
@@ -1160,11 +1390,17 @@ fn split_indexe_suit_la_voie_generale_sur_les_cas_limites() {
 fn string_join_ignore_les_null_de_la_liste() {
     let db = db_unaire();
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN string_join(['a', null, 'b'], '-') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN string_join(['a', null, 'b'], '-') AS r LIMIT 1"
+        ),
         Value::String("a-b".into())
     );
     assert!(matches!(
-        valeur(&db, "MATCH (n:S) RETURN string_join(null, '-') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN string_join(null, '-') AS r LIMIT 1"
+        ),
         Value::Null
     ));
 }
@@ -1181,18 +1417,33 @@ fn group_concat_restitue_toutes_les_valeurs_avec_le_separateur_demande() {
     morceaux.sort_unstable();
     assert_eq!(morceaux, ["aa", "bb", "cc"]);
     // et il s'accorde avec le chemin collect + string_join
-    let r2 = valeur(&db, "MATCH (n:S) RETURN string_join(collect(n.nom), '|') AS g");
-    let Value::String(g2) = r2 else { panic!("chaîne attendue") };
+    let r2 = valeur(
+        &db,
+        "MATCH (n:S) RETURN string_join(collect(n.nom), '|') AS g",
+    );
+    let Value::String(g2) = r2 else {
+        panic!("chaîne attendue")
+    };
     let mut m2: Vec<&str> = g2.split('|').collect();
     m2.sort_unstable();
-    assert_eq!(m2, morceaux, "group_concat et string_join(collect(...)) doivent concorder");
+    assert_eq!(
+        m2, morceaux,
+        "group_concat et string_join(collect(...)) doivent concorder"
+    );
 }
 
 #[test]
 fn les_fonctions_de_chaine_propagent_null() {
     let db = db_unaire();
     for f in [
-        "char_length", "octet_length", "size", "toupper", "tolower", "trim", "ltrim", "rtrim",
+        "char_length",
+        "octet_length",
+        "size",
+        "toupper",
+        "tolower",
+        "trim",
+        "ltrim",
+        "rtrim",
         "normalize",
     ] {
         assert!(
@@ -1209,11 +1460,17 @@ fn les_fonctions_de_chaine_propagent_null() {
 fn replace_et_trim_operent_sur_des_chaines_unicode() {
     let db = db_unaire();
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN replace('caf\u{e9}', '\u{e9}', 'e') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN replace('caf\u{e9}', '\u{e9}', 'e') AS r LIMIT 1"
+        ),
         Value::String("cafe".into())
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN replace('cafe\u{301}', '\u{e9}', 'e') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN replace('cafe\u{301}', '\u{e9}', 'e') AS r LIMIT 1"
+        ),
         Value::String("cafe\u{301}".into()),
         "replace ne normalise pas davantage que l'égalité"
     );
@@ -1222,7 +1479,10 @@ fn replace_et_trim_operent_sur_des_chaines_unicode() {
         Value::String("caf\u{e9}".into())
     );
     assert_eq!(
-        valeur(&db, "MATCH (n:S) RETURN TRIM(BOTH '\u{e9}' FROM '\u{e9}caf\u{e9}') AS r LIMIT 1"),
+        valeur(
+            &db,
+            "MATCH (n:S) RETURN TRIM(BOTH '\u{e9}' FROM '\u{e9}caf\u{e9}') AS r LIMIT 1"
+        ),
         Value::String("caf".into())
     );
 }
@@ -1242,8 +1502,15 @@ fn une_chaine_de_deux_cent_mille_caracteres_traverse_le_moteur() {
         Value::Int64(200_000)
     );
     let q = format!("MATCH (n:S) WHERE n.nom = '{longue}' RETURN char_length(n.nom) AS l");
-    assert_eq!(valeur(&db, &q), Value::Int64(200_000), "égalité sur 200 000 caractères");
-    assert_eq!(valeur(&db, "MATCH (n:S) RETURN n.nom"), Value::String(longue.as_str().into()));
+    assert_eq!(
+        valeur(&db, &q),
+        Value::Int64(200_000),
+        "égalité sur 200 000 caractères"
+    );
+    assert_eq!(
+        valeur(&db, "MATCH (n:S) RETURN n.nom"),
+        Value::String(longue.as_str().into())
+    );
 }
 
 #[test]
@@ -1255,11 +1522,18 @@ fn l_ordre_de_deux_chaines_tres_longues_se_joue_sur_le_dernier_caractere() {
     let b = format!("{}b", "a".repeat(199_999));
     let db = db_avec(&[&b, &a]);
     let ordre = textes(&db, "MATCH (n:S) RETURN n.nom ORDER BY n.nom");
-    assert_eq!(ordre[0], a, "la divergence au dernier caractère doit décider de l'ordre");
+    assert_eq!(
+        ordre[0], a,
+        "la divergence au dernier caractère doit décider de l'ordre"
+    );
     assert_eq!(ordre[1], b);
     // même verdict par le chemin du balayage par intervalle
     assert_eq!(
-        lignes(&db, &format!("MATCH (n:S) WHERE n.nom < '{b}' RETURN n.nom")).len(),
+        lignes(
+            &db,
+            &format!("MATCH (n:S) WHERE n.nom < '{b}' RETURN n.nom")
+        )
+        .len(),
         1
     );
     // et par l'évaluateur
@@ -1278,7 +1552,11 @@ fn contains_et_ends_with_sur_une_chaine_tres_longue() {
     let longue = format!("{}aiguille{}", "x".repeat(100_000), "y".repeat(100_000));
     let db = db_avec(&[&longue, &"x".repeat(200_008)]);
     assert_eq!(
-        lignes(&db, "MATCH (n:S) WHERE n.nom CONTAINS 'aiguille' RETURN n.nom").len(),
+        lignes(
+            &db,
+            "MATCH (n:S) WHERE n.nom CONTAINS 'aiguille' RETURN n.nom"
+        )
+        .len(),
         1
     );
     assert_eq!(
@@ -1286,7 +1564,11 @@ fn contains_et_ends_with_sur_une_chaine_tres_longue() {
         1
     );
     assert_eq!(
-        lignes(&db, "MATCH (n:S) WHERE n.nom STARTS WITH 'xxxx' RETURN n.nom").len(),
+        lignes(
+            &db,
+            "MATCH (n:S) WHERE n.nom STARTS WITH 'xxxx' RETURN n.nom"
+        )
+        .len(),
         2
     );
     // une aiguille elle-même très longue

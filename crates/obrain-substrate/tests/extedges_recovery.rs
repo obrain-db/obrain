@@ -55,16 +55,30 @@ fn les_aretes_externes_survivent_au_kill_sans_flush() {
     }
 
     let store = SubstrateStore::open(tmp.path()).expect("reouverture");
-    assert_eq!(store.external_edge_count(), 3, "les 3 aretes externes doivent revenir");
+    assert_eq!(
+        store.external_edge_count(),
+        3,
+        "les 3 aretes externes doivent revenir"
+    );
 
     let de_a = store.external_edges_from(a);
     assert_eq!(de_a.len(), 2);
-    let doc = de_a.iter().find(|e| e.edge_type == "DOCUMENTS").expect("DOCUMENTS");
+    let doc = de_a
+        .iter()
+        .find(|e| e.edge_type == "DOCUMENTS")
+        .expect("DOCUMENTS");
     assert_eq!(doc.to_store, "agent/system");
     assert_eq!(doc.to_key, "note_6b608fa4");
     assert_eq!(doc.to_host, None);
-    let mir = de_a.iter().find(|e| e.edge_type == "MIRRORS").expect("MIRRORS");
-    assert_eq!(mir.to_host.as_deref(), Some("dgx-2"), "l'hote encode doit survivre");
+    let mir = de_a
+        .iter()
+        .find(|e| e.edge_type == "MIRRORS")
+        .expect("MIRRORS");
+    assert_eq!(
+        mir.to_host.as_deref(),
+        Some("dgx-2"),
+        "l'hote encode doit survivre"
+    );
 
     // Registre inverse reconstruit : qui pointe vers agent/system:note_6b608fa4 ?
     let inbound = store.external_inbound_refs("agent/system", "note_6b608fa4");
@@ -116,9 +130,15 @@ fn detach_delete_emporte_les_externes_sortantes_et_survit_au_kill() {
         store.definir_seuil_checkpoint(0);
         a = store.create_node(&["Note"]);
         b = store.create_node(&["Note"]);
-        store.create_external_edge(a, "DOCUMENTS", None, "cible", "k1").expect("creation");
-        store.create_external_edge(a, "REFERS_TO", None, "cible", "k2").expect("creation");
-        store.create_external_edge(b, "DOCUMENTS", None, "cible", "k3").expect("creation");
+        store
+            .create_external_edge(a, "DOCUMENTS", None, "cible", "k1")
+            .expect("creation");
+        store
+            .create_external_edge(a, "REFERS_TO", None, "cible", "k2")
+            .expect("creation");
+        store
+            .create_external_edge(b, "DOCUMENTS", None, "cible", "k3")
+            .expect("creation");
         // DETACH DELETE de a : ses externes SORTANTES partent avec lui
         // (elles vivent chez lui — spec paragraphe 4) ; celles de b restent.
         store.delete_node_edges(a);
@@ -175,7 +195,9 @@ fn le_sidecar_seul_suffit_apres_flush_et_checkpoint() {
     {
         let store = SubstrateStore::create(tmp.path()).expect("creation");
         let a = store.create_node(&["Note"]);
-        store.create_external_edge(a, "DOCUMENTS", None, "cible", "k1").expect("creation");
+        store
+            .create_external_edge(a, "DOCUMENTS", None, "cible", "k1")
+            .expect("creation");
         store.flush().expect("flush");
         // Checkpoint = troncature du WAL : la fenetre de rejeu disparait,
         // seul le sidecar porte encore le registre.
@@ -204,7 +226,10 @@ fn delete_edge_route_le_bit_haut_vers_le_registre_externe() {
     // delete_edge sur un id a bit haut supprime l'externe, pas l'interne.
     assert!(store.delete_edge(externe));
     assert_eq!(store.external_edge_count(), 0);
-    assert!(store.get_edge(interne).is_some(), "l'arete interne ne bouge pas");
+    assert!(
+        store.get_edge(interne).is_some(),
+        "l'arete interne ne bouge pas"
+    );
     // Idempotence.
     assert!(!store.delete_edge(externe));
     // Un id externe ne resout jamais un get_edge interne.

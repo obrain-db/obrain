@@ -15,8 +15,8 @@
 
 use obrain_engine::ObrainDB;
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 fn pct(sorted_us: &[u128], p: f64) -> u128 {
     if sorted_us.is_empty() {
@@ -82,11 +82,19 @@ fn main() {
     let t0 = Instant::now();
     db.create_property_index("id");
     db.create_property_index("singleton");
-    println!("create_property_index x2 : {:.2} s", t0.elapsed().as_secs_f64());
+    println!(
+        "create_property_index x2 : {:.2} s",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Cibles réparties sur tout l'espace de clés (évite un biais de localité).
     let targets: Vec<String> = (0..n_probes)
-        .map(|k| format!("obj_{:08}", (k * n_nodes.max(1) / n_probes.max(1)) % n_nodes.max(1)))
+        .map(|k| {
+            format!(
+                "obj_{:08}",
+                (k * n_nodes.max(1) / n_probes.max(1)) % n_nodes.max(1)
+            )
+        })
         .collect();
 
     // ---- A. MATCH par clé indexée (mono-thread) -------------------------

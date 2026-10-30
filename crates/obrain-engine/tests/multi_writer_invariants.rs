@@ -125,7 +125,8 @@ fn second_writer_exclusif_refuse_pendant_shared_write() {
     );
 
     // Le writer partagé continue de fonctionner (invariant de sûreté).
-    s.execute("CREATE (:A {id: 2})").expect("create après refus");
+    s.execute("CREATE (:A {id: 2})")
+        .expect("create après refus");
     writer.checkpoint().expect("checkpoint");
     assert_eq!(writer.node_count(), 2);
 }
@@ -362,8 +363,8 @@ fn lecture_ro_pendant_writer_thread_sans_blocage() {
 
 #[test]
 fn parallel_executor_batch_reel_substrate() {
-    use obrain_engine::transaction::parallel::{BatchRequest, ParallelExecutor};
     use obrain_engine::transaction::EntityId;
+    use obrain_engine::transaction::parallel::{BatchRequest, ParallelExecutor};
 
     let td = tempfile::tempdir().unwrap();
     let chemin = td.path().join("mw-parallel");
@@ -384,7 +385,10 @@ fn parallel_executor_batch_reel_substrate() {
         let _ = idx;
     });
 
-    assert!(result.all_succeeded(), "batch réel : toutes les ops réussissent");
+    assert!(
+        result.all_succeeded(),
+        "batch réel : toutes les ops réussissent"
+    );
     assert_eq!(result.failure_count, 0);
     assert_eq!(
         db.node_count(),
@@ -396,7 +400,11 @@ fn parallel_executor_batch_reel_substrate() {
     // même Writer/WAL que la voie séquentielle).
     drop(db);
     let db2 = ObrainDB::open_substrate(&chemin).expect("réouverture");
-    assert_eq!(db2.node_count(), 12, "zéro perte après batch parallèle réel");
+    assert_eq!(
+        db2.node_count(),
+        12,
+        "zéro perte après batch parallèle réel"
+    );
 }
 
 // ============================================================================
@@ -447,11 +455,20 @@ fn import_bulk_400k_1600k_non_regresse() {
     }
 
     let t0 = Instant::now();
-    let (nn, mm) = db.bulk_import(&labels, &src, &dst, &etypes).expect("bulk zone-direct");
+    let (nn, mm) = db
+        .bulk_import(&labels, &src, &dst, &etypes)
+        .expect("bulk zone-direct");
     db.checkpoint().expect("checkpoint");
     let total = t0.elapsed();
-    eprintln!("bulk 400k/1,6M : {:.3} s (repère ≈ 0,26 s)", total.as_secs_f64());
-    assert_eq!((nn as usize, mm as usize), (n as usize, m as usize), "retour bulk exact");
+    eprintln!(
+        "bulk 400k/1,6M : {:.3} s (repère ≈ 0,26 s)",
+        total.as_secs_f64()
+    );
+    assert_eq!(
+        (nn as usize, mm as usize),
+        (n as usize, m as usize),
+        "retour bulk exact"
+    );
     // ── LE REPÈRE DE TEMPS EST OPT-IN (doctrine du 2026-09-17) ──────────────
     // Une garde de temps mural dans la porte PAR DÉFAUT est un test qui dépend
     // de l'environnement : mesuré sur cette machine (charge 7,6 pour 16 cœurs,

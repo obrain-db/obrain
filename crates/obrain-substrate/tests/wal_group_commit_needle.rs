@@ -163,7 +163,10 @@ fn needle_le_seuil_d_octets_declenche_avant_le_seuil_de_records() {
     // trois fois SEUIL_OCTETS. Le seuil de records ne peut donc PAS être la cause
     // des flush observés — c'est bien la borne MÉMOIRE qui déclenche.
     let n = 192usize;
-    assert!(n < SEUIL_RECORDS, "le seuil de records ne doit pas pouvoir jouer");
+    assert!(
+        n < SEUIL_RECORDS,
+        "le seuil de records ne doit pas pouvoir jouer"
+    );
     for i in 0..n as u64 {
         w.append(record(i, 65_536)).unwrap();
     }
@@ -273,10 +276,7 @@ fn needle_un_record_a_exigence_de_sync_force_le_flush_immediat() {
     // c'est une demande adressée à l'écrivain, pas un état du journal (aucun
     // octet du format ne change).
     let r = WalReader::open(&chemin).unwrap();
-    let lus: Vec<WalRecord> = r
-        .iter_from(0)
-        .map(|i| i.expect("relu").0)
-        .collect();
+    let lus: Vec<WalRecord> = r.iter_from(0).map(|i| i.expect("relu").0).collect();
     assert_eq!(lus.len(), 2);
     for rec in &lus {
         assert_eq!(
@@ -313,7 +313,10 @@ fn needle_le_group_commit_ecrit_les_memes_octets_que_n_appends() {
     }
     groupe.commit_point().unwrap();
 
-    let (pg, pi) = (dir.path().join("groupe.wal"), dir.path().join("immediat.wal"));
+    let (pg, pi) = (
+        dir.path().join("groupe.wal"),
+        dir.path().join("immediat.wal"),
+    );
     assert_eq!(
         std::fs::read(&pg).unwrap(),
         std::fs::read(&pi).unwrap(),
@@ -476,7 +479,11 @@ fn needle_la_troncature_compte_le_tampon_et_ne_reeemet_aucun_lsn() {
         ancre_avant + octets_en_attente,
         "l'ancre doit avancer de la taille du segment abandonné, tampon COMPRIS"
     );
-    assert_eq!(w.records_en_tampon(), 0, "le tampon a été vidé par la troncature");
+    assert_eq!(
+        w.records_en_tampon(),
+        0,
+        "le tampon a été vidé par la troncature"
+    );
     assert_eq!(w.octets_en_tampon(), 0);
     assert_eq!(taille_fichier(&chemin), 0, "le segment est bien tronqué");
 
@@ -518,7 +525,10 @@ fn needle_une_queue_dechiree_refuse_aussi_la_pose_du_tampon() {
     assert_eq!(w.records_en_tampon(), 1);
 
     w.forcer_queue_a_repairer("déchirure simulée pour le test");
-    assert!(w.append(record(2, 40)).is_err(), "l'append doit être refusé");
+    assert!(
+        w.append(record(2, 40)).is_err(),
+        "l'append doit être refusé"
+    );
     assert!(
         w.commit_point().is_err(),
         "la POSE du tampon doit être refusée elle aussi : c'est le défaut corrigé"

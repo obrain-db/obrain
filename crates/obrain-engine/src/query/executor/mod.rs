@@ -565,8 +565,8 @@ mod tests {
 
     #[test]
     fn test_executor_timeout_expired() {
-        use web_time::Instant;
         use std::time::Duration;
+        use web_time::Instant;
 
         // Set a deadline that has already passed
         let executor = Executor::with_columns(vec!["value".to_string()]).with_deadline(Some(

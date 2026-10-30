@@ -95,9 +95,15 @@ fn table_simulee() -> Vec<Migration> {
 fn store_neuf_version_courante_et_migrer_noop() {
     let td = tempfile::tempdir().unwrap();
     store_ferme_avec(td.path(), 3);
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     migrer_repertoire(td.path()).expect("migrer sur store a jour = no-op");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     assert_eq!(compter_noeuds(td.path()), 3);
 }
 
@@ -113,7 +119,10 @@ fn chaine_simulee_migre_et_une_seule_fois() {
     assert_eq!(lire_version_meta(td.path()).unwrap(), 0);
 
     migrer_repertoire_avec_table(td.path(), &table_simulee()).expect("migration simulee");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     assert_eq!(passages(td.path()), 1, "l'etape court UNE fois");
 
     // Idempotence : un second passage est un no-op total.
@@ -150,7 +159,10 @@ fn etape_dechiree_ne_bump_pas_puis_reprise_aboutit() {
 
     // Reprise : la bonne table aboutit (l'etape est idempotente par contrat).
     migrer_repertoire_avec_table(td.path(), &table_simulee()).expect("reprise");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     assert_eq!(compter_noeuds(td.path()), 2);
 }
 
@@ -222,7 +234,10 @@ fn kill_9_pendant_migration_puis_reprise() {
 
     // REPRISE idempotente : la migration relancee aboutit.
     migrer_repertoire_avec_table(td.path(), &table_simulee()).expect("reprise apres kill");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     assert_eq!(compter_noeuds(td.path()), 4);
 }
 
@@ -262,7 +277,10 @@ fn version_ancienne_sans_etape_refusee_a_l_ouverture() {
         Ok(_) => panic!("version sans chemin acceptee"),
     };
     let msg = format!("{err}");
-    assert!(msg.contains('0'), "le refus nomme la version trouvee : {msg}");
+    assert!(
+        msg.contains('0'),
+        "le refus nomme la version trouvee : {msg}"
+    );
     assert_eq!(
         lire_version_meta(td.path()).unwrap(),
         0,

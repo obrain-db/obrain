@@ -380,7 +380,10 @@ fn test_prepare_commit_lifecycle() {
     // endroits se contredisaient ; le témoin qui reste est celui qui dit la
     // vérité mesurée.
     let info = prepared.info();
-    assert_eq!(info.nodes_written, 1, "un nœud écrit doit être compté AVANT le commit");
+    assert_eq!(
+        info.nodes_written, 1,
+        "un nœud écrit doit être compté AVANT le commit"
+    );
 
     // Attach metadata
     prepared.set_metadata("audit_user", "admin");

@@ -35,9 +35,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use obrain_substrate::SubstrateFile;
 use obrain_substrate::wal::{WalPayload, WalRecord};
 use obrain_substrate::wal_io::{SyncMode, WalReader, WalWriter};
-use obrain_substrate::SubstrateFile;
 
 /// Records écrits par chaque processus dans les sondes de perte.
 const M: u64 = 2000;
@@ -325,11 +325,7 @@ fn p2_lsn_par_instance_se_duplique_entre_processus() {
     );
     a.attendre("PRET"); // A a écrit 1 frame (LSN 1)
 
-    let mut b = Enfant::lancer(
-        test,
-        "p2b",
-        &[("MW_WAL", wal.display().to_string())],
-    );
+    let mut b = Enfant::lancer(test, "p2b", &[("MW_WAL", wal.display().to_string())]);
     b.attendre("FIN");
     b.terminer();
 
@@ -421,7 +417,11 @@ fn p3_deux_processus_shared_write_coexistent() {
     eprintln!(
         "SONDE 3 : 2ᵉ shared-write (parent, autre processus) = {} · \
          ouvertures exclusives refusées : parent={} · enfant tiers={}",
-        if second.is_ok() { "ACCEPTÉ" } else { "REFUSÉ" },
+        if second.is_ok() {
+            "ACCEPTÉ"
+        } else {
+            "REFUSÉ"
+        },
         excl.is_err(),
         verdict.contains("EXCLUSIF_REFUSE")
     );

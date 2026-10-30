@@ -14,8 +14,8 @@ use obrain_common::types::NodeId;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use crate::store_trait::{
     OptionalGraphStore, PROP_SCAR_COUNT, PROP_SCAR_INTENSITY, load_node_f64, persist_node_f64,

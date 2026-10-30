@@ -18,7 +18,10 @@ fn main() {
     for i in 0..n {
         // « tokens » apparaît dans TOUS les documents : la requête visite
         // exactement n postings, ce qui donne un coût par posting honnête.
-        index.insert(NodeId::new(i), &format!("tokens common document number {i}"));
+        index.insert(
+            NodeId::new(i),
+            &format!("tokens common document number {i}"),
+        );
     }
 
     // Warm-up : la première recherche paie l'allocation du scratch/accumulateur.

@@ -13,7 +13,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use obrain_substrate::wal::{WalPayload, WalRecord};
-use obrain_substrate::wal_io::{ANCRE_INITIALE, CoordinationAppend, SyncMode, WalReader, WalWriter};
+use obrain_substrate::wal_io::{
+    ANCRE_INITIALE, CoordinationAppend, SyncMode, WalReader, WalWriter,
+};
 
 fn role() -> Option<String> {
     std::env::var("MWB_ROLE").ok()
@@ -268,7 +270,6 @@ fn t2_checkpoint_d_un_processus_ne_perd_pas_l_append_de_l_autre() {
          PRÉCÉDENT"
     );
 }
-
 
 // ===========================================================================
 // T5 — UN SEUL CHECKPOINTEUR À LA FOIS (pièce 1, élection)

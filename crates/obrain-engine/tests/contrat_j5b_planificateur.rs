@@ -167,7 +167,11 @@ fn contains_ne_balaie_pas_quand_la_route_sert() {
     //       encore (0 slot) et rend le MÊME ensemble que le balayage. ──
     let (temoin_balayage, _) = mesurer_slots(|| lignes(&db, Q_FREQUENT));
     let (indexe, slots_indexe) = mesurer_slots(|| lignes(&db, Q_FREQUENT));
-    assert_eq!(temoin_balayage.len(), N / 2, "le banc doit porter N/2 communs");
+    assert_eq!(
+        temoin_balayage.len(),
+        N / 2,
+        "le banc doit porter N/2 communs"
+    );
     assert_eq!(
         slots_indexe, 0,
         "sous le plancher par defaut, le frequent reste indexe (petit store)"
@@ -185,10 +189,11 @@ fn contains_ne_balaie_pas_quand_la_route_sert() {
 #[test]
 fn orderby_par_label_ne_lit_pas_plus_que_le_balayage() {
     let db = banc();
-    let (_, slots_temoin) = mesurer_slots(|| {
-        lignes(&db, "MATCH (n:D) RETURN n.qualified_name")
-    });
-    assert!(slots_temoin > 0, "le temoin doit balayer, sinon rien n'est mesure");
+    let (_, slots_temoin) = mesurer_slots(|| lignes(&db, "MATCH (n:D) RETURN n.qualified_name"));
+    assert!(
+        slots_temoin > 0,
+        "le temoin doit balayer, sinon rien n'est mesure"
+    );
     let (r, slots_orderby) = mesurer_slots(|| {
         lignes(
             &db,

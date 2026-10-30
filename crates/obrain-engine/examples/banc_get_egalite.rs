@@ -50,7 +50,10 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| "mnt.obrain.sources.linux_6.6:branch:DETACHED".to_string());
     let sondes: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50);
-    let propriete = args.get(3).cloned().unwrap_or_else(|| "qualified_name".to_string());
+    let propriete = args
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| "qualified_name".to_string());
 
     let t_open = Instant::now();
     let db = ObrainDB::open_read_only(std::path::Path::new(&chemin)).expect("ouverture");
@@ -61,8 +64,7 @@ fn main() {
     );
 
     let session = db.session();
-    let q =
-        format!("MATCH (n) WHERE n.{propriete} = '{valeur}' RETURN n.{propriete} AS q");
+    let q = format!("MATCH (n) WHERE n.{propriete} = '{valeur}' RETURN n.{propriete} AS q");
 
     // Le PLAN, tel que le planificateur le rend : c'est le verdict structurel,
     // indépendant de la charge machine.

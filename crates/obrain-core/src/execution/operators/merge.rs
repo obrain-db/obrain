@@ -136,7 +136,9 @@ impl MergeOperator {
         // base agent), deux MERGE successifs pouvaient cibler deux noeuds
         // DIFFERENTS. La regle min-NodeId est stable, converge, et c'est
         // la meme que la resolution de course post-creation ci-dessous.
-        self.porteurs_du_motif(resolved_match_props).into_iter().min()
+        self.porteurs_du_motif(resolved_match_props)
+            .into_iter()
+            .min()
     }
 
     /// (2026-08-17, unicite MERGE) TOUS les porteurs VIVANTS du motif de
@@ -288,7 +290,8 @@ impl MergeOperator {
                 if let Some(tid) = self.transaction_id {
                     self.store.delete_node_versioned(
                         cree,
-                        self.viewing_epoch.unwrap_or_else(|| self.store.current_epoch()),
+                        self.viewing_epoch
+                            .unwrap_or_else(|| self.store.current_epoch()),
                         tid,
                     );
                 } else {

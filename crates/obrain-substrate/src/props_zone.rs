@@ -481,7 +481,8 @@ impl PropsZone {
 
     /// Les zones ont-elles grandi sur disque depuis notre projection ?
     pub(crate) fn a_grandi_sur_disque(&self) -> bool {
-        self.props.longueur_disque() > self.props.len() || self.heap.longueur_disque() > self.heap.len()
+        self.props.longueur_disque() > self.props.len()
+            || self.heap.longueur_disque() > self.heap.len()
     }
 
     /// Reprojette les deux zones si un autre processus les a agrandies (voir
@@ -562,7 +563,9 @@ impl PropsZone {
             self.ensure_page_addressable(self.next_page_idx.saturating_add(pages_props - 1))?;
         }
         if pages_tas > 0 {
-            self.ensure_heap_page_addressable(self.next_heap_page_idx.saturating_add(pages_tas - 1))?;
+            self.ensure_heap_page_addressable(
+                self.next_heap_page_idx.saturating_add(pages_tas - 1),
+            )?;
         }
         Ok(())
     }
@@ -609,7 +612,8 @@ impl PropsZone {
     /// Écrit d'un bloc les pages de propriétés accumulées.
     pub(crate) fn vider_pages(&mut self, tampon: &mut TamponPages) -> SubstrateResult<()> {
         if !tampon.octets.is_empty() {
-            self.props.ecrire_a(tampon.debut as u64 * PAGE_SIZE as u64, &tampon.octets)?;
+            self.props
+                .ecrire_a(tampon.debut as u64 * PAGE_SIZE as u64, &tampon.octets)?;
             tampon.octets.clear();
         }
         Ok(())
@@ -634,7 +638,11 @@ impl PropsZone {
         }
         // Première utilisation : reprendre la page de queue existante, comme
         // le ferait `intern_bytes`.
-        if lot.page.is_none() && lot.reprise.is_none() && lot.neuves.octets.is_empty() && self.next_heap_page_idx > 0 {
+        if lot.page.is_none()
+            && lot.reprise.is_none()
+            && lot.neuves.octets.is_empty()
+            && self.next_heap_page_idx > 0
+        {
             let tail = self.next_heap_page_idx - 1;
             lot.page = Some((tail, self.read_heap_page(tail)?));
             lot.reprise = Some(tail);
@@ -642,7 +650,10 @@ impl PropsZone {
         if let Some((idx, page)) = lot.page.as_mut()
             && let Some(off) = page.append(bytes)
         {
-            return Ok(crate::page::HeapRef { page_id: *idx, offset: off });
+            return Ok(crate::page::HeapRef {
+                page_id: *idx,
+                offset: off,
+            });
         }
         // Page pleine (ou aucune) : on scelle et on écrit la précédente, puis
         // on en ouvre une neuve.
@@ -656,9 +667,14 @@ impl PropsZone {
             .checked_add(1)
             .ok_or_else(|| SubstrateError::WalBadFrame("heap zone page id overflow".into()))?;
         let mut page = HeapPage::new(new_idx);
-        let off = page.append(bytes).expect("fresh heap page fits single entry");
+        let off = page
+            .append(bytes)
+            .expect("fresh heap page fits single entry");
         lot.page = Some((new_idx, page));
-        Ok(crate::page::HeapRef { page_id: new_idx, offset: off })
+        Ok(crate::page::HeapRef {
+            page_id: new_idx,
+            offset: off,
+        })
     }
 
     /// Scelle et écrit la page de queue tenue par `lot`. À appeler avant tout
@@ -680,7 +696,12 @@ impl PropsZone {
 
     /// Une page de tas terminée : la page REPRISE est réécrite en place ; une
     /// page neuve rejoint le bloc, vidé par `pwrite` quand il est plein.
-    fn poser_page_tas(&mut self, lot: &mut TasEnLot, idx: u32, page: &HeapPage) -> SubstrateResult<()> {
+    fn poser_page_tas(
+        &mut self,
+        lot: &mut TasEnLot,
+        idx: u32,
+        page: &HeapPage,
+    ) -> SubstrateResult<()> {
         if lot.reprise == Some(idx) || lot_par_projection() {
             return self.write_heap_page(idx, page);
         }
@@ -693,7 +714,9 @@ impl PropsZone {
             idx as usize,
             "les pages de tas d'un lot sont contiguës"
         );
-        lot.neuves.octets.extend_from_slice(bytemuck::bytes_of(page));
+        lot.neuves
+            .octets
+            .extend_from_slice(bytemuck::bytes_of(page));
         if lot.neuves.octets.len() >= BLOC_ECRITURE {
             let debut = lot.neuves.debut as u64 * HEAP_PAGE_SIZE as u64;
             self.heap.ecrire_a(debut, &lot.neuves.octets)?;
@@ -730,7 +753,8 @@ impl PropsZone {
         self.ensure_page_addressable(carrier_idx)?;
         // Unité 0 — contrôle (unités 1..=7 à réserver).
         let mut ctrl = crate::unite::CarrierControl::new();
-        ctrl.reserver_unite().expect("unité 1 réservable sur carrier neuf");
+        ctrl.reserver_unite()
+            .expect("unité 1 réservable sur carrier neuf");
         ctrl.seal_crc32();
         {
             let page = self.page_slice_mut(carrier_idx).expect("adressable");
@@ -791,8 +815,8 @@ impl PropsZone {
                 cur = decode_page_id(page.header.next_page);
                 continue;
             }
-            let deplacee_vers_ce_proprietaire = (stamp as usize) < old_to_new.len()
-                && old_to_new[stamp as usize] == proprietaire;
+            let deplacee_vers_ce_proprietaire =
+                (stamp as usize) < old_to_new.len() && old_to_new[stamp as usize] == proprietaire;
             if !deplacee_vers_ce_proprietaire {
                 // Page étrangère / parasite : ne pas épisser, s'arrêter.
                 break;
@@ -1274,8 +1298,7 @@ impl PropsZone {
                     Ok(_) => {
                         slot.seal_crc32();
                         let base = self.page_slice_mut(carrier).expect("adressable");
-                        base[debut..debut + UNITE_SIZE]
-                            .copy_from_slice(bytemuck::bytes_of(&slot));
+                        base[debut..debut + UNITE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot));
                         Ok(addr)
                     }
                     Err(crate::page::PropertyCodecError::PageFull { .. }) => {
@@ -1309,8 +1332,9 @@ impl PropsZone {
                     let suivant = unite + 1;
                     self.maj_controle_carrier(carrier, suivant)?;
                     self.carrier_pack_ouvert = Some((carrier, suivant));
-                    return crate::unite::encode_slot(carrier, unite)
-                        .ok_or_else(|| SubstrateError::WalBadFrame("encodage slot impossible".to_string()));
+                    return crate::unite::encode_slot(carrier, unite).ok_or_else(|| {
+                        SubstrateError::WalBadFrame("encodage slot impossible".to_string())
+                    });
                 }
             }
             // Nouveau carrier : unité 0 = contrôle, unité 1 = 1re chaîne.
@@ -1330,8 +1354,9 @@ impl PropsZone {
             self.ecrire_slot_unite(carrier, 1, owner_id, kind, entry)?;
             self.maj_controle_carrier(carrier, 2)?;
             self.carrier_pack_ouvert = Some((carrier, 2));
-            return crate::unite::encode_slot(carrier, 1)
-                .ok_or_else(|| SubstrateError::WalBadFrame("encodage slot impossible".to_string()));
+            return crate::unite::encode_slot(carrier, 1).ok_or_else(|| {
+                SubstrateError::WalBadFrame("encodage slot impossible".to_string())
+            });
         }
         let idx = self.allouer_page_neuve(owner_id, kind, None, entry)?;
         Ok(u64::from(idx))
@@ -1365,9 +1390,9 @@ impl PropsZone {
     /// Met à jour le compteur d'unités utilisées du carrier (contrôle scellé).
     fn maj_controle_carrier(&mut self, carrier: u32, nb: u8) -> SubstrateResult<()> {
         let mut ctrl: crate::unite::CarrierControl = {
-            let base = self
-                .page_slice(carrier)
-                .ok_or_else(|| SubstrateError::WalBadFrame(format!("carrier {carrier} hors zone")))?;
+            let base = self.page_slice(carrier).ok_or_else(|| {
+                SubstrateError::WalBadFrame(format!("carrier {carrier} hors zone"))
+            })?;
             *bytemuck::from_bytes(&base[..core::mem::size_of::<crate::unite::CarrierControl>()])
         };
         ctrl.nb_unites_utilisees = nb;
@@ -1509,11 +1534,7 @@ impl PropsZone {
         live: &mut FxHashMap<u16, PropertyEntry>,
         tombstoned: &mut FxHashSet<u16>,
     ) -> SubstrateResult<()> {
-        self.collect_live_props_by_key_unite(
-            Self::tete_legacy_u64(head),
-            live,
-            tombstoned,
-        )
+        self.collect_live_props_by_key_unite(Self::tete_legacy_u64(head), live, tombstoned)
     }
 
     /// Variante unité-aware de [`Self::collect_live_props_by_key`].
@@ -1927,7 +1948,11 @@ mod tests {
             head = Some(pz.append_entry(1, head, &e).unwrap());
         }
         pz.flush().unwrap();
-        assert_eq!(head, Some(1), "le lot 1 doit tenir sur une seule page props");
+        assert_eq!(
+            head,
+            Some(1),
+            "le lot 1 doit tenir sur une seule page props"
+        );
 
         // Image disque de l'etat PLEINEMENT durable.
         let dir_durable = tempfile::tempdir().unwrap();
@@ -2019,7 +2044,8 @@ mod tests {
     // =================================================================
 
     /// Nombre d'octets utiles d'une page heap (payload).
-    const HEAP_PAYLOAD: usize = HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>();
+    const HEAP_PAYLOAD: usize =
+        HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>();
 
     /// Remplit une page heap entiere avec un enregistrement unique, de
     /// sorte que chaque `intern_bytes` consomme exactement une page : les
@@ -2061,7 +2087,10 @@ mod tests {
         }
         pz.flush().unwrap();
         let heap_durable = pz.allocated_heap_page_count();
-        assert_eq!(heap_durable, 2, "lot 1 doit occuper exactement 2 pages heap");
+        assert_eq!(
+            heap_durable, 2,
+            "lot 1 doit occuper exactement 2 pages heap"
+        );
 
         // Image disque de l'etat pleinement durable.
         let dir_durable = tempfile::tempdir().unwrap();
@@ -2870,15 +2899,13 @@ mod tests {
         }
         // Relecture depuis la zone : contrôle puis slot (owner, entrée, CRC).
         let page = pz.page_slice(1).expect("carrier 1 lisible");
-        let ctrl: &crate::unite::CarrierControl = bytemuck::from_bytes(
-            &page[..core::mem::size_of::<crate::unite::CarrierControl>()],
-        );
+        let ctrl: &crate::unite::CarrierControl =
+            bytemuck::from_bytes(&page[..core::mem::size_of::<crate::unite::CarrierControl>()]);
         assert_eq!(ctrl.magic, crate::unite::CARRIER_PACKED_MAGIC);
         assert_eq!(ctrl.nb_unites_utilisees, 2, "contrôle + unité 1 réservés");
         assert_eq!(ctrl.crc32, ctrl.compute_crc32());
-        let slot: &crate::unite::SlotPage = bytemuck::from_bytes(
-            &page[crate::unite::UNITE_SIZE..2 * crate::unite::UNITE_SIZE],
-        );
+        let slot: &crate::unite::SlotPage =
+            bytemuck::from_bytes(&page[crate::unite::UNITE_SIZE..2 * crate::unite::UNITE_SIZE]);
         assert_eq!(slot.header.node_id, 9);
         assert_eq!(slot.header.magic, crate::page::PROP_PAGE_MAGIC_NODE);
         assert!(slot.verify_crc32(), "CRC du slot valide");

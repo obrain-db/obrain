@@ -2550,7 +2550,9 @@ impl RdfExpressionPredicate {
                     }
                 }
                 match (left, right) {
-                    (Value::Int64(l), Value::Int64(r)) if *r != 0 => l.checked_div(*r).map(Value::Int64),
+                    (Value::Int64(l), Value::Int64(r)) if *r != 0 => {
+                        l.checked_div(*r).map(Value::Int64)
+                    }
                     (Value::Float64(l), Value::Float64(r)) if *r != 0.0 => {
                         Some(Value::Float64(l / r))
                     }
@@ -2572,7 +2574,9 @@ impl RdfExpressionPredicate {
                 }
             }
             BinaryFilterOp::Mod => match (left, right) {
-                (Value::Int64(l), Value::Int64(r)) if *r != 0 => l.checked_rem(*r).map(Value::Int64),
+                (Value::Int64(l), Value::Int64(r)) if *r != 0 => {
+                    l.checked_rem(*r).map(Value::Int64)
+                }
                 _ => None,
             },
             BinaryFilterOp::Contains => match (left, right) {

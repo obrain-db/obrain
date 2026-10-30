@@ -104,7 +104,10 @@ fn ecriture_courte_le_quota_dechire_la_frame_et_l_append_l_annule() {
             demandes,
             position,
         } => {
-            assert!(*ecrits > 0, "une écriture COURTE a bien transféré des octets");
+            assert!(
+                *ecrits > 0,
+                "une écriture COURTE a bien transféré des octets"
+            );
             assert!(*ecrits < *demandes, "mais pas la frame entière");
             assert_eq!(*position, taille_saine, "elle a commencé à la fin saine");
         }

@@ -9,8 +9,8 @@ mod rdf;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_common::types::{EdgeId, EpochId, NodeId, TransactionId, Value};
 use obrain_common::utils::error::Result;
@@ -248,7 +248,6 @@ fn erreur_de_conflit_rejouable(e: &obrain_common::utils::error::Error) -> bool {
         || texte.contains("TransactionConflict")
 }
 
-
 /// Ce qu'un point d'entrée SAIT du plan quand il franchit
 /// [`Session::with_auto_commit`].
 ///
@@ -377,7 +376,9 @@ impl Session {
     /// les deux cas — le drapeau `transaction_auto` fait la difference.
     fn in_explicit_transaction(&self) -> bool {
         self.current_transaction.lock().is_some()
-            && !self.transaction_auto.load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .transaction_auto
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Sets the cognitive engine for this session (shared with the database).
@@ -407,10 +408,7 @@ impl Session {
     /// right after constructing a session so substrate-native procedures
     /// (`CALL obrain.window_2d`, RFC zorder-superposition C5) resolve at
     /// query-plan time. `None` on non-substrate backends.
-    pub(crate) fn set_substrate_store(
-        &mut self,
-        store: Arc<obrain_substrate::SubstrateStore>,
-    ) {
+    pub(crate) fn set_substrate_store(&mut self, store: Arc<obrain_substrate::SubstrateStore>) {
         self.substrate_store = Some(store);
     }
 
@@ -1260,7 +1258,8 @@ impl Session {
                         // jamais rejoué). Un échec est journalisé, jamais fatal :
                         // le type vaut pour la session courante, et le fichier
                         // sera réécrit au prochain CREATE réussi.
-                        if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json) {
+                        if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json)
+                        {
                             if let Err(e) = sub.declarer_type("node", &stmt.name, json) {
                                 tracing::error!(
                                     erreur = %e,
@@ -1327,7 +1326,8 @@ impl Session {
                                 constraints: Vec::new(),
                             }
                         );
-                        if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json) {
+                        if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json)
+                        {
                             if let Err(e) = sub.declarer_type("edge", &stmt.name, json) {
                                 tracing::error!(
                                     erreur = %e,
@@ -2567,7 +2567,6 @@ impl Session {
 
         let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-
         let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
@@ -2672,8 +2671,7 @@ impl Session {
             let rows_scanned = result.rows.len() as u64;
             // `None` sur wasm32 : la mesure est laissée ABSENTE, pas
             // remplacée par un zéro qui se ferait passer pour elle.
-            result.execution_time_ms =
-                start_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
+            result.execution_time_ms = start_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
             result.rows_scanned = Some(rows_scanned);
 
             Ok(result)
@@ -2803,7 +2801,6 @@ impl Session {
         let has_mutations = Self::query_looks_like_mutation(query);
         let active = self.active_store();
 
-
         self.with_auto_commit(Nature::Texte(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
@@ -2813,8 +2810,8 @@ impl Session {
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
-let processor = processor
-    .with_session_context(self.build_session_context(Arc::clone(&active)));
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
 
             // Apply transaction context if in a transaction
             let processor = if let Some(transaction_id) = transaction_id {
@@ -2987,7 +2984,6 @@ let processor = processor
 
         let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-
         let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
@@ -3059,7 +3055,6 @@ let processor = processor
 
         let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-
         let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
@@ -3112,8 +3107,8 @@ let processor = processor
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
-let processor = processor
-    .with_session_context(self.build_session_context(Arc::clone(&active)));
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
             let processor = if let Some(transaction_id) = transaction_id {
                 processor.with_transaction_context(viewing_epoch, transaction_id)
             } else {
@@ -3186,7 +3181,6 @@ let processor = processor
         let optimized_plan = optimizer.optimize(logical_plan)?;
         let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-
         let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let planner =
@@ -3234,8 +3228,8 @@ let processor = processor
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
-let processor = processor
-    .with_session_context(self.build_session_context(Arc::clone(&active)));
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
             let processor = if let Some(transaction_id) = transaction_id {
                 processor.with_transaction_context(viewing_epoch, transaction_id)
             } else {
@@ -3341,7 +3335,6 @@ let processor = processor
         let active = self.active_store();
         let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-
         let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let planner =
@@ -3389,8 +3382,8 @@ let processor = processor
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
-let processor = processor
-    .with_session_context(self.build_session_context(Arc::clone(&active)));
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
             let processor = if let Some(transaction_id) = transaction_id {
                 processor.with_transaction_context(viewing_epoch, transaction_id)
             } else {
@@ -3467,8 +3460,8 @@ let processor = processor
                             Arc::clone(&active),
                             Arc::clone(&self.transaction_manager),
                         )?;
-let processor = processor
-    .with_session_context(self.build_session_context(Arc::clone(&active)));
+                        let processor = processor
+                            .with_session_context(self.build_session_context(Arc::clone(&active)));
                         let (viewing_epoch, transaction_id) = self.get_transaction_context();
                         let processor = if let Some(transaction_id) = transaction_id {
                             processor.with_transaction_context(viewing_epoch, transaction_id)
@@ -4310,9 +4303,7 @@ let processor = processor
                             .map(|d| d.subsec_nanos() as u64)
                             .unwrap_or(0)
                             % plafond.max(1);
-                        std::thread::sleep(std::time::Duration::from_micros(
-                            plafond / 2 + jitter,
-                        ));
+                        std::thread::sleep(std::time::Duration::from_micros(plafond / 2 + jitter));
                         continue;
                     }
                     autre => {

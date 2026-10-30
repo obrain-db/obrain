@@ -54,15 +54,12 @@
 #![cfg(all(feature = "synapse", feature = "substrate"))]
 
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_cognitive::synapse::{SynapseConfig, SynapseStore};
 use obrain_common::types::NodeId;
 use serde_json::json;
-
-
-
 
 /// ── LA PORTE DE PERFORMANCE EST-ELLE ARMÉE SUR CETTE MACHINE ? ──────────────
 ///

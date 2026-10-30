@@ -68,7 +68,7 @@ use crate::page::PAGE_SIZE;
 /// module le disent.
 const OCTETS_ENTREE: usize = core::mem::size_of::<EntreeIndex>();
 use crate::props_index::{
-    DescSerie, EnteteRacine, EnteteSerie, EntreeIndex, ENTREES_PAR_PAGE, SERIES_MAX,
+    DescSerie, ENTREES_PAR_PAGE, EnteteRacine, EnteteSerie, EntreeIndex, SERIES_MAX,
 };
 use std::path::{Path, PathBuf};
 
@@ -120,7 +120,10 @@ impl PropsOrdIndexZone {
             return vide;
         }
         let Ok(zone) = ZoneFile::open_or_create(chemin) else {
-            tracing::warn!(?chemin, "index ordonne-valeur illisible — ignore (balayage)");
+            tracing::warn!(
+                ?chemin,
+                "index ordonne-valeur illisible — ignore (balayage)"
+            );
             return vide;
         };
         let octets = zone.as_slice();
@@ -374,7 +377,8 @@ impl PropsOrdIndexZone {
                 };
                 page[..24].copy_from_slice(bytemuck::bytes_of(&entete));
                 if n > 0 {
-                    page[24..24 + n * OCTETS_ENTREE].copy_from_slice(bytemuck::cast_slice(&entrees[d..f]));
+                    page[24..24 + n * OCTETS_ENTREE]
+                        .copy_from_slice(bytemuck::cast_slice(&entrees[d..f]));
                 }
                 let crc = crc32fast::hash(&page);
                 page[4..8].copy_from_slice(&crc.to_le_bytes());
@@ -445,8 +449,10 @@ mod tests {
     /// Serie triee par VALEUR chaine (puis slot). Les slots ne sont PAS dans
     /// l'ordre croissant : c'est tout l'interet (l'ordre est celui des valeurs).
     fn serie_chaines(paires: &[(&str, u32)]) -> Vec<EntreeIndex> {
-        let mut v: Vec<(String, u32)> =
-            paires.iter().map(|(s, id)| ((*s).to_string(), *id)).collect();
+        let mut v: Vec<(String, u32)> = paires
+            .iter()
+            .map(|(s, id)| ((*s).to_string(), *id))
+            .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         v.into_iter()
             .map(|(s, id)| EntreeIndex::new(encoder_cle(&Value::String(s.into())).unwrap(), id))
@@ -468,12 +474,7 @@ mod tests {
         let (_d, mut z) = zone_temporaire();
         // Valeurs volontairement dans le desordre de slot pour prouver que
         // l'ordre stocke est celui de la VALEUR, pas du slot.
-        let s = serie_chaines(&[
-            ("mango", 3),
-            ("apple", 42),
-            ("zebra", 1),
-            ("banana", 7),
-        ]);
+        let s = serie_chaines(&[("mango", 3), ("apple", 42), ("zebra", 1), ("banana", 7)]);
         z.fusionner(&[(5u16, s)], 10, 2).unwrap();
         assert!(z.fiable());
         // min = premiere entree = "apple" (slot 42), max = "zebra" (slot 1).
@@ -543,8 +544,7 @@ mod tests {
     fn une_fusion_survit_a_la_reouverture_sans_reconstruction() {
         let sf = SubstrateFile::open_tempfile().unwrap();
         let mut z = PropsOrdIndexZone::ouvrir(&sf);
-        let paires: Vec<(String, u32)> =
-            (0..700).map(|i| (format!("v{i:05}"), i as u32)).collect();
+        let paires: Vec<(String, u32)> = (0..700).map(|i| (format!("v{i:05}"), i as u32)).collect();
         let refp: Vec<(&str, u32)> = paires.iter().map(|(s, id)| (s.as_str(), *id)).collect();
         z.fusionner(&[(3u16, serie_chaines(&refp))], 77, 9).unwrap();
         let g = z.generation();
@@ -560,8 +560,7 @@ mod tests {
 
     #[test]
     fn deux_fusions_du_meme_contenu_sont_identiques_octet_a_octet() {
-        let paires: Vec<(String, u32)> =
-            (0..300).map(|i| (format!("q{i:05}"), i as u32)).collect();
+        let paires: Vec<(String, u32)> = (0..300).map(|i| (format!("q{i:05}"), i as u32)).collect();
         let refp: Vec<(&str, u32)> = paires.iter().map(|(s, id)| (s.as_str(), *id)).collect();
         let lire = || {
             let sf = SubstrateFile::open_tempfile().unwrap();

@@ -97,9 +97,7 @@ fn bench_tri_borne(c: &mut Criterion) {
     });
 
     // Plancher : même limite, aucun tri.
-    let sans_tri = format!(
-        "MATCH (c:Claim) WHERE c.status = 'open' RETURN c.id LIMIT {K_PETIT}"
-    );
+    let sans_tri = format!("MATCH (c:Claim) WHERE c.status = 'open' RETURN c.id LIMIT {K_PETIT}");
     g.bench_function("sans_tri", |b| {
         b.iter(|| black_box(session.execute(&sans_tri).unwrap()));
     });

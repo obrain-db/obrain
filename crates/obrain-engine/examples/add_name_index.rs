@@ -34,9 +34,7 @@ fn main() {
         .substrate_handle()
         .map(|s| s.node_count_live_estimate())
         .unwrap_or(0);
-    println!(
-        "store {store} : ~{est} nœuds — déclaration des index d'égalité…"
-    );
+    println!("store {store} : ~{est} nœuds — déclaration des index d'égalité…");
 
     // Idempotent : `create_property_index` ne refait rien sur une clé déjà
     // enregistrée ; `qualified_name` est re-déclaré par sécurité (certaines

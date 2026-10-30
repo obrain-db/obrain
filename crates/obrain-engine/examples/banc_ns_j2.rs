@@ -98,7 +98,12 @@ fn main() {
         .collect();
     let qc: Vec<String> = cles
         .iter()
-        .map(|i| format!("MATCH (n:S) WHERE n.nom CONTAINS '{:04}' RETURN n.nom", i % 10000))
+        .map(|i| {
+            format!(
+                "MATCH (n:S) WHERE n.nom CONTAINS '{:04}' RETURN n.nom",
+                i % 10000
+            )
+        })
         .collect();
     let qd: Vec<String> = cles
         .iter()

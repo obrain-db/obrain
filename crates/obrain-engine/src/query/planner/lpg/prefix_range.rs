@@ -163,8 +163,14 @@ mod tests {
         assert_eq!(min, "self:");
         assert_eq!(max, "self;", "':' + 1 == ';'");
         // 'selg' est SUPERIEUR a 'self:' en octets et doit pourtant sortir.
-        assert!("selg" > min.as_str(), "temoin : 'selg' passe la borne basse");
-        assert!("selg" >= max.as_str(), "…et c'est la borne haute qui l'exclut");
+        assert!(
+            "selg" > min.as_str(),
+            "temoin : 'selg' passe la borne basse"
+        );
+        assert!(
+            "selg" >= max.as_str(),
+            "…et c'est la borne haute qui l'exclut"
+        );
     }
 
     /// Prefixe multi-octets : la borne haute doit rester de l'UTF-8 valide,
@@ -233,11 +239,12 @@ mod tests {
 
     #[test]
     fn extraction_du_motif() {
-        let motif = |gauche: LogicalExpression, droite: LogicalExpression| LogicalExpression::Binary {
-            left: Box::new(gauche),
-            op: BinaryOp::StartsWith,
-            right: Box::new(droite),
-        };
+        let motif =
+            |gauche: LogicalExpression, droite: LogicalExpression| LogicalExpression::Binary {
+                left: Box::new(gauche),
+                op: BinaryOp::StartsWith,
+                right: Box::new(droite),
+            };
         let prop = LogicalExpression::Property {
             variable: "n".into(),
             property: "nom".into(),
@@ -254,7 +261,10 @@ mod tests {
         // Litteral NON-chaine : l'evaluateur ne retient rien, la plage ne
         // doit donc rien retenir non plus.
         assert_eq!(
-            extraire_prefixe(&motif(prop.clone(), LogicalExpression::Literal(Value::Int64(1)))),
+            extraire_prefixe(&motif(
+                prop.clone(),
+                LogicalExpression::Literal(Value::Int64(1))
+            )),
             None
         );
 

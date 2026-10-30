@@ -131,9 +131,12 @@ fn p7_count_avec_refs_pendantes_melangees() {
     sb.execute("INSERT (:Doc {id: 'doc_mort', titre: 'Mort'})")
         .expect("insert doc_mort");
     let sa = alpha.session();
-    sa.execute("INSERT (:Note {name: 'n2'})").expect("insert n2");
-    sa.execute("MATCH (a:Note {name: 'n2'}) CREATE (a)-[:DOCUMENTS]->(ref(\"beta\", \"doc_mort\"))")
-        .expect("create vers doc_mort");
+    sa.execute("INSERT (:Note {name: 'n2'})")
+        .expect("insert n2");
+    sa.execute(
+        "MATCH (a:Note {name: 'n2'}) CREATE (a)-[:DOCUMENTS]->(ref(\"beta\", \"doc_mort\"))",
+    )
+    .expect("create vers doc_mort");
     sb.execute("MATCH (d:Doc {id: 'doc_mort'}) DETACH DELETE d")
         .expect("suppression cible");
     let r = alpha
@@ -157,9 +160,12 @@ fn p7_optional_match_rend_null_pour_la_ref_pendante() {
     sb.execute("INSERT (:Doc {id: 'doc_mort', titre: 'Mort'})")
         .expect("insert");
     let sa = alpha.session();
-    sa.execute("INSERT (:Note {name: 'n2'})").expect("insert n2");
-    sa.execute("MATCH (a:Note {name: 'n2'}) CREATE (a)-[:DOCUMENTS]->(ref(\"beta\", \"doc_mort\"))")
-        .expect("create");
+    sa.execute("INSERT (:Note {name: 'n2'})")
+        .expect("insert n2");
+    sa.execute(
+        "MATCH (a:Note {name: 'n2'}) CREATE (a)-[:DOCUMENTS]->(ref(\"beta\", \"doc_mort\"))",
+    )
+    .expect("create");
     sb.execute("MATCH (d:Doc {id: 'doc_mort'}) DETACH DELETE d")
         .expect("delete");
     let r = alpha
@@ -172,7 +178,10 @@ fn p7_optional_match_rend_null_pour_la_ref_pendante() {
         .iter()
         .filter(|row| matches!(row[1], Value::Null))
         .count();
-    assert_eq!(nulls, 1, "la ref pendante rend Null, la vivante rend la cible");
+    assert_eq!(
+        nulls, 1,
+        "la ref pendante rend Null, la vivante rend la cible"
+    );
 }
 
 // ─── Point 3 : ambiguite de la clef to_key ───────────────────────────────
@@ -185,7 +194,8 @@ fn p3_collision_nodeid_contre_propriete_id_le_nodeid_gagne() {
     let alpha = ObrainDB::new_in_memory();
     let beta = ObrainDB::new_in_memory();
     let sb = beta.session();
-    sb.execute("INSERT (:Doc {titre: 'ParSlot'})").expect("insert 1");
+    sb.execute("INSERT (:Doc {titre: 'ParSlot'})")
+        .expect("insert 1");
     let slot = beta.graph_store().nodes_by_label("Doc")[0];
     sb.execute(&format!(
         "INSERT (:Doc {{id: '{}', titre: 'ParPropriete'}})",
@@ -208,7 +218,11 @@ fn p3_collision_nodeid_contre_propriete_id_le_nodeid_gagne() {
         .session()
         .execute("MATCH (a:Note)-[:VOIT]->(b) RETURN b.titre")
         .expect("traversee");
-    assert_eq!(r.rows.len(), 1, "la resolution doit etre univoque : UNE ligne");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "la resolution doit etre univoque : UNE ligne"
+    );
     assert_eq!(
         r.rows[0][0],
         Value::String("ParSlot".into()),
@@ -230,10 +244,8 @@ fn p3_clef_numerique_debordant_u64_absente_sans_erreur() {
     beta.graph_store().create_property_index("id");
     let sa = alpha.session();
     sa.execute("INSERT (:Note {name: 'n'})").expect("insert");
-    sa.execute(
-        "MATCH (a:Note) CREATE (a)-[:VOIT]->(ref(\"beta\", \"99999999999999999999\"))",
-    )
-    .expect("create");
+    sa.execute("MATCH (a:Note) CREATE (a)-[:VOIT]->(ref(\"beta\", \"99999999999999999999\"))")
+        .expect("create");
     alpha.attach_bases("alpha", None);
     alpha.attach_base("beta", &beta).expect("attach");
     let r = alpha
@@ -243,7 +255,11 @@ fn p3_clef_numerique_debordant_u64_absente_sans_erreur() {
     // PIEGE DOCUMENTE PAR CE TEST : la propriete id="9999...9" (20 chiffres)
     // est inatteignable par ref() — la clef route NodeId et le parse u64
     // echoue en silence.
-    assert_eq!(r.rows.len(), 0, "comportement actuel : absent (piege a documenter)");
+    assert_eq!(
+        r.rows.len(),
+        0,
+        "comportement actuel : absent (piege a documenter)"
+    );
 }
 
 /// Zeros de tete : "007" route NodeId(7) — la propriete id="007" est
@@ -344,7 +360,11 @@ fn p6_rollback_annule_l_arete_externe_creee_dans_la_transaction() {
         "le refus doit enseigner le bon geste (hors transaction / undo-log), recu : {msg}"
     );
     s.execute("ROLLBACK").expect("rollback");
-    assert_eq!(store.external_edge_count(), 1, "rien ne doit avoir ete ecrit");
+    assert_eq!(
+        store.external_edge_count(),
+        1,
+        "rien ne doit avoir ete ecrit"
+    );
     // Hors transaction (auto-commit) : la meme ecriture passe.
     s.execute("MATCH (a:Note) CREATE (a)-[:TEMP]->(ref(\"beta\", \"doc_1\"))")
         .expect("hors transaction : accepte");

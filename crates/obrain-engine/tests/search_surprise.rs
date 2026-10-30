@@ -9,8 +9,8 @@
 //! (activité ≪ attente → surprise négative) ; les nœuds feuilles ont une
 //! activité anecdotique (~zéro de surprise).
 
-use web_time::SystemTime;
 use std::time::Duration;
+use web_time::SystemTime;
 
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
@@ -64,7 +64,9 @@ fn search_surprise_rank_les_ecarts_d_activite() {
     }
     db.create_edge(a, c, "T");
 
-    let rows = db.search_surprise(since, 100, false).expect("search_surprise");
+    let rows = db
+        .search_surprise(since, 100, false)
+        .expect("search_surprise");
     assert!(!rows.is_empty(), "fenêtre d'activité non vide");
     let ra = rows.iter().find(|r| r.node_id == a.0).expect("A actif");
     let rc = rows.iter().find(|r| r.node_id == c.0).expect("C actif");
@@ -72,8 +74,16 @@ fn search_surprise_rank_les_ecarts_d_activite() {
     assert!(rc.activity >= 1);
     // A : activé bien plus que son degré initial ne le prédit (positif max) ;
     // C : bien moins (négatif marqué).
-    assert!(ra.surprise > 5.0, "A surprise positive forte, got {}", ra.surprise);
-    assert!(rc.surprise < -2.0, "C surprise négative, got {}", rc.surprise);
+    assert!(
+        ra.surprise > 5.0,
+        "A surprise positive forte, got {}",
+        ra.surprise
+    );
+    assert!(
+        rc.surprise < -2.0,
+        "C surprise négative, got {}",
+        rc.surprise
+    );
     // Tri par |surprise| : A (positif max) domine.
     assert_eq!(
         rows[0].node_id, a.0,
@@ -95,7 +105,10 @@ fn search_surprise_rank_les_ecarts_d_activite() {
     assert_eq!(top1.len(), 1, "limit appliquée");
     assert_eq!(top1[0].node_id, a.0);
     let signed_rows = db.search_surprise(since, 100, true).expect("signé");
-    assert_eq!(signed_rows[0].node_id, a.0, "tri signé : A (positif max) en tête");
+    assert_eq!(
+        signed_rows[0].node_id, a.0,
+        "tri signé : A (positif max) en tête"
+    );
     let mut prev = f64::INFINITY;
     for r in &signed_rows {
         assert!(r.surprise <= prev, "tri signé décroissant");
@@ -123,7 +136,11 @@ fn call_search_surprise_expose_le_classement() {
     let col = &r.columns[0];
     assert_eq!(col, "node_id", "colonne node_id, got {col}");
     for row in r.rows.iter().take(5) {
-        assert!(matches!(row[0], Value::Int64(_)), "node_id Int64: {:?}", row[0]);
+        assert!(
+            matches!(row[0], Value::Int64(_)),
+            "node_id Int64: {:?}",
+            row[0]
+        );
     }
 }
 
@@ -162,8 +179,8 @@ fn search_surprise_est_une_lecture_pure() {
 /// (activité, expected, surprise) pour chaque nœud actif.
 #[test]
 fn search_surprise_concorde_avec_l_oracle() {
-    use web_time::SystemTime;
     use std::time::Duration;
+    use web_time::SystemTime;
     fn now_ms() -> u64 {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -199,7 +216,11 @@ fn search_surprise_concorde_avec_l_oracle() {
             let b = (rnd() % n as u64) as usize;
             if a != b {
                 prior.push((a, b));
-                db.create_edge(obrain_common::types::NodeId(nodes[a]), obrain_common::types::NodeId(nodes[b]), "T");
+                db.create_edge(
+                    obrain_common::types::NodeId(nodes[a]),
+                    obrain_common::types::NodeId(nodes[b]),
+                    "T",
+                );
             }
         }
         std::thread::sleep(Duration::from_millis(3));
@@ -213,7 +234,11 @@ fn search_surprise_concorde_avec_l_oracle() {
             let b = (rnd() % n as u64) as usize;
             if a != b {
                 burst.push((a, b));
-                db.create_edge(obrain_common::types::NodeId(nodes[a]), obrain_common::types::NodeId(nodes[b]), "T");
+                db.create_edge(
+                    obrain_common::types::NodeId(nodes[a]),
+                    obrain_common::types::NodeId(nodes[b]),
+                    "T",
+                );
                 act[a] += 1;
                 act[b] += 1;
             }
@@ -229,8 +254,12 @@ fn search_surprise_concorde_avec_l_oracle() {
             let mut outw = 0u64;
             let mut inw = 0u64;
             for (a, b) in &burst {
-                if *a == i { outw += 1; }
-                if *b == i { inw += 1; }
+                if *a == i {
+                    outw += 1;
+                }
+                if *b == i {
+                    inw += 1;
+                }
             }
             start[i] = deg(nodes[i]).saturating_sub(outw + inw);
         }
@@ -242,7 +271,11 @@ fn search_surprise_concorde_avec_l_oracle() {
         let oracle: Vec<(u64, u64, f64, f64)> = (0..n as usize)
             .filter(|i| act[*i] > 0)
             .map(|i| {
-                let exp = if denom > 0.0 { total * (start[i] as f64 + 1.0) / denom } else { 0.0 };
+                let exp = if denom > 0.0 {
+                    total * (start[i] as f64 + 1.0) / denom
+                } else {
+                    0.0
+                };
                 let z = (act[i] as f64 - exp) / (exp + 1.0).sqrt();
                 (nodes[i], act[i], exp, z)
             })
@@ -265,7 +298,10 @@ fn search_surprise_concorde_avec_l_oracle() {
         }
         // Tri par |surprise| décroissant.
         for w in rows.windows(2) {
-            assert!(w[0].surprise.abs() >= w[1].surprise.abs(), "graine {graine}: tri |surprise|");
+            assert!(
+                w[0].surprise.abs() >= w[1].surprise.abs(),
+                "graine {graine}: tri |surprise|"
+            );
         }
     }
 }

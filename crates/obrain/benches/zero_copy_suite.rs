@@ -21,7 +21,7 @@
 use std::hint::black_box;
 use std::ops::ControlFlow;
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use obrain::{EdgeId, NodeId, ObrainDB, ResultBuf, StrViewSource, Value};
 
 const NOEUDS_ZONE: usize = 9_500;
@@ -93,7 +93,11 @@ fn bench_suite(c: &mut Criterion) {
         "nœuds cibles: {} — sources: zone={zone} blob={blob} shared={part}",
         ids.len()
     );
-    assert_eq!(ids.len(), NOEUDS_ZONE + NOEUDS_BLOB, "10 000 nœuds :Fait attendus");
+    assert_eq!(
+        ids.len(),
+        NOEUDS_ZONE + NOEUDS_BLOB,
+        "10 000 nœuds :Fait attendus"
+    );
 
     let servies_scan = session
         .for_each_prop_view(Some("Fait"), "texte", |_, _| ControlFlow::Continue(()))
@@ -102,7 +106,11 @@ fn bench_suite(c: &mut Criterion) {
 
     let requete = "MATCH (n:Fait) RETURN n.texte";
     let res0 = session.execute(requete).expect("execute de contrôle");
-    assert_eq!(res0.rows.len(), ids.len(), "GQL et balayage voient les mêmes nœuds");
+    assert_eq!(
+        res0.rows.len(),
+        ids.len(),
+        "GQL et balayage voient les mêmes nœuds"
+    );
 
     // ── Groupe 1 : balayage 10k, rapporté PAR NŒUD ──────────────────────
     let mut g = c.benchmark_group("balayage_10k");
@@ -183,7 +191,11 @@ fn bench_suite(c: &mut Criterion) {
         "arêtes cibles: {} — sources: zone={ez} blob={eb} shared={es}",
         edge_ids.len()
     );
-    assert_eq!(edge_ids.len(), ARETES_ZONE + ARETES_BLOB, "1 200 arêtes :CITE attendues");
+    assert_eq!(
+        edge_ids.len(),
+        ARETES_ZONE + ARETES_BLOB,
+        "1 200 arêtes :CITE attendues"
+    );
 
     let mut g = c.benchmark_group("arete");
     g.sample_size(100);

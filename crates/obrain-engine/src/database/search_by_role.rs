@@ -132,7 +132,6 @@ fn hks_descriptors_cached(substrate: &SubstrateStore) -> Result<std::sync::Arc<V
     Ok(arc)
 }
 
-
 /// Calcule le classement des nœuds de rôle structurel le plus proche de
 /// `anchor` (HKS 3 échelles). `label = Some(l)` restreint les candidats aux
 /// nœuds portant le label `l`. L'ancre elle-même est exclue. O(CSR+HKS) +
@@ -174,9 +173,7 @@ pub fn compute_search_by_role(
     } else {
         candidates.reserve(hw.saturating_sub(1));
         for slot in 1..hw {
-            if slot as u64 != anchor.0
-                && descriptors[slot].iter().all(|v| v.is_finite())
-            {
+            if slot as u64 != anchor.0 && descriptors[slot].iter().all(|v| v.is_finite()) {
                 candidates.push(slot as u64);
             }
         }
@@ -189,19 +186,14 @@ pub fn compute_search_by_role(
         .map(|n| {
             (
                 n,
-                obrain_substrate::geometric::hks_distance(
-                    &anchor_desc,
-                    &descriptors[n as usize],
-                ),
+                obrain_substrate::geometric::hks_distance(&anchor_desc, &descriptors[n as usize]),
             )
         })
         .collect();
     // Comparateur TOTAL (total_cmp) : les descripteurs HKS peuvent contenir
     // des NaN (nœuds isolés) — partial_cmp rendrait un ordre non total et le
     // tri paniquerait (« user-provided comparison function »).
-    raw.sort_by(|a, b| {
-        a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
-    });
+    raw.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
     // PRÉ-RANK BORNÉ puis RE-RANK augmenté : la distance de rôle finale =
     // hks + λ·|clustering(ancre) − clustering(candidat)| — la clustering
@@ -214,7 +206,10 @@ pub fn compute_search_by_role(
         let mut nbrs: Vec<u64> = Vec::new();
         {
             let mut vu = std::collections::HashSet::new();
-            for (t, _) in sub.edges_from(obrain_common::types::NodeId(n), obrain_core::graph::Direction::Both) {
+            for (t, _) in sub.edges_from(
+                obrain_common::types::NodeId(n),
+                obrain_core::graph::Direction::Both,
+            ) {
                 if t.0 != n && vu.insert(t.0) && vu.len() > CLUSTER_MAX_DEGREE {
                     break;
                 }
@@ -232,7 +227,10 @@ pub fn compute_search_by_role(
         let set: std::collections::HashSet<u64> = nbrs.iter().copied().collect();
         let mut triangles: u64 = 0;
         for a in &nbrs {
-            for (t, _) in sub.edges_from(obrain_common::types::NodeId(*a), obrain_core::graph::Direction::Both) {
+            for (t, _) in sub.edges_from(
+                obrain_common::types::NodeId(*a),
+                obrain_core::graph::Direction::Both,
+            ) {
                 if t.0 != n && set.contains(&t.0) {
                     triangles += 1;
                 }
@@ -243,7 +241,9 @@ pub fn compute_search_by_role(
     };
     let anchor_cluster = cluster_of(substrate, anchor.0);
 
-    let keep = raw.len().min((limit.max(1) * 2).min(SEARCH_BY_ROLE_MAX_LIMIT));
+    let keep = raw
+        .len()
+        .min((limit.max(1) * 2).min(SEARCH_BY_ROLE_MAX_LIMIT));
     let mut out: Vec<RoleMatch> = raw
         .into_iter()
         .take(keep)
@@ -253,7 +253,9 @@ pub fn compute_search_by_role(
         })
         .collect();
     out.sort_by(|a, b| {
-        a.distance.total_cmp(&b.distance).then_with(|| a.node_id.cmp(&b.node_id))
+        a.distance
+            .total_cmp(&b.distance)
+            .then_with(|| a.node_id.cmp(&b.node_id))
     });
     out.truncate(limit.min(SEARCH_BY_ROLE_MAX_LIMIT));
     Ok(out)
@@ -306,7 +308,12 @@ fn arg_u64(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<u64>
     }
 }
 
-fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usize) -> Result<usize> {
+fn arg_usize(
+    arguments: &[LogicalExpression],
+    i: usize,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
     match arguments.get(i) {
         None => Ok(default),
         Some(LogicalExpression::Literal(Value::Int64(v))) if *v >= 0 => Ok(*v as usize),
@@ -316,15 +323,12 @@ fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usi
     }
 }
 
-fn arg_string(
-    arguments: &[LogicalExpression],
-    i: usize,
-    name: &str,
-) -> Result<Option<String>> {
+fn arg_string(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<Option<String>> {
     match arguments.get(i) {
         None => Ok(None),
         Some(LogicalExpression::Literal(Value::String(s))) => Ok(Some(s.to_string())),
-        Some(LogicalExpression::Literal(Value::Null)) | Some(LogicalExpression::Literal(Value::Bool(false))) => Ok(None),
+        Some(LogicalExpression::Literal(Value::Null))
+        | Some(LogicalExpression::Literal(Value::Bool(false))) => Ok(None),
         _ => Err(Error::Internal(format!(
             "obrain.search_by_role(): argument {i} ({name}) must be a string"
         ))),

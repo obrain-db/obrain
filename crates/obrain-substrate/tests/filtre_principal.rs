@@ -173,7 +173,11 @@ fn sans_principal_tout_visible_sauf_sentinelle() {
     assert_eq!(store.node_count_by_label("Fantome"), 0, "sentinelle : 0");
     assert_eq!(store.nodes_by_label("Fantome"), vec![]);
     assert!(store.get_node(id(26)).is_none(), "seek sentinelle : absent");
-    assert!(store.get_node_property(id(26), &PropertyKey::new("k")).is_none());
+    assert!(
+        store
+            .get_node_property(id(26), &PropertyKey::new("k"))
+            .is_none()
+    );
 
     // Les deux tenants et le public se lisent comme avant.
     for slot in [1u64, 11, 21] {
@@ -220,11 +224,8 @@ fn scans_et_seeks_depuis_chaque_point_de_vue() {
         "propriete d'autrui : absente"
     );
     assert_eq!(
-        a.filter_visible_node_ids(
-            &[id(1), id(11), id(21), id(26)],
-            EpochId::new(0)
-        )
-        .len(),
+        a.filter_visible_node_ids(&[id(1), id(11), id(21), id(26)], EpochId::new(0))
+            .len(),
         2,
         "filtre par lot : A + public seulement"
     );
@@ -239,7 +240,10 @@ fn scans_et_seeks_depuis_chaque_point_de_vue() {
         "B voit B + public"
     );
     assert_eq!(b.node_count(), 15);
-    assert!(b.get_node(id(11)).is_none(), "seek d'un noeud de A : absent");
+    assert!(
+        b.get_node(id(11)).is_none(),
+        "seek d'un noeud de A : absent"
+    );
     drop(b);
 
     // Principal PUBLIC (tenant 0) : ne voit QUE le public — legal, utile

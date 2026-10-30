@@ -222,13 +222,9 @@ fn creer_store(chemin: &Path) {
     s.flush().expect("flush initial");
 }
 
-
 // ---------------------------------------------------------------------------
 // Enfants
 // ---------------------------------------------------------------------------
-
-
-
 
 /// Enfant « intern puis meurt en SIGKILL » : aucun flush, aucun dictionnaire.
 fn enfant_intern_puis_meurt(dir: &Path, nom: &str, n: u64) -> ! {
@@ -237,11 +233,7 @@ fn enfant_intern_puis_meurt(dir: &Path, nom: &str, n: u64) -> ! {
     for _ in 0..n {
         ids.push(s.create_node(&[nom]).0);
     }
-    let liste = ids
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     // Le nom interné est DANS le mmap partagé, pas seulement dans la mémoire du
     // processus : c'est ce que le parent va vérifier après le SIGKILL.
     annoncer(&format!("IDS {liste}"));
@@ -250,7 +242,6 @@ fn enfant_intern_puis_meurt(dir: &Path, nom: &str, n: u64) -> ! {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
-
 
 // ===========================================================================
 // R3 — L'INDICE SURVIT À UN `kill -9` (et ne se redistribue pas)
@@ -315,9 +306,8 @@ fn r3_l_indice_survit_a_un_kill_9() {
     // Le dictionnaire est celui d'AVANT (le mort n'a rien flushé) et le WAL porte
     // ses nœuds. « Volatile » n'existe donc NULLE PART sur le disque… sauf dans la
     // table mmapée, que ce processus-ci ne relira jamais.
-    let dict_apres_crash =
-        obrain_substrate::dict::DictSnapshot::load(&dir.join("substrate.dict"))
-            .expect("lire le dictionnaire");
+    let dict_apres_crash = obrain_substrate::dict::DictSnapshot::load(&dir.join("substrate.dict"))
+        .expect("lire le dictionnaire");
     assert!(
         !dict_apres_crash.labels.iter().any(|l| l == "Volatile"),
         "le mort ne doit RIEN avoir persisté : {:?} — le test ne mesurerait plus \
@@ -394,10 +384,7 @@ fn r3_l_indice_survit_a_un_kill_9() {
     );
     // Le nom du mort est encore lisible, ET au bit que le dictionnaire lui donne.
     let id3 = s.create_node(&["Volatile"]).0;
-    let l3 = s
-        .get_node_labels(NodeId(id3))
-        .unwrap_or_default()
-        .join("|");
+    let l3 = s.get_node_labels(NodeId(id3)).unwrap_or_default().join("|");
     assert_eq!(
         l3, "Volatile",
         "après réouverture, « Volatile » rend {l3:?} — la table partagée n'a pas été \

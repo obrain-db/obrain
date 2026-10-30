@@ -19,7 +19,9 @@ fn session_balayage_vues_arete_et_arene() {
     let long = "contexte long vers la colonne blob du substrate ".repeat(7); // ~340 o
     for i in 0..8 {
         session
-            .execute(&format!("INSERT (:Fait {{fid: {i}, texte: 'fait numero {i}'}})"))
+            .execute(&format!(
+                "INSERT (:Fait {{fid: {i}, texte: 'fait numero {i}'}})"
+            ))
             .expect("insert nœud");
     }
     session

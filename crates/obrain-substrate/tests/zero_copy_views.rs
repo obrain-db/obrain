@@ -8,7 +8,7 @@
 use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
 use obrain_substrate::blob_column::BlobSlotEntry;
-use obrain_substrate::heap::{HeapPage, HEAP_PAGE_SIZE};
+use obrain_substrate::heap::{HEAP_PAGE_SIZE, HeapPage};
 use obrain_substrate::store::SubstrateStore;
 use obrain_substrate::view::StrViewSource;
 

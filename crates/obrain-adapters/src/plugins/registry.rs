@@ -146,7 +146,8 @@ pub fn installer_udfs_dans_le_moteur() {
         });
         // `Box` derrière un `OnceLock` : l'adresse ne bouge plus, donc prêter la
         // référence pour la vie du processus est sûr et sans fuite au-delà.
-        let statique: &'static obrain_core::execution::fonction_hote::ResolveurFonctions = resolveur;
+        let statique: &'static obrain_core::execution::fonction_hote::ResolveurFonctions =
+            resolveur;
         let _ = obrain_core::execution::fonction_hote::installer(statique);
     });
 }

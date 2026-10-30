@@ -245,9 +245,7 @@ mod set_remove {
         assert_eq!(keys.row_count(), 1);
         match &keys.rows[0][0] {
             Value::List(items) => assert!(
-                !items
-                    .iter()
-                    .any(|i| *i == Value::String("age".into())),
+                !items.iter().any(|i| *i == Value::String("age".into())),
                 "SET to NULL must REMOVE the key — keys(n) still lists 'age': {items:?}"
             ),
             other => panic!("keys(n) must return a list, got {other:?}"),

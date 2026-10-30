@@ -14,8 +14,8 @@
 //! Ce test est aussi une régression de COHÉRENCE entre les formes : chaque
 //! motif du scénario est détecté par la forme qui lui correspond.
 
-use web_time::SystemTime;
 use std::time::Duration;
+use web_time::SystemTime;
 
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
@@ -72,7 +72,8 @@ fn tissage_claims_preuves_causalite_saillance() {
     // ── Contradiction (2) : le flip A→B→A… est détecté sur (c, status).
     let rows = db.search_conflicts(0, 100).expect("conflicts");
     assert!(
-        rows.iter().any(|r| r.node_id == c.0 && r.property == "status"),
+        rows.iter()
+            .any(|r| r.node_id == c.0 && r.property == "status"),
         "reversal A→B→A sur (c,status) détecté: {rows:?}"
     );
 
@@ -110,7 +111,11 @@ fn tissage_claims_preuves_causalite_saillance() {
         "le nouveau hub domine la surprise (activity {}, expected {})",
         top.activity, top.expected
     );
-    assert!(top.surprise > 1.0, "surprise positive marquée: {}", top.surprise);
+    assert!(
+        top.surprise > 1.0,
+        "surprise positive marquée: {}",
+        top.surprise
+    );
 }
 
 /// Jumeaux structurels : deux étoiles identiques de forme (labels différents)

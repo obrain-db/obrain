@@ -116,7 +116,10 @@ fn egalite_sur_propriete_non_indexee_rend_les_memes_lignes_des_deux_cotes_du_pla
         "valeur absente : le repli doit rendre 0, pas une erreur"
     );
     assert_eq!(
-        compte(&db, "MATCH (n:Grand) WHERE n.propriete_absente = 'x' RETURN count(n)"),
+        compte(
+            &db,
+            "MATCH (n:Grand) WHERE n.propriete_absente = 'x' RETURN count(n)"
+        ),
         0,
         "propriete absente : idem"
     );
@@ -164,7 +167,10 @@ fn egalite_sur_propriete_non_indexee_rend_les_memes_lignes_des_deux_cotes_du_pla
             &db,
             &format!("MATCH (n:Grand) WHERE n.k = '{valeur}' RETURN count(n)"),
         );
-        let sans_label = compte(&db, &format!("MATCH (n) WHERE n.k = '{valeur}' RETURN count(n)"));
+        let sans_label = compte(
+            &db,
+            &format!("MATCH (n) WHERE n.k = '{valeur}' RETURN count(n)"),
+        );
         assert_eq!(
             avec_label, sans_label,
             "egalite {valeur} : label (repli) contre sans-label (temoin)"
@@ -191,5 +197,8 @@ fn egalite_sur_propriete_non_indexee_rend_les_memes_lignes_des_deux_cotes_du_pla
         "MATCH (n:Grand) WHERE n.k = 'v2' RETURN n.rang LIMIT 5",
     );
     assert_eq!(lus.len(), 5, "LIMIT 5 sur un label au-dessus du plafond");
-    assert!(lus.iter().all(|v| v % 3 == 2), "les lignes rendues doivent satisfaire le filtre : {lus:?}");
+    assert!(
+        lus.iter().all(|v| v % 3 == 2),
+        "les lignes rendues doivent satisfaire le filtre : {lus:?}"
+    );
 }

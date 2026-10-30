@@ -39,8 +39,8 @@
 
 use criterion::{Criterion, Throughput, criterion_group};
 use obrain_core::graph::GraphStoreMut as _;
-use obrain_substrate::registres_partages::{Espace, RegistresPartages};
 use obrain_substrate::SubstrateStore;
+use obrain_substrate::registres_partages::{Espace, RegistresPartages};
 use std::hint::black_box;
 use std::path::PathBuf;
 
@@ -69,7 +69,8 @@ fn bench_intern_partage(c: &mut Criterion) {
     let r = RegistresPartages::ouvrir(&dir).expect("registres partagés");
 
     // Un nom DÉJÀ interné : le régime de tout appel réel (le même nom, N fois).
-    r.interner(Espace::Labels, "DejaConnu").expect("intern initial");
+    r.interner(Espace::Labels, "DejaConnu")
+        .expect("intern initial");
 
     groupe.bench_function("nom_connu", |b| {
         b.iter(|| black_box(r.interner(Espace::Labels, "DejaConnu")).ok())

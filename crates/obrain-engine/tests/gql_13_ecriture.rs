@@ -214,10 +214,7 @@ fn insert_depose_exactement_les_cles_citees() {
 #[test]
 fn insert_repete_laisse_deux_noeuds_distincts() {
     let db = ObrainDB::new_in_memory();
-    ecrire(
-        &db,
-        &["INSERT (:T {id: 'a'})", "INSERT (:T {id: 'a'})"],
-    );
+    ecrire(&db, &["INSERT (:T {id: 'a'})", "INSERT (:T {id: 'a'})"]);
 
     assert_eq!(
         compte(&db, "T"),
@@ -243,7 +240,11 @@ fn insert_est_visible_dans_sa_propre_transaction() {
     let r = session
         .execute("MATCH (n:T {id: 'a'}) RETURN n.v AS v")
         .unwrap();
-    assert_eq!(r.rows.len(), 1, "la transaction doit voir sa propre insertion");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "la transaction doit voir sa propre insertion"
+    );
     assert_eq!(r.rows[0][0], Value::Int64(7));
 
     session.commit().unwrap();
@@ -274,7 +275,10 @@ fn insert_annule_ne_laisse_aucun_noeud() {
 #[test]
 fn insert_de_chemin_depose_les_deux_noeuds_et_l_arete() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd'})"]);
+    ecrire(
+        &db,
+        &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd'})"],
+    );
 
     assert_eq!(compte(&db, "A"), 1, "le nœud source est déposé");
     assert_eq!(compte(&db, "B"), 1, "le nœud cible est déposé");
@@ -325,7 +329,11 @@ fn insert_commite_est_visible_d_une_autre_session() {
     let r = autre
         .execute("MATCH (n:T {id: 'a'}) RETURN n.v AS v")
         .unwrap();
-    assert_eq!(r.rows.len(), 1, "une session neuve voit l'écriture commitée");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "une session neuve voit l'écriture commitée"
+    );
     assert_eq!(r.rows[0][0], Value::Int64(9));
 }
 
@@ -445,12 +453,18 @@ fn insert_puis_set_est_visible_avant_le_commit() {
     let db = ObrainDB::new_in_memory();
     let mut session = db.session();
     session.begin_transaction().unwrap();
-    session.execute("INSERT (n:T {id: 'a'}) SET n.x = 1").unwrap();
+    session
+        .execute("INSERT (n:T {id: 'a'}) SET n.x = 1")
+        .unwrap();
 
     let r = session
         .execute("MATCH (n:T {id: 'a'}) RETURN n.x AS x")
         .unwrap();
-    assert_eq!(r.rows.len(), 1, "le nœud créé est visible dans sa transaction");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "le nœud créé est visible dans sa transaction"
+    );
     assert_eq!(
         r.rows[0][0],
         Value::Int64(1),
@@ -669,10 +683,7 @@ fn une_queue_de_requete_incomprise_doit_etre_refusee() {
 #[test]
 fn merge_repete_dans_une_transaction_laisse_un_seul_noeud() {
     let db = ObrainDB::new_in_memory();
-    ecrire(
-        &db,
-        &["MERGE (n:T {id: 'a'})", "MERGE (n:T {id: 'a'})"],
-    );
+    ecrire(&db, &["MERGE (n:T {id: 'a'})", "MERGE (n:T {id: 'a'})"]);
 
     assert_eq!(
         identifiants(&db, "T"),
@@ -749,7 +760,11 @@ fn merge_d_un_motif_different_cree_un_second_noeud() {
         "deux identifiants distincts, deux nœuds : MERGE apparie sur le motif \
          ENTIER, pas sur la seule étiquette"
     );
-    assert_eq!(compte(&db, "T"), 2, "et le compte s'accorde avec le balayage");
+    assert_eq!(
+        compte(&db, "T"),
+        2,
+        "et le compte s'accorde avec le balayage"
+    );
 }
 
 /// INTENTION : `ON CREATE SET` s'applique à la seule branche CRÉATION, et
@@ -806,13 +821,20 @@ fn merge_d_une_arete_repete_ne_laisse_qu_une_arete() {
     ecrire(&db, &[requete]);
     ecrire(&db, &[requete]);
 
-    let r = lire(&db, "MATCH (a:A)-[:VERS]->(b:B) RETURN a.id AS g, b.id AS d");
+    let r = lire(
+        &db,
+        "MATCH (a:A)-[:VERS]->(b:B) RETURN a.id AS g, b.id AS d",
+    );
     assert_eq!(
         r.len(),
         1,
         "MERGE d'arête est idempotent : deux exécutions, une seule arête"
     );
-    assert_eq!(compte(&db, "A"), 1, "et aucun nœud n'a été dupliqué au passage");
+    assert_eq!(
+        compte(&db, "A"),
+        1,
+        "et aucun nœud n'a été dupliqué au passage"
+    );
     assert_eq!(compte(&db, "B"), 1);
 }
 
@@ -831,7 +853,11 @@ fn merge_apres_suppression_cree_un_noeud_neuf_sans_trace_de_l_ancien() {
     ecrire(&db, &["MATCH (n:T {id: 'a'}) DETACH DELETE n"]);
     ecrire(&db, &["MERGE (n:T {id: 'a'})"]);
 
-    assert_eq!(compte(&db, "T"), 1, "exactement un nœud T après la recréation");
+    assert_eq!(
+        compte(&db, "T"),
+        1,
+        "exactement un nœud T après la recréation"
+    );
     assert_eq!(
         cles(&db, "(n:T {id: 'a'})"),
         ens(&["id"]),
@@ -932,7 +958,11 @@ fn set_carte_fusionnee_ajoute_et_conserve() {
         "fusion : la clé absente de la carte survit, la nouvelle est ajoutée"
     );
     let p = proprietes(&db, "(n:T {id: 'a'})");
-    assert_eq!(p.get("x"), Some(&Value::Int64(2)), "la clé commune est écrasée");
+    assert_eq!(
+        p.get("x"),
+        Some(&Value::Int64(2)),
+        "la clé commune est écrasée"
+    );
     assert_eq!(p.get("y"), Some(&Value::Int64(3)));
     assert_eq!(p.get("garde"), Some(&Value::String("intact".into())));
 }
@@ -960,7 +990,11 @@ fn set_carte_remplacee_fait_disparaitre_les_cles_absentes() {
          elles DISPARAISSENT du nœud"
     );
     let p = proprietes(&db, "(n:T {id: 'a'})");
-    assert_eq!(p.len(), 2, "properties() ne rend que les deux clés, obtenu {p:?}");
+    assert_eq!(
+        p.len(),
+        2,
+        "properties() ne rend que les deux clés, obtenu {p:?}"
+    );
     assert_eq!(p.get("neuf"), Some(&Value::Int64(3)));
 }
 
@@ -975,7 +1009,11 @@ fn set_carte_vide_ne_laisse_aucune_cle_mais_laisse_le_noeud() {
     ecrire(&db, &["INSERT (:T {id: 'a', x: 1, y: 2})"]);
     ecrire(&db, &["MATCH (n:T {id: 'a'}) SET n = {}"]);
 
-    assert_eq!(compte(&db, "T"), 1, "le nœud subsiste : vider n'est pas supprimer");
+    assert_eq!(
+        compte(&db, "T"),
+        1,
+        "le nœud subsiste : vider n'est pas supprimer"
+    );
     let vide: Vec<String> = Vec::new();
     assert_eq!(
         en_ensemble(&scalaire(&db, "MATCH (n:T) RETURN keys(n) AS c")),
@@ -1115,11 +1153,7 @@ fn set_sur_arete_ecrit_sur_l_arete_et_pas_sur_les_noeuds() {
         ens(&["id"]),
         "le nœud source n'a pas reçu l'écriture destinée à l'arête"
     );
-    assert_eq!(
-        cles(&db, "(n:B)"),
-        ens(&["id"]),
-        "le nœud cible non plus"
-    );
+    assert_eq!(cles(&db, "(n:B)"), ens(&["id"]), "le nœud cible non plus");
 }
 
 /// INTENTION : `SET n:Etiquette` ajoute l'étiquette au nœud existant, sans
@@ -1351,7 +1385,10 @@ fn le_remplacement_nettoie_l_etat_laisse_par_un_remove() {
 #[test]
 fn remove_sur_arete_retire_la_cle_de_l_arete() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd'})"]);
+    ecrire(
+        &db,
+        &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd'})"],
+    );
     ecrire(&db, &["MATCH (:A)-[r:VERS]->(:B) REMOVE r.poids"]);
 
     let v = scalaire(&db, "MATCH (:A)-[r:VERS]->(:B) RETURN keys(r) AS c");
@@ -1440,7 +1477,10 @@ fn set_puis_remove_dans_cet_ordre_laisse_le_noeud_sans_la_cle() {
 #[test]
 fn delete_d_un_noeud_isole_le_supprime_et_epargne_les_autres() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &["INSERT (:T {id: 'a'})", "INSERT (:T {id: 'b', garde: 1})"]);
+    ecrire(
+        &db,
+        &["INSERT (:T {id: 'a'})", "INSERT (:T {id: 'b', garde: 1})"],
+    );
     ecrire(&db, &["MATCH (n:T {id: 'a'}) DELETE n"]);
 
     assert_eq!(compte(&db, "T"), 1, "un seul nœud a disparu");
@@ -1463,7 +1503,10 @@ fn delete_d_un_noeud_isole_le_supprime_et_epargne_les_autres() {
 #[test]
 fn delete_nu_refuse_sur_un_noeud_a_aretes_et_ne_laisse_aucune_trace() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd'})"]);
+    ecrire(
+        &db,
+        &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd'})"],
+    );
 
     let mut session = db.session();
     session.begin_transaction().unwrap();
@@ -1474,7 +1517,11 @@ fn delete_nu_refuse_sur_un_noeud_a_aretes_et_ne_laisse_aucune_trace() {
     assert_eq!(compte(&db, "A"), 1, "le nœud visé est toujours là");
     assert_eq!(compte(&db, "B"), 1, "le voisin aussi");
     let r = lire(&db, "MATCH (:A)-[r:VERS]->(:B) RETURN r.poids AS p");
-    assert_eq!(r.len(), 1, "et l'arête n'a pas été supprimée par anticipation");
+    assert_eq!(
+        r.len(),
+        1,
+        "et l'arête n'a pas été supprimée par anticipation"
+    );
     assert_eq!(
         r[0][0],
         Value::Int64(3),
@@ -1491,7 +1538,10 @@ fn delete_nu_refuse_sur_un_noeud_a_aretes_et_ne_laisse_aucune_trace() {
 #[test]
 fn detach_delete_emporte_les_aretes_et_epargne_le_voisin() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd', garde: 1})"]);
+    ecrire(
+        &db,
+        &["INSERT (:A {id: 'g'})-[:VERS {poids: 3}]->(:B {id: 'd', garde: 1})"],
+    );
     ecrire(&db, &["MATCH (n:A {id: 'g'}) DETACH DELETE n"]);
 
     assert_eq!(compte(&db, "A"), 0, "le nœud visé a disparu");
@@ -1513,7 +1563,10 @@ fn detach_delete_emporte_les_aretes_et_epargne_le_voisin() {
 #[test]
 fn delete_d_une_arete_laisse_les_deux_noeuds_intacts() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &["INSERT (:A {id: 'g', x: 1})-[:VERS]->(:B {id: 'd', y: 2})"]);
+    ecrire(
+        &db,
+        &["INSERT (:A {id: 'g', x: 1})-[:VERS]->(:B {id: 'd', y: 2})"],
+    );
     ecrire(&db, &["MATCH (:A)-[r:VERS]->(:B) DELETE r"]);
 
     assert_eq!(
@@ -1640,10 +1693,7 @@ fn une_cle_nulle_semee_est_portee_par_le_noeud() {
     db.create_node_with_props(&["T"], [("id", Value::String("a".into()))]);
     db.create_node_with_props(
         &["T"],
-        [
-            ("id", Value::String("b".into())),
-            ("x", Value::Null),
-        ],
+        [("id", Value::String("b".into())), ("x", Value::Null)],
     );
 
     assert_eq!(
@@ -1725,7 +1775,10 @@ fn les_trois_routes_rendent_toutes_la_valeur_nulle() {
             "route « {id} » : la valeur lue est NULL"
         );
         assert_eq!(
-            scalaire(&db, &format!("MATCH (n:T {{id: '{id}'}}) RETURN n.x IS NULL AS v")),
+            scalaire(
+                &db,
+                &format!("MATCH (n:T {{id: '{id}'}}) RETURN n.x IS NULL AS v")
+            ),
             Value::Bool(true),
             "route « {id} » : IS NULL est vrai"
         );
@@ -1750,7 +1803,9 @@ fn le_remplacement_ramene_les_trois_routes_a_une_seule_forme() {
     for id in ["jamais", "null_a_l_insert", "retiree"] {
         ecrire(
             &db,
-            &[&format!("MATCH (n:T {{id: '{id}'}}) SET n = {{id: '{id}'}}")],
+            &[&format!(
+                "MATCH (n:T {{id: '{id}'}}) SET n = {{id: '{id}'}}"
+            )],
         );
     }
 

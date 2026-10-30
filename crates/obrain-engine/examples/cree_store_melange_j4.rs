@@ -41,10 +41,16 @@ fn main() {
         let d = ObrainDB::open_substrate(dir).expect("open_substrate");
         let s = d.session();
         for i in 0..3i64 {
-            s.create_node_with_props(&["DocA"], [("camp", Value::from("A")), ("i", Value::Int64(i))]);
+            s.create_node_with_props(
+                &["DocA"],
+                [("camp", Value::from("A")), ("i", Value::Int64(i))],
+            );
         }
         for i in 0..3i64 {
-            s.create_node_with_props(&["DocB"], [("camp", Value::from("B")), ("i", Value::Int64(i))]);
+            s.create_node_with_props(
+                &["DocB"],
+                [("camp", Value::from("B")), ("i", Value::Int64(i))],
+            );
         }
         for i in 0..3i64 {
             s.create_node_with_props(
@@ -53,10 +59,8 @@ fn main() {
             );
         }
         // 7 est un DocPub ; 1 est un DocA ; 4 est un DocB.
-        let _ = s.create_edge(NodeId::new(7), NodeId::new(1), "CONTAINS")
-            ;
-        let _ = s.create_edge(NodeId::new(7), NodeId::new(4), "CONTAINS")
-            ;
+        let _ = s.create_edge(NodeId::new(7), NodeId::new(1), "CONTAINS");
+        let _ = s.create_edge(NodeId::new(7), NodeId::new(4), "CONTAINS");
         d.checkpoint().expect("checkpoint");
     }
 
@@ -82,5 +86,7 @@ fn main() {
         );
         println!("vue tenant {tenant} : count(n) = {attendu} — conforme");
     }
-    println!("store melange cree a {chemin} (v3, 3 DocA t1 + 3 DocB t2 + 3 DocPub publics, 2 aretes)");
+    println!(
+        "store melange cree a {chemin} (v3, 3 DocA t1 + 3 DocB t2 + 3 DocPub publics, 2 aretes)"
+    );
 }

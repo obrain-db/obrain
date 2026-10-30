@@ -197,9 +197,7 @@ impl AggregateState {
                     // Gardé : la somme enroulée passerait pour un résultat
                     // légitime — personne ne vérifie un `sum` à la main.
                     *sum = sum.checked_add(v).ok_or_else(|| {
-                        OperatorError::Execution(format!(
-                            "integer overflow in sum(): {sum} + {v}"
-                        ))
+                        OperatorError::Execution(format!("integer overflow in sum(): {sum} + {v}"))
                     })?;
                     *count += 1;
                 } else if let Some(Value::Float64(v)) = value {
@@ -309,8 +307,7 @@ impl AggregateState {
                     match max {
                         None => *max = Some(v),
                         Some(current) => {
-                            if value_cmp::comparer_total(&v, current)
-                                == std::cmp::Ordering::Greater
+                            if value_cmp::comparer_total(&v, current) == std::cmp::Ordering::Greater
                             {
                                 *max = Some(v);
                             }

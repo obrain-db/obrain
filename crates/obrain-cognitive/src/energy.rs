@@ -13,8 +13,8 @@ use obrain_common::types::NodeId;
 use obrain_reactive::{MutationEvent, MutationListener};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use crate::store_trait::{
     OptionalGraphStore, PROP_ENERGY, PROP_ENERGY_LAST_ACTIVATED_EPOCH, epoch_to_instant,

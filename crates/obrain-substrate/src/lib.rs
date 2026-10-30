@@ -42,19 +42,19 @@ pub mod error;
 pub mod file;
 pub mod geometric;
 pub mod heap;
-pub mod instantane;
 pub mod hilbert;
+pub mod instantane;
 pub mod jump;
 pub mod meta;
 pub mod migration;
 pub mod page;
 pub mod popcount;
+pub mod principal;
 pub mod props_codec;
 pub mod props_eq_index;
 pub mod props_index;
 pub mod props_ord_index;
 pub mod props_snapshot;
-pub mod principal;
 pub mod props_trigram_index;
 pub mod props_zone;
 pub mod record;
@@ -68,13 +68,13 @@ pub mod simplex_incidence;
 pub mod simplex_passes;
 pub mod simplex_zone;
 pub mod slot_remap;
-pub mod unite;
 pub mod store;
 pub mod synapse_incidence;
 pub mod tier_persist;
 pub mod tiered_scan;
 pub mod tiers;
 pub mod typed_degree;
+pub mod unite;
 pub mod vec_column;
 pub mod vec_column_registry;
 pub mod view;
@@ -124,6 +124,7 @@ pub use popcount::{
     Backend as PopcountBackend, backend as popcount_backend, t0_hamming, t1_hamming,
     xor_popcount_t0, xor_popcount_t0_scalar, xor_popcount_t1, xor_popcount_t1_scalar,
 };
+pub use principal::PrincipalSubstrat;
 pub use props_codec::{
     BYTES_DISCRIMINATOR_BINCODE, BYTES_DISCRIMINATOR_RAW, decode_value as decode_property_value,
     encode_value as encode_property_value,
@@ -135,15 +136,16 @@ pub use props_zone::{
 };
 pub use record::{
     COACT_EDGE_TYPE_NAME, EdgeRecord, NODE_ALLOC_PAGE_BYTES, NODES_PER_PAGE, NODES_ZONE_V3_MAGIC,
-    NodeRecord, PackedScarUtilAff, tenant,
-    SCAR_MAX_INTENSITY_Q5, U48, UTILITY_MAX_SCORE_Q5, affinity_to_q5, edge_flags, f32_to_q1_15,
-    node_flags, q1_15_to_f32, q5_to_affinity, q5_to_scar, q5_to_utility, scar_to_q5, utility_to_q5,
+    NodeRecord, PackedScarUtilAff, SCAR_MAX_INTENSITY_Q5, U48, UTILITY_MAX_SCORE_Q5,
+    affinity_to_q5, edge_flags, f32_to_q1_15, node_flags, q1_15_to_f32, q5_to_affinity, q5_to_scar,
+    q5_to_utility, scar_to_q5, tenant, utility_to_q5,
 };
 pub use record::{
     SIMPLEX_HYPEREDGE_MAX_MEMBERS, SIMPLEX_HYPEREDGE_MIN_MEMBERS, SimplexRecord, simplex_flags,
     simplex_kind,
 };
 pub use replay::{ReplayStats, replay_from};
+pub use result_buf::ResultBuf;
 pub use retrieval::{NodeOffset, SubstrateTieredIndex, VectorIndex};
 pub use simplex_incidence::{SIMPLEX_POSTINGS_FILENAME, SimplexIncidenceZone};
 pub use simplex_passes::{
@@ -154,8 +156,6 @@ pub use simplex_zone::{
     SIMPLEX_HEAP_FILENAME, SimplexDirZone, SimplexHeapZone, SimplexId, SimplexKeyIndex,
     SimplexView, canonicalize_members, key_hash_members,
 };
-pub use principal::PrincipalSubstrat;
-pub use result_buf::ResultBuf;
 pub use store::{
     DeclarationIndex, DeclarationProcedure, EdgePropsV2FinalizeStats, PropsV2FinalizeStats,
     SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,

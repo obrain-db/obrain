@@ -100,7 +100,9 @@ fn monter(n: usize, declarer: bool) -> ObrainDB {
             format!("autre:{melange:08}")
         };
         session
-            .execute(&format!("INSERT (:Grain {{nom: '{nom}', rang: {melange}}})"))
+            .execute(&format!(
+                "INSERT (:Grain {{nom: '{nom}', rang: {melange}}})"
+            ))
             .expect("semis");
     }
     if declarer {

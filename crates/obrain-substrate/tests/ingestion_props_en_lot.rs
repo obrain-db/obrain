@@ -9,17 +9,29 @@ use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
 use obrain_substrate::SubstrateStore;
 
 /// Le jeu : ce qu'un index de code produit, plus les cas limites du stockage.
-fn jeu() -> (Vec<&'static str>, Vec<(u32, u32, &'static str)>, Vec<Vec<(String, Value)>>) {
+fn jeu() -> (
+    Vec<&'static str>,
+    Vec<(u32, u32, &'static str)>,
+    Vec<Vec<(String, Value)>>,
+) {
     let n = 300u32;
-    let labels: Vec<&str> = (0..n).map(|i| if i % 3 == 0 { "Function" } else { "File" }).collect();
+    let labels: Vec<&str> = (0..n)
+        .map(|i| if i % 3 == 0 { "Function" } else { "File" })
+        .collect();
     let aretes: Vec<(u32, u32, &str)> = (1..n).map(|i| (i, i + 1, "CALLS")).collect();
     let longue = "x".repeat(700); // au-delà du seuil des colonnes blob (256)
     let mut props = Vec::new();
     for i in 0..n {
         let mut l: Vec<(String, Value)> = vec![
-            ("qualified_name".into(), Value::String(format!("mod::f{i}").into())),
+            (
+                "qualified_name".into(),
+                Value::String(format!("mod::f{i}").into()),
+            ),
             ("name".into(), Value::String(format!("f{i}").into())),
-            ("file_path".into(), Value::String(format!("src/{}.c", i % 17).into())),
+            (
+                "file_path".into(),
+                Value::String(format!("src/{}.c", i % 17).into()),
+            ),
             ("start_line".into(), Value::Int64(i as i64)),
             ("end_line".into(), Value::Int64(i as i64 + 10)),
             ("is_exported".into(), Value::Bool(i % 2 == 0)),
@@ -31,7 +43,10 @@ fn jeu() -> (Vec<&'static str>, Vec<(u32, u32, &'static str)>, Vec<Vec<(String, 
         if i == 42 {
             // Débordement : bien plus qu'une page de 4 Ko d'entrées.
             for j in 0..200 {
-                l.push((format!("extra_{j}"), Value::String(format!("valeur-{j}-{}", "y".repeat(20)).into())));
+                l.push((
+                    format!("extra_{j}"),
+                    Value::String(format!("valeur-{j}-{}", "y".repeat(20)).into()),
+                ));
             }
         }
         props.push(l);
@@ -65,7 +80,8 @@ fn en_lot(dir: &std::path::Path) {
     // En deux paquets, pour éprouver `premier_slot`.
     let n = refs.len();
     s.bulk_import_node_props(1, &refs[..n / 2]).unwrap();
-    s.bulk_import_node_props(1 + (n / 2) as u32, &refs[n / 2..]).unwrap();
+    s.bulk_import_node_props(1 + (n / 2) as u32, &refs[n / 2..])
+        .unwrap();
     s.checkpoint().unwrap();
 }
 
@@ -74,7 +90,10 @@ fn le_lot_relit_exactement_comme_l_unitaire_apres_reouverture() {
     let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     unitaire(a.path());
     en_lot(b.path());
-    let (sa, sb) = (SubstrateStore::open(a.path()).unwrap(), SubstrateStore::open(b.path()).unwrap());
+    let (sa, sb) = (
+        SubstrateStore::open(a.path()).unwrap(),
+        SubstrateStore::open(b.path()).unwrap(),
+    );
 
     assert_eq!(sa.node_count(), sb.node_count(), "même nombre de nœuds");
     assert_eq!(sa.edge_count(), sb.edge_count(), "même nombre d'arêtes");
@@ -85,13 +104,19 @@ fn le_lot_relit_exactement_comme_l_unitaire_apres_reouverture() {
         let id = NodeId((i + 1) as u64);
         for (k, v) in l {
             let cle = PropertyKey::new(k.as_str());
-            let (va, vb) = (sa.get_node_property(id, &cle), sb.get_node_property(id, &cle));
+            let (va, vb) = (
+                sa.get_node_property(id, &cle),
+                sb.get_node_property(id, &cle),
+            );
             assert_eq!(va.as_ref(), Some(v), "unitaire : nœud {i}, {k}");
             assert_eq!(vb.as_ref(), Some(v), "EN LOT : nœud {i}, {k}");
             comparees += 1;
         }
     }
-    assert!(comparees > 2_000, "le jeu couvre bien des milliers de valeurs ({comparees})");
+    assert!(
+        comparees > 2_000,
+        "le jeu couvre bien des milliers de valeurs ({comparees})"
+    );
 }
 
 #[test]
@@ -114,8 +139,16 @@ fn apres_un_lot_une_ecriture_ordinaire_n_ecrase_rien() {
     {
         let s = SubstrateStore::open(b.path()).unwrap();
         for i in [1u64, 42, 43, 150, 300] {
-            s.set_node_property(NodeId(i), "ajout_tardif", Value::String(format!("tard-{i}").into()));
-            s.set_node_property(NodeId(i), "name", Value::String(format!("renomme-{i}").into()));
+            s.set_node_property(
+                NodeId(i),
+                "ajout_tardif",
+                Value::String(format!("tard-{i}").into()),
+            );
+            s.set_node_property(
+                NodeId(i),
+                "name",
+                Value::String(format!("renomme-{i}").into()),
+            );
         }
         s.checkpoint().unwrap();
     }
@@ -127,7 +160,11 @@ fn apres_un_lot_une_ecriture_ordinaire_n_ecrase_rien() {
         for (k, v) in l {
             let lu = s.get_node_property(id, &PropertyKey::new(k.as_str()));
             if touche && k == "name" {
-                assert_eq!(lu, Some(Value::String(format!("renomme-{}", i + 1).into())), "nœud {i}");
+                assert_eq!(
+                    lu,
+                    Some(Value::String(format!("renomme-{}", i + 1).into())),
+                    "nœud {i}"
+                );
             } else {
                 assert_eq!(lu.as_ref(), Some(v), "nœud {i}, {k} recouvert ?");
             }
@@ -152,15 +189,19 @@ fn le_vidage_par_blocs_des_pages_ne_perd_rien() {
         let s = SubstrateStore::create(d.path()).unwrap();
         let labels: Vec<&str> = (0..n).map(|_| "Function").collect();
         s.bulk_import_labels_edges(&labels, &[]).unwrap();
-        let props: Vec<Vec<(&str, Value)>> =
-            (0..n).map(|i| vec![("qualified_name", Value::String(format!("q{i}").into()))]).collect();
+        let props: Vec<Vec<(&str, Value)>> = (0..n)
+            .map(|i| vec![("qualified_name", Value::String(format!("q{i}").into()))])
+            .collect();
         s.bulk_import_node_props(1, &props).unwrap();
         s.checkpoint().unwrap();
     }
     let s = SubstrateStore::open(d.path()).unwrap();
     for i in (0..n).step_by(97).chain([0, n - 1]) {
         assert_eq!(
-            s.get_node_property(NodeId(u64::from(i) + 1), &PropertyKey::new("qualified_name")),
+            s.get_node_property(
+                NodeId(u64::from(i) + 1),
+                &PropertyKey::new("qualified_name")
+            ),
             Some(Value::String(format!("q{i}").into())),
             "nœud {i}"
         );

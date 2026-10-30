@@ -1,14 +1,15 @@
 //! Expand operator for relationship traversal.
 
 use super::{Operator, OperatorError, OperatorResult, SessionContext};
-use crate::execution::base_registry::{
-    self, BaseRegistry, external_edge_value, remote_edge_value, remote_node_value,
-    resolve_node_key,
-};
 use crate::execution::DataChunk;
+use crate::execution::base_registry::{
+    self, BaseRegistry, external_edge_value, remote_edge_value, remote_node_value, resolve_node_key,
+};
 use crate::graph::Direction;
 use crate::graph::GraphStore;
-use obrain_common::types::{EdgeId, EpochId, LogicalType, NodeId, PropertyKey, TransactionId, Value};
+use obrain_common::types::{
+    EdgeId, EpochId, LogicalType, NodeId, PropertyKey, TransactionId, Value,
+};
 use std::sync::Arc;
 
 /// An expand operator that traverses edges from source nodes.
@@ -199,9 +200,7 @@ impl ExpandOperator {
                 if let Some(reg) = self.session_context.base_registry.clone() {
                     match col.get_value(self.current_row) {
                         Some(Value::Map(map)) => {
-                            let slug = match map
-                                .get(&PropertyKey::new(base_registry::BASE_KEY))
-                            {
+                            let slug = match map.get(&PropertyKey::new(base_registry::BASE_KEY)) {
                                 Some(Value::String(s)) => s.clone(),
                                 _ => {
                                     return Err(OperatorError::Execution(
@@ -509,9 +508,7 @@ impl Operator for ExpandOperator {
             }
 
             // If we've exhausted edges for current row, move to next row
-            while self.current_edge_idx
-                >= self.current_edges.len() + self.current_external.len()
-            {
+            while self.current_edge_idx >= self.current_edges.len() + self.current_external.len() {
                 self.current_row += 1;
 
                 // If we've exhausted the current input chunk, get next one
@@ -553,9 +550,8 @@ impl Operator for ExpandOperator {
             } else {
                 // Aretes inter-bases (V2) : resultat non local, emis en
                 // valeurs (les colonnes sont Generic dans ce mode).
-                let (edge_val, target_val) = self.current_external
-                    [self.current_edge_idx - self.current_edges.len()]
-                .clone();
+                let (edge_val, target_val) =
+                    self.current_external[self.current_edge_idx - self.current_edges.len()].clone();
                 if let Some(col) = chunk.column_mut(input_col_count) {
                     col.push_value(edge_val);
                 }

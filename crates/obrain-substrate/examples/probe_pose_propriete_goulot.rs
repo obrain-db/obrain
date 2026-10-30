@@ -125,9 +125,18 @@ fn main() {
     println!("{:<28} {:>10}", "D get_property (lecture)", d);
     println!("{:<28} {:>10}", "E get_node (hydratation)", e);
     println!();
-    println!("surcoût écriture vs création      B/A  = {:.2}×", b as f64 / a as f64);
-    println!("coût MARGINAL de l'internement     C−B  = {} ns", c.saturating_sub(b));
-    println!("écriture vs lecture               B/D  = {:.2}×", b as f64 / d as f64);
+    println!(
+        "surcoût écriture vs création      B/A  = {:.2}×",
+        b as f64 / a as f64
+    );
+    println!(
+        "coût MARGINAL de l'internement     C−B  = {} ns",
+        c.saturating_sub(b)
+    );
+    println!(
+        "écriture vs lecture               B/D  = {:.2}×",
+        b as f64 / d as f64
+    );
 }
 
 fn env_head() -> String {

@@ -3,8 +3,8 @@
 //! (1) méthode `ObrainDB::search_conflicts` ; (2) procédure CALL ;
 //! (3) lecture pure (read-only) ; (4) monotonie → 0 ; (5) fenêtre vide.
 
-use web_time::SystemTime;
 use std::time::Duration;
+use web_time::SystemTime;
 
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
@@ -99,7 +99,11 @@ fn call_search_conflicts_expose_le_classement() {
         .execute("CALL obrain.search_conflicts(0, 10) YIELD node_id, property, reversals RETURN reversals")
         .expect("CALL search_conflicts");
     assert!(!r.rows.is_empty(), "CALL rend des lignes");
-    assert!(matches!(r.rows[0][0], Value::Int64(3)), "3 reversals: {:?}", r.rows[0]);
+    assert!(
+        matches!(r.rows[0][0], Value::Int64(3)),
+        "3 reversals: {:?}",
+        r.rows[0]
+    );
 }
 
 #[test]
@@ -118,7 +122,10 @@ fn search_conflicts_est_une_lecture_pure() {
     }
     let db_ro = ObrainDB::open_read_only(&path).expect("open ro");
     let rows = db_ro.search_conflicts(0, 100).expect("ro ok");
-    assert!(!rows.is_empty(), "read-only : la fenêtre persistée est relue");
+    assert!(
+        !rows.is_empty(),
+        "read-only : la fenêtre persistée est relue"
+    );
     assert_eq!(rows[0].reversals, 1);
     let s = db_ro.session();
     let r = s

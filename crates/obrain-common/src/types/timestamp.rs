@@ -11,8 +11,8 @@
 use super::date::civil_from_days;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use web_time::{SystemTime, UNIX_EPOCH};
 use std::time::Duration as StdDuration;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// A point in time, stored as NANOSECONDS since Unix epoch.
 ///
@@ -146,7 +146,11 @@ impl Timestamp {
         let time_nanos = time.as_nanos() as i64;
         // If the time has an offset, subtract it to get UTC
         let offset_nanos = time.offset_seconds().unwrap_or(0) as i64 * 1_000_000_000;
-        Self(day_nanos.saturating_add(time_nanos).saturating_sub(offset_nanos))
+        Self(
+            day_nanos
+                .saturating_add(time_nanos)
+                .saturating_sub(offset_nanos),
+        )
     }
 
     /// Extracts the date component (UTC).

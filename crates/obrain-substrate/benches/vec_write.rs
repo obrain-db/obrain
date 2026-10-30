@@ -162,7 +162,11 @@ impl Terrain {
         for (id, v) in ids.iter().zip(&vecteurs) {
             store.set_node_property(*id, "_bench_vec", Value::Vector(Arc::clone(v)));
         }
-        Self { store, ids, vecteurs }
+        Self {
+            store,
+            ids,
+            vecteurs,
+        }
     }
 }
 

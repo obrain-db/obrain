@@ -23,7 +23,8 @@ fn deux_bases() -> (ObrainDB, ObrainDB) {
     beta.graph_store().create_property_index("id");
 
     let sa = alpha.session();
-    sa.execute("INSERT (:Note {name: 'note agent'})").expect("insert alpha");
+    sa.execute("INSERT (:Note {name: 'note agent'})")
+        .expect("insert alpha");
     sa.execute("MATCH (a:Note) CREATE (a)-[:DOCUMENTS]->(ref(\"beta\", \"doc_1\"))")
         .expect("create arete externe");
 
@@ -171,9 +172,7 @@ fn le_motif_continue_dans_le_store_cible() {
 fn cycle_a_b_a_revient_sur_la_base_primaire_en_natif() {
     let (alpha, beta) = deux_bases();
     // beta -> alpha : le Doc pointe la Note par sa clef numerique.
-    let note_id = {
-        alpha.graph_store().nodes_by_label("Note")[0]
-    };
+    let note_id = { alpha.graph_store().nodes_by_label("Note")[0] };
     beta.attach_bases("beta", None);
     beta.session()
         .execute(&format!(
@@ -184,9 +183,7 @@ fn cycle_a_b_a_revient_sur_la_base_primaire_en_natif() {
 
     let r = alpha
         .session()
-        .execute(
-            "MATCH (a:Note)-[:DOCUMENTS]->(b)-[:ANNOTE]->(c) RETURN base(c), c.name",
-        )
+        .execute("MATCH (a:Note)-[:DOCUMENTS]->(b)-[:ANNOTE]->(c) RETURN base(c), c.name")
         .expect("cycle A -> B -> A");
     assert_eq!(r.rows.len(), 1);
     assert_eq!(
@@ -205,9 +202,7 @@ fn clef_numerique_resout_par_id_de_noeud() {
     beta.session()
         .execute("INSERT (:Doc {titre: 'Brut'})")
         .expect("insert");
-    let doc_id = {
-        beta.graph_store().nodes_by_label("Doc")[0]
-    };
+    let doc_id = { beta.graph_store().nodes_by_label("Doc")[0] };
     let sa = alpha.session();
     sa.execute("INSERT (:Note {name: 'n'})").expect("insert");
     sa.execute(&format!(
@@ -439,7 +434,11 @@ fn profondeur_variable_droits_refuses_au_deuxieme_saut() {
         "saut 1 (beta) autorise, saut 2 (gamma) refuse : branche coupee"
     );
     let reg = alpha.base_registry().expect("registre");
-    assert!(reg.access_denied_refs.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(
+        reg.access_denied_refs
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    );
 }
 
 /// Mode ACYCLIC multi-bases : la clef de visite est (base, id) — deux

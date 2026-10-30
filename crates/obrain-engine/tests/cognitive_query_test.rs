@@ -552,8 +552,8 @@ async fn synthesize_procedure_respects_budget_tokens() {
 //      renforcées, pas dupliquées à l'infini — count reste borné).
 #[test]
 fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
-    use obrain_common::types::Value;
     use obrain_cognitive::CognitiveEngine;
+    use obrain_common::types::Value;
 
     let db = obrain_engine::ObrainDB::new_in_memory();
     let session = db.session();
@@ -585,9 +585,16 @@ fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
 
     // 1. bootstrap : 2 synapses pour 2 arêtes.
     let r = session
-        .execute("CALL obrain.cognitive.bootstrap({edge_types: ['CALLS']}) YIELD count RETURN count")
+        .execute(
+            "CALL obrain.cognitive.bootstrap({edge_types: ['CALLS']}) YIELD count RETURN count",
+        )
         .expect("bootstrap");
-    let count: i64 = r.rows.first().and_then(|row| row.first()).map(|v| v.to_string().parse().unwrap_or(-1)).unwrap_or(-1);
+    let count: i64 = r
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .map(|v| v.to_string().parse().unwrap_or(-1))
+        .unwrap_or(-1);
     assert_eq!(count, 2, "une synapse par arête CALLS");
 
     // 2. spread depuis a : doit propager (au moins b, probablement c).
@@ -605,9 +612,19 @@ fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
     // 3. second bootstrap idempotent : les arêtes existantes sont renforcées,
     //    pas ré-créées — le count reste 2 (pas 4).
     let r2 = session
-        .execute("CALL obrain.cognitive.bootstrap({edge_types: ['CALLS']}) YIELD count RETURN count")
+        .execute(
+            "CALL obrain.cognitive.bootstrap({edge_types: ['CALLS']}) YIELD count RETURN count",
+        )
         .expect("bootstrap 2");
-    let count2: i64 = r2.rows.first().and_then(|row| row.first()).map(|v| v.to_string().parse().unwrap_or(-1)).unwrap_or(-1);
-    assert_eq!(count2, 2, "idempotent : toujours 2 synapses (renforcées, pas dupliquées)");
+    let count2: i64 = r2
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .map(|v| v.to_string().parse().unwrap_or(-1))
+        .unwrap_or(-1);
+    assert_eq!(
+        count2, 2,
+        "idempotent : toujours 2 synapses (renforcées, pas dupliquées)"
+    );
     let _ = (b, c, Value::Null);
 }

@@ -271,7 +271,11 @@ mod wal {
             let val = session
                 .execute("MATCH (n:Person {name: 'Alix'}) RETURN n.age")
                 .unwrap();
-            assert_eq!(val.rows[0][0], Value::Null, "value of removed key reads NULL");
+            assert_eq!(
+                val.rows[0][0],
+                Value::Null,
+                "value of removed key reads NULL"
+            );
             db.close().expect("close");
         }
     }
