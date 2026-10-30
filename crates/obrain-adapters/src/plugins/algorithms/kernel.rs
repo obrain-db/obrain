@@ -928,7 +928,7 @@ mod tests {
         let mask = AdjacencyMask::fully_connected(n);
         let phi = MultiHeadPhi0::new(D_MODEL, N_HEADS, D_FF, 42);
 
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         for _ in 0..100 {
             let _ = single_pass_attention(&features, &phi, &mask, DEFAULT_ALPHA);
         }

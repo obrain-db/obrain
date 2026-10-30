@@ -129,13 +129,17 @@ fn multi_community_pages_are_not_interleaved() {
         );
     }
 
-    // Under grouped insertion, the number of pages touched must be
-    // <= 4 (one community at a time) × ceil(500/128) plus at most
-    // 3 alignment pages (one per transition) = 4 × 4 + 3 = 19.
-    let pages_touched = (hw as usize * NodeRecord::SIZE).div_ceil(PAGE_SIZE);
+    // Under grouped insertion, the number of ALLOCATION pages touched must
+    // be <= 4 (one community at a time) x ceil(500/NODES_PER_PAGE) plus at
+    // most 3 alignment pages (one per transition). (jalon 2 : la page
+    // d'allocation vaut 512 slots de 40 o = 20 480 o — la borne se calcule
+    // en pages d'allocation, pas en pages OS, pour rester vraie a tout
+    // stride.)
+    let pages_touched = (hw as usize).div_ceil(NODES_PER_PAGE_USIZE);
+    let borne = 4 * 500usize.div_ceil(NODES_PER_PAGE_USIZE) + 3;
     assert!(
-        pages_touched <= 19,
-        "grouped multi-community insertion overflowed: {pages_touched} pages > 19"
+        pages_touched <= borne,
+        "grouped multi-community insertion overflowed: {pages_touched} pages > {borne}"
     );
 }
 
@@ -183,6 +187,11 @@ fn online_insert_invalidates_hilbert_sorted_flag() {
         "online insert did not clear HILBERT_SORTED"
     );
 
-    // Extra sanity: NODES_PER_PAGE constant is self-consistent.
-    assert_eq!(NODES_PER_PAGE_USIZE * NodeRecord::SIZE, PAGE_SIZE);
+    // Extra sanity: NODES_PER_PAGE constant is self-consistent. (jalon 2 :
+    // contre la page d ALLOCATION — 512 x 40 = 20 480 = 5 pages OS.)
+    assert_eq!(
+        NODES_PER_PAGE_USIZE * NodeRecord::SIZE,
+        obrain_substrate::NODE_ALLOC_PAGE_BYTES
+    );
+    assert_eq!(obrain_substrate::NODE_ALLOC_PAGE_BYTES % PAGE_SIZE, 0);
 }

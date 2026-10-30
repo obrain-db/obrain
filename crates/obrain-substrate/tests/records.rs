@@ -14,6 +14,9 @@ fn node_record_layout_roundtrip_via_bytemuck() {
             scar_util_affinity: PackedScarUtilAff::new(10, 20, 30, true).pack(),
             centrality_cached: 0xAAAA,
             flags: node_flags::ENGRAM_SEED | node_flags::IDENTITY,
+            // (jalon 2) appartenance : fixture publique.
+            tenant_id: 0,
+            _reserve: 0,
         };
         1000
     ];

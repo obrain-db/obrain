@@ -387,7 +387,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int64(i) => write!(f, "{i}"),
             Value::Float64(fl) => write!(f, "{fl}"),
-            Value::String(s) => write!(f, "{s:?}"),
+            Value::String(s) => write!(f, "{s}"),
             Value::Bytes(b) => write!(f, "<bytes: {} bytes>", b.len()),
             Value::Timestamp(t) => write!(f, "{t}"),
             Value::Date(d) => write!(f, "{d}"),
@@ -780,9 +780,15 @@ impl PartialEq for OrderableValue {
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::Time(a), Self::Time(b)) => a == b,
             (Self::ZonedDatetime(a), Self::ZonedDatetime(b)) => a == b,
-            // Cross-type numeric comparison
-            (Self::Int64(a), Self::Float64(b)) => (*a as f64) == b.0,
-            (Self::Float64(a), Self::Int64(b)) => a.0 == (*b as f64),
+            // Comparaison numérique croisée EXACTE (comparateur canonique) :
+            // `i as f64` arrondit au-delà de 2^53 et confondrait des entiers
+            // distincts avec le même flottant.
+            (Self::Int64(a), Self::Float64(b)) => {
+                super::value_cmp::cmp_i64_f64(*a, b.0) == Some(std::cmp::Ordering::Equal)
+            }
+            (Self::Float64(a), Self::Int64(b)) => {
+                super::value_cmp::cmp_i64_f64(*b, a.0) == Some(std::cmp::Ordering::Equal)
+            }
             _ => false,
         }
     }
@@ -807,9 +813,14 @@ impl Ord for OrderableValue {
             (Self::Date(a), Self::Date(b)) => a.cmp(b),
             (Self::Time(a), Self::Time(b)) => a.cmp(b),
             (Self::ZonedDatetime(a), Self::ZonedDatetime(b)) => a.cmp(b),
-            // Cross-type numeric comparison
-            (Self::Int64(a), Self::Float64(b)) => OrderedFloat64(*a as f64).cmp(b),
-            (Self::Float64(a), Self::Int64(b)) => a.cmp(&OrderedFloat64(*b as f64)),
+            // Comparaison numérique croisée EXACTE (comparateur canonique).
+            // NaN garde sa place d'OrderedFloat64 : PLUS GRAND que tout
+            // nombre — la même convention que `value_cmp::comparer_total`.
+            (Self::Int64(a), Self::Float64(b)) => {
+                super::value_cmp::cmp_i64_f64(*a, b.0).unwrap_or(std::cmp::Ordering::Less)
+            }
+            (Self::Float64(a), Self::Int64(b)) => super::value_cmp::cmp_i64_f64(*b, a.0)
+                .map_or(std::cmp::Ordering::Greater, std::cmp::Ordering::reverse),
             // Different types: order by type ordinal for consistency
             // Order: Bool < Int64 < Float64 < String < Timestamp < Date < Time < ZonedDatetime
             _ => self.type_ordinal().cmp(&other.type_ordinal()),

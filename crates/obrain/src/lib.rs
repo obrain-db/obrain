@@ -72,3 +72,8 @@ pub use obrain_engine::{
 
 // Re-export core types - you'll need these for working with IDs and values
 pub use obrain_common::types::{EdgeId, NodeId, Value};
+
+// (O1) Pont mémoire zero-copy : vues `&str` empruntées aux pages mmap du
+// substrate — voir `Session::prop_str_view` et `obrain_substrate::view`.
+pub use obrain_engine::{FactView, StrView, StrViewSource};
+pub use obrain_engine::ResultBuf;

@@ -635,7 +635,7 @@ mod tests {
         let mut rng = Rng::new(42);
         let a = Matrix::randn(80, 80, &mut rng);
         let b = Matrix::randn(80, 80, &mut rng);
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         for _ in 0..100 {
             let _ = a.matmul(&b);
         }

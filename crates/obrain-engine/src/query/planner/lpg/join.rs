@@ -2,11 +2,127 @@
 
 use super::{
     ApplyOp, ApplyOperator, DistinctOp, Error, ExceptOp, HashJoinOperator, IntersectOp, JoinOp,
-    JoinType, LeapfrogJoinOperator, LogicalExpression, MultiWayJoinOp, Operator, OtherwiseOp,
-    PhysicalJoinType, Result, UnionOp, common,
+    JoinType, LeapfrogJoinOperator, LogicalExpression, LogicalOperator, MultiWayJoinOp, Operator,
+    OtherwiseOp, PhysicalJoinType, Result, UnionOp, common,
 };
 
 impl super::Planner {
+    /// ── CONTRÔLE DE L'EXPLOSION DES LIENS ────────────────────────────────
+    ///
+    /// Deux formes produisent un PRODUIT dont la taille est celle des deux côtés
+    /// multipliés, et l'engin les exécute en boucle imbriquée :
+    ///
+    /// ```text
+    /// NodeScan (c:*)          ← un scan complet POUR CHAQUE ligne d'en dessous
+    ///   Expand (a)->(b)          (`plan_node_scan` en fait un
+    ///     NodeScan (a:*)          NestedLoopJoin … PhysicalJoinType::Cross)
+    ///
+    /// Join (sans condition)   ← appariement sans clé
+    /// ```
+    ///
+    /// Mesuré le 2026-09-12 sur `runtime-dev` : `MATCH (a)-[r]->(b), (c) WHERE
+    /// id(b) IN [3] RETURN count(c)` = 1 251 348 arêtes × 406 335 nœuds ≈ 5·10¹¹
+    /// paires — et le serveur **mourait**, sans message et sans panique (OOM).
+    /// L'engin possède un budget mémoire (`config.memory_limit`, `spill_path`)
+    /// mais AUCUN opérateur d'exécution ne le consulte : il ne pouvait donc rien
+    /// refuser.
+    ///
+    /// Le contrôle est posé au passage unique de la planification (`plan_operator`),
+    /// pour que l'erreur soit EXPLICABLE — elle dit quoi écrire à la place — au
+    /// lieu d'être fatale. La taille est une BORNE INFÉRIEURE tirée des compteurs
+    /// du store : on ne refuse que ce qui est prouvé énorme, jamais ce qui est
+    /// modeste.
+    pub(super) fn garde_explosion(&self, op: &LogicalOperator) -> Result<()> {
+        let (gauche, droite, forme) = match op {
+            LogicalOperator::NodeScan(scan) => {
+                let Some(inner) = scan.input.as_ref() else {
+                    return Ok(());
+                };
+                let lignes_du_scan = match &scan.label {
+                    Some(label) => self.store.node_count_by_label(label),
+                    None => self.store.node_count(),
+                } as u128;
+                (
+                    self.borne_inferieure(inner),
+                    lignes_du_scan.max(1),
+                    "scan imbriqué (produit cartésien)",
+                )
+            }
+            LogicalOperator::Join(join) if join.conditions.is_empty() => (
+                self.borne_inferieure(&join.left),
+                self.borne_inferieure(&join.right),
+                "jointure sans condition",
+            ),
+            _ => return Ok(()),
+        };
+        let paires = gauche.saturating_mul(droite);
+        let plafond = Self::plafond_produit();
+        if paires <= plafond {
+            return Ok(());
+        }
+        use obrain_common::utils::error::{QueryError, QueryErrorKind};
+        Err(QueryError::new(
+            QueryErrorKind::Semantic,
+            format!(
+                "{forme} refusé : au moins {gauche} × {droite} = {paires} paires (plafond {plafond}). \
+                 Les parties du motif ne partagent aucune variable, donc rien ne peut les apparier. \
+                 Mesuré le 2026-09-12 sur runtime-dev : 1 251 348 arêtes × 406 335 nœuds a fait \
+                 tomber le serveur, sans message. Reliez les parties par une variable commune \
+                 (le planificateur en fait alors une jointure amorcée par la graine), bornez par un \
+                 LIMIT, ou comptez autrement. `OBRAIN_MAX_PRODUIT=0` lève ce garde."
+            ),
+        )
+        .into())
+    }
+
+    /// Plafond du nombre de paires qu'une jointure SANS condition peut produire.
+    ///
+    /// Un milliard de paires ne tient dans aucune mémoire de cette machine : le
+    /// garde vise l'explosion, pas les jointures modestes. `OBRAIN_MAX_PRODUIT`
+    /// permet de le régler (`0` = garde levé), sans recompilation.
+    pub(super) fn plafond_produit() -> u128 {
+        match std::env::var("OBRAIN_MAX_PRODUIT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u128>().ok())
+        {
+            Some(0) => u128::MAX,
+            Some(v) => v,
+            None => 1_000_000_000,
+        }
+    }
+
+    /// Borne INFÉRIEURE du nombre de lignes que produira un opérateur, d'après
+    /// les seuls compteurs du store — O(1), aucun parcours.
+    ///
+    /// On ne devine jamais : chaque chiffre vient du store. Ce qui n'est pas
+    /// prouvable vaut **1**, et une borne basse ne fait que rendre le garde plus
+    /// permissif — elle ne peut pas faire refuser une requête modeste.
+    pub(super) fn borne_inferieure(&self, op: &LogicalOperator) -> u128 {
+        match op {
+            LogicalOperator::NodeScan(scan) => {
+                if let Some(inner) = &scan.input {
+                    return self.borne_inferieure(inner);
+                }
+                let n = match &scan.label {
+                    Some(label) => self.store.node_count_by_label(label),
+                    None => self.store.node_count(),
+                };
+                (n as u128).max(1)
+            }
+            // Un parcours depuis un scan NON borné traverse toutes les arêtes du
+            // store : le compteur d'arêtes est donc une borne inférieure EXACTE
+            // des paires produites. À deux sauts et plus, le second saut peut
+            // être vide et la borne ne tient plus : on n'affirme rien.
+            LogicalOperator::Expand(expand) => match expand.input.as_ref() {
+                LogicalOperator::NodeScan(scan) if scan.label.is_none() && scan.input.is_none() => {
+                    (self.store.edge_count() as u128).max(1)
+                }
+                _ => 1,
+            },
+            _ => 1,
+        }
+    }
+
     /// Plans a JOIN operator.
     ///
     /// When join conditions reference shared variables, deduplicates the output

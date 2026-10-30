@@ -32,12 +32,15 @@
 
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::file::{SubstrateFile, Zone, ZoneFile};
-use crate::hilbert::{compute_hilbert_permutation_page_aligned, hilbert_key_from_features};
+use crate::hilbert::{
+    compute_hilbert_permutation_page_aligned, hilbert_key_from_features, zorder_key_from_features,
+};
 use crate::meta::meta_flags;
 use crate::record::{EdgeRecord, NODES_PER_PAGE, NodeRecord, U48};
+use crate::slot_remap::{self, RemapContext, SlotRemapRegistry};
 use crate::wal::{WalPayload, WalRecord};
 use crate::wal_io::{SyncMode, WalWriter};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
 /// High-level write-through primitive for a substrate.
@@ -48,9 +51,57 @@ use std::sync::Arc;
 pub struct Writer {
     substrate: Arc<Mutex<SubstrateFile>>,
     wal: Arc<WalWriter>,
-    zones: Mutex<ZoneCache>,
+    /// Cache de handles de zone, en `RwLock` et NON en `Mutex`.
+    ///
+    /// (2026-08-07) Le `Mutex` sérialisait TOUTES les lectures de nœuds et
+    /// d'arêtes : `read_node` / `read_edge` passent par `with_*_zone`, qui
+    /// prenait un verrou EXCLUSIF alors qu'une lecture n'a besoin que de
+    /// `&ZoneFile` (`as_slice(&self)`). C'était l'écriture qui imposait son
+    /// contrat de verrouillage à la lecture.
+    ///
+    /// Mesuré avant correctif sur la base `agent/system` : débit plafonné à
+    /// ~21 req/s quelle que soit la concurrence, 264 requêtes en file qui ne
+    /// se résorbaient jamais, 35 workers tokio sur 40 endormis en
+    /// `futex_do_wait`, et une part d'attente de 66 à 99 % selon les bases.
+    /// Le MVCC du moteur est réel, mais il ne survivait pas à la descente
+    /// vers le stockage.
+    ///
+    /// Les écritures gardent un accès exclusif via `.write()` — seules les
+    /// lectures pures (`with_node_zone_read` / `with_edge_zone_read`)
+    /// prennent `.read()` et peuvent courir ensemble.
+    zones: RwLock<ZoneCache>,
     /// Growth policy: minimum bytes of headroom kept in each zone.
     min_headroom: u64,
+    /// Chantier SlotRemappable — registre des side-cars slot-indexés
+    /// enrôlés par le `SubstrateStore` (veccol, blobcol, degrés). Invoqué
+    /// sous verrou writer par `bulk_sort_by_hilbert` /
+    /// `compact_community`, APRÈS la durabilité du record WAL et AVANT le
+    /// flip de l'epoch/flag. Voir `crate::slot_remap`.
+    remap_registry: SlotRemapRegistry,
+    /// (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Dernière permutation
+    /// de slots `old→new` appliquée par `bulk_sort_by_hilbert`. Consommée par
+    /// `SubstrateStore` juste après le sort pour rafraîchir les owner stamps
+    /// (`header.node_id`) des chaînes PropsZone v2 déplacées — sinon la garde
+    /// d'append détache la chaîne au prochain append (props pré-remap
+    /// invisibles : perte silencieuse, repro `une_prop_ecrite_apres_un_remap_
+    /// de_slot_ne_perd_pas_la_chaine`). `None` = jamais trié.
+    derniere_permutation_remap: parking_lot::RwLock<Option<std::sync::Arc<Vec<u32>>>>,
+    /// Offset WAL couvert par le dernier flush durable (chantier
+    /// SlotRemappable). Voir [`Writer::require_empty_replay_window`].
+    wal_baseline: std::sync::atomic::AtomicU64,
+    /// Index d'unicité (kind, type_id, key_hash) → ids des simplexes
+    /// VIVANTS (I2, spec 271180c3). Reconstruit paresseusement au premier
+    /// upsert par balayage du répertoire — l'ouverture ne paie rien.
+    /// ORDRE DE VERROUILLAGE : toujours `zones.write()` PUIS ce mutex.
+    simplex_index: Mutex<Option<crate::simplex_zone::SimplexKeyIndex>>,
+    /// Cache de la config des passes simpliciales (T5) : `None` = jamais
+    /// lue ; `Some(x)` = valeur de la zone. Invalidé (réécrit) par
+    /// [`Writer::set_simplex_passes_config`]. Évite l'aller-retour zone à
+    /// CHAQUE mutation d'arête sur le chemin du commit — le hook de
+    /// maintenance ne paie qu'un mutex non contendu quand la couche
+    /// simpliciale n'est pas configurée. Mutex FEUILLE : jamais tenu en
+    /// travers d'un verrou de zone.
+    simplex_passes_cache: Mutex<Option<Option<crate::simplex_passes::SimplexPassesConfig>>>,
 }
 
 #[derive(Default)]
@@ -59,25 +110,110 @@ struct ZoneCache {
     edges: Option<ZoneFile>,
     engram_members: Option<ZoneFile>,
     engram_bitset: Option<ZoneFile>,
+    /// Zones simpliciales (T4, décision 2d461b89) — toujours manipulées
+    /// ENSEMBLE sous le même verrou d'écriture : répertoire + heap des
+    /// hyperarêtes + incidence + pages de postings.
+    simplex_dir: Option<ZoneFile>,
+    simplex_heap: Option<ZoneFile>,
+    simplex_incidence: Option<ZoneFile>,
+    simplex_postings: Option<ZoneFile>,
+    /// ── DIRTY-FLAG de `msync_zones` (taille changée) ──
+    ///
+    /// `remap_count` de chaque zone au moment du dernier `fsync`. Il est
+    /// incrémenté par `grow_to` / `shrink_to` / `rafraichir` — les trois
+    /// seules opérations qui changent la TAILLE du fichier. Quand il diffère
+    /// de la valeur courante, la zone a été ÉTENDUE (ou rétrécie) depuis le
+    /// dernier fsync : la métadonnée de taille doit être rendue durable par un
+    /// `fsync`. Sinon, `msync(MS_SYNC)` suffit — les pages de données sont
+    /// déjà poussées sur disque, et l'ancien double flush (msync PUIS fsync
+    /// inconditionnel) était du travail redondant payé à chaque flush.
+    nodes_fsync_rc: std::sync::atomic::AtomicU64,
+    edges_fsync_rc: std::sync::atomic::AtomicU64,
+    engram_members_fsync_rc: std::sync::atomic::AtomicU64,
+    engram_bitset_fsync_rc: std::sync::atomic::AtomicU64,
+    simplex_dir_fsync_rc: std::sync::atomic::AtomicU64,
+    simplex_heap_fsync_rc: std::sync::atomic::AtomicU64,
+    simplex_incidence_fsync_rc: std::sync::atomic::AtomicU64,
+    simplex_postings_fsync_rc: std::sync::atomic::AtomicU64,
+}
+
+/// Vue exclusive sur les quatre zones simpliciales, ouvertes paresseusement
+/// et empruntées ensemble le temps d'une section critique.
+pub(crate) struct SimplexZones<'a> {
+    pub dir: &'a mut ZoneFile,
+    pub heap: &'a mut ZoneFile,
+    pub incidence: &'a mut ZoneFile,
+    pub postings: &'a mut ZoneFile,
 }
 
 impl Writer {
     /// Construct a writer. The WAL is opened at `substrate.wal_path()`.
     pub fn new(substrate: SubstrateFile, sync_mode: SyncMode) -> SubstrateResult<Self> {
-        let wal_path = substrate.wal_path();
-        let next_lsn = substrate.meta_header().last_wal_offset.saturating_add(1);
-        let wal = Arc::new(WalWriter::open(&wal_path, sync_mode, next_lsn)?);
+        // ── L'ANCRE DE REPLI, PLUS LE « PROCHAIN LSN » (2026-10-06) ─────────
+        // `last_wal_offset` n'est écrit que par le checkpoint, qui le remet à 0
+        // (`checkpoint.rs`) : il valait donc 0 en pratique, et TOUT processus
+        // repartait de LSN 1. L'ancre durable vit désormais dans le side-car
+        // `substrate.wal.lsn`, à côté du WAL, et c'est ELLE qui fait foi — y
+        // compris entre processus et à travers les checkpoints. La valeur du
+        // méta ne sert plus que de REPLI, pour une base antérieure à l'ancre
+        // (side-car absent) : `0 + 1 = 1` y reproduit exactement l'ancien
+        // amorçage, donc aucune base existante ne change de LSN.
+        let ancre_de_repli = substrate.meta_header().last_wal_offset.saturating_add(1);
+        // ── SUIS-JE LE SEUL ÉCRIVAIN ? (axe APPEND, 2026-10-06) ─────────────
+        // Le verrou du RÉPERTOIRE le dit : `SubstrateFile::open` prend un verrou
+        // EXCLUSIF — aucun autre processus ne peut ouvrir ce store, donc aucune
+        // coordination d'append n'est due, et le chemin chaud reste intact.
+        // `open_shared_write` / `open_read_only` prennent un verrou PARTAGÉ, que
+        // deux écrivains peuvent tenir simultanément : là, l'append doit relire
+        // la fin RÉELLE du fichier, sinon deux écrivains estampillent le même LSN
+        // (la position devient une prédiction). On le DÉCLARE au WAL, qui choisit
+        // son chemin en conséquence.
+        let coordination = if substrate.est_ecriture_partagee() {
+            crate::wal_io::CoordinationAppend::OAppend
+        } else {
+            crate::wal_io::CoordinationAppend::Aucune
+        };
+        // (2026-09-17) En mode mémoire il n'y a pas de fichier WAL à ouvrir :
+        // le journal vit dans un tampon (voir `WalWriter::open_memory`).
+        let wal = if substrate.is_memory() {
+            Arc::new(WalWriter::open_memory(sync_mode, ancre_de_repli)?)
+        } else {
+            let wal_path = substrate.wal_path();
+            Arc::new(WalWriter::open(&wal_path, sync_mode, ancre_de_repli)?)
+        };
+        wal.coordination(coordination);
         Ok(Self {
             substrate: Arc::new(Mutex::new(substrate)),
             wal,
-            zones: Mutex::new(ZoneCache::default()),
+            zones: RwLock::new(ZoneCache::default()),
             min_headroom: 1 << 20, // 1 MiB default
+            remap_registry: SlotRemapRegistry::new(),
+            derniere_permutation_remap: parking_lot::RwLock::new(None),
+            wal_baseline: std::sync::atomic::AtomicU64::new(0),
+            simplex_index: Mutex::new(None),
+            simplex_passes_cache: Mutex::new(None),
         })
     }
 
     /// Access the shared [`SubstrateFile`] behind this writer.
     pub fn substrate(&self) -> Arc<Mutex<SubstrateFile>> {
         self.substrate.clone()
+    }
+
+    /// Registre des side-cars slot-indexés enrôlés dans les
+    /// repermutations (chantier SlotRemappable). Le `SubstrateStore` y
+    /// enrôle ses registres ouverts à l'open ; tout NOUVEAU side-car
+    /// slot-indexé DOIT s'y enrôler avant tout câblage du warden.
+    pub fn remap_registry(&self) -> SlotRemapRegistry {
+        self.remap_registry.clone()
+    }
+
+    /// Copie de la dernière permutation `old→new` appliquée par le dernier
+    /// `bulk_sort_by_hilbert` (`None` si aucun tri n'a eu lieu). Utilisée par
+    /// `SubstrateStore` pour rafraîchir les owner stamps des chaînes
+    /// PropsZone v2 déplacées (fix 2026-09-06, CONSTAT-REMAP-PROPS).
+    pub fn derniere_permutation_remap(&self) -> Option<std::sync::Arc<Vec<u32>>> {
+        self.derniere_permutation_remap.read().clone()
     }
 
     /// Access the underlying WAL writer (for advanced callers — group-commit
@@ -92,16 +228,131 @@ impl Writer {
     /// 1. append `WalPayload::NodeInsert` to WAL (not yet committed),
     /// 2. mutate the mmap,
     /// 3. caller must call [`Writer::commit`] to seal the transaction.
+    /// BULK WRITE zone-direct (RFC §16.1, ingestion native) : écrit les zones
+    /// Nodes/Edges par blocs puis chaîne les listes d'adjacence en UNE passe
+    /// ascendante (invariant `next_from`/`next_to` → arête d'id INFÉRIEUR,
+    /// miroir de `create_edge`) et pose `NodeRecord.first_edge_off` = tête
+    /// (dernier id) de chaque source. PAS de WAL, PAS de degrés — l'appelant
+    /// (store) synchronise compteurs et sidecars. Store supposé NEUF (slots
+    /// 1..=n, 1..=m).
+    pub(crate) fn bulk_write(
+        &self,
+        node_bitsets: &[u64],
+        edges: &[(u32, u32, u16)],
+    ) -> SubstrateResult<(u32, u64)> {
+        let n = node_bitsets.len();
+        let m = edges.len() as u64;
+        if n == 0 {
+            return Ok((0, m));
+        }
+        // Zone Nodes : records contigus (slot 1..=n), slot 0 = sentinelle.
+        self.with_node_zone(|zf| {
+            let total = (n as u64 + 1) * NodeRecord::SIZE as u64;
+            ensure_room(zf, total as usize, self.min_headroom)?;
+            let bytes = zf.as_slice_mut();
+            for (i, &bits) in node_bitsets.iter().enumerate() {
+                let slot = i as u64 + 1;
+                let mut rec = NodeRecord::default();
+                rec.label_bitset = bits;
+                // (jalon 1) l'ecriture en masse est une ecriture reelle.
+                rec.flags = crate::record::node_flags::ALLOCATED;
+                let off = (slot * NodeRecord::SIZE as u64) as usize;
+                bytes[off..off + NodeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(&rec));
+            }
+            Ok(())
+        })?;
+        // Zone Edges : slots 1..=m — chaînage FUSIONNÉ (une seule passe :
+        // next_from/next_to posés à l'écriture, têtes mémorisées).
+        if m > 0 {
+            let cap = n + 1;
+            let mut last_from = vec![0u64; cap];
+            let mut heads_from = vec![0u64; cap];
+            let mut last_to = vec![0u64; cap];
+            self.with_edge_zone(|zf| {
+                let total = (m as u64 + 1) * EdgeRecord::SIZE as u64;
+                ensure_room(zf, total as usize, self.min_headroom)?;
+                let bytes = zf.as_slice_mut();
+                for (i, &(src, dst, ty)) in edges.iter().enumerate() {
+                    let id = i as u64 + 1;
+                    let s = src as usize;
+                    let d = dst as usize;
+                    if s >= cap || d >= cap {
+                        return Err(SubstrateError::Internal(
+                            "bulk_write: edge endpoint hors bornes (slots 1..=n)".into(),
+                        ));
+                    }
+                    let mut rec = EdgeRecord::default();
+                    rec.src = src;
+                    rec.dst = dst;
+                    rec.edge_type = ty;
+                    rec.next_from = if last_from[s] != 0 {
+                        U48::from_u64(last_from[s] * EdgeRecord::SIZE as u64)
+                    } else {
+                        U48::ZERO
+                    };
+                    rec.next_to = if last_to[d] != 0 {
+                        U48::from_u64(last_to[d] * EdgeRecord::SIZE as u64)
+                    } else {
+                        U48::ZERO
+                    };
+                    let off = (id * EdgeRecord::SIZE as u64) as usize;
+                    bytes[off..off + EdgeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(&rec));
+                    last_from[s] = id;
+                    heads_from[s] = id;
+                    last_to[d] = id;
+                }
+                Ok(())
+            })?;
+            // Têtes dans NodeRecord.first_edge_off (slot 1..=n).
+            self.with_node_zone(|zf| {
+                let bytes = zf.as_slice_mut();
+                for slot in 1..=n as u64 {
+                    let off = (slot * NodeRecord::SIZE as u64) as usize;
+                    let mut rec: NodeRecord =
+                        *bytemuck::from_bytes(&bytes[off..off + NodeRecord::SIZE]);
+                    rec.first_edge_off = if heads_from[slot as usize] != 0 {
+                        U48::from_u64(heads_from[slot as usize] * EdgeRecord::SIZE as u64)
+                    } else {
+                        U48::ZERO
+                    };
+                    bytes[off..off + NodeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(&rec));
+                }
+                Ok(())
+            })?;
+        }
+        Ok((n as u32, m))
+    }
+
+    /// (RFC zorder-superposition, chantier 3) Marque une MUTATION de
+    /// features : incrémente `feature_epoch` du substrate. Coût : un lock
+    /// court + un fetch_add — les chemins d'écriture verrouillent déjà le
+    /// substrate.
+    fn note_feature_mutation(&self) {
+        let sub = self.substrate.lock();
+        sub.feature_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
     #[tracing::instrument(level = "trace", skip(self, node))]
     pub fn write_node(&self, idx: u32, node: NodeRecord) -> SubstrateResult<()> {
-        // (1) WAL first.
+        // (jalon 1) TOUT record reellement ecrit porte ALLOCATED — pose ici,
+        // au seul point d'ecriture, jamais laisse au choix de l'appelant.
+        let node = NodeRecord {
+            flags: node.flags | crate::record::node_flags::ALLOCATED,
+            ..node
+        };
+        self.note_feature_mutation();
+        // (1) WAL first. (jalon 2) La trame V3 porte le tenant du record —
+        // le rejeu restaure l'appartenance a l'identique. Le defaut public
+        // (0) vient du record lui-meme (`NodeRecord::default()`), pas d'ici.
         let rec = WalRecord {
             lsn: 0, // assigned by WalWriter::append
             timestamp: unix_micros(),
             flags: 0,
-            payload: WalPayload::NodeInsert {
+            payload: WalPayload::NodeInsertV3 {
                 node_id: idx,
                 label_bitset: node.label_bitset,
+                tenant_id: node.tenant_id,
             },
         };
         self.wal.append(rec)?;
@@ -123,11 +374,20 @@ impl Writer {
     /// exactly as it was at commit time.
     #[tracing::instrument(level = "trace", skip(self, node))]
     pub fn update_node(&self, idx: u32, node: NodeRecord) -> SubstrateResult<()> {
+        // (jalon 1) meme regle que write_node — ALLOCATED avant le WAL,
+        // pour que le payload NodeUpdate rejoue le bit a l'identique.
+        let node = NodeRecord {
+            flags: node.flags | crate::record::node_flags::ALLOCATED,
+            ..node
+        };
+        // (jalon 2) Trame V3 : le tenant voyage avec les autres champs
+        // mutables — le rejeu restaure le slot exactement, appartenance
+        // comprise.
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
             flags: 0,
-            payload: WalPayload::NodeUpdate {
+            payload: WalPayload::NodeUpdateV3 {
                 node_id: idx,
                 label_bitset: node.label_bitset,
                 energy: node.energy,
@@ -135,6 +395,7 @@ impl Writer {
                 centrality_cached: node.centrality_cached,
                 flags: node.flags,
                 community_id: node.community_id,
+                tenant_id: node.tenant_id,
             },
         };
         self.wal.append(rec)?;
@@ -163,6 +424,31 @@ impl Writer {
     /// let the WAL-only record stand rather than panic (replay will rebuild
     /// the slot when the matching `NodeInsert` arrives).
     #[tracing::instrument(level = "trace", skip(self))]
+    /// (2026-09-16, T27) Pose les têtes de chaîne de propriétés d'une
+    /// ingestion EN LOT, en une passe sur la zone nœuds et SANS WAL par
+    /// nœud — même contrat que `bulk_write` : base neuve, l'appelant
+    /// checkpoint à la fin. Le chemin unitaire journalise une
+    /// `NodePropHeadUpdate` par PROPRIÉTÉ, soit ≈ 12 M trames sur le noyau
+    /// Linux pour un état que le checkpoint rend durable de toute façon.
+    pub fn poser_tetes_props_en_lot(&self, tetes: &[(u32, U48)]) -> SubstrateResult<()> {
+        if tetes.is_empty() {
+            return Ok(());
+        }
+        self.with_node_zone(|zf| {
+            let octets = zf.as_slice_mut();
+            for &(idx, tete) in tetes {
+                let champ = idx as usize * NodeRecord::SIZE + 14; // first_prop_off
+                if champ + 6 > octets.len() {
+                    return Err(SubstrateError::Internal(format!(
+                        "poser_tetes_props_en_lot : slot {idx} hors de la zone nœuds"
+                    )));
+                }
+                octets[champ..champ + 6].copy_from_slice(&tete.0);
+            }
+            Ok(())
+        })
+    }
+
     pub fn update_node_first_prop_off(&self, idx: u32, new_head: U48) -> SubstrateResult<()> {
         // (1) WAL first.
         let rec = WalRecord {
@@ -176,7 +462,9 @@ impl Writer {
         };
         self.wal.append(rec)?;
 
-        // (2) mmap mutation — 6 bytes at offset (idx * 32 + 14).
+        // (2) mmap mutation — 6 bytes at offset (idx * NodeRecord::SIZE + 14).
+        // (jalon 2 : le stride est 40 ; l'offset 14 de first_prop_off n'a
+        // pas bouge, le tenant s'ajoute en queue de record.)
         self.with_node_zone(|zf| {
             let record_offset = idx as usize * NodeRecord::SIZE;
             let field_offset = record_offset + 14; // first_prop_off byte offset inside NodeRecord
@@ -191,6 +479,42 @@ impl Writer {
             zf.as_slice_mut()[field_offset..field_offset + 6].copy_from_slice(&new_head.0);
             Ok(())
         })
+    }
+
+    /// GARANTIE MEMOIRE (2026-07-25) : append generique d un payload au
+    /// WAL — meme construction d enregistrement que
+    /// update_node_first_prop_off (lsn/timestamp/flags identiques). Utilise
+    /// par SubstrateStore pour journaliser les proprietes scalaires inline
+    /// (PropSetInline & co) au moment exact de l ecriture sidecar.
+    pub(crate) fn append_payload(&self, payload: WalPayload) -> SubstrateResult<()> {
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload,
+        };
+        self.wal.append(rec)?;
+        Ok(())
+    }
+
+    /// ── PROPRIÉTÉ SCALAIRE INLINE, SANS ALLOCATION PAR RECORD (pièce 2) ─────
+    ///
+    /// Le chemin d'écriture de propriété du store passait par
+    /// `append_payload(WalPayload::PropSetInline { key: key.to_string(),
+    /// value_bincode: bytes })` : une `String` ET un `Vec<u8>` alloués par record
+    /// pour des données que l'appelant possédait déjà (`&str` + `&[u8]`), soit
+    /// C1 = 46,4 ns/record mesurés. Ici rien n'est cloné : le payload est encodé
+    /// EMPRUNTÉ, et les octets sur disque sont identiques
+    /// (voir `WalPayload`/`PropSetInlineRef` dans `wal.rs`).
+    pub(crate) fn append_prop_set_inline(
+        &self,
+        node_id: u32,
+        key: &str,
+        value_bincode: &[u8],
+    ) -> SubstrateResult<()> {
+        self.wal
+            .append_prop_set_inline(node_id, key, value_bincode, unix_micros())?;
+        Ok(())
     }
 
     /// Tombstone the node at `idx`: logs `NodeDelete` and flips the
@@ -228,10 +552,106 @@ impl Writer {
         })
     }
 
+    /// Inverse exact de [`Self::tombstone_node`] : efface le bit
+    /// [`node_flags::TOMBSTONED`](crate::record::node_flags::TOMBSTONED) sans
+    /// toucher au reste de l'enregistrement.
+    ///
+    /// (2026-08-14) Sert a annuler une suppression au sein d'une transaction.
+    /// Le tombstone ne detruit rien — il leve un drapeau, et le
+    /// `label_bitset`, les chainages et les offsets de proprietes restent
+    /// intacts dans le slot. La resurrection est donc EXACTE, pas une
+    /// reconstruction approchee : le noeud retrouve son identite, ses aretes
+    /// et sa place dans les chaines.
+    ///
+    /// AUCUNE VARIANTE DE WAL N'A ETE AJOUTEE, et c'est ce qui rend l'affaire
+    /// abordable : `WalPayload::NodeUpdate` porte deja un champ `flags`. On
+    /// journalise donc l'enregistrement complet avec le drapeau efface, ce que
+    /// le rejeu apres panne applique naturellement. Pas de changement de
+    /// format, pas de version a faire evoluer, pas de fichier existant a
+    /// migrer.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn revive_node(&self, idx: u32) -> SubstrateResult<()> {
+        let Some(cur) = self.read_node(idx)? else {
+            return Ok(());
+        };
+        let mut updated = cur;
+        updated.flags &= !crate::record::node_flags::TOMBSTONED;
+
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::NodeUpdate {
+                node_id: idx,
+                label_bitset: updated.label_bitset,
+                energy: updated.energy,
+                scar_util_affinity: updated.scar_util_affinity,
+                centrality_cached: updated.centrality_cached,
+                flags: updated.flags,
+                community_id: updated.community_id,
+            },
+        };
+        self.wal.append(rec)?;
+
+        self.with_node_zone(|zf| {
+            let offset = idx as usize * NodeRecord::SIZE;
+            if offset + NodeRecord::SIZE > zf.as_slice().len() {
+                return Ok(());
+            }
+            let bytes = bytemuck::bytes_of(&updated);
+            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
+            Ok(())
+        })
+    }
+
+    /// Inverse exact de [`Self::tombstone_edge`]. Meme raisonnement que
+    /// [`Self::revive_node`] : `WalPayload::EdgeUpdate` porte deja `flags`.
+    ///
+    /// ATTENTION : ceci ne remet PAS l'arete dans les chaines d'adjacence.
+    /// `delete_edge` la desenfile avant de poser le tombstone ; le rechainage
+    /// est la responsabilite de l'appelant, cote store, ou vivent les
+    /// helpers de splice. Separer les deux evite de dupliquer ici une logique
+    /// de chainage qui a deja son verrou et ses invariants ailleurs.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn revive_edge(&self, idx: u64) -> SubstrateResult<()> {
+        let Some(cur) = self.read_edge(idx)? else {
+            return Ok(());
+        };
+        let mut updated = cur;
+        updated.flags &= !crate::record::edge_flags::TOMBSTONED;
+
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::EdgeUpdate {
+                edge_id: idx,
+                weight_u16: updated.weight_u16,
+                ricci_u8: updated.ricci_u8,
+                flags: updated.flags,
+                engram_tag: updated.engram_tag,
+            },
+        };
+        self.wal.append(rec)?;
+
+        self.with_edge_zone(|zf| {
+            let offset = idx as usize * EdgeRecord::SIZE;
+            if offset + EdgeRecord::SIZE > zf.as_slice().len() {
+                return Ok(());
+            }
+            let bytes = bytemuck::bytes_of(&updated);
+            zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE].copy_from_slice(bytes);
+            Ok(())
+        })
+    }
+
     /// Read the [`NodeRecord`] at slot `idx`. Returns `None` if the slot is
     /// beyond the current zone length (never allocated).
     pub fn read_node(&self, idx: u32) -> SubstrateResult<Option<NodeRecord>> {
-        self.with_node_zone(|zf| {
+        // (2026-08-07) Lecture PARTAGÉE — voir `with_node_zone_read`. C'est
+        // le chemin le plus chaud du moteur (`get_node`, tout `MATCH`) et il
+        // prenait jusqu'ici un verrou exclusif.
+        self.with_node_zone_read(|zf| {
             let offset = idx as usize * NodeRecord::SIZE;
             if offset + NodeRecord::SIZE > zf.as_slice().len() {
                 return Ok(None);
@@ -241,9 +661,304 @@ impl Writer {
         })
     }
 
+    /// Parcourt les enregistrements de nœud des slots `[1, hw)` en ne prenant
+    /// le verrou de zone qu'UNE SEULE FOIS pour toute la boucle.
+    ///
+    /// (2026-08-07) Les scans de label appelaient [`Writer::read_node`] slot
+    /// par slot. Sur la base `agent` (216 000 slots), un seul `MATCH (n:X)`
+    /// prenait donc 216 000 fois le verrou de zone. Mesuré avant correctif :
+    /// 458 ms pour 10 000 slots, soit ~46 µs par nœud — pour lire 32 octets
+    /// déjà présents en mémoire mappée. Extrapolé à la base entière, un scan
+    /// complet coûtait une dizaine de secondes, dont l'écrasante majorité en
+    /// acquisitions de verrou et non en lecture de données.
+    ///
+    /// `f` reçoit `(slot, &NodeRecord)` et rend `false` pour arrêter le
+    /// parcours (utilisé par les scans à `LIMIT`).
+    ///
+    /// ATTENTION : `f` s'exécute AVEC le verrou de zone tenu en lecture. Elle
+    /// ne doit ni écrire dans la zone, ni rappeler une méthode qui reprend
+    /// `self.zones` — `parking_lot::RwLock` n'est pas réentrant.
+    /// Variante BORNÉE de [`Writer::for_each_node_record`] : ne balaie que
+    /// `debut..fin`, donc ne tient le verrou de zone que le temps de cette
+    /// tranche.
+    ///
+    /// ── POURQUOI ELLE EXISTE (2026-08-19) ──
+    ///
+    /// `for_each_node_record` tient la lecture de zone pendant TOUT le
+    /// balayage. La construction d index depuis PropsZone v2 l utilisait
+    /// ainsi, et le chemin d écriture de propriété tient `props_zone` en
+    /// ÉCRITURE tout en réclamant, imbriquée, l écriture de zone de nœuds
+    /// (`update_node_first_prop_off`). Avec plusieurs lecteurs qui se
+    /// relaient, la lecture de zone n était jamais libre : l écrivain
+    /// n obtenait pas son verrou, et les lecteurs attendaient ensuite le
+    /// `props_zone` qu il détenait. Pas un interblocage au sens strict —
+    /// une famine — mais l effet observé est le même : un test croisant
+    /// 4 lecteurs et 4 écrivains ne terminait pas en 120 s, alors que
+    /// chaque famille seule s exécute en moins d une seconde.
+    pub(crate) fn for_each_node_record_range<F>(
+        &self,
+        debut: u32,
+        fin: u32,
+        mut f: F,
+    ) -> SubstrateResult<()>
+    where
+        F: FnMut(u32, &NodeRecord) -> bool,
+    {
+        self.with_node_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            for slot in debut.max(1)..fin {
+                let offset = slot as usize * NodeRecord::SIZE;
+                if offset + NodeRecord::SIZE > bytes.len() {
+                    break;
+                }
+                let rec =
+                    bytemuck::from_bytes::<NodeRecord>(&bytes[offset..offset + NodeRecord::SIZE]);
+                if !f(slot, rec) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn for_each_node_record<F>(&self, hw: u32, mut f: F) -> SubstrateResult<()>
+    where
+        F: FnMut(u32, &NodeRecord) -> bool,
+    {
+        self.with_node_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            for slot in 1..hw {
+                let offset = slot as usize * NodeRecord::SIZE;
+                if offset + NodeRecord::SIZE > bytes.len() {
+                    break;
+                }
+                let rec =
+                    bytemuck::from_bytes::<NodeRecord>(&bytes[offset..offset + NodeRecord::SIZE]);
+                if !f(slot, rec) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // VARIANTES INTERRUPTIBLES (2026-08-24, annulation coopérative)
+    // ═════════════════════════════════════════════════════════════════
+    //
+    // POURQUOI DES VARIANTES ET PAS UN CONTRÔLE DANS LES ORIGINALES.
+    //
+    // Ces trois boucles sont le socle de TOUT le balayage du substrat —
+    // scans de label, mais aussi reconstructions d'index et de compteurs
+    // (`rebuild_degrees_from_scan`, `refresh_community_ranges`,
+    // `batir_index_depuis_v2`). Une reconstruction TRONQUÉE ne rend pas un
+    // résultat partiel à un appelant qui le jettera : elle PERSISTE un index
+    // faux, que toutes les requêtes suivantes croiront. Le dégât survit à
+    // l'annulation.
+    //
+    // Rendre les originales interruptibles ferait donc du défaut la
+    // dangereuse : tout chemin oublié deviendrait tronquable. Le défaut
+    // reste NON interruptible, et l'interruption s'OPTE-IN, chemin par
+    // chemin, uniquement là où le résultat est consommé par une requête de
+    // LECTURE et jeté avec elle.
+    //
+    // COÛT : une `Vigie` par appel, soit un `usize` de pile et, une
+    // itération sur 1024, une lecture de thread-local + un `load(Relaxed)`.
+    //
+    // SÛRETÉ DES VERROUS : le `?` déroule la pile normalement ; la garde
+    // RAII de `with_*_zone_read` (parking_lot) relâche le verrou de zone à
+    // son `Drop`. Aucun verrou orphelin — et surtout, le point de contrôle
+    // ne REPREND aucun verrou : `parking_lot::RwLock` n'est pas réentrant,
+    // et un contrôle qui rappellerait `self.zones` interbloquerait ici.
+    // Seul un `AtomicBool::load` est sûr sous ce verrou.
+
+    /// Variante INTERRUPTIBLE de [`Writer::for_each_node_record`].
+    ///
+    /// Rend `Err(SubstrateError::Cancelled)` si le jeton du thread est armé.
+    /// Réservée aux chemins de LECTURE dont le résultat meurt avec la requête.
+    pub(crate) fn for_each_node_record_annulable<F>(&self, hw: u32, mut f: F) -> SubstrateResult<()>
+    where
+        F: FnMut(u32, &NodeRecord) -> bool,
+    {
+        let mut vigie = obrain_common::utils::cancel::Vigie::new();
+        // (2026-09-11) COMPTAGE DES SLOTS REELLEMENT LUS. Cumul LOCAL, verse
+        // dans l'atomique UNE FOIS a la sortie : le chemin chaud ne paie
+        // aucun trafic atomique par slot. C'est l'instrument de preuve du
+        // plafond sans etiquette — un nombre comptable et deterministe, la
+        // ou le chronometre de cette machine ne vaut rien.
+        let mut lus: u64 = 0;
+        let issue = self.with_node_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            for slot in 1..hw {
+                if vigie.tick_bool() {
+                    return Err(crate::error::SubstrateError::Cancelled);
+                }
+                let offset = slot as usize * NodeRecord::SIZE;
+                if offset + NodeRecord::SIZE > bytes.len() {
+                    break;
+                }
+                let rec =
+                    bytemuck::from_bytes::<NodeRecord>(&bytes[offset..offset + NodeRecord::SIZE]);
+                lus += 1;
+                if !f(slot, rec) {
+                    break;
+                }
+            }
+            Ok(())
+        });
+        crate::compteurs::ajouter_slots_noeuds_lus(lus);
+        issue
+    }
+
+    /// Variante INTERRUPTIBLE de [`Writer::for_each_node_record_range`].
+    pub(crate) fn for_each_node_record_range_annulable<F>(
+        &self,
+        debut: u32,
+        fin: u32,
+        mut f: F,
+    ) -> SubstrateResult<()>
+    where
+        F: FnMut(u32, &NodeRecord) -> bool,
+    {
+        let mut vigie = obrain_common::utils::cancel::Vigie::new();
+        self.with_node_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            for slot in debut.max(1)..fin {
+                if vigie.tick_bool() {
+                    return Err(crate::error::SubstrateError::Cancelled);
+                }
+                let offset = slot as usize * NodeRecord::SIZE;
+                if offset + NodeRecord::SIZE > bytes.len() {
+                    break;
+                }
+                let rec =
+                    bytemuck::from_bytes::<NodeRecord>(&bytes[offset..offset + NodeRecord::SIZE]);
+                if !f(slot, rec) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Variante INTERRUPTIBLE de [`Writer::for_each_edge_record`].
+    pub(crate) fn for_each_edge_record_annulable<F>(&self, hw: u64, mut f: F) -> SubstrateResult<()>
+    where
+        F: FnMut(u64, &EdgeRecord) -> bool,
+    {
+        let mut vigie = obrain_common::utils::cancel::Vigie::new();
+        self.with_edge_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            for slot in 1..hw {
+                if vigie.tick_bool() {
+                    return Err(crate::error::SubstrateError::Cancelled);
+                }
+                let offset = slot as usize * EdgeRecord::SIZE;
+                if offset + EdgeRecord::SIZE > bytes.len() {
+                    break;
+                }
+                let rec =
+                    bytemuck::from_bytes::<EdgeRecord>(&bytes[offset..offset + EdgeRecord::SIZE]);
+                if !f(slot, rec) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Équivalent de [`Writer::for_each_node_record`] pour les arêtes.
+    ///
+    /// ATTENTION : mêmes contraintes de réentrance.
+    pub(crate) fn for_each_edge_record<F>(&self, hw: u64, mut f: F) -> SubstrateResult<()>
+    where
+        F: FnMut(u64, &EdgeRecord) -> bool,
+    {
+        self.with_edge_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            for slot in 1..hw {
+                let offset = slot as usize * EdgeRecord::SIZE;
+                if offset + EdgeRecord::SIZE > bytes.len() {
+                    break;
+                }
+                let rec =
+                    bytemuck::from_bytes::<EdgeRecord>(&bytes[offset..offset + EdgeRecord::SIZE]);
+                if !f(slot, rec) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Donne accès à la zone des nœuds sous UN SEUL verrou, pour les accès
+    /// ALÉATOIRES à une liste de slots connue d'avance — typiquement les
+    /// tests de vivacité d'un lot d'identifiants.
+    ///
+    /// (2026-08-07) `get_node_property` teste la vivacité via
+    /// `is_live_on_disk`, qui fait un `read_node` complet — donc une
+    /// acquisition de verrou — pour ne consulter qu'un bit. En lecture
+    /// unitaire c'est incompressible ; en lot, ça se mutualise.
+    ///
+    /// Mêmes contraintes de réentrance que [`Writer::with_edge_zone_records`].
+    pub(crate) fn with_node_zone_records<R>(
+        &self,
+        f: impl FnOnce(&mut dyn FnMut(u32) -> Option<NodeRecord>) -> R,
+    ) -> SubstrateResult<R> {
+        self.with_node_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            let mut lire = |idx: u32| -> Option<NodeRecord> {
+                let offset = idx as usize * NodeRecord::SIZE;
+                if offset + NodeRecord::SIZE > bytes.len() {
+                    return None;
+                }
+                Some(*bytemuck::from_bytes::<NodeRecord>(
+                    &bytes[offset..offset + NodeRecord::SIZE],
+                ))
+            };
+            Ok(f(&mut lire))
+        })
+    }
+
+    /// Donne accès à la zone des arêtes sous UN SEUL verrou, pour les
+    /// parcours à accès ALÉATOIRE — les chaînes chaînées `next_from` /
+    /// `next_to`, que `for_each_edge_record` ne sait pas suivre puisqu'il
+    /// balaie les slots dans l'ordre.
+    ///
+    /// (2026-08-07) `walk_outgoing_chain` / `walk_incoming_chain` — le chemin
+    /// de toute traversée `-[:TYPE]->` — appelaient `read_edge` par maillon,
+    /// donc un verrou par arête parcourue.
+    ///
+    /// La closure reçoit un lecteur de slot. Elle NE DOIT PAS appeler de code
+    /// utilisateur ni reprendre `self.zones` : les appelants collectent la
+    /// chaîne ici, et n'invoquent leur propre closure qu'APRÈS la sortie,
+    /// verrou relâché. C'est délibérément plus strict que nécessaire — les
+    /// appelants actuels sont tous inoffensifs, mais faire dépendre l'absence
+    /// d'interblocage de la bonne conduite des futurs appelants serait un
+    /// piège.
+    pub(crate) fn with_edge_zone_records<R>(
+        &self,
+        f: impl FnOnce(&mut dyn FnMut(u64) -> Option<EdgeRecord>) -> R,
+    ) -> SubstrateResult<R> {
+        self.with_edge_zone_read(|zf| {
+            let bytes = zf.as_slice();
+            let mut lire = |idx: u64| -> Option<EdgeRecord> {
+                let offset = idx as usize * EdgeRecord::SIZE;
+                if offset + EdgeRecord::SIZE > bytes.len() {
+                    return None;
+                }
+                Some(*bytemuck::from_bytes::<EdgeRecord>(
+                    &bytes[offset..offset + EdgeRecord::SIZE],
+                ))
+            };
+            Ok(f(&mut lire))
+        })
+    }
+
     /// Write an [`EdgeRecord`] at `idx` and log an `EdgeInsert` record.
     #[tracing::instrument(level = "trace", skip(self, edge))]
     pub fn write_edge(&self, idx: u64, edge: EdgeRecord) -> SubstrateResult<()> {
+        self.note_feature_mutation();
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
@@ -337,7 +1052,8 @@ impl Writer {
     /// Read the [`EdgeRecord`] at slot `idx`. Returns `None` if the slot is
     /// beyond the current zone length (never allocated).
     pub fn read_edge(&self, idx: u64) -> SubstrateResult<Option<EdgeRecord>> {
-        self.with_edge_zone(|zf| {
+        // (2026-08-07) Lecture PARTAGÉE — voir `with_node_zone_read`.
+        self.with_edge_zone_read(|zf| {
             let offset = idx as usize * EdgeRecord::SIZE;
             if offset + EdgeRecord::SIZE > zf.as_slice().len() {
                 return Ok(None);
@@ -731,6 +1447,7 @@ impl Writer {
     /// WAL payload: [`WalPayload::CentralityUpdate`].
     #[tracing::instrument(level = "trace", skip(self, updates))]
     pub fn update_centrality_batch(&self, updates: Vec<(u32, u16)>) -> SubstrateResult<()> {
+        self.note_feature_mutation();
         if updates.is_empty() {
             return Ok(());
         }
@@ -772,6 +1489,7 @@ impl Writer {
     /// WAL payload: [`WalPayload::CommunityAssign`].
     #[tracing::instrument(level = "trace", skip(self, updates))]
     pub fn update_community_batch(&self, updates: Vec<(u32, u32)>) -> SubstrateResult<()> {
+        self.note_feature_mutation();
         if updates.is_empty() {
             return Ok(());
         }
@@ -825,10 +1543,11 @@ impl Writer {
     /// 5. Apply the permutation **out-of-place** to `Zone::Nodes` (build
     ///    a fresh buffer, swap at the end).
     /// 6. Rewrite every `EdgeRecord.src` / `dst` using the permutation.
-    /// 7. Rebuild `Zone::Hilbert` and `Zone::Community` side-columns so
-    ///    each new slot carries its hilbert_key / community_id — these
-    ///    columns are the fast-path for spreading activation prefetch
-    ///    (`madvise(WILLNEED)` range computation).
+    /// 7. Rebuild `Zone::Hilbert`, `Zone::Zorder` and `Zone::Community`
+    ///    side-columns so each new slot carries its hilbert_key /
+    ///    zorder_key / community_id — these columns are the fast-path for
+    ///    spreading activation prefetch (`madvise(WILLNEED)` range
+    ///    computation) and for Z-order window queries on the feature plane.
     /// 8. Set [`meta_flags::HILBERT_SORTED`] and persist the meta header.
     /// 9. `msync` + `fsync` touched zones + commit WAL.
     ///
@@ -867,6 +1586,10 @@ impl Writer {
         order: u32,
         max_degree: u32,
     ) -> SubstrateResult<()> {
+        // T4 simplicial : les zones simpliciales ne sont pas encore
+        // enrôlées dans le remap de slots — refus explicite plutôt que
+        // corruption silencieuse.
+        self.refuser_remap_si_simplexes("bulk_sort_by_hilbert")?;
         // Early-out idempotency check.
         {
             let sub = self.substrate.lock();
@@ -906,17 +1629,10 @@ impl Writer {
                 }
                 let rec: &NodeRecord =
                     bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
-                let is_zero_sentinel = rec.label_bitset == 0
-                    && rec.community_id == 0
-                    && rec.centrality_cached == 0
-                    && rec.energy == 0
-                    && rec.scar_util_affinity == 0
-                    && rec.flags == 0
-                    && rec.first_edge_off == crate::record::U48::ZERO
-                    && rec.first_prop_off == crate::record::U48::ZERO;
+                // (jalon 1) ALLOCATED remplace la zero-sentinelle 8-champs.
                 communities[idx as usize] = rec.community_id;
                 centrality[idx as usize] = rec.centrality_cached;
-                tombstoned[idx as usize] = rec.is_tombstoned() || is_zero_sentinel || idx == 0;
+                tombstoned[idx as usize] = !rec.is_live() || idx == 0;
             }
             Ok(())
         })?;
@@ -956,93 +1672,224 @@ impl Writer {
             max_degree,
             NODES_PER_PAGE,
         );
+        // (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Mémoïse la
+        // permutation pour que `SubstrateStore` rafraîchisse les owner stamps
+        // des chaînes PropsZone v2 des nœuds déplacés (post-sort). Clone O(n)
+        // — le sort est déjà O(n log n), coût négligeable mesuré.
+        self.derniere_permutation_remap
+            .write()
+            .replace(std::sync::Arc::new(old_to_new.clone()));
 
         // ---- Phase 3 — WAL-first: log the permutation -----------------
+        //
+        // Chantier SlotRemappable :
+        // * I1 — la permutation est validée (bijection totale, 0 → 0)
+        //   AVANT toute écriture ; un refus n'a rien muté.
+        // * Le record V2 porte l'epoch de repermutation (monotone,
+        //   `substrate.remap.epoch`).
+        // * Les enregistrements ABSOLUS des zones engram (membres +
+        //   bitsets post-remap) sont journalisés dans la MÊME fenêtre de
+        //   durabilité que le record V2 (un seul fsync WAL), puis
+        //   appliqués aux zones : le rejeu les ré-applique idempotemment
+        //   quel que soit l'état intermédiaire — c'est leur mécanisme
+        //   d'idempotence (les zones engram n'ont pas d'en-tête où
+        //   porter un epoch).
+        slot_remap::validate_permutation(&old_to_new)?;
+        // La fenêtre de rejeu doit être VIDE avant d'écrire le record :
+        // sinon un rejeu ultérieur repartirait d'avant le tri et
+        // réécrirait des identifiants pré-permutation dans une zone
+        // post-permutation. Voir `require_empty_replay_window`.
+        self.require_empty_replay_window("bulk_sort_by_hilbert")?;
+
+        let epoch = {
+            let sub = self.substrate.lock();
+            slot_remap::current_remap_epoch(&sub)?.saturating_add(1)
+        };
+        let (engram_member_updates, engram_bitset_updates) =
+            self.compute_engram_remap_updates(&old_to_new)?;
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
             flags: 0,
-            payload: WalPayload::HilbertRepermute {
+            payload: WalPayload::HilbertRepermuteV2 {
                 permutation: old_to_new.clone(),
+                epoch,
+                engram_members: engram_member_updates.clone(),
+                engram_bitsets: engram_bitset_updates.clone(),
             },
         };
         self.wal.append(rec)?;
+        // Point de durabilité : le record porte TOUT l'état absolu (y
+        // compris engram) et est sur disque AVANT la première mutation.
+        self.wal.fsync()?;
 
-        // ---- Phase 4 — apply permutation out-of-place to Zone::Nodes --
-        self.with_node_zone(|zf| {
-            let n = node_high_water as usize;
-            let total = n * NodeRecord::SIZE;
-            ensure_room(zf, total, self.min_headroom)?;
-            let mut buf = vec![NodeRecord::default(); n];
-            let src = &zf.as_slice()[..total];
-            for old in 0..n {
-                let new = old_to_new[old] as usize;
-                let rec: &NodeRecord = bytemuck::from_bytes(
-                    &src[old * NodeRecord::SIZE..(old + 1) * NodeRecord::SIZE],
-                );
-                buf[new] = *rec;
+        // ANNONCE : à partir d'ici les zones peuvent être touchées sans
+        // que leur durabilité soit acquise. Un rejeu qui retrouve cette
+        // annonce sans la confirmation correspondante REFUSERA de
+        // deviner — voir `slot_remap::RemapEpochState`.
+        // La garde porte l'annonce ET sa resolution : elle ne peut pas
+        // etre laissee non tranchee (voir `slot_remap::AnnonceRemap`).
+        let annonce = slot_remap::AnnonceRemap::annoncer_partagee(self.substrate.clone(), epoch)?;
+
+        // ---- Phases 4 a 7 — MUTATIONS DE ZONES, SOUS GARDE D'ANNONCE --
+        //
+        // Tout echec ici est traite par `abandonner_annonce_remap` : voir
+        // sa doc pour le raisonnement complet. Resume : un echec AVANT la
+        // premiere ecriture efface l'annonce (donnees intactes, base
+        // ouvrable) ; un echec APRES la laisse (etat indetermine, la base
+        // doit refuser de se rouvrir).
+        let mutations = (|| -> SubstrateResult<()> {
+            // ---- Phase 4 — apply permutation out-of-place to Zone::Nodes --
+            self.with_node_zone(|zf| {
+                let n = node_high_water as usize;
+                let total = n * NodeRecord::SIZE;
+                ensure_room(zf, total, self.min_headroom)?;
+                let mut buf = vec![NodeRecord::default(); n];
+                let src = &zf.as_slice()[..total];
+                for old in 0..n {
+                    let new = old_to_new[old] as usize;
+                    let rec: &NodeRecord = bytemuck::from_bytes(
+                        &src[old * NodeRecord::SIZE..(old + 1) * NodeRecord::SIZE],
+                    );
+                    buf[new] = *rec;
+                }
+                // ── PREMIERE MUTATION DE ZONE ──
+                // Au-dela de cette ligne l'etat des zones n'est plus connu de
+                // l'exterieur tant que la barriere (phase 7) n'est pas
+                // franchie. `ensure_room` ci-dessus, lui, peut echouer sans
+                // avoir rien touche : c'est LA fenetre que le drapeau protege.
+                annonce.premiere_mutation();
+                zf.as_slice_mut()[..total].copy_from_slice(bytemuck::cast_slice(&buf));
+                Ok(())
+            })?;
+
+            // ---- Phase 5 — rewrite edge.src/dst in place ------------------
+            self.with_edge_zone(|zf| {
+                for idx in 0..edge_high_water {
+                    let offset = (idx as usize) * EdgeRecord::SIZE;
+                    if offset + EdgeRecord::SIZE > zf.as_slice().len() {
+                        break;
+                    }
+                    let rec: EdgeRecord =
+                        *bytemuck::from_bytes(&zf.as_slice()[offset..offset + EdgeRecord::SIZE]);
+                    // Silent tombstones keep their (now stale) src/dst — their payload
+                    // is ignored by every reader anyway.
+                    if rec.is_tombstoned() {
+                        continue;
+                    }
+                    let mut updated = rec;
+                    if (rec.src as usize) < old_to_new.len() {
+                        updated.src = old_to_new[rec.src as usize];
+                    }
+                    if (rec.dst as usize) < old_to_new.len() {
+                        updated.dst = old_to_new[rec.dst as usize];
+                    }
+                    zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
+                        .copy_from_slice(bytemuck::bytes_of(&updated));
+                }
+                Ok(())
+            })?;
+
+            // ---- Phase 6 — rebuild side-columns (Hilbert, Zorder, Community) --
+            // Hilbert side-column: u32 per new slot (the recomputed hilbert_key).
+            // Zorder side-column: u32 per new slot (the recomputed zorder_key —
+            // same (cx, cy) grid as hilbert_key, see RFC zorder-superposition).
+            // Community side-column: u32 per new slot (the community_id).
+            {
+                let sub = self.substrate.lock();
+                let mut hilbert_zone = sub.open_zone(Zone::Hilbert)?;
+                let need = (node_high_water as u64) * 4;
+                ensure_room(&mut hilbert_zone, need as usize, self.min_headroom)?;
+                let mut hbuf = vec![0u32; node_high_water as usize];
+                let mut zbuf = vec![0u32; node_high_water as usize];
+                let mut cbuf = vec![0u32; node_high_water as usize];
+                for old in 0..node_high_water as usize {
+                    let new = old_to_new[old] as usize;
+                    hbuf[new] =
+                        hilbert_key_from_features(centrality[old], degrees[old], order, max_degree);
+                    zbuf[new] =
+                        zorder_key_from_features(centrality[old], degrees[old], order, max_degree);
+                    cbuf[new] = communities[old];
+                }
+                hilbert_zone.as_slice_mut()[..(need as usize)]
+                    .copy_from_slice(bytemuck::cast_slice(&hbuf));
+                hilbert_zone.msync()?;
+                hilbert_zone.fsync()?;
+
+                let mut zorder_zone = sub.open_zone(Zone::Zorder)?;
+                ensure_room(&mut zorder_zone, need as usize, self.min_headroom)?;
+                zorder_zone.as_slice_mut()[..(need as usize)]
+                    .copy_from_slice(bytemuck::cast_slice(&zbuf));
+                zorder_zone.msync()?;
+                zorder_zone.fsync()?;
+
+                let mut community_zone = sub.open_zone(Zone::Community)?;
+                ensure_room(&mut community_zone, need as usize, self.min_headroom)?;
+                community_zone.as_slice_mut()[..(need as usize)]
+                    .copy_from_slice(bytemuck::cast_slice(&cbuf));
+                community_zone.msync()?;
+                community_zone.fsync()?;
             }
-            zf.as_slice_mut()[..total].copy_from_slice(bytemuck::cast_slice(&buf));
+
+            // ---- Phase 6b — zones engram (états absolus du record) ---------
+            self.apply_engram_remap_updates(&engram_member_updates, &engram_bitset_updates)?;
+
+            // ---- Phase 7 — BARRIÈRE de durabilité des zones ---------------
+            //
+            // (2026-08-23, revue adversariale) Tout ce qui précède est mmap ;
+            // rien n'est durable avant ce msync. C'est LA barrière : elle
+            // sépare « les zones peuvent être dans n'importe quel état » de
+            // « les zones sont permutées, et on peut le dire ».
+            self.msync_zones()?;
+
+            // ══ BARRIÈRE FRANCHIE — l'état bascule de INDÉTERMINÉ à
+            //    DÉTERMINÉ-ET-PERMUTÉ. Tout échec au-delà de cette ligne
+            //    appelle la reprise OPPOSÉE de celle d'avant. ══
+            annonce.barriere_franchie();
+
+            // ---- Phase 8 — CONFIRMATION de l'epoch ---------------------
+            //
+            // Écrite juste après la barrière, AVANT les side-cars : un
+            // crash entre les deux laisse un `committed` exact (les zones
+            // SONT permutées) et des side-cars en retard, que le rejeu
+            // rattrape un par un grâce à leurs epochs d'en-tête.
+            //
+            // (2026-08-24, revue #3) ELLE EST DANS LA RÉGION GARDÉE ; et
+            // depuis la revue #5, c'est la GARDE elle-même qui la porte :
+            // `confirmer` gère son propre échec (il retente la
+            // confirmation, les zones étant permutées et durables). La
+            // confirmation ne peut donc plus être appelée « à côté » de la
+            // région gardée — elle EST la résolution.
             Ok(())
-        })?;
-
-        // ---- Phase 5 — rewrite edge.src/dst in place ------------------
-        self.with_edge_zone(|zf| {
-            for idx in 0..edge_high_water {
-                let offset = (idx as usize) * EdgeRecord::SIZE;
-                if offset + EdgeRecord::SIZE > zf.as_slice().len() {
-                    break;
-                }
-                let rec: EdgeRecord =
-                    *bytemuck::from_bytes(&zf.as_slice()[offset..offset + EdgeRecord::SIZE]);
-                // Silent tombstones keep their (now stale) src/dst — their payload
-                // is ignored by every reader anyway.
-                if rec.is_tombstoned() {
-                    continue;
-                }
-                let mut updated = rec;
-                if (rec.src as usize) < old_to_new.len() {
-                    updated.src = old_to_new[rec.src as usize];
-                }
-                if (rec.dst as usize) < old_to_new.len() {
-                    updated.dst = old_to_new[rec.dst as usize];
-                }
-                zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
-                    .copy_from_slice(bytemuck::bytes_of(&updated));
+        })();
+        match mutations {
+            Ok(()) => annonce.confirmer()?,
+            Err(e) => {
+                annonce.abandonner(&e);
+                return Err(e);
             }
-            Ok(())
-        })?;
-
-        // ---- Phase 6 — rebuild side-columns (Hilbert, Community) ------
-        // Hilbert side-column: u32 per new slot (the recomputed hilbert_key).
-        // Community side-column: u32 per new slot (the community_id).
-        {
-            let sub = self.substrate.lock();
-            let mut hilbert_zone = sub.open_zone(Zone::Hilbert)?;
-            let need = (node_high_water as u64) * 4;
-            ensure_room(&mut hilbert_zone, need as usize, self.min_headroom)?;
-            let mut hbuf = vec![0u32; node_high_water as usize];
-            let mut cbuf = vec![0u32; node_high_water as usize];
-            for old in 0..node_high_water as usize {
-                let new = old_to_new[old] as usize;
-                hbuf[new] =
-                    hilbert_key_from_features(centrality[old], degrees[old], order, max_degree);
-                cbuf[new] = communities[old];
-            }
-            hilbert_zone.as_slice_mut()[..(need as usize)]
-                .copy_from_slice(bytemuck::cast_slice(&hbuf));
-            hilbert_zone.msync()?;
-            hilbert_zone.fsync()?;
-
-            let mut community_zone = sub.open_zone(Zone::Community)?;
-            ensure_room(&mut community_zone, need as usize, self.min_headroom)?;
-            community_zone.as_slice_mut()[..(need as usize)]
-                .copy_from_slice(bytemuck::cast_slice(&cbuf));
-            community_zone.msync()?;
-            community_zone.fsync()?;
         }
 
-        // ---- Phase 7 — set HILBERT_SORTED in meta header ---------------
+        // ---- Phase 9 — side-cars, APRÈS la barrière (condition 2) ------
+        //
+        // Ordre par risque croissant : tier0 (table slot_to_offset seule),
+        // puis le registre (degrés, blobcol, veccol — le plus délicat en
+        // dernier, protégé par sa bascule atomique par rename).
+        {
+            // Portee COURTE : le mutex ne doit surtout pas etre tenu
+            // pendant l'appel au registre (interblocage — voir la doc du
+            // trait `SlotRemappable`).
+            let sub = self.substrate.lock();
+            slot_remap::remap_tier0_slot_table(&sub, &old_to_new, epoch)?;
+        }
+        self.remap_registry.remap_node_slots(
+            &self.substrate,
+            &old_to_new,
+            epoch,
+            RemapContext::Live,
+        )?;
+
+        // ---- Phase 10 — méta + commit ---------------------------------
         {
             let mut sub = self.substrate.lock();
             let mut h = sub.meta_header();
@@ -1051,10 +1898,197 @@ impl Writer {
             h.node_count = node_high_water as u64;
             sub.write_meta_header(&h)?;
         }
-
-        // ---- Phase 8 — msync touched node/edge zones + WAL commit -----
-        self.msync_zones()?;
         let _ = self.commit()?;
+        // Grille de tri persistée (hint — jamais fatal, cf. write_zgrid).
+        // Écrite APRÈS le commit : la colonne Zorder est durable (barrière
+        // Ph7) et le fichier ne fait partie d'aucune discipline WAL.
+        {
+            let sub = self.substrate.lock();
+            let _ = sub.write_zgrid(order, max_degree);
+        }
+        Ok(())
+    }
+
+    /// Chantier SlotRemappable — exige que la fenêtre de rejeu soit VIDE
+    /// avant d'entamer une repermutation.
+    ///
+    /// ── LE DÉFAUT QUE CECI FERME (revue adversariale, 2026-08-23) ──
+    ///
+    /// Le rejeu de production ne repart PAS de zéro : il repart de
+    /// `wal_offset_at_flush`, l'offset du dernier flush
+    /// (`store.rs`, ouverture). Or une repermutation ne faisait pas
+    /// avancer cet offset. Enchaînement observé en revue : trafic
+    /// ordinaire, puis tri réussi (zones msyncées, side-cars estampillés),
+    /// puis crash plus tard. Au redémarrage, le rejeu repart d'AVANT le
+    /// tri et réécrit des enregistrements en numérotation PRÉ-permutation
+    /// dans une zone déjà POST-permutation. Corruption silencieuse, CRC
+    /// valides.
+    ///
+    /// Le remède est en amont : on n'entame une repermutation que si la
+    /// fenêtre de rejeu est vide, c'est-à-dire si le dernier flush couvre
+    /// tout le WAL écrit. L'appelant supporté
+    /// ([`crate::store::SubstrateStore::repermuter_par_hilbert`]) encadre
+    /// la passe de deux flushes ; ce garde-fou refuse tout autre usage
+    /// plutôt que de le laisser corrompre.
+    fn require_empty_replay_window(&self, operation: &str) -> SubstrateResult<()> {
+        let baseline = self.wal_baseline.load(std::sync::atomic::Ordering::Acquire);
+        let current = self.wal.offset();
+        if baseline < current {
+            return Err(SubstrateError::Internal(format!(
+                "{operation}: la fenetre de rejeu n'est pas vide (baseline {baseline} < WAL \
+                 {current}). Une repermutation doit etre encadree par un flush AVANT et un \
+                 flush APRES — passez par SubstrateStore::repermuter_par_hilbert."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Publie l'offset WAL couvert par le dernier flush durable. Appelé
+    /// par [`crate::store::SubstrateStore::flush`] ; c'est ce que
+    /// [`Self::require_empty_replay_window`] vérifie.
+    /// Un `store` et non un `fetch_max` : un checkpoint TRONQUE le WAL et
+    /// remet son offset a zero. Garder le maximum historique laisserait
+    /// croire, apres troncature, que la fenetre de rejeu est vide alors
+    /// qu'elle se remplit a nouveau.
+    ///
+    /// ══ VISIBILITE RESTREINTE (revue #3) ══
+    ///
+    /// Cette fonction ETAIT `pub`. Un appelant pouvait donc AFFIRMER une
+    /// durabilite qui n'existait pas, et la garde
+    /// [`Self::require_empty_replay_window`] le croyait. Constate en
+    /// revue par construction d'un cas : en l'appelant sans flush reel on
+    /// obtient une base dont l'ouverture rejoue des `update_node` en
+    /// numerotation PRE-permutation sur des zones POST-permutation —
+    /// exactement la corruption que cette garde existe pour empecher.
+    ///
+    /// Elle est desormais `pub(crate)`, et son seul appelant de
+    /// production est `SubstrateStore::flush`, qui l'appelle APRES avoir
+    /// reellement rendu les donnees durables. Les appelants externes qui
+    /// ont besoin d'une fenetre vide doivent passer par
+    /// [`Self::vider_fenetre_de_rejeu`], qui ne l'AFFIRME pas : elle la
+    /// REND vide.
+    pub(crate) fn note_durable_baseline(&self, offset: u64) {
+        self.wal_baseline
+            .store(offset, std::sync::atomic::Ordering::Release);
+    }
+
+    /// REND la fenetre de rejeu vide, au lieu de l'affirmer — remplacant
+    /// public de `note_durable_baseline` (revue #3).
+    ///
+    /// Trois actes, dans cet ordre, et c'est l'ordre qui fait la surete :
+    ///
+    /// 1. `msync_zones` — tout ce que le WAL decrit est desormais dans
+    ///    les zones, sur disque ;
+    /// 2. `fsync` du WAL — rien n'est perdu si l'etape 3 echoue a
+    ///    mi-chemin ;
+    /// 3. `truncate` du WAL — la fenetre de rejeu est VIDE, et elle l'est
+    ///    DURABLEMENT : plus aucun enregistrement pre-permutation ne peut
+    ///    etre rejoue sur des zones post-permutation.
+    ///
+    /// Aucune donnee n'est perdue : l'etape 1 precede l'etape 3, donc
+    /// tout ce qui est tronque est deja dans les zones. C'est exactement
+    /// ce que fait un checkpoint.
+    ///
+    /// Contrairement a l'ancienne API, il n'y a rien a mentir ici : la
+    /// fonction ne prend aucun parametre et ne croit personne sur parole.
+    pub fn vider_fenetre_de_rejeu(&self) -> SubstrateResult<()> {
+        self.msync_zones()?;
+        self.wal.fsync()?;
+        self.wal.truncate()?;
+        self.wal_baseline
+            .store(self.wal.offset(), std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    // ==================================================================
+    // Chantier SlotRemappable — remap des zones engram
+    // ==================================================================
+
+    /// Calcule (LECTURE SEULE, avant tout WAL/mutation) les états
+    /// absolus post-remap des zones engram :
+    ///
+    /// * membres — pour chaque engram dont la liste change, la liste
+    ///   complète avec chaque slot nœud passé par `old_to_new` ;
+    /// * bitsets — pour chaque slot dont la signature change, la valeur
+    ///   u64 finale (permutation du tableau `bitset[new] = bitset[old]`).
+    ///
+    /// Les listes rendues sont journalisées telles quelles
+    /// (`EngramMembersSet` / `EngramBitsetSet`) puis appliquées par
+    /// [`Self::apply_engram_remap_updates`].
+    #[allow(clippy::type_complexity)]
+    fn compute_engram_remap_updates(
+        &self,
+        old_to_new: &[u32],
+    ) -> SubstrateResult<(Vec<(u16, Vec<u32>)>, Vec<(u32, u64)>)> {
+        // ── Membres : remap de VALEURS (les payloads sont des slots) ──
+        let mut member_updates: Vec<(u16, Vec<u32>)> = Vec::new();
+        self.with_engram_zone(|zf| {
+            // Zone jamais initialisée (aucun engram) ou en-tête invalide :
+            // rien à remapper — on ne force pas l'init pour un no-op.
+            if crate::engram::EngramZone::payload_used(zf).is_err() {
+                return Ok(());
+            }
+            for id in 1..crate::engram::DIRECTORY_SLOTS {
+                let engram_id = id as u16;
+                let Some(members) = crate::engram::EngramZone::members(zf, engram_id)? else {
+                    continue;
+                };
+                let mapped: Vec<u32> = members
+                    .iter()
+                    .map(|&m| old_to_new.get(m as usize).copied().unwrap_or(m))
+                    .collect();
+                if mapped != members {
+                    member_updates.push((engram_id, mapped));
+                }
+            }
+            Ok(())
+        })?;
+
+        // ── Bitsets : permutation du tableau u64 sur [0, hw) ──────────
+        let mut bitset_updates: Vec<(u32, u64)> = Vec::new();
+        self.with_engram_bitset_zone(|zf| {
+            let hw = old_to_new.len();
+            let covered = (zf.as_slice().len() / crate::engram_bitset::BITSET_ENTRY_SIZE).min(hw);
+            let mut old_vals = vec![0u64; hw];
+            for (slot, val) in old_vals.iter_mut().enumerate().take(covered) {
+                *val = crate::engram_bitset::EngramBitsetColumn::get(zf, slot as u32);
+            }
+            let mut new_vals = vec![0u64; hw];
+            for (old, &new) in old_to_new.iter().enumerate() {
+                new_vals[new as usize] = old_vals[old];
+            }
+            for slot in 0..hw {
+                if new_vals[slot] != old_vals[slot] {
+                    bitset_updates.push((slot as u32, new_vals[slot]));
+                }
+            }
+            Ok(())
+        })?;
+
+        Ok((member_updates, bitset_updates))
+    }
+
+    fn apply_engram_remap_updates(
+        &self,
+        member_updates: &[(u16, Vec<u32>)],
+        bitset_updates: &[(u32, u64)],
+    ) -> SubstrateResult<()> {
+        if !member_updates.is_empty() {
+            self.with_engram_zone(|zf| {
+                for (engram_id, members) in member_updates {
+                    crate::engram::EngramZone::set_members_raw(zf, *engram_id, members)?;
+                }
+                Ok(())
+            })?;
+        }
+        if !bitset_updates.is_empty() {
+            self.with_engram_bitset_zone(|zf| {
+                for (node_id, bitset) in bitset_updates {
+                    crate::engram_bitset::EngramBitsetColumn::set_raw(zf, *node_id, *bitset)?;
+                }
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
@@ -1107,12 +2141,17 @@ impl Writer {
         order: u32,
         max_degree: u32,
     ) -> SubstrateResult<CompactionResult> {
+        // T4 simplicial : même garde que `bulk_sort_by_hilbert`.
+        self.refuser_remap_si_simplexes("compact_community")?;
         if current_node_hw == 0 {
             return Ok(CompactionResult::empty());
         }
 
         // ---- Phase 1 — gather live members of the target community ----
-        let mut members: Vec<(u32, u32)> = Vec::new(); // (old_slot, hilbert_key)
+        // (old_slot, centrality_cached) + ensemble des slots membres (pour le
+        // comptage de degré restreint du scan d'arêtes, Phase 1b).
+        let mut raw_members: Vec<(u32, u16)> = Vec::new();
+        let mut member_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
         self.with_node_zone(|zf| {
             for slot in 0..current_node_hw {
                 let offset = (slot as usize) * NodeRecord::SIZE;
@@ -1121,37 +2160,59 @@ impl Writer {
                 }
                 let rec: &NodeRecord =
                     bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
-                if rec.is_tombstoned() {
+                // (jalon 1) ALLOCATED remplace la garde zero-sentinelle :
+                // tombstones et creneaux jamais ecrits exclus d'un test.
+                if !rec.is_live() {
                     continue;
                 }
                 if rec.community_id != community_id {
                     continue;
                 }
-                // Zero-sentinel guard (slow-path padding left by Step 3).
-                if rec.label_bitset == 0
-                    && rec.community_id == 0
-                    && rec.centrality_cached == 0
-                    && rec.energy == 0
-                    && rec.scar_util_affinity == 0
-                    && rec.flags == 0
-                    && rec.first_edge_off == crate::record::U48::ZERO
-                    && rec.first_prop_off == crate::record::U48::ZERO
-                {
-                    continue;
-                }
-                let hkey = hilbert_key_from_features(
-                    rec.centrality_cached,
-                    0, // degree unknown here — Step 7 will plumb it; Hilbert locality already suffices
-                    order,
-                    max_degree,
-                );
-                members.push((slot, hkey));
+                raw_members.push((slot, rec.centrality_cached));
+                member_slots.insert(slot);
             }
             Ok(())
         })?;
 
-        if members.is_empty() {
+        if raw_members.is_empty() {
             return Ok(CompactionResult::empty());
+        }
+
+        // ---- Phase 1b — degrés SORTANTS RÉELS (Step 7) -----------------
+        //
+        // Un scan UNIQUE des arêtes, restreint aux sources membres, compte
+        // le degré sortant exact de chaque slot. Le bulk sort fait déjà ce
+        // scan O(E) ; la compaction est un chemin rare. AVANT ce changement,
+        // hkey/zkey étaient calculés avec `degree = 0` — colonnes Hilbert et
+        // Zorder dégradées par conception après compactage (les fenêtres 2D
+        // et le préfetch lisaient des clés fausses sur l'axe degré).
+        let mut outdeg: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        self.with_edge_zone(|zf| {
+            for idx in 0..current_edge_hw {
+                let offset = (idx as usize) * EdgeRecord::SIZE;
+                if offset + EdgeRecord::SIZE > zf.as_slice().len() {
+                    break;
+                }
+                let rec: &EdgeRecord =
+                    bytemuck::from_bytes(&zf.as_slice()[offset..offset + EdgeRecord::SIZE]);
+                if rec.flags & crate::record::edge_flags::TOMBSTONED != 0 {
+                    continue;
+                }
+                if member_slots.contains(&rec.src) {
+                    *outdeg.entry(rec.src).or_insert(0) += 1;
+                }
+            }
+            Ok(())
+        })?;
+
+        let mut members: Vec<(u32, u32, u32)> = Vec::with_capacity(raw_members.len()); // (old_slot, hilbert_key, zorder_key)
+        for (slot, centrality) in raw_members {
+            let deg = outdeg.get(&slot).copied().unwrap_or(0);
+            members.push((
+                slot,
+                hilbert_key_from_features(centrality, deg, order, max_degree),
+                zorder_key_from_features(centrality, deg, order, max_degree),
+            ));
         }
 
         // ---- Phase 2 — sort by (hilbert_key, old_slot) for determinism --
@@ -1170,21 +2231,42 @@ impl Writer {
         let relocations: Vec<(u32, u32)> = members
             .iter()
             .enumerate()
-            .map(|(i, (old, _))| (*old, new_start + i as u32))
+            .map(|(i, (old, _, _))| (*old, new_start + i as u32))
             .collect();
 
-        // ---- Phase 4/5 — WAL-first (fsync happens at commit()) --------
+        // ---- Phase 4/5 — WAL-first + durabilité immédiate -------------
+        //
+        // Chantier SlotRemappable : permutation totale équivalente
+        // (identité + échanges old ↔ new) validée AVANT toute écriture ;
+        // record V2 porteur de l'epoch ; états absolus engram journalisés
+        // dans la même fenêtre de durabilité (voir bulk_sort_by_hilbert,
+        // Phase 3, pour le rationale complet).
+        let total_perm = slot_remap::permutation_from_relocations(&relocations, new_end)?;
+        self.require_empty_replay_window("compact_community")?;
+        let epoch = {
+            let sub = self.substrate.lock();
+            slot_remap::current_remap_epoch(&sub)?.saturating_add(1)
+        };
+        let (engram_member_updates, engram_bitset_updates) =
+            self.compute_engram_remap_updates(&total_perm)?;
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
             flags: 0,
-            payload: WalPayload::CompactCommunity {
+            payload: WalPayload::CompactCommunityV2 {
                 community_id,
                 relocations: relocations.clone(),
                 page_range: (first_page, last_page),
+                epoch,
+                engram_members: engram_member_updates.clone(),
+                engram_bitsets: engram_bitset_updates.clone(),
             },
         };
         self.wal.append(rec)?;
+        self.wal.fsync()?;
+        // La garde porte l'annonce ET sa resolution : elle ne peut pas
+        // etre laissee non tranchee (voir `slot_remap::AnnonceRemap`).
+        let annonce = slot_remap::AnnonceRemap::annoncer_partagee(self.substrate.clone(), epoch)?;
 
         // Old → New maps for fast lookup during edge remap.
         let old_slots: std::collections::HashSet<u32> =
@@ -1192,105 +2274,161 @@ impl Writer {
         let old_to_new_map: std::collections::HashMap<u32, u32> =
             relocations.iter().copied().collect();
 
-        // ---- Phase 6 — copy old → new + zero old ----------------------
-        self.with_node_zone(|zf| {
-            let needed = (new_end as usize) * NodeRecord::SIZE;
-            ensure_room(zf, needed, self.min_headroom)?;
-            // Grab a snapshot of the old records first (borrowing rules).
-            let mut copies: Vec<(u32, NodeRecord)> = Vec::with_capacity(relocations.len());
-            {
-                let src = zf.as_slice();
-                for (old, new) in &relocations {
+        // ---- Phases 6 a 9 — MUTATIONS DE ZONES, SOUS GARDE D'ANNONCE --
+        // Meme discipline que `bulk_sort_by_hilbert` — voir
+        // `abandonner_annonce_remap`.
+        let mutations = (|| -> SubstrateResult<()> {
+            // ---- Phase 6 — copy old → new + zero old ----------------------
+            self.with_node_zone(|zf| {
+                let needed = (new_end as usize) * NodeRecord::SIZE;
+                ensure_room(zf, needed, self.min_headroom)?;
+                // Grab a snapshot of the old records first (borrowing rules).
+                let mut copies: Vec<(u32, NodeRecord)> = Vec::with_capacity(relocations.len());
+                {
+                    let src = zf.as_slice();
+                    for (old, new) in &relocations {
+                        let off = (*old as usize) * NodeRecord::SIZE;
+                        let rec: &NodeRecord =
+                            bytemuck::from_bytes(&src[off..off + NodeRecord::SIZE]);
+                        copies.push((*new, *rec));
+                    }
+                }
+                // ── PREMIERE MUTATION DE ZONE ── (cf. bulk_sort_by_hilbert)
+                annonce.premiere_mutation();
+                // Write each to its new slot.
+                let zone_mut = zf.as_slice_mut();
+                for (new, rec) in &copies {
+                    let off = (*new as usize) * NodeRecord::SIZE;
+                    zone_mut[off..off + NodeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(rec));
+                }
+                // Zero each old slot (turn into zero-sentinel — safe because we
+                // set community_id back to 0, so the warden & bulk_sort will skip
+                // it).
+                let zero = NodeRecord::default();
+                for (old, _) in &relocations {
                     let off = (*old as usize) * NodeRecord::SIZE;
-                    let rec: &NodeRecord = bytemuck::from_bytes(&src[off..off + NodeRecord::SIZE]);
-                    copies.push((*new, *rec));
+                    zone_mut[off..off + NodeRecord::SIZE]
+                        .copy_from_slice(bytemuck::bytes_of(&zero));
                 }
-            }
-            // Write each to its new slot.
-            let zone_mut = zf.as_slice_mut();
-            for (new, rec) in &copies {
-                let off = (*new as usize) * NodeRecord::SIZE;
-                zone_mut[off..off + NodeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(rec));
-            }
-            // Zero each old slot (turn into zero-sentinel — safe because we
-            // set community_id back to 0, so the warden & bulk_sort will skip
-            // it).
-            let zero = NodeRecord::default();
-            for (old, _) in &relocations {
-                let off = (*old as usize) * NodeRecord::SIZE;
-                zone_mut[off..off + NodeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(&zero));
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
 
-        // ---- Phase 7 — remap edges whose endpoint is in old_slots -----
-        self.with_edge_zone(|zf| {
-            for idx in 0..current_edge_hw {
-                let offset = (idx as usize) * EdgeRecord::SIZE;
-                if offset + EdgeRecord::SIZE > zf.as_slice().len() {
-                    break;
+            // ---- Phase 7 — remap edges whose endpoint is in old_slots -----
+            self.with_edge_zone(|zf| {
+                for idx in 0..current_edge_hw {
+                    let offset = (idx as usize) * EdgeRecord::SIZE;
+                    if offset + EdgeRecord::SIZE > zf.as_slice().len() {
+                        break;
+                    }
+                    let rec: EdgeRecord =
+                        *bytemuck::from_bytes(&zf.as_slice()[offset..offset + EdgeRecord::SIZE]);
+                    if rec.is_tombstoned() {
+                        continue;
+                    }
+                    let src_in = old_slots.contains(&rec.src);
+                    let dst_in = old_slots.contains(&rec.dst);
+                    if !src_in && !dst_in {
+                        continue;
+                    }
+                    let mut updated = rec;
+                    if src_in && let Some(&ns) = old_to_new_map.get(&rec.src) {
+                        updated.src = ns;
+                    }
+                    if dst_in && let Some(&nd) = old_to_new_map.get(&rec.dst) {
+                        updated.dst = nd;
+                    }
+                    zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
+                        .copy_from_slice(bytemuck::bytes_of(&updated));
                 }
-                let rec: EdgeRecord =
-                    *bytemuck::from_bytes(&zf.as_slice()[offset..offset + EdgeRecord::SIZE]);
-                if rec.is_tombstoned() {
-                    continue;
-                }
-                let src_in = old_slots.contains(&rec.src);
-                let dst_in = old_slots.contains(&rec.dst);
-                if !src_in && !dst_in {
-                    continue;
-                }
-                let mut updated = rec;
-                if src_in && let Some(&ns) = old_to_new_map.get(&rec.src) {
-                    updated.src = ns;
-                }
-                if dst_in && let Some(&nd) = old_to_new_map.get(&rec.dst) {
-                    updated.dst = nd;
-                }
-                zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
-                    .copy_from_slice(bytemuck::bytes_of(&updated));
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
 
-        // ---- Phase 8 — rebuild affected slots in side-columns ---------
+            // ---- Phase 8 — rebuild affected slots in side-columns ---------
+            {
+                let sub = self.substrate.lock();
+                let mut hilbert_zone = sub.open_zone(Zone::Hilbert)?;
+                let needed = (new_end as usize) * 4;
+                ensure_room(&mut hilbert_zone, needed, self.min_headroom)?;
+                let hbytes = hilbert_zone.as_slice_mut();
+                for (i, (old, new)) in relocations.iter().enumerate() {
+                    let _ = old; // unused here, only hkey matters — recompute from sorted list
+                    let hkey = members[i].1;
+                    let off = (*new as usize) * 4;
+                    hbytes[off..off + 4].copy_from_slice(&hkey.to_le_bytes());
+                }
+                // Zero side-column entries at old slots.
+                for (old, _) in &relocations {
+                    let off = (*old as usize) * 4;
+                    hbytes[off..off + 4].copy_from_slice(&0u32.to_le_bytes());
+                }
+                hilbert_zone.msync()?;
+                hilbert_zone.fsync()?;
+
+                // Z-order side-column: same slots, same degraded-degree input
+                // as the Hilbert key (mirror semantics — the warden's bulk
+                // sort recomputes both with the real degree).
+                let mut zorder_zone = sub.open_zone(Zone::Zorder)?;
+                ensure_room(&mut zorder_zone, needed, self.min_headroom)?;
+                let zbytes = zorder_zone.as_slice_mut();
+                for (i, (old, new)) in relocations.iter().enumerate() {
+                    let _ = old; // only zkey matters — from the sorted member list
+                    let zkey = members[i].2;
+                    let off = (*new as usize) * 4;
+                    zbytes[off..off + 4].copy_from_slice(&zkey.to_le_bytes());
+                }
+                for (old, _) in &relocations {
+                    let off = (*old as usize) * 4;
+                    zbytes[off..off + 4].copy_from_slice(&0u32.to_le_bytes());
+                }
+                zorder_zone.msync()?;
+                zorder_zone.fsync()?;
+
+                let mut community_zone = sub.open_zone(Zone::Community)?;
+                ensure_room(&mut community_zone, needed, self.min_headroom)?;
+                let cbytes = community_zone.as_slice_mut();
+                for (_, new) in &relocations {
+                    let off = (*new as usize) * 4;
+                    cbytes[off..off + 4].copy_from_slice(&community_id.to_le_bytes());
+                }
+                for (old, _) in &relocations {
+                    let off = (*old as usize) * 4;
+                    cbytes[off..off + 4].copy_from_slice(&0u32.to_le_bytes());
+                }
+                community_zone.msync()?;
+                community_zone.fsync()?;
+            }
+
+            // ---- Phase 8b — zones engram (états absolus du record) --------
+            self.apply_engram_remap_updates(&engram_member_updates, &engram_bitset_updates)?;
+
+            // ---- Phase 9 — BARRIÈRE de durabilité, puis CONFIRMATION ------
+            // Même discipline que `bulk_sort_by_hilbert` (voir ses phases
+            // 7 à 9) : barrière → confirmation → side-cars.
+            self.msync_zones()?;
+
+            // ══ BARRIÈRE FRANCHIE (cf. bulk_sort_by_hilbert) ══
+            annonce.barriere_franchie();
+            Ok(())
+        })();
+        match mutations {
+            Ok(()) => annonce.confirmer()?,
+            Err(e) => {
+                annonce.abandonner(&e);
+                return Err(e);
+            }
+        }
         {
             let sub = self.substrate.lock();
-            let mut hilbert_zone = sub.open_zone(Zone::Hilbert)?;
-            let needed = (new_end as usize) * 4;
-            ensure_room(&mut hilbert_zone, needed, self.min_headroom)?;
-            let hbytes = hilbert_zone.as_slice_mut();
-            for (i, (old, new)) in relocations.iter().enumerate() {
-                let _ = old; // unused here, only hkey matters — recompute from sorted list
-                let hkey = members[i].1;
-                let off = (*new as usize) * 4;
-                hbytes[off..off + 4].copy_from_slice(&hkey.to_le_bytes());
-            }
-            // Zero side-column entries at old slots.
-            for (old, _) in &relocations {
-                let off = (*old as usize) * 4;
-                hbytes[off..off + 4].copy_from_slice(&0u32.to_le_bytes());
-            }
-            hilbert_zone.msync()?;
-            hilbert_zone.fsync()?;
-
-            let mut community_zone = sub.open_zone(Zone::Community)?;
-            ensure_room(&mut community_zone, needed, self.min_headroom)?;
-            let cbytes = community_zone.as_slice_mut();
-            for (_, new) in &relocations {
-                let off = (*new as usize) * 4;
-                cbytes[off..off + 4].copy_from_slice(&community_id.to_le_bytes());
-            }
-            for (old, _) in &relocations {
-                let off = (*old as usize) * 4;
-                cbytes[off..off + 4].copy_from_slice(&0u32.to_le_bytes());
-            }
-            community_zone.msync()?;
-            community_zone.fsync()?;
+            slot_remap::remap_tier0_slot_table(&sub, &total_perm, epoch)?;
         }
+        self.remap_registry.remap_node_slots(
+            &self.substrate,
+            &total_perm,
+            epoch,
+            RemapContext::Live,
+        )?;
 
-        // ---- Phase 9 — meta header: clear HILBERT_SORTED (compaction
-        //                invalidates global sort), bump node_count ------
+        // ---- Phase 10 — méta (clear HILBERT_SORTED, bump node_count) --
         {
             let mut sub = self.substrate.lock();
             let mut h = sub.meta_header();
@@ -1298,9 +2436,6 @@ impl Writer {
             h.node_count = new_end as u64;
             sub.write_meta_header(&h)?;
         }
-
-        // ---- Phase 10 — flush mmap + commit WAL ----------------------
-        self.msync_zones()?;
         let _ = self.commit()?;
 
         Ok(CompactionResult {
@@ -1441,11 +2576,411 @@ impl Writer {
         })
     }
 
+    // ==================================================================
+    // Stockage simplicial (T4, décision 2d461b89, spec 271180c3)
+    // ==================================================================
+
+    /// Upsert WAL-first d'un simplexe (I1-I3, I7).
+    ///
+    /// Canonicalise les membres (tri strict sauf ORDERED, doublons et
+    /// bornes rejetés), résout la clé (kind, type_id, key_hash) dans
+    /// l'index d'unicité — départage par comparaison des membres en
+    /// collision de hash — puis :
+    ///
+    /// * clé inconnue → alloue `simplex_id = high_water`, journalise
+    ///   [`WalPayload::SimplexSet`] (état absolu), matérialise le record
+    ///   (+ snapshot heap pour les hyperarêtes) et poste l'id dans
+    ///   l'incidence de chaque membre ;
+    /// * clé connue, contenu identique → no-op, AUCUN record WAL ;
+    /// * clé connue, contenu réécrit (flags, ordre ORDERED, props) →
+    ///   journalise + réécrit sous le même id, incidence intacte.
+    ///
+    /// Retourne `(simplex_id, créé)`. La liveness des slots de nœuds
+    /// n'est pas vérifiée ici (primitive basse — même contrat que
+    /// [`Writer::write_node`]) : `SubstrateStore::upsert_simplex` la
+    /// vérifie.
+    #[tracing::instrument(level = "trace", skip(self, members, props))]
+    pub fn upsert_simplex(
+        &self,
+        kind: u8,
+        type_id: u16,
+        flags: u8,
+        members: &[u32],
+        props: &[u8],
+    ) -> SubstrateResult<(crate::simplex_zone::SimplexId, bool)> {
+        use crate::simplex_zone as sz;
+        sz::validate_flags(kind, flags)?;
+        let (stored, sorted_key) = sz::canonicalize_members(kind, flags, members)?;
+        if kind != crate::record::simplex_kind::HYPEREDGE {
+            if type_id != 0 {
+                return Err(SubstrateError::WalBadFrame(
+                    "type_id réservé aux hyperarêtes (0 pour les kinds 2-4)".into(),
+                ));
+            }
+            if !props.is_empty() {
+                return Err(SubstrateError::WalBadFrame(
+                    "propriétés réservées aux hyperarêtes".into(),
+                ));
+            }
+        }
+        let key_hash = sz::key_hash_members(&sorted_key);
+
+        self.with_simplex_zones(|z| {
+            // ORDRE DE VERROUILLAGE : zones.write() (déjà tenu) puis index.
+            let mut guard = self.simplex_index.lock();
+            if guard.is_none() {
+                *guard = Some(sz::SimplexKeyIndex::build(z.dir)?);
+            }
+            let idx = guard.as_mut().unwrap();
+
+            if let Some(id) =
+                idx.find_verified(z.dir, z.heap, kind, type_id, key_hash, &sorted_key)?
+            {
+                // Clé connue : contenu identique ⇒ no-op sans WAL.
+                let rec = sz::SimplexDirZone::read(z.dir, id)?.ok_or_else(|| {
+                    SubstrateError::WalBadFrame(format!(
+                        "index simplicial désynchronisé : id {id} absent du répertoire"
+                    ))
+                })?;
+                let (cur_members, cur_props) = sz::read_members_props(&rec, z.heap)?;
+                if rec.flags == flags && cur_members == stored && cur_props == props {
+                    return Ok((id, false));
+                }
+                // Réécriture sous le même id : WAL d'abord.
+                let rec_wal = WalRecord {
+                    lsn: 0,
+                    timestamp: unix_micros(),
+                    flags: 0,
+                    payload: WalPayload::SimplexSet {
+                        simplex_id: id,
+                        kind,
+                        flags,
+                        type_id,
+                        members: stored.clone(),
+                        props: props.to_vec(),
+                    },
+                };
+                self.wal.append(rec_wal)?;
+                sz::apply_set_raw(z.dir, z.heap, id, kind, flags, type_id, &stored, props)?;
+                return Ok((id, false));
+            }
+
+            // Clé inconnue : matérialisation à l'id suivant.
+            sz::SimplexDirZone::init(z.dir)?;
+            let id = sz::SimplexDirZone::high_water(z.dir)?;
+            let rec_wal = WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::SimplexSet {
+                    simplex_id: id,
+                    kind,
+                    flags,
+                    type_id,
+                    members: stored.clone(),
+                    props: props.to_vec(),
+                },
+            };
+            self.wal.append(rec_wal)?;
+            let applied =
+                sz::apply_set_raw(z.dir, z.heap, id, kind, flags, type_id, &stored, props)?;
+            debug_assert_eq!(applied, sz::AppliedSimplex::Materialized);
+            for &m in &stored {
+                crate::simplex_incidence::SimplexIncidenceZone::append(
+                    z.incidence,
+                    z.postings,
+                    m,
+                    id,
+                )?;
+            }
+            idx.insert(kind, type_id, key_hash, id);
+            Ok((id, true))
+        })
+    }
+
+    /// Tombstone WAL-first d'un simplexe. Retourne `false` si le slot est
+    /// vide ou déjà tombstoné. Les postings d'incidence restent en place
+    /// (filtrés à la lecture, réclamés par [`Writer::compact_simplexes`]).
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn tombstone_simplex(&self, id: crate::simplex_zone::SimplexId) -> SubstrateResult<bool> {
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            let Some(rec) = sz::SimplexDirZone::read(z.dir, id)? else {
+                return Ok(false);
+            };
+            if rec.is_tombstoned() {
+                return Ok(false);
+            }
+            let rec_wal = WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::SimplexTombstone { simplex_id: id },
+            };
+            self.wal.append(rec_wal)?;
+            sz::SimplexDirZone::tombstone_raw(z.dir, id)?;
+            let mut guard = self.simplex_index.lock();
+            if let Some(idx) = guard.as_mut() {
+                idx.remove(rec.kind, rec.type_id, sz::record_key_hash(&rec), id);
+            }
+            Ok(true)
+        })
+    }
+
+    /// Lit un simplexe VIVANT. `None` pour un slot vide ou tombstoné.
+    pub fn get_simplex(
+        &self,
+        id: crate::simplex_zone::SimplexId,
+    ) -> SubstrateResult<Option<crate::simplex_zone::SimplexView>> {
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            let Some(rec) = sz::SimplexDirZone::read(z.dir, id)? else {
+                return Ok(None);
+            };
+            if rec.is_tombstoned() {
+                return Ok(None);
+            }
+            let (members, props) = sz::read_members_props(&rec, z.heap)?;
+            Ok(Some(crate::simplex_zone::SimplexView {
+                id,
+                kind: rec.kind,
+                flags: rec.flags,
+                type_id: rec.type_id,
+                members,
+                props,
+            }))
+        })
+    }
+
+    /// Ids des simplexes VIVANTS incidents au nœud `node`, en O(degré
+    /// simplicial) : lecture des postings + filtre de vie sur le record —
+    /// jamais de scan global (spec §2).
+    pub fn simplices_of_node(
+        &self,
+        node: u32,
+    ) -> SubstrateResult<Vec<crate::simplex_zone::SimplexId>> {
+        use crate::simplex_incidence::SimplexIncidenceZone;
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            if z.dir.is_empty() {
+                return Ok(Vec::new());
+            }
+            let ids = SimplexIncidenceZone::postings(z.incidence, z.postings, node)?;
+            let mut out = Vec::with_capacity(ids.len());
+            for id in ids {
+                if sz::SimplexDirZone::read(z.dir, id)?.is_some_and(|r| !r.is_tombstoned()) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Ids des simplexes VIVANTS d'un kind donné (balayage du répertoire,
+    /// O(nombre total de simplexes) — chemin d'itération, pas de requête).
+    pub fn iter_simplices_kind(
+        &self,
+        kind: u8,
+    ) -> SubstrateResult<Vec<crate::simplex_zone::SimplexId>> {
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            if z.dir.is_empty() {
+                return Ok(Vec::new());
+            }
+            let hw = sz::SimplexDirZone::high_water(z.dir)?;
+            let mut out = Vec::new();
+            for id in 0..hw {
+                if sz::SimplexDirZone::read(z.dir, id)?
+                    .is_some_and(|r| r.kind == kind && !r.is_tombstoned())
+                {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Cascade I5 : tombstone WAL-first de TOUS les simplexes vivants
+    /// incidents à `node` (appelée par la suppression de nœud du store).
+    /// O(degré simplicial du nœud) via l'incidence. Retourne les ids
+    /// tombstonés.
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub fn tombstone_simplexes_of_node(
+        &self,
+        node: u32,
+    ) -> SubstrateResult<Vec<crate::simplex_zone::SimplexId>> {
+        use crate::simplex_incidence::SimplexIncidenceZone;
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            if z.dir.is_empty() {
+                return Ok(Vec::new());
+            }
+            let ids = SimplexIncidenceZone::postings(z.incidence, z.postings, node)?;
+            let mut tombstoned = Vec::new();
+            for id in ids {
+                let Some(rec) = sz::SimplexDirZone::read(z.dir, id)? else {
+                    continue;
+                };
+                if rec.is_tombstoned() {
+                    continue;
+                }
+                let rec_wal = WalRecord {
+                    lsn: 0,
+                    timestamp: unix_micros(),
+                    flags: 0,
+                    payload: WalPayload::SimplexTombstone { simplex_id: id },
+                };
+                self.wal.append(rec_wal)?;
+                sz::SimplexDirZone::tombstone_raw(z.dir, id)?;
+                let mut guard = self.simplex_index.lock();
+                if let Some(idx) = guard.as_mut() {
+                    idx.remove(rec.kind, rec.type_id, sz::record_key_hash(&rec), id);
+                }
+                tombstoned.push(id);
+            }
+            Ok(tombstoned)
+        })
+    }
+
+    /// Compaction déterministe des zones simpliciales (I4) : heap réécrit
+    /// dans l'ordre des ids (snapshots orphelins réclamés), postings
+    /// réécrits sans les ids tombstonés. Maintenance explicite — jamais
+    /// sur le chemin du commit.
+    pub fn compact_simplexes(&self) -> SubstrateResult<()> {
+        use crate::simplex_incidence::SimplexIncidenceZone;
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            if z.dir.is_empty() {
+                return Ok(());
+            }
+            sz::compact_heap(z.dir, z.heap)?;
+            let dir: &ZoneFile = z.dir;
+            SimplexIncidenceZone::compact_postings(z.incidence, z.postings, |_node, id| {
+                sz::SimplexDirZone::read(dir, id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|r| !r.is_tombstoned())
+            })
+        })
+    }
+
+    /// Écrit la configuration des passes simpliciales (T5) — WAL-first
+    /// ([`WalPayload::SimplexPassesConfig`], état absolu) puis les octets
+    /// 16..26 de l'en-tête SPXD. No-op sans record WAL si la config
+    /// stockée est déjà identique (gabarit `upsert_simplex`).
+    pub fn set_simplex_passes_config(
+        &self,
+        cfg: &crate::simplex_passes::SimplexPassesConfig,
+    ) -> SubstrateResult<()> {
+        use crate::simplex_passes as sp;
+        self.with_simplex_zones(|z| {
+            crate::simplex_zone::SimplexDirZone::init(z.dir)?;
+            if sp::read_config_raw(z.dir)?.as_ref() == Some(cfg) {
+                return Ok(());
+            }
+            let (de, dp, dh) = match cfg.dispatch {
+                Some(d) => (d.edge_type, d.group_prop_key, d.he_type),
+                None => (
+                    sp::DISPATCH_ABSENT,
+                    sp::DISPATCH_ABSENT,
+                    sp::DISPATCH_ABSENT,
+                ),
+            };
+            let rec = WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::SimplexPassesConfig {
+                    flags: cfg.flags,
+                    clique_edge_type: cfg.clique_edge_type,
+                    clique_label_mask: cfg.clique_label_mask,
+                    dispatch_edge_type: de,
+                    dispatch_prop_key: dp,
+                    dispatch_he_type: dh,
+                },
+            };
+            self.wal.append(rec)?;
+            sp::write_config_raw(z.dir, cfg);
+            *self.simplex_passes_cache.lock() = Some(Some(*cfg));
+            Ok(())
+        })
+    }
+
+    /// Variante CACHÉE de [`Writer::simplex_passes_config`] pour le chemin
+    /// du commit : la première lecture paie l'aller-retour zone, les
+    /// suivantes un mutex feuille non contendu.
+    pub fn simplex_passes_config_cached(
+        &self,
+    ) -> SubstrateResult<Option<crate::simplex_passes::SimplexPassesConfig>> {
+        if let Some(v) = *self.simplex_passes_cache.lock() {
+            return Ok(v);
+        }
+        let v = self.simplex_passes_config()?;
+        *self.simplex_passes_cache.lock() = Some(v);
+        Ok(v)
+    }
+
+    /// Configuration des passes simpliciales, ou `None` si jamais
+    /// configurée (zone vierge ou octets de config à zéro).
+    pub fn simplex_passes_config(
+        &self,
+    ) -> SubstrateResult<Option<crate::simplex_passes::SimplexPassesConfig>> {
+        self.with_simplex_zones(|z| {
+            if z.dir.is_empty() {
+                return Ok(None);
+            }
+            // Valide magic/version/longueur avant de toucher aux octets.
+            crate::simplex_zone::SimplexDirZone::high_water(z.dir)?;
+            crate::simplex_passes::read_config_raw(z.dir)
+        })
+    }
+
+    /// Refuse toute repermutation de slots quand des simplexes vivants
+    /// existent : membres et incidence sont indexés par SLOT de nœud, une
+    /// permutation les rendrait silencieusement faux (CRC valides, données
+    /// fausses). L'enrôlement des zones simpliciales dans le
+    /// `SlotRemapRegistry` est le chantier de la passe de dérivation
+    /// (T5+) ; d'ici là, le refus explicite est le seul comportement sûr.
+    fn refuser_remap_si_simplexes(&self, operation: &str) -> SubstrateResult<()> {
+        use crate::simplex_zone as sz;
+        self.with_simplex_zones(|z| {
+            if z.dir.is_empty() {
+                return Ok(());
+            }
+            let hw = sz::SimplexDirZone::high_water(z.dir)?;
+            for id in 0..hw {
+                if sz::SimplexDirZone::read(z.dir, id)?.is_some_and(|r| !r.is_tombstoned()) {
+                    return Err(SubstrateError::WalBadFrame(format!(
+                        "{operation} refusé : la base porte des simplexes vivants (zone \
+                         SimplexDir), qui référencent les slots de nœuds et ne sont pas \
+                         encore enrôlés dans le remap de slots. Tombstonez la couche \
+                         simpliciale ou attendez son enrôlement (T5+)."
+                    )));
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Seal the transaction: append a commit-flagged no-op and fsync.
     ///
     /// Under [`SyncMode::EveryCommit`] the `FLAG_COMMIT` bit triggers fsync
     /// automatically; under [`SyncMode::Group`] we still append the marker but
     /// the caller's group-commit timer owns the actual fsync.
+    ///
+    /// ── CE QUE DEVIENT CET APPEL SOUS GROUP COMMIT ARMÉ (2026-10-06) ────────
+    /// Le `fsync` n'est plus indexé sur le LOT mais sur la NEEDLE (voir
+    /// [`crate::wal_io::SEUIL_RECORDS`] / `SEUIL_OCTETS` / `SEUIL_TEMPS`) : ce
+    /// `commit()` rend donc la main dès que le record est EN TAMPON, et la
+    /// durabilité est acquise au plus tard `SEUIL_TEMPS` plus tard (ou avant si
+    /// un seuil est franchi). C'est LE levier mesuré : 644 rec/s → ~1,5 M rec/s.
+    ///
+    /// Un appelant qui veut la durabilité AVANT le retour doit appeler
+    /// [`Writer::commit_durable`] — c'est la seule différence entre les deux, et
+    /// elle est explicite plutôt que devinée.
+    ///
+    /// Groupe commit NON armé (le défaut) : le comportement est celui d'avant,
+    /// bit pour bit.
     pub fn commit(&self) -> SubstrateResult<u64> {
         let rec = WalRecord {
             lsn: 0,
@@ -1453,28 +2988,156 @@ impl Writer {
             flags: WalRecord::FLAG_COMMIT,
             payload: WalPayload::NoOp,
         };
-        let (off, _) = self.wal.append(rec)?;
+        // (pièce 2) `append_encoded(&rec)` au lieu de `append(rec)` : plus de
+        // `Vec<WalRecord>` alloué par `append_batch` pour un lot d'UN record.
+        let (off, _) = self.wal.append_encoded(&rec)?;
         Ok(off)
     }
 
+    /// ── COMMIT DURABLE : la même chose, mais DURABLE AVANT DE RENDRE LA MAIN ─
+    ///
+    /// Le record porte [`WalRecord::FLAG_SYNC_ATTENDU`] : le groupe commit pose
+    /// alors le tampon et le `fsync` IMMÉDIATEMENT (voir
+    /// `WalWriter::push_group_encode`), quel que soit l'état de la needle. Sans
+    /// groupe commit armé, ce bit ne change RIEN au comportement (il n'est même
+    /// pas écrit sur disque : voir la doc du bit) — c'est ce qui permet d'écrire
+    /// `commit_durable()` partout sans régression.
+    pub fn commit_durable(&self) -> SubstrateResult<u64> {
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: WalRecord::FLAG_COMMIT | WalRecord::FLAG_SYNC_ATTENDU,
+            payload: WalPayload::NoOp,
+        };
+        let (off, _) = self.wal.append_encoded(&rec)?;
+        Ok(off)
+    }
+
+    /// ── ARMER LE GROUP COMMIT À NEEDLE DE DURABILITÉ (2026-10-06) ───────────
+    ///
+    /// # Effet
+    /// Les records d'un `commit()` cessent d'être `fsync`és un par un : le
+    /// `fsync` est indexé sur la needle (4 096 records / 4 Mio / 2 ms) et non sur
+    /// le lot. Fenêtre de perte : bornée par `SEUIL_TEMPS`.
+    ///
+    /// # Pourquoi ce n'est pas le défaut
+    /// Parce que c'est un CHANGEMENT DE SÉMANTIQUE de durabilité, pas un réglage
+    /// de performance : `commit()` ne garantit plus « durable au retour ». Un
+    /// appelant qui veut les deux appelle `commit_durable()`. Tant que cette
+    /// méthode n'est pas appelée, rien ne change.
+    pub fn activer_group_commit_wal(&self) {
+        self.wal.activer_group_commit();
+    }
+
+    /// Le group commit à needle de durabilité est-il armé sur ce store ?
+    pub fn group_commit_actif(&self) -> bool {
+        self.wal.group_commit_actif()
+    }
+
+    /// Télémétrie du group commit (des zéros sans `OBRAIN_GC_DIAG=1`) : voir
+    /// `wal_io::DiagGroupe`. C'est l'instrument qui a localisé la régression
+    /// ×0,42-0,60 du 2026-10-06 ; le moteur la rend au banc.
+    pub fn diagnostic_group_commit(&self) -> String {
+        self.wal.diagnostic_group_commit()
+    }
+
+    /// Force la pose du tampon du group commit maintenant (et son `fsync`).
+    /// Sans group commit armé : no-op.
+    pub fn commit_point_wal(&self) -> SubstrateResult<()> {
+        self.wal.commit_point()
+    }
+
+    /// Explicit WAL fsync — cheap durability checkpoint for [`SyncMode::Group`]
+    /// (T5 batch-WAL, plan b30650e2): under `Group` mode `commit()` appends
+    /// the marker but does NOT sync (the writer only fsyncs on
+    /// `SyncMode::EveryCommit`). Callers batching many commits (imports,
+    /// wardens) call this explicitly every N commits / at end-of-batch to
+    /// bound how much work a crash can lose, without paying a syscall per
+    /// commit. Cheap no-op-equivalent under `EveryCommit` (already synced
+    /// per commit) and `Never` (intentionally not durable).
+    pub fn fsync_wal(&self) -> SubstrateResult<()> {
+        self.wal.fsync()
+    }
+
     /// Msync all live zone mmaps. Call at end-of-checkpoint.
+    /// Exclut les ecrivains le temps d'une operation critique.
+    ///
+    /// (2026-08-14) `checkpoint()` documentait « the caller MUST ensure no
+    /// concurrent writes are in flight » — une exigence ECRITE mais JAMAIS
+    /// APPLIQUEE. Tenir `substrate.lock()` ne suffisait pas : la voie
+    /// d'ecriture prend `zones.write()`, et ne touche le mutex du substrat que
+    /// pour l'ouverture PARESSEUSE d'une zone, une fois par zone et par
+    /// instance.
+    ///
+    /// Cette fermeture rend l'exigence effective. Elle ne doit encadrer QUE le
+    /// checkpoint proprement dit, jamais un `flush()` : `msync_zones` prend
+    /// `zones.read()`, et `parking_lot::RwLock` n'est pas reentrant.
+    ///
+    /// Portee CLOSE plutot que garde rendue a l'appelant : le type interne
+    /// `ZoneCache` ne fuit pas, et personne ne peut retenir l'exclusion
+    /// au-dela de ce qu'il a ecrit.
+    pub fn sous_exclusion_ecritures<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _garde = self.zones.write();
+        f()
+    }
+
+    /// Msync toutes les zones vivantes, et ne `fsync` QUE celles dont la TAILLE
+    /// a changé depuis le dernier `fsync` (extension/rétrécissement via
+    /// `grow_to` / `shrink_to` / `rafraichir` — signalé par `remap_count`).
+    ///
+    /// ## Pourquoi ne pas fsync systématiquement (2026-10-06)
+    ///
+    /// `ZoneFile::msync` est un `msync(MS_SYNC)` : il pousse les pages de
+    /// données sales sur le disque. Le `fsync` supplémentaire ne sert qu'à
+    /// rendre durable la TAILLE du fichier (métadonnée d'inode) quand elle a
+    /// bougé. L'ancien code enchaînait les deux sur CHAQUE zone à CHAQUE
+    /// flush — un double flush redondant, payé ~8 fois par flush périodique.
+    /// On ne garde donc `fsync` que pour les zones réellement étendues.
     pub fn msync_zones(&self) -> SubstrateResult<()> {
-        let zones = self.zones.lock();
-        if let Some(z) = zones.nodes.as_ref() {
+        let zones = self.zones.read();
+        // Helper local : `msync` inconditionnel, `fsync` seulement si la
+        // taille a changé (le compteur `remap_count` de la zone a bougé depuis
+        // le dernier `fsync` mémorisé dans le champ `last_rc`).
+        fn msync_zone_si_etendu(
+            z: &ZoneFile,
+            last_rc: &std::sync::atomic::AtomicU64,
+        ) -> SubstrateResult<()> {
             z.msync()?;
-            z.fsync()?;
+            let rc = z.remap_count();
+            if rc != last_rc.load(std::sync::atomic::Ordering::Acquire) {
+                z.fsync()?;
+                last_rc.store(rc, std::sync::atomic::Ordering::Release);
+            }
+            Ok(())
+        }
+        if let Some(z) = zones.nodes.as_ref() {
+            msync_zone_si_etendu(z, &zones.nodes_fsync_rc)?;
         }
         if let Some(z) = zones.edges.as_ref() {
-            z.msync()?;
-            z.fsync()?;
+            msync_zone_si_etendu(z, &zones.edges_fsync_rc)?;
         }
         if let Some(z) = zones.engram_members.as_ref() {
-            z.msync()?;
-            z.fsync()?;
+            msync_zone_si_etendu(z, &zones.engram_members_fsync_rc)?;
         }
         if let Some(z) = zones.engram_bitset.as_ref() {
-            z.msync()?;
-            z.fsync()?;
+            msync_zone_si_etendu(z, &zones.engram_bitset_fsync_rc)?;
+        }
+        for (z, last_rc) in [
+            (zones.simplex_dir.as_ref(), &zones.simplex_dir_fsync_rc),
+            (zones.simplex_heap.as_ref(), &zones.simplex_heap_fsync_rc),
+            (
+                zones.simplex_incidence.as_ref(),
+                &zones.simplex_incidence_fsync_rc,
+            ),
+            (
+                zones.simplex_postings.as_ref(),
+                &zones.simplex_postings_fsync_rc,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(z, rc)| z.map(|z| (z, rc)))
+        {
+            msync_zone_si_etendu(z, last_rc)?;
         }
         Ok(())
     }
@@ -1511,11 +3174,14 @@ impl Writer {
             // compact_community, etc.), not the normal hot-write loop.
             Zone::Hilbert
             | Zone::Community
+            | Zone::Zorder
             | Zone::Props
             | Zone::Strings
             | Zone::Tier0
             | Zone::Tier1
-            | Zone::Tier2 => {
+            | Zone::Tier2
+            | Zone::SimplexDir
+            | Zone::SimplexIncidence => {
                 let sub = self.substrate.lock();
                 let zf = sub.open_zone(zone)?;
                 drop(sub);
@@ -1530,7 +3196,7 @@ impl Writer {
         &self,
         f: impl FnOnce(&mut ZoneFile) -> SubstrateResult<R>,
     ) -> SubstrateResult<R> {
-        let mut zones = self.zones.lock();
+        let mut zones = self.zones.write();
         if zones.nodes.is_none() {
             let sub = self.substrate.lock();
             zones.nodes = Some(sub.open_zone(Zone::Nodes)?);
@@ -1538,11 +3204,45 @@ impl Writer {
         f(zones.nodes.as_mut().unwrap())
     }
 
+    /// Variante LECTURE de [`Writer::with_node_zone`] : plusieurs lecteurs
+    /// courent ensemble.
+    ///
+    /// (2026-08-07) `read_node` passait par la variante exclusive et
+    /// sérialisait donc toutes les lectures de nœuds de la base. La closure
+    /// ne reçoit qu'un `&ZoneFile` — `as_slice(&self)` suffit à lire —, ce
+    /// qui rend l'exclusivité inutile. Le `RwLock` continue d'exclure
+    /// lecteurs et écrivain l'un de l'autre : la sûreté est inchangée, seule
+    /// la concurrence entre lecteurs est rendue possible.
+    ///
+    /// Verrouillage à double vérification : on tente d'abord en lecture,
+    /// et on ne bascule en écriture que pour l'ouverture paresseuse de la
+    /// zone, qui n'arrive qu'une fois par zone et par instance.
+    ///
+    /// ATTENTION : `parking_lot::RwLock` n'est PAS réentrant. La closure ne
+    /// doit jamais reprendre `self.zones`, sous peine d'interblocage.
+    fn with_node_zone_read<R>(
+        &self,
+        f: impl FnOnce(&ZoneFile) -> SubstrateResult<R>,
+    ) -> SubstrateResult<R> {
+        {
+            let zones = self.zones.read();
+            if let Some(z) = zones.nodes.as_ref() {
+                return f(z);
+            }
+        }
+        let mut zones = self.zones.write();
+        if zones.nodes.is_none() {
+            let sub = self.substrate.lock();
+            zones.nodes = Some(sub.open_zone(Zone::Nodes)?);
+        }
+        f(zones.nodes.as_ref().unwrap())
+    }
+
     fn with_edge_zone<R>(
         &self,
         f: impl FnOnce(&mut ZoneFile) -> SubstrateResult<R>,
     ) -> SubstrateResult<R> {
-        let mut zones = self.zones.lock();
+        let mut zones = self.zones.write();
         if zones.edges.is_none() {
             let sub = self.substrate.lock();
             zones.edges = Some(sub.open_zone(Zone::Edges)?);
@@ -1550,11 +3250,31 @@ impl Writer {
         f(zones.edges.as_mut().unwrap())
     }
 
+    /// Variante LECTURE de [`Writer::with_edge_zone`] — voir
+    /// [`Writer::with_node_zone_read`] pour le raisonnement complet.
+    fn with_edge_zone_read<R>(
+        &self,
+        f: impl FnOnce(&ZoneFile) -> SubstrateResult<R>,
+    ) -> SubstrateResult<R> {
+        {
+            let zones = self.zones.read();
+            if let Some(z) = zones.edges.as_ref() {
+                return f(z);
+            }
+        }
+        let mut zones = self.zones.write();
+        if zones.edges.is_none() {
+            let sub = self.substrate.lock();
+            zones.edges = Some(sub.open_zone(Zone::Edges)?);
+        }
+        f(zones.edges.as_ref().unwrap())
+    }
+
     fn with_engram_zone<R>(
         &self,
         f: impl FnOnce(&mut ZoneFile) -> SubstrateResult<R>,
     ) -> SubstrateResult<R> {
-        let mut zones = self.zones.lock();
+        let mut zones = self.zones.write();
         if zones.engram_members.is_none() {
             let sub = self.substrate.lock();
             zones.engram_members = Some(sub.open_zone(Zone::EngramMembers)?);
@@ -1566,12 +3286,45 @@ impl Writer {
         &self,
         f: impl FnOnce(&mut ZoneFile) -> SubstrateResult<R>,
     ) -> SubstrateResult<R> {
-        let mut zones = self.zones.lock();
+        let mut zones = self.zones.write();
         if zones.engram_bitset.is_none() {
             let sub = self.substrate.lock();
             zones.engram_bitset = Some(sub.open_zone(Zone::EngramBitset)?);
         }
         f(zones.engram_bitset.as_mut().unwrap())
+    }
+
+    /// Emprunte les QUATRE zones simpliciales sous le verrou d'écriture —
+    /// une seule section critique pour (index → WAL → mmap), sans quoi deux
+    /// upserts concurrents de la même clé matérialiseraient deux ids (I2).
+    fn with_simplex_zones<R>(
+        &self,
+        f: impl FnOnce(&mut SimplexZones<'_>) -> SubstrateResult<R>,
+    ) -> SubstrateResult<R> {
+        let mut zones = self.zones.write();
+        if zones.simplex_dir.is_none() {
+            let sub = self.substrate.lock();
+            zones.simplex_dir = Some(sub.open_zone(Zone::SimplexDir)?);
+            zones.simplex_heap =
+                Some(sub.open_named_zone(crate::simplex_zone::SIMPLEX_HEAP_FILENAME)?);
+            zones.simplex_incidence = Some(sub.open_zone(Zone::SimplexIncidence)?);
+            zones.simplex_postings =
+                Some(sub.open_named_zone(crate::simplex_incidence::SIMPLEX_POSTINGS_FILENAME)?);
+        }
+        // Déstructuration : quatre emprunts disjoints du même cache.
+        let ZoneCache {
+            simplex_dir,
+            simplex_heap,
+            simplex_incidence,
+            simplex_postings,
+            ..
+        } = &mut *zones;
+        f(&mut SimplexZones {
+            dir: simplex_dir.as_mut().unwrap(),
+            heap: simplex_heap.as_mut().unwrap(),
+            incidence: simplex_incidence.as_mut().unwrap(),
+            postings: simplex_postings.as_mut().unwrap(),
+        })
     }
 }
 
@@ -1814,11 +3567,104 @@ impl CompactionResult {
     }
 }
 
+// Point d'injection de panne pour `ensure_room` — **compile uniquement
+// sous `cfg(test)`**, donc rigoureusement inexistant en production.
+//
+// Il existe parce que la fenetre « annonce posee, aucune zone touchee »
+// n'est atteignable QUE par un echec de croissance de zone (ENOSPC,
+// echec de remap mmap) : elle est indeclenchable depuis l'API publique.
+// Sans lui, le test du point 2 ne pourrait qu'appeler directement le
+// helper de nettoyage — c'est-a-dire se tester lui-meme.
+//
+// Deux proprietes qui le rendent sur :
+// * `cfg(test)` — aucune surface en production, contrairement a une
+//   garde `pub` qu'un appelant pourrait satisfaire artificiellement ;
+// * `thread_local` — chaque `#[test]` a son propre thread, l'armement ne
+//   peut pas empoisonner les tests qui tournent en parallele.
+//
+// Valeur : `Some((suffixe, sauts))` laisse passer `sauts` appels dont le
+// chemin de zone se termine par `suffixe`, fait echouer le suivant, puis
+// se desarme. Le compteur de sauts est indispensable pour viser une
+// fenetre PRECISE : la zone d'epoch est touchee deux fois par une passe
+// de repermutation (l'ANNONCE, avant les mutations, puis la
+// CONFIRMATION, apres la barriere), et ces deux echecs appellent des
+// reprises OPPOSEES.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ECHEC_ENSURE_ROOM: std::cell::RefCell<Option<(String, u32)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+// Failpoint jumeau du precedent, mais sur `msync` — donc APRES que la
+// page a ete ecrite et AVANT que sa durabilite ne soit acquise.
+//
+// Il existe parce que le failpoint `ensure_room` ne pouvait pas atteindre
+// la fenetre trouvee en revue #6 : `write_epoch_state` ecrit la page PUIS
+// demande sa durabilite, et c'est un echec A CETTE COUTURE qui laisse
+// `pending` sur le disque pendant que l'annonce echoue. Un failpoint pose
+// trop tot rend le test VIDE — ce qu'une mutation a montre.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ECHEC_MSYNC: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Arme le failpoint de `msync` : le prochain `ZoneFile::msync` sur une
+/// zone dont le chemin se termine par `suffixe` echouera, puis se desarme.
+#[cfg(test)]
+pub(crate) fn armer_echec_msync(suffixe: &str) {
+    ECHEC_MSYNC.with(|c| *c.borrow_mut() = Some(suffixe.to_string()));
+}
+
+/// Vrai si le failpoint de `msync` a TIRE (donc s'est desarme).
+#[cfg(test)]
+pub(crate) fn echec_msync_a_tire() -> bool {
+    ECHEC_MSYNC.with(|c| c.borrow().is_none())
+}
+
+/// Arme le failpoint : le `sauts`-ieme appel a `ensure_room` sur une zone
+/// dont le chemin se termine par `suffixe` echouera (0 = le prochain).
+#[cfg(test)]
+pub(crate) fn armer_echec_ensure_room(suffixe: &str, sauts: u32) {
+    ECHEC_ENSURE_ROOM.with(|c| *c.borrow_mut() = Some((suffixe.to_string(), sauts)));
+}
+
+/// Vrai si le failpoint a TIRE (donc s'est desarme). Une assertion
+/// anti-vacuite a part entiere : sans elle, un test qui echouerait avant
+/// d'atteindre la fenetre visee passerait au vert sans rien couvrir.
+#[cfg(test)]
+pub(crate) fn echec_ensure_room_a_tire() -> bool {
+    ECHEC_ENSURE_ROOM.with(|c| c.borrow().is_none())
+}
+
 /// Ensure `zf` is at least `needed_end` bytes long, with exponential pre-alloc.
 ///
 /// Growth policy: target = max(needed_end + min_headroom, current × 3/2),
 /// rounded up to 4 KiB. This yields O(log N) remaps for N-byte bulk inserts.
 pub fn ensure_room(zf: &mut ZoneFile, needed_end: usize, min_headroom: u64) -> SubstrateResult<()> {
+    #[cfg(test)]
+    {
+        let vise = ECHEC_ENSURE_ROOM.with(|c| {
+            let mut m = c.borrow_mut();
+            let Some((suffixe, sauts)) = m.as_mut() else {
+                return false;
+            };
+            if !zf.path().to_string_lossy().ends_with(suffixe.as_str()) {
+                return false;
+            }
+            if *sauts > 0 {
+                *sauts -= 1;
+                return false;
+            }
+            *m = None; // desarmement : le test peut ASSERTER qu'il a tire
+            true
+        });
+        if vise {
+            return Err(SubstrateError::Io(std::io::Error::other(
+                "ENOSPC simule (failpoint de test) : croissance de zone refusee",
+            )));
+        }
+    }
     let need = needed_end as u64;
     if zf.len() >= need {
         return Ok(());
@@ -1830,7 +3676,7 @@ pub fn ensure_room(zf: &mut ZoneFile, needed_end: usize, min_headroom: u64) -> S
 }
 
 fn unix_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -1856,6 +3702,9 @@ mod tests {
             scar_util_affinity: PackedScarUtilAff::new(1, 2, 3, true).pack(),
             centrality_cached: i as u16,
             flags: 0,
+            // (jalon 2) appartenance : fixture publique.
+            tenant_id: 0,
+            _reserve: 0,
         }
     }
 
@@ -1947,13 +3796,71 @@ mod tests {
         w.msync_zones().unwrap();
 
         // Read back via the mmap view.
-        let zones = w.zones.lock();
+        let zones = w.zones.read();
         let zf = zones.nodes.as_ref().unwrap();
         let bytes = zf.as_slice();
         let slice: &[NodeRecord] = bytemuck::cast_slice(&bytes[..10 * NodeRecord::SIZE]);
         for i in 0..10u32 {
-            assert_eq!(slice[i as usize], sample_node(i));
+            // (jalon 1) le writer pose ALLOCATED sur tout record ecrit.
+            let mut attendu = sample_node(i);
+            attendu.flags |= crate::record::node_flags::ALLOCATED;
+            assert_eq!(slice[i as usize], attendu);
         }
+    }
+
+    /// (2026-08-07) Prouve que DEUX lectures tiennent la zone en même temps.
+    ///
+    /// Avec l'ancien `Mutex<ZoneCache>`, la seconde lecture ne pouvait pas
+    /// entrer tant que la première tenait le verrou : ce test s'arrêtait au
+    /// bout des 5 s d'attente. C'est le garde-fou qui empêche de revenir
+    /// silencieusement à un verrou exclusif sur le chemin le plus chaud du
+    /// moteur.
+    #[test]
+    fn deux_lectures_tiennent_la_zone_en_meme_temps() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let w = Arc::new(Writer::new(sub, SyncMode::Never).unwrap());
+        w.write_node(0, sample_node(0)).unwrap();
+        w.commit().unwrap();
+        // Ouvre la zone : les deux lecteurs passeront par le chemin `.read()`
+        // et non par l'ouverture paresseuse, qui exige `.write()`.
+        w.read_node(0).unwrap();
+
+        let (tenu_tx, tenu_rx) = mpsc::channel();
+        let (relache_tx, relache_rx) = mpsc::channel();
+        let w1 = Arc::clone(&w);
+        let premier = std::thread::spawn(move || {
+            w1.with_node_zone_read(|_zf| {
+                tenu_tx.send(()).unwrap();
+                relache_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+
+        // Le premier lecteur tient maintenant le verrou et ne le rendra pas
+        // avant qu'on le lui dise.
+        tenu_rx.recv().unwrap();
+
+        let (fini_tx, fini_rx) = mpsc::channel();
+        let w2 = Arc::clone(&w);
+        std::thread::spawn(move || {
+            let r = w2.read_node(0);
+            let _ = fini_tx.send(r.is_ok() && r.unwrap().is_some());
+        });
+
+        let second = fini_rx.recv_timeout(Duration::from_secs(5));
+        relache_tx.send(()).unwrap();
+        premier.join().unwrap();
+
+        assert!(
+            second.is_ok(),
+            "la seconde lecture n'a pas pu entrer pendant que la première \
+             tenait la zone : le verrou est redevenu exclusif"
+        );
+        assert!(second.unwrap(), "la seconde lecture n'a pas rendu le nœud");
     }
 
     #[test]
@@ -1966,7 +3873,7 @@ mod tests {
         w.commit().unwrap();
         w.msync_zones().unwrap();
 
-        let zones = w.zones.lock();
+        let zones = w.zones.read();
         let zf = zones.edges.as_ref().unwrap();
         let bytes = zf.as_slice();
         let slice: &[EdgeRecord] = bytemuck::cast_slice(&bytes[..20 * EdgeRecord::SIZE]);
@@ -1993,9 +3900,9 @@ mod tests {
 
         let r = crate::wal_io::WalReader::open(&wal_path).unwrap();
         let items: Vec<_> = r.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
-        // 5 NodeInsert + 1 NoOp commit
+        // 5 NodeInsertV3 (trames tenant, jalon 2) + 1 NoOp commit
         assert_eq!(items.len(), 6);
-        assert!(matches!(items[0].0.payload, WalPayload::NodeInsert { .. }));
+        assert!(matches!(items[0].0.payload, WalPayload::NodeInsertV3 { .. }));
         assert!(items.last().unwrap().0.is_commit());
     }
 
@@ -2004,7 +3911,9 @@ mod tests {
         let sub = SubstrateFile::open_tempfile().unwrap();
         let mut zf = sub.open_zone(Zone::Nodes).unwrap();
         let start = zf.len();
-        ensure_room(&mut zf, 1, 4096).unwrap();
+        // (jalon 2) la zone nait a 40 o (sentinelle de stride) : demander
+        // UN octet de plus force la premiere croissance.
+        ensure_room(&mut zf, start as usize + 1, 4096).unwrap();
         let after_small = zf.len();
         assert!(after_small >= 4096);
         ensure_room(&mut zf, (after_small as usize) + 1, 4096).unwrap();
@@ -2093,7 +4002,11 @@ mod tests {
         assert_eq!(got.scar_util_affinity, 0xBEEF);
         assert_eq!(got.centrality_cached, 0xABCD);
         assert_eq!(got.community_id, 42);
-        assert_eq!(got.flags, crate::record::node_flags::CENTRALITY_STALE);
+        assert_eq!(
+            got.flags,
+            // (jalon 1) ALLOCATED pose a l'ecriture s'ajoute aux flags seedes.
+            crate::record::node_flags::CENTRALITY_STALE | crate::record::node_flags::ALLOCATED
+        );
         assert_eq!(got.first_edge_off, U48::from_u64(0x00_1234_5678));
         assert_eq!(got.label_bitset, sample_node(1).label_bitset);
 
@@ -2817,6 +4730,85 @@ mod tests {
                 0x8000,
                 "SYNAPSE slot {slot} must NOT be decayed by CoactDecay"
             );
+        }
+    }
+
+    /// Step 7 (RFC zorder-superposition) — `compact_community` plombe le
+    /// degré RÉEL (scan d'arêtes restreint aux membres) dans les clés
+    /// Hilbert/Zorder des slots relocalisés (fini le `degree = 0` dégradé).
+    #[test]
+    fn compact_community_uses_real_out_degree_in_keys() {
+        use crate::hilbert::{hilbert_key_from_features, zorder_key_from_features};
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("cmp");
+        let sub = SubstrateFile::create(&path).unwrap();
+        let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+
+        // Communauté 1 : 6 nœuds, centralités distinctes.
+        let community_id = 1u32;
+        let mut deg_expected = vec![0u32; 7];
+        let mut centr = vec![0u16; 7];
+        for i in 1..=6u32 {
+            let mut rec = NodeRecord::default();
+            rec.label_bitset = 1;
+            rec.community_id = community_id;
+            rec.centrality_cached = (i * 3000) as u16;
+            centr[i as usize] = (i * 3000) as u16;
+            w.write_node(i, rec).unwrap();
+        }
+        // Degrés : 1→2, 1→3, 2→3, 4→5 → out: node1=2, node2=1, node4=1.
+        let edges: Vec<(u32, u32)> = vec![(1, 2), (1, 3), (2, 3), (4, 5)];
+        for (i, &(src, dst)) in edges.iter().enumerate() {
+            let mut rec = EdgeRecord::default();
+            rec.src = src;
+            rec.dst = dst;
+            rec.edge_type = 1;
+            w.write_edge(i as u64 + 1, rec).unwrap();
+            deg_expected[src as usize] += 1;
+        }
+        // Un nœud d'une autre communauté pour vérifier l'exclusion.
+        {
+            let mut rec = NodeRecord::default();
+            rec.label_bitset = 1;
+            rec.community_id = 2;
+            w.write_node(7, rec).unwrap();
+        }
+        w.commit().unwrap();
+        w.vider_fenetre_de_rejeu().unwrap();
+
+        let res = w
+            .compact_community(community_id, 8, 5, 4, 32)
+            .unwrap();
+        assert!(!res.relocations.is_empty(), "compaction doit relocaliser");
+
+        // Vérifie la colonne Zorder au NOUVEAU slot de chaque membre : clé
+        // calculée avec le degré réel (plus un : les anciens slots sont zéro).
+        let subg = w.substrate();
+        let subg = subg.lock();
+        let zf = subg.open_zone(Zone::Zorder).unwrap();
+        let bytes = zf.as_slice();
+        for (old, new) in &res.relocations {
+            let key_at_new =
+                u32::from_le_bytes(bytes[(*new as usize) * 4..(*new as usize) * 4 + 4].try_into().unwrap());
+            let expected = zorder_key_from_features(
+                centr[*old as usize],
+                deg_expected[*old as usize],
+                4,
+                32,
+            );
+            assert_eq!(
+                key_at_new, expected,
+                "zorder au slot {new} (orig {old}) doit refléter le degré réel {}",
+                deg_expected[*old as usize]
+            );
+            let _ = hilbert_key_from_features;
+        }
+        // Anciens slots zéro.
+        for (old, _) in &res.relocations {
+            let key_at_old = u32::from_le_bytes(
+                bytes[(*old as usize) * 4..(*old as usize) * 4 + 4].try_into().unwrap(),
+            );
+            assert_eq!(key_at_old, 0, "ancien slot {old} doit être zéro");
         }
     }
 }

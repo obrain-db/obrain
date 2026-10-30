@@ -40,7 +40,7 @@ fn main() -> Result<(), BoxErr> {
     let dry_run = args.next().map(|s| s == "--dry-run").unwrap_or(false);
 
     eprintln!("rebuild_tiers: opening {}", path.display());
-    let t_open = std::time::Instant::now();
+    let t_open = web_time::Instant::now();
     let store = SubstrateStore::open(&path)?;
     eprintln!(
         "rebuild_tiers: opened in {:.2}s",
@@ -55,7 +55,7 @@ fn main() -> Result<(), BoxErr> {
     let node_ids = store.node_ids();
     eprintln!("rebuild_tiers: {} node_ids enumerated", node_ids.len());
 
-    let t_scan = std::time::Instant::now();
+    let t_scan = web_time::Instant::now();
     let mut pairs: Vec<(NodeOffset, Vec<f32>)> = Vec::with_capacity(node_ids.len());
     let mut scanned = 0usize;
     let mut wrong_shape = 0usize;
@@ -119,8 +119,14 @@ fn main() -> Result<(), BoxErr> {
     }
 
     // --- Phase 2: rebuild the index ------------------------------------
-    let t_build = std::time::Instant::now();
-    let index = SubstrateTieredIndex::new(L2_DIM);
+    let t_build = web_time::Instant::now();
+    // Index LIE a l'etat de repermutation de la base (chantier
+    // SlotRemappable) — voir `SubstrateTieredIndex::new_lie_a_la_base`.
+    let index = {
+        let sub_mutex = store.writer().substrate();
+        let sub_guard = sub_mutex.lock();
+        SubstrateTieredIndex::new_lie_a_la_base(&sub_guard, L2_DIM)?
+    };
     index.rebuild(&pairs);
     eprintln!(
         "rebuild_tiers: rebuild() done in {:.2}s (len={})",
@@ -129,7 +135,7 @@ fn main() -> Result<(), BoxErr> {
     );
 
     // --- Phase 3: persist to tier0/1/2 zones ---------------------------
-    let t_persist = std::time::Instant::now();
+    let t_persist = web_time::Instant::now();
     {
         let sub_mutex = store.writer().substrate();
         let sub_guard = sub_mutex.lock();

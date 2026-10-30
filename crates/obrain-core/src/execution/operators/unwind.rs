@@ -72,6 +72,7 @@ impl UnwindOperator {
     /// Advances to the next row or fetches the next chunk.
     fn advance(&mut self) -> OperatorResult {
         loop {
+            super::verifier_annulation()?;
             // If we have a current list, try to get the next element
             if let Some(list) = &self.current_list
                 && self.current_list_idx < list.len()

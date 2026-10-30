@@ -105,6 +105,52 @@ impl PluginRegistry {
     }
 }
 
+/// ── LE REGISTRE DU PROCESSUS, ET LE PONT VERS LE MOTEUR ────────────────────
+///
+/// Défaut mesuré le 2026-09-16 : ce registre était **orphelin**. Il existait,
+/// il était thread-safe, sa documentation annonçait « UDF … resolved at query
+/// planning time » — et aucun appelant de production ne le créait ni ne le
+/// lisait (seul un test l'instanciait). Une extension qu'on ne peut pas
+/// atteindre n'est pas une extension.
+///
+/// Il y a désormais un registre PAR PROCESSUS, et un pont vers l'évaluateur :
+/// `installer_udfs_dans_le_moteur` pose sur le noyau (`obrain-core`) un
+/// résolveur qui consulte ce registre. Le noyau ne dépend pas de ce crate (c'est
+/// l'inverse), donc le sens de la flèche est respecté : c'est l'hôte qui
+/// s'installe, le noyau appelle.
+pub fn registre_global() -> &'static PluginRegistry {
+    static REGISTRE: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
+    REGISTRE.get_or_init(PluginRegistry::new)
+}
+
+/// Installe, UNE fois par processus, le pont entre le registre d'UDF et
+/// l'évaluateur du moteur.
+///
+/// Idempotent et sans coût mesurable : appelé à la construction d'une base, il
+/// ne fait rien après la première fois. Sans cet appel, une UDF enregistrée
+/// reste invisible à `RETURN mon_algo(n)` — le défaut même qu'on corrige.
+pub fn installer_udfs_dans_le_moteur() {
+    static PONT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PONT.get_or_init(|| {
+        // Le résolveur vit pour le processus : l'installer une fois, puis le
+        // prêter au noyau sous forme `'static` (c'est le contrat de
+        // `fonction_hote::installer`, qui n'accepte qu'un hôte).
+        static RESOLVEUR: std::sync::OnceLock<
+            Box<obrain_core::execution::fonction_hote::ResolveurFonctions>,
+        > = std::sync::OnceLock::new();
+        let resolveur = RESOLVEUR.get_or_init(|| {
+            Box::new(|nom: &str, args: &[Value]| {
+                let udf = registre_global().get_udf(nom)?;
+                Some(udf.evaluate(args).map_err(|e| e.to_string()))
+            })
+        });
+        // `Box` derrière un `OnceLock` : l'adresse ne bouge plus, donc prêter la
+        // référence pour la vie du processus est sûr et sans fuite au-delà.
+        let statique: &'static obrain_core::execution::fonction_hote::ResolveurFonctions = resolveur;
+        let _ = obrain_core::execution::fonction_hote::installer(statique);
+    });
+}
+
 impl Default for PluginRegistry {
     fn default() -> Self {
         Self::new()

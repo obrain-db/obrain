@@ -1,16 +1,24 @@
 //! Timestamps for temporal properties.
 //!
-//! Stored as microseconds since Unix epoch - plenty of precision for most uses.
+//! Stocké en NANOSECONDES depuis l'époque Unix (vague 4a, gql_15 D8) : une
+//! écriture RFC 3339 à neuf décimales — la forme même qu'écrit
+//! `to_rfc3339_opts(Nanos, …)` — garde ses trois derniers chiffres. L'API
+//! historique en microsecondes (`from_micros`/`as_micros`) est conservée à
+//! l'identique pour les appelants ; la plage couverte devient 1677-09-21 →
+//! 2262-04-11 (bornes d'un i64 de nanosecondes), les conversions saturent
+//! au-delà.
 
 use super::date::civil_from_days;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration as StdDuration;
 
-/// A point in time, stored as microseconds since Unix epoch.
+/// A point in time, stored as NANOSECONDS since Unix epoch.
 ///
-/// Microsecond precision, covering roughly 290,000 years in each direction
-/// from 1970. Create with [`from_secs()`](Self::from_secs),
+/// Nanosecond precision (gql_15 D8 : deux instants distants d'1 ns restent
+/// distincts), couvrant 1677-09-21 → 2262-04-11 ; les constructeurs saturent
+/// au-delà. Create with [`from_secs()`](Self::from_secs),
 /// [`from_millis()`](Self::from_millis), or [`now()`](Self::now).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 #[repr(transparent)]
@@ -26,25 +34,32 @@ impl Timestamp {
     /// The maximum representable timestamp.
     pub const MAX: Self = Self(i64::MAX);
 
+    /// Creates a timestamp from nanoseconds since the Unix epoch.
+    #[inline]
+    #[must_use]
+    pub const fn from_nanos(nanos: i64) -> Self {
+        Self(nanos)
+    }
+
     /// Creates a timestamp from microseconds since the Unix epoch.
     #[inline]
     #[must_use]
     pub const fn from_micros(micros: i64) -> Self {
-        Self(micros)
+        Self(micros.saturating_mul(1000))
     }
 
     /// Creates a timestamp from milliseconds since the Unix epoch.
     #[inline]
     #[must_use]
     pub const fn from_millis(millis: i64) -> Self {
-        Self(millis * 1000)
+        Self(millis.saturating_mul(1_000_000))
     }
 
     /// Creates a timestamp from seconds since the Unix epoch.
     #[inline]
     #[must_use]
     pub const fn from_secs(secs: i64) -> Self {
-        Self(secs * 1_000_000)
+        Self(secs.saturating_mul(1_000_000_000))
     }
 
     /// Returns the current time as a timestamp.
@@ -53,81 +68,98 @@ impl Timestamp {
         let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(StdDuration::ZERO);
-        Self::from_micros(duration.as_micros() as i64)
+        Self::from_nanos(duration.as_nanos() as i64)
     }
 
-    /// Returns the timestamp as microseconds since the Unix epoch.
+    /// Returns the timestamp as nanoseconds since the Unix epoch.
+    #[inline]
+    #[must_use]
+    pub const fn as_nanos(&self) -> i64 {
+        self.0
+    }
+
+    /// Returns the timestamp as microseconds since the Unix epoch
+    /// (division PLANCHER : la troncature reste chronologiquement monotone,
+    /// y compris avant 1970 — c'est ce qu'exige la clé d'index).
     #[inline]
     #[must_use]
     pub const fn as_micros(&self) -> i64 {
-        self.0
+        self.0.div_euclid(1000)
     }
 
     /// Returns the timestamp as milliseconds since the Unix epoch.
     #[inline]
     #[must_use]
     pub const fn as_millis(&self) -> i64 {
-        self.0 / 1000
+        self.0.div_euclid(1_000_000)
     }
 
     /// Returns the timestamp as seconds since the Unix epoch.
     #[inline]
     #[must_use]
     pub const fn as_secs(&self) -> i64 {
-        self.0 / 1_000_000
+        self.0.div_euclid(1_000_000_000)
     }
 
     /// Returns the timestamp as a `SystemTime`, if it's within the representable range.
     #[must_use]
     pub fn as_system_time(&self) -> Option<SystemTime> {
         if self.0 >= 0 {
-            Some(UNIX_EPOCH + StdDuration::from_micros(self.0 as u64))
+            Some(UNIX_EPOCH + StdDuration::from_nanos(self.0 as u64))
         } else {
-            UNIX_EPOCH.checked_sub(StdDuration::from_micros((-self.0) as u64))
+            UNIX_EPOCH.checked_sub(StdDuration::from_nanos(self.0.unsigned_abs()))
         }
     }
 
-    /// Adds a duration to this timestamp.
+    /// Adds a duration (in microseconds) to this timestamp.
     #[must_use]
     pub const fn add_micros(self, micros: i64) -> Self {
-        Self(self.0.saturating_add(micros))
+        Self(self.0.saturating_add(micros.saturating_mul(1000)))
     }
 
-    /// Subtracts a duration from this timestamp.
+    /// Subtracts a duration (in microseconds) from this timestamp.
     #[must_use]
     pub const fn sub_micros(self, micros: i64) -> Self {
-        Self(self.0.saturating_sub(micros))
+        Self(self.0.saturating_sub(micros.saturating_mul(1000)))
     }
 
-    /// Returns the duration between this timestamp and another.
+    /// Returns the duration between this timestamp and another, in
+    /// MICROSECONDS (sémantique historique, conservée pour les appelants —
+    /// filter.rs, obrain-cognitive).
     ///
     /// Returns a positive value if `other` is before `self`, negative otherwise.
     #[must_use]
     pub const fn duration_since(self, other: Self) -> i64 {
-        self.0 - other.0
+        self.0.saturating_sub(other.0).div_euclid(1000)
     }
 
     /// Creates a timestamp from a date and time.
+    ///
+    /// La fraction de seconde est reprise ENTIÈRE (gql_15 D8) : `Time` compte
+    /// en nanosecondes, et l'ancienne division par 1000 tronquait sans
+    /// avertissement les trois derniers chiffres d'une écriture à neuf
+    /// décimales. Sature aux bornes de la plage (dates au-delà de ±292 ans
+    /// autour de 1970 × 1000).
     #[must_use]
     pub fn from_date_time(date: super::Date, time: super::Time) -> Self {
-        let day_micros = date.as_days() as i64 * 86_400_000_000;
-        let time_micros = (time.as_nanos() / 1000) as i64;
+        let day_nanos = (date.as_days() as i64).saturating_mul(86_400_000_000_000);
+        let time_nanos = time.as_nanos() as i64;
         // If the time has an offset, subtract it to get UTC
-        let offset_micros = time.offset_seconds().unwrap_or(0) as i64 * 1_000_000;
-        Self(day_micros + time_micros - offset_micros)
+        let offset_nanos = time.offset_seconds().unwrap_or(0) as i64 * 1_000_000_000;
+        Self(day_nanos.saturating_add(time_nanos).saturating_sub(offset_nanos))
     }
 
     /// Extracts the date component (UTC).
     #[must_use]
     pub fn to_date(self) -> super::Date {
-        let days = self.0.div_euclid(86_400_000_000) as i32;
+        let days = self.0.div_euclid(86_400_000_000_000) as i32;
         super::Date::from_days(days)
     }
 
     /// Extracts the time-of-day component (UTC).
     #[must_use]
     pub fn to_time(self) -> super::Time {
-        let day_nanos = self.0.rem_euclid(86_400_000_000) as u64 * 1000;
+        let day_nanos = self.0.rem_euclid(86_400_000_000_000) as u64;
         super::Time::from_nanos(day_nanos).unwrap_or_default()
     }
 
@@ -153,26 +185,26 @@ impl Timestamp {
                 Some(first.to_timestamp())
             }
             "day" => {
-                let days = self.0.div_euclid(86_400_000_000);
-                Some(Self(days * 86_400_000_000))
+                let days = self.0.div_euclid(86_400_000_000_000);
+                Some(Self(days * 86_400_000_000_000))
             }
             "hour" => {
-                let days = self.0.div_euclid(86_400_000_000);
-                let day_micros = self.0.rem_euclid(86_400_000_000);
-                let hours = day_micros / 3_600_000_000;
-                Some(Self(days * 86_400_000_000 + hours * 3_600_000_000))
+                let days = self.0.div_euclid(86_400_000_000_000);
+                let day_nanos = self.0.rem_euclid(86_400_000_000_000);
+                let hours = day_nanos / 3_600_000_000_000;
+                Some(Self(days * 86_400_000_000_000 + hours * 3_600_000_000_000))
             }
             "minute" => {
-                let days = self.0.div_euclid(86_400_000_000);
-                let day_micros = self.0.rem_euclid(86_400_000_000);
-                let minutes = day_micros / 60_000_000;
-                Some(Self(days * 86_400_000_000 + minutes * 60_000_000))
+                let days = self.0.div_euclid(86_400_000_000_000);
+                let day_nanos = self.0.rem_euclid(86_400_000_000_000);
+                let minutes = day_nanos / 60_000_000_000;
+                Some(Self(days * 86_400_000_000_000 + minutes * 60_000_000_000))
             }
             "second" => {
-                let days = self.0.div_euclid(86_400_000_000);
-                let day_micros = self.0.rem_euclid(86_400_000_000);
-                let seconds = day_micros / 1_000_000;
-                Some(Self(days * 86_400_000_000 + seconds * 1_000_000))
+                let days = self.0.div_euclid(86_400_000_000_000);
+                let day_nanos = self.0.rem_euclid(86_400_000_000_000);
+                let seconds = day_nanos / 1_000_000_000;
+                Some(Self(days * 86_400_000_000_000 + seconds * 1_000_000_000))
             }
             _ => None,
         }
@@ -188,26 +220,25 @@ impl Timestamp {
         let time = self.to_time();
         let base = Self::from_date_time(date, time);
         // Add days and nanos directly
-        let day_micros = dur.days() * 86_400_000_000;
-        let nano_micros = dur.nanos() / 1000;
-        Self(base.0 + day_micros + nano_micros)
+        let day_nanos = dur.days().saturating_mul(86_400_000_000_000);
+        Self(base.0.saturating_add(day_nanos).saturating_add(dur.nanos()))
     }
 }
 
 impl fmt::Debug for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Timestamp({}μs)", self.0)
+        write!(f, "Timestamp({}ns)", self.0)
     }
 }
 
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let micros = self.0;
-        let micro_frac = micros.rem_euclid(1_000_000) as u64;
+        let nanos = self.0;
+        let nano_frac = nanos.rem_euclid(1_000_000_000) as u64;
 
-        let total_days = micros.div_euclid(86_400_000_000) as i32;
-        let day_micros = micros.rem_euclid(86_400_000_000);
-        let day_secs = day_micros / 1_000_000;
+        let total_days = nanos.div_euclid(86_400_000_000_000) as i32;
+        let day_nanos = nanos.rem_euclid(86_400_000_000_000);
+        let day_secs = day_nanos / 1_000_000_000;
 
         let hours = day_secs / 3600;
         let minutes = (day_secs % 3600) / 60;
@@ -215,11 +246,28 @@ impl fmt::Display for Timestamp {
 
         let (year, month, day) = civil_from_days(total_days);
 
-        write!(
-            f,
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
-            year, month, day, hours, minutes, seconds, micro_frac
-        )
+        // Rendu historique à 6 décimales conservé pour toute valeur à la
+        // microseconde près (100 % de l'existant) ; 9 décimales dès qu'une
+        // partie sub-microseconde existe, pour ne rien perdre à l'affichage.
+        if nano_frac % 1000 == 0 {
+            write!(
+                f,
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
+                year,
+                month,
+                day,
+                hours,
+                minutes,
+                seconds,
+                nano_frac / 1000
+            )
+        } else {
+            write!(
+                f,
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+                year, month, day, hours, minutes, seconds, nano_frac
+            )
+        }
     }
 }
 
@@ -230,8 +278,11 @@ impl From<i64> for Timestamp {
 }
 
 impl From<Timestamp> for i64 {
+    /// Microsecondes (sémantique historique de cette conversion, conservée) —
+    /// la partie sub-microseconde est tronquée ; passer par
+    /// [`Timestamp::as_nanos`] pour la précision pleine.
     fn from(ts: Timestamp) -> Self {
-        ts.0
+        ts.as_micros()
     }
 }
 

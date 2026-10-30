@@ -901,7 +901,7 @@ mod tests {
         let _ = khop_subgraph(&store, &config);
 
         // Measure
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         let iterations = 10;
         for _ in 0..iterations {
             let _ = khop_subgraph(&store, &config);

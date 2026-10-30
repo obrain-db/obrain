@@ -55,9 +55,17 @@ impl FilterPredicate for ColumnPredicate {
             return false;
         };
 
+        // Égalité via le comparateur canonique — l'incohérence interne
+        // recensée (un `=` strict `PartialEq` face à des `<=`/`>=` coercitifs
+        // dans le même fichier) est résorbée : Int64(1) = Float64(1.0),
+        // classes disjointes → pas de correspondance, comme l'évaluateur.
         match self.op {
-            CompareOp::Eq => val == self.value,
-            CompareOp::Ne => val != self.value,
+            CompareOp::Eq => {
+                obrain_common::types::value_cmp::egaler(&val, &self.value) == Some(true)
+            }
+            CompareOp::Ne => {
+                obrain_common::types::value_cmp::egaler(&val, &self.value) == Some(false)
+            }
             CompareOp::Lt => compare_values(&val, &self.value) == Some(std::cmp::Ordering::Less),
             CompareOp::Le => {
                 matches!(

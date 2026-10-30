@@ -4,6 +4,72 @@
 use super::*;
 
 impl GqlTranslator {
+    /// Predicat du motif qualifie par base (V2) : `base(var) = "slug"`.
+    pub(super) fn predicat_base(variable: &str, slug: &str) -> LogicalExpression {
+        LogicalExpression::Binary {
+            left: Box::new(LogicalExpression::FunctionCall {
+                name: "base".into(),
+                args: vec![LogicalExpression::Variable(variable.to_string())],
+                distinct: false,
+            }),
+            op: BinaryOp::Eq,
+            right: Box::new(LogicalExpression::Literal(Value::from(slug))),
+        }
+    }
+
+    /// Refus enseignant : IN "slug" est un motif de LECTURE.
+    pub(super) fn erreur_in_ecriture() -> Error {
+        Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            "IN \"slug\" qualifie un motif de LECTURE (MATCH). En ecriture, \
+             la cible d'une autre base s'adresse par ref(\"slug\", \"clef\")",
+        ))
+    }
+
+    /// Refus enseignant : la SOURCE d'une arete inter-bases doit vivre
+    /// dans la base courante (une ecriture ne touche qu'UNE base, sa WAL).
+    pub(super) fn erreur_source_ref() -> Error {
+        Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            "la SOURCE d'une arete inter-bases doit vivre dans la base courante : \
+             une ecriture ne touche qu'une seule base (sa WAL). Ouvre une session \
+             sur la base source et ecris l'arete depuis elle : \
+             CREATE (a)-[:TYPE]->(ref(\"slug\", \"clef\"))",
+        ))
+    }
+
+    /// Refus enseignant : ref() n'est pas un motif de lecture ni un motif
+    /// de creation de noeud.
+    pub(super) fn erreur_ref_hors_cible() -> Error {
+        Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            "ref(\"slug\", \"clef\") designe un noeud d'une AUTRE base et ne \
+             s'utilise aujourd'hui que comme CIBLE d'une arete en CREATE/MERGE : \
+             CREATE (a)-[:TYPE]->(ref(...)). En lecture, les aretes inter-bases \
+             se traversent par un MATCH ordinaire sur les aretes existantes",
+        ))
+    }
+
+    /// Refus enseignant : pas de proprietes ni de variable d'arete en V1.
+    pub(super) fn erreur_ref_arete_riche() -> Error {
+        Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            "une arete inter-bases ne porte pas encore de proprietes ni de \
+             variable d'arete (V1) : ecris CREATE (a)-[:TYPE]->(ref(...)) sans \
+             {props} ni [r:...]",
+        ))
+    }
+
+    /// Refus enseignant : l'arete inter-bases est orientee.
+    pub(super) fn erreur_ref_orientation() -> Error {
+        Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            "une arete inter-bases est ORIENTEE et part de la base courante : \
+             ecris (a)-[:TYPE]->(ref(...)). Pour l'autre sens, ecris depuis \
+             l'autre base",
+        ))
+    }
+
     /// Translates a MERGE clause into a MergeOp.
     pub(super) fn translate_merge(
         &self,
@@ -12,6 +78,12 @@ impl GqlTranslator {
     ) -> Result<LogicalOperator> {
         let (variable, labels, match_properties) = match &merge_clause.pattern {
             ast::Pattern::Node(node) => {
+                if node.reference.is_some() {
+                    return Err(Self::erreur_ref_hors_cible());
+                }
+                if node.base_qualifier.is_some() {
+                    return Err(Self::erreur_in_ecriture());
+                }
                 let var = node
                     .variable
                     .clone()
@@ -96,6 +168,15 @@ impl GqlTranslator {
     ) -> Result<LogicalOperator> {
         let mut current_input = input;
 
+        if path.source.reference.is_some() {
+            return Err(Self::erreur_source_ref());
+        }
+        if path.source.base_qualifier.is_some()
+            || path.edges.iter().any(|e| e.target.base_qualifier.is_some())
+        {
+            return Err(Self::erreur_in_ecriture());
+        }
+
         let source_variable = path.source.variable.clone().ok_or_else(|| {
             Error::Query(QueryError::new(
                 QueryErrorKind::Semantic,
@@ -128,6 +209,47 @@ impl GqlTranslator {
                 "MERGE relationship pattern is empty",
             ))
         })?;
+
+        // Aretes inter-bases (V1) : MERGE (a)-[:T]->(ref(...)) — variante
+        // idempotente de CREATE, une arete identique n'est pas dupliquee.
+        if let Some(reference) = &edge.target.reference {
+            if path.edges.len() != 1 {
+                return Err(Error::Query(QueryError::new(
+                    QueryErrorKind::Semantic,
+                    "un ref(...) termine un motif d'ecriture : rien ne peut \
+                     s'enchainer apres une cible d'une autre base",
+                )));
+            }
+            match edge.direction {
+                ast::EdgeDirection::Outgoing => {}
+                ast::EdgeDirection::Incoming => return Err(Self::erreur_source_ref()),
+                ast::EdgeDirection::Undirected => {
+                    return Err(Self::erreur_ref_orientation());
+                }
+            }
+            if !edge.properties.is_empty() || edge.variable.is_some() {
+                return Err(Self::erreur_ref_arete_riche());
+            }
+            if merge_clause.on_create.is_some() || merge_clause.on_match.is_some() {
+                return Err(Self::erreur_ref_arete_riche());
+            }
+            let edge_type = edge.types.first().cloned().ok_or_else(|| {
+                Error::Query(QueryError::new(
+                    QueryErrorKind::Semantic,
+                    "une arete inter-bases exige un type : \
+                     MERGE (a)-[:TYPE]->(ref(...))",
+                ))
+            })?;
+            return Ok(LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
+                from_variable: source_variable,
+                edge_type,
+                to_host: reference.host.clone(),
+                to_store: reference.store.clone(),
+                to_key: reference.key.clone(),
+                merge: true,
+                input: Box::new(current_input),
+            }));
+        }
 
         let variable = edge
             .variable
@@ -218,6 +340,12 @@ impl GqlTranslator {
         for pattern in patterns {
             match pattern {
                 ast::Pattern::Node(node) => {
+                    if node.reference.is_some() {
+                        return Err(Self::erreur_ref_hors_cible());
+                    }
+                    if node.base_qualifier.is_some() {
+                        return Err(Self::erreur_in_ecriture());
+                    }
                     let variable = node
                         .variable
                         .clone()
@@ -228,14 +356,32 @@ impl GqlTranslator {
                         .map(|(k, v)| Ok((k.clone(), self.translate_expression(v)?)))
                         .collect::<Result<_>>()?;
 
+                    // (correctif parseur-queue) en tete de requete (plan Empty),
+                    // le CreateNode demarre sans entree — comme le chemin
+                    // DataModification — au lieu d'emboiter un plan vide que le
+                    // planificateur refuse.
+                    let entree = std::mem::replace(&mut plan, LogicalOperator::Empty);
+                    let entree = if matches!(entree, LogicalOperator::Empty) {
+                        None
+                    } else {
+                        Some(Box::new(entree))
+                    };
                     plan = LogicalOperator::CreateNode(CreateNodeOp {
                         variable,
                         labels: node.labels.clone(),
                         properties,
-                        input: Some(Box::new(plan)),
+                        input: entree,
                     });
                 }
                 ast::Pattern::Path(path) => {
+                    if path.source.reference.is_some() {
+                        return Err(Self::erreur_source_ref());
+                    }
+                    if path.source.base_qualifier.is_some()
+                        || path.edges.iter().any(|e| e.target.base_qualifier.is_some())
+                    {
+                        return Err(Self::erreur_in_ecriture());
+                    }
                     // First create the source node if it has labels (new node)
                     let source_var = path
                         .source
@@ -252,16 +398,66 @@ impl GqlTranslator {
                             .map(|(k, v)| Ok((k.clone(), self.translate_expression(v)?)))
                             .collect::<Result<_>>()?;
 
+                        // (correctif parseur-queue) meme repli que pour le motif
+                        // de noeud : pas d'entree quand le plan est encore vide.
+                        let entree = std::mem::replace(&mut plan, LogicalOperator::Empty);
+                        let entree = if matches!(entree, LogicalOperator::Empty) {
+                            None
+                        } else {
+                            Some(Box::new(entree))
+                        };
                         plan = LogicalOperator::CreateNode(CreateNodeOp {
                             variable: source_var.clone(),
                             labels: path.source.labels.clone(),
                             properties: source_props,
-                            input: Some(Box::new(plan)),
+                            input: entree,
                         });
                     }
 
                     // Create edges and target nodes
-                    for edge in &path.edges {
+                    for (edge_idx, edge) in path.edges.iter().enumerate() {
+                        // Aretes inter-bases (V1) : cible = ref(...) —
+                        // l'arete vit dans la base courante, la cible est
+                        // une ADRESSE, jamais resolue a l'ecriture.
+                        if let Some(reference) = &edge.target.reference {
+                            match edge.direction {
+                                ast::EdgeDirection::Outgoing => {}
+                                ast::EdgeDirection::Incoming => {
+                                    return Err(Self::erreur_source_ref());
+                                }
+                                ast::EdgeDirection::Undirected => {
+                                    return Err(Self::erreur_ref_orientation());
+                                }
+                            }
+                            if !edge.properties.is_empty() || edge.variable.is_some() {
+                                return Err(Self::erreur_ref_arete_riche());
+                            }
+                            if edge_idx + 1 != path.edges.len() {
+                                return Err(Error::Query(QueryError::new(
+                                    QueryErrorKind::Semantic,
+                                    "un ref(...) termine un motif d'ecriture : rien ne \
+                                     peut s'enchainer apres une cible d'une autre base",
+                                )));
+                            }
+                            let edge_type =
+                                edge.types.first().cloned().ok_or_else(|| {
+                                    Error::Query(QueryError::new(
+                                        QueryErrorKind::Semantic,
+                                        "une arete inter-bases exige un type : \
+                                         CREATE (a)-[:TYPE]->(ref(...))",
+                                    ))
+                                })?;
+                            plan = LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
+                                from_variable: source_var.clone(),
+                                edge_type,
+                                to_host: reference.host.clone(),
+                                to_store: reference.store.clone(),
+                                to_key: reference.key.clone(),
+                                merge: false,
+                                input: Box::new(plan),
+                            });
+                            continue;
+                        }
                         let target_var = edge
                             .target
                             .variable
@@ -357,6 +553,7 @@ impl GqlTranslator {
             variable: variable.clone(),
             label,
             input: input.map(Box::new),
+            pushdown_hint: None,
         });
 
         // Add hasLabel filters for additional colon-syntax labels (AND semantics).
@@ -385,6 +582,11 @@ impl GqlTranslator {
         if let Some(ref where_expr) = node.where_clause {
             let predicate = self.translate_expression(where_expr)?;
             plan = wrap_filter(plan, predicate);
+        }
+
+        // Aretes inter-bases (V2) : motif qualifie par base.
+        if let Some(ref slug) = node.base_qualifier {
+            plan = wrap_filter(plan, Self::predicat_base(&variable, slug));
         }
 
         Ok(plan)
@@ -504,6 +706,7 @@ impl GqlTranslator {
             variable: source_var.clone(),
             label: source_label,
             input: input.map(Box::new),
+            pushdown_hint: None,
         });
 
         // Add hasLabel filters for additional source labels (AND semantics)
@@ -649,6 +852,11 @@ impl GqlTranslator {
             if let Some(ref where_expr) = edge.target.where_clause {
                 let predicate = self.translate_expression(where_expr)?;
                 plan = wrap_filter(plan, predicate);
+            }
+
+            // Aretes inter-bases (V2) : cible qualifiee par base.
+            if let Some(ref slug) = edge.target.base_qualifier {
+                plan = wrap_filter(plan, Self::predicat_base(&target_var, slug));
             }
 
             // Questioned edge: wrap expand + all filters in a LeftJoin so the

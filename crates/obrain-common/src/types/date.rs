@@ -93,6 +93,16 @@ impl Date {
         if parts.len() != 3 {
             return None;
         }
+        // Chaque champ en CHIFFRES stricts : `str::parse` accepte un signe de
+        // tête, qui laissait passer `+2026-01-01` et `2026-+1-01` comme des
+        // dates réelles (gql_15 D9). Le signe du millésime, lui, est déjà
+        // consommé plus haut.
+        if !parts
+            .iter()
+            .all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
         let year: i32 = parts[0].parse().ok()?;
         let month: u32 = parts[1].parse().ok()?;
         let day: u32 = parts[2].parse().ok()?;

@@ -1,3 +1,5 @@
+//! Planification des mutations : INSERT, SET, DELETE et MERGE produisent les operateurs attendus.
+
 #![cfg(feature = "cypher")]
 //! Integration tests for mutation-related planning paths.
 //!

@@ -15,7 +15,7 @@
 #![cfg(feature = "cypher")]
 
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 const N: usize = 200;
 

@@ -2,7 +2,7 @@
 
 use obrain_common::types::Value;
 use obrain_engine::{Config, ObrainDB};
-use std::time::Instant;
+use web_time::Instant;
 
 fn setup_graph_with_config(node_count: usize, avg_degree: usize, config: Config) -> ObrainDB {
     let db = ObrainDB::with_config(config).expect("Failed to create database");

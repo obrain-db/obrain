@@ -11,6 +11,21 @@ impl super::Planner {
         &self,
         scan: &NodeScanOp,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // (NATIF-J6) ROUTE ORDER BY <prop> LIMIT k : quand `try_plan_order_by_index`
+        // a pose une restriction pour CETTE variable, on ne balaie pas — on emet
+        // la liste EXACTE des k NodeId rendus par l'index ordonne par valeur. Le
+        // reste du plan (projection + SortOperator.with_limit(k)) est INCHANGE,
+        // donc le resultat est identique au tri complet, mais ne lit que ~k slots.
+        // Uniquement pour un scan NU (sans input propre).
+        if scan.input.is_none()
+            && let Some((var, ids)) = self.restriction_scan.borrow().as_ref()
+            && var == &scan.variable
+        {
+            let op: Box<dyn Operator> = Box::new(
+                obrain_core::execution::operators::NodeListOperator::new(ids.clone(), 2048),
+            );
+            return Ok((op, vec![scan.variable.clone()]));
+        }
         let scan_op = if let Some(label) = &scan.label {
             ScanOperator::with_label(Arc::clone(&self.store) as Arc<dyn GraphStore>, label)
         } else {

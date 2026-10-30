@@ -125,7 +125,7 @@ pub struct CreateNodeOperator {
 }
 
 /// Source for a property value.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum PropertySource {
     /// Get value from an input column.
     Column(usize),
@@ -138,25 +138,64 @@ pub enum PropertySource {
         /// The property name to extract.
         property: String,
     },
+    /// (2026-08-30, vague 4a) Expression composée évaluée PAR LIGNE, sur
+    /// l'état d'AVANT l'écriture : `SET n.x = n.x + 1` lit le `n.x` du
+    /// moment de la résolution — les sources d'une ligne sont TOUTES
+    /// résolues avant sa première écriture, aux sites d'appel de `resolve`.
+    ///
+    /// Avant cette variante, toute expression non repliable à la
+    /// planification tombait en erreur `Internal` : `SET n.x = n.y` passait
+    /// (accès nu) mais `SET n.x = n.y + 1` était refusé — une frontière
+    /// indevinable depuis le langage (gql_13, set_par_expression).
+    Expression(Arc<super::filter::ExpressionPredicate>),
+}
+
+impl std::fmt::Debug for PropertySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropertySource::Column(c) => f.debug_tuple("Column").field(c).finish(),
+            PropertySource::Constant(v) => f.debug_tuple("Constant").field(v).finish(),
+            PropertySource::PropertyAccess { column, property } => f
+                .debug_struct("PropertyAccess")
+                .field("column", column)
+                .field("property", property)
+                .finish(),
+            // `ExpressionPredicate` porte un verrou d'erreur, pas de Debug ;
+            // le plan logique, lui, sait imprimer l'expression d'origine.
+            PropertySource::Expression(_) => f.write_str("Expression(..)"),
+        }
+    }
 }
 
 impl PropertySource {
     /// Resolves a property value from a data chunk row.
+    ///
+    /// `Err` ne signale JAMAIS une absence de valeur (elle vaut
+    /// `Value::Null`) : seule une faute d'évaluation d'expression —
+    /// division par zéro, débordement i64, l'arithmétique gardée de la
+    /// vague 1 — refuse la requête au lieu de se déguiser en NULL écrit.
     pub fn resolve(
         &self,
         chunk: &crate::execution::chunk::DataChunk,
         row: usize,
         store: &dyn GraphStore,
-    ) -> Value {
-        match self {
+    ) -> Result<Value, OperatorError> {
+        Ok(match self {
             PropertySource::Column(col_idx) => chunk
                 .column(*col_idx)
                 .and_then(|c| c.get_value(row))
                 .unwrap_or(Value::Null),
             PropertySource::Constant(v) => v.clone(),
+            PropertySource::Expression(predicate) => {
+                let value = predicate.eval_at(chunk, row);
+                if let Some(e) = predicate.take_eval_error() {
+                    return Err(OperatorError::Execution(e));
+                }
+                value.unwrap_or(Value::Null)
+            }
             PropertySource::PropertyAccess { column, property } => {
                 let Some(col) = chunk.column(*column) else {
-                    return Value::Null;
+                    return Ok(Value::Null);
                 };
                 // Try node ID first, then edge ID, then map value
                 if let Some(node_id) = col.get_node_id(row) {
@@ -176,7 +215,7 @@ impl PropertySource {
                     Value::Null
                 }
             }
-        }
+        })
     }
 }
 
@@ -244,6 +283,16 @@ impl CreateNodeOperator {
         node_id: NodeId,
         resolved_props: &mut Vec<(String, Value)>,
     ) -> Result<(), OperatorError> {
+        // Une propriete declaree nulle a la creation — INSERT (:T {x: null})
+        // ou valeur resolue a NULL — n'est PAS materialisee : « x: null »
+        // declare que x n'a pas de valeur, donc le noeud a la meme forme que
+        // si la cle n'avait jamais ete ecrite (gql_13, groupe 7 : la forme ne
+        // memorise pas la route d'ecriture). Le filtre vient AVANT
+        // inject_defaults : une cle fournie nulle est traitee comme non
+        // fournie. Seul le semis direct (API create_node_with_props) sait
+        // encore fabriquer l'etat « cle presente, valeur nulle ».
+        resolved_props.retain(|(_, value)| !matches!(value, Value::Null));
+
         // Phase 0: Validate that node labels are allowed by the bound graph type
         if let Some(ref validator) = self.validator {
             validator.validate_node_labels_allowed(&self.labels)?;
@@ -299,14 +348,27 @@ impl Operator for CreateNodeOperator {
                         .properties
                         .iter()
                         .map(|(name, source)| {
-                            let value =
-                                source.resolve(&chunk, row, self.store.as_ref() as &dyn GraphStore);
-                            (name.clone(), value)
+                            let value = source.resolve(
+                                &chunk,
+                                row,
+                                self.store.as_ref() as &dyn GraphStore,
+                            )?;
+                            Ok((name.clone(), value))
                         })
-                        .collect();
+                        .collect::<Result<_, OperatorError>>()?;
 
                     // Create the node with MVCC versioning
                     let label_refs: Vec<&str> = self.labels.iter().map(String::as_str).collect();
+                    // ── LA CAPACITÉ D'ÉTIQUETTES SE DEMANDE AVANT DE CRÉER ──
+                    // `create_node` est infaillible par contrat : dépasser les 64
+                    // étiquettes distinctes d'une base faisait donc ABANDONNER le
+                    // processus (`.expect("label registry overflow")`). Une
+                    // requête — ou un agent avec droit d'écriture — pouvait tuer
+                    // le démon. On refuse ici, proprement, avec un message qui dit
+                    // la limite et la sortie.
+                    self.store
+                        .valider_etiquettes(&label_refs)
+                        .map_err(OperatorError::Execution)?;
                     let node_id = self.store.create_node_versioned(&label_refs, epoch, tx);
 
                     // Record write for conflict detection
@@ -364,6 +426,9 @@ impl Operator for CreateNodeOperator {
 
             // Create the node with MVCC versioning
             let label_refs: Vec<&str> = self.labels.iter().map(String::as_str).collect();
+            self.store
+                .valider_etiquettes(&label_refs)
+                .map_err(OperatorError::Execution)?;
             let node_id = self.store.create_node_versioned(&label_refs, epoch, tx);
 
             // Record write for conflict detection
@@ -563,15 +628,20 @@ impl Operator for CreateEdgeOperator {
                     )?;
                 }
 
-                // Resolve property values
+                // Resolve property values. Une propriete declaree nulle a la
+                // creation n'est pas materialisee — meme regle que pour les
+                // noeuds : « p: null » declare que p n'a pas de valeur.
                 let resolved_props: Vec<(String, Value)> = self
                     .properties
                     .iter()
                     .map(|(name, source)| {
                         let value =
-                            source.resolve(&chunk, row, self.store.as_ref() as &dyn GraphStore);
-                        (name.clone(), value)
+                            source.resolve(&chunk, row, self.store.as_ref() as &dyn GraphStore)?;
+                        Ok((name.clone(), value))
                     })
+                    .collect::<Result<Vec<_>, OperatorError>>()?
+                    .into_iter()
+                    .filter(|(_, value)| !matches!(value, Value::Null))
                     .collect();
 
                 // Validate constraints before writing
@@ -657,6 +727,10 @@ pub struct DeleteNodeOperator {
     output_schema: Vec<LogicalType>,
     /// Whether to detach (delete connected edges) before deleting.
     detach: bool,
+    /// (V3) Vrai en transaction EXPLICITE : DETACH DELETE d'un noeud
+    /// porteur d'aretes inter-bases est refuse (registre externe hors
+    /// undo-log — un ROLLBACK ressusciterait le noeud, pas ses aretes).
+    refuser_detach_externes: bool,
     /// Epoch for MVCC versioning.
     viewing_epoch: Option<EpochId>,
     /// Transaction ID for MVCC versioning.
@@ -680,10 +754,19 @@ impl DeleteNodeOperator {
             node_column,
             output_schema,
             detach,
+            refuser_detach_externes: false,
             viewing_epoch: None,
             transaction_id: None,
             write_tracker: None,
         }
+    }
+
+    /// (V3) Active le refus du DETACH DELETE porteur d'aretes
+    /// inter-bases (transaction explicite — registre hors undo-log).
+    #[must_use]
+    pub fn with_detach_externes_refuses(mut self, refuser: bool) -> Self {
+        self.refuser_detach_externes = refuser;
+        self
     }
 
     /// Sets the transaction context for MVCC versioning.
@@ -735,6 +818,22 @@ impl Operator for DeleteNodeOperator {
                 };
 
                 if self.detach {
+                    // (V3) Refus enseignant : en transaction explicite, un
+                    // noeud porteur d'aretes inter-bases ne se DETACH
+                    // DELETE pas — le registre externe est hors undo-log.
+                    if self.refuser_detach_externes {
+                        let externes = self.store.external_edges_from(node_id).len();
+                        if externes > 0 {
+                            return Err(OperatorError::Execution(format!(
+                                "ce noeud porte {externes} arete(s) inter-bases, HORS \
+                                 journal d'annulation (V1) : DETACH DELETE est refuse \
+                                 dans une transaction explicite — un ROLLBACK \
+                                 ressusciterait le noeud mais pas ses aretes externes. \
+                                 Execute la suppression hors transaction (auto-commit), \
+                                 ou supprime d'abord ses aretes externes"
+                            )));
+                        }
+                    }
                     // Delete all connected edges first, using versioned deletion
                     // so rollback can restore them
                     let outgoing = self
@@ -751,9 +850,18 @@ impl Operator for DeleteNodeOperator {
                             tracker.record_edge_write(tid, edge_id)?;
                         }
                     }
+                    // Aretes inter-bases (V1) : les SORTANTES vivent chez
+                    // ce noeud — elles partent avec lui (spec paragraphe 4).
+                    // Hors MVCC : le registre externe ne participe pas au
+                    // rollback (limitation V1, documentee).
+                    for e in self.store.external_edges_from(node_id) {
+                        self.store.delete_external_edge(e.id);
+                    }
                 } else {
                     // NODETACH: check that node has no connected edges
-                    let degree = self.store.out_degree(node_id) + self.store.in_degree(node_id);
+                    let degree = self.store.out_degree(node_id)
+                        + self.store.in_degree(node_id)
+                        + self.store.external_edges_from(node_id).len();
                     if degree > 0 {
                         return Err(OperatorError::ConstraintViolation(format!(
                             "Cannot delete node with {} connected edge(s). Use DETACH DELETE.",
@@ -1195,6 +1303,10 @@ pub struct SetPropertyOperator {
     output_schema: Vec<LogicalType>,
     /// Whether to replace all properties (true) or merge (false) for map assignments.
     replace: bool,
+    /// Whether the listed properties are REMOVED (real key deletion) instead
+    /// of assigned. Set by `REMOVE n.x` / `REMOVE r.p` : the store emits a
+    /// tombstone and a Remove*Property WAL record — never a stored NULL.
+    remove: bool,
     /// Optional constraint validator for schema enforcement.
     validator: Option<Arc<dyn ConstraintValidator>>,
     /// Entity labels (for node constraint validation).
@@ -1226,6 +1338,7 @@ impl SetPropertyOperator {
             properties,
             output_schema,
             replace: false,
+            remove: false,
             validator: None,
             labels: Vec::new(),
             edge_type_name: None,
@@ -1251,6 +1364,7 @@ impl SetPropertyOperator {
             properties,
             output_schema,
             replace: false,
+            remove: false,
             validator: None,
             labels: Vec::new(),
             edge_type_name: None,
@@ -1264,6 +1378,35 @@ impl SetPropertyOperator {
     pub fn with_replace(mut self, replace: bool) -> Self {
         self.replace = replace;
         self
+    }
+
+    /// Sets whether this operator REMOVES the listed properties (for
+    /// `REMOVE n.x` / `REMOVE r.p`) instead of assigning them.
+    pub fn with_remove(mut self, remove: bool) -> Self {
+        self.remove = remove;
+        self
+    }
+
+    /// Removes one property of the target entity — the REAL removal: the
+    /// store writes a tombstone and the WAL carries a Remove*Property record.
+    /// Removing an absent key is a no-op, which makes REMOVE idempotent.
+    fn remove_entity_property(&self, entity_id: u64, key: &str) {
+        match (self.is_edge, self.transaction_id) {
+            (true, Some(tid)) => {
+                self.store
+                    .remove_edge_property_versioned(EdgeId(entity_id), key, tid);
+            }
+            (true, None) => {
+                self.store.remove_edge_property(EdgeId(entity_id), key);
+            }
+            (false, Some(tid)) => {
+                self.store
+                    .remove_node_property_versioned(NodeId(entity_id), key, tid);
+            }
+            (false, None) => {
+                self.store.remove_node_property(NodeId(entity_id), key);
+            }
+        }
     }
 
     /// Sets the constraint validator for schema enforcement.
@@ -1341,16 +1484,44 @@ impl Operator for SetPropertyOperator {
                     }
                 }
 
-                // Resolve all property values
+                // REMOVE n.x / REMOVE r.p : retrait REEL de chaque cle
+                // listee — tombstone en stockage, enregistrement WAL
+                // Remove*Property — jamais un NULL stocke. Les expressions
+                // de valeur ne sont pas resolues : seule la cle compte, et
+                // retirer une cle absente ne change rien (idempotence).
+                if self.remove {
+                    for (prop_name, _source) in &self.properties {
+                        self.remove_entity_property(entity_id, prop_name);
+                    }
+
+                    // Copy input columns to output (pass-through)
+                    for col_idx in 0..chunk.column_count() {
+                        if let (Some(src), Some(dst)) =
+                            (chunk.column(col_idx), builder.column_mut(col_idx))
+                        {
+                            if let Some(val) = src.get_value(row) {
+                                dst.push_value(val);
+                            } else {
+                                dst.push_value(Value::Null);
+                            }
+                        }
+                    }
+                    builder.advance_row();
+                    continue;
+                }
+
+                // Resolve all property values — TOUTES avant la premiere
+                // ecriture de la ligne : une expression (`SET n.x = n.x + 1`)
+                // lit ainsi l'etat d'AVANT l'ecriture, jamais le sien.
                 let resolved_props: Vec<(String, Value)> = self
                     .properties
                     .iter()
                     .map(|(name, source)| {
                         let value =
-                            source.resolve(&chunk, row, self.store.as_ref() as &dyn GraphStore);
-                        (name.clone(), value)
+                            source.resolve(&chunk, row, self.store.as_ref() as &dyn GraphStore)?;
+                        Ok((name.clone(), value))
                     })
-                    .collect();
+                    .collect::<Result<_, OperatorError>>()?;
 
                 // Validate constraints before writing
                 if let Some(ref validator) = self.validator {
@@ -1418,6 +1589,15 @@ impl Operator for SetPropertyOperator {
                             }
                             // Set each map entry
                             for (key, val) in map.iter() {
+                                // Une entree nulle de carte declare « pas de
+                                // valeur » : meme regle que SET n.x = null,
+                                // la cle est retiree, jamais ecrite a NULL.
+                                // En mode replace elle est deja partie — le
+                                // retrait est alors un no-op.
+                                if matches!(val, Value::Null) {
+                                    self.remove_entity_property(entity_id, key.as_str());
+                                    continue;
+                                }
                                 if self.is_edge {
                                     if let Some(tid) = tx_id {
                                         self.store.set_edge_property_versioned(
@@ -1449,6 +1629,14 @@ impl Operator for SetPropertyOperator {
                                 }
                             }
                         }
+                    } else if matches!(value, Value::Null) {
+                        // SET n.x = null (litteral OU expression resolue a
+                        // NULL) declare « x n'a pas de valeur » : la cle est
+                        // RETIREE, comme le ferait un remplacement par une
+                        // carte sans cette cle. Ecrire un NULL stocke
+                        // laisserait le noeud memoriser la ROUTE d'ecriture
+                        // au lieu de l'etat declare (cf. gql_13, groupe 7).
+                        self.remove_entity_property(entity_id, &prop_name);
                     } else if self.is_edge {
                         if let Some(tid) = tx_id {
                             self.store.set_edge_property_versioned(
@@ -1501,6 +1689,162 @@ impl Operator for SetPropertyOperator {
 
     fn name(&self) -> &'static str {
         "SetProperty"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CreateExternalEdgeOperator — aretes inter-bases (V1)
+// ---------------------------------------------------------------------------
+
+/// Cree une arete EXTERNE `(source locale) -[TYPE]-> ref(hote?, slug, clef)`
+/// pour chaque ligne d'entree, puis laisse passer la ligne inchangee.
+///
+/// Contrats (spec << aretes inter-bases natives >>) :
+/// - la SOURCE doit etre un noeud VIVANT de la base courante — une ecriture
+///   ne touche qu'une base (sa WAL). Toute autre valeur en colonne source
+///   est refusee avec une erreur enseignante, jamais un silence ;
+/// - la CIBLE n'est PAS resolue a l'ecriture : c'est une adresse. Une cible
+///   inexistante rendra simplement << absent >> a la traversee (trivalue) ;
+/// - `merge = true` : idempotent — une arete identique (type, hote, slug,
+///   clef) deja portee par la source n'est pas dupliquee.
+pub struct CreateExternalEdgeOperator {
+    store: Arc<dyn GraphStoreMut>,
+    input: Box<dyn Operator>,
+    from_column: usize,
+    from_variable: String,
+    edge_type: String,
+    to_host: Option<String>,
+    to_store: String,
+    to_key: String,
+    merge: bool,
+    output_schema: Vec<LogicalType>,
+}
+
+impl CreateExternalEdgeOperator {
+    /// Creates a new external-edge creation operator.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        store: Arc<dyn GraphStoreMut>,
+        input: Box<dyn Operator>,
+        from_column: usize,
+        from_variable: String,
+        edge_type: String,
+        to_host: Option<String>,
+        to_store: String,
+        to_key: String,
+        merge: bool,
+        output_schema: Vec<LogicalType>,
+    ) -> Self {
+        Self {
+            store,
+            input,
+            from_column,
+            from_variable,
+            edge_type,
+            to_host,
+            to_store,
+            to_key,
+            merge,
+            output_schema,
+        }
+    }
+}
+
+impl Operator for CreateExternalEdgeOperator {
+    fn next(&mut self) -> OperatorResult {
+        if let Some(chunk) = self.input.next()? {
+            let mut builder =
+                DataChunkBuilder::with_capacity(&self.output_schema, chunk.row_count());
+
+            for row in chunk.selected_indices() {
+                let from_id = chunk
+                    .column(self.from_column)
+                    .and_then(|c| c.get_value(row))
+                    .ok_or_else(|| {
+                        OperatorError::ColumnNotFound(format!("from column {}", self.from_column))
+                    })?;
+
+                let from_node_id = match from_id {
+                    Value::Int64(id) => NodeId(id as u64),
+                    autre => {
+                        return Err(OperatorError::Execution(format!(
+                            "la source '{}' d'une arete inter-bases doit etre un noeud \
+                             de la base COURANTE (une ecriture ne touche qu'une base, \
+                             sa WAL) — recu {autre:?}. Pour ecrire depuis une autre \
+                             base, ouvre une session sur elle et fais-y le CREATE",
+                            self.from_variable
+                        )));
+                    }
+                };
+
+                if self.store.get_node_labels(from_node_id).is_none() {
+                    return Err(OperatorError::Execution(format!(
+                        "la source '{}' (noeud {}) n'existe pas dans la base \
+                         courante — une arete inter-bases s'ecrit depuis la base \
+                         qui porte sa source",
+                        self.from_variable, from_node_id.0
+                    )));
+                }
+
+                let deja = self.merge
+                    && self
+                        .store
+                        .external_edges_from(from_node_id)
+                        .iter()
+                        .any(|e| {
+                            e.edge_type == self.edge_type
+                                && e.to_host.as_deref() == self.to_host.as_deref()
+                                && e.to_store == self.to_store
+                                && e.to_key == self.to_key
+                        });
+
+                if !deja
+                    && self
+                        .store
+                        .create_external_edge(
+                            from_node_id,
+                            &self.edge_type,
+                            self.to_host.as_deref(),
+                            &self.to_store,
+                            &self.to_key,
+                        )
+                        .is_none()
+                {
+                    return Err(OperatorError::Execution(
+                        "le backend de stockage courant ne materialise pas les \
+                         aretes inter-bases (registre externe absent) — base \
+                         substrate requise"
+                            .to_string(),
+                    ));
+                }
+
+                // La ligne passe inchangee.
+                for col_idx in 0..chunk.column_count() {
+                    if let (Some(src), Some(dst)) =
+                        (chunk.column(col_idx), builder.column_mut(col_idx))
+                    {
+                        if let Some(val) = src.get_value(row) {
+                            dst.push_value(val);
+                        } else {
+                            dst.push_value(Value::Null);
+                        }
+                    }
+                }
+                builder.advance_row();
+            }
+
+            Ok(Some(builder.finish()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn reset(&mut self) {
+        self.input.reset();
+    }
+
+    fn name(&self) -> &'static str {
+        "CreateExternalEdge"
     }
 }
 

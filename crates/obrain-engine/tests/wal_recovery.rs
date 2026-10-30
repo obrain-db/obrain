@@ -1,3 +1,5 @@
+//! Rejeu du WAL apres arret brutal : l'etat commite est retrouve, l'inacheve est ecarte.
+
 #![cfg(feature = "cypher")]
 //! Integration tests for WAL-based persistence and recovery.
 //!
@@ -227,6 +229,49 @@ mod wal {
                 .unwrap();
             assert_eq!(result.rows.len(), 1);
             assert_eq!(result.rows[0][0], Value::Int64(31), "SET should persist");
+            db.close().expect("close");
+        }
+    }
+
+    #[test]
+    fn test_query_remove_property_persists() {
+        // REMOVE n.x emet un RemoveNodeProperty dans le journal (et non un
+        // SetNodeProperty{Null}) : apres rejeu, le noeud ne porte plus la
+        // cle — meme forme qu'un noeud qui ne l'a jamais portee. Un rejeu
+        // qui restaurerait la cle (nulle ou non) fige l'ancien defaut.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("query_remove.obrain");
+
+        {
+            let db = ObrainDB::open(&path).expect("open");
+            let session = db.session();
+            session
+                .execute("INSERT (:Person {name: 'Alix', age: 30})")
+                .expect("insert");
+            session
+                .execute("MATCH (n:Person {name: 'Alix'}) REMOVE n.age")
+                .expect("remove");
+            db.close().expect("close");
+        }
+
+        {
+            let db = ObrainDB::open(&path).expect("reopen");
+            let session = db.session();
+            let result = session
+                .execute("MATCH (n:Person {name: 'Alix'}) RETURN keys(n)")
+                .unwrap();
+            assert_eq!(result.rows.len(), 1);
+            match &result.rows[0][0] {
+                Value::List(items) => assert!(
+                    !items.iter().any(|i| *i == Value::String("age".into())),
+                    "after WAL replay the removed key must stay removed, got {items:?}"
+                ),
+                other => panic!("keys(n) must return a list, got {other:?}"),
+            }
+            let val = session
+                .execute("MATCH (n:Person {name: 'Alix'}) RETURN n.age")
+                .unwrap();
+            assert_eq!(val.rows[0][0], Value::Null, "value of removed key reads NULL");
             db.close().expect("close");
         }
     }

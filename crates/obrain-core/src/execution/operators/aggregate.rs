@@ -173,7 +173,13 @@ impl AggregateState {
     }
 
     /// Updates the state with a new value.
-    pub(crate) fn update(&mut self, value: Option<Value>) {
+    ///
+    /// Rend `Err` quand l'accumulation est mathématiquement fausse et doit
+    /// REFUSER la requête : une somme entière qui déborde `i64` (arithmétique
+    /// gardée — même sémantique que `check_eval.rs` et que l'évaluateur de
+    /// `filter.rs` : jamais de panique, jamais d'enroulement, comportement
+    /// identique en debug et en release).
+    pub(crate) fn update(&mut self, value: Option<Value>) -> Result<(), OperatorError> {
         match self {
             AggregateState::Count(count) => {
                 *count += 1;
@@ -188,7 +194,13 @@ impl AggregateState {
             }
             AggregateState::SumInt(sum, count) => {
                 if let Some(Value::Int64(v)) = value {
-                    *sum += v;
+                    // Gardé : la somme enroulée passerait pour un résultat
+                    // légitime — personne ne vérifie un `sum` à la main.
+                    *sum = sum.checked_add(v).ok_or_else(|| {
+                        OperatorError::Execution(format!(
+                            "integer overflow in sum(): {sum} + {v}"
+                        ))
+                    })?;
                     *count += 1;
                 } else if let Some(Value::Float64(v)) = value {
                     // Convert to float sum, carrying count forward
@@ -205,7 +217,12 @@ impl AggregateState {
                     let hashable = HashableValue::from(v);
                     if seen.insert(hashable) {
                         if let Value::Int64(i) = v {
-                            *sum += i;
+                            // Même garde que SumInt ci-dessus.
+                            *sum = sum.checked_add(*i).ok_or_else(|| {
+                                OperatorError::Execution(format!(
+                                    "integer overflow in sum(DISTINCT): {sum} + {i}"
+                                ))
+                            })?;
                             *count += 1;
                         } else if let Value::Float64(f) = v {
                             // Convert to float distinct: move the seen set instead of cloning
@@ -266,12 +283,19 @@ impl AggregateState {
                     }
                 }
             }
+            // MIN/MAX délogent leur incumbent par l'ORDRE TOTAL canonique.
+            // L'ancien `compare_values` partiel rendait `None` entre types :
+            // le premier venu restait champion à vie et min() d'une colonne
+            // chaîne pouvait rendre n'importe quoi selon l'ordre d'arrivée.
+            // NULL est ignoré (il n'est ni un minimum ni un maximum).
             AggregateState::Min(min) => {
-                if let Some(v) = value {
+                if let Some(v) = value
+                    && !v.is_null()
+                {
                     match min {
                         None => *min = Some(v),
                         Some(current) => {
-                            if compare_values(&v, current) == Some(std::cmp::Ordering::Less) {
+                            if value_cmp::comparer_total(&v, current) == std::cmp::Ordering::Less {
                                 *min = Some(v);
                             }
                         }
@@ -279,11 +303,15 @@ impl AggregateState {
                 }
             }
             AggregateState::Max(max) => {
-                if let Some(v) = value {
+                if let Some(v) = value
+                    && !v.is_null()
+                {
                     match max {
                         None => *max = Some(v),
                         Some(current) => {
-                            if compare_values(&v, current) == Some(std::cmp::Ordering::Greater) {
+                            if value_cmp::comparer_total(&v, current)
+                                == std::cmp::Ordering::Greater
+                            {
                                 *max = Some(v);
                             }
                         }
@@ -359,6 +387,7 @@ impl AggregateState {
                 // Single-value update is a no-op for bivariate state.
             }
         }
+        Ok(())
     }
 
     /// Updates a bivariate (two-variable) aggregate state with a pair of values.
@@ -600,7 +629,8 @@ impl AggregateState {
     }
 }
 
-use super::value_utils::{compare_values, value_to_f64};
+use super::value_utils::value_to_f64;
+use obrain_common::types::value_cmp;
 
 /// Converts a Value to its string representation for GROUP_CONCAT.
 fn agg_value_to_string(val: &Value) -> String {
@@ -623,6 +653,21 @@ enum GroupKeyPart {
     Null,
     Bool(bool),
     Int64(i64),
+    /// Flottant encodé par son motif binaire (`f64::to_bits`), qui est
+    /// injectif : le regroupement par bits est donc exact, et la variante
+    /// dédiée permet à `to_values` de RESTITUER la vraie valeur (avant, le
+    /// motif était rangé dans `Int64` et ressortait en entier brut).
+    ///
+    /// Conséquences documentées de l'égalité PAR BITS :
+    /// * NaN : deux NaN de même motif binaire forment UN groupe (restitué
+    ///   NaN) ; des NaN de motifs différents forment des groupes distincts.
+    ///   IEEE 754 dit NaN ≠ NaN, mais un GROUP BY qui ne fusionne jamais
+    ///   les NaN identiques dupliquerait les lignes à l'infini — le choix
+    ///   par bits est celui de DuckDB/Postgres (NaN groupés ensemble).
+    /// * ±0.0 : +0.0 et -0.0 ont des motifs distincts et forment DEUX
+    ///   groupes, chacun restitué fidèlement. 0.0 == -0.0 en IEEE, mais la
+    ///   clé restituée reste exactement la valeur d'entrée du groupe.
+    Float64Bits(u64),
     String(ArcStr),
 }
 
@@ -639,7 +684,7 @@ impl GroupKey {
                         Value::Null => GroupKeyPart::Null,
                         Value::Bool(b) => GroupKeyPart::Bool(b),
                         Value::Int64(i) => GroupKeyPart::Int64(i),
-                        Value::Float64(f) => GroupKeyPart::Int64(f.to_bits() as i64),
+                        Value::Float64(f) => GroupKeyPart::Float64Bits(f.to_bits()),
                         Value::String(s) => GroupKeyPart::String(s.clone()),
                         _ => GroupKeyPart::String(ArcStr::from(format!("{v:?}"))),
                     })
@@ -656,6 +701,7 @@ impl GroupKey {
                 GroupKeyPart::Null => Value::Null,
                 GroupKeyPart::Bool(b) => Value::Bool(*b),
                 GroupKeyPart::Int64(i) => Value::Int64(*i),
+                GroupKeyPart::Float64Bits(bits) => Value::Float64(f64::from_bits(*bits)),
                 GroupKeyPart::String(s) => Value::String(s.clone()),
             })
             .collect()
@@ -710,6 +756,8 @@ impl HashAggregateOperator {
     /// Performs the aggregation.
     fn aggregate(&mut self) -> Result<(), OperatorError> {
         while let Some(chunk) = self.child.next()? {
+            super::verifier_annulation()?;
+
             for row in chunk.selected_indices() {
                 let key = GroupKey::from_row(&chunk, row, &self.group_columns);
 
@@ -756,21 +804,21 @@ impl HashAggregateOperator {
 
                     // For COUNT without DISTINCT, always update. For others, skip nulls.
                     match (agg.function, agg.distinct) {
-                        (AggregateFunction::Count, false) => states[i].update(None),
+                        (AggregateFunction::Count, false) => states[i].update(None)?,
                         (AggregateFunction::Count, true) => {
                             // COUNT DISTINCT needs the value to track unique values
                             if value.is_some() && !matches!(value, Some(Value::Null)) {
-                                states[i].update(value);
+                                states[i].update(value)?;
                             }
                         }
                         (AggregateFunction::CountNonNull, _) => {
                             if value.is_some() && !matches!(value, Some(Value::Null)) {
-                                states[i].update(value);
+                                states[i].update(value)?;
                             }
                         }
                         _ => {
                             if value.is_some() && !matches!(value, Some(Value::Null)) {
-                                states[i].update(value);
+                                states[i].update(value)?;
                             }
                         }
                     }
@@ -920,6 +968,8 @@ impl Operator for SimpleAggregateOperator {
 
         // Process all input
         while let Some(chunk) = self.child.next()? {
+            super::verifier_annulation()?;
+
             for row in chunk.selected_indices() {
                 for (i, agg) in self.aggregates.iter().enumerate() {
                     // Binary set functions: read two column values
@@ -947,21 +997,21 @@ impl Operator for SimpleAggregateOperator {
                     };
 
                     match (agg.function, agg.distinct) {
-                        (AggregateFunction::Count, false) => self.states[i].update(None),
+                        (AggregateFunction::Count, false) => self.states[i].update(None)?,
                         (AggregateFunction::Count, true) => {
                             // COUNT DISTINCT needs the value to track unique values
                             if value.is_some() && !matches!(value, Some(Value::Null)) {
-                                self.states[i].update(value);
+                                self.states[i].update(value)?;
                             }
                         }
                         (AggregateFunction::CountNonNull, _) => {
                             if value.is_some() && !matches!(value, Some(Value::Null)) {
-                                self.states[i].update(value);
+                                self.states[i].update(value)?;
                             }
                         }
                         _ => {
                             if value.is_some() && !matches!(value, Some(Value::Null)) {
-                                self.states[i].update(value);
+                                self.states[i].update(value)?;
                             }
                         }
                     }

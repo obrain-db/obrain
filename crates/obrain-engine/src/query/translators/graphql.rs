@@ -271,6 +271,7 @@ impl GraphQLTranslator {
             variable: var.clone(),
             label: Some(capitalize_first(type_name)),
             input: None,
+            pushdown_hint: None,
         });
 
         // Apply filter
@@ -282,6 +283,7 @@ impl GraphQLTranslator {
             properties,
             replace: false, // Merge properties, don't replace all
             is_edge: false,
+            remove: false,
             input: Box::new(plan),
         });
 
@@ -344,6 +346,7 @@ impl GraphQLTranslator {
             variable: var.clone(),
             label: Some(capitalize_first(type_name)),
             input: None,
+            pushdown_hint: None,
         });
 
         // Apply filter
@@ -368,6 +371,7 @@ impl GraphQLTranslator {
             variable: var.clone(),
             label: Some(capitalize_first(&field.name)),
             input: None,
+            pushdown_hint: None,
         });
 
         // Extract special arguments (pagination, orderBy) from regular filters

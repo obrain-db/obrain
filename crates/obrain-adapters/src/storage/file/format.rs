@@ -12,7 +12,7 @@
 //! The two database headers alternate writes for crash safety. The one
 //! with the higher [`DbHeader::iteration`] counter is the current state.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 

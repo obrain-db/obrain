@@ -150,6 +150,7 @@ impl ApplyOperator {
 impl Operator for ApplyOperator {
     fn next(&mut self) -> OperatorResult {
         loop {
+            super::verifier_annulation()?;
             match &mut self.state {
                 ApplyState::Init => match self.outer.next()? {
                     Some(chunk) => {
