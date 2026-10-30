@@ -1,0 +1,130 @@
+SPHERE: e007a2_r7_r8_forensique_binaire
+RESUME: La sphere R7 R7B R8 a etabli par le desassemblage et par la mesure que la divergence entre le noyau natif k_full et le banc R6 ne vient ni des adresses ni des valeurs entieres ni de la frontiere entier vers flottant mais de l ordre des additions flottantes entre contributions kbx. R7 a montre des masques de chargement byte identiques md5 87ad784d739a avec 32 IDP.4A de part et d autre et un reordonnancement des chaines entieres 19 chaines de longueur maximale 4 contre 16 chaines de longueur 7 provoque par les regions de convergence BSSY BSYNC passees de 2 a 6. R7B a retire deux conclusions de R7 les valeurs entieres different et ce n est pas une question de tolerance puis a prouve par mesure directe que la partition entier vers flottant change avec 1 conversion native contre 3 dans R6 et que la racine B de R6 vaut zero par le mode LOP3 0xc0. R8 a retire l artefact span_count et done ce qui ramene la structure et la frontiere entier vers flottant au natif et la chaine entiere maximale de 7 a 4 mais le desaccord de sortie reste inchange a 1875 lignes sur 5120 avec une erreur absolue maximale nulle. Restent ouverts le gate d equivalence native de R8 en echec 1875 lignes au lieu de zero la preuve binaire de reassociation flottante la capture du cumul flottant par kbx non construite la capture des racines entieres non construite le defaut 38 table d armes sans SHA le defaut 37 a cause racine partielle les defauts de plomberie 28 et 29 non assigne le blocage des mesures de temps et de la voie epsilon ainsi que Q0 comme perimetre de cette sphere. Le rapport final 007B N4 re classe R7 en infrastructure de capture graphique qualifiee et traite un autre defaut la reference q8_1, hors du perimetre de cette sphere.
+NOEUDS:
+[PROUVE] e007a2_r7_status :: R7 clos avec cause racine identifiee dans le graphe de dependance des IDP et non par reassociation flottante :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_r7_freeze_r6 :: R6 gele structure proche du natif delta statique plus 48 registres 39 sans spill boucle presente sans deroulement complet :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_p48_mismatch :: Sorties R6 P48 contre K_FULL divergentes sur 1875 lignes de 5120 :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_r7_fidelity_fail :: Gate de fidelite R6 en echec et resultat de temps R6 mis en quarantaine non promu :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_r7_objet_unique :: Les deux noyaux sont dans un meme objet compile dans une meme session avec dumps SASS conserves de 2113 et 2161 lignes :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_address_mask_identical :: Gate adresse PASS masques de chargement byte identiques md5 87ad784d739a pour poids activations et echelle :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_idp_count_identical :: 32 IDP.4A comptes dans le noyau natif comme dans le noyau R6 :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_idp_chains_differ :: 19 chaines d accumulation natives de longueur maximale 4 contre 16 chaines R6 de longueur maximale 7 :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_cfg_bssy_regions :: Le double test runtime porte les regions de reconvergence BSSY BSYNC de 2 a 6 et ajoute un BRA :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_r7_root_cause_cfg :: Cause racine R6 attribuee aux regions de convergence issues des tests runtime qui changent l ordonnancement des IDP :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_float_dag_differs :: DAG flottant non identique avec FFMA de 1 a 2 FMUL de 0 a 1 I2F de 1 a 3 consequence du graphe entier :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_warp_reduction_identical :: Ordre de reduction de warp identique 5 SHFL.DOWN et 9 FADD dans les deux noyaux :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[RETIRE] e007a2_int_partial_sums_yes :: R7 conclut que les sommes partielles entieres different conclusion retiree par R7B :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[RETIRE] e007a2_not_tolerance_claim :: R7 affirme que la divergence n est pas une question de tolerance numerique affirmation retiree par R7B :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[RETIRE] e007a2_float_reassoc_rejected :: R7 rejette l hypothese de reassociation flottante statut REJECTED retire par R7B puis par R8 :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[REFUTE] e007a2_r8a_float_order_wrong :: R8A force native float accumulation order declaree mauvaise cible car la divergence ne nait pas dans l ordre flottant :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[OUVERT] e007a2_r8a_feasibility_open :: Faisabilite de contraindre l ordre entier des IDP non etablie et cible non ouverte apres R7B :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_defect_35 :: Defaut de harnais numerote 35 resolu par la structure :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_defect_36 :: Defaut de harnais numerote 36 resolu par la structure :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PARTIEL] e007a2_defect_37 :: Defaut de harnais numerote 37 divergence de la sortie R6 P48 declare explique par R7 puis localise a la frontiere I2F et reste ouvert avec cause racine partielle en R8 :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_defect_38 :: Defaut de harnais numerote 38 table d armes mal cablee reste ouvert sans table auto verifiee et sans SHA256 produit :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_defect_39 :: Defaut de harnais numerote 39 resolu :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[OUVERT] e007a2_plumbing_29 :: Defaut de plomberie numerote 29 non assigne dans les trois rapports de la sphere :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_plumbing_count_28 :: Compteur de defauts de plomberie fige a 28 dans les trois rapports :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[OUVERT] e007a2_timing_gates_closed :: Mesures de temps R6 et multiplicite kbx interdites et voie epsilon relachee bloquee :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_kbx_hypothesis_not_tested :: Hypothese de multiplicite dynamique du corps de boucle kbx non testee valablement :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_fixed_floor_unexplained :: Plancher fixe majeur reste non explique :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_compute_bound_not_proven :: Caractere compute bound et limitation par le debit d emission declares non prouves :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_codegen_sensitivity :: Sensibilite du resultat numerique a la perturbation de codegen fortement soutenue puis prouvee par le retrait de l artefact :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_sensitivity_engine006 :: Explication des resultats d ENGINE-006 par cette sensibilite declaree possible mais non prouvee :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_engine007b_blocked :: ENGINE-007B declare bloque dans les trois rapports de la sphere :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_engine007c_blocked :: ENGINE-007C declare bloque dans les trois rapports de la sphere :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_no_sparsity :: Aucune sparsite aucun low rank aucun pruning dans cette passe :: docs/ENGINE-007A-R7-BINARY-ARITHMETIC-FORENSIC.md
+[PROUVE] e007a2_r7b_status :: R7B clos avec changement de partition prouve par desassemblage et valeurs entieres non capturees :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_int_partition_change_proven :: La partition entier vers flottant change mesuree directement natif 1 racine entiere contre 2 dans R6 :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_i2f_boundary_1_vs_3 :: Dernier IDP indexe 987 contre 999 et conversions entier vers flottant aux offsets plus 2 contre plus 2 plus 14 plus 45 :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_root_b_zero_lop3 :: Racine B de R6 vaut zero par le mode LOP3 0xc0 qui annule les sources et son terme flottant est exactement nul :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_third_i2f_not_accum :: La troisieme conversion de R6 n est pas un terme d accumulation elle vient d un parametre de noyau et d un FMUL supplementaires :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PARTIEL] e007a2_int_assoc_equality :: Egalite des valeurs entieres par associativite et par le mode LOP3 sans capture des valeurs le statut NOT_PROVEN est conserve au ledger :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[OUVERT] e007a2_int_root_capture_not_built :: Kernel de capture des racines entieres non construit compteur de desaccord minimum et maximum non mesures :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[REFUTE] e007a2_backward_trace_invalid :: Methode de tracage arriere par derniere ecriture de registre invalide sur le SASS de ptxas qui reutilise les registres :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[OUVERT] e007a2_alpha_trace_not_obtained :: Trace feuille IDP vers racine entiere apres alpha renaming non obtenue :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[OUVERT] e007a2_debug_kernel_perf_invalid :: Donnees de performance du kernel de debug declarees invalides et non mesurees :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PARTIEL] e007a2_num_root_cause_partial :: Cause racine numerique ramenee a l ordre des operations flottantes mais le corps de R7B la declare encore non pleinement localisee :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_terme_b_perturbation :: Le terme nul de R6 explique la divergence par la perturbation de codegen et non par sa valeur :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_r8_geste_prescrit :: R7B prescrit de retirer l artefact d instrumentation puis de retester la fidelite de P48 avant toute autre cible :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[OUVERT] e007a2_r8_targets_not_opened :: Les deux cibles R8 ordre flottant force et ordre entier des IDP restent non ouvertes apres R7B :: docs/ENGINE-007A-R7B-IDP-I2F-BOUNDARY.md
+[PROUVE] e007a2_r8_status :: R8 clos artefact retire structure convergee et desaccord de sortie inchange :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_artifact_removed :: Parametre span_count et compteur done retires integralement sans keepalive de remplacement :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_r8_artifact_gate_pass :: Gate artefact PASS avec I2F 1 UI2F 0 FMUL 0 FFMA 1 et aucun LDCU de parametre :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_r8_structure_gate_pass :: Gate de structure PASS avec 2145 lignes SASS 65 LDG 32 IDP 39 registres et 0 spill :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_chain_max_back_to_4 :: Longueur maximale de chaine entiere ramenee de 7 a 4 comme le natif mais nombre de chaines 24 contre 19 :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_mismatch_unchanged :: Desaccord P48 contre K_FULL inchange a 1875 lignes sur 5120 sans correspondance bit a bit :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_max_abs_output_error_zero :: Erreur absolue maximale nulle la difference reste sous la resolution du flottant :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_r8_equivalence_gate_fail :: Gate d equivalence native de R8 en echec avec 1875 lignes divergentes au lieu de zero :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_three_hypotheses_eliminated :: Quatre hypotheses eliminees par la mesure adresses valeurs entieres frontiere entier vers flottant et perturbation du planificateur entier :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_float_add_order_residue :: Residu de divergence localise a l ordre des additions flottantes entre contributions kbx apres conversion et mise a l echelle :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_zero_instr_codegen_active :: Une instrumentation de valeur nulle peut etre active au niveau du codegen un noop de source n est pas un noop binaire :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_artifact_caused_chain_7 :: Le multiplicateur par zero avait cree une racine une conversion un FMUL deux regions de convergence et porte la chaine entiere de 4 a 7 :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_codegen_perturbation_not_removed :: Retrait complet de la perturbation de codegen declare NON il reste deux regions de convergence inherentes au test runtime :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_debug_capture_kbx_not_built :: Kernel de debug capturant le cumul flottant apres chaque kbx non construit dans cette passe :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[OUVERT] e007a2_float_reassoc_open :: Preuve binaire de reassociation flottante non acquise faute de racines et de chaines entieres identiques :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PROUVE] e007a2_no_source_modification :: Aucune modification de source dans la passe R8 microbench autonome avec baseline runtime restauree et SHA verifies :: docs/ENGINE-007A-R8-ARTIFACT-REMOVAL.md
+[PARTIEL] e007a2_r7_statut_final :: Ledger final de 007B re classe R7 en infrastructure de capture graphique qualifiee et soumise sans reprendre la conclusion de cause racine :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+e007a2_r7_status -> e007a2_r7_root_cause_cfg [DEMONTRE] le statut clos de R7 repose sur la cause racine de topologie de controle
+e007a2_r7_objet_unique -> e007a2_address_mask_identical [DEMONTRE] les deux noyaux du meme objet permettent la comparaison des masques de chargement
+e007a2_address_mask_identical -> e007a2_idp_chains_differ [OUVRE] les entrees etant exclues la recherche se deplace vers le graphe de dependance des IDP
+e007a2_cfg_bssy_regions -> e007a2_idp_chains_differ [DEMONTRE] les regions de convergence ajoutees repartitionnent les chaines d accumulation
+e007a2_idp_chains_differ -> e007a2_r7_root_cause_cfg [DEMONTRE] 19 chaines de longueur maximale 4 contre 16 chaines de longueur 7
+e007a2_idp_chains_differ -> e007a2_int_partial_sums_yes [DEMONTRE] R7 en deduit que les sommes entieres different
+e007a2_float_dag_differs -> e007a2_r7_root_cause_cfg [DEPEND] la difference flottante est presentee comme une consequence du graphe entier
+e007a2_warp_reduction_identical -> e007a2_r7_root_cause_cfg [DEMONTRE] la reduction etant identique elle est exclue comme source de divergence
+e007a2_int_partition_change_proven -> e007a2_int_partial_sums_yes [RETIRE] R7B retire la conclusion de R7 sur les valeurs entieres
+e007a2_i2f_boundary_1_vs_3 -> e007a2_int_partition_change_proven [DEMONTRE] 1 conversion native contre 3 dans R6 aux offsets plus 2 et plus 2 plus 14 plus 45
+e007a2_root_b_zero_lop3 -> e007a2_int_partition_change_proven [DEMONTRE] la deuxieme racine entiere vaut zero par le mode LOP3 0xc0
+e007a2_root_b_zero_lop3 -> e007a2_int_partial_sums_yes [RETIRE] une racine de valeur nulle ne peut pas changer la valeur entiere
+e007a2_int_assoc_equality -> e007a2_int_partial_sums_yes [RETIRE] l associativite entiere et le mode LOP3 infirment l interpretation de R7
+e007a2_int_assoc_equality -> e007a2_int_root_capture_not_built [OUVRE] l egalite repose sur un argument et non sur une capture de valeurs
+e007a2_third_i2f_not_accum -> e007a2_root_b_zero_lop3 [DEMONTRE] la troisieme conversion vient du parametre de noyau et du FMUL parasites
+e007a2_backward_trace_invalid -> e007a2_alpha_trace_not_obtained [DEMONTRE] la remontee par derniere ecriture echoue sur le SASS de ptxas
+e007a2_terme_b_perturbation -> e007a2_num_root_cause_partial [DEMONTRE] le terme nul explique la divergence par perturbation de codegen
+e007a2_num_root_cause_partial -> e007a2_float_reassoc_open [OUVRE] le mecanisme flottant reste la seule piste sans preuve binaire
+e007a2_float_reassoc_open -> e007a2_float_reassoc_rejected [RETIRE] R7B puis R8 retirent le statut REJECTED de R7
+e007a2_r7b_status -> e007a2_not_tolerance_claim [RETIRE] R7B retire l affirmation de R7 et requalifie le blocage epsilon en raison generale
+e007a2_r8_targets_not_opened -> e007a2_r8a_float_order_wrong [REMPLACE] R7B ferme les deux cibles R8 et ecarte la cible flottante proposee
+e007a2_r8a_feasibility_open -> e007a2_r8a_float_order_wrong [DEPEND] la cible entiere proposee par R7 reste sans faisabilite etablie
+e007a2_r8_geste_prescrit -> e007a2_artifact_removed [OUVRE] le premier geste prescrit par R7B est le retrait de l artefact
+e007a2_r8_geste_prescrit -> e007a2_debug_capture_kbx_not_built [OUVRE] le second geste de R7B la capture des racines reste en reserve et non fait
+e007a2_artifact_removed -> e007a2_r8_artifact_gate_pass [DEMONTRE] les compteurs I2F UI2F FMUL FFMA et LDCU reviennent a ceux du natif
+e007a2_artifact_removed -> e007a2_chain_max_back_to_4 [DEMONTRE] la chaine entiere maximale revient de 7 a 4
+e007a2_artifact_removed -> e007a2_zero_instr_codegen_active [DEMONTRE] retirer un multiplicateur par zero ramene la structure au natif
+e007a2_zero_instr_codegen_active -> e007a2_codegen_sensitivity [DEMONTRE] c est la preuve la plus nette de la sensibilite au codegen
+e007a2_artifact_caused_chain_7 -> e007a2_chain_max_back_to_4 [DEMONTRE] le multiplicateur par zero avait porte la chaine entiere de 4 a 7
+e007a2_r8_structure_gate_pass -> e007a2_r8_status [DEMONTRE] structure convergee vers le natif hors deux regions de convergence
+e007a2_mismatch_unchanged -> e007a2_r8_equivalence_gate_fail [DEMONTRE] 1875 sorties sur 5120 divergent encore du natif
+e007a2_mismatch_unchanged -> e007a2_float_add_order_residue [DEMONTRE] la structure etant native il reste l ordre des additions flottantes
+e007a2_max_abs_output_error_zero -> e007a2_float_add_order_residue [DEMONTRE] la difference est sous la resolution du flottant donc dans les derniers bits
+e007a2_three_hypotheses_eliminated -> e007a2_float_add_order_residue [DEMONTRE] quatre hypotheses eliminees resserrent la divergence restante
+e007a2_float_add_order_residue -> e007a2_debug_capture_kbx_not_built [OUVRE] la localisation exige la capture du cumul flottant par kbx
+e007a2_float_add_order_residue -> e007a2_float_reassoc_open [OUVRE] preuve binaire non acquise faute de chaines entieres identiques
+e007a2_codegen_perturbation_not_removed -> e007a2_r8_equivalence_gate_fail [DEPEND] deux regions de convergence residuelles persistent
+e007a2_r8_status -> e007a2_no_source_modification [DEMONTRE] passe R8 en microbench autonome sans modification de source
+e007a2_r7_root_cause_cfg -> e007a2_defect_37 [DEMONTRE] R7 declare le defaut 37 explique par la topologie de controle
+e007a2_i2f_boundary_1_vs_3 -> e007a2_defect_37 [OUVRE] R7B localise le defaut 37 a la frontiere I2F et le laisse ouvert
+e007a2_r8_status -> e007a2_defect_37 [REMPLACE] R8 remplace le statut du defaut 37 par resolu structurellement avec cause racine partielle
+e007a2_defect_38 -> e007a2_timing_gates_closed [OUVRE] le defaut 38 ouvert interdit toute campagne de temps
+e007a2_defect_37 -> e007a2_timing_gates_closed [OUVRE] les deux defauts ouverts interdisent la mesure de temps R6
+e007a2_p48_mismatch -> e007a2_r7_fidelity_fail [DEMONTRE] le desaccord de sortie est la cause de l echec du gate de fidelite
+e007a2_r7_fidelity_fail -> e007a2_engine007b_blocked [DEPEND] fidelite en echec et temps en quarantaine bloquent 007B
+e007a2_float_reassoc_open -> e007a2_engine007b_blocked [DEPEND] absence de preuve binaire de reassociation maintient le blocage
+e007a2_timing_gates_closed -> e007a2_engine007b_blocked [DEPEND] la voie epsilon relachee reste bloquee
+e007a2_engine007b_blocked -> e007a2_engine007c_blocked [DEPEND] 007C depend de 007B
+e007a2_kbx_hypothesis_not_tested -> e007a2_timing_gates_closed [DEPEND] aucune campagne de temps autorisee pour trancher la multiplicite kbx
+e007a2_fixed_floor_unexplained -> e007a2_engine007b_blocked [DEPEND] un plancher fixe majeur reste inexplique
+e007a2_compute_bound_not_proven -> e007a2_engine007b_blocked [DEPEND] compute bound et debit d emission non prouves
+e007a2_codegen_sensitivity -> e007a2_sensitivity_engine006 [OUVRE] l explication des resultats d ENGINE-006 reste possible et non prouvee
+e007a2_plumbing_count_28 -> e007a2_plumbing_29 [OUVRE] 28 defauts de plomberie comptes et le suivant non assigne
+e007a2_debug_kernel_perf_invalid -> e007a2_debug_capture_kbx_not_built [DEPEND] les donnees de performance d un kernel de debug sont invalides et non mesurees
+e007a2_r7_statut_final -> e007a2_r7_status [REMPLACE] le ledger final re classe le statut de R7 sans reprendre la conclusion de cause racine
+e007a2_r7b_status -> e007a2_int_partition_change_proven [DEMONTRE] le statut clos de R7B repose sur la partition mesuree par desassemblage
+e007a2_r7_status -> e007a2_defect_35 [DEMONTRE] R7 cloture le defaut 35 par la structure
+e007a2_r7_status -> e007a2_defect_36 [DEMONTRE] R7 cloture le defaut 36 par la structure
+e007a2_r7_status -> e007a2_defect_39 [DEMONTRE] R7 cloture le defaut 39
+e007a2_idp_count_identical -> e007a2_idp_chains_differ [DEMONTRE] un compte identique impose de comparer la topologie des chaines et non leur nombre
+e007a2_r7_freeze_r6 -> e007a2_p48_mismatch [DEMONTRE] le gel de R6 fournit la mesure de desaccord de sortie
+e007a2_no_sparsity -> e007a2_engine007b_blocked [DEPEND] aucune piste de sparsite low rank ou pruning exploree dans la sphere

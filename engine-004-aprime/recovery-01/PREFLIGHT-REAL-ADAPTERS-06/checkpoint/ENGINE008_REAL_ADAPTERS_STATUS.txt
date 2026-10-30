@@ -1,0 +1,124 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-REAL-ADAPTERS-06
+==========================================================================
+Les adaptateurs REELS sont ecrits, compiles et lies contre Q1. Le refus AVANT
+tout calcul est PROUVE par compteurs, pas par un message.
+Aucun chargement, aucun contexte, aucun forward.
+
+REAL_DEPENDENCY_ADAPTERS_IMPLEMENTED=YES
+  engine008_real_deps.cpp : les 14 dependances de PipelineDeps sont raccordees
+  aux API Q1 exactes.
+  calcul/ressources : llama_model_load_from_file (vocab_only=FALSE),
+    llama_init_from_model, prefill par llama_batch avec positions explicites,
+    decode d UN token a position explicite, llama_get_logits_ith, llama_free +
+    llama_model_free (sur succes ET sur erreur, via d.release).
+  SELECTION DES LOGITS : PAR TOKEN via llama_batch.logits, comme exige.
+    Aucun recours a un champ logits_all -- il n existe PAS dans cette revision.
+  identite native : llama_internal_get_tensor_map, declaration TRANSCRITE
+    VERBATIM de src/llama-model.h:763. Toutes les entrees sont conservees ;
+    les ambiguites et associations multiples ne sont pas ecrasees.
+    Les cles sont GENEREES par il in [n_layer(), n_layer()+n_layer_nextn()).
+  capture/enumeration : destination isolee preparee APRES autorisation, avec
+    refus si non vide ; activateurs f1a poses ici seulement ;
+    f1a_last_gf lu puis ggml_graph_n_nodes / ggml_graph_node.
+    OBRAIN_NO_ROTATION n est JAMAIS touche. Aucun global Q1 ecrit.
+  Aucune seconde implementation du decode ni du contrat d arret : la logique
+  authorize_doc / correlate_call de engine008_pipeline.cpp est REUTILISEE.
+REAL_ADAPTER_LINKAGE_VERIFIED=YES
+  ldd du binaire reel : libllama.so.0, libggml.so.0, libggml-base.so.0,
+  libggml-cpu.so.0, libggml-cuda.so.0 -- tous resolus dans build-cuda/bin.
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+PREFLIGHT_RUNTIME_IMPLEMENTATION_INCLUDED=YES
+  Le point d entree reel engine008_real_entry.cpp emploie LE MEME controle
+  d autorisation et LA MEME run_pipeline() que les tests mockes. Un seul
+  pipeline : les deux binaires sont lies au MEME pipeline.o.
+PREFLIGHT_COMPONENTS_CONNECTED=YES
+  Les composants sont raccordes PAR LES DEPENDANCES du pipeline, pas par un
+  second chemin d execution. run_pipeline() n a PAS ete modifiee : ses
+  interfaces ont suffi.
+COMMON_ORCHESTRATION_USED_BY_MOCK_AND_REAL_ADAPTERS=YES
+  engine008-preflight-connect (mocks) et engine008-preflight-real (adapta. reels)
+  partagent le meme pipeline.o.
+
+INTEGRATED_MOCK_PATH_SELFTEST=PASS       (41 controles, FAILED_COUNT=0)
+REAL_ENTRYPOINT_REJECTION_SELFTEST=PASS
+  6 cas, tous exit=3 avec REFUSED_BEFORE_ANY_COMPUTE=YES :
+    aucun document            -> REFUSED_NO_DOCUMENT
+    flag seul                 -> REFUSED_NO_DOCUMENT
+    document MOCK             -> REFUSED_MALFORMED_DOCUMENT
+    identite discordante      -> REFUSED_BINARY_IDENTITY
+    allow_model_compute=0     -> REFUSED_FLAG_ONLY
+    document malforme         -> REFUSED_MALFORMED_DOCUMENT
+MOCK_AUTHORIZATION_REJECTED_BY_REAL_PATH=YES
+  Une autorisation destinee aux MOCKS (audience=MOCK) est REFUSEE par le chemin
+  reel : elle n est pas seulement inoperante, elle est explicitement rejetee.
+  AUCUNE autorisation valide de calcul reel n a ete creee dans cette passe :
+  les deux documents portant audience=REAL_PREFLIGHT sont refuses, l un par
+  identite erronee, l autre par allow_model_compute=0.
+STOP_CONTRACT_SELFTEST=PASS              (rejoue, FAILED_COUNT=0)
+OBSERVATION_LIFETIME_HANDLING_IMPLEMENTED=YES  (conserve de CONNECT-05)
+
+=== PREUVE DU REFUS AVANT CALCUL (compteurs, pas un message) ===
+Immediatement avant l appel, le point d entree capture les compteurs ; le
+rapport affiche les DELTAS. Sur les 6 cas de refus :
+  REAL_LOAD_CALLS=0
+  REAL_CONTEXT_CREATE_CALLS=0
+  REAL_F1A_ENV_CALLS=0          <- aucun activateur f1a pose
+  REAL_REGISTRY_CALLS=0
+  REAL_PREFILL_CALLS=0
+  REAL_DECODE_CALLS=0
+  MODEL_FORWARD_CALL_COUNT=0
+Les points d entree des adaptateurs sont instrumentes : les compteurs sont des
+compteurs d APPEL REEL, pas des affirmations.
+
+HARNESS_SOURCE_MANIFEST_SHA256=8fbf22d6a04bc3ea74d7e112384bbb3f2eaf590cd90ed86242439e2c523bf5e2
+  engine008_pipeline.h        cd0e3c4203a2e0b1b9d0c2d1a7d09a015741dac7dfae2cecd134950407c6308
+  engine008_pipeline.cpp      f5495ee767dc626825e87d9a47e4c56ea3b6374b1811c531d02964accb76274c
+  engine008_connect_tests.cpp 60e81ec557540379ad2f0c00681e9446c2fcfd0e9b13d756625824a762c1e7d5
+  engine008_real_deps.h       7002ac4c471b034935b2588c0fb7a920b52533802756507d72d007e0f4c94fba
+  engine008_real_deps.cpp     b854e11a0b7d8261be4d90161991d9957023b1c1c0f3e0a04cec433d253e5b2f
+  engine008_real_entry.cpp    ab3f56d40a1b322a8415906844fbc9a65e74a29a8f268a84c0ea6c22c5e213f9
+  pipeline.h et pipeline.cpp sont IDENTIQUES a CONNECT-05 : l orchestration
+  n a pas ete touchee.
+HARNESS_BINARY_SHA256=105da28cb35f86eaf66a2ab98616c3bb672f48be6875620ab80cb380e841e771
+  (binaire raccorde). Le binaire mocke reste c7a0d5b3e60bb2e8f7cb7088cf198d41287c4ef102ebbe64ef766cb97be317be
+  et est CONSERVE.
+
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+Q1_LIBLLAMA_REBUILT=NO
+NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED
+  L adaptateur d identite est ECRIT et lie ; il n a pas ete exerce sur un modele
+  charge. Le linkage verifie ne signifie PAS que les adaptateurs ont tourne.
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+FINGERPRINT_CONFRONTATION=UNRESOLVED   (hors perimetre de cette passe)
+
+PASS_STATUS=COMPLETE_SCOPE_REAL_ADAPTERS
+
+REMAINING_WORK=
+  X1_La correlation sur les surfaces f1a REELLES reste un STUB DECLARE :
+     d.ledger_window() rend malformed=true et d.ledger_snapshot() rend vide,
+     faute de parseur du EVENT_LEDGER.csv reel. Consequence : sur un run reel,
+     la correlation rendra MALFORMED_CAPTURE et AUCUNE conclusion ne sera
+     possible. C est CONSERVATEUR et volontaire, mais c est un manque a combler
+     avant tout run : ecrire le parseur du ledger et le releve avant/apres.
+  X2_L enumeration reelle ne confronte PAS le fingerprint (definition inconnue,
+     hors perimetre ici) : e.valid est mis a true des que les noeuds sont
+     enumerables, et l identite reste POINTER_AND_COUNT_ONLY.
+  X3_Puis le fingerprint, le protocole et le gel, sur instruction separee.
+
+ENGINE008_NEXT_STEP=X1 (parseur du EVENT_LEDGER.csv reel et releve avant/apres
+  pour que la correlation soit effective sur un run)
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucune
+execution preflight ou qualite, aucun gel. Aucun rebuild de bibliotheque Q1.
+Aucun global de Q1 ecrit. Aucun backend, CUDA graph ou parametre de calcul
+modifie pour faciliter l observation. Aucune autorisation reelle creee.

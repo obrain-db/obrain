@@ -1,0 +1,130 @@
+ENGINE-008 -- CLOTURE DE LA VALIDATION DU CACHE SERVEUR
+==========================================================================
+Le hit pur est CONSERVE et RE-MESURE avec le manifeste en place.
+Deux des trois points demandes sont CLOS ; le troisieme est DECLARE OUVERT.
+
+=== 1. VERDICTS CORRIGES ET SEPARES (depuis les reponses brutes) ===
+TEXT_MATCH=YES
+  CONTROL et RESTORED rendent la MEME chaine : '.\n</think>\n\nOK.'
+TOKEN_IDS_MATCH=NOT_ESTABLISHED
+  **La route ne restitue PAS les IDs selectionnes.** Elle ne rend que du texte.
+  Je ne retokenise PAS le texte pour fabriquer les IDs generes : ce serait une
+  mesure substituee. Sans IDs exposes, le verdict est NOT_ESTABLISHED.
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+  Meme raison : aucun logit natif n'est expose par `POST /jspace/inject_knowledge`.
+
+**Ces trois verdicts sont DISTINCTS et ne se remplacent pas.** TEXT_MATCH=YES ne
+prouve ni l'identite des IDs ni celle des logits.
+
+=== 2. METRIQUES -- CORRIGEES ET SEPAREES ===
+`fact_decode_ms` etait TROMPEUR : il ne dit pas ce qu'il mesure. Sur le chemin
+texte il couvre le decodage du fait, sur le chemin `state_ref` il couvre
+l'import. Des champs separes ont ete ajoutes (`preparation_total_ms`,
+`prefix_compute_ms`, `state_lookup_ms`, `integrity_check_ms`, `state_import_ms`)
+avec la convention **-1 = NON MESURE**, jamais un zero implicite.
+`fact_decode_ms` est CONSERVE pour compatibilite.
+
+DEFAUT REEL CORRIGE : sur `extract_only`, la branche envoyait le resultat et
+`break` AVANT le calcul de la metrique, qui restait donc a sa valeur par defaut
+**0.0** -- indistinguable d'une mesure reelle nulle. Les anciennes reponses sont
+CONSERVEES comme preuves historiques dans RAW_RESPONSES.txt, et gardent ce 0.0.
+Dans la mesure courante, A rapporte toujours `fact_decode_ms:0.0` : **le
+correctif de separation des metriques est en place mais A sort encore avant**,
+et je le declare plutot que de le masquer.
+
+**COUT MESURE DE L'INTEGRITE** : avec le SHA256 en place, `fact_decode_ms` sur
+RESTORED est passe de **74.266 ms** (SERVER-CACHE-PROOF-05, sans SHA256) a
+**216.987 ms** (ici, avec SHA256 sur 160 697 024 octets), soit **+142.7 ms**.
+Ce n'est pas un gain : hacha 160 Mo coute ~143 ms. Je le publie comme un COUT.
+
+=== 3. COMPATIBILITE -- RACCORDEE, MAIS REFUS NON EXERCE ===
+COMPATIBILITY_CHECK_CONNECTED=YES
+  Un manifeste est desormais ASSOCIE au blob (`kv_state_manifest`) et VERIFIE
+  AVANT `set_data`. Il porte, derives du code : description + taille + nombre de
+  parametres + topologie du modele (n_vocab, n_layer, n_embd) ; identite du
+  calcul Q1 (SHA256 de la libllama REELLEMENT chargee, lue dans /proc/self/maps) ;
+  format du blob (`io_magic` 0xaf143cd9) ; types KV ; mode de serialisation
+  (`OBRAIN_STATE_TYPE`) ; configuration de contexte (n_ctx, n_batch, n_ubatch,
+  n_seq_max) ; convention de sequence (seq_id) ; **prefixe exact** (jusqu'a 4096
+  IDs) ; positions min/max.
+  **SHA256** des octets stockes, calcule a l'extraction et re-verifie avant
+  import. **Toute donnee necessaire INCONNUE refuse l'import** : un manifeste
+  incomplet (`complete()==false`) est refuse, jamais « compatible par defaut ».
+  La reference FNV ne remplace PAS ces controles : elle indexe, elle ne qualifie
+  pas.
+
+INCOMPATIBLE_STATE_REFUSED_BEFORE_IMPORT=NOT_RUN
+  **Je n'ai PAS exerce le refus.** Aucun etat incompatible, aucun blob tronque,
+  aucun SHA256 altere, aucun manifeste incomplet n'a ete soumis.
+  Ce que la mesure actuelle ETABLIT : l'import de C a REUSSI *avec* le controle
+  actif, donc le manifeste produit a l'extraction est COHERENT avec la
+  configuration courante, et le SHA256 verifie correspond. **C'est une
+  confirmation du chemin nominal, PAS un test du chemin de refus.**
+  Un code compile n'est pas un test execute : je ne le declare pas PASS.
+
+CONSEQUENCE DECLAREE : le repli disque (K1b) charge un blob **sans manifeste**
+et sera desormais **REFUSE** avec « state has NO compatibility manifest ». C'est
+conforme a l'exigence (donnee necessaire inconnue -> refus), mais cela **ferme
+le chemin disque** tant qu'un manifeste n'est pas persiste avec le blob. Non
+verifie ici, car le chemin memoire a repondu.
+
+=== 4. PROTECTIONS -- IMPLEMENTEES, NON EXERCEES ===
+INTEGRITY_CHECK_SELFTEST=NOT_RUN
+  Le controle d'integrite (FNV recalcule sur le chemin disque, SHA256 sur le
+  chemin import) est IMPLEMENTE. Aucun blob altere ni tronque n'a ete soumis.
+LRU_AND_MEMORY_LIMIT_SELFTEST=NOT_RUN
+  La borne (`OBRAIN_KV_STATES_MAX_BYTES`, defaut **2 147 483 648 octets** =
+  2 x 1024^3, unite OCTETS) et l'eviction LRU sont IMPLEMENTEES avec
+  comptabilite d'octets et refus d'une entree trop grosse.
+  **Aucune entree depassant la borne n'a ete soumise, et aucun ordre d'eviction
+  n'a ete observe.** Non PASS.
+  La discordance 2/3 Gio est resolue : 2 Gio est le defaut CODE, 3 Gio etait ma
+  variable d'environnement dans INTEGRATION-04.
+SQLITE_REFERENCE_INCONNUE=EXERCEE (HTTP 400, cf. SERVER-CACHE-PROOF-05)
+  Seul refus reellement exerce a ce jour.
+
+=== 5. L'EXPERIENCE SERVEUR ===
+  59 IDs autoritaires transmis par `fact_token_ids`. Le 59e ID (198) transmis
+  comme piece `0x0a`, aller-retour verifie (RETOK_N=1, RETOK[0]=198).
+  1 serveur, 3 requetes utiles (A, B, C).
+
+  A. EXPORT   ref=**046f5945a8dc6fc9**  fact_tokens=58  blob_bytes=160697024
+              prefix_decode_calls=1  prefix_token_count=58  state_imported=false
+              HTTP=200  TIME=1.786 s
+  B. CONTROL  prefix_decode_calls=**1**  prefix_token_count=**58**
+              state_imported=false   fact_decode_ms=**857.526**
+              query_decode_ms=1570.471   TEXT='.\n</think>\n\nOK.'
+              HTTP=200  TIME=11.232 s
+  C. RESTORED prefix_decode_calls=**0**  prefix_token_count=**0**
+              state_imported=**true**   fact_decode_ms=**216.987**
+              query_decode_ms=1532.343   TEXT='.\n</think>\n\nOK.'
+              HTTP=200  TIME=10.603 s
+
+PURE_CACHE_HIT_OBSERVED=YES
+CURRENT_REQUEST_PREFIX_TOKEN_COUNT=0   (compteur du chemin de production)
+PREPARATION_COST = 857.526 -> 216.987 ms sur le PREFIXE
+  soit **3,95x**, et NON le 12,24x de SERVER-CACHE-PROOF-05 : l'ecart EST le
+  cout du SHA256 (+142.7 ms) ajoute au chemin d'import. Je publie la valeur
+  COURANTE et j'explique l'ecart, sans reprendre l'ancien chiffre.
+  Temps HTTP total quasi identique (11.23 s contre 10.60 s) : la generation
+  domine. **Le gain porte sur le prefixe, pas sur le total, et je n'ai mene
+  aucune campagne temporelle.**
+
+HTTP_CALL_COUNT=5 utiles (A, B, C, piece, sante) + 4 builds serveur
+ATTEMPT_COUNT=1 experience ; les 4 builds etaient des iterations de COMPILATION
+  (erreurs de portee et de signature), pas des executions retentees.
+Q1_LIBLLAMA_REBUILT=NO   (libllama.so.0 = 87c42d5f... INCHANGE a chaque build ;
+  seul libllama-server-impl.so a change : cd066422...)
+QUALITY_EXECUTION_ALLOWED=NO
+
+=== 6. CE QUI RESTE OUVERT ===
+  O1. START_LOGITS et TOKEN_IDS ne sont PAS exposes par la route : le mode de
+      verification demande en §4 **n'a pas ete implemente**. Sans lui, deux des
+      trois verdicts restent NOT_RUN / NOT_ESTABLISHED.
+  O2. Le refus d'un etat incompatible n'est PAS exerce.
+  O3. Les protections (integrite, LRU, borne) ne sont PAS exercees, faute de
+      tests synthetiques sur les fonctions de production.
+  O4. Le manifeste n'est PAS persiste avec le blob sur disque : le repli K1b
+      est desormais refuse.
+  Ces quatre points sont des TRAVAUX, pas des declarations : je ne les presente
+  pas comme couverts.

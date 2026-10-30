@@ -14,18 +14,62 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-obrain-engine = { workspace = true, features = ["storage", "parallel", "regex"] }
+# `hybrid-search` (2026-09-13, chantier RECHERCHE-COUPLEE) : l'outil de chat
+# `obrain_recherche` fusionne ses sources BM25 par RRF (`fuse_results`,
+# obrain-core/index/text/fusion.rs) et ouvre `ObrainDB::hybrid_search` au
+# binaire — la fusion texte+vecteurs attend seulement un embedder de requête.
+obrain-engine = { workspace = true, features = ["storage", "parallel", "regex", "text-index", "hybrid-search", "cognitive", "cognitive-engram", "algos", "cdc"] }
+# LA GARDE (échéance, budget, répétition, clamp) : l'arrêt du chat ne
+# vit plus dans ce binaire — `selfd` et `selflink` en ont besoin aussi,
+# et deux copies d'une garde ne restent pas d'accord.
+obrain-garde = { workspace = true }
 obrain-common = { workspace = true }
 obrain-core = { workspace = true }
+# `repair` doit ouvrir le FICHIER substrat sans passer par le store — le
+# store refuse precisement les bases que cette commande repare.
+obrain-substrate = { workspace = true }
+# Couche de restitution : IR + json-graph v1 + writers DOT/Mermaid + overlays
+# (lib pure, aucune dépendance substrate — les extracteurs vivent dans ce crate).
+obrain-viz = { workspace = true }
+# Louvain/Leiden pour la cascade Hilbert (`obrain topo hilbert` : détection
+# de communautés avant la repermutation — la pièce qui rend le préfetch utile).
+obrain-adapters = { workspace = true, default-features = false, features = ["algos"] }
+# Indexation repo→graphe (RFC M6) — optionnel (compile ~40 grammaires tree-sitter) ;
+# `index_repository` du bridge n'est disponible qu'avec la feature `indexer`.
+obrain-indexer = { path = "../obrain-indexer", optional = true }
+obrain-iam = { workspace = true, optional = true }
+# LE BUDGET EN JETONS DE L'INJECTION. `obrain-rag` portait deja le budget
+# (`RagConfig::token_budget`, estimation chars/jeton, selection gloutonne avec
+# garantie « au moins un element ») et N'ETAIT BRANCHE NULLE PART : l'injection
+# du pont empilait des plafonds par section (goals 5, summaries N, weave 8,
+# engrams 10) sans aucun chiffre d'ensemble. Un budget par section n'est pas un
+# budget — le total est la somme de ce que chacun s'autorise.
+obrain-rag = { workspace = true }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+# (T27) Préparation parallèle des propriétés de l'ingestion native.
+rayon = { workspace = true }
 clap_complete = "4"
+
+# ── COMPRESSION À LA VOLÉE DU SERVEUR VIZ (`viz serve`) ─────────────────────
+# `flate2` ÉTAIT DÉJÀ dans le binaire, tiré par `ureq` ← `tree-sitter-language-pack`
+# ← `obrain-indexer` (feature `indexer`, active par défaut). Preuve :
+# `strings target/release/obrain | grep -c flate2` → 13, et Cargo.lock portait
+# déjà flate2 1.1.10. Cette ligne ne compile donc AUCUN crate nouveau : elle
+# déclare une dépendance que le binaire utilisait déjà sans le dire. C'est la
+# différence entre « ça marche par accident » et « ça marche » : une dépendance
+# transitive peut disparaître au prochain `cargo update` d'un crate tiers, et le
+# serveur cesserait alors de compiler sans que personne n'ait touché son code.
+# Niveau 6 (défaut) : mesuré à 30-40 ms pour 1,29 Mo de bundle.
+flate2 = "1"
 
 # Output formatting
 comfy-table = "7"
 serde = { workspace = true }
 serde_json = "1"
+# Compression gzip des reponses viz (NATIF-J7) : deja dans le Cargo.lock du
+# workspace (tiree par ureq) et en cache local -> build hors-ligne, zero dep neuve.
 is-terminal = "0.4"
 
 # REPL
@@ -42,8 +86,21 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# Allocateurs de rechange (banc T7 perf/RAM) — liés statiquement, exclusifs.
+# Actifs uniquement par feature explicite : le binaire par défaut garde
+# l'allocateur système, seul l'exécutable de banc change d'allocateur.
+tikv-jemallocator = { version = "0.6", optional = true }
+mimalloc = { version = "0.1", optional = true }
+
 [features]
-default = ["gql"]
+# Politique « meilleur par défaut », renforcée le 2026-09-15 : le binaire
+# standard embarque TOUT l ensemble de production — dialectes (GQL, Cypher),
+# indexeur, chaine AI (vector/text/hybrid/cdc), IAM et algos. Un build par
+# defaut ne peut plus produire un binaire ampute d une capacite servie
+# (constate : un deploiement SANS IAM issu d un build par defaut).
+# Builds minimaux pour les bancs : --no-default-features --features gql.
+default = ["gql", "cypher", "indexer", "ai", "iam", "algos", "parallel"]
+indexer = ["dep:obrain-indexer"]
 gql = ["obrain-engine/gql"]
 cypher = ["obrain-engine/cypher"]
 sparql = ["obrain-engine/sparql"]
@@ -58,6 +115,10 @@ hybrid-search = ["obrain-engine/hybrid-search"]
 cdc = ["obrain-engine/cdc"]
 languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
 ai = ["vector-index", "text-index", "hybrid-search", "cdc"]
+# IAM ATTEIGNABLE, JAMAIS IMPOSÉ. `--features iam` ouvre la chaîne
+# cli -> engine -> cognitive -> obrain-iam ; sans cette option, RIEN ne change
+# (aucune ligne du build par défaut n'est touchée). Vérifié dans les deux sens.
+iam = ["obrain-engine/cognitive-iam", "dep:obrain-iam"]
 storage = ["obrain-engine/storage"]
 # Named profiles
 embedded = ["gql", "ai", "algos", "obrain-engine/parallel", "obrain-engine/regex"]
@@ -65,6 +126,16 @@ reactive = ["obrain-engine/reactive"]
 parallel = ["obrain-engine/parallel"]
 tiered-storage = ["obrain-engine/tiered-storage"]  # Mmap epoch files for instant boot
 full = ["languages", "ai", "algos", "rdf", "storage", "parallel", "reactive", "tiered-storage"]
+# Cognitive engine (3 piliers : causal spreading activation, gap detection, dynamic synthesis)
+cognitive = ["obrain-engine/cognitive"]
+cognitive-fabric = ["obrain-engine/cognitive-fabric"]
+cognitive-gap-detection = ["obrain-engine/cognitive-gap-detection"]  # CALL obrain.cognitive.detect_gaps
+cognitive-synthesis = ["obrain-engine/cognitive-synthesis"]  # CALL obrain.cognitive.synthesize
+cognitive-engram = ["obrain-engine/cognitive-engram"]  # CALL obrain.engrams.* (Layer 0 : Hebbian + FSRS)
+cognitive-full = ["obrain-engine/cognitive-full", "algos"]  # All cognitive subsystems (algos requis par le dispatch generique des procedures CALL)
+# Allocateurs (banc T7) : exclusifs — l'activation des deux est un compile_error.
+alloc-jemalloc = ["dep:tikv-jemallocator"]
+alloc-mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 tempfile = "3.27"

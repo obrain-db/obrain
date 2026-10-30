@@ -15,6 +15,16 @@ pub fn run(quiet: bool) {
     println!("  rustc:    {}", rustc_version());
     println!("  target:   {}", std::env::consts::ARCH);
     println!("  os:       {}", std::env::consts::OS);
+    println!("  commit:   {}", env!("OBRAIN_GIT_COMMIT"));
+    println!("  describe: {}", env!("OBRAIN_GIT_DESCRIBE"));
+    println!(
+        "  arbre:    {}",
+        if env!("OBRAIN_GIT_ARBRE") == "SALE" {
+            "SALE — ce binaire n est pas reconstructible"
+        } else {
+            "propre"
+        }
+    );
 
     // Features
     let mut features = Vec::new();

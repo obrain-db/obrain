@@ -1,0 +1,10 @@
+1d6ed9dde172b931e238117052596b991fd08dcf39f1a6f9ca24c022e7337aaa  /tmp/kv01/e8-kv-roundtrip
+34bcd114a170b09bb19358c145f46cadb15201b769e89c1465d7dfd7f300e4e5  /tmp/kv01/e8-ids
+--- ids ---
+fc39bb86b0a942c2855d4cd90016f87bf655d4463731631658324e897021dbab  /tmp/kv01/ids59.txt
+--- libs ---
+	libllama.so.0 => /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0 (0x0000fcccf32e0000)
+	libggml-base.so.0 => /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-base.so.0 (0x0000fcccf3210000)
+	libggml.so.0 => /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml.so.0 (0x0000fcccf2d50000)
+	libggml-cpu.so.0 => /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-cpu.so.0 (0x0000fcccf2ab0000)
+	libggml-cuda.so.0 => /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-cuda.so.0 (0x0000fcccef180000)

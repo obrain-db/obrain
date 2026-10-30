@@ -1,0 +1,134 @@
+ENGINE-008 -- STATUT TERMINAL WHT-COVERAGE-CLOSE-14
+==========================================================================
+A3 ferme pour la propriete de cloture et AFFAIBLI pour la portee ; les 168
+cibles manquantes sont EXPLIQUEES ; le critere de couverture etait DEFECTUEUX et
+est CORRIGE. Toutes les suites passent. Aucun gel, aucun forward.
+
+GRAPH_DEPENDENCY_CLOSURE_ESTABLISHED=YES
+  `ggml_build_forward_expand` -> `ggml_build_forward_impl` ->
+  `ggml_visit_parents_graph` (ggml.c:7104). La racine passee est ajoutee en
+  DERNIER (`GGML_ASSERT(nodes[n_nodes-1] == tensor)`), les `src[]` sont parcourus
+  recursivement, les noeuds deja visites sont ecartes par `visited_hash_set`.
+  La cloture transitive DE LA RACINE est donc bien dans le graphe.
+WHT_TO_RELEVANT_OUTPUT_MAPPING=PARTIAL
+  NUANCE DECISIVE : un graphe construit par PLUSIEURS appels contient l'UNION
+  des clotures de plusieurs racines. Appartenir au graphe n'implique donc PAS
+  etre sur le chemin d'une sortie donnee -- le code distingue lui-meme les
+  racines (`ggml_build_forward_select` passe `compute = (i == idx)`).
+  Les cinq proprietes sont DISTINGUEES : appartenance au graphe ETABLIE
+  (in_submitted_graph 504/504) ; dependance d'une sortie PARTIELLE ; dependance
+  des logits PARTIELLE ; traitement par le backend ETABLIE (le scheduler itere
+  tous les n_nodes) ; achevement synchronise ETABLI pour la soumission, ordre
+  exact vis-a-vis des logits = NOT_EXERCISED.
+  CORRECTION DE PROOF-13 : j'y appuyais « son resultat atteint la sortie » sur
+  `downstream_reach=1` et `effect_class=OUTPUT_DEPENDENT` du PRODUCTEUR, dont je
+  n'ai PAS lu la semantique. Ces champs corroborent ; ils n'etablissent pas. La
+  deduction est AFFAIBLIE a PARTIAL en consequence.
+  HYPOTHESE RESTANTE : la liste des racines du graphe qwen35 soumis, et laquelle
+  produit les logits.
+
+HISTORICAL_MISSING_TARGETS_EXPLAINED=168 sur 336
+  Identites verifiees PRODUCTEUR PAR PRODUCTEUR avant toute jointure :
+    manifeste : (run_id, epoch, target_id, capture_id, kind) = 672 ;
+                (epoch, target_id) = 336 (168 par epoch)
+    roles / effet : (epoch, target_id), EPOCH 1 UNIQUEMENT, 168 chacun
+    residence : target_id, 3 roles par cible, 168 cibles, 504 lignes
+  TABLEAU : lignes 672 ; captures distinctes 672 ; cibles distinctes 336 ;
+  associations attendues 336 ; presentes 168 ; manquantes 168 ; dont epoch 0 =
+  168, dont epoch 1 = 0.
+  MOTIF : les soumissions se repartissent `epoch 0 -> submission 1, decode_step
+  = -1` (PREFILL) et `epoch 1 -> submission 2, decode_step = 0` (DECODE).
+  L'analyse de role/effet/residence est produite sur le chemin CAPTURE_EXTRACT
+  (epoch 1) tandis que le manifeste accumule tous les epochs. Les 168
+  manquantes sont donc les cibles du PREFILL.
+  JE NE CONCLUS PAS « la moitie est normale » depuis le seul ratio : le motif
+  est etabli par la correspondance exacte epoch <-> surfaces. Aucun run fusionne,
+  aucun fichier deplace.
+
+WHT_COVERAGE_DENOMINATOR_JUSTIFIED=YES
+  DEFAUT REEL TROUVE ET CORRIGE : le seul test de couverture etait « > 0 ». Une
+  couverture de MOITIE (168 sur 336) passait donc pour complete et le code
+  pouvait declarer la chaine complete. Le denominateur est desormais le
+  MANIFESTE -- jamais les lignes deja jointes, ce qui serait circulaire.
+  `n_targets_with_roles`, `n_targets_with_effect`, `n_targets_with_residency`
+  sont explicites, et une couverture partielle force `INCOMPLETE_COVERAGE` avec
+  un motif nommant le ratio et un scope « COUVERTURE PARTIELLE : chaine complete
+  NON etablie ».
+  CHOIX CONSERVATEUR retenu (D1) : toutes les cibles du manifeste. Le
+  denominateur D2 (epoch soumise a l'analyse de role) exigerait d'etablir DANS LA
+  SOURCE que l'analyse est par conception restreinte a un epoch -- ce que je n'ai
+  PAS lu. C'est une decision de protocole, pas de code.
+WHT_COVERAGE_SELFTEST=PASS
+  Nouveaux tests : couverture complete ; couverture partielle (1 sur 2) avec
+  ratio nomme ; ligne SUPPLEMENTAIRE d'un autre kind SANS nouvelle cible (ne
+  gonfle ni le denominateur ni la couverture) ; capture REPETEE de la meme cible
+  (detectee) ; association ambigue ; fenetre suivante valide apres une fenetre
+  incomplete (le defaut n'est PAS efface).
+
+P3_CURRENT_PROTOCOL_ASSESSABLE=YES
+  La methode peut evaluer P3 : le code produit desormais rotation detectee,
+  couverture par CIBLES DISTINCTES avec denominateur explicite, distinction des
+  kind. MAIS sur une fenetre multi-epoch avec D1, P3 rendra INCOMPLETE_COVERAGE
+  -- ce qui est le comportement voulu, pas un echec. Le choix D1/D2 reste a
+  trancher au protocole.
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+  ENGINE008_P4_AMENDMENT_TEXT.md : texte exact, pret a adopter, amender ou
+  rejeter. Il DIT EXPLICITEMENT que P4' remplace une propriete par une AUTRE
+  propriete (inatteignabilite structurelle au lieu d'absence observee), et que
+  les six conditions ne sont PAS verifiees sur un modele reel.
+
+REAL_HARNESS_BINARY_SHA256=dff23aa490de2af88d2eb1b05514a7f2248c1ac9cfd36646968c5e69df1e12cc
+  IDENTITE NOUVELLE : le critere de couverture a change dans wht_parser.cpp, donc
+  le binaire reel change et NE PEUT PAS reprendre bedb18b9... de PROOF-13.
+  Autres binaires de la meme compilation :
+    t-wht      e92b339e0a5043553cba963ba083053412bfd7279b36efa172aa7ea426279a9d
+    t-connect  7a55c63b797b78b2acee2506ad5d5122766df1b3ccd67e560c663cba7d2a532f
+    t-whtpipe  ce4255285f8ec57f32d10568cb5799b5303551fe9c0b677c117e15b693b8a664
+    t-parser   5cb163859153fba4eb7c09cdb9e70bd02944bdc0c462929f47b80aae99f02f9d
+    t-launcher cb5ef00e762fdca6f072cb2f955c6a450e74ce9e5f54d768daa31ffefdcb0271
+  Identites recalculees APRES compilation reussie.
+
+SUITES REJOUees SUR CE BINAIRE (aucun PASS herite) --
+  t-wht      38 controles, 0 echec     t-connect  65 controles, 0 echec
+  t-parser   42 controles, 0 echec     t-whtpipe   7 controles, 0 echec
+  t-launcher  0 echec
+  garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3
+  Liberation : deux erreurs de LINK de ma part dans cette passe (nommage des .o,
+  puis chemins d'inclusion manquants pour parser_tests) -- corrigees, aucun
+  resultat presente avant que le lien ne reussisse.
+
+HARNESS_SOURCE_MANIFEST_SHA256=c000815e1262e0bbab03f3db969c12e85a458dd7bb33f149d8e3d6c7ad812eac
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve.
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_FREEZE_BLOCKERS=
+  B1_A3-RESIDUEL : relever les RACINES du graphe qwen35 soumis et identifier
+     celle qui produit les logits. Sans cela, WHT_TO_RELEVANT_OUTPUT_MAPPING
+     reste PARTIAL et la deduction d'execution reste conditionnelle.
+  B2_DENOMINATEUR P3 : trancher D1 (manifeste, conservateur, applique) ou D2
+     (epoch analyse), et si D2, l'etablir DANS LA SOURCE du producteur.
+  B3_P4 : arbitrage sur le texte livre, apres verification des six conditions
+     sur un modele reellement charge.
+  B4_CONFIRMER au runtime l'ordre de `synchronize()` vis-a-vis de
+     `llama_get_logits_ith` (NOT_EXERCISED).
+  B5_PUIS le protocole et le gel, sur instruction separee.
+  Le preflight n'est PAS autorisable tant que B1-B4 restent ouverts.
+
+PASS_STATUS=COMPLETE_SCOPE_WHT_COVERAGE
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte. Aucun changement de Q1, du backend, de la
+topologie ou des regles de preuve. Aucun protocole modifie. Les captures
+historiques sont lues en LECTURE SEULE ; aucun fichier deplace ni fusionne ;
+les pointeurs restent des valeurs ARCHIVEES, jamais dereferencees.

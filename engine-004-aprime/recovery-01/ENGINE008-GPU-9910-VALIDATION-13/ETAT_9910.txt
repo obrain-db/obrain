@@ -1,0 +1,20 @@
+=== verification d exposition CORRECTE (colonne locale seulement) ===
+  bind local = 127.0.0.1:9910
+  -> 127.0.0.1 UNIQUEMENT : OK
+
+=== accessibilite externe (doit echouer) ===
+  non joignable depuis 192.168.1.7 : OK (bind local)
+
+=== etat du service ===
+  PID=709332
+ 709332       00:19 1325904 /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-server -m /home/triviere/projects/models/Qwen3.8-27B-OB
+
+=== placement GPU du serveur en service ===
+
+=== autres services intacts ? ===
+  9906 : actif (inchange)
+  9907 : actif (inchange)
+  9908 : actif (inchange)
+=== etats disque existants intacts ? ===
+  /home/triviere/kv-states/fd4ff6aa4370b553.bin 157550332 octets mtime=2026-09-17 15:07:32.473004645 +0200
+  obrain-resume-slots : 5 fichiers

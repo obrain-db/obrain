@@ -1,0 +1,101 @@
+%% Ce que ce diagramme prouve : le defaut 56, soit deux tenseurs de capture crees par la greffe de
+%% build_lora_mm SANS le drapeau GGML_TENSOR_FLAG_OUTPUT. ggml-alloc libere alors leur region des
+%% leur derniere consommation, bien avant l extraction de fin d epoque : 336 captures sur 336
+%% etaient corrompues. Avec f1a_mark_output vers ggml_set_output, la region est conservee jusqu a
+%% l extraction : 0 capture corrompue et logits identiques au bit pres entre capture OFF et ON.
+%% Sources LUES : engine-004-aprime/source/f1a-capture.cpp et f1a-capture.h, n3nonies-patch.py,
+%% apply-f1a-capture.py, apply-f1a-context-graft.py, llama-obrain/ggml/src/ggml-alloc.c:689,
+%% llama-obrain/ggml/include/ggml.h:662, llama-obrain/ggml/src/ggml-backend.cpp:1342,
+%% llama-obrain/src/llama-graph.cpp:1303, docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-
+%% CAPTURE-LIFETIME.md.
+%% MESURE, lu dans N3NONIES : CAPTURES_WERE_CORRUPTED=336_SUR_336, puis CAPTURES_NOW_VERIFIED
+%% =336_SUR_336, ZERO_INPUT_NONZERO_OUTPUT_CONTRADICTION_COUNT 25 vers 0, epoque 0 et epoque 1
+%% a 168 activations differentes sur 168, LOGIT_BITWISE_MISMATCH_COUNT=0.
+%% DEDUIT : la region de cur_capture n a qu un consommateur, le MUL_MAT, et 3968 autres noeuds du
+%% graphe soumis s executent entre cette liberation et l extraction ; c est le mecanisme, pas la
+%% designation de l ecrivain.
+%% NON ETABLI : l arbre patche /home/triviere/projects/llama-obrain-cuda-f1a, cite par
+%% n3nonies-patch.py et apply-f1a-r5e.py, n existe PAS sur cette machine. L etat APRES est donc lu
+%% dans le TEXTE LITTERAL du patch et dans le rapport, jamais dans un llama-graph.cpp patche : aucun
+%% noeud n est dessine pour cet arbre. L ecrivain qui a ecrase chaque region reste NON IDENTIFIE
+%% dans la source, et N3NONIES_NATIVE_REFERENCE_VALIDATION=FAIL reste ouvert hors de ce perimetre.
+
+flowchart TB
+
+  subgraph Regle["Groupe 1 : la regle de l allocateur et le drapeau, lus dans la source du fork"]
+    direction TB
+    n_free["· ggml-alloc.c:689 ggml_gallocr_free_node<br/>commentaire de la source : graph outputs are never freed<br/>si node flags ET GGML_TENSOR_FLAG_OUTPUT alors return<br/>Tout autre tenseur est libere a sa derniere consommation<br/>✅ ecrit et verifie"]
+    n_flag["· ggml/include/ggml.h:662<br/>GGML_TENSOR_FLAG_OUTPUT = 2<br/>commentaire : is an output for the GGML compute graph<br/>⚪ existe en amont"]
+    n_upstream["· ggml-backend.cpp:1342 ggml_set_output vers tensor_copy<br/>commentaire du fork : prevent ggml-alloc from overwriting the tensor<br/>⚪ existe en amont"]
+    n_native["· src/llama-graph.cpp:1303 llm_graph_result::set_outputs<br/>ggml_set_output sur t_logits, t_embd, t_embd_pooled,<br/>t_h_nextn et t_layer_inp<br/>⚪ existe en amont"]
+  end
+
+  subgraph Greffe["Groupe 2 : la greffe de capture, telle qu ecrite dans le fichier de patch"]
+    direction TB
+    n_graft["· greffe de build_lora_mm, apply-f1a-capture.py<br/>f1a_cur_cap = ggml_dup de ctx0 et cur<br/>f1a_mm_raw = ggml_mul_mat de ctx0, w, f1a_cur_cap<br/>res = ggml_dup de f1a_mm_raw<br/>🔴 refus : aucun ggml_set_output sur ces deux dup"]
+    n_note["· f1a-capture.cpp:100 f1a_capture_note<br/>remplit f1a_target_rec et stocke les POINTEURS VIVANTS<br/>t_cur_capture, t_mm_raw, t_mm_capture<br/>✅ ecrit et verifie"]
+    n_elig["· f1a-capture.cpp:85 f1a_eligible<br/>type GGML_TYPE_TQ2_G128 ET nom present dans le CSV<br/>f1a_capture_get_ctx rend nullptr sans OBRAIN_F1A_CAPTURE=1<br/>✅ ecrit et verifie"]
+    n_extract["· f1a-capture.cpp:176 f1a_capture_end_epoch<br/>1 ggml_backend_synchronize du backend<br/>2 f1a_write_payload : ggml_backend_tensor_get sur les pointeurs vivants<br/>3 invalidation du registre, aucune identite ne survit a l epoque<br/>✅ ecrit et verifie"]
+    n_site["· apply-f1a-context-graft.py, dans llama-context.cpp<br/>appel place APRES graph_compute et AVANT la reutilisation<br/>des buffers du planificateur<br/>✅ ecrit et verifie"]
+  end
+
+  subgraph Avant["Groupe 3 : AVANT, sans ggml_set_output, la region de cur_capture est liberee apres le matmul"]
+    direction TB
+    a1["· le MUL_MAT consomme f1a_cur_cap<br/>c est son SEUL consommateur<br/>sa region est donc liberee immediatement apres le matmul<br/>🔴 refus par l allocateur"]
+    a2["· graphe soumis : nodes=3991<br/>3968 autres noeuds s executent entre la liberation<br/>et l extraction de fin d epoque<br/>✅ ecrit et verifie"]
+    a3["· la region liberee est reattribuee a un noeud suivant<br/>qui y ecrit ses propres valeurs<br/>le contenu lu n est plus celui du tenseur<br/>🟠 decide pas ecrit : l ecrivain precis n est pas identifie"]
+    a4["· f1a_write_payload lit cette region a la fin de l epoque<br/>et l ecrit dans le manifeste comme si c etait le tenseur<br/>🟠 consequence de a3"]
+    a5["· MESURE AVANT<br/>CAPTURES_WERE_CORRUPTED=336_SUR_336<br/>epoque 0 : 168 activations, 25 toutes nulles, 168 DIFFERENTES<br/>epoque 1 : 168 activations, 0 nulle, 168 DIFFERENTES<br/>contradictions activation nulle et sortie non nulle : 25<br/>✅ ecrit et verifie"]
+    a6["· H1 refutee sans instrumentation<br/>si cur_capture etait nul a la consommation,<br/>la sortie native du matmul serait nulle<br/>or les 25 sorties natives sont NON nulles<br/>✅ ecrit et verifie"]
+  end
+
+  subgraph Apres["Groupe 4 : APRES, avec ggml_set_output, la region est conservee jusqu a l extraction"]
+    direction TB
+    b1["· src/f1a-capture.h, n3nonies-patch.py<br/>declaration : void f1a_mark_output de struct ggml_tensor<br/>✅ ecrit et verifie"]
+    b2["· src/f1a-capture.cpp, n3nonies-patch.py<br/>definition : if t n est pas nullptr alors ggml_set_output de t<br/>✅ ecrit et verifie"]
+    b3["· src/llama-graph.cpp, greffe patchee par n3nonies-patch.py<br/>f1a_mark_output de f1a_cur_cap, N3nonies :<br/>sinon ggml-alloc libere sa region<br/>f1a_mark_output de res, idem pour mm_capture<br/>✅ ecrit et verifie"]
+    b4["· effet : GGML_TENSOR_FLAG_OUTPUT porte par les deux dup<br/>ggml_gallocr_free_node sort en return sur ce drapeau<br/>la region survit jusqu a l extraction<br/>🟠 decide pas ecrit dans un arbre patche absent de cette machine"]
+    b5["· MESURE APRES<br/>CAPTURES_NOW_VERIFIED=336_SUR_336<br/>ZERO_INPUT_NONZERO_OUTPUT_CONTRADICTION_COUNT=0<br/>epoque 0 et epoque 1 : 168 differentes sur 168<br/>LOGIT_BITWISE_MISMATCH_COUNT=0 entre capture OFF et ON<br/>✅ ecrit et verifie"]
+  end
+
+  subgraph Limite["Groupe 5 : ce que la correction ne ferme pas"]
+    direction TB
+    w1["· BUFFER_REUSE_CAUSALITY<br/>=MECHANISM_AND_EFFECT_PROVEN_WRITER_NOT_IDENTIFIED<br/>le mecanisme et l effet sont prouves,<br/>le tenseur ecrivain ne l est pas<br/>🟠 decide pas ecrit"]
+    w2["· hors perimetre du defaut 56<br/>N3NONIES_NATIVE_REFERENCE_VALIDATION=FAIL<br/>ecart q8_1 de 13 a 160 pour cent, non attribue a la capture<br/>✅ ecrit et verifie"]
+  end
+
+  n_free -->|lit| n_flag
+  n_upstream -->|applique| n_flag
+  n_native -->|applique| n_flag
+  n_graft -->|cree les tenseurs sans le drapeau| n_free
+  n_graft -->|appelle| n_note
+  n_elig -->|conditionne| n_graft
+  n_site -->|appelle| n_extract
+  n_note -->|fournit les pointeurs a| n_extract
+
+  n_graft -->|etat initial| a1
+  a1 -->|ouvre la fenetre de reutilisation| a2
+  a2 -->|permet| a3
+  a3 -->|corrompt le contenu lu par| a4
+  a4 -->|produit| a5
+  a5 -->|motive le test| a6
+
+  a5 -->|motive le correctif| b1
+  b1 -->|declare| b2
+  b2 -->|appelee par| b3
+  b3 -->|protege la region| b4
+  b4 -->|produit| b5
+
+  a5 -->|336 sur 336 corrompues| w1
+  b5 -->|0 corrompue, logits identiques au bit pres| w2
+  w1 -.->|ecrivain toujours non identifie| a3
+
+  classDef mesure fill:#1f6f2f,stroke:#0d3315,color:#fff
+  classDef amont fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef refuse fill:#8a1f1f,stroke:#4d0f0f,color:#fff
+  classDef ouvert fill:#8a6d12,stroke:#4d3c0a,color:#fff
+
+  class n_free,n_note,n_elig,n_extract,n_site,a2,a5,a6,b1,b2,b3,b5,w2 mesure
+  class n_flag,n_upstream,n_native amont
+  class n_graft,a1 refuse
+  class a3,a4,b4,w1 ouvert

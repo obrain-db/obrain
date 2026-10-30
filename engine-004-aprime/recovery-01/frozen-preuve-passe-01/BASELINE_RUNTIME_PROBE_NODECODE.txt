@@ -1,0 +1,47 @@
+ENGINE-008 HARNESS -- SONDE BASELINE, SANS DECODE
+========================================================================
+PROBE_KIND=GGUF_METADATA_STATIC_READ
+NOTE IMPORTANTE : cette sonde n a PAS charge de modele via libllama.
+  La libllama qualifiee Q1 est ABSENTE de la machine (§7), donc aucun
+  binaire n a pu etre lie ni execute. Les champs normalement produits
+  par 'runtime-probe --no-decode' sont ici lus dans l en-tete GGUF par
+  lecture directe du conteneur (aucun appel a la bibliotheque).
+  Tout champ exigeant libllama est marque NOT_AVAILABLE, jamais invente.
+
+model_path=/home/triviere/models/Qwen3.8-27B-Q4_K_M.gguf
+model_sha256=31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34
+model_sha256_matches_authority=YES
+architecture=qwen35
+normal_layer_count=64
+nextn_count=None
+tokenizer_sha256=49930cc8a75188cf69a07c57914f0aabe383db11494aa03ed15629adee4c7e33
+chat_template_sha256=c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+vocab=248320
+BOS=248044
+EOS=248046
+context_length=262144
+qtype_summary=F32:353, Q8_0:288, Q4_K:193, Q6_K:17
+qtype_bytes_estimate_total=18954939904
+libllama_sha256=NOT_AVAILABLE
+libllama_path=NOT_AVAILABLE
+libllama_linked=NONE
+OBRAIN_NO_ROTATION_presence=UNSET
+compute_allowed=false
+decode_call_count=0
+
+ATTENDU vs AUTORITE (§14, §63) :
+  tokenizer_sha256 == authority : YES
+  vocab == 248320 : YES
+  BOS == 248044 / EOS == 248046 : YES
+
+DIFFERENCES PERMISES (§64) observees :
+  representation de quantification : F32, Q8_0, Q4_K, Q6_K
+  nextn metadata / couche NextN : None
+  padding token metadata : 248044
+DIFFERENCES INTERDITES (§64) :
+  tokenizer : SAME (IDENTIQUE)
+  vocab : SAME
+  BOS/EOS : SAME
+  chat template : DIFF   <<< DIVERGENCE MESUREE
+  normal decoder layer count : base=64 cand=64 (attendu : 64/64)
+  semantic prompt renderer : NON_VERIFIABLE (exige llama_chat_apply_template)

@@ -1,0 +1,20 @@
+[Unit]
+Description=Obrain — passe de la flotte toutes les 5 minutes
+# ── POURQUOI 5 MINUTES, ET PAS 2 COMME LA PASSE DU SELF ────────────────────
+# Le registre des machines change quand une machine se rattache, se réannonce ou
+# se détache — un rythme d'humain, pas de boucle. La passe, elle, ouvre la base
+# de CHAQUE compte en EXCLUSIF : la faire courir plus vite disputerait le verrou
+# à la passe du Self (`obrain-self-appliquer`, toutes les 2 minutes) sans rien
+# apprendre de plus. On reste donc à 5 minutes, et la passe est idempotente
+# (`MERGE` par `qn`) : deux passages ne dupliquent rien.
+Documentation=file:%h/projects/banc-obrain-tronc/docs/ACCEPTATION-FLOTTE-2026-09-16.md
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Une passe interrompue par un arrêt de la machine ne doit pas attendre le
+# prochain cycle : on rattrape au démarrage suivant.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

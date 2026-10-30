@@ -1,0 +1,100 @@
+ENGINE-008 -- PASSE RECOVERY-01 : RAPPORT
+==========================================================================
+AGENT_TOKEN_BUDGET=UNLIMITED
+PASSE=RECOVERY_ONLY
+QUALITY_EXECUTION_ALLOWED=NO
+HOTE_D_EXECUTION=n3 ; HOTE_D_AUTORITE=spark-c578 (192.168.1.7, alias ssh 'dgx')
+DATE_UTC=2026-10-02
+
+=== RESULTAT EN UNE PHRASE ===
+Les entrees autoritaires de ENGINE-008 n etaient pas detruites : elles
+resident sur le dgx. Elles ont ete retrouvees, et HUIT controles d autorite
+sur HUIT passent, dont deux re-derivations independantes.
+
+=== 1. CE QUI A ETE RETROUVE ET VERIFIE ===
+  Q1 libllama                      87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2   MATCH (autorite Q1 recoupee)
+  Q1 llama-tokenize                edacdf0d7bcf933bf9a14df1f305197d11860d00f6d8c60488c546e0aac1a61f   MATCH
+  Q1 f1a-eval                      79ba1c449864da8be4b9fa53313a179c2ddad96bac1e814d77f470a8f2e7b80a   MATCH
+  baseline model                   31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34   MATCH
+  candidat model                   1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937   MATCH
+  TASK_EVAL_DATA_CONTENT_TREE      c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a   MATCH
+  TOKEN_EVAL_CONTENT_TREE_V2       0ce4512e9d73b5e1cc3beddd2222e9ad7a96592508f10930515ef8b4276cf5dd   MATCH (re-derive)
+  TASK_PROMPT_CONTRACTS_V1         fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6   MATCH
+  ENGINE008_SCORER_PROVENANCE      6d9e68cf38de67267be8ec68583ff2746dac37a944233eb5468100e8192d1ffa   MATCH (recalcule)
+  ENGINE008_SELECTION_RULES_V2     3c1a16d7053f693400b3a8d858733f6a884301e34c8796e8a482370d5a369552   MATCH
+  Q1_FORWARD_PROTOCOL_v1           55b69719fc78b1d71d66a390d8db7a792bafef003296156bb0fe2c6e1684a8b5   MATCH (triple concordance)
+
+=== 2. LES DEUX VERIFICATIONS FORTES ===
+a) TOKEN v2 RE-DERIVE depuis les sources amont, sans executer e8-s8.py :
+   379 unites, 65536 tokens scores, TOKENIZATION_SECOND_PASS_MISMATCH_COUNT=0,
+   tree hash reproduit a l identique. Seule operation modele : la tokenisation.
+b) CHECKPOINT RE-HACHE SUR n3, hote different de la source : le tree hash TASK
+   et les 6 scorers se reproduisent. La recuperation n est pas une simple
+   relecture de la source.
+
+=== 3. LES SCORERS SONT VIVANTS ===
+Les 6 modules rejouent leurs selftests SANS MODELE, tous EXIT=0 :
+MMLU, GSM8K, MBPP_SANDBOX (docker, fork/network/host-path bloques),
+IFEVAL, LONG_CONTEXT, STRUCTURED_VALIDITY, TASK_AGGREGATE, BOOTSTRAP.
+Aucune restriction n a ete abaissee pour faire passer un test.
+Les gates de comptage sont conformes : 2698 items (1400/500/257/541),
+STRUCTURED_VALIDITY_ITEM_COUNT=370, GSM8K parse failures=0,
+BOOTSTRAP_SEED_U64=5833308329814621762.
+
+=== 4. LA DECOUVERTE STRUCTURANTE : L API PRESCRITE NE REND PAS LE TEMPLATE ===
+§16 de la passe precedente prescrivait llama_chat_apply_template. Mesure :
+cette fonction, DANS LE FORK Q1 (include/llama.h l.1593), declare elle-meme
+« does not use a jinja parser. It only support a pre-defined list of template ».
+Sa liste ne contient AUCUN qwen. Sa detection par indices route tout template
+contenant '<|im_start|>' -- et les deux templates Qwen3.8 en contiennent --
+vers LLM_CHAT_TEMPLATE_CHATML.
+=> Le chemin prescrit aurait rendu du ChatML, pas le template embarque, et
+   n aurait execute NI reasoning_instructions NI enable_thinking NI sysns.
+Le fork possede en revanche un VRAI moteur Jinja (common/jinja/, 788 symboles
+dans libllama-common.so), accessible par common_chat_templates_apply avec
+use_jinja=true. libllama.so SEUL ne l expose pas.
+NATIVE_CHAT_RENDERER_CONTRACT_COMPATIBILITY=NO
+La correction precise est preparee pour revue, NON appliquee.
+
+=== 5. LA GATE §15 DEMEURE OUVERTE, ET ELLE EST DE NATURE SCIENTIFIQUE ===
+EMBEDDED_TEMPLATE_MATCH=NO (inchange : les deux GGUF portent des revisions
+differentes du template). Aucun GGUF n a ete retouche.
+L amendement propose expose une INCOMPATIBILITE avant tout choix : egalite des
+entrees (l autorite commune ignore le template embarque du candidat) et
+fidelite native (chaque modele garde son template, mais §20 devient
+inatteignable) sont MUTUELLEMENT EXCLUSIFS.
+Aucun choix n est fait. Aucun rendu n a ete effectue au titre de l amendement.
+
+=== 6. BLOCAGES RESTANTS, PRECIS ===
+B1. ARBITRAGE DU TEMPLATE (scientifique, decision humaine). Non technique.
+    A trancher : OBJECTIF_A (une autorite commune) ou OBJECTIF_B (fidelite
+    native). Puis adoption ou rejet de ENGINE008_CHAT_TEMPLATE_AMENDMENT_PROPOSED_v1.
+B2. TEXTE AUTORITAIRE DU PROTOCOLE HARNESS : INTROUVABLE. Les clauses §1..§74
+    n existent que dans le brief. Aucun protocole n a ete reconstitue a partir
+    de numeros de paragraphes. Si un texte autoritaire existe ailleurs, il doit
+    etre fourni ; sinon il doit etre ECRIT et gele comme document a part entiere.
+B3. STATUT D AUTORITE DE libllama-common.so : constate (a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20),
+    non qualifie. Decision requise avant d en faire le chemin de rendu.
+B4. POINTS OUVERTS DE RENDU : enable_thinking (defaut true => bloc system
+    reasoning_instructions emis) et reasoning_effort (defaut 'xhigh'). Aucune
+    autorite ne les prescrit pour TASK aujourd hui.
+B5. DOCUMENTATION MTP : aucune source documentaire MTP propre a ENGINE-008.
+    Seules les metadonnees GGUF attestent blk.64.nextn.* (4 tenseurs).
+
+=== 7. CE QUE CETTE PASSE N A PAS FAIT (et n avait pas le droit de faire) ===
+  HARNESS_PREFREEZE_DECODE_CALL_COUNT=0
+  QUALITY_PREFREEZE_BASELINE_RESULT_COUNT=0
+  QUALITY_PREFREEZE_CANDIDATE_RESULT_COUNT=0
+  Aucun llama_decode, aucun prefill, aucun logit, aucune generation, aucune
+  NLL/PPL, aucun benchmark qualite, aucun long contexte, aucun calcul modele
+  deguise en selftest.
+  Aucun rendu TASK, aucun amendement adopte, aucune requalification Q1, aucun
+  gel de harnais, aucun enchainement automatique.
+
+=== 8. VALIDITE DES FAITS ANTERIEURS (distingues, non confondus) ===
+  gel historique        : SCORERS_FROZEN=YES, TOKEN_CORPUS_FROZEN=YES (1-2 oct.)
+  presence actuelle     : fichiers retrouves sur le dgx, OUI
+  hash de reference     : verifie, 8/8 MATCH
+  acceptation actuelle  : NON -- la gate template reste ouverte (B1)
+  Les preuves MTP/WHT restent STATIQUES. Aucun decode n a eu lieu ; les preuves
+  runtime manquantes sont reportees, pas converties en confirmation.

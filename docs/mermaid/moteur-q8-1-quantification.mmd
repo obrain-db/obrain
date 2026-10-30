@@ -1,0 +1,113 @@
+%% Ce que ce diagramme prouve : la structure exacte du bloc q8_1 d activation tel qu il est
+%% ecrit par la reference CPU et par le noyau CUDA, la semantique d arrondi des deux cotes,
+%% et ce que devient le champ s. Toute valeur chiffree vient d une ligne lue, sitee en clair.
+%% Sources lues : llama-obrain/ggml/src/ggml-quants.c, ggml-common.h, ggml.c, ggml-quants.h,
+%% ggml-cpu/ggml-cpu.c, ggml-cpu/quants.c, ggml-cuda/quantize.cu, quantize.cuh, mmvq.cu, vecdotq.cuh.
+%% MESURE : tailles de structures par static_assert, constantes QK8_1 et QK_G128, lignes
+%% d ecriture de d, qs et s, bornes de boucles, macro GGML_FP32_TO_FP16, taille de bloc CUDA.
+%% DEDUIT : le rapport 4 blocs q8_1 pour 1 bloc TQ2 de 128 est une ARITHMETIQUE de tailles
+%% de bloc 128 / 32 = 4, rien de plus.
+%% NON ETABLI, et c est le point important : AUCUN code lu ne relie q8_1 a TQ2. Cote CUDA il
+%% n existe aucun case GGML_TYPE_TQ2_G128 dans le switch de dispatch de mmvq.cu, et une
+%% recherche TQ2_G128 sur tout ggml/src/ggml-cuda/ ne rend rien. Cote CPU le ternaire
+%% g128 est apparie a GGML_TYPE_Q8_K, pas a Q8_1. Le chemin q8_1 reellement cable est celui
+%% des types de poids q4_1 et q5_1. Aucun noeud n est dessine pour un lien TQ2 vers q8_1.
+%% NON ETABLI aussi : quantize_row_q8_1_cuda n est PAS dans mmvq.cu. Il y est appele ligne
+%% 1228 ; il est declare dans quantize.cuh et defini dans quantize.cu ligne 375.
+
+flowchart TB
+
+  subgraph Contrat["Contrat de type q8_1 : ce que le bloc est, mesure sur les declarations"]
+    qk8_1["ggml-common.h<br/>ligne 258 : define QK8_1 32<br/>32 valeurs par bloc"]
+    bq8_1["ggml-common.h<br/>lignes 259 a 268 : typedef block_q8_1<br/>36 octets, static_assert ligne 269"]
+    f_d["champ d : ggml_half<br/>echelle fp16 du bloc<br/>ligne 262"]
+    f_s["champ s : ggml_half<br/>declaration ligne 263<br/>commentaire : d x somme des qs"]
+    f_qs["champ qs : int8_t en 32 cases<br/>ligne 267, offset 4 dans le bloc"]
+    f_union["union ds : ggml_half2<br/>ligne 265 : recouvre d puis s<br/>octets 0 a 3 du bloc"]
+    meta["ggml.c lignes 744 a 750<br/>type_name q8_1, blck_size QK8_1<br/>from_float_ref seulement, pas de to_float"]
+    qk_g128["ggml-common.h lignes 281 a 286<br/>define QK_G128 128<br/>block_tq2_g128, 34 octets"]
+  end
+
+  subgraph RefCPU["Reference CPU, deterministe, pour la creation des fichiers de modele"]
+    ref_fn["ggml-quants.c ligne 302<br/>void quantize_row_q8_1_ref<br/>lignes 302 a 335"]
+    ref_amax["lignes 308 a 313<br/>boucle j de 0 a QK8_1<br/>amax = MAX de fabsf"]
+    ref_d["lignes 315 a 318<br/>d = amax / 127<br/>id = d different de 0 ? 1/d : 0<br/>ecrit y[i].d = GGML_FP32_TO_FP16"]
+    ref_qs["lignes 322 a 331<br/>boucle j de 0 a QK8_1 sur 2<br/>arrondi roundf de x fois id<br/>ecrit qs en 2 moities decalees de 16"]
+    ref_s["ligne 333<br/>y[i].s = GGML_FP32_TO_FP16 de sum fois d<br/>sum = somme des qs DEJA arrondis, ligne 320"]
+  end
+
+  subgraph CudaK["Noyau CUDA : un thread par valeur, reduction de warp"]
+    cuda_fn["quantize.cu ligne 375<br/>void quantize_row_q8_1_cuda<br/>lignes 375 a 392"]
+    cuda_kern["quantize.cu ligne 5<br/>global void quantize_q8_1<br/>lignes 5 a 48"]
+    cuda_geom["quantize.cuh lignes 8 a 9<br/>CUDA_QUANTIZE_BLOCK_SIZE 256<br/>lance en dim3 256 threads"]
+    cuda_idx["lignes 26 a 30<br/>ib = i_cont / QK8_1<br/>iqs = i_cont modulo QK8_1"]
+    cuda_amax["lignes 34 a 40<br/>xi = fabsf de x, sum = xi<br/>warp_reduce_max et warp_reduce_sum sur width 32"]
+    cuda_d["lignes 42 a 43<br/>d = amax / 127<br/>q = amax egal 0 ? 0 : roundf de xi / d"]
+    cuda_qs["ligne 45<br/>y[ib].qs[iqs] = q<br/>chaque lane ecrit SA case"]
+    cuda_s["lignes 47 a 51<br/>si iqs superieur a 0 : return<br/>lane 0 ecrit y[ib].ds = make_half2 d, sum"]
+    cuda_pad["mmvq.cu lignes 1223 a 1228<br/>ne10_padded = GGML_PAD de ne10 a 512<br/>appel de quantize_row_q8_1_cuda"]
+    common_wr["common.cuh lignes 507 et 447<br/>warp_reduce_max et warp_reduce_sum float<br/>shfl_xor_sync sur width, width par defaut WARP_SIZE"]
+  end
+
+  subgraph Correspondance["Les 4 blocs q8_1 qui couvrent un bloc TQ2 de 128, arithmetique de tailles"]
+    map_1["1 bloc TQ2 de 128<br/>QK_G128 = 128 valeurs<br/>34 octets"]
+    map_32["32 valeurs par bloc q8_1<br/>QK8_1 = 32<br/>36 octets"]
+    map_4["128 / 32 = 4<br/>bloc q8_1 numero 0 : valeurs 0 a 31<br/>bloc 1 : 32 a 63, bloc 2 : 64 a 95, bloc 3 : 96 a 127"]
+  end
+
+  subgraph Amont["Amont et aval reellement cables"]
+    tq2_cpu["ggml-cpu/ggml-cpu.c lignes 414 a 419<br/>TQ2_G128 : vec_dot_type = GGML_TYPE_Q8_K<br/>pas q8_1"]
+    q8k_dot["ggml-cpu/quants.c ligne 581<br/>ggml_vec_dot_tq2_g128_q8_K<br/>un bloc q8_K de 256 porte 2 groupes"]
+    q8_1_use["ggml-cpu/ggml-cpu.c lignes 251 et 267<br/>vec_dot q4_1_q8_1 et q5_1_q8_1<br/>vec_dot_type Q8_1<br/>ggml.c ligne 282 du cpu : from_float"]
+    s_read["ggml-cpu/quants.c lignes 302 et 455<br/>x.d x y.d x sumi plus x.m x y.s<br/>q8_1 est le seul a porter m dans s"]
+    ds_read["ggml-cuda/vecdotq.cuh ligne 1217<br/>vec_dot_iq1_s_q8_1<br/>lit ds.x et ds.y par half22float2"]
+    no_tq2_cuda["🔴 aucun case GGML_TYPE_TQ2_G128<br/>dans mul_mat_vec_q_switch_type<br/>mmvq.cu lignes 998 a 1143<br/>le ternaire n a pas de chemin GPU"]
+  end
+
+  qk8_1 -->|declare| bq8_1
+  bq8_1 -->|contient| f_d
+  bq8_1 -->|contient| f_s
+  bq8_1 -->|contient| f_qs
+  f_d -->|recouvert par| f_union
+  f_s -->|recouvert par| f_union
+
+  ref_fn -->|appelle| ref_amax
+  ref_amax -->|alimente| ref_d
+  ref_d -->|ecrit| f_d
+  ref_amax -->|alimente| ref_qs
+  ref_qs -->|ecrit| f_qs
+  ref_qs -->|somme les qs arrondis| ref_s
+  ref_d -->|fournit d| ref_s
+  ref_s -->|ecrit| f_s
+
+  cuda_fn -->|lance| cuda_kern
+  cuda_geom -->|dimensionne| cuda_fn
+  cuda_kern -->|calcule| cuda_idx
+  cuda_idx -->|adresse| cuda_amax
+  cuda_amax -->|lit| common_wr
+  cuda_amax -->|fournit amax| cuda_d
+  cuda_d -->|ecrit| f_d
+  cuda_d -->|produit q| cuda_qs
+  cuda_qs -->|ecrit| f_qs
+  cuda_amax -->|fournit sum| cuda_s
+  cuda_s -->|ecrit| f_s
+  cuda_s -->|recouvre d et s en une fois| f_union
+  cuda_pad -->|appelle| cuda_fn
+
+  map_1 -->|se decoupe en| map_4
+  map_32 -->|compte| map_4
+
+  tq2_cpu -.->|apparie a Q8_K, pas a q8_1| q8k_dot
+  q8k_dot -->|lit| qk_g128
+  q8_1_use -->|lit| bq8_1
+  q8_1_use -->|appelle| s_read
+  s_read -->|lit| f_s
+  s_read -->|lit| f_d
+  q8_1_use -->|appelle| ds_read
+  ds_read -->|lit| f_union
+
+  classDef mesure fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef refuse fill:#8a1f1f,stroke:#4d0f0f,color:#fff
+
+  class qk8_1,bq8_1,f_d,f_s,f_qs,f_union,meta,qk_g128,ref_fn,ref_amax,ref_d,ref_qs,ref_s,cuda_fn,cuda_kern,cuda_geom,cuda_idx,cuda_amax,cuda_d,cuda_qs,cuda_s,cuda_pad,common_wr,map_1,map_32,map_4,tq2_cpu,q8k_dot,q8_1_use,s_read,ds_read mesure
+  class no_tq2_cuda refuse

@@ -75,7 +75,7 @@ fn search_constellation_bar_fire() {
     // Direct-API scan (Cypher WHERE on properties is broken on Wiki).
     println!("\n=== Direct-API scan on Article.title ===");
     let key = obrain_common::PropertyKey::from("title");
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let mut total = 0u64;
     let mut bar_constellation: Vec<(u64, String)> = Vec::new();
     let mut only_constellation: Vec<(u64, String)> = Vec::new();

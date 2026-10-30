@@ -1,0 +1,63 @@
+{
+  "area": "Surfaces CLI + IAM auth (obrain-cli, packages/obrain-cli-*, obrain-iam, feat/iam-mint-endpoint)",
+  "summary": "La CLI obrain est un binaire Rust unique (crate obrain-cli, binaire `obrain`) construit sur clap, qui expose ~40 sous-commandes (query, init, shell/REPL, viz, index, backup, data, wal, topo, jump, journal, repair*, enrich, compare, continuity, mcp/bridge, iam…). La surface IAM est un noyau unique (crate obrain-iam, ~8500 lignes) partagé par trois surfaces : le CLI `obrain iam` (hors bande, sans plafond, agit sur un fichier .obrain), le serveur HTTP `viz serve` (plafonné par les droits de l'appelant), et l'exemple d'amorçage. L'authentification repose sur ObrainIamProvider (trait AuthProvider) : authenticate() accepte Internal/SessionToken/ApiKey/Password/OidcToken (OIDC non implémenté), create_session() émet un jeton `obt_…` de 256 bits dont seul l'empreinte SHA-256 est stockée, authorize() évalue les politiques à chaque requête via IamStore::evaluate_access. Le flux de connexion HTTP est `POST /api/auth/login` (mot de passe → jeton rendu dans le corps JSON + cookie HttpOnly), puis `/api/auth/whoami|refresh|logout|audit` et les routes `/api/iam/*` gardées par l'action nommée `iam:admin`. La garde (`Garde`) est fail-closed quand armée (`OBRAIN_IAM=1`) et bruyante quand non armée ; le plafond réseau se déduit des politiques de l'acteur (`Administration::plafonnee_par_l_acteur`), jamais déclaré par l'appelant. Les packages npm (`@obrain-db/cli`) et Python (`obrain-cli`) sont de simples lanceurs qui délèguent au binaire natif. La branche feat/iam-mint-endpoint (worktree wt-iam-mint, 2 commits en avance sur banc-obrain HEAD) ajoute l'endpoint `POST /api/iam/token` (mint de jeton de service) via `Garde::emettre_service`/`Garde::est_administrateur`, non encore fusionné dans banc-obrain.",
+  "components": [
+    "crates/obrain-cli/src/main.rs — binaire `obrain`, enum clap `Cli`/`Commands`/`OutputFormat`/`QueryLanguage`/`GraphMode`, ~40 sous-commandes, codes de sortie (0/1/2)",
+    "crates/obrain-cli/src/commands/iam.rs — surface `obrain iam`, enum `IamCommands` (21 variantes : amorcer, utilisateurs, utilisateur, ajouter, desactiver, reactiver, mot-de-passe, espace-ajouter/-retirer, admin-ajouter/-retirer, jetons, jeton, jeton-revoquer, roles, politiques, politique-supprimer, audit, exporter, effacer)",
+    "crates/obrain-iam/src/admin.rs — noyau `Administration` (hors_bande / avec_plafond / plafonnee_par_l_acteur), garanties (plafond, verrou dernier-admin, trace), constantes ACTION_ADMIN/ACTION_LECTURE/ACTION_ECRITURE/ACTION_AUDIT",
+    "crates/obrain-iam/src/provider.rs — trait `AuthProvider` + `ObrainIamProvider` (authenticate/authorize/create_session/revoke_session/create_federation_token/assume_role), hash_token SHA-256, generate_token 256 bits, bcrypt",
+    "crates/obrain-iam/src/garde.rs — `Garde`, point d'entrée unique de contrôle (fail-closed armé, `OBRAIN_IAM=1/ACCOUNT/TOKEN/ACTION_*`)",
+    "crates/obrain-iam/src/store.rs — `IamStore`, CRUD graphe-backed (create_user/role/policy/credential, evaluate_access, log_audit_event, list_audit_events, deactivate_user, delete_role/policy, purge_session_credentials)",
+    "crates/obrain-iam/src/model.rs — types domaine (User/Role/Policy/Credential/AuditEvent, PolicyEffect/PolicyDecision/CredentialType/EntityStatus) + labels IamUser/IamRole/IamPolicy/IamCredential/IamAuditEvent et arêtes HAS_ROLE/HAS_POLICY/HAS_CREDENTIAL/PERFORMED",
+    "crates/obrain-iam/src/orn.rs — ORN (`orn:obrain:{service}:{account}:{type}/{path}`), parsing, jokers, substitution",
+    "crates/obrain-iam/src/policy.rs — moteur d'évaluation Allow/Deny/ImplicitDeny",
+    "crates/obrain-iam/src/gdpr.rs — GdprManager (export_user_data, request_erasure → ErasureCertificate)",
+    "crates/obrain-iam/src/session_ext.rs — AuthenticatedSession (intégration session/identité)",
+    "crates/obrain-iam/src/audit_chaine.rs — audit chaîné/signé (ADR §4.1)",
+    "crates/obrain-iam/src/error.rs — IamError/IamResult",
+    "crates/obrain-cli/src/viz_serve.rs — serveur HTTP : /api/auth/{login,logout,whoami,refresh,audit} + /api/iam/* (plafonné) + pages /login et /iam",
+    "crates/obrain-cli/examples/amorcer_iam.rs — amorçage hors bande du premier jeton (utilisateur+rôle+politiques+mot de passe+jeton 24h)",
+    "packages/obrain-cli-npm/bin/obrain.js — lanceur Node (résout le binaire plateforme via optionalDependencies, sinon PATH)",
+    "packages/obrain-cli-npm/package.json — @obrain-db/cli 0.0.1, optionalDependencies par plateforme",
+    "packages/obrain-cli-npm/platform-template/package.json.tmpl — template de paquet plateforme (@obrain-db/cli-{{PLATFORM}})",
+    "packages/obrain-cli-python/obrain_cli/__init__.py — lanceur Python (bundled > venv bin > PATH), __main__.py, pyproject.toml (entry point obrain=obrain_cli:main)",
+    "scripts/acceptation-iam.sh — porte d'acceptation bout-en-bout CLI + HTTP (amorçage, gestes, garde/plafond, refus, piste)",
+    "docs/ADMINISTRATION-IAM-2026-09-13.md — document d'administration IAM (défaut, surfaces, 3 garanties, pièges, hors-chaîne)",
+    "feat/iam-mint-endpoint (worktree /home/triviere/projects/wt-iam-mint) — Garde::emettre_service + Garde::est_administrateur + route POST /api/iam/token (viz_serve.rs)",
+    "feat/iam-groupes-tronc (worktree /home/triviere/projects/wt-iam-tronc) — groupes (User)-[:MEMBER_OF]->(Group)-[:HAS_ROLE]->(Role), argon2id, cache politiques par principal, Garde::controler_ressource"
+  ],
+  "relationships": [
+    "obrain-cli → obrain-iam : dépendance OPTIONNELLE, feature `iam = [\"obrain-engine/cognitive-iam\", \"dep:obrain-iam\"]` (Cargo.toml) ; `default = [\"gql\",\"cypher\",\"indexer\",\"ai\",\"iam\",\"algos\",\"parallel\"]` embarque iam par défaut depuis 2026-09-15",
+    "commands/iam.rs `ouvrir()` → `obrain_iam::admin::Administration::hors_bande(Arc<IamStore::new(db.graph_store()), compte, acteur)` — ouvre la base via `commands::open_existing` (jamais `ObrainDB::open`)",
+    "main.rs `Commands::Iam(cmd) => commands::iam::run(cmd, cli.format)` — sans feature iam, run() bails « IAM NON COMPILÉ » au lieu de disparaître",
+    "obrain-iam::admin → obrain-iam::provider (ObrainIamProvider) + obrain-iam::store (IamStore) + obrain-iam::gdpr (GdprManager)",
+    "viz_serve.rs (HTTP) → Garde (GardeIam::partagee()) → ObrainIamProvider → IamStore — la décision de politique vit dans la bibliothèque, pas dans le binaire",
+    "POST /api/auth/login → garde.connecter() → authenticate(AuthRequest::Password) → create_session() → jeton + cookie HttpOnly SameSite=Strict",
+    "mint feat : POST /api/iam/token → garde_interieure() + garde.identite(jeton) + garde.est_administrateur(appelant) → garde.emettre_service(cible, espaces, ttl, acteur) → Administration::hors_bande → ajouter_utilisateur/accorder_espace → emettre_jeton",
+    "packages/obrain-cli-npm & obrain-cli-python → spawn du binaire natif `obrain` (execFileSync / subprocess.run), aucune logique IAM propre",
+    "IamStore opère sur le GraphStoreMut de l'appelant (labels IamUser/IamRole/IamPolicy/IamCredential/IamAuditEvent) — le « graphe nommé __system » n'apparaît que dans les doc-comments"
+  ],
+  "notable_findings": [
+    "L'IAM est optionnel mais le défaut est « reachable, never imposed » : sans `--features iam`, `obrain iam` reste présent et s'annonce « IAM NON COMPILÉ » (message nommant la construction exacte), au lieu de disparaître — un choix de diagnostic documenté.",
+    "feat/iam-mint-endpoint N'EST PAS dans banc-obrain HEAD (456d3794) : l'endpoint POST /api/iam/token et Garde::emettre_service n'existent que dans le worktree wt-iam-mint (branche feat/iam-mint-endpoint, commits 05ff1bbe « wip endpoint mint » puis a399665b « l'audit nomme l'appelant, plus la constante viz-mint »). garde.rs de HEAD a 0 occurrence de emettre_service.",
+    "Le jeton de session était PRÉVISIBLE avant le 2026-09-13 (DefaultHasher + compteur, même jeton à chaque démarrage) ; corrigé en entropie système 256 bits (`rand::random::<u64>()`×4, préfixe `obt_`). Mots de passe bcrypt, jetons SHA-256.",
+    "revoke_session était un NO-OP documenté ; corrigé en écriture d'une expiration dans le passé + tentative delete_node (la suppression pure est insuffisante sur base fichier — mesuré).",
+    "Trois garanties d'administration : plafond LU (jamais déclaré) via plafonnee_par_l_acteur ; verrou du dernier administrateur actif (désactivation/dégradation/effacement/suppression de politique refusés) ; tout geste tracé sur l'action nommée (iam:user:create, iam:space:revoke…) avec principal=acteur et ressource=cible.",
+    "La désactivation/révocation mord immédiatement sans purge : authenticate_by_token_hash relit l'utilisateur et authorize réévalue les politiques à CHAQUE requête (propriété de chaîne, pas une promesse du module admin).",
+    "L'amorçage (amorcer) et l'émission de jeton pour autrui (emettre_jeton) refusent d'être appelés sur une administration plafonnée — contournements impossibles depuis le réseau.",
+    "Le CLI est hors bande (plafond: None, autorité = système de fichiers) ; le serveur est plafonné et exige un espace NOMMÉ (refus 400 sinon) ; /api/iam/moi exige une identité mais aucun droit.",
+    "Les packages npm/python sont des lanceurs minces : la version Python déclare __version__=\"0.4.4\" dans __init__.py alors que pyproject.toml dit version 0.0.1 ; le template npm référence github.com/ObrainDB/obrain et une licence AGPL, tandis que package.json pointe github.com/this-rs/obrain en Apache-2.0.",
+    "Deux branches IAM divergent en parallèle : feat/iam-mint-endpoint (wt-iam-mint) et feat/iam-groupes-tronc (wt-iam-tronc : groupes, argon2id PHC, cache de politiques par principal, Garde::controler_ressource) — consolidation non triviale."
+  ],
+  "gaps": [
+    "feat/iam-mint-endpoint non fusionné dans banc-obrain HEAD : le mint (POST /api/iam/token) n'existe que dans wt-iam-mint ; docs/ADMINISTRATION-IAM §garde dit encore « aucune route de remise de jeton » (obsolète vis-à-vis de la branche).",
+    "OIDC non implémenté : AuthRequest::OidcToken rend InvalidParameter « requires T1.7 (JWT/Ed25519) » ; aucun JWKS/issuer vérifié.",
+    "assume_role crée une session mais le commentaire admet que le scoping du rôle « will be enforced by AuthenticatedSession in T1.4 » — non appliqué aujourd'hui.",
+    "create_federation_token « trust the caller » : aucune validation d'intersection des scoped_actions avec les permissions réelles (commentaire l'admet).",
+    "revoke_session dépend de la visibilité de delete_node dans le substrat (incohérente fichier vs mémoire) ; l'expiration-dans-le-passé est le filet de sécurité.",
+    "Le « graphe nommé __system » n'est que doc-commentaire : IamStore écrit dans le GraphStoreMut passé par l'appelant, sous labels IamUser/IamRole/… (pas d'isolation physique en graphe nommé).",
+    "Incohérences de packaging : py __version__ 0.4.4 vs 0.0.1 ; template npm repo ObrainDB/obrain + AGPL vs this-rs/obrain + Apache-2.0.",
+    "Pas de MFA, pas de renouvellement automatique côté client, pas d'énumération des sessions d'une identité (doc §6, inchangé).",
+    "Divergence entre les deux branches IAM (mint vs groupes-tronc : argon2id remplace bcrypt, groupes, cache) — quel ordre de fusion / quelle autorité fait foi reste à trancher."
+  ]
+}

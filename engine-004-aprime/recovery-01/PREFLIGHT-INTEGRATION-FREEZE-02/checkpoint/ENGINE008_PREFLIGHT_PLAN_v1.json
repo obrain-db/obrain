@@ -1,0 +1,77 @@
+{
+  "plan_id": "ENGINE008_PREFLIGHT_PLAN_v1",
+  "pass": "PREFLIGHT-INTEGRATION-FREEZE-02",
+  "date_utc": "2026-10-02",
+  "status": "DRAFT_NOT_FROZEN",
+  "note": "Plan PREVISIONNEL. Les executions restent interdites : PREFLIGHT_EXECUTION_ALLOWED=NO.",
+
+  "protocol": {"id": "ENGINE008_QUALITY_PROTOCOL_v1", "sha256": "c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3"},
+  "freeze_v1_manifest_sha256": "855172969ef621fd0223a79d5443dd44c81fd08b329c212af915b55fdcb82a42",
+  "note_freeze": "Le gel v1 ne qualifie PAS les binaires construits apres lui. Un gel v2 reste a emettre.",
+
+  "executables": {
+    "preflight": {"path": "protocol-harness-01/build-preflight/engine008-preflight-eval", "sha256": "aa7e4bf45f69854fe92e871d4bcf352b99972a2dc1572fd6af62640c8b988ce9"},
+    "enumerator": {"path": "protocol-harness-01/build-graph-enum/engine008-graph-enum", "sha256": "9579aca018eba09bdd5a0594b59853c871f37949d13a7adf432185e713d667f7"},
+    "identity_adapter": {"path": "protocol-harness-01/build-identity/engine008-identity-adapter", "sha256": "c8c6df46e32521ed05ec04c4fff8ee9d387a3bfb0c2c93b1a5207a270b5866c9"}
+  },
+  "libraries": {
+    "libllama.so.0.0.135": "87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2",
+    "libllama-common.so.0.0.135": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20"
+  },
+  "host": {"name": "spark-c578", "ssh_alias": "dgx", "ip": "192.168.1.7", "backend": "CUDA build-cuda"},
+
+  "context_params_prescribed": {
+    "n_ctx": 512, "n_batch": 512, "n_ubatch": 512, "n_seq_max": 1,
+    "ctx_type": "LLAMA_CONTEXT_TYPE_DEFAULT",
+    "embeddings_nextn": false,
+    "vocab_only": false,
+    "_note": "valeur par defaut du fork, NON modifiee. A enregistrer telle que transmise."
+  },
+  "environment_constraints": {
+    "OBRAIN_NO_ROTATION": "MUST_BE_UNSET (test de PRESENCE : la valeur 0 serait INCORRECTE)",
+    "launch": "env -u OBRAIN_NO_ROTATION",
+    "f1a_capture": {"OBRAIN_F1A_CAPTURE": "1", "OBRAIN_F1A_OUTDIR": "<isole par modele et par run>", "OBRAIN_F1A_RUN_ID": "<modele>-<run>"}
+  },
+
+  "preflight_input": {"messages": [{"role": "user", "content": "Reponds uniquement : OK."}], "system_message_provided": false, "template_generated_system_block": "ACCEPTE_ET_TRACE"},
+
+  "runs": {
+    "order": ["baseline_run1", "candidate_run1", "baseline_run2", "candidate_run2"],
+    "fresh_process_and_context_per_run": true,
+    "max_new_tokens": 8,
+    "selection": "ARGMAP_DIRECT_LOWEST_TOKEN_ID_TIEBREAK",
+    "stop": {"GENERATE_STOP_TOKEN_IDS": [248046], "reason_EOS": "EOS", "reason_limit": "MAX_NEW_TOKENS"},
+    "not_success_criteria": ["le texte « OK. »", "l emission spontanee d EOS"],
+    "scorers_applied": "NONE",
+    "long_context": "NONE"
+  },
+
+  "runtime_assumptions_to_record": {
+    "A1": "ctx_type reellement transmis a llama_init_from_model",
+    "A2": "embeddings_nextn reellement transmis",
+    "A3": "dispatch statique qwen35.cpp:129-134 (build_arch_graph)",
+    "gtype_status": "GTYPE_DERIVED_FROM_VERIFIED_SOURCE_MAPPING",
+    "_note": "GTYPE_RUNTIME_OBSERVED est INTERDIT : aucune surface native ne l expose. La conclusion combinera A1+A2 transmis et acceptes, le dispatch statique verifie, et la preuve de soumission reussie."
+  },
+
+  "success_criteria": [
+    "aucun binaire ou bibliotheque inattendu charge",
+    "entree et configuration conformes au plan",
+    "aucun depassement de budget",
+    "aucune mutation d autorite pendant la passe",
+    "MTP : standard decoder confirme, MTP inactif, NextN non utilise dans le chemin de scoring",
+    "WHT : rotation absente pour la baseline (couverture non nulle exigee), presente pour le candidat",
+    "contrat d arret : ids generes, nombre, condition finale, appels effectues",
+    "reproductibilite des ids generes entre les deux runs d un meme modele"
+  ],
+  "stop_conditions": [
+    "mauvais binaire ou bibliotheque chargee",
+    "entree ou configuration differente du plan",
+    "erreur de calcul ou etat invalide",
+    "execution MTP/speculative incompatible",
+    "preuve rotation/WHT contradictoire",
+    "depassement du budget",
+    "mutation d une autorite",
+    "observation obligatoire absente"
+  ]
+}

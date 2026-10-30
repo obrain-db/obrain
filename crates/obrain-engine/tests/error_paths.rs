@@ -380,6 +380,7 @@ fn test_translator_errors_not_internal() {
 }
 
 #[test]
+#[cfg(feature = "algos")] // CALL atteint la branche d'erreur seulement avec les procédures algos
 fn test_gql_unknown_procedure_error_code() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
@@ -394,6 +395,7 @@ fn test_gql_unknown_procedure_error_code() {
 }
 
 #[test]
+#[cfg(feature = "algos")] // pagerank n'existe que sous algos
 fn test_gql_yield_nonexistent_column_error() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();

@@ -17,6 +17,7 @@ obrain-core = { path = "../../obrain-core" }
 obrain-common = { path = "../../obrain-common" }
 obrain-adapters = { path = "../../obrain-adapters" }
 obrain-bindings-common = { path = "../common" }
+obrain-cognitive = { path = "../../obrain-cognitive", optional = true, default-features = false }
 
 pyo3 = { workspace = true, features = ["extension-module"] }
 pyo3-async-runtimes = { workspace = true }
@@ -42,9 +43,9 @@ rdf = ["obrain-engine/rdf"]
 languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
 ai = ["vector-index", "text-index", "hybrid-search", "cdc"]
 storage = ["obrain-engine/storage"]
-cognitive = ["algos"]
-cognitive-fabric = ["cognitive"]
-cognitive-full = ["cognitive"]
+cognitive = ["dep:obrain-cognitive", "obrain-cognitive/cognitive", "obrain-cognitive/scar", "obrain-cognitive/fabric", "algos"]
+cognitive-fabric = ["cognitive", "obrain-cognitive/cognitive-fabric"]
+cognitive-full = ["cognitive", "obrain-cognitive/cognitive-full"]
 # Named profiles
 embedded = ["gql", "ai", "algos", "obrain-engine/parallel", "obrain-engine/regex"]
 full = ["languages", "ai", "algos", "rdf"]

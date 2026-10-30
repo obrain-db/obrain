@@ -1,0 +1,130 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-IMPLEMENT-01
+==========================================================================
+Portee W1 + W2 achevee : code compile et teste, sans aucun calcul modele.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=PREFLIGHT_IMPLEMENT_ONLY
+
+PREFLIGHT_FULL_LOAD_PATH_IMPLEMENTED=YES
+  real_ops().full_load : llama_model_load_from_file avec vocab_only=false
+  (chargement COMPLET, distinct du chemin vocab_only des modes de preparation).
+PREFLIGHT_PREFILL_PATH_IMPLEMENTED=YES
+  Batch explicite, positions 0..n-1, n_seq_id=1, seq_id=0, et logits demandes
+  SEULEMENT sur le dernier token. ATTENTION : dans cette revision de Q1 il
+  n existe PAS de champ llama_context_params.logits_all ; la selection des
+  logits est PAR TOKEN via llama_batch.logits (llama.h:241-255).
+PREFLIGHT_DECODE_LOOP_IMPLEMENTED=YES
+  Un pas = un token a une position explicite, logits demandes, argmax direct
+  par greedy_argmax_lowest_id (egalite exacte -> plus petit token id).
+  Boucle bornee par max_new_tokens. Aucun sampler de temperature, aucun RNG.
+  Erreur de decode retournee explicitement, jamais confondue avec un succes.
+
+HARNESS_COMPUTE_GUARD_SELFTEST=PASS
+  11 controles, 0 echec. Fonctions MOCKEES (full_load, make_ctx, prefill,
+  decode) : quand la garde refuse, AUCUNE n est appelee.
+  Le drapeau --allow-model-compute seul n ouvre pas la garde.
+  Refus observe en CLI :
+    COMPUTE_REFUSED_BEFORE_LLAMA_CALL / motif : no authorization
+    aucun chargement complet, aucun contexte, aucun forward
+  La garde est evaluee DANS run_preflight AVANT l etape 3 (chargement complet).
+GREEDY_AND_STOP_SYNTHETIC_SELFTEST=PASS
+  9 controles, 0 echec : EOS au 1er token ; MAX_NEW_TOKENS a 8 ; EOS a la
+  position 8 sans off-by-one ; EOS au-dela de la limite classe MAX_NEW_TOKENS ;
+  aucun decode apres l arret ; erreur de decode simulee rapportee ; limite 1 ;
+  argmax/egalite ; rejet d une ligne de logits invalide.
+
+F1A_ACTIVATION_PREPARATION_IMPLEMENTED=YES
+  prepare_f1a() cree une destination ISOLEE par modele et par run
+  (<root>/<model_tag>/<run_tag>), REFUSE une destination non vide (empeche la
+  reutilisation silencieuse de captures anterieures), et pose les activateurs
+  lus par Q1 : OBRAIN_F1A_CAPTURE=1, OBRAIN_F1A_OUTDIR, OBRAIN_F1A_RUN_ID,
+  OBRAIN_F1A_INVENTORY.
+  OBRAIN_NO_ROTATION n est JAMAIS touche. Le backend et les parametres
+  scientifiques ne sont pas modifies. Le mode CUDA graph n est pas desactive.
+F1A_CAPTURE_COLLECTION_IMPLEMENTED=YES
+  collect_f1a() lit les trois surfaces constatees dans Q1 : EVENT_LEDGER.csv
+  (schemas a 10 colonnes), GRAPH_CAPTURE_MANIFEST.csv (colonne
+  rotation_applied), GRAPH_ROLE_RELATIONSHIPS.csv (detection NextN).
+  Colonnes absentes ou inattendues -> malformed, jamais completees par des
+  valeurs supposees.
+CAPTURE_COVERAGE_CRITERIA_IMPLEMENTED=YES
+  coverage_verdict : EMPTY / PARTIAL / COMPLETE.
+  rotation_conclusion : ROTATION_ABSENT_WITH_COVERAGE n est rendu QUE si la
+  couverture est COMPLETE et que des cibles ont ete capturees avec
+  rotation_applied=0. Couverture vide ou partielle -> NOT_CONFIRMED_*.
+  nextn_conclusion : NEXTN_ABSENT_WITH_COVERAGE exige la meme couverture ;
+  NEXTN_PRESENT_IN_GRAPH des qu un noeud nextn est vu.
+  Les cas incomplets ne deviennent JAMAIS une conclusion d absence.
+WHT_CAPTURE_COLLECTOR_SELFTEST=PASS
+MTP_CAPTURE_COLLECTOR_SELFTEST=PASS
+  11 controles, 0 echec : positif ; negatif AVEC couverture ; couverture vide ;
+  couverture partielle (soumission absente) ; artefact malforme ; manifeste
+  sans colonne rotation_applied ; NextN present ; destination isolee acceptee
+  puis reutilisation refusee.
+RUNTIME_CAPTURE_STATUS=METHOD_IMPLEMENTED_NOT_EXERCISED
+
+HARNESS_SOURCE_SHA256=3c49baad8dbb60a4c61a8d2e73631a29652a5a04c8bcb3207e8348c9d6a722cf
+HARNESS_BINARY_SHA256=9f9d1bc005061d7910e37345e9f69aceb4c8f56bfd9206c890f48de1b7cdb970
+  source : tools/engine008-quality-eval/engine008-quality-eval-extended.cpp (1244 lignes)
+  binaire: build-preflight/engine008-preflight-eval (337 848 octets)
+  NOUVEAU binaire et NOUVELLE identite. Le harnais gele de PROTOCOL-HARNESS-01
+  (source 3e969191..., binaire 011bd438...) est CONSERVE INTACT et n a pas ete
+  modifie.
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama liee : 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/, ggml/, include/, common/ ; reference=etat qualifie Q1 tel que trouve
+  mesure=0 fichier modifie dans ces 4 repertoires depuis le debut de la passe
+  PORTEE NON ELARGIE : un diff nul signifie « aucun changement depuis la
+  reference explicitement choisie ». Il ne prouve PAS l identite de cette
+  reference avec les sources historiques ayant produit Q1 ; cette attribution
+  repose sur Q1_PREEXECUTION_BUILD_PROVENANCE.txt, pas sur un horodatage.
+  Seule addition : tools/engine008-quality-eval/engine008-quality-eval-extended.cpp
+  (hors du perimetre de calcul produit).
+
+RENDERER_QUALIFICATION_STATUS=INCHANGE_NON_CLOSE
+  Cette passe n avait pas a la fermer (hors portee). Etat inchange depuis
+  PREFLIGHT-BUILD-01.
+NEW_PROTOCOL_FREEZE_STATUS=NOT_ATTEMPTED
+  Hors portee. Le gel v1 reste intact :
+  protocole c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3
+  manifeste 855172969ef621fd0223a79d5443dd44c81fd08b329c212af915b55fdcb82a42
+  Le gel v1 ne qualifie PAS le binaire modifie par cette passe.
+
+MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_BASELINE_RUN_COUNT=0
+PREFLIGHT_CANDIDATE_RUN_COUNT=0
+QUALITY_RESULT_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_W1_W2
+  Au sens strict de la consigne : code compile et tests requis passes.
+  Cela ne signifie NI renderer qualifie, NI nouveau gel, NI preflight execute.
+REMAINING_WORK=
+  R1_fermer_R2 : ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md avec attentes
+     examinables (contenu exact des instructions de raisonnement, ordre des
+     blocs system/user/assistant, ouverture assistant, absence de fallback
+     ChatML, transmission effective de l override au candidat, non-troncature).
+  R2_emettre_v1.1 : protocole, source map, contrat de preuves runtime, autorite
+     du renderer, identite du nouveau harnais, manifeste de gel, plan
+     previsionnel du preflight.
+  R3_executer_les_4_runs (baseline x2, candidat x2), 8 tokens maximum, avec
+     capture f1a active, puis produire MTP/WHT/arret/reproductibilite.
+  R4_corriger_le_classement_NEXTN : la detection actuelle cherche les motifs
+     "nextn"/"NEXTN"/"h_nextn" dans GRAPH_ROLE_RELATIONSHIPS.csv. Les
+     signatures exactes des structures Q1 (t_h_nextn, n_layer_nextn,
+     LLM_TENSOR_NEXTN_*) doivent etre confirmees sur un artefact REEL avant
+     toute conclusion ; les fixtures synthetiques ne valident que le
+     collecteur, pas la semantique de la surface.
+
+ENGINE008_NEXT_STEP=FERMER_R2_PUIS_EMETTRE_v1.1_PUIS_AUTORISER_LES_4_RUNS
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit de modele, aucune generation, aucun scoring de sortie modele,
+aucune NLL/PPL, aucun benchmark long contexte, aucune recherche de parametres.
+Aucune modification de libllama Q1, des GGUF, des corpus, des scorers, des
+seuils, du renderer, du template commun, du protocole v1 ni du gel v1.
+Les 2 698 entrees rendues n ont pas ete refaites (identites inchangees).

@@ -1,0 +1,137 @@
+ENGINE-008 -- DEBLOQUER L'IMPORT ET FIABILISER LES OBSERVATIONS
+==========================================================================
+LE HACHAGE EST EN PROCESSUS (0 SOUS-PROCESSUS). LA COMPARAISON NUMERIQUE
+N'A PAS EU LIEU : L'EXPERIENCE N'A PAS ATTEINT LE SERVEUR.
+
+=== 1. LOCALISATION DU BLOCAGE ===
+IMPORT_BLOCK_LOCATION=UNKNOWN
+  Je n'ai PAS relance de hang de 240 s pour le reconfirmer. Je n'ai pas non
+  plus obtenu de pile : le processus bloque de COMPLETE-08 avait ete arrete
+  avant cette mission, et je n'en ai pas provoque de nouveau.
+  **Un releve « tous en S/futex » ne donne ni la pile ni le proprietaire du
+  verrou : je ne l'ai pas transforme en cause racine.** C'est precisement pour
+  cela que la cause est restee UNKNOWN en COMPLETE-08, et elle l'est encore.
+  Ce qui a ete fait a la place : **supprimer le mecanisme suspect** (§2) plutot
+  que de continuer a l'observer.
+
+ROOT_CAUSE_STATUS=UNKNOWN
+  Le mecanisme `popen`/`fork()` a ete ELIMINE du chemin de hachage. **Je ne
+  peux PAS en deduire que c'etait la cause du blocage** : je n'ai pas observe
+  d'import reussi apres la modification, puisque l'experience n'a pas atteint
+  le serveur (cf. §6). **Un succes apres modification n'aurait de toute facon
+  pas remplace les preuves de localisation, qui manquent.**
+
+=== 2. HACHAGE EN PROCESSUS -- FAIT ET TESTE ===
+HASH_SUBPROCESS_CALLS=0
+  `tools/server/obrain-sha256.h` : implementation SHA256 complete EN PROCESSUS.
+  Plus aucun `popen`, `shell`, `fork` ni fichier temporaire dans le chemin de
+  hachage. **Aucune empreinte n'a ete remplacee par FNV** : `fnv1a64` reste
+  utilisee uniquement comme REFERENCE D'INDEX, et SHA256 reste le controle
+  d'integrite -- les deux fonctions coexistent, inchangees dans leur role.
+  L'unique occurrence residuelle du mot `popen` dans le cache est **dans un
+  commentaire** qui documente le retrait.
+
+REQUIRED_TESTS=PASS
+  Trois suites, executees sur l'etat final (TESTS_OUTPUT.txt) :
+   a) **SHA256, vecteurs connus : 11 PASSED, 0 FAILED** -- vide, "abc",
+      56 octets (1 bloc + padding), 1 000 000 x 'a' (multi-blocs), binaire
+      0x00..0xFF, 64 octets nuls (bloc plein exact), lecture de fichier par
+      blocs de 1 Mio ET de 7 octets (== calcul en memoire), /dev/null
+      (== SHA256 du vide), fichier inexistant (== chaine vide).
+   b) **CONCURRENCE : PASS** -- 32 threads x 2000 hachages, resultats tous
+      corrects, **AUCUN sous-processus cree** (nombre de processus inchange :
+      439 avant, 439 apres), **AUCUN fichier temporaire** `.obrain_kvsha*`.
+   c) **CACHE : 49 PASSED, 0 FAILED** -- rejouee sur l'etat final.
+
+=== 3. IDENTITE DU MODELE ETABLIE UNE FOIS, LIEE A L'INSTANCE ===
+MODEL_SHA256_MS=64832.7
+  **MESURE DIRECTE, et elle CORRIGE mon inference precedente.** En COMPLETE-08
+  j'avais infere ~6-7 s depuis l'ecart entre runs, en refusant de la presenter
+  comme une mesure. La mesure reelle est **64 832,7 ms (64,8 s)** -- **dix fois
+  plus**. La ligne du journal, lue a l'execution :
+    load_model: obrain model identity: instance=1
+      sha256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937
+      (64832.7 ms)
+  L'identite est calculee **AU CHARGEMENT du modele, avant toute requete**, et
+  liee a **CETTE instance** : `kv_model_instance_new()` invalide l'empreinte
+  precedente, et `kv_model_sha256(path, token)` ne reutilise le cache que si le
+  **jeton d'instance** ET le chemin correspondent. **Une nouvelle instance ne
+  reutilise donc jamais aveuglement l'identite precedente.**
+  Le hachage est effectue **HORS du verrou global du cache** : une operation de
+  64,8 s ne bloque pas les autres threads.
+  Le contrat de reutilisation est donc etabli -- **mais son effet n'a pas ete
+  mesure sur une deuxieme requete**, faute d'experience aboutie.
+BLOB_SHA256_MS=PARTIEL
+  La mesure est instrumentee SEPAREMENT (`g_kv_ms_blob_sha`, publiee dans
+  `ms_blob_sha256`) et le modele n'est plus compte comme calcul du prefixe.
+  **Aucune requete n'ayant abouti, je n'ai pas de valeur** : je ne la remplace
+  pas par une estimation.
+
+=== 4. OBSERVATIONS CORRIGEES DEPUIS LES FAITS ===
+OBSERVED_TOKEN_COUNTS_RECONCILED=YES
+  **Les 6 IDs de COMPLETE-08 etaient REELS, et le compteur 32 m'a induit en
+  erreur -- pas la collecte.** Lu dans la boucle de production :
+    `while (t < n_generate) { if (tok == eos) break; ... }`
+  `n_generate=32` est un **PLAFOND**, pas un nombre produit. La generation a
+  fait 6 tokens puis a rencontre **EOS** : le texte `.\n</think>\n\nOK.` fait
+  exactement 6 tokens ([13,198,248069,271,3793,13]) suivis de `<|im_end|>`.
+  **§4 annoncait ce piege mot pour mot : « ne pas confondre MAX_NEW_TOKENS
+  demande et nombre produit ».** J'ai ajoute des compteurs distincts :
+  `selected_ids_count`, `emitted_ids_count`, `n_generate_requested`,
+  `stop_reason` (renseigne desormais par `cur_stop`, positionne sur `EOS` ou
+  laisse a `MAX_NEW_TOKENS`). Le second site d'emission (acceptation
+  speculative) est instrumente lui aussi, alors qu'il ne l'etait pas.
+
+OBSERVED_DECODE_POSITIONS_CORRECT=YES (corrige, non re-observe)
+  **La formule `cur_pos + t` etait FAUSSE** : `cur_pos` avance deja, donc les
+  positions sortaient avec un pas de 2 (59,61,63,65,67,69).
+  Corrige en enregistrant **`cur_pos` seul** -- qui est EXACTEMENT la position
+  du batch transmis a `llama_decode` (`gen_batch.pos[0] = cur_pos`), ce que §4
+  demande precisement. **Corrige dans le code et instrumente, mais NON
+  re-observe** puisque aucune requete n'a abouti : je declare la correction,
+  pas une observation.
+
+=== 5. CE QUI N'A PAS ETE FAIT ===
+  L'experience finale N'A PAS ATTEINT LE SERVEUR. Les trois requetes ont
+  echoue en **connexion refusee (curl rc=7, TIME=0.0001 s)**. Diagnostic :
+   - le serveur est devenu **PRET a 84 s** (`model loaded` puis
+     `listening on http://127.0.0.1:8476` dans le journal). Il charge
+     desormais en 84 s au lieu de ~20 s, **a cause des 64,8 s d'identite** ;
+   - les trois requetes ont ete emises a **~241 s**, alors que le serveur
+     ecoutait, et ont toutes echoue en connexion refusee ;
+   - aucune reponse n'a ete produite, aucun resultat tardif.
+  **La cause de ce refus de connexion n'est PAS etablie.** Une fenetre de
+  disponibilite sous-dimensionnee dans MON script de lancement est un candidat,
+  mais je ne l'affirme pas : les faits montrent un serveur a l'ecoute au moment
+  ou les requetes ont echoue.
+  **Aucun retry automatique**, conformement a §6 : j'ai conserve le diagnostic
+  et arrete.
+
+PURE_CACHE_HIT_OBSERVED=NOT_RUN
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+TOKEN_IDS_MATCH=NOT_RUN
+CONTROL_IDS=NON OBTENUS
+RESTORED_IDS=NON OBTENUS
+CONTROL_TEXT=NON OBTENU
+RESTORED_TEXT=NON OBTENU
+  **Je ne requalifie aucune experience anterieure** : le hit pur etabli en
+  SERVER-CACHE-PROOF-05 et CLOSURE-06 le reste pour l'etat de code d'ALORS, et
+  n'est pas re-observe sur l'etat final.
+ATTEMPT_COUNT=1 experience (RESOLVE-09), NON ABOUTIE. Aucun retry.
+  Plus 3 executions de tests sans modele.
+Q1_LIBLLAMA_REBUILT=NO  (87c42d5f... INCHANGE a chaque build)
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_WORK=
+  R1. ETABLIR la cause du refus de connexion a ~241 s alors que le serveur
+      ecoutait depuis 84 s : verifier la fenetre de disponibilite et l'etat
+      du serveur a l'instant exact des requetes.
+  R2. ETABLIR la cause du blocage d'import (ROOT_CAUSE_STATUS reste UNKNOWN) :
+      relever une PILE de threads sur un processus bloque, ou instrumenter les
+      frontieres (lookup, verrou, identite, SHA blob, compatibilite, import,
+      synchronisation) avec identifiant de requete et verrous tenus.
+  R3. MESURER BLOB_SHA256_MS et les autres composantes sur une requete reelle.
+  R4. RE-OBSERVER positions et compteurs reconcilies sur une requete aboutie.
+  R5. ATTEINDRE la comparaison numerique CONTROL/RESTORED.
+  R6. REDUIRE le cout de l'identite modele : 64,8 s au chargement est un cout
+      reel et mesure, qui n'etait pas connu avant cette mission.

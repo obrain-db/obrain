@@ -1,0 +1,177 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-01
+==========================================================================
+Passe INTERROMPUE avant le premier forward pass. Aucun calcul modele n'a eu
+lieu. Les valeurs ci-dessous sont MESUREES dans cette passe, ou declarees
+NOT_RUN / NOT_CONFIRMED. Rien n'est estime.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=PREFLIGHT_ONLY
+
+--- R2 : QUALIFICATION DU RENDERER ---
+RENDERER_QUALIFIED=NO
+  Motif : la qualification additionnelle n'a PAS ete close dans cette passe.
+  L'autorite de provenance du renderer reste celle publiee par
+  PROTOCOL-HARNESS-01 (ENGINE008_RENDERER_PROVENANCE_v1.json,
+  sha256=2ec2e166cfbd5951c5d68ff3074b3a977c910e855db795fffcdb55a316d0b3da),
+  qui DECLARE elle-meme que libllama-common n'a pas de SHA d'autorite ecrite
+  prealable. Cette declaration n'a pas ete levee.
+RENDERER_QUALIFICATION_AUTHORITY_SHA256=NOT_AVAILABLE
+  Aucun document ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md n'a ete
+  produit : les criteres de correction demandes (contenu exact des
+  instructions de raisonnement, ordre des blocs, ouverture assistant, absence
+  de fallback ChatML, transmission effective de l'override, non-troncature)
+  n'ont pas tous ete transformes en attentes examinables verifiees.
+  Les preuves deja suffisantes sont conservees et NON rejouees :
+    - EMBEDDED_TEMPLATE_OVERRIDDEN_BY_EXPLICIT=YES mesure sur le candidat
+    - 6 fixtures sur 6 rendent des SHA256 identiques entre les deux modeles
+    - RENDERER_TEMPLATE_SOURCE_SHA256 == autorite effective
+
+--- R3 : REGLE NORMATIVE SYSTEM ---
+SYSTEM_RULE_MATERIALIZED=YES
+  La regle adoptee par l'instruction est materialisee et MESUREE :
+  « Aucun message de role system n'est fourni dans le tableau des messages
+   TASK. Le template effectif commun peut produire un bloc system, notamment
+   pour ses instructions de raisonnement par defaut. Ce bloc fait partie du
+   rendu accepte et doit etre conserve et trace. »
+TASK_INPUT_MESSAGES_SYSTEM_COUNT=0
+  Mesure : le harnais ne construit qu'un seul message, de role user
+  (engine008-quality-eval.cpp, mode render). Aucun message system fourni.
+TEMPLATE_GENERATED_SYSTEM_POLICY=ACCEPTED_AND_TRACED
+RENDERED_WITH_TEMPLATE_SYSTEM_BLOCK_COUNT=2698      (sur 2698)
+RENDERED_WITH_DEFAULT_REASONING_INSTRUCTIONS_COUNT=2698
+RENDERED_WITH_ASSISTANT_OPENING_COUNT=2698
+
+  Structure exacte observee du rendu (premier item, extrait verifie) :
+    <|im_start|>system\n
+    Reasoning effort is set to xhigh. Please think carefully through the
+    task, validate key assumptions, consider plausible alternatives, and
+    prioritize correctness, consistency, and clarity in the final answer.
+    <|im_end|>\n
+    <|im_start|>user\n<Question/Choices/Answer selon contrat><|im_end|>\n
+    <|im_start|>assistant\n<think>\n
+
+  CONFLIT DECLARE, NON RESOLU PAR REECRITURE : la clause de brief
+  « SYSTEM_MESSAGE_PRESENT=NO » decrit le TABLEAU DE MESSAGES ; elle ne decrit
+  pas le TEXTE RENDU. Les deux sont vrais simultanement et ne se contredisent
+  pas une fois distingues. Aucun bloc n'a ete supprime; aucun message system
+  n'a ete ajoute; le template commun n'a pas ete modifie;
+  TASK_PROMPT_CONTRACTS_v1 n'a pas ete modifie.
+  Les 2 698 entrees rendues et tokenisees restent VALIDES et INCHANGEES
+  (aucun re-rendu : aucun changement ne le justifiait).
+
+--- R1 : OBSERVABILITE DES PREUVES RUNTIME (constat determinant) ---
+Le site exact de la condition WHT a ete localise dans les sources Q1 :
+  src/llama-graph.cpp:1497
+    if (w->type == GGML_TYPE_TQ2_G128 && getenv("OBRAIN_NO_ROTATION") == nullptr)
+  src/llama-quant.cpp:1329  (chemin de quantification, hors inference)
+CONSTAT MESURE : CE SITE N'EMET AUCUN LOG. Il n'existe donc pas, en l'etat,
+d'observation directe de la decision de rotation au moment ou elle est prise.
+Chemin de capture candidat identifie, NON encore etabli :
+  GGML_CUDA_OP_TIMING=1  (ggml/src/ggml-cuda/ggml-cuda.cu:3821) journalise le
+  temps par operation ; il revelerait l'execution du noyau WHT sur CUDA.
+  LIMITE : ggml-cuda.cu:3941 indique que ce journal est IGNORE lorsque le
+  graphe est capture en CUDA graph -- une absence de ligne ne prouverait donc
+  rien dans ce mode.
+CONSEQUENCE, ENONCEE SANS DETOUR :
+  une absence d'observabilite n'est PAS un compteur zero. En l'etat,
+  ENGINE008_MTP_EXECUTION_ABSENT_RUNTIME_CONFIRMED et
+  ENGINE008_CANDIDATE_WHT_RUNTIME_CONFIRMED ne pourraient etre au mieux que
+  NOT_CONFIRMED, ce qui n'est jamais assimile a PASS (§15).
+
+--- ETAT D'AVANCEMENT REEL DE LA PASSE ---
+Le harnais engine008-quality-eval, tel que construit et gele par
+PROTOCOL-HARNESS-01 (source 3e9691918fa5e861862f7068bbb4af0025d8c1ca2e21a978a0cd32c658aeab7d,
+binaire 011bd43880307fe1271eeb7b7865889a135f2689d6a4c74091177163892a0665),
+charge les modeles en vocab_only=true et NE POSSEDE PAS de chemin de decode.
+Le mode execute refuse par construction, avant tout appel a libllama.
+Aucune extension de ce harnais n'a ete ecrite dans cette passe.
+
+N'ONT DONC PAS ETE PRODUITS :
+  ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md
+  protocole / source map / autorites renderer / manifestes en v1.1
+  ENGINE008_PREFLIGHT_PREREQUISITES.txt
+  ENGINE008_PREFLIGHT_PLAN_v1.json et son SHA
+  les 4 runs autorises (baseline x2, candidat x2)
+  ENGINE008_MTP_RUNTIME_PROOF.md
+  ENGINE008_WHT_RUNTIME_PROOF.md
+  ENGINE008_STOP_RUNTIME_OBSERVATIONS.md
+  les tests synthetiques du contrat d'arret
+
+RAISON : la passe a ete interrompue par epuisement du budget de contexte de
+l'agent AVANT que ces etapes ne soient abordees. Ce n'est PAS un blocage
+technique : la suite est bornee et realisable. Il est declare ici pour qu'il
+ne soit pas confondu avec une impossibilite.
+
+--- AUTORITES : INTEGRITE VERIFIEE PENDANT LA PASSE ---
+Aucune autorite n'a ete modifiee pendant cette passe.
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+  (87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2, non reconstruite)
+ACTUAL_LOADED_LIBRARIES_AUTHORITY_MATCH=NOT_VERIFIED
+  (aucun forward pass n'a eu lieu ; le linkage reste celui mesure et publie par
+   PROTOCOL-HARNESS-01, non re-verifie par execution dans cette passe)
+EMBEDDED_CHAT_TEMPLATE_MATCH=NO
+EFFECTIVE_CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=YES
+  (mesure PROTOCOL-HARNESS-01, entrees inchangees, non rejouee)
+
+--- COMPTEURS DE CALCUL ---
+HARNESS_PREFREEZE_DECODE_CALL_COUNT=0
+HARNESS_PREFREEZE_MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_BASELINE_RUN_COUNT=0
+PREFLIGHT_CANDIDATE_RUN_COUNT=0
+PREFLIGHT_LLAMA_DECODE_CALL_COUNT=0
+PREFLIGHT_MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_UNAUTHORIZED_COMPUTE_CALL_COUNT=0
+MODEL_COMPUTE_ALLOWED=NO
+
+--- CONTRAT D'ARRET ---
+GENERATE_STOP_TOKEN_IDS=[248046]
+  Relu depuis le protocole gele (ENGINE008_PROTOCOL_v1).
+  EOS 248046 = <|im_end|> sur les deux modeles (<|im_start|>=248045,
+  <|endoftext|>=248044 = token BOS).
+STOP_CONTRACT_SYNTHETIC_SELFTEST=NOT_RUN
+PREFLIGHT_OBSERVED_EOS_STOP_COUNT=0
+PREFLIGHT_OBSERVED_MAX_NEW_TOKENS_STOP_COUNT=0
+PREFLIGHT_BASELINE_GENERATED_IDS_REPEAT_MATCH=NOT_RUN
+PREFLIGHT_CANDIDATE_GENERATED_IDS_REPEAT_MATCH=NOT_RUN
+
+--- ABSENCE DE RESULTATS QUALITE (invariant preserve) ---
+SCORERS_MODEL_OUTPUT_INPUT_COUNT=0
+TASK_QUALITY_RESULT_COUNT=0
+TOKEN_QUALITY_RESULT_COUNT=0
+LONG_CONTEXT_RESULT_COUNT=0
+
+--- VERDICT ---
+ENGINE008_PREFLIGHT=BLOCKED
+FIRST_BLOCKING_GATE=PREFLIGHT_NOT_EXECUTED_HARNESS_HAS_NO_DECODE_PATH_AND_WHT_OBSERVABILITY_UNESTABLISHED
+REMAINING_BLOCKERS=
+  B1_harnais_sans_chemin_de_decode : le binaire gele charge en vocab_only et
+     refuse l'execution. Un mode de preflight (chargement complet, prefill,
+     boucle de generation bornee, compteurs d'appels, contrat d'arret) doit
+     etre ecrit, compile, teste, puis NOUVELLEMENT GELE. Les anciennes
+     observations ne pourraient pas etre recyclees sous les nouvelles
+     identites (§13).
+  B2_observabilite_WHT_NON_ETABLIE : le site de decision (llama-graph.cpp:1497)
+     n'emet aucun log. GGML_CUDA_OP_TIMING=1 est un chemin candidat, mais il
+     est ignore en mode CUDA graph : l'absence de ligne ne prouverait rien.
+     Une methode de capture qui detecte REELLEMENT une rotation si elle avait
+     lieu -- y compris pour la propriete NEGATIVE de la baseline -- reste a
+     etablir. Sans elle, WHT ne peut etre que NOT_CONFIRMED.
+  B3_observabilite_MTP_NON_ETABLIE : meme exigence pour distinguer presence
+     des tenseurs NextN / chargement / construction de graphe / execution
+     effective. Aucun instrument n'est encore etabli.
+  B4_R2_non_close : autorite de qualification additionnelle du renderer et
+     attentes examinables non produites.
+  B5_v1.1_non_produite : aucun document normatif n'ayant change de contenu
+     au-dela de la materialisation R3, la version v1.1 n'a pas ete emise.
+     Le gel v1 (protocole c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3)
+     reste INTACT et n'a pas ete reecrit pour effacer ses reserves.
+
+ENGINE008_READY_FOR_QUALITY_AUTHORIZATION=NO
+ENGINE008_QUALITY_EXECUTION_ALLOWED=NO
+ENGINE008_NEXT_STEP=ECRIRE_ET_GELLER_LE_MODE_PREFLIGHT_DU_HARNAIS_ET_ETABLIR_LES_METHODES_DE_CAPTURE_MTP_ET_WHT_QUI_DETECTENT_REELLEMENT_LEUR_EXECUTION
+
+--- ARRET ---
+Arret a la fin de PREFLIGHT-01. Aucun enchainement vers l'evaluation qualite.
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit, aucune generation, aucune NLL/PPL, aucun scoring de sortie modele,
+aucun benchmark long contexte, aucune recherche de parametres.

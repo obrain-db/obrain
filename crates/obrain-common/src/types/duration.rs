@@ -44,6 +44,16 @@ impl Duration {
         }
     }
 
+    /// Clé de tri STRUCTURELLE `(months, days, nanos)` pour l'ordre TOTAL du
+    /// comparateur canonique ([`crate::types::value_cmp::comparer_total`]) :
+    /// quand l'ordre partiel ne tranche pas (P1M vs P30D), le tri départage
+    /// par cette clé — déterministe et documentée, sans prétendre à une
+    /// sémantique calendaire.
+    #[must_use]
+    pub const fn cle_de_tri(&self) -> (i64, i64, i64) {
+        (self.months, self.days, self.nanos)
+    }
+
     /// Creates a duration from a number of months.
     #[must_use]
     pub const fn from_months(months: i64) -> Self {

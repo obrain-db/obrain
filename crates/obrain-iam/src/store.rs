@@ -37,6 +37,9 @@ use crate::policy;
 pub struct IamStore {
     /// The underlying graph store (typically the `__system` named graph).
     store: Arc<dyn GraphStoreMut>,
+    /// Écrire les événements d'audit ? Faux pour un processus LECTEUR : le
+    /// magasin d'identités n'a qu'un écrivain (voir `sans_audit`).
+    audit: bool,
 }
 
 impl std::fmt::Debug for IamStore {
@@ -50,7 +53,21 @@ impl std::fmt::Debug for IamStore {
 impl IamStore {
     /// Creates a new `IamStore` wrapping the given graph store.
     pub fn new(store: Arc<dyn GraphStoreMut>) -> Self {
-        Self { store }
+        Self { store, audit: true }
+    }
+
+    /// Le même magasin, SANS écriture d'audit — pour un processus qui n'est
+    /// pas l'écrivain de la base d'identités (pont MCP).
+    ///
+    /// Mesuré sur n3 (2026-09-16) : chaque pont écrivait un événement d'audit
+    /// par appel, en même temps que `viz serve`. Deux écrivains s'allouent les
+    /// mêmes slots et pages, et un credential (le jeton du compte de service)
+    /// finissait écrasé. Une base ouverte en lecture n'y refuse pas les
+    /// mutations : c'est donc ici que l'abstention se décide.
+    #[must_use]
+    pub fn sans_audit(mut self) -> Self {
+        self.audit = false;
+        self
     }
 
     /// Returns a reference to the underlying graph store.
@@ -372,10 +389,18 @@ impl IamStore {
             })?;
 
         let now = now_iso();
-        // Simple expiration calculation (approximate — good enough for now)
+        // ── L'EXPIRATION EST UNE DATE COMPARABLE, plus une décoration ────────
+        // On écrit DEUX fois : l'ISO pour l'humain, l'époque en secondes pour
+        // la seule comparaison que l'authentification puisse faire. `ttl_secs`
+        // à 0 = pas d'expiration (les mots de passe, notamment).
         let expires = format!("{}+{ttl_secs}s", &now);
+        let expires_ts = if ttl_secs == 0 {
+            None
+        } else {
+            Some(maintenant_ts() + ttl_secs)
+        };
 
-        let cred_props: Vec<(PropertyKey, Value)> = vec![
+        let mut cred_props: Vec<(PropertyKey, Value)> = vec![
             (props::ID.into(), Value::from(id)),
             (
                 props::CRED_TYPE.into(),
@@ -385,6 +410,9 @@ impl IamStore {
             (props::CREATED_AT.into(), Value::from(now.as_str())),
             (props::EXPIRES_AT.into(), Value::from(expires.as_str())),
         ];
+        if let Some(ts) = expires_ts {
+            cred_props.push((props::EXPIRES_TS.into(), Value::Int64(ts as i64)));
+        }
 
         let cred_nid = self
             .store
@@ -421,6 +449,16 @@ impl IamStore {
             PolicyDecision::Deny => "deny",
             PolicyDecision::ImplicitDeny => "implicit_deny",
         };
+        if !self.audit {
+            return AuditEvent {
+                id: id.to_string(),
+                principal: principal.clone(),
+                action: action.to_string(),
+                resource: resource.clone(),
+                result,
+                timestamp: now,
+            };
+        }
 
         let event_props: Vec<(PropertyKey, Value)> = vec![
             (props::ID.into(), Value::from(id)),
@@ -632,7 +670,7 @@ impl IamStore {
     // -----------------------------------------------------------------------
 
     /// Finds a node with a given label and `iam_id` property value.
-    fn find_node_by_label_and_id(&self, label: &str, id: &str) -> Option<NodeId> {
+    pub(crate) fn find_node_by_label_and_id(&self, label: &str, id: &str) -> Option<NodeId> {
         let candidates = self.store.nodes_by_label(label);
         for nid in candidates {
             if let Some(Value::String(nid_val)) =
@@ -720,6 +758,19 @@ impl IamStore {
 
     /// Converts a graph node to a [`Role`].
     fn node_to_role(&self, nid: NodeId) -> Option<Role> {
+        // ── UN RÔLE SUPPRIMÉ N'EST PLUS UN RÔLE ─────────────────────────────
+        // `delete_role` marque `iam_status = "deleted"` depuis toujours, et rien
+        // ne lisait ce champ. Le rôle restait donc rendu par `get_role`,
+        // `find_role_by_name`, `list_roles` et `get_user_roles` — et comme
+        // `evaluate_access` collecte les politiques EN PASSANT PAR LES RÔLES,
+        // **supprimer un rôle ne retirait aucun droit**. Même correctif que pour
+        // les politiques (voir `node_to_policy`). Statut absent ⇒ actif.
+        if matches!(
+            self.store.get_node_property(nid, &props::STATUS.into()),
+            Some(Value::String(s)) if s.as_str() == "deleted"
+        ) {
+            return None;
+        }
         Some(Role {
             id: self.get_str(nid, props::ID)?,
             name: self.get_str(nid, props::NAME)?,
@@ -730,6 +781,23 @@ impl IamStore {
 
     /// Converts a graph node to a [`Policy`].
     fn node_to_policy(&self, nid: NodeId) -> Option<Policy> {
+        // ── UNE POLITIQUE SUPPRIMÉE N'EST PLUS UNE POLITIQUE ────────────────
+        // `delete_policy` marque `iam_status = "deleted"`, mais cette fonction
+        // ne lisait jamais ce champ : la politique continuait d'être rendue par
+        // `list_policies`, `get_role_policies` et `evaluate_access`, donc
+        // **supprimer une politique ne retirait aucun droit**.
+        //
+        // Défaut MESURÉ le 2026-09-13, par un test d'administration : après
+        // `retirer_espace`, la session dont l'espace venait d'être fermé
+        // continuait de passer. Le statut absent vaut actif — les politiques
+        // écrites avant ce correctif n'en portent pas, et les invalider toutes
+        // serait une panne.
+        if matches!(
+            self.store.get_node_property(nid, &props::STATUS.into()),
+            Some(Value::String(s)) if s.as_str() == "deleted"
+        ) {
+            return None;
+        }
         let effect_str = self.get_str(nid, props::EFFECT)?;
         let effect = PolicyEffect::from_str_loose(&effect_str)?;
         let actions_csv = self.get_str(nid, props::ACTIONS).unwrap_or_default();
@@ -784,14 +852,41 @@ impl IamStore {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Returns the current time as an ISO 8601 string (simplified).
+/// L'instant présent, en secondes depuis l'époque UNIX.
+///
+/// ── CE QUI ÉTAIT ÉCRIT AVANT (défaut mesuré le 2026-09-13) ───────────────
+/// `now_iso()` rendait un **compteur** formaté en date :
+/// `2026-01-01T00:00:00Z`, `…:01Z`, `…:02Z`… Aucun rapport avec l'heure. Donc
+/// `iam_created_at` et `iam_expires_at` ne dataient RIEN, et l'expiration
+/// annoncée (`{now}+3600s`) n'était pas une date non plus. Le commentaire
+/// disait « à remplacer par chrono en production » — la production, c'est ici.
+pub(crate) fn maintenant_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// L'instant présent en ISO 8601 (UTC), pour la lecture humaine.
+///
+/// Conversion depuis l'époque UNIX, sans calendrier externe : les jours sont
+/// comptés par l'algorithme civil (Howard Hinnant), valable pour toutes les
+/// dates du parc.
 fn now_iso() -> String {
-    // Use a monotonic counter as a proxy for "now" in embedded mode.
-    // In production, this would be replaced by `chrono::Utc::now().to_rfc3339()`.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let ts = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("2026-01-01T00:00:{ts:02}Z")
+    let ts = maintenant_ts();
+    let (jours, reste) = (ts / 86_400, ts % 86_400);
+    let (h, m, s) = (reste / 3600, (reste % 3600) / 60, reste % 60);
+    let z = jours as i64 + 719_468;
+    let ere = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - ere * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + ere * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mois = if mp < 10 { mp + 3 } else { mp - 9 };
+    let annee = if mois <= 2 { y + 1 } else { y };
+    format!("{annee:04}-{mois:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,6 +1138,35 @@ mod tests {
 
     // -- Audit events --------------------------------------------------------
 
+    /// Un magasin LECTEUR n'écrit aucun audit : ni nœud, ni arête — le
+    /// magasin d'identités n'a qu'un écrivain (n3, 2026-09-16).
+    #[test]
+    fn un_magasin_sans_audit_n_ecrit_rien() {
+        let store = Arc::new(SubstrateStore::open_tempfile().expect("store"));
+        let graphe = Arc::clone(&store) as Arc<dyn GraphStoreMut>;
+        let ecrivain = IamStore::new(Arc::clone(&graphe));
+        ecrivain.create_user("u1", "alice", None).unwrap();
+        let noeuds = graphe.node_count();
+        let aretes = graphe.edge_count();
+
+        let lecteur = IamStore::new(Arc::clone(&graphe)).sans_audit();
+        let principal = Orn::user("default", "alice");
+        let evt = lecteur.log_audit_event(
+            "e1",
+            &principal,
+            "graph:read",
+            &Orn::node("alice", 1),
+            PolicyDecision::Allow,
+        );
+        assert_eq!(evt.id, "e1", "l'événement est rendu à l'appelant");
+        assert_eq!(graphe.node_count(), noeuds, "aucun nœud d'audit écrit");
+        assert_eq!(graphe.edge_count(), aretes, "aucune arête PERFORMED écrite");
+
+        // L'écrivain, lui, journalise toujours.
+        ecrivain.log_audit_event("e2", &principal, "graph:read", &Orn::node("alice", 1), PolicyDecision::Allow);
+        assert_eq!(graphe.node_count(), noeuds + 1);
+    }
+
     #[test]
     fn log_and_list_audit_events() {
         let iam = new_store();
@@ -1153,5 +1277,82 @@ mod tests {
             PolicyDecision::Allow,
         );
         assert_eq!(iam.list_audit_events(10).len(), 1);
+    }
+
+    // ── LA SUPPRESSION DOIT RETIRER LE DROIT (régression, 2026-09-13) ───────
+    //
+    // `delete_policy` et `delete_role` marquent `iam_status = "deleted"` depuis
+    // toujours, mais `node_to_policy` / `node_to_role` ne lisaient jamais ce
+    // champ : la politique et le rôle restaient rendus par `list_*`,
+    // `get_role_policies` et `get_user_roles`. Or `evaluate_access` collecte les
+    // politiques EN PASSANT PAR LES RÔLES — donc **supprimer ne retirait aucun
+    // droit**. Ces deux tests tiennent la correction.
+
+    #[test]
+    fn supprimer_une_politique_retire_le_droit() {
+        let iam = new_store();
+        iam.create_user("u1", "alice", None).unwrap();
+        iam.create_role("r1", "lecteur", None).unwrap();
+        iam.attach_role("u1", "r1").unwrap();
+        let ressource = Orn::tenant("default", "base");
+        iam.create_policy(
+            "p1",
+            "lecture",
+            PolicyEffect::Allow,
+            &["graph:read"],
+            std::slice::from_ref(&ressource),
+        )
+        .unwrap();
+        iam.attach_policy_to_role("r1", "p1").unwrap();
+        assert!(
+            iam.evaluate_access("u1", "graph:read", &ressource)
+                .unwrap()
+                .is_allowed()
+        );
+
+        iam.delete_policy("p1").unwrap();
+
+        assert!(iam.get_policy("p1").is_none(), "une politique supprimée ne se lit plus");
+        assert!(iam.list_policies().is_empty());
+        assert!(
+            !iam.evaluate_access("u1", "graph:read", &ressource)
+                .unwrap()
+                .is_allowed(),
+            "supprimer une politique DOIT retirer le droit qu'elle accordait"
+        );
+    }
+
+    #[test]
+    fn supprimer_un_role_retire_le_droit() {
+        let iam = new_store();
+        iam.create_user("u1", "alice", None).unwrap();
+        iam.create_role("r1", "lecteur", None).unwrap();
+        iam.attach_role("u1", "r1").unwrap();
+        let ressource = Orn::tenant("default", "base");
+        iam.create_policy(
+            "p1",
+            "lecture",
+            PolicyEffect::Allow,
+            &["graph:read"],
+            std::slice::from_ref(&ressource),
+        )
+        .unwrap();
+        iam.attach_policy_to_role("r1", "p1").unwrap();
+        assert!(
+            iam.evaluate_access("u1", "graph:read", &ressource)
+                .unwrap()
+                .is_allowed()
+        );
+
+        iam.delete_role("r1").unwrap();
+
+        assert!(iam.get_role("r1").is_none(), "un rôle supprimé ne se lit plus");
+        assert!(iam.list_roles().is_empty());
+        assert!(
+            !iam.evaluate_access("u1", "graph:read", &ressource)
+                .unwrap()
+                .is_allowed(),
+            "supprimer un rôle DOIT retirer les droits qu'il portait"
+        );
     }
 }

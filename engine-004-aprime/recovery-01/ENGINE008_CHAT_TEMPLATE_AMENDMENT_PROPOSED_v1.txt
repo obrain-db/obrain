@@ -1,0 +1,136 @@
+ENGINE008_CHAT_TEMPLATE_AMENDMENT_PROPOSED_v1
+==========================================================================
+CHAT_TEMPLATE_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+AUCUN RENDU TASK, AUCUN GEL DE HARNAIS, AUCUN CALCUL MODELE AU TITRE DE CET
+AMENDEMENT TANT QU IL N A PAS ETE EXPLICITEMENT ADOPTE.
+
+=== 1. OBJET ===
+Objectif propose : comparer baseline et candidat A ENTREES CONTROLEES, c est-a-
+dire avec UNE AUTORITE DE RENDU COMMUNE, de sorte que toute difference mesuree
+ensuite provienne des MODELES et non du texte qui leur est presente.
+
+=== 2. FAIT MESURE QUI MOTIVE L AMENDEMENT (il demeure declare) ===
+EMBEDDED_TEMPLATE_MATCH=NO
+  BASELINE_CHAT_TEMPLATE_SHA256=c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+  CANDIDATE_CHAT_TEMPLATE_SHA256=12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce
+  premiere divergence a l octet 1971 ; 102 lignes de diff unifie (+34 / -20) ;
+  le candidat se termine par {{#- Unsloth fixes - developer role, merged
+  system messages, tool calling #}}
+  Le mismatch reste DECLARE partout, y compris apres adoption eventuelle.
+  Aucun GGUF n a ete ni ne sera retouche pour obtenir artificiellement
+  l egalite des empreintes.
+
+=== 3. INCOMPATIBILITE EXPOSEE AVANT TOUT CHOIX (exigee par §7) ===
+Deux objectifs sont possibles et MUTUELLEMENT EXCLUSIFS :
+
+  OBJECTIF_A -- EGALITE DES ENTREES
+    Une seule autorite de rendu pour les deux modeles. Le template EMBARQUE du
+    candidat est IGNORE au profit d une autorite commune.
+    Avantage : §20 (entrees bit-identiques) devient atteignable.
+    Cout scientifique ASSUME : le candidat est evalue sur un texte qu il n a
+    PAS embarque. La comparaison mesure les poids, pas la fidelite au template.
+
+  OBJECTIF_B -- FIDELITE NATIVE
+    Chaque modele est rendu avec SON PROPRE template embarque.
+    Avantage : chaque modele voit exactement ce pour quoi il a ete livre.
+    Cout : les entrees DIFFERENT par construction ; §20
+    (TASK_RENDERED_TEXT_BASELINE_CANDIDATE_MISMATCH_COUNT=0) devient
+    INATTEIGNABLE, et toute difference de score melange effet modele et effet
+    de mise en forme.
+
+AUCUN CHOIX N EST FAIT ICI. Cet arbitrage est un choix SCIENTIFIQUE, il ne
+peut pas etre tranche par un correctif technique, et il ne doit JAMAIS etre
+choisi apres observation de scores.
+
+=== 4. PROPOSITION RECOMMANDEE (a adopter ou rejeter en bloc) ===
+OBJECTIF RETENU PAR LA PROPOSITION = OBJECTIF_A.
+AUTORITE EFFECTIVE COMMUNE = les OCTETS EXACTS du template baseline,
+  c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041,
+  transmis EXPLICITEMENT au chemin natif retenu, pour les DEUX modeles.
+JUSTIFICATION DU CHOIX BASELINE COMME SOURCE : c est le modele de reference de
+  la comparaison ; figer l autorite sur le bras de reference rend l ecart
+  imputable au candidat. Ce choix est enonce ICI, avant tout rendu et avant
+  tout score, donc non piloté par les resultats.
+
+=== 5. CHEMIN NATIF RETENU, SA PROVENANCE ET TOUS LES PARAMETRES ===
+Fonction=common_chat_templates_apply
+Bibliotheque=libllama-common.so.0.0.135
+  sha256=a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20  (CONSTAT de cette passe, PAS une autorite :
+  aucun SHA d autorite n existe pour cette bibliotheque -- voir §4 de
+  ENGINE008_Q1_RECOVERY.txt. Son elevation au rang d autorite doit etre
+  explicitement decidee, ou une qualification separee menee.)
+Fork=/home/triviere/projects/llama-obrain-cuda-f1a
+  git HEAD=8447604f7f0c3b48a77be46de2466a5b23e27826  branche=feat/cuda-tq2g128
+libllama liee simultanement=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0
+  sha256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2   (AUTORITE Q1)
+Fonction PRESCRITE AUPARAVANT ET DESORMAIS ECARTEE=llama_chat_apply_template
+  MOTIF=mesure : repli ChatML, aucun Jinja (voir ENGINE008_NATIVE_CHAT_RENDERER_AUDIT.txt)
+PARAMETRES DE RENDU, tous explicites :
+  use_jinja            = true         (OBLIGATOIRE : sinon les kwargs sont ignores)
+  add_generation_prompt= true         (prefixe assistant exact, §17)
+  add_bos              = false        (TASK_CHAT_TEMPLATE_EMITS_BOS=NO)
+  add_eos              = false
+  messages             = [ {role:"user", content:<prompt semantique gele>} ]
+                         SYSTEM_MESSAGE_PRESENT=NO (§17) -- le bloc system
+                         eventuel provient du TEMPLATE, pas de l appelant
+  tools                = vide
+  parallel_tool_calls  = false
+  reasoning_format     = COMMON_REASONING_FORMAT_NONE
+  enable_thinking      = ETAT A DECIDER, voir §6 (point ouvert)
+  chat_template_kwargs = ETAT A DECIDER, voir §6 (point ouvert)
+  force_pure_content   = false
+  continue_final_message = COMMON_CHAT_CONTINUATION_NONE
+  grammar, json_schema = vides
+TOKENISATION ASSOCIEE (inchangee) :
+  TASK_CHAT_PARSE_SPECIAL=YES
+  TASK_TOKENIZER_ADDS_BOS=NO (add_bos=false sur les deux modeles, cf. passe precedente)
+  outil=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-tokenize sha256=edacdf0d7bcf933bf9a14df1f305197d11860d00f6d8c60488c546e0aac1a61f
+
+=== 6. POINTS OUVERTS -- A TRancher AVANT ADOPTION (non tranches ici) ===
+O1. enable_thinking : le defaut du fork est true. Non defini = true, ce qui
+    declenche l emission d un bloc system 'reasoning_instructions' par le
+    template. Faut-il l exiger EXPLICITEMENT a true, le mettre a false, ou le
+    laisser implicite ? La valeur change le texte vu par les deux modeles.
+O2. reasoning_effort : defaut du template 'xhigh'. Varie-t-il par categorie
+    TASK (math/code/instruction) ? Aucune autorite ne le prescrit aujourd'hui.
+O3. Statut d autorite de libllama-common.so : le constat de SHA suffit-il, ou
+    faut-il une qualification separee ? Sans decision, le chemin retenu
+    repose sur une bibliotheque non qualifiee -- a declarer tel quel.
+O4. Si l autorite voulue exige la FIDELITE NATIVE (OBJECTIF_B), alors cet
+    amendement doit etre REJETE tel quel, et §20 doit etre amendé pour
+    reconnaitre des entrees differentes par conception. Les deux ne peuvent
+    pas coexister.
+
+=== 7. DISTINCTION DES DEUX GATES (exigee) ===
+  EMBEDDED_TEMPLATE_MATCH=NO          (mesure ; ne changera pas)
+  EFFECTIVE_TEMPLATE_MATCH=NOT_EXERCISED
+    (elle ne pourra etre declaree qu APRES exercice du chemin natif retenu,
+     sur les 2698 items. Aucune egalite effective n est annoncee ici.)
+
+=== 8. GATES D EGALITE QUI DEMEURENT EXIGES APRES ADOPTION (inchanges) ===
+  TASK_RENDERED_TEXT_BASELINE_CANDIDATE_MISMATCH_COUNT=0
+  TASK_INPUT_TOKEN_ID_BASELINE_CANDIDATE_MISMATCH_COUNT=0
+  TASK_RENDERED_INPUT_COUNT=2698 (1400/500/257/541)
+  TASK_INVALID_TOKEN_ID_COUNT=0
+  TASK_RENDER_SECOND_PASS_TEXT_MISMATCH_COUNT=0
+  TASK_RENDER_SECOND_PASS_TOKEN_MISMATCH_COUNT=0
+  TASK_RENDER_REPRODUCIBLE=YES
+  MMLU_PREFIX_EXTENSION_NONPREFIX_COUNT=0
+  MMLU_CANDIDATE_SUFFIX_TOKEN_MISMATCH_COUNT=0
+  MMLU_PREFIX_STATE_REUSE=NO (correctness-first, v1)
+
+=== 9. CONSEQUENCES SUR LES HASHES ET LE GEL ===
+C1. ENGINE008_CHAT_TEMPLATE_SHA256 doit devenir le hash de l AUTORITE
+    EFFECTIVE, c est-a-dire c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041 sous la proposition, et NON un
+    hash suppose commun aux deux GGUF.
+C2. Le candidat portant toujours son propre template embarque, tout hash de
+    harnais couvrant la configuration de rendu doit enregistrer LES DEUX
+    empreintes embarquees ET l autorite effective, plus le parametrage §5.
+C3. TASK_EVAL_CONTENT_TREE_SHA256 doit etre recalcule apres adoption : il
+    couvre desormais un rendu different.
+C4. TASK_EVAL_DATA_CONTENT_TREE_SHA256=c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a reste INCHANGE : il
+    porte sur la DATA amont, que l amendement ne touche pas.
+C5. La gate historique n est PAS renommee retroactivement pour la faire
+    passer : EMBEDDED_TEMPLATE_MATCH=NO reste publie a cote de la nouvelle
+    EFFECTIVE_TEMPLATE_MATCH.
+C6. Aucun seuil (QUALITY_THRESHOLDS_v1) n est touche par cet amendement.

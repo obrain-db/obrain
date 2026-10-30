@@ -875,8 +875,8 @@ pub struct EpochStoreStats {
 /// Returns an ISO 8601 timestamp string using std::time (no chrono dependency).
 fn chrono_timestamp() -> String {
     // Use SystemTime for a rough ISO 8601 timestamp
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let duration = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = duration.as_secs();
     // Simple UTC timestamp without pulling in chrono

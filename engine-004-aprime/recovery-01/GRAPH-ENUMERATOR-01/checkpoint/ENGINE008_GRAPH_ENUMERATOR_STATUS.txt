@@ -1,0 +1,108 @@
+ENGINE-008 -- STATUT TERMINAL GRAPH-ENUMERATOR-01
+==========================================================================
+La faisabilite est TRANCHEE et l'acces VERIFIE. L'implementation n'a pas ete
+ecrite : limite de contexte. Aucun forward pass.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=GRAPH_ENUMERATOR_BUILD_ONLY
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  AUCUNE modification de Q1 n'est requise : la methode retenue n'utilise que
+  des symboles DEJA exportes et des structures DEJA publiques.
+
+GRAPH_OBSERVER_METHOD=EXPORTED_f1a_last_gf_PLUS_PUBLIC_GGML_GRAPH_ACCESSORS
+GRAPH_OBSERVER_ACCESS_VERIFIED=YES
+  f1a_last_gf         : globale EXPORTEE (f1a-capture.cpp:91), pointeur du
+                        DERNIER graphe soumis ; f1a_last_gf_nodes (:92)
+  ggml_graph_node     : GGML_API publique (ggml.h:2783)
+  ggml_graph_n_nodes  : GGML_API publique (ggml.h:2785)
+  ggml_tensor         : struct PUBLIQUE -- type (:684), ne[] (:688), nb[] (:691),
+                        op (:695), src[], name
+  Helpers f1a exportes : f1a_sub_node_op, f1a_sub_node_src,
+                        f1a_ptr_in_submitted_graph, f1a_submitted_graph_output_count
+OBSERVED_GRAPH_LEVEL=GRAPHE_SOUMIS (submitted graph)
+  Etabli : la colonne gf de SUBMITTED_GRAPH_SNAPSHOTS.csv vaut 0xfbdeec9f3030
+  dans le run Q1 reel -- exactement le pointeur que f1a_last_gf publie. La
+  surface et l'acces designent le MEME objet. C'est le niveau que la question
+  NextN exige.
+
+ACCES ECARTES, avec motif :
+  cb_eval (llama.h:369-370) EXISTE mais n'est pas retenu : il est appele PAR
+    TENSEUR et ne donne pas l'enumeration du graphe soumis ; de plus il force
+    une synchronisation par noeud et desactive les CUDA graphs, ce que §4
+    interdit (« ne pas modifier le chemin d'execution pour l'observer »).
+    Il reste disponible comme controle croise ulterieur.
+  Aucun accesseur de graphe sur llama_context : `grep get_graph include/llama.h`
+    est vide. Ecarte.
+
+GRAPH_ENUMERATOR_IMPLEMENTED=NO
+GRAPH_ENUMERATION_SCHEMA_SHA256=SPECIFIE_NON_IMPLEMENTE
+  Schema ENGINE008_GRAPH_ENUM_v1 SPECIFIE dans
+  ENGINE008_GRAPH_ENUMERATION_SCHEMA.md : 25 champs par noeud, champs exclus
+  motives, 6 controles d'exhaustivite, 6 regles de classification
+  preenregistrees.
+GRAPH_ENUMERATOR_SYNTHETIC_SELFTEST=NOT_RUN
+GRAPH_ENUMERATION_COMPLETENESS_CHECK_IMPLEMENTED=NO
+  Les 6 controles sont SPECIFIES mais pas codes.
+
+NEXTN_STRUCTURAL_MAPPING=COMPLETE (au sens de la cartographie source)
+  t_h_nextn (llama-graph.cpp:1271, ggml_set_output :1317-1318) est un TENSEUR du
+  graphe, atteignable par enumeration. Les tenseurs blk.64.nextn.* apparaissent
+  comme FEUILLES (poids). n_layer_nextn (:1407) n'entre pas dans le graphe.
+  REGLE CONSERVATRICE, enoncee avant toute mesure : la presence d'un POIDS NextN
+  ne prouve pas l'execution d'une OPERATION NextN. La classification porte sur
+  les operations qui CONSOMMENT ces feuilles.
+
+HARNESS_SOURCE_SHA256=e92f3516938cdb7cf35026cc9533155fdef7e892f6526eec9f258eed17e97109
+HARNESS_BINARY_SHA256=aa7e4bf45f69854fe92e871d4bcf352b99972a2dc1572fd6af62640c8b988ce9
+  IDENTITES INCHANGEES : le harnais n'a pas ete modifie dans cette passe. Le
+  code existant reste valide ; l'enumerateur est specifie, non ecrit.
+
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Ce n'est ni un blocage d'acces (l'acces EST verifie et exploitable), ni une
+  gate scientifique. C'est une interruption de travail.
+  L'objectif « COMPLETE_SCOPE_ENUMERATOR » exige une methode IMPLEMENTEE et
+  TESTEE : elle ne l'est pas.
+
+REMAINING_PROOF_REQUIREMENTS=
+  E1_implementer l'enumerateur : import des symboles f1a_last_gf /
+     f1a_last_gf_nodes, cast en ggml_cgraph*, boucle ggml_graph_n_nodes /
+     ggml_graph_node, lecture de op / src / type / ne / name, ecriture du
+     schema ENGINE008_GRAPH_ENUM_v1.
+  E2_confirmer l'export de ggml_op_name AVANT de s'en servir comme dictionnaire
+     (ne pas le supposer). A defaut, classer sur le code numerique `op`.
+  E3_implementer les 6 controles d'exhaustivite et les 6 regles de
+     classification preenregistrees.
+  E4_tests sur graphes SYNTHETIQUES construits avec les primitives ggml
+     publiques (aucune evaluation numerique) : enumeration complete,
+     dependances partagees, feuilles et vues, noms vides ou trompeurs, export
+     incomplet, dependance manquante, identifiant incoherent, mauvais graphe,
+     parametres d'operation, serialisation/relecture. Un test POSITIF NextN doit
+     etre justifie par la cartographie source -> structure ; ajouter la chaine
+     « nextn » a un nom NE SUFFIT PAS.
+  E5_constater AU PREMIER RUN que f1a_last_gf est renseigne et que la valeur
+     egale la colonne gf du snapshot pour le meme submission_id. Sans cette
+     confrontation, l'enumeration pourrait lire un graphe residuel.
+  E6_gerer la fenetre : f1a_last_gf est ECRASE a chaque soumission.
+  E7_reprendre les travaux hors perimetre laisses en attente (R2 closure
+     renderer, chemin nominal d'autorisation sur mocks, v1.1, gel preflight).
+
+ENGINE008_NEXT_STEP=IMPLEMENTER_E1_A_E4 (enumerateur + 6 controles + tests
+  synthetiques), PUIS E5 au premier run autorise
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit, aucune generation, aucun scoring, aucune NLL/PPL, aucune execution
+speculative ou NextN.
+Aucune modification ni reconstruction de libllama Q1. Aucun modele, corpus,
+scorer, seuil, renderer, template, gel ou identite historique modifie.
+Aucun nouveau gel cree.

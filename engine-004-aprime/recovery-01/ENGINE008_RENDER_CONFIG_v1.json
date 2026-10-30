@@ -1,0 +1,141 @@
+{
+  "config_id": "ENGINE008_RENDER_CONFIG_v1",
+  "decided_utc": "2026-10-02",
+  "pass": "PROTOCOL-HARNESS-01",
+  "comparison_objective": "CONTROLLED_IDENTICAL_INPUTS",
+  "chat_template_amendment_status": "ADOPTED_COMMON_BASELINE",
+
+  "effective_template": {
+    "role": "AUTORITE_EFFECTIVE_UNIQUE_POUR_LES_DEUX_MODELES",
+    "artifact": "ENGINE008_EFFECTIVE_CHAT_TEMPLATE.jinja",
+    "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "bytes": 8952,
+    "provenance": "octets exacts du template embarque du modele BASELINE, extraits de tokenizer.chat_template et verifies par SHA256",
+    "transmission": "EXPLICITE via common_chat_templates_init(model, chat_template_override)",
+    "never_read_from_model": true
+  },
+
+  "embedded_templates": {
+    "baseline_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "candidate_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+    "embedded_chat_template_match": "NO",
+    "role": "DECLARE, NON UTILISE POUR PRODUIRE LES ENTREES"
+  },
+
+  "renderer": {
+    "function": "common_chat_templates_apply",
+    "library": "libllama-common.so.0.0.135",
+    "library_sha256": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20",
+    "engine": "JINJA_MINJA_NATIVE",
+    "rejected_alternative": {
+      "function": "llama_chat_apply_template",
+      "reason": "ne parse aucun Jinja et route le template Qwen vers LLM_CHAT_TEMPLATE_CHATML (mesure, voir ENGINE008_NATIVE_CHAT_RENDERER_AUDIT.txt)"
+    }
+  },
+
+  "template_interface_config": {
+    "_note": "parametres transmis a common_chat_templates_inputs, tous ECRITS EXPLICITEMENT",
+    "use_jinja": true,
+    "add_generation_prompt": true,
+    "enable_thinking": true,
+    "enable_thinking_state": "PRESENTE_VALEUR_EXPLICITE_TRUE",
+    "reasoning_format": "COMMON_REASONING_FORMAT_NONE",
+    "add_bos": false,
+    "add_eos": false,
+    "force_pure_content": false,
+    "tools": [],
+    "parallel_tool_calls": false,
+    "grammar": "",
+    "json_schema": "",
+    "continue_final_message": "COMMON_CHAT_CONTINUATION_NONE",
+    "chat_template_kwargs": {},
+    "chat_template_kwargs_state": "PRESENT_MAIS_VIDE",
+    "reasoning_effort_state": "ABSENTE_DU_CONTEXTE_JINJA",
+    "reasoning_effort_consequence": "le template applique son propre defaut 'xhigh' via reasoning_effort|default('xhigh')"
+  },
+
+  "message_structure": {
+    "system_message_present": "NO",
+    "messages": [
+      {
+        "role": "user",
+        "content": "<prompt semantique construit selon TASK_PROMPT_CONTRACTS_v1>"
+      }
+    ],
+    "generation_prefix": true,
+    "note": "le bloc system eventuel du texte rendu provient du TEMPLATE, jamais de l appelant"
+  },
+
+  "states_distinguished": {
+    "_note": "les quatre etats sont distincts et ne sont pas interchangeables (exige par §6)",
+    "variable_absente": {
+      "example": "reasoning_effort",
+      "observed_behavior": "le template applique son defaut 'xhigh'"
+    },
+    "variable_presente_false": {
+      "example": "enable_thinking=false (fixture thinking_off)",
+      "observed_behavior": "aucune instruction de raisonnement n est construite ; le rendu tombe a 81 octets contre 307"
+    },
+    "variable_presente_chaine_vide": {
+      "example": "aucun parametre de ce type n est requis par le contrat retenu",
+      "observed_behavior": "NON_EXERCE"
+    },
+    "variable_presente_valeur_explicite": {
+      "example": "enable_thinking=true, add_generation_prompt=true, use_jinja=true",
+      "observed_behavior": "valeurs retenues pour la production des entrees"
+    }
+  },
+
+  "semantic_prompt_contract": {
+    "authority": "TASK_PROMPT_CONTRACTS_v1.txt",
+    "authority_sha256": "fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6",
+    "mmlu_pro": {
+      "template": "Question:\n{question}\nChoices:\nA. {option_0}\n...\n{last}. {last_option}\nAnswer:\n",
+      "options_rendered": "UNIQUEMENT les options existantes (3..10)",
+      "max_new_tokens": null,
+      "scorer_id": "mmlu_pro_v1"
+    },
+    "gsm8k": {
+      "template": "{question}\nSolve the problem carefully.\nEnd your response with exactly one line in this format:\nFINAL: <number>",
+      "max_new_tokens": 1024,
+      "scorer_id": "gsm8k_v1"
+    },
+    "mbpp": {
+      "template": "{prompt}\nReturn only the Python source code implementing the requested function.\nDo not include Markdown fences or explanations.",
+      "max_new_tokens": 1024,
+      "scorer_id": "mbpp_v1"
+    },
+    "ifeval": {
+      "template": "EXACTEMENT le prompt upstream (ni prefixe ni suffixe)",
+      "max_new_tokens": 4096,
+      "scorer_id": "ifeval_v1"
+    }
+  },
+
+  "tokenization": {
+    "tool": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-tokenize",
+    "tool_sha256": "edacdf0d7bcf933bf9a14df1f305197d11860d00f6d8c60488c546e0aac1a61f",
+    "in_harness_call": "llama_tokenize(vocab, text, len, toks, n, add_special=false, parse_special=true)",
+    "TASK_CHAT_PARSE_SPECIAL": "YES",
+    "add_special": false,
+    "add_bos": false,
+    "add_eos": false,
+    "bos_policy_source": "preuves recouvrees : add_bos=false des deux cotes (metadonnee baseline False ; cle absente cote candidat, defaut de branche qwen35 false)",
+    "vocab_size": 248320,
+    "reason": "le texte rendu contient des tokens de controle du template : ils doivent etre interpretes comme speciaux"
+  },
+
+  "item_order": {
+    "authority": "ENGINE008_SELECTION_RULES_v2.txt + ordre DATA gele",
+    "sequence": ["knowledge_reasoning", "math", "code", "instruction"],
+    "within_category": "ordre DATA deja gele (ordre des fichiers *_ITEMS.jsonl)",
+    "emitted_file": "TASK_GLOBAL_ITEM_ORDER.txt"
+  },
+
+  "explicitly_not_done_in_this_pass": [
+    "aucun llama_decode, llama_encode, prefill, forward pass",
+    "aucun logit de modele",
+    "aucune generation, NLL, PPL, perplexite",
+    "aucun essai exploratoire de parametre ou de seuil"
+  ]
+}

@@ -1,0 +1,128 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-FINALIZE-10
+==========================================================================
+B2 ACHEVE : lanceur des quatre runs ecrit et teste, 21 controles, 0 echec.
+B1 ACHEVE EN VERIFICATION, VERDICT NEGATIF ET FONDE : la chaine WHT n'est pas
+raccordee, et deux de ses proprietes requises sont INEVALUABLES sur cet hote.
+B3 : manifeste NON emis, le gel restant refuse. Aucun run execute.
+
+WHT_REAL_COLLECTION_CONNECTED=NO
+  RACCORDE ET TESTE : activateurs f1a (poses apres autorisation),
+  EVENT_LEDGER.csv, SUBMITTED_GRAPH_SNAPSHOTS.csv, couverture des evenements et
+  des snapshots, confrontation du fingerprint, rapport serialise.
+  NON RACCORDE : GRAPH_ROLE_RELATIONSHIPS.csv (:671), TARGET_EFFECT_PATH.csv
+  (:675), RESIDENCY_MANIFEST.csv (:628) -- produits par Q1 mais AUCUN parseur ;
+  et la colonne `rotation_applied` (:590, valeur :473) n'est LUE NULLE PART.
+  La chaine WHT s'arrete donc avant l'attribution a la soumission et avant tout
+  verdict. C'est le maillon manquant, nomme precisement.
+BASELINE_WHT_NEGATIVE_COVERAGE_ASSESSABLE=NO
+  Critere d'eligibilite du producteur, verbatim (f1a-capture.cpp:5) :
+  « f1a_eligible() exige le TYPE TQ2_G128 ET le NOM exact present dans le CSV ».
+  La baseline est quantifiee en Q4_K_M : AUCUN tenseur TQ2_G128 -> ZERO cible
+  eligible. La baseline NE PEUT PAS etre capturee comme le candidat, exactement
+  la mise en garde de la consigne. Zero cible capturee reste NOT_CONFIRMED,
+  jamais une preuve d'absence -> la propriete negative n'est pas evaluable.
+CANDIDATE_WHT_POSITIVE_PROOF_ASSESSABLE=NO
+  `rotation = get_il_eff(il) % ud->n_devices` (llama-model.cpp:472,478,481).
+  L'hote expose UN SEUL device (nvidia-smi -L : GPU 0 NVIDIA GB10). Donc
+  n_devices==1 et x % 1 == 0 TOUJOURS : la rotation est toujours nulle, et
+  rotation_applied = (cur_raw != cur_used) (:473) ne peut pas devenir vrai.
+  C'est un fait STRUCTUREL, etabli par lecture croisee du code de rotation et de
+  la topologie de la machine -- pas une difficulte d'execution.
+WHT_CONNECTED_SELFTEST=NOT_RUN
+  Non execute : la chaine n'etant pas raccordee, il n'y a pas de chemin a tester.
+  Les fixtures exigees par la consigne n'ont donc pas ete ecrites. Je ne les
+  presente pas comme faites.
+
+FOUR_RUN_LAUNCHER_IMPLEMENTED=YES
+  engine008_launcher.cpp : un processus de harnais PAR run, sequence imposee
+  baseline1 -> candidat1 -> baseline2 -> candidat2.
+  Verifie AVANT le premier lancement : existence du harnais, autorisation
+  externe presente, identites du harnais et des deux modeles et du template,
+  et maximum de tokens EGAL A 8 (toute autre valeur refuse la sequence).
+  Par run : destination de capture UNIQUE et initialement vide (refus sinon,
+  sans meme invoquer), environnement `env -u OBRAIN_NO_ROTATION` (ABSENCE, pas
+  valeur), compteurs et rapport propres.
+  Arret au PREMIER echec, artefacts de l'echec CONSERVES, runs suivants marques
+  NOT_RUN, AUCUN retry, AUCUNE cinquieme invocation.
+  Le verdict ne se reduit PAS au code de sortie : le rapport enfant est lu et
+  valide ; absent -> FAIL, malforme -> FAIL, et un exit 0 avec rapport malforme
+  reste FAIL.
+  Rapport agrege distinguant PASS / FAIL / NOT_CONFIRMED / NOT_RUN.
+FOUR_RUN_LAUNCHER_SELFTEST=PASS
+  21 controles, 0 echec : ordre nominal et quatre processus distincts ;
+  propagation des parametres (model_tag, max=8, capture unique) ; arret au
+  premier echec sans retry ; destination reutilisee refusee sans invocation ;
+  rapport enfant absent et malforme ; exit code seul non suffisant ;
+  max_tokens != 8 refuse ; autorisation absente refusee avant lancement.
+  ENFANTS SYNTHETIQUES : scripts qui ecrivent un rapport explicitement
+  synthetique. Aucun modele, aucun calcul.
+PREFLIGHT_PLAN_ENFORCED=YES
+  Le plan n'est plus un JSON documentaire : le lanceur l'applique (ordre, 4 runs,
+  8 tokens, captures isolees, arret de sequence) et le harnais applique ses
+  regles internes (garde, contrat d'arret, argmax, compteurs).
+
+HARNESS_BINARY_SHA256=6623041159638d89a5459e085a1142c7d3506fb1cf7a3af46cc78b99c80a35a4
+  binaire REEL (t-real), identique a FREEZE-09 : real_deps.cpp n'a pas ete
+  modifie dans cette passe.
+LAUNCHER_SHA256=c95ed2903f6322e3aeebcb286541c149a28a45304b46e74c7eee3bc6253aab3a
+  t-launcher. Les deux binaires de tests inchangee : t-parser
+  9db455829513c34801dbb684c70a2d6c7022745634d428e54d114884012965d6, t-connect
+  9be327dcdf576b34e13608c085c813fd7892bb829bb6067a95191f94f0802224.
+  NOUVELLE identite de source : engine008_launcher.cpp/.h et
+  engine008_launcher_tests.cpp (le manifeste de source passe de
+  fb508af3... a une nouvelle valeur).
+PREFLIGHT_PROTOCOL_SHA256=822db99f6c288e346e1dca06c7405ab13a4a06d69bc05beccbe92e333fe5fa3d
+  INCHANGE. Le contenu du protocole v2 n'a pas ete modifie : ses exigences P3/P4
+  restent telles quelles, precisement parce que je refuse de les affaiblir.
+PREFLIGHT_PLAN_SHA256=b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+  INCHANGE : le lanceur applique le plan adopte, il ne le redefinit pas.
+PREFLIGHT_FREEZE_MANIFEST_SHA256=NOT_CREATED
+PREFLIGHT_PROTOCOL_FROZEN=NO
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=NO
+
+REMAINING_BLOCKERS=
+  B1a_RACCORDER la chaine WHT : parseurs pour GRAPH_ROLE_RELATIONSHIPS.csv,
+      TARGET_EFFECT_PATH.csv, RESIDENCY_MANIFEST.csv, et lecture de
+      `rotation_applied` ; puis couverture des cibles, attribution a la
+      soumission, verdict, et serialisation. Nouvelle identite de source et
+      tests concernes rejoues.
+  B1b_LEVER L INEVALUABILITE, et c'est un fait a trancher, pas du code :
+      - P3 (rotation candidate) exige un hote a >= 2 devices ; cet hote n'en a
+        qu un, et le harnais est deja ecrit pour un hote multi-device ;
+      - P4 (baseline negative) exige des cibles eligibles TQ2_G128 ; la baseline
+        Q4_K_M n'en a aucune.
+      Deux voies, aucune choisie ici : V-a executer sur >= 2 devices ; V-b
+      produire un protocole v3 qui retire ou remplace P3/P4 comme preuves
+      requises. V-b doit etre une version EXPLICITE, jamais un affaiblissement
+      silencieux.
+  B3_EMETTRE le manifeste une fois B1a et B1b leves, sans circularite : compiler,
+      puis construire le document qui reference l identite du binaire.
+
+PASS_STATUS=COMPLETE_SCOPE_PREFLIGHT_FINALIZATION
+  Le travail realisable est fait : le lanceur est ecrit et teste, B1 est tranche
+  avec un verdict negatif fonde et nomme, le gel est refuse avec ses conditions
+  de levee. Ce qui reste n est pas du travail interrompu mais des conditions a
+  trancher.
+
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  5 bibliotheques resolues (llama, ggml, ggml-base, ggml-cpu, ggml-cuda).
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+AUCUN DOCUMENT D AUTORISATION REELLE N A ETE CREE. Verifie : les seuls documents
+existants portent audience=MOCK et sont REJETES par le chemin reel (exit 3,
+aucun appel de calcul).
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucune
+execution des quatre runs, aucun gel cree. Aucun rebuild de bibliotheque Q1.
+Aucun global de Q1 ecrit. Les protocoles v1/v2, gels et artefacts historiques
+sont INTACTS.

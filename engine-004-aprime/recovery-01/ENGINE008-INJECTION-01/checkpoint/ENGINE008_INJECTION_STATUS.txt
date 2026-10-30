@@ -1,0 +1,57 @@
+ENGINE-008 -- RECHERCHE DE L'INTERFACE D'INJECTION : RESULTAT
+==========================================================================
+L'INTERFACE EXISTE. Elle est NATIVE, DECLAREE et IMPLEMENTEE dans Q1.
+Trois mecanismes distincts sont presents ; le choix conditionne l'experience.
+AUCUN SMOKE TEST N'A ETE EXECUTE.
+
+GRAPH_INJECTION_MECHANISM=IDENTIFIED (trois variantes natives, choix a faire)
+
+  I-A  llama_kv_cache_inject_layer   KV, une couche     llama.h:1382 / llama-context.cpp:4776
+  I-B  llama_kv_cache_inject         KV, multicouche    llama.h:1366 / llama-context.cpp:4760
+  I-C  llama_kv_cache_project_hidden ACTIVATION -> KV   llama.h:1436 / llama-context.cpp:4853
+  MIROIR  llama_kv_cache_extract_layer                  llama.h:1403
+
+  Entree I-A/I-B : k_data [n_tokens][n_embd_k_gqa] et v_data
+  [n_tokens][n_embd_v_gqa], en TYPE NATIF du cache, positionnels.
+  Entree I-C : hidden_states f32 [n_tokens][n_embd].
+  Point d'application : cellules (pos, seq_id) du cache KV, par couche.
+  MODIFICATION DU CHEMIN DE CALCUL : AUCUNE -- l'injection ECRIT un etat
+  d'entree dans le cache ; elle ne touche ni le graphe ni les poids.
+
+  EXEMPLE REPRODUCTIBLE EXISTANT : tools/obrain/pstate-exp0a.cpp, 2565 lignes,
+  EXP0A.2 « extract -> inject -> extract identity » et EXP0A.3 « behavioral
+  probe ». **NON COMPILE** : aucun binaire dans le fork.
+  INSTRUMENTATION NON COUVERTE PAR LE GEL Q1 : un pilote est a compiler ou a
+  ecrire, et a qualifier SEPAREMENT. Je ne le presente pas comme qualifie.
+
+  `llama_kv_cache_inject_begin` : **N'EXISTE PAS** -- cite seulement dans un
+  commentaire (llama.h:1378). La precondition annoncee est OBSOLETE ; l'appel
+  direct ne l'utilise pas. A confirmer par execution, non suppose.
+
+  POINT DE VIGILANCE DEMONTRE PAR LE CODE : `resolve_kv_for_inject` doit gerer
+  `llama_memory_hybrid` ; un defaut en ce sens a deja fait echouer la validation
+  de taille de inject_layer (« rejected every correctly-sized buffer »). Notre
+  modele est `qwen35`, hybride. A VERIFIER a l'execution.
+
+ENTREE NUMERIQUE CANDIDATE : VERIFIEE EN FORME, PAS EN SEMANTIQUE
+  captures f1a candidates : 1344 fichiers .bin, format entierement documente
+  par le producteur (PAYLOAD_PROVENANCE.csv + GRAPH_CAPTURE_MANIFEST.csv).
+  `activation` : f32, [59, 5120], contigu, 1208320 octets, rotation_applied=1,
+  cible blk.8.attn_gate.weight, expected_K=5120, empreinte fnv64x4.
+  Coherence verifiee : 1208320/4 = 302080 = 59 x 5120 ; 5120 =
+  qwen35.embedding_length du modele candidat (metadonnee GGUF lue).
+  `base_output` : ne0=6144 = qwen35.ssm.inner_size (dimension SSM, pas attention).
+  **COMPATIBILITE AVEC project_hidden NON DECLAREE** : deux points restent a
+  etablir -- (1) l'activation est ROTATIVEE par la WHT alors que project_hidden
+  projette avec les poids NON rotatifs ; (2) ces captures sont des entrees de
+  projections lineaires, pas des etats caches de sortie de bloc. Erreur de SENS,
+  pas de taille. Je ne conclus PAS depuis l'existence des fichiers.
+
+SMOKE TESTS : NON EXECUTES. Le plan controle/injection est prepare (32 tokens
+max, contextes neufs, configuration commune, difference unique) mais le
+MECANISME n'est pas choisi : I-A/I-B prennent un K/V extrait, I-C prend une
+activation f32. Ce sont des EXPERIENCES DIFFERENTES. Choix laisse a l'utilisateur.
+
+Q1_LIBLLAMA_REBUILT=NO
+PREFLIGHT_RELAUNCHED=NO
+QUALITY_EXECUTION_ALLOWED=NO

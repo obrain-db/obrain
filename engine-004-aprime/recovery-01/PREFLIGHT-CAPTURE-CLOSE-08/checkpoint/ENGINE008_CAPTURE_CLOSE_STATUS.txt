@@ -1,0 +1,136 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-CAPTURE-CLOSE-08
+==========================================================================
+Y1 etabli depuis les sources, Y2 raccorde et serialise, Y3 VERIFIE sur pieces.
+42 controles parseur + suite mocke : 0 echec. Aucun modele, aucun forward.
+
+CAPTURE_VISIBILITY_CONTRACT_ESTABLISHED=PARTIAL
+CAPTURE_VISIBILITY_METHOD=
+  LEDGER (f1a-capture.cpp) : fopen(..., "a") -- mode AJOUT -- ouvert paresseusement
+    a la premiere ecriture (:173), en-tete ecrit une fois, puis
+    ** fflush(g_f1a_ledger) apres CHAQUE evenement (:220) **, avec echec rendu
+    observable. Une ligne est donc VISIBLE POUR UN LECTEUR des que fflush rend
+    la main, AVANT le retour de la fonction. Visibilite FORTE, sans fclose.
+  SNAPSHOTS (f1a-capture.cpp) : fopen(..., "w") -- mode ECRASEMENT (:302) --
+    puis ecriture de tout g_f1a_snaps et fclose (:309). Le fichier est donc
+    REECRIT EN ENTIER a chaque appel, et un lecteur peut observer un fichier
+    TRONQUE entre l ouverture "w" et le fclose. AUCUN flush par ligne.
+  METHODE RETENUE : le releve APRES relit le FICHIER et non le retour de l appel ;
+  un etat PARTIAL/MALFORME interdit toute conclusion. Aucun delai arbitraire
+  n est introduit -- l absence de nouvelles lignes ne devient JAMAIS une preuve
+  de completude.
+  DISTINCTION : on etablit une VISIBILITE POUR LE LECTEUR. La durabilite apres
+  crash n est pas exigee par ce contrat et n est pas revendiquee.
+CAPTURE_VISIBILITY_ESTABLISHED_FOR=LEDGER_ONLY
+  Les snapshots n offrent PAS de garantie de lecture stable : leur ecriture "w"
+  est un remplacement integral. C est exactement ce que detecte le curseur.
+
+FINGERPRINT_COMPARISON_CONNECTED_TO_PIPELINE=YES
+  Dans chaque fenetre, pendant que l objet graphe est valide :
+  1 enumeration de ggml_graph_node ; 2 recalcul par recompute_graph_fingerprint()
+  (definition exacte du producteur) ; 3 identification du snapshot attribuable par
+  submission_id ; 4 comparaison ; 5 resultat transmis au correlateur.
+  REGLE STRICTE corrigee en cours de passe : seule une DISCORDANCE est une
+  contradiction positive et degrade la couverture. Une valeur ABSENTE ou une
+  jointure AMBIGUE est consignee comme limite et interdit la conclusion, mais
+  n ECASE PAS un verdict de couverture deja etabli. Confondre les deux masquait
+  la couverture reelle -- deux tests l ont revele.
+FINGERPRINT_COMPARISON_SERIALIZED=YES
+  Le rapport porte : fp_verdict, fp_read, fp_recomputed, fp_submission_id,
+  fp_n_nodes, fp_candidates, fp_gf. Verifie par test.
+  PORTEE, NON SURESTIMEE : la definition inclut des ADRESSES. MATCH etablit une
+  COHERENCE DANS LE PROCESSUS entre l objet enumere et celui hache par le
+  producteur. Cela ne prouve NI une identite sans collision, NI une identite
+  structurelle entre runs, NI la couverture des soumissions intermediaires.
+  Le rapport porte la limite FINGERPRINT_MATCH_IN_PROCESS_ONLY.
+
+HISTORICAL_CROSS_SURFACE_JOIN=VERIFIED
+  Provenance etablie : la paire existe et est CO-LOCALISEE --
+  .../e7b-f1a-q1-forward-v1/on/EVENT_LEDGER.csv
+  .../e7b-f1a-q1-forward-v1/on/capon/SUBMITTED_GRAPH_SNAPSHOTS.csv
+  Meme arbre de run, meme BUILD_PROVENANCE (LIBLLAMA_SHA256=87c42d5f...).
+  Jointure sur pieces : ledger 46 lignes dont 10 COMPUTE_SUBMIT (ids 1..10) ;
+  snapshots 2 lignes (ids 1,2). INTERSECTION = {1,2}.
+  Pour les deux : graph_ptr CONCORDE (0xfbdeec9f3030) et graph_fingerprint
+  CONCORDE (bfb9b6dbfa65aafb).
+  DECOUVERTE REELLE 1 : 8 soumissions sur 10 n ont AUCUN snapshot. La couverture
+  incomplete est un fait du run historique, pas une hypothese.
+  DECOUVERTE REELLE 2 : les soumissions 1 et 2 partagent le MEME pointeur ET la
+  MEME empreinte -- la reutilisation de graphe/pointeur est REELLE. Cela confirme
+  sur pieces que pointeur + compte ne peuvent PAS identifier une soumission.
+  DECOUVERTE REELLE 3 (defaut de ma part) : `eligible_target_count` vaut 0 dans
+  le ledger alors que n_nodes vaut 4315 dans le snapshot. Ce ne sont PAS la meme
+  grandeur. Je les avais mappees l une sur l autre : ERREUR CORRIGEE. Le ledger
+  ne porte pas n_nodes ; le champ reste inconnu (-1) et le correlateur ne
+  compare les comptes que s ils sont connus des DEUX cotes.
+SYNTHETIC_CROSS_SURFACE_JOIN_SELFTEST=PASS
+  Fixtures declarees, construites selon les schemas du producteur : association
+  unique concordante ; plusieurs snapshots candidats -> jointure ambigue.
+
+WINDOW_REPLACEMENT_SELFTEST=PASS
+  Au-dela du nombre de lignes : remplacement par un fichier ayant AUTANT de
+  lignes (detecte par comparaison de PREFIXE) ; prefixe modifie a nombre egal ;
+  identifiant de soumission REUTILISE ; ligne finale partielle ; fichiers pas
+  encore disponibles -> refus de completude ; troncature.
+INCOMPLETE_VISIBILITY_BLOCKS_COMPLETENESS=YES
+  Fichier ABSENT/EMPTY/PARTIAL/MALFORME -> aucune conclusion negative. Aucune
+  capture de runs differents n est fusionnee pour completer une fenetre.
+
+INTEGRATED_MOCK_PATH_SELFTEST=PASS   (dont 16 nouveaux controles fingerprint)
+REAL_ENTRYPOINT_REJECTION_SELFTEST=PASS
+  aucun document -> exit 3 ; document MOCK -> exit 3, REFUSED_BEFORE_ANY_COMPUTE.
+  REAL_LOAD_CALLS=0, REAL_F1A_ENV_CALLS=0. Aucune autorisation reelle creee.
+
+HARNESS_SOURCE_MANIFEST_SHA256=fb508af3cd23f3ed8ff1a4af5717eaea2d9991feffd41ac3538ce982a7516b09
+  engine008_pipeline.h       673328548361ae4056feb4d7b4e1cbe22d8b3f027b870e721853f02c50193097
+  engine008_pipeline.cpp     ef3f594b9d1d1e011cc9355eebde944526793af549c0d547807401be20597f66
+  engine008_capture_parser.h 638a383b949d8d517c9e1fa46ac8b400dbc96aa7801915bd1a0a17d3c11515df
+  engine008_capture_parser.cpp ee7c845154726a4c9f2a215e9fb0fd1c69a31855aa937b1f033347b7ec023949
+  engine008_parser_tests.cpp d75589a9f7436c4f6420ab0a81f53e4451361558e2501084871d19fd701febc8
+  engine008_connect_tests.cpp 1a1d6899857ffd280c078ed74f4b601b9bcc615971c7da8e7dfe2047738800ff
+  engine008_real_deps.h      4bf621aeeed91dbc181f3b4ab21b31ba9df981b2cc3101cef8d9b50e75ac89ca
+  engine008_real_deps.cpp    f70cbd77adb5a5c5dc529eb63fce33cbf29c2ba552978cdecbc61959230360a9
+  engine008_real_entry.cpp   ab3f56d40a1b322a8415906844fbc9a65e74a29a8f268a84c0ea6c22c5e213f9
+HARNESS_BINARY_SHA256=
+  t-parser  9db455829513c34801dbb684c70a2d6c7022745634d428e54d114884012965d6
+  t-connect 9be327dcdf576b34e13608c085c813fd7892bb829bb6067a95191f94f0802224
+  t-real    6623041159638d89a5459e085a1142c7d3506fb1cf7a3af46cc78b99c80a35a4
+  Identites recalculees APRES compilation reussie, avec arret sur erreur.
+
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_CAPTURE_CLOSURE
+
+POINTS OUVERTS AVANT LE GEL (aucun n est masque) --
+  Z1_LES SNAPSHOTS N ONT PAS DE GARANTIE DE LECTURE STABLE (ecriture "w"
+     integrale). Un lecteur peut les voir tronques. Le curseur le detecte, mais
+     aucun contrat de disponibilite solide n existe pour cette surface.
+  Z2_LE LEDGER NE PORTE PAS n_nodes. Toute confrontation de compte doit se faire
+     cote snapshots. Corrige, mais a garder present a l esprit.
+  Z3_LA COUVERTURE EST REELLEMENT INCOMPLETE dans le run historique : 10
+     soumissions, 2 snapshots. Aucune conclusion negative ne pourra etre tiree
+     d une telle fenetre -- c est le comportement voulu.
+  Z4_La confrontation du fingerprint n a PAS ete exercee sur un vrai graphe
+     soumis : recompute_graph_fingerprint est teste sur des graphes ggml
+     construits en memoire, pas sur une soumission reelle.
+  Z5_Puis le protocole et le gel, sur instruction separee.
+
+ENGINE008_NEXT_STEP=protocole et gel (Z5), en consignant Z1-Z4 comme points
+  ouverts
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucune
+execution preflight ou qualite, aucun gel. Aucun rebuild de bibliotheque Q1.
+Aucun global de Q1 ecrit. Les captures historiques sont lues en LECTURE SEULE et
+leurs pointeurs ne sont JAMAIS dereferences. Aucune autorisation reelle creee.
+Aucune capture de runs differents fusionnee.

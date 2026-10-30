@@ -1,0 +1,21 @@
+=== identite modele (OpenSSL) ===
+0.17.520.293 I srv    load_model: obrain model identity: instance=1 sha256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937 (5978.6 ms)
+=== timeline chargement ===
+0.17.520.293 load_model: obrain model identity: instance=1 sha256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937 (5978.6 ms)
+0.26.424.441 llama_server: model loaded
+0.26.424.444 llama_server: listening on http://127.0.0.1:8480
+=== C3 complet ===
+  prefix_decode_calls      0
+  prefix_token_count       0
+  state_imported           True
+  selected_ids_count       6
+  emitted_ids_count        6
+  n_generate_requested     32
+  decoded_ids_json         [13,198,248069,271,3793,13]
+  decoded_pos_json         [59,60,61,62,63,64]
+  stop_reason              EOS
+  ms_state_lookup          49.50199890136719
+  ms_compatibility         0.012000000104308128
+  ms_blob_sha256           64.50499725341797
+  ms_state_import          6.8460001945495605
+  ms_preparation_total     143.28900146484375

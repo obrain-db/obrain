@@ -1,0 +1,319 @@
+ENGINE-008 -- VALIDATION GPU POUR 9910
+==========================================================================
+PLACEMENT GPU PROUVE PAR LE JOURNAL. SEQUENTIEL ET CONCURRENT PASSENT.
+SERVEUR VALIDE EN SERVICE SUR 127.0.0.1:9910.
+
+=== 1. CONFIGURATION CIBLE ===
+REFERENCE_9910_CONFIG=RECOVERED
+  Une autorite historique EXISTE, retrouvee dans
+  `/home/triviere/sauvegardes/obrain-qwen38-20260917-1507/obrain-qwen38.service` :
+    ExecStart=/home/triviere/projects/llama-obrain/build/bin/llama-server
+      -m .../qwen3.8-27b-gguf/Qwen3.8-27B-Q4_K_M.gguf
+      --host 0.0.0.0 --port 9910 -ngl 99 --ctx-size 32768 --jinja
+      --cache-reuse 256 --cache-ram 16384
+      --slot-save-path /home/triviere/obrain-resume-slots/ -ctxcp 32 -cms 512
+      --spec-default
+    drop-in retire : --ctx-size 262144 --spec-inject-consume (llama-obrain-deploy)
+
+  **MAIS CETTE CONFIGURATION N'EST PAS CELLE QUI A ETE VALIDEE.** Elle differe
+  sur quatre points structurants :
+    - **modele** : `Qwen3.8-27B-Q4_K_M.gguf` (18 973 870 432 o) et non le
+      candidat valide `Qwen3.8-27B-OBRAIN-v3.gguf` (12 844 231 424 o) ;
+    - **exposition** : `--host 0.0.0.0` (LAN) alors que la validation exige
+      `127.0.0.1` uniquement ;
+    - **contexte** : `--ctx-size 32768` (ou 262144) contre 1024 ;
+    - **binaire** : `llama-obrain/build` et non `llama-obrain-cuda-f1a/build-cuda`,
+      donc **sans** le correctif de verrouillage ni la substitution SHA256.
+  **Je ne presente donc PAS la configuration mise en service comme une
+  restauration.** C'est une **NOUVELLE configuration de validation**, et la
+  reference historique est publiee ci-dessus pour comparaison.
+
+  CONFIGURATION DE VALIDATION (nouvelle, exacte) :
+    binaire  : /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-server
+    modele   : /home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf
+    args     : -m <modele> --host 127.0.0.1 --port 9910 -ngl 99
+               --ctx-size 1024 --parallel 3 --jinja
+    env      : OBRAIN_KV_STATES_MAX_BYTES=2147483648 (2 Gio), CUDA_VISIBLE_DEVICES=0
+    cwd      : /home/triviere/obrain-9910/work  (jspace_kv_dir="kv-states" est
+               RELATIF au CWD -> les nouveaux etats sont ISOLEES)
+  `-ngl 99` : le CLI de ce fork accepte un nombre exact, 'auto' ou 'all'
+  (verifie dans `--help`). 99 couches sur 66 existantes = offload total.
+
+=== 2. IDENTITES ET PLACEMENT GPU ===
+  Identites completes dans IDENTITES_GPU.txt. **Q1 inchange** :
+  `libllama.so.0 = 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2`
+
+GPU_OFFLOAD_OBSERVED=PROUVE PAR LE JOURNAL (et non par l'argument de lancement)
+  Extrait de `gpu_placement.log`, capture lors de la validation avec `-lv 4`
+  (memes parametres que le service, a la verbosite pres) :
+    load_tensors: offloading output layer to GPU
+    load_tensors: offloading 64 repeating layers to GPU
+    **load_tensors: offloaded 66/66 layers to GPU**
+    load_tensors:   CPU_Mapped model buffer size =   682.03 MiB
+    load_tensors:        **CUDA0 model buffer size = 11556.70 MiB**
+    llama_context:  CUDA_Host  output buffer size =     2.84 MiB
+    **llama_kv_cache:      CUDA0 KV buffer size =    96.00 MiB**
+    **llama_memory_recurrent: CUDA0 RS buffer size =  448.88 MiB**
+    llama_memory_recurrent: size = 448.88 MiB (3 cells, 64 layers, 3 seqs 0 rs_seq),
+                            R (f32): 16.88 MiB, S (f32): 432.00 MiB
+    sched_reserve:      CUDA0 compute buffer size =   134.78 MiB
+    sched_reserve:  CUDA_Host compute buffer size =    20.56 MiB
+    sched_reserve: graph nodes = 4011   graph splits = 2
+  **LES DEUX MEMOIRES DE L'ETAT HYBRIDE SONT SUR GPU** : le cache d'attention
+  (`KV buffer`, 96.00 MiB) **et** la memoire recurrente (`RS buffer`,
+  448.88 MiB) sont sur `CUDA0`. C'est le point decisif : le blob transfere
+  couvre precisement ces deux memoires.
+  Restent sur l'hote : 682.03 MiB de modele mappe et 20.56 MiB de tampon de
+  calcul `CUDA_Host`. `graph splits = 2` : le graphe est coupe en deux, ce qui
+  est attendu avec un tampon hote.
+  Plateau materiel : **NVIDIA GB10**, driver 580.173.02, CUDA 13.0,
+  121 Go de memoire unifiee (100 Go disponibles).
+  Le serveur EN SERVICE a ete lance **sans `-lv 4`** : sa sortie ne recontient
+  donc pas ces lignes. **La preuve de placement provient de la validation, a
+  parametres identiques** ; je le precise plutot que de laisser croire qu'elle
+  vient du service.
+
+  **Preuve physique independante** : le recalcul du prefixe de 58 tokens passe
+  de **874 ms (CPU, `-ngl 0`)** a **20.251 ms (GPU)** -- facteur ~43. Un simple
+  argument de lancement ne produirait pas cet effet.
+
+=== 3. ISOLATION DES NOUVEAUX ETATS ===
+EXISTING_DISK_STATES_MODIFIED=NO
+  `cwd = /home/triviere/obrain-9910/work` : `jspace_kv_dir` valant `"kv-states"`
+  **relatif**, les nouveaux etats vont dans
+  `/home/triviere/obrain-9910/work/kv-states`, **un repertoire neuf**.
+  Verifie apres mise en service :
+    `/home/triviere/kv-states/fd4ff6aa4370b553.bin`  157 550 332 octets
+       mtime **2026-09-17 15:07:32** -- INCHANGE
+    `/home/triviere/obrain-resume-slots/` : 5 fichiers -- INCHANGE
+  **Aucun blob CPU n'a ete presume compatible**, aucun manifeste n'a ete migre,
+  supprime ni fabrique. Le manifeste applique les regles existantes a la
+  configuration effective : le blob produit ici porte `type_k`/`type_v`,
+  `n_ctx`, `state_mode`, `seq_id` et l'identite Q1 **de cette configuration**.
+
+=== 4. GATE AVANT EXPERIMENTATION ===
+REQUIRED_TESTS=PASS -- suites rejouees sur les executables utilises :
+  cache (compatibilite, integrite, persistance, LRU, borne)  **49 PASSED / 0 FAILED**
+  regression du double verrouillage                           **5 PASSED / 0 FAILED**
+  concurrence SHA256 (aucun sous-processus)                  **PASS**
+  vecteurs SHA256                                            **11 PASSED / 0 FAILED**
+  substitution SHA256                                        **22 PASSED / 0 FAILED**
+Port 9910 verifie **LIBRE** avant chaque lancement. Orchestrateur maitrise :
+suivi de disponibilite horodate (sondes `readiness`), delais **preenregistres**
+(demarrage 900 s, requete 300 s), et **capture des piles** (`etat`, `wchan`,
+`syscall` par thread) cablee en cas de blocage -- non declenchee, aucun
+blocage n'etant survenu.
+
+=== 5. VALIDATION GPU SEQUENTIELLE ===
+GPU_SEQUENTIAL_RESUME=PASS
+  A : http=200  0.714s  ref=`4304f084eab6ecb1`  blob_bytes=160697024  fact_tokens=58
+  B : http=200  0.801s  prefix_tok=**58**  imported=false  prep_ms=**20.251**
+  C : http=200  0.619s  prefix_tok=**0**   imported=true   prep_ms=**139.407**
+  Comparaison des premiers logits :
+    **FINITE=YES  MAX_ABS_DIFF=0  L2=0  ARGMAX=13/13  BINARY_IDENTICAL=YES**
+  TOKEN_IDS_MATCH=YES    TEXT_MATCH=YES    stop_reason=EOS (les deux)
+  Positions B = C = [59,60,61,62,63,64]
+  IDs B = C = [13,198,248069,271,3793,13]
+  Texte B = C = '.\n</think>\n\nOK.'
+  C ms : lookup=49.283  compat=0.012  blob_sha=64.513  import=3.899
+  Regle numerique **preenregistree et inchangee** : identite binaire, zero
+  tolerance, MAX_ABS_DIFF==0 exige.
+
+=== 6. VALIDATION CONCURRENTE BORNEE ===
+TWO_REQUEST_CONCURRENT_RESUME=PASS
+CROSS_REQUEST_STATE_ISOLATION=PASS
+  Deux entrees distinctes, provenance exacte :
+    E1 : **59 IDs autoritaires** (`ids59.txt`, prefixe 58) -> ref `4304f084eab6ecb1`
+    E2 : **`fact_text="Réponds uniquement : BONJOUR."`**, rendu et **tokenise
+         nativement par le serveur** -> 9 tokens -> ref `2363afa7c65f2e5e`,
+         blob 157 484 780 octets
+  Controles sequentiels PREALABLES, un par entree :
+    E1 CTRL ids=[13,198,248069,271,3793,13]  text='.\n</think>\n\nOK.'
+    E2 CTRL ids=[271,248068,198,760,1156,...]  text='\n\n<think>\nThe user is
+            asking me to respond only with "BONJOUR. OK"...'
+    **Les deux controles sont DIFFERENTS** : le test est donc discriminant.
+  Puis les **deux restaurations lancees SIMULTANEMENT** (deux threads) :
+    E1 REST : http=200 0.596s  prefix_tok=**0** imported=true
+              vs SON controle -> MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 IDENTIQUE
+              TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+              prep_ms=137.132 lookup=46.631 import=3.821 blob_sha=64.513
+    E2 REST : http=200 2.832s  prefix_tok=**0** imported=true
+              vs SON controle -> MAX_ABS_DIFF=0 L2=0 ARGMAX=271/271 IDENTIQUE
+              TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+              prep_ms=127.536 lookup=43.524 import=3.766 blob_sha=63.252
+    duree totale des deux : **2.835 s**
+  **Isolation croisee verifiee** : `E1_REST` est identique a **SON** controle et
+  **NON** a celui de E2 (« E1_REST identique a E2_CTRL ? NON »). Aucun melange
+  d'etats. Zero recalcul du prefixe dans les deux restaurations. Aucun blocage.
+  Comptabilite du cache : les deux blobs coexistent (160 697 024 et
+  157 484 780 octets, soit ~318 Mo) sous la borne de 2 147 483 648 octets.
+  **Cette etape demontre DEUX requetes simultanees, pas une charge generale.**
+
+=== 7. MISE A DISPOSITION LOCALE ===
+LOCAL_9910_READY=YES
+  **BIND MODIFIE A LA DEMANDE EXPLICITE DE L'OPERATEUR** : la mission prescrivait
+  `127.0.0.1` uniquement ; l'operateur a indique avoir besoin du service sur
+  `0.0.0.0` pour l'utiliser. Le serveur a donc ete relance sur `0.0.0.0:9910`.
+  **Cela converge d'ailleurs vers la configuration historique**, qui utilisait
+  deja `--host 0.0.0.0`.
+
+  PID      : **710730**
+  commande : /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-server
+             -m /home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf
+             --host **0.0.0.0** --port 9910 -ngl 99 --ctx-size 1024
+             --parallel 3 --jinja
+             env: OBRAIN_KV_STATES_MAX_BYTES=2147483648 CUDA_VISIBLE_DEVICES=0
+             cwd: /home/triviere/obrain-9910/work
+  journaux : /home/triviere/obrain-9910/logs/server.log
+  pidfile  : /home/triviere/obrain-9910/server.pid
+  disponibilite : `GET /health` -> `{"status":"ok"}` atteinte en **13 s**
+  ecoute   : `LISTEN 0 512 **0.0.0.0:9910** 0.0.0.0:*`
+
+  **JOIGNABILITE VERIFIEE DEPUIS UNE AUTRE MACHINE** (et non depuis dgx vers sa
+  propre IP, ce qui ne prouverait rien) :
+    depuis `n3` (192.168.1.103) : `http://192.168.1.7:9910/health` -> `{"status":"ok"}`
+    **JOIGNABLE.**
+  Comparaison du modele d'exposition avec les services existants, testee depuis n3 :
+    9906 -> **injoignable** (binde sur 127.0.0.1)
+    9907 -> http=200      (binde sur 0.0.0.0)
+    9908 -> http=200      (binde sur 0.0.0.0)
+    9910 -> **http=200**  (binde sur 0.0.0.0) -- meme modele d'exposition que 9907/9908
+  Le serveur repond aussi sur `172.17.0.1:9910` (pont docker) : **tout conteneur
+  du reseau docker par defaut peut l'atteindre.**
+
+  **PORTEE DE L'EXPOSITION, telle que mesuree** : `ufw` est **actif** avec
+  `DEFAULT_INPUT_POLICY="DROP"`, mais **je n'ai pas pu lire ses regles**
+  (privileges requis). Le fait etabli est **empirique** : le port 9910 est
+  joignable depuis le LAN. **Je ne peux pas affirmer quelles sources ufw
+  autorise ni refuse** — pour restreindre l'acces, ajouter une regle explicite
+  (`ufw allow from 192.168.1.0/24 to any port 9910` puis `ufw deny 9910`).
+
+  PROCEDURE D'ARRET :
+    `kill $(cat /home/triviere/obrain-9910/server.pid)`  (ou `kill 710730`)
+    verifier ensuite : `ss -tln | grep :9910`  (doit ne rien retourner)
+
+  **Aucun autre service n'a ete modifie** : 9906, 9907 et 9908 sont actifs et
+  inchanges. Aucun etat disque existant n'a ete touche.
+
+  **PORTEE DE LA VALIDATION VIS-A-VIS DU BIND.** `--host` ne change que
+  l'interface d'ecoute HTTP : il n'affecte **ni** le transfert d'etat, **ni** le
+  manifeste, **ni** l'integrite SHA256, **ni** le verrouillage, **ni** les
+  numeriques. La validation sequentielle et concurrente a ete faite sur
+  `127.0.0.1` avec **le meme binaire, le meme modele et les memes parametres**,
+  seul `--host` differant. **Le coeur valide est donc inchange ; ce qui change
+  est la joignabilite reseau, et je le declare plutot que de le passer sous
+  silence.**
+
+=== CE QUE CETTE VALIDATION N'ETABLIT PAS ===
+  - **Pas une charge generale** : deux requetes simultanees, pas un test de
+    montee en charge, de contention ni de saturation.
+  - **Pas une equivalence CPU/GPU** : les resultats GPU ne sont pas compares
+    aux resultats CPU autrement que par coherence interne (chaque restauration
+    est comparee a SON controle GPU).
+  - **Pas la configuration historique** : modele, contexte et binaire
+    differents de `obrain-qwen38.service` (mais **exposition desormais
+    identique** : `0.0.0.0`, a la demande de l'operateur).
+  - Le prefixe source reste **calcule une fois** ; ce n'est pas une elimination
+    du prefill.
+  - Aucune conclusion de qualite generale.
+
+=== 8. CORRECTION DU CONTEXTE APRES MISE EN SERVICE (defaut de MA configuration) ===
+  **L'operateur a recu un HTTP 400** :
+    `request (45573 tokens) exceeds the available context size (512 tokens)`
+    `n_prompt_tokens: 45573, n_ctx: 512`
+
+  **CAUSE, et elle est de mon fait** : j'avais lance avec `--ctx-size 1024
+  --parallel 3`. Le contexte de `--ctx-size` est le contexte **TOTAL**, divise
+  par `--parallel` : le serveur a journalise
+  `n_ctx is not divisible by n_seq_max - rounding down to 1536` puis
+  **`n_slots = 3, n_ctx_slot = 512`**. Chaque slot ne recevait donc que
+  **512 tokens**. 1024 etait le parametre de la *validation* (59 IDs) ; ce
+  n'etait **pas** un parametre d'usage, et je ne l'ai pas signale comme tel.
+
+  **CE QUE LE MODELE SUPPORTE REELLEMENT** (lu dans le GGUF) :
+    `qwen35.context_length = 262144`   <- contexte natif d'entrainement
+    `qwen35.block_count = 65`, `attention.head_count_kv = 4`, `rope.freq_base = 1e7`
+  Le cout du KV attention est de **65 536 octets/token**
+  (16 couches x 2 x 4 tetes KV x 256 dim x 2 octets), soit :
+    32768 -> 2 Gio | 65536 -> 4 Gio | 131072 -> 8 Gio | **262144 -> 16 Gio**
+  La memoire recurrente est **fixe** (~449 Mio, 3 cellules) : elle ne croit pas
+  avec le contexte.
+  **La configuration historique utilisait exactement cela** : `--ctx-size 32768`
+  dans l'unite, et **`--ctx-size 262144`** dans le drop-in. Mon 1024 etait donc
+  tres en dessous de l'usage reel.
+
+  **CORRECTION APPLIQUEE** :
+    `--ctx-size **262144** --parallel 3`  ->  contexte total 262656 (arrondi
+    serveur), **`n_slots = 3, n_ctx_slot = 87552`** tokens PAR SLOT.
+  Cout memoire : 16 Gio de KV + 12,84 Go de modele, tres en dessous des 87 Go
+  disponibles.
+
+  **RE-VALIDATION COMPLETE A CETTE CONFIGURATION** (le contexte fait partie du
+  manifeste : changer `n_ctx` invalide les etats anterieurs, ce qui est le
+  comportement attendu) :
+    A : http=200  0.712s   ref=`4304f084eab6ecb1`  blob_bytes=160697024
+    B : http=200  0.808s   prefix_tok=**58**  imported=false
+    C : http=200  0.598s   prefix_tok=**0**   imported=true
+    **MAX_ABS_DIFF=0  L2=0  ARGMAX=13/13  BINARY_IDENTICAL=YES**
+    TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES  texte='.\n</think>\n\nOK.'
+    **VALIDATION_AT_262144=PASS**
+
+  **PREUVE PAR UNE REQUETE REALISTE**, depuis une AUTRE machine (192.168.1.103) :
+    POST http://192.168.1.7:9910/v1/chat/completions
+    **HTTP=200**, duree 16.691 s
+    `usage: {prompt_tokens: **10052**, completion_tokens: 8}`
+    **10 052 tokens acceptes**, la ou 512 etaient refuses auparavant.
+
+  **ETAT DU SERVICE APRES CORRECTION** : PID **712293**, bind `0.0.0.0:9910`,
+  `n_ctx_slot = 87552`, `{"status":"ok"}`. Les anciens etats disque sont
+  **intacts** (mtime du 17/09 inchange), `obrain-resume-slots` conserve ses
+  5 fichiers, et 9906/9907/9908 restent actifs et inchanges.
+
+  **CE QUE CETTE CORRECTION N'EST PAS** : ce n'est pas une nouvelle capacite du
+  moteur. Le mecanisme de transfert est inchange ; seule la **taille de
+  contexte** a ete portee a la valeur native du modele, qui etait deja celle de
+  la configuration historique.
+
+=== 9. CHEMIN DISQUE CORRIGE ET TESTE : REINJECTION SANS TEXTE, SANS PREFILL ===
+  **J'avais trouve un vrai trou, et il etait de mon fait.** Le serveur persistait
+  les etats au format nu (4 octets d'en-tete + blob brut), **sans manifeste**.
+  Or mon controle de compatibilite **refuse** un blob sans manifeste. Consequence :
+  **tout etat extrait etait IRRECUPERABLE apres un redemarrage** -- le chemin
+  disque etait mort par construction. Je l'avais documente comme « consequence
+  assumee » sans le corriger.
+
+  **CORRECTION** : l'ecriture et la lecture disque passent desormais par
+  `obrain_kv::save_state_file` / `load_state_file`, qui portent le **manifeste
+  complet**. Taille du fichier : 160 697 028 -> **160 697 885 octets**
+  (+857 octets de manifeste), en-tete **`OBKV` + version**.
+
+  **DEUX TESTS ONT ETE NECESSAIRES, CAR LE PREMIER ETAIT UN FAUX PASS.**
+  Le premier essai annoncait `PASS`, mais deux indices le contredisaient :
+  le fichier relu commencait par `:\x00\x00\x00` et **non** `OBKV`, et le
+  journal affichait **`port libre = False`** apres l'arret -- l'instance 1
+  n'etait pas morte, donc « l'instance 2 » repondait **depuis l'instance 1**,
+  dont le cache memoire contenait encore le blob. **Le chemin disque n'avait
+  jamais ete exerce.** J'ai corrige le test : arret **verifie** (le port doit
+  etre libre et son proprietaire nul) et controle que l'instance 2 **possede
+  reellement le port**.
+
+  **RESULTAT DU TEST CORRIGE (TEST_DISQUE.txt)** :
+    fichier : **`OBKV\x01\x00\x00\x00`**, 160 697 885 octets  <- format corrige
+    [stop] exit=0  proprietaire_du_port=None                 <- instance 1 MORTE
+    instance 2 PID=715013, **proprietaire du port 9910**     <- seule source : LE DISQUE
+    REST_DISK : http=200  **prefix_tok=0**  imported=true
+                ids=[13,198,248069,271,3793,13]  text='.\n</think>\n\nOK.'
+    vs CONTROLE calcule sur l'INSTANCE 1 (processus different) :
+      **MAX_ABS_DIFF=0  L2=0  ARGMAX=13/13  BINARY_IDENTICAL=YES**
+      TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+    chronometrage : lookup=**0.001 ms** (le cache memoire a MANQUE) puis
+      compat=3.178, blob_sha=76.667, import=4.119, **total=433.171 ms**
+      contre ~140 ms en memoire : **les ~290 ms d'ecart sont la lecture disque
+      de 160 Mo**. C'est la signature physique du chemin disque.
+    **DISK_REINJECTION_WITHOUT_TEXT=PASS**
+
+  **Portee** : le controle a ete calcule sur un processus, la restauration sur
+  **un autre processus**, apres arret verifie -- et les logits sont
+  **binairement identiques**. Cela etablit que l'etat hybride complet survit a
+  un redemarrage du serveur et se reinjecte **sans repasser par le texte** et
+  **sans recalculer le prefixe**.

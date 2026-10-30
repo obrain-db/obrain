@@ -1,0 +1,113 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-INTEGRATE-CODE-03
+==========================================================================
+S2, S3 et S4 sont ECRITS, COMPILES et TESTES : 24 controles, 0 echec, EXIT=0.
+S1 (unification des trois composants en un binaire) N'EST PAS FAIT.
+Aucun modele charge, aucun forward, aucun acces aux globals de Q1.
+
+PREFLIGHT_COMPONENTS_INTEGRATED=NO
+  Les trois composants restent SEPARES :
+    harnais preflight  aa7e4bf45f69854fe92e871d4bcf352b99972a2dc1572fd6af62640c8b988ce9
+    enumerateur        9579aca018eba09bdd5a0594b59853c871f37949d13a7adf432185e713d667f7
+    adaptateur          c8c6df46e32521ed05ec04c4fff8ee9d387a3bfb0c2c93b1a5207a270b5866c9
+  Le nouveau binaire est un QUATRIEME composant : il porte la correlation, les
+  hypotheses et l'autorisation, mais il n'INCORPORE pas les trois autres.
+  L'unification reste a faire. Je ne la marque pas achevee.
+
+SUBMISSION_CORRELATION_IMPLEMENTED=YES
+  Implementee et testee sur fixtures synthetiques. Regles effectivement codes :
+    - aucune nouvelle soumission -> ZERO_SUBMISSION, aucune attribution ;
+    - plusieurs soumissions / une seule enumeree -> MULTIPLE_SUBMISSIONS_ONLY_
+      LAST_ENUMERATED, et la couverture de l'APPEL est incomplete ;
+    - pointeur discordant, ou compte de noeuds discordant -> AMBIGUOUS_MAPPING ;
+    - soumission en erreur (rc != 0) -> SUBMISSION_ERROR, statut explicite ;
+    - capture malformee -> MALFORMED_CAPTURE ;
+    - capture anterieure reutilisee -> STALE_CAPTURE_REUSED, refusee ;
+    - enumeration invalide -> INVALID_WINDOW ;
+    - AUCUN verdict de correlation ne conclut une absence NextN (teste).
+FINGERPRINT_CORRELATION_METHOD=METHOD_DECLARED_LIMIT_NOT_IMPLEMENTABLE
+  LIMITE INTRINSEQUE, correctement representee plutot que contournee :
+  les champs reellement disponibles au producteur (f1a-capture.cpp:301-310) sont
+  submission_id, gf, n_nodes, submission_rc, fingerprint. La definition du
+  FINGERPRINT n'a PAS ete etablie au producteur, et l'enumerateur ne le derive
+  pas. Sa confrontation a l'enumeration n'est donc PAS implementable.
+  Consequence reportee SEPAREMENT, sans degrader la couverture :
+    couverture etablie sur gf + n_nodes (NECESSAIRES, tous deux reutilisables) ;
+    force d'identite = POINTER_AND_COUNT_ONLY, jamais FINGERPRINT_CONFRONTED.
+  Ce maillon reste a fermer : lire la construction du fingerprint au producteur.
+PER_SUBMISSION_COVERAGE_IMPLEMENTED=YES
+PER_CALL_COVERAGE_IMPLEMENTED=YES
+  Les deux sont DISTINGUES : une soumission peut etre correlee alors que l'appel
+  ne l'est pas (plusieurs soumissions, une seule enumeratee).
+
+RUNTIME_ASSUMPTION_RECORDING_IMPLEMENTED=YES
+  Enregistrement des valeurs TRANSMISES : ctx_type et embeddings_nextn, plus le
+  resultat de creation du contexte. Ce ne sont PAS des lectures internes.
+  gtype_status = GTYPE_DERIVED_FROM_VERIFIED_SOURCE_MAPPING (teste).
+  GTYPE_RUNTIME_OBSERVED n'est PAS publiee. h_nextn n'est PAS un temoin
+  d'operation MTP (le constructeur standard produit cet etat du tronc).
+
+NOMINAL_AUTHORIZATION_MOCK_SELFTEST=PASS
+  9 controles : autorisation nominale acceptee ; callbacks mockes atteints dans
+  l'ordre load -> ctx -> prefill -> decode ; flag absent refuse ; document absent
+  refuse ; document malforme refuse ; identite de binaire erronee refusee ;
+  plan discordant refuse ; protocole discordant refuse ; flag seul sans document
+  refuse. Dans TOUS les refus : load=ctx=prefill=decode=0 (aucun callback apres
+  refus). Le fixture nominal n'autorise QUE des mocks : aucun document produit
+  pendant cette passe n'ouvre le calcul reel.
+REJECTION_GUARD_SELFTEST=PASS
+STOP_CONTRACT_SELFTEST=PASS   (herite du binaire aa7e4bf4..., NON rejoue ici et
+  NON presente comme un nouveau resultat)
+INTEGRATION_SELFTEST=PASS
+
+HARNESS_SOURCE_SHA256=89e39ab78941192265f75ea22a7a86a2501a94ff256710832ff63bfdb04bca94
+HARNESS_BINARY_SHA256=06d6f8c8072f74043d9894c6cc8a2b76b24729180b5a8d15a2ae153c516b8457
+  source : tools/engine008-integrated/engine008-preflight-integrated.cpp
+  binaire: build-integrated/engine008-preflight-integrated
+  COMMANDE DE BUILD (reproductible) :
+    g++ -std=c++17 -O2 -w -I$FORK/include -I$FORK/common -I$FORK/ggml/include \
+        -I$FORK/vendor $SRC -o $OUT -L$FORK/build-cuda/bin -lllama-common -lllama \
+        -lggml -lggml-base -Wl,-rpath,$FORK/build-cuda/bin
+  Compilation avec arret immediat en cas d'echec (set -e). Identites recalculees
+  APRES compilation reussie.
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  S2, S3 et S4 sont ACHEVES et verifies. S1 ne l'est pas. Je ne marque pas
+  achevee une integration non ecrite.
+
+REMAINING_WORK=
+  T1_S1_UNIFIER les trois composants en un binaire : enumerateur
+     ENGINE008_GRAPH_ENUM_v1_1 (10 slots src[] sans compaction), registre
+     d'identite natif avec ses regles d'ambiguite, et le chemin
+     full-load/prefill/decode avec le contrat d'arret. Separer explicitement
+     acquisition native / collecte / classification pure / serialisation.
+     Le nouveau composant de cette passe fournit la COUCHE de correlation et
+     d'autorisation a y raccorder.
+  T2_FERMER la limite du fingerprint : lire au producteur la construction du
+     fingerprint, ou etablir qu'elle n'est pas exposable. Tant que ce maillon
+     est ouvert, la force d'identite reste POINTER_AND_COUNT_ONLY.
+  T3_ENREGISTRER au runtime les valeurs reelles de ctx_type et embeddings_nextn
+     (A1/A2) et l'identite des binaires/bibliotheques chargees, puis les
+     confronter au plan.
+  T4_PUIS seulement le protocole v2 et le gel v2, sur instruction separee.
+
+ENGINE008_NEXT_STEP=T1 (unifier les trois composants en un binaire, en y
+  raccordant la couche de correlation de cette passe)
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun forward, aucun run preflight ou
+qualite. Aucun rebuild de bibliotheque Q1. Aucun nouveau gel. Aucun document
+d'autorisation ouvrant le calcul reel. Aucun global de Q1 ecrit. Les anciens
+binaires, sources et gels sont INTACTS.

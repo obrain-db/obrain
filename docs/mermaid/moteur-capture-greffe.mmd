@@ -1,0 +1,124 @@
+%% Ce que ce diagramme prouve : la topologie EXACTE de la greffe de capture graph-bound dans
+%% build_lora_mm, soit cur_raw puis cur_effective puis DUP cur_capture puis MUL_MAT mm_raw puis DUP
+%% mm_capture, et le point ou le drapeau GGML_TENSOR_FLAG_OUTPUT est pose sur les deux copies, avec
+%% la raison : ggml_gallocr_free_node ne protege QUE ce drapeau, donc sans lui la region de
+%% cur_capture est liberee des son unique consommateur, le MUL_MAT.
+%% Sources LUES : engine-004-aprime/source/f1a-capture.h et f1a-capture.cpp, apply-f1a-capture.py,
+%% n3nonies-patch.py, apply-f1a-context-graft.py, llama-obrain-cuda/src/llama-graph.cpp:1468 a 1535,
+%% llama-obrain/ggml/src/ggml-alloc.c:690, ggml/include/ggml.h:662, ggml/src/ggml.c:7761,
+%% ggml/src/ggml-backend.cpp:1342 et 1361, docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-
+%% CAPTURE-LIFETIME.md.
+%% MESURE, lu dans le rapport N3NONIES : CAPTURES_WERE_CORRUPTED=336_SUR_336, epoque 0 avec 25
+%% activations toutes nulles sur 168, puis CAPTURES_NOW_VERIFIED=336_SUR_336, contradictions
+%% activation nulle sur sortie non nulle 25 vers 0, LOGIT_BITWISE_MISMATCH_COUNT=0.
+%% DEDUIT : la region de cur_capture n a qu un consommateur, le MUL_MAT, donc elle est liberee
+%% immediatement apres, et 3968 autres noeuds s executent avant l extraction : c est le mecanisme.
+%% NON ETABLI : la greffe f1a est ABSENTE de tous les llama-graph.cpp lisibles sur cette machine,
+%% l arbre cite /home/triviere/projects/llama-obrain-cuda-f1a N EXISTE PAS, et f1a_mark_output est
+%% absent du f1a-capture.h et du f1a-capture.cpp lus. L etat applique est donc lu dans le TEXTE
+%% LITTERAL des scripts de patch, marque ici 🟠 decide pas ecrit ; aucun noeud n est dessine pour un
+%% arbre patche inexistant. L ecrivain qui ecrase chaque region reste NON IDENTIFIE.
+
+flowchart TB
+
+  subgraph Point["Groupe 1 : le point de greffe reel et son absence dans l arbre lisible"]
+    direction TB
+    g_site["· llama-obrain-cuda/src/llama-graph.cpp:1510<br/>ggml_tensor * res = ggml_mul_mat de ctx0, w, cur<br/>ancre unique, retrouvee a l identique dans les cinq checkouts<br/>✅ ecrit et verifie"]
+    g_absent["· greffe f1a ABSENTE de tout llama-graph.cpp lisible<br/>llama-obrain, llama-obrain-cuda, llama-obrain-dgx,<br/>llama-obrain-i1-wt, llama-obrain-m1-wt,<br/>plus mnt obrain verif-branche et wt-wht-dense<br/>aucun f1a_cur_cap, aucun f1a_mark_output, aucun OBRAIN_F1A_CAPTURE<br/>🔴 refuse : l arbre cite llama-obrain-cuda-f1a n existe pas<br/>donc aucun noeud applique ne peut etre lu"]
+  end
+
+  subgraph Chaine["Groupe 2 : la chaine de tenseurs, du brut a la copie de sortie"]
+    direction TB
+    c_raw["· f1a_cur_raw = cur, pose en tete de build_lora_mm<br/>apply-f1a-capture.py lignes 48 a 52<br/>l activation telle qu elle ARRIVE<br/>champ cur_raw_id de f1a_target_rec<br/>🟠 decide pas ecrit : texte du patch seulement"]
+    c_wht["· llama-graph.cpp:1496 a 1507, memo obrain_rot<br/>si type TQ2_G128 et pas OBRAIN_NO_ROTATION :<br/>ggml_cont si non contigu, ggml_reshape_2d sur OBRAIN_WHT_BLOCK,<br/>ggml_wht, puis ggml_reshape_4d retour<br/>une seule rotation par activation, memoisee par pointeur<br/>✅ ecrit et verifie"]
+    c_eff["· cur EFFECTIF, celui que le matmul consomme vraiment<br/>f1a-capture.cpp:117 cur_eff_id, eff_ne, eff_nb, eff_bytes<br/>f1a-capture.cpp:116 rotation_applied vrai si cur_raw differe de cur_used<br/>✅ ecrit et verifie"]
+    c_dupcur["· DUP cur_capture, apply-f1a-capture.py:59<br/>ggml_tensor * const f1a_cur_cap = ggml_dup de ctx0 et cur<br/>UN SEUL consommateur : le MUL_MAT<br/>🟠 decide pas ecrit : arbre cible absent"]
+    c_mmraw["· MUL_MAT mm_raw, apply-f1a-capture.py:60<br/>ggml_mul_mat de ctx0, w, f1a_cur_cap<br/>le matmul consomme la COPIE, pas cur<br/>🟠 decide pas ecrit"]
+    c_dupmm["· DUP mm_capture, apply-f1a-capture.py:61<br/>res = ggml_dup de f1a_mm_raw<br/>AVANT w_s et AVANT toute contribution LoRA<br/>🟠 decide pas ecrit"]
+    c_aval["· llama-graph.cpp:1512 a 1532, reste INTACT<br/>w_s puis boucle loras et retour de res<br/>tout l aval s applique donc a mm_capture<br/>aucun bloc n est duplique<br/>✅ ecrit et verifie"]
+    c_note["· f1a-capture.cpp:100 f1a_capture_note<br/>remplit f1a_target_rec et stocke les POINTEURS VIVANTS<br/>t_cur_capture, t_mm_raw, t_mm_capture<br/>✅ ecrit et verifie"]
+  end
+
+  subgraph Drapeau["Groupe 3 : ou le drapeau OUTPUT est pose, et pourquoi"]
+    direction TB
+    d_markcur["· n3nonies-patch.py:43, DANS la greffe<br/>f1a_mark_output de f1a_cur_cap<br/>commentaire du patch : sinon ggml-alloc libere sa region<br/>🟠 decide pas ecrit"]
+    d_markmm["· n3nonies-patch.py:46, DANS la greffe<br/>f1a_mark_output de res, donc de mm_capture<br/>commentaire du patch : idem pour mm_capture<br/>🟠 decide pas ecrit"]
+    d_def["· n3nonies-patch.py:30, definition<br/>si t n est pas nullptr alors ggml_set_output de t<br/>la declaration est ABSENTE du f1a-capture.h lu, 75 lignes<br/>🟠 decide pas ecrit"]
+    d_setout["· ggml/src/ggml.c:7761 ggml_set_output<br/>tensor flags recoit GGML_TENSOR_FLAG_OUTPUT<br/>⚪ existe en amont"]
+    d_flag["· ggml/include/ggml.h:662<br/>GGML_TENSOR_FLAG_OUTPUT = 2<br/>commentaire : is an output for the GGML compute graph<br/>⚪ existe en amont"]
+    d_free["· ggml/src/ggml-alloc.c:690 ggml_gallocr_free_node<br/>commentaire de la source : graph outputs are never freed<br/>si node flags ET GGML_TENSOR_FLAG_OUTPUT alors return<br/>tout autre tenseur est libere a sa DERNIERE consommation<br/>✅ ecrit et verifie"]
+    d_fork["· ggml/src/ggml-backend.cpp:1342 et 1361<br/>ggml_set_output de tensor_copy<br/>commentaire du fork : prevent ggml-alloc<br/>from overwriting the tensor<br/>⚪ existe en amont, c est le fork qui nomme la consequence"]
+  end
+
+  subgraph Pourquoi["Groupe 4 : pourquoi ce drapeau est necessaire, et l etat sans lui"]
+    direction TB
+    p_seul["· cur_capture n a QU UN consommateur, le MUL_MAT<br/>sa region est donc liberee immediatement apres le matmul,<br/>tot dans le graphe<br/>deduit de d_free et de c_dupcur<br/>🔴 refuse par l allocateur"]
+    p_fenetre["· graphe soumis : nodes=3991<br/>3968 autres noeuds s executent entre la liberation<br/>et l extraction de fin d epoque<br/>✅ ecrit et verifie, lu dans le rapport N3nonies"]
+    p_ecrase["· la region liberee est reattribuee a un noeud suivant<br/>qui y ecrit ses propres valeurs<br/>le contenu lu n est plus celui du tenseur<br/>🟠 decide pas ecrit : l ecrivain precis n est pas identifie"]
+    p_sans["· consequence nommee par le fork lui meme<br/>sans drapeau, ggml-alloc ECRASE le tenseur<br/>lire la region a la fin de l epoque<br/>n est pas lire le tenseur<br/>✅ ecrit et verifie, commentaire ggml-backend.cpp:1342"]
+  end
+
+  subgraph Extraction["Groupe 5 : l extraction de fin d epoque, qui exige la survie de la region"]
+    direction TB
+    x_elig["· f1a-capture.cpp:85 f1a_eligible<br/>type GGML_TYPE_TQ2_G128 ET nom present dans le CSV<br/>f1a-capture.cpp:79 get_ctx rend nullptr<br/>sans OBRAIN_F1A_CAPTURE=1<br/>✅ ecrit et verifie"]
+    x_fam["· f1a-capture.cpp:94 f1a_family_of<br/>K 5120 donne famille 5, K 6144 donne famille 6<br/>f1a-capture.cpp:120 affecte r.family<br/>✅ ecrit et verifie"]
+    x_ctx["· apply-f1a-context-graft.py:17, appel APRES<br/>const auto status = graph_compute de res et get_gf<br/>si f1a_capture_active alors f1a_capture_end_epoch<br/>⚪ existe en amont, hors du perimetre graph"]
+    x_end["· f1a-capture.cpp:176 f1a_capture_end_epoch<br/>1 ggml_backend_synchronize du backend<br/>2 extraction sur les pointeurs vivants<br/>3 invalidation : aucune identite ne survit a l epoque<br/>✅ ecrit et verifie"]
+    x_get["· f1a-capture.cpp:150 f1a_write_payload<br/>ggml_backend_tensor_get sur le tenseur vivant<br/>contigu copie directe, sinon reconstruction par ne et nb<br/>✅ ecrit et verifie"]
+  end
+
+  subgraph Mesure["Groupe 6 : ce qui a ete mesure, et ce qui reste ouvert"]
+    direction TB
+    m_avant["· MESURE AVANT le correctif<br/>CAPTURES_WERE_CORRUPTED=336_SUR_336<br/>epoque 0 : 25 activations toutes nulles sur 168<br/>✅ ecrit et verifie"]
+    m_apres["· MESURE APRES le correctif<br/>CAPTURES_NOW_VERIFIED=336_SUR_336<br/>contradictions activation nulle sur sortie non nulle 25 vers 0<br/>LOGIT_BITWISE_MISMATCH_COUNT=0<br/>✅ ecrit et verifie"]
+    m_ouvert["· BUFFER_REUSE_CAUSALITY<br/>=MECHANISM_AND_EFFECT_PROVEN_WRITER_NOT_IDENTIFIED<br/>CAPTURE_BUFFER_REGIONS_IDENTIFIED=NO<br/>🟠 decide pas ecrit : le tenseur ecrivain reste non identifie"]
+  end
+
+  g_site -->|remplacee par la greffe| c_mmraw
+  g_absent -.->|contredit l etat applique de| c_dupcur
+  c_raw -->|subit| c_wht
+  c_wht -->|produit| c_eff
+  c_eff -->|copie par| c_dupcur
+  c_dupcur -->|consomme par| c_mmraw
+  c_mmraw -->|copie par| c_dupmm
+  c_dupmm -->|alimente| c_aval
+  c_dupcur -->|decrit a| c_note
+  c_mmraw -->|pointeur vivant vers| c_note
+  c_dupmm -->|pointeur vivant vers| c_note
+
+  d_markcur -->|marque| c_dupcur
+  d_markmm -->|marque| c_dupmm
+  d_markcur -->|appelle| d_def
+  d_markmm -->|appelle| d_def
+  d_def -->|appelle| d_setout
+  d_setout -->|pose| d_flag
+  d_free -->|lit| d_flag
+  d_fork -->|applique| d_setout
+  c_dupcur -->|sans drapeau, region liberee par| d_free
+
+  d_free -->|ouvre| p_seul
+  p_seul -->|ouvre la fenetre de| p_fenetre
+  p_fenetre -->|permet| p_ecrase
+  p_ecrase -->|corrompt la lecture de| x_get
+  p_sans -->|motive le correctif| d_markcur
+
+  x_elig -->|conditionne| c_dupcur
+  x_fam -->|classifie| c_note
+  x_ctx -->|appelle| x_end
+  x_end -->|appelle| x_get
+  x_get -->|lit les pointeurs de| c_note
+
+  m_avant -->|motive le correctif| d_markcur
+  m_apres -->|mesure l effet de| d_markmm
+  m_apres -->|laisse ouvert| m_ouvert
+  m_ouvert -.->|ecrivain toujours non identifie| p_ecrase
+
+  classDef mesure fill:#1f6f2f,stroke:#0d3315,color:#fff
+  classDef amont fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef refuse fill:#8a1f1f,stroke:#4d0f0f,color:#fff
+  classDef ouvert fill:#8a6d12,stroke:#4d3c0a,color:#fff
+
+  class g_site,c_wht,c_eff,c_aval,c_note,d_free,p_fenetre,p_sans,x_elig,x_fam,x_end,x_get,m_avant,m_apres mesure
+  class d_setout,d_flag,d_fork,x_ctx amont
+  class g_absent,p_seul refuse
+  class c_raw,c_dupcur,c_mmraw,c_dupmm,d_markcur,d_markmm,d_def,p_ecrase,m_ouvert ouvert

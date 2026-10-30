@@ -1,0 +1,11 @@
+# ÉCHECS CONNUS — un banc durablement rouge n'apprend plus rien.
+#
+# Un échec listé ici est CONNU, DATÉ et ATTRIBUÉ. Il est affiché à chaque
+# exécution (« N échec(s) connu(s) »), mais ne rend pas le banc rouge : c'est ce
+# qui permet à un NOUVEL échec de se voir.
+#
+# Règle : on n'inscrit ici que ce qui est compris et attribué. Un échec qu'on ne
+# s'explique pas doit rester ROUGE.
+#
+# format : nom_du_test | date d'inscription | attribution
+des_ancres_divergentes_ne_rendent_jamais_un_resultat_ampute | 2026-09-13 | index ordonné — autre session ; présent depuis le 2026-09-13, inchangé par mes travaux

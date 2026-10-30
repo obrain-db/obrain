@@ -1,0 +1,162 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-FREEZE-01
+==========================================================================
+Passe interrompue par limite de contexte. Aucun forward pass. Aucun resultat
+invente. Le defaut R4 a ete IDENTIFIE AVANT toute conclusion — c est le
+resultat principal de cette passe.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=PREFLIGHT_QUALIFICATION_AND_FREEZE_ONLY
+
+--- R4 : LE DEFAUT EST CARACTERISE (resultat principal) ---
+MTP_SOURCE_TO_SURFACE_MAPPING=INCOMPLETE
+MTP_CLASSIFIER_SEMANTICS_VERIFIED=NO
+MTP_CAPTURE_COVERAGE_DEFINED=NO
+  FAIT : mon classificateur NextN cherchait les sous-chaines nextn/NEXTN/
+  h_nextn dans GRAPH_ROLE_RELATIONSHIPS.csv. Or `grep -n "nextn"
+  src/f1a-capture.cpp` est VIDE : le producteur n emet JAMAIS ces chaines.
+  Le test synthetique nextn_present_detected ne passait que parce que MA
+  fixture contenait la chaine recherchee. La detection etait donc
+  STRUCTURELLEMENT INCAPABLE de voir NextN : elle aurait toujours rendu
+  NEXTN_ABSENT_WITH_COVERAGE, meme si NextN avait ete execute.
+  CONSEQUENCE : toute conclusion d absence tiree de ce classificateur est
+  NULLE. Aucune n a ete publiee comme valide.
+  VRAIE NATURE de GRAPH_ROLE_RELATIONSHIPS.csv (en-tete lu au producteur
+  f1a-capture.cpp:672-674 ET confirme sur les fichiers reels de Q1) :
+    epoch,target_id,weight_name,sub_at_build,cur_op,cur_src0_is_effective,
+    mulmat_op,mulmat_src0_is_weight,mulmat_src1_is_cur,mmcap_op,
+    mmcap_src0_is_mmraw,downstream_reach,role_ok,effect_class
+  => c est la surface ROLE/EFFET DE LA WHT, pas une surface NextN.
+  SURFACES f1a REELLEMENT PRODUITES (9) : EVENT_LEDGER, GRAPH_CAPTURE_MANIFEST,
+  GRAPH_ROLE_RELATIONSHIPS, TARGET_EFFECT_PATH, PAYLOAD_PROVENANCE,
+  BACKEND_OWNERSHIP_MANIFEST, RESIDENCY_MANIFEST, EPOCH_CLASSIFICATION,
+  SUBMITTED_GRAPH_SNAPSHOTS. Aucune n est documentee comme portant une
+  identite NextN.
+  CANDIDAT A EXAMINER : SUBMITTED_GRAPH_SNAPSHOTS.csv (instantane du graphe
+  SOUMIS = niveau ou la question « le decodeur standard construit-il des
+  operations NextN ? » peut recevoir une reponse). NON ENCORE EXAMINE.
+
+--- DECOUVERTES ANNEXES SUR LES SURFACES REELLES ---
+EVENT_KINDS_REELS=CAPTURE_BEGIN,CAPTURE_END,CAPTURE_EXTRACT,COMPUTE_SUBMIT,
+  DECODE_BEGIN,DECODE_END,LOGITS_READ,SYNC_COMPLETE   (huit, pas deux)
+  Mon collecteur n en comptait que deux. DECODE_BEGIN/DECODE_END/LOGITS_READ
+  portent la notion de pas de decodage et sont ignores.
+LEDGER_REEL (run Q1_ON) : graph_fingerprint=16 hex ; capture_epoch_id peut
+  valoir NA (grammaire non purement numerique) ; graph_ptr=adresse.
+  eligible_target_count=1344 et captured_target_count=0 COEXISTENT.
+  => « cibles eligibles » != « cibles capturees » : mon critere
+     manifest_rows>0 comme signe de couverture est INSUFFISANT.
+SOUMISSION != ACHEVEMENT : correctement comptes separement, mais JAMAIS
+  correles par identifiant. Sens exact de rc NON etabli.
+  Un fingerprint n est PAS une description exhaustive du graphe.
+
+--- R2 : NON CLOSE ---
+RENDERER_QUALIFIED=NO
+RENDERER_QUALIFICATION_AUTHORITY_SHA256=NOT_AVAILABLE
+  ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md non produite. Les preuves
+  existantes restent celles de PROTOCOL-HARNESS-01 (provenance
+  2ec2e166cfbd5951c5d68ff3074b3a977c910e855db795fffcdb55a316d0b3da) et
+  les 6 fixtures. Aucun re-rendu, aucune autorite inventee.
+
+--- GARDE : ETAT INCHANGE, CHEMIN NOMINAL NON TESTE ---
+HARNESS_NOMINAL_AUTHORIZATION_MOCK_SELFTEST=NOT_RUN
+HARNESS_REJECTION_GUARD_SELFTEST=PASS   (herite de PREFLIGHT-IMPLEMENT-01 :
+  11 controles, 0 echec ; refus avant chargement complet, contexte et forward ;
+  le drapeau --allow-model-compute seul n ouvre pas la garde)
+  Le chemin NOMINAL d autorisation n a pas ete implemente ni teste sur mocks.
+  La garde reste FERMEE et n est pas ouverte par une constante : elle depend de
+  g_auth.allowed, positionne par le seul drapeau (qui reste insuffisant).
+
+--- WHT : COUVERTURE NON VERIFIEE ---
+WHT_CAPTURE_COVERAGE_VERIFIED=NO
+  Les criteres EMPTY/PARTIAL/COMPLETE et le refus de conclure une absence
+  existent et sont testes (11 controles). MAIS, au vu de ce qui precede,
+  COMPLETE repose encore sur ledger_rows/manifest_rows/submit_events/
+  fingerprints Non Vides — c est-a-dire sur des comptes non nuls, pas sur un
+  ENSEMBLE ATTENDU et une correspondance verifiable. Le critere doit etre
+  reconstruit sur eligible/captured et sur la correlation
+  soumission -> achevement. A FAIRE.
+  rotation_applied reste correctement ancre a f1a-capture.cpp:473
+  (cur_raw != cur_used) : une difference d identite de tenseur n est prise
+  pour WHT que dans ce contexte precis.
+
+EXISTING_REAL_CAPTURE_VALIDATION=PARTIAL
+  Confrontation effectuee sur les captures REELLES de Q1
+  (e7b-f1a-q1-forward-v1/on/) : schema du ledger CONFIRME, kinds reels
+  releves, valeurs reelles observees. Aucune fixture inventee.
+  MAIS : GRAPH_ROLE_RELATIONSHIPS.csv est ABSENT de ce run (seuls
+  EVENT_LEDGER, GRAPH_CAPTURE_MANIFEST, PAYLOAD_PROVENANCE et deux CSV de
+  validation y figurent). La surface NextN pressentie n a donc pas pu etre
+  confrontee sur un artefact reel.
+
+RUNTIME_CAPTURE_STATUS=INCOMPLETE
+
+--- HARNais : IDENTITES INCHANGEES DANS CETTE PASSE ---
+HARNESS_SOURCE_SHA256=3c49baad8dbb60a4c61a8d2e73631a29652a5a04c8bcb3207e8348c9d6a722cf
+HARNESS_BINARY_SHA256=9f9d1bc005061d7910e37345e9f69aceb4c8f56bfd9206c890f48de1b7cdb970
+  Le collecteur n a PAS ete corrige dans cette passe : la correction exige
+  l examen prealable de SUBMITTED_GRAPH_SNAPSHOTS.csv sur un artefact reel
+  (§5 : ne pas inventer une validation). Modifier le classificateur avant
+  d avoir releve la grammaire reviendrait a remplacer une supposition par une
+  autre. Le harnais garde donc son identite, et ses tests restent valides pour
+  ce qu ils testent REELLEMENT (le collecteur sur entrees synthetiques), pas
+  pour la semantique de la surface.
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/, ggml/, include/, common/ ; reference=etat qualifie Q1.
+  PORTEE NON ELARGIE : un diff nul ne prouve pas l identite de la reference
+  avec les sources historiques de Q1.
+
+--- v1.1 : NON PRODUITE ---
+Le gel v1 reste INTACT et n a pas ete reecrit :
+  protocole c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3
+  manifeste 855172969ef621fd0223a79d5443dd44c81fd08b329c212af915b55fdcb82a42
+ENGINE008_PROTOCOL_FROZEN=YES   (v1, inchange)
+NEW_PREFLIGHT_FREEZE=NOT_ATTEMPTED
+  Motif : geler maintenant figerait un classificateur dont la semantique de
+  surface est DEMONTREE NON FIABLE. Le gel preflight ne doit pas etre emis
+  au-dessus d une preuve d absence invalide.
+ENGINE008_PREFLIGHT_PLAN_SHA256=NOT_CREATED
+PREFLIGHT_HARNESS_READY=NO
+QUALITY_EXECUTION_PATH_READY=NOT_ASSESSED
+
+MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_BASELINE_RUN_COUNT=0
+PREFLIGHT_CANDIDATE_RUN_COUNT=0
+QUALITY_RESULT_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Ce n est ni une gate scientifique, ni une impossibilite technique.
+FIRST_BLOCKING_GATE=NONE
+REMAINING_RUNTIME_VALIDATIONS=
+  V1_relever_en_tete_et_grammaire_de_SUBMITTED_GRAPH_SNAPSHOTS.csv sur un
+     artefact reel ; decider s il constitue la surface NextN.
+  V2_reconstruire_le_classificateur_sur_des_IDENTITES D OPERATION relevees,
+     jamais sur des sous-chaines de noms de variables C++.
+  V3_ajouter_le_cas_de_test_« nom trompeur » (une ligne contenant nextn dans
+     un champ non pertinent ne doit PAS produire NEXTN_PRESENT).
+  V4_correler_soumission et achevement par identifiant ; confronter
+     eligible_target_count et captured_target_count.
+  V5_reconstruire le critere COMPLETE sur un ensemble ATTENDU et une
+     correspondance verifiable, pas sur des comptes non nuls.
+  V6_confirmer le sens exact de rc de soumission et la grammaire de role /
+     effect_class avant tout usage.
+  V7_implementer et tester sur mocks le chemin NOMINAL d autorisation, et les
+     refus (autorisation absente, flag seul, mauvais mode, mauvais hash de
+     binaire, mauvais gel ou plan, precondition manquante), sans circularite
+     binaire <-> manifeste.
+  V8_fermer R2 : ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md.
+  V9_emettre v1.1 et le manifeste de gel preflight, puis le plan des 4 runs.
+
+ENGINE008_NEXT_STEP=EXAMINER_SUBMITTED_GRAPH_SNAPSHOTS.csv_SUR_UN_ARTEFACT_REEL
+  PUIS_reconstruire_le_classificateur_AVANT_toute_autre_chose
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit de modele, aucune generation, aucun scoring, aucune NLL/PPL.
+Aucune modification de libllama Q1, des GGUF, des corpus, des scorers, des
+seuils, du renderer, du template commun, du gel v1, ni du harnais.
+Aucun re-rendu des 2 698 entrees. Aucun replay des scorers.

@@ -3,8 +3,9 @@
 //! [`PropertyMap`] replaces `BTreeMap<PropertyKey, Value>` on user-facing
 //! [`Node`](crate::graph::lpg::Node) and [`Edge`](crate::graph::lpg::Edge)
 //! types.  For the typical case of 1-4 properties the data lives entirely
-//! inline (no heap allocation), and lookups use a fast linear scan instead
-//! of tree traversal.
+//! inline (no heap allocation). Entries are kept SORTED by key and looked up
+//! by binary search, so bulk hydration can sort once (O(P log P)) instead of
+//! inserting P times (O(P²)).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,9 +24,10 @@ const INLINE_CAP: usize = 4;
 /// A compact, ordered property map.
 ///
 /// Behaves like a `BTreeMap<PropertyKey, Value>` but stores small maps
-/// inline (up to 4 entries) and uses linear scan for lookups.  For the
-/// sizes typical in graph workloads this is both faster and more
-/// memory-efficient than a tree.
+/// inline (up to 4 entries). Entries are kept SORTED by key and looked up
+/// by binary search (O(log P)). The bulk-load path
+/// ([`Self::from_sorted_pairs`]) sorts the pairs once instead of inserting
+/// them one by one — the difference between O(P log P) and O(P²).
 #[derive(Clone, PartialEq)]
 pub struct PropertyMap {
     entries: SmallVec<[(PropertyKey, Value); INLINE_CAP]>,
@@ -50,6 +52,23 @@ impl PropertyMap {
         }
     }
 
+    /// Construit une `PropertyMap` depuis des paires `(clef, valeur)` DÉJÀ
+    /// triées par clef et dédupliquées.
+    ///
+    /// POURQUOI ce constructeur existe : le chemin de lecture en masse
+    /// (`read_all_properties_for_node`) décode P paires, les trie et les
+    /// déduplique EN UNE passe (O(P log P)), puis les remet ici. Sans lui, la
+    /// seule voie de remplissage était `insert` répété — O(P²) par balayage
+    /// linéaire. Le `Vec` est adopté tel quel : aucune re-copie pour les maps
+    /// qui débordent la capacité en ligne (≤ 4 entrées restent en ligne).
+    #[inline]
+    #[must_use]
+    pub fn from_sorted_pairs(pairs: Vec<(PropertyKey, Value)>) -> Self {
+        Self {
+            entries: SmallVec::from_vec(pairs),
+        }
+    }
+
     /// Returns the number of properties.
     #[inline]
     #[must_use]
@@ -65,37 +84,56 @@ impl PropertyMap {
     }
 
     /// Looks up a property by key.
+    ///
+    /// POURQUOI la dichotomie : les entrées sont maintenues TRIÉES par clef
+    /// (`PropertyKey` est `Ord`), donc une recherche coûte O(log P) au lieu du
+    /// balayage linéaire O(P). C'est le socle qui fait passer l'hydratation
+    /// d'un nœud de O(P²) à O(P log P) une fois le remplissage trié en masse.
     #[must_use]
     pub fn get(&self, key: &PropertyKey) -> Option<&Value> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        self.entries
+            .binary_search_by(|(k, _)| k.cmp(key))
+            .ok()
+            .map(|pos| &self.entries[pos].1)
     }
 
     /// Returns `true` if the map contains the given key.
     #[must_use]
     pub fn contains_key(&self, key: &PropertyKey) -> bool {
-        self.entries.iter().any(|(k, _)| k == key)
+        self.entries
+            .binary_search_by(|(k, _)| k.cmp(key))
+            .is_ok()
     }
 
     /// Inserts a property, replacing any existing value for the same key.
     ///
     /// Returns the previous value if the key was already present.
+    ///
+    /// POURQUOI l'insertion par dichotomie : le tableau reste TRIÉ par clef.
+    /// Chaque insertion coûte O(log P) de recherche + O(P) de glissement de
+    /// mémoire (inévitable pour un tableau ordonné). L'essentiel est de ne
+    /// plus faire P balayages linéaires pour P insertions : le chemin en masse
+    /// passe par [`Self::from_sorted_pairs`] pour ne trier qu'UNE seule fois.
     pub fn insert(&mut self, key: PropertyKey, value: Value) -> Option<Value> {
-        for entry in &mut self.entries {
-            if entry.0 == key {
-                let old = std::mem::replace(&mut entry.1, value);
-                return Some(old);
+        match self.entries.binary_search_by(|(k, _)| k.cmp(&key)) {
+            Ok(pos) => Some(std::mem::replace(&mut self.entries[pos].1, value)),
+            Err(pos) => {
+                self.entries.insert(pos, (key, value));
+                None
             }
         }
-        self.entries.push((key, value));
-        None
     }
 
     /// Removes a property by key, returning its value if present.
+    ///
+    /// POURQUOI un retrait ORDONNÉ (`remove` et non `swap_remove`) : il
+    /// préserve l'invariant de tri dont `get`/`contains_key`/`insert`
+    /// dépendent désormais. Le glissement O(P) est sans objet sur le chemin
+    /// chaud, où les suppressions passent par le build trié en masse.
     pub fn remove(&mut self, key: &PropertyKey) -> Option<Value> {
-        if let Some(pos) = self.entries.iter().position(|(k, _)| k == key) {
-            Some(self.entries.swap_remove(pos).1)
-        } else {
-            None
+        match self.entries.binary_search_by(|(k, _)| k.cmp(key)) {
+            Ok(pos) => Some(self.entries.remove(pos).1),
+            Err(_) => None,
         }
     }
 
@@ -310,5 +348,84 @@ mod tests {
         let btree = map.to_btree_map();
         assert_eq!(btree.len(), 2);
         assert_eq!(btree[&PropertyKey::new("x")], Value::from(1i64));
+    }
+
+    // ===================================================================
+    // T17k-opt — invariant TRIÉ + build en masse. Ces tests verrouillent
+    // l'hypothèse sur laquelle la dichotomie repose : sans un tableau trié,
+    // `get`/`contains_key`/`insert` rendraient des réponses fausses, pas
+    // seulement lentes. Le build `from_sorted_pairs` est le pendant O(P) du
+    // remplissage O(P²) par `insert` répété.
+    // ===================================================================
+
+    /// L'invariant central : quelle que soit la séquence d'`insert`/`remove`,
+    /// les entrées restent triées par clef (condition d'exactitude de la
+    /// dichotomie), et chaque clef insérée reste lisible.
+    #[test]
+    fn insert_maintains_sorted_invariant() {
+        let mut map = PropertyMap::new();
+        // Ordre d'insertion délibérément NON trié.
+        for name in ["z", "m", "a", "q", "b", "y", "c", "x"] {
+            map.insert(PropertyKey::new(name), Value::from(name.len() as i64));
+        }
+        // Trié par clef après chaque insertion.
+        let keys: Vec<&PropertyKey> = map.iter().map(|(k, _)| k).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "les entrées doivent rester triées par clef");
+
+        for name in ["z", "m", "a", "q", "b", "y", "c", "x"] {
+            assert_eq!(
+                map.get(&PropertyKey::new(name)).and_then(Value::as_int64),
+                Some(name.len() as i64)
+            );
+        }
+    }
+
+    /// Un `remove` ne doit pas casser l'invariant de tri (l'ancien
+    /// `swap_remove` échangeait le trou avec le dernier élément).
+    #[test]
+    fn remove_maintains_sorted_invariant() {
+        let mut map = PropertyMap::new();
+        for name in ["a", "b", "c", "d", "e"] {
+            map.insert(PropertyKey::new(name), Value::from(1i64));
+        }
+        map.remove(&PropertyKey::new("c"));
+        let keys: Vec<&PropertyKey> = map.iter().map(|(k, _)| k).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "remove doit préserver l'ordre trié");
+        assert!(map.get(&PropertyKey::new("c")).is_none());
+        assert!(map.get(&PropertyKey::new("d")).is_some());
+    }
+
+    /// Le chemin en masse : P paires triées → `from_sorted_pairs` les adopte
+    /// en O(P) (aucun `insert`), et chaque lecture reste O(log P). C'est la
+    /// contre-partie fonctionnelle du gain mesuré par `benches/read_path.rs`
+    /// (`effet_P` : P=128 ~39,7 µs → ~12 µs).
+    #[test]
+    fn from_sorted_pairs_bulk_build_of_128_keys() {
+        const P: usize = 128;
+        let mut paires: Vec<(PropertyKey, Value)> = (0..P)
+            .map(|i| (PropertyKey::new(format!("prop{i:03}")), Value::from(i as i64)))
+            .collect();
+        paires.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let map = PropertyMap::from_sorted_pairs(paires);
+        assert_eq!(map.len(), P);
+
+        // Chaque clef est lisible par dichotomie, dans les deux sens.
+        for i in 0..P {
+            let cle = PropertyKey::new(format!("prop{i:03}"));
+            assert_eq!(map.get(&cle).and_then(Value::as_int64), Some(i as i64));
+            assert!(map.contains_key(&cle));
+        }
+        assert!(!map.contains_key(&PropertyKey::new("prop999")));
+
+        // L'itération sort bien triée (le `Vec` a été adopté tel quel).
+        let keys: Vec<&PropertyKey> = map.iter().map(|(k, _)| k).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
     }
 }

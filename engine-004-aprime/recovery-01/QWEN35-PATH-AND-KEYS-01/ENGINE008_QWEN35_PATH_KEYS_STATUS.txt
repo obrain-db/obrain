@@ -1,0 +1,129 @@
+ENGINE-008 -- STATUT TERMINAL QWEN35-PATH-AND-KEYS-01
+==========================================================================
+Les cles exactes sont IMPLEMENTEES, TESTEES et RACCORDEES au registre.
+30 controles, 0 echec, EXIT=0. Aucun chargement de modele. Aucun forward.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=QWEN35_SOURCE_PATH_AND_KEYS
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+=== K1 : LA PORTEE EXACTE DU FILTRE STEP35, ET POURQUOI IL NE S APPLIQUE PAS ===
+STEP35_FILTER_SCOPE=CHARGEMENT DES TENSORS UNIQUEMENT, ET EXCLUSIVEMENT POUR
+  LLM_ARCH_STEP35. Le garde est EXPLICITE dans le code (llama-model.cpp:2242) :
+      if (arch == LLM_ARCH_STEP35 && hparams.n_layer_nextn > 0) { ... }
+  Il n est PAS dans un chemin commun, et il n est PAS atteint par qwen35.
+  Il ne selectionne pas une couche a executer : il filtre ce qui est CHARGE.
+
+QWEN35_STANDARD_NEXTN_SOURCE_PATH=
+  1. Les tenseurs NextN de qwen35 sont CREES dans la boucle de couches, pour
+     l indice `i` de la boucle : llama-model.cpp:1477 (eh_proj), :1542
+     (eh_proj input_scale), :1479-1480 et :1544-1545 (shared_head_head).
+  2. Il n existe AUCUN filtre de chargement NextN pour qwen35 : le seul filtre
+     de ce type est garde par `arch == LLM_ARCH_STEP35`.
+  3. La separation standard/MTP se fait AILLEURS : par le TYPE DE CONTEXTE,
+     converti en TYPE DE GRAPHE par ctx_type_to_graph_type
+     (llama-context.cpp:78), consomme en :2264 (process_ubatch), :2869 et
+     :3868 (graph_params). Le defaut LLAMA_CONTEXT_TYPE_DEFAULT apparait en
+     :3973.
+
+CORRECTION D UNE ASSERTION QUE J AVAIS AVANCEE A TORT :
+  J avais ecrit, d apres STEP35, que « le chemin standard filtre les couches
+  NextN au chargement ». C est FAUX pour qwen35. Pour qwen35, les tenseurs
+  NextN sont bien crees/charges ; c est le choix du TYPE DE GRAPHE qui separe
+  les chemins. L inference etait abusive : elle etendait a qwen35 une regle
+  gardee par une architecture differente. Corrige ici, publie ici.
+
+QWEN35_STANDARD_NEXTN_EXCLUSION_STATICALLY_JUSTIFIED=UNRESOLVED
+  La distinction standard/MTP existe (ctx_type -> graph type) mais je n ai PAS
+  etabli que le builder standard EXCLUT les operations NextN. C est l assertion
+  C du §4, et elle reste non tranchee.
+
+=== K2 : LA REGLE DES CLES EST ETABLIE INDEPENDAMMENT DE STEP35 ===
+QWEN35_EXACT_KEY_GENERATION_RULE_VERIFIED=YES
+  Source directe, sans rapport avec STEP35 :
+    llama-hparams.cpp:273   return n_layer_all - n_layer_nextn;
+  donc les couches NextN sont [ n_layer(), n_layer_all ), soit
+    il in [ n_layer(), n_layer() + n_layer_nextn )
+  Les tenseurs etant crees pour l indice i de cette plage (llama-model.cpp:1477,
+  :1542), la formule des cles en decoule.
+  La CONSTANTE 64 A ETE RETIREE et remplacee par cette formule.
+
+NEXTN_LAYER_INDEX_EXPANSION_IMPLEMENTED=YES
+  generate_keys(shape, present) produit les cles completes pour TOUTE la plage.
+  Teste : configuration a 2 couches NextN (n_layer_all=66, nextn=2) -> indices
+  64 ET 65 ; configuration a n_layer_all=40 -> indice 39 (donc PAS 64 fige).
+NEXTN_OPTIONALITY_RULES_MATERIALIZED=YES
+  Poids principaux : crees SANS TENSOR_NOT_REQUIRED -> OBLIGATOIRES
+  (manquant -> APPLICABLE_REQUIRED_MISSING).
+  Compagnons ".scale" et ".input_scale" : TENSOR_NOT_REQUIRED
+  (llama-model.cpp:1477, :1542) -> OPTIONNELS
+  (manquant -> APPLICABLE_OPTIONAL_ABSENT).
+  Un compagnon optionnel n est JAMAIS un temoin positif : teste.
+  Un optionnel absent n est NI un tensor normal NI une preuve d absence.
+
+BASELINE_EXACT_KEYS_RESOLVED=YES
+  n_layer_nextn absent des metadonnees -> defaut 0.
+  generate_keys rend NOT_APPLICABLE pour TOUS les roles.
+  Ce n est JAMAIS un ROLE_ABSENT par defaut. Le baseline ne fournit AUCUN
+  temoin NextN applicable, par construction.
+CANDIDATE_EXACT_KEYS_RESOLVED=YES
+  n_layer_all=65, n_layer_nextn=1 -> indices [64,65) = {64}.
+  4 roles exclusifs + SHARED_HEAD_HEAD (exclusivite NON ETABLIEE, maintenu HORS
+  des temoins positifs -- statut NON modifie dans cette passe, conformement a §6).
+EXACT_KEYS_REGISTRY_INTEGRATION_IMPLEMENTED=YES
+  build_registry(table, keys) : la recherche se fait par EGALITE EXACTE dans
+  l ensemble des cles GENEREES. Aucune recherche par sous-chaine, aucun
+  rapprochement approximatif. Les etats d ambiguite du registre sont MAINTENUS
+  (KEY_AMBIGUOUS, MULTI_KEY_OBJECT, NULL_IDENTITY, EXCLUSIVITY_UNESTABLISHED).
+EXACT_KEYS_SELFTEST=PASS
+  30 controles, 0 echec : cle nominale + indice 64 ; mauvais suffixe refuse
+  (.bias) ; indice incorrect refuse (blk.63) ; plusieurs indices NextN ;
+  indice de depart != 64 ; zero couche NextN -> NOT_APPLICABLE ; obligatoire
+  manquant ; optionnel absent ; present ; compagnon optionnel non temoin ;
+  et tous les controles d identite anterieurs.
+
+UNRESOLVED_LOADING_CONDITION_COUNT=1
+  L assertion C : le builder standard de qwen35 construit-il ou exclut-il les
+  operations NextN ? La distinction ctx_type -> graph type est etablie ; son
+  EFFET sur les operations NextN ne l est pas.
+
+ADAPTER_SOURCE_SHA256=78ea125451f7cfcab1a8e528f4b8f345c138234b0d2735f63e3bc25981b40d78
+ADAPTER_BINARY_SHA256=c8c6df46e32521ed05ec04c4fff8ee9d387a3bfb0c2c93b1a5207a270b5866c9
+  Etat anterieur conserve : 17c0cec1... / cc5ea508...
+
+RUNTIME_STANDARD_PATH_CONFIRMATION=NOT_EXERCISED
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  K2 est ACHEVE (code compile, teste, raccorde). K1 est etabli et a produit une
+  CORRECTION d une assertion fausse. Ce qui reste n est pas du travail
+  interrompu mais une question non tranchee (assertion C).
+
+REMAINING_WORK=
+  Q1_TRANCHER l assertion C : lire le builder de graphe qwen35 et etablir si le
+     graphe standard construit des operations NextN ou les exclut. C est le
+     dernier maillon statique avant toute preuve runtime.
+  Q2_CONFRONTER les cles generees aux metadonnees GGUF des deux modeles
+     (lecture seule, sans poids ni contexte) et produire REQUIRED_TENSOR_MISSING_COUNT.
+  Q3_ALIAS et exclusivite du poids de tete : hors perimetre jusqu ici.
+  Q4_REPRENDRE les travaux hors perimetre : closure renderer, chemin nominal
+     d autorisation, v1.1 du protocole, gel preflight.
+
+ENGINE008_NEXT_STEP=Q1 (lire le builder de graphe qwen35 : le chemin standard
+  construit-il des operations NextN ?)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+AUCUN CHARGEMENT DE MODELE, aucune creation de contexte, aucun logit, aucune
+generation, aucun scoring, aucune NLL/PPL, aucune evaluation numerique.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template, gel v1, contrats de roles, ni des identites historiques.
+Aucun nouveau gel cree.

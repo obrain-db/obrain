@@ -1,15 +1,26 @@
-//! Shared value comparison and conversion utilities.
+//! Façade des comparaisons partagées par les opérateurs (agrégats, filtres,
+//! tris, recherche).
 //!
-//! Used by pull-based and push-based aggregate, filter, and sort operators
-//! to avoid duplicating comparison logic across six different files.
+//! (Correctif E, 2026-08) Ce fichier portait DEUX des quatre dialectes de
+//! comparaison mesurés par la campagne de conformité : un `compare_values`
+//! qui parsait les chaînes numériquement (hack RDF fuyant dans LPG — il
+//! faisait min('10','9') = '9' là où ORDER BY et `<` disent '10') et un
+//! `compare_values_total` qui rendait `Equal` pour toute paire de types
+//! différents — donc n'était PAS un ordre total, et laissait le tri inerte
+//! sur colonne hétérogène. Les deux délèguent désormais au comparateur
+//! canonique [`obrain_common::types::value_cmp`] ; les implémentations
+//! locales sont SUPPRIMÉES.
 
 use std::cmp::Ordering;
 
-use obrain_common::types::Value;
+use obrain_common::types::{Value, value_cmp};
 
 /// Converts a value to `f64` for numeric aggregations.
 ///
-/// Supports RDF values stored as strings by attempting numeric parsing.
+/// Le parse des chaînes reste ici À DESSEIN : les agrégats NUMÉRIQUES
+/// (sum/avg/stddev…) servent aussi le chemin RDF, où les littéraux numériques
+/// vivent dans des chaînes. Ce parse ne participe à AUCUNE comparaison —
+/// min/max et les prédicats passent par `value_cmp`, qui ne coerce pas.
 pub fn value_to_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Int64(i) => Some(*i as f64),
@@ -20,66 +31,36 @@ pub fn value_to_f64(value: &Value) -> Option<f64> {
     }
 }
 
-/// Compares two values with partial ordering (returns `None` for incomparable types).
-///
-/// Handles cross-type comparisons between Int64/Float64/String, including
-/// RDF numeric strings that need parsing before comparison.
+/// Comparaison de PRÉDICAT canonique : `None` pour les classes disjointes
+/// (UNKNOWN) comme pour NaN. Chaîne↔nombre n'est PLUS comparé — le même
+/// verdict que `<`/`<=`/`>`/`>=` dans l'évaluateur et que le balayage par
+/// intervalle.
+#[must_use]
 pub fn compare_values(a: &Value, b: &Value) -> Option<Ordering> {
-    match (a, b) {
-        (Value::Int64(a), Value::Int64(b)) => Some(a.cmp(b)),
-        (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b),
-        (Value::String(a), Value::String(b)) => {
-            // Try numeric comparison first if both look like numbers
-            if let (Ok(a_num), Ok(b_num)) = (a.parse::<f64>(), b.parse::<f64>()) {
-                a_num.partial_cmp(&b_num)
-            } else {
-                Some(a.cmp(b))
-            }
-        }
-        (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
-        (Value::Int64(a), Value::Float64(b)) => (*a as f64).partial_cmp(b),
-        (Value::Float64(a), Value::Int64(b)) => a.partial_cmp(&(*b as f64)),
-        // String-to-numeric comparisons for RDF
-        (Value::String(s), Value::Int64(i)) => s.parse::<f64>().ok()?.partial_cmp(&(*i as f64)),
-        (Value::String(s), Value::Float64(f)) => s.parse::<f64>().ok()?.partial_cmp(f),
-        (Value::Int64(i), Value::String(s)) => (*i as f64).partial_cmp(&s.parse::<f64>().ok()?),
-        (Value::Float64(f), Value::String(s)) => f.partial_cmp(&s.parse::<f64>().ok()?),
-        (Value::Timestamp(a), Value::Timestamp(b)) => Some(a.cmp(b)),
-        (Value::Date(a), Value::Date(b)) => Some(a.cmp(b)),
-        (Value::Time(a), Value::Time(b)) => Some(a.cmp(b)),
-        _ => None,
+    match value_cmp::comparer(a, b) {
+        value_cmp::Comparaison::Ordonnees(o) => Some(o),
+        value_cmp::Comparaison::NonOrdonnees | value_cmp::Comparaison::Incomparables => None,
     }
 }
 
-/// Compares two values with total ordering (returns `Equal` for incomparable types).
-///
-/// Used by sort operators where a total order is required.
+/// L'ORDRE TOTAL canonique — utilisé par les tris (pull, push, externe,
+/// fusion parallèle) et les incumbents de MIN/MAX. Vraiment total : types
+/// rangés par classe (Bool < nombres < String < temporels < … < Null),
+/// valeurs comparées dans la classe, NaN plus grand que tout nombre.
+#[must_use]
 pub fn compare_values_total(a: &Value, b: &Value) -> Ordering {
-    match (a, b) {
-        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-        (Value::Int64(a), Value::Int64(b)) => a.cmp(b),
-        (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
-        (Value::Int64(a), Value::Float64(b)) => {
-            (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
-        }
-        (Value::Float64(a), Value::Int64(b)) => {
-            a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)
-        }
-        (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
-        (Value::Date(a), Value::Date(b)) => a.cmp(b),
-        (Value::Time(a), Value::Time(b)) => a.cmp(b),
-        _ => Ordering::Equal,
-    }
+    value_cmp::comparer_total(a, b)
 }
 
 /// Returns `true` if `new` is less than `current` (for MIN aggregation).
 ///
 /// Returns `true` when `current` is `None` (first value always wins).
+/// L'ORDRE TOTAL garantit qu'un incumbent est TOUJOURS délogeable : plus
+/// aucun min/max figé sur sa première valeur face à un type « incomparable ».
 pub fn is_less_than(current: &Option<Value>, new: &Value) -> bool {
     match current {
         None => true,
-        Some(curr) => compare_values(new, curr) == Some(Ordering::Less),
+        Some(curr) => value_cmp::comparer_total(new, curr) == Ordering::Less,
     }
 }
 
@@ -89,7 +70,7 @@ pub fn is_less_than(current: &Option<Value>, new: &Value) -> bool {
 pub fn is_greater_than(current: &Option<Value>, new: &Value) -> bool {
     match current {
         None => true,
-        Some(curr) => compare_values(new, curr) == Some(Ordering::Greater),
+        Some(curr) => value_cmp::comparer_total(new, curr) == Ordering::Greater,
     }
 }
 
@@ -139,10 +120,12 @@ mod tests {
     }
 
     #[test]
-    fn compare_rdf_numeric_strings() {
+    fn les_chaines_se_comparent_lexicographiquement_jamais_en_nombres() {
+        // Fin du hack RDF : '10' < '9' parce que '1' < '9'. C'est l'ordre
+        // qu'ORDER BY et `<` ont toujours rendu — désormais min/max aussi.
         assert_eq!(
             compare_values(&Value::String("10".into()), &Value::String("9".into())),
-            Some(Ordering::Greater)
+            Some(Ordering::Less)
         );
     }
 
@@ -152,10 +135,20 @@ mod tests {
     }
 
     #[test]
-    fn total_ordering_incomparable_returns_equal() {
+    fn l_ordre_total_tranche_les_types_disjoints_par_rang() {
+        // Plus jamais `Equal` entre types : Bool < nombres < String, et la
+        // transitivité tient (c'est elle que le tri exige).
         assert_eq!(
             compare_values_total(&Value::Bool(true), &Value::Int64(1)),
-            Ordering::Equal
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_values_total(&Value::Int64(3), &Value::String("m".into())),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_values_total(&Value::String("m".into()), &Value::Int64(-2)),
+            Ordering::Greater
         );
     }
 
@@ -187,5 +180,19 @@ mod tests {
     #[test]
     fn is_greater_than_smaller() {
         assert!(!is_greater_than(&Some(Value::Int64(10)), &Value::Int64(5)));
+    }
+
+    #[test]
+    fn l_incumbent_min_max_est_delogeable_entre_types() {
+        // Le défaut « incumbent jamais délogé » : min sur [String, Int] devait
+        // rendre l'Int (rang numérique < rang chaîne), pas rester figé.
+        assert!(is_less_than(
+            &Some(Value::String("zzz".into())),
+            &Value::Int64(5)
+        ));
+        assert!(is_greater_than(
+            &Some(Value::Int64(5)),
+            &Value::String("aaa".into())
+        ));
     }
 }

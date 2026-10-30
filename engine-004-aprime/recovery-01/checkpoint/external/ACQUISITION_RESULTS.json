@@ -1,0 +1,36 @@
+{
+ "wikitext": {
+  "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+  "files": [
+   "test-00000-of-00001.parquet",
+   "train-00000-of-00001.parquet"
+  ],
+  "license": [
+   "cc-by-sa-3.0",
+   "gfdl"
+  ]
+ },
+ "gsm8k": {
+  "revision": "3101c7d5072418e28b9008a6636bde82a006892c",
+  "test_items": 1319,
+  "license_file": true
+ },
+ "mmlu_pro": {
+  "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+  "files": [
+   "test-00000-of-00001.parquet"
+  ],
+  "license": "mit"
+ },
+ "mbpp": {
+  "revision": "e49bbfe381c9c0e564b937f1c4e163a2273c65cc",
+  "files": [
+   "mbpp/mbpp.jsonl",
+   "mbpp/sanitized-mbpp.json"
+  ]
+ },
+ "ifeval": {
+  "revision": "e49bbfe381c9c0e564b937f1c4e163a2273c65cc",
+  "file_count": 12
+ }
+}

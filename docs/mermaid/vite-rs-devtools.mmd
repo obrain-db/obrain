@@ -1,0 +1,198 @@
+%% Ce que ce diagramme prouve : l architecture reelle du crate vite-rs lu comme un DevTools pour IA,
+%% soit le serveur HTTP/1.1 borne, les huit endpoints __dev, le service d assets, et le pont de
+%% commandes qui laisse un agent executer du JavaScript dans la page puis relire le resultat.
+%% MESURE : lecture integrale de src/lib.rs 54 l, src/http.rs 616 l, src/dev.rs 875 l,
+%% src/statics.rs 265 l, src/headers.rs 16 l, Cargo.toml 16 l, README.md 77 l,
+%% tests/integration.rs 239 l, tests/no_busy.rs 115 l, examples/basic.rs 50 l, soit 1826 l dans src
+%% et 2230 l avec tests et exemple. 16 tests declares par grep sur les crochets test, dont 3 dans
+%% http.rs, 6 dans dev.rs, 4 dans statics.rs, 2 dans integration.rs et 1 dans no_busy.rs.
+%% Toutes les constantes citees sont lues dans le code, jamais estimees. Le fichier
+%% src/http.rs.bak-20260910 - 595 l - est une sauvegarde posee dans src et n est pas compilee :
+%% il ne porte aucun noeud.
+%% DEDUIT : le role de chaque endpoint vient de la table du README confrontee au match de
+%% DevState::handle, que j ai lu ligne a ligne. Le cablage serveur vers handler est DEDUIT de
+%% examples/basic.rs et de tests/integration.rs : le crate n impose aucun routage, serve prend une
+%% closure. Les numeros 1 a 8 du pont suivent l ordre des appels lus, pas un protocole specifie.
+%% NON ETABLI : aucune source lisible dans ce depot pour un proxy amont ni pour une terminaison
+%% TLS - les constantes PROXY_CONNECT, PROXY_SHORT, PROXY_LONG et MAX_BUFFERED_UP existent et
+%% connect_up est declare, mais grep ne trouve aucun appelant, et aucune valeur de Body::Stream
+%% n est construite dans le crate : aucun noeud de proxy n est dessine. Le comportement reel d un
+%% navigateur sur ce pont n a pas ete execute ici, seulement lu dans la constante DEV_SNIPPET.
+
+flowchart TB
+
+  subgraph Crate["Le crate : quatre modules publics et deux dependances externes"]
+    cargo_toml["Cargo.toml - 16 lignes<br/>vite-rs 0.1.0, edition 2021, rust 1.75<br/>dependances - httparse 1 et serde_json 1"]
+    lib_rs["src/lib.rs - 54 lignes<br/>pub mod dev, headers, http, statics<br/>1826 lignes .rs dans src"]
+    headers_rs["src/headers.rs - 16 lignes<br/>DEFAULT_SECURITY_HEADERS - 5 en-tetes<br/>CSP, nosniff, Referrer-Policy,<br/>Permissions-Policy, X-Frame-Options DENY"]
+  end
+
+  subgraph Serveur["Serveur HTTP/1.1 borne : src/http.rs, 616 lignes, 3 tests"]
+    serve_fn["serve listen, handler, security<br/>TcpListener::bind puis pool de workers<br/>le crate n a aucun routage, il prend une closure"]
+    pool["worker_count - variable VITE_RS_HTTP_WORKERS<br/>defaut available_parallelism x 8 borne 32 a 256<br/>queue_cap - workers x 8, plancher 32"]
+    accept["boucle accept - tx.try_send<br/>file pleine - BACKPRESSURE puis envoi bloquant<br/>la backlog du noyau absorbe le surplus"]
+    backpressure["BACKPRESSURE - AtomicU64<br/>compteur de contre-pression, non nul sous charge"]
+    rejected["REJECTED - AtomicU64 garde a 0<br/>plus aucun chemin de 503 depuis la suppression de write_503<br/>no_busy.rs exige que ce compteur reste fige"]
+    workers_th["threads nommes vite-rs-http<br/>catch_unwind autour de serve_conn"]
+    serve_conn["serve_conn - keep-alive plafonne a 32 requetes<br/>keep-alive seulement pour /s/ et /assets/<br/>une requete HEAD vide le corps"]
+    read_req["read_request et parse_headers<br/>httparse, MAX_HEADERS 64<br/>MAX_HEADER_BYTES 16 Kio, MAX_BODY 8 Mio"]
+    timeouts["delais durs - HEADER 5 s, BODY 15 s<br/>WRITE 15 s, IDLE 400 ms"]
+    write_out["write_out et write_headers<br/>Date, Server vite-rs, Content-Length<br/>en-tetes de securite ajoutes si absents"]
+    body_enum["enum Body - Bytes, File et Stream<br/>Stream est ecrit et matche dans write_out<br/>mais aucune valeur Stream n est construite ici"]
+    counters["compteurs atomiques - ACCEPTED, SERVED<br/>INFLIGHT, WORKERS, BACKPRESSURE"]
+    proxy_dead["PROXY_CONNECT 2 s, PROXY_SHORT 8 s<br/>PROXY_LONG 300 s, MAX_BUFFERED_UP 2 Mio<br/>connect_up declare, zero appelant trouve par grep<br/>aucun noeud de proxy amont n est dessine"]
+  end
+
+  subgraph Assets["Service d assets : src/statics.rs, 265 lignes, 4 tests"]
+    static_files["StaticFiles - new, resolve<br/>serve et serve_existing"]
+    safe_rel["safe_rel - refuse les deux points,<br/>l octet nul, le pourcent et le chemin vide"]
+    layout["resolve essaie le chemin tel quel<br/>puis l autre disposition - assets vers racine<br/>et racine vers assets"]
+    mime["mime_of - table par extension<br/>js et mjs, css, html, json, wasm,<br/>images et polices"]
+    cache["cache_control_for - /assets/ et /s/ immuable<br/>max-age 31536000, html max-age 0,<br/>le reste max-age 300"]
+    etag["file_etag - secondes et taille en hexadecimal<br/>etag_match gere W/ et l etoile<br/>correspondance - reponse 304 sans corps"]
+    path_only["path_only - retire requete et fragment<br/>is_asset_url decide entre 404 et repli SPA"]
+  end
+
+  subgraph Dev["Mode dev et pont : src/dev.rs, 875 lignes, 6 tests"]
+    devstate["DevState - 13 champs<br/>dev, version AtomicU64, rebuilding AtomicBool<br/>commands Mutex de VecDeque, results Mutex de HashMap"]
+    builders["constructeurs - dev, watch, rebuild<br/>rebuild_cwd, poll_ms plancher 200,<br/>log_path et commands"]
+    start["start - thread nomme vite-rs-watch<br/>totalement inerte si dev est faux"]
+    watcher["watcher_loop - sondage 500 ms par defaut<br/>snapshot_dir puis snap_diff<br/>au plus un rebuild par tick"]
+    rebuild["rebuild - sh -c dans rebuild_cwd<br/>succes - version incrementee<br/>echec - les 2000 derniers caracteres journalises"]
+    append_log["append_log - stderr puis fichier en ajout<br/>ne panique jamais, meme sur un tube ferme"]
+    log_file["fichier de journal NDJSON<br/>defaut TMPDIR/vite-rs.log"]
+    handle["DevState::handle - routeur des chemins __dev<br/>renvoie None si dev est faux ou hors __dev"]
+    inject["inject_html et inject_html_no_dev<br/>inject_html_inner insere juste apres head,<br/>sinon en tete - statut 200 seulement, Cache-Control no-store"]
+  end
+
+  subgraph Endpoints["Endpoints __dev : 8 routes du README, toutes repondues par handle"]
+    ep_root["GET /__dev<br/>ok vrai, dev vrai, chemin du journal"]
+    ep_version["GET /__dev/version<br/>v et rebuilding, sonde par le snippet"]
+    ep_log_get["GET /__dev/log<br/>lit le fichier en text/plain"]
+    ep_log_post["POST et PUT /__dev/log<br/>204 - un tableau JSON est eclate<br/>en une ligne par evenement"]
+    ep_cmd["POST /__dev/command<br/>corps avec code, repond un id"]
+    ep_cmd_off["403 command bridge disabled<br/>des que commands est faux<br/>405 si la methode n est pas POST,<br/>400 si le champ code manque"]
+    ep_next["GET /__dev/command/next<br/>depile la file, repond id et code<br/>ou un objet vide"]
+    ep_result_post["POST /__dev/command/result<br/>204 - stocke le corps brut tel quel"]
+    ep_result_get["GET /__dev/command/result avec id<br/>repond le resultat stocke<br/>ou pending vrai"]
+    ep_404["tout autre chemin sous __dev<br/>404 not found"]
+  end
+
+  subgraph Pont["Le pont de commandes : une IA pilote la page sans DevTools"]
+    agent["Agent IA - client HTTP hors du crate<br/>curl ou outil de l agent<br/>README lignes 30 a 41"]
+    queue["DevState.commands<br/>Mutex de VecDeque de couples id et code"]
+    results_map["DevState.results<br/>Mutex de HashMap id vers reponse brute"]
+    snippet["DEV_SNIPPET - constante de src/dev.rs<br/>injectee dans chaque page servie en dev"]
+    poller["sondage de /__dev/command/next<br/>toutes les 400 ms"]
+    exec["new Function du code recu<br/>puis attente si le retour est une promesse"]
+    safe_fn["safe - serialiseur borne<br/>profondeur 2, 20 entrees,<br/>chaines coupees a 500 caracteres"]
+  end
+
+  subgraph Capture["Ce que la page renvoie toute seule, sans session DevTools"]
+    con_capture["console - log, info, warn,<br/>error, debug et trace<br/>arguments passes par safe, pile si trace"]
+    err_capture["window error et unhandledrejection<br/>message, source, ligne, colonne et pile"]
+    net_capture["fetch et XMLHttpRequest enveloppes<br/>statut, type de contenu, duree<br/>et pile d initiator"]
+    route_capture["pushState, replaceState,<br/>popstate et hashchange<br/>evenement route avec chemin et recherche"]
+    reload_poller["sondage de /__dev/version<br/>toutes les 700 ms - location.reload<br/>si v change et rebuilding est faux"]
+    sender["send - POST /__dev/log en keepalive<br/>un objet JSON par evenement"]
+  end
+
+  subgraph Montage["Le cablage du handler, laisse a l appelant et prouve par les tests"]
+    example_basic["examples/basic.rs - 50 lignes<br/>dev.handle puis statics.resolve<br/>repli SPA vers index.html puis inject_html"]
+    integ_test["tests/integration.rs - 239 lignes, 2 tests<br/>serveur reel sur port ephemere, requetes TCP brutes<br/>dont l aller-retour complet du pont"]
+    nobusy_test["tests/no_busy.rs - 115 lignes, 1 test<br/>4 workers pour 64 clients - exige 64 reponses 200<br/>et un compteur REJECTED fige"]
+    aletheia_host["aletheia/miner/src/host.rs - 1486 lignes<br/>hors du crate - monte http::serve, StaticFiles et DevState<br/>journal /tmp/aletheia-front.log"]
+  end
+
+  lib_rs -->|publie| headers_rs
+  lib_rs -->|publie le module| serve_fn
+  lib_rs -->|publie le module| static_files
+  lib_rs -->|publie le module| devstate
+  cargo_toml -->|fournit httparse| read_req
+  cargo_toml -->|fournit serde_json| handle
+
+  serve_fn -->|calcule la taille par| pool
+  pool -->|dimensionne| workers_th
+  serve_fn -->|boucle d acceptation| accept
+  accept -->|incremente quand la file est pleine| backpressure
+  accept -->|incremente| counters
+  accept -->|passe le couple flux et adresse| workers_th
+  workers_th -->|appelle| serve_conn
+  serve_conn -->|appelle| read_req
+  serve_conn -->|appelle| write_out
+  read_req -->|applique| timeouts
+  write_out -->|ecrit selon la variante| body_enum
+  write_out -->|ajoute si absentes| headers_rs
+  serve_fn -->|appelle la closure de l appelant| handle
+
+  static_files -->|appelle| safe_rel
+  static_files -->|appelle| path_only
+  static_files -->|resout par| layout
+  static_files -->|appelle| mime
+  static_files -->|appelle| cache
+  static_files -->|appelle| etag
+  path_only -->|alimente| mime
+  path_only -->|alimente| cache
+
+  builders -->|construisent| devstate
+  devstate -->|demarre| start
+  start -->|lance le thread watcher| watcher
+  watcher -->|incremente la version| devstate
+  watcher -->|lance la commande| rebuild
+  watcher -->|journalise| append_log
+  rebuild -->|journalise succes ou echec| append_log
+  append_log -->|ecrit| log_file
+  devstate -->|route| handle
+  devstate -->|contient| queue
+  devstate -->|contient| results_map
+  devstate -->|injecte dans la reponse| inject
+  static_files -->|fournit le corps HTML| inject
+  inject -->|insere| snippet
+
+  handle -->|route| ep_root
+  handle -->|route| ep_version
+  handle -->|route| ep_log_get
+  handle -->|route| ep_log_post
+  handle -->|route| ep_cmd
+  handle -->|route| ep_next
+  handle -->|route| ep_result_post
+  handle -->|route| ep_result_get
+  handle -->|route| ep_404
+  ep_cmd -->|refuse si le pont est coupe| ep_cmd_off
+  ep_log_post -->|appelle| append_log
+  ep_log_get -->|lit| log_file
+  ep_version -->|lit version et rebuilding| devstate
+  ep_root -->|lit le chemin du journal| devstate
+
+  agent -->|1 POST command avec code| ep_cmd
+  ep_cmd -->|2 push_back du couple id et code| queue
+  queue -->|3 pop_front| ep_next
+  ep_next -->|4 le snippet sonde| poller
+  poller -->|appelle| snippet
+  snippet -->|execute par| exec
+  exec -->|serialise par| safe_fn
+  safe_fn -->|5 POST command result| ep_result_post
+  ep_result_post -->|6 insert de l id| results_map
+  results_map -->|7 GET resultat par id| ep_result_get
+  ep_result_get -->|8 relit la reponse brute| agent
+
+  snippet -->|contient| con_capture
+  snippet -->|contient| err_capture
+  snippet -->|contient| net_capture
+  snippet -->|contient| route_capture
+  snippet -->|contient| reload_poller
+  con_capture -->|appelle| sender
+  err_capture -->|appelle| sender
+  net_capture -->|appelle| sender
+  route_capture -->|appelle| sender
+  sender -->|POST vers| ep_log_post
+  reload_poller -->|lit| ep_version
+
+  example_basic -->|appelle| serve_fn
+  example_basic -->|appelle| handle
+  example_basic -->|appelle| static_files
+  example_basic -->|appelle| inject
+  aletheia_host -->|appelle| serve_fn
+  aletheia_host -->|appelle| devstate
+  integ_test -->|exerce| serve_fn
+  nobusy_test -->|exerce| accept

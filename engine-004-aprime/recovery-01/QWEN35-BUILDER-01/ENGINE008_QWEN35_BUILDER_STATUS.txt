@@ -1,0 +1,99 @@
+ENGINE-008 -- STATUT TERMINAL QWEN35-BUILDER-01
+==========================================================================
+Assertion C tranchee SOUS CONDITIONS, avec trois maillons non determines
+explicitement nommes. Lecture source uniquement. Aucun forward.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=QWEN35_STANDARD_BUILDER_AUDIT
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+STANDARD_CONTEXT_TO_BUILDER_TRACE_COMPLETE=YES
+  ctx_type DEFAULT -> LLM_GRAPH_TYPE_DEFAULT par ctx_type_to_graph_type
+  (llama-context.cpp:78-85), consomme en :2264, :2869, :3868. Le harnais
+  n a jamais modifie ctx_type : defaut retenu.
+PREFILL_SOURCE_PATH_AUDITED=YES
+DECODE_SOURCE_PATH_AUDITED=YES
+  Memes points de consommation pour les deux : process_ubatch (:2264) et
+  graph_params (:2869 prefill, :3868 decode).
+OUTSIDE_MAIN_LOOP_PATHS_AUDITED=YES
+  C est le point decisif : hors boucle, `layer.nextn.*` n apparait NULLE PART
+  dans llama-graph.cpp. La seule occurrence de « nextn » est le champ de
+  parametres n_layer_nextn (:1407). Conclure depuis la seule borne de boucle
+  aurait ete insuffisant -- c est bien l examen hors boucle qui tranche.
+
+STANDARD_NEXTN_OPERATIONS_CONSTRUCTED=NO (sous les conditions enoncees)
+STANDARD_NEXTN_OPERATIONS_INCLUDED_IN_SUBMITTED_GRAPH=NO (memes conditions)
+
+AUXILIARY_NEXTN_STATE_SEMANTICS=
+  `t_h_nextn` est un etat cache NextN 2D [n_outputs][n_embd], initialise a
+  nullptr (llama-graph.cpp:1271), marque sortie de graphe SI non nul (:1317-1318),
+  et consomme UNIQUEMENT si `cparams.embeddings_nextn` est vrai
+  (llama-context.cpp:1874, :2304). Or ce parametre vaut false par defaut
+  (:151) et le harnais ne le modifie pas. Commentaire source explicite
+  (llama-context.h:426-429) : « populated only when cparams.embeddings_nextn is
+  enabled and the model graph sets llm_graph_result::t_h_nextn ».
+  => l etat auxiliaire n est NI produit NI exporte dans le chemin du harnais.
+
+QWEN35_STANDARD_NEXTN_EXCLUSION_STATICALLY_JUSTIFIED=YES (conditionnel)
+
+STATIC_PROOF_ASSUMPTIONS=
+  A1 ctx_type = LLAMA_CONTEXT_TYPE_DEFAULT (defaut, non modifie par le harnais)
+  A2 embeddings_nextn = false (defaut llama-context.cpp:151, non modifie)
+  A3 construction du graphe par llama-graph.cpp, ou layer.nextn.* n apparait
+     jamais et ou t_h_nextn reste nul
+
+MAILLONS NON DETERMINES, NOMMES :
+  M1_LE_BUILDER_QWEN35_N_A_PAS_ETE_IDENTIFIE_NOMMEMENT
+     `grep llm_build_qwen35|struct llm_build_qwen` sur llama-graph.cpp et
+     llama-graph.h est VIDE. J ai lu le fichier PARTAGE de construction de
+     graphe, pas un builder qwen35 nomme. Si un tel builder existe ailleurs,
+     il n a pas ete examine.
+  M2_LLM_GRAPH_TYPE_DECODER_MTP_DECLARE_MAIS_AUCUN_DISPATCH_TROUVE
+     (llama-graph.h:41). Comment le graphe MTP differe reste indetermine.
+  M3_AUCUN_SETTER_DE_t_h_nextn_TROUVE
+     `grep "t_h_nextn\s*="` ne rend que `= nullptr` et les deux lectures
+     gatees. La capacite d export de l etat NextN semble inerte dans ce fork,
+     mais le setter peut vivre ailleurs (cf. commentaire llama-context.h:428).
+
+RUNTIME_STANDARD_PATH_CONFIRMATION=NOT_EXERCISED
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_BUILDER_AUDIT
+  La question a recu une reponse etayee (favorable a l exclusion, sous
+  conditions), ET ses limites sont nommees. COMPLETE ne signifie pas que
+  M1/M2/M3 sont resolus.
+
+REMAINING_PROOF_REQUIREMENTS=
+  P1_RESOUDRE_M1 : identifier le builder reellement selectionne pour qwen35
+     (nom exact, dispatch par architecture) et y verifier l absence de
+     consommation de layer.nextn.*. C est le maillon qui empeche de passer de
+     « le fichier partage ne les consomme pas » a « le builder qwen35 ne les
+     consomme pas ».
+  P2_RESOUDRE_M2 : trouver le dispatch de LLM_GRAPH_TYPE_DECODER_MTP, ou
+     etablir qu il n existe pas.
+  P3_RESOUDRE_M3 : localiser le setter de t_h_nextn, ou etablir qu il n existe
+     pas (auquel cas la capacite d export NextN est inerte et doit etre declaree
+     comme telle au protocole).
+  P4_CONFIRMER au runtime les hypotheses A1/A2 sur le vrai contexte cree.
+  P5_REPRENDRE les travaux hors perimetre : closure renderer, chemin nominal
+     d autorisation, v1.1 du protocole, gel preflight.
+
+ENGINE008_NEXT_STEP=P1 (identifier le builder qwen35 selectionne par
+  architecture et y verifier l absence de consommation de layer.nextn.*)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+AUCUN CHARGEMENT DE MODELE, aucune creation de contexte, aucun logit, aucune
+generation, aucun scoring, aucune NLL/PPL, aucune evaluation numerique.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template, gel v1, contrats de roles/cles, adaptateur ou harnais.
+Aucun rebuild. Aucun nouveau gel. Aucune observation ancienne presentee comme
+nouvelle.

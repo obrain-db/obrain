@@ -1,0 +1,127 @@
+SPHERE: f1a1_capture_geometrie_heterogene
+RESUME: F1A a prouve la geometrie heterogene du modele cible - 156 tenseurs E5 a cinq episodes de 1024 poids et 12 tenseurs E6 a six episodes - avec un inventaire gele et un lecteur GGUF cross-valide, mais le gate de capture d activations n a pas passe faute de hook, la greffe observe.cuh etant absente du depot.
+RESUME: S2 a corrige le comptage de lignes publie par F1A de 2007040 vers 2052096 et a distingue le site d identification build_lora_mm du site de capture manquant, laissant le mapping des operandes non prouve a l execution.
+RESUME: I2 a implemente l extraction a pointeurs vivants, prouve statiquement la fenetre de duree de vie et fait passer le build diagnostique, en retirant la justification du budget d erreur par les contrastes de paroi R12.
+RESUME: Le rapport final N4 valide la reference q8_1 native corrigee sur trois tenseurs toutes lignes epoque 0 avec rel_l2 1.42314e-07 et cosinus 1.0, et retire l ancienne reference a echelle fp16 inversee et arrondi bancaire, enregistree comme defaut 57.
+RESUME: Restent ouverts la validation limitee a trois tenseurs et a l epoque 0 donc Q0 non passe et Q1 interdit, le test d indexation independante non execute, l appariement temporel partiel, la comparaison directe des blocs q8_1 natifs jamais faite, et toute saillance ou ablation non mesuree.
+NOEUDS:
+[PROUVE] f1a1_model_authoritatif :: modele Qwen3.8-27B-OBRAIN-v3.gguf sha256 1d7c9409ae7f - 866 tenseurs - 65 blocs - dimensions 5120 et 17408 :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_mtp_head_ecarte :: mtp-Qwen3.8-27B-TQ2G128.gguf ecarte - tete MTP nextn seule - 799 Mo - 18 tenseurs - blk.64 :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_lecteur_gguf_cross_valide :: deux lecteurs independants - libggml du fork et python autonome - 866 tenseurs - zero ecart type dimensions offset :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_type43_tq2_g128 :: type GGUF 43 egal TQ2_G128 - bloc de 34 octets - blck size 128 :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_geometrie_e5 :: E5 K egal 5120 - cinq episodes de 1024 poids - episodes par warp physique 2 1 1 1 - cardinalites 5 10 10 :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_geometrie_e6 :: E6 K egal 6144 - six episodes de 1024 poids - episodes par warp physique 2 2 1 1 - cardinalites 6 15 20 :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_granularite_episode :: granularite logique de 1024 poids contigus - aucun stride padding ni packing intermediaire :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_inventaire_gele :: inventaire gele - 156 tenseurs E5 plus 12 tenseurs E6 - blocs 8 a 55 :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_roles_non_eligibles :: ffn_down en Q4_K - attn_v inexistant car attn_qkv fusionne en Q5_K - token_embd et output en Q4_K et Q6_K :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[RETIRE] f1a1_e5_row_count_publie_faux :: F1A avait publie E5_ROW_COUNT egal 2007040 - la valeur autoritaire du CSV est 2052096 :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[PROUVE] f1a1_row_count_autoritaire :: 168 tenseurs eligibles et 2113536 lignes recalculees tenseur par tenseur depuis le CSV - somme par role egale au total :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[OUVERT] f1a1_mapping_operandes_non_prouve :: src0 egal w et src1 egal cur identifies par lecture de source en llama-graph.cpp - non prouve sur le noeud de graphe execute :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[PROUVE] f1a1_sites_identification_et_capture :: build_lora_mm est un site d identification qui donne les identites mais pas les valeurs - un second site cote execution est requis :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[PROUVE] f1a1_observe_graft_absent :: ggml-cuda-observe.cuh absent du depot - greffe ENGINE-004 declaree et appliquee hors arbre :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[RETIRE] f1a1_reutilisation_observe_graft_retiree :: la note interne presentant observe.cuh comme un harnais existant et reutilisable est retiree :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_note_interne_inexacte_recurrence :: deuxieme note interne inexacte sur l etat du depot dans cette serie apres le generateur de donnees de R9A :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_aucun_callback_de_graphe :: aucun callback de graphe in-tree - cb_eval ggml_callback eval_cb sans aucun resultat :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[OUVERT] f1a1_hook_capture_non_qualifie :: READ_ONLY_ACTIVATION_CAPTURE_HOOK NOT_QUALIFIED - manifeste de capture vide - zero invocation observee :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[OUVERT] f1a1_hook_capture_aucun_selectionne :: CAPTURE_HOOK NONE_SELECTED - zero sequence et zero token de qualification - mode planifie non capture :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[OUVERT] f1a1_decode_ternaire_hypothese :: table ternaire moins un zero plus un plus un annoncee comme a confirmer sur le fork :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_decode_ternaire_qualifie :: codes 2 bits 0 1 2 3 vers moins un zero plus un plus un - relu dans vecdotq.cuh et non infere :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[REFUTE] f1a1_layout_q8_1_f1a_40_octets :: layout q8_1 declare en 40 octets avec ds uint32 puis d et s separes - contredit par la source du fork :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] f1a1_layout_q8_1_fork :: block_q8_1 union half2 ds portant d et s puis int8 qs de 32 - 36 octets :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[PROUVE] f1a1_semantique_q8_1_source_cpu :: quantize_row_q8_1_ref en ggml-quants.c 302 - echelle amax sur 127 et quantification par blocs de 32 :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[REFUTE] f1a1_echelle_fp16_avant_usage :: l affirmation que l echelle est arrondie fp16 avant usage est refutee - le noyau divise par d fp32 non arrondi :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_semantique_q8_1_native :: noyau quantize_q8_1 en quantize.cu 5 appele par mmvq.cu 1311 - d egal amax sur 127 en fp32 - roundf loin de zero - bloc de 32 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[RETIRE] f1a1_reference_q8_1_ancienne :: reference ancienne a echelle fp16 inversee et arrondi bancaire np.rint - retiree apres localisation de la divergence :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a1_champ_s_q8_1_ouvert :: formule du champ s differente entre la reference CPU somme des qs et le noyau CUDA somme des xi fp32 - desaccord non mesure directement :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_divergence_premiere :: premiere divergence localisee dans l arrondi et la base de l echelle q8_1 - 15 a 42 blocs sur 160 ou 192 differents soit environ 20 pourcent :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_reference_native_validee :: trois tenseurs toutes lignes epoque 0 - rel_l2 1.42314e-07 - cosinus 1.0 - max_abs 4.76837e-07 - PASS :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_effet_lignes_ameliore :: six lignes sur six meilleures - mediane 2.548e-03 vers 3.139e-07 soit trois ordres de grandeur :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_captures_corrigees_integres :: manifeste 672 lignes - zero payload manquant - zero sha divergent - zero dimension divergente - zero contradiction :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a1_q8_natif_non_observe :: blocs q8_1 natifs non copies - semantique issue de la source et validation par la consequence :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] f1a1_scope_validation_epoque0 :: validation limitee a trois tenseurs et a l epoque 0 - epoque 1 non reconstruite - Q0 non passe :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a1_gate_indexation_independante :: INDEPENDENT_ROW_OUTPUT_INDEXING_TEST NOT_EXECUTED :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] f1a1_appariement_temporel_partiel :: REFERENCE_SAMPLE_TEMPORAL_PAIRING PARTIAL :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a1_gate_reference_operateur :: statut F1A reste BLOCKED_OPERATOR_REFERENCE_GATE - Q0_STATUS NOT_PASSED - Q1_ALLOWED NO :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_extraction_pointeurs_vivants :: registre conservant les pointeurs vivants puis synchronisation extraction manifeste et invalidation :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_serialisation_logique :: ggml_is_contiguous decide de la copie directe ou de la reconstruction par ne et nb - sha256 calcule par le harnais apres ecriture :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_fenetre_duree_de_vie_statique :: ordre prouve calcul puis synchronisation puis extraction puis invalidation - borne documentee par le commentaire source de llama-context.cpp 1708 :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a1_duree_de_vie_runtime :: CAPTURE_TENSOR_LIFETIME_PROVEN NO_RUNTIME_CONFIRMATION_PENDING :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_build_diagnostique :: binaire llama-cli sha256 b5144ede - worktree de copie hors arbre de production - CUDA ON architecture 121 :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_erreur_build_include :: une seule erreur de build - ggml_backend_t non declare faute d include ggml-backend.h - specifique a la capture :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_sources_produit_intactes :: quatre sha256 des sources produit releves apres le build - mmvq.cu 2bf9a270 et vecdotq.cuh a8ddd222 inchanges :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a1_smoke_capture_off :: CAPTURE_DISABLED_EXECUTION NOT_RUN - Q0_RUN NO - Q1_RUN NO :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[RETIRE] f1a1_justification_budget_retiree :: justification du budget d erreur par les contrastes de paroi R12 declaree raisonnement invalide puis retiree :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_budget_predeclare :: budget rel_l2 inferieur ou egal a 1e-3 - cosinus superieur ou egal a 0.9999 - max_abs inferieur ou egal a 1e-2 fois nat_amax - seuil d ingenierie predeclare :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a1_ratio_reference_ablation :: erreur de reference a verifier petite devant l effet d ablation mesure - seuil non defini tant que la metrique d effet n est pas choisie :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[RETIRE] f1a1_tests_unitaires_reference_claim :: Q8_1_REFERENCE_UNIT_TESTS PASS et ROUNDING_HALF_CASES_OK declares en I2 sur une reference ensuite retiree :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PARTIEL] f1a1_completude_partition :: EPISODE_PARTITION_COMPLETENESS PASS_WITHIN_INTRINSIC_FP32_PRECISION declare sur la reference ensuite retiree et non remesure apres correction :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_partition_structurelle :: E5 et E6 partitionnent exactement leur domaine K - union exacte et intersections vides :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[PARTIEL] f1a1_defaut_46 :: defaut 46 arrondi bancaire de la reference q8_1 declare resolu - symptome retrouve dans la reference utilisee jusqu en N4 :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_defaut_56 :: defaut 56 tenseurs de capture dupliques non marques comme sortie donc liberes par l allocateur - RESOLVED_VERIFIED :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_defaut_57 :: defaut 57 reference q8_1 a echelle fp16 inversee et arrondi bancaire - resolu et verifie par accord avec la sortie native :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] f1a1_defauts_46_55_bloc :: bloc des defauts 46 a 55 declare resolu en bloc sans statut individuel detaille :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[RETIRE] f1a1_defaut_51 :: defaut 51 affirmation d attribution fausse dans un rapport - retire apres mesure et non defaut corrige :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] f1a1_plumbing_failure_29 :: PLUMBING_FAILURE_29 NOT_ASSIGNED - compteur maintenu a 28 - absence de hook declaree lacune de capacite :: docs/ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[OUVERT] f1a1_saillance_non_mesuree :: SALIENCY_MEASURED NO - QUALITY_ABLATION_MEASURED NO - PRODUCT_GAIN NOT_MEASURED :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_aucune_mutation_produit :: aucune modification de mmvq.cu ni du GGUF - patch de capture non produit dans cette passe :: docs/ENGINE-007B-F1A-S2-ACTIVATION-CAPTURE-REFERENCE-QUALIFICATION.md
+[PROUVE] f1a1_product_optimization_interdite :: ENGINE007B_PRODUCT_OPTIMIZATION_ALLOWED NO - ENGINE007C_STATUS BLOCKED :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a1_alignement_q8_tq2_mesure :: alignement q8_1 et TQ2_G128 confirme par la mesure - couverture 160 sur 160 en E5 et 192 sur 192 en E6 - quatre sous-blocs de 32 par bloc de 128 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a1_reconstruction_ligne_complete :: produit entier du bloc 0 verifie - application d echelle verifiee - reconstruction de ligne complete effectuee :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+f1a1_mtp_head_ecarte -> f1a1_model_authoritatif [DEMONTRE] l exclusion de la tete MTP etablit le modele autoritatif
+f1a1_model_authoritatif -> f1a1_lecteur_gguf_cross_valide [DEMONTRE] modele identifie puis lu par deux chemins independants
+f1a1_lecteur_gguf_cross_valide -> f1a1_type43_tq2_g128 [DEMONTRE] les deux lecteurs confirment le type 43 et sa geometrie de bloc
+f1a1_lecteur_gguf_cross_valide -> f1a1_inventaire_gele [DEMONTRE] inventaire tenu pour fiable apres zero ecart sur 866 tenseurs
+f1a1_lecteur_gguf_cross_valide -> f1a1_roles_non_eligibles [DEMONTRE] les roles non eligibles sont confirmes sur l artefact courant
+f1a1_granularite_episode -> f1a1_geometrie_e5 [DEMONTRE] granularite de 1024 poids contigus produisant cinq episodes
+f1a1_granularite_episode -> f1a1_geometrie_e6 [DEMONTRE] granularite de 1024 poids contigus produisant six episodes
+f1a1_geometrie_e5 -> f1a1_inventaire_gele [DEPEND] l inventaire par famille depend des deux geometries d episodes
+f1a1_geometrie_e6 -> f1a1_inventaire_gele [DEPEND] l inventaire par famille depend des deux geometries d episodes
+f1a1_row_count_autoritaire -> f1a1_e5_row_count_publie_faux [RETIRE] le recalcul tenseur par tenseur retire la valeur 2007040 publiee par F1A
+f1a1_row_count_autoritaire -> f1a1_inventaire_gele [DEMONTRE] egalite de somme par role validant l inventaire gele
+f1a1_observe_graft_absent -> f1a1_reutilisation_observe_graft_retiree [RETIRE] fichier absent du depot donc harnais non reutilisable
+f1a1_observe_graft_absent -> f1a1_note_interne_inexacte_recurrence [DEMONTRE] seconde note interne fausse sur l etat du depot
+f1a1_note_interne_inexacte_recurrence -> f1a1_reutilisation_observe_graft_retiree [DEMONTRE] la recurrence impose de reverifier tout composant reutilisable sur disque
+f1a1_observe_graft_absent -> f1a1_aucun_callback_de_graphe [OUVRE] ni greffe ni callback donc aucun point d accroche pret a l emploi
+f1a1_aucun_callback_de_graphe -> f1a1_hook_capture_aucun_selectionne [OUVRE] le mecanisme de capture est a construire et aucun hook n est selectionne
+f1a1_sites_identification_et_capture -> f1a1_hook_capture_non_qualifie [OUVRE] le site d identification ne donne pas les valeurs donc le gate de capture reste non qualifie
+f1a1_hook_capture_non_qualifie -> f1a1_mapping_operandes_non_prouve [OUVRE] les deux gates tombent ensemble faute de capture a l execution
+f1a1_hook_capture_aucun_selectionne -> f1a1_extraction_pointeurs_vivants [OUVRE] le besoin d un second site ouvre le travail d extraction realise en I2
+f1a1_decode_ternaire_hypothese -> f1a1_decode_ternaire_qualifie [DEMONTRE] la table ternaire a confirmer sur le fork est qualifiee en S2
+f1a1_layout_q8_1_fork -> f1a1_layout_q8_1_f1a_40_octets [REMPLACE] le layout union half2 de 36 octets remplace le layout de 40 octets declare en F1A
+f1a1_echelle_fp16_avant_usage -> f1a1_semantique_q8_1_source_cpu [DEPEND] affirmation tiree de la lecture de la reference CPU
+f1a1_semantique_q8_1_native -> f1a1_echelle_fp16_avant_usage [RETIRE] la lecture du noyau CUDA retire l affirmation d une echelle arrondie avant usage
+f1a1_semantique_q8_1_native -> f1a1_semantique_q8_1_source_cpu [REMPLACE] le noyau CUDA reel remplace la reference CPU comme base de la reference
+f1a1_semantique_q8_1_native -> f1a1_reference_q8_1_ancienne [RETIRE] la semantique native retire l echelle fp16 inversee et l arrondi bancaire
+f1a1_divergence_premiere -> f1a1_reference_q8_1_ancienne [DEMONTRE] les deux ecarts cumules localisent la premiere divergence dans l ancienne reference
+f1a1_semantique_q8_1_native -> f1a1_reference_native_validee [DEMONTRE] reference construite sur la semantique du noyau puis validee sur les sorties natives
+f1a1_defaut_57 -> f1a1_reference_q8_1_ancienne [DEMONTRE] le defaut 57 nomme exactement la semantique ancienne
+f1a1_defaut_57 -> f1a1_tests_unitaires_reference_claim [RETIRE] les tests unitaires PASS portaient sur la reference ensuite corrigee
+f1a1_defaut_57 -> f1a1_defaut_46 [RETIRE] le symptome d arrondi bancaire reapparait dans la reference utilisee jusqu en N4
+f1a1_reference_native_validee -> f1a1_effet_lignes_ameliore [DEMONTRE] la nouvelle semantique ameliore six lignes sur six
+f1a1_reference_native_validee -> f1a1_captures_corrigees_integres [DEPEND] la validation repose sur des captures integres et sans contradiction
+f1a1_reference_native_validee -> f1a1_scope_validation_epoque0 [OUVRE] la validation laisse l epoque 1 et Q0 hors perimetre
+f1a1_reference_native_validee -> f1a1_q8_natif_non_observe [OUVRE] validation par la consequence et non par observation directe des blocs q8_1
+f1a1_reference_native_validee -> f1a1_reconstruction_ligne_complete [DEMONTRE] reconstruction complete des lignes supportant la validation vectorielle
+f1a1_champ_s_q8_1_ouvert -> f1a1_reference_native_validee [OUVRE] desaccord possible sur le champ s non mesure directement
+f1a1_geometrie_e5 -> f1a1_alignement_q8_tq2_mesure [DEMONTRE] geometrie d episode confirmee par la mesure sur les captures corrigees
+f1a1_scope_validation_epoque0 -> f1a1_gate_reference_operateur [OUVRE] perimetre insuffisant pour Q0 donc gate operateur toujours bloque
+f1a1_gate_indexation_independante -> f1a1_gate_reference_operateur [OUVRE] test d indexation independante jamais execute
+f1a1_appariement_temporel_partiel -> f1a1_gate_reference_operateur [OUVRE] appariement temporel partiel maintenant la couverture incomplete
+f1a1_extraction_pointeurs_vivants -> f1a1_build_diagnostique [DEMONTRE] extraction implementee puis binaire diagnostique construit
+f1a1_serialisation_logique -> f1a1_extraction_pointeurs_vivants [DEMONTRE] serialisation logique portee par le registre a pointeurs vivants
+f1a1_fenetre_duree_de_vie_statique -> f1a1_duree_de_vie_runtime [OUVRE] preuve statique seule donc confirmation runtime encore due
+f1a1_defaut_56 -> f1a1_duree_de_vie_runtime [REMPLACE] correction et verification du defaut de duree de vie apportant la confirmation runtime
+f1a1_build_diagnostique -> f1a1_erreur_build_include [DEMONTRE] une seule erreur de build rencontree et corrigee par un include
+f1a1_build_diagnostique -> f1a1_sources_produit_intactes [DEMONTRE] sources produit reverifiees intactes apres le build
+f1a1_build_diagnostique -> f1a1_smoke_capture_off [OUVRE] le build passe mais le smoke capture desactivee reste non execute
+f1a1_budget_predeclare -> f1a1_justification_budget_retiree [REMPLACE] budget inchange mais justification remplacee par un seuil d ingenierie predeclare
+f1a1_justification_budget_retiree -> f1a1_ratio_reference_ablation [OUVRE] l erreur de reference devra etre comparee a l effet d ablation mesure
+f1a1_tests_unitaires_reference_claim -> f1a1_completude_partition [DEPEND] la completude de partition declaree reposait sur la meme reference q8_1 ancienne
+f1a1_partition_structurelle -> f1a1_completude_partition [DEMONTRE] partition exacte par construction puis completude a mesurer
+f1a1_defauts_46_55_bloc -> f1a1_defaut_46 [DEPEND] l agregat couvre le defaut 46 dont la resolution est contredite par N4
+f1a1_defauts_46_55_bloc -> f1a1_defaut_51 [OUVRE] l agregat assimile une retractation a une resolution
+f1a1_hook_capture_non_qualifie -> f1a1_plumbing_failure_29 [OUVRE] absence de hook declaree comme lacune de capacite et non comme defaut 29
+f1a1_gate_reference_operateur -> f1a1_saillance_non_mesuree [DEMONTRE] gate non franchi donc aucune saillance ni ablation ne peut etre mesuree
+f1a1_gate_reference_operateur -> f1a1_product_optimization_interdite [DEMONTRE] gate non franchi donc optimisation produit interdite et ENGINE007C bloque
+f1a1_aucune_mutation_produit -> f1a1_sources_produit_intactes [DEMONTRE] aucune mutation declaree confirmee par les hachages des sources produit

@@ -1,0 +1,18 @@
+--- compilation ---
+BUILD=1
+=== LINKAGE REEL ===
+NEEDED : libllama.so.0 libggml-base.so.0 libstdc++.so.6 libm.so.6 libgcc_s.so.1 libc.so.6 ld-linux-aarch64.so.1 
+SYMBOLES_LLAMA_REFERENCES : 30
+--- symboles state_seq ---
+                 U llama_state_seq_get_data_ext
+                 U llama_state_seq_get_size_ext
+                 U llama_state_seq_set_data_ext
+=== BIBLIOTHEQUES RESOLUES + SHA ===
+libllama.so.0                87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+libggml-base.so.0            af2c88dd19e87ebf0c902aa07dfcf53a04fbcc7a79c3fdaf19a6b856ab269c01
+libggml.so.0                 3d7f9ac51cb98936759a2e30acc1a7562e9122d3381d27f3955fff6be9016611
+libggml-cpu.so.0             910a04c7af610aa65caf257b1d4ffe589cec608d5dd2a22e6ef5868367218f4f
+libggml-cuda.so.0            7fdd87502b93191a0de3f62a9a15989f4fb63211c8cefb64d226b8f4480cdd70
+c4644aa7ee0d5976637dc2605ebcd0d899aa7b725c7745681e756c6cc5195d0d  /tmp/kv04/e8-resume2.cpp
+d6093efe8b289454a1e2ceda8cd8c8f567561e3fd891ca3b9125013f7dff42dc  /tmp/kv04/e8-resume2
+fc39bb86b0a942c2855d4cd90016f87bf655d4463731631658324e897021dbab  /tmp/kv04/ids59.txt

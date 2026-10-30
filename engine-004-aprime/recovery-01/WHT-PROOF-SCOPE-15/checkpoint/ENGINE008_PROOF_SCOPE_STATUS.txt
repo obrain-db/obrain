@@ -1,0 +1,141 @@
+ENGINE-008 -- STATUT TERMINAL WHT-PROOF-SCOPE-15
+==========================================================================
+Les quatre questions statiques sont fermees. Aucun code modifie, donc aucune
+nouvelle identite. Aucun gel, aucun forward, aucun protocole change.
+
+QWEN35_LOGITS_ROOT_IDENTIFIED=YES
+  `src/models/qwen35.cpp` : `:226 res->t_h_nextn = cur` (etat du tronc publie),
+  puis `:229 cur = ggml_get_rows(ctx0, cur, inp_out_ids)` -- **cur est
+  REASSIGNE**, donc la selection des positions de sortie coupe APRES la norme --
+  puis `:239 res->t_logits = cur` et `:241 ggml_build_forward_expand(gf, cur)`.
+  LA RACINE DES LOGITS est ce `cur`. Sa cloture contient le dernier etat du
+  tronc, donc toutes les projections du tronc.
+  RACINES AUXILIAIRES confirmees et nombreuses : `q_cur/k_cur/v_cur`
+  (llama-graph.cpp:2763-2765, 2887-2889, mise en cache KV), `weights` (:2112),
+  `experts` (:2266), `cur_experts[i]` (:2276), `moe_out` (:2288). Elles ajoutent
+  des tenseurs au graphe SANS etre sur le chemin des logits -- la nuance de A3
+  est donc REELLE sur ce graphe.
+WHT_TO_LOGITS_MAPPING=COMPLETE
+  Etabli par la SOURCE (:239-241), et CORROBORE par l'inventaire des cibles :
+  168 noms de poids distincts, couches **blk.8 a blk.55** (48 couches),
+  **aucun** nom hors `blk.`, **AUCUNE** couche >= 64 (donc aucun poids NextN).
+  Toutes les cibles capturees sont des poids du TRONC, donc dans la cloture de la
+  racine des logits.
+ROLE_EFFECT_FIELD_SEMANTICS_ESTABLISHED=YES
+  `f1a-capture.cpp:708` : `down_ok = f1a_node_reaches_declared_output(r.t_mm_capture)`
+  -> `f1a-capture.h:73`. Le champ etablit « atteint **UNE** sortie declaree »
+  (`GGML_TENSOR_FLAG_OUTPUT`), PAS « atteint la sortie des logits ». Or le
+  constructeur declare **plusieurs** sorties : `t_logits`, `t_embd` (:233),
+  `t_h_nextn` (:226).
+  **LE CHAMP NE DISTINGUE PAS LES RACINES.** La consigne a raison : un libelle
+  OUTPUT_DEPENDENT ne suffit pas. La distinction est faite par la SOURCE, pas par
+  lui. Cette limite est CONSERVEE.
+CAPTURE_EXTRACT_EPOCH_SCOPE_ESTABLISHED=YES
+  `f1a-capture.cpp:671,675,678` : les trois surfaces role/effet/residence sont
+  ouvertes en **"w"** -- ECRASEMENT INTEGRAL a chaque extraction. Epoch :
+  `:564` et `:586` (`cc->targets.clear(); cc->epoch++`), `:839` (`cc->epoch++`).
+  DISTINCTION DEMANDEE, TRANCHEE :
+    - analyse volontairement limitee a l'epoch courant : **NON** ;
+    - **analyses anterieures produites puis ECRASEES : OUI** -- `fopen("w")` ;
+    - analyse jamais produite pour le prefill : **NON**, elle EST produite.
+  Mesure : `epoch 0` = 168 activation + 168 base_output ; `epoch 1` = idem. Les
+  deux epochs portent les MEMES 168 `target_id` (le compteur de cibles est remis
+  a zero a chaque extraction). Seul le DERNIER epoch survit.
+  => LES 168 MANQUANTES SONT LES CIBLES DU PREFILL, dont l'analyse a ete DETRUITE
+  par l'ecriture en "w". Ni limite volontaire, ni absence de production.
+EXPECTED_CAPTURED_JOINED_COUNTS_DISTINGUISHED=YES
+  TROIS denominateurs materiaslises :
+    N1 cibles ATTENDUES/ELIGIBLES -- NON PUBLIE par le producteur ;
+    N2 cibles CAPTUREES -- 336 (`(epoch,target)` distincts) ;
+    N3 cibles avec RELATIONS requises -- 168.
+  Le manifeste sert de denominateur pour la couverture des relations PARMI les
+  captures (N3/N2). Il NE PROUVE PAS que toutes les cibles attendues ont ete
+  capturees (N2/N1). Le code applique N2, jamais N3 -- ce serait circulaire.
+  Sémantique des compteurs verifiee AVANT usage : `eligible_target_count` n'est
+  PAS `n_nodes` (0 contre 4315) ; lignes (672) != cibles (336) ; `target_id` est
+  PER-EPOCH ; sans `kind` l'identite produit 336 faux doublons.
+D1_REQUIRED_COVERAGE_OBTAINABLE=YES
+  PAR LA COLLECTE PAR FENETRE, et sous reserve de confirmation runtime. Une
+  lecture unique en fin de run ne verrait que le dernier epoch, puisque le
+  producteur ecrase ses trois fichiers a chaque extraction. Le harnais collecte
+  DANS CHAQUE FENETRE (PROOF-13), donc il lit chaque analyse AVANT l'ecrasement
+  suivant. AUCUNE modification de Q1 n'est necessaire.
+  LIMITE : D1 s'applique sur N2, qui est une BORNE INFERIEURE puisque N1 n'est
+  pas publie. A dire comme tel.
+D2_PROOF_SCOPE=UN_EPOCH_SEUL_PREFILL_NON_COUVERT
+  Demontrerait : sur l'epoch choisi, toutes les cibles capturees ont une analyse
+  concordante (role_ok=1, effect_ok=1, in_submitted_graph=1 -- 168/168, 504/504).
+  Ne couvrirait PAS : tous les autres epochs, en particulier le PREFILL (epoch 0),
+  soit 168 cibles sur le run historique.
+  Incompatible avec P3 tel qu'ecrit : « couverture suffisante » n'est pas defini
+  par epoch, et D2 **selectionnerait le perimetre APRES avoir vu quels epochs
+  reussissent** -- ce que la consigne interdit.
+D2_ADOPTION_STATUS=NOT_ADOPTED
+
+LOGITS_SYNCHRONIZATION_CONTRACT_ESTABLISHED=YES
+  `llama-context.cpp` :
+    float * llama_get_logits_ith(llama_context * ctx, int32_t i) {
+        ctx->synchronize();            // PREMIERE instruction
+        ... res = get_sampled_logits_ith(i); if (!res) res = get_logits_ith(i); return res; }
+  `llama_context::synchronize()` (:718-723) appelle
+  `ggml_backend_sched_synchronize(sched.get())`.
+  => la LECTURE force la synchronisation ; le travail soumis est acheve par elle.
+  Succes/echec rapporte par le POINTEUR de retour (nullptr ou non).
+  **B4 EST FERME.** Le point d'observation existe DEJA et le harnais s'en sert
+  (`d.logits` -> `llama_get_logits_ith`, nullptr traite en StopReason::ERROR).
+RUNTIME_CONFIRMATION_METHOD=
+  A chaque pas, enregistrer SANS modifier Q1 :
+   (1) `submission_rc == GGML_STATUS_SUCCESS` -- evenement DIRECTEMENT OBSERVE
+       (llama-context.cpp:2955, retour de `..._graph_compute_async`) ;
+   (2) `llama_get_logits_ith` non nul -- evenement DIRECTEMENT OBSERVE, qui
+       IMPLIQUE la synchronisation par le contrat ci-dessus ;
+   (3) l'`epoch` et le `decode_step` de chaque extraction alignes sur la fenetre
+       correspondante -- OBSERVE, et c'est ce qui autorise la collecte par fenetre.
+  ORDRE DEDUIT du contrat source : que (2) acheve le travail soumis en (1).
+  JAMAIS OBSERVE : le deroule du backend operation par operation.
+  Critere satisfait si, pour CHAQUE fenetre : soumission acceptee ET logits lus
+  ET couverture WHT non partielle.
+  `RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED` : ce sont des CRITERES DE RUN, pas
+  des prerequis a l'autorisation.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+REAL_HARNESS_BINARY_SHA256=dff23aa490de2af88d2eb1b05514a7f2248c1ac9cfd36646968c5e69df1e12cc
+  VERIFIE et INCHANGE : aucune source n'a ete modifiee dans cette passe (aucun
+  nouveau parseur, aucune nouvelle suite -- la consigne le demandait). Le binaire
+  de COVERAGE-14 reste donc l'identite courante.
+
+REMAINING_STATIC_GAPS=
+  G1_N1 NON PUBLIE : le nombre de cibles attendues/eligibles d'un run complet
+     n'est publie par aucune surface. D1 s'applique donc sur N2 (borne
+     inferieure). Combler exigerait le registre natif + l'inventaire TQ2.
+  G2_LES CHAMPS downstream_reach / effect_class NE DISTINGUENT PAS LES RACINES.
+     La distinction vient de la source. Si un jour une cible n'etait PAS un poids
+     du tronc, le champ ne le dirait pas -- il faudrait l'inventaire.
+  G3_LE DEROULES BACKEND N'EST TRACE PAR AUCUNE SURFACE : la preuve d'execution
+     reste une DEDUCTION (soumission + synchronisation par la lecture +
+     appartenance a la cloture de la racine des logits).
+  G4_P4' : six conditions, AUCUNE verifiee sur un modele reel.
+  Tous les autres points statiques sont fermes.
+
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve.
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_PROOF_SCOPE
+  Le gel n'est PAS declare pret : les decisions scientifiques (D1/D2, P4') et
+  G1 restent a arbitrer. Aucune n'est tranchee par cette passe.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte, aucun protocole change. Aucun changement de Q1, du
+backend, de la topologie ou des regles de preuve. Les captures historiques sont
+lues en LECTURE SEULE ; pointeurs ARCHIVES jamais dereferences.

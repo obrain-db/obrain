@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# selfd.attacher.service — le nœud SORT de la machine pour aller chercher du
+# travail. C'est ce mode qui fait qu'un self agit réellement sur cette machine.
+#
+# ── POURQUOI C'EST LA MACHINE QUI APPELLE ───────────────────────────────────
+# La machine d'un utilisateur est derrière un routeur : le moteur ne peut pas
+# l'appeler. Elle ouvre donc une connexion SORTANTE vers `/api/remote/*` (servi
+# par `obrain viz serve`, 8432), demande s'il y a du travail, l'exécute, rend
+# son verdict, recommence. Rien à ouvrir sur le routeur, rien d'exposé sur
+# Internet. `serve` (la socket locale) et `attacher` (le canal sortant) sont
+# donc deux unités distinctes, et l'une n'a pas besoin de l'autre.
+#
+# ── POURQUOI LE JETON N'EST PAS DANS CE FICHIER ─────────────────────────────
+# Parce qu'un secret écrit dans une unité est un secret lisible par quiconque
+# lit `~/.config/systemd/user/`, et qu'un secret passé en argument se lit dans
+# `ps` par tout utilisateur de la machine. Il vit donc dans
+# `~/.config/selfd/attacher.env` (0600), que `selfd` lit via
+# `$SELFD_MOTEUR_TOKEN` — l'unité ne fait que charger ce fichier.
+#
+# ── POURQUOI UN JETON REFUSÉ DOIT FINIR EN `failed` ─────────────────────────
+# `selfd attacher` ne rend la main que sur une erreur DÉFINITIVE : un jeton
+# refusé (401/403). Tout le reste — moteur éteint, réseau coupé, machine en
+# veille — est une coupure dont la boucle revient toute seule, avec un repos
+# croissant borné. Redémarrer indéfiniment un nœud dont le jeton est refusé ne
+# peut que le refuser encore : les limites ci-dessous font donc atterrir
+# l'unité en `failed` après quelques essais, et `systemctl --user status` DIT
+# la vérité au lieu d'afficher un service qui bat toutes les 5 s en silence.
+# Le journal, lui, porte le motif exact : « le moteur refuse ce jeton —
+# vérifiez le jeton de VOTRE compte ».
+#
+# PRÉPARER LE FICHIER DE RATTACHEMENT (fait par scripts/selfd-installer.sh
+# quand `--jeton-moteur` est fourni) :
+#   ~/.config/selfd/attacher.env, mode 0600, contenant au moins :
+#     SELFD_MOTEUR=http://<ip-du-moteur>:8432
+#     SELFD_MOTEUR_TOKEN=<jeton IAM de VOTRE compte>
+#     SELFD_MACHINE=<nom de cette machine chez votre compte>   # sinon « machine sans nom »
+#     SELFD_RACINE=<racine du nœud>                            # même valeur que selfd.service
+#
+# VÉRIFIER QUE LE RATTACHEMENT TIENT
+#   systemctl --user status selfd.attacher          # doit être active, pas failed
+#   journalctl --user -u selfd.attacher -n 20       # « « <nom> » branchée au moteur (<id>) »
+#   puis, côté moteur : GET http://<ip>:8432/api/remote/clients (avec VOTRE jeton)
+#   doit lister CETTE machine avec ses capacités RÉELLES (`exec` n'y figure que
+#   si le nœud a été installé avec --allow-exec : annoncer une capacité qu'on
+#   n'a pas ferait proposer à l'utilisateur une action vouée au refus).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=selfd — rattachement de cette machine au moteur obrain (canal sortant)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=6
+
+[Service]
+Type=simple
+
+EnvironmentFile=-%h/.config/selfd/attacher.env
+
+# `--moteur` et `--machine` sont explicites : les lire depuis l'environnement
+# serait plus court, mais un opérateur doit pouvoir lire DANS L'UNITÉ vers quoi
+# cette machine se branche. Le jeton, lui, ne s'y lit pas — voir l'en-tête.
+ExecStart=%h/.local/lib/selfd/selfd attacher \
+  --root ${SELFD_RACINE} \
+  --moteur ${SELFD_MOTEUR} \
+  --machine ${SELFD_MACHINE}
+
+# Aucune surface réseau n'est ouverte par ce mode : il n'écoute rien, il parle.
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+TimeoutStopSec=20
+KillMode=mixed
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=selfd-attacher
+
+[Install]
+WantedBy=default.target

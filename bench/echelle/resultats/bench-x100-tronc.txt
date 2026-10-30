@@ -1,0 +1,12 @@
+    "b.name": "
+## x100 q5_scan_filtre passe1=284118ms resultat: [
+  {
+    "count(...)": "886400"
+  }
+]
+=== x100 minima sur 7 passes (ms, CLI complet = ouverture+requete) ===
+x100 q1_lookup_nom 20931 ms
+x100 q2_appelants_1saut 3955 ms
+x100 q3_count_label 545 ms
+x100 q4_orderby_desc_limit 3599 ms
+x100 q5_scan_filtre 85994 ms

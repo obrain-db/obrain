@@ -1,0 +1,80 @@
+ENGINE-008 -- DEFAUT DE HARNAIS : LE PREFLIGHT GELÉ N'EST PAS EXECUTABLE
+==========================================================================
+Constate a la verification AVANT calcul. AUCUN RUN N'A ETE LANCE.
+Aucune ligne de code n'a ete modifiee. Le gel reste INTACT.
+
+=== D-A : LE POINT D'ENTREE REEL NE LIE NI LE MODELE NI LE PROMPT ===
+Le LANCEUR construit cette commande (engine008_launcher.cpp:113-117) :
+    --model <M> --template <T> --capture-root <C> --model-tag <G> --run-tag <R>
+    --max-new-tokens 8
+
+Le POINT D'ENTREE reel (engine008_real_entry.cpp:13-18) ne parse QUE :
+    --mode  --auth-doc  --plan  --protocol  --binary  --allow-model-compute
+
+Il IGNORE --model, --template, --capture-root, --model-tag, --run-tag,
+--max-new-tokens, et n'affecte JAMAIS :
+    r.model_path, r.template_path, r.capture_root, r.model_tag, r.run_tag
+
+PORTEE, maillon par maillon :
+  1. r.model_path reste VIDE -> `load_full("")` ->
+     `llama_model_load_from_file("")` echoue -> LOAD_FAILED.
+  2. r.capture_root reste VIDE -> `prepare_capture` recoit une racine vide ;
+     la destination devient "//" et le controle « non vide » REFUSE.
+  3. r.prompt_tokens reste VIDE -> `prefill(ctx, {})` rend faux ->
+     PREFILL_FAILED directement.
+  4. **LE PROMPT DE 59 TOKENS N'EST JAMAIS UTILISE.** Le point d'entree ne
+     contient AUCUN appel de tokenisation (verifie : 0 occurrence de
+     tokenize/prompt_tokens/llama_tokenize).
+
+CONCLUSION : le point d'entree a ete construit pour PROUVER QUE LA GARDE REFUSE
+AVANT TOUT CALCUL -- ce qu'il fait correctement (exit 3, tous les compteurs de
+calcul a 0, verifie sur le binaire gele). Mais **le chemin nominal AUTORISE n'a
+jamais ete implemente** : sans liaison du modele, du prompt et de la destination,
+il ne peut pas executer le preflight.
+
+=== D-B : IL N'EXISTE AUCUN EXECUTABLE DE LANCEUR ===
+`engine008_launcher.cpp` **n'a AUCUN `main`** (verifie). Il ne definit que
+`run_sequence(LaunchConfig)`.
+`t-launcher` est un binaire de **TESTS** : il pilote des enfants **SYNTHETIQUES**
+(`child.sh` ecrit par le test, 21 puis 23 controles). Son unique usage de
+`child_override` est le script synthetique.
+
+**Aucun pilote de production ne relie `run_sequence` au harnais reel.** Donc il
+n'existe, a ce jour, **rien a lancer** pour les quatre runs.
+
+=== POURQUOI JE M ARRETE PLUTOT QUE DE LANCER ===
+1. L'instruction §1 : « Toute discordance interdit le lancement. » Les identites
+   concordent, mais un defaut de harnais decouvert a la verification interdit le
+   lancement au meme titre : les runs ne pourraient pas produire les preuves
+   exigees.
+2. L'instruction §5 : « Si un defaut du harnais apparait : arreter ; conserver
+   les preuves ; decrire le defaut et sa portee ; **ne pas modifier puis relancer
+   sous le meme gel**. Un changement necessiterait une nouvelle identite et une
+   instruction separee. »
+   Executer exigerait d'ecrire un pilote et de lier modele/prompt/destination :
+   c'est une MODIFICATION DU CODE sous le meme gel. Je ne la fais pas.
+3. Lancer un run que je SAIS ne pas pouvoir aboutir consumerait l'autorisation
+   sans produire de preuve -- et l'instruction interdit tout retry.
+
+=== CE QUI RESTE VRAI ET ACQUIS ===
+  - La GARDE fonctionne : aucun document -> exit 3 ; document MOCK -> exit 3 ;
+    tous les compteurs de calcul a 0.
+  - Toutes les autres preuves du gel (inventaire, invocations attendues, WHT,
+    P4', parseurs, arret, prompt mesure, segmentation) sont acquises et testees.
+  - Le gel n'est PAS invalide : il n'a simplement jamais ete exerce sur son
+    chemin nominal.
+
+=== CE QU'IL FAUDRAIT, EN UNE INSTRUCTION SEPAREE ===
+  E1. Implementer dans `engine008_real_entry.cpp` : lecture de --model,
+      --template, --capture-root, --model-tag, --run-tag, --max-new-tokens ;
+      affectation des champs correspondants de PipelineRequest.
+  E2. Y tokeniser le prompt RENDU (320 octets, 59 tokens mesures) par le chemin
+      natif, et remplir `r.prompt_tokens`.
+  E3. Ecrire un EXECUTABLE de lanceur (un `main` appelant `run_sequence`) avec le
+      chemin du harnais, les deux modeles, leurs SHA, la destination de capture,
+      et le document d'autorisation.
+  E4. Rebuild propre -> NOUVELLES identites de harnais et de lanceur, nouveau
+      manifeste de gel, nouveau manifeste source, nouveaux SHA de tests.
+  E5. PUIS les quatre runs, sur instruction separee.
+  Les identites gelees actuelles restent valides pour ce qu'elles couvrent ;
+  elles ne couvrent pas l'execution.

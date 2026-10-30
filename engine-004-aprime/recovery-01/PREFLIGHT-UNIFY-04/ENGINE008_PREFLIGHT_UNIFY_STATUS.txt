@@ -1,0 +1,116 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-UNIFY-04
+==========================================================================
+Un SEUL executable contient les quatre composants, et les trois autres sont
+REELLEMENT invoques par son point d'entree. Toutes les suites passent depuis
+ce binaire. Aucun modele charge, aucun forward.
+
+PREFLIGHT_SINGLE_EXECUTABLE_BUILT=YES
+  binaire unique : engine008-preflight-unified (153 256 octets)
+  4 unites de traduction, aucun cinquieme composant autonome, aucune
+  implementation dupliquee. Les `main` des composants sont renommes par
+  -Dmain=<symbole> et APPELES par le point d'entree unique.
+  Organisation explicitement autorisee par la consigne (« plusieurs unites de
+  traduction ... un seul executable final est exige »).
+
+PREFLIGHT_COMPONENTS_CONNECTED=NO
+  CONTENUS et INVOCABLES : oui. Les trois composants sont appeles par
+  engine008-unified-main.cpp -- ce ne sont PAS des fonctions inutilisees.
+  MAIS le critere de T1 n'est pas rempli : « le chemin preflight final doit
+  appeler reellement la garde, le chargement, le contexte, le prefill, le
+  decode, l'enregistrement des parametres, l'acquisition du registre,
+  l'enumeration, la correlation et la serialisation » -- dans UNE sequence.
+  Cette chaine END-TO-END mockee n'est PAS ecrite : les suites restent
+  independantes, chacune avec ses propres fixtures. Je ne marque pas
+  « connected » ce qui est juxtapose sans etre enchaine.
+
+INTEGRATED_MOCK_PATH_SELFTEST=NOT_RUN
+  Consequence directe : faute de chaine unique, il n'y a pas de selftest de
+  chemin integre a executer.
+
+NOMINAL_AUTHORIZATION_MOCK_SELFTEST=PASS  (depuis le binaire unifie)
+REJECTION_GUARD_SELFTEST=PASS             (depuis le binaire unifie)
+STOP_CONTRACT_SELFTEST=NOT_RUN_DANS_CE_BINAIRE
+  Le contrat d'arret vit dans le harnais de preflight aa7e4bf4..., qui n'a PAS
+  ete incorpore dans le binaire unifie. Il n'est donc ni rejoue ni herite ici.
+  Resultat anterieur CONSERVE mais NON presente comme nouveau.
+
+Resultats obtenus DEPUIS LE BINAIRE UNIFIE (UNIFIED_EXIT=0, 0 echec au total) :
+  GRAPH_ENUMERATOR_SYNTHETIC_SELFTEST=PASS
+  GRAPH_COMPLETENESS_CONTROLS_SELFTEST=PASS
+  NEXTN_STRUCTURAL_CLASSIFIER_SELFTEST=PASS
+  LAST_GRAPH_ADAPTER_SELFTEST=PASS          (FAILED_COUNT=0)
+  IDENTITY_REGISTRY_MOCK_SELFTEST=PASS      (ADAPTER_FAILED_COUNT=0)
+  NOMINAL_AUTHORIZATION_MOCK_SELFTEST=PASS
+  REJECTION_GUARD_SELFTEST=PASS
+  INTEGRATION_SELFTEST=PASS                 (FAILED_COUNT=0)
+
+FINGERPRINT_DEFINITION_ESTABLISHED=NO
+FINGERPRINT_CONFRONTATION=SOURCE_JUSTIFIED_LIMIT
+  La definition du fingerprint n'a PAS ete etablie dans cette passe : le suivi
+  depuis l'ecriture CSV jusqu'a ses fonctions et donnees sources n'a pas ete
+  mene. La limite reste donc JUSTIFIEE PAR LA SOURCE DEJA CONSTATEE (champs
+  disponibles au producteur, f1a-capture.cpp:301-310 : submission_id, gf,
+  n_nodes, submission_rc, fingerprint) mais NON par une lecture de sa
+  construction. Je ne l'appelle pas « intrinseque » : sa definition reste
+  INCONNUE.
+
+AMBIGUOUS_ATTRIBUTION_BLOCKS_NEGATIVE_CONCLUSION=YES
+  Conserve et teste : POINTER_AND_COUNT_ONLY n'autorise aucune conclusion
+  negative, et aucun verdict de correlation ne conclut une absence NextN.
+  Dimensions distinctes maintenues : couverture des soumissions / exhaustivite
+  de l'enumeration / force de l'attribution / admissibilite d'une conclusion.
+  Une seule soumission nouvelle est attribuable quand le contrat de fenetre le
+  demontre ; plusieurs soumissions avec seulement le dernier graphe observe
+  restent INCOMPLETES.
+
+HARNESS_SOURCE_MANIFEST_SHA256=
+  enum        e5f14fe294d50eb192e386dd4bee2df668e069be592b3b7f9196cf5e4bff6707
+  identity    78ea125451f7cfcab1a8e528f4b8f345c138234b0d2735f63e3bc25981b40d78
+  integrated  89e39ab78941192265f75ea22a7a86a2501a94ff256710832ff63bfdb04bca94
+  unified-main 78a82def534f0871a6b5325649a7aea655a8b888beaa0e518e1418a05990f787
+HARNESS_BINARY_SHA256=188523132d85ccb942b84951535deab35db98212bfdf5f500c04b236c02de6c7
+  Identites recalculees APRES compilation reussie. Compilation avec arret sur
+  erreur (set -e). Les sources des trois composants sont INCHANGEES : leurs
+  hashes sont identiques a ceux des passes anterieures (aucune reecriture).
+
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+
+REMAINING_WORK=
+  U1_ECRIRE la chaine END-TO-END mockee exigee par T1 : garde externe ->
+     chargement -> contexte -> prefill -> decode -> enregistrement des
+     parametres transmis -> acquisition du registre -> enumeration ->
+     correlation -> serialisation, dans UNE sequence, avec dependances mockees.
+     C'est le seul manque qui empeche PREFLIGHT_COMPONENTS_CONNECTED=YES.
+     Les fonctions necessaires existent dans les trois composants ; il faut
+     leur donner un lien externe (elles sont aujourd'hui `static`) et les
+     enchainer dans engine008-unified-main.cpp.
+  U2_INCORPORER le contrat d'arret (depuis engine008-quality-eval-extended.cpp,
+     source e92f3516938cdb7cf35026cc9533155fdef7e892f6526eec9f258eed17e97109)
+     pour qu'il soit rejoue DANS le binaire unifie.
+  U3_FERMER la definition du fingerprint par lecture du producteur, ou etablir
+     qu'elle n'est pas exposable. Tant que ce maillon est ouvert, la force
+     d'attribution reste POINTER_AND_COUNT_ONLY.
+  U4_PUIS le protocole et le gel, sur instruction separee.
+
+ENGINE008_NEXT_STEP=U1 (ecrire la chaine end-to-end mockee et lier les trois
+  composants par lien externe), PUIS U2 (incorporer le contrat d'arret)
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun forward, aucune execution preflight,
+aucun gel. Aucun rebuild de bibliotheque Q1. Aucun global de Q1 ecrit. Aucun
+document d'autorisation ouvrant le calcul reel. Les sources des composants
+anterieurs, les binaires anterieurs, Q1 et les gels existants sont INTACTS.
+Aucun batch ni chemin CUDA modifie pour faire passer la couverture.

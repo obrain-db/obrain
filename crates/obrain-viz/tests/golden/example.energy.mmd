@@ -1,0 +1,13 @@
+flowchart LR
+    nb7a5ae935517a42d["lib (core)"]
+    n24e1ba208f22976c["serde_json"]
+    n11d7ce11103733a4["hub #quot;central#quot;"]
+    ne7b197e7a0c8cd54["parse()"]
+    iso["isolé"]
+    n11d7ce11103733a4 -->|CALLS| nb7a5ae935517a42d
+    ne7b197e7a0c8cd54 -->|IMPORTS| n24e1ba208f22976c
+    ne7b197e7a0c8cd54 -->|CALLS| n11d7ce11103733a4
+
+    style n11d7ce11103733a4 fill:#e45a32,stroke:#333333
+    style ne7b197e7a0c8cd54 fill:#eb8936,stroke:#333333
+    style iso fill:#f5d63d,stroke:#333333

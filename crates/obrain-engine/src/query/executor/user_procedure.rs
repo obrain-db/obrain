@@ -28,6 +28,10 @@ pub struct ProcedureContext {
     pub viewing_epoch: EpochId,
     /// Catalog for sub-planner resolution.
     pub catalog: Option<Arc<Catalog>>,
+    /// Contexte de session (registre multi-store — aretes inter-bases V2) :
+    /// le corps de la procedure batit son propre Planner, il doit voir les
+    /// memes bases attachees que la requete appelante.
+    pub session_context: obrain_core::execution::operators::SessionContext,
 }
 
 /// An operator that executes a user-defined stored procedure.
@@ -57,6 +61,8 @@ pub struct UserProcedureOperator {
     viewing_epoch: EpochId,
     /// Catalog for sub-planner.
     catalog: Option<Arc<Catalog>>,
+    /// Contexte de session (registre multi-store compris).
+    session_context: obrain_core::execution::operators::SessionContext,
     /// Buffered result rows from execution.
     result_rows: Option<Vec<Vec<Value>>>,
     /// Current row index into buffered results.
@@ -89,6 +95,7 @@ impl UserProcedureOperator {
             transaction_id: ctx.transaction_id,
             viewing_epoch: ctx.viewing_epoch,
             catalog: ctx.catalog,
+            session_context: ctx.session_context,
             result_rows: None,
             row_index: 0,
             output_columns,
@@ -97,6 +104,7 @@ impl UserProcedureOperator {
 
     /// Executes the stored procedure body and buffers the results.
     fn execute_body(&mut self) -> Result<(), OperatorError> {
+        // (voir `erreur_de_corps` en bas de fichier)
         // Substitute parameters into the body
         let mut body = self.body.clone();
         for (name, value) in &self.params {
@@ -128,18 +136,20 @@ impl UserProcedureOperator {
                 p = p.with_catalog(Arc::clone(cat));
             }
             p
-        };
+        }
+        // Aretes inter-bases (V2) : le corps voit les bases attachees.
+        .with_session_context(self.session_context.clone());
 
-        let physical = planner
-            .plan(&logical_plan)
-            .map_err(|e| OperatorError::Execution(format!("Failed to plan procedure body: {e}")))?;
+        let physical = planner.plan(&logical_plan).map_err(|e| {
+            erreur_de_corps(&e, format!("Failed to plan procedure body: {e}"))
+        })?;
 
         // Execute
         let executor = crate::query::executor::Executor::with_columns(physical.columns().to_vec());
         let mut root_op = physical.into_operator();
-        let result: QueryResult = executor
-            .execute(root_op.as_mut())
-            .map_err(|e| OperatorError::Execution(format!("Procedure execution failed: {e}")))?;
+        let result: QueryResult = executor.execute(root_op.as_mut()).map_err(|e| {
+            erreur_de_corps(&e, format!("Procedure execution failed: {e}"))
+        })?;
 
         // Map result columns to expected return columns, handling YIELD filtering
         let column_indices = if let Some(ref yields) = self.yield_columns {
@@ -168,6 +178,31 @@ impl UserProcedureOperator {
 
         self.result_rows = Some(rows);
         Ok(())
+    }
+}
+
+/// Traduit une erreur du CORPS de la procedure sans lui faire perdre sa
+/// nature.
+///
+/// ── UNE ERREUR QUI MASQUE SA PROPRE NATURE (2026-08-24) ──────────────
+///
+/// Le corps s'executait derriere un `map_err` qui enveloppait TOUT dans
+/// `OperatorError::Execution(String)`. Une annulation en sortait donc sous
+/// la forme `OBRAIN-X001 Internal error: Procedure execution failed: query
+/// cancelled` : le texte disait « cancelled », mais `Error::is_cancelled`
+/// rendait `false`. L'appelant qui avait ARME le jeton ne pouvait pas
+/// distinguer sa propre demande, honoree, d'une panne du moteur — et un
+/// chien de garde qui relance sur panne aurait relance une requete qu'on
+/// venait d'annuler exprès.
+///
+/// `OperatorError::Cancelled` existe precisement pour traverser les
+/// couches sans perdre cette distinction. On la preserve donc ici, et on
+/// n'enveloppe que le reste.
+fn erreur_de_corps(e: &obrain_common::utils::error::Error, contexte: String) -> OperatorError {
+    if e.is_cancelled() {
+        OperatorError::Cancelled
+    } else {
+        OperatorError::Execution(contexte)
     }
 }
 
@@ -233,5 +268,43 @@ fn value_to_gql_literal(value: &Value) -> String {
         Value::Float64(f) => format!("{f:?}"),
         Value::String(s) => format!("'{}'", s.replace('\'', "''")),
         _ => format!("'{value}'"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obrain_common::utils::error::{Error, QueryError};
+
+    #[test]
+    fn une_annulation_traverse_sans_perdre_sa_nature() {
+        let annulee = Error::Query(QueryError::cancelled());
+        assert!(
+            annulee.is_cancelled(),
+            "anti-vacuite : l'erreur de depart doit bien etre une annulation"
+        );
+        assert!(
+            matches!(
+                erreur_de_corps(&annulee, "contexte".to_string()),
+                OperatorError::Cancelled
+            ),
+            "une annulation qui traverse une procedure doit rester une \
+             ANNULATION : sans cela l'appelant qui a arme le jeton ne peut \
+             pas distinguer sa propre demande, honoree, d'une panne du moteur"
+        );
+    }
+
+    #[test]
+    fn une_vraie_panne_reste_une_panne_et_garde_son_contexte() {
+        // Anti-vacuite du test precedent : si `erreur_de_corps` rendait
+        // `Cancelled` pour tout, il passerait sans rien prouver.
+        let panne = Error::Internal("zone illisible".to_string());
+        assert!(!panne.is_cancelled());
+        match erreur_de_corps(&panne, "Procedure execution failed: boum".to_string()) {
+            OperatorError::Execution(m) => {
+                assert!(m.contains("Procedure execution failed"), "contexte perdu : {m}");
+            }
+            autre => panic!("une panne ne doit pas devenir une annulation : {autre:?}"),
+        }
     }
 }

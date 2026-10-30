@@ -1,3 +1,5 @@
+//! Fonction `timestamp()` : monotonie et format.
+
 #![cfg(feature = "cypher")]
 //! Integration tests for the `timestamp()` function.
 //!
@@ -12,7 +14,7 @@ use obrain_engine::ObrainDB;
 // ---------------------------------------------------------------------------
 
 fn current_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

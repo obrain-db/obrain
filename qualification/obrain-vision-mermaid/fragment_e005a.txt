@@ -1,0 +1,131 @@
+SPHERE: e005a_timeline_provenance
+RESUME: Sphere 005A a 005E - le plafond de 15.7 tok par seconde est porte par les multiplications matricielles quantifiees a 86.2 jusqu a 91.7 pourcent du temps GPU mesure selon que les graphes CUDA sont actifs ou non.
+RESUME: Etabli par mesure - CUPTI et ncu sont indisponibles sur GB10 donc l attribution passe par paires d evenements CUDA puis par provenance de construction avec 64 ancres sur 64 et une couverture MUL_MAT de 100 pourcent.
+RESUME: Refute - l anomalie d echelle 6.77 fois est un artefact de semantique d instrumentation et non de la concurrence GPU et la conversion naive part d operation vers paroi est fausse.
+RESUME: Retire - l attribution de couche par nom de noeud est structurellement inapte a 3.46 pourcent de couverture et le candidat de cible ENGINE006 propose par 005D est reinvesti en cible non epinglee.
+RESUME: Premier pont mural - 5.25 ms par token soit 8.24 pourcent de la paroi pour le chemin de sortie mais logits=false ne supprime pas la projection de sortie.
+RESUME: Ouvert - route noyau reelle MMVQ contre MMQ non prouvee au runtime et correspondance absolue vers la paroi non validee hors chemin de sortie.
+NOEUDS:
+[PROUVE] e005a_baseline_engine004 :: baseline ENGINE004 reprise sans changement a 15.7983 tok par seconde backend et 15.6330 greedy avec SHA de sequence :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_profiled_window_class_a :: fenetre profilee de classe A pure - 24 tokens sans transition de graphe a position KV 1209 :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_matmul_dominates_865_917 :: famille MUL_MAT a 86.2 jusqu a 91.7 pourcent du temps GPU mesure selon le mode graphes :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_matmul_critical_path_586 :: MUL_MAT porte 58.6 ms du chemin critique par token avec graphes CUDA actifs :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_graph_only_107_percent :: le graphe CUDA n apporte que plus 10.7 pourcent de debit donc la reduction des lancements hote de 109738 a 1859 par token n est pas le facteur limitant :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_host_launch_not_limiter :: le cout de lancement hote n est pas le limiteur principal - confirme par la passe 005C :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_cupti_unavailable :: CUPTI ne trace aucun noyau sur GB10 et CUDA 13.2 y compris pour un noyau trivial de contre-epreuve a 5 lancements :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_ncu_counters_blocked :: compteurs materiels ncu refuses par ERR_NVGPUCTRPERM avec perf_event_paranoid a 4 - porte des metriques roofline non franchie :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_event_pair_method :: methode de remplacement par paires d evenements CUDA dans la bibliotheque avec accumulateur par nom d operation :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_ratio_677_observed :: somme des durees d operations a 432.6 ms par token contre une paroi de 63.9 ms soit un rapport de 6.77 :: ENGINE-005A-TIMELINE-GPU.md
+[RETIRE] e005a_kernel_overlap_present :: chevauchement de noyaux declare necessaire par 005A puis retire car le rapport 6.77 est un artefact d instrumentation :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_gpu_active_fraction_not_measurable :: fraction active du GPU et bulles non mesurables sans timeline CUPTI :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_kernels_lt_5us_not_measurable :: nombre de noyaux sous 5 microsecondes non mesurable et seulement borne par les microsecondes par appel :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_compute_or_memory_bound_undecided :: etat lie au calcul ou a la memoire contre bulles d ordonnancement reste non tranche :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_30_tok_s_not_affirmed :: objectif de 30 tok par seconde soit 33.33 ms par token non affirme faute de metriques roofline :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_recurrent_not_separable :: recurrent et attention non separables par nom de noyau en 005A car ils partagent l operation MUL_MAT :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_fused_gdn_not_isolable :: temps du Gated Delta Net fusionne non isolable car aucun noyau nomme GDN ou SSM n apparait dans le catalogue :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_flash_attn_small :: attention FLASH_ATTN_EXT a 0.4 ms par token soit 0.7 pourcent - desactivee comme cible :: ENGINE-005A-TIMELINE-GPU.md
+[RETIRE] e005a_engine005b_allowed_with_reserve :: 005B declaree ouverte avec reserve de plateforme en 005A puis reinvestie en bloque par permissions et CUPTI :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_layer_attribution_next_measurement :: attribution par couche designee prochaine mesure utile en 005A :: ENGINE-005A-TIMELINE-GPU.md
+[OUVERT] e005a_profiled_tps_diagnostic_only :: debit de la fenetre profilee declare diagnostic seulement et non promu comme debit produit :: ENGINE-005A-TIMELINE-GPU.md
+[PROUVE] e005a_layer_coverage_346 :: 3.46 pourcent seulement des 401912 operations portent un indice de couche et MUL_MAT qui pese 87 pourcent n en porte aucun :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_layer_attribution_not_delivered :: attribution par couche non livree car l indice de couche est absent des noeuds matmul quantifies :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[RETIRE] e005a_layer_attribution_via_names :: attribution de couche par nom de noeud - sauvetage fonctionnel mais structurellement inapte a 3.46 pourcent de couverture :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_layer_classification_64 :: classification des 64 couches lue dans le GGUF - 16 couches attention aux indices 3 7 jusqu a 63 et 48 couches recurrentes :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_accounting_gate :: 926 noeuds executes sur 4010 par calcul et environ 29.5 ms d evenements par calcul pour 2 calculs par token :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_ratio_677_root_cause :: cause du rapport 6.77 identifiee comme semantique d instrumentation et non concurrence GPU :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_partial_numbers_not_distribution :: les totaux recurrent 1.77 ms et attention 78.35 ms de 005C mesurent l echec de couverture et non une repartition :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[OUVERT] e005a_absolute_op_timing_not_validated :: correspondance des valeurs absolues d op timing vers la paroi non validee - encore invalide hors familles de sortie selon 005E :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[OUVERT] e005a_which_20_percent_matmul :: quelle fraction des appels MUL_MAT consomme 80 pourcent du temps reste non mesure :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[OUVERT] e005a_mmvq_mmq_shape_distribution :: distribution des formes entre MMVQ et MMQ non mesuree :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[OUVERT] e005a_remove_13_3ms_not_answered :: retirer les premieres signatures suffirait il a retirer 13.3 ms par token reste non repondu :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_harness_defect_1 :: defaut de harnais numerote 1 de la passe E5C - mesure de noeuds non executes detectee par invalid resource handle et resolu :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_harness_defect_2 :: defaut de harnais numerote 2 de la passe E5C - mesure sans synchronisation detectee par device not ready et resolu :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_harness_defect_3 :: defaut de harnais numerote 3 de la passe E5C - evenements poses dans une capture provoquant un crash et resolu par passe graphes desactives :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_harness_defect_4 :: defaut de harnais numerote 4 de la passe E5C - etat statique en double entre harnais et bibliotheque et resolu par definition unique :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_harness_defect_5 :: defaut de harnais numerote 5 de la passe E5C - bloc d accumulation absent du binaire compile et resolu par script de patch verifie :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_e5c_harness_defect_6 :: defaut de harnais numerote 6 de la passe E5C - noms de fonctions divergents resolus par renommage aligne :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_layer_provenance_ok :: provenance par ancres de sortie de couche - 64 ancres sur 64 ordre topologique PASS et 4006 noeuds sur 4010 attribues :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_mul_mat_coverage_100 :: couverture de couche des MUL_MAT executes a 100.00 pourcent avec zero milliseconde en couche inconnue :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_hot_path_lookup_none :: methode sans renommage ni noeud ajoute ni execution decoupee - une seule execution normale du graphe :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_recurrent_dominance_measured :: repartition du temps MUL_MAT a 71.9 pourcent pour les 48 couches recurrentes contre 11.2 pourcent pour les 16 couches attention :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_layer_class_split_7196_1313 :: temps total par classe de couche a 71.96 pourcent recurrent et 13.13 pourcent attention sur la fenetre de 24 tokens :: ENGINE-005D-MATMUL-PROVENANCE.md
+[RETIRE] e005a_e5c_top_signatures_unknown :: signatures MUL_MAT dominantes declarees non identifiees en 005C puis identifiees en 005D :: ENGINE-005C-LAYER-ATTRIBUTION.md
+[PROUVE] e005a_output_weight_17_27 :: output.weight en q6_K domine a lui seul 17.27 pourcent du temps MUL_MAT soit 2106.2 ms sur la fenetre :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_attn_gate_family_701 :: famille attn_gate.weight en tq2_g128 sur 48 couches recurrentes a 7.01 pourcent du temps MUL_MAT :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_ssm_bf16_full_dim :: ssm_alpha et ssm_beta en bf16 non quantifies a 3.58 pourcent du temps MUL_MAT en pleine dimension malgre un resultat de rang 48 :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PARTIEL] e005a_mmvq_by_shape :: route noyau dominante deduite des formes avec N egal a 1 et non observee depuis la bibliotheque :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_scale_factor_7x :: facteur d echelle d environ 7 fois entre 508 ms par token d evenements et 71 ms de paroi reste en vigueur :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_e5d_build_defects :: cinq defauts de greffe de la passe E5D dont en tete perimee et include en fin de fichier tous resolus :: ENGINE-005D-MATMUL-PROVENANCE.md
+[RETIRE] e005a_engine006_target_candidate :: candidat de cible ENGINE006 output.weight q6_K et famille tq2_g128 propose par 005D puis reinvesti en cible non epinglee :: ENGINE-005D-MATMUL-PROVENANCE.md
+[PROUVE] e005a_e5e_two_arms_measured :: rejeu teacher-forced de 256 tokens - bras logits ON a 63.87 ms par token et bras OFF a 58.63 avec ecart stable sur trois repetitions :: ENGINE-005E-WALL-BRIDGE.md
+[PROUVE] e005a_wall_bridge_output_path :: premier pont mural causal du chemin de sortie a 5.25 ms par token soit 8.24 pourcent de la paroi :: ENGINE-005E-WALL-BRIDGE.md
+[REFUTE] e005a_logits_false_skips_refuted :: hypothese que logits=false supprime la projection de sortie refutee par lecture source mesure et contre-epreuve :: ENGINE-005E-WALL-BRIDGE.md
+[PROUVE] e005a_output_weight_cost_bound :: cout du poids de sortie borne superieurement par le cout du chemin de sortie quand les logits sont demandes :: ENGINE-005E-WALL-BRIDGE.md
+[REFUTE] e005a_naive_relative_to_wall_rejected :: conversion naive de la part d operation vers la paroi refutee car 17.27 pourcent de part MUL_MAT ne donne que 8.24 pourcent de paroi :: ENGINE-005E-WALL-BRIDGE.md
+[PARTIEL] e005a_state_probe_functional :: egalite d etat finale verifiee par les logits d un seul token de sonde sans hachage du cache KV :: ENGINE-005E-WALL-BRIDGE.md
+[PROUVE] e005a_e5e_head_skip_attempts :: deux tentatives de saut de tete sans effet car la porte reposait sur une condition toujours vraie - consignees sans effet sur les chiffres :: ENGINE-005E-WALL-BRIDGE.md
+[PROUVE] e005a_e5e_weak_symbol_defect :: defaut de harnais dependant de symboles V3 absents du runtime op timing et corrige en symboles faibles :: ENGINE-005E-WALL-BRIDGE.md
+[OUVERT] e005a_runtime_kernel_path_not_proven :: route noyau reelle MMVQ contre MMQ non prouvee au runtime et exigeant une instrumentation au point de selection :: ENGINE-005E-WALL-BRIDGE.md
+[OUVERT] e005a_output_path_sensitivity_unknown :: sensibilite des 5.25 ms non etablie faute de bras A/B de noyau equivalent ou de pente de travail duplique :: ENGINE-005E-WALL-BRIDGE.md
+[OUVERT] e005a_engine006_target_not_pinned :: cible ENGINE006 non epinglee et modification de noyau interdite en l etat :: ENGINE-005E-WALL-BRIDGE.md
+[OUVERT] e005a_next_measurement_head_skip_arm :: mesure suivante declaree bras de saut de tete reel plus compteur de route noyau et non executee :: ENGINE-005E-WALL-BRIDGE.md
+[OUVERT] e005a_plumbing_failure_29_not_assigned :: compteur de defauts de plomberie fige a 28 et emplacement 29 non assigne dans les quatre rapports :: ENGINE-005E-WALL-BRIDGE.md
+LIENS:
+e005a_cupti_unavailable -> e005a_event_pair_method [DEMONTRE] la methode par paires d evenements remplace le tracage CUPTI indisponible
+e005a_ncu_counters_blocked -> e005a_cupti_unavailable [DEPEND] les deux blocages de plateforme se cumulent et forcent la meme methode
+e005a_event_pair_method -> e005a_matmul_dominates_865_917 [DEMONTRE] l attribution par nom d operation etablit la dominance MUL_MAT
+e005a_profiled_window_class_a -> e005a_matmul_dominates_865_917 [DEPEND] les parts reposent sur une fenetre de classe A pure
+e005a_matmul_dominates_865_917 -> e005a_profiled_tps_diagnostic_only [DEPEND] les parts viennent d une fenetre dont le debit n est pas promu
+e005a_matmul_critical_path_586 -> e005a_matmul_dominates_865_917 [DEPEND] la part de chemin critique derive de la meme attribution
+e005a_ratio_677_observed -> e005a_kernel_overlap_present [RETIRE] le rapport 6.77 avait servi de base au chevauchement declare puis retire
+e005a_e5c_accounting_gate -> e005a_ratio_677_root_cause [DEMONTRE] la mesure restreinte aux noeuds executes identifie la cause du 6.77
+e005a_ratio_677_root_cause -> e005a_kernel_overlap_present [RETIRE] la cause etant la semantique d instrumentation et non la concurrence GPU
+e005a_ratio_677_root_cause -> e005a_absolute_op_timing_not_validated [OUVRE] la mise en cause des valeurs absolues laisse la correspondance non validee
+e005a_scale_factor_7x -> e005a_absolute_op_timing_not_validated [OUVRE] le facteur 7 persistant maintient la correspondance non validee
+e005a_host_launch_not_limiter -> e005a_graph_only_107_percent [DEMONTRE] le gain de 10.7 pourcent confirme que le lancement hote n est pas le limiteur
+e005a_layer_attribution_via_names -> e005a_layer_coverage_346 [DEMONTRE] le sauvetage par renommage ne couvre que 3.46 pourcent des operations
+e005a_layer_coverage_346 -> e005a_layer_attribution_not_delivered [DEMONTRE] la couverture absente sur les matmul quantifies bloque la livraison
+e005a_e5c_partial_numbers_not_distribution -> e005a_layer_attribution_not_delivered [DEMONTRE] les totaux partiels ne constituent pas une repartition
+e005a_recurrent_not_separable -> e005a_layer_attribution_next_measurement [OUVRE] l impossibilite de separer par nom de noyau ouvre la demande d attribution par couche
+e005a_layer_attribution_not_delivered -> e005a_layer_provenance_ok [REMPLACE] la provenance par ancres remplace l attribution par nom de noeud
+e005a_layer_provenance_ok -> e005a_layer_attribution_via_names [RETIRE] MUL_MAT_LAYER_ATTRIBUTION est declaree indisponible via cb il
+e005a_layer_classification_64 -> e005a_layer_provenance_ok [DEPEND] les 64 ancres reposent sur les 64 couches du modele
+e005a_layer_provenance_ok -> e005a_mul_mat_coverage_100 [DEMONTRE] 64 ancres sur 64 et ordre topologique PASS donnent la couverture complete
+e005a_e5d_build_defects -> e005a_layer_provenance_ok [DEPEND] la provenance n a ete validee qu apres correction des defauts de greffe
+e005a_mul_mat_coverage_100 -> e005a_recurrent_dominance_measured [DEMONTRE] la couverture complete autorise la repartition par classe de couche
+e005a_recurrent_dominance_measured -> e005a_recurrent_not_separable [REMPLACE] la repartition 71.9 contre 11.2 ferme la question laissee ouverte en 005A
+e005a_recurrent_dominance_measured -> e005a_layer_class_split_7196_1313 [DEPEND] la repartition MUL_MAT s inscrit dans le temps total par classe
+e005a_attn_gate_family_701 -> e005a_e5c_top_signatures_unknown [REMPLACE] les signatures dominantes sont identifiees en 005D
+e005a_output_weight_17_27 -> e005a_recurrent_dominance_measured [DEPEND] la tete de sortie hors couche complete la repartition
+e005a_e5e_two_arms_measured -> e005a_wall_bridge_output_path [DEMONTRE] le delta des deux bras donne la quantite murale
+e005a_e5e_two_arms_measured -> e005a_state_probe_functional [DEMONTRE] l egalite d etat est verifiee sur les six executions des deux bras
+e005a_baseline_engine004 -> e005a_e5e_two_arms_measured [DEPEND] le pont rejoue la sequence gelee de RUN-003 a runtime gele
+e005a_e5e_head_skip_attempts -> e005a_logits_false_skips_refuted [DEMONTRE] les deux sauts sans effet confirment que la tete n est pas supprimable
+e005a_logits_false_skips_refuted -> e005a_output_weight_cost_bound [DEMONTRE] la porte ratee oblige a lire le delta comme une borne sur le chemin de sortie
+e005a_output_weight_cost_bound -> e005a_output_path_sensitivity_unknown [OUVRE] la borne ne dit pas si ce cout est reductible
+e005a_output_weight_17_27 -> e005a_wall_bridge_output_path [DEPEND] le pont confronte la part relative de 005D a la paroi de 005E
+e005a_wall_bridge_output_path -> e005a_naive_relative_to_wall_rejected [DEMONTRE] l ecart 17.27 vers 8.24 refute la conversion naive
+e005a_naive_relative_to_wall_rejected -> e005a_engine006_target_candidate [RETIRE] la conversion non validee empeche d epingler la cible proposee
+e005a_engine006_target_candidate -> e005a_engine006_target_not_pinned [REMPLACE] 005E reinvestit la cible en non epinglee
+e005a_mmvq_by_shape -> e005a_runtime_kernel_path_not_proven [OUVRE] la deduction par les formes laisse la route noyau non prouvee
+e005a_runtime_kernel_path_not_proven -> e005a_next_measurement_head_skip_arm [OUVRE] le compteur de route noyau fait partie de la prochaine mesure
+e005a_engine006_target_not_pinned -> e005a_next_measurement_head_skip_arm [OUVRE] l epinglage de la cible exige le bras de saut reel et le compteur de route noyau
+e005a_e5e_weak_symbol_defect -> e005a_e5e_two_arms_measured [DEPEND] le harnais a du passer en symboles faibles avant de mesurer les deux bras
+e005a_e5c_harness_defect_1 -> e005a_e5c_accounting_gate [DEPEND] la restriction aux noeuds executes conditionne la mesure par calcul
+e005a_e5c_harness_defect_2 -> e005a_e5c_accounting_gate [DEPEND] la synchronisation avant lecture conditionne la mesure par calcul
+e005a_e5c_harness_defect_3 -> e005a_e5c_accounting_gate [DEPEND] la passe graphes desactives conditionne la mesure par calcul
+e005a_e5c_harness_defect_5 -> e005a_e5c_accounting_gate [DEPEND] le bloc d accumulation doit etre present dans le binaire pour compter
+e005a_plumbing_failure_29_not_assigned -> e005a_event_pair_method [DEPEND] l emplacement 29 reste non assigne malgre les defauts de harnais numerotes
+e005a_flash_attn_small -> e005a_matmul_dominates_865_917 [DEMONTRE] l attention a 0.7 pourcent exclut l attention comme cible
+e005a_fused_gdn_not_isolable -> e005a_recurrent_not_separable [DEPEND] l absence de noyau GDN identifiable contribue a la non separabilite
+e005a_engine005b_allowed_with_reserve -> e005a_ncu_counters_blocked [RETIRE] la reserve de plateforme se realise en blocage des compteurs materiels
+e005a_which_20_percent_matmul -> e005a_remove_13_3ms_not_answered [DEPEND] l absence de concentration mesuree laisse la question du gain sans reponse
+e005a_mmvq_mmq_shape_distribution -> e005a_remove_13_3ms_not_answered [DEPEND] la distribution des formes non mesuree laisse la question du gain sans reponse
+e005a_gpu_active_fraction_not_measurable -> e005a_cupti_unavailable [DEPEND] l absence de timeline empeche la fraction active
+e005a_kernels_lt_5us_not_measurable -> e005a_cupti_unavailable [DEPEND] l absence de timeline empeche le comptage des noyaux fins
+e005a_compute_or_memory_bound_undecided -> e005a_ncu_counters_blocked [DEPEND] l indecision tient au blocage des compteurs materiels
+e005a_30_tok_s_not_affirmed -> e005a_naive_relative_to_wall_rejected [DEPEND] l objectif non affirme depend de la conversion relative vers murale
+e005a_e5c_harness_defect_4 -> e005a_e5c_accounting_gate [DEPEND] la definition unique de l etat statique conditionne le compteur E5C_COMPUTE
+e005a_e5c_harness_defect_6 -> e005a_e5c_accounting_gate [DEPEND] l alignement des noms de fonctions conditionne la compilation de l instrument
+e005a_hot_path_lookup_none -> e005a_mul_mat_coverage_100 [DEPEND] l absence de lookup en chemin chaud rend la couverture complete exploitable
+e005a_ssm_bf16_full_dim -> e005a_recurrent_dominance_measured [DEPEND] la famille bf16 en pleine dimension s ajoute aux couts recurrents mesures

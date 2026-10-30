@@ -1,0 +1,73 @@
+{
+  "contract_id": "ENGINE008_NEXTN_TENSOR_ROLE_CONTRACT_v1",
+  "pass": "NEXTN-IDENTITY-01",
+  "date_utc": "2026-10-02",
+  "authority_kind": "SOURCE_NATIVE_Q1",
+  "authority_files": [
+    "src/llama-arch.cpp:492-499 (table LLM_TENSOR_NAMES : enum -> identifiant GGUF)",
+    "src/llama-arch.cpp:201 (LLM_KV_NEXTN_PREDICT_LAYERS)",
+    "src/llama-arch.cpp:837-844 (table des ops attendues par tensor)",
+    "src/llama-arch.h:602-609 (enum LLM_TENSOR_NEXTN_*)",
+    "src/llama-graph.cpp:1271,:1317-1318 (t_h_nextn), :1407 (n_layer_nextn)",
+    "src/llama-model.cpp:1476-1480, :1541-1545 (creation des tensors NextN)"
+  ],
+  "method": "Lecture de la table NORMATIVE enum -> identifiant GGUF. Aucune recherche de sous-chaine n'est utilisee : les identifiants sont ceux que Q1 declare, pas ceux qu'on suppose.",
+
+  "roles": [
+    {"role": "NEXTN_PROJ_PRE",         "enum": "LLM_TENSOR_NEXTN_PROJ_PRE",         "gguf_id": "nextn.pre_projection",              "op": "GGML_OP_MUL_MAT",  "exclusive_to_nextn": true,  "source": "llama-arch.cpp:492,837"},
+    {"role": "NEXTN_PROJ_POST",        "enum": "LLM_TENSOR_NEXTN_PROJ_POST",        "gguf_id": "nextn.post_projection",             "op": "GGML_OP_MUL_MAT",  "exclusive_to_nextn": true,  "source": "llama-arch.cpp:493,838"},
+    {"role": "NEXTN_EH_PROJ",          "enum": "LLM_TENSOR_NEXTN_EH_PROJ",          "gguf_id": "blk.%d.nextn.eh_proj",              "op": "GGML_OP_MUL_MAT",  "exclusive_to_nextn": true,  "source": "llama-arch.cpp:494,842 / presente dans le candidat : blk.64.nextn.eh_proj.weight"},
+    {"role": "NEXTN_EMBED_TOKENS",     "enum": "LLM_TENSOR_NEXTN_EMBED_TOKENS",     "gguf_id": "blk.%d.nextn.embed_tokens",         "op": "GGML_OP_GET_ROWS", "exclusive_to_nextn": true,  "source": "llama-arch.cpp:495,843"},
+    {"role": "NEXTN_ENORM",            "enum": "LLM_TENSOR_NEXTN_ENORM",            "gguf_id": "blk.%d.nextn.enorm",                "op": "GGML_OP_MUL",      "exclusive_to_nextn": true,  "source": "llama-arch.cpp:496,844 / candidat : blk.64.nextn.enorm.weight"},
+    {"role": "NEXTN_HNORM",            "enum": "LLM_TENSOR_NEXTN_HNORM",            "gguf_id": "blk.%d.nextn.hnorm",                "op": null,               "exclusive_to_nextn": true,  "source": "llama-arch.cpp:497 / candidat : blk.64.nextn.hnorm.weight"},
+    {"role": "NEXTN_SHARED_HEAD_NORM", "enum": "LLM_TENSOR_NEXTN_SHARED_HEAD_NORM", "gguf_id": "blk.%d.nextn.shared_head_norm",      "op": null,               "exclusive_to_nextn": true,  "source": "llama-arch.cpp:499 / candidat : blk.64.nextn.shared_head_norm.weight"},
+    {"role": "NEXTN_SHARED_HEAD_HEAD", "enum": "LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD", "gguf_id": "blk.%d.nextn.shared_head_head",      "op": null,               "exclusive_to_nextn": false, "source": "llama-arch.cpp:498 / llama-model.cpp:1479-1480,1544-1545", "warning": "NON EXCLUSIF : le nom meme dit SHARED_HEAD. Ce poids est PARTAGE avec le decodeur standard. Il ne peut donc PAS servir de temoin exclusif de NextN (exigence §3)."}
+  ],
+
+  "hyperparameter": {
+    "role": "n_layer_nextn",
+    "key": "LLM_KV_NEXTN_PREDICT_LAYERS",
+    "gguf_id": "%s.nextn_predict_layers",
+    "source": "llama-arch.cpp:201 / llama-graph.cpp:1407",
+    "observed_candidate": 1,
+    "enters_graph": false
+  },
+
+  "observed_in_candidate_metadata": [
+    "blk.64.nextn.eh_proj.weight", "blk.64.nextn.enorm.weight",
+    "blk.64.nextn.hnorm.weight", "blk.64.nextn.shared_head_norm.weight"
+  ],
+
+  "witness_analysis": {
+    "positive_witness_justified": true,
+    "positive_witness_basis": "Les identifiants ci-dessus sont ceux que Q1 declare pour creer les tensors NextN. Leur consommation par une operation du graphe soumis caracterise le chemin NextN. La justification est NORMATIVE (table du fork), pas une recherche de sous-chaine : un tensor dont l'identifiant est hors de cette table n'est PAS un temoin, meme si son nom d'affichage contient 'nextn'.",
+    "negative_witness_exhaustiveness_justified": false,
+    "negative_witness_basis": "NON ETABLIE. Deux raisons precisees : (a) NEXTN_SHARED_HEAD_HEAD est partage avec le decodeur standard -- il ne peut donc pas servir de temoin exclusif ; (b) rien n'etablit que TOUT chemin NextN pertinent consomme necessairement l'un des temoins exclusifs dans le perimetre enumere. Une regle suffisante pour detecter des cas POSITIFS n'est pas automatiquement suffisante pour exclure tous les cas NEGATIFS (exigence §4). EN CONSEQUENCE : NO_NEXTN_WITNESS_IN_COMPLETE_SCOPE ne peut PAS etre rendu comme conclusion d'absence.",
+    "correct_verdict_when_no_witness": "NOT_CONFIRMED_NEGATIVE_RULE_INCOMPLETE"
+  },
+
+  "native_identity_access": {
+    "accessor_found": "llama_model::get_tensor(const char * name) const",
+    "location": "src/llama-model.h:664, src/llama-model.cpp:2062",
+    "public_api": false,
+    "public_api_evidence": "absent de include/llama.h (grep infructueux). C'est une methode INTERNE de la classe llama_model.",
+    "consequence": "Le harnais NE PEUT PAS acquerir le registre d'identite natif via l'API publique. Deux voies seulement : (i) une instruction autorisant un accesseur exporte dans libllama -- modification, HORS PERIMETRE ; (ii) une compilation du harnais contre les headers INTERNES du fork, sous reserve que le symbole soit effectivement exporte par le .so -- A VERIFIER par nm.",
+    "status": "NOT_ESTABLISHED"
+  },
+
+  "ggml_src_slot_coverage": {
+    "GGML_MAX_SRC": "a confirmer dans ggml.h",
+    "exported_slots_in_enumerator": "src[0..3]",
+    "verified_sufficient": false,
+    "requirement": "Relever GGML_MAX_SRC et les slots reellement utilises par les operateurs pertinents. Si une dependance tombe au-dela de src[3], l'export est TRONQUE et ne doit PAS etre presente comme COMPLETE (exigence §7).",
+    "status": "NOT_VERIFIED"
+  },
+
+  "runtime_status": {
+    "MODEL_FORWARD_CALL_COUNT": 0,
+    "FULL_MODEL_LOAD_COUNT": 0,
+    "RUNTIME_NATIVE_IDENTITY_ACQUISITION": "NOT_EXERCISED",
+    "RUNTIME_NEXTN_ABSENCE_CONFIRMED": "NO",
+    "note": "Aucun de ces faits n'est une preuve d'execution runtime."
+  }
+}

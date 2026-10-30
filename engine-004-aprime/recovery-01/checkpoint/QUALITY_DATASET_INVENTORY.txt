@@ -1,0 +1,54 @@
+QUALITY_DATASET_INVENTORY -- PHASE A, INVENTORY_LOCAL_FIRST
+
+=== DATASETS CLASSIQUES : RECHERCHE PAR NOM ===
+  MMLU            NOT_FOUND
+  MMLU-Pro        NOT_FOUND
+  GSM8K           NOT_FOUND
+  MATH            NOT_FOUND (seules occurrences : polices KaTeX dans une sauvegarde dist)
+  HumanEval       NOT_FOUND
+  MBPP            NOT_FOUND
+  IFEval          NOT_FOUND
+  ARC             NOT_FOUND (occurrences : cache triton, sans rapport)
+  HellaSwag       NOT_FOUND_AS_DATA (3 scripts get-hellaswag.sh = telechargeurs)
+  TruthfulQA      NOT_FOUND
+  BBH             NOT_FOUND
+  GPQA            NOT_FOUND
+  DROP            NOT_FOUND
+  SQuAD           NOT_FOUND
+
+=== CACHES DE DATASETS ===
+  ~/.cache/huggingface  : absent
+  ~/.cache/datasets     : absent
+  /mnt/*/datasets       : absent
+
+=== SOURCE LOCALE REELLE, MESUREE ===
+dataset_id: obrain-repo-docs
+  path        /home/triviere/projects/banc-obrain/docs
+  format      markdown
+  file_count  248
+  byte_size   1349621
+  task_type   general_prose + structured_data
+  deterministic_labels  NON (pas de labels)
+  license_ok  OUI (depot du projet)
+  network_required  NON
+
+dataset_id: obrain-repo-rust
+  path        /home/triviere/projects/banc-obrain/crates
+  format      rust source
+  file_count  902
+  byte_size   20024616
+  task_type   code
+  deterministic_labels  NON
+  license_ok  OUI
+  network_required  NON
+
+  TOTAL texte exploitable mesure : ~21 552 724 octets
+
+=== CONCLUSION PHASE A ===
+  Aucun dataset de benchmark avec labels et scorer automatique n existe
+  localement. Aucun corpus de prose generaliste non plus.
+  SEULE source reelle : le depot obrain lui-meme (docs + code).
+  Cela suffit POTENTIELLEMENT au pilier A (token distribution) mais
+  PAS au pilier B (task behavior), qui exige des labels verifiables.
+
+  NE RIEN TELECHARGER dans cette passe (INVENTORY_LOCAL_FIRST).

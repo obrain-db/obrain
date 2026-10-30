@@ -57,6 +57,31 @@ if [[ ! -f "$WASM_FILE" ]]; then
     exit 1
 fi
 
+# Step 1bis: GARDE HORLOGE (2026-09-17)
+#
+# `std::time::Instant::now()` et `std::time::SystemTime::now()` ne sont PAS
+# implémentés sur `wasm32-unknown-unknown` : ils paniquent (« time not
+# implemented on this platform » → trap `unreachable`). Le trap est PROUVÉ par
+# exécution : un module wasm minimal qui appelle `Instant::now()` trappe, alors
+# qu'une fonction témoin sans horloge rend sa valeur.
+#
+# Le panic est LIÉ dès qu'un crate du graphe en appelle un, même sur un chemin
+# que le navigateur n'emprunte jamais — donc sa présence dans le binaire est la
+# preuve mesurable qu'un chemin d'horloge std a été réintroduit. On refuse un
+# module qui le porte, au lieu de livrer un artefact qui trappe à l'exécution.
+#
+# Remède : `web-time` (le même `std::time` sur natif, l'horloge de l'hôte JS —
+# `performance.now()` — sur wasm32). Voir `crates/obrain-cognitive/Cargo.toml`.
+if strings -a "$WASM_FILE" | grep -q "time not implemented on this platform"; then
+    echo "Error: le module wasm lie le panic d'horloge std."
+    echo "       Cause : un crate du graphe wasm utilise std::time::{Instant,SystemTime}."
+    echo "       Remede : web-time (deja declare dans obrain-cognitive/obrain-reactive)."
+    if strings -a "$WASM_FILE" | grep -q "unsupported/time"; then
+        echo "       Trace : library/std/src/sys/pal/unsupported/time.rs"
+    fi
+    exit 1
+fi
+
 # Step 2: wasm-bindgen
 echo "  wasm-bindgen..."
 rm -rf "$OUT_DIR"

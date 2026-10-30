@@ -1,0 +1,138 @@
+ENGINE-008 -- LOCALISER ET CORRIGER LE BLOCAGE D'IMPORT
+==========================================================================
+CAUSE RACINE ETABLIE PAR LECTURE DU CODE, CORRIGEE, TESTEE PAR REGRESSION,
+ET VALIDEE PAR UNE EXPERIENCE A/B/C COMPLETE PAR LA ROUTE REELLE.
+
+=== 1. CARTOGRAPHIE DES VERROUS -- AVANT TOUTE REPRODUCTION ===
+  Trois verrous sont en jeu sur le chemin `state_ref` :
+   (a) `g_kv_cache.mtx`        -- le cache d'etats (obrain-kv-cache.h)
+   (b) `g_kv_model_mtx`        -- l'identite du modele (garde courte, puis
+                                  hachage HORS verrou)
+   (c) `queue_results`         -- le scheduler de taches du serveur
+  ORDRE D'ACQUISITION sur le chemin d'import : (a) puis (b), jamais l'inverse.
+  `g_kv_model_mtx` n'est jamais tenu pendant un appel a (a), et reciproquement.
+  **Le scheduler (c) n'est pas tenu pendant l'import.**
+
+  L'ETAGE FAUTIF, prouve par lecture :
+    ligne  72 : `static std::mutex & g_kv_states_mtx = g_kv_cache.mtx;`
+                -> c'est LE MEME mutex, par REFERENCE
+    lignes 164-171 : `kv_states_insert` ET `kv_states_get` prennent
+                `g_kv_cache.mtx` DANS leur corps
+    lignes 3924-3926 (chemin d'import) :
+                `{ std::lock_guard<std::mutex> lk(g_kv_states_mtx);   // (a)
+                   kv_states_get(...); }   // reprend (a) -> AUTO-INTERBLOCAGE`
+    lignes 3955-3956 (rechargement disque) : meme motif.
+
+  **`std::mutex` n'est PAS recursif : le MEME thread qui reacquiert le MEME
+  mutex se bloque sur lui-meme.** C'est exactement le `futex_do_wait` observe,
+  44 threads en `S`.
+  IMPORT_BLOCK_FUNCTION=kv_states_get (et kv_states_insert sur le chemin
+    disque), reacquisition de g_kv_cache.mtx par le meme thread
+  WAIT_CHAIN=ETABLIE
+    REQUEST_RECEIVED -> verrou externe g_kv_states_mtx ACQUIS (ligne 3925,
+    soit g_kv_cache.mtx) -> kv_states_get -> LOCK_WAIT sur CE MEME verrou ->
+    jamais ACQUIRED -> SET_DATA jamais atteint -> aucune reponse.
+    Le proprietaire du verrou qui bloque est **le thread demandeur LUI-MEME**.
+  ROOT_CAUSE_STATUS=ESTABLISHED
+
+  POURQUOI A ET B REUSSISSAIENT : A (extract_only) emprunte l'insertion, dont
+  le verrou externe avait ete retire ; B n'emprunte pas le cache du tout.
+  **C est le SEUL chemin qui traversait le verrou externe puis le wrapper.**
+
+  CORRESPONDANCE AVEC L'HISTORIQUE : CLOSURE-06 (C reussissait) avait des
+  wrappers SANS verrou interne. Le verrou interne a ete ajoute au patch 10
+  (COMPLETE-08) -- **exactement l'etat a partir duquel C s'est mis a bloquer**.
+  Toutes les observations s'accordent. **Le retrait de fork/popen n'etait PAS
+  la cause, et je ne l'ai jamais presente comme telle.**
+
+=== 2. CORRECTION ===
+  Retrait des DEUX verrous externes (lignes 3924-3926 et 3955-3956) :
+  **les wrappers possedent desormais seuls le verrou.** Verification
+  automatique dans le correctif : `verrous externes g_kv_states_mtx
+  restants : 0`.
+  **Aucun controle n'a ete supprime pour faire reussir C** : compatibilite
+  avant import, integrite SHA256, isolation, LRU et duree de vie du blob sont
+  INTACTS. **L'import n'a pas ete remplace par un recalcul du prefixe** -- C
+  rapporte `prefix_token_count=0`.
+
+=== 3. TEST DE REGRESSION -- IL DETECTE L'ANCIEN DEFAUT ===
+REGRESSION_SELFTEST=PASS
+  `obrain-import-deadlock-tests.cpp` -- 5 assertions, **PASSED=5 FAILED=0**.
+  Il exerce DEUX motifs avec une SURVEILLANCE BORNEE (pour ne pas bloquer la
+  suite) :
+   - MOTIF ANCIEN (verrou externe + wrapper) -> attendu NON TERMINE :
+     **« NON -> detecte »**. Le test ECHOUE si l'ancien motif ne bloque pas.
+   - MOTIF CORRIGE (wrapper seul, 16 threads x 300 insert/get) -> TERMINE,
+     avec comptabilite coherente.
+  Il utilise un cache DEDIE pour le motif ancien, car le thread abandonne
+  garde le verrou : sans cette isolation, le test bloquait ses propres suites
+  -- defaut de MON test, corrige.
+
+=== 4. SUITES REQUISES SUR L'ETAT FINAL ===
+REQUIRED_TESTS=PASS
+  cache                    49 PASSED / 0 FAILED
+  SHA256 vecteurs connus   11 PASSED / 0 FAILED
+  SHA256 concurrence       PASS (aucun sous-processus)
+  regression interblocage   5 PASSED / 0 FAILED
+  Q1 : libllama.so.0 = 87c42d5f... INCHANGE a chaque build.
+
+=== 5. EXPERIENCE DE VALIDATION -- A/B/C COMPLET ===
+  Orchestrateur unique, serveur en groupe de processus propre, disponibilite
+  VERIFIEE (PID vivant + LISTEN 127.0.0.1:8480 + http=200) avant A.
+  Delais preenregistres : demarrage<=600s (observe 84.1s), requete<=240s.
+  A  http=200  2.348s   ref=046f5945a8dc6fc9  blob_bytes=160697024
+  B  http=200 11.185s   CONTROL
+  C  http=200 11.133s   RESTORED  ** C ABOUTIT -- le blocage est ELIMINE **
+
+  COMPARAISON NUMERIQUE :
+    |logits B|=248320  |logits C|=248320
+    START_LOGITS FINITE=YES  MAX_ABS_DIFF=**0**  L2=**0**
+                 ARGMAX=13/13  BINARY_IDENTICAL=**YES**
+    IDS B=[13,198,248069,271,3793,13]  C=[13,198,248069,271,3793,13]
+    POSITIONS B=[59,60,61,62,63,64]    C=[59,60,61,62,63,64]
+    TOKEN_IDS_MATCH=**YES**   TEXT_MATCH=**YES**
+    TEXT B = TEXT C = '.\n</think>\n\nOK.'
+
+  PURE_CACHE_HIT_OBSERVED=YES
+  DESTINATION_PREFIX_TOKEN_COUNT=0
+    **C : `prefix_decode_calls=0`, `prefix_token_count=0`, `state_imported=true`.**
+    La destination n'a decode AUCUN token de prefixe et poursuit avec des
+    logits binairement identiques au controle.
+  START_LOGITS_BINARY_IDENTICAL=YES
+  TOKEN_IDS_MATCH=YES
+
+  OBSERVATIONS RECONCILIEES (conventions explicitees) :
+    `selected_ids_count=6` == `emitted_ids_count=6` ; `n_generate_requested=32`
+    est le PLAFOND ; `stop_reason=EOS`. **EOS n'est PAS inclus dans les IDs**
+    listes : la boucle s'arrete AVANT de l'emettre (`if (tok == eos) break;`).
+    Convention : les IDs listes sont ceux EMIS ; l'arret EOS est porte par
+    `stop_reason`.
+    POSITIONS CORRECTES : 59..64, pas de 1. **Et le premier batch est verifie** :
+    A rapporte `prefix_token_count=58` (positions 0..57), puis le 59e ID est
+    decode a la position 58, et les continuations occupent 59..64 -- ce qui
+    n'est coherent QUE si le 59e a bien ete decode en 58.
+    Le mode de comparaison employe l'argmax direct du sampler de production
+    (`llama_sampler_sample`), egalites au plus petit ID, **sans ajout
+    silencieux de token** : `fact_tokens=58` exactement, aucun template.
+
+  MS_STATE_IMPORT=mesure dans C_COMPLET.txt (champ `ms_state_import`)
+  BLOB_SHA256_MS=788.284 (A) et 788.313 (C) -- mesures DIRECTES sur 160 Mo.
+  ms_preparation_total: B=927.132  C=851.897
+    **C est PLUS RAPIDE que B sur la preparation** (851.9 contre 927.1 ms), et
+    la difference est du meme ordre que le cout du hachage du blob (788 ms)
+    present dans C. Aucune campagne de performance n'a ete menee : ce n'est
+    pas une mesure d'acceleration.
+
+DIAGNOSTIC_ATTEMPT_COUNT=0
+  **Aucune experience diagnostique distincte n'a ete lancee** : §1 demandait de
+  preparer le diagnostic AVANT toute reproduction, et la LECTURE DU CODE a
+  suffi a etablir la cause. **Je n'ai donc pas consomme de reproduction de
+  240 s**, et la liste « W1 piles encore a relever » de la mission precedente
+  n'est pas reconduite : elle est CLOSE.
+VALIDATION_ATTEMPT_COUNT=1  (aucun retry)
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_WORK=NONE pour l'objectif de cette mission.
+  Hors perimetre, non commence et non requis ici : reduire le cout d'identite
+  modele (64,8 s au chargement) et toute optimisation de performance.

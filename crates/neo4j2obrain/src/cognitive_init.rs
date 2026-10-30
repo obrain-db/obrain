@@ -44,34 +44,47 @@ const PAGERANK_MAX_ITER: usize = 50;
 /// Convergence tolerance (L1 norm of the PageRank vector delta).
 const PAGERANK_TOL: f64 = 1.0e-6;
 
-/// Stage 4 — LDleiden community detection batch.
+/// Stage 4 — LDleiden community detection batch (unit weights).
 ///
-/// Walks the substrate, builds a dense `(u32, u32, f64)` edge list, runs
-/// [`leiden_batch`] with [`LeidenConfig::default`], then persists the
-/// resulting partition back into substrate via
-/// [`Writer::update_community_batch`] (WAL-logged, crash-safe).
-///
-/// ## Dense indexing
-///
-/// The substrate's `NodeId` is a 64-bit slot index that can be sparse
-/// (tombstoned / padding slots). The leiden API needs a contiguous
-/// `0..n` indexing, so we build two maps:
-/// * `dense_of: NodeId -> u32` (substrate slot → dense idx)
-/// * `slot_of:  u32 -> u32`    (dense idx → substrate slot, used to
-///   write back the partition with the correct slot index)
-///
-/// ## Edge weights
-///
-/// Edges are currently fed to the leiden solver with unit weight. The
-/// substrate does carry a `weight_u16` per edge, but exposing it via
-/// `GraphStore` requires either a specialised path (substrate-aware
-/// bypass of the trait) or a `weight` property lookup, both of which
-/// are tracked separately. Unit weights give a well-posed Newman
-/// modularity and keep the batch deterministic.
+/// Délègue à [`run_ldleiden_batch_inner`] avec `ricci_boost = 0.0` : les
+/// arêtes sont pondérées unitairement — comportement historique, inchangé.
 #[cfg(feature = "cognitive-init")]
 pub fn run_ldleiden_batch(
     substrate: &Arc<SubstrateStore>,
     stats: &mut PipelineStats,
+) -> Result<()> {
+    run_ldleiden_batch_inner(substrate, stats, 0.0)
+}
+
+/// Stage 4 variant — LDleiden pondéré par la courbure de Ricci (P3b).
+///
+/// Même pipeline que [`run_ldleiden_batch`] mais chaque arête porte le
+/// poids `w(e) = max(0, 1 + ricci_boost · κ(e))`, où `κ(e)` est la
+/// courbure d'Ollivier-Ricci persistée (`EdgeRecord.ricci_u8`, décodée par
+/// `ricci_f32()`). Les arêtes à κ < 0 (cols/goulots — frontières
+/// naturelles entre régions denses) sont affaiblies ; les arêtes à κ > 0
+/// (cœurs) renforcées — la modularité préfère alors couper aux cols.
+///
+/// - `ricci_boost = 0.0` ⇒ strictement identique à la variante unitaire.
+/// - Nécessite que la colonne ricci soit déjà calculée (Stage 6) — en
+///   re-détection après un premier passage complet, pas en première
+///   détection (l'ordre des stages du pipeline est inchangé).
+#[cfg(feature = "cognitive-init")]
+pub fn run_ldleiden_batch_ricci(
+    substrate: &Arc<SubstrateStore>,
+    stats: &mut PipelineStats,
+    ricci_boost: f64,
+) -> Result<()> {
+    run_ldleiden_batch_inner(substrate, stats, ricci_boost)
+}
+
+/// Shared Stage 4 implementation. `ricci_boost` scales the Ricci-curvature
+/// edge weighting; `0.0` reproduces the historical unit-weight behaviour.
+#[cfg(feature = "cognitive-init")]
+fn run_ldleiden_batch_inner(
+    substrate: &Arc<SubstrateStore>,
+    stats: &mut PipelineStats,
+    ricci_boost: f64,
 ) -> Result<()> {
     let store: &dyn GraphStore = &**substrate;
 
@@ -97,19 +110,34 @@ pub fn run_ldleiden_batch(
         slot_of.push(nid.0 as u32);
     }
 
-    // ---- Edge list (unit-weighted, undirected collapse) ---------------------
+    // ---- Edge list (unit-weighted or Ricci-weighted, undirected collapse) --
     let mut edges: Vec<(u32, u32, f64)> = Vec::new();
     let mut dangling = 0u64;
     for src in &node_ids {
         let Some(&src_dense) = dense_of.get(src) else {
             continue;
         };
-        for (dst, _eid) in store.edges_from(*src, Direction::Outgoing) {
+        for (dst, eid) in store.edges_from(*src, Direction::Outgoing) {
             let Some(&dst_dense) = dense_of.get(&dst) else {
                 dangling += 1;
                 continue;
             };
-            edges.push((src_dense, dst_dense, 1.0));
+            let w = if ricci_boost == 0.0 {
+                1.0
+            } else {
+                // Lecture du κ persisté sur l'arête (inline dans
+                // l'EdgeRecord, zone mmap) — zéro si absent (arête dont le
+                // refresh ricci n'a pas tourné) = poids unitaire.
+                let kappa = substrate
+                    .writer()
+                    .read_edge(eid.0)
+                    .ok()
+                    .flatten()
+                    .map(|rec| f64::from(rec.ricci_f32()))
+                    .unwrap_or(0.0);
+                (1.0 + ricci_boost * kappa).max(0.0)
+            };
+            edges.push((src_dense, dst_dense, w));
         }
     }
     let edge_count = edges.len();
@@ -138,7 +166,7 @@ pub fn run_ldleiden_batch(
     let num_communities = partition.iter().copied().max().map(|m| m + 1).unwrap_or(0);
     stats.communities = num_communities as u64;
     tracing::info!(
-        "Stage 4 (LDleiden): n={}, edges={}, dangling={}, communities={}",
+        "Stage 4 (LDleiden): n={}, edges={}, dangling={}, communities={} (ricci_boost={ricci_boost})",
         n,
         edge_count,
         dangling,
@@ -159,6 +187,20 @@ pub fn run_ldleiden_batch(
     tracing::warn!(
         "Stage 4 (LDleiden) skipped — built without the `cognitive-init` \
          feature; community_id column left empty"
+    );
+    Ok(())
+}
+
+/// Ricci-weighted variant fallback (same split as [`run_ldleiden_batch`]).
+#[cfg(not(feature = "cognitive-init"))]
+pub fn run_ldleiden_batch_ricci(
+    _substrate: &Arc<SubstrateStore>,
+    _stats: &mut PipelineStats,
+    _ricci_boost: f64,
+) -> Result<()> {
+    tracing::warn!(
+        "Stage 4 (LDleiden, ricci-weighted) skipped — built without the \
+         `cognitive-init` feature; community_id column left empty"
     );
     Ok(())
 }
@@ -353,6 +395,80 @@ mod tests {
             stats2.pagerank_nonzero >= 6,
             "expected ≥ 6 non-zero PageRank scores, got {}",
             stats2.pagerank_nonzero
+        );
+    }
+
+    /// P3b — A/B : la variante ricci pondérée est bit-identique à la
+    /// variante unitaire quand `ricci_boost = 0.0`, et réutilise la
+    /// colonne `ricci_u8` quand le boost est actif.
+    #[test]
+    fn ldleiden_ricci_boost_zero_equals_unit() {
+        use obrain_core::graph::traits::GraphStoreMut;
+
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("cog.obrain");
+        let sub = Arc::new(SubstrateStore::create(&path).unwrap());
+        std::mem::forget(td);
+
+        // Deux triangles reliés par un pont unique (même topologie que le
+        // test historique) — partition attendue : 2 communautés.
+        let a = sub.create_node_with_props(&["N"], &[]);
+        let b = sub.create_node_with_props(&["N"], &[]);
+        let c = sub.create_node_with_props(&["N"], &[]);
+        sub.create_edge_with_props(a, b, "E", &[]);
+        sub.create_edge_with_props(b, c, "E", &[]);
+        sub.create_edge_with_props(c, a, "E", &[]);
+        let d = sub.create_node_with_props(&["N"], &[]);
+        let e = sub.create_node_with_props(&["N"], &[]);
+        let f = sub.create_node_with_props(&["N"], &[]);
+        sub.create_edge_with_props(d, e, "E", &[]);
+        sub.create_edge_with_props(e, f, "E", &[]);
+        sub.create_edge_with_props(f, d, "E", &[]);
+        sub.create_edge_with_props(a, d, "BRIDGE", &[]);
+        sub.flush().unwrap();
+
+        let read_communities = |s: &Arc<SubstrateStore>| -> Vec<u32> {
+            let store: &dyn GraphStore = &**s;
+            let mut out = Vec::new();
+            for nid in store.all_node_ids() {
+                let rec = s.writer().read_node(nid.0 as u32).ok().flatten().unwrap();
+                out.push(u32::from(rec.community_id));
+            }
+            out
+        };
+
+        // Variante unitaire (chemin historique).
+        let mut stats_unit = PipelineStats::default();
+        run_ldleiden_batch(&sub, &mut stats_unit).unwrap();
+        let part_unit = read_communities(&sub);
+        assert_eq!(stats_unit.communities, 2, "partition historique = 2 communautés");
+
+        // Variante ricci avec boost = 0 : résultats identiques (A/B).
+        let mut stats_zero = PipelineStats::default();
+        run_ldleiden_batch_ricci(&sub, &mut stats_zero, 0.0).unwrap();
+        let part_zero = read_communities(&sub);
+        assert_eq!(
+            part_zero, part_unit,
+            "ricci_boost=0.0 doit reproduire la variante unitaire bit à bit"
+        );
+
+        // Boost positif après refresh ricci : le pont (arête unique entre
+        // les deux triangles, κ < 0 par construction — deux régions denses
+        // reliées par un goulot) est affaibli → les deux triangles restent
+        // séparés (2 communautés). Le refresh est nécessaire : sans lui la
+        // colonne ricci vaut 0 (poids unitaires partout, boost neutre).
+        let ricci_stats = obrain_substrate::refresh_all_ricci(&sub).unwrap();
+        assert!(
+            ricci_stats.edges_updated >= 7,
+            "refresh ricci doit mettre à jour ≥ 7 arêtes (6 intra + 1 pont), got {}",
+            ricci_stats.edges_updated
+        );
+
+        let mut stats_boost = PipelineStats::default();
+        run_ldleiden_batch_ricci(&sub, &mut stats_boost, 1.0).unwrap();
+        assert_eq!(
+            stats_boost.communities, 2,
+            "boost ricci doit préserver les 2 communautés (pont κ<0 affaibli)"
         );
     }
 }

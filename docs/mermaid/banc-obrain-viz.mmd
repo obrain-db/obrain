@@ -1,0 +1,162 @@
+%% Ce que ce diagramme prouve : ce que CHAQUE overlay de la couche de restitution viz de
+%% banc-obrain ECRIT sur l IR, et sur QUEL champ de signal il s appuie. Perimetre lu : le crate
+%% obrain-viz, 11 fichiers .rs 3043 lignes mesurees, dont son unique point d application
+%% apply_overlay dans crates/obrain-viz/src/overlay.rs 656 lignes ; l alimentation par
+%% crates/obrain-cli/src/viz_extract.rs 1490 lignes ; la consommation par les writers DOT,
+%% Mermaid, GraphML, json-graph v1 et v2 ; les surfaces CLI, MCP et HTTP plus WebSocket.
+%% Source : lecture directe des fichiers Rust cites, chacun portant son nombre de lignes mesure
+%% par wc -l ; couleurs, formules, seuils et noms d overlays sont recopies du code, pas deduits.
+%% MESURE : noms de fonctions et de champs, valeurs hexadecimales, formules de normalisation,
+%% seuils de quantiles, liste des noms d overlay acceptes par chaque parseur. DEDUIT : rien.
+%% NON ETABLI DONC NON DESSINE : l overlay flow. L enum Overlay de overlay.rs ne porte que
+%% 7 variantes — Ricci Energy Roles Tier Fsrs Engrams Pheromone — les deux parseurs overlay du
+%% depot refusent tout autre nom, et aucun appel a obrain.flow n existe dans le code lu. Aucun
+%% noeud n est donc dessine pour flow, ni pour une procedure de ce nom.
+%% Deux champs de l IR ne sont lus par AUCUN overlay : curvature et engram_state. Et aucun
+%% extracteur de ce depot ne pose VizEdge.pheromone hors des tests unitaires de overlay.rs.
+
+flowchart TB
+
+classDef cSrc fill:#1f4fa1,stroke:#0f2857,color:#fff
+classDef cExt fill:#0f7a7a,stroke:#084040,color:#fff
+classDef cIR  fill:#4a4a4a,stroke:#222222,color:#fff
+classDef cOv  fill:#5a3d8a,stroke:#2e1e46,color:#fff
+classDef cWr  fill:#c47a10,stroke:#6b420a,color:#fff
+classDef cSur fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef cLim fill:#a11f1f,stroke:#5c0f0f,color:#fff
+
+subgraph Sources["Sources de signal : lues au niveau substrate, la couche viz ne recalcule aucun signal persiste"]
+  rec_rs["crates/obrain-substrate/src/record.rs<br/>889 lignes<br/>energy_q15 : q1_15_to_f32 de energy<br/>ricci_f32 : ricci_u8 divise par 127.5 moins 1.0<br/>weight_f32<br/>edge_flags RICCI_STALE = 1 decale de 1"]
+  geom_rs["crates/obrain-substrate/src/geometric.rs<br/>2795 lignes<br/>node_curvature ligne 631<br/>moyenne des ricci incidents ponderee par weight<br/>repli non pondere si somme des poids nulle<br/>None si aucun voisin vivant"]
+  scc_engine["moteur GQL<br/>CALL obrain.strongly_connected_components<br/>YIELD node_id, component_id<br/>lu par scc_map dans le CLI"]
+  props_store["proprietes de noeud persistees, lues via db.session<br/>qualified_name, name, file_path<br/>engram_id, fsrs_stability, fsrs_difficulty"]
+end
+
+subgraph Extracteur["viz_extract.rs 1490 lignes : UNE seule implementation, partagee par la CLI, le tool MCP et le serveur HTTP"]
+  ex_opts["ExtractOptions<br/>hops 1 a 8, ou 0 = closure<br/>limit_nodes vers truncated true<br/>PER_QUERY_CAP = 500000 arêtes par direction<br/>signals : coupe la lecture substrate"]
+  ex_resolve["resolve_node_opts<br/>id numerique, qn exact, ou suffixe non ambigu"]
+  ex_node_signal["node_signal ligne 401<br/>lit le record substrate du noeud<br/>energy, curvature, community_id<br/>ignore un noeud tombstoned"]
+  ex_edge_signal["edge_signal ligne 423<br/>rend ricci, weight, stale<br/>ricci_u8 egal a 0 = sentinelle non calculee vers 0.0<br/>stale = flags et RICCI_STALE"]
+  ex_build_node["build_node ligne 461<br/>pose qn, label, file_path<br/>engram_id, fsrs_stability, fsrs_difficulty<br/>scc_id, kind, energy, curvature, community_id"]
+  ex_scc_locales["scc_locales ligne 287<br/>SCC calculees sur le sous-graphe extrait<br/>chemin du sous-graphe et de la CLI Subgraph"]
+  ex_scc_map["scc_map ligne 348<br/>SCC globales du moteur<br/>garde SCC_MAX_STORE_NODES = 300000<br/>sinon scc_id reste vide et roles se degrade"]
+  ex_extract["extract_subgraph_centers ligne 526<br/>BFS borne, deux directions, union des centres"]
+  ex_export["export_all ligne 835<br/>store entier, noeuds et arêtes vivants"]
+end
+
+subgraph IR["IR obrain-viz : ir.rs 496 lignes, agnostique au store, canonicalisee avant tout writer"]
+  ir_node["VizNode, champs signal<br/>energy, curvature, scc_id, community_id<br/>engram_state, engram_id<br/>fsrs_stability, fsrs_difficulty, kind<br/>plus color_hint et size_hint poses par overlay<br/>curvature et engram_state ne sont lus par aucun overlay"]
+  ir_edge["VizEdge, champs signal<br/>weight, ricci, stale, pheromone<br/>plus color_hint et size_hint poses par overlay"]
+  ir_subgraph["Subgraph nodes edges truncated<br/>validate rejette id duplique et arête pendante<br/>canonical trie par id puis src dst type"]
+end
+
+subgraph Overlays["overlay.rs 656 lignes : Overlay a 7 variantes, une seule par appel, l entree n est jamais mutee"]
+  ov_apply["apply_overlay ligne 101<br/>clone le Subgraph puis ecrit color_hint et size_hint<br/>rend OverlayReport : overlay, nodes_styled,<br/>edges_styled, stale_edges, legend"]
+  ov_ricci["Overlay Ricci — aretes<br/>arête stale vers #9e9e9e et stale_edges plus 1<br/>sinon ricci_color kappa : negatif vers #d62728, positif vers #1f77b4,<br/>gris neutre #e8e8e8 en 0<br/>size_hint = 1 + 3 x valeur absolue de kappa, soit 4.0 a plus ou moins 1<br/>aucun style si ricci est None"]
+  ov_energy["Overlay Energy — noeuds<br/>energy bornee 0 a 1 vers color_ramp<br/>#3b4cc0 froid, #f5d63d median, #e03b2f chaud<br/>size_hint = 0.75 + 1.5 x energy"]
+  ov_energy_fb["✅ seconde branche du MEME overlay, active<br/>quand TOUTES les energy sont inferieures a EPSILON<br/>et que le degre max depasse 1<br/>d = ln de 1 + degre divise par ln de 1 + degre max<br/>meme rampe, taille 0.75 + 1.5 x d"]
+  ov_roles["Overlay Roles — noeuds<br/>scc_id vers pastel_for_id<br/>teinte = FNV-1a de scc puis modulo 360<br/>saturation 0.45, valeur 0.95<br/>aucun size_hint, aucun style si scc_id est None"]
+  ov_tier["Overlay Tier — noeuds<br/>masse = 0.7 x energy + 0.3 x degre normalise<br/>quantiles q90 et q50<br/>chaud #ff5c4d taille 2.1, tiede #f5d63d taille 1.3,<br/>froid #3b4cc0 taille 0.8"]
+  ov_fsrs["Overlay Fsrs — noeuds, VOLATIL<br/>difficulte bornee 1 a 10 vers color_ramp<br/>taille = 0.8 + stabilite bornee 0 a 20 sur 20 puis x 1.4<br/>exige les deux champs a la fois"]
+  ov_engrams["Overlay Engrams — noeuds, VOLATIL<br/>engram_id vers pastel FNV-1a de engram:id, taille 1.15"]
+  ov_engrams_dead["🟠 seconde branche du meme overlay<br/>engram_state seulement poserait size_hint 1.15<br/>aucun extracteur de ce depot ne pose engram_state"]
+  ov_pheromone["🔴 Overlay Pheromone — aretes, VOLATIL<br/>intensite relative au max du sous-graphe<br/>gris #e8e8e8 vers orange #e6550d, taille 1 + 3 x rel<br/>REFUSE DE STYLER : edges_styled reste 0 car aucun extracteur<br/>ne pose VizEdge.pheromone hors tests unitaires de overlay.rs"]
+end
+
+subgraph Writers["Writers obrain-viz : ce que chaque format fait des hints poses par l overlay"]
+  w_dot["dot.rs 227 lignes, to_dot<br/>color_hint de noeud vers style filled et fillcolor<br/>color_hint d arête vers color<br/>size_hint vers penwidth formate a 2 decimales"]
+  w_mermaid["mermaid.rs 182 lignes, to_mermaid<br/>flowchart LR, ids hors A-Za-z0-9_ hashes en FNV-1a<br/>color_hint de noeud vers style id fill<br/>arete vers linkStyle index stroke et stroke-width arrondi au demi"]
+  w_graphml["🔴 graphml.rs 153 lignes, to_graphml<br/>cles declarees : qn, label, file, type, weight, ricci<br/>color_hint et size_hint ne sont JAMAIS ecrits"]
+  w_json1["json_graph.rs 238 lignes<br/>schema obrain/json-graph@1, defaut du serveur<br/>enveloppe schema stats nodes edges<br/>generated_at absent par defaut"]
+  w_json2["json_graph_v2.rs 450 lignes<br/>schema obrain/json-graph@2<br/>arêtes en colonnes plus table de chaines<br/>colonnes color_hint, size_hint, pheromone<br/>servi seulement si format vaut json-graph-2"]
+end
+
+subgraph Surfaces["Surfaces : trois entrees, une seule implementation d extraction et d overlay"]
+  s_cli["commande obrain viz, commands/viz.rs 643 lignes<br/>sous-commandes Subgraph, Export, Compare<br/>--overlay et --as json dot mermaid graphml<br/>emit ligne 562 : le rapport d overlay part sur stderr"]
+  s_mcp["tools MCP viz_subgraph, viz_export, node_curvature<br/>mcp_server.rs 8001 lignes<br/>parse_overlay_arg ligne 4458 accepte 7 noms :<br/>ricci energy roles fsrs engrams pheromone tier<br/>la reponse porte overlay_report et generated_at si volatil"]
+  s_http["viz_serve.rs 9637 lignes<br/>GET api/viz/subgraph ligne 3135 et api/viz/subgraph/stream ligne 3134<br/>prepare_subgraph ligne 3757 : memes 7 noms d overlay<br/>apply_overlay garde seulement le premier retour : le rapport est JETE<br/>cle de cache : overlay, edge_types, format, inbound, outbound, mtime du store<br/>SUBGRAPH_TTL 30 s, PLAFOND_TRANSPORT 500000"]
+  s_ws["viz_ws.rs 299 lignes<br/>handshake RFC6455 et frames texte sans masque, std seulement<br/>WS_CHUNK = 512 noeuds ou arêtes par frame"]
+end
+
+subgraph Reste["Reste du crate viz, hors overlays mais lu dans lib.rs"]
+  v_diff["diff.rs 299 lignes<br/>diff_subgraphs, timeline_subgraphs, diff_json_string<br/>base du sous-commande Compare"]
+  v_plan["plan.rs 134 lignes<br/>tree_subgraph_from_explain ligne 16<br/>parse le texte EXPLAIN indente, 2 espaces par niveau<br/>ids op_001 et arêtes parent vers enfant de type PLAN"]
+end
+
+ex_build_node -->|appelle| ex_node_signal
+ex_node_signal -->|lit| rec_rs
+ex_node_signal -->|lit| geom_rs
+ex_edge_signal -->|lit| rec_rs
+ex_scc_map -->|appelle| scc_engine
+ex_build_node -->|lit| props_store
+ex_extract -->|appelle| ex_resolve
+ex_extract -->|appelle| ex_scc_locales
+ex_extract -->|appelle| ex_build_node
+ex_extract -->|appelle| ex_edge_signal
+ex_export -->|appelle| ex_scc_map
+ex_export -->|appelle| ex_build_node
+ex_export -->|appelle| ex_edge_signal
+ex_opts -.->|optionnel : signals| ex_node_signal
+ex_opts -.->|optionnel : signals| ex_edge_signal
+
+ex_build_node -->|ecrit| ir_node
+ex_scc_locales -->|ecrit scc_id| ir_node
+ex_extract -->|ecrit| ir_edge
+ex_extract -->|ecrit| ir_subgraph
+ex_export -->|ecrit| ir_subgraph
+
+ov_apply -->|branche| ov_ricci
+ov_apply -->|branche| ov_energy
+ov_apply -->|branche| ov_roles
+ov_apply -->|branche| ov_tier
+ov_apply -->|branche| ov_fsrs
+ov_apply -->|branche| ov_engrams
+ov_apply -->|branche| ov_pheromone
+ov_energy -.->|optionnel : energy vide| ov_energy_fb
+ov_engrams -.->|optionnel : engram_state| ov_engrams_dead
+
+ov_ricci -->|lit| ir_edge
+ov_energy -->|lit| ir_node
+ov_energy_fb -->|lit| ir_edge
+ov_roles -->|lit| ir_node
+ov_tier -->|lit| ir_node
+ov_tier -->|lit degre| ir_edge
+ov_fsrs -->|lit| ir_node
+ov_engrams -->|lit| ir_node
+ov_pheromone -->|lit| ir_edge
+ov_apply -->|ecrit color_hint et size_hint| ir_node
+ov_apply -->|ecrit color_hint et size_hint| ir_edge
+
+s_cli -->|appelle| ex_extract
+s_cli -->|appelle| ex_export
+s_cli -->|appelle| ov_apply
+s_cli -->|appelle| v_diff
+s_mcp -->|appelle| ex_extract
+s_mcp -->|appelle| ex_export
+s_mcp -->|appelle| ov_apply
+s_http -->|appelle| ex_extract
+s_http -->|appelle| ov_apply
+s_http -->|sert| w_json1
+s_http -->|sert| w_json2
+s_http -->|streame| s_ws
+s_mcp -->|rend| w_json1
+s_mcp -->|rend| w_dot
+s_mcp -->|rend| w_mermaid
+s_cli -->|rend| w_dot
+s_cli -->|rend| w_mermaid
+s_cli -->|rend| w_graphml
+
+ir_subgraph -->|lu par| w_dot
+ir_subgraph -->|lu par| w_mermaid
+ir_subgraph -->|lu par| w_graphml
+ir_subgraph -->|lu par| w_json1
+ir_subgraph -->|lu par| w_json2
+ir_subgraph -->|lu par| v_plan
+
+class rec_rs,geom_rs,scc_engine,props_store cSrc
+class ex_opts,ex_resolve,ex_node_signal,ex_edge_signal,ex_build_node,ex_scc_locales,ex_scc_map,ex_extract,ex_export cExt
+class ir_node,ir_edge,ir_subgraph,v_diff,v_plan cIR
+class ov_apply,ov_ricci,ov_energy,ov_energy_fb,ov_roles,ov_tier,ov_fsrs,ov_engrams,ov_engrams_dead cOv
+class ov_pheromone,w_graphml cLim
+class w_dot,w_mermaid,w_json1,w_json2 cWr
+class s_cli,s_mcp,s_http,s_ws cSur

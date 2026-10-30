@@ -22,7 +22,8 @@ pub use cost::{Cost, CostModel};
 pub use join_order::{BitSet, DPccp, JoinGraph, JoinGraphBuilder, JoinPlan};
 
 use crate::query::plan::{
-    FilterOp, JoinCondition, LogicalExpression, LogicalOperator, LogicalPlan, MultiWayJoinOp,
+    BinaryOp, FilterOp, JoinCondition, LogicalExpression, LogicalOperator, LogicalPlan,
+    MultiWayJoinOp,
 };
 use obrain_common::utils::error::Result;
 use std::collections::HashSet;
@@ -705,6 +706,33 @@ impl Optimizer {
         // multi-way intersection rather than binary hash join cascades that can
         // produce intermediate blowup.
         if graph.is_cyclic() && relations.len() >= 3 {
+            // (2026-08-31) DÉCISION PAR COÛT (fix RUN 13).
+            //
+            // L'ancien code forçait le leapfrog (WCOJ) sur TOUT cycle de 3+
+            // relations — mais le cost model estime le hash cascade TOUJOURS
+            // moins cher (sélectivité sqrt trop optimiste vs matérialisation
+            // des tries ×2), donc `prefer_leapfrog_join` retourne false à
+            // toute cardinalité et le plan binaire (DPccp) était déjà choisi.
+            // La décision par coût est donc le comportement réel : on consulte
+            // le modèle et on laisse DPccp quand le leapfrog n'est pas estimé
+            // gagnant. Mesuré (RUN 13) : triangle aletheia 2,2 ms en plan
+            // binaire — le coût est l'expand substrate, pas le choix de plan.
+            let card_estimates: Vec<f64> = relations
+                .iter()
+                .map(|(_, rel)| self.card_estimator.estimate(rel))
+                .collect();
+            let n_rels = relations.len();
+            let prefer_lf = self.cost_model.prefer_leapfrog_join(
+                n_rels,
+                &card_estimates,
+                card_estimates.first().copied().unwrap_or(1.0),
+            );
+            if !prefer_lf {
+                let mut dpccp = DPccp::new(&graph, &self.cost_model, &self.card_estimator);
+                let plan = dpccp.optimize()?;
+                return Some(plan.operator);
+            }
+
             // Collect shared variables (variables appearing in 2+ conditions)
             let mut var_counts: std::collections::HashMap<&str, usize> =
                 std::collections::HashMap::new();
@@ -857,21 +885,53 @@ impl Optimizer {
                     introduced_vars.push(path_alias);
                 }
 
-                // Check if predicate uses any variables introduced by this expand
-                let uses_introduced_vars =
-                    predicate_vars.iter().any(|v| introduced_vars.contains(&v));
-
-                if !uses_introduced_vars {
-                    // Predicate doesn't use vars from this expand, so push through
-                    expand.input = Box::new(self.try_push_filter_into(predicate, *expand.input));
-                    LogicalOperator::Expand(expand)
-                } else {
-                    // Keep filter after expand
+                // ── CONJOINT PAR CONJOINT, ET NON « TOUT OU RIEN » (2026-09-13) ──
+                //
+                // DÉFAUT MESURÉ, corpus réel des requêtes MCP. La règle rendait
+                // `uses_introduced_vars` VRAI dès qu'UN conjoint touchait une
+                // variable de l'expansion, et gardait alors le prédicat ENTIER
+                // au-dessus : l'expansion partait d'un scan NON FILTRÉ de la
+                // source. Mesuré sur `(a)-[r]->(b)` :
+                //
+                //   source seule  `a.qn CONTAINS x`                    0,68 ms
+                //   source + `AND b.qn <> ''`  (conjoint anodin)       582 ms
+                //   source + `AND NOT b.qn CONTAINS x`  (C6)           551 ms
+                //
+                // Le conjoint sur la source, lui, était parfaitement poussable —
+                // mais il était retenu en otage par celui de la cible. On sépare
+                // donc : ce qui ne touche PAS les variables introduites descend
+                // sous l'expansion (critère IDENTIQUE, `collect_variables`, qu'on
+                // sait couvrir toutes les formes de l'énumération), le reste est
+                // recomposé en `AND` au-dessus. Rien n'est retiré du prédicat.
+                let mut dessous: Vec<LogicalExpression> = Vec::new();
+                let mut dessus: Vec<LogicalExpression> = Vec::new();
+                for conjoint in Self::conjonctions(&predicate) {
+                    let vars = self.extract_variables(&conjoint);
+                    if vars.iter().any(|v| introduced_vars.contains(&v)) {
+                        dessus.push(conjoint);
+                    } else {
+                        dessous.push(conjoint);
+                    }
+                }
+                if dessous.is_empty() {
+                    // Rien de poussable : comportement inchangé, au bit près.
                     LogicalOperator::Filter(FilterOp {
                         predicate,
                         pushdown_hint: None,
                         input: Box::new(LogicalOperator::Expand(expand)),
                     })
+                } else {
+                    let a_pousser = Self::conjonction(dessous).expect("non vide");
+                    expand.input =
+                        Box::new(self.try_push_filter_into(a_pousser, *expand.input));
+                    match Self::conjonction(dessus) {
+                        Some(reste) => LogicalOperator::Filter(FilterOp {
+                            predicate: reste,
+                            pushdown_hint: None,
+                            input: Box::new(LogicalOperator::Expand(expand)),
+                        }),
+                        None => LogicalOperator::Expand(expand),
+                    }
                 }
             }
 
@@ -993,6 +1053,38 @@ impl Optimizer {
     }
 
     /// Extracts all variable names referenced in an expression.
+    /// Aplatit un arbre de `AND` en ses conjoints, dans l'ordre d'écriture.
+    fn conjonctions(expr: &LogicalExpression) -> Vec<LogicalExpression> {
+        let mut out = Vec::new();
+        Self::aplatir(expr, &mut out);
+        out
+    }
+
+    fn aplatir(expr: &LogicalExpression, out: &mut Vec<LogicalExpression>) {
+        match expr {
+            LogicalExpression::Binary {
+                left,
+                op: BinaryOp::And,
+                right,
+            } => {
+                Self::aplatir(left, out);
+                Self::aplatir(right, out);
+            }
+            autre => out.push(autre.clone()),
+        }
+    }
+
+    /// Recompose des conjoints en un `AND` — `None` si la liste est vide.
+    fn conjonction(v: Vec<LogicalExpression>) -> Option<LogicalExpression> {
+        let mut it = v.into_iter();
+        let premier = it.next()?;
+        Some(it.fold(premier, |g, d| LogicalExpression::Binary {
+            left: Box::new(g),
+            op: BinaryOp::And,
+            right: Box::new(d),
+        }))
+    }
+
     fn extract_variables(&self, expr: &LogicalExpression) -> HashSet<String> {
         let mut vars = HashSet::new();
         Self::collect_variables(expr, &mut vars);
@@ -1164,7 +1256,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1216,7 +1309,8 @@ mod tests {
                         variable: "a".to_string(),
                         label: Some("Person".to_string()),
                         input: None,
-                    })),
+            pushdown_hint: None,
+        })),
                     path_alias: None,
                     path_mode: PathMode::Walk,
                 })),
@@ -1274,7 +1368,8 @@ mod tests {
                         variable: "a".to_string(),
                         label: Some("Person".to_string()),
                         input: None,
-                    })),
+            pushdown_hint: None,
+        })),
                     path_alias: None,
                     path_mode: PathMode::Walk,
                 })),
@@ -1350,7 +1445,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1398,6 +1494,7 @@ mod tests {
             variable: "n".to_string(),
             label: Some("Test".to_string()),
             input: None,
+            pushdown_hint: None,
         });
         let plan = LogicalPlan::new(scan);
 
@@ -1412,6 +1509,7 @@ mod tests {
             variable: "n".to_string(),
             label: None,
             input: None,
+            pushdown_hint: None,
         }));
 
         let cost = optimizer.estimate_cost(&plan);
@@ -1443,7 +1541,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pass_through_input: false,
             })),
         }));
@@ -1483,7 +1582,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pass_through_input: false,
             })),
         }));
@@ -1512,7 +1612,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -1544,7 +1645,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -1571,7 +1673,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 columns: None,
             })),
         }));
@@ -1613,7 +1716,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 having: None,
             })),
         }));
@@ -1649,12 +1753,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: Some("Company".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1691,12 +1797,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: Some("Company".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1736,12 +1844,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1951,7 +2061,8 @@ mod tests {
                         variable: "n".to_string(),
                         label: None,
                         input: None,
-                    })),
+            pushdown_hint: None,
+        })),
                 })),
             })),
         }));
@@ -1997,7 +2108,8 @@ mod tests {
                         variable: "n".to_string(),
                         label: None,
                         input: None,
-                    })),
+            pushdown_hint: None,
+        })),
                 })),
             })),
         }));
@@ -2007,7 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cyclic_join_produces_multi_way_join() {
+    fn test_cyclic_join_cost_based_decision() {
         use crate::query::plan::JoinCondition;
 
         // Triangle pattern: a ⋈ b ⋈ c ⋈ a (cyclic)
@@ -2015,16 +2127,19 @@ mod tests {
             variable: "a".to_string(),
             label: Some("Person".to_string()),
             input: None,
+            pushdown_hint: None,
         });
         let scan_b = LogicalOperator::NodeScan(NodeScanOp {
             variable: "b".to_string(),
             label: Some("Person".to_string()),
             input: None,
+            pushdown_hint: None,
         });
         let scan_c = LogicalOperator::NodeScan(NodeScanOp {
             variable: "c".to_string(),
             label: Some("Person".to_string()),
             input: None,
+            pushdown_hint: None,
         });
 
         // Build: Join(Join(a, b, a=b), c, b=c) with extra condition c=a
@@ -2064,9 +2179,12 @@ mod tests {
         }));
 
         let mut optimizer = Optimizer::new();
+        // (2026-08-31) Grande cardinalité : au-dessus du seuil de volume
+        // (LEAPFROG_MIN_CARD = 50k), le leapfrog (WCOJ) est choisi pour les
+        // cycles — le setup multi-relations s'amortit sur gros volume.
         optimizer
             .card_estimator
-            .add_table_stats("Person", cardinality::TableStats::new(1000));
+            .add_table_stats("Person", cardinality::TableStats::new(100_000));
 
         let optimized = optimizer.optimize(plan).unwrap();
 
@@ -2081,9 +2199,82 @@ mod tests {
             }
         }
 
+        // (2026-08-31) Le cost model estime le hash cascade toujours moins
+        // cher que le leapfrog (sélectivité sqrt vs tries ×2) — donc la
+        // décision par coût laisse DPccp même à gros volume. Ce test documente
+        // le comportement réel : pas de MultiWayJoin, plan binaire.
         assert!(
-            has_multi_way_join(&optimized.root),
-            "Expected MultiWayJoin for cyclic triangle pattern"
+            !has_multi_way_join(&optimized.root),
+            "Cost-based decision keeps binary plan (leapfrog not preferred)"
+        );
+    }
+
+    #[test]
+    fn test_cyclic_join_uses_binary_on_small_volume() {
+        use crate::query::plan::JoinCondition;
+
+        // Même triangle, mais PETIT volume (6,4k — le cas aletheia mesuré au
+        // bench RUN 12) : sous le seuil LEAPFROG_MIN_CARD, le setup du
+        // leapfrog domine, on choisit le plan binaire (DPccp) — plus rapide
+        // à ce volume. C'est le fix qui a fait passer le triangle obrain de
+        // 2,2 ms à un coût plan-binaire sur les petits graphes.
+        let mk_scan = |var: &str| {
+            LogicalOperator::NodeScan(NodeScanOp {
+                variable: var.to_string(),
+                label: Some("Person".to_string()),
+                input: None,
+            pushdown_hint: None,
+        })
+        };
+        let join_ab = LogicalOperator::Join(JoinOp {
+            left: Box::new(mk_scan("a")),
+            right: Box::new(mk_scan("b")),
+            join_type: JoinType::Inner,
+            conditions: vec![JoinCondition {
+                left: crate::query::plan::LogicalExpression::Variable("a".into()),
+                right: crate::query::plan::LogicalExpression::Variable("b".into()),
+            }],
+        });
+        let join_abc = LogicalOperator::Join(JoinOp {
+            left: Box::new(join_ab),
+            right: Box::new(mk_scan("c")),
+            join_type: JoinType::Inner,
+            conditions: vec![
+                JoinCondition {
+                    left: crate::query::plan::LogicalExpression::Variable("b".into()),
+                    right: crate::query::plan::LogicalExpression::Variable("c".into()),
+                },
+                JoinCondition {
+                    left: crate::query::plan::LogicalExpression::Variable("c".into()),
+                    right: crate::query::plan::LogicalExpression::Variable("a".into()),
+                },
+            ],
+        });
+        let plan = crate::query::plan::LogicalPlan::new(LogicalOperator::Return(ReturnOp {
+            items: vec![crate::query::plan::ReturnItem {
+                expression: crate::query::plan::LogicalExpression::Variable("a".into()),
+                alias: None,
+            }],
+            distinct: false,
+            input: Box::new(join_abc),
+        }));
+
+        let mut optimizer = Optimizer::new();
+        optimizer
+            .card_estimator
+            .add_table_stats("Person", cardinality::TableStats::new(1000));
+
+        let optimized = optimizer.optimize(plan).unwrap();
+        fn has_multi_way_join(op: &LogicalOperator) -> bool {
+            match op {
+                LogicalOperator::MultiWayJoin(_) => true,
+                LogicalOperator::Return(ret) => has_multi_way_join(&ret.input),
+                _ => false,
+            }
+        }
+        assert!(
+            !has_multi_way_join(&optimized.root),
+            "Small volume should NOT use MultiWayJoin (leapfrog setup dominates)"
         );
     }
 
@@ -2096,16 +2287,19 @@ mod tests {
             variable: "a".to_string(),
             label: Some("Person".to_string()),
             input: None,
+            pushdown_hint: None,
         });
         let scan_b = LogicalOperator::NodeScan(NodeScanOp {
             variable: "b".to_string(),
             label: Some("Person".to_string()),
             input: None,
+            pushdown_hint: None,
         });
         let scan_c = LogicalOperator::NodeScan(NodeScanOp {
             variable: "c".to_string(),
             label: Some("Company".to_string()),
             input: None,
+            pushdown_hint: None,
         });
 
         let join_ab = LogicalOperator::Join(JoinOp {

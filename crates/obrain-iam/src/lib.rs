@@ -26,7 +26,10 @@
 
 #![deny(unsafe_code)]
 
+pub mod admin;
+pub mod audit_chaine;
 pub mod error;
+pub mod garde;
 pub mod gdpr;
 pub mod model;
 pub mod orn;
@@ -36,6 +39,7 @@ pub mod session_ext;
 pub mod store;
 
 pub use error::{IamError, IamResult};
+pub use garde::Garde;
 pub use model::{
     AuditEvent, Credential, CredentialType, EntityStatus, Policy, PolicyDecision, PolicyEffect,
     Role, User,

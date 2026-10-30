@@ -1,0 +1,131 @@
+ENGINE-008 -- STATUT ENGINE008-FINAL-03
+==========================================================================
+I1 (PORTEE + APPLICATION DE LA GATE), I2 (INVENTAIRE), LES TYPES NATIFS ET LA
+SEPARATION BASELINE/CANDIDAT SONT FAITS ET TESTES. 253 controles verts.
+5 controles du lanceur-mock restent rouges -> AUCUNE AUTORISATION REELLE N'A ETE
+CREEE, AUCUNE SEQUENCE N'A ETE LANCEE (regle imperative respectee).
+
+=== 1. PORTEE DE LA GATE : P4' EST BASELINE UNIQUEMENT ===
+BASELINE_P4_SCOPE_SELFTEST=PASS
+CANDIDATE_P4_NOT_APPLICABLE_SELFTEST=PASS
+BLOCKED_P4_PREVENTS_FORWARD_SELFTEST=PASS
+  L'applicabilite ne vient PAS d'un tag libre : `PipelineRequest.p4_applies` est
+  pose par le point d'entree a partir du ROLE VALIDE (`--model-tag` contraint a
+  {baseline, candidate} par `validate_precompute`, et reporte dans
+  `validated_role`). `p4_applies = (role == "baseline")`.
+  La gate elle-meme, dans l'ordre reel (autorisation -> destination -> chargement
+  -> registre + P4' -> GATE -> contexte -> prefill) :
+      if (r.p4_adopted && r.p4_applies && r.p4_checks_run && !pc.all_pass) {
+          r.limits.push_back("P4PRIME_GATE_BLOCKED_BEFORE_FORWARD");
+          if (d.release) d.release(ctx, model);     // LIBERATION des ressources
+          return r;                                  // AUCUN forward
+      }
+  Elle EMPECHE le calcul, elle ne modifie pas seulement le verdict.
+  TESTS DEDIES (`t-gate`, 12/12), sur l'orchestration REELLE :
+    baseline six PASS            -> contexte + prefill atteints     PASS
+    baseline UNKNOWN             -> ctx=0, prefill=0, decode=0      PASS
+    baseline FAIL (TQ2 pertinent)-> prefill=0                       PASS
+    limite de blocage PUBLIEE    -> P4PRIME_GATE_BLOCKED_BEFORE_FORWARD  PASS
+    candidat, P4' UNKNOWN        -> NON bloque, prefill atteint     PASS
+    candidat -> p4_applies=false et validated_role="candidate"      PASS
+    sans evaluation P4'          -> aucun blocage par defaut        PASS
+
+=== 2. TYPES NATIFS TRANSPORTES -- NATIVE_TYPES_CONNECTED_TO_P4=YES ===
+  `NativeTensor { name, type, ptr }` -- le champ s'appelle `type`, pas `ggml_type`.
+  `RegistryEntry.tensor` est un `void*` : je le convertis en `const ggml_tensor*`
+  et je lis `->type` AU MOMENT DE L'ACQUISITION NATIVE.
+      if (e.tensor != nullptr) t.type = (int) ((const ggml_tensor *) e.tensor)->type;
+  Aucun type deduit du nom : `in.type_inferred_from_name = false` est passe
+  explicitement. Les mocks peuvent fournir ces descripteurs sans modele reel.
+  C1..C6 sont alimentes par ces donnees REELLES (registre acquis, types lus,
+  denombrement des TQ2 pertinents, sites WHT audites statiquement,
+  SHA de libllama lu dans /proc/self/maps). Ce qui n'est pas verifiable reste
+  UNKNOWN -- jamais une constante PASS.
+
+=== 3. INVENTAIRE -- REAL_INVENTORY_CONFIGURATION_CONNECTED=YES ===
+EMPTY_INVENTORY_REJECTED_SELFTEST=PASS
+  Chemin : OBRAIN_F1A_INVENTORY -> `inventory_path_from_env()` ->
+  `read_inventory_file()` -> `read_inventory_source()` (format producteur) ->
+  `validate_inventory()` -> rapport.
+  Autorite : sha256 e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+  LE VRAI-A-VIDE EST SUPPRIME : un inventaire configure mais ABSENT ou VIDE, ou
+  portant des doublons, ne peut JAMAIS rendre `globally_complete=true`.
+      if (path.empty() || names.empty() || n_duplicates>0 || disabled_by_duplicates)
+          v.inventory_globally_complete = false;   // refus explicite
+  Differenciation preservee : inventaire configure non vide (168 noms) vs
+  absence LEGITIME de cibles TQ2 eligibles sur la baseline Q4_K_M -- deux etats
+  distincts, jamais le meme verdict.
+  La conversion set->vector est explicite et conserve les controles de doublons
+  et d'ambiguite (`n_duplicates`, `capture_disabled_by_duplicates`).
+
+=== 4. TESTS SUR L'ETAT FINAL (rebuild propre) ===
+  adopt 15/15   t4 14/14   inv 33/33   p4 26/26   wht 54/54
+  e2e 24/24     connect 75/75        gate 12/12
+  TOTAL 253 controles, 0 echec.
+  lrep 12/17 -- 5 echecs : la sequence mock de QUATRE ENFANTS par le lanceur.
+  Les enfants ont REELLEMENT tourne (rapport enfant : prefill_windows=1,
+  decode_windows=8, 8 tokens, stop_reason=MAX_NEW_TOKENS), mais les assertions
+  du lanceur ne les voient pas. CAUSE NON ISOLEE : l'artefact /tmp/lr examine
+  provient d'un binaire ANTERIEUR (`validated_role` vide), donc il ne documente
+  pas l'etat courant. Il faut instrumenter le test pour lire le rapport courant.
+
+=== 5. CE QUI N'A PAS ETE FAIT, ET POURQUOI JE N'AI PAS LANCE ===
+  PRECOMPUTE_REQUIRED_TESTS=FAIL (5 controles du lanceur-mock).
+  Regle imperative : « Ne creer aucune autorisation reelle tant qu'un test requis
+  echoue. » Donc :
+    - AUCUNE autorisation reelle acceptee n'a ete creee ;
+    - AUCUNE sequence n'a ete lancee ;
+    - AUCUN nouveau gel n'a ete emis : rien a geler tant que les preconditions
+      ne sont pas PASS. Le gel v3 reste l'autorite en vigueur et NE QUALIFIE PAS
+      le code modifie de FINAL-02/FINAL-03.
+
+  I3 (F1A_CONFIGURATION_CONNECTED=NO) : les activateurs f1a et leur moment
+  d'initialisation ne sont PAS raccordes. La capture reste a 0 fichier. Une
+  capture ABSENTE reste un echec et n'est PAS assimilee a une absence de WHT.
+  I4 (GRAPH_INJECTION_MECHANISM=UNRESOLVED) : la capture f1a n'est PAS une
+  injection -- etabli. Le mecanisme natif d'injection dans engine/Obrain n'a PAS
+  ete identifie : ni interface, ni entree reproductible, ni point d'application,
+  ni preuve d'acceptation. Aucune substitution inventee : ni dump numerique, ni
+  contexte textuel.
+
+=== IDENTITES ===
+  PRODUCTION_HARNESS_SHA256=aeabfec97d472f6e5f2efdf82f8c3ddde053bb0d9f3f66b22dd9528aed1ea3cb
+  PRODUCTION_LAUNCHER_SHA256=de6491b594e580f73bab92c5931de2f6183e1b4744f3aed8634c3e8c8346b503
+  HARNESS_SOURCE_MANIFEST_SHA256=97cb00ac896707c94c80a0b6d3ba8d9d577a4abf7c1b9a586dac1577878ca232
+  t-gate=2afae31fdc746c5ce73abff368ecbec52d965c4013deb0f0e871d9783f6eba47
+  Le lanceur est INCHANGE depuis FINAL-02 : seul le harnais a change.
+
+PREFLIGHT_SEQUENCE_RESULT=NOT_RUN
+GENERATED_IDS_PER_RUN=NOT_RUN (aucune sequence dans cette passe)
+GENERATED_TEXT_PER_RUN=NOT_RUN
+INJECTION_APPLICATION_PROOF=NOT_ESTABLISHED
+RETRY_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_BLOCKERS=
+  B1. `t-lrep` : 5 assertions du lanceur-mock. Les enfants produisent bien 8
+      tokens, donc le defaut est dans la LECTURE du rapport par le test ou dans
+      la construction du chemin de rapport, pas dans la generation. A isoler.
+  B2. I3 : suivre les activateurs f1a jusqu'a leur PREMIERE LECTURE dans Q1 et
+      les poser APRES autorisation mais AVANT consommation. Ne pas supposer
+      qu'une variable posee apres une initialisation memorisee sera relue.
+      Verifier destination, inventaire et parametres ; tester sans forward.
+  B3. I4 : identifier le mecanisme natif d'injection (interface ou commande,
+      mecanisme precis, entree reproductible EXISTANTE, point d'application,
+      preuve attendue d'acceptation/consommation).
+  B4. Puis rebuild, nouveau gel, autorisation externe conforme, et seulement
+      alors les quatre runs (8 tokens max) puis controle/injection (32 max).
+
+--- CE QUI RESTE ACQUIS ---
+  FINAL-01, observation reelle hors validation protocolaire :
+    baseline1 IDs [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]
+    TEXTE "We need answer user: \"Répond"   STOP_REASON MAX_NEW_TOKENS
+    TOKEN_1596_NATIVE_PIECE="We" (0x57 0x65, 2 octets, IS_EOG=0)
+  RUN-01 a RUN-06 : conserves.
+
+--- INVARIANTS PRESERVES ---
+Aucun calcul dans cette passe. Aucune autorisation reelle creee. Aucune sequence
+lancee. Aucun changement de Q1, des modeles, du template, de l'inventaire, du
+protocole ou du plan. Aucune exigence scientifique modifiee. Aucune evaluation
+qualite.

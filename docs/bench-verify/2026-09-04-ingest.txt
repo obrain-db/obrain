@@ -1,0 +1,7 @@
+=== INGESTION NATIVE (re-mesure) — 2026-09-04T12:12:52Z ===
+native-import: +445493 nœuds +1670005 arêtes en 0.267 s
+native-import wall: 0.40s (user 0.16s sys 0.21s)
+kuzu LOAD (CSV) : 0.5 s  (855,969 nœuds/s)
+kuzu count(*)        : 0.40 ms
+kuzu count(File)     : 3.47 ms
+kuzu count(CALLS)    : 21.63 ms

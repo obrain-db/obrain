@@ -1,0 +1,59 @@
+# Unit systemd UTILISATEUR : garde le Dashboard obrain en ligne même quand
+# l'agent s'arrête. Installation :
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/obrain-viz.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now obrain-viz
+[Unit]
+Description=Obrain Dashboard (viz serve)
+After=network.target
+
+[Service]
+Type=simple
+Environment=OBRAIN_DEV=1
+# ── LE CHEMIN DE `pnpm` : SANS LUI, LE RECHARGEMENT NE RECHARGE RIEN ────────
+# `OBRAIN_DEV=1` demande au serveur de reconstruire le dashboard à chaque
+# changement de `src/` — mais le service démarre avec le PATH de systemd, où
+# `pnpm` n'existe pas (nvm l'installe dans le profil de l'utilisateur).
+# Constaté le 2026-09-12 : sept reconstructions échouées d'affilée
+# (« [dev] pnpm indisponible »), donc un dashboard servi depuis un bundle périmé
+# pendant que la source était corrigée — l'écart finissait par s'afficher à
+# l'écran. Si le chemin de node change, c'est cette ligne qu'il faut mettre à
+# jour, et la vérification tient en une ligne de journal :
+#   journalctl --user -u obrain-viz | grep '\[dev\]'
+Environment=PATH=/home/triviere/.nvm/versions/node/v22.19.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/home/triviere/projects/banc-obrain
+# ── LA RÉÉCRITURE DE PRÉFIXE EST ÉTEINTE, ET C'EST UNE MESURE ────────────────
+# A/B sur le MÊME binaire, même store (408 832 nœuds), requête identique :
+#   réécriture ACTIVE   : 47,6 / 31,8 / 33,2 ms
+#   réécriture ÉTEINTE  :  2,4 /  1,8 /  1,7 ms   (et 2,0-2,1 ms en régime stable)
+# La réécriture `STARTS WITH` → intervalle rassemble TOUS les candidats avant de
+# vérifier, alors que le filtre d'expression s'arrête au LIMIT : pour « les 30
+# premiers nœuds dont le chemin commence par … », elle est 15 à 20 fois plus
+# lente. L'interrupteur existe pour mesurer les deux sous la même charge, dans le
+# même binaire. Les intervalles (>, <, >=, <=) gardent leur chemin d'index.
+Environment=OBRAIN_PREFIXE_INTERVALLE=0
+# ── LA CHAÎNE IAM EST ARMÉE ICI, ET IL FAUT LES DEUX CHOSES ──────────────────
+# 1. un binaire construit avec `--features ai,iam` — sinon il annonce « IAM NON
+#    COMPILÉ » et la variable ci-dessous reste SANS EFFET (défaut constaté trois
+#    fois le 2026-09-13, dont une fois par moi : reconstruire avec `--features ai`
+#    dégrade le déploiement en silence) ;
+# 2. le magasin d'identités ci-dessous, ÉCRIVABLE et dédié — l'armer sur la base
+#    servie elle-même la rendrait écriture sur une base ouverte en lecture.
+# Contrôle en une seconde : `bash scripts/verif-chaine-iam.sh`.
+Environment=OBRAIN_IAM=1
+Environment=OBRAIN_IAM_ACCOUNT=obrain
+Environment=OBRAIN_IAM_STORE=/home/triviere/.local/share/obrain-harness/data/iam.obrain
+ExecStart=/home/triviere/projects/banc-obrain/target/release/obrain viz serve \
+  --host 192.168.1.103 --port 8432 \
+  --preset-default "Runtime dev (engrams)" \
+  --preset "Runtime dev (engrams)=/home/triviere/.local/share/obrain-harness/data/runtime-dev.obrain" \
+  --preset "Runtime prod=/home/triviere/.local/share/obrain-harness/data/runtime-prod.obrain" \
+  --preset "Self-demo (engrams)=/home/triviere/.local/share/obrain-harness/data/self-demo.obrain" \
+  --preset "Linux complet (v6.6)=/tmp/linux-full3.obrain" \
+  --preset "Linux e1000=/tmp/kv-linux-e1000.obrain" \
+  --preset "Obrain (rust)=/tmp/engine_idx.obrain"
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

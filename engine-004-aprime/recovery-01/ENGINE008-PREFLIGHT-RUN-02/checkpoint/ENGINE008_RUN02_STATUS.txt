@@ -1,0 +1,118 @@
+ENGINE-008 -- STATUT ENGINE008-PREFLIGHT-RUN-02
+==========================================================================
+Verifications prealables REUSSIES. L'autorisation reelle a ete creee et lue.
+baseline1 A ETE INVOQUE et a REFUSE. La sequence s'est arretee.
+UN DEFAUT DU LANCEUR GELE est etabli. Aucune reparation sous ce gel.
+
+PRECOMPUTE_IDENTITY_VERIFICATION=PASS
+  harnais        c4fe4dd162b9fab04132063286726c2e29eb8dc136dabc31a1d65634eec28693  OK
+  lanceur        f3c32092ec8862abd9715e17ac20609a3c12c51835eaf9921224ef6d748b05ac  OK
+  manifeste v2   1736b341974a46c0f72df0f0e070702d2855196cc428ea86c48af16ca4ca6119
+  libllama       87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2  OK
+  template       c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041  OK
+  inventaire     e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1  OK
+  5 bibliotheques resolues dans build-cuda/bin (ldd). Aucune discordance.
+
+FOUR_PROCESS_NOMINAL_MOCK_VERIFICATION=PASS
+  Le LANCEUR GELE ne peut PAS exercer de sequence mock : son `build_command`
+  code en dur `--mode real-preflight` et n offre aucun mode sans calcul. C'est
+  une LIMITE du mecanisme gele, pas une preuve nominale.
+  La sequence a donc ete exercee avec le mecanisme sans calcul PRESENT et gele
+  (`--mode verify-nominal`), en QUATRE PROCESSUS NEUFS, dans l'ordre du plan :
+    1. baseline  run1  exit=0  AUTH=ACCEPTED  prefill_calls=1  IDs_MATCH=YES  forward=0
+    2. candidate run1  exit=0  AUTH=ACCEPTED  prefill_calls=1  IDs_MATCH=YES  forward=0
+    3. baseline  run2  exit=0  AUTH=ACCEPTED  prefill_calls=1  IDs_MATCH=YES  forward=0
+    4. candidate run2  exit=0  AUTH=ACCEPTED  prefill_calls=1  IDs_MATCH=YES  forward=0
+  4 destinations DISTINCTES, 4/4 en mode mock, 0 fichier de capture,
+  PREFLIGHT_RENDERED_TOKEN_COUNT=59, `MOCK_PREFILL_TOKEN_COUNT=59`,
+  une seule valeur de RENDERED_SHA256 sur les quatre, STOP_REASON=MAX_NEW_TOKENS,
+  MODEL_FORWARD_CALL_COUNT=0.
+
+=== EXPLICATION DU FAIL/exit=3 DE LA TRACE PRECEDENTE (RUN-01) ===
+  La trace RUN-01 invoquait le lanceur avec un document MOCK alors que
+  `build_command` code `--mode real-preflight` : le chemin reel REFUSE une
+  audience MOCK -> exit 3 -> le lanceur marque FAIL et arrete. C'est la GARDE qui
+  fonctionne. Ce n'etait PAS une sequence nominale, et je ne l'ai pas presentee
+  comme telle.
+
+=== L'AUTORISATION REELLE ===
+  ENGINE008_AUTHORIZATION_REAL_PREFLIGHT.conf
+  sha256 6b8753c4315c7941cf42703fd4681ada9c5d0f47eb0cb75e33ddc2771b1ea6d6
+  audience=REAL_PREFLIGHT, well_formed=1, allow_model_compute=1, et les trois
+  identites (binaire c4fe4dd1..., plan b1821f33..., protocole 1dc2c3c3...).
+  Lue par le lanceur : LAUNCHER_PLAN_CHECKED=YES.
+
+=== DEFAUT ETABLI : LE LANCEUR GELE N OUVRERA JAMAIS LE CALCUL REEL ===
+FIRST_BLOCKING_GATE=ENGINE008_LAUNCHER_MISSING_ALLOW_MODEL_COMPUTE_FLAG
+  `engine008_launcher.cpp:108-117` construit la commande enfant :
+    --mode real-preflight --auth-doc --plan --protocol --binary --model
+    --template --capture-root --model-tag --run-tag --max-new-tokens
+  **`grep -c "allow-model-compute" engine008_launcher.cpp` = 0.**
+  Le drapeau `--allow-model-compute` n'est JAMAIS transmis a l'enfant.
+
+  CONSEQUENCE, observee sur le VRAI run baseline1 :
+    AUTH=REFUSED_FLAG_ONLY
+    REAL_LOAD_CALLS=0   REAL_CONTEXT_CREATE_CALLS=0
+    MODEL_FORWARD_CALL_COUNT=0   REFUSED_BEFORE_ANY_COMPUTE=YES
+  Le document etait VALIDE ; c'est le DRAPEAU qui manquait.
+
+  LA GARDE EST CORRECTE, PAS LE LANCEUR. Le contrat exige DEUX facteurs : un
+  document externe ET un drapeau explicite. « Le drapeau seul ne suffit jamais »
+  -- et reciproquement, le document seul ne suffit pas. Le lanceur ne fournit que
+  le document. Il ne PEUT donc produire que REFUSED_FLAG_ONLY : aucun run reel
+  n'est atteignable par le lanceur gele.
+
+=== CE QUI S'EST REELLEMENT PASSE ===
+  baseline1 : INVOCATION REELLE, modele OUVERT EN VOCAB_ONLY pour E2 (tokenizer,
+    851 tenseurs, architecture `qwen35`), puis
+    RENDERED_SHA256=92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658  OK
+    TOKEN_IDS_SHA256=ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e  OK
+    PREFLIGHT_RENDERED_TOKEN_COUNT=59  OK
+    puis REFUS a la garde. AUCUN chargement complet, AUCUN contexte, AUCUN forward.
+  Aucune destination de capture n'a ete creee (le refus precede prepare_capture).
+
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+
+PRECOMPUTE_IDENTITY_VERIFICATION=PASS
+PREFLIGHT_RUN_ORDER=baseline1 (invoque, refuse)
+BASELINE_RUN_COUNT=1 invoque / 0 abouti
+CANDIDATE_RUN_COUNT=0
+GENERATED_TOKEN_COUNT_PER_RUN=0 (aucun token genere)
+STOP_REASON_PER_RUN=NONE
+P4_STRUCTURAL_RESULT_PER_BASELINE_RUN=NOT_EXERCISED
+CANDIDATE_WHT_RESULT_PER_RUN=NOT_EXERCISED
+NEXTN_STANDARD_PATH_RESULT_PER_RUN=NOT_EXERCISED
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_SEQUENCE_RESULT=FAIL
+UNEXECUTED_RUNS=candidate1, baseline2, candidate2
+EXTRA_RUN_COUNT=0
+RETRY_COUNT=0
+FROZEN_AUTHORITIES_MODIFIED=NO
+TASK_QUALITY_RESULT_COUNT=0
+QUALITY_EXECUTION_ALLOWED=NO
+
+=== CE QUE JE N'AI PAS FAIT, CONFORMEMENT A §5 ===
+  Je n'ai modifie AUCUN executable, plan, bibliotheque ni critere. Le correctif
+  evident (ajouter --allow-model-compute a build_command) est DECRIT, pas
+  applique : il exigerait une nouvelle identite, un nouveau gel et une
+  instruction separee.
+
+=== CE QU'IL FAUDRAIT, EN UNE INSTRUCTION SEPAREE ===
+  F1. Ajouter `--allow-model-compute` a la commande enfant de `build_command`
+      (`engine008_launcher.cpp:108-117`), sous une garde qui exige que
+      l'autorisation ait ete verifiee.
+  F2. Rebuild propre -> NOUVELLES identites de lanceur (le harnais peut rester
+      c4fe4dd1... s'il n'est pas modifie).
+  F3. Nouveau manifeste de gel et nouvelle autorisation liees a ces identites.
+  F4. PUIS les quatre runs, sur instruction separee.
+  Note : `--mode verify-nominal` n'est PAS un remede pour la production -- le
+  lanceur de production doit rester en `real-preflight`.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucun token genere, aucune evaluation qualite, aucun scorer, aucun long contexte.
+Aucun retry, aucun run supplementaire. Aucune modification de Q1, des modeles,
+du template, de l'inventaire, du protocole v3, du plan, ni du code gele.
+L'autorisation RUN-01 n'a PAS ete reutilisee.

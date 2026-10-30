@@ -1,0 +1,67 @@
+{
+  "area": "CI & Bench & Makefile",
+  "summary": "Le pipeline CI principal (.github/workflows/ci.yml) orchestre 12 jobs : rust-check (fmt + clippy -D warnings + doc --all-features + build examples + validation des annotations ISO GQL), rust-test (matrice ubuntu/windows/macos, debug + release --all-features), miri (nightly-2026-02-11 épinglé sur obrain-common avec -Zmiri-strict-provenance), coverage (cargo-llvm-cov → Codecov), python-test (3 OS × Python 3.12/3.13/3.14), node-test (Node 20/22/24), go-test, csharp-test, dart-test, wasm-build (wasm32-unknown-unknown, gql seul), benchmark-pr (Criterion --save-baseline + critcmp, commentaire de PR) et supply-chain (cargo-deny --all-features). Trois profils de features sont documentés en tête du fichier : full (--all-features), WASM (default-features=false + gql) et défaut (bindings). Le harnais de bench est double : d'une part les benches Criterion internes aux crates (arena_bench/index_bench/query_bench/cognitive_bench + ~25 benches supplémentaires dont ceux d'obrain-substrate), d'autre part bench/substrate, un workspace Cargo autonome (hors du workspace principal) qui pilote les gates du RFC Substrate via des binaires dédiés (retrieval-gate, t16-validation, reverse-traversal-bench, real-retrieval-bench) et le Makefile racine qui les orchestre (bench-baseline/substrate/compare). Deux autres familles complètent le banc : bench/echelle (allocateurs, requêtes, load à échelle, en zsh) et scripts/bench-verify (re-mesure anti-régression sur stores réels). Le lint local est couvert par scripts/ci-local.sh et scripts/ci-clean.sh (variantes PowerShell ci-local.ps1/ci-clean.ps1) ainsi qu'un hook pre-push.sh (fmt + clippy) qui n'est pas installé. codecov.yml définit des seuils (projet 90%/2%, patch 90%/5%) et un suivi par composant dont les chemins sont périmés (crates/common vs crates/obrain-common). deny.toml verrouille licences, advisories, bans et sources (RUSTSEC-2025-0141 ignoré pour bincode 2.0)."
+,
+  "components": [
+    ".github/workflows/ci.yml — pipeline CI principal (12 jobs, 3 profils de features documentés en en-tête)",
+    ".github/workflows/docs.yml — build mkdocs --strict + déploiement GitHub Pages + validation PR",
+    ".github/workflows/pypi.yml — build/publish wheels Python (linux/musllinux/windows/macos, x86_64+aarch64) via maturin",
+    ".github/workflows/release.yml — release multi-langages : binaires natifs, crates.io, Go, npm (node+wasm+cli), NuGet, checksums SHA256",
+    ".github/workflows/publish.yml — publication du binding Dart sur pub.dev",
+    ".github/workflows/retrieval-gate.yml — gate T9 (recall@10/recall@100/p95 sur 1M nœuds, N=1M) dédié à la stack retrieval substrate",
+    ".github/workflows/update-obrain-web.yml — PR automatisée de mise à jour du repo obrain-web après release",
+    "Makefile — orchestration bench/substrate (baseline, substrate, compare, smoke, clean) + variables PO_DB/MEGALAW_DB",
+    "codecov.yml — seuils de couverture (projet 90%/2%, patch 90%/5%), ignore-list, suivi par composant",
+    "deny.toml — config cargo-deny (advisories, licences allow-list, bans, sources deny)",
+    "scripts/ci-local.sh — contrôle CI local (fmt/clippy/doc/test debug+release/python) avec mode --quick",
+    "scripts/ci-clean.sh — CI 'propre' mimant GitHub Actions (venv neufs, 3 versions Python) avec --skip-rust/--python",
+    "scripts/ci-local.ps1 — variante PowerShell du contrôle CI local",
+    "scripts/ci-clean.ps1 — variante PowerShell du CI propre",
+    "scripts/pre-push.sh — hook pre-push (blocage push upstream GrafeoDB + cargo fmt + clippy -D warnings)",
+    "scripts/check-all.sh — smoke backend + E2E du chantier dashboard-graph (pas un check CI/lint)",
+    "scripts/bench_boot.rs — bench de boot (replay WAL vs fichiers epoch mmap) via cargo +nightly -Zscript",
+    "scripts/bench-compare.sh — compare deux baselines Criterion via critcmp et poste un commentaire de PR (seuil de régression)",
+    "scripts/build-wasm.sh — build wasm-bindgen (cibles bundler, gql seul ou --features full)",
+    "scripts/gql-conformance.py — validation des annotations // ISO: des tests contre docs/user-guide/gql/conformance.md",
+    "bench/substrate/ — workspace Cargo autonome (Cargo.toml, src/lib.rs, bench_baseline.rs, bench_substrate.rs, bins retrieval_gate/t16_validation/reverse_traversal_bench/real_retrieval_bench, benches retrieval/activation/crud/ldleiden)",
+    "bench/echelle/ — bancs d'échelle zsh/python (bench_allocateurs.sh, bench_requetes.sh, duel_load_allocateurs.sh, load_garde.sh, verif_index_persiste.sh, gen_xn.py) + resultats/",
+    "scripts/bench-verify/ — batterie de re-mesure anti-régression (perf-snapshot.sh, semantic-resolution.sh, surface-tools.sh, verify-o1.mjs, verify-engine.mjs, combo-pipeline.mjs, guard.sh, metrics-report.py, ...)",
+    "crates/obrain-common/benches/arena_bench.rs, crates/obrain-core/benches/index_bench.rs, crates/obrain-engine/benches/query_bench.rs, crates/obrain-cognitive/benches/cognitive_bench.rs — benches Criterion référencés par benchmark-pr",
+    "crates/obrain-substrate/benches/ — ~12 benches Criterion (hks_refresh, read_path, tiered_scan, ricci_batch, geodesic, spreading_activation, effective_resistance, memoire_vs_fichier, zorder_analysis, forman_batch, heat_step, hopfield_recall, decay_all, vec_write)"
+  ],
+  "relationships": [
+    "ci.yml (job benchmark-pr) → scripts/bench-compare.sh (critcmp + gh pr comment)",
+    "ci.yml (jobs rust-check/wasm-build) → scripts/gql-conformance.py + scripts/build-wasm.sh",
+    "ci.yml (job supply-chain) → deny.toml (EmbarkStudios/cargo-deny-action@v2 --all-features)",
+    "ci.yml (job coverage) → codecov.yml (cargo llvm-cov --lcov → codecov-action@v5)",
+    "Makefile (cibles bench-*) → bench/substrate/src/bench_baseline.rs et bench_substrate.rs (bins bench-baseline/bench-substrate)",
+    "retrieval-gate.yml → bench/substrate/src/bin/retrieval_gate.rs (cargo build --release --bin retrieval-gate)",
+    "bench/substrate/Cargo.toml → dépendances path : obrain-substrate, obrain-cognitive (feature community), obrain-core, obrain-common",
+    "bench/substrate/src/lib.rs → définit BenchResult/Target/Backend/Measurement/RssSampler consommés par les runners et gates",
+    "scripts/ci-local.sh + ci-clean.sh → dupliquent les commandes cargo fmt/clippy/doc/test du job rust-check/rust-test de ci.yml",
+    "release.yml (publish-wasm) → scripts/build-wasm.sh --target bundler --features full et crates/bindings/wasm/pkg",
+    "bench/substrate/README.md → spec des gates T9 (rss_anon_peak ≤1 GiB, open_duration ≤100 ms, recall@10 ≥99 %) reprises par le Makefile",
+    "docs.yml → docs/requirements.txt (uv pip install) puis mkdocs build --strict"
+  ],
+  "notable_findings": [
+    "ci.yml documente explicitement 3 profils de features en commentaire d'en-tête (full / WASM minimal / défaut bindings), et la feature 'embed' (ONNX ~17 MB) n'est jamais testée (opt-in seulement).",
+    "Le job benchmark-pr élimine la variance matérielle en exécutant base ET PR sur le même runner (checkout du sha base puis head), et exécute le bench base EN PREMIER pour que l'échauffement thermique profite au run PR (rendant les régressions plus faciles à détecter).",
+    "Le job miri épingle nightly-2026-02-11 à cause d'une régression cargo (rust-lang/miri#4855) et ne teste que obrain-common avec -Zmiri-strict-provenance.",
+    "bench/substrate est un workspace Cargo AUTONOME (hors du workspace principal) pour isoler criterion/sysinfo/clap des builds de release — mais son Cargo.toml garde un commentaire NOTE obsolète affirmant que les deps path sont 'wired in T3... les runners sont des stubs', alors que obrain-substrate/obrain-cognitive/obrain-core/obrain-common sont déjà câblés.",
+    "Le Makefile et bench/substrate portent encore l'ancien nom 'lab/grafeo'/'Grafeo', et pre-push.sh bloque tout push vers GrafeoDB/grafeo (fork → obrain) par sécurité de fuite d'information.",
+    "scripts/check-all.sh porte un nom trompeur : ce n'est pas un check CI/lint mais un smoke + E2E du chantier dashboard-graph (vizserve, smoke-backend.sh, e2e-dashboard.mjs, endpoint 192.168.1.103:8432).",
+    "Le job benchmark-pr garde le bench cognitif derrière un test d'existence de fichier ([ -f crates/obrain-cognitive/benches/cognitive_bench.rs ]) — il peut être silencieusement sauté sur un commit base antérieur à la création du crate.",
+    "retrieval-gate.yml épingle rustc '1.85' (aligné sur rust-version du Cargo.toml de bench/substrate) alors que ci.yml utilise 'stable' — divergence de toolchain entre les deux workflows.",
+    "scripts/bench-verify/ contient une batterie de re-mesure anti-régression autonome (guard.sh, perf-snapshot.sh, verify-o1.mjs) distincte du CI GitHub, orientée stores réels et machine n3."
+  ],
+  "gaps": [
+    "codecov.yml component_management pointe vers crates/common, crates/core, crates/adapters, crates/engine — chemins INEXISTANTS (les vrais crates sont crates/obrain-common, obrain-core, obrain-adapters, obrain-engine) ; le suivi par composant est donc inopérant.",
+    "Makefile : cible bench-compare = simple stub TBD (T9) qui liste des JSON et affiche '(compare binary TBD)' — aucune sortie de gate n'est réellement produite côté Makefile (la vraie gate est dans retrieval-gate.yml/bin).",
+    "scripts/pre-push.sh n'est PAS installé comme hook (.git/hooks/pre-push absent) — le blocage anti-upstream et le lint pre-push sont donc inactifs localement.",
+    "scripts/ci-local.ps1 et scripts/ci-clean.ps1 existent mais aucune référence dans les docs/README du périmètre CI (scripts orphelins, vraisemblablement Windows-only).",
+    "bench/substrate/Cargo.toml contient un commentaire NOTE périmé affirmant que les runners sont des stubs (deps 'wired in T3') alors qu'ils sont déjà câblés — documentation en retard sur le code.",
+    "Le bench cognitif du job benchmark-pr peut être silencieusement omis (test [ -f ]) sans signaler de skip explicite dans le commentaire de PR.",
+    "bench/substrate a un dossier target/ présent sur disque (build artifacts, fingerprints) mais non versionné (git ls-files = 0) — polluant local seulement, pas un bug VCS.",
+    "bench/echelle/ est en zsh (#!/bin/zsh) alors que le reste du banc CI est bash — portabilité limitée, non couvert par le CI GitHub."
+  ]
+}

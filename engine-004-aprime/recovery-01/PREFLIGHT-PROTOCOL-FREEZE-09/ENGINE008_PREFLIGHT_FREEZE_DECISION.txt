@@ -1,0 +1,96 @@
+ENGINE-008 -- DECISION DE GEL (PREFLIGHT-PROTOCOL-FREEZE-09)
+==========================================================================
+PREFLIGHT_PROTOCOL_FROZEN=NO
+PREFLIGHT_FREEZE_MANIFEST_SHA256=NOT_CREATED
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=NO
+
+=== POURQUOI JE REFUSE DE GELER ===
+Une seule propriete requise n'est PAS evaluable dans l'etat actuel du code :
+
+  P8 -- LA COLLECTE WHT ET SES CRITERES DE COUVERTURE NE SONT PAS VERIFIES
+        COMME RACCORDES DANS LE CODE FINAL.
+
+La consigne est explicite : « Verifier dans le code final que la collecte WHT et
+ses criteres de couverture sont reellement raccordes. Leur conception ancienne
+ou leurs tests isoles ne suffisent pas. » Je n'ai PAS effectue cette
+verification. Une collection WHT non raccordee rendrait P3 et P4 -- rotation
+candidate et propriete negative de rotation baseline -- non evaluables, et ces
+deux proprietes figurent au contrat.
+
+Le protocole v2 est REDIGE et coherent. Le gel est refuse NON PAS parce que le
+protocole serait mauvais, mais parce qu'une de ses exigences ne serait pas
+honorable avec le raccordement actuel. Geler maintenant reviendrait a masquer ce
+point -- exactement la faute que ce dispositif existe pour empecher.
+
+=== CE QUI EST COMPATIBLE AVEC UN GEL (et ne le bloque donc pas) ===
+Z1_RESOLU. Stabilite post-appel ETABLIE : ecriture "w" + fclose synchrones, site
+   unique d'appel. Le harnais peut lire apres le retour du calcul.
+Z2_RESOLU. Le ledger ne porte pas n_nodes ; `eligible_target_count` est une autre
+   grandeur. Toute comparaison de comptes n'utilise que des valeurs connues des
+   DEUX cotes. Aucune substitution.
+Z3_RESOLU, et c'est un resultat, pas une gene. La surface snapshots est un dump a
+   DERNIER ECRIVAIN GAGNANT ("w" integral), pas un journal. L'exhaustivite ne
+   peut donc pas en etre exigee. C'est COMPATIBLE avec le gel parce que le
+   protocole v2 a adopte la forme CONDITIONNELLE de preuve NextN et a ECARTE
+   explicitement la forme exhaustive, au lieu d'affaiblir l'exigence en silence.
+Z4_PRE-ENREGISTRE. La validation de l'observateur sur modele reel appartient aux
+   runs futurs ; son critere de succes et l'arret de sequence sont consignes. Ce
+   n'est donc PAS un bloqueur.
+
+=== CE QUI EST DEJA ACQUIS ET GELE DE FACTO (a verser au manifeste des que P8
+    sera verifie) ===
+PROTOCOLE v2 : SHA a la ligne PREFLIGHT_PROTOCOL_SHA256 du statut.
+PLAN DES QUATRE RUNS : b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+QUALIFICATION RENDERER : 14cbbc1336fe885a796539eb473e85388f54a4e600daae24348aeaeccf2c9bdd
+RENDERER_LINKAGE : libllama-common a87c31d2..., libllama 87c42d5f..., ggml/ggml-base/
+  ggml-cpu/ggml-cuda resolus dans build-cuda/bin.
+Q1_LIBLLAMA : 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2 (NON reconstruite)
+
+=== PREUVE QUE LE PLAN N EST PAS UN JSON DOCUMENTAIRE ===
+La consigne exige que le point d entree applique REELLEMENT le plan. Etat exact :
+  - APPLIQUE dans le code : la garde avant tout calcul ; le maximum de tokens
+    (requete -> run_pipeline -> boucle bornee) ; le contrat d arret (EOS, limite,
+    aucun decode apres arret) ; l argmax au plus petit ID ; le refus des logits
+    invalides ; l isolement des destinations de capture ; les compteurs de sortie.
+    Ces elements sont TESTES dans le binaire courant (7 controles d arret,
+    6 cas de refus du point d entree, 41 + 42 controles des suites).
+  - NON ENCORE APPLIQUE : la SEQUENCE baseline1 -> candidat1 -> baseline2 ->
+    candidat2 elle-meme. Le point d entree n execute qu UN run par invocation
+    (`--mode real-preflight`) et n enchaine ni les quatre runs, ni la
+    revérification des identites avant chacun, ni l arret de sequence.
+  => PREFLIGHT_PLAN_ENFORCED_BY_ENTRYPOINT=PARTIAL. Les REGLES du plan sont
+     appliquees et testees ; son ORCHESTRATION sur quatre runs reste a ecrire.
+     C est un second bloqueur, plus modeste, mais reel et nomme.
+
+=== POINT PRECIS QUI EMPECHE LE GEL ===
+1. Verifier dans le code final que la collecte WHT et ses criteres de couverture
+   sont raccordes (P8). Si elle ne l est pas, l ecrire -> nouvelle identite de
+   source/binaire et tests concernes rejoues.
+2. Ecrire l orchestration des quatre runs dans le point d entree, avec
+   revérification des identites avant chaque run et arret de sequence.
+3. PUIS emettre le manifeste de gel, sans circularite de hashes : compiler, puis
+   construire le document qui reference l identite du binaire.
+
+=== COMMANDES PREPAREES (NON EXECUTEES) ===
+Chaque run, processus neuf :
+  env -u OBRAIN_NO_ROTATION \
+    <binaire> --mode real-preflight \
+      --auth-doc <DOC_AUTORISATION> --plan <PLAN_SHA> --protocol <PROTO_SHA> \
+      --binary <BIN_SHA> --model <MODELE> --template <TEMPLATE> \
+      --capture-root <RACINE_ISOLEE> --model-tag <baseline|candidat> --run-tag run<N>
+Sequence : baseline1, candidat1, baseline2, candidat2.
+
+=== SCHEMA DU FUTUR DOCUMENT D AUTORISATION (AUCUN CREE ICI) ===
+Format ligne a ligne `cle=valeur`, refuse si une cle est dupliquee :
+  well_formed=1
+  allow_model_compute=1
+  audience=REAL_PREFLIGHT          <- une autorisation MOCK est REFUSEE
+  binary_sha256=<SHA du binaire autorise>
+  plan_sha256=<SHA du plan>
+  protocol_sha256=<SHA du protocole v2>
+Aucun document de ce type n a ete cree dans cette passe : les seuls documents
+existants portent audience=MOCK et sont REJETES par le chemin reel (verifie).
+
+--- INVARIANTS ---
+Aucun chargement complet, aucun contexte cree, aucun forward, aucun run execute,
+aucun gel cree. Aucun rebuild de bibliotheque Q1. Aucun global de Q1 ecrit.

@@ -1,0 +1,13 @@
+total	MATCH (n) RETURN count(n)
+aretes	MATCH (a)-[r]->(b) RETURN count(r)
+label_1	MATCH (n:%L1%) RETURN count(n)
+label_2	MATCH (n:%L2%) RETURN count(n)
+label_3	MATCH (n:%L3%) RETURN count(n)
+label_4	MATCH (n:%L4%) RETURN count(n)
+label_5	MATCH (n:%L5%) RETURN count(n)
+sortant	MATCH (a {qualified_name: '%QN%'})-[]->(b) RETURN b.qualified_name ORDER BY b.qualified_name LIMIT 50
+entrant	MATCH (a)-[]->(b {qualified_name: '%QN%'}) RETURN a.qualified_name ORDER BY a.qualified_name LIMIT 50
+filtre_eq	MATCH (n:%L1% {%PEQ%: '%VEQ%'}) RETURN count(n)
+contains	MATCH (n:%L1%) WHERE n.%PTXT% CONTAINS '%FRAG%' RETURN count(n)
+orderby	MATCH (n:%L1%) RETURN n.%PEQ% ORDER BY n.%PEQ% LIMIT 20
+agregat	MATCH (n:%L1%) RETURN count(n), min(n.%PEQ%), max(n.%PEQ%)

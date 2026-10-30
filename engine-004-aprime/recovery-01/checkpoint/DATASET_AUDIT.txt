@@ -1,0 +1,85 @@
+=== MMLU-PRO ===
+  fichiers parquet : 1
+  fichier   : test-00000-of-00001.parquet
+  sha256    : 0e24a191921c2f453518a537a8b2117bd137e7714d4ef1565e9ba06c1ecb9ad8
+MMLU_PRO_RAW_TEST_COUNT=12032
+
+MMLU_PRO_SCHEMA :
+    question_id      int64
+    question         string
+    options          list<element: string>
+    answer           string
+    answer_index     int64
+    cot_content      string
+    category         string
+    src              string
+
+MMLU_PRO_CATEGORY_COUNT=14
+MMLU_PRO_CATEGORY_COUNTS :
+    biology                        717
+    business                       789
+    chemistry                     1132
+    computer science               410
+    economics                      844
+    engineering                    969
+    health                         818
+    history                        381
+    law                           1101
+    math                          1351
+    other                          924
+    philosophy                     499
+    physics                       1299
+    psychology                     798
+
+MMLU_PRO_CATEGORIES_BELOW_100=0
+MMLU_PRO_SELECTION_TARGET_IF_ALL_GE_100=1400
+MMLU_PRO_ACHIEVABLE_SELECTED_COUNT=1400
+
+EXEMPLE D ITEM (cles):
+    answer           I
+    answer_index     8
+    category         business
+    cot_content      
+    options          ['Safe practices, Fear, Jealousy, Trivial', 'Unsafe practices, Distres...
+    question         Typical advertising regulatory bodies suggest, for example that advert...
+    question_id      70
+    src              ori_mmlu-business_ethics
+
+MMLU_PRO_ITEM_STRUCTURE_INVALID_COUNT=0
+MMLU_PRO_OPTION_COUNT_DISTRIBUTION={"9": 801, "10": 9981, "7": 158, "6": 93, "8": 320, "4": 606, "5": 52, "3": 21}
+MMLU_PRO_PARSE_ERROR_COUNT=0
+
+=== GSM8K ===
+GSM8K_RAW_TEST_COUNT=1319
+GSM8K_PARSE_ERROR_COUNT=0
+GSM8K_FIELDS=['answer', 'question']
+
+=== MBPP ===
+
+=== IFEVAL ===
+  README.md                                            1457 octets
+  evaluation_lib.py                                    6984 octets
+  evaluation_main.py                                   2449 octets
+  instructions.py                                      55162 octets
+  instructions_registry.py                             7240 octets
+  instructions_test.py                                 48520 octets
+  instructions_util.py                                 19538 octets
+  instructions_util_test.py                            4255 octets
+  requirements.txt                                     35 octets
+  run.sh                                               895 octets
+  data/input_data.jsonl                                207111 octets
+  data/input_response_data_gpt4_20231107_145030.jsonl  830335 octets
+IFEVAL_RAW_COUNT=541
+  champs : ['instruction_id_list', 'key', 'kwargs', 'prompt']
+
+=== WIKITEXT ===
+  FILES.sha256  189 octets
+  LICENSE_UPSTREAM.txt  25 octets
+  REVISION.txt  124 octets
+  UPSTREAM.txt  56 octets
+  .gitignore  1 octets
+  CACHEDIR.TAG  191 octets
+  test-00000-of-00001.parquet.metadata  124 octets
+  train-00000-of-00001.parquet.metadata  125 octets
+  test-00000-of-00001.parquet  732610 octets
+  train-00000-of-00001.parquet  6357543 octets

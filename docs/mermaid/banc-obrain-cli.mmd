@@ -1,0 +1,265 @@
+%% Ce que ce diagramme prouve : l arbre COMPLET des sous-commandes du binaire CLI obrain,
+%% avec pour chacune ses options principales et leur valeur par defaut.
+%% Source : crates/obrain-cli lu ligne a ligne — l enum Commands de src/main.rs lignes
+%% 113-482, les enums IndexCommands, BackupCommands, DataCommands, WalCommands lignes
+%% 484-611 du meme fichier, puis TopoCommands, JumpCommands, JournalCommands,
+%% VizCommands, IamCommands dans commands/, et les structs MemoireArgs, EntretienArgs,
+%% McpArgs dans commands/ et mcp_server.rs. Le binaire est declare au Cargo.toml du
+%% crate, section bin : name = obrain, path = src/main.rs.
+%% Mesure : 34 variantes de premier niveau dans Commands — 33 avec un corps plus
+%% Version sans argument ; IamCommands 20 ; VizCommands 8 ; IndexCommands 4 ;
+%% TopoCommands 3 ; JumpCommands 3 ; BackupCommands 2 ; DataCommands 2 ; WalCommands 2 ;
+%% JournalCommands 1. Comptes obtenus par grep sur les enums. Chaque nombre de lignes
+%% vient de wc -l sur le fichier cite ; chaque valeur par defaut vient d un attribut
+%% default_value ou default_value_t de clap ; chaque conflit vient d un conflicts_with.
+%% DEDUIT et non mesure : la graphie KEBAB-CASE des verbes en ligne de commande
+%% — repair-degrees, harness-serve, mot-de-passe, jeton-revoquer — est la derivation par
+%% defaut de clap a partir des noms de variantes Rust. Aucun attribut rename_all
+%% n existe dans le crate, mais AUCUN BINAIRE COMPILE n etait disponible — ni
+%% target/release/obrain ni target/debug/obrain — donc obrain --help n a pas pu etre
+%% execute pour confirmer la graphie ni le texte d aide.
+%% Non etabli : le comportement a l execution de chaque verbe et ses sorties reelles ;
+%% les codes de sortie autres que 0, 1 et 2, seuls lus dans l enum ExitCode de main.rs.
+%% Un etat mesure merite d etre signale : les 2 verbes du sous-groupe backup existent
+%% toujours dans l enum, mais commands/backup.rs ligne 33 rend une erreur de
+%% depreciation — ils sont donc dessines 🔴 et non comme des capacites vivantes.
+
+flowchart TB
+
+  obrain["bin obrain<br/>crates/obrain-cli<br/>Cargo.toml section bin : name = obrain, path = src/main.rs<br/>main.rs : 802 lignes<br/>crate : 40 483 lignes .rs<br/>clap Parser + Subcommand"]
+
+  subgraph Global["Options globales : portees par la racine Cli, valables sur toute sous-commande"]
+    opt_format["--format<br/>global = true<br/>defaut : auto<br/>auto, table, json, csv"]
+    opt_quiet["-q, --quiet<br/>global = true<br/>supprime progression et messages info"]
+    opt_verbose["-v, --verbose<br/>global = true<br/>journalisation niveau DEBUG"]
+    opt_nocolor["--no-color<br/>global = true<br/>respecte aussi la variable NO_COLOR"]
+    opt_color["--color<br/>global = true<br/>conflicts_with = no_color"]
+  end
+
+  subgraph Amont["Ce que le CLI lit dans son environnement, pas dans ses arguments"]
+    env_vars["variables lues dans le code<br/>⚪ existe en amont<br/>OBRAIN_STORE : store par defaut de mcp et bridge<br/>OBRAIN_WRITE = 1 : ouvre l ecriture du pont<br/>OBRAIN_QUERY_TIMEOUT_MS : defaut 30000 ms au pont, 60000 ms au CLI<br/>OBRAIN_OPEN_RETRY_MS : defaut 10000 ms<br/>NO_COLOR"]
+  end
+
+  subgraph Lecture["Lecture et diagnostic : la base est ouverte, rien n est ecrit"]
+    c_info["obrain info PATH<br/>commands/info.rs : 63 lignes<br/>comptages, taille, mode"]
+    c_stats["obrain stats PATH<br/>commands/stats.rs : 68 lignes"]
+    c_schema["obrain schema PATH<br/>commands/schema.rs : 206 lignes<br/>labels, types d aretes, cles de propriete"]
+    c_validate["obrain validate PATH<br/>commands/validate.rs : 180 lignes<br/>🔴 code de sortie 2 si l integrite est rompue"]
+    c_continuity["obrain continuity PATH<br/>commands/continuity.rs : 243 lignes<br/>--stale-after-min defaut 15<br/>🔴 code 1 si le store est fige"]
+    c_compare["obrain compare PATH_A PATH_B<br/>commands/compare.rs : 1249 lignes<br/>--limit defaut 20<br/>--prefix-a, --prefix-b<br/>--attrs"]
+  end
+
+  subgraph Requete["Requete et session interactive"]
+    c_query["obrain query PATH REQUETE<br/>commands/query.rs : 440 lignes<br/>--file, --stdin, --param<br/>--lang defaut gql : gql, cypher, sparql, sql<br/>--timing, --max-width<br/>--read-only, --slots"]
+    c_shell["obrain shell PATH<br/>repl.rs : 433 lignes<br/>--lang defaut gql<br/>--timing"]
+    c_init["obrain init PATH<br/>commands/init.rs : 52 lignes<br/>--mode defaut lpg : lpg, rdf"]
+  end
+
+  subgraph Maintenance["Reparation et entretien du substrat : les gestes d ecriture, gardes par --apply"]
+    c_repair["obrain repair PATH<br/>commands/repair.rs : 865 lignes<br/>--dry-run : defaut, conflicts_with = apply<br/>--apply<br/>--verdict, requires = apply : zones-intactes ou zones-permutees<br/>🔴 refuse --apply sans --verdict"]
+    c_repairdeg["obrain repair-degrees PATH<br/>reconstruit les colonnes de degre depuis un balayage d aretes<br/>exige un acces exclusif au store"]
+    c_repairprops["obrain repair-props PATH<br/>references de tas pendantes dans la zone de proprietes v2<br/>--dry-run : defaut, conflicts_with = apply<br/>--apply"]
+    c_repairedge["obrain repair-edge-chains PATH<br/>chaines d adjacence cycliques<br/>--apply<br/>sans lui : diagnostic seul"]
+    c_enrich["obrain enrich PATH<br/>commands/enrich.rs : 77 lignes<br/>--ricci : courbure de Ricci-Ollivier persistee sur les aretes vivantes"]
+    c_compact["obrain compact PATH<br/>commands/compact.rs : 228 lignes<br/>--dry-run<br/>--prune-wal"]
+    c_entretien["obrain entretien<br/>commands/entretien_cmd.rs : 80 lignes<br/>--attacher, --accorder<br/>--genre defaut degres<br/>--raison, --source defaut cli"]
+    c_native["obrain native-import PATH FICHIER<br/>commands/native_import.rs : 76 lignes<br/>corpus binaire vers un store neuf"]
+  end
+
+  subgraph GrpIndex["Sous-groupe index : 4 verbes"]
+    c_index["obrain index<br/>commands/index.rs : 208 lignes<br/>sous-groupe, 4 verbes"]
+    i_list["index list PATH"]
+    i_stats["index stats PATH"]
+    i_create["index create PATH PROPRIETE<br/>✅ declaration durable : substrate.indexcat"]
+    i_rebuild["index rebuild PATH<br/>-p, --property : repetable"]
+  end
+
+  subgraph GrpDonnees["Sous-groupes backup, data et wal"]
+    c_backup["obrain backup<br/>commands/backup.rs : 39 lignes<br/>sous-groupe, 2 verbes<br/>🔴 les deux verbes refusent : erreur de depreciation depuis le basculement T17"]
+    b_create["backup create PATH<br/>-o, --output FICHIER<br/>🔴 echoue et renvoie vers cp -r, tar ou rsync"]
+    b_restore["backup restore SAUVEGARDE PATH<br/>--force<br/>🔴 echoue et renvoie vers cp -r, tar ou rsync"]
+    c_data["obrain data<br/>commands/data.rs : 862 lignes<br/>sous-groupe, 2 verbes"]
+    d_dump["data dump PATH<br/>-o, --output<br/>--export-format"]
+    d_load["data load ENTREE PATH<br/>--no-index"]
+    c_wal["obrain wal<br/>commands/wal.rs : 74 lignes<br/>sous-groupe, 2 verbes"]
+    w_status["wal status PATH"]
+    w_checkpoint["wal checkpoint PATH"]
+  end
+
+  subgraph GrpTopo["Sous-groupes topo et jump : relief structurel persiste"]
+    c_topo["obrain topo<br/>commands/topo.rs : 391 lignes<br/>sous-groupe, 3 verbes"]
+    t_mat["topo materialize PATH<br/>--clique-type defaut CALLS<br/>--clique-labels defaut Function,Method<br/>--dispatch-type defaut CALLS<br/>--dispatch-prop defaut line<br/>--dispatch-he-type defaut DISPATCH<br/>--no-dispatch, --no-maintenance"]
+    t_stats["topo stats PATH<br/>--node : repetable"]
+    t_hilbert["topo hilbert PATH<br/>--order defaut 10<br/>--max-degree defaut 1024<br/>repermutation physique par courbe de Hilbert"]
+    c_jump["obrain jump<br/>commands/jump.rs : 204 lignes<br/>sous-groupe, 3 verbes"]
+    j_mat["jump materialize PATH<br/>--type : requis, repetable<br/>--quiet<br/>🔴 refuse moins de 2 types"]
+    j_list["jump list PATH"]
+    j_stats["jump stats PATH<br/>--type-a, --type-b"]
+  end
+
+  subgraph GrpViz["Sous-groupe viz : la couche de restitution, 8 verbes"]
+    c_viz["obrain viz<br/>commands/viz.rs : 643 lignes<br/>sous-groupe, 8 verbes"]
+    v_sub["viz subgraph PATH CENTRE<br/>--hops defaut 2<br/>--limit defaut 500<br/>--edge-type : repetable<br/>--outbound-only, --inbound-only<br/>--no-signals<br/>--as defaut json<br/>--overlay"]
+    v_export["viz export PATH<br/>--edge-type : repetable<br/>--no-signals<br/>--as defaut json<br/>--overlay"]
+    v_compare["viz compare A B<br/>--sample defaut 20<br/>fichier json-graph v1 ou store"]
+    v_explain["viz explain PATH REQUETE<br/>plan EXPLAIN en json-graph, dot, mermaid ou graphml<br/>--as defaut json"]
+    v_timeline["viz timeline SNAPSHOTS<br/>au moins 2 etats, ordre = chronologie"]
+    v_weave["viz weave<br/>--world LABEL=CHEMIN : repetable, au moins 2<br/>--out STORE<br/>--self defaut self:triviere-dsh<br/>--per-label defaut 400<br/>--anchor-labels<br/>✅ persiste la base synaptique de l agent"]
+    v_serve["viz serve<br/>--store, --preset LABEL=CHEMIN<br/>--preset-default, --synapse-store<br/>--enrich-ricci defaut 60 minutes<br/>--host defaut 127.0.0.1<br/>--port defaut 8432<br/>ouverture READ-ONLY"]
+    v_monde["viz monde URL<br/>--label<br/>clone, indexe et enrichit un depot GitHub"]
+  end
+
+  subgraph GrpIam["Sous-groupe iam : 20 verbes d administration des identites"]
+    c_iam["obrain iam<br/>commands/iam.rs : 1221 lignes<br/>sous-groupe, 20 verbes<br/>--compte defaut obrain, --acteur defaut cli, --json<br/>🟠 la commande est declaree, l implementation n est compilee qu avec la feature iam<br/>🟠 feature iam : presente dans la liste default du Cargo.toml du crate<br/>🔴 sinon : echoue en annoncant IAM NON COMPILE"]
+    ia_amorcer["iam amorcer PATH<br/>--espace, --utilisateur<br/>--mot-de-passe<br/>imprime mot de passe et jeton une seule fois"]
+    ia_utilisateurs["iam utilisateurs PATH"]
+    ia_utilisateur["iam utilisateur PATH NOM"]
+    ia_ajouter["iam ajouter PATH NOM<br/>--espace : repetable, au moins un<br/>aucun droit d administration accorde"]
+    ia_desactiver["iam desactiver PATH NOM<br/>🔴 refuse le dernier administrateur actif"]
+    ia_reactiver["iam reactiver PATH NOM"]
+    ia_mdp["iam mot-de-passe PATH NOM<br/>le compte devra le changer"]
+    ia_esp_add["iam espace-ajouter PATH NOM ESPACE"]
+    ia_esp_del["iam espace-retirer PATH NOM ESPACE<br/>droits, piste d audit et administration compris"]
+    ia_adm_add["iam admin-ajouter PATH NOM ESPACE"]
+    ia_adm_del["iam admin-retirer PATH NOM<br/>🔴 refuse le dernier administrateur actif"]
+    ia_jetons["iam jetons PATH NOM<br/>jamais la valeur des jetons"]
+    ia_jeton["iam jeton PATH NOM<br/>--ttl defaut 86400 secondes<br/>jeton imprime une seule fois"]
+    ia_jeton_rev["iam jeton-revoquer PATH NOM<br/>revoque tous les jetons du compte"]
+    ia_roles["iam roles PATH"]
+    ia_politiques["iam politiques PATH"]
+    ia_pol_del["iam politique-supprimer PATH ID<br/>🔴 refuse si elle porte le dernier acces d administration"]
+    ia_audit["iam audit PATH<br/>du plus recent au plus ancien"]
+    ia_exporter["iam exporter PATH NOM<br/>RGPD, droit d acces"]
+    ia_effacer["iam effacer PATH NOM<br/>RGPD, IRREVERSIBLE<br/>🔴 exige --oui, sinon refuse"]
+  end
+
+  subgraph GrpJournal["Sous-groupe journal, import de journal, memoire du Self et resonance"]
+    c_journal["obrain journal<br/>commands/journal.rs : 79 lignes<br/>sous-groupe, 1 verbe"]
+    j_migrate["journal migrate REPERTOIRE<br/>--store STORE<br/>lit les fichiers jsonl et ecrit les zones de session"]
+    c_jimp["obrain journal-import PATH<br/>commands/import_journal.rs : 496 lignes<br/>--prefix<br/>✅ ecrit substrate.import-journal"]
+    c_memoire["obrain memoire<br/>commands/memoire.rs : 98 lignes<br/>--store, --self defaut self:triviere-dsh<br/>--appliquer : ouverture exclusive de la base du Self<br/>🔴 refuse --appliquer sans --store"]
+    c_resonance["obrain resonance<br/>commands/resonance.rs : 88 lignes<br/>--publieur, --lecteur<br/>--delier"]
+  end
+
+  subgraph Services["Services et ponts : le CLI devient un processus long"]
+    c_harness["obrain harness-serve PATH<br/>harness_serve.rs : 233 lignes<br/>--addr defaut 127.0.0.1:8090<br/>lecture seule, coexiste avec l ecrivain dsh"]
+    c_mcp["obrain mcp<br/>mcp_server.rs : 8001 lignes<br/>--store, sinon variable OBRAIN_STORE<br/>JSON-RPC sur stdin<br/>lecture seule par defaut, OBRAIN_WRITE = 1 pour ecrire<br/>🔴 refuse sans --store ni OBRAIN_STORE"]
+    c_bridge["obrain bridge<br/>alias de mcp<br/>meme struct McpArgs"]
+  end
+
+  subgraph Outils["Divers : version et completions"]
+    c_version["obrain version<br/>commands/version.rs : 115 lignes"]
+    c_completions["obrain completions SHELL<br/>clap_complete::generate sur la racine Cli"]
+  end
+
+  obrain -->|option globale| opt_format
+  obrain -->|option globale| opt_quiet
+  obrain -->|option globale| opt_verbose
+  obrain -->|option globale| opt_nocolor
+  obrain -->|option globale| opt_color
+
+  obrain -.->|lit| env_vars
+  c_mcp -->|lit| env_vars
+  c_query -->|lit| env_vars
+
+  obrain -->|sous-commande| c_info
+  obrain -->|sous-commande| c_stats
+  obrain -->|sous-commande| c_schema
+  obrain -->|sous-commande| c_validate
+  obrain -->|sous-commande| c_continuity
+  obrain -->|sous-commande| c_compare
+  obrain -->|sous-commande| c_query
+  obrain -->|sous-commande| c_shell
+  obrain -->|sous-commande| c_init
+  obrain -->|sous-commande| c_repair
+  obrain -->|sous-commande| c_repairdeg
+  obrain -->|sous-commande| c_repairprops
+  obrain -->|sous-commande| c_repairedge
+  obrain -->|sous-commande| c_enrich
+  obrain -->|sous-commande| c_compact
+  obrain -->|sous-commande| c_entretien
+  obrain -->|sous-commande| c_native
+  obrain -->|sous-commande| c_index
+  obrain -->|sous-commande| c_backup
+  obrain -->|sous-commande| c_data
+  obrain -->|sous-commande| c_wal
+  obrain -->|sous-commande| c_topo
+  obrain -->|sous-commande| c_jump
+  obrain -->|sous-commande| c_journal
+  obrain -->|sous-commande| c_jimp
+  obrain -->|sous-commande| c_viz
+  obrain -->|sous-commande| c_iam
+  obrain -->|sous-commande| c_memoire
+  obrain -->|sous-commande| c_resonance
+  obrain -->|sous-commande| c_harness
+  obrain -->|sous-commande| c_mcp
+  obrain -->|sous-commande| c_bridge
+  obrain -->|sous-commande| c_version
+  obrain -->|sous-commande| c_completions
+
+  c_index -->|sous-commande| i_list
+  c_index -->|sous-commande| i_stats
+  c_index -->|sous-commande| i_create
+  c_index -->|sous-commande| i_rebuild
+
+  c_backup -->|sous-commande| b_create
+  c_backup -->|sous-commande| b_restore
+  c_data -->|sous-commande| d_dump
+  c_data -->|sous-commande| d_load
+  c_wal -->|sous-commande| w_status
+  c_wal -->|sous-commande| w_checkpoint
+
+  c_topo -->|sous-commande| t_mat
+  c_topo -->|sous-commande| t_stats
+  c_topo -->|sous-commande| t_hilbert
+  c_jump -->|sous-commande| j_mat
+  c_jump -->|sous-commande| j_list
+  c_jump -->|sous-commande| j_stats
+
+  c_viz -->|sous-commande| v_sub
+  c_viz -->|sous-commande| v_export
+  c_viz -->|sous-commande| v_compare
+  c_viz -->|sous-commande| v_explain
+  c_viz -->|sous-commande| v_timeline
+  c_viz -->|sous-commande| v_weave
+  c_viz -->|sous-commande| v_serve
+  c_viz -->|sous-commande| v_monde
+
+  c_iam -->|sous-commande| ia_amorcer
+  c_iam -->|sous-commande| ia_utilisateurs
+  c_iam -->|sous-commande| ia_utilisateur
+  c_iam -->|sous-commande| ia_ajouter
+  c_iam -->|sous-commande| ia_desactiver
+  c_iam -->|sous-commande| ia_reactiver
+  c_iam -->|sous-commande| ia_mdp
+  c_iam -->|sous-commande| ia_esp_add
+  c_iam -->|sous-commande| ia_esp_del
+  c_iam -->|sous-commande| ia_adm_add
+  c_iam -->|sous-commande| ia_adm_del
+  c_iam -->|sous-commande| ia_jetons
+  c_iam -->|sous-commande| ia_jeton
+  c_iam -->|sous-commande| ia_jeton_rev
+  c_iam -->|sous-commande| ia_roles
+  c_iam -->|sous-commande| ia_politiques
+  c_iam -->|sous-commande| ia_pol_del
+  c_iam -->|sous-commande| ia_audit
+  c_iam -->|sous-commande| ia_exporter
+  c_iam -->|sous-commande| ia_effacer
+
+  c_journal -->|sous-commande| j_migrate
+
+  c_query -->|refuse si la base n existe pas, avec le remede obrain init| c_init
+  c_shell -->|refuse si la base n existe pas, avec le remede obrain init| c_init
+  v_serve -.->|optionnel : enrich-ricci fait dans le serveur, car il detient le verrou exclusif| c_enrich
+  d_load -.->|meme primitive create_property_index, debranchee par --no-index| i_create
+  c_bridge -.->|meme point d entree que| c_mcp
+
+  v_weave -.->|optionnel : base servie par| v_serve
+
+  classDef mesure fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef groupe fill:#2f6f4f,stroke:#173a29,color:#fff
+  classDef amont fill:#8a8a12,stroke:#4d4d0a,color:#fff
+
+  class obrain,opt_format,opt_quiet,opt_verbose,opt_nocolor,opt_color,c_info,c_stats,c_schema,c_validate,c_continuity,c_compare,c_query,c_shell,c_init,c_repair,c_repairdeg,c_repairprops,c_repairedge,c_enrich,c_compact,c_entretien,c_native,i_list,i_stats,i_create,i_rebuild,b_create,b_restore,d_dump,d_load,w_status,w_checkpoint,t_mat,t_stats,t_hilbert,j_mat,j_list,j_stats,v_sub,v_export,v_compare,v_explain,v_timeline,v_weave,v_serve,v_monde,ia_amorcer,ia_utilisateurs,ia_utilisateur,ia_ajouter,ia_desactiver,ia_reactiver,ia_mdp,ia_esp_add,ia_esp_del,ia_adm_add,ia_adm_del,ia_jetons,ia_jeton,ia_jeton_rev,ia_roles,ia_politiques,ia_pol_del,ia_audit,ia_exporter,ia_effacer,j_migrate,c_jimp,c_memoire,c_resonance,c_harness,c_mcp,c_bridge,c_version,c_completions mesure
+  class c_index,c_backup,c_data,c_wal,c_topo,c_jump,c_viz,c_iam,c_journal groupe
+  class env_vars amont

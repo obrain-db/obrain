@@ -326,6 +326,7 @@ impl SqlPgqTranslator {
             variable: variable.clone(),
             label,
             input: input.map(Box::new),
+            pushdown_hint: None,
         });
 
         // Add filters for inline properties (e.g., {city: 'NYC'})
@@ -723,17 +724,19 @@ impl SqlPgqTranslator {
             ast::Literal::Duration(s) => obrain_common::types::Duration::parse(s)
                 .map_or_else(|| Value::from(s.as_str()), Value::Duration),
             ast::Literal::Datetime(s) => {
-                if let Some(pos) = s.find('T') {
+                // Doublon assumé du littéral GQL (relevé note 0007e004) :
+                // même règle — 't' minuscule admis, illisible → NULL.
+                if let Some(pos) = s.find(['T', 't']) {
                     if let (Some(d), Some(t)) = (
                         obrain_common::types::Date::parse(&s[..pos]),
                         obrain_common::types::Time::parse(&s[pos + 1..]),
                     ) {
                         Value::Timestamp(obrain_common::types::Timestamp::from_date_time(d, t))
                     } else {
-                        Value::from(s.as_str())
+                        Value::Null
                     }
                 } else {
-                    Value::from(s.as_str())
+                    Value::Null
                 }
             }
             ast::Literal::ZonedDatetime(s) => obrain_common::types::ZonedDatetime::parse(s)

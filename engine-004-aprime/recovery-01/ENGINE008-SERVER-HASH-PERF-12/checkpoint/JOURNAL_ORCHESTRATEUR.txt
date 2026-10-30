@@ -1,0 +1,36 @@
+=== localisation des artefacts exp12 ===
+absent
+8:D    = "/tmp/exp11"
+=== log complet ===
+[18:40:10] === ORCHESTRATEUR ENGINE008 ENDTOEND-10 ===
+[18:40:10] hote=127.0.0.1 port=8480 (meme hote, meme espace reseau)
+[18:40:10] DELAIS PREENREGISTRES: demarrage<=600s requete<=240s
+[18:40:10] SERVER_PID=664139 (groupe propre, cwd=/home/triviere/projects/llama-obrain-cuda-f1a)
+[18:40:37] PRET apres 27.0s (probe#10) http=200 body={"status":"ok"}
+[18:40:37] --- ETAT AVANT A (horodate) ---
+[18:40:37]   PID=664139 VIVANT | ecoute: LISTEN 0      512        127.0.0.1:8480       0.0.0.0:*    users:(("llama-server",pid=664139,fd=32))
+[18:40:37]   sonde HTTP: http=200 body={"status":"ok"}
+[18:40:37]   URL CLIENT EXACTE: POST http://127.0.0.1:8480/jspace/inject_knowledge
+[18:40:37] IDS AUTORITAIRES: 59 lus, prefixe=58, 59e ID=198
+[18:40:38] [A] http=200 duree=1.657s err=None
+[18:40:38] A: ref=046f5945a8dc6fc9 blob_bytes=160697024 fact_tokens=58
+[18:40:38] ORDRE PREENREGISTRE DES PAIRES : [('B', 'C'), ('C', 'B'), ('B', 'C')]
+[18:40:38] --- PAIRE 1 : B puis C ---
+[18:40:50] [B1] http=200 duree=11.095s err=None
+[18:41:00] [C1] http=200 duree=10.480s err=None
+[18:41:00]   B1: prefix_tok=58 imported=False prep_ms=874.322021484375 ids=[13,198,248069,271,3793,13] stop=EOS
+[18:41:00]   C1: prefix_tok=0 imported=True prep_ms=144.5570068359375 ids=[13,198,248069,271,3793,13] stop=EOS
+[18:41:00]   C1 ms: lookup=50.75699996948242 compat=0.012000000104308128 blob_sha=64.51799774169922 import=6.890999794006348
+[18:41:00] --- PAIRE 2 : C puis B ---
+[18:41:11] [C2] http=200 duree=10.490s err=None
+[18:41:22] [B2] http=200 duree=11.224s err=None
+[18:41:22]   B2: prefix_tok=58 imported=False prep_ms=824.85498046875 ids=[13,198,248069,271,3793,13] stop=EOS
+[18:41:22]   C2: prefix_tok=0 imported=True prep_ms=143.5030059814453 ids=[13,198,248069,271,3793,13] stop=EOS
+[18:41:22]   C2 ms: lookup=49.75 compat=0.012000000104308128 blob_sha=64.50199890136719 import=6.9029998779296875
+[18:41:22] --- PAIRE 3 : B puis C ---
+[18:41:33] [B3] http=200 duree=11.351s err=None
+[18:41:43] [C3] http=200 duree=10.026s err=None
+[18:41:43]   B3: prefix_tok=58 imported=False prep_ms=804.1530151367188 ids=[13,198,248069,271,3793,13] stop=EOS
+[18:41:43]   C3: prefix_tok=0 imported=True prep_ms=143.28900146484375 ids=[13,198,248069,271,3793,13] stop=EOS
+[18:41:43]   C3 ms: lookup=49.50199890136719 compat=0.012000000104308128 blob_sha=64.50499725341797 import=6.8460001945495605
+[18:41:43] === COMPARAISON DES PREMIERS LOGITS SUR LES 3 PAIRES ===

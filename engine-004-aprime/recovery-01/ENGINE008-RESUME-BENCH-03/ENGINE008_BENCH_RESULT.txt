@@ -1,0 +1,120 @@
+ENGINE-008 -- MESURE DU GAIN DE REPRISE HYBRIDE
+==========================================================================
+5 PAIRES, EQUIVALENCE NUMERIQUE PARFAITE, RATIO MEDIAN 5.24x.
+Aucun retry. Un seul essai.
+
+=== LES MESURES, D'ABORD ===
+  RECOMPUTE_MS_LIST=[403.318, 383.785, 359.483, 381.523, 362.305]
+  RESUME_MS_LIST=   [ 72.310,  72.884,  71.695,  73.448,  72.829]
+
+  RECOMPUTE_MEDIAN_MS=381.523   MIN=359.483   MAX=403.318
+  RESUME_MEDIAN_MS=   72.829    MIN= 71.695   MAX= 73.448
+  **MEDIAN_RATIO_RECOMPUTE_OVER_RESUME=5.2386**
+
+  DEFINITION EXACTE DU RATIO : MEDIANE(RECOMPUTE_MS) / MEDIANE(RESUME_MS),
+  sur les 5 paires completes. > 1 signifie que la reprise est plus rapide.
+  Aucune mesure n'a ete ecartee.
+
+  RATIOS PAR PAIRE : 5.5776, 5.2657, 5.0141, 5.1945, 4.9748
+  (croissance puis decroissance : la 1re paire est la plus favorable, les
+  suivantes se stabilisent : effet de cache sur le modele et les poids, que
+  je DECLARE et que je ne quantifie pas.)
+
+  SOUS-DUREES (mediane implicite, valeurs par paire dans le journal) :
+    A_PREFILL_MS   ~292-308   A_DECODE59_MS  ~67-95
+    B_IMPORT_MS     ~3.76-4.28  B_DECODE59_MS  ~67.9-69.2
+  La synchronisation est INCLUSE dans chaque frontiere et comptee UNE SEULE
+  fois : la frontiere de prefill et celle de decodage separent deux appels
+  distincts, et `llama_synchronize` est appele dans la seconde.
+
+=== EQUIVALENCE NUMERIQUE : PASS SUR 5/5 ===
+  Critere PREENREGISTRE dans le code, non ajuste apres observation :
+      ok = logits finis ET identite BINAIRE ET MAX_ABS_DIFF==0 ET argmax egal
+  Sur les 5 paires :
+    CMP FINITE=YES  BINARY_IDENTICAL=YES  MAX_ABS_DIFF=0  L2_DIFF=0
+        ARGMAX_A=760  ARGMAX_B=760  MATCH=YES  PAIR_OK=YES
+  PAIRS_COMPLETED=5   PAIRS_NUMERICALLY_OK=5   NUMERICAL_EQUIVALENCE=PASS
+
+  Tokens de la PREMIERE paire (seule a generer) :
+    CONTROL_IDS = RESTORED_IDS =
+    [760,1156,369,9859,728,310,5707,1132,440,328,3793,1149,1061,369,264,4145,
+     1622,13,353,1220,5707,440,1066,328,3793,1149,198,248069,271,3793,13,248046]
+    TOKEN_SEQUENCE_MATCH=YES
+    Texte identique : The user is asking me to respond only with "OK." This is a
+    simple request. I should respond with just "OK." -- </think> (248069)
+    puis OK. puis <|im_end|> (248046, EOS).
+
+=== CONDITIONS ===
+  MODELE   Qwen3.8-27B-OBRAIN-v3.gguf  sha256 1d7c9409...  (voir BUILD_AND_LINKAGE)
+  59 IDs   ids59.txt sha256 fc39bb86b0a942c2855d4cd90016f87bf655d4463731631658324e897021dbab
+           rendu 92eb0cb3...  IDs ee174071...  VERIFIES
+  N_CTX=512  N_BATCH=512  N_UBATCH=512  n_seq_max=1
+  TRANSFER_FLAGS=0   PARTIAL_ONLY_REFUSED=YES
+  ENV_OBRAIN_STATE_TYPE=<ABSENTE>   ENV_OBRAIN_STATE_F16=<ABSENTE>
+  ORDRE APPLIQUE : A/B, B/A, A/B, B/A, A/B  (conforme au preenregistrement)
+  CONTEXTE NEUF pour CHAQUE condition (11 contextes crees au total).
+  Horloge : std::chrono::steady_clock, monotone.
+
+  HORS MESURE PRINCIPALE, mesures separement :
+    MODEL_LOAD_MS=5457.860   (une seule fois, modele reutilise)
+    CTX_CREATE_MS=~55-92 par contexte
+  **Aucune condition n'est qualifiee de « froide » sans mesure correspondante.**
+  Cette experience est une MESURE SEQUENTIELLE DANS UN PROCESSUS, avec
+  reutilisation du modele charge et effets de cache possibles. C'est ainsi
+  qu'elle doit etre lue.
+
+  **Aucun acces disque dans la mesure** : le blob est garde EN MEMOIRE.
+    BLOB_BYTES=160697016
+    BLOB_SHA256=7a40fc6b9f270a87053ca6a352b68a2cbf83401b945b62f396eb70147cf34832
+    Le SHA est IDENTIQUE a celui produit en RUN-02 : le blob est compatible et
+    reproductible, et il a ete verifie AVANT usage. Il a neanmoins ete REPRODUIT
+    dans ce processus pour que la mesure soit homogene.
+
+  DESTINATION : DESTINATION_PREFIX_DECODE_CALLS=0 et
+  DESTINATION_PREFIX_TOKEN_COUNT=0 sur les 5 paires.
+
+=== ANALYSE DES COUTS ===
+  COUT DE PRODUCTION INITIALE DU BLOB   SOURCE_BLOB_PREPARATION_MS=718.733
+      dont SOURCE_PREFIX_MS=673.511  (le prefill des 58 IDs dans la source)
+      dont SOURCE_EXPORT_MS=45.221   (get_size + get_data vers le buffer)
+  COUT D'UNE REPRISE DEPUIS UN BUFFER DEJA DISPONIBLE   72.829 ms (mediane)
+  COUT DISQUE / RESEAU   **NON MESURE ICI** -- le blob est en memoire.
+  CHARGEMENT ET CREATION DE CONTEXTE   hors mesure principale.
+
+  Le cout d'import lui-meme est faible : ~3.8-4.3 ms pour 160.7 Mo, soit
+  ~37-42 Go/s depuis la memoire de l'hote.
+
+  SEUIL DE RENTABILITE, calcule :
+    production = 718.733 ms = 1.88 recalculs
+    la reprise devient rentable au 3e usage (N=3) ;
+    a N=5 : 1 082.9 ms cumules contre 1 907.6 ms en recalcul, soit 43.2 %
+    d'economie sur ce seul bloc de 5.
+
+=== CE QUE CETTE MESURE ETABLIT, ET CE QU'ELLE N'ETABLIT PAS ===
+  ETABLI : sur le candidat Q1 inchange, la reprise depuis un blob hybride
+  deja disponible produit des logits BINAIREMENT IDENTIQUES et la meme
+  sequence de 32 tokens, pour un temps median 5.24x inferieur, sur 5 paires
+  et avec l'ordre alterne preenregistre.
+  NON ETABLI :
+   - un gain de BOUT EN BOUT. Le blob doit etre produit une fois (718.733 ms),
+     et son transport disque/reseau n'est PAS mesure ici.
+   - une elimination globale du prefill : le prefixe reste CALCULE une fois
+     dans la source. C'est un transfert d'etat, pas une suppression.
+   - une equivalence au-dela de 32 tokens : seule la premiere paire genere.
+   - une reproductibilite temporelle : 5 paires dans UN processus, avec
+     effets de cache non quantifies.
+
+DESTINATION_PREFILL_AVOIDED=YES
+SOURCE_PREFILL_REQUIRED=YES
+GLOBAL_PREFILL_ELIMINATION=NO
+NUMERICAL_EQUIVALENCE=PASS
+RECOMPUTE_MEDIAN_MS=381.523
+RESUME_MEDIAN_MS=72.829
+MEDIAN_RATIO_RECOMPUTE_OVER_RESUME=5.2386
+SOURCE_BLOB_PREPARATION_MS=718.733
+BLOB_BYTES=160697016
+DISK_AND_NETWORK_COST_MEASURED=NO
+PAIR_COUNT=5
+ATTEMPT_COUNT=1
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO

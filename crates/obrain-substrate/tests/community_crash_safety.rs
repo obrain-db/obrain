@@ -56,6 +56,9 @@ fn sample_node(i: u32, community: u32) -> NodeRecord {
         scar_util_affinity: PackedScarUtilAff::new(0, 0, 0, false).pack(),
         centrality_cached: 0,
         flags: 0,
+        // (jalon 2) appartenance : fixture publique.
+        tenant_id: 0,
+        _reserve: 0,
     }
 }
 

@@ -29,8 +29,21 @@ offset  size  field
 28      ...   payload      (length bytes, bincode-serialized `WalPayload` enum)
 ```
 
-- Records are written with `O_APPEND`; partial tail writes are detected by `length + crc32` mismatch and truncated at recovery.
-- `lsn` starts at 1 and never resets. `lsn` is the source of truth for causality; `timestamp` is informational.
+- Records are written with `O_APPEND` — **et c'est ce qui rend l'append atomique
+  entre PROCESSUS** (avant le 2026-10-06 le fichier n'était PAS ouvert en ajout :
+  deux processus écrivaient au même offset de descripteur et le second écrasait
+  le premier, frame par frame, avec des CRC valides — 83,3 % de perte mesurée).
+- **UNE SEULE écriture par record** (jamais `write_all`, qui BOUCLE et peut donc
+  poser une frame HYBRIDE après un `EINTR`/`ENOSPC` partiel). Une écriture courte
+  est ANNULÉE par troncature à la position de départ ; au-delà de
+  `MAX_FRAME_BYTES` (1 Gio), la frame est refusée à l'encodage.
+- `lsn = ancre + position` : le LSN est DÉRIVÉ de l'offset octet de la frame, et
+  l'ancre est durable (side-car `<wal>.lsn`, 32 octets, avancée par le checkpoint
+  élu). `lsn` reste la source de vérité pour la causalité, mais ce n'est plus un
+  compteur : en multi-écrivain (régime `OAppend`) c'est une **borne inférieure**
+  de la position. `timestamp` reste informatif.
+- Un TROU de zéros SUIVI DE DONNÉES est NOMMÉ (`WalTrou`), jamais confondu avec
+  une fin de fichier pré-allouée ni avec une frontière de crash.
 
 ## 3. Record kinds
 
@@ -88,7 +101,11 @@ Writer thread                    Reader threads
 6. release AppenderMutex
 ```
 
-**Batching**: mutations in the same logical transaction share one `lsn` range and a trailing record with `flags.bit(0) = 1` ("commit marker"). Readers never observe partial transactions because the mmap update in step 5 happens **after** the fsync of step 4.
+**Batching**: mutations in the same logical transaction are stamped with DISTINCT
+`lsn` (each record carries its own position) and share a trailing record with
+`flags.bit(0) = 1` ("commit marker"). `WalWriter::append_batch` pose jusqu'à N
+records en UN SEUL `write` (group commit) : un lot est, sur le disque,
+indiscernable de N appends successifs. Readers never observe partial transactions because the mmap update in step 5 happens **after** the fsync of step 4.
 
 **Group-commit**: writers may coalesce up to `wal_group_commit_ms` (default 2 ms) of concurrent mutations into a single fsync. Measured latency target: p99 < 5 ms for single-node update on NVMe.
 
@@ -122,7 +139,13 @@ A checkpoint is a durable snapshot of the in-memory + mmap state such that every
 2. `msync(mmap, MS_SYNC)` on all data files (`nodes`, `edges`, `props`, `strings`, `tier0/1/2`, `hilbert`, `community`).
 3. Write a fresh `substrate.meta.tmp` with updated `last_wal_offset` and `last_checkpoint`.
 4. `fsync(meta.tmp)`; `rename(meta.tmp, meta)`; `fsync(parent_dir)`.
-5. Append a `Checkpoint` WalRecord.
+5. **Publier l'ANCRE durable** (`<wal>.lsn` : `ancre += taille du segment`, par
+   tmp+rename) — AVANT la troncature, sinon les LSN du nouveau segment
+   RECOUVRERAIENT ceux du précédent. L'ordre est dans `WalWriter::truncate()`,
+   pas chez l'appelant.
+6. Append a `Checkpoint` WalRecord, puis `sceller_segment()` (relève le plancher
+   du side-car : un fichier plus court que son plancher est une troncature
+   ÉTRANGÈRE, et elle est nommée à l'ouverture suivante).
 6. Truncate `substrate.wal` to the Checkpoint record boundary.
 7. Release CheckpointMutex.
 
@@ -163,7 +186,15 @@ See T3 (Foundation WAL) and T4 (crash-safety):
 - [ ] Property test: random sequence of mutations + random crash + replay ⇒ graph state equals state at last committed LSN.
 - [ ] SIGKILL test: spawn child, run workload, kill -9, re-open, verify invariants (no orphan edges, no duplicated nodes, idempotent).
 - [ ] Fuzz tail corruption: truncate WAL at every byte offset in the last record, verify recovery.
-- [ ] Benchmark group-commit at 1/10/100/1000 concurrent writers → p99 latency curve.
+- [x] **Axe APPEND (2026-10-06)** — ces cases sont désormais couvertes par des
+  tests réels, y compris INTER-PROCESSUS (ce que la spécification ne prévoyait
+  pas) : `tests/mw_interprocess_preuve.rs` (T2 : 6 processus, zéro perte, EOF
+  exact — **rouge avant : 83,3 % de perte**), `tests/mw_interprocess_append.rs`
+  (T2/T2b/T3/T4/T7 + débit à N écrivains), `tests/wal_append_unite.rs`
+  (réconciliation d'ouverture, trou nommé, borne de taille, ENOSPC),
+  `tests/wal_ecriture_courte.rs` (quota disque réel), `tests/wal_latence_append.rs`.
+- [x] Benchmark group-commit : `benches/wal_append.rs` (chiffres datés dans
+  `benches/BANCS.md`).
 
 ## 11. Open questions
 

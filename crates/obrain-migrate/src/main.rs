@@ -50,21 +50,23 @@ struct Cli {
     /// Input `.obrain` database (either a directory of epoch files or a
     /// single `GRAF`-magic file). Auto-detected at open time.
     ///
-    /// Unused in `--finalize` / `--finalize-v2` / `--upgrade-edges-v2` modes.
+    /// Unused in `--finalize` / `--finalize-v2` / `--upgrade-edges-v2` /
+    /// `--checkpoint` modes.
     #[arg(
         long = "in",
         value_name = "PATH",
-        required_unless_present_any = ["finalize", "finalize_v2", "upgrade_edges_v2"],
+        required_unless_present_any = ["finalize", "finalize_v2", "upgrade_edges_v2", "checkpoint"],
     )]
     input: Option<PathBuf>,
 
     /// Output `.obrain` directory (substrate format). Created if absent.
     ///
-    /// Unused in `--finalize` / `--finalize-v2` / `--upgrade-edges-v2` modes.
+    /// Unused in `--finalize` / `--finalize-v2` / `--upgrade-edges-v2` /
+    /// `--checkpoint` modes.
     #[arg(
         long = "out",
         value_name = "PATH",
-        required_unless_present_any = ["finalize", "finalize_v2", "upgrade_edges_v2"],
+        required_unless_present_any = ["finalize", "finalize_v2", "upgrade_edges_v2", "checkpoint"],
     )]
     output: Option<PathBuf>,
 
@@ -75,6 +77,34 @@ struct Cli {
     /// re-migrate from legacy. Mutually exclusive with `--in` / `--out`.
     #[arg(long = "finalize", value_name = "SUBSTRATE_DIR", conflicts_with_all = ["input", "output", "resume"])]
     finalize: Option<PathBuf>,
+
+    /// Checkpoint an existing substrate base: open it, flush, then
+    /// truncate the WAL and reseed it with a checkpoint marker.
+    ///
+    /// No service called the checkpoint primitive before this flag
+    /// existed (only the `checkpoint_cli` example, by hand), so a
+    /// long-lived base accumulates an unbounded WAL that is **replayed
+    /// in full on every open** — measured at 452 MB / 4.2 M inline
+    /// property writes on a 93 616-node base. Running this offline
+    /// bounds that cost: 2.5x faster open on that base.
+    ///
+    /// It is also the prerequisite for an offline sidecar conversion
+    /// (see the `vectorize_list_props` example): with a live WAL, values
+    /// journalled before the conversion are replay candidates on the
+    /// next open, because `merge_wal_inline_props` runs after
+    /// `load_properties` has routed the converted values out. The
+    /// documented order is `--checkpoint` → convert → `--finalize`.
+    ///
+    /// Run with the service offline. Safe to repeat: flush precedes the
+    /// truncate, so no committed state depends on the journal.
+    ///
+    /// Mutually exclusive with `--in` / `--out` / `--finalize`.
+    #[arg(
+        long = "checkpoint",
+        value_name = "SUBSTRATE_DIR",
+        conflicts_with_all = ["input", "output", "resume", "finalize"]
+    )]
+    checkpoint: Option<PathBuf>,
 
     /// T17c Step 4 — Drain the legacy `substrate.props` bincode
     /// sidecar into the `substrate.props.v2` page chain (+ heap v2),
@@ -201,6 +231,15 @@ fn main() -> Result<()> {
     if let Some(target) = cli.finalize {
         tracing::info!("obrain-migrate --finalize: target={}", target.display());
         converter::finalize(&target)?;
+        tracing::info!("obrain-migrate: done");
+        return Ok(());
+    }
+
+    // Bound the WAL. See `converter::checkpoint` for the contract and
+    // why this is a prerequisite for offline sidecar conversions.
+    if let Some(target) = cli.checkpoint {
+        tracing::info!("obrain-migrate --checkpoint: target={}", target.display());
+        converter::checkpoint(&target)?;
         tracing::info!("obrain-migrate: done");
         return Ok(());
     }

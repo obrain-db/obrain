@@ -1,0 +1,137 @@
+ENGINE-008 -- RESULTATS FINAUX : SEQUENCE COMPLETE, QUATRE RUNS PASS
+==========================================================================
+LA SEQUENCE AUTORISEE A ABOUTI : 4/4 runs PASS, 0 arret, 0 retry.
+L'ASYMETRIE BASELINE/CANDIDAT EST OBSERVEE ET REPRODUCTIBLE.
+
+=== 1. LE TEXTE REEL ET LES IDs, PAR RUN ===
+  baseline1  IDs [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]
+             TEXTE "We need answer user: \"Répond"      arret MAX_NEW_TOKENS  8/8
+  candidate1 IDs [760, 1156, 369, 9859, 728, 310, 5707, 1132]
+             TEXTE "The user is asking me to respond only" arret MAX_NEW_TOKENS 8/8
+  baseline2  IDs [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]   -- IDENTIQUE a baseline1
+             TEXTE "We need answer user: \"Répond"
+  candidate2 IDs [760, 1156, 369, 9859, 728, 310, 5707, 1132]    -- IDENTIQUE a candidate1
+             TEXTE "The user is asking me to respond only"
+
+  REPRODUCTIBILITE MESUREE, PAS SUPPOSEE : IDs, textes et compteurs sont
+  IDENTIQUES deux a deux. Les rapports ont la meme taille et le meme nombre de
+  lignes (baseline 105477 octets / 1856 lignes ; candidat 611650 / 7127), mais
+  leurs SHA DIFFERENT : le chemin de capture (`run1` vs `run2`) est embarque
+  dans le rapport. Je ne revendique donc PAS une byte-identite des fichiers --
+  seulement l'identite des tokens, des textes et des compteurs, qui est ce qui
+  importe ici.
+  **LE CANDIDAT PRODUIT UN TEXTE DIFFERENT DE LA BASELINE** : c'est la
+  manifestation observable du modele OBRAIN-v3, et elle est stable.
+  « OK. » n'est PAS la sortie -- la sortie est du raisonnement, conserve tel quel.
+
+  COMPTEURS, par run : DECODE_ATTEMPTS=7 DECODE_SUCCESS=7 (7 continuations,
+  0 echec) ; REAL_LOAD_CALLS=1 ; 8 tokens = 1 issu des logits du prefill
+  + 7 issus des continuations.
+
+=== 2. L'ASYMETRIE STRUCTURELLE : LE RESULTAT SCIENTIFIQUE ===
+  BASELINE (Q4_K_M), deux fois de facon identique :
+    P4' : p4_overall=PASS, p4_adopted=true, p4_not_applicable=FALSE
+          les SIX conditions PASS sur donnees REELLES (registre 851 tenseurs,
+          848 poids blk.*, **0 TQ2_G128**), libllama verifiee
+    WHT : wht_verdict=SURFACE_MISSING_OR_MALFORMED
+          blocker nomme : "GRAPH_CAPTURE_MANIFEST.csv : manifeste absent"
+          **extractions_total=0**
+    SURFACES produites : **EVENT_LEDGER.csv SEULEMENT** (aucune surface WHT)
+    INTERPRETATION : l'inatteignabilite du chemin WHT est ETABLIE par P4' C1-C6,
+      et CORROBOREE par l'absence de toute extraction et de toute surface. Ce
+      n'est PAS une « absence directement observee » revendiquee : c'est une
+      inatteignabilite structurelle prouvee, dont l'absence d'extraction est la
+      consequence attendue.
+
+  CANDIDAT (OBRAIN-v3), deux fois de facon identique :
+    P4' : p4_overall=PASS, p4_adopted=true, **p4_not_applicable=TRUE**
+          P4' est BASELINE uniquement : elle n'est PAS evaluee pour le candidat
+          et ne le bloque pas. La portee est portee par le ROLE VALIDE, pas par
+          un tag libre.
+    WHT : wht_verdict=INCOMPLETE_COVERAGE   (limite de COUVERTURE, pas un echec)
+          wht_n1=168  wht_n2=336  wht_n3=168
+          wht_targets_expected=336
+          **wht_rotation_true=672  wht_rotation_false=0**
+          **extractions_total=2**
+    SURFACES produites : GRAPH_CAPTURE_MANIFEST.csv, GRAPH_ROLE_RELATIONSHIPS.csv,
+      TARGET_EFFECT_PATH.csv, RESIDENCY_MANIFEST.csv, SUBMITTED_GRAPH_SNAPSHOTS.csv,
+      EPOCH_CLASSIFICATION.csv, BACKEND_OWNERSHIP_MANIFEST.csv, EVENT_LEDGER.csv
+      + **1344 fichiers .bin** (activations et base_output par cible)
+    INTERPRETATION : sur le candidat, la WHT EST APPLIQUEE -- 672 rotations
+      vraies, 0 fausse, sur 336 cibles attendues. La couverture est INCOMPLETE
+      (N3=168 sur N2=336) : c'est une limite de couverture declaree, jamais
+      transformee en PASS.
+
+  **LE CONTRASTE EST LE RESULTAT** : meme entree de 59 tokens, meme configuration,
+  meme harnais -- la baseline ne produit AUCUNE extraction WHT, le candidat en
+  produit 2 et 672 rotations. Deux fois chacune.
+
+=== 3. LES GATES, TOUTES EVALUEES SUR DONNEES REELLES ===
+  P4' six conditions : C1 registre complet (851) PASS · C2 types REELS lus sur
+  les tenseurs, jamais deduits du nom PASS · C3 aucun poids pertinent TQ2_G128
+  sur la baseline PASS · C4 audit des sites WHT PASS · C5 identite libllama et
+  chemin PASS · C6 limites enoncees PASS.
+  Inventaire : n_inventory_entries=168, SHA confronte a l'autorite
+  e4c96b6e..., contenu transmis au pipeline.
+  Ordre applique : autorisation -> chargement -> registre -> P4' -> GATE ->
+  contexte -> prefill. Sur la baseline, P4' OPEN ; le calcul a donc ete autorise
+  PAR la gate, non malgre elle.
+  Limites distinguees : une limite de COUVERTURE (WHT_INCOMPLETE_COVERAGE,
+  INVENTORY_NOT_GLOBALLY_COMPLETE) n'est pas bloquante ; une CONFIGURATION
+  invalide (INVENTORY_ABSENT/EMPTY/SHA_MISMATCH, gate P4' bloquee sur la
+  baseline) l'est. Portee par ROLE.
+
+=== 4. INJECTION (Phase C) ===
+GRAPH_INJECTION_MECHANISM=UNRESOLVED
+  La Phase C exige un mecanisme natif d'injection identifie ET son entree
+  reproductible. Je n'ai PAS trouve d'interface d'injection native dans le
+  perimetre examine (fork Q1 : llama-graph/context/batch, f1a-capture ; harness
+  et ses adaptateurs).
+  ETABLI : la capture f1a OBSERVE le graphe ggml et n'injecte ni tenseur, ni
+  activation, ni etat, ni KV. La nommer « injection » serait faux.
+  AUCUNE SUBSTITUTION INVENTEE : ni dump numerique, ni contexte textuel.
+  LES DEUX SMOKE TESTS NE SONT DONC PAS EXECUTES. Ils exigeaient une entree
+  reproductible etablie ; elle ne l'est pas.
+  MANQUE PRECIS : il faut designer l'interface visee. « Injection » peut
+  legitimement recouvrir plusieurs mecanismes distincts -- graphe, tenseur ou
+  activation, etat recurrent, KV, contexte textuel -- qui impliquent des
+  experiences differentes. Les surfaces f1a candidates (activations et
+  base_output, 1344 fichiers .bin, par cible et par epoch) SONT une entree
+  numerique reproductible reellement produite : si l'injection visee est
+  l'injection d'ACTIVATION, cette entree existe et est qualifiee.
+
+PREFLIGHT_SEQUENCE_RESULT=PASS
+GENERATED_IDS_PER_RUN=baseline1:[1596,1144,4087,1156,25,328,81911,3396] candidate1:[760,1156,369,9859,728,310,5707,1132] baseline2:[1596,1144,4087,1156,25,328,81911,3396] candidate2:[760,1156,369,9859,728,310,5707,1132]
+GENERATED_TEXT_PER_RUN=baseline1+baseline2:"We need answer user: \"Répond" ; candidate1+candidate2:"The user is asking me to respond only"
+INJECTION_APPLICATION_PROOF=NOT_ESTABLISHED
+RETRY_COUNT=0
+EXTRA_RUN_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+TASK_QUALITY_RESULT_COUNT=0
+
+=== 5. LES CAUSES REPAREES DANS CETTE PASSE ===
+  D2 : `prepare_capture` ECRASAIT OBRAIN_F1A_INVENTORY avec
+       `<capture>/inventory.json`, un fichier inexistant -- detruisant la
+       configuration verifiee. Corrige : la variable n'est plus ecrasee, et le
+       SHA de l'inventaire est confronte a l'autorite.
+  D3 : `acquire_registry` faisait `return r;` AVANT de peupler le registre quand
+       n_nextn==0 -- le cas de la baseline. Le registre sortait VIDE et C1..C5
+       restaient UNKNOWN ; la population etait meme placee APRES le return (code
+       mort). Corrige : registre COMPLET (851), types reels lus sur les tenseurs.
+  PORTEE : la limite `P4PRIME_GATE_BLOCKED` bloquait la baseline ET le candidat.
+       Corrige : elle ne bloque QUE si `p4_applies`. Les six conditions ne sont
+       pas evaluees pour le candidat (`p4_not_applicable=true`).
+  ROLE : le point d'entree n'affectait NI `validated_role` NI `p4_applies` --
+       un patch qui n'avait pas pris. Corrige, avec assertion sur l'ancre.
+  BLOCAGE : la completude d'inventaire et des invocations attendues bloquait la
+       baseline, alors que l'absence de cible TQ2 est son ETAT LEGITIME. Corrige :
+       portee par role.
+  MESSAGE : le rapport nommait `limits[0]` au lieu du VRAI bloqueur. Corrige.
+
+--- INVARIANTS PRESERVES ---
+Aucun retry, aucun run supplementaire (4 invocations exactement, arret NON
+declenche). Aucune evaluation qualite, aucun scorer, aucun NLL/PPL, aucun long
+contexte. Q1 ni modifie ni reconstruit ; CUDA graphs intacts. Les exigences
+baseline et candidate restent DISTINCTES. Les artefacts RUN-01 a RUN-09 et
+FINAL-01 a FINAL-05 sont conserves.

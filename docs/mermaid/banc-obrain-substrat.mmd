@@ -1,0 +1,207 @@
+%% Ce que ce diagramme prouve : l organisation INTERNE du substrat de stockage du crate
+%% obrain-substrate tel qu il est ECRIT dans le code : enregistrements Pod repr(C) a stride
+%% fixe, pages de 4 KiB scellees par CRC32, zone de proprietes v2 chainee, et stockage de la
+%% topologie par chaines d adjacence dans la zone des aretes.
+%% Source : lecture directe des fichiers Rust cites, chacun portant son nombre de lignes
+%% mesure par wc -l, et ses tailles MESUREES par les asserts de compilation
+%% `const _: [(); 1] = [(); (size_of::<T>() == N) as usize];` presents dans le code.
+%% MESURE : strides, tailles de page, offsets de champs, noms de fichiers de zone, flags
+%% par defaut, constantes de magic. DEDUIT : rien de plus que ce que ces lignes disent.
+%% NON ETABLI ici : docs/rfc/substrate/format-spec.md annonce NodeRecord 32 B / EdgeRecord
+%% 32 B et un autre ordre de champs dans PropertyPageHeader que ceux du code (record.rs et
+%% page.rs font foi, ils sont assertes) ; la disposition octet par octet d une base VIVANTE
+%% n a pas ete relue en hexdump ; le cablage complet des unites 512 dans le store reste
+%% derriere un flag d environnement a OFF.
+
+flowchart TB
+
+  subgraph Crate["Crate obrain-substrate : 53 fichiers .rs, 82 802 lignes mesurees"]
+    lib["lib.rs<br/>169 lignes<br/>52 modules pub declares"]
+    record_mod["record.rs<br/>889 lignes<br/>enregistrements Pod repr C"]
+    page_mod["page.rs<br/>1039 lignes<br/>pages de proprietes"]
+    heap_mod["heap.rs<br/>333 lignes<br/>tas de chaines et octets"]
+    meta_mod["meta.rs<br/>159 lignes<br/>en-tete substrate.meta"]
+    propszone_mod["props_zone.rs<br/>2619 lignes<br/>zone de proprietes v2"]
+    unite_mod["unite.rs<br/>450 lignes<br/>unites 512 et carrier 4K"]
+    file_mod["file.rs<br/>2533 lignes<br/>ZoneFile mmap et noms de zones"]
+    writer_mod["writer.rs<br/>4630 lignes<br/>WAL puis mmap"]
+    wal_mod["wal.rs<br/>1185 lignes<br/>trames de journal"]
+    store_mod["store.rs<br/>34 172 lignes<br/>SubstrateStore"]
+    dict_mod["dict.rs<br/>1203 lignes<br/>dictionnaires persistants"]
+  end
+
+  subgraph Enregistrements["Enregistrements Pod repr(C) : stride fixe, taille verrouillee par assert de compilation"]
+    node_rec["✅ NodeRecord<br/>40 B, align 8<br/>label_bitset u64, first_edge_off U48,<br/>first_prop_off U48, community_id u32,<br/>energy u16 Q1.15, scar_util_affinity u16,<br/>centrality_cached u16 Q0.16, flags u16,<br/>tenant_id u32, _reserve u32"]
+    u48["✅ U48<br/>6 B little-endian<br/>offset interne 48 bits<br/>0 = fin de chaine"]
+    edge_rec["✅ EdgeRecord<br/>36 B, align 4<br/>src u32, dst u32, edge_type u16,<br/>weight_u16 Q0.16, next_from U48, next_to U48,<br/>first_prop_off U48, ricci_u8, flags u8,<br/>engram_tag u16, _pad 2"]
+    simplex_rec["✅ SimplexRecord<br/>32 B<br/>kind 2 triangle, 3 K4, 4 K5,<br/>255 hyperarete"]
+    node_flags["node_flags<br/>TOMBSTONED 1 bit 0<br/>CENTRALITY_STALE, EMBEDDING_STALE,<br/>ENGRAM_SEED, HILBERT_DIRTY, IDENTITY<br/>ALLOCATED 1 bit 6"]
+    edge_flags["edge_flags<br/>TOMBSTONED, RICCI_STALE,<br/>COACT, SYNAPSE_ACTIVE, BRIDGE"]
+    page_alloc["Allocation des noeuds<br/>NODES_PER_PAGE = 512<br/>NODE_ALLOC_PAGE_BYTES = 20 480<br/>5 pages OS, zero octet perdu"]
+    v3_magic["NODES_ZONE_V3_MAGIC<br/>NODESv3 grave dans le slot 0<br/>jamais vivant, flags a 0"]
+  end
+
+  subgraph Pages["Pages de 4 KiB et tas : en-tete en tete de page, magics distincts par proprietaire"]
+    prop_hdr["✅ PropertyPageHeader<br/>24 B sans remplissage<br/>magic u32, node_id u32, crc32 u32,<br/>next_page U48, entry_count u16,<br/>free_offset u16, tombstones u16"]
+    prop_page["✅ PropertyPage<br/>4096 B = en-tete 24 B + payload 4072 B"]
+    prop_magic["PROP_PAGE_MAGIC_NODE 0xF5075FA6<br/>PROP_PAGE_MAGIC_EDGE 0xE5075FA6<br/>le genre du proprietaire EST le magic"]
+    entry["✅ PropertyEntry<br/>flags u8, prop_key u16 LE, tag u8<br/>ENTRY_HEADER_SIZE = 4<br/>9 ValueTag de Null a ArrStringRef"]
+    heapref["✅ HeapRef<br/>8 B : page_id u32, offset u32"]
+    heap_page["✅ HeapPage<br/>4096 B = en-tete 16 B + payload 4080 B<br/>HEAP_PAGE_MAGIC 0xF1EA95FF<br/>magic, page_id, crc32,<br/>entry_count u16, free_offset u16"]
+    heap_read["HeapPage::read_at<br/>borne sur free_offset, jamais payload.len<br/>une longueur corrompue est REFUSEE"]
+  end
+
+  subgraph ZoneV2["Zone de proprietes v2 : deux fichiers mmapes, une chaine par proprietaire"]
+    props_v2["✅ substrate.props.v2<br/>tableau de pages de 4 KiB<br/>page 0 sentinelle, pages reelles a partir de 1<br/>taille initiale 2 pages, croissance x1.5"]
+    heap_v2["✅ substrate.props.heap.v2<br/>tas append-only, entrees jamais deplacees<br/>taille initiale 1 page"]
+    acheve["✅ substrate.props.v2.acheve<br/>marqueur de migration ACHEVEE,<br/>ecrit en tmp + rename, contenu non vide"]
+    propszone_obj["PropsZone<br/>props, heap, next_page_idx,<br/>next_heap_page_idx, carrier_pack_ouvert"]
+    frontier["compute_next_page_idx<br/>recherche binaire sur la frontiere magic<br/>O log N, pas de balayage du padding"]
+    append["append_entry_inner<br/>page pleine donc NOUVELLE TETE,<br/>next_page vers l ancienne<br/>lecture du plus recent vers le plus ancien"]
+    walk["walk_chain_unite<br/>PropertyCursor par page, tombes sautees<br/>adresse brute U48, page ou slot"]
+    intern["intern_bytes<br/>ajoute longueur u32 + octets au tas<br/>rend un HeapRef stable a vie"]
+  end
+
+  subgraph Unites["Unites 512 : additif, garde derriere un flag d environnement"]
+    unite_addr["🟠 UniteAddr 48 bits<br/>bit 47 a 0 = page legacy u32<br/>bit 47 a 1 = carrier 4K et unite 1 a 7"]
+    slot_page["🟠 SlotPage 512 B<br/>en-tete 24 B + payload 488 B"]
+    carrier["🟠 CarrierControl 512 B<br/>magic 0xC5A250C8, nb_unites_utilisees,<br/>version, crc32"]
+    pack_flag["🟠 OBRAIN_PROPS_SLOTS_512<br/>DEFaut OFF : production inchangee<br/>carriers a 7 slots non actifs"]
+  end
+
+  subgraph Topologie["Topologie : les aretes SONT le stockage, l adjacence est une liste chainee intrusive"]
+    nodes_zone["✅ substrate.nodes<br/>tableau plat de NodeRecord 40 B<br/>offset = slot x 40"]
+    edges_zone["✅ substrate.edges<br/>tableau plat de EdgeRecord 36 B<br/>offset = slot x 36, slot 0 sentinelle"]
+    out_chain["✅ Chaine SORTANTE<br/>entree O 1 par NodeRecord.first_edge_off<br/>puis EdgeRecord.next_from<br/>marche avec garde anti-cycle par set des vus"]
+    in_chain["Chaine ENTRANTE<br/>EdgeRecord.next_to existe sur disque<br/>tete en memoire seulement<br/>incoming_heads DashMap, reconstruit O E a l ouverture"]
+    splice["splice_edge_at_head<br/>1 lire la tete, 2 ecrire le slot,<br/>3 publier first_edge_off,<br/>4 publier incoming_heads<br/>initialiser AVANT de publier"]
+    deg_col["✅ substrate.degrees.node.u32<br/>en-tete 64 B + 8 B par slot<br/>out u32 et in u32, degre en O 1"]
+    simplicial["substrate.simplex_dir<br/>SimplexRecord 32 B, membres inline<br/>substrate.simplex_incidence<br/>16 B par slot de noeud + postings"]
+  end
+
+  subgraph Durabilite["Durabilite : le journal d abord, la mmap ensuite"]
+    wal_rec["✅ WalRecord<br/>en-tete 28 B : length u32, kind u8,<br/>flags u8, reserved u16, lsn u64,<br/>timestamp i64, crc32 u32<br/>payload bincode little-endian fixint"]
+    write_node["Writer::write_node<br/>pose ALLOCATED, 1 WAL append,<br/>2 copie dans la mmap"]
+    update_prop_head["Writer::update_node_first_prop_off<br/>journalise puis patche 6 octets<br/>a l offset 14 du NodeRecord"]
+    checkpoint_mod["checkpoint.rs<br/>msync de toutes les zones,<br/>reecriture de meta en tmp et rename,<br/>trame Checkpoint, WAL tronque"]
+    meta_file["✅ substrate.meta 4096 B<br/>MetaHeader 96 B : magic SUBSTRT,<br/>format_version 3, flags,<br/>node_count, edge_count,<br/>last_wal_offset, schema_crc32"]
+    dict_file["✅ substrate.dict<br/>labels vers bit 0 a 63,<br/>types d arete vers u16,<br/>cles de propriete vers u16,<br/>next_node_id, next_edge_id"]
+    crc_decision["🔴 CRC32 de page<br/>scelle a chaque ecriture,<br/>verifie NULLE PART sur le chemin chaud"]
+    legacy_v1["⚪ substrate.props, side-car v1<br/>predecesseur de la zone v2"]
+  end
+
+  lib -->|declare| record_mod
+  lib -->|declare| page_mod
+  lib -->|declare| heap_mod
+  lib -->|declare| propszone_mod
+  lib -->|declare| unite_mod
+  lib -->|declare| file_mod
+  lib -->|declare| writer_mod
+  lib -->|declare| meta_mod
+
+  record_mod -->|definit| node_rec
+  record_mod -->|definit| u48
+  record_mod -->|definit| edge_rec
+  record_mod -->|definit| simplex_rec
+  record_mod -->|definit| node_flags
+  record_mod -->|definit| edge_flags
+  record_mod -->|definit| page_alloc
+  record_mod -->|definit| v3_magic
+  page_mod -->|definit| prop_hdr
+  page_mod -->|definit| prop_page
+  page_mod -->|definit| prop_magic
+  page_mod -->|definit| entry
+  page_mod -->|definit| heapref
+  heap_mod -->|definit| heap_page
+  heap_mod -->|definit| heap_read
+  meta_mod -->|definit| meta_file
+  unite_mod -->|definit| unite_addr
+  unite_mod -->|definit| slot_page
+  unite_mod -->|definit| carrier
+  unite_mod -->|garde par| pack_flag
+
+  node_rec -->|pointe via first_edge_off| out_chain
+  edge_rec -->|chaine par next_from| out_chain
+  edge_rec -->|chaine par next_to| in_chain
+  node_rec -->|pointe via first_prop_off| append
+  u48 -->|sert d adresse dans| out_chain
+  u48 -->|sert d adresse dans| append
+  node_rec -->|vit dans| nodes_zone
+  edge_rec -->|vit dans| edges_zone
+  edge_rec -->|porte first_prop_off| append
+  node_flags -->|discrimine vivant ou trou dans| nodes_zone
+  v3_magic -->|auto-decris le stride de| nodes_zone
+  page_alloc -->|calibre l allocation de| nodes_zone
+
+  prop_hdr -->|en tete de| prop_page
+  prop_magic -->|etiquette| prop_page
+  entry -->|encode par PropertyCursor dans| prop_page
+  entry -->|StringRef et BytesRef vers| heapref
+  heapref -->|lit| heap_page
+  heap_read -->|securise la lecture de| heap_page
+  prop_page -->|remplit| props_v2
+  heap_page -->|remplit| heap_v2
+
+  propszone_mod -->|possede| propszone_obj
+  propszone_obj -->|ouvre et mappe| props_v2
+  propszone_obj -->|ouvre et mappe| heap_v2
+  propszone_obj -->|calcule| frontier
+  propszone_obj -->|appelle| append
+  propszone_obj -->|appelle| walk
+  propszone_obj -->|appelle| intern
+  frontier -->|borne les pages reutilisables de| heap_v2
+  append -->|alloue une tete dans| props_v2
+  intern -->|ajoute au tail de| heap_v2
+  walk -->|lit| props_v2
+  walk -->|lit| slot_page
+  acheve -->|autorise a ne plus croire| legacy_v1
+
+  unite_addr -->|etend l adressage de| append
+  slot_page -->|est une unite de| carrier
+  pack_flag -->|desactive par defaut| carrier
+  carrier -->|remplace la page 4K dans| props_v2
+
+  store_mod -->|appelle| append
+  store_mod -->|appelle| walk
+  store_mod -->|appelle| write_node
+  store_mod -->|appelle| splice
+  store_mod -->|passe par| propszone_mod
+  propszone_mod -->|journalise via| writer_mod
+  writer_mod -->|ecrit| wal_rec
+  writer_mod -->|mute la mmap de| nodes_zone
+  writer_mod -->|mute la mmap de| edges_zone
+  writer_mod -->|mute la mmap de| props_v2
+  writer_mod -->|mute la mmap de| heap_v2
+  write_node -->|journalise avant de muter| wal_rec
+  update_prop_head -->|journalise avant de muter| node_rec
+  splice -->|publie la tete dans| nodes_zone
+  splice -->|publie la tete dans| in_chain
+  file_mod -->|mappe et fait croitre x1.5| props_v2
+  file_mod -->|mappe et fait croitre x1.5| heap_v2
+  file_mod -->|mappe| nodes_zone
+  file_mod -->|mappe| edges_zone
+  file_mod -->|mappe| meta_file
+
+  dict_file -->|donne le bit de label a| node_rec
+  dict_file -->|donne le u16 de type a| edge_rec
+  deg_col -->|compte en O 1 les aretes de| out_chain
+  deg_col -->|compte en O 1 les aretes de| in_chain
+  simplicial -->|topologie au dela des paires autour de| nodes_zone
+
+  checkpoint_mod -->|msync| props_v2
+  checkpoint_mod -->|msync| heap_v2
+  checkpoint_mod -->|reecrit| meta_file
+  wal_rec -->|rejoue par| writer_mod
+  prop_hdr -->|CRC32 pris sur| crc_decision
+  heap_page -->|CRC32 pris sur| crc_decision
+  crc_decision -->|seulement dans obrain repair-props| heap_v2
+
+  classDef mesure fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef decide fill:#8a6a12,stroke:#4d3b0a,color:#fff
+  classDef refuse fill:#8a1f1f,stroke:#4d0f0f,color:#fff
+  classDef amont fill:#4a4a4a,stroke:#2a2a2a,color:#fff
+
+  class node_rec,u48,edge_rec,simplex_rec,prop_hdr,prop_page,entry,heapref,heap_page,heap_read,meta_file,props_v2,heap_v2,wal_rec,nodes_zone,edges_zone,out_chain,deg_col,dict_file,acheve mesure
+  class unite_addr,slot_page,carrier,pack_flag decide
+  class crc_decision refuse
+  class legacy_v1 amont

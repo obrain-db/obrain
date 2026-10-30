@@ -1,0 +1,178 @@
+%% Ce que ce diagramme prouve : l architecture du daemon obrain.harness qui tourne sur le
+%% port 8090 — du binaire vivant a la source qui lui correspond, puis l entree CLI,
+%% l ouverture en lecture seule, le transport HTTP ecrit a la main, les cinq routes du
+%% contrat, l identite auto-declaree, la lecture des sessions et le journal de declaration.
+%% Source de l information : crates/obrain-cli/src/harness_serve.rs — 1 428 lignes, md5
+%% 5fa90337463659da70b6bd8fdf5d654d, IDENTIQUE au blob du commit ee0dd1e5. Le binaire vivant
+%% declare ce meme commit via « obrain version », donc la source lue EST celle qui tourne.
+%% MESURE : 1 428 lignes pour harness_serve.rs, 779 pour main.rs, 7 169 pour mcp_server.rs,
+%% 243 pour commands/continuity.rs, 826 pour machines.rs ; 23 tests unitaires dans
+%% harness_serve.rs ; sur le store vivant 892 zones de journal, 32 sessions actives,
+%% age 16 s, etat frais ; 1 fichier de declaration de 2 lignes dont le pid 1781121 et le
+%% commit ee0dd1e5 concordent avec /proc. DEDUIT : rien. NON ETABLI : le nombre de clients
+%% HTTP distincts qui interrogent le 8090 en dehors des trois scripts lus ; le detail de
+%% ce que fait build.rs au-dela des trois variables qu il pose ; l etat du noeud machine:
+%% dans le store, qui exige une ouverture en exclusif et n a pas ete mesure ici.
+
+flowchart TB
+
+  subgraph Vivant["1 - Le binaire qui tourne, et la source qui lui correspond"]
+    unit["obrain-harness-dev.service - systemd utilisateur<br/>Type simple, Restart on-failure, RestartSec 2<br/>drop-in descripteurs.conf - LimitNOFILE 1048576<br/>pour un processus qui ouvre des stores de centaines de fichiers"]
+    proc["processus vivant - pid 1781121<br/>harness-serve runtime-dev.obrain adresse 192.168.1.103:8090<br/>ecoute MESUREE par ss, cwd /home/triviere<br/>binaire /home/triviere/sauvegardes-bascule-v3/obrain.harness-dev-tronc-20260916"]
+    ver["obrain version, execute sur le binaire vivant<br/>version 0.0.1 - commit ee0dd1e5 - describe version-2026-09-16-37-gee0dd1e5<br/>arbre propre - rustc 1.93.0 - cible x86_64 - features gql, cypher"]
+    src["projects/banc-obrain-tronc/crates/obrain-cli/src/harness_serve.rs<br/>1 428 lignes - md5 5fa90337463659da70b6bd8fdf5d654d<br/>egal au blob du commit ee0dd1e5 - c est donc LA source du binaire"]
+    build_rs["crates/obrain-cli/build.rs - 3 009 octets<br/>pose OBRAIN_GIT_COMMIT ligne 33<br/>OBRAIN_GIT_ARBRE ligne 36 - RUSTC_VERSION ligne 56"]
+  end
+
+  subgraph Entree["2 - L entree CLI - main.rs, 779 lignes"]
+    cli["Commands::HarnessServe - main.rs ligne 327<br/>champs path de type PathBuf et addr de type String<br/>defaut addr 127.0.0.1:8090 - main.rs ligne 333"]
+    dispatch["main.rs ligne 696<br/>harness_serve::run avec addr, path et cli.quiet"]
+    pont["Commands::Mcp ligne 348 et Commands::Bridge ligne 351<br/>deux alias du meme mcp_server::run - lignes 716 et 717<br/>JSON-RPC sur stdio - le transport d AVANT, respawne a chaque injection"]
+    cout["cout cite par la source, ligne 4 du fichier<br/>632 ms de demarrage par injection via le GraphInjector dsh<br/>c est ce que le daemon persistant supprime"]
+  end
+
+  subgraph Ouverture["3 - L ouverture - lecture seule par construction"]
+    run["harness_serve.rs ligne 854 - pub fn run<br/>ObrainDB::open_read_only sur le store<br/>puis TcpListener::bind sur addr"]
+    ro["obrain-engine database/mod.rs ligne 801 - open_read_only<br/>Config::read_only pose AccessMode::ReadOnly<br/>verrou PARTAGE, WAL desactive, mutations refusees au niveau session"]
+    mode["harness_serve.rs ligne 225 - MODE_OFFERT vaut ro<br/>publie nommement - aucun mode rw n existe, meme si un client le demande"]
+    invariant["raison ecrite dans la source, lignes 196 a 199<br/>l exclusif romprait l invariant mono-ecrivain qui permet<br/>a dsh d ecrire pendant que le harness repond"]
+  end
+
+  subgraph Transport["4 - Le transport - HTTP 1.1 ecrit a la main, std-only"]
+    stdonly["en-tete du fichier, ligne 10 - std-only, comme viz_serve<br/>aucune dependance reseau nouvelle"]
+    serve_on["harness_serve.rs ligne 805 - pub fn serve_on<br/>delegue a serve_on_journalisant ligne 816"]
+    boucle["ligne 844 - for stream in listener.incoming<br/>boucle SERIELLE - un handle a la fois, aucune concurrence"]
+    handle["ligne 469 - fn handle<br/>lecture de l en-tete jusqu a CRLF CRLF puis Content-Length octets<br/>gere l en-tete et le corps arrives en segments TCP separes"]
+    cap["ligne 507 - corps au-dela de 1 048 576 octets<br/>refus 400 requete trop grande"]
+    respond["ligne 62 - fn respond<br/>Content-Type application/json, Content-Length, Connection close<br/>trois status seulement - 200 OK, 400 Bad Request, 404 Not Found"]
+  end
+
+  subgraph Routes["5 - Les cinq routes du contrat, et le refus par defaut"]
+    r_machine["/api/harness/machine - ligne 535<br/>l identite entiere au premier niveau, plus status ok et presence_ms<br/>repondre EST la preuve de presence - aucune derniere-presence stockee"]
+    r_health["/api/harness/health - ligne 543<br/>status, mode, store, version, machine plus l objet identite complet<br/>les cinq champs d origine restent pour les scripts qui les lisaient"]
+    r_cont["/api/harness/continuity - ligne 587<br/>le meme compute que obrain continuity, plus les 5 journaux les plus recents"]
+    r_sessions["/api/harness/sessions - ligne 633<br/>limit, offset, owner et project passes a mcp_server::sessions_list<br/>la query string est decodee par parse_query ligne 56"]
+    r_context["/api/harness/context - ligne 651<br/>corps JSON - session_id, subject ou son alias prompt, limit, owner"]
+    r_404["route inconnue - ligne 781<br/>404 franc - aucune route du moteur par effet de bord"]
+  end
+
+  subgraph Identite["6 - L identite auto-declaree - jamais inventoriee"]
+    ident["ligne 283 - fn identite_machine<br/>calculee UNE fois au demarrage, figee pour la vie du processus<br/>machine, machine_qn, instance, base, store, store_racine,<br/>mode, ecoute, pid, demarre_le_ms"]
+    hote["ligne 237 - fn nom_hote<br/>/proc/sys/kernel/hostname puis /etc/hostname puis HOSTNAME<br/>la SOURCE est publiee dans nom_source - sinon inconnu, JAMAIS devine"]
+    build["ligne 323 - bloc build<br/>version, commit, describe, arbre lus par env au compilateur<br/>rustc via rustc_estampe ligne 261, sinon non_estampee"]
+    instance["instance vaut machine HOTE diese BASE SERVIE<br/>deux harnesses d un meme hote servent deux bases - l instance les separe<br/>mesure vivante - machine n3, instance machine:n3 diese runtime-dev.obrain"]
+  end
+
+  subgraph Sessions["7 - Ce qu il lit dans le store pour les sessions"]
+    ss["mcp_server.rs ligne 1656 - sessions_list<br/>limit defaut 1000 borne de 1 a 5000, offset, recentes d abord"]
+    sub_reader["mcp_server.rs ligne 1526 - sessions_rows_from_substrate<br/>8 lectures COLONNAIRES par lot au lieu de lectures unitaires<br/>gain cite dans la source - environ 10 ms vers environ 1 ms"]
+    memo["mcp_server.rs ligne 63 - is_writer_process<br/>vrai seulement si OBRAIN_WRITE vaut 1<br/>le harness ne pose pas cette variable - le memo-cache ne le concerne pas"]
+    owned["chemin owner - traversee OWNED_BY puis lecteur colonnaire filtre<br/>la variante GQL projetait 8 props par ligne, 80 a 104 ms sur 615 sessions"]
+    cb["mcp_server.rs ligne 1819 - context_build<br/>goals par HAS_GOAL et par GOVERNED, summaries is_compaction,<br/>weave par BM25 sur le title, engrams par recall des cues"]
+    sconnue["harness_serve.rs ligne 455 - session_connue<br/>TROIS etats rendus - Some vrai, Some faux, None<br/>None veut dire on n a PAS pu mesurer, et l appelant doit le dire"]
+    decide["lignes 706 a 778 - le statut cesse d etre ok<br/>aucune session - corps illisible - 200, on n invente pas un echec de transport<br/>aucune session - corps lisible - 400, la demande est comprise et refusee<br/>session inconnue - 200, car une session NEUVE est le cas normal"]
+  end
+
+  subgraph Tissage["8 - Le fil du tissage - la sante du graphe voyage avec le contexte"]
+    seuil["ligne 78 - SEUIL_TISSAGE_MIN vaut 30 minutes<br/>meme valeur que la sentinelle ops - deux calculs divergeraient"]
+    bloc["ligne 112 - fn bloc_tissage et ligne 122 bloc_tissage_a a instant impose<br/>etat frais, fige ou sans_journal<br/>un zero muet est interdit - sans journal on ne dit pas frais"]
+    comp["commands/continuity.rs ligne 70 - pub fn compute<br/>mtime des fichiers substrate.journal.SESSION uniquement<br/>aucune ouverture de store, aucun verrou, donc tourne pendant l ecriture"]
+    report["commands/continuity.rs ligne 37 - struct ContinuityReport<br/>store, stale_after_min, stale, journals, sessions"]
+    inject["ligne 707 - le bloc tissage est INSERE dans la reponse context<br/>tout consommateur du contexte le recoit sans requete supplementaire"]
+  end
+
+  subgraph Declaration["9 - L auto-declaration - journaliser puis appliquer"]
+    ligne["ligne 352 - fn ligne_declaration, fonction PURE<br/>kind machine, et ni id ni compte ni capacite<br/>rien n est reinvente - chaque champ vient de identite_machine"]
+    chemin["ligne 407 - fn chemin_declaration<br/>nom de fichier egal au hachage 16 hex du chemin du STORE servi<br/>un fichier par store - defaut corrige, deux processus s entremelaient"]
+    journaliser["ligne 428 - fn journaliser_declaration<br/>append-only, UNE seule write_all atomique en O_APPEND<br/>writeln faisait plusieurs appels systeme et les lignes se sont coupees - mesure dans la source"]
+    dirj["machines.rs ligne 276 - dir_journal_machines<br/>OBRAIN_VIZ_CACHE_DIR sinon /tmp/obrain-viz-cache, puis machines<br/>une seule resolution partagee par l ecrivain et la passe"]
+    besteffort["lignes 828 a 843 - echec de journalisation N EST PAS echec de demarrage<br/>tracing::warn puis le harness sert sa base<br/>une declaration perdue en silence rendrait une machine invisible"]
+    disque["sur disque, lu - /tmp/obrain-viz-cache/machines/08dd9ad74f87f2d0.jsonl<br/>1 076 octets, 2 lignes - la derniere porte pid 1781121, commit ee0dd1e5<br/>ecoute 192.168.1.103:8090, mode ro - concorde avec le processus vivant"]
+    appliquer["machines.rs ligne 448 - pub fn appliquer<br/>relit le journal et ecrit machine HOTE et machine HOTE diese BASE<br/>ignore les declarations des qu un compte est filtre - cloisonnement dans le CODE"]
+  end
+
+  subgraph Etats["10 - Etats obrain - ce qui est ecrit, decide, refuse, herite"]
+    e_ok["✅ ecrit et verifie<br/>la ligne de declaration dans le journal des machines<br/>2 lignes sur disque, pid et commit concordent avec /proc"]
+    e_decide["🟠 decide pas ecrit par le harness<br/>le noeud machine HOTE dans le store - impossible en ro<br/>c est obrain machines et son verbe appliquer qui l ecrit"]
+    e_refus1["🔴 refuse - toute ecriture dans le store servi<br/>AccessMode::ReadOnly, verrou partage<br/>pour ne pas rompre l invariant mono-ecrivain avec dsh"]
+    e_refus2["🔴 refuse - un corps lisible qui ne nomme aucune session<br/>400 avec status aucune_session et une raison ecrite<br/>le vide n a pas la forme d une bonne reponse"]
+    e_amont1["⚪ existe en amont - la sentinelle obrain continuity et son timer 15 min<br/>le harness ne recalcule pas, il appelle le meme compute"]
+    e_amont2["⚪ existe en amont - le journal du registre selfd, meme repertoire et extension jsonl<br/>le harness y ajoute ses lignes au lieu d inventer une seconde mecanique"]
+  end
+
+  subgraph Interrogateurs["11 - Qui l interroge - trois scripts lus, aucun client cache"]
+    porte["scripts/acceptation-harness.sh - 606 lignes - 7 familles<br/>identite, sessions, injection, lecture seule,<br/>auto-declaration, deux harnesses, routes"]
+    flotte["scripts/flotte-auto-connaissance.sh - 87 lignes<br/>curl http://IP:8090/api/harness/health sur n1, n2, n3, dgx, m4<br/>se nomme OUI si le corps contient le nom de l hote"]
+    sentinelle["scripts/verifier-integration-tissage.sh - 290 lignes<br/>DAEMON par defaut http://192.168.1.103:8090<br/>seuil d injection 50 ms en variable SEUIL_INJECTION_MS"]
+    tests["tests d integration du crate obrain-cli<br/>harness_serve.rs 113 lignes, harness_machine.rs 414 lignes<br/>harness_context.rs 79 lignes, harness_machine_declare.rs 478 lignes<br/>plus 23 tests unitaires dans harness_serve.rs"]
+  end
+
+  unit -->|lance et redemarre| proc
+  src -->|compile en| proc
+  build_rs -->|pose les variables lues par| build
+  ver -->|prouve la correspondance avec| src
+
+  cli -->|declare| dispatch
+  dispatch -->|appelle| run
+  pont -.->|transport remplace par| handle
+  cout -.->|motive| pont
+
+  run -->|appelle| ro
+  run -->|publie| mode
+  ro -->|protege| invariant
+  run -->|puis| serve_on
+
+  stdonly -->|contrainte de| handle
+  serve_on -->|boucle sur| boucle
+  boucle -->|appelle par connexion| handle
+  handle -->|borne par| cap
+  handle -->|repond via| respond
+
+  handle -->|sert| r_machine
+  handle -->|sert| r_health
+  handle -->|sert| r_cont
+  handle -->|sert| r_sessions
+  handle -->|sert| r_context
+  handle -->|sinon| r_404
+
+  serve_on -->|calcule une fois| ident
+  ident -->|lit le nom par| hote
+  ident -->|lit la provenance par| build
+  ident -->|publie| instance
+  r_machine -->|rend| ident
+  r_health -->|rend| ident
+
+  r_cont -->|appelle| comp
+  comp -->|produit| report
+  seuil -->|borne| bloc
+  bloc -->|appelle| comp
+  inject -->|appelle| bloc
+  r_context -->|appelle| cb
+  r_context -->|insere| inject
+  r_context -->|verifie par| sconnue
+  r_context -->|decide| decide
+
+  r_sessions -->|appelle| ss
+  ss -->|lit par| sub_reader
+  ss -.->|memo-cache conditionne par| memo
+  ss -->|filtre par| owned
+
+  serve_on -->|journalise| ligne
+  ligne -->|ecrite par| journaliser
+  journaliser -->|dans| dirj
+  journaliser -->|nommee par| chemin
+  journaliser -.->|echec non fatal| besteffort
+  journaliser -->|produit| disque
+  disque -->|relu par| appliquer
+  appliquer -->|ecrit machine HOTE et machine HOTE diese BASE| e_decide
+
+  e_ok -->|c est la ligne du| disque
+  e_refus1 -->|est la raison du mode| mode
+  e_refus2 -->|est le statut| decide
+  e_amont1 -->|est la sentinelle de| comp
+  e_amont2 -->|est le meme repertoire que| dirj
+
+  porte -->|interroge health machine sessions context continuity| r_health
+  flotte -->|interroge| r_health
+  sentinelle -->|interroge| r_cont
+  tests -->|exercent| serve_on

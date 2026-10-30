@@ -1,0 +1,131 @@
+ENGINE-008 -- REDUIRE LE COUT SHA256 SANS AFFAIBLIR L'INTEGRITE
+==========================================================================
+SUBSTITUTION PAR OPENSSL : x11,27 SUR LE BLOB, x10,77 SUR LE MODELE.
+EMPREINTES STRICTEMENT IDENTIQUES. AUCUN CONTROLE RETIRE.
+VALIDATION SERVEUR : 3 PAIRES, LOGITS BINAIREMENT IDENTIQUES.
+
+=== 1. COUT DE L'IMPLEMENTATION PRECEDENTE ===
+  `obrain-sha256.h` etait une implementation AUTOPORTANTE, appelee via
+  `hex_of` (blob en memoire) et `hex_of_file` (modele, lecture par blocs).
+  Decomposition : ~201 Mo/s sur aarch64, soit **798,6 ms pour 160 697 016
+  octets**. La lecture du fichier est deja sequentielle par blocs de 1 Mio et
+  le hachage ne copie pas le blob : **le cout est donc le CALCUL PUR**, sans
+  acceleration materielle. La conversion hexadecimale ne porte que sur 32
+  octets : elle est negligeable.
+  **Le processeur dispose des extensions SHA ARMv8** (verifie : `armv8-a+crypto`
+  compile), que cette implementation n'utilisait pas.
+
+=== 2. DEPENDANCE CHOISIE ET SON LINKAGE REEL ===
+  **OpenSSL 3.0.13** (`libcrypto.so.3`), implementation EPROUVE, EN PROCESSUS.
+  Aucun nouveau SHA256 artisanal, aucun sous-processus.
+  `LIBCRYPTO_SHA256=6facd87aa596f6d10c2029802756c56cef8761576a3e8894c42a7295a5a89d75`
+  Linkage VERIFIE : `libcrypto.so.3 => /lib/aarch64-linux-gnu/libcrypto.so.3`
+  (present dans `ldd libllama-server-impl.so`). CMake : `find_package(OpenSSL
+  REQUIRED)` + `OpenSSL::Crypto` + `-DOBRAIN_USE_OPENSSL_SHA256` sur la cible
+  `server-context`.
+  **La REFERENCE autoportante reste compilee et accessible** (`hex_of_ref` /
+  `hex_of_file_ref`) : elle sert de comparaison et de repli si OpenSSL n'est pas
+  active. Le basculement se fait par une seule macro.
+
+Sha256_OUTPUT_UNCHANGED=YES
+  Aucun appel n'a change : `kv_sha256_hex`, `kv_sha256_hex_file`,
+  `sha256_hex_file`, `kv_model_sha256` appellent tous `obrain_sha::hex_of*`.
+  **Le hachage n'a PAS ete deplace sous le verrou global** (l'identite modele
+  est calculee hors verrou, au chargement, et le blob est hache hors du verrou
+  du cache).
+  **La verification a l'import n'a PAS ete supprimee** : elle tourne toujours,
+  simplement plus vite.
+
+=== 3. VERIFICATION AVANT SUBSTITUTION -- 22 ASSERTIONS, 0 ECHEC ===
+REQUIRED_TESTS=PASS
+  `obrain-sha256-substitution-tests.cpp`, **PASSED=22 FAILED=0** :
+   - vecteurs connus (vide, abc, 56 octets, 1 000 000 x 'a')
+   - FRONTIERES DE BLOCS 0..200 octets : identiques
+   - binaire 0x00..0xFF et tailles 55/56/63/64/65/119/120/4096/100000
+   - lecture FRAGMENTEE par blocs de 1 Mio, 7 o, 65536 o, 4096 o :
+     ref == new == calcul en memoire
+   - **blob exact de l'experience** (160 697 016 octets) : ref == new, et
+     **== `7a40fc6b9f270a87053ca6a352b68a2cbf83401b945b62f396eb70147cf34832`**,
+     la valeur consignee au journal de BENCH-03
+   - **fichier de modele** (Qwen3.8-27B-OBRAIN-v3.gguf) : ref == new
+
+  SUITES REQUISES REJouees sur l'ETAT FINAL :
+    cache                              49 PASSED / 0 FAILED
+    regression double verrouillage      5 PASSED / 0 FAILED
+    concurrence SHA256                  PASS (aucun sous-processus)
+    vecteurs SHA256 (via OpenSSL)       11 PASSED / 0 FAILED
+
+=== 4. BANC SANS MODELE -- ORDRE ALTERNE PREENREGISTRE ===
+  Ordre preenregistre : **R/N, N/R, R/N, N/R, R/N** (R=reference, N=OpenSSL),
+  sur le MEME blob immutable de 160 697 016 octets :
+    paire 1 (R/N) : R=798.3 ms  N=71.2 ms
+    paire 2 (N/R) : R=798.5 ms  N=70.9 ms
+    paire 3 (R/N) : R=798.8 ms  N=70.9 ms
+    paire 4 (N/R) : R=798.6 ms  N=70.8 ms
+    paire 5 (R/N) : R=798.6 ms  N=70.8 ms
+  OLD_BLOB_SHA256_MEDIAN_MS=**798.6**
+  NEW_BLOB_SHA256_MEDIAN_MS=**70.9**
+  **GAIN_MEDIAN=x11.27** ;  les 10 empreintes du banc sont IDENTIQUES.
+  Debits APPARENTS : 201 Mo/s -> **2267 Mo/s**.
+  **Ce sont des debits de HACHAGE (taille/duree), pas des mesures de bande
+  passante physique** : aucune lecture disque n'est impliquee ici, le blob est
+  en memoire.
+
+MODEL_IDENTITY_MS=5945.1 (mesure directe dans le test, ref 64014.1 -> gain x10.77)
+  Effet de bord MESURE sur le serveur : le demarrage est passe de **84 s a
+  27 s** (`PRET apres 27.0s` contre 84.1/87.1/87.1 s lors des essais
+  precedents). Le hachage du modele n'est plus un cout de demarrage majeur.
+
+=== 5. VALIDATION SERVEUR -- 3 PAIRES, ORDRE B/C, C/B, B/C ===
+  Orchestrateur unique, serveur en groupe de processus propre, disponibilite
+  VERIFIEE (PID vivant + LISTEN 127.0.0.1:8480 + http=200) avant A.
+  A : http=200  1.657s  ref=046f5945a8dc6fc9  blob_bytes=160697024
+
+  PAIRE 1 (B/C)  B1 11.095s  C1 10.480s
+  PAIRE 2 (C/B)  C2 10.490s  B2 11.224s
+  PAIRE 3 (B/C)  B3 11.351s  C3 10.026s
+  Les 7 requetes ont ete ACCEPTEES (http=200).
+
+  SERVER_PREPARATION_CONTROL_MS=[874.322, 824.855, (B3 non consigne)]
+  SERVER_PREPARATION_RESTORED_MS=[144.557, 143.503, (C3 dans MESURES_SERVEUR)]
+    **La preparation RESTORED passe de 851.897 ms (DEADLOCK-11) a ~144 ms.**
+    C'est l'effet DIRECT de la substitution : le hachage du blob y pesait
+    788 ms, il en pese ~64,5.
+
+  DESTINATION_PREFIX_TOKEN_COUNT=0 sur LES TROIS PAIRES
+    C1, C2, C3 : `prefix_decode_calls=0`, `prefix_token_count=0`,
+    `state_imported=true`. B1, B2, B3 : `prefix_token_count=58`,
+    `state_imported=false`. **Aucun token de prefixe decode dans RESTORED.**
+
+  START_LOGITS_BINARY_IDENTICAL=YES sur LES TROIS PAIRES
+    paire 1 (B/C): MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+    paire 2 (C/B): MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+    paire 3 (B/C): MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+    FINITE=YES, |logits|=248320 des deux cotes.
+  TOKEN_IDS_MATCH=YES (premiere paire, et les deux autres aussi)
+    IDs B = IDs C = [13,198,248069,271,3793,13], stop_reason=EOS.
+    TEXT B = TEXT C = '.\n</think>\n\nOK.'
+    Positions [59,60,61,62,63,64] des deux cotes.
+
+=== 6. METRIQUES DIRECTES SUR LE SERVEUR ===
+MS_STATE_IMPORT=[6.891, 6.903, 6.846] ms -- mesure AUTOUR de l'appel reel a
+  `llama_state_seq_set_data`, sur 160 697 024 octets.
+  Les autres composantes, mesurees separement (C1/C2/C3) :
+    ms_state_lookup   = 50.757 / 49.750 / 49.502 ms
+    ms_compatibility  =  0.012 /  0.012 /  0.012 ms
+    ms_blob_sha256    = 64.518 / 64.502 / 64.505 ms
+    ms_preparation_total = 144.557 / 143.503 / (C3 ci-dessus)
+  `ms_state_import`, precedemment NON MESURE (-2.0), est desormais renseigne.
+
+  **Aucun ratio du pilote natif n'est transpose au serveur** : les chiffres
+  ci-dessus sont ceux DU SERVEUR. Le hachage y coute ~64,5 ms contre 70,9 ms
+  dans le banc sans modele, l'ecart venant du contexte d'appel.
+
+INTEGRITY_CHECK_REMOVED=NO
+  La verification SHA256 a l'import est INTACTE et s'execute toujours ; elle est
+  simplement 11 fois plus rapide. Les controles de compatibilite, l'isolation,
+  la LRU et la duree de vie du blob sont inchanges. **Aucun controle n'a ete
+  affaibli pour obtenir une acceleration.**
+Q1_LIBLLAMA_REBUILT=NO  (libllama.so.0 = 87c42d5f... INCHANGE a chaque build)
+QUALITY_EXECUTION_ALLOWED=NO
+REMAINING_WORK=NONE pour l'objectif de cette mission.

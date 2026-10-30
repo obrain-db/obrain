@@ -16,6 +16,7 @@ obrain-engine = { workspace = true, features = ["gql", "regex-lite"] }
 obrain-core = { workspace = true, default-features = false, optional = true }
 obrain-common.workspace = true
 obrain-reactive = { workspace = true, optional = true }
+obrain-cognitive = { workspace = true, optional = true, features = ["cognitive"] }
 obrain-bindings-common = { path = "../common", default-features = false }
 
 # WASM bindings
@@ -51,7 +52,7 @@ hybrid-search = ["obrain-engine/hybrid-search"]
 languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
 ai = ["vector-index", "text-index", "hybrid-search"]
 # Cognitive features (energy scoring, synapses, activation)
-cognitive = ["dep:obrain-reactive"]
+cognitive = ["dep:obrain-reactive", "dep:obrain-cognitive"]
 # Named profiles
 browser = ["gql", "obrain-engine/regex-lite"]  # GQL + regex-lite (~507 KB gzip)
 full = ["languages", "ai"]  # All languages + AI search

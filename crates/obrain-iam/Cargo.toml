@@ -15,9 +15,16 @@ default = []
 # Internal crates
 obrain-common.workspace = true
 obrain-core = { workspace = true, default-features = false }
+# Audit chaîné et signé (ADR §4.1, réserve n° 1) — l'audit n'était ni chaîné ni
+# signé ; ce module le fait devenir, sans changer le store existant.
+obrain-journal.workspace = true
 
 # Password hashing
 bcrypt.workspace = true
+# Empreinte des jetons de session (SHA-256)
+sha2.workspace = true
+# Entropie des jetons de session
+rand.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -32,6 +39,9 @@ smallvec.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 obrain-substrate.workspace = true
+# La frontière « la clé prime sur le droit » (tests/la_cle_prime_sur_le_droit.rs) :
+# un `Allow` de la garde ne doit pas donner le contenu d'un espace scellé.
+obrain-coffre.workspace = true
 
 [lints]
 workspace = true

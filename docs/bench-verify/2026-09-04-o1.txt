@@ -1,0 +1,2 @@
+edgeCountByType(CALLS) = 349289  O(1) 0.18 µs (annoncé 0,20)
+nodeCountByLabel(File) = 27501  O(1) 0.13 µs (annoncé 0,14)

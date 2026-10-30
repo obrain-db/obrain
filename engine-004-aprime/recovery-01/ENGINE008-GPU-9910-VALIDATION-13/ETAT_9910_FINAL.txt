@@ -1,0 +1,11 @@
+=== ETAT FINAL 9910 (ctx natif, bind 0.0.0.0) ===
+  PID=712293   vivant=llama-server   rss=2007 Mo
+  bind=0.0.0.0:9910
+  health={"status":"ok"}
+  n_ctx_slot=87552
+  memoire : total=121Go dispo=70Go
+  anciens etats : 157550332 o mtime=2026-09-17 15:07:32.473004645 +0200
+  obrain-resume-slots : 5 fichiers
+  9906 : actif
+  9907 : actif
+  9908 : actif

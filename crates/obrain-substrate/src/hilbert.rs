@@ -90,13 +90,194 @@ pub fn hilbert_key_from_features(
     order: u32,
     max_degree: u32,
 ) -> u32 {
+    let (cx, cy) = grid_coords_from_features(centrality_q16, degree, order, max_degree);
+    hilbert_index_2d(cx, cy, order)
+}
+
+/// Rescale `(centrality_q16, degree)` onto the shared `[0, n)²` grid.
+///
+/// This is the **single point of definition of the 2D feature plane** used
+/// by both the Hilbert key (physical order) and the Z-order key (logical
+/// prefix index). Keeping one rescale guarantees both curves talk about
+/// the *same* grid — the Z-order prefix hierarchy is only meaningful if
+/// `zorder_key_from_features` and `hilbert_key_from_features` map equal
+/// feature pairs onto equal coordinates.
+///
+/// Returns coordinates clamped to `[0, n-1]` (saturation of `degree` at
+/// `max_degree`, and of `centrality` at 65535).
+#[inline]
+pub fn grid_coords_from_features(
+    centrality_q16: u16,
+    degree: u32,
+    order: u32,
+    max_degree: u32,
+) -> (u32, u32) {
     let n = 1u32 << order;
     // Rescale centrality from [0, 65535] to [0, n-1].
     let cx = (u32::from(centrality_q16) * (n - 1).max(1)) / u16::MAX as u32;
     // Saturate degree at max_degree then rescale to [0, n-1].
     let d = degree.min(max_degree);
     let cy = (d * (n - 1).max(1)) / max_degree.max(1);
-    hilbert_index_2d(cx.min(n - 1), cy.min(n - 1), order)
+    (cx.min(n - 1), cy.min(n - 1))
+}
+
+// ---------------------------------------------------------------------------
+// Z-order (Morton) superposition — logical prefix index on the same grid.
+//
+// `zorder_key_from_features` reuses [`grid_coords_from_features`] so the
+// Z-order column is filled on the exact same (cx, cy) as the Hilbert key.
+// The two curves are complements, not substitutes:
+//
+// * Hilbert orders *physically*: contiguous index ranges map to compact 2D
+//   regions (topological prefetch for spreading activation — see the module
+//   doc above).
+// * Z-order indexes *logically*: the `2k` high bits of the key are a single
+//   aligned `2^(order-k) × 2^(order-k)` quadtree cell, so any 2D window
+//   decomposes into a small number of **contiguous Z-key runs** (see
+//   [`zorder_window_ranges`]).
+//
+// Morton (bit-interleave) costs ~2-5 ns (no rotations, no branches) and
+// keeps the whole superposition in the same sort pass as the Hilbert key.
+// ---------------------------------------------------------------------------
+
+/// Map 2D grid coordinates to a 1D Z-order (Morton) index.
+///
+/// * `x, y` must be in `[0, 1 << order)`. Debug-asserted.
+/// * `order ≤ 15` so the output fits in a `u32` (`2·15 = 30` bits), the
+///   same constraint as [`hilbert_index_2d`].
+///
+/// Bit layout: `x`'s bit `i` lands at Z bit `2i`, `y`'s bit `i` at Z bit
+/// `2i+1` (x is the low/interleaved-first axis). Consequently the `2k`
+/// high bits of the key select one aligned cell of side `2^(order-k)`.
+#[inline]
+pub fn zorder_key_2d(x: u32, y: u32, order: u32) -> u32 {
+    debug_assert!(order <= 15, "order out of range: {order}");
+    let n = 1u32 << order;
+    debug_assert!(x < n, "x out of range: {x} >= {n}");
+    debug_assert!(y < n, "y out of range: {y} >= {n}");
+    let mut z: u32 = 0;
+    let mut i = 0;
+    while i < order {
+        let bit = 1u32 << i;
+        z |= (x & bit) << i; // x bit i → z bit 2i
+        z |= (y & bit) << (i + 1); // y bit i → z bit 2i+1
+        i += 1;
+    }
+    z
+}
+
+/// Build a composite Z-order key from node features.
+///
+/// Identical input contract and rescale to [`hilbert_key_from_features`]
+/// (they share [`grid_coords_from_features`]): same `order`, same
+/// `max_degree` saturation. The result is a stable *logical* key whose
+/// high-bit prefixes are quadtree cells of the `(centrality × degree)`
+/// plane.
+#[inline]
+pub fn zorder_key_from_features(
+    centrality_q16: u16,
+    degree: u32,
+    order: u32,
+    max_degree: u32,
+) -> u32 {
+    let (cx, cy) = grid_coords_from_features(centrality_q16, degree, order, max_degree);
+    zorder_key_2d(cx, cy, order)
+}
+
+/// Decompose an axis-aligned 2D window into contiguous Z-order key runs.
+///
+/// * Window bounds are **inclusive grid coordinates** on the shared
+///   `[0, n)²` grid (`n = 1 << order`), clamped to the grid. Convert
+///   absolute `(centrality, degree)` ranges with
+///   [`grid_coords_from_features`]-compatible rescaling *before* calling.
+/// * Returns disjoint, sorted, merged `(z_lo, z_hi)` runs. Every grid point
+///   of the window maps to exactly one key in the union, and vice-versa.
+///
+/// # Interval count (honest bound)
+///
+/// Compact windows decompose into few runs (roughly proportional to the
+/// window's boundary on the quadtree). Degenerate windows spanning a full
+/// axis with unit height can produce up to O(n) single-cell runs — the
+/// bench (B2) measures the real distribution. Windows aligned on cell
+/// boundaries collapse to exactly one run.
+pub fn zorder_window_ranges(
+    cx0: u32,
+    cx1: u32,
+    cy0: u32,
+    cy1: u32,
+    order: u32,
+) -> Vec<(u32, u32)> {
+    debug_assert!(order <= 15, "order out of range: {order}");
+    let n = 1u32 << order;
+    let last = n.saturating_sub(1);
+    let (qx0, qx1) = (cx0.min(cx1).min(last), cx0.max(cx1).min(last));
+    let (qy0, qy1) = (cy0.min(cy1).min(last), cy0.max(cy1).min(last));
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    if order == 0 {
+        // Single-cell grid; the window either covers it or is empty.
+        if qx0 == 0 && qy0 == 0 {
+            out.push((0, 0));
+        }
+        return out;
+    }
+
+    fn visit(
+        ox: u32,
+        oy: u32,
+        s: u32,
+        order: u32,
+        qx0: u32,
+        qx1: u32,
+        qy0: u32,
+        qy1: u32,
+        out: &mut Vec<(u32, u32)>,
+    ) {
+        // Aligned square [ox, ox+s) × [oy, oy+s), s a power of two.
+        if ox + s <= qx0 || ox > qx1 || oy + s <= qy0 || oy > qy1 {
+            return; // no overlap
+        }
+        let hi_x = ox + s - 1;
+        let hi_y = oy + s - 1;
+        if qx0 <= ox && hi_x <= qx1 && qy0 <= oy && hi_y <= qy1 {
+            // Square fully inside the window: one contiguous Z run.
+            let z0 = zorder_key_2d(ox, oy, order);
+            let z1 = zorder_key_2d(hi_x, hi_y, order);
+            debug_assert!(z1 >= z0);
+            out.push((z0, z1));
+            return;
+        }
+        if s == 1 {
+            // Single point partially covered — cannot happen (a point is
+            // either inside or outside), kept as a defensive fallback.
+            if qx0 <= ox && ox <= qx1 && qy0 <= oy && oy <= qy1 {
+                let z = zorder_key_2d(ox, oy, order);
+                out.push((z, z));
+            }
+            return;
+        }
+        let h = s / 2;
+        // Quadrants in ascending Z order: (0,0), (s/2,0), (0,s/2), (s/2,s/2).
+        visit(ox, oy, h, order, qx0, qx1, qy0, qy1, out);
+        visit(ox + h, oy, h, order, qx0, qx1, qy0, qy1, out);
+        visit(ox, oy + h, h, order, qx0, qx1, qy0, qy1, out);
+        visit(ox + h, oy + h, h, order, qx0, qx1, qy0, qy1, out);
+    }
+    visit(0, 0, n, order, qx0, qx1, qy0, qy1, &mut out);
+
+    out.sort_unstable();
+    // Merge adjacent runs (end of one + 1 == start of next).
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(out.len());
+    for (lo, hi) in out {
+        match merged.last_mut() {
+            Some(last) if last.1.saturating_add(1) >= lo => {
+                if hi > last.1 {
+                    last.1 = hi;
+                }
+            }
+            _ => merged.push((lo, hi)),
+        }
+    }
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -599,5 +780,162 @@ mod tests {
             "centrality sweep collapsed to {} distinct keys: {keys:?}",
             distinct.len()
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Z-order (Morton) primitives
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn zorder_order1_layout_is_x_then_y() {
+        // x bit lands on Z bit 0, y bit on Z bit 1 (see zorder_key_2d doc).
+        assert_eq!(zorder_key_2d(0, 0, 1), 0);
+        assert_eq!(zorder_key_2d(1, 0, 1), 1);
+        assert_eq!(zorder_key_2d(0, 1, 1), 2);
+        assert_eq!(zorder_key_2d(1, 1, 1), 3);
+    }
+
+    #[test]
+    fn zorder_bijection_order_5() {
+        let order = 5;
+        let n = 1u32 << order;
+        let mut seen = vec![false; (n * n) as usize];
+        for y in 0..n {
+            for x in 0..n {
+                let z = zorder_key_2d(x, y, order) as usize;
+                assert!(z < seen.len(), "index out of range: {z}");
+                assert!(!seen[z], "collision at ({x}, {y}) → {z}");
+                seen[z] = true;
+            }
+        }
+        assert!(seen.iter().all(|&b| b));
+    }
+
+    #[test]
+    fn zorder_high_prefix_selects_aligned_cell() {
+        // The 2k high bits of the key identify the aligned cell of side
+        // 2^(order-k): every point of the cell shares the prefix, no point
+        // outside does.
+        let order = 6;
+        for k in 1..order {
+            let cell_side = 1u32 << (order - k);
+            // The top 2k bits of the 2·order-bit key are the cell selector.
+            let shift = 2 * order - 2 * k;
+            for y in 0..cell_side {
+                for x in 0..cell_side {
+                    let z = zorder_key_2d(x, y, order);
+                    assert_eq!(
+                        z >> shift,
+                        0,
+                        "in-cell point ({x},{y}) must have empty {shift}-bit prefix"
+                    );
+                }
+            }
+            // First point outside the cell (along x) must flip a prefix bit.
+            let z_out = zorder_key_2d(cell_side, 0, order);
+            assert_ne!(z_out >> shift, 0, "out-of-cell point must differ in prefix");
+            let z_out_y = zorder_key_2d(0, cell_side, order);
+            assert_ne!(z_out_y >> shift, 0, "out-of-cell point must differ in prefix");
+        }
+    }
+
+    #[test]
+    fn zorder_key_shared_grid_with_hilbert() {
+        // Same feature pair must rescale to the same grid coordinates,
+        // whatever the curve — zorder_key_from_features and
+        // hilbert_key_from_features only diverge through the curve mapping.
+        let order = 6;
+        let max_degree = 4096;
+        for c in [0u16, 1, 100, 32_000, 65_000, 65_535] {
+            for d in [0u32, 1, 10, 100, 1_000, 5_000] {
+                let z = zorder_key_from_features(c, d, order, max_degree);
+                let n = 1u32 << order;
+                assert!(z < n * n, "zorder key out of range for ({c}, {d}): {z}");
+                // Hilbert and Z share (cx, cy): reconstruct both from the
+                // common rescale and check they are consistent with it.
+                let (cx, cy) = grid_coords_from_features(c, d, order, max_degree);
+                assert_eq!(z, zorder_key_2d(cx, cy, order));
+                assert_eq!(
+                    hilbert_key_from_features(c, d, order, max_degree),
+                    hilbert_index_2d(cx, cy, order)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zorder_respects_degree_saturation() {
+        let order = 6;
+        let max_deg = 1000;
+        let z_above = zorder_key_from_features(32_000, 10_000, order, max_deg);
+        let z_at = zorder_key_from_features(32_000, max_deg, order, max_deg);
+        assert_eq!(
+            z_above, z_at,
+            "degrees above saturation cap must collapse to the cap"
+        );
+    }
+
+    /// Exhaustive oracle: for a window, the union of returned runs must
+    /// contain exactly the Z keys of the grid points inside the window.
+    /// Mirrors the clamping of `zorder_window_ranges` (inclusive bounds,
+    /// clamped to the grid).
+    fn assert_window_coverage(cx0: u32, cx1: u32, cy0: u32, cy1: u32, order: u32) {
+        let n = 1u32 << order;
+        let last = n - 1;
+        let (qx0, qx1) = (cx0.min(cx1).min(last), cx0.max(cx1).min(last));
+        let (qy0, qy1) = (cy0.min(cy1).min(last), cy0.max(cy1).min(last));
+        let runs = zorder_window_ranges(cx0, cx1, cy0, cy1, order);
+        // Runs are sorted, disjoint and merged.
+        for w in runs.windows(2) {
+            assert!(w[0].0 <= w[0].1, "inverted run {w:?}");
+            assert!(
+                w[0].1.saturating_add(1) < w[1].0,
+                "runs not disjoint/merged: {w:?}"
+            );
+        }
+        // Membership of every grid point.
+        for y in 0..n {
+            for x in 0..n {
+                let inside = x >= qx0 && x <= qx1 && y >= qy0 && y <= qy1;
+                let z = zorder_key_2d(x, y, order);
+                let in_any_run = runs.iter().any(|&(lo, hi)| z >= lo && z <= hi);
+                assert_eq!(inside, in_any_run, "point ({x},{y}) mismatch for window ({cx0},{cx1},{cy0},{cy1})");
+            }
+        }
+    }
+
+    #[test]
+    fn zorder_window_ranges_cover_exactly() {
+        let order = 4; // 16 × 16 — exhaustive oracle stays cheap.
+        let n = 1u32 << order;
+        // A sweep of windows: corners, center, thin rows/columns, aligned cells.
+        assert_window_coverage(0, n - 1, 0, n - 1, order); // full grid
+        assert_window_coverage(0, 0, 0, 0, order); // single corner point
+        assert_window_coverage(n - 1, n - 1, n - 1, n - 1, order); // opposite corner
+        assert_window_coverage(5, 9, 3, 7, order); // compact center window
+        assert_window_coverage(0, n - 1, 6, 6, order); // full-width thin row
+        assert_window_coverage(2, 2, 0, n - 1, order); // full-height thin column
+        assert_window_coverage(2, 5, 2, 5, order); // unaligned square
+        assert_window_coverage(4, 7, 4, 7, order); // aligned 2^k cell
+        assert_window_coverage(8, 15, 8, 15, order); // aligned half-grid cell
+        assert_window_coverage(3, 12, 6, 6, order); // offset row
+    }
+
+    #[test]
+    fn zorder_window_full_grid_is_single_run() {
+        let order = 5;
+        let n = 1u32 << order;
+        let runs = zorder_window_ranges(0, n - 1, 0, n - 1, order);
+        assert_eq!(runs, vec![(0, n * n - 1)], "full grid must be one run");
+    }
+
+    #[test]
+    fn zorder_window_out_of_grid_clamps() {
+        let order = 3;
+        let n = 1u32 << order;
+        // Entirely out-of-range windows clamp to the edge column/row of the
+        // grid (mirroring the inclusive clamped bounds), never panic.
+        assert_window_coverage(n, n + 5, 0, 2, order); // → column x = n-1, rows 0..=2
+        assert_window_coverage(3, 3, 4, 4, order); // single point
     }
 }

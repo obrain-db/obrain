@@ -4,6 +4,24 @@
 pub trait Tokenizer: Send + Sync {
     /// Tokenizes text into a list of normalized terms.
     fn tokenize(&self, text: &str) -> Vec<String>;
+
+    /// ── L'IDENTITÉ DU TOKENIZER, POUR QUE L'INDEX DISE QUI L'A FAIT ────────
+    ///
+    /// Un index inverti n'est valide que pour le tokenizer qui l'a produit : les
+    /// termes stockés SONT sa sortie. Changer de tokenizer (les mots vides, la
+    /// longueur minimale, un stemmer, une langue) sans le dire rendrait un index
+    /// périmé **silencieusement** — la recherche répondrait avec un vocabulaire
+    /// que le code ne croit plus, et personne ne verrait d'erreur.
+    ///
+    /// Défaut par défaut dans tous les sens du terme : l'implémentation fournie
+    /// rend le nom du type, donc toute implémentation est identifiée SANS rien
+    /// écrire. Une implémentation qui porte des paramètres (une longueur
+    /// minimale, une langue, une liste de mots vides) DOIT la surcharger : deux
+    /// réglages différents sont deux tokenizers différents, et un index
+    /// persistant doit le savoir.
+    fn identite(&self) -> String {
+        std::any::type_name::<Self>().to_string()
+    }
 }
 
 /// A simple Unicode-aware tokenizer with stop word removal.
@@ -39,6 +57,15 @@ impl SimpleTokenizer {
 
     /// Creates a tokenizer with a custom minimum token length.
     #[must_use]
+    /// L'identité de CE tokenizer : son type **et** son réglage.
+    ///
+    /// « Simple » ne suffit pas : `with_min_length(2)` et `with_min_length(4)`
+    /// ne produisent pas les mêmes termes, donc pas le même index. Les confondre
+    /// ferait charger un index que le code actuel ne sait plus lire.
+    fn identite_parametree(&self) -> String {
+        format!("simple(min_length={})", self.min_token_length)
+    }
+
     pub fn with_min_length(min_token_length: usize) -> Self {
         Self { min_token_length }
     }
@@ -137,6 +164,12 @@ impl Tokenizer for SimpleTokenizer {
             .map(|s| s.to_lowercase())
             .filter(|s| s.len() >= self.min_token_length && !Self::is_stop_word(s))
             .collect()
+    }
+
+    /// Surcharge OBLIGATOIRE ici : ce tokenizer a un réglage, et deux réglages
+    /// différents sont deux vocabulaires différents.
+    fn identite(&self) -> String {
+        self.identite_parametree()
     }
 }
 

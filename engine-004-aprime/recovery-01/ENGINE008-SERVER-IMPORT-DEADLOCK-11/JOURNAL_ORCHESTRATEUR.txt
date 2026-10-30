@@ -1,0 +1,32 @@
+[18:30:24] === ORCHESTRATEUR ENGINE008 ENDTOEND-10 ===
+[18:30:24] hote=127.0.0.1 port=8480 (meme hote, meme espace reseau)
+[18:30:24] DELAIS PREENREGISTRES: demarrage<=600s requete<=240s
+[18:30:24] SERVER_PID=658479 (groupe propre, cwd=/home/triviere/projects/llama-obrain-cuda-f1a)
+[18:31:48] PRET apres 84.1s (probe#29) http=200 body={"status":"ok"}
+[18:31:48] --- ETAT AVANT A (horodate) ---
+[18:31:48]   PID=658479 VIVANT | ecoute: LISTEN 0      512        127.0.0.1:8480       0.0.0.0:*    users:(("llama-server",pid=658479,fd=32))
+[18:31:48]   sonde HTTP: http=200 body={"status":"ok"}
+[18:31:48]   URL CLIENT EXACTE: POST http://127.0.0.1:8480/jspace/inject_knowledge
+[18:31:48] IDS AUTORITAIRES: 59 lus, prefixe=58, 59e ID=198
+[18:31:51] [A] http=200 duree=2.348s err=None
+[18:31:51] A: ref=046f5945a8dc6fc9 blob_bytes=160697024 fact_tokens=58
+[18:32:02] [B] http=200 duree=11.185s err=None
+[18:32:13] [C] http=200 duree=11.133s err=None
+[18:32:13] LOGITS: |B|=248320 |C|=248320
+[18:32:13] START_LOGITS FINITE=YES MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+[18:32:13] B: ids=[13,198,248069,271,3793,13] pos=[59,60,61,62,63,64] sel=6 emis=6 stop=EOS prefix_tok=58
+[18:32:13] C: ids=[13,198,248069,271,3793,13] pos=[59,60,61,62,63,64] sel=6 emis=6 stop=EOS prefix_tok=0 imported=True
+[18:32:13] BLOB_SHA256_MS: A=788.2839965820312 C=788.31298828125
+[18:32:13] MODEL_SHA256_MS: A=-2.0 B=-2.0
+[18:32:13] ms_preparation_total: B=927.1320190429688 C=851.89697265625
+[18:32:13] TEXT B=[.
+</think>
+
+OK.]
+[18:32:13] TEXT C=[.
+</think>
+
+OK.]
+[18:32:13] TOKEN_IDS_MATCH=YES
+[18:32:13] TEXT_MATCH=YES
+[18:32:13] === FIN ===

@@ -1,0 +1,9 @@
+run_id,epoch,target_id,capture_id,weight_name,family,expected_K,rotation_applied,kind,path,dtype,ne0,ne1,ne2,ne3,nb0,nb1,nb2,nb3,logical_elems,bytes,contiguous,decode_step,compute_submission_id
+candidate-run1,0,1177,109,blk.8.attn_gate.weight,5,5120,1,activation,/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/RUN-09/captures/candidate/run1/ep0_sub1_t1177_c109_activation.bin,0,5120,59,1,1,4,20480,1208320,1208320,302080,1208320,1,-1,1
+candidate-run1,0,1177,109,blk.8.attn_gate.weight,5,5120,1,base_output,/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/RUN-09/captures/candidate/run1/ep0_sub1_t1177_c109_base_output.bin,0,6144,59,1,1,4,24576,1449984,1449984,362496,1449984,1,-1,1
+---
+epoch,target_id,weight_name,role,effect_class,src0_is_weight,src1_is_cur,dst_is_cur,effect_ok
+1,1,blk.8.attn_gate.weight,MM_CAPTURE,OUTPUT_DEPENDENT,1,1,1,1
+1,2,blk.8.ffn_up.weight,MM_CAPTURE,OUTPUT_DEPENDENT,1,1,1,1
+---
+673 /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/RUN-09/captures/candidate/run1/GRAPH_CAPTURE_MANIFEST.csv

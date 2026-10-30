@@ -1,0 +1,131 @@
+ENGINE-008 -- STATUT TERMINAL NEXTN-IDENTITY-01
+==========================================================================
+Le CONTRAT DE ROLES est etabli depuis la table normative de Q1. L'adaptateur
+d'identite native n'a PAS ete implemente : limite de contexte. Aucun forward.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=NEXTN_IDENTITY_RULE_BUILD_ONLY
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+NEXTN_TENSOR_ROLE_CONTRACT_SHA256=57e13bd988f9b1c164389465c826f29d69fe35f9c25f181ed6988580298b4e74
+
+=== CE QUI A ETE ETABLI (le resultat principal) ===
+Les identifiants GGUF des tensors NextN sont ceux que Q1 DECLARE, lus dans la
+table normative `LLM_TENSOR_NAMES` (llama-arch.cpp:492-499) :
+
+  enum                            identifiant GGUF                    op            exclusif
+  NEXTN_PROJ_PRE                  nextn.pre_projection                MUL_MAT       oui
+  NEXTN_PROJ_POST                 nextn.post_projection               MUL_MAT       oui
+  NEXTN_EH_PROJ                   blk.%d.nextn.eh_proj                MUL_MAT       oui
+  NEXTN_EMBED_TOKENS              blk.%d.nextn.embed_tokens           GET_ROWS      oui
+  NEXTN_ENORM                     blk.%d.nextn.enorm                  MUL           oui
+  NEXTN_HNORM                     blk.%d.nextn.hnorm                  --            oui
+  NEXTN_SHARED_HEAD_NORM          blk.%d.nextn.shared_head_norm       --            oui
+  NEXTN_SHARED_HEAD_HEAD          blk.%d.nextn.shared_head_head       --            ** NON **
+
+  hyperparametre : LLM_KV_NEXTN_PREDICT_LAYERS = "%s.nextn_predict_layers"
+                   (llama-arch.cpp:201) ; n entre PAS dans le graphe.
+
+La justification est NORMATIVE, pas lexicale : ces identifiants sont ceux avec
+lesquels Q1 CREE les tensors. Un tensor hors de cette table n est PAS un
+temoin, meme si son nom d affichage contient « nextn ».
+
+=== LE POINT QUE LA CONSIGNE §3 EXIGEAIT DE TROUVER ===
+NEXTN_SHARED_HEAD_HEAD est **NON EXCLUSIF** : son propre nom dit SHARED_HEAD.
+Il est PARTAGE avec le decodeur standard. Il ne peut donc PAS servir de temoin
+exclusif de NextN. Le contrat le declare explicitement en avertissement.
+
+NEXTN_POSITIVE_WITNESS_RULE_JUSTIFIED=YES
+  Base : les 7 identifiants exclusifs ci-dessus, consommes par une operation du
+  graphe soumis. Le chemin standard ne les consomme pas.
+NEXTN_NEGATIVE_WITNESS_EXHAUSTIVENESS_JUSTIFIED=NO
+  Deux motifs precis :
+   (a) NEXTN_SHARED_HEAD_HEAD est partage -> inutilisable comme temoin exclusif ;
+   (b) rien n etablit que TOUT chemin NextN pertinent consomme necessairement
+       l un des temoins exclusifs DANS LE PERIMETRE ENUMERE.
+  Une regle suffisante pour detecter des cas POSITIFS n est pas automatiquement
+  suffisante pour exclure tous les cas NEGATIFS.
+  CONSEQUENCE ASSUMEE : NO_NEXTN_WITNESS_IN_COMPLETE_SCOPE ne peut PAS etre
+  rendu comme conclusion d absence. Le verdict correct, quand aucun temoin
+  n est vu, est NOT_CONFIRMED_NEGATIVE_RULE_INCOMPLETE.
+  L autorisation donnee par cette passe N A PAS ete transformee en preuve
+  d exhaustivite.
+
+=== ADAPTATEUR D IDENTITE NATIVE : NON IMPLEMENTE, ET UNE DIFFICULTE REELLE ===
+Acces recherche : `llama_model::get_tensor(const char * name) const`
+  (src/llama-model.h:664, src/llama-model.cpp:2062).
+PUBLIC_API=NO. Ce n est PAS dans include/llama.h : c est une methode INTERNE
+  de la classe llama_model. Le harnais ne peut donc PAS acquerir le registre
+  d identite natif par l API publique.
+DEUX VOIES SEULEMENT, aucune tentee ici :
+  (i) un accesseur exporte dans libllama -> MODIFICATION de Q1, HORS PERIMETRE ;
+  (ii) compiler le harnais contre les headers INTERNES du fork, SOUS RESERVE que
+       le symbole soit effectivement exporte par le .so -- A VERIFIER par nm.
+NEXTN_NATIVE_IDENTITY_ADAPTER_IMPLEMENTED=NO
+NEXTN_IDENTITY_ADAPTER_MOCK_SELFTEST=NOT_RUN
+ALIAS_PROVENANCE_RULE_IMPLEMENTED=NO
+
+=== COUVERTURE DES SLOTS src DE GGML : NON VERIFIEE ===
+GGML_SRC_SLOT_COVERAGE_VERIFIED=NO
+  L enumerateur exporte src[0..3]. GGML_MAX_SRC doit etre releve, ainsi que les
+  slots reellement utilises par les operateurs pertinents. Si une dependance
+  tombe au-dela de src[3], l export est TRONQUE et ne doit PAS etre presente
+  comme COMPLETE. Cette verification n a pas ete faite.
+
+=== IDENTITES ===
+ENUMERATION_SCHEMA_VERSION=ENGINE008_GRAPH_ENUM_v1 (inchange)
+GRAPH_ENUMERATOR_SOURCE_SHA256=79a192e3066284bd138f0599a194d8bd6c9ba7745e116eb67f565e1e5f9558be
+GRAPH_ENUMERATOR_BINARY_SHA256=56b0516e6a87ee09174055bf5593ced7453e9b2d3b102f3c4dba033e3f261156
+  L enumerateur n a PAS ete modifie dans cette passe (l extension src[] exige
+  d abord la verification des slots, cf. ci-dessus). Ses tests restent valides
+  pour ce qu ils testent REELLEMENT.
+NEXTN_STRUCTURAL_CLASSIFIER_SELFTEST=PASS (herite, non rejoue : binaire inchange)
+
+MODEL_FORWARD_CALL_COUNT=0
+FULL_MODEL_LOAD_COUNT=0
+SYNTHETIC_GRAPH_NUMERIC_EVALUATION_COUNT=0
+RUNTIME_NATIVE_IDENTITY_ACQUISITION=NOT_EXERCISED
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Ni blocage de preuve : le contrat de roles EST etabli et il est decisif.
+  Ni achevement : l adaptateur mocke, les alias et la couverture src[] restent
+  a faire. C est une interruption de travail.
+
+REMAINING_PROOF_REQUIREMENTS=
+  R1_IMPLEMENTER_l_adaptateur_de_registre avec une table native MOCKEE (aucun
+     chargement complet) : identite du modele, role semantique, identifiant
+     exact, objet natif, coherence. Un tensor inconnu ne devient PAS un tensor
+     normal par defaut ; roles attendus / absents / partages / ambigus distingues.
+  R2_VERIFIER_par_nm si `llama_model::get_tensor` est exporte par libllama.so,
+     afin de savoir si la voie (ii) est ouverte SANS modifier Q1.
+  R3_RELEVER_GGML_MAX_SRC et les slots utilises ; ETENDRE l export si une
+     dependance tombe au-dela de src[3] ; VERSIONNER le schema si besoin.
+  R4_IMPLEMENTER_la_resolution_des_operandes et la regle d ALIAS verifiable.
+     Ne jamais fusionner deux tensors sur leur seul nom ou leur seule adresse.
+     Provenance ambigue -> NOT_CONFIRMED.
+  R5_TESTS_synthetiques : tensor enregistre mais non consomme ; temoin consomme
+     par la structure attendue ; poids PARTAGE consomme dans un chemin standard
+     (ne doit PAS produire de detection NextN) ; tensor non enregistre portant
+     un nom trompeur ; alias justifie ; alias ambigu ; role attendu manquant ;
+     consommation dans un slot > 3 ; graphe incomplet ; soumission
+     intermediaire manquante.
+  R6_REPRENDRE_les_travaux hors perimetre : R2 closure renderer, chemin nominal
+     d autorisation, v1.1, gel preflight.
+
+ENGINE008_NEXT_STEP=VERIFIER_R2 (nm : llama_model::get_tensor est-il exporte ?)
+  PUIS_R1 (adaptateur sur registre mocke)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun chargement complet de modele, aucun logit, aucune generation, aucun
+scoring, aucune NLL/PPL. Aucune evaluation numerique de graphe.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template, gel v1, enumerateur ou identite historique.
+Aucun nouveau gel cree.

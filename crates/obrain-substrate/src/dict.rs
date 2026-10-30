@@ -43,7 +43,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::blob_column::BlobColSpec;
 use crate::error::{SubstrateError, SubstrateResult};
@@ -83,7 +83,12 @@ const MAGIC: u32 = 0xD1C7_0DB1;
 ///   peer-label-constrained queries. v5 dicts load these fields as
 ///   empty `Vec` and the caller rebuilds them on the next full
 ///   counter scan.
-const FORMAT_VERSION: u32 = 6;
+// v7 (2026-08-15, garantie zero perte SANS saccage de performances) :
+// wal_offset_at_flush — l'offset du WAL au debut du flush qui a ecrit ce
+// snapshot. Tout ce qui precede est deja durable (zones + dict) : le
+// rejeu a l'ouverture part de la, au lieu de relire jusqu'a 512 Mio
+// d'histoire deja duree (mesure : 73 s par ouverture de la base agent).
+const FORMAT_VERSION: u32 = 7;
 
 /// Wire size of one `VecColSpec` in the v3+ tail of the dict.
 const VEC_COL_SPEC_WIRE_SIZE: usize = 2 + 1 + 1 + 4;
@@ -183,6 +188,11 @@ pub struct DictSnapshot {
     /// Writers always populate this from the in-memory atomics before
     /// calling [`Self::persist`].
     pub counters: Option<PersistedCounters>,
+    /// v7 : offset du WAL au DEBUT du flush qui a ecrit ce snapshot.
+    /// Capture avant commit/msync — le rejeu peut relire un peu trop
+    /// (idempotent), jamais trop peu. 0 sur les dicts v<=6 (rejeu
+    /// complet une fois, puis le premier flush borne).
+    pub wal_offset_at_flush: u64,
 }
 
 impl Default for DictSnapshot {
@@ -196,6 +206,7 @@ impl Default for DictSnapshot {
             next_engram_id: 1,
             vec_columns: Vec::new(),
             blob_columns: Vec::new(),
+            wal_offset_at_flush: 0,
             // T17h T1: a default (fresh) snapshot is already v5-compatible.
             // Producing `Some(Default)` here ensures roundtrip invariance
             // (write → read → equal) and makes in-memory snapshots consistent
@@ -332,6 +343,9 @@ impl DictSnapshot {
             }
         }
 
+        // v7 : l'offset WAL du flush — voir le doc du champ.
+        buf.extend_from_slice(&self.wal_offset_at_flush.to_le_bytes());
+
         // Pad to 4-byte boundary before crc to keep alignment clean.
         while buf.len() % 4 != 0 {
             buf.push(0);
@@ -340,6 +354,28 @@ impl DictSnapshot {
         let crc = crc32c(&buf);
         buf.extend_from_slice(&crc.to_le_bytes());
         Ok(buf)
+    }
+
+    /// Sérialise le CONTENU STABLE du snapshot — tout SAUF
+    /// `wal_offset_at_flush` (v7).
+    ///
+    /// ## Pourquoi (optimisation DIRTY-FLAG du dict)
+    ///
+    /// `wal_offset_at_flush` avance à CHAQUE flush : `SubstrateStore::flush`
+    /// le capture AVANT `commit()`, et `commit()` appose un marqueur NoOp dans
+    /// le WAL — donc même sur un store qui n'a rien écrit, l'offset bouge d'un
+    /// marqueur par flush. Le comparer à l'octet près forcerait une réécriture
+    /// du dict à chaque flush périodique, alors que le reste (registres de
+    /// noms, compteurs vivants, specs de colonnes vec/blob) n'a pas bougé.
+    ///
+    /// Cette méthode sert de SIGNATURE du dirty-flag : deux flushes aux
+    /// registres+compteurs+specs identiques produisent les mêmes octets
+    /// stables, même si leur `wal_offset_at_flush` diffère. `SubstrateStore`
+    /// saute alors `persist_dict` (coût O(fsync+rename) évité).
+    pub fn to_bytes_stable(&self) -> SubstrateResult<Vec<u8>> {
+        let mut stable = self.clone();
+        stable.wal_offset_at_flush = 0;
+        stable.to_bytes()
     }
 
     /// Deserialize a snapshot from bytes. Validates magic, version, crc.
@@ -532,6 +568,7 @@ impl DictSnapshot {
         // v5+: PersistedCounters block. u64 total_nodes + u64 total_edges
         // + 64×u64 label_counts + u16 count + (u16, u64) entries.
         // v1..=v4: counters = None → caller rebuilds.
+        let mut wal_offset_at_flush = 0u64;
         let counters: Option<PersistedCounters> = if version >= 5 {
             if cur.len() < COUNTERS_FIXED_PREFIX_SIZE {
                 return Err(SubstrateError::Internal(format!(
@@ -605,6 +642,16 @@ impl DictSnapshot {
             } else {
                 (Vec::new(), Vec::new())
             };
+            // v7 : offset WAL du flush. v<=6 -> 0 (rejeu complet une fois).
+            if version >= 7 {
+                if cur.len() < 8 {
+                    return Err(SubstrateError::Internal(
+                        "dict v7 truncated at wal_offset_at_flush".into(),
+                    ));
+                }
+                wal_offset_at_flush = u64::from_le_bytes(cur[0..8].try_into().unwrap());
+                cur = &cur[8..];
+            }
             // Touch `cur` so future versions can continue parsing from here.
             let _ = &cur;
             Some(PersistedCounters {
@@ -629,26 +676,80 @@ impl DictSnapshot {
             vec_columns,
             blob_columns,
             counters,
+            wal_offset_at_flush,
         })
     }
 
     /// Atomically write the snapshot to `path` (tmpfile + rename + fsync).
+    ///
+    /// ── LE TEMPORAIRE EST UNIQUE PAR ÉCRIVAIN (Phase B, pièce 3) ─────────────
+    /// Il était nommé `<dict>.tmp`, un nom PARTAGÉ par tous les processus du
+    /// store. Deux écrivains qui flushent en même temps ouvrent donc LE MÊME
+    /// fichier (le second `O_TRUNC` efface le contenu du premier), et le `rename`
+    /// du perdant échoue en `ENOENT` : le premier a déjà emporté le fichier.
+    /// Mesuré par `strace` sur deux enfants écrivant le même store, au même
+    /// instant : `rename("…/substrate.dict.tmp", "…/substrate.dict") = -1 ENOENT`.
+    /// Le flush ÉCHOUAIT donc chez l'un des deux — pour une raison qui n'a rien à
+    /// voir avec ce qu'il écrivait.
+    ///
+    /// C'est exactement le raisonnement déjà écrit pour l'ancre du WAL
+    /// (`wal_io::chemin_tmp_ancre`) : « un nom partagé fait échouer le rename du
+    /// second publieur en ENOENT ». Le dictionnaire est le dernier fichier publié
+    /// de cette façon qui gardait un nom partagé.
+    ///
+    /// ── FENCE COURT : DÉCOMPOSÉE EN TROIS PHASES ──────────────────────────────
+    /// `persist_dict` a besoin de sortir l'E/S de durabilité (le `sync_all` du
+    /// tmp) de la section critique du `flock`. Cette méthode reste le chemin
+    /// complet (écrire + fsync + rename + fsync répertoire) pour les appelants qui
+    /// n'ont pas de verrou à tenir ; `persist_dict`, lui, compose les trois
+    /// primitives ci-dessous pour faire l'E/S AVANT le verrou, le `rename` SOUS
+    /// le verrou, et le fsync du répertoire APRÈS.
     pub fn persist(&self, path: &Path) -> SubstrateResult<()> {
+        let (tmp, _octets) = self.persist_tmp(path)?;
+        Self::publier_tmp(&tmp, path)?;
+        Self::synchroniser_repertoire(path);
+        Ok(())
+    }
+
+    /// Phase (i) du FENCE COURT : sérialiser + écrire + fsync un temporaire
+    /// UNIQUE, SANS publier (pas de `rename`) et SANS fsync du répertoire.
+    ///
+    /// Rend `(chemin_du_tmp, octets_écrits)`. Les octets sont la sérialisation
+    /// du snapshot : sous le verrou, `persist_dict` compare le résultat de sa
+    /// FUSION à ces octets pour décider si le tmp déjà fsyncé peut être publié
+    /// tel quel (`rename` direct) ou s'il faut re-sérialiser un second tmp (le
+    /// disque a changé entre-temps). C'est la comparaison EXACTE qui rend
+    /// l'optimisation sûre : le tmp n'est publié que si ses octets SONT déjà le
+    /// résultat fusionné.
+    pub fn persist_tmp(&self, path: &Path) -> SubstrateResult<(PathBuf, Vec<u8>)> {
         let bytes = self.to_bytes()?;
-        let tmp = path.with_extension("dict.tmp");
+        let tmp = crate::wal_io::chemin_tmp_unique(path);
         {
             let mut f = fs::File::create(&tmp)?;
             f.write_all(&bytes)?;
             f.sync_all()?;
         }
-        fs::rename(&tmp, path)?;
+        Ok((tmp, bytes))
+    }
+
+    /// Phase (iv)/(v) du FENCE COURT : publie un temporaire DÉJÀ écrit et fsyncé
+    /// par un `rename` atomique. NE fsync PAS le répertoire parent — c'est la
+    /// phase (vi), différée HORS du verrou par `persist_dict`.
+    pub fn publier_tmp(tmp: &Path, path: &Path) -> SubstrateResult<()> {
+        fs::rename(tmp, path)?;
+        Ok(())
+    }
+
+    /// Phase (vi) du FENCE COURT : fsync du répertoire parent, meilleur effort.
+    /// Rend le `rename` durable. Différé hors de la section critique pour qu'un
+    /// `fsync` de répertoire ne sérialise pas N processus derrière le `flock`.
+    pub fn synchroniser_repertoire(path: &Path) {
         // fsync parent dir to make the rename durable.
         if let Some(parent) = path.parent()
             && let Ok(d) = fs::File::open(parent)
         {
             let _ = d.sync_all();
         }
-        Ok(())
     }
 
     /// Load a snapshot from `path`. Returns an empty snapshot if the file
@@ -739,6 +840,46 @@ mod tests {
         assert_eq!(s.next_edge_id, 1);
     }
 
+    /// Le dirty-flag du dict repose sur une séparation nette : deux snapshots
+    /// IDENTIQUES sauf leur `wal_offset_at_flush` (qui avance à chaque flush via
+    /// le marqueur de commit WAL) doivent produire les MÊMES octets stables, mais
+    /// des octets COMPLETS différents. C'est ce qui permet de sauter
+    /// `persist_dict` sur un store propre sans jamais sauter une vraie mutation.
+    #[test]
+    fn stable_bytes_ignore_wal_offset_but_full_bytes_differ() {
+        let mut a = DictSnapshot {
+            labels: vec!["Node".into()],
+            edge_types: vec!["REL".into()],
+            prop_keys: vec!["id".into()],
+            next_node_id: 42,
+            next_edge_id: 99,
+            next_engram_id: 7,
+            vec_columns: Vec::new(),
+            blob_columns: Vec::new(),
+            wal_offset_at_flush: 1_000,
+            counters: Some(PersistedCounters::default()),
+        };
+        let mut b = a.clone();
+        b.wal_offset_at_flush = 2_000_000;
+
+        // Même contenu stable, offset WAL différent.
+        assert_eq!(
+            a.to_bytes_stable().unwrap(),
+            b.to_bytes_stable().unwrap(),
+            "la signature stable doit ignorer wal_offset_at_flush"
+        );
+        // Les octets complets, eux, diffèrent (l'offset est sérialisé).
+        assert_ne!(a.to_bytes().unwrap(), b.to_bytes().unwrap());
+
+        // Une mutation du contenu stable (nouveau label) change la signature.
+        a.labels.push("Personne".into());
+        assert_ne!(
+            a.to_bytes_stable().unwrap(),
+            b.to_bytes_stable().unwrap(),
+            "un registre modifié doit changer la signature stable"
+        );
+    }
+
     #[test]
     fn roundtrip_empty() {
         let s = DictSnapshot::default();
@@ -758,6 +899,7 @@ mod tests {
             next_engram_id: 4321,
             vec_columns: Vec::new(),
             blob_columns: Vec::new(),
+            wal_offset_at_flush: 0,
             counters: Some(PersistedCounters::default()),
         };
         let bytes = s.to_bytes().unwrap();
@@ -778,6 +920,7 @@ mod tests {
             next_engram_id: 7,
             vec_columns: Vec::new(),
             blob_columns: Vec::new(),
+            wal_offset_at_flush: 0,
             counters: Some(PersistedCounters::default()),
         };
         s.persist(&path).unwrap();
@@ -809,6 +952,7 @@ mod tests {
                 },
             ],
             blob_columns: Vec::new(),
+            wal_offset_at_flush: 0,
             counters: Some(PersistedCounters::default()),
         };
         let bytes = s.to_bytes().unwrap();
@@ -871,6 +1015,7 @@ mod tests {
                 },
             ],
             counters: Some(PersistedCounters::default()),
+            wal_offset_at_flush: 0,
         };
         let bytes = s.to_bytes().unwrap();
         let back = DictSnapshot::from_bytes(&bytes).unwrap();
@@ -1119,6 +1264,7 @@ mod tests {
             next_engram_id: 9999,
             vec_columns: Vec::new(),
             blob_columns: Vec::new(),
+            wal_offset_at_flush: 0,
             counters: Some(PersistedCounters::default()),
         };
         let bytes = s.to_bytes().unwrap();

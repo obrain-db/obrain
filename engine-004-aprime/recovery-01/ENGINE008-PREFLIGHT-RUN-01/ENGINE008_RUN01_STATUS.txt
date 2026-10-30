@@ -1,0 +1,60 @@
+ENGINE-008 -- STATUT ENGINE008-PREFLIGHT-RUN-01
+==========================================================================
+Les identites sont VERIFIEES et concordantes. Un DEFAUT DE HARNAIS a ete
+decouvert a la verification avant calcul : le chemin nominal autorise n'est pas
+implemente. LA SEQUENCE N'A PAS ETE ENTAMEE.
+
+PREFLIGHT_RUN_ORDER=NONE (aucun run lance)
+PREFLIGHT_BASELINE_RUN_COUNT=0
+PREFLIGHT_CANDIDATE_RUN_COUNT=0
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+GENERATED_TOKEN_COUNT_PER_RUN=NONE
+STOP_REASON_PER_RUN=NONE
+P4_STRUCTURAL_RESULT_PER_BASELINE_RUN=NOT_EXERCISED
+CANDIDATE_WHT_RESULT_PER_RUN=NOT_EXERCISED
+NEXTN_STANDARD_PATH_RESULT_PER_RUN=NOT_EXERCISED
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_SEQUENCE_RESULT=INCOMPLETE
+FIRST_BLOCKING_GATE=ENGINE008_PREFLIGHT_ENTRYPOINT_NOT_EXECUTABLE
+UNEXECUTED_RUNS=baseline1, candidate1, baseline2, candidate2
+EXTRA_RUN_COUNT=0
+RETRY_COUNT=0
+FROZEN_AUTHORITIES_MODIFIED=NO
+TASK_QUALITY_RESULT_COUNT=0
+QUALITY_EXECUTION_ALLOWED=NO
+
+=== AUTORISATION : MATERIALISEE, NON CONSUMEE ===
+  ENGINE008_AUTHORIZATION_REAL_PREFLIGHT.conf a ete cree conformement au schema
+  gele (audience=REAL_PREFLIGHT, bien forme, allow_model_compute=1, et les trois
+  identites binaire/plan/protocole). Son SHA est au checkpoint.
+  AUCUN RUN NE L'A CONSUMTE : la sequence n'a pas ete lancee.
+
+=== QUATRE DESTINATIONS DE CAPTURE NEUVES, VIDES, INUTILISEES ===
+  captures/baseline/run1, captures/candidate/run1,
+  captures/baseline/run2, captures/candidate/run2 -- toutes creees VIDES et
+  restees vides.
+
+=== PREUVES CONSERVEES ===
+  ENGINE008_PRECOMPUTE_IDENTITY_VERIFICATION.txt  (toutes les identites, ldd,
+    modeles, template, inventaire, destinations)
+  ENGINE008_HARNESS_DEFECT_REPORT.txt             (D-A et D-B, portee precise)
+  ENGINE008_AUTHORIZATION_REAL_PREFLIGHT.conf
+
+=== CE QUI N'A PAS ETE FAIT, ET POURQUOI ===
+  Aucun run n'a ete lance. Aucune ligne de code n'a ete modifiee. Aucune autorite
+  n'a ete reconstruite, remplacee ou reparee. Aucun modele charge. Aucun contexte
+  cree. Aucun forward. Aucun retry. Aucun run supplementaire.
+  L'instruction §5 interdit de modifier puis relancer sous le meme gel : ecrire
+  le pilote et lier modele/prompt/destination est une modification de code. Je ne
+  la fais pas ; je la decris.
+
+FROZEN_AUTHORITIES_MODIFIED=NO
+  Protocole v3, manifeste de gel, plan, inventaire, template, P4' : INTACTS.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucune evaluation qualite, aucun scorer, aucun NLL/PPL, aucun long contexte.
+Aucune modification de Q1, des modeles, du template, de l'inventaire, du
+protocole, du plan ou du code gele.

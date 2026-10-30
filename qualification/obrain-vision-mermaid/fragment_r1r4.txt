@@ -1,0 +1,122 @@
+SPHERE: q0_r1_r4_residence_et_provenance
+RESUME: R1-R4 ont localise et requalifie la bufferlessness des tenseurs captures comme une propriete de phase et d instance de graphe et non de role de tenseur, puis l ont prouvee par appartenance au graphe soumis avec zero contre-exemple, soit 504 residents et soumis contre 0 bufferless et soumis. R2 a refute le raccourci 1176 egal 168 x 7 presente comme sept decodes et montre que ces epoques sont des passes de construction non soumises, avec 8 constructions par soumission et 1344 cibles par construction. R3 a remplace la preuve par compteur de soumissions par un instantane fige des noeuds et a prouve la semantique de synchronisation par lecture de source. Restent ouverts la propriete backend enregistree, la correspondance par role, la provenance des payloads et l exhaustivite A-B-C, donc Q0_FULL_RUN_ALLOWED reste NO et Q0_STATUS reste NOT_PASSED. Aucune mesure numerique dans R1-R4, la validation du noyau q8_1 apparaissant seulement dans N4.
+NOEUDS:
+[RETIRE] r1r4_retrait_capture_tensor_lifetime :: retrait de la preuve statique de duree de vie des tenseurs captures presentee comme complete :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_ordre_extraction_statique :: ordre statique compute puis synchronize puis extraction puis premiere invalidation connue :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PARTIEL] r1r4_residence_et_extraction_qualifiees_partiel :: statut R1 residence et extraction qualifiees partielles car propriete backend et identite de pointeur manquantes :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[OUVERT] r1r4_capture_backend_ownership_not_established :: propriete backend de capture non etablie et champ sched_backend ecrit vide :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_counts_identiques_par_role :: les trois roles cur_capture mm_raw et mm_capture ont exactement les memes comptes a chaque epoque :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_bufferlessness_propriete_de_timing :: la bufferlessness est une propriete de moment et non une propriete de role de tenseur :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_resident_168_bufferless_1176 :: comptes par role 168 residents contre 1176 bufferless a epoque precoce et 168 contre 0 a epoque tardive :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_h1_backend_zero_cause_premiere :: hypothese H1 du backend zero suppose ecartee comme cause premiere :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_h2_jamais_bufferise :: hypothese H2 du tenseur jamais bufferise rejetee car les trois roles deviennent residents :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_h3_pointeur_non_execute :: hypothese H3 du pointeur non execute rejetee car les memes pointeurs deviennent residents :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_h4_role_structurellement_bufferless :: hypothese H4 d une classe legitimement bufferless rejetee :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_h5_buffer_libere_reformule :: hypothese H5 du buffer libere avant extraction reformulee en buffer pas encore alloue :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_h6_mm_raw_inutile_non_cause :: extraction de mm_raw confirmee inutile mais non cause du crash :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_extraction_un_token_rc0 :: extraction d un token sans assertion avec code retour zero et 672 payloads ecrits :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_limite_extraction_roles :: extraction limitee a cur_capture et mm_capture et mm_raw retire de l extraction :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_topologie_graphe_confirmee :: topologie confirmee par les operations observees DUP 1 pour cur_capture MUL_MAT 29 pour mm_raw et DUP 1 pour mm_capture :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_index_backend_capture_rejete :: index de backend fixe pour l extraction de capture rejete :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[OUVERT] r1r4_pointer_identity_not_measured :: identite de pointeur entre registre et graphe execute non mesuree :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[OUVERT] r1r4_capture_off_inert_non_mesure_r1 :: chemin de capture desactive declare implemente mais non encore mesure en R1 :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_cli_interactif_interdit :: CLI interactif interdit pour la qualification F1A et remplace par f1a-eval sous libllama direct :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_defect47_heredoc_ssh :: defaut de harnais 47 CLI interactif ayant consomme un heredoc SSH comme entree de modele avec sorties de plusieurs gigaoctets jetees :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_defect48_extraction_sans_buffer :: defaut de harnais 48 extraction tentee sans controle de residence du buffer corrige par condition sur t_buffer non nul :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_gates_r1 :: etat des gates R1 ordre PASS et residence PASS conditionnelle tandis que propriete backend et serialisation logique restent non etablies :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_hook_soumission_calcul :: hook pose juste avant ggml_backend_sched_graph_compute_async enregistrant le compteur de soumissions a la construction :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_epoques_bufferless_non_executees :: epoques bufferless precoces prouvees non executees comme passes de construction et non des decodes :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_table_decisive_par_epoque :: epoque 0 marquee BUILD_ONLY_NOT_SUBMITTED avec 1176 cibles nulles et epoque 1 SUBMITTED_FOR_COMPUTE avec 0 cible nulle :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_build_calls_par_passe :: la greffe build_lora_mm est appelee 8 fois par construction de graphe soit 1344 cibles par epoque de construction :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[REFUTE] r1r4_1176_egale_sept_decodes :: lecture de 1176 egal 168 x 7 comme sept vrais appels de decodage rejetee par la mesure :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_saut_bufferless_sur_epoques_non_soumises :: le saut sur buffer nul est sur pour les epoques non soumises et aucun tenseur requis soumis n est saute :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_payload_accounting_exact :: reconciliation exacte des 672 payloads 168 cibles par 2 classes par 2 epoques sans fichier inexplique :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_regles_methodologiques :: trois distinctions permanentes existence contre residence ordre statique contre duree de vie et construction contre soumission :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_defect49_acces_type_incomplet :: defaut de harnais 49 acces a gf_n_nodes via un type ggml_cgraph incomplet corrige par l accesseur ggml_graph_n_nodes :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[OUVERT] r1r4_r2_trois_conditions_non_remplies :: trois des neuf conditions du paragraphe 23 non remplies donc pas de promotion au-dela du statut R2 :: ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_instantane_fige_noeuds :: R3 remplace le hook a compteur et dernier pointeur de R2 par un instantane fige des noeuds avec empreinte :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_deux_soumissions_acceptees :: deux soumissions de calcul acceptees avec code retour zero et meme pointeur 3991 noeuds et meme empreinte FNV-1a :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_bufferless_absents_graphes_soumis :: preuve centrale 504 cibles residents et soumises contre 0 cible bufferless et soumise soit aucun contre-exemple :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_scheduler_synchronize_source :: semantique de synchronisation prouvee par lecture de source ggml-backend.cpp boucle sur tous les backends participants :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_tensor_get_non_utilise_comme_preuve :: un tensor_get reussi n est pas utilise comme preuve de residence :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PARTIEL] r1r4_role_structure_partiel :: appartenance des pointeurs prouvee mais correspondance par role non ecrite et structure non etablie :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[OUVERT] r1r4_payload_provenance_incomplete :: provenance des payloads incomplete sans SHA256 par payload ni rattachement de l identifiant de soumission :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[OUVERT] r1r4_r3_compteurs_off_non_mesures :: cinq compteurs capture desactivee non mesures car leur publication depend d une fonction jamais appelee hors capture :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[OUVERT] r1r4_r3_aucune_reference_numerique :: q8_1 non executee TQ2 non comparee logits hors et sous capture non compares et aucune saillance mesuree :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_jalons_r4_abcd :: jalons R4 a publier les compteurs hors capture b passer le planificateur c ecrire la correspondance par role d hasher les payloads :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_r4_capture_off_inert :: chemin de capture desactive mesure inerte avec les cinq compteurs a zero et aucun fichier de capture :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_publication_compteurs_standalone :: correction par publication independante appelee inconditionnellement en fin de test sans contexte ni allocation ni E-S :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_compteur_discrimine_les_modes :: verification capture active montrant ctx_active 4479 superieur a zero et probe a zero donc le compteur distingue bien les deux modes :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_defect50_compteur_mesurait_les_verifications :: defaut de harnais 50 compteur ctx_active incrementant les deux branches donc mesurant les verifications du drapeau et non les contextes crees :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_inertie_non_provable_sans_la_mesure :: sans la mesure exigee l absence de fichiers n aurait pas prouve l inertie et un 4477 inexplique aurait ete publie :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_r4_reproduit_r3 :: R4 reproduit la preuve d appartenance de R3 avec 504 residents et soumis contre 0 bufferless et soumis :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_empreinte_hache_des_adresses :: l empreinte differe entre R3 et R4 car elle hache des adresses et seules les deux soumissions d une meme execution doivent coincider :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_dup_nodes_added :: compteur de noeuds DUP ajoutes a 3024 capture active et a 0 capture desactivee :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_stats_arret_r4 :: statut R4 bloque sur le gate de propriete backend et premier gate echoue selon la taxonomie :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_r4_quatre_points_non_executes :: R4-b proprietaire backend R4-c relations par role R4-d provenance des payloads et R4-e exhaustivite A-B-C specifies mais non executes :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_q0_full_run_interdit :: Q0 complet reste interdit et Q0_STATUS reste NOT_PASSED avec Q1_ALLOWED a NO :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_backend_ownership_reste_ouvert_r4 :: propriete backend du tenseur toujours non enregistree car end_epoch ne recoit pas le planificateur :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_role_relationships_non_prouvees :: relations de role entre tenseurs et graphe non prouvees :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_submitted_target_completeness_non_mesure :: exhaustivite de capture des cibles soumises non mesuree :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r1r4_defects46_49_resolved_r3 :: defauts de harnais 46 a 49 listes resolus dans le ledger R3 :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_defects46_50_resolved_r4 :: defauts de harnais 46 a 50 listes resolus dans le ledger R4 :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PARTIEL] r1r4_ambiguite_numerotation_defect46 :: le meme numero 46 designe l arrondi bancaire en R3 et R4 mais aucune definition n est donnee dans R1 et le libelle 46 reste introuvable :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[OUVERT] r1r4_divergence_compteur_r3_r4 :: le compteur capture active vaut 4477 dans le releve de R3 et 4479 apres correction en R4 et R3 ne signale pas ce defaut :: ENGINE-007B-F1A-Q0-R3-GRAPH-PROVENANCE-QUALIFICATION.md
+[PROUVE] r1r4_q8_reference_tests_pass :: tests unitaires de reference q8_1 PASS et cas de mi-chemin conformes dans les ledgers R1 a R4 :: ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r1r4_defect57_reference_q8_1 :: defaut de harnais 57 reference q8_1 ayant utilise une echelle fp16 inversee et l arrondi bancaire au lieu de roundf :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] r1r4_desaccord_numerotation_defects :: R1 declare 46 comme dernier defaut de la serie R2 ajoute 49 R3 et R4 ajoutent 50 et N4 declare 46 a 55 resolus avec 56 et 57 distincts :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] r1r4_validation_native_n4 :: validation de la reference native q8_1 sur trois tenseurs et toutes les lignes epoque 0 avec rel_l2 de l ordre de 1.4e-7 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] r1r4_plumbing_failures :: compteur de defauts de plomberie fige a 28 avec le numero 29 non attribue dans tous les rapports R1 a R4 :: ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[OUVERT] r1r4_gates_historiques_n4 :: test d indexation de sortie de ligne non execute et appariement temporel des echantillons partiel :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] r1r4_perimetre_epoque_0 :: validation numerique limitee a l epoque 0 et captures de l epoque 1 non reconstruites :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+r1r4_retrait_capture_tensor_lifetime -> r1r4_ordre_extraction_statique [REMPLACE] le retrait de la preuve de duree de vie est remplace par la preuve d ordre statique
+r1r4_retrait_capture_tensor_lifetime -> r1r4_residence_et_extraction_qualifiees_partiel [RETIRE] le statut R1 est abaisse a partiel apres retrait de la preuve presentee comme complete
+r1r4_ordre_extraction_statique -> r1r4_residence_et_extraction_qualifiees_partiel [DEPEND] l ordre statique est une des conditions du statut partiel R1
+r1r4_topologie_graphe_confirmee -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] la topologie observee alimente la conclusion de timing
+r1r4_counts_identiques_par_role -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] l egalite des comptes entre trois roles distincts etablit la propriete de timing
+r1r4_resident_168_bufferless_1176 -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] les comptes par epoque fondent la conclusion de timing
+r1r4_h2_jamais_bufferise -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] le rejet de H2 appuie la conclusion que la bufferlessness n est pas structurelle
+r1r4_h3_pointeur_non_execute -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] le rejet de H3 appuie la meme conclusion
+r1r4_h4_role_structurellement_bufferless -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] le rejet de H4 appuie la meme conclusion
+r1r4_h5_buffer_libere_reformule -> r1r4_bufferlessness_propriete_de_timing [DEMONTRE] la reformulation en buffer pas encore alloue appuie la conclusion de timing
+r1r4_h6_mm_raw_inutile_non_cause -> r1r4_limite_extraction_roles [DEMONTRE] la confirmation que mm_raw est inutile fonde le retrait de son extraction
+r1r4_1176_egale_sept_decodes -> r1r4_counts_identiques_par_role [RETIRE] la lecture 1176 egal 168 x 7 comme sept decodes est retiree au profit de 1344 cibles par construction
+r1r4_build_calls_par_passe -> r1r4_1176_egale_sept_decodes [RETIRE] la mesure de 8 constructions par soumission remplace la lecture des sept decodes
+r1r4_hook_soumission_calcul -> r1r4_epoques_bufferless_non_executees [DEMONTRE] le hook a l endroit exact de la soumission produit la preuve par correlation
+r1r4_epoques_bufferless_non_executees -> r1r4_residence_et_extraction_qualifiees_partiel [REMPLACE] R2 tranche la question de residence laissee partielle par R1
+r1r4_table_decisive_par_epoque -> r1r4_epoques_bufferless_non_executees [DEMONTRE] la table par epoque fonde la preuve non executee
+r1r4_saut_bufferless_sur_epoques_non_soumises -> r1r4_epoques_bufferless_non_executees [DEPEND] la surete du saut depend de la preuve que ces epoques ne sont pas executees
+r1r4_r2_trois_conditions_non_remplies -> r1r4_capture_backend_ownership_not_established [OUVRE] la condition de propriete backend non remplie laisse le gate ouvert
+r1r4_r2_trois_conditions_non_remplies -> r1r4_pointer_identity_not_measured [OUVRE] la condition d identite de pointeur soumis non remplie laisse le gate ouvert
+r1r4_r2_trois_conditions_non_remplies -> r1r4_role_relationships_non_prouvees [OUVRE] la semantique de synchronisation non verifiee en R2 laisse le gate ouvert
+r1r4_regles_methodologiques -> r1r4_instantane_fige_noeuds [DEMONTRE] la distinction construction contre soumission motive l instantane fige de R3
+r1r4_instantane_fige_noeuds -> r1r4_hook_soumission_calcul [REMPLACE] le hook a compteur et dernier pointeur de R2 est remplace par un instantane fige des noeuds
+r1r4_deux_soumissions_acceptees -> r1r4_bufferless_absents_graphes_soumis [DEPEND] l instantane des soumissions acceptees est la base de la preuve d appartenance
+r1r4_bufferless_absents_graphes_soumis -> r1r4_epoques_bufferless_non_executees [DEMONTRE] R3 remplace la correlation par compteur de soumissions par une preuve d appartenance au graphe soumis
+r1r4_scheduler_synchronize_source -> r1r4_role_relationships_non_prouvees [OUVRE] la preuve de source leve un doute de synchronisation mais laisse la structure par role non prouvee
+r1r4_role_structure_partiel -> r1r4_pointer_identity_not_measured [DEPEND] la correspondance partielle par appartenance laisse l identite par role ouverte
+r1r4_r3_compteurs_off_non_mesures -> r1r4_jalons_r4_abcd [OUVRE] l absence de publication des compteurs hors capture devient le jalon R4-a
+r1r4_payload_provenance_incomplete -> r1r4_jalons_r4_abcd [OUVRE] la provenance des payloads devient le jalon R4-d
+r1r4_publication_compteurs_standalone -> r1r4_r3_compteurs_off_non_mesures [DEMONTRE] la publication independante ferme le gate des compteurs hors capture laisse non mesure en R3
+r1r4_r4_capture_off_inert -> r1r4_r3_compteurs_off_non_mesures [REMPLACE] le NON_MESURE de R3 est remplace par la mesure des cinq zeros en R4
+r1r4_compteur_discrimine_les_modes -> r1r4_r4_capture_off_inert [DEPEND] l inertie n est prouvee que si le compteur n est pas bloque a zero
+r1r4_defect50_compteur_mesurait_les_verifications -> r1r4_divergence_compteur_r3_r4 [DEMONTRE] le defaut du compteur explique que le releve 4477 de R3 mesurait les verifications
+r1r4_defect50_compteur_mesurait_les_verifications -> r1r4_compteur_discrimine_les_modes [DEMONTRE] la separation des deux sens produit le compteur de sondage distinct
+r1r4_inertie_non_provable_sans_la_mesure -> r1r4_r4_capture_off_inert [DEMONTRE] la mesure exigee est ce qui rend l inertie prouvable
+r1r4_r4_reproduit_r3 -> r1r4_bufferless_absents_graphes_soumis [DEPEND] R4 reproduit la preuve centrale de R3
+r1r4_empreinte_hache_des_adresses -> r1r4_r4_reproduit_r3 [DEPEND] l explication du changement d empreinte conditionne la lecture de la reproduction
+r1r4_stats_arret_r4 -> r1r4_backend_ownership_reste_ouvert_r4 [OUVRE] le premier gate echoue est la propriete backend et il fixe le statut d arret
+r1r4_backend_ownership_reste_ouvert_r4 -> r1r4_q0_full_run_interdit [DEMONTRE] le gate non franchi interdit Q0 complet
+r1r4_role_relationships_non_prouvees -> r1r4_q0_full_run_interdit [DEMONTRE] l absence de preuve de structure par role interdit Q0 complet
+r1r4_payload_provenance_incomplete -> r1r4_q0_full_run_interdit [DEMONTRE] la provenance incomplete interdit Q0 complet
+r1r4_r4_quatre_points_non_executes -> r1r4_q0_full_run_interdit [OUVRE] les quatre points specifies non executes maintiennent Q0 interdit
+r1r4_q0_full_run_interdit -> r1r4_perimetre_epoque_0 [DEPEND] le perimetre restreint a l epoque 0 s ajoute a l interdiction de Q0 complet
+r1r4_defect48_extraction_sans_buffer -> r1r4_gates_r1 [DEPEND] le correctif du defaut 48 conditionne le gate de residence a l extraction
+r1r4_defect47_heredoc_ssh -> r1r4_cli_interactif_interdit [DEMONTRE] le defaut 47 motive l interdiction du CLI interactif et le harnais dedie
+r1r4_ambiguite_numerotation_defect46 -> r1r4_desaccord_numerotation_defects [DEMONTRE] l ambiguite sur le numero 46 alimente le constat de numerotation incoherente
+r1r4_defect57_reference_q8_1 -> r1r4_validation_native_n4 [DEMONTRE] la correction du defaut de reference q8_1 aboutit a la validation native
+r1r4_q8_reference_tests_pass -> r1r4_validation_native_n4 [DEPEND] les tests unitaires q8_1 sont une condition de la validation native
+r1r4_desaccord_numerotation_defects -> r1r4_plumbing_failures [OUVRE] la reconciliation des numerotages de defauts et du compteur de plomberie reste sans reponse
+r1r4_plumbing_failures -> r1r4_desaccord_numerotation_defects [DEPEND] le compteur fige et le numero 29 non attribue accompagnent l incoherence de numerotation
+r1r4_gates_historiques_n4 -> r1r4_q0_full_run_interdit [DEPEND] les deux gates historiques restent ouverts et confirment que Q0 n est pas promu

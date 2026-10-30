@@ -1,0 +1,61 @@
+{
+  "area": "scripts/ui-* — contrat UI, promotion de version du dashboard 8432, et vérifications d'écran (portes headless-Chrome)",
+  "summary": "La tranche décrit le cycle complet « build → mesurer → promouvoir → servir → vérifier » du dashboard obrain (packages/obrain-dashboard, servi sur le port 8432), né après l'accident du 14-15/09/2026 où un `pnpm build` d'une lignée sans markdown/KaTeX a écrasé la page servie sans qu'aucune porte ne s'ouvre. Le pivot est scripts/ui-deploy.sh : il mesure les capacités d'un dist via scripts/ui-capacites.mjs (fermeture ATTEIGNABLE des assets depuis index.html, et non le dossier-cimetière de bundles périmés), applique la porte scripts/ui-contrat.json (2 « bloquantes » : markdown + katex ; 7 « suivies » : fratrie, ws-client, projection, ramifications, admin-comptes, descente-fractale), refuse toute régression « jamais en arrière » sauf --accepter-perte explicite, gèle une version nommée en lecture seule, bascule atomiquement le lien `current`, puis vérifie par HTTP octet-à-octet via scripts/ui-verifier.sh. Le magasin de versions vit dans $HOME/.local/share/obrain-harness/ui (releases/ + current + etat.json + journal.log + .verrou flock), et ui-bascule.sh est la seule bascule manuelle légale sous verrou. En parallèle, un second groupe de sondes est une suite de portes « qualité d'écran » qui pilotent Chrome headless (via CDP) pour mesurer la géométrie réellement rendue, jamais le SCSS : scripts/ui-mobile-porte.mjs (3 tailles, seuil tactile 44 px, chevauchements, texte < 11 px), ui-chat-porte.mjs (le champ de saisie reçoit réellement le clic et l'envoi aboutit), ui-lire-ecran.mjs (carte mesurée de l'écran sans image) et ui-mobile-capture.mjs (PNG + rapport). Un troisième groupe vérifie des comportements fonctionnels précis du monde/Cosmos : facetbar-monde.mjs (la barre de fratrie se monte dans l'état par défaut), mobile-panels-check.mjs (menus rétractables), views-controls-check.mjs (grammaire de contrôles commune aux 3 vues + continuité de sujet), emphasis-check.mjs (l'effet visuel de sélection est prouvé en luminance, pas seulement calculé) et world-add-check.mjs (ajout d'un repo GitHub enrichi depuis l'interface). Les marqueurs de capacités correspondent 1:1 à des classes DOM réelles du dashboard (FacetBar.tsx, ViewPanel.tsx, ChatPleinEcran.tsx, Projection.tsx, CosmosWeave.tsx, App.tsx). L'état promu courant est la version 20260916-152354-392ef8bd (branche harness/continuite-dans-contrat-2026-09-15), avec les 8 capacités du contrat toutes à true.",
+  "components": [
+    "scripts/ui-contrat.json — contrat UI : bloquantes (markdown, katex) + suivies (fratrie, ws-client, projection, ramifications, admin-comptes, descente-fractale)",
+    "scripts/ui-capacites.mjs — mesure des capacités d'un dist via MARQUEURS sur la fermeture atteignable des assets (index.html → chunks hashés)",
+    "scripts/ui-deploy.sh — build (tsc+vite) ou --depuis un dist, porte du contrat, gel de version lecture seule, bascule atomique, vérif HTTP",
+    "scripts/ui-bascule.sh — bascule délibérée vers une version déjà promue (verrou flock, réécrit etat.json, journalise, vérifie)",
+    "scripts/ui-verifier.sh — comparaison HTTP octet-à-octet (index.html + assets + dist découplé) de ce qui est servi vs version courante",
+    "scripts/ui-chat-porte.mjs — porte conversation : champ de saisie visible/actif/non recouvert, écriture + envoi réels, indépendance du canvas",
+    "scripts/ui-lire-ecran.mjs — carte mesurée de l'écran (boîtes, polices, récit vertical, débordements, chevauchements) sans image",
+    "scripts/ui-mobile-capture.mjs — capture PNG mobile (390×844) + rapport JSON (accueil, après clic chat, commandes cosmos)",
+    "scripts/ui-mobile-porte.mjs — porte tactile sur 3 tailles (390/360/320) : débordement, cibles ≥ 44 px, chevauchements, texte < 11 px",
+    "scripts/facetbar-monde.mjs — la barre de facettes (fratrie) se monte-t-elle dans l'état par défaut Monde (clics/grammaire clavier réels)",
+    "scripts/mobile-panels-check.mjs — menus .ov-panel rétractables sur mobile (repli mémorisé/localStorage, replié par défaut)",
+    "scripts/views-controls-check.mjs — grammaire de contrôles commune aux 3 vues (Cosmos/Monde/Graphe) + continuité de sujet + scène nue (ffmpeg)",
+    "scripts/emphasis-check.mjs — « baissage » : prouve l'effet visuel de sélection en luminance (scène figée ⏸, bruit de fond mesuré, ffmpeg)",
+    "scripts/world-add-check.mjs — ajout d'un monde GitHub depuis l'interface (clone→indexation→enrichissement) + /api/viz/signatures",
+    "packages/obrain-dashboard/src/components/FacetBar.tsx — .facetbar / .facetbar-totaux (fratrie)",
+    "packages/obrain-dashboard/src/components/ViewPanel.tsx — .ov-panel / .ov-panel-repli (panneaux rétractables)",
+    "packages/obrain-dashboard/src/graph/ChatPleinEcran.tsx — .chat-plein / .chat-reglages-bouton / .chat-reglage",
+    "packages/obrain-dashboard/src/components/Projection.tsx — .proj-row (projection multi-axes)",
+    "packages/obrain-dashboard/src/graph/CosmosWeave.tsx — .echelle-bar, descente fractale sous-groupes",
+    "packages/obrain-dashboard/src/app/App.tsx — .stage (conteneur de la scène canvas)",
+    "docs/PROCESSUS-UI-8432.md — processus complet de promotion/servage/vérification de l'UI 8432",
+    "docs/plan-j5-bascule.md — plan de la bascule (dont le « PIÈGE dist du viz » cité par ui-deploy.sh)"
+  ],
+  "relationships": [
+    "ui-deploy.sh → ui-capacites.mjs (mesure CAPS_JSON), ui-contrat.json (porte bloquantes/suivies), ui-verifier.sh (vérif HTTP finale)",
+    "ui-bascule.sh → ui-verifier.sh (re-vérifie après bascule) ; ui-bascule.sh lit le même magasin releases/current/etat.json",
+    "ui-capacites.mjs MARQUEURS ↔ ui-contrat.json : correspondance 1:1 (markdown, katex, fratrie, ws-client, projection, ramifications, admin-comptes, descente-fractale)",
+    "ui-verifier.sh LIENS_ATTENDUS → /home/triviere/projects/banc-obrain-j5/packages/obrain-dashboard/dist (symlink vers .../ui/current, découplage du dist servi)",
+    "marqueurs → composants dashboard : .facetbar→FacetBar.tsx ; .ov-panel/.ov-panel-repli→ViewPanel.tsx + StoreOverview.tsx ; .chat-plein/.chat-reglages-bouton→ChatPleinEcran.tsx ; .proj-row→Projection.tsx ; .stage→App.tsx ; sous-groupes/echelle-bar→CosmosWeave.tsx + StageContinu.tsx ; peut_administrer→AdminComptes.tsx",
+    "magasin partagé : releases/ + current + etat.json + journal.log + .verrou (flock) dans $HOME/.local/share/obrain-harness/ui, écrit par ui-deploy.sh/ui-bascule.sh, lu par ui-verifier.sh",
+    "deux patterns de pilotage Chrome : (a) spawn chromium headless dédié (ui-chat-porte 9254, ui-lire-ecran 9251, ui-mobile-capture 9250, ui-mobile-porte 9253) ; (b) endpoint CDP externe via fetch (facetbar-monde 9423, mobile-panels-check/views-controls-check/emphasis-check/world-add-check 9248 via CDP_URL)",
+    "views-controls-check.mjs + emphasis-check.mjs → binaire externe ffmpeg (décodage rawvideo rgb24 pour luminance/différentiel)",
+    "world-add-check.mjs → HTTP /api/viz/signatures (présence du monde) ; mobile-panels-check.mjs → localStorage obrain.panel.* (état de repli mémorisé)",
+    "docs/PROCESSUS-UI-8432.md documente ui-verifier.sh --attendre dans ExecStartPost du service (obrain-viz.service)"
+  ],
+  "notable_findings": [
+    "Incohérence de périmètre : la consigne nomme « scripts/ui-*.mjs (bascule, capacites, chat-porte, lire-ecran, mobile-capture, mobile-porte, deploy, verifier) » — mais bascule, deploy et verifier sont des .sh (ui-bascule.sh, ui-deploy.sh, ui-verifier.sh), pas des .mjs ; seuls 5 fichiers ui-*.mjs existent (capacites, chat-porte, lire-ecran, mobile-capture, mobile-porte)",
+    "Origine datée 2026-09-15, écrite dans l'en-tête de ui-capacites.mjs et ui-deploy.sh : un `pnpm build` d'une lignée sans markdown/KaTeX a écrasé dist/index.html et le redémarrage de 21:50 a rendu la substitution effective, silencieusement — d'où la règle « on ne sert plus un dossier de build, on sert une VERSION »",
+    "Le « cimetière » d'assets (dossier accumulant les bundles de tous les builds passés) faisait mentir la première mesure : ui-capacites.mjs mesure la fermeture ATTEIGNABLE depuis index.html, seule mesure qui décrive réellement la page servie",
+    "L'état promu courant (etat.json) est 20260916-152354-392ef8bd sur la branche harness/continuite-dans-contrat-2026-09-15, avec les 8 capacités toutes à true — le journal.log confirme une chaîne de promotions successives sur la même branche",
+    "emphasis-check.mjs a prouvé l'effet de sélection par luminance (−24,35 % puis −24,32 %, reproductible) uniquement après avoir GELÉ la scène (chip « ⏸ figer ») : la scène morph s'anime en permanence (19–30 % de pixels), ce qui noyait tout différentiel d'image",
+    "Deux conventions de pilotage CDP coexistent et des ports/base différents par script (8432/8462/8466/8433 ; CDP 9248/9423/9250-9254) — signe d'une absence de normalisation, chaque sonde « spawn son chrome » ou « se branche sur un chrome déjà ouvert » selon le cas",
+    "Les marqueurs de capacités sont des chaînes fragiles volontairement choisies et documentées (ex. « sous-groupes » pour descente-fractale, vérifié discriminant 3c042268 vs f106e190) ; ui-capacites.mjs documente explicitement lesquels discriminent",
+    "facetbar-monde.mjs suppose un « veilleur » qui reconstruit et réessaie jusqu'à 5 fois (page blanche tolérée), contrairement aux autres sondes qui échouent net après un chargement borné",
+    "ui-verifier.sh compare index.html via /app (sous IAM, « / » renvoie 303 vers la connexion) — un détail de routage IAM documenté dans PROCESSUS-UI-8432.md"
+  ],
+  "gaps": [
+    "Ports/URLs par défaut non portables et divergents : BASE par défaut 192.168.1.103:8432 (IP privée codée en dur) pour plusieurs scripts, 127.0.0.1:8462/8466/8433 pour d'autres, sans repli auto ni variable d'environnement unifiée",
+    "Chemin Chromium codé en dur /home/triviere/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome (version 1234 figée) dans 4 scripts — cassera à la prochaine mise à jour de Playwright",
+    "ui-verifier.sh utilise /tmp/ui-verifier-ko comme compteur inter-subshell (fichier partagé) : fragile sous exécutions concurrentes (pas de PID/timestamp dans le nom)",
+    "Aucun orchestrateur n'agrège les « portes » : scripts/check-all.sh n'invoque que smoke-backend.sh + e2e-dashboard.mjs, et ignore ui-mobile-porte/ui-chat-porte/ui-lire-ecran/facetbar-monde/mobile-panels/views-controls/emphasis/world-add",
+    "mobile-panels-check.mjs, views-controls-check.mjs, emphasis-check.mjs, world-add-check.mjs et facetbar-monde.mjs supposent un endpoint CDP déjà ouvert (9248/9423) sans spawn de repli : ils échouent ou SKIP si aucun Chrome n'est lancé avec --remote-debugging-port",
+    "Le chemin LIENS_ATTENDUS de ui-verifier.sh est codé en dur vers /home/triviere/projects/banc-obrain-j5/.../dist (existe aujourd'hui en symlink) : un seul worktree surveillé, non découvert dynamiquement — toute nouvelle instance servie devra être ajoutée à la main",
+    "Le marqueur « sous-groupes » (descente-fractale) est un mot français très commun : risque de faux positif documenté par son propre commentaire, sans liste négative d'exclusion",
+    "La consigne « ui-*.mjs (deploy, verifier, bascule) » laisse entendre des fichiers .mjs qui n'existent pas : soit la nomenclature a changé (.mjs → .sh), soit la cartographie attendue est en décalage avec le dépôt réel"
+  ]
+}

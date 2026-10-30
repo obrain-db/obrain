@@ -1,0 +1,119 @@
+ENGINE-008 -- I-B CAUSAL : PREUVE D'ECRITURE ET DE CONSOMMATION DU KV
+==========================================================================
+LES TROIS PREUVES SONT ETABLIES, SEPAREMENT ET CHACUNE DISCRIMINANTE.
+Aucun retry. Aucune perturbation plus forte pour forcer une divergence.
+
+=== 1. PREUVE DISCRIMINANTE D'ECRITURE -- KV_WRITE_DISCRIMINATING_PROOF=PASS ===
+  Le buffer injecte DIFFERE de l'original, donc un readback egal au buffer
+  MODIFIE etablit que l'ECRITURE a eu lieu. C'est ce qui manquait en RUN-01.
+  Sur les 16 couches d'attention, dans C :
+    DIFFERS_FROM_ORIGINAL=YES   INJECT_RC=0   READBACK_EQ_MODIFIED=YES
+    RESTORE_RC=0                READBACK_EQ_ORIGINAL=YES
+  Comptes : DISCRIMINATING_LAYERS=16, NON_DISCRIMINATING_LAYERS=0.
+  Aucun buffer original n'etait deja tout a zero : le test est discriminant
+  pour les 16 couches, aucune n'est declaree non discriminante.
+  EDGE=63 : V_ORIG_FNV=fcf6b04e8b015f6c -> V_ZERO_FNV=2386d0592f82c383,
+  V_READ_FNV=2386d0592f82c383. Le readback rend EXACTEMENT les zeros injectes.
+  **Aucun decode n'a eu lieu entre perturbation et restauration de C.**
+
+=== 2. RESTAURATION -- KV_RESTORATION_BYTE_IDENTITY=PASS ===
+  C_RESTORED_LAYERS=16/16   A_UNTOUCHED_LAYERS=16/16
+  C a retrouve ses K/V originaux OCTET POUR OCTET, et A n'a jamais ete touche.
+
+=== 3. EFFET SUR LE CALCUL -- INJECTION_COMPUTATIONAL_EFFECT=OBSERVED ===
+  Etat initial verifie AVANT toute injection : INITIAL_LAYERS_IDENTICAL=16/16.
+  Les trois contextes partageaient bien le meme KV calcule -- condition
+  necessaire pour que la perturbation soit la SEULE difference.
+  Hashes par couche consignes (K_FNV / V_FNV, 118784 octets chacun).
+
+  LOGITS_A_VS_B (= controle vs couche 63 perturbe, V=0, K inchange) :
+    FINITE=YES
+    MAX_ABS_DIFF=2.75086212
+    L2_DIFF=183.210677
+    ARGMAX_X=760  ARGMAX_Y=760  ARGMAX_MATCH=YES
+    FNV_X=f4f4260fd33ce5b1  FNV_Y=c09ea86a5843669d  BYTE_IDENTICAL=NO
+  **La perturbation d'UNE SEULE couche d'attention change REELLEMENT le
+  calcul** : les logits de depart different, la ou ils etaient identiques avant.
+  C'est l'effet de l'injection sur le calcul -- OBSERVE, pas deduit.
+
+  LOGITS_A_VS_C (= controle vs perturbe PUIS restaure) :
+    FINITE=YES
+    MAX_ABS_DIFF=0      L2_DIFF=0
+    ARGMAX_MATCH=YES
+    FNV_X=f4f4260fd33ce5b1  FNV_Y=f4f4260fd33ce5b1  BYTE_IDENTICAL=YES
+  **Apres restauration, les logits sont BYTE-IDENTIQUES a ceux du controle.**
+  La restauration est exacte non seulement en octets KV, mais au niveau du
+  calcul. C'est un resultat plus fort que la seule identite des octets.
+
+=== 4. LES TROIS GENERATIONS REELLES ===
+  CONTROL_IDS = PERTURBED_IDS = RESTORED_IDS =
+    [760,1156,369,9859,728,310,5707,1132,440,328,3793,1149,1061,369,264,4145,
+     1622,13,353,1220,5707,440,1066,328,3793,1149,198,248069,271,3793,13,248046]
+  32 tokens chacune, arret EOS, TOKEN_MATCH_A_B=YES TOKEN_MATCH_A_C=YES.
+
+  TEXTE, IDENTIQUE DANS LES TROIS CONDITIONS :
+    The user is asking me to respond only with "OK." This is a simple request.
+    I should respond with just "OK."
+    </think>
+
+    OK.<|im_end|>
+  ESC : The user is asking me to respond only with \"OK.\" This is a simple
+        request. I should respond with just \"OK.\"\x0a</think>\x0a\x0aOK.<|im_end|>
+
+  **INTERPRETATION, SANS SURINTERPRETATION** : l'argmax reste 760 malgre des
+  logits differents (max abs diff 2.75, L2 183.2). La divergence ne franchit
+  donc PAS la frontiere de l'argmax sur ces 32 pas. Les trois textes sont
+  identiques. **Ce n'est PAS un echec** : l'instruction prevoit explicitement
+  que « l'argmax peut rester identique malgre des logits differents ».
+  La preuve cherchee porte sur les octets ecrits et les logits, et elle est
+  acquise. Je n'ai pas cherche a forcer une divergence de texte.
+
+=== 5. NOMBRE D'ESSAIS ET IDENTITES -- SANS REGROUPEMENT ===
+  Les essais ne sont PAS regroupes sous RETRY_COUNT.
+
+  ESSAI 1 -- ENGINE008-KV-INJECTION-RUN-01, execution 1
+    STATUT : DEFECTUEUX (bug de mon pilote). Un appel mort `generate(A,0,...)`
+    decodait un token parasite en position 59, puis la reprise decodait dans
+    une position DEJA OCCUPEE. Resultat incoherent : CONTROL=[248046] (EOS
+    immediat) contre INJECTED 32 tokens.
+    CONSERVE, non masque.
+  ESSAI 2 -- ENGINE008-KV-INJECTION-RUN-01, execution 2 (apres correction)
+    STATUT : VALIDE. TOKEN_SEQUENCE_MATCH=YES. Mais sa preuve d'ecriture etait
+    NON DISCRIMINANTE (les deux contextes avaient le meme KV calcule, donc un
+    readback identique etait attendu meme sans ecriture). Declare comme tel.
+  ESSAI 3 -- ENGINE008-KV-INJECTION-CAUSAL-02 (cette passe)
+    STATUT : VALIDE ET DISCRIMINANT. Ecriture, restauration et effet calcul
+    tous etablis.
+  Plus un AUTO-TEST SANS CALCUL (--selftest), execute avant l'essai 3 :
+    SELFTEST_RESULT=PASS FAILED=0
+
+  Identites : voir BUILD_AND_IDENTITIES.txt
+    e8-kv-causal, e8-ids, ids59.txt, bibliotheques resolues.
+  Le pilote est une INSTRUMENTATION DISTINCTE, non qualifiee par le gel Q1.
+
+=== 6. PORTEE -- CE QUI RESTE NON DEMONTRE ===
+PREFILL_ELIMINATION_DEMONSTRATED=NO
+  Les trois contextes ont effectue le MEME prefill 0..57. Aucune suppression de
+  prefill n'a ete cherchee ni mesuree. Aucune mesure d'acceleration.
+FULL_HYBRID_STATE_RESTORATION_DEMONSTRATED=NO
+  Seuls les K/V des 16 couches d'ATTENTION ont ete manipules. Les 48 couches
+  SSM/Gated DeltaNet portent un etat RECURRENT qui n'est pas dans le cache KV
+  et n'a pas ete touche : il a ete CALCULE dans les trois contextes.
+  **L'etat hybride complet n'est PAS restaure, et je ne le revendique pas.**
+
+KV_WRITE_DISCRIMINATING_PROOF=PASS
+KV_RESTORATION_BYTE_IDENTITY=PASS
+PERTURBED_LAYER=63
+INTERVENTION=ZERO_V_ORIGINAL_K
+START_LOGITS_A_B_DIFF=FINITE=YES MAX_ABS_DIFF=2.75086212 L2_DIFF=183.210677 ARGMAX_A=760 ARGMAX_B=760 FNV_A=f4f4260fd33ce5b1 FNV_B=c09ea86a5843669d BYTE_IDENTICAL=NO
+START_LOGITS_A_C_DIFF=FINITE=YES MAX_ABS_DIFF=0 L2_DIFF=0 ARGMAX_A=760 ARGMAX_C=760 FNV_A=f4f4260fd33ce5b1 FNV_C=f4f4260fd33ce5b1 BYTE_IDENTICAL=YES
+INJECTION_COMPUTATIONAL_EFFECT=OBSERVED
+CONTROL_IDS=[760,1156,369,9859,728,310,5707,1132,440,328,3793,1149,1061,369,264,4145,1622,13,353,1220,5707,440,1066,328,3793,1149,198,248069,271,3793,13,248046]
+PERTURBED_IDS=[760,1156,369,9859,728,310,5707,1132,440,328,3793,1149,1061,369,264,4145,1622,13,353,1220,5707,440,1066,328,3793,1149,198,248069,271,3793,13,248046]
+RESTORED_IDS=[760,1156,369,9859,728,310,5707,1132,440,328,3793,1149,1061,369,264,4145,1622,13,353,1220,5707,440,1066,328,3793,1149,198,248069,271,3793,13,248046]
+CONTROL_TEXT=The user is asking me to respond only with "OK." This is a simple request. I should respond with just "OK."
+PERTURBED_TEXT=The user is asking me to respond only with "OK." This is a simple request. I should respond with just "OK."
+RESTORED_TEXT=The user is asking me to respond only with "OK." This is a simple request. I should respond with just "OK."
+ATTEMPT_COUNT=3 (2 pilote RUN-01 dont 1 defectueux + 1 conserve ; 1 pilote CAUSAL-02) + 1 auto-test sans calcul
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO

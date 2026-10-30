@@ -1,0 +1,149 @@
+SPHERE: engine_005f_i
+RESUME: La sphere etablit par la mesure la route noyau reelle de chaque role de poids, puis epingle la cible ENGINE-006 sur recurrent attn_gate.weight tq2_g128 decode s1 1 MMVQ avec une sensibilite murale de 1.2591 ms par repetition dupliquee.
+RESUME: Elle refute trois hypotheses - l exclusivite MMVQ du decodage, la marginalite de MMQ, et l idee que le signal MIXED de attn_gate serait une competition de deux noyaux sur une meme signature - et retire la borne 5.25 ms de 005E, la preuve par la forme, et le desaccord d etat de R2.
+RESUME: Le pont relatif vers mural de output.weight reste ouvert comme le cout mural de la tete et de output.weight, le cout natif de attn_gate n est pas derivable de la pente, et l axe d optimisation n est pas choisi.
+RESUME: Le blocage moteur de 005F - la tete de sortie exige un noeud de sortie valide dans le graphe - a ete leve en 005F-R2 par un sink dup post_get_rows, sans pour autant etablir l isolation de la projection seule.
+RESUME: Six defauts de harnais numerotes sont rencontres et consignes, dont le defaut 7 qui fonde le retrait de la porte d etat, et une reutilisation des numeros 9 et 10 pour des causes differentes selon les passes.
+RESUME: La sequence native du chemin cible est de deux kernels, quantification q8_1 puis noyau MMVQ, etablie par revue de source en 005I volet 2.
+NOEUDS:
+[PROUVE] e005f_head_skip_toggle_proven :: bascule GGML_E5F_SKIP_OUTPUT_HEAD verifiee active retire la construction et le noeud de graphe 4011 vers 3994 :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[PROUVE] e005f_head_bridge_blocked :: le moteur refuse d executer sans tete dans le graphe GGML_ASSERT buffer a ggml-backend.cpp 194 :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[PROUVE] e005f_head_off_node_not_built :: dans le bras off du saut pur le noeud output.weight n est pas construit et n est pas atteint :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[OUVERT] e005f_head_off_wall_delta_not_measured :: delta mural du chemin de tete NON MESURE car le bras off abandonne au premier decodage :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[RETIRE] e005f_output_weight_upper_bound_retired :: borne superieure 5.25 ms de 005E pour output.weight explicitement retiree car output.weight etait commun aux deux bras :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[REFUTE] e005f_relative_to_wall_conversion_invalid :: conversion lineaire du temps relatif par operation vers le temps mural declaree invalide :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[PROUVE] e005f_sync_frontier_identical :: frontiere de synchronisation llama_synchronize apres chaque decode et sortie hote off dans les deux bras :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[PROUVE] e005f_005e_confounder_eliminated :: confondeur migration du travail entre llama_decode et get_logits elimine par construction :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[PARTIEL] e005f_kernel_route_shape_derived :: nom du noyau MMVQ contre MMQ seulement deduit par la forme N egal 1 sans compteur au point de selection :: ENGINE-005F-TRUE-HEAD-BRIDGE.md
+[PROUVE] e005f_r2_sink_remedy :: remede par remplacement de la cible de graphe avec sink dup post_get_rows le noeud reste conserve :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[PROUVE] e005f_r2_head_off_executable :: apres le remede le bras sans tete s execute exit 0 sur 256 tokens :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[PROUVE] e005f_r2_null_wall_delta :: delta mural apparie moins 0.0424 ms par token contre un ecart-type inter-runs de 0.1463 ms donc aucune difference detectable :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[OUVERT] e005f_output_weight_wall_cost_unmeasured :: cout mural de output.weight toujours NON MESURE au sens strict :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[OUVERT] e005f_output_weight_zero_cost_not_proven :: cout nul de output.weight NON PROUVE le delta nul n est converti en aucun cout nul ni negatif :: ENGINE-005G-DISPATCH-CENSUS.md
+[OUVERT] e005f_r2_output_node_built_not_established :: dans le bras off de R2 la construction du noeud output.weight n est pas etablie :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[OUVERT] e005f_projection_isolation_not_established :: isolation de la projection seule non etablie compteur de noeuds emis a la reservation 4011 dans les deux bras :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[OUVERT] e005f_dispatch_counters_not_instrumented :: compteurs de selection MMVQ MMQ et residuel non instrumentes dans R2 :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[RETIRE] e005f_state_gate_retired :: premier desaccord d etat des logits de sonde de R2 retire comme artefact de harnais :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[PROUVE] e005f_defect_7_stale_logits_probe :: defaut de harnais 7 la sonde lit les logits perimes du prefixe quand la tete est absente pour toute la duree du processus :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[OUVERT] e005f_state_gate_not_evaluable :: porte d etat final non evaluable avec ce harnais etat recurrent KV et position NON MESURES :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[OUVERT] e005f_output_weight_bridge_open :: pont du relatif 17.27 pourcent de 005D vers le mural reste ouvert faute d isolation :: ENGINE-005F-R2-OUTPUT-WEIGHT.md
+[PROUVE] e005f_census_instrumented_totals :: recensement pose au point exact de la cascade cinq chemins classes dans l ordre du code sans IO dans le chemin chaud :: ENGINE-005G-DISPATCH-CENSUS.md
+[PROUVE] e005f_census_totals :: totaux globaux 893 pointeurs de poids MMVF 384 MMF 0 MMVQ 940 MMQ 928 OTHER 888 :: ENGINE-005G-DISPATCH-CENSUS.md
+[REFUTE] e005f_mmvq_exclusive_hypothesis_rejected :: hypothese d un decodage exclusivement MMVQ rejetee quatre chemins reellement empruntes :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[REFUTE] e005f_mmq_not_negligible :: marginalite de MMQ en decodage refutee par 928 selections :: ENGINE-005G-DISPATCH-CENSUS.md
+[RETIRE] e005f_shape_proof_retired :: preuve par la forme N egal 1 vers MMVQ retiree comme preuve principale :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[OUVERT] e005f_census_not_role_keyed :: recensement cle par pointeur sans table pointeur vers role donc sorties par role non publiees :: ENGINE-005G-DISPATCH-CENSUS.md
+[PROUVE] e005f_defect_8_census_not_dumped :: defaut de harnais 8 premier essai a zero ligne car le harnais n appelait pas la fonction de vidage statut RESOLVED :: ENGINE-005G-DISPATCH-CENSUS.md
+[PROUVE] e005f_mrope_batch_incident :: incident echec d initialisation de batch positions M-RoPE sur le premier run du binaire R2 artefact de harnais contourne :: ENGINE-005G-DISPATCH-CENSUS.md
+[PROUVE] e005f_output_weight_deprioritized :: output.weight retire de la premiere priorite d optimisation et classe secondaire pour ENGINE-006 :: ENGINE-005G-DISPATCH-CENSUS.md
+[PROUVE] e005f_generalization_limits :: le delta mural nul ne se generalise ni a toutes les longueurs de contexte ni au chemin greedy normal :: ENGINE-005G-DISPATCH-CENSUS.md
+[PROUVE] e005f_role_keyed_join_complete :: jointure pointeur vers role complete dans le meme processus 77413 egal 77413 et zero non joint :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[PROUVE] e005f_output_weight_route_mmvq_runtime_proven :: output.weight 100 pourcent MMVQ etabli par la branche de dispatch au runtime :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[PROUVE] e005f_attn_gate_route_mixed :: attn_gate recurrent MIXED MMVQ 99 pourcent plus OTHER 1 pourcent plus MMQ 0.4 pourcent :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[PROUVE] e005f_ssm_alpha_beta_mmvf :: ssm_alpha et ssm_beta suivent MMVF a 98 pourcent nom exact du chemin dense bf16 :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[OUVERT] e005f_ffn_other_unexplained :: ffn_gate et ffn_up recurrents massivement OTHER a 56 pourcent signale sans interpretation :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[OUVERT] e005f_attn_gate_ab_gate_closed :: A/B MMVQ contre MMQ non autorise faute de preuve de validite sur la shape et le qtype exacts :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[PROUVE] e005f_defect_9_provenance_table_empty :: defaut de harnais 9 table pointeur vers role vide faute du drapeau de timing 100 pourcent non joint detecte par le compteur statut RESOLVED :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[PROUVE] e005f_defect_10_timing_illegal_graph_capture :: defaut de harnais 10 evenements de timing par couche illicites pendant la capture de graphe resolu en desactivant les graphes :: ENGINE-005G-R2-ROLE-KEYED-DISPATCH.md
+[PROUVE] e005f_dispatch_domain_answer :: MMQ structurellement indisponible pour le domaine dominant attn_gate tq2_g128 soit 9396 appels sur 12528 en decodage :: ENGINE-005H-DISPATCH-DOMAIN.md
+[PROUVE] e005f_cas_decisif_b :: cas B du protocole le domaine majoritaire interdit MMQ seuls les 3132 appels q4_K soit 25 pourcent sont eligibles :: ENGINE-005H-DISPATCH-DOMAIN.md
+[REFUTE] e005f_mixed_root_cause_refuted :: le signal MIXED n est pas une competition de noyaux sur une meme signature mais deux domaines de qtype et de sequence disjoints :: ENGINE-005H-DISPATCH-DOMAIN.md
+[PROUVE] e005f_attn_gate_natural_mmq_prefill :: les 45 selections MMQ naturelles de attn_gate sont entierement du prefill q4_K :: ENGINE-005H-DISPATCH-DOMAIN.md
+[PROUVE] e005f_ssm_prefill_classified :: les 2 pourcent non MMVF de ssm alpha et beta sont exactement les jetons de prefill :: ENGINE-005H-DISPATCH-DOMAIN.md
+[PROUVE] e005f_ffn_other_explained :: les FFN quantifies atteignent OTHER car les predicats MMVQ et MMQ sont tous deux faux sur tq2_g128 en prefill :: ENGINE-005H-DISPATCH-DOMAIN.md
+[OUVERT] e005f_selection_not_logical_execution :: une selection de dispatch n est pas une execution logique NON PROUVE :: ENGINE-005H-DISPATCH-DOMAIN.md
+[OUVERT] e005f_graph_mode_domain_unchecked :: independance du domaine de decision au mode graphe non verifiee dans 005H :: ENGINE-005H-DISPATCH-DOMAIN.md
+[PROUVE] e005f_engine006_candidate_action :: action candidate optimiser le MMVQ courant pour tq2_g128 en decodage plutot que basculer vers MMQ :: ENGINE-005H-DISPATCH-DOMAIN.md
+[PROUVE] e005f_quantized_weight_not_guaranteed_kernel :: un poids quantifie ne garantit pas un noyau specialise la route depend de qtype forme geometrie de sequence et predicats backend :: ENGINE-005I-GRAPH-ON-QUALIFICATION.md
+[PROUVE] e005f_graph_on_qualification :: mapping signature vers chemin identique graphes actifs ou non 1738 signatures intersection 1738 divergence 0 :: ENGINE-005I-GRAPH-ON-QUALIFICATION.md
+[PROUVE] e005f_capture_safe_runtime :: runtime de qualification construit depuis la source vierge avec le seul recensement zero evenement CUDA et zero log chaud :: ENGINE-005I-GRAPH-ON-QUALIFICATION.md
+[PROUVE] e005f_no_alternate_kernel_dominant :: aucun noyau alternatif ou de remplacement n existe pour le domaine dominant :: ENGINE-005I-GRAPH-ON-QUALIFICATION.md
+[OUVERT] e005f_volet2_specified_not_run :: volet 2 sensibilite causale par duplication du MMVQ natif specifie mais non execute :: ENGINE-005I-GRAPH-ON-QUALIFICATION.md
+[PROUVE] e005f_idempotence_source_proven :: reexecution du chemin MMVQ cible semantiquement idempotente prouvee par la source ecriture pure sans lecture de dst :: ENGINE-005I-VOLET2-IDEMPOTENCE.md
+[PROUVE] e005f_duplicate_work_allowed :: experience de duplication autorisee apres franchissement des six portes A a F toutes par preuve de code :: ENGINE-005I-VOLET2-IDEMPOTENCE.md
+[PROUVE] e005f_native_sequence_two_kernels :: la sequence native complete du chemin MMVQ est de deux noyaux quantification q8_1 puis noyau MMVQ :: ENGINE-005I-VOLET2-IDEMPOTENCE.md
+[PROUVE] e005f_target_population_36 :: population cible 36 poids tq2_g128 sur 48 attn_gate recurrents les 12 q4_K explicitement hors cible :: ENGINE-005I-VOLET2-IDEMPOTENCE.md
+[OUVERT] e005f_volet2_campaign_not_run :: campagne R0 R1 R2 non executee dans la passe d idempotence :: ENGINE-005I-VOLET2-IDEMPOTENCE.md
+[PROUVE] e005f_slope_measured :: sensibilite murale au travail MMVQ duplique 1.2591 ms par repetition pente sur bruit 9.6 et ratio de linearite 0.869 :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_numerical_preflight_pass :: preflight numerique PASS logits de sonde bit a bit identiques en R0 R1 R2 :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_scope_gate_pass :: porte de perimetre PASS zero execution supplementaire hors cible sur attn_gate et 168 extra non cible constants :: ENGINE-005I-FINAL-R0R1R2.md
+[OUVERT] e005f_native_wall_cost_not_derivable :: cout mural natif de attn_gate NON DERIVABLE de la pente :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_engine006_target_pinned :: cible ENGINE-006 epinglee sur recurrent attn_gate.weight tq2_g128 decode s1 1 MMVQ et modification de noyau autorisee :: ENGINE-005I-FINAL-R0R1R2.md
+[OUVERT] e005f_engine006_axis_unchosen :: axe d optimisation non choisi en attente d un profiling dedie de la signature :: ENGINE-005I-FINAL-R0R1R2.md
+[OUVERT] e005f_graph_counters_not_instrumented :: compteurs de mode graphe capture begin instantiate exec update launch non instrumentes donc non publies :: ENGINE-005I-FINAL-R0R1R2.md
+[PARTIEL] e005f_marginal_cost_per_sequence :: cout marginal de 0.0087 ms par sequence dupliquee controle de vraisemblance et non preuve de causalite :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_e6_report_after_probe :: defaut de harnais numerote 9 en 005I-FINAL rapport e6 imprime apres la sonde au lieu d avant masquant les compteurs :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_aslr_target_identity :: defaut de harnais numerote 10 en 005I-FINAL pointeur de cible instable entre processus par ASLR identification par role et qtype imposee :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_defect_numbering_collision :: les numeros de defauts 9 et 10 designent des causes differentes entre 005G-R2 et 005I-FINAL donc numerotation locale non globale :: ENGINE-005I-FINAL-R0R1R2.md
+[PROUVE] e005f_plumbing_failure_unassigned :: compteur de defauts de plomberie fige a 28 sur toute la campagne et numero 29 jamais attribue :: ENGINE-005I-FINAL-R0R1R2.md
+LIENS:
+e005f_head_skip_toggle_proven -> e005f_head_off_node_not_built [DEMONTRE] la trace du builder et le compte de noeuds prouvent que le noeud de sortie n est pas construit
+e005f_head_skip_toggle_proven -> e005f_head_bridge_blocked [OUVRE] la bascule activee a revele le refus du moteur d executer un graphe sans tete de sortie
+e005f_head_bridge_blocked -> e005f_head_off_wall_delta_not_measured [OUVRE] l abandon au premier decodage laisse le delta mural du chemin de tete non mesure
+e005f_sync_frontier_identical -> e005f_005e_confounder_eliminated [DEMONTRE] la frontiere de synchronisation commune aux deux bras supprime le confondeur de 005E
+e005f_head_skip_toggle_proven -> e005f_005e_confounder_eliminated [DEPEND] la suppression du confondeur suppose un bras off reellement sans tete
+e005f_output_weight_upper_bound_retired -> e005f_relative_to_wall_conversion_invalid [DEMONTRE] le retrait de la borne montre que la conversion lineaire du relatif vers le mural ne vaut pas
+e005f_r2_sink_remedy -> e005f_head_bridge_blocked [REMPLACE] le sink dup remplace la suppression pure de la tete qui abandonnait
+e005f_r2_head_off_executable -> e005f_r2_null_wall_delta [DEPEND] l execution reussie du bras off est la condition de la mesure murale appariee
+e005f_r2_null_wall_delta -> e005f_output_weight_wall_cost_unmeasured [OUVRE] un delta indetectable ne mesure pas le cout donc la quantite reste non mesuree
+e005f_projection_isolation_not_established -> e005f_r2_null_wall_delta [OUVRE] sans isolation de la projection seule le delta nul n est pas attribuable
+e005f_r2_output_node_built_not_established -> e005f_projection_isolation_not_established [DEPEND] la construction non etablie du noeud dans le bras off fonde le doute sur l isolation
+e005f_output_weight_wall_cost_unmeasured -> e005f_output_weight_zero_cost_not_proven [OUVRE] le cout nul n est pas prouve puisque le cout lui meme n est pas mesure
+e005f_state_gate_retired -> e005f_state_gate_not_evaluable [OUVRE] le retrait du desaccord d etat laisse la porte d etat non evaluable
+e005f_defect_7_stale_logits_probe -> e005f_state_gate_retired [DEMONTRE] la sonde qui lit un tampon perime explique et fonde le retrait
+e005f_dispatch_counters_not_instrumented -> e005f_census_instrumented_totals [OUVRE] le besoin de compteurs non poses a ouvert la passe de recensement
+e005f_output_weight_bridge_open -> e005f_projection_isolation_not_established [DEPEND] le pont du relatif vers le mural reste ouvert faute d isolation
+e005f_census_instrumented_totals -> e005f_census_totals [DEMONTRE] l instrumentation au point exact produit les totaux par chemin
+e005f_census_totals -> e005f_mmvq_exclusive_hypothesis_rejected [DEMONTRE] quatre chemins reellement empruntes refutent l exclusivite MMVQ
+e005f_census_totals -> e005f_mmq_not_negligible [DEMONTRE] 928 selections MMQ refutent la marginalite supposee en decodage
+e005f_census_totals -> e005f_shape_proof_retired [DEMONTRE] la mesure par branche retire la preuve par la forme
+e005f_census_not_role_keyed -> e005f_role_keyed_join_complete [OUVRE] l absence de cle par role a ouvert la jointure pointeur vers role
+e005f_defect_8_census_not_dumped -> e005f_census_totals [DEPEND] les totaux n ont ete obtenus qu apres correction du defaut de vidage
+e005f_mrope_batch_incident -> e005f_census_totals [DEPEND] les chiffres viennent du harnais teacher-forced retenu apres l incident M-RoPE
+e005f_role_keyed_join_complete -> e005f_output_weight_route_mmvq_runtime_proven [DEMONTRE] la jointure complete attribue le chemin MMVQ a output.weight
+e005f_output_weight_route_mmvq_runtime_proven -> e005f_kernel_route_shape_derived [REMPLACE] la branche de dispatch observee remplace la deduction par la forme
+e005f_output_weight_route_mmvq_runtime_proven -> e005f_shape_proof_retired [DEMONTRE] la preuve au runtime fonde le retrait de la preuve par la forme
+e005f_role_keyed_join_complete -> e005f_attn_gate_route_mixed [DEMONTRE] la jointure par role livre la distribution MIXED de attn_gate
+e005f_role_keyed_join_complete -> e005f_ssm_alpha_beta_mmvf [DEMONTRE] la jointure nomme le chemin dense des poids bf16
+e005f_role_keyed_join_complete -> e005f_ffn_other_unexplained [OUVRE] la jointure fait apparaitre la dominance OTHER des FFN restee inexpliquee
+e005f_attn_gate_route_mixed -> e005f_attn_gate_ab_gate_closed [OUVRE] le caractere mixte a pose la question de l A/B restee fermee
+e005f_defect_9_provenance_table_empty -> e005f_role_keyed_join_complete [DEPEND] la jointure complete n a ete obtenue qu apres correction du drapeau de timing
+e005f_defect_10_timing_illegal_graph_capture -> e005f_role_keyed_join_complete [DEPEND] la jointure a exige de desactiver les graphes a cause de ce defaut
+e005f_attn_gate_ab_gate_closed -> e005f_dispatch_domain_answer [OUVRE] l impossibilite de l A/B a motive la mesure exacte du domaine de capacite
+e005f_dispatch_domain_answer -> e005f_attn_gate_ab_gate_closed [DEMONTRE] le domaine dominant interdit MMQ donc l A/B reste refuse
+e005f_dispatch_domain_answer -> e005f_cas_decisif_b [DEMONTRE] 9396 appels sur 12528 hors MMQ etablissent le cas B
+e005f_dispatch_domain_answer -> e005f_mixed_root_cause_refuted [DEMONTRE] deux domaines de qtype disjoints refutent la competition sur une meme signature
+e005f_mixed_root_cause_refuted -> e005f_attn_gate_route_mixed [RETIRE] l interpretation en competition de noyaux du signal MIXED est retiree
+e005f_attn_gate_natural_mmq_prefill -> e005f_mixed_root_cause_refuted [DEMONTRE] les 45 selections MMQ toutes en prefill fondent la refutation
+e005f_ffn_other_explained -> e005f_ffn_other_unexplained [REMPLACE] le mecanisme prefill sur tq2_g128 remplace l observation inexpliquee
+e005f_ssm_prefill_classified -> e005f_ssm_alpha_beta_mmvf [DEMONTRE] les 2 pourcent non MMVF sont classes comme jetons de prefill
+e005f_quantized_weight_not_guaranteed_kernel -> e005f_ffn_other_explained [DEMONTRE] le principe qtype shape geometrie predicats explique le cas FFN
+e005f_quantized_weight_not_guaranteed_kernel -> e005f_dispatch_domain_answer [DEPEND] le domaine dominant attn_gate est un cas de ce principe general
+e005f_engine006_candidate_action -> e005f_cas_decisif_b [DEPEND] l action candidate decoule du domaine majoritaire qui interdit MMQ
+e005f_output_weight_deprioritized -> e005f_engine006_candidate_action [DEPEND] la mise en second plan de output.weight oriente l action vers le MMVQ de attn_gate
+e005f_graph_mode_domain_unchecked -> e005f_graph_on_qualification [OUVRE] la reserve sur le mode graphe a ouvert la qualification graphes actifs
+e005f_graph_on_qualification -> e005f_graph_mode_domain_unchecked [REMPLACE] le mapping identique remplace l incertitude sur le mode graphe
+e005f_capture_safe_runtime -> e005f_graph_on_qualification [DEPEND] la qualification graph-on repose sur un runtime sans evenement CUDA
+e005f_no_alternate_kernel_dominant -> e005f_volet2_specified_not_run [OUVRE] l absence de noyau alternatif impose la sensibilite par duplication restee non executee
+e005f_volet2_specified_not_run -> e005f_idempotence_source_proven [OUVRE] la specification du volet 2 a ouvert la revue d idempotence de source
+e005f_idempotence_source_proven -> e005f_duplicate_work_allowed [DEMONTRE] les six portes franchies par la source autorisent la duplication
+e005f_idempotence_source_proven -> e005f_native_sequence_two_kernels [DEMONTRE] la revue de source etablit la sequence a deux noyaux
+e005f_native_sequence_two_kernels -> e005f_slope_measured [DEPEND] la duplication doit porter sur la sequence entiere pour que la pente ait un sens
+e005f_target_population_36 -> e005f_scope_gate_pass [DEMONTRE] le perimetre de 36 poids fonde la porte de perimetre
+e005f_aslr_target_identity -> e005f_target_population_36 [DEMONTRE] l instabilite du pointeur a impose l identification par role et qtype donc la population de 36 poids
+e005f_duplicate_work_allowed -> e005f_slope_measured [OUVRE] l autorisation de duplication rend la campagne mesurable
+e005f_volet2_campaign_not_run -> e005f_slope_measured [OUVRE] la campagne non executee dans cette passe a ete executee dans la passe finale
+e005f_numerical_preflight_pass -> e005f_slope_measured [DEMONTRE] l egalite bit a bit valide la neutralite du travail duplique avant la pente
+e005f_idempotence_source_proven -> e005f_numerical_preflight_pass [DEMONTRE] la neutralite numerique predite par la source est confirmee par la sonde
+e005f_slope_measured -> e005f_engine006_target_pinned [DEMONTRE] la sensibilite murale mesuree epingle la cible ENGINE-006
+e005f_scope_gate_pass -> e005f_engine006_target_pinned [DEMONTRE] la porte de perimetre est l une des conditions d epinglage
+e005f_slope_measured -> e005f_native_wall_cost_not_derivable [OUVRE] la pente ne chiffre pas le cout natif donc la quantite reste ouverte
+e005f_engine006_target_pinned -> e005f_engine006_axis_unchosen [OUVRE] l epinglage laisse l axe d optimisation a choisir
+e005f_engine006_target_pinned -> e005f_marginal_cost_per_sequence [DEPEND] le cout marginal par sequence dupliquee est le controle de vraisemblance de la pente
+e005f_graph_counters_not_instrumented -> e005f_slope_measured [OUVRE] les compteurs de mode graphe absents obligent a prouver le replay par la paroi
+e005f_e6_report_after_probe -> e005f_scope_gate_pass [DEPEND] le defaut masquait les compteurs en fenetre courte il a fallu le corriger pour la porte de perimetre
+e005f_selection_not_logical_execution -> e005f_slope_measured [DEPEND] la reserve sur les compteurs de selection reste portee par la campagne finale
+e005f_generalization_limits -> e005f_r2_null_wall_delta [DEPEND] le delta nul ne vaut que pour la configuration rejouee
+e005f_defect_numbering_collision -> e005f_defect_9_provenance_table_empty [DEPEND] le numero 9 designe aussi une autre cause en 005I-FINAL ce qui rend le suivi ambigu
+e005f_defect_numbering_collision -> e005f_e6_report_after_probe [DEPEND] le numero 9 est reutilise pour une cause differente selon la passe
+e005f_plumbing_failure_unassigned -> e005f_defect_numbering_collision [OUVRE] le compteur de plomberie fige coexiste avec une numerotation de defauts locale aux passes

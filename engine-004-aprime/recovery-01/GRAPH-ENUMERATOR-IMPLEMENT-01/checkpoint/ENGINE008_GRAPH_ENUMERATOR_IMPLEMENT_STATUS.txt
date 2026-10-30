@@ -1,0 +1,148 @@
+ENGINE-008 -- STATUT TERMINAL GRAPH-ENUMERATOR-IMPLEMENT-01
+==========================================================================
+Enumerateur implemente, compile et teste. Aucun forward, aucune evaluation
+numerique de graphe.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=GRAPH_ENUMERATOR_IMPLEMENT_ONLY
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+GRAPH_ENUMERATOR_IMPLEMENTED=YES
+GRAPH_ENUM_SCHEMA_IMPLEMENTED=ENGINE008_GRAPH_ENUM_v1
+GRAPH_ENUMERATOR_SYNTHETIC_SELFTEST=PASS
+GRAPH_COMPLETENESS_CONTROLS_SELFTEST=PASS
+NEXTN_STRUCTURAL_CLASSIFIER_SELFTEST=PASS
+LAST_GRAPH_ADAPTER_SELFTEST=PASS
+  23 controles, 0 echec.
+
+=== ABI IMPORTEE, VERIFIEE, JAMAIS DEVINEE (§3) ===
+nm -D sur libllama.so.0.0.135 (Q1) :
+  B f1a_last_gf        NON mangle -> linkage C  : const void * f1a_last_gf
+  B f1a_last_gf_nodes  NON mangle -> linkage C  : int f1a_last_gf_nodes
+  T _Z15f1a_sub_node_opPKv  MANGLED (C++) : NON declare, NON utilise (une
+                            signature mangee ne se recopie pas de memoire)
+nm -D sur libggml-base.so.0.16.0 :
+  ggml_graph_n_nodes, ggml_graph_node, ggml_graph_nodes, ggml_op_name
+Layout lu dans ggml.h : type (:684), ne[] (:688), nb[] (:691), op (:695),
+  op_params[] (:698), flags (:700), src[GGML_MAX_SRC] (:702).
+Champs lus : op, name, type, ne[0..3], src[0..3]. AUCUNE donnee numerique lue.
+
+=== LES 6 CONTROLES D'EXHAUSTIVITE (§3) -- IMPLEMENTES ===
+1. graphe publie non nul (sinon NO_PUBLISHED_GRAPH, SANS dereferencement)
+2. n_declared > 0 (sinon NULL_DECLARED_COUNT)
+3. n_exported == n_declared, et coherence avec published_n_nodes (COUNT_MISMATCH)
+4. submission_rc == 0 (sinon SUBMISSION_RC_NONZERO)
+5. toutes les references src resolues (sinon UNRESOLVED_SRC)
+6. correlation snapshot presente (sinon CORRELATION_FAILED), et
+   submit_events_observed == submit_events_expected
+   (sinon INTERMEDIATE_SUBMISSIONS_POSSIBLE)
+
+SUBMISSION_CORRELATION_IMPLEMENTED=YES
+  via l'interface injectable PublishedGraphSource : last_gf(), last_gf_nodes(),
+  snapshot_for(submission_id, meta). La source REELLE (RealQ1Source) lit les
+  globals Q1 et DECLARE snapshot indisponible plutot que d'inventer une valeur.
+INTERMEDIATE_SUBMISSION_LOSS_DETECTION_IMPLEMENTED=YES
+  f1a_last_gf n'expose que la DERNIERE soumission. L'adaptateur compare le
+  nombre de soumissions attendues et observees dans l'intervalle ; si elles
+  different -> INTERMEDIATE_SUBMISSIONS_POSSIBLE, et COMPLETE est INTERDIT.
+GRAPH_LIFETIME_CONTRACT_DEFINED=YES
+  f1a_last_gf est ECRASE a chaque soumission. L'acquisition doit se faire dans
+  la fenetre entre la soumission et la suivante. L'egalite de pointeur et de
+  n_nodes NE SUFFIT PAS (le meme gf peut etre reutilise) : la correlation par
+  submission_id et fingerprint est requise.
+
+=== CORRECTION DE DEUX DEFAUTS REELS TROUVES PAR LES TESTS ===
+D1. ggml separe leafs[] et nodes[]. Aucun accesseur de leafs n'est exporte.
+    Ma premiere version comptait toute source hors nodes[] comme reference NON
+    RESOLUE, ce qui rendait COMPLETE inatteignable. Corrige par le critere
+    STRUCTUREL ggml : une feuille a op == GGML_OP_NONE (ggml.h:489).
+    - source dans nodes[]      -> index local
+    - source hors nodes[] ET op == GGML_OP_NONE -> FEUILLE legitime (-1)
+    - source hors nodes[] ET op != NONE         -> calcule mais absent (-2),
+                                                   seule vraie reference non resolue
+    LIMITE DECLAREE : les feuilles sont observees a travers src[], PAS
+    enumerees independamment (aucun accesseur de leafs n'existe).
+D2. submit_events_expected / observed etaient declares `bool` alors que ce sont
+    des COMPTES : 3 et 1 devenaient tous deux `true`, et la perte de soumissions
+    intermediaires n'etait jamais detectee. Corrige en `int`.
+
+=== CLASSIFICATION NextN : LE POINT IMPORTANT ===
+L'enumeration est STRUCTURELLE et fonctionne : elle observe les feuilles
+consommees par les operations, resout les dependances, et serialise 27 champs.
+
+MAIS la SEULE signature NextN disponible dans Q1 est une CONVENTION DE NOM
+(blk.<N>.nextn.*). Un nom n'est pas une structure. Aucune regle
+d'identification STRUCTURELLE n'est justifiee par la cartographie source.
+
+CONSEQUENCE ASSUMEE : le classificateur REFUSE DE TRANCHER.
+  NEXTN_STRUCTURE_DETECTED  : jamais rendu -- il faudrait une regle justifiee
+  NEXTN_NOT_DETECTED_IN_COMPLETE_SUBMITTED_GRAPH_SCOPE : jamais rendu non plus
+  A la place : NOT_CONFIRMED_IDENTIFICATION_RULE_INSUFFICIENT
+  Les indicateurs de nom restent exportes comme OBSERVATIONS BRUTES
+  (nextn_leaf_count, nextn_op_count), jamais comme conclusion.
+
+C'est exactement l'exigence « une regle positive doit reposer sur la structure,
+pas seulement sur une sous-chaine ». Mon premier jet la violait : le test
+« nom trompeur » a echoue et l'a revele. Je n'ai pas ajuste le test pour le
+faire passer ; j'ai corrige la regle, et le test verifie desormais que le
+classificateur ne conclut RIEN.
+
+=== IDENTITES ===
+GRAPH_ENUMERATOR_SOURCE_SHA256=79a192e3066284bd138f0599a194d8bd6c9ba7745e116eb67f565e1e5f9558be
+GRAPH_ENUMERATOR_BINARY_SHA256=56b0516e6a87ee09174055bf5593ced7453e9b2d3b102f3c4dba033e3f261156
+  source : tools/engine008-graph-enum/engine008-graph-enum.cpp
+  binaire: build-graph-enum/engine008-graph-enum
+  NOUVELLE identite, distincte du harnais de preflight
+  (source e92f3516... / binaire aa7e4bf4...), qui reste INTACT et inchange.
+  Le schema est un CSV d'en-tete a 27 colonnes ; un enregistrement par noeud.
+
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+  Aucun forward. L'adaptateur a ete teste sur une source de metadonnees MOCKEE ;
+  les globals de Q1 n'ont JAMAIS ete ecrits (interdiction §4 respectee).
+  Aucun evenement de soumission n'a ete simule pour presenter une fixture comme
+  une observation modele.
+MODEL_FORWARD_CALL_COUNT=0
+SYNTHETIC_GRAPH_NUMERIC_EVALUATION_COUNT=0
+  Les graphes synthetiques sont construits avec ggml_init(no_alloc=true) et
+  les primitives publiques ; ils ne sont JAMAIS evalues.
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_IMPLEMENTATION
+  Code compile et tests requis passes. Cela ne signifie PAS que la fenetre et
+  la couverture sont validees sur un forward reel : c'est
+  RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED.
+
+REMAINING_RUNTIME_COVERAGE_CONDITIONS=
+  C1_constater AU PREMIER RUN que f1a_last_gf est non nul et que sa valeur
+     egale la colonne `gf` du SUBMITTED_GRAPH_SNAPSHOTS.csv pour le meme
+     submission_id. Sans cette confrontation, une enumeration pourrait lire un
+     graphe residuel.
+  C2_verifier que la fenetre d'acquisition est respectee : f1a_last_gf est
+     ecrase a chaque soumission.
+  C3_confronter submit_events attendus et observes sur un run REEL, pour
+     savoir si une seule soumission par intervalle est observable. Si plusieurs
+     graphes sont soumis par appel, COVERAGE=INCOMPLETE et toute conclusion
+     negative reste interdite.
+  C4_trancher la question de la regle d'identification NextN : soit une
+     instruction autorise une signature STRUCTURELLE (auquel cas le
+     classificateur pourra rendre un verdict), soit le protocole acte
+     NOT_OBSERVABLE. En l'etat, le harnais refuse de conclure, ce qui est le
+     comportement conservateur correct.
+  C5_reprendre les travaux hors perimetre laisses en attente : R2 closure
+     renderer, chemin nominal d'autorisation, v1.1, gel preflight.
+
+ENGINE008_NEXT_STEP=TRANCHER_C4 (regle d'identification NextN : signature
+  structurelle autorisee, ou NOT_OBSERVABLE acte au protocole)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit, aucune generation, aucun scoring, aucune NLL/PPL.
+Aucune modification ni reconstruction de libllama Q1. Aucun GGUF, corpus,
+scorer, seuil, renderer, template, gel v1 ou identite historique modifie.
+Aucun global de Q1 ecrit. Aucun nouveau gel cree.

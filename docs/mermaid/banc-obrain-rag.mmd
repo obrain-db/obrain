@@ -1,0 +1,168 @@
+%% Ce que ce diagramme prouve : la chaine RAG du depot banc-obrain, du graphe
+%% jusqu au contexte injecte dans un prompt — ingestion de l index inverse vivant,
+%% encodage spectral, recherche a quatre voies, restitution sous budget de jetons,
+%% puis boucle de feedback. Chaque numero de ligne cite est une ligne lue.
+%% Mesure : les 10 fichiers de crates/obrain-rag/src lus integralement, soit
+%% 4791 lignes .rs avec le test et l exemple ; les sources cognitives reellement
+%% appelees par le retriever lues aussi : engram/spectral.rs, engram/recall.rs,
+%% engram/hopfield.rs, engram/traits.rs, engram/store.rs, engram/types.rs,
+%% activation.rs ; plus le seul consommateur externe trouve par grep,
+%% obrain-cli/src/mcp_server.rs. DEDUIT : rien.
+%% NON ETABLI, donc NON DESSINE : aucun fichier de obrain-rag ne FORME d engramme
+%% — la formation vit en amont dans obrain-cognitive/engram/formation.rs, dont
+%% seule l API a ete grepée, pas le corps : elle est marquee en amont, pas tracee.
+%% Aucune mesure d execution n a ete produite ici : le p99 cite sur le cap 32 est
+%% un chiffre LU dans un commentaire de feedback.rs, pas une mesure rejouee. Le
+%% tri des cues par label L287 n a pas ete trace jusqu a un appelant.
+
+flowchart TB
+
+  subgraph Amont["Amont : ce que obrain-rag ne forme pas — les engrammes consolides"]
+    eng_type["obrain-cognitive/engram/types.rs<br/>240 lignes<br/>Engram : ensemble de noeuds ponderes,<br/>spectral_signature, strength, valence,<br/>precision beta"]
+    eng_formation["obrain-cognitive/engram/formation.rs<br/>843 lignes<br/>HebbianWithSurprise<br/>⚪ forme les engrammes EN AMONT<br/>API seule grepée, corps non lu"]
+    eng_store["obrain-cognitive/engram/store.rs<br/>679 lignes<br/>EngramStore : cache DashMap<br/>+ ecriture traversante<br/>get L164, insert L190, list L375,<br/>find_by_node L383, count L398"]
+  end
+
+  subgraph Ingestion["Ingestion : du graphe vers l index inverse vivant — retriever.rs 1548 lignes"]
+    rag_new["retriever.rs L393 EngramRetriever::new<br/>construit l index COMPLET<br/>a la construction"]
+    rag_lazy["retriever.rs L437 new_lazy<br/>index VIDE au depart : prefere<br/>pour un serveur alimente par<br/>un flux de mutations"]
+    build_index["retriever.rs L453 build_full_index<br/>graph.node_ids puis get_node<br/>puis refresh_cardinalities L471"]
+    tok["retriever.rs L776 tokenize_text<br/>minuscules, coupe sur tout caractere<br/>non alphanumerique sauf _ et -<br/>garde 2 caracteres et plus<br/>AUCUN filtre de mots vides L773"]
+    inv_add["retriever.rs L93 InvertedIndex::add_node<br/>plafond MAX_TERMS_PER_NODE = 100 L30<br/>tf = 1.0 + longueur du terme<br/>divisee par longueur du texte L119<br/>reajout idempotent L95"]
+    index_node["retriever.rs L483 index_node<br/>incremental, 1 noeud,<br/>sous verrou d ecriture"]
+    index_nodes["retriever.rs L510 index_nodes<br/>lot, cardinalites<br/>rafraichies une seule fois L523"]
+    remove_node["retriever.rs L500 remove_node<br/>retire termes, libelles,<br/>cardinalites et total L164"]
+    reindex["retriever.rs L529 reindex<br/>reconstruit tout ;<br/>commande /reindex du demo"]
+    inv_idx["retriever.rs L49 InvertedIndex<br/>text_entries, term_doc_freq,<br/>label_entries, label_counts,<br/>node_label_cardinality,<br/>node_terms, node_labels, total_nodes<br/>✅ ecrit et verifie par les tests<br/>du module L801 a L1547"]
+  end
+
+  subgraph Encodage["Encodage : d un identifiant de noeud vers une signature spectrale"]
+    spectral["engram/spectral.rs L114 SpectralEncoder<br/>defaut DefaultSpectralEncoder L59<br/>dimensions = 64 L59"]
+    enc_encode["spectral.rs L64 encode<br/>hache le NodeId par DefaultHasher L73<br/>4 sous-hachages par noeud L79<br/>signe alterne selon un bit L88<br/>pondere par le poids d ensemble<br/>puis L2-normalisation L153<br/>vecteur nul si entree vide L67"]
+    vec_index["engram/traits.rs L57 VectorIndex<br/>L173 InMemoryVectorIndex<br/>recherche par force brute<br/>distance cosinus L213<br/>1.0 si dimension incoherente L214"]
+    pattern["engram/hopfield.rs L48 PatternMatrix<br/>L73 from_store :<br/>ne retient que les signatures<br/>de dimension EXACTE L85"]
+    hopfield["engram/hopfield.rs L163 hopfield_retrieve<br/>logits = beta de l engramme<br/>fois produit scalaire L180<br/>softmax centre sur le max L186<br/>tri par poids d attention, top-k L195"]
+    pos["engram/recall.rs L227 recall_with_position<br/>3e voie par centroide de position<br/>🟠 JAMAIS appelee par obrain-rag :<br/>retriever.rs L645 appelle recall, pas elle"]
+  end
+
+  subgraph Recherche["Recherche : requete texte vers noeuds actives"]
+    retrieve["retriever.rs L638 EngramRetriever::retrieve<br/>4 etapes nommees dans le code<br/>🔴 direct_recall_weight L21<br/>n est jamais lu"]
+    cues["retriever.rs L579 text_to_cues<br/>nombre de cues<br/>= max_engrams x 5 L640"]
+    inv_query["retriever.rs L229 InvertedIndex::query<br/>idf = ln de N sur df,<br/>plancher 0.1 L246<br/>libelle contenu ou contenant,<br/>+0.5 bidirectionnel L257<br/>dampening ln de 1 + fraction x 10 L273<br/>tronque a max_cues L279"]
+    recall_engine["engram/recall.rs L199 RecallEngine::recall<br/>poids direct code en dur = 0.6 L94<br/>voie 1 recouvrement d ensemble L273<br/>voie 2 Hopfield L301<br/>repli VectorIndex si matrice vide L316<br/>fusion par identifiant, dedoublonnage"]
+    matrix_cache["engram/recall.rs L172 pattern_matrix<br/>cache invalide par<br/>EngramStore::revision L173"]
+    syn_src["engram/activation.rs L180<br/>SynapseActivationSource<br/>fournit les voisins ponderes"]
+    spread["engram/activation.rs L352 spread<br/>BFS avec file L378<br/>energie = parent x poids x decay L411<br/>bitset dense si id sous 2 puissance 26 L458<br/>coupe-circuit max_activated_nodes L402<br/>superposition des chemins multiples L417"]
+    cfg_spread["retriever.rs L677 SpreadConfig<br/>max_hops = activation_depth<br/>decay = activation_decay<br/>min_energy = min_activation_energy<br/>max_activated_nodes"]
+    spread_use["retriever.rs L688 spread appele<br/>depuis les noeuds d engrammes<br/>seuil min_activation_energy L693"]
+    direct_merge["retriever.rs L713 les cues entrent<br/>SANS penalite de score<br/>quand aucun engramme n existe,<br/>le match direct EST la voie de rappel L712"]
+    extract["retriever.rs L586 extract_node_content<br/>toutes les proprietes texte non vides,<br/>les libelles, les relations sortantes<br/>et entrantes L601 a L620"]
+    retrieve_out["retriever.rs L746 tri par score decroissant<br/>L753 troncature a max_context_nodes<br/>retourne nodes, engrams_matched,<br/>nodes_activated"]
+  end
+
+  subgraph Restitution["Restitution : noeuds actives vers contexte markdown sous budget"]
+    pipeline["pipeline.rs L51 RagPipeline::query<br/>retrieve puis<br/>context_builder.build L53"]
+    rank["ranking.rs L44 rank_with_diversity<br/>MMR simplifie<br/>W_SCORE 0.6 L12<br/>W_RICHNESS 0.25 L14<br/>W_DIVERSITY 0.15 L16<br/>penalite de redondance 0.30 L19"]
+    richness["ranking.rs L135 text_richness<br/>= somme des longueurs<br/>de toutes les proprietes"]
+    budget_est["budget.rs L14 estimate_tokens<br/>plafond 500 caracteres<br/>par propriete L36<br/>divise par chars_per_token = 4.0<br/>entete et relations comptees L19 a L62"]
+    budget_sel["budget.rs L74 select_within_budget<br/>glouton sur le tri decroissant<br/>au moins UN noeud,<br/>meme au-dessus du budget L87"]
+    ctx_build["context.rs L33 GraphContextBuilder::build<br/>615 lignes"]
+    ctx_group["context.rs L86 groupe sur labels 0<br/>le commentaire L63 a L80 avertit :<br/>le label primaire n est PAS une propriete<br/>du noeud, c est le plus ancien interne"]
+    ctx_noise["context.rs L154 filtre noise_properties<br/>6 noms par defaut L71 :<br/>id, uuid, created_at, updated_at,<br/>modified_at, _id"]
+    ctx_trunc["context.rs L161 troncature a 500 caracteres<br/>coupe sur frontiere de caractere<br/>pour survivre a l UTF-8 multioctet"]
+    ctx_rels["context.rs L178 relations avec noms resolus<br/>plafond max_relations_display = 10 L85<br/>et indicateur et N de plus L198"]
+    ctx_head["context.rs L109 titre Graph Knowledge Context<br/>puis un titre par groupe de libelle L120<br/>puis un sous-titre par noeud L137<br/>nom ou titre, sinon score seul L145"]
+    ctx_out["traits.rs L85 RagContext<br/>text, estimated_tokens,<br/>nodes_included, node_ids,<br/>node_texts L102 pour le feedback"]
+  end
+
+  subgraph Boucle["Boucle de feedback : apres la reponse du LLM — feedback.rs 508 lignes"]
+    fb_pipe["pipeline.rs L65 RagPipeline::feedback<br/>sans sink : FeedbackStats::default L68"]
+    fb["feedback.rs L141 CognitiveFeedback::feedback<br/>no-op si contexte ou reponse vide L149"]
+    fb_mentions["feedback.rs L114 find_mentioned_nodes<br/>minuscules, valeur de plus<br/>de 3 caracteres contenue<br/>dans la reponse L128"]
+    fb_energy["feedback.rs L158 energy_store.boost<br/>plein si le noeud est mentionne,<br/>0.3 x sinon L163"]
+    fb_reinforce["feedback.rs L195 paires i,j renforcees<br/>voie mentions si 2 noeuds ou plus L181<br/>sinon repli plafonne L191"]
+    fb_cap["feedback.rs L66 FALLBACK_CAP = 32<br/>chiffre LU dans le commentaire :<br/>p99 6.27 ms a N=32, 86.59 ms a N=100<br/>mesure NON rejouee ici"]
+    fb_counters["feedback.rs L81 mentions_path_total<br/>L82 fallback_path_total<br/>exactement un des deux<br/>est incremente par appel"]
+    cog_stores["obrain-cognitive<br/>EnergyStore importe L11<br/>SynapseStore importe L12<br/>cibles d ecriture du feedback"]
+  end
+
+  subgraph Consommateurs["Consommateurs reels, mesures par grep sur tout le depot"]
+    demo["examples/rag_demo.rs 371 lignes<br/>SEUL branchement complet mesure<br/>L91 EngramRetriever::with_defaults<br/>L120 RagPipeline::new<br/>base de demonstration L335"]
+    membench["tests/membench_recall.rs 361 lignes<br/>recall at 1, 5 et 10 plus MRR<br/>sur un corpus 2 sauts incorpore<br/>instrumente EngramRetriever"]
+    mcp["obrain-cli/src/mcp_server.rs<br/>L2270 budget_jetons_injection<br/>variable OBRAIN_CONTEXT_TOKEN_BUDGET,<br/>plancher 200 L2274<br/>defaut = RagConfig::default token_budget L2275<br/>L2300 borner_injection_par_jetons<br/>appelle estimate_tokens L2325"]
+    mcp_tronc["mcp_server.rs L2371 bloc troncature<br/>budget_jetons, jetons_avant,<br/>jetons_apres, retire par section<br/>retrait dans l ordre engrams,<br/>weave, summaries, goals L2354"]
+    dead_pipeline["🔴 RagPipeline, EngramRetriever et<br/>GraphContextBuilder n ont AUCUN<br/>appelant hors de obrain-rag :<br/>grep sur tout le depot, seule<br/>occurrence externe = un commentaire<br/>de obrain-substrate/retrieval.rs L13"]
+    dead_cfg["🔴 direct_recall_weight L21 :<br/>zero occurrence hors de sa declaration<br/>🟠 min_recall_confidence L17 :<br/>lu seulement pour l affichage,<br/>rag_demo.rs L287, jamais applique<br/>comme filtre"]
+  end
+
+  eng_formation -.->|produit en amont| eng_store
+  eng_type -->|definit la structure de| eng_store
+  eng_store -->|lu par| recall_engine
+  eng_store -->|lu par| pattern
+
+  rag_new -->|appelle| build_index
+  rag_lazy -.->|index vide| inv_idx
+  build_index -->|appelle| inv_add
+  inv_add -->|appelle| tok
+  inv_add -->|ecrit dans| inv_idx
+  index_node -->|lit le graphe puis ecrit dans| inv_idx
+  index_nodes -->|ecrit par lots dans| inv_idx
+  remove_node -->|retire de| inv_idx
+  reindex -->|reconstruit| inv_idx
+  inv_idx -->|lu par| inv_query
+
+  spectral -->|employe par| enc_encode
+  enc_encode -->|vecteur requete pour| hopfield
+  enc_encode -->|vecteur indexe dans| vec_index
+  pattern -->|alimente| hopfield
+  hopfield -->|appele par| recall_engine
+  vec_index -.->|repli si matrice vide| recall_engine
+  pos -.->|non branche sur le retriever RAG| recall_engine
+
+  retrieve -->|appelle| cues
+  cues -->|appelle| inv_query
+  retrieve -->|appelle| recall_engine
+  matrix_cache -->|met en cache| pattern
+  retrieve -->|appelle| cfg_spread
+  cfg_spread -->|configure| spread
+  syn_src -->|fournit les voisins ponderes a| spread
+  recall_engine -->|ensembles d engrammes sources de| spread_use
+  spread_use -->|appelle| spread
+  spread -->|noeuds actives| direct_merge
+  cues -->|noeuds cues| direct_merge
+  direct_merge -->|appelle| extract
+  extract -->|RetrievedNode| retrieve_out
+  recall_engine -->|confiance et engrammes| retrieve_out
+
+  pipeline -->|appelle| retrieve
+  pipeline -->|appelle| ctx_build
+  ctx_build -->|appelle| rank
+  rank -->|appelle| richness
+  ctx_build -->|appelle| budget_sel
+  budget_sel -->|appelle| budget_est
+  ctx_build -->|appelle| ctx_group
+  ctx_build -->|appelle| ctx_head
+  ctx_group -->|applique| ctx_noise
+  ctx_group -->|applique| ctx_trunc
+  ctx_group -->|applique| ctx_rels
+  ctx_build -->|produit| ctx_out
+
+  ctx_out -->|injecte dans le prompt puis alimente| fb
+  pipeline -->|appelle| fb_pipe
+  fb_pipe -->|delegue a| fb
+  fb -->|appelle| fb_mentions
+  fb -->|appelle| fb_energy
+  fb -->|appelle| fb_reinforce
+  fb -->|incremente| fb_counters
+  fb_reinforce -->|plafonne par| fb_cap
+  fb_energy -->|ecrit| cog_stores
+  fb_reinforce -->|ecrit| cog_stores
+  cog_stores -.->|renforce les synapses lues par| syn_src
+
+  demo -->|branche| rag_new
+  demo -->|branche| pipeline
+  membench -->|instrumente| retrieve
+  mcp -->|emploie| budget_est
+  mcp -->|produit| mcp_tronc
+  dead_pipeline -.->|constat de grep| pipeline
+  dead_cfg -.->|constat de grep| retrieve

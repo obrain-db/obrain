@@ -1,0 +1,16 @@
+node_modules/
+dist/
+# Dans les worktrees SERVIS, `dist` n'est plus un dossier mais un LIEN vers la
+# version gelée (`~/.local/share/obrain-harness/ui/current`) : un lien n'est pas
+# un dossier, donc `dist/` ne le couvrait pas et le dépôt apparaissait sale en
+# permanence. `dist.*` couvre les sauvegardes locales (`dist.avant-decouplage-…`).
+dist
+dist.*
+*.local
+*.tsbuildinfo
+
+# `dist` est un LIEN vers la version servie (`~/.local/share/obrain-harness/ui/current`)
+# dans les worktrees servis : un lien n'est pas un dossier, donc `dist/` ne le
+# couvrait pas. `dist.*` couvre les sauvegardes locales (`dist.avant-decouplage-…`).
+dist
+dist.*

@@ -1,0 +1,126 @@
+ENGINE-008 -- STATUT TERMINAL IDENTITY-ADAPTER-CODE-01
+==========================================================================
+Adaptateur compile et teste : 19 controles, 0 echec, EXIT=0.
+Aucun chargement de modele. Aucun forward. Aucune evaluation de graphe.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=IDENTITY_ADAPTER_CODE_ONLY
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+=== 1. LINKAGE CONTRE Q1 : EXERCE, PAS SEULEMENT DECLARE ===
+NATIVE_TENSOR_ACCESS_LINK_VERIFIED=YES
+  Declaration TRANSCRITE VERBATIM depuis src/llama-model.h:763 (verifiee) :
+    extern const std::vector<std::pair<std::string, ggml_tensor *>> &
+    llama_internal_get_tensor_map(const llama_model * model);
+  Implementation : src/llama-model.cpp:3115  ->  return model->tensors_by_name;
+  Le fichier se LIE contre libllama.so.0.0.135 : le symbole est donc REELLEMENT
+  resolu. §3 exigeait un controle qui REFERENCE la fonction sans l'appeler et
+  sans modele nul : c'est le role de g_get_tensor_map = &llama_internal_...,
+  pris en adresse, teste par linkage_control(), et jamais invoque.
+  La limite de §3 est respectee : le symbole vu par nm ne suffisait pas, le
+  linkage est desormais exerce par une compilation et une edition de liens
+  reelles.
+
+=== 2. SEPARATION ACQUISITION / REGISTRE PUR (§4) ===
+NEXTN_NATIVE_IDENTITY_ADAPTER_IMPLEMENTED=YES
+IDENTITY_REGISTRY_IMPLEMENTED=YES
+OPERAND_IDENTITY_LOOKUP_IMPLEMENTED=YES
+  Trois fonctions distinctes :
+   - acquire_native_identity(const llama_model*) : pour le FUTUR modele charge,
+     derriere la garde runtime. REFUSE un modele nul sans dereferencer.
+   - build_registry(table) : fonction PURE, ne touche a aucun modele. C'est
+     elle qui est testee.
+   - IdentityRegistry::roles_of(const ggml_tensor*) : recherche par IDENTITE
+     NATIVE, jamais par nom.
+  L'acquisition reelle n'est PAS exercee (aucun modele charge).
+  Les globals de Q1 n'ont jamais ete touches : les tests utilisent une table
+  MOCKEE et des tensors ggml SYNTHETIQUES non evalues.
+
+=== 3. REGISTRE : 6 ETATS DISTINGUES ===
+IDENTITY_REGISTRY_MOCK_SELFTEST=PASS
+  ROLE_RESOLVED / ROLE_ABSENT / KEY_AMBIGUOUS / NULL_IDENTITY /
+  MULTI_KEY_OBJECT / EXCLUSIVITY_UNESTABLISHED
+  Temoins positifs : exclusif ET exclusivite ETABLIE uniquement.
+  NEXTN_SHARED_HEAD_HEAD reste HORS des temoins positifs (exclusivite non
+  etablie depuis la v1_1 du contrat de roles).
+  Toutes les associations d'un objet sont PRESERVEES : aucun role n'est choisi
+  arbitrairement quand plusieurs sont presents.
+  Un tensor nul ne devient JAMAIS un tensor normal par defaut.
+
+=== 4. CONSOMMATEUR : RACCORD MINIMAL (§6) ===
+  classify_operand(reg, operand, derived) rend :
+    NEXTN_WITNESS_CONSUMED          : objet enregistre ET temoin utilisable
+    OPERAND_NOT_A_NEXTN_WITNESS     : objet inconnu ou non temoin -- AUCUNE
+                                      conclusion sur NextN n'en est tiree
+    NOT_CONFIRMED_ALIAS_PROVENANCE  : operande derive non resolu
+    NOT_CONFIRMED_IDENTITY_MAPPING  : identite nulle
+  Un tensor portant le BON NOM mais une AUTRE identite n'est pas celui du
+  registre : teste explicitement (same_name_other_object_is_not_a_witness).
+ALIAS_PROVENANCE_RULE_IMPLEMENTED=NO
+  Hors perimetre de cette passe. Les regles d'alias ne sont PAS implementees,
+  et la limite est rendue explicitement, jamais remplacee par une conclusion.
+NEXTN_NEGATIVE_WITNESS_EXHAUSTIVENESS_JUSTIFIED=NO
+
+=== 5. DEUX DEFAUTS REELS TROUVES PAR LES TESTS ===
+D1. Mon premier jeu de test placait une CLE EN DOUBLE dans la table nominale.
+    Le registre a CORRECTEMENT marque les DEUX entrees KEY_AMBIGUOUS -- ce qui
+    a fait echouer 5 tests. C'est la FIXTURE qui etait fausse, pas la regle :
+    dans une table native reelle les cles sont uniques. J'ai separe les deux
+    cas (table nominale vs table volontairement dupliquee) au lieu d'affaiblir
+    la regle. Le cas duplique est desormais teste a part et verifie que les
+    DEUX entrees sont ambigues et qu'aucune ne produit de temoin.
+D2. L'anomalie MULTI_KEY_OBJECT n'etait posee que sur le chemin « cle du
+    contrat » : un objet associe a une cle de role ET a une cle hors contrat
+    voyait l'anomalie signalee sur une seule de ses deux lignes. Corrige :
+    l'anomalie s'applique a TOUTES les entrees d'un objet multi-cles.
+
+=== 6. IDENTITES ===
+ADAPTER_SOURCE_SHA256=17c0cec17ba49ccc729ce58913a833183d741018400f7b0cbff7e67898b8ca60
+ADAPTER_BINARY_SHA256=cc5ea508b5de1a2793c7f70565bb9ea366a2cdfc3f9a426103231234c981367b
+  source : tools/engine008-identity/engine008-identity-adapter.cpp
+  binaire: build-identity/engine008-identity-adapter
+  NOUVELLE identite, distincte de l'enumerateur (e5f14fe2... / 9579aca0...) et
+  du harnais de preflight (e92f3516... / aa7e4bf4...), tous deux CONSERVES.
+
+NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+SYNTHETIC_GRAPH_NUMERIC_EVALUATION_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_ADAPTER
+  Code compile, linkage exerce, tests mockes passes.
+  Cela ne signifie PAS que l'identite native a ete acquise sur un modele reel :
+  c'est NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED.
+
+REMAINING_WORK=
+  R1_RESOUDRE les CLES COMPLETES reellement demandees par le chargement Q1 :
+     construction du nom (prefixe/suffixe), indices de couche pour TOUTES les
+     couches NextN (aujourd hui le contrat ne liste que blk.64.*), conditions
+     d optionalite (TENSOR_NOT_REQUIRED vu en llama-model.cpp:1479-1480).
+     Aucune recherche par sous-chaine, aucun rapprochement approximatif.
+  R2_IMPLEMENTER les regles d ALIAS verifiables (hors perimetre ici). Un
+     operande derive reste NOT_CONFIRMED_ALIAS_PROVENANCE jusque-la.
+  R3_ACQUERIR l identite native sur un modele reellement charge, dans la passe
+     d execution autorisee, et confronter les roles attendus / absents /
+     partages / ambigus aux metadonnees GGUF deja mesurees.
+  R4_ETABLIR ou REFUTER l exclusivite de NEXTN_SHARED_HEAD_HEAD -- auquel cas
+     le contrat de roles devra etre versionne a nouveau.
+  R5_REPRENDRE les travaux hors perimetre : R2 closure renderer, chemin nominal
+     d autorisation, v1.1 du protocole, gel preflight.
+
+ENGINE008_NEXT_STEP=R1 (resoudre les cles completes du chargement Q1 pour
+  toutes les couches NextN, avec indices et optionalite)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+AUCUN CHARGEMENT DE MODELE, aucun logit, aucune generation, aucun scoring,
+aucune NLL/PPL, aucune evaluation numerique de graphe.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template, gel v1, contrats de roles v1/v1_1, ni des identites
+historiques. Aucun nouveau gel cree. Aucun global de Q1 ecrit.

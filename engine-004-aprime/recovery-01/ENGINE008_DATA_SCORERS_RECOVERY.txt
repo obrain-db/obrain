@@ -1,0 +1,119 @@
+ENGINE-008 RECOVERY-01 -- §5 RESTAURATION DATA, SCORERS, SEUILS
+==========================================================================
+LLAMA_DECODE_CALL_COUNT=0
+LECTURE_SEULE_SUR_L_ARBRE_D_AUTORITE=OUI (aucune ecriture dans l arbre gele)
+
+=== 1. LES DEUX DEFINITIONS DE TREE HASH ONT ETE RETROUVEES, PAS INVENTEES ===
+TASK_EVAL_DATA_CONTENT_TREE_SHA256 :
+  definition = tree_hash() de e8s9-final.py / engine008-corpora-task.py
+    parcours sorted(os.walk(root)) ; pour chaque fichier : relpath + NUL +
+    contenu + NUL ; racine = corpora/task_eval
+TOKEN_EVAL_CONTENT_TREE_V2_SHA256 :
+  definition = construction STRUCTUREE de e8-s8.py section S8.3 -- ce n est
+  PAS un parcours d arborescence. Elle enchainne :
+    b"RULES_V2\x00" + octets de ENGINE008_SELECTION_RULES_v2.txt
+    b"\x00TOKENIZER\x00" + b"49930cc8..."
+    b"\x00TOOL\x00" + hex(sha256(llama-tokenize Q1))
+    b"\x00BOS=NO\x00EOS=NO\x00PARSE_SPECIAL=NO\x00NO_ESCAPE=YES"
+    par unite : b"\x00UNIT\x00" + group|item_id|content_sha|ids_csv
+    par fichier : b"\x00FILE\x00" + nom + NUL + octets
+  Aucune nouvelle fonction de hash n a ete inventee pour annoncer une egalite.
+  Le premier essai, qui supposait a tort un parcours d arborescence, a donne
+  5119a3f9... : il a ete REJETE comme non conforme, pas retenu.
+
+=== 2. VERIFICATIONS D AUTORITE (mesurees, hote dgx) ===
+TASK_PROMPT_CONTRACTS_V1_SHA256=fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6             MATCH
+ENGINE008_SELECTION_RULES_V2_SHA256=3c1a16d7053f693400b3a8d858733f6a884301e34c8796e8a482370d5a369552          MATCH
+ENGINE008_SCORER_PROVENANCE_SHA256=6d9e68cf38de67267be8ec68583ff2746dac37a944233eb5468100e8192d1ffa        MATCH
+  (recalcule depuis les fichiers sur disque, definition de e8-scorers-artifacts.py)
+TASK_EVAL_DATA_CONTENT_TREE_SHA256=c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a          MATCH
+TOKEN_EVAL_CONTENT_TREE_V2_SHA256=0ce4512e9d73b5e1cc3beddd2222e9ad7a96592508f10930515ef8b4276cf5dd       MATCH
+  (RE-DERIVE independamment depuis les sources amont, voir §3)
+QUALITY_THRESHOLDS_v1.txt sha256=08d70467d2dada51a362bfa91694b00d6bd0b1dd020feab2f7bb52af47666bc7   (constat ; pas d autorite prealable citee)
+STRUCTURED_VALIDITY_CONFIG_v1.txt sha256=7896e65e4ba6c1d6749067db27eba26fc74ecfa25f0fb0418887fc3d17b289d3
+
+=== 3. TOKEN v2 : RE-DERIVATION INDEPENDANTE (verification la plus forte) ===
+Script=rec01-token-v2-rederive.py ; e8-s8.py N A PAS ETE EXECUTE (il
+reecrirait les artefacts geles) ; la definition S8.3 a ete REIMPLEMENTEE.
+  wikitext      rebuilt=32768 units=347
+  obrain_docs   rebuilt=16384 units=14
+  obrain_rust   rebuilt=16384 units=18
+  TOKENIZATION_SECOND_PASS_MISMATCH_COUNT=0
+  UNITS_COMPARED=379   STORED_EQ_REBUILT=YES
+  TOKEN_EVAL_CONTENT_TREE_V2_SHA256=0ce4512e9d73b5e1cc3beddd2222e9ad7a96592508f10930515ef8b4276cf5dd
+  TOKEN_REFERENCE_HASH_MATCH=YES
+  LLAMA_DECODE_CALL_COUNT=0 -- seule operation modele : tokenisation
+  (llama-tokenize --ids : chargement du vocabulaire, AUCUN forward pass)
+TOKEN_DATA_STATUS=PASS ; TOKEN_CORPUS_FROZEN=YES (autorite entrante, desormais
+  adossee a une re-derivation independante reussie)
+
+=== 4. COMPTES TASK (mesures depuis les artefacts recuperes) ===
+TASK_RENDERED_MMLU_COUNT=1400
+TASK_RENDERED_GSM8K_COUNT=500
+TASK_RENDERED_MBPP_COUNT=257
+TASK_RENDERED_IFEVAL_COUNT=541
+TASK_EVAL_ITEM_COUNT=2698
+TASK_GLOBAL_ITEM_ID_DUPLICATE_COUNT=0
+TOUS_CONFORMES_A_L_AUTORITE=YES   (1400 / 500 / 257 / 541 = 2698)
+
+=== 5. SELFTESTS DES SCORERS REJOUES SANS MODELE (15 gates d origine) ===
+Aucune restriction n a ete abaissee pour faire passer un test.
+Environnement : venv gele /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/.venv + ENGINE008_IFEVAL_ROOT=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/external/mbpp
+  (cette variable est le mecanisme DOCUMENTE dans ifeval_v1.py ; sans elle le
+   module officiel est introuvable -- c est un defaut d invocation, pas un
+   defaut de scorer. Le premier essai, Lance sans elle, est consigne comme tel
+   et n a pas ete presente comme un echec de scorer.)
+  mmlu_pro_v1        EXIT=0  MMLU_SCORER_SELFTEST=PASS
+  gsm8k_v1           EXIT=0  GSM8K_SCORER_SELFTEST=PASS
+  mbpp_v1            EXIT=0  MBPP_SANDBOX_SELFTEST=PASS (backend=docker)
+  ifeval_v1          EXIT=0  IFEVAL_SCORER_SELFTEST=PASS
+  long_context_v1    EXIT=0  LONG_CONTEXT_SCORER_SELFTEST=PASS
+  task_scorers_v1    EXIT=0  STRUCTURED_VALIDITY_SCORER_SELFTEST=PASS
+                             TASK_AGGREGATE_SELFTEST=PASS
+                             BOOTSTRAP_SELFTEST=PASS
+GATES DE COMPTAGE, verifiees depuis les artefacts :
+  GSM8K_REFERENCE_PARSE_FAILURE_COUNT=0 (sur 500)
+  IFEVAL_DUPLICATE_PROMPT_COUNT=0
+  IFEVAL_INSTRUCTION_ID_COUNT=25
+  STRUCTURED_VALIDITY_ITEM_COUNT=370
+  BOOTSTRAP_SEED_U64=5833308329814621762
+  BOOTSTRAP_REPEATABILITY_MISMATCH_COUNT=0
+CONTRÔLE REEL DU SANDBOX MBPP (non abaisse) :
+  fork_attempt            PASS  attendu=RUNTIME_ERROR observe=RUNTIME_ERROR
+  network_attempt         PASS  attendu=RUNTIME_ERROR observe=RUNTIME_ERROR
+  host_path_read          PASS  attendu=RUNTIME_ERROR observe=RUNTIME_ERROR
+  write_outside_sandbox   PASS  attendu=RUNTIME_ERROR observe=RUNTIME_ERROR
+  infinite_loop           PASS  attendu=TIMEOUT        observe=TIMEOUT
+SCORERS_CURRENT_SELFTEST=PASS
+SCORERS_CURRENT_AUTHORITY_VERIFIED=YES (provenance recalculee = 6d9e68cf...)
+
+=== 6. SEUILS (autorite gelee, non modifiee) ===
+CONTENU VERIFIE de QUALITY_THRESHOLDS_v1.txt :
+  MAX_MEAN_NLL_DELTA_NATS=0.0100
+  MAX_RELATIVE_PERPLEXITY_INCREASE=exp(0.0100)-1  (~1.005%)
+  MIN_TOP1_TOKEN_AGREEMENT=0.970
+THRESHOLDS_CURRENT_AUTHORITY_VERIFIED=YES (fichier present, hash constate ci-dessus)
+AUCUN seuil n a ete recalcule, aucun n a ete reconstitue.
+
+=== 7. ENVIRONNEMENT PYTHON ===
+PYTHON_ENVIRONMENT_FREEZE.txt, PYTHON_PACKAGE_PROVENANCE.csv,
+PYTHON_PACKAGE_ARTIFACTS.sha256, PYARROW_WHEEL.sha256 presents et copies au
+checkpoint. venv reinstallable sans reseau (--no-index --find-links) :
+PYTHON_ENVIRONMENT_REINSTALL_SELFTEST=PASS (autorite entrante, non rejouee ici).
+
+=== 8. CE QUI RESTE MANQUANT APRES RECUPERATION ===
+a) TEXTE AUTORITAIRE DU PROTOCOLE HARNESS : INTROUVABLE.
+   L arbre ENGINE-008 ne contient QUE des artefacts DATA (S1..S8) et SCORERS.
+   Aucun fichier de protocole HARNESS n a jamais ete materialise. Les clauses
+   numerotees §1..§74 utilisees par la passe precedente n existent que dans le
+   brief de mission, PAS sous forme de document autoritaire verifiable.
+   Consequence assumee : ces clauses restent des clauses de brief. Toute
+   clause manquante reste manquante -- aucun protocole n a ete reconstitue a
+   partir de ses seuls numeros de paragraphes.
+b) MAX_NEW_TOKENS et structure §17 : confirmes par TASK_PROMPT_CONTRACTS_v1
+   (GSM8K 1024, MBPP 1024, IFEVAL 4096, GREEDY requis) -- donc adosses a une
+   autorite reelle.
+c) MTP : aucun document MTP propre a ENGINE-008 n existe. Le MTP n est
+   documente que par les metadonnees GGUF du candidat (blk.64.nextn.*) et par
+   la note de type ggml. Le champ ENGINE008_MTP_RUNTIME_PROOF_METHOD_DEFINED
+   reste une exigence de brief, sans texte autoritaire.

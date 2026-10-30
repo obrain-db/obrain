@@ -1,0 +1,146 @@
+ENGINE-008 -- STATUT ENGINE008-PREFLIGHT-ENTRYPOINT-REPAIR
+==========================================================================
+D-A ET D-B SONT CORRIGES. Les deux executables de PRODUCTION existent. La chaine
+executable a executable est TESTEE SANS CALCUL. Nouveau gel emis.
+
+=== 1. CORRECTION DE LA CONCLUSION DU GEL PRECEDENT ===
+OLD_READINESS_CONCLUSION=INVALIDATED
+  Le gel precedent (manifeste 3c614f5d...) declarait
+  ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=YES. Cette conclusion est
+  INVALIDEE : elle reposait sur un chemin nominal qui n'existait pas.
+  CE QUI RESTE VALIDE de ce gel -- et ce qui ne l'est plus :
+   - IDENTITES : concordantes, conservees comme historique.
+   - AUCUN RUN N'A ETE LANCE : confirme, zero run, zero modele, zero forward.
+   - VALIDE pour les chemins EFFECTIVEMENT testes : garde avant calcul (exit 3,
+     compteurs a 0), inventaire, invocations attendues, WHT, P4' et ses six
+     verificateurs, parseurs, contrat d'arret, prompt mesure, segmentation.
+   - PLUS VALIDE comme disponibilite operationnelle : le chemin nominal autorise.
+  Je ne declare PAS l'ensemble du code faux : l'orchestration, les adaptateurs et
+  les parseurs sont corrects et testes. Ce qui manquait etait la LIAISON entre
+  les arguments de production et la requete, et le pilote.
+OLD_AUTHORIZATION_REUSED=NO
+  L'autorisation precedente (098ecb7b...) reference l'ANCIENNE identite de
+  harnais. Elle n'est PAS reutilisee : les executables ont change d'identite.
+  Aucune nouvelle autorisation acceptee de calcul reel n'a ete creee.
+
+=== 2. E1 : POINT D'ENTREE REEL -- FAIT ===
+PRODUCTION_HARNESS_ENTRYPOINT_IMPLEMENTED=YES
+  `engine008_argv.cpp` : parsing PARTAGE, liste EXACTE des arguments acceptes.
+  Tout argument INCONNU est REFUSE (exit 2).
+  Parametres lus ET affectes a PipelineRequest : --model (model_path),
+  --template (template_path), --capture-root (capture_root), --model-tag
+  (model_tag), --run-tag (run_tag), --max-new-tokens (max_new_tokens),
+  plus --auth-doc, --plan, --protocol, --binary, --allow-model-compute.
+  REFUS AVANT CALCUL, tous testes par INVOCATION D'EXECUTABLE :
+   - parametre obligatoire manquant -> exit 3 ;
+   - argument inconnu -> exit 2 ;
+   - identite discordante -> exit 3 ;
+   - racine vide ou "/" -> exit 3 ;
+   - destination NON VIDE (reutilisation) -> exit 3 ;
+   - --max-new-tokens != 8 -> exit 3 (le plan est IMPOSE, un argument ne peut
+     PAS le changer) ;
+   - --model-tag hors {baseline,candidate} et --run-tag hors {run1,run2} -> exit 3.
+  La GARDE reste AVANT chargement complet, contexte et activateurs f1a, dans les
+  deux modes.
+
+=== 3. E2 : ENTREE AUTORITAIRE -- FAIT ===
+AUTHORITATIVE_TOKEN_IDS_REACH_PREFILL_SELFTEST=PASS
+  Le point d'entree REND et TOKENISE nativement (vocab_only, add_special=0,
+  parse_special=1), puis VERIFIE par EMPREINTE avant tout prefill :
+   RENDERED_SHA256=92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658  OK
+   TOKEN_IDS_SHA256=ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e  OK
+   PREFLIGHT_RENDERED_TOKEN_COUNT=59  OK
+  Toute discordance REFUSE : REFUSED_RENDERED_SHA_MISMATCH,
+  REFUSED_TOKEN_IDS_SHA_MISMATCH, REFUSED_TOKEN_COUNT_MISMATCH.
+  Le MESSAGE BRUT n'est jamais substitue au rendu : c'est le rendu du TEMPLATE
+  qualifie qui est tokenise.
+  Le prefill MOCK a recu EXACTEMENT ces IDs : MOCK_PREFILL_CALLS=1,
+  MOCK_PREFILL_TOKEN_COUNT=59, MOCK_PREFILL_IDS_MATCH=YES.
+
+=== 4. E3 : LANCEUR DE PRODUCTION -- FAIT ===
+PRODUCTION_LAUNCHER_EXECUTABLE_BUILT=YES
+  `engine008-launch` : un vrai `main`, distinct de `t-launcher`.
+  Il lit ses parametres, refuse tout argument inconnu, exige les parametres
+  obligatoires, verifie les identites AVANT le premier lancement, appelle
+  `run_sequence`, impose les quatre processus neufs et leur ordre, controle les
+  rapports enfants, et s'arrete au premier defaut.
+  CHAINE EXECUTABLE A EXECUTABLE, reellement exercee :
+   LAUNCHER_INVOCATIONS=1  LAUNCHER_PLAN_CHECKED=YES  LAUNCHER_STOPPED_EARLY=YES
+   RUN baseline1   verdict=FAIL  exit=3  report_seen=Y
+   RUN candidate1  verdict=NOT_RUN   "non lance : sequence arretee"
+   RUN baseline2   verdict=NOT_RUN   "non lance : sequence arretee"
+   RUN candidate2  verdict=NOT_RUN   "non lance : sequence arretee"
+   LAUNCHER_STOP_REASON=arret au premier echec : baseline1
+  Aucune cinquieme invocation, aucun retry.
+
+=== 5. TEST OBLIGATOIRE DES COMMANDES REELLES, SANS CALCUL ===
+PRODUCTION_ARGUMENT_BINDING_SELFTEST=PASS
+EXECUTABLE_TO_EXECUTABLE_NOMINAL_SELFTEST=PASS
+  Le mode `verify-nominal` traverse : lanceur -> arguments enfant -> parsing ->
+  requete preparee -> garde nominale -> pipeline -> prefill mocke -> rapport.
+  MEME parsing, MEME preparation de requete, MEME orchestration, MEMES
+  interfaces ; seules les dependances de CALCUL sont mockees.
+  Parametres REELLEMENT recus, verifies dans la trace :
+   MODE=verify-nominal  MODEL_TAG=baseline  RUN_TAG=run1  MAX_NEW_TOKENS=8
+   CAPTURE_ROOT=/tmp/rep/cap
+   MOCK_LOAD_CALLS=1  MOCK_CTX_CALLS=1  MOCK_PREFILL_CALLS=1
+   AUTH=ACCEPTED  STOP_REASON=MAX_NEW_TOKENS  GENERATED_TOKEN_COUNT=8
+   MODEL_FORWARD_CALL_COUNT=0
+REAL_COMPUTE_GUARD_SELFTEST=PASS
+  SEPARATION PAR AUDIENCE DISTINCTE, verifiee dans les DEUX sens :
+   - `verify-nominal` exige audience=MOCK ; un document REAL_PREFLIGHT y est
+     REFUSE ;
+   - `real-preflight` exige audience=REAL_PREFLIGHT ; le document MOCK est
+     REFUSE : AUTH=REFUSED_MALFORMED_DOCUMENT, exit 3, et
+     REAL_LOAD_CALLS=0, REAL_CONTEXT_CREATE_CALLS=0,
+     MODEL_FORWARD_CALL_COUNT=0, REFUSED_BEFORE_ANY_COMPUTE=YES.
+  Une autorisation MOCK n'ouvre JAMAIS les adaptateurs de calcul reels.
+
+=== 6. IDENTITES NOUVELLES ===
+  REAL_HARNESS_BINARY_SHA256=c4fe4dd162b9fab04132063286726c2e29eb8dc136dabc31a1d65634eec28693
+  PRODUCTION_LAUNCHER_SHA256=f3c32092ec8862abd9715e17ac20609a3c12c51835eaf9921224ef6d748b05ac
+  (t-launcher, binaire de TESTS, reste distinct et inchange dans son role.)
+  Les anciennes identites 14ef0c1a... / 43e7c2c5... sont CONSERVEES comme
+  historique. L'autorisation precedente ne les remplace pas.
+
+=== 7. CE QUI N'A PAS CHANGE ===
+  P4' reste ADOPTEE (PROPOSED_NOT_ADOPTED -> ADOPTED le 2026-10-02) ; D1 conserve,
+  D2 non adopte. Protocole v3 GELE, contenu INCHANGE. Plan INCHANGE.
+  Inventaire, template, renderer, modeles : INTACTS.
+  Q1_LIBLLAMA_REBUILT=NO.
+
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+  Les quatre runs NE SONT PAS executes dans cette passe. Aucune autorisation
+  acceptee de calcul reel n'a ete creee.
+
+REMAINING_BLOCKERS=NONE (technique)
+  Les quatre runs exigeront une instruction separee, liee au NOUVEAU gel et aux
+  nouvelles identites.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucune evaluation qualite, aucun scorer, aucun long contexte, aucun run.
+Aucune modification de Q1, des modeles, du template, de l'inventaire, du
+protocole v3 ou du plan. Aucune donnee fabriquee.
+
+=== 8. NOUVEAU GEL ===
+  PREFLIGHT_FREEZE_MANIFEST_SHA256=1736b341974a46c0f72df0f0e070702d2855196cc428ea86c48af16ca4ca6119
+  Il REMPLACE le manifeste v1 (3c614f5d...) dont la conclusion de disponibilite
+  est INVALIDEE. Sans circularite : il contient l'identite des executables ; les
+  executables ne contiennent PAS son identite.
+  PREFLIGHT_PROTOCOL_SHA256=1dc2c3c36329550d29b1abf1ec448f0c82ef6f2d7ab81994deed9320f9d8b7ae   (v3, contenu INCHANGE)
+  PREFLIGHT_PLAN_SHA256=b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06  (INCHANGE)
+  SUITES SUR LES NOUVELLES IDENTITES : 314 controles, 0 echec.
+    adopt 15 · t4 14 · inv 33 · p4 26 · wht 54 · e2e 24 · connect 75 · whtpipe 8
+    · parser 42 · launcher 23
+  TESTS DE PRODUCTION, par INVOCATION D'EXECUTABLES :
+    PRODUCTION_ARGUMENT_BINDING_SELFTEST=PASS
+    AUTHORITATIVE_TOKEN_IDS_REACH_PREFILL_SELFTEST=PASS
+    EXECUTABLE_TO_EXECUTABLE_NOMINAL_SELFTEST=PASS
+    REAL_COMPUTE_GUARD_SELFTEST=PASS
+  ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=YES (sur les NOUVELLES identites)

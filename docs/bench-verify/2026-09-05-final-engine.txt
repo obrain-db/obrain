@@ -1,0 +1,14 @@
+=== VÉRIFICATION REQUÊTES & PERFORMANCES — 2026-09-05T10:14:29.974Z ===
+store code-all3 : 445493 nœuds / 1670005 arêtes
+GQL count(n)            = 445493   syntaxe : MATCH (n) RETURN count(n) AS n
+GQL count(n:File)       = 27501   syntaxe : MATCH (n:File) RETURN count(n) AS n
+GQL count(n:Function)   = 95386   syntaxe : MATCH (n:Function) RETURN count(n) AS n
+GQL count(CALLS) scan   = 349289   syntaxe : MATCH ()-[r:CALLS]->() RETURN count(r) AS n
+latence count(n)        : 52.2 µs (annoncé ~54)
+latence count(File)     : 30.8 µs (annoncé ~39)
+latence count(CALLS)    : 22204 µs (annoncé ~20 000)
+communauté testée : 43292 (19653 nœuds)
+window large exact==sorted : true (19653) ; hubs d≥50 exact==sorted : true
+fenêtre hubs d≥50 : scan 240.6 µs | zruns 70.5 µs (égalité vérifiée)
+lookup qualified_name (index) : 61.0 µs (annoncé ~65)   syntaxe : MATCH (n:Method) WHERE n.qualified_name = 'obrain-engine.crates.obrain-substrate.src.hilbert.zorder_key_2d' RETURN n.id AS id
+=== FIN VÉRIFICATION ===

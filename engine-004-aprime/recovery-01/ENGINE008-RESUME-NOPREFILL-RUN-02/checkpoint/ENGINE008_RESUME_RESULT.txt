@@ -1,0 +1,138 @@
+ENGINE-008 -- REPRISE HYBRIDE COMPLETE SANS PREFILL DESTINATION
+==========================================================================
+L'EXPERIENCE A ABOUTI. Aucun retry. Un seul essai modele.
+
+=== LE RESULTAT, D'ABORD ===
+  CONTROL  IDs [760,1156,369,9859,728,310,5707,1132,440,328,3793,1149,1061,
+                369,264,4145,1622,13,353,1220,5707,440,1066,328,3793,1149,198,
+                248069,271,3793,13,248046]
+  RESTORED IDs IDENTIQUES, element par element (32 tokens)
+  TOKEN_SEQUENCE_MATCH=YES
+
+  TEXTE (identique dans les deux conditions) :
+    The user is asking me to respond only with "OK." This is a simple request.
+    I should respond with just "OK."
+    </think>
+
+    OK.<|im_end|>
+  ESC : The user is asking me to respond only with \"OK.\" This is a simple
+        request. I should respond with just \"OK.\"\x0a</think>\x0a\x0aOK.<|im_end|>
+  Tokens speciaux CONSERVES : </think> = 248069, <|im_end|> = 248046 (EOS).
+  Arret : EOS dans les deux.  CONTROL_DECODES=31  RESTORED_DECODES=31
+  (1 token issu des logits du decodage du 59e ID + 31 decodes = 32 tokens :
+  aucune continuation apres l'arret, aucun decode superflu.)
+
+=== 1. LINKAGE REEL -- exige par l'instruction ===
+  NEEDED inclut libllama.so.0 et libggml-base.so.0 ; 30 symboles llama
+  references ; et les trois symboles du transfert sont bien des references
+  NON RESOLUES, donc resolues par la bibliotheque :
+      U llama_state_seq_get_size_ext
+      U llama_state_seq_get_data_ext
+      U llama_state_seq_set_data_ext
+  Bibliotheques effectivement resolues, SHA256 complets :
+    libllama.so.0       87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+    libggml-base.so.0   af2c88dd19e87ebf0c902aa07dfcf53a04fbcc7a79c3fdaf19a6b856ab269c01
+    libggml.so.0        3d7f9ac51cb98936759a2e30acc1a7562e9122d3381d27f3955fff6be9016611
+    libggml-cpu.so.0    910a04c7af610aa65caf257b1d4ffe589cec608d5dd2a22e6ef5868367218f4f
+    libggml-cuda.so.0   7fdd87502b93191a0de3f62a9a15989f4fb63211c8cefb64d226b8f4480cdd70
+  Le pilote de RESUME-NOPREFILL-01 ne referencait AUCUN symbole llama
+  (--as-needed avait ecarte les bibliotheques) : **ce lien-ci est reel**, et
+  c'est la difference qui rend cette experience valide.
+
+=== 2. CONDITIONS EFFECTIVES ===
+  MODELE      Qwen3.8-27B-OBRAIN-v3.gguf
+              sha256 1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937
+  TEMPLATE    c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+  59 IDs      ids59.txt sha256 fc39bb86b0a942c2855d4cd90016f87bf655d4463731631658324e897021dbab
+              rendu 92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658  OK
+              IDs   ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e  OK
+  MEMORY_BACKEND=HYBRID
+  KV_TYPE_K=f16  KV_TYPE_V=f16
+  N_CTX=512  N_BATCH=512  N_UBATCH=512  n_seq_max=1
+  TRANSFER_FLAGS=0  PARTIAL_ONLY_REFUSED=YES
+  ENV_OBRAIN_STATE_TYPE=<ABSENTE>  ENV_OBRAIN_STATE_F16=<ABSENTE>
+  ENV_OBRAIN_NO_ROTATION=<ABSENTE>
+  **Aucun mode de representation n'a change entre export et import : les
+  variables sont absentes dans les deux phases, dans le MEME processus.**
+  N_RS_SEQ=NOT_READ  RECURRENT_CAPACITY_CELLS=NOT_READ
+    Les accesseurs internes de la memoire recurrente (get_n_rs / get_size) ne
+    sont pas atteignables par ce chemin d'inclusion. **Je ne les invente pas.**
+
+=== 3. EXPORT (CONTROL) -- mesure sur l'etat REELLEMENT exporte ===
+  PREFILL_CONTROL=PASS  CONTROL_PREFIX_DECODE_CALLS=1  CONTROL_PREFIX_TOKEN_COUNT=58
+  llama_synchronize(ctxA) appele AVANT l'export (achevement du calcul).
+  GET_SIZE_EXT=160697016          <- MESURE, aucune formule ni constante
+  BLOB_SIZE=160697016
+  GET_DATA_EXT=160697016          <- retour EGAL a la taille mesuree
+  EXPORT_COMPLETE=PASS
+  BLOB_SHA256=7a40fc6b9f270a87053ca6a352b68a2cbf83401b945b62f396eb70147cf34832
+  Aucune taille d'un etat anterieur, aucune formule theorique n'a ete utilisee.
+
+  POSITIONS, OBSERVEES (pas deduites) :
+    CONTROL_POS_ATTN_MIN=0   CONTROL_POS_ATTN_MAX=57    <- vue ATTENTION
+    CONTROL_POS_ALL_MIN=57   CONTROL_POS_ALL_MAX=57     <- vue COMBINEE
+  **Confirmation directe du comportement documente** (include/llama.h:839-842) :
+  sur un hybride, `seq_pos_min/max` s'effondre a `[last, last]` et MASQUE la
+  fenetre d'attention. C'est pourquoi `_attn` existe. Le blob couvre bien 0..57
+  pour l'attention ; la vue combinee ne dit que la position recurrente (57).
+
+=== 4. IMPORT (RESTORED) -- contexte reellement neuf ===
+  DESTINATION_PREFIX_DECODE_CALLS=0
+  DESTINATION_PREFIX_TOKEN_COUNT=0
+  **Aucun des 58 tokens de prefixe n'a ete decode dans la destination.**
+  SET_DATA_EXT=160697016          <- retour EGAL a la taille exacte du blob
+  IMPORT_COMPLETE=PASS            (aucun retour nul, aucune exception)
+  RESTORED_POS_ATTN_MIN=0   RESTORED_POS_ATTN_MAX=57
+  RESTORED_POS_ALL_MIN=57   RESTORED_POS_ALL_MAX=57
+  -> **couverture des positions IDENTIQUE a CONTROL**, sur les deux vues.
+  REEXPORT depuis RESTORED : taille 160697016, SHA256
+    7a40fc6b9f270a87053ca6a352b68a2cbf83401b945b62f396eb70147cf34832
+  REEXPORT_IDENTICAL=YES  -- taille ET octets identiques au blob source.
+  Je ne presume PAS l'identite binaire normative : le format porte un magic
+  (0xaf143cd9) et un seq_id, et j'ai verifie la SEMANTIQUE en comparant les
+  positions avant/arriere ET les logits, pas seulement le SHA.
+
+=== 5. CONTINUATION ET LOGITS ===
+  Decodage du 59e ID en position 58 dans les DEUX contextes : PASS.
+  START_LOGITS  FINITE=YES  MAX_ABS_DIFF=0  L2_DIFF=0
+                ARGMAX_A=760  ARGMAX_B=760  ARGMAX_MATCH=YES
+                BINARY_IDENTICAL=YES
+  **Les premiers logits de continuation sont BINAIRES IDENTIQUES**, alors que la
+  destination n'a jamais vu le prefixe. Critere preenregistre, non ajuste.
+
+=== VERDICTS DISTINCTS (exigence §6) ===
+FULL_HYBRID_EXPORT=PASS      (160697016 octets, retour == taille mesuree)
+FULL_HYBRID_IMPORT=PASS      (retour == taille du blob, aucune exception)
+RESTORED_POSITION_COVERAGE=PASS
+  attn 0..57 identique ; vue combinee [57,57] identique. La couverture
+  attention est OBSERVEE par _attn ; la couverture recurrente n'est lisible que
+  par la vue combinee [57,57], qui est la convention du code et non une mesure
+  independante. **Les deux memoires ne suivent PAS la meme regle de positions :
+  c'est documente, et c'est pourquoi `_attn` existe.**
+START_LOGITS_COMPARISON=PASS (MAX_ABS_DIFF=0, L2=0, BINAIRE IDENTIQUE, argmax 760/760)
+TOKEN_SEQUENCE_MATCH=YES
+DESTINATION_PREFIX_ABSENCE=PASS (0 decode, 0 token de prefixe)
+
+  **Ce qui est etabli** : export complet accepte, import complet accepte,
+  positions compatibles, logits binairement identiques, 32 tokens identiques,
+  et AUCUN prefill du prefixe dans la destination.
+  **Ce que cela n'etablit PAS** : une mesure d'acceleration. L'export a coute
+  160 MO d'ecriture et l'import 160 MO de lecture, plus un appel de
+  synchronisation. **SPEEDUP_MEASURED=NO** -- aucune duree n'a ete mesuree ni
+  revendiquee.
+
+=== PORTEE ===
+  Injection d'ETAT (KV attention + etat recurrent SSM), transportes ENSEMBLE par
+  le blob. Aucune modification du graphe, des poids ou du backend.
+  PREFILL_ELIMINATION_DEMONSTRATED=NO
+    Le prefixe n'est PAS recalcule dans la DESTINATION ; mais il EST calcule
+    dans CONTROL, et le blob doit bien etre produit une fois. Ce n'est pas une
+    elimination du prefill, c'est un TRANSFERT d'etat apres un prefill unique.
+  FULL_HYBRID_RESUME_DEMONSTRATED=YES
+    au sens precis : un contexte n'ayant decode AUCUN token de prefixe poursuit
+    avec des logits binairement identiques au controle.
+
+ATTEMPT_COUNT=1
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+SPEEDUP_MEASURED=NO

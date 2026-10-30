@@ -1,0 +1,116 @@
+%% Prouve : le chemin MMVQ du noyau CUDA -- quand ggml_cuda_mul_mat choisit MMVQ plutot que mul_mat_q,
+%% et ce que ce choix impose sur la representation des poids : les blocs quantifies sont consommes
+%% TELS QUELS par ggml_cuda_dp4a, sans aucune dequantification vers F16.
+%% Source lue : llama-obrain-cuda HEAD 57bd239 -- ggml/src/ggml-cuda/ggml-cuda.cu 5404 l., mmvq.cu 1339 l.,
+%% mmvq.cuh 35 l., vecdotq.cuh 1363 l., mmq.cu 379 l., mmq.cuh, mmf.cu, mmvf.cu, ggml/src/ggml-common.h,
+%% ggml/src/ggml.c. Les numeros de ligne sont ceux de cet arbre, lu ligne a ligne pour les zones citees.
+%% MESURE : lignes, constantes, cas de switch, corps de fonction. DEDUIT : la priorite entre predicats
+%% n est PAS ecrite dans le code, elle est lue dans l ORDRE des tests de ggml_cuda_mul_mat.
+%% NON ETABLI : le corps du noyau mul_mat_q MMQ n a pas ete lu -- seul son predicat l a ete, et il est
+%% marque comme tel ; aucun temps GPU n est affirme ici, ce diagramme est statique.
+
+flowchart TB
+
+classDef decide  fill:#c47a10,stroke:#6b420a,color:#fff
+classDef ecrit   fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef refuse  fill:#a11f1f,stroke:#5c0f0f,color:#fff
+classDef amont   fill:#1f4fa1,stroke:#0f2857,color:#fff
+
+subgraph Entree["ggml-cuda.cu -- ggml_cuda_mul_mat : l ordre des tests EST la decision"]
+entry["🟠 ggml_cuda_mul_mat<br/>ggml-cuda.cu:1742<br/>src0 = poids quantifies, src1 = activation F32"]
+badpad["🟠 garde bad_padding_clear<br/>ggml-cuda.cu:1753-1758<br/>src0 vue d un tampon COMPUTE mal aligne, ou src1 et dst non F32"]
+kf16["🟠 ggml_cuda_mul_mat_vec_f ggml-cuda.cu:1766<br/>ggml_cuda_mul_mat_f ggml-cuda.cu:1770<br/>noeuds F16 et BF16 seulement"]
+pmmvf["🟠 ggml_cuda_should_use_mmvf<br/>ggml-cuda.cu:1763 -- mmvf.cu:786<br/>default return false"]
+pmmf["🟠 ggml_cuda_should_use_mmf<br/>ggml-cuda.cu:1769 -- mmf.cu:133<br/>mmf.cu:135 si ggml_is_quantized alors return false"]
+pmmvq["🟠 ggml_cuda_should_use_mmvq<br/>ggml-cuda.cu:1773 -- mmvq.cu:282<br/>teste AVANT mul_mat_q"]
+pmmq["🟠 ggml_cuda_should_use_mmq<br/>ggml-cuda.cu:1777 -- mmq.cu:267<br/>atteint seulement si MMVQ a dit non"]
+mmq_switch["🟠 ggml_cuda_mul_mat_q_switch_type<br/>mmq.cu:262<br/>corps du noyau NON lu"]
+cublas["🟠 ggml_cuda_mul_mat_cublas<br/>ggml-cuda.cu:1543 -- filet de secours"]
+end
+
+subgraph Predicat["mmvq.cu -- ggml_cuda_should_use_mmvq : le domaine depend du TYPE, pas seulement de la carte"]
+q_notq["🟠 garde 1 -- mmvq.cu:283-285<br/>si non ggml_is_quantized alors return false"]
+q_tq2["🟠 garde 2 -- mmvq.cu:290-292<br/>si type vaut GGML_TYPE_TQ2_G128<br/>alors return ne11 dans le domaine 1 a 16<br/>MMVQ_MAX_BATCH_SIZE_TQ2_G128 mmvq.cuh:20"]
+q_cdna["🟠 politique CDNA -- mmvq.cu:298-340<br/>plafonds par type : q4_0 7, q8_0 6, q4_K 2<br/>branche AMD, non empruntee sur NVIDIA"]
+q_generic["🟠 retour par defaut -- mmvq.cu:341<br/>return ne11 dans le domaine 1 a 8<br/>MMVQ_MAX_BATCH_SIZE mmvq.cuh:3"]
+end
+
+subgraph Regime["Ce que le regime choisi implique sur la representation des poids"]
+rep_block["✅ block_tq2_g128 -- ggml-common.h:283-287<br/>uint8_t qs de 32 octets + ggml_half d<br/>34 octets pour 128 poids soit 2,125 bpw<br/>QK_G128 128 -- ggml-common.h:280<br/>ggml.c:922-926 blck_size QK_G128 et is_quantized true"]
+rep_noq["✅ AUCUNE dequantification sur le chemin MMVQ<br/>vecdotq.cuh:735 lit block_tq2_g128 directement<br/>vecdotq.cuh:761 ggml_cuda_dp4a sur les codes 2 bits"]
+rep_cublas["🔴 chemin cuBLAS : compute_type passe a F16 des que le type est quantifie<br/>ggml-cuda.cu:1544-1547"]
+rep_dequant["🔴 tampon temporaire ggml_cuda_pool_alloc de cuda_t<br/>ggml-cuda.cu:1362 puis 1371<br/>convert_func dequantifie ggml_nelements de src0<br/>ggml-cuda.cu:1374-1390"]
+rep_mmq["⚪ mul_mat_q -- predicat seul lu, corps NON lu<br/>mmq.cu:267 -- mmq.cuh:12 MMQ_DP4A_MAX_BATCH_SIZE 64"]
+end
+
+subgraph Noyau["mmvq.cu -- le noyau consomme les blocs quantifies tels quels"]
+k_type["✅ mul_mat_vec_q_switch_type<br/>mmvq.cu:1040<br/>dispatch par ggml_type"]
+k_ncols["✅ mul_mat_vec_q_switch_ncols_dst<br/>mmvq.cu:852<br/>assert mmvq.cu:864-865 : ncols_dst plafonne a 16 pour TQ2_G128 et a 8 pour tout autre type"]
+k_wide["✅ OBRAIN_MMVQ_WIDE_CASE 9 a 16 -- mmvq.cu:1013-1034<br/>instancie seulement si type vaut GGML_TYPE_TQ2_G128<br/>sinon GGML_ABORT fatal error"]
+k_params["✅ calc_nwarps mmvq.cu:366-381 et calc_rows_per_block mmvq.cu:472-490<br/>table MMVQ_PARAMETERS_GENERIC : 4 warps pour ncols_dst 1 a 4, 2 pour 5 a 8, 1 au dela<br/>get_device_table_id mmvq.cu:91-108 : fenetre Turing seulement entre TURING et AMPERE"]
+k_q8["✅ seule l ACTIVATION est quantifiee<br/>quantize_row_q8_1_cuda mmvq.cu:1278<br/>tampon src1_q8_1 mmvq.cu:1273"]
+k_kernel["✅ mul_mat_vec_q type, ncols_dst, has_fusion, small_k<br/>mmvq.cu:494<br/>un warp par tranche de 32 poids"]
+k_dot["✅ appel vec_dot_q_cuda -- mmvq.cu:616-617<br/>vx est le pointeur des poids, jamais converti"]
+k_tq2dot["✅ vec_dot_tq2_g128_q8_1 -- vecdotq.cuh:732<br/>8 octets lus = 32 poids, echelle FP16 unique vecdotq.cuh:738<br/>codes repliees vers moins 1, 0, plus 1 -- vecdotq.cuh:752-755"]
+k_moe["✅ mul_mat_vec_q_moe -- mmvq.cu:721<br/>variante MoE multi-token, rows_per_block 2 -- mmvq.cu:838"]
+end
+
+subgraph Fusion["ggml-cuda.cu -- ggml_cuda_should_fuse_mul_mat_vec_q : quand GLU est replie dans MMVQ"]
+f_pred["✅ ggml-cuda.cu:1707<br/>quantifie, pas de bad_padding_clear, src1 F32, ne1 au plus MMVQ_MAX_BATCH_SIZE<br/>refus si cc au plus GGML_CUDA_CC_PASCAL -- ggml-cuda.cu:1727<br/>refus si ncols_dst superieur a 1 -- ggml-cuda.cu:1731 et 1735"]
+f_sites["✅ sites d appel -- ggml-cuda.cu:3409, 3502, 3564, 3603, 3695, 3760<br/>le noyau recoit alors aussi vgate et les biais"]
+end
+
+subgraph MoE["ggml-cuda.cu -- MUL_MAT_ID : un domaine distinct de MUL_MAT"]
+id_gate["✅ porte ggml-cuda.cu:1799-1804<br/>ne2 au plus MMVQ_MAX_BATCH_SIZE puis ggml_is_quantized<br/>puis get_mmvq_mmid_max_batch"]
+id_max["✅ get_mmvq_mmid_max_batch -- mmvq.cu:249-280<br/>Volta, Ada et Blackwell : MMVQ_MAX_BATCH_SIZE<br/>Turing et plus : table par type mmvq.cu:141<br/>sinon table Pascal mmvq.cu:114"]
+end
+
+entry -->|appelle| badpad
+badpad -->|vrai : conversion impossible| cublas
+entry -->|sinon teste| pmmvf
+pmmvf -->|true pour un poids F16 ou BF16| kf16
+pmmvf -->|false| pmmf
+pmmf -->|false : tout type quantifie est exclu| pmmvq
+pmmvq -->|true : ne11 dans le domaine du type| k_type
+pmmvq -->|false : ne11 hors domaine| pmmq
+pmmq -->|true| mmq_switch
+pmmq -->|false| cublas
+
+pmmvq -->|lit| q_notq
+pmmvq -->|lit| q_tq2
+pmmvq -->|lit| q_cdna
+pmmvq -->|lit| q_generic
+q_notq -->|sinon| q_tq2
+q_tq2 -->|sinon| q_cdna
+q_cdna -->|sinon| q_generic
+pmmq -->|lit| rep_mmq
+
+k_type -->|appelle| k_ncols
+k_ncols -->|appelle| k_wide
+k_ncols -->|lit| k_params
+k_q8 -->|ecrit| k_kernel
+k_wide -->|appelle| k_kernel
+k_kernel -->|appelle| k_dot
+k_dot -->|appelle| k_tq2dot
+k_tq2dot -->|lit| rep_block
+k_tq2dot -->|prouve| rep_noq
+k_ncols -->|appelle| k_moe
+
+rep_block -->|consomme sans conversion| rep_noq
+cublas -->|lit| rep_block
+cublas -->|appelle| rep_dequant
+rep_dequant -->|ecrit| rep_cublas
+rep_noq -.->|ce que cuBLAS coute a la place| rep_dequant
+
+f_pred -->|decide| f_sites
+f_sites -->|appelle| k_kernel
+
+id_gate -->|lit| id_max
+id_gate -->|true| k_moe
+id_gate -->|false| pmmq
+
+class entry,badpad,kf16,pmmvf,pmmf,pmmvq,pmmq,mmq_switch,cublas decide
+class q_notq,q_tq2,q_cdna,q_generic decide
+class rep_block,rep_noq,k_type,k_ncols,k_wide,k_params,k_q8,k_kernel,k_dot,k_tq2dot,k_moe,f_pred,f_sites,id_gate,id_max ecrit
+class rep_cublas,rep_dequant refuse
+class rep_mmq amont

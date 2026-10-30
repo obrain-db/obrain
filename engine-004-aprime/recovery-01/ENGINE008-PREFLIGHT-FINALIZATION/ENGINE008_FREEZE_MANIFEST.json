@@ -1,0 +1,107 @@
+{
+  "manifest_id": "ENGINE008_PREFLIGHT_FREEZE_v1",
+  "frozen_utc": "2026-10-02",
+  "note": "Aucune circularite : ce manifeste contient l'identite du binaire ; le binaire ne contient PAS l'identite de ce manifeste. Le document d'autorisation, externe, referencera des identites deja calculees et reste a creer separement.",
+
+  "protocol": {
+    "v3_consolidated_sha256": "1dc2c3c36329550d29b1abf1ec448f0c82ef6f2d7ab81994deed9320f9d8b7ae",
+    "v3_status": "FROZEN",
+    "v2_preserved": "822db99f6c288e346e1dca06c7405ab13a4a06d69bc05beccbe92e333fe5fa3d",
+    "v1_preserved": "c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3"
+  },
+  "scientific_decisions": {
+    "P4_amendment_status": "ADOPTED",
+    "P4_property": "STRUCTURAL_WHT_PATH_UNREACHABILITY",
+    "P4_adoption_doc_sha256": "5da671af3dfc97db3fb3869325c835cc12ad939dbee241a54a5a63f5f8536f53",
+    "P4_real_model_conditions": "NOT_EXERCISED",
+    "P4_conditions": ["C1_registre_complet","C2_types_reels","C3_aucun_TQ2_pertinent","C4_audit_sites_WHT","C5_identite_code_et_chemin","C6_limites_explicites"],
+    "D1_retained": true,
+    "D2_adopted": false
+  },
+
+  "executables": {
+    "harness_real": {"sha256": "14ef0c1ab848a8a724ebee85d59733a00affbd05826cf2f1513b4ae1f9ecb791", "path": "protocol-harness-01/build-freeze/t-real"},
+    "launcher":     {"sha256": "43e7c2c5aa8d895a5b415684dc76cf74adeaf686d90d8491e71401b9f4726717", "path": "protocol-harness-01/build-freeze/t-launcher"},
+    "e2e_tests":    {"sha256": "770979b740bd183f93a551286346a9ad08b7545ed0e75d3dc794aa065045f763"},
+    "adoption_tests": {"sha256": "439e5b84b42e5cf300bc00299105dc06a4a6da8b196653f4dc91966b317828ea"},
+    "prompt_measure": {"sha256": "645a61f7f1602aac20daaeb510eb9be73a38aba0d4ce7ae74c6160616fcc1ead"}
+  },
+
+  "sources": {
+    "harness_source_manifest_sha256": "c718c0a26d6914ac6d46d81baaf36301dc033b86fd59be55b1d81132ddb05fc4",
+    "files": {
+      "engine008_pipeline.h": "834c3d9cb9f1a1445b19f65b9c561e68fcf062c64214f3a7b191e01c757a7a2c",
+      "engine008_pipeline.cpp": "2d3e57cc67226ae2b9cedcdeedd589ac288700b378e4fa55bfb186763dddbcee",
+      "engine008_inventory.h": "7031162b305e0e78569bc1548165e908cdf9ff5668767e5e0649d73a27aae619",
+      "engine008_inventory.cpp": "3e6ddd176200f634d142f7f2e6b046cc1ba92bd9db85c992ba3554aa5fc01cd5",
+      "engine008_p4_checks.h": "6e9d7efc94fba784fa47cb1e054152068c80ba5ce94f491920befe254594f60d",
+      "engine008_p4_checks.cpp": "31f696748fe2baaee2e86e24041d7838179851ced91892f1c2630f44f95f7e93",
+      "engine008_wht_parser.h": "ab53b1a0c65be61cf8eff1de638c8957b83c9da43404c972d882e7fb9cfc42eb",
+      "engine008_wht_parser.cpp": "65d4d43cd4fea4164db2c9d8769a734aad090c808f2283979b1d025505882084",
+      "engine008_capture_parser.h": "638a383b949d8d517c9e1fa46ac8b400dbc96aa7801915bd1a0a17d3c11515df",
+      "engine008_capture_parser.cpp": "ee7c845154726a4c9f2a215e9fb0fd1c69a31855aa937b1f033347b7ec023949",
+      "engine008_real_deps.h": "7d164e1c029f24566fe1f15dfccb02ae372443a26e0f4fed0a26ae81dd653050",
+      "engine008_real_deps.cpp": "476666a0b6845013d02310a057d5899e38b3ecff6c19b12b31349ad37527a5e5",
+      "engine008_real_entry.cpp": "ab3f56d40a1b322a8415906844fbc9a65e74a29a8f268a84c0ea6c22c5e213f9",
+      "engine008_launcher.h": "c39863feb5277ad47d45905f523c0aca343145286207652814813a36daaa4cff",
+      "engine008_launcher.cpp": "2933babbd0fe20aa11dfe4983d368f04698fc4100531557a9e46347268565dd2",
+      "engine008-prompt-measure.cpp": "92c8883db0ccaaf9f466223488d254e639a1219aefc31f306468771a9e3421d2"
+    }
+  },
+
+  "libraries_resolved": {
+    "libllama.so.0.0.135": "87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2",
+    "libllama-common.so.0.0.135": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20",
+    "libggml.so.0": "resolu dans build-cuda/bin",
+    "libggml-base.so.0": "resolu dans build-cuda/bin",
+    "libggml-cpu.so.0": "resolu dans build-cuda/bin",
+    "libggml-cuda.so.0": "resolu dans build-cuda/bin",
+    "ldd_verified": true
+  },
+
+  "models": {
+    "baseline": "Qwen3.8-27B-Q4_K_M.gguf (path /home/triviere/projects/models/qwen3.8-27b-gguf/)",
+    "candidate": "Qwen3.8-27B-OBRAIN-v3.gguf (path /home/triviere/projects/models/)"
+  },
+  "renderer": {
+    "qualification_sha256": "14cbbc1336fe885a796539eb473e85388f54a4e600daae24348aeaeccf2c9bdd",
+    "common_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "common_template_bytes": 8952
+  },
+  "inventory": {
+    "path": "qualification/e7b-f1a-q1-forward-v1/Q1_WHT_ELIGIBLE_INVENTORY.csv",
+    "sha256": "e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1",
+    "authority_cross_check": "Q1_WHT_ELIGIBLE_INVENTORY.sha256 -- concordance EXACTE",
+    "format_rules": "colonne 0 tensor_name ; en-tete prefixe tensor_name ; # commentaire ; doublon -> capture DESACTIVEE",
+    "entries": 168
+  },
+  "preflight_input": {
+    "rendered_bytes": 320,
+    "rendered_sha256": "92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658",
+    "token_count": 59,
+    "token_ids_sha256": "ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e",
+    "add_special": 0, "parse_special": 1,
+    "baseline_candidate_match": true
+  },
+  "plan": {
+    "sha256": "b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06",
+    "runs": ["baseline1","candidate1","baseline2","candidate2"],
+    "fresh_process_and_context_per_run": true,
+    "max_new_tokens": 8
+  },
+  "tests": {
+    "total_pass": 314, "total_fail": 0,
+    "suites": {"adopt":15,"t4":14,"inv":33,"p4":26,"wht":54,"e2e":24,"connect":75,"whtpipe":8,"parser":42,"launcher":23},
+    "real_guards": {"no_document_exit":3,"mock_document_exit":3}
+  },
+  "state": {
+    "Q1_LIBLLAMA_REBUILT": false,
+    "FULL_MODEL_LOAD_COUNT": 0,
+    "REAL_CONTEXT_CREATE_COUNT": 0,
+    "MODEL_FORWARD_CALL_COUNT": 0,
+    "RUNTIME_OBSERVER_VALIDATION": "NOT_EXERCISED",
+    "PREFLIGHT_EXECUTION_ALLOWED": false,
+    "QUALITY_EXECUTION_ALLOWED": false,
+    "authorization_document_created": false
+  }
+}

@@ -8,25 +8,45 @@ tags:
 
 # Security Best Practices
 
-Obrain is an embedded database without built-in authentication. Security depends on how it is deployed and used.
+Obrain is an embedded database. Security depends on how it is deployed and used.
 
 ---
 
 ## Understanding Obrain's Security Model
 
-Obrain is designed as an **embedded library**, not a network-accessible server:
+!!! warning "This section was corrected on 2026-09-15"
 
-- **No authentication** - Anyone with access to the application can access the database
-- **No network protocol** - No TCP/HTTP ports to secure
-- **No encryption at rest** - Database files are not encrypted
-- **File-based access control** - Security relies on filesystem permissions
+    It used to state "**No authentication**" and "**No network protocol** - No
+    TCP/HTTP ports to secure". Both had become **false**: the IAM exists
+    (`crates/obrain-iam` — entry guard, spaces, sessions, tokens) and two network
+    surfaces exist (`obrain viz serve`, the MCP bridge). A deployer reading this
+    page protected neither. See the ADR
+    [Computation confidentiality guarantee](../ADR-2026-09-15-GARANTIE-CONFIDENTIALITE-CALCUL.md).
 
-This model is appropriate for:
+Obrain has **three surfaces**, and security depends on which one you deploy:
 
-- Single-user applications
-- Microservices with internal graph state
-- Data science environments
-- Applications that implement their own access control
+| Surface | What it is | Default state |
+|---|---|---|
+| **Embedded library** | `ObrainDB` inside the caller's process | no controls: security is entirely the caller's |
+| **Graph server** (`obrain viz serve`) | hand-rolled HTTP/1.1 on `TcpListener` (`crates/obrain-cli/src/viz_serve.rs`) | **plaintext on the wire**; the IAM applies only if `OBRAIN_IAM=1` **and** the binary was built `--features iam` |
+| **MCP bridge** | serves the harness | same — token via `OBRAIN_IAM_TOKEN` |
+
+Three things remain true, and you need to know them:
+
+- **No encryption at rest** — substrate pages carry a CRC32, which detects
+  corruption and **hides nothing**. A `hexdump` of the `.obrain` file yields the
+  graph.
+- **No TLS anywhere in the workspace** — no `rustls`, no `native-tls`. On an
+  untrusted network, `tcpdump` yields tokens, queries and results.
+- **Without `OBRAIN_IAM=1`, the guard lets requests through** — but it
+  **announces** that state on `/api/info`. An unprotected door must never be
+  silent.
+
+The "embedded library" model suits single-user applications, microservices with
+internal graph state, and data science environments. **As soon as there are
+several users or a network, it is no longer that model** — and confidentiality
+becomes an architectural choice: see the ADR above for the three variants and
+their limits.
 
 ---
 
@@ -123,6 +143,19 @@ result = safe_execute(db, "MATCH (n) RETURN n")  # Limited to 10000 results
 ### 5. Audit Logging
 
 Log database operations for security auditing:
+
+!!! danger "Logging the query is disclosing it"
+
+    The log below writes `query` and `params` in plaintext. That is exactly what
+    invariant **G2** of the ADR forbids: *whoever executes the engine must not be
+    able to read what the computation does*. A log holding the payload cancels
+    computation confidentiality even if everything else is perfectly encrypted —
+    and it keeps it, durably, outside the user's control.
+
+    If audit is to serve as a guarantee, it must record **who / when / which
+    action / which decision / how long** — never the query text. The IAM's
+    `AuditEvent` (`crates/obrain-iam/src/model.rs`: `principal`, `action`,
+    `resource`, `result`, `timestamp`) has the right shape: imitate it.
 
 ```python
 import logging

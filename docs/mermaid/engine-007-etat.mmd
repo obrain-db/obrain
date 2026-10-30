@@ -1,0 +1,70 @@
+%% name: engine-007-etat
+%% ETAT DE L ENGINE-007, DERIVE DES ARTEFACTS.
+%% Ce fichier est GENERE par tools/engine-etat.py : ne pas l editer a la main.
+%% Chaque noeud de passe porte le statut terminal lu dans son fichier de statut.
+%% Un statut illisible est ecrit ABSENT : le diagramme ne devine pas.
+flowchart TB
+  subgraph GATE["LE GATE COURANT"]
+    direction LR
+    q0["🔴 Q0_STATUS=NOT_PASSED<br/>Q1_ALLOWED=NO<br/>l operateur de reference n est pas qualifie"]
+    nd["⚠️ N3NONIES : NEXT_DIVERGENCE_LAYER_UNKNOWN=YES<br/>ecart residuel 13 a 160 pourcent,<br/>NON localise"]
+    q0 --> nd
+  end
+  subgraph ETABLI["CE QUI EST ACQUIS ET NON RETRACTE"]
+    direction LR
+    a1["✅ lecteur GGUF corrige<br/>align_up(en-tete, 32)<br/>6 lignes / 8704 octets verifies contre libggml"]
+    a2["✅ encodeur et decodeur ternaire<br/>lus dans la source<br/>code 3 jamais produit"]
+    a3["✅ defaut 56 corrige<br/>ggml_set_output sur les captures<br/>logits OFF/ON identiques au bit"]
+    a4["✅ 4 couches d adressage eliminees<br/>identite, convention,<br/>indexation, offsets"]
+  end
+  subgraph PASSES["CHAINE DES PASSES"]
+    direction TB
+    r1["⚪ R1 — résidence des tenseurs<br/>aucun fichier de statut"]
+    r2["⚪ R2 — graphe soumis / backend<br/>aucun fichier de statut"]
+    r3["⚪ R3 — provenance du graphe<br/>aucun fichier de statut"]
+    r4["🔴 R4 — propriété des buffers<br/>BLOCKED_BACKEND_OWNERSHIP_GATE"]
+    r5["⚪ R5 — clôture infrastructure<br/>aucun fichier de statut"]
+    r6["⚪ R6 — clôture infrastructure<br/>aucun fichier de statut"]
+    r7["🔴 R7 — capture graph-bound<br/>BLOCKED_ACTIVATION_CAPTURE_GATE"]
+    n1["🔴 N1 — qualification numérique<br/>NOT_PASSED"]
+    n1bis["🔴 N1bis — qualification numérique<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    n2["🔴 N2 — ligne ↔ unité de sortie<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    n3["🔴 N3 — octets de poids<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    n3bis["🔴 N3bis — lecture indépendante<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    n3ter["🟡 N3ter — adresse GGUF<br/>OK"]
+    n3quater["🔴 N3quater — reconstruction native<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    n3quinquies["🔴 N3quinquies — codeur ternaire<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    n3sexies["🔴 N3sexies — activations q8_1<br/>BLOCKED_ACTIVATION_CAPTURE_GATE"]
+    n3septies["🔴 N3septies — causalité du contenu<br/>BLOCKED_ACTIVATION_CAPTURE_GATE"]
+    n3octies["🔴 N3octies — durée de vie<br/>BLOCKED_ACTIVATION_CAPTURE_GATE"]
+    n3nonies["🟡 N3nonies — aliasing mémoire<br/>CAPTURE_LIFETIME_DEFECT_FIXED_AND_VERIFIED"]
+    n4["🔴 N4 — q8_1 natif et opérateur<br/>BLOCKED_OPERATOR_REFERENCE_GATE"]
+    r1 --> r2
+    r2 --> r3
+    r3 --> r4
+    r4 --> r5
+    r5 --> r6
+    r6 --> r7
+    r7 --> n1
+    n1 --> n1bis
+    n1bis --> n2
+    n2 --> n3
+    n3 --> n3bis
+    n3bis --> n3ter
+    n3ter --> n3quater
+    n3quater --> n3quinquies
+    n3quinquies --> n3sexies
+    n3sexies --> n3septies
+    n3septies --> n3octies
+    n3octies --> n3nonies
+    n3nonies --> n4
+  end
+  subgraph DEF["DEFAUTS DU HARNAIS"]
+    direction LR
+    dlist["defauts 46 a 56<br/>46-50 RESOLVED, 51 RETRACTED,<br/>52-56 RESOLVED<br/>(lu dans les ledgers des passes)"]
+  end
+  nxt["▶️ PROCHAIN PAS<br/>CLOSE_INDEXING_AND_TEMPORAL_COVERAGE_GATES"]
+  q0 --> nxt
+  GATE --> PASSES
+  PASSES --> ETABLI
+  PASSES --> DEF

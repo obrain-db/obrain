@@ -1,0 +1,5 @@
+nltk.data.path=['/home/triviere/nltk_data', '/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/.venv/nltk_data', '/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/.venv/share/nltk_data', '/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/.venv/lib/nltk_data', '/usr/share/nltk_data', '/usr/local/share/nltk_data', '/usr/lib/nltk_data', '/usr/local/lib/nltk_data']
+IFEVAL_NLTK_EXTERNAL_RESOURCE_COUNT=0
+IFEVAL_NLTK_RESOURCE_TREE_SHA256=NON_APPLICABLE
+NLTK_GROUP_OR_OTHER_WRITABLE_FILE_COUNT=0
+NLTK_GROUP_OR_OTHER_WRITABLE_DIR_COUNT=0

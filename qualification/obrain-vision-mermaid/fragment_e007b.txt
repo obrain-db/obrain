@@ -1,0 +1,117 @@
+SPHERE: e007b_f1
+RESUME: F1 prouve par lecture de source que la granularité épisode vaut 1024 poids contigus et que le modèle cible réel est Qwen3.8-27B-OBRAIN-v3 gguf sha 1d7c9409 866 tenseurs, le fichier désigné par le brief n'étant que la tête MTP. F1 réfute la prémisse géométrique du brief puisque 156 tenseurs à K 5120 soit 95 pourcent des lignes éligibles portent 5 épisodes et non 6, ce qui rend le masque 6 bits et les niveaux KEEP inapplicables sur l'essentiel du périmètre. F1 retire deux rôles qu'il avait lui-même cités en attente, ffn_down et attn_v, absents de TQ2_G128 car stockés en Q4_K et Q5_K, et le rapport refuse de choisir l'un des quatre verdicts de qualité du paragraphe 41 faute de mesure. O2 et O2-T1 ferment l'hypothèse de redistribution dense sur 6 warps par une régression mesurée de 0,8268 microseconde avec fidélité bit à bit intacte, renvoyant le programme vers l'élimination structurée alignée sur les épisodes, qui reste non déterminée. Restent ouverts le gate de capture des activations, l'arbitrage de la géométrie à 5 épisodes, les compteurs matériels R13, le test d'indexation indépendante des lignes, la couverture temporelle de l'époque 1 et le défaut de plomberie 29 jamais assigné.
+NOEUDS:
+[OUVERT] e007b_f1_status_blocked :: F1 bloqué sur prémisse géométrique fausse et harnais d activation absent :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_model_target_qwen38_27b :: Modèle cible réel Qwen3.8-27B-OBRAIN-v3 gguf 12,8 Go sha 1d7c9409 866 tenseurs :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_brief_file_is_mtp_head :: Fichier désigné par le brief mtp-Qwen3.8-27B-TQ2G128 799 304 992 octets 18 tenseurs blk64 seule tête MTP :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_episode_granularity_1024 :: Granularité épisode de 1024 poids contigus prouvée par mmvq.cu 606 et vecdotq.cuh 732 :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_eligible_population_168 :: Population TQ2_G128 éligible 168 tenseurs et 2 113 536 lignes blocs 8 à 55 :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_k5120_five_episodes :: 156 tenseurs à K 5120 soit 2 007 040 lignes et 95 pourcent portent 5 épisodes :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_k6144_six_episodes :: 12 tenseurs attn_output à K 6144 soit 106 496 lignes portent 6 épisodes :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[REFUTE] e007b_brief_six_bit_mask_refuted :: Masque 6 bits du brief applicable à seulement 5 pourcent des lignes éligibles :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[REFUTE] e007b_keep_levels_inapplicable :: Niveaux KEEP6 à KEEP3 inapplicables à 95 pourcent des lignes et KEEP5 y serait le baseline :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_roles_six_confirmed :: Les six rôles annoncés sont présents en TQ2_G128 avec 48 48 36 12 12 et 12 tenseurs :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[RETIRE] e007b_roles_ffn_down_attn_v_retracted :: Retrait de ffn_down et attn_v cités à tort en attente car stockés en Q4_K et Q5_K :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_activation_capture_absent :: Aucun outil de capture des activations par couche ni point d accroche dans le dépôt :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_gates_14_to_30_not_executed :: Contributions par épisode masques statiques stabilité et ablations non exécutées :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_episode_elimination_not_determined :: Élimination structurée alignée sur les épisodes non déterminée :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_section41_verdict_not_applicable :: Aucun des quatre verdicts de qualité du paragraphe 41 n est applicable :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_calibration_corpus_not_established :: Corpus de calibration non établi :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_no_mutation_f1 :: Aucune mutation du modèle du GGUF ni du noyau produit pendant F1 :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_mmvq_sha_2bf9a270 :: Empreinte mmvq.cu 2bf9a270 inchangée :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_r9_r12_geometry_confirmed :: Géométrie supposée dans les microbenchs R9 à R12 identique au code produit :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_tq2g128_type_code_43 :: Code de type GGUF 43 pour TQ2_G128 hors table standard piège de comptage consigné :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_next_step_scope_decision :: Prochaine étape arbitrer la géométrie à 5 épisodes puis construire la capture :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_product_optimization_not_allowed :: Optimisation produit 007B non autorisée tant que les gates restent ouverts :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_engine007_status_open :: Programme ENGINE 007 encore ouvert :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_o2_qualification_gates_pass :: Qualification O2 tous gates passés mapping hôte et GPU identiques adresses identiques :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_bitwise_fidelity :: Fidélité bit à bit O2 zéro mismatch sur 5 graines sans epsilon ni tolérance :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_sass_expected_delta :: Delta SASS attendu moins 16 lignes moins 7 IADD plus 2 FADD sans travail non attendu :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_reduction_order_preserved :: Ordre des additions flottantes inchangé par construction :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_theoretical_occupancy :: Occupation théorique 100 pourcent des deux côtés soit 48 warps résidents par SM :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_grid_unchanged :: Grille X 5120 identique sans blocs persistants ni lancement coopératif :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_dirty_tree_known :: Arbre sale connu build-cuda non reclassé en défaut :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[OUVERT] e007b_o2_timing_pending :: Chronométrage canonique O2 en attente et non exécuté lors de la qualification :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_harness_defect_45 :: Défaut 45 extraction tronquée du symbole O2 donnant un SASS vide 27 lignes puis corrigé :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_o2_regression_measured :: O2 plus lent de 0,8268 microseconde soit 0,99 pourcent IC95 0,7010 à 0,9526 :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[REFUTE] e007b_six_warp_hypothesis_refuted :: Hypothèse de redistribution dense sur 6 warps rejetée par chronométrage mural :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[REFUTE] e007b_r12_effect_does_not_generalize :: Effet R12 même warp contre warps différents ne se généralise pas à 6 épisodes :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[PARTIEL] e007b_o2_regression_within_resolution :: Régression 0,99 pourcent du même ordre que la résolution de mesure 0,5 à 0,6 microseconde :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[PROUVE] e007b_o2_position_diagnostic :: Diagnostic de position corrigé effet 0,1179 microseconde contre contraste 0,827 équilibré 50 sur 50 :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[PROUVE] e007b_harness_defect_43 :: Défaut 43 diagnostic de position corrigé utilisé et fonctionnel :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[OUVERT] e007b_o2_no_mechanism_proposed :: Aucun mécanisme scheduler latence ou issue proposé faute de compteurs matériels :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[PROUVE] e007b_o2_variance_observation :: Variance O2 2,8 fois plus faible que la native mais moyenne plus lente :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[PROUVE] e007b_o2_fidelity_maintained_during_timing :: Fidélité et intégrité binaire maintenues avant et après la campagne :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[OUVERT] e007b_o2_prod1_not_opened :: Bras produit O2 PROD1 non ouvert faute de gain matériel :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[OUVERT] e007b_product_gain_not_measured :: Gain produit par token et bout en bout non mesurés :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[OUVERT] e007b_runtime_occupancy_not_measured :: Occupation à l exécution non mesurée faute de compteurs matériels :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[OUVERT] e007b_hw_counter_permission_blocked :: Compteurs matériels bloqués par permission R13 :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_lever_warp_episode_level :: Levier primaire antérieur exécution structurée au niveau warp épisode :: ENGINE-007-O2-6WARP-QUALIFICATION.md
+[PROUVE] e007b_lever_episode_aligned :: Levier primaire redéfini en élimination structurée alignée sur les épisodes :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[PROUVE] e007b_plumbing_failure_count_28 :: Compteur de défauts de plomberie figé à 28 dans les trois rapports :: ENGINE-007B-F1-EPISODE-ALIGNED-FEASIBILITY.md
+[OUVERT] e007b_plumbing_failure_29 :: Défaut de plomberie 29 jamais assigné :: ENGINE-007-O2-T1-CANONICAL-TIMING.md
+[OUVERT] e007b_f1a_capture_gate_blocked :: Gate de capture des activations non franchi dans la passe F1A hétérogène :: ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PROUVE] e007b_f1a_e5_e6_inventory_frozen :: Inventaire gelé 156 tenseurs E5 et 12 tenseurs E6 géométrie prouvée par la source :: ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[OUVERT] e007b_f1a_operand_mapping_not_proven :: Mapping des opérandes de la matmul cible non prouvé :: ENGINE-007B-F1A-HETEROGENEOUS-GEOMETRY-ACTIVATION-CAPTURE.md
+[PARTIEL] e007b_f1a_native_q8_reference_validated :: Référence q8_1 native validée sur 3 tenseurs toutes lignes époque 0 rel_l2 1,4e-07 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] e007b_f1a_operator_reference_gate_blocked :: Gate de référence opérateur encore bloqué malgré la validation N4 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] e007b_f1a_q0_not_passed :: Q0 non franchi et Q1 non autorisé :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] e007b_f1a_independent_indexing_test :: Test indépendant d indexation des sorties de ligne non exécuté :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] e007b_f1a_temporal_pairing_partial :: Appariement temporel des échantillons partiel et époque 1 non reconstruite :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] e007b_harness_defect_57 :: Défaut 57 référence q8_1 avec échelle fp16 inversée et arrondi bancaire résolu par accord natif :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] e007b_harness_defect_56 :: Défaut 56 de durée de vie des captures corrigé et vérifié :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] e007b_saliency_not_measured :: Saillance non mesurée et aucune donnée de saillance produite :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] e007b_f1a_next_step_gates :: Prochaine étape fermer les gates d indexation indépendante et de couverture temporelle :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+e007b_brief_file_is_mtp_head -> e007b_model_target_qwen38_27b [OUVRE] l ecart entre le fichier du brief et le modele complet a declenche l inventaire des GGUF
+e007b_model_target_qwen38_27b -> e007b_eligible_population_168 [DEPEND] l inventaire des 866 tenseurs derive de l artefact cible identifie
+e007b_tq2g128_type_code_43 -> e007b_eligible_population_168 [DEPEND] le comptage des tenseurs TQ2_G128 exige le code de type 43 du fork
+e007b_episode_granularity_1024 -> e007b_k5120_five_episodes [DEMONTRE] 40 blocs de 128 sur K 5120 donnent 5 episodes de 1024 poids
+e007b_episode_granularity_1024 -> e007b_k6144_six_episodes [DEMONTRE] 48 blocs de 128 sur K 6144 donnent 6 episodes de 1024 poids
+e007b_k5120_five_episodes -> e007b_brief_six_bit_mask_refuted [DEMONTRE] 95 pourcent des lignes n ont que 5 episodes donc 5 bits utiles
+e007b_brief_six_bit_mask_refuted -> e007b_keep_levels_inapplicable [DEMONTRE] un masque de 5 bits rend les niveaux KEEP6 a KEEP3 sans objet
+e007b_eligible_population_168 -> e007b_f1_status_blocked [DEMONTRE] l inventaire etablit la population puis revele l ecart de geometrie
+e007b_activation_capture_absent -> e007b_gates_14_to_30_not_executed [OUVRE] sans capture d activations aucune contribution par episode n est mesurable
+e007b_calibration_corpus_not_established -> e007b_gates_14_to_30_not_executed [OUVRE] le corpus fixe manquant bloque les mesures d ablation
+e007b_gates_14_to_30_not_executed -> e007b_episode_elimination_not_determined [OUVRE] la question de qualite de selection n a pas encore ete posee
+e007b_section41_verdict_not_applicable -> e007b_episode_elimination_not_determined [DEPEND] aucun verdict ne peut etre choisi sans mesure de selection
+e007b_brief_six_bit_mask_refuted -> e007b_next_step_scope_decision [OUVRE] le perimetre doit etre rearbitre a 5 episodes avant de continuer
+e007b_gates_14_to_30_not_executed -> e007b_next_step_scope_decision [OUVRE] la capture d activations est le prerequis declare de la suite
+e007b_roles_ffn_down_attn_v_retracted -> e007b_roles_six_confirmed [RETIRE] le rapport retire deux roles qu il avait lui meme cites en attente
+e007b_r9_r12_geometry_confirmed -> e007b_episode_granularity_1024 [DEPEND] la geometrie supposee des microbenchs correspond au code produit
+e007b_no_mutation_f1 -> e007b_mmvq_sha_2bf9a270 [DEMONTRE] l empreinte inchangee du noyau etablit l absence de mutation
+e007b_o2_qualification_gates_pass -> e007b_o2_timing_pending [OUVRE] la qualification ouvre le chronometrage sans l executer
+e007b_o2_bitwise_fidelity -> e007b_no_mutation_f1 [DEMONTRE] zero mismatch avec travail identique confirme l absence de changement arithmetique
+e007b_o2_sass_expected_delta -> e007b_o2_bitwise_fidelity [DEPEND] la classification du delta SASS explique la fidelite bit a bit conservee
+e007b_o2_reduction_order_preserved -> e007b_o2_bitwise_fidelity [DEMONTRE] la reduction generalisee sur le nombre de warps preserve l ordre des additions
+e007b_o2_theoretical_occupancy -> e007b_o2_grid_unchanged [DEPEND] 12 blocs de 4 warps et 8 blocs de 6 warps donnent 48 warps residents par SM
+e007b_o2_theoretical_occupancy -> e007b_runtime_occupancy_not_measured [DEPEND] l occupation theorique est distincte de l occupation mesuree a l execution
+e007b_hw_counter_permission_blocked -> e007b_runtime_occupancy_not_measured [DEMONTRE] l absence de compteurs materiels empeche toute mesure d occupation
+e007b_o2_timing_pending -> e007b_o2_regression_measured [DEMONTRE] le chronometrage execute mesure plus 0,8268 microseconde en O2
+e007b_o2_regression_measured -> e007b_six_warp_hypothesis_refuted [DEMONTRE] cinq deltas positifs sur cinq processus et IC95 hors de zero
+e007b_o2_fidelity_maintained_during_timing -> e007b_o2_regression_measured [DEPEND] le resultat est declare valide sans perte de fidelite ni defaut de binaire
+e007b_o2_regression_within_resolution -> e007b_o2_regression_measured [DEPEND] la regression reste du meme ordre que la resolution de mesure
+e007b_o2_variance_observation -> e007b_o2_regression_measured [DEPEND] la variance plus faible rend le signe defavorable solide sans l expliquer
+e007b_harness_defect_43 -> e007b_o2_position_diagnostic [DEMONTRE] le diagnostic corrige est celui utilise dans cette campagne
+e007b_harness_defect_45 -> e007b_o2_qualification_gates_pass [DEPEND] l extraction SASS corrigee conditionne le manifeste et la classification du delta
+e007b_hw_counter_permission_blocked -> e007b_o2_no_mechanism_proposed [DEMONTRE] sans compteurs aucun mecanisme de scheduler ou de latence n est propose
+e007b_o2_no_mechanism_proposed -> e007b_six_warp_hypothesis_refuted [DEPEND] le rejet reste un fait mesure sans explication de mecanisme
+e007b_six_warp_hypothesis_refuted -> e007b_o2_prod1_not_opened [OUVRE] le bras produit est conditionne a un gain materiel inexistant
+e007b_six_warp_hypothesis_refuted -> e007b_product_gain_not_measured [OUVRE] aucun gain produit par token ni bout en bout n est mesure
+e007b_r12_effect_does_not_generalize -> e007b_six_warp_hypothesis_refuted [DEMONTRE] le signal creux a 2 episodes s inverse legerement a 6 episodes
+e007b_six_warp_hypothesis_refuted -> e007b_lever_episode_aligned [OUVRE] la fermeture de la redistribution dense renvoie a l elimination structuree
+e007b_lever_warp_episode_level -> e007b_lever_episode_aligned [REMPLACE] le levier primaire est renomme dans le ledger de F1
+e007b_plumbing_failure_count_28 -> e007b_plumbing_failure_29 [OUVRE] le compteur reste fige et le defaut 29 n est jamais assigne
+e007b_activation_capture_absent -> e007b_f1a_capture_gate_blocked [DEPEND] le meme gate de capture reste non franchi dans la passe F1A
+e007b_f1a_e5_e6_inventory_frozen -> e007b_k5120_five_episodes [DEMONTRE] confirmation independante de la repartition 156 tenseurs E5 et 12 tenseurs E6
+e007b_f1a_operand_mapping_not_proven -> e007b_f1a_capture_gate_blocked [DEMONTRE] le mapping des operandes cibles non prouve contribue au blocage du gate de capture
+e007b_harness_defect_56 -> e007b_f1a_native_q8_reference_validated [DEPEND] la correction de duree de vie des captures conditionne la validite de leur contenu
+e007b_harness_defect_57 -> e007b_f1a_native_q8_reference_validated [DEMONTRE] la reference corrigee passe le budget par accord avec la sortie native
+e007b_f1a_native_q8_reference_validated -> e007b_f1a_q0_not_passed [OUVRE] trois tenseurs a une epoque ne constituent pas la population exigee par Q0
+e007b_f1a_operator_reference_gate_blocked -> e007b_f1a_q0_not_passed [DEPEND] le gate operateur reste bloque et Q0 n est pas promu
+e007b_f1a_q0_not_passed -> e007b_f1a_independent_indexing_test [OUVRE] le test d indexation independante reste non execute
+e007b_f1a_q0_not_passed -> e007b_f1a_temporal_pairing_partial [OUVRE] l epoque 1 n est pas reconstruite et l appariement reste partiel
+e007b_f1a_q0_not_passed -> e007b_saliency_not_measured [OUVRE] aucune mesure de saillance ni ablation de qualite n est produite
+e007b_f1a_independent_indexing_test -> e007b_f1a_next_step_gates [OUVRE] la fermeture de ce gate est la prochaine etape declaree
+e007b_f1a_temporal_pairing_partial -> e007b_f1a_next_step_gates [OUVRE] la couverture temporelle fait partie des gates a fermer
+e007b_f1a_q0_not_passed -> e007b_product_optimization_not_allowed [DEPEND] Q1 non autorise maintient l interdiction d optimisation produit

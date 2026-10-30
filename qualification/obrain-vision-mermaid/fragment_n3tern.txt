@@ -1,0 +1,109 @@
+SPHERE: q0_n3ternaire_q8
+RESUME: N3quater a corrige l origine des donnees a 10996480 avec 28 octets de remplissage, ce qui rend les echelles TQ2 plausibles et fait chuter les ecarts de 4.7e4 a l ordre des valeurs, mais la validation native reste en echec sur 6 lignes et 3 tenseurs.
+RESUME: N3quater a mesure que le code ternaire 3 n apparait jamais et que la table du decodeur annule 44 pourcent des poids, puis a accuse le decodage ternaire d etre la premiere couche de divergence, accusation retiree ensuite faute de contre-exemple.
+RESUME: N3quinquies a prouve par la source le codeur moins1-0-plus1 et le decodeur 0-1-2 du fork, mais la provenance du codeur du GGUF reste inconnue, la table B et la table C sont refutees, et la table A colle au natif seulement de 9.8e-01 a 2.0e+01, tres au dessus du budget 1e-3.
+RESUME: N3sexies a prouve la premiere divergence au niveau de l activation brute de l epoque 0, entierement nulle pour la cible E6 alors que la sortie native vaut 11.04527, et a retracte la piste ternaire, troisieme retractation de la serie.
+RESUME: Restent ouverts l audit q8 des 160 et 192 blocs, l alignement q8_1 avec TQ2, les gates du bloc 0, le codeur du GGUF, l indexation independante des lignes, l appariement temporel partiel et Q0 non franchi, alors que N4 valide ensuite la reference q8_1 corrigee sur trois tenseurs en epoque 0 avec rel_l2 1.42314e-07.
+NOEUDS:
+[PROUVE] n3tern_quater_scale_before_absurd :: Echelles TQ2 lues avant correction d adresse absurdes min -0.02473 max 3400.00000 moyenne 402.2 :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quater_addr_aligned :: Correction d adresse origine des donnees a 10996480 apres 28 octets de remplissage rendant les echelles plausibles entre 0.011322 et 0.020218 :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quater_tq2_layout :: Bloc TQ2_G128 de 34 octets echelle fp16 a l offset 32 et accord octet par octet sur plusieurs tenseurs :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quater_gross_divergence_removed :: La divergence grossiere est eliminee les erreurs relatives passent de 4.7e4 a 0.5 et 1.0 mais un ecart systematique subsiste :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quater_validation_fail :: Validation de la reference native en echec sur 6 lignes et 3 tenseurs avec max_abs 4.0093 et erreur relative 86.68 sur une ligne :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quater_code3_absent :: Le code ternaire 3 n apparait jamais zero occurrence sur 5120 et sur 6144 codes lus :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quater_zero_fraction_044 :: Sous la table du decodeur 44 pourcent des poids deviennent nuls et la reference E6 est exactement nulle :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[RETIRE] n3tern_quater_ternary_accusation :: Accusation du decodage ternaire comme premiere couche de divergence portee en N3quater puis retiree faute de contre-exemple :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] n3tern_quater_mapping_unqualified :: Table de correspondance ternaire et ordre des poids dans le bloc non qualifies :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] n3tern_quater_q8_not_measured :: Alignement des blocs q8_1 avec TQ2 et semantique native de quantification q8_1 non mesures :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] n3tern_quater_block0_gates :: Gates du bloc 0 non atteints produit entier application d echelle et accord interne :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] n3tern_quater_deliverables_absent :: Seize livrables listes comme non crees faute d etapes atteintes :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_defect_53 :: Defaut de harnais 53 resolu et verifie par comparaison d octets multi tenseurs independante :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] n3tern_defect_54_open :: Defaut de harnais 54 le test des permutations ternaires decodait 32 valeurs par bloc au lieu de 128 donc les trois tables n ont pas pu etre evaluees :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_defect_54_fixed :: Defaut de harnais 54 corrige a 128 valeurs par bloc et verifie par assertions sur toutes les lignes et tous les blocs :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PROUVE] n3tern_defect_55 :: Defaut de harnais 55 python3 -i consommait le heredoc ssh aucune mesure affectee :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[RETIRE] n3tern_defect_51 :: Defaut de harnais 51 retire apres mesure :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_defects_46_52 :: Defauts de harnais 46 47 48 49 50 et 52 resolus et verifies par discrimination marche-arret et regression sur deux epoques :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_quinquies_encoder :: Codeur quantize_row_tq2_g128_im a ggml-quants.c ligne 2577 encode moins1 vers 0 zero vers 1 et plus1 vers 2 et ne produit jamais le code 3 :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PROUVE] n3tern_quinquies_tertile_threshold :: Seuil du codeur au tertile des valeurs absolues visant environ un tiers de zeros :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PROUVE] n3tern_quinquies_decoder :: Decodeur a vecdotq.cuh lignes 751 a 758 lit code 0 vers moins1 1 vers 0 2 vers plus1 3 vers plus1 replie :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[RETIRE] n3tern_quinquies_inversion_claim :: Affirmation d une inversion entre les tables du codeur et du decodeur du fork :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[OUVERT] n3tern_gguf_encoder_provenance :: Provenance du codeur ayant reellement produit le GGUF inconnue aucun outil de quantification archive :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[REFUTE] n3tern_quinquies_tables_b_c :: Tables B inverse du codeur et C controle de signe refutees car elles donnent des sorties de signe oppose a la table A :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PARTIEL] n3tern_quinquies_table_a :: Table A du decodeur meilleure sur les 6 lignes mais erreur de 9.8e-01 a 2.0e+01 tres au dessus du budget 1e-3 :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PROUVE] n3tern_quinquies_e6_zero :: Les 48 blocs de E6 sont parcourus toutes les contributions sont nulles et l accumulateur final vaut 0.0 :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[OUVERT] n3tern_quinquies_causal_not_proven :: Conclusion causale sur la table ternaire non prouvee :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[OUVERT] n3tern_quinquies_q8_gate :: Gate de quantification d activation q8_1 bloque et divergence situee cote q8_1 ou contenu d activation :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[OUVERT] n3tern_quinquies_deliverables_absent :: Quinze livrables listes comme non crees les mesures etant dans le fichier de statut :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_divergence_proven :: Premiere divergence demontree au niveau de l activation brute de l epoque 0 :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_ep0_activation_zero :: Activation de l epoque 0 pour la cible 1202 entierement nulle 6144 valeurs amax 0.00000 aucune valeur non nulle :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_ep0_slices_zero :: Les 48 tranches de 128 de E6 en epoque 0 sont toutes entierement nulles :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_ep1_activation_valid :: Activation de l epoque 1 pour la meme cible saine 6144 valeurs amax 0.02709 toutes non nulles :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_contradiction :: Contradiction arithmetique activation nulle en epoque 0 alors que la sortie native de la meme cible vaut amax 11.04527 :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_e5_control :: Controle E5 sain les 40 tranches de 128 sont entierement non nulles et l appariement E5 et E6 est PASS :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_ep0_zero_explained :: Le zero de la reference E6 est explique par l activation nulle de l epoque 0 et non par la reference ni par le decodage ternaire :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[RETIRE] n3tern_n3sexies_third_retraction :: Troisieme retractation de la serie invalidant l axe principal des passes N3quater et N3quinquies :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[OUVERT] n3tern_n3sexies_q8_not_audited :: Audit des blocs q8_1 160 en E5 et 192 en E6 tests synthetiques alignement produits entiers et accumulation non executes :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[OUVERT] n3tern_n3sexies_resident_buffer_lead :: Piste prioritaire de buffers residants de l epoque 0 extraits avant ecriture du producteur non prouvee :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[OUVERT] n3tern_n3sexies_zero_systematic_question :: Question ouverte de savoir si les activations residantes de l epoque 0 sont systematiquement nulles :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3sexies_encoder_decoder_consistency :: Le ledger N3sexies declare la coherence codeur decodeur du fork PASS :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PROUVE] n3tern_n3nonies_capture_lifetime :: Le rapport N4 rapporte N3nonies comme correction verifiee du defaut de duree de vie des captures :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3tern_defect_57 :: Defaut de harnais 57 la reference q8_1 utilisait une echelle fp16 inversee et un arrondi bancaire resolu et verifie par accord avec la sortie native :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3tern_defect_56 :: Defaut de harnais 56 declare resolu et verifie dans le ledger N4 sans description de son contenu :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3tern_n4_native_reference_validated :: Reference q8_1 native validee sur trois tenseurs toutes lignes en epoque 0 avec max_abs 4.76837e-07 rel_l2 1.42314e-07 et cosinus 1.0 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] n3tern_n4_scope_partial :: Validation N4 limitee a trois tenseurs et a l epoque 0 l epoque 1 n a pas ete reconstruite :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] n3tern_n4_no_remaining_divergence :: Aucune divergence numerique restante identifiee sur le perimetre mesure mais cette absence est declaree non prouvee :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] n3tern_n4_q8_intermediate_not_observed :: Les blocs q8_1 du noyau CUDA n ont pas ete copies la semantique vient de la source et non d une observation directe :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] n3tern_gate_row_indexing :: Test independant d indexation des lignes de sortie non execute dans les trois passes et encore non execute en N4 :: docs/ENGINE-007B-F1A-Q0-N3SEXIES-Q8-ACTIVATION-QUALIFICATION.md
+[PARTIEL] n3tern_temporal_pairing_partial :: Appariement temporel des echantillons declare partiel dans les trois passes et encore partiel en N4 :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] n3tern_q0_not_passed :: Q0 non franchi et Q1 non autorise dans les trois passes comme dans le rapport N4 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] n3tern_saliency_gain_not_measured :: Salience ablation de qualite et gain produit non mesures dans toute la sphere :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PARTIEL] n3tern_plumbing_failures :: Vingt-huit defauts de plomberie comptes dans les trois passes et plomberie 29 non attribuee :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] n3tern_capture_graft_transparent :: Greffe de capture numeriquement transparente et sources produit et GGUF non modifiees :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+LIENS:
+n3tern_quater_scale_before_absurd -> n3tern_quater_addr_aligned [REMPLACE] la correction d adresse remplace la lecture d echelles absurdes par des echelles plausibles
+n3tern_quater_tq2_layout -> n3tern_quater_addr_aligned [DEMONTRE] la regle de bloc 34 et d echelle a l offset 32 etaye l origine corrigee
+n3tern_quater_addr_aligned -> n3tern_quater_gross_divergence_removed [DEMONTRE] l origine alignee fait chuter les ecarts de quatre ordres de grandeur
+n3tern_quater_gross_divergence_removed -> n3tern_quater_validation_fail [OUVRE] l ecart systematique residuel maintient la validation en echec
+n3tern_quater_code3_absent -> n3tern_quater_zero_fraction_044 [DEMONTRE] le code 3 jamais produit et la table repliee expliquent 44 pourcent de poids nuls
+n3tern_quater_zero_fraction_044 -> n3tern_quater_ternary_accusation [OUVRE] le taux de zeros anormal ouvre l accusation du decodage ternaire
+n3tern_quater_ternary_accusation -> n3tern_quater_mapping_unqualified [DEPEND] l accusation repose sur une correspondance ternaire non qualifiee
+n3tern_defect_54_open -> n3tern_quater_ternary_accusation [DEPEND] l accusation s appuyait sur un test de permutations defectueux jamais evalue
+n3tern_defect_54_open -> n3tern_defect_54_fixed [REMPLACE] le test passe de 32 a 128 valeurs et couvre tous les blocs
+n3tern_defect_54_fixed -> n3tern_quinquies_tables_b_c [DEMONTRE] la couverture complete permet enfin d evaluer les trois tables sur les 6 lignes
+n3tern_quater_validation_fail -> n3tern_quinquies_encoder [OUVRE] l echec impose d aller lire le codeur et le decodeur ternaires dans la source
+n3tern_quinquies_encoder -> n3tern_quinquies_tertile_threshold [DEMONTRE] la source du codeur fixe le seuil au tertile des valeurs absolues
+n3tern_quinquies_encoder -> n3tern_quinquies_inversion_claim [OUVRE] la comparaison du codeur et du decodeur fait naitre l affirmation d inversion
+n3tern_quinquies_decoder -> n3tern_quinquies_inversion_claim [DEPEND] l affirmation s appuie sur les expressions du decodeur lues a vecdotq.cuh
+n3tern_quinquies_inversion_claim -> n3tern_gguf_encoder_provenance [DEPEND] l inversion ne peut etre tranchee sans la provenance du codeur du GGUF
+n3tern_quinquies_inversion_claim -> n3tern_n3sexies_encoder_decoder_consistency [REMPLACE] N3sexies redeclare le couple codeur decodeur coherent donc l inversion n est pas l etat retenu
+n3tern_quinquies_tables_b_c -> n3tern_quinquies_table_a [DEMONTRE] leur refutation par signe oppose laisse la table A seule table non refutee
+n3tern_quinquies_table_a -> n3tern_quinquies_causal_not_proven [DEPEND] la table A colle au natif mais tres loin du budget donc la causalite reste non prouvee
+n3tern_quinquies_e6_zero -> n3tern_quinquies_q8_gate [OUVRE] le zero sous les trois tables deplace le soupcon vers l activation et q8_1
+n3tern_quater_q8_not_measured -> n3tern_quinquies_q8_gate [DEPEND] le gate q8_1 laisse ouvert en N3quater devient le gate bloquant de N3quinquies
+n3tern_quinquies_q8_gate -> n3tern_n3sexies_divergence_proven [REMPLACE] la descente vers q8_1 est arretee en amont par la divergence prouvee sur l activation brute
+n3tern_n3sexies_ep0_activation_zero -> n3tern_n3sexies_contradiction [DEMONTRE] l activation nulle en epoque 0 contredit une sortie native non nulle
+n3tern_n3sexies_ep1_activation_valid -> n3tern_n3sexies_contradiction [DEMONTRE] l epoque 1 saine sur la meme cible localise le defaut dans l epoque 0
+n3tern_n3sexies_ep0_slices_zero -> n3tern_n3sexies_ep0_activation_zero [DEMONTRE] les 48 tranches entierement nulles confirment l activation nulle de bout en bout
+n3tern_n3sexies_e5_control -> n3tern_n3sexies_contradiction [DEPEND] le controle E5 sain donne le contre-exemple qui rend la contradiction interpretable
+n3tern_n3sexies_contradiction -> n3tern_n3sexies_divergence_proven [DEMONTRE] l activation nulle face a la sortie native non nulle etablit la premiere divergence
+n3tern_n3sexies_ep0_zero_explained -> n3tern_quinquies_e6_zero [DEMONTRE] l activation nulle de l epoque 0 explique le zero mesure en N3quinquies
+n3tern_n3sexies_divergence_proven -> n3tern_n3sexies_third_retraction [DEMONTRE] la divergence situee en amont invalide l axe ternaire des deux passes precedentes
+n3tern_n3sexies_third_retraction -> n3tern_quater_ternary_accusation [RETIRE] la retractation confirme le retrait de l accusation du decodage ternaire
+n3tern_n3sexies_third_retraction -> n3tern_quinquies_causal_not_proven [RETIRE] l axe causal ternaire de N3quinquies est invalide
+n3tern_n3sexies_divergence_proven -> n3tern_n3sexies_zero_systematic_question [OUVRE] la divergence sur une cible ouvre la question du caractere systematique en epoque 0
+n3tern_n3sexies_zero_systematic_question -> n3tern_n3sexies_resident_buffer_lead [DEPEND] la question se decline en piste d extraction avant ecriture du producteur
+n3tern_n3sexies_resident_buffer_lead -> n3tern_n3nonies_capture_lifetime [DEMONTRE] N4 rapporte la correction verifiee du defaut de duree de vie des captures sur le binaire corrige
+n3tern_n3sexies_q8_not_audited -> n3tern_defect_57 [DEPEND] l audit q8 non fait en N3sexies est traite plus tard par la semantique q8_1 qualifiee en N4
+n3tern_defect_57 -> n3tern_quater_q8_not_measured [REMPLACE] la semantique q8_1 fondee sur roundf xi sur d fp32 ferme le gate laisse ouvert en N3quater
+n3tern_defect_57 -> n3tern_n4_native_reference_validated [DEMONTRE] la semantique corrigee produit un accord natif a 1.42314e-07 sur trois tenseurs
+n3tern_n4_native_reference_validated -> n3tern_n3sexies_divergence_proven [REMPLACE] les captures corrigees par N3nonies remplacent l etat de divergence sur l activation brute
+n3tern_n4_native_reference_validated -> n3tern_n4_no_remaining_divergence [OUVRE] l absence de divergence restante n est declaree ni identifiee au dela du perimetre mesure ni prouvee
+n3tern_n4_q8_intermediate_not_observed -> n3tern_n4_native_reference_validated [DEPEND] la validation repose sur une semantique lue en source et non sur une observation directe des blocs
+n3tern_n4_scope_partial -> n3tern_n4_native_reference_validated [DEPEND] la validation ne couvre que trois tenseurs et l epoque 0
+n3tern_n4_scope_partial -> n3tern_q0_not_passed [DEPEND] trois tenseurs a une epoque ne constituent pas la population exigee par Q0
+n3tern_gate_row_indexing -> n3tern_q0_not_passed [DEPEND] le gate d indexation non execute interdit de promouvoir Q0
+n3tern_temporal_pairing_partial -> n3tern_q0_not_passed [DEPEND] l appariement temporel partiel interdit de promouvoir Q0
+n3tern_quater_deliverables_absent -> n3tern_quater_block0_gates [DEPEND] les livrables absents correspondent aux etapes non atteintes
+n3tern_quinquies_deliverables_absent -> n3tern_quinquies_causal_not_proven [DEPEND] les traces de source et de provenance non creees laissent la causalite non prouvee
+n3tern_defect_53 -> n3tern_quater_tq2_layout [DEMONTRE] l accord d octets multi tenseurs etaye la lecture des octets qualifies
+n3tern_capture_graft_transparent -> n3tern_n3sexies_contradiction [DEPEND] la transparence de la greffe rend la contradiction imputable a la capture et non a l instrumentation

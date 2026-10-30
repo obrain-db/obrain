@@ -1,0 +1,57 @@
+{
+  "area": "Transport WebSocket + modèle réactif (obrain-reactive, feat/transport-ws-j9)",
+  "summary": "obrain comporte DEUX notions de « push » disjointes. (1) Le substrat réactif en-process, la crate obrain-reactive (crates/obrain-reactive/), qui transforme chaque mutation de graphe en événements publiés sur un tokio::broadcast : InstrumentedStore (wrapper transparent de GraphStoreMut) tamponne les MutationEvent, le commit hook les draine en MutationBatch, le MutationBus les diffuse, le Scheduler les agrège par BatchConfig (100 events / 50 ms) et les dispatche en parallèle (JoinSet) vers des MutationListener. Les consommateurs réels sont les sous-systèmes cognitifs de obrain-cognitive (EnergyListener, SynapseListener, FabricListener, CoChangeDetector, KernelListener, StigmergicMutationListener, EpisodeRecorder), câblés par CognitiveEngineBuilder::build(scheduler) depuis obrain-engine/database/mod.rs. (2) Le transport WebSocket, porté par la branche feat/transport-ws-j9 (worktree /home/triviere/projects/banc-obrain-j9), qui streame le subgraph du viz par CHUNKS au lieu d'un corps JSON unique : primitives RFC6455 std-only maison dans crates/obrain-cli/src/viz_ws.rs (SHA-1 + base64 inline, zéro dépendance nouvelle, clause anti-enlisement), endpoint /api/viz/subgraph/stream dans viz_serve.rs (frames begin/nodes*/edges*/end + ordre par importance structurelle), mode live/deltas piloté par l'époque = mtime du store (sondage 400 ms), et client dashboard (api.ts) avec repli HTTP transparent. Les deux mondes ne communiquent PAS : le live WS poll le mtime du fichier au lieu de s'abonner au MutationBus. La Phase C protobuf est différée (prost absent de Cargo.lock).",
+  "components": [
+    "crates/obrain-reactive/src/lib.rs — façade : doc d'architecture (InstrumentedStore→MutationBus→Scheduler→Listeners), exports, deny(unsafe_code)",
+    "crates/obrain-reactive/src/bus.rs — MutationBus : wrapper tokio::broadcast (capacité 16 384), publish/publish_batch/subscribe, compteurs atomiques, zéro-coût sans abonné",
+    "crates/obrain-reactive/src/event.rs — MutationEvent (NodeCreated/Updated/Deleted, EdgeCreated/Updated/Deleted), NodeSnapshot/EdgeSnapshot, MutationBatch, EventContext (tenant/principal/session, from_wami)",
+    "crates/obrain-reactive/src/store.rs — InstrumentedStore<S: GraphStoreMut> : intercepte les écritures, tamponne les événements, drain_pending/clear_pending",
+    "crates/obrain-reactive/src/scheduler.rs — Scheduler natif (tokio::task + batching + dispatch concurrent JoinSet) vs WASM (synchrone), BatchConfig",
+    "crates/obrain-reactive/src/listener.rs — trait MutationListener (on_event/on_batch/accepts/accepts_context) + TenantFilteredListener",
+    "crates/obrain-reactive/src/error.rs — ReactiveError (BusCapacityExceeded, ListenerError, SendError) + Result",
+    "crates/obrain-reactive/tests/ + benches/bus_bench.rs — suites event/scheduler/listener/mutation_bus/store/bus_extra + bench",
+    "crates/obrain-engine/src/database/mod.rs — crée MutationBus + Scheduler, construit le CognitiveEngine avec le scheduler (feature cognitive)",
+    "crates/obrain-engine/src/session/mod.rs — post_commit_hook (ligne ~3806) + set_post_commit_hook (~573), point d'injection réactif",
+    "crates/obrain-cognitive/src/engine.rs — CognitiveEngineBuilder::build : register_listener Energy/Synapse/Fabric/CoChange/Kernel (~542-670)",
+    "crates/obrain-cognitive/src/{energy,synapse,fabric,co_change,kernel,stigmergy,episodic}.rs — implémenteurs de MutationListener (boost énergie, co-activation, métriques fabric, détection co-change, embeddings kernel, stigmergie, épisodes)",
+    "crates/obrain-cli/src/viz_ws.rs — primitives WS std-only : sha1/base64 inline, is_websocket_upgrade, handshake 101, send_text/send_close, vecteurs RFC6455",
+    "crates/obrain-cli/src/viz_serve.rs — api_subgraph_stream, prepare_subgraph, stream_subgraph, importance_order, compute_delta, live_loop, envoyer_delta (constantes WS_CHUNK/WS_LIVE_POLL/WS_HEARTBEAT/WS_LIVE_MAX/WS_RESNAPSHOT_DELTA_MAX)",
+    "crates/obrain-cli/src/main.rs — mod viz_ws / viz_serve / viz_extract / viz_weave",
+    "packages/obrain-dashboard/src/lib/api.ts — streamSubgraph + fetchSubgraph (repli HTTP), parse des frames begin/nodes/edges/end, wsUrl ws/wss",
+    "docs/plan-j9.md — NATIF-J9 : doctrine, Phases A/B/C, décision archi (WS maison std-only, identité par construction, repli)",
+    "docs/plan-j9-protobuf.md — Phase C différée : schéma .proto Frame/Node/Edge/Delta, négociation Sec-WebSocket-Protocol/enc=pb",
+    "scripts/guard-msgpath.sh — garde DoD du chemin message, délègue à scripts/msgpath_guard.py (copie jetable, PASS/FAIL)",
+    "scripts/msgpath_guard.py — rejoue bridge MCP/spawn-court sur copie store, gates ouverture propre/sale, runtime_search chaud, intégrité"
+  ],
+  "relationships": [
+    "obrain-reactive → obrain-common (types NodeId/EdgeId/PropertyKey/Value) et obrain-core (traits GraphStore/GraphStoreMut, graph::lpg::Node/Edge) via Cargo.toml",
+    "obrain-engine (features reactive/cognitive, dep optionnelle obrain-reactive) → crée MutationBus + Scheduler et passe le scheduler au CognitiveEngineBuilder (database/mod.rs ~766 et ~1059)",
+    "obrain-engine/session commit → post_commit_hook(&dyn GraphStoreMut) → censé drainer les événements de l'InstrumentedStore (doc, feature=reactive)",
+    "obrain-cognitive (dep obrain-reactive) → implémente MutationListener (7 listeners) et les enregistre via CognitiveEngineBuilder::build(&scheduler) (engine.rs ~542-670)",
+    "obrain-cli/viz_ws → obrain_viz (Subgraph::canonical/stats, JSON_GRAPH_SCHEMA_V1) via subgraph_for_stream/stream_subgraph ; aucune dépendance tokio-tungstenite/tungstenite",
+    "obrain-cli/viz_serve route GET /api/viz/subgraph/stream → viz_ws::handshake → stream_subgraph (snapshot) puis live_loop (mode live=1)",
+    "packages/obrain-dashboard api.ts → endpoint /api/viz/subgraph/stream (WebSocket) avec repli fetch('/api/viz/subgraph') HTTP+gzip",
+    "scripts/guard-msgpath.sh → python3 scripts/msgpath_guard.py (référence bench/GUARD-SPEC.md, absente)",
+    "compute_delta (viz_serve) réimplémente la diff node/edge localement au lieu d'appeler obrain_viz::diff_subgraphs (diff.rs), pourtant mentionné comme réutilisable dans plan-j9.md"
+  ],
+  "notable_findings": [
+    "Le handshake WebSocket est implémenté MAISON en std-only (SHA-1 + base64 inline, ~120 lignes) avec vecteurs RFC6455 — refus explicite de tokio-tungstenite pour ne pas introduire un runtime async dans un serveur synchrone thread-par-connexion (clause anti-enlisement).",
+    "Deux systèmes « push » disjoints : obrain-reactive (bus mutation in-process, tokio) et le transport WS du viz (serveur→client). Le live WS ne s'abonne PAS au MutationBus : il sonde le mtime du store toutes les 400 ms (epoch = mtime u128).",
+    "InstrumentedStore, la SOURCE d'événements du pipeline réactif (interception de GraphStoreMut), n'est instanciée nulle part en production : seul obrain-substrate/src/store.rs le mentionne en commentaire. La chaîne MutationBus→Scheduler→Listeners est câblée, mais la capture des mutations par wrapper semble latente/non branchée.",
+    "Le stream est ordonné par IMPORTANCE STRUCTURELLE (degré décroissant dans le sous-graphe, tie-break energy desc puis id) : le squelette/hubs peint avant les détails, tout en préservant l'identité (permutation, union == corps HTTP).",
+    "Backpressure WS : au-delà de WS_RESNAPSHOT_DELTA_MAX=4096 changements, le serveur re-snapshot complet au lieu de pousser un delta énorme ; abonnement borné à 300 s + heartbeat 15 s.",
+    "Phase C protobuf différée (prost/prost-build absents de Cargo.lock) : le schéma .proto Frame/Node/Edge/Delta est posé (docs/plan-j9-protobuf.md) mais non compilé.",
+    "Le client dashboard parse les frames live/delta/epoch/heartbeat/resnapshot/bye en no-op (default) : le mode live=1 n'est pas encore consommé par l'UI actuelle, qui n'utilise que le snapshot one-shot.",
+    "Le Scheduler natif est à spawn paresseux (premier register_listener) et zéro-coût sans listener ; sur WASM, Scheduler est synchrone (pas de tâche de fond)."
+  ],
+  "gaps": [
+    "InstrumentedStore n'est jamais construit dans obrain-engine (aucun `InstrumentedStore::new` hors tests/doc) : la source d'événements du pipeline réactif est-elle réellement branchée en production, ou la capture repose-t-elle sur un autre mécanisme non trouvé ?",
+    "Le live/delta WS est du polling (mtime toutes les 400 ms) et non de l'événementiel branché sur le MutationBus : une mutation qui ne modifie pas le mtime, ou plusieurs commits dans la même fenêtre, peuvent être fusionnés/ratés ; le lien entre l'epoch=mtime et l'epoch de transaction réel n'est pas documenté.",
+    "epoch = mtime du fichier store (u128) est un proxy grossier de fraîcheur (pas un epoch MVCC) ; risque de collision/latence entre écriture et détection.",
+    "docs/plan-j9.md annonce une réutilisation de obrain_viz::diff_subgraphs pour les deltas, mais viz_serve.rs réimplémente compute_delta localement (divergence doc/code).",
+    "scripts/guard-msgpath.sh référence bench/GUARD-SPEC.md qui n'existe pas (ls bench/GUARD-SPEC.md → absent).",
+    "La Phase C protobuf est différée (prost hors Cargo.lock) : pas d'encodeur/décodeur binaire ni de négociation enc=pb implémentés.",
+    "Le mode live (abonnement vivant + deltas) est implémenté côté serveur mais non consommé par l'UI dashboard (api.ts ignore les frames live/delta) : fonctionnalité orpheline à ce stade.",
+    "Le bench bus_bench.rs existe mais la métrique « <5 us sans abonné » n'est attestée que par doc/commentaires, pas par un test chiffré visible."
+  ]
+}

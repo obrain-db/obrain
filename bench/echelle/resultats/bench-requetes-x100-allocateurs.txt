@@ -1,0 +1,21 @@
+# passe 1 faite
+# passe 2 faite
+# passe 3 faite
+# passe 4 faite
+# passe 5 faite
+=== minima sur 5 passes alternees (ms / RSS pic Mo) ===
+obrain-sys q1_lookup_nom 2431 ms 6950 Mo
+obrain-sys q2_appelants_1saut 2752 ms 2966 Mo
+obrain-sys q3_count_label 491 ms 1000 Mo
+obrain-sys q4_orderby_desc_limit 3064 ms 2986 Mo
+obrain-sys q5_scan_filtre 6629 ms 15704 Mo
+obrain-jemalloc q1_lookup_nom 2323 ms 6998 Mo
+obrain-jemalloc q2_appelants_1saut 2556 ms 2982 Mo
+obrain-jemalloc q3_count_label 495 ms 1000 Mo
+obrain-jemalloc q4_orderby_desc_limit 2574 ms 2983 Mo
+obrain-jemalloc q5_scan_filtre 6452 ms 15660 Mo
+obrain-mimalloc q1_lookup_nom 2318 ms 7021 Mo
+obrain-mimalloc q2_appelants_1saut 2397 ms 3027 Mo
+obrain-mimalloc q3_count_label 533 ms 1000 Mo
+obrain-mimalloc q4_orderby_desc_limit 2590 ms 3027 Mo
+obrain-mimalloc q5_scan_filtre 5810 ms 15763 Mo

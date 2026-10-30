@@ -1,0 +1,118 @@
+{
+ "checkpoint": "ENGINE008_PROTOCOL_HARNESS_CHECKPOINT_v1",
+ "file_count": 22,
+ "files": [
+  {
+   "bytes": 8952,
+   "path": "authority/ENGINE008_EFFECTIVE_CHAT_TEMPLATE.jinja",
+   "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+  },
+  {
+   "bytes": 7998,
+   "path": "build/ph01-build-task-manifest.py",
+   "sha256": "25e721b84762386a4c142fbc84ea3a749a08e139a2a26a0bc0fa47834064ff94"
+  },
+  {
+   "bytes": 15675,
+   "path": "build/ph01-freeze.py",
+   "sha256": "11e0c8234f801fb38e310f189aae4f5a9747eeaa6c05bb30da77e9265ebdb240"
+  },
+  {
+   "bytes": 5966,
+   "path": "build/ph01-scorer-gates.py",
+   "sha256": "3ed518657604cde8f03363bd47c67dad5aa901706931f205ca4639cf33e9c04b"
+  },
+  {
+   "bytes": 8169,
+   "path": "build/ph01-status.py",
+   "sha256": "e0f12d76860f2da2dc9e37954d3e47b20c16043d3fc9748f7f31dfa81ff7cd26"
+  },
+  {
+   "bytes": 7314,
+   "path": "docs/ENGINE008_PROTOCOL_SOURCE_MAP_v1.json",
+   "sha256": "1d0070e60fdfa3762304bd19f76a4b653bb8e2b54c14f445defe57df68b0107c"
+  },
+  {
+   "bytes": 15094,
+   "path": "docs/ENGINE008_QUALITY_PROTOCOL_v1.md",
+   "sha256": "c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3"
+  },
+  {
+   "bytes": 7058,
+   "path": "docs/ENGINE008_RENDERER_PROVENANCE_v1.json",
+   "sha256": "2ec2e166cfbd5951c5d68ff3074b3a977c910e855db795fffcdb55a316d0b3da"
+  },
+  {
+   "bytes": 3566,
+   "path": "docs/ENGINE008_RENDERER_QUALIFICATION_REPORT.md",
+   "sha256": "c30e3f797eafe27f9654e76cb579191929ea5fdd194cb831aef90b490cd1ca1c"
+  },
+  {
+   "bytes": 5924,
+   "path": "docs/ENGINE008_RENDER_CONFIG_v1.json",
+   "sha256": "a5b6f50c7ee6b675fec037579036f3777a8d96e3c1545a3878530f3937a28b47"
+  },
+  {
+   "bytes": 7460,
+   "path": "docs/ENGINE008_RUNTIME_PROOF_CONTRACT_v2.md",
+   "sha256": "40f83568285fce079b8f91fd0d0aedb3ef141755faf9a5a0704be38e15cff4c3"
+  },
+  {
+   "bytes": 4162,
+   "path": "docs/ENGINE008_TEMPLATE_AUTHORITY_DECISION_v1.md",
+   "sha256": "661a0d90c5af262fc6d7ecbe5b92dd2e88091d6362506906b53f98906fe3276b"
+  },
+  {
+   "bytes": 8730,
+   "path": "out/ENGINE008_FREEZE_MANIFEST_v1.json",
+   "sha256": "855172969ef621fd0223a79d5443dd44c81fd08b329c212af915b55fdcb82a42"
+  },
+  {
+   "bytes": 4991,
+   "path": "out/ENGINE008_PROTOCOL_HARNESS_STATUS.txt",
+   "sha256": "8dcb51dba0d5d67d5dd5a94fa6b71826d49471bd88ad0040d48baab272db6643"
+  },
+  {
+   "bytes": 3444,
+   "path": "out/ENGINE008_TASK_CANONICAL_MANIFEST_v1.json",
+   "sha256": "290bf8d486d981d1185be0c629bbc8074dc6ae894acfd3150778aace68c2bf74"
+  },
+  {
+   "bytes": 4857,
+   "path": "out/HARNESS_BUILD_REPORT.txt",
+   "sha256": "ca5e7a07a1fc8560cd0567c1ed1eeec358768c373fa04b43026c0919ede8c50d"
+  },
+  {
+   "bytes": 523,
+   "path": "out/RENDER_PASS1.txt",
+   "sha256": "09048fc453e9454628806042ca0eee58865c07696b7e9b0f8d94e8e989cc9fb5"
+  },
+  {
+   "bytes": 523,
+   "path": "out/RENDER_PASS2.txt",
+   "sha256": "09048fc453e9454628806042ca0eee58865c07696b7e9b0f8d94e8e989cc9fb5"
+  },
+  {
+   "bytes": 2181,
+   "path": "out/SCORER_GATES_REPLAY.txt",
+   "sha256": "cbff19187e9854ca8265c4c9f57531c33020f530482d5b5e94da46a3c59e2f2f"
+  },
+  {
+   "bytes": 78279,
+   "path": "out/TASK_GLOBAL_ITEM_ORDER.txt",
+   "sha256": "b7bbade7658b3c4ff397573cb5bf4033da03c37d45aceb4392493ce1e2a940a1"
+  },
+  {
+   "bytes": 78279,
+   "path": "out/TASK_GLOBAL_ITEM_ORDER_PASS2.txt",
+   "sha256": "b7bbade7658b3c4ff397573cb5bf4033da03c37d45aceb4392493ce1e2a940a1"
+  },
+  {
+   "bytes": 5213,
+   "path": "out/TASK_SCOPE_MANIFEST_REPORT.txt",
+   "sha256": "c7f526360ea4befacfcbb62524283e9a929622cebbe517b390af25ff27bd82f4"
+  }
+ ],
+ "host": "spark-c578",
+ "root": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01"
+}

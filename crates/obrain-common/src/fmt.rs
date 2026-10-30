@@ -11,6 +11,27 @@ use crate::types::Value;
 /// Maximum display width for any single column before truncation.
 const MAX_COLUMN_WIDTH: usize = 40;
 
+/// Formate une valeur pour une cellule de table — style JSON : les strings
+/// sont quotées. Indépendant du `Display` de [`Value`] (brut pour les strings
+/// depuis 2026-08-31) : les couches d'affichage décident de quoter ou non.
+fn format_cell(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{s}\""),
+        Value::List(items) => {
+            let inner: Vec<String> = items.iter().map(format_cell).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Map(entries) => {
+            let inner: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_cell(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Renders a query result as a Unicode box-drawing table.
 ///
 /// Produces output like:
@@ -49,10 +70,12 @@ pub fn format_result_table(
         return "(empty)".to_string();
     }
 
-    // Format all cell values to strings
+    // Format all cell values to strings. Affichage style JSON : les strings
+    // sont quotées (le Display de Value::String est BRUT depuis 2026-08-31 —
+    // les couches d'affichage ajoutent les guillemets quand elles le veulent).
     let formatted_rows: Vec<Vec<String>> = rows
         .iter()
-        .map(|row| row.iter().map(|v| v.to_string()).collect())
+        .map(|row| row.iter().map(format_cell).collect())
         .collect();
 
     // Calculate column widths: max of header and all cell values, capped

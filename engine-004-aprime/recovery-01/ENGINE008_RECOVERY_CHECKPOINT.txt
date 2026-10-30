@@ -1,0 +1,55 @@
+ENGINE-008 RECOVERY-01 -- CHECKPOINT ET RECETTE DE RESTAURATION
+==========================================================================
+RECOVERY_CHECKPOINT_CREATED=YES
+RECOVERY_CHECKPOINT_ROOT=recovery-01/checkpoint
+RECOVERY_CHECKPOINT_FILE_COUNT=56
+RECOVERY_CHECKPOINT_TOTAL_BYTES=3397232
+RECOVERY_CHECKPOINT_MANIFEST=ENGINE008_RECOVERY_AUTHORITY_MANIFEST.json
+
+=== VERIFICATION DU CHECKPOINT SUR n3 (hote different de la source) ===
+Le checkpoint a ete re-hache sur n3, INDEPENDAMMENT du dgx :
+  TASK_EVAL_DATA_CONTENT_TREE_SHA256 recalculé sur n3 = c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a
+    == autorite : MATCH
+  TASK_PROMPT_CONTRACTS_v1.txt      == autorite fa30f16d... : MATCH
+  ENGINE008_SELECTION_RULES_v2.txt  == autorite 3c1a16d7... : MATCH
+  les 6 fichiers scorers            == SHAs enregistres : MATCH
+=> RELECTURE POSSIBLE ET MANIFESTE COHERENT AVEC LES FICHIERS PRESERVES.
+   La concordance sur un second hote est une verification plus forte qu une
+   simple relecture sur la source.
+
+=== CE QUI EST DANS LE CHECKPOINT, ET CE QUI N Y EST PAS (par decision) ===
+DANS : corpus TASK et TOKEN (JSONL + selections), les 6 scorers, les contrats
+  et seuils, les regles de selection v1/v2, les statuts d origine (DATA,
+  SCORERS, QUALITY, STAGE_S*), les provenances (modeles, tokenizer, python,
+  nltk, acquisition), les CSV d audit (GSM8K, IFEval, structured-validity),
+  l ordre global DATA.
+DEHORS, PAR DECISION : les MODELES (19,0 Go + 12,8 Go) -- §8 interdit de les
+  dupliquer ; leurs chemins resolus, tailles et SHA sont au manifeste.
+  Les jeux de donnees amont external/ (1,6 Go avec le venv gele) restent sur
+  le dgx, references par chemin dans le manifeste.
+UN MANIFESTE DE FICHIERS ABSENTS NE COMPTE PAS COMME SAUVEGARDE : c est
+  pourquoi les fichiers critiques sont REELLEMENT copies et re-haches ici.
+
+=== RECETTE DE RESTAURATION (reproductible) ===
+Etape 1 -- verifier l acces a la source :
+  ssh dgx 'ls -d /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1'
+Etape 2 -- re-verifier les autorites AVANT tout usage :
+  $Q/.venv/bin/python rec01-verify-authorities.py <staging>      (8 controles)
+  $Q/.venv/bin/python rec01-token-v2-rederive.py <staging>       (re-derivation TOKEN v2)
+Etape 3 -- reconstituer le checkpoint local :
+  ssh dgx 'cd /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1 && tar cf - <liste de fichiers>' | tar xf - -C checkpoint
+Etape 4 -- re-verifier le checkpoint sur l hote de destination (re-hachage) ;
+  exiger la reproduction de c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a sur corpora/task_eval.
+Etape 5 -- environnement python gele, SANS RESEAU :
+  python -m venv .venv && .venv/bin/pip install --no-index --find-links external/python-wheels -r <freeze>
+  (PYTHON_ENVIRONMENT_FREEZE.txt + PYTHON_PACKAGE_ARTIFACTS.sha256 font foi)
+Etape 6 -- selftests des scorers, SANS MODELE :
+  export ENGINE008_IFEVAL_ROOT=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/external/mbpp
+  .venv/bin/python scorers/<scorer>.py     (6 modules, 8 gates de selftest)
+Etape 7 -- le fork Q1 reste sur le dgx ; ne PAS reconstruire. Verifier
+  sha256sum /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0 == 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+=== INTERDITS RESPECTES ===
+Aucun git add global. Aucun upload vers les miroirs. Aucun --delete.
+Aucune modification distante hors du repertoire de staging recovery-01.
+Aucun modele duplique. Aucune cle exposee.

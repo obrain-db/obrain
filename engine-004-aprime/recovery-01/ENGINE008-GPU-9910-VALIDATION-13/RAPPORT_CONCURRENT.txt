@@ -1,0 +1,68 @@
+[19:04:34] === GPU 9910 : PLACEMENT + VALIDATION CONCURRENTE ===
+[19:04:34] port 9910 LIBRE
+[19:04:34] COMMANDE : /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-server -m /home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf --host 127.0.0.1 --port 9910 -ngl 99 --ctx-size 1024 --parallel 3 --jinja -lv 4
+[19:04:34] SERVER_PID=707669
+[19:04:46] PRET apres 12.0s
+[19:04:46] --- PLACEMENT GPU (recherche large dans le journal) ---
+[19:04:46]   0.00.215.760 I cmn  common_param:   - CUDA0   : NVIDIA GB10 (124610 MiB, 102930 MiB free)
+[19:04:46]   0.00.215.799 I cmn  common_param: system_info: n_threads = 20 (n_threads_batch = 20) / 20 | CUDA : ARCHS = 1210 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | RE
+[19:04:46]   0.00.581.652 I common_memory_breakdown_print: |   - CUDA0 (GB10)       | 124610 = 102365 + (12236 = 11556 +     544 +     134) +       10008 |
+[19:04:46]   0.00.694.719 I llama_model_loader: loaded meta data with 47 key-value pairs and 866 tensors from /home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf (version GGUF V3 (latest))
+[19:04:46]   0.00.726.438 I llama_model_loader: - type  f32:  360 tensors
+[19:04:46]   0.00.726.438 I llama_model_loader: - type q4_K:  176 tensors
+[19:04:46]   0.00.726.439 I llama_model_loader: - type q5_K:   65 tensors
+[19:04:46]   0.00.726.439 I llama_model_loader: - type q6_K:    1 tensors
+[19:04:46]   0.00.726.439 I llama_model_loader: - type bf16:   96 tensors
+[19:04:46]   0.00.726.440 I llama_model_loader: - type tq2_g128:  168 tensors
+[19:04:46]   0.00.726.534 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GB10) (000f:01:00.0) - 102813 MiB free
+[19:04:46]   0.00.946.486 I print_info: f_attn_scale          = 0.0e+00
+[19:04:46]   0.00.946.486 I print_info: f_attn_value_scale    = 0.0000
+[19:04:46]   0.00.946.488 I print_info: causal attn           = 1
+[19:04:46]   0.00.946.501 I load_tensors: loading model tensors, this can take a while... (mmap = true, direct_io = false)
+[19:04:46]   0.01.722.536 I load_tensors: offloading output layer to GPU
+[19:04:46]   0.01.722.543 I load_tensors: offloading 64 repeating layers to GPU
+[19:04:46]   0.01.722.544 I load_tensors: offloaded 66/66 layers to GPU
+[19:04:46]   0.01.722.548 I load_tensors:   CPU_Mapped model buffer size =   682.03 MiB
+[19:04:46]   0.01.722.549 I load_tensors:        CUDA0 model buffer size = 11556.70 MiB
+[19:04:46]   0.05.480.067 I llama_context: causal_attn   = 1
+[19:04:46]   0.05.480.067 I llama_context: flash_attn    = auto
+[19:04:46]   0.05.482.038 I llama_context:  CUDA_Host  output buffer size =     2.84 MiB
+[19:04:46]   0.05.486.094 I llama_kv_cache:      CUDA0 KV buffer size =    96.00 MiB
+[19:04:46]   0.05.486.606 I llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+[19:04:46]   0.05.486.606 I llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+[19:04:46]   0.05.507.258 I llama_memory_recurrent:      CUDA0 RS buffer size =   448.88 MiB
+[19:04:46]   0.05.507.267 I llama_memory_recurrent: size =  448.88 MiB (     3 cells,  64 layers,  3 seqs  0 rs_seq), R (f32):   16.88 MiB, S (f32):  432.00 MiB
+[19:04:46]   0.05.539.740 I sched_reserve:      CUDA0 compute buffer size =   134.78 MiB
+[19:04:46]   0.05.539.745 I sched_reserve:  CUDA_Host compute buffer size =    20.56 MiB
+[19:04:46]   0.05.539.745 I sched_reserve: graph nodes  = 4011
+[19:04:46]   0.05.539.746 I sched_reserve: graph splits = 2
+[19:04:46] --- 32 lignes de placement ---
+[19:04:46] ENTREE 1 : 59 IDs autoritaires (prefixe 58)
+[19:04:46] ENTREE 2 : fact_text='Réponds uniquement : BONJOUR.' (rendu et tokenise NATIVEMENT par le serveur)
+[19:04:46] [E1_A] http=200 duree=0.680s err=None
+[19:04:46]   E1 A: ref=4304f084eab6ecb1 blob_bytes=160697024 fact_tokens=58
+[19:04:47] [E1_CTRL] http=200 duree=0.803s err=None
+[19:04:47]   E1 CTRL: ids=[13,198,248069,271,3793,13] prefix_tok=58 text='.\n</think>\n\nOK.'
+[19:04:48] [E2_A] http=200 duree=0.416s err=None
+[19:04:48]   E2 A: ref=2363afa7c65f2e5e blob_bytes=157484780 fact_tokens=9
+[19:04:50] [E2_CTRL] http=200 duree=2.233s err=None
+[19:04:50]   E2 CTRL: ids=[271,248068,198,760,1156,369,9859,728,310,5707,1132,440,328,33,691,41,6578,13,10092,3158,1061,369,264,4145,1622,471,781,1318,728,310,1910,328] prefix_tok=9 text='\n\n<think>\nThe user is asking me to respond only with "BONJOUR. OK". This is a simple request - they want me to say "'
+[19:04:50] === RESTAURATIONS SIMULTANEES (2 requetes en parallele) ===
+[19:04:50] [E1_REST] http=200 duree=0.596s err=None
+[19:04:53] [E2_REST] http=200 duree=2.832s err=None
+[19:04:53] les deux restaurations ont dure 2.835s au total
+[19:04:53]   E1 REST vs SON controle: MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+[19:04:53]   E1 REST: prefix_tok=0 imported=True ids=[13,198,248069,271,3793,13] text='.\n</think>\n\nOK.'
+[19:04:53]   E1 TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+[19:04:53]   E1 prep_ms=137.1320037841797 lookup=46.63100051879883 import=3.821000099182129 blob_sha=64.51300048828125
+[19:04:53]   E2 REST vs SON controle: MAX_ABS_DIFF=0 L2=0 ARGMAX=271/271 BINARY_IDENTICAL=YES
+[19:04:53]   E2 REST: prefix_tok=0 imported=True ids=[271,248068,198,760,1156,369,9859,728,310,5707,1132,440,328,33,691,41,6578,13,10092,3158,1061,369,264,4145,1622,471,781,1318,728,310,1910,328] text='\n\n<think>\nThe user is asking me to respond only with "BONJOUR. OK". This is a simple request - they want me to say "'
+[19:04:53]   E2 TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+[19:04:53]   E2 prep_ms=127.53600311279297 lookup=43.52399826049805 import=3.7660000324249268 blob_sha=63.25199890136719
+[19:04:53] === ISOLATION CROISEE ===
+[19:04:53]   E1_REST ids=[13,198,248069,271,3793,13]  E2_REST ids=[271,248068,198,760,1156,369,9859,728,310,5707,1132,440,328,33,691,41,6578,13,10092,3158,1061,369,264,4145,1622,471,781,1318,728,310,1910,328]
+[19:04:53]   E2_CTRL ids=[271,248068,198,760,1156,369,9859,728,310,5707,1132,440,328,33,691,41,6578,13,10092,3158,1061,369,264,4145,1622,471,781,1318,728,310,1910,328]
+[19:04:53]   E1_REST identique a E2_CTRL ? NON
+[19:04:53]   les deux entrees ont-elles des controles DIFFERENTS ? OUI
+[19:04:53] TWO_REQUEST_CONCURRENT_RESUME=PASS
+[19:04:53] === FIN ===

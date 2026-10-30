@@ -5,13 +5,32 @@
 use bytemuck::{Pod, Zeroable};
 
 pub const SUBSTRATE_MAGIC: [u8; 8] = *b"SUBSTRT\0";
-pub const SUBSTRATE_FORMAT_VERSION: u32 = 1;
+/// v2 (jalon 1, RFC principal-natif-v2 plan A) : `node_flags::ALLOCATED`
+/// obligatoire sur tout record de noeud reellement ecrit ; les creneaux de
+/// bourrage jamais ecrits ne le portent pas. Layout 32 B INCHANGE — le bit
+/// loge dans le u16 `flags` existant. Migration 1→2 : `migration::table()`.
+///
+/// v3 (jalon 2, RFC principal-natif-v2 §4-J2) : `NodeRecord` 32 → 40 octets
+/// — colonne `tenant_id: u32` + `_reserve: u32` en QUEUE de record (les
+/// offsets v2 ne bougent pas). Page d'allocation 20 480 o = 512 records
+/// exactement. La zone nodes v3 porte un marqueur de stride dans son slot 0
+/// ([`crate::record::NODES_ZONE_V3_MAGIC`]). Migration 2→3 : reecriture de
+/// la zone nodes vers un fichier temporaire + rename atomique, tenant 0
+/// (public DECLARE : [`meta_flags::MONO_TENANT_PUBLIC`]) sur chaque record.
+pub const SUBSTRATE_FORMAT_VERSION: u32 = 3;
 pub const META_HEADER_SIZE: usize = 96;
 pub const META_FILE_SIZE: usize = 4096;
 
 pub mod meta_flags {
     pub const COGNITIVE_ACTIVE: u32 = 1 << 0;
     pub const HILBERT_SORTED: u32 = 1 << 1;
+    /// (jalon 2 — RFC principal-natif-v2 §5.2 / A5) Ce store a ETE DECLARE
+    /// mono-tenant public : `tenant_id = 0` y est un choix d'exploitation,
+    /// pas un defaut subi. Pose par la migration en bloc 2→3 (qui met tout
+    /// noeud existant a 0) — jamais implicite. Un store multi-tenant ne
+    /// portera pas ce drapeau ; ses sessions sans Principal obtiendront la
+    /// portee VIDE au jalon 4 (fail-closed).
+    pub const MONO_TENANT_PUBLIC: u32 = 1 << 2;
 }
 
 /// Fixed-size header portion of `substrate.meta` (96 B).
@@ -66,11 +85,31 @@ impl MetaHeader {
 }
 
 fn now_unix_seconds() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    // wasm32 (`wasm32-unknown-unknown`, la seule cible wasm qu'Obrain vise)
+    // n'a AUCUNE horloge : `SystemTime::now()` y panique — « time not
+    // implemented on this platform » — et cette panique tombait dès la
+    // CONSTRUCTION du store. `ObrainDB::new_in_memory()` ne rendait donc
+    // jamais la main en WASM.
+    //
+    // Zéro est ici la réponse HONNÊTE, pas un substitut : `created_at` n'est
+    // jamais relu (déclaration, initialisation, valeur de test — rien
+    // d'autre), il documente la date de création du store pour un lecteur
+    // humain ou un outil externe. Aucune décision du substrat n'en dépend —
+    // l'ordre du WAL vient du `lsn`. Le jour où un lecteur en dépendra, c'est
+    // CE commentaire qu'il faudra démentir, et une horloge qu'il faudra
+    // fournir (l'hôte JS en a une : `Date.now()`).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
 }
 
 #[cfg(test)]

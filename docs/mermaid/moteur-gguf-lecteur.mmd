@@ -1,0 +1,185 @@
+%% Ce que ce diagramme prouve : la chaine complete de lecture du GGUF cible, du fichier jusqu au
+%% decodage d une ligne, et l ecart exact entre la formule fautive du defaut 53 et la regle
+%% d alignement align_up de la fin des metadonnees vers la valeur d alignement 32.
+%% Sources MESUREES : les 37 fichiers .py de engine-004-aprime/source, dont 4 seulement portent un
+%% lecteur GGUF et qui sont lus integralement ; les sources du fork local
+%% llama-obrain-cuda ggml/src/gguf.cpp, ggml/include/gguf.h, ggml/include/ggml.h,
+%% ggml/src/ggml-common.h, ggml/src/ggml.c, ggml/src/ggml-cuda/mmvq.cu,
+%% ggml/src/ggml-cuda/vecdotq.cuh et gguf-py/gguf/gguf_reader.py ; les rapports
+%% docs/ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md et docs/ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md.
+%% MESURE : chaque numero de ligne, chaque nom de fonction, chaque taille de bloc, chaque formule
+%% d adresse et chaque constante sont lus dans un fichier cite en clair. L arithmetique
+%% 10996452 modulo 32 = 4, align_up = 10996480, padding = 28 est verifiee a la main.
+%% DEDUIT : l ordre magic puis version puis n_tensors puis n_kv est celui des lectures successives
+%% de gguf.cpp lignes 456 a 535, ce n est pas une citation de la specification du format.
+%% NON ETABLI — le chemin demande llama-obrain-cuda-f1a/ggml/src/gguf.cpp N EXISTE PAS sur cette
+%% machine. Les cinq forks presents portent tous la meme regle aux memes lignes 223, 609 et 610 ;
+%% c est llama-obrain-cuda branche feat/cuda-tq2g128 qui est cite. Le producteur du dump
+%% gguf_dump_cible.json n existe nulle part sur le disque : seuls ses quatre consommateurs sont
+%% lisibles, et c est d eux que viennent data_start, tensors, offset et dims. Le fichier
+%% Qwen3.8-27B-OBRAIN-v3.gguf et le repertoire exp-artifacts sont absents : les valeurs 10996452,
+%% 10996480 et 28 sont LUES dans le rapport N3ter, elles ne sont PAS re-mesurees ici. Aucun noeud
+%% n est dessine pour une zone sans source lisible.
+
+flowchart TB
+
+  subgraph Fichier["Le fichier cible et ses deux consommateurs lisibles"]
+    direction TB
+    f_gguf["⚪ Qwen3.8-27B-OBRAIN-v3.gguf<br/>chemin lu en n3quater-reconstruct.py ligne 16<br/>q0-reference-validation.py ligne 19<br/>n4-row-effect.py ligne 15 et n4-vector-validation.py ligne 15<br/>ABSENT du disque a l inspection"]
+    f_dump["⚪ gguf_dump_cible.json<br/>chemin lu en n3quater-reconstruct.py ligne 17<br/>q0-reference-validation.py ligne 20<br/>n4-row-effect.py ligne 16 et n4-vector-validation.py ligne 16<br/>producteur introuvable sur le disque"]
+    f_scope["37 fichiers .py dans engine-004-aprime source<br/>grep sur gguf GGUF data_start alignment align_up header_end<br/>4 fichiers seulement portent un lecteur GGUF<br/>n3quater-reconstruct 190 lignes<br/>q0-reference-validation 154 lignes<br/>n4-row-effect 147 lignes<br/>n4-vector-validation 142 lignes"]
+  end
+
+  subgraph Entete["En-tete GGUF : ordre de lecture impose par gguf_init_from_reader"]
+    direction TB
+    h_fn["gguf.cpp ligne 451<br/>gguf_init_from_reader<br/>constructeur de gguf_context"]
+    h_magic["gguf.cpp lignes 456 a 478<br/>magic : 4 octets lus puis compares a GGUF_MAGIC<br/>gguf.h ligne 41 : define GGUF_MAGIC GGUF<br/>octet invalide -> refus"]
+    h_version["gguf.cpp lignes 484 a 513<br/>ctx version : uint32<br/>gguf.h ligne 42 : GGUF_VERSION 3<br/>version 0 refusee ligne 485<br/>version 1 refusee ligne 502<br/>version superieure a 3 refusee ligne 506"]
+    h_counts["gguf.cpp lignes 515 a 535<br/>n_tensors lu en PREMIER puis n_kv<br/>les deux int64, bornes verifiees contre SIZE_MAX"]
+    h_order_py["gguf_reader.py lignes 165 a 167<br/>meme ordre cote python : 2 uint64 d un coup<br/>champ GGUF.tensor_count puis GGUF.kv_count"]
+  end
+
+  subgraph Metadonnees["Metadonnees : n_kv paires, et la cle general.alignment"]
+    direction TB
+    m_loop["gguf.cpp lignes 544 a 607<br/>boucle sur n_kv paires<br/>cle de type string puis type puis valeur"]
+    m_dup["gguf.cpp lignes 560 a 564<br/>cle dupliquee -> refus"]
+    m_types["gguf.cpp lignes 581 a 592<br/>douze types scalaires dispatches<br/>GGUF_TYPE_ARRAY en tete de paire<br/>tout autre type -> refus"]
+    m_key["gguf.cpp lignes 609 a 610<br/>alignment_idx = gguf_find_key de GGUF_KEY_GENERAL_ALIGNMENT<br/>ctx alignment = 32 par defaut ou valeur lue<br/>gguf.h ligne 44 : general.alignment<br/>gguf.h ligne 46 : GGUF_DEFAULT_ALIGNMENT 32"]
+    m_align_check["gguf.cpp lignes 612 a 616<br/>alignement nul ou non puissance de deux -> refus<br/>le format n accepte que 2 puissance n"]
+    m_py["gguf_reader.py lignes 173 a 180<br/>meme regle cote python :<br/>lecture du champ general.alignment<br/>controle puissance de deux non nulle"]
+  end
+
+  subgraph Alignement["La regle d alignement : la section de donnees commence apres un remplissage"]
+    direction TB
+    a_comment["gguf.cpp ligne 214<br/>commentaire sur gguf_tensor_info offset :<br/>offset depuis le debut des data<br/>doit etre un multiple de ALIGNMENT"]
+    a_macro["ggml.h ligne 267<br/>define GGML_PAD x n = x plus n moins 1<br/>et non de n moins 1<br/>arrondi vers le haut au multiple de n"]
+    a_pad["gguf.cpp lignes 751 a 756<br/>commentaire : we require the data section to be aligned<br/>so take into account any padding<br/>gr.seek de GGML_PAD de gr.tell et ctx alignment"]
+    a_offset["gguf.cpp lignes 758 a 759<br/>ctx offset = gr.tell<br/>commentaire : this is where the data section starts<br/>c est le data_start du format"]
+    a_accessor["gguf.cpp lignes 1008 a 1013<br/>gguf_get_alignment rend ctx alignment<br/>et l accesseur suivant rend ctx offset"]
+    a_py["gguf_reader.py lignes 181 a 184<br/>padding = offs modulo self.alignment<br/>si non nul offs plus alignment moins padding<br/>self.data_offset = offs"]
+  end
+
+  subgraph Defaut53["Defaut 53 : l origine brute, les 28 octets de remplissage, la translation moins 28"]
+    direction TB
+    d_raw["N3TER lignes 24 a 26<br/>fin des metadonnees = 10996452<br/>10996452 modulo 32 = 4 donc NON aligne<br/>align_up vers 32 = 10996480<br/>padding = 28"]
+    d_zero["N3TER lignes 40 a 41<br/>PREMIER OCTET NON NUL apres data_start : offset 28<br/>les 28 octets a partir de 10996452 sont TOUS NULS<br/>c est du remplissage d alignement, pas des donnees"]
+    d_test["N3TER lignes 63 a 65<br/>origine BRUTE row0 debut 4a505aa42211641629415451945a1518<br/>contient libggml = False<br/>origine ALIGNEE row0 debut 2a45a1459555a2962945a99564594650<br/>contient libggml = TRUE"]
+    d_shift["N3BIS lignes 47 a 59<br/>DIRECT_ROW_BYTE_COUNT 1360 et LIBGGML_ROW_BYTE_COUNT 1360<br/>BYTE_MISMATCH_COUNT 1334<br/>premier octet divergent offset 0 : direct 0x4a libggml 0x2a<br/>meilleur decalage direct vers libggml offset moins 28<br/>concordance 1.0000 sur 1332 octets recouvrants"]
+    d_scales["N3BIS lignes 30 a 33 et 76<br/>echelles du lecteur direct aberrantes<br/>de moins 0.02473 jusqu a 3400<br/>contre 0.01036 a 0.01524 pour libggml<br/>observation N2 des echelles 89.3 et 3400 RETIREE"]
+    d_open["N3BIS ligne 218<br/>HARNESS_DEFECT_53 OPEN<br/>DIRECT_GGUF_READER_ADDRESS_OFFSET_28_BYTES<br/>DIRECT_READER_IS_WRONG_BY_28_BYTES=YES<br/>INDEPENDENT_GGUF_ROW_BYTE_AGREEMENT=NO"]
+    d_bad["🔴 FORMULE FAUTIVE<br/>position = fin_metadonnees plus offset_tenseur<br/>N3TER ligne 47<br/>appliquee telle quelle en q0-reference-validation.py ligne 115<br/>aucun align_up, l origine est la fin brute des metadonnees"]
+    d_noadd["🔴 NON applique : address plus egal 28<br/>N3TER ligne 103<br/>un ajout de constante ne serait pas un correctif :<br/>le correctif est la REGLE d alignement"]
+  end
+
+  subgraph Correctif["Correctif : align_up de la fin des metadonnees vers l alignement"]
+    direction TB
+    c_formula["✅ FORMULE CORRECTE<br/>position = align_up de fin_metadonnees vers alignement<br/>plus offset_tenseur<br/>N3TER ligne 48<br/>N3TER ligne 99 : seek de align_up header_end alignment<br/>plus offset plus row fois row_stride"]
+    c_n3q["✅ n3quater-reconstruct.py lignes 105 a 108<br/>ALIGN = 32 puis DS = d data_start<br/>DATA = DS plus ALIGN moins 1 div ALIGN fois ALIGN<br/>print DATA_START_ALIGNE avec brut et padding"]
+    c_n4row["✅ n4-row-effect.py ligne 95<br/>DATA = de d data_start plus 31 div 32 fois 32"]
+    c_n4vec["✅ n4-vector-validation.py ligne 84<br/>DATA = de d data_start plus 31 div 32 fois 32"]
+    c_hard["🟠 le correctif python fixe 32 en dur<br/>n3quater-reconstruct.py ligne 105<br/>alors que gguf.cpp ligne 610 lit general.alignment<br/>l exigence d independance a la VALEUR d alignement<br/>est portee par le C, pas par ces trois scripts"]
+    c_requal["✅ N3TER lignes 76 a 84<br/>comparateur INDEPENDANT, ni mon lecteur ni libggml<br/>3 tenseurs, 6 lignes, 8704 octets compares<br/>BYTE_MISMATCH_COUNT=0, aucune premiere divergence<br/>SHA256 egaux ligne a ligne<br/>deux tailles de ligne testees : 1360 pour E5 et 1632 pour E6<br/>donc une erreur de stride serait detectee aussi"]
+    c_ledger["✅ N3TER ligne 237<br/>HARNESS_DEFECT_53=RESOLVED_VERIFIED_BY_INDEPENDENT_MULTITENSOR_BYTE_COMPARISON<br/>GGUF_DATA_START_ALIGNMENT_RULE=PROVEN"]
+    c_reserve["N3TER lignes 91 a 93<br/>DIRECT_GGUF_READER=BYTE_QUALIFIED_FOR_TESTED_TENSORS<br/>RESERVE : 3 tenseurs ne constituent PAS<br/>une preuve exhaustive sur les 866"]
+  end
+
+  subgraph Tenseur["Tenseur : la table d offsets, puis le bloc TQ2_G128 de 34 octets"]
+    direction TB
+    t_info["gguf.cpp lignes 620 a 741<br/>par tenseur, dans cet ordre :<br/>nom ligne 627, n_dims uint32 ligne 658<br/>dims uint64 ligne 668, type uint32 ligne 698<br/>offset uint64 ligne 739"]
+    t_dup["gguf.cpp lignes 642 a 649<br/>nom de tenseur duplique -> refus<br/>ligne 635 nom trop long -> refus"]
+    t_nb["gguf.cpp lignes 727 a 732<br/>nb0 = type_size<br/>nb1 = nb0 fois ne0 div blck_size<br/>nb2 et nb3 par produits successifs"]
+    t_qk["ggml-common.h ligne 280<br/>define QK_G128 128<br/>ligne 281 : QI_G128 = QK_G128 div 32<br/>soit 4 tranches de 32, la taille d un bloc q8_1"]
+    t_block["ggml-common.h lignes 283 a 287<br/>block_tq2_g128 : uint8 qs de QK_G128 div 4 octets<br/>plus ggml_half d, echelle FP16 du groupe<br/>static_assert de taille 34 octets sans remplissage"]
+    t_traits["ggml.c lignes 920 a 927<br/>type_name tq2_g128, blck_size QK_G128<br/>type_size sizeof block_tq2_g128<br/>ggml.h ligne 439 : GGML_TYPE_TQ2_G128 = 43"]
+    t_meas["N3BIS lignes 27 a 34<br/>TENSOR_TYPE=tq2_g128 43<br/>NE0=5120 NE1=17408 NE2=1 NE3=1<br/>NB0=34 NB1=1360 NB2=23674880<br/>GGML_NBYTES=23674880<br/>ROW_BYTES=1360 BLOCKS_PER_ROW=40"]
+    t_dims_py["n3quater-reconstruct.py lignes 128 a 129<br/>K = t dims 0 et N = t dims 1<br/>stride = K div 128 fois 34"]
+  end
+
+  subgraph Ligne["Ligne : l adresse seek, la lecture du stride, puis le decodage du bloc"]
+    direction TB
+    r_seek_q0["🔴 q0-reference-validation.py lignes 114 a 117<br/>nbytes_row = K div 128 fois 34<br/>f.seek de data_start plus t offset<br/>plus row fois nbytes_row<br/>data_start vient du dump SANS align_up"]
+    r_seek_n3q["✅ n3quater-reconstruct.py lignes 146 a 148<br/>f.seek de DATA plus t offset plus row fois stride<br/>f.read de stride<br/>assert len wb egal stride"]
+    r_stride["n3quater-reconstruct.py ligne 129<br/>n4-row-effect.py ligne 116<br/>n4-vector-validation.py ligne 97<br/>stride = K div 128 fois 34<br/>5120 div 128 fois 34 = 40 fois 34 = 1360<br/>6144 div 128 fois 34 = 48 fois 34 = 1632"]
+    r_allrows["n4-vector-validation.py lignes 107 a 110<br/>boucle row de 0 a N moins 1<br/>seek puis read de stride par ligne<br/>les N lignes du tenseur sont reconstruites"]
+    r_block["n3quater-reconstruct.py lignes 81 a 82<br/>n4-row-effect.py lignes 74 a 75<br/>qs32 = wb de kbx fois 34 a kbx fois 34 plus 32<br/>d16 = struct unpack de e sur wb<br/>de kbx fois 34 plus 32 a kbx fois 34 plus 34<br/>donc qs a l offset 0 et echelle fp16 a l offset 32"]
+    r_decode["n3quater-reconstruct.py lignes 65 a 72<br/>n4-row-effect.py lignes 66 a 67<br/>32 octets qs decodes en 128 valeurs ternaires<br/>4 codes de 2 bits par octet<br/>1 trit par case de 2 bits"]
+    r_ternary["n3quater-reconstruct.py ligne 22<br/>n4-row-effect.py ligne 20<br/>TERNARY : 0 vers moins 1, 1 vers 0<br/>2 vers plus 1, 3 vers plus 1<br/>le code 3 est replie sur plus 1"]
+    r_kernel["mmvq.cu ligne 13<br/>case GGML_TYPE_TQ2_G128 renvoie vec_dot_tq2_g128_q8_1<br/>vecdotq.cuh ligne 732<br/>une tranche de 32 poids par appel iqs<br/>les codes deviennent des int8 dans moins 1 0 plus 1"]
+  end
+
+  f_gguf -->|lu par| h_fn
+  f_dump -->|fournit data_start et la table des offsets| t_dims_py
+  f_scope -->|recense les lecteurs| f_gguf
+  f_scope -->|recense les lecteurs| f_dump
+
+  h_fn -->|lit d abord| h_magic
+  h_magic -->|puis| h_version
+  h_version -->|puis| h_counts
+  h_counts -->|nb de paires| m_loop
+  h_order_py -->|confirme le meme ordre| h_counts
+  m_loop -->|cle dupliquee| m_dup
+  m_loop -->|type de valeur| m_types
+  m_loop -->|derniere cle utile| m_key
+  m_key -->|controle| m_align_check
+  m_py -->|meme regle que| m_align_check
+  m_key -->|fournit ctx alignment| a_pad
+
+  a_macro -->|definit l arrondi de| a_pad
+  a_comment -->|enonce la contrainte de| a_pad
+  a_pad -->|puis fixe| a_offset
+  a_offset -->|expose| a_accessor
+  a_py -->|meme regle que| a_pad
+  a_offset -->|produit le data_start du dump| f_dump
+
+  h_counts -->|nb de tenseurs| t_info
+  t_info -->|nom duplique| t_dup
+  t_info -->|dimensions et type| t_nb
+  t_qk -->|taille de groupe| t_block
+  t_block -->|type_size| t_traits
+  t_traits -->|type 43 et nb0 34| t_meas
+  t_nb -->|nb0 et nb1| t_meas
+  t_info -->|offset uint64| t_meas
+  t_meas -->|dims 0 et 1| t_dims_py
+
+  t_dims_py -->|stride par ligne| r_stride
+  r_stride -->|dimensionne| r_seek_n3q
+  r_allrows -->|repete la lecture| r_seek_n3q
+  r_seek_n3q -->|lit le bloc| r_block
+  r_block -->|qs 32 octets| r_decode
+  r_decode -->|table de codes| r_ternary
+  r_kernel -.->|consomme la meme disposition de bloc| r_block
+
+  a_offset -.->|origine brute prise pour data_start sans alignement| d_raw
+  d_raw -->|prouve par| d_zero
+  d_zero -->|donc remplissage| d_test
+  d_test -->|test decisif| d_shift
+  d_shift -->|explique| d_scales
+  d_shift -->|declenche| d_open
+  d_raw -->|entraine| d_bad
+  d_bad -->|refuse d etre corrigee par une constante| d_noadd
+  d_bad -->|appliquee en clair| r_seek_q0
+
+  c_formula -->|remplace| d_bad
+  c_formula -->|installe en| c_n3q
+  c_formula -->|installe en| c_n4row
+  c_formula -->|installe en| c_n4vec
+  c_n3q -->|corrige l origine de| r_seek_n3q
+  c_n4row -->|corrige l origine de| r_seek_n3q
+  c_n4vec -->|corrige l origine de| r_allrows
+  c_hard -.->|limite la portee de| c_formula
+  c_requal -->|ferme| d_open
+  c_n3q -->|octets requalifies| c_requal
+  c_requal -->|consigne| c_ledger
+  c_requal -->|bornee par| c_reserve
+
+  classDef mesure fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef resolu fill:#1f6f2f,stroke:#0d3315,color:#fff
+  classDef refuse fill:#8a1f1f,stroke:#4d0f0f,color:#fff
+  classDef ouvert fill:#8a3a12,stroke:#4d200a,color:#fff
+  classDef amont fill:#4a4a4a,stroke:#222222,color:#fff
+
+  class h_fn,h_magic,h_version,h_counts,h_order_py,m_loop,m_dup,m_types,m_key,m_align_check,m_py,a_comment,a_macro,a_pad,a_offset,a_accessor,a_py,t_info,t_dup,t_nb,t_qk,t_block,t_traits,t_meas,t_dims_py,r_stride,r_allrows,r_block,r_decode,r_ternary,r_kernel,f_scope mesure
+  class c_formula,c_n3q,c_n4row,c_n4vec,c_requal,c_ledger,r_seek_n3q resolu
+  class d_bad,d_noadd,r_seek_q0 refuse
+  class d_raw,d_zero,d_test,d_shift,d_scales,d_open,c_reserve,c_hard ouvert
+  class f_gguf,f_dump amont

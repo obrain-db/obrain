@@ -17,7 +17,8 @@
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use web_time::Instant;
+use std::time::Duration;
 
 use super::WalManager;
 

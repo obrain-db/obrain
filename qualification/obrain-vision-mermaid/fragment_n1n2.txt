@@ -1,0 +1,63 @@
+SPHERE: n1n2
+RESUME: La sequence N1 / N1bis / N2 a etabli la transparence bit a bit de la greffe de capture sur la trajectoire figee, reproduite independamment en N1 et en N1bis, puis la correspondance ligne vers unite de sortie par les metadonnees capturees et la validation des 865 offsets GGUF sur 865 avec tous les types. N1bis a refute l attribution de l absence du tenseur E6 au defaut 52 et a corrige sa selection, puis la reconstruction de reference a echoue massivement et N2 a localise la divergence au decodage des octets de poids ou a l offset d echelle de bloc. N2 a aussi refute sa propre hypothese d incoherence GGUF avant de conclure. Restent ouverts le gate d indexation independante NON EXECUTE aux deux etapes, la couverture temporelle PARTIELLE, Q0 STATUS NOT PASSED et Q1 ALLOWED NO. Les defauts 46 a 51 sont resolus ou retires apres mesure, 52 resolu et verifie par regression deux epoques, et 57 est un defaut de reference q8_1 resolu plus tard, hors de cette sphere. Aucun chiffre de cette sphere n a ete produit ici, tous sont lus dans les rapports cites.
+NOEUDS:
+[PROUVE] n1n2_n1_capture_off :: N1 gate N1-A capture desactivee inerte avec cinq zeros verifies :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_n1_transparence_bitwise :: N1 gate N1-C transparence numerique bit a bit de la greffe sur 2234880 valeurs :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[PARTIEL] n1n2_n1_population_validee :: N1 selection figee pour la validation mais non resolue faute d appariement payload cible :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[OUVERT] n1n2_n1_reconstruction_operateur :: N1 gate N1-F reconstruction q8_1 x TQ2_G128 contre mm_base non mesuree :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[OUVERT] n1n2_n1_defect_52 :: Defaut 52 manifeste de capture ecrase a chaque epoque etait OUVERT en N1 :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[RETIRE] n1n2_n1_analyse_absurde :: N1 erreurs de methode de son propre harnais d analyse avec awk sur mauvais index et target_id du mauvais fichier :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_n1_meme_trajectoire :: N1 OFF et ON consomment la meme trajectoire de tokens figee avant toute mesure :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_n1bis_defect_52_resolu :: N1bis manifeste repare a 673 lignes un seul en tete et deux epoques avec 672 payloads :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[REFUTE] n1n2_n1bis_absence_e6_cause_52 :: N1bis refute que l ecrasement du manifeste explique l absence du tenseur E6 la cause etait sa propre selection :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_n1bis_selection_corrigee :: N1bis selection E6 corrigee vers blk 15 attn_output et figee avant tout calcul d erreur :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_n1bis_transparence_bitwise :: N1bis transparence bitwise re mesuree sur le nouvel essai avec SHA256 identiques des logits OFF et ON :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[REFUTE] n1n2_n1bis_reconstruction_native :: N1bis reconstruction de reference refusee par le budget sur les trois tenseurs avec ecarts de plusieurs ordres de grandeur :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[REFUTE] n1n2_n1bis_causes_cuda_wht_capture :: N1bis ecarte CUDA la WHT desactivee et la capture non attribuables au vu de l ecart mesure :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[OUVERT] n1n2_n1bis_appariement_ligne :: N1bis fait de l appariement ligne vers valeur mm_base la premiere hypothese a eliminer avant toute comparaison :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[PARTIEL] n1n2_n1bis_arithmetique_reference :: N1bis modele arithmetique de reference confirme par la source mais non valide contre le natif :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_n2_convention_dimensions :: N2 convention des dimensions prouvee par les metadonnees capturees pour les trois tenseurs :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PROUVE] n1n2_n2_ligne_vers_sortie :: N2 la ligne logique du poids correspond a la coordonnee de sortie et l appariement de N1bis est declare juste :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PROUVE] n1n2_n2_indexation_payload :: N2 indexation du payload de sortie prouvee par contiguite nb ne bytes et offsets dans les bornes :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[REFUTE] n1n2_n2_incoherence_gguf :: N2 refute sa propre hypothese d incoherence des offsets GGUF en incluant tous les types de tenseurs :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PROUVE] n1n2_n2_offsets_gguf :: N2 offsets GGUF verifies a 865 sur 865 paires une fois tous les types inclus :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PROUVE] n1n2_n2_layout_bloc_tq2 :: N2 layout du bloc TQ2_G128 confirme par la source et concordant avec la lecture :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[OUVERT] n1n2_n2_divergence_poids :: N2 localise la premiere divergence au decodage des octets de poids ou a l offset d echelle de bloc sans la trancher :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[OUVERT] n1n2_gate_indexation_independante :: Gate de test d indexation independante de la ligne vers la sortie non execute en N2 et encore non execute en N4 :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PARTIEL] n1n2_gate_couverture_temporelle :: Couverture temporelle partielle en N2 et encore partielle en N4 les echantillons compares viennent de l epoque 0 soumission 1 :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[OUVERT] n1n2_n0_non_passe :: Q0 non passe et Q1 non autorise a la fin de la sequence N1 N1bis N2 :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PARTIEL] n1n2_ref_q8_1_heritee :: Reference q8_1 heritee declaree tests PASS et cas de mi chemin OK en N1 et N1bis sans re execution :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[RETIRE] n1n2_defect_57 :: Defaut 57 reference q8_1 avec echelle fp16 inversee et arrondi bancaire resolu et verifie par accord avec la sortie native en N4 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n1n2_n4_reference_validee :: N4 reference native validee sur trois tenseurs toutes lignes epoque 0 apres correction de la reference q8_1 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[RETIRE] n1n2_convention_mlp_gate :: La convention de nommage des tenseurs E5 et E6 est retiree elle reposait sur un nom inexistant corrige en N1bis :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[OUVERT] n1n2_defect_52_doute :: L attribution automatique de toute absence de tenseur au defaut 52 est abandonnee apres refutation en N1bis :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[PROUVE] n1n2_defects_46_51 :: Defauts 46 a 49 resolus 50 resolu et verifie par discrimination OFF ON et 51 retire apres mesure :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[PARTIEL] n1n2_n2_e_gate_non_execute :: N2 gate N2-E test F32 independant non ecrit juge utile mais non bloquant :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+[OUVERT] n1n2_champs_non_mesures :: Champs declares NON MESURE en N1 N1bis et N2 sur les compteurs NaN Inf les K d activation et la rotation :: docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md
+LIENS:
+n1n2_n1_capture_off -> n1n2_n1_transparence_bitwise [DEMONTRE] cinq zeros en mode OFF puis egalite bit a bit des logits OFF et ON
+n1n2_n1_meme_trajectoire -> n1n2_n1_transparence_bitwise [DEPEND] la comparaison bitwise n a de sens que sur une trajectoire figee identique
+n1n2_n1_transparence_bitwise -> n1n2_n1bis_transparence_bitwise [DEPEND] N1bis re mesure la transparence au lieu de l heriter de N1
+n1n2_n1_defect_52 -> n1n2_n1bis_defect_52_resolu [REMPLACE] N1 ouvre le defaut 52 et N1bis le repare et le verifie
+n1n2_n1bis_defect_52_resolu -> n1n2_n1_reconstruction_operateur [OUVRE] l appariement payload cible redevient possible et ouvre le calcul de reference
+n1n2_n1bis_absence_e6_cause_52 -> n1n2_defect_52_doute [RETIRE] l ecrasement du manifeste n explique pas l absence du tenseur E6
+n1n2_convention_mlp_gate -> n1n2_n1bis_selection_corrigee [REMPLACE] le nom de tenseur inexistant est remplace par la selection corrigee
+n1n2_n1bis_selection_corrigee -> n1n2_n1bis_reconstruction_native [DEPEND] le calcul de reference est execute sur la selection corrigee
+n1n2_n1_population_validee -> n1n2_n1bis_reconstruction_native [DEPEND] la reconstruction consomme la selection figee puis corrigee
+n1n2_n1bis_reconstruction_native -> n1n2_n1bis_appariement_ligne [OUVRE] l echec massif impose d eliminer d abord l appariement ligne vers sortie
+n1n2_n1bis_arithmetique_reference -> n1n2_n1bis_reconstruction_native [DEPEND] le modele arithmetique sous jacent a la reference n etait pas valide contre le natif
+n1n2_n1bis_appariement_ligne -> n1n2_n2_ligne_vers_sortie [REMPLACE] l hypothese d appariement faux est remplacee par la correspondance prouvee
+n1n2_n2_convention_dimensions -> n1n2_n2_ligne_vers_sortie [DEMONTRE] la convention ne et nb etablie par les metadonnees fonde la correspondance
+n1n2_n2_indexation_payload -> n1n2_n2_ligne_vers_sortie [DEMONTRE] l indexation du payload confirme la coordonnee de sortie
+n1n2_n2_incoherence_gguf -> n1n2_n2_offsets_gguf [RETIRE] l incoherence apparente des offsets est retiree apres verification sur tous les types
+n1n2_n2_offsets_gguf -> n1n2_n2_divergence_poids [OUVRE] les offsets etant verifies la divergence est ramenee aux octets de poids ou a l echelle de bloc
+n1n2_n2_layout_bloc_tq2 -> n1n2_n2_divergence_poids [DEPEND] le layout du bloc est confirme mais les valeurs lues restent incoherentes
+n1n2_n2_divergence_poids -> n1n2_n4_reference_validee [OUVRE] la divergence des octets de poids ouvre la chaine N3 puis N4
+n1n2_ref_q8_1_heritee -> n1n2_defect_57 [RETIRE] la reference q8_1 jugee conforme en N1 et N1bis est retiree apres N4
+n1n2_defect_57 -> n1n2_n4_reference_validee [DEMONTRE] la reference corrigee passe le budget preenregistre sur trois tenseurs
+n1n2_n1_analyse_absurde -> n1n2_n1_population_validee [RETIRE] l analyse fautive avait d abord fait conclure a un probleme de capture
+n1n2_n2_divergence_poids -> n1n2_n2_e_gate_non_execute [OUVRE] le test d indexation independante reste non ecrit malgre la divergence localisee
+n1n2_gate_indexation_independante -> n1n2_n0_non_passe [DEPEND] un gate non franchi interdit de promouvoir Q0
+n1n2_gate_couverture_temporelle -> n1n2_n0_non_passe [DEPEND] une couverture partielle sur une epoque ne constitue pas la population exigee par Q0
+n1n2_champs_non_mesures -> n1n2_n0_non_passe [DEPEND] des champs declares NON MESURE maintiennent Q0 non passe
+n1n2_n4_reference_validee -> n1n2_n0_non_passe [OUVRE] la validation de reference ne promeut pas Q0 limitee a trois tenseurs et une epoque

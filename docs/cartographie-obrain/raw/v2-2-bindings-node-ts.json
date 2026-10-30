@@ -1,0 +1,64 @@
+{
+  "area": "Bindings Node/TypeScript + CLI npm + interface JS du dashboard",
+  "summary": "La surface Node/TypeScript d'obrain se divise en DEUX paquets npm distincts et un client navigateur. (1) @obrain-db/js (crates/bindings/node/) est le binding natif napi-rs v3 (crate Rust `obrain-node`, cdylib) qui enveloppe obrain_engine::database::ObrainDB derrière un Arc<RwLock> et expose une API asynchrone (execute/executeCypher/executeSql/executeGremlin/executeGraphql/executeSparql), le CRUD nœud/arête, les transactions, la recherche vectorielle HNSW, le text-search BM25, le hybride, le CDC et l'embedding ONNX — le tout via index.js auto-généré (loader multi-plateformes) et index.d.ts (types). (2) @obrain-db/cli (packages/obrain-cli-npm/) est un lanceur mince (bin/obrain.js) qui résout le binaire obrain-cli Rust plateforme-spécifique parmi des optionalDependencies et le spawn avec execFileSync, sans logique métier. (3) Le dashboard Vue/React (packages/obrain-dashboard/) N'UTILISE PAS le binding napi : son interface d'appel à obrain est un client HTTP/WebSocket REST (src/lib/api.ts) qui interroge le serveur « viz » (/api/stores, /api/viz/subgraph avec streaming WS + repli HTTP, /api/query, /api/functions, /api/viz/weave, /api/worlds, /api/engine/ask…). Le tronc documente Node.js/TypeScript uniquement dans le README racine (installation `npm install @obrain-db/js`, exemple `ObrainDB.create()`/`execute()`), sans section dédiée au CLI. L'ensemble est en Apache-2.0 côté npm mais porte des incohérences de licence, d'URL de dépôt et de version entre le workspace Rust (0.0.1) et les paquets publiés (0.5.24)."
+  ,
+  "components": [
+    "crates/bindings/node/package.json — manifeste @obrain-db/js v0.5.24, main=index.js, types=index.d.ts, 6 optionalDependencies plateformes, engines node>=20",
+    "crates/bindings/node/index.js — loader napi-rs auto-généré (586 lignes) : détection musl/glibc, résolution de ~15 plateformes vers les binaires .node, repli WASI",
+    "crates/bindings/node/index.d.ts — déclarations TypeScript auto-générées : ObrainDB, JsNode, JsEdge, QueryResult, Transaction, simdSupport(), version()",
+    "crates/bindings/node/Cargo.toml — crate obrain-node (cdylib), deps obrain-engine/core/common/adapters + obrain-bindings-common, napi 3 (napi9/async/serde-json/error_anyhow), features gql/cypher/sparql/gremlin/graphql/sql-pgq/vector-index/text-index/hybrid-search/cdc/embed/algos/rdf, profils embedded/full",
+    "crates/bindings/node/build.rs — napi_build::setup() (génère les symboles C napi)",
+    "crates/bindings/node/src/lib.rs — module racine : #[macro_use] napi_derive, simd_support() -> obrain_core::index::vector::simd_support(), version() -> CARGO_PKG_VERSION",
+    "crates/bindings/node/src/database.rs — JsObrainDB (js_name ObrainDB) : create/open/open_read_only, execute_language_impl, CRUD nœud/arête, windowQuery2d(+Sorted), createEdgesBatch(Fast)/bulkImport, nodeCountByLabel/edgeCountByType, createPropertyIndex, checkpoint, vector/text/hybrid search, CDC history, embed ONNX (1274 lignes)",
+    "crates/bindings/node/src/graph.rs — JsNode / JsEdge exposés à JS (getters id/labels/edgeType, get(), properties(), hasLabel)",
+    "crates/bindings/node/src/query.rs — QueryResult : getters columns/length/executionTimeMs/rowsScanned, get()/toArray()/scalar()/nodes()/edges()/rows()",
+    "crates/bindings/node/src/transaction.rs — Transaction : execute/commit/rollback/isActive + variantes par langage, session obrain_engine::session::Session, support `using` (explicit resource management Node 22+)",
+    "crates/bindings/node/src/types.rs — conversion JS<->Value (table de correspondance null/bool/number/string/Array/Object/Buffer/Date/BigInt/Float32Array), js_to_value/value_to_js",
+    "crates/bindings/node/src/error.rs — NodeObrainError (thiserror) -> napi::Error (InvalidArg vs GenericFailure)",
+    "crates/bindings/node/__test__/index.spec.mjs — suite vitest (exports, cycle de vie, CRUD, requêtes) importée depuis ../index.js",
+    "crates/bindings/node/npm/linux-x64-gnu/package.json (et 5 autres) — paquets plateformes @obrain-db/js-* publiant le binaire .node",
+    "crates/bindings/wasm/package.json — @obrain-db/wasm (binding WASM séparé, non utilisé par le dashboard)",
+    "packages/obrain-cli-npm/package.json — manifeste @obrain-db/cli v0.0.1, bin obrain, optionalDependencies @obrain-db/cli-{linux-x64,linux-arm64,darwin-x64,darwin-arm64,win32-x64}, engines node>=18",
+    "packages/obrain-cli-npm/bin/obrain.js — launcher : table PLATFORMS platform/arch -> pkg+bin, findBinary() (optional dep -> adjacent -> PATH), execFileSync avec stdio inherit",
+    "packages/obrain-cli-npm/platform-template/package.json.tmpl — gabarit des paquets binaires @obrain-db/cli-{{PLATFORM}} (os/cpu/files {{BINARY}})",
+    "packages/obrain-cli-npm/README.md — doc d'installation/usage du CLI npm (info/stats/validate/query/shell/init)",
+    "packages/obrain-dashboard/src/lib/api.ts — client REST/WS du dashboard vers le serveur obrain (viz) : getCached/get, streamSubgraph (WebSocket), fetchSubgraph, searchFunctions, resoudreAncres, runQuery (/api/query), fetchWeave, fetchModuleArcs, fetchSpacePage, fetchLabelPairs, fetchEntretien, fetchActivation, askEngine, addWorld/fetchWorlds, fetchRamifications",
+    "packages/obrain-dashboard/src/app/store.ts — état jotai (storesAtom, activeStoreAtom, centersAtom, queryTextAtom/queryLangAtom/queryResultAtom, subjectAtom, ancrerAtom, faceAtom…) ; QueryResult local {columns, rows, error, execution_time_ms}",
+    "README.md (racine) — sections Node.js (ligne ~108) et Node.js/TypeScript (ligne ~511) : `npm install @obrain-db/js` et exemple ObrainDB.create()/execute()/close()"
+  ],
+  "relationships": [
+    "crates/bindings/node/src/database.rs -> obrain_engine::database::ObrainDB (wrap Arc<RwLock<ObrainDB>>) ; exécution via db.execute_language(query, language, params)",
+    "crates/bindings/node/src/lib.rs::simd_support() -> obrain_core::index::vector::simd_support()",
+    "crates/bindings/node/Cargo.toml -> obrain-engine, obrain-core, obrain-common, obrain-adapters, obrain-bindings-common (crates/bindings/common)",
+    "crates/bindings/node/src/database.rs -> crate::graph::{JsEdge,JsNode}, crate::query::QueryResult, crate::transaction::Transaction, crate::types, crate::error::NodeObrainError",
+    "crates/bindings/node/src/database.rs::convert_json_params/json_to_value -> obrain_bindings_common::json::{json_params_to_map, json_to_value}",
+    "crates/bindings/node/src/database.rs::extract_entities -> obrain_bindings_common::entity::extract_entities",
+    "crates/bindings/node/index.js -> require() des paquets @obrain-db/js-{platform} (optionalDependencies) pour charger le binaire .node",
+    "packages/obrain-cli-npm/bin/obrain.js -> spawn du binaire obrain/obrain.exe des paquets @obrain-db/cli-{platform} (optionalDependencies), repli cargo install obrain-cli",
+    "packages/obrain-dashboard/src/lib/api.ts -> fetch()/WebSocket() vers les endpoints HTTP du serveur obrain (aucun import de @obrain-db/js ni de @obrain-db/wasm)",
+    "packages/obrain-dashboard/src/app/App.tsx, Inspector.tsx, StoreOverview.tsx, StageContinu.tsx, Graph3D.tsx, CosmosWeave.tsx, EngineAsk.tsx, WorldAdd.tsx, useActivation.ts, fractale.ts, fratrie.ts, SubjectLine.tsx, CenterSearch.tsx, CommandBar.tsx, FacetBar.tsx, ChatPleinEcran.tsx -> importent depuis src/lib/api.ts",
+    "packages/obrain-dashboard/src/app/store.ts -> import type { JsonGraph } from ../lib/api ; runQuery (lib/api) alimente queryResultAtom",
+    "README.md racine -> cite @obrain-db/js (npm), @obrain-db/wasm, @obrain-db/web (badges) ; la table des bindings mentionne Node.js/TypeScript (napi-rs)"
+  ],
+  "notable_findings": [
+    "Le dashboard n'utilise PAS le binding natif @obrain-db/js ni WASM : son interface JS à obrain est un client HTTP/WebSocket REST pur (src/lib/api.ts) contre le serveur « viz » — la frontière réelle côté navigateur est donc le réseau, pas napi-rs.",
+    "Deux surfaces npm coexistent et ne se parlent pas : @obrain-db/js (binding embarqué napi-rs, v0.5.24) et @obrain-db/cli (lanceur de binaire Rust, v0.0.1) — le CLI ne passe pas par le binding JS, il spawn l'exécutable obrain-cli compilé.",
+    "Désaccord de version : le workspace Cargo.toml est à 0.0.1, mais les paquets npm (node index.js/d.ts/package.json) sont figés à 0.5.24 ; or version() retourne env!(CARGO_PKG_VERSION) = 0.0.1, donc un appel JS version() renverra 0.0.1 alors que npm a installé 0.5.24.",
+    "index.d.ts déclare inconditionnellement les méthodes sous feature-gates Rust (executeSql, executeGremlin, executeGraphql, executeSparql, mmrSearch, CDC, embed…) alors que database.rs les compile sous #[cfg(feature=...)] ; seuls les builds --features full (script `napi build --features full`) les exposent tous.",
+    "Le loader index.js (auto-généré napi-rs) gère ~15 plateformes (android, freebsd, linux-arm/loong64/riscv64/ppc64/s390x, openharmony, win32-ia32/arm64, darwin-universal…), mais package.json ne liste que 6 optionalDependencies — les autres cibles ne sont pas publiées.",
+    "Incohérence de licence : packages/obrain-cli-npm/platform-template/package.json.tmpl porte AGPL-3.0-or-later alors que le package CLI principal, le README CLI et le binding node sont Apache-2.0.",
+    "Incohérence d'URL de dépôt : le template CLI pointe github.com/ObrainDB/obrain tandis que partout ailleurs (node, README, cli package.json) c'est github.com/this-rs/obrain.",
+    "Les commentaires .d.ts mélangent anglais et français (ex. windowQuery2dSorted « Fenêtre 2D ACCÉLÉRÉE (zruns) », createEdgesBatchFast « BULK LOAD (sans WAL/CDC…) ») — traces des ajouts récents de la lignée substrate/zorder non harmonisés.",
+    "Le QueryResult JS expose rows() comme « all rows as array of arrays » mais aussi toArray() comme « objects » ; la distinction sémantique entre les deux (clés de colonnes vs positions) est documentée de façon ambiguë."
+  ],
+  "gaps": [
+    "Le champ `files` de packages/obrain-cli-npm/package.json (et du binding node) référence LICENSE, mais AUCUN fichier LICENSE n'existe dans packages/obrain-cli-npm/ ni crates/bindings/node/ (vérifié par ls).",
+    "index.js référence un repli WASI (obrain.wasi.cjs et @obrain-db/js-wasm32-wasi) mais aucun obrain.wasi.cjs n'est présent et wasm32-wasi n'est pas une cible du package — branche morte du gabarit napi-rs.",
+    "Aucune config de publication (workflow CI, .npmrc de publish, pipeline napi artifacts) n'a été trouvée à côté des paquets plateformes node/cli — la chaîne de release n'est pas cartographiée dans cette tranche.",
+    "executeSql() mappe le langage 'sql' (execute_language_impl('sql', …)) alors que le README du binding annonce « SQL/PGQ (SQL:2023 GRAPH_TABLE) » — l'étiquette feature s'appelle sql-pgq mais la clé runtime est 'sql'.",
+    "fetchLabelPairs() (dashboard) porte un bug documenté et non corrigé : `labels(a)[0]`/`labels(b)[0]` dans un GROUP BY recopie le label de la cible dans la source (le cross-label est quasi vide) — signalé en commentaire, à reprendre (cf. docs/ADR-COSMOS-TOILE-2026-09-10.md).",
+    "App.tsx.bak-avant-fix (package obrain-dashboard) reste dans l'arbre source — fichier de sauvegarde mort, non compilé, à purger.",
+    "Les fichiers dist/ de packages/obrain-dashboard (dizaines de bundles index-*.js/.map commités) cohabitent avec src/ — artefacts de build versionnés, source potentielle de confusion sur l'interface réellement servie.",
+    "Question ouverte : aucune route /api/viz/subgraph/stream n'est visiblement définie côté serveur dans cette tranche (seul le client WebSocket la consomme) — l'implémentation serveur du streaming WS n'a pas été vérifiée ici."
+  ]
+}

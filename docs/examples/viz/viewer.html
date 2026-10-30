@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<!--
+  Vue interactive autonome d'un sous-graphe obrain (json-graph v1) — V4-G1.
+  Aucune dépendance : chargement relatif de `sub.json`, layout circulaire
+  vanilla + SVG. Ouvrir ce fichier dans un navigateur (ou servir le dossier).
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<title>obrain viz — sous-graphe interactif</title>
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; margin: 1rem; color: #222; }
+  h1 { font-size: 1.1rem; }
+  #wrap { display: flex; gap: 1rem; flex-wrap: wrap; }
+  #info { font-size: .85rem; opacity: .8; white-space: pre-line; }
+  svg { border: 1px solid #ddd; border-radius: 6px; background:#fcfcfc; }
+  .node { cursor: pointer; }
+  .node circle { stroke: #333; stroke-width: 1; }
+  .node text { font-size: 10px; fill: #111; pointer-events: none; }
+  .edge { stroke: #999; stroke-width: 1; }
+  .edge.hot { stroke: #d62728; stroke-width: 2.5; }
+  .node.hot circle { stroke: #d62728; stroke-width: 2.5; }
+  #legend { font-size:.8rem; opacity:.7; }
+</style>
+</head>
+<body>
+<h1>obrain · sous-graphe rendable <code id="center">…</code></h1>
+<div id="toolbar" style="margin:.5rem 0">
+  store&nbsp;<input id="iStore" size="34" placeholder="chemin du store (vide = défaut serveur)"/>
+  centre&nbsp;<input id="iCenter" size="22" value="substitute_in_operator"/>
+  hops&nbsp;<input id="iHops" size="2" value="2"/>
+  <button id="bGo" onclick="go()">Charger</button>
+  <span style="opacity:.6;font-size:.8rem">mode fichier : sub.json · mode serve : /api/viz/subgraph</span>
+</div>
+<div id="wrap">
+  <svg id="g" width="720" height="520"></svg>
+  <div>
+    <div id="info"></div>
+    <div id="legend">clic : met en évidence les voisins (arêtes CALLS/DEFINES en rouge).
+      Source : <code>docs/examples/viz/sub.json</code> (json-graph v1).</div>
+  </div>
+</div>
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const RAD = 190, CX = 360, CY = 260;
+const colors = ["#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f","#edc948","#b07aa1"];
+
+function params() { return new URLSearchParams(location.search); }
+function apiUrl(store, center, hops) {
+  const q = new URLSearchParams({ hops: hops || "2" });
+  if (store) q.set("store", store);
+  if (center) q.set("center", center);
+  return "/api/viz/subgraph?" + q.toString();
+}
+async function load() {
+  const p = params();
+  if (p.get("store") || p.get("center")) {
+    const store = p.get("store") || "";
+    const center = p.get("center") || "substitute_in_operator";
+    const hops = p.get("hops") || "2";
+    document.getElementById("iStore").value = store;
+    document.getElementById("iCenter").value = center;
+    document.getElementById("iHops").value = hops;
+    const r = await fetch(apiUrl(store, center, hops));
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  // Mode fichier (sub.json) ; sinon bascule sur l'endpoint (store défaut serveur).
+  try {
+    const r = await fetch("sub.json");
+    if (!r.ok) throw new Error("sub.json indisponible");
+    return r.json();
+  } catch (e) {
+    const r = await fetch(apiUrl("", "substitute_in_operator", "2"));
+    if (!r.ok) throw e;
+    return r.json();
+  }
+}
+
+function draw(data) {
+  const nodes = data.nodes, edges = data.edges;
+  const ids = nodes.map(n => n.id);
+  const n = nodes.length;
+  // Layout circulaire ordonné (déterministe : ordre du json-graph canonique).
+  const pos = {};
+  nodes.forEach((node, i) => {
+    const a = (2 * Math.PI * i) / Math.max(n, 1) - Math.PI / 2;
+    pos[node.id] = { x: CX + RAD * Math.cos(a), y: CY + RAD * Math.sin(a) };
+  });
+  // Couleur des nœuds : color_hint si présent, sinon par indice.
+  const fill = node => node.color_hint || colors[nodes.indexOf(node) % colors.length];
+
+  const svg = document.getElementById("g");
+  const mk = (tag, attrs) => { const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+  const byId = new Map(nodes.map(x => [x.id, x]));
+
+  edges.forEach(edge => {
+    const a = pos[edge.src], b = pos[edge.dst];
+    if (!a || !b) return;
+    const line = mk("line", { class: "edge", x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    if (edge.color_hint) line.setAttribute("stroke", edge.color_hint);
+    line.setAttribute("data", `${edge.src}·${edge.dst}`);
+    svg.appendChild(line);
+  });
+
+  nodes.forEach(node => {
+    const p = pos[node.id];
+    const g = mk("g", { class: "node", transform: `translate(${p.x},${p.y})` });
+    g.appendChild(mk("circle", { r: 9, fill: fill(node) }));
+    const label = node.label || node.qn || node.id;
+    g.appendChild(mk("text", { x: 0, y: -14, "text-anchor": "middle" }))
+      .textContent = label.length > 24 ? label.slice(0, 23) + "…" : label;
+    g.addEventListener("click", () => highlight(node.id));
+    g.addEventListener("mouseenter", () => info(node));
+    svg.appendChild(g);
+  });
+
+  // Info par défaut : centre (1er nœud) puis survol.
+  info(nodes[0]);
+  document.getElementById("center").textContent =
+    (nodes[0].qn || nodes[0].id);
+
+  function neighbors(id) {
+    const set = new Set([id]);
+    edges.forEach(e => { if (e.src === id) set.add(e.dst);
+                          if (e.dst === id) set.add(e.src); });
+    return set;
+  }
+  function highlight(id) {
+    const hot = neighbors(id);
+    svg.querySelectorAll(".node").forEach(g => {
+      const nid = idOf(g);
+      g.classList.toggle("hot", hot.has(nid));
+    });
+    svg.querySelectorAll(".edge").forEach(l => {
+      const [s, d] = l.getAttribute("data").split("·");
+      l.classList.toggle("hot", hot.has(s) && hot.has(d));
+    });
+    const node = byId.get(id);
+    info(node);
+  }
+  // Attacher __id aux groupes (ordre d'insertion = ordre des nœuds) — le clic
+  // et la mise en évidence des voisins s'appuient dessus.
+  const groups = [...svg.querySelectorAll("g.node")];
+  groups.forEach((g, i) => { g.__id = ids[i]; });
+
+  function info(node) {
+    const parts = [
+      `id      : ${node.id}`,
+      node.qn  ? `qn      : ${node.qn}`  : "",
+      node.label ? `label   : ${node.label}` : "",
+      node.file_path ? `fichier : ${node.file_path}` : "",
+      node.energy != null ? `energy  : ${node.energy}` : "",
+      node.scc_id != null ? `scc_id  : ${node.scc_id}` : "",
+    ].filter(Boolean);
+    document.getElementById("info").textContent = parts.join("\n");
+  }
+}
+
+function go() {
+  const store = document.getElementById("iStore").value.trim();
+  const center = document.getElementById("iCenter").value.trim() || "substitute_in_operator";
+  const hops = document.getElementById("iHops").value.trim() || "2";
+  fetch(apiUrl(store, center, hops)).then(r => r.ok ? r.json() : Promise.reject(r))
+    .then(draw)
+    .catch(e => { document.getElementById("info").textContent = "Erreur : " + e; });
+}
+load().then(draw).catch(e => {
+  document.getElementById("info").textContent =
+    "Échec du chargement de sub.json : " + e.message +
+    "\nServez ce dossier via un serveur statique (fetch relatif) ou ouvrez-le par http.";
+});
+</script>
+</body>
+</html>

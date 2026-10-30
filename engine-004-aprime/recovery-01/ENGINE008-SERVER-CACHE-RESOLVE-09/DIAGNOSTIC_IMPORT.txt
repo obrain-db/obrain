@@ -1,0 +1,20 @@
+=== PHASES (exp9) ===
+[A] START 1790956930
+[A] END rc=7 1790956930
+[B] START 1790956930
+[B] END rc=7 1790956930
+[C] START 1790956930
+[C] END rc=7 1790956930
+=== META ===
+A : HTTP=000 TIME=0.000112
+
+B : HTTP=000 TIME=0.000118
+
+C : HTTP=000 TIME=0.000102
+
+=== TIMELINE CHARGEMENT ===
+0.00.208.360 load_model: loading model '/home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf'
+1.15.311.219 load_model: obrain model identity: instance=1 sha256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937 (64832.7 ms)
+1.24.118.923 load_model: initializing, n_slots = 3, n_ctx_slot = 512, kv_unified = 'false'
+1.24.142.299 llama_server: model loaded
+1.24.142.303 llama_server: listening on http://127.0.0.1:8476

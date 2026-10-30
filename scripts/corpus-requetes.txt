@@ -1,0 +1,18 @@
+C1 name CONTAINS iam (3 termes)|MATCH (n) WHERE n.name CONTAINS 'iam' OR n.name CONTAINS 'IAM' OR n.qualified_name CONTAINS 'iam' RETURN n.qualified_name, labels(n) LIMIT 30
+C2 auth/token (4 termes)|MATCH (n) WHERE n.name CONTAINS 'auth' OR n.name CONTAINS 'Auth' OR n.name CONTAINS 'token' OR n.name CONTAINS 'Token' RETURN n.qualified_name, labels(n) LIMIT 30
+C3 STARTS WITH module|MATCH (n) WHERE n.qualified_name STARTS WITH 'home.triviere.projects.banc_obrain.crates.obrain-iam' RETURN n.qualified_name, labels(n) LIMIT 60
+C4 STARTS WITH + labels (OU)|MATCH (n) WHERE n.qualified_name STARTS WITH 'home.triviere.projects.banc_obrain.crates.obrain-iam.src' AND (n:Module OR n:Struct OR n:Enum OR n:Trait OR n:Class OR n:Interface OR n:Type) RETURN n.qualified_name, labels(n) LIMIT 40
+C5 File CONTAINS obrain-iam|MATCH (f:File) WHERE f.qualified_name CONTAINS 'obrain-iam' RETURN f.qualified_name LIMIT 40
+C6 aretes traversantes|MATCH (a)-[r]->(b) WHERE a.qualified_name CONTAINS 'obrain-iam' AND NOT b.qualified_name CONTAINS 'obrain-iam' RETURN a.qualified_name, type(r), b.qualified_name LIMIT 40
+C7 aretes TESTS|MATCH (a)-[r:TESTS]->(b) WHERE a.qualified_name CONTAINS 'obrain-iam' RETURN a.qualified_name, b.qualified_name LIMIT 30
+C8 STARTS WITH + Function|MATCH (n) WHERE n.qualified_name STARTS WITH 'home.triviere.projects.banc_obrain.crates.obrain-iam.src' AND (n:Function OR n:Method) RETURN n.qualified_name LIMIT 80
+C9 intervalle de qn|MATCH (n) WHERE n.qualified_name >= 'home.triviere.projects.banc_obrain.crates.obrain-iam' AND n.qualified_name < 'home.triviere.projects.banc_obrain.crates.obrain-iamz' RETURN n.qualified_name LIMIT 60
+C10 egalite indexee|MATCH (n) WHERE n.qualified_name = 'home.triviere.projects.banc_obrain.workspace.dependencies.obrain-iam' RETURN n.qualified_name LIMIT 5
+C11 balayage de label|MATCH (m:Method) RETURN m.qualified_name, m.file_path LIMIT 25
+C12 messages d'une session|MATCH (m:Message) WHERE m.session = 'session-x' AND m.role = 'user' RETURN m.seq AS seq, m.text AS text ORDER BY m.seq DESC LIMIT 3
+C13 compteur de noeuds|MATCH (n) RETURN count(n)
+F1 plage basse seule|MATCH (n) WHERE n.qualified_name >= 'home.triviere.projects.banc_obrain.crates.obrain-iam.src.libzzzz' RETURN count(n)
+F3 plage prefixe non selectif|MATCH (n) WHERE n.name >= 'aa' AND n.name < 'ab' RETURN count(n)
+F7 negation seule|MATCH (n) WHERE NOT n.qualified_name CONTAINS 'obrain' RETURN count(n)
+V1 viz space (CONTAINS .crates.)|MATCH (n) WHERE n.qualified_name CONTAINS '.crates.' RETURN n.qualified_name LIMIT 43
+C14 compteur de label|MATCH (f:File) RETURN count(f)

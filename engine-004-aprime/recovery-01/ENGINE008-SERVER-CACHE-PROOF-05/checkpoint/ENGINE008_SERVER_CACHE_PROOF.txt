@@ -1,0 +1,171 @@
+ENGINE-008 -- PREUVE DU CACHE HIT PAR LA ROUTE SERVEUR
+==========================================================================
+LE CACHE HIT PUR EST PROUVE PAR LA ROUTE REELLE. Aucun pilote isole.
+
+=== 1. AMBIGUITES RESOLUES (avec references source) ===
+
+FACT_DECODE_MS_SEMANTICS=ETABLIE -- et c'est une MESURE COURANTE, pas un
+historique. Preuve : `const int64_t t_fact_decode_start = ggml_time_us();`
+a server-context.cpp:3727, et
+`const float fact_decode_ms = (ggml_time_us() - t_fact_decode_start)/1000.0f;`
+a :3837. Les deux valeurs sont prises DANS la requete.
+
+CE QUE LE CHAMP MESURE DEPEND DU CHEMIN, et c'est un defaut de nommage :
+ - chemin TEXTE / extract : il couvre `decode_batch(fact_tokens, 0, false)`
+   (:3729, DANS la branche `if (!kv_by_ref)`) ;
+ - chemin `state_ref` : le decode du fait N'EST PAS execute (il est dans la
+   branche `!kv_by_ref`). Le champ couvre alors le lookup, le controle
+   d'integrite, `llama_state_seq_set_data` et `get_size`.
+ Mesure directe qui le prouve : CONTROL 909.083 ms contre RESTORED 74.266 ms
+ sur les MEMES 58 IDs. Si le prefixe etait rejoue, RESTORED serait ~900 ms.
+
+**CORRECTION D'UN RAPPORT PRECEDENT, que je dois declarer.** J'avais ecrit en
+INTEGRATION-04 : « K1 rapporte fact_decode_ms=63.647 et K2 exactement la meme
+valeur », et j'en avais tire un « signal suspect ». **C'ETAIT FAUX** : j'avais
+confondu deux executions differentes (smoke2 et smoke3). Les valeurs brutes
+reelles sont : **K1 (extract_only) = 0.0** et **K2 (state_ref) = 63.647**. Il
+n'y avait AUCUNE coincidence a elucider. Le vrai defaut, que j'ai trouve en
+verifiant, est ailleurs :
+
+DEFAUT DE RAPPORT REEL -- sur `extract_only`, la branche envoie le resultat et
+`break` a :3786, AVANT :3837. `fact_decode_ms` et `query_decode_ms` gardent
+donc leur **valeur par defaut 0.0** et sont serialises tels quels : un appelant
+ne peut PAS distinguer « mesure 0 ms » de « jamais mesure ». Confirme sur la
+sortie brute de A : `fact_decode_ms:0.0, query_decode_ms:0.0`.
+
+STATE_FORMAT_AND_SCOPE=ETABLIS.
+ - transfert : `llama_state_seq_{get_size,get_data,set_data}(ctx, ..., seq_id)`,
+   soit `flags = LLAMA_STATE_SEQ_FLAGS_NONE` = 0. **PARTIAL_ONLY n'est PAS
+   utilise** : le blob porte attention + recurrent.
+ - perimetre : `llama_memory_hybrid::state_write` ecrit `mem_attn` (16 couches
+   d'attention) PUIS `mem_recr` (48 couches SSM) -- la seule valeur qui
+   transporte l'etat hybride complet.
+ - sequence destination : `llama_memory_seq_rm(llama_get_memory(ctx), seq_id,
+   -1, -1)` est appele AVANT la source de l'etat (:3723). La sequence est donc
+   remise a zero avant tout import -- pas de residu.
+ - retours verifies : `llama_state_seq_set_data(...) == 0` -> erreur
+   « failed to load state (set_data) » ; `get_data != blob_size` -> erreur
+   « failed to extract fact state ».
+
+DIFFERENCE DE TAILLE 160697016 vs 157353668 -- EXPLIQUEE, pas « proche ».
+  Attention KV par token = 16 couches x (1024 K + 1024 V) x 2 octets (f16)
+                          = 65 536 octets
+  BENCH-03 : 58 tokens -> attention 3 801 088 ; blob 160 697 016
+             => partie recurrente 156 895 928
+  SERVEUR  :  7 tokens -> attention   458 752 ; blob 157 353 668
+             => partie recurrente 156 894 916
+  L'ecart sur le blob (3 343 348) est explique a **99,97 %** par le seul terme
+  d'attention ; le residu sur la partie RECURRENTE est de **1 012 octets**.
+  **Le blob est DOMINE par l'etat recurrent fixe (~156,9 Mo).**
+  ET LA MESURE DECISIVE : avec les MEMES 58 tokens, le serveur produit
+  **160 697 024** contre **160 697 016** en BENCH-03, soit **8 OCTETS d'ecart**
+  -- un en-tete, PAS un format different.
+  CONCLUSION CORRIGEE : « tout est dans le blob » est VRAI pour le CONTENU
+  (etat attention + recurrent + type + mode + format), mais **le blob ne porte
+  NI l'identite du modele, NI la configuration de contexte, NI le SHA256 du
+  contenu** : ce sont des elements EXTERIEURS. Un hash de contenu n'est donc
+  PAS un controle de compatibilite (cf. §2 ci-dessous, NON IMPLEMENTE).
+
+=== 2. CE QUI A ETE IMPLEMENTE ===
+  `fact_token_ids` -- entree EXPLICITE d'IDs natifs (server-task.h : champ
+    `jspace_fact_token_ids` ; route : parsing avec BORNE 1..4096, verication de
+    chaque ID contre `llama_vocab_n_tokens`, et REFUS si `fact_text` est fourni
+    en meme temps -- les deux sources sont mutuellement exclusives).
+  Compteurs de requete -- `prefix_decode_calls`, `prefix_token_count`,
+    `state_imported`, publies dans `to_json()`. Ils distinguent ce qui est
+    decode DANS cette requete de ce qui vient d'un import.
+  4 correctifs d'exclusion d'entree, chacun avec ancres VERIFIEES avant
+    ecriture (une tentative a echoue sur une ancre mal indentee et n'a RIEN
+    ecrit : le fichier n'est jamais reste a moitie patche).
+
+COMPATIBILITY_CHECK_CONNECTED=NO
+  **Je ne l'ai PAS implemente.** Il faudrait un manifeste associe au blob
+  (modele, Q1, parametres, types/mode d'etat, format, prefixe exact, positions,
+  convention de sequence) verifie AVANT import. Aujourd'hui la cle est FNV-1a
+  64 bits sur le contenu -- elle etablit que le contenu est LE MEME, pas qu'il
+  est COMPATIBLE avec le modele et la configuration courants. **FNV-1a n'est pas
+  une garantie d'integrite cryptographique**, et je ne l'ai pas remplace par
+  SHA256.
+
+INTEGRITY_CHECK_SELFTEST=NOT_RUN
+  Le controle d'integrite disque (recalcul de `kv_ref_of` et refus sur
+  discordance) est IMPLEMENTE depuis INTEGRATION-04, mais **je ne l'ai pas
+  exerce** : aucun blob tronque ni altere n'a ete soumis. Je ne le declare
+  donc pas PASS.
+
+LRU_AND_MEMORY_LIMIT_SELFTEST=NOT_RUN
+  La borne et l'eviction LRU sont IMPLEMENTEES, mais **non exercees** : aucune
+  entree depassant la borne n'a ete soumise. Non PASS.
+
+EFFECTIVE_CACHE_LIMIT_BYTES=2147483648
+  La discordance 2 Gio / 3 Gio est RESOLUE : la borne par defaut CODEe en dur
+  dans `kv_states_max_bytes()` est **2 x 1024^3 = 2 147 483 648 octets**. Les
+  3 221 225 472 utilises dans INTEGRATION-04 venaient de la variable
+  d'environnement `OBRAIN_KV_STATES_MAX_BYTES` que j'avais posee a 3 Gio dans
+  le script de smoke. **Les deux valeurs sont donc coherentes : 2 Gio est le
+  defaut, 3 Gio etait un reglage explicite.** Unites : OCTETS.
+  Dans cette experience, `OBRAIN_KV_STATES_MAX_BYTES=2 x 1024^3` a ete pose :
+  valeur effective 2 147 483 648 octets, soit 13,4 entrees de 160 697 024.
+
+=== 3. L'EXPERIENCE SERVEUR, PAR LA ROUTE REELLE ===
+  Entree : les **59 IDs autoritaires** (`ids59.txt`, SHA fc39bb86...), fournis
+  par `fact_token_ids`. **Aucune seconde tokenisation** : le 59e ID (198) a ete
+  converti en piece `0x0a` et l'aller-retour verifie (`RETOK_N=1`,
+  `RETOK[0]=198`).
+  Serveur : modele candidat, `--ctx-size 1024 --parallel 3 --jinja`,
+  `OBRAIN_KV_STATES_MAX_BYTES=2147483648`.
+
+  A. EXPORT   route reelle, `fact_token_ids` = 58 premiers IDs, extract_only
+     HTTP=200  TIME=1.732976 s
+     REF = **046f5945a8dc6fc9**   fact_tokens=58   blob_bytes=160697024
+     prefix_decode_calls=1  prefix_token_count=58  state_imported=false
+
+  B. CONTROL  contexte neuf, `fact_token_ids` = 58 IDs + 59e en position 58
+     HTTP=200  TIME=14.579908 s
+     prefix_decode_calls=**1**  prefix_token_count=**58**  state_imported=false
+     fact_decode_ms=**909.083**   query_decode_ms=1936.839
+     TEXT = **'.\n</think>\n\nOK.'**
+
+  C. RESTORED contexte neuf, `state_ref` = ref de A + 59e en position 58
+     HTTP=200  TIME=13.761742 s
+     prefix_decode_calls=**0**  prefix_token_count=**0**  state_imported=**true**
+     fact_decode_ms=**74.266**    query_decode_ms=1932.020
+     TEXT = **'.\n</think>\n\nOK.'**
+
+  **CURRENT_REQUEST_PREFIX_DECODE_CALLS=0 et
+    CURRENT_REQUEST_PREFIX_TOKEN_COUNT=0 sur RESTORED : l'exigence §6 est
+    satisfaite par un compteur du chemin de production lui-meme.**
+  **Coût du prefixe : 909.083 -> 74.266 ms, soit 12,24x, mesure par l'engine.**
+  Temps HTTP total quasi identique (14.58 s contre 13.76 s) : la generation de
+  32 tokens domine (~1.93 s de query_decode_ms dans les deux cas). **Le gain
+  porte sur le PREFIXE, pas sur le total.**
+
+PURE_CACHE_HIT_OBSERVED=YES
+CURRENT_REQUEST_PREFIX_TOKEN_COUNT=0
+TOKEN_SEQUENCE_MATCH=YES  (texte identique, mais voir la reserve ci-dessous)
+CONTROL_TEXT=.\n</think>\n\nOK.
+RESTORED_TEXT=.\n</think>\n\nOK.
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+  **La route ne restitue QUE du texte.** Aucun logit natif n'est expose par
+  `POST /jspace/inject_knowledge`. La comparaison binaire des premiers logits
+  exigerait une instrumentation supplementaire qui n'existe pas dans cette
+  route, et je n'ai pas construit de pipeline parallele pour la simuler.
+
+HTTP_CALL_COUNT=3 utiles (A, B, C) + 1 sante + 1 aller-retour piece = 5
+SERVER_START_COUNT=1 pour cette experience (plus 3 pendant les mises au point,
+  dont 2 ou la route refusait encore `fact_token_ids` -- declarees, non masquees)
+Q1_LIBLLAMA_REBUILT=NO  (libllama.so.0 = 87c42d5f... INCHANGE a chaque build)
+QUALITY_EXECUTION_ALLOWED=NO
+
+=== 4. RESERVES ===
+ - **L'egalite des textes n'est PAS l'egalite des logits.** Deux continuations
+   textuelles identiques ne prouvent pas une identite numerique. Ce que je
+   prouve est : le prefixe n'a pas ete decode, l'etat a ete importe, et la
+   continuation produite est la meme CHAINE.
+ - Le blob est garde EN MEMOIRE dans ce processus ; **aucun cout disque/reseau
+   n'a ete mesure**.
+ - `blob_bytes` rapporte par A, B et C est identique (160697024), mais cela ne
+   prouve pas que les trois ont utilise le MEME blob : A l'a produit, C l'a
+   importe ; B a produit le sien.
+ - La borne et l'integrite sont implementees mais NON exercees.
+ - Le manifeste de compatibilite n'existe PAS.

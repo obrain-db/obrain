@@ -1,0 +1,62 @@
+{
+  "area": "Primitives cognitives obrain-cognitive (energy / synapse / scar / fabric / engrams)",
+  "summary": "obrain-cognitive est le crate qui matérialise « The Graph Database That Learns » : chaque sous-système cognitif implémente MutationListener (obrain-reactive) et réagit de façon asynchrone aux mutations du graphe via la MutationBus/Scheduler. Cinq primitives centrales cohabitent : l'energy (énergie nodale à décroissance exponentielle E(t)=E0·2^(-Δt/half_life), boostée à chaque mutation/requête, avec renforcement structurel par degré), la synapse (apprentissage hebbien « fire together, wire together » avec poids à décroissance exponentielle et plafond compétitif), le scar (mémoire persistante des erreurs — rollback, erreur, troncature LLM — dont l'intensité guérit exponentiellement et nourrit le risque), le fabric (métriques auto-calculées par nœud : fréquence de mutation, densité d'annotation, staleness, risk_score composite, pagerank/betweenness/community via GDS refresh) et l'engram (trace mnésique consolidée émergente, architecture biomimétique en 6 couches + homéostasie). Toutes les métriques sont persistées en write-through via des propriétés préfixées `_cog_*` (PROP_ENERGY, PROP_SYNAPSE_WEIGHT, PROP_SCAR_INTENSITY, PROP_FABRIC_RISK...). L'engram est le sommet d'abstraction : il consolide la co-activation (couche 0 Hebbian+FSRS), l'immunité, la stigmergie, le Hopfield moderne + codage prédictif, l'épigénétique, et s'expose en GQL via des procédures d'introspection (engrams.list/inspect/forget, cognitive.metrics). Le crate est strictement `#![deny(unsafe_code)]`, WASM-compatible (web-time), et découpé en 3 niveaux de features de convenance (cognitive → cognitive-fabric → cognitive-full).",
+  "components": [
+    "crates/obrain-cognitive/src/lib.rs — point d'entrée, arborescence des modules feature-gated, re-exports (355 lignes)",
+    "crates/obrain-cognitive/Cargo.toml — features energy/synapse/fabric/scar/engram/hopfield/immune/stigmergy/epigenetic + groupes de convenance",
+    "crates/obrain-cognitive/src/energy.rs — EnergyConfig/NodeEnergy/EnergyListener/EnergyStore/energy_score/effective_half_life (872 l.)",
+    "crates/obrain-cognitive/src/synapse.rs — Synapse/SynapseConfig/SynapseListener/SynapseStore/synapse_score/mutation_frequency_score + SynapseConsolidator (2323 l.)",
+    "crates/obrain-cognitive/src/activation.rs — ActivationMap/ActivationSource/SpreadConfig/spread/spread_single (spreading activation)",
+    "crates/obrain-cognitive/src/scar.rs — Scar/ScarConfig/ScarReason/ScarStore (718 l.)",
+    "crates/obrain-cognitive/src/fabric.rs — FabricScore/FabricListener/FabricStore/RiskWeights (647 l.)",
+    "crates/obrain-cognitive/src/gds_refresh.rs — GdsRefreshScheduler (PageRank/Betweenness/Louvain) alimentant le fabric",
+    "crates/obrain-cognitive/src/store_trait.rs — constantes PROP_* de persistance write-through (_cog_energy, _cog_synapse_weight, _cog_scar_intensity, _cog_risk_score...)",
+    "crates/obrain-cognitive/src/engram/mod.rs — documentation des 6 couches biomimétiques + feature flags engram (119 l.)",
+    "crates/obrain-cognitive/src/engram/types.rs — Engram/EngramId/EpisodeId/EngramHorizon/FsrsState/PredictionError/RecallEvent (240 l.)",
+    "crates/obrain-cognitive/src/engram/store.rs — EngramStore cache DashMap + write-through CognitiveStorage + backend substrate (engram_members/engram_bitset)",
+    "crates/obrain-cognitive/src/engram/formation.rs — HebbianWithSurprise/FormationConfig/EngramFormationTrigger/CoActivationDetector (843 l.)",
+    "crates/obrain-cognitive/src/engram/decay.rs — FsrsScheduler/FsrsConfig/ReviewRating (spaced repetition)",
+    "crates/obrain-cognitive/src/engram/recall.rs — RecallEngine/WarmupSelector/ActivatedEngram/DetailLevel",
+    "crates/obrain-cognitive/src/engram/hopfield.rs — PatternMatrix/hopfield_retrieve/max_marginal_relevance/softmax_compete/PredictiveModel (57346 o.)",
+    "crates/obrain-cognitive/src/engram/homeostasis.rs — HomeostasisEngine/HomeostasisConfig (synaptic scaling, anti-lock-in)",
+    "crates/obrain-cognitive/src/engram/observe.rs — CognitiveMetrics/EngramMetricsCollector/HomeostasisSignal",
+    "crates/obrain-cognitive/src/engram/crystallization.rs — CrystallizationDetector/crystallize/generate_summary (engram → note)",
+    "crates/obrain-cognitive/src/engram/manager.rs — EngramManager coordinateur unifié des sous-systèmes",
+    "crates/obrain-cognitive/src/engram/position.rs + position_substrate.rs — signatures positionnelles µs (PosCentroid/PosIndex/SubstratePositionProvider)",
+    "crates/obrain-cognitive/src/engram/spectral.rs — SpectralEncoder (signature spectrale pour similarité/Hopfield)",
+    "crates/obrain-cognitive/src/procedures.rs — procédures GQL d'introspection (engrams.list/inspect/forget, cognitive.metrics)",
+    "crates/obrain-cognitive/src/config.rs — CognitiveConfig/KernelConfigToml"
+  ],
+  "relationships": [
+    "energy/synapse/fabric/co_change implémentent MutationListener (obrain-reactive) → réagissent aux MutationEvent du MutationBus",
+    "activation.spread consume les synapses (poids hebbiens) pour propager l'activation entre nœuds",
+    "scar.scar_intensity est poussé dans fabric.FabricScore via FabricStore::set_scar_intensity → pondère risk_score (poids scar=0.15 par défaut)",
+    "fabric ← gds_refresh.GdsRefreshScheduler (pagerank, betweenness, community_id) et ← gap_detection (knowledge_gap, distinct de annotation_density)",
+    "engram couche 0 (formation HebbianWithSurprise) prolonge le principe de co-activation des synapses, modulé par l'erreur de prédiction",
+    "engram.store (feature substrate) miroite vers obrain-substrate : tables side-column substrate.engram_members et substrate.engram_bitset (Bloom 64 bits)",
+    "procedures.rs interroge EngramStore/EngramMetricsCollector pour exposer engrams.list/inspect/forget et cognitive.metrics au dialecte GQL",
+    "store_trait.rs fournit les PROP_* partagés par energy/synapse/scar/fabric pour la persistance write-through sur GraphStore",
+    "energy.effective_half_life = base·(1+α·ln(1+degree)) — couplage structurel énergie/degré (structural_reinforcement_alpha)",
+    "lib.rs re-exporte les primitives : EnergyListener, SynapseListener, Scar, FabricListener, EngramManager... sous leurs gates respectifs"
+  ],
+  "notable_findings": [
+    "synapse.rs est de loin le plus gros fichier (2323 lignes, ~98 Ko) et porte un SynapseConsolidator (plan 69e59065 T3) drainant pending_metadata_writes via crossbeam::SegQueue, cadence 30s, contrainte de crash-safety aa932b40",
+    "ScarReason encode des motifs spécifiques LLM (Truncation, Repetition, UserCorrection) — la couche cognitive sert donc aussi à mémoriser la qualité des sorties LLM, pas seulement les rollbacks BDD",
+    "L'engram est le seul module « toujours disponible » (non gate au niveau mod), mais ses sous-systèmes restent feature-gated ; position.rs est volontairement feature-free (dépend seulement de obrain_common)",
+    "engram.store expose trois primitives substrate additionnelles form/recall/members avec un bitset Bloom monotone-union (bits périmés = faux positifs résolus par la table members)",
+    "Le crate est `#![deny(unsafe_code)]` et WASM-compatible (web_time::Instant/SystemTime au lieu de std::time)",
+    "Propriétés dépréciées détectées : PROP_FABRIC_CHURN → PROP_FABRIC_MUTATION_FREQ, PROP_FABRIC_DENSITY → PROP_FABRIC_ANNOTATION_DENSITY (traces de renommage)",
+    "engram décrit une architecture en 6 couches biomimétiques (Hebbian+FSRS, immuno, stigmergie, Hopfield+codage prédictif, épigénétique) + homéostasie — le tout coordonné par EngramManager",
+    "engrams.forget implémente explicitement le RGPD « droit à l'oubli » (procédures.rs, avec cascade de relations)",
+    "knowledge_gap (liens manquants, sémantiquement proches mais non connectés) est explicitement distingué de annotation_density (notes manquantes) dans fabric.rs"
+  ],
+  "gaps": [
+    "Cargo.toml classe `scar` sous le commentaire `# Future subsystems` (lignes 69-70) alors que scar.rs est entièrement implémenté et re-exporté — commentaire obsolète/incohérent",
+    "engram/mod.rs documente des features `engram-immune`/`engram-stigmergy`/`engram-hopfield`/`engram-epigenetic`/`engram-full` qui n'existent PAS dans Cargo.toml (noms réels : immune, stigmergy, hopfield, epigenetic ; pas de engram-full) — doc désynchronisée des flags",
+    "src/thinker/kernel_enricher.rs porte des permissions 0600 (rw-------), cas unique dans le crate — à clarifier (volontaire pour kernel secret ? ou accident)",
+    "structural_reinforcement_alpha est exposé dans EnergyConfig et effective_half_life existe, mais son branchement réel dans EnergyListener (calcul du degré au moment du decay) n'a pas été vérifié en profondeur",
+    "Le crate est documenté « ~24 crates » mais obrain-cognitive agrège déjà >40 modules : la frontière énergie/synapse/fabric vs engram (couche 0) est conceptuellement floue (double mécanisme de co-activation)",
+    "Aucun test d'intégration visible dans src/tests dédié au couplage scar→fabric.risk_score au niveau crate (seuls des tests unitaires internes ont été repérés)",
+    "La procédure cognitive.metrics agrège EngramMetricsCollector mais la couverture des primitives non-engram (energy/synapse/fabric/scar) dans ces métriques GQL reste à confirmer"
+  ]
+}

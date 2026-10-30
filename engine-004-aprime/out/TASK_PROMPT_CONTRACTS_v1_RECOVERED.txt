@@ -1,0 +1,31 @@
+ENGINE-008 HARNESS -- RECOUVREMENT D AUTORITE GELEE
+========================================================================
+RECOVERY_METHOD=AST_LITERAL_EXTRACTION
+RECOVERY_SOURCE=/home/triviere/projects/banc-obrain/engine-004-aprime/source/e8-scorers-artifacts.py
+RECOVERY_SOURCE_VAR=contracts
+ARTIFACT=TASK_PROMPT_CONTRACTS_v1.txt
+ARTIFACT_BYTES=2194
+ARTIFACT_SHA256=fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6
+AUTHORITY_SHA256=fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6
+TASK_PROMPT_CONTRACTS_V1_RECOVERED=YES
+VERIFICATION=SHA256_EXACT_MATCH
+
+Le texte recouvre est BIT-IDENTIQUE a l autorite gelee publiee.
+L autorite TASK_PROMPT_CONTRACTS_v1 n est donc plus une entree
+manquante : elle est restauree et verifiee.
+
+RAPPEL DES CONTRAINTES QU ELLE FIXE (extrait) :
+  MMLU-PRO : scoring = CHOICE_CONDITIONAL_LOGLIKELIHOOD
+             NORMALISATION_PAR_LONGUEUR=NON
+             tie_policy = plus PETIT index parmi les maxima ex aequo
+  GSM8K    : max_new_tokens=1024, GREEDY=YES
+             parser = ^\s*FINAL:\s*(.*?)\s*$
+  MBPP     : max_new_tokens=1024, GREEDY=YES
+  IFEVAL   : max_new_tokens=4096, GREEDY=YES
+  COMMUN   : GREEDY_REQUIRED=YES
+             TASK_AGGREGATION_MODE=FOUR_CATEGORY_MACRO_AVERAGE
+             BOOTSTRAP_RESAMPLES=10000
+
+=> les limites de generation exigees par §38 sont CONFIRMEES ici :
+   GSM8K_MAX_NEW_TOKENS=1024, MBPP_MAX_NEW_TOKENS=1024,
+   IFEVAL_MAX_NEW_TOKENS=4096.

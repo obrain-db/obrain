@@ -1,0 +1,123 @@
+ENGINE-008 -- STATUT TERMINAL WHT-EXPECTED-COVERAGE-16
+==========================================================================
+N1 est IMPLEMENTE et INDEPENDANT des captures. La reconciliation N1/N2/N3 est
+implementee et testee : 54 controles, 0 echec. Aucun gel, aucun forward.
+
+EXPECTED_TARGET_METHOD=intersection(inventaire CSV valide, tenseurs du modele dont le TYPE REEL est TQ2_G128)
+EXPECTED_TARGET_SCOPE=
+  Poids portant un nom de l inventaire ET le type TQ2_G128, lus via
+  `llama_internal_get_tensor_map` sur le modele CHARGE.
+  LIMITE DECLAREE : un inventaire partiel ne represente PAS toutes les
+  operations WHT du modele -- il represente ce que l inventaire couvre. Si
+  l inventaire ne liste qu une partie des tenseurs TQ2_G128, N1 est une BORNE
+  INFERIEURE et doit etre dit comme tel.
+  SECONDE LIMITE : un poids CHARGE n est pas automatiquement une operation
+  CONSTRUITE -- les branches et la selection d experts peuvent l exclure. N1
+  compte des cibles POTENTIELLES, pas des operations effectives.
+  N1 exige le modele charge ; avant chargement, N1=UNKNOWN.
+N1_INDEPENDENT_OF_SUCCESSFUL_CAPTURES=YES
+  N1 ne lit AUCUNE ligne du manifeste. Il vient de l inventaire (configuration
+  validee avant le run) et des types reels du modele. Une capture echouee ne
+  peut donc pas reduire N1 -- teste : `n1_known_from_inventory_and_types`,
+  `n1_ignores_weights_without_tq2_type`, `n1_unknown_without_inventory`,
+  `n1_unknown_without_native_registry`.
+  UNITES TENUES DISTINCTES : poids distinct / invocation / capture /
+  couple cible-epoch. N2 compte des COUPLES `(epoch, target_id)`.
+EXPECTED_CAPTURED_JOINED_RECONCILIATION_IMPLEMENTED=YES
+  `reconcile_coverage()` exporte n1, n2, n3, n_lines, n_missing, n_unexpected,
+  missing_identities, unexpected_identities, complete, verdict.
+  INTERDICTIONS APPLIQUEES ET TESTEES :
+   - `N2>0 -> COMPLETE` : NON. Teste :
+     `n2_positive_and_n3_equal_n2_never_complete_without_n1`.
+   - `N3==N2 -> COMPLETE` avec N1 inconnu : NON. Meme test.
+   - additionner les `kind` comme plusieurs cibles : NON. `n_lines` et `n2` sont
+     separes -- teste `kinds_not_summed_as_targets`, `multi_epoch_counts_pairs_not_lines`.
+   - une fenetre suivante complete effacant une precedente incomplete : NON.
+     `merge_wht` conserve le PIRE maillon et ACCUMULE les identites.
+  ORDRE DES VERDICTS : N1 UNKNOWN -> MISSING_EXPECTED_TARGETS ->
+  UNEXPECTED_CAPTURES -> MISSING_REQUIRED_RELATIONS -> PARTIAL -> chaine complete.
+UNKNOWN_N1_BLOCKS_COMPLETENESS=YES
+  Sans N1, `complete=false` et `verdict=N1_UNKNOWN_BLOCKS_COMPLETENESS`, quels
+  que soient N2 et N3. Le rapport porte la limite
+  `WHT_N1_UNKNOWN_BLOCKS_COMPLETENESS`.
+PER_WINDOW_ANALYSES_PRESERVED=PARTIAL
+  CONSERVE : ce qui a ete LU est accumule entre fenetres (identites manquantes,
+  inattendues, blockers, pire maillon). L ecrasement des fichiers entre fenetres
+  ne perd plus l acquis -- teste.
+  LIMITE PUBLIEE : `CAPTURE_EXTRACT` incremente `cc->epoch` (f1a-capture.cpp:564,
+  586, 839) et ecrit ses fichiers a CHAQUE extraction. **Si UNE fenetre contient
+  PLUSIEURS extractions, les precedentes sont ecrasees avant toute lecture** et
+  la collecte par fenetre NE SUFFIT PAS. Le rapport porte
+  `wht_max_extractions_per_window` pour rendre le cas visible, mais AUCUNE
+  lecture par extraction n est implementee -- ce serait le seul remede sans
+  modifier Q1. C est pourquoi le statut est PARTIAL et non YES.
+COVERAGE_SELFTEST=PASS
+  54 controles, 0 echec, dont 14 nouveaux : N1 connu depuis inventaire+types ;
+  N1 ignore les poids hors TQ2_G128 ; N1 UNKNOWN sans inventaire ; N1 UNKNOWN
+  sans registre natif ; N2>0 et N3==N2 jamais complets sans N1 ; cible ATTENDUE
+  absente avec identite NOMMEE ; capture INATTENDUE -> ambigu ; couverture
+  COMPLETE quand N1 connu et tout present ; kinds non sommes comme cibles ;
+  multi-epoch compte des couples ; relations partielles quand toutes les cibles
+  attendues sont capturees.
+  TROIS fixtures de MES tests ont du etre corrigees : elles dataient d avant N1
+  et fournissaient des noms de poids qui ne correspondaient pas a l inventaire,
+  ce qui les faisait basculer en « captures inattendues ». C est le NOUVEAU
+  comportement qui est correct ; j ai corrige les fixtures, pas les attentes.
+
+P4_STRUCTURAL_CHECKS_IMPLEMENTED=NO
+  Les verificateurs des six conditions de P4' ne sont PAS implementes. C est un
+  MANQUE A COMBLER AVANT LE GEL : la consigne exige que leurs verificateurs
+  soient implementes et testes avant le gel, leurs resultats reels restant
+  NOT_EXERCISED. Non fait dans cette passe, et non masque.
+PROTOCOL_PROPOSAL_STATUS=PROPOSED_NOT_ADOPTED
+  ENGINE008_PROTOCOL_PROPOSAL_v4.md : D1 sur toutes les fenetres ; N1/N2/N3 avec
+  criteres exacts ; preuve candidate distinguant observation et deduction ;
+  P4' avec ses six conditions ; confirmations requises dont « une seule
+  extraction par fenetre » ; arret au premier defaut et absence de retry.
+  v4 COMPLETE v3 ; elle ne la remplace pas.
+
+REAL_HARNESS_BINARY_SHA256=f4bd86261b49b5aca6194ee09cfc3c1f183b13e68c728e4940fae4be9bb11bb3
+  IDENTITE NOUVELLE : wht_parser.cpp, pipeline.cpp et real_deps.cpp ont change.
+  Autres binaires de la meme compilation :
+    t-wht      d26a13739071159640014f8b79448594326cb6fced95403b2fb60f3732a0582e
+    t-connect  f20971754bee2f53bc28e0771eed01304beccf095102377cf020211cc5c3a617
+    t-whtpipe  7e23a4e201b7e3f1e13aaf8400a480d81bd58241d24b5aa697a0656d20bf6a4c
+    t-parser   1ec1ada01eadfa3e3238b3c9da25b0003b348f49ebf18cd680b2f697a46c7b98
+  Identites recalculees APRES compilation reussie. HARNESS_SOURCE_MANIFEST_SHA256=
+  6b3f0bb2fad6fd7ecdada8eeb1a94d61c57dd105699cca5abe563239a610d782
+
+SUITES REJOUees SUR CE BINAIRE (aucun PASS herite) --
+  t-wht 54/54 ; t-connect 65/65 ; t-parser 42/42 ; t-whtpipe 7/7 ; launcher 0 echec.
+  Garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3.
+  NOTE D HONNETETE : pendant cette passe, deux commandes ont d abord echoue pour
+    une raison de MON fait -- zsh ne decoupe pas les variables, donc `$G` a ete
+    passe comme un seul argument et les compilations ont echoue en bloc. Aucun
+    resultat n a ete presente avant que les compilations et les liens reussissent.
+
+REMAINING_IMPLEMENTATION_GAPS=
+  I1_LES VERIFICATEURS de P4' (six conditions) ne sont PAS implementes. Exiges
+     avant le gel.
+  I2_UNE SEULE EXTRACTION PAR FENETRE n est pas garantie ni detectee au-dela du
+     compteur publie. Si plusieurs, la conservation par fenetre est insuffisante.
+  I3_AUCUNE LECTURE PAR EXTRACTION : seul remede a I2 sans modifier Q1.
+  I4_N1 EST UNE BORNE INFERIEURE tant que l inventaire n est pas etabli complet.
+REMAINING_SCIENTIFIC_DECISIONS=
+  S1_D1 vs D2 : D1 retenu par le code, D2 NON ADOPTE. A arbitrer.
+  S2_P4' : adopter, amender ou rejeter le texte livre.
+  Le gel n est PAS pret : I1, I2 et S1/S2 restent ouverts.
+
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_EXPECTED_COVERAGE
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte. Aucun changement de Q1, du backend, de la
+topologie ou des regles de preuve. Aucun protocole modifie.

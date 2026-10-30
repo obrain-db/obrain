@@ -1,0 +1,122 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-PROTOCOL-FREEZE-09
+==========================================================================
+Z1, Z2, Z3 fermes par lecture source ; Z4 pre-enregistre. Protocole v2 REDIGE.
+GEL REFUSE, avec le point precis qui l'empeche. Aucun run execute.
+
+SNAPSHOT_POST_CALL_STABILITY=ESTABLISHED
+  f1a_dump_submitted_snapshots() : fopen("w") -> ecriture de tout g_f1a_snaps ->
+  fclose, DANS UN SEUL APPEL, sans E/S asynchrone. Un SEUL site d'appel dans
+  tout le fork : f1a-capture.cpp:826, juste apres fclose(m) du chemin
+  d'extraction. Le harnais lisant APRES le retour du calcul, la lecture est
+  POST-FERMETURE, sans ecrivain actif. Aucun delai arbitraire introduit.
+  RESERVE : l'echec d'OUVERTURE est traite en silence (if f==nullptr return) et
+  le retour de fclose n'est PAS verifie -- la stabilite est etablie, la
+  DETECTION D'ERREUR d'ecriture ne l'est pas.
+SNAPSHOT_COVERAGE_RULE_ESTABLISHED=YES
+  DECOUVERTE : le dump ouvre en "w" -- ECRASEMENT INTEGRAL. La surface n'est
+  PAS un journal append-only mais un instantane a DERNIER ECRIVAIN GAGNANT.
+  Donc la completude de la couverture NE PEUT PAS etre supposee : l'absence d'un
+  snapshot pour une soumission n'est JAMAIS une preuve la concernant. Cela
+  explique 10 evenements COMPUTE_SUBMIT pour 2 lignes sans invoquer aucune perte
+  de donnees -- le fichier ne represente que l'etat de l'accumulateur au dernier
+  dump. Stabilité du fichier lu et presence d'un snapshot par soumission sont
+  DEUX choses distinctes, et je ne les confonds pas.
+
+WHT_REAL_COLLECTION_CONNECTED=NOT_VERIFIED
+  Je n'ai PAS verifie dans le code final que la collecte WHT et ses criteres de
+  couverture sont raccordes. La consigne precise que leur conception ancienne ou
+  leurs tests isoles ne suffisent pas. C'est le PREMIER BLOQUEUR DU GEL.
+NEXTN_PROOF_METHOD=CONDITIONAL_ONLY
+  FORME EXHAUSTIVE ECARTEE, et ecartee EXPLICITEMENT plutot qu'affaiblie en
+  silence : elle exigerait d'enumerer chaque soumission, ce que l'acces ne permet
+  pas (snapshots non exhaustifs par construction ; f1a_last_gf ne conserve que
+  la DERNIERE soumission).
+  FORME ADOPTEE, conditionnelle, en trois volets : (1) valeurs de contexte
+  transmises ET acceptees ; (2) dispatch statique verifie (qwen35.cpp:129-134,
+  build_arch_graph) ; (3) preuve de soumission et de succes.
+  PORTEE EXACTE : « sous ces conditions, les operations NextN pertinentes ne sont
+  pas incluses dans ce graphe ». INTERDIT d'ecrire « absence directement observee
+  dans tous les graphes ». gtype reste
+  GTYPE_DERIVED_FROM_VERIFIED_SOURCE_MAPPING ; h_nextn n'est PAS un temoin
+  d'operation MTP.
+
+REQUIRED_PROPERTIES_ASSESSABLE=NO
+  P1 chemin standard/MTP : OUI (statique). P2 NextN : OUI (conditionnel).
+  P5 arret : OUI. P7 identites : OUI.
+  P3 rotation candidate et P4 rotation baseline negative : NON, faute de
+  verification du raccordement WHT.
+  P6 attribution par soumission : NON exhaustivement, par construction (Z3).
+  P8 raccordement WHT : NON VERIFIE.
+
+PREFLIGHT_PLAN_ENFORCED_BY_ENTRYPOINT=PARTIAL
+  APPLIQUE ET TESTE dans le code : garde avant tout calcul ; maximum de tokens ;
+  contrat d'arret ; argmax au plus petit ID ; refus des logits invalides ;
+  isolement des destinations ; compteurs ; codes de sortie.
+  NON ENCORE APPLIQUE : la SEQUENCE baseline1 -> candidat1 -> baseline2 ->
+  candidat2 elle-meme. Le point d'entree n'execute qu UN run par invocation, sans
+  enchainer les quatre, sans reverifier les identites avant chacun, ni arreter la
+  sequence sur echec. SECOND BLOQUEUR, plus modeste mais reel.
+
+HARNESS_SOURCE_MANIFEST_SHA256=fb508af3cd23f3ed8ff1a4af5717eaea2d9991feffd41ac3538ce982a7516b09
+  Inchange depuis CLOSE-08 : AUCUN code modifie dans cette passe, donc aucune
+  nouvelle identite de source ou de binaire n'est requise.
+HARNESS_BINARY_SHA256=6623041159638d89a5459e085a1142c7d3506fb1cf7a3af46cc78b99c80a35a4
+  binaire REEL final (t-real), RECALCULE dans cette passe et non repris d'une
+  passe precedente. Les autres binaires de la meme compilation :
+    t-parser  9db455829513c34801dbb684c70a2d6c7022745634d428e54d114884012965d6
+    t-connect 9be327dcdf576b34e13608c085c813fd7892bb829bb6067a95191f94f0802224
+  Ces identites sont celles testees a l instant de la redaction ; elles n ont
+  valeur que pour ces fichiers precis.
+
+PREFLIGHT_PROTOCOL_SHA256=822db99f6c288e346e1dca06c7405ab13a4a06d69bc05beccbe92e333fe5fa3d
+  ENGINE008_QUALITY_PROTOCOL_v2.md -- version NORMATIVE DISTINCTE de v1
+  (c42f485d... conservee intacte).
+  Pieces jointes : matrice d admissibilite
+  02d116a1f511f655bfdb888b50e8a9e8f19ec4c42908e91824a973ed0a9a782f ;
+  contrat de stabilite des captures
+  4c08803c6f33579d204f8ca3a80f4affcbc151418d4b34543113f033746ffd24 ;
+  decision de gel 7358c228784c0a604fbe47cf7bd2d74dc73b3fdb3622129900311f84f18888c6.
+PREFLIGHT_FREEZE_MANIFEST_SHA256=NOT_CREATED
+PREFLIGHT_PROTOCOL_FROZEN=NO
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=NO
+
+REMAINING_BLOCKERS=
+  B1_VERIFIER dans le code final que la collecte WHT et ses criteres de
+     couverture sont reellement raccordes, puis les ecrire si necessaire (nouvelle
+     identite de source/binaire et tests concernes rejoues).
+  B2_ECRIRE l orchestration des quatre runs dans le point d entree, avec
+     reverification des identites avant chaque run et arret de sequence.
+  B3_PUIS emettre le manifeste de gel sans circularite : compiler, puis
+     construire le document qui reference l identite du binaire.
+
+PASS_STATUS=COMPLETE_SCOPE_PREFLIGHT_FREEZE
+  Le perimetre de la passe est acheve : Z1-Z4 traites, matrice etablie, protocole
+  v2 redige, plan verifie et son etat exact rapporte, decision de gel rendue avec
+  ses deux bloqueurs nommes et les commandes preparees. Ce qui n est pas fait
+  l est parce que le gel doit etre REFUSE, non parce que la passe est inachevee.
+
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  Bibliotheques resolues : libllama.so.0, libggml.so.0, libggml-base.so.0,
+  libggml-cpu.so.0, libggml-cuda.so.0 -- toutes dans build-cuda/bin.
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+IDENTITES A VERSER AU MANIFESTE DES QUE B1/B2 SERONT LEVES :
+  template commun   c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+  renderer qualifie 14cbbc1336fe885a796539eb473e85388f54a4e600daae24348aeaeccf2c9bdd
+  plan des 4 runs   b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+  baseline GGUF     31629f53165ab6a7dad8 (Qwen3.8-27B-Q4_K_M.gguf)
+  candidat GGUF     1d7c9409ae7f2c7f6071 (Qwen3.8-27B-OBRAIN-v3.gguf)
+  Aucun document d autorisation reelle n a ete cree : les seuls existants portent
+  audience=MOCK et sont REJETES par le chemin reel (verifie).
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucune
+execution des quatre runs, aucun gel cree. Aucun rebuild de bibliotheque Q1.
+Aucun code modifie : aucune nouvelle identite requise. Aucun global de Q1 ecrit.
+Les protocoles, gels et artefacts historiques sont INTACTS.

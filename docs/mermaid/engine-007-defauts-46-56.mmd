@@ -1,0 +1,112 @@
+%% Ce que ce diagramme prouve : l etat final, tel qu ecrit dans les ledgers ENGINE-007B, des onze
+%% defauts de harnais numerotes 46 a 56, avec pour chacun la mesure precise qui l a ferme et le
+%% rapport ou cette mesure est consignee.
+%% Source MESUREE : les lignes HARNESS_DEFECT_46 a HARNESS_DEFECT_56 des ledgers, et les sections
+%% de preuve des rapports ENGINE-007B-F1A R1, R2, R4, R5, R6, Q0-N1, Q0-N1bis, Q0-N3bis,
+%% Q0-N3ter, Q0-N3quater, Q0-N3quinquies, Q0-N3nonies et Q0-N4, tous lus dans docs/.
+%% DEDUIT : rien. Chaque statut est la chaine exacte lue dans un ledger, chaque preuve est un
+%% couple cle=valeur lu dans le rapport cite, chaque numero de ligne cite est celui du rapport.
+%% NON ETABLI : aucun rapport ne definit le TEXTE litteral du defaut 46 ou 48 au-dela de son nom
+%% et de son mode de resolution ; HARNESS_DEFECT_57 apparait en N4 ligne 254 sur la meme famille
+%% d arrondi q8_1 et sort du perimetre 46-56 ; les repertoires d artefacts sous
+%% engine-004-steady-state/RUN-001/qualification/ n ont pas ete lus, seuls les rapports le sont.
+
+flowchart TB
+
+  subgraph Perimetre["Perimetre : onze defauts de harnais, 46 a 56, declares dans la serie ENGINE-007B"]
+    direction TB
+
+    subgraph Infra["Groupe 1 : defauts d infrastructure de capture, fermes par les passes R1 a R6"]
+      d46["HARNESS_DEFECT_46<br/>Q8_1_REFERENCE_USED_BANKERS_ROUNDING<br/>_INSTEAD_OF_C_ROUNDF<br/>statut RESOLVED"]
+      d47["HARNESS_DEFECT_47<br/>LLAMA_OBRAIN_INTERACTIVE_CLI_CONSUMED_SSH<br/>_HEREDOC_AS_MODEL_INPUT<br/>statut RESOLVED"]
+      d48["HARNESS_DEFECT_48<br/>EXTRACTION_ATTEMPTED_WITHOUT<br/>_BUFFER_RESIDENCE_CHECK<br/>statut RESOLVED"]
+      d49["HARNESS_DEFECT_49<br/>gf_n_nodes_ACCESSED_THROUGH<br/>_INCOMPLETE_TYPE_ggml_cgraph<br/>statut RESOLVED"]
+      d50["HARNESS_DEFECT_50<br/>CAPTURE_CONTEXT_ACTIVE_COUNTER<br/>_MEASURED_PROBES_NOT_CONTEXTS<br/>statut RESOLVED<br/>VERIFIED_BY_OFF_ON_DISCRIMINATION"]
+      d51["HARNESS_DEFECT_51<br/>WRONG_OFF_BY_ONE_ATTRIBUTION<br/>_CLAIM_IN_REPORT<br/>statut RETRACTED_AFTER_MEASUREMENT"]
+    end
+
+    subgraph Numerique["Groupe 2 : defauts de mesure numerique, fermes par les passes N1 a N4"]
+      d52["HARNESS_DEFECT_52<br/>GRAPH_CAPTURE_MANIFEST<br/>_OVERWRITTEN_EACH_EPOCH<br/>statut RESOLVED<br/>VERIFIED_BY_TWO_EPOCH_REGRESSION"]
+      d53["HARNESS_DEFECT_53<br/>DIRECT_GGUF_READER_ADDRESS<br/>_OFFSET_28_BYTES<br/>statut RESOLVED<br/>VERIFIED_BY_INDEPENDENT_MULTITENSOR_BYTE_COMPARISON"]
+      d54["HARNESS_DEFECT_54<br/>TERNARY_TEST_DECODED_32_VALUES<br/>_INSTEAD_OF_128<br/>statut RESOLVED<br/>VERIFIED_BY_128_VALUE_TESTS"]
+      d55["HARNESS_DEFECT_55<br/>python3_-i_CONSUMED_THE_SSH_HEREDOC<br/>_AS_INTERPRETER_INPUT<br/>statut RESOLVED"]
+      d56["HARNESS_DEFECT_56<br/>CAPTURE_DUP_TENSORS_NOT_MARKED_AS_OUTPUT<br/>_SO_ALLOCATOR_FREES_THEIR_STORAGE<br/>statut RESOLVED<br/>VERIFIED_BY_TARGETED_PRESERVATION_AND_BITWISE_TRANSPARENCY"]
+    end
+  end
+
+  subgraph PreuvesInfra["Preuves lues : R1, R2, R4, R5, R6"]
+    p46["R1 ligne 157<br/>8 cas de mi-chemin testes :<br/>0.5 1.5 2.5 -0.5 -1.5 -2.5 0.4999 -0.4999<br/>ROUNDING_HALF_CASES_OK=YES<br/>np.rint sur 2.5 donne 2, roundf donne 3"]
+    p47["R1 lignes 157 a 162<br/>RESOLVED_BY_DEDICATED_LIBLLAMA<br/>_TEACHER_FORCING_HARNESS<br/>2 sorties geantes supprimees :<br/>5524130360 et 4295057795 octets<br/>outil build-cuda/bin/f1a-eval<br/>SHA256=1c340a9546c3df584b80ba5123b5491d907d0051639f3404599c9e8c11298384"]
+    p48["R1 lignes 163 a 165<br/>RESOLVED_BY_CONDITIONING<br/>_ON_t_buffer_NOT_NULL"]
+    p49["R2 lignes 229 a 230<br/>RESOLVED_BY_ggml_graph_n_nodes<br/>_ACCESSOR"]
+    p50["R4 lignes 61 a 79<br/>premier passage ctx_active=4477<br/>alors qu aucun contexte n a ete cree<br/>CAUSE : f1a_capture_get_ctx incrementait<br/>ctx_active dans les DEUX branches<br/>CORRECTIF : increment dans la branche active<br/>plus un compteur distinct<br/>F1A_CAPTURE_PROBE_COUNT"]
+    p51["R6 lignes 17 a 40<br/>trace de la sequence reelle :<br/>ligne 1285 submission=1<br/>ligne 5318 end_epoch<br/>ligne 5662 submission=2<br/>ligne 6167 end_epoch<br/>end_epoch tourne APRES le llama_decode<br/>qui vient de soumettre<br/>decode 1 etiquette sub=1, decode 2 sub=2<br/>PAYLOAD_SUBMISSION_ATTRIBUTION=CORRECT_NO_OFFSET"]
+  end
+
+  subgraph PreuvesNum["Preuves lues : N1, N1bis, N3bis, N3ter, N3quater, N3quinquies, N3nonies, N4"]
+    p52["N1bis lignes 26 a 35 et 165<br/>AVANT : manifeste 337 lignes,<br/>672 payloads sur disque, 2 epoques,<br/>chaque epoque rouvrait le fichier en w<br/>APRES : 673 lignes, 1 SEUL en-tete,<br/>2 epoques presentes 0 et 1, 672 payloads"]
+    p53["N3ter lignes 19 a 93<br/>fin des metadonnees = 10996452<br/>10996452 modulo 32 = 4, non aligne<br/>align_up vers 10996480, padding = 28<br/>GGUF_DEFAULT_ALIGNMENT=32 lu en gguf.cpp:223<br/>28 octets tous nuls apres data_start<br/>origine alignee : row0 contient libggml = TRUE<br/>comparateur independant :<br/>BYTE_MISMATCH_COUNT=0<br/>sur 6 lignes et 8704 octets compares"]
+    p54["N3quinquies lignes 74 a 85<br/>AVANT w construit par range 8 puis range 4<br/>soit 32 valeurs<br/>APRES range 32 puis range 4<br/>soit 128 valeurs<br/>ASSERTIONS len qs32 == 32 et len w == 128<br/>COUVERTURE E5 40 blocs x 128 = 5120<br/>E6 48 blocs x 128 = 6144"]
+    p55["N3quater lignes 123 a 125<br/>meme famille que le defaut 47<br/>AUCUNE MESURE AFFECTEE :<br/>le test n a pas tourne"]
+    p56["N3nonies lignes 19 a 93 et 159 a 208<br/>regle de l allocateur lue en ggml-alloc.c:690 :<br/>graph outputs are never freed<br/>si node flags contient GGML_TENSOR_FLAG_OUTPUT<br/>commentaire du fork en ggml-backend.cpp:1342<br/>prevent ggml-alloc from overwriting the tensor<br/>cur_capture n a qu un consommateur, le MUL_MAT<br/>3968 autres noeuds s executent avant l extraction<br/>PATCH : f1a_mark_output vers ggml_set_output<br/>dans src/f1a-capture.h, src/f1a-capture.cpp<br/>et la greffe de src/llama-graph.cpp"]
+  end
+
+  subgraph Ouverts["Etats OPEN intermediaires : un defaut declare ouvert puis ferme dans un rapport posterieur"]
+    o53["N3bis ligne 218<br/>HARNESS_DEFECT_53 OPEN<br/>DIRECT_READER_IS_WRONG_BY_28_BYTES=YES<br/>INDEPENDENT_GGUF_ROW_BYTE_AGREEMENT=NO"]
+    o54["N3quater lignes 117 a 121<br/>STATUS=OPEN<br/>le calcul PRINCIPAL est correct,<br/>le TEST ne l est pas :<br/>les trois permutations n ont donc PAS<br/>pu etre evaluees"]
+    o56["N3nonies lignes 350 a 351<br/>STATUS=OPEN_MECHANISM_PROVEN<br/>_FIX_NOT_YET_APPLIED<br/>le mecanisme est prouve,<br/>le correctif n est pas applique"]
+  end
+
+  subgraph Consequence["Consequence mesuree du defaut 56 sur le diagnostic anterieur"]
+    c56["N3nonies lignes 199 a 217<br/>CAPTURES_WERE_CORRUPTED=336_SUR_336<br/>CAPTURES_NOW_VERIFIED=336_SUR_336<br/>CONTRADICTIONS activation nulle et sortie non nulle : 25 vers 0<br/>EPOQUE 0 : 168 activations DIFFERENTES sur 168<br/>EPOQUE 1 : 168 activations DIFFERENTES sur 168<br/>LOGIT_BITWISE_MISMATCH_COUNT=0<br/>Toutes les reconstructions de N1bis, N3quater<br/>et N3quinquies portaient sur des activations corrompues"]
+  end
+
+  d46 -->|prouve par| p46
+  d47 -->|prouve par| p47
+  d48 -->|prouve par| p48
+  d49 -->|prouve par| p49
+  d50 -->|prouve par| p50
+  d51 -->|prouve par| p51
+  d52 -->|prouve par| p52
+  d53 -->|prouve par| p53
+  d54 -->|prouve par| p54
+  d55 -->|prouve par| p55
+  d56 -->|prouve par| p56
+
+  d53 -.->|etait declare ouvert en amont| o53
+  d54 -.->|etait declare ouvert en amont| o54
+  d56 -.->|etait declare ouvert en amont| o56
+
+  o53 -->|ferme par la regle d alignement| p53
+  o54 -->|ferme par le test a 128 valeurs| p54
+
+  p56 -->|invalide les mesures anterieures| c56
+  p53 -->|debloque, octets requalifies| d54
+
+  subgraph Ledger["Ledger final consolide, lu en N4 lignes 253 a 258"]
+    l1["HARNESS_DEFECT_56=RESOLVED_VERIFIED"]
+    l2["HARNESS_DEFECT_46..55=RESOLVED"]
+    l3["Q0_STATUS=NOT_PASSED<br/>Q1_ALLOWED=NO<br/>PLUMBING_FAILURE_COUNT=28<br/>PLUMBING_FAILURE_29=NOT_ASSIGNED"]
+  end
+
+  d46 -->|agrege dans| l2
+  d47 -->|agrege dans| l2
+  d48 -->|agrege dans| l2
+  d49 -->|agrege dans| l2
+  d50 -->|agrege dans| l2
+  d51 -->|agrege dans| l2
+  d52 -->|agrege dans| l2
+  d53 -->|agrege dans| l2
+  d54 -->|agrege dans| l2
+  d55 -->|agrege dans| l2
+  d56 -->|agrege dans| l1
+
+  classDef resolu fill:#1f6f2f,stroke:#0d3315,color:#fff
+  classDef retire fill:#8a6d12,stroke:#4d3c0a,color:#fff
+  classDef ouvert fill:#8a3a12,stroke:#4d200a,color:#fff
+  classDef preuve fill:#1f4fa1,stroke:#0f2857,color:#fff
+
+  class d46,d47,d48,d49,d50,d52,d53,d54,d55,d56 resolu
+  class d51 retire
+  class o53,o54,o56 ouvert
+  class p46,p47,p48,p49,p50,p51,p52,p53,p54,p55,p56,c56,l1,l2,l3 preuve

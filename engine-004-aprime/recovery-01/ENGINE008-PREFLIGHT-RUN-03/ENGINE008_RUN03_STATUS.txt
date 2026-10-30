@@ -1,0 +1,98 @@
+ENGINE-008 -- STATUT ENGINE008-PREFLIGHT-RUN-03
+==========================================================================
+Les quatre runs ont ETE EXECUTES par le lanceur : 4 invocations, exit 0.
+MAIS ILS N'ONT PRODUIT **AUCUN** TOKEN. La cause est etablie et precise.
+
+=== RESULTAT VISIBLE D'ABORD ===
+  baseline1   exit=0  AUTH=ACCEPTED  GENERATED_TOKEN_COUNT=0  IDs=[]  arret=NONE
+  candidate1  exit=0  AUTH=ACCEPTED  GENERATED_TOKEN_COUNT=0  IDs=[]  arret=NONE
+  baseline2   exit=0  AUTH=ACCEPTED  GENERATED_TOKEN_COUNT=0  IDs=[]  arret=NONE
+  candidate2  exit=0  AUTH=ACCEPTED  GENERATED_TOKEN_COUNT=0  IDs=[]  arret=NONE
+  Texte genere : AUCUN pour les quatre runs.
+  **Il n'y a AUCUN token a livrer.** Je ne le remplace pas par « OK. ».
+
+=== LA CAUSE, ETABLIE ===
+  Pour les QUATRE rapports :
+    "limits":["CAPTURE_DESTINATION_REFUSED"]
+    "load_ok":0  "ctx_ok":0  "prefill_windows":0  "decode_windows":0
+    "llama_decode_calls":0  REAL_LOAD_CALLS=0  REAL_CONTEXT_CREATE_CALLS=0
+
+  La destination de capture est CONSTRUITE DEUX FOIS :
+    le LANCEUR passe --capture-root <D>/captures/baseline/run1
+    et `prepare_capture` y AJOUTE encore /<model_tag>/<run_tag>
+    => "capture_dir":"<D>/captures/baseline/run1/baseline/run1"
+
+  Le controle « destination non vide / non conforme » de `prepare_capture`
+  REFUSE ce chemin, et le pipeline s'arrete la -- APRES l'autorisation, AVANT
+  tout chargement de modele, contexte ou forward.
+
+=== DEFAUT DE GATE, DISTINCT ET PLUS GRAVE ===
+  Le harnais rend **exit 0** et le LANCEUR marque **verdict=PASS** alors que le
+  run n'a RIEN produit. `judge` se fonde sur exit_code, report_seen,
+  report_malformed et stop_reason -- mais `stop_reason` valait "NONE", non vide,
+  donc PASS. **Un run vide est declare PASS.** C'est un defaut de gate, pas
+  seulement de chemin.
+
+=== CE QUI N'A PAS ETE FAIT, CONFORMEMENT AU GEL ===
+  « Aucun retry ni modification sous ce gel. »
+  Je n'ai modifie NI le lanceur, NI le harnais, NI le plan, NI les criteres.
+  Je n'ai pas relance. Un correctif exige une nouvelle identite, un nouveau gel
+  et une instruction separee.
+  Je n'ai pas fabrique de substitution de destination pour forcer la generation.
+
+=== CE QUI EST ACQUIS ET VERIFIE SUR CE RUN ===
+  Identites recalculees et concordantes avant calcul :
+    harnais  125767da48b69b0431e9be6809cd62e92f386d89d34e69f69581b71213fbd49f  OK
+    lanceur  31cc90b93f756d9ddb6a2098b5a4abd1aaf06abce0d8181e50de2231933813e2  OK
+  Nouvelle autorisation externe, conforme au schema, liee a ces executables :
+    ENGINE008_AUTHORIZATION_REAL_PREFLIGHT.conf
+    sha256 6b58732e8e80e1fad07559c3bd6fd2f5e1d56804a2910da8d4f08f9178a985c7
+    audience=REAL_PREFLIGHT, well_formed=1, allow_model_compute=1,
+    binary_sha256=125767da... (= le harnais reellement execute)
+  Aucune ancienne autorisation reutilisee.
+  LE LANCEUR REPARE FONCTIONNE : LAUNCHER_MODE=real, LAUNCHER_CONSENT=GRANTED,
+  LAUNCHER_PLAN_CHECKED=YES, LAUNCHER_INVOCATIONS=4, LAUNCHER_STOPPED_EARLY=NO,
+  ordre baseline1/candidate1/baseline2/candidate2 respecte, 4 processus neufs,
+  4 rapports enfants vus. La propagation du consentement est donc CONFIRMEE en
+  conditions reelles -- c'etait le defaut D-B, il est corrige et prouve.
+  Entree autoritaire verifiee avant prefill, sur les quatre runs :
+    RENDERED_SHA256=92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658  OK
+    TOKEN_IDS_SHA256=ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e  OK
+    PREFLIGHT_RENDERED_TOKEN_COUNT=59  OK
+
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+  Aucun modele complet charge, aucun contexte cree, aucun forward. Le refus
+  precede ces etapes.
+
+=== PHASE B ET PHASE C ===
+  La Phase C est autorisee SEULEMENT SI le preflight passe. Il n'a pas produit de
+  tokens : la condition n'est pas remplie en substance, meme si les codes de
+  sortie disent PASS. Je n'ai donc PAS lance les deux generations d'injection.
+  La Phase B (identifier le mecanisme d'injection) n'a pas ete conduite : elle
+  n'aurait pas d'objet sans une generation de reference reelle.
+  GRAPH_INJECTION_MECHANISM=UNRESOLVED
+  GRAPH_INJECTION_SMOKE_STATUS=NOT_RUN
+
+PREFLIGHT_SEQUENCE_RESULT=FAIL
+FIRST_BLOCKING_GATE=CAPTURE_DESTINATION_DOUBLED_AND_EMPTY_RUN_MARKED_PASS
+RETRY_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+TASK_QUALITY_RESULT_COUNT=0
+QUALITY_EXECUTION_ALLOWED=NO
+
+=== CE QU'IL FAUDRAIT, EN UNE INSTRUCTION SEPAREE ===
+  G1. Ne construire la destination de capture QU'UNE FOIS. Soit le lanceur passe
+      la racine de passe et le harnais ajoute tag/run (etat actuel du harnais),
+      soit le lanceur passe deja le chemin final -- pas les deux.
+  G2. `judge` du lanceur doit REFUSER un rapport dont le pipeline n'a pas abouti :
+      `stop_reason=NONE` avec `generated_token_ids` vide et des limites de refus
+      doit donner FAIL, jamais PASS. Un run vide n'est pas un run reussi.
+  G3. Rebuild -> NOUVELLES identites, nouveau gel, puis les quatre runs.
+
+--- INVARIANTS PRESERVES ---
+Aucun retry. Aucune modification sous le gel. Aucune substitution fabriquee.
+Aucune evaluation qualite. Aucune modification de Q1, des modeles, du template,
+de l'inventaire, du protocole ou du plan. Les runs RUN-01, RUN-02 et RUN-03 sont
+conserves intacts.

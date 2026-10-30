@@ -1,0 +1,207 @@
+%% Architecture de l observateur de steady-state ENGINE-004 A-prime-prime : les 15 sites inseres dans
+%% ggml-cuda.cu par apply-observer.py, ce que l en-tete ggml-cuda-observe.cuh capture en memoire, et la
+%% restitution lue par le harnais aprime-a2.cpp apres la fenetre mesuree de 256 tokens.
+%% Sources lues : engine-004-aprime/source/apply-observer.py 414 lignes, source/ggml-cuda-observe.cuh
+%% 588 lignes, source/aprime-a2.cpp, docs/ENGINE-004-A2-OBSERVATEUR.md, ENGINE-004-STATUT-A-B-C-APRIME.md,
+%% ENGINE-004-DEFAUTS-4-5.md, ENGINE-004-CLOTURE-RUN003.md.
+%% MESURE = lu litteralement dans ces fichiers : noms de fonctions et d ancres, numeros d etape, valeurs de
+%% constantes, comptes d occurrences. CITE DE DOC = valeur publiee par un rapport et non relue dans la source.
+%% DEDUIT = arithmetique sur les types declares, ex. 4096 evenements de 256 octets donnent 1048576 octets.
+%% NON LU : ggml-cuda.cu lui-meme n est pas dans le perimetre et aucune copie locale ne porte le patch final ;
+%% aucun numero de ligne de ggml-cuda.cu n est donc publie ici. Voir le groupe Limites.
+
+flowchart TB
+
+classDef cPatch fill:#5a3d8a,stroke:#2e1e46,color:#fff
+classDef cSite  fill:#1f4fa1,stroke:#0f2857,color:#fff
+classDef cMem   fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef cHarn  fill:#c47a10,stroke:#6b420a,color:#fff
+classDef cRes   fill:#0f7a7a,stroke:#084040,color:#fff
+classDef cLim   fill:#a11f1f,stroke:#5c0f0f,color:#fff
+classDef cEtat  fill:#4a4a4a,stroke:#222222,color:#fff
+
+subgraph PATCH["Application du patch a ggml-cuda.cu par apply-observer.py"]
+  patch_script["apply-observer.py<br/>414 lignes<br/>usage : apply-observer.py chemin-ggml-cuda.cu puis option --suppress-log"]
+  patch_guard["🔴 garde d entree<br/>si ggml-cuda-observe.cuh est deja dans le texte : SystemExit DEJA PATCHE<br/>rien n est ecrit"]
+  patch_anchor_rule["✅ regle d ancrage<br/>chaque ancre doit apparaitre exactement 1 fois<br/>sinon SystemExit ANCRE INTROUVABLE OU AMBIGUE et aucun patch partiel"]
+  patch_mark["marqueur de commentaire ENGINE-004-OBS, ecrit entre crochets<br/>27 occurrences dans les chaines de remplacement<br/>compte final affiche et permet la restauration"]
+  patch_include["inclusion de ggml-cuda/ggml-cuda-observe.cuh<br/>2 variantes : apres la fin de la telemetrie V3 si presente,<br/>sinon apres les 3 includes d origine"]
+  patch_steps["liste steps : 15 entrees executees dans l ordre<br/>defaut documente : deux etapes portent le nom update_required"]
+  patch_suppress["option --suppress-log<br/>retire du chemin rapide l appel GGML_LOG_DEBUG CUDA Graph id reused<br/>A2 publie PER_TOKEN_LIBRARY_TEXT_LOGGING=0"]
+  patch_write["✅ ecriture atomique<br/>chemin plus .engine004-tmp puis os.replace<br/>affiche MARQUEURS egal au nombre de marqueurs poses"]
+end
+
+subgraph SITESDEC["Sites instrumentes dans la decision d invalidation du graphe"]
+  site_compute_head["etape 1 compute_ordinal<br/>tete de ggml_backend_cuda_graph_compute<br/>appelle ggml_obrain_obs_begin_compute"]
+  site_atexit_call["etape 14 atexit<br/>ancre chainee : texte insere par l etape 1<br/>appelle ggml_obrain_obs_install_atexit"]
+  site_upd_head["etape 2 tete de ggml_cuda_graph_update_required<br/>capture obs_cached_uid, obs_graph_key, obs_bytes0<br/>avant toute decision"]
+  site_fast_path["etape 2 chemin rapide uid == graph-uid<br/>appelle ggml_obrain_obs_fast_path_reuse avec 3 arguments<br/>ne consomme PAS d evenement d anneau"]
+  site_node_count["etape 3 champ NODE_COUNT<br/>node_props.size != cgraph-n_nodes<br/>obs_first_node = -2 et obs_field = GGML_OBS_FIELD_NODE_COUNT"]
+  site_memcmp["etape 4 qualification du champ fautif<br/>boucle memcmp sur graph-node_props avant ecrasement<br/>precedence fixe SRC_DATA_PTR puis SRC_SHAPE_NE puis SRC_STRIDE_NB puis OTHER"]
+  site_emit["etape 5 emission de l evenement<br/>ggml_obrain_obs_event_transition avec 6 arguments<br/>le champ est un etat local : son oubli fut le defaut corrige"]
+  site_upd_counter["etape 13 update_required<br/>const bool properties_changed<br/>appelle ggml_obrain_obs_update_required"]
+end
+
+subgraph SITESLIFE["Sites instrumentes dans le cycle de vie du graphe CUDA"]
+  site_begin_capture["etape 8 capture_begin<br/>cudaStreamBeginCapture<br/>appelle ggml_obrain_obs_capture_begin avec uid, cle de graphe, n_nodes"]
+  site_end_capture["etape 7 capture_end<br/>cudaStreamEndCapture<br/>appelle ggml_obrain_obs_capture_end"]
+  site_instantiate["etape 9 instantiate<br/>cudaGraphInstantiate quand instance == nullptr<br/>appelle ggml_obrain_obs_instantiate"]
+  site_exec_update["etape 10 exec_update<br/>appel de ggml_cuda_graph_update_executable<br/>appelle ggml_obrain_obs_exec_update avec false"]
+  site_reinstantiate["etape 6 reinstantiation<br/>queue de ggml_cuda_graph_update_executable apres cudaGraphExecDestroy<br/>appelle ggml_obrain_obs_reinstantiate"]
+  site_launch["etape 11 launch<br/>cudaGraphLaunch<br/>appelle ggml_obrain_obs_launch avec true, instance presente, update requis"]
+  site_direct_eval["etape 12 direct_eval<br/>branche d evaluation directe du graphe<br/>appelle ggml_obrain_obs_launch avec false trois fois"]
+  site_warmup_reset["etape 15 warmup_reset<br/>graph-warmup_complete = false<br/>appelle ggml_obrain_obs_warmup_reset"]
+end
+
+subgraph OBS["Etat capture en memoire par ggml-cuda-observe.cuh"]
+  obs_enum["enum ggml_obrain_obs_field<br/>8 valeurs : NONE, UID, NODE_COUNT, NODE_TENSOR_BYTES,<br/>SRC_DATA_PTR, SRC_SHAPE_NE, SRC_STRIDE_NB, OTHER"]
+  obs_field_name["ggml_obrain_obs_field_name<br/>rend la chaine publiee en EVENT_i_FIRST_CHANGED_FIELD"]
+  obs_evt["struct ggml_obrain_obs_events evt<br/>ordinal, uid, cached_uid, graph_key, node_index, n_nodes, kind, field,<br/>old et new data_ptr, ne 4, nb 4, old et new bytes, node_name 48 octets"]
+  obs_ring["anneau statique MAX = 4096<br/>push avec seq.fetch_add en memoire relaxed<br/>anneau plein : compteur exact, echantillon borne et declare"]
+  obs_counters["struct ggml_obrain_observe<br/>14 compteurs atomiques uint64<br/>plus compute_ordinal, warmup_begin, warmup_end, window_begin, window_end, frozen"]
+  obs_ordinal["ggml_obrain_obs_ordinal<br/>lit compute_ordinal<br/>seule datation : ordinal de calcul, jamais le temps"]
+  obs_armed["armement ggml_obrain_obs_armed<br/>getenv GGML_OBSERVE, GGML_OBSERVE_OUT, GGML_OBSERVE_VERBOSE<br/>inerte et sans cout quand desactive"]
+  obs_freeze["ggml_obrain_obs_write_allowed<br/>si frozen : frozen_writes plus 1 et refus de l ecriture<br/>porte INVARIANT_NO_IO_DURING_WINDOW"]
+  obs_window["ggml_obrain_obs_window_begin et window_end<br/>bornes posees par le harnais sans aucune I/O"]
+  obs_phase["ggml_obrain_obs_phase_of<br/>0 PREWINDOW, 1 MEASURED, 2 POSTWINDOW<br/>classe chaque evenement de l anneau"]
+  obs_dump["ggml_obrain_obs_dump<br/>capacite, octets reserves, ordinaux, 14 compteurs, comptes par phase,<br/>detail EVENT_i et 3 invariants"]
+  obs_atexit["ggml_obrain_obs_atexit et ggml_obrain_obs_install_atexit<br/>std::atexit puis ggml_obrain_obs_dump_to<br/>sans cet appel le linkage elimine le vidage"]
+  obs_driver["8 symboles non inline, lignes 581 a 588<br/>window_begin, window_end, begin_warmup, end_warmup,<br/>freeze, reset, counters, dump"]
+  obs_force_emit["namespace ggml_obrain_obs_force_emit<br/>4 pointeurs volatils sur window et warmup<br/>force l emission hors ligne des fonctions inline"]
+end
+
+subgraph HARN["Harnais A-prime-prime aprime-a2.cpp"]
+  h_reset_warmup["driver_reset puis driver_begin_warmup<br/>pre-roll adaptatif jusqu a 2 no_update_launch consecutifs"]
+  h_step["lambda step<br/>llama_decode puis llama_get_logits_ith puis argmax<br/>t0 t1 t2 t3 sur CLOCK_MONOTONIC"]
+  h_counters["driver_counters remplit 16 doubles<br/>index 9 = no_update_launch, index 14 = compute_ordinal"]
+  h_window["driver_reset puis driver_window_begin<br/>256 tokens mesures"]
+  h_freeze["driver_freeze true pendant la fenetre<br/>driver_window_end puis driver_freeze false"]
+  h_dump["driver_dump ecrit a2-observer-dump.txt<br/>apres la fenetre, avec les CSV et les tokens"]
+  h_sha["SHA256 des 256 tokens<br/>A2_TOKEN_SEQUENCE_MATCH_APRIME"]
+end
+
+subgraph RES["Resultat mesure de la fenetre A-prime-prime"]
+  res_event["EVENT_0_COMPUTE_ORDINAL=224, PHASE=MEASURED_WINDOW<br/>FIRST_CHANGED_NODE_INDEX=213 sur 4010, nom cache_k_l3 view<br/>FIRST_CHANGED_FIELD=OTHER"]
+  res_kv["OLD_NE 256 4 1024 1 vers NEW_NE 256 4 1280 1<br/>OLD_BYTES 2097152 vers NEW_BYTES 2621440<br/>pointeur de donnees et pas inchanges"]
+  res_counter_trace["CUDA_COUNTER_TRANSITION_COUNT=1<br/>OBSERVER_RING_TRANSITION_COUNT=1<br/>COUNTER_TRACE_CONSISTENCY=PASS"]
+  res_warmup_cycles["DEBUG_TRACE_WARMUP_CYCLE_COUNT=2<br/>cycle 1 dans le prefixe avant la fenetre<br/>cycle 2 a l ordinal 224 dans la fenetre"]
+  res_fidelity["les 256 tokens A-prime-prime ont le meme SHA-256 que A-prime<br/>A2_TOKEN_SEQUENCE_MATCH_APRIME=YES"]
+  res_overhead["CITE DE DOC OBSERVER_OVERHEAD_VS_APRIME_PCT = plus 1.35<br/>classe DIAGNOSTIC ONLY, aucun chiffre de debit en baseline"]
+  res_incident["OBSERVER_IMPLEMENTATION_DEFECT_1<br/>champ fautif non propage a l emission, symptome FIRST_CHANGED_FIELD=NONE<br/>STATUS=RESOLVED"]
+end
+
+subgraph LIM["Limites et contradictions relevees en lisant les sources"]
+  lim_local_tree["🔴 la copie locale llama-obrain-cuda ggml-cuda.cu porte un patch ANTERIEUR :<br/>marqueurs ENGINE-004 et fonction ggml_obrain_obs_properties_changed, 3 appels, SHA 3461f13c<br/>ce n est pas la sortie de apply-observer.py"]
+  lim_base_sha["⚪ les copies locales non patchees ont SHA e350b06b<br/>different de la base documentee 960e38d6 : la base du patch n est pas verifiable sur cette machine"]
+  lim_ring512["🔴 le doc STATUT-A-B-C-APRIME annonce un anneau de 512 evenements<br/>contredit par la source MAX = 4096 et par le doc A2 a 1048576 octets reserves"]
+  lim_points["🟠 le doc STATUT annonce 11 points d insertion et 9 ancres verifiees<br/>la source en compte 15 etapes plus 1 ancre d include plus 1 ancre de log : non reconcilie"]
+  lim_kinds["🟠 kind 2 a 6 sont decrits dans le commentaire de evt<br/>un seul appel a event_marker, kind 2 : les kinds 3 4 5 6 ne sont jamais pousses"]
+  lim_fields["🟠 GGML_OBS_FIELD_UID et GGML_OBS_FIELD_NODE_TENSOR_BYTES sont declares<br/>mais jamais assignes par le patch : aucun evenement ne peut les porter"]
+  lim_other["🟠 le champ exact du ggml_tensor de la vue qui differe reste non identifie<br/>OTHER est la classe publiee par la nomenclature fermee"]
+  lim_rate["🟠 GRAPH_TRANSITION_EVENT_RATE de 1 sur 256 est une mesure ponctuelle<br/>la periodicite sur 256 tokens n est pas etablie"]
+end
+
+subgraph ETAT["Etat des objets au sens obrain"]
+  st_ecrit["✅ ecrit et verifie<br/>patch applique, make exit 0, dump et invariant presents dans l objet compile<br/>CITE DE DOC grep -c ggml_obrain_obs = 12"]
+  st_decide["🟠 decide pas ecrit<br/>kinds 3 a 6 et champs UID et NODE_TENSOR_BYTES declares sans emetteur"]
+  st_refuse["🔴 refuse<br/>ancre absente ou ambigue, ou source deja patchee : rien n est ecrit"]
+  st_amont["⚪ existe en amont<br/>bloc de telemetrie ENGINE-003 V3 dans ggml-cuda.cu, jamais modifie par le patch observateur"]
+end
+
+patch_script -->|lit puis reecrit| patch_write
+patch_script -->|verifie chaque ancre| patch_anchor_rule
+patch_script -->|garde d entree| patch_guard
+patch_script -->|pose| patch_include
+patch_script -->|applique dans l ordre| patch_steps
+patch_script -->|marque chaque site| patch_mark
+patch_anchor_rule -->|refus| st_refuse
+patch_suppress -.->|optionnel| patch_write
+patch_guard -->|etat local observe| lim_local_tree
+lim_points -.->|contredit| patch_steps
+lim_base_sha -.->|empeche la verification de| patch_script
+st_ecrit -->|etat du patch| patch_write
+st_refuse -.->|etat du garde| patch_guard
+st_amont -.->|existe avant le patch| patch_include
+patch_include -.->|apres| st_amont
+
+patch_steps -->|etape 1| site_compute_head
+patch_steps -->|etape 2| site_upd_head
+patch_steps -->|etape 2| site_fast_path
+patch_steps -->|etape 3| site_node_count
+patch_steps -->|etape 4| site_memcmp
+patch_steps -->|etape 5| site_emit
+patch_steps -->|etape 6| site_reinstantiate
+patch_steps -->|etape 7| site_end_capture
+patch_steps -->|etape 8| site_begin_capture
+patch_steps -->|etape 9| site_instantiate
+patch_steps -->|etape 10| site_exec_update
+patch_steps -->|etape 11| site_launch
+patch_steps -->|etape 12| site_direct_eval
+patch_steps -->|etape 13| site_upd_counter
+patch_steps -->|etape 14| site_atexit_call
+patch_steps -->|etape 15| site_warmup_reset
+
+site_compute_head -->|appelle| obs_ordinal
+site_atexit_call -->|appelle| obs_atexit
+site_upd_head -->|fournit uid memorise et cle de graphe| obs_evt
+site_fast_path -->|appelle| obs_counters
+site_node_count -->|ecrit| obs_enum
+site_memcmp -->|ecrit| obs_enum
+site_emit -->|remplit| obs_evt
+site_emit -->|appelle| obs_ring
+site_emit -->|appelle| obs_counters
+site_upd_counter -->|appelle| obs_counters
+site_begin_capture -->|appelle| obs_ring
+site_end_capture -->|appelle| obs_counters
+site_instantiate -->|appelle| obs_counters
+site_exec_update -->|appelle| obs_counters
+site_reinstantiate -->|appelle| obs_counters
+site_launch -->|appelle| obs_counters
+site_direct_eval -->|appelle| obs_counters
+site_warmup_reset -->|appelle| obs_counters
+
+obs_ordinal -->|date| obs_evt
+obs_enum -->|nom publie par| obs_field_name
+obs_armed -->|arme| obs_counters
+obs_armed -->|arme| obs_ring
+obs_freeze -->|compte frozen_writes| obs_counters
+obs_window -->|borne| obs_phase
+obs_phase -->|classe| obs_ring
+obs_ring -->|lu par| obs_dump
+obs_counters -->|16 valeurs o 0 a 15| obs_dump
+obs_field_name -->|chaine EVENT_i_FIRST_CHANGED_FIELD| obs_dump
+obs_freeze -->|invariant| obs_dump
+obs_atexit -->|appelle| obs_dump
+obs_force_emit -->|force l emission de| obs_driver
+obs_driver -->|enveloppe| obs_window
+lim_kinds -.->|limite| obs_evt
+lim_fields -.->|limite| obs_enum
+lim_ring512 -.->|contredit| obs_ring
+st_decide -.->|etat des emetteurs absents| obs_evt
+
+h_reset_warmup -->|appelle| obs_driver
+h_window -->|appelle| obs_driver
+h_freeze -->|appelle| obs_driver
+h_counters -->|lit 16 doubles| obs_driver
+h_dump -->|appelle| obs_driver
+h_step -->|un ordinal par decode| obs_ordinal
+obs_dump -->|fichier a2-observer-dump.txt| h_dump
+
+obs_ring -->|EVENT_i| res_event
+obs_window -->|fenetre 9 a 264| res_event
+res_event -->|cause| res_kv
+obs_dump -->|publie| res_counter_trace
+res_counter_trace -->|resout| res_warmup_cycles
+h_sha -->|juge la fidelite| res_fidelity
+res_fidelity -->|rend comparable| res_overhead
+res_incident -->|consigne| site_emit
+lim_other -.->|limite| res_event
+lim_rate -.->|limite| res_counter_trace
+
+class patch_script,patch_guard,patch_anchor_rule,patch_mark,patch_include,patch_steps,patch_suppress,patch_write cPatch
+class site_compute_head,site_atexit_call,site_upd_head,site_fast_path,site_node_count,site_memcmp,site_emit,site_upd_counter,site_begin_capture,site_end_capture,site_instantiate,site_exec_update,site_reinstantiate,site_launch,site_direct_eval,site_warmup_reset cSite
+class obs_enum,obs_field_name,obs_evt,obs_ring,obs_counters,obs_ordinal,obs_armed,obs_freeze,obs_window,obs_phase,obs_dump,obs_atexit,obs_driver,obs_force_emit cMem
+class h_reset_warmup,h_step,h_counters,h_window,h_freeze,h_dump,h_sha cHarn
+class res_event,res_kv,res_counter_trace,res_warmup_cycles,res_fidelity,res_overhead,res_incident cRes
+class lim_local_tree,lim_base_sha,lim_ring512,lim_points,lim_kinds,lim_fields,lim_other,lim_rate cLim
+class st_ecrit,st_decide,st_refuse,st_amont cEtat

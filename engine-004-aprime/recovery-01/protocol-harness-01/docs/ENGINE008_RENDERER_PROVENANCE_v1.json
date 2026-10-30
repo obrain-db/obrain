@@ -1,0 +1,114 @@
+{
+  "provenance_id": "ENGINE008_RENDERER_PROVENANCE_v1",
+  "pass": "PROTOCOL-HARNESS-01",
+  "decided_utc": "2026-10-02",
+  "host": "spark-c578 (192.168.1.7, alias ssh dgx)",
+
+  "fork": {
+    "path": "/home/triviere/projects/llama-obrain-cuda-f1a",
+    "git_head": "8447604f7f0c3b48a77be46de2466a5b23e27826",
+    "git_branch": "feat/cuda-tq2g128",
+    "role": "seul build-cuda correspond a Q1, identifie par sa provenance et non par son nom"
+  },
+
+  "renderer_function": {
+    "name": "common_chat_templates_apply",
+    "mangled": "_Z27common_chat_templates_applyPK21common_chat_templatesRK28common_chat_templates_inputs",
+    "declaration": "common/chat.h:324",
+    "implementation": "common/chat.cpp:2646 (common_chat_templates_apply_jinja)",
+    "dispatch": "common/chat.cpp:2855  ->  inputs.use_jinja ? apply_jinja : apply_legacy",
+    "engine": "JINJA_MINJA_NATIVE",
+    "jinja_program_construction": {
+      "struct": "common_chat_template (common/chat.h:52)",
+      "member": "jinja::program prog",
+      "built_by": "jinja::lexer::tokenize + jinja::parse_from_tokens",
+      "caps": "jinja::caps_get(prog)"
+    },
+    "template_selection": {
+      "function": "common_chat_templates_init (common/chat.h:316, common/chat.cpp:707)",
+      "signature": "common_chat_templates_ptr common_chat_templates_init(const struct llama_model * model, const std::string & chat_template_override, const std::string & bos_token_override = \"\", const std::string & eos_token_override = \"\")",
+      "explicit_override_rule": "chat_template_override non vide => default_template_src = override ; llama_model_chat_template() N EST PAS lu (common/chat.cpp:714-729)",
+      "empty_override_rule": "override vide => lecture du template embarque du modele",
+      "chatml_fallback_condition": "default_template_src vide OU == \"chatml\" (common/chat.cpp:730) -- NON declenche : l autorite fait 8952 octets",
+      "verified": "RENDERER_USES_EXPLICIT_TEMPLATE=YES ; EMBEDDED_TEMPLATE_OVERRIDDEN_BY_EXPLICIT=YES (candidat)"
+    },
+    "rejected_alternative": {
+      "name": "llama_chat_apply_template",
+      "declaration": "include/llama.h:1601",
+      "header_note": "include/llama.h:1593 -- \"NOTE: This function does not use a jinja parser. It only support a pre-defined list of template.\"",
+      "measured_dispatch": "llm_chat_detect_template -> LLM_CHAT_TEMPLATE_CHATML pour les deux templates Qwen3.8 (src/llama-chat.cpp:99-104)",
+      "reason_for_rejection": "n execute aucune branche Jinja : ni reasoning_instructions, ni enable_thinking, ni sysns",
+      "source_audit": "ENGINE008_NATIVE_CHAT_RENDERER_AUDIT.txt (RECOVERY-01)"
+    }
+  },
+
+  "libraries_used": [
+    {"name": "libllama.so.0.0.135", "sha256": "87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2", "is_q1_authority": true, "role": "runtime modele/quantification"},
+    {"name": "libllama-common.so.0.0.135", "sha256": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20", "is_q1_authority": false, "role": "RENDERER JINJA -- provenance etablie, NON qualifiee par une autorite ecrite prealable"},
+    {"name": "libggml.so.0.16.0", "sha256": "3d7f9ac51cb98936759a2e30acc1a7562e9122d3381d27f3955fff6be9016611", "is_q1_authority": false},
+    {"name": "libggml-base.so.0.16.0", "sha256": "af2c88dd19e87ebf0c902aa07dfcf53a04fbcc7a79c3fdaf19a6b856ab269c01", "is_q1_authority": false},
+    {"name": "libggml-cpu.so.0.16.0", "sha256": "910a04c7af610aa65caf257b1d4ffe589cec608d5dd2a22e6ef5868367218f4f", "is_q1_authority": false},
+    {"name": "libggml-cuda.so.0.16.0", "sha256": "7fdd87502b93191a0de3f62a9a15989f4fb63211c8cefb64d226b8f4480cdd70", "is_q1_authority": false}
+  ],
+
+  "resolved_at_runtime": {
+    "_measured_by": "ldd du binaire du harnais",
+    "libllama-common.so.0": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama-common.so.0",
+    "libllama.so.0": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0",
+    "libggml.so.0": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml.so.0",
+    "libggml-base.so.0": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-base.so.0",
+    "libggml-cpu.so.0": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-cpu.so.0",
+    "libggml-cuda.so.0": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-cuda.so.0",
+    "runpath": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin"
+  },
+
+  "render_source_files": [
+    "common/chat.h", "common/chat.cpp",
+    "common/jinja/lexer.h", "common/jinja/lexer.cpp",
+    "common/jinja/parser.h", "common/jinja/parser.cpp",
+    "common/jinja/runtime.h", "common/jinja/runtime.cpp",
+    "common/jinja/value.h", "common/jinja/value.cpp",
+    "common/jinja/caps.h", "common/jinja/caps.cpp",
+    "common/jinja/string.h", "common/jinja/string.cpp",
+    "common/jinja/utils.h", "include/llama.h",
+    "vendor/nlohmann/json.hpp"
+  ],
+
+  "build": {
+    "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "standard": "c++17",
+    "command": "g++ -std=c++17 -O2 -I$FORK/include -I$FORK/common -I$FORK/ggml/include -I$FORK/vendor $FORK/tools/engine008-quality-eval/engine008-quality-eval.cpp -o $BUILD/engine008-quality-eval -L$FORK/build-cuda/bin -lllama-common -lllama -lggml -lggml-base -Wl,-rpath,$FORK/build-cuda/bin",
+    "build_space": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/build (DISTINCT de build-cuda)",
+    "abi": {
+      "soname_renderer": "libllama-common.so.0",
+      "soname_runtime": "libllama.so.0",
+      "arch": "aarch64",
+      "note": "le harnais lie les bibliotheques DEJA construites ; il ne reconstruit ni libllama ni libllama-common"
+    },
+    "isolated_modifications": {
+      "fork_files_modified": 0,
+      "fork_files_added": ["tools/engine008-quality-eval/engine008-quality-eval.cpp"],
+      "cmake_files_modified": 0,
+      "note": "l outil est compile hors de l arbre CMake du fork : aucune modification de build n est necessaire, et build-cuda reste intact"
+    }
+  },
+
+  "qualification_status": {
+    "NATIVE_JINJA_RENDERER_QUALIFIED": "YES",
+    "basis": [
+      "signature et chemin d appel lus dans les sources exactes",
+      "structures d entree lues (common_chat_templates_inputs)",
+      "option qui selectionne reellement Jinja identifiee (use_jinja -> apply_jinja)",
+      "transmission du template explicite prouvee (override non vide)",
+      "absence de fallback ChatML prouvee (autorite 8952 octets, != \"chatml\")",
+      "absence de selection implicite du template candidat prouvee a l execution (EMBEDDED_TEMPLATE_OVERRIDDEN_BY_EXPLICIT=YES)"
+    ],
+    "caveat_declared": "libllama-common.so n a pas de SHA d autorite ecrite prealable. Son identite est CONSTATEE dans ce document, pas qualifiee. Un composant non qualifie ne devient pas qualifie parce qu il se trouve a cote de libllama Q1."
+  },
+
+  "not_touched": [
+    "libllama Q1 non reconstruite, SHA de reference inchange",
+    "aucune source de calcul produit modifiee",
+    "aucun GGUF modifie"
+  ]
+}

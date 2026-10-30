@@ -1,0 +1,122 @@
+ENGINE-008 -- STATUT TERMINAL NEXTN-KEYS-01
+==========================================================================
+Les cles exactes et le MECANISME STRUCTUREL sont etablis par lecture des
+sources Q1. Le code de generation et les tests n'ont pas ete ecrits : limite de
+contexte. Aucun chargement de modele. Aucun forward.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=NEXTN_EXACT_KEYS_ONLY
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+MODEL_ARCHITECTURE_LOADING_PATH_VERIFIED=PARTIAL
+  Chemin de chargement lu : tn() construit <modele LLM_TENSOR_NAMES> + suffixe
+  + indice de couche ; borne hparams.n_layer_nextn
+  (llama-model.cpp:1981, accesseur public llama_model_n_layer_nextn :2426).
+  RESERVE : le filtre decisif (cf. ci-dessous) est ecrit pour LLM_ARCH_STEP35.
+  Son equivalent pour qwen35 doit etre CONFIRME avant d'en faire une regle.
+
+=== LE RESULTAT PRINCIPAL : UNE SIGNATURE STRUCTURELLE, PAS UN NOM ===
+llama-model.cpp:2242-2248, verbatim :
+    if (arch == LLM_ARCH_STEP35 && hparams.n_layer_nextn > 0) {
+        if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+            filter = [&](uint32_t il) { return il >= hparams.n_layer(); };
+        } else {
+            filter = [&](uint32_t il) { return il <  hparams.n_layer(); };
+        }
+    }
+Etabli :
+  - les couches NextN sont celles d indice >= hparams.n_layer() ;
+  - le chemin STANDARD (ctx_type par defaut != MTP) les FILTRE : il < n_layer() ;
+  - les atteindre exige explicitement LLAMA_CONTEXT_TYPE_MTP.
+C est une signature STRUCTURELLE du chemin -- un filtre d indices gouverne par
+un TYPE DE CONTEXTE -- et non une convention de nom. C est exactement le temoin
+que les passes precedentes cherchaient, et il ne depend d aucune sous-chaine.
+
+=== CLES : CE QUI ETAIT JUSTE ET CE QUI ETAIT FAUX DANS L ADAPTATEUR ===
+JUSTE : suffixe .weight sur les poids principaux ; suffixes "scale" et
+  "input_scale" identifies comme compagnons de quantification.
+FAUX : l indice de couche ETAIT FIGE a 64. La formule reelle est
+    il in [ hparams.n_layer(), hparams.n_layer() + n_layer_nextn - 1 ]
+  Pour le candidat : n_layer()=64, n_layer_nextn=1 -> indice unique 64.
+  Pour 2 couches NextN : 64 et 65. La constante doit etre REMPLACEE.
+  Defaut reconnu, non encore corrige dans le code.
+
+NEXTN_LAYER_INDEX_EXPANSION_VERIFIED=NO (formule etablie, expansion non codee)
+NEXTN_OPTIONALITY_RULES_MATERIALIZED=PARTIAL
+  TENSOR_NOT_REQUIRED (llama-model.cpp:1388) : les compagnons _s ("scale",
+  "input_scale") sont OPTIONNELS (llama-model.cpp:1479-1480, :1544-1545 pour
+  les roles NextN). Les poids PRINCIPAUX sont crees SANS ce drapeau :
+  OBLIGATOIRES. Un optionnel absent n est ni un tensor normal ni une preuve
+  d absence -- regle materialisee, application non codee.
+
+BASELINE_EXACT_KEYS_RESOLVED=YES
+  n_layer_nextn : cle GGUF ABSENTE -> defaut 0 -> AUCUN role NextN applicable.
+  Etat = NOT_APPLICABLE. Ce n est JAMAIS un ROLE_ABSENT par defaut : le
+  baseline ne PEUT PAS produire de temoin NextN, par construction.
+CANDIDATE_EXACT_KEYS_RESOLVED=YES
+  n_layer_nextn = 1 (mesure : 4 tenseurs blk.64.nextn.* dans les metadonnees).
+  Roles applicables : NEXTN_EH_PROJ, NEXTN_ENORM, NEXTN_HNORM,
+  NEXTN_SHARED_HEAD_NORM (exclusifs) et NEXTN_SHARED_HEAD_HEAD
+  (exclusivite NON ETABLIEE, maintenu HORS des temoins positifs).
+EXACT_KEYS_REGISTRY_INTEGRATION_IMPLEMENTED=NO
+EXACT_KEYS_SELFTEST=NOT_RUN
+REQUIRED_TENSOR_MISSING_COUNT=NOT_MEASURED
+  (exige l exercice sur les metadonnees des deux modeles ; non fait)
+UNRESOLVED_LOADING_CONDITION_COUNT=1
+  Le filtre par type de contexte pour qwen35 (cf. reserve ci-dessus).
+
+NEXTN_TENSOR_ROLE_CONTRACT_SHA256=d46a114d702341bb65a12553c5c7df9a5b2f527de5995a34ad025806ffbdb637
+  (v1_1, inchangee dans cette passe : l exclusivite de SHARED_HEAD_HEAD n est
+   PAS modifiee ici, conformement a §5)
+ADAPTER_SOURCE_SHA256=17c0cec17ba49ccc729ce58913a833183d741018400f7b0cbff7e67898b8ca60
+ADAPTER_BINARY_SHA256=cc5ea508b5de1a2793c7f70565bb9ea366a2cdfc3f9a426103231234c981367b
+  ADAPTATEUR NON MODIFIE dans cette passe : corriger la constante de couche
+  exige d abord de confirmer le filtre pour qwen35. Modifier avant de confirmer
+  reviendrait a remplacer une constante par une autre supposition.
+
+ALIAS_PROVENANCE_RULE_IMPLEMENTED=NO
+NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED
+NEXTN_NEGATIVE_WITNESS_EXHAUSTIVENESS_JUSTIFIED=NO
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Ni blocage de preuve : le mecanisme structurel EST etabli et il est decisif.
+  Ni achevement : le code de generation, l integration au registre et les tests
+  restent a ecrire.
+
+REMAINING_WORK=
+  K1_CONFIRMER le filtre par type de contexte pour qwen35 (l equivalent de
+     llama-model.cpp:2242-2248). C est le seul point qui empeche d en faire une
+     regle. Tant qu il n est pas confirme : UNRESOLVED_CONDITION.
+  K2_CORRIGER l adaptateur : remplacer la constante de couche 64 par la formule
+     il in [n_layer(), n_layer() + n_layer_nextn - 1].
+  K3_IMPLEMENTER la generation des cles completes par modele et architecture,
+     avec les 5 etats (APPLICABLE_PRESENT / APPLICABLE_OPTIONAL_ABSENT /
+     APPLICABLE_REQUIRED_MISSING / NOT_APPLICABLE / UNRESOLVED_CONDITION).
+  K4_CONFRONTER aux metadonnees GGUF des deux modeles (lecture seule, sans
+     poids ni contexte) et produire les resolutions baseline/candidat.
+  K5_TESTS cibles : cle nominale ; mauvais suffixe ; indice incorrect ;
+     plusieurs indices NextN ; aucune couche NextN ; role non applicable ;
+     optionnel absent ; obligatoire manquant ; condition indeterminee ;
+     resolution differente entre deux configurations ; maintien des etats
+     d ambiguite du registre.
+  K6_REPRENDRE les travaux hors perimetre : alias, exclusivite du poids de tete,
+     closure renderer, chemin nominal d autorisation, v1.1, gel preflight.
+
+ENGINE008_NEXT_STEP=K1 (confirmer le filtre par type de contexte pour qwen35
+  dans llama-model.cpp), PUIS K2 (corriger la constante de couche)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+AUCUN CHARGEMENT DE MODELE, aucune creation de contexte, aucun logit, aucune
+generation, aucun scoring, aucune NLL/PPL, aucune evaluation numerique.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template, gel v1, contrats de roles, ni de l adaptateur.
+Aucun nouveau gel cree.

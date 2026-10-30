@@ -1,0 +1,153 @@
+ENGINE-008 -- STATUT ENGINE008-FINAL-05
+==========================================================================
+ORIGINE COMMUNE DES CHAMPS VIDES : TROUVEE ET CORRIGEE.
+LE CABLAGE PREND EFFET : la gate P4' s'applique desormais et BLOQUE AVANT le
+contexte. Le maillon restant est le REGISTRE VIDE. AUCUNE SEQUENCE RELANCEE.
+
+=== 1. FINAL-04 INVALIDE -- CONSERVE INTACT ===
+  ACQUIS : baseline1 a produit une generation REELLE de 8 tokens
+    IDs [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]
+    TEXTE "We need answer user: \"Répond"  STOP MAX_NEW_TOKENS
+  NON ACQUIS, et c'est le point :
+   - AUCUN PASS protocolaire : la sequence s'est arretee au premier defaut ;
+   - `validated_role` VIDE et `p4_applies` FAUX -> la gate baseline ne
+     s'appliquait PAS, a tort ;
+   - inventaire VIDE (0 nom lu) alors que le fichier fait 169 lignes ;
+   - registre ABSENT du rapport (`n_registry_entries=0`) ;
+   - AUCUNE capture f1a (0 fichier) et AUCUNE injection demontree.
+  **La repetition du meme texte qu'en FINAL-01 n'est PAS une validation de ces
+  mecanismes.** Elle prouve seulement la reproductibilite du chemin de calcul.
+
+=== 2. ORIGINE COMMUNE -- DEMONTREE ===
+  `grep -n "validated_role\|p4_applies" engine008_real_entry.cpp` rendait
+  **RIEN**. Le point d'entree n'affectait JAMAIS ces deux champs : ils restaient
+  a leur valeur par defaut. C'est l'origine COMMUNE des deux champs vides.
+  La cause est un PATCH QUI N'A PAS PRIS : mon remplacement a ete applique sur un
+  fichier qui a ensuite ete ECRASE par une copie d'un etat anterieur, et je
+  n'avais pas mis d'assertion pour le detecter. Je ne l'avais pas verifie.
+  CORRECTION : affectation posee APRES `r.max_new_tokens`, avec `assert` sur
+  l'ancre cette fois :
+      r.validated_role = a.model_tag;                  // role VALIDE
+      r.p4_applies     = (a.model_tag == "baseline");  // P4' BASELINE seulement
+  Le pipeline recopiait DEJA correctement (engine008_pipeline.cpp:255-256) :
+      r.p4_applies = req.p4_applies;
+      r.validated_role = req.validated_role;
+  Il ne manquait QUE la source.
+
+=== 3. PREUVE QUE LE CABLAGE PREND EFFET (sonde directe, sans sequence) ===
+  Enfant reel, modele baseline, inventaire pose dans l'environnement :
+      LOAD_OK=1  CTX_OK=0  PREFILL_WINDOWS=0  DECODE_WINDOWS=0
+      P4_GATE=BLOCKED
+      RUN_OUTCOME=FAIL  exit=5
+  AVANT la correction, ce meme chemin atteignait le contexte et le prefill
+  (FINAL-04 : CTX_OK=1, PREFILL_WINDOWS=1, 8 tokens). MAINTENANT il s'arrete
+  AVANT le contexte. **C'est exactement l'ordre exige** :
+      autorisation -> chargement -> registre -> P4' -> GATE -> contexte -> prefill
+  La gate P4' EMPECHE donc reellement le calcul : P4' UNKNOWN -> zero contexte,
+  zero prefill, zero decode. C'est un resultat MESURE.
+  ET l'inventaire bloque aussi : `P4PRIME_GATE_BLOCKED` et
+  `INVENTORY_NOT_GLOBALLY_COMPLETE` sont tous deux presents, et le refus tombe
+  AVANT tout forward -- conforme a l'exigence §3.
+
+BASELINE_P4_APPLICABILITY_ENFORCED=PASS
+  `p4_applies` est desormais vrai pour la baseline, la gate s'applique, et un
+  resultat UNKNOWN interrompt REELLEMENT la baseline avant le contexte.
+
+EMPTY_ROLE_REJECTED_BEFORE_FORWARD=NOT_RUN
+  Le refus explicite d'un role vide n'est PAS encore code. Aujourd'hui un role
+  vide rend `p4_applies=false`, donc la gate ne s'applique pas -- ce qui est
+  precisement le defaut que §3 demande de refuser. A CORRIGER : role vide ou non
+  lie a l'identite du modele -> refus AVANT calcul.
+
+INVENTORY_REACHES_REAL_PIPELINE=FAIL
+  L'inventaire autoritaire existe (169 lignes = 1 en-tete + 168 noms,
+  sha256 e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1),
+  `OBRAIN_F1A_INVENTORY` est pose dans l'environnement, et la validation
+  rapporte `inventaire VIDE : 0 nom lu`. DONC le chemin n'atteint pas le
+  lecteur. La trace `INVENTORY_ENV`/`INVENTORY_EXISTS` que j'avais ecrite n'a
+  PAS ete inseree non plus (meme cause : ancre de remplacement non verifiee) :
+  je n'ai donc PAS la valeur du chemin resolu, et je m'interdis de conclure.
+  Ce qui est CERTAIN : `read_inventory_source(bytes, file_existed)` prend
+  `file_existed` en 2e parametre et `read_inventory_file` passe bien `true` ;
+  le lecteur lui-meme gere l'en-tete `tensor_name` (11 premiers caracteres) et
+  le comptage de doublons. Le defaut est donc en AMONT du lecteur.
+  AMELIORATION ACQUISE : le vrai-a-vide est desormais REFUSE et BLOQUE
+  (`globally_complete:false`, `why_incomplete` nomme la cause), la ou RUN-06
+  rendait `true` avec 0 entree.
+
+REGISTRY_REACHES_P4_INPUTS=FAIL
+  `n_registry_entries=0` : le registre natif n'est PAS acquis, donc
+  `registry_tensors` est vide, donc C1..C5 restent UNKNOWN et la gate est
+  BLOQUEE. Le cablage existe (`registry_tensors.push_back` a
+  engine008_real_deps.cpp:177, lecture `((const ggml_tensor*)e.tensor)->type`),
+  mais `acquire_registry` rend un registre VIDE alors que le modele est charge
+  (`LOAD_OK=1`). Cause non elucidee : `llama_internal_get_tensor_map`,
+  `llama_model_n_layer`, `llama_model_n_layer_nextn`, ou le filtre SPECS.
+  A ISOLER par instrumentation du nombre d'entrees avant/apres filtrage.
+
+PRODUCTION_REQUEST_BINDING_SELFTEST=FAIL
+  Le role et la portee sont maintenant lies, mais le refus explicite du role vide
+  et le refus du registre absent restent a coder, et l'inventaire n'atteint pas
+  le pipeline. Le test de bout en bout demande par §4 (parsing -> validation ->
+  dependances reelles -> requete -> orchestration -> serialisation, avec
+  frontieres de chargement mockees) N'EST PAS ECRIT.
+
+=== 4. INJECTION (§5) ===
+GRAPH_INJECTION_MECHANISM=UNRESOLVED
+  Perimetre REELLEMENT examine : le fork Q1 (`src/llama-graph.cpp`,
+  `src/llama-context.cpp`, `src/llama-batch.cpp`, `f1a-capture.cpp`), la chaine
+  de capture f1a et son ledger, le harness de preflight et ses adaptateurs.
+  ETABLI : la capture f1a OBSERVE le graphe ggml (`f1a_capture_note`,
+  `f1a_capture_end_epoch`) et n'injecte ni tenseur, ni activation, ni etat, ni
+  KV. La nommer « injection » serait faux.
+  NON TROUVE : aucune interface d'injection native dans ce perimetre -- ni
+  commande, ni module, ni entree reproductible, ni point d'application, ni
+  preuve d'acceptation/consommation. AUCUNE SUBSTITUTION INVENTEE : ni dump
+  numerique, ni contexte textuel.
+  MANQUE PRECIS : il faudrait que l'operateur designe l'interface visee (nom de
+  commande, module ou binaire) car « injection » peut legitimement designer
+  plusieurs mecanismes distincts (graphe, tenseur/activation, etat, KV,
+  contexte textuel) qui impliquent des experiences differentes.
+
+F1A_CONFIGURATION_CONNECTED=NO
+  Les activateurs f1a ne sont pas raccordes : 0 fichier de capture.
+  `WHT_SURFACE_MISSING_OR_MALFORMED`, blocker `GRAPH_CAPTURE_MANIFEST.csv :
+  manifeste absent`. Une capture ABSENTE reste un echec et n'est PAS assimilee a
+  une absence de WHT.
+
+PREFLIGHT_SEQUENCE_RESULT=NOT_RUN
+GENERATED_IDS_PER_RUN=NOT_RUN (aucune sequence dans cette passe)
+GENERATED_TEXT_PER_RUN=NOT_RUN
+INJECTION_APPLICATION_PROOF=NOT_ESTABLISHED
+RETRY_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+  Aucune autorisation reelle creee, aucun forward, conformement a §6.
+
+REMAINING_BLOCKERS -- CAUSES DEMONTREES=
+  D1. ROLE VIDE : non refuse. `p4_applies=false` pour un role vide, donc la gate
+      ne s'applique pas. A coder : role vide ou non lie a l'identite du modele
+      -> refus avant calcul.
+  D2. INVENTAIRE : le chemin n'atteint pas le lecteur (0 nom lu avec un fichier
+      de 169 lignes). Defaut EN AMONT du lecteur -- `OBRAIN_F1A_INVENTORY` pose,
+      fichier present. A instrumenter : la trace que j'ai ecrite n'a pas ete
+      inseree (ancre non verifiee) et je n'ai donc PAS la valeur du chemin.
+  D3. REGISTRE VIDE : `acquire_registry` rend 0 entree avec un modele charge.
+      A isoler avant/apres filtrage SPECS. C'est ce qui maintient C1..C5 UNKNOWN
+      et donc la gate BLOQUEE.
+  D4. TEST DE BOUT EN PRODUCTION (§4) non ecrit.
+  D5. f1a non raccorde ; injection non identifiee.
+  D6. Puis rebuild, nouveau gel, autorisation, et les quatre runs.
+
+--- LECON DE METHODE, APPLIQUEE DESORMAIS ---
+  Trois de mes correctifs precedents ont ete appliques par des remplacements de
+  texte SANS ASSERTION sur l'ancre : deux n'ont pas pris et je ne l'ai pas vu
+  avant d'executer. Le correctif de ce tour porte un `assert` sur l'ancre. La
+  lecon vaut pour D2 : je n'insererai plus de trace sans verifier qu'elle est
+  bien presente dans le source compile.
+
+--- INVARIANTS PRESERVES ---
+Aucun retry. Aucune sequence lancee dans cette passe. Aucune autorisation reelle.
+Aucune evaluation qualite. Q1, modeles, template, inventaire, protocole et plan
+inchanges. Exigences baseline et candidat maintenues distinctes.
+FINAL-04 et RUN-01 a RUN-07 conserves.

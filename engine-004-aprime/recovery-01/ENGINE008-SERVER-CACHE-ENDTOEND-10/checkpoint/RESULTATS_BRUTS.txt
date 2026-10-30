@@ -1,0 +1,39 @@
+=== A ===
+{
+ "fact_tokens": 58,
+ "blob_bytes": 160697024,
+ "prefix_decode_calls": 1,
+ "prefix_token_count": 58,
+ "state_imported": false,
+ "fact_decode_ms": 2287.18603515625,
+ "ms_prefix_compute": 2287.18603515625,
+ "ms_state_lookup": -1.0,
+ "ms_model_sha256": -2.0,
+ "ms_blob_sha256": 788.1519775390625,
+ "ms_state_import": -1.0,
+ "ms_preparation_total": 2287.18603515625
+}
+=== B (CONTROL) ===
+{
+ "selected_ids_count": 6,
+ "emitted_ids_count": 6,
+ "n_generate_requested": 32,
+ "decoded_ids_json": "[13,198,248069,271,3793,13]",
+ "decoded_pos_json": "[59,60,61,62,63,64]",
+ "stop_reason": "EOS",
+ "first_logits_n": 248320,
+ "verify_enabled": true,
+ "selection_method": "llama_sampler_sample (argmax en greedy, egalites au plus petit ID)",
+ "prefix_decode_calls": 1,
+ "prefix_token_count": 58,
+ "state_imported": false,
+ "ms_prefix_compute": 849.4199829101562,
+ "ms_model_sha256": -2.0,
+ "ms_blob_sha256": -2.0,
+ "ms_state_import": -2.0,
+ "ms_preparation_total": 849.4199829101562,
+ "fact_decode_ms": 849.4199829101562
+}
+TEXT='.\n</think>\n\nOK.'
+=== C ===
+http=0 duration_s=240.083874 error=TimeoutError: timed out

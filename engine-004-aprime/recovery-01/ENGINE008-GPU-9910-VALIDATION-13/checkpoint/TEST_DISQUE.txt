@@ -1,0 +1,26 @@
+[19:14:14] === TEST DU CHEMIN DISQUE (reinjection SANS texte, SANS recalcul) ===
+[19:14:14] repertoire d'etats : /home/triviere/obrain-9910/work/kv-states
+[19:14:14] fichiers presents avant : 1 -> ['4304f084eab6ecb1.bin']
+[19:14:14] --- INSTANCE 1 ---
+[19:14:30] instance 1 PID=714939 prete
+[19:14:30] [CTRL] http=200 duree=0.861s err=None
+[19:14:30]   CTRL ids=[13,198,248069,271,3793,13] prefix_tok=58 text='.\n</think>\n\nOK.'
+[19:14:31] [EXPORT] http=200 duree=0.797s err=None
+[19:14:31]   EXPORT ref=4304f084eab6ecb1 blob_bytes=160697024
+[19:14:33]   nouveaux fichiers sur disque : []
+[19:14:33]   fichier /home/triviere/obrain-9910/work/kv-states/4304f084eab6ecb1.bin : 160697885 octets
+[19:14:33]   8 premiers octets : b'OBKV\x01\x00\x00\x00'  (attendu: b'OBKV' + version)
+[19:14:33] --- ARRET DE L'INSTANCE 1 (la memoire cache disparait) ---
+[19:14:34]   [stop] exit=0 proprietaire_du_port=None
+[19:14:34] instance 1 arretee ; port 9910 LIBRE (verifie)
+[19:14:34] --- INSTANCE 2 (processus NEUF, cache memoire VIDE) ---
+[19:14:52] instance 2 PID=715013 prete ET proprietaire du port 9910 -- seule source : LE DISQUE
+[19:14:53] [REST_DISK] http=200 duree=0.920s err=None
+[19:14:53]   REST ids=[13,198,248069,271,3793,13] prefix_tok=0 imported=True text='.\n</think>\n\nOK.'
+[19:14:53]   REST ms: lookup=0.0010000000474974513 compat=3.177999973297119 blob_sha=76.66699981689453 import=4.11899995803833 total=433.1709899902344
+[19:14:53] === COMPARAISON : reinjection DISQUE vs CONTROLE de l'instance 1 ===
+[19:14:53]   MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+[19:14:53]   prefix_token_count=0  (0 = aucun token de prefixe recalcule)
+[19:14:53]   TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+[19:14:53] DISK_REINJECTION_WITHOUT_TEXT=PASS
+[19:14:53] === instance 2 laissee EN SERVICE sur 127.0.0.1:9910 (bind local pendant le test) ===

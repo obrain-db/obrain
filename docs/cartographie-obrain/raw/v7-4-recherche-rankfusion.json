@@ -1,0 +1,55 @@
+{
+  "area": "Recherche & rank fusion (feat/recherche-couplee, search_delta/surprise/by-role, rank fusion RRF, feat/zorder)",
+  "summary": "La tranche « recherche & rank fusion » d'obrain se déploie sur deux axes. (1) Les « formes de recherche » GQL, livrées comme procédures LECTURE additives dans crates/obrain-engine/src/database/ : search_delta (diff CDC graphe), search_surprise (écart activité observée vs attendue par le degré), search_by_role (rôle structurel via descripteurs HKS 3 échelles), search_conflicts (reversals A→B→A dans la fenêtre CDC), search_causes/search_effects (BFS avant/inverse amorti), et le composite search_relief/obrain.relief (N/T/B/X) — documentées par 5 PROPOSAL-SEARCH-*. (2) Le rank fusion, porté par la primitive générique RRF (Reciprocal Rank Fusion, k=60 par défaut) + Weighted dans crates/obrain-core/src/index/text/fusion.rs (fuse_results/fuse_rrf/fuse_weighted), consommée par ObrainDB::hybrid_search (BM25+vecteur, crates/obrain-engine/src/database/search.rs) et par l'outil CLI obrain_recherche (chantier feat/recherche-couplee, crates/obrain-cli/src/outils.rs). Le chantier feat/zorder (ordre Z/Morton + superposition hilbert/zorder, fenêtres 2D window_query_2d) relève de la recherche spatiale de fenêtres et enrichit le même catalogue moteur, taggé v0.0.1-zorder-2026-09-04 puis fusionné dans feat/release-m6-zorder. feat/recherche-couplee est déjà absorbé dans le tronc (CONSOLIDATION-2026-09-16 : fuse_results 3×, hybrid_search 2×, RRF 4×) et le worktree banc-obrain-recherche est périmé face au tronc. Un troisième étage, SearchPipeline (crates/obrain-cognitive/src/search.rs), fusionne 4 signaux cognitifs (similarité, énergie, topologie, synapse) par somme pondérée + trait Reranker optionnel — distinct du RRF générique.",
+  "components": [
+    "crates/obrain-core/src/index/text/fusion.rs — enum FusionMethod (Rrf{ k }, Weighted{ weights }) + fuse_results/fuse_rrf/fuse_weighted (RRF k=60 par défaut)",
+    "crates/obrain-engine/src/database/search.rs — ObrainDB::text_search, text_search_federated, vector_search, hybrid_search (fusion via fuse_results)",
+    "crates/obrain-engine/src/database/search_delta.rs — search_delta (CDC diff graphe, fenêtre chaude CdcLog, feature cdc)",
+    "crates/obrain-engine/src/database/search_surprise.rs — search_surprise (z=(activité−attendue)/sqrt(attendue+ε) sur fenêtre CDC)",
+    "crates/obrain-engine/src/database/search_by_role.rs — search_by_role (descripteur HKS 3 échelles + hks_distance)",
+    "crates/obrain-engine/src/database/search_conflicts.rs — search_conflicts (reversals A→B→A par couple (nœud,propriété), CDC)",
+    "crates/obrain-engine/src/database/search_causality.rs — search_causes/search_effects (BFS inverse/avant amorti γ=0.5)",
+    "crates/obrain-engine/src/database/search_relief.rs — search_relief/obrain.relief (θ_N·N+θ_T·T+θ_B·B−θ_X·X, recompose surprise+conflicts+degré+recence)",
+    "crates/obrain-cli/src/outils.rs — outil chat obrain_recherche (BM25 multi-index + fusion RRF k=60, fn recherche), tests recherche_sur_store_reel",
+    "crates/obrain-cognitive/src/search.rs — SearchPipeline (4 signaux similarity/energy/topology/synapse, SearchWeights, trait Reranker/NoopReranker)",
+    "crates/obrain-engine/src/query/plan.rs — PROCEDURES_DE_LECTURE (liste d'autorisation read-only : obrain.search_*/relief)",
+    "crates/obrain-substrate/src/hilbert.rs — zorder primitives : grid_coords_from_features, zorder_key_2d, zorder_key_from_features, zorder_window_ranges",
+    "crates/obrain-substrate/src/store.rs — SubstrateStore::window_query_2d / window_query_2d_sorted (scan exact vs voie zruns accélérée)",
+    "crates/obrain-substrate/src/geometric.rs — compute_hks_descriptors (HKS 3 échelles), hks_distance, node_curvature (support de search_by_role)",
+    "docs/PROPOSAL-SEARCH-SURPRISE-2026-09-05.md, PROPOSAL-SEARCH-BY-ROLE-2026-09-05.md, PROPOSAL-SEARCH-CONFLICTS-2026-09-05.md, PROPOSAL-SEARCH-CAUSES-EFFECTS-2026-09-05.md (4 propositions + pivot v1 documentés)",
+    "docs/zorder-RAPPORT-FINAL.md, docs/CHECKPOINT-ZORDER-2026-09-04.md, docs/RELEASE-RC-M6-ZORDER-2026-09-07.md, docs/rfc/substrate/zorder-superposition.md (chantier zorder)",
+    "worktree /home/triviere/projects/banc-obrain-recherche (branche feat/recherche-couplee, HEAD 669f626e) — commit 058d8142 ajoute obrain_recherche à outils.rs",
+    "worktree /home/triviere/projects/banc-obrain-v0001-zorder (detached HEAD a80e3b9b) — checkpoint zorder kit de vérification"
+  ],
+  "relationships": [
+    "fusion.rs::fuse_results ← appelée par engine search.rs::hybrid_search (BM25+vecteur) et par cli outils.rs::recherche (obrain_recherche, sources BM25 multi-index)",
+    "FusionMethod::Rrf (k=60) est le défaut de FusionMethod (impl Default) ; FusionMethod::Weighted normalise min-max puis somme pondérée",
+    "bindings : crates/bindings/python/src/database.rs (hybrid_search fusion 'rrf'|'weighted') et crates/bindings/wasm/src/lib.rs exposent le même RRF",
+    "search_relief.rs compose compute_search_surprise + compute_search_conflicts + degrés substrate (fenêtre CDC bornée CDC_RELOAD_CAP)",
+    "search_delta/search_surprise/search_conflicts dépendent du CDC (crate::cdc::CdcLog, ChangeEvent, changes_since_timestamp) — feature 'cdc'",
+    "search_by_role dépend de obrain-substrate::geometric.rs (compute_hks_descriptors/hks_distance, CSR + 3 diffusions)",
+    "dispatch GQL : query/planner/lpg/mutation.rs try_execute_*_procedure + query/plan.rs PROCEDURES_DE_LECTURE (read-only)",
+    "obrain_recherche (outils.rs) référence le couple bridge <label>.text/.name déjà éprouvé par mcp_server.rs::search_code ; create_text_index à la demande",
+    "zorder : hilbert.rs (zorder_key_2d, zorder_window_ranges) → store.rs window_query_2d / window_query_2d_sorted → engine ObrainDB::window_query_2d → NAPI windowQuery2d",
+    "feat/recherche-couplee est absorbé dans le tronc (docs/CONSOLIDATION-2026-09-16.md ligne 155) ; feat/zorder taggé v0.0.1-zorder-2026-09-04 puis fusionné dans feat/release-m6-zorder (merge 50f10d9a)"
+  ],
+  "notable_findings": [
+    "La fusion par rang RRF est la primitive UNIQUE de rank fusion, paramètre k=60 codé en dur comme défaut partout (fuse_results, hybrid_search, obrain_recherche) — aucune variante type 'reciprocal rank fusion amélioré' ni MMR n'est branchée sur la fusion hybride du moteur",
+    "Le pivot documenté de search_surprise : la v1 « engramme interne » (FSRS/hopfield) était creuse sur données réelles → bascule vers la surprise d'ACTIVITÉ CDC (variante (a) de la proposition), mesurable et non dégénérée",
+    "obrain_recherche fusionne les scores BM25 de plusieurs index (label,propriété) par RRF, mais n'embarque PAS d'embedder : un index vectoriel présent est seulement ANNONCÉ, jamais fusionné (pas de simulacre)",
+    "search_by_role s'appuie sur des primitives déjà compilées/testées (HKS 3 échelles dans geometric.rs, courbure Ricci en enrichissement optionnel hors LECTURE)",
+    "search_relief (obrain.relief) est une 6e forme composée, antérieure aux 5 propositions listées, qui réutilise surprise+conflicts+degré plutôt qu'un calcul dédié — jamais documentée par une PROPOSAL-SEARCH-RELIEF",
+    "Le chantier zorder a été validé à l'échelle (fill Z = 41-46% du coût hkey, fenêtres 2D zruns ×1.7→×131 sous crossover ~10-50% d'aire, localité Z non dégradée vs Hilbert) et déployé comme binaire de référence harness (CHECKPOINT-ZORDER)",
+    "La requête de obrain_recherche n'entre dans AUCUNE chaîne GQL (elle va au tokenizer BM25 tel quel) — surface anti-injection explicite, contrairement à obrain_query"
+  ],
+  "gaps": [
+    "Aucun PROPOSAL-SEARCH-DELTA : search_delta a été livré en premier (c935b9d1) AVANT la série des 5 propositions — seuls le code (search_delta.rs) et les tests existent, la proposition manque",
+    "search_relief/obrain.relief n'a pas de doc de proposition (seul PROPOSAL-IMPORT-RELIEF existe, sujet différent) — la 6e forme est orpheline côté documentation",
+    "docs/comparisons/ ne contient AUCUN comparatif de rank fusion (seulement cypher/graphql/gremlin/sparql-vs-gql) — la doc rank fusion vit dans docs/user-guide/vector-search/index.md, docs/roadmap.md, docs/ecosystem/obrain-server.md, docs/llms.txt",
+    "Le worktree banc-obrain-v0001-zorder est en detached HEAD a80e3b9b alors que le CHECKPOINT-ZORDER documente le tag v0.0.1-zorder-2026-09-04 (HEAD 5ae779d2) — divergence entre l'état documenté et le worktree ; aucune branche feat/zorder n'est actuellement checkoutée",
+    "Le worktree banc-obrain-recherche (feat/recherche-couplee) est périmé : diff vs tronc = 350 fichiers, 102 565 suppressions (tronc Sep 30 vs recherche Sep 14) — branche déjà absorbée, worktree orphelin",
+    "search_delta.rs porte un attribut #[cfg(feature = \"cdc\")] dupliqué sur deux lignes consécutives (l.91-92) — résidu de lint inoffensif mais signe d'édition rapide",
+    "La voie vectorielle de obrain_recherche est morte dans le binaire CLI (feature 'embed' ONNX/HF jamais câblée au CLI) : fusion hybride BM25+vecteur inaccessible côté chat, malgré hybrid_search compilé",
+    "Coût HKS de search_by_role annoncé ~112 ms/10⁶ arêtes par CALL (recalcul CSR + 3 diffusions à chaque appel) — borné par doc mais sans cache ni preuve de bench sur store réel dans la proposition"
+  ]
+}

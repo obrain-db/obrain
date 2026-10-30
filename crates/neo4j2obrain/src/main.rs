@@ -37,14 +37,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-#[cfg(feature = "neo4j-bolt")]
-mod bolt_reader;
-mod cognitive_init;
-#[cfg(feature = "embed")]
-mod embedder;
-mod pipeline;
-#[cfg(feature = "embed")]
-mod sentence_transformer;
+// (2026-08-18) Les modules ont migre dans `src/lib.rs` : la logique est
+// desormais appelable depuis un autre programme (migrateur PO, integration
+// dans l interface du PO). Ce binaire n en est plus que la CLI. Les
+// references internes en `crate::` dans les modules resolvent vers la
+// bibliotheque et n ont pas bouge.
+use neo4j2obrain::pipeline;
 
 /// Streaming Neo4j → substrate importer with inline cognitive
 /// bootstrapping.
@@ -167,24 +165,10 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_max_level(if cli.verbose {
-            tracing::Level::DEBUG
-        } else {
-            tracing::Level::INFO
-        })
-        .with_target(false)
-        .init();
-
-    // Wire the rayon global thread pool once. `cli.workers == 0`
-    // means "rayon default" (physical core count). A second
-    // initialisation attempt is silently ignored (the pool is global
-    // and can only be set once per process).
-    if cli.workers > 0 {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(cli.workers)
-            .build_global();
-    }
+    // (2026-08-19) Ce bloc vivait ICI, donc la bibliotheque ne l avait pas.
+    // Il est desormais dans `lib.rs::init_runtime`, que la CLI appelle comme
+    // n importe quel autre consommateur — plus de chemin privilegie.
+    neo4j2obrain::init_runtime(cli.workers, cli.verbose);
 
     // Enforce neo4j connectivity args when we're in full-pipeline mode.
     // In --enrich-only mode, bolt is skipped entirely, so the strings

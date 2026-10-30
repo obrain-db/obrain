@@ -14,7 +14,7 @@ A Substrate database is a directory:
 ```
 <db_path>/
   substrate.meta          # 4 KiB — magic, version, offsets, counters
-  substrate.nodes         # array of NodeRecord (32 B each)
+  substrate.nodes         # array of NodeRecord (40 B each depuis le format 3 ; 32 B en formats 1-2)
   substrate.edges         # array of EdgeRecord (30 B each, padded to 32 B on disk)
   substrate.props         # array of PropertyPage (4 KiB each)
   substrate.strings       # StringHeap — variable-length, page-indexed
@@ -23,6 +23,10 @@ A Substrate database is a directory:
   substrate.tier2         # L2 f16 embeddings — 768 B per node (384 × f16)
   substrate.hilbert       # Hilbert-ordered node_id permutation (u32 × node_count)
   substrate.community     # community_id per node (u32 × node_count) — may alias NodeRecord.community_id
+  substrate.zorder        # Z-order (Morton) key per node (u32 × node_count) — logical prefix
+                          # index on the same (centrality × degree) grid as substrate.hilbert
+                          # (RFC zorder-superposition; additive, hint semantics, absent on
+                          # stores that were never re-sorted by a zorder-capable binary)
   substrate.wal           # append-only write-ahead log (see wal-spec.md)
   substrate.checkpoint    # periodic checkpoint marker (timestamp + last fsync'd WAL offset)
 ```
@@ -55,7 +59,18 @@ offset  size  field
 
 The meta file is rewritten atomically at every checkpoint (`tmpfile + rename + fsync`).
 
-## 3. NodeRecord (32 B, `#[repr(C)]`, Pod)
+## 3. NodeRecord (40 B depuis le format 3, `#[repr(C)]`, Pod)
+
+> **Format 3 (jalon 2, RFC principal-natif-v2 §4-J2)** : deux colonnes
+> s ajoutent en QUEUE du record ci-dessous — `tenant_id: u32` (octets
+> 32..36 ; 0 = public declare, u32::MAX = sentinelle non-migre invisible)
+> et `_reserve: u32` (octets 36..40, toujours 0). Aucun offset anterieur
+> ne bouge. Le stride passe de 32 a 40 ; la page d allocation devient
+> 20 480 o = 512 records exactement (5 pages OS, zero perte). Le slot 0
+> porte le marqueur de stride `NODES_ZONE_V3_MAGIC` dans `label_bitset`
+> (flags nuls : jamais vivant). Le bit 6 des flags est `ALLOCATED`
+> (format 2, jalon 1). Le corps historique 32 B ci-dessous reste exact
+> pour les formats 1-2 et pour les 32 premiers octets du format 3.
 
 ```rust
 #[repr(C)]

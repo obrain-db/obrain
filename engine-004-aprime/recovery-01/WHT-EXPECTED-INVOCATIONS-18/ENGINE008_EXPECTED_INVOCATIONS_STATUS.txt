@@ -1,0 +1,129 @@
+ENGINE-008 -- STATUT TERMINAL WHT-EXPECTED-INVOCATIONS-18
+==========================================================================
+J2 (validation de l'inventaire) et J1 (invocations attendues) sont IMPLEMENTES
+et TESTES : 33 controles, 0 echec. Aucun gel, aucun forward, aucun amendement.
+
+INVENTORY_NATIVE_KEY_VALIDATION_IMPLEMENTED=YES
+  `validate_inventory()` rend, pour CHAQUE cle, un etat explicite :
+  VALID / ABSENT / AMBIGUOUS / DUPLICATED / IDENTITY_NULL / TYPE_NOT_TQ2,
+  avec le type REEL et un motif precis. Publie les ENSEMBLES, pas seulement les
+  tailles : valid_keys, absent_keys, ambiguous_keys, duplicated_keys,
+  identity_null_keys, type_not_tq2_keys, tq2_outside_inventory.
+  AMBIGU : plusieurs entrees portant le meme nom sont ambigues SEULEMENT si
+  leurs IDENTITES NATIVES different.
+  IDENTITY_NULL : entree presente mais pointeur nul -> etat distinct, jamais VALID.
+  TYPE : lu dans l'entree de registre, JAMAIS deduit du nom.
+INVENTORY_VALIDATION_SELFTEST=PASS
+  14 controles : toutes cles valides ; aucune dans les autres casiers ; cle
+  ABSENTE ; cle DUPLIQUEE dans l'inventaire ; cle AMBIGUE a identites distinctes ;
+  identite NULLE ; type REEL non TQ2 avec le type remonte dans le resultat ;
+  poids TQ2_G128 HORS inventaire detecte.
+  `inventory_globally_complete` n'est vrai que si AUCUN casier n'est occupe --
+  donc un inventaire seulement VALIDE n'est PAS declare globalement complet.
+  `scope` indique explicitement « perimetre DECLARE par l'inventaire, resolu
+  contre le registre natif complet », et `why_incomplete` nomme la cause.
+
+EXPECTED_INVOCATIONS_METHOD=
+  Denombrement des operations du GRAPHE SOUMIS dont l'operande src0 est un poids
+  ELIGIBLE, identifie par son NOM EXACT et son POINTEUR NATIF.
+  Fonde sur la semantique du producteur, lue dans la source : `f1a_capture_note`
+  fait `r.target_id = cc->next_target_id++` -- **une cible = UN APPEL a
+  f1a_capture_note, donc UNE INVOCATION de build_lora_mm**, pas un poids distinct.
+  Les ACTIVATIONS, elles, sont dedupliquees par
+  `"%p|%d|%lld|%lld"` sur `(cur_used, type, ne[0], nb[0])` : une activation WHT
+  partagee est servie par le meme `activation_capture_id`.
+  => poids eligibles et invocations attendues sont DEUX ensembles differents,
+  et je ne les compare plus directement.
+  SI l'enumeration du graphe soumis est indisponible : **UNKNOWN**, avec le
+  maillon manquant nomme. **Aucune formule de couches n'est substituee** --
+  verifie par test (`no_layer_formula_substituted`).
+EXPECTED_INVOCATIONS_INDEPENDENT_OF_CAPTURES=YES
+  Le denombrement ne lit AUCUNE ligne du manifeste : il vient des operations du
+  graphe soumis et des poids eligibles. Un test dedie verifie qu'un poids charge
+  mais NON invoque est distingue, et qu'un poids NON eligible present dans le
+  graphe est IGNORE (nom EXACT, jamais approximatif).
+EXPECTED_INVOCATIONS_RECONCILIATION_IMPLEMENTED=YES
+  `reconcile_invocations()` publie SEPAREMENT : n_eligible_weights,
+  n_expected_invocations, n_captured_targets, n_relations_available, plus
+  invoked_never_captured, captured_never_invoked, ambiguous_references.
+  **Une reference UNKNOWN INTERDIT COMPLETE** -- teste.
+EXPECTED_INVOCATIONS_SELFTEST=PASS
+  19 controles : poids charge non invoque ; DEUX invocations du meme poids
+  (detectees comme reference ambigue) ; invocation attendue sans capture ;
+  capture inattendue ; reference ambigue ; reference UNKNOWN bloquant la
+  completude ; accord complet ; comptes publies separement.
+
+=== BUG REEL TROUVE PAR MES TESTS ===
+  Dans `validate_inventory`, `KeyState state` valait ABSENT par DEFAUT, ce qui
+  rendait « pas encore determine » indiscernable de « determine ABSENT ». Une cle
+  PRESENTE et de type TQ2 restait donc classee ABSENTE : 5 tests ont echoue et
+  ont revele le defaut. Corrige par un drapeau `determined` explicite. C'est un
+  defaut de MON code, pas des attentes.
+
+PREFLIGHT_RENDERED_TOKEN_COUNT=NOT_ESTABLISHED
+  Je n'ai PAS obtenu de comptage tokenise du message preflight exact. Le chemin
+  `vocab_only` a bien charge le tokenizer (kv 38 `tokenizer.ggml.tokens`,
+  248320 entrees), mais l'outil disponible n'emet pas de compte de tokens pour
+  ce message. **Je n'estime pas ce nombre** : une estimation ne serait pas une
+  mesure. Methode a utiliser : tokeniser le prompt RENDU exact
+  (`Réponds uniquement : OK.` avec le template commun) par le chemin vocab-only.
+PLANNED_N_BATCH=512
+PLANNED_N_UBATCH=512
+  Valeurs effectives lues dans le code du harnais :
+  `engine008_real_deps.cpp:168` -> `cp.n_ctx=512; cp.n_batch=512; cp.n_ubatch=512;
+  cp.n_seq_max=1;`. Elles ne sont PAS modifiees pour arranger la preuve.
+
+ONE_EXTRACTION_PER_WINDOW_SOURCE_GUARANTEE=NO
+  ATTENDUE, NON GARANTIE. Trois raisons, et je ne les maquille pas :
+   1. le comptage de tokens du prompt est NOT_ESTABLISHED, donc « le prompt tient
+      dans un seul ubatch » n'est pas etabli ;
+   2. je n'ai PAS lu la regle de segmentation de `llama_decode_impl`, qui decide
+      combien d'ubatches sont construits ;
+   3. une extraction par `process_ubatch` est etablie (llama-context.cpp:1783-1788),
+      mais le NOMBRE d'ubatches par appel ne l'est pas.
+  Le controle runtime des extractions reste donc OBLIGATOIRE : le harnais compte
+  les evenements CAPTURE_EXTRACT du ledger par fenetre et publie
+  `wht_max_extractions_per_window`. Si une fenetre en montre plus d'une, la
+  couverture D1 est declaree NON obtenable pour cette fenetre.
+  RIEN n'a ete modifie -- batching, CUDA graphs, configuration : intacts.
+
+REAL_HARNESS_BINARY_SHA256=0c2324333442cdca225261879110b8799eee67610087f7d160c654a363689b14
+  INCHANGE : `engine008_inventory.*` est un NOUVEAU composant PUR, non encore
+  raccorde aux adaptateurs reels ni au pipeline. Le binaire reel de CHECKS-17
+  reste donc l'identite courante, et je ne lui attribue pas une identite de
+  cette passe.
+HARNESS_SOURCE_MANIFEST_SHA256=affaef11266e11c7f0d89b810de8f8cae852d12eb80d6126ad69938af5166e44
+  t-inv : e43b9c10b8b26af0c6abe15891782acfcc74dde50da5bb6ab2ca30f893858bef
+
+REMAINING_IMPLEMENTATION_GAPS=
+  L1_RACCORDEMENT NON FAIT : `validate_inventory()` et
+     `compute_expected_invocations()` sont PURS et TESTES, mais ils ne sont
+     raccordes NI aux adaptateurs reels NI au pipeline, et leurs ENSEMBLES ne
+     sont PAS serialises dans le rapport. C'est le maillon manquant pour que
+     INVENTORY_NATIVE_KEY_VALIDATION_IMPLEMENTED se traduise en preuve de run.
+  L2_INVENTAIRE REEL : je n'ai PAS lu le format reel de l'inventaire f1a
+     (`f1a_load_inventory`, f1a-capture.cpp:54-74) pour confirmer que mon
+     lecteur ligne-a-ligne dans real_deps correspond. A verifier.
+  L3_L_ENUMERATION DU GRAPHE SOUMIS n'est PAS raccordee au denombrement des
+     invocations : `compute_expected_invocations` attend des `MatmulOp`, que
+     personne ne produit encore. Tant que ce n'est pas fait,
+     EXPECTED_INVOCATIONS vaut UNKNOWN en pratique.
+  L4_COMPTAGE DE TOKENS du prompt preflight : NOT_ESTABLISHED.
+  L5_REGLE DE SEGMENTATION de `llama_decode_impl` non lue.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_EXPECTED_INVOCATIONS
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte. Aucun changement de Q1, du backend, des CUDA
+graphs, du batching, de la topologie ou des regles de preuve. Aucun protocole
+modifie ni reecrit.

@@ -1,0 +1,130 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# selfd.service — le micro-harness d'UNE machine, en unité systemd UTILISATEUR.
+#
+# CE QUE CE FICHIER EST, ET CE QU'IL N'EST PAS
+#   C'est le MODÈLE rendu par `scripts/selfd-installer.sh` : l'installateur en
+#   fait l'unité réellement posée sur la machine, en substituant
+#   `#@EXEC_POLITIQUE@` (le commentaire de politique, qui dit ce qui a été
+#   choisi) et, si — et seulement si — l'installateur l'a demandé, en ajoutant
+#   `--allow-exec` à la ligne `--socket` de `ExecStart`. Le fichier posé n'est
+#   donc jamais édité à la main : R3 du protocole de déploiement (« une
+#   configuration, une source ») s'applique ici comme au drop-in du harness, et
+#   une main qui l'édite est une dérive, pas un correctif.
+#
+# POURQUOI `--user` ET PAS UNE UNITÉ SYSTÈME
+#   Un nœud appartient à un utilisateur : c'est SA machine, SES fichiers, SON
+#   compte chez le moteur. Une unité système ferait tourner le nœud sous un
+#   autre compte que celui dont il lit les fichiers, et la racine confinée
+#   protégerait alors les fichiers de root en laissant ceux de l'utilisateur
+#   exposés — le contraire de ce qu'on veut. La frontière du nœud est le
+#   compte, pas la machine.
+#
+# POURQUOI PAS DE PORT
+#   `serve` n'ouvre AUCUN port : la surface locale est une socket Unix sous
+#   `%t` (le répertoire d'exécution de l'utilisateur, `0700`, effacé à la
+#   déconnexion). Rien n'est joignable depuis le réseau, donc rien n'est à
+#   filtrer : le chemin distant reste `ssh` ou MCP, explicitement. Une socket
+#   ne peut pas non plus entrer en collision avec le moteur (8432), les GUI
+#   (3082/3083) ni le modèle local (9901) — le mode de panne évité est celui
+#   d'un nœud qui refuse de démarrer parce qu'un port est déjà pris.
+#
+# POURQUOI LA RACINE VIENT D'UN EnvironmentFile ET NON DU FICHIER
+#   Parce qu'une racine écrite en dur ici deviendrait un défaut, et qu'un
+#   défaut de racine est un défaut ÉLARGI : le jour où la machine change de
+#   disposition, le nœud continuerait d'observer un répertoire que personne n'a
+#   choisi. `${SELFD_RACINE}` vient de `~/.config/selfd/selfd.env`, que
+#   l'installateur écrit après avoir reçu `--racine` en argument. Si ce fichier
+#   manque, le mot devient vide, `selfd` refuse `--root ''` avec un motif et le
+#   service ÉCHOUE BRUYAMMENT au lieu de servir un répertoire non voulu : un
+#   refus qui remonte vaut mieux qu'un silence qui ressemble à une panne.
+#   Le même fichier porte le SOCLE du nœud — `SELFD_MOTEUR` (l'URL du moteur,
+#   par défaut `http://127.0.0.1:8432`), `SELFD_BASE` (la base commune),
+#   `SELFD_LLM` — que `selfd` lit dans l'environnement : pas besoin d'un
+#   drapeau de plus dans la ligne de commande.
+#
+# VÉRIFIER QUE LE NŒUD EST VIVANT (et pas seulement « active »)
+#   1. `systemctl --user show selfd -p NRestarts` — doit être INCHANGÉ après
+#      60 s. `is-active` répond `active` en plein crash-loop : le protocole de
+#      déploiement (G3) l'a établi le 2026-09-01, quand le compteur est monté à
+#      9 sans que systemd renonce.
+#   2. `selfd status` — parle à la SOCKET, donc au démon : c'est la politique
+#      RÉELLE qui s'affiche, pas celle du shell de l'opérateur.
+#   3. `selfd --call read {"path":"<fichier connu>"}` — une sonde qui prouve la
+#      FONCTION et pas la vie (R5) : un processus vivant qui n'agit plus répond
+#      quand même.
+#   Le fichier est vérifiable hors installation, mais `systemd-analyze --user
+#   verify` contrôle que le programme existe : cette commande ne peut donc
+#   passer SANS ERREUR que sur une machine où le binaire est déjà posé
+#   (`scripts/selfd-installer.sh` le fait). C'est le prix d'un `ExecStart` en
+#   chemin littéral, et il est délibéré : un chemin qu'on peut lire vaut mieux
+#   qu'une variable qu'on doit résoudre pour savoir ce qui tourne.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=selfd — micro-harness de cette machine (nœud du harness : il agit, et il le dit)
+# Le nœud n'a besoin d'aucune interface réseau pour sa surface locale, mais
+# `attacher` en a besoin : on attend le réseau pour que le mode rattachement ne
+# démarre pas dans un état où il ne peut qu'échouer.
+After=network-online.target
+Wants=network-online.target
+
+# ── REDÉMARRAGE : CE QUI LE DÉCLENCHE, ET CE QUI L'ARRÊTE ───────────────────
+# `Restart=always` avec `RestartSec=5` : un nœud qui tombe doit revenir, mais
+# pas au rythme d'un battement qui sature le journal.
+# Les deux limites sont EXPLICITES parce que le défaut (5 démarrages sur 10 s)
+# ne se déclenche jamais dans cette configuration — au mieux 2 démarrages par
+# fenêtre contre un seuil de 5 ; le protocole de déploiement le note noir sur
+# blanc, constat du 2026-09-01. 8 démarrages en 120 s, c'est un crash-loop réel
+# et non un raté de démarrage : systemd renonce, et `is-active` cesse de mentir.
+StartLimitIntervalSec=120
+StartLimitBurst=8
+
+[Service]
+Type=simple
+
+# Le binaire INSTALLÉ, pas `target/release/` : le nœud d'une machine ne doit
+# jamais dépendre d'un arbre de sources présent sur cette machine. Le nom
+# `selfd` est un lien stable ; le fichier versionné à côté porte le commit
+# (R2 : « le binaire installé porte son commit »), et le retour arrière est un
+# `ln -sfn` — une commande.
+ExecStart=%h/.local/lib/selfd/selfd serve \
+  --root ${SELFD_RACINE} \
+  --state-dir %h/.local/state/selfd \
+  --socket %t/selfd.sock
+
+# Le `-` dit « facultatif » : sans ce fichier le service doit démarrer et
+# ÉCHOUER SUR `--root ''`, avec le motif, plutôt que de ne pas démarrer du tout
+# et de laisser l'opérateur chercher pourquoi.
+EnvironmentFile=-%h/.config/selfd/selfd.env
+
+# ── LA POLITIQUE LOCALE EST FIXÉE ICI, ET NULLE PART AILLEURS ───────────────
+# `--allow-exec` n'est PAS dans la ligne ci-dessus : c'est un acte, pas un
+# défaut. Sans lui, le nœud observe (status, read, list) et n'exécute rien —
+# « un nœud qui n'a pas été autorisé à agir est un nœud qui observe ». Un
+# appelant ne peut pas l'élargir : la politique est lue par `status`/`caps`,
+# jamais négociée (cf. crates/obrain-selfd/src/politique.rs).
+#@EXEC_POLITIQUE@
+
+# Le répertoire de travail n'est PAS la racine : il est là pour qu'un chemin
+# relatif éventuel ne tombe pas sur `/`. La racine, elle, est explicite.
+WorkingDirectory=%h
+
+# `NoNewPrivileges` : un nœud autorisé à exécuter des commandes ne doit pas
+# pouvoir gagner de privilèges par un binaire setuid rencontré dans sa racine.
+# C'est le seul durcissement qu'on s'autorise — le reste (PrivateTmp,
+# ProtectHome, ProtectSystem) casserait le nœud : il doit voir les MÊMES `/tmp`
+# et les mêmes fichiers que l'opérateur, sinon il rapporte un monde qui
+# n'existe pas et l'écart ne se voit qu'après coup.
+NoNewPrivileges=yes
+
+# Le chat local peut tenir un tour de modèle : on laisse le temps de finir le
+# travail en cours avant de tuer, mais pas indéfiniment.
+TimeoutStopSec=20
+KillMode=mixed
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=selfd
+
+[Install]
+WantedBy=default.target

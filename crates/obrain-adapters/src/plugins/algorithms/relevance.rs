@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use obrain_common::types::{NodeId, Value};
+use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_common::utils::error::Result;
 use obrain_common::utils::hash::FxHashMap;
 use obrain_core::graph::{Direction, GraphStore, GraphStoreMut};
@@ -148,13 +148,28 @@ pub fn personalized_pagerank(
         }
     }
 
-    // Build adjacency: for each node, list of (neighbor_idx, weight)
-    // We follow outgoing edges for the random walk
-    let mut out_neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+    // Build adjacency: for each node, list of (neighbor_idx, edge_weight).
+    // We follow outgoing edges for the random walk. Edge weight comes from
+    // the conventional "weight" edge property (same convention as
+    // ego_graph.rs/projection.rs) and defaults to 1.0 when absent — which
+    // makes the propagation share identical to the previous uniform split
+    // for any graph that never sets edge weights (exact backward
+    // compatibility with callers that don't opt into weighted edges).
+    let weight_key = PropertyKey::from("weight");
+    let mut out_neighbors: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
     for (idx, &nid) in node_ids.iter().enumerate() {
-        for neighbor in store.neighbors(nid, Direction::Outgoing) {
+        for (neighbor, edge_id) in store.edges_from(nid, Direction::Outgoing) {
             if let Some(&nidx) = node_to_idx.get(&neighbor) {
-                out_neighbors[idx].push(nidx);
+                let weight = store
+                    .get_edge_property(edge_id, &weight_key)
+                    .and_then(|v| match v {
+                        Value::Float64(f) => Some(f),
+                        Value::Int64(i) => Some(i as f64),
+                        _ => None,
+                    })
+                    .unwrap_or(1.0)
+                    .max(0.0); // negative weights would break the probability semantics
+                out_neighbors[idx].push((nidx, weight));
             }
         }
     }
@@ -168,13 +183,13 @@ pub fn personalized_pagerank(
     for iter in 0..config.iterations {
         let mut new_scores = vec![0.0_f64; n];
 
-        // Distribute score along outgoing edges
+        // Distribute score along outgoing edges, proportionally to edge weight
+        // (uniform when no "weight" property is set — see adjacency build above).
         for i in 0..n {
-            let out_deg = out_neighbors[i].len();
-            if out_deg > 0 {
-                let share = scores[i] / out_deg as f64;
-                for &j in &out_neighbors[i] {
-                    new_scores[j] += d * share;
+            let total_weight: f64 = out_neighbors[i].iter().map(|&(_, w)| w).sum();
+            if total_weight > 0.0 {
+                for &(j, w) in &out_neighbors[i] {
+                    new_scores[j] += d * scores[i] * (w / total_weight);
                 }
             } else {
                 // Dangling node: redistribute uniformly to seeds (not all nodes)
@@ -425,6 +440,54 @@ mod tests {
             }
         }
         assert!(result.iterations_used > 0);
+    }
+
+    #[test]
+    fn test_ppr_weighted_edges_favor_heavier_neighbor() {
+        let store = SubstrateStore::open_tempfile().unwrap();
+        let center = store.create_node(&["Center"]);
+        let heavy = store.create_node(&["Leaf"]);
+        let light = store.create_node(&["Leaf"]);
+        let e_heavy = store.create_edge(center, heavy, "POINTS_TO");
+        let e_light = store.create_edge(center, light, "POINTS_TO");
+        store.set_edge_property(e_heavy, "weight", Value::Float64(9.0));
+        store.set_edge_property(e_light, "weight", Value::Float64(1.0));
+
+        let config = PprConfig {
+            iterations: 1,
+            ..PprConfig::default()
+        };
+        let result = personalized_pagerank(&store, &[center], &config);
+
+        let heavy_score = result.scores.get(&heavy).copied().unwrap_or(0.0);
+        let light_score = result.scores.get(&light).copied().unwrap_or(0.0);
+        assert!(
+            heavy_score > light_score * 5.0,
+            "9:1 edge-weight split should favor 'heavy' far more than a uniform split would: heavy={heavy_score} light={light_score}"
+        );
+    }
+
+    #[test]
+    fn test_ppr_unweighted_edges_still_split_uniformly() {
+        // Backward compatibility: with no "weight" property set anywhere,
+        // the propagation share must be identical to the pre-existing
+        // uniform out-degree split.
+        let (store, center, leaves) = create_star(4);
+        let config = PprConfig {
+            iterations: 1,
+            ..PprConfig::default()
+        };
+        let result = personalized_pagerank(&store, &[center], &config);
+        let scores: Vec<f64> = leaves
+            .iter()
+            .map(|l| result.scores.get(l).copied().unwrap_or(0.0))
+            .collect();
+        for w in scores.windows(2) {
+            assert!(
+                (w[0] - w[1]).abs() < 1e-9,
+                "unweighted leaves should get an equal share: {scores:?}"
+            );
+        }
     }
 
     #[test]

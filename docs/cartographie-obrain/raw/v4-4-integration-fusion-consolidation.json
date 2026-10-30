@@ -1,0 +1,63 @@
+{
+  "area": "integration/fusion/consolidation",
+  "summary": "La tranche integration/fusion/consolidation est un DAG à 12 branches réparties sur 3 filesystems (/home/triviere/projects, /mnt/obrain, /tmp). Le socle le plus profond est integration/zero-copy (af0490a2), ancêtre de presque tout — sauf de fusion/tronc-plus-j6 et fusion/tronc-plus-j6-mes-correctifs, qui vivent sur une lignée distincte privée de ce socle. La branche de tête réelle est integration/projets (574d03f7, worktree wt-projets-moteur) : elle est 101 commits devant le HEAD du dépôt principal, et la chaîne t27 ⊂ n3-tronc ⊂ projets (147/139 commits d'écart) montre une intégration progressive du travail IAM/selfd/flotte. Le HEAD du dépôt principal, consolidation/tronc-2026-09-15-plus-fusion (456d3794), est une fusion « tissage » qui absorbe consolidation/2026-09-13, consolidation/tronc-complet-2026-09-13, fusion/j4-consolide, fusion/j4-final, fusion/tronc-plus-j6 et ses correctifs, mais il est lui-même DÉPASSÉ par les branches integration (t27, n3-tronc, projets). consolidation/tronc-release-2026-09-15 (89ba8841) diverge du HEAD au commit « sonde d'auto-connaissance de la flotte » (20fc3d38) et n'a jamais été fusionné : ses correctifs « WAL O_APPEND » et « course entre tests » sont orphelins. Les chantiers j4 et tronc-complet sont des jumeaux divergents : fusion/j4-final (11376f67) et consolidation/tronc-complet-2026-09-13 (e0fc7fd5) rejouent tous deux « index de trigrammes » et « mesure de phases » avec des SHAs et horodatages différents (~2h45 d'écart).",
+  "components": [
+    "crates/obrain-iam/src/garde.rs (+1132 lignes sur integration/projets) — garde de classification lecture/écriture, cœur de l'autorité IAM",
+    "crates/obrain-iam/src/admin.rs, store.rs, policy.rs, provider.rs, audit_chaine.rs, model.rs, gdpr.rs, orn.rs — administration, politiques effectives, audit chaîné",
+    "crates/obrain-substrate/src/props_zone.rs (+263), store.rs (+547), wal_io.rs, replay.rs, file.rs, compteurs.rs, writer.rs — reprojection de zone props, WAL, ingestion en lot",
+    "crates/obrain-substrate/tests/reprojection_zone.rs, ingestion_props_en_lot.rs, scan_plafonne.rs, tenant_colonne.rs, trous_allocated.rs, operators_filter.rs",
+    "crates/obrain-selfd/src/soi.rs (+382), politique.rs (+306), attache.rs, mcp.rs, outils.rs (+186), protocole.rs, ecoute.rs, main.rs — le « self » / flotte auto-orchestrée",
+    "crates/obrain-selfd/tests/annonce.rs (+811), capacites.rs (+651) — annonce de capacités et self par compte",
+    "crates/obrain-indexer/src/lib.rs, metrics.rs, parse.rs, resolve.rs, spec_engine.rs (+ tests cache_extraction.rs, empreinte_depot.rs)",
+    "crates/obrain-viz/src/overlay.rs (+51), lib.rs — overlays de rendu",
+    "crates/obrain-cli/src/viz_serve.rs (+223) — serveur de visualisation CLI",
+    "packages/obrain-dashboard/src/graph/flotte.ts (1233 lignes) + flotte.test.mjs (664) — logique de la flotte (branches integration/*, absent du HEAD)",
+    "packages/obrain-dashboard/src/graph/PanneauFlotte.tsx (907), PanneauGens.tsx (351), PanneauMonde.tsx (58), ChatPleinEcran.tsx, CosmosWeave.tsx",
+    "packages/obrain-dashboard/src/lib/resonance.ts (90) + app/App.tsx, app/store.ts, styles/_layout.scss (+381)",
+    "deploy/systemd/selfd.service (+130), selfd.attacher.service (+81), obrain-machines.timer (+38), obrain-viz.service.d-cache-persistant.conf (+82)",
+    "scripts/acceptation-flotte.sh (+815), acceptation-harness.sh (+606), acceptation-self-par-compte.sh (+649), acceptation-portabilite.sh (+299), acceptation-8432.sh",
+    "scripts/selfd-empaqueter.sh (+473), selfd-installer.sh (+532), machines-appliquer.sh (+316), machines-appliquer-comptes.sh (+120), memoire-appliquer-comptes.sh (+403)",
+    "scripts/porte-atelier.sh (+530), verifier-integration-tissage.sh (+290), version-check.sh (+190), banc-interface-authentifiee.sh (+119)",
+    "scripts/ui-chat-porte.mjs, ui-gens-porte.mjs (+209), ui-monde-porte.mjs (+186), ui-mobile-porte.mjs, ui-capacites.mjs (+110), ui-lire-ecran.mjs (+140), ui-mobile-capture.mjs (+169), ui-bascule.sh, ui-deploy.sh, ui-contrat.json, ui-verifier.sh",
+    "scripts/projection-check.mjs, protocole-check.mjs, world-add-check.mjs, endpoints-check.mjs, fratrie-check.mjs, echelle-multi-niveaux-check.mjs, views-controls-check.mjs, flotte-auto-connaissance.sh",
+    "docs/ACCEPTATION-FLOTTE-2026-09-16.md (656), DEVELOPPEMENT-SELF-PAR-COMPTE-2026-09-16.md (849), ETAT-BINAIRE-SELFD-2026-09-16.md (1070) — absents du HEAD, présents sur integration/*",
+    "docs/FLOTTE-EN-SERVICE-2026-09-16.md (291), UI-FLOTTE-8432-2026-09-16.md (627), PROTOCOLE-VERSION.md (82)",
+    "docs/rfc/substrate/format-spec.md (+15) — spec de format modifiée par le chantier trigrammes",
+    "spike/node-distant/drive.mjs (185), cordis.yml (119), measure.mjs (81), mount-harness-client.mjs (69) — nœud distant / micro-harness",
+    "docs de consolidation/2026-09-13 (commits docs) : CAUSE RACINE (deux lignées), surface de conflit réelle, verdict de vérification, consolidation des 16 chantiers",
+    "docs du HEAD (TISSAGE) : LE TISSAGE EST VÉRIFIÉ, TISSAGE SECOND VOLET, savoir du multi-échelle devenu document de reprise"
+  ],
+  "relationships": [
+    "integration/zero-copy (af0490a2) est ancêtre de t27, 2026-09-13, tronc-complet, tronc-release, j4-consolide, j4-final et du HEAD — socle quasi-universel",
+    "integration/t27 (9fed71eb) ⊂ integration/n3-tronc-20260920 (d97f5ecb) ⊂ integration/projets (574d03f7) — chaîne linéaire, t27..projets = 147 commits",
+    "consolidation/tronc-2026-09-15-plus-fusion (HEAD 456d3794) ⊂ integration/n3-tronc (ahead 93) et ⊂ integration/projets (ahead 101) — le dépôt principal est en retard",
+    "integration/n3-tronc-20260920 est la fusion de t27 et du HEAD (merge-base t27/HEAD = 20fc3d38) + le travail n3 « chaîne armable / jeton porte son client / audit chaîné »",
+    "fusion/j4-consolide (4ff85c8d) ⊂ fusion/j4-final (11376f67), et tous deux ⊂ HEAD — le chantier « principal j4 » rejoint le tronc",
+    "consolidation/tronc-complet-2026-09-13 (e0fc7fd5) et fusion/j4-consolide partagent le merge-base 5032e107 (« Merge feat/tronc-complet-2026-09-13 ») puis divergent",
+    "consolidation/tronc-complet-2026-09-13 ⊂ integration/t27 et ⊂ consolidation/tronc-release-2026-09-15 — socle de la lignée serveur",
+    "consolidation/tronc-release-2026-09-15 (89ba8841) et le HEAD divergent à 20fc3d38 ; tronc-release n'est ancêtre de RIEN d'autre (aucun descendant fusionné)",
+    "fusion/tronc-plus-j6 (b1fb10e2) ⊂ HEAD, mais ne contient PAS zero-copy — lignée hors socle",
+    "fusion/tronc-plus-j6-mes-correctifs (4da722ae) a divergé de tronc-plus-j6 : 21 commits en avant, 17 en arrière (branche « mes correctifs » non rebasée)",
+    "worktrees : /home/triviere/projects/banc-obrain→HEAD plus-fusion, banc-obrain-consolidation→2026-09-13, banc-obrain-consolide→tronc-complet, banc-obrain-integ→zero-copy, wt-projets-moteur→projets, /mnt/obrain/wt-integration→t27, /mnt/obrain/wt-integration-n3→n3-tronc, /tmp/fusion-j4→j4-consolide, /tmp/tpc-j6→mes-correctifs"
+  ],
+  "notable_findings": [
+    "Le HEAD du dépôt principal (456d3794, consolidation/tronc-2026-09-15-plus-fusion) est 101 commits DERRIÈRE integration/projets : le worktree de référence n'est pas la pointe du travail",
+    "Deux paires de commits jumeaux à SHAs/horodatages différents : « index de trigrammes » = 4f97c7c1 (j4-final, 16:24) vs 496e64bb (tronc-complet, 13:41) ; « mesure de phases » = 11376f67 (16:24) vs e0fc7fd5 (13:50) — même messages, mêmes fichiers, rejoués ~2h45 plus tard",
+    "fusion/tronc-plus-j6 ne descend pas de integration/zero-copy : c'est la seule lignée (avec mes-correctifs) privée du socle zero-copy, donc potentiellement privée de ses correctifs substrate",
+    "consolidation/tronc-release-2026-09-15 est une impasse : ses correctifs « LE WAL S'OUVRAIT SANS O_APPEND » et « LA SUITE DIT ENFIN LA VÉRITÉ (course entre tests) » ne sont ancêtres d'aucune branche vivante",
+    "fusion/tronc-plus-j6-mes-correctifs n'est PAS une branche posée sur tronc-plus-j6 : les deux ont divergé (21 vs 17 commits uniques), malgré le nom « mes correctifs »",
+    "Le travail « flotte » (flotte.ts 1233 lignes, PanneauFlotte.tsx 907, resonance.ts) n'existe QUE sur integration/projets et n3-tronc : les fichiers sont absents du checkout HEAD",
+    "integration/t27 est un pont de lecture IAM qui vérifie les identités « sans écrire dans iam.obrain » — abstraction d'écriture en lecture seule, thème central de l'audit multi-axe",
+    "Le worktree banc-obrain-release est sur feat/data-load-bulk, pas sur consolidation/tronc-release-2026-09-15 : nom de répertoire trompeur"
+  ],
+  "gaps": [
+    "Aucun worktree pour fusion/j4-final (11376f67), fusion/tronc-plus-j6 (b1fb10e2) ni consolidation/tronc-release-2026-09-15 (89ba8841) — trois branches sans checkout matériel",
+    "Le correctif WAL O_APPEND de tronc-release semble perdu : personne ne le porte vers HEAD ni vers integration/* (à confirmer par diff de wal_io.rs)",
+    "Quelle version de « index de trigrammes »/« mesure de phases » fait foi — j4-final (16:24) ou tronc-complet (13:41) ? Duplication non résolue par fusion",
+    "fusion/tronc-plus-j6 hors socle zero-copy : quels correctifs substrate lui manquent-ils réellement ? Aucun merge-base avec zero-copy",
+    "La raison de la divergence de fusion/tronc-plus-j6-mes-correctifs (21/17) n'est documentée dans aucun message de commit consulté",
+    "Le HEAD est en retard de 93-101 commits : qui est censé re-fusionner integration/projets vers le tronc, et pourquoi le travail « tissage » du HEAD n'est-il pas dans projets ?",
+    "Les 3 docs flotte (ACCEPTATION/DEVELOPPEMENT/ETAT-BINAIRE-SELFD 2026-09-16) n'ont pas de répertoire docs/ dédié à la consolidation — leur date (09-16) précède la lignée n3 (09-20)",
+    "spike/node-distant (cordis.yml, drive.mjs) est présent sur integration/* et tronc-release mais supprimé côté tronc-plus-j6/HEAD : statut réel de ce spike (mort ou à rapatrier) ?"
+  ]
+}

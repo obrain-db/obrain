@@ -1,0 +1,111 @@
+ENGINE-008 RECOVERY-01 -- §4 RESTAURATION DE LA LIBLLAMA Q1
+==========================================================================
+LLAMA_DECODE_CALL_COUNT=0   (aucun decode, aucun forward pass dans cette passe)
+
+=== 1. IDENTITE DU BINAIRE ===
+QUALITY_EVAL_LIBLLAMA_PATH=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0
+QUALITY_EVAL_LIBLLAMA_REALPATH=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0.0.135
+QUALITY_EVAL_LIBLLAMA_SHA256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+  Mesure sur le dgx : sha256sum = valeur attendue, EGALITE EXACTE.
+
+=== 2. RECOUPEMENT AVEC L AUTORITE Q1 D ORIGINE (exige par §1) ===
+Document autoritaire retrouve :
+  /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/e7b-f1a-q1-forward-v1/Q1_PREEXECUTION_BUILD_PROVENANCE.txt
+Extrait textuel :
+  LIBLLAMA_PATH=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0.0.135
+  LIBLLAMA_SHA256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  F1A_EVAL_LINKED_LIBLLAMA_SHA256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  F1A_EVAL_LINKS_INTENDED_Q1_LIBLLAMA=YES
+  Q1_SOURCE_CHANGED_SINCE_Q0_RUN2=NO
+  PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+Q1_REFERENCE_AUTHORITY_RECOVERED=YES
+AUCUNE_CONTRADICTION_ENTRE_AUTORITES=CONFIRME
+  Le SHA de continuite de fil et l autorite d origine CONCORDENT. Aucune
+  resolution silencieuse n a ete necessaire.
+
+=== 3. OUTIL DE TOKENISATION QUALIFIE ===
+NATIVE_TOKENIZER_TOOL_PATH=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-tokenize
+NATIVE_TOKENIZER_TOOL_SHA256=edacdf0d7bcf933bf9a14df1f305197d11860d00f6d8c60488c546e0aac1a61f
+NATIVE_TOKENIZER_TOOL_SHA_MATCH=YES
+  Concordance avec la valeur enregistree dans ENGINE008_DATA_STATUS.txt.
+
+=== 4. BINAIRE DE QUALIFICATION F1A ===
+F1A_EVAL_PATH=/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/f1a-eval
+F1A_EVAL_SHA256=79ba1c449864da8be4b9fa53313a179c2ddad96bac1e814d77f470a8f2e7b80a
+F1A_EVAL_SHA_MATCH=YES   (concordance avec Q1_PREEXECUTION_BUILD_PROVENANCE.txt)
+
+=== 5. SOURCES ET HEADERS CORRESPONDANTS ===
+Q1_FORK_PATH=/home/triviere/projects/llama-obrain-cuda-f1a
+Q1_FORK_GIT_HEAD=8447604f7f0c3b48a77be46de2466a5b23e27826
+Q1_FORK_GIT_BRANCH=feat/cuda-tq2g128
+  Arbre CUDA complet, sources et headers inclus (include/llama.h,
+  src/llama-chat.cpp, common/chat.cpp, common/jinja/*).
+
+=== 6. DISCRIMINATION DE PROVENANCE (pourquoi build-cuda, et lui seul) ===
+Le MEME fork contient plusieurs constructions de libllama aux SHA DIFFERENTS.
+Seule build-cuda correspond a Q1 :
+  build-cuda/bin/libllama.so.0        87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2   <-- Q1, RETENU
+  build-r2-base/bin/libllama.so.0     924447ead4bc2fa76e02d6e0c1135babea68f79a27dc7b32609d02861a95d72c
+  build-e5c/bin/libllama.so.0         4e0a2472937404995cba50292b2f2977157ac20398b95bc893a09db78445b398
+  build-e4-observe, build-e5i, build-r2-v1 : autres constructions
+=> Aucune lib Vulkan, HIP, CPU, DGX ou amont ne remplace Q1 implicitement.
+   Aucun rebuild n a ete tente. Aucun hash de reference n a ete modifie.
+
+=== 7. DEPENDANCES PRESCRITES ===
+Bibliotheques presentes dans /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin :
+  libllama.so.0.0.135           87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  libllama-common.so.0.0.135    a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20
+  libggml.so.0.16.0             (SHA non releve dans cette passe)
+  libggml-base.so.0.16.0        (idem)
+  libggml-cpu.so.0.16.0         (idem)
+  libggml-cuda.so.0.16.0        (idem)
+  libmtmd.so.0.0.135            (idem)
+Q1_QUALIFIED_DEPENDENCIES_AVAILABLE=YES
+  AU SENS DE LA DISPONIBILITE : les bibliotheques requises sont presentes.
+LIMITE DECLAREE, JAMAIS MASQUEE :
+  L autorite Q1 n enregistre un SHA que pour f1a-eval et libllama. Aucun SHA
+  d autorite n existe pour libllama-common, libggml*, libmtmd. Leur identite
+  est CONSTATEE, pas QUALIFIEE. Les valeurs ci-dessus sont des constats de
+  cette passe, pas des autorites.
+  Faire passer ces constats au rang d autorite exigerait une qualification
+  separee, NON executee ici.
+
+=== 8. ENVIRONNEMENT D EXECUTION ===
+Q1_RUNTIME_ENVIRONMENT_AVAILABLE=YES
+  Le binaire est present et ses dependances sont resolues a cote de lui, sur
+  le dgx. La qualification Q1 a effectivement tourne sur cet hote (artefacts
+  Q1 ON/OFF avec logits et preuves runtime).
+NON VERIFIE DANS CETTE PASSE : l execution effective du binaire. Aucun decode
+  n est autorise par RECOVERY-01. L absence de nvcc sur n3 est SANS EFFET :
+  on ne reconstruit rien. Elle n autorise ni changement de backend ni rebuild
+  declare equivalent (§7).
+
+=== 9. PREUVE WHT RUNTIME Q1 (retrouvee -- fait historique, PAS une preuve nouvelle) ===
+/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/e7b-f1a-q1-forward-v1/on/WHT_RUNTIME_PROOF_AUDIT.txt
+  PREUVE A (environnement) : OBRAIN_NO_ROTATION_PRESENT_IN_PARENT_ENV=NO
+    OBRAIN_NO_ROTATION_PRESENT_IN_CHILD_ENV=NO ; Q1_OBRAIN_NO_ROTATION_STATE=UNSET
+    (verifie par env -u + test ${VAR+x} : UNSET n est pas SET_BUT_EMPTY)
+  PREUVE B (runtime, sur le VRAI run qualificatif) :
+    Q1_ROTATION_APPLIED_TRUE_COUNT=672
+    Q1_ROTATION_APPLIED_FALSE_COUNT=0
+    Q1_ROTATION_APPLIED_MISSING_COUNT=0
+  PREUVE C (controle croise independant) : logits Q0 (rotation desactivee) et
+    logits Q1 (rotation active) sont DIFFERENTS.
+  Q1_WHT_RUNTIME_PROOF=PASS ; Q1_WHT_ACTIVE_CONFIRMED=YES
+  Q1_WHT_ENVIRONMENT_CONTRACT=OBRAIN_NO_ROTATION MUST BE UNSET (lancement par env -u)
+PORTEE, SANS SURINTERPRETATION :
+  Cette preuve a ete produite sur le run qualificatif Q1 de f1a, avec le
+  modele de ce run. Elle n est PAS une preuve runtime pour le candidat
+  ENGINE-008. Elle fournit la METHODE et le precedent de reference ; la
+  collecte runtime pour le candidat reste a faire apres gel.
+
+=== 10. TEXTE AUTORITAIRE DU PROTOCOLE Q1 ===
+/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/e7b-f1a-q1-forward-v1/Q1_FORWARD_PROTOCOL_v1.md
+  SHA256=55b69719fc78b1d71d66a390d8db7a792bafef003296156bb0fe2c6e1684a8b5
+  VERIFICATION=egale a son .sha256 et a la valeur enregistree dans
+  Q1_FORWARD_STATUS.txt. Triple concordance.
+Q1_FORWARD_PROTOCOL_FROZEN=YES ; Q1_FORWARD_STATUS=PASS ; FIRST_Q1_BLOCKING_GATE=NONE
+CONDITION WHT SOURCE (Q1_FORWARD_PROTOCOL_v1.md) :
+  WHT_ENABLE_CONDITION_SOURCE = w->type == GGML_TYPE_TQ2_G128 AND getenv("OBRAIN_NO_ROTATION") == nullptr
+  WHT_DISABLE_CONDITION_SOURCE= w->type != GGML_TYPE_TQ2_G128 OR  getenv("OBRAIN_NO_ROTATION") != nullptr

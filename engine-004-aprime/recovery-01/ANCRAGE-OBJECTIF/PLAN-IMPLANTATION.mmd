@@ -1,0 +1,35 @@
+flowchart TD
+  subgraph PROB["PROBLÈME — prouvé par les logs (/tmp/chat-server.log)"]
+    U["Utilisateur : « corrige le jeu du dragon 3D »"]
+    U -->|"systeme générique + tools"| M["Modèle TQ2 (raisonnement coupé)"]
+    M -->|"structure MAL l'objectif"| WRONG["n3__read exemple.txt<br/>web__browser_navigate example.com"]
+    WRONG --> STOP["s'arrête : croit avoir fini<br/>(objectif jamais vérifié)"]
+  end
+
+  subgraph TERRAIN["TERRAIN DÉJÀ DISPONIBLE (non injecté)"]
+    V["veille : dragon3d-work, dragon-3d<br/>+ 4 autres dossiers suivis"]
+    G["graphe : chantiers-harness.obrain<br/>96 228 nœuds / 64 435 arêtes"]
+    T["outils MCP : graphe(7 lecture), parc(13)<br/>n3(6 lecture/5 action), web(6)"]
+  end
+
+  subgraph FIX["FIX — ancrage d'objectif à la frontière de tour"]
+    direction TB
+    E1["① Extraire le projet de la veille<br/>(match mots-clés → dossier)<br/>dragon → dragon3d-work"]
+    E2["② Injecter dans le system prompt<br/>« projet = X ; séquence list→read→edit→verify<br/>; interdit exemple.txt/example.com »"]
+    E3["③ Phase de plan (modèle liste ses étapes)<br/>le harness valide les outils ciblent X"]
+    E4["④ Arrêt contrôlé : ne pas stop tant que<br/>le changement n'est pas vérifié (diff/rebuild)"]
+    E1 --> E2 --> E3 --> E4
+  end
+
+  TERRAIN --> E1
+  FIX --> FIXED["Modèle ancré → bon projet<br/>list dragon3d-work → read index.html/world.js/dragon.js<br/>→ edit canvas → verify"]
+  FIXED --> OK["objectif atteint ET vérifié"]
+
+  PROB -.->|"contraste"| FIX
+
+  subgraph CODE["POINTS DE CODE (obrain-chat-mobile/api)"]
+    P1["src/chat/mod.rs : construction du `systeme` + boucle d'étapes"]
+    P2["src/chat/inference.rs : corps de requête (tools, max_tokens)"]
+    P3["main.rs : system prompt de base (l.524)"]
+  end
+  CODE -.-> FIX

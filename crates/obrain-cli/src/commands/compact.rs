@@ -59,6 +59,53 @@ pub fn run(
         output::status("Compacting database...", quiet);
         db.gc();
 
+        // (2026-08-31) COMPACT DOIT AUSSI CHECKPOINTER LE WAL SUBSTRATE.
+        //
+        // `ObrainDB::checkpoint()` (engine) ne fait que `flush()` — il ne
+        // TRONQUE jamais le WAL. La troncature vit dans
+        // `SubstrateStore::checkpoint()` (flush + `checkpoint::checkpoint`
+        // qui appelle `wal.truncate()` + re-ancrage des index), mais elle
+        // n'était appelée par AUCUN chemin de production : le seul
+        // déclencheur était le seuil auto de 512 Mio, jamais atteint sur des
+        // bases importées. Résultat mesuré (bench 2026-08-31) : `substrate.wal`
+        // = 17 Mo (aletheia) / 122 Mo (harness) rejoués à CHAQUE open, soit
+        // open = 55-520 ms — le seul point où obrain perdait vs cbm (0,2 ms).
+        //
+        // `compact` est le chemin d'opérations : il appelle désormais le
+        // checkpoint substrate complet. C'est sûr : les données sont déjà
+        // durables (le WAL n'est tronqué qu'après flush + fsync des zones),
+        // et idempotent (checkpoint sur WAL vide = no-op + re-ancrage).
+        if let Some(sub) = db.substrate_handle() {
+            match sub.checkpoint() {
+                Ok(stats) => output::status(
+                    &format!(
+                        "WAL checkpointed (tronqué à 0, {} octets de WAL avant)",
+                        stats.wal_offset_before
+                    ),
+                    quiet,
+                ),
+                Err(e) => {
+                    output::status(&format!("Warning: WAL checkpoint failed: {e}"), false);
+                }
+            }
+            // (2026-08-31) SHRINK DE LA ZONE v2 — la zone `substrate.props.v2`
+            // est pré-allouée par croissance exponentielle ×1.5 : mesuré
+            // 167 Mo sur disque pour 26 Mo réellement alloués (aletheia),
+            // 849 Mo pour ~120 Mo (harness). Le padding au-delà de la
+            // dernière page live est zéro-init et jamais adressé ; le
+            // tronquer récupère le disque et raccourcit le msync/fsync au
+            // prochain checkpoint/close. Sûr ici : le store est tenu
+            // exclusivement par `compact`, et les ancres (page_idx) restent
+            // dans l'étendue tronquée. `shrink_to_fit` est un no-op si la
+            // zone est déjà à sa taille utile.
+            if let Err(e) = sub.shrink_props_zone() {
+                output::status(
+                    &format!("Warning: props zone shrink failed (non fatal): {e}"),
+                    false,
+                );
+            }
+        }
+
         // T17 final cutover: the legacy tiered-storage epoch-file path
         // (`ObrainDB::compact()`) was retired; substrate handles its own
         // on-disk layout natively, so no epoch files are written here.

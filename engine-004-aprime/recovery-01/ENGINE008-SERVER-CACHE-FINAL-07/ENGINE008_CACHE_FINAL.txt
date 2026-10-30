@@ -1,0 +1,136 @@
+ENGINE-008 -- CLOTURE SERVEUR : RAPPORT TERMINAL
+==========================================================================
+LES TESTS DE PRODUCTION PASSENT (44/0) ET ONT ATTRAPE UN VRAI DEFAUT.
+O1 N'EST PAS IMPLEMENTE. L'EXPERIENCE FINALE A ETE INTERROMPUE EN C.
+
+=== 1. TESTS DE PRODUCTION -- EXECUTES, PAS DECLARES ===
+`tools/server/obrain-kv-cache.h` est desormais le code de production du cache,
+**inclus par server-context.cpp ET par les tests** : les regles testees sont
+celles du serveur, pas une copie simplifiee.
+`tools/server/obrain-kv-cache-tests.cpp` -- 44 assertions, **44 PASSED, 0 FAILED,
+EXIT=0** (sortie brute : TESTS_OUTPUT.txt).
+
+COMPATIBILITY_REJECTION_SELFTEST=PASS
+  manifeste ABSENT -> REFUSE_NO_MANIFEST
+  manifeste INCOMPLET (sha vide) -> REFUSE_INCOMPATIBLE
+  manifeste INCOMPLET (identite modele absente) -> REFUSE_INCOMPATIBLE
+  **SHA256 modele DIFFERENT avec description ET topologie IDENTIQUES -> REFUSE**
+    (raison : « SHA256 du modele DIFFERENT (identite exacte) »)
+  Q1 different, type KV different, mode de serialisation different,
+  configuration de contexte differente, convention de sequence differente,
+  format d'etat inconnu -> REFUSE pour chacun
+  **SET_DATA_CALLS=0 sur les 4 refus** (compteur du chemin de production)
+  **SET_DATA_CALLS=1 sur ACCEPT** (temoin : le compteur discrimine bien)
+
+INTEGRITY_SELFTEST=PASS
+  blob TRONQUE -> REFUSE_BAD_SIZE ; blob ALTERE a taille constante ->
+  REFUSE_BAD_SHA256 ; SHA256 stocke falsifie -> REFUSE_BAD_SHA256 ;
+  fichier disque TRONQUE -> refus au chargement ; fichier SANS manifeste ->
+  refus ; fichier ALTERE -> import REFUSE.
+
+LRU_MEMORY_SELFTEST=PASS
+  3 insertions -> 3 entrees, 300 octets exactement ; get(A) rafraichit ;
+  insertion de D evince **B, le moins recemment utilise** ; A (rafraichi) et C
+  survivent ; comptabilite apres eviction = 300 ; n_evict=1 ;
+  remplacement de la meme cle : taille ET octets inchanges ;
+  entree plus grosse que la borne -> REFUSEE, n_refuse_too_big=1, 0 entree.
+  **UN DEFAUT REEL A ETE TROUVE PAR CES TESTS** : la boucle d'eviction tournait
+  AVANT de verifier si la cle existait, donc sa propre taille comptait encore
+  dans le total et un simple REMPLACEMENT evinçait une entree NON LIEE. La
+  premiere execution l'a montre (`n_replace=0 n_evict=2`). Corrige : la cle
+  existante est retiree AVANT le calcul du besoin, et une assertion verifie
+  desormais que `n_evict` ne bouge pas lors d'un remplacement.
+
+DISK_MANIFEST_ROUNDTRIP_SELFTEST=PASS
+  save/load aller-retour : octets IDENTIQUES, SHA256 du manifeste concordant.
+  Le format persiste magic "OBKV" + version + manifeste + taille + octets.
+  **Le prefixe exact n'est PAS persiste** : le manifeste rechargé est donc
+  declae INCOMPLET par `complete()`, et l'import est REFUSE -- un ancien blob
+  sans manifeste complet reste refuse, et **aucun manifeste retroactif n'est
+  fabrique**. Un lecteur ne peut donc pas accepter une association discordante :
+  c'est une consequence ASSUMEE, et elle ferme le chemin disque tant que le
+  prefixe n'y est pas persiste (REMAINING_WORK).
+
+=== 2. IDENTITE DU MODELE : SHA256 EXACT ===
+§1 exigeait que le manifeste lie le SHA256 du modele REELLEMENT charge. C'est
+fait : `kv_model_sha256()` calcule le SHA256 du fichier de modele, **une seule
+fois par processus** (cache statique), et `manifest_mismatch()` le compare en
+PREMIER, avec le message « SHA256 du modele DIFFERENT (identite exacte) ».
+Description, taille, parametres et topologie sont CONSERVES comme conditions
+supplementaires, mais **ils ne remplacent pas cette identite** -- et le test B
+le prouve : deux modeles partageant description ET topologie sont refusés.
+Isolation : la cle de cache reste la reference de contenu, et `seq_id` fait
+partie du manifeste compare ; aucun partage implicite entre sessions.
+
+=== 3. METRIQUE EXPORT -- NON VERIFIEE ===
+EXPORT_METRIC_VERIFIED=NO
+  Les champs separes existent (`preparation_total_ms`, `prefix_compute_ms`,
+  `state_lookup_ms`, `integrity_check_ms`, `state_import_ms`) avec la convention
+  **-1 = NON MESURE**.
+  **MAIS le chemin `extract_only` sort TOUJOURS avant le calcul de la metrique**,
+  et A rapporte encore `fact_decode_ms:0.0` dans la mesure courante. C'est un
+  0.0 implicite, exactement ce que §3 interdit. **Je ne le declare donc pas
+  corrige**, et je n'attribue aucune difference entre runs au SHA256 sans
+  mesure directe : le cout du SHA256 n'est PAS isole.
+
+=== 4. O1 -- NON IMPLEMENTE ===
+  Le mode de verification exposant les **IDs reellement selectionnes** et les
+  **premiers logits natifs** par la route n'existe pas. Je ne l'ai pas ecrit.
+  Consequence : START_LOGITS_BINARY_IDENTICAL=NOT_RUN, TOKEN_IDS_MATCH=NOT_RUN.
+
+=== 5. EXPERIENCE FINALE -- INTERROMPUE, ARTEFACTS CONSERVES ===
+  Le lancement A/B/C a ete coupe par le plafond de 600 s de mon propre
+  wrapper, **pas par un defaut du moteur** : le serveur est reste vivant et
+  sain (`listening on http://127.0.0.1:8473`, modele charge en 19,6 s).
+  Ce qui a ABOUTI et est conserve dans RAW_RESPONSES_INTERRUPTED.txt :
+    A : ref=**046f5945a8dc6fc9**  fact_tokens=58  blob_bytes=160697024
+        prefix_decode_calls=1  prefix_token_count=58  state_imported=false
+    B : TEXT=**'.\n</think>\n\nOK.'**  fact_decode_ms=**849.338**
+        query_decode_ms=1549.324  6 pas de ~1.45 a ~1.61 s
+  Ce qui N'A PAS abouti : **C**. Aucune reponse C n'a ete produite.
+  **Je n'ai PAS diagnostique la cause**, et je ne relance pas silencieusement.
+  Piste NON VERIFIEE, donc NON RETENUE : `kv_model_sha256()` hache le fichier
+  de modele de ~16 Go a sa premiere invocation ; je n'ai pas mesure ce cout.
+
+  Ce que cette execution ETABLIT malgre l'interruption : **aucune regression
+  du refactor** sur les chemins A (extraction, manifeste construit, SHA256 du
+  modele, SHA256 du blob) et B (recalcul complet + generation), qui ont tous
+  deux abouti avec les compteurs attendus.
+
+=== 6. ETAT DES CRITERES DE CLOTURE (§6) ===
+  compatibilite connectee ET refus exerces ............ OUI (tests PASS)
+  integrite testee ................................... OUI (tests PASS)
+  LRU et borne testees ............................... OUI (tests PASS)
+  persistance/rechargement avec manifeste testes ..... OUI (tests PASS)
+  metrique EXPORT corrigee et observee ............... **NON**
+  IDs/logits recueillis par la route de production ... **NON**
+  comparaison numerique effectuee .................... **NON** (C interrompu)
+  **Je n'ecris donc pas que tout est clos.**
+
+COMPATIBILITY_REJECTION_SELFTEST=PASS
+INTEGRITY_SELFTEST=PASS
+LRU_MEMORY_SELFTEST=PASS
+DISK_MANIFEST_ROUNDTRIP_SELFTEST=PASS
+EXPORT_METRIC_VERIFIED=NO
+AUTHORITATIVE_DECODED_IDS_MATCH=NOT_RUN
+PURE_CACHE_HIT_OBSERVED=YES  (etabli en SERVER-CACHE-PROOF-05 et CLOSURE-06 ;
+  conserve comme acquis, non re-demontre ici puisque C n'a pas abouti)
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+TOKEN_IDS_MATCH=NOT_RUN
+TEXT_MATCH=NOT_RUN
+SHA256_MS=NON MESURE -- le cout du SHA256 n'a pas ete isole
+PREPARATION_TOTAL_MS=CONTROL 849.338 (B) ; RESTORED non obtenu (C interrompu)
+REMAINING_WORK=
+  R1. Implementer le mode de verification O1 (IDs selectionnes + premiers
+      logits natifs par la route), puis la comparaison numerique.
+  R2. Finaliser la metrique AVANT le retour du chemin `extract_only` (A sort
+      encore avec fact_decode_ms=0.0 implicite).
+  R3. Isoler et mesurer sha256_ms separement (model et blob).
+  R4. Persister le prefixe exact avec le blob pour rendre le manifeste disque
+      COMPLET -- sinon le chemin disque reste ferme par construction.
+  R5. Terminer l'experience C (import + 59e ID) et la comparaison numerique.
+  R6. Diagnostiquer pourquoi C n'a pas abouti dans la fenetre de 600 s.
+HTTP_CALL_COUNT=3 (A, B, piece) ; C n'a produit aucune reponse
+ATTEMPT_COUNT=1 experience, INTERROMPUE. Aucun retry.
+Q1_LIBLLAMA_REBUILT=NO  (libllama.so.0 = 87c42d5f... INCHANGE a chaque build)
+QUALITY_EXECUTION_ALLOWED=NO

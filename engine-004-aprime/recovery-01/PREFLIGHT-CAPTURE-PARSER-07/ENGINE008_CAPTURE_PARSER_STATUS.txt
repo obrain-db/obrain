@@ -1,0 +1,147 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-CAPTURE-PARSER-07
+==========================================================================
+Les stubs de capture sont REMPLACES. Parseurs reels ecrits et testes :
+32 controles, 0 echec. Le fingerprint est ETABLI et le recalcul IMPLEMENTE.
+Aucun modele charge, aucun contexte, aucun forward.
+
+REAL_LEDGER_PARSER_IMPLEMENTED=YES
+  EVENT_LEDGER.csv : en-tete valide colonne par colonne (event_kind,
+  event_sequence_id, compute_submission_id, graph_ptr, graph_fingerprint,
+  capture_epoch_id, eligible_target_count, captured_target_count, decode_step,
+  run_id). Types d evenements PRESERVES sans filtrage. Nombres, pointeurs et
+  statuts valides SANS conversion silencieuse. Toute valeur absente est
+  REFUSEE, jamais supposee.
+REAL_SNAPSHOT_PARSER_IMPLEMENTED=YES
+  SUBMITTED_GRAPH_SNAPSHOTS.csv : les 5 colonnes (submission_id, gf, n_nodes,
+  submission_rc, fingerprint) sont EXIGEES et validees. Le ledger n est PAS
+  substitue aux snapshots : champs et roles distincts, comme exige.
+REAL_CAPTURE_STUBS_REMAINING=0
+  Les deux stubs (ledger_window, ledger_snapshot) sont remplaces par la lecture
+  reelle des fichiers, raccordee au correlateur EXISTANT (correlate_call).
+BEFORE_AFTER_WINDOW_IMPLEMENTED=YES
+  arm_window() releve l etat AVANT (etat, nombre de lignes, empreinte FNV-1a du
+  contenu) ; observe_window() relit APRES et rend les NOUVEAUX evenements et
+  snapshots. Aucune contiguite des identifiants n est supposee : le curseur
+  travaille sur le NOMBRE de lignes initial, pas sur des ids supposes suivis.
+  Detecte : aucune soumission, plusieurs soumissions, troncature ou
+  remplacement (par le compte), identifiants dupliques, soumission en erreur.
+CAPTURE_FLUSH_CONTRACT_ESTABLISHED=PARTIAL
+  Etabli par lecture : le producteur ecrit EVENT_LEDGER.csv avec un en-tete fixe
+  puis une ligne par evenement ; g_f1a_last_sub_fp est pose AVANT l ecriture de
+  la ligne du ledger, et l evenement COMPUTE_SUBMIT est emis apres.
+  NON etabli : les points de FLUSH reels et le moment exact ou les donnees
+  deviennent lisibles par un autre processus. Le retour d un appel de decode ne
+  prouve PAS a lui seul que les surfaces sont flushees -- c est precisement
+  pourquoi le releve APRES relit le FICHIER au lieu de faire confiance a l appel.
+  Ce point reste a etablir avant tout run.
+
+=== X2 : LE FINGERPRINT EST ETABLI, ET LE RECALCUL EST IMPLEMENTE ===
+FINGERPRINT_DEFINITION_ESTABLISHED=YES
+  Source : f1a-capture.cpp:263-281, verbatim.
+    fp = 1469598103934665603ULL                      // FNV-1a 64 bits, base
+    pour i in [0, n_nodes) :
+      t = ggml_graph_node(gf, i); si t == null : CONTINUER (noeud nul IGNORE)
+      x = (uintptr_t)t ^ ((uint64_t)t->op << 48)
+      fp = (fp ^ x) * 1099511628211ULL
+      pour k in [0, GGML_MAX_SRC) :                   // TOUS les slots 0..9
+        si t->src[k] == null : CONTINUER (source nulle IGNOREE)
+        fp = (fp ^ (uintptr_t)t->src[k]) * 1099511628211ULL
+  Algorithme FNV-1a 64 bits. CHAMPS INCLUS : adresse du noeud, son op code
+  decale de 48, et les ADRESSES de TOUTES ses sources non nulles.
+  CHAMPS EXCLUS : flags, dimensions, type, nom, donnees. ns.flags et
+  n_outputs sont calcules a cote mais n entrent PAS dans l empreinte.
+  DEPENDANCE A L ORDRE : oui, l ordre des indices de noeuds est structurant.
+FINGERPRINT_CONFRONTATION=IMPLEMENTED
+  recompute_graph_fingerprint() reimplemente la definition EXACTE du producteur
+  et l applique a l objet soumis. Teste : deterministe sur le meme objet,
+  distinct sur un autre graphe, nul sur un graphe nul, et l offset de base est
+  bien applique.
+  PORTEE EXACTE, et je ne la surestime pas : l empreinte contient des ADRESSES.
+  Elle etablit donc « mon enumeration porte sur le MEME objet graphe que celui
+  que le producteur a hache », DANS LE MEME PROCESSUS. Elle n etablit PAS une
+  identite structurelle entre deux processus ni entre deux runs : deux graphes
+  structurellement identiques y produisent des empreintes DIFFERENTES.
+  Une concordance de fingerprint n est donc PAS une preuve d identite complete.
+
+=== CATEGORIE 1 : CAPTURES HISTORIQUES Q1 (lecture seule) ===
+HISTORICAL_CAPTURE_PARSER_VALIDATION=PASS
+  EVENT_LEDGER.csv valide sur .../e7b-f1a-q1-forward-v1/on : etat VALID,
+  lignes presentes, types d evenements preserves, sequences non nulles,
+  empreintes presentes, aucun doublon de sequence.
+  SUBMITTED_GRAPH_SNAPSHOTS.csv valide sur .../e7b-f1a-q0-n1bis/capon : etat
+  VALID, 2 lignes, valeurs bien formees (n_nodes=3991, empreinte 16 hexa).
+  DECOUVERTE REELLE : les deux surfaces NE SONT PAS CO-LOCALISEES dans le
+  corpus historique -- le ledger est dans .../on/, les snapshots dans
+  .../capon/. Mon test mono-repertoire supposait le contraire et a donc rendu
+  FAIL sur le repertoire qui n a que les snapshots : c est MON hypothese qui
+  etait fausse, l ABSENT rendu par le parseur etait correct. Les deux surfaces
+  ont ete validees separement.
+  Les captures historiques ne deviennent PAS des observations du nouveau
+  harnais : leurs pointeurs sont des valeurs ARCHIVEES, jamais dereferencees.
+
+=== CATEGORIE 2 : FIXTURES SYNTHETIQUES (identifiees comme telles) ===
+FILE_TO_CORRELATION_SELFTEST=PASS
+  absent, vide, en-tete seul, mauvais en-tete, ligne partielle, sequence non
+  numerique, pointeur illisible, doublon d identifiant, type d evenement
+  preserve, soumission en erreur, troncature/remplacement, capture malformee
+  bloquant la conclusion, zero/une/plusieurs soumissions.
+
+REAL_ENTRYPOINT_REJECTION_SELFTEST=PASS
+  aucun document -> exit 3 ; document MOCK -> REFUSED_MALFORMED_DOCUMENT exit 3.
+  REAL_LOAD_CALLS=0, REAL_F1A_ENV_CALLS=0, REFUSED_BEFORE_ANY_COMPUTE=YES.
+INTEGRATED_MOCK_PATH_SELFTEST=PASS   (41 controles, pipeline inchange)
+STOP_CONTRACT_SELFTEST=PASS
+
+HARNESS_SOURCE_MANIFEST_SHA256=e93d070542cbff73f1216ac2bc8010fa16c6ed10964a55407185d78cab7f7e4b
+  engine008_capture_parser.h  13a31a410d943b5d4409c075fec056bc0a596ea7a61e7bee6efcb99ab5144000
+  engine008_capture_parser.cpp b9e626f8f6bb419666c67c2463c49a2dd66245c04872589fb5e5ca7a75af7dfc
+  engine008_parser_tests.cpp  51f07da3579ff5fe66f7f2c3eb533acdfb311c4a777114e8195889dfab7e4343
+  engine008_real_deps.h       4bf621aeeed91dbc181f3b4ab21b31ba9df981b2cc3101cef8d9b50e75ac89ca
+  engine008_real_deps.cpp     ccd330b7496bf9dd391c80ecabde2b289d45b12454dba6b6a12b0ded37b03f37
+  engine008_real_entry.cpp    ab3f56d40a1b322a8415906844fbc9a65e74a29a8f268a84c0ea6c22c5e213f9
+  engine008_pipeline.h/.cpp et connect_tests.cpp : IDENTIQUES a CONNECT-05
+  (f5495ee7... / 1cd0e3c4... / 60e81ec5...). L orchestration n a PAS ete touchee.
+HARNESS_BINARY_SHA256=
+  t-parser  af2d3ff9b80c31b7f238e08f0506595e0b7fd876e8f7266e56de448d39c2a10e
+  t-real    9a93cd13d4b5fd685a9fb86274eff34162f1789a530894b66eb0de12e8187033
+  t-connect c7a0d5b3e60bb2e8f7cb7088cf198d41287c4ef102ebbe64ef766cb97be317be
+  Identites recalculees APRES compilation reussie, avec arret sur erreur.
+
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_CAPTURE_PARSER
+
+REMAINING_WORK=
+  Y1_ETABLIR le contrat de FLUSH reel : quand les surfaces deviennent-elles
+     lisibles ? Le releve APRES relit le fichier, mais rien ne garantit encore
+     qu il est complet au moment de la relecture. A verifier au producteur
+     (fflush / fclose / ordre des ecritures) avant tout run.
+  Y2_La confrontation du fingerprint N EST PAS branchee dans le pipeline : la
+     fonction existe et est testee, mais le rapport ne compare pas encore
+     l empreinte recalculee a celle lue dans le snapshot. A faire pour que
+     l attribution soit effective.
+  Y3_Le corpus historique n a pas de paire (ledger + snapshots) dans un meme
+     repertoire : la jointure reelle ledger<->snapshots n a donc pas pu etre
+     exercee sur pieces. A faire si une telle paire existe ailleurs.
+  Y4_Puis le protocole et le gel, sur instruction separee.
+
+ENGINE008_NEXT_STEP=Y1 (etablir le contrat de flush) puis Y2 (brancher la
+  confrontation du fingerprint dans le pipeline)
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucune
+execution preflight ou qualite, aucun gel. Aucun rebuild de bibliotheque Q1.
+Aucun global de Q1 ecrit. Les captures historiques sont lues en LECTURE SEULE
+et leurs pointeurs ne sont jamais dereferences. Aucune fixture synthetique
+presentee comme une observation du harnais.

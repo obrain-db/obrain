@@ -1,0 +1,62 @@
+ENGINE-008 -- ETAT APRES ACQUISITION (aucune inference modele)
+
+=== A. AUDIT DES OUTILS D EVAL DU FORK ===
+LOCAL_LLAMA_PERPLEXITY_SOURCE_FOUND=YES   (tools/perplexity/)
+LOCAL_LLAMA_PERPLEXITY_CMAKE_TARGET_FOUND=YES
+LOCAL_LLAMA_PERPLEXITY_TARGET_NAME=llama-perplexity
+DO_NOT_REIMPLEMENT_PERPLEXITY_FROM_SCRATCH=YES
+  Compile depuis le MEME fork/libllama : BUILD_RC=0, binaire 70304 octets.
+  JAMAIS execute sur un modele dans cette passe.
+  Role futur : INDEPENDENT_NLL_PPL_CROSSCHECK (pas un nouveau seuil).
+
+=== B/C/D. ACQUISITIONS, REVISIONS PINNEES ===
+WIKITEXT_REVISION=b08601e04326c79dfdd32d625aee71d232d685c3
+  Salesforce/wikitext, config wikitext-2-raw-v1, split test, 2 fichiers, 6.9 Mo
+GSM8K_REVISION=3101c7d5072418e28b9008a6636bde82a006892c
+  openai/grade-school-math, 1319 items de test, LICENSE MIT presente
+MMLU_PRO_REVISION=b189ec765aa7ed75c8acfea42df31fdae71f97be
+  TIGER-Lab/MMLU-Pro, test-00000-of-00001.parquet, 4.1 Mo, license=mit
+MBPP_REVISION=e49bbfe381c9c0e564b937f1c4e163a2273c65cc
+  google-research, mbpp/mbpp.jsonl + mbpp/sanitized-mbpp.json
+IFEVAL_REVISION=e49bbfe381c9c0e564b937f1c4e163a2273c65cc
+  google-research/instruction_following_eval, 12 fichiers
+
+  Chaque source a : UPSTREAM.txt, REVISION.txt, LICENSE_UPSTREAM.txt, FILES.sha256
+  Aucun HEAD flottant : les revisions/commits sont resolus AVANT copie.
+
+=== CE QUI RESTE, ET CE N EST PAS MARGINAL ===
+  E. audit des donnees acquises            : NON FAIT
+     -> pyarrow ABSENT : le parquet MMLU-Pro n est pas encore lisible.
+        (compte par categorie non etabli)
+  F. regles de selection deterministes     : NON ECRITES
+  G. corpus materiels (token/task/long)    : NON CONSTRUITS
+  H. scorers                               : NON CONSTRUITS
+  I. harnais engine008-quality-eval        : NON ECRIT
+     4 modes (teacher/choices/generate/runtime-probe) + tests unitaires.
+     C est le plus gros morceau restant.
+  J. prompts + INPUT_TOKEN_IDS             : NON PRODUITS
+  K. long-context synthetique              : NON GENERE
+  L/M. suffisance + protocole              : NON ATTEINT
+
+=== ETAT ===
+TOKEN_CORPUS_FROZEN=NO      TASK_CORPUS_FROZEN=NO      LONG_CONTEXT_CORPUS_FROZEN=NO
+SCORERS_FROZEN=NO           THRESHOLDS_FROZEN=YES
+HARNESS_UNIT_TEST_FAILED_COUNT=NON_APPLICABLE
+SCORER_UNIT_TEST_FAILED_COUNT=NON_APPLICABLE
+QUALITY_PREFREEZE_BASELINE_RESULT_COUNT=0
+QUALITY_PREFREEZE_CANDIDATE_RESULT_COUNT=0
+QUALITY_ABLATION_MEASURED=NO   SALIENCY_MEASURED=NO   PRODUCT_GAIN=NOT_MEASURED
+TOKEN_DISTRIBUTION_STATUS=NOT_EXECUTED
+TASK_BEHAVIOR_STATUS=NOT_EXECUTED
+LONG_CONTEXT_STATUS=NOT_EXECUTED
+QUALITY_ABLATION_STATUS=NOT_EXECUTED
+
+ENGINE008_PROTOCOL_VERSION=NON_GELE
+ENGINE008_PROTOCOL_FROZEN=NO
+ENGINE008_EXECUTION_ALLOWED=NO
+FIRST_QUALITY_BLOCKING_GATE=EVALUATION_HARNESS_AND_CORPORA_NOT_BUILT
+
+  Aucun modele n a tourne. Aucun llama_decode. Aucun logit. Aucune generation.
+  Tokenisation : pas encore faite (elle depend des corpus materiels).
+
+ENGINE007_NEXT_STEP=BUILD_ENGINE008_HARNESS_SELECTION_RULES_AND_CORPORA_THEN_FREEZE

@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<!--
+  obrain viz — sous-graphe 3D (V4-G3, patterns repris de aletheia/graph-explorer-3d)
+  Optimisations : nœuds InstancedMesh (1 draw call), arêtes LineSegments
+  vertexColors batchées (1 draw call), pixelRatio ≤ 1.6, pause hors écran,
+  autorotation, picking raycast instancié, labels-sprites limités.
+  Couches : nœuds, arêtes, triangles K3 (Δ), cliques K4, hyperarêtes (étoiles).
+  Responsive : desktop / tablette / mobile (panneau en bottom-sheet).
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>obrain · sous-graphe 3D</title>
+<style>
+  :root { --panel: #10151c; --line: #2a3440; --accent: #7fd1ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+      font: 12.5px/1.45 system-ui, sans-serif; color: #d7e1ea; background: #090a0c; }
+  #stats { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5;
+      background: rgba(10,14,19,.75); padding: 4px 14px; border-radius: 12px;
+      font-size: 11px; white-space: nowrap; }
+  #panel { position: fixed; left: 8px; top: 46px; bottom: 8px; width: 250px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px; overflow-y: auto; z-index: 7; }
+  #panel h1 { font-size: 13px; margin: 0 0 8px; }
+  #panel label { display: block; margin: 7px 0 2px; opacity: .8; font-size: 11px; }
+  #panel input[type=text], #panel input[type=number], #panel select {
+      width: 100%; background: #0d131b; color: #dfe8f1; border: 1px solid var(--line);
+      border-radius: 6px; padding: 4px 6px; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .row label { margin: 0; }
+  button { background: #16405c; color: #fff; border: 0; border-radius: 6px; padding: 5px 10px;
+      cursor: pointer; }
+  button.primary { background: var(--accent); color: #06222f; font-weight: 600; }
+  .checks label { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  #panelHandle { display: none; }
+  #info { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px;
+      font: 11px/1.5 ui-monospace, monospace; white-space: pre; min-height: 64px;
+      color: #9fd6ff; }
+  #legend { margin-top: 8px; opacity: .85; font-size: 10.5px; }
+  .sw { display:inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px;
+      vertical-align: -1px; }
+  #canvashost { position: fixed; inset: 0; }
+  #canvashost canvas { display: block; touch-action: none; }
+  #hint { position: fixed; right: 12px; bottom: 10px; opacity: .45; font-size: 10.5px;
+      z-index: 4; }
+  /* responsive */
+  @media (max-width: 900px) {
+    #stats { top: 6px; font-size: 10px; max-width: 94vw; overflow: hidden;
+             text-overflow: ellipsis; }
+    #panel { left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 58vh;
+             border-radius: 14px 14px 0 0; transform: translateY(calc(100% - 44px));
+             transition: transform .25s ease;
+             padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+    #panel.open { transform: translateY(0); }
+    #panel { padding: 0; display: flex; flex-direction: column; }
+    #panelContent { display: none; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+                    overflow-y: auto; min-height: 0; }
+    #panel.open #panelContent { display: block; }
+    #panelHandle { display: flex; align-items: center; justify-content: center;
+                   min-height: 44px; cursor: pointer; user-select: none; gap: 8px;
+                   color: var(--accent); font-weight: 700; font-size: 13px;
+                   border-bottom: 1px solid transparent; }
+    #panel.open #panelHandle { border-bottom: 1px solid var(--line); }
+    #hint { display: none; }
+  }
+  @media (pointer: coarse) {
+    #panel input, #panel select, #panel button { font-size: 16px; min-height: 42px; }
+    #panel .checks label { font-size: 14px; }
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .chips button { border: 1px solid var(--line); background: #0d131b; color: #cfe3f5;
+      border-radius: 20px; padding: 5px 12px; font-size: 12px; }
+  .chips button.active { background: var(--accent); color: #06222f; font-weight: 700; }
+  details summary { cursor: pointer; opacity: .75; font-size: 11px; margin: 6px 0 2px; }
+  #panel input, #panel select { margin: 2px 0 4px; }
+
+  #suggest { max-height: 170px; overflow-y: auto; background:#0d131b;
+             border: 1px solid var(--line); border-radius: 8px; margin: 2px 0 4px; }
+  #suggest div { padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #1a2330;
+                 font-size: 12px; }
+  #suggest div b { color: var(--accent); }
+  #suggest div small { color: #7f93a8; }
+  #suggest div:hover { background: #15232f; }
+  #selChips { min-height: 20px; margin: 2px 0; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; background: #16405c;
+          border-radius: 14px; padding: 2px 8px; margin: 2px; font-size: 11px;
+          max-width: 100%; overflow: hidden; }
+  .chip button { background: none; border: 0; color: #9fd6ff; padding: 0 0 0 4px;
+                 cursor: pointer; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="stats">…</div>
+<div id="panel">
+  <div id="panelHandle"><span id="panelLabel">⚙ Configuration</span></div>
+  <div id="panelContent">
+  <h1>obrain · graphe 3D</h1>
+
+  <label>Store</label>
+  <select id="iPreset"></select>
+  <details id="advStore"><summary>ou chemin libre…</summary>
+    <input id="iStore" type="text" placeholder="chemin du store (.obrain)"/>
+  </details>
+
+  <label>Fonction(s) de départ (recherche, plusieurs choix possibles)</label>
+  <input id="iCenter" type="text" value="" placeholder="taper pour chercher (ex. e1000_probe)…"
+         autocomplete="off"/>
+  <div id="selChips" class="chips"></div>
+  <div id="suggest"></div>
+
+  <button class="primary" id="bGo" style="width:100%;margin:10px 0">Charger le graphe</button>
+
+  <label>Vue</label>
+  <div class="chips" id="chipOv">
+    <button data-ov="" class="ov active">aucun</button>
+    <button data-ov="ricci" class="ov">ricci</button>
+    <button data-ov="roles" class="ov">roles</button>
+    <button data-ov="energy" class="ov">energy</button>
+  </div>
+
+  <label>Portée</label>
+  <div class="chips" id="chipHop">
+    <button data-h="1" class="hop active">voisinage 1</button>
+    <button data-h="2" class="hop">voisinage 2</button>
+    <button data-h="3" class="hop">voisinage 3</button>
+    <button data-h="0" class="hop">arbre complet (0)</button>
+  </div>
+
+  <div class="checks">
+    <label><input type="checkbox" id="cEdges" checked/> arêtes</label>
+    <label><input type="checkbox" id="cTri" checked/> triangles K3</label>
+    <label><input type="checkbox" id="cK4"/> cliques K4</label>
+    <label><input type="checkbox" id="cHe"/> hyperarêtes</label>
+    <label><input type="checkbox" id="cContour"/> ∂ contours (κ&lt;0)</label>
+    <label><input type="checkbox" id="cSpectral"/> communauté (spectral)</label>
+    <label><input type="checkbox" id="cSynapse"/> synapses (poids)</label>
+    <label><input type="checkbox" id="cLabels"/> libellés</label>
+    <label><input type="checkbox" id="cRotate"/> rotation</label>
+  </div>
+
+  <details id="adv"><summary>avancé (hops, limite)</summary>
+    <div class="row">
+      <label>hops</label><input id="iHops" type="number" value="1" min="1" max="3" style="width:64px"/>
+      <label>limite</label><input id="iLimit" type="number" value="120" min="2" style="width:84px"/>
+    </div>
+    <input id="iOverlay" type="hidden" value=""/>
+    <button id="bReset" style="margin-top:6px">Réinitialiser la caméra</button>
+  </details>
+
+  <div id="info">—</div>
+  <div id="legend">
+    <span class="sw" style="background:#6fd08c"></span>nœud
+    <span class="sw" style="background:#4aa8ff"></span>CALLS
+    <span class="sw" style="background:#b07aa1"></span>autre
+    <span class="sw" style="background:#21d4b4"></span>K3
+    <span class="sw" style="background:#ffd166"></span>K4
+    <span class="sw" style="background:#ff7a5c"></span>hyper
+    <span class="sw" style="background:#ff6b9d"></span>∂ contour
+    <span class="sw" style="background:#ffe066"></span>synapse
+    <br/>clic : voisins · dbl-clic : recentrer
+  </div>
+  </div><!-- /panelContent -->
+</div>
+
+<div id="hint">orbite · zoom molette/pincement · clic droit pan</div>
+<div id="canvashost"></div>
+
+<script src="./vendor/three.min.js"></script>
+<script src="./vendor/OrbitControls.js"></script>
+<script>
+"use strict";
+const state = { nodes: [], edges: [], byId: [], scene: null, camera: null, renderer: null,
+  controls: null, root: null, inst: null, segs: null, ray: null,
+  hovered: null, raf: 0 };
+let graphStore = {};
+const $ = id => document.getElementById(id);
+
+/* ---------- chargement ---------- */
+function params(){ return new URLSearchParams(location.search); }
+function apiUrl(store, center, hops, limit, overlay){
+  const q = new URLSearchParams({ hops: hops || "1", limit: limit || "120" });
+  if (store) q.set("store", store); if (center) q.set("center", center);
+  if (overlay) q.set("overlay", overlay);
+  return "/api/viz/subgraph?" + q.toString();
+}
+async function loadData(){
+  const p = params();
+  if (p.get("store") || p.get("center") || location.pathname.endsWith("/")) {
+    if (p.get("store")) $("iStore").value = p.get("store");
+    if (p.get("center")) $("iCenter").value = p.get("center");
+    if (p.get("hops")) $("iHops").value = p.get("hops");
+    const r = await fetch(apiUrl($("iStore").value.trim(), centersParam(),
+      $("iHops").value, $("iLimit").value, $("iOverlay").value));
+    if (!r.ok) throw new Error((await r.text()).slice(0, 300));
+    return r.json();
+  }
+  try { const r = await fetch("sub.json"); if (!r.ok) throw 0; return r.json(); }
+  catch (e) {
+    const r = await fetch(apiUrl("", "substitute_in_operator", "1", "120", ""));
+    if (!r.ok) throw e; return r.json();
+  }
+}
+
+/* ---------- topologie ---------- */
+function adjacency(edges){
+  const adj = new Map();
+  for (const e of edges) {
+    const a = e.src, b = e.dst;
+    if (!adj.has(a)) adj.set(a, new Set());
+    if (!adj.has(b)) adj.set(b, new Set());
+    adj.get(a).add(b); adj.get(b).add(a);
+  }
+  return { adj };
+}
+function triangles(adj, maxT){
+  const out = [];
+  for (const u of adj.keys()) {
+    if (out.length >= maxT) break;
+    const ns = [...adj.get(u)];
+    for (let i = 0; i < ns.length && out.length < maxT; i++)
+      for (let j = i + 1; j < ns.length && out.length < maxT; j++)
+        if (adj.get(ns[i]).has(ns[j])) {
+          const k = [u, ns[i], ns[j]].sort().join("·");
+          if (!out.some(t => t.join("·") === k)) out.push([u, ns[i], ns[j]].sort());
+        }
+  }
+  return out;
+}
+function cliquesK4(adj, triList, maxK4){
+  const out = [];
+  for (const t of triList) {
+    if (out.length >= maxK4) break;
+    const [a, b, c] = t;
+    const common = [...adj.get(a)].filter(x => adj.get(b).has(x) && adj.get(c).has(x));
+    for (const d of common) {
+      const k = [a, b, c, d].sort().join("·");
+      if (!out.some(x => x.join("·") === k)) { out.push([a, b, c, d].sort()); if (out.length >= maxK4) break; }
+    }
+  }
+  return out;
+}
+function hyperGroups(edges){
+  const g = new Map();
+  for (const e of edges) {
+    const k = e.src + "\u0001" + (e.edge_type || e.type);
+    if (!g.has(k)) g.set(k, new Set());
+    g.get(k).add(e.dst);
+  }
+  return [...g.entries()].filter(([, s]) => s.size >= 3)
+    .map(([k, s]) => { const [src, type] = k.split("\u0001"); return { src, type, members: [...s] }; });
+}
+
+/* ---------- helpers ---------- */
+const PALETTE = [0x6fd08c, 0x4aa8ff, 0xe15759, 0xf5d63d, 0xb07aa1, 0x21d4b4, 0xffa03c];
+function hashStr(s){ let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function layerOf(nodes, edges){
+  const first = nodes.length ? nodes[0].id : "";
+  const layer = new Map([[first, 0]]);
+  const es = new Set(edges.map(e => e.src + "\u0001" + e.dst));
+  const q = [first];
+  while (q.length) {
+    const u = q.shift();
+    for (const v of nodes.map(n => n.id))
+      if (!layer.has(v) && (es.has(u + "\u0001" + v) || es.has(v + "\u0001" + u))) {
+        layer.set(v, layer.get(u) + 1); q.push(v);
+      }
+  }
+  return layer;
+}
+function layout(nodes, edges){
+  const L = layerOf(nodes, edges);
+  const maxL = Math.max(1, ...L.values());
+  const byL = new Map();
+  nodes.forEach((n, i) => {
+    const l = L.has(n.id) ? L.get(n.id) : maxL + 0.6 + (i % 3) * 0.3;
+    if (!byL.has(l)) byL.set(l, []);
+    byL.get(l).push(n.id);
+  });
+  const R0 = 60, pos = new Map();
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (const [l, ids] of byL) {
+    const R = R0 * (1 + l);
+    ids.forEach((id, i) => {
+      const y = 1 - (i / Math.max(ids.length - 1, 1)) * 2;
+      const rad = Math.sqrt(Math.max(0, 1 - y * y));
+      const a = golden * i + hashStr(id) % 360;
+      pos.set(id, new THREE.Vector3(R * rad * Math.cos(a), R * y, R * rad * Math.sin(a)));
+    });
+  }
+  return pos;
+}
+function nodeColor(n, i){
+  if ($("cSpectral") && $("cSpectral").checked) {
+    const cid = (n.community_id != null) ? n.community_id : n.scc_id;
+    if (cid != null) return PALETTE[cid % PALETTE.length];
+  }
+  return n.color_hint ? parseInt(n.color_hint.slice(1), 16) : PALETTE[i % PALETTE.length];
+}
+
+/* ---------- rendu ---------- */
+function clear(){ while (state.root.children.length) state.root.remove(state.root.children[0]); }
+
+function build(){
+  clear();
+  const { nodes, edges } = state.groups;
+  const { adj } = state.groups;
+  const pos = layout(nodes, edges);
+  const N = nodes.length;
+
+  // 1) Nœuds — InstancedMesh (1 draw call), couleur par instance.
+  const geo = new THREE.SphereGeometry(1, 14, 12);
+  const mat = new THREE.MeshPhongMaterial({ color: 0xffffff });
+  const inst = new THREE.InstancedMesh(geo, mat, N);
+  const m4 = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  nodes.forEach((n, i) => {
+    const p = pos.get(n.id); if (!p) return;
+    const s = (n.scc_id != null || n.engram_id) ? 1.25 : 1.0;
+    m4.compose(p, q, new THREE.Vector3(s, s, s));
+    inst.setMatrixAt(i, m4);
+    inst.setColorAt(i, new THREE.Color(nodeColor(n, i)));
+  });
+  inst.instanceMatrix.needsUpdate = true;
+  if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+  state.byId = nodes.map(n => n.id);
+  state.inst = inst;
+  state.root.add(inst);
+
+  // 2) Labels (sprites) limités pour la perf.
+  const withLabels = nodes.filter(n => n.label || n.qn);
+  if (withLabels.length <= 220) withLabels.forEach(n => {
+    const c = document.createElement("canvas"); c.width = 512; c.height = 64;
+    const ctx = c.getContext("2d");
+    const txt = (n.label || n.qn || n.id);
+    const short = txt.length > 26 ? txt.slice(0, 25) + "…" : txt;
+    ctx.font = "30px ui-monospace, monospace"; ctx.fillStyle = "#eaf2fa";
+    ctx.fillText(short, 8, 44);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c),
+      transparent: true, depthWrite: false }));
+    sp.position.copy(pos.get(n.id)); sp.position.y += 12;
+    sp.scale.set(70, 9, 1);
+    sp.userData = { label: true };
+    sp.visible = !!$("cLabels").checked;
+    state.root.add(sp);
+  });
+
+  // 3) Arêtes — UN LineSegments batché avec vertexColors (1 draw call).
+  state.edgeIdx = new Map();
+  const pts = [], cols = [];
+  edges.forEach((e, i) => {
+    const a = pos.get(e.src), b = pos.get(e.dst); if (!a || !b) return;
+    state.edgeIdx.set(i, e);
+    let col;
+    if ($("cSynapse") && $("cSynapse").checked &&
+        ((e.weight != null && e.weight > 0) || (e.pheromone != null && e.pheromone > 0))) {
+      const st = Math.min(1, Math.max(0, (e.weight || e.pheromone || 0)));
+      const c = new THREE.Color(0x0a0f14).lerp(new THREE.Color(0xffe066), st);
+      col = c.getHex();
+    } else {
+      col = e.color_hint ? parseInt(e.color_hint.slice(1), 16)
+        : (e.edge_type === "CALLS" ? 0x4aa8ff : 0xb07aa1);
+    }
+    const C = new THREE.Color(col);
+    pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    cols.push(C.r, C.g, C.b, C.r, C.g, C.b);
+  });
+  const geoE = new THREE.BufferGeometry();
+  geoE.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  geoE.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  const segs = new THREE.LineSegments(geoE,
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .85 }));
+  segs.visible = !!$("cEdges").checked;
+  state.segs = segs;
+  state.root.add(segs);
+
+  // 4) Triangles K3 : faces translucides (Δ).
+  const triList = triangles(adj, 400);
+  const tp = [];
+  triList.forEach(t => {
+    const p = t.map(id => pos.get(id)); if (p.some(x => !x)) return;
+    tp.push(p[0].x,p[0].y,p[0].z, p[1].x,p[1].y,p[1].z, p[2].x,p[2].y,p[2].z);
+  });
+  const triGeo = new THREE.BufferGeometry();
+  triGeo.setAttribute("position", new THREE.Float32BufferAttribute(tp, 3));
+  const triMesh = new THREE.Mesh(triGeo, new THREE.MeshBasicMaterial({ color: 0x21d4b4,
+    transparent: true, opacity: .14, side: THREE.DoubleSide, depthWrite: false }));
+  triMesh.visible = !!$("cTri").checked;
+  triMesh.userData = { tri: true };
+  state.root.add(triMesh);
+
+  // 5) Cliques K4 : filaire tétra (vertexColors).
+  const k4 = cliquesK4(adj, triList, 24);
+  const k4p = [], k4c = [];
+  const KC = new THREE.Color(0xffd166);
+  k4.forEach(four => {
+    const p = four.map(id => pos.get(id)); if (p.some(x => !x)) return;
+    [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]].forEach(([i, j]) => {
+      k4p.push(p[i].x,p[i].y,p[i].z, p[j].x,p[j].y,p[j].z);
+      k4c.push(KC.r,KC.g,KC.b, KC.r,KC.g,KC.b);
+    });
+  });
+  const k4Geo = new THREE.BufferGeometry();
+  k4Geo.setAttribute("position", new THREE.Float32BufferAttribute(k4p, 3));
+  k4Geo.setAttribute("color", new THREE.Float32BufferAttribute(k4c, 3));
+  const k4seg = new THREE.LineSegments(k4Geo, new THREE.LineBasicMaterial({ vertexColors: true }));
+  k4seg.visible = !!$("cK4").checked;
+  k4seg.userData = { k4: true };
+  state.root.add(k4seg);
+
+  // 6) Hyperarêtes (étoiles typées).
+  const he = hyperGroups(edges);
+  const hep = [], hec = [];
+  const HC = new THREE.Color(0xff7a5c);
+  he.forEach(h => {
+    const c = pos.get(h.src); if (!c) return;
+    h.members.forEach(mId => {
+      const m = pos.get(mId); if (!m) return;
+      hep.push(c.x,c.y,c.z, m.x,m.y,m.z);
+      hec.push(HC.r,HC.g,HC.b, HC.r,HC.g,HC.b);
+    });
+  });
+  const heGeo = new THREE.BufferGeometry();
+  heGeo.setAttribute("position", new THREE.Float32BufferAttribute(hep, 3));
+  heGeo.setAttribute("color", new THREE.Float32BufferAttribute(hec, 3));
+  const heseg = new THREE.LineSegments(heGeo,
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .9 }));
+  heseg.visible = !!$("cHe").checked;
+  heseg.userData = { he: true };
+  state.root.add(heseg);
+
+  // 7) Contour (∂) : arêtes à courbure négative (frontières de communautés).
+  const ctr = edges.filter(e => e.ricci != null && e.ricci < 0);
+  const ctrp = [], ctrc = [];
+  const CC = new THREE.Color(0xff6b9d);
+  ctr.forEach(e => {
+    const a = pos.get(e.src), b = pos.get(e.dst); if (!a || !b) return;
+    ctrp.push(a.x,a.y,a.z, b.x,b.y,b.z);
+    ctrc.push(CC.r,CC.g,CC.b, CC.r,CC.g,CC.b);
+  });
+  const ctrGeo = new THREE.BufferGeometry();
+  ctrGeo.setAttribute("position", new THREE.Float32BufferAttribute(ctrp, 3));
+  ctrGeo.setAttribute("color", new THREE.Float32BufferAttribute(ctrc, 3));
+  const ctrseg = new THREE.LineSegments(ctrGeo,
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .95 }));
+  ctrseg.visible = !!$("cContour").checked;
+  ctrseg.userData = { contour: true };
+  state.root.add(ctrseg);
+
+  state.groups.triList = triList; state.groups.k4 = k4; state.groups.he = he;
+  state.groups.contour = ctr.length;
+  state.groups.pos = pos;
+  statsLine();
+  state.controls.target.set(0, 0, 0); state.controls.update();
+}
+function statsLine(){
+  $("stats").textContent =
+    `${state.groups.nodes.length} nœuds · ${state.groups.edges.length} arêtes` +
+    ` · K3 ${state.groups.triList.length} · K4 ${state.groups.k4.length} · hyper ${state.groups.he.length}` +
+    ` · ∂ ${state.groups.contour || 0}` +
+    (graphStore.stats && graphStore.stats.truncated ? " · TRONQUÉ" : "") +
+    (graphStore.schema ? " · " + graphStore.schema : "");
+}
+
+/* ---------- interactions ---------- */
+function highlight(id){
+  const hot = new Set(state.groups.adj.get(id) || []); hot.add(id);
+  if (state.segs && state.segs.geometry.getAttribute("color")) {
+    const arr = state.segs.geometry.getAttribute("color").array;
+    state.groups.edges.forEach((e, i) => {
+      const on = hot.has(e.src) && hot.has(e.dst);
+      const C = on ? new THREE.Color(e.color_hint ? parseInt(e.color_hint.slice(1), 16)
+        : (e.edge_type === "CALLS" ? 0xffd166 : 0xffb02e))
+        : new THREE.Color(0x1c242e);
+      const o = i * 6;
+      arr[o] = arr[o+3] = C.r; arr[o+1] = arr[o+4] = C.g; arr[o+2] = arr[o+5] = C.b;
+    });
+    state.segs.geometry.getAttribute("color").needsUpdate = true;
+  }
+  const node = state.groups.nodes.find(x => x.id === id);
+  if (node) info(node, hot.size);
+}
+function info(node, nb){
+  const parts = [
+    `id       : ${node.id}`,
+    node.qn         ? `qn       : ${node.qn}` : "",
+    node.label      ? `label    : ${node.label}` : "",
+    node.file_path  ? `fichier  : ${node.file_path}` : "",
+    nb != null      ? `voisins  : ${nb}` : "",
+    node.energy != null    ? `energy   : ${node.energy}` : "",
+    node.curvature != null ? `κ        : ${node.curvature}` : "",
+    node.scc_id != null    ? `scc_id   : ${node.scc_id}` : "",
+    node.engram_id ? `engram   : ${node.engram_id}` : "",
+  ].filter(Boolean);
+  $("info").textContent = parts.join("\n") || "—";
+}
+
+/* ---------- moteur ---------- */
+function init3d(){
+  state.scene = new THREE.Scene();
+  state.scene.background = new THREE.Color(0x090a0c);
+  state.camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 4000);
+  state.camera.position.set(320, 180, 320);
+  state.renderer = new THREE.WebGLRenderer({ antialias: true });
+  state.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
+  state.renderer.setSize(innerWidth, innerHeight);
+  $("canvashost").appendChild(state.renderer.domElement);
+  state.controls = new THREE.OrbitControls(state.camera, state.renderer.domElement);
+  state.controls.enableDamping = true; state.controls.dampingFactor = .09;
+  state.root = new THREE.Group();
+  state.scene.add(state.root);
+  state.scene.add(new THREE.AmbientLight(0xffffff, .6));
+  const dl = new THREE.DirectionalLight(0xffffff, .75); dl.position.set(300, 420, 220);
+  state.scene.add(dl);
+  state.ray = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  const dom = state.renderer.domElement;
+  const pick = (ev) => {
+    const r = dom.getBoundingClientRect();
+    mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    state.ray.setFromCamera(mouse, state.camera);
+    const hit = state.ray.intersectObject(state.inst, false)[0];
+    return hit ? state.byId[hit.instanceId] : null;
+  };
+  dom.addEventListener("pointermove", ev => {
+    const id = pick(ev);
+    if (id !== state.hovered) { state.hovered = id; dom.style.cursor = id ? "pointer" : "default"; }
+  });
+  dom.addEventListener("click", ev => {
+    const id = pick(ev);
+    if (id) highlight(id);
+    if (innerWidth <= 900 && panel().classList.contains("open")) panel().classList.remove("open");
+  });
+  dom.addEventListener("dblclick", ev => {
+    const r = dom.getBoundingClientRect();
+    mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    state.ray.setFromCamera(mouse, state.camera);
+    const hit = state.ray.intersectObject(state.inst, false)[0];
+    if (hit && state.groups.pos) {
+      state.controls.target.copy(state.groups.pos.get(state.byId[hit.instanceId]));
+      state.controls.update();
+    }
+  });
+  addEventListener("resize", () => {
+    state.camera.aspect = innerWidth / innerHeight;
+    state.camera.updateProjectionMatrix();
+    state.renderer.setSize(innerWidth, innerHeight);
+  });
+  animate();
+}
+function animate(){
+  state.raf = requestAnimationFrame(animate);
+  if (document.hidden) return;             // pause hors écran
+  if (state.controls) state.controls.update();
+  if ($("cRotate") && $("cRotate").checked && state.root)
+    state.root.rotation.y += 0.0016;
+  state.renderer.render(state.scene, state.camera);
+}
+function toggles(){
+  state.root.children.forEach(o => {
+    if (o.userData.label) o.visible = !!$("cLabels").checked;
+    else if (o === state.segs) o.visible = !!$("cEdges").checked;
+    else if (o.userData.tri) o.visible = !!$("cTri").checked;
+    else if (o.userData.k4) o.visible = !!$("cK4").checked;
+    else if (o.userData.he) o.visible = !!$("cHe").checked;
+    else if (o.userData.contour) o.visible = !!$("cContour").checked;
+  });
+}
+async function load(){
+  try {
+    const data = await loadData();
+    graphStore = data;
+    if (!data.nodes || !data.edges) throw new Error("json-graph v1 invalide");
+    if (data.nodes.length > 700 &&
+        !confirm(data.nodes.length + " nœuds — afficher quand même (perf) ?")) return;
+    state.groups = { nodes: data.nodes, edges: data.edges, ...adjacency(data.edges) };
+    build();
+  } catch (e) { $("info").textContent = "Erreur : " + e.message; }
+}
+const panel = () => document.getElementById("panel");
+
+/* Presets de stores exposés par le serveur (/api/stores) — vue simplifiée. */
+function centerFor(label){
+  const l = (label || "").toLowerCase();
+  if (l.includes("linux")) return "e1000_probe";
+  if (l.includes("obrain") || l.includes("rust")) return "substitute_in_operator";
+  return $("iCenter").value || "";
+}
+function applyPreset(pr){
+  $("iStore").value = pr.path || "";
+  if (!document.body.dataset.centerSet) {
+    const def = centerFor(pr.label);
+    chosen = def ? [def] : [];
+    $("iCenter").value = "";
+    renderChips();
+  }
+}
+async function loadPresets(){
+  const sel = $("iPreset");
+  try {
+    const r = await fetch("/api/stores");
+    if (!r.ok) return;
+    const j = await r.json();
+    const list = j.presets || [];
+    list.forEach(pr => {
+      const o = document.createElement("option");
+      o.value = pr.path; o.textContent = pr.label; o.dataset.label = pr.label;
+      sel.appendChild(o);
+    });
+    const def = list.find(p => p.label === (j.default || "")) || list[0];
+    if (def) { sel.value = def.path; applyPreset(def); }
+    sel.addEventListener("change", () => {
+      const o = sel.options[sel.selectedIndex];
+      applyPreset(o ? { path: sel.value, label: o.dataset.label || "" } : { path: "", label: "" });
+    });
+  } catch (e) { /* mode fichier : pas de serveur, on garde sub.json */ }
+}
+/* Sélection multiple de fonctions + recherche (autocomplete /api/functions). */
+let chosen = [];
+const qsOf = () => $("iStore").value.trim() || "";
+function shortQn(qn){ const p = qn.split("."); return p.slice(-2).join("."); }
+function renderChips(){
+  const box = $("selChips"); box.innerHTML = "";
+  chosen.forEach(qn => {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.title = qn;
+    const t = document.createElement("span"); t.textContent = shortQn(qn);
+    const x = document.createElement("button"); x.textContent = "✕";
+    x.addEventListener("click", () => { chosen = chosen.filter(q => q !== qn); renderChips(); });
+    c.append(t, x); box.appendChild(c);
+  });
+}
+function addChosen(qn){
+  if (qn && !chosen.includes(qn)) chosen.push(qn);
+  $("iCenter").value = "";
+  hideSuggest();
+  renderChips();
+}
+function centersParam(){ return chosen.length ? chosen.join(",") : $("iCenter").value.trim(); }
+let sugTimer = 0;
+function hideSuggest(){ const sg = $("suggest"); if (sg) sg.innerHTML = ""; }
+function searchSuggest(){
+  const q = $("iCenter").value.trim();
+  const store = qsOf();
+  hideSuggest();
+  if (q.length < 2) return;
+  clearTimeout(sugTimer);
+  sugTimer = setTimeout(async () => {
+    try {
+      const r = await fetch("/api/functions?store=" + encodeURIComponent(store) +
+        "&q=" + encodeURIComponent(q) + "&limit=8");
+      if (!r.ok) return;
+      const j = await r.json();
+      const sg = $("suggest"); sg.innerHTML = "";
+      (j.items || []).forEach(it => {
+        const d = document.createElement("div");
+        const name = it.name || shortQn(it.qn);
+        const b = document.createElement("b"); b.textContent = name;
+        const sm = document.createElement("small"); sm.textContent = "  " + shortQn(it.qn);
+        d.append(b, sm);
+        d.addEventListener("click", () => addChosen(it.qn));
+        sg.appendChild(d);
+      });
+    } catch (e) { /* pas de serveur (mode fichier) */ }
+  }, 180);
+}
+function bindChips(){
+  const iCenter = $("iCenter");
+  iCenter.addEventListener("input", searchSuggest);
+  iCenter.addEventListener("keydown", ev => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      const first = $("suggest").firstElementChild;
+      if (first && iCenter.value.trim().length >= 2) {
+        // premier résultat proposé -> on l'ajoute
+        first.dispatchEvent(new MouseEvent("click"));
+      } else if (iCenter.value.trim()) {
+        addChosen(iCenter.value.trim());
+      }
+    }
+  });
+  $("chipHop").querySelectorAll(".hop").forEach(btn => {
+    btn.addEventListener("click", () => {
+      $("chipHop").querySelectorAll(".hop").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      $("iHops").value = btn.dataset.h;
+      load();
+    });
+  });
+  $("chipOv").querySelectorAll(".ov").forEach(btn => {
+    btn.addEventListener("click", () => {
+      $("chipOv").querySelectorAll(".ov").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      $("iOverlay").value = btn.dataset.ov || "";
+      load();
+    });
+  });
+}
+document.addEventListener("DOMContentLoaded", async () => {
+  init3d();
+  // Poignée mobile TOUJOURS visible : ouvrir/fermer la config d'un tap.
+  const handle = document.getElementById("panelHandle");
+  const panelLabel = () => document.getElementById("panelLabel");
+  const refreshHandle = () => {
+    panelLabel().textContent = panel().classList.contains("open")
+      ? "▾ Fermer la configuration"
+      : "⚙ Configuration";
+  };
+  handle.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    panel().classList.toggle("open");
+    refreshHandle();
+  });
+  refreshHandle();
+  $("bGo").addEventListener("click", load);
+  $("bReset").addEventListener("click", () => {
+    state.camera.position.set(320, 180, 320);
+    state.controls.target.set(0, 0, 0); state.controls.update();
+  });
+  ["cEdges","cTri","cK4","cHe","cLabels","cRotate"].forEach(id =>
+    $(id).addEventListener("change", toggles));
+  ["cContour","cSpectral","cSynapse"].forEach(id =>
+    $(id).addEventListener("change", () => { toggles(); load(); }));
+  await loadPresets();
+  if (!chosen.length && !$("iCenter").value) chosen = ["e1000_probe"];
+  renderChips();
+  bindChips();
+  load();
+});
+</script>
+</body>
+</html>

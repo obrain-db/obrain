@@ -1,0 +1,26 @@
+[package]
+name = "obrain-httpmin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Client HTTP minimal (std uniquement) partagé par selflink et selfd"
+
+[dependencies]
+# Un client HTTP minimal, en `std::net`, avec le parti pris déjà tenu par
+# `obrain-cli/src/http_min.rs` : « obrain-cli n'embarque aucune dépendance HTTP —
+# et n'en embarquera pas pour joindre un service local ». Tirer TLS, tokio et une
+# pile de redirections pour parler à une machine du même réseau serait payer très
+# cher une poignée de fonctionnalités qu'on n'utilise pas.
+#
+# CE CRATE EXISTE POUR NE PAS AVOIR DEUX CLIENTS. `selflink` et `selfd` en
+# avaient chacun un, dérivé du même modèle : deux chemins qui divergent à la
+# première correction — exactement le défaut que le dépôt combat (« Le réécrire
+# aurait créé deux chemins divergents »). Une pièce, deux usages.
+anyhow.workspace = true
+serde_json = "1"
+
+[lints]
+workspace = true

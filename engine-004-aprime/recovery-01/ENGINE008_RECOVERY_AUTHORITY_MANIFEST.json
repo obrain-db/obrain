@@ -1,0 +1,364 @@
+{
+ "authorities_verified": {
+  "BASELINE_CHAT_TEMPLATE_SHA256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+  "CANDIDATE_CHAT_TEMPLATE_SHA256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "ENGINE008_SCORER_PROVENANCE_SHA256": "6d9e68cf38de67267be8ec68583ff2746dac37a944233eb5468100e8192d1ffa",
+  "ENGINE008_SELECTION_RULES_V2_SHA256": "3c1a16d7053f693400b3a8d858733f6a884301e34c8796e8a482370d5a369552",
+  "Q1_FORWARD_PROTOCOL_v1_SHA256": "55b69719fc78b1d71d66a390d8db7a792bafef003296156bb0fe2c6e1684a8b5",
+  "QUALITY_THRESHOLDS_v1_SHA256": "08d70467d2dada51a362bfa91694b00d6bd0b1dd020feab2f7bb52af47666bc7",
+  "TASK_EVAL_DATA_CONTENT_TREE_SHA256": "c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a",
+  "TASK_PROMPT_CONTRACTS_V1_SHA256": "fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6",
+  "TOKEN_EVAL_CONTENT_TREE_V2_SHA256": "0ce4512e9d73b5e1cc3beddd2222e9ad7a96592508f10930515ef8b4276cf5dd"
+ },
+ "authority_host": "spark-c578 (192.168.1.7, alias ssh 'dgx')",
+ "authority_manifest": {
+  "file_count": 3590,
+  "raw_manifest": "manifest-dgx-raw.json",
+  "total_bytes": 1646873938,
+  "verification": "8/8 authority checks PASS"
+ },
+ "authority_root": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1",
+ "checkpoint": {
+  "file_count": 56,
+  "files": [
+   {
+    "path": "checkpoint/BASELINE_MODEL_PROVENANCE.txt",
+    "sha256": "53f2a434f250a8f01025f401bd70a402ab41a44053ef13e8bf8b7b8a99829138",
+    "size": 543
+   },
+   {
+    "path": "checkpoint/CANDIDATE_MODEL_PROVENANCE.txt",
+    "sha256": "17b496d3edef610d945df1f4ff2b0452fe68b60ddc273e1d4b364c292b0310ac",
+    "size": 489
+   },
+   {
+    "path": "checkpoint/DATASET_AUDIT.txt",
+    "sha256": "871d4dfa83276f41e8079fff6c50b5151f2673ce110d95aa5f14268d7887e935",
+    "size": 3134
+   },
+   {
+    "path": "checkpoint/ENGINE008_DATA_STATUS.txt",
+    "sha256": "92f7909b365d2755c896961e3a37dd280c941d69105257ad07a0c31b4b3e58b4",
+    "size": 3600
+   },
+   {
+    "path": "checkpoint/ENGINE008_SCORER_STATUS.txt",
+    "sha256": "a79416388bb1a550d75f2fda71fb9a813b7d426e87a92dbee403f76432c6470a",
+    "size": 1589
+   },
+   {
+    "path": "checkpoint/ENGINE008_SELECTION_RULES_v1.sha256",
+    "sha256": "3b249d93fb3253076d5be11194bec90f7aedf308628114ed78eb33d43c806e07",
+    "size": 99
+   },
+   {
+    "path": "checkpoint/ENGINE008_SELECTION_RULES_v1.txt",
+    "sha256": "b42a7e62522c61b200032b9e3f4c699e95fa6c3572166cca41f7069377f1dbba",
+    "size": 2914
+   },
+   {
+    "path": "checkpoint/ENGINE008_SELECTION_RULES_v2.sha256",
+    "sha256": "28e27da1b1e726ef5725fecf6b910693fc95cb15db0aa8413ad0f0eea868623a",
+    "size": 99
+   },
+   {
+    "path": "checkpoint/ENGINE008_SELECTION_RULES_v2.txt",
+    "sha256": "3c1a16d7053f693400b3a8d858733f6a884301e34c8796e8a482370d5a369552",
+    "size": 4015
+   },
+   {
+    "path": "checkpoint/GSM8K_REFERENCE_ANSWER_AUDIT.csv",
+    "sha256": "62ce74ae456231b6eafded3fb2dd0e83dd4be7d8fdcbe8c02bc55a4556cb025a",
+    "size": 17858
+   },
+   {
+    "path": "checkpoint/IFEVAL_EXCLUSION_LIST.txt",
+    "sha256": "61d94fd0e2aca4ffdb4bceb6ee15bef2a89ff036bcb061968cae4bff959c3327",
+    "size": 289
+   },
+   {
+    "path": "checkpoint/IFEVAL_INSTRUCTION_ID_INVENTORY.csv",
+    "sha256": "222be756425202b030a5527018e0b7f16fe31a78b944e1b33e2e5123b2c01234",
+    "size": 1339
+   },
+   {
+    "path": "checkpoint/IFEVAL_STRUCTURED_VALIDITY_SUBSET.csv",
+    "sha256": "ff4fff3795fb59180848eee08b8d1d4bdfda6c8a8be9ab39b7c596f551c03eaf",
+    "size": 21018
+   },
+   {
+    "path": "checkpoint/MBPP_AND_WIKITEXT_AUDIT.txt",
+    "sha256": "0fb6f932444ffca8ad47a749f043d94a75d9ca8fba095603917df57d7f3d922d",
+    "size": 1119
+   },
+   {
+    "path": "checkpoint/MODEL_IDENTITY_AUDIT.txt",
+    "sha256": "00ce85404571415de0d79c22fada0270ebfd8a02552ec7e928311d706f91c952",
+    "size": 2128
+   },
+   {
+    "path": "checkpoint/NLTK_RESOURCES.sha256",
+    "sha256": "d3d5f4d92892d9c902eabf35cf8aab2e8a4ab52cf86c7fd70ef2166545e5f0c6",
+    "size": 26807
+   },
+   {
+    "path": "checkpoint/NLTK_RESOURCE_AUDIT.txt",
+    "sha256": "3cefb7eca55345143afcc9197624f95cd9e36e3508ee171482887379075129e7",
+    "size": 675
+   },
+   {
+    "path": "checkpoint/NLTK_RESOURCE_PROVENANCE.txt",
+    "sha256": "c6bdb03dab7b04a22e76425b74eeb7f455cf2c7d2fa3f5150965075e1b4e0675",
+    "size": 977
+   },
+   {
+    "path": "checkpoint/OBRAIN_REPLAY_SOURCE_AUDIT.txt",
+    "sha256": "09c131146c77ecab2a285e3b2b0dbc5e43d4daaca15e50f1bfc5faa310323164",
+    "size": 725
+   },
+   {
+    "path": "checkpoint/PYARROW_WHEEL.sha256",
+    "sha256": "822a5684854c107f4d5d0f9ea60cdb0d66191abe9365f03860f36e5c81f0ab3b",
+    "size": 240
+   },
+   {
+    "path": "checkpoint/PYTHON_ENVIRONMENT_FREEZE.txt",
+    "sha256": "e1490d9ac9bebaf2bb1eb7f13f269fec8a0dd9881431a89b21808420dd49199e",
+    "size": 189
+   },
+   {
+    "path": "checkpoint/PYTHON_ENVIRONMENT_REINSTALL_SELFTEST.txt",
+    "sha256": "dd249324ed2b6ef0eb6ae23c101e1ca1c59d96bfdeb4bcaa6439e2102b22920a",
+    "size": 216
+   },
+   {
+    "path": "checkpoint/PYTHON_PACKAGE_ARTIFACTS.sha256",
+    "sha256": "e2b19c9b23ec7bd5b328b7df86771d84268965c5c4835d6a9fc7606e8da6a005",
+    "size": 1555
+   },
+   {
+    "path": "checkpoint/PYTHON_PACKAGE_PROVENANCE.csv",
+    "sha256": "da5192d5cf4414fd88f6eef658aa3173435e57910d2b0e71dcacc3ee73efe33e",
+    "size": 2217
+   },
+   {
+    "path": "checkpoint/QUALITY_DATASET_INVENTORY.txt",
+    "sha256": "81f4d1c771e3b37552003c6bf943d1ff337bcb523ee8101c680f963db21e9f74",
+    "size": 1844
+   },
+   {
+    "path": "checkpoint/QUALITY_GLOBAL_ITEM_ORDER_DATA.txt",
+    "sha256": "fa22ea561639dba0d84971e338e27e2a6d553f112982401486ef6bc77a59d893",
+    "size": 103081
+   },
+   {
+    "path": "checkpoint/QUALITY_SCORER_INVENTORY.txt",
+    "sha256": "566241c4b8f2bc3a1b31fb2e51b9abad39944609f61d01695a3bd6582fb424c7",
+    "size": 763
+   },
+   {
+    "path": "checkpoint/QUALITY_SCORER_PROVENANCE.txt",
+    "sha256": "eeea6da8e2ef7dc49dd3e7eb5140b55f30488b618d69b57758c3bac6f982a455",
+    "size": 2819
+   },
+   {
+    "path": "checkpoint/QUALITY_STATUS.txt",
+    "sha256": "93fc277d2c52791e80c15f13b65556fd54cf055223980f56f1660bd57aae5b68",
+    "size": 3019
+   },
+   {
+    "path": "checkpoint/QUALITY_THRESHOLDS_v1.txt",
+    "sha256": "08d70467d2dada51a362bfa91694b00d6bd0b1dd020feab2f7bb52af47666bc7",
+    "size": 661
+   },
+   {
+    "path": "checkpoint/STAGE_S8_STATUS.txt",
+    "sha256": "6672d2d87835365389b762fd265cdaceb9e3acd553ae15cf804e2160aebc7be9",
+    "size": 312
+   },
+   {
+    "path": "checkpoint/STRUCTURED_VALIDITY_CONFIG_v1.txt",
+    "sha256": "7896e65e4ba6c1d6749067db27eba26fc74ecfa25f0fb0418887fc3d17b289d3",
+    "size": 1061
+   },
+   {
+    "path": "checkpoint/TASK_PROMPT_CONTRACTS_v1.sha256",
+    "sha256": "9f099bc70e1175478306bf629cf61ccfa73b2d6c2bb0d674f94a46028e9d593d",
+    "size": 95
+   },
+   {
+    "path": "checkpoint/TASK_PROMPT_CONTRACTS_v1.txt",
+    "sha256": "fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6",
+    "size": 2194
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/gsm8k/GSM8K_ITEMS.jsonl",
+    "sha256": "4853065ba49aad124d25bfc1b08f558709759e239df33067426cd7593e99641b",
+    "size": 341687
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/gsm8k/GSM8K_SELECTION.csv",
+    "sha256": "242392e336a946c9d29da281cb3085fe488bfcddf63ea770f2cf0356bd266f2a",
+    "size": 44526
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/ifeval/IFEVAL_ITEMS.jsonl",
+    "sha256": "ee4e3446cd0842b9ffbdb45d7b30608218110911bea4f58484352de8f0ef7546",
+    "size": 214199
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/ifeval/IFEVAL_SELECTION.csv",
+    "sha256": "cab1cf1934c4b466bf251b27f4531d21ab59b48943a92e74cfb347231ee97aa5",
+    "size": 10199
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/mbpp/MBPP_ITEMS.jsonl",
+    "sha256": "d58e4468d240c1300d9cfb2dabd5d73d0611fef76f8c70256ffd433b80b7764f",
+    "size": 190721
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/mbpp/MBPP_SELECTION.csv",
+    "sha256": "668107acfe61c462b79f19b706da0d366a0b724e43c093277027f9205319105a",
+    "size": 4578
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/mmlu_pro/MMLU_PRO_ITEMS.jsonl",
+    "sha256": "735315dcf216ff31b31ed98579cd726bd11247c331e46f2004524dd7c683f078",
+    "size": 1279924
+   },
+   {
+    "path": "checkpoint/corpora/task_eval/mmlu_pro/MMLU_PRO_SELECTION.csv",
+    "sha256": "4d4ed9cddb806c7c613df1e3d751a5c10ffc094122015d03cc7d623def0e8516",
+    "size": 138810
+   },
+   {
+    "path": "checkpoint/corpora/token_eval/TOKEN_EVAL_INPUTS.jsonl",
+    "sha256": "699f6133ef8397fa665b03b5bd1a4bc542dcc7293ea6a76351d40ee888de7553",
+    "size": 402091
+   },
+   {
+    "path": "checkpoint/corpora/token_eval/TOKEN_EVAL_SELECTION.csv",
+    "sha256": "6450d2729ceca85f8640529cad93bd8c39855d74bd73c3202bf21b7ead4e9be2",
+    "size": 53313
+   },
+   {
+    "path": "checkpoint/corpora/token_eval/v2/TOKEN_CORPUS_BUILD_LOG.txt",
+    "sha256": "8c70defc609fbefd9c6d8052f1973ab1bbea35841cb33804c8540c868726f6a5",
+    "size": 421
+   },
+   {
+    "path": "checkpoint/corpora/token_eval/v2/TOKEN_EVAL_INPUTS_v2.jsonl",
+    "sha256": "971af327d5e2522185590e21868509e4859292c6fc0cd977276ce830bb8be9fa",
+    "size": 407563
+   },
+   {
+    "path": "checkpoint/corpora/token_eval/v2/TOKEN_EVAL_RETOKENIZATION_AUDIT.txt",
+    "sha256": "d977e7c5a3af4ebb0409c5b99d1528ddc09b53c0a8b7e50944f07c056cb1ee15",
+    "size": 614
+   },
+   {
+    "path": "checkpoint/corpora/token_eval/v2/TOKEN_EVAL_SELECTION_v2.csv",
+    "sha256": "b61552fa08772497d0fc551ccfee1514a42ca84bf792c4efcc023b385fbbe225",
+    "size": 60534
+   },
+   {
+    "path": "checkpoint/external/ACQUISITION_LOG.txt",
+    "sha256": "3427247b18e9d700e40321b692bbce07314fdd2aa861f64e8b881e608529c186",
+    "size": 16
+   },
+   {
+    "path": "checkpoint/external/ACQUISITION_RESULTS.json",
+    "sha256": "0506010dfc4786b90c82c9ac41805df674669fd29de73c324b9dae847844f04b",
+    "size": 716
+   },
+   {
+    "path": "checkpoint/scorers/gsm8k_v1.py",
+    "sha256": "3b8a3000275f1545a99b6ac9dd60c0c21fee71c526a80f4b438c60e8a7c8b239",
+    "size": 5462
+   },
+   {
+    "path": "checkpoint/scorers/ifeval_v1.py",
+    "sha256": "cbd662d3d03743c781af0ba24571a3fd2b2ce91467e4afdb4567e136d2d8afb7",
+    "size": 4225
+   },
+   {
+    "path": "checkpoint/scorers/long_context_v1.py",
+    "sha256": "049d1ffa4bf106d1447a781bddc9fcc6e9a0a5600a12a6ba10a65c3c3cd93645",
+    "size": 3121
+   },
+   {
+    "path": "checkpoint/scorers/mbpp_v1.py",
+    "sha256": "6f4aee18b6c3eba31418d7099e86a67c0d695159814361233d295e6e826c1685",
+    "size": 8581
+   },
+   {
+    "path": "checkpoint/scorers/mmlu_pro_v1.py",
+    "sha256": "c0c0134502abea0f68dfb34b169a47324f2b606d0453bab4c546f983785f4e31",
+    "size": 4422
+   },
+   {
+    "path": "checkpoint/scorers/task_scorers_v1.py",
+    "sha256": "db1e0f15109cef00b70b81c3862071fccc75810358d1d663cd5c8c0017dde95a",
+    "size": 11826
+   }
+  ],
+  "root": "recovery-01/checkpoint",
+  "total_bytes": 3397232,
+  "verification_on_n3": {
+   "ENGINE008_SELECTION_RULES_V2_SHA256": "MATCH",
+   "SCORER_FILES": "6/6 MATCH",
+   "TASK_EVAL_DATA_CONTENT_TREE_SHA256": "c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a",
+   "TASK_PROMPT_CONTRACTS_V1_SHA256": "MATCH",
+   "result": "MATCH (recalcule sur n3 depuis le checkpoint)"
+  }
+ },
+ "generated_utc": "2026-10-02",
+ "models": {
+  "baseline": {
+   "duplicated": false,
+   "note": "reste sur le dgx, non duplique (§8)",
+   "path": "/home/triviere/projects/models/qwen3.8-27b-gguf/Qwen3.8-27B-Q4_K_M.gguf",
+   "sha256": "31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34",
+   "size": 18973870432
+  },
+  "candidate": {
+   "duplicated": false,
+   "note": "reste sur le dgx, non duplique (§8)",
+   "path": "/home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf",
+   "sha256": "1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937",
+   "size": 12844231424
+  }
+ },
+ "not_recovered": [
+  "texte autoritaire du protocole HARNESS (jamais materialise)",
+  "quantification MTP documentaire propre a ENGINE-008",
+  "hash d autorite pour libllama-common / libggml* / libmtmd"
+ ],
+ "pass": "ENGINE-008-RECOVERY-01",
+ "q1_toolchain": {
+  "f1a_eval": {
+   "is_authority": true,
+   "path": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/f1a-eval",
+   "sha256": "79ba1c449864da8be4b9fa53313a179c2ddad96bac1e814d77f470a8f2e7b80a"
+  },
+  "fork": "/home/triviere/projects/llama-obrain-cuda-f1a",
+  "git_branch": "feat/cuda-tq2g128",
+  "git_head": "8447604f7f0c3b48a77be46de2466a5b23e27826",
+  "libllama": {
+   "is_authority": true,
+   "path": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0",
+   "sha256": "87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2"
+  },
+  "libllama_common": {
+   "is_authority": false,
+   "note": "constat de cette passe ; aucun SHA d autorite enregistre",
+   "path": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama-common.so.0.0.135",
+   "sha256": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20"
+  },
+  "llama_tokenize": {
+   "is_authority": true,
+   "path": "/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-tokenize",
+   "sha256": "edacdf0d7bcf933bf9a14df1f305197d11860d00f6d8c60488c546e0aac1a61f"
+  }
+ }
+}

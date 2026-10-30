@@ -1,0 +1,124 @@
+ENGINE-008 RECOVERY-01 -- §6 AUDIT DU CHEMIN NATIF DE CHAT
+==========================================================================
+AUDIT_KIND=STATIC_SOURCE_AUDIT
+LLAMA_DECODE_CALL_COUNT=0
+AUCUN RENDU TASK N A ETE EFFECTUE. AUCUN GGUF N A ETE MODIFIE.
+
+=== 0. PERIMETRE AUDITE -- SOURCES EXACTES DE Q1 ===
+Q1_FORK_PATH=/home/triviere/projects/llama-obrain-cuda-f1a
+Q1_FORK_GIT_HEAD=8447604f7f0c3b48a77be46de2466a5b23e27826
+Q1_FORK_GIT_BRANCH=feat/cuda-tq2g128
+Fichiers lus :
+  include/llama.h        (declaration de l API)
+  src/llama-chat.cpp     (implementation prescrite)
+  common/chat.h / .cpp   (implementation Jinja du fork)
+  common/jinja/*         (lexer, parser, runtime, value, caps)
+Les templates EMBARQUES audites sont ceux extraits et hashes dans la passe
+precedente, et non modifies depuis :
+  BASELINE  c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041 (8952 o)
+  CANDIDATE 12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce (9993 o)
+CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=NO   (CONSERVE : la divergence demeure)
+
+=== 1. LA FONCTION PRESCRITE (§16 de la passe precedente) ===
+Signature lue dans include/llama.h (Q1) :
+  LLAMA_API int32_t llama_chat_apply_template(
+        const char * tmpl, const struct llama_chat_message * chat,
+        size_t n_msg, bool add_ass, char * buf, int32_t length);
+COMMENTAIRE DE L EN-TETE, texte exact, DANS LE FORK Q1 (include/llama.h l.1593) :
+  "NOTE: This function does not use a jinja parser. It only support a
+   pre-defined list of template."
+  Le point est donc CONFIRME DANS L AUTORITE Q1 ELLE-MEME, et non plus
+  seulement dans l amont comme le supposait la consigne §6. La mise en garde
+  de la consigne est VERIFIEE.
+
+=== 2. DISPATCH EFFECTIF ===
+src/llama-chat.cpp : table LLM_CHAT_TEMPLATES (llm_chat_template_from_str),
+~60 entrees nommees : chatml, llama2/3/4, mistral-v1/v3/v7, phi3/4, falcon3,
+zephyr, monarch, gemma, orion, openchat, vicuna, deepseek/2/3/ocr, command-r,
+chatglm3/4, glmedge, minicpm, exaone3/4/moe, rwkv-world, granite-3.x/4.0/4.1,
+gigachat, megrez, yandex, bailing*, smolvlm, hunyuan-*, gpt-oss, kimi-k2,
+seed_oss, grok-2, pangu-embedded, solar-open.
+  AUCUNE ENTREE qwen / qwen3 / qwen35 / qwen3.8.
+Puis llm_chat_detect_template() applique une detection par indices. Extrait
+exact (src/llama-chat.cpp l.99-104) :
+  if (tmpl_contains("<|im_start|>")) {
+      return tmpl_contains("<|im_sep|>") ? LLM_CHAT_TEMPLATE_PHI_4
+          : tmpl_contains("<end_of_utterance>") ? LLM_CHAT_TEMPLATE_SMOLVLM
+          : LLM_CHAT_TEMPLATE_CHATML;
+  }
+Les DEUX templates Qwen3.8 contiennent '<|im_start|>' (9 occurrences baseline,
+8 candidat) et NE contiennent NI '<|im_sep|>' NI '<end_of_utterance>'
+(mesure sur les deux chaines extraites).
+=> DISPATCH EFFECTIF = LLM_CHAT_TEMPLATE_CHATML, pour les deux modeles.
+DISPATCH_RESULT_TEMPLATE=CHATML
+NATIVE_CHAT_RENDERER_SOURCE_AUDIT=COMPLETE
+
+=== 3. CONSEQUENCE : CE QUE LA FONCTION PRESCRITE N EXECUTE PAS ===
+Appeler llama_chat_apply_template avec le template Qwen3.8 embarque :
+  - n analyse AUCUN Jinja (l en-tete le dit) ;
+  - retombe sur la branche ChatML predefinie ;
+  - n evalue donc NI reasoning_instructions, NI enable_thinking, NI
+    reasoning_effort (dont l alias 'high'->'xhigh' du candidat), NI le
+    namespace sysns de fusion des messages system, NI les branches d outils.
+Or ces branches ne sont pas decoratives : avec enable_thinking non defini et
+reasoning_effort par defaut 'xhigh', le template EMBARQUE emet un bloc
+'<|im_start|>system\n' + reasoning_instructions + '<|im_end|>\n'.
+Le repli ChatML ne l emet pas. Les deux sorties DIVERGENT donc sur du texte
+reellement vu par le modele.
+
+=== 4. LE VRAI CHEMIN NATIF JINJA DU FORK ===
+Le fork EMBARQUE un moteur Jinja complet :
+  common/jinja/ (lexer.cpp, parser.cpp, runtime.cpp, value.cpp, caps.cpp, ...)
+  common/chat.cpp inclut "jinja/value.h", "jinja/runtime.h", "jinja/caps.h"
+API reelle :
+  struct common_chat_params common_chat_templates_apply(
+        const struct common_chat_templates * tmpls,
+        const struct common_chat_templates_inputs & inputs);
+  bool common_chat_verify_template(const std::string & tmpl, bool use_jinja);
+struct common_chat_templates_inputs (common/chat.h l.249-267), champs exacts :
+  messages; grammar; json_schema; add_generation_prompt = true;
+  continue_final_message = COMMON_CHAT_CONTINUATION_NONE; use_jinja = true;
+  tools; tool_choice; parallel_tool_calls;
+  reasoning_format = COMMON_REASONING_FORMAT_NONE; enable_thinking = true;
+  now; chat_template_kwargs (map<string,string>);
+  add_bos = false; add_eos = false; force_pure_content = false;
+  -- les champs sous 'use_jinja' ne sont honores QUE si use_jinja est vrai.
+
+=== 5. OU VIT CE CHEMIN, ET POURQUOI CELA CHANGE LE HARNAIS ===
+liaison verifiee sur les binaires Q1 :
+  libllama.so.0.0.135  exporte UNIQUEMENT :
+      llama_chat_apply_template, llama_model_chat_template,
+      llm_chat_apply_template, llm_chat_template_from_str
+      -> AUCUN symbole jinja dans libllama.
+  libllama-common.so.0.0.135  exporte :
+      common_chat_templates_apply, common_chat_verify_template
+      et 788 symboles jinja.
+  libllama-common.so.0.0.135 sha256=a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20 (constat, cf. §4 LIMITE)
+=> Un harnais qui ne lie QUE libllama NE PEUT PAS rendre le template embarque.
+   Il doit lier libllama ET libllama-common. Cela CONFIRME la preference
+   d origine : construire l outil DANS le fork (tools/engine008-quality-eval/),
+   ce qui donne acces a common/ et donc au moteur Jinja.
+
+=== 6. VERDICT SUR LA COMPATIBILITE DU CONTRAT ===
+Question 1 -- le contrat §17 (aucun system, un message user, add_generation_prompt)
+  est-il EXPRIMABLE dans l API prescrite ?
+  REPONSE=OUI, formellement : messages=[user] + add_ass=true. Le message-list
+  est representable.
+Question 2 -- l API prescrite HONORE-T-ELLE le template embarque ?
+  REPONSE=NON. Elle retombe sur ChatML et n execute aucune branche Jinja.
+=> NATIVE_CHAT_RENDERER_CONTRACT_COMPATIBILITY=NO
+   (au sens : le contrat scientifique -- rendre le template EMBARQUE -- n est
+    pas satisfait par l API prescrite)
+CORRECTION PRECISE A SOUMETTRE A REVUE :
+   remplacer l appel prescrit llama_chat_apply_template par
+   common_chat_templates_apply (libllama-common.so), avec use_jinja=true et
+   les arguments enumeres en §4 ci-dessus, depuis un outil construit DANS le
+   fork. Cette correction N EST PAS APPLIQUEE ici : elle exige un amendement
+   explicite du protocole.
+
+=== 7. CE QUE CET AUDIT N A PAS FAIT ===
+  - aucun rendu TASK (ni Python, ni Jinja, ni Transformers, ni lib non qualifiee)
+  - aucune substitution d API
+  - aucune modification de GGUF, de commentaire ou de template
+  - aucun llama_decode
+CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=NO  (inchange)

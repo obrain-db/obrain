@@ -1,0 +1,195 @@
+{
+ "all_conditions_met": true,
+ "artifacts": {
+  "harness_bin": {
+   "bytes": 323688,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/build/engine008-quality-eval",
+   "sha256": "011bd43880307fe1271eeb7b7865889a135f2689d6a4c74091177163892a0665"
+  },
+  "harness_src": {
+   "bytes": 29349,
+   "path": "/home/triviere/projects/llama-obrain-cuda-f1a/tools/engine008-quality-eval/engine008-quality-eval.cpp",
+   "sha256": "3e9691918fa5e861862f7068bbb4af0025d8c1ca2e21a978a0cd32c658aeab7d"
+  },
+  "mmlu": {
+   "bytes": 2224042,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/MMLU_CHOICES_INPUTS.jsonl",
+   "sha256": "9a87459668631613f9485a65606c74e0ed1c824f331f6ed28f8fec1248eac498"
+  },
+  "order": {
+   "bytes": 78279,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/TASK_GLOBAL_ITEM_ORDER.txt",
+   "sha256": "b7bbade7658b3c4ff397573cb5bf4033da03c37d45aceb4392493ce1e2a940a1"
+  },
+  "render_pass1": {
+   "bytes": 523,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/RENDER_PASS1.txt",
+   "sha256": "09048fc453e9454628806042ca0eee58865c07696b7e9b0f8d94e8e989cc9fb5"
+  },
+  "rendered": {
+   "bytes": 7945440,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/TASK_RENDERED_INPUTS.jsonl",
+   "sha256": "ef3a4702355258c636a9dccd2691860928628648b0e61752f1e5db0233036784"
+  },
+  "scorer_gates": {
+   "bytes": 2181,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/SCORER_GATES_REPLAY.txt",
+   "sha256": "cbff19187e9854ca8265c4c9f57531c33020f530482d5b5e94da46a3c59e2f2f"
+  },
+  "task_manifest": {
+   "bytes": 3444,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/ENGINE008_TASK_CANONICAL_MANIFEST_v1.json",
+   "sha256": "290bf8d486d981d1185be0c629bbc8074dc6ae894acfd3150778aace68c2bf74"
+  },
+  "template": {
+   "bytes": 8952,
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/authority/ENGINE008_EFFECTIVE_CHAT_TEMPLATE.jinja",
+   "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+  }
+ },
+ "authorities": {
+  "baseline_embedded_chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+  "baseline_model_sha256": "31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34",
+  "candidate_embedded_chat_template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "candidate_model_sha256": "1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937",
+  "engine008_effective_chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+  "engine008_scorer_provenance_sha256": "6d9e68cf38de67267be8ec68583ff2746dac37a944233eb5468100e8192d1ffa",
+  "libllama_common_sha256": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20",
+  "libllama_sha256": "87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2",
+  "quality_thresholds_v1_sha256": "08d70467d2dada51a362bfa91694b00d6bd0b1dd020feab2f7bb52af47666bc7",
+  "task_eval_content_tree_sha256": "290bf8d486d981d1185be0c629bbc8074dc6ae894acfd3150778aace68c2bf74",
+  "task_eval_data_content_tree_sha256": "c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a",
+  "task_prompt_contracts_v1_sha256": "fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6",
+  "token_eval_content_tree_v2_sha256": "0ce4512e9d73b5e1cc3beddd2222e9ad7a96592508f10930515ef8b4276cf5dd"
+ },
+ "chat_template_amendment_status": "ADOPTED_COMMON_BASELINE",
+ "comparison_objective": "CONTROLLED_IDENTICAL_INPUTS",
+ "conditions": [
+  {
+   "condition": "toutes les autorites requises presentes et verifiees",
+   "detail": "template effectif, contrats, seuils, scorers, DATA, Q1, modeles",
+   "ok": true
+  },
+  {
+   "condition": "choix A materialise dans le protocole",
+   "detail": "ENGINE008_TEMPLATE_AUTHORITY_DECISION_v1.md + protocole section 3",
+   "ok": true
+  },
+  {
+   "condition": "renderer natif et dependances qualifies",
+   "detail": "caveat declare : libllama-common constate, non qualifie par une autorite ecrite",
+   "ok": true
+  },
+  {
+   "condition": "harnais construit avec le runtime Q1 exact",
+   "detail": "libllama liee = 87c42d5f... ; libllama non reconstruite",
+   "ok": true
+  },
+  {
+   "condition": "selftests requis passent",
+   "detail": "HARNESS_SELFTEST=PASS ; HARNESS_COMPUTE_GUARD_SELFTEST=PASS",
+   "ok": true
+  },
+  {
+   "condition": "2698 entrees produites",
+   "detail": "MMLU 1400 / GSM8K 500 / MBPP 257 / IFEval 541",
+   "ok": true
+  },
+  {
+   "condition": "controle texte = 0",
+   "detail": "TASK_RENDERED_TEXT_BASELINE_CANDIDATE_MISMATCH_COUNT=0",
+   "ok": true
+  },
+  {
+   "condition": "controle token ids = 0",
+   "detail": "TASK_INPUT_TOKEN_ID_BASELINE_CANDIDATE_MISMATCH_COUNT=0",
+   "ok": true
+  },
+  {
+   "condition": "controle ids valides = 0",
+   "detail": "TASK_INVALID_TOKEN_ID_COUNT=0",
+   "ok": true
+  },
+  {
+   "condition": "controle prefixe MMLU = 0",
+   "detail": "MMLU_PREFIX_EXTENSION_NONPREFIX_COUNT=0",
+   "ok": true
+  },
+  {
+   "condition": "controle suffixe MMLU = 0",
+   "detail": "MMLU_CANDIDATE_SUFFIX_TOKEN_MISMATCH_COUNT=0",
+   "ok": true
+  },
+  {
+   "condition": "reproductibilite seconde passe",
+   "detail": "sha256 identique : ef3a4702355258c636a9dccd2691860928628648b0e61752f1e5db0233036784",
+   "ok": true
+  },
+  {
+   "condition": "contrats TOKEN et SCORERS preserves",
+   "detail": "15 gates sur 15 ; TOKEN v2 non retokenise",
+   "ok": true
+  },
+  {
+   "condition": "tous les parametres normatifs determines",
+   "detail": "EOS 248046 = <|im_end|> sur les deux modeles, token de cloture du template (audit statique)",
+   "ok": true
+  },
+  {
+   "condition": "preuves runtime futures ont un contrat exploitable",
+   "detail": "ENGINE008_RUNTIME_PROOF_CONTRACT_v2.md",
+   "ok": true
+  },
+  {
+   "condition": "gardes interdisant reellement le calcul",
+   "detail": "garde centralisee ; refus avant libllama ; --allow-model-compute insuffisant",
+   "ok": true
+  }
+ ],
+ "decided_utc": "2026-10-02",
+ "documents": {
+  "build_report": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/out/HARNESS_BUILD_REPORT.txt",
+   "sha256": "ca5e7a07a1fc8560cd0567c1ed1eeec358768c373fa04b43026c0919ede8c50d"
+  },
+  "protocol": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_QUALITY_PROTOCOL_v1.md",
+   "sha256": "c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3"
+  },
+  "render_config": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_RENDER_CONFIG_v1.json",
+   "sha256": "a5b6f50c7ee6b675fec037579036f3777a8d96e3c1545a3878530f3937a28b47"
+  },
+  "renderer_prov": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_RENDERER_PROVENANCE_v1.json",
+   "sha256": "2ec2e166cfbd5951c5d68ff3074b3a977c910e855db795fffcdb55a316d0b3da"
+  },
+  "renderer_qual": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_RENDERER_QUALIFICATION_REPORT.md",
+   "sha256": "c30e3f797eafe27f9654e76cb579191929ea5fdd194cb831aef90b490cd1ca1c"
+  },
+  "runtime_proof": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_RUNTIME_PROOF_CONTRACT_v2.md",
+   "sha256": "40f83568285fce079b8f91fd0d0aedb3ef141755faf9a5a0704be38e15cff4c3"
+  },
+  "source_map": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_PROTOCOL_SOURCE_MAP_v1.json",
+   "sha256": "1d0070e60fdfa3762304bd19f76a4b653bb8e2b54c14f445defe57df68b0107c"
+  },
+  "template_decision": {
+   "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_TEMPLATE_AUTHORITY_DECISION_v1.md",
+   "sha256": "661a0d90c5af262fc6d7ecbe5b92dd2e88091d6362506906b53f98906fe3276b"
+  }
+ },
+ "execution": {
+  "ENGINE008_EXECUTION_ALLOWED": "NO"
+ },
+ "freeze_manifest_id": "ENGINE008_FREEZE_MANIFEST_v1",
+ "hash_cycles": "AUCUNE : le manifeste ne contient jamais son propre hash ; le protocole ne contient pas le hash du manifeste.",
+ "host": "spark-c578 (192.168.1.7, alias ssh dgx)",
+ "pass": "PROTOCOL-HARNESS-01",
+ "protocol": {
+  "path": "/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/docs/ENGINE008_QUALITY_PROTOCOL_v1.md",
+  "sha256": "c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3"
+ }
+}

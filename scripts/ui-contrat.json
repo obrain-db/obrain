@@ -1,0 +1,15 @@
+{
+  "_lire": "Contrat de l'UI servie sur 8432. 'bloquantes' = une UI qui ne les a pas NE PEUT PAS être promue. 'suivies' = mesurées, et une capacité présente ne peut disparaître sans --accepter-perte=<nom>. Modifier ce fichier est un ACTE explicite : c'est ici qu'on décide ce que l'utilisateur ne doit jamais reperdre.",
+  "bloquantes": {
+    "markdown": "Rendu markdown des réponses de l'agent (react-markdown + remark)",
+    "katex": "Formules rendues et polices incluses (KaTeX présent dans le CSS)"
+  },
+  "suivies": {
+    "fratrie": "Frères/sœurs d'un élément sélectionné (__fratrie exposée par le dashboard)",
+    "ws-client": "Client du transport WS streaming du sous-graphe (subgraph/stream)",
+    "projection": "Panneau de projection multi-axes (.proj-row)",
+    "ramifications": "Panneau des ramifications d'une entité (réelles + à construire, /api/viz/ramifications)",
+    "admin-comptes": "Panneau d'administration des comptes IAM (création, espaces, jetons)",
+    "descente-fractale": "Descente dans les sous-groupes d'un monde (chaque sous-groupe a son propre graphe)"
+  }
+}

@@ -1,0 +1,15 @@
+0.00.215.760 I cmn  common_param:   - CUDA0   : NVIDIA GB10 (124610 MiB, 102930 MiB free)
+0.00.215.799 I cmn  common_param: system_info: n_threads = 20 (n_threads_batch = 20) / 20 | CUDA : ARCHS = 1210 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.581.652 I common_memory_breakdown_print: |   - CUDA0 (GB10)       | 124610 = 102365 + (12236 = 11556 +     544 +     134) +       10008 |
+0.00.726.534 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GB10) (000f:01:00.0) - 102813 MiB free
+0.01.722.536 I load_tensors: offloading output layer to GPU
+0.01.722.543 I load_tensors: offloading 64 repeating layers to GPU
+0.01.722.544 I load_tensors: offloaded 66/66 layers to GPU
+0.01.722.548 I load_tensors:   CPU_Mapped model buffer size =   682.03 MiB
+0.01.722.549 I load_tensors:        CUDA0 model buffer size = 11556.70 MiB
+0.05.482.038 I llama_context:  CUDA_Host  output buffer size =     2.84 MiB
+0.05.486.094 I llama_kv_cache:      CUDA0 KV buffer size =    96.00 MiB
+0.05.507.258 I llama_memory_recurrent:      CUDA0 RS buffer size =   448.88 MiB
+0.05.507.267 I llama_memory_recurrent: size =  448.88 MiB (     3 cells,  64 layers,  3 seqs  0 rs_seq), R (f32):   16.88 MiB, S (f32):  432.00 MiB
+0.05.539.740 I sched_reserve:      CUDA0 compute buffer size =   134.78 MiB
+0.05.539.745 I sched_reserve:  CUDA_Host compute buffer size =    20.56 MiB

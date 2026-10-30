@@ -1,0 +1,10 @@
+LAUNCHER_INVOCATIONS=1
+LAUNCHER_STOPPED_EARLY=YES
+LAUNCHER_PLAN_CHECKED=YES
+LAUNCHER_STOP_REASON=arret au premier echec : baseline1
+RUN baseline1   model=baseline  verdict=FAIL           exit=3 report_seen=Y malformed=N reason=verdict non PASS
+RUN candidate1  model=          verdict=NOT_RUN        exit=-1 report_seen=N malformed=N reason=non lance : sequence arretee
+RUN baseline2   model=          verdict=NOT_RUN        exit=-1 report_seen=N malformed=N reason=non lance : sequence arretee
+RUN candidate2  model=          verdict=NOT_RUN        exit=-1 report_seen=N malformed=N reason=non lance : sequence arretee
+LAUNCHER_REPORT={"schema":"ENGINE008_LAUNCH_REPORT_v1","runs":[{"name":"baseline1","model_tag":"baseline","verdict":"FAIL","exit_code":3,"report_seen":true,"report_malformed":false,"stop_reason":"","generated_token_count":-1,"fp_verdict":"","per_call":"","reason":"verdict non PASS"},{"name":"candidate1","model_tag":"","verdict":"NOT_RUN","exit_code":-1,"report_seen":false,"report_malformed":false,"stop_reason":"","generated_token_count":-1,"fp_verdict":"","per_call":"","reason":"non lance : sequence arretee"},{"name":"baseline2","model_tag":"","verdict":"NOT_RUN","exit_code":-1,"report_seen":false,"report_malformed":false,"stop_reason":"","generated_token_count":-1,"fp_verdict":"","per_call":"","reason":"non lance : sequence arretee"},{"name":"candidate2","model_tag":"","verdict":"NOT_RUN","exit_code":-1,"report_seen":false,"report_malformed":false,"stop_reason":"","generated_token_count":-1,"fp_verdict":"","per_call":"","reason":"non lance : sequence arretee"}],"invocations":1,"stopped_early":true,"plan_checked":true,"stop_reason":"arret au premier echec : baseline1"}
+LAUNCH_EXIT=4

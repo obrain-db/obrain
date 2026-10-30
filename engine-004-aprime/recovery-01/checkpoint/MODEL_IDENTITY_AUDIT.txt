@@ -1,0 +1,49 @@
+MODEL_IDENTITY_AUDIT
+
+=== CHAMPS IDENTIQUES ===
+  architecture        qwen35 == qwen35
+  embedding_length    5120 == 5120
+  head_count          24 == 24
+  head_count_kv       4 == 4
+  context_length      262144 == 262144
+  rope.freq_base      10000000.0 == 10000000.0
+  tokenizer.ggml.model  gpt2 == gpt2
+  tokenizer.ggml.pre    qwen35 == qwen35
+  bos_token_id        248044 == 248044
+  eos_token_id        248046 == 248046
+  chat_template       present == present
+  size_label          27B == 27B
+
+=== TOKENIZER : IDENTIQUE ===
+  tokenizer_sha256 (sha256 de la sequence complete des tokens) :
+    49930cc8a75188cf69a07c57914f0aabe383db11494aa03ed15629adee4c7e33  DES DEUX COTES
+  tokenizer_token_count = 248320 des deux cotes
+  -> les deux modeles partagent EXACTEMENT le meme vocabulaire et les memes IDs.
+     C est la condition qui rend INPUT_TOKEN_IDS identiques possible.
+
+=== DIFFERENCES, EXPLIQUEES ===
+1. block_count 64 -> 65
+   Le candidat declare : qwen35.nextn_predict_layers = 1
+   Les 15 tenseurs supplementaires sont TOUS blk.64.* et incluent
+     blk.64.nextn.eh_proj / enorm / hnorm / shared_head_norm
+   PRESENTS_DANS_LA_BASELINE_SEULEMENT=0 (aucun tenseur manquant).
+   llama.cpp tient n_layer_all et n_layer_nextn separe, et
+   LLM_GRAPH_TYPE_DECODER_MTP est un type de graphe DISTINCT du decodage
+   normal. Donc n_layer() = 65 - 1 = 64, identique a la baseline.
+   -> ARCHITECTURE_IDENTITY=PASS_SUR_LE_CHEMIN_DE_DECODAGE
+   -> difference DECLAREE et NOMMEE, pas un mismatch de modele logique.
+
+   LIMITE HONNETE : ceci est etabli par les metadonnees GGUF et la source
+   llama.cpp. Ce n est PAS une observation runtime. A confirmer au premier
+   token mesure (le harnais ne doit PAS activer MTP).
+
+2. padding_token_id 248044 -> 248055
+   Le padding n intervient que sur les batchs padés. En decodage glouton de
+   sequences simples il est inerte. Difference DECLAREE.
+   -> SPECIAL_TOKEN_IDENTITY=PASS_SUR_BOS_EOS_PADDING_DIFFERENT
+
+=== VERDICTS ===
+ARCHITECTURE_IDENTITY=PASS_SUR_LE_CHEMIN_DE_DECODAGE
+TOKENIZER_IDENTITY=PASS
+VOCAB_IDENTITY=PASS
+SPECIAL_TOKEN_IDENTITY=PASS_SUR_BOS_EOS_PADDING_DIFFERENT

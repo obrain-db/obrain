@@ -1,0 +1,173 @@
+SPHERE: e007a3
+RESUME: La sequence R9A a R13 a d abord etabli que les 1875 mismatches bit a bit n existaient pas ils etaient des NaN venus du generateur de test et non des noyaux la comparaison native contre R8 et R6 etant bit a bit identique sur entrees saines. R9A a donc retire toute la narration de divergence numerique de R7 R7B et R8 tout en conservant les mesures structurelles SASS et en ouvrant la replication de R2 sur donnees saines. R9B a replique R2 sur entrees saines et re promu que ni le nombre de sites dp4a soit 3.22 pourcent ni le placement a cardinalite 16 ne dominent la paroi alors que le placement a cardinalite 8 vaut 1.25 us. R10 a resolu le defaut 38 par une table d armes faisant autorite puis refute l hypothese de multiplicite des corps kbx retire 75 pourcent des blocs ne rend que 2.54 pourcent et falsifie la prediction de R4. R11 a refute l existence d un plancher fixe le bras a masque vide ne coutant que 6.21 us et a etabli un cout declenche et non proportionnel ou 12.5 pourcent du travail donnent 97.7 pourcent du temps. R12 a etabli que le nombre d episodes de warp actifs est la variable primaire a environ 11.4 us par episode et que la densite de lanes ne compte pas puis R13 a corrige le modele lineaire de R12 declare faux sur E6 et s est bloque faute de permission d acces aux compteurs materiels. Restent ouverts le mecanisme du seuil d activation le test causal de la transition 24 vers 36 les signatures de compteurs le defaut 42 enregistre le defaut de detection de finitude enregistre et un gain produit jamais mesure.
+NOEUDS:
+[PROUVE] e007a3_r9a_statut :: R9A clos sur un mismatch inexistant cause par les donnees de test et non par les noyaux :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_r9a_mismatch_zero :: R9A les 1875 mismatches declares etaient des NaN des deux cotes et tombent a zero sur entrees saines :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_r9a_bitwise_match :: R9A K_FULL natif et noyau R8 donnent des sorties bit a bit identiques sur les 5120 lignes :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_r9a_r6_artefact :: R9A le noyau R6 avec artefact a valeur nulle donne mismatch zero et sequence kbx identique au natif :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_defect_40 :: Defaut 40 generateur de poids ecrivant des bits arbitraires dans le champ d echelle half et produisant des NaN silencieux :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_defect_40_portee :: Defaut 40 present dans e7a-scaling et e7a-r2 r3 r4 r5 r6 r8 et corrige dans e7a-r9a :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[OUVERT] e007a3_defaut_detection_finitude :: Defaut de methode enregistre la finitude des sorties n etait pas verifiee avant la comparaison bit a bit sans correction documentee :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[RETIRE] e007a3_retrait_narratif_divergence :: R9A retire la narration de divergence numerique de R7 R7B et R8 construite sur un mismatch fabrique :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[RETIRE] e007a3_hypothese_reassociation :: R9A retire l hypothese de reassociation flottante faute de divergence a expliquer :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[RETIRE] e007a3_gate_r8_fail :: R9A retire le gate d equivalence R8 declare en echec le gate passe en realite :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_sass_structure_retenue :: R9A conserve les mesures structurelles SASS qui relevent du desassemblage et non du calcul :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_artefact_zero_retire :: R9A le retrait de l artefact a valeur nulle restaure la structure native mesuree au SASS :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PARTIEL] e007a3_r2_timing_validite :: R9A maintient les temps de R2 et R3 par argument NaN identiques dans tous les bras sans mesure dediee et recommande de reverifier :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[OUVERT] e007a3_defect_38_ouvert :: Defaut 38 table d armes auto verifiee reste ouvert et son empreinte n est pas produite :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[OUVERT] e007a3_plancher_fixe :: Le plancher majeur de la paroi reste inexplique a la fin de R9A :: docs/ENGINE-007A-R9A-BITWISE-TAXONOMY.md
+[PROUVE] e007a3_defect_37 :: Defaut 37 resolu comme faux mismatch issu d entrees NaN et non comme defaut de fidelite du noyau :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[OUVERT] e007a3_plomberie_29 :: Le compte de defauts de plomberie reste a 28 et le numero 29 demeure non assigne sur les sept passes :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_r9b_correction_statut :: R9B corrige le statut R9A en faux mismatch cause par les metadonnees NaN des entrees :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_r9b_gates_sanite :: R9B gates de sanite passes 245760 echelles finies normales non nulles et aucune sortie non finie :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_r9b_replication_r2 :: R9B les conclusions de R2 se repliquent sur donnees saines avec un contraste A100 moins A0 de 2.9331 us :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_r9b_dp4a_non_dominant :: R9B retirer les 32 sites dp4a ne rend que 3.22 pourcent de la paroi sur donnees saines :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_r9b_emplacement_8 :: R9B a cardinalite 8 l emplacement vaut 1.2520 us soit 43 pourcent du contraste extreme :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[REFUTE] e007a3_r9b_emplacement_16 :: R9B l effet d emplacement a cardinalite 16 n est pas detectable sous la resolution de mesure :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_r9b_place_importe :: R9B le placement du travail compte independamment du nombre de sites resultat re promu sur donnees saines :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PARTIEL] e007a3_r9b_seuil_non_lineaire :: R9B le comportement de seuil du travail est renforce par des increments marginaux quadruples en fin de courbe mais reste sans mecanisme :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PARTIEL] e007a3_r9b_parite_sass :: R9B la parite du code device est etablie par manifeste SASS complet sans hash de cubin non produit :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PARTIEL] e007a3_timings_contamines :: Les chronometrages R3 R4 R5 R6 et R8 restent contamines historiques et en attente de replication saine :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_engine006_ferme :: R9B laisse ENGINE-006 ferme faute de preuve de contamination des charges produit :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[OUVERT] e007a3_r10_bloque_par_defaut_38 :: R9B l etape de chronometrage de multiplicite est bloquee par la resolution du defaut 38 :: docs/ENGINE-007A-R9B-SANE-REPLICATION.md
+[PROUVE] e007a3_defect_38_resolu :: Defaut 38 resolu par une table d armes faisant autorite avec empreinte e71b8358 c80333f7 :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_table_armes_12 :: R10 table de 12 armes qualifiee auto verification simulation hote et qualification GPU toutes passes :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_cardinalite_gate :: R10 gate de cardinalite popcount egal compte egal ensemble verifie pour les 12 armes :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_sequence_kbx48 :: R10 la sequence kbx de l arme 48 en regime runtime egale celle du noyau natif sur 192 couples :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_controle_primaire_kbx12 :: R10 les ensembles KBX12 A B et C sont designes controle primaire equilibre a 16 16 8 8 :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_kbx08_confond :: R10 les armes KBX08 sont desequilibrees entre warps donc descriptives seulement et non controle primaire :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[OUVERT] e007a3_cubin_non_enregistre :: R10 la parite du code device passe par manifeste SASS mais l identite du cubin n est pas enregistree :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_r10_timing_autorise :: R10 aucun chronometrage execute dans cette passe et la campagne suivante est autorisee :: docs/ENGINE-007A-R10-ARM-TABLE-QUALIFICATION.md
+[PROUVE] e007a3_valeur_pre_post :: R10 l empreinte de table est identique avant et apres la campagne ce qui valide le resultat :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[PROUVE] e007a3_runtime_equiv_natif :: R10 l equivalence de chronometrage entre famille runtime et noyau natif passe avec 0.2173 us sous la resolution de 0.50 us :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[PROUVE] e007a3_gate_meme_cardinalite :: R10 le gate primaire de meme cardinalite passe les trois ensembles KBX12 sont indiscernables a 0.1060 us :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[PROUVE] e007a3_kbx24_immateriel :: R10 l ecart KBX24 A moins B de 0.1021 us est detecte mais declare immateriel :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[REFUTE] e007a3_kbx_multiplicite_non_dominante :: R10 refute l hypothese de multiplicite dynamique des corps kbx retirer 75 pourcent des blocs rend 2.54 pourcent :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[PROUVE] e007a3_monotonie_echec :: R10 la monotonie de la paroi en nombre de kbx echoue avec un saut unique de 1.8850 us entre 24 et 36 blocs :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[REFUTE] e007a3_regression_lineaire :: R10 la regression lineaire n est pas promue son residu maximal de 0.6356 us vaut six fois la resolution :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[RETIRE] e007a3_prediction_r4 :: R10 falsifie la prediction historique de R4 de 5.2808 us par passe manquante :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[PROUVE] e007a3_tout_moins_que_partie :: R10 retirer tout le corps kbx rend moins que retirer la seule arithmetique dans R2 soit un ratio de 0.79 :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[OUVERT] e007a3_decomposer_corps_kbx :: R10 declare la decomposition d un corps kbx non justifiee par ces donnees et ne l execute pas :: docs/ENGINE-007A-R10-KBX-MULTIPLICITY-TIMING.md
+[REFUTE] e007a3_plancher_fixe_refute :: R11 refute l existence d un plancher fixe le bras a masque vide ne coute que 6.2103 us :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_table_r11_neuve :: R11 ajoute le bras a travail nul dans une table neuve et laisse la table R10 intacte :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_seuil_activation :: R11 le cout est declenche et non proportionnel 12.5 pourcent du travail donnent 97.7 pourcent du temps :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_decomposition_trois :: R11 decomposition en echafaudage 6.2103 us activation 75.8279 us et region haute 1.9058 us :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_defect_41 :: Defaut 41 le filtre de restriction R11 n a joue qu en mode generation une campagne de 12 bras a ete ecartee et non publiee :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[OUVERT] e007a3_defect_42 :: Defaut 42 l artefact de simulation hote suit l ordre alphabetique et non celui de la table enregistre et non bloquant :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[OUVERT] e007a3_candidat_tous_threads :: R11 seul descripteur suivant la forme temporelle est tous les threads actifs mais la causalite n est pas inferee :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[OUVERT] e007a3_test_causal_seuil :: R11 le test causal du seuil de 24 vers 36 n a pas ete execute et aucun mecanisme n est promu :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_axe_cardinalite_epuise :: R11 declare toute nouvelle experience locale de reduction de cardinalite non justifiee sans evidence causale nouvelle :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_fin_campagne_table_post :: R11 empreinte de table identique apres la campagne resultat valide sur 490 observations :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_bornes_non_promues :: R11 aucune borne launch memoire calcul issue ou latence n est promue :: docs/ENGINE-007A-R11-FIXED-FLOOR-TOPOLOGY.md
+[PROUVE] e007a3_episodes_variable_primaire :: R12 le nombre d episodes de warp actifs gouverne la paroi sur la voie kbx non nulle :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PROUVE] e007a3_controle_kbx06_episodes :: R12 le masque KBX06 historique couvrait les six episodes il reduisait les lanes et le travail mais pas la couverture :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[REFUTE] e007a3_densite_lanes :: R12 refute la densite de lanes huit fois plus de lanes dans un episode coutent 0.2951 us :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PROUVE] e007a3_identite_episode :: R12 l identite de l episode compte pour environ 1 us les episodes G2 et G3 etant plus rapides :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PROUVE] e007a3_warp_physique_materiel :: R12 deux episodes dans le meme warp physique coutent 1.9319 us de plus que dans deux warps differents :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PROUVE] e007a3_table_r12 :: R12 utilise une table version 2 de 19 armes distincte et immuable pendant la campagne :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PROUVE] e007a3_ancres_r12 :: R12 reproduit les ancres KBX00 KBX48 et K_FULL a moins de 0.4 us de R11 :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PROUVE] e007a3_replication_kbx06_e6 :: R12 deux bras au meme masque mesures independamment different de 0.0884 us :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[OUVERT] e007a3_defect_43 :: Defaut 43 le diagnostic de position est sensible a la composition des bras forme en V symetrique indicateur a corriger :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[OUVERT] e007a3_couverture_episodes_24_36 :: R12 propose la couverture en episodes comme lecture la plus compatible de la transition 24 vers 36 sans test dedie :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[REFUTE] e007a3_tous_threads_actifs :: R12 supersede l hypothese tous les threads actifs de R11 au profit de la couverture en episodes :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[PARTIEL] e007a3_potentiel_noyau :: R12 le contraste KBX00 vers KBX06 borne le potentiel au niveau noyau et non le gain produit :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[OUVERT] e007a3_paire_decisive :: R12 la paire decisive G0_D1 contre KBX00 vaut 14.13 us et n a pas ete instruite dans cette passe :: docs/ENGINE-007A-R12-WARP-EPISODE-ACTIVATION.md
+[OUVERT] e007a3_r13_bloque_compteurs :: R13 ne peut pas etre execute l acces aux compteurs materiels est refuse pour toutes les metriques :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_nvgpuctrperm :: R13 le refus ERR_NVGPUCTRPERM est reproduit trois fois y compris sur la duree du noyau et RmProfilingAdminOnly vaut 1 :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_aucune_donnee_compteur :: R13 aucune donnee de compteur n a ete obtenue ni simulee et aucun manifeste de metriques n a ete fabrique :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_nsys_duree_seule :: R13 nsys fonctionne mais ne rend que des durees de noyau sans information causale nouvelle :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_trois_contrastes_geles :: R13 les trois contrastes C1 C2 et C3 restent valides comme contrastes de paroi en attente de compteurs :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[RETIRE] e007a3_defect_44 :: Defaut 44 le residu maximal publie en R12 etait faux 0.26 us annonces contre 5.5 us reels sur E6 :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[RETIRE] e007a3_modele_lineaire_r12 :: R13 retire la comptabilite lineaire de style R4 et l ajustement a 0.99989 publies en R12 :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[RETIRE] e007a3_accord_universel :: R13 retire l affirmation d un accord universel a 0.2 pourcent l accord ne vaut que sur E6 :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_echelon_episode :: R13 la pente reelle va de 12.2 a 12.6 us par episode actif supplementaire selon le placement physique :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_contrastes_noyau :: R13 opportunite au niveau noyau de 31.8 pourcent de 6 vers 4 episodes et 74.8 pourcent de 6 vers 1 episode :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_defect_43_resolu :: Defaut 43 resolu pour les campagnes futures par effet de position intra bras ou sur contrastes apparies :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_branche_o2 :: R13 la branche O2 de redistribution des episodes sur plus de warps physiques ne depend pas des compteurs :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[OUVERT] e007a3_remediation_root :: R13 la remediation exige root et un redemarrage avec NVreg RestrictProfilingToAdminUsers a zero :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[OUVERT] e007a3_signatures_compteurs :: R13 les signatures de compteurs d activation d episode et de reutilisation de warp physique restent non resolues :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[OUVERT] e007a3_gain_produit_non_mesure :: Le gain produit en tokens par seconde n est mesure dans aucune passe de la sequence R9 a R13 :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+[PROUVE] e007a3_engine007b_debloque_partiel :: R13 debloque ENGINE-007B pour la seule faisabilite des episodes structures sans autoriser l optimisation produit :: docs/ENGINE-007A-R13-HARDWARE-COUNTER-FINGERPRINT.md
+LIENS:
+e007a3_defect_40 -> e007a3_r9a_mismatch_zero [DEMONTRE] le generateur non fini explique a lui seul les 1875 mismatches
+e007a3_defect_40_portee -> e007a3_timings_contamines [DEMONTRE] la liste des binaires fautifs delimite les campagnes contaminees
+e007a3_r9a_mismatch_zero -> e007a3_r9a_bitwise_match [DEMONTRE] une fois les entrees saines l egalite bit a bit sur 5120 lignes est etablie
+e007a3_r9a_r6_artefact -> e007a3_defect_38_ouvert [OUVRE] la fidelite du noyau etant etablie la table d armes devient le prerequis suivant
+e007a3_defaut_detection_finitude -> e007a3_retrait_narratif_divergence [DEMONTRE] l absence de controle de finitude est la cause du faux mismatch et de la narration retiree
+e007a3_retrait_narratif_divergence -> e007a3_hypothese_reassociation [RETIRE] retirer la divergence retire du meme coup l hypothese de reassociation
+e007a3_retrait_narratif_divergence -> e007a3_gate_r8_fail [RETIRE] le gate declare en echec est retire et passe en realite
+e007a3_gate_r8_fail -> e007a3_r9a_bitwise_match [REMPLACE] le constat d echec est remplace par l egalite bit a bit mesuree
+e007a3_artefact_zero_retire -> e007a3_sass_structure_retenue [DEMONTRE] le retrait de l artefact restaure la structure native mesuree au SASS
+e007a3_defect_40 -> e007a3_r2_timing_validite [OUVRE] la contamination des campagnes ouvre la question de la validite des temps de R2 et R3
+e007a3_r2_timing_validite -> e007a3_r9b_replication_r2 [REMPLACE] la validite seulement argumentee est remplacee par une replication mesuree sur donnees saines
+e007a3_r9a_statut -> e007a3_r9b_correction_statut [REMPLACE] R9B corrige et precise le statut publie par R9A
+e007a3_r9b_correction_statut -> e007a3_defect_37 [DEMONTRE] la correction du statut identifie la cause exacte du faux mismatch
+e007a3_defect_37 -> e007a3_defect_40 [DEPEND] l absence de defaut de noyau renvoie la cause aux donnees de test
+e007a3_r9b_gates_sanite -> e007a3_r9b_replication_r2 [DEMONTRE] la replication n est promue qu apres passage des gates d entree et de sortie
+e007a3_r9b_replication_r2 -> e007a3_r9b_dp4a_non_dominant [DEMONTRE] le contraste A100 moins A0 mesure 3.22 pourcent sur donnees saines
+e007a3_r9b_replication_r2 -> e007a3_r9b_emplacement_8 [DEMONTRE] le gate de meme cardinalite 8 est mesure dans la meme campagne saine
+e007a3_r9b_emplacement_8 -> e007a3_r9b_emplacement_16 [DEPEND] les deux controles de meme cardinalite se lisent ensemble 8 detecte et 16 non detecte
+e007a3_r9b_dp4a_non_dominant -> e007a3_r9b_place_importe [DEPEND] retirer l arithmetique rend peu alors que son placement compte
+e007a3_r9b_replication_r2 -> e007a3_r9b_seuil_non_lineaire [DEMONTRE] les increments marginaux mesures renforcent le comportement de seuil
+e007a3_r9b_parite_sass -> e007a3_r9b_replication_r2 [DEPEND] la replication suppose le meme code device etabli par manifeste SASS
+e007a3_r9b_replication_r2 -> e007a3_engine006_ferme [DEPEND] le generateur synthetique ne contamine pas les charges produit de ENGINE-006
+e007a3_r9b_emplacement_16 -> e007a3_gate_meme_cardinalite [OUVRE] la resolution insuffisante a 16 sites impose un controle mieux equilibre en R10
+e007a3_defect_38_ouvert -> e007a3_r10_bloque_par_defaut_38 [OUVRE] le chronometrage de multiplicite est bloque jusqu a resolution du defaut 38
+e007a3_r10_bloque_par_defaut_38 -> e007a3_defect_38_resolu [REMPLACE] la passe suivante resout le defaut 38 par une table faisant autorite
+e007a3_defect_38_resolu -> e007a3_table_armes_12 [DEMONTRE] la table fait autorite et passe auto verification simulation hote et qualification GPU
+e007a3_table_armes_12 -> e007a3_cardinalite_gate [DEMONTRE] le gate de cardinalite est verifie sur les 12 armes
+e007a3_table_armes_12 -> e007a3_controle_primaire_kbx12 [DEMONTRE] la qualification designe KBX12 comme controle primaire equilibre
+e007a3_table_armes_12 -> e007a3_kbx08_confond [DEMONTRE] la qualification revele le desequilibre entre warps des armes KBX08
+e007a3_sequence_kbx48 -> e007a3_r10_timing_autorise [DEPEND] la correspondance de sequence et l accord de sortie levent le dernier prerequis
+e007a3_cubin_non_enregistre -> e007a3_r10_timing_autorise [DEPEND] l identite du cubin non enregistree est declaree acceptable sans bloquer la campagne
+e007a3_controle_primaire_kbx12 -> e007a3_gate_meme_cardinalite [DEMONTRE] le controle primaire porte le gate de meme cardinalite
+e007a3_r10_timing_autorise -> e007a3_kbx_multiplicite_non_dominante [DEPEND] la campagne n est executee qu apres autorisation de la passe precedente
+e007a3_runtime_equiv_natif -> e007a3_kbx_multiplicite_non_dominante [DEMONTRE] la famille runtime est declaree proxy causal propre du noyau natif
+e007a3_valeur_pre_post -> e007a3_kbx_multiplicite_non_dominante [DEPEND] l empreinte identique avant et apres valide le resultat
+e007a3_gate_meme_cardinalite -> e007a3_monotonie_echec [OUVRE] le gate passant la courbe de cardinalite est construite et echoue en monotonie
+e007a3_monotonie_echec -> e007a3_regression_lineaire [RETIRE] la monotonie echouant la pente lineaire n est pas promue
+e007a3_prediction_r4 -> e007a3_kbx_multiplicite_non_dominante [RETIRE] la prediction historique de R4 est falsifiee par la mesure
+e007a3_kbx_multiplicite_non_dominante -> e007a3_decomposer_corps_kbx [OUVRE] le corps entier valant si peu sa decomposition est declaree sans objet
+e007a3_kbx_multiplicite_non_dominante -> e007a3_plancher_fixe_refute [OUVRE] une hypothese de moins laisse le plancher sans explication ce qui motive la passe suivante
+e007a3_kbx_multiplicite_non_dominante -> e007a3_r9b_dp4a_non_dominant [DEPEND] les deux leviers sont lus ensemble pour conclure a deux effets faibles
+e007a3_plancher_fixe -> e007a3_plancher_fixe_refute [REMPLACE] la question du plancher majeur est reformulee en seuil d activation
+e007a3_table_r11_neuve -> e007a3_plancher_fixe_refute [DEMONTRE] le bras a masque vide ne pouvait exister que dans une table neuve
+e007a3_table_r11_neuve -> e007a3_defect_42 [OUVRE] la table neuve fait apparaitre le defaut d ordre de l artefact de simulation hote
+e007a3_plancher_fixe_refute -> e007a3_seuil_activation [DEMONTRE] le bras a masque vide coute 6.2103 us donc le cout est declenche et non proportionnel
+e007a3_seuil_activation -> e007a3_decomposition_trois [DEMONTRE] la decomposition en trois contrastes decoule du bras a travail nul
+e007a3_defect_41 -> e007a3_fin_campagne_table_post [DEPEND] les donnees de la premiere execution fautive ont ete ecartees avant la campagne valide
+e007a3_candidat_tous_threads -> e007a3_test_causal_seuil [OUVRE] le descripteur candidat unique reste a tester causalement
+e007a3_bornes_non_promues -> e007a3_test_causal_seuil [DEPEND] aucune borne n etant promue le mecanisme du seuil reste ouvert
+e007a3_seuil_activation -> e007a3_axe_cardinalite_epuise [OUVRE] le cout n etant pas proportionnel les experiences locales de cardinalite perdent leur objet
+e007a3_decomposition_trois -> e007a3_episodes_variable_primaire [OUVRE] le seuil d activation ouvre la question de l unite d activation tranchee par R12
+e007a3_table_r12 -> e007a3_episodes_variable_primaire [DEPEND] la famille d armes de la table version 2 porte la mesure
+e007a3_episodes_variable_primaire -> e007a3_densite_lanes [RETIRE] l axe densite de lanes est teste et rejete dans le meme dispositif
+e007a3_candidat_tous_threads -> e007a3_tous_threads_actifs [RETIRE] l hypothese tous les threads actifs est superseded par la couverture en episodes
+e007a3_controle_kbx06_episodes -> e007a3_tous_threads_actifs [DEMONTRE] KBX06 couvrait les six episodes ce qui explique la faille de R11
+e007a3_episodes_variable_primaire -> e007a3_identite_episode [DEPEND] le meme dispositif mesure l identite de l episode
+e007a3_episodes_variable_primaire -> e007a3_warp_physique_materiel [DEPEND] la variable primaire etablie permet d isoler le placement physique
+e007a3_episodes_variable_primaire -> e007a3_couverture_episodes_24_36 [OUVRE] la lecture de la transition 24 vers 36 reste a tester directement
+e007a3_ancres_r12 -> e007a3_episodes_variable_primaire [DEPEND] les ancres reproduites a moins de 0.4 us fondent la comparabilite avec R11
+e007a3_replication_kbx06_e6 -> e007a3_episodes_variable_primaire [DEPEND] le controle de replication a 0.0884 us conforte la mesure
+e007a3_defect_43 -> e007a3_ancres_r12 [DEPEND] la reserve porte sur l indicateur de position et non sur les contrastes apparies ni sur les ancres
+e007a3_potentiel_noyau -> e007a3_gain_produit_non_mesure [DEPEND] le potentiel au niveau noyau ne vaut pas gain produit
+e007a3_defect_43 -> e007a3_defect_43_resolu [REMPLACE] R12 enregistre l indicateur fautif et R13 le declare resolu pour les campagnes futures
+e007a3_paire_decisive -> e007a3_r13_bloque_compteurs [OUVRE] la paire decisive identifiee ouvre la passe de compteurs
+e007a3_nvgpuctrperm -> e007a3_r13_bloque_compteurs [DEMONTRE] le refus reproduit trois fois sur des metriques croissantes etablit le blocage
+e007a3_nsys_duree_seule -> e007a3_r13_bloque_compteurs [DEMONTRE] le seul outil disponible ne rend que des durees sans information causale
+e007a3_r13_bloque_compteurs -> e007a3_signatures_compteurs [OUVRE] le refus d acces laisse les signatures de compteurs non resolues
+e007a3_aucune_donnee_compteur -> e007a3_signatures_compteurs [DEPEND] aucune donnee n etant obtenue ni simulee les signatures restent ouvertes
+e007a3_remediation_root -> e007a3_r13_bloque_compteurs [DEPEND] la levee du blocage exige root et un redemarrage hors de portee
+e007a3_trois_contrastes_geles -> e007a3_signatures_compteurs [OUVRE] les contrastes tiennent comme contrastes de paroi mais attendent leurs compteurs
+e007a3_defect_44 -> e007a3_modele_lineaire_r12 [RETIRE] le defaut 44 constate que le residu publie etait faux ce qui retire la comptabilite lineaire
+e007a3_modele_lineaire_r12 -> e007a3_accord_universel [RETIRE] le retrait de l ajustement emporte celui de l affirmation d accord a 0.2 pourcent
+e007a3_episodes_variable_primaire -> e007a3_echelon_episode [DEMONTRE] la pente est recalculee sur les contrastes apparies sans ajustement global
+e007a3_echelon_episode -> e007a3_contrastes_noyau [DEMONTRE] les contrastes de noyau sont recalcules sur les mesures
+e007a3_echelon_episode -> e007a3_warp_physique_materiel [DEPEND] la pente depend du placement physique mesure en R12
+e007a3_warp_physique_materiel -> e007a3_branche_o2 [OUVRE] la mesure de 1.9319 us motive la redistribution des episodes sans compteurs
+e007a3_contrastes_noyau -> e007a3_gain_produit_non_mesure [OUVRE] l opportunite au niveau noyau n est pas un gain produit
+e007a3_gain_produit_non_mesure -> e007a3_engine007b_debloque_partiel [DEPEND] le deblocage est limite a la faisabilite faute de gain produit mesure
+e007a3_branche_o2 -> e007a3_engine007b_debloque_partiel [DEMONTRE] la seule piste independante des compteurs fonde le deblocage partiel
+e007a3_controle_primaire_kbx12 -> e007a3_kbx24_immateriel [DEPEND] le controle secondaire de meme cardinalite confirme l absence d effet materiel
+e007a3_kbx_multiplicite_non_dominante -> e007a3_tout_moins_que_partie [DEMONTRE] la mise en regard avec R2 montre que le tout vaut moins que la partie
+e007a3_r13_bloque_compteurs -> e007a3_plomberie_29 [DEPEND] le defaut de plomberie numero 29 reste non assigne a la fin de la sequence

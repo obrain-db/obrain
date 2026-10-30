@@ -1,0 +1,26 @@
+[19:00:21] === ORCHESTRATEUR GPU 9910 -- CONFIGURATION DE VALIDATION (NOUVELLE) ===
+[19:00:21] Cette configuration n'est PAS une restauration de la config historique :
+[19:00:21]   historique : Qwen3.8-27B-Q4_K_M.gguf, --host 0.0.0.0, ctx 32768, ngl 99
+[19:00:21]   validation : Qwen3.8-27B-OBRAIN-v3.gguf, 127.0.0.1, ctx 1024, ngl 99
+[19:00:21] port 9910 verifie LIBRE avant lancement
+[19:00:21] COMMANDE : /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/llama-server -m /home/triviere/projects/models/Qwen3.8-27B-OBRAIN-v3.gguf --host 127.0.0.1 --port 9910 -ngl 99 --ctx-size 1024 --parallel 3 --jinja
+[19:00:21] CWD (isole les nouveaux etats) : /tmp/gpu9910/work
+[19:00:21] SERVER_PID=706225
+[19:00:36] PRET apres 15.0s (probe#6)
+[19:00:36] --- PLACEMENT GPU (lu dans le journal du serveur) ---
+[19:00:36] --- fin du placement ---
+[19:00:36] 59 IDs autoritaires, prefixe=58, 59e ID=198
+[19:00:36] [A] http=200 duree=0.714s err=None
+[19:00:36] A: ref=4304f084eab6ecb1 blob_bytes=160697024 fact_tokens=58
+[19:00:37] [B] http=200 duree=0.801s err=None
+[19:00:38] [C] http=200 duree=0.619s err=None
+[19:00:38] === VALIDATION GPU SEQUENTIELLE ===
+[19:00:38]   GPU seq B/C: FINITE=YES MAX_ABS_DIFF=0 L2=0 ARGMAX=13/13 BINARY_IDENTICAL=YES
+[19:00:38]   B: prefix_tok=58 imported=False prep_ms=20.250999450683594 ids=[13,198,248069,271,3793,13] pos=[59,60,61,62,63,64] stop=EOS
+[19:00:38]   C: prefix_tok=0 imported=True prep_ms=139.40699768066406 ids=[13,198,248069,271,3793,13] pos=[59,60,61,62,63,64] stop=EOS
+[19:00:38]   C ms: lookup=49.28300094604492 compat=0.012000000104308128 blob_sha=64.51300048828125 import=3.8989999294281006
+[19:00:38]   TOKEN_IDS_MATCH=YES  TEXT_MATCH=YES
+[19:00:38]   TEXT B='.\n</think>\n\nOK.'
+[19:00:38]   TEXT C='.\n</think>\n\nOK.'
+[19:00:38] GPU_SEQUENTIAL_RESUME=PASS
+[19:00:38] === FIN SEQUENTIEL ===

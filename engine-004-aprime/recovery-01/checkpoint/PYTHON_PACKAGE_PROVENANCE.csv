@@ -1,0 +1,16 @@
+package,version,artifact_filename,artifact_type,sha256,reason
+absl_py,2.5.0,absl_py-2.5.0-py3-none-any.whl,wheel,0f17b89f2a4eaaedc4f28c622998aa690564b3012a396a4ffad0821007fe03ba,engine-008 runtime
+click,8.5.0,click-8.5.0-py3-none-any.whl,wheel,255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360,engine-008 runtime
+cloudpickle,3.1.2,cloudpickle-3.1.2-py3-none-any.whl,wheel,9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a,engine-008 runtime
+defusedxml,0.7.1,defusedxml-0.7.1-py2.py3-none-any.whl,wheel,a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61,engine-008 runtime
+immutabledict,4.3.1,immutabledict-4.3.1-py3-none-any.whl,wheel,c9facdc0ff30fdb8e35bd16532026cac472a549e182c94fa201b51b25e4bf7bf,engine-008 runtime
+joblib,1.6.0,joblib-1.6.0-py3-none-any.whl,wheel,3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba,engine-008 runtime
+langdetect,1.0.9.tar.gz,langdetect-1.0.9.tar.gz,sdist,cbc1fef89f8d062739774bd51eda3da3274006b3661d199c2655f6b3f6d605a0,engine-008 runtime
+nltk,3.10.3,nltk-3.10.3-py3-none-any.whl,wheel,ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c,engine-008 runtime
+packaging,26.3,packaging-26.3-py3-none-any.whl,wheel,d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c,engine-008 runtime
+pyarrow,25.0.1,pyarrow-25.0.1-cp312-cp312-manylinux_2_28_aarch64.whl,wheel,4340f0ba6c1d2e13f21658de1d7c662ca2545018568d0030a1e9afca159d87e3,engine-008 runtime
+regex,2026.9.29,regex-2026.9.29-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl,wheel,f93bc1c3486ef3747e07c9d7c1d0a147b8fbaab975f80e348aed6f71309dfaca,engine-008 runtime
+setuptools,84.0.0,setuptools-84.0.0-py3-none-any.whl,wheel,51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670,build dependency
+six,1.17.0,six-1.17.0-py2.py3-none-any.whl,wheel,4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274,build dependency
+tqdm,4.70.1,tqdm-4.70.1-py3-none-any.whl,wheel,c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73,engine-008 runtime
+wheel,0.48.0,wheel-0.48.0-py3-none-any.whl,wheel,3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab,build dependency

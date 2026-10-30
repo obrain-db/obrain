@@ -73,6 +73,46 @@ pub fn run(cmd: IndexCommands, format: OutputFormat, quiet: bool) -> Result<()> 
                 }
             }
         }
+        IndexCommands::Create { path, property } => {
+            let db = super::open_existing(&path)?;
+            db.create_property_index(&property);
+            // La FERMETURE n'est pas décorative : la DÉCLARATION vit dans
+            // `substrate.indexcat` et la série ordonnée dans
+            // `substrate.props.idx.v2` — sans flush, un autre processus ne
+            // verrait ni l'une ni l'autre.
+            db.close()?;
+            if !quiet {
+                println!(
+                    "index de propriété « {property} » déclaré (égalité + série ordonnée) \
+                     et persisté dans {}",
+                    path.display()
+                );
+            }
+        }
+        IndexCommands::Rebuild { path, property } => {
+            let db = super::open_existing(&path)?;
+            let t = std::time::Instant::now();
+            let n = db.rebuild_property_indexes();
+            // (NATIF-J6) Index ordonne PAR VALEUR pour les proprietes demandees.
+            let n_ord = if property.is_empty() {
+                0
+            } else {
+                db.rebuild_ordered_value_index(&property)
+            };
+            if !quiet {
+                if n == 0 && n_ord == 0 {
+                    println!("Aucune propriete declaree au catalogue — rien a rebatir.");
+                } else {
+                    println!(
+                        "{} index de propriete + {} index ordonne-valeur rebatis et persistes en {:.1}s",
+                        n,
+                        n_ord,
+                        t.elapsed().as_secs_f64()
+                    );
+                }
+            }
+            db.close()?;
+        }
         IndexCommands::Stats { path } => {
             let db = super::open_existing(&path)?;
             let stats = db.detailed_stats();

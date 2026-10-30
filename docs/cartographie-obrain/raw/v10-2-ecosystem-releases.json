@@ -1,0 +1,59 @@
+{
+  "area": "Écosystème, manifeste et releases",
+  "summary": "L'écosystème obrain est décrit en trois lieux cohérents mais non identiques : la table « Ecosystem » de README.md (13 projets : obrain-server, obrain-web, gwp, boltr, obrain-langchain, obrain-llamaindex, obrain-mcp, obrain-memory, anywidget-graph, anywidget-vector, playground, graph-bench, ann-benchmarks), le hub docs/ecosystem/ (11 fichiers .md dont index.md, 10 docs projet : server, web, mcp, memory, langchain, llamaindex, anywidget-graph, anywidget-vector, graph-bench, performance), et la section Ecosystem de docs/llms.txt (9 projets, org GitHub différente). Les releases sont doublement suivies : CHANGELOG-grafeo.md (797 lignes, historique amont GrafeoDB en semver 0.2.x→0.5.24, 0.5.25 unreleased) et CHANGELOG.md (1802 lignes, journal narratif daté 2026-09-10→2026-09-15, sans en-têtes semver). Le manifeste machine docs/CONNAISSANCES-MANIFEST.json (2026-09-05) décrit 7 KnowledgeDoc + 7 Theme + liens + commits, re-seedable dans le graphe dsh-runtime via graph_link. La migration LpgStore→SubstrateStore est documentée dans docs/MIGRATION.md (outil obrain-migrate, dry-run/upgrade/rollback 7 jours), tandis que docs/FULL-OBRAIN-MIGRATION-2026-09-08.md est un plan/contrat de parité (538 lignes, 32 outils MCP) pour retirer le binaire C codebase-memory-mcp au profit du bridge obrain. Le release candidate docs/RELEASE-RC-M6-ZORDER-2026-09-07.md fige la montée dev/prod de feat/release-m6-zorder (merge 50f10d9a, substrate 822/822, engine 683/683, SUBSTRATE_FORMAT_VERSION 1→2). Licence Apache-2.0, contribution guidée par CONTRIBUTING.md (Rust 1.91.1+, conventional commits) et CONTRIBUTORS.md (un seul contributeur externe nommé, un mainteneur).",
+  "components": [
+    "README.md — table Ecosystem (13 projets) + sections Examples/Documentation/License/lineage (fork GrafeoDB)",
+    "docs/ecosystem/index.md — hub MkDocs « grid cards » listant 9 projets écosystème",
+    "docs/ecosystem/obrain-server.md — server REST/GWP/Bolt, 4 tiers Docker (gwp/bolt/standard/full)",
+    "docs/ecosystem/obrain-web.md — @obrain-db/web WASM + IndexedDB + hooks React/Vue/Svelte",
+    "docs/ecosystem/obrain-mcp.md — serveur MCP 16 outils/4 catégories, transports stdio/SSE/streamable HTTP",
+    "docs/ecosystem/obrain-memory.md — MemoryManager boucle extract/search/reconcile/execute, providers openai/mistral/anthropic",
+    "docs/ecosystem/obrain-langchain.md — intégration LangChain (graph store, vector store, Graph RAG)",
+    "docs/ecosystem/obrain-llamaindex.md — intégration LlamaIndex PropertyGraphStore",
+    "docs/ecosystem/anywidget-graph.md — widget graphe pour notebooks Python",
+    "docs/ecosystem/anywidget-vector.md — widget vecteurs 3D pour notebooks Python",
+    "docs/ecosystem/graph-bench.md — suite de benchmark (8 moteurs, 25+ benchmarks)",
+    "docs/ecosystem/performance.md — page performance comparée (LDBC/benchs)",
+    "docs/llms.txt — guide LLM (features, 6 langages, API Python/Node/Rust, crates, ecosystem 9 projets)",
+    "docs/index.md — page d'accueil docs « The graph database that learns » (7 couches biomimétiques, bindings)",
+    "docs/README-public.md — README public alternatif (mmap instant-open, WAL crash-safe, neo4j2obrain)",
+    "docs/MIGRATION.md — guide migration LpgStore→SubstrateStore (obrain-migrate, rollback 7 jours)",
+    "docs/FULL-OBRAIN-MIGRATION-2026-09-08.md — plan/contrat parité 32 outils MCP, retrait codebase-memory-mcp C",
+    "docs/RELEASE-RC-M6-ZORDER-2026-09-07.md — release candidate feat/release-m6-zorder, suites + pré-vol dev/prod",
+    "docs/CONNAISSANCES-MANIFEST.json — manifeste machine des connaissances (KnowledgeDoc/Skill/Theme, commits)",
+    "CHANGELOG.md — journal narratif Obrain daté (1802 lignes, 2026-09-10→2026-09-15)",
+    "CHANGELOG-grafeo.md — historique amont GrafeoDB en semver 0.2.x→0.5.24 (797 lignes)",
+    "CONTRIBUTORS.md — communauté, stack, contributeur CorvusYe, mainteneur S.T. Grond",
+    "CONTRIBUTING.md — setup, branching, table des 12 crates, 13 projets écosystème this-rs",
+    "LICENSE — Apache-2.0 (201 lignes), notices copyright GrafeoDB préservées"
+  ],
+  "relationships": [
+    "README.md « Ecosystem » → docs/ecosystem/index.md : même liste projet mais README en liste 13 (inclut gwp, boltr, playground, ann-benchmarks) vs 9 dans le hub docs",
+    "docs/llms.txt « Ecosystem » (9 projets, org github.com/ObrainDB/*) diverge des liens README/CONTRIBUTING/CONTRIBUTORS/docs/index (org github.com/this-rs/*)",
+    "CONTRIBUTING.md table crates ↔ docs/llms.txt « Crate Structure » ↔ docs/README-public.md arborescence crates/ : trois vues de la topologie crates (noms qui diffèrent : obrain-bindings-common, obrain-python/node/c/csharp/dart)",
+    "docs/MIGRATION.md référence docs/architecture/overview.md, docs/rfc/substrate/format-spec.md, docs/rfc/substrate/wal-spec.md, crates/obrain-substrate/README.md",
+    "docs/RELEASE-RC-M6-ZORDER-2026-09-07.md ← feat/release-m6-zorder = feat/zorder (slots 512) + feat/m6-code-graph (obrain-indexer), binaire target/release/obrain sha256 c0d30668…71369",
+    "docs/FULL-OBRAIN-MIGRATION-2026-09-08.md ↔ crates/obrain-cli/src/mcp_server.rs (portage des outils bridge), examples/persist.rs (migration SQLite→substrate), obrain-indexer (feature indexer)",
+    "docs/CONNAISSANCES-MANIFEST.json → nœuds graphe dsh-runtime (KnowledgeDoc/Skill/Theme) re-seedable par graph_link ; liens doc↔theme↔skill et commits",
+    "CHANGELOG.md référence CHANGELOG-grafeo.md (historique amont préservé) et le fork GrafeoDB/grafeo",
+    "CONTRIBUTORS.md/CONTRIBUTING.md/LICENSE → org this-rs et licence Apache-2.0 ; docs/index.md/README-public.md héritent de la même licence/lineage"
+  ],
+  "notable_findings": [
+    "Deux journaux de version coexistent sans schéma unifié : CHANGELOG-grafeo.md en semver (0.5.24, 0.5.25 unreleased) vs CHANGELOG.md narratif daté sans bump de version crate, ce qui rend le numéro de version courant ambigu (README montre obrain ^0.5.24, docs/index.md montre Dart obrain ^0.5.21).",
+    "Le README-public.md vante un format « single-file .obrain » mmap, mais docs/MIGRATION.md décrit le Substrate comme un répertoire substrate.obrain/ (zones mmap + WAL) — tension de formulation entre le format legacy (fichier unique) et le format courant (répertoire).",
+    "docs/FULL-OBRAIN-MIGRATION-2026-09-08.md est un chantier vivant de 538 lignes avec 36 sections chronologiques : découverte que le daemon C sert ses 32 outils depuis ~26 Go de stores SQLite (~/.cache/codebase-memory-mcp/*.db), distincts des stores substrate runtime-*.obrain (4,4-6,2 Go).",
+    "Le micro-bench obrain vs Kuzu (section 28-30) revendique obrain ×2,3 sur count, ×37 sur lookup qualified_name avec index d'égalité (1,8 µs count natif GQL), mais concède que les parcours 3+ hops restent plus lents que Kuzu (54 ms vs 30 ms).",
+    "docs/CONNAISSANCES-MANIFEST.json référence un chemin générique docs/PROPOSAL-SEARCH-*-2026-09-05.md (glob, pas un fichier réel) — le manifeste encode un pattern de fichier, pas un artefact unique.",
+    "CONTRIBUTORS.md ne nomme qu'un seul contributeur externe (CorvusYe, Dart bindings #138) et un mainteneur (S.T. Grond), en décalage avec l'ampleur d'un écosystème de ~13 projets et ~24 crates.",
+    "docs/index.md revendique « Fastest graph database tested on the LDBC SNB » tandis que graph-bench.md/index.md parlent de 8 moteurs ; README parle de 25+ benchmarks — les chiffres de benchmark ne sont pas strictement alignés entre fichiers."
+  ],
+  "gaps": [
+    "Les chemins docs/FULL-OBRAIN-MIGRATION et docs/RELEASE-RC-M6-ZORDER n'existent pas tels quels : les fichiers réels sont docs/FULL-OBRAIN-MIGRATION-2026-09-08.md et docs/RELEASE-RC-M6-ZORDER-2026-09-07.md (suffixes de date).",
+    "Incohérence d'organisation GitHub : README/CONTRIBUTING/CONTRIBUTORS/docs/index utilisent github.com/this-rs/* alors que docs/llms.txt utilise github.com/ObrainDB/* (y compris pour le module Go) — une seule des deux orgs est canonique.",
+    "gwp, boltr, playground et ann-benchmarks sont listés dans README Ecosystem mais n'ont pas de page dédiée dans docs/ecosystem/ (seuls 10 projets ont un .md) ; pas de documentation locale pour gwp/boltr/ann-benchmarks.",
+    "docs/CONNAISSANCES-MANIFEST.json est daté 2026-09-05 et référence des docs (CAPACITES-AGENT-OBRAIN-2026-09-05.md, ETAT-2026-09-05-2015.md, etc.) à vérifier : le manifeste n'est pas revalidé automatiquement contre le système de fichiers.",
+    "Absence d'un fichier VERSION unique ou d'une table de correspondance release↔commit↔format (SUBSTRATE_FORMAT_VERSION évolue 1→2→3 selon CHANGELOG.md et RELEASE-RC-M6-ZORDER, mais aucune cartographie centralisée version→numéro de format).",
+    "Dérive de versions dans les exemples : README obrain ^0.5.24, docs/index.md Dart ^0.5.21, obrain-mcp >=0.4.4, obrain-memory >=0.5.1 — aucune source unique de vérité de version.",
+    "Le statut réel des phases P1-P5 de FULL-OBRAIN-MIGRATION (P1 partiel ~25/32 outils, P2-P5 non exécutées, bascule conditionnée à décision utilisateur) n'est pas reflété dans CHANGELOG.md ni README — l'état de migration vit uniquement dans ce document."
+  ]
+}

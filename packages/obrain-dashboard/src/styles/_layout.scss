@@ -1,0 +1,1344 @@
+
+@use "tokens" as t;
+// ── Armature canvas-first : la représentation occupe tout l'écran, les
+//    commandes la survolent (verre), aucun panneau figé ne la masque. ──
+.shell { position: relative; width: 100%; height: 100%; overflow: hidden; background: t.$bg; }
+.stage { position: absolute; inset: 0; }
+.stage canvas { display: block; }
+
+// Poignée « Réglages » : ouvre l'inspecteur, posée en haut à droite du canvas.
+.lab-btn { position: absolute; top: 12px; right: 12px; z-index: 20; display: inline-flex;
+  align-items: center; gap: 6px; padding: 7px 12px; border-radius: t.$r-pill;
+  border: 1px solid t.$line; background: t.$panel-glass; color: t.$text-2;
+  backdrop-filter: blur(10px); box-shadow: t.$sh-glass; cursor: pointer; font-size: 12px; }
+.lab-btn .lab-ico { font-size: 14px; }
+.lab-btn:hover, .lab-btn.on { background: #16405c; border-color: t.$accent-hi; color: #fff; }
+.lab-btn .lab-txt { font-weight: 600; letter-spacing: .02em; }
+
+// Statut : fiche discrète (bas-gauche), horizontal, non bloquante.
+.stats { position: absolute; left: 14px; bottom: 14px; z-index: 7; max-width: 58%;
+  display: inline-flex; align-items: center; gap: 8px; background: t.$panel-glass;
+  border: 1px solid t.$line; border-radius: t.$r-lg; padding: 7px 12px; font-size: t.$fs-sm;
+  line-height: 1.5; color: t.$text-2; box-shadow: t.$sh-glass; backdrop-filter: blur(10px);
+  pointer-events: auto; }
+.stats b, .stats strong { color: t.$text; }
+.stats-reload { background: none; border: 0; color: t.$accent-hi; font-size: 15px;
+  cursor: pointer; padding: 0 2px; line-height: 1; }
+.stats-reload:hover { color: #fff; }
+
+// Message d'interprétation naturelle (au-dessus du dock facettes, discret).
+.ask-msg { position: absolute; left: 50%; transform: translateX(-50%); bottom: 74px;
+  z-index: 8; background: rgba(12,17,23,.9); border: 1px solid #2a3440; border-radius: t.$r-lg;
+  padding: 6px 12px; font-size: 11.5px; color: t.$text-2; max-width: 70%;
+  backdrop-filter: blur(8px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+// ── AUCUNE BASE LISIBLE ──────────────────────────────────────────────────────
+// Le vide s'explique : un compte sans droit voyait un écran nu, ce qui se lit
+// comme une panne. Encadré lisible, au-dessus de la scène, et il dit la sortie.
+.sans-acces { position: absolute; left: 50%; top: 96px; transform: translateX(-50%);
+  z-index: 9; width: min(560px, calc(100% - 32px));
+  background: rgba(12,17,23,.94); border: 1px solid #3a4a5c; border-radius: t.$r-lg;
+  padding: 12px 16px; font-size: 12.5px; line-height: 1.5; color: t.$text-2;
+  backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+.sans-acces b { color: #dfe8f1; }
+
+// Vue Monde (store entier)..overview { position: absolute; inset: 0; }
+.overview .ov-panel { position: absolute; left: 14px; top: 64px; width: 252px; max-height: 78%;
+  overflow: auto; background: rgba(10,14,19,.78); border: 1px solid #2a3440; border-radius: 14px;
+  padding: 10px 12px; z-index: 3; backdrop-filter: blur(8px); font-size: 12px; }
+.overview .ov-x { position: absolute; top: 6px; right: 8px; background: none; border: 0;
+  color: #9fd6ff; font-size: 14px; cursor: pointer; }
+.overview h2 { padding-right: 22px; margin: 0 0 6px; font-size: 13px; }
+.overview .ov-tot { display: flex; gap: 18px; margin: 8px 0; }
+.overview .ov-tot b { font-size: 22px; color: #fff; display: block; }
+.overview .ov-tot span { font-size: 11px; opacity: .7; }
+.overview .ov-note { font-size: 11px; opacity: .75; margin-bottom: 6px; }
+.overview .ov-bars { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px;
+  font-size: 11.5px; margin-bottom: 8px; }
+.overview .ov-name { font-weight: 700; }
+.overview .ov-n { text-align: right; opacity: .9; }
+.overview .ov-mode { font-size: 11px; color: t.$text-2; line-height: 1.5; margin: 6px 0 8px;
+  padding: 7px 9px; background: rgba(61,180,255,.07); border: 1px solid rgba(61,180,255,.18);
+  border-radius: t.$r-md; }
+.ov-stage { font-size: 11px; color: t.$text-3; font-family: t.$font-mono, monospace;
+  animation: ov-blink 1.1s ease-in-out infinite; margin: 4px 0; }
+@keyframes ov-blink { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+// Fil d'échelle « projets → sous-espaces » : remontée directe d'un clic.
+.ov-scale { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 2px 0 8px; }
+.ov-scale .chip { font-size: 10.5px; padding: 3px 8px; }
+.monde-up { position: absolute; right: 14px; bottom: 62px; z-index: 12; border: 1px solid t.$line;
+  background: t.$panel-glass; color: t.$text-2; border-radius: t.$r-pill; padding: 6px 13px;
+  font-size: 11px; cursor: pointer; backdrop-filter: blur(8px); box-shadow: t.$sh-glass; }
+.monde-up:hover { background: #16405c; color: #fff; border-color: t.$accent-hi; }
+
+// Étiquettes DOM projetées (nettes, plus de sprites flous).
+.monde-labels { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+.monde-label { position: absolute; left: 0; top: 0; display: none; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: t.$r-pill; background: rgba(10,15,22,.82);
+  border: 1px solid rgba(90,140,200,.28); backdrop-filter: blur(3px);
+  font-size: 11px; color: #dbe7f3; white-space: nowrap; will-change: transform;
+  transition: opacity .15s; opacity: .92; }
+.monde-label .ml-dot { width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+.monde-label .ml-name { font-weight: 600; }
+.monde-label .ml-cnt { color: #7d92a8; font-family: t.$font-mono, monospace; font-size: 10px; }
+.monde-label.on { background: rgba(18,32,48,.95); border-color: rgba(127,209,255,.75); color: #fff;
+  transform-origin: center; opacity: 1; }
+.monde-label.ghost { opacity: .72; border-style: dashed; border-color: rgba(120,150,180,.35);
+  background: rgba(8,12,17,.72); font-size: 10px; padding: 2px 7px; }
+.monde-label.ghost .ml-name { font-weight: 500; color: #b4c4d4; }
+.monde-label.dim { opacity: .24; }
+.mf-legend { color: t.$text-3; font-size: 10px; }
+.monde-tip { position: absolute; z-index: 9; display: none; pointer-events: none;
+  background: rgba(8,12,17,.94); border: 1px solid #2a3440; border-radius: t.$r-md;
+  padding: 4px 9px; font-size: 11px; color: #eaf2fa; max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.monde-focus { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 12; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: t.$panel-glass; border: 1px solid t.$line; border-radius: t.$r-lg;
+  box-shadow: t.$sh-glass; backdrop-filter: blur(10px); padding: 8px 12px;
+  max-width: calc(100vw - 200px); }
+.mf-name { color: t.$text; font-size: 13px; }
+.monde-nb { display: flex; flex-wrap: wrap; gap: 4px; }
+.monde-nb .chip i { font-style: normal; color: t.$text-3; font-size: 10px; margin-left: 2px; }
+
+// Contrôles de zoom / vue d'ensemble (réservés au bas-droit, hors de l'inspecteur).
+.zoomctl { position: absolute; right: 12px; bottom: 12px; z-index: 8; display: flex;
+  flex-direction: column; gap: 6px; }
+.zoomctl button { width: 34px; height: 34px; border-radius: t.$r-md; border: 1px solid t.$line;
+  background: t.$panel-glass; color: #eaf2fa; font-size: 17px; cursor: pointer;
+  backdrop-filter: blur(6px); }
+.zoomctl button:hover { background: #16405c; }
+.zoomctl button.on { background: #16405c; border-color: t.$accent-hi; color: #fff; }
+@media (max-width: 900px) { .zoomctl { bottom: 12px; right: 8px; } }
+
+// PANNEAU DES AXES SUR PETIT ÉCRAN. `.monde-focus` est centré avec
+// `max-width: calc(100vw - 200px)` : sur un téléphone de 375 px il ne reste que
+// ~175 px, et les sept axes (« module · parent · extension · communauté ·
+// couche · ∂ ») se replient en une colonne illisible. Sous 640 px on rend au
+// panneau toute la largeur disponible.
+@media (max-width: 640px) {
+  .monde-focus {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    transform: none;
+    max-width: none;
+  }
+}
+
+.canvas-host { position: absolute; inset: 0; }
+
+.boundary-err { position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; color: t.$contour;
+  background: rgba(10,12,16,.92); padding: 20px; text-align: center; }
+.boundary-err pre { max-width: 80%; white-space: pre-wrap; font-size: 12px;
+  background: rgba(255,107,157,.08); border: 1px solid rgba(255,107,157,.3);
+  border-radius: 10px; padding: 10px; color: t.$text; }
+
+@media (pointer: coarse) {
+  .zoomctl button, .lab-btn { min-width: 44px; min-height: 44px; }
+
+  // CIBLES TACTILES DES CONTRÔLES, PAS SEULEMENT DE LA CAMÉRA.
+  //
+  // Les axes multi-dimensionnels (« grouper par » : module, parent, extension,
+  // communauté, couche, ∂) sont des <button class="chip">. Mesure du style de
+  // base : padding 5px 11px + petite police ≈ 24-26 px de haut, soit bien en
+  // dessous du minimum tactile de 44 px. Le 3D se pilotait au doigt, mais les
+  // contrôles qui COMMANDENT la vue restaient des cibles de souris : sur mobile
+  // on tape à côté, et comme il n'y a aucun retour visuel, on croit que ça ne
+  // marche pas.
+  // 44 px, et non 40 : le seuil tactile est 44 pt (Apple) comme 48 dp (Material),
+  // et 40 n'était ni l'un ni l'autre — c'était le chiffre qui « avait l'air
+  // suffisant ». Une cible ratée ne produit aucun retour : on croit que le
+  // bouton ne marche pas.
+  .chip { min-height: 44px; padding: 10px 15px; font-size: 13px; }
+  .chips { gap: 8px; }
+  .qb-lbl { font-size: 12px; }
+
+  // ── LES QUATRE CIBLES QUI RESTAIENT DES CIBLES DE SOURIS (mesuré) ────────
+  // La règle coarse ne couvrait que `.zoomctl button` et `.lab-btn`. Restaient
+  // sous le seuil, tous mesurés dans le CSS compilé :
+  //   · `.ctl-x`        26 × 26 — la FERMETURE de l'inspecteur, de la barre de
+  //                     facettes, de la projection et de la barre de sélection.
+  //                     Rater la fermeture sur téléphone, c'est rester coincé
+  //                     dans un panneau ;
+  //   · `.proj-ax`      ~20 px — les axes de la projection ;
+  //   · `.cmd-bc`       ~22 px — les miettes du fil d'ancrage ;
+  //   · `.ov-panel-repli` 34×30 / 38×30 — le REPLI des panneaux : le geste le
+  //                     plus utilisé quand on veut rendre la place au canvas.
+  .ctl-x { min-width: 44px; min-height: 44px; }
+  .proj-ax { min-height: 44px; padding: 8px 10px; }
+  .cmd-bc { min-height: 44px; padding: 8px 10px; }
+  .ov-panel-repli { min-width: 44px; min-height: 44px; }
+  /* Le fil des poupées et les miettes d'échelle se touchent au doigt. */
+  .reperes .chip { min-height: 34px; font-size: 11px; }
+
+  // Un doigt n'a pas de survol : `:hover` reste ACCROCHÉ après le tap et laisse
+  // le bouton allumé alors qu'il ne l'est plus. On neutralise, et on rend l'état
+  // pressé explicite.
+  .chip:hover { background: rgba(16, 22, 32, .92); border-color: t.$line; color: t.$text-2; }
+  .chip.on:hover { background: #16405c; border-color: t.$accent-hi; color: #fff; }
+  .chip:active { background: #16405c; border-color: t.$accent-hi; color: #fff; }
+}
+
+// Carte-mère « big picture » : mini-carte 2D du périmètre + repère de vue.
+.monde-map { position: absolute; right: 12px; bottom: 118px; z-index: 13; cursor: crosshair;
+  border-radius: 10px; border: 1px solid rgba(90,140,200,.35); box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  touch-action: none; }
+
+// Étiquettes : fondu d'arrivée (transitions naturelles entre niveaux)
+.monde-label { animation: mlabel-in .24s ease; }
+@keyframes mlabel-in { from { opacity: 0; } to { opacity: 1; } }
+// Indicateur de chargement DANS le canvas (transition visible, non bloquante)
+.monde-loading { position: absolute; left: 50%; top: 74px; transform: translateX(-50%);
+  z-index: 14; pointer-events: none; font-size: 11.5px; color: #bfe3ff;
+  background: rgba(10,15,22,.75); border: 1px solid rgba(127,209,255,.35);
+  padding: 5px 12px; border-radius: 999px; backdrop-filter: blur(4px);
+  animation: mlabel-in .25s ease; }
+
+// Aide clavier dans le canvas (H / ?)
+.monde-help { position: absolute; left: 50%; top: 76px; transform: translateX(-50%);
+  z-index: 15; display: flex; flex-direction: column; gap: 3px;
+  background: rgba(8,12,18,.94); border: 1px solid rgba(127,209,255,.4);
+  border-radius: 12px; padding: 10px 14px; font-size: 11.5px; color: #cfe3f5;
+  box-shadow: 0 12px 34px rgba(0,0,0,.55); animation: mlabel-in .2s ease; }
+.monde-help b { color: #fff; margin-bottom: 3px; }
+.monde-help span { opacity: .85; }
+
+.cosmos { position: absolute; inset: 0; display: flex; }
+.cosmos-panel { width: 330px; padding: 18px; overflow: auto; background: rgba(13,18,25,.92);
+  border-right: 1px solid #223041; }
+.cosmos-svg { flex: 1; width: 100%; height: 100%; background: radial-gradient(circle at 50% 45%, #0d141d, #070a0f); }
+
+.stage { transition: none; }
+/* Repli des particules : la projection se referme en un point (celui regardé),
+   on permute à ce moment précis, puis la nouvelle projection s'ouvre du même
+   point — le canvas ne « change » jamais visiblement. */
+.stage.fx-out { animation: collapse .21s cubic-bezier(.55,.06,.68,.19) forwards; }
+.stage.fx-in { animation: expand .30s cubic-bezier(.16,.84,.32,1.06) forwards; }
+@keyframes collapse {
+  55% { filter: blur(1.2px); opacity: .85; }
+  to { transform: scale(.015); opacity: 0; filter: blur(4px); } }
+@keyframes expand {
+  from { transform: scale(.015); opacity: 0; filter: blur(4px); }
+  55% { opacity: .9; filter: blur(1.2px); }
+  to { transform: none; opacity: 1; filter: blur(0); } }
+
+.stage.fx-out { pointer-events: none; }
+.stage.fx-in { pointer-events: auto; }
+
+/* Sélecteur des 3 vues, posé sur le canvas */
+.viewswitch { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 41; display: flex; gap: 4px; padding: 5px 6px; background: t.$panel-glass;
+  border: 1px solid t.$line; border-radius: 14px; box-shadow: t.$sh-glass;
+  backdrop-filter: blur(8px); }
+.viewswitch button { background: transparent; border: 0; color: t.$text-2; font-size: 12px;
+  padding: 6px 12px; border-radius: 10px; cursor: pointer; }
+.viewswitch button:hover { background: t.$hover; color: t.$text; }
+.viewswitch button.on { background: t.$accent; color: t.$on-accent; font-weight: 700; }
+@media (max-width: 720px) { .viewswitch { top: 54px; } .viewswitch button { padding: 6px 9px; font-size: 11px; } }
+
+/* Transitions directionnelles : out = repli vers le Cosmos ; fwd = entrée dans
+   le détail (grossissement + fondu, la nouvelle vue tombe depuis un plan large) */
+.stage.fx-fwd-out { animation: fwdout .26s cubic-bezier(.5,.05,.7,.1) forwards; }
+.stage.fx-fwd-in { animation: fwdin .38s cubic-bezier(.15,.8,.3,1.05) forwards; }
+@keyframes fwdout { 55% { filter: blur(1px); } to { transform: scale(1.9) rotate(.6deg); opacity: 0; filter: blur(5px); } }
+@keyframes fwdin { from { transform: scale(1.75) rotate(-.6deg); opacity: 0; filter: blur(5px); }
+  60% { opacity: .92; filter: blur(1px); } to { transform: none; opacity: 1; filter: blur(0); } }
+/* Voile de bascule : masque l'instant exact du changement de vue */
+/* Voile de bascule : n'assombrit QUE la périphérie (le centre reste net) et
+   passe SOUS les menus ; il ne recouvre donc plus les interfaces. */
+.stage-veil { position: absolute; inset: 0; pointer-events: none; z-index: 12; opacity: 0;
+  background: radial-gradient(circle at 50% 45%, rgba(7,10,15,0) 45%, rgba(7,10,15,.75) 92%);
+  transition: opacity .24s ease; }
+.stage-veil.on { opacity: 1; }
+
+/* Rappel de la grammaire clavier commune aux vues (voir graph/grammar.ts) :
+   le même libellé partout, pour que « ↑ remonte » veuille dire la même chose
+   dans le Cosmos, le Monde, le Graphe et le morph. */
+.zoomhint {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  z-index: 7; pointer-events: none; white-space: nowrap;
+  font-size: 10.5px; color: #7e93a8; background: rgba(7, 12, 18, .55);
+  border: 1px solid rgba(127, 209, 255, .14); border-radius: 10px;
+  padding: 4px 10px;
+}
+/* ══ LE FIL DES POUPÉES — IL N'AVAIT AUCUNE RÈGLE (2026-09-11) ══════════════
+   Constat de la reconnaissance : `.reperes` n'existait que sous forme de styles
+   EN LIGNE dans `CosmosWeave` — zéro règle dans les feuilles, zéro media query.
+   Il portait pourtant le fil d'échelle, la légende et les boutons de natures, se
+   posait SOUS le sélecteur de vues (top 62 contre 54, z-index 13 contre 41) et
+   ne pouvait pas être replié : premier poste d'occupation de la vue Cosmos sur un
+   téléphone. Une classe sans règle est une classe qu'aucun réglage global ne peut
+   atteindre — c'est exactement ce qu'on corrige ici. */
+.reperes {
+  /* L'empreinte publiée par l'état d'interface (`canvasInsetAtom`) : le fil se
+     range SOUS le chrome au lieu de passer dessous. */
+  scrollbar-width: thin;
+  max-height: min(34vh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Sans cela, le geste vertical sur le fil est confisqué par le canvas (la
+     racine est passée à `pan-y`, mais le conteneur doit l'autoriser aussi). */
+  touch-action: pan-y;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.reperes .q-intro { font-size: 11px; }
+.reperes .chip { padding: 3px 7px; font-size: 10.5px; min-height: 24px; }
+@media (max-width: 720px) {
+  /* Sur téléphone, le fil cède la place au canvas : deux lignes suffisent à
+     situer l'échelle, et la suite se lit au défilement du fil lui-même. */
+  .reperes { max-height: 22vh; gap: 4px; }
+  .reperes .chip { font-size: 10px; padding: 2px 6px; }
+}
+
+/* ══ LA BARRE D'ÉCHELLE — ELLE VIT DANS `reperes`, PAS DANS LE PANNEAU ═══════
+   MESURÉ sur la page servie : dans une fenêtre de 757 px de haut — celle de tout
+   portable, et celle des contrôles de ce dépôt — le panneau « Cosmos » porte
+   1251 px de contenu pour 588 px visibles (`scrollHeight` 1251, `clientHeight`
+   588 : il défile). Le repère d'échelle et le SEUL bouton de descente à la souris
+   vivaient au bas de ce panneau, donc sous la ligne de flottaison : « ⤓ plonger »
+   mesuré à y = 805, `elementFromPoint` répondait « HORS ÉCRAN » et le clic ne
+   produisait rien. Redonné à la même application une fenêtre de 1200 px, le même
+   clic descendait. Les repères d'échelle sont donc ici, avec le fil des poupées et
+   la légende — dont c'est déjà la raison d'être : visibles à toutes les échelles,
+   sur tous les écrans. */
+.echelle-bar {
+  display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 4px 9px; border: 1px solid t.$line; border-radius: t.$r-pill;
+  background: t.$panel-glass; backdrop-filter: blur(8px); color: t.$text-2;
+  font-size: t.$fs-sm; max-width: 100%;
+  /* ── `pointer-events: auto` N'EST PAS DÉCORATIF ICI ────────────────────────
+     `.reperes` porte `pointer-events: none` (posé en ligne, pour laisser passer
+     les clics vers la scène), et seuls ses ENFANTS déclarés `auto` reçoivent un
+     clic. Sans cette ligne, le bouton « ⤓ descendre » était visible, dans la
+     fenêtre (bas = 197 pour 757 px de haut) — et `elementFromPoint` à son centre
+     répondait « CANVAS » : le clic traversait le bouton et allait à la scène.
+     Mesuré sur la page servie, c'est ce qui rendait le seul bouton de descente
+     à la souris inerte. */
+  pointer-events: auto;
+}
+.echelle-bar .eb-niv { white-space: nowrap; }
+.echelle-bar .eb-niv b { color: #fff; }
+.echelle-bar .eb-jauge {
+  display: inline-block; width: 88px; height: 6px; border-radius: t.$r-pill;
+  background: t.$inset; border: 1px solid t.$line-soft; overflow: hidden;
+}
+.echelle-bar .eb-jauge i {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #2f6ea8, t.$accent-hi);
+}
+.echelle-bar .eb-vise {
+  max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: t.$accent-hi;
+}
+.echelle-bar .eb-attente { color: t.$text-3; font-style: italic; }
+/* L'AXE DE NAVIGATION — dans la barre, donc visible à TOUS les crans. Il est
+   repliable par nature (flex-wrap) : sur téléphone il passe à la ligne suivante
+   au lieu de pousser le bouton de descente hors de l'écran, ce qui était
+   exactement le défaut corrigé ici. */
+.echelle-bar .eb-axe { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.echelle-bar .eb-axe .chip { padding: 3px 7px; font-size: 10.5px; }
+.echelle-bar .eb-axe-attente { color: t.$text-3; font-size: 10.5px; white-space: nowrap; }
+@media (max-width: 720px) {
+  .echelle-bar { font-size: 10px; gap: 5px; padding: 3px 7px; }
+  .echelle-bar .eb-jauge { width: 52px; }
+  .echelle-bar .eb-vise { max-width: 110px; }
+}
+
+/* ── `.q-intro` : LA CLASSE LA PLUS UTILISÉE DU PROJET, SANS AUCUNE RÈGLE ────
+   Mesuré : 9 fichiers l'emploient, et elle héritait des 16 px par défaut du
+   navigateur alors que tout le chrome est calibré à 11-13 px. Les 25 lignes
+   d'information de la vue Cosmos occupaient donc ~25 % de plus que prévu, et
+   c'est la plus grosse économie de place facile de cette vue. */
+.q-intro {
+  font-size: 11.5px;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+.q-title { font-size: 12.5px; font-weight: 600; margin: 0 0 4px; }
+
+/* ── LES RECOUVREMENTS MESURÉS ──────────────────────────────────────────────
+   Trois éléments se marchaient dessus ; chacun est un défaut d'empilement, donc
+   la correction est un `z-index`, pas une position devinée. */
+.stats { z-index: 5; }                 /* était 7 : recouvrait les panneaux repliés */
+.monde-map { z-index: 9; }             /* était 13 : masquait les boutons θ (z-index 8) */
+.chat-flottant { z-index: 45; }        /* était 55 : couvrait le dernier bouton de zoom */
+
+@media (max-width: 900px) { .zoomhint { display: none; } }
+
+/* ── PANNEAUX REPLIABLES ───────────────────────────────────────────────────
+   Un panneau de 252 px sur un écran de 390 px mangeait la vue et ne pouvait
+   pas être rangé. Le repli est porté par le composant partagé
+   (graph/ViewPanel.tsx) : même geste, même bouton dans toutes les vues. */
+.overview .ov-panel-tete {
+  display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;
+}
+.overview .ov-panel-tete h2 { flex: 1 1 auto; padding-right: 0; }
+.overview .ov-panel-repli {
+  flex: 0 0 auto; width: 26px; height: 22px; line-height: 1; cursor: pointer;
+  background: rgba(127, 209, 255, .1); border: 1px solid rgba(127, 209, 255, .3);
+  color: #9fd6ff; border-radius: 7px; font-size: 12px; padding: 0;
+}
+.overview .ov-panel-repli:hover { background: rgba(127, 209, 255, .22); color: #fff; }
+.overview .ov-panel.replie { width: auto; max-width: min(70vw, 320px); }
+/* Repli par CSS plutôt que par démontage : le contenu des panneaux riches
+   (métriques, listes) reste monté, donc aucun état perdu, et aucune
+   restructuration du JSX n'est nécessaire pour rendre un panneau rétractable. */
+.overview .ov-panel.replie > *:not(.ov-panel-tete) { display: none; }
+.overview .ov-panel.replie .ov-panel-tete h2 {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 52vw;
+}
+
+/* Sur mobile : le canvas d'abord. Les panneaux se replient d'office (le
+   composant le fait au montage), restent dans le cadre, et le bouton de repli
+   est assez grand pour un doigt. */
+@media (max-width: 720px) {
+  .overview .ov-panel {
+    width: auto; max-width: 88vw; max-height: 46vh; overflow: auto;
+    padding: 8px 10px;
+  }
+  .overview .ov-panel:not(.replie) { box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+  .overview .ov-panel-repli { width: 34px; height: 30px; font-size: 14px; }
+  /* Le rappel clavier n'a pas de sens au doigt (il est déjà masqué < 900 px),
+     et la barre de commandes passe en bas pour libérer le haut de l'écran. */
+  .overview .ov-panel { top: 56px; }
+}
+@media (max-width: 480px) {
+  .overview .ov-panel { max-width: 94vw; max-height: 42vh; }
+}
+
+/* ── COLONNE DE PANNEAUX, ET INTÉGRATION MOBILE ──────────────────────────────
+   La règle ci-dessus pose la MÊME position absolue (left 14 / top 64) pour tous
+   les panneaux : sur bureau des styles en ligne les séparaient, sur téléphone
+   ils se superposaient ou tombaient hors écran (mesuré en 390×844 : y=56, 496,
+   784 — le dernier à 12 px du bord bas). La colonne prend le relais : les
+   panneaux s'y empilent, et sur mobile elle occupe le bas de l'écran en
+   laissant la scène visible au-dessus. */
+.ov-panneaux {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ov-panneaux .ov-panel { pointer-events: auto; }
+
+@media (max-width: 720px) {
+  .ov-panneaux {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;   /* les panneaux repliés s'empilent par le bas */
+    gap: 6px;
+    padding: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .ov-panneaux .ov-panel {
+    position: relative;
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+    bottom: auto !important;
+    width: auto;
+    max-width: none;
+    max-height: 46vh;            /* un panneau ouvert ne mange pas la scène */
+  }
+  /* Un panneau replié reste une barre fine et lisible au doigt. */
+  .ov-panneaux .ov-panel.replie { max-height: none; }
+  .ov-panneaux .ov-panel-tete { min-height: 38px; }
+  .ov-panneaux .ov-panel-repli { min-width: 38px; min-height: 30px; }
+}
+
+/* ── CHAT PLEIN ÉCRAN ────────────────────────────────────────────────────────
+   Sur mobile, une conversation n'a pas sa place dans un encart de 250 px : le
+   clavier virtuel mange la moitié de l'écran et l'on ne voit ni la question ni
+   la réponse. Le chat occupe donc TOUT l'écran, au-dessus de la vue, et se
+   referme. Sur bureau il garde la même structure, en fenêtre large centrée. */
+.chat-plein {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: rgba(5, 7, 12, .96);
+  backdrop-filter: blur(3px);
+}
+.chat-tete {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; border-bottom: 1px solid rgba(127, 209, 255, .18);
+  font-size: 13px;
+}
+.chat-sujet { opacity: .8; margin-right: auto; }
+.chat-corps {
+  flex: 1 1 auto; overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+  overscroll-behavior: contain;
+}
+.chat-moi {
+  align-self: flex-end; max-width: 86%;
+  background: rgba(127, 209, 255, .16); border: 1px solid rgba(127, 209, 255, .3);
+  border-radius: 10px; padding: 8px 10px; white-space: pre-wrap;
+}
+.chat-lui {
+  align-self: flex-start; max-width: 96%;
+  background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .10);
+  border-radius: 10px; padding: 8px 10px;
+}
+.chat-contexte {
+  font-size: 11px; color: #9fd6ff; border-left: 2px solid #4aa8ff;
+  padding-left: 6px; margin-bottom: 6px;
+}
+/* L'ANCRAGE RÉEL — store, monde, self. Il est plus discret que le contexte
+   (c'est une preuve, pas un titre) mais jamais masqué : c'est lui qui empêche
+   l'en-tête de nommer un monde que l'engine n'a pas lu. */
+.chat-ancrage { opacity: .72; font-size: 10.5px; margin-top: 2px; }
+.chat-ancrage code { color: #cfe6ff; }
+/* LES APPELS D'OUTILS — ce que l'engine a réellement demandé à la base.
+   Visibles parce qu'un travail caché ne se vérifie pas : on lit la requête, le
+   monde interrogé, le nombre de lignes et la durée. */
+.chat-outils { margin: 4px 0 2px; border-left: 2px solid rgba(127, 209, 255, .45); padding-left: 6px; }
+.chat-outil { font-size: 10.5px; line-height: 1.5; color: #bcd8f2; }
+.chat-outil code { color: #cfe6ff; opacity: .9; margin-left: 5px; word-break: break-word; }
+.chat-outil-ok { color: #7fd1a0; }
+.chat-outil-err { color: #ff9e8a; }
+/* La coupe se marque : c'est une information, pas un ornement. */
+.chat-outil-coupe { color: #ffc078; }
+/* LA MÉMOIRE — une ÉCRITURE journalisée, distincte des lectures. Elle est dite
+   « en attente d'application » : le substrat impose l'invariant mono-écrivain,
+   et annoncer une écriture faite alors qu'elle attend serait un mensonge. */
+.chat-memoire {
+  font-size: 10.5px; color: #d8c8a0; margin: 4px 0 2px;
+  border-left: 2px solid rgba(216, 200, 160, .5); padding-left: 6px;
+}
+.chat-memoire-attente { opacity: .7; }
+/* LE CŒUR DU GRAPHE — les nœuds les plus connectés, par registre de degrés. */
+.chat-hubs { font-size: 10.5px; margin-top: 3px; color: #b7e3c0; }
+.chat-hubs summary { cursor: pointer; opacity: .85; }
+.chat-hubs div { margin: 3px 0 0 6px; }
+.chat-hubs code { color: #cdf0d6; }
+/* LA DENSIFICATION DISPONIBLE — ce qui n'a PAS été lu, chiffré par type. */
+.chat-densite { font-size: 10.5px; margin-top: 3px; }
+.chat-densite summary { cursor: pointer; opacity: .8; }
+.chat-densite div { margin: 3px 0 0 6px; opacity: .85; }
+.chat-densite code { color: #9fd6ff; }
+.chat-think {
+  font-size: 11.5px; color: #c9b58a; margin: 4px 0;
+  border-left: 2px solid rgba(255, 209, 102, .5); padding-left: 6px;
+}
+.chat-think summary { cursor: pointer; opacity: .85; }
+.chat-think-corps { max-height: 34vh; overflow-y: auto; }
+/* Le raisonnement garde SA taille : c'est un travail, pas la réponse. */
+.chat-think .md { font-size: 11.5px; }
+/* ── RÉPONSE RICHE : markdown + LaTeX (KaTeX) ───────────────────────────────
+   Le texte de l'agent n'est plus un bloc `pre-wrap` : il est rendu en markdown
+   (titres, listes, tableaux, code) et en LaTeX. Ce qui se joue ici n'est que
+   l'habillage : le rendu est fait par `RenduRiche`, qui mémoire ses blocs — ces
+   règles ne s'appliquent donc qu'une fois par bloc, jamais à chaque morceau de
+   flux. */
+.md { line-height: 1.5; font-size: 13px; overflow-wrap: anywhere; }
+.md-bloc + .md-bloc { margin-top: 0.6em; }
+.md-bloc > :first-child { margin-top: 0; }
+.md-bloc > :last-child { margin-bottom: 0; }
+.md p { margin: 0.35em 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0.7em 0 0.35em; line-height: 1.25; }
+.md h1 { font-size: 1.25em; }
+.md h2 { font-size: 1.15em; }
+.md h3, .md h4, .md h5, .md h6 { font-size: 1.05em; }
+.md ul, .md ol { margin: 0.35em 0; padding-left: 1.3em; }
+.md li { margin: 0.15em 0; }
+.md blockquote {
+  margin: 0.4em 0; padding-left: 0.7em; opacity: 0.9;
+  border-left: 2px solid rgba(127, 209, 255, 0.4);
+}
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em; background: rgba(127, 209, 255, 0.10);
+  border-radius: 4px; padding: 0 0.28em;
+}
+.md pre {
+  background: rgba(5, 7, 12, 0.65); border: 1px solid #223041; border-radius: 8px;
+  padding: 8px 10px; overflow-x: auto; margin: 0.5em 0;
+}
+.md pre code { background: none; padding: 0; font-size: 11.5px; }
+.md hr { border: none; border-top: 1px solid rgba(255, 255, 255, 0.14); margin: 0.7em 0; }
+.md a { color: #7fd1ff; }
+/* LES TABLEAUX : une réponse qui compare des choses doit rester lisible sur un
+   téléphone — d'où le défilement horizontal plutôt qu'un écrasement. */
+.md table {
+  border-collapse: collapse; margin: 0.5em 0; max-width: 100%;
+  display: block; overflow-x: auto;
+}
+.md th, .md td {
+  border: 1px solid rgba(255, 255, 255, 0.14); padding: 3px 7px;
+  text-align: left; vertical-align: top;
+}
+.md th { background: rgba(127, 209, 255, 0.10); }
+/* KATEX : une formule affichée ne doit pas déborder de la bulle (le défilement
+   horizontal est préférable à une formule coupée). */
+.md .katex { font-size: 1.03em; }
+.md .katex-display { margin: 0.5em 0; padding: 2px 0; overflow-x: auto; overflow-y: hidden; }
+.md .katex-error { color: #ff9e8a; }
+/* LE BLOC EN COURS D'ÉCRITURE : un curseur, pour que l'attente se voie. */
+.md-actif .md-bloc:last-child::after {
+  content: "▍"; opacity: 0.45; animation: md-curseur 1s steps(2) infinite;
+}
+@keyframes md-curseur { 50% { opacity: 0; } }
+.chat-attente { opacity: .6; }
+.chat-meta { font-size: 10.5px; opacity: .55; margin-top: 4px; }
+.chat-err { color: #ff9e8a; font-size: 12px; }
+.chat-pied {
+  display: flex; gap: 8px; padding: 10px 12px;
+  border-top: 1px solid rgba(127, 209, 255, .18);
+  /* l'encoche et la barre gestuelle du téléphone ne doivent pas recouvrir
+     le champ de saisie */
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.chat-pied textarea {
+  flex: 1 1 auto; resize: none; font: inherit; font-size: 14px;
+  background: rgba(255, 255, 255, .06); color: inherit;
+  border: 1px solid rgba(127, 209, 255, .25); border-radius: 8px; padding: 8px;
+}
+.chat-pied textarea:focus { outline: 1px solid rgba(127, 209, 255, .5); }
+.chat-pied .chip { align-self: stretch; min-width: 84px; }
+
+@media (min-width: 721px) {
+  /* Sur bureau : fenêtre large centrée, on garde la vue autour. */
+  .chat-plein {
+    inset: 4vh 12vw;
+    border: 1px solid rgba(127, 209, 255, .22);
+    border-radius: 12px;
+    background: rgba(5, 7, 12, .97);
+  }
+  .chat-moi { max-width: 70%; }
+  .chat-lui { max-width: 82%; }
+}
+
+/* Accès direct à la conversation : les panneaux mobiles étant repliés par
+   défaut, un chat « à part » ne doit pas dépendre d'un dépliage. */
+.chat-flottant {
+  position: fixed;
+  right: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 55;
+  width: 52px; height: 52px; border-radius: 50%;
+  font-size: 22px; line-height: 1;
+  background: rgba(127, 209, 255, .18);
+  border: 1px solid rgba(127, 209, 255, .45);
+  color: inherit; cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+.chat-flottant:hover { background: rgba(127, 209, 255, .3); }
+@media (min-width: 721px) { .chat-flottant { right: 20px; bottom: 20px; } }
+/* Une réponse coupée doit se VOIR : sans cela elle passe pour complète. */
+.chat-tronque {
+  margin-top: 6px; padding: 6px 8px; font-size: 11.5px;
+  color: #ffcf9a; background: rgba(255, 158, 74, .12);
+  border-left: 2px solid #ff9e4a; border-radius: 4px;
+}
+/* ── REPRENDRE UNE RÉPONSE COUPÉE ───────────────────────────────────────────
+   La reprise automatique est bornée ; au-delà, c'est ce bouton qui relance — et
+   il est dans le bloc d'erreur, juste sous la cause, pour qu'on n'ait pas à
+   chercher comment continuer une réponse qui s'est arrêtée. */
+.chat-reprise { margin-top: 6px; }
+.chat-reprise .chip { font-size: 11px; }
+
+/* ══ SUR TÉLÉPHONE, RIEN NE SE CHEVAUCHE ET TOUT SE TOUCHE ══════════════════
+ *
+ * MESURÉ le 2026-09-15, écran 390×844 (le téléphone réel le plus courant),
+ * par `scripts/ui-lire-ecran.mjs` — qui lit la géométrie rendue, pas le CSS :
+ *
+ *   · `.cmdbar` portait `max-width: min(720px, calc(100vw - 300px))` : à 390 px
+ *     de large, cela fait **90 px** — la barre de recherche et le choix de base
+ *     étaient écrasés dans une bande de 90 px, avec le champ de saisie à 23 px
+ *     de haut ;
+ *   · `.viewswitch` (Cosmos/Monde/Groupe/Signaux) est posé en ABSOLU à
+ *     `top: 10px`, centré — donc SOUS la barre : la règle mobile existante le
+ *     descendait à 54 px, ce qui le faisait tomber sur la rangée de chips de la
+ *     projection. Résultat mesuré : **8 chevauchements**, jusqu'à 63×38 px, et
+ *     des contrôles de 38 px de haut (seuil tactile : 44).
+ *
+ * Le défaut n'était pas l'absence de règles mobiles — il y en avait — mais
+ * qu'elles DÉPLAÇAIENT des éléments absolus sans changer de modèle : deux
+ * éléments à `left: 50%` finissent toujours par se rencontrer. On empile donc.
+ *
+ * Ce que ça change pour l'utilisateur : une barre lisible en haut, une ligne de
+ * vues où l'on vise juste du premier coup, et un canvas qui commence SOUS elles.
+ */
+@media (max-width: 720px) {
+  /* 1. LA BARRE PREND TOUTE LA LARGEUR, SOUS L'ENCOCHE DU TÉLÉPHONE. */
+  .cmdbar {
+    top: calc(8px + env(safe-area-inset-top, 0px));
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    transform: none;
+  }
+  .cmdbar-inner { padding: 6px 8px; gap: 6px; }
+  /* La base choisie est une LISTE : elle doit être atteignable au doigt, et son
+     intitulé ne doit pas pousser la saisie hors de l'écran. */
+  .cmd-store { flex: 0 1 auto; min-width: 0; max-width: 42%; }
+  .cmd-store select { padding: 8px 6px; font-size: 13px; max-width: 100%; }
+  /* Le raccourci clavier n'existe pas sur un téléphone : il n'apprend rien. */
+  .cmd-keys { display: none; }
+  .cmd-input { font-size: 16px; }   /* 16 px : en dessous, iOS zoome à la saisie */
+
+  /* 2. LES QUATRE VUES : UNE LIGNE SOUS LA BARRE, PAS DESSOUS ELLE. */
+  .viewswitch {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: auto;
+    transform: none;
+    margin-top: 0;
+    /* Sa position vient de la barre : on l'ancre juste après, dans le flux de
+       l'écran, en la posant sous la barre par un décalage calculé sur la barre
+       et non sur une valeur devinée (54 px ne correspondait à rien de mesuré). */
+    position: fixed;
+    top: calc(56px + env(safe-area-inset-top, 0px));
+    z-index: 42;
+    padding: 4px;
+    gap: 2px;
+    border-radius: 12px;
+    justify-content: space-between;
+  }
+  .viewswitch button {
+    flex: 1 1 0;
+    min-height: 44px;
+    padding: 8px 4px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  /* 3. LES CHIPS (« grouper par », signaux, filtres) : 44 px, et on peut
+        faire défiler latéralement plutôt que d'empiler dix lignes. */
+  .chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { min-height: 44px; padding: 10px 14px; font-size: 13px; flex: 0 0 auto; }
+  /* Les repères d'échelle restent des MÉTA-données : ils n'ont pas besoin
+     d'être tactiles, mais ils ne doivent plus être illisibles (10 px). */
+  .reperes .chip { min-height: 28px; padding: 4px 8px; font-size: 11px; }
+}
+
+/* 4. LE PANNEAU DE CHAT : PLEIN ÉCRAN, ET LE BOUTON AU-DESSUS DE LUI. */
+@media (max-width: 720px) {
+  .chat-panneau, .chat-flottant-panneau { align-items: stretch; }
+  .chat-flottant { z-index: 60; }
+}
+
+/* ── LES VUES PASSENT EN BAS SUR TÉLÉPHONE (et pourquoi) ────────────────────
+ *
+ * Deuxième mesure, après le premier correctif : les contrôles ne se
+ * chevauchaient plus entre eux, mais les VUES (Cosmos/Monde/Groupe/Signaux)
+ * tombaient encore sur le bandeau du panneau — « ⌗ projection » (y=44..88) et le
+ * bouton de repli « ▸ » — parce que les panneaux occupent toute la bande haute.
+ * Mesuré : trois chevauchements restants, dont 71×27 px.
+ *
+ * On ne pouvait pas empiler davantage vers le bas sans repousser le graphe hors
+ * de l'écran : la bande haute est pleine. Sur un téléphone, la navigation
+ * principale vit EN BAS — c'est là que le pouce arrive, et c'est le seul endroit
+ * que les panneaux ne prennent pas. Les panneaux gardent donc le haut, les vues
+ * prennent le bas, et rien ne se recouvre.
+ */
+@media (max-width: 720px) {
+  .viewswitch {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    z-index: 58;                 /* au-dessus du canvas, sous le bouton de chat */
+    justify-content: space-between;
+  }
+  /* Le bouton de retour au centre remonte au-dessus de la barre de vues : les
+     deux occupent le même coin, et deux cibles superposées, c'est une cible
+     ratée sur deux. */
+  .zoomctl { bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  .chat-flottant { bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+}
+
+@media (max-width: 720px) {
+  /* ── À 360 px (et moins), CINQ ONGLETS NE TIENNENT PAS ────────────────────
+   * Mesuré : à 360×640 comme à 320×568, « ⟲ morph » sortait de l'écran
+   * (`x=302, largeur=71` pour 360 px) — donc INATTEIGNABLE, et un débordement
+   * qui rognait la page à droite. Deux réglages, et dans cet ordre :
+   *   1. les libellés se resserrent (c'est le seul contenu compressible) ;
+   *   2. si ça ne suffit toujours pas, la ligne DÉFILE horizontalement — mieux
+   *      vaut un onglet qu'on fait venir au doigt qu'un onglet coupé.
+   */
+  .viewswitch { overflow-x: auto; scrollbar-width: none; }
+  .viewswitch::-webkit-scrollbar { display: none; }
+  .viewswitch button { padding: 8px 2px; font-size: 12px; }
+}
+@media (max-width: 400px) {
+  .viewswitch button { font-size: 11.5px; letter-spacing: -.01em; }
+}
+
+/* ── PENDANT LA CONVERSATION, LA NAVIGATION S'EFFACE (MOBILE) ────────────────
+ *
+ * Mesuré à 390×844 : les quatre onglets de vue, fixés EN BAS, se posaient SUR le
+ * champ de saisie du message — quatre contrôles recouvrant le champ, ce qui est
+ * exactement le défaut rapporté (« la vue des comptes arrive sur le input de
+ * saisie »). Une conversation plein écran qui garde une barre flottante
+ * au-dessus de sa saisie n'est pas plein écran : on la retire pendant l'échange.
+ *
+ * Le drapeau `.chat-ouvert` est posé sur la racine par `App` : le CSS décide, et
+ * le chat n'a pas à connaître la barre (ni l'inverse) — c'est aussi ce qui laisse
+ * les deux évoluer séparément.
+ */
+@media (max-width: 720px) {
+  .chat-ouvert .viewswitch,
+  .chat-ouvert .zoomctl,
+  .chat-ouvert .chat-flottant,
+  .chat-ouvert .cmdbar,
+  .chat-ouvert .proj-open,
+  .chat-ouvert .reduire,
+  .chat-ouvert .sans-acces { display: none; }
+}
+
+/* ── L'EN-TÊTE DU CHAT, MESURÉ (390 et 320 px) ───────────────────────────────
+ *
+ * Ce que la porte mobile a trouvé dès que le chat est devenu testable :
+ *   · le bouton de fermeture « ✕ » faisait **33×44** — 44 de haut, mais 33 de
+ *     LARGE, donc sous le seuil tactile dans la dimension où il se rate ;
+ *   · à 320 px, le repli de la réponse (« ▸ ») et le témoin « think visible »
+ *     se superposaient (24×12 px), faute d'ordre de lecture quand la ligne se
+ *     remplit.
+ *
+ * L'en-tête est une ligne de contrôles comme les autres : on applique les deux
+ * règles déjà posées ailleurs — 44 px minimum dans les DEUX dimensions, et une
+ * ligne qui défile plutôt que de se chevaucher quand il n'y a plus de place.
+ */
+@media (max-width: 720px) {
+  .chat-tete { flex-wrap: nowrap; gap: 4px; padding: 6px 8px; overflow: hidden; }
+  .chat-tete button, .chat-tete .chip {
+    min-width: 44px; min-height: 44px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11.5px; padding: 6px 8px;
+  }
+  /* L'EN-TÊTE NE DÉFILE PAS : IL SE RESSERRE.
+     Deuxième mesure : en laissant la ligne défiler, le bouton de fermeture
+     sortait de l'écran (x=363 pour 390 px) — un bouton de fermeture qu'il faut
+     aller chercher est pire qu'un bouton absent, parce qu'on ne sait pas qu'il
+     existe. Ce qui est compressible ici, c'est le TEXTE des témoins (le niveau de
+     pensée, « think visible »), pas la taille des cibles : on réduit donc les
+     libellés, on garde 44 px, et le titre cède la place en dernier. */
+  .chat-tete .chat-sujet, .chat-tete span, .chat-tete label { font-size: 11px; }
+  .chat-sujet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+}
+
+/* ── LE BOUTON DE FERMETURE NE SE COMPRIME JAMAIS, ET L'EN-TÊTE NON PLUS ─────
+ *
+ * Mesuré à trois largeurs, après deux tentatives : l'en-tête du chat porte cinq
+ * éléments (titre, sujet, « think visible », niveau de pensée, fermeture) pour
+ * ~350 px disponibles à 390, et **~285 px à 320**. Au premier essai, le ✕ était
+ * descendu à 33 px de large (sous le seuil) ; au second, la ligne défilait et le
+ * ✕ sortait de l'écran (x=363). Les deux sont inacceptables pour la fermeture :
+ * introuvable ou raté, c'est la même chose pour l'utilisateur.
+ *
+ * La règle qui tranche : ce qui est COMPRESSIBLE, c'est le texte ; ce qui ne
+ * l'est pas, c'est la cible. On réduit donc les libellés davantage, on serre les
+ * espaces, et le bouton de fermeture garde ses 44 px — il ne rétrécit ni ne
+ * s'échappe.
+ */
+/* ── À 400 px ET MOINS : ON RETIRE UN ÉLÉMENT, ON NE RÉTRÉCIT PAS LE TEXTE ───
+ *
+ * Trois essais mesurés, et le troisième a tranché. À 320 px, l'en-tête du chat
+ * porte cinq éléments pour ~285 px : titre, sujet, « think visible », niveau de
+ * pensée, fermeture. Les deux premières tentatives ont échoué chacune sur une
+ * règle différente :
+ *   · réduire les CIBLES → le ✕ tombait à 33 px de large (raté au doigt) ;
+ *   · réduire le TEXTE → 10,5 px, sous le seuil de lisibilité (mesuré).
+ * Les deux règles sont bonnes, donc ce qui doit céder est le NOMBRE d'éléments.
+ *
+ * On retire de l'en-tête les deux RÉGLAGES (niveau de pensée, « think visible ») :
+ * ils ne servent pas à mener une conversation, ils la configurent. Ils restent
+ * dans le panneau du chat, où ils appartiennent. Ce qui demeure est ce dont on se
+ * sert en parlant : où l'on est (titre + sujet) et comment sortir (✕).
+ */
+@media (max-width: 400px) {
+  .chat-tete { gap: 6px; padding: 6px 8px; }
+  /* Repliés par défaut à cette largeur… */
+  .chat-tete .chat-reglage, .chat-tete .chat-pensee, .chat-tete .chat-think-champ {
+    display: none;
+  }
+  /* …et RAPPELÉS par le bouton ⚙, qui prend leur place. Un réglage retiré sans
+     recours serait un cul-de-sac : c'est le défaut que ce dépôt combat. */
+  .chat-ouvert .chat-reglages-bouton,
+  .chat-tete .chat-reglages-bouton { display: inline-flex; }
+  .chat-tete.reglages-ouverts .chat-reglage,
+  .chat-tete.reglages-ouverts .chat-pensee,
+  .chat-tete.reglages-ouverts .chat-think-champ { display: inline-flex; }
+  .chat-tete > button:last-child { margin-left: auto; }
+}
+/* Sur écran large, le ⚙ n'a rien à rappeler : les réglages sont visibles. */
+@media (min-width: 401px) {
+  .chat-reglages-bouton { display: none; }
+}
+/* ══ LES DEUX LIGNÉES ONT AJOUTÉ ICI, CHACUNE DE SON CÔTÉ ════════════════════
+ *
+ * Aucune règle n'est en conflit : les deux côtés ont AJOUTÉ des blocs distincts à
+ * la fin de la feuille, sans toucher aux mêmes sélecteurs. La fusion les garde
+ * donc TOUS LES DEUX, et l'ordre compte : les règles d'ÉTAT (`@media` qui
+ * retirent des contrôles pendant la conversation) restent groupées, chacune
+ * après les règles de repos qu'elle surcharge.
+ *
+ *   · côté canonique (ci-dessous) : panneau « Gens » (comptes et résonance),
+ *     panneau « Monde » (ajouter un dépôt), colonnes de boutons du coin, fiches
+ *     de self ;
+ *   · côté multi-écrivain (plus bas) : liste des conversations du chat
+ *     (`.chat-convs`, `.chat-conv*`) et curseur d'échelle (`.echelle-curseur`).
+ *
+ * CE QUI A ÉTÉ RÉPARÉ ICI : une résolution automatique (`rerere`) avait retenu
+ * ce seul côté en silence. Les 97 lignes de l'autre côté — les sélecteurs
+ * `.chat-convs`/`.chat-conv` que la liste des conversations RÉCLAME, et le
+ * curseur d'échelle — avaient disparu de la feuille. Elles sont rétablies.
+ */
+
+/* ══ LE PANNEAU DES GENS — COMPTES ET RÉSONANCE ══════════════════════════════
+ *
+ * Il remplace l'ancien panneau « Comptes », dont les styles étaient EN LIGNE
+ * (`style={{ position:"fixed", left:10, bottom:10 }}`) : sans une seule règle
+ * média, il tombait sur le champ de saisie du chat — mesuré, recouvrement
+ * 274×50 px — et ses boutons faisaient 22 px de haut, sous le seuil tactile.
+ *
+ * Des styles en ligne ne peuvent pas avoir de règle pour téléphone : c'est le
+ * vrai enseignement de ce déplacement, et la raison pour laquelle tout passe
+ * ici, en classes `gens-*`.
+ */
+.gens-bouton { position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 57; display: inline-flex; align-items: center; gap: 6px; }
+
+.gens-panneau {
+  position: fixed;
+  left: 12px;
+  bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  z-index: 59;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(72vh, 620px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(13, 17, 24, .97);
+  border: 1px solid rgba(127, 209, 255, .22);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .5);
+  color: #dfe8f1;
+  font-size: 12.5px;
+  backdrop-filter: blur(10px);
+}
+.gens-tete { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid rgba(127, 209, 255, .16); }
+.gens-onglets { display: flex; gap: 4px; }
+.gens-fermer { margin-left: auto; }
+.gens-msg { margin-top: 8px; padding: 6px 8px; border-radius: 7px; font-size: 12px;
+  color: #ffcf9a; background: rgba(255, 158, 74, .12); border: 1px solid rgba(255, 158, 74, .3); }
+.gens-corps { margin-top: 10px; display: flex; flex-direction: column; gap: 12px; }
+.gens-regle { margin: 0; font-size: 11.5px; line-height: 1.5; color: #9fb0c4; }
+.gens-regle b { color: #dfe8f1; }
+.gens-bloc { display: flex; flex-direction: column; gap: 6px; }
+.gens-titre { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 12px; }
+.gens-n { font-weight: 400; color: #7fd1ff; }
+.gens-select { margin-left: auto; background: rgba(0,0,0,.25); color: inherit;
+  border: 1px solid rgba(140,150,170,.4); border-radius: 7px; padding: 4px 6px; font: inherit; font-size: 11.5px; }
+.gens-vide { color: #8b98a8; font-size: 11.5px; font-style: italic; }
+.gens-liste { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.gens-liste li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 5px 0; border-top: 1px solid rgba(140,150,170,.14); }
+.gens-meta { color: #8b98a8; font-size: 11.5px; }
+.gens-noms { flex-basis: 100%; font-size: 11.5px; color: #a9c4dc;
+  font-family: ui-monospace, monospace; word-break: break-word; }
+.gens-actions { margin-left: auto; display: flex; gap: 4px; }
+.gens-act { font-size: 11px; }
+.gens-choix { display: flex; flex-wrap: wrap; gap: 6px; }
+.gens-nouveau { display: flex; gap: 6px; }
+.gens-input { flex: 1 1 auto; min-width: 0; background: rgba(0,0,0,.25); color: inherit;
+  border: 1px solid rgba(140,150,170,.4); border-radius: 7px; padding: 6px 8px; font: inherit; font-size: 12px; }
+.gens-secret { padding: 8px; border-radius: 8px; border: 1px dashed #d9b95c;
+  background: rgba(217,185,92,.07); font-size: 11.5px; }
+.gens-mdp { font-family: ui-monospace, monospace; user-select: all; margin: 5px 0;
+  word-break: break-all; color: #ffe9b0; }
+.gens-note { margin: 6px 0 0; font-size: 11px; color: #8b98a8; line-height: 1.45; }
+
+/* ── SUR TÉLÉPHONE, IL PREND L'ÉCRAN AU LIEU DE SE POSER SUR LA VUE ──────────
+ * Un panneau de 440 px ne tient pas dans 390 : on l'étale, on le borne en
+ * hauteur, et — comme le chat — il se retire PENDANT la conversation plutôt que
+ * de flotter au-dessus (l'utilisateur qui écrit n'a pas besoin des comptes). */
+@media (max-width: 720px) {
+  .gens-panneau {
+    left: 8px; right: 8px; width: auto;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    max-height: min(64vh, 520px);
+  }
+  .gens-bouton { left: 8px; }
+  /* Les cibles tactiles du panneau : 44 px, comme partout. */
+  .gens-act, .gens-choix .chip, .gens-nouveau .chip, .gens-tete .chip {
+    min-height: 44px; padding: 10px 12px;
+  }
+  .gens-input { min-height: 44px; font-size: 16px; }  /* 16 px : iOS ne zoome pas */
+  .chat-ouvert .gens-panneau, .chat-ouvert .gens-bouton { display: none; }
+}
+
+/* ══ L'ÉTAT SE DÉCLARE APRÈS CE QU'IL SURCHARGE ══════════════════════════════
+ *
+ * Défaut trouvé en mesurant, et il est général : ma règle
+ * `.chat-ouvert .gens-bouton { display: none }` était écrite AVANT le bloc
+ * `.gens-*` qui pose `display: inline-flex`. Même spécificité, donc c'est
+ * l'ordre du fichier qui tranche — et le second gagnait : le panneau « Gens »
+ * restait affiché pendant la conversation (mesuré : 0×0, ancêtre en
+ * `display: none`, alors que la boîte du bouton était bien présente dans le
+ * DOM). Le symptôme rapporté — le panneau sur la saisie — revenait donc par la
+ * seule disposition du CSS, pas par un oubli.
+ *
+ * On regroupe ici, à la FIN de la feuille, tout ce qui décrit « pendant la
+ * conversation ». C'est la règle à retenir : une règle d'ÉTAT se pose après les
+ * règles de REPOS, sinon elle ne s'applique jamais — et elle le fait en silence.
+ */
+@media (max-width: 720px) {
+  .chat-ouvert .viewswitch,
+  .chat-ouvert .zoomctl,
+  .chat-ouvert .cmdbar,
+  .chat-ouvert .proj-open,
+  .chat-ouvert .reduire,
+  .chat-ouvert .sans-acces,
+  .chat-ouvert .gens-bouton,
+  .chat-ouvert .gens-panneau,
+  .chat-ouvert .chat-flottant { display: none; }
+}
+/* Sur écran large, la conversation ne recouvre qu'elle-même : la navigation
+   reste utile (on lit un graphe en parlant), donc rien n'est retiré. */
+@media (min-width: 721px) {
+  .chat-ouvert .gens-panneau { z-index: 40; }
+}
+
+/* ── LE BOUTON « GENS » REMONTE AU-DESSUS DES ONGLETS, ET SA CROIX S'ÉLARGIT ─
+ *
+ * Deux mesures de la porte, à 390 et 320 px :
+ *   · le bouton « Gens » (en bas à gauche) recouvrait DEUX contrôles — « 🌌
+ *     Cosmos » et son voisin — parce que la barre de vues occupe toute la
+ *     largeur en bas. On le remonte de la hauteur de la barre : la règle est la
+ *     même que pour le bouton de recentrage et celui du chat, qui ont la même
+ *     contrainte depuis le début ;
+ *   · la croix de fermeture du panneau faisait **35×44** : assez haute, trop
+ *     étroite. C'est la même erreur que dans l'en-tête du chat, et la même
+ *     correction — une cible se juge dans les DEUX dimensions.
+ */
+@media (max-width: 720px) {
+  .gens-bouton { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+  .gens-fermer { min-width: 44px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center; }
+  /* Le repli des actions par ligne suit la même règle : dans les DEUX sens. */
+  .gens-act { min-width: 44px; }
+}
+
+/* ── LES BOUTONS DU COIN : UNE SEULE COLONNE, SANS RECOUVREMENT ─────────────
+ *
+ * Défaut mesuré dès que la conversation reste FERMÉE au chargement (l'état par
+ * défaut corrigé) : trois contrôles se partageaient le coin bas-droit — « ⌂ »
+ * (recentrage), « 🖥 » (écran plein) et « 💬 » (conversation) — et la mesure a
+ * montré deux choses précises :
+ *   · « 🖥 » faisait **31×44** : assez haut, trop ÉTROIT (même erreur que la
+ *     croix du chat et du panneau — une cible se juge dans les DEUX dimensions) ;
+ *   · « ⌂ » et « 💬 » se recouvraient de **38×44 px**, soit la quasi-totalité de
+ *     leurs surfaces : on visait l'un, on ouvrait l'autre.
+ *
+ * On les range donc en COLONNE, à des paliers distincts, au-dessus de la barre
+ * d'onglets (qui occupe le bas) : ⌂ | 🖥 | 💬 de haut en bas, puis les onglets.
+ * Aucun ne dépend d'un autre pour être atteint — et chacun fait 44 px dans les
+ * deux sens.
+ */
+@media (max-width: 720px) {
+  .zoomctl { bottom: calc(144px + env(safe-area-inset-bottom, 0px)); }
+  .ecran-plein, .lab-btn { min-width: 44px; min-height: 44px; }
+}
+
+/* ── LA FLOTTE AUSSI SE RANGE EN COLONNE, ET SES STYLES SORTENT DE L'INLINE ──
+ *
+ * Le bouton « 🖥 » (ma flotte) portait `style={{ position:"fixed", left:56,
+ * bottom:10 }}` — en LIGNE, donc incapable d'avoir une règle média. Mesuré à
+ * 390 px : il faisait **31×44** (assez haut, trop étroit) et recouvrait les
+ * onglets de vue (« 🌌 Cosmos ») sur 28×41 px. C'est exactement le défaut de
+ * l'ancien panneau « Comptes » : un style en ligne ne peut pas être adapté au
+ * téléphone, et le téléphone est justement l'écran où la place manque.
+ *
+ * Le coin bas-gauche devient donc une colonne, avec la même règle qu'à droite
+ * (⌂ / 🖥 / 💬) : chaque bouton fait 44 px dans les DEUX sens, et aucun ne
+ * recouvre la barre d'onglets qui occupe le bas.
+ */
+@media (max-width: 720px) {
+  .flotte-bouton {
+    position: fixed;
+    left: 8px;
+    /* ── LE PALIER DE LA FLOTTE EST AU-DESSUS DE CELUI DES GENS ──────────────
+     * Mesuré : les deux à 72 px, ils se recouvraient de 44×44 — soit la totalité
+     * de leurs surfaces. Le coin bas-gauche a maintenant deux étages : « Gens »
+     * (72) puis « 🖥 flotte » (124), la barre d'onglets occupant le bas. */
+    bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+    z-index: 57;
+    min-width: 44px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+}
+
+/* ══ LE PANNEAU « MONDE » — AJOUTER UN DÉPÔT ═════════════════════════════════
+ *
+ * Il porte le geste par lequel un compte neuf obtient sa première base. Il vivait
+ * dans un panneau du canvas, donc sous la charge GPU de la scène ET sous son
+ * risque d'échec — le pire couplage possible pour cette action-là.
+ *
+ * Le bouton prend le PALIER DU HAUT dans la colonne de droite, au-dessus des
+ * trois autres (⌂ à 144, 💬 à 64) : la colonne est déjà rangée, on s'y insère au
+ * lieu d'ouvrir un coin. Les styles sont des CLASSES, pas de l'inline — un style
+ * en ligne ne peut pas avoir de règle pour téléphone, et c'est exactement ce qui
+ * a produit les trois défauts précédents.
+ */
+.monde-bouton { position: fixed; right: 12px; bottom: 200px;
+  z-index: 57; display: inline-flex; align-items: center; gap: 6px; }
+
+.monde-panneau {
+  position: fixed;
+  right: 12px;
+  bottom: calc(252px + env(safe-area-inset-bottom, 0px));
+  z-index: 59;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(64vh, 560px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(13, 17, 24, .97);
+  border: 1px solid rgba(127, 209, 255, .22);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .5);
+  color: #dfe8f1;
+  font-size: 12.5px;
+  backdrop-filter: blur(10px);
+}
+.monde-tete { display: flex; align-items: center; gap: 8px;
+  padding-bottom: 8px; border-bottom: 1px solid rgba(127, 209, 255, .16); }
+.monde-fermer { margin-left: auto; }
+.monde-ask { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(140,150,170,.16); }
+.monde-ask summary { cursor: pointer; font-size: 12px; color: #9fb0c4; }
+
+@media (max-width: 720px) {
+  .monde-bouton {
+    right: 8px;
+    /* PALIER DU HAUT de la colonne de droite : au-dessus de ⌂ (144) et 💬 (64). */
+    bottom: calc(200px + env(safe-area-inset-bottom, 0px));
+    min-width: 44px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 13px;
+  }
+  .monde-panneau {
+    left: 8px; right: 8px; width: auto;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    max-height: min(60vh, 480px);
+  }
+  .monde-fermer { min-width: 44px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center; }
+  /* Les contrôles de l'ajout de monde : le champ d'adresse et le bouton sont
+     les deux seules cibles, et elles doivent tenir au doigt. */
+  .monde-panneau input { min-height: 44px; font-size: 16px; }
+  .monde-panneau .chip { min-height: 44px; }
+  .chat-ouvert .monde-bouton, .chat-ouvert .monde-panneau { display: none; }
+}
+
+/* ── LE REPLI « POSER UNE QUESTION » EST UNE CIBLE, PAS UN TITRE ─────────────
+ *
+ * Mesuré par la porte : 14 px de haut sur les trois téléphones. Un `<summary>`
+ * est cliquable — c'est même son seul rôle — donc il tombe sous la même règle
+ * que les boutons : 44 px dans les DEUX sens. Le fond et le curseur le disent
+ * aussi : sans cela, rien ne signale qu'on peut l'ouvrir.
+ */
+@media (max-width: 720px) {
+  .monde-ask summary {
+    min-height: 44px;
+    display: flex; align-items: center;
+    padding: 8px 10px; margin: 0 -10px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .monde-ask summary:hover { background: rgba(127, 209, 255, .08); }
+}
+
+/* ── LA FICHE D'UN SELF QU'ON LIT ────────────────────────────────────────────
+ *
+ * Avant : un nom, des compteurs, et des noms publics collés dessous — on savait
+ * qu'un self partageait quelque chose sans jamais pouvoir le LIRE. Or c'est tout
+ * l'objet de la résonance : voir les facettes, pas savoir qu'elles existent.
+ *
+ * La ligne devient donc un bouton qui déplie une FICHE. Trois choix de
+ * présentation, chacun pour une raison :
+ *   · la ligne entière est la cible (pas un chevron de 12 px à viser) ;
+ *   · le chevron dit qu'il y a quelque chose à ouvrir — sans lui, une ligne de
+ *     texte ne se distingue pas d'une ligne cliquable ;
+ *   · ce qui n'est JAMAIS lisible est écrit SUR LA FICHE, pas seulement dans la
+ *     règle en tête de panneau : un partage dont on ignore les limites se lit
+ *     comme un partage total, et c'est au moment où l'on regarde qu'il faut le
+ *     dire.
+ */
+.gens-ligne {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 0; color: inherit; font: inherit; text-align: left;
+  padding: 8px 6px; border-radius: 8px; cursor: pointer;
+}
+.gens-ligne:hover { background: rgba(127, 209, 255, .07); }
+.gens-ligne.on { background: rgba(127, 209, 255, .12); }
+.gens-chevron { margin-left: auto; color: #7fd1ff; font-size: 11px; }
+.gens-fiche { padding: 4px 6px 10px; }
+.gens-sous-titre { margin-top: 8px; font-size: 11px; color: #8b98a8;
+  text-transform: uppercase; letter-spacing: .06em; }
+.gens-exclu { margin-top: 10px; padding: 6px 8px; border-radius: 7px; font-size: 11px;
+  color: #ffcf9a; background: rgba(255, 158, 74, .10);
+  border: 1px solid rgba(255, 158, 74, .26); }
+
+@media (max-width: 720px) {
+  /* La cible tactile, dans les deux sens — comme partout ailleurs. */
+  .gens-ligne { min-height: 44px; padding: 10px 8px; }
+  .gens-fiche .gens-act, .gens-fiche .chip { min-height: 44px; min-width: 44px; }
+}
+
+/* ══ CE QUE LA LIGNÉE MULTI-ÉCRIVAIN AJOUTE, ET QUE LA FUSION GARDE ══════════ */
+
+/* ── STRUCTURER SES CONVERSATIONS (liste du chat) ──────────────────────────
+   La liste s'insère ENTRE l'en-tête et le corps : elle ne recouvre pas la
+   conversation en cours, on voit toujours ce qu'on est en train de lire.
+   Chaque ligne porte son état (ouverte, épinglée, rangée) et ses gestes, sans
+   menu déroulant : un rangement caché derrière un clic de plus ne se découvre pas. */
+.chat-convs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(159, 214, 255, 0.18);
+  background: rgba(8, 14, 22, 0.72);
+  max-height: 42vh;
+  overflow-y: auto;
+}
+.chat-conv {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  padding: 2px 4px;
+
+  &.on { background: rgba(159, 214, 255, 0.10); }
+}
+.chat-conv-ouvrir {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+
+  &:hover { background: rgba(159, 214, 255, 0.08); }
+  b { font-weight: 600; }
+}
+.chat-conv-meta { font-size: 11px; opacity: 0.7; }
+
+/* ── L'ÉCHELLE : UN CURSEUR VERTICAL QUI PORTE LA DONNÉE ────────────────────
+   « Plutôt que ces boutons » : un curseur occupe une POSITION (la descente est
+   continue), et chaque cran porte ce que la scène y contient réellement. Le rail
+   est vertical par `writing-mode` — la façon moderne, qui garde le clavier, le
+   tactile et l'accessibilité d'un `<input type=range>` ; `direction: rtl` place
+   le plus large (espace) en HAUT et le plus fin (signaux) en BAS, comme une
+   coupe : on descend pour entrer. */
+.echelle-curseur {
+  position: absolute;
+  /* ── AU-DESSUS DE LA BARRE DE SCÈNE, ET PAS DESSOUS ──────────────────────
+     MESURÉ : à `z-index: 6`, `elementFromPoint` sur le cran « monde » répondait
+     `DIV.echelle-bar` — la barre de la scène recouvrait le curseur, et le clic ne
+     faisait RIEN. L'ancien sélecteur de vues vivait à 41 (`z-index`) ; on se place
+     juste au-dessus, et à gauche, où la barre ne s'étend pas. */
+  top: 50%;
+  transform: translateY(-50%);
+  left: 10px;
+  z-index: 42;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 6;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(8, 14, 22, 0.55);
+  backdrop-filter: blur(2px);
+
+  .ec-colonne { display: flex; flex-direction: column; gap: 2px; }
+  .ec-cran {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    background: none; border: 0; color: inherit; font: inherit;
+    text-align: left; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+    opacity: 0.62;
+
+    b { font-size: 12px; font-weight: 600; }
+    &:hover { opacity: 1; background: rgba(159, 214, 255, 0.08); }
+    &.on { opacity: 1; background: rgba(159, 214, 255, 0.14); }
+  }
+  .ec-donnees { font-size: 10px; opacity: 0.8; max-width: 22ch; }
+  .ec-rail {
+    writing-mode: vertical-lr;
+    /* ── LE SENS DE L'AXE EST UNE MESURE, PAS UNE INTENTION ──────────────────
+       J'avais écrit « direction: rtl » en commentant « espace en haut » — MESURÉ
+       au clic : le HAUT donnait le cran 2 et le BAS le cran 0, donc l'inverse.
+       Retiré : le minimum (espace) est en haut, le maximum (signaux) en bas, et
+       la liste des crans à côté suit le même sens. Une flèche qui pointe à
+       l'envers est un mensonge de plus. */
+    width: 22px;
+    height: 132px;
+    accent-color: #7fd1ff;
+  }
+}
+
+// ── TIMELINE D'UNE SESSION ────────────────────────────────────────────────────
+.tl-flottant { bottom: 86px; }
+.tl-voile {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(6, 10, 18, .96);
+  display: flex; flex-direction: column;
+  color: #dbe6f5;
+}
+.tl-entete {
+  display: flex; gap: 10px; padding: 12px 16px;
+  border-bottom: 1px solid rgba(127, 209, 255, .2);
+}
+.tl-champ {
+  flex: 1; background: rgba(255,255,255,.06); color: #dbe6f5;
+  border: 1px solid rgba(127,209,255,.3); border-radius: 8px; padding: 8px 12px;
+  font-size: 14px; font-family: ui-monospace, monospace;
+}
+.tl-vide { padding: 24px 16px; opacity: .7; }
+.tl-panneau { flex: 1; overflow: auto; display: flex; flex-direction: column; }
+.tl-tete {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline;
+  padding: 10px 16px; border-bottom: 1px solid rgba(127,209,255,.15);
+  font-size: 13px; opacity: .9;
+}
+.tl-session { font-family: ui-monospace, monospace; color: #7fd1ff; }
+.tl-compte { color: #9fe3a8; }
+.tl-totaux { margin-left: auto; opacity: .75; }
+.tl-fil { list-style: none; margin: 0; padding: 0; flex: 1; }
+.tl-ev { padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,.05); }
+.tl-ligne { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; font-size: 12px; }
+.tl-badge { font-weight: 600; }
+.tl-seq { color: #7a8aa0; font-family: ui-monospace, monospace; }
+.tl-tokens { color: #c9b46a; font-family: ui-monospace, monospace; }
+.tl-texte {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12.5px;
+  color: #c3d2e6; max-height: 320px; overflow: auto;
+}
+.tl-msg.tl-user .tl-badge { color: #7fd1ff; }
+.tl-msg.tl-assistant .tl-badge { color: #9fe3a8; }
+.tl-appel .tl-badge { color: #e0b56a; }
+.tl-resultat .tl-badge { color: #a8a0c8; }
+.tl-erreur, .tl-chargement { padding: 24px 16px; opacity: .8; }

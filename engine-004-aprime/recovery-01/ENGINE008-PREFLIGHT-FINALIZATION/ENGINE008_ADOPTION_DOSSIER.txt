@@ -1,0 +1,132 @@
+ENGINE-008 -- DOSSIER D'ADOPTION ET CLOTURE TECHNIQUE
+==========================================================================
+T4 EST FERME SUR LES QUATRE CAS. 299 controles verts sur rebuild complet.
+Seule l'adoption de P4' reste ouverte.
+
+=== T4 : LES QUATRE CAS ===
+T4_COPY_CAPTURE=JUSTIFIED
+  Verbatim llama-graph.cpp:1526-1535 : la branche de capture cree DEUX ggml_dup
+  (src0 = l ACTIVATION, puis src0 = le RESULTAT du matmul) et UN SEUL
+  ggml_mul_mat(w, ...). Les dup sont exclues par opcode ET par src0. Le
+  producteur lui-meme les compte comme DUP (`f1a_ctr_dup_added += 2`).
+  Teste : 3 matmul + 3 dup -> n_expected_invocations=3, COMPLETE.
+T4_WEIGHT_ALIAS=JUSTIFIED
+  `build_lora_mm` passe `w` DIRECTEMENT a `ggml_mul_mat` : le src0 EST le
+  tenseur enregistre, sans vue ni reshape. Et un src0 NON resolu n'est PAS
+  attribue arbitrairement : il est COMPTE (`scan_unregistered_src0`), une limite
+  est publiee (`MATMUL_SRC0_NOT_IN_REGISTRY`) et la COMPLETUDE EST INTERDITE
+  avec une reference ambigue nommee. Teste.
+T4_EXPERT_SELECTION=JUSTIFIED
+  Quatre notions DISTINGUEES : poids charge / operation construite / operation
+  presente dans le graphe SOUMIS / selection pendant le calcul. Nous comptons la
+  TROISIEME. Un expert charge mais NON selectionne n'a pas de noeud -> non
+  compte. Teste : 3 eligibles, 2 operations -> eligible=3, expected=2. Le
+  nombre d'experts charges n'est PAS assimile aux cibles attendues.
+  `GGML_OP_MUL_MAT_ID` EST compte (teste). Perimetre Q1 : aucun suffixe `_exps`
+  ni `shexp` dans le manifeste.
+T4_SHARED_WEIGHT_OTHER_OPERATION=JUSTIFIED
+  L'opcode ET l'identite du poids suffisent parce que la correspondance est
+  DEMONTREE sur le chemin applicable : `build_lora_mm` ne cree que
+  `ggml_mul_mat`, plus des `ggml_dup` et un `ggml_mul(ctx0, res, w_s)` dont src0
+  est `res`. Une op non-matmul portant le poids est comptee SEPAREMENT
+  (`scan_nonmatmul`) et JAMAIS retenue. Teste : 5 non-matmul + 3 matmul ->
+  expected=3, scan_nonmatmul=5.
+INVOCATION_MAPPING_STATUS=JUSTIFIED
+  Les quatre cas sont fermes par la source ET par des tests traversant
+  `run_pipeline` jusqu'au rapport serialise. Les fixtures construisent les
+  COMPTES REELS que l'adaptateur produit, pas des etiquettes dans un nom.
+
+=== TESTS SUR L'ETAT FINAL (rebuild complet, aucun PASS herite) ===
+  t-t4        14/14      t-inv       33/33      t-p4        26/26
+  t-wht       54/54      t-e2e       24/24      t-connect   75/75
+  t-whtpipe    8/8       t-parser    42/42      t-launcher  23/23
+  TOTAL 299 controles, 0 echec.
+  Garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3.
+
+=== IDENTITES FINALES ===
+  REAL_HARNESS_BINARY_SHA256=12d3d96b3fc79cb61ac281de72d31f52b4129eee16e8b7706dabc1311b50d816
+  LAUNCHER_SHA256=95c1cd6c0e64d7114596893b9b818814e2f35a6da396f0bac2cfb2db28daf355
+  HARNESS_SOURCE_MANIFEST_SHA256=b4c5bca89ddf27a5c577346d989f8cd426691facd4d4d9dfc3cfc0f440f0b303
+  t-e2e     3bab4ccebd355893da849468863fa17f5341477c3f668574674bb3ef4b5af742
+  t-t4      e7b86d0e00ad939736948f5cc1d847a1a4b7ba38ca54c4280dd8feb29216c62d
+  t-connect dbf929146634d9c71e56aca2d5a39b3eea0962673b165bd9dc1efb5a224b6f2c
+  INVENTORY_SHA256=e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+  PROMPT : 320 octets, 59 tokens,
+    rendu 92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658
+    IDs  ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e
+    concordance baseline/candidat ETABLIE.
+
+=== COMPOSANTS A GELER (liste, sans circularite) ===
+  1. harnais reel        12d3d96b3fc79cb61ac281de72d31f52b4129eee16e8b7706dabc1311b50d816
+  2. lanceur             95c1cd6c0e64d7114596893b9b818814e2f35a6da396f0bac2cfb2db28daf355
+  3. manifeste source    b4c5bca89ddf27a5c577346d989f8cd426691facd4d4d9dfc3cfc0f440f0b303
+  4. bibliotheques resolues (ldd) :
+       libllama.so.0.0.135     87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+       libllama-common.so.0.0.135  a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20
+       libggml / -base / -cpu / -cuda : resolus dans build-cuda/bin
+  5. modeles : baseline Q4_K_M, candidat OBRAIN-v3
+  6. renderer qualifie   14cbbc1336fe885a796539eb473e85388f54a4e600daae24348aeaeccf2c9bdd
+  7. template commun     c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+  8. inventaire Q1       e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+  9. plan des 4 runs     b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+ 10. protocole v2        822db99f6c288e346e1dca06c7405ab13a4a06d69bc05beccbe92e333fe5fa3d
+ 11. contrat de prompt   (320 o / 59 tokens, hashes ci-dessus)
+ 12. resultats de tests  299 controles, binaires ci-dessus
+  SCHEMA SANS CIRCULARITE : le manifeste contient l'identite du binaire. Le
+  binaire ne contient PAS l'identite du manifeste. Le document d'autorisation,
+  externe, referencera des identites deja calculees -- et reste a creer
+  separement. Aucun hash d'un document contenant celui du binaire n'entre dans
+  le binaire.
+
+=== COMMANDES EXACTES DES QUATRE RUNS (preparees, non executees) ===
+  Chaque run, processus NEUF :
+    env -u OBRAIN_NO_ROTATION \
+      OBRAIN_F1A_CAPTURE=1 OBRAIN_F1A_INVENTORY=<INVENTAIRE_SHA e4c96b6e...> \
+      OBRAIN_F1A_OUTDIR=<DESTINATION ISOLEE> OBRAIN_F1A_RUN_ID=<modele>-<run> \
+      12d3d96b... --mode real-preflight \
+        --auth-doc <DOC EXTERNE> --plan b1821f33... --protocol 822db99f... \
+        --binary 12d3d96b... --model <BASELINE|candidat> --template <c3cf9e34...> \
+        --capture-root <RACINE ISOLEE> --model-tag <baseline|candidat> --run-tag run<N>
+  Sequence : baseline1, candidat1, baseline2, candidat2. Arret au premier echec,
+  aucun retry, aucune cinquieme invocation -- applique par le lanceur (23 tests).
+
+=== DECISION SCIENTIFIQUE RESTANTE ===
+  P4' : adopter, amender ou rejeter. Voir ENGINE008_P4PRIME_DECISION_CLAUSE.md.
+  Clause : remplacer « absence de rotation observee avec couverture » par
+  « inatteignabilite du chemin WHT sous six conditions verifiees ».
+  CONSEQUENCE : la propriete change de NATURE -- INATTEIGNABILITE STRUCTURELLE
+  au lieu d'ABSENCE OBSERVEE ; elle porte sur la CONSTRUCTION du graphe et ne
+  revendique AUCUNE observation runtime directe.
+  Adopter rend P4 evaluable et leve le dernier obstacle au gel. Rejeter laisse
+  P4 NON EVALUABLE.
+  D1 conserve, D2 NON ADOPTE. Aucune autre decision ouverte.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+PREFLIGHT_PROTOCOL_FROZEN=NO
+PREFLIGHT_FREEZE_MANIFEST_SHA256=NOT_CREATED
+  Le manifeste N'EST PAS emis : P4 actuelle reste inevalable et son remplacement
+  n'est pas adopte. Les elements a geler sont listes ci-dessus, prets a l'emploi.
+  Je ne declare PAS un gel adopte.
+
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_TECHNICAL_BLOCKERS=NONE
+  T1 a T5 sont fermes. Aucune limite applicable ne subsiste dans le perimetre du
+  preflight : les cas T4 sont resolus par la source et testes dans le chemin
+  raccorde, et le seul cas qui pourrait echapper (src0 non resolu) est COMPTE et
+  INTERDIT la completude au lieu de passer inapercu.
+
+PASS_STATUS=READY_FOR_SCIENTIFIC_DECISION
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucun run, aucun gel, aucun amendement adopte, aucune donnee fabriquee, aucun
+UNKNOWN transforme en PASS. Aucun changement de Q1, du backend, des CUDA graphs,
+du batching, de la topologie ou des regles de preuve. Aucun document autorisant
+le calcul reel.

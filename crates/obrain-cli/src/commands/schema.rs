@@ -30,7 +30,8 @@ struct LabelOutput {
 #[derive(Serialize)]
 struct EdgeTypeOutput {
     name: String,
-    count: usize,
+    /// `None` quand le moteur ne sait pas compter ce type — affiche `?`.
+    count: Option<usize>,
 }
 
 /// Schema output for RDF mode.
@@ -93,7 +94,13 @@ pub fn run(path: &Path, format: OutputFormat, quiet: bool) -> Result<()> {
                             println!("label,{},{}", label.name, label.count);
                         }
                         for edge_type in &output.edge_types {
-                            println!("edge_type,{},{}", edge_type.name, edge_type.count);
+                            println!(
+                                "edge_type,{},{}",
+                                edge_type.name,
+                                edge_type
+                                    .count
+                                    .map_or_else(|| "?".to_string(), |c| c.to_string())
+                            );
                         }
                         for key in &output.property_keys {
                             println!("property_key,{},", key);
@@ -116,7 +123,11 @@ pub fn run(path: &Path, format: OutputFormat, quiet: bool) -> Result<()> {
                         for edge_type in &output.edge_types {
                             table.add_row(vec![
                                 Cell::new(&edge_type.name),
-                                Cell::new(edge_type.count),
+                                Cell::new(
+                                    edge_type
+                                        .count
+                                        .map_or_else(|| "?".to_string(), |c| c.to_string()),
+                                ),
                             ]);
                         }
                         println!("{table}\n");

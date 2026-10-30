@@ -1,0 +1,138 @@
+ENGINE-008 -- STATUT TERMINAL WHT-PIPELINE-PROOF-13
+==========================================================================
+Le collecteur WHT est RACCODE au pipeline reel, teste de bout en bout, et son
+resultat est SERIALISE. Toutes les suites passent. Aucun gel, aucun forward.
+
+WHT_REAL_COLLECTION_CONNECTED=YES
+  Le collecteur est appele DEPUIS les adaptateurs reels, DANS les fenetres, et
+  son resultat remonte a l'agregation puis au rapport. Un seul pipeline : la
+  dependance `wht_collect` a ete ajoutee a PipelineDeps, `run_pipeline` n'a pas
+  ete double. L'extension d'interface etait le minimum necessaire.
+WHT_FILE_TO_PIPELINE_SELFTEST=PASS
+  `t-whtpipe` : FICHIERS -> lecteur REEL -> collecteur WHT -> agregation.
+  Les surfaces sont ecrites selon les schemas du producteur et lues par
+  `make_real_deps().wht_collect`, qui cherche a la racine de la destination ET
+  dans son sous-repertoire `capon/`. 7 controles, 0 echec.
+  C'est ce test, et lui seul, qui autorise WHT_REAL_COLLECTION_CONNECTED=YES.
+WHT_RESULT_SERIALIZED=YES
+  Le rapport porte : `wht_collected`, `wht_windows_observed`, `wht_verdict`,
+  `wht_targets_expected`, `wht_rotation_true`, `wht_rotation_false`,
+  `wht_in_submitted_graph`, `wht_role_ok`, `wht_effect_ok`, `wht_scope`,
+  `wht_blockers`. Les COMPTES DE LIGNES et DE CIBLES sont serialises SEPAREMENT
+  (`wht_rotation_true` = lignes ; `wht_targets_expected` = cibles).
+  AGREGATION : on conserve le PIRE maillon atteint sur toutes les fenetres
+  (`wht_progress`, minimum). Une fenetre suivante valide N'EFFACE JAMAIS un
+  defaut anterieur -- teste explicitement.
+
+=== JOINTURE HISTORIQUE : VERIFIEE, ET PARTIELLE ===
+HISTORICAL_WHT_CROSS_SURFACE_JOIN=PARTIAL
+  CORRECTION DE MON ERREUR DE CONNECT-12 : j'avais declare les trois surfaces
+  « absentes du repertoire on/ ». Elles y sont -- dans `on/capon/`, la
+  DESTINATION DE CAPTURE, pas a la racine du run. Douze repertoires portent les
+  4 surfaces ; j'ai lu le mauvais.
+  Mesure sur `.../e7b-f1a-q1-forward-v1/on/capon/` :
+    manifeste 672 lignes / 336 cibles (epochs 0 et 1, kinds activation+base_output)
+    roles 168 lignes ; effet 168 ; residence 504 (= 168 cibles x 3 roles)
+    jointure manifeste <-> roles sur (epoch, target_id) : 168 SUR 336
+    jointure manifeste <-> effet  sur (epoch, target_id) : 168 SUR 336
+    jointure manifeste <-> residence sur target_id          : 168 SUR 336
+  STATUTS PRODUCTEUR sur les lignes PRESENTES : role_ok=1 168/168,
+  effect_ok=1 168/168, in_submitted_graph=1 504/504, resident=1 504/504,
+  effect_class=OUTPUT_DEPENDENT partout, roles de residence CUR_CAPTURE,
+  MM_CAPTURE, MM_RAW.
+  DONC : la moitie des cibles (168 sur 336) a une couverture roles/effet/residence.
+  Les associations manquantes sont CONSERVEES comme manquantes ; aucun fichier
+  n'a ete deplace ni fusionne. Les pointeurs historiques restent des VALEURS
+  ARCHIVEES, jamais dereferencees.
+WHT_CONSTRUCTION_TO_SUBMISSION_MAPPING=PARTIAL
+  Le maillon est etabli pour les 168 cibles couvertes, non pour les 168 autres.
+
+=== CONTRAT D EXECUTION : DEDUCTION JUSTIFIEE, PAS TRACE ===
+WHT_EXECUTION_PROOF_METHOD=JUSTIFIED_DEDUCTION_FROM_COMPUTE_CONTRACT
+  `submission_rc` recoit le retour de `ggml_backend_sched_graph_compute_ASYNC`
+  (llama-context.cpp:2955) ; `GGML_STATUS_SUCCESS = 0`. Le producteur ecrit
+  lui-meme : « la seule preuve de SOUMISSION ». Ce n'est donc PAS un statut
+  d'execution, et je ne m'en sers pas comme tel.
+  Chaine : soumission acceptee -> `synchronize()` (llama-context.cpp:718-723,
+  invoque :1954 et :2620) acheve -> le scheduler traite tous les `n_nodes`
+  (ggml-backend.cpp:947,1045,1080,1122,1160,1214) -> la WHT est un noeud de ce
+  graphe et son resultat atteint la sortie. Sous ces conditions, la WHT a ete
+  executee.
+WHT_EXECUTION_PROOF_SCOPE=
+  « La WHT a ete executee AU MOINS UNE FOIS dans un graphe soumis et acheve. »
+  N'ETABLIT PAS une nouvelle execution a CHAQUE pas : le cache `obrain_rot`
+  partage l'activation entre consommateurs, donc CREATION != EXECUTION INITIALE
+  != CONSOMMATION ULTERIEURE.
+  HYPOTHESES : A1 (scheduler parcourt tout le graphe) VERIFIEE par lecture ;
+  A2 (WHT dans le graphe soumis) VERIFIEE sur pieces, 504/504 ; A3 (les noeuds
+  d'un graphe ggml sont la cloture des sorties) NON VERIFIEE dans cette passe,
+  seulement corroboree par downstream_reach=1 et effect_class=OUTPUT_DEPENDENT ;
+  A4 (synchronize avant lecture des logits) LOCALISEE, ordre exact a confirmer
+  au runtime.
+  Aucune surface n'observe le deroule du backend : `effect_ok`, `role_ok`,
+  `in_submitted_graph`, `resident` ne sont PAS des traces d'execution, malgre
+  leurs noms. Une surface nouvelle n'est PAS declaree indispensable : le contrat
+  de calcul suffit a la deduction, avec A3 comme maillon a etayer.
+
+P3_CURRENT_PROTOCOL_ASSESSABLE=YES
+  Texte exact de v2 : « rotation detectee, couverture suffisante ». P3 n'exige
+  PAS de trace par operation. La methode fournit la rotation detectee, la
+  couverture par CIBLES DISTINCTES (valeurs illisibles comptees), la distinction
+  des `kind`, et en renfort la consommation dans le graphe soumis. La methode
+  SATISFAIT l'exigence au sens litteral ; la deduction d'execution est un
+  renfort documente comme tel. AUCUN amendement de P3 n'est necessaire, et si
+  l'arbitrage voulait exiger la trace par operation, ce serait une exigence PLUS
+  FORTE que v2 exigeant un amendement explicite -- que je ne propose pas.
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED   (inchange)
+
+HARNESS_SOURCE_MANIFEST_SHA256=798c04d0bdc5fc02d22862aaf3d79ad96f7442a9438bae2ccf785970fabbb961
+REAL_HARNESS_BINARY_SHA256=bedb18b9a2c2a2e5a2edf31e86e10f10de68a7a7006cf3dff0a4ca70f7b02755
+  IDENTITE NOUVELLE : `engine008_real_deps.cpp` a change (ajout de wht_collect),
+  donc le binaire reel a change et NE PEUT PAS reprendre 6623041159... de la
+  passe precedente. Autres binaires de la meme compilation :
+    t-connect  d4756808004bd2454735a7994b2f4f3afa1da298841e0fabd21ba435ab3ad322
+    t-whtpipe  5cbd827db1a657ce1e7907dab5e67b6a76396511ce5cf0b8a760705eb15fcf6d
+    t-parser   53f360c5f330db7bd5d83f433f897a7d0e466f5697fee117da227c055871f4f0
+    t-launcher c2c1fc56d34e114a3751dc67067015a8940fc7e315b0296ad77aaf7830b21628
+    t-wht      ad46823948a99b98002c6f08e55f5761b5cb7a60ba96165a4cfbc39b8f93c6d1 (inchange)
+  Identites recalculees APRES compilation reussie.
+
+TESTS REJOUES SUR CE BINAIRE (aucun PASS herite) --
+  t-connect   65 controles, 0 echec  (dont 11 nouveaux sur le raccordement WHT)
+  t-whtpipe    7 controles, 0 echec  (fichiers -> lecteur reel -> collecteur)
+  t-parser     0 echec  (captures historiques brutes)
+  t-wht        0 echec  (surfaces WHT)
+  t-launcher   0 echec  (quatre runs)
+  garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3
+
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve.
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_WHT_PIPELINE_PROOF
+
+RESTE --
+  Z1_A3 a etayer : lire `ggml_build_forward_expand` pour etablir que les noeuds
+     d'un graphe sont la cloture transitive des sorties demandees.
+  Z2_A4 a confirmer au runtime : ordre exact de `synchronize()` vis-a-vis de
+     `llama_get_logits_ith` dans le harnais.
+  Z3_Les 168 cibles sans couverture roles/effet/residence dans le run
+     historique : expliquer la regle du producteur, ou conserver la couverture
+     partielle comme fait.
+  Z4_P4 : arbitrage apres verification des six conditions sur un modele charge.
+  Z5_PUIS le protocole et le gel, sur instruction separee.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte. Aucun changement de Q1, du backend, de la
+topologie ou des regles de preuve. Les captures historiques sont lues en
+LECTURE SEULE ; aucun fichier deplace ni fusionne.

@@ -1,0 +1,132 @@
+SPHERE: f1a2_capture_graph_bound
+RESUME: La sequence S2bis / I1 / I2 a concu et implemente la capture liee au graphe des activations et des sorties de base, sans jamais la prouver a l execution. S2bis a etabli l inventaire autoritatif de 2113536 lignes eligibles, la faisabilite par lecture de source d une copie materialisee de src1, la reference q8_1 sur 7 cas, le decodage TQ2_G128 et la partition d episodes sans trou ni recouvrement, et a refuse de livrer un hook non qualifie. I1 a ecrit le patch de greffe en 18 lignes verifie par diff mais non compile, et a decouvert que l activation consommee par le matmul TQ2_G128 est l activation post-WHT, ce qui a RETIRE la cible de validation de S2bis et non la reference elle-meme. I2 a implemente le registre scope a une epoque et predeclare le budget d erreur, mais s est arrete avant le build car l extraction des payloads ne peut pas se faire a la construction du graphe. La suite a ferme le build, puis la preuve statique de duree de vie a ete REFUTEE par un SIGABRT a l extraction, cause reelle le defaut 56 corrige en N3nonies, avant que Q0-N4 mesure 672 captures integres et une transparence numerique de la greffe. Restent OUVERTS Q0 non passe, Q1 non autorise, le test d indexation independante non execute, la couverture temporelle partielle, la comparaison native des blocs q8_1 jamais observee directement, la saillance et le gain produit non mesures, et la double numerotation du defaut de reference q8_1 sous 46 puis 57.
+NOEUDS:
+[OUVERT] f1a2_statut_s2bis :: Statut final de S2bis BLOCKED GRAPH BOUND CAPTURE GATE avec hook non implemente :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_inventaire :: Inventaire autoritatif 2052096 lignes E5 et 61440 lignes E6 soit 2113536 eligibles avec somme par role concordante :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_design_faisable :: Faisabilite du design de capture par copie materialisee de src1 verifiee par lecture de source ggml_dup backend CUDA et chaine de duree de vie :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_hook_non_implemente :: Greffe de capture non implementee CAPTURE_HOOK NONE IMPLEMENTED et patch non produit dans cette passe :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PARTIEL] f1a2_s2bis_gate_a_mapping :: Gate A mapping de l operande identifie par la source mais non prouve en execution :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_gate_c_duree_de_vie :: Gate C duree de vie declare non applicable tant que le gate B n existe pas :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_gate_d_completude :: Gate D completude et forme non mesure :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PARTIEL] f1a2_s2bis_ref_q8_1 :: Gate E reference q8_1 validee sur 7 cas contre ses propres invariants mais base d echelle fp16 de amax sur 127 refutee plus tard par le natif :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_ref_tq2 :: Gate F decodage TQ2_G128 qualifie sur la table des 4 codes et l empaquetage petit boutiste verifie sur un octet :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_gate_g_operateur :: Gate G reconstruction complete de l operateur non mesuree :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_partition_episodes :: Partition en 5 episodes pour K 5120 et 6 pour K 6144 sans trou sans recouvrement avec completude dans la precision fp32 intrinseque a 8.6e-08 relatif :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_defaut_arrondi :: Defaut de la reference q8_1 utilisant np.rint half to even au lieu de roundf demi ecarte de zero trouve et corrige :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_detection_sans_gate :: Defaut trouve par relecture de sa propre sortie et non par un gate pour la troisieme fois de la serie :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PARTIEL] f1a2_s2bis_modele_arithmetique :: Modele arithmetique entier dp4a puis double mise a l echelle fp16 confirme par la source C seulement et non contre le SASS :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_budget_non_fixe :: Budget d erreur de reference non fixe en attente de la comparaison native :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_validation_non_mesuree :: Validation de la reference contre la sortie native non mesuree pour max abs moyenne abs l2 relatif et cosinus :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_s2bis_non_mutation :: Aucune mutation des sources produit ni du modele avec hashes mmvq vecdotq et llama graph inchanges et aucun patch de capture produit :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[OUVERT] f1a2_s2bis_perf_invalide :: Donnees de performance du run de capture declarees invalides et non mesurees :: docs/ENGINE-007B-F1A-S2BIS-GRAPH-BOUND-CAPTURE.md
+[PROUVE] f1a2_plumbing_28 :: Compteur de defauts de plomberie fige a 28 avec 29 non assigne de S2bis jusqua Q0 N4 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_saillance_et_gain :: Saillance ablation de qualite et gain produit non mesures a la fin de la chaine :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_statut_i1 :: Statut final de I1 BLOCKED GRAPH BOUND CAPTURE GATE avec patch ecrit non compile et non execute :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i1_patch_ecrit :: Patch de greffe ecrit applique et verifie par diff 3 ancres 18 lignes ajoutees et 1 modifiee avec sha256 archive :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i1_implementations_non_ecrites :: Implementations du registre et chargement de l inventaire pour l eligibilite non ecrits dans cette passe :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i1_build_non_tente :: Build du binaire diagnostique execution extraction et manifeste non tentes :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i1_whitening :: L activation consommee par le matmul TQ2_G128 est l activation post WHT mise en cache dans obrain_rot et partagee entre consommateurs :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[RETIRE] f1a2_i1_cible_s2bis :: La cible de validation de S2bis sur l activation brute est retiree elle doit etre corrigee ou la rotation desactivee :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i1_dedup_gratuite :: Le partage du cache obrain_rot fournit la deduplication par identite de cur sans heuristique :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i1_rotation_getenv :: La rotation depend de la variable d environnement OBRAIN_NO_ROTATION et la greffe enregistre activation brute et activation consommee :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[RETIRE] f1a2_i1_variante_retour_anticipe :: Variante du patch a retour anticipe dupliquant la boucle LoRA ecartee par le redacteur pour risque de divergence sans mesure :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PARTIEL] f1a2_i1_dups_sur_chemin_vivant :: Les deux dup seraient executes car res est retourne par construction mais dependance de graphe declaree non prouvee :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i1_gates_ouverts :: Gates de dependance de graphe duree de vie transparence OFF ON et validation native non mesures avec 0 invocation observee :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i1_greffe_sur_copie :: Greffe appliquee a une copie temporaire pour produire le diff et depot de production laisse intact :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i1_tenseurs_eligibles :: 168 tenseurs eligibles autoritatifs retenus pour l eligibilite :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_defect_46 :: Defaut 46 reference q8_1 avec arrondi bancaire au lieu de roundf resolu avant toute conclusion de saillance ou native :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_defect_46_resolu_incomplet :: Le maintien du statut resolu du defaut 46 alors que la meme composante d arrondi reapparait sous le defaut 57 n est pas explique :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_statut_i2 :: Statut final de I2 BLOCKED CAPTURE BUILD GATE avec registre implemente et binaire non construit :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i2_registre_implemente :: Registre scope a une epoque implemente en 176 lignes avec eligibilite par inventaire deduplication exacte et registre vide en fin d epoque :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i2_extraction_structurelle :: Ecriture des payloads impossible a la construction du graphe car les tenseurs n ont pas encore de donnees et end_epoch ne recoit pas les tenseurs :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i2_payload_non_implemente :: Extraction des payloads et site d appel non implementes avec frontiere de reset interdite a deviner :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i2_build_non_tente :: Build diagnostique non tente et statut BLOCKED CAPTURE BUILD GATE assume pour ne pas perdre la passe :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i2_budget_predeclare :: Budget d erreur predeclare avant toute mesure avec l2 relatif sous 1e-3 cosinus au moins 0.9999 et max abs sous 1e-2 du pic :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i2_manifeste_rotation :: Le manifeste enregistre rotation_applied calcule comme difference entre cur brut et cur consomme :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PARTIEL] f1a2_i2_reference_agnostique :: L affirmation que la reference q8_1 et TQ2 n est pas invalidee par la WHT repose sur son agnosticisme de v et non sur une mesure :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i2_gates_q0_q1 :: Gates Q0 et Q1 de completude transparence de greffe et reconstruction de l operateur non mesures :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[OUVERT] f1a2_i2_plan_non_execute :: Plan I2 a a I2 f extraction build smoke OFF Q0 et Q1 entierement a executer :: docs/ENGINE-007B-F1A-S2BIS-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_i2bis_extraction_faite :: Extraction des payloads et fenetre de duree de vie statique terminees avec build diagnostique PASS et sources produit intactes :: docs/ENGINE-007B-F1A-I2-RUNTIME-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_q0_sigabrt :: Q0 capture ON en echec SIGABRT code 134 a l extraction sur tenseur dont le buffer n est pas alloue :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[REFUTE] f1a2_preuve_statique_duree_de_vie :: Hypothese que la preuve statique de duree de vie de I2 b suffit a garantir un buffer lisible a l extraction refutee par l echec runtime :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] f1a2_defect_48 :: Defaut 48 extraction tentee sans controle de residence du buffer resolu dans la chaine de capture :: docs/ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] f1a2_defect_56 :: Defaut 56 tenseurs dup non marques comme sorties donc liberes par l allocateur trouve et resolu avec verification par preservation ciblee et transparence bit a bit :: docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] f1a2_defects_47_51 :: Defauts 47 a 49 resolus 50 resolu et verifie par discrimination OFF ON et 51 retire apres mesure :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] f1a2_r7_infra :: Trois derniers gates d infrastructure de capture fermes statut SUBMITTED GRAPH CAPTURE INFRASTRUCTURE QUALIFIED et Q0 complet autorise :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] f1a2_q0n4_captures_integres :: 672 lignes de manifeste issues du binaire corrige integres sans payload manquant sans ecart sha256 ni dimension ni valeur non finie :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a2_q0n4_transparence :: CAPTURE GRAFT NUMERICALLY TRANSPARENT YES mesure en Q0 N4 apres avoir ete NON MESURE en I1 et I2 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a2_q0n4_semantique_q8 :: Semantique q8_1 native etablie par lecture de source bloc de 32 echelle amax sur 127 en fp32 non arrondi roundf et stockage ds de 36 octets :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[REFUTE] f1a2_ref_q8_1_semantique_s2bis :: Hypothese d une base d echelle egale a fp16 de amax sur 127 avec multiplication par l inverse refutee par la source native et par l accord de la reference corrigee :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a2_defect_57 :: Defaut 57 reference q8_1 avec echelle fp16 inversee et arrondi bancaire corrige et verifie par accord avec la sortie native :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a2_defect_46_57_double :: Le meme defaut de reference q8_1 est enregistre sous 46 en I1 et sous 57 en Q0 N4 avec la composante echelle fp16 inversee en plus :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] f1a2_q0n4_validation_reference :: Reference native validee sur 3 tenseurs toutes lignes a l epoque 0 seulement avec max abs 4.76837e-07 l2 relatif 1.42314e-07 et cosinus 1.0 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a2_q0n4_effet_arrondi :: 6 lignes sur 6 ameliorees apres correction de la semantique q8_1 mediane de 2.548e-03 ramenee a 3.139e-07 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] f1a2_q0n4_alignement_blocs :: Alignement q8_1 avec les blocs TQ2_G128 confirme par la mesure a 4 sous blocs de 32 par bloc de 128 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_q0n4_intermediaire_non_observe :: Les blocs q8_1 produits par le noyau CUDA n ont pas ete copies ni observes directement la semantique vient de la source :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_q0n4_premiere_divergence_non_prouvee :: Premiere divergence numerique restante non identifiee sur le perimetre mesure et jamais prouvee :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_q0n4_livrables_absents :: Plusieurs livrables annonces non crees dont la comparaison intermediaire q8 native et le fichier de premiere divergence :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] f1a2_gate_indexation_independante :: Test d indexation independante de la ligne vers la sortie declare non execute a la fin de la chaine :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] f1a2_gate_couverture_temporelle :: Appariement temporel des echantillons de reference declare partiel les captures de l epoque 1 non reconstruites :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] f1a2_q0_non_passe :: Q0 non passe et Q1 non autorise a la fin de la chaine :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+f1a2_statut_s2bis -> f1a2_s2bis_hook_non_implemente [DEPEND] le statut bloque decoule directement de l absence de hook
+f1a2_s2bis_inventaire -> f1a2_s2bis_hook_non_implemente [DEPEND] l eligibilite de la greffe doit se fonder sur l inventaire autoritatif
+f1a2_s2bis_design_faisable -> f1a2_s2bis_hook_non_implemente [OUVRE] le design valide laisse le gate B ouvert faute d implementation
+f1a2_s2bis_ref_q8_1 -> f1a2_s2bis_validation_non_mesuree [OUVRE] la reference qualifiee sur ses invariants attend la comparaison native
+f1a2_s2bis_defaut_arrondi -> f1a2_defect_46 [DEMONTRE] le defaut trouve en S2bis est enregistre et numerote 46 en I1
+f1a2_s2bis_defaut_arrondi -> f1a2_s2bis_detection_sans_gate [DEMONTRE] le defaut a ete trouve par relecture et non par un gate
+f1a2_s2bis_modele_arithmetique -> f1a2_s2bis_validation_non_mesuree [OUVRE] le modele confirme par la source C reste a valider contre la sortie native
+f1a2_s2bis_partition_episodes -> f1a2_gate_couverture_temporelle [DEPEND] la partition est complete par construction mais l appariement temporel reste partiel
+f1a2_s2bis_gate_g_operateur -> f1a2_q0n4_validation_reference [REMPLACE] le gate G non mesure est franchi sur le sous ensemble de 3 tenseurs en Q0 N4
+f1a2_s2bis_gate_d_completude -> f1a2_q0n4_captures_integres [REMPLACE] la completude non mesuree devient un manifeste de 672 lignes sans payload manquant
+f1a2_s2bis_perf_invalide -> f1a2_saillance_et_gain [DEPEND] sans donnee de performance valide aucun gain produit n est mesurable
+f1a2_statut_s2bis -> f1a2_statut_i1 [OUVRE] le meme gate bloque encore apres l ecriture du patch
+f1a2_i1_patch_ecrit -> f1a2_s2bis_hook_non_implemente [REMPLACE] le hook inexistant devient un patch ecrit et verifie par diff
+f1a2_i1_whitening -> f1a2_i1_cible_s2bis [RETIRE] le domaine post WHT invalide la cible de validation choisie en S2bis
+f1a2_i1_cible_s2bis -> f1a2_i2_reference_agnostique [DEPEND] la correction porte sur la cible de validation et non sur la validite de la reference
+f1a2_i2_reference_agnostique -> f1a2_i1_cible_s2bis [REMPLACE] l agnosticisme de la reference remplace le soupcon d invalidation de la reference
+f1a2_i1_whitening -> f1a2_i1_dedup_gratuite [DEMONTRE] le cache obrain_rot partage fournit la cle de registre sans heuristique
+f1a2_i1_rotation_getenv -> f1a2_i1_cible_s2bis [OUVRE] la rotation etant optionnelle le domaine capture depend de la variable d environnement
+f1a2_i1_variante_retour_anticipe -> f1a2_i1_patch_ecrit [REMPLACE] la variante dupliquant la boucle LoRA est ecartee au profit du patch minimal
+f1a2_i1_dups_sur_chemin_vivant -> f1a2_i1_gates_ouverts [DEPEND] l argument par construction ne remplace pas la preuve de dependance de graphe
+f1a2_i1_gates_ouverts -> f1a2_i2_build_non_tente [OUVRE] les gates non franchis en I1 restent ouverts faute de build
+f1a2_i1_implementations_non_ecrites -> f1a2_i2_registre_implemente [REMPLACE] le registre non ecrit en I1 est implemente en I2
+f1a2_i1_greffe_sur_copie -> f1a2_s2bis_non_mutation [DEMONTRE] la greffe sur copie explique le maintien de l absence de mutation
+f1a2_statut_i1 -> f1a2_statut_i2 [REMPLACE] le gate bloquant passe de l absence de hook a l absence de build
+f1a2_i2_registre_implemente -> f1a2_i1_patch_ecrit [DEPEND] le patch de greffe reste inchange et les implementations sont ajoutees a cote
+f1a2_i2_registre_implemente -> f1a2_i2_payload_non_implemente [OUVRE] l implementation du registre laisse l extraction des payloads ouverte
+f1a2_i2_extraction_structurelle -> f1a2_i2_payload_non_implemente [DEMONTRE] l ordre des appels et l API etablissent pourquoi l extraction ne peut pas se faire a la construction
+f1a2_i2_budget_predeclare -> f1a2_s2bis_budget_non_fixe [REMPLACE] le budget non fixe en S2bis est predeclare avant mesure en I2
+f1a2_i2_manifeste_rotation -> f1a2_i1_whitening [DEPEND] le champ rotation_applied materialise la decouverte du domaine post WHT
+f1a2_i2_plan_non_execute -> f1a2_i2_build_non_tente [OUVRE] le plan I2 a a f reste entierement a executer
+f1a2_i2_gates_q0_q1 -> f1a2_q0n4_transparence [REMPLACE] la transparence de greffe non mesuree est mesuree en Q0 N4
+f1a2_i2bis_extraction_faite -> f1a2_i2_payload_non_implemente [REMPLACE] l extraction des payloads et la fenetre de duree de vie sont terminees en I2 bis
+f1a2_i2bis_extraction_faite -> f1a2_i2_build_non_tente [REMPLACE] le build diagnostique passe en I2 bis
+f1a2_q0_sigabrt -> f1a2_preuve_statique_duree_de_vie [RETIRE] l echec mesure retire la preuve statique de duree de vie de I2 b
+f1a2_defect_48 -> f1a2_q0_sigabrt [DEMONTRE] le defaut 48 nomme la cause de l echec extraction sans controle de residence du buffer
+f1a2_preuve_statique_duree_de_vie -> f1a2_defect_56 [OUVRE] la cause reelle est le defaut 56 trouve plus tard en N3nonies
+f1a2_defect_56 -> f1a2_q0n4_captures_integres [DEMONTRE] la correction du defaut 56 rend les 672 captures integres
+f1a2_r7_infra -> f1a2_q0_sigabrt [REMPLACE] l infrastructure de capture est qualifiee et le run complet autorise apres correction
+f1a2_q0n4_captures_integres -> f1a2_q0n4_transparence [DEMONTRE] des captures integres sans contradiction permettent de mesurer la transparence de la greffe
+f1a2_q0n4_transparence -> f1a2_i1_gates_ouverts [REMPLACE] la transparence non mesuree en I1 est mesuree en Q0 N4
+f1a2_q0n4_semantique_q8 -> f1a2_q0n4_validation_reference [DEMONTRE] la reference construite sur la semantique lue reproduit la sortie native a environ 1e-07
+f1a2_ref_q8_1_semantique_s2bis -> f1a2_s2bis_ref_q8_1 [RETIRE] la base d echelle fp16 de la reference S2bis est retiree au profit de amax sur 127 en fp32
+f1a2_defect_57 -> f1a2_ref_q8_1_semantique_s2bis [DEMONTRE] la correction du defaut 57 etablit la refutation de la semantique de S2bis
+f1a2_defect_57 -> f1a2_defect_46 [DEPEND] le defaut 57 reprend la composante arrondi bancaire du defaut 46 et ajoute l echelle fp16 inversee
+f1a2_defect_57 -> f1a2_q0n4_validation_reference [DEMONTRE] la reference corrigee passe le budget sur les trois tenseurs complets
+f1a2_defect_46_57_double -> f1a2_defect_46_resolu_incomplet [OUVRE] la double numerotation laisse ouverte la portee de la resolution du defaut 46
+f1a2_q0n4_effet_arrondi -> f1a2_defect_57 [DEMONTRE] l amelioration mesuree sur 6 lignes s explique par la correction de la semantique q8_1
+f1a2_q0n4_alignement_blocs -> f1a2_q0n4_validation_reference [DEPEND] l alignement mesure des sous blocs soutient la reconstruction par tranches de la reference
+f1a2_q0n4_intermediaire_non_observe -> f1a2_q0n4_semantique_q8 [DEPEND] la semantique est qualifiee par la source et non observee donc la validation passe par la consequence
+f1a2_q0n4_livrables_absents -> f1a2_q0n4_intermediaire_non_observe [DEPEND] la comparaison intermediaire non creee est coherente avec l absence d observation directe
+f1a2_q0n4_premiere_divergence_non_prouvee -> f1a2_q0_non_passe [OUVRE] la premiere divergence non identifiee interdit de promouvoir Q0
+f1a2_gate_indexation_independante -> f1a2_q0_non_passe [OUVRE] le test d indexation independante non execute bloque Q0
+f1a2_gate_couverture_temporelle -> f1a2_q0_non_passe [OUVRE] la couverture temporelle partielle bloque Q0
+f1a2_q0n4_validation_reference -> f1a2_q0_non_passe [OUVRE] trois tenseurs a une epoque ne constituent pas la population exigee par Q0
+f1a2_defect_46 -> f1a2_plumbing_28 [DEPEND] les defauts numerotes du harnais sont distincts du compteur de plomberie fige a 28
+f1a2_s2bis_gate_a_mapping -> f1a2_i1_gates_ouverts [DEPEND] le mapping de l operande reste identifie par source et non prouve en execution au fil des passes
+f1a2_s2bis_gate_c_duree_de_vie -> f1a2_i1_gates_ouverts [DEPEND] la duree de vie declaree non applicable devient un gate non mesure des que le patch existe
+f1a2_s2bis_ref_tq2 -> f1a2_q0n4_validation_reference [DEPEND] le decodage ternaire qualifie est un ingredient de la reconstruction validee en Q0 N4
+f1a2_i1_build_non_tente -> f1a2_i2_build_non_tente [DEPEND] le build du binaire diagnostique reste non tente d une passe a l autre
+f1a2_i1_tenseurs_eligibles -> f1a2_i2_registre_implemente [DEPEND] l eligibilite par inventaire porte sur les 168 tenseurs autoritatifs
+f1a2_defects_47_51 -> f1a2_defect_48 [DEPEND] le defaut 48 appartient a la serie 47 a 51 nee de la chaine de capture

@@ -1,0 +1,24 @@
+STRUCTURED_VALIDITY_CONFIG_v1
+
+Population : items IFEval contenant >=1 instruction d un namespace de FORME.
+Le score structured-validity EST le STRICT officiel, restreint a ce sous-ensemble.
+
+NAMESPACES INCLUS :
+  detectable_format      FORMAT de reponse (json, sections, listes, titre, reponse contrainte)
+  change_case            CASSE de la reponse
+  startend               FORME de debut/fin (citation, terminaison exacte)
+  punctuation            PONCTUATION
+  combination            STRUCTURE de reponse (repetition du prompt, deux reponses)
+
+NAMESPACES EXCLUS :
+  keywords               contrainte de CONTENU semantique (presence/absence/frequence de mots)
+  length_constraints     contrainte de LONGUEUR/COMPTAGE seule
+  detectable_content     contrainte de CONTENU (placeholders, postscript)
+  language               contrainte de LANGUE / sujet
+
+STRUCTURED_VALIDITY_ITEM_COUNT=370
+STRUCTURED_VALIDITY_MINIMUM=100
+STRUCTURED_VALIDITY_MINIMUM_MET=YES
+
+Aucune exclusion n a ete motivee par un resultat modele : aucune inference
+n a eu lieu avant ce gel.

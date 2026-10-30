@@ -1,0 +1,27 @@
+graph TD
+  A["Objectif : prefill/décodage ×10-×100<br/>via représentation mathématique"] --> B["Goulots MESURÉS"]
+  B --> B1["Prefill ~725 tok/s<br/>plafonné par 48 couches récurrentes (séquentielles)"]
+  B --> B2["Blob 65 Ko/token (attention f16)<br/>+ 156,9 Mo récurrent (f32)"]
+  B --> B3["Injection 50% SHA256 + 29% copie<br/>(set_data = 2,5% seulement)"]
+
+  B1 --> C["LEVIER : ternarisation des poids"]
+  C --> C1["Rotation WHT (obrain-rotation.h)<br/>implémentée + testée (orthogonale)"]
+  C1 --> C2["Types TQ1_0 (1,69b) TQ2_0 (2,06b) TQ2_G128 (2,13b)<br/>connus du quantifieur"]
+  C2 --> C3["Noyaux CUDA présents :<br/>vecdotq.cuh, mmvq.cuh, wht.cuh, convert.cu"]
+  C3 --> C4["?? MAILLON À VALIDER :<br/>modèle TQ2 principal + mesure tok/s réelle"]
+  C4 --> C4a["Draft TQ2 existent (mtp-*, 799-1882 Mo)<br/>mais PAS de modèle principal TQ2"]
+  C4 --> C4b["llama-quantize NON construit<br/>(binaire absent)"]
+  C4 --> C4c["Base f16 à localiser<br/>(v3 = file_type 42, déjà quantifié)"]
+
+  B2 --> D["LEVIER : état i8/f16 (OBRAIN_STATE_TYPE)"]
+  D --> D1["R+S en i8 → blob récurrent ÷4<br/>mais attention domine à long contexte<br/>(gain <4% à 47k tokens)"]
+
+  B3 --> E["LEVIER : alléger ma surcharge<br/>(SHA256 hors chemin, copie évitée)<br/>gain ~×2 sur l'injection, pas ×100"]
+
+  C4 --> F["PROCHAINES ÉTAPES"]
+  F --> F1["1. Construire llama-quantize"]
+  F --> F2["2. Localiser/obtenir base f16/bf16 27B"]
+  F --> F3["3. Quantifier → TQ2_G128 (rotation auto)"]
+  F --> F4["4. Benchmark prefill+décodage tok/s vs base 725/13"]
+  F --> F5["5. Contrôle qualité (59 IDs → même continuation)"]
+  F --> F6["6. Itérer : TQ1_0 si TQ2 tient"]

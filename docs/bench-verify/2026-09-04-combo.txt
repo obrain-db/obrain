@@ -1,0 +1,2 @@
+C1 obrain-engine (35 k/248 k) : ingestion 0,089 s + tri 0,374 s + réponse 0,040 s = 0,50 s
+C1 kuzu (20 k/89 k) : ingestion 0,059 s + tri 0,182 s + réponse 0,052 s = 0,29 s

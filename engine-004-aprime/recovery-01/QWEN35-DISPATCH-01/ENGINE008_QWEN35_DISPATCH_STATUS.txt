@@ -1,0 +1,85 @@
+ENGINE-008 -- STATUT TERMINAL QWEN35-DISPATCH-01
+==========================================================================
+Assertion C TRANCHEE par le dispatch reel. Audit statique. Aucun forward.
+
+ACTUAL_QWEN35_BUILDER_IDENTIFIED=YES
+ACTUAL_QWEN35_BUILDER_SYMBOL=llama_model_qwen35::build_arch_graph
+  -> selectionne llm_build : llama_model_qwen35::graph      (STANDARD, :137)
+                            llama_model_qwen35::graph_mtp  (MTP, :500)
+  Le constructeur specifique vit dans src/models/qwen35.cpp -- repertoire que
+  mes recherches precedentes n avaient PAS ouvert (erreur de perimetre corrigee).
+  Dispatch verbatim, qwen35.cpp:129-134 :
+    if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) return make_unique<graph_mtp>(...);
+    return make_unique<graph>(...);
+BUILD_INCLUSION_VERIFIED=YES
+  src/models/ contient un CMakeLists.txt et qwen35.cpp y figure.
+PREFILL_DISPATCH_TRACE_COMPLETE=YES
+DECODE_DISPATCH_TRACE_COMPLETE=YES
+  Meme build_arch_graph ; gtype consomme en llama-context.cpp:2264 (ubatch),
+  :2869 (prefill) et :3868 (decode).
+NEXTN_RELEVANT_HELPERS_AUDITED=YES
+  Consommateurs de layer.nextn.* -- TOUS dans graph_mtp (qwen35.cpp:535-565) :
+  build_lora_mm(layer.nextn.eh_proj), build_norm(layer.nextn.hnorm),
+  build_norm(layer.nextn.enorm), layer.nextn.embed_tokens, shared_head_norm.
+  La classe standard `graph` n en consomme AUCUN.
+
+STANDARD_NEXTN_OPERATIONS_CONSTRUCTED=NO
+STANDARD_NEXTN_OPERATIONS_INCLUDED_IN_SUBMITTED_GRAPH=NO
+  Preuve par SEPARATION DE CLASSES et flux de code, pas par absence de
+  sous-chaine. Commentaire source qwen35.cpp:157 : « MTP/NextN layers are loaded
+  as extra decoder blocks but not executed in the main pass. »
+
+AUXILIARY_NEXTN_STATE_PRODUCED=YES
+  qwen35.cpp:225-226, dans la classe STANDARD :
+    cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+    cb(cur, "h_nextn", -1);  res->t_h_nextn = cur;
+  NATURE EXACTE : ce n est PAS une operation NextN. C est le DERNIER ETAT CACHE
+  DU TRONC, apres output_norm, PUBLIE pour qu un futur passage MTP le consomme.
+  Le chemin standard ne consomme rien de NextN : il OFFRE son etat.
+AUXILIARY_NEXTN_STATE_EXPORTED=NO
+  qwen35.cpp:228 gate par embeddings_nextn_masked ; llama-context.cpp:1874 et
+  :2304 gatent la lecture hote par cparams.embeddings_nextn -- false par defaut
+  (:151), non modifie par le harnais. Produit dans le graphe, NON exporte.
+MTP_GRAPH_DISPATCH_RESOLVED=YES
+  Deux classes distinctes dans qwen35.cpp, selection par params.gtype.
+  M3 (setter de t_h_nextn) est RESOLU : il existe, qwen35.cpp:226 et :645.
+  Mon grep precedent, limite a src/*.cpp, ne l avait pas vu.
+
+QWEN35_STANDARD_NEXTN_EXCLUSION_STATICALLY_JUSTIFIED=YES (conditionnel)
+STATIC_PROOF_ASSUMPTIONS=
+  A1 ctx_type = LLAMA_CONTEXT_TYPE_DEFAULT (defaut llama_context_default_params,
+     non modifie par le harnais) -> LLM_GRAPH_TYPE_DEFAULT
+  A2 embeddings_nextn = false (defaut llama-context.cpp:151, non modifie)
+  A3 selection par build_arch_graph (qwen35.cpp:129-134) de la classe
+     llama_model_qwen35::graph
+
+NOTE UTILE : qwen35.cpp:40  mtp_only = (n_layer_nextn > 0) && (get_weight(
+  "blk.0.attn_norm.weight") == nullptr). Le candidat possede blk.0.attn_norm.weight
+  -> mtp_only = FALSE : c est un MODELE COMPLET avec un bloc MTP, pas un fichier
+  MTP seul. Son tronc est construit normalement.
+
+RUNTIME_STANDARD_PATH_CONFIRMATION=NOT_EXERCISED
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_DISPATCH_AUDIT
+
+REMAINING_PROOF_REQUIREMENTS=
+  P4_seule reste : observer AU RUNTIME les valeurs effectives de A1/A2 sur le
+     vrai contexte cree, et le gtype reellement transmis. Aucune preuve statique
+     ne devient RUNTIME_CONFIRMED.
+  P5_reprendre les travaux hors perimetre : closure renderer, chemin nominal
+     d autorisation, v1.1 du protocole, gel preflight.
+
+ENGINE008_NEXT_STEP=P4 (au premier run autorise : confirmer ctx_type/embeddings_nextn
+  et le gtype effectif), sinon P5
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun forward, aucune generation, aucun
+rebuild, aucun nouveau gel. Aucune modification de libllama Q1, des modeles,
+corpus, scorers, seuils, renderer, harnais, contrats ou identites historiques.
+Aucune suite synthetique nouvelle. Les artefacts QWEN35-BUILDER-01 sont INTACTS.

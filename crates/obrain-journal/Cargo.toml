@@ -1,0 +1,30 @@
+[package]
+name = "obrain-journal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Journal de calcul inviolable et reçus signés pour Obrain — l'histoire qu'un opérateur ne peut pas réécrire sans que ses clients le voient."
+
+[features]
+default = []
+
+[dependencies]
+# Signatures Ed25519 : le reçu qu'un client détient ne peut pas être renié
+ed25519-dalek = { workspace = true }
+sha2.workspace = true
+# Entropie du système d'exploitation (graine de la clé de journal)
+getrandom.workspace = true
+zeroize.workspace = true
+hex.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

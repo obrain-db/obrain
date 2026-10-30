@@ -1,0 +1,101 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-BUILD-01
+==========================================================================
+Passe interrompue par limite de contexte. Aucun forward pass n'a eu lieu.
+Aucun resultat inventé. Travail acheve conserve.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=PREFLIGHT_BUILD_ONLY
+
+RENDERER_QUALIFIED=NO
+  B4 non close : ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md non produite.
+RENDERER_QUALIFICATION_AUTHORITY_SHA256=NOT_AVAILABLE
+SYSTEM_RULE_MATERIALIZED=YES
+TASK_ARTIFACTS_REFERENCE_MATCH=YES
+  Les 2 698 entrees rendues sont INCHANGEES et leurs identites verifiees :
+  TASK_RENDERED_INPUTS.jsonl ef3a4702355258c636a9dccd2691860928628648b0e61752f1e5db0233036784
+  MMLU_CHOICES_INPUTS.jsonl   9a87459668631613f9485a65606c74e0ed1c824f331f6ed28f8fec1248eac498
+  TASK_GLOBAL_ITEM_ORDER.txt  b7bbade7658b3c4ff397573cb5bf4033da03c37d45aceb4392493ce1e2a940a1
+  Aucun re-rendu effectue (aucune dependance pertinente n'a change).
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/, ggml/, include/, common/ ; reference=etat qualifie Q1 tel que trouve
+QUALITY_EVAL_HARNESS_SOURCE_SHA256=3e9691918fa5e861862f7068bbb4af0025d8c1ca2e21a978a0cd32c658aeab7d
+  (inchange : le harnais n'a PAS ete etendu dans cette passe)
+QUALITY_EVAL_HARNESS_BINARY_SHA256=011bd43880307fe1271eeb7b7865889a135f2689d6a4c74091177163892a0665
+  (inchange)
+
+PREFLIGHT_FULL_LOAD_PATH_IMPLEMENTED=NO
+PREFLIGHT_PREFILL_PATH_IMPLEMENTED=NO
+PREFLIGHT_DECODE_LOOP_IMPLEMENTED=NO
+HARNESS_COMPUTE_GUARD_SELFTEST=PASS
+  (herite de PROTOCOL-HARNESS-01, non rejoue : binaire inchange)
+GREEDY_AND_STOP_SYNTHETIC_SELFTEST=PASS
+  (herite : argmax, egalites au plus petit id, top5, logsumexp, rejets NaN/Inf ;
+   NON etendu au contrat d'arret complet, qui reste a ecrire)
+
+WHT_CAPTURE_METHOD=Q1_NATIVE_F1A_INSTRUMENTATION
+  rotation_applied=(cur_raw!=cur_used), f1a-capture.cpp:473 ; instrument DEJA
+  compile dans libllama 87c42d5f ; inerte sauf OBRAIN_F1A_CAPTURE=1 ;
+  surface=EVENT_LEDGER.csv + GRAPH_CAPTURE_MANIFEST.csv + GRAPH_ROLE_RELATIONSHIPS.csv
+WHT_CAPTURE_IMPLEMENTED=NO
+  Conception ecrite et ancree aux sources ; activateur et collecteur non codes.
+WHT_CAPTURE_COLLECTOR_SELFTEST=NOT_RUN
+MTP_CAPTURE_METHOD=Q1_NATIVE_F1A_GRAPH_SUBMISSION_CAPTURE
+  f1a_mark_compute_submission(gf,rc) -> COMPUTE_SUBMIT + graph_fingerprint ;
+  NextN est un concept de premier ordre (t_h_nextn, n_layer_nextn, LLM_TENSOR_NEXTN_*)
+MTP_CAPTURE_IMPLEMENTED=NO
+MTP_CAPTURE_COLLECTOR_SELFTEST=NOT_RUN
+RUNTIME_CAPTURE_STATUS=INCOMPLETE
+
+TASK_PREPARATION_READY=YES
+PREFLIGHT_HARNESS_READY=NO
+QUALITY_EXECUTION_PATH_READY=NOT_ASSESSED
+
+ENGINE008_PROTOCOL_SHA256=c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3
+ENGINE008_FREEZE_MANIFEST_SHA256=855172969ef621fd0223a79d5443dd44c81fd08b329c212af915b55fdcb82a42
+ENGINE008_PROTOCOL_FROZEN=YES
+  Le gel v1 reste INTACT et n'a pas ete reecrit. v1.1 non produite : aucun
+  document normatif n'a change de contenu (R3 etait deja materialisee par
+  PREFLIGHT-01). Ne pas conserver c42f485d... comme identite d'un document
+  modifie : ce document n'a PAS ete modifie.
+
+PREFLIGHT_BASELINE_RUN_COUNT=0
+PREFLIGHT_CANDIDATE_RUN_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+TASK_QUALITY_RESULT_COUNT=0
+TOKEN_QUALITY_RESULT_COUNT=0
+LONG_CONTEXT_RESULT_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Ce n'est PAS une gate scientifique, ni une impossibilite technique.
+  Aucun resultat n'a ete invente, aucun travail acheve n'a ete efface.
+FIRST_BLOCKING_GATE=NONE
+  Aucune gate scientifique n'a echoue. Le travail reste a achever.
+REMAINING_WORK=
+  W1_etendre_le_harnais_avec_un_mode_preflight (chargement complet, contexte
+     neuf, prefill, boucle de decode bornee, argmax direct, contrat d'arret,
+     compteurs distincts, garde refusant AVANT chargement/contexte/forward)
+  W2_implementer_l_activation_f1a_et_le_collecteur_des_deux_surfaces
+     (OBRAIN_F1A_CAPTURE/OUTDIR/RUN_ID ; parsing EVENT_LEDGER,
+      GRAPH_CAPTURE_MANIFEST, GRAPH_ROLE_RELATIONSHIPS)
+  W3_tester_les_collecteurs_sur_cas_synthetiques_positif/negatif/incomplet
+  W4_ecrire_le_selftest_du_contrat_d_arret (EOS, limite, off-by-one)
+  W5_fermer_B4 : ENGINE008_RENDERER_QUALIFICATION_CLOSURE_v1.md avec attentes
+     examinables (contenu exact des instructions de raisonnement, ordre des
+     blocs, ouverture assistant, absence de fallback ChatML, non-troncature)
+  W6_emettre_v1.1 (protocole, source map, contrat de preuves, autorite du
+     renderer, identite du nouveau harnais, manifeste de gel, plan previsionnel)
+  W7_verifier_le_checkpoint_et_les_correspondances_de_hashes
+
+ENGINE008_NEXT_STEP=REPRENDRE_PAR_W1 (etendre le harnais) PUIS W2 (capture f1a)
+  INSTRUCTION AUTONOME : voir ENGINE008_RESUME_PROMPT.md
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit, aucune generation, aucun scoring de sortie modele, aucune
+NLL/PPL, aucun benchmark long contexte, aucune recherche de parametres.
+Aucune modification de libllama Q1, des GGUF, des corpus, des scorers,
+des seuils, du protocole v1 ni du gel v1.

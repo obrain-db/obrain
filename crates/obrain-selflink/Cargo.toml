@@ -1,0 +1,31 @@
+[package]
+name = "obrain-selflink"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "selflink — le contact minimal avec le moteur : le self, la mémoire, les bases"
+
+[[bin]]
+name = "selflink"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+# Volontairement DEUX dépendances, et aucune de plus.
+#
+# `obrain-cli` a établi la règle pour joindre ce même service (`http_min.rs`) :
+# « obrain-cli n'embarque aucune dépendance HTTP — et n'en embarquera pas pour
+# joindre un service local ». Un client symétrique de ~150 lignes suffit. Tirer
+# `reqwest` ou `ureq` ici ferait entrer TLS, tokio et une pile de redirection
+# dans un binaire dont le seul travail est de parler à un serveur en `std::net`.
+anyhow.workspace = true
+serde_json = "1"
+# Le client HTTP minimal n'est plus local : `selfd` en a besoin pour parler au
+# modèle, et deux copies dérivées du même modèle auraient divergé.
+obrain-httpmin = { path = "../obrain-httpmin" }
+
+[lints]
+workspace = true

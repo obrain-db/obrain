@@ -1,0 +1,189 @@
+%% Ce que ce diagramme prouve : le graphe de dependances INTERNE des 30 paquets du depot
+%% banc-obrain, soit les 29 membres declares dans le [workspace] du Cargo.toml racine plus
+%% le paquet bench/substrate. Chaque arete vient d'une ligne [dependencies] ou
+%% [dev-dependencies] lue dans le Cargo.toml du paquet source. Les paquets dont le
+%% manifeste ne porte ni [lib] ni [[bin]] sont marques sans section de cible.
+%% Mesure : les 30 Cargo.toml du depot ont ete lus un par un, soit les 29 membres declares
+%% dans [workspace] members du Cargo.toml racine, plus bench/substrate qui declare son
+%% propre [workspace] et n est donc PAS membre. Lignes Rust = somme brute des fichiers
+%% *.rs du crate, target/ exclu, commentaires et lignes vides compris.
+%% DEDUIT : rien. Non etabli : le graphe des dependances EXTERNES au depot ; les features
+%% reellement activees a la compilation ; les liens de code hors Cargo.toml. Les aretes
+%% pointillees de dev-dependencies ne forment pas le graphe de compilation du produit :
+%% elles apparaissent quand les tests tournent, et deux d entre elles sont cycliques.
+
+flowchart TB
+
+  subgraph Surface["Surface produit : binaires et bibliotheques exposes a l utilisateur"]
+    obrain_cli["obrain-cli<br/>bin obrain<br/>41542 lignes .rs"]
+    obrain_viz["obrain-viz<br/>sans section de cible<br/>3271 lignes .rs"]
+    obrain_migrate["obrain-migrate<br/>bin obrain-migrate<br/>3363 lignes .rs"]
+    neo4j2obrain["neo4j2obrain<br/>lib + bin<br/>3380 lignes .rs"]
+  end
+
+  subgraph Noeuds["Noeuds autonomes : deux dependances de principe, sans chaine d outils"]
+    obrain_selflink["obrain-selflink<br/>bin selflink<br/>1066 lignes .rs"]
+    obrain_selfd["obrain-selfd<br/>bin selfd<br/>3865 lignes .rs"]
+    obrain_httpmin["obrain-httpmin<br/>client HTTP std<br/>560 lignes .rs"]
+  end
+
+  subgraph Bindings["Liaisons langages : libs dynamiques vers le moteur"]
+    bind_python["obrain-python<br/>cdylib pyo3<br/>7068 lignes .rs"]
+    bind_node["obrain-node<br/>cdylib napi<br/>2294 lignes .rs"]
+    bind_c["obrain-c<br/>cdylib + staticlib<br/>2217 lignes .rs"]
+    bind_wasm["obrain-wasm<br/>cdylib + rlib<br/>2722 lignes .rs"]
+    bind_common["obrain-bindings-common<br/>sans section de cible<br/>473 lignes .rs"]
+  end
+
+  subgraph Facade["Facade et bancs"]
+    obrain["obrain<br/>facade sans section de cible<br/>547 lignes .rs"]
+    obrain_examples["obrain-examples<br/>19 binaires<br/>2437 lignes .rs"]
+    bench_substrate["bench-substrate<br/>workspace autonome, sans section de cible<br/>2553 lignes .rs"]
+  end
+
+  subgraph Moteur["Moteur : planification, execution, indexation"]
+    obrain_engine["obrain-engine<br/>moteur de requetes<br/>166664 lignes .rs"]
+    obrain_indexer["obrain-indexer<br/>code vers graphe, tree-sitter<br/>15797 lignes .rs"]
+  end
+
+  subgraph Couches["Couches cognitives et de stockage specialisees"]
+    obrain_cognitive["obrain-cognitive<br/>energie, synapses, engram<br/>62105 lignes .rs"]
+    obrain_substrate["obrain-substrate<br/>mmap + WAL, Pod<br/>107679 lignes .rs"]
+    obrain_adapters["obrain-adapters<br/>langages de requete, WAL<br/>63686 lignes .rs"]
+    obrain_rag["obrain-rag<br/>sans section de cible<br/>4791 lignes .rs"]
+    obrain_reactive["obrain-reactive<br/>bus de mutation<br/>6698 lignes .rs"]
+  end
+
+  subgraph Fondations["Fondations : types, confidentialite du calcul, garde"]
+    obrain_core["obrain-core<br/>sans section de cible<br/>78218 lignes .rs"]
+    obrain_common["obrain-common<br/>sans section de cible<br/>14981 lignes .rs"]
+    obrain_iam["obrain-iam<br/>sans section de cible<br/>9035 lignes .rs"]
+    obrain_coffre["obrain-coffre<br/>enveloppes AEAD<br/>5666 lignes .rs"]
+    obrain_journal["obrain-journal<br/>journal signe Ed25519<br/>1527 lignes .rs"]
+    obrain_aveugle["obrain-aveugle<br/>porteur aveugle<br/>1232 lignes .rs"]
+    obrain_tls["obrain-tls<br/>transport chiffre<br/>1516 lignes .rs"]
+    obrain_garde["obrain-garde<br/>garde sans dependance<br/>669 lignes .rs"]
+  end
+
+  obrain -->|depend de| obrain_engine
+  obrain -->|depend de| obrain_core
+  obrain -->|depend de| obrain_common
+  obrain -->|depend de| obrain_adapters
+
+  obrain_examples -->|depend de| obrain
+  obrain_examples -->|depend de| obrain_engine
+  obrain_examples -->|depend de| obrain_cognitive
+  obrain_examples -->|depend de| obrain_common
+  obrain_examples -->|depend de| obrain_core
+  obrain_examples -->|depend de| obrain_reactive
+  obrain_examples -->|depend de| obrain_substrate
+
+  obrain_engine -->|depend de| obrain_common
+  obrain_engine -->|depend de| obrain_core
+  obrain_engine -->|depend de| obrain_adapters
+  obrain_engine -->|depend de| obrain_substrate
+  obrain_engine -.->|optionnel : feature cognitive| obrain_cognitive
+  obrain_engine -.->|optionnel : feature reactive| obrain_reactive
+
+  obrain_adapters -->|depend de| obrain_common
+  obrain_adapters -->|depend de| obrain_core
+  obrain_adapters -->|depend de| obrain_substrate
+
+  obrain_substrate -->|depend de| obrain_common
+  obrain_substrate -->|depend de| obrain_core
+
+  obrain_cognitive -->|depend de| obrain_common
+  obrain_cognitive -->|depend de| obrain_core
+  obrain_cognitive -->|depend de| obrain_reactive
+  obrain_cognitive -.->|optionnel : features kernel, gap-detection| obrain_adapters
+  obrain_cognitive -.->|optionnel : feature iam| obrain_iam
+  obrain_cognitive -.->|optionnel : features substrate, thinker| obrain_substrate
+  obrain_cognitive -.->|dev : tests| obrain_substrate
+
+  obrain_reactive -->|depend de| obrain_common
+  obrain_reactive -->|depend de| obrain_core
+  obrain_reactive -.->|dev : tests| obrain_substrate
+
+  obrain_rag -->|depend de| obrain_common
+  obrain_rag -->|depend de| obrain_core
+  obrain_rag -->|depend de| obrain_cognitive
+  obrain_rag -.->|dev : tests| obrain
+  obrain_rag -.->|dev : tests| obrain_substrate
+
+  obrain_indexer -->|depend de| obrain_engine
+  obrain_indexer -->|depend de| obrain_common
+
+  obrain_cli -->|depend de| obrain_engine
+  obrain_cli -->|depend de| obrain_common
+  obrain_cli -->|depend de| obrain_core
+  obrain_cli -->|depend de| obrain_substrate
+  obrain_cli -->|depend de| obrain_adapters
+  obrain_cli -->|depend de| obrain_garde
+  obrain_cli -->|depend de| obrain_rag
+  obrain_cli -->|depend de| obrain_viz
+  obrain_cli -.->|optionnel : feature indexer| obrain_indexer
+  obrain_cli -.->|optionnel : feature iam| obrain_iam
+
+  obrain_migrate -->|depend de| obrain_core
+  obrain_migrate -->|depend de| obrain_common
+  obrain_migrate -->|depend de| obrain_substrate
+
+  neo4j2obrain -->|depend de| obrain_core
+  neo4j2obrain -->|depend de| obrain_common
+  neo4j2obrain -->|depend de| obrain_substrate
+  neo4j2obrain -->|depend de| obrain_adapters
+  neo4j2obrain -.->|optionnel : feature cognitive-init| obrain_cognitive
+
+  bench_substrate -->|depend de| obrain_substrate
+  bench_substrate -->|depend de| obrain_cognitive
+  bench_substrate -->|depend de| obrain_core
+  bench_substrate -->|depend de| obrain_common
+
+  obrain_selflink -->|depend de| obrain_httpmin
+  obrain_selfd -->|depend de| obrain_httpmin
+  obrain_selfd -->|depend de| obrain_garde
+
+  bind_common -->|depend de| obrain_engine
+  bind_common -->|depend de| obrain_common
+
+  bind_python -->|depend de| obrain_engine
+  bind_python -->|depend de| obrain_core
+  bind_python -->|depend de| obrain_common
+  bind_python -->|depend de| obrain_adapters
+  bind_python -->|depend de| bind_common
+  bind_python -.->|optionnel : feature cognitive| obrain_cognitive
+
+  bind_node -->|depend de| obrain_engine
+  bind_node -->|depend de| obrain_core
+  bind_node -->|depend de| obrain_common
+  bind_node -->|depend de| obrain_adapters
+  bind_node -->|depend de| bind_common
+
+  bind_c -->|depend de| obrain_engine
+  bind_c -->|depend de| obrain_core
+  bind_c -->|depend de| obrain_common
+  bind_c -->|depend de| bind_common
+
+  bind_wasm -->|depend de| obrain_engine
+  bind_wasm -->|depend de| obrain_common
+  bind_wasm -->|depend de| bind_common
+  bind_wasm -.->|optionnel : feature rdf| obrain_core
+  bind_wasm -.->|optionnel : feature cognitive| obrain_cognitive
+  bind_wasm -.->|optionnel : feature cognitive| obrain_reactive
+
+  obrain_iam -->|depend de| obrain_common
+  obrain_iam -->|depend de| obrain_core
+  obrain_iam -->|depend de| obrain_journal
+  obrain_iam -.->|dev : tests| obrain_substrate
+  obrain_iam -.->|dev : tests| obrain_coffre
+
+  obrain_aveugle -->|depend de| obrain_coffre
+  obrain_aveugle -->|depend de| obrain_journal
+
+  obrain_core -->|depend de| obrain_common
+
+  classDef mesure fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef vide fill:#8a8a12,stroke:#4d4d0a,color:#fff
+
+  class obrain_cli,obrain_viz,obrain_migrate,neo4j2obrain,obrain_selflink,obrain_selfd,obrain_httpmin,bind_common,obrain,obrain_examples,bench_substrate,obrain_engine,obrain_indexer,obrain_cognitive,obrain_substrate,obrain_adapters,obrain_rag,obrain_reactive,obrain_core,obrain_common,obrain_iam,obrain_tls mesure
+  class obrain_garde vide

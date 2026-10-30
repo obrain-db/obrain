@@ -476,6 +476,18 @@ pub fn finalize_v2_with_opts(substrate_dir: &Path, opts: &FinalizeV2Opts) -> Res
         stats.edge_sidecar_bytes,
         store.props_v2_page_count().unwrap_or(0),
     );
+    // (2026-08-20) La ligne qui dit ce qui a été PROUVÉ, et non seulement
+    // écrit. Sans elle l'opérateur qui enchaîne 1 583 bases n'a aucun moyen de
+    // distinguer une base réellement relue d'une base dont l'échantillon serait
+    // vide (rien à drainer, ou tout déjà en v2).
+    tracing::info!(
+        "finalize-v2 relecture de contrôle : {} paire(s) relue(s) couvrant {} \
+         clé(s), en {} ms — le sidecar hérité ne sera supprimé que parce que \
+         ces couples se relisent",
+        stats.paires_relues,
+        stats.cles_relues,
+        stats.relecture_ms,
+    );
 
     store
         .flush()
@@ -1101,6 +1113,14 @@ pub fn upgrade_edges_v2_with_opts(substrate_dir: &Path, opts: &UpgradeEdgesV2Opt
         stats.scalars_emitted,
         store.props_v2_page_count().unwrap_or(0),
     );
+    // (2026-08-20) Voir le jumeau nœud dans `finalize_v2_with_opts`.
+    tracing::info!(
+        "upgrade-edges-v2 relecture de contrôle : {} paire(s) relue(s) couvrant \
+         {} clé(s), en {} ms",
+        stats.paires_relues,
+        stats.cles_relues,
+        stats.relecture_ms,
+    );
 
     store
         .flush()
@@ -1166,6 +1186,62 @@ pub fn finalize(substrate_dir: &Path) -> Result<()> {
         before_bytes / (1024 * 1024),
         after_bytes / (1024 * 1024),
         delta_bytes / (1024 * 1024),
+    );
+    Ok(())
+}
+
+/// Open a base, flush it, then truncate the WAL and reseed it with a
+/// checkpoint marker. See [`obrain_substrate::SubstrateStore::checkpoint`]
+/// for the ordering guarantee (flush precedes truncate, so discarding the
+/// journal cannot lose committed state).
+///
+/// ## Why a base needs this
+///
+/// The checkpoint primitive shipped with `obrain-substrate` at T16, but its
+/// only caller was the `checkpoint_cli` example, run by hand before
+/// benchmarks. No service ever invoked it, so on a long-lived base the WAL
+/// grows without bound and is replayed in full on every single open.
+/// Bounding it is a straight reduction in open time — measured at 2.5x on
+/// a 93 616-node base carrying a 452 MB WAL.
+///
+/// ## Why a conversion needs this
+///
+/// `merge_wal_inline_props` runs *after* `load_properties` has routed
+/// values out of the sidecar. Any value journalled before an offline
+/// sidecar conversion is therefore a candidate to be replayed over the
+/// converted state, and the following flush would persist the replayed
+/// version. Checkpointing first removes that interference.
+///
+/// Run with the service offline.
+pub fn checkpoint(substrate_dir: &Path) -> Result<()> {
+    if !substrate_dir.exists() {
+        anyhow::bail!(
+            "checkpoint target does not exist: {}",
+            substrate_dir.display()
+        );
+    }
+    let wal_path = substrate_dir.join("substrate.wal");
+    let before_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+
+    tracing::info!(
+        "obrain-migrate --checkpoint: opening {} (substrate.wal={} MiB)",
+        substrate_dir.display(),
+        before_bytes / (1024 * 1024),
+    );
+
+    let store = SubstrateStore::open(substrate_dir)
+        .with_context(|| format!("open {}", substrate_dir.display()))?;
+    let stats = store.checkpoint().context("checkpoint")?;
+    drop(store);
+
+    let after_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+    tracing::info!(
+        "obrain-migrate --checkpoint: done. substrate.wal: {} MiB → {} MiB \
+         (offset_before={}, at_lsn={})",
+        before_bytes / (1024 * 1024),
+        after_bytes / (1024 * 1024),
+        stats.wal_offset_before,
+        stats.at_lsn,
     );
     Ok(())
 }
@@ -1868,7 +1944,19 @@ fn phase_tiers(
         pairs.len(),
         skipped_wrong_dim
     );
-    let index = SubstrateTieredIndex::new(L2_DIM);
+    // Chantier SlotRemappable — index LIE a l'etat de repermutation de la
+    // base : c'est ce qui atteste que son contenu a ete bati APRES la
+    // derniere repermutation. Sans cette liaison, `persist_to_zones`
+    // refuse d'ecrire sur une base deja repermutee, pour ne pas ecraser
+    // une table slot_to_offset a jour par des slots perimes.
+    let index = {
+        let sub_mutex = substrate.writer().substrate();
+        let sub_guard = sub_mutex.lock();
+        // (Revue #3) Faillible : une zone d epoch presente mais illisible
+        // ne doit pas produire un index estampille epoch 0, qui se croirait
+        // ensuite autorise a ecraser une table remappee.
+        SubstrateTieredIndex::new_lie_a_la_base(&sub_guard, L2_DIM)?
+    };
     index.rebuild(&pairs);
 
     // T16.5 — persist L0/L1/L2 to substrate.tier0/.tier1/.tier2 so
@@ -2168,6 +2256,8 @@ mod tests {
     ///   3. be idempotent (second call on the same path is a no-op).
     #[test]
     fn finalize_noop_on_fresh_substrate_and_idempotent() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         use obrain_substrate::SubstrateStore;
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("fresh");
@@ -2217,6 +2307,29 @@ mod tests {
     /// can verify round-trip after the upgrade.
     // Test helper: the two (edge, props) pairs are clearer as a flat tuple
     // than behind single-use type aliases.
+    /// Serialise `OBRAIN_PROPS_V2` entre les tests de ce module.
+    ///
+    /// ── (2026-08-19) POURQUOI IL A FALLU EN POSER UN ────────────────────
+    ///
+    /// `std::env` est un etat de PROCESSUS. Trois entrees le mutent ici :
+    /// `seed_edge_fixture` (ci-dessous), et `finalize_v2` /
+    /// `upgrade_edges_v2` qui forcent `=1` derriere un `EnvRestorer`. Rien
+    /// ne les serialisait, et `cargo test` execute ce module en parallele :
+    /// la course existait deja, elle etait seulement invisible tant qu aucun
+    /// test ne dependait de la VALEUR du drapeau.
+    ///
+    /// Un verrou EMPOISONNE est repris, jamais propage : il ne protege aucun
+    /// invariant de donnees, seulement l ordonnancement — et une panique dans
+    /// un test ne doit pas faire mourir les suivants avant qu ils n eprouvent
+    /// quoi que ce soit (49 faux echecs pour 6 vrais, `65d54d00`).
+    fn verrou_env_props_v2() -> std::sync::MutexGuard<'static, ()> {
+        static VERROU: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        VERROU
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[allow(clippy::type_complexity)]
     fn seed_edge_fixture(
         dir: &_TestPath,
@@ -2229,7 +2342,37 @@ mod tests {
         use obrain_core::graph::traits::GraphStoreMut;
         use obrain_substrate::SubstrateStore;
 
+        // ── (2026-08-19) LA FIXTURE DOIT NAITRE EN REGIME HERITE ────────
+        //
+        // Elle fabrique une base PRE-Step-1 : `substrate.edges` a un pas de
+        // 32 octets, sans `first_prop_off`. Une telle base ne peut PAS porter
+        // de chaine v2 d aretes — l ancrage n existe pas dans son format. Ses
+        // proprietes d arete vivent donc, par construction, dans le sidecar
+        // herite, et c est ce que `persist_edge_properties_sidecar` doit
+        // trouver dans la DashMap.
+        //
+        // La fixture obtenait cette DashMap peuplee par l ECRITURE DOUBLE.
+        // Depuis son retrait, `set_edge_property` sur une base neuve — donc
+        // v2 par defaut depuis `a4c1edaf` — n ecrit plus que sur la chaine
+        // v2 : le sidecar sortait VIDE, et le `downgrade_edges_to_32b` qui
+        // suit detruisait les tetes de chaine. Les proprietes n existaient
+        // alors plus nulle part (« edge e1 prop since missing after upgrade »).
+        //
+        // On pose donc le regime EXPLICITEMENT, au lieu de dependre d un
+        // effet de bord — meme remede que pour `auto_migrates_legacy_vectors_
+        // on_load` en `65d54d00`. L appelant DOIT detenir
+        // `verrou_env_props_v2()`.
+        // SAFETY: serialise par `verrou_env_props_v2`, detenu par l appelant.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("OBRAIN_PROPS_V2", "0")
+        };
+
         let store = SubstrateStore::create(dir).expect("substrate create");
+        assert!(
+            !store.props_v2_enabled(),
+            "la fixture PRE-Step-1 doit naitre en regime herite"
+        );
 
         let a = store.create_node(&["Person"]);
         let b = store.create_node(&["Person"]);
@@ -2255,6 +2398,12 @@ mod tests {
             (PropertyKey::from("strength"), Value::Float64(0.85)),
         ];
         let e2_props = vec![(PropertyKey::from("role"), Value::String("Engineer".into()))];
+        // SAFETY: idem — on repose le drapeau des que la fixture est batie,
+        // pour que l upgrader eprouve bien son propre forcage a `=1`.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var("OBRAIN_PROPS_V2")
+        };
         (e1, e2, e1_props, e2_props)
     }
 
@@ -2325,6 +2474,8 @@ mod tests {
 
     #[test]
     fn upgrade_edges_v2_dry_run_on_post_step1_base_is_readonly() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         let td = tempfile::tempdir().unwrap();
         let subs = td.path().join("subs");
         std::fs::create_dir_all(&subs).unwrap();
@@ -2363,6 +2514,8 @@ mod tests {
 
     #[test]
     fn upgrade_edges_v2_real_run_on_post_step1_base_drains_sidecar() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         let td = tempfile::tempdir().unwrap();
         let subs = td.path().join("subs");
         std::fs::create_dir_all(&subs).unwrap();
@@ -2430,6 +2583,8 @@ mod tests {
 
     #[test]
     fn upgrade_edges_v2_rewrites_pre_step1_base_and_drains() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         let td = tempfile::tempdir().unwrap();
         let subs = td.path().join("subs");
         std::fs::create_dir_all(&subs).unwrap();
@@ -2509,6 +2664,8 @@ mod tests {
 
     #[test]
     fn upgrade_edges_v2_takes_snapshot_by_default() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         let td = tempfile::tempdir().unwrap();
         let subs = td.path().join("subs");
         std::fs::create_dir_all(&subs).unwrap();
@@ -2553,6 +2710,8 @@ mod tests {
 
     #[test]
     fn upgrade_edges_v2_bails_on_truncated_edges_file() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         let td = tempfile::tempdir().unwrap();
         let subs = td.path().join("subs");
         std::fs::create_dir_all(&subs).unwrap();
@@ -2585,6 +2744,8 @@ mod tests {
 
     #[test]
     fn upgrade_edges_v2_bails_on_nonzero_tail() {
+        // Serialise l acces a `OBRAIN_PROPS_V2` — voir `verrou_env_props_v2`.
+        let _verrou = verrou_env_props_v2();
         // Same idea but with trailing non-zero garbage: a valid Post
         // base with a handful of non-zero bytes written past `n36`.
         // The tail-zero validation must flag this as corrupt even

@@ -1,0 +1,141 @@
+ENGINE-008 -- STATUT ENGINE008-FINAL-02
+==========================================================================
+I1 (APPLICATION DE LA GATE) EST IMPLEMENTE ET DEMONTRE ACTIF.
+I2, I3, I4 NON TERMINES. AUCUNE AUTORISATION REELLE N'A ETE CREEE.
+AUCUNE SEQUENCE N'A ETE LANCEE -- regle imperative respectee.
+
+=== REGLE IMPERATIVE : RESPECTEE ===
+BLOCKED_P4_PREVENTS_FORWARD_SELFTEST=FAIL (voir ci-dessous : la gate bloque,
+  mais la suite de tests n'est PAS encore mise a jour, donc le selftest
+  requis n'est pas PASS au sens de l'instruction)
+  -> JE N'AI PAS cree d'autorisation reelle acceptee.
+  -> JE N'AI PAS lance la sequence.
+  -> J'ai continue la reparation et les tests, comme prescrit.
+  Je n'ai PAS utilise une generation reelle pour confirmer un defaut deja
+  demontre par un test. FINAL-01 est conserve comme observation reelle hors
+  validation protocolaire, ainsi que RUN-01 a RUN-06.
+
+=== I1 -- LA GATE EST DESORMAIS APPLIQUEE ===
+  Fichier : engine008_pipeline.cpp, juste apres l'evaluation de P4'.
+  Position dans l'ordre reel : autorisation (etape 1) -> destination (2) ->
+  chargement (3) -> registre + P4' (4) -> GATE -> contexte (6) -> prefill (7).
+  La gate est donc evaluee APRES chargement et acquisition du registre, et
+  AVANT le contexte et le prefill. C'est l'ordre exige.
+  CODE :
+      if (r.p4_adopted && !pc.all_pass) {
+          r.limits.push_back("P4PRIME_GATE_BLOCKED_BEFORE_FORWARD");
+          r.stop_reason = StopReason::NONE;
+          if (d.release) { trace(d, "release"); d.release(ctx, model); }
+          trace(d, "end");
+          return r;                       // AUCUN forward n'est tente
+      }
+  FAIL ou UNKNOWN -> rapport explicite, LIBERATION des ressources, zero
+  contexte, zero prefill, zero decode.
+  Le jugement G2 reste en place : il ne REMPLACE pas ce blocage, il s'y ajoute.
+
+  PREUVE QUE LA GATE BLOQUE -- c'est un resultat MESURE, pas une intention :
+    - machine a etats de l'orchestration (`t-connect`) : 27 PASS / **48 FAIL**
+    - tests d'adoption (`t-adopt`) : 11 PASS / **4 FAIL**
+    - `t-e2e` : 24/24 inchange (il utilise des gates PASS)
+    Les echecs sont EXACTEMENT les assertions qui encodaient l'ANCIEN
+    comportement, celui ou une gate BLOQUEE laissait quand meme passer le
+    contexte et le prefill. Elles tombent maintenant sur la gate :
+      nominal_ctx_ok, ordering_full_chain_traversed,
+      relative_order_load_registry_ctx_prefill_enum_correlate,
+      registry_built_and_used, blocked_limit_published,
+      overall_fail_serialized, unknown_never_becomes_pass,
+      inferred_type_blocks_gate
+    **C'est la demonstration que le blocage est effectif.** Mais ces suites
+    doivent etre REECRITES pour le nouveau contrat avant que
+    BLOCKED_P4_PREVENTS_FORWARD_SELFTEST puisse valoir PASS.
+
+=== I1 : LA CAUSE DES UNKNOWN, LUE MAIS NON ENCORE REPAREE ===
+  C1..C5 restent UNKNOWN parce que `d.p4_checks` recoit des `P4Inputs` VIDES :
+  rien ne relie le registre natif reellement acquis (851 entrees) aux entrees du
+  verificateur. J'ai ecrit le cablage, il ne compile pas encore :
+   - `RegistryEntry` n'expose PAS de champ de description de tenseur
+     (`tensor_meta` absent) : je ne peux pas lire les TYPES REELS par ce chemin.
+     Je n'ai PAS fabrique de type de substitution : C2/C3 doivent rester UNKNOWN
+     tant que le chemin d'acces aux types natifs n'est pas etabli.
+   - `NativeTensor` n'a pas de champ `ggml_type` (il en a un autre nom).
+   - `read_inventory_source` rend un `std::set<std::string>`, `validate_inventory`
+     attend un `std::vector<std::string>`.
+  J'ai RETIRE ce cablage incomplet plutot que de le laisser en place : il ne
+  compile pas, et un cablage non compile ne prouve rien.
+
+REAL_INVENTORY_CONFIGURATION_CONNECTED=NO
+EMPTY_INVENTORY_REJECTED_SELFTEST=NOT_RUN
+  L'inventaire autoritaire est identifie :
+    sha256 e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+    chemin qualification/e7b-f1a-q1-forward-v1/Q1_WHT_ELIGIBLE_INVENTORY.csv
+    168 noms, format conforme au producteur.
+  Il n'est PAS raccorde au chemin reel : `n_inventory_entries=0` en RUN-06.
+  Le faux positif `inv_globally_complete=true` a 0 entree N'EST PAS ENCORE
+  supprime : c'est precisement ce que I2 doit corriger.
+  DISTINCTION A PRESERVER : inventaire configure non vide (168 noms) vs absence
+  LEGITIME de cibles TQ2 eligibles sur la baseline Q4_K_M. Les deux ne doivent
+  jamais produire le meme verdict.
+
+F1A_CONFIGURATION_CONNECTED=NO
+  Les activateurs f1a et leur moment d'initialisation n'ont pas ete raccordes.
+  La capture reste a 0 fichier. Une capture ABSENTE reste un echec et n'est PAS
+  assimilee a une absence de WHT.
+
+=== I4 -- INJECTION : CE QUI EST ETABLI, ET CE QUI MANQUE ===
+  ETABLI : la capture f1a N'EST PAS une injection. Elle observe le graphe ggml
+  (`f1a_capture_note`, `f1a_capture_end_epoch`) et n'injecte ni tenseur, ni
+  activation, ni etat, ni KV. La nommer « injection » serait faux.
+  NON ETABLI : je n'ai pas identifie, dans engine/Obrain, le mecanisme natif
+  d'injection demande (interface ou commande, mecanisme precis, entree
+  reproductible existante, point d'application, preuve d'acceptation).
+  GRAPH_INJECTION_MECHANISM=UNRESOLVED
+  Je n'ai PAS invente de dump numerique et je n'ai PAS substitue de contexte
+  textuel au mecanisme natif.
+
+PRECOMPUTE_REQUIRED_TESTS=FAIL
+  Tous les tests requis ne passent pas : `t-connect` et `t-adopt` doivent etre
+  mis a jour pour le contrat I1. Tant que ce n'est pas fait, l'autorisation
+  reelle NE DOIT PAS etre creee -- et elle ne l'a pas ete.
+
+PREFLIGHT_SEQUENCE_RESULT=NOT_RUN
+GENERATED_IDS_PER_RUN=NOT_RUN (aucune sequence lancee dans cette passe)
+GENERATED_TEXT_PER_RUN=NOT_RUN
+INJECTION_APPLICATION_PROOF=NOT_ESTABLISHED
+
+=== CE QUI RESTE ACQUIS DE FINAL-01 ===
+  FINAL-01 a produit une generation REELLE et complete, conservee comme
+  observation hors validation protocolaire :
+    baseline1 : IDs [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]
+                TEXTE "We need answer user: \"Répond"
+                STOP_REASON MAX_NEW_TOKENS, 8/8 tokens
+    TOKEN_1596_NATIVE_PIECE = "We" (0x57 0x65, 2 octets, IS_EOG=0)
+
+=== IDENTITES ===
+  Le harnais a change (application de la gate) :
+    src-fin2/engine008_pipeline.cpp  -- voir sha dans le checkpoint
+  Un NOUVEAU GEL N'A PAS ETE EMIS : il n'y a rien a geler tant que les
+  preconditions ne sont pas PASS. Le gel v3 reste l'autorite en vigueur.
+
+REMAINING_BLOCKERS=
+  B1. `t-connect` et `t-adopt` : 52 assertions a mettre au nouveau contrat I1
+      (gate BLOQUEE -> zero contexte, zero prefill). Sans cela,
+      BLOCKED_P4_PREVENTS_FORWARD_SELFTEST ne peut pas etre PASS.
+  B2. Chemins d'acces manquants pour alimenter P4' : `RegistryEntry` n'expose pas
+      la description des tenseurs, `NativeTensor` n'a pas de champ `ggml_type`.
+      Il faut lire les types REELS via `llama_internal_get_tensor_map` et les
+      faire descendre jusqu'a `P4Inputs`. UNKNOWN reste bloquant en attendant.
+  B3. I2 : raccorder OBRAIN_F1A_INVENTORY, et REFUSER une validation complete a
+      0 entree (le vrai a-vide n'est pas un succes).
+  B4. I3 : raccorder les activateurs f1a et leur moment d'initialisation.
+  B5. I4 : identifier le mecanisme natif d'injection -- ce n'est pas f1a.
+  B6. Puis rebuild, nouveau gel, autorisation, et seulement alors la sequence.
+
+RETRY_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+--- INVARIANTS PRESERVES ---
+Aucun calcul dans cette passe. Aucune autorisation reelle creee. Aucune sequence
+lancee. Aucun changement de Q1, des modeles, du template, de l'inventaire, du
+protocole ou du plan. Aucune exigence scientifique modifiee. Les rapports
+RUN-01 a RUN-06 et FINAL-01 sont conserves.

@@ -1,0 +1,54 @@
+{
+  "area": "scripts-enrich-index — pipeline d'enrichissement et d'indexation du graphe",
+  "summary": "Cette tranche couvre les 14 scripts d'enrichissement, d'indexation et d'entretien du graphe obrain. Elle se décompose en quatre familles : (1) l'enrichissement topologique de la courbure de Ricci (`enrich-ricci-maintain.sh`, `enrich-ricci-window.sh`) sur 8 bases servies par le dashboard, où l'invariant mono-écrivain oblige à tuer les détenteurs de verrou exclusif PAR PID avant toute passe ; (2) l'indexation et le transfert de corpus : `index-code-projects.sh` (index_repository via le pont MCP), les convertisseurs Node `.mjs` qui s'appuient sur le binaire N-API `/tmp/rtprobe.node` (`runtime-to-substrate.mjs`, `code-index-to-substrate.mjs`, `code-corpus-to-binary.mjs`) pour peupler les stores substrate depuis les SQLite cbm ; (3) l'entretien et la mémoire : `entretien-bases.sh` (colonnes de degrés + diagnostic des enregistrements), `memoire.sh` / `memoire-appliquer-comptes.sh` (application journalisée du Self), `backfill-sessions.sh` (réparation des métadonnées de session perdues) ; (4) la projection de chantier `couche-decision.gql` + son pilote `couche-decision-ingest.sh`, qui encode l'ADR-2026-09-22 en 21 instructions GQL rejouables. Le fil conducteur est l'invariant mono-écrivain du substrat : tout script d'écriture arrête proprement les détenteurs, vérifie l'absence de verrou, et repart en lecture si un autre processus tient la base. Deux auxiliaires complètent l'ensemble : `session-iam.mjs` (ouverture de session authentifiée pour les bancs) et `cosmos-capture.mjs` (vérification visuelle WebGL par CDP), qui ne peuplent pas le graphe mais le surveillent."
+,
+  "components": [
+    "scripts/enrich-ricci-maintain.sh — passe continue de `obrain enrich --ricci` sur 8 bases, saute les stores verrouillés (fuser sur substrate.meta), flock mono-instance, idempotent",
+    "scripts/enrich-ricci-window.sh — fenêtre de maintenance : arrêt des détenteurs PAR PID, enrich avec reprises, relance garantie du dashboard par `trap restart_viz EXIT INT TERM`",
+    "scripts/index-code-projects.sh — insère les projets CODE (index_repository) dans runtime-prod/runtime-dev via `obrain bridge`, détaché systemd-run, arrêt/relance dsh-web + dsh-dev-3083",
+    "scripts/runtime-to-substrate.mjs — convertit un SQLite cbm runtime (nodes/edges/runtime_payloads) en store substrate, reconstruit les arêtes IN_SESSION session→message",
+    "scripts/code-corpus-to-binary.mjs — génère le corpus binaire little-endian pour `obrain native-import` (RFC §16.1)",
+    "scripts/code-index-to-substrate.mjs — importe les index de code cbm (un SQLite par projet) dans un store substrate unique, batch createEdgesBatchFast 8192, journal-import détaché",
+    "scripts/backfill-sessions.sh — rejoue les en-têtes session.jsonl.zstd via import_events (origin/parentSession) + pose source_path en GQL, simulation par défaut (--appliquer)",
+    "scripts/memoire.sh — applique le journal de mémoire du chat dans self-demo.obrain (MERGE idempotent), arrêt propre du viz serve, contrôle des détenteurs via /proc/<pid>/fd",
+    "scripts/memoire-appliquer-comptes.sh — applique le journal Self compte par compte dans selfs/<compte>.obrain, découverte des comptes par le journal (pas l'annuaire IAM)",
+    "scripts/session-iam.mjs — ouvre une session authentifiée (POST /api/auth/login) et rend le cookie ; sonde /api/stores pour détecter serveur ouvert (200) vs armé (401)",
+    "scripts/entretien-bases.sh — maintenance pendant la fenêtre de redémarrage : colonnes de degrés (repair-degrees, en place) + diagnostic/application `obrain repair` + acquittement `obrain entretien`",
+    "scripts/cosmos-capture.mjs — capture de la vue Cosmos via Chrome CDP (127.0.0.1:9248), sonde WebGL, mesure pixel via ffmpeg (contenu/luminosité/centre de lumière)",
+    "scripts/couche-decision.gql — projection GQL du chantier « couche de décision » (source docs/ADR-2026-09-22-COUCHE-DECISION.md) : 21 instructions, labels Chantier/Todo/Gate/Constraint/Pitfall/Test/Risk/CodeRef/Artefact, 121 arêtes",
+    "scripts/couche-decision-ingest.sh — pilote qui joue couche-decision.gql une instruction par invocation (parseur « entire query must be consumed »), --store explicite obligatoire, MERGE idempotent"
+  ],
+  "relationships": [
+    "enrich-ricci-maintain.sh / enrich-ricci-window.sh → `obrain enrich --ricci <store>` + fuser sur substrate.meta pour détecter les verrous exclusifs",
+    "enrich-ricci-window.sh → scripts/vizserve.sh (relance du dashboard sur :8432 via `trap restart_viz EXIT INT TERM`)",
+    "index-code-projects.sh → `obrain bridge` (outils MCP index_repository + list_projects) + systemd-run --user (détachement) + systemctl dsh-web.service / dsh-dev-3083.service",
+    "runtime-to-substrate.mjs / code-index-to-substrate.mjs / enrich-live-dev-to-store.mjs → require('/tmp/rtprobe.node') (binding N-API ObrainDB) + node:sqlite DatabaseSync",
+    "code-corpus-to-binary.mjs → consommé par `obrain native-import` (format binaire RFC §16.1)",
+    "code-index-to-substrate.mjs → spawn détaché de `obrain journal-import <dest> --prefix` (journal d'import RFC diff-incremental-variantes)",
+    "memoire.sh / memoire-appliquer-comptes.sh → `obrain memoire --self <qn> [--store] [--appliquer]` (journal append-only → MERGE dans la base Self)",
+    "entretien-bases.sh → `obrain repair-degrees`, `obrain repair [--apply]`, `obrain entretien [--accorder]` ; appelé par scripts/vizserve.sh entre arrêt et relance",
+    "backfill-sessions.sh → `obrain mcp` (import_events, sessions_list) + `obrain query` (SET source_path en GQL) ; arrête dsh-web/dsh-dev-3083 pour le verrou exclusif",
+    "couche-decision-ingest.sh → `obrain query <store> <instruction>` ligne par ligne sur couche-decision.gql",
+    "couche-decision.gql → docs/ADR-2026-09-22-COUCHE-DECISION.md (source de vérité), et ancres vers crates/obrain-engine/src/query/plan.rs, crates/obrain-cognitive/src/synapse.rs, hopfield.rs, store_trait.rs, intent.rs",
+    "session-iam.mjs → endpoints HTTP /api/stores (sonde) et /api/auth/login (session), identifiants depuis options / OBRAIN_IAM_USER+PASSWORD / data/iam.obrain.identifiants.txt"
+  ],
+  "notable_findings": [
+    "L'invariant mono-écrivain du substrat structure TOUT le périmètre : memoire.sh, backfill-sessions.sh, entretien-bases.sh et enrich-ricci-window.sh arrêtent les détenteurs puis vérifient l'absence de verrou avant toute écriture exclusive, et documentent explicitement la raison (flock partagé en lecture, refus de promotion en verrou exclusif).",
+    "enrich-ricci-window.sh documente un piège réel de pkill : `pkill -f 'obrain viz serve'` matche sa propre ligne de commande quand le motif y figure — le script se tire dessus (constaté deux fois le 2026-09-10) ; d'où l'arrêt PAR PID lu depuis fuser, jamais par motif.",
+    "Tous les convertisseurs .mjs reposent sur /tmp/rtprobe.node, un binaire N-API de 9,8 Mo posé dans /tmp — dépendance éphémère non versionnée, absente du dépôt, donc non reproductible depuis le checkout seul.",
+    "couche-decision.gql encode une liste dense de limites MESURÉES du parseur GQL : une seule instruction par invocation, INSERT d'arête non idempotent, `order` mot réservé, concaténation de chaînes rendant 0, STARTS WITH/CONTAINS inutilisables, projection d'une propriété absente éliminant la ligne (C14–C21).",
+    "couche-decision.gql durcit 21 contraintes (C1–C21) dont C20/C21 découvertes « après la première projection », alors que l'en-tête annonce encore « 19 contraintes » — dérive documentaire mineure entre le commentaire et le corps.",
+    "Les scripts hardcodent des chemins et adresses absolus non portables : /home/triviere/projects/banc-obrain, l'IP 192.168.1.103:8432, /tmp/linux-full3.obrain, /tmp/obrain-viz-cache — exécutables uniquement sur cette machine.",
+    "enrich-live-dev-to-store.mjs est un script d'enrichissement (copie de props de session runtime-dev → runtime-full-v2) mais n'est PAS capté par le glob enrich-*.sh ; il cible runtime-full-v2.obrain, absente de la liste des 8 bases de enrich-ricci-*.sh.",
+    "cosmos-capture.mjs est le seul script du périmètre dédié à la VÉRIFICATION VISUELLE (screenshot CDP + mesure de pixels ffmpeg) plutôt qu'au peuplement du graphe — il surveille la scène WebGL Cosmos, pas le substrat."
+  ],
+  "gaps": [
+    "/tmp/rtprobe.node est un binaire N-API non versionné : où est son code source et comment le reconstruire ? (aucune référence trouvée dans le périmètre ni dans scripts/).",
+    "Incohérence de nommage des stores : backfill-sessions.sh vise runtime.obrain en prod alors que enrich-ricci-*.sh et index-code-projects.sh utilisent runtime-prod.obrain — deux noms pour (probablement) la même base.",
+    "code-index-to-substrate.mjs ligne 27 : dans la branche NO_PROPS, `ids.set(..., createNodeNoWal(lab))` stocke la valeur de retour sans `.id`, alors que la branche normale stocke `createNode(...).id` — asymétrie suspecte si createNodeNoWal rend un objet nœud.",
+    "enrich-live-dev-to-store.mjs cible runtime-full-v2.obrain, base absente de la liste BASES de enrich-ricci-maintain/window.sh — cible orpheline ou legacy à éclaircir.",
+    "couche-decision.gql bloque si le projet « obrain » n'a pas été indexé dans le store cible (bloc §20 « 1 885 fichiers scannés ») ; l'ingestion des ancres réelles échoue silencieusement sans ce prérequis, non contrôlé par le pilote.",
+    "session-iam.mjs ne couvre pas le cas d'un cookie absent sur réponse 200 (POST login direct) et lit un fichier d'identifiants en clair — aucune rotation ni test unitaire visible dans le périmètre.",
+    "Les deux passe de entretien-bases.sh (degrés puis diagnostic) ont été fusionnées « base par base » après qu'un agent concurrent a regaspillé la fenêtre libre — preuve que ces scripts dépendent d'une discipline d'exécution externe non verrouillée par un mécanisme global."
+  ]
+}

@@ -1,0 +1,10 @@
+digraph obrain_viz {
+    "crate:lib" [label="lib\n(core)"] [tooltip="crates/obrain-viz/src/lib.rs"];
+    "dep:/usr/deps.json" [label="serde_json"] [tooltip="Cargo.lock"];
+    "fn:hub" [label="hub \"central\""] [tooltip="crates/obrain-viz/src/hub.rs"] [style="filled", fillcolor="#e45a32"];
+    "fn:parse" [label="parse()"] [tooltip="crates/obrain-viz/src/parse.rs"] [style="filled", fillcolor="#eb8936"];
+    "iso" [label="isolé"] [tooltip="crates/obrain-viz/src/iso.rs"] [style="filled", fillcolor="#f5d63d"];
+    "fn:hub" -> "crate:lib" [label="CALLS"];
+    "fn:parse" -> "dep:/usr/deps.json" [label="IMPORTS"];
+    "fn:parse" -> "fn:hub" [label="CALLS"];
+}

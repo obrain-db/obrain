@@ -1,0 +1,90 @@
+%% Ce que ce diagramme prouve : dans ggml-alloc, la seule protection contre la liberation de la
+%% region memoire d un tenseur a sa derniere consommation est la presence du bit
+%% GGML_TENSOR_FLAG_OUTPUT sur ce tenseur. Sans ce bit, des que n_children et n_views tombent a
+%% zero, ggml_gallocr_free_node rend le bloc au tallocr et un noeud ulterieur peut y ecrire.
+%% C est la cause racine du defaut 56.
+%% Source MESUREE : lecture directe de ggml/src/ggml-alloc.c, ggml/src/ggml-backend.cpp,
+%% ggml/src/ggml.c, ggml/src/ggml-impl.h, ggml/include/ggml.h, ggml/include/ggml-alloc.h et
+%% src/llama-graph.cpp du worktree /home/triviere/projects/llama-obrain-cuda, commit 57bd239.
+%% Tous les numeros de ligne et tous les identifiants de ce diagramme viennent de ces fichiers.
+%% DEDUIT : l equivalence entre derniere consommation et n_children 0 avec n_views 0 est la lecture
+%% des lignes 799 a 818 ; aucun chiffre d execution n est avance de mon fait.
+%% NON ETABLI, donc NON DESSINE : le chemin demande /home/triviere/projects/llama-obrain-cuda-f1a
+%% n existe pas sur cette machine. Cinq worktrees llama-obrain ont ete trouves et leurs fichiers
+%% ggml-alloc.c et ggml-backend.cpp sont identiques octet a octet ; le commit cite est celui de
+%% llama-obrain-cuda. Le correctif de capture decrit dans le rapport N3nonies, soit f1a_mark_output,
+%% src/f1a-capture.h, src/f1a-capture.cpp et sa greffe, N EST PAS dans ce worktree : aucun noeud ne
+%% le represente. Les valeurs 3991 noeuds, 3968 noeuds et 336 captures sont lues dans
+%% docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md, pas mesurees ici.
+
+flowchart TB
+
+  subgraph Alloc["Regle de duree de vie, lue ligne a ligne dans ggml/src/ggml-alloc.c"]
+    direction TB
+    a_impl["ggml_gallocr_alloc_graph_impl<br/>ggml-alloc.c:717<br/>compte n_children ligne 753<br/>compte n_views ligne 740"]
+    hn["struct hash_node<br/>ggml-alloc.c:458 a 464<br/>int n_children<br/>int n_views<br/>int buffer_id<br/>struct buffer_address addr<br/>bool allocated"]
+    dec["decrement puis test de derniere consommation<br/>ggml-alloc.c:799 puis 804<br/>p_hn n_children moins 1<br/>si n_children 0 ET n_views 0"]
+    is_own["ggml_gallocr_is_own<br/>ggml-alloc.c:588 a 590<br/>lit hn allocated<br/>seul allocated vrai autorise<br/>le reemploi et la liberation"]
+    free_node["ggml_gallocr_free_node<br/>ggml-alloc.c:690 a 711<br/>garde lignes 691 a 695<br/>si node flags ET GGML_TENSOR_FLAG_OUTPUT<br/>alors return immediat<br/>commentaire source : graph outputs are never freed"]
+    free_bytes["ggml_dyn_tallocr_free_bytes<br/>ggml-alloc.c:311<br/>rend le bloc et le fusionne<br/>avec les blocs libres voisins<br/>MAX_FREE_BLOCKS = 256 ligne 14"]
+    alloc_node["ggml_gallocr_allocate_node<br/>ggml-alloc.c:622 a 688<br/>un bloc libere peut etre reattribue<br/>par ggml_dyn_tallocr_alloc ligne 686"]
+    inplace["Seconde garde, meme bit<br/>refus du reemploi inplace<br/>ggml-alloc.c:644 a 648<br/>parent flags ET GGML_TENSOR_FLAG_OUTPUT<br/>ou parent view_src output<br/>sinon la boucle des sources continue"]
+    trace["AT_PRINTF<br/>ggml-alloc.c:19<br/>define AT_PRINTF vide<br/>la trace not freeing output<br/>n est donc PAS emise par defaut"]
+  end
+
+  subgraph Flags["Ou le bit est ecrit, et ce qu il vaut"]
+    direction TB
+    flag["GGML_TENSOR_FLAG_OUTPUT = 2<br/>ggml/include/ggml.h:662<br/>enum ggml_tensor_flag<br/>commentaire source : is an output<br/>for the GGML compute graph"]
+    setout["ggml_set_output<br/>ggml/src/ggml.c:7761 a 7763<br/>tensor flags OU logique GGML_TENSOR_FLAG_OUTPUT<br/>declare en ggml/include/ggml.h:888"]
+    docrule["Regle deja documentee en amont<br/>ggml/include/ggml-alloc.h:44<br/>output tensors are never freed<br/>and never overwritten"]
+    bk1342["ggml/src/ggml-backend.cpp:1342<br/>ggml_set_output sur tensor_copy<br/>prevent ggml-alloc from<br/>overwriting the tensor"]
+    bk1361["ggml/src/ggml-backend.cpp:1361<br/>meme appel, meme commentaire<br/>second site de copie"]
+    ncopies["Condition d entree lue<br/>ggml-backend.cpp:1330 et 1359<br/>sched n_copies superieur a 1"]
+  end
+
+  subgraph Amont["Ce qui existe deja en amont : les sorties natives portent le bit"]
+    direction TB
+    lg["llm_graph_result set_outputs<br/>src/llama-graph.cpp:1303 a 1345<br/>9 sites d appel a ggml_set_output<br/>lignes 1305 1308 1311 1314 1321<br/>1327 1332 1337 1342"]
+    md["Sorties de modeles<br/>3 fichiers, 4 sites<br/>src/models/eagle3.cpp:139 et 284<br/>src/models/plamo2.cpp:196<br/>src/models/dflash.cpp:101"]
+  end
+
+  subgraph Defaut["Le defaut 56, tel que consigne dans docs/"]
+    direction TB
+    d56["HARNESS_DEFECT_56<br/>CAPTURE_DUP_TENSORS_NOT_MARKED<br/>_AS_OUTPUT_SO_ALLOCATOR<br/>_FREES_THEIR_STORAGE<br/>statut RESOLVED_VERIFIED"]
+    c56["ENGINE-007B-F1A-Q0-N3NONIES<br/>lignes 19 a 93 et 159 a 217<br/>cur_capture n a qu un consommateur<br/>le MUL_MAT<br/>3968 autres noeuds s executent<br/>avant l extraction<br/>graphe nodes = 3991<br/>CAPTURES_WERE_CORRUPTED = 336 sur 336<br/>TRANSPARENCE OFF et ON identique<br/>LOGIT_BITWISE_MISMATCH_COUNT = 0<br/>CONTRADICTIONS nulle sur non nulle 25 vers 0"]
+  end
+
+  a_impl -->|compte les consommateurs dans| hn
+  hn -->|est lu par| dec
+  dec -->|si n_children 0 et n_views 0 alors appelle| free_node
+  is_own -->|conditionne la liberation| free_node
+  free_node -->|teste le bit de| flag
+  setout -->|ecrit le bit de| flag
+  flag -->|bit present donc return immediat sans liberation| free_node
+  free_node -->|bit absent donc appelle| free_bytes
+  free_bytes -->|bloc remis a disposition de| alloc_node
+  alloc_node -->|reattribue le bloc et reecrit| hn
+  inplace -->|lit le meme bit de| flag
+  docrule -->|documente la regle appliquee par| free_node
+  ncopies -->|conditionne l entree dans| bk1342
+  ncopies -->|conditionne l entree dans| bk1361
+  bk1342 -->|appelle| setout
+  bk1361 -->|appelle| setout
+  lg -->|appelle| setout
+  md -->|appelle| setout
+  trace -->|n emet pas la trace de| free_node
+  free_node -->|garde absente quand le bit manque, cause racine de| d56
+  setout -.->|optionnel pour toute copie applicative, obligatoire pour une capture| d56
+  d56 -->|mesure consignee dans| c56
+
+  classDef regle fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef flagc fill:#8a6d12,stroke:#4d3c0a,color:#fff
+  classDef amont fill:#4a4a4a,stroke:#222,color:#fff
+  classDef refus fill:#8a3a12,stroke:#4d200a,color:#fff
+  classDef verifie fill:#1f6f2f,stroke:#0d3315,color:#fff
+
+  class free_node,dec,free_bytes,alloc_node,hn,is_own,a_impl regle
+  class flag,setout,docrule,bk1342,bk1361,ncopies flagc
+  class lg,md,trace amont
+  class inplace refus
+  class d56,c56 verifie

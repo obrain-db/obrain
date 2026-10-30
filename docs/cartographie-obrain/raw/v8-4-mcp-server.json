@@ -1,0 +1,54 @@
+{
+  "area": "Serveur MCP — pont obrain (bridge) + surface selfd + intégration Claude",
+  "summary": "Le serveur MCP principal est `obrain mcp` / `obrain bridge` dans crates/obrain-cli/src/mcp_server.rs (8001 lignes) : un pont JSON-RPC 2.0 sur stdin/stdout qui expose 35 outils au harness DeepSeek (client MCP standard `@modelcontextprotocol` SDK / StdioClientTransport), et qui double le protocole `codebase-memory-mcp bridge` du moteur C (`{\"tool\",\"args\"}` normalisé en `tools/call`). Le protocole ne sert QUE des outils : `initialize` annonce `capabilities.tools.listChanged=false`, `tools/list` renvoie le catalogue, `tools/call` route vers l'API moteur ObrainDB — aucune ressource (`resources/list`) ni prompt (`prompts/list`) n'est implémenté. Le contrat de réponse miroir du moteur C est `structuredContent` = payload JSON objet (l'autorité pour le client), `content[0].text` = JSON sérialisé, `isError` sur échec. Chaque appel passe d'abord la garde IAM (GardeIam via `OBRAIN_IAM_TOKEN`) qui classe lecture/écriture (outil_ecrivant + gql_ecrivante) et publie son état dans la réponse `initialize` (champs `iam`/`iam_armee`). Les 35 outils couvrent la lecture/analyse du graphe (search_graph, query, query_graph, trace_path, impact_set, viz_*…), le runtime (sessions_list, context_build, checkpoint_material, session_load…), l'écriture (import_events, graph_link, index_repository, memory_register…) et la parité codebase-memory (search_code, payload_get, list_docs…). Un second serveur MCP indépendant vit dans crates/obrain-selfd (surface machine : exec/read/write/list/node_chat/node_run/node_status, transport stdio ou ssh). L'intégration Claude est portée par la branche NON FUSIONNÉE feat/mcp-install-claude (commande `obrain mcp-install` + guide embarqué `mcp_guide.md` servi dans `initialize.instructions`), tandis que feat/mcp-next-step-hints (hints `next_step_hint()` annexés aux réponses) est, elle, déjà fusionnée dans HEAD.",
+  "components": [
+    "crates/obrain-cli/src/mcp_server.rs — serveur MCP bridge (8001 lignes) : boucle JSON-RPC (run/handle_line), tools_list() 35 outils, call_tool() routeur + garde IAM, next_step_hint(), outil_ecrivant(), échéance OBRAIN_QUERY_TIMEOUT_MS, mémo-cache sessions_list (process écrivain), AutoOpt metrics (OBRAIN_METRICS_FILE)",
+    "crates/obrain-cli/src/main.rs — câblage CLI : mod mcp_server (l.33), Commands::Mcp (l.369) et Commands::Bridge alias (l.371-373), dispatch run() (l.739-740), log_to_stderr pour Mcp (l.650)",
+    "crates/obrain-cli/src/harness_serve.rs — réutilise mcp_server::sessions_list (l.176) et mcp_server::context_build (l.199) depuis le serveur HTTP harness",
+    "crates/obrain-cli/src/worlds.rs — réutilise mcp_server::index_repository (l.578) : l'indexeur du serveur MCP partagé avec l'outil `worlds`",
+    "crates/obrain-selfd/src/mcp.rs — surface MCP selfd (250 lignes) : outils exec/read/write/list/node_chat/node_run/node_status, boucle JSON-RPC une trame par ligne, version 2025-06-18",
+    "crates/obrain-selfd/src/protocole.rs — analyser(ligne), executer_outil(etat, methode, args, secret), Etat::nouveau, repondre — protocole partagé par les modes serve/socket/mcp de selfd",
+    "crates/obrain-selfd/src/main.rs — sous-commande `selfd mcp` (l.58), mode \"mcp\" sans verrou ni jeton (l.363-449), appel mcp::boucle(&mut etat, None) (l.449)",
+    "crates/obrain-cli/src/commands/mcp_install.rs — (branche feat/mcp-install-claude, NON fusionnée) auto-installation du binaire comme serveur MCP Claude (1293 lignes) : sonde de format binaire (Mach-O/ELF/PE), fusion idempotente de claude_desktop_config.json, mcp-uninstall/mcp-status, 7 tests unitaires + 38 tests e2e HOME isolé",
+    "crates/obrain-cli/src/mcp_guide.md — (branche feat/mcp-install-claude) guide 7 sections embarqué via include_str! et servi dans initialize.instructions (3697 caractères)",
+    "crates/obrain-cli/src/commands/mod.rs — enregistre le module mcp_install (branche feat/mcp-install-claude)",
+    "crates/obrain-indexer/src/schema.rs, lang_specs.rs, docs.rs, metrics.rs, tests_detect.rs — parité du schéma et de l'analyse de l'ancien indexeur C codebase-memory-mcp (répliquée par le serveur MCP)",
+    "crates/obrain-engine/src/database/text_index_persist.rs — log de démarrage \"obrain-mcp: store ouvert\" partagé avec le pont",
+    "README.md — section « MCP Server » (l.350-364) : expose queries/algorithms/cognitive, npm install -g @obrain-db/mcp, renvoi vers github.com/this-rs/obrain-mcp"
+  ],
+  "relationships": [
+    "mcp_server.rs::run → obrain_engine::ObrainDB (ouvre le store en lecture partagée par défaut, OBRAIN_STORE ou --store, verrou LOCK_SH pour les respawns bridge du harness)",
+    "mcp_server.rs::call_tool → viz_serve::{GardeIam, gql_ecrivante, jeton_du_pont} — la garde IAM passe AVANT tout outil (jeton depuis OBRAIN_IAM_TOKEN, espace = radical du store)",
+    "mcp_server.rs::handle_line(\"initialize\") → viz_serve::GardeIam::partagee().etat() / est_armee() — publie l'état d'accès dans la réponse initialize (champs iam/iam_armee)",
+    "main.rs Commands::Mcp / Commands::Bridge → mcp_server::run (même point d'entrée, Bridge = alias du protocole codebase-memory-mcp bridge)",
+    "harness_serve.rs → mcp_server::sessions_list / context_build (réutilisation des implémentations du bridge par le serveur HTTP)",
+    "worlds.rs → mcp_server::index_repository (l'outil `worlds` réutilise l'indexeur du serveur MCP)",
+    "selfd/mcp.rs::boucle → protocole::analyser + protocole::executer_outil (Etats : exec/read/write/list/chat/run/status mappés par methode_native)",
+    "selfd/main.rs (mode mcp) → selfd/mcp.rs::boucle(&mut etat, None) — pas de verrou ni jeton : le lanceur (config harness / ssh) EST la frontière de confiance",
+    "mcp_server.rs::tools_list() ↔ mcp_server.rs::call_tool() — parité 35/35 vérifiée (noms identiques), la doc en-tête du module ne cite que 6 outils représentatifs",
+    "obrain-indexer/* → parité codebase-memory-mcp (schéma OUVERT répliqué, lang_specs/docs/metrics/tests_detect issus de internal/cbm du moteur C)",
+    "feat/mcp-install-claude → main.rs (+23/+11 lignes) : sous-commandes mcp-install/mcp-uninstall/mcp-status/mcp-guide ; mcp_server.rs (+85) : initialize.instructions = include_str!(\"mcp_guide.md\") + OBRAIN_IDLE_MS=0"
+  ],
+  "notable_findings": [
+    "mcp_server.rs fait 8001 lignes : le bridge Rust est un miroir fonctionnel du moteur C codebase-memory-mcp, y compris le format de trame bridge non-JSONRPC {\"tool\",\"args\"} normalisé en tools/call pour le GraphWriter/GraphInjector du harness.",
+    "Le protocole MCP n'implémente AUCUNE ressource ni prompt : initialize renvoie uniquement capabilities.tools.{listChanged:false}, seuls tools/list et tools/call sont servis — l'intégration « Claude » de la branche ajoute en revanche initialize.instructions (guide embarqué).",
+    "feat/mcp-install-claude est NON FUSIONNÉE dans HEAD (branche courante consolidation/tronc-2026-09-15-plus-fusion, HEAD 456d3794) : mcp_install.rs, mcp_guide.md et le champ instructions n'existent PAS sur HEAD — la commande `obrain mcp-install` et l'installation Claude Desktop sont absentes du tronc.",
+    "feat/mcp-next-step-hints est FUSIONNÉE : next_step_hint() (l.1103-1141) annexe un champ `hint` impératif aux réponses de SUCCÈS des outils principaux (query, query_graph, search_graph, search_code, runtime_search, get_graph_schema, index_status) — additif strict, jamais sur erreur, jamais par-dessus un hint posé par l'outil.",
+    "La garde IAM publie son état dans initialize (champs iam/iam_armee) et chaque refus d'outil garde sa structure (champs à plat error/outil/acces/espace/http/iam) au lieu d'aplatir en une phrase — correction documentée « UN REFUS GARDE SA STRUCTURE » (l.560-577).",
+    "sessions_list possède un mémo-cache (SESSIONS_LIST_GEN/CACHE) réservé au process écrivain (OBRAIN_WRITE=1), qui voit toutes les mutations ; les process RO ne cachent pas (point de vue d'un instant).",
+    "La doc d'en-tête de mcp_server.rs (l.10-15) ne cite que 6 outils représentatifs alors que tools_list() en sert 35 ; le commentaire « P1 parité 31 outils » des commits est désormais obsolète (35 au HEAD).",
+    "Le commentaire « DÉCISIONS ENREGISTRÉES EN CODE » (l.1036-1075) documente 6 outils de l'ancien serveur C NON servis (detect_changes, get_architecture, cliques_of/hyperedges_of, delete_project, weave_retisser, check_index_coverage) avec l'équivalent bridge de contournement.",
+    "La branche feat/mcp-install-claude documente trois pannes réelles du premier branchement : (1) OBRAIN_IDLE_MS=5000 par défaut tuait le serveur après 5 s d'inactivité (fix OBRAIN_IDLE_MS=0 pour Desktop + `claude mcp add`) ; (2) initialize ne servait aucun instructions (fix : mcp_guide.md embarqué) ; (3) graph_link jetait les propriétés d'arête alors que create_edge_with_props existe depuis toujours.",
+    "README.md (l.355) renvoie vers `npm install -g @obrain-db/mcp` et github.com/this-rs/obrain-mcp — des artefacts EXTERNES absents de ce dépôt ; le serveur réel est le sous-processus `obrain mcp`/`obrain bridge` de obrain-cli, pas un paquet npm dans packages/."
+  ],
+  "gaps": [
+    "feat/mcp-install-claude non fusionnée : la commande obrain mcp-install, mcp-uninstall, mcp-status, mcp-guide et le champ initialize.instructions (guide embarqué) sont absents de HEAD — décision d'intégration non documentée dans le tronc.",
+    "README.md « MCP Server » (l.350-364) est partiellement aspirational : il pointe @obrain-db/mcp (npm) et github.com/this-rs/obrain-mcp, inexistants dans le dépôt — l'URL de référence réelle est le binaire obrain-cli ; divergence doc/code.",
+    "Aucune ressource ni prompt MCP : le serveur n'expose que tools — le README évoque « inspect schema, stats, and graph structure » mais pas de resources/prompts côté code.",
+    "Doc d'en-tête obsolète : mcp_server.rs l.10-15 liste 6 outils alors que tools_list() en sert 35 ; le commentaire de commit « P1 parité 31 outils » est périmé.",
+    "6 outils de l'ancien serveur C (detect_changes, get_architecture, cliques_of/hyperedges_of, delete_project, weave_retisser, check_index_coverage) sont documentés comme NON implémentés — trous de parité codebase-memory assumés mais non comblés.",
+    "index_status note que les métadonnées de couverture (parse_partial/miss-graph) ne sont pas persistées par obrain-indexer — couverture d'indexation incomplète côté bridge.",
+    "trace_path ne porte pas les modes data_flow/cross_service (mentionné dans son inputSchema) — trou de parité partiel.",
+    "selfd/mcp.rs déclare capabilities.tools.{listChanged:false} et version 2025-06-18 mais la réponse initialize ne renvoie pas instructions ; la confiance repose entièrement sur le lanceur (pas de jeton en mode MCP), ce qui est un choix documenté mais à vérifier côté sécurité."
+  ]
+}

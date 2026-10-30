@@ -1,0 +1,7 @@
+PILOTE e8-resume.cpp  sha256 : 9ce7f7f340889655d537a07b3a5d2af8b3c1a0d84e57d64d393063bb89d5f070
+BINAIRE e8-resume     sha256 : 97a1700349996529774f1eccfd2d8721e8cf679c734909bb19dbaa8032099cdf
+NEEDED : libc.so.6 ld-linux-aarch64.so.1 
+RUNPATH : /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin
+SYMBOLES_LLAMA_NON_RESOLUS : 0
+LIBLLAMA_Q1_SHA (non chargee par ce binaire) : 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+SELFTEST : ./e8-resume --selftest 1 -> SELFTEST_RESULT=PASS FAILED=0 (sans modele, sans forward)

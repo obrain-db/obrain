@@ -1,0 +1,94 @@
+ENGINE-008 -- STATUT ENGINE008-LAUNCHER-REPAIR
+==========================================================================
+Le lanceur exige et propage le consentement, distingue les modes, et la sequence
+nominale est desormais TESTEE PAR LE LANCEUR. 17/17. Nouveau gel.
+
+LAUNCHER_REQUIRES_EXPLICIT_COMPUTE_CONSENT=YES
+  `run_sequence` exige `grant_compute_consent`, qui n'est pose QUE par le
+  drapeau explicite `--allow-model-compute` du lanceur. Jamais deduit du
+  document. TESTE : `real_mode_without_explicit_consent_refused`,
+  `document_alone_is_insufficient` (document CONFORME, drapeau absent -> refus).
+REAL_CHILD_COMPUTE_FLAG_PROPAGATED=YES
+  `build_command` transmet `--allow-model-compute` a chaque enfant, et
+  **uniquement** si le consentement a ete accorde ET valide :
+      + (c.grant_compute_consent ? " --allow-model-compute" : "")
+  TESTE par lecture de source : `command_flag_is_conditional_on_consent`.
+  Le drapeau n'est JAMAIS ajoute inconditionnellement.
+  AUCUNE verification n'a ete retiree de l'enfant : le harnais continue d'exiger
+  les DEUX facteurs (document conforme ET drapeau).
+
+=== MODE ET AUDIENCE : EXPLICITES, SANS FALLBACK ===
+MODE_AUDIENCE_SEPARATION_SELFTEST=PASS
+  Le lanceur porte un `mode` explicite ("real" | "mock") et exige l'audience
+  correspondante :
+    mode=real -> audience=REAL_PREFLIGHT -> enfant en `--mode real-preflight`
+    mode=mock -> audience=MOCK          -> enfant en `--mode verify-nominal`
+  Refus TESTES : mode inconnu ; mode real + document MOCK (audience
+  INCOMPATIBLE nommee) ; mode mock + document REAL_PREFLIGHT. **Aucun fallback
+  automatique** entre modes ou audiences.
+  Deux-facteurs exige dans LES DEUX modes : le drapeau est le consentement a
+  executer ; l'AUDIENCE est ce qui separe mock et reel. C'est l'audience, et
+  elle seule, qui empeche une autorisation MOCK d'ouvrir les adaptateurs reels.
+
+=== SEQUENCE NOMINALE PAR LE LANCEUR ===
+LAUNCHER_TO_FOUR_CHILDREN_NOMINAL_SELFTEST=PASS
+  Le NOUVEAU lanceur cree lui-meme les QUATRE enfants. Aucune commande manuelle.
+   launcher_invoked_four_children                                   PASS
+   order_is_baseline1_candidate1_baseline2_candidate2               PASS
+   four_distinct_capture_destinations                               PASS
+   no_fifth_child                                                   PASS
+   all_children_received_authoritative_59_ids                       PASS
+   all_children_in_mock_mode                                        PASS
+   zero_real_compute_in_all_children                                PASS
+AUTHORITATIVE_IDS_RECEIVED_BY_ALL_MOCK_CHILDREN=YES
+  `MOCK_PREFILL_IDS_MATCH=YES` sur **4/4** rapports enfants. Chaque prefill
+  mocke a recu les **59 IDs autoritaires** (SHA IDs
+  ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e).
+REAL_ENTRYPOINT_REJECTION_SELFTEST=PASS
+  Les refus de l'enfant sont conserves et testes ; le lanceur controle les
+  rapports enfants (absent -> FAIL, malforme -> FAIL) et s'arrete au premier
+  echec sans retry.
+
+=== DIVERGENCE TECHNIQUE CORRIGEE ===
+  Le LANCEUR lit `stop_reason=` en MINUSCULES ; le point d'entree imprimait
+  `STOP_REASON=` en MAJUSCULES. Les enfants etaient donc juges NOT_CONFIRMED au
+  lieu de PASS. Corrige : le point d'entree emet desormais les DEUX formes
+  (`stop_reason`, `generated_token_count`, `fp_verdict`, `per_call`), sans
+  supprimer la forme majuscule dont d'autres consommateurs dependent.
+
+=== IDENTITES NOUVELLES ===
+  PRODUCTION_HARNESS_SHA256=125767da48b69b0431e9be6809cd62e92f386d89d34e69f69581b71213fbd49f
+  PRODUCTION_LAUNCHER_SHA256=31cc90b93f756d9ddb6a2098b5a4abd1aaf06abce0d8181e50de2231933813e2
+  t-lrep (tests du lanceur) = ea0829ee37ab65b627be9eb48bfae8443c4e7f1feaa5b2d6528dc4cb99d40b18
+  HARNESS_SOURCE_MANIFEST_SHA256=9cd67fec940db1f9050399b4f93d2cd4f1d65d19e3b472cf06cf6da378cda6ec
+  Anciennes identites c4fe4dd1... / f3c32092... : HISTORIQUES, conservees.
+
+=== CE QUI N'A PAS CHANGE ===
+  P4' reste ADOPTEE ; D1 conserve ; D2 non adopte. Protocole v3 : contenu
+  INCHANGE. Plan INCHANGE : b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06.
+  Inventaire e4c96b6e..., template c3cf9e34..., models Q4_K_M 31629f53... et
+  OBRAIN-v3 1d7c9409... : INTACTS. Q1_LIBLLAMA_REBUILT=NO.
+
+OLD_AUTHORIZATIONS_REUSED=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+  Aucun run reel, aucune nouvelle autorisation acceptee de calcul.
+
+REMAINING_BLOCKERS=NONE (technique)
+  Les quatre runs restent une INSTRUCTION SEPAREE, liee au nouveau gel.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucun token genere, aucune evaluation qualite. Les artefacts RUN-02 et
+RUN-01 sont INTACTS. Aucune modification de Q1, des modeles, du template, de
+l'inventaire, du protocole, du plan ou des autorites gelees anterieures.
+
+=== NOUVEAU GEL ===
+  PREFLIGHT_FREEZE_MANIFEST_SHA256=880efc7242e7461fad4cc10aa7ea3c01d3f7f4f9b214db40d45b176fd59adc93
+  PREFLIGHT_PROTOCOL_SHA256=1dc2c3c36329550d29b1abf1ec448f0c82ef6f2d7ab81994deed9320f9d8b7ae
+  PREFLIGHT_PLAN_SHA256=b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+  ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=YES (sur ces identites)
+  Sans circularite. Les quatre runs restent une instruction separee.

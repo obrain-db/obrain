@@ -1,0 +1,51 @@
+{
+  "area": "Procédures cognitives GQL — CALL obrain.cognitive.* / obrain.engrams.*",
+  "summary": "Le point d'entrée unique des procédures cognitives est try_execute_cognitive_procedure dans crates/obrain-engine/src/cognitive_procedures.rs, un dispatcher matché sur le nom résolu qui délègue à 11 exécuteurs. Sept procédures obrain.cognitive.* (spread, distill, search, detect_gaps, synthesize, reinforce, bootstrap) forment la couche « développée » : spread lit via les synapses (seule procédure cognitive prouvée lecture seule et inscrite dans PROCEDURES_DE_LECTURE), reinforce et bootstrap écrivent dans le SynapseStore, et detect_gaps/synthesize sont des primitives génériques sans forme de sortie taillée pour un consommateur. Quatre procédures de niveau 2 (obrain.engrams.list/inspect/forget et obrain.cognitive.metrics) exposent l'introspection des engrams et les métriques cognitives, déléguées à crates/obrain-cognitive/src/procedures.rs (dont le droit à l'oubli RGPD via engrams.forget). L'exécution est déclenchée par plan_call_procedure dans crates/obrain-engine/src/query/planner/lpg/mutation.rs (famille « cognitive », gatée par la feature `cognitive`), la classification lecture/écriture étant faite par procedure_mute et PROCEDURES_DE_LECTURE dans crates/obrain-engine/src/query/plan.rs. Trois UDF compagnes (obrain.energy, obrain.risk, obrain.synapses) dans cognitive_udfs.rs complètent l'exposition, enregistrées dans le PluginRegistry. Le chantier « couche de décision » (docs/ADR-2026-09-22-COUCHE-DECISION.md + scripts/couche-decision.gql) spécifie deux procédures futures — obrain.decide (lecture) et obrain.settle (écriture différée) — qui n'existent pas encore dans le code. docs/gql-dialect.json ne catalogue que les fonctionnalités génériques GQL de procédures (GP01/GP02/GP04), sans signature des obrain.cognitive.*.",
+  "components": [
+    "crates/obrain-engine/src/cognitive_procedures.rs — dispatcher try_execute_cognitive_procedure + 11 exécuteurs (spread, distill, search, detect_gaps, synthesize, reinforce, bootstrap, engrams.list/inspect/forget, cognitive.metrics)",
+    "crates/obrain-cognitive/src/procedures.rs — implémentations Level 2 des engrams (engrams_list/inspect/forget, cognitive_metrics) + yield_columns() + ProcedureResult",
+    "crates/obrain-engine/src/cognitive_udfs.rs — UDF obrain.energy(node), obrain.risk(node), obrain.synapses(node) + register_cognitive_udfs",
+    "crates/obrain-engine/src/query/planner/lpg/mutation.rs — plan_call_procedure : ordre de résolution des 6 familles, dispatch cognitif gaté `cognitive` (l.864-875)",
+    "crates/obrain-engine/src/query/plan.rs — PROCEDURES_DE_LECTURE (l.320-394) et procedure_mute (l.579-605) : classification lecture/écriture des CALL",
+    "crates/obrain-engine/tests/cognitive_query_test.rs — tests d'intégration des procédures cognitives via l'engine",
+    "crates/obrain-engine/tests/cognitive_engram_procedures_test.rs — tests des procédures engrams",
+    "crates/obrain-engine/tests/procedure_qui_ecrit.rs — discipline anti-vacuité sur PROCEDURES_DE_LECTURE (témoin reinforce/engrams.forget)",
+    "docs/cognitive/engrams.md — documentation des procédures engrams.list/inspect/forget et cognitive.metrics",
+    "docs/ADR-2026-09-22-COUCHE-DECISION.md — spécification des procédures futures obrain.decide (lecture) et obrain.settle (écriture différée)",
+    "scripts/couche-decision.gql — projection GQL du chantier couche-decision (ancrages vers cognitive_procedures.rs, plan.rs, synapse.rs)",
+    "crates/obrain-cli/src/mcp_server.rs — exposition des CALL obrain.cognitive.* via l'outil MCP `query`",
+    "docs/gql-dialect.json — conformité GQL : fonctionnalités procédures GP01/GP02/GP04 (support), GP05/GP17/GP18 (non supportées)"
+  ],
+  "relationships": [
+    "mutation.rs:866-875 → cognitive_procedures.rs::try_execute_cognitive_procedure (gaté `#[cfg(feature = \"cognitive\")]`)",
+    "cognitive_procedures.rs → obrain_cognitive::CognitiveEngine (trait) : synapse_store(), energy_store(), fabric_store(), engram_store(), vector_index(), engram_metrics()",
+    "cognitive_procedures.rs → obrain_adapters::plugins::AlgorithmResult (type de retour des exécuteurs)",
+    "cognitive_procedures.rs → obrain_core::graph::GraphStore (accès structurel read-only pour spread causal, detect_gaps, synthesize, bootstrap)",
+    "obrain-cognitive/src/procedures.rs (yield_columns) ↔ cognitive_procedures.rs (colonnes de repli) : double source de vérité pour les mêmes colonnes",
+    "plan.rs::PROCEDURES_DE_LECTURE liste uniquement « obrain.cognitive.spread »/« cognitive.spread » comme lecture cognitive ; reinforce/engrams.forget écrivains restent exclus",
+    "cognitive_udfs.rs → obrain_adapters::plugins::PluginRegistry (register_udf) lors de l'init de la base",
+    "couche-decision.gql ancre les symboles réels : try_execute_cognitive_procedure (cogproc-rs-41), execute_reinforce (cogproc-rs-228), poids search 0.3/0.3/0.3/0.1 (cogproc-rs-445)",
+    "mcp_server.rs expose obrain.cognitive.* / obrain.engrams.* via l'outil `query` (CALL inclus) côté serveur MCP",
+    "ADR-2026-09-22-COUCHE-DECISION.md DEC-P3/P4 → obrain.decide / obrain.settle (spécifiés, non implémentés) ; DEC-C2 → PROCEDURES_DE_LECTURE plan.rs:320-351"
+  ],
+  "notable_findings": [
+    "Onze procédures CALL effectivement dispatchées, mais la doc d'en-tête de cognitive_procedures.rs n'en liste que 5 (spread, distill, detect_gaps, synthesize, reinforce) — search, bootstrap, metrics et les 3 engrams sont omis de ce commentaire.",
+    "Seule obrain.cognitive.spread est PROUVÉE lecture seule (bench + lecture de code) et figure dans PROCEDURES_DE_LECTURE ; toutes les autres cognitives sont sur-approximées en écriture, par conception (CognitiveEngine est un trait à mutabilité intérieure).",
+    "obrain.cognitive.search est un squelette non câblé : vector_candidates est un Vec::new() codé en dur avec un commentaire « simulate », donc la recherche renvoie un résultat vide malgré tout l'échafaudage SearchPipeline/SearchWeights (HNSW non branché au niveau CALL).",
+    "obrain.cognitive.bootstrap (2026-08-31) crée une synapse par arête du graphe en une passe (bootstrap_batch, mesuré 407-749 ms pour 29 994 synapses) pour rendre une base importée « cognitive » — sa doc YIELD source/target/weight est contredite par le code qui renvoie une colonne `count`.",
+    "obrain.engrams.forget implémente le droit à l'oubli RGPD (cascade engram + signature spectrale + rappels), mais le chemin CALL n'utilise que la variante sans cascade immune (immune=None), rendant engrams_forget_with_cascade mort au niveau CALL.",
+    "Les procédures futures obrain.decide (lecture) et obrain.settle (écriture différée par SegQueue) sont spécifiées en détail (ADR + couche-decision.gql : contraintes C2/C5/C7/C12, tests T6-T11) mais ABSENTES du dispatcher — le chantier P3/P4 est en statut todo, acceptation « non atteint ».",
+    "obrain.cognitive.synthesize n'embarque aucun LLM (NoopSummarizer + texte structuré tronqué au budget) — choix assumé : pas de client HTTP/clé API dans le moteur de stockage.",
+    "docs/gql-dialect.json ne référence AUCUNE signature obrain.cognitive.* : il ne couvre que la syntaxe générique des procédures (GP01/GP02/GP04 supportées, GP05/GP17/GP18 non)."
+  ],
+  "gaps": [
+    "obrain.decide et obrain.settle sont référencés dans l'ADR et couche-decision.gql mais absents de cognitive_procedures.rs — non implémentés (DEC-P3/P4 en todo).",
+    "Incohérence de nommage : l'ADR/couche-decision nomment les futures procédures obrain.decide/obrain.settle (sans segment « cognitive. »), alors que toutes les procédures cognitives existantes vivent sous obrain.cognitive.*.",
+    "obrain.cognitive.search : vector_candidates codé en dur à vide (Vec::new(), commentaire « simulate ») — l'intégration vectorielle HNSW n'est pas branchée, la procédure renvoie 0 ligne.",
+    "Doc d'en-tête obsolète : la signature YIELD de detect_gaps y est décrite comme « kind, source, target, score, energy, reason » alors que le code émet « kind, node_a, node_b, score, detail ».",
+    "obrain.cognitive.bootstrap : option direction 'both' documentée mais non implémentée (seul le parcours sortant est collecté) ; résultat renvoyé = colonne unique `count`, pas source/target/weight comme documenté.",
+    "Double source de vérité pour les colonnes YIELD : obrain-cognitive/src/procedures.rs::yield_columns duplique les listes codées en dur dans les replis « sous-système absent » de cognitive_procedures.rs (risque de divergence, le code le reconnaît déjà pour le registre).",
+    "engrams_forget_with_cascade (cascade détecteurs immune) est défini et testé dans obrain-cognitive mais jamais atteint depuis le chemin CALL (execute_engrams_forget appelle la variante non-cascade) — cascade immune morte au niveau GQL.",
+    "gql-dialect.json n'a pas de registre machine des signatures obrain.cognitive.* : aucun catalogue formel des arguments/YIELD de ces procédures hors commentaires Rust."
+  ]
+}

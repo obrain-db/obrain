@@ -1,0 +1,39 @@
+{
+  "$schema_note": "Manifest machine-readable des connaissances agent structurées en graphe (dsh-runtime). Chaque id = qn du nœud graph (label KnowledgeDoc|Skill|Theme). Re-seedable par graph_link.",
+  "updated": "2026-09-05",
+  "documents": [
+    {"id": "knowledge/doc:etat", "path": "docs/ETAT-2026-09-05-2015.md", "kind": "etat", "theme": "etat-global", "summary": "État réel consolidé du repo (ré-ancre post-perte)"},
+    {"id": "knowledge/doc:capacites", "path": "docs/CAPACITES-AGENT-OBRAIN-2026-09-05.md", "kind": "capacites", "theme": "agent", "summary": "Ce que je peux faire branché à obrain (formes, compare, ingest, ops, vérif)"},
+    {"id": "knowledge/doc:reconstruction", "path": "docs/RECONSTRUCTION-AGENT-2026-09-05.md", "kind": "reconstruction", "theme": "agent", "summary": "Protocole de reprise L0/L1/L2 + routes globale/sujet/compétence + convention Skill"},
+    {"id": "knowledge/doc:tissage", "path": "docs/TISSAGE-EDGEBASIS-EN-ACTES-2026-09-05.md", "kind": "concept", "theme": "relief-tissage", "summary": "Vocabulaire EdgeBasis^* démontré sur les 5 formes + anti-déformation"},
+    {"id": "knowledge/doc:fix-degres", "path": "docs/FIX-DEGRES-TYPES-2026-09-05.md", "kind": "fix", "theme": "engine", "summary": "Auto-guérison colonnes degrés typées (6678330c) + CDC lazy"},
+    {"id": "knowledge/doc:garanties", "path": "docs/GARANTIES-NON-REGRESSION.md", "kind": "methodo", "theme": "verification", "summary": "Matrice de portes / oracles indépendants"},
+    {"id": "knowledge/doc:proposals", "path": "docs/PROPOSAL-SEARCH-*-2026-09-05.md", "kind": "proposal", "theme": "recherche-ia", "summary": "Propositions des formes de recherche + relief"}
+  ],
+  "themes": [
+    {"id": "knowledge/theme:agent", "summary": "Capacités & reconstruction de l'agent"},
+    {"id": "knowledge/theme:recherche-ia", "summary": "Formes de recherche (delta/surprise/by_role/conflicts/causes/relief)"},
+    {"id": "knowledge/theme:perf-cdc", "summary": "Perf fenêtres CDC (1,05 Go → 25 Mo ; index temporel)"},
+    {"id": "knowledge/theme:engine", "summary": "Correctifs moteur (degrés typés, CDC lazy)"},
+    {"id": "knowledge/theme:relief-tissage", "summary": "Relief R_q et tissage EdgeBasis^*"},
+    {"id": "knowledge/theme:verification", "summary": "Non-régression, portes, benchs"},
+    {"id": "knowledge/theme:deploiement", "summary": "Prod/dev, continuity, manifestes"}
+  ],
+  "links_doc_theme": [
+    ["knowledge/doc:etat", "knowledge/theme:agent"], ["knowledge/doc:capacites", "knowledge/theme:agent"],
+    ["knowledge/doc:reconstruction", "knowledge/theme:agent"], ["knowledge/doc:tissage", "knowledge/theme:relief-tissage"],
+    ["knowledge/doc:fix-degres", "knowledge/theme:engine"], ["knowledge/doc:garanties", "knowledge/theme:verification"],
+    ["knowledge/doc:proposals", "knowledge/theme:recherche-ia"]
+  ],
+  "links_skill_doc": [
+    ["skill:recherche-cdc", "knowledge/doc:capacites"], ["skill:relief", "knowledge/doc:tissage"],
+    ["skill:fenetres-cdc-perf", "knowledge/doc:fix-degres"], ["skill:reconstruction", "knowledge/doc:reconstruction"]
+  ],
+  "commits": {
+    "skill:fenetres-cdc-perf": ["175cba06", "55869fb6", "b97ac7ec", "ed648808"],
+    "skill:recherche-cdc": ["022004a6", "2bfb03bd", "98861a47", "e7bfb9eb"],
+    "skill:relief": ["022004a6", "9bf1f1e4"],
+    "skill:reconstruction": ["e972dc67", "3483c7b1", "0c799fb3", "4b1bc872"],
+    "knowledge/doc:fix-degres": ["6678330c", "c29ce045"]
+  }
+}

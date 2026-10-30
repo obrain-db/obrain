@@ -1,0 +1,13 @@
+# ronde 1 obrain-sys: 70280 ms, RSS 413 Mo
+# ronde 1 obrain-jemalloc: 64519 ms, RSS 413 Mo
+# ronde 1 obrain-mimalloc: 42350 ms, RSS 412 Mo
+# ronde 2 obrain-sys: 42110 ms, RSS 413 Mo
+# ronde 2 obrain-jemalloc: 58220 ms, RSS 413 Mo
+# ronde 2 obrain-mimalloc: 56140 ms, RSS 412 Mo
+# ronde 3 obrain-sys: 44440 ms, RSS 413 Mo
+# ronde 3 obrain-jemalloc: 33990 ms, RSS 414 Mo
+# ronde 3 obrain-mimalloc: 54360 ms, RSS 412 Mo
+=== duel load t7-x10.jsonl — minima sur 3 rondes alternees ===
+obrain-sys load 42110 ms RSS 413 Mo
+obrain-jemalloc load 33990 ms RSS 413 Mo
+obrain-mimalloc load 42350 ms RSS 412 Mo

@@ -1,0 +1,63 @@
+{
+  "area": "Branches IAM — lignée feat/iam-* (obrain-iam + obrain-cli)",
+  "summary": "La lignée IAM se déploie sur deux baselines parallèles : la release tronc (b6c6da2c « LA FAMILLE 7… », non ancêtre de HEAD) porte feat/iam-mint-endpoint puis feat/iam-groupes, tandis que la branche principale (HEAD 456d3794) porte feat/iam-groupes-tronc (rebase de groupes sur main) puis feat/iam-audit-borne (audit borné). feat/iam-mint-endpoint ajoute Garde::emettre_service et le point de remise de jeton POST /api/iam/token ; feat/iam-groupes ajoute le modèle Group (User-[:MEMBER_OF]->Group-[:HAS_ROLE]->Role), Garde::controler_ressource sur un ORN quelconque, les mots de passe argon2id (PHC, sel par compte) et le cache des politiques effectives par principal. feat/iam-audit-borne couronne la chaîne avec l'audit borné (lectures autorisées agrégées, purge de rétention signée) et constitue aussi la pointe de integration/projets. La branche fix/iam-pont-lecture (6cbb4d30) vérifie les identités au pont MCP sans écrire dans iam.obrain via Garde::depuis_env_lecteur et IamStore::sans_audit ; elle a été fusionnée dans integration/t27 et est ancêtre des 4 branches IAM mais PAS de HEAD. Le point de fourche entre main et tronc-release est 20fc3d38. La bibliothèque obrain-iam (crates/obrain-iam, 12 modules) reste la source unique de la règle, appliquée en opt-in (`--features iam`) aux surfaces viz_serve.rs et mcp_server.rs, et administrée hors bande par la sous-commande `obrain iam` (commands/iam.rs)."
+  ,
+  "components": [
+    "crates/obrain-iam/src/garde.rs — Garde : authentifier/controler/controler_action/controler_ressource/emettre_service/renouveler/connecter/deconnecter/audit/depuis_env_lecteur/agrege/purger_audit",
+    "crates/obrain-iam/src/admin.rs — Administration (noyau) : plafonnee_par_l_acteur, verrouillage du dernier administrateur, trace des gestes",
+    "crates/obrain-iam/src/model.rs — User, Role, Group, Policy, AuditEvent, EDGE_MEMBER_OF, EDGE_HAS_ROLE (Group absent du HEAD)",
+    "crates/obrain-iam/src/store.rs — IamStore : CRUD identités, evaluate_access, sans_audit, log_audit_event",
+    "crates/obrain-iam/src/provider.rs — ObrainIamProvider/AuthProvider, argon2id PHC, empreintes SHA-256",
+    "crates/obrain-iam/src/audit_chaine.rs — chaîne d'audit signée (Journal, recu, empreinte_evenement)",
+    "crates/obrain-iam/src/orn.rs — Orn (parsing, wildcard, substitution de variables)",
+    "crates/obrain-iam/src/policy.rs — moteur d'évaluation allow/deny/implicit-deny (fail-closed)",
+    "crates/obrain-iam/src/session_ext.rs — AuthenticatedSession (intégration session)",
+    "crates/obrain-iam/src/gdpr.rs — export/effacement RGPD (horodatage gelé préexistant)",
+    "crates/obrain-iam/src/error.rs — IamError / IamResult",
+    "crates/obrain-iam/src/lib.rs — façade de la crate, ré-exports publics",
+    "crates/obrain-iam/tests/audit_chaine.rs — tests de la chaîne d'audit",
+    "crates/obrain-iam/tests/la_cle_prime_sur_le_droit.rs — tests de la chaîne IAM (garde)",
+    "crates/obrain-cli/src/viz_serve.rs — endpoints HTTP /api/auth/*, /api/iam/*, /api/iam/token (mint), page /login et /iam",
+    "crates/obrain-cli/src/mcp_server.rs — pont MCP, point de dispatch unique de call_tool()",
+    "crates/obrain-cli/src/commands/iam.rs — sous-commande CLI `obrain iam` (hors bande)",
+    "crates/obrain-cli/tests/iam_ressource_et_404.rs — tests d'intégration HTTP ressource/404",
+    "scripts/verif-chaine-iam.sh — porte de vérification de la chaîne IAM de bout en bout",
+    "scripts/acceptation-iam.sh — porte d'acceptation CLI + HTTP de l'administration IAM",
+    "docs/IAM-BRANCHE-2026-09-13.md — revue de la chaîne IAM branchée (garde, armement, maillons)",
+    "docs/ADMINISTRATION-IAM-2026-09-13.md — administration des comptes (noyau, garanties, pièges)",
+    "docs/ADR-2026-09-13-CHAINE-IAM-ET-EXPLOSION-DES-LIENS.md — ADR chaîne IAM et contrôle de l'explosion des liens"
+  ],
+  "relationships": [
+    "obrain-cli --features iam -> obrain-engine/cognitive-iam -> obrain-cognitive/iam -> obrain-iam (chaîne de feature opt-in)",
+    "viz_serve.rs::handle() et mcp_server.rs::call_tool() appellent Garde::authentifier + check_graph_access/controler_action (garde unique, fail-closed)",
+    "commands/iam.rs et viz_serve.rs (/api/iam/*) partagent le même noyau Administration (obrain_iam::admin) — une règle, deux surfaces",
+    "feat/iam-groupes-tronc (569f8a08) est le REBASE de feat/iam-groupes (e068e458) sur HEAD 456d3794 (base tronc b6c6da2c abandonnée)",
+    "feat/iam-audit-borne (574d03f7) = feat/iam-groupes-tronc + commit « audit borné » ; il est aussi la pointe de integration/projets",
+    "feat/iam-groupes (e068e458) descend de feat/iam-mint-endpoint (a399665b), lui-même basé sur tronc-release b6c6da2c",
+    "fix/iam-pont-lecture (6cbb4d30) a été fusionné dans integration/t27 (commit 9fed71eb) et est ancêtre des 4 branches IAM, mais absent de HEAD 456d3794",
+    "Point de fourche main/tronc-release = 20fc3d38 (ancêtre de HEAD, non-ancêtre de b6c6da2c)",
+    "IamStore::evaluate_access collecte les politiques en passant par les rôles (node_to_role/node_to_policy filtrent status=deleted)",
+    "Garde::emettre_service (mint) est consommé par la route POST /api/iam/token de viz_serve.rs"
+  ],
+  "notable_findings": [
+    "Deux baselines parallèles : mint/groupes vivent sur tronc-release (b6c6da2c), groupes-tronc/audit-borne sur main (456d3794) — même jeu de features rebasé deux fois",
+    "Le HEAD principal (456d3794) ne contient NI Group/MEMBER_OF, NI argon2id, NI emettre_service, NI controler_ressource, NI depuis_env_lecteur, NI l'audit borné : tout vit encore sur les branches IAM",
+    "fix/iam-pont-lecture n'est pas dans HEAD mais est déjà fusionné dans integration/t27 et présent dans les 4 branches IAM",
+    "feat/iam-audit-borne cumule double rôle : branche de feature et pointe de integration/projets",
+    "La bibliothèque IAM est complète et testée mais n'a aucun appelant hors d'elle-même sans --features iam (opt-in expresse, jamais imposée)",
+    "fail-closed : PolicyDecision sans « abstention », pas de politique => ImplicitDeny => refus (inverse du défaut Abstain du framework this, 72 tests)",
+    "docs/IAM-BRANCHE-2026-09-13.md documente encore examples/amorcer_iam.rs alors que ce fichier a disparu du HEAD (remplacé par obrain iam amorcer)",
+    "Deux ADR quasi-identiques ne différant que par la casse : ADR-2026-09-13-chaine-iam-et-explosion-des-liens.md et ADR-2026-09-13-CHAINE-IAM-ET-EXPLOSION-DES-LIENS.md"
+  ],
+  "gaps": [
+    "examples/amorcer_iam.rs référencé par la doc IAM-BRANCHE mais absent du HEAD (supersédé par la sous-commande obrain iam amorcer)",
+    "ADR dupliquée en deux fichiers ne différant que par la casse (chaine-iam-et-explosion-des-liens vs CHAINE-IAM-ET-EXPLOSION-DES-LIENS)",
+    "feat/iam-mint-endpoint et feat/iam-groupes (baseline tronc b6c6da2c) ne sont pas fusionnés dans main — risque de divergence avec groupes-tronc",
+    "fix/iam-pont-lecture absent de HEAD 456d3794 (seulement integration/t27 et branches IAM)",
+    "Group/MEMBER_OF/HAS_ROLE, argon2id, emettre_service, controler_ressource et audit borné absents du HEAD principal",
+    "gdpr.rs : horodatage gelé (erased_at/exported_at = 2026-01-01) et principal=cible au lieu d'acteur — défaut préexistant non corrigé",
+    "revoke_session dépend de la visibilité de delete_node dans le substrat (écrit une expiration passée + tente la suppression)",
+    "Pas de MFA, pas de renouvellement automatique client, pas de renommage de compte (clé d'ORN), pas d'énumération des sessions d'une identité",
+    "feat/iam-audit-borne est à la fois feature et pointe de integration/projets — son état de merge vers main reste à confirmer"
+  ]
+}

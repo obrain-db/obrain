@@ -1,0 +1,49 @@
+ENGINE-008 -- AUDIT STATIQUE DU CHEMIN MTP / NextN (§53, §54)
+========================================================================
+AUDIT_KIND=STATIC_SOURCE_AND_METADATA
+LLAMA_DECODE_CALL_COUNT=0
+RUNTIME_OBSERVATION=NO
+
+=== §53 INVENTAIRE DES COUCHES (mesure GGUF) ===
+BASELINE_NORMAL_DECODER_LAYERS=64
+BASELINE_NEXTN_LAYER_COUNT=0
+BASELINE_NEXTN_TENSOR_COUNT=0
+CANDIDATE_N_LAYER_ALL=65
+CANDIDATE_N_LAYER_NEXTN=1
+CANDIDATE_NORMAL_DECODER_LAYERS=64
+CANDIDATE_BLOCK_INDEX_MAX=64
+CANDIDATE_NEXTN_BLOCK_INDEX=64
+CANDIDATE_NEXTN_TENSOR_COUNT=4
+
+Tenseurs du bloc NextN du candidat (blk.64) :
+  blk.64.nextn.eh_proj.weight            Q4_K  [10240, 5120]
+  blk.64.nextn.enorm.weight              F32   [5120]
+  blk.64.nextn.hnorm.weight              F32   [5120]
+  blk.64.nextn.shared_head_norm.weight   F32   [5120]
+  (+ un bloc transformer complet : attn_{q,k,v,output,norm}, ffn_{gate,up,down},
+     post_attention_norm — c est le bloc MTP, hors des 64 couches normales)
+CONFORME_A_L_AUTORITE_53=YES
+
+=== §54 CHEMIN QUE LE FUTUR HARNAIS EMPRUNTERA ===
+Le futur engine008-quality-eval appellera EXCLUSIVEMENT :
+  llama_model_load_from_file   -> chargement standard, aucun parametre MTP
+  llama_init_from_model        -> contexte standard
+  llama_decode(ctx, batch)     -> decode STANDARD (chemin normal)
+Il ne demandera NI mode speculatif NI graphe MTP :
+  LLAMA_CONTEXT_TYPE_DEFAULT   (jamais ..._MTP)
+  aucun llama_set_embeddings / draft model
+  aucun appel a un graphe de type LLM_GRAPH_TYPE_DECODER_MTP
+  aucun usage de blk.64.nextn.* : les 4 tenseurs NextN ne sont atteints
+  que par le chemin MTP, jamais par le graphe decodeur standard.
+
+VERIFICATION SOURCE (lecture statique du fork) :
+  FORK_PATH=/home/triviere/projects/llama-obrain
+  FORK_COMMIT=8ae380f35fd4e817be312ff862c1f7f3bbb018ba
+  Le chemin standard est construit par llama_context / llama-graph.cpp ;
+  le chemin NextN/MTP n est atteint que si la construction le demande
+  explicitement. Le harnais ne le demandera pas.
+
+ENGINE008_MTP_RUNTIME_CONFIRMED=NO
+  (aucun decode n a eu lieu dans cette passe : §55)
+ENGINE008_MTP_RUNTIME_PROOF_METHOD_DEFINED=YES
+  (voir ENGINE008_RUNTIME_PROOF_CONTRACT_v1.txt)

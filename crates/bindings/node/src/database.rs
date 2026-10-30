@@ -296,6 +296,171 @@ impl JsObrainDB {
         self.inner.read().edge_count() as u32
     }
 
+    /// 2D window query over one community's `(centrality_cached × out-degree)`
+    /// plane — RFC zorder-superposition, capacité C1.
+    ///
+    /// Returns the live node ids of `communityId` whose cached PageRank
+    /// centrality (`centrality_cached`, Q0.16) lies in `[cLo, cHi]` AND whose
+    /// out-degree lies in `[dLo, dHi]`. Bounds are inclusive and
+    /// order-insensitive.
+    ///
+    /// Requires a substrate-backed database (throws otherwise).
+    #[napi(js_name = "windowQuery2d")]
+    pub fn window_query_2d(
+        &self,
+        community_id: u32,
+        c_lo: u16,
+        c_hi: u16,
+        d_lo: u32,
+        d_hi: u32,
+    ) -> Result<Vec<u32>> {
+        let db = self.inner.read();
+        let ids = db
+            .window_query_2d(community_id, c_lo, c_hi, d_lo, d_hi)
+            .map_err(NodeObrainError::from)?;
+        // Substrate node slots are u32 node ids; the engine widens them to
+        // u64. The narrowing back to u32 below is lossless by construction.
+        Ok(ids.into_iter().map(|id| id as u32).collect())
+    }
+
+    /// Crée un LOT d'arêtes (natif) — import rapide de gros volumes.
+    /// Tableaux parallèles de même longueur. Retourne les ids créés.
+    #[napi(js_name = "createEdgesBatch")]
+    pub fn create_edges_batch(
+        &self,
+        src_ids: Vec<u32>,
+        dst_ids: Vec<u32>,
+        edge_types: Vec<String>,
+    ) -> Result<Vec<u32>> {
+        if src_ids.len() != dst_ids.len() || src_ids.len() != edge_types.len() {
+            return Err(NodeObrainError::InvalidArgument(
+                "createEdgesBatch: lengths differ".into(),
+            )
+            .into());
+        }
+        let db = self.inner.read();
+        let mut edges: Vec<(obrain_common::types::NodeId, obrain_common::types::NodeId, &str)> =
+            Vec::with_capacity(src_ids.len());
+        for i in 0..src_ids.len() {
+            edges.push((
+                obrain_common::types::NodeId(u64::from(src_ids[i])),
+                obrain_common::types::NodeId(u64::from(dst_ids[i])),
+                edge_types[i].as_str(),
+            ));
+        }
+        let ids = db.create_edges_batch(&edges);
+        Ok(ids.into_iter().map(|e| e.0 as u32).collect())
+    }
+
+    /// Crée un nœud SANS journalisation engine (bulk load). checkpoint() ensuite.
+    #[napi(js_name = "createNodeNoWal")]
+    pub fn create_node_no_wal(&self, labels: Vec<String>) -> Result<u32> {
+        let db = self.inner.read();
+        let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let id = db.create_node_no_wal(&refs);
+        Ok(id.0 as u32)
+    }
+
+    /// BULK LOAD d'arêtes (sans WAL/CDC par arête) — importer de gros volumes ;
+    /// appeler `checkpoint()` ensuite pour la durabilité.
+    #[napi(js_name = "createEdgesBatchFast")]
+    pub fn create_edges_batch_fast(
+        &self,
+        src_ids: Vec<u32>,
+        dst_ids: Vec<u32>,
+        edge_types: Vec<String>,
+    ) -> Result<Vec<u32>> {
+        if src_ids.len() != dst_ids.len() || src_ids.len() != edge_types.len() {
+            return Err(NodeObrainError::InvalidArgument(
+                "createEdgesBatchFast: lengths differ".into(),
+            )
+            .into());
+        }
+        let db = self.inner.read();
+        let mut edges: Vec<(obrain_common::types::NodeId, obrain_common::types::NodeId, &str)> =
+            Vec::with_capacity(src_ids.len());
+        for i in 0..src_ids.len() {
+            edges.push((
+                obrain_common::types::NodeId(u64::from(src_ids[i])),
+                obrain_common::types::NodeId(u64::from(dst_ids[i])),
+                edge_types[i].as_str(),
+            ));
+        }
+        let ids = db.create_edges_batch_no_wal(&edges);
+        Ok(ids.into_iter().map(|e| e.0 as u32).collect())
+    }
+
+    /// INGESTION NATIVE zone-direct (RFC §16.1) — store neuf requis.
+    #[napi(js_name = "bulkImport")]
+    pub fn bulk_import(
+        &self,
+        labels: Vec<String>,
+        src_ids: Vec<u32>,
+        dst_ids: Vec<u32>,
+        edge_types: Vec<String>,
+    ) -> Result<(u32, u32)> {
+        if src_ids.len() != dst_ids.len() || src_ids.len() != edge_types.len() {
+            return Err(NodeObrainError::InvalidArgument(
+                "bulkImport: edge arrays lengths differ".into(),
+            )
+            .into());
+        }
+        let db = self.inner.read();
+        let (n, m) = db
+            .bulk_import(&labels, &src_ids, &dst_ids, &edge_types)
+            .map_err(NodeObrainError::from)?;
+        Ok((n, m as u32))
+    }
+
+    /// Comptage O(1) par label (compteurs vivants substrate).
+    #[napi(js_name = "nodeCountByLabel")]
+    pub fn node_count_by_label(&self, label: String) -> u32 {
+        let db = self.inner.read();
+        db.node_count_by_label(&label) as u32
+    }
+
+    /// Comptage O(1) par type d'arête (compteurs vivants substrate).
+    #[napi(js_name = "edgeCountByType")]
+    pub fn edge_count_by_type(&self, edge_type: String) -> u32 {
+        let db = self.inner.read();
+        db.edge_count_by_type(&edge_type).unwrap_or(0) as u32
+    }
+
+    /// Crée l'index propriété (égalité) natif substrate — accélère les
+    /// lookups WHERE prop = value.
+    #[napi(js_name = "createPropertyIndex")]
+    pub fn create_property_index(&self, property: String) {
+        let db = self.inner.read();
+        db.create_property_index(&property);
+    }
+
+    /// Checkpoint (durabilité : msync/fsync + troncature WAL).
+    #[napi]
+    pub fn checkpoint(&self) -> Result<()> {
+        let db = self.inner.read();
+        db.checkpoint()
+            .map_err(NodeObrainError::from)
+            .map_err(napi::Error::from)
+    }
+
+    /// Fenêtre 2D ACCÉLÉRÉE (zruns) — voie « layout trié » (RFC D3b).
+    /// Repli scan automatique ; voir ObrainDB.windowQuery2dSorted.
+    #[napi(js_name = "windowQuery2dSorted")]
+    pub fn window_query_2d_sorted(
+        &self,
+        community_id: u32,
+        c_lo: u16,
+        c_hi: u16,
+        d_lo: u32,
+        d_hi: u32,
+    ) -> Result<Vec<u32>> {
+        let db = self.inner.read();
+        let ids = db
+            .window_query_2d_sorted(community_id, c_lo, c_hi, d_lo, d_hi)
+            .map_err(NodeObrainError::from)?;
+        Ok(ids.into_iter().map(|id| id as u32).collect())
+    }
+
     /// Begin a transaction with an optional isolation level.
     ///
     /// Isolation levels: "read_committed", "snapshot" (default), "serializable".

@@ -1,0 +1,62 @@
+ENGINE-008 -- PERIMETRE CANONIQUE TASK v1
+==========================================================================
+SCHEMA=ENGINE008_TASK_SCOPE_v1
+DEFINITION=NOUVELLE_PAR_CETTE_PASSE (l ancienne n a jamais ete materialisee)
+SERIALISATION=json, cles triees, separateurs compacts, ensure_ascii=false, sans saut de ligne final
+ORDRE=chemin logique, ordre des octets
+ENTRY_COUNT=25
+MANIFEST_BYTES=3444
+MANIFEST_SHA256=290bf8d486d981d1185be0c629bbc8074dc6ae894acfd3150778aace68c2bf74
+
+TASK_EVAL_CONTENT_TREE_SHA256=290bf8d486d981d1185be0c629bbc8074dc6ae894acfd3150778aace68c2bf74
+
+=== ENTREES ===
+  contracts/ENGINE008_SELECTION_RULES_v2.txt                 4015  3c1a16d7053f693400b3a8d858733f6a884301e34c8796e8a482370d5a369552
+  contracts/QUALITY_THRESHOLDS_v1.txt                         661  08d70467d2dada51a362bfa91694b00d6bd0b1dd020feab2f7bb52af47666bc7
+  contracts/STRUCTURED_VALIDITY_CONFIG_v1.txt                1061  7896e65e4ba6c1d6749067db27eba26fc74ecfa25f0fb0418887fc3d17b289d3
+  contracts/TASK_PROMPT_CONTRACTS_v1.txt                     2194  fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6
+  data/task_eval/gsm8k/GSM8K_ITEMS.jsonl                   341687  4853065ba49aad124d25bfc1b08f558709759e239df33067426cd7593e99641b
+  data/task_eval/gsm8k/GSM8K_SELECTION.csv                  44526  242392e336a946c9d29da281cb3085fe488bfcddf63ea770f2cf0356bd266f2a
+  data/task_eval/ifeval/IFEVAL_ITEMS.jsonl                 214199  ee4e3446cd0842b9ffbdb45d7b30608218110911bea4f58484352de8f0ef7546
+  data/task_eval/ifeval/IFEVAL_SELECTION.csv                10199  cab1cf1934c4b466bf251b27f4531d21ab59b48943a92e74cfb347231ee97aa5
+  data/task_eval/mbpp/MBPP_ITEMS.jsonl                     190721  d58e4468d240c1300d9cfb2dabd5d73d0611fef76f8c70256ffd433b80b7764f
+  data/task_eval/mbpp/MBPP_SELECTION.csv                     4578  668107acfe61c462b79f19b706da0d366a0b724e43c093277027f9205319105a
+  data/task_eval/mmlu_pro/MMLU_PRO_ITEMS.jsonl            1279924  735315dcf216ff31b31ed98579cd726bd11247c331e46f2004524dd7c683f078
+  data/task_eval/mmlu_pro/MMLU_PRO_SELECTION.csv           138810  4d4ed9cddb806c7c613df1e3d751a5c10ffc094122015d03cc7d623def0e8516
+  out/MMLU_CHOICES_INPUTS.jsonl                           2224042  9a87459668631613f9485a65606c74e0ed1c824f331f6ed28f8fec1248eac498
+  out/TASK_GLOBAL_ITEM_ORDER.txt                            78279  b7bbade7658b3c4ff397573cb5bf4033da03c37d45aceb4392493ce1e2a940a1
+  out/TASK_RENDERED_INPUTS.jsonl                          7945440  ef3a4702355258c636a9dccd2691860928628648b0e61752f1e5db0233036784
+  prep/ENGINE008_EFFECTIVE_CHAT_TEMPLATE.jinja               8952  c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+  prep/ENGINE008_RENDER_CONFIG_v1.json                       5924  a5b6f50c7ee6b675fec037579036f3777a8d96e3c1545a3878530f3937a28b47
+  prep/engine008-quality-eval.cpp                           29349  3e9691918fa5e861862f7068bbb4af0025d8c1ca2e21a978a0cd32c658aeab7d
+  scorers/QUALITY_SCORER_PROVENANCE.txt                      2819  eeea6da8e2ef7dc49dd3e7eb5140b55f30488b618d69b57758c3bac6f982a455
+  scorers/gsm8k_v1.py                                        5462  3b8a3000275f1545a99b6ac9dd60c0c21fee71c526a80f4b438c60e8a7c8b239
+  scorers/ifeval_v1.py                                       4225  cbd662d3d03743c781af0ba24571a3fd2b2ce91467e4afdb4567e136d2d8afb7
+  scorers/long_context_v1.py                                 3121  049d1ffa4bf106d1447a781bddc9fcc6e9a0a5600a12a6ba10a65c3c3cd93645
+  scorers/mbpp_v1.py                                         8581  6f4aee18b6c3eba31418d7099e86a67c0d695159814361233d295e6e826c1685
+  scorers/mmlu_pro_v1.py                                     4422  c0c0134502abea0f68dfb34b169a47324f2b606d0453bab4c546f983785f4e31
+  scorers/task_scorers_v1.py                                11826  db1e0f15109cef00b70b81c3862071fccc75810358d1d663cd5c8c0017dde95a
+
+=== HASHES CONSERVES SEPAREMENT (perimetres DIFFERENTS) ===
+TASK_EVAL_DATA_CONTENT_TREE_SHA256=c30d71d84712fae390be582111f0473c87ccaaad7411e1ef99b97689d69ab84a
+  -> perimetre DATA amont (corpora/task_eval), historique, INCHANGE
+TASK_EVAL_CONTENT_TREE_SHA256=290bf8d486d981d1185be0c629bbc8074dc6ae894acfd3150778aace68c2bf74
+  -> perimetre TASK COMPLET (ce manifeste)
+  Les deux ne sont PAS comparables : perimetres differents.
+
+=== EXCLUSIONS DECIDEES (§9) ===
+  - le manifeste lui-meme
+  - le rapport de gel qui contient son hash
+  - les resultats qualite futurs
+  - les fichiers temporaires et logs non normatifs
+  - les grands modeles
+  - le corpus long contexte non prepare
+
+=== MODELES ET DEPENDANCES RUNTIME : manifestes de provenance SEPARES ===
+  ENGINE008_RENDERER_PROVENANCE_v1.json  (fork, libs, ABI, chemin resolu)
+  ENGINE008_Q1_RECOVERY.txt               (identite Q1 et son autorite)
+  qualite_baseline_model_sha256=31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34
+  qualite_candidate_model_sha256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937
+  libllama_sha256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  TASK_EVAL_CONTENT_TREE_SHA256 ne couvre PAS les modeles : ils sont exclus
+  par decision, et lies par des manifestes de provenance separes.

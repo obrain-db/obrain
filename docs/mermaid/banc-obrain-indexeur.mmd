@@ -1,0 +1,126 @@
+%% Ce que ce diagramme prouve : la chaine complete de l indexeur de code natif du depot, du
+%% repertoire sur disque jusqu aux aretes CALLS ecrites dans le store substrate. Chaque noeud
+%% nomme un fichier, un type ou une fonction REELLEMENT lus dans crates/obrain-indexer/src et
+%% dans crates/obrain-cli/src/mcp_server.rs, avec ses lignes mesurees par wc -l.
+%% MESURE : 15 797 lignes .rs dans le crate dont 4 971 pour src/lang ; 26 variantes NodeKind et
+%% 34 variantes EdgeKind declarees dans schema.rs ; 8 modules de langage manuels, 63 appels
+%% reg.register dans spec_langs.rs, 71 noms dans la liste DEDICATED de pack_langs.rs ; sur les
+%% 34 types d aretes declares, 7 ont un site d ecriture trouve par grep.
+%% DEDUIT : rien. NON ETABLI : le nombre de langages effectivement enregistres a l execution
+%% - pack_langs interroge tree_sitter_language_pack::has_language, non execute ici ; le nombre de
+%% noeuds produits sur un depot donne ; le contenu reel du store apres ecriture.
+
+flowchart TB
+
+  subgraph Depot["1 - Le depot sur disque, et ce qu on refuse d indexer"]
+    root["racine du depot - parametre root de type Path<br/>nom de projet = chemin absolu, separateurs en points,<br/>tirets en underscores - contrat C fqn.c"]
+    disc["discovery.rs - 403 lignes<br/>fonction discover - pile DFS iterative,<br/>tri final pour une indexation reproductible"]
+    opts["DiscoveryOptions<br/>max_file_bytes 5 Mo<br/>honor_cbmignore true<br/>exclure_artefacts true"]
+    raisons["Raison - 7 variantes<br/>versionnage, dependances, sortie de build,<br/>environnement, verrouillage, minifie, trop gros"]
+    excl["Exclusion chemin plus raison<br/>DiscoveryResult::par_raison<br/>nb_artefacts"]
+  end
+
+  subgraph Grammaires["2 - Une grammaire egale un module - le registre des langages"]
+    build_reg["lang/mod.rs - 41 lignes<br/>build_registry"]
+    manuels["src/lang/ - 8 modules manuels, 4 971 lignes avec mod.rs<br/>rust 927, cpp 777, typescript 641, javascript 635,<br/>c 577, java 487, go 455, python 431"]
+    spec["spec_langs.rs - 548 lignes<br/>63 reg.register - SpecLang::new plus grammar_*"]
+    pack["pack_langs.rs - 113 lignes<br/>DEDICATED - 71 noms sautes<br/>tree_sitter_language_pack::has_language"]
+    specs["lang_specs.rs - 3 324 lignes<br/>table LANG_SPECS parcourue par pack_langs"]
+    reg["LanguageRegistry - parse.rs<br/>language_for_path - premier langage<br/>dont les extensions contiennent la sienne"]
+  end
+
+  subgraph Extraction["3 - Extraction tree-sitter - un fichier rend une FileExtraction"]
+    trait_lang["parse.rs - 185 lignes<br/>trait Language - extensions, name, extract"]
+    parser["lang/rust.rs - 927 lignes - module de REFERENCE<br/>PARSER thread_local - un Parser par thread rayon<br/>mesure notee dans le fichier - 1,92 s vers 0,29 s sur 823 fichiers"]
+    walks["walk_items - arbre vers definitions<br/>collect_bindings - let et parametres types"]
+    spec_engine["spec_engine.rs - 885 lignes<br/>extract_spec source, parser, spec<br/>SpecLang::new et SpecLang::from_pack"]
+    fe["FileExtraction<br/>definitions, calls, imports,<br/>bindings, struct_fields"]
+  end
+
+  subgraph Graphe["4 - Le graphe en memoire - buffers de noeuds et d aretes"]
+    schema_rs["schema.rs - 188 lignes - le contrat<br/>26 variantes NodeKind<br/>34 variantes EdgeKind<br/>le commentaire du fichier annonce 24 labels"]
+    codegraph["graph.rs - 537 lignes<br/>CodeGraph - Vec Node plus Vec Edge<br/>index by_qn, by_id, by_kind, by_edge_kind"]
+    upsert["upsert_node - unicite du FQN<br/>fusion des props manquantes"]
+    insedge["insert_edge et link_qns<br/>resolution FQN vers NodeId"]
+  end
+
+  subgraph Resolution["5 - Resolution des appels - chaine de confiance decroissante"]
+    registry["resolve.rs - 1 287 lignes<br/>SymbolRegistry - 10 index HashMap,<br/>dont by_method et method_return"]
+    confiance["Confidence - 13 constantes mesurees<br/>import_map 0.95, receiver_self 0.92,<br/>same_module 0.90, receiver_type 0.90,<br/>unique_name 0.75, suffix_match 0.55,<br/>fuzzy 0.40 et 0.30"]
+    receiver["resolve_receiver - passe recepteur<br/>self, type local, import, let-binding,<br/>retour de fonction libre, champ de struct"]
+    emitcall["index.rs - 1 064 lignes<br/>index_repository - 2 phases rayon par_iter<br/>chaque CALLS porte strategy, confidence,<br/>line et caller_scope"]
+    filtres["anti-bruit mesure dans index.rs<br/>self-loops filtres sauf recursion par nom nu<br/>saut intermediaire de cascade non persiste"]
+  end
+
+  subgraph Passes["6 - Passes post-resolution sur le graphe en memoire"]
+    complex["metrics.rs - 490 lignes<br/>complexity_pass - DFS memoise le long des CALLS<br/>ecrit transitive_loop_depth et recursive"]
+    tests["tests_pass - un CALLS test vers non-test<br/>devient une arete TESTS"]
+    gitc["git_ctx.rs - 116 lignes<br/>capture - git rev-parse head, branche, merge-base"]
+    gith["git_history.rs - 282 lignes<br/>analyze - change_count, last_modified,<br/>couples co-evoluants"]
+  end
+
+  subgraph Ecriture["7 - Ecriture dans le store substrate"]
+    cli["obrain-cli src/mcp_server.rs<br/>index_repository - feature indexer<br/>appelle index::index_repository"]
+    nowal["create_node_no_wal<br/>create_edges_batch_no_wal - lots de 65 536"]
+    props_aretes["provenance des aretes ecrite<br/>set_node_property plus properties d arete<br/>si les identifiants rendus concordent"]
+    indexes["create_property_index<br/>qualified_name, name"]
+    ckpt["checkpoint - durabilite du lot NoWal"]
+  end
+
+  subgraph NonEcrit["Declare mais sans site d ecriture - etabli par grep sur tout le crate"]
+    imports_edge["🟠 IMPORTS<br/>ses 2 seules occurrences sont dans schema.rs<br/>variante ligne 111, libelle ligne 154<br/>l import EST extrait en parse::Import et sert<br/>d indice de resolution, mais aucun insert_edge<br/>ne l ecrit"]
+    folder_node["🟠 Folder<br/>declare dans NodeKind et annonce cree par<br/>lib.rs discovery - aucune creation dans index.rs<br/>qui ne cree que Project, Branch et File"]
+    cbmignore["🟠 honor_cbmignore true<br/>declare dans DiscoveryOptions, jamais lu<br/>le fichier de code dit pourquoi il ne l applique pas"]
+  end
+
+  root -->|lit| disc
+  opts -->|parametre| disc
+  disc -->|classe chaque chemin| raisons
+  raisons -->|motive| excl
+  disc -->|rend les fichiers retenus| fe
+
+  build_reg -->|construit| reg
+  manuels -->|enregistre 8 langages| reg
+  spec -->|enregistre 63 langages| reg
+  specs -->|alimente| pack
+  pack -->|complete le registre| reg
+  reg -->|language_for_path| parser
+  trait_lang -->|contrat de| parser
+  parser -->|appelle| walks
+  parser -->|appelle| spec_engine
+  walks -->|remplit definitions, calls, bindings| fe
+  spec_engine -->|remplit| fe
+
+  schema_rs -->|labels et types| codegraph
+  fe -->|definitions| upsert
+  upsert -->|noeuds| codegraph
+  insedge -->|aretes| codegraph
+  fe -->|calls bruts plus imports| registry
+  registry -->|resout via| confiance
+  confiance -->|ordonne les strategies| receiver
+  receiver -->|rend une Resolution| emitcall
+  emitcall -->|link_qns| insedge
+  filtres -->|filtre a l emission| emitcall
+  gitc -->|noeud Branch plus HAS_BRANCH| upsert
+
+  codegraph -->|lu par| complex
+  complex -->|ecrit transitive_loop_depth| codegraph
+  tests -->|insere TESTS| insedge
+  gith -->|FILE_CHANGES_WITH| insedge
+
+  codegraph -->|IndexOutcome| cli
+  cli -->|create_node_no_wal| nowal
+  cli -->|create_edges_batch_no_wal| nowal
+  nowal -->|proprietes| props_aretes
+  props_aretes -->|index d egalite| indexes
+  indexes -->|durabilite| ckpt
+
+  schema_rs -.->|declare sans emetteur| imports_edge
+  schema_rs -.->|declare sans emetteur| folder_node
+  opts -.->|declare sans lecteur| cbmignore
+
+  classDef ecrit fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef nonEcrit fill:#8a8a12,stroke:#4d4d0a,color:#fff
+
+  class root,disc,opts,raisons,excl,build_reg,manuels,spec,pack,specs,reg,trait_lang,parser,walks,spec_engine,fe,schema_rs,codegraph,upsert,insedge,registry,confiance,receiver,emitcall,filtres,complex,tests,gitc,gith,cli,nowal,props_aretes,indexes,ckpt ecrit
+  class imports_edge,folder_node,cbmignore nonEcrit

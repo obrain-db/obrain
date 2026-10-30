@@ -21,6 +21,11 @@ pub struct QueryRunOptions<'a> {
     pub quiet: bool,
     pub timing: bool,
     pub max_width: Option<usize>,
+    /// Ouvrir en lecture seule (verrou partagé) — pour mesurer un store tenu
+    /// par un autre processus, sans l'arrêter.
+    pub read_only: bool,
+    /// Mesure et imprime (stderr) les slots-noeuds lus par l execution.
+    pub slots: bool,
 }
 
 /// Run the query command.
@@ -36,6 +41,8 @@ pub fn run(opts: QueryRunOptions<'_>) -> Result<()> {
         quiet,
         timing,
         max_width,
+        read_only,
+        slots,
     } = opts;
     // Resolve the query string from one of three sources
     let query_str = if let Some(q) = query {
@@ -56,14 +63,67 @@ pub fn run(opts: QueryRunOptions<'_>) -> Result<()> {
     // Parse parameters
     let param_map = parse_params(params)?;
 
-    let db = super::open_existing(path)?;
+    // ── LE CLI AUSSI EST BORNÉ, PAS SEULEMENT LE SERVEUR ────────────────────
+    // Le serveur arme l'échéance de requête depuis le 2026-09-12 (voir
+    // `viz_serve::echeance_requete`) — sans quoi `MATCH (a)-[*1..2]->(b) WHERE
+    // id(b) IN […]` tournait encore après 150 s. La requête en LIGNE DE COMMANDE
+    // ne l'armait pas : un script lançant un motif explosif attendait
+    // indéfiniment, sans message.
+    //
+    // Une requête en ligne de commande est un geste délibéré : le rail est donc
+    // réglé PLUS LARGE que celui du serveur (60 s contre 30 s).
+    // `OBRAIN_QUERY_TIMEOUT_MS` le règle (`0` le désarme).
+    fn echeance_requete_cli() -> Option<std::time::Duration> {
+        let ms = std::env::var("OBRAIN_QUERY_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(60_000);
+        (ms > 0).then(|| std::time::Duration::from_millis(ms))
+    }
+
+    // LECTURE SEULE si demandé : c'est ce qui permet de mesurer un store VIVANT
+    // (tenu par le harness) au lieu d'une copie figée.
+    let db = if read_only {
+        let chemin = path;
+        obrain_engine::database::ObrainDB::open_read_only(chemin).with_context(|| {
+            format!(
+                "échec de l'ouverture en lecture seule de {}",
+                chemin.display()
+            )
+        })?
+    } else {
+        super::open_existing(path)?
+    }
+    .with_query_timeout(echeance_requete_cli());
     let session = db.session();
 
+    // (J5) COMPTEUR DE SLOTS : remise a zero apres l ouverture (les scans
+    // d ouverture ne sont pas la requete), lecture apres l execution. Sur
+    // stderr pour laisser stdout aux resultats.
+    if slots {
+        obrain_substrate::compteurs::raz_slots_noeuds_lus();
+    }
     let result = if param_map.is_empty() {
         execute_query(&session, &query_str, lang)?
     } else {
         execute_query_with_params(&session, &query_str, param_map, lang)?
     };
+    if slots {
+        eprintln!(
+            "slots_noeuds_lus = {}",
+            obrain_substrate::compteurs::slots_noeuds_lus()
+        );
+    }
+    // ── LA TÉLÉMÉTRIE DU GROUP COMMIT, APRÈS LA REQUÊTE (banc 2026-10-06) ───
+    // Le même instrument que `index_repository` : `OBRAIN_GC_DIAG=1` la rend sur
+    // stderr. C'est ce qui permet de vérifier le contrat « armé ne coûte RIEN
+    // quand le WAL est inactif » sur le chemin `query` (mutations CREATE), et pas
+    // seulement de le supposer.
+    if std::env::var("OBRAIN_GC_DIAG").is_ok_and(|v| v == "1") {
+        if let Some(s) = db.substrate_handle() {
+            eprintln!("[gc-diag] {}", s.writer().diagnostic_group_commit());
+        }
+    }
 
     let fmt: Format = format.into();
 
@@ -211,14 +271,17 @@ fn truncate_value(s: String, max_width: Option<usize>) -> String {
     }
 }
 
-/// Format a Value for display.
+/// Format a Value for display. Les strings sont BRUTES (sans guillemets) :
+/// la sortie JSON (serde) quotera elle-même, la table CLI peut quoter via
+/// son formateur. (2026-08-31) — avant, les guillemets ajoutés ici
+/// produisaient un double-encodage en sortie JSON (`"\"Alix\""`).
 pub fn format_value(v: &Value) -> String {
     match v {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Int64(i) => i.to_string(),
         Value::Float64(f) => format!("{f}"),
-        Value::String(s) => format!("\"{s}\""),
+        Value::String(s) => s.to_string(),
         Value::List(items) => {
             let inner: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", inner.join(", "))
@@ -367,7 +430,8 @@ mod tests {
 
     #[test]
     fn test_format_value_string() {
-        assert_eq!(format_value(&Value::from("hello")), "\"hello\"");
+        // Brut depuis 2026-08-31 — la sortie JSON quotera via serde.
+        assert_eq!(format_value(&Value::from("hello")), "hello");
     }
 
     #[test]

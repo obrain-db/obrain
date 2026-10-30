@@ -1151,6 +1151,12 @@ impl GraphStore for GraphProjection<'_> {
 
     // --- Visibility checks ---
 
+    fn has_pending_writes(&self) -> bool {
+        // Pure délégation : la projection ne crée pas d'écritures en attente,
+        // elle ne fait que filtrer ce que le store sous-jacent expose.
+        self.store.has_pending_writes()
+    }
+
     fn is_node_visible_at_epoch(&self, id: NodeId, epoch: EpochId) -> bool {
         if !self.store.is_node_visible_at_epoch(id, epoch) {
             return false;

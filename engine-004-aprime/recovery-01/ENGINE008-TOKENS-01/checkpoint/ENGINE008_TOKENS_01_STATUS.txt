@@ -1,0 +1,108 @@
+ENGINE-008 -- STATUT ENGINE008-TOKENS-01
+==========================================================================
+G1 ET G2 CORRIGES. Le faux PASS a disparu. Un FORWARD REEL a eu lieu et un
+TOKEN REEL a ete produit. La sequence s'arrete au premier defaut, comme prescrit.
+
+=== LES TOKENS REELLEMENT PRODUITS -- D'ABORD ===
+  baseline1  : GENERATED_TOKEN_IDS=[1596]   count=1   stop_reason=ERROR
+  candidate1 : NOT_RUN (rapport absent)
+  baseline2  : NOT_RUN
+  candidate2 : NOT_RUN
+
+  TEXTE GENERE : **AUCUN texte n'est emis.** Le harnais ne decode pas les IDs en
+  texte : il n'existe aucun champ `GENERATED_TEXT` dans le rapport. Je ne le
+  fabrique pas. Je livre l'ID reel et la representation du token telle que le
+  vocabulaire la donne, mais PAS de texte que le harnais n'a pas produit.
+
+  Le token 1596 n'est NI EOS ni un token special de controle : c'est un token
+  ordinaire selectionne par argmax. Il est CONSERVE, pas ecarte.
+
+=== LA PREUVE QUE LE CALCUL REEL A EU LIEU ===
+  REAL_LOAD_CALLS=1              (chargement complet, une fois)
+  REAL_CONTEXT_CREATE_CALLS=1    (contexte cree, une fois)
+  load_ok=1  ctx_ok=1
+  prefill_windows=1              (le prefill de 59 tokens a ete execute)
+  decode_windows=1
+  llama_decode_calls=1
+  GENERATED_TOKEN_COUNT=1   IDs=[1596]
+
+  Ce n'est donc PAS un refus avant calcul : le modele a ete charge, le contexte
+  cree, le prefill execute, les logits lus, un token selectionne et enregistre.
+
+=== LE DEFAUT QUI ARRETE LA SEQUENCE ===
+  stop_reason=ERROR
+  Message du fork, verbatim :
+      decode: failed to initialize batch
+      llama_decode: failed to decode, ret = -1
+  Le PREMIER pas de decode reussit (le prefill et la selection du token 1596),
+  le pas SUIVANT echoue a initialiser son batch. Limite : DECODE_OR_LOGIT_ERROR.
+
+  MON CRITERE G2 A CORRECTEMENT JUGE : `ERROR` n'appartient pas au contrat
+  {EOS, MAX_NEW_TOKENS}. RUN_OUTCOME=FAIL, **exit_code=5** (et non 0), le
+  lanceur marque FAIL et ARRETE la sequence. Les runs 2 a 4 sont NOT_RUN.
+  **C'est exactement le comportement qui manquait en RUN-03.**
+
+=== G1 : UNE SEULE CONSTRUCTION DE DESTINATION -- CORRIGE ===
+  CONTRAT RETENU ET DOCUMENTE : **capture-root EST la destination FINALE**,
+  utilisee sans ajout. Applique des DEUX cotes :
+   - le harnais (`prepare_capture`) utilise la racine TELLE QUELLE ;
+   - le LANCEUR cree lui-meme les parents autorises (`mkdir -p`) avant l'enfant.
+  VERIFIE : `capture_dir` = `.../RUN-05/captures/baseline/run1` -- **plus de
+  double suffixe** (RUN-03 donnait `.../baseline/run1/baseline/run1`).
+  Le controle de reutilisation n'a PAS ete contourne.
+  Le refus `CAPTURE_DESTINATION_REFUSED` a DISPARU de RUN-05.
+
+=== G2 : JUGER L'ABOUTISSEMENT REEL -- CORRIGE ===
+  Le HARNAIS evalue conjointement : load_ok, ctx_ok, prefill_windows>=1,
+  decode/logits, >=1 token enregistre, stop_reason dans {EOS, MAX_NEW_TOKENS},
+  absence de limite bloquante. Il emet `RUN_OUTCOME=PASS|FAIL`,
+  `RUN_OUTCOME_WHY=` (la liste exacte des manques) et un **code de sortie
+  coherent** : 3 = refus avant calcul, 5 = accepte mais NON abouti, 0 = abouti.
+  Le LANCEUR lit desormais les PREUVES du rapport (`report_text`) :
+  `generated_token_count >= 1`, `stop_reason` dans {EOS, MAX_NEW_TOKENS}, et
+  refus explicite de toute limite bloquante connue.
+  VERIFIE sur RUN-03 et RUN-05 : un run vide ou en ERROR donne **FAIL**, jamais PASS.
+
+=== CE QUE LE RUN A AUSSI REVELE, ET QUI EST UTILE ===
+  - `registry_entries=851` : le registre natif a bien ete lu.
+  - `n_inventory_entries=0`, `valid_keys=[]` : **l'inventaire n'a PAS ete charge**
+    (la variable OBRAIN_F1A_INVENTORY n'a pas ete consommee par le chemin reel).
+    `inv_globally_complete=true` est donc VRAI A VIDE -- a corriger.
+  - P4' S'EST EXECUTE : `p4_checks_run=true`, `p4_overall=UNKNOWN`, C1..C5
+    UNKNOWN (registre non acquis, SHA libllama vide), **C6 PASS**. Gate BLOCKED.
+    C'est un resultat REEL, pas une simulation.
+  - `WHT_SURFACE_MISSING_OR_MALFORMED`, blocker nomme :
+    `GRAPH_CAPTURE_MANIFEST.csv : manifeste absent` -- la capture f1a n'a rien
+    ecrit, ce qui est coherent : les captures n'ont pas ete produites.
+
+=== CE QUI N'A PAS ETE FAIT ===
+  Aucun retry. Aucune modification pendant la sequence. La sequence a ete
+  arretee au premier defaut et les runs suivants marques NOT_RUN.
+  PHASE C (injection graph) : NON EXECUTEE. Le preflight n'a pas abouti
+  (stop_reason=ERROR) : la condition « le preflight passe » n'est pas remplie.
+  GRAPH_INJECTION_MECHANISM=UNRESOLVED  GRAPH_INJECTION_SMOKE_STATUS=NOT_RUN
+  Les invocations RUN-03 et RUN-04 n'ont PAS ete presentees comme des
+  generations reussies, et ne sont pas reutilisees.
+
+TECHNICAL_REPAIR_RESULT=PASS
+EMPTY_RUN_REJECTED_SELFTEST=PASS
+CAPTURE_DESTINATION_CONTRACT_SELFTEST=PASS
+
+PRODUCTION_HARNESS_SHA256=c8c3a71601e6cb51530a69839a5aaaf578d067c22e9990ad2b2cb511a58d99d2
+PRODUCTION_LAUNCHER_SHA256=de6491b594e580f73bab92c5931de2f6183e1b4744f3aed8634c3e8c8346b503
+FULL_MODEL_LOAD_COUNT=1        (baseline, une fois)
+MODEL_FORWARD_CALL_COUNT=1     (llama_decode_calls=1)
+PREFLIGHT_SEQUENCE_RESULT=FAIL  (aboutissement non atteint : 1 token puis ERROR)
+RETRY_COUNT=0   Q1_LIBLLAMA_REBUILT=NO   TASK_QUALITY_RESULT_COUNT=0
+QUALITY_EXECUTION_ALLOWED=NO
+
+=== CE QU'IL FAUDRAIT, EN UNE INSTRUCTION SEPAREE ===
+  H1. `decode: failed to initialize batch` au 2e pas : le batch de decode doit
+      etre initialise avec la position courante et la sequence ; la lecture des
+      logits par pas doit etre coherente avec `ctx->synchronize()`.
+  H2. Raccorder OBRAIN_F1A_INVENTORY au chemin reel : l'inventaire vaut
+      actuellement 0 entree, donc la validation est vraie a vide.
+  H3. Decoder les IDs en texte (`llama_token_to_piece`) et l'ecrire dans le
+      rapport -- le texte n'est aujourd'hui PAS produit.
+  H4. Rebuild -> nouvelles identites, nouveau gel, PUIS les quatre runs et la
+      Phase C.

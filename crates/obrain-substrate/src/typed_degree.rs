@@ -26,7 +26,8 @@
 //! - **One file per edge type** : `substrate.degrees.node.<type_name>.u32`
 //!   where `<type_name>` is the ASCII edge-type name from the registry
 //!   (with a small filename-safe encoding for the few special chars).
-//! - **Columns stored in a `DashMap<u16, Arc<RwLock<DegreeColumn>>>`** :
+//! - **Columns stored in a `DashMap<u16, Arc<TypedColumn>>`** (le wrapper
+//!   `TypedColumn` ajoute un drapeau dirty par colonne, cf. sa doc) :
 //!   lazy creation on first `incr_*` for a type; existing types picked
 //!   up via directory scan at `open_all`.
 //! - **Reuses [`DegreeColumn`]** verbatim — same header, same CRC, same
@@ -57,6 +58,7 @@
 
 #![allow(unsafe_code)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -103,6 +105,58 @@ enum InitState {
     Initialized,
 }
 
+/// Handle d'une colonne de degrés typée + son drapeau **dirty**.
+///
+/// ## Pourquoi un drapeau SÉPARÉ de [`DegreeColumn`]
+///
+/// `DegreeColumn` est PARTAGÉ avec la colonne T5 totale (le `SubstrateStore`
+/// la matérialise dans son propre `degrees_cell`). Y ajouter un champ `dirty`
+/// l'armerait aussi sur le chemin T5, où l'on n'en veut pas. Le drapeau vit
+/// donc CÔTÉ REGISTRE, armé uniquement par les mutations des colonnes TYPÉES.
+///
+/// ## Pourquoi ce drapeau existe (optimisation DIRTY-FLAG du flush)
+///
+/// `flush()` est appelé périodiquement (~60 s en production) sur des bases
+/// où la plupart des types n'ont pas bougé. L'ancien code persistait CHAQUE
+/// colonne `substrate.degrees.node.<type>.u32` à chaque flush :
+/// `persist_header_crc()` (CRC IEEE sur TOUT le payload) + `msync()`, SANS
+/// drapeau → O(E_types) msync par flush, ~0,83 ms/type, soit ~6 s à 7000
+/// types, même quand RIEN n'a changé. Le drapeau fait tomber le coût
+/// périodique à O(types_sales) : une colonne propre ne paie ni CRC ni msync.
+struct TypedColumn {
+    col: RwLock<DegreeColumn>,
+    dirty: AtomicBool,
+}
+
+impl TypedColumn {
+    /// Colonne fraîchement CRÉÉE (`create_by_filename`) : son en-tête (CRC=0)
+    /// n'est pas encore msyncé, elle doit être persistée au prochain flush.
+    fn created(col: DegreeColumn) -> Self {
+        Self {
+            col: RwLock::new(col),
+            dirty: AtomicBool::new(true),
+        }
+    }
+
+    /// Colonne OUVERTE depuis le disque (`open_by_filename`, CRC valide) :
+    /// l'en-tête sur disque est déjà exact, rien à repersister.
+    fn opened(col: DegreeColumn) -> Self {
+        Self {
+            col: RwLock::new(col),
+            dirty: AtomicBool::new(false),
+        }
+    }
+
+    /// Arme le drapeau dirty. Doit être appelé APRÈS la mutation du payload,
+    /// SOUS le verrou de colonne (voir [`TypedDegreeRegistry::incr_out`]) —
+    /// jamais avant, sinon un `flush()` concurrent qui efface le drapeau sous
+    /// son write-lock laisserait la mutation invisible à la prochaine passe.
+    #[inline]
+    fn marquer_sale(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+}
+
 /// Registry mapping `edge_type_id` → DegreeColumn. Created once per
 /// store; internal DashMap supports concurrent lazy insertion.
 ///
@@ -125,9 +179,9 @@ enum InitState {
 /// completes and included in the rebuild, or happens after the
 /// init finishes and increments its own column).
 pub struct TypedDegreeRegistry {
-    /// `edge_type_id → Arc<RwLock<DegreeColumn>>`. `Arc` so callers can
+    /// `edge_type_id → Arc<TypedColumn>`. `Arc` so callers can
     /// `.clone()` the column handle for short-lived read-lock scopes.
-    columns: DashMap<u16, Arc<RwLock<DegreeColumn>>>,
+    columns: DashMap<u16, Arc<TypedColumn>>,
     /// Needed for lazy file creation.
     substrate: Arc<parking_lot::Mutex<SubstrateFile>>,
     /// Edge-type name registry for filename resolution at persist /
@@ -138,6 +192,12 @@ pub struct TypedDegreeRegistry {
     /// body once, and flips to `Initialized`. All subsequent calls
     /// observe `Initialized` under the lock and return immediately.
     init_state: parking_lot::Mutex<InitState>,
+    /// Test-only : nombre de colonnes réellement persistées (CRC + msync)
+    /// par [`Self::flush`]. Prouve, dans les tests, qu'un flush sur un
+    /// store PROPRE n'en persiste AUCUNE (le coût périodique tombe à zéro
+    /// quand rien n'est sale).
+    #[cfg(test)]
+    flush_persist_count: std::sync::atomic::AtomicUsize,
 }
 
 impl TypedDegreeRegistry {
@@ -152,6 +212,8 @@ impl TypedDegreeRegistry {
             substrate,
             edge_type_names,
             init_state: parking_lot::Mutex::new(InitState::Uninitialized),
+            #[cfg(test)]
+            flush_persist_count: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -223,11 +285,16 @@ impl TypedDegreeRegistry {
     /// Retrieve (or lazily create) the column for `edge_type_id`.
     /// Returns a clone of the Arc so callers can drop the registry
     /// guard before holding the column lock.
+    ///
+    /// NE MARQUE PAS la colonne sale : c'est le rôle des mutations
+    /// ([`Self::incr_out`] / [`Self::incr_in`] / [`Self::zero_type`]), qui
+    /// arment le drapeau APRÈS avoir écrit le payload. La création
+    /// elle-même arme le drapeau (en-tête CRC=0 non encore msyncé).
     pub(crate) fn get_or_create(
         &self,
         edge_type_id: u16,
         n_slots_hint: u32,
-    ) -> SubstrateResult<Arc<RwLock<DegreeColumn>>> {
+    ) -> SubstrateResult<Arc<TypedColumn>> {
         // Fast path: column exists.
         if let Some(col) = self.columns.get(&edge_type_id) {
             return Ok(col.clone());
@@ -249,14 +316,18 @@ impl TypedDegreeRegistry {
             // Try open existing first (for bases where the column was
             // persisted previously). Fall back to create.
             let col = match DegreeColumn::open_by_filename(&sub, &filename_for_type(&type_name))? {
-                Some(c) => c,
-                None => DegreeColumn::create_by_filename(
+                // Ouverte depuis le disque : CRC valide, en-tête déjà exact →
+                // colonne PROPRE.
+                Some(c) => TypedColumn::opened(c),
+                // Créée : en-tête CRC=0 posé en mémoire mais pas encore
+                // msyncé → colonne SALE.
+                None => TypedColumn::created(DegreeColumn::create_by_filename(
                     &sub,
                     &filename_for_type(&type_name),
                     n_slots_hint,
-                )?,
+                )?),
             };
-            Ok::<_, crate::error::SubstrateError>(Arc::new(RwLock::new(col)))
+            Ok::<_, crate::error::SubstrateError>(Arc::new(col))
         })?;
         Ok(entry.value().clone())
     }
@@ -264,6 +335,15 @@ impl TypedDegreeRegistry {
     /// Increment out-degree for `(edge_type_id, src_slot)` by `delta`.
     /// Creates the column lazily if absent. Safe under concurrent
     /// writers (atomic fetch_add inside read lock; grow via upgrade).
+    ///
+    /// ## Dirty-flag — armer SOUS le verrou, APRÈS la mutation
+    ///
+    /// Le drapeau est posé APRÈS `incr_out`, jamais avant : si `flush()`
+    /// lit `dirty == false`, la mutation n'a pas eu lieu ; s'il lit
+    /// `dirty == true`, il prend le write-lock et exclut toute mutation
+    /// concurrente le temps du CRC+msync. Armer AVANT créerait la fenêtre
+    /// « flush efface le drapeau sous son write-lock, puis l'incrémenteur
+    /// bloque sur le read-lock et écrit APRÈS » → mutation perdue.
     pub fn incr_out(
         &self,
         edge_type_id: u16,
@@ -271,18 +351,48 @@ impl TypedDegreeRegistry {
         delta: i32,
         n_slots_hint: u32,
     ) -> SubstrateResult<()> {
-        let col = self.get_or_create(edge_type_id, n_slots_hint)?;
+        let tc = self.get_or_create(edge_type_id, n_slots_hint)?;
         {
-            let rl = col.read();
+            let rl = tc.col.read();
             if slot < rl.n_slots() {
                 rl.incr_out(slot, delta);
+                tc.marquer_sale();
                 return Ok(());
             }
         }
-        let mut wl = col.write();
+        let mut wl = tc.col.write();
         wl.ensure_slot(slot)?;
         wl.incr_out(slot, delta);
+        tc.marquer_sale();
         Ok(())
+    }
+
+    /// (2026-09-05) Auto-guérison : remet à zéro la colonne d'un type
+    /// (le rescan des arêtes suit dans `SubstrateStore`). L'appelant doit
+    /// tenir le write-lock de la colonne — voir [`DegreeColumn::zero_out_in`].
+    pub(crate) fn zero_type(
+        &self,
+        edge_type_id: u16,
+        n_slots_hint: u32,
+    ) -> SubstrateResult<()> {
+        let tc = self.get_or_create(edge_type_id, n_slots_hint)?;
+        // zero_out_in réécrit TOUT le payload : la colonne devient sale, même
+        // si aucun `incr_*` ne suit (cas : type sans arête vivante après heal).
+        {
+            let mut wl = tc.col.write();
+            wl.zero_out_in();
+            tc.marquer_sale();
+        }
+        Ok(())
+    }
+
+    /// (2026-09-05) Sommes out/in de la colonne du type (slots 1..n_slots,
+    /// sentinelle 0 exclue). `None` si aucune colonne n'est matérialisée
+    /// pour ce type. Oracle côté colonne de la vérification de péremption.
+    pub(crate) fn out_in_sums(&self, edge_type_id: u16) -> Option<(u64, u64)> {
+        let tc = self.columns.get(&edge_type_id)?;
+        let rl = tc.col.read();
+        Some(rl.sum_out_in())
     }
 
     /// Increment in-degree for `(edge_type_id, dst_slot)`. Same as
@@ -294,17 +404,19 @@ impl TypedDegreeRegistry {
         delta: i32,
         n_slots_hint: u32,
     ) -> SubstrateResult<()> {
-        let col = self.get_or_create(edge_type_id, n_slots_hint)?;
+        let tc = self.get_or_create(edge_type_id, n_slots_hint)?;
         {
-            let rl = col.read();
+            let rl = tc.col.read();
             if slot < rl.n_slots() {
                 rl.incr_in(slot, delta);
+                tc.marquer_sale();
                 return Ok(());
             }
         }
-        let mut wl = col.write();
+        let mut wl = tc.col.write();
         wl.ensure_slot(slot)?;
         wl.incr_in(slot, delta);
+        tc.marquer_sale();
         Ok(())
     }
 
@@ -314,7 +426,7 @@ impl TypedDegreeRegistry {
     pub fn out_degree(&self, edge_type_id: u16, slot: u32) -> u32 {
         self.columns
             .get(&edge_type_id)
-            .map(|c| c.read().out_degree(slot))
+            .map(|tc| tc.col.read().out_degree(slot))
             .unwrap_or(0)
     }
 
@@ -323,19 +435,87 @@ impl TypedDegreeRegistry {
     pub fn in_degree(&self, edge_type_id: u16, slot: u32) -> u32 {
         self.columns
             .get(&edge_type_id)
-            .map(|c| c.read().in_degree(slot))
+            .map(|tc| tc.col.read().in_degree(slot))
             .unwrap_or(0)
     }
 
-    /// Persist all open columns : compute CRC, msync. Called from
-    /// `SubstrateStore::flush`.
-    pub fn flush(&self) -> SubstrateResult<()> {
+    /// Chantier SlotRemappable — remap des colonnes de degrés typées
+    /// (chemin vif). Matérialise d'abord toutes les colonnes persistées
+    /// sur disque (`open_existing_columns` est idempotent : les colonnes
+    /// déjà ouvertes — porteuses de compteurs non synchronisés — sont
+    /// laissées telles quelles), puis permute chacune via
+    /// [`DegreeColumn::remap_node_slots`] (out-of-place, en-tête
+    /// CRC + epoch en dernier). Les colonnes au CRC invalide sur disque
+    /// sont ignorées par `open_existing_columns` — elles sont déjà
+    /// « absentes » et repasseront par le rebuild.
+    pub(crate) fn remap_node_slots_all(
+        &self,
+        old_to_new: &[u32],
+        epoch: u32,
+    ) -> SubstrateResult<()> {
+        let _ = self.open_existing_columns()?;
         for entry in self.columns.iter() {
-            let mut col = entry.value().write();
-            col.persist_header_crc();
-            col.msync()?;
+            // `remap_node_slots` persiste DÉJÀ l'en-tête (CRC+epoch) et fait
+            // son propre msync+fsync en interne : la colonne est durable à la
+            // sortie, le drapeau dirty n'est donc PAS touché ici.
+            entry
+                .value()
+                .col
+                .write()
+                .remap_node_slots(old_to_new, epoch)?;
         }
         Ok(())
+    }
+
+    /// Persist open columns : compute CRC, msync. Called from
+    /// `SubstrateStore::flush`.
+    ///
+    /// ## Optimisation DIRTY-FLAG
+    ///
+    /// Ne persiste QUE les colonnes sales (`dirty == true`). Une colonne
+    /// propre n'a pas bougé depuis son dernier flush réussi : son en-tête
+    /// sur disque est déjà exact, on ne paie ni CRC ni msync. C'est ce qui
+    /// fait tomber le coût du flush périodique de O(E_types) à O(types_sales).
+    pub fn flush(&self) -> SubstrateResult<()> {
+        for entry in self.columns.iter() {
+            let tc = entry.value();
+            // Pré-filtre SANS verrou : le drapeau est un AtomicBool, le lire
+            // ne coûte rien et une colonne propre est la grande majorité des
+            // cas en régime périodique.
+            if !tc.dirty.load(Ordering::Acquire) {
+                continue;
+            }
+            let mut col = tc.col.write();
+            // Le write-lock exclut tout `incr_*` concurrent : aucun nouvel
+            // incrément ne peut se glisser entre le CRC et le msync.
+            col.persist_header_crc();
+            col.msync()?;
+            // Effacer SOUS le write-lock : un mutateur bloqué sur read/write
+            // re-armera le drapeau APRÈS ce store (voir `marquer_sale`).
+            tc.dirty.store(false, Ordering::Release);
+            #[cfg(test)]
+            self.flush_persist_count.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Test-only : nombre de colonnes SALE. Prouve, dans les tests, qu'un
+    /// flush sur un store propre n'arme aucun drapeau (donc ne msync rien).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn dirty_count_for_test(&self) -> usize {
+        self.columns
+            .iter()
+            .filter(|e| e.value().dirty.load(Ordering::Acquire))
+            .count()
+    }
+
+    /// Test-only : nombre total de colonnes persistées (CRC+msync) par tous
+    /// les appels à [`Self::flush`] sur ce registre.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn flush_persist_count_for_test(&self) -> usize {
+        self.flush_persist_count.load(Ordering::Relaxed)
     }
 
     /// Returns the number of edge-type columns currently materialized.
@@ -370,6 +550,9 @@ impl TypedDegreeRegistry {
     /// session. Bases with no prior typed-column sidecars return 0,
     /// and the caller is expected to invoke the rebuild path.
     pub(crate) fn open_existing_columns(&self) -> SubstrateResult<usize> {
+        // NOTE(SlotRemappable) : appelé aussi par `remap_node_slots_all` —
+        // toute évolution doit rester idempotente vis-à-vis des colonnes
+        // déjà matérialisées (ne jamais écraser un handle vivant).
         let dir_path = {
             let sub = self.substrate.lock();
             sub.path().to_path_buf()
@@ -425,9 +608,29 @@ impl TypedDegreeRegistry {
                 // Corrupt CRC or unexpected shape — leave to rebuild.
                 continue;
             };
-            self.columns.insert(type_id, Arc::new(RwLock::new(col)));
+            self.columns.insert(type_id, Arc::new(TypedColumn::opened(col)));
             opened += 1;
         }
         Ok(opened)
+    }
+}
+
+/// Chantier SlotRemappable — enrôlement du registre de degrés typés dans
+/// les repermutations de slots nœuds (chemin vif ; le chemin rejeu passe
+/// par `crate::slot_remap::remap_sidecar_files_for_replay`, qui balaie
+/// les fichiers `substrate.degrees.node.*.u32` sur disque).
+impl crate::slot_remap::SlotRemappable for TypedDegreeRegistry {
+    fn remap_name(&self) -> &'static str {
+        "typed_degrees"
+    }
+
+    fn remap_node_slots(
+        &self,
+        _substrate: &Arc<parking_lot::Mutex<crate::file::SubstrateFile>>,
+        old_to_new: &[u32],
+        epoch: u32,
+        _ctx: crate::slot_remap::RemapContext,
+    ) -> SubstrateResult<()> {
+        self.remap_node_slots_all(old_to_new, epoch)
     }
 }

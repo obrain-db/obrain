@@ -1,0 +1,103 @@
+SPHERE: n3addr_gguf_address
+RESUME: N3 a prouve par la source que l operande de poids reste quantifie et que le bloc TQ2_G128 fait 34 octets, mais n a pas execute le gate de lecture independante, qui reste ouvert.
+RESUME: N3bis a execute ce gate, il a innocente libggml et designe le lecteur direct, puis a refute la coherence interne de la table d offsets comme preuve de la bonne origine et retire l observation N2 des echelles 89.3 et 3400.
+RESUME: N3ter a prouve la cause racine, le lecteur prenait la fin des metadonnees comme origine sans appliquer l alignement, et a requalifie les octets sur 3 tenseurs et 8704 octets sans aucun ecart.
+RESUME: Le defaut de harnais 53 est resolu et verifie, la revision N4 confirme la fermeture des defauts 46 a 55 plus 56 et 57, et la reference q8_1 corrigee passe sur 3 tenseurs en epoque 0.
+RESUME: Restent ouverts le test d indexation independante non execute, l appariement temporel partiel, la preuve exhaustive sur les 866 tenseurs, et Q0 non franchi avec Q1 non autorise.
+NOEUDS:
+[OUVERT] n3addr_n3_gate_not_executed :: Gate decisif de N3 la lecture independante par libggml non executee :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_first_divergence_not_proven :: Premiere divergence non prouvee en N3 la suspicion de N2 reste une suspicion :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PROUVE] n3addr_n3_weight_still_quantized :: Le noyau MMVQ consomme directement les octets TQ2_G128 sans dequantification avant le matmul :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PROUVE] n3addr_n3_tq2_block_layout :: Bloc TQ2_G128 de 34 octets avec qs a l offset 0 et echelle fp16 a l offset 32 prouve par static_assert :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_weight_bytes_not_extracted :: Operande natif non extrait donc non comparable octet a octet :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PROUVE] n3addr_n3_offset_population_865 :: 865 transitions d offsets coherentes sur les 866 tenseurs tous types confondus :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[REFUTE] n3addr_n3_tq2_only_contiguity :: Hypotheses de contiguite des seuls TQ2_G128 refutee avec 60 coherents et 107 incoherents dans ce sous-ensemble :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_scale_fp16_not_measured :: Conversion fp16 de l echelle TQ2 non mesuree :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_q8_block_alignment_open :: Alignement des blocs q8_1 avec les 128 du TQ2 non mesure :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_block0_dot :: Produit entier du bloc 0 non verifie :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_block0_scale :: Application d echelle du bloc 0 non verifiee :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_full_row_not_done :: Reconstruction de ligne complete non realisee :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PARTIEL] n3addr_n3_head_alignment_partial :: Tete GGUF et bornes de fichier traitees seulement en partie alignement non verifie :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PARTIEL] n3addr_n3_temporal_coverage_partial :: Couverture temporelle partielle heritee de N2 :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_n3_deliverables_absent :: Dix-huit livrables du plan N3 non crees seul N3_STATUS existe :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[RETIRE] n3addr_n3_q8_1_ref_tests_pass_claim :: Affirmation N3 des tests unitaires q8_1 PASS et des cas de mi-chemin OK invalidee par le defaut 57 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3addr_defects_46_to_49 :: Defauts de harnais 46 a 49 resolus :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PROUVE] n3addr_defect_50 :: Defaut de harnais 50 resolu et verifie par discrimination marche-arret :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[RETIRE] n3addr_defect_51 :: Defaut de harnais 51 retire apres mesure :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PROUVE] n3addr_defect_52 :: Defaut de harnais 52 resolu et verifie par regression sur deux epoques :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[OUVERT] n3addr_plumbing_failures :: Vingt-huit defauts de plomberie comptes et le defaut 29 non attribue :: ENGINE-007B-F1A-Q0-N3-WEIGHT-BYTE-AND-BLOCK-ARITHMETIC-QUALIFICATION.md
+[PROUVE] n3addr_n3bis_gate_verdict :: Le gate independant a innocente libggml et designe le lecteur direct avec 1334 octets differents sur 1360 :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PROUVE] n3addr_n3bis_shift_28 :: Les deux lecteurs lisent le meme flux decale de 28 octets avec concordance 1.0000 sur les 1332 octets recouvrants :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[REFUTE] n3addr_n3bis_naive_disagreement :: Lecture naive annoncant que les deux lecteurs ne concordent pas refutee par la correlation a offset moins 28 :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PROUVE] n3addr_n3bis_direct_scales_absurd :: Echelles du lecteur direct aberrantes de moins 0.02473 a 3400 contre des echelles libggml plausibles de 0.01036 a 0.01524 :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PROUVE] n3addr_n3bis_direct_reader_wrong :: Le lecteur direct est decale de 28 octets et les octets libggml de la ligne 0 sont qualifies :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PROUVE] n3addr_n3bis_tensor_metadata :: Metadonnees lues par libggml type tq2_g128 43 avec ne 5120 17408 et nb 34 1360 :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PARTIEL] n3addr_n3bis_negative_control :: Controle negatif du comparateur execute et detecteur de la copie alteree mais resultat consigne au journal sans fichier :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[RETIRE] n3addr_n2_scale_observation :: Observation N2 des echelles 89.3125 et 3400 sur la ligne 0 de blk.20.ffn_up retiree comme artefact du decalage d adresse :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[OUVERT] n3addr_n3bis_shift_rule_unknown :: La regle du decalage de 28 octets non caracterisee comme constante ou variable par N3bis :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[REFUTE] n3addr_n3bis_table_coherence_not_origin :: La coherence interne des 865 transitions ne garantit pas que data_start soit la bonne origine absolue :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[OUVERT] n3addr_defect_53_open :: Defaut de harnais 53 lecteur GGUF direct decale de 28 octets ouvert :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[OUVERT] n3addr_n3bis_unqualified_list :: Echelle fp16 ternaire alignement q8_1 operande GPU et reference operateur non qualifies par N3bis :: ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PROUVE] n3addr_n3ter_root_cause :: Cause racine prouvee le lecteur prenait la fin des metadonnees pour origine sans appliquer l alignement du format :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_alignment_rule :: Fin des metadonnees 10996452 avec modulo 32 egal 4 et origine alignee 10996480 soit un remplissage de 28 octets :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_alignment_constant :: Constante d alignement GGUF de 32 declaree dans le fork et lue dans la metadonnee du fichier :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_padding_zero :: Les 28 octets a partir de la fin des metadonnees sont tous nuls donc du remplissage et non des donnees :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_decisive_test :: Test decisif l origine alignee reproduit les octets libggml et l origine brute ne les contient pas :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_formulas :: Formule fautive fin des metadonnees plus offset et formule correcte align_up plus offset identifiees :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_requalification :: Requalification par comparateur independant sur 6 lignes 3 tenseurs et 8704 octets avec zero ecart et SHA256 egaux :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PARTIEL] n3addr_n3ter_scope_reserve :: Trois tenseurs ne constituent pas une preuve exhaustive sur les 866 tenseurs :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_constant_shift :: Le decalage observe est constant a 28 octets :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n3ter_aligned_origin_reader :: Lecteur corrige par la regle d alignement et non par un ajout de 28 avec six proprietes exigees satisfaites :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_defect_53_resolved :: Defaut de harnais 53 resolu et verifie par comparaison multi-tenseurs independante :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[RETIRE] n3addr_n3ter_second_retraction :: Deuxieme observation retiree apres verification independante la cause etait une hypothese non verifiee sur l origine des donnees :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[RETIRE] n3addr_r6_submission_shift_obs :: Premiere observation retiree de la serie le decalage d une soumission en R6 :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[OUVERT] n3addr_n3ter_steps_not_done :: Echelle fp16 ternaire alignement q8_1 contribution du bloc 0 et reconstruction de ligne non executes en N3ter :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[OUVERT] n3addr_n3ter_deliverables_absent :: Quinze livrables du plan N3ter non crees seuls quatre fichiers existent :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[OUVERT] n3addr_independent_indexing_gate :: Test F32 d indexation independante des lignes non execute :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PARTIEL] n3addr_temporal_pairing_gate :: Appariement temporel des echantillons de reference partiel :: ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[PROUVE] n3addr_n4_q8_reference_corrected :: Reference q8_1 corrigee roundf de xi sur d fp32 validee sur trois tenseurs toutes lignes en epoque 0 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3addr_n4_defect_57 :: Defaut 57 la reference q8_1 utilisait une echelle fp16 inversee et l arrondi bancaire resolu par accord avec la sortie native :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3addr_n4_defect_56 :: Defaut de harnais 56 resolu et verifie :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3addr_n4_defects_46_55 :: Ledger N4 declarant les defauts 46 a 55 resolus :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PARTIEL] n3addr_n4_native_q8_source_qualified :: Semantique q8_1 qualifiee par la lecture de source et non par observation directe des blocs produits par le noyau CUDA :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3addr_n4_q8_tq2_alignment :: Alignement q8_1 et TQ2 confirme par la mesure avec quatre sous-blocs de 32 par bloc de 128 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] n3addr_n4_remaining_divergence :: Aucune divergence numerique restante identifiee sur le perimetre mesure mais non prouvee :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] n3addr_q0_status :: Q0 non franchi et Q1 non autorise :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+n3addr_n3_head_alignment_partial -> n3addr_n3_gate_not_executed [OUVRE] l alignement de la tete GGUF non verifie en N3 laisse le gate decisif ouvert
+n3addr_n3_weight_still_quantized -> n3addr_n3_weight_bytes_not_extracted [OUVRE] la source prouve que l operande reste quantifie mais les octets n ont pas ete extraits
+n3addr_n3_tq2_block_layout -> n3addr_n3_weight_still_quantized [DEMONTRE] le layout du bloc consomme directement par le noyau est prouve par static_assert
+n3addr_n3_offset_population_865 -> n3addr_n3_tq2_only_contiguity [RETIRE] la verification tous types refute l hypothese de contiguite restreinte aux TQ2_G128
+n3addr_n3bis_table_coherence_not_origin -> n3addr_n3_offset_population_865 [RETIRE] la coherence interne des transitions ne garantit pas la bonne origine absolue
+n3addr_n3bis_gate_verdict -> n3addr_n3_gate_not_executed [REMPLACE] le gate non execute en N3 est execute en N3bis
+n3addr_n3bis_gate_verdict -> n3addr_n3bis_direct_reader_wrong [DEMONTRE] le gate independant designe le lecteur direct comme fautif
+n3addr_n3bis_gate_verdict -> n3addr_n3bis_shift_28 [DEMONTRE] la correlation des deux lectures etablit le decalage de 28 octets
+n3addr_n3bis_shift_28 -> n3addr_n3bis_naive_disagreement [RETIRE] la concordance de 1.0000 a offset moins 28 retire la lecture naive du desaccord
+n3addr_n3bis_negative_control -> n3addr_n3bis_gate_verdict [DEMONTRE] le controle negatif valide la sensibilite du comparateur
+n3addr_n3bis_direct_reader_wrong -> n3addr_n2_scale_observation [RETIRE] la lecture independante montre que l observation N2 etait un artefact du decalage
+n3addr_n3ter_second_retraction -> n3addr_r6_submission_shift_obs [RETIRE] la premiere observation retiree de la serie etait le decalage d une soumission en R6
+n3addr_n3ter_root_cause -> n3addr_n3bis_shift_28 [DEPEND] la translation de moins 28 octets mesuree en N3bis est l entree du diagnostic de N3ter
+n3addr_n3ter_decisive_test -> n3addr_n3ter_root_cause [DEMONTRE] l origine alignee reproduit les octets libggml ce qui n est pas une coincidence
+n3addr_n3ter_padding_zero -> n3addr_n3ter_alignment_rule [DEMONTRE] les 28 octets nuls confirment un remplissage d alignement
+n3addr_n3ter_root_cause -> n3addr_n3bis_shift_rule_unknown [REMPLACE] la regle du decalage est caracterisee et constante a 28 octets
+n3addr_n3ter_alignment_rule -> n3addr_n3_head_alignment_partial [REMPLACE] l alignement de la section de donnees devient verifie et prouve en N3ter
+n3addr_n3ter_aligned_origin_reader -> n3addr_n3bis_direct_reader_wrong [REMPLACE] la formule d adresse brute est remplacee par la regle d alignement
+n3addr_n3ter_requalification -> n3addr_n3bis_gate_verdict [REMPLACE] le desaccord octet a octet devient un accord complet apres correction de l adresse
+n3addr_defect_53_resolved -> n3addr_defect_53_open [REMPLACE] le defaut 53 est ferme par la preuve de cause racine et la requalification
+n3addr_n3ter_requalification -> n3addr_n3ter_scope_reserve [OUVRE] la requalification reste limitee a trois tenseurs sur 866
+n3addr_n3ter_deliverables_absent -> n3addr_n3ter_steps_not_done [DEMONTRE] l absence des livrables correspond aux etapes declarees non executees
+n3addr_n3ter_steps_not_done -> n3addr_n3_scale_fp16_not_measured [OUVRE] l echelle fp16 reste non mesuree apres la correction d adresse
+n3addr_defect_53_open -> n3addr_n3bis_unqualified_list [OUVRE] le defaut d adresse bloque la qualification de l echelle du ternaire et de l alignement q8_1
+n3addr_n4_defect_57 -> n3addr_n3_q8_1_ref_tests_pass_claim [RETIRE] la reference q8_1 precedente est declaree defaillante par la mesure native
+n3addr_n4_q8_reference_corrected -> n3addr_n3_q8_1_ref_tests_pass_claim [REMPLACE] la semantique roundf sur d fp32 remplace l ancienne semantique fp16 inversee
+n3addr_n4_q8_reference_corrected -> n3addr_n3ter_requalification [DEPEND] la reference corrigee s appuie sur les octets requalifies par N3ter
+n3addr_n4_q8_tq2_alignment -> n3addr_n3_q8_block_alignment_open [REMPLACE] l alignement des blocs q8_1 avec les 128 du TQ2 est confirme par la mesure
+n3addr_n4_defects_46_55 -> n3addr_defect_53_resolved [DEMONTRE] le ledger N4 confirme la fermeture du defaut 53
+n3addr_n4_defects_46_55 -> n3addr_defects_46_to_49 [DEMONTRE] le ledger N4 confirme la fermeture des defauts 46 a 49
+n3addr_n4_native_q8_source_qualified -> n3addr_n4_q8_reference_corrected [DEPEND] la semantique vient de la source et non d une observation directe des blocs CUDA
+n3addr_n4_remaining_divergence -> n3addr_independent_indexing_gate [OUVRE] la divergence residuelle n est pas prouvee et le gate d indexation reste ouvert
+n3addr_n3ter_scope_reserve -> n3addr_q0_status [OUVRE] trois tenseurs a une epoque ne constituent pas la population exigee par Q0
+n3addr_independent_indexing_gate -> n3addr_q0_status [OUVRE] le gate d indexation non execute interdit la promotion de Q0
+n3addr_temporal_pairing_gate -> n3addr_q0_status [OUVRE] la couverture temporelle partielle interdit la promotion de Q0
+n3addr_n3_first_divergence_not_proven -> n3addr_q0_status [OUVRE] la premiere divergence non prouvee maintient Q0 non franchi
+n3addr_plumbing_failures -> n3addr_q0_status [OUVRE] le defaut de plomberie 29 non attribue reste ouvert

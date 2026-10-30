@@ -1,0 +1,129 @@
+ENGINE-008 -- STATUT TERMINAL WHT-CAPTURE-CONNECT-12
+==========================================================================
+La chaine WHT candidate est RACCODEE, COMPILEE et TESTEE : 31 controles, 0 echec.
+Le compte historique 672 s'avere compter des LIGNES, pas des cibles. Aucun gel,
+aucun amendement adopte, aucun forward.
+
+WHT_REAL_COLLECTION_CONNECTED=YES
+  engine008_wht_parser.cpp : quatre surfaces parsees, avec validation d en-tete
+  colonne par colonne et refus de toute conversion silencieuse.
+  - GRAPH_CAPTURE_MANIFEST.csv (24 colonnes) : porte `rotation_applied` ET la
+    jointure (`compute_submission_id`, `decode_step`). ELLE N A PAS ETE OMISE.
+  - GRAPH_ROLE_RELATIONSHIPS.csv (14 colonnes) : `sub_at_build`, `role_ok`,
+    `effect_class`.
+  - TARGET_EFFECT_PATH.csv (9 colonnes) : `role`, `effect_ok`.
+  - RESIDENCY_MANIFEST.csv (15 colonnes) : `in_submitted_graph`, `resident`.
+  Raccordement : capture -> parseurs -> associations -> couverture -> verdict ->
+  portee. Les donnees manquantes ou ambigues restent VISIBLES et interdisent le
+  verdict correspondant (blockers nommes un par un).
+WHT_CONNECTED_SELFTEST=PASS
+  31 controles, 0 echec. Chaine candidate complete ; rotation fausse ; surface
+  absente ou malformee ; ligne partielle ; cible non numerique ; rotation
+  illisible COMPTEE et non supposee ; association ambigue ; appartenance au
+  graphe soumis absente ; activation issue du cache ; soumission en erreur ;
+  maillons manquants nommes. Plus la validation sur la capture historique brute,
+  explicitement presentee comme telle et NON comme observation du nouveau binaire.
+WHT_EXPECTED_TARGET_COVERAGE_DEFINED=YES
+  Cible attendue = type TQ2_G128 ET nom dans l inventaire (f1a-capture.cpp:442),
+  soit tout couple (epoch, target_id) distinct du manifeste. Cible couverte =
+  couple present avec rotation exploitable. Valeur illisible COMPTEE, jamais
+  supposee. Les `kind` (activation, base_output) sont DISTINGUES.
+
+=== DECOUVERTE MAJEURE : 672 LIGNES, 336 CIBLES ===
+  Mesure sur pieces :
+    (run_id, epoch, target_id, capture_id)                -> 336
+    (run_id, epoch, target_id, capture_id, kind)          -> 672
+  kinds presents : `activation` et `base_output`. Chaque cible porte donc DEUX
+  lignes (ex. target 1177 / capture 109 : une activation, une base_output).
+  CONSEQUENCES :
+   - Q1_ROTATION_APPLIED_TRUE_COUNT=672 compte des LIGNES. Les CIBLES distinctes
+     portant rotation_applied=1 sont 336.
+   - `target_id` est PER-EPOCH, pas global : l identite doit inclure `epoch`.
+   - L identite d une ligne DOIT inclure `kind` : sans lui, 336 faux doublons
+     apparaissent -- ce que mes deux premiers tests ont effectivement produit, et
+     qu il a fallu corriger.
+   - Une couverture qui melangerait lignes et cibles DOUBLERAIT le compte.
+  Cela confirme la consigne : le compte 672 n est pas le compte attendu de chaque
+  run -- il n est meme pas le compte de cibles du run historique.
+
+WHT_CONSTRUCTION_TO_SUBMISSION_MAPPING=PARTIAL
+  ETABLI : construction (rotation_applied=1) ; consommation du resultat WHT par
+  une operation du graphe SOUMIS (in_submitted_graph + role_ok + effect_ok) ;
+  statut de la soumission (ledger).
+  NON ETABLI : le maillon vers l EXECUTION. Ni `effect_ok`, ni `role_ok`, ni
+  `in_submitted_graph`, ni `resident` n observent une execution -- malgre leurs
+  noms. Ces trois surfaces sont par ailleurs ABSENTES du repertoire `on/` du run
+  historique examine (elles existent ailleurs, ex. `capon/`) : le maillon
+  construction -> soumission n a donc pas pu etre exerce sur pieces avec le
+  manifeste de ce repertoire.
+WHT_EXECUTION_PROOF_METHOD=
+  Aucune surface auditee n observe l execution. La portee rendue est :
+  « WHT CONSTRUITE ; RESULTAT WHT CONSOMME PAR UNE OPERATION DU GRAPHE SOUMIS ;
+  soumission a confronter au ledger ; EXECUTION NON ETABLIE -- une reussite de
+  soumission n est PAS une trace par operation ».
+  Verifie par test : `execution_never_claimed_from_submission_success`.
+CANDIDATE_P3_ASSESSABLE=YES
+  L obstacle invoque dans FINALIZE-10 n existait pas (cf. MECHANISM-AUDIT-11) et
+  le raccordement est desormais en place. Le manifeste se lit : VALID, 672 lignes
+  / 672 identites / 336 cibles, rotation T=672 F=0, champ jamais manquant.
+
+BASELINE_P4_CURRENT_METHOD_ASSESSABLE=NO
+  Filtre du producteur sur le TYPE TQ2_G128 ; baseline en Q4_K_M -> aucune cible
+  eligible -> couverture nulle -> NOT_CONFIRMED, jamais une absence.
+BASELINE_P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+  ENGINE008_P4_AMENDMENT_PROPOSAL.md : inatteignabilite du chemin WHT, avec six
+  conditions exigees et ses limites exactes. AUCUNE condition n est verifiee sur
+  un modele reel (NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED,
+  FULL_MODEL_LOAD_COUNT=0). L amendement change la NATURE de la propriete
+  (inatteignabilite structurelle au lieu d absence observee) : l arbitrage devra
+  le dire explicitement. Il n est PAS adopte et v2 n est PAS reecrit.
+
+HARNESS_SOURCE_MANIFEST_SHA256=0a0f5affb1efe9b42e336cb2773bc84b1147939d1e5ac502ee1120bfd8eba25c
+  engine008_wht_parser.h  1a880267ef30932ce464bceb6b39504bbad00cae1eed217fd44112215a15d24e
+  engine008_wht_parser.cpp (voir checkpoint)
+  engine008_wht_tests.cpp  (voir checkpoint)
+  Les sources des passes anterieures sont REPRISES A L IDENTIQUE : pipeline,
+  capture_parser, real_deps, real_entry, launcher et leurs tests gardent leurs
+  hashes (dont ab3f56d4..., f5495ee7..., 1cd0e3c4...). Le lanceur est INCHANGE :
+  son interface n a pas bouge, il n a donc pas ete rejoue.
+HARNESS_BINARY_SHA256=ad46823948a99b98002c6f08e55f5761b5cb7a60ba96165a4cfbc39b8f93c6d1
+  t-wht (nouveau binaire de tests). Le binaire REEL reste
+  6623041159638d89a5459e085a1142c7d3506fb1cf7a3af46cc78b99c80a35a4 -- INCHANGE :
+  real_deps.cpp n a pas ete modifie dans cette passe, le raccordement WHT est
+  dans le parseur et ses tests.
+
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve.
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_WHT_CONNECTION
+
+RESTE, ET RIEN N EST MASQUE --
+  Z1_Le raccordement WHT est dans un PARSEUR ET SES TESTS. Il n est PAS encore
+     appele par run_pipeline : la chaine candidate n est pas branchee dans
+     l orchestration. C est le prochain maillon de code.
+  Z2_Les trois surfaces roles/effet/residence sont ABSENTES du repertoire `on/`
+     du run historique : le maillon construction -> soumission n a pas pu etre
+     exerce sur pieces. Il faudra une paire co-localisee les portant.
+  Z3_L EXECUTION reste non observable par les surfaces auditees. Si le protocole
+     doit l etablir, il faudra soit une surface nouvelle, soit un amendement
+     explicite de portee -- pas une deduction.
+  Z4_P4 : arbitrage a rendre apres verification des six conditions sur un modele
+     reellement charge.
+  Z5_PUIS le protocole et le gel, sur instruction separee.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel. Aucun changement de Q1, du backend, de la topologie ou des regles de preuve.
+Aucun protocole modifie. Les captures historiques sont lues en LECTURE SEULE et
+leurs pointeurs ne sont JAMAIS dereferences. Aucune fixture synthetique
+presentee comme une observation du nouveau binaire.

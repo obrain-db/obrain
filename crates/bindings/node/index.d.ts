@@ -26,8 +26,38 @@ export declare class ObrainDB {
   setEdgeProperty(id: number, key: string, value: unknown): void
   /** Get the number of nodes. */
   nodeCount(): number
+  /** Comptage O(1) par label (compteurs vivants substrate). */
+  nodeCountByLabel(label: string): number
   /** Get the number of edges. */
   edgeCount(): number
+  /** Comptage O(1) par type d'arête (compteurs vivants substrate). */
+  edgeCountByType(edgeType: string): number
+  /**
+   * 2D window query over one community's (centrality_cached × out-degree)
+   * plane — RFC zorder-superposition, capacité C1. Returns the live node ids
+   * of communityId whose cached PageRank centrality (Q0.16) lies in [cLo, cHi]
+   * AND whose out-degree lies in [dLo, dHi]. Bounds are inclusive. Requires a
+   * substrate-backed database.
+   */
+  windowQuery2d(communityId: number, cLo: number, cHi: number, dLo: number, dHi: number): number[]
+  /**
+   * Fenêtre 2D ACCÉLÉRÉE (zruns) sur store trié (layout invariant : aucune
+   * mutation de features depuis le dernier `repermuter_par_hilbert`). Repli
+   * scan exact automatique sinon. RFC zorder-superposition D3b.
+   */
+  windowQuery2dSorted(communityId: number, cLo: number, cHi: number, dLo: number, dHi: number): number[]
+  /** Crée un lot d'arêtes (natif) — import rapide. Tableaux parallèles. */
+  createEdgesBatch(srcIds: number[], dstIds: number[], edgeTypes: string[]): number[]
+  /** Crée un nœud sans journalisation engine (bulk load). */
+  createNodeNoWal(labels: string[]): number
+  /** BULK LOAD (sans WAL/CDC par arête) — importer de gros volumes ; checkpoint() ensuite. */
+  createEdgesBatchFast(srcIds: number[], dstIds: number[], edgeTypes: string[]): number[]
+  /** Checkpoint : durabilité (msync/fsync + troncature WAL). */
+  checkpoint(): void
+  /** Crée l'index propriété (égalité) natif substrate. */
+  createPropertyIndex(property: string): void
+  /** INGESTION NATIVE zone-direct (RFC §16.1) — store neuf requis. */
+  bulkImport(labels: string[], srcIds: number[], dstIds: number[], edgeTypes: string[]): [number, number]
   /**
    * Begin a transaction with an optional isolation level.
    *

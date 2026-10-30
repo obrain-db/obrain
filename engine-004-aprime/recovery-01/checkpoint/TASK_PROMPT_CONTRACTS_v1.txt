@@ -1,0 +1,65 @@
+TASK_PROMPT_CONTRACTS_v1
+
+=== MMLU-PRO ===
+user_template =
+Question:
+{question}
+Choices:
+A. {option_0}
+B. {option_1}
+...
+{last_existing_label}. {last_existing_option}
+Answer:
+Rendu des options : UNIQUEMENT les options existantes (3..10). Jamais de faux choix.
+scoring = CHOICE_CONDITIONAL_LOGLIKELIHOOD
+choice_loglikelihood = sum(log P(candidate_token_j | prefix + previous candidate tokens))
+NORMALISATION_PAR_LONGUEUR=NON (les labels sont des symboles courts)
+boundary_safe_tokenization = tokens(prefix+candidate) moine tokens(prefix),
+  UNIQUEMENT si tokens(prefix) est un prefixe exact de la concatenation.
+tie_policy = plus PETIT index parmi les maxima ex aequo
+MMLU_EXACT_TIE_COUNT rapporte
+
+=== GSM8K ===
+user_template =
+{question}
+Solve the problem carefully.
+End your response with exactly one line in this format:
+FINAL: <number>
+few_shot=NON
+max_new_tokens=1024
+GREEDY=YES (temperature=0 semantics)
+parser = ^\s*FINAL:\s*(.*?)\s*$ ; EXACTEMENT une ligne FINAL
+reference = ce qui suit '####' dans answer upstream
+arithmetique = Fraction/Decimal EXACTS (jamais de float binaire)
+
+=== MBPP ===
+user_template =
+{prompt}
+Return only the Python source code implementing the requested function.
+Do not include Markdown fences or explanations.
+max_new_tokens=1024
+GREEDY=YES
+JAMAIS expose : reference_code, test_imports, test_list
+extraction = 1 bloc ```python -> contenu ; 1 bloc generique -> contenu ;
+             aucun bloc -> reponse entiere ; sinon EXTRACTION_ERROR
+sandbox = docker, un seul backend
+
+=== IFEVAL ===
+user_content = EXACTEMENT le prompt upstream (ni prefixe ni suffixe)
+max_new_tokens=4096
+GREEDY=YES
+scorer = officiel pinne, revision e49bbfe381c9c0e564b937f1c4e163a2273c65cc
+gate principal = STRICT (follow_all_instructions)
+diagnostic = LOOSE, follow_instruction_list
+
+=== LONG-CONTEXT (futur) ===
+user_template demandera une reponse :
+FINAL: <needle>
+parser = ^\s*FINAL:\s*(.*?)\s*$ ; EXACTEMENT une ligne FINAL
+egalite EXACTE apres strip ; sensible a la casse ; pas de normalisation,
+pas de fuzzy, pas de substring
+
+=== COMMUN ===
+GREEDY_REQUIRED=YES (les deux modeles, meme configuration)
+TASK_AGGREGATION_MODE=FOUR_CATEGORY_MACRO_AVERAGE
+BOOTSTRAP_RESAMPLES=10000

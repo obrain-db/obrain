@@ -1,0 +1,65 @@
+{
+  "source_map_id": "ENGINE008_PROTOCOL_SOURCE_MAP_v1",
+  "pass": "PROTOCOL-HARNESS-01",
+  "decided_utc": "2026-10-02",
+  "rule": "Aucune regle nouvelle n est attribuee a un ancien paragraphe absent. Toute clause manquante reste manquante.",
+
+  "provenance_kinds": {
+    "BRIEF": "enonce dans le brief de la passe courante",
+    "AUTORITE_DATA": "autorite DATA recouverte sur le DGX, hash verifie",
+    "AUTORITE_SCORERS": "autorite SCORERS recouverte, hash verifie",
+    "AUTORITE_Q1": "autorite Q1 recouverte, hash verifie",
+    "DECISION_NOUVELLE": "decision nouvelle, explicitement exposee comme telle",
+    "AUCUNE_AUTORITE": "valeur normative sans autorite ecrite disponible -- declaree, non inventee"
+  },
+
+  "rules": [
+    {"rule": "objectif CONTROLLED_IDENTICAL_INPUTS", "kind": "BRIEF", "ref": "brief PROTOCOL-HARNESS-01, section 1"},
+    {"rule": "autorite de template = octets du template baseline", "kind": "BRIEF", "ref": "brief, section 1 ; materialise dans ENGINE008_TEMPLATE_AUTHORITY_DECISION_v1.md"},
+    {"rule": "renderer = moteur Jinja natif du fork Q1", "kind": "BRIEF", "ref": "brief, section 1"},
+    {"rule": "aucun GGUF modifie", "kind": "BRIEF", "ref": "brief, section 1"},
+    {"rule": "correction historique n3 / DGX", "kind": "DECISION_NOUVELLE", "ref": "RECOVERY-01, ENGINE008_MIRROR_RECOVERY.txt ; lecon : l absence locale ne prouve pas une suppression"},
+    {"rule": "seul build-cuda correspond a Q1, par provenance", "kind": "AUTORITE_Q1", "ref": "Q1_PREEXECUTION_BUILD_PROVENANCE.txt (LIBLLAMA_SHA256=87c42d5f...)"},
+    {"rule": "modele baseline SHA", "kind": "AUTORITE_DATA", "ref": "MODEL_IDENTITY_AUDIT.txt ; re-verifie RECOVERY-01"},
+    {"rule": "modele candidat SHA", "kind": "AUTORITE_DATA", "ref": "MODEL_IDENTITY_AUDIT.txt ; re-verifie RECOVERY-01"},
+    {"rule": "libllama Q1 SHA", "kind": "AUTORITE_Q1", "ref": "Q1_PREEXECUTION_BUILD_PROVENANCE.txt"},
+    {"rule": "TASK_EVAL_DATA_CONTENT_TREE_SHA256", "kind": "AUTORITE_DATA", "ref": "ENGINE008_DATA_STATUS.txt"},
+    {"rule": "TOKEN_EVAL_CONTENT_TREE_V2_SHA256 et sa definition structuree", "kind": "AUTORITE_DATA", "ref": "e8-s8.py section S8.3 + STAGE_S8_STATUS.txt ; re-derive RECOVERY-01"},
+    {"rule": "TASK_PROMPT_CONTRACTS_v1 (prompts, max_new_tokens, scoring)", "kind": "AUTORITE_SCORERS", "ref": "TASK_PROMPT_CONTRACTS_v1.txt sha256=fa30f16d..."},
+    {"rule": "QUALITY_THRESHOLDS_v1 (seuils)", "kind": "AUTORITE_SCORERS", "ref": "QUALITY_THRESHOLDS_v1.txt sha256=08d70467..."},
+    {"rule": "bootstrap seed, resamples, percentile, stratification", "kind": "AUTORITE_SCORERS", "ref": "QUALITY_SCORER_PROVENANCE.txt + task_scorers_v1.py"},
+    {"rule": "sandbox MBPP (docker, pids=1, network=none)", "kind": "AUTORITE_SCORERS", "ref": "QUALITY_SCORER_PROVENANCE.txt"},
+    {"rule": "ENGINE008_IFEVAL_ROOT comme mecanisme d import", "kind": "AUTORITE_SCORERS", "ref": "ifeval_v1.py, variable documentee"},
+    {"rule": "les 15 gates scorers et leurs criteres", "kind": "AUTORITE_SCORERS", "ref": "e8-scorers-artifacts.py, dictionnaire gates"},
+    {"rule": "condition source WHT", "kind": "AUTORITE_Q1", "ref": "Q1_FORWARD_PROTOCOL_v1.md sha256=55b69719..."},
+    {"rule": "OBRAIN_NO_ROTATION doit rester UNSET (test de presence)", "kind": "AUTORITE_Q1", "ref": "Q1_FORWARD_PROTOCOL_v1.md + Q1 on/RUN_CONFIG.txt"},
+    {"rule": "precedent de preuve WHT runtime (3 preuves A/B/C)", "kind": "AUTORITE_Q1", "ref": "e7b-f1a-q1-forward-v1/on/WHT_RUNTIME_PROOF_AUDIT.txt"},
+
+    {"rule": "structure de messages TASK : aucun system, un user, prefixe assistant", "kind": "AUCUNE_AUTORITE", "ref": "aucun texte autoritaire materialise ; enonce par le brief et CONSERVE comme clause de brief. Le rendu observe (bloc system emis par le template) est DECRIT, pas decrete."},
+    {"rule": "TASK_CHAT_PARSE_SPECIAL=YES", "kind": "BRIEF", "ref": "brief, section 8"},
+    {"rule": "add_bos=false des deux cotes", "kind": "AUTORITE_DATA", "ref": "preuves recouvrees ; metadonnee baseline False, cle absente cote candidat, defaut de branche qwen35 false"},
+    {"rule": "mode de chargement vocab_only=true", "kind": "DECISION_NOUVELLE", "ref": "decision du harnais : rend tout forward pass structurellement impossible pendant cette passe"},
+    {"rule": "enable_thinking=true explicite", "kind": "DECISION_NOUVELLE", "ref": "ENGINE008_RENDER_CONFIG_v1.json ; choix de moindre intervention (defaut de la structure d entree du fork), enonce avant tout rendu"},
+    {"rule": "reasoning_effort absent du contexte Jinja", "kind": "DECISION_NOUVELLE", "ref": "idem : le template applique son propre defaut 'xhigh'"},
+    {"rule": "chat_template_kwargs vide", "kind": "DECISION_NOUVELLE", "ref": "idem"},
+    {"rule": "arbre de build DISTINCT de build-cuda", "kind": "DECISION_NOUVELLE", "ref": "brief section 5 ; mis en oeuvre sous protocol-harness-01/build"},
+    {"rule": "compilation hors arbre CMake du fork", "kind": "DECISION_NOUVELLE", "ref": "evite toute modification de build ; build-cuda reste intact et libllama n est pas reconstruite"},
+    {"rule": "definition du perimetre TASK canonique et de sa serialisation", "kind": "DECISION_NOUVELLE", "ref": "ph01-build-task-manifest.py : schema ENGINE008_TASK_SCOPE_v1, JSON cles triees, separateurs compacts, entrees ordonnees par chemin"},
+    {"rule": "definition du perimetre de PRODUCT_COMPUTE_SOURCE_DIFF_COUNT", "kind": "DECISION_NOUVELLE", "ref": "perimetre = src/, ggml/, include/, common/ ; reference = etat qualifie Q1 tel que trouve ; mesure = inventaire de fichiers + horodatage"},
+    {"rule": "garde de calcul centralisee, refus AVANT libllama", "kind": "DECISION_NOUVELLE", "ref": "engine008-quality-eval.cpp : requireComputeAuthorization ; selftest par sous-processus, sans appeler llama_decode"},
+    {"rule": "le drapeau --allow-model-compute ne suffit pas", "kind": "DECISION_NOUVELLE", "ref": "brief section 7 : « La seule presence d un fichier de gel ne constitue pas cette autorisation »"},
+    {"rule": "documentation MTP produite par cette passe", "kind": "DECISION_NOUVELLE", "ref": "ENGINE008_RUNTIME_PROOF_CONTRACT_v2.md ; aucun texte MTP anterieur n existait"},
+    {"rule": "statut d autorite de libllama-common.so : constate, non qualifie", "kind": "AUCUNE_AUTORITE", "ref": "aucun SHA d autorite ecrite n existe pour cette bibliotheque"},
+
+    {"rule": "GENERATE_STOP_TOKEN_IDS", "kind": "AUCUNE_AUTORITE", "ref": "NON GELE : l audit runtime du role exact de l EOS dans un tour assistant n a pas ete exerce (aucun forward pass autorise). Expected [248046] ne peut pas etre fige sans cet audit."},
+    {"rule": "ENGINE008_PROTOCOL_FROZEN pour la passe HARNESS precedente", "kind": "AUCUNE_AUTORITE", "ref": "le texte autoritaire des anciens §1..§74 n a jamais ete materialise ; CONSTATE par RECOVERY-01"},
+    {"rule": "corpus et scores long contexte", "kind": "DECISION_NOUVELLE", "ref": "HORS PERIMETRE de cette passe ; non rouvert"}
+  ],
+
+  "explicitly_not_reconstructed": [
+    "les anciens paragraphes §1..§74 du brief HARNESS : texte jamais materialise",
+    "un defaut implicite pour enable_thinking ou reasoning_effort qui n aurait ete prescrit nulle part",
+    "un seuil statistique nouveau : ceux de QUALITY_THRESHOLDS_v1 sont repris tels quels",
+    "une methode de PPL generique se substituant aux contrats TOKEN v2"
+  ]
+}

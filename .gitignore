@@ -72,3 +72,27 @@ cargo-timing*.html
 docs/changelog.md
 site/
 .cache/
+
+# ── Stores obrain (substrat mmap + WAL) — JAMAIS dans git ────────────
+# Un store est un état d'exécution, pas une source : il vit sous
+# `~/.local/share/obrain-harness/`. Les entrées ci-dessous couvrent les stores
+# égarés à la racine du dépôt (une passe de mesures lancée avec le dépôt pour
+# répertoire courant en laisse toujours), reconnus à leur marqueur `substrate.*`.
+# `kv-states/` (153 Mo) est de la même famille : des états de banc de mesures.
+/substrate.*
+/*.obrain/
+/kv-states/
+/x/
+/runtime/
+/runtime-dev/
+/runtime-prod/
+/runtime-dev.obrain/
+/self-demo/
+/linux-full3/
+/engine_idx/
+/agent-synapse-triviere-dsh/
+/acceptation-*/
+/Runtime dev (engrams)/
+
+# bench : sorties régénérables (journaux + checkpoints de mesure)
+bench/echelle/resultats/*.log

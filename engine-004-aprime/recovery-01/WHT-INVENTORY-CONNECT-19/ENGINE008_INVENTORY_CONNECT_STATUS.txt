@@ -1,0 +1,143 @@
+ENGINE-008 -- STATUT TERMINAL WHT-INVENTORY-CONNECT-19
+==========================================================================
+L2 (format reel de l'inventaire) et L3 (adaptateur MatmulOp) sont FAITS et
+raccordes ; L1 est cable et compile. L4 et L5 NE SONT PAS faits, et le test
+bout-en-bout de la couverture raccordee N'A PAS ete ecrit. Aucun gel, aucun forward.
+
+REAL_INVENTORY_FORMAT_VERIFIED=YES
+  Format lu dans `f1a_load_inventory` (f1a-capture.cpp).
+  REGLES EXACTES : chemin par `OBRAIN_F1A_INVENTORY` ; lecture LIGNE A LIGNE ;
+  **colonne 0 = tensor_name** ; **en-tete detecte par le PREFIXE `tensor_name`
+  sur les 11 premiers caracteres** ; `#` = commentaire ; lignes vides ignorees ;
+  nom = texte AVANT la premiere virgule ; nom vide ignore ;
+  **DOUBLON -> compteur `dup` ET CAPTURE DESACTIVEE** (regle stricte du
+  producteur) ; `loaded = eligible_names.size()` (noms UNIQUES) ; fichier
+  illisible -> capture DESACTIVEE.
+  `read_inventory_source()` implemente ces regles et expose separement
+  n_lines, n_skipped_header, n_skipped_comment, n_skipped_empty_name,
+  n_duplicates, header_seen, capture_disabled_by_duplicates.
+  MON LECTEUR PRECEDENT ETAIT FAUX sur trois points : il ne sautait pas l'en-tete
+  `tensor_name`, ne comptait pas les doublons, et n'appliquait pas la
+  desactivation. Corrige.
+INVENTORY_VALIDATION_CONNECTED=YES
+  `d.inventory_validation` est appele par `run_pipeline` **APRES l'acquisition du
+  registre natif** (trace `inventory_validation`), et l'adaptateur reel construit
+  le registre depuis `llama_internal_get_tensor_map` (nom, type REEL, pointeur).
+  Le rapport porte `inv_validation_run`, `inv_globally_complete`, les sept
+  compteurs, et l'objet complet `ENGINE008_INVENTORY_VALIDATION_v1` avec les
+  SEPT ENSEMBLES (valid, absent, ambiguous, duplicated, identity_null,
+  type_not_tq2, tq2_outside_inventory).
+  Limite publiee dans `limits` : `INVENTORY_NOT_GLOBALLY_COMPLETE`.
+
+NATIVE_GRAPH_MATMUL_ADAPTER_IMPLEMENTED=YES
+  `d.submitted_matmul_ops` parcourt le graphe soumis (`ggml_graph_n_nodes` /
+  `ggml_graph_node`) et retient un `MatmulOp` quand :
+   1. `t->op` est `GGML_OP_MUL_MAT` ou `GGML_OP_MUL_MAT_ID` -- **filtrage
+      justifie** : ce sont les seules operations que `build_lora_mm` cree ;
+      toute autre operation ayant un poids dans src0 n'est PAS une invocation ;
+   2. `t->src[0]` est non nul ;
+   3. le pointeur natif du poids est dans le registre du modele -- le nom est
+      alors EXACT, jamais un nom d'affichage approche.
+  `d.graph_enumeration_available` rend vrai seulement si `f1a_last_gf` est non
+  nul : **sans graphe observe, le denombrement est UNKNOWN**, et aucune formule
+  de couches n'est substituee.
+INVOCATION_TO_GRAPH_MAPPING_JUSTIFIED=PARTIAL
+  ETABLI : une invocation de `build_lora_mm` cree une operation de produit
+  matriciel dont src0 est le poids (lu dans `build_lora_mm`) ; les activations
+  sont dedupliquees par le producteur sur `(cur_used, type, ne[0], nb[0])` ;
+  `target_id = cc->next_target_id++` compte donc des INVOCATIONS.
+  NON ETABLI : l'equivalence exacte « une operation MUL_MAT retenue = un appel a
+  `build_lora_mm` » n'a PAS ete exercee bout en bout. Cas non couverts par un
+  test : copie de capture, alias ou vue du poids, expert non selectionne,
+  operateur distinct. **Je ne compte pas toute operation ayant un poids dans src0
+  comme une invocation** : le filtrage existe, mais sa justification complete
+  reste PARTIELLE.
+EXPECTED_INVOCATIONS_CONNECTED=YES (code) / UNKNOWN en pratique
+  `d.submitted_matmul_ops` est appele dans la fenetre d'enumeration (trace
+  `expected_invocations`), l'ensemble eligible vient des temoins positifs du
+  registre, et `reconcile_invocations()` rend invoked_never_captured,
+  captured_never_invoked, ambiguous_references.
+  EN PRATIQUE sans modele charge : `f1a_last_gf` est nul -> UNKNOWN -> limite
+  `EXPECTED_INVOCATIONS_UNKNOWN_BLOCKS_COMPLETENESS`.
+INVENTORY_AND_INVOCATIONS_SERIALIZED=YES
+  Le rapport porte `inventory_validation` (7 ensembles) et
+  `expected_invocations` (comptes + 3 ensembles), plus `invi_verdict`,
+  `invi_complete`, `inv_valid/inv_absent/inv_ambiguous/inv_duplicated/
+  inv_identity_null/inv_type_not_tq2/inv_tq2_outside`.
+
+CONNECTED_COVERAGE_SELFTEST=NOT_RUN
+  **JE N'AI PAS ECRIT le test bout-en-bout exige** : inventaire reel de lecture
+  + registre mocke + graphe synthetique -> validation -> invocations attendues ->
+  reconciliation -> rapport. Les fonctions pures sont testees (33/33) et le
+  cablage est compile, mais **le chemin raccorde n'a pas ete traverse par un
+  test**. C'est le manque principal de cette passe, et je ne le maquille pas.
+
+PREFLIGHT_RENDERED_TOKEN_COUNT=NOT_ESTABLISHED
+  NON MESURE. Le chemin vocab-only charge bien le tokenizer (kv 38
+  `tokenizer.ggml.tokens`, 248320 entrees) mais **aucun mode du harnais n'exporte
+  le compte de tokens** du prompt preflight. La consigne precise que l'absence
+  d'un champ de sortie n'est pas un blocage technique : **il fallait l'ajouter au
+  harnais, et je ne l'ai pas fait**. Je n'estime pas ce nombre -- une estimation
+  n'est pas une mesure.
+PREFLIGHT_INPUT_BASELINE_CANDIDATE_MATCH=NOT_ESTABLISHED
+  Consequence directe : sans rendu ni tokenisation du message preflight, la
+  concordance baseline/candidat n'a pas ete etablie sur CETTE entree. Elle l'est
+  sur les six fixtures du renderer qualifie, ce qui n'est pas la meme chose.
+UBATCH_SEGMENTATION_ESTABLISHED=NO
+  Je n'ai PAS trouve ni lu les regles de decoupage en ubatches de
+  `llama_decode_impl` : la recherche par ce nom n'a rien rendu dans
+  `llama-context.cpp`. La borne etablie reste « une extraction par
+  `process_ubatch` » (llama-context.cpp:1783-1788) ; **le nombre d'ubatches par
+  appel ne l'est pas**, et je ne conclus pas depuis la seule inegalite
+  longueur <= n_ubatch.
+ONE_EXTRACTION_PER_WINDOW_SOURCE_GUARANTEE=NO
+  ATTENDUE, NON GARANTIE. Le controle runtime des extractions reste OBLIGATOIRE :
+  comptage des evenements CAPTURE_EXTRACT du ledger par fenetre, publication de
+  `wht_max_extractions_per_window`. NI batching, NI CUDA graphs, NI configuration
+  n'ont ete modifies.
+
+REAL_HARNESS_BINARY_SHA256=c4f895705ef70a4cee4e12edf44f949363f04b8859c4a4e8234b18260f5d222b
+  IDENTITE NOUVELLE : pipeline, inventory et real_deps ont change.
+HARNESS_SOURCE_MANIFEST_SHA256=8b577c7946dcc41b18e45563f8514d9ceb26a675d11525a7056fed5ee2969927
+  t-inv : 1fa3cb43097020a08eebde5d0470d01ba8d4002b71884dd0edeed0e855725eef
+
+SUITES REJOUees SUR CE BINAIRE (aucun PASS herite) --
+  t-connect 75/75 ; t-inv 33/33 ; t-p4 26/26 ; t-wht 54/54 ; t-whtpipe 8/8 ;
+  t-parser 42/42. Garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3.
+
+DEFAUT REEL DE MA PART DANS CETTE PASSE --
+  Ma substitution de texte a RATE sa cible : les DEFINITIONS de
+  `serialize_inventory` et `serialize_invocations` n'ont jamais ete ecrites, seules
+  les declarations l'etaient. Les binaires qui les utilisent n'ont donc pas pu etre
+  lies (`reference indefinie`), et trois suites ont rendu exit 127 avant correction.
+  **Aucun resultat n'a ete presente avant que les liens ne reussissent.**
+
+REMAINING_IMPLEMENTATION_GAPS=
+  M1_TEST BOUT-EN-BOUT de la couverture raccordee : NON ecrit. Exige par la
+     consigne ; c'est le trou principal.
+  M2_L4 : le harnais n'exporte PAS le compte de tokens ; le champ doit etre
+     ajoute au mode de preparation, puis le prompt rendu et tokenise.
+  M3_L5 : les regles de segmentation en ubatches ne sont PAS lues.
+  M4_CAS NON TESTES de la correspondance invocation <-> operation : copie de
+     capture, alias ou vue du poids, expert non selectionne, operateur distinct.
+  M5_L_INVENTAIRE N'EST PAS FIGE : l'identite du fichier d'inventaire utilise par
+     le plan n'est pas arretee (chemin + SHA). Il est lu par
+     `OBRAIN_F1A_INVENTORY`, que `prepare_capture` pointe vers un fichier de la
+     destination de capture -- a confronter au fichier gele reel.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte. Aucun changement de Q1, du backend, des CUDA
+graphs, du batching, de la topologie ou des regles de preuve. Aucun protocole
+modifie ni reecrit.

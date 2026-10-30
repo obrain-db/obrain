@@ -1,0 +1,62 @@
+[Unit]
+Description=Obrain — inscrit la flotte dans le graphe (nœuds « machine: » dans la base servie)
+# ── À QUOI SERT CE SERVICE ─────────────────────────────────────────────────
+# Il exécute la passe qui fait de la flotte un FAIT DU GRAPHE : `obrain
+# machines --appliquer`, déclenchée par `obrain-machines.timer` au lieu d'être
+# lancée à la main par la porte d'acceptation. Une fonctionnalité qu'aucun
+# service n'appelle n'existe pas pour l'utilisateur : c'est précisément le
+# manque que ce service comble.
+#
+# ── POURQUOI UN SERVICE SÉPARÉ, ET PAS DANS LE MOTEUR ──────────────────────
+# Parce que le moteur sert ses bases en LECTURE (flock partagé) : il ne PEUT pas
+# écrire ces nœuds lui-même, et ce n'est pas un défaut à contourner — c'est
+# l'invariant mono-écrivain qui protège les données. Faire de la flotte un fait
+# du graphe est donc un geste SÉPARÉ, exactement comme `obrain memoire
+# --appliquer` et son timer.
+#
+# ── POURQUOI LA CIBLE PAR DÉFAUT EST LA BASE SERVIE ────────────────────────
+# C'est là que la question « quelles machines connais-tu, et que sait faire
+# chacune ? » se pose au graphe. Mais cette base est tenue en lecture par les
+# services qui la servent : la passe est alors REFUSÉE (flock exclusif non
+# bloquant), et le script le DIT avec ses remèdes puis sort non nul — il
+# n'arrête aucun service (R6), et il ne boucle pas. Un refus daté dans le
+# journal est un fait ; un succès silencieux qui n'a rien écrit serait un
+# mensonge.
+#
+# Ceux qui veulent la flotte DANS LE GRAPHE SANS DISPUTER LE VERROU activent
+# `obrain-machines-appliquer.timer` (dépôt) : la passe y écrit la flotte de
+# chaque compte dans SA base (`selfs/<compte>.obrain`), que nul service ne
+# tient. Les deux déclencheurs sont complémentaires, et le document
+# docs/FLOTTE-EN-SERVICE-2026-09-16.md dit lequel choisir.
+#
+# ── CE QU'IL NE FAIT PAS ──────────────────────────────────────────────────
+# Il ne démarre, n'arrête et ne redémarre RIEN (R6). Il n'écrit dans aucune base
+# qu'il n'a pas ouverte en exclusif, et il n'écrit jamais dans le registre.
+Documentation=file:%h/projects/banc-obrain-tronc/docs/FLOTTE-EN-SERVICE-2026-09-16.md
+
+[Service]
+Type=oneshot
+# OBRAIN_BIN (le binaire à utiliser), OBRAIN_MACHINES_STORE (la base cible) et
+# OBRAIN_VIZ_CACHE_DIR (où vit le registre des machines) viennent d'ici.
+# Facultatif : le script a des défauts explicites (le binaire du déploiement,
+# la base servie, /tmp/obrain-viz-cache) et il DIT quand le registre est
+# ailleurs qu'où il regarde au lieu de conclure « 0 machine ».
+#
+# Le fichier est aussi l'endroit où poser OBRAIN_VIZ_CACHE_DIR quand le drop-in
+# `obrain-viz.service.d-cache-persistant.conf` est installé : l'écrivain du
+# registre (viz serve) et cette passe DOIVENT pointer le même dossier.
+EnvironmentFile=-%h/.config/obrain/machines.env
+# Le script refuse explicitement un binaire qui ne connaît pas la sous-commande
+# « machines » (code 3, avec la commande de reconstruction) : sans cette garde,
+# un déploiement en retard ferait échouer chaque passage en silence, et
+# personne ne lit les journaux d'un timer.
+ExecStart=%h/projects/banc-obrain-tronc/scripts/machines-appliquer.sh
+# La passe lit un journal et écrit quelques nœuds : elle ne doit jamais prendre
+# le pas sur le moteur qui sert l'interface.
+Nice=10
+SyslogIdentifier=obrain-machines
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

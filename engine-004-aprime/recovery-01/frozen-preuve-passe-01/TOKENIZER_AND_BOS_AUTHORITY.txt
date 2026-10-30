@@ -1,0 +1,64 @@
+ENGINE-008 HARNESS -- AUTORITE TOKENIZER (§14) ET POLITIQUE BOS (§19)
+========================================================================
+MODE=GGUF_METADATA_STATIC_READ
+LLAMA_DECODE_CALL_COUNT=0
+MODEL_LOAD_EXECUTED=NO
+
+=== §14 AUTORITE TOKENIZER -- RECONTROLE ===
+TOKENIZER_SHA256_EXPECTED=49930cc8a75188cf69a07c57914f0aabe383db11494aa03ed15629adee4c7e33
+BASELINE_TOKENIZER_SHA256=49930cc8a75188cf69a07c57914f0aabe383db11494aa03ed15629adee4c7e33
+CANDIDATE_TOKENIZER_SHA256=49930cc8a75188cf69a07c57914f0aabe383db11494aa03ed15629adee4c7e33
+TOKENIZER_SHA256_BASELINE_MATCH=YES
+TOKENIZER_SHA256_CANDIDATE_MATCH=YES
+TOKENIZER_SHA_CONVENTION=sha256(concat(token.encode(utf-8,replace)+NUL))
+  (convention EXACTE de engine008-gguf-meta.py, rejouee a l identique)
+VOCAB_SIZE_EXPECTED=248320
+BASELINE_TOKENIZER_TOKEN_COUNT=248320
+CANDIDATE_TOKENIZER_TOKEN_COUNT=248320
+VOCAB_SIZE_MATCH=YES
+BOS_TOKEN_ID_EXPECTED=248044
+BASELINE_BOS_TOKEN_ID=248044
+CANDIDATE_BOS_TOKEN_ID=248044
+EOS_TOKEN_ID_EXPECTED=248046
+BASELINE_EOS_TOKEN_ID=248046
+CANDIDATE_EOS_TOKEN_ID=248046
+BOS_EOS_MATCH=YES
+TOKENIZER_MODEL=gpt2
+TOKENIZER_PRE=qwen35
+
+=== DIFFERENCE DE METADONNEES DE PADDING (attendue, §64) ===
+BASELINE_PADDING_TOKEN_ID=248044
+CANDIDATE_PADDING_TOKEN_ID=248055
+PADDING_METADATA_DIFFERENCE=DOCUMENTED_AND_ALLOWED
+
+=== §19 POLITIQUE BOS POUR TASK ===
+TASK_CHAT_TEMPLATE_EMITS_BOS=NO
+TASK_TOKENIZER_ADDS_BOS=NO
+TASK_DOUBLE_BOS_RISK=NO
+TASK_BOS_POLICY=SINGLE_BOS_FROM_GENERATION_FRAMING_ONLY
+  Justification template : ni 'bos_token', ni '<|startoftext|>', ni '<s>'
+  n apparaissent dans l une ou l autre des deux chaines de template.
+  Marqueurs presents : '<|im_start|>' x9 (base) / x8 (cand),
+  '<|im_end|>' x8 (base) / x7 (cand).
+  Justification tokenizer : llama-vocab.cpp initialise 'bool add_bos = false'
+  (ligne 1804), la branche 'qwen35' (lignes 2211-2214) ne le modifie pas,
+  et 'ml.get_key(LLM_KV_TOKENIZER_ADD_BOS, temp, false)' (ligne 2538) est
+  OPTIONNEL : cle absente => add_bos reste false.
+    baseline  : cle presente, valeur False  => add_bos=false
+    candidat  : cle ABSENTE                  => add_bos=false (defaut branche)
+  => la divergence de METADONNEE (False vs absente) ne produit AUCUNE
+     divergence de COMPORTEMENT au niveau du tokenizer.
+
+PROVENANCE DE CETTE LECTURE STATIQUE :
+  FORK_PATH=/home/triviere/projects/llama-obrain
+  FORK_COMMIT=8ae380f35fd4e817be312ff862c1f7f3bbb018ba
+  FORK_BRANCH=feat/vulkan-tq2g128
+  LLAMA_VOCAB_CPP_BLOB=fdd447147d43daa42ea8d437924240bd02036b01
+  VERIFICATION_INTER_BRANCHES : le blob llama-vocab.cpp est IDENTIQUE
+  entre feat/vulkan-tq2g128 (8ae380f) et feat/cuda-tq2g128 (57bd239).
+  Les correctifs f1a (apply-f1a-*.py) ne touchent QUE llama-context.{cpp,h}
+  et llama-graph.{cpp,h} : llama-vocab.cpp n est PAS instrumente par f1a.
+  => la semantique vocab/tokenizer transfere a la construction Q1.
+  LIMITE HONNETE : ceci est une lecture STATIQUE. Le protocole exige un
+  recontrole au RUNTIME via runtime-probe --no-decode, qui reste a faire
+  avec le binaire du harnais (non construit dans cette passe, §7).

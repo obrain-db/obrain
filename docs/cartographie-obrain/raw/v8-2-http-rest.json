@@ -1,0 +1,56 @@
+{
+  "area": "HTTP/REST",
+  "summary": "La couche HTTP/REST d'obrain est entièrement écrite à la main en std::net (aucun framework, aucune dépendance réseau : ni tokio, ni hyper, ni TLS côté serveur), autour d'un serveur HTTP/1.1 monolithique de ~9 637 lignes, crates/obrain-cli/src/viz_serve.rs, qui sert le dashboard et la quasi-totalité des routes /api/* sur :8432. Un second serveur minimal en lecture seule, crates/obrain-cli/src/harness_serve.rs (233 lignes), sert les contrats /api/harness/* sur :8090 en in-process. Le crate obrain-httpmin est un CLIENT HTTP minimal (std uniquement, ~560 lignes) partagé par selflink (qui interroge le moteur) et selfd (qui interroge un serveur OpenAI-compatible), né pour supprimer deux copies divergentes ; il descend de crates/obrain-cli/src/http_min.rs. Le routage est un unique match sur le chemin (lignes 3131-3252 de viz_serve.rs) couvrant statiques (/app, /viewer2d, /login, /iam, /sitemap.xml, /__dev/version), la lecture (/api/query, /api/functions, /api/info, /api/stores), la projection viz (/api/viz/{status,overview,modules,signatures,orbites,arcs,ramifications,space,weave,activation,subgraph,subgraph/stream}), les mondes, le moteur (/api/engine/{sante,memoire,selfs,resonance,entretien,ask,chat}), l'authentification (/api/auth/*), l'administration IAM (~17 sous-routes /api/iam/*) et le canal machine /api/remote/*. Le modèle d'exécution est un thread par requête avec Connection: close, plus compression gzip (NATIF-J7) et un upgrade WebSocket pour /api/viz/subgraph/stream. La garde d'accès GardeIam (viz_serve.rs) enveloppe obrain_iam::Garde pour un point de décision unique partagé entre serveur HTTP, pont MCP et CLI. L'audit 2026-09-15 atteste 27 endpoints sondés, zéro route morte, et 4 points chauds > 100 ms ; le script scripts/endpoints-check.mjs rejoue ce balayage à froid puis à chaud avec gestion explicite SSE, identité et heuristique « error ».",
+  "components": [
+    "crates/obrain-httpmin/src/lib.rs — client HTTP minimal std-only (parse_url, echapper, get, post_json, lire_sse, post_sse_supervise)",
+    "crates/obrain-httpmin/Cargo.toml — dépendances : anyhow + serde_json uniquement ; « CE CRATE EXISTE POUR NE PAS AVOIR DEUX CLIENTS »",
+    "crates/obrain-cli/src/viz_serve.rs — serveur HTTP/1.1 principal :8432 (9 637 lignes), routage lignes 3131-3252, run_serve ligne 1327",
+    "crates/obrain-cli/src/harness_serve.rs — daemon harness natif :8090 lecture seule, routes /api/harness/health|sessions|context",
+    "crates/obrain-cli/src/http_min.rs — ancêtre du client httpmin (~120 lignes), « obrain-cli n'embarque aucune dépendance HTTP »",
+    "crates/obrain-cli/src/main.rs — câblage CLI : mod viz_serve / mod harness_serve, Commands::Viz → viz::run, Commands::HarnessServe → harness_serve::run",
+    "crates/obrain-cli/src/mcp_server.rs — partage GardeIam (etat/est_armee) et fonctions sessions_list / context_build appelées par harness_serve",
+    "crates/obrain-selfd/src/ecoute.rs — surface HTTP du nœud selfd (page + /api/status, /api/chat), jeton obligatoire, comparaison en temps constant",
+    "crates/obrain-selfd/src/chat.rs — consommateur obrain-httpmin (chat OpenAI-compatible)",
+    "crates/obrain-selflink/src/engine.rs — consommateur obrain-httpmin (interroge le moteur via /api/*)",
+    "crates/obrain-garde/src/garde.rs — garde de classification lecture/écriture réutilisée par selfd/ecoute",
+    "crates/obrain-tls/examples/serveur_tls.rs — serveur TLS témoin étape 0, même dessin que viz_serve.rs (servir/traiter sur S: Read+Write)",
+    "docs/audit-endpoints-2026-09-15.md — inventaire 27 endpoints sondés, mesures froid/chaud, verdict zéro route morte",
+    "scripts/endpoints-check.mjs — balayage complet des endpoints (verdict OK/VIDE/ERREUR/ABSENT/LENT/SKIP, SSE, identité, statiques)",
+    "docs/api/index.md — référence API multi-langages (Python/Node/Go/C#/Dart/WASM/Rust), PAS la doc HTTP/REST",
+    "docs/perf/ENDPOINTS.md — coûts consolidés des endpoints (froid/médiane/max, cache par (store,centre,sauts,limite))",
+    "docs/dashboard-viz/perimeter-8432.md — inventaire des endpoints :8432 issu du code + mesures à chaud (contrat ≤ ~1 ms)",
+    "packages/obrain-dashboard/src — client SPA (React/Vite) qui consomme /api/viz/*, /api/stores, /api/query"
+  ],
+  "relationships": [
+    "viz_serve.rs (serveur) ↔ http_min.rs / obrain-httpmin (client) : symétrie std::net ; le serveur répond Content-Length ou chunked, le client décode les deux",
+    "obrain-httpmin ← obrain-cli/src/http_min.rs : refactorisation/partage, élimine deux clients divergents (selflink et selfd en avaient chacun une copie)",
+    "obrain-selflink/src/engine.rs → obrain-httpmin → moteur (self, mémoire, requêtes, conversation)",
+    "obrain-selfd/src/chat.rs (et agent.rs, soi.rs, attache.rs) → obrain-httpmin → serveur OpenAI-compatible (llama-server :9901, POST /v1/chat/completions)",
+    "viz_serve.rs::GardeIam → obrain_iam::Garde : enveloppe mince, un seul endroit décide (HTTP + pont MCP + CLI), feature-gated",
+    "harness_serve.rs → ObrainDB::open_read_only (verrou partagé) → mcp_server::sessions_list / mcp_server::context_build (in-process, sans respawn de bridge)",
+    "main.rs → viz_serve::run_serve (TcpListener + un thread par requête) et harness_serve::run (TcpListener + boucle séquentielle)",
+    "scripts/endpoints-check.mjs → BASE par défaut http://192.168.1.103:8432 → sonde viz_serve.rs ; identité via OBRAIN_TOKEN/OBRAIN_COOKIE",
+    "packages/obrain-dashboard/src → /api/stores, /api/query, /api/functions, /api/viz/{overview,modules,arcs,space,subgraph,status}",
+    "obrain-tls/examples/serveur_tls.rs → contrat d'intégration de run_serve : poignée de main TLS puis même boucle traiter(S: Read+Write)"
+  ],
+  "notable_findings": [
+    "Zéro framework HTTP : tout est std::net/TcpStream écrit à la main (viz_serve, harness_serve, http_min, httpmin, ecoute, serveur_tls) — le parti pris « pas de dépendance réseau pour joindre un service local » est tenu jusqu'au serveur",
+    "docs/api/ ne documente PAS l'API HTTP/REST : c'est la référence des bindings multi-langages (Python/Node/Go/C#/Dart/WASM/Rust) ; les endpoints HTTP vivent dans docs/dashboard-viz/perimeter-8432.md et docs/perf/ENDPOINTS.md",
+    "Modèle un thread par requête avec Connection: close (pas de keep-alive, pas de pool) ; la compression gzip (NATIF-J7) cible le coût dominant = transfert de payload JSON (~30x)",
+    "L'audit 2026-09-15 conclut « zéro route morte » sur 27 endpoints sondés et identifie 4 points chauds > 100 ms : /api/functions (758 ms, trigrammes à la demande), /api/viz/space (1 513 ms, projection par appel), /api/viz/weave (144 ms), /api/harness/context (110 ms vs contrat 50 ms)",
+    "Faille de traversal /app/* fermée et documentée : chemin décodé + assaini via chemin_sous, réponse 404 (pas 403) pour ne pas confirmer l'existence d'un fichier hors dossier",
+    "/api/viz/subgraph/stream est un WebSocket (upgrade) négocié, non couvert par la sonde HTTP paramétrée (contrat testé ailleurs, handshake 0,9 ms)",
+    "La garde IAM (GardeIam) a été écrasée le 2026-09-13 par une réécriture concurrente de viz_serve.rs puis reposée — leçon notée sur les fichiers partagés qui peuvent disparaître",
+    "harness_serve est volontairement lecture seule (mode:ro) en T1, coexistant avec l'écrivain dsh sans violer l'invariant WAL",
+    "Le serveur selfd refuse de démarrer son écouteur HTTP sans jeton (--token / $SELFD_TOKEN) et compare le jeton en temps constant ; écoute 127.0.0.1 par défaut"
+  ],
+  "gaps": [
+    "docs/api/ (périmètre nommé) ne couvre pas les endpoints HTTP/REST — mismatch de périmètre ; l'inventaire HTTP n'a pas de doc API dédiée consolidée",
+    "Pas de liste d'endpoints unique et exhaustive côté code : le match de routage (viz_serve.rs ~40+ routes) déborde la liste de scripts/endpoints-check.mjs (27) — /api/viz/orbites, /api/viz/ramifications, /api/engine/selfs, /api/engine/resonance, /api/auth/audit, /api/iam/* (17) et /api/remote/* (6) ne sont pas sondées par le script",
+    "scripts/endpoints-check.mjs durcit BASE (192.168.1.103:8432) et STORE (/home/triviere/.local/share/obrain-harness/data/runtime-dev.obrain) — dépendance machine-spécifique",
+    "Aucun TLS dans le serveur réel (seulement l'exemple témoin obrain-tls) ; le gateway :8144 mentionné dans l'audit (IAM armé) n'a pas été localisé dans cette tranche",
+    "Asymétrie SSE : /api/engine/chat en GET (contrainte EventSource) côté serveur, mais selfd consomme le modèle en POST SSE (/v1/chat/completions) — deux conventions de flux coexistent",
+    "harness_serve est figé en T1 lecture seule : pas de routes d'écriture, le chantier T2/NS (index d'égalité, /api/harness/context < 50 ms) est signalé non résolu dans le code inspecté",
+    "Code mort potentiel : le client historique http_min.rs coexiste encore avec obrain-httpmin dans obrain-cli, sans qu'il soit établi ici s'il est encore utilisé ailleurs que comme ancêtre"
+  ]
+}

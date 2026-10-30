@@ -10,6 +10,7 @@
 //! - `embed` - Embedding model management
 //! - `persistence` - Save, load, snapshots, iteration
 //! - `admin` - Stats, introspection, diagnostics, CDC
+//! - `window` - 2D window queries per community (RFC zorder-superposition C1)
 
 mod admin;
 #[cfg(feature = "cognitive")]
@@ -18,6 +19,20 @@ mod crud;
 #[cfg(feature = "embed")]
 mod embed;
 mod index;
+/// (2026-09-07) Catalogue DURABLE des procedures stockees. Le catalogue GQL
+/// (`CREATE PROCEDURE`) vit en RAM par processus — la persistance substrate
+/// (`substrate.proccat`, meme pattern que les index) le rend rejouable a
+/// l'ouverture : declaration au CREATE/DROP, hydratation au boot.
+mod procedure_catalog;
+/// (2026-09-17) CATALOGUE DE TYPES — meme constat que les procedures, memes
+/// remedes : `CREATE NODE|EDGE TYPE` vivait en RAM par processus, donc
+/// disparaissait au redemarrage (quatre tests de `wal_recovery` le disaient).
+/// Declaration au CREATE/DROP, hydratation au boot depuis `substrate.typecat`.
+mod schema_catalog;
+/// (2026-09-17) L'INDEX TEXTE SURVIT AU PROCESSUS : les publications sont
+/// persistees (`substrate.textidx.<label>.<propriete>`) avec une EMPREINTE du
+/// store, et rechargees a l'ouverture quand elle correspond encore.
+mod text_index_persist;
 // T17 final cutover (2026-04-23): the `persistence`, `mmap_store`,
 // `nocache_reader`, and `native_writer` modules were deleted. They
 // implemented the legacy single-file `.obrain` v1 (bincode snapshot)
@@ -33,8 +48,24 @@ mod query;
 #[cfg(feature = "rdf")]
 mod rdf_ops;
 mod search;
+pub mod topological;
 #[cfg(feature = "wal")]
 pub mod wal_store;
+mod window;
+#[cfg(feature = "cdc")]
+pub mod search_delta;
+#[cfg(feature = "cdc")]
+pub mod search_surprise;
+#[cfg(feature = "cdc")]
+pub mod cdc_observer;
+#[cfg(feature = "cdc")]
+pub mod search_relief;
+#[cfg(feature = "cdc")]
+pub mod search_conflicts;
+pub mod search_causality;
+pub mod search_by_role;
+pub mod reachable_count;
+pub mod contient;
 
 #[cfg(feature = "wal")]
 use std::path::Path;
@@ -122,6 +153,11 @@ pub struct ObrainDB {
     /// Change data capture log for tracking mutations.
     #[cfg(feature = "cdc")]
     pub(super) cdc_log: Arc<crate::cdc::CdcLog>,
+    /// (2026-09-05) Observateur de mutations substrate actif (feature cdc) :
+    /// quand vrai, les CREATE node/edge passent par l'observateur substrate —
+    /// `crud.rs` neutralise alors ses propres enregistrements de création
+    /// (anti-doublon) ; updates de propriétés inchangés (portés par crud).
+    pub(super) cdc_observer_active: std::sync::atomic::AtomicBool,
     /// Registered embedding models for text-to-vector conversion.
     #[cfg(feature = "embed")]
     pub(super) embedding_models:
@@ -140,6 +176,108 @@ pub struct ObrainDB {
     ///
     /// [`SubstrateStore`]: obrain_substrate::SubstrateStore
     pub(super) substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// (2026-08-17, aretes inter-bases V2) Registre multi-store de la
+    /// base : slug primaire + bases attachees (ouverture paresseuse).
+    /// `None` tant que `attach_bases` n'a pas ete appele — une base
+    /// mono-store ne paie rien et ne change pas de comportement.
+    pub(super) base_registry:
+        parking_lot::RwLock<Option<Arc<obrain_core::execution::BaseRegistry>>>,
+
+    /// Index vectoriels du mode SUBSTRAT, cles par `"label:propriete"`.
+    ///
+    /// (2026-08-13, T17b) Pourquoi ici et pas sur `SubstrateStore`, ni dans le
+    /// trait `GraphStoreMut` :
+    ///
+    /// - PAS dans le trait. Ses methodes d'index sont typees sur `HnswIndex`,
+    ///   le type concret de `LpgStore`. Le moteur n'y appelle pas « un index
+    ///   vectoriel » mais un HNSW — `config()`, `search_with_ef_and_filter()`,
+    ///   un accessor de construction de graphe. Les retyper sur un contrat
+    ///   general obligerait a y faire entrer des concepts HNSW : ce serait
+    ///   salir l'abstraction pour faire passer des tests. La doc du trait dit
+    ///   d'ailleurs depuis avril que les appelants « should dispatch on
+    ///   Arc<SubstrateStore> directly in substrate-mode paths ».
+    /// - PAS sur `SubstrateStore`. Le registre appartient a la BASE, qui est
+    ///   ce sur quoi `create_vector_index` est une methode ; et le store fait
+    ///   7 000 lignes qu'il est inutile de rouvrir pour ca.
+    ///
+    /// `RwLock` et non `Mutex` : les recherches sont concurrentes et ne
+    /// prennent qu'une lecture partagee. Seuls `create_vector_index` et
+    /// `drop_vector_index` prennent l'ecriture, et jamais pendant une
+    /// recherche — la valeur est un `Arc` clone hors verrou.
+    ///
+    /// La valeur porte la dimension NATIVE en plus de l'index. Le cascade,
+    /// lui, travaille toujours en `L2_DIM` : les vecteurs plus courts y sont
+    /// plonges par `rembourrer_au_cascade`. Garder la dimension native permet
+    /// de REFUSER une requete de largeur incoherente au lieu de la rembourrer
+    /// en silence — sans quoi une requete en 3 dimensions interrogerait
+    /// joyeusement un index construit sur des embeddings en 128.
+    pub(super) substrate_vector_indexes: parking_lot::RwLock<
+        std::collections::HashMap<
+            String,
+            (usize, Arc<dyn obrain_core::index::vector::VectorIndex>),
+        >,
+    >,
+
+    /// Index texte (BM25) du mode SUBSTRAT, cles par `"label:propriete"`.
+    ///
+    /// (2026-08-13, T17b) Le message de refus de `create_text_index` affirmait
+    /// que « substrate mode exposes BM25 retrieval via SubstrateTieredIndex ».
+    /// C'est FAUX : `SubstrateTieredIndex` est un cascade VECTORIEL (L0 bits /
+    /// L1 bits / L2 f16), et un grep sur tout `obrain-substrate` ne trouve ni
+    /// InvertedIndex ni BM25. Le substrat n'a aucun index texte.
+    ///
+    /// Il n'en a pas besoin : `obrain_core::index::text::InvertedIndex` se
+    /// construit tres bien A PARTIR de donnees du substrat, en iterant
+    /// `nodes_by_label` + `get_node_property` — c'est exactement ce que faisait
+    /// deja le chemin LpgStore. Seul le REGISTRE manquait, et le defaut de
+    /// trait `add_text_index` (corps vide) faisait passer l'enregistrement
+    /// pour un succes.
+    ///
+    /// `RwLock` externe : plusieurs recherches concurrentes ne prennent qu'une
+    /// lecture partagee du registre, et l'Arc est clone avant relachement.
+    /// `RwLock` interne : impose par le type de `InvertedIndex`, qui est mute
+    /// a l'insertion.
+    ///
+    /// GATE : ce champ nomme `obrain_core::index::text::InvertedIndex`, un
+    /// type qui n'existe que sous la fonctionnalite `text-index`. Le champ
+    /// doit donc porter le meme cfg que le type qu'il nomme — sans quoi le
+    /// crate ne compile plus SEUL, alors que `cargo check --workspace` le
+    /// masque en unifiant les fonctionnalites entre crates.
+    /// Nombre d'index texte CHARGÉS depuis le disque (introspection : c'est ce
+    /// qui permet de VÉRIFIER qu'une réouverture n'a pas reconstruit).
+    pub(super) index_texte_charges: std::sync::atomic::AtomicUsize,
+    /// Nombre d'index texte persistés (introspection).
+    pub(super) index_texte_persistes: std::sync::atomic::AtomicUsize,
+    /// L'empreinte (offset du WAL) à laquelle chaque index texte a été construit
+    /// ou chargé : elle porte la validité INTER-SESSIONS (au réveil, l'offset du
+    /// store dit si le fichier décrit encore ce store).
+    pub(super) index_texte_empreintes:
+        parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    /// L'EPOQUE à laquelle chaque index texte a été construit ou chargé : elle
+    /// porte la validité INTRA-SESSION.
+    ///
+    /// ── POURQUOI DEUX SIGNAUX, ET PAS UN ────────────────────────────────────
+    /// Mesuré : l'offset du WAL BOUGE à la fermeture elle-même (551 → 583, les
+    /// écritures de flush), alors que l'EPOQUE, elle, ne bouge PAS
+    /// (`epoque=5` avant et après la fermeture) et s'incrémente à chaque
+    /// écriture (5 → 1 après réouverture, puis 2 après un `SET` de propriété).
+    ///
+    /// Aucun des deux ne suffit seul : l'offset empêcherait tout index d'être
+    /// réputé à jour à la fermeture (il ne correspond jamais), et l'époch est
+    /// remise à zéro à chaque réouverture (elle ne peut donc rien dire de la
+    /// validité d'un fichier écrit par une session précédente). On demande donc à
+    /// chacun ce qu'il sait : l'époch décide « cet index a-t-il vu une écriture
+    /// depuis sa construction ? » (donc : réécrire ou effacer), l'offset décide
+    /// « ce fichier décrit-il encore ce store ? » (donc : charger ou reconstruire).
+    pub(super) index_texte_epochs:
+        parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    #[cfg(feature = "text-index")]
+    pub(super) substrate_text_indexes: parking_lot::RwLock<
+        std::collections::HashMap<
+            String,
+            Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+        >,
+    >,
     /// Metrics registry shared across all sessions.
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<crate::metrics::MetricsRegistry>>,
@@ -157,6 +295,104 @@ pub struct ObrainDB {
     /// Reactive scheduler (keeps the background task alive).
     #[cfg(feature = "cognitive")]
     _cognitive_scheduler: Option<obrain_reactive::Scheduler>,
+}
+
+/// Rembourre un embedding a la largeur canonique du cascade du substrat.
+///
+/// LE REMBOURRAGE PAR DES ZEROS N'EST PAS UNE APPROXIMATION — c'est une
+/// isometrie pour les deux metriques que le cascade utilise :
+///
+/// - cosinus : `a.b` ne gagne que des termes `0*0`, et `|a|`, `|b|` que des
+///   `0^2`. Numerateur et denominateur sont inchanges, donc l'angle aussi.
+/// - euclidienne : la somme gagne des `(0-0)^2 = 0`. La distance est
+///   identique au bit pres.
+///
+/// Autrement dit : un espace de dimension d plonge exactement dans un espace
+/// de dimension L2_DIM >= d. Le voisinage rendu est le MEME que celui d'un
+/// index natif en dimension d — ce n'est pas « assez proche », c'est egal.
+///
+/// La seule perte est la quantification f16 du tier L2, qui existait deja et
+/// ne depend pas du rembourrage.
+///
+/// Rend `None` au-dessus de L2_DIM : reduire demanderait une VRAIE projection
+/// (aleatoire, ACP...), qui elle perd de l'information. Une degradation
+/// silencieuse de qualite ne doit pas se cacher derriere un helper.
+pub(super) fn rembourrer_au_cascade(v: &[f32]) -> Option<Vec<f32>> {
+    let large = obrain_substrate::L2_DIM;
+    if v.len() > large {
+        return None;
+    }
+    if v.len() == large {
+        return Some(v.to_vec());
+    }
+    let mut plein = vec![0.0f32; large];
+    plein[..v.len()].copy_from_slice(v);
+    Some(plein)
+}
+
+// ---------------------------------------------------------------------------
+// (V3, parade p8) Registre PROCESSUS des substrats vivants
+// ---------------------------------------------------------------------------
+
+/// Substrats VIVANTS de ce processus, par chemin canonique. `Weak` : le
+/// registre ne retient rien — une base fermee disparait d'elle-meme.
+///
+/// Danger demontre par la verification adversariale (p8) : attacher PAR
+/// CHEMIN une base deja ouverte dans le meme processus creait une seconde
+/// instance des memes fichiers, aux sidecars divergents — les ecritures de
+/// la premiere restaient invisibles a la seconde. L'ouvreur paresseux des
+/// bases attachees consulte ce registre AVANT d'ouvrir.
+static SUBSTRATS_VIVANTS: std::sync::LazyLock<
+    parking_lot::Mutex<
+        std::collections::HashMap<
+            std::path::PathBuf,
+            std::sync::Weak<obrain_substrate::SubstrateStore>,
+        >,
+    >,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// Chemin canonique (symlinks/relatifs resolus) — repli sur le chemin brut
+/// si la canonisation echoue (chemin pas encore cree).
+fn chemin_canonique(p: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Inscrit un substrat vivant (et purge les entrees mortes au passage).
+fn enregistrer_substrat_vivant(
+    path: &std::path::Path,
+    store: &Arc<obrain_substrate::SubstrateStore>,
+) {
+    let mut carte = SUBSTRATS_VIVANTS.lock();
+    carte.retain(|_, w| w.strong_count() > 0);
+    carte.insert(chemin_canonique(path), Arc::downgrade(store));
+}
+
+/// Rend l'instance VIVANTE d'un chemin, si une base de ce processus la
+/// tient encore ouverte.
+fn substrat_vivant(path: &std::path::Path) -> Option<Arc<obrain_substrate::SubstrateStore>> {
+    SUBSTRATS_VIVANTS
+        .lock()
+        .get(&chemin_canonique(path))
+        .and_then(std::sync::Weak::upgrade)
+}
+
+
+/// Branche le vocabulaire de l'hôte (UDF du registre de plugins) sur
+/// l'évaluateur du moteur.
+///
+/// ── POURQUOI ICI, ET POURQUOI IDEMPOTENT ────────────────────────────────────
+/// `obrain-adapters` porte `PluginRegistry::register_udf` et il était
+/// **orphelin** : aucune base ne le lisait, donc une fonction enregistrée
+/// restait invisible à `RETURN mon_algo(n)` — qui répondait « fonction
+/// inconnue », en invitant même à vérifier l'orthographe.
+///
+/// Le pont se pose à la CONSTRUCTION de chaque base (les deux constructeurs
+/// l'appellent) plutôt qu'à un endroit que chaque embedder devrait connaître :
+/// une extension qui dépend de la mémoire de l'appelant n'est pas une
+/// extension. L'appel est idempotent et sans coût mesurable après la première
+/// fois (un `OnceLock`).
+fn brancher_le_vocabulaire_de_l_hote() {
+    obrain_adapters::plugins::installer_udfs_dans_le_moteur();
 }
 
 impl ObrainDB {
@@ -230,18 +466,43 @@ impl ObrainDB {
     ///
     /// [`with_store`]: Self::with_store
     pub fn open_substrate(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::open_substrate_inner(path, false)
+    }
+
+    /// Ouvre le store en READ-ONLY (verrou partagé) quand `read_only=true`.
+    /// `with_config(Config::read_only(...))` passe par ici : le verrou
+    /// partagé du substrate permet à plusieurs processus de lire le même
+    /// store simultanément (contrat promis par `Config::read_only`, tenu
+    /// depuis 2026-08-31).
+    pub(crate) fn open_substrate_read_only(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::open_substrate_inner(path, true)
+    }
+
+    fn open_substrate_inner(
+        path: impl AsRef<std::path::Path>,
+        read_only: bool,
+    ) -> Result<Self> {
         let path_ref = path.as_ref();
         // Detect existing substrate: if `substrate.meta` is present, open;
         // otherwise create. This mirrors the semantics of ObrainDB::open(path)
         // on the legacy path (open-or-create idempotent).
         let meta_path = path_ref.join("substrate.meta");
         let store = if meta_path.is_file() {
-            obrain_substrate::SubstrateStore::open(path_ref).map_err(|e| {
-                obrain_common::utils::error::Error::Internal(format!(
-                    "substrate: failed to open existing store at {}: {e}",
-                    path_ref.display()
-                ))
-            })?
+            if read_only {
+                obrain_substrate::SubstrateStore::open_read_only(path_ref).map_err(|e| {
+                    obrain_common::utils::error::Error::Internal(format!(
+                        "substrate: failed to open existing store (read-only) at {}: {e}",
+                        path_ref.display()
+                    ))
+                })?
+            } else {
+                obrain_substrate::SubstrateStore::open(path_ref).map_err(|e| {
+                    obrain_common::utils::error::Error::Internal(format!(
+                        "substrate: failed to open existing store at {}: {e}",
+                        path_ref.display()
+                    ))
+                })?
+            }
         } else {
             obrain_substrate::SubstrateStore::create(path_ref).map_err(|e| {
                 obrain_common::utils::error::Error::Internal(format!(
@@ -250,14 +511,263 @@ impl ObrainDB {
                 ))
             })?
         };
+        Self::with_substrate_store(store, Some(path_ref))
+    }
+
+    /// Opens (or creates) a substrate-backed database with an explicit WAL
+    /// [`SyncMode`](obrain_substrate::wal_io::SyncMode) — T5 batch-WAL (plan
+    /// b30650e2). `open_substrate`/`open` always use `EveryCommit` (fsync per
+    /// commit); this entry point is for batch producers (imports, wardens)
+    /// that accept a bounded durability window in exchange for throughput —
+    /// pass `SyncMode::Group` and call [`ObrainDB::flush_wal`] every N writes
+    /// / at end-of-batch. User-facing default behaviour is unchanged: this is
+    /// purely additive, opt-in API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the substrate store cannot be created/opened at
+    /// `path`.
+    /// Ouvre le store en SHARED-WRITE (verrou partagé + écriture WAL) :
+    /// coexiste avec les lecteurs RO du service. Réservé au GraphWriter
+    /// unique (langextract) — les mutations sont journalisées dans le WAL,
+    /// les lecteurs les voient par le replay à leur ouverture.
+    pub fn open_shared_write(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path_ref = path.as_ref();
+        let meta_path = path_ref.join("substrate.meta");
+        let store = if meta_path.is_file() {
+            obrain_substrate::SubstrateStore::open_shared_write(path_ref).map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "substrate: failed to open existing store in shared-write mode at {}: {e}",
+                    path_ref.display()
+                ))
+            })?
+        } else {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "substrate: store introuvable en shared-write (doit exister): {}",
+                path_ref.display()
+            )));
+        };
+        Self::with_substrate_store(store, Some(path_ref))
+    }
+
+    pub fn open_substrate_with_mode(
+        path: impl AsRef<std::path::Path>,
+        sync_mode: obrain_substrate::wal_io::SyncMode,
+    ) -> Result<Self> {
+        let path_ref = path.as_ref();
+        let meta_path = path_ref.join("substrate.meta");
+        let store = if meta_path.is_file() {
+            obrain_substrate::SubstrateStore::open_with_mode(path_ref, sync_mode).map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "substrate: failed to open existing store at {}: {e}",
+                    path_ref.display()
+                ))
+            })?
+        } else {
+            obrain_substrate::SubstrateStore::create_with_mode(path_ref, sync_mode).map_err(
+                |e| {
+                    obrain_common::utils::error::Error::Internal(format!(
+                        "substrate: failed to create store at {}: {e}",
+                        path_ref.display()
+                    ))
+                },
+            )?
+        };
+        Self::with_substrate_store(store, Some(path_ref))
+    }
+
+    /// Arme l'ÉCHÉANCE GLOBALE des requêtes sur une base déjà ouverte.
+    ///
+    /// ── POURQUOI CETTE ENTRÉE EXISTE (2026-08-24) ─────────────────────
+    ///
+    /// `Config::with_query_timeout` existe depuis longtemps, mais elle ne
+    /// sert qu'à `ObrainDB::with_config`. Les appelants qui passent par
+    /// `open_substrate` — c'est-à-dire TOUS les appelants de production
+    /// depuis la bascule T17 — n'avaient aucun moyen de l'armer : le chemin
+    /// construit sa `Config` lui-même. Résultat mesuré : `query_timeout`
+    /// vaut `None` partout en production, donc `Executor::check_deadline`
+    /// y est un no-op permanent, et aucune requête n'a jamais eu de limite
+    /// au niveau du moteur.
+    ///
+    /// L'échéance vaut pour la vie de la base ouverte : `ObrainDB` est
+    /// partagé par toutes les sessions, on ne peut donc pas y loger une
+    /// valeur par requête. C'est un RAIL DE SÉCURITÉ, à régler large. La
+    /// limite PAR REQUÊTE se pose avec un jeton
+    /// ([`Session::execute_annulable`]), qui est plus précis et arrive
+    /// toujours le premier.
+    ///
+    /// `None` rétablit le comportement d'avant : aucune échéance.
+    #[must_use]
+    pub fn with_query_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.config.query_timeout = timeout;
+        self
+    }
+
+    /// (jalon 3 — RFC principal-natif-v2) Pose l'identite de lecture du
+    /// substrat de CETTE base : passthrough vers
+    /// [`obrain_substrate::SubstrateStore::avec_principal`].
+    ///
+    /// C'EST LE POINT D'ENTREE DU JALON 4 : `Database::session_as(principal)`
+    /// derivera un `PrincipalSubstrat` du `Principal` de session et
+    /// l'amenera ici. En attendant, un appelant (bridge, service) peut deja
+    /// confiner un handle entier : une fois pose, TOUTES les lectures de ce
+    /// handle — scans, seeks, index (egalite / trigrammes / ordonne),
+    /// traversees (cascade sur l'extremite lointaine), compteurs — ne
+    /// rendent que le tenant du principal et le public. Immuable une fois
+    /// pose (pas de setter, pas d'effacement) ; un second appel echoue.
+    ///
+    /// PORTEE DU CONFINEMENT : le principal est PAR HANDLE de store — il
+    /// s'applique a toutes les sessions de CE `ObrainDB` (et a tout clone
+    /// de l'`Arc` sous-jacent). La multiplexion par session est le jalon 4.
+    ///
+    /// # Errors
+    ///
+    /// - base non substrat (memoire) : pas de substrat a confiner ;
+    /// - `PrincipalIrrecevable` : `tenant_id == u32::MAX` (sentinelle) ;
+    /// - `PrincipalDejaPose` : ce handle a deja une identite.
+    pub fn avec_principal(&self, tenant_id: u32) -> Result<()> {
+        let Some(ref store) = self.substrate_store else {
+            return Err(obrain_common::utils::error::Error::Internal(
+                "avec_principal : base non substrat — aucun substrat a confiner".into(),
+            ));
+        };
+        let principal = obrain_substrate::PrincipalSubstrat::nouveau(tenant_id)
+            .map_err(|e| obrain_common::utils::error::Error::Internal(e.to_string()))?;
+        store
+            .avec_principal(principal)
+            .map_err(|e| obrain_common::utils::error::Error::Internal(e.to_string()))
+    }
+
+    /// Explicit WAL fsync passthrough — see [`obrain_substrate::SubstrateStore::fsync_wal`].
+    /// No-op (returns `Ok(())`) when the database is not substrate-backed
+    /// (e.g. an in-memory `ObrainDB`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying WAL fsync fails.
+    pub fn flush_wal(&self) -> Result<()> {
+        if let Some(ref store) = self.substrate_store {
+            store.fsync_wal().map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!("wal fsync failed: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Force a full durability checkpoint: [`obrain_substrate::SubstrateStore::flush`]
+    /// (WAL commit marker + msync of every mmap zone, including the v2
+    /// props zone -- see that method's doc for the exact ordering).
+    ///
+    /// Unlike [`Self::flush_wal`] (WAL-only) and `commit_wal`
+    /// (`#[cfg(feature = "wal")]`, engine-level mutation replay log),
+    /// this method is **not** gated behind the `wal` feature: it exists
+    /// purely to let a long-lived caller (e.g. a REPL session kept open
+    /// for hours, or a connection-pool wrapper recycling sessions on a
+    /// timer) bound how much unflushed mutation state a mid-session
+    /// process kill can lose. Without a periodic call to this, the v2
+    /// props zone's page-content writes (which are NOT WAL-protected --
+    /// see the `obrain-substrate` gotcha on `append_scalar_to_props_zone_v2`)
+    /// only ever get durably flushed on a graceful `close()`; a session
+    /// killed (SIGKILL) before ever calling `close()` can lose or orphan
+    /// property pages written since the last flush. Calling this on a
+    /// cadence (e.g. every 30-60s of a session's lifetime) shrinks that
+    /// exposure from "whole session lifetime" down to "one interval".
+    ///
+    /// No-op (returns `Ok(())`) when the database is not substrate-backed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any underlying zone fsync/msync fails.
+    pub fn checkpoint(&self) -> Result<()> {
+        if let Some(ref store) = self.substrate_store {
+            store.flush().map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!("checkpoint failed: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Shared setup for a constructed [`obrain_substrate::SubstrateStore`]:
+    /// wraps it as the erased `GraphStoreMut` backend and wires the
+    /// cognitive engine (T17 Step 3 W1). Factored out of `open_substrate` so
+    /// `open_substrate_with_mode` (T5 batch-WAL) shares the exact same
+    /// wiring instead of risking drift between two copies.
+    ///
+    /// `path` porte le chemin REEL du store : `Some` pour une base sur
+    /// disque, `None` pour un tempfile.
+    ///
+    /// (2026-08-13) Cette fonction codait `Config::in_memory()` en dur, quel
+    /// que soit le store qu'on lui passait. Consequence : toute base ouverte
+    /// par `ObrainDB::open(chemin)` se declarait NON PERSISTANTE — `info()`
+    /// rendait `is_persistent: false` et `path()` rendait `None` pour une
+    /// base bien presente sur le disque. Ce n'est pas qu'un test qui rate :
+    /// tout code qui s'oriente sur `is_persistent()` ou `path()` prenait la
+    /// mauvaise branche, en silence.
+    fn with_substrate_store(
+        store: obrain_substrate::SubstrateStore,
+        path: Option<&std::path::Path>,
+    ) -> Result<Self> {
         // Keep a typed handle in addition to the erased `GraphStoreMut` one:
         // cognitive stores reach for the substrate column APIs (reinforce /
         // decay_all / iter_live_synapse_weights) which are not part of the
         // `GraphStoreMut` trait.
         let typed: Arc<obrain_substrate::SubstrateStore> = Arc::new(store);
+        // ── ARMEMENT DU GROUP COMMIT PAR L'ENVIRONNEMENT (banc 2026-10-06) ───
+        //
+        // `OBRAIN_GROUP_COMMIT=1` arme le group commit à needle de durabilité
+        // (`Writer::activer_group_commit_wal`) sur TOUTE base ouverte par le
+        // moteur. POURQUOI UNE VARIABLE D'ENVIRONNEMENT, ET PAS UN DÉFAUT :
+        // armer le group commit CHANGE la sémantique de durabilité (`commit()`
+        // ne garantit plus « durable au retour »). Le défaut reste donc
+        // INCHANGÉ — sans la variable, pas un octet du chemin d'écriture ne
+        // change. C'est un levier de MESURE, pas une décision de production :
+        // il n'existe que pour pouvoir comparer l'indexation réelle AVANT et
+        // APRÈS sur le même binaire, sans recompiler deux fois.
+        if std::env::var("OBRAIN_GROUP_COMMIT").is_ok_and(|v| v == "1") {
+            typed.writer().activer_group_commit_wal();
+        }
+        // (V3, parade p8) Chaque base sur disque s'inscrit au registre
+        // processus des substrats vivants : l'ouvreur paresseux des bases
+        // attachees REUTILISE l'instance au lieu d'ouvrir une seconde fois
+        // les memes fichiers (sidecars divergents).
+        if let Some(p) = path {
+            enregistrer_substrat_vivant(p, &typed);
+        }
         let erased: Arc<dyn GraphStoreMut> = Arc::clone(&typed) as Arc<dyn GraphStoreMut>;
-        let mut db = Self::with_store(erased, Config::in_memory())?;
+        let config = match path {
+            Some(p) => Config::persistent(p),
+            None => Config::in_memory(),
+        };
+        let mut db = Self::with_store(erased, config)?;
         db.substrate_store = Some(Arc::clone(&typed));
+
+        // (2026-08-31) PERSISTANCE CDC — le journal survit au redémarrage.
+        // `with_store` construit un `CdcLog` vide ; on y attache le persistor
+        // substrate (zone `cdc_journal`) : recharge au boot + append à chaque
+        // mutation. Prod-readiness §9.5 point 1.
+        #[cfg(feature = "cdc")]
+        {
+            // Opt-out imports bulk : le CDC ouvre son journal/tail à chaque
+            // mutation (~14 opens/nœud) — réservé au hot path applicatif.
+            let cdc_off = std::env::var("OBRAIN_DISABLE_CDC").is_ok();
+            if !cdc_off {
+                db.cdc_log.attach_persist(crate::cdc_persist::CdcPersist::open(Arc::clone(
+                    &typed,
+                )));
+            }
+        }
+        #[cfg(feature = "cdc")]
+        if std::env::var("OBRAIN_DISABLE_CDC").is_err() {
+                        // (2026-09-05) CDC×GQL : observe les créations substrate (le chemin
+                        // GQL/executor écrit directement dans le store, sans `crud`) →
+                        // search_delta/search_surprise voient le runtime réel.
+                        db.cdc_observer_active
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        let observateur = Arc::new(crate::database::cdc_observer::CdcObserver::new(
+                            Arc::clone(&db.cdc_log),
+                        )) as Arc<dyn obrain_substrate::StoreMutationObserver>;
+                        typed.set_mutation_observer(observateur);
+        }
 
         // T17 Step 3 W1 — wire the cognitive engine to substrate column
         // routing. `with_store` leaves `cognitive_engine: None`; substrate-
@@ -275,6 +785,16 @@ impl ObrainDB {
             let mut builder = obrain_cognitive::CognitiveEngineBuilder::from_config(&config)
                 .with_graph_store(db.graph_store())
                 .with_substrate(Arc::clone(&typed));
+            // (DEC-P1) Câble le DecisionStore quand la feature est compilée.
+            // Le registre de décision est passif (aucun listener, aucun flag de
+            // config) : sans cet appel, `engine.decision_store()` reste `None`
+            // dans la base réelle et `obrain.decide` rend toujours le prior
+            // uniforme 0.5 / `obrain.settle` n'écrit rien — la couche DEC-P1
+            // serait compilée mais morte au runtime.
+            #[cfg(feature = "decision")]
+            {
+                builder = builder.with_decision();
+            }
             // T17 Step 19 W2c — wire the kernel subsystem to the substrate-routed
             // store (NOT the dummy `db.store()` handle; see gotcha W4.p4.D1.s9).
             // `db.graph_store()` resolves to the real substrate backend in
@@ -285,11 +805,50 @@ impl ObrainDB {
             {
                 builder = builder.with_kernel_store(db.graph_store());
             }
+            // (2026-08-31) ENGRAMS — active le Layer 0 (Hebbian + FSRS) quand
+            // la feature est compilée : les procédures obrain.engrams.*
+            // deviennent réelles (engram_store câblé via set_engram_subsystem).
+            #[cfg(feature = "cognitive-engram")]
+            {
+                builder = builder.with_engrams(
+                    obrain_cognitive::engram::EngramManagerConfig::default(),
+                );
+            }
             let engine = builder.build(&scheduler);
+            // (2026-08-31) PERSISTANCE ENGRAMS — attache le writer substrate au
+            // manager : les engrams formés par `record_activation` sont écrits
+            // dans les zones `engram_members`/`engram_bitset` (survivent au
+            // redémarrage — prod-readiness §9.5 point 2).
+            #[cfg(feature = "cognitive-engram")]
+            {
+                use obrain_cognitive::CognitiveEngine as _;
+                if let Some(mgr) = engine.engram_manager() {
+                    mgr.attach_substrate(typed.writer_arc());
+                }
+            }
             db.cognitive_engine =
                 Some(Arc::new(engine) as Arc<dyn obrain_cognitive::CognitiveEngine>);
             db._cognitive_scheduler = Some(scheduler);
         }
+
+        // (2026-09-07) CATALOGUE DE PROCEDURES — hydratation au boot.
+        // `substrate_store` est pose ci-dessus ; le catalogue RAM du moteur
+        // (`db.catalog`, partage avec les sessions via `SessionConfig`) est
+        // repeuple depuis `substrate.proccat`. Sans cela, un process neuf ne
+        // connaît aucune procedure creee par un process precedent (le WAL
+        // moteur CreateProcedure n'est jamais rejoue — meme constat que les
+        // index le 2026-08-14).
+        db.hydrater_procedures();
+        // (2026-09-17) CATALOGUE DE TYPES — hydratation au boot, dans le meme
+        // mouvement. `CREATE NODE TYPE` ecrivait un WalRecord que PERSONNE ne
+        // rejoue : le type vecu disparaissait a la fermeture. Le fichier
+        // `substrate.typecat` porte l'intention, le catalogue RAM s'y plie.
+        db.hydrater_types();
+        // (2026-09-17) INDEX TEXTE : recharge les index déclarés depuis
+        // `substrate.textidx.*` quand leur empreinte décrit encore ce store.
+        // Sans cela, chaque ouverture repayait un balayage complet du label.
+        #[cfg(feature = "text-index")]
+        db.hydrater_index_textuels();
 
         Ok(db)
     }
@@ -318,6 +877,21 @@ impl ObrainDB {
     /// // session.execute("INSERT (:Person)") => Err(ReadOnly)
     /// # Ok::<(), obrain_common::utils::error::Error>(())
     /// ```
+    ///
+    /// (2026-08-13) CE BLOC DE DOCUMENTATION ETAIT ORPHELIN : il decrivait
+    /// `open_read_only`, une fonction qui n'existait plus, et se retrouvait
+    /// colle au doc-comment de `with_config`. Le doctest echouait donc a la
+    /// compilation, en annoncant publiquement une API absente.
+    ///
+    /// La capacite, elle, EXISTE : `Config::read_only(path)` pose
+    /// `AccessMode::ReadOnly`, que `with_config` honore deja (verrou partage,
+    /// WAL desactive, mutations refusees au niveau session). Il ne manquait que
+    /// le raccourci. On le remet plutot que de supprimer la promesse — la
+    /// documentation avait raison, c'est le code qui manquait.
+    pub fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::with_config(Config::read_only(path.as_ref()))
+    }
+
     /// Creates a database with custom configuration.
     ///
     /// Use this when you need fine-grained control over memory limits,
@@ -342,6 +916,11 @@ impl ObrainDB {
     /// # Ok::<(), obrain_common::utils::error::Error>(())
     /// ```
     pub fn with_config(config: Config) -> Result<Self> {
+        // Les DEUX constructeurs branchent le vocabulaire : `new_in_memory()`
+        // passe par ici et PAS par `with_store` — l'oublier laissait les bases en
+        // mémoire sans UDF (constaté par le test `fonction_hote`, qui échouait
+        // exactement là).
+        brancher_le_vocabulaire_de_l_hote();
         // Validate configuration before proceeding
         config
             .validate()
@@ -359,10 +938,44 @@ impl ObrainDB {
         // this entry point.
         if let Some(ref db_path) = config.path {
             // Persistent: delegate straight to the substrate open path.
-            return Self::open_substrate(db_path);
+            // (2026-08-31) ReadOnly → ouverture en VERROU PARTAGÉ : plusieurs
+            // processus peuvent lire le même store simultanément (le contrat
+            // de `Config::read_only`, qui promettait « shared file lock » mais
+            // ouvrait en exclusif). `open_substrate_read_only` pose le
+            // `LOCK_SH` côté substrate.
+            let is_read_only = config.access_mode == crate::config::AccessMode::ReadOnly;
+            let mut db = if is_read_only {
+                Self::open_substrate_read_only(db_path)?
+            } else {
+                Self::open_substrate(db_path)?
+            };
+            // (2026-08-31) FIX READ-ONLY PERDU SUR LE CHEMIN SUBSTRATE.
+            //
+            // `open_substrate` → `with_substrate_store` construit la Config
+            // elle-même (`Config::persistent`) et pose `read_only: false` —
+            // le mode ReadOnly de `Config::read_only` était silencieusement
+            // droppé. Conséquence mesurée au bench : le close d'une session
+            // read-only déclenchait quand même le `flush()` substrate complet
+            // (~11-22 ms), le seul point où obrain perdait vs cbm sur `open`.
+            // En read_only, le close doit juste relâcher le verrou (c'est
+            // déjà le comportement du champ `read_only` dans `close()`).
+            if is_read_only {
+                db.read_only = true;
+            }
+            return Ok(db);
         }
 
-        let store = obrain_substrate::SubstrateStore::open_tempfile().map_err(|e| {
+        // (2026-09-17) wasm32 : il n'y a PAS de système de fichiers, donc
+        // `open_tempfile()` y panique (`std::env::temp_dir()` →
+        // « no filesystem on this platform », trap `unreachable`). Le mode
+        // « en mémoire » de la config doit donc être un vrai substrat EN
+        // MÉMOIRE là où le temporaire n'existe pas. Sur natif, rien ne change :
+        // le répertoire temporaire reste le comportement de référence.
+        #[cfg(target_arch = "wasm32")]
+        let ouverture = obrain_substrate::SubstrateStore::open_memory();
+        #[cfg(not(target_arch = "wasm32"))]
+        let ouverture = obrain_substrate::SubstrateStore::open_tempfile();
+        let store = ouverture.map_err(|e| {
             obrain_common::utils::error::Error::Internal(format!(
                 "substrate tempfile creation failed: {e}"
             ))
@@ -481,6 +1094,23 @@ impl ObrainDB {
                 // subsystem — no concrete LpgStore cast needed.
                 builder = builder.with_kernel_store(Arc::clone(&store));
             }
+            // (DEC-C6) La copie inline du câblage NE passait PAS par
+            // `with_graph_store` / `with_substrate` : `substrate_handle()`
+            // rendait None et les stores cognitifs (dont le DecisionStore
+            // write-through) retombaient sur les propriétés LPG aux défauts
+            // de trait vides — appels réussis sans rien faire. Ces deux
+            // lignes routent vers le substrat, comme `with_substrate_store`.
+            builder = builder
+                .with_graph_store(Arc::clone(&store))
+                .with_substrate(Arc::clone(&typed));
+            // (DEC-P1) Même câblage que `with_substrate_store` : la copie inline
+            // de `with_config` oubliait le DecisionStore, laissant
+            // `decision_store()` à None sur ce chemin. `obrain.decide`/`settle`
+            // seraient morts pour toute base ouverte par `with_config`.
+            #[cfg(feature = "decision")]
+            {
+                builder = builder.with_decision();
+            }
             let engine = builder.build(&scheduler);
             (
                 Some(Arc::new(engine) as Arc<dyn obrain_cognitive::CognitiveEngine>),
@@ -505,10 +1135,45 @@ impl ObrainDB {
             is_open: RwLock::new(true),
             #[cfg(feature = "cdc")]
             cdc_log: Arc::new(crate::cdc::CdcLog::new()),
+            cdc_observer_active: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed")]
             embedding_models: RwLock::new(hashbrown::HashMap::new()),
             external_store: None,
-            substrate_store: None,
+            // (2026-08-13) `Some(typed)`, et non `None`. Cette base EST adossee
+            // a un substrat — `open_tempfile()` quelques lignes plus haut — mais
+            // `with_config` a sa propre copie inline du cablage et ne passait
+            // jamais par `with_substrate_store`, seul endroit du fichier qui
+            // renseigne ce champ (ligne ~357).
+            //
+            // TROIS CONSEQUENCES, toutes silencieuses :
+            //   1. `create_vector_index` / `create_text_index` / `vector_search`
+            //      / `text_search` testent `substrate_store.is_some()` pour
+            //      REFUSER explicitement en mode substrat (« LpgStore-only —
+            //      substrate mode exposes retrieval via SubstrateTieredIndex ; a
+            //      unified retrieval API is tracked as T17b »). Avec `None`, les
+            //      appels passaient A COTE de cette garde honnete, tombaient dans
+            //      le chemin LpgStore, y trouvaient des defauts de trait a CORPS
+            //      VIDE, et rendaient Ok(()) sans rien faire. Puis la recherche
+            //      repondait « No index found. Call create_*_index() first » — en
+            //      conseillant exactement ce qui venait d'etre fait. 42 tests.
+            //   2. `substrate_handle()` rendait None, donc les stores cognitifs
+            //      (energy / scar / utility / affinity / synapse) retombaient sur
+            //      le chemin de proprietes LPG au lieu des APIs colonne du
+            //      substrat — sa propre doc le dit.
+            //   3. `is_persistent()` mentait, corrige separement.
+            //
+            // Le champ dit desormais la verite. Les gardes T17b se declenchent, et
+            // les tests concernes echouent avec le VRAI motif au lieu d'un message
+            // qui envoie chercher au mauvais endroit.
+            substrate_store: Some(typed),
+            base_registry: parking_lot::RwLock::new(None),
+            substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
+            index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
+            index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "text-index")]
+            substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -548,6 +1213,7 @@ impl ObrainDB {
         config
             .validate()
             .map_err(|e| obrain_common::utils::error::Error::Internal(e.to_string()))?;
+        brancher_le_vocabulaire_de_l_hote();
 
         // T17 Step 24 (2026-04-23): the dummy `LpgStore::new()` that used
         // to shadow the real store in this constructor is gone — the
@@ -585,10 +1251,19 @@ impl ObrainDB {
             is_open: RwLock::new(true),
             #[cfg(feature = "cdc")]
             cdc_log: Arc::new(crate::cdc::CdcLog::new()),
+            cdc_observer_active: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed")]
             embedding_models: RwLock::new(hashbrown::HashMap::new()),
             external_store: Some(store),
             substrate_store: None,
+            base_registry: parking_lot::RwLock::new(None),
+            substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
+            index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
+            index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "text-index")]
+            substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -598,6 +1273,102 @@ impl ObrainDB {
             #[cfg(feature = "cognitive")]
             _cognitive_scheduler: None,
         })
+    }
+
+    /// (2026-08-17, aretes inter-bases V2) Declare la session
+    /// multi-store de cette base : son SLUG (l'adresse par laquelle les
+    /// autres bases la referencent) et, optionnellement, la RACINE des
+    /// bases (`racine/slug` devient un chemin candidat pour l'ouverture
+    /// paresseuse des bases attachees).
+    ///
+    /// Sans cet appel, les aretes externes s'ecrivent et survivent, mais
+    /// leur traversee rend absent (le registre n'existe pas). Les
+    /// sessions ouvertes APRES l'appel voient le registre.
+    pub fn attach_bases(&self, primary_slug: &str, root: Option<&std::path::Path>) {
+        let opener: Box<obrain_core::execution::base_registry::StoreOpener> =
+            Box::new(|path: &std::path::Path| {
+                // (V3, parade p8) REUTILISER l'instance vivante si une base
+                // de ce processus tient deja ce chemin — jamais deux
+                // instances des memes fichiers (sidecars divergents).
+                if let Some(vivant) = substrat_vivant(path) {
+                    return Some(vivant as Arc<dyn obrain_core::graph::GraphStore>);
+                }
+                match obrain_substrate::SubstrateStore::open(path) {
+                    Ok(store) => {
+                        let arc = Arc::new(store);
+                        // Deux attacheurs du meme chemin partagent aussi.
+                        enregistrer_substrat_vivant(path, &arc);
+                        Some(arc as Arc<dyn obrain_core::graph::GraphStore>)
+                    }
+                    Err(e) => {
+                        tracing::warn!(chemin = %path.display(), erreur = %e,
+                            "base attachee inaccessible — les references vers elle rendront absent");
+                        None
+                    }
+                }
+            });
+        let primary: Arc<dyn obrain_core::graph::GraphStore> = self.graph_store();
+        let mut registry =
+            obrain_core::execution::BaseRegistry::new(primary_slug, primary, opener);
+        if let Some(root) = root {
+            registry = registry.with_root(root);
+        }
+        *self.base_registry.write() = Some(Arc::new(registry));
+    }
+
+    /// (2026-08-17, aretes inter-bases V2) Attache une base DEJA OUVERTE
+    /// du meme processus sous `slug` (le pool du service, ou un autre
+    /// [`ObrainDB`]). Necessite un `attach_bases` prealable.
+    ///
+    /// # Errors
+    ///
+    /// Erreur si `attach_bases` n'a pas encore declare le slug primaire.
+    pub fn attach_base(&self, slug: &str, other: &ObrainDB) -> Result<()> {
+        let guard = self.base_registry.read();
+        let Some(registry) = guard.as_ref() else {
+            return Err(obrain_common::utils::error::Error::InvalidValue(
+                "attach_base: declare d'abord la session multi-store avec \
+                 attach_bases(slug_primaire, racine)"
+                    .to_string(),
+            ));
+        };
+        let store: Arc<dyn obrain_core::graph::GraphStore> = other.graph_store();
+        registry.register_store(slug, store);
+        Ok(())
+    }
+
+    /// (2026-08-17, aretes inter-bases V2) Declare le chemin d'une base
+    /// attachable sous `slug` (ouverture paresseuse au premier besoin).
+    ///
+    /// # Errors
+    ///
+    /// Erreur si `attach_bases` n'a pas encore declare le slug primaire.
+    pub fn attach_base_path(&self, slug: &str, path: &std::path::Path) -> Result<()> {
+        let guard = self.base_registry.read();
+        let Some(registry) = guard.as_ref() else {
+            return Err(obrain_common::utils::error::Error::InvalidValue(
+                "attach_base_path: declare d'abord la session multi-store avec \
+                 attach_bases(slug_primaire, racine)"
+                    .to_string(),
+            ));
+        };
+        registry.register_path(slug, path);
+        Ok(())
+    }
+
+    /// (Service, eviction du pool) Detache une base du registre de cette
+    /// base : ses stores ne sont plus retenus, les references vers elle
+    /// redeviennent absentes. No-op sans registre.
+    pub fn detach_base(&self, slug: &str) {
+        if let Some(registry) = self.base_registry.read().as_ref() {
+            registry.detach_store(slug);
+        }
+    }
+
+    /// Registre multi-store de la base, s'il a ete declare.
+    #[must_use]
+    pub fn base_registry(&self) -> Option<Arc<obrain_core::execution::BaseRegistry>> {
+        self.base_registry.read().clone()
     }
 
     /// Opens a new query [`Session`] bound to this database.
@@ -617,8 +1388,37 @@ impl ObrainDB {
         };
 
         if let Some(ref ext_store) = self.external_store {
-            return Session::with_external_store(Arc::clone(ext_store), session_cfg())
-                .expect("arena allocation for external store session");
+            #[allow(unused_mut)]
+            let mut ext_session =
+                Session::with_external_store(Arc::clone(ext_store), session_cfg())
+                    .expect("arena allocation for external store session");
+            // T17 cutover made substrate (routed through `external_store`)
+            // the only production backend, so this early return is the path
+            // EVERY real session takes — the wal/cdc/cognitive wiring below
+            // was dead code for it. Wire the cognitive engine (3 piliers)
+            // here too, or `CALL obrain.cognitive.*` silently falls through
+            // to "Unknown procedure" for every substrate-backed database.
+            #[cfg(feature = "cognitive")]
+            if let Some(ref engine) = self.cognitive_engine {
+                ext_session.set_cognitive_engine(Arc::clone(engine));
+            }
+            // Typed substrate handle — same wiring pattern, so substrate-
+            // native procedures (`CALL obrain.window_2d`, RFC
+            // zorder-superposition C5) resolve at query-plan time.
+            if let Some(ref sub) = self.substrate_store {
+                ext_session.set_substrate_store(Arc::clone(sub));
+            }
+            // CDC log — même câblage, pour `CALL obrain.search_delta`
+            // (diff de changements) sur les bases substrate (ce chemin
+            // external_store est celui que prend TOUTE base réelle).
+            #[cfg(feature = "cdc")]
+            ext_session.set_cdc_log(Arc::clone(&self.cdc_log));
+            // Aretes inter-bases (V2) : la session herite du registre
+            // multi-store declare sur la base.
+            if let Some(registry) = self.base_registry.read().clone() {
+                ext_session.set_base_registry(registry);
+            }
+            return ext_session;
         }
 
         #[cfg(feature = "rdf")]
@@ -641,6 +1441,22 @@ impl ObrainDB {
         #[cfg(feature = "cdc")]
         session.set_cdc_log(Arc::clone(&self.cdc_log));
 
+        // Wire the cognitive engine (3 piliers), if this DB has one, so
+        // `CALL obrain.cognitive.*` resolves in every session's planner
+        // instead of silently falling through to "Unknown procedure".
+        #[cfg(feature = "cognitive")]
+        {
+            if let Some(ref engine) = self.cognitive_engine {
+                session.set_cognitive_engine(Arc::clone(engine));
+            }
+        }
+        // Typed substrate handle — same wiring pattern, so substrate-native
+        // procedures (`CALL obrain.window_2d`, RFC zorder-superposition C5)
+        // resolve at query-plan time in this branch too.
+        if let Some(ref sub) = self.substrate_store {
+            session.set_substrate_store(Arc::clone(sub));
+        }
+
         #[cfg(feature = "metrics")]
         {
             if let Some(ref m) = self.metrics {
@@ -655,6 +1471,13 @@ impl ObrainDB {
         // Propagate persistent graph context to the new session
         if let Some(ref graph) = *self.current_graph.read() {
             session.use_graph(graph);
+        }
+
+        // Aretes inter-bases (V2) : meme heritage du registre multi-store
+        // que le chemin external_store plus haut — les DEUX chemins de
+        // construction de session doivent le poser.
+        if let Some(registry) = self.base_registry.read().clone() {
+            session.set_base_registry(registry);
         }
 
         // Suppress unused_mut when cdc/wal are disabled
@@ -708,6 +1531,14 @@ impl ObrainDB {
     #[must_use]
     pub fn cognitive_engine(&self) -> Option<&Arc<dyn obrain_cognitive::CognitiveEngine>> {
         self.cognitive_engine.as_ref()
+    }
+
+    /// (2026-08-31) Accès au journal CDC (audit trail) — exposé pour la
+    /// prod/monitoring : `nodeHistory`/`changesBetween` via [`CdcLog`].
+    #[cfg(feature = "cdc")]
+    #[must_use]
+    pub fn cdc_log(&self) -> &Arc<crate::cdc::CdcLog> {
+        &self.cdc_log
     }
 
     /// Returns the graph data model of this database.
@@ -791,13 +1622,11 @@ impl ObrainDB {
     #[allow(dead_code)] // Reserved for future graph-aware CRUD methods
     fn active_store(&self) -> Arc<dyn GraphStoreMut> {
         let graph_name = self.current_graph.read().clone();
+        let racine = self.data_store();
         match graph_name {
-            None => Arc::clone(&self.store),
-            Some(ref name) if name.eq_ignore_ascii_case("default") => Arc::clone(&self.store),
-            Some(ref name) => self
-                .store
-                .named_graph(name)
-                .unwrap_or_else(|| Arc::clone(&self.store)),
+            None => racine,
+            Some(ref name) if name.eq_ignore_ascii_case("default") => racine,
+            Some(ref name) => racine.named_graph(name).unwrap_or(racine),
         }
     }
 
@@ -807,49 +1636,41 @@ impl ObrainDB {
     ///
     /// # Errors
     ///
-    /// Returns an error if arena allocation fails, or if the database is
-    /// substrate-backed (substrate is a single-graph store — named graphs
-    /// are an LpgStore-only feature; see T17b for future substrate support).
+    /// Returns an error if the graph could not be created (nom invalide,
+    /// repertoire inaccessible).
     pub fn create_graph(&self, name: &str) -> Result<bool> {
-        // T17 W3c slice 4: named graphs are an LpgStore-inherent feature
-        // absent from `SubstrateStore`. Creating against the dummy LpgStore
-        // would succeed locally but would not be visible to any substrate
-        // query path. Gate explicitly.
-        if self.substrate_store.is_some() {
-            return Err(obrain_common::utils::error::Error::Internal(
-                "create_graph() is not supported in substrate mode — substrate \
-                 is single-graph by design. Named-graph support is tracked as \
-                 T17b."
-                    .to_string(),
-            ));
-        }
-        self.store
+        // (2026-08-14) TROIS REFUS EXPLICITES SONT TOMBES ICI.
+        //
+        // `create_graph`, `drop_graph` et `list_graphs` commencaient par
+        // `if self.substrate_store.is_some()` et rendaient respectivement une
+        // erreur, `false` et un `Vec` vide, au motif que « substrate is
+        // single-graph by design ». C'etait VRAI quand ces lignes ont ete
+        // ecrites. Ca ne l'est plus : le substrat porte desormais ses graphes
+        // nommes, un sous-substrat complet par graphe.
+        //
+        // Le symptome etait joliment trompeur : `CREATE GRAPH` fonctionnait
+        // (la session passe par le store, pas par ces methodes) et le graphe
+        // etait UTILISABLE — mais `list_graphs()` jurait qu'il n'existait pas.
+        // Deux verites contradictoires dans la meme base, chacune sur de soi.
+        //
+        // Les trois passent maintenant par `data_store()`, comme tout le
+        // reste.
+        self.data_store()
             .create_named_graph(name)
             .map_err(|e| obrain_common::utils::error::Error::Internal(e.to_string()))
     }
 
     /// Drops a named graph. Returns `true` if dropped, `false` if it did not exist.
     ///
-    /// In substrate mode this always returns `false` — substrate is a
-    /// single-graph store with no named graphs to drop.
     pub fn drop_graph(&self, name: &str) -> bool {
-        if self.substrate_store.is_some() {
-            // No named graphs exist on substrate, so there is nothing to drop.
-            return false;
-        }
-        self.store.drop_named_graph(name)
+        self.data_store().drop_named_graph(name)
     }
 
     /// Returns all named graph names.
     ///
-    /// In substrate mode this always returns an empty `Vec` — substrate is
-    /// a single-graph store (only the default graph exists).
     #[must_use]
     pub fn list_graphs(&self) -> Vec<String> {
-        if self.substrate_store.is_some() {
-            return Vec::new();
-        }
-        self.store.named_graph_names()
+        self.data_store().named_graph_names()
     }
 
     /// Returns the active data store as a trait object — the single
@@ -994,6 +1815,22 @@ impl ObrainDB {
             tracing::error!("substrate flush during close failed: {e}");
         }
 
+        // ── LES INDEX TEXTE SONT REPERSISTÉS ICI, APRÈS LE FLUSH ────────────
+        // L'empreinte du store (offset du WAL) BOUGE pendant la fermeture
+        // elle-même — mesuré : 551 → 583, les écritures de flush. Un index
+        // persisté au moment de sa construction porte donc une empreinte qui ne
+        // correspond plus dès la première réouverture, et il serait reconstruit
+        // à chaque fois : la persistance ne servirait à rien.
+        //
+        // Mais on ne peut pas pour autant tout réécrire : l'index en RAM n'est
+        // PAS maintenu par les écritures, donc à la fermeture il peut être
+        // PÉRIMÉ — le graver ferait croire à une réouverture qu'il décrit l'état
+        // actuel (c'est le premier jet de ce chantier, et le test l'a démasqué).
+        // La fonction décide donc index par index : elle réécrit ceux qui n'ont
+        // rien vu passer, et EFFACE les autres.
+        #[cfg(feature = "text-index")]
+        self.repersister_index_textuels();
+
         *is_open = false;
         Ok(())
     }
@@ -1094,6 +1931,92 @@ impl ObrainDB {
     #[must_use]
     pub fn substrate_handle(&self) -> Option<Arc<obrain_substrate::SubstrateStore>> {
         self.substrate_store.as_ref().map(Arc::clone)
+    }
+
+    /// (2026-09-01) Reconstruit les colonnes de degrés (générique + typées)
+    /// depuis un scan des arêtes — le remède aux sidecars périmés (migrés
+    /// par un binaire plus ancien : CRC valide, compteurs faux → les
+    /// expansions d'arêtes typées sortantes renvoyaient 0, ex.
+    /// `sessions_list`/`session_load` du harness vides). Nécessite un
+    /// lock exclusif sur le store. Retourne le nombre de sidecars
+    /// supprimés/rebâtis.
+    pub fn rebuild_degree_columns(&self) -> std::result::Result<usize, String> {
+        let Some(store) = self.substrate_handle() else {
+            return Err("rebuild_degrees: store substrate absent".into());
+        };
+        store
+            .rebuild_degree_columns()
+            .map_err(|e| format!("rebuild_degrees: {e}"))
+    }
+
+    /// (2026-09-14, NATIF-R1) Reconstruit les chaines d'adjacence
+    /// (`next_from`/`next_to`/`first_edge_off`) depuis les `EdgeRecord`
+    /// vivants — remede a l'explosion de la traversee non typee causee par
+    /// des chaines CYCLIQUES (incident dedup runtime-dev). `count(*)` reste
+    /// juste tandis que `count(a)` explose ; ni `repair-degrees` (degres
+    /// recalcules depuis les records, deja justes) ni `compact` (ne touche
+    /// pas les pointeurs de chaine) n'y remedient. Idempotent ; `dry_run`
+    /// diagnostique sans ecrire. Necessite un lock exclusif sur le store.
+    pub fn rebuild_edge_chains(
+        &self,
+        dry_run: bool,
+    ) -> std::result::Result<obrain_substrate::store::EdgeChainRebuildStats, String> {
+        let Some(store) = self.substrate_handle() else {
+            return Err("rebuild-edge-chains: store substrate absent".into());
+        };
+        store
+            .rebuild_edge_chains(dry_run)
+            .map_err(|e| format!("rebuild-edge-chains: {e}"))
+    }
+
+    /// Journal de session : écrit les lignes brutes du log dans la zone
+    /// substrate dédiée (migration depuis le MCP).
+    pub fn write_session_journal(
+        &self,
+        session_id: &str,
+        lines: &[String],
+    ) -> std::result::Result<(), String> {
+        let Some(store) = self.substrate_handle() else {
+            return Err("journal: store substrate absent".into());
+        };
+        crate::journal_zone::write_session_journal(&store, session_id, lines)
+    }
+
+    /// Journal de session : APPEND les lignes brutes à la zone existante
+    /// (capture live GraphWriter — le journal accumule les lots successifs).
+    pub fn append_session_journal(
+        &self,
+        session_id: &str,
+        lines: &[String],
+    ) -> std::result::Result<(), String> {
+        let Some(store) = self.substrate_handle() else {
+            return Err("journal: store substrate absent".into());
+        };
+        crate::journal_zone::append_session_journal(&store, session_id, lines)
+    }
+
+    /// Journal de session : lit les lignes de la zone (paginées par seq).
+    pub fn read_session_journal(
+        &self,
+        session_id: &str,
+        after_seq: i64,
+        before_seq: i64,
+        limit: usize,
+    ) -> Vec<String> {
+        let Some(store) = self.substrate_handle() else {
+            return Vec::new();
+        };
+        crate::journal_zone::read_session_journal(&store, session_id, after_seq, before_seq, limit)
+    }
+
+    /// Journal de session : le seq du dernier événement de la session (pour
+    /// `events_last_seq`).
+    pub fn session_journal_last_seq(&self, session_id: &str) -> i64 {
+        let lines = self.read_session_journal(session_id, -1, 0, 1);
+        lines
+            .last()
+            .and_then(|l| Some(crate::journal_zone::session_seq(l)))
+            .unwrap_or(-1)
     }
 
     /// Logs a WAL record if WAL is enabled.
@@ -1595,6 +2518,48 @@ mod tests {
 
         // Second close should also succeed (idempotent)
         assert!(db.close().is_ok());
+    }
+
+    #[test]
+    fn test_checkpoint_flushes_persistent_store() {
+        // db.checkpoint() should succeed on a substrate-backed persistent
+        // database, be callable repeatedly (idempotent), and not lose any
+        // data in between calls -- it exists specifically to let a
+        // long-lived caller bound how much unflushed props-zone-v2 state
+        // a mid-session process kill can lose (see doc comment).
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("checkpoint_test_db");
+
+        let db = ObrainDB::open(&db_path).unwrap();
+        let node = db.create_node(&["Test"]);
+        db.set_node_property(node, "name", obrain_common::types::Value::from("alpha"));
+
+        assert!(db.checkpoint().is_ok());
+        // Idempotent: calling it again with no new mutations must also succeed.
+        assert!(db.checkpoint().is_ok());
+
+        // Data must still be intact after checkpointing.
+        let fetched = db.get_node(node).unwrap();
+        assert_eq!(
+            fetched
+                .properties
+                .get(&obrain_common::types::PropertyKey::new("name")),
+            Some(&obrain_common::types::Value::from("alpha"))
+        );
+
+        db.close().unwrap();
+    }
+
+    #[test]
+    fn test_checkpoint_is_noop_on_in_memory_db() {
+        // Non-substrate-backed (in-memory) databases have no zones to
+        // flush -- checkpoint() must be a harmless Ok(()) no-op, not an
+        // error, so callers can call it unconditionally regardless of
+        // backend.
+        let db = ObrainDB::new_in_memory();
+        assert!(db.checkpoint().is_ok());
     }
 
     #[test]

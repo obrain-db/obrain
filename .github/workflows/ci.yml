@@ -1,18 +1,628 @@
 name: CI
+
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main, 'release/*']
   pull_request:
+    branches: [main, 'release/*']
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Feature profiles tested in this workflow:
+#
+# 1. Full profile (--all-features): exercises every language parser (GQL,
+#    Cypher, SPARQL, Gremlin, GraphQL, SQL/PGQ), AI features (vector-index,
+#    text-index, hybrid-search, cdc), RDF, algorithms, tiered-storage, etc.
+#    Used by: rust-check, rust-test, miri, coverage, benchmark-pr.
+#
+# 2. WASM profile (default-features=false, gql only): minimal feature set
+#    for the wasm32-unknown-unknown target, which has no threads or OS APIs.
+#    Used by: wasm-build (via scripts/build-wasm.sh).
+#
+# 3. Default profile (crate defaults, no explicit --features): whatever each
+#    binding crate enables in its own Cargo.toml. The Python, Node.js, and Go
+#    bindings each pull in "full" through their crate dependencies.
+#    Used by: python-test, node-test, go-test.
+#
+# Note: the "embed" feature (ONNX embeddings, ~17 MB) is never included in
+# "full" and is not tested here. It is opt-in only.
+
 jobs:
-  check:
+  # Rust checks
+  rust-check:
+    name: Rust Check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rustfmt, clippy" }
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --features "obrain-engine/cypher,obrain-engine/algos" -- -D warnings
-      - name: Tests
-        run: cargo test --workspace --features "obrain-engine/cypher,obrain-engine/algos"
+
+      # Full profile: --all-features enables all language parsers (GQL, Cypher,
+      # SPARQL, Gremlin, GraphQL, SQL/PGQ), AI features (vector-index, text-index,
+      # hybrid-search, cdc), RDF, algorithms, and other optional features.
+      # This ensures every conditional compilation path compiles without warnings.
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # Verify Rust examples compile (all feature profiles)
+      - name: Build examples
+        run: cargo build -p obrain-examples --bins --features full
+
+      # Validate that all // ISO: annotations in tests reference valid
+      # feature IDs from docs/user-guide/gql/conformance.md.
+      - name: Validate GQL conformance annotations
+        run: python scripts/gql-conformance.py validate
+
+      # Full profile: generates docs for every feature-gated module so no
+      # broken intra-doc links or missing items slip through.
+      - name: Check docs
+        run: |
+          rm -rf target/doc
+          cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Rust tests
+  rust-test:
+    name: Rust Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      # Full profile: --all-features tests every language parser, AI index,
+      # RDF store, algorithms, CDC, and other optional modules together.
+      # This catches integration issues across feature combinations.
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+      # Full profile (release): re-runs with optimizations enabled to catch
+      # issues that only surface under release-mode inlining or overflow checks.
+      - name: Run tests (release)
+        run: cargo test --all-features --workspace --release
+
+  # Miri undefined behavior check
+  miri:
+    name: Miri UB Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Pin nightly due to cargo regression in nightly-2026-02-12+
+    # See: https://github.com/rust-lang/miri/issues/4855
+    # Remove pin once rust-lang/cargo#16631 lands in nightly
+    env:
+      NIGHTLY: nightly-2026-02-11
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly with Miri
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          components: miri
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-miri-${{ env.NIGHTLY }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-miri-${{ env.NIGHTLY }}-
+
+      - name: Setup Miri sysroot
+        run: cargo +$NIGHTLY miri setup
+
+      # Full profile: tests obrain-common with all features under Miri to
+      # verify no undefined behavior in the foundation crate (allocators,
+      # hashing, MVCC types) regardless of which features are active.
+      - name: Run Miri on obrain-common
+        run: cargo +$NIGHTLY miri test --all-features -p obrain-common
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+
+  # Code coverage
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Full profile: --all-features ensures coverage includes all language
+      # parsers, AI features, and optional modules. Binding crates, build
+      # scripts, test helpers, and benchmarks are excluded from the report.
+      - name: Generate coverage report
+        run: |
+          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info \
+            --ignore-filename-regex '(crates/bindings/|build\.rs|tests/|benches/)'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: false
+          verbose: true
+
+  # Python tests
+  # Default profile: maturin builds obrain-python with its crate-level default
+  # features, which pull in "full" (all languages + AI) via obrain-engine.
+  python-test:
+    name: Python Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-python-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-python-
+
+      - name: Build Python wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist -m crates/bindings/python/Cargo.toml
+          sccache: 'true'
+
+      - name: Install Python package and test dependencies
+        shell: bash
+        run: |
+          uv pip install --system dist/*.whl
+          uv pip install --system pytest pytest-asyncio networkx numpy scipy solvor
+
+      - name: Run Python tests
+        run: pytest crates/bindings/python/tests/ -v --ignore=crates/bindings/python/tests/benchmark_phases.py
+
+  # Node.js tests
+  # Default profile: napi-rs builds obrain-node with its crate-level default
+  # features, which pull in "full" (all languages + AI) via obrain-engine.
+  node-test:
+    name: Node.js Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-node-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-node-
+
+      - name: Install dependencies
+        working-directory: crates/bindings/node
+        run: npm install
+
+      - name: Build native module
+        working-directory: crates/bindings/node
+        run: npm run build
+
+      - name: Run tests
+        working-directory: crates/bindings/node
+        run: npm test
+
+  # Go tests
+  # Default profile: obrain-c is built with --features full explicitly (see
+  # the "Build shared library" step), so the Go FFI tests the full API surface.
+  go-test:
+    name: Go Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-go-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-go-
+
+      # Full profile (via "full" feature group): builds with all language
+      # parsers and AI features so the C FFI exposes the complete API surface.
+      # Go bindings call through this shared library.
+      - name: Build shared library
+        run: cargo build --release -p obrain-c --features full
+
+      - name: Copy library and run tests (Linux)
+        if: runner.os == 'Linux'
+        working-directory: crates/bindings/go
+        run: |
+          cp ../../../target/release/libobrain_c.so .
+          CGO_ENABLED=1 CGO_LDFLAGS="-L. -lobrain_c -lm -ldl -lpthread" LD_LIBRARY_PATH=. go test -v ./...
+
+      - name: Copy library and run tests (macOS)
+        if: runner.os == 'macOS'
+        working-directory: crates/bindings/go
+        run: |
+          cp ../../../target/release/libobrain_c.dylib .
+          CGO_ENABLED=1 CGO_LDFLAGS="-L. -lobrain_c -lm -ldl -lpthread -framework Security" DYLD_LIBRARY_PATH=. go test -v ./...
+
+      - name: Copy library and run tests (Windows)
+        if: runner.os == 'Windows'
+        working-directory: crates/bindings/go
+        shell: bash
+        run: |
+          cp ../../../target/release/obrain_c.dll .
+          cp ../../../target/release/obrain_c.dll.lib .
+          CGO_ENABLED=1 CGO_LDFLAGS="-L. -lobrain_c -lws2_32 -lbcrypt -lntdll -luserenv" go test -v ./...
+
+  csharp-test:
+    name: C# Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-csharp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-csharp-
+
+      # Full profile: builds with all language parsers and AI features so the
+      # C FFI exposes the complete API surface for the C# bindings.
+      - name: Build shared library
+        run: cargo build --release -p obrain-c --features full
+
+      - name: Copy library (Linux)
+        if: runner.os == 'Linux'
+        run: cp target/release/libobrain_c.so crates/bindings/csharp/tests/Obrain.Tests/
+
+      - name: Copy library (macOS)
+        if: runner.os == 'macOS'
+        run: cp target/release/libobrain_c.dylib crates/bindings/csharp/tests/Obrain.Tests/
+
+      - name: Copy library (Windows)
+        if: runner.os == 'Windows'
+        run: copy target\release\obrain_c.dll crates\bindings\csharp\tests\Obrain.Tests\
+
+      - name: Restore
+        run: dotnet restore
+        working-directory: crates/bindings/csharp
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+        working-directory: crates/bindings/csharp
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release --verbosity normal
+        working-directory: crates/bindings/csharp
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/crates/bindings/csharp/tests/Obrain.Tests
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/crates/bindings/csharp/tests/Obrain.Tests
+
+  # Dart tests
+  # Default profile: obrain-c is built with --features full explicitly,
+  # so the Dart FFI tests exercise the complete C API surface.
+  dart-test:
+    name: Dart Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-dart-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-dart-
+
+      - name: Build shared library
+        run: cargo build --release -p obrain-c --features full
+
+      - name: Copy library (Linux)
+        if: runner.os == 'Linux'
+        run: cp target/release/libobrain_c.so crates/bindings/dart/
+
+      - name: Copy library (macOS)
+        if: runner.os == 'macOS'
+        run: cp target/release/libobrain_c.dylib crates/bindings/dart/
+
+      - name: Copy library (Windows)
+        if: runner.os == 'Windows'
+        run: copy target\release\obrain_c.dll crates\bindings\dart\
+
+      - name: Install dependencies
+        working-directory: crates/bindings/dart
+        run: dart pub get
+
+      - name: Analyze
+        working-directory: crates/bindings/dart
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        working-directory: crates/bindings/dart
+        run: dart test
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/crates/bindings/dart
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/crates/bindings/dart
+
+  # WASM build
+  # WASM profile: builds with default-features = false and only the "gql"
+  # feature enabled (minimal, no threads). The wasm32-unknown-unknown target
+  # has no std::thread, so threading features, jemalloc/mimalloc allocators,
+  # and other OS-dependent code are excluded. The build script
+  # (scripts/build-wasm.sh) handles the exact cargo flags.
+  wasm-build:
+    name: WASM Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
+        uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall wasm-bindgen-cli@0.2.114 --no-confirm
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
+
+      # WASM profile: delegates to build-wasm.sh which compiles obrain-wasm
+      # with only the gql feature (no threads, no native allocators).
+      - name: Build WASM
+        run: bash scripts/build-wasm.sh
+
+      - name: Check gzip size
+        run: |
+          SIZE=$(gzip -c crates/bindings/wasm/pkg/obrain_wasm_bg.wasm | wc -c)
+          echo "WASM gzip size: $SIZE bytes ($(( SIZE / 1024 )) KB)"
+          if [ "$SIZE" -gt 409600 ]; then echo "::warning::WASM exceeds 400KB gzip target"; fi
+
+  # Benchmark regression check (PR only, same-runner comparison)
+  #
+  # Runs both base and PR benchmarks on the same runner to eliminate
+  # hardware variance from shared GitHub Actions VMs. Uses Criterion's
+  # --save-baseline to store results, then critcmp to compare.
+  benchmark-pr:
+    name: Benchmark (PR)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 45
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Need full history to checkout base commit
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Install critcmp
+        run: cargo install critcmp --locked
+
+      # Run base benchmarks first. Any CPU thermal warming benefits
+      # the PR run, making regressions easier to detect.
+      - name: Checkout base
+        run: git checkout ${{ github.event.pull_request.base.sha }}
+
+      # Engine benchmarks: --features full includes all language parsers,
+      # AI indexes, and RDF but excludes cognitive features (reactive scheduler,
+      # energy, synapses) which add per-commit overhead not relevant to core
+      # engine performance measurement.
+      # Cognitive benchmarks: run separately with --features cognitive to measure
+      # the reactive pipeline overhead in isolation.
+      - name: Bench base
+        run: |
+          cargo bench --features full \
+            --bench arena_bench \
+            --bench index_bench \
+            --bench query_bench \
+            -- --save-baseline base --noplot
+          # Cognitive bench may not exist on the base commit (new crate)
+          if [ -f crates/obrain-cognitive/benches/cognitive_bench.rs ]; then
+            cargo bench -p obrain-cognitive --features cognitive \
+              --bench cognitive_bench \
+              -- --save-baseline base --noplot
+          fi
+
+      - name: Checkout PR head
+        run: git checkout ${{ github.event.pull_request.head.sha }}
+
+      - name: Bench PR
+        run: |
+          cargo bench --features full \
+            --bench arena_bench \
+            --bench index_bench \
+            --bench query_bench \
+            -- --save-baseline pr --noplot
+          if [ -f crates/obrain-cognitive/benches/cognitive_bench.rs ]; then
+            cargo bench -p obrain-cognitive --features cognitive \
+              --bench cognitive_bench \
+              -- --save-baseline pr --noplot
+          fi
+
+      - name: Compare and comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/bench-compare.sh base pr 15 ${{ github.event.pull_request.number }}
+
+  # Supply chain security (licenses, advisories, bans, sources)
+  supply-chain:
+    name: Supply Chain Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features

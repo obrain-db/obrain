@@ -1,0 +1,57 @@
+{
+  "area": "Bindings Go, C#/.NET, Dart (tranche interfaces multi-langages)",
+  "summary": "Les trois bindings Go, C#/.NET et Dart existent réellement et de façon substantielle sous crates/bindings/ : Go (13 fichiers, ~1870 lignes, CGO), C# (.NET 8 P/Invoke via LibraryImport, ~2273 lignes, solution Obrain.sln) et Dart (dart:ffi, ~2632 lignes, package obrain 0.5.24). Tous trois s'appuient sur une unique couche native commune, le crate obrain-c (crates/bindings/c, cdylib+staticlib, ~80 fonctions C exportées depuis src/database.rs), lui-même aidé du crate partagé obrain-bindings-common (crates/bindings/common). Le README principal annonce correctement ces trois bindings (sections Go/C#/Dart lignes 517-539, et ligne 431 « Go (CGO), C# (.NET 8 P/Invoke), Dart (dart:ffi) »), ainsi que les instructions d'installation go get / dotnet add package / pubspec. Les surfaces d'API se répondent (execute/executeWithParams/executeCypher/Sparql/Gremlin/GraphQL/SQL, CRUD node/edge, transactions ACID, recherche vectorielle k-NN+MMR, index de propriétés). La documentation mkdocs ne recense toutefois que l'API Go (docs/api/go/index.md) et C (docs/api/c/index.md) : C# et Dart ne sont documentés que par leur README.md interne au package. Plusieurs incohérences ont été relevées : dérive entre les deux copies d'en-tête C (go/obrain.h vs c/obrain.h), README de obrain-c décrivant une signature d'API obsolète (out-params + codes de statut) qui n'existe pas dans le code réel, et un numéro de version Dart (0.5.24) prétendant « match workspace release » alors que le workspace Cargo est en 0.0.1. Aucune bibliothèque native n'est embarquée dans le dépôt (runtimes/ C# absents, aucun .so/.dylib/.dll dans dart/), la compilation manuelle via `cargo build -p obrain-c` étant requise avant test.",
+  "components": [
+    "crates/bindings/go/ — bindings Go complets (13 fichiers) : go.mod (module github.com/this-rs/obrain/crates/bindings/go), obrain.go, node.go, edge.go, transaction.go, vector.go, index.go, admin.go, types.go, errors.go, obrain_test.go, README.md",
+    "crates/bindings/go/obrain.h — en-tête C copié pour CGO (158 lignes), diverge de c/obrain.h",
+    "crates/bindings/go/obrain.go — Database (OpenInMemory/Open/Execute/ExecuteWithParams/ExecuteCypher/Gremlin/GraphQL/SPARQL/SQL, NodeCount/EdgeCount), cgo LDFLAGS -lobrain_c",
+    "crates/bindings/go/node.go / edge.go / transaction.go / vector.go / index.go — CRUD nœuds, arêtes, transactions (BeginTransactionWithIsolation), recherche vectorielle, index de propriétés",
+    "crates/bindings/csharp/Obrain.sln — solution VS (2 projets : Obrain, Obrain.Tests)",
+    "crates/bindings/csharp/src/Obrain/Obrain.csproj — net8.0, AllowUnsafeBlocks, PackageId Obrain v0.0.1, bundling conditionnel runtimes/win-x64|linux-x64|linux-arm64|osx-x64|osx-arm64",
+    "crates/bindings/csharp/src/Obrain/ObrainDB.cs — handle principal IDisposable/IAsyncDisposable (Memory/Open/Execute*/BeginTransaction/CreateNode/CreateEdge/VectorSearch/MmrSearch/Info/Save)",
+    "crates/bindings/csharp/src/Obrain/Native/NativeMethods.cs — P/Invoke LibraryImport (AOT-safe) de toutes les fonctions obrain_* exportées",
+    "crates/bindings/csharp/src/Obrain/{Transaction,QueryResult,ValueConverter,ObrainException}.cs + Native/Handles.cs — transaction, résultat, conversion de valeurs, exceptions, SafeHandle",
+    "crates/bindings/csharp/tests/Obrain.Tests/ — xunit : DatabaseTests, CrudTests, QueryTests, TransactionTests",
+    "crates/bindings/dart/pubspec.yaml — package obrain 0.5.24, sdk >=3.0.0, deps ffi ^2.1.0",
+    "crates/bindings/dart/lib/obrain.dart — entrée publique (export database/error/transaction/types/value)",
+    "crates/bindings/dart/lib/src/database.dart — ObrainDB (memory/open/execute*/beginTransaction/CRUD/vector, NativeFinalizer)",
+    "crates/bindings/dart/lib/src/ffi/bindings.dart + ffi/loader.dart — bindings dart:ffi statiques + chargement plateforme (obrain_c.dll/libobrain_c.dylib/libobrain_c.so)",
+    "crates/bindings/dart/lib/src/{transaction,value,types,error}.dart + example/example.dart + test/ — transaction, encodeur de paramètres/valeurs, types, hiérarchie d'exceptions scellée, exemple et tests",
+    "crates/bindings/c/ — crate obrain-c (cdylib+staticlib) : src/database.rs (~80 fonctions C : open_memory/open/open_read_only/execute*/CRUD/vector/batch/transaction/info/wal), types.rs, error.rs, obrain.h, build.rs (header maintenu manuellement)",
+    "crates/bindings/common/ — crate obrain-bindings-common : abstractions partagées error/json/entity utilisées par obrain-c",
+    "docs/api/go/index.md — page API Go dans la doc mkdocs (Database/Query Languages/CRUD/Transactions/Vector Search)",
+    "README.md (racine) — sections Go (517-527), C# / .NET (529-533), Dart (535-539) + badge Go et ligne 431 des bindings multi-langages"
+  ],
+  "relationships": [
+    "go (CGO) → c/obrain.h (copie go/obrain.h) → libobrain_c via #cgo LDFLAGS: -lobrain_c",
+    "csharp (P/Invoke LibraryImport) → obrain_c (LibName=\"obrain_c\") → même ABI C que go/dart",
+    "dart (dart:ffi lookupFunction) → obrain_c (chargé via loadNativeLibrary) → même ABI C",
+    "obrain-c (crate) dépend de obrain-engine, obrain-core, obrain-common, obrain-bindings-common (Cargo.toml de c/)",
+    "obrain-bindings-common dépend de obrain-engine (default-features=false) et obrain-common",
+    "features partagées : c/Cargo.toml et common/Cargo.toml propagent gql/cypher/sparql/gremlin/graphql/sql-pgq/vector-index/text-index/hybrid-search/cdc/algos/rdf + profils embedded/full vers obrain-engine",
+    "csharp/src/Obrain/Obrain.csproj référence README.md parent (PackageReadmeFile) et bundling conditionnel des runtimes natives",
+    "csharp/tests/Obrain.Tests/Obrain.Tests.csproj référence src/Obrain/Obrain.csproj et copie conditionnelle obrain_c.dll/libobrain_c.so/libobrain_c.dylib",
+    "docs/api/go/index.md ↔ go/README.md : contenu quasi identique (quick start, API) ; mkdocs.yml référence api/go/index.md et api/c/index.md",
+    "go/obrain.h ↔ c/obrain.h : deux copies du même en-tête, mais en divergence (cf. findings)"
+  ],
+  "notable_findings": [
+    "Dérive d'en-tête : go/obrain.h contient obrain_execute_sql (ligne 70) mais pas obrain_open_read_only ; c/obrain.h contient obrain_open_read_only (ligne 58) mais pas obrain_execute_sql. La source Rust de référence c/src/database.rs contient LES DEUX — chaque copie d'en-tête est donc périmée dans une direction différente.",
+    "README obsolète de obrain-c : c/README.md documente une API à out-params + codes de statut (obrain_open_memory(&db) != OBRAIN_OK, obrain_execute(db, query, &result)) qui n'existe pas dans c/src/database.rs ; le vrai ABI retourne des pointeurs (obrain_open_memory() -> *mut ObrainDatabase). Go/C#/Dart suivent tous le vrai ABI, pas le README.",
+    "Incohérence de version : dart/pubspec.yaml = 0.5.24 et dart/CHANGELOG.md prétend « Version bump to match workspace release », mais Cargo.toml [workspace.package] version = 0.0.1. Le C# (NuGet Version 0.0.1) correspond au workspace, pas le Dart.",
+    "C# et Dart n'ont PAS de page API dans docs/api/ ni dans la nav mkdocs.yml (seuls api/go/index.md et api/c/index.md sont câblés, lignes 340-345) : leur documentation repose uniquement sur leur README.md interne.",
+    "Aucune bibliothèque native embarquée : les runtimes/win-x64|linux-x64|... référencés par Obrain.csproj sont absents (condition Exists), et aucun .so/.dylib/.dll dans dart/ — le build `cargo build -p obrain-c` + copie manuelle est obligatoire avant test (ce qui est bien documenté dans chaque README).",
+    "Le Go binding expose ExecuteSQL (obrain_execute_sql) mais n'expose PAS OpenReadOnly (obrain_open_read_only), alors que l'ABI C le fournit — surface Go légèrement plus étroite que le C.",
+    "Les trois bindings couvrent la même surface fonctionnelle (GQL/Cypher/Gremlin/GraphQL/SPARQL/SQL, CRUD, transactions ACID à isolation configurable, recherche vectorielle k-NN + MMR) ; le C# est le plus riche côté API publique (méthodes Async/await + MmrSearch + Save + DropVectorIndex/RebuildVectorIndex).",
+    "Le C# utilise la source generation LibraryImport (.NET 8, AOT-safe) plutôt que l'ancien DllImport, et le Dart utilise NativeFinalizer pour le nettoyage natif automatique — choix modernes cohérents.",
+    "build.rs de obrain-c indique que l'en-tête est « maintained manually » (cbindgen ne supporte pas encore #[unsafe(no_mangle)] en Rust 2024) — cause probable de la dérive go/obrain.h vs c/obrain.h."
+  ],
+  "gaps": [
+    "Header drift non résolu entre go/obrain.h et c/obrain.h (obrain_execute_sql absent de c/obrain.h ; obrain_open_read_only absent de go/obrain.h) — pas de génération automatisée pour garder les copies synchronisées.",
+    "c/README.md documente un ABI obsolète (out-params + statut) qui ne correspond pas au code réel — documentation trompeuse pour tout nouvel intégrateur C.",
+    "Pas de docs/api/csharp/ ni docs/api/dart/ dans docs/api/ ni dans mkdocs.yml : C# et Dart absents de la documentation API publiée, alors que Python/Node/Go/WASM/C y figurent.",
+    "Version Dart 0.5.24 vs workspace 0.0.1 — le CHANGELOG Dart (« match workspace release ») est factuellement faux ; le mécanisme de versioning Dart n'est pas raccordé au workspace Rust.",
+    "Chemins de publication externes non vérifiables en lecture seule : github.com/this-rs/obrain/crates/bindings/go, pkg.go.dev, NuGet « Obrain », pub.dev « obrain » — présence réelle des packages publiés non confirmée dans ce dépôt.",
+    "Bundling natif incomplet : les répertoires runtimes/ du csproj C# et toute .so/.dylib/.dll Dart sont absents, donc les packages NuGet/pub ne sont pas autonomes en l'état (build natif + copie manuelle requis).",
+    "Le binding Go omet obrain_open_read_only (ouverture en lecture seule) pourtant disponible dans l'ABI C — trou de parité de fonctionnalité entre Go et C#/C."
+  ]
+}

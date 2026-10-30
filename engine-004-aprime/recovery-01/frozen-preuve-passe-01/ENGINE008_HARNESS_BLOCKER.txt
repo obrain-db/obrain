@@ -1,0 +1,218 @@
+ENGINE-008 HARNESS -- RAPPORT DE BLOCAGE OBJECTIF
+==========================================================================
+PASSE=ENGINE-008-QUALITY-v1 / construction du harnais offline
+CONDITION_D_ARRET=B -- premier blocage technique reel empechant la suite
+QUALITY_EVAL_HARNESS_READY=NO
+
+Le harnais engine008-quality-eval N A PAS ETE CONSTRUIT. Non par choix,
+mais parce que TROIS entrees autoritaires de la passe sont ABSENTES de
+cette machine. Chacune suffit a interdire la suite. Elles sont
+independantes : en corriger une ne debloque pas les autres.
+
+==========================================================================
+BLOCAGE 1 -- LIBLLAMA QUALIFIEE Q1 ABSENTE  (gate §7)
+==========================================================================
+Le protocole exige de LIER la libllama qualifiee Q1 et de prouver son
+identite :
+  Q1_LIBLLAMA_SHA256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  chemin attendu      =/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0
+
+CONSTAT :
+  QUALITY_EVAL_LIBLLAMA_PATH=NOT_AVAILABLE
+  QUALITY_EVAL_LIBLLAMA_SHA256=NOT_AVAILABLE
+  Q1_QUALITY_LIBLLAMA_SHA_MATCH=NO
+  Le repertoire /home/triviere/projects/llama-obrain-cuda-f1a N EXISTE PAS.
+  Aucune libllama presente sur la machine ne porte ce SHA. Les 50+
+  exemplaires de libllama.so* presents (Vulkan, HIP, DGX, amont b9222)
+  ont ete hashes un par un : aucun ne vaut 87c42d5f...
+  Les SHAs observes sont, par exemple :
+    /mnt/obrain/verif-branche/build/bin/libllama.so.0.0.60   14a6a2b37411d6fd...
+    /mnt/obrain/build-vk/bin/libllama.so.0.0.36              8fc88831c05c812f...
+    /home/triviere/projects/llama-obrain/build-vk/...0.0.70  ede0ef43577b034f...
+  Un toolchain CUDA est de surcroit ABSENT de la machine (nvcc introuvable).
+
+POURQUOI UN REBUILD NE SUFFIT PAS :
+  §7 est explicite : « Ne pretends pas qu un rebuild different est
+  automatiquement equivalent. » Un binaire reconstruit aurait un SHA
+  different (compilateur, CUDA, horodatage) et exigerait une QUALIFICATION
+  EXPLICITE SEPAREE, qui n a pas ete commandee.
+  §7 prescrit alors : QUALITY_EVAL_HARNESS_READY=NO,
+  FIRST_HARNESS_BLOCKING_GATE=Q1_QUALIFIED_LIBLLAMA_PROVENANCE_MISMATCH,
+  ET ARRETER.
+
+==========================================================================
+BLOCAGE 2 -- CHAT TEMPLATE BASELINE != CANDIDAT  (gate §15, MESURE)
+==========================================================================
+§15 exige CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=YES. Mesure :
+  BASELINE_CHAT_TEMPLATE_SHA256 =c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+  CANDIDATE_CHAT_TEMPLATE_SHA256=12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce
+  CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=NO
+  ENGINE008_CHAT_TEMPLATE_SHA256=UNDEFINED
+
+  Les deux modeles portent des REVISIONS DIFFERENTES du template
+  (8 952 octets contre 9 993). Premiere divergence a l octet 1971.
+  Le candidat se termine par un commentaire explicite :
+      {#- Unsloth fixes - developer role, merged system messages, tool calling #}
+
+  ECOART DE LA DIVERGENCE (102 lignes de diff unifie, +34 / -20) :
+    a) fusion des messages system/developer consecutifs (namespace sysns)
+    b) alias reasoning_effort 'high' -> 'xhigh' (absent du baseline)
+    c) le bloc system n est emis que si merged_system (le candidat supprime
+       la branche imbriquee 'elif content vide mais reasoning_instructions')
+    d) saut des messages d entete par 'if loop.index0 >= num_sys'
+    e) refus explicite des arguments d appel d outil passes en chaine JSON
+    f) le baseline porte un garde 'ns.multi_step_tool' que le candidat retire
+
+  POURQUOI C EST BLOQUANT :
+  §20 exige TASK_RENDERED_TEXT_BASELINE_CANDIDATE_MISMATCH_COUNT=0, c est-a-dire
+  des entrees bit-identiques. §15 fait de l identite des templates la
+  precondition de cette egalite, et §16 INTERDIT d appliquer le template
+  autrement que par le chemin natif llama_chat_apply_template.
+  Or ce chemin natif est precisement ce que le harnais devait fournir,
+  et le harnais ne peut pas etre construit (BLOCAGE 1).
+
+  NOTE HONNETE : pour la structure TASK exacte (§17 : aucun message system,
+  un seul message user, add_generation_prompt), les deux templates
+  empruntent la MEME branche 'elif reasoning_instructions' et produiraient
+  donc VRAISEMBLABLEMENT le meme texte. Mais « vraisemblablement » n est
+  pas une preuve : sans le moteur natif, l egalite des rendus reste
+  NON VERIFIEE. Aucune conclusion scientifique n est tiree ici.
+
+==========================================================================
+BLOCAGE 3 -- CORPUS TASK / TOKEN ET PROVENANCE SCORERS ABSENTS  (§2)
+==========================================================================
+L arbre d artefacts de la passe a ETE SUPPRIME de la machine. Racine
+attendue par tous les scripts :
+  /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/
+  -> CE REPERTOIRE N EXISTE PAS. /home/triviere/exp-artifacts n existe pas.
+
+Entrees absentes, recherche exhaustive sur tout le disque :
+  TASK_EVAL_DATA  corpora/task_eval/{mmlu_pro,gsm8k,mbpp,ifeval}/*_ITEMS.jsonl
+                  -> 2 698 items introuvables. TASK_EVAL_DATA_CONTENT_TREE_SHA256
+                  attendu c30d71d84712... : aucune source a rehacher.
+  TOKEN_EVAL_DATA corpora/token_eval/TOKEN_EVAL_INPUTS*.jsonl  (65 536 tokens)
+                  -> introuvable. TOKEN_CORPUS_FROZEN=YES est une autorite
+                  entrante dont le support materiel a disparu.
+  SCORERS         scorers/ installes + QUALITY_SCORER_PROVENANCE.txt
+                  -> absents. Seules les SOURCES d auteur survivent.
+  EXTERNAL        external/{mbpp,instruction_following_eval,nltk_data,
+                  python-packages,tokenizer_fixtures} -> absent
+  CONFIGS         QUALITY_THRESHOLDS_v1.txt, ENGINE008_SELECTION_RULES_v1.*,
+                  PYTHON_PACKAGE_PROVENANCE.csv, STRUCTURED_VALIDITY_CONFIG_v1.txt,
+                  STAGE_S8_STATUS.txt, ENGINE008_DATA_STATUS.txt -> absents
+  VENV            .venv/bin/python (environnement epingle) -> absent
+
+Sans ces entrees, §8 a §67 sont inatteignables : les 2 698 prompts ne
+peuvent pas etre rendus, et TASK_EVAL_CONTENT_TREE_SHA256 ne peut pas
+etre calcule.
+
+Aucune voie de recouvrement locale n existe :
+  - engine-004-aprime/ est INTEGRALEMENT non suivi par git (0 fichier
+    indexe) : aucun historique, aucun stash, aucune corbeille ne les
+    contient.
+  - aucune archive du disque ne les contient (verifie : les archives
+    disponibles datent du 7 au 15 septembre, la passe est du 1-2 octobre).
+  - aucun cache de jeux de donnees local (le cache HF ne contient que des
+    MODELES, aucun dataset).
+  - les couches overlay Docker ont ete balayees : rien.
+  - les pairs accessibles (n1-miroir) n exposent qu une cle rsync
+    restreinte, sans shell.
+
+==========================================================================
+CE QUI A ETE VERIFIE AVEC SUCCES (travail reel de cette passe)
+==========================================================================
+Les deux modeles d autorite ont ete RETROUVES a des chemins differents de
+ceux documentes, et leurs SHA sont EXACTS :
+  BASELINE  /home/triviere/models/Qwen3.8-27B-Q4_K_M.gguf
+            31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34  MATCH
+  CANDIDATE /mnt/obrain/models/Qwen3.8-27B-OBRAIN-v3.gguf
+            1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937  MATCH
+
+§14 AUTORITE TOKENIZER -- RECONTROLEE, EXACTE SUR LES DEUX MODELES :
+  TOKENIZER_SHA256=49930cc8a75188cf69a07c57914f0aabe383db11494aa03ed15629adee4c7e33  MATCH
+  VOCAB_SIZE=248320  MATCH    BOS=248044  MATCH    EOS=248046  MATCH
+
+§53 STRUCTURE DES COUCHES -- CONFORME A L AUTORITE :
+  BASELINE_NORMAL_DECODER_LAYERS=64   (blocs 0..63, aucun NextN)
+  CANDIDATE_N_LAYER_ALL=65   CANDIDATE_N_LAYER_NEXTN=1   NORMAL=64
+  blk.64 est le bloc NextN/MTP : 4 tenseurs blk.64.nextn.*
+  (eh_proj, enorm, hnorm, shared_head_norm) + un bloc transformer complet.
+
+§19 POLITIQUE BOS -- RESOLUE STATIQUEMENT :
+  TASK_CHAT_TEMPLATE_EMITS_BOS=NO  (ni bos_token, ni <|startoftext|>, ni <s>)
+  TASK_TOKENIZER_ADDS_BOS=NO       (les DEUX modeles resolvent add_bos=false)
+  TASK_DOUBLE_BOS_RISK=NO
+    Le baseline porte la cle add_bos_token=False ; le candidat ne porte PAS
+    la cle. llama-vocab.cpp initialise 'bool add_bos = false' (l.1804), la
+    branche qwen35 (l.2211-2214) ne le modifie pas, et la lecture de la cle
+    (l.2538) est OPTIONNELLE : cle absente => add_bos reste false. La
+    divergence de METADONNEE ne produit donc aucune divergence de
+    COMPORTEMENT. Ceci est une lecture statique : le recontrole runtime
+    reste exige par le protocole.
+
+§38 LIMITES DE GENERATION -- CONFIRMEES par l autorite recouvree :
+  GSM8K_MAX_NEW_TOKENS=1024  MBPP_MAX_NEW_TOKENS=1024  IFEVAL_MAX_NEW_TOKENS=4096
+
+RECOUVREMENT D UNE AUTORITE GELEE :
+  TASK_PROMPT_CONTRACTS_v1.txt a ete RECONSTRUIT par extraction AST du
+  litteral `contracts` de source/e8-scorers-artifacts.py et VERIFIE :
+    sha256 = fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6
+    identique a TASK_PROMPT_CONTRACTS_V1_SHA256. Egalite EXACTE.
+  Cette entree n est donc plus manquante.
+
+==========================================================================
+CE QUE CETTE PASSE N A PAS FAIT -- ET NE POUVAIT PAS FAIRE
+==========================================================================
+  HARNESS_PREFREEZE_DECODE_CALL_COUNT=0        (aucun llama_decode)
+  llama_decode / logits / generation / NLL / PPL / MMLU likelihood : AUCUN
+  Aucun binaire engine008-quality-eval n a ete construit.
+  HARNESS_PROVENANCE.txt  : NON PRODUIT (pas de binaire a prouver)
+  HARNESS_SELFTEST.txt    : NON PRODUIT (pas de binaire a tester)
+  TASK_RENDERED_INPUTS.jsonl : NON PRODUIT (corpus TASK absent + moteur natif absent)
+  MMLU_CHOICES_INPUTS.jsonl  : NON PRODUIT (meme raison)
+  TASK_GLOBAL_ITEM_ORDER.txt : NON PRODUIT (identites d items absentes)
+  TASK_EVAL_CONTENT_TREE_SHA256 : NON CALCULABLE
+  PRODUCT_COMPUTE_SOURCE_DIFF_COUNT : NON CALCULABLE (aucune source harnais)
+  QUALITY_PREFREEZE_BASELINE_RESULT_COUNT=0   (verifie : aucun resultat)
+  QUALITY_PREFREEZE_CANDIDATE_RESULT_COUNT=0  (verifie : aucun resultat)
+
+Aucun de ces manques n a ete masque par une valeur inventee.
+
+==========================================================================
+CONDITIONS DE REPRISE
+==========================================================================
+Pour debloquer BLOCAGE 1 : restaurer la construction qualifiee Q1
+  (llama-obrain-cuda-f1a / libllama 87c42d5f...), OU commander
+  EXPLICITEMENT une qualification separee d une nouvelle libllama.
+Pour debloquer BLOCAGE 2 : decision humaine requise. Deux templates
+  differents ne peuvent pas produire des entrees baseline/candidat
+  bit-identiques sans choisir une autorite commune, ce qui modifie ce que
+  voit l un des deux modeles. C est un arbitrage scientifique, pas un
+  correctif technique.
+Pour debloquer BLOCAGE 3 : restaurer l arbre d artefacts ENGINE-008
+  (corpus TASK, corpus TOKEN, scorers installes, external/, .venv), ou
+  re-acquerir les jeux de donnees amont depuis leurs revisions epinglees
+  et RE-VERIFIER le tree hash c30d71d8... avant tout usage.
+
+=== GATES BLOQUANTS, DANS L ORDRE DU PROTOCOLE ===
+FIRST_QUALITY_BLOCKING_GATE=Q1_QUALIFIED_LIBLLAMA_PROVENANCE_MISMATCH
+  (§7 prescrit exactement cette valeur et l arret : la libllama qualifiee
+   Q1 est absente, donc QUALITY_EVAL_HARNESS_READY=NO et on ARRETE.)
+SECOND_QUALITY_BLOCKING_GATE=CHAT_TEMPLATE_BASELINE_CANDIDATE_MISMATCH
+  (§15 mesure ; §72 exige YES ; impossible a lever sans decision humaine)
+THIRD_QUALITY_BLOCKING_GATE=ENGINE008_TASK_AND_TOKEN_CORPUS_ABSENT
+  (§2 ; les 2 698 items TASK ne sont pas sur la machine)
+
+=== INVENTAIRE DES ARTEFACTS PRODUITS (SHA256) ===
+a3c8f1f1dda5cb864fce6a932f00168903dbbfa2580ef1e94528bc6eba71701d  ENGINE008_METADATA_AUTHORITY.txt
+41d437f9e5e0f34a592b5b1bc6a5662cb49ef3fadf066467dad5b4909800723a  TOKENIZER_AND_BOS_AUTHORITY.txt
+ccb87424b055a5c9296c832007fba31fce3ddb1cf2ecf5354681981dd743bef2  CHAT_TEMPLATE_AUDIT.txt
+00c944ace64fd7e64c0332afcd25452e4e19cab0dd8f57d0a4688ae98a8e3c93  CHAT_TEMPLATE_BASELINE_CANDIDATE.diff
+c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041  BASELINE_CHAT_TEMPLATE.jinja
+12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce  CANDIDATE_CHAT_TEMPLATE.jinja
+fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6  TASK_PROMPT_CONTRACTS_v1.txt
+a9801787a311527988a09869ef93fb7cb91130d664a0308aaa419a67625b023f  TASK_PROMPT_CONTRACTS_v1_RECOVERED.txt
+aec69bb48cf0294cb693fbd68bef668c4ec87999fedf301d5d498b6888faf88d  ENGINE008_MTP_PATH_AUDIT.txt
+29497bfba4d9f169674014f13dad30da772d125b7c2019935037b9abc25fd1d3  ENGINE008_RUNTIME_PROOF_CONTRACT_v1.txt
+eb6ddd0b98faf2196e7908bf02f47163aae0c1f70d9377f37849fc4e09cf9a9f  BASELINE_RUNTIME_PROBE_NODECODE.txt
+db0965297873c7fe5457a85435462a8a9dda6eea0610aff3b637cc32a59f38cb  CANDIDATE_RUNTIME_PROBE_NODECODE.txt

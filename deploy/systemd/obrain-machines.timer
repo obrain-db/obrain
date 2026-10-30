@@ -1,0 +1,38 @@
+[Unit]
+Description=Obrain — passe de la flotte toutes les 2 minutes
+# ── POURQUOI 2 MINUTES (et non 5 comme la passe par compte) ────────────────
+# Parce que ce que cette passe rafraîchit est ce qu'un humain REGARDE : on
+# rattache une machine, puis on ouvre l'interface et on demande « quelles
+# machines connais-tu ? ». Deux minutes, c'est le délai au bout duquel ce qu'on
+# vient de faire est un fait du graphe (même cadence que `obrain-self-appliquer`,
+# qui applique la mémoire des comptes) — un opérateur lit ainsi UNE cadence.
+#
+# Ce n'est pas gratuit, c'est MESURÉ :
+#   · registre vide → la passe n'ouvre MÊME PAS la base (`machines.rs` : elle
+#     rend son rapport avant l'ouverture) : un passage coûte une lecture de
+#     journal vide ;
+#   · base tenue en lecture → le verrou est un `try_lock` NON BLOQUANT
+#     (`obrain-substrate/src/file.rs`) : le passage coûte un appel système
+#     refusé, il n'attend personne et ne met rien en file ;
+#   · l'écriture est un `MERGE` par `qn` : deux passages ne dupliquent rien, et
+#     une machine disparue du registre garde son nœud (on n'efface pas un fait
+#     passé parce qu'il n'est plus d'actualité).
+#
+# La passe PAR COMPTE (`obrain-machines-appliquer.timer`, 5 minutes) va plus
+# lentement pour une autre raison : elle ouvre en exclusif la base de CHAQUE
+# compte et dispute donc le verrou au rythme du nombre de comptes. Une passe qui
+# vise UNE base n'a pas cette contrainte.
+Documentation=file:%h/projects/banc-obrain-tronc/docs/FLOTTE-EN-SERVICE-2026-09-16.md
+
+[Timer]
+# La machine vient de démarrer : on ne relance pas une passe dont on ne sait pas
+# si elle a abouti. 3 minutes laissent au harness et au viz le temps d'ouvrir
+# leurs stores — sinon la passe ne mesurerait que sa propre course.
+OnBootSec=3min
+OnUnitActiveSec=2min
+# Un passage manqué (machine éteinte, service en cours) se rattrape au démarrage
+# suivant : c'est un fait daté, pas un rendez-vous.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

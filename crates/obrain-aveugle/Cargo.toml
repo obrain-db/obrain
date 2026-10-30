@@ -1,0 +1,27 @@
+[package]
+name = "obrain-aveugle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Le porteur aveugle : l'engine qui transporte les calculs d'un utilisateur sans jamais pouvoir les lire. Cœur de la variante V-B de l'ADR."
+
+[features]
+default = []
+
+[dependencies]
+# Les enveloppes à taille fixe et les jetons de capacité
+obrain-coffre.workspace = true
+# Le registre des transitions, pour qu'un routage ne puisse pas être renié
+obrain-journal.workspace = true
+# Entropie du système : les adresses sont tirées au sort, jamais dérivées d'un nom
+getrandom.workspace = true
+hex.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[lints]
+workspace = true

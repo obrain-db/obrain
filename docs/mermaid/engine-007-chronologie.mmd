@@ -1,0 +1,224 @@
+%% Ce que ce diagramme prouve : la chronologie des quinze passes de diagnostic ENGINE-007 lues dans
+%% docs/ENGINE-007*, et pour chacune le gate franchi ou le blocage, avec le statut exactement tel
+%% qu il est ecrit dans le rapport de la passe. Rien n est resume de memoire.
+%% Sources MESUREES : les quinze rapports docs/ENGINE-007B-F1A* lus integralement ; chaque statut est
+%% la chaine lue dans la section Rapport final ou Ledger du rapport, chaque valeur est un couple
+%% cle=valeur du meme rapport. Le harnais est lu dans l arbre : engine-004-aprime/source/f1a-capture.h,
+%% f1a-capture.cpp, f1a-eval.cpp et n3nonies-patch.py.
+%% DEDUIT : l ORDRE des passes. Il est etabli par les champs ENGINE007_NEXT_STEP, qui nomment la passe
+%% suivante, et confirme par les dates de modification des fichiers ; aucune source unique ne le donne.
+%% La liste de la demande place R1 et R7 avant F1A et Q0 : ce n est pas l ordre chronologique mesure.
+%% NON ETABLI, donc AUCUN noeud dessine : les passes Q0 R2 a R6 existent sur disque mais sont hors
+%% perimetre et n ont pas ete lues ; l arbre ggml du fork n est pas dans ce depot, donc ggml-alloc.c:690,
+%% ggml-backend.cpp:1342 et 1361, ggml-quants.c:2577, vecdotq.cuh:751-758, ggml-common.h:286,
+%% ggml-cuda.cu:1769 et gguf.cpp:223 sont cites PAR les rapports et non relus ici ; les repertoires
+%% d artefacts sous engine-004-steady-state/RUN-001/qualification/ n ont pas ete ouverts.
+
+flowchart TB
+
+  subgraph F1A["F1A : geometrie heterogene 5 et 6 episodes, la capture echoue"]
+    f1a_model["Modele cible Qwen3.8-27B-OBRAIN-v3.gguf<br/>MODEL_BYTES=12844231424, FULL_MODEL_TENSOR_COUNT=866<br/>MODEL_SHA256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937<br/>F32=360 Q4_K=176 TQ2_G128=168 BF16=96 Q5_K=65 Q6_K=1"]
+    f1a_crosscheck["f1a-gguf-crosscheck.c, second lecteur par le chemin libggml du fork<br/>libggml 866 tenseurs, lecteur python autonome 866 tenseurs<br/>ecarts type=0 dimensions=0 offset=0<br/>✅ STANDALONE_GGUF_READER_CROSS_VALIDATED=YES"]
+    f1a_geo["Geometrie episode prouvee par la source<br/>mmvq.cu:606 kbx = tid/4 + 32*i, mmvq.cu:732 indexation LINEAIRE<br/>E5 K=5120, 5 episodes, EPISODES_PER_PHYSICAL_WARP={2,1,1,1}<br/>E6 K=6144, 6 episodes, EPISODES_PER_PHYSICAL_WARP={2,2,1,1}<br/>EPISODE_LOGICAL_WEIGHT_GRANULARITY=1024_CONTIGUOUS_WEIGHTS"]
+    f1a_inv["Inventaire gele<br/>E5_TENSOR_COUNT=156, E5_ROW_COUNT=2007040, E6_TENSOR_COUNT=12, E6_ROW_COUNT=61440<br/>ELIGIBLE_ROW_COUNT=2113536, BLOCS_CONCERNES=48 soit 8 a 55<br/>✅ ELIGIBLE_TENSOR_INVENTORY_FROZEN=YES"]
+    f1a_map["🟠 TARGET_MATMUL_OPERAND_MAPPING_PROVEN=NO<br/>src0=w et src1=cur lus a llama-graph.cpp:1476 et 1518, build_lora_mm<br/>identifie par LECTURE DE SOURCE, pas sur le noeud de graphe execute"]
+    f1a_absent["ggml/src/ggml-cuda/ggml-cuda-observe.cuh ABSENT de l arbre courant<br/>la greffe ENGINE-004 est un script apply-observer.py, pas un fichier du depot<br/>grep cb_eval et ggml_callback dans ggml.h et ggml.c rend AUCUN RESULTAT"]
+    f1a_hook["🔴 READ_ONLY_ACTIVATION_CAPTURE_HOOK=NOT_QUALIFIED<br/>CAPTURE_MANIFEST_EMPTY=YES, OBSERVED_TARGET_INVOCATIONS=0<br/>CAPTURE_CANDIDATE_SITE=llama-graph.cpp:1476_build_lora_mm, aucun patch ecrit"]
+    f1a_status["🔴 ENGINE007B_F1A_STATUS=BLOCKED_ACTIVATION_CAPTURE_GATE<br/>franchis : AUTHORITATIVE_FULL_MODEL_IDENTIFIED, STANDALONE_GGUF_READER_CROSS_VALIDATED<br/>E5_GEOMETRY_SOURCE_PROVEN, E6_GEOMETRY_SOURCE_PROVEN, ELIGIBLE_TENSOR_INVENTORY_FROZEN<br/>bloquants : TARGET_MATMUL_OPERAND_MAPPING_PROVEN et READ_ONLY_ACTIVATION_CAPTURE_HOOK"]
+  end
+
+  subgraph Q0["Q0 : smoke capture-off puis capture no-rotation, le SIGABRT"]
+    q0_defect47["🔴 HARNESS_DEFECT_47, le CLI llama-obrain reste INTERACTIF et consomme le heredoc SSH<br/>sorties parasitees de 5524130360 puis de 4295057795 octets, disque a 92 pourcent<br/>STATUS=RESOLVED_BY_DEDICATED_LIBLLAMA_TEACHER_FORCING_HARNESS"]
+    q0_eval["tools/f1a-eval.cpp, harnais libllama direct, 97 lignes<br/>tokens figes, 1 seul token par appel llama_decode, logits binaires<br/>EVAL_HARNESS_SHA256=1c340a9546c3df584b80ba5123b5491d907d0051639f3404599c9e8c11298384"]
+    q0_s0["✅ Q0-S0 smoke capture desactivee PASS<br/>OBRAIN_NO_ROTATION=1, OBRAIN_F1A_CAPTURE non pose, RC=0<br/>8 tokens = 1 prefill + 7 pas, OFF_logits.bin = 6952976 octets<br/>NO_CAPTURE_PAYLOADS=YES, NO_CAPTURE_MANIFEST_ENTRIES=YES"]
+    q0_inert["🟠 CAPTURE_DISABLED_RUNTIME_PATH_INERT=NON_MESURE<br/>les compteurs d inertie exiges par le paragraphe 4 ne sont pas implementes"]
+    q0_s3["🔴 Q0-S3 capture ON, ECHEC RC=134 SIGABRT apres la premiere epoque<br/>ggml-backend.cpp:342 GGML_ASSERT buf != NULL and tensor buffer not set<br/>pile f1a_capture_end_epoch puis ggml_backend_tensor_get puis ggml_abort<br/>un payload ecrit : capout-on/ep0_t1_activation.bin, inventaire 168 noms eligibles, 0 doublon"]
+    q0_cause["🔴 cause : le backend est SUPPOSE au lieu d etre demande au tenseur<br/>ggml_backend_sched_get_backend sched 0 au lieu de ggml_backend_sched_get_tensor_backend<br/>CAPTURE_TENSOR_BUFFER_RESIDENCE_PROVEN=NO, TARGET_MATMUL_OPERAND_MAPPING_PROVEN=NO<br/>l ordre COMPUTE puis SYNCHRONIZE puis EXTRACTION etait prouve, la residence ne l etait pas"]
+    q0_status["🔴 Q0_STATUS=NOT_PASSED, Q1_ALLOWED=NO<br/>F1A_I2_STATUS=BUILD_QUALIFIED_Q0_BLOCKED_ON_BUFFER_RESIDENCE<br/>Q0-S4 a S6 non atteints, aucun manifeste, aucune comparaison OFF sur ON"]
+  end
+
+  subgraph R1["R1 : residence des tenseurs et propriete du backend"]
+    r1_retrait["✅ retrait de CAPTURE_TENSOR_LIFETIME_STATIC_PROOF, preuve partielle presentee comme complete<br/>remplace par CAPTURE_EXTRACTION_ORDER_STATIC_PROOF<br/>ordre COMPUTE avant SYNCHRONIZE avant EXTRACTION avant FIRST_KNOWN_INVALIDATION"]
+    r1_epoque["✅ la residence depend de l epoque et non du role, sonde 1 sequence 2 tokens<br/>epoque precoce : RESIDENT=168 et BUFFERLESS=1176 pour cur_capture, mm_raw et mm_capture<br/>epoque tardive : RESIDENT=168 et BUFFERLESS=0 pour les trois roles<br/>1176 = 168 x 7"]
+    r1_finding["FINDING=BUFFERLESSNESS_IS_A_TIMING_PROPERTY_NOT_A_TENSOR_ROLE_PROPERTY<br/>H1 backend-0 ecartee comme cause premiere, H2 H3 H4 REJECTED, H5 reformulee, H6 CONFIRMED_BUT_NOT_THE_CRASH_CAUSE<br/>CUR_CAPTURE_OP=GGML_OP_DUP_1, MM_RAW_OP=GGML_OP_MUL_MAT_29, MM_CAPTURE_OP=GGML_OP_DUP_1"]
+    r1_ok["✅ GATE_A EXTRACTION_ORDER_STATIC_PROOF=PASS<br/>GATE_C BUFFER_RESIDENCE_AT_EXTRACTION=PASS_SOUS_CONDITION_DE_MOMENT<br/>ONE_TOKEN_EXTRACTION_RC=0, 672 payloads, 20480 octets pour K=5120 en F32<br/>HARNESS_DEFECT_48=RESOLVED_BY_CONDITIONING_ON_t_buffer_NOT_NULL"]
+    r1_open["🟠 GATE_B REGISTERED_POINTER_MATCHES_EXECUTED_GRAPH=NOT_MEASURED<br/>GATE_D BACKEND_OWNERSHIP=NOT_ESTABLISHED, ACTUAL_BACKEND_OWNERSHIP_RECORDED=PARTIEL<br/>GATE_E LOGICAL_SERIALIZATION=NOT_VALIDATED, GATE_F GATE_G GATE_H=NOT_MEASURED"]
+    r1_status["🟠 F1A_Q0_R1_STATUS=RESIDENCY_AND_EXTRACTION_QUALIFIED_PARTIAL<br/>extraction d un token OUI sans assertion, propriete backend NON, identite de pointeur NON MESUREE<br/>ENGINE007B_F1A_STATUS reste BLOCKED_ACTIVATION_CAPTURE_GATE"]
+  end
+
+  subgraph R7["R7 : cloture des trois derniers gates d infrastructure"]
+    r7_chrono["✅ chronologie gelee, attribution des payloads sans decalage<br/>ligne 1285 f1a-sub submission=1, ligne 5318 f1a-res bufferless=1176<br/>ligne 5662 f1a-sub submission=2, ligne 6167 f1a-res bufferless=0<br/>PAYLOAD_SUBMISSION_ATTRIBUTION=CORRECT_NO_OFFSET, SUBMISSION_ID_OFF_BY_ONE_COUNT=0"]
+    r7_retract["✅ HARNESS_DEFECT_51=RETRACTED_AFTER_MEASUREMENT<br/>aucun compteur decremente et aucun registre ajoute : l interpretation R6 etait fausse, pas le code"]
+    r7_sha["✅ 672 payloads repris, copies et SHA256 recalcule depuis les fichiers<br/>PAYLOAD_HASH_MISMATCH_COUNT=0, PAYLOAD_SIZE_MISMATCH_COUNT=0<br/>CONTROLE_NEGATIF=PASS, un octet modifie par XOR 0x01 sur l octet 0 est detecte, original intact"]
+    r7_backend["✅ BACKEND_EXTRACTION_SEMANTICS_QUALIFIED=YES, cinq garanties B1 a B5<br/>337 sur 337 tenseurs requis ont buffer_ptr non NULL, written_bytes == ggml_nbytes pour les 672<br/>INDEPENDENT_BUFFER_OWNER_ID=NOT_EXPOSED, l API n expose pas cette identite"]
+    r7_abc["✅ comparaison par identifiants epoch et target_id, pas par cardinalite<br/>A_COUNT=168, B_COUNT=168, C_COUNT=168, A moins B et A moins C VIDES<br/>B = 156 OUTPUT_DEPENDENT plus 12 KV_SIDE_EFFECT<br/>SUBMITTED_TARGET_CAPTURE_COMPLETENESS=PASS"]
+    r7_status["✅ F1A_Q0_R7_STATUS=SUBMITTED_GRAPH_CAPTURE_INFRASTRUCTURE_QUALIFIED<br/>Q0_FULL_RUN_ALLOWED=YES, CAPTURE_DISABLED_RUNTIME_PATH_INERT=YES<br/>mais Q0_STATUS reste NOT_PASSED et Q1_ALLOWED NO : une qualification d infrastructure n est pas numerique"]
+  end
+
+  subgraph N1["N1bis : manifeste repare et premiere reconstruction numerique"]
+    n1_manifest["✅ HARNESS_DEFECT_52_STATUS=RESOLVED_VERIFIED_BY_TWO_EPOCH_REGRESSION<br/>manifeste 673 lignes, 1 SEUL en-tete, 2 epoques presentes 0 et 1, 672 payloads"]
+    n1_sel["✅ selection corrigee et figee AVANT tout calcul d erreur<br/>blk.20.ffn_up.weight FFN_E5, blk.16.attn_gate.weight ATTENTION_E5, blk.15.attn_output.weight ATTN_OUTPUT_E6<br/>blk.16.attn_output n existe pas : les attn_output E6 sont aux blocs 11 15 19 23 27 31 35 39 43 47 51 55, full_attention_interval=4<br/>Q0_REFERENCE_SELECTION.sha256=57dcc76c83dc352ebe0a7f3f7027958e3586e2cc5c46fa37d399391d89074a46"]
+    n1_bitwise["✅ Q0_CAPTURE_GRAFT_NUMERICALLY_TRANSPARENT=YES, re-mesuree sur le nouvel essai<br/>Q0_OFF_LOGITS.bin et Q0_ON_LOGITS.bin sha256=53aa87fb70d101c7e98525e148f8c97b8441112a6728dacc28312c2dd5df0dd5<br/>LOGIT_BITWISE_MISMATCH_COUNT=0, trajectoire identique, Q0_DECODE_TOKEN_COUNT=9"]
+    n1_fail["🔴 Q0_EPISODE_REFERENCE_RECONSTRUCTS_FULL_OPERATOR=FAIL<br/>blk.20.ffn_up abs=1.167752e+05 rel=4.674e+04<br/>blk.16.attn_gate abs=9.396767e+02 rel=4.310e+04<br/>blk.15.attn_output abs=2.210024e+00 rel=1.000e+00, ecart de NATURE et non de precision"]
+    n1_status["🔴 ENGINE007B_F1A_STATUS=BLOCKED_OPERATOR_REFERENCE_GATE<br/>N1bis-A manifeste PASS, N1bis-B selection corrigee, N1bis-C build PASS, N1bis-E transparence PASS<br/>N1bis-J reconstruction native ECHEC, piste a eliminer EN PREMIER : l appariement ligne et valeur mm_base"]
+  end
+
+  subgraph N2["N2 : correspondance ligne vers unite de sortie"]
+    n2_conv["✅ la convention est etablie par les metadonnees capturees<br/>blk.20.ffn_up activation ne 5120 1 1 1 et base_output ne 17408 1 1 1<br/>blk.16.attn_gate activation ne 5120 1 1 1 et base_output ne 6144 1 1 1<br/>blk.15.attn_output activation ne 6144 1 1 1 et base_output ne 5120 1 1 1<br/>WEIGHT_ROW_TO_OUTPUT_COORDINATE_MAPPING_PROVEN=YES, OUTPUT_STRIDE_MAPPING_PROVEN=YES"]
+    n2_gguf["✅ 865 transitions d offsets coherentes sur 865, TOUS TYPES CONFONDUS<br/>mon hypothese de contiguite des seuls TQ2_G128 donnait 60 coherents sur 167 paires, elle etait fausse<br/>K=5120 vers 40 blocs x 34 = 1360 octets par ligne, K=6144 vers 48 x 34 = 1632"]
+    n2_loc["🔴 FIRST_DIVERGENCE_LAYER=WEIGHT_BYTE_DECODE_OR_BLOCK_SCALE_OFFSET<br/>echelles lues sur la ligne 0 de blk.20.ffn_up : min=-0.0247 max=3400.0 moyenne=402.2 premiere=89.3125<br/>sortie native de la meme ligne abs max 3.7985, incompatible<br/>quatre couches eliminees : identite des tenseurs, convention de dimensions, indexation du payload, offsets GGUF"]
+    n2_gate["🟠 N2-E INDEPENDENT_ROW_OUTPUT_INDEXING_TEST=NON EXECUTE<br/>REFERENCE_SAMPLE_TEMPORAL_PAIRING=PARTIAL<br/>9 pas de logits, 4 soumissions, 2 epoques, 672 payloads ne se correspondent pas 1 pour 1"]
+    n2_status["✅ F1A_Q0_N2_STATUS=ROW_TO_OUTPUT_CORRESPONDENCE_QUALIFIED_DIVERGENCE_LOCALIZED<br/>mon appariement de N1bis etait juste, la cause est ailleurs<br/>ENGINE007B_F1A_STATUS reste BLOCKED_OPERATOR_REFERENCE_GATE"]
+  end
+
+  subgraph N3ADDR["N3, N3bis, N3ter : octets de poids et adresse GGUF"]
+    n3_proof["✅ prouve par la source : le poids n est PAS dequantifie avant le matmul<br/>ggml-cuda.cu:1769 appelle ggml_cuda_mul_mat_vec_q, NATIVE_WEIGHT_OPERAND_IS_STILL_QUANTIZED=YES<br/>ggml-common.h:286 et 287 : block_tq2_g128 = uint8_t qs de 32 octets plus ggml_half d, static_assert donc 34 octets et echelle a l offset 32<br/>GGUF_OFFSET_TRANSITIONS=865_OF_865_ALL_TYPES"]
+    n3_status["🔴 F1A_Q0_N3_STATUS=BLOCKED_ON_INDEPENDENT_BYTE_READ_NOT_EXECUTED<br/>INDEPENDENT_GGUF_ROW_BYTE_AGREEMENT=NON_MESURE, FIRST_DIVERGENCE_LAYER=NOT_PROVEN<br/>la suspicion de N2 reste une suspicion, je ne la promeus pas"]
+    n3bis_read["✅ lecteur independant par libggml, binaire construit et execute<br/>TENSOR_NAME=blk.20.ffn_up.weight, TENSOR_TYPE=tq2_g128 43<br/>NE 5120 17408 1 1, NB 34 1360 23674880 23674880, BLOCKS_PER_ROW=40, ROW_BYTES=1360<br/>les deux chemins lisent 1360 octets de ligne"]
+    n3bis_verdict["🔴 INDEPENDENT_GGUF_ROW_BYTE_AGREEMENT=NO<br/>BYTE_MISMATCH_COUNT=1334 sur 1360, FIRST_DIFFERING_BYTE_OFFSET=0<br/>BEST_ALIGNMENT_OFFSET=-28 et BEST_ALIGNMENT_AGREEMENT=1.0000 : les deux lecteurs lisent le MEME flux decale de 28 octets<br/>F1A_Q0_N3BIS_STATUS=BLOCKED_WEIGHT_BYTE_IDENTITY_GATE, HARNESS_DEFECT_53=OPEN"]
+    n3bis_retract["✅ N2_SCALE_OBSERVATION_STATUS=RETRACTED_ARTEFACT_OF_ADDRESS_OFFSET<br/>echelles DIRECT absurdes min=-0.02473 max=3400.0, echelles LIBGGML plausibles min=0.01036 max=0.01524<br/>C EST MON LECTEUR DIRECT QUI EST DECALE, LIBGGML_READER_ROW0_BYTES=QUALIFIED"]
+    n3ter_root["✅ HARNESS_DEFECT_53_ROOT_CAUSE=PROVEN<br/>fin des metadonnees 10996452, modulo 32 = 4 donc NON alignee<br/>align_up vers 32 donne 10996480, ALIGNMENT_PADDING=28 et PADDING_BYTES_ALL_ZERO=YES<br/>gguf.cpp:223 size_t alignment = GGUF_DEFAULT_ALIGNMENT, FAUTIVE position = fin_metadonnees plus offset, CORRECTE position = align_up plus offset"]
+    n3ter_status["✅ F1A_Q0_N3TER_STATUS=GGUF_ADDRESS_ROOT_CAUSE_PROVEN_AND_BYTES_REQUALIFIED<br/>comparateur independant : 3 tenseurs, 6 lignes, 8704 octets, POSTFIX_BYTE_MISMATCH_COUNT=0<br/>HARNESS_DEFECT_53=RESOLVED_VERIFIED_BY_INDEPENDENT_MULTITENSOR_BYTE_COMPARISON<br/>reserve ecrite : 3 tenseurs ne sont pas une preuve sur les 866, Q0_STATUS reste NOT_PASSED"]
+  end
+
+  subgraph N3TERN["N3quater et N3quinquies : decodage ternaire puis activation q8_1"]
+    n3q_scale["✅ TQ2_SCALE_FP16_CONVERSION_PROVEN=YES sur les octets corriges<br/>echelles APRES correction min=0.011322 max=0.020218 moyenne=0.0156, plausibles<br/>l ecart passe de 4 ordres de grandeur a un facteur 1 a 2"]
+    n3q_rows["🔴 6 lignes comparees, rel_err de 0.524 a 86.68, N3QUATER_NATIVE_REFERENCE_VALIDATION=FAIL<br/>blk.15.attn_output reference exactement 0.000000 sur les deux lignes<br/>F1A_Q0_N3QUATER_STATUS=BLOCKED_TQ2_TERNARY_DECODE_GATE"]
+    n3q_codes["🔴 le code 3 n apparait JAMAIS : 0 sur 5120 et 0 sur 6144<br/>distribution ligne 0 blk.20.ffn_up : 0=1449 1=2256 2=1415 3=0<br/>ZERO_WEIGHT_FRACTION_UNDER_CURRENT_TABLE=0.44 la ou un ternaire equilibre en compte environ 1 tiers<br/>FIRST_DIVERGENCE_LAYER=TQ2_TERNARY_CODE_MAPPING, HARNESS_DEFECT_54=OPEN"]
+    n3q_enc["✅ codeur lu a la source, ggml-quants.c:2577 quantize_row_tq2_g128_im<br/>code = trit plus 1, donc -1 vers code 0, 0 vers code 1, +1 vers code 2<br/>CURRENT_FORK_ENCODER_MAPPING_PROVEN=YES, seuil au tertile des valeurs absolues, environ 1 tiers de zeros"]
+    n3q_dec["✅ decodeur lu aux EXPRESSIONS reelles et non au commentaire, vecdotq.cuh:751-758<br/>code 0 vers -1, code 1 vers 0, code 2 vers +1, code 3 vers +1 replie<br/>NATIVE_TQ2_DECODER_MAPPING_PROVEN=YES, NATIVE_TQ2_WITHIN_BLOCK_ORDER_PROVEN=YES"]
+    n3q_inv["🟠 ENCODER_DECODER_INVERSION_ESTABLISHED=YES, les deux tables sont inverses l une de l autre<br/>ACTUAL_GGUF_ENCODER_PROVENANCE=INCONNUE : aucun outil de quantification n est archive<br/>je ne tranche pas entre un defaut du couple et un codeur historique different, HARNESS_DEFECT_54=RESOLVED_VERIFIED_BY_128_VALUE_TESTS"]
+    n3q_tables["✅ THREE_TABLE_DIAGNOSTIC_EXECUTED=YES sur les 6 lignes<br/>tables B et C donnent des sorties de SIGNES OPPOSES a A donc elles sont REFUTEES<br/>table A meilleure mais 9.8e-01 reste tres au-dessus du budget 1e-3, je ne choisis pas A pour cette raison"]
+    n3q_status["🔴 F1A_Q0_N3QUINQUIES_STATUS=BLOCKED_Q8_ACTIVATION_QUANTIZATION_GATE<br/>TERNARY_MAPPING_CAUSAL_CONCLUSION=NOT_PROVEN, l accusation contre la table est RETIREE faute de contre-exemple<br/>E6 est nul sous les TROIS tables et les trois tables sont des permutations de signes : un decodage faux ne peut pas expliquer ce zero<br/>FIRST_DIVERGENCE_LAYER=Q8_1_ACTIVATION_QUANTIZATION_OR_ACTIVATION_CONTENT"]
+  end
+
+  subgraph N3LIFE["N3sexies a N3nonies : contenu des captures et duree de vie"]
+    n3s_raw["🔴 ep0 target 1202, kind activation, 6144 valeurs, amax=0.00000, non nulles=0<br/>ep1 target 26, meme cible blk.15.attn_output.weight, amax=0.02709, non nulles=6144<br/>base_output non nulle dans les deux cas : 11.04527 en ep0 et 11.71043 en ep1<br/>blk.20.ffn_up K=5120 : amax=11.04527, 5120 non nulles"]
+    n3s_contra["🔴 un matmul sans terme constant et une activation toute nulle DOIT produire une sortie nulle<br/>or E6_NATIVE_OUTPUT_NONZERO_WHILE_ACTIVATION_ZERO=YES_CONTRADICTION, c est un CONTRE-EXEMPLE<br/>F1A_Q0_N3SEXIES_STATUS=DIVERGENCE_PROVEN_AT_RAW_ACTIVATION_EPOCH0<br/>FIRST_DIVERGENCE_LAYER=RAW_ACTIVATION_CAPTURE_EPOCH0, FIRST_DIVERGENCE_LAYER_PROVEN=YES"]
+    n3s_retract["✅ troisieme retractation de la serie<br/>le zero E6 N EST PAS un defaut de ma reference ni du decodage ternaire, c est une propriete de la capture d epoque 0<br/>cela invalide l axe principal de DEUX passes, N3quater et N3quinquies"]
+    n3sept_inv["✅ inventaire complet des deux epoques, 672 lignes, 168 cibles par epoque, appariement par NOM EXACT et non par TARGET_ID<br/>epoque 0 : 25 activations toutes nulles, 143 saines, 25 contradictions<br/>epoque 1 : 0 activation nulle, 0 contradiction, EPOCH1_IS_A_POSITIVE_CONTROL=YES<br/>EPOCH0_EPOCH1_TARGET_MATCHING=PASS, ACTIVATION_AND_OUTPUT_HASHES_VERIFIED=YES"]
+    n3sept_roles["🔴 la nullite est STRUCTUREE et non accidentelle : attn_output 12 sur 12, attn_gate 13 sur 36<br/>attn_output aux blocs 11 15 19 23 27 31 35 39 43 47 51 55, attn_gate aux blocs 9 12 14 18 22 26 30 34 38 42 46 50 54<br/>ffn_up 0 sur 48, ffn_gate 0 sur 48, attn_q 0 sur 12, attn_k 0 sur 12<br/>blk.12 et blk.14 ne suivent pas le pas de 4 des blocs d attention complete, je ne force pas une regle qui ne colle pas"]
+    n3sept_status["🔴 F1A_Q0_N3SEPTIES_STATUS=BLOCKED_CAPTURE_CONTENT_CAUSALITY_GATE<br/>FIRST_DIVERGENCE_CAUSAL_ROOT=NOT_PROVEN, CAPTURE_CONTENT_VALIDITY_RULE=NOT_PROVEN<br/>etapes B C D et controle positif epoque 1 NON EXECUTES, aucune cible n a ete ecartee en silence"]
+    n3oct_idx["indice mesure : trois tenseurs sans rapport rapportent exactement amax=11.04527 en activation<br/>blk.16.attn_gate, blk.20.ffn_up et un troisieme, or 11.04527 est l amax de la SORTIE de blk.15.attn_output<br/>131 activations egales au prefixe de la sortie d un AUTRE tenseur, et 131 AUSSI en epoque 1<br/>l indice ne discrimine pas les deux epoques, je ne l utilise donc PAS comme preuve"]
+    n3oct_h["✅ H1 REFUTEE : si cur_capture etait nul a la consommation, les 25 sorties natives seraient nulles, or elles sont non nulles<br/>H2 SURVIVANTE mais NON PROUVEE : region reutilisee avant l extraction hote<br/>RULE_DE_VALIDITE_TENUE_PAR_AMAX_SUP_0=NON_SUFFISANTE, BUFFER_REUSE_CAUSALITY=SUSPECTED_NOT_PROVEN"]
+    n3oct_status["🔴 F1A_Q0_N3OCTIES_STATUS=BLOCKED_BUFFER_REUSE_CAUSALITY_GATE<br/>CAPTURE_BUFFER_REGIONS_IDENTIFIED=NO, CAPTURE_REGION_OVERLAP_COUNT=NON_MESURE<br/>l etape qui exige le chevauchement et son effet causal n a pas ete faite, aucun des deux n est etabli"]
+    n3non_rule["✅ mecanisme causal prouve par la source<br/>ggml-alloc.c:690 ggml_gallocr_free_node ne protege QUE GGML_TENSOR_FLAG_OUTPUT, tout autre tenseur est libere a sa derniere consommation<br/>ggml-backend.cpp:1342 et 1361 : ggml_set_output tensor_copy, prevent ggml-alloc from overwriting the tensor, commentaire du fork lui-meme<br/>cur_capture n a qu UN consommateur le MUL_MAT, 3968 autres noeuds s executent entre la liberation et l extraction"]
+    n3non_patch["✅ correctif applique ET mesure sur un nouveau binaire<br/>f1a_mark_output dans engine-004-aprime/source/n3nonies-patch.py, greffe sur src/f1a-capture.h, src/f1a-capture.cpp et src/llama-graph.cpp<br/>transparence REFAITE et non heritee : LOGIT_BITWISE_MISMATCH_COUNT=0, controle d inertie sans payload<br/>contradictions 25 vers 0, CAPTURES_WERE_CORRUPTED=336_SUR_336, les 168 activations different dans CHAQUE epoque<br/>HARNESS_DEFECT_56=RESOLVED_VERIFIED_BY_TARGETED_PRESERVATION_AND_BITWISE_TRANSPARENCY"]
+    n3non_result["🔴 N3NONIES_NATIVE_REFERENCE_VALIDATION=FAIL<br/>6 lignes sur 6 meilleures : rel_err 0.535 0.877 0.0672 0.511 1.615 0.134<br/>blk.20.ffn_up ln0 passe de 1.335 a 0.535 et blk.15.attn_output de reference NULLE a 0.0355 non nulle<br/>le budget preenregistre RELATIVE_L2 plus petit ou egal a 1e-3 n est PAS atteint, l ecart systematique n est pas localise"]
+    n3non_status["🟠 deux ledgers contradictoires dans le MEME fichier<br/>section 8 : F1A_Q0_N3NONIES_STATUS=MECHANISM_PROVEN_WRITER_IDENTIFICATION_PENDING et defaut 56 OPEN_MECHANISM_PROVEN_FIX_NOT_YET_APPLIED<br/>section 12 : N3NONIES_STATUS=CAPTURE_LIFETIME_DEFECT_FIXED_AND_VERIFIED et HARNESS_DEFECT_56=RESOLVED_VERIFIED<br/>la section 9 mesure le correctif applique, la section 12 le consolide : je ne tranche pas laquelle fait foi"]
+  end
+
+  subgraph Gates["Gates restes ouverts a la fin de la periode lue"]
+    gate_q0["🔴 Q0_STATUS=NOT_PASSED dans les QUINZE rapports, de F1A a N3nonies<br/>Q1_ALLOWED=NO : le domaine POST-WHT n est pas qualifie"]
+    gate_index["🟠 INDEPENDENT_ROW_OUTPUT_INDEXING_TEST=NON_EXECUTE, declare tel de N2 jusqu a N3nonies<br/>aucune passe ne l a converti en PASS par deduction"]
+    gate_pair["🟠 REFERENCE_SAMPLE_TEMPORAL_PAIRING=PARTIAL, de N2 a N3nonies<br/>les echantillons compares viennent de l epoque 0 et de la soumission 1"]
+    gate_sal["🟠 SALIENCY_MEASURED=NO, QUALITY_ABLATION_MEASURED=NO, PRODUCT_GAIN=NOT_MEASURED dans les quinze rapports<br/>PRODUCT_MMVQ_SOURCE_MODIFIED=NO et MODEL_GGUF_MODIFIED=NO dans les quinze rapports"]
+    gate_plumb["🟠 PLUMBING_FAILURE_COUNT=28 et PLUMBING_FAILURE_29=NOT_ASSIGNED dans les quinze rapports<br/>l absence de hook de capture est declaree lacune de capacite et non defaut de plomberie"]
+  end
+
+  %% ==================== CHAINE DES PASSES, ordre etabli par ENGINE007_NEXT_STEP ====================
+  f1a_model -->|fournit le modele et les 866 tenseurs| f1a_crosscheck
+  f1a_crosscheck -->|inventaire fiable donc geole| f1a_geo
+  f1a_geo -->|E5 et E6 figes| f1a_inv
+  f1a_inv -->|goulot unique des projections lineaires| f1a_map
+  f1a_absent -.->|la greffe declaree n est pas un fichier du depot| f1a_hook
+  f1a_map -->|mapping non prouve donc aucun patch ecrit| f1a_hook
+  f1a_hook --> f1a_status
+
+  f1a_status -.->|F1A_S2_IMPLEMENT_THE_CAPTURE_HOOK_AT_build_lora_mm, puis S2bis I1 I2 hors perimetre et non lues| q0_eval
+  q0_defect47 -->|corrige par un harnais libllama teacher forcing| q0_eval
+  q0_eval -->|Q0-S0 sur la trajectoire figee| q0_s0
+  q0_s0 -->|inertie du chemin non mesurable, compteurs absents| q0_inert
+  q0_s0 -->|puis Q0-S3 capture ON sur la meme trajectoire| q0_s3
+  q0_s3 -->|la pile designe f1a_capture_end_epoch| q0_cause
+  q0_cause --> q0_status
+  q0_inert --> q0_status
+
+  q0_status -->|ENGINE007_NEXT_STEP=F1A_Q0_BIS_FIX_BUFFER_RESIDENCE_THEN_RERUN, la passe lue suivante est R1| r1_retrait
+  r1_retrait -->|sonde 1 sequence et 2 tokens, OBRAIN_NO_ROTATION=1| r1_epoque
+  r1_epoque -->|les trois roles se comportent identiquement| r1_finding
+  r1_finding -->|extraction conditionnee a t buffer non NULL| r1_ok
+  r1_ok -->|propriete backend et identite de pointeur manquantes| r1_open
+  r1_open --> r1_status
+
+  r1_status -.->|R2 a R6 hors perimetre et non lues, R7 clot les trois gates restants| r7_chrono
+  r7_retract -->|RETIRE l interpretation R6 du decalage d une soumission| r7_chrono
+  r7_chrono -->|post traitement hote, binaire INCHANGE depuis R6, aucune re-execution| r7_sha
+  r7_sha -->|contrat d extraction adosse a la source et a la mesure| r7_backend
+  r7_backend -->|comparaison par identifiants epoch et target_id| r7_abc
+  r7_abc --> r7_status
+
+  r7_status -->|ENGINE007_NEXT_STEP=Q0_FULL_NUMERICAL_TRANSPARENCY_AND_NATIVE_OPERATOR_REFERENCE| n1_manifest
+  n1_manifest -->|selection corrigee et figee avant calcul| n1_sel
+  n1_sel -->|transparence bitwise re-mesuree sur le nouvel essai| n1_bitwise
+  n1_bitwise -->|donc le gate bloquant est ailleurs| n1_fail
+  n1_fail --> n1_status
+
+  n1_status -->|ENGINE007_NEXT_STEP=N2_ESTABLISH_ROW_TO_OUTPUT_UNIT_CORRESPONDENCE_BEFORE_ANY_NUMERIC_COMPARISON| n2_conv
+  n2_conv -->|N2-D, j ai verifie avant de conclure a un defaut du lecteur| n2_gguf
+  n2_gguf -->|la divergence se ramene aux octets de poids| n2_loc
+  n2_loc --> n2_gate
+  n2_gate --> n2_status
+
+  n2_status -->|ENGINE007_NEXT_STEP=N3_PROVE_WEIGHT_BYTES_AND_BLOCK_SCALE_POSITION| n3_proof
+  n3_proof -->|le gate decisif, la lecture independante, n a pas ete ecrite| n3_status
+
+  n3_status -->|ENGINE007_NEXT_STEP=N3_BIS_WRITE_LIBGGML_INDEPENDENT_ROW_READER| n3bis_read
+  n3bis_read -->|comparaison octet a octet et analyse de correlation| n3bis_verdict
+  n3bis_verdict -->|verdict par la physique des donnees| n3bis_retract
+  n3bis_retract -->|ENGINE007_NEXT_STEP=N3TER_CHARACTERIZE_THEN_FIX_DIRECT_ADDRESSING_AND_REQUALIFY| n3ter_root
+  n3ter_root -->|requalification d un comparateur independant| n3ter_status
+
+  n3ter_status -->|ENGINE007_NEXT_STEP=N3quater_RESUME_SCALE_TERNARY_Q8_AND_ROW_RECONSTRUCTION| n3q_scale
+  n3q_scale -->|reconstruction sur octets qualifies| n3q_rows
+  n3q_rows -->|un ecart systematique designe un decodage et non une lecture| n3q_codes
+  n3q_codes -->|une seule lecture de source peut departager, le QUANTIFIEUR| n3q_enc
+  n3q_enc -->|et le DECODEUR, lu aux expressions reelles| n3q_dec
+  n3q_dec -->|contradiction etablie entre les deux tables| n3q_inv
+  n3q_inv -->|correction du defaut 54 puis trois tables evaluees sur 128 valeurs| n3q_tables
+  n3q_tables --> n3q_status
+
+  n3q_status -->|ENGINE007_NEXT_STEP=INSPECT_E6_ACTIVATION_CONTENT_AND_Q8_BLOCKS| n3s_raw
+  n3s_raw -->|comparaison a la sortie native de la MEME cible| n3s_contra
+  n3s_contra --> n3s_retract
+
+  n3s_contra -->|ENGINE007_NEXT_STEP=TEST_WHETHER_EPOCH0_RESIDENT_ACTIVATIONS_ARE_SYSTEMATICALLY_ZERO| n3sept_inv
+  n3sept_inv -->|les 25 cibles ne sont pas aleatoires| n3sept_roles
+  n3sept_roles --> n3sept_status
+
+  n3sept_status -->|ENGINE007_NEXT_STEP=TRACE_WHY_ATTN_OUTPUT_AND_ATTN_GATE_ARE_ZERO_IN_EPOCH0| n3oct_idx
+  n3oct_idx -->|un amax identique est un indice, pas un chevauchement| n3oct_h
+  n3oct_h --> n3oct_status
+
+  n3oct_status -->|ENGINE007_NEXT_STEP=READ_ALLOCATOR_RULE_FOR_DUP_AND_COMPUTE_REGIONS| n3non_rule
+  n3non_rule -->|le fork nomme lui-meme la consequence| n3non_patch
+  n3non_patch -->|reconstruction sur captures non corrompues| n3non_result
+  n3non_result --> n3non_status
+
+  %% ==================== RETRACTATIONS, chacune lue dans son rapport ====================
+  r1_retrait -->|RETIRE - la preuve statique de duree de vie laissait croire la residence reglee| q0_cause
+  n3bis_retract -->|RETIRE - l echelle n etait ni invalide ni a corriger, c est l adresse qui etait fausse| n2_loc
+  n3q_status -->|RETIRE - le zero E6 ne vient pas du decodage ternaire| n3q_codes
+  n3s_retract -->|RETIRE - l axe principal de N3quater et N3quinquies portait sur une activation nulle| n3q_status
+  n3non_patch -->|RETIRE - les reconstructions de N1bis N3quater et N3quinquies portaient sur des activations corrompues| n1_fail
+  n3non_patch -->|RETIRE - l epoque 1 n est pas un controle positif, EPOCH1_CAPTURES_ALSO_AT_RISK=YES| n3sept_inv
+
+  %% ==================== GATES OUVERTS ====================
+  n3non_result -->|ENGINE007_NEXT_STEP=LOCATE_REMAINING_Q8_1_OR_ACCUMULATION_DIVERGENCE| gate_q0
+  gate_index -->|OUVRE - un gate jamais execute, converti en PASS nulle part| gate_q0
+  gate_pair -->|OUVRE - appariement PARTIAL, il limite la portee de toutes les validations| gate_q0
+  gate_sal -->|OUVRE - saillance et ablation de qualite jamais mesurees| gate_q0
+  gate_plumb -->|OUVRE - un numero de plomberie jamais attribue| gate_q0
+  f1a_status -->|OUVRE - le gate de capture est reste le meme du debut a la fin| gate_q0
+  q0_status -->|OUVRE - le parcours des blocs q8_1 par le noyau n a jamais ete observe| gate_q0
+
+  classDef franchi fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+  classDef partiel fill:#8a8a12,stroke:#4d4d0a,color:#fff
+  classDef refuse fill:#a11f1f,stroke:#5c0f0f,color:#fff
+  classDef ouvert fill:#c47a10,stroke:#6b420a,color:#fff
+  classDef preuve fill:#1f4fa1,stroke:#0f2857,color:#fff
+
+  class f1a_model,f1a_crosscheck,f1a_geo,f1a_inv,q0_s0,q0_eval,r1_retrait,r1_epoque,r1_ok,r7_chrono,r7_sha,r7_backend,r7_abc,r7_status,n1_manifest,n1_sel,n1_bitwise,n2_conv,n2_gguf,n2_status,n3_proof,n3bis_read,n3bis_retract,n3ter_root,n3ter_status,n3q_scale,n3q_enc,n3q_dec,n3q_tables,n3s_retract,n3sept_inv,n3oct_h,n3non_rule,n3non_patch franchi
+  class f1a_map,r1_open,r1_status,q0_inert,n2_gate,n3q_inv,n3non_status partiel
+  class f1a_hook,f1a_status,q0_defect47,q0_s3,q0_cause,q0_status,n1_fail,n1_status,n2_loc,n3_status,n3bis_verdict,n3q_rows,n3q_codes,n3q_status,n3s_raw,n3s_contra,n3sept_roles,n3sept_status,n3oct_status,n3non_result,gate_q0 refuse
+  class f1a_absent,gate_index,gate_pair,gate_sal,gate_plumb,n3oct_idx ouvert

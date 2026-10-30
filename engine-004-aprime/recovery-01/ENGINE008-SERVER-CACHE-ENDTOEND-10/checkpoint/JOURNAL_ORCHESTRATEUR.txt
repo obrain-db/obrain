@@ -1,0 +1,62 @@
+[18:17:13] === ORCHESTRATEUR ENGINE008 ENDTOEND-10 ===
+[18:17:13] hote=127.0.0.1 port=8478 (meme hote, meme espace reseau)
+[18:17:13] DELAIS PREENREGISTRES: demarrage<=600s requete<=240s
+[18:17:13] SERVER_PID=637309 (groupe propre, cwd=/home/triviere/projects/llama-obrain-cuda-f1a)
+[18:18:40] PRET apres 87.1s (probe#30) http=200 body={"status":"ok"}
+[18:18:40] --- ETAT AVANT A (horodate) ---
+[18:18:40]   PID=637309 VIVANT | ecoute: LISTEN 0      512        127.0.0.1:8478       0.0.0.0:*    users:(("llama-server",pid=637309,fd=32))
+[18:18:40]   sonde HTTP: http=200 body={"status":"ok"}
+[18:18:40]   URL CLIENT EXACTE: POST http://127.0.0.1:8478/jspace/inject_knowledge
+[18:18:40] IDS AUTORITAIRES: 59 lus, prefixe=58, 59e ID=198
+[18:18:43] [A] http=200 duree=2.288s err=None
+[18:18:43] A: ref=046f5945a8dc6fc9 blob_bytes=160697024 fact_tokens=58
+[18:18:54] [B] http=200 duree=11.144s err=None
+[18:22:54] [C] http=0 duree=240.084s err=TimeoutError: timed out
+[18:22:54] ARRET APRES C (defaut).
+[18:22:54] --- DIAGNOSTIC : dernieres phases + etat des threads ---
+[18:22:54]   PID=637309 VIVANT | ecoute: LISTEN 0      512        127.0.0.1:8478       0.0.0.0:*    users:(("llama-server",pid=637309,fd=32))
+[18:22:54]   thread 637309 etat=S
+[18:22:54]   thread 637311 etat=S
+[18:22:54]   thread 637312 etat=S
+[18:22:54]   thread 637313 etat=S
+[18:22:54]   thread 637314 etat=S
+[18:22:54]   thread 637315 etat=S
+[18:22:54]   thread 637316 etat=S
+[18:22:54]   thread 637317 etat=S
+[18:22:54]   thread 637318 etat=S
+[18:22:54]   thread 637319 etat=S
+[18:22:54]   thread 637320 etat=S
+[18:22:54]   thread 637321 etat=S
+[18:22:54]   thread 637322 etat=S
+[18:22:54]   thread 637323 etat=S
+[18:22:54]   thread 637324 etat=S
+[18:22:54]   thread 637325 etat=S
+[18:22:54]   thread 637326 etat=S
+[18:22:54]   thread 637327 etat=S
+[18:22:54]   thread 637328 etat=S
+[18:22:54]   thread 637329 etat=S
+[18:22:54]   thread 637330 etat=S
+[18:22:54]   thread 637331 etat=S
+[18:22:54]   thread 637332 etat=S
+[18:22:54]   thread 637333 etat=S
+[18:22:54]   thread 637334 etat=S
+[18:22:54]   thread 637335 etat=S
+[18:22:54]   thread 637336 etat=S
+[18:22:54]   thread 637337 etat=S
+[18:22:54]   thread 637338 etat=S
+[18:22:54]   thread 637339 etat=S
+[18:22:54]   thread 637340 etat=S
+[18:22:54]   thread 637341 etat=S
+[18:22:54]   thread 637342 etat=S
+[18:22:54]   thread 637343 etat=S
+[18:22:54]   thread 637344 etat=S
+[18:22:54]   thread 637345 etat=S
+[18:22:54]   thread 637346 etat=S
+[18:22:54]   thread 637347 etat=S
+[18:22:54]   thread 637348 etat=S
+[18:22:54]   thread 637349 etat=S
+[18:22:54]   thread 637350 etat=S
+[18:22:54]   thread 637351 etat=S
+[18:22:54]   thread 637352 etat=S
+[18:22:54]   thread 637353 etat=S
+[18:22:54]   wchan=futex_do_wait

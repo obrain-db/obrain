@@ -1,0 +1,68 @@
+SPHERE: defauts_harness
+RESUME: Le registre des defauts de harnais de la serie ENGINE-007B-F1A va de 46 a 57 et le numero 58 n apparait dans aucun rapport ni fichier de qualification - le registre s arrete donc a 57.
+RESUME: Sont PROUVES resolus le CLI interactif consommant le heredoc SSH numero 47, l extraction sans controle de residence numero 48, le champ gf_n_nodes via un type incomplet numero 49, le compteur de contexte actif numero 50 verifie par discrimination OFF et ON, le manifeste ecrase par epoque numero 52, le lecteur GGUF decale de 28 octets numero 53, le test ternaire a 32 valeurs numero 54, le python3 -i numero 55 et la duree de vie des captures numero 56.
+RESUME: Sont RETIRES parce que l accusation elle meme etait fausse le defaut 51 qui affirmait un decalage d une soumission dans les payloads, ainsi que la preuve statique de duree de vie, l accusation contre la table ternaire, l observation des echelles aberrantes de la ligne 0 et la regle de validite fondee sur amax superieur a 0.
+RESUME: Le defaut 46 arrondi bancaire de la reference q8_1 est declare RESOLVED des S2bis I1 mais la meme composante d arrondi est retrouvee active dans la reference utilisee jusqu en N4 sous le numero 57 avec en plus l echelle fp16 inversee, ce qui contredit la portee de la resolution du 46.
+RESUME: Deux incoherences de numerotation sont signalees sans etre tranchees - la double numerotation du defaut de reference q8_1 sous 46 puis 57, et le statut contradictoire du numero 56 qui est RESOLVED_VERIFIED dans une section et OPEN avec correctif non applique dans une autre section du meme fichier.
+RESUME: Restent OUVERTS le numero 58 jamais attribue, le defaut du champ logits_all absent laisse sans numero en no-rotation, le compteur de plomberie bloque a 28 avec le numero 29 non attribue, et la question de duree de vie des captures qui circule entre un numero 56 en serie N et un traitement sans numero de defaut en serie R.
+NOEUDS:
+[PROUVE] defaut_46 :: Defaut 46 reference q8_1 utilisant l arrondi bancaire np.rint au lieu de roundf detecte par relecture de ma propre sortie et non par un gate - corrige et RESOLVED avant toute conclusion de saillance ou de reference native :: docs/ENGINE-007B-F1A-S2BIS-I1-GRAPH-BOUND-CAPTURE-QUALIFICATION.md
+[REFUTE] defaut_46_portee_contredite :: La portee de la resolution du defaut 46 est contredite car la composante d arrondi bancaire est retrouvee active dans la reference utilisee jusqu en N4 sous le numero 57 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] defaut_47 :: Defaut 47 CLI interactif llama-obrain consommant le heredoc SSH comme entree du modele avec 5 524 130 360 puis 4 295 057 795 octets de sortie parasite ecartes comme non experimentaux - RESOLVED par un harnais libllama dedie en teacher forcing :: docs/ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] defaut_48 :: Defaut 48 extraction tentee sans controle de residence du buffer - RESOLVED_BY_CONDITIONING_ON_t_buffer_NOT_NULL :: docs/ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] defaut_49 :: Defaut 49 champ gf_n_nodes accede via un type ggml_cgraph incomplet - RESOLVED_BY_ggml_graph_n_nodes_ACCESSOR :: docs/ENGINE-007B-F1A-Q0-R2-SUBMITTED-GRAPH-BACKEND-QUALIFICATION.md
+[PROUVE] defaut_50_declare :: Defaut 50 compteur de contexte actif mesurant les verifications du drapeau et non les contextes crees - declare RESOLVED_BY_SPLITTING_THE_TWO_MEANINGS avec un compteur de sonde distinct :: docs/ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] defaut_50_verifie :: Defaut 50 statut final RESOLVED_VERIFIED_BY_OFF_ON_DISCRIMINATION verifie par la discrimination capture OFF et capture ON et non par l ecriture du patch :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[RETIRE] defaut_51 :: Defaut 51 accusation d une attribution des payloads decalee d une soumission - RETRACTED_AFTER_MEASUREMENT car l ordre des evenements montre que l etiquette est correcte sans offset :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] defaut_52_ouvert :: Defaut 52 manifeste GRAPH_CAPTURE_MANIFEST ecrase a chaque epoque - declare OPEN et bloque la completude de capture et l appariement payload vers cible :: docs/ENGINE-007B-F1A-Q0-N1-NUMERICAL-QUALIFICATION.md
+[PROUVE] defaut_52_resolu :: Defaut 52 statut final RESOLVED_VERIFIED_BY_TWO_EPOCH_REGRESSION sur 673 lignes avec un seul en tete deux epoques presentes et 672 payloads :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[REFUTE] defaut_52_non_attribution :: L attribution de l absence du tenseur E6 au defaut 52 est refusee car la cause etait la selection de tenseur et non l ecrasement du manifeste :: docs/ENGINE-007B-F1A-Q0-N1BIS-NUMERICAL-QUALIFICATION.md
+[OUVERT] defaut_53_ouvert :: Defaut 53 lecteur GGUF direct decale de 28 octets - declare OPEN avec signature du lecteur direct fausse et gate d identite des octets de poids bloque :: docs/ENGINE-007B-F1A-Q0-N3BIS-INDEPENDENT-BYTE-READ.md
+[PROUVE] defaut_53_resolu :: Defaut 53 cause racine PROVEN par la regle d alignement 32 du format GGUF fin des metadonnees 10996452 et origine alignee 10996480 - RESOLVED_VERIFIED_BY_INDEPENDENT_MULTITENSOR_BYTE_COMPARISON sur 6 lignes et 8704 octets :: docs/ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[OUVERT] defaut_54_ouvert :: Defaut 54 test des permutations ternaires decodant 32 valeurs par bloc au lieu de 128 - declare OPEN le calcul principal restant correct :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[PROUVE] defaut_54_resolu :: Defaut 54 statut final RESOLVED_VERIFIED_BY_128_VALUE_TESTS avec couverture 40 blocs E5 et 48 blocs E6 :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[PROUVE] defaut_55 :: Defaut 55 python3 -i consommant le heredoc SSH comme entree de l interpreteur meme famille que le defaut 47 - RESOLVED sans aucune mesure affectee :: docs/ENGINE-007B-F1A-Q0-N3QUATER-NATIVE-REFERENCE-RECONSTRUCTION.md
+[OUVERT] defaut_56_ouvert :: Defaut 56 tenseurs de capture crees par ggml_dup sans ggml_set_output donc region de stockage liberee par l allocateur des leur derniere consommation - declare OPEN avec mecanisme prouve et correctif non encore applique :: docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] defaut_56_resolu :: Defaut 56 statut final RESOLVED_VERIFIED_BY_TARGETED_PRESERVATION_AND_BITWISE_TRANSPARENCY avec 336 captures sur 336 corrompues puis verifiees et 25 contradictions ramenees a 0 :: docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] defaut_56_statut_contradictoire :: Le meme numero 56 porte deux statuts opposes dans deux ledgers du meme fichier N3nonies soit RESOLVED_VERIFIED soit OPEN avec correctif non applique - incoherence signalee et non tranchee :: docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] defaut_57 :: Defaut 57 reference q8_1 a echelle fp16 inversee et arrondi bancaire - statut RESOLVED_VERIFIED_BY_NATIVE_OUTPUT_AGREEMENT avec accord a environ 1.4e-07 sur 28 672 lignes :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] defaut_46_57_double_numerotation :: Le meme defaut de reference q8_1 est enregistre sous 46 en S2bis I1 et sous 57 en N4 avec une composante d echelle fp16 inversee en plus - incoherence de numerotation signalee et non tranchee :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] defaut_58 :: Aucune occurrence du numero 58 dans les rapports ENGINE ni dans le dossier de qualification - le registre des defauts de harnais s arrete a 57 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] defaut_non_numerotes :: Trois defauts constates en no-rotation sont listes sans numero A B et C et seuls A et C recoivent ensuite les numeros 47 et 48 donc le defaut du champ llama_context_params logits_all absent de ce fork reste sans numero :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] defaut_numerotation_duree_de_vie :: Le correctif de duree de vie des captures porte le numero 56 dans la serie N alors que la meme question est traitee dans la serie R sans numero de defaut par le retrait de la preuve statique - divergence de numerotation signalee et non tranchee :: docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[RETIRE] defaut_duree_de_vie_preuve_statique :: L affirmation CAPTURE_TENSOR_LIFETIME_STATIC_PROOF egale PASS est retiree car elle presentait une preuve partielle comme complete - remplacee par une preuve d ordre et une residence restant a etablir :: docs/ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[RETIRE] defaut_accusation_table_ternaire :: L accusation contre la table ternaire du noyau est retiree faute de contre-exemple car la reference E6 nulle est nulle sous les trois tables permutees :: docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md
+[RETIRE] defaut_observation_echelles :: L observation des echelles aberrantes 89.3 et 3400 de la ligne 0 de blk 20 ffn up est retiree comme artefact du decalage de 28 octets :: docs/ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md
+[RETIRE] defaut_regle_validite_amax :: La regle de validite des captures fondee sur amax superieur a 0 est declaree NON_SUFFISANTE puis abandonnee :: docs/ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[OUVERT] defaut_plumbing_29 :: Le compteur de defauts de plomberie reste bloque a 28 et le numero 29 n est jamais attribue dans toute la serie Q0 :: docs/ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] defaut_46_55_lot :: Le ledger de N4 declare le lot 46 a 55 RESOLVED en une seule ligne et y joint le 56 et le 57 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+defaut_46 -> defaut_57 [OUVRE] la composante d arrondi bancaire du defaut 46 reapparait sous le nouveau numero 57
+defaut_57 -> defaut_46 [REMPLACE] le defaut 57 reprend et etend le defaut 46 par l echelle fp16 inversee
+defaut_46_57_double_numerotation -> defaut_46_portee_contredite [DEMONTRE] la double numerotation contredit la portee de la resolution du defaut 46
+defaut_46_57_double_numerotation -> defaut_57 [DEPEND] la double numerotation porte sur le meme defaut de reference q8_1
+defaut_46_55_lot -> defaut_46 [DEPEND] le lot declare inclut le defaut 46
+defaut_46_55_lot -> defaut_54_resolu [DEPEND] le lot declare inclut le defaut 54
+defaut_46_55_lot -> defaut_55 [DEPEND] le lot declare inclut le defaut 55
+defaut_52_ouvert -> defaut_52_resolu [REMPLACE] la correction du manifeste remplace le statut ouvert par une verification sur deux epoques
+defaut_53_ouvert -> defaut_53_resolu [REMPLACE] la cause racine prouvee remplace le statut ouvert du lecteur GGUF direct
+defaut_54_ouvert -> defaut_54_resolu [REMPLACE] le test corrige a 128 valeurs remplace le statut ouvert du defaut 54
+defaut_50_declare -> defaut_50_verifie [REMPLACE] la declaration de resolution par separation des sens est remplacee par une verification par discrimination OFF et ON
+defaut_56_ouvert -> defaut_56_resolu [REMPLACE] la section 9 du meme rapport applique le correctif et le mesure
+defaut_56_statut_contradictoire -> defaut_56_ouvert [DEPEND] le statut ouvert provient du premier ledger du fichier N3nonies
+defaut_56_statut_contradictoire -> defaut_56_resolu [DEPEND] le statut resolu et verifie provient du second ledger du meme fichier
+defaut_52_resolu -> defaut_52_non_attribution [DEMONTRE] la reparation du manifeste a permis d etablir que l absence de E6 venait de la selection de tenseur
+defaut_53_ouvert -> defaut_observation_echelles [DEMONTRE] le decalage de 28 octets explique les echelles aberrantes et provoque leur retrait
+defaut_54_resolu -> defaut_accusation_table_ternaire [DEMONTRE] le test corrige a 128 valeurs permet de retirer l accusation contre la table ternaire
+defaut_48 -> defaut_duree_de_vie_preuve_statique [OUVRE] le controle de residence manquant au defaut 48 est la question rouverte par le retrait de la preuve statique
+defaut_duree_de_vie_preuve_statique -> defaut_56_resolu [OUVRE] le retrait ouvre la question de duree de vie que le defaut 56 ferme par un correctif mesure
+defaut_numerotation_duree_de_vie -> defaut_56_resolu [DEPEND] la divergence de numerotation porte sur le correctif de duree de vie des captures
+defaut_numerotation_duree_de_vie -> defaut_duree_de_vie_preuve_statique [DEPEND] la serie R traite la meme question sans numero de defaut
+defaut_56_resolu -> defaut_regle_validite_amax [DEMONTRE] les 336 captures corrompues puis corrigees confirment que amax superieur a 0 ne garantissait rien
+defaut_57 -> defaut_50_verifie [DEPEND] le defaut 57 est ferme dans le meme ledger final qui porte les statuts 46 a 56
+defaut_47 -> defaut_55 [DEMONTRE] le defaut 55 est declare de la meme famille que le defaut 47 par heredoc SSH consomme
+defaut_non_numerotes -> defaut_47 [DEPEND] le defaut non numerote A devient le defaut 47 apres verification du registre
+defaut_non_numerotes -> defaut_48 [DEPEND] le defaut non numerote C devient le defaut 48 apres verification du registre
+defaut_58 -> defaut_57 [OUVRE] le registre s arrete a 57 ce qui laisse le numero 58 non attribue
+defaut_plumbing_29 -> defaut_58 [OUVRE] deux numeros restent non attribues dans deux series de comptage distinctes
+defaut_51 -> defaut_52_resolu [DEPEND] la retractation du decalage d une soumission prefigure la validation du manifeste sur deux epoques

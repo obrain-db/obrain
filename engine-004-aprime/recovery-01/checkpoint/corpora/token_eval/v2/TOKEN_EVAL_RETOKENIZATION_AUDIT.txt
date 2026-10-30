@@ -1,0 +1,14 @@
+=== S8.1 : retokenisation INDEPENDANTE depuis les sources (candidat) ===
+  wikitext      rebuilt=32768 scored=32768 units=347
+  obrain_docs   rebuilt=16384 scored=16384 units=14
+  obrain_rust   rebuilt=16384 scored=16384 units=18
+TOKENIZATION_SECOND_PASS_MISMATCH_COUNT=0
+TOKENIZATION_REPRODUCIBLE=YES
+  unites comparees : 379
+
+=== S8.2 : cross-GGUF sur le corpus final (baseline vs candidat) ===
+TOKEN_CORPUS_BASELINE_CANDIDATE_TOKEN_ID_MISMATCH_COUNT=0
+  sequences comparees : 379
+
+=== S8.3 : tree hash final ===
+TOKEN_EVAL_CONTENT_TREE_V2_SHA256=0ce4512e9d73b5e1cc3beddd2222e9ad7a96592508f10930515ef8b4276cf5dd

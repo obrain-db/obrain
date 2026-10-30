@@ -1,0 +1,115 @@
+ENGINE-008 -- STATUT TERMINAL SUBMITTED-GRAPH-AUDIT-01
+==========================================================================
+Portee unique : capacite reelle de SUBMITTED_GRAPH_SNAPSHOTS.csv pour NextN,
+puis correction du collecteur. Aucun forward pass.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=SUBMITTED_GRAPH_AUDIT_AND_COLLECTOR_CORRECTION
+
+LEGACY_NEXTN_CLASSIFIER_STATUS=INVALIDATED
+LEGACY_NEXTN_ABSENCE_PATH_DISABLED=YES
+  Regle invalide : recherche des sous-chaines nextn/NEXTN/h_nextn dans
+  GRAPH_ROLE_RELATIONSHIPS.csv.
+  Fixture qui la satisfaisait artificiellement : le cas "nextn" de
+  mode_capture_selftest, dont la fixture CONTENAIT la chaine recherchee. Le
+  producteur, lui, ne l emet jamais (`grep -n "nextn" src/f1a-capture.cpp` vide).
+  Portee invalidee : toute conclusion d ABSENCE tiree de ce chemin. Aucune
+  conclusion runtime n avait ete publiee a partir de cette regle.
+  Le chemin rend desormais NOT_CONFIRMED_INVALID_SURFACE, quelle que soit la
+  couverture. L attente NEXTN_ABSENT_WITH_COVERAGE a ete RETIREE de la suite :
+  elle faisait partie de la regle invalide.
+  Les tests syntaxiques independants de cette regle restent valides et passent.
+
+SUBMITTED_GRAPH_PRODUCER_AUDITED=YES
+  f1a-capture.cpp:301-310, appele en :826. Corps integral dans
+  ENGINE008_SUBMITTED_GRAPH_SCHEMA.md.
+SUBMITTED_GRAPH_SCHEMA_ESTABLISHED=YES
+  submission_id,gf,n_nodes,submission_rc,fingerprint
+  Porte une IDENTITE, un VOLUME et un STATUT. N enumere AUCUN noeud.
+  « snapshot » ne signifie donc PAS « graphe complet ».
+  submission_rc resout le sens de rc : 0 = soumission reussie.
+EXISTING_REAL_SNAPSHOT_VALIDATION=PASS
+  Deux captures reelles confrontees, conservees brutes :
+    Q1 forward (rotation ACTIVE)    n_nodes=4315  rc=0  fp=bfb9b6dbfa65aafb
+    Q0 n1     (rotation DESACTIVEE) n_nodes=3991
+  FAIT 1 : la surface est SENSIBLE au contenu du graphe (+324 noeuds avec la
+  rotation). Controle positif reel : elle n est pas inerte.
+  FAIT 2 : deux soumissions partagent gf et n_nodes -> submission_id n est PAS
+  l identite du graphe ; fingerprint l est, et il est stable.
+NEXTN_SOURCE_TO_SURFACE_MAPPING=COMPLETE
+  La cartographie est desormais COMPLETE au sens ou elle est TRANCHEE :
+  t_h_nextn (llama-graph.cpp:1271,:1317), n_layer_nextn (:1407),
+  LLM_TENSOR_NEXTN_* (llama-model.cpp:1476) n ont AUCUNE representation dans
+  une surface f1a. Les 9 surfaces produites ne portent aucune identite
+  d operation. Aucun tag NextN n est emis par le producteur.
+SUBMITTED_GRAPH_COVERAGE_DEFINED=YES
+  Criteres fondes sur le schema REEL (5 colonnes, rc, unicite des
+  submissions), remplacant les anciens criteres a base de comptes non nuls.
+  Defaut de l ancien critere, mesure sur artefact reel :
+  eligible_target_count=1344 et captured_target_count=0 coexistent.
+SURFACE_SUPPORTS_NEXTN_NEGATIVE_CONCLUSION=NO
+  Une variation de n_nodes n identifie pas QUELLES operations existent. Sans
+  reference « avec NextN », aucune inference d absence n est legitime.
+  Le maillon bloquant est le niveau 3 : « operations NextN CONSTRUITES dans le
+  graphe » n est PAS OBSERVABLE, aucune surface n enumerant les noeuds.
+
+CORRECTED_CLASSIFIER_IMPLEMENTED=YES
+  - ancien chemin neutralise (NOT_CONFIRMED_INVALID_SURFACE) ;
+  - parseur du schema reel (5 colonnes) avec detection malformee ;
+  - submitted_graph_conclusion() : MALFORMED_CAPTURE /
+    NOT_CONFIRMED_SUBMISSION_ERROR / NOT_CONFIRMED_AMBIGUOUS_MAPPING /
+    NOT_CONFIRMED_INCOMPLETE_COVERAGE / SURFACE_INSUFFICIENT_FOR_NEXTN_ABSENCE.
+    Aucune de ces valeurs ne constitue une conclusion d absence.
+CLASSIFIER_SELFTEST=PASS
+  17 controles, 0 echec, dont : nom trompeur contenant nextn -> plus de
+  detection ; ancien chemin refuse meme avec couverture complete ; schema
+  reel parse ; surface insuffisante ; soumission en erreur ; snapshot absent ;
+  capture tronquee ; destination isolee et refus de reutilisation.
+  Les suites garde (11 controles) et contrat d arret (9 controles) restent PASS.
+HARNESS_SOURCE_SHA256=e92f3516938cdb7cf35026cc9533155fdef7e892f6526eec9f258eed17e97109
+HARNESS_BINARY_SHA256=aa7e4bf45f69854fe92e871d4bcf352b99972a2dc1572fd6af62640c8b988ce9
+  NOUVELLE identite (1328 lignes). Les etats historiques sont conserves :
+  source 3c49baad... / binaire 9f9d1bc0... restent les etats anterieurs.
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_NEXTN_EXECUTION_PROOF_STATUS=NOT_EXERCISED
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+NEW_FREEZE_CREATED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_AUDIT
+  La capacite de la surface a ete ETABLIE (elle est sensible mais non
+  enumerante) et le collecteur est CORRIGE, avec l ancien chemin explicitement
+  ferme. Cela ne signifie ni preflight pret, ni renderer qualifie, ni gel
+  recevable.
+FREEZE_BLOCKING_GATE=SURFACE_INSUFFICIENT_FOR_NEXTN_ABSENCE
+  Aucune surface native de Q1 n enumere les operations du graphe soumis. Un
+  resultat NEGATIF sur NextN exige une telle surface. Elle n existe pas, et
+  cette passe n ajoute pas d instrumentation au calcul.
+REMAINING_WORK=
+  M1_decider_du_traitement_de_NextN : soit accepter que le preflight ne puisse
+     PAS publier de resultat negatif sur NextN et le declarer explicitement au
+     protocole (NOT_OBSERVABLE, jamais ABSENT) ; soit faire autoriser, par une
+     instruction dediee, une surface native qui enumere les operations du
+     graphe soumis. NE PAS modifier libllama sans cette autorisation.
+  M2_correler_soumission et achevement par submission_id dans le ledger, et
+     confronter eligible_target_count a captured_target_count.
+  M3_impliquer_le_cas_« graphe non pertinent » et « identifiants incoherents »
+     dans la suite du collecteur.
+  M4_rejouer le parseur sur les captures reelles disponibles (fait pour le
+     schema ; a etendre aux corrélations).
+  M5_reprendre les travaux hors perimetre laisses en attente : R2 (closure
+     renderer), chemin NOMINAL d autorisation sur mocks, v1.1, gel preflight.
+
+ENGINE008_NEXT_STEP=TRANCHER_M1 (traitement de NextN : NOT_OBSERVABLE declare,
+  ou autorisation d une surface native enumerante)
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+aucun logit, aucune generation, aucun scoring, aucune NLL/PPL.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template commun, gel v1, ni des etats historiques du harnais.
+Aucun run modele cree pour obtenir une fixture.

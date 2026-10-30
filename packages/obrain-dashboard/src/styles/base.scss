@@ -1,0 +1,21 @@
+
+@use "tokens" as t;
+@use "layout";
+@use "controls";
+@use "query";
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; width: 100%; height: 100%; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { overscroll-behavior: none; }
+/* ── LE DÉFILEMENT TACTILE ÉTAIT BLOQUÉ POUR TOUT LE MONDE ─────────────────
+   `touch-action: none` sur la racine empêche TOUT défilement au doigt — et
+   `touch-action` s'INTERSECTIONNE le long des ancêtres, donc aucun descendant ne
+   peut le rétablir (poser `pan-y` sur un panneau ne sert à rien tant que la
+   racine dit `none`). Or plusieurs panneaux sont en `overflow-y:auto` : ils ne
+   défilaient pas. On autorise donc le geste vertical ICI, et on le retire
+   explicitement là où il doit rester capté (le canvas 3D, la carte-mère). */
+#root { touch-action: pan-y; }
+body { background: t.$bg; color: t.$text; font-family: t.$font;
+       overflow: hidden; }
+#root, .shell, .stage { width: 100%; height: 100%; }
+button { font: inherit; cursor: pointer; }

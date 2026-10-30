@@ -1,0 +1,78 @@
+ENGINE-008 -- AUDIT DU CHAT TEMPLATE (§15)
+========================================================================
+MODE=STATIC_STRING_EXTRACTION_ONLY
+TEMPLATE_APPLIED=NO
+LLAMA_CHAT_APPLY_TEMPLATE_CALLED=NO
+PYTHON_TEMPLATE_REIMPLEMENTATION=NO
+
+BASELINE_MODEL_PATH=/home/triviere/models/Qwen3.8-27B-Q4_K_M.gguf
+BASELINE_MODEL_SHA256=31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34
+BASELINE_CHAT_TEMPLATE_SHA256=c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+BASELINE_CHAT_TEMPLATE_BYTES=8952
+
+CANDIDATE_MODEL_PATH=/mnt/obrain/models/Qwen3.8-27B-OBRAIN-v3.gguf
+CANDIDATE_MODEL_SHA256=1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937
+CANDIDATE_CHAT_TEMPLATE_SHA256=12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce
+CANDIDATE_CHAT_TEMPLATE_BYTES=9993
+
+CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=NO
+CHAT_TEMPLATE_REQUIRED_BY_PROTOCOL=YES
+CHAT_TEMPLATE_GATE=FAIL
+
+=== CARACTERISATION DE LA DIVERGENCE ===
+FIRST_DIVERGENCE_CHAR_INDEX=1971
+COMMON_PREFIX_SHA256=96501a6dfb30acbf99a50ee4df973a8c010768c833380915c9dbf046783a1073
+COMMON_PREFIX_BYTES=1971
+COMMON_PREFIX_LINE_COUNT=45
+
+DIVERGENCE_REGION = traitement des messages system/developer
+  baseline : gere UN message system (messages[0].role == 'system')
+  candidat : FUSIONNE les messages system/developer consecutifs
+             via un namespace sysns(count, text)
+
+--- EXTRAIT BASELINE (au point de divergence) ---
+ndif %}
+{%- endmacro %}
+{%- if not messages %}
+    {{- raise_exception('No messages provided.') }}
+{%- endif %}
+{%- set reasoning_instructions = '' %}
+{%- if enable_thinking is undefined or enable_thinking is true %}
+    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}
+    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}
+        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh (default), medium, and low.') }}
+    {%- endif %}
+    {%- if resolved_reasoning_effort == 'xhigh' %}
+        {%- set reasoning_instructions = 'Reasoning effort is 
+--- EXTRAIT CANDIDAT (au point de divergence) ---
+ndif %}
+{%- endmacro %}
+{%- if not messages %}
+    {{- raise_exception('No messages provided.') }}
+{%- endif %}
+{%- set sysns = namespace(count=0, text='') %}
+{%- for message in messages %}
+    {%- if sysns.count == loop.index0 and (message.role == 'system' or message.role == 'developer') %}
+        {%- set sys_content = render_content(message.content, false, true)|trim %}
+        {%- if sys_content %}
+            {%- set sysns.text = sysns.text + ('\n' if sysns.text else '') + sys_content %}
+        {%- endif %}
+        {%- set sysns.count = sysns.count + 1 %}
+    {%- endif %}
+{%- endfor %}
+{%- set num_sys = sysns.count %}
+{%- set 
+
+UNIFIED_DIFF_LINE_COUNT=102
+UNIFIED_DIFF_ADDED_LINE_COUNT=34
+UNIFIED_DIFF_REMOVED_LINE_COUNT=20
+UNIFIED_DIFF_PATH=/home/triviere/projects/banc-obrain/engine-004-aprime/out/CHAT_TEMPLATE_BASELINE_CANDIDATE.diff
+
+=== CONSIGNE PROTOCOLE (§15) ===
+ENGINE008_CHAT_TEMPLATE_SHA256=UNDEFINED
+  Le protocole exige CHAT_TEMPLATE_BASELINE_CANDIDATE_MATCH=YES.
+  Les deux modeles portent des revisions DIFFERENTES du template.
+  Aucune autorite commune ne peut etre definie sans decision humaine :
+  rendre TASK avec deux templates differents violerait l exigence
+  d inputs baseline/candidat bit-identiques (§20).
+  GATE=CHAT_TEMPLATE_BASELINE_CANDIDATE_MISMATCH

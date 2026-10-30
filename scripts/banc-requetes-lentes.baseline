@@ -1,0 +1,19 @@
+#store	/home/triviere/bench-stores/runtime-dev-snapshot-20260909.obrain
+C1 name CONTAINS iam (3 termes)	3.30
+C2 auth/token (4 termes)	6.50
+C3 STARTS WITH module	2.30
+C4 STARTS WITH + labels (OU)	2.40
+C5 File CONTAINS obrain-iam	1.90
+C6 aretes traversantes	3.10
+C7 aretes TESTS	26.00
+C8 STARTS WITH + Function	2.50
+C9 intervalle de qn	56.30
+C10 egalite indexee	0.33
+C11 balayage de label	1.30
+C12 messages d'une session	0.30
+C13 compteur de noeuds	0.21
+F1 plage basse seule	318.80
+F3 plage prefixe non selectif	649.60
+F7 negation seule	296.90
+V1 viz space (CONTAINS .crates.)	154.60
+C14 compteur de label	0.23

@@ -1,0 +1,5 @@
+{"text":"kv_state:fb428a61fba54710","fact_tokens":7,"blob_bytes":157353668,"per_token_ms":[],"fact_decode_ms":0.0,"query_decode_ms":0.0,"spec_draft_n":0,"spec_draft_accepted":0}
+---K2---
+{"text":"\n\n<think>\nThe user is asking me to respond only with \"OK.\" This is a simple request - they want me to just say \"OK\" without any","fact_tokens":7,"blob_bytes":157353668,"per_token_ms":[2021.758056640625,1963.0889892578125,2065.571044921875,1941.4820556640625,1997.6590576171875,1927.43994140625,1964.8079833984375,2056.64306640625,1844.5999755859375,2069.537109375,2100.945068359375,20
+---K3---
+{"error":{"code":400,"message":"unknown state_ref 'deadbeefdeadbeef' (extract d'abord)","type":"invalid_request_error"}}

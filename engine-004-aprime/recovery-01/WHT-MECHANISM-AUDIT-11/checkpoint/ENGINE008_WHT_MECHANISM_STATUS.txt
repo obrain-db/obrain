@@ -1,0 +1,109 @@
+ENGINE-008 -- STATUT TERMINAL WHT-MECHANISM-AUDIT-11
+==========================================================================
+MON AFFIRMATION DE FINALIZE-10 EST REFUTEE ET CORRIGEE. Les deux mecanismes sont
+DISTINCTS : la WHT ne depend pas du nombre de devices. Aucun arbitrage V-a/V-b,
+aucun protocole modifie, aucun gel. Aucun forward.
+
+DEVICE_ROTATION_TO_WHT_RELATION=DISTINCT
+  A. llama-model.cpp:472,478,481  `rotation = il % ud->n_devices` -- commentaire
+     du champ (:447) : « rotate how the rounding is done for more even
+     allocation ». Structure : configuration de decoupage de tenseurs.
+     Effet : PLACEMENT / repartition de l'arrondi. Aucun lien avec l'activation.
+  B. llama-graph.cpp:1480-1534 `build_lora_mm` : garde sur le TYPE du poids
+     (`w->type == GGML_TYPE_TQ2_G128`) ET sur l'environnement
+     (`getenv("OBRAIN_NO_ROTATION") == nullptr`), puis insertion de `ggml_wht`
+     sur l'activation, avec cache `obrain_rot`.
+     Effet : TRANSFORMATION DE L'ACTIVATION.
+  Consommateurs disjoints, structures porteuses disjointes, chaines source
+  demontrees separement. Ils ne partagent que le MOT.
+WHT_DEPENDENCY_ON_DEVICE_COUNT=NONE_FOUND_IN_AUDITED_PATH
+  Aucune occurrence de `n_devices` dans le chemin B.
+SINGLE_DEVICE_WHT_IMPOSSIBILITY_JUSTIFIED=NO
+  Mon affirmation etait FAUSSE. J'avais lu le mecanisme A, constate `% 1 == 0`
+  avec un seul GPU, et TRANSFERE la conclusion a `rotation_applied` sans lire le
+  chemin qui la produit -- exactement ce que la consigne interdisait :
+  « Ne pas etablir leur equivalence depuis le mot "rotation" ».
+  CONSEQUENCES ANNULEES : l'obstacle invoque pour P3 n'existe pas ; V-a est sans
+  objet ; aucun changement de machine n'est demande ; l'hote mono-GPU cesse
+  d'etre un bloqueur. Ce qui reste vrai de FINALIZE-10 : la chaine WHT n'est pas
+  raccordee (trois surfaces sans parseur, `rotation_applied` jamais lu).
+
+ROTATION_APPLIED_SEMANTICS_VERIFIED=YES
+  `f1a_capture_note(cc, w, f1a_cur_raw, cur, ...)` (llama-graph.cpp:1534) ;
+  `r.rotation_applied = (cur_raw != cur_used)` (f1a-capture.cpp:473).
+  cur_raw = activation ENTRANTE ; cur_used = activation EFFECTIVEMENT UTILISEE.
+  La difference est expliquee par l'insertion de ggml_wht.
+  AUTRE CAUSE, signalee : le cache `obrain_rot` -- une activation partagee entre
+  consommateurs est servie par le cache, le pointeur differe encore, et
+  `rotation_applied` reste vrai A JUSTE TITRE.
+  PORTEE, NON SURESTIMEE : c'est un fait de CONSTRUCTION DU GRAPHE. Une
+  difference de pointeur ne prouve pas, seule, l'execution. Les maillons qui
+  manquent sont le lien cible -> calcul soumis, porte par
+  GRAPH_ROLE_RELATIONSHIPS.csv et TARGET_EFFECT_PATH.csv -- precisement les
+  surfaces NON RACCODEES.
+
+Q1_TRUE_ROTATION_CAPTURE_PROVENANCE_VERIFIED=YES
+  Sur pieces : GRAPH_CAPTURE_MANIFEST.csv (4 copies, dont
+  .../e7b-f1a-q1-forward-v1/on/) -> rotation_applied T=672, F=0, total=672.
+  Autorite : .../on/WHT_RUNTIME_PROOF_AUDIT.txt -- PREUVE A environnement
+  (Q1_OBRAIN_NO_ROTATION_STATE=UNSET, verifie par env -u + test ${VAR+x}),
+  PREUVE B runtime (672/0/0), CONTROLE CROISE INDEPENDANT (logits Q0 rotation
+  desactivee 53aa87fb... vs Q1 rotation active 0c535e26... -> DIFFERENTS).
+HISTORICAL_DEVICE_TOPOLOGY=NOT_RECORDED
+  Aucun releve explicite de topologie trouve dans les artefacts du run. Je ne
+  l'invente pas. La topologie ACTUELLE n'est pas utilisee comme preuve de celle
+  du run : ce qui est etabli, c'est que la WHT agit SANS dependre du nombre de
+  devices (lecture du mecanisme B), et 672 vraies le confirment sur cet hote.
+  LA CONTRADICTION EST EXPOSEE ET RESOLUE : il n'y avait pas deux faits a
+  arbitrer, il y avait une affirmation fausse de ma part.
+
+BASELINE_TQ2_CAPTURE_ELIGIBLE=NO
+  Filtre producteur (f1a-capture.cpp:442) : type TQ2_G128 ET nom dans le CSV
+  d'inventaire. La baseline est Q4_K_M -> aucune cible eligible. Ajouter des
+  devices NE CHANGE PAS son type de poids.
+BASELINE_ALTERNATIVE_PROOF_METHOD=JUSTIFIED_POSSIBILITY_NOT_ADOPTED
+  La garde du BUILDER est un fait structurel : si aucun poids de la baseline
+  n'est TQ2_G128, la branche WHT de build_lora_mm est INATTEIGNABLE pour tous
+  ses consommateurs. Cela s'etablirait par l'ENUMERATEUR NATIF existant (types
+  des tenseurs du modele charge), donc SANS dependre du filtre d'eligibilite du
+  collecteur f1a.
+  LIMITES : prouve une INATTEIGNABILITE STRUCTURELLE, pas une ABSENCE OBSERVEE --
+  deux proprietes differentes, et P4 demande la seconde ; porte sur la
+  CONSTRUCTION du graphe, avec le meme maillon manquant ; ne dit rien de
+  l'execution.
+  NON ADOPTEE comme remplacement de P4. Toute modification de la methode
+  normative devra etre EXPLICITE.
+
+PROTOCOL_CHANGED=NO
+  Protocole v2 inchange : 822db99f6c288e346e1dca06c7405ab13a4a06d69bc05beccbe92e333fe5fa3d
+NEW_FREEZE_CREATED=NO
+  Aucun gel. Le lanceur et ses 21 tests restent acquis avec leur provenance
+  (LAUNCHER_SHA256=c95ed2903f6322e3aeebcb286541c149a28a45304b46e74c7eee3bc6253aab3a).
+  Les parseurs WHT n'ont PAS ete commences : cette passe etablissait le
+  mecanisme d'abord.
+
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_MECHANISM_AUDIT
+
+SUITE, SUR LA BASE CORRIGEE --
+  Y1_RACCORDER la chaine WHT (parseurs des trois surfaces + lecture de
+     `rotation_applied`) : c'est le maillon qui relie la cible au calcul soumis.
+  Y2_LEVER les maillons manquants de portee : construction du graphe -> graphe
+     SOUMIS -> execution. La confrontation de fingerprint et la correlation de
+     soumission existent deja et s'y raccordent.
+  Y3_P3 (rotation candidate) n'a PLUS d'obstacle de machine : il reste a
+     raccorder puis a exercer. P4 (baseline negative) reste non evaluable PAR LE
+     COLLECTEUR f1a ; la voie structurelle existe mais exige une decision
+     explicite de methode.
+  Y4_PUIS le protocole et le gel, sur instruction separee.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+run, aucun gel. Aucun changement de Q1, du backend, de la topologie ou des
+regles de preuve. Aucun protocol modifie. Les artefacts historiques sont INTACTS
+et lus en LECTURE SEULE, sans dereferencement de leurs pointeurs.

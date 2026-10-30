@@ -1,3 +1,5 @@
+//! Conformite a ISO/IEC 39075 (GQL) sur les clauses implementees.
+
 #![cfg(feature = "cypher")]
 //! Spec compliance tests for GQL, Cypher, and SPARQL.
 //!
@@ -1330,6 +1332,21 @@ mod cypher_features {
         }
     }
 
+    // ── CES TROIS TESTS ONT CHANGÉ DE SENS APRÈS LE CUTOVER T17 ─────────────
+    //
+    // Ils affirmaient que `CREATE INDEX` / `DROP INDEX` RÉUSSISSENT. Le moteur
+    // les REFUSE désormais, et le refus est un choix documenté
+    // (`session/mod.rs`, `SchemaStatement::CreateIndex`) : « les instructions GQL
+    // sont conservées pour que les scripts existants se PARSENT proprement, mais
+    // leur évaluation rend une erreur sur une session substrate », parce que le
+    // substrat construit lui-même son indexation (CommunityWarden, RetrievalTier,
+    // colonne d'index inversé) — un `CREATE INDEX` nommé n'aurait rien à créer.
+    //
+    // Un succès silencieux serait pire qu'un refus : le script croirait avoir
+    // accéléré une requête qui ne l'est pas. Les tests vérifient donc le refus
+    // EXPLICITE, message compris, et gardent les deux formes conditionnelles
+    // (`IF EXISTS`) qui, elles, restent des no-op idempotents.
+
     #[test]
     fn cypher_create_index() {
         let db = ObrainDB::new_in_memory();
@@ -1338,12 +1355,13 @@ mod cypher_features {
         session
             .execute("INSERT (:Person {name: 'Alix', age: 30})")
             .unwrap();
-        let result =
-            session.execute_cypher("CREATE INDEX idx_person_name FOR (n:Person) ON (n.name)");
+        let err = session
+            .execute_cypher("CREATE INDEX idx_person_name FOR (n:Person) ON (n.name)")
+            .expect_err("CREATE INDEX doit être REFUSÉ explicitement (cutover T17)");
+        let message = format!("{err:?}");
         assert!(
-            result.is_ok(),
-            "CREATE INDEX should succeed: {:?}",
-            result.err()
+            message.contains("no longer supported") && message.contains("T17"),
+            "le refus doit DIRE pourquoi : {message}"
         );
     }
 
@@ -1352,13 +1370,21 @@ mod cypher_features {
         let db = ObrainDB::new_in_memory();
         let session = db.session();
         session.execute("INSERT (:Person {name: 'Alix'})").unwrap();
-        session
-            .execute_cypher("CREATE INDEX idx_test IF NOT EXISTS FOR (n:Person) ON (n.name)")
-            .unwrap();
-        // Running again should not error with IF NOT EXISTS
-        let result = session
-            .execute_cypher("CREATE INDEX idx_test IF NOT EXISTS FOR (n:Person) ON (n.name)");
-        assert!(result.is_ok());
+        // `IF NOT EXISTS` ne sauve PAS la forme : le refus porte sur la
+        // CAPACITÉ (le substrat n'expose pas d'index nommé), pas sur
+        // l'idempotence. On vérifie les deux appels — la réponse ne doit pas
+        // dépendre du fait que « l'index existerait déjà ».
+        for essai in 0..2 {
+            let result = session
+                .execute_cypher("CREATE INDEX idx_test IF NOT EXISTS FOR (n:Person) ON (n.name)");
+            let err = result.err().unwrap_or_else(|| {
+                panic!("essai {essai} : CREATE INDEX doit être refusé, même avec IF NOT EXISTS")
+            });
+            assert!(
+                format!("{err:?}").contains("no longer supported"),
+                "essai {essai} : le refus doit être celui de la doctrine : {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -1366,15 +1392,14 @@ mod cypher_features {
         let db = ObrainDB::new_in_memory();
         let session = db.session();
         session.execute("INSERT (:Person {name: 'Alix'})").unwrap();
-        session
-            .execute_cypher("CREATE INDEX idx_drop FOR (n:Person) ON (n.name)")
-            .unwrap();
-        // DROP by property name (store tracks by property, not by index name)
-        let result = session.execute_cypher("DROP INDEX name");
+        // Le refus ne s'obtient plus en créant d'abord (la création est
+        // refusée) : on éprouve directement la forme NON conditionnelle.
+        let err = session
+            .execute_cypher("DROP INDEX name")
+            .expect_err("DROP INDEX doit être refusé sans IF EXISTS");
         assert!(
-            result.is_ok(),
-            "DROP INDEX should succeed: {:?}",
-            result.err()
+            format!("{err:?}").contains("no longer supported"),
+            "le refus doit dire pourquoi : {err:?}"
         );
     }
 

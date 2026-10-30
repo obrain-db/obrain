@@ -1,0 +1,138 @@
+ENGINE-008 -- ATTEINDRE LA COMPARAISON NUMERIQUE
+==========================================================================
+A ET B ONT ETE ACCEPTES PAR LE SERVEUR. C BLOQUE ENCORE -- ET CELA
+REFUTE L'HYPOTHESE fork/popen. LA COMPARAISON NUMERIQUE RESTE IMPOSSIBLE.
+
+=== 1. LANCEMENT -- CONTROLE, VERIFIE, HORODATE ===
+SERVER_LIFETIME_CONTROLLED=YES
+  Un ORCHESTRATEUR UNIQUE (`orchestrateur.py`) possede desormais : le
+  processus serveur et son PID, ses journaux, l'adresse et le port exacts,
+  les requetes et leurs reponses, et le nettoyage final. Le serveur est lance
+  en **groupe de processus propre** (`preexec_fn=os.setsid`), et le nettoyage
+  se fait par `killpg` : **aucun wrapper externe ne peut le tuer apres sa mise
+  a disposition**. Serveur et client sur **le meme hote et le meme espace
+  reseau** (127.0.0.1). **Aucune duree fixe supposant 20 s de demarrage** :
+  la fenetre de demarrage est PREENREGISTREE a 600 s, tres au-dela des 87 s
+  reellement observees.
+
+CLIENT_SERVER_ENDPOINT_VERIFIED=YES
+  Journal horodate AVANT A (JOURNAL_ORCHESTRATEUR.txt) :
+    PID=637309 VIVANT | ecoute: LISTEN 0 512 127.0.0.1:8478
+        users:(("llama-server",pid=637309,fd=32))
+    sonde HTTP: http=200 body={"status":"ok"}
+    URL CLIENT EXACTE: POST http://127.0.0.1:8478/jspace/inject_knowledge
+  **La disponibilite est un ETAT COURANT, pas un ancien journal** : chaque
+  sonde verifie le code HTTP ET la survie du processus, et le journal ne
+  contient aucun « listening » reutilise. Les 30 sondes de demarrage sont
+  horodatees dans SONDES_DISPONIBILITE.txt.
+
+=== 2. GATE -- TESTS SUR L'ETAT EFFECTIVEMENT COMPILE ===
+REQUIRED_TESTS=PASS
+  - **SHA256, vecteurs connus : 11 PASSED, 0 FAILED**
+  - **CONCURRENCE : PASS** (32 threads x 2000, aucun sous-processus, aucun
+    fichier temporaire)
+  - **CACHE : 49 PASSED, 0 FAILED**
+  - **COMPTEURS, EOS ET POSITIONS : OBSERVES SUR REQUETE REELLE** (cf. §4) --
+    `selected_ids_count=6`, `emitted_ids_count=6`, `stop_reason=EOS`,
+    positions 59..64. C'est la validation du chemin d'observation complet,
+    que §2 exigeait et que les seules suites SHA/cache ne donnaient pas.
+  - **premiers logits raccordes** : `first_logits_n=248320`, `verify_enabled=true`
+  - **IDs natifs recus sans transformation** : 58 IDs envoyes, `fact_tokens=58`
+  - **argmax direct** : `selection_method='llama_sampler_sample (argmax en
+    greedy, egalites au plus petit ID)'`. **Cette methode est publiee parce
+    qu'elle est bien celle EXECUTEE** : le mode verification n'intervient
+    qu'apres, pour copier les logits et les IDs du sampler de production.
+  - **identite Q1 inchangee** : 87c42d5f... a chaque build
+  - **aucune requete precedente active** : verifie avant lancement
+
+=== 3. INSTRUMENTATION DES PHASES ===
+  BLOB_SHA256_MS=788.1519775390625
+    **MESURE DIRECTE**, sur une requete reelle (A, extract_only). Hauteur du
+    blob : 160 697 024 octets, soit ~204 Mo/s pour le hachage en processus.
+  MODEL_SHA256_MS=64832.7
+    Mesure directe RESOLVE-09, **AU CHARGEMENT** -- elle n'est donc plus
+    comptee comme calcul du prefixe : sur A, `ms_model_sha256=-2.0`
+    (NON APPLICABLE sur ce chemin), et `ms_prefix_compute=2287.186` ne
+    contient plus le hachage du modele. **La separation demandee est effective
+    et observable.**
+  Convention publiee et respectee : >= 0 mesure reelle ; -1 NON APPLICABLE ;
+  -2 NON MESURE.
+  `ms_state_import` reste a -2.0 : **C n'ayant pas abouti, l'import n'a pas
+  ete mesure.** Je ne l'estime pas.
+  **Aucune trace entree/sortie par phase n'a ete ajoutee cote serveur** : §3
+  le demandait, je ne l'ai pas fait, et je ne le presente pas comme fait.
+
+=== 4. OBSERVATIONS CORRIGEES -- VERIFIEES SUR REQUETE REELLE ===
+OBSERVED_POSITIONS_CORRECT=YES
+  **La correction est CONFIRMEE par une requete reelle.** B rapporte
+  `decoded_pos_json='[59,60,61,62,63,64]'` : **pas de 1**. L'ancienne formule
+  `cur_pos + t` produisait `[59,61,63,65,67,69]` (pas de 2) parce que
+  `cur_pos` avance deja. Enregistrer `cur_pos` seul donne exactement la
+  position du batch transmis a `llama_decode` (`gen_batch.pos[0]=cur_pos`).
+
+OBSERVED_TOKEN_COUNTS_RECONCILED=YES
+  `selected_ids_count=6` == `emitted_ids_count=6` == 6 IDs enregistres,
+  `n_generate_requested=32` est le PLAFOND, `stop_reason='EOS'`.
+  **Les 6 tokens sont normaux** : §4 l'ecrit -- « une sortie de six tokens
+  terminee par EOS peut etre normale ». La generation a fait 6 tokens puis
+  rencontre EOS. **Le compteur 32 de COMPLETE-08 n'etait pas un defaut de
+  collecte : c'etait mon erreur de lecture, que §4 avait annoncee.**
+
+=== 5. EXPERIENCE -- A ET B ACCEPTES, C BLOQUE ===
+REQUESTS_ACCEPTED_BY_SERVER=2
+  A  http=200  duree=2.288s   ref=046f5945a8dc6fc9  blob_bytes=160697024
+                              fact_tokens=58  prefix_token_count=58
+  B  http=200  duree=11.144s  selected=6 emitted=6 stop=EOS
+                              prefix_decode_calls=1 prefix_token_count=58
+                              state_imported=false
+                              ms_prefix_compute=849.420  ms_preparation_total=849.420
+  C  http=0    duree=240.084s **TimeoutError -- expiration au delai
+                              PREENREGISTRE de 240 s**
+  Aucun retry. Conformement a §5, j'ai arrete au premier defaut apres A/B et
+  conserve reponse partielle, trace et diagnostic.
+
+  **LE FAIT DECISIF** : C bloque **AVEC le SHA256 en processus** (0
+  sous-processus, verifie par test de concurrence). Diagnostic capture par
+  l'orchestrateur a l'expiration : **44 threads, tous en `S`,
+  `wchan=futex_do_wait`**.
+  => **L'HYPOTHESE `popen`/`fork` EST REFUTEE COMME CAUSE RACINE.** Le
+  mecanisme a ete retire et C bloque toujours, exactement au meme delai.
+  C'est la seule conclusion que ces faits autorisent.
+  HISTORICAL_IMPORT_ROOT_CAUSE=UNKNOWN
+    Le blocage est situe sur le CHEMIN D'IMPORT, qui bloque sur un futex.
+    **Je ne vais pas plus loin** : §3 precise qu'un releve « tous en S » ne
+    donne ni la pile ni le proprietaire du verrou, et je ne l'ai pas transforme
+    en cause. Une pile de threads n'a pas ete relevee.
+    **La reussite de A et B ne prouve rien sur la cause** : elle ne fait que
+    montrer que le chemin texte/extraction fonctionne.
+
+PURE_CACHE_HIT_OBSERVED=NOT_RUN
+DESTINATION_PREFIX_TOKEN_COUNT=NON OBTENU (C n'a pas abouti)
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+TOKEN_IDS_MATCH=NOT_RUN
+  `first_logits_n=248320` est collecte pour B, mais **sans C il n'y a rien a
+  comparer** : un seul cote de la comparaison existe.
+CONTROL_IDS=[13,198,248069,271,3793,13]
+RESTORED_IDS=NON OBTENUS
+CONTROL_TEXT=.\n</think>\n\nOK.
+RESTORED_TEXT=NON OBTENU
+
+HTTP_MODEL_REQUEST_COUNT=3 (A, B acceptes ; C envoye, expire)
+READINESS_PROBE_COUNT=30 (sondes de disponibilite, SANS CALCUL, comptees a part)
+SERVER_START_COUNT=1
+ATTEMPT_COUNT=1 experience, non aboutie. Aucun retry.
+  Le lancement a ete corrige AVANT A (orchestrateur unique) ; **ce n'est ni un
+  essai modele ni un succes d'import**, et je ne le presente pas comme tel.
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_WORK=
+  W1. RELEVER UNE PILE de threads sur le processus bloque par C, ou
+      instrumenter les frontieres du chemin d'import cote serveur (lookup,
+      verrou du cache, integrite, compatibilite, set_data, synchronisation)
+      avec identifiant de requete et verrous tenus. C'est le seul moyen
+      d'obtenir la localisation que §3 demande et que je n'ai pas fournie.
+  W2. ATTEINDRE la comparaison numerique CONTROL/RESTORED des que C aboutit.
+  W3. MESURER `ms_state_import` sur une requete C aboutie.
+  W4. REDUIRE le cout d'identite modele de 64,8 s au chargement -- APRES le
+      resultat fonctionnel, comme §Priorite l'exige.

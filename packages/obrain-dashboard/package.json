@@ -1,0 +1,45 @@
+{
+  "name": "@obrain-db/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Obrain Dashboard \u2014 exploration, repr\u00e9sentation conceptuelle et questions au moteur obrain (React \u00b7 Jotai \u00b7 SCSS)",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/this-rs/obrain",
+    "directory": "packages/obrain-dashboard"
+  },
+  "homepage": "https://obrain.dev",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "jotai": "^2.10.0",
+    "katex": "^0.18.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.160.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "sass": "^1.77.8",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@parcel/watcher"
+    ]
+  }
+}

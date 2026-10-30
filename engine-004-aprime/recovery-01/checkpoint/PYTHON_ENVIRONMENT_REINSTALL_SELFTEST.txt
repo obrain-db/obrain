@@ -1,0 +1,13 @@
+PYTHON_ENVIRONMENT_REINSTALL_SELFTEST=PASS
+
+venv rc=0
+pip install --no-index rc=0
+imports rc=0
+pyarrow=25.0.1
+absl-py=2.5.0
+langdetect=1.0.9
+nltk=3.10.3
+immutabledict=4.3.1
+
+ifeval scorer rc=0 : INSTRUCTION_DICT=25
+

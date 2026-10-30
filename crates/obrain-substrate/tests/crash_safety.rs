@@ -45,6 +45,9 @@ fn sample_node(i: u32) -> NodeRecord {
         scar_util_affinity: PackedScarUtilAff::new(0, 0, 0, false).pack(),
         centrality_cached: 0,
         flags: 0,
+        // (jalon 2) appartenance : fixture publique.
+        tenant_id: 0,
+        _reserve: 0,
     }
 }
 
@@ -280,4 +283,58 @@ fn pseudo_random(seed: u64, lo: u64, hi: u64) -> u64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
     z ^= z >> 31;
     lo + z % (hi - lo)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LA FRONTIÈRE DE CRASH SE DIT ENCORE (2026-09-17)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// L'itérateur WAL ne rend plus une QUEUE INCOMPLÈTE comme une erreur : c'est une
+// écriture en vol (ou un arrêt brutal), pas une corruption, et le crier faisait
+// échouer un test qui avait raison (`multi_writer_wal` : 2 échecs sur 12). Mais
+// `ReplayStats::decode_errors` documente « 1 si la queue du WAL a été déchirée par
+// un crash » : rendre cette queue silencieuse aurait transformé une PANNE en fin
+// de fichier ordinaire — une régression d'observabilité.
+//
+// Les tests existants asserent `decode_errors <= 1`, ce qui ne distingue PAS le
+// signal préservé du signal disparu (0 passe l'assertion). Ce test tranche, sur
+// une coupure CONSTRUITE au milieu d'un enregistrement : la seule façon d'être
+// sûr que le fait est encore compté.
+#[test]
+fn une_queue_coupee_au_milieu_d_un_enregistrement_est_comptee() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub_path = dir.path().join("kb");
+    let wal_path;
+    {
+        let sub = SubstrateFile::create(&sub_path).unwrap();
+        wal_path = sub.wal_path();
+        let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+        for i in 0..50u32 {
+            w.write_node(i, sample_node(i)).unwrap();
+            w.commit().unwrap();
+        }
+        w.wal().fsync().unwrap();
+    }
+
+    // Coupure DÉLIBÉRÉE au milieu d'un enregistrement : on garde tout sauf les
+    // derniers octets, ce qui laisse une frame incomplète en fin de fichier.
+    let octets = std::fs::read(&wal_path).unwrap();
+    assert!(octets.len() > 32, "le WAL doit porter de quoi couper");
+    let garde = octets.len() - 5; // 5 octets < en-tête de 32 : queue tronquée
+    std::fs::write(&wal_path, &octets[..garde]).unwrap();
+
+    let sub = SubstrateFile::open(&sub_path).unwrap();
+    let stats = replay_from(&sub, 0).unwrap();
+    assert_eq!(
+        stats.decode_errors, 1,
+        "une queue coupée au milieu d'un enregistrement doit être COMPTÉE \
+         (frontière de crash), pas silencieuse — sans quoi une panne devient \
+         indiscernable d'une fin de fichier ordinaire"
+    );
+    assert!(
+        stats.stopped_at <= garde as u64,
+        "le rejeu doit s'arrêter à la coupure : stopped_at={} garde={garde}",
+        stats.stopped_at
+    );
+    assert!(stats.applied > 0, "tout ce qui précède la coupure est appliqué");
 }

@@ -1,0 +1,121 @@
+ENGINE-008 -- DOSSIER FINAL DE CLOTURE TECHNIQUE
+==========================================================================
+T1 PASS, T2 ETABLI, T3 RETROUVE ET FIGE. T4 PARTIEL. Aucun gel.
+
+=== 1. PREPARATION TECHNIQUE ACHEVEE ===
+T1_CONNECTED_END_TO_END_SELFTEST=PASS
+  `engine008_connected_e2e_tests.cpp` traverse LE CHEMIN RACCORDE :
+  inventaire lu au format reel -> registre MOCKE -> graphe SYNTHETIQUE
+  -> validation -> invocations attendues -> captures/relations
+  -> reconciliation -> RAPPORT SERIALISE. Tout passe par `run_pipeline` et par
+  les adaptateurs reellement utilises ; les fonctions pures ne sont PAS appelees
+  separement. 24 controles, 0 echec.
+  Couvre : en-tete et commentaires sautes ; doublon desactivant la capture ;
+  poids TQ2 HORS inventaire detecte et NOMME dans le rapport ; limite publiee ;
+  invocation attendue sans capture ; completude ; reference UNKNOWN bloquant la
+  completude ; **une fenetre ulterieure valide n'efface pas un defaut anterieur**.
+T2_SEGMENTATION_PROOF=ESTABLISHED
+  Voir ENGINE008_SEGMENTATION_PROOF.md. Chaine suivie de proche en proche depuis
+  `llama_decode` (:4691) -> `ctx->decode` (:2101) -> boucle `while(true)` avec
+  `memory->init_batch(*balloc, cparams.n_ubatch, ...)` (:2192) ->
+  `mctx->get_ubatch()` (:2244) -> `process_ubatch` (:2264) ->
+  `f1a_capture_end_epoch` (:1786). Splitters `split_equal`/`split_seq`
+  (llama-batch.cpp:510, :681), tous deux **parametres par n_ubatch**.
+  CONDITION ETABLIE : prefill 59 tokens et decode 1 token, une seule sequence,
+  n_ubatch=512 -> UN ubatch -> UNE extraction par fenetre.
+  Le controle runtime des extractions reste OBLIGATOIRE.
+T3_INVENTORY_STATUS=RECOVERED_AND_FROZEN
+  Voir ENGINE008_INVENTORY_AUTHORITY.md.
+  INVENTORY_SHA256=e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+  CONCORDANCE EXACTE avec l'autorite voisine `Q1_WHT_ELIGIBLE_INVENTORY.sha256`.
+  Format conforme au producteur sur les cinq regles. 169 lignes = 1 en-tete +
+  **168 noms**, sans doublon -- et le manifeste porte **168 noms distincts** :
+  concordance INDEPENDANTE (configuration vs observation).
+T4_INVOCATION_MAPPING_STATUS=PARTIAL
+  Adaptateur en place : `GGML_OP_MUL_MAT` et `GGML_OP_MUL_MAT_ID`, `src[0]` non
+  nul, pointeur natif present au registre -> nom EXACT. Cas couverts par les
+  tests : plusieurs invocations du meme poids, poids non eligible ignore (nom
+  exact), capture inattendue, reference ambigue, reference UNKNOWN.
+  CAS NON TESTES : copie de capture, alias ou vue du poids, expert non
+  selectionne, operateur distinct utilisant le meme poids.
+T5_EXECUTABLES=rebuild COMPLET depuis zero.
+
+=== 2. DECISIONS SCIENTIFIQUES RESTANTES ===
+S1_P4' : PROPOSED_NOT_ADOPTED. Les six verificateurs SONT implementes, raccordes
+   et testes (26/26). Ils ne peuvent PAS faire passer P4 avant adoption.
+   CLAUSE A ARBITRER : remplacer, dans P4, « absence de rotation observee avec
+   couverture » par « inatteignabilite du chemin WHT sous six conditions
+   verifiees ». CONSEQUENCE : la propriete exigee change de NATURE -- une
+   INATTEIGNABILITE STRUCTURELLE remplace une ABSENCE OBSERVEE. Sur quoi : la
+   CONSTRUCTION du graphe, plus l'observation. Et elle ne dit RIEN de
+   l'execution. Adopter rend P4 evaluable ; rejeter laisse P4 NON EVALUABLE,
+   la baseline Q4_K_M n'ayant aucune cible eligible au collecteur f1a.
+S2_D1 conserve, D2 NON ADOPTE. Aucune autre decision ouverte.
+
+=== 3. OBSERVATIONS RESERVEES AUX RUNS FUTURS ===
+  submission_rc == GGML_STATUS_SUCCESS par pas -- observe ;
+  llama_get_logits_ith non nul par pas (implique ctx->synchronize()) -- observe ;
+  epoch et decode_step alignes sur la fenetre -- observe ;
+  verdict WHT non partiel sur chaque fenetre -- observe ;
+  ctx_type et embeddings_nextn transmis et acceptes ;
+  gtype : GTYPE_DERIVED_FROM_VERIFIED_SOURCE_MAPPING (jamais observe) ;
+  NOMBRE D EXTRACTIONS par fenetre -- observe, et c'est ce qui refuterait T2 si
+  la condition etait fausse.
+  RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED.
+
+=== TESTS SUR L'ETAT FINAL (clean rebuild, aucun PASS herite) ===
+  t-inv        33/33     t-p4         26/26     t-wht        54/54
+  t-e2e        24/24     t-connect    75/75     t-whtpipe     8/8
+  t-parser     42/42     t-launcher   23/23
+  TOTAL 285 controles, 0 echec.
+  Garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3.
+
+=== IDENTITES ===
+  REAL_HARNESS_BINARY_SHA256=ac6dc4c7f9de5cf17a75aa5e91b972e64cf59a6418af9dbeb90652c7526575c1
+  LAUNCHER_SHA256=9d673ac2d0ad3ad66659845c3e3bc04e1d8d31e7f9cc770b2069c713091daaa5
+  HARNESS_SOURCE_MANIFEST_SHA256=b3a7656d338d3d78d9b48403c864a131696e694dc456cf419e304737a2ea1690
+  t-e2e 2694a92b22f1ee0bb30c0a38898353096d426f1b0b87e26759bce3bc62f3a4b0
+  t-connect 9cb318e9495b4c56449f4024e006f5436d1ed33dc979f1689481a166649258c7
+  INVENTORY_SHA256=e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+
+=== DEFAUTS REELS TROUVES DANS CETTE PASSE ===
+  D1_L'ELIGIBILITE VENAIT DES CAPTURES. Le pipeline tirait l'ensemble eligible du
+     REGISTRE de captures, ce qui rendait les invocations ATTENDUES dependantes
+     des captures REUSSIES -- exactement ce que la consigne interdit. Deux tests
+     e2e l'ont revele. Corrige : l'ensemble eligible vient de l'INVENTAIRE VALIDE
+     (`inv_valid_key_set`), reference independante. Un poids attendu mais non
+     capture reste desormais dans l'ensemble attendu, et l'ecart est signale.
+  D2_STACK SMASHING PAR ABI OBSOLETE. Apres avoir ajoute un membre a
+     `PipelineReport`, `tests.o` n'avait pas ete recompilee : l'ancienne
+     disposition de structure a corrompu la pile (`stack smashing detected`,
+     exit 134). Corrige par un REBUILD COMPLET depuis zero. C'est un defaut de
+     MON processus de build, pas du code.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+PREFLIGHT_PROTOCOL_FROZEN=NO
+PREFLIGHT_FREEZE_MANIFEST_SHA256=NOT_CREATED
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=NO
+  Le gel n'est pas emis : S1 attend un arbitrage, et T4 reste PARTIAL. Le gel ne
+  sera PAS declare adopte tant que P4 actuelle reste inevalable et que son
+  remplacement n'est pas adopte.
+
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_TECHNICAL_BLOCKERS=
+  T4_LES QUATRE CAS non testes de la correspondance invocation <-> operation :
+     copie de capture, alias ou vue du poids, expert non selectionne, operateur
+     distinct utilisant le meme poids.
+  T6_Le lanceur doit etre revalide sur son identite finale apres tout changement
+     d'interface (il l'a ete ici : 23/23 sur le rebuild complet).
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucun run, aucun gel, aucun amendement adopte, aucune donnee fabriquee, aucun
+UNKNOWN transforme en PASS. Aucun changement de Q1, du backend, des CUDA graphs,
+du batching, de la topologie ou des regles de preuve. Aucun document autorisant
+le calcul reel.

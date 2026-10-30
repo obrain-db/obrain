@@ -1,0 +1,140 @@
+%% Ce que ce diagramme prouve : la topologie de deploiement de la flotte obrain et de la facade
+%% publique ffs.space — quelle machine heberge quoi, quels tunnels ssh existent REELLEMENT,
+%% sur quels ports ils ecoutent, et ce qui est deploye contre ce qui est seulement prepare.
+%% Sources LUES : ffs-space-front/README.md 29 lignes, RUNBOOK.md 115, caddy/Caddyfile 80,
+%% caddy/ffs.space.docker.caddy 56, nginx/ffs.space.conf 76, systemd/ffs-tunnel-viz.service 22,
+%% systemd/ffs-tunnel-gateway.service 22, test/Caddyfile.test 44, test/resultats-test-local.md 36 ;
+%% obrain-tmn/deploy/ffs-nodes.md, obrain-tmn.fleet.env, obrain-tunnel-ffs-n1.service,
+%% obrain-tunnel-ffs-n2.service ; unites systemd utilisateur de n3 ; unites systemd utilisateur
+%% INSTALLEES sur le DGX lues par ssh.
+%% MESURE le 2026-09-30 sur n3 et le DGX : ss -tlnp, curl avec code HTTP, systemctl --user
+%% is-active, hostname et hostname -I, dig +short ffs.space, test TCP. DEDUIT : rien. Les seuls
+%% elements non mesures sont ceux marques constat RUNBOOK, et ils sont attribues a leur source.
+%% ECART DOCUMENTE : l IP publique 82.65.152.87 du README est CORROBOREE — vue comme adresse de
+%% sortie de n3 par api.ipify.org. Le 443 et le 80 d iaflow restent des constats RUNBOOK : ssh
+%% triviere@192.168.1.42 depuis n3 est refuse en publickey, donc le Caddyfile infra d iaflow
+%% n a PAS pu etre lu — aucun noeud n est dessine pour son contenu, seulement pour le conteneur
+%% que le RUNBOOK nomme. Le fork llama de n1 sur :9902 est declare par l unite installee du DGX
+%% et atteint par le tunnel ; il n a pas ete lu depuis n1 elle-meme, faute de mesure directe.
+
+flowchart TB
+
+classDef cMach fill:#1f4fa1,stroke:#0f2857,color:#fff
+classDef cSvc  fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef cTun  fill:#0f7a7a,stroke:#084040,color:#fff
+classDef cCfg  fill:#c47a10,stroke:#6b420a,color:#fff
+classDef cPub  fill:#5a3d8a,stroke:#2e1e46,color:#fff
+classDef cRef  fill:#a11f1f,stroke:#5c0f0f,color:#fff
+classDef cMes  fill:#4a4a4a,stroke:#222222,color:#fff
+
+subgraph Internet["Internet — rien n est encore publie"]
+  i_dns["ffs.space et www.ffs.space<br/>A attendu vers 82.65.152.87<br/>MESURE : dig +short ffs.space renvoie VIDE<br/>donc aucun nom public ne resout aujourd hui"]
+  i_cli["client externe<br/>verifications prevues au RUNBOOK<br/>health attendu 200<br/>stores attendu 401 sans jeton"]
+end
+
+subgraph Iaflow["iaflow 192.168.1.42 — hote declare de la facade publique — MESURE : TCP 443 joignable, 80 refuse, ssh refuse en publickey"]
+  i_caddy["conteneur infra_caddy_1<br/>image caddy:2.6.4 — constat RUNBOOK<br/>tient le 443 public d iaflow<br/>aucun module rate_limit dans ce binaire"]
+  i_ha["conteneur homeassistant<br/>0.0.0.0:80 vers 8300 — constat RUNBOOK<br/>MESURE depuis n3 : 192.168.1.42:80 REFUSE<br/>l etat a donc change depuis le 2026-09-13"]
+  i_cha["chemin A — recommande par le RUNBOOK<br/>bloc ffs.space ajoute au Caddyfile infra<br/>upstreams LAN DIRECTS, sans aucun tunnel<br/>le conteneur bridge n atteint pas 127.0.0.1 de l hote"]
+  i_chb["chemin B — variante hote<br/>caddy ou nginx installe sur l hote iaflow<br/>upstreams 127.0.0.1 servis par les tunnels ssh<br/>bloque tant que le 443 est tenu par infra_caddy_1"]
+end
+
+subgraph N3["n3 192.168.1.103 — cette machine — hote des services servis"]
+  n3_viz["obrain-viz.service — ACTIF<br/>ExecStart obrain viz serve<br/>binaire banc-obrain-tronc target release<br/>LISTEN 192.168.1.103:8432 — pid obrain 1060030<br/>MESURE : racine renvoie 303 vers /login puis 200"]
+  n3_gw["this-rs-gateway.service — ACTIF<br/>binaire this-rs-gateway.fix-wal-20260916<br/>LISTEN 192.168.1.103:8144 — pid 1529142<br/>issuer obrain-n3<br/>MESURE : health renvoie 200"]
+  n3_stores["4 stores servis par le gateway<br/>runtime et prod en tenant c90599a3-f1b6-43f1-a5c8-03b7b645f378<br/>linux et driversnet en tenant public"]
+  n3_bind["MESURE ss -tlnp<br/>8432 et 8144 n ecoutent QUE sur 192.168.1.103<br/>aucun bind loopback sur n3<br/>c est pourquoi les tunnels visent 192.168.1.103 et non localhost"]
+end
+
+subgraph DGX["DGX spark-c578 192.168.1.7 — les tunnels ssh installes, lus par ssh"]
+  d_llm["llama-server — ACTIF<br/>LISTEN 0.0.0.0:9910 — pid 2417<br/>c est OBRAIN_LLM_URL du viz de n3"]
+  d_n1["obrain-tunnel-ffs-n1.service — ACTIF<br/>ssh -N -L 9921:localhost:9902 vers triviere@192.168.1.101<br/>Description : fork llama-obrain :9902<br/>Qwen3.6-35B-A3B CPU<br/>LISTEN 127.0.0.1:9921 et sur ::1:9921<br/>MESURE par le tunnel : 200"]
+  d_n2["obrain-tunnel-ffs-n2.service — ACTIF<br/>ssh -N -L 9922:localhost:9902 vers triviere@192.168.1.102<br/>Description : fork llama-obrain :9902<br/>Qwen3.8-27B CPU<br/>LISTEN 127.0.0.1:9922 et sur ::1:9922<br/>MESURE par le tunnel : 200"]
+  d_n3["obrain-tunnel-ffs-n3.service — INACTIF<br/>Description : DESACTIVE 2026-09-17<br/>fork n3 arrete le 09-09<br/>raison ecrite : 27B a 0,25 tok par seconde sur n3<br/>MESURE : aucun listener 9923, tunnel renvoie 000"]
+end
+
+subgraph Noeuds["noeuds ffs servis — inventaire ffs-nodes.md du 2026-07-03"]
+  n1_fork["ffs-n1 192.168.1.101<br/>MAC 68:1d:ef:4a:db:36 pour wake-on-lan<br/>fork llama-obrain sur :9902<br/>MESURE depuis n3 : 101:9902 injoignable en direct<br/>le fork n ecoute donc que sur le loopback de n1"]
+  n2_fork["ffs-n2 192.168.1.102<br/>MAC 68:1d:ef:4b:02:23 pour wake-on-lan<br/>fork llama-obrain sur :9902<br/>MESURE depuis n3 : 102:9902 renvoie 200 en direct"]
+end
+
+subgraph Prep["banc ffs-space-front — PREPARE et NON DEPLOYE — un seul commit 30ac4b2, arbre propre"]
+  p_docker["caddy/ffs.space.docker.caddy — 56 lignes<br/>bloc pour le Caddy docker EXISTANT d iaflow<br/>reverse_proxy http 192.168.1.103:8144 pour auth stores health<br/>reverse_proxy http 192.168.1.103:8432 pour tout le reste<br/>en-tetes HSTS nosniff DENY no-referrer poses"]
+  p_caddy["caddy/Caddyfile — 80 lignes<br/>variante hote, caddy 2.7 ou plus<br/>reverse_proxy 127.0.0.1:8144 et 127.0.0.1:8432<br/>donc depend des deux tunnels ssh"]
+  p_nginx["nginx/ffs.space.conf — 76 lignes<br/>listen 443 ssl, http2, certbot DNS-01 conseille<br/>limit_req_zone ffs_auth_token 10r par minute burst 5<br/>proxy_pass 127.0.0.1:8144 et 127.0.0.1:8432"]
+  p_tviz["systemd/ffs-tunnel-viz.service — 22 lignes<br/>ssh -N -L 127.0.0.1:8432 vers 192.168.1.103:8432<br/>cible triviere@192.168.1.103<br/>patron repris de obrain-tunnel-ffs-n3 du DGX"]
+  p_tgw["systemd/ffs-tunnel-gateway.service — 22 lignes<br/>ssh -N -L 127.0.0.1:8144 vers 192.168.1.103:8144<br/>cible triviere@192.168.1.103<br/>meme patron"]
+  p_test["test/Caddyfile.test — 44 lignes<br/>127.0.0.1:8543 avec bind loopback explicite<br/>memes regles de routage que la prod<br/>upstreams directs 192.168.1.103:8144 et :8432<br/>serveur tue apres les tests, preuves dans resultats-test-local.md"]
+end
+
+subgraph Src["obrain-tmn/deploy — unites source-controlled — ELLES DIVERGENT DE L INSTALLE"]
+  s_n1["obrain-tunnel-ffs-n1.service du depot<br/>ssh -N -L 9921:localhost:11434<br/>cible ollama, 14 lignes, date 2026-07-03"]
+  s_n2["obrain-tunnel-ffs-n2.service du depot<br/>ssh -N -L 9922:localhost:11434<br/>cible ollama, 14 lignes, date 2026-07-03"]
+  s_fleet["obrain-tmn.fleet.env — 19 lignes<br/>OBRAIN_TMN_FLEET declare ffs_n1 sur localhost:9921 mirage 8771<br/>ffs_n2 sur localhost:9922 mirage 8772<br/>ffs_n3 sur localhost:9923 mirage 8773<br/>et dgx_cuda 9902, dgx_cuda_2 9904, m4_local 9911"]
+  s_nodes["ffs-nodes.md — 10 lignes, inventaire 2026-07-03<br/>n1 ollama :11434 bind 127.0.0.1<br/>n2 ollama :11434 bind 127.0.0.1<br/>n3 non renseigne en port et en service"]
+end
+
+subgraph Ecarts["ecarts mesures le 2026-09-30 — ce que les documents annoncent contre ce que la machine repond"]
+  x1["RUNBOOK annonce curl 8432 racine vers 200<br/>MESURE : 303 vers /login<br/>le viz s est donc mis a exiger une connexion"]
+  x2["RUNBOOK annonce 127.0.0.1:8443 occupe sur n3 par un pid 2500038<br/>MESURE : AUCUN listener sur 8443<br/>ce constat est perime, et le test sur 8543 n a plus cette raison"]
+  x3["RUNBOOK annonce le 80 d iaflow tenu par homeassistant<br/>MESURE depuis n3 : connexion REFUSEE sur 192.168.1.42:80<br/>le 443 lui repond au TCP mais refuse le handshake TLS"]
+  x4["unites tunnel du depot visent ollama 11434<br/>unites INSTALLEES sur le DGX visent le fork llama 9902<br/>meme nom de fichier, cible differente"]
+end
+
+risk["RISQUE ASSUME — ecrit, pas corrige<br/>api query du viz repond 200 SANS AUCUNE AUTH<br/>mesure a travers la facade d essai le 2026-09-13<br/>regle de coupure 403 prete mais commentee dans les 3 configs<br/>la couper casse le dashboard qui charge ses donnees par la"]
+
+i_dns -.->|pointe quand deploye| i_caddy
+i_cli -->|HTTPS 443| i_caddy
+
+i_caddy -->|heberge le contenu du chemin A| i_cha
+i_cha -->|reverse_proxy http| n3_gw
+i_cha -->|reverse_proxy http| n3_viz
+i_caddy -.->|variante hote impossible tant que le 443 est tenu| i_chb
+
+p_docker -->|config du chemin A| i_cha
+p_caddy -->|config du chemin B| i_chb
+p_nginx -->|variante du chemin B| i_chb
+
+i_chb -->|proxy_pass 127.0.0.1:8144| p_tgw
+i_chb -->|proxy_pass 127.0.0.1:8432| p_tviz
+p_tgw -.->|NON INSTALLE : cle ssh iaflow vers n3 absente| n3_gw
+p_tviz -.->|NON INSTALLE : meme prerequis manquant| n3_viz
+
+n3_bind -.->|raison de la cible 192.168.1.103| p_tviz
+n3_bind -.->|raison de la cible 192.168.1.103| p_tgw
+
+n3_gw -->|lit| n3_stores
+n3_viz -->|lit le moteur| d_llm
+
+d_n1 -->|tunnel ssh vers le fork| n1_fork
+d_n2 -->|tunnel ssh vers le fork| n2_fork
+
+s_n1 -.->|DIVERGE de l unite installee| d_n1
+s_n2 -.->|DIVERGE de l unite installee| d_n2
+s_fleet -->|declare les cibles des tunnels| d_n1
+s_fleet -->|declare une cible desormais morte| d_n3
+s_nodes -->|explique le bind loopback de n1| n1_fork
+
+p_test -->|reverse_proxy direct| n3_gw
+p_test -->|reverse_proxy direct| n3_viz
+p_test -->|a demontre| risk
+risk -->|concerne l endpoint sans garde| n3_viz
+
+x1 -->|contredit| n3_viz
+x2 -->|perime| p_test
+x3 -->|contredit| i_ha
+x4 -->|contredit| d_n1
+
+class i_dns,i_cli cPub
+class i_caddy,i_ha cMach
+class i_cha,i_chb cCfg
+class n3_viz,n3_gw cSvc
+class n3_stores,n3_bind cMes
+class d_llm cSvc
+class d_n1,d_n2 cTun
+class d_n3 cRef
+class n1_fork,n2_fork cSvc
+class p_docker,p_caddy,p_nginx,p_tviz,p_tgw,p_test cCfg
+class s_n1,s_n2,s_fleet,s_nodes cMes
+class x1,x2,x3,x4 cMes
+class risk cRef

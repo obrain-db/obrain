@@ -1,0 +1,250 @@
+{
+  "horodatage": "2026-09-10T20:35:04.192Z",
+  "base": "http://192.168.1.103:8432",
+  "store": "/home/triviere/.local/share/obrain-harness/data/runtime-dev.obrain",
+  "tours": 3,
+  "mesures": [
+    {
+      "nom": "/api/viz/subgraph hops=2 (phase MOTIFS)",
+      "section": "route",
+      "min": 8.11425700000109,
+      "median": 8.894843000001856,
+      "max": 26212.751912,
+      "froid": 26212.751912,
+      "octets": 2207569,
+      "note": ""
+    },
+    {
+      "nom": "agréger par type d'arête",
+      "section": "moteur",
+      "min": 1.2751359999997476,
+      "median": 1.7243610000000444,
+      "max": 2088.791003,
+      "froid": 2088.791003,
+      "octets": 663,
+      "note": "",
+      "moteur_ms": 2086.965584
+    },
+    {
+      "nom": "/api/viz/space (sous-ensembles)",
+      "section": "route",
+      "min": 1.240671999999904,
+      "median": 2.1165430000037304,
+      "max": 1621.8798010000028,
+      "froid": 1621.8798010000028,
+      "octets": 173,
+      "note": ""
+    },
+    {
+      "nom": "/api/viz/weave (tissage complet)",
+      "section": "route",
+      "min": 1175.4476350000004,
+      "median": 1179.5429890000014,
+      "max": 1184.926993000001,
+      "froid": 1175.4476350000004,
+      "octets": 8096,
+      "note": ""
+    },
+    {
+      "nom": "/api/viz/signatures (toutes les signatures)",
+      "section": "route",
+      "min": 1080.5814950000004,
+      "median": 1127.3539889999993,
+      "max": 1169.8975440000004,
+      "froid": 1080.5814950000004,
+      "octets": 4645,
+      "note": ""
+    },
+    {
+      "nom": "/api/viz/subgraph hops=1 (phase RAPIDE)",
+      "section": "route",
+      "min": 7.431931999999506,
+      "median": 21.50361900000098,
+      "max": 756.5225790000004,
+      "froid": 756.5225790000004,
+      "octets": 1669045,
+      "note": ""
+    },
+    {
+      "nom": "agréger par label",
+      "section": "moteur",
+      "min": 1.5064110000000142,
+      "median": 2.8645700000000147,
+      "max": 224.504203,
+      "froid": 224.504203,
+      "octets": 1521,
+      "note": "",
+      "moteur_ms": 222.350632
+    },
+    {
+      "nom": "/api/functions (recherche)",
+      "section": "route",
+      "min": 1.3004829999990761,
+      "median": 1.6111629999941215,
+      "max": 202.50800000000163,
+      "froid": 202.50800000000163,
+      "octets": 6730,
+      "note": ""
+    },
+    {
+      "nom": "/api/viz/overview (résumé d'un store)",
+      "section": "route",
+      "min": 0.8649609999993118,
+      "median": 1.403081000000384,
+      "max": 151.45832700000028,
+      "froid": 151.45832700000028,
+      "octets": 587,
+      "note": ""
+    },
+    {
+      "nom": "expansion du nœud cyclique 317553",
+      "section": "rejeu",
+      "min": 1.4411309999995865,
+      "median": 1.8987330000018119,
+      "max": 142.85155400000076,
+      "froid": 142.85155400000076,
+      "octets": 117657,
+      "note": "",
+      "moteur_ms": 133.572143
+    },
+    {
+      "nom": "expansion du nœud cyclique 318414",
+      "section": "rejeu",
+      "min": 1.12114300000394,
+      "median": 1.4881870000026538,
+      "max": 117.7929460000014,
+      "froid": 117.7929460000014,
+      "octets": 117665,
+      "note": "",
+      "moteur_ms": 114.47518199999999
+    },
+    {
+      "nom": "compter les nœuds",
+      "section": "moteur",
+      "min": 2.19661099999999,
+      "median": 2.670682999999997,
+      "max": 90.537645,
+      "froid": 90.537645,
+      "octets": 80,
+      "note": "",
+      "moteur_ms": 0.029394
+    },
+    {
+      "nom": "compter UN type d'arête",
+      "section": "moteur",
+      "min": 1.8398149999999873,
+      "median": 2.7962540000000047,
+      "max": 33.515956999999986,
+      "froid": 33.515956999999986,
+      "octets": 76,
+      "note": "",
+      "moteur_ms": 28.805361
+    },
+    {
+      "nom": "étendre 1 saut depuis 1 nœud",
+      "section": "moteur",
+      "min": 2.516147999999987,
+      "median": 2.8656819999999925,
+      "max": 22.980255999999997,
+      "froid": 22.980255999999997,
+      "octets": 161548,
+      "note": "",
+      "moteur_ms": 18.346781999999997
+    },
+    {
+      "nom": "lire 10 nœuds",
+      "section": "moteur",
+      "min": 0.9642340000000047,
+      "median": 1.2926669999999945,
+      "max": 22.384389,
+      "froid": 22.384389,
+      "octets": 6175,
+      "note": "",
+      "moteur_ms": 20.673061
+    },
+    {
+      "nom": "/api/viz/modules (ensembles d'un monde)",
+      "section": "route",
+      "min": 1.5723219999999856,
+      "median": 2.4502080000002024,
+      "max": 5.9790090000005875,
+      "froid": 5.9790090000005875,
+      "octets": 344,
+      "note": ""
+    },
+    {
+      "nom": "/api/viz/activation (journal vif)",
+      "section": "route",
+      "min": 2.616893999998865,
+      "median": 4.9031489999997575,
+      "max": 5.91540200000054,
+      "froid": 5.91540200000054,
+      "octets": 8315,
+      "note": ""
+    },
+    {
+      "nom": "/api/engine/sante (LLM)",
+      "section": "route",
+      "min": 2.4051650000037625,
+      "median": 4.623945999999705,
+      "max": 5.21780900000158,
+      "froid": 5.21780900000158,
+      "octets": 116,
+      "note": ""
+    },
+    {
+      "nom": "compter les arêtes",
+      "section": "moteur",
+      "min": 1.7407230000000027,
+      "median": 2.010969999999986,
+      "max": 3.5341119999999933,
+      "froid": 3.5341119999999933,
+      "octets": 81,
+      "note": "",
+      "moteur_ms": 0.032921
+    },
+    {
+      "nom": "/api/worlds (registre)",
+      "section": "route",
+      "min": 1.4020090000049095,
+      "median": 1.454024999999092,
+      "max": 2.2104160000017146,
+      "froid": 2.2104160000017146,
+      "octets": 1701,
+      "note": ""
+    },
+    {
+      "nom": "chercher par nom (index)",
+      "section": "moteur",
+      "min": 1.3777950000000203,
+      "median": 1.5268179999999916,
+      "max": 1.867334999999997,
+      "froid": 1.867334999999997,
+      "octets": 68,
+      "note": "",
+      "moteur_ms": 0.046625999999999994
+    },
+    {
+      "nom": "expansion du nœud VOISIN 318415 (témoin)",
+      "section": "rejeu",
+      "min": 1.0618130000002566,
+      "median": 1.1675979999999981,
+      "max": 1.4011170000012498,
+      "froid": 1.4011170000012498,
+      "octets": 254,
+      "note": "",
+      "moteur_ms": 0.089314
+    },
+    {
+      "nom": "expansion du nœud VOISIN 317554 (témoin)",
+      "section": "rejeu",
+      "min": 0.8314989999998943,
+      "median": 0.9024910000007367,
+      "max": 1.2735130000000936,
+      "froid": 1.2735130000000936,
+      "octets": 899,
+      "note": "",
+      "moteur_ms": 0.109842
+    }
+  ]
+}

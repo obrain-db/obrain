@@ -1,0 +1,44 @@
+{
+  "_lire": "LA RÉFÉRENCE DE VERSION. Un seul endroit dit QUELLE version est validée, et `scripts/version-check.sh` compare le réel à cette référence. Tant que la comparaison est au vert, ce qui tourne EST ce qui est validé. Dès qu'elle rougit, quelque chose a dérivé — et elle dit quoi.",
+  "_pourquoi": "Défaut mesuré le 2026-09-16 : l'UI promue annonçait `hors_ligne 0e3367a4` alors que les sources étaient en `990a8911`. Cause : `ui-deploy.sh` CONSTRUIT depuis l'arbre de travail mais ENREGISTRE `git HEAD`. Des fichiers non commités produisent donc une version servie plus récente que la référence — un écart invisible sans une porte qui le compare. Deux arbres (banc-obrain, banc-obrain-tronc) sont des worktrees du MÊME dépôt : ce qui dérive, ce sont des BRANCHES, pas des copies.",
+
+  "arbre_de_service": "/home/triviere/projects/banc-obrain-tronc",
+  "branche_de_service": "harness/continuite-dans-contrat-2026-09-15",
+  "tag_valide": "version-2026-09-16",
+  "commit_valide": "68e87663",
+  "_tag": "Le TAG est la référence stable : la porte vérifie que ce tag pointe le commit courant de l'arbre de service. `commit_valide` n'est qu'un INDICE lisible — il se périme dès qu'on amende, et c'est pour ça qu'il ne décide plus rien.",
+  "reference_ui": "/home/triviere/.local/share/obrain-harness/ui/etat.json",
+  "reference_ui_attendue": {
+    "hors_ligne": "68e87663",
+    "note": "Le champ `hors_ligne` doit nommer le commit dont l'UI est ISSUE. Tant qu'il diffère du commit validé, la page servie n'est pas exactement la version validée."
+  },
+
+  "service": {
+    "unite": "obrain-viz.service",
+    "port": 8432,
+    "binaire": "/home/triviere/projects/banc-obrain-tronc/target/release/obrain"
+  },
+
+  "_portes": "Ce qui doit passer pour que la version soit dite VALIDÉE. Chaque entrée est exécutée par `version-check.sh --complet`. Les portes d'interface tournent sur un serveur local jetable (port libre), jamais sur le service de l'utilisateur.",
+  "portes": {
+    "moteur": [
+      "cargo test --release -p obrain-cli --features ai,iam --bin obrain ancrage::",
+      "cargo test --release -p obrain-cli --features ai,iam --bin obrain memoire::",
+      "cargo test --release -p obrain-cli --features ai,iam --bin obrain resonance::"
+    ],
+    "acceptation": [
+      "scripts/acceptation-monde-utilisateur.sh",
+      "scripts/acceptation-resonance.sh",
+      "scripts/acceptation-selfs-catalogue.sh",
+      "scripts/acceptation-self-par-compte.sh"
+    ],
+    "interface": [
+      "scripts/ui-mobile-porte.mjs",
+      "scripts/ui-chat-porte.mjs",
+      "scripts/ui-gens-porte.mjs",
+      "scripts/ui-monde-porte.mjs"
+    ]
+  },
+  "interface_base": "http://127.0.0.1:8479",
+  "_portes_note": "Les portes d'acceptation des dépôts voisins (acceptation-monde-utilisateur.sh, acceptation-self-par-compte.sh) vivent dans banc-obrain/scripts ; les autres dans l'arbre de service."
+}

@@ -1,0 +1,161 @@
+%% Ce que ce diagramme prouve : l architecture REELLE du chat obrain qui ecoute sur
+%% 192.168.1.103:9903 — UN SEUL binaire axum qui sert a la fois le SPA React, le canal
+%% gRPC-web, et qui relie le moteur obrain (chat.obrain), le modele Qwen3.8-27B du dgx et
+%% 7 serveurs MCP. Perimetre lu : 24 fichiers .rs et 19334 lignes cote serveur, 44 fichiers
+%% et 21345 lignes cote client, plus un contrat .proto de 1136 lignes.
+%% Source : /home/triviere/projects/wt-chat-pieces-jointes — l arbre D OU LE BINAIRE EN
+%% SERVICE A ETE COMPILE. Etabli en lisant les chemins graves DANS le binaire deploye
+%% /mnt/obrain/deploy/obrain-chat-mobile : ils portent .../wt-chat-pieces-jointes/api/config
+%% et .../wt-chat-pieces-jointes/api/../front/dist. Confirme independamment par l en-tete
+%% Last-Modified du front servi, 2026-09-22 18:26:54, identique a la seconde pres au
+%% mtime de wt-chat-pieces-jointes/front/dist/index.html. Plus /proc/1517408/environ, la
+%% conf systemd du service, et le banner de demarrage du 2026-09-22T12:10:06 lu dans
+%% /tmp/chat-server.log.
+%% MESURE : nombres de lignes par wc -l ; 39 rpc et 103 messages du .proto comptes ; 3 RPC
+%% pour AuthService et 36 pour ChatService ; 64 outils MCP et 7 bases externes lus dans le
+%% banner de demarrage du process vivant ; tailles et dates par stat. DEDUIT : rien.
+%% Aucun noeud n est dessine sans que sa source ait ete ouverte et lue.
+%% NON ETABLI DONC NON DESSINE, et ecrit ici plutot que comble :
+%% 1. Le cwd du process vivant est /home/triviere/projects/wt-chat-securite/api, alors que le
+%%    binaire vient de wt-chat-pieces-jointes. L ecart est REEL et mesure, mais je n ai pas pu
+%%    etablir lequel des deux arbres fait foi pour le prochain redeploiement : aucun noeud ne
+%%    figure donc pour le code de wt-chat-securite. Il explique en revanche la racine du noeud
+%%    selfd n3, qui vaut ce meme chemin.
+%% 2. Malgre des commentaires qui le nomment deux fois, AUCUN capacitor.config n existe dans
+%%    l arbre lu. Le client est donc dessine comme un SPA React, pas comme une application
+%%    Capacitor, et aucune chaine de build native n est dessinee.
+%% ETATS utilises : ✅ ecrit et verifie · 🟠 decide pas ecrit · 🔴 refuse avec sa raison ·
+%% ⚪ existe en amont.
+
+flowchart TB
+
+classDef cCli  fill:#1f4fa1,stroke:#0f2857,color:#fff
+classDef cDep  fill:#4a4a4a,stroke:#222222,color:#fff
+classDef cSrv  fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef cEng  fill:#0f7a7a,stroke:#084040,color:#fff
+classDef cInf  fill:#5a3d8a,stroke:#2e1e46,color:#fff
+classDef cOut  fill:#c47a10,stroke:#6b420a,color:#fff
+classDef cAmon fill:#6b6b6b,stroke:#333333,color:#fff
+classDef cLim  fill:#a11f1f,stroke:#5c0f0f,color:#fff
+
+subgraph Client["Le client : un SPA React de 21345 lignes, servi par le MEME serveur, sans aucune bibliotheque gRPC"]
+  ui["front/src — 44 fichiers, 21345 lignes<br/>React 18 · react-router-dom 7 · Vite 6 · highlight.js · KaTeX<br/>chat/Chat.tsx 2103 lignes · styles.css 4861 lignes"]
+  usechat["front/src/chat/useChat.ts<br/>1843 lignes<br/>etat du tour, rejeu du journal apres une coupure de flux"]
+  chatcli["front/src/grpc/chat.ts<br/>1822 lignes<br/>39 methodes, chemins /obrain.chat.v1.AuthService/… et /obrain.chat.v1.ChatService/…"]
+  protob["front/src/grpc/protobuf.ts 178 lignes<br/>front/src/grpc/sha256.ts 79 lignes<br/>protobuf et SHA-256 ECRITS A LA MAIN : aucune dependance grpc-web ni google-protobuf"]
+  canal["front/src/grpc/canal.ts<br/>392 lignes<br/>gRPC-web ecrit a la main : fetch, cadre 0x00 puis longueur BE32, trailers 0x80<br/>repli arrayBuffer quand le WebView refuse de lire un flux sans fin"]
+end
+
+subgraph Deploiement["Le deploiement : un service systemd utilisateur, et une COPIE stable du binaire"]
+  unit["~/.config/systemd/user/obrain-chat-mobile.service<br/>EnvironmentFile obrain-chat-mobile.env · StandardOutput /tmp/chat-server.log<br/>drop-ins worktree.conf puis zz-securite-mots-de-passe.conf, ce dernier gagne"]
+  bin["ExecStart /mnt/obrain/deploy/obrain-chat-mobile<br/>410292888 octets, 2026-09-22 12:10, pid 1517408<br/>WorkingDirectory wt-chat-securite/api · HOST 192.168.1.103 · PORT 9903"]
+end
+
+subgraph Serveur["Le serveur : main.rs 1120 lignes — un seul routeur axum, une seule origine, donc aucun CORS"]
+  main["api/src/main.rs<br/>:873 AuthService · :927 ChatService · :946 merge · :954 fallback ServeDir<br/>chemin du front = CARGO_MANIFEST_DIR/../front/dist, grave a la compilation"]
+  web["tonic_web::GrpcWebLayer<br/>main.rs:882 et main.rs:932<br/>traduit gRPC-web vers tonic : sans lui un WebView ne pourrait appeler AUCUN service"]
+  auth["AuthServiceImpl<br/>chat/mod.rs — login :110 · changer_mot_de_passe :166 · refresh :197<br/>3 RPC, monte SANS la garde : on ne demande pas un jeton pour obtenir un jeton"]
+  chatsvc["ChatServiceImpl<br/>chat/mod.rs:1050 · impl ChatService :1732<br/>36 RPC, dont 2 en flux : Send et ReadAttachment<br/>garde IAM PAR OPERATION, le gRPC n ayant pas de routes a policy"]
+  garde["api/src/garde.rs 339 lignes<br/>identite :197 lit la metadonnee authorization<br/>exiger :243 appelle Iam::allows — fail-closed<br/>couple :105 est AUSSI passee a this-rs par with_principal_mapping : une seule fonction, deux appelants"]
+  rest["RestExposure::build_router — this-rs<br/>main.rs:855<br/>la surface REST de this-rs, politiques auth: appliquees par route"]
+  refus["🔴 refus mesure — canal.ts:163<br/>WhoAmI sans jeton : HTTP 200, content-length 0, grpc-status 16<br/>la garde rend unauthenticated AVANT tout travail"]
+  nonmonte["🟠 decide, pas ecrit — main.rs:857<br/>la surface gRPC de this-rs Entity Link Event Notification n est PLUS montee<br/>elle etait anonyme : aucun noeud de code ne la represente aujourd hui"]
+end
+
+subgraph Moteur["Le moteur obrain : le graphe EST la memoire du chat, atteint par GraphBackend"]
+  store["ObrainStore — this-rs/src/storage/obrain.rs 2478 lignes<br/>open :130 · open_read_only :151 · new_in_memory :115<br/>✅ donnees/chat.obrain, ouvert au demarrage du 2026-09-22"]
+  facade["GraphBackend — this-rs/src/storage/mod.rs:60<br/>surface publique et cloisonnee par espace<br/>ObrainStore::session reste volontairement PRIVE, d ou le passage par cette facade"]
+  memoire["api/src/chat/memoire.rs 1935 lignes<br/>conversations, messages, journal de tour, politique d approbation<br/>create_node :412 et neighbors :260 via GraphBackend"]
+  bases["api/src/chat/bases.rs 1328 lignes<br/>notes et projets : INTERNES, dans le store du chat<br/>une base externe est ouverte en open_read_only et jamais ecrite"]
+  basesext["⚪ 7 bases EXTERNES, lecture seule, comptees au banner du 2026-09-22<br/>linux-full3 1553071 notes · linux-drivers-net 333262 · orchestrateur 26633<br/>obrain-moteur 6587 · this-rs 4685 · linux-e1000 1378 · rust-log 698"]
+  ident["api/src/chat/identites.rs 615 lignes<br/>✅ donnees/identites.obrain — 3 comptes au demarrage<br/>mots de passe argon2id au format PHC, jamais en clair"]
+  iam["Iam — this-rs/src/storage/iam.rs<br/>decisions materialisees au demarrage depuis l annuaire<br/>un compte sans roles n a AUCUNE decision : tout lui est refuse"]
+  pieces["api/src/chat/pieces.rs 589 lignes<br/>donnees/pieces, cloisonne par tenant puis par conversation"]
+end
+
+subgraph Inference["L inference : llama.cpp du dgx, en HTTP interne — le client ne le voit jamais"]
+  inf["api/src/chat/inference.rs 2024 lignes<br/>reqwest — POST :414 sur base plus /chat/completions, en stream<br/>sonder :260 interroge /v1/models"]
+  llm["⚪ llama-server du dgx — http://192.168.1.7:9910<br/>banner : 1 modele Qwen3.8-27B-Q4_K_M.gguf, 32768 jetons max<br/>prechauffage mesure au demarrage : premier_token_ms 290"]
+end
+
+subgraph Outils["Les outils de l agent : 7 serveurs MCP PERSISTANTS, 64 outils au demarrage"]
+  outils["api/src/chat/outils/mod.rs 1678 lignes<br/>catalogue et Nature Lecture ou Action<br/>schemas_openai :760 ne propose au modele que ce que l IAM permet"]
+  mcp["api/src/chat/outils/mcp.rs 682 lignes<br/>JSON-RPC 2.0 sur stdio ou ssh — outils :194, appeler :204<br/>un processus persistant par serveur, relance s il est mort"]
+  machines["api/src/chat/machines.rs 504 lignes<br/>Transport Local ou Ssh · etats :335<br/>🔴 banner : n3 dgx n1 n2 joignables, execution refusee sur les QUATRE"]
+  m_parc["serveur MCP parc — 13 outils, 13 action<br/>obrain mcp sur parc.obrain, OBRAIN_WRITE=1"]
+  m_graphe["serveur MCP graphe — 7 outils, 7 lecture<br/>obrain mcp sur chantiers-harness.obrain"]
+  m_web["serveur MCP web — 6 outils, 6 lecture<br/>dsh-obscura-nav mcp, par stdio"]
+  m_n3["serveur MCP n3 — 11 outils, 6 lecture et 5 action<br/>selfd mcp --allow-exec, en local"]
+  m_ssh["serveurs MCP dgx, n1, n2 — 9 outils chacun, 5 lecture et 4 action<br/>selfd mcp par ssh, alias dgx-selfd n1-selfd n2-selfd"]
+  veille["api/src/chat/outils/veille.rs 255 lignes<br/>banner : 4 dossiers de code suivis, re-indexes a la frontiere de tour"]
+end
+
+subgraph Amont["Ce qui est en amont, atteint par des dependances de CHEMIN dans api/Cargo.toml"]
+  thisrs["this-rs/this — this 0.0.9<br/>api/Cargo.toml:12, features obrain grpc wami<br/>c est la feature obrain qui porte la memoire du chat"]
+  j4["banc-obrain-j4 — 0.0.1<br/>la feature obrain de this-rs, this/Cargo.toml:167, tire<br/>obrain-substrate · obrain-engine · obrain-common<br/>obrain-core · obrain-adapters · obrain-reactive<br/>obrain-common et obrain-core sont AUSSI en direct, api/Cargo.toml:22 et :25"]
+end
+
+ui -->|pilote| usechat
+usechat -->|appelle| chatcli
+chatcli -->|encode via| protob
+chatcli -->|traverse| canal
+canal -->|"POST application/grpc-web+proto sur 192.168.1.103:9903, authorization Bearer"| bin
+canal -->|rencontre| refus
+
+unit -->|"ExecStart"| bin
+bin -->|"est le binaire de"| main
+
+main -->|monte| auth
+main -->|monte| chatsvc
+main -->|monte| rest
+main -->|"enveloppe"| web
+web -->|route| auth
+web -->|route| chatsvc
+main -.->|"a ferme la surface gRPC de this-rs"| nonmonte
+
+chatsvc -->|"exige identite puis permission"| garde
+garde -->|lit| iam
+iam -->|"persiste dans"| store
+chatsvc -->|lit| memoire
+chatsvc -->|ecrit| memoire
+memoire -->|"passe par"| facade
+facade -->|"lit et ecrit"| store
+chatsvc -->|"cherche le contexte"| bases
+bases -->|"lit, interne"| store
+bases -.->|"ouvre en lecture seule"| basesext
+chatsvc -->|"gere les pieces jointes"| pieces
+pieces -->|ecrit| store
+main -->|"materialise les droits au demarrage"| iam
+main -->|"ouvre l annuaire"| ident
+ident -->|"branche sur le STS"| auth
+main -->|"ouvre le store persistant"| store
+
+chatsvc -->|genere| inf
+inf -->|"HTTP interne, jamais gRPC"| llm
+chatsvc -->|"propose les outils permis"| outils
+outils -->|"tools/list puis tools/call"| mcp
+mcp -->|appelle| m_parc
+mcp -->|appelle| m_graphe
+mcp -->|appelle| m_web
+mcp -->|appelle| m_n3
+mcp -->|appelle| m_ssh
+chatsvc -->|"interroge l etat"| machines
+machines -->|sonde| m_n3
+machines -->|sonde| m_ssh
+outils -->|"reindexe en fin de tour"| veille
+veille -->|appelle| m_parc
+main -->|"sert le front a la racine et sur /app, meme origine"| ui
+
+main -->|"depend de"| thisrs
+thisrs -->|"depend de"| j4
+main -->|"depend de"| j4
+j4 -->|"fournit"| store
+
+class ui,usechat,chatcli,protob,canal cCli
+class unit,bin cDep
+class main,web,auth,chatsvc,garde,rest cSrv
+class refus,nonmonte cLim
+class store,facade,memoire,bases,basesext,ident,iam,pieces cEng
+class inf,llm cInf
+class outils,mcp,machines,m_parc,m_graphe,m_web,m_n3,m_ssh,veille cOut
+class thisrs,j4 cAmon

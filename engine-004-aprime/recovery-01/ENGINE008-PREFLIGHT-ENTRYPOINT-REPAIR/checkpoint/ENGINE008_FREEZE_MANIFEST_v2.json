@@ -1,0 +1,65 @@
+{
+  "manifest_id": "ENGINE008_PREFLIGHT_FREEZE_v2",
+  "supersedes": "ENGINE008_PREFLIGHT_FREEZE_v1 (3c614f5d4b8bded8ceef5a482d444c4283ed3c667eb65e9765f54f8728c60bfc) -- conclusion READY_FOR_PREFLIGHT_AUTHORIZATION INVALIDEE par D-A/D-B",
+  "frozen_utc": "2026-10-02",
+  "note": "Aucune circularite : ce manifeste contient l'identite des executables ; les executables ne contiennent PAS l'identite de ce manifeste. L'autorisation, externe, referencera des identites deja calculees et reste a creer separement.",
+
+  "protocol": {"v3_sha256": "1dc2c3c36329550d29b1abf1ec448f0c82ef6f2d7ab81994deed9320f9d8b7ae", "v3_status": "FROZEN",
+               "v2_preserved": "822db99f6c288e346e1dca06c7405ab13a4a06d69bc05beccbe92e333fe5fa3d",
+               "v1_preserved": "c42f485d41214fd9a87b9398c0df5a82965f68eb35e2ee69e17c4db76252e1a3"},
+  "scientific_decisions": {"P4_amendment_status": "ADOPTED",
+    "P4_property": "STRUCTURAL_WHT_PATH_UNREACHABILITY",
+    "P4_real_model_conditions": "NOT_EXERCISED",
+    "D1_retained": true, "D2_adopted": false},
+
+  "production_executables": {
+    "harness":  {"path": "build-repair/engine008-preflight", "sha256": "c4fe4dd162b9fab04132063286726c2e29eb8dc136dabc31a1d65634eec28693"},
+    "launcher": {"path": "build-repair/engine008-launch",    "sha256": "f3c32092ec8862abd9715e17ac20609a3c12c51835eaf9921224ef6d748b05ac"},
+    "note": "executables de PRODUCTION. t-launcher (8607212816b1d1b9c7d49aa9b02becb5a6987a82ece4405ba8e30973b5f01d4c) est un binaire de TESTS, distinct."
+  },
+  "test_binaries": {
+    "t-e2e": "37dcb8b424e9e7f835dd7ab19cd8ee00f1a34c74743b7fa5b772e175a286013d",
+    "t-adopt": "8bc747ee4739bc265c2d970b9e4707aa4b1e21ad7ca5b891f8695630a292ad19",
+    "t-launcher": "8607212816b1d1b9c7d49aa9b02becb5a6987a82ece4405ba8e30973b5f01d4c"
+  },
+  "sources": {"harness_source_manifest_sha256": "c0f772951c7bf76128b7d3ba196756e5fdb22ecce656784d37399a4c2a257d23",
+    "repaired_or_new": {
+      "engine008_argv.cpp": "64b5847bb2c0372c2b5a00cefba949fd940927fb284d715e67fa35e2e15cbdf3",
+      "engine008_real_entry.cpp": "4331ba788044ec3de9cb3cccbbffb2cbeda2c6b7f65ced3b1e83a34ede7ff4b9",
+      "engine008-launcher-main.cpp": "e5878dc5b1820a239581a62a3ab8f9d54b0e00617d0d72a22807632d521ac356",
+      "engine008_launcher.cpp": "fd17bd7b329596f6f45a5adab7da9e07c1a0230a808563e464a823bfb1d22b80"}},
+
+  "libraries_resolved": {"libllama.so.0.0.135": "87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2",
+    "libllama-common.so.0.0.135": "a87c31d2e68ebadf3c21b4718b7bf58c34cb97c9a5b1145a7fa30df82f1a4b20",
+    "libggml/ggml-base/ggml-cpu/ggml-cuda": "resolus dans build-cuda/bin", "ldd_verified": true},
+  "models": {"baseline": "Qwen3.8-27B-Q4_K_M.gguf (31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34)",
+             "candidate": "Qwen3.8-27B-OBRAIN-v3.gguf (1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937)"},
+  "renderer": {"qualification_sha256": "14cbbc1336fe885a796539eb473e85388f54a4e600daae24348aeaeccf2c9bdd",
+               "common_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"},
+  "inventory": {"sha256": "e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1",
+                "authority_cross_check": "concordance EXACTE avec Q1_WHT_ELIGIBLE_INVENTORY.sha256", "entries": 168},
+  "preflight_input": {"rendered_bytes": 320,
+    "rendered_sha256": "92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658",
+    "token_count": 59,
+    "token_ids_sha256": "ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e",
+    "add_special": 0, "parse_special": 1, "baseline_candidate_match": true,
+    "verified_before_prefill": true},
+  "plan": {"sha256": "b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06",
+           "runs": ["baseline1","candidate1","baseline2","candidate2"], "max_new_tokens": 8},
+
+  "tests": {"total_pass": 314, "total_fail": 0,
+    "suites": {"adopt":15,"t4":14,"inv":33,"p4":26,"wht":54,"e2e":24,"connect":75,"whtpipe":8,"parser":42,"launcher":23},
+    "production_tests": {
+      "PRODUCTION_ARGUMENT_BINDING_SELFTEST": "PASS",
+      "AUTHORITATIVE_TOKEN_IDS_REACH_PREFILL_SELFTEST": "PASS",
+      "EXECUTABLE_TO_EXECUTABLE_NOMINAL_SELFTEST": "PASS",
+      "REAL_COMPUTE_GUARD_SELFTEST": "PASS"},
+    "launcher_chain_exercised": "LAUNCHER_INVOCATIONS=1 ; baseline1 FAIL exit=3 ; candidate1/baseline2/candidate2 NOT_RUN ; arret au premier echec ; aucun retry"},
+
+  "state": {"Q1_LIBLLAMA_REBUILT": false, "FULL_MODEL_LOAD_COUNT": 0,
+    "REAL_CONTEXT_CREATE_COUNT": 0, "MODEL_FORWARD_CALL_COUNT": 0,
+    "RUNTIME_OBSERVER_VALIDATION": "NOT_EXERCISED",
+    "PREFLIGHT_EXECUTION_ALLOWED": false, "QUALITY_EXECUTION_ALLOWED": false,
+    "authorization_document_created": false,
+    "old_authorization_reused": false}
+}

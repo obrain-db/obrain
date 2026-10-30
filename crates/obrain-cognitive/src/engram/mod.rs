@@ -1,0 +1,119 @@
+//! # Engram System — Mémoire Vivante pour Obrain
+//!
+//! Engrams are emergent memory traces formed from repeated co-activation patterns.
+//! Unlike raw synapses or energy scores, engrams represent *consolidated knowledge*
+//! — groups of nodes that consistently appear together across episodes.
+//!
+//! ## Architecture (6 Biomimetic Layers + Homeostasis)
+//!
+//! - **Layer 0**: Hebbian + FSRS — engram formation via co-activation with surprise,
+//!   decay via Free Spaced Repetition Scheduler
+//! - **Layer 1**: Immuno-memory — anomaly detection via shape space + affinity maturation
+//! - **Layer 2**: Stigmergy — diffuse memory via pheromones on edges
+//! - **Layer 3+4**: Modern Hopfield + Predictive Coding — content-addressable retrieval
+//!   with prediction error as main learning signal
+//! - **Layer 5**: Epigenetics — cross-instance memory marks with expression conditions
+//! - **Layer ⊥**: Homeostasis — synaptic scaling, T-reg regulation, anti-lock-in
+//!
+//! ## Feature flags
+//!
+//! - `engram` — Core engram formation, recall, decay (Layer 0)
+//! - `engram-immune` — Immuno-memory subsystem (Layer 1)
+//! - `engram-stigmergy` — Stigmergic pheromones (Layer 2)
+//! - `engram-hopfield` — Modern Hopfield + predictive coding (Layers 3+4)
+//! - `engram-epigenetic` — Cross-instance epigenetic marks (Layer 5)
+//! - `engram-full` — All engram layers
+
+pub mod traits;
+
+mod types;
+pub use types::*;
+
+#[cfg(feature = "engram")]
+mod store;
+#[cfg(feature = "engram")]
+pub use store::EngramStore;
+
+#[cfg(feature = "engram")]
+mod formation;
+#[cfg(all(feature = "engram", feature = "epigenetic"))]
+pub use formation::compute_modulated_min_episodes;
+#[cfg(feature = "engram")]
+pub use formation::{
+    CoActivationDetector, CoActivationSnapshot, EngramFormationTrigger, FormationConfig,
+    FormationSnapshot, HebbianWithSurprise,
+};
+
+#[cfg(feature = "engram")]
+mod decay;
+#[cfg(feature = "engram")]
+pub use decay::{FsrsConfig, FsrsScheduler, ReviewRating};
+
+#[cfg(feature = "engram")]
+mod spectral;
+#[cfg(feature = "engram")]
+pub use spectral::SpectralEncoder;
+
+#[cfg(feature = "engram")]
+mod recall;
+#[cfg(feature = "engram")]
+pub use recall::{
+    ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
+};
+
+#[cfg(feature = "engram")]
+mod hopfield;
+#[cfg(feature = "engram")]
+pub use hopfield::{
+    BayesianUpdateResult, CompetitionResult, HopfieldResult, MmrResult, PatternMatrix, Prediction,
+    PredictionErrorCalculator, PredictionErrorResult, PredictiveModel, bayesian_update,
+    compute_prediction_error, hopfield_retrieve, max_marginal_relevance, softmax_compete,
+};
+
+#[cfg(feature = "engram")]
+mod homeostasis;
+#[cfg(feature = "engram")]
+pub use homeostasis::{HomeostasisConfig, HomeostasisEngine};
+
+#[cfg(feature = "engram")]
+mod observe;
+#[cfg(feature = "engram")]
+pub use observe::{
+    CognitiveMetrics, CognitiveMetricsSnapshot, EngramMetricsCollector, HomeostasisSignal,
+    IMMUNE_FP_RATE_THRESHOLD, LOW_PRECISION_BETA_THRESHOLD, compute_max_pheromone_ratio,
+    compute_pheromone_entropy,
+};
+
+#[cfg(feature = "engram")]
+mod crystallization;
+#[cfg(feature = "engram")]
+pub use crystallization::{
+    CrystallizationConfig, CrystallizationDetector, CrystallizationProposal, CrystallizationResult,
+    LABEL_CRYSTALLIZED_NOTE, REL_CRYSTALLIZED_IN, crystallize, generate_summary,
+};
+
+#[cfg(feature = "engram")]
+mod manager;
+#[cfg(feature = "engram")]
+pub use manager::{EngramManager, EngramManagerConfig};
+
+#[cfg(feature = "substrate")]
+pub mod substrate_adapter;
+#[cfg(feature = "substrate")]
+pub use substrate_adapter::SubstrateVectorIndexAdapter;
+
+/// Exact, microsecond position-aggregate signatures for engrams.
+///
+/// Deliberately feature-free: the module depends only on `obrain_common` and the
+/// engram id type, so any caller able to supply a
+/// [`position::PositionProvider`] can use it.
+pub mod position;
+pub use position::{
+    POS_DIM, PosCentroid, PosError, PosIndex, PositionProvider, QueryStats, SlicePositionProvider,
+};
+
+/// Production position provider: snapshots the substrate's position column.
+#[cfg(feature = "substrate")]
+pub mod position_substrate;
+#[cfg(feature = "substrate")]
+pub use position_substrate::{DEFAULT_POSITION_KEY, SubstratePositionProvider};

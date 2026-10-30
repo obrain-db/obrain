@@ -1,0 +1,50 @@
+{
+  "area": "Tests golden et garantie de non-régression",
+  "summary": "La garantie de non-régression d'obrain repose sur trois mécanismes complémentaires, tous réels et inspectables. Le premier est la matrice de portes documentée dans docs/GARANTIES-NON-REGRESSION.md : une chaîne de commandes rejouables (cargo test par crate, puis --tests avec features cdc/algos/ai, puis --all-features --workspace en CI) assortie d'un inventaire rouge daté au ledger. Le second est le test golden octet-à-octet de la couche de visualisation : crates/obrain-viz/tests/golden.rs compare la sortie des writers (json/dot/mermaid/graphml) à des fichiers de référence figés dans crates/obrain-viz/tests/golden/, régénérables via l'exemple print_golden.rs. Le troisième est le registre des échecs connus scripts/echecs-connus.txt, lu par scripts/bench-regression.sh, qui distingue un échec NOMÉ-DATÉ-ATTRIBUÉ (toléré, affiché) d'un nouvel échec (rouge) — principe « un banc durablement rouge n'apprend plus rien ». La couche substrate fige elle aussi des octets little-endian par des tests golden (zero_copy_views.rs) et verrouille le déterminisme du read-path Top-K par tri (sim desc, offset asc) documenté dans store.rs. docs/golden/2026-09-04/ conserve des artefacts historiques (compteurs, latences, schémas CLI, sondes bridge) qui servent de référence de régression datée plutôt que de diff automatisé. L'hermétisme (tests indépendants de l'environnement du poste) est tenu par code via GardeIam::desarmer_pour_les_tests() et un audit env::set_var/remove_var documenté dans le même fichier de garanties.",
+  "components": [
+    "docs/GARANTIES-NON-REGRESSION.md — matrice de portes (bench/features/exactitude), règles d'hermétisme (IAM désarmé, env_remove, OBRAIN_PERF_GATE), inventaire rouge daté 2026-09-05 → 2026-09-17",
+    "crates/obrain-viz/tests/golden.rs — 7 tests anti-régression de schéma comparant les octets de sortie aux golden files (json/dot/mermaid/graphml + variantes overlay energy)",
+    "crates/obrain-viz/tests/golden/ — golden files de référence : example.{json,dot,mmd,graphml} + example.energy.{json,dot,mmd}",
+    "crates/obrain-viz/examples/print_golden.rs — régénérateur des golden files (cargo run -p obrain-viz --example print_golden), échantillon sample() dupliqué volontairement avec tests/golden.rs",
+    "scripts/echecs-connus.txt — registre des échecs connus (format nom_du_test | date | attribution) ; entrée unique : des_ancres_divergentes_ne_rendent_jamais_un_resultat_ampute",
+    "scripts/bench-regression.sh — harnais de régression 8 axes ; lit scripts/echecs-connus.txt (lignes 72-103) pour ne pas rendre le banc rouge sur un échec connu",
+    "scripts/viz_guard.py — garde DoD de la couche viz : déterminisme octet-à-octet (sha256), structure, bornes limit/truncated, parité export_all == comptage store, bench",
+    "scripts/guard-viz.sh — wrapper shell de scripts/viz_guard.py (point d'entrée documenté dans pre-push.sh)",
+    "crates/obrain-substrate/tests/zero_copy_views.rs — goldens little-endian : golden_le_prefixe_longueur_du_heap, golden_le_entree_index_blob (représentation disque FIGÉE octet à octet)",
+    "crates/obrain-substrate/tests/slot_remap_sidecars.rs — t4_golden_vector_top_k_avant_apres : parité des scores cosinus avant/après repermutation des slots",
+    "crates/obrain-substrate/tests/zero_copy_suite.rs — vue_arete_survit_a_la_reouverture (formats v2 little-endian, « goldens O1 »)",
+    "crates/obrain-substrate/src/store.rs — contrat de déterminisme du read-path Top-K (tri sim desc, offset asc) « que le golden test du read-path verrouille » (ligne ~14522)",
+    "docs/golden/2026-09-04/ — artefacts historiques datés : 2026-09-04-engine.txt, 2026-09-04-o1.txt, cli-info.json, cli-schema.json, cli-stats.json, gql-counts.jsonl, bridge-sonde.jsonl",
+    "docs/FULL-OBRAIN-VIZ-ROADMAP-2026-09-08.md — spéc vivante des goldens viz (json-graph v1 gelé, échappements hostiles, overlays volatils figés par ts)"
+  ],
+  "relationships": [
+    "crates/obrain-viz/tests/golden.rs ← lit → crates/obrain-viz/tests/golden/example.* via fn golden(name) et assert_same() (assert_eq! octets)",
+    "crates/obrain-viz/examples/print_golden.rs → écrit → crates/obrain-viz/tests/golden/example.* (régénération après évolution volontaire du schéma)",
+    "crates/obrain-viz/tests/golden.rs ↔ crates/obrain-viz/examples/print_golden.rs : échantillon sample() dupliqué volontairement, les deux copies doivent rester identiques",
+    "scripts/guard-viz.sh → exec → scripts/viz_guard.py (la logique vit en python, le wrapper garde le point d'entrée shell)",
+    "scripts/bench-regression.sh → lit → scripts/echecs-connus.txt (registre des échecs connus, boucle while IFS= read + cut -d'|' -f1)",
+    "crates/obrain-substrate/tests/zero_copy_views.rs → fige → représentation little-endian de HeapPage::append et BlobSlotEntry (bytemuck::bytes_of / pod_read_unaligned)",
+    "crates/obrain-substrate/tests/slot_remap_sidecars.rs → appelle → store.vector_top_k (obrain-substrate/src/store.rs) et recompute cosine() pour parité",
+    "docs/GARANTIES-NON-REGRESSION.md → documente → commandes cargo test des crates (obrain-core, obrain-substrate, obrain-engine, obrain-cli) et .github/workflows/ci.yml",
+    "docs/FULL-OBRAIN-VIZ-ROADMAP-2026-09-08.md → référence → crates/obrain-viz/tests/golden/ et scripts/guard-viz.sh (§5 garde DoD)"
+  ],
+  "notable_findings": [
+    "Deux familles de « golden » coexistent : (a) golden files octet-à-octet pour le schéma de sortie viz (obrain-viz) et (b) goldens de représentation binaire disque (substrate little-endian) — la première est diff automatisé, la seconde est figée par assertion d'octets en dur",
+    "docs/golden/2026-09-04/ n'est PAS un diff automatisé : ce sont des artefacts historiques (sorties de requêtes/perf/CLI sur un store code-all3 de 445 493 nœuds / 1 670 005 arêtes) conservés comme référence datée",
+    "Le mécanisme echecs-connus.txt est une philosophie explicite : un banc durablement rouge « n'apprend plus rien », donc un échec nommé-daté-attribué est toléré et AFFICHÉ mais ne rend pas le banc rouge ; un échec inexpliqué reste rouge",
+    "L'échantillon golden viz est hostile par conception : ids avec ':', '/', '-', '.', libellés avec guillemet et saut de ligne, signaux energy/curvature/scc/ricci/stale — pour verrouiller les échappements writers dès maintenant",
+    "La duplication volontaire de sample() entre tests/golden.rs et examples/print_golden.rs est un point de fragilité assumé et documenté (« les garder identiques »)",
+    "Le golden ratio apparaît aussi comme CONSTANTE déterministe (seed SplitMix64 0x9E37_79B9_7F4A_7C15 dans tiers.rs, vecteur initial spectral 0.618033988749895) — sans rapport avec les golden files, mais nommé 'golden'",
+    "docs/GARANTIES-NON-REGRESSION.md documente des faux positifs d'audit corrigés : le motif set_var|remove_var désignait à tort offset_var/remove_variable (5 fichiers innocents) — le motif exact est env::set_var/env::remove_var",
+    "L'inventaire rouge daté montre un progrès mesurable : 8 769 · 26 · 14 au départ → 8 838 · 0 · 0 le 2026-09-17 (cargo test --workspace --no-fail-fast en environnement propre)"
+  ],
+  "gaps": [
+    "docs/golden/2026-09-04/ ne référence aucun script qui le consomme ou le compare automatiquement : rôle exact de ces artefacts dans la chaîne de non-régression non établi (référence manuelle ?)",
+    "Aucun mécanisme de golden diff ne semble exister pour la sortie GQL/query (contrairement à viz et substrate) : gql_spec_compliance.rs est cité dans les garanties mais non inspecté ici (hors périmètre grep 'golden')",
+    "La duplication manuelle de sample() (golden.rs ↔ print_golden.rs) est fragile : une divergence entre les deux copies produirait un test vert mais un golden régénéré incohérent — aucun test ne vérifie leur identité",
+    "scripts/echecs-connus.txt ne contient qu'UNE entrée, alors que le fichier de garanties décrit plusieurs flake/gardes de temps (annulation_bout_en_bout, import_bulk_400k...) : la couverture du registre semble partielle",
+    "Les goldens substrate little-endian sont des assertions d'octets en dur dans le code (pas de fichiers golden séparés) — un portage big-endian casserait les tests, ce qui est le but, mais la « vérité » de référence est dispersée dans le code de test",
+    "print_golden.rs, guard-viz.sh et les golden files ont des permissions incohérentes (-rw------- pour print_golden.rs et GARANTIES, -rwx--x--x pour guard-viz.sh) : non exécutable en lecture pour d'autres utilisateurs, possiblement accidentel",
+    "Le read-path Top-K cite « le golden test du read-path » (store.rs ligne 14522) mais le test golden correspondant n'a pas été localisé nommément dans crates/obrain-substrate/tests/ par le grep 'golden' (seul slot_remap_sidecars.rs contient vector_top_k golden)"
+  ]
+}

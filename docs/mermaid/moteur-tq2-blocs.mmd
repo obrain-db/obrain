@@ -1,0 +1,137 @@
+%% Ce que ce diagramme prouve : la structure exacte du bloc TQ2_G128 de 34 octets, la
+%% correspondance code 2 bits vers valeur ternaire des deux cotes ecriture et lecture, le
+%% calcul de l echelle fp16 par moindres carres sur 3 passes, et la boucle de raffinement du
+%% seuil. Toute valeur chiffree vient d une ligne lue, sitee en clair.
+%% ATTENTION AU CHEMIN : le chemin demande llama-obrain-cuda-f1a N EXISTE PAS. Le depot
+%% reellement lu est llama-obrain-cuda, seul depot du disque contenant block_tq2_g128.
+%% Sources lues : llama-obrain-cuda/ggml/src/ggml-common.h, ggml-quants.c, ggml-quants.h, ggml.c.
+%% MESURE : taille de bloc par static_assert ligne 287, define QK_G128 et QI_G128 lignes 280 et
+%% 281, lignes d ecriture des codes 2575 a 2580, ligne de lecture 2600 a 2604, bornes de boucles,
+%% garde isfinite, macro GGML_FP32_TO_FP16, refus du code 3 lignes 5797 a 5807.
+%% DEDUIT : le 2,125 bpw est une ARITHMETIQUE de 34 octets fois 8 bits sur 128 poids, egalement
+%% ecrite en commentaire ligne 275. Rien de plus n est deduit.
+%% NON ETABLI : tq2_g128_cmp_float, defini static ligne 2440, n a AUCUN site d appel dans
+%% ggml-quants.c ni ailleurs dans ggml/src ; un grep du nom ne rend que sa definition. Il est
+%% donc dessine comme declare non appele, pas comme un maillon de la tertile.
+%% NON ETABLI aussi : la diffusion du residu et la ponderation imatrix naive ne sont PAS dans le
+%% code, seulement dans les commentaires lignes 2507 et 2560. Elles sont dessinees en REFUSE,
+%% avec leurs chiffres mesures telles que les commentaires les rapportent.
+
+flowchart TB
+
+  subgraph Contrat["Contrat de type TQ2_G128 : ce que le bloc est, mesure sur les declarations"]
+    qk["ggml-common.h ligne 280<br/>define QK_G128 128<br/>128 poids par bloc"]
+    qi["ggml-common.h ligne 281<br/>define QI_G128 QK_G128 sur 32<br/>= 4 tranches de 32 poids<br/>la taille d un bloc q8_1, chemin MMVQ"]
+    qs["champ qs : uint8_t en 32 cases<br/>ggml-common.h ligne 284<br/>1 trit par case de 2 bits<br/>motif j div 4 et 2 fois j mod 4"]
+    d["champ d : ggml_half<br/>ggml-common.h ligne 285<br/>echelle FP16 du groupe<br/>ggml_half est uint16_t, 2 octets, ligne 6"]
+    sa["static_assert ggml-common.h ligne 287<br/>sizeof block_tq2_g128 egale 2 plus 128 sur 4<br/>= 34 octets, aucun remplissage"]
+    bpw["34 octets fois 8 bits sur 128 poids<br/>= 2,125 bpw<br/>commentaire ligne 275"]
+    reg["ggml.c lignes 920 a 927<br/>type_name tq2_g128, blck_size QK_G128<br/>type_size sizeof block_tq2_g128<br/>is_quantized true"]
+  end
+
+  subgraph Entrees["Entrees du quantifieur : trois portes vers le meme corps"]
+    ref["ggml-quants.c ligne 2477<br/>quantize_row_tq2_g128_ref<br/>lignes 2477 a 2479<br/>appelle im avec quant_weights NULL"]
+    im["ggml-quants.c ligne 2494<br/>quantize_row_tq2_g128_im<br/>lignes 2494 a 2582<br/>4e argument : quant_weights, l imatrix"]
+    qtype["ggml-quants.c ligne 2584<br/>quantize_tq2_g128<br/>lignes 2584 a 2590<br/>taille de ligne par ggml_row_size<br/>rend nrow fois row_size"]
+    assertk["ligne 2495<br/>assert k modulo QK_G128 vaut 0<br/>nb = k sur QK_G128"]
+  end
+
+  subgraph Encodage["Correspondance code 2 bits vers valeur ternaire, cote ECRITURE"]
+    write["ggml-quants.c lignes 2575 a 2578<br/>memset des 32 octets puis<br/>code = trit plus 1<br/>qs a l index j div 4 OU logique<br/>de code decale de 2 fois j mod 4"]
+    c_neg["code 0<br/>trit -1"]
+    c_zero["code 1<br/>trit 0"]
+    c_pos["code 2<br/>trit +1"]
+    unused["code 3<br/>JAMAIS ecrit par le quantifieur<br/>ligne 2577 ne produit que 0, 1 et 2"]
+  end
+
+  subgraph Decodage["Correspondance code 2 bits vers valeur ternaire, cote LECTURE"]
+    read["ggml-quants.c lignes 2599 a 2605<br/>boucle j sur 32 octets, n sur 4 cases<br/>code = octet decale de 2 fois n ET 3<br/>y a l index 4 fois j plus n<br/>= code moins 1 fois d"]
+    fold["ligne 2604<br/>code superieur a 2 vaut +1<br/>le code 3 corrompu est REPLIE sur +1<br/>un octet corrompu degrade au lieu de mentir"]
+    deq["ggml-quants.c ligne 2592<br/>dequantize_row_tq2_g128<br/>lignes 2592 a 2609<br/>lit d par GGML_FP16_TO_FP32 ligne 2597"]
+    valid["ggml-quants.c lignes 5790 a 5809<br/>case GGML_TYPE_TQ2_G128 du validateur<br/>refuse tout code 3 et rend false<br/>ligne 5803, message sur stderr<br/>l echelle est validee d abord ligne 5793"]
+  end
+
+  subgraph Seuil["Seuil initial : le tertile des valeurs absolues, par SELECTION et non par tri"]
+    absv["ggml-quants.c lignes 2538 a 2540<br/>absv en 128 float<br/>absv du poids, boucle j de 0 a 128"]
+    tert["ggml-quants.c ligne 2451<br/>static float tq2_g128_tertile<br/>lignes 2451 a 2475<br/>prend float a et int n, rend a de k"]
+    ksel["ligne 2452<br/>k = n sur 3<br/>pour 128 cela vaut 42<br/>le 43e plus petit des 128"]
+    part["lignes 2456 a 2472<br/>partition de Hoare sur pivot median<br/>lo, hi, i et j<br/>boucle tant que lo inferieur a hi<br/>resserre du cote de k, puis rend a de k"]
+    cmp["ggml-quants.c ligne 2440<br/>static int tq2_g128_cmp_float<br/>AUCUN site d appel trouve<br/>vestige d une version qsort"]
+    thr0["ggml-quants.c ligne 2541<br/>thr = tertile de absv et QK_G128<br/>seuil initial, environ 1 tiers de zeros"]
+  end
+
+  subgraph Echelle["Echelle fp16 par moindres carres : 3 passes de Lloyd"]
+    loop["ggml-quants.c ligne 2544<br/>boucle it de 0 a 3, donc 3 passes"]
+    assign["lignes 2547 a 2549<br/>t vaut 0 si absv inferieur a thr<br/>sinon +1 si x superieur a 0, sinon -1<br/>trit a l index j garde t"]
+    numden["ligne 2550<br/>si t non nul : num plus egale rho fois x fois t<br/>den plus egale rho<br/>t au carre vaut 1, donc den EST la somme des rho t carre"]
+    guard["ligne 2552<br/>si den vaut 0 ou num ou den non fini<br/>alors s = 0 et sortie immediate de la boucle"]
+    cand["lignes 2553 et 2556<br/>cand = num sur den<br/>s = cand si isfinite, sinon 0<br/>une echelle non finie ne sort JAMAIS"]
+    thrstep["ligne 2557<br/>thr = 0,5 fois s<br/>frontiere optimale entre 0 et +s<br/>realimente la passe suivante"]
+    fp16["ligne 2580<br/>y a l index i, champ d<br/>= GGML_FP32_TO_FP16 de s"]
+  end
+
+  subgraph Rho["rho : importance relative de chaque canal du groupe"]
+    rho_note["ggml-quants.c ligne 2502<br/>float rho en 128 cases<br/>vaut 1 partout sans imatrix"]
+    env["ggml-quants.c ligne 2498<br/>getenv OBRAIN_IMATRIX_WEIGHT<br/>evalue UNE fois par appel<br/>un getenv par groupe couterait des millions d appels"]
+    flat["lignes 2532 a 2536<br/>sans imatrix rho vaut 1 partout<br/>comportement identique a avant"]
+    weighted["lignes 2513 a 2531<br/>avec imatrix : moyenne des qw positifs finis<br/>w = qw sur mean, sinon 1<br/>non fini ou negatif retombe sur 1<br/>ecrete a 100 ligne 2529<br/>au dela un canal ecraserait les 127 autres"]
+  end
+
+  subgraph Refuse["Ce qui a ete essaye et REFUSE, chiffres mesures dans les commentaires"]
+    rej_resid["🔴 diffusion du residu, commentaire lignes 2560 a 2573<br/>non presente dans le code<br/>erreur par element 0,006233 vers 0,008255<br/>erreur du produit 0,089486 vers 0,322091<br/>3,6 fois PIRE, la porte passe au rouge"]
+    rej_im["🔴 ponderation imatrix naive, commentaire lignes 2507 a 2512<br/>rejetee PAR DEFAUT, derriere l interrupteur env<br/>perplexite 83,09 vers 175,65<br/>27B, meme corpus, meme graine"]
+  end
+
+  qk --> qs
+  qk --> sa
+  qk --> qi
+  qs --> sa
+  d --> sa
+  sa --> bpw
+  reg -->|declare| sa
+
+  qtype -->|appelle| im
+  ref -->|appelle| im
+  im --> assertk
+  im -->|lit| env
+  env -->|decide| weighted
+  env -.->|absent, cas par defaut| flat
+  weighted -->|ecrit| rho_note
+  flat -->|ecrit| rho_note
+
+  im -->|lit| absv
+  absv -->|passe| tert
+  tert --> ksel
+  ksel --> part
+  part -->|partitionne en place| absv
+  tert -.->|aucun appel| cmp
+  tert -->|rend le tertile| thr0
+  thr0 -->|initialise| loop
+
+  loop --> assign
+  assign --> numden
+  rho_note -->|pondere| numden
+  numden --> guard
+  guard -->|cas nominal| cand
+  guard -->|den nul ou non fini| fp16
+  cand --> thrstep
+  thrstep -->|passe suivante| loop
+  cand --> fp16
+  fp16 -->|ecrit| d
+
+  im -->|ecrit| write
+  write --> c_neg
+  write --> c_zero
+  write --> c_pos
+  write -.->|jamais| unused
+  c_neg -->|code 0| read
+  c_zero -->|code 1| read
+  c_pos -->|code 2| read
+  read --> fold
+  fold --> deq
+  d -->|lu par| deq
+  unused -.->|si corruption, replie| fold
+  unused -->|refuse| valid
+  deq -->|ecrit| valid
+  rej_resid -.->|non implemente| im
+  rej_im -.->|desactive par defaut| weighted

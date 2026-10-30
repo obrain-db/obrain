@@ -1,0 +1,21 @@
+IFEVAL_NLTK_EXTERNAL_RESOURCE_COUNT=2
+IFEVAL_NLTK_RESOURCE_TREE_SHA256=d3d5f4d92892d9c902eabf35cf8aab2e8a4ab52cf86c7fd70ef2166545e5f0c6
+
+Ressources requises par le scorer IFEval officiel :
+  instructions_util.py:135  nltk.data.load("nltk:tokenizers/punkt/english.pickle")
+
+Telechargees et archivees :
+  external/nltk_data/tokenizers/punkt
+  external/nltk_data/tokenizers/punkt_tab
+  120 fichiers, 64 Mo
+  manifeste : NLTK_RESOURCES.sha256 (120 hashes)
+
+NLTK_DATA doit pointer sur external/nltk_data dans l environnement
+d evaluation. Le protocole ne doit dependre d AUCUN telechargement
+implicite de NLTK au moment du scoring.
+
+AVERTISSEMENT SECURITE enregistre tel quel : NLTK a refuse d autoriser
+le telechargement dans un repertoire accessible en ecriture au groupe
+(« NLTK will not authorize the non-private download directory »).
+Les fichiers ont neanmoins ete ecrits. A verifier avant le scoring :
+le repertoire doit etre lisible UNIQUEMENT par le compte d evaluation.

@@ -1,0 +1,157 @@
+ENGINE-008 -- INTEGRATION DE LA REPRISE HYBRIDE DANS L'ENGINE
+==========================================================================
+LE SMOKE TEST INTEGRE A ABOUTI PAR LA ROUTE REELLE DU SERVEUR.
+DEUX LIMITES SONT DECLAREES, DONT UN SIGNAL SUSPECT QUE JE NE MASCARE PAS.
+
+=== 1. LE CHEMIN DE REQUETE REEL (cartographie, sources lues) ===
+  Ce que j'ai ECARTE, avec preuve : `tools/obrain/` ne contient QU'UN fichier
+  (`pstate-exp0a.cpp`, 194 Ko) et AUCUN binaire `obrain` n'existe dans
+  `build-cuda/bin/`. Ce n'est pas le chemin de requete.
+  **Le chemin reel est `llama-server`**, implementation dans
+  `tools/server/server-context.cpp` (~7 000 lignes), construit en
+  `libllama-server-impl.so`.
+
+  **Et ce chemin contient DEJA l'integration K1/K2 du transfert d'etat
+  hybride** :
+    - cache memoire global : `g_kv_states` (server-context.cpp:63-65)
+    - cle content-addressed : `kv_ref_of(data)` = FNV-1a 64 bits sur le blob (:66-71)
+    - EXTRACTION (K1) : `llama_state_seq_get_size` + `get_data`, verifies,
+      puis `g_kv_states[ref] = {n_fact, data}` (+ persistance disque K1b)
+    - INJECTION (K2) : `llama_state_seq_set_data(ctx, blob.data, blob.size, seq_id)`,
+      commentaire du producteur : « K2 : injecter l'etat persiste (copie
+      memoire, pas de prefill) »
+    - route HTTP : **`POST /jspace/inject_knowledge`** (server.cpp:269), decrite
+      dans le source comme « production entry point for the KV-splice
+      knowledge-fusion mechanism »
+    - contrat : `{fact_text, extract_only:true}` -> extraction, renvoie un ref ;
+      `{state_ref, prompt, n_generate}` -> injection par ref (bypass texte)
+
+  **La cle content-addressed satisfait §2 sans schema parallele** : modele,
+  calcul Q1, IDs du prefixe, configuration, types KV, MODE de serialisation,
+  FORMAT (magic 0xaf143cd9) et positions sont TOUS a l'interieur du blob, donc
+  un etat incompatible produit un blob different, donc un miss. Aucune
+  compatibilite n'est presumee.
+
+=== 2. CE QUE J'AI IMPLEMENTE : 2 DEFAUTS REELS ===
+  Le fichier a ete MODIFIE : server-context.cpp, 321 284 -> 325 259 octets,
+  **4 ancres verifiees avant ecriture** (une premiere tentative a echoue sur
+  une ancre mal indentee et n'a RIEN ecrit : le fichier n'est jamais reste
+  a moitie patche).
+
+  DEFAUT 1 -- aucune borne memoire, aucune eviction (le trou concret).
+    `g_kv_states` etait un unordered_map SANS limite : `g_kv_states.erase`
+    n'apparaissait NULLE PART. A 157 353 668 octets par entree (mesure ici),
+    une poignee d'extractions epuisait la memoire, sans autre issue que l'OOM.
+    IMPLEMENTE : borne explicite configurable par `OBRAIN_KV_STATES_MAX_BYTES`
+    (defaut 2 Gio), eviction LRU (`g_kv_states_lru` + index de position),
+    compteur d'octets, et REFUS d'une entree plus grosse que la borne
+    (message d'erreur explicite, aucune entree creee).
+
+  DEFAUT 2 -- chemin disque SANS controle d'integrite.
+    Le blob etait lu du disque et injecte SANS verifier que le contenu
+    correspondait au nom de fichier (= la cle). Un fichier altere aurait ete
+    charge et injecte.
+    IMPLEMENTE : recalcul de `kv_ref_of(payload)` et REFUS explicite
+    (« state integrity mismatch on disk load ») en cas de discordance.
+
+  BUILD : `cmake --build build-cuda --target llama-server`.
+  **Q1 N'A PAS ETE RECONSTRUIT** : `libllama.so.0` =
+  87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+  AVANT et APRES le build. Identique. Le serveur seul a ete relink.
+
+=== 3. LE SMOKE TEST INTEGRE, PAR LA ROUTE REELLE ===
+  Serveur lance sur le modele candidat, `--parallel 3 --jinja`,
+  `OBRAIN_KV_STATES_MAX_BYTES=3221225472`. Modele pret a 32 s.
+
+  K1 -- EXTRACTION :  POST /jspace/inject_knowledge
+      {"fact_text":"Réponds uniquement : OK.","extract_only":true}
+      HTTP=200   TIME=20.019270 s
+      {"text":"kv_state:fb428a61fba54710","fact_tokens":7,
+       "blob_bytes":157353668,"fact_decode_ms":63.647,...}
+      **REF DE CACHE = fb428a61fba54710**
+
+  K2 -- INJECTION PAR REF (bypass texte) :
+      {"state_ref":"fb428a61fba54710","prompt":"Réponds uniquement : OK.",
+       "n_generate":32,"greedy":true}
+      HTTP=200   TIME=83.803092 s
+      **CONTINUATION REELLE PRODUITE** :
+        "\n\n<think>\nThe user is asking me to respond only with \"OK.\" This is a
+         simple request - they want me to just say \"OK\" without any"
+      `query_decode_ms=19934.553`, 32 pas de ~1.85 a 2.17 s chacun
+      `blob_bytes=157353668` (meme blob rechargé)
+
+  K3 -- REFUS D'UN state_ref INCONNU :  HTTP=400
+      {"error":{"code":400,"message":"unknown state_ref 'deadbeefdeadbeef'
+       (extract d'abord)","type":"invalid_request_error"}}
+      **Le refus fonctionne.**
+
+=== 4. LIMITE 1 -- L'ENTREE N'EST PAS LES 59 IDs AUTORITAIRES ===
+  `fact_tokens=7`. La route tokenise `fact_text` par **son propre template de
+  chat** : elle produit 7 tokens, pas les **59 IDs autoritaires** mesures et
+  geles. **La route ne permet donc PAS d'imposer le prefixe de 59 IDs**, et
+  l'entree effectivement utilisee dans le smoke test n'est PAS l'entree
+  autoritaire de RUN-02 / BENCH-03.
+  CONSEQUENCE : le smoke test demontre que **le mecanisme K1/K2 fonctionne par
+  le chemin reel de l'engine**, mais il ne reproduit pas la mesure de BENCH-03
+  et ne la remplace pas. Je ne transpose aucun chiffre de BENCH-03 ici.
+  MAILLON MANQUANT, NOMME : la route n'a pas de parametre acceptant une liste
+  d'IDs de tokens. Il faudrait soit un parametre `fact_token_ids`, soit passer
+  par le template exact — ce qui exigerait que le serveur utilise le template
+  qualifie `c3cf9e34...`, ce que je n'ai PAS verifie.
+
+=== 5. LIMITE 2 -- SIGNAL SUSPECT SUR fact_decode_ms, NON RESOLU ===
+  K1 rapporte `fact_decode_ms=63.647` et K2 rapporte **exactement la meme
+  valeur, 63.647**. Or K2 n'a PAS envoye de `fact_text` : il passe par
+  `state_ref`. Deux lectures sont possibles :
+   (a) le champ est simplement recopie depuis le blob et ne mesure rien ;
+   (b) le fait EST re-decode dans K2, auquel cas **K2 n'est PAS un cache hit
+      pur** et les tokens du fait sont bel et bien executes.
+  La description de la route dit qu'elle fait « extract+reinject — the seam a
+  future cross-request cache would split at » : elle fait donc un aller-retour
+  dans le MEME appel. **Je n'ai PAS lu assez de code pour trancher, et je ne
+  tranche pas.**
+  **Le meme nombre a deux endroits est un signal, pas une preuve.**
+  Ce point doit etre elucide AVANT toute revendication de cache hit
+  inter-requetes.
+
+=== 6. TESTS ===
+  Execute dans le smoke test : hit d'un ref connu (K2, HTTP 200), refus d'un ref
+  inconnu (K3, HTTP 400 avec message explicite). 
+  NON execute : blob tronque ou altere, refus de PARTIAL_ONLY par la route,
+  retour d'import nul/partiel, liberation du contexte apres echec, aucun decode
+  du prefixe sur hit, aucune entree apres export echoue. Le code implemente
+  certaines de ces protections (le refus d'insertion trop grosse, le controle
+  d'integrite disque), mais **je ne les ai pas exercees** : je ne les declare
+  donc pas PASS.
+
+ENGINE_REQUEST_PATH_USED=tools/server/server-context.cpp ; POST /jspace/inject_knowledge ; SERVER_TASK_TYPE_JSPACE_INJECT_KNOWLEDGE
+HYBRID_STATE_CACHE_CONNECTED=YES  (g_kv_states + kv_ref_of + K1/K2, deja present ; borne LRU et integrite ajoutees)
+CACHE_HIT_OBSERVED=PARTIAL
+  Le ref extrait a ete reutilise avec succes (K2, HTTP 200, continuation reelle),
+  MAIS le signal `fact_decode_ms` identique empeche de conclure a un hit PUR.
+DESTINATION_PREFIX_TOKEN_COUNT=NOT_ESTABLISHED
+  La route ne rapporte pas ce compteur, et `fact_decode_ms` identique suggere
+  que les tokens du fait pourraient etre rejoues. Non tranche.
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+  La route ne restitue pas les logits natifs ; elle restitue du TEXTE. La
+  comparaison binaire de logits n'est pas realisable par cette route.
+TOKEN_SEQUENCE_MATCH=NOT_RUN
+  La route n'expose qu'une seule condition par appel ; aucune paire
+  controle/reprise comparable n'en sort.
+ENGINE_RESUME_TOTAL_MS=83.803092  (K2, appel complet ; NON comparable a BENCH-03,
+  entree differente : 7 tokens contre 59)
+CACHE_MEMORY_BYTES=157353668  par entree ; borne ajoutee = 3221225472 (3 Gio)
+ATTEMPT_COUNT=5 appels HTTP (1 sante, 1 K1 x2, 1 K2, 1 K3) ; 2 lancements de
+  serveur, dont 1 ou j'ai attendu le chargement trop tot (health ok a 2 s alors
+  que le modele chargeait encore) -- declare, non masque.
+Q1_LIBLLAMA_REBUILT=NO   (libllama.so.0 identique avant/apres : 87c42d5f...)
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_BLOCKERS=
+  B1. La route n'accepte pas de liste d'IDs : l'entree autoritaire de 59 IDs ne
+      peut pas etre imposee. Maillon precis, nomme en §4.
+  B2. `fact_decode_ms` identique entre K1 et K2 : hit pur NON etabli. A elucider
+      dans le code avant toute revendication de cache inter-requetes.
+  B3. Aucune comparaison de logits possible par cette route (texte seulement).
+  B4. Les protections implementees (refus de taille, integrite disque) ne sont
+      pas exercees.

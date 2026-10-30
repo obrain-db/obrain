@@ -1,0 +1,284 @@
+{
+  "mode": "LPG",
+  "labels": [
+    {
+      "name": "Project",
+      "count": 29
+    },
+    {
+      "name": "Branch",
+      "count": 15
+    },
+    {
+      "name": "File",
+      "count": 27501
+    },
+    {
+      "name": "Folder",
+      "count": 4329
+    },
+    {
+      "name": "Module",
+      "count": 24912
+    },
+    {
+      "name": "Struct",
+      "count": 3842
+    },
+    {
+      "name": "Method",
+      "count": 41950
+    },
+    {
+      "name": "Field",
+      "count": 27569
+    },
+    {
+      "name": "Function",
+      "count": 95386
+    },
+    {
+      "name": "Variable",
+      "count": 41595
+    },
+    {
+      "name": "Enum",
+      "count": 1141
+    },
+    {
+      "name": "Interface",
+      "count": 8127
+    },
+    {
+      "name": "Class",
+      "count": 6631
+    },
+    {
+      "name": "Type",
+      "count": 3391
+    },
+    {
+      "name": "Section",
+      "count": 53807
+    },
+    {
+      "name": "EnvVar",
+      "count": 917
+    },
+    {
+      "name": "Decorator",
+      "count": 97
+    },
+    {
+      "name": "Route",
+      "count": 3188
+    },
+    {
+      "name": "Package",
+      "count": 54
+    },
+    {
+      "name": "Macro",
+      "count": 4380
+    },
+    {
+      "name": "Channel",
+      "count": 41
+    },
+    {
+      "name": "Table",
+      "count": 69
+    },
+    {
+      "name": "Session",
+      "count": 61
+    },
+    {
+      "name": "Turn",
+      "count": 480
+    },
+    {
+      "name": "Step",
+      "count": 23144
+    },
+    {
+      "name": "Message",
+      "count": 24174
+    },
+    {
+      "name": "ToolCall",
+      "count": 24288
+    },
+    {
+      "name": "ToolResult",
+      "count": 24288
+    },
+    {
+      "name": "Subagent",
+      "count": 48
+    },
+    {
+      "name": "Goal",
+      "count": 18
+    },
+    {
+      "name": "Summary",
+      "count": 18
+    },
+    {
+      "name": "Plan",
+      "count": 3
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "HAS_BRANCH",
+      "count": 15
+    },
+    {
+      "name": "CONTAINS_FILE",
+      "count": 26654
+    },
+    {
+      "name": "CONTAINS_FOLDER",
+      "count": 4147
+    },
+    {
+      "name": "DEFINES",
+      "count": 320182
+    },
+    {
+      "name": "FILE_CHANGES_WITH",
+      "count": 9304
+    },
+    {
+      "name": "IMPORTS",
+      "count": 47407
+    },
+    {
+      "name": "USAGE",
+      "count": 567715
+    },
+    {
+      "name": "CALLS",
+      "count": 349289
+    },
+    {
+      "name": "WRITES",
+      "count": 63661
+    },
+    {
+      "name": "GRAPHQL_CALLS",
+      "count": 4169
+    },
+    {
+      "name": "DEPENDS_ON",
+      "count": 60
+    },
+    {
+      "name": "TESTS_FILE",
+      "count": 121
+    },
+    {
+      "name": "CALL_REFERENCE",
+      "count": 2560
+    },
+    {
+      "name": "DEFINES_METHOD",
+      "count": 40807
+    },
+    {
+      "name": "DECORATES",
+      "count": 29550
+    },
+    {
+      "name": "SIMILAR_TO",
+      "count": 36971
+    },
+    {
+      "name": "SEMANTICALLY_RELATED",
+      "count": 4457
+    },
+    {
+      "name": "IMPLEMENTS",
+      "count": 1529
+    },
+    {
+      "name": "OVERRIDE",
+      "count": 5301
+    },
+    {
+      "name": "TESTS",
+      "count": 44755
+    },
+    {
+      "name": "CONFIGURES",
+      "count": 3209
+    },
+    {
+      "name": "INHERITS",
+      "count": 1514
+    },
+    {
+      "name": "RAISES",
+      "count": 2284
+    },
+    {
+      "name": "THROWS",
+      "count": 395
+    },
+    {
+      "name": "HTTP_CALLS",
+      "count": 1229
+    },
+    {
+      "name": "CROSS_CHANNEL",
+      "count": 1
+    },
+    {
+      "name": "LISTENS_ON",
+      "count": 60
+    },
+    {
+      "name": "EMITS",
+      "count": 14
+    },
+    {
+      "name": "HANDLES",
+      "count": 32
+    },
+    {
+      "name": "HAS_TURN",
+      "count": 480
+    },
+    {
+      "name": "HAS_STEP",
+      "count": 23144
+    },
+    {
+      "name": "INVOKED",
+      "count": 24306
+    },
+    {
+      "name": "PART_OF",
+      "count": 24192
+    },
+    {
+      "name": "PRODUCED",
+      "count": 24288
+    },
+    {
+      "name": "TOUCHES",
+      "count": 6135
+    },
+    {
+      "name": "CHILD_OF",
+      "count": 50
+    },
+    {
+      "name": "GOVERNED",
+      "count": 18
+    }
+  ],
+  "property_keys": []
+}

@@ -1,0 +1,45 @@
+ENGINE-008 -- MESURE DE L'ENTREE EXACTE DU PREFLIGHT (L4)
+==========================================================================
+Outil : engine008-prompt-measure.cpp -- chemin VOCAB_ONLY.
+AUCUN forward. AUCUN contexte de calcul. Aucun poids charge.
+
+MESSAGE UTILISATEUR : Réponds uniquement : OK.
+TEMPLATE : le template commun qualifie
+  ENGINE008_EFFECTIVE_CHAT_TEMPLATE.jinja
+  sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041
+CONFIGURATION : use_jinja=true, add_generation_prompt=true,
+  enable_thinking=true, add_special=0, parse_special=1.
+
+--- BASELINE : Qwen3.8-27B-Q4_K_M.gguf ---
+  RENDERED_BYTES=320
+  RENDERED_SHA256=92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658
+  PREFLIGHT_RENDERED_TOKEN_COUNT=59
+  TOKEN_IDS_SHA256=ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e
+  N_CTX_REQUIRED_MIN=67
+
+--- CANDIDAT : Qwen3.8-27B-OBRAIN-v3.gguf ---
+  RENDERED_BYTES=320
+  RENDERED_SHA256=92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658
+  PREFLIGHT_RENDERED_TOKEN_COUNT=59
+  TOKEN_IDS_SHA256=ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e
+  N_CTX_REQUIRED_MIN=67
+
+PREFLIGHT_INPUT_BASELINE_CANDIDATE_MATCH=YES
+  Le texte rendu ET les identifiants de tokens sont IDENTIQUES entre les deux
+  modeles : meme SHA de rendu, meme SHA d'IDs, meme compte. La symetrie de
+  l'entree est donc etablie sur l'entree REELLE du preflight, et non seulement
+  sur les six fixtures du renderer qualifie.
+
+CONSEQUENCE POUR LA SEGMENTATION --
+  Le prompt prefill fait **59 tokens** et `n_ubatch=512`.
+  **59 <= 512, donc AU PLUS UN ubatch pour le prefill.** Et chaque pas de decode
+  porte **1 token**, donc au plus un ubatch egalement.
+  RESERVE, et elle est reelle : c'est **l'inegalite** longueur <= n_ubatch. La
+  consigne previent explicitement de ne pas conclure depuis elle seule si
+  d'autres regles interviennent. Je n'ai PAS lu ces regles ; je n'ai pas trouve
+  le point de decoupage (voir statut). La borne est donc PLAUSIBLE et non
+  DEMONTREE.
+  Le controle runtime des extractions reste OBLIGATOIRE : comptage des
+  evenements CAPTURE_EXTRACT du ledger par fenetre.
+
+OUTIL : t-measure sha256 645a61f7f1602aac20daaeb510eb9be73a38aba0d4ce7ae74c6160616fcc1ead

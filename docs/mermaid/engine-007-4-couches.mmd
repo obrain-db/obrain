@@ -1,0 +1,139 @@
+%% Ce que ce diagramme prouve : les QUATRE couches d adressage declarees ELIMINEES par
+%% ENGINE-007B-F1A-Q0-N2, la CINQUIEME couche qui restait nommee
+%% WEIGHT_BYTE_DECODE_OR_BLOCK_SCALE_OFFSET, et la refutation lue en N3ter : l elimination de la
+%% couche 4 offsets GGUF ne portait que sur la coherence RELATIVE, l origine absolue etait fausse
+%% de 28 octets. Les quatre couches ne sont donc pas eliminees de la meme facon : trois le sont
+%% restees, la quatrieme a ete refutee, et la cinquieme n a jamais ete mesuree.
+%% Source MESUREE : docs/ENGINE-007B-F1A-Q0-N2-ROW-OUTPUT-CORRESPONDENCE.md 252 lignes et
+%% docs/ENGINE-007B-F1A-Q0-N3TER-GGUF-ADDRESS-CORRECTION.md 264 lignes, plus le fork llama-obrain
+%% lu sur cette machine : ggml/src/gguf.cpp, ggml/src/ggml-common.h, ggml/src/ggml.c,
+%% ggml/src/ggml-quants.c, ggml/include/ggml.h, ggml/include/gguf.h.
+%% DEDUIT : rien. Chaque statut est la chaine cle=valeur exacte lue dans un ledger de rapport,
+%% chaque valeur numerique est celle ecrite dans le rapport cite, chaque ligne source citee a ete
+%% ouverte. Recalcule par moi et confirme : 10996452 modulo 32 = 4, align_up 32 = 10996480,
+%% padding = 28, 40 x 34 = 1360, 48 x 34 = 1632, 5120 sur 128 = 40, 6144 sur 128 = 48,
+%% 17408 x 4 = 69632, 10996480 modulo 32 = 0.
+%% NON ETABLI, donc AUCUN noeud : les repertoires d artefacts
+%% engine-004-steady-state/RUN-001/qualification/e7b-f1a-q0-n2 et e7b-f1a-q0-n3ter ne sont pas sur
+%% cette machine, N2_STATUS.txt et N3TER_DEFECT_53_ROOT_CAUSE.txt non plus, le modele GGUF n est
+%% pas la et les tailles de tenseurs 1042944000 20480 715161600 ne sont donc PAS re-mesurees ici,
+%% seulement recopiees. Le noyau CUDA MMVQ et le SASS sont hors de ce qui a ete lu.
+
+flowchart TB
+
+  subgraph L1["Couche 1 ELIMINEE : identite des tenseurs, quel tenseur est lu"]
+    direction TB
+    c1_tensors["✅ 3 tenseurs cibles, N2 section 1 et N3ter section 3<br/>blk.20.ffn_up.weight<br/>blk.16.attn_gate.weight<br/>blk.15.attn_output.weight<br/>GGUF_TENSOR_NAME_EXACT_MATCH=YES<br/>GGUF_TENSOR_TYPE_MATCH=YES<br/>GGUF_TENSOR_DIMENSIONS_MATCH=YES"]
+    c1_proven["✅ TARGET_WEIGHT_IDENTITY_PROVEN=YES<br/>TARGET_ACTIVATION_IDENTITY_PROVEN=YES<br/>TARGET_NATIVE_OUTPUT_IDENTITY_PROVEN=YES<br/>lu en N2 section 1, recopie en N2 section 7"]
+  end
+
+  subgraph L2["Couche 2 ELIMINEE : convention de dimensions, quelle ligne va sur quelle sortie"]
+    direction TB
+    c2_ffn["✅ blk.20.ffn_up<br/>activation ne = 5120 1 1 1<br/>base_output ne = 17408 1 1 1"]
+    c2_gate["✅ blk.16.attn_gate<br/>activation ne = 5120 1 1 1<br/>base_output ne = 6144 1 1 1"]
+    c2_out["✅ blk.15.attn_output<br/>activation ne = 6144 1 1 1<br/>base_output ne = 5120 1 1 1"]
+    c2_rule["✅ convention etablie par les metadonnees capturees<br/>weight.ne0 = K et activation.ne0 = K<br/>activation.ne1 = 1 soit un seul token<br/>output.ne0 = N et output.ne1 = 1<br/>GGML_MUL_MAT_OUTPUT_DIMENSION_CONVENTION_PROVEN=YES<br/>WEIGHT_ROW_TO_OUTPUT_COORDINATE_MAPPING_PROVEN=YES<br/>la ligne logique r du poids correspond a output de rang r"]
+    c2_n1bis["⚪ tension N1bis resorbee par N2 section 1<br/>l appariement ligne vers sortie etait juste<br/>la cause est ailleurs"]
+  end
+
+  subgraph L3["Couche 3 ELIMINEE : indexation du payload, ou lire dans la sortie"]
+    direction TB
+    c3_payload["✅ base_output contiguous = 1<br/>nb0 = 4 et ne0 = 17408<br/>bytes = 69632 = 17408 x 4<br/>offset_bytes = 4 x r"]
+    c3_values["✅ valeurs lues aux offsets testes<br/>r = 0 donne -2.498384<br/>r = 1 donne 0.868136<br/>r = 17 donne -1.410863<br/>toutes finies, ordre de grandeur 1<br/>coherent avec une projection FFN"]
+    c3_gates["✅ OUTPUT_DTYPE_MATCH=YES<br/>OUTPUT_SHAPE_MATCH=YES<br/>OUTPUT_STRIDE_MAPPING_PROVEN=YES<br/>ALL_TESTED_OUTPUT_OFFSETS_IN_BOUNDS=YES"]
+    c3_gap["🟠 INDEPENDENT_ROW_OUTPUT_INDEXING_TEST=NON_EXECUTE<br/>le test F32 independant demande en N2 section 6<br/>n a pas ete ecrit, redit en N3ter section 6<br/>la couche tient par les metadonnees ne nb et bytes<br/>et par des valeurs finies, pas par ce test"]
+  end
+
+  subgraph L4["Couche 4 ELIMINEE PUIS REFUTEE : offsets GGUF, ou commence la section de donnees"]
+    direction TB
+    c4_n2["✅ declaree eliminee en N2 section 3<br/>865 coherents et 0 incoherents sur 865 paires<br/>EN INCLUANT TOUS LES TYPES<br/>output.weight Q6_K offset 0 taille 1042944000<br/>output_norm F32 offset 1042944000 taille 20480<br/>token_embd Q4_K offset 1042964480 taille 715161600<br/>GGUF_OFFSETS=VERIFIED_865_OF_865_WITH_ALL_TYPES<br/>les tenseurs sont INTERCALES Q4_K F32 BF16 entre les TQ2_G128"]
+    c4_limited["🔴 cette elimination ne portait que sur la coherence RELATIVE<br/>N3bis : data_start coherent ne garantit pas<br/>que data_start soit la bonne origine absolue<br/>le controle de N2 ne voyait pas l origine"]
+    c4_wrong["🔴 formule fautive du lecteur direct<br/>position = fin_metadonnees plus offset_tenseur<br/>DIRECT_READER_ORIGINAL_DATA_START=10996452"]
+    c4_right["✅ formule correcte, N3ter sections 1 et 4<br/>position = align_up de fin_metadonnees sur alignement<br/>plus offset_tenseur plus row x row_stride<br/>DIRECT_READER_CORRECTED_DATA_START=10996480<br/>le correctif est la REGLE d alignement<br/>NON applique : address plus 28 en dur"]
+    c4_align["✅ decalage constant mesure a 28 octets<br/>fin des metadonnees = 10996452<br/>10996452 modulo 32 = 4 donc NON aligne<br/>align_up vers 10996480, padding = 28<br/>GGUF_HEADER_END=10996452 et GGUF_ALIGNMENT=32<br/>GGUF_DATA_START=10996480 et ALIGNMENT_PADDING=28<br/>PADDING_BYTES_ALL_ZERO=YES<br/>OBSERVED_ADDRESS_SHIFT_IS_CONSTANT=YES_28_BYTES"]
+    c4_test["✅ test decisif, N3ter section 2<br/>origine BRUTE row0 commence par 4a505aa422116416<br/>contient libggml = False<br/>origine ALIGNEE row0 commence par 2a45a1459555a296<br/>contient libggml = TRUE"]
+    c4_requal["✅ requalification par comparateur INDEPENDANT, N3ter section 3<br/>le comparateur n utilise ni mon lecteur ni le programme libggml<br/>6 lignes sur 8704 octets compares<br/>1360 octets par ligne pour E5 et 1632 pour E6<br/>BYTE_MISMATCH_COUNT=0<br/>INDEPENDENT_GGUF_ROW_BYTE_AGREEMENT=YES<br/>reserve ecrite : 3 tenseurs ne constituent PAS une preuve sur les 866"]
+    c4_retract["🔴 N2_SCALE_OBSERVATION_STATUS=RETRACTED_ARTEFACT_OF_ADDRESS_OFFSET<br/>les echelles de la ligne 0 de blk.20.ffn_up lues en N2 section 4<br/>min -0.0247 et max 3400.0 et moyenne 402.2 et premiere 89.3125<br/>etaient un artefact du decalage de 28 octets<br/>elles ne refletent pas le contenu du GGUF"]
+  end
+
+  subgraph L5["Couche 5 CE QUI RESTAIT : lecture des octets de poids et offset de l echelle de bloc"]
+    direction TB
+    c5_named["🟠 nommee par N2 section 4 apres elimination des quatre<br/>FIRST_DIVERGENCE_LAYER=WEIGHT_BYTE_DECODE_OR_BLOCK_SCALE_OFFSET<br/>trois candidats ecrits dans N2 section 4 :<br/>la position des octets de poids<br/>l offset de l echelle DANS le bloc<br/>l ordre des blocs dans la ligne"]
+    c5_proven_part["✅ seul acquis sur cette couche apres N3ter<br/>WEIGHT_ROW_BYTE_STRIDE_PROVEN=YES<br/>K=5120 donne 40 blocs x 34 = 1360 octets par ligne<br/>K=6144 donne 48 blocs x 34 = 1632 octets par ligne<br/>WEIGHT_ROW_OFFSETS_IN_BOUNDS=YES<br/>GGUF_DATA_START_PROVEN=YES"]
+    c5_unmeasured["🔴 ce qui reste NON MESURE, ledger N3ter section 8<br/>TQ2_SCALE_FP16_CONVERSION_PROVEN=NON_MESURE_EN_N3TER<br/>TQ2_TERNARY_CODE_MAPPING=NON_MESURE_EN_N3TER<br/>TQ2_WITHIN_BLOCK_WEIGHT_ORDER=NON_MESURE_EN_N3TER<br/>Q8_BLOCK_ALIGNMENT_WITH_TQ2=NON_MESURE_EN_N3TER<br/>BLOCK_0_INTEGER_DOT_VERIFIED=NO<br/>BLOCK_0_SCALE_APPLICATION_VERIFIED=NO<br/>FULL_ROW_RECONSTRUCTION_COMPLETED=NO<br/>N3_NATIVE_REFERENCE_VALIDATION=NON_MESURE"]
+    c5_next["🟠 N3quater section 10, decide et pas ecrit<br/>a lire d en 32 et 33 sur les octets CORRECTS<br/>b decodage ternaire confronte a un second decodeur<br/>c alignement q8_1, 4 blocs de 32 par bloc de 128<br/>d contribution du bloc 0 puis des 40 ou 48 blocs<br/>e comparer la ligne complete a mm_capture<br/>f test F32 d indexation herite de N2"]
+    c5_gate["🔴 Q0_STATUS=NOT_PASSED<br/>Q1_ALLOWED=NO<br/>ENGINE007B_F1A_STATUS=BLOCKED_OPERATOR_REFERENCE_GATE<br/>FIRST_DIVERGENCE_LAYER=DIRECT_GGUF_ADDRESS_ALIGNMENT  RESOLVED<br/>HARNESS_DEFECT_53_ROOT_CAUSE=PROVEN"]
+  end
+
+  subgraph SRC["Ancrage source lu sur cette machine : fork llama-obrain"]
+    direction TB
+    s_const["ggml/include/gguf.h:46<br/>define GGUF_DEFAULT_ALIGNMENT 32"]
+    s_default["ggml/src/gguf.cpp:223<br/>size_t alignment = GGUF_DEFAULT_ALIGNMENT"]
+    s_read["ggml/src/gguf.cpp:610<br/>ctx.alignment lu dans la metadonnee general.alignment<br/>sinon GGUF_DEFAULT_ALIGNMENT<br/>ligne 612 rejette une valeur non puissance de 2"]
+    s_pad["ggml/include/ggml.h:267<br/>define GGML_PAD x n = x plus n moins 1<br/>ET binaire avec le NON de n moins 1"]
+    s_align["ggml/src/gguf.cpp:752<br/>gr.seek GGML_PAD gr.tell et ctx.alignment<br/>la section de donnees est alignee a la lecture"]
+    s_offset["ggml/src/gguf.cpp:758<br/>ctx.offset = gr.tell<br/>origine absolue de la section de donnees"]
+    s_check["ggml/src/gguf.cpp:767 a 770<br/>a la lecture le loader exige ti.offset egal a ctx.size<br/>accumule en GGML_PAD de ggml_nbytes<br/>c est un controle des offsets RELATIFS entre tenseurs<br/>il ne verifie jamais l origine absolue du fichier"]
+    s_qk["ggml/src/ggml-common.h:280<br/>define QK_G128 128"]
+    s_block["ggml/src/ggml-common.h:282 a 285<br/>block_tq2_g128 : qs de QK_G128 sur 4 soit 32 octets<br/>plus ggml_half d soit 2 octets<br/>ligne 286 static_assert sur 34 octets<br/>commentaire du fork : 32 plus 2 = 34 octets, 2,125 bpw"]
+    s_type["ggml/src/ggml.c:439 GGML_TYPE_TQ2_G128 = 43<br/>ggml.c:920 a 926 type_name tq2_g128<br/>blck_size QK_G128 et type_size sizeof du bloc"]
+    s_dequant["⚪ ggml/src/ggml-quants.c:2592<br/>dequantize_row_tq2_g128<br/>ligne 2597 d = FP16 vers FP32 de x.d<br/>lignes 2601 a 2603 code = q decale de 2n puis masque 3<br/>y = code moins 1, le tout fois d, code 3 replie sur plus 1<br/>le decodeur de reference EXISTE EN AMONT dans la source<br/>il n a PAS ete confronte aux octets corriges"]
+  end
+
+  subgraph LEG["Notation d etat utilisee dans ce diagramme"]
+    lg1["✅ ecrit et verifie"]
+    lg2["🟠 decide pas ecrit"]
+    lg3["🔴 refuse, avec la raison"]
+    lg4["⚪ existe en amont"]
+  end
+
+  c1_tensors -->|identifie| c1_proven
+  c1_proven -->|fournit la cible de| c2_rule
+
+  c2_ffn -->|mesure| c2_rule
+  c2_gate -->|mesure| c2_rule
+  c2_out -->|mesure| c2_rule
+  c2_n1bis -.->|reserve levee dans| c2_rule
+  c2_rule -->|autorise l etape suivante| c3_payload
+
+  c3_payload -->|prouve| c3_values
+  c3_values -->|confirme| c3_gates
+  c3_gap -.->|reserve sur| c3_gates
+  c3_gates -->|indexation qualifiee, on passe aux octets| c4_n2
+
+  c4_n2 -->|declare la couche eliminee mais| c4_limited
+  c4_limited -->|refutee par la mesure de| c4_align
+  c4_align -->|explique| c4_wrong
+  c4_align -->|prescrit| c4_right
+  c4_test -->|test decisif de| c4_right
+  c4_right -->|requalifie les octets par| c4_requal
+  c4_requal -->|retracte| c4_retract
+  c4_retract -->|donc la couche 5 n etait pas la divergence| c5_named
+
+  c5_named -->|seul acquis mesure| c5_proven_part
+  c5_named -->|reste ouvert sur| c5_unmeasured
+  c5_unmeasured -->|reste a executer, plan de| c5_next
+  c5_next -->|conditionne| c5_gate
+
+  s_const -->|definit la constante de| s_default
+  s_read -->|fournit ctx.alignment a| s_align
+  s_default -->|valeur par defaut de| s_read
+  s_pad -->|est la macro de| s_align
+  s_align -->|etablit| s_offset
+  s_check -->|explique pourquoi N2 n a pas vu le defaut, voir| c4_limited
+  s_offset -->|est l origine que le lecteur direct ratait, corrigee en| c4_right
+  s_qk -->|dimensionne| s_block
+  s_block -->|est le bloc de| s_type
+  s_type -->|est decode par| s_dequant
+  s_dequant -.->|non confronte aux octets corriges de| c5_unmeasured
+
+  classDef elimine fill:#1f6f2f,stroke:#0d3315,color:#fff
+  classDef refute fill:#a11f1f,stroke:#5c0f0f,color:#fff
+  classDef reste fill:#c47a10,stroke:#6b420a,color:#fff
+  classDef source fill:#1f4fa1,stroke:#0f2857,color:#fff
+
+  class c1_tensors,c1_proven,c2_ffn,c2_gate,c2_out,c2_rule,c3_payload,c3_values,c3_gates elimine
+  class c4_n2,c4_right,c4_align,c4_test,c4_requal,c5_proven_part elimine
+  class c4_limited,c4_wrong,c4_retract,c5_unmeasured,c5_gate refute
+  class c3_gap,c5_named,c5_next reste
+  class s_const,s_default,s_read,s_pad,s_align,s_offset,s_check,s_qk,s_block,s_type,s_dequant,c2_n1bis source

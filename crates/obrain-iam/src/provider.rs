@@ -244,11 +244,18 @@ impl ObrainIamProvider {
     /// In production this would use bcrypt/argon2 with salt, but for the
     /// embedded single-user scenario a simple hash suffices.
     fn hash_token(token: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        token.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        // ── SHA-256, PAS UN HACHAGE DE TABLE ────────────────────────────────
+        // L'implémentation précédente hachait le jeton avec `DefaultHasher`
+        // (SipHash, 64 bits, sans sel) : une empreinte de jeton de session
+        // qu'une collision suffit à faire passer pour une autre. Le changement
+        // est GRATUIT AUJOURD'HUI et ne le sera plus demain : aucune identité
+        // de production n'existe encore (l'IAM n'a jamais été armé), donc
+        // aucun jeton en circulation n'est invalidé. À faire maintenant, ou
+        // jamais sans casser des sessions.
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(token.as_bytes());
+        format!("{:x}", h.finalize())
     }
 
     /// Generates a simple unique ID.
@@ -259,20 +266,30 @@ impl ObrainIamProvider {
         format!("{prefix}-{n:08x}")
     }
 
-    /// Generates a random-ish session token.
+    /// Engendre un jeton de session — RÉELLEMENT imprévisible.
+    ///
+    /// ── CE QUI ÉTAIT ÉCRIT AVANT (défaut mesuré le 2026-09-13) ──────────────
+    /// « random-ish » : un `DefaultHasher` alimenté par un **compteur**, donc
+    /// le même jeton à chaque démarrage du même store. Constaté à la mesure :
+    /// deux processus distincts ont émis `obt_d32bf2e05a925e5f0000000000000001`,
+    /// et seuls les derniers chiffres changeaient. Un jeton de session
+    /// PRÉVISIBLE n'est pas un jeton : qui devine la graine peut se faire passer
+    /// pour le premier utilisateur. On tire donc l'entropie du système (256 bits)
+    /// — `rand` est déjà une dépendance du workspace.
     fn generate_token() -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
-        let n = TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let mut hasher = DefaultHasher::new();
-        n.hash(&mut hasher);
-        "obrain-iam".hash(&mut hasher);
-        format!("obt_{:016x}{:016x}", hasher.finish(), n)
+        let mut octets = [0u8; 32];
+        for morceau in octets.chunks_mut(8) {
+            let tirage = rand::random::<u64>().to_le_bytes();
+            morceau.copy_from_slice(&tirage);
+        }
+        let mut sortie = String::with_capacity(4 + 64);
+        sortie.push_str("obt_");
+        for o in octets {
+            sortie.push_str(&format!("{o:02x}"));
+        }
+        sortie
     }
+
 }
 
 impl AuthProvider for ObrainIamProvider {
@@ -396,12 +413,45 @@ impl AuthProvider for ObrainIamProvider {
         })
     }
 
-    fn revoke_session(&self, _credential_id: &str) -> IamResult<()> {
-        // Credential revocation requires node deletion support in the graph
-        // store, which is not yet uniformly exposed. For now, mark as a no-op
-        // and track as a known limitation.
+    fn revoke_session(&self, credential_id: &str) -> IamResult<()> {
+        // ── LA RÉVOCATION EST RÉELLE (2026-09-13) ───────────────────────────
+        // Elle était un NO-OP documenté : « requires node deletion support …
+        // TODO: implement when GraphStoreMut::delete_node() is available ».
+        // Or `delete_node` EST exposé (`obrain-core/src/graph/traits.rs`) — la
+        // prémisse du TODO était périmée. Une chaîne qui émet des jetons sans
+        // pouvoir les révoquer n'est pas une chaîne : une déconnexion rendait
+        // `Ok(())` en laissant le jeton vivant.
+        use crate::model::LABEL_CREDENTIAL;
+        let Some(nid) = self.store.find_node_by_label_and_id(LABEL_CREDENTIAL, credential_id)
+        else {
+            return Err(IamError::ResourceNotFound {
+                resource: format!("credential:{credential_id}"),
+            });
+        };
+        // ── ON EXPIRE D'ABORD, ON SUPPRIME ENSUITE ──────────────────────────
+        // Mesuré le 2026-09-13 sur une base FICHIER : la suppression n'a PAS
+        // suffi — le credential restait compté (4 avant, 4 après) et le jeton
+        // continuait d'authentifier, alors que le test unitaire (store en
+        // mémoire) passait. Le défaut est donc dans la visibilité de la
+        // suppression côté substrat, et une DÉCONNEXION ne peut pas en dépendre.
         //
-        // TODO: implement when GraphStoreMut::delete_node() is available
+        // On écrit donc une expiration DANS LE PASSÉ : l'authentification la
+        // vérifie désormais (`EXPIRES_TS`), et elle ne dépend que d'une écriture
+        // de propriété. La suppression reste tentée — si elle passe, tant mieux :
+        // le credential disparaît au lieu de rester inerte.
+        use obrain_common::Value;
+        self.store.inner().set_node_property(
+            nid,
+            crate::model::props::EXPIRES_TS,
+            Value::Int64(crate::store::maintenant_ts().saturating_sub(1) as i64),
+        );
+        self.store.inner().delete_node_edges(nid);
+        let supprime = self.store.inner().delete_node(nid);
+        if !supprime {
+            // Ce n'est pas un échec : l'expiration ci-dessus a déjà fermé la
+            // session. On le note pour que personne ne croie à une suppression.
+            // (pas de journal : `obrain-iam` n'embarque pas `tracing`)
+        }
         Ok(())
     }
 
@@ -542,6 +592,59 @@ impl ObrainIamProvider {
         Ok(())
     }
 
+    /// Réémet une session à partir d'un jeton encore valable : NOUVEAU jeton,
+    /// et l'ANCIEN révoqué (rotation).
+    ///
+    /// ── POURQUOI LA ROTATION, ET PAS SEULEMENT L'ÉMISSION ───────────────────
+    /// Renouveler sans révoquer laisse un jeton valable derrière chaque
+    /// renouvellement : la session s'ACCUMULE, et un jeton volé le reste jusqu'à
+    /// sa propre échéance, indépendamment de l'utilisateur. On tourne donc la
+    /// session : le nouveau remplace l'ancien, qui meurt.
+    pub fn reemettre_session(&self, ancien: &str, ttl_secs: u64) -> IamResult<Option<String>> {
+        let identite = match self.authenticate(&AuthRequest::SessionToken {
+            token: ancien.to_string(),
+        }) {
+            Ok(i) => i,
+            // Jeton inconnu ou expiré : ce n'est pas une erreur, c'est un refus.
+            Err(_) => return Ok(None),
+        };
+        let nouveau = self.create_session(&identite, ttl_secs)?.token;
+        let _ = self.revoquer_jeton(ancien);
+        Ok(Some(nouveau))
+    }
+
+    /// Révoque le jeton de session donné, à partir du JETON (et non d'un
+    /// identifiant de credential).
+    ///
+    /// ── POURQUOI ELLE EXISTE ────────────────────────────────────────────────
+    /// `AuthProvider::revoke_session` prend un identifiant de credential, que
+    /// seul le magasin connaît. Une déconnexion, elle, ne reçoit que le jeton :
+    /// il fallait donc retrouver le credential par son empreinte — ce que la
+    /// vérification faisait déjà, mais sans que rien ne l'expose. Rend `true`
+    /// quand un credential a bien été révoqué.
+    pub fn revoquer_jeton(&self, token: &str) -> IamResult<bool> {
+        use crate::model::{LABEL_CREDENTIAL, props};
+        use obrain_common::Value;
+
+        let empreinte = Self::hash_token(token);
+        let store = self.store.inner();
+        for cred_nid in store.nodes_by_label(LABEL_CREDENTIAL) {
+            let meme_empreinte = matches!(
+                store.get_node_property(cred_nid, &props::TOKEN_HASH.into()),
+                Some(Value::String(h)) if h.as_str() == empreinte
+            );
+            if !meme_empreinte {
+                continue;
+            }
+            let Some(id) = self.get_str_prop(cred_nid, props::ID) else {
+                continue;
+            };
+            self.revoke_session(&id)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Returns `true` if the user has a password credential.
     pub fn has_password(&self, user_id: &str) -> bool {
         self.find_password_credential(user_id).is_some()
@@ -655,6 +758,19 @@ impl ObrainIamProvider {
                 _ => false,
             };
             if !type_match {
+                continue;
+            }
+
+            // ── L'EXPIRATION EST VÉRIFIÉE, PAS SEULEMENT ANNONCÉE ───────────
+            // Défaut mesuré le 2026-09-13 : cette fonction rendait « invalid or
+            // EXPIRED credentials » sans jamais lire `iam_expires_at`. Un jeton
+            // n'expirait donc jamais. On lit maintenant `iam_expires_ts`
+            // (époque en secondes) ; absente ⇒ pas d'expiration, pour ne pas
+            // invalider les identités écrites avant ce correctif.
+            if let Some(Value::Int64(echeance)) = store.get_node_property(cred_nid, &props::EXPIRES_TS.into())
+                && (echeance as u64) <= crate::store::maintenant_ts()
+            {
+                // (Pas de journal ici : `obrain-iam` n'embarque pas `tracing`.)
                 continue;
             }
 

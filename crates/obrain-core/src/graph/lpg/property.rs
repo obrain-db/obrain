@@ -478,8 +478,8 @@ impl<Id: EntityId> PropertyStorage<Id> {
     ///
     /// let storage: PropertyStorage<NodeId> = PropertyStorage::new();
     /// let key = PropertyKey::new("embedding");
-    /// storage.set(NodeId(1), key.clone(), Value::Vector(vec![1.0, 2.0]));
-    /// storage.set(NodeId(2), key.clone(), Value::Vector(vec![3.0, 4.0]));
+    /// storage.set(NodeId(1), key.clone(), Value::Vector(vec![1.0, 2.0].into()));
+    /// storage.set(NodeId(2), key.clone(), Value::Vector(vec![3.0, 4.0].into()));
     ///
     /// let mut count = 0;
     /// storage.for_each_vector(&key, |_id, v| { count += 1; assert_eq!(v.len(), 2); });
@@ -1725,18 +1725,13 @@ impl<Id: EntityId> PropertyColumn<Id> {
     }
 }
 
-/// Compares two values for ordering.
+/// Comparaison de PRÉDICAT canonique (le dialecte local est SUPPRIMÉ —
+/// c'était l'une des 11 copies recensées par la campagne). Sert les bornes
+/// min/max des statistiques de colonne et le filtrage par plage de LpgStore :
+/// même verdict que l'évaluateur et que le balayage substrat.
 fn compare_values(a: &Value, b: &Value) -> Option<Ordering> {
-    match (a, b) {
-        (Value::Int64(a), Value::Int64(b)) => Some(a.cmp(b)),
-        (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b),
-        (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
-        (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
-        (Value::Int64(a), Value::Float64(b)) => (*a as f64).partial_cmp(b),
-        (Value::Float64(a), Value::Int64(b)) => a.partial_cmp(&(*b as f64)),
-        (Value::Timestamp(a), Value::Timestamp(b)) => Some(a.cmp(b)),
-        (Value::Date(a), Value::Date(b)) => Some(a.cmp(b)),
-        (Value::Time(a), Value::Time(b)) => Some(a.cmp(b)),
+    match obrain_common::types::value_cmp::comparer(a, b) {
+        obrain_common::types::value_cmp::Comparaison::Ordonnees(o) => Some(o),
         _ => None,
     }
 }

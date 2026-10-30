@@ -1,0 +1,109 @@
+SPHERE: engine_004_observateur
+RESUME: La sphere etablit la cause de l invalidation du CUDA Graph par un observateur forensique non baseline - changement de forme de la vue cache_k_l3 de 1024 vers 1280 positions sans changement de pointeur ni de pas, evenement deterministe a l ordinal de calcul 224 dans la fenetre 9 a 264 sur le noeud 213 de 4010.
+RESUME: Elle etablit aussi que l observateur ne perturbe pas la generation - 256 tokens de SHA identique a A-prime - et elle refute puis retire formellement la conclusion A-prime zero transition dans la fenetre mesuree, ainsi que l hypothese frontiere de mesure causale et l hypothese un evenement compteur egal un cycle de warmup complet.
+RESUME: Les defauts de harnais numerotes 4 et 5 sont PROUVE resolus par la specification des quatre horodatages, l attribution mesuree donnant 99.7 pourcent du temps par token dans l attente de synchronisation backend.
+RESUME: Restent OUVERT le champ exact du tenseur de vue classe OTHER, la reprise de RUN-002 sous observateur, la periodicite de 256 tokens, l echelle de capacite KV 1024 1280 1536 1792, l enumeration de champ de vue, le taux de transition reduit a une mesure ponctuelle et le defaut de plomberie 29 non assigne.
+NOEUDS:
+[PROUVE] e004_abc_microtests :: microtests A B C sans transition sur un token de test apres reexecution de A :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[REFUTE] e004_reset_not_causal :: hypothese remise a zero de la telemetrie causale de la transition :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[REFUTE] e004_entry_path_not_causal :: hypothese chemin d entree de mesure causal de la transition :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[PROUVE] e004_reset_alone_no_transition :: reset seul sans declenchement de transition de graphe :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_aprime_run_256 :: run A-prime de 256 tokens avec sequence identique a RUN-002 :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[REFUTE] e004_aprime_dating_500 :: datation de la bascule uid 36 vers 39 avant la fenetre mesuree :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[OUVERT] e004_counter_trace_gap :: ecart mesure non explique entre compteurs engine-003 et traces de warmup :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[OUVERT] e004_aprime_window_io_gate :: fenetre du run A-prime non libre d I/O de diagnostic :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[OUVERT] e004_run3_gate_blocked :: autorisation RUN-003 refusee par lecture stricte des deux conditions :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[PROUVE] e004_defect_4 :: defaut de harnais 4 attribution de latence par placement des horloges :: ENGINE-004-DEFAUTS-4-5.md
+[PROUVE] e004_defect_5 :: defaut de harnais 5 grandeurs manquantes separees et publiees :: ENGINE-004-DEFAUTS-4-5.md
+[PROUVE] e004_four_timestamps :: specification des quatre points d horodatage t0 t1 t2 t3 sur horloge monotone :: ENGINE-004-DEFAUTS-4-5.md
+[PROUVE] e004_attribution_backend :: 99.7 pourcent du temps par token est attente de synchronisation backend :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[PARTIEL] e004_aprime_latency_dist :: distributions de latence A-prime sur un seul run de 256 tokens :: ENGINE-004-DEFAUTS-4-5.md
+[OUVERT] e004_open_amortized_cost :: cout amorti de la maintenance non mesurable faute de distribution de tokens de transition :: ENGINE-004-DEFAUTS-4-5.md
+[PROUVE] e004_observer_runtime :: runtime observateur construit sur arbre vierge 960e38d6 plus patch additif non baseline :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_observer_no_v3 :: observateur sans la telemetrie V3 et symboles declares weak dans le harnais :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_observer_spec_header :: observateur instrumente anneau prealloue et patch auto-verifiant compile :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[PROUVE] e004_observer_window_discipline :: discipline de fenetre A2 sans I/O ni allocation diagnostique et zero log par token :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_a2_fidelity_gate :: sequence de 256 tokens sous observateur identique a A-prime :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_event_ordinal_224 :: evenement unique a l ordinal 224 dans la fenetre 9 a 264 sur le noeud 213 de 4010 :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_kv_shape_cause :: changement de forme du cache_k_l3 de 1024 vers 1280 invalide le graphe :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_ptr_strides_unchanged :: pointeur de donnees et pas inchanges pendant la transition :: ENGINE-004-A2-OBSERVATEUR.md
+[OUVERT] e004_changed_field_other :: champ exact du tenseur de vue non identifie et classe OTHER :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_counter_trace_resolved :: contradiction compteur trace resolue par deux transitions logiques distinctes :: ENGINE-004-A2-OBSERVATEUR.md
+[REFUTE] e004_retire_one_counter_one_cycle :: hypothese un evenement compteur egal un cycle de warmup complet :: ENGINE-004-A2-OBSERVATEUR.md
+[RETIRE] e004_retire_aprime_zero_window :: conclusion zero transition dans la fenetre A-prime retiree comme fausse :: ENGINE-004-A2-OBSERVATEUR.md
+[RETIRE] e004_retire_measured_window_zero :: valeur nulle et taux 1 sur 256 non publies pour la fenetre mesuree :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_correct_aprime_count :: comptage corrige de la fenetre A-prime a un evenement :: ENGINE-004-CLOTURE-RUN003.md
+[PROUVE] e004_steady_state_redef :: steady state redefini comme regime stable incluant la maintenance amortie :: ENGINE-004-CLOTURE-RUN003.md
+[PARTIEL] e004_a2_reproducibility :: reproductibilite sur cinq executions meme ordinal meme noeud et meme sortie :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_provenance_incident_1 :: incident de provenance 1 build copie ecrivant dans l arbre d origine :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_provenance_incident_2 :: incident de provenance 2 bibliotheque obsolete reutilisee apres build echoue :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_observer_defect_1 :: defaut observateur 1 champ fautif non propage a l evenement :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_observer_dump_defect :: defaut observateur vidage elimine par l editeur de liens sans appel install_atexit :: ENGINE-004-STATUT-A-B-C-APRIME.md
+[OUVERT] e004_a2_not_established_run2 :: transition de RUN-002 non etablie comme identique faute de rejeu sous observateur :: ENGINE-004-A2-OBSERVATEUR.md
+[OUVERT] e004_rate_punctual :: taux de transition de 1 sur 256 mesure ponctuelle et non taux etabli :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_run3_allowed :: autorisation RUN-003 accordee sous runtime gele V3 :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_observer_tps_diagnostic :: debit observateur plus 1.35 pourcent classe diagnostic seulement :: ENGINE-004-A2-OBSERVATEUR.md
+[PROUVE] e004_causal_verdict :: verdict causal promu sur la forme de vue du cache KV cache_k_l3 :: ENGINE-004-CLOTURE-RUN003.md
+[RETIRE] e004_retire_boundary_hypothesis :: hypothese frontiere de mesure causale de l invalidation abandonnee :: ENGINE-004-CLOTURE-RUN003.md
+[OUVERT] e004_periodicity_not_promoted :: periodicite de 256 tokens non promue faute d etablissement :: ENGINE-004-CLOTURE-RUN003.md
+[PROUVE] e004_exec_update_zero :: update requis vrai mais aucun appel cudaGraphExecUpdate execute :: ENGINE-004-CLOTURE-RUN003.md
+[PROUVE] e004_run003_baseline :: baseline RUN-003 sous runtime gele V3 avec sequence valide et distributions stables :: ENGINE-004-CLOTURE-RUN003.md
+[PROUVE] e004_log_filter_run003 :: filtrage du log par API publique dans le harnais sans repatcher les DSO :: ENGINE-004-CLOTURE-RUN003.md
+[PARTIEL] e004_amortized_maintenance_cost :: cout amorti de maintenance 0.002336 et pic 0.027746 ms par token :: ENGINE-004-CLOTURE-RUN003.md
+[OUVERT] e004_kv_ladder_open :: echelle de capacite KV 1024 1280 1536 1792 non parcourue :: ENGINE-004-CLOTURE-RUN003.md
+[OUVERT] e004_view_enum_open :: enumeration du champ de vue non etendue faute de rerun A2 :: ENGINE-004-CLOTURE-RUN003.md
+[PROUVE] e004_run003_link_note :: liens libggml resolus depuis le build engine-003 mais SHA identiques :: ENGINE-004-CLOTURE-RUN003.md
+[PROUVE] e004_closed_baseline :: sphere ENGINE-004 close en baseline et ENGINE-005 autorise :: ENGINE-004-CLOTURE-RUN003.md
+[OUVERT] e004_plumbing_29 :: defaut de plomberie 29 non assigne avec compteur fige a 28 :: ENGINE-004-CLOTURE-RUN003.md
+LIENS:
+e004_four_timestamps -> e004_defect_4 [DEMONTRE] specification des horloges corrige l attribution
+e004_four_timestamps -> e004_defect_5 [DEMONTRE] specification separe les grandeurs manquantes
+e004_defect_4 -> e004_attribution_backend [DEMONTRE] attribution mesuree apres correction du placement
+e004_defect_5 -> e004_attribution_backend [DEMONTRE] grandeurs separees fondent la lecture du budget
+e004_attribution_backend -> e004_open_amortized_cost [OUVRE] attribution par token laisse le cout amorti non mesure
+e004_aprime_latency_dist -> e004_open_amortized_cost [OUVRE] un seul token de transition interdit une distribution
+e004_abc_microtests -> e004_reset_not_causal [DEMONTRE] absence de transition refute la causalite du reset
+e004_abc_microtests -> e004_entry_path_not_causal [DEMONTRE] absence de transition refute la causalite du chemin d entree
+e004_reset_alone_no_transition -> e004_reset_not_causal [DEPEND] resultat elementaire du microtest
+e004_aprime_run_256 -> e004_aprime_latency_dist [DEMONTRE] le run fournit l unique distribution mesuree
+e004_counter_trace_gap -> e004_run3_gate_blocked [DEPEND] contradiction non expliquee bloque le gel de baseline
+e004_counter_trace_gap -> e004_retire_aprime_zero_window [DEMONTRE] ecart compteur trace fonde le retrait
+e004_event_ordinal_224 -> e004_aprime_dating_500 [RETIRE] evenement mesure dans la fenetre refute la datation pre-fenetre
+e004_retire_aprime_zero_window -> e004_aprime_dating_500 [RETIRE] datation pre-fenetre retiree avec le comptage nul
+e004_counter_trace_resolved -> e004_retire_aprime_zero_window [DEMONTRE] deux transitions logiques distinctes expliquent le zero lu
+e004_counter_trace_resolved -> e004_retire_measured_window_zero [DEMONTRE] vocabulaire corrige apres resolution de la contradiction
+e004_retire_one_counter_one_cycle -> e004_counter_trace_resolved [RETIRE] hypothese refutee remplacee par deux transitions distinctes
+e004_correct_aprime_count -> e004_retire_aprime_zero_window [REMPLACE] valeur 1 remplace le 0 declare faux
+e004_retire_measured_window_zero -> e004_correct_aprime_count [DEPEND] meme valeur nulle corrigee dans deux enonces
+e004_counter_trace_resolved -> e004_run3_allowed [DEMONTRE] resolution debloque l autorisation RUN-003
+e004_run3_allowed -> e004_run3_gate_blocked [REMPLACE] autorisation accordee apres etablissement de la branche transitions naturelles
+e004_event_ordinal_224 -> e004_kv_shape_cause [DEMONTRE] l evenement porte le changement de forme mesure
+e004_ptr_strides_unchanged -> e004_kv_shape_cause [DEPEND] forme seule modifiee donc propriete comparee par le moteur
+e004_kv_shape_cause -> e004_causal_verdict [DEMONTRE] mecanisme mesure puis promu en verdict causal
+e004_kv_shape_cause -> e004_steady_state_redef [OUVRE] croissance KV normale impose la redefinition du regime
+e004_a2_reproducibility -> e004_kv_shape_cause [DEPEND] determinisme meme ordinal et meme noeud appuie la cause
+e004_provenance_incident_2 -> e004_a2_reproducibility [DEPEND] deux runs du tableau declares abandonnes pour bibliotheque obsolete
+e004_provenance_incident_1 -> e004_a2_fidelity_gate [DEPEND] restauration verifiee de la bibliotheque gelee conditionne la comparabilite
+e004_observer_no_v3 -> e004_observer_runtime [DEPEND] base arbre vierge plus patch additif donne la classe non baseline
+e004_observer_spec_header -> e004_observer_runtime [DEMONTRE] instruments compiles et verifies sur l objet
+e004_observer_dump_defect -> e004_observer_spec_header [DEPEND] verification deplacee sur l objet compile
+e004_observer_window_discipline -> e004_a2_fidelity_gate [DEPEND] discipline de fenetre conditionne la comparabilite
+e004_a2_fidelity_gate -> e004_run3_allowed [DEMONTRE] non perturbation comportementale mesuree autorise la suite
+e004_observer_defect_1 -> e004_changed_field_other [DEMONTRE] propagation manquante produisait un champ vide puis OTHER
+e004_changed_field_other -> e004_view_enum_open [OUVRE] champ non identifie reporte a une version future de l enumeration
+e004_observer_runtime -> e004_run003_baseline [DEPEND] classification non baseline impose le runtime gele pour RUN-003
+e004_run3_allowed -> e004_run003_baseline [DEMONTRE] autorisation suivie de l execution du baseline
+e004_log_filter_run003 -> e004_aprime_window_io_gate [REMPLACE] filtre de log ferme la reserve de discipline A-prime
+e004_amortized_maintenance_cost -> e004_open_amortized_cost [REMPLACE] mesure remplace le gate laisse ouvert
+e004_run003_baseline -> e004_amortized_maintenance_cost [DEMONTRE] run gele fournit la mesure independante du cout
+e004_run003_baseline -> e004_aprime_latency_dist [DEMONTRE] distributions stables sur cinq runs
+e004_run003_baseline -> e004_closed_baseline [DEMONTRE] endpoints et distributions stables closent la sphere
+e004_retire_boundary_hypothesis -> e004_causal_verdict [REMPLACE] hypothese de frontiere remplacee par la causalite de capacite KV
+e004_abc_microtests -> e004_retire_boundary_hypothesis [DEPEND] soutien experimental independant de l abandon
+e004_rate_punctual -> e004_periodicity_not_promoted [DEPEND] mesure ponctuelle empeche la promotion d une periodicite
+e004_kv_ladder_open -> e004_periodicity_not_promoted [DEPEND] un seul palier observe laisse l echelle KV a parcourir
+e004_exec_update_zero -> e004_causal_verdict [DEPEND] voie capture absorbe l update requis sans appel executif
+e004_a2_not_established_run2 -> e004_causal_verdict [OUVRE] RUN-002 reste non rejoue sous observateur
+e004_observer_tps_diagnostic -> e004_run003_baseline [DEPEND] aucun chiffre de debit observateur n entre dans le baseline
+e004_run003_link_note -> e004_run003_baseline [DEPEND] SHA identiques donc aucune divergence de runtime
+e004_plumbing_29 -> e004_closed_baseline [OUVRE] defaut 29 non assigne reste ouvert a la cloture

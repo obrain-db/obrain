@@ -1,0 +1,51 @@
+%% Ce que ce diagramme prouve : le GOUFFRE exact entre ce que le modèle reçoit (conversation
+%% + bases) et ce qu'il devrait recevoir (le sujet réel sous veille : dragon3d-work), dans le
+%% chat obrain de source canonique wt-chat-pieces-jointes.
+%% CONSTATÉ (lu) : mod.rs:3174 memoire.contexte_pour (conversation) ; mod.rs:3186 bases.chercher
+%% (notes/projets/externes) ; mod.rs:3200-3218 la géométrie du prompt (stable=consigne+historique,
+%% volatile=fragments+question) ; outils/mod.rs:485-488 Veille + reindexer_veilles (indexe dans
+%% parc.obrain) ; ordonnanceur.rs = ordonnanceur d'INFÉRENCE (Interactif/Fond, LLM_JETONS=3,
+%% AGE_MAX=15s), pas la structuration d'objectif.
+%% MESURÉ (cette session) : log /tmp/chat-server.log → appel n3__read + web__browser_navigate ok=true ;
+%% A/B multi-outils : TQ2=8 tool_calls, Q4_K_M=10 (le modèle n'est PAS la cause).
+%% DÉDUIT : la veille indexe le code dans parc.obrain mais ne l'injecte PAS dans le prompt →
+%% le modèle ne sait pas que dragon3d-work existe → il hallucine exemple.txt.
+%% CONSTATÉ (veille.rs, 255 lignes) : la veille est un INDEXEUR PUR — retenir/changements/
+%% reindexer_veilles, elle ne rend AUCUN contexte pour le prompt. Son en-tête le dit : « le graphe
+%% de code se tient à jour TOUT SEUL ». Le modèle doit DÉCOUVRIR les projets via parc__search_code,
+%% mais rien ne lui dit quels projets existent ni leur poignée (Dossier.chemin + Dossier.projet).
+%% ⇒ ÉTABLI : le gouffre n'est pas un bug d'injection, c'est une ABSENCE DE LISTE DES PROJETS VEILLÉS.
+
+flowchart TB
+
+  subgraph INJECTION["Ce que le modèle REÇOIT réellement dans le prompt (mod.rs 3164-3219)"]
+    A1["consigne + historique (STABLE, en tête)<br/>préserve le cache de préfixe KV"]
+    A2["fragments (VOLATIL, dernier message) =<br/>memoire.contexte_pour → base « conversation »<br/>+ bases.chercher → notes / projets / 7 bases externes"]
+    A3["consigne d'outils (SYSTÈME, stable par compte)"]
+    A1 --> A2
+  end
+
+  subgraph VEILLE["Ce que fait la veille (outils/mod.rs:485, veille.rs)"]
+    V1["veille : dossiers suivis (dragon3d-work, dragon-3d, …)"]
+    V2["reindexer_veilles → index_repository → parc.obrain<br/>(le code devient des symboles dans le graphe)"]
+    V3["🔴 PAS d'injection dans le prompt<br/>le modèle ne reçoit jamais « dragon3d-work existe »"]
+    V1 --> V2 --> V3
+  end
+
+  subgraph GOUFFRE["Le gouffre — la panne exemple.txt"]
+    G1["Modèle : « corrige le dragon 3D »<br/>→ il ne sait pas où est le dragon"]
+    G2["appelle n3__read + web__browser_navigate<br/>(patron générique, mesuré ok=true)"]
+    G1 --> G2
+  end
+
+  subgraph FIX["Le fix précis (aligné philosophie : l'oracle d'abord)"]
+    F1["① Injecter veille.lister() dans la consigne STABLE<br/>(chemin + poignée projet : dragon3d-work → n1.dragon_3d)<br/>coût ~1 ligne par dossier, stable donc sans casser le cache de préfixe"]
+    F2["② L'oracle : le modèle sait où est le sujet,<br/>il part de dragon3d-work et non d'un patron générique"]
+    F3["③ Couche de décision (DEC-P0) :<br/>enregistrer :Decision (quel projet, quels outils), verdict extérieur"]
+    F1 --> F2 --> F3
+  end
+
+  INJECTION --> GOUFFRE
+  VEILLE --> GOUFFRE
+  GOUFFRE --> FIX
+  FIX --> OK["Modèle ancré sur le sujet réel<br/>→ travaille dragon3d-work, pas exemple.txt"]

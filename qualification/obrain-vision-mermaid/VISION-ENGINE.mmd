@@ -1,0 +1,339 @@
+flowchart TD
+
+classDef prouve  fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef retire  fill:#a11f1f,stroke:#5c0f0f,color:#fff
+classDef ouvert  fill:#c47a10,stroke:#6b420a,color:#fff
+classDef final   fill:#1f4fa1,stroke:#0f2857,color:#fff
+classDef partiel fill:#8a8a12,stroke:#4d4d0a,color:#fff
+
+%% ==================== VISION GLOBALE DU PROGRAMME ENGINE ====================
+%% obrain - moteur d inference - llama.cpp modifie - quantifications TQ2_G128 et q8_1
+%% GPU GB10 sm_121a - 73 rapports - 18 spheres de fragments
+
+subgraph eng004[ENGINE-004 observateur et transition]
+  e004_a2_fidelity_gate[Sequence de 256 tokens sous observateur identique a A-prime - l observateur ne perturbe pas la generation]
+  e004_event_ordinal_224[Evenement deterministe unique a l ordinal 224 dans la fenetre 9 a 264 sur le noeud 213 de 4010]
+  e004_kv_shape_cause[Changement de forme du cache_k_l3 de 1024 vers 1280 positions sans changement de pointeur ni de pas]
+  e004_attribution_backend[99.7 pourcent du temps par token est attente de synchronisation backend]
+  e004_retire_aprime_zero_window[Conclusion zero transition dans la fenetre A-prime retiree comme fausse]
+end
+
+subgraph e005a[ENGINE-005A a 005E paroi GPU]
+  e005a_cupti_unavailable[CUPTI ne trace aucun noyau sur GB10 et CUDA 13.2 - attribution par paires d evenements CUDA]
+  e005a_matmul_dominates_865_917[Famille MUL_MAT a 86.2 jusqu a 91.7 pourcent du temps GPU mesure selon le mode graphes]
+  e005a_ratio_677_root_cause[Cause du rapport 6.77 identifiee comme semantique d instrumentation et non concurrence GPU]
+  e005a_kernel_overlap_present[Chevauchement de noyaux declare necessaire puis retire - le rapport 6.77 est un artefact]
+  e005a_output_weight_17_27[output.weight en q6_K domine a lui seul 17.27 pourcent du temps MUL_MAT soit 2106.2 ms sur la fenetre]
+  e005a_wall_bridge_output_path[Premier pont mural causal du chemin de sortie a 5.25 ms par token soit 8.24 pourcent de la paroi]
+end
+
+subgraph e005f[ENGINE-005F a 005I tete et dispatch]
+  e005f_head_skip_toggle_proven[Bascule GGML_E5F_SKIP_OUTPUT_HEAD verifiee active - noeud de graphe 4011 vers 3994]
+  e005f_shape_proof_retired[Preuve par la forme N egal 1 vers MMVQ retiree comme preuve principale]
+  e005f_output_weight_upper_bound_retired[Borne 5.25 ms de 005E retiree car output.weight est commun aux deux bras]
+  e005f_r2_null_wall_delta[Delta mural apparie moins 0.0424 ms par token contre un ecart-type inter-runs de 0.1463 ms - aucune difference detectable]
+  e005f_dispatch_domain_answer[MMQ structurellement indisponible pour le domaine dominant attn_gate tq2_g128 soit 9396 appels sur 12528 en decodage]
+  e005f_mmvq_exclusive_hypothesis_rejected[Hypothese d un decodage exclusivement MMVQ rejetee - quatre chemins reellement empruntes]
+  e005f_engine006_target_pinned[Cible ENGINE-006 epinglee sur recurrent attn_gate.weight tq2_g128 decode s1 1 MMVQ]
+  e005f_slope_measured[Sensibilite murale au travail MMVQ duplique 1.2591 ms par repetition pente sur bruit 9.6]
+  e005f_native_wall_cost_not_derivable[Cout mural natif de attn_gate NON DERIVABLE de la pente]
+end
+
+subgraph eng006[ENGINE-006 noyau MMVQ]
+  e006_decomposition_composants[Decomposition par composant de la pente murale 1.1794 ms MMVQ contre 0.0144 ms quantize]
+  e006_vertical_fidelite_decode[Fidelite du decodage ternaire sur 16777216 symboles sans ecart]
+  e006_registres_smem[Forensique statique du noyau exact - 42 registres 384 octets de smem 0 spill et 0 trafic de pile locale]
+  e006_occupancy_theorique[Occupation theorique atteignable de 100 pourcent avec 12 blocs par SM]
+  e006_part_instructions_decodage[Environ 62 pourcent des instructions du corps sont en manipulation de bits]
+  e006_v1_rejetee_produit[V1 rejetee au niveau produit avec gain net negatif de moins 1.0301 ms par jeton]
+  e006_aucun_appelant_retracte[Affirmation aucun appelant de la greffe EXP1A4A reconnue inexacte]
+  e006_plancher_materiel_non_prouve[Memory bound compute bound et occupancy limited jamais prouves]
+  e006_campagne_produit_non_lancee_h[Justification produit insuffisante donc campagne produit non lancee]
+end
+
+subgraph e007a[ENGINE-007A R1 a R13]
+  e007a1_r5_prediction_refuted[Pente predite 5.2808 us par passe contre 52.2411 mesuree - rapport 9.89]
+  e007a3_retrait_narratif_divergence[R9A retire la narration de divergence numerique de R7 R7B et R8 construite sur un mismatch fabrique]
+  e007a3_r9a_mismatch_zero[Les 1875 mismatches declares etaient des NaN des deux cotes et tombent a zero sur entrees saines]
+  e007a3_r9b_dp4a_non_dominant[Retirer les 32 sites dp4a ne rend que 3.22 pourcent de la paroi sur donnees saines]
+  e007a3_table_armes_12[Defaut 38 resolu par une table de 12 armes auto verifiee - empreinte e71b8358 c80333f7]
+  e007a3_seuil_activation[Le cout est declenche et non proportionnel - 12.5 pourcent du travail donnent 97.7 pourcent du temps]
+  e007a3_episodes_variable_primaire[Le nombre d episodes de warp actifs gouverne la paroi sur la voie kbx non nulle]
+  e007a3_r13_bloque_compteurs[R13 non executable - acces aux compteurs materiels refuse ERR_NVGPUCTRPERM - RmProfilingAdminOnly vaut 1]
+  e007a3_gain_produit_non_mesure[Le gain produit en tokens par seconde n est mesure dans aucune passe de la sequence R9 a R13]
+end
+
+subgraph e007b[ENGINE-007B F1 et O2]
+  e007b_model_target_qwen38_27b[Modele cible reel Qwen3.8-27B-OBRAIN-v3 gguf 12.8 Go sha 1d7c9409 avec 866 tenseurs]
+  e007b_episode_granularity_1024[Granularite episode de 1024 poids contigus prouvee par la source mmvq.cu 606 et vecdotq.cuh 732]
+  e007b_k5120_five_episodes[156 tenseurs a K 5120 soit 2007040 lignes - 95 pourcent portent 5 episodes et non 6]
+  e007b_brief_six_bit_mask_refuted[REFUTE - le masque 6 bits du brief n est applicable qu a 5 pourcent des lignes eligibles]
+  e007b_roles_ffn_down_attn_v_retracted[RETIRE - ffn_down et attn_v cites a tort en attente car stockes en Q4_K et Q5_K]
+  e007b_o2_regression_measured[O2 plus lent de 0,8268 microseconde soit 0,99 pourcent - fidelite bit a bit intacte]
+end
+
+subgraph f1a[F1A geometrie et capture graphe]
+  f1a1_lecteur_gguf_cross_valide[Deux lecteurs independants libggml du fork et python autonome - 866 tenseurs zero ecart]
+  f1a1_geometrie_e5[E5 K egal 5120 - cinq episodes de 1024 poids - episodes par warp physique 2 1 1 1]
+  f1a1_geometrie_e6[E6 K egal 6144 - six episodes de 1024 poids - episodes par warp physique 2 2 1 1]
+  f1a1_e5_row_count_publie_faux[RETIRE - E5_ROW_COUNT publie a 2007040 alors que la valeur autoritaire du CSV est 2052096]
+  f1a1_layout_q8_1_f1a_40_octets[REFUTE - layout q8_1 declare en 40 octets avec ds uint32 - contredit par la source du fork]
+  f1a2_i1_patch_ecrit[Patch de greffe ecrit et verifie par diff - 3 ancres 18 lignes ajoutees et 1 modifiee avec sha256 archive]
+  f1a2_i1_whitening[L activation consommee par le matmul TQ2_G128 est l activation post WHT mise en cache dans obrain_rot]
+end
+
+subgraph q0r[Q0 R1 a R7 infrastructure de capture]
+  r1r4_retrait_capture_tensor_lifetime[RETIRE - retrait de la preuve statique de duree de vie des tenseurs captures presentee comme complete]
+  r5r7_no_rotation_residence_refutee[REFUTE - le SIGABRT sur ggml_backend_tensor_get refute que la residence du buffer soit acquise]
+  r1r4_bufferless_absents_graphes_soumis[Preuve centrale - 504 cibles residents et soumises contre 0 cible bufferless et soumise]
+  r1r4_table_decisive_par_epoque[Epoque 0 marquee BUILD_ONLY_NOT_SUBMITTED avec 1176 cibles nulles et epoque 1 SUBMITTED_FOR_COMPUTE avec 0]
+  r1r4_1176_egale_sept_decodes[REFUTE - la lecture de 1176 egal 168 x 7 comme sept vrais decodages est rejetee par la mesure]
+  r1r4_r4_capture_off_inert[Chemin de capture desactive mesure inerte avec les cinq compteurs a zero]
+  r5r7_r5_exceptions_attn_k[R5 les 12 cibles inatteignables sont les cles d attention des couches 11 a 55 par pas de 4 ecrites dans le cache KV]
+  r5r7_r7_sha256[R7 SHA256 reel sur les 672 payloads - zero manquant zero divergence de taille zero divergence de hash]
+end
+
+subgraph n1n2[N1 N1bis N2 transparence et appariement]
+  n1n2_n1_transparence_bitwise[N1 gate N1-C transparence numerique bit a bit de la greffe sur 2234880 valeurs]
+  n1n2_n1bis_defect_52_resolu[N1bis manifeste repare a 673 lignes - un seul en tete deux epoques et 672 payloads]
+  n1n2_n2_ligne_vers_sortie[N2 la ligne logique du poids correspond a la coordonnee de sortie]
+  n1n2_n2_offsets_gguf[N2 offsets GGUF verifies a 865 sur 865 paires une fois tous les types inclus]
+  n1n2_n1bis_reconstruction_native[REFUTE - reconstruction de reference refusee par le budget sur les trois tenseurs]
+  n1n2_n2_divergence_poids[N2 localise la premiere divergence au decodage des octets de poids ou a l offset d echelle de bloc]
+end
+
+subgraph n3[N3 adresse GGUF et ternaire]
+  n3addr_n3bis_gate_verdict[Gate independant - libggml innocente et lecteur direct designe avec 1334 octets differents sur 1360]
+  n3addr_n3ter_root_cause[Cause racine prouvee - le lecteur prenait la fin des metadonnees pour origine sans appliquer l alignement du format]
+  n3addr_n3ter_requalification[Requalification par comparateur independant sur 6 lignes 3 tenseurs et 8704 octets avec zero ecart et SHA256 egaux]
+  n3tern_quinquies_encoder[Codeur du fork quantize_row_tq2_g128_im - moins 1 vers code 0 zero vers code 1 plus 1 vers code 2]
+  n3tern_quinquies_decoder[Decodeur natif vecdotq.cuh 751 a 758 - code 0 vers moins 1 code 1 vers 0 code 2 vers plus 1 code 3 replie]
+  n3tern_n3sexies_contradiction[Contradiction arithmetique - activation nulle en epoque 0 alors que la sortie native de la meme cible vaut amax 11.04527]
+  n3life_allocator_rule[La seule protection contre la liberation est le drapeau GGML_TENSOR_FLAG_OUTPUT lu a ggml-alloc.c 690]
+  n3life_all_336_corrupted[Les 336 captures d activation des deux epoques etaient toutes corrompues et pas seulement les 25 visibles]
+  n3life_native_reference_budget_fail[Le budget preenregistre RELATIVE_L2 sous 1e-3 n est pas atteint - validation de reference native FAIL]
+end
+
+subgraph retract[Rétractations - affirme puis dementi]
+  retract_r6_payload_submission[Etiquette SUBMISSION declaree decalee d une soumission - retiree car end_epoch tourne apres llama_decode et l etiquette est juste]
+  retract_n1_manifest_attribution[Absence de blk.16.attn_output.weight attribuee a l ecrasement du manifeste - retiree car la couche 16 n est pas une couche E6]
+  retract_n2_gguf_contiguity_hypothesis[Hypothese de contiguite des seuls TQ2_G128 donne 60 paires coherentes sur 167 - refutee par 865 transitions sur 865 tous types]
+  retract_n2_scale_observation[Echelles de la ligne 0 min moins 0.0247 max 3400.0 premiere 89.3125 - retirees comme artefact du decalage d adresse]
+  retract_address_root_cause[Origine des donnees align_up de 10996452 sur 32 soit 10996480 avec 28 octets de remplissage tous nuls]
+  retract_ternary_accusation[Accusation contre la table ternaire TQ2 retiree faute de contre-exemple - la sortie E6 est nulle sous les trois tables]
+  retract_encoder_decoder_inversion[Encodeur du fork 0 1 2 contre decodeur natif moins 1 0 plus 1 - les deux sont inverses]
+  retract_e6_zero_axis[Axe attribuant la reference E6 nulle a la reference ou au decodage ternaire retire - le zero vient d une activation de l epoque 0]
+  retract_epoch0_activation_zero[Activation de blk.15.attn_output en epoque 0 - amax 0.00000 et 6144 valeurs nulles contre amax 0.02709 en epoque 1]
+  retract_zero_contradiction_structured[25 activations nulles sur 168 cibles en epoque 0 et 0 sur 168 en epoque 1 - attn_output 12 sur 12 attn_gate 13 sur 36]
+  retract_h1_zero_at_consumption[Hypothese H1 d une activation deja nulle lors de sa consommation refutee par les 25 sorties natives non nulles]
+  retract_capture_defect_fix[Stockage de cur_capture et mm_capture libere faute de GGML_TENSOR_FLAG_OUTPUT - 3968 noeuds s executent avant l extraction]
+  retract_336_captures_corrupted[Les 336 captures des deux epoques etaient corrompues - apres le correctif 168 sur 168 sont differentes dans chaque epoque]
+  retract_epoch1_positive_control[Statut d epoque 1 saine et de controle positif retire - ses 168 activations sont toutes differentes apres le correctif]
+  retract_prior_reconstructions[Reconstructions N1bis N3quater et N3quinquies declarees calculees sur des activations corrompues et ne mesurant rien du modele]
+  retract_q8_reference_semantics[Reference q8_1 convertissant l echelle en fp16 inversee avec arrondi au plus proche pair - retiree et enregistree comme defaut 57]
+  retract_q8_unit_test_flags[Les drapeaux Q8_1_REFERENCE_UNIT_TESTS PASS et ROUNDING_HALF_CASES_OK sont repris a l identique en N2 et en N4 alors que la reference testee a change]
+  retract_q8_final_semantics[Semantique native - d egal amax sur 127 en fp32 non arrondi q egal roundf de xi sur d et s egal somme des xi fp32]
+end
+
+subgraph final[Etat final reference validee]
+  retract_q8_semantics_divergence_rate[Les deux semantiques q8_1 different sur 15 a 42 blocs sur 160 ou 192 soit environ 20 pourcent des blocs]
+  retract_last_divergence_q8[Derniere divergence localisee ROUNDING_AND_SCALE_BASE avec deux ecarts cumules la base de l echelle et la regle d arrondi]
+  retract_margin_before_after[A poids table ternaire echelle et accumulation identiques 6 lignes sur 6 sont meilleures - mediane de 2.548e-03 a 3.139e-07]
+  retract_budget_pass[Les 3 tenseurs complets passent a l epoque 0 - MAX_ABS 4.76837e-07 RELATIVE_L2 1.42314e-07 COSINE 1.0000000000 contre un budget de 1e-3]
+  retract_final_margins[Marge de quatre ordres de grandeur entre 1.42314e-07 et 1e-3 - le pire MAX_ABS est du niveau du bruit d arrondi fp32 sur une somme de 5120 termes]
+  retract_corrected_capture_validity[336 activations et 336 sorties du binaire corrige integres - 0 payload manquant 0 desaccord SHA256 0 dimension fausse]
+  f1a1_alignement_q8_tq2_mesure[Alignement q8_1 et TQ2_G128 confirme par la mesure - couverture 160 sur 160 en E5 et 192 sur 192 en E6]
+  f1a1_reference_native_validee[Reference native retiree puis corrigee - 3 tenseurs toutes lignes epoque 0 rel_l2 1.42314e-07 cosinus 1.0 max_abs 4.76837e-07 PASS]
+  f1a1_captures_corrigees_integres[Manifeste 672 lignes - zero payload manquant zero sha divergent zero dimension divergente zero contradiction]
+end
+
+subgraph defauts[Defauts de harnais 46 a 57]
+  defaut_46[Defaut 46 reference q8_1 avec arrondi bancaire np.rint au lieu de roundf - corrige et RESOLVED avant toute conclusion]
+  defaut_47[Defaut 47 CLI interactif consommant le heredoc SSH - RESOLVED par un harnais libllama dedie]
+  defaut_48[Defaut 48 extraction tentee sans controle de residence du buffer - RESOLVED par conditionnement sur t_buffer non nul]
+  defaut_52_resolu[Defaut 52 manifeste ecrase par epoque - RESOLVED_VERIFIED par regression sur deux epoques avec 673 lignes et 672 payloads]
+  defaut_53_resolu[Defaut 53 lecteur GGUF decale de 28 octets - cause racine prouvee par la regle d alignement 32 et comparaison sur 6 lignes et 8704 octets]
+  defaut_54_resolu[Defaut 54 test ternaire a 32 valeurs par bloc - RESOLVED_VERIFIED par tests a 128 valeurs avec 40 blocs E5 et 48 blocs E6]
+  defaut_56_resolu[Defaut 56 tenseurs de capture liberes par l allocateur - RESOLVED_VERIFIED par preservation ciblee et transparence bit a bit]
+  defaut_57[Defaut 57 reference q8_1 a echelle fp16 inversee et arrondi bancaire - RESOLVED_VERIFIED par accord a environ 1.4e-07 sur 28672 lignes]
+  defaut_51[Defaut 51 attribution des payloads declaree decalee d une soumission - RETRACTED_AFTER_MEASUREMENT car l etiquette est correcte]
+  defaut_58[Defaut 58 jamais attribue - aucune occurrence du numero 58 le registre s arrete a 57]
+  defaut_46_57_double_numerotation[Le meme defaut de reference q8_1 est enregistre sous 46 en S2bis I1 et sous 57 en N4 - incoherence de numerotation non tranchee]
+end
+
+subgraph gates[Gates ouverts ce qui n est PAS fait]
+  retract_independent_indexing_gate[Test F32 d indexation independante des lignes de sortie - NOT_EXECUTED de N2 jusqu a N4]
+  retract_temporal_pairing_gate[Appariement temporel PARTIAL - les echantillons compares viennent de l epoque 0 et de la soumission 1]
+  retract_q0_not_passed[Q0 reste NOT_PASSED et Q1_ALLOWED est a NO car trois tenseurs a une epoque ne constituent pas la population exigee]
+  retract_q8_intermediate_not_observed[Les blocs q8_1 produits par le noyau CUDA n ont pas ete copies ni compares directement - 28672 lignes validees par la consequence]
+  retract_writer_not_identified[Le mecanisme et son effet sont prouves mais le couple region memoire et ecrivain reste non identifie]
+  retract_gguf_encoder_provenance[Provenance du codeur qui a produit le GGUF inconnue - aucun outil de quantification n est archive]
+  retract_remaining_divergence_absent[Aucune divergence numerique restante identifiee sur le perimetre mesure mais cette absence est declaree NON_PROVEN]
+  f1a1_saillance_non_mesuree[Saillance non mesuree ablation de qualite non mesuree et gain produit NOT_MEASURED]
+  r5r7_q1_non_autorise[Q1_ALLOWED NO - le domaine POST-WHT n est pas qualifie]
+  defaut_plumbing_29[Le compteur de defauts de plomberie reste bloque a 28 et le numero 29 n est jamais attribue]
+  e007b_activation_capture_absent[Aucun outil de capture des activations par couche ni point d accroche dans le depot]
+  n3life_allocation_plan_changed[Le correctif change le plan d allocation donc la transparence bitwise doit etre refaite et n est pas heritee]
+end
+
+%% ==================== CHAINE DES DECOUVERTES ====================
+e004_a2_fidelity_gate -->|l observateur ne perturbe pas la generation| e004_event_ordinal_224
+e004_event_ordinal_224 -->|puis cause identifiee sur la forme de vue| e004_kv_shape_cause
+e004_attribution_backend -->|99.7 pourcent en attente de synchronisation| e005a_cupti_unavailable
+e004_kv_shape_cause -->|la paroi restante est portee par les multiplications quantifiees| e005a_matmul_dominates_865_917
+e005a_cupti_unavailable -->|donc attribution par paires d evenements CUDA| e005a_matmul_dominates_865_917
+e005a_matmul_dominates_865_917 -->|dominance de output.weight en q6_K| e005a_output_weight_17_27
+e005a_output_weight_17_27 -->|premier pont mural du chemin de sortie| e005a_wall_bridge_output_path
+e005a_wall_bridge_output_path -->|bras logits ON contre OFF puis bascule de tete| e005f_head_skip_toggle_proven
+e005f_head_skip_toggle_proven -->|delta mural apparie non detectable| e005f_r2_null_wall_delta
+e005f_r2_null_wall_delta -->|reinvestissement vers les domaines de dispatch| e005f_dispatch_domain_answer
+e005f_dispatch_domain_answer -->|cible epinglee sur attn_gate tq2_g128 MMVQ| e005f_engine006_target_pinned
+e005f_engine006_target_pinned -->|sensibilite murale mesuree par duplication| e005f_slope_measured
+e005f_slope_measured -->|decomposition par composant du chemin cible| e006_decomposition_composants
+e006_decomposition_composants -->|fidelite verticale du decodage ternaire| e006_vertical_fidelite_decode
+e006_vertical_fidelite_decode -->|forensique statique du noyau exact| e006_registres_smem
+e006_registres_smem -->|occupation theorique atteignable| e006_occupancy_theorique
+e006_occupancy_theorique -->|axes d optimisation rejetes par la mesure| e006_v1_rejetee_produit
+e006_part_instructions_decodage -->|segment de bits sans effet produit| e006_v1_rejetee_produit
+e006_v1_rejetee_produit -->|microbenchs autonomes de la serie 007A| e007a1_r5_prediction_refuted
+e007a1_r5_prediction_refuted -->|taxonomie bit a bit sur donnees saines| e007a3_r9a_mismatch_zero
+e007a3_r9a_mismatch_zero -->|R9B replique R2 sur entrees saines| e007a3_r9b_dp4a_non_dominant
+e007a3_r9b_dp4a_non_dominant -->|defaut 38 resolu par une table d armes| e007a3_table_armes_12
+e007a3_table_armes_12 -->|cout declenche et non proportionnel| e007a3_seuil_activation
+e007a3_seuil_activation -->|variable primaire le nombre d episodes de warp| e007a3_episodes_variable_primaire
+e007a3_episodes_variable_primaire -->|compteurs materiels refuses donc blocage| e007a3_r13_bloque_compteurs
+e007b_model_target_qwen38_27b -->|inventaire eligible et granularite episode| e007b_episode_granularity_1024
+e007b_episode_granularity_1024 -->|geometrie heterogene des tenseurs| e007b_k5120_five_episodes
+e007b_o2_regression_measured -->|ferme la redistribution dense sur 6 warps| e007b_episode_granularity_1024
+f1a1_lecteur_gguf_cross_valide -->|geometrie du modele cible| f1a1_geometrie_e5
+f1a1_geometrie_e5 -->|12 tenseurs E6 a six episodes| f1a1_geometrie_e6
+f1a2_i1_patch_ecrit -->|decouverte de l activation post WHT| f1a2_i1_whitening
+f1a2_i1_whitening -->|impose la capture liee au graphe soumis| r1r4_retrait_capture_tensor_lifetime
+r1r4_retrait_capture_tensor_lifetime -->|la residence restait a etablir| r1r4_bufferless_absents_graphes_soumis
+r1r4_bufferless_absents_graphes_soumis -->|puis discrimination capture OFF et ON| r1r4_r4_capture_off_inert
+r1r4_table_decisive_par_epoque -->|504 residents et soumis contre 0 bufferless et soumis| r1r4_bufferless_absents_graphes_soumis
+r5r7_r5_exceptions_attn_k -->|les 12 exceptions sont la topologie reelle du cache KV| r5r7_r7_sha256
+r1r4_r4_capture_off_inert -->|puis SHA256 reel sur les 672 payloads| r5r7_r7_sha256
+n1n2_n1_transparence_bitwise -->|puis correspondance ligne vers unite de sortie| n1n2_n2_ligne_vers_sortie
+n1n2_n2_ligne_vers_sortie -->|865 offsets verifies sur 865| n1n2_n2_offsets_gguf
+n1n2_n2_offsets_gguf -->|la divergence est ramenee aux octets de poids ou a l echelle de bloc| n1n2_n2_divergence_poids
+n1n2_n2_divergence_poids -->|ouvre la chaine N3 puis N4| n3addr_n3bis_gate_verdict
+n3addr_n3bis_gate_verdict -->|les deux lecteurs lisent le meme flux decale de 28 octets| n3addr_n3ter_root_cause
+n3addr_n3ter_root_cause -->|requalification sur 6 lignes et 8704 octets| n3addr_n3ter_requalification
+n3addr_n3ter_requalification -->|echelles plausibles puis ecart residuel localise| n3tern_quinquies_encoder
+n3tern_quinquies_encoder -->|decodeur du fork lu a la source| n3tern_quinquies_decoder
+n3tern_n3sexies_contradiction -->|activation nulle contre sortie native non nulle| retract_e6_zero_axis
+retract_h1_zero_at_consumption -->|REFUTE - les 25 sorties natives sont non nulles| n3life_allocator_rule
+n3life_allocator_rule -->|mecanisme causal prouve defaut 56| retract_capture_defect_fix
+retract_capture_defect_fix -->|les 336 captures des deux epoques etaient corrompues| n3life_all_336_corrupted
+n3life_all_336_corrupted -->|rend sans valeur les reconstructions anterieures| retract_prior_reconstructions
+retract_prior_reconstructions -->|OUVRE - l ecart systematique de 13 a 160 pourcent devient la cible de N4| retract_q8_reference_semantics
+n3life_native_reference_budget_fail -->|OUVRE - le budget preenregistre n est pas atteint| retract_prior_reconstructions
+
+%% ==================== ARETES DE RETRACTATION ====================
+e004_retire_aprime_zero_window -->|RETIRE - conclusion zero transition dans la fenetre A-prime| e004_event_ordinal_224
+e005a_kernel_overlap_present -->|RETIRE - le rapport 6.77 est un artefact d instrumentation| e005a_ratio_677_root_cause
+e005f_shape_proof_retired -->|RETIRE - la preuve par la forme N egal 1 ne tient pas| e005f_dispatch_domain_answer
+e005f_output_weight_upper_bound_retired -->|RETIRE - la borne 5.25 ms tombe car output.weight est commun aux deux bras| e005f_r2_null_wall_delta
+e005f_mmvq_exclusive_hypothesis_rejected -->|REFUTE - le decodage n est pas exclusivement MMVQ| e005f_dispatch_domain_answer
+e006_aucun_appelant_retracte -->|RETIRE - l affirmation aucun appelant de la greffe est inexacte| e006_registres_smem
+e007a3_retrait_narratif_divergence -->|RETIRE - la narration de divergence numerique de R7 R7B et R8 tombe| e007a3_r9a_mismatch_zero
+e007a3_r9a_mismatch_zero -->|RETIRE - les 1875 lignes divergentes etaient des NaN du generateur de test| e007a3_retrait_narratif_divergence
+e007b_brief_six_bit_mask_refuted -->|REFUTE - la premisse geometrique du brief est fausse| e007b_episode_granularity_1024
+e007b_roles_ffn_down_attn_v_retracted -->|RETIRE - ffn_down et attn_v ne sont pas stockes en TQ2_G128| e007b_k5120_five_episodes
+f1a1_e5_row_count_publie_faux -->|RETIRE - 2007040 remplace par la valeur autoritaire 2052096| f1a1_geometrie_e5
+f1a1_layout_q8_1_f1a_40_octets -->|REFUTE - le layout a 40 octets est contredit par la source du fork| f1a1_lecteur_gguf_cross_valide
+r1r4_1176_egale_sept_decodes -->|REFUTE - 1176 n est pas sept decodes mais des passes de construction| r1r4_table_decisive_par_epoque
+r5r7_no_rotation_residence_refutee -->|REFUTE - le SIGABRT refute la residence du buffer a l extraction| r1r4_retrait_capture_tensor_lifetime
+retract_r6_payload_submission -->|RETIRE - premiere retractation de la serie le defaut 51| defaut_51
+retract_r6_payload_submission -->|DEPEND - la premiere retractation precede la correction d attribution| retract_n1_manifest_attribution
+retract_n1_manifest_attribution -->|OUVRE - apres correction de la selection la chaine s ouvre sur le lecteur d octets| retract_n2_gguf_contiguity_hypothesis
+retract_n2_gguf_contiguity_hypothesis -->|OUVRE - la verification tous types ferme la piste GGUF| retract_n2_scale_observation
+retract_address_root_cause -->|RETIRE - 28 octets de remplissage nul expliquent les echelles aberrantes| retract_n2_scale_observation
+retract_ternary_accusation -->|RETIRE - le zero sous les trois tables retire l accusation ternaire| retract_e6_zero_axis
+retract_encoder_decoder_inversion -->|DEPEND - l inversion etablie n accuse pas la reference| retract_ternary_accusation
+retract_gguf_encoder_provenance -->|OUVRE - l inversion ne tranche pas le procede historique du GGUF| retract_encoder_decoder_inversion
+retract_epoch0_activation_zero -->|DEMONTRE - l activation d epoque 0 est entierement nulle| retract_e6_zero_axis
+retract_zero_contradiction_structured -->|DEMONTRE - 25 cibles en epoque 0 et 0 en epoque 1| retract_e6_zero_axis
+retract_e6_zero_axis -->|OUVRE - le zero ouvre la piste de la duree de vie du contenu| retract_capture_defect_fix
+retract_capture_defect_fix -->|RETIRE - l epoque 1 n est pas un controle positif| retract_epoch1_positive_control
+retract_h1_zero_at_consumption -->|OUVRE - H1 refutee il ne reste que la reutilisation de la region| retract_capture_defect_fix
+retract_writer_not_identified -->|DEPEND - le mecanisme est prouve mais l ecrivain reste inconnu| retract_capture_defect_fix
+retract_336_captures_corrupted -->|DEMONTRE - 168 sur 168 activations differentes apres correctif| retract_prior_reconstructions
+retract_q8_final_semantics -->|REMPLACE - roundf de xi sur d fp32 remplace l echelle fp16 inversee et l arrondi bancaire| retract_q8_reference_semantics
+retract_q8_unit_test_flags -->|DEPEND - un PASS de tests unitaires ne vaut que pour la reference effectivement testee| retract_q8_reference_semantics
+retract_margin_before_after -->|DEMONTRE - 6 lignes sur 6 meilleures apres correction| retract_q8_reference_semantics
+retract_q8_reference_semantics -->|RETIRE - enregistree comme defaut 57| defaut_57
+retract_q8_semantics_divergence_rate -->|DEMONTRE - 15 a 42 blocs divergents sur 160 ou 192| retract_last_divergence_q8
+retract_q8_intermediate_not_observed -->|DEPEND - divergence etablie par la source et non par observation directe| retract_last_divergence_q8
+retract_last_divergence_q8 -->|DEMONTRE - la semantique corrigee fait passer les 3 tenseurs| retract_budget_pass
+retract_final_margins -->|DEMONTRE - la marge mesuree est de quatre ordres de grandeur| retract_budget_pass
+retract_corrected_capture_validity -->|DEPEND - validation vectorielle sur 336 activations et 336 sorties integres| retract_budget_pass
+
+%% ==================== ETAT FINAL ====================
+retract_budget_pass -->|reference q8_1 x TQ2_G128 validee sur 3 tenseurs a l epoque 0| f1a1_reference_native_validee
+f1a1_alignement_q8_tq2_mesure -->|DEPEND - 4 sous blocs de 32 par bloc de 128| f1a1_reference_native_validee
+f1a1_captures_corrigees_integres -->|DEPEND - manifeste de 672 lignes integre| retract_budget_pass
+retract_corrected_capture_validity -->|DEPEND - 336 activations et 336 sorties integres| f1a1_captures_corrigees_integres
+n1n2_n1_transparence_bitwise -->|transparence re mesuree sur le binaire corrige| f1a1_captures_corrigees_integres
+
+%% ==================== GATES OUVERTS ====================
+retract_budget_pass -->|OUVRE - un budget franchi sur 3 tenseurs et une epoque ne promeut pas Q0| retract_q0_not_passed
+retract_independent_indexing_gate -->|OUVRE - gate NOT_EXECUTED dans toute la chaine| retract_q0_not_passed
+retract_temporal_pairing_gate -->|OUVRE - appariement PARTIAL il limite la portee de la validation| retract_q0_not_passed
+retract_remaining_divergence_absent -->|OUVRE - absence de divergence restante non prouvee| retract_q0_not_passed
+retract_q0_not_passed -->|Q1_ALLOWED NO le domaine POST-WHT n est pas qualifie| r5r7_q1_non_autorise
+retract_q0_not_passed -->|saillance et ablation de qualite non mesurees| f1a1_saillance_non_mesuree
+e007b_activation_capture_absent -->|OUVRE - gate de capture des activations non franchi| f1a2_i1_patch_ecrit
+n3life_allocation_plan_changed -->|OUVRE - transparence bitwise a refaire sur le plan d allocation corrige| n1n2_n1_transparence_bitwise
+e006_plancher_materiel_non_prouve -->|OUVRE - classification materielle jamais prouvee| e006_campagne_produit_non_lancee_h
+e006_campagne_produit_non_lancee_h -->|OUVRE - aucune campagne produit lancee| e007a3_gain_produit_non_mesure
+e007a3_gain_produit_non_mesure -->|OUVRE - aucun gain produit mesure sur toute la chaine| retract_q0_not_passed
+defaut_plumbing_29 -->|OUVRE - un numero de plomberie jamais attribue| defaut_58
+
+%% ==================== REGISTRE DES DEFAUTS ====================
+defaut_46 -->|OUVRE - la composante d arrondi bancaire reapparait sous le numero 57| defaut_57
+defaut_46 -->|OUVRE - double numerotation du meme defaut| defaut_46_57_double_numerotation
+retract_address_root_cause -->|RESOUT - cause racine du decalage de 28 octets| defaut_53_resolu
+retract_capture_defect_fix -->|RESOUT - defaut 56 passe a RESOLVED_VERIFIED| defaut_56_resolu
+defaut_52_resolu -->|manifeste repare puis appariement des payloads possible| n1n2_n1bis_defect_52_resolu
+defaut_54_resolu -->|test corrige a 128 valeurs par bloc| n3tern_quinquies_encoder
+defaut_48 -->|controle de residence exige a l extraction| r1r4_bufferless_absents_graphes_soumis
+defaut_47 -->|harnais libllama dedie en teacher forcing| e004_a2_fidelity_gate
+
+%% ==================== APPLICATIONS DE CLASSES ====================
+class e004_event_ordinal_224,e004_kv_shape_cause,e004_attribution_backend,e004_a2_fidelity_gate prouve
+class e004_retire_aprime_zero_window retire
+class e005a_cupti_unavailable,e005a_matmul_dominates_865_917,e005a_ratio_677_root_cause,e005a_output_weight_17_27,e005a_wall_bridge_output_path prouve
+class e005a_kernel_overlap_present retire
+class e005f_head_skip_toggle_proven,e005f_r2_null_wall_delta,e005f_dispatch_domain_answer,e005f_engine006_target_pinned,e005f_slope_measured prouve
+class e005f_mmvq_exclusive_hypothesis_rejected,e005f_shape_proof_retired,e005f_output_weight_upper_bound_retired retire
+class e005f_native_wall_cost_not_derivable ouvert
+class e006_decomposition_composants,e006_vertical_fidelite_decode,e006_registres_smem,e006_occupancy_theorique,e006_part_instructions_decodage prouve
+class e006_v1_rejetee_produit,e006_aucun_appelant_retracte retire
+class e006_plancher_materiel_non_prouve,e006_campagne_produit_non_lancee_h ouvert
+class e007a3_r9a_mismatch_zero,e007a3_r9b_dp4a_non_dominant,e007a3_table_armes_12,e007a3_seuil_activation,e007a3_episodes_variable_primaire prouve
+class e007a1_r5_prediction_refuted,e007a3_retrait_narratif_divergence retire
+class e007a3_r13_bloque_compteurs,e007a3_gain_produit_non_mesure ouvert
+class e007b_model_target_qwen38_27b,e007b_episode_granularity_1024,e007b_k5120_five_episodes,e007b_o2_regression_measured prouve
+class e007b_brief_six_bit_mask_refuted,e007b_roles_ffn_down_attn_v_retracted retire
+class f1a1_lecteur_gguf_cross_valide,f1a1_geometrie_e5,f1a1_geometrie_e6,f1a2_i1_patch_ecrit,f1a2_i1_whitening prouve
+class f1a1_e5_row_count_publie_faux,f1a1_layout_q8_1_f1a_40_octets retire
+class r1r4_bufferless_absents_graphes_soumis,r1r4_table_decisive_par_epoque,r1r4_r4_capture_off_inert,r5r7_r5_exceptions_attn_k,r5r7_r7_sha256 prouve
+class r5r7_no_rotation_residence_refutee,r1r4_1176_egale_sept_decodes,r1r4_retrait_capture_tensor_lifetime retire
+class n1n2_n1_transparence_bitwise,n1n2_n1bis_defect_52_resolu,n1n2_n2_ligne_vers_sortie,n1n2_n2_offsets_gguf prouve
+class n1n2_n1bis_reconstruction_native retire
+class n1n2_n2_divergence_poids ouvert
+class n3addr_n3bis_gate_verdict,n3addr_n3ter_root_cause,n3addr_n3ter_requalification,n3tern_quinquies_encoder,n3tern_quinquies_decoder,n3tern_n3sexies_contradiction,n3life_allocator_rule,n3life_all_336_corrupted prouve
+class n3life_native_reference_budget_fail retire
+class retract_address_root_cause,retract_encoder_decoder_inversion,retract_epoch0_activation_zero,retract_zero_contradiction_structured,retract_capture_defect_fix,retract_336_captures_corrupted prouve
+class retract_r6_payload_submission,retract_n1_manifest_attribution,retract_n2_gguf_contiguity_hypothesis,retract_n2_scale_observation,retract_ternary_accusation,retract_e6_zero_axis,retract_h1_zero_at_consumption,retract_epoch1_positive_control,retract_prior_reconstructions,retract_q8_reference_semantics retire
+class retract_q8_unit_test_flags partiel
+class retract_q8_final_semantics final
+class retract_budget_pass,retract_final_margins,f1a1_reference_native_validee final
+class retract_q8_semantics_divergence_rate,retract_last_divergence_q8,retract_margin_before_after,retract_corrected_capture_validity,f1a1_alignement_q8_tq2_mesure,f1a1_captures_corrigees_integres prouve
+class defaut_46,defaut_47,defaut_48,defaut_52_resolu,defaut_53_resolu,defaut_54_resolu,defaut_56_resolu,defaut_57 prouve
+class defaut_51 retire
+class defaut_58,defaut_46_57_double_numerotation ouvert
+class retract_independent_indexing_gate,retract_temporal_pairing_gate,retract_q0_not_passed,retract_q8_intermediate_not_observed,retract_writer_not_identified,retract_gguf_encoder_provenance,f1a1_saillance_non_mesuree,r5r7_q1_non_autorise,defaut_plumbing_29,e007b_activation_capture_absent,n3life_allocation_plan_changed ouvert
+class retract_remaining_divergence_absent partiel

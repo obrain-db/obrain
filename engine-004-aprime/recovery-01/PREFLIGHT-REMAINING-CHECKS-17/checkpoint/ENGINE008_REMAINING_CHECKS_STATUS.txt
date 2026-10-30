@@ -1,0 +1,142 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-REMAINING-CHECKS-17
+==========================================================================
+Les six verificateurs de P4' sont IMPLEMENTES et TESTES ; la cadence des
+extractions est ETABLIE depuis la source ; D1 est faisable sous condition
+observable. Aucun gel, aucun forward, aucun amendement adopte.
+
+P4_STRUCTURAL_CHECKS_IMPLEMENTED=YES
+  engine008_p4_checks.cpp : `check_p4_structural()` rend, pour CHACUNE des six
+  conditions, un verdict PASS/FAIL/UNKNOWN avec preuve, perimetre et motif.
+  C1 acquisition complete du registre natif ; C2 inventaire des TYPES REELS lus
+  sur les tenseurs ; C3 aucun poids pertinent TQ2_G128 ; C4 audit des autres
+  sites de creation WHT ; C5 identite du code et conditions du chemin ; C6
+  limites enoncees.
+  Les six conditions sont lues depuis ENGINE008_P4_AMENDMENT_TEXT.md, PAS
+  reconstruites de memoire.
+  JAMAIS de type deduit du nom : `type_inferred_from_name` doit rester FAUX, et
+  s'il est vrai, C2 rend FAIL avec le motif citant `Q4_K_M`.
+P4_STRUCTURAL_CHECKS_SELFTEST=PASS
+  26 controles, 0 echec : registre complet sans TQ2 pertinent -> PASS ;
+  presence d'un poids TQ2_G128 pertinent -> FAIL avec le nom de l'offenseur et
+  verdict global FAIL ; registre absent -> UNKNOWN avec motif citant
+  NOT_EXERCISED ; registre incomplet -> FAIL ; types non lus -> UNKNOWN ; type
+  deduit du nom -> FAIL ; rien denombre -> UNKNOWN ; SHA discordant -> UNKNOWN ;
+  sans SHA -> UNKNOWN ; OBRAIN_NO_ROTATION present -> UNKNOWN ; audit absent ->
+  UNKNOWN ; C6 toujours PASS **sans masquer un FAIL** ; serialisation avec
+  `"adopted":false`.
+P4_PROPOSED_RESULTS_SERIALIZED=YES
+  Le rapport serialise `p4_checks_run`, `p4_overall` et l'objet complet
+  `p4_checks` (`ENGINE008_P4PRIME_CHECKS_v1`) portant `adopted:false` et, par
+  condition, `verdict`, `proof`, `scope`, `reason`.
+
+MAX_EXTRACTIONS_PER_CALL_SOURCE_BOUND=UNE_EXTRACTION_PAR_UBATCH
+  `llama-context.cpp:1783-1788`, dans `process_ubatch` : apres
+  `graph_compute(...)`, `f1a_capture_end_epoch(...)` est appele si la capture est
+  active -- **une extraction par appel a process_ubatch, donc par UBATCH**, pas
+  par appel de `llama_decode`.
+  `f1a_capture_end_epoch` incremente `cc->epoch` (f1a-capture.cpp:839) et ecrit
+  ses trois fichiers en `"w"`.
+  BORNE : le nombre d'ubatches traites par l'appel. Pour la configuration du plan
+  (n_ubatch=512, prompt court, decode d'un token) : 1 ubatch -> 1 extraction par
+  appel. C'est l'ATTENDU, pas une garantie : la segmentation depend de l'ubatch
+  construit par `llama_decode_impl`.
+  NI le batching, NI les CUDA graphs, NI la configuration n'ont ete modifies.
+PER_EXTRACTION_OBSERVER_AVAILABLE_WITHOUT_COMPUTE_CHANGE=YES
+  `f1a_capture_end_epoch` emet `CAPTURE_EXTRACT` et `CAPTURE_END`
+  (f1a-capture.cpp:816-825). Le ledger est en mode AJOUT (`fopen "a"`, :173) et
+  **`fflush` apres CHAQUE evenement** (:220) : il est lisible immediatement.
+  Compter ses lignes `CAPTURE_EXTRACT` donne le nombre d'extractions. Le harnais
+  le fait PAR FENETRE (delta avant/apres) et publie
+  `wht_max_extractions_per_window`.
+  CE N'EST PAS un polling temporel : c'est un compteur d'evenements ecrits par le
+  producteur, dans un fichier en ajout avec flush. AUCUN chemin CUDA touche,
+  aucun callback ajoute.
+D1_REQUIRED_COVERAGE_OBTAINABLE=YES (sous condition observable)
+  Si CHAQUE fenetre contient exactement 1 extraction, la collecte par fenetre lit
+  l'analyse de cette extraction AVANT que la suivante ne l'ecrase -> D1 obtenable.
+  Si une fenetre en contient PLUSIEURS, les precedentes sont ecrasees avant
+  lecture -> D1 NON obtenable pour cette fenetre. Le harnais DETECTE le cas
+  (delta du compteur) et publie `WHT_MULTIPLE_EXTRACTIONS_IN_WINDOW`. Il VERIFIE
+  la borne au lieu de la supposer.
+  HORS DE PORTEE sans modifier Q1 : RECUPERER l'analyse d'une extraction ecrasee.
+  Le ledger dit qu'elle a eu lieu ; il ne dit pas ce qu'elle contenait.
+
+ELIGIBLE_WEIGHTS_DISTINGUISHED_FROM_EXPECTED_INVOCATIONS=YES
+  QUATRE ensembles nommes et tenus distincts :
+   (i) poids ELIGIBLES ; (ii) INVOCATIONS/CIBLES ATTENDUES pour l'epoch ;
+   (iii) captures OBSERVEES ; (iv) RELATIONS DISPONIBLES.
+  N1 compte (i) : `intersection(inventaire, tenseurs dont le TYPE REEL est
+  TQ2_G128)`. **Un poids charge n'est PAS automatiquement une invocation
+  attendue** : les branches et la selection d'experts peuvent l'exclure. Aucun
+  denombrement de (ii) n'est implemente -- c'est un manque, pas un acquis.
+INVENTORY_COVERAGE_SCOPE=
+  PERIMETRE CONFIGURE de l'inventaire : les noms qu'il liste ET dont le tenseur
+  porte le type TQ2_G128. Ce n'est PAS la WHT du modele entier. Un inventaire
+  seulement VALIDE n'est pas COMPLET. Si des poids pertinents sont exclus par
+  l'inventaire, N1 est une BORNE INFERIEURE.
+  Aucune verification croisee des cles de l'inventaire contre le registre
+  complet n'est implementee ; `n_inventory_names` et `n_model_tq2g128` sont
+  publies SEPAREMENT pour rendre l'ecart visible.
+
+REAL_HARNESS_BINARY_SHA256=0c2324333442cdca225261879110b8799eee67610087f7d160c654a363689b14
+HARNESS_SOURCE_MANIFEST_SHA256=fcf02eceaf1ab5c9b2019533d03d87a99e0d5cdb4629c60f192b1a80ddcbcf29
+  Autres binaires de la meme compilation :
+    t-p4       d872709aa61c00fb4163c2cd471f9c867fa2619a87422ef2bfb52d1415efb9e7
+    t-connect  cb5bf5ace00ceaf88e81309656ff640127afe2920902b04716dca9d6460ed6a2
+    t-wht      d26a13739071159640014f8b79448594326cb6fced95403b2fb60f3732a0582e
+    t-whtpipe  ebdee70ccc2129c21515f3fcd1ec974be1d02590bb59c2534c53dff5349fba06
+    t-parser   aa42e9a55d8d523065b4eeef5bd3c0460973769777ff3c04ec330d67a304cc3b
+  Identites recalculees APRES compilation reussie.
+
+SUITES REJOUees SUR CE BINAIRE (aucun PASS herite) --
+  t-connect 75/75 ; t-p4 26/26 ; t-wht ; t-whtpipe ; t-parser.
+  Garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3.
+
+DEFAUT REEL TROUVE ET CORRIGE DANS CETTE PASSE --
+  J'avais place la verification P4' AVANT la garde d'autorisation. C'est faux
+  deux fois : (a) la garde doit rester la PREMIERE operation, (b) P4' inspecte le
+  modele, qui n'existe qu'apres le chargement. Deplacee APRES la garde et APRES
+  l'acquisition du registre, et un test verifie desormais l'ordre relatif :
+  `p4_checks_after_gate_and_after_load`.
+  Seconde correction, dans MES tests : le compteur d'extractions du mock etait
+  CONSTANT, donc son delta valait 0 et la detection ne pouvait pas fonctionner.
+  Le mock est desormais CUMULATIF, comme le vrai ledger qui croit.
+
+REMAINING_IMPLEMENTATION_GAPS=
+  J1_DENOMBREMENT DES INVOCATIONS ATTENDUES (ensemble (ii)) : NON implemente.
+     Seul (i), les poids eligibles, est denombre. Or (i) != (ii) des qu'une
+     branche ou une selection d'experts exclut un poids. A combler.
+  J2_VERIFICATION CROISEE DES CLES DE L'INVENTAIRE contre le registre COMPLET :
+     non implementee. `n_inventory_names` et `n_model_tq2g128` sont publies
+     separes, ce qui rend l'ecart visible mais ne l'explique pas.
+  J3_RECUPERATION d'une extraction ecassee : impossible sans modifier Q1.
+REQUIRED_SCIENTIFIC_DECISIONS=
+  K1_D1 vs D2. D1 retenu par le code. Consequence : sur un run ou une fenetre
+     contient >1 extraction, la couverture sera declaree NON obtenable et le run
+     devra s'arreter. Adopter D2 leverait cette contrainte mais laisserait le
+     prefill hors couverture ET selectionnerait le perimetre apres coup.
+  K2_P4' : adopter, amender ou rejeter. Consequence de l'adoption : la propriete
+     exigee passe d'une ABSENCE OBSERVEE a une INATTEIGNABILITE STRUCTURELLE.
+     Consequence du rejet : P4 reste non evaluable (baseline Q4_K_M sans cible
+     eligible au collecteur).
+  K3_J1/J2 : faut-il denombrer les invocations attendues et croiser l'inventaire
+     avec le registre complet ? Sans cela, N1 reste une borne inferieure.
+  Le gel n'est PAS pret : J1, J2 et K1/K2 restent ouverts.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PROTOCOL_CHANGED=NO
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=COMPLETE_SCOPE_REMAINING_CHECKS
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte cree, aucun forward, aucun
+gel, aucun amendement adopte. Aucun changement de Q1, du backend, des CUDA
+graphs, du batching, de la topologie ou des regles de preuve. Aucun protocole
+modifie. Aucune proposition de protocole complete reecrite : seules les clauses a
+modifier sont livrees, avec leurs references.

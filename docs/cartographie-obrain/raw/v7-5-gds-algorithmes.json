@@ -1,0 +1,58 @@
+{
+  "area": "Algorithmes GDS (Graph Data Science)",
+  "summary": "La bibliothèque GDS d'obrain est documentée dans README.md (section « GDS Algorithms », lignes 234-288) avec 34 procédures CALL réparties en 6 familles (centrality, community, shortest paths, traversal/structure, clustering/similarity, network flow/MST). L'implémentation réelle est concentrée dans crates/obrain-adapters/src/plugins/algorithms/ : 26 fichiers .rs (~25 700 lignes) qui exposent à la fois des fonctions libres (pagerank, dijkstra, kruskal, articulation_points, …) et des wrappers structs implémentant le trait GraphAlgorithm (traits.rs) pour être enregistrables comme procédures. L'enregistrement CALL est fait dans crates/obrain-engine/src/procedures.rs via BuiltinProcedures::new() qui instancie ~28 Arc<dyn GraphAlgorithm>. Une seconde implémentation de Leiden (batch Traag-Waltman + variante incrémentale LDleiden) vit dans crates/obrain-cognitive/src/community/, déterministe et sans RNG, distincte du leiden de obrain-adapters. Le pont cognitif est assuré par crates/obrain-cognitive/src/gds_refresh.rs, un scheduler qui recale pagerank/betweenness/louvain et injecte les métriques dans la FabricStore (risk_score). Les bindings Python (crates/bindings/python/src/bridges/algorithms.rs, networkx.rs) et la doc docs/algorithms/ (7 fichiers .md) complètent l'écosystème. Des écarts existent entre le README et le code enregistré (procédures annoncées mais absentes du registre).",
+  "components": [
+    "README.md (section GDS Algorithms lignes 234-288, tables des 34 procédures + CALL Procedures Reference lignes 290-310)",
+    "crates/obrain-adapters/src/plugins/algorithms/mod.rs (hub de ré-export : 26 modules, ~50 pub use)",
+    "crates/obrain-adapters/src/plugins/algorithms/traits.rs (trait GraphAlgorithm/ParallelGraphAlgorithm, Control, TraversalEvent, MinScored)",
+    "crates/obrain-adapters/src/plugins/algorithms/centrality.rs (degree_centrality, pagerank, betweenness_centrality, closeness_centrality, hits — 1624 lignes)",
+    "crates/obrain-adapters/src/plugins/algorithms/community.rs (label_propagation, louvain, leiden — 1792 lignes)",
+    "crates/obrain-adapters/src/plugins/algorithms/components.rs (connected_components, strongly_connected_components, topological_sort, UnionFind)",
+    "crates/obrain-adapters/src/plugins/algorithms/shortest_path.rs (dijkstra, dijkstra_path, astar, bellman_ford, floyd_warshall — 1265 lignes)",
+    "crates/obrain-adapters/src/plugins/algorithms/traversal.rs (bfs, bfs_layers, bfs_with_visitor, dfs, dfs_all, dfs_with_visitor)",
+    "crates/obrain-adapters/src/plugins/algorithms/structure.rs (articulation_points, bridges, k_core, kcore_decomposition)",
+    "crates/obrain-adapters/src/plugins/algorithms/clustering.rs (triangle_count, clustering_coefficient, global/local_clustering_coefficient)",
+    "crates/obrain-adapters/src/plugins/algorithms/similarity.rs (jaccard, cosine_similarity, adamic_adar, overlap_coefficient, resource_allocation, top_k_similar)",
+    "crates/obrain-adapters/src/plugins/algorithms/mst.rs (kruskal, prim)",
+    "crates/obrain-adapters/src/plugins/algorithms/flow.rs (max_flow Ford-Fulkerson/push-relabel, min_cost_max_flow)",
+    "crates/obrain-adapters/src/plugins/algorithms/relevance.rs (personalized_pagerank, extract_subgraph — PPR)",
+    "crates/obrain-adapters/src/plugins/algorithms/{spectral.rs, heat_diffusion.rs, hilbert.rs, hilbert_features.rs, kernel*.rs, contraction.rs, projection.rs, ego_graph.rs, stable_communities.rs} (extensions Rust-API : embedding, noyau, contraction, projection, ego-graph)",
+    "crates/obrain-engine/src/procedures.rs (BuiltinProcedures::new() registre CALL obrain.*, resolve_name, output_columns_for)",
+    "crates/obrain-cognitive/src/community/leiden.rs (leiden_batch, Graph, Partition, LeidenConfig, modularity)",
+    "crates/obrain-cognitive/src/community/ldleiden.rs (LDleiden incrémental : on_edge_add/reweight/remove, refine_in_place)",
+    "crates/obrain-cognitive/src/gds_refresh.rs (GdsRefreshScheduler, GdsRefreshConfig — recalage fabric feature-gated 'gds-refresh')",
+    "crates/obrain-engine/tests/gds_integration_e2e.rs + crates/obrain-adapters/benches/gds_bench.rs (tests e2e + benches pagerank/louvain/leiden/betweenness)",
+    "crates/bindings/python/src/bridges/algorithms.rs + crates/bindings/python/src/bridges/networkx.rs (pont Python)",
+    "docs/algorithms/{index.md, centrality.md, community.md, path-finding.md, link-prediction.md, similarity.md, metrics.md}"
+  ],
+  "relationships": [
+    "crates/obrain-engine/src/procedures.rs -> crates/obrain-adapters/src/plugins/algorithms/mod.rs : BuiltinProcedures::new() importe et enregistre les wrappers *Algorithm (PageRankAlgorithm, LeidenAlgorithm, DijkstraAlgorithm, KruskalAlgorithm, ArticulationPointsAlgorithm, …) en Arc<dyn GraphAlgorithm>",
+    "crates/obrain-adapters/src/plugins/algorithms/mod.rs -> traits.rs : ré-export du trait GraphAlgorithm et des types communs (Control, TraversalEvent, MinScored)",
+    "chaque fichier algorithms/*.rs -> obrain_core::graph::GraphStore : les fonctions libres prennent &dyn GraphStore comme entrée de données",
+    "crates/obrain-cognitive/src/gds_refresh.rs -> obrain_adapters::plugins::algorithms::{pagerank, betweenness_centrality, louvain} : le scheduler recale et injecte dans FabricStore.set_gds_metrics() puis recalculate_all_risks()",
+    "crates/obrain-cognitive/src/community/leiden.rs + ldleiden.rs : implémentation Leiden indépendante (module communautaire T10) SANS dépendance obrain-adapters, portant NodeRecord.community_id u32 via Writer::update_community_batch",
+    "crates/bindings/python/src/bridges/algorithms.rs -> crates/obrain-adapters/src/plugins/algorithms : exposition des algorithmes aux bindings Python",
+    "crates/obrain-engine/tests/gds_integration_e2e.rs -> projection + hits + leiden + khop + similarity : validation du pipeline GDS complet en e2e",
+    "README.md (tables GDS) <-> crates/obrain-engine/src/procedures.rs : correspondance partielle entre les 34 procédures documentées et le registre réel",
+    "crates/obrain-cognitive/src/fabric.rs <- gds_refresh.rs : les métriques pagerank/betweenness/community alimentent le risk_score composite (README lignes 220-232)"
+  ],
+  "notable_findings": [
+    "A* (astar) est implémenté comme fonction générique libre `astar<H>` dans shortest_path.rs mais n'a NI wrapper struct `AstarAlgorithm` NI enregistrement dans BuiltinProcedures : la procédure `obrain.astar()` annoncée par le README (ligne 259) n'existe pas",
+    "jaccard, cosine_similarity, adamic_adar sont des fonctions libres regroupées derrière un unique NodeSimilarityAlgorithm (nom enregistré 'similarity', paramètre metric) et non des procédures CALL séparées comme le suggère le README (lignes 278-280)",
+    "Il existe DEUX implémentations de Leiden : adapters/community.rs::leiden (procédure CALL 'leiden') et cognitive/community/leiden.rs::leiden_batch + ldleiden.rs (LDleiden incrémental, déterministe byte-for-byte, sans RNG, calibration Newman-Girvan sur karate/football)",
+    "La procédure k-core est enregistrée sous le nom 'kcore' (structure.rs ligne 484) et non 'k_core' comme annoncé par le README (obrain.k_core(), ligne 271)",
+    "gds_refresh est feature-gated derrière le feature 'gds-refresh' ; sans lui, refresh_stub() ne fait rien (no-op)",
+    "Des algorithmes entiers sont Rust-API uniquement, non exposés en CALL : spectral_embedding, heat_kernel_diffusion, hilbert/hilbert_features, kernel (IrreducibleKernel), contraction, projection, personalized_pagerank, stable_communities (seul khop est enregistré pour l'ego-graph)",
+    "triangle_count existe en fonction libre et en colonne de sortie de clustering_coefficient, mais pas de procédure `obrain.triangle_count()` autonome",
+    "Le module hilbert_manager a été supprimé (note T17 W2c dans mod.rs lignes 49-51) comme code mort sans appelant de production"
+  ],
+  "gaps": [
+    "Écart README/code : `obrain.astar()` documenté mais aucun AstarAlgorithm n'existe (free function non enregistrée) — procédure manquante ou doc erronée",
+    "Écart README/code : `obrain.jaccard()`, `obrain.cosine_similarity()`, `obrain.adamic_adar()` documentés comme procédures distinctes mais regroupés sous la procédure unique 'similarity'",
+    "Écart README/code : `obrain.k_core()` vs nom réel enregistré 'kcore' (et 'kcore_decomposition' existe en plus)",
+    "Duplication architecturale : deux implémentations Leiden (obrain-adapters vs obrain-cognitive) sans lien apparent — question de consolidation ou de divergence assumée (batch CALL vs incrémental cognitive)",
+    "`obrain.astar()`/`obrain.triangle_count()` : fonctions implémentées mais non exposées en procédures CALL autonomes — frontière README « full GDS library » vs registre réel à réconcilier",
+    "Le README ne liste pas les extensions réellement présentes (spectral, heat_diffusion, hilbert_features, kernel, contraction, projection, personalized_pagerank, stable_communities) — documentation GDS incomplète par rapport au code",
+    "gds_refresh.rs dépend du feature 'gds-refresh' : vérifier si ce feature est activé par défaut dans Cargo.toml (sinon le recalage fabric est inopérant en build standard)"
+  ]
+}

@@ -1,0 +1,160 @@
+SPHERE: e007a1
+RESUME: ENGINE-007A R2 a R6 etablit que le travail dp4a est reel mais faible - retirer les 32 sites rend 3.4391 us sur 94 us soit 3.65 pourcent - et que le nombre de sites n est pas la variable explicative suffisante car a cardinalite identique l emplacement fait varier la latence de plus de 1.15 us. R1 etait inconcluant par dispersion - R2 refute l hypothese de limite de debit dp4a - R3 classe le desaccord de niveau absolu en interaction noyau x harnais avec effet noyau dominant et interdit les comparaisons absolues entre instruments d axes differents. R4 reussit le replay canonique mais invalide son factoriel car la boucle kbx est hissee - R5 refute sa propre prediction de pente par un facteur 9.89 et ne mesure qu une machine serielle artificielle - R6 passe les gates de structure mais echoue le gate de fidelite avec 1875 lignes divergentes sur 5120. Restent ouverts le plancher fixe de 58.09 us entre K_DECODE et K_FULL, la cause de la divergence numerique, la contribution reelle des activations et de l ecriture large dans k_full, et le defaut 38 de tableau d armes. Aucune sparsite aucun rang faible aucun pruning - 007B et 007C restent bloques dans tous les ledgers 007A - le ledger 007B posterieur redefinit le levier primaire en elimination structuree alignee sur les episodes tout en restant bloque sur le gate de reference operateur avec Q0 non passe.
+NOEUDS:
+[PROUVE] e007a1_r1_status :: R1 inconcluant car la dispersion inter-campagnes egale l effet cherche :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[PROUVE] e007a1_r1_gates :: gates keepalive et structure de charge PASS mais gate meme cardinalite FAIL :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[PROUVE] e007a1_r1_dp4a_removal_no_collapse :: retirer les 32 sites dp4a ne fait pas chuter un noyau de 85 us :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[PROUVE] e007a1_r1_defect28 :: defaut 28 keepalive ne gardait pas les activations vivantes - detecte au SASS avant mesure puis corrige :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[OUVERT] e007a1_r1_defect29 :: defaut 29 effet de position non maitrise dans l ordre de mesure - non resolu en R1 :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[OUVERT] e007a1_r1_defect30 :: defaut 30 premiere mesure A100 a 93 us non expliquee - aucune interpretation tentee :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[RETIRE] e007a1_r1_006f_gap_keepalive :: explication de l ecart avec 006F par le keepalive seul de l instrument :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[PROUVE] e007a1_r1_no_regression :: aucune regression ni modele lineaire construits car le gate meme cardinalite echoue :: docs/ENGINE-007A-ARITHMETIC-WORK-SCALING.md
+[PROUVE] e007a1_r2_status :: R2 concluant sur la mesure et negatif sur l hypothese principale :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_a100_minus_a0 :: retirer les 32 sites dp4a rend 3.4391 us sur 94 us avec IC95 de 3.3395 a 3.5387 et effet sur bruit de 67.7 :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_defect29_resolved :: defaut 29 resolu par batchs de 2048 et rotation latine - etendue de position 0.116 us :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_same_cardinality_gate_fail :: gate meme cardinalite FAIL - A25_A contre A25_B ecart de 1.1527 us a travail strictement identique :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_idp_count_insufficient :: le nombre d IDP seul n est pas la variable explicative suffisante :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_monotonicity_fail :: monotonie FAIL et modele lineaire non promu - residus jusqu a 0.83 us :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[OUVERT] e007a1_r2_threshold_suggested :: comportement de seuil entre 24 et 32 sites suggere mais non etabli et sans mecanisme :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_headroom_low :: plafond local d une reduction arithmetique juge LOW :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[REFUTE] e007a1_r2_dp4a_throughput_rejected :: hypothese de limite de debit dp4a rejetee par l experience de retrait arithmetique :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_zero_cost_not_promoted :: cout nul de l arithmetique non promu car les IDP ont un effet reel mais faible :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[OUVERT] e007a1_r2_absolute_disagreement :: desaccord de niveau absolu entre microbenchs - 006F DECODE 22.60 contre 007A A0 90.69 :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r2_defect31 :: defaut 31 huit processus paralleles sur le meme GPU ont invalide la campagne - donnees purgees et relance sequentielle :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PARTIEL] e007a1_r2_seven_sha_partial :: les sept SHA par variante demandes ne sont pas publies - SHA de l unite et manifeste SASS fournis a la place :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_r3_status :: R3 classe la cause racine en interaction noyau x harnais avec effet noyau dominant :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_matrix :: matrice 2x2 mesuree - noyau A 79.9392 et 82.3198 - noyau B 88.4909 et 88.9729 :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_harness_effect_small :: effet harnais de 0.48 a 2.38 us contre effet noyau de 6.65 a 8.55 us et interaction de moins 1.8986 :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_kernel_a_reproduces :: le noyau A reproduit le k_full de 006F a 0.01 us - les instruments sont fideles :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_cross_experiment_forbidden :: comparabilite absolue inter-noeuds non etablie - comparaisons absolues entre instruments d axes differents interdites :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_decode_not_same_workload :: 006F k_decode et 007A A0 ne font pas le meme travail - 0 contre 32 chargements d activation et 2.50 Mo contre 20 Ko d ecriture :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[RETIRE] e007a1_r3_direct_comparison_invalid :: comparaison directe 006F DECODE contre 007A A0 declaree invalide - erreur commise deux fois en 006G et 006H :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[OUVERT] e007a1_r3_attribution_not_quantified :: attribution de l ecart 22.60 contre 90.69 non quantifiee dans cette passe :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[OUVERT] e007a1_r3_write_volume_candidate :: volume d ecriture 128 fois plus grand - candidat fort non demontre :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_batch_warmup :: latence par noyau plate des K egal a 20 et effet de warmup nul sur un facteur 1000 :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_canonical_protocol :: protocole canonique de microbench defini avec K 2048 warmup 3 rotation latine et au moins 5 processus :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_partial_gain_not_derivable :: aucun gain d une reduction partielle du travail n est derivable de la cardinalite seule :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_defect30_quarantined :: defaut 30 anomalie historique mise en quarantaine car R2 remplace R1 quantitativement :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r3_method_principles :: trois principes methodologiques promus dont le contraste apparie superieur a la comparaison absolue :: docs/ENGINE-007A-R3-ABSOLUTE-RECONCILIATION.md
+[PROUVE] e007a1_r4_status :: R4 replay canonique reussi et decomposition factorielle invalidee :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PROUVE] e007a1_r4_replay :: replay canonique K_STREAM 8.3344 K_DECODE 22.8950 K_FULL 83.0176 avec ecarts de 0.05 0.30 et 3.08 us :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PROUVE] e007a1_r4_replay_cross_check :: R3 82.32 contre R4 83.02 - ecart de 0.70 us entre deux binaires :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[REFUTE] e007a1_r4_factorial_design_invalid :: factoriel activations x ecriture invalide pour la question posee - boucle kbx hissee donc 8 chargements au lieu de 96 :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PARTIEL] e007a1_r4_activation_write_effects :: effets activations plus 0.5419 us et ecriture large plus 0.5022 us mesures seulement dans la famille D hissee :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PROUVE] e007a1_r4_interaction_no_additive :: interaction de moins 0.8075 du meme ordre que les effets principaux - decomposition additive non publiee :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[OUVERT] e007a1_r4_fixed_floor_unexplained :: K_FULL moins D11 egale 58.09 us non expliques - D11 moins K_DECODE egale 2.03 us :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[OUVERT] e007a1_r4_residual_hypothesis :: hypothese residuelle que le noyau complet paie ses 12 passes de chargement - compatible avec trois mesures mais non mesuree :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[OUVERT] e007a1_r4_k_full_contributions_not_measured :: contribution de l ecriture et des activations non mesuree pour k_full :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PROUVE] e007a1_r4_defect33 :: defaut 33 version sans PTX inline repliait l ecriture large - D00 et D01 indiscernables - detecte au gate SASS avant mesure puis corrige :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PROUVE] e007a1_r4_defect34 :: defaut 34 extraction de symbole mangled tronquee - trois noyaux desassembles en 0 ligne - non interprete :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[OUVERT] e007a1_r4_defect35 :: defaut 35 boucle kbx hissee dans les bras factoriels - 8 chargements dynamiques au lieu de 96 :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[PROUVE] e007a1_r5_status :: R5 prediction pre-enregistree refutee et mesure invalide pour la question posee :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[REFUTE] e007a1_r5_prediction_refuted :: pente predite 5.2808 us par passe contre 52.2411 mesuree - rapport 9.89 et P12 a 630.47 contre K_FULL a 83.02 :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[PROUVE] e007a1_r5_multiplicity_proven :: multiplicite kbx dynamique prouvee - LDG.U8 de 32 96 192 et 384 proportionnels aux passes :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[PROUVE] e007a1_r5_linearity :: relation passes vers temps exactement lineaire R carre 0.99999 ordonnee 2.9764 et residu max 1.3755 :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[REFUTE] e007a1_r5_not_equivalent :: famille P non equivalente au noyau complet - 21665 lignes SASS contre 2273 et passes chainees par l accumulateur :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[PROUVE] e007a1_r5_cause :: cause identifiee - l anti-hissage lit acc et cree une dependance serielle et un deroulement complet :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[PROUVE] e007a1_r5_upper_bound :: corps d une passe isolee et chainee a environ 52 us - borne superieure avec rapport 10.5 fois :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[OUVERT] e007a1_r5_hypothesis_not_tested :: hypothese de multiplicite kbx non testee validement et non rejetee :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[OUVERT] e007a1_r5_defect36 :: defaut 36 le mecanisme anti-hissage a distordu le graphe plus que la variable visee :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[OUVERT] e007a1_r5_defect35_open :: defaut 35 toujours ouvert en R5 - hissage de la famille D :: docs/ENGINE-007A-R5-KBX-MULTIPLICITY.md
+[PROUVE] e007a1_r6_status :: R6 gate de fidelite non franchi - aucune mesure R6 exploitable pour la question posee :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[REFUTE] e007a1_r6_fidelity_gate_fail :: hypothese d equivalence numerique du noyau a masque runtime refutee - 1875 lignes sur 5120 divergent :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_structure_gates_pass :: gates de structure franchis - 2161 lignes SASS contre 2113 natif - 65 LDG - 32 IDP - backedge present - 0 spill :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_defects_35_36_resolved :: defauts 35 et 36 resolus par la structure - boucle conservee et controle de boucle independant de l arithmetique :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[OUVERT] e007a1_r6_divergence_cause :: cause de la divergence numerique non etablie - reassociation flottante plausible et non demontree :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_timing_refused :: valeurs brutes enregistrees et non interpretees - K_FULL 83.79 P6 61.41 P24_A 112.57 P24_B 239.68 P48 471.40 P48b 241.26 :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[OUVERT] e007a1_r6_defect37 :: defaut 37 divergence P48 contre k_full sur 1875 lignes :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[OUVERT] e007a1_r6_defect38 :: defaut 38 tableau d armes mal cable - P48 et P48b partagent le masque M48 et different d un facteur 2 :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_defect39 :: defaut 39 premiere version de partition passDiv 4 ne correspondait pas au natif - resolu :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_52us_not_native :: la pente de 52 us par passe ne s applique pas au noyau natif :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_three_attempts :: trois instruments construits pour la meme hypothese et trois gates echoues sur des defauts de construction differents :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_r6_codegen_sensitivity :: le noyau est tres sensible a la perturbation du codegen - soutenu fortement :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[OUVERT] e007a1_r6_next_paths :: deux voies proposees et non executees - comparer les sequences d instructions ou mesurer en tolerance epsilon :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[OUVERT] e007a1_plumbing_failure_29 :: PLUMBING_FAILURE_29 reste non assigne alors que les defauts de harnais vont de 28 a 39 :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_microbench_autonome :: aucune modification de source produit dans R1 a R6 - microbenchs autonomes :: docs/ENGINE-007A-R4-CANONICAL-REPLAY.md
+[OUVERT] e007a1_compute_bound_not_proven :: ni compute bound ni limite de debit d emission ne sont prouves :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_no_sparsity_lowrank :: aucune sparsite aucun rang faible aucun pruning - audit low-rank non justifie pour cette projection :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_keeps_blocked :: les ledgers R2 a R6 maintiennent 007B et 007C bloques :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_primary_lever_not_identified :: le levier primaire reste non identifie a la fin de 007A :: docs/ENGINE-007A-R6-NATIVE-MULTIPLICITY.md
+[PROUVE] e007a1_latency_scales_weakly_gate :: le gate de mise a l echelle est franchi au sens faible mais ARITHMETIC_WORK_SCALING est juge non MATERIAL donc 007B n est pas ouvert :: docs/ENGINE-007A-R2-HIGH-POWER-SCALING.md
+[PROUVE] e007a1_successor_lever :: le ledger 007B redefinit le levier primaire en elimination structuree alignee sur les episodes :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] e007a1_gate_operator_reference :: 007B reste bloque sur le gate de reference operateur et Q0 non passe :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+LIENS:
+e007a1_r1_dp4a_removal_no_collapse -> e007a1_r1_status [DEMONTRE] absence de chute a 0 site dp4a rend l instrument incapable de resoudre l effet
+e007a1_r1_defect28 -> e007a1_r1_gates [DEPEND] le gate de keepalive exige de garder les activations vivantes au SASS
+e007a1_r1_defect29 -> e007a1_r1_status [DEMONTRE] le biais de position cause l inconclusion de R1
+e007a1_r1_defect30 -> e007a1_r1_defect29 [DEPEND] meme campagne et meme ordre de mesure non maitrise
+e007a1_r1_006f_gap_keepalive -> e007a1_r1_status [DEPEND] l ecart avec 006F etait attribue au keepalive de l instrument
+e007a1_r1_no_regression -> e007a1_r1_gates [DEPEND] pas de regression ni de modele sans gate meme cardinalite
+e007a1_r2_defect29_resolved -> e007a1_r1_defect29 [REMPLACE] defaut 29 resolu par construction avec 0.116 us d etendue sur 7 positions
+e007a1_r2_a100_minus_a0 -> e007a1_r1_dp4a_removal_no_collapse [REMPLACE] R1 suggestif non promu remplace par un contraste mesure a 67.7 fois le bruit
+e007a1_r2_dp4a_throughput_rejected -> e007a1_r2_a100_minus_a0 [DEMONTRE] le retrait complet du travail ne produit que 3.65 pourcent
+e007a1_r2_same_cardinality_gate_fail -> e007a1_r2_idp_count_insufficient [DEMONTRE] a cardinalite identique l emplacement fait varier la latence
+e007a1_r2_headroom_low -> e007a1_r2_a100_minus_a0 [DEMONTRE] plafond local deduit de l effet total de 3.65 pourcent
+e007a1_r2_monotonicity_fail -> e007a1_r2_idp_count_insufficient [DEPEND] ni monotonie ni modele lineaire ne tiennent
+e007a1_r2_defect31 -> e007a1_r2_status [DEPEND] la campagne parallele a ete purgee avant toute publication
+e007a1_r2_absolute_disagreement -> e007a1_r2_status [OUVRE] l incoherence de niveau absolu limite la portee des valeurs de R2
+e007a1_r2_seven_sha_partial -> e007a1_r2_status [DEPEND] le protocole demandait sept SHA par variante non publies
+e007a1_r2_zero_cost_not_promoted -> e007a1_r2_a100_minus_a0 [DEPEND] l effet reel mais faible interdit de conclure au cout nul
+e007a1_r2_threshold_suggested -> e007a1_r2_monotonicity_fail [OUVRE] le seuil entre 24 et 32 sites reste sans mecanisme ni compteur
+e007a1_r3_status -> e007a1_r2_absolute_disagreement [REMPLACE] R3 identifie la cause racine laissee non resolue par R2
+e007a1_r3_matrix -> e007a1_r3_harness_effect_small [DEMONTRE] la decomposition 2x2 separe harnais noyau et interaction
+e007a1_r3_matrix -> e007a1_r3_status [DEMONTRE] l effet noyau domine l effet harnais par un facteur 7
+e007a1_r3_kernel_a_reproduces -> e007a1_r3_status [DEMONTRE] les instruments sont fideles donc les noyaux ne font pas le meme travail
+e007a1_r3_decode_not_same_workload -> e007a1_r3_direct_comparison_invalid [DEMONTRE] chargements d activation et volume d ecriture incomparables
+e007a1_r3_direct_comparison_invalid -> e007a1_r1_006f_gap_keepalive [RETIRE] l explication par le seul keepalive est retiree au profit d une equivalence de charge refusee
+e007a1_r3_partial_gain_not_derivable -> e007a1_r2_headroom_low [DEPEND] le plafond LOW reste valable mais aucune extrapolation partielle n en decoule
+e007a1_r3_partial_gain_not_derivable -> e007a1_r3_status [DEMONTRE] la non linearite et la dependance au placement interdisent l extrapolation
+e007a1_r3_cross_experiment_forbidden -> e007a1_r3_direct_comparison_invalid [DEMONTRE] interdiction des comparaisons absolues entre instruments d axes differents
+e007a1_r3_attribution_not_quantified -> e007a1_r3_write_volume_candidate [OUVRE] quantifier exige de relancer k_decode et k_full sous protocole canonique
+e007a1_r3_canonical_protocol -> e007a1_r2_defect29_resolved [DEPEND] le protocole canonique generalise la correction du defaut 29
+e007a1_r3_defect30_quarantined -> e007a1_r1_defect30 [REMPLACE] R2 remplace R1 quantitativement et l anomalie est mise en quarantaine
+e007a1_r3_batch_warmup -> e007a1_r3_canonical_protocol [DEPEND] K 2048 est justifie par le plateau observe des K au moins 20
+e007a1_r3_method_principles -> e007a1_r3_cross_experiment_forbidden [DEPEND] principe promu a partir de l interdiction etablie
+e007a1_r4_replay -> e007a1_r3_canonical_protocol [DEPEND] le replay applique le protocole canonique defini en R3
+e007a1_r4_replay_cross_check -> e007a1_r4_replay [DEMONTRE] deux binaires donnent 82.32 et 83.02 pour le meme noyau
+e007a1_r4_factorial_design_invalid -> e007a1_r4_activation_write_effects [RETIRE] les effets mesures sont internes a la famille D et nuls pour k_full
+e007a1_r4_defect35 -> e007a1_r4_factorial_design_invalid [DEMONTRE] le hissage reduit le corps des bras D a 8 chargements
+e007a1_r4_defect33 -> e007a1_r4_factorial_design_invalid [DEPEND] sans correction PTX les bras D00 et D01 etaient indiscernables
+e007a1_r4_interaction_no_additive -> e007a1_r4_activation_write_effects [DEPEND] interaction du meme ordre que les effets principaux
+e007a1_r4_fixed_floor_unexplained -> e007a1_r4_factorial_design_invalid [DEMONTRE] l echec du factoriel laisse 58.09 us inexpliques
+e007a1_r4_residual_hypothesis -> e007a1_r4_fixed_floor_unexplained [OUVRE] hypothese des 12 passes de chargement non mesuree
+e007a1_r4_k_full_contributions_not_measured -> e007a1_r3_write_volume_candidate [RETIRE] le candidat volume d ecriture n est pas promu faute de mesure pour k_full
+e007a1_r4_k_full_contributions_not_measured -> e007a1_r4_fixed_floor_unexplained [DEPEND] les deux facteurs testes ne couvrent pas le plancher
+e007a1_r4_defect34 -> e007a1_r4_status [DEPEND] desassemblages vides signales sans interpretation
+e007a1_r5_prediction_refuted -> e007a1_r4_residual_hypothesis [RETIRE] la prediction batie sur le residu de R4 est refutee par un facteur 9.89
+e007a1_r5_not_equivalent -> e007a1_r5_prediction_refuted [DEPEND] la famille P est un noyau different seriel et deroule
+e007a1_r5_cause -> e007a1_r5_not_equivalent [DEMONTRE] la lecture de acc cree la dependance serielle et le deroulement complet
+e007a1_r5_defect36 -> e007a1_r5_not_equivalent [DEMONTRE] le mecanisme anti-hissage a change le graphe de calcul
+e007a1_r5_linearity -> e007a1_r5_upper_bound [DEPEND] la linearite exacte soutient la lecture en borne superieure
+e007a1_r5_upper_bound -> e007a1_r5_status [DEMONTRE] la borne ne repond pas a la question posee sur le noyau natif
+e007a1_r5_hypothesis_not_tested -> e007a1_r5_not_equivalent [DEMONTRE] absence d equivalence structurelle donc hypothese non testee
+e007a1_r5_multiplicity_proven -> e007a1_r5_not_equivalent [DEPEND] la multiplicite est prouvee dans une geometrie non equivalente
+e007a1_r5_defect35_open -> e007a1_r4_defect35 [DEPEND] le defaut 35 reste ouvert en R5
+e007a1_r5_prediction_refuted -> e007a1_r5_linearity [DEMONTRE] la relation mesuree est propre et tres lineaire mais hors sujet
+e007a1_r6_fidelity_gate_fail -> e007a1_r6_timing_refused [DEMONTRE] la divergence numerique interdit l interpretation des temps
+e007a1_r6_defect37 -> e007a1_r6_fidelity_gate_fail [DEMONTRE] 1875 lignes sur 5120 divergent du natif
+e007a1_r6_defect38 -> e007a1_r6_timing_refused [DEMONTRE] deux bras a masque identique different d un facteur 2
+e007a1_r6_divergence_cause -> e007a1_r6_defect37 [OUVRE] la cause reste non etablie et l hypothese de reassociation non demontree
+e007a1_r6_structure_gates_pass -> e007a1_r6_status [DEPEND] le dispositif est bon mais le gate de fidelite echoue
+e007a1_r6_defects_35_36_resolved -> e007a1_r4_defect35 [REMPLACE] boucle conservee avec backedge en R6
+e007a1_r6_defects_35_36_resolved -> e007a1_r5_defect36 [REMPLACE] controle de boucle independant de l arithmetique en R6
+e007a1_r6_defect39 -> e007a1_r6_structure_gates_pass [DEPEND] la premiere partition a ete corrigee avant la mesure
+e007a1_r6_52us_not_native -> e007a1_r5_upper_bound [RETIRE] la pente de 52 us par passe n est jamais reutilisable pour le natif
+e007a1_r6_three_attempts -> e007a1_r4_factorial_design_invalid [DEPEND] premiere tentative echouee sur le hissage
+e007a1_r6_three_attempts -> e007a1_r5_not_equivalent [DEPEND] deuxieme tentative echouee sur la dependance serielle
+e007a1_r6_three_attempts -> e007a1_r6_fidelity_gate_fail [DEPEND] troisieme tentative echouee sur le gate de fidelite
+e007a1_r6_codegen_sensitivity -> e007a1_r6_three_attempts [DEMONTRE] trois perturbations de source ont change ordonnancement ou forme du code
+e007a1_r6_next_paths -> e007a1_r6_divergence_cause [OUVRE] deux voies proposees et non executees faute de decision
+e007a1_keeps_blocked -> e007a1_r2_headroom_low [DEPEND] le plafond local LOW interdit d ouvrir l audit de sparsite
+e007a1_no_sparsity_lowrank -> e007a1_keeps_blocked [DEPEND] aucune transformation de modele ouverte dans cet axe
+e007a1_primary_lever_not_identified -> e007a1_r4_fixed_floor_unexplained [DEPEND] le plancher inexplique laisse le levier primaire non identifie
+e007a1_primary_lever_not_identified -> e007a1_keeps_blocked [DEMONTRE] sans levier identifie 007B et 007C restent fermes
+e007a1_compute_bound_not_proven -> e007a1_r2_a100_minus_a0 [DEPEND] ni compute bound ni limite de debit d emission ne decoulent de la mesure
+e007a1_latency_scales_weakly_gate -> e007a1_keeps_blocked [DEPEND] gate franchi au sens faible mais non au sens MATERIAL exige
+e007a1_microbench_autonome -> e007a1_r3_kernel_a_reproduces [DEPEND] les noyaux sont des reimplementations autonomes hors produit
+e007a1_plumbing_failure_29 -> e007a1_r1_defect28 [DEPEND] la numerotation plumbing reste decouplee des defauts de harnais numerotes
+e007a1_successor_lever -> e007a1_primary_lever_not_identified [REMPLACE] le ledger 007B quitte l axe arithmetique et retient l elimination structuree alignee sur les episodes
+e007a1_gate_operator_reference -> e007a1_successor_lever [OUVRE] la suite du programme reste bloquee sur le gate de reference operateur
+e007a1_r3_status -> e007a1_r2_threshold_suggested [DEPEND] R3 conserve la reserve sur le seuil et sur le placement

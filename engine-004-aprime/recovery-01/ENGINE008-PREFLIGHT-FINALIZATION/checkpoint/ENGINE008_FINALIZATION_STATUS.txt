@@ -1,0 +1,103 @@
+ENGINE-008 -- STATUT FINAL ENGINE008-PREFLIGHT-FINALIZATION
+==========================================================================
+La mesure de l'entree du preflight est FAITE (L4). L5 et le test bout-en-bout
+restent ouverts. Aucun gel, aucun forward, aucune donnee fabriquee.
+
+TECHNICAL_PREFLIGHT_PREPARATION_COMPLETE=NO
+  Ce qui est fait depuis CONNECT-19 : L4, la mesure exacte de l'entree.
+  Ce qui ne l'est pas : L5 (segmentation) et le test bout-en-bout (M1).
+
+CONNECTED_END_TO_END_SELFTEST=NOT_RUN
+  TOUJOURS PAS ECRIT. Le cablage L1/L2/L3 est compile et les fonctions pures
+  sont testees (33/33), mais le chemin raccorde -- inventaire reel + registre
+  mocke + graphe synthetique -> validation -> invocations -> reconciliation ->
+  rapport -- n'a pas ete traverse par un test. C'est le manque principal.
+INVOCATION_MAPPING_STATUS=PARTIAL
+  Le filtrage est en place (GGML_OP_MUL_MAT / MUL_MAT_ID, src[0] non nul,
+  pointeur natif present au registre) et la semantique du producteur est lue
+  (`target_id = cc->next_target_id++` compte des INVOCATIONS ; activations
+  dedupliquees sur `(cur_used, type, ne[0], nb[0])`).
+  NON ETABLI par un test : la bijection « une operation MUL_MAT retenue = un
+  appel a build_lora_mm ». Cas ouverts : copie de capture, alias ou vue du
+  poids, expert non selectionne, operateur distinct.
+PREFLIGHT_RENDERED_TOKEN_COUNT=59
+  MESURE, pas estime. Voir ENGINE008_PROMPT_MEASUREMENT.txt.
+  RENDERED_SHA256=92eb0cb3a51bbece69aea29afc87553f6b5b5fdd16a1f30485a31dc38ca1c658
+  TOKEN_IDS_SHA256=ee1740718fd9fc85bfdec4edac4e561be0336b791d40b2f3514d24d310ece37e
+  RENDERED_BYTES=320 ; ADD_SPECIAL=0 ; PARSE_SPECIAL=1 ; N_CTX_REQUIRED_MIN=67
+  PREFLIGHT_INPUT_BASELINE_CANDIDATE_MATCH=YES -- rendu ET identifiants
+  IDENTIQUES entre baseline et candidat, sur l'entree REELLE.
+  Obtenu par `engine008-prompt-measure.cpp` en vocab_only, SANS forward.
+ONE_EXTRACTION_PER_WINDOW_SOURCE_GUARANTEE=NO
+  59 <= n_ubatch=512, donc AU PLUS UN ubatch pour le prefill, et 1 token par pas
+  de decode. C'est l'INEqALITE longueur <= n_ubatch -- et la consigne interdit
+  d'en conclure seule. Je n'ai PAS lu les regles de decoupage : la recherche de
+  `llama_decode_impl` n'a rien rendu (le fork utilise d'autres noms ; les
+  appelants identifies sont `process_ubatch` a `llama-context.cpp:1859` et
+  `:2264`). La borne est PLAUSIBLE, NON DEMONTREE.
+  Le controle runtime reste obligatoire.
+INVENTORY_AUTHORITY_SHA256=NOT_FROZEN
+  Le chemin est lu (`OBRAIN_F1A_INVENTORY`, f1a-capture.cpp:13) et le FORMAT est
+  verifie contre le producteur. Mais le fichier reellement gele n'a PAS ete
+  identifie : je n'ai pas trouve de fichier d'inventaire dans
+  `.../e7b-f1a-q1-forward-v1/on/` (qui contient EVENT_LEDGER, MANIFEST,
+  PAYLOAD_PROVENANCE, PAYLOAD...). `prepare_capture` pointe vers un fichier de
+  la destination de capture, ce qui doit etre confronte au fichier gele.
+REAL_HARNESS_BINARY_SHA256=c4f895705ef70a4cee4e12edf44f949363f04b8859c4a4e8234b18260f5d222b
+  INCHANGE depuis CONNECT-19 : cette passe n'a modifie AUCUNE source du harnais
+  de preflight. Le seul nouveau binaire est l'outil de mesure :
+  LAUNCHER_SHA256=VOIR_CI_DESSOUS (le lanceur n'a pas ete reconstruit ici)
+HARNESS_SOURCE_MANIFEST_SHA256=8b577c7946dcc41b18e45563f8514d9ceb26a675d11525a7056fed5ee2969927
+  INCHANGE pour la meme raison.
+
+REMAINING_TECHNICAL_BLOCKERS=
+  T1_TEST BOUT-EN-BOUT (M1) : non ecrit. Exige par la consigne.
+  T2_L5 : regles de decoupage en ubatches non lues. Maillon a suivre depuis
+     `llama_decode` (`llama-context.cpp:4691`) jusqu'a `process_ubatch`
+     (`:1688`, appele en `:1859` et `:2264`) en suivant les appels, pas un nom
+     suppose.
+  T3_INVENTAIRE AUTORITAIRE non fige : chemin, contenu, SHA complet.
+  T4_CAS DE CORRESPONDANCE non testes (copie, alias/vue, expert, operateur).
+  T5_LAUNCHER non reconstruit dans cette passe ; son identite doit etre
+     reverifiee sur l'etat final.
+
+REMAINING_SCIENTIFIC_DECISIONS=
+  S1_P4' reste PROPOSED_NOT_ADOPTED : inatteignabilite structurelle remplacant
+     une absence directement observee. Ses six verificateurs SONT implementes et
+     testes (26/26) ; ils ne peuvent PAS faire passer P4 avant adoption explicite.
+  S2_D1 conserve, D2 NON ADOPTE.
+  Aucune autre decision scientifique n'est ouverte par cette passe.
+
+P4_AMENDMENT_STATUS=PROPOSED_NOT_ADOPTED
+PREFLIGHT_PROTOCOL_FROZEN=NO
+PREFLIGHT_FREEZE_MANIFEST_SHA256=NOT_CREATED
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=NO
+  Le gel n'est pas admissible : T1, T2 et T3 sont ouverts, et S1 attend un
+  arbitrage. Les documents proposes sont prets ; le gel ne l'est pas.
+
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Deux taches concretes ont ete achevees dans cette passe (l'outil de mesure et
+  la mesure elle-meme). Les trois blocages restants sont nommes et sont du
+  travail realisable ; je m'arrete sur limite de contexte de l'agent, ce qui
+  n'est NI une impossibilite technique NI un motif de declarer COMPLETE.
+
+--- CE QUI A ETE LIVRE DANS CETTE PASSE ---
+  engine008-prompt-measure.cpp  (nouveau, vocab_only, aucun forward)
+  t-measure sha256 645a61f7f1602aac20daaeb510eb9be73a38aba0d4ce7ae74c6160616fcc1ead
+  ENGINE008_PROMPT_MEASUREMENT.txt
+  Aucune source du harnais de preflight modifiee : les identites de
+  CONNECT-19 restent valides, et je ne leur en attribue pas de nouvelles.
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucun gel, aucun amendement adopte, aucune donnee fabriquee, aucun UNKNOWN
+transforme en PASS. Aucun changement de Q1, du backend, des CUDA graphs, du
+batching, de la topologie ou des regles de preuve.

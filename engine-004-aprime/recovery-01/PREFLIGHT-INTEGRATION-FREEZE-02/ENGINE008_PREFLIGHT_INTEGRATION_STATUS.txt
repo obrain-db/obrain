@@ -1,0 +1,138 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-INTEGRATION-FREEZE-02
+==========================================================================
+Renderer QUALIFIE et plan etabli. L'integration en un binaire unique et le test
+d'autorisation nominale n'ont PAS ete faits : limite de contexte. Aucun forward.
+
+RENDERER_QUALIFIED=YES
+RENDERER_QUALIFICATION_AUTHORITY_SHA256=14cbbc1336fe885a796539eb473e85388f54a4e600daae24348aeaeccf2c9bdd
+  AUTHORITE NOUVELLE, creee par cette passe. Elle ne pretend pas restaurer une
+  qualification historique de libllama-common.so (qui n'en a jamais eu).
+  Distincte de la qualification du calcul Q1, inchangee.
+  Composition qualifiee : libllama-common a87c31d2..., libllama 87c42d5f...,
+  libggml*/libggml-base*/libggml-cpu*/libggml-cuda* (SHA complets au document),
+  template commun c3cf9e34..., fonction common_chat_templates_apply.
+  ATTENTES SEMANTIQUES verifiees sur le rendu REEL (fixture simple_ascii, 307 o) :
+    bloc system emis par le TEMPLATE      : True
+    instructions xhigh, texte exact       : True
+    bloc user / ouverture assistant       : True / True
+    ouverture du raisonnement <think>     : True
+    ABSENCE DE FALLBACK CHATML            : True (1re ligne <|im_start|>system,
+                                            non <|im_start|>user)
+    thinking_off sans instructions        : True (81 o contre 307)
+    non-troncature / Unicode preserve     : True / True
+    override du template embarque candidat: OVERRIDDEN_BY_EXPLICIT=YES
+  L'egalite inter-modeles est CONSERVEE comme symetrie, pas presentee comme
+  preuve de correction.
+  PERIMETRE HORS QUALIFICATION : branches outils, reasoning_format non NONE,
+  messages system fournis, multi-tours.
+
+PREFLIGHT_COMPONENTS_INTEGRATED=NO
+  L'enumeration sur les 10 slots src[], le registre d'identite native et la
+  correlation aux soumissions existent SEPAREMENT et sont testes separement
+  (23 puis 30 controles, 0 echec). Ils ne sont PAS integres dans un binaire
+  unique. La correlation a une soumission REELLE n'est PAS implementee : les
+  surfaces f1a donnent le dernier graphe et le ledger, mais l'appariement
+  ledger<->enumerateur n'a pas ete code.
+NOMINAL_AUTHORIZATION_MOCK_SELFTEST=NOT_RUN
+REJECTION_GUARD_SELFTEST=PASS   (herite : 11 controles, refus avant chargement
+  complet, contexte et forward ; le drapeau --allow-model-compute seul n ouvre pas)
+STOP_CONTRACT_SELFTEST=PASS     (herite : 9 controles d arret)
+  Ces deux suites sont PASS sur le binaire aa7e4bf4..., NON rejouees dans cette
+  passe, et NE SONT PAS presentees comme de nouvelles observations.
+RUNTIME_ASSUMPTION_RECORDING_IMPLEMENTED=NO
+
+GTYPE_PROOF_METHOD=GTYPE_DERIVED_FROM_VERIFIED_SOURCE_MAPPING
+  Aucune surface native n expose gtype. GTYPE_RUNTIME_OBSERVED est INTERDIT.
+  Methode : (1) valeurs de contexte transmises et acceptees ; (2) dispatch
+  statique verifie (qwen35.cpp:129-134, build_arch_graph) ; (3) preuve de
+  soumission et de succes. Conclusion par COMBINAISON, jamais presentee comme
+  une observation directe du builder.
+  h_nextn n'est PAS utilise comme preuve d execution MTP : le constructeur
+  standard produit cet etat du tronc (qwen35.cpp:225-226).
+
+GRAPH_SUBMISSION_COVERAGE_LIMITS=
+  f1a_last_gf n expose QUE la derniere soumission. L'enumeration ne couvre donc
+  qu'UNE soumission par fenetre. Si plusieurs graphes sont soumis par appel,
+  COVERAGE=INCOMPLETE et toute conclusion negative reste INTERDITE.
+  La capture de chaque soumission n'est PAS realisable avec l'acces existant,
+  et Q1 n'a PAS ete modifie pour le resoudre.
+  L'absence de temoins du registre ne constitue TOUJOURS PAS une preuve
+  exhaustive d'absence NextN.
+
+Q1_LIBLLAMA_REBUILT=NO
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/ propre aux architectures), ggml/,
+  include/, common/ ; reference=etat qualifie Q1 tel que trouve.
+  PORTEE NON ELARGIE : diff nul = « aucun changement depuis cette reference ».
+HARNESS_SOURCE_SHA256=VOIR_MANIFESTE (binaires et sources inchanges dans cette passe)
+HARNESS_BINARY_SHA256=aa7e4bf45f69854fe92e871d4bcf352b99972a2dc1572fd6af62640c8b988ce9
+  Harnais de preflight INCHANGE : aucune compilation dans cette passe. Les
+  identites verifiees par recalcul concordent avec celles rapportees :
+    adaptateur source 78ea125451f7cfcab1a8e528f4b8f345c138234b0d2735f63e3bc25981b40d78
+    adaptateur binaire c8c6df46e32521ed05ec04c4fff8ee9d387a3bfb0c2c93b1a5207a270b5866c9
+    enumerateur source e5f14fe294d50eb192e386dd4bee2df668e069be592b3b7f9196cf5e4bf6707
+    enumerateur binaire 9579aca018eba09bdd5a0594b59853c871f37949d13a7adf432185e713d667f7
+  Les 17 repertoires d artefacts sont presents sur n3 ; aucun n a ete detruit.
+
+PREFLIGHT_PROTOCOL_FROZEN=NO
+  Le protocole v1 reste INTACT (c42f485d...). Un protocole v2 normatif DISTINCT
+  n'a PAS ete emis. Le modele de document et les faits a y consigner sont
+  identifies ; l'emission reste a faire.
+PREFLIGHT_PLAN_SHA256=b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+  PLAN PREVISIONNEL etabli et valide (JSON charge). Quatre runs :
+  baseline1, candidat1, baseline2, candidat2 ; contexte et processus neufs ;
+  message « Reponds uniquement : OK. » ; aucun system fourni ; 8 tokens max ;
+  argmax direct, departage plus petit ID ; arret EOS ou limite ; aucun scorer,
+  aucun resultat qualite, aucun long contexte. OBRAIN_NO_ROTATION UNSET via
+  env -u. Captures f1a isolees par modele et par run.
+FREEZE_MANIFEST_v2=NOT_CREATED
+  Conditions NON toutes remplies (integration et autorisation nominale
+  manquantes). Aucun gel emis : masquer ces manques serait la faute a eviter.
+
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+RUNTIME_NEXTN_ABSENCE_CONFIRMED=NO
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Deux livrables substantiels sont ACHEVES : la qualification du renderer (avec
+  autorite et SHA) et le plan des quatre runs. Le reste est nomme ci-dessous.
+
+REMAINING_WORK=
+  S1_INTEGRER en un binaire unique : enumeration 10 slots src[] sans compaction,
+     registre d identite native, refus pour ambiguite / alias non resolu /
+     couverture incomplete. Les composants existent et sont testes ; c est leur
+     INTEGRATION qui manque.
+  S2_CORRELER les observations aux soumissions REELLES (appariement
+     ledger <-> enumerateur par submission_id, gf et fingerprint). Non code.
+     Sans cela, aucune conclusion negative n est publiable.
+  S3_IMPLEMENTER l enregistrement des parametres runtime transmis (A1/A2) et
+     l identite des binaires/bibliotheques chargees.
+  S4_TESTER l autorisation NOMINALE sur mocks : autorisation complete acceptee
+     et callbacks atteints ; autorisation absente, incorrecte ou visant un autre
+     binaire refusee ; plan ou autorite discordants refuses ; destination de
+     capture non vide refusee ; aucun callback de calcul apres refus. Sans
+     circularite entre hash du binaire, manifeste et autorisation : le binaire
+     doit verifier un document EXTERNE dont l identite est fournie explicitement.
+  S5_EMETTRE le protocole v2 normatif distinct de v1, avec : perimetre du
+     preflight ; methodes de preuve WHT et NextN et leurs limites ; criteres de
+     couverture et d echec ; contrat d arret ; identites exactes des composants ;
+     faits statiques acquis ; confirmations runtime encore attendues.
+  S6_COMPILER le harnais integre avec echec bloquant, recalculer les hashes,
+     mesurer le diff contre la reference Q1 conservee (src/ inclus), puis
+     emettre le manifeste de gel v2 si et seulement si toutes les conditions
+     sont remplies.
+  S7_PUIS SEULEMENT autoriser les quatre runs, par instruction separee.
+
+ENGINE008_NEXT_STEP=S1 puis S2 puis S4 puis S5 puis S6 (S7 sur instruction
+  separee)
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun forward, aucune generation, aucune
+execution des quatre runs, aucun rebuild, aucun nouveau gel.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+template commun, gel v1, contrats ou identites historiques.
+Aucune suite de tests ancienne presentee comme une nouvelle observation.

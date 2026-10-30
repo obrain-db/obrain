@@ -1,0 +1,118 @@
+ENGINE-008 -- STATUT TERMINAL PREFLIGHT-CONNECT-05
+==========================================================================
+L'ORCHESTRATION COMMUNE EST ECRITE, COMPILEE ET TESTEE.
+41 controles, 0 echec, EXIT=0. Aucun modele charge, aucun forward.
+
+PREFLIGHT_RUNTIME_IMPLEMENTATION_INCLUDED=NO
+  Le harnais historique (source e92f3516938cdb7cf35026cc9533155fdef7e892f6526eec9f258eed17e97109,
+  binaire aa7e4bf4...) n'est PAS incorpore. Son contrat d'arret a ete REJOUE
+  DANS LE NOUVEAU BINAIRE (7 controles, tous PASS) : les regles sont donc
+  re-exercees ici, mais son implementation libllama (chargement complet,
+  contexte, prefill) n'est pas branchee.
+PREFLIGHT_COMPONENTS_CONNECTED=NO
+  La LOGIQUE des composants est REUTILISEE, pas recopiee : authorize_doc() et
+  correlate_call() vivent dans engine008_pipeline.cpp et sont appelees par le
+  chemin ET par les mocks -- il n'existe PAS de seconde implementation pour les
+  tests. Mais les ADAPTATEURS reels (deps libllama, registre natif, enumerateur
+  f1a) ne sont PAS ecrits : le registre et l'enumeration sont fournis par les
+  mocks. Je ne marque donc pas « connected » ce qui est conçu pour l'etre mais
+  pas encore relie.
+COMMON_ORCHESTRATION_USED_BY_MOCK_AND_REAL_ADAPTERS=NO
+  UNE SEULE fonction run_pipeline() existe, avec dependances injectables, et
+  elle sert au chemin nominal mocke ET aux tests de refus et d'erreur. Aucun
+  second pipeline simplifie n'a ete ecrit. L'adaptateur reel reste a brancher.
+
+INTEGRATED_MOCK_PATH_SELFTEST=PASS
+REJECTION_GUARD_SELFTEST=PASS
+STOP_CONTRACT_SELFTEST=PASS        (REJOUE dans ce binaire, NON herite)
+SERIALIZED_PIPELINE_RESULT_SELFTEST=PASS
+OBSERVATION_LIFETIME_HANDLING_IMPLEMENTED=YES
+  Chaque pas de decode a SA PROPRE fenetre (releve AVANT, calcul, releve APRES),
+  et l'enumeration est faite PAR PAS, jamais differee a la fin de la generation :
+  f1a_last_gf ne conserve que la derniere soumission. C'est teste.
+
+=== CE QUI EST REELLEMENT TESTE (41 controles) ===
+Chemin nominal : autorisation acceptee ; chargement ; registre ; parametres ;
+  contexte ; prefill ; enumeration ; correlation ; logits ; argmax ; arret ;
+  serialisation ; liberation. Ordre RELATIF verifie sur la trace de
+  l'orchestrateur : load < registre < contexte < prefill < enumeration <
+  correlation. La garde precede le chargement (trace[0]=="authorize").
+Registre REELLEMENT utilise : 3 entrees, 1 seul temoin positif utilisable --
+  NEXTN_SHARED_HEAD_HEAD reste HORS des temoins positifs (exclusivite non
+  etablie), conformement au contrat v1_1.
+Enumeration REELLEMENT transmise : n_declared=100 provient de la capture mockee
+  et se retrouve dans le rapport.
+Correlation REELLEMENT alimentee : le correlateur est appele, et le rapport
+  porte per_call / per_submission / identity.
+Refus AVANT tout calcul : load=ctx=prefill=decode=enumeration=0, et la limite
+  REFUSED_BEFORE_ANY_COMPUTE est consignee.
+Nettoyage sur erreur : echec de contexte -> aucun prefill, aucun decode ;
+  echec de prefill -> liberation effectuee, aucun decode ; echec de chargement
+  -> rien a liberer.
+Couverture incomplete CONSERVEE : plusieurs soumissions avec un seul graphe
+  enumere -> MULTIPLE_SUBMISSIONS_ONLY_LAST_ENUMERATED, et la limite
+  PER_CALL_COVERAGE_INCOMPLETE figure au rapport. Capture malformee ->
+  MALFORMED_CAPTURE, aucune conclusion.
+Attribution ambigue : identity reste POINTER_AND_COUNT_ONLY ; le rapport
+  serialise ne contient NI « ABSENT » NI « NEXTN_NOT_DETECTED », et porte
+  explicitement nextn_conclusion=NONE_IN_THIS_REPORT.
+Contrat d'arret : EOS au 1er token ; MAX_NEW_TOKENS a 8 ; EOS en position 8
+  sans off-by-one ; aucun decode apres l'arret ; erreur de decode rapportee ;
+  egalite argmax departagee au plus petit ID ; ligne de logits invalide refusee.
+
+=== DEFAUT REEL TROUVE PAR LES TESTS ===
+La couverture de correlation etait ECORASEE par la derniere fenetre : un appel
+dont le prefill voyait plusieurs soumissions pouvait etre re-declare CORRELATED
+par la fenetre de decode suivante. Corrige par merge_correlation() : la
+couverture d'un appel est le PIRE verdict de ses fenetres (gravite croissante),
+une fenetre incomplete ne peut JAMAIS etre rattrapee par une suivante.
+Les deux autres echecs venaient de MES assertions, qui interrogeaient les
+compteurs du mock au lieu de la trace de l'orchestrateur : corrigees.
+
+FINGERPRINT_DEFINITION_ESTABLISHED=NO
+FINGERPRINT_CONFRONTATION=UNRESOLVED
+  Statuts PRESERVES. Aucune limite inconnue n'est promue en impossibilite
+  demontree. Le rapport porte la limite FINGERPRINT_DEFINITION_UNKNOWN.
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+
+HARNESS_SOURCE_MANIFEST_SHA256=10cb82d2d8344ea06a7c8781a75af6fde0bb20522fdff304e66f332b85235e90
+  engine008_pipeline.h     cd0e3c4203a2e0b1b9d0c2d1a7d09a015741dac7dfae2cecd134950407c6308
+  engine008_pipeline.cpp   f5495ee767dc626825e87d9a47e4c56ea3b6374b1811c531d02964accb76274c
+  engine008_connect_tests.cpp 60e81ec557540379ad2f0c00681e9446c2fcfd0e9b13d756625824a762c1e7d5
+HARNESS_BINARY_SHA256=c7a0d5b3e60bb2e8f7cb7088cf198d41287c4ef102ebbe64ef766cb97be317be
+  Identite recalculee APRES compilation reussie. Build avec arret sur erreur.
+  COMMANDE : g++ -std=c++17 -O2 -I$S -c engine008_pipeline.cpp ; idem tests ;
+             g++ pipeline.o tests.o -o engine008-preflight-connect -lm
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+  perimetre=src/ (y compris src/models/), ggml/, include/, common/ ;
+  reference=etat qualifie Q1 tel que trouve ; mesure=0 fichier modifie.
+Q1_LIBLLAMA_REBUILT=NO
+  libllama=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  L'orchestration commune et ses tests sont ACHEVES. Les adaptateurs reels ne
+  le sont pas.
+
+REMAINING_WORK=
+  W1_ECRIRE les adaptateurs reels des dependances : load_full / make_ctx /
+     prefill / decode_step sur libllama (depuis engine008-quality-eval-extended.cpp,
+     source e92f3516...), acquire_registry sur llama_internal_get_tensor_map,
+     enumerate/correlate sur les surfaces f1a. run_pipeline() n'a PAS a changer.
+  W2_BRANCHER la garde reelle (document externe d'autorisation) sur le chemin
+     runtime, en conservant le refus avant tout calcul deja teste.
+  W3_FERMER la definition du fingerprint (passe dediee).
+  W4_PUIS le protocole et le gel, sur instruction separee.
+
+ENGINE008_NEXT_STEP=W1 (ecrire les adaptateurs reels des dependances, sans
+  toucher a run_pipeline())
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun forward, aucune execution preflight,
+aucun gel. Aucun rebuild de bibliotheque Q1. Aucun global de Q1 ecrit. Aucune
+fixture presentee comme une capture modele. Les binaires, sources, contrats et
+gels anterieurs sont INTACTS.

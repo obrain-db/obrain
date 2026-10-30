@@ -1,0 +1,9 @@
+{
+  "mode": "Lpg",
+  "node_count": 445493,
+  "edge_count": 1670005,
+  "is_persistent": true,
+  "path": "target/bench/real/code-all3.obrain",
+  "wal_enabled": true,
+  "version": "0.0.1"
+}

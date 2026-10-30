@@ -1,0 +1,62 @@
+{
+  "area": "Roadmap & phases restantes (roadmap.md, plan d'améliorations protégées, design des chantiers restants, FULL-OBRAIN-VIZ-ROADMAP, backlog dashboard)",
+  "summary": "Le périmètre roadmap d'obrain est éclaté en documents de statuts hétérogènes : un docs/roadmap.md public daté « March 2026 » (échelle de versions 0.1 Foundation → 0.5 Beta courante → 0.6 RC → 1.0 Stable) qui n'est pas synchronisé avec le travail cognitif/visualisation de septembre ; un plan d'améliorations protégées moteur (PLAN-AMELIORATIONS-PROTEGEES-2026-09-04.md) structuré en 10 contraintes C1-C10 et phases 0→5, quasi intégralement livré ; un design des chantiers restants (design-phases-restantes-2026-09-04.md) cadrant P3c/P4b/P5a/P5b ; et deux feuilles de route produit récentes (FULL-OBRAIN-VIZ-ROADMAP-2026-09-08.md et BACKLOG-OBRAIN-DASHBOARD.md). Le plan moteur est livré à ~90 % (P1a C5 fenêtres Z, P2a BM25 ≤1 ms, P2b C2 RAG topologique, P3a KernelEnricher, P3b κ→communautés, P4a ingestion native, P4b ordre temporel, P5a C3 fenêtre cognitive) ; ne restent que P5b (C6 mémoire de sessions cognitive) EN ATTENTE et P3c (plan sémantique) REPORTÉ par gate de mesure (−2,4 % de localité spectrale vs topologique). La feuille de route viz est complète (P0 v01-v06 → EXIT, V1 A/B/C overlays volatils/compare/graphml, V2 D explain, V3 E timeline, V4 mise en service) ; les reliquats sont G2b (exposition ffs/Caddy, décision opérateur), V5 dashboard-ui DGX différé, les hyperarêtes DISPATCH différées et le rendu binaire réel graphviz/mermaid (binaires absents de l'environnement). Le backlog dashboard reste le chantier le plus ouvert (canvas unifié « bloc C » gros chantier, flux d'exécution entre 2 ancres PENDING, vérif capture utilisateur BLOQUÉ). Le véritable état de fait consolidé vit dans docs/ledger-ameliorations-2026-09-04.md (106 Ko), un tableau daté commit-par-commit qui sert de registre de chantiers plus fiable que les roadmaps formelles. Il n'existe ni répertoire docs/roadmap/ ni roadmap racine unique réconciliant l'échelle de versions publique et les phases opérationnelles de septembre.",
+  "components": [
+    "docs/roadmap.md — roadmap publique (0.1 Foundation, 0.2 Performance, 0.3 AI Compatibility, 0.4 Developer Accessibility, 0.5 Beta courante, 0.6 RC, 1.0 Stable) ; « Last updated: March 2026 », référence changelog.md et l'org GitHub this-rs",
+    "docs/PLAN-AMELIORATIONS-PROTEGEES-2026-09-04.md — plan moteur protégé : 10 contraintes C1-C10 (additivité, zéro retour cassé, perf non régressive, RSS borné, un commit/chantier, dette zéro, chiffres datés, opt-in, pas de déploiement prod, invariants), phases 0→5, chantiers P1a-P5b avec DoD, séquencement et ledger",
+    "docs/design-phases-restantes-2026-09-04.md — design des chantiers restants P3c (plan sémantique), P4b (ordre temporel journal), P5a (C3 fenêtre cognitive), P5b (C6 mémoire de sessions) ; ancres fichier:ligne vérifiées à HEAD cff0e200",
+    "docs/FULL-OBRAIN-VIZ-ROADMAP-2026-09-08.md — feuille de route complète de la couche de restitution : P0 v01→v06, V1 A/B/C, V2 D, V3 E, V4 A-G2 mise en service, état par round 0-11 avec preuves commit:ligne et 10 décisions à trancher + résolutions actées",
+    "docs/BACKLOG-OBRAIN-DASHBOARD.md — graphe de tâches dashboard (P1/P2/P3) avec dépendances, statuts (DONE/EN COURS/PENDING/BLOQUÉ) et commits de preuve",
+    "docs/ledger-ameliorations-2026-09-04.md — registre exécutif daté (106 Ko) : une ligne par chantier (date | chantier | commit | tests | bench avant→après | golden diff | RSS | notes), incluant la campagne CDC/HKS/cdc_tail/open hors plan initial",
+    "docs/continuity-spectral-spatial.md — design doc CH6 (continuité spectrale/spatiale) : reconstruction de contexte par signature spectrale + localité Hilbert, hooks context_build/memory_recall",
+    "docs/cognitive/canonical-features-pipeline.md — pipeline de features canoniques (Hilbert/Kernel, Ph2 livré) référencé par le plan moteur",
+    "docs/rfc/substrate/zorder-superposition.md — RFC z-order/superposition (propose C2 puis C5), source du plan protégé",
+    "docs/zorder-RAPPORT-FINAL.md + docs/CHECKPOINT-ZORDER-2026-09-04.md + docs/RELEASE-RC-M6-ZORDER-2026-09-07.md — chaîne de livraison zorder (Hilbert physique / Z-order logique / cascade 64d)",
+    "docs/ETAT-DASHBOARD-2026-09-09.md + docs/DASHBOARD-EMBED.md — état et intégration dashboard (compléments du backlog)",
+    "docs/dashboard-viz/GRAPH.md + perimeter-8432.md + CHARGE-SUBGRAPH-2026-09-15.md + PAYLOAD-json-graph-2026-09-15.md + VERIFICATION-2026-09-15.md — dossier de suivi dashboard-viz (endpoints /api/viz/*, charge, payload json-graph)",
+    "crates/obrain-viz/ — crate de restitution (ir.rs, json_graph.rs, overlay.rs, dot.rs, mermaid.rs, graphml.rs, diff.rs, plan.rs, sanitize.rs) livré par la roadmap viz",
+    "crates/obrain-cli/src/viz_extract.rs + viz_serve.rs — extracteur partagé CLI↔MCP et serveur HTTP obrain viz serve (implémentation unique CLI↔bridge)",
+    "crates/obrain-cli/src/mcp_server.rs — bridge MCP : expose context_build, memory_recall, import_events, viz_subgraph/viz_export/node_curvature/viz_topo",
+    "crates/obrain-substrate/src/geometric.rs — compute_ricci_fast / refresh_all_ricci / compute_hks_descriptors (formes persistées ricci_u8)",
+    "crates/obrain-substrate/src/hilbert.rs — grid_coords_from_features / compute_hilbert_permutation / bulk_sort_by_hilbert (plan physique Hilbert/Z-order)",
+    "crates/obrain-cognitive/src/thinker/kernel_enricher.rs — KernelEnricher (P3a, ThinkerKind::KernelEnricher) + obrain-cognitive/src/engram/spectral.rs SpectralEncoder",
+    "crates/obrain-cognitive/src/stigmergy.rs — PheromoneMap/évaporation (overlays volatils V1-A de la roadmap viz)",
+    "scripts/guard-viz.sh + scripts/viz_guard.py — garde DoD de la roadmap viz (déterminisme, bien-formé, parité export_all, bench p50/p95)",
+    "crates/obrain-engine/src/window_procedures.rs — CALL obrain.window_2d (P1a C5) et obrain.window_2d_energy (P5a C3)"
+  ],
+  "relationships": [
+    "PLAN-AMELIORATIONS-PROTEGEES-2026-09-04.md → design-phases-restantes-2026-09-04.md (le design cadre P3c/P4b/P5a/P5b avant implémentation) et → ledger-ameliorations-2026-09-04.md (chaque chantier a sa ligne de résultat datée)",
+    "design-phases-restantes §1 P3c / §4 P5b → docs/continuity-spectral-spatial.md (fil rouge CH6, rappel par signature spectrale + localité Hilbert) et → docs/cognitive/canonical-features-pipeline.md (cascade hilbert_features 64d, eigvecs 0-1)",
+    "PLAN §2.1 Phase 0 → docs/bench-verify/ + docs/golden/2026-09-04/ (baseline gelée + golden outputs des 4 surfaces GQL/CLI/NAPI/bridge)",
+    "FULL-OBRAIN-VIZ-ROADMAP P0 v01-v06 → crates/obrain-viz/* (IR + json-graph v1 + writers DOT/Mermaid/GraphML + overlays) → obrain-cli/src/viz_extract.rs (CLI) → obrain-cli/src/mcp_server.rs (bridge MCP, parité par construction)",
+    "FULL-OBRAIN-VIZ-ROADMAP V4-G2a → obrain-cli/src/viz_serve.rs (serveur obrain viz serve) → scripts/vizserve.sh + obrain-viz.service (déploiement port 8432/8433) — tracé dans docs/dashboard-viz/",
+    "BACKLOG-OBRAIN-DASHBOARD → docs/UX-UI-SKILL.md (méthode) et → packages/obrain-dashboard (cible Vue/Vite, suivi par todo+commits)",
+    "P3b run_ldleiden_batch_ricci → geometric.rs compute_ricci_fast/ricci_u8 (κ comme poids dans LDleiden, A/B boost=0 bit-identique)",
+    "P4b read_session_journal → engine/src/journal_zone.rs (zone substrate.journal.<session>) et → harness session-persistence (re-tri par seq à supprimer, action harness séparée)",
+    "P5a obrain.window_2d_energy → window_procedures.rs (filtre énergie inline Q1.15 sur la fenêtre C5, seuil 0 = C5 inchangée)",
+    "V1-A overlays volatils (fsrs/engrams/pheromone) → obrain-cognitive/src/engram/decay.rs (FSRS-5) + stigmergy.rs (phéromones) + engram/mod.rs (Hebbian Layer 0)",
+    "ledger-ameliorations-2026-09-04.md (campagne CDC/HKS/cdc_tail, hors plan) → docs/rfc/substrate/multi-writer.md (RFC multi-writer) et docs/PLAN-TISSAGE-PERIMETRE-2026-09-06.md (carte du périmètre)",
+    "docs/roadmap.md (publique) ↔ sans lien avec les phases de septembre : divergence non réconciliée (voir gaps)"
+  ],
+  "notable_findings": [
+    "Le plan moteur protégé est livré à ~90 % et le reste est documenté honnêtement : P3c Étape B (Plan2D::Spectral) a été REPORTÉE car la mesure B3 montrait un recul de localité (~+2,4 % : topologique 8753,3 vs spectral 8962,7) — la gate de mesure a fonctionné, tradition « lecture honnête » du dépôt",
+    "P5b (C6 mémoire de sessions cognitive) est le SEUL chantier du plan moteur resté EN ATTENTE, sans commit d'implémentation — c'est le fil rouge CH6 du design continuity-spectral-spatial, cadré mais non réalisé (payload context_build additif rétro-compatible à enrichir avec le rappel spectral-ensembles)",
+    "La roadmap viz a atteint l'exhaustivité en 11 rounds sur une seule journée (08/09) : P0 EXIT + V1 A/B/C + V2 D + V3 E + V4 A-G2a LIVRÉS, avec une implémentation unique partagée CLI↔bridge MCP (parité garantie par construction) et une garde DoD 11/11 puis 13/13",
+    "Le ledger-ameliorations-2026-09-04.md (106 Ko) déborde largement le plan initial : il consigne aussi une campagne de performance « à froid » (CDC by_ts, cdc_tail, load par blocs, HKS cache, seuil auto-checkpoint WAL 512 Mo → 8 Mo) qui n'apparaît dans aucune roadmap formelle",
+    "Le docs/roadmap.md public est daté « March 2026 » et référence l'org GitHub this-rs (this-rs/obrain-server, this-rs/obrain-web…) : c'est un artefact d'upstream/fork non synchronisé avec la réalité de septembre (aucune mention des primitives cognitives energy/synapse/scar/fabric, du GDS, du MCP, ni des phases zorder/viz)",
+    "Le backlog dashboard est le chantier le plus ouvert : canvas unifié = « bloc C » qualifié de « gros chantier », flux d'exécution entre 2 ancres PENDING, vérif capture utilisateur BLOQUÉ (dépend d'une capture humaine)",
+    "Les références croisées documentaires sont majoritairement exactes (fichier:ligne vérifiés à HEAD cff0e200), mais le chemin canonical-features-pipeline.md cité dans le plan pointe vers docs/cognitive/canonical-features-pipeline.md en réalité (incohérence de chemin)",
+    "La branche HEAD courante (consolidation/tronc-2026-09-15-plus-fusion) diffère des branches d'autorité des roadmaps (feat/zorder, feat/llama-obrain-index-persist) : la feuille de route est rédigée sur des branches features, consolidées ensuite"
+  ],
+  "gaps": [
+    "Aucun répertoire docs/roadmap/ n'existe (mentionné dans le périmètre) ; le seul fichier roadmap est docs/roadmap.md, et aucun roadmap.md à la racine du dépôt",
+    "docs/roadmap.md public est périmé/désynchronisé (March 2026, échelle 0.5/0.6/1.0, références this-rs) : il ignore totalement le travail cognitif, GDS, MCP, viz et zorder de septembre — pas de réconciliation avec les phases opérationnelles",
+    "Absence de roadmap maîtresse unique : le plan moteur (PLAN-AMELIORATIONS-PROTEGEES), la roadmap viz (FULL-OBRAIN-VIZ-ROADMAP) et le backlog dashboard coexistent sans document agrégateur consolidant les phases restantes transverses",
+    "P5b (C6 mémoire de sessions cognitive) est le seul chantier moteur non implémenté : aucun commit, statut « EN ATTENTE / round dédié » — reste à réaliser",
+    "P3c plan sémantique : Étape B non implémentée (reportée par gate de mesure) mais encore listée comme chantier dans design-phases-restantes — statut ambigu entre « reporté » et « en attente d'un meilleur plan »",
+    "FULL-OBRAIN-VIZ-ROADMAP reliquats non clos : G2b (exposition ffs/Caddy) = décision opérateur hors périmètre, V5 dashboard-ui DGX différé, hyperarêtes DISPATCH différées, et rendu binaire réel graphviz/mermaid jamais exécuté (binaires absents de l'environnement)",
+    "Référence de chemin incohérente : PLAN-AMELIORATIONS-PROTEGEES cite « canonical-features-pipeline.md » à la racine docs/ alors que le fichier réel est docs/cognitive/canonical-features-pipeline.md",
+    "Backlog dashboard : tâches BLOQUÉ (vérif capture utilisateur) et PENDING (flux d'exécution entre 2 ancres) + « bloc C » canvas unifié — la résolution des dépendances (AGENT A arcs, AGENT B couches) n'est pas datée dans le backlog lui-même (preuves « à intégrer »)",
+    "Le ledger-ameliorations-2026-09-04.md n'est pas un fichier de phase (table plate) : pas d'index de statut consolidé « fait/reporté/en attente » par chantier — la reconstruction de l'état demande une lecture intégrale du tableau"
+  ]
+}

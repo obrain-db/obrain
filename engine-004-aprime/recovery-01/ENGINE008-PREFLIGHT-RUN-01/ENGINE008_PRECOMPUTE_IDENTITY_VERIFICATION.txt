@@ -1,0 +1,36 @@
+ENGINE-008 -- VERIFICATION AVANT CALCUL (instruction du 2026-10-02)
+==========================================================================
+Toutes les identites exigees ont ete RECALCULEES sur les artefacts reels.
+Aucune discordance d'identite. AUCUN CALCUL N'A ETE EFFECTUE.
+
+=== IDENTITES EXIGEES -- TOUTES CONCORDANTES ===
+  harnais reel  14ef0c1ab848a8a724ebee85d59733a00affbd05826cf2f1513b4ae1f9ecb791  OK
+  lanceur       43e7c2c5aa8d895a5b415684dc76cf74adeaf686d90d8491e71401b9f4726717  OK
+  manifeste src c718c0a26d6914ac6d46d81baaf36301dc033b86fd59be55b1d81132ddb05fc4  OK
+  libllama Q1   87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2  OK
+  template      c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041  OK
+  inventaire    e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1  OK
+  protocole v3  1dc2c3c36329550d29b1abf1ec448f0c82ef6f2d7ab81994deed9320f9d8b7ae
+  plan          b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+  manifeste gel 3c614f5d4b8bded8ceef5a482d444c4283ed3c667eb65e9765f54f8728c60bfc
+
+=== MODELES ===
+  baseline  Qwen3.8-27B-Q4_K_M.gguf   31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34
+  candidat  Qwen3.8-27B-OBRAIN-v3.gguf 1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937
+
+=== BIBLIOTHEQUES -- RESOLUTION EFFECTIVE (ldd sur le harnais reel) ===
+  libllama.so.0        -> build-cuda/bin/libllama.so.0
+  libggml-base.so.0    -> build-cuda/bin/libggml-base.so.0
+  libggml.so.0         -> build-cuda/bin/libggml.so.0
+  libggml-cpu.so.0     -> build-cuda/bin/libggml-cpu.so.0
+  libggml-cuda.so.0    -> build-cuda/bin/libggml-cuda.so.0
+  Toutes resolues dans build-cuda/bin. Aucune substitution.
+
+=== DESTINATIONS NEUVES, JAMAIS UTILISEES ===
+  ENGINE008-PREFLIGHT-RUN-01/         (destination de passe, creee vide)
+  captures/baseline/run1              creee vide
+  captures/candidate/run1             creee vide
+  captures/baseline/run2              creee vide
+  captures/candidate/run2             creee vide
+
+AUCUNE AUTORITE N'A ETE RECONSTRUITE, REMPLACEE OU REPAREE DANS CETTE PASSE.

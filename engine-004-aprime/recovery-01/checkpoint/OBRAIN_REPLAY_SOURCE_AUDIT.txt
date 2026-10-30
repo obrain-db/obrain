@@ -1,0 +1,18 @@
+OBRAIN_REPLAY_SOURCE_AUDIT
+
+Recherche passive de requetes historiques :
+  logs applicatifs obrain    : non trouves
+  logs serveur               : non trouves
+  traces de requetes         : non trouvees
+  fixtures de test           : non trouvees
+  sessions enregistrees      : /home/triviere/.claude/sessions (outil tiers, hors perimetre)
+  store obrain runtime       : non inspecte (donnees privees)
+
+OBRAIN_REPLAY_AVAILABLE=NO
+OBRAIN_REPLAY_SAFE_TO_FREEZE=NON_APPLICABLE
+OBRAIN_REPLAY_ITEM_COUNT=0
+
+  Aucun historique Obrain exploitable n a ete trouve.
+  Je n invente aucun faux historique.
+  Ce sera une LIMITE DOCUMENTEE, pas un blocage a lui seul.
+  Aucun secret, aucune credential, aucune donnee personnelle collectee.

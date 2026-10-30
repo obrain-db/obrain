@@ -1,0 +1,113 @@
+%% Ce que le diagramme prouve : la table ECRITE par le codeur TQ2_G128 et la table LUE par ses decodeurs, mises cote a cote ligne par ligne.
+%% D ou vient l information : lecture directe de llama-obrain/ggml/src/ggml-quants.c L2477 a L2609 et de llama-obrain-cuda/ggml/src/ggml-cuda/vecdotq.cuh L724 a L765, plus les 5 autres sites de decodage et le document banc-obrain docs/ENGINE-007B-F1A-Q0-N3QUINQUIES-TERNARY-MAPPING-QUALIFICATION.md.
+%% MESURE = ligne de source citee, lue telle quelle ; DEDUIT = composition des deux tables, chaque noeud deduit le dit dans son libelle ; aucune provenance du GGUF en service n est etablie ici, la question reste ouverte et ce diagramme ne la tranche pas.
+
+flowchart TB
+
+subgraph depot["Deux depots lus, un seul codeur TQ2_G128 dans le fork"]
+  qsrc["llama-obrain<br/>ggml/src/ggml-quants.c<br/>5870 lignes<br/>md5 41a1871e06699ac4e6354d1e69062533<br/>branche feat/vulkan-tq2g128 HEAD 8ae380f"]
+  cudasrc["llama-obrain-cuda<br/>ggml/src/ggml-cuda/vecdotq.cuh<br/>1363 lignes<br/>branche feat/cuda-tq2g128 HEAD 57bd239<br/>arbre de travail modifie sur ggml-cuda.cu"]
+  noqa["⚪ llama-obrain/ggml/src/ggml-cuda<br/>aucun fichier ne mentionne tq2<br/>mesure grep -rli tq2 rend 0 fichier<br/>le noyau CUDA n existe que dans le second depot"]
+  doc["banc-obrain docs<br/>ENGINE-007B-F1A-Q0-N3QUINQUIES<br/>-TERNARY-MAPPING-QUALIFICATION.md<br/>257 lignes<br/>c est la ou le point de diagnostic est consigne"]
+end
+
+subgraph enc["Table du codeur, ce que la source ECRIT, ggml-quants.c L2494 a L2581"]
+  e_fn["quantize_row_tq2_g128_im L2494<br/>k multiple de QK_G128 qui vaut 128<br/>une seule echelle FP16 pour 128 poids<br/>appelee par quantize_tq2_g128 L2584 et par quantize_row_tq2_g128_ref L2477"]
+  e_trit["L2548 le trit est calcule<br/>t vaut 0 si la valeur absolue est sous le seuil<br/>sinon +1 si x est positif et -1 sinon<br/>t ne prend donc que -1, 0 ou +1"]
+  e_seuil["L2541 puis L2557 le seuil<br/>tertile des valeurs absolues, commentaire L2541 le tiers donc environ 1 tiers de zeros<br/>puis thr devient 0.5 fois s<br/>boucle de 3 iterations L2544"]
+  e_scale["L2550 et L2553 l echelle<br/>num somme de rho fois x fois t, den somme de rho<br/>s vaut num sur den, refus si non fini L2556<br/>ecrite en FP16 par y[i].d L2580"]
+  e_im["L2498 et L2513 imatrix<br/>interrupteur OBRAIN_IMATRIX_WEIGHT lu une fois par appel<br/>ponderation par importance des canaux ecrite puis rejetee par la mesure<br/>perplexite 83,09 vers 175,65 sur 27B L2507 a L2512"]
+  e_code["L2577 l encodage<br/>const uint8_t code = uint8_t trit[j] + 1<br/>commentaire de la meme ligne, trit -1 0 +1 vers code 0 1 2<br/>le code range les trois valeurs de trit dans les codes 0, 1 et 2"]
+  e_pack["L2578 le rangement<br/>y[i].qs[j >> 2] recoit code decale de 2 fois j et 3<br/>4 codes de 2 bits par octet<br/>le poids j vit dans les bits 2 fois j modulo 4 de l octet j sur 4"]
+  enc_m1["✅ trit -1 donne code 0"]
+  enc_z["✅ trit 0 donne code 1"]
+  enc_p1["✅ trit +1 donne code 2"]
+  enc_never["🟠 code 3 jamais atteint<br/>L2548 ne produit que trois valeurs de trit<br/>mesure par lecture, pas deduction"]
+end
+
+subgraph dec["Table du decodeur, ce que les sept sites de lecture LISENT"]
+  d_cuda["vecdotq.cuh L732<br/>vec_dot_tq2_g128_q8_1<br/>L742 qs avance de 8 fois iqs<br/>L748 a L751 extraction de c0 c1 c2 c3 par decalage"]
+  d_expr["L752 a L755 l expression reelle<br/>c0 superieur a 2 donne 1 sinon c0 moins 1<br/>meme formule pour c1 c2 c3<br/>L764 retour d fois ds fois sumi"]
+  d_cpu_deq["ggml-quants.c L2604<br/>dequantize_row_tq2_g128<br/>code superieur a 2 donne 1 sinon code moins 1<br/>commentaire L2602, 3 inutilise replie sur +1"]
+  d_cpu_dot["ggml-cpu/quants.c L607<br/>ggml_vec_dot_tq2_g128_q8_K<br/>reference scalaire du produit sur CPU<br/>meme expression code superieur a 2"]
+  d_cu_conv["ggml-cuda/convert.cu L167<br/>dequantize_block_tq2_g128<br/>conversion vers F16 BF16 F32<br/>chemin cuBLAS faute de MMQ du type"]
+  d_vk_trit["vulkan dequant_funcs.glsl L543 et L544<br/>tq2_g128_trit, c superieur a 2 donne 1.0 sinon c moins 1<br/>commentaire L540 annonce la copie de la reference CPU L2592"]
+  d_vk_deq["vulkan dequant_tq2_g128.comp L40<br/>un fil traite deux octets soit huit poids<br/>meme expression c superieur a 2"]
+  d_vk_mmq["vulkan mul_mm_funcs.glsl L174 a L177<br/>chargement du bloc vers la memoire partagee<br/>quatre sous expressions c0 c1 c2 c3"]
+  dec_0["✅ code 0 donne -1"]
+  dec_1["✅ code 1 donne 0"]
+  dec_2["✅ code 2 donne +1"]
+  dec_3["🟠 code 3 donne +1, replie<br/>decision ecrite ggml-common.h L277 avec sa raison, un octet corrompu degrade au lieu de mentir<br/>jamais exerce par un bloc produit par ce codeur"]
+end
+
+subgraph compose["Composition des deux tables, DEDUIT et signale comme tel"]
+  comp["DEDUIT des deux tables lues<br/>trit -1 vers code 0 puis code 0 vers -1<br/>trit 0 vers code 1 puis code 1 vers 0<br/>trit +1 vers code 2 puis code 2 vers +1<br/>sur les trois codes emis la composition est l identite"]
+  comp_3["DEDUIT, le seul ecart possible entre les deux tables<br/>aucun trit du codeur ne porte le code 3<br/>un code 3 lu quelque part ne vient pas de L2577"]
+  claim["🔴 enonce consigne en section 3 du document, non reproduit par les deux tables ci dessus<br/>le document ecrit ENCODER_DECODER_INVERSION_ESTABLISHED=YES et un poids -1 encode ressort +1<br/>raison du refus de le reprendre ici, les tables citees section 2 et section 3 donnent -1 vers 0 puis 0 vers -1"]
+  open_q["🟠 question laissee OUVERTE, ce diagramme ne la tranche pas<br/>ACTUAL_GGUF_ENCODER_PROVENANCE vaut INCONNUE dans le document<br/>le depot n archive ni outil de conversion ni commande de quantification<br/>deux lectures restent possibles, le GGUF vient de ce codeur, ou d un codeur utilisant la table du decodeur"]
+end
+
+subgraph cons["Consequence, ce que ces tables impliquent pour la lecture et pour le diagnostic"]
+  cons1["Mesure de couverture, 7 sites de decodage sur 3 moteurs<br/>CPU 2 sites, CUDA 2 sites, Vulkan 3 sites<br/>les 7 replient le code 3 sur +1 avec la meme expression"]
+  cons2["Si un code 3 est lu un jour<br/>il devient +1 sur les trois moteurs a la fois<br/>un desaccord de table ne se manifesterait donc pas comme un desaccord entre moteurs"]
+  cons3["Diagnostic du document section 6, independant de toute table<br/>blk.15.attn_output rend zero sous les trois tables A, B et C<br/>les trois tables sont des permutations de signes, donc un decodage errone ne peut pas expliquer ce zero<br/>le soupcon se deplace vers l activation q8_1"]
+  doc_tables["Document section 5, trois tables comparees sur 6 lignes<br/>A la table du decodeur, B l encodeur inverse, C un controle de signe<br/>B et C rendent des signes opposes a A et sont refutees<br/>TABLE_A_NATIVE_ERROR reste entre 9,8e-01 et 2,0e+01, tres au dessus du budget 1e-3"]
+end
+
+qsrc -->|contient| e_fn
+cudasrc -->|contient| d_cuda
+noqa -.->|explique pourquoi le noyau CUDA est cherche ailleurs| cudasrc
+doc -->|consigne le diagnostic| claim
+
+e_fn -->|appelle| e_trit
+e_seuil -->|fixe le seuil de| e_trit
+e_trit -->|alimente| e_code
+e_scale -->|ecrit l echelle du bloc| e_fn
+e_im -.->|optionnel, desactive par defaut| e_scale
+e_code -->|ecrit| e_pack
+e_code -->|produit| enc_m1
+e_code -->|produit| enc_z
+e_code -->|produit| enc_p1
+e_trit -->|ne produit jamais| enc_never
+
+d_cuda -->|lit| d_expr
+d_expr -->|applique| dec_0
+d_expr -->|applique| dec_1
+d_expr -->|applique| dec_2
+d_expr -->|applique| dec_3
+d_cpu_deq -->|applique la meme table que| d_expr
+d_cpu_dot -->|applique la meme table que| d_expr
+d_cu_conv -->|applique la meme table que| d_expr
+d_vk_trit -->|applique la meme table que| d_expr
+d_vk_deq -->|applique la meme table que| d_expr
+d_vk_mmq -->|applique la meme table que| d_expr
+
+enc_m1 -->|code 0| dec_0
+enc_z -->|code 1| dec_1
+enc_p1 -->|code 2| dec_2
+enc_never -.->|aucune donnee emise n arrive a| dec_3
+
+dec_0 -->|compose avec la table du codeur| comp
+dec_3 -->|seul etat hors du domaine emis| comp_3
+comp -->|contredit| claim
+claim -->|ne ferme pas| open_q
+comp_3 -->|ne ferme pas| open_q
+
+comp -->|implique| cons1
+comp_3 -->|implique| cons2
+cons1 -->|borne la portee de| cons2
+doc -->|mesure| doc_tables
+doc_tables -->|motive| cons3
+open_q -->|reste la question a instruire| cons3
+
+classDef mesure fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+classDef deduit fill:#1f4fa1,stroke:#0f2857,color:#fff
+classDef ouvert fill:#c47a10,stroke:#6b420a,color:#fff
+classDef refuse fill:#a11f1f,stroke:#5c0f0f,color:#fff
+classDef amont  fill:#6b6b6b,stroke:#3a3a3a,color:#fff
+
+class e_fn,e_trit,e_seuil,e_scale,e_code,e_pack,e_im,d_cuda,d_expr,d_cpu_deq,d_cpu_dot,d_cu_conv,d_vk_trit,d_vk_deq,d_vk_mmq,enc_m1,enc_z,enc_p1,dec_0,dec_1,dec_2,cons1,cons2,cons3,doc_tables,qsrc,cudasrc,doc mesure
+class comp,comp_3 deduit
+class enc_never,dec_3,open_q ouvert
+class claim refuse
+class noqa amont

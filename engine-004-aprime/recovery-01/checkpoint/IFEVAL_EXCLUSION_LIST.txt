@@ -1,0 +1,7 @@
+IFEVAL_EXCLUSION_LIST
+EXCLUSION_COUNT=0
+
+Aucune exclusion. Les 17 items a instruction_id repete ont ete audites
+positionnellement : chaque occurrence (instruction_id_list[idx], kwargs[idx])
+s instancie et build_description reussit. DUPLICATE_INSTRUCTION_ID n est
+PAS un motif d exclusion.

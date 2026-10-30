@@ -192,18 +192,72 @@ impl Operator for ProjectOperator {
                     let prop_key = PropertyKey::new(property);
                     let epoch = self.viewing_epoch;
                     let tx_id = self.transaction_id;
-                    // T17k: single-property projection. Use the scalar
-                    // `store.get_node_property` / `get_edge_property`
-                    // directly — they do a targeted per-zone lookup
-                    // (O(1)) rather than the O(N) bulk hydrate that
-                    // `get_node` performs (needed for bulk consumers
-                    // like merge / RAG but wasteful for N-row × 1-prop
-                    // projections). MVCC-aware paths still route
-                    // through `get_node_at_epoch` for historical reads.
+                    // T12 property pushdown (mirrors the T12 label-pushdown
+                    // fix in filter.rs, 295f44ef): sessions ALWAYS set
+                    // viewing_epoch = Some(EpochId(0)) as the read-only
+                    // baseline, so gating on `epoch.is_some()` ("has_mvcc")
+                    // made EVERY session property access take the epoch
+                    // branch — which on SubstrateStore is `get_node_at_epoch`
+                    // = a full `get_node()` bulk hydrate (all props, all 4
+                    // zones) just to read one key. Measured: list_project_symbols
+                    // 21.7s, call_edges 9.6s, 1-hop 272ms (note 96ae814c).
+                    //
+                    // Fix: try the O(1) targeted `get_node_property` /
+                    // `get_edge_property` lookup FIRST, unconditionally.
+                    // Fall back to the versioned resolve only on a miss
+                    // AND when an epoch/tx context is actually present —
+                    // preserves correctness for backends where historical
+                    // reads can differ from current state.
                     let has_mvcc = epoch.is_some();
-                    for row in input.selected_indices() {
+
+                    // (2026-08-07) PRÉCALCUL GROUPÉ de la première tentative.
+                    //
+                    // La boucle ci-dessous appelait `get_node_property` ligne
+                    // par ligne. Sur SubstrateStore, chaque appel commence par
+                    // un test de vivacité qui relit l'enregistrement complet du
+                    // nœud — donc une acquisition du verrou de zone — pour ne
+                    // consulter qu'un bit. `get_node_property_batch` groupe ces
+                    // tests sous un verrou unique.
+                    //
+                    // On ne groupe que le cas non ambigu : TOUTES les lignes
+                    // portent un identifiant de nœud (colonne typée, ce que
+                    // produit un scan). Dès qu'une ligne n'en a pas — colonne
+                    // Generic après jointure, où `get_node_id` et `get_edge_id`
+                    // peuvent réussir tous deux sur le même Int64 — on retombe
+                    // sur le chemin d'origine, inchangé.
+                    //
+                    // Les REPLIS ne bougent pas : une valeur absente du lot
+                    // repasse exactement par la résolution MVCC puis arête
+                    // d'origine. Seule la première tentative est mutualisée.
+                    let lignes: Vec<usize> = input.selected_indices().collect();
+                    let mut precalc: Option<Vec<Option<Value>>> = lignes
+                        .iter()
+                        .map(|&r| input_col.get_node_id(r))
+                        .collect::<Option<Vec<_>>>()
+                        .map(|ids| store.get_node_property_batch(&ids, &prop_key));
+
+                    // (2026-09-11) LE LOT EST CONSOMME, PLUS RECOPIE.
+                    //
+                    // La valeur deja materialisee par le lot etait duplique
+                    // ligne a ligne par un clone, donc une String ou un Vec
+                    // recopie par ligne et par colonne projetee, l'original
+                    // etant aussitot jete avec le lot. Chaque rang n'est
+                    // visite QU'UNE fois (enumerate sur lignes) et le lot
+                    // n'est plus relu apres cette boucle : on DEPLACE la
+                    // valeur au lieu de la copier. Option::take laisse None
+                    // derriere lui, ce que le repli ci-dessous traite deja
+                    // comme une absence — meme repli, meme semantique, une
+                    // copie de moins sur TOUTE projection de propriete.
+                    for (rang, &row) in lignes.iter().enumerate() {
                         let value = if let Some(node_id) = input_col.get_node_id(row) {
-                            let prop = if has_mvcc {
+                            let premiere = match &mut precalc {
+                                Some(vals) => vals[rang].take(),
+                                None => store.get_node_property(node_id, &prop_key),
+                            };
+                            let prop = premiere.or_else(|| {
+                                if !has_mvcc {
+                                    return None;
+                                }
                                 let node = if let (Some(ep), Some(tx)) = (epoch, tx_id) {
                                     store.get_node_versioned(node_id, ep, tx)
                                 } else if let Some(ep) = epoch {
@@ -212,13 +266,36 @@ impl Operator for ProjectOperator {
                                     None
                                 };
                                 node.and_then(|n| n.get_property(property).cloned())
-                            } else {
-                                store.get_node_property(node_id, &prop_key)
-                            };
+                            });
                             if let Some(v) = prop {
                                 v
                             } else if let Some(edge_id) = input_col.get_edge_id(row) {
-                                if has_mvcc {
+                                store
+                                    .get_edge_property(edge_id, &prop_key)
+                                    .or_else(|| {
+                                        if !has_mvcc {
+                                            return None;
+                                        }
+                                        let edge = if let (Some(ep), Some(tx)) = (epoch, tx_id) {
+                                            store.get_edge_versioned(edge_id, ep, tx)
+                                        } else if let Some(ep) = epoch {
+                                            store.get_edge_at_epoch(edge_id, ep)
+                                        } else {
+                                            None
+                                        };
+                                        edge.and_then(|e| e.get_property(property).cloned())
+                                    })
+                                    .unwrap_or(Value::Null)
+                            } else {
+                                Value::Null
+                            }
+                        } else if let Some(edge_id) = input_col.get_edge_id(row) {
+                            store
+                                .get_edge_property(edge_id, &prop_key)
+                                .or_else(|| {
+                                    if !has_mvcc {
+                                        return None;
+                                    }
                                     let edge = if let (Some(ep), Some(tx)) = (epoch, tx_id) {
                                         store.get_edge_versioned(edge_id, ep, tx)
                                     } else if let Some(ep) = epoch {
@@ -227,31 +304,8 @@ impl Operator for ProjectOperator {
                                         None
                                     };
                                     edge.and_then(|e| e.get_property(property).cloned())
-                                        .unwrap_or(Value::Null)
-                                } else {
-                                    store
-                                        .get_edge_property(edge_id, &prop_key)
-                                        .unwrap_or(Value::Null)
-                                }
-                            } else {
-                                Value::Null
-                            }
-                        } else if let Some(edge_id) = input_col.get_edge_id(row) {
-                            if has_mvcc {
-                                let edge = if let (Some(ep), Some(tx)) = (epoch, tx_id) {
-                                    store.get_edge_versioned(edge_id, ep, tx)
-                                } else if let Some(ep) = epoch {
-                                    store.get_edge_at_epoch(edge_id, ep)
-                                } else {
-                                    None
-                                };
-                                edge.and_then(|e| e.get_property(property).cloned())
-                                    .unwrap_or(Value::Null)
-                            } else {
-                                store
-                                    .get_edge_property(edge_id, &prop_key)
-                                    .unwrap_or(Value::Null)
-                            }
+                                })
+                                .unwrap_or(Value::Null)
                         } else if let Some(Value::Map(map)) = input_col.get_value(row) {
                             map.get(&prop_key).cloned().unwrap_or(Value::Null)
                         } else {
@@ -316,8 +370,21 @@ impl Operator for ProjectOperator {
                     }
 
                     for row in input.selected_indices() {
-                        let value = evaluator.eval_at(&input, row).unwrap_or(Value::Null);
-                        output_col.push_value(value);
+                        let value = evaluator.eval_at(&input, row);
+                        output_col.push_value(value.unwrap_or(Value::Null));
+                    }
+                    // Arithmétique gardée : une faute d'évaluation (division
+                    // par zéro, débordement i64) REFUSE la requête au lieu de
+                    // se déguiser en NULL projeté. Relevé PAR CHUNK, après la
+                    // boucle — pas par ligne : le verrou (non contendu) pris à
+                    // chaque ligne coûtait ~12 % sur une projection à trois
+                    // colonnes d'expressions (banc revue vague 1, 120k lignes)
+                    // en gênant l'optimisation de la boucle. Sémantique
+                    // inchangée : la PREMIÈRE faute gagne (get_or_insert) et
+                    // le chunk fautif n'est JAMAIS émis — le Err sort avant le
+                    // return du chunk.
+                    if let Some(e) = evaluator.take_eval_error() {
+                        return Err(OperatorError::Execution(e));
                     }
                 }
                 ProjectExpr::NodeResolve { column } => {
@@ -345,6 +412,14 @@ impl Operator for ProjectOperator {
                                 store.get_node(node_id)
                             };
                             node.map_or(Value::Null, |n| node_to_map(&n))
+                        } else if let Some(deja) = input_col
+                            .get_value(row)
+                            .filter(|v| matches!(v, Value::Map(_)))
+                        {
+                            // Aretes inter-bases (V2) : noeud DISTANT deja
+                            // materialise a la frontiere (Map avec _base) —
+                            // il passe tel quel, son store n'est pas ici.
+                            deja
                         } else {
                             Value::Null
                         };
@@ -376,6 +451,13 @@ impl Operator for ProjectOperator {
                                 store.get_edge(edge_id)
                             };
                             edge.map_or(Value::Null, |e| edge_to_map(&e))
+                        } else if let Some(deja) = input_col
+                            .get_value(row)
+                            .filter(|v| matches!(v, Value::Map(_)))
+                        {
+                            // Aretes inter-bases (V2) : arete distante ou
+                            // externe deja materialisee a la frontiere.
+                            deja
                         } else {
                             Value::Null
                         };

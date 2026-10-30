@@ -80,6 +80,7 @@
 
 mod accessor;
 mod distance;
+mod index_trait;
 mod mmr;
 pub mod quantization;
 mod simd;
@@ -94,11 +95,14 @@ mod hnsw;
 mod quantized_hnsw;
 
 pub use accessor::{PropertyVectorAccessor, VectorAccessor};
+// (T17b) Le contrat d'index vectoriel, remonte depuis obrain-substrate pour
+// que `graph::traits` puisse le nommer. Voir index_trait.rs.
 pub use distance::{
     DistanceMetric, compute_distance, cosine_distance, cosine_similarity, dot_product,
     euclidean_distance, euclidean_distance_squared, l2_norm, manhattan_distance, normalize,
     simd_support,
 };
+pub use index_trait::{NodeOffset, VectorIndex};
 pub use mmr::mmr_select;
 pub use quantization::{BinaryQuantizer, ProductQuantizer, QuantizationType, ScalarQuantizer};
 #[cfg(feature = "mmap")]

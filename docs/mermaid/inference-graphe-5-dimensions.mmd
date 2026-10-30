@@ -1,0 +1,77 @@
+%% INFÉRENCE SUR GRAPHE (KV-splice /jspace) dans le chat obrain — 5 dimensions, 5 agents.
+%% CONSTATÉ (lu par 5 agents) : point d'insertion exact = wt-chat-pieces-jointes/api/src/chat/mod.rs
+%% ENTRE 4335 (fin usages_outils.push) et 4337 (messages.push) ; détection par Outils::origine()
+%% (outils/mod.rs:813), JAMAIS par préfixe de chaîne ; 1 fait/appel ; repli texte obligatoire.
+%% MESURÉ (live 9910, 2026-10-02/03) : décodage 16,05 t/s (prose) / 63,37 t/s (contexte répétitif,
+%% spéculatif ngram-mod) ; fact_decode_ms=66,45 pour 16 jetons de fait ; KV attention = 16 GiB
+%% (262144 × 65536 o) ; état récurrent 149,63 MiB/seq ; RSS serveur 10,38 GiB ; MemTotal 121,69 GiB.
+%% DÉDUIT : le splice ne change PAS le débit de décodage ; le gain = prefill évité (~3-5 s par
+%% résultat graphe de 2000 jetons à 415-665 t/s). Le slot réservé est seq_rm à chaque appel →
+%% mode extract_only (K1) puis state_ref (K2), prompt COURT (jamais le fil entier).
+%% NON ÉTABLI : benchmark engine réel + injection = NOT_RUN (doc §131.5) ; spec_draft_accepted
+%% indisponible (speculative.types="none" sur 9910) → la preuve de gain repose sur prompt_tokens.
+
+flowchart TB
+
+  subgraph AGENTIC["① AGENTIC — la boucle et le point d'insertion"]
+    OBJ["OBJECTIF → PLAN → GÉNÉRATION (8 étapes, ETAPES_MAX)"]
+    CONF["APPROBATION : Lecture immédiate · Action = confirmation 300s (silence=refus)"]
+    EXEC["EXÉCUTION outil → ResultatOutil {texte, erreur}"]
+    SPLICE{"Résultat GRAPHE ?<br/>origine() → serveur ∈ déclaré<br/>+ erreur=false + refuse=false"}
+    JSP["INSERTION : POST /jspace/inject_knowledge<br/>fact_text=resultat.texte · prompt=question<br/>(mod.rs:4335↔4337) — 1 fait/appel"]
+    REINJ["REPLI TEXTE : messages.push Message::Resultat<br/>(re-prefill intégral à l'étape n+1)"]
+    OBJ --> CONF --> EXEC --> SPLICE
+    SPLICE -- "OUI (graphe__* Lecture / parc__* Action exécutée)" --> JSP
+    SPLICE -- "NON (n3__read, web, exec…)" --> REINJ
+    JSP -. "timeout / slot réservé indispo → repli" .-> REINJ
+  end
+
+  subgraph TOOLS["② TOOLS — les producteurs du résultat graphe"]
+    G["graphe__* (7 outils, Lecture, sans confirmation) :<br/>search_graph · query_graph · get_code_snippet · get_graph_schema<br/>list_projects · sessions_list · context_build"]
+    P["parc__* (13 outils, Action, confirmation) :<br/>search_code · trace_path · query_graph · get_code_snippet…"]
+    K["KEEPALIVE : OBRAIN_IDLE_MS=0 (mcp.rs) → les outils ne disparaissent plus"]
+    V["VEILLE : dossiers ré-indexés à la frontière de tour (dragon3d-work, dragon-3d…)"]
+    G --> SPLICE
+    P --> SPLICE
+    K -. "catalogue stable" .-> G
+    V -. "fraîcheur du graphe" .-> G
+  end
+
+  subgraph TTFT["③ TTFT — le prefill évité"]
+    GEO["Géométrie : STABLE devant (cache préfixe) · VOLATIL derrière (dernier msg)"]
+    PUSH["AUJOURD'HUI : résultat graphe → Message::Resultat → entre DANS le préfixe"]
+    BYP["CIBLE : K1 extract_only → K2 state_ref = BYPASS du texte, 0 re-prefill du fait"]
+    PIEGE["PIÈGE : slot réservé seq_rm à chaque appel + re-décodage → prompt COURT<br/>(jamais le fil entier, sinon TTFT pire)"]
+    GEO --> PUSH --> BYP --> PIEGE
+    BYP -. "gain = ~3-5 s par résultat graphe de 2000 jetons" .-> JSP
+  end
+
+  subgraph DEBIT["④ TOKEN/S — invariance du décodage"]
+    DEC["Décodage = poids TQ2_G128 (12,83 Go/jeton, plafond ~203 Go/s → 16 t/s)<br/>le splice n'ajoute AUCUN noyau → débit INCHANGÉ"]
+    SPEC["Spéculatif ngram-mod (--spec-default) → 63,37 t/s sur contexte répétitif"]
+    PIEGE2["PIÈGE : --spec-default n_max=64 mais MMVQ TQ2 plafonne à 49 → borner n_max≤48"]
+    DEC --> SPEC --> PIEGE2
+  end
+
+  subgraph RAM["⑤ RAM — budget (46,55 GiB de plafonds sur 121,69 GiB)"]
+    MOD["Poids TQ2 11,96 GiB · KV attention 16,00 GiB · récurrent 0,58 GiB"]
+    CRAM["--cache-ram 16 GiB (plafond dur) · LRU états jspace 2 GiB"]
+    SPLICE_RAM["Splice : N tokens × 65536 o (marginal, 1-186 MiB)<br/>MAIS état récurrent par référence = 149,63 MiB/blob (indivisible)"]
+    MOD --> SPLICE_RAM
+    CRAM --> SPLICE_RAM
+  end
+
+  %% Les arêtes qui relient les dimensions
+  JSP -->|"fusionne le fait → slot réservé"| BYP
+  JSP -->|"débit inchangé, prefill évité"| DEC
+  JSP -->|"occupe N cellules du pool KV unifié"| SPLICE_RAM
+  SPLICE -->|"détection par origine(), jamais par préfixe"| G
+
+  subgraph GARANTIE["GARANTIE mesurable (A/B apparié)"]
+    G1["1 appel jspace HTTP 200 par résultat graphe (0 sinon) ; fact_tokens>0"]
+    G2["prompt_tokens de l'étape n+1 baisse ≥30% ; texte affiché/persisté IDENTIQUE"]
+    G3["Non-régression : Done.steps, ToolConfirm, Failure identiques ; ≤ plafond étapes"]
+    G4["Repli : /jspace forcé 5xx → tour complet, aucun Message::Resultat vide"]
+    G5["RAM : RSS ≤ 12 GiB, MemAvailable ≥ 32 GiB, SwapUsed ≤ 1 GiB après 1000 splices"]
+  end
+  JSP --> GARANTIE

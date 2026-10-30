@@ -1,0 +1,117 @@
+ENGINE-008 -- STATUT TERMINAL NATIVE-IDENTITY-IMPLEMENT-01
+==========================================================================
+Trois faits decisifs etablis ; un defaut reel corrige et prouve. L'adaptateur
+complet n'a pas ete ecrit : limite de contexte. Aucun forward, aucun chargement.
+
+AGENT_TOKEN_BUDGET=UNLIMITED
+ENGINE008_PASS=NATIVE_IDENTITY_IMPLEMENT_ONLY
+
+Q1_QUALITY_LIBLLAMA_SHA_MATCH=YES
+Q1_LIBLLAMA_REBUILT=NO
+  libllama 87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+
+=== 1. ACCES NATIF : DISPONIBLE, SANS TOUCHER Q1 ===
+NATIVE_TENSOR_ACCESS_METHOD=EXPORTED_METHOD_llama_model::get_tensor_PLUS_INTERNAL_HEADERS
+NATIVE_TENSOR_ACCESS_LINK_VERIFIED=NO (le symbole est exporte ; le LINKAGE n a
+  pas encore ete exerce par une compilation reelle de l adaptateur)
+  nm -D --defined-only --demangle libllama.so.0.0.135 :
+    T llama_model::get_tensor(char const*) const
+    T llama_internal_get_tensor_map(llama_model const*)
+  Le premier est bien EXPORTE : la voie (ii) est OUVERTE, sans modification de
+  Q1. La resolution de la question R2 de la passe precedente est done.
+  ACCES SECONDAIRE, potentiellement meilleur : llama_internal_get_tensor_map
+  retourne la TABLE des tensors du modele -- acces d ENUMERATION direct, a
+  examiner en priorite sur get_tensor (qui exige une cle exacte).
+  Prochaine etape : compiler l adaptateur contre src/llama-model.h et lier
+  -lllama ; le symbole etant exporte, le compilateur genere la reference
+  mangee correcte. AUCUNE signature mangee n a ete devinee.
+
+=== 2. COUVERTURE src[] : UN DEFAUT REEL, CORRIGE ET PROUVE ===
+GGML_SRC_CAPACITY=10
+  Source : ggml/include/ggml.h:224  --  #define GGML_MAX_SRC 10
+  L enumerateur exportait src[0..3]. IL ETAIT TRONQUE. Six slots sur dix
+  etaient ignores, et une dependance tombant au-dela de src[3] aurait ete
+  silencieusement perdue -- exactement ce que §7 interdit.
+CORRIGE : boucle sur la capacite exacte declaree, src[0..9]. AUCUNE compaction :
+  le slot k reste le slot k ; les slots vides gardent -9 ; -1 = feuille, -2 =
+  calcule mais absent.
+ENUMERATION_SCHEMA_VERSION=ENGINE008_GRAPH_ENUM_v1_1
+  Le CSV passe de 27 a 33 colonnes (src0_index..src9_index).
+GGML_SRC_SLOT_COVERAGE_VERIFIED=YES
+  Teste : un operande place au slot 4 est EXPORTE (operand_in_slot_gt_3_is_exported)
+  et ne produit AUCUNE reference non resolue (export_not_truncated_at_slot_3).
+GRAPH_ENUMERATOR_SELFTEST=PASS
+  27 controles, 0 echec (4 nouveaux sur la capacite src[]).
+
+=== 3. SHARED_HEAD_HEAD : LA v1 AVAIT TORT DE CONCLURE ===
+SHARED_HEAD_HEAD_EXCLUSIVITY_STATUS=EXCLUSIVITY_UNESTABLISHED
+  La v1 declarait ce poids NON EXCLUSIF en se fondant sur son NOM (SHARED_HEAD).
+  Le nom ne suffit pas -- c est le reproche exact fait a l ancien classificateur,
+  et je l avais reproduit dans le contrat de roles.
+  Recherche de preuve de partage dans les sources Q1 : INFRUCTUEUSE.
+    grep shared_head_head src/llama-model.cpp : seuls ses compagnons de
+    quantification apparaissent (:1479-1480, :1544-1545). AUCUN alias vers
+    LLM_TENSOR_OUTPUT, AUCUNE liaison a output.weight, AUCUN chargement partage.
+  CORRECTION : exclusivite NON ETABLIE -- ni prouvee, ni refutee. Le poids reste
+  HORS DES TEMOINS POSITIFS par prudence, mais il n est plus declare partage
+  sans preuve.
+NEXTN_TENSOR_ROLE_CONTRACT_SHA256=voir ENGINE008_NEXTN_TENSOR_ROLE_CONTRACT_v1_1.json
+  La v1 (57e13bd988f9b1c164389465c826f29d69fe35f9c25f181ed6988580298b4e74) est
+  CONSERVEE INTACTE. La justification ayant change, une version v1_1 est emise ;
+  l identite d un document modifie n est pas reutilisee.
+
+=== CE QUI N A PAS ETE FAIT ===
+NEXTN_NATIVE_IDENTITY_ADAPTER_IMPLEMENTED=NO
+NEXTN_IDENTITY_ADAPTER_MOCK_SELFTEST=NOT_RUN
+  L adaptateur, la construction du registre, la resolution des operandes et des
+  alias, et les tests sur registre MOCKE restent a ecrire. La difficulte R2 est
+  levee (l acces existe) : le travail restant est de l implementation, pas de
+  la recherche d acces.
+
+GRAPH_ENUMERATOR_SOURCE_SHA256=e5f14fe294d50eb192e386dd4bee2df668e069be592b3b7f9196cf5e4bff6707
+GRAPH_ENUMERATOR_BINARY_SHA256=9579aca018eba09bdd5a0594b59853c871f37949d13a7adf432185e713d667f7
+  NOUVELLE identite (etat anterieur : 79a192e3... / 56b0516e...), conserve.
+
+NATIVE_MODEL_IDENTITY_ACQUISITION=NOT_EXERCISED
+NEXTN_NEGATIVE_WITNESS_EXHAUSTIVENESS_JUSTIFIED=NO
+FULL_MODEL_LOAD_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+SYNTHETIC_GRAPH_NUMERIC_EVALUATION_COUNT=0
+NEW_FREEZE_CREATED=NO
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+PASS_STATUS=INCOMPLETE_CONTEXT_LIMIT
+  Ni blocage d acces : l acces natif EST disponible et verifie.
+  Ni achevement : l adaptateur reste a ecrire.
+
+REMAINING_WORK=
+  W1_ecrire l adaptateur d identite : compiler contre
+     src/llama-model.h, lier -lllama, utiliser llama_model::get_tensor ou
+     llama_internal_get_tensor_map. L acquisition reelle reste derriere la
+     garde runtime ; AUCUN chargement complet dans la passe d implementation.
+  W2_resoudre les CLES EXACTES reellement demandees au modele (construction du
+     nom, suffixes, indices de couche, optionalite), pas un motif ni un prefixe.
+  W3_implementer le registre distinguant : identite etablie / role absent /
+     resolution ambigue / role partage / exclusivite non etablie.
+  W4_resoudre les operandes et la regle d ALIAS verifiable. Le nom d affichage
+     du noeud ne remplace JAMAIS l identite acquise. Alias non resolus =
+     explicitement INCONNUS.
+  W5_tester sur registre MOCKE (tensors ggml synthetiques non evalues) :
+     resolution exacte ; role absent ; cle ressemblante mais incorrecte ; nom
+     d affichage trompeur ; meme identite sans dependance au nom ; role partage ;
+     exclusivite non etablie ; incoherence de metadonnees ; slot > 3 ; dernier
+     slot ; dependance partagee et slot nul.
+  W6_reprendre les travaux hors perimetre : R2 closure renderer, chemin nominal
+     d autorisation, v1.1 du protocole, gel preflight.
+
+ENGINE008_NEXT_STEP=W1 (ecrire l adaptateur contre les headers internes Q1 et
+  lier -lllama), en commencant par llama_internal_get_tensor_map
+
+--- INVARIANTS PRESERVES ---
+Aucun llama_decode, aucun llama_encode, aucun prefill, aucun forward pass,
+AUCUN CHARGEMENT COMPLET DE MODELE, aucun logit, aucune generation, aucun
+scoring, aucune NLL/PPL, aucune evaluation numerique de graphe.
+Aucune modification de libllama Q1, des modeles, corpus, scorers, seuils,
+renderer, template, gel v1, ni de la v1 du contrat de roles (conservee intacte).
+Aucun nouveau gel cree.

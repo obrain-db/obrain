@@ -1,0 +1,118 @@
+SPHERE: n3life
+RESUME: N3septies a prouve que la contradiction de contenu est structuree et non accidentelle avec 25 activations nulles sur 168 en epoque 0 et 0 sur 168 en epoque 1, toutes concentrees sur attn_output 12 sur 12 et attn_gate 13 sur 36, mais a laisse la cause racine NOT_PROVEN et le gate de causalite bloque.
+RESUME: N3octies a refute H1 par la mesure car les 25 sorties natives sont non nulles, a laisse H2 suspecte sans preuve, et a corrige d avance la regle de validite fondee sur amax superieur a 0 en la declarant NON_SUFFISANTE.
+RESUME: N3nonies a prouve le mecanisme causal par la source avec ggml-alloc.c:690 ou seul GGML_TENSOR_FLAG_OUTPUT protege un tenseur de la liberation, puis a applique le patch ggml_set_output sur les deux tenseurs de capture et mesure le resultat.
+RESUME: Le resultat depasse les 25 cas visibles car les 336 captures des deux epoques etaient corrompues, les 168 activations d epoque 0 sont toutes differentes apres correctif, les 143 qui semblaient saines etaient ecrasees elles aussi et le defaut 56 passe a RESOLVED_VERIFIED.
+RESUME: L epoque 1 est declaree aussi a risque par le meme mecanisme, toute la reconstruction numerique anterieure N1bis N3quater N3quinquies est declaree mesuree sur des activations corrompues, et la validation de reference native reste FAIL avec un ecart de 13 a 160 pourcent.
+RESUME: Restent ouverts l identification de l ecrivain et du couple region ecrivain, les regions memoire, le test de preservation ciblee, le gate d indexation independante, l appariement temporel partiel, Q0 non franchi et Q1 non autorise.
+NOEUDS:
+[PROUVE] n3life_allocator_rule :: La seule protection contre la liberation est le drapeau GGML_TENSOR_FLAG_OUTPUT tout autre tenseur est libere des sa derniere consommation :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_fork_names_consequence :: Le fork documente lui-meme qu un tenseur copie sans le drapeau de sortie est ecrase par ggml-alloc lignes 1342 et 1361 :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_capture_dup_not_marked :: Les tenseurs de capture cur_capture et mm_capture sont crees par ggml_dup sans ggml_set_output donc leur region est liberee immediatement apres le matmul :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_window_3968_nodes :: Entre la libration de la region de cur_capture et l extraction 3968 autres noeuds s executent et peuvent y ecrire :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_h1_refuted :: L hypothese H1 activation nulle a la consommation est refutee par les 25 sorties natives non nulles :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[PROUVE] n3life_h2_mechanism_proven :: L hypothese H2 region de stockage reutilisee avant l extraction est prouvee par la regle de l allocateur qui est inconditionnelle :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_h4_consequence :: L hypothese H4 extraction lisant une region qui n est plus le tenseur est etablie comme consequence de H2 :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[REFUTE] n3life_h2_surviving_not_proven_retro :: L etat H2 survivante sans preuve de N3octies est depasse le mecanisme est ensuite prouve :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[RETIRE] n3life_retract_h2_suspected :: L affirmation BUFFER_REUSE_CAUSALITY SUSPECTED_NOT_PROVEN et FIRST_DIVERGENCE_CAUSAL_ROOT NOT_PROVEN est retiree par N3nonies :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[RETIRE] n3life_retract_amax_rule :: La regle de validite fondee sur amax superieur a 0 tenue par N3octies est explicitement declaree NON_SUFFISANTE puis contredite par la mesure :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[PROUVE] n3life_root_cause_named :: La cause racine de la premiere divergence est nommee CAPTURE_STORAGE_FREED_AFTER_LAST_CONSUMER et declaree prouvee :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PARTIEL] n3life_causality_writer_pending :: La causalite de reutilisation de buffer est prouvee au niveau mecanisme et effet mais l ecrivain n est pas identifie :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_epoch0_inventory :: L epoque 0 compte 25 activations toutes nulles sur 168 cibles et l epoque 1 en compte 0 sur 168 :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[PROUVE] n3life_zero_roles_structured :: La nullite est concentree sur deux roles attn_output 12 sur 12 et attn_gate 13 sur 36 avec ffn_up ffn_gate attn_q attn_k a zero :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[PROUVE] n3life_epoch1_positive_control :: L epoque 1 est un controle positif avec aucune activation nulle et aucune contradiction :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[REFUTE] n3life_epoch0_accident_hypothesis :: L hypothese d un accident limite a une seule cible est refutee par l inventaire complet sur 25 cibles et deux roles :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[REFUTE] n3life_epoch0_preparatory_pass :: La piste d une epoque 0 passe preparatoire est affaiblie car 143 de ses 168 activations sont saines :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[OUVERT] n3life_attn_gate_pattern :: Le motif des 13 attn_gate n est pas explique blk.12 et blk.14 ne suivent pas le pas de 4 des blocs d attention complete :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[PROUVE] n3life_amax_1104527_signature :: Trois tenseurs sans rapport rapportent exactement 11.04527 en activation valeur de l amax de la sortie de blk.15.attn_output :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[REFUTE] n3life_prefix_equality_not_proof :: L indice de 131 activations egales au prefixe d un autre tenseur est refuse comme preuve car il ne discrimine pas les deux epoques :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[PROUVE] n3life_all_336_corrupted :: Les 336 captures d activation des deux epoques etaient toutes corrompues et pas seulement les 25 visibles :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_143_healthy_were_overwritten :: En epoque 0 les 168 activations sont differentes apres correctif donc les 143 qui semblaient saines etaient ecrasees elles aussi :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_contradictions_25_to_0 :: Le compteur de contradictions activation nulle et sortie non nulle passe de 25 a 0 apres le correctif :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_fix_bitwise_transparency :: Sur le nouveau binaire les logits capture OFF et ON sont identiques octet a octet avec un compteur de desaccord de 0 :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_fix_mechanism_not_noise :: Les differences observees ne sont pas une variabilite d execution puisque le calcul est deterministe et reproductible au bit pres :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_epoch1_also_at_risk :: Le mecanisme est identique aux deux epoques avec le meme graphe de 3991 noeuds donc les 168 captures d epoque 1 sont aussi a risque :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_epoch1_healthy_unexplained :: Le rapport declare ne pas expliquer pourquoi l epoque 1 semble saine et n invente pas d explication :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_prior_reconstructions_voided :: Toutes les reconstructions numeriques anterieures N1bis N3quater N3quinquies ont ete calculees sur des activations corrompues :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_structural_conclusions_survive :: Les conclusions structurelles restent valides lecteur GGUF corrige encodeur decodeur ternaire et quatre couches d adressage eliminees :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_capture_graft_transparent :: La greffe de capture est numeriquement transparente sur l ancien binaire et le chemin capture desactive est inerte :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_allocation_plan_changed :: Le correctif change le plan d allocation donc la transparence bitwise doit etre refaite et n est pas heritee :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[REFUTE] n3life_native_reference_budget_fail :: Le budget preenregistre RELATIVE_L2 inferieur ou egal a 1e-3 n est pas atteint la validation de reference native est FAIL :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_residual_gap_unlocated :: L ecart systematique residuel de 13 a 160 pourcent n est plus attribuable a la capture et n est pas localise quatre candidats non departages :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[RETIRE] n3life_q8_1_reference_fp16_bankers :: La reference q8_1 qui utilisait une echelle fp16 inversee et un arrondi bancaire est remplacee par la semantique roundf sur d fp32 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] n3life_e6_no_longer_zero :: La reconstruction sur captures non corrompues donne a E6 une reference non nulle contre une reference nulle auparavant :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PARTIEL] n3life_e6_gap_factor_1_to_2 :: L ecart de reconstruction passe de plusieurs ordres de grandeur aberrants a un facteur 1 a 2 sans atteindre le budget :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_buffer_regions_not_identified :: Les regions memoire reelles des tenseurs de capture ne sont pas identifiees et le compteur de chevauchement est non mesure :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_writers_not_identified :: Les ecrivains chevauchants ne sont pas identifies et le couple region ecrivain n est pas etabli :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_targeted_preservation_test :: L experience de preservation ciblee n a pas ete menee et le contenu preserve n est pas mesure :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[OUVERT] n3life_intervals_i2_i3 :: La duree de vie du contenu n est pas etablie a travers I2 et I3 le premier intervalle non prouve est a partir de la derniere consommation :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_n3octies_steps_not_done :: Cinq etapes de N3octies declarees NON EXECUTEES chemins de construction regle de l allocateur regions chronologie portee :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+[OUVERT] n3life_n3septies_steps_not_done :: Quatre etapes de N3septies declarees NON EXECUTEES relations MUL_MAT chronologie des buffers instrumentation post-calcul controle epoque 1 :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[OUVERT] n3life_n3nonies_deliverables_absent :: Les 18 fichiers de mesure annonces par N3nonies ne sont pas crees seuls N3NONIES_STATUS et les artefacts de capture existent :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PARTIEL] n3life_n3nonies_document_numbering :: Le document N3nonies numerote deux fois les sections 10 et 11 les deux ledgers coexistent dans le meme fichier :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_defect_56_status :: Le defaut 56 est passe de OPEN par suspicion a RESOLVED_VERIFIED apres correctif et verification ciblee :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[OUVERT] n3life_defect_56_first_ledger :: Le premier ledger de N3nonies declare encore le defaut 56 OPEN avec correctif non applique alors que la section 9 l a applique et mesure :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_defect_57_status :: Le defaut 57 reference q8_1 en echelle fp16 inversee et arrondi bancaire est RESOLVED_VERIFIED par accord avec la sortie native :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[RETIRE] n3life_defect_51 :: Le defaut 51 est RETRACTED_AFTER_MEASUREMENT et reste au statut retire dans les trois ledgers :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_defect_50 :: Le defaut 50 est resolu et verifie par discrimination marche arret :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[PARTIEL] n3life_defects_46_to_55 :: Les defauts 46 a 49 et 55 sont declares resolus et les defauts 52 53 54 verifies par regression sur deux epoques comparaison multitenseur et tests a 128 valeurs :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[OUVERT] n3life_plumbing_28_29 :: Le compteur de defauts de plomberie reste a 28 et le defaut 29 n est pas attribue :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[OUVERT] n3life_independent_indexing_gate :: Le test d indexation independante des sorties par ligne est NOT_EXECUTED dans les trois rapports et dans N4 :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PARTIEL] n3life_temporal_pairing_partial :: L appariement temporel des echantillons de reference reste PARTIAL :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[OUVERT] n3life_q0_not_passed :: Q0_STATUS reste NOT_PASSED et Q1_ALLOWED reste NO dans les trois rapports et dans N4 :: ENGINE-007B-F1A-Q0-N3NONIES-BUFFER-ALIASING-AND-CAPTURE-LIFETIME.md
+[PROUVE] n3life_reference_validated_n4 :: Sur le perimetre mesure la reference native corrigee passe sur 3 tenseurs toutes lignes en epoque 0 avec un rel_l2 de 1.42314e-07 :: ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] n3life_no_filtrering_of_epoch0 :: Aucune cible soumise n a ete ecartee silencieusement pour obtenir une reconstruction plus favorable :: ENGINE-007B-F1A-Q0-N3SEPTIES-CAPTURE-CONTENT-CAUSALITY.md
+[OUVERT] n3life_epoch0_bufferless_hint :: L epoque 0 contenait les 1176 cibles bufferless donc l allocation y est la plus tardive ce qui renforce H2 sans la prouver :: ENGINE-007B-F1A-Q0-N3OCTIES-CAPTURE-CONTENT-LIFETIME.md
+LIENS:
+n3life_allocator_rule -> n3life_h2_mechanism_proven [DEMONTRE] la regle inconditionnelle de l allocateur rend H2 certaine et non probable
+n3life_fork_names_consequence -> n3life_allocator_rule [DEMONTRE] le commentaire du planificateur confirme l ecrasement par ggml-alloc sans le drapeau
+n3life_capture_dup_not_marked -> n3life_window_3968_nodes [DEMONTRE] la liberation immediate apres le matmul ouvre la fenetre de 3968 noeuds
+n3life_h2_mechanism_proven -> n3life_h4_consequence [DEMONTRE] l extraction lit une region qui n est plus le tenseur
+n3life_h1_refuted -> n3life_h2_mechanism_proven [OUVRE] la refutation de H1 laisse H2 seule survivante a tester
+n3life_h2_surviving_not_proven_retro -> n3life_h2_mechanism_proven [REMPLACE] l etat survivante sans preuve est remplace par la preuve du mecanisme
+n3life_retract_h2_suspected -> n3life_root_cause_named [REMPLACE] la causalite suspectee devient une cause racine nommee et declaree prouvee
+n3life_h2_mechanism_proven -> n3life_causality_writer_pending [OUVRE] le mecanisme et l effet sont prouves mais l ecrivain reste non identifie
+n3life_allocator_rule -> n3life_causality_writer_pending [DEPEND] le statut de causalite exige la designation du couple region et ecrivain
+n3life_epoch0_inventory -> n3life_zero_roles_structured [DEMONTRE] l inventaire complet etablit la concentration de la nullite sur deux roles
+n3life_epoch0_inventory -> n3life_epoch1_positive_control [DEMONTRE] la meme campagne d inventaire etablit l epoque 1 comme controle positif
+n3life_epoch0_inventory -> n3life_epoch0_accident_hypothesis [RETIRE] l inventaire sur 25 cibles retire l hypothese de l accident d une seule cible
+n3life_epoch0_inventory -> n3life_epoch0_preparatory_pass [RETIRE] les 143 activations saines affaiblissent la piste de la passe preparatoire
+n3life_amax_1104527_signature -> n3life_h2_mechanism_proven [DEMONTRE] la signature de region partagee est l indice mesure qui oriente vers la reutilisation
+n3life_prefix_equality_not_proof -> n3life_h2_mechanism_proven [DEPEND] cet indice est refuse comme preuve de chevauchement la demonstration vient de la source
+n3life_all_336_corrupted -> n3life_143_healthy_were_overwritten [DEMONTRE] les 168 valeurs differentes en epoque 0 impliquent que les 143 saines etaient ecrasees
+n3life_143_healthy_were_overwritten -> n3life_retract_amax_rule [RETIRE] la mesure refute definitivement la validite fondee sur amax superieur a 0
+n3life_contradictions_25_to_0 -> n3life_all_336_corrupted [DEMONTRE] la disparition des 25 contradictions accompagne la corruption generale revelee
+n3life_fix_bitwise_transparency -> n3life_fix_mechanism_not_noise [DEMONTRE] l identite bitwise des logits OFF et ON exclut la variabilite d execution
+n3life_fix_mechanism_not_noise -> n3life_all_336_corrupted [DEMONTRE] les differences viennent du correctif et non du bruit donc les captures etaient corrompues
+n3life_fix_bitwise_transparency -> n3life_epoch1_also_at_risk [OUVRE] la meme regle s applique a l epoque 1 donc ses captures ne sont pas fideles par nature
+n3life_epoch1_also_at_risk -> n3life_all_336_corrupted [DEMONTRE] la portee du defaut s etend aux 168 captures de l epoque 1
+n3life_epoch1_also_at_risk -> n3life_epoch1_healthy_unexplained [OUVRE] l innocence apparente de l epoque 1 reste non expliquee
+n3life_all_336_corrupted -> n3life_prior_reconstructions_voided [RETIRE] les reconstructions N1bis N3quater N3quinquies mesuraient la capture et non le modele
+n3life_prior_reconstructions_voided -> n3life_structural_conclusions_survive [DEPEND] seules les conclusions structurelles echappent a l invalidation
+n3life_native_reference_budget_fail -> n3life_residual_gap_unlocated [OUVRE] l echec du budget laisse un ecart systematique non localise
+n3life_capture_graft_transparent -> n3life_native_reference_budget_fail [DEMONTRE] la capture etant verifiee l ecart residuel n est plus attribuable a elle
+n3life_residual_gap_unlocated -> n3life_q8_1_reference_fp16_bankers [OUVRE] la semantique q8_1 est l un des quatre candidats non departages
+n3life_q8_1_reference_fp16_bankers -> n3life_e6_no_longer_zero [REMPLACE] la semantique q8_1 corrigee remplace l ancienne dans la reconstruction corrigee
+n3life_e6_no_longer_zero -> n3life_e6_gap_factor_1_to_2 [DEMONTRE] la reference non nulle ramene l ecart a un facteur 1 a 2
+n3life_e6_gap_factor_1_to_2 -> n3life_native_reference_budget_fail [OUVRE] l ecart reduit ne franchit pas le budget preenregistre
+n3life_allocation_plan_changed -> n3life_capture_graft_transparent [OUVRE] la transparence doit etre remesuree sur le nouveau binaire et n est pas heritee
+n3life_buffer_regions_not_identified -> n3life_causality_writer_pending [OUVRE] sans region identifiee le couple region ecrivain reste hors de portee
+n3life_writers_not_identified -> n3life_causality_writer_pending [OUVRE] l ecrivain non identifie plafonne le statut de causalite
+n3life_n3octies_steps_not_done -> n3life_buffer_regions_not_identified [DEMONTRE] les regions ne sont pas identifiees parce que l etape correspondante n a pas ete executee
+n3life_n3nonies_deliverables_absent -> n3life_n3octies_steps_not_done [DEMONTRE] l absence des fichiers de mesure correspond aux etapes declarees non executees
+n3life_targeted_preservation_test -> n3life_intervals_i2_i3 [OUVRE] sans test de preservation les intervalles I2 et I3 restent non etablis
+n3life_intervals_i2_i3 -> n3life_q0_not_passed [OUVRE] la duree de vie non garantie interdit la promotion de Q0
+n3life_defect_56_status -> n3life_all_336_corrupted [DEMONTRE] la fermeture du defaut 56 s appuie sur la comparaison des 336 captures
+n3life_defect_56_first_ledger -> n3life_defect_56_status [RETIRE] le statut OPEN et correctif non applique est retire par la section 9 du meme rapport
+n3life_defect_57_status -> n3life_q8_1_reference_fp16_bankers [DEMONTRE] l accord avec la sortie native ferme le defaut de reference q8_1
+n3life_defect_57_status -> n3life_residual_gap_unlocated [DEPEND] la semantique corrigee deplace l ecart residuel vers d autres candidats non departages
+n3life_defect_51 -> n3life_defects_46_to_55 [DEPEND] le defaut 51 est le seul du lot 46 a 55 a rester au statut retire
+n3life_defects_46_to_55 -> n3life_defect_56_status [DEMONTRE] le lot precedent est clos avant l ouverture puis la fermeture du defaut 56
+n3life_plumbing_28_29 -> n3life_q0_not_passed [OUVRE] le defaut de plomberie 29 non attribue reste ouvert
+n3life_independent_indexing_gate -> n3life_q0_not_passed [OUVRE] le gate d indexation independante non execute interdit la promotion de Q0
+n3life_temporal_pairing_partial -> n3life_q0_not_passed [OUVRE] la couverture temporelle partielle interdit la promotion de Q0
+n3life_n3nonies_document_numbering -> n3life_defect_56_first_ledger [DEMONTRE] la double numerotation des sections explique la coexistence des deux ledgers
+n3life_epoch0_bufferless_hint -> n3life_h2_mechanism_proven [DEPEND] l allocation tardive de l epoque 0 renforce H2 sans la prouver
+n3life_no_filtrering_of_epoch0 -> n3life_epoch0_inventory [DEMONTRE] l inventaire complet est obtenu sans ecarter aucune cible soumise
+n3life_reference_validated_n4 -> n3life_residual_gap_unlocated [REMPLACE] la divergence residuelle est localisee dans la quantification q8_1 et non ailleurs sur le perimetre mesure
+n3life_reference_validated_n4 -> n3life_capture_graft_transparent [DEPEND] la validation N4 repose sur les captures corrigees par N3nonies

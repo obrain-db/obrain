@@ -1,0 +1,98 @@
+ENGINE-008 -- STATUT FINAL : P4' ADOPTEE, PROTOCOLE GELE
+==========================================================================
+Adoption materialisee, gates raccordees, 314 controles verts, manifeste de gel
+emis. Aucun calcul reel, aucune autorisation creee.
+
+=== DECISION SCIENTIFIQUE : ADOPTEE ===
+P4_AMENDMENT_STATUS=ADOPTED
+P4_PROPERTY=STRUCTURAL_WHT_PATH_UNREACHABILITY
+  Ancienne propriete : « absence de rotation OBSERVEE sur la baseline, avec
+  couverture non nulle » -- NON EVALUABLE (Q4_K_M : aucune cible eligible au
+  collecteur TQ2, et le type de poids ne depend pas du nombre de devices).
+  Nouvelle propriete : « inatteignabilite du chemin WHT dans la CONSTRUCTION DU
+  GRAPHE baseline, sous les six conditions C1-C6 verifiees ».
+  CHANGEMENT DE NATURE ACCEPTE EXPLICITEMENT : preuve structurelle conditionnelle,
+  sans revendication d'absence directement observee pendant l'execution.
+  Document : ENGINE008_P4PRIME_ADOPTION.md
+  sha256 5da671af3dfc97db3fb3869325c835cc12ad939dbee241a54a5a63f5f8536f53
+P4_REAL_MODEL_CONDITIONS=NOT_EXERCISED
+  L'adoption fixe la REGLE ; elle ne constitue PAS un PASS des conditions sur un
+  modele reel. C1, C2, C3 et C5 rendent UNKNOWN en pratique et BLOQUENT la gate --
+  comportement correct, a exercer lors du preflight autorise.
+D1_RETAINED=YES      D2_ADOPTED=NO
+
+=== GATES RACCORDEES (code modifie, nouvelles identites) ===
+  `p4_gate = OPEN` si et seulement si les SIX conditions sont PASS.
+  TOUT FAIL OU UNKNOWN -> `BLOCKED`, limite `P4PRIME_GATE_BLOCKED` publiee,
+  sequence arretee. C6 ne peut JAMAIS transformer un FAIL ou un UNKNOWN en PASS.
+  Le rapport porte : `p4_adopted`, `p4_gate`, `p4_property`,
+  `p4_real_model_conditions`, et l'objet `ENGINE008_P4PRIME_CHECKS_v1` avec par
+  condition `verdict`, `proof`, `scope`, `reason`.
+  LIMITE STRUCTURELLE PUBLIEE : `GRAPH_OPS_NOT_RUNTIME_EXPERT_SELECTION` --
+  compter les OPERATIONS PRESENTES DANS LE GRAPHE n'est PAS compter les EXPERTS
+  EFFECTIVEMENT SELECTIONNES AU RUNTIME. La fixture T4 n'est PAS generalisee.
+
+=== VALIDATION (rebuild propre, aucun PASS herite) ===
+  t-adopt  15/15   tests d'adoption et de gate : six conditions PASS -> OPEN ;
+                   condition FAIL -> BLOCKED ; condition UNKNOWN -> BLOCKED et
+                   JAMAIS PASS ; C2 (type deduit du nom) -> BLOCKED ; limite
+                   graphe/experts publiee.
+  t-t4     14/14   t-inv 33/33   t-p4 26/26   t-wht 54/54
+  t-e2e    24/24   t-connect 75/75   t-whtpipe 8/8   t-parser 42/42
+  t-launcher 23/23
+  TOTAL 314 controles, 0 echec.
+  Garde reelle : aucun document -> exit 3 ; document MOCK -> exit 3
+  (REFUSED_MALFORMED_DOCUMENT), compteurs de calcul tous a 0.
+
+=== IDENTITES FINALES, VERIFIEES SUR LES ARTEFACTS ===
+  REAL_HARNESS_BINARY_SHA256=14ef0c1ab848a8a724ebee85d59733a00affbd05826cf2f1513b4ae1f9ecb791
+  LAUNCHER_SHA256=43e7c2c5aa8d895a5b415684dc76cf74adeaf686d90d8491e71401b9f4726717
+  HARNESS_SOURCE_MANIFEST_SHA256=c718c0a26d6914ac6d46d81baaf36301dc033b86fd59be55b1d81132ddb05fc4
+  PREFLIGHT_PROTOCOL_SHA256=1dc2c3c36329550d29b1abf1ec448f0c82ef6f2d7ab81994deed9320f9d8b7ae
+  PREFLIGHT_PLAN_SHA256=b1821f335d93464106d8cc7d13d5f167edd1e95d7e1af9cc15a8f747b56ade06
+  PREFLIGHT_FREEZE_MANIFEST_SHA256=3c614f5d4b8bded8ceef5a482d444c4283ed3c667eb65e9765f54f8728c60bfc
+  INVENTORY_SHA256=e4c96b6e9b86be307fd90a0e3e51c2c42b55d091286aac13a5a7b8e94c9398c1
+  Les identites de depart (12d3d96b..., 95c1cd6c..., b4c5bca8...) ont ETE
+  VERIFIEES sur les artefacts de la passe precedente, puis remplacees par de
+  NOUVELLES identites parce que le code a change (gate P4' + limite). Les
+  anciennes sont CONSERVEES comme etats historiques.
+
+PREFLIGHT_PROTOCOL_FROZEN=YES
+ENGINE008_READY_FOR_PREFLIGHT_AUTHORIZATION=YES
+  Le dossier est GELE et pret. L'autorisation reste un document EXTERNE, separe,
+  NON CREE. Ce statut ne vaut pas autorisation.
+
+=== GEL : SANS CIRCULARITE ===
+  Le manifeste contient l'identite du binaire ; le binaire ne contient PAS
+  l'identite du manifeste. Le document d'autorisation, externe, referencera des
+  identites deja calculees. Aucun hash d'un document contenant celui du binaire
+  n'entre dans le binaire.
+  Le manifeste couvre : sources et executables finaux ; bibliotheques resolues
+  (ldd verifie) ; modeles ; renderer qualifie et template commun ; inventaire
+  (avec concordance d'autorite) ; entree preflight mesuree ; protocole v3,
+  decision d'adoption et plan ; contrats de preuve ; resultats des tests.
+  Checkpoint verifie par recalcul.
+
+REMAINING_BLOCKERS=NONE
+  T1 a T5 fermes, P4' adoptee, gates en coherence, manifeste emis. Aucun obstacle
+  technique ni scientifique ne subsiste. Les confirmations runtime (conditions
+  P4' sur modele reel, nombre d'extractions par fenetre, synchronisation des
+  logits, gtype) sont des CRITERES DES RUNS, pas des prerequis -- et
+  RUNTIME_OBSERVER_VALIDATION reste NOT_EXERCISED.
+
+Q1_LIBLLAMA_REBUILT=NO
+FULL_MODEL_LOAD_COUNT=0
+REAL_CONTEXT_CREATE_COUNT=0
+MODEL_FORWARD_CALL_COUNT=0
+RUNTIME_OBSERVER_VALIDATION=NOT_EXERCISED
+PREFLIGHT_EXECUTION_ALLOWED=NO
+QUALITY_EXECUTION_ALLOWED=NO
+AUCUN DOCUMENT D'AUTORISATION DE CALCUL REEL N'A ETE CREE.
+
+PASS_STATUS=COMPLETE_TECHNICAL_PREPARATION
+
+--- INVARIANTS PRESERVES ---
+Aucun chargement complet de modele, aucun contexte de calcul, aucun forward,
+aucun run. Aucun changement de Q1, du backend, des CUDA graphs, du batching, de
+la topologie ou des regles de preuve. Protocoles v1 et v2 CONSERVES INTACTS.
+Aucune donnee fabriquee, aucun UNKNOWN transforme en PASS.

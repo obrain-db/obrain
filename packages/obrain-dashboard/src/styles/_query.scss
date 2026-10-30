@@ -1,0 +1,13 @@
+@use "tokens" as t;
+// Éditeur de requête intégré à l'inspecteur + exemples.
+.q-samples { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.q-editor { width: 100%; background: t.$inset; color: t.$text; border: 1px solid t.$line;
+  border-radius: t.$r-md; padding: 8px 10px; font-family: t.$font-mono, monospace; font-size: t.$fs-sm;
+  line-height: 1.5; resize: vertical; min-height: 56px; }
+.q-editor:focus { outline: none; border-color: t.$accent-hi; box-shadow: t.$halo; }
+.q-bar { display: flex; align-items: flex-end; gap: 10px; margin: 8px 0 2px; }
+.q-lang { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: t.$text-3;
+  text-transform: uppercase; letter-spacing: .06em; }
+.q-lang select { background: t.$inset; color: t.$text; border: 1px solid t.$line;
+  border-radius: t.$r-sm; padding: 6px 8px; font-size: t.$fs-sm; }
+.q-bar .btn-primary { width: auto; margin-left: auto; }

@@ -1,0 +1,271 @@
+SPHERE: engine006
+RESUME: La sphere ENGINE-006 a decompose causalement le chemin tq2_g128 du noyau MMVQ et designe le noyau comme axe primaire - 99 pourcent de la sensibilite murale, quantification non detectable - avec un scope cible propre apres correction d un compteur fautif. La forensique statique puis sept passes ont etabli les ressources du noyau exact - 42 registres, 0 spill, 0 gaspillage de queue, occupation theorique 100 pourcent - et mesure un plancher empirique ou le streaming des poids ne coute que 8,28 us contre 79,94 us pour le noyau complet, ratio 9,65. La sphere a REFUTE ou REJETE sept axes d optimisation et deux hypotheses fortes - volume de poids non dominant, aucune sensibilite memoire du noyau complet, 62 pourcent d instructions de decodage sans effet produit, V1 rejetee au produit, vectorisation des poids interdite par l alignement 2 octets, zero redondance inter-warp de l activation, gain ILP DP4A nul, geometrie sans effet, et la specialisation exacte a -7,7 pourcent d instructions pour seulement -0,77 pourcent de mur. Elle a RETIRE deux conclusions : le compteur de scope non-cible et la portee du microbench comme cause du rejet de V1. Restent OUVERTS la classification materielle du noyau - MEMORY_BOUND et COMPUTE_BOUND jamais prouves -, la fidelite bit a bit de bout en bout, la parite de performance des builds reconstruites, la campagne produit jamais lancee, et 28 defauts de harnais numerotes.
+NOEUDS:
+[PROUVE] e006_scope_gate :: gate de scope cible franchi apres correction du compteur non-cible :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_compteur_scope_artefact :: compteur non-cible incremente deux fois par appel et confondant natif et extra :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_non_target_extra_zero :: executions MMVQ non-cibles supplementaires egales a zero :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_bitwise_equal_4_variantes :: les quatre variantes BASE Q plus M plus QM plus bit a bit egales :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_quantize_neutralite :: quantize dupliquee fonctionnellement neutre par lecture de source :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_mmvq_neutralite :: MMVQ duplique fonctionnellement neutre par lecture de source :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_decomposition_composants :: decomposition par composant de la pente murale 1.1794 ms MMVQ contre 0.0144 ms quantize :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[REFUTE] e006_quantize_non_detectable :: sensibilite murale de la quantification non detectable sous le bruit :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_chemin_additif :: chemin additif en mur marginal avec interaction -0.0022 ms :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[OUVERT] e006_plancher_materiel_non_prouve :: memory bound compute bound et occupancy limited non prouves :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[OUVERT] e006_profiling_statique_non_fait :: profiling statique cible du noyau non realise :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[OUVERT] e006_fusion_q8_1_non_justifiee :: fusion quantize et MMVQ non justifiee par la mesure interaction nulle :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_population_cible :: cible attn_gate tq2_g128 decode_s1_1 MMVQ sur 36 poids tq2 :: docs/ENGINE-006-OPENING-COMPONENT-DECOMPOSITION.md
+[PROUVE] e006_instanciation_exacte :: instanciation exacte du noyau identifiee avec grille 5120 et bloc 32x4 :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_registres_smem :: 42 registres 384 octets de smem 0 spill et 0 trafic de pile locale :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[REFUTE] e006_hypothese_pression_registres :: hypothese de pression registres ecartee par mesure compilateur :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[REFUTE] e006_hypothese_occupancy_limitee :: hypothese de limite d occupation explicitement rejetee pour cette specialisation :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_occupancy_theorique :: occupation theorique atteignable de 100 pourcent avec 12 blocs par SM :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_tail_waste_nul :: gaspillage de queue nul car 5120 et 6144 s alignent sur 128 :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_part_instructions_decodage :: environ 62 pourcent des instructions du corps en manipulation de bits :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[OUVERT] e006_hypothese_charges_scalaires :: huit chargements U8 pour huit octets contigus reste une hypothese :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[REFUTE] e006_gaspillage_reduction :: gaspillage de reduction ecarte la reduction etant deja minimale :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[RETIRE] e006_aucun_appelant_retracte :: affirmation aucun appelant de la greffe EXP1A4A reconnue inexacte :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_troisieme_fichier_sale :: troisieme fichier source modifie consommateur de la greffe sous tools :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_dso_gele_contient_greffes :: les deux greffes sont presentes dans le DSO gele de reference :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_lectures_nom_chemin_chaud :: zero lecture du nom de tenseur dans le chemin chaud :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_baseline_identite :: identite de baseline enregistree pour la reproductibilite des builds :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_axe_decode_selectionne :: premier axe retenu reduction de force du decodage tq2_g128 :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[OUVERT] e006_gain_theorique_non_promu :: aucun gain theorique promu avant mesure :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_defaut_12 :: script de compilation mangling du drapeau generate code :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_defaut_13 :: sonde de propriete device sans lien runtime CUDA :: docs/ENGINE-006B-STATIC-FORENSIC.md
+[PROUVE] e006_vertical_fidelite_decode :: fidelite du decodage ternaire sur 16777216 symboles sans ecart :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_gain_microbench_v1 :: gain vec dot de plus 18.1 pourcent reproduit en microbench :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_gain_decode_seul :: gain decode seul de plus 16.5 pourcent :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[REFUTE] e006_v2_table_rejetee :: variante a table constante 4.6 fois plus lente et rejetee :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_semantique_temporelle_microbench :: semantique de chronometrage du microbench validee :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[OUVERT] e006_mesure_produit_bloquee_006c :: mesure produit 256 jetons bloquee par les symboles d instrument :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[OUVERT] e006_patch_produit_interdit :: patch produit non autorise faute de gate de fidelite franchi :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_defaut_14 :: source du harnais absente de tmp avec echec de lien silencieux :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_defaut_15 :: test d egalite vrai sur deux chaines vides faux positif :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_defaut_16 :: symbole faible non resolu appele provoquant un segfault :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[PROUVE] e006_defaut_17 :: symbole d instrument ajoute au harnais entre passes sans nettoyage :: docs/ENGINE-006C-DECODE-MICROBENCH.md
+[REFUTE] e006_overhead_patch :: surcout du patch de bascule de 1.1312 ms par jeton soit 31.2 fois le bruit :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[PROUVE] e006_gain_interne_v1 :: gain interne de V1 dans le build patche 0.1011 ms soit 2.8 fois le bruit :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[REFUTE] e006_v1_rejetee_produit :: V1 rejetee au niveau produit avec gain net negatif de -1.0301 ms par jeton :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[REFUTE] e006_non_transfert_microbench :: le gain de plus 18 pourcent du microbench ne se transpose pas au produit :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[REFUTE] e006_benefice_vec_dot_modele :: benefice vec dot au niveau modele non detecte :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[OUVERT] e006_pression_registres_pipeline :: pression registres et pipeline inexpliques :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[PROUVE] e006_fidelite_produit_r1 :: fidelite produit prouvee sequence et logits identiques sur trois bras :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[OUVERT] e006_sequence_run003_non_reproduite :: sequence du harnais differente de RUN-003 invalidant la comparaison historique :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[PROUVE] e006_defaut_18 :: critere d arret du pre-roll reconstruit et non confirme :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[PROUVE] e006_defaut_19 :: compteur de selection cible non pose :: docs/ENGINE-006C-R1-PRODUCT-QUALIFICATION.md
+[RETIRE] e006_axe_rejete_par_microbench_retire :: rejet de l axe impute au microbench retire au profit de la mesure produit :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[PROUVE] e006_scope_implementation :: implementation plus large que la cible causale avec 168 poids et 6 roles :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[PROUVE] e006_v1_sass_alourdi :: V1 alourdit le noyau de 40 instructions avec plus 16 LOP3 et plus 24 SEL :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[REFUTE] e006_v1_statique_sans_gain :: V1 compilee separement ne donne aucun gain mesurable 1.77 fois le bruit :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[REFUTE] e006_interference_codegen_switch :: interference codegen du commutateur runtime non supportee :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[OUVERT] e006_parite_build :: parite de performance des builds reconstruites non etablie :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[PROUVE] e006_regle_build_separe :: regle permanente de compilation separee des variantes produit :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[PROUVE] e006_audit_avant_modification :: exigence d audit statique avant toute modification du noyau :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[PROUVE] e006_alignement_garanti :: alignement garanti de 2 octets impose par les 34 octets par bloc :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[REFUTE] e006_vec64_vec32_interdits :: VEC64 et VEC32 interdits car 34 mod 4 et 34 mod 8 valent 2 :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PROUVE] e006_seule_largeur_licite :: seule la largeur 16 bits est licite pour les chargements de poids :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PROUVE] e006_delta_instructions_nul :: VEC16 dans le noyau complet donne un delta d instructions total nul :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PARTIEL] e006_microbench_largeurs :: microbench des largeurs charge 8 a 4 instructions mais delta runtime 0.1 pourcent :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[REFUTE] e006_axe_vectorisation_rejete :: axe vectorisation des poids rejete au gate statique :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PROUVE] e006_forme_charge_imposee :: forme scalaire des chargements imposee par le layout et non inefficacite :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PROUVE] e006_defaut_20 :: parametre de template non constant dans le lancement corrige :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PROUVE] e006_defaut_21 :: SASS vide du a un nom mangled errone non interprete :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+[PROUVE] e006_reuse_factor :: facteur de reutilisation logique q8_1 de 32 demandes :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[PROUVE] e006_warps_disjoints :: les quatre warps d un bloc consomment des tranches d activation disjointes :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[REFUTE] e006_duplication_inter_warp :: duplication d activation intra-bloc nulle entre warps :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[PROUVE] e006_charges_hissees :: adressage de l activation hisse hors de la boucle kbx :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[REFUTE] e006_reduction_charges_shared :: potentiel de reduction des instructions de chargement par le shared nul :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[REFUTE] e006_axe_residence_q8_rejete :: axe residence partagee de l activation rejete statiquement :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[PROUVE] e006_smem_occupation :: aucun regression d occupation par le smem 1728 octets contre 384 :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[PROUVE] e006_specialisation_auditee :: specialisation complete auditee sans delta negatif demontre :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[PROUVE] e006_dominance_op_non_recuperable :: dominance relative d une operation ne prouve pas de gaspillage recuperable :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[PARTIEL] e006_audit_specialisation_complete :: audit specialisation complete sans prototype ni campagne :: docs/ENGINE-006E-Q8-1-ACTIVATION-RESIDENCY.md
+[REFUTE] e006_volume_poids_non_plancher :: le volume de poids n est pas le plancher du noyau :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_mesure_stream_decode_full :: plancher empirique 8.28 us en streaming 22.60 us en decodage et 79.94 us complet :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_ratio_full_sur_stream :: ratio noyau complet sur streaming de 9.65 :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_poids_servis_par_cache :: les 8.36 Mo de poids sont servis par le cache et non par la DRAM :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_full_sous_plafond_dram :: noyau complet a 41 pourcent du plafond DRAM local de 255.8 Go par seconde :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_plafond_mesure_local :: plafond de streaming mesure sur le meme GPU a 255.8 Go par seconde :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[REFUTE] e006_cout_egale_volume :: these le cout est fondamentalement le volume de travail affaiblie :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_headroom_local_restant :: headroom local de calcul ou decodage restant apres 006F :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_alignement_confirme_runtime :: contrainte d alignement 006D confirmee a l execution par adresse non alignee :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PARTIEL] e006_ecart_microbench_production :: ratio microbench sur production de 1.64 suggerant une machinerie generique couteuse :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[OUVERT] e006_attribution_machinerie_generique :: attribution de la surcharge de la machinerie generique non etablie :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_defaut_22 :: sonde de plancher ecrite par greffes sed fragiles trois echecs :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_defaut_23 :: S0 en uint32 invalide par alignement corrige en uint16 :: docs/ENGINE-006F-EMPIRICAL-LOWER-BOUND.md
+[PROUVE] e006_insensibilite_memoire :: noyau complet insensible au cache avec sensibilite de 0.78 a 0.98 :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_streaming_sensible_cache :: streaming sensible au cache avec un facteur 4.10 a 4.37 :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[REFUTE] e006_memory_bound_contredit :: memory bound empiriquement contredit et non plus seulement non prouve :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[REFUTE] e006_g2_dp4a_rejete :: dependance DP4A rejetee par la mesure avec gain 0.14 puis -0.02 us :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_compilateur_deux_accumulateurs :: le compilateur emploie deja deux accumulateurs DP4A independants :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_g1_plafond_modeste :: machinerie generique auditee avec plafond de gain 5 a 6 pourcent :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[OUVERT] e006_g1_prototype_non_construit :: prototype G1 non construit malgre un delta statique negatif :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_g3_reduction_dominee :: reduction auditee 5 shuffles et dominee par le DP4A :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PARTIEL] e006_statut_partiel_006g :: statut 006G partiel G1 audite G2 rejete G3 audite :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_cout_travail_arithmetique :: cout attribue au travail arithmetique lui meme par convergence :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[OUVERT] e006_headroom_local_faible :: headroom local faible pour le faconnage d instructions :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_defaut_24 :: flush hot cold appelait le noyau complet sur un buffer plat :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[PROUVE] e006_defaut_25 :: mesure froide integrant le cout de flush avec dispersion residuelle 25 pourcent :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[REFUTE] e006_geometrie_sans_gain :: aucune geometrie warps par ligne ne gagne avec une etendue de 0.2 pourcent :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[REFUTE] e006_occupancy_sans_effet :: passer de 48 a 24 warps actifs par SM ne fait rien perdre :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_occupation_mesuree_api :: occupation mesuree par l API CUDA et non extrapolee :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_wpr2_occupation_egale :: WPR2 atteint les memes 48 warps actifs par SM que WPR4 :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_desequilibre_wpr4 :: geometrie de production desequilibree 16 16 8 8 blocs par warp :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_couverture_kbx_exacte :: couverture kbx exacte 192 sur 192 sans manque ni doublon :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[REFUTE] e006_wpr_baseline_faux_retire :: modele de couverture fautif pour la baseline WPR4 corrige :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[REFUTE] e006_fidelite_bitwise_geometrie :: un changement de geometrie casse la fidelite bit a bit du noyau :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_validation_niveau_modele_requise :: une variante de geometrie exige une validation au niveau modele :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[OUVERT] e006_gain_wpr_non_promu :: gain WPR2 directionnellement coherent mais 0.07 pourcent non promu :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[OUVERT] e006_campagne_produit_non_lancee_h :: campagne produit non lancee pour la geometrie :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_defaut_26 :: modele de couverture kbx faux pour la baseline corrige par simulation :: docs/ENGINE-006H-WPR-GEOMETRY.md
+[PROUVE] e006_g1_construit :: machinerie generique specialisee construite et mesuree :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_delta_sass_negatif :: delta SASS negatif de 176 instructions soit -7.69 pourcent :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_corps_math_inchange :: corps mathematique structurellement inchange 32 dp4a 65 LDG 5 SHFL :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_gain_mural_006i :: gain mural mesure de 0.6197 us avec un rapport gain sur bruit de 2.5 :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[REFUTE] e006_instructions_hors_chemin_critique :: gain d instructions hors du chemin critique avec un ratio de 10 contre 1 :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[REFUTE] e006_isolation_gate_fail :: gate d isolation echoue la sortie du noyau n est pas bit a bit identique :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_reassociation_flottante :: reassociation flottante par le compilateur expliquant 1875 lignes divergentes :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[OUVERT] e006_attribution_gain_qualifiee :: gain du microbench mesure mais attribution qualifiee :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[REFUTE] e006_issue_throughput_non_prouve :: limite par le debit d emission non prouvee :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_limit_dp4a_convergent :: limite de debit d execution des dp4a soutenue par convergence sans compteur materiel :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_manifeste_geometrie :: manifeste de geometrie exacte extrait du lancement reel :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_parametres_compile_time :: 12 parametres surs a la compilation contre 3 requis au runtime :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_headroom_epuise :: headroom local de faconnage epuise par les axes testes :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[OUVERT] e006_justification_produit_insuffisante :: justification produit insuffisante donc campagne produit non lancee :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_defaut_27 :: pragma unroll ajoute dans une seule variante comparaison invalide corrigee :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[OUVERT] e006_closure_006_en_attente :: ENGINE-006 reste ouvert en attente de decision de fermeture :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[OUVERT] e006_engine007_non_autorise :: ENGINE-007 non autorise tant qu ENGINE-006 n est pas clos :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[OUVERT] e006_defauts_harnais_ouverts :: defauts 18 et 19 du harnais restent ouverts :: docs/ENGINE-006C-R2-STATIC-V1-QUALIFICATION.md
+[OUVERT] e006_compteur_plumbing :: compteur de defauts de plomberie bloque a 28 sans trentaine assignee :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_axes_fermes :: sept axes locaux testes avec resultats negatifs ou negligeables :: docs/ENGINE-006I-EXACT-SHAPE-SPECIALIZATION.md
+[PROUVE] e006_decode_part_006f :: decodage a 17.9 pourcent du microbench contre dot et reduction a 71.7 pourcent :: docs/ENGINE-006G-GENERIC-MACHINERY-DP4A.md
+[OUVERT] e006_branches_generiques_effet_specialisation :: effet d une specialisation complete sur registres et ordonnancement reste ouvert :: docs/ENGINE-006D-WEIGHT-LOAD-VECTORIZATION.md
+LIENS:
+e006_compteur_scope_artefact -> e006_scope_gate [DEPEND] la correction du compteur conditionne la validite du gate
+e006_compteur_scope_artefact -> e006_non_target_extra_zero [DEMONTRE] le compteur corrige separe natif et extra et donne zero
+e006_decomposition_composants -> e006_quantize_non_detectable [DEMONTRE] 0.0144 ms sur 1.1917 ms passe sous le bruit
+e006_decomposition_composants -> e006_chemin_additif [DEMONTRE] la somme des composants egale le chemin complet a 0.2 pourcent
+e006_decomposition_composants -> e006_quantize_non_detectable [REMPLACE] la pente 1.2591 ms mesuree avec un compteur imparfait est remplacee
+e006_bitwise_equal_4_variantes -> e006_quantize_neutralite [DEPEND] l egalite bit a bit confirme la neutralite fonctionnelle
+e006_bitwise_equal_4_variantes -> e006_mmvq_neutralite [DEPEND] l egalite bit a bit confirme la neutralite fonctionnelle
+e006_population_cible -> e006_instanciation_exacte [DEPEND] la cible est identifiee par son instanciation exacte
+e006_instanciation_exacte -> e006_registres_smem [DEMONTRE] l instanciation exacte a ete compilee par ptxas
+e006_registres_smem -> e006_hypothese_pression_registres [RETIRE] 42 registres et 0 spill ecartent la pression registres
+e006_registres_smem -> e006_hypothese_occupancy_limitee [RETIRE] 0 spill et 12 blocs par SM ecartent la limite d occupation
+e006_registres_smem -> e006_occupancy_theorique [DEMONTRE] registres et threads donnent tous deux 12 blocs par SM
+e006_part_instructions_decodage -> e006_axe_decode_selectionne [DEMONTRE] 62 pourcent des instructions justifient l axe decode
+e006_gaspillage_reduction -> e006_axe_decode_selectionne [DEPEND] la reduction ecartee renforce le choix du decode
+e006_hypothese_charges_scalaires -> e006_axe_decode_selectionne [DEPEND] les chargements restent hypothese et non axe premier
+e006_aucun_appelant_retracte -> e006_troisieme_fichier_sale [RETIRE] le consommateur existe dans un troisieme fichier
+e006_troisieme_fichier_sale -> e006_lectures_nom_chemin_chaud [DEPEND] le consommateur impose de verifier le chemin chaud
+e006_troisieme_fichier_sale -> e006_dso_gele_contient_greffes [DEPEND] la chaine experimentale est presente dans le DSO gele
+e006_dso_gele_contient_greffes -> e006_baseline_identite [DEMONTRE] la baseline doit inclure les greffes et etre enregistree
+e006_lectures_nom_chemin_chaud -> e006_baseline_identite [DEPEND] zero lecture du nom rend le renommage inerte
+e006_axe_decode_selectionne -> e006_vertical_fidelite_decode [OUVRE] l axe exige un test de fidelite avant performance
+e006_vertical_fidelite_decode -> e006_gain_microbench_v1 [DEMONTRE] la fidelite etablie autorise la mesure de gain
+e006_vertical_fidelite_decode -> e006_gain_decode_seul [DEPEND] le gain decode seul est mesure sur corpus identique
+e006_v2_table_rejetee -> e006_gain_microbench_v1 [DEPEND] la voie lookup fermee isole le gain comme calcul entier
+e006_semantique_temporelle_microbench -> e006_gain_microbench_v1 [DEPEND] la semantique de chronometrage valide le gain
+e006_defaut_14 -> e006_mesure_produit_bloquee_006c [DEMONTRE] echec de lien silencieux puis symboles non resolus
+e006_defaut_15 -> e006_mesure_produit_bloquee_006c [DEMONTRE] le faux positif sur chaines vides a masque l echec
+e006_defaut_16 -> e006_mesure_produit_bloquee_006c [DEMONTRE] le symbole faible non resolu provoque le segfault
+e006_defaut_17 -> e006_defaut_16 [DEMONTRE] instruments de passes terminees non nettoyes du harnais
+e006_mesure_produit_bloquee_006c -> e006_patch_produit_interdit [OUVRE] sans gate de fidelite produit le patch reste interdit
+e006_defaut_14 -> e006_defaut_15 [DEPEND] le lien silencieux a permis le faux positif d egalite
+e006_overhead_patch -> e006_v1_rejetee_produit [DEMONTRE] le surcout 1.13 ms domine le gain interne 0.10 ms
+e006_gain_interne_v1 -> e006_v1_rejetee_produit [DEMONTRE] le gain interne reel mais marginal ne compense pas le mecanisme
+e006_gain_microbench_v1 -> e006_non_transfert_microbench [RETIRE] plus 18 pourcent local devient -1.6 pourcent produit
+e006_v1_rejetee_produit -> e006_benefice_vec_dot_modele [DEMONTRE] le benefice modele n est pas detectable une fois integre
+e006_fidelite_produit_r1 -> e006_v1_rejetee_produit [DEPEND] la fidelite bit a bit rend la mesure de performance interpretable
+e006_sequence_run003_non_reproduite -> e006_defaut_18 [DEMONTRE] le critere d arret du pre-roll reconstruit explique l ecart
+e006_sequence_run003_non_reproduite -> e006_v1_rejetee_produit [DEPEND] seule la comparaison contemporaine reste valide
+e006_defaut_19 -> e006_pression_registres_pipeline [OUVRE] sans compteur de selection la tracabilite reste une reserve
+e006_v1_rejetee_produit -> e006_axe_rejete_par_microbench_retire [RETIRE] c est le produit et non le microbench qui rejette V1
+e006_scope_implementation -> e006_axe_rejete_par_microbench_retire [DEPEND] la portee reelle depasse la cible causale attn_gate
+e006_scope_implementation -> e006_v1_rejetee_produit [RETIRE] l attribution a attn_gate seul est corrigee
+e006_v1_sass_alourdi -> e006_v1_statique_sans_gain [DEMONTRE] plus 40 instructions expliquent l absence de gain produit
+e006_v1_sass_alourdi -> e006_interference_codegen_switch [RETIRE] alourdissement statique ecarte l interference de codegen
+e006_regle_build_separe -> e006_v1_statique_sans_gain [DEPEND] la compilation separee isole la transformation du mecanisme
+e006_audit_avant_modification -> e006_alignement_garanti [DEPEND] l audit d alignement precede toute modification
+e006_alignement_garanti -> e006_vec64_vec32_interdits [DEMONTRE] 34 octets par bloc interdisent 4 et 8 alignements
+e006_alignement_garanti -> e006_seule_largeur_licite [DEMONTRE] l alignement garanti de 2 octets ne laisse que 16 bits
+e006_seule_largeur_licite -> e006_delta_instructions_nul [DEMONTRE] VEC16 reste la seule option et son delta est nul
+e006_microbench_largeurs -> e006_delta_instructions_nul [DEPEND] le microbench ne montre aucun effet du aux largeurs
+e006_delta_instructions_nul -> e006_axe_vectorisation_rejete [DEMONTRE] gate statique non franchi faute de reduction
+e006_alignement_garanti -> e006_forme_charge_imposee [DEMONTRE] la forme scalaire est forcee par le layout du format
+e006_defaut_20 -> e006_microbench_largeurs [DEPEND] instanciations explicites avant toute mesure
+e006_defaut_21 -> e006_microbench_largeurs [DEPEND] SASS vides non interpretes comme resultat
+e006_alignement_confirme_runtime -> e006_alignement_garanti [DEMONTRE] le misaligned address confirme la contrainte 006D
+e006_couverture_kbx_exacte -> e006_warps_disjoints [DEMONTRE] la partition par warp est disjointe et complete
+e006_warps_disjoints -> e006_duplication_inter_warp [DEMONTRE] l intersection entre warps est vide
+e006_duplication_inter_warp -> e006_reduction_charges_shared [DEMONTRE] sans redondance inter-warp le shared n apporte rien
+e006_reduction_charges_shared -> e006_axe_residence_q8_rejete [DEMONTRE] gate de redondance non franchi avant implementation
+e006_charges_hissees -> e006_axe_residence_q8_rejete [DEMONTRE] les chargements sont deja hisses hors de la boucle
+e006_smem_occupation -> e006_axe_residence_q8_rejete [DEPEND] aucune regression d occupation donc la redondance seule condamne
+e006_reuse_factor -> e006_duplication_inter_warp [DEPEND] le facteur 32 est logique et intra-warp
+e006_charges_hissees -> e006_reuse_factor [DEPEND] huit instructions servent les douze blocs kbx
+e006_specialisation_auditee -> e006_dominance_op_non_recuperable [DEMONTRE] aucun delta negatif malgre une part d instructions elevee
+e006_audit_specialisation_complete -> e006_specialisation_auditee [DEPEND] audit sans prototype donc sans preuve de gain
+e006_audit_specialisation_complete -> e006_branches_generiques_effet_specialisation [OUVRE] effet sur registres et ordonnancement non tranche
+e006_mesure_stream_decode_full -> e006_volume_poids_non_plancher [DEMONTRE] 8.28 us de streaming contre 79.94 us de calcul
+e006_ratio_full_sur_stream -> e006_volume_poids_non_plancher [DEMONTRE] un facteur 9.65 separe le streaming du calcul
+e006_mesure_stream_decode_full -> e006_cout_egale_volume [RETIRE] la these du volume de travail comme cout est affaiblie
+e006_mesure_stream_decode_full -> e006_decode_part_006f [DEMONTRE] les increments donnent 17.9 et 71.7 pourcent
+e006_plafond_mesure_local -> e006_poids_servis_par_cache [DEMONTRE] S0 depasse le plafond DRAM d un facteur 3.94
+e006_plafond_mesure_local -> e006_full_sous_plafond_dram [DEMONTRE] FULL atteint 41 pourcent du plafond DRAM
+e006_poids_servis_par_cache -> e006_volume_poids_non_plancher [DEPEND] le tenseur tient dans le L2 de 25.2 Mo
+e006_full_sous_plafond_dram -> e006_cout_egale_volume [RETIRE] le noyau n atteint pas la bande passante disponible
+e006_volume_poids_non_plancher -> e006_headroom_local_restant [DEMONTRE] la ligne locale reste ouverte faute de plancher atteint
+e006_ecart_microbench_production -> e006_attribution_machinerie_generique [OUVRE] la surcharge de machinerie reste suggestive
+e006_headroom_local_restant -> e006_g1_plafond_modeste [OUVRE] le candidat machinerie generique est audite ensuite
+e006_attribution_machinerie_generique -> e006_g1_plafond_modeste [DEPEND] le plafond est borne par le seul chemin dynamique
+e006_defaut_22 -> e006_mesure_stream_decode_full [DEPEND] sonde reecrite avant toute mesure
+e006_defaut_23 -> e006_alignement_confirme_runtime [DEMONTRE] le defaut revele la contrainte d alignement reelle
+e006_insensibilite_memoire -> e006_memory_bound_contredit [DEMONTRE] le froid n est pas plus lent que le chaud
+e006_streaming_sensible_cache -> e006_poids_servis_par_cache [DEMONTRE] le streaming quadruple a cache froid donc il etait en cache
+e006_insensibilite_memoire -> e006_cout_travail_arithmetique [DEMONTRE] l insensibilite memoire pointe vers le calcul
+e006_defaut_24 -> e006_insensibilite_memoire [DEPEND] flush corrige en lecture pure avant le controle
+e006_defaut_25 -> e006_insensibilite_memoire [DEPEND] dispersion de 25 pourcent declaree sur les mesures froides
+e006_compilateur_deux_accumulateurs -> e006_g2_dp4a_rejete [DEMONTRE] la variante reproduit ce que le compilateur fait deja
+e006_g2_dp4a_rejete -> e006_cout_travail_arithmetique [DEMONTRE] toute une famille d optimisations ILP est eliminee
+e006_g3_reduction_dominee -> e006_cout_travail_arithmetique [DEMONTRE] la reduction est structurellement minuscule devant le dp4a
+e006_g1_plafond_modeste -> e006_g1_prototype_non_construit [OUVRE] plafond de 5 a 6 pourcent juge insuffisant pour un prototype
+e006_g1_plafond_modeste -> e006_g1_construit [OUVRE] l axe est differe puis rendu obligatoire par 006H
+e006_statut_partiel_006g -> e006_g1_prototype_non_construit [DEPEND] statut partiel car G1 non construit
+e006_statut_partiel_006g -> e006_headroom_local_faible [DEMONTRE] quatre mecanismes de gaspillage local elimines
+e006_headroom_local_faible -> e006_geometrie_sans_gain [OUVRE] seule la geometrie reste non testee
+e006_geometrie_sans_gain -> e006_occupancy_sans_effet [DEMONTRE] divise par deux le parallelisme de warp sans perte
+e006_occupation_mesuree_api -> e006_wpr2_occupation_egale [DEMONTRE] WPR2 et WPR4 donnent tous deux 48 warps actifs par SM
+e006_wpr2_occupation_egale -> e006_geometrie_sans_gain [DEMONTRE] l hypothese echoue avec les conditions reunies
+e006_desequilibre_wpr4 -> e006_geometrie_sans_gain [DEMONTRE] le reequilibrage 24 24 n apporte rien
+e006_couverture_kbx_exacte -> e006_geometrie_sans_gain [DEPEND] les quatre variantes couvrent exactement les memes blocs
+e006_wpr_baseline_faux_retire -> e006_couverture_kbx_exacte [RETIRE] le modele fautif concluait a tort 32 blocs sur 48
+e006_fidelite_bitwise_geometrie -> e006_validation_niveau_modele_requise [DEMONTRE] l ordre de sommation flottante change avec la partition
+e006_fidelite_bitwise_geometrie -> e006_gain_wpr_non_promu [DEPEND] 0.07 pourcent ne justifie pas une validation modele complete
+e006_gain_wpr_non_promu -> e006_campagne_produit_non_lancee_h [OUVRE] la campagne produit n a pas ete lancee
+e006_defaut_26 -> e006_wpr_baseline_faux_retire [DEMONTRE] erreur de modele corrigee par simulation fidele
+e006_geometrie_sans_gain -> e006_g1_construit [OUVRE] la regle du paragraphe 28 rend G1 obligatoire
+e006_g1_construit -> e006_delta_sass_negatif [DEMONTRE] le gate statique du paragraphe 16 est franchi
+e006_delta_sass_negatif -> e006_corps_math_inchange [DEPEND] le corps mathematique reste identique a 32 dp4a
+e006_delta_sass_negatif -> e006_gain_mural_006i [DEMONTRE] 7.7 pourcent d instructions ne donnent que 0.77 pourcent de mur
+e006_gain_mural_006i -> e006_instructions_hors_chemin_critique [DEMONTRE] un ratio de 10 contre 1 entre instructions et mur
+e006_reassociation_flottante -> e006_isolation_gate_fail [DEMONTRE] la reassociation explique 1875 lignes divergentes
+e006_corps_math_inchange -> e006_isolation_gate_fail [DEPEND] corps identique mais ordre des additions modifie
+e006_isolation_gate_fail -> e006_attribution_gain_qualifiee [OUVRE] le gain contient une part non quantifiee d ordonnancement
+e006_defaut_27 -> e006_delta_sass_negatif [RETIRE] le premier jet a plus 161 pourcent etait une comparaison invalide
+e006_instructions_hors_chemin_critique -> e006_issue_throughput_non_prouve [RETIRE] cinq mesures convergent contre la limite d emission
+e006_instructions_hors_chemin_critique -> e006_limit_dp4a_convergent [DEMONTRE] le travail arithmetique reste le seul poste
+e006_manifeste_geometrie -> e006_parametres_compile_time [DEMONTRE] 12 parametres surs et 3 requis au runtime
+e006_parametres_compile_time -> e006_delta_sass_negatif [DEMONTRE] la specialisation supprime les chargements de parametres
+e006_headroom_epuise -> e006_justification_produit_insuffisante [DEMONTRE] sept axes testes et sept resultats negatifs
+e006_attribution_gain_qualifiee -> e006_justification_produit_insuffisante [OUVRE] fidelite non preservee et gain local trop faible
+e006_justification_produit_insuffisante -> e006_closure_006_en_attente [OUVRE] le critere de fermeture est reuni mais la decision reste a prendre
+e006_closure_006_en_attente -> e006_engine007_non_autorise [OUVRE] ENGINE-007 reste interdit tant que la fermeture n est pas decidee
+e006_axes_fermes -> e006_headroom_epuise [DEPEND] les axes negatifs fondent le constat d epuisement
+e006_defauts_harnais_ouverts -> e006_compteur_plumbing [OUVRE] defauts 18 et 19 non resolus et compteur bloque a 28
+e006_v1_rejetee_produit -> e006_axes_fermes [DEPEND] V1 est l un des sept axes rejetes
+e006_axe_vectorisation_rejete -> e006_axes_fermes [DEPEND] la vectorisation est l un des sept axes rejetes
+e006_axe_residence_q8_rejete -> e006_axes_fermes [DEPEND] la residence q8_1 est l un des sept axes rejetes
+e006_g2_dp4a_rejete -> e006_axes_fermes [DEMONTRE] le rejet ILP alimente le bilan des axes
+e006_geometrie_sans_gain -> e006_axes_fermes [DEMONTRE] le rejet de geometrie alimente le bilan des axes
+e006_headroom_epuise -> e006_cout_travail_arithmetique [DEPEND] le constat converge vers le travail arithmetique

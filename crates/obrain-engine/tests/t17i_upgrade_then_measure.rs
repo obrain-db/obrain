@@ -13,7 +13,7 @@
 #![cfg(feature = "cypher")]
 
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 fn upgrade_and_measure(name: &str, path: std::path::PathBuf) {
     if !path.exists() {

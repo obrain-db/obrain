@@ -1,0 +1,117 @@
+ENGINE-008 -- STATUT ENGINE008-FINAL-04
+==========================================================================
+B1 EST ISOLE, CORRIGE ET TOUTES LES SUITES SONT VERTES (277/277).
+LA SEQUENCE AUTORISEE A ETE EXECUTEE : baseline1 A PRODUIT 8 TOKENS REELS.
+Elle s'est ARRETEE au premier defaut, sans retry. B2 ET B3 RESTENT OUVERTS.
+
+=== 1. LES TOKENS REELS -- D'ABORD ===
+  baseline1  : IDs [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]
+               NOMBRE 8/8
+               TEXTE  "We need answer user: \"Répond"
+               STOP   MAX_NEW_TOKENS
+               DECODE_ATTEMPTS=7 DECODE_SUCCESS=7  (7 continuations, 0 echec)
+               LOAD_OK=1 CTX_OK=1 PREFILL_WINDOWS=1 DECODE_WINDOWS=8
+               REAL_LOAD_CALLS=1 REAL_CONTEXT_CREATE_CALLS=1
+  candidate1, baseline2, candidate2 : NOT_RUN (arret au premier defaut)
+  C'est le MEME texte qu'en FINAL-01 : reproductible.
+
+=== 2. B1 -- CAUSE ISOLEE, PAS SUPPOSEE ===
+  Le diagnostic a ete fait sur des binaires COURANTS et une destination NEUVE,
+  pas depuis /tmp/lr ni un artefact ancien.
+  ENFANT (rapport brut) : AUTH=ACCEPTED, MOCK_COMPUTE=YES,
+    MOCK_PREFILL_IDS_MATCH=YES, stop_reason=MAX_NEW_TOKENS,
+    generated_token_count=8, MODEL_FORWARD_CALL_COUNT=0, exit_code=0
+    MAIS **RUN_OUTCOME=FAIL**, donc `judge` du lanceur rendait FAIL.
+  CAUSE REELLE, DEMONTREE : mon calcul d'aboutissement exigeait
+  `limits.empty()`. Un run mock porte legitimement des limites de COUVERTURE
+  (WHT, identite, NextN) tout en ayant ABOUTI. Le defaut etait donc dans le
+  CODE DE PRODUCTION, pas dans le lecteur du test -- contrairement a l'hypothese
+  que j'avais avancee, et que je n'ai donc PAS retenue.
+  CORRECTION : seules les limites BLOQUANTES interdisent l'aboutissement
+  (gate P4', destination refusee, chargement, contexte, prefill, logits,
+  refus avant calcul, erreur de decode, invocations attendues inconnues).
+  CAUSE SECONDAIRE, dans mon nouveau controle de role : le test de « roles
+  inverses » se declenchait quand AUCUN SHA n'etait declare, car
+  `file_sha_ok(x, "")` est vrai. Corrige : le croisement n'est teste que si les
+  DEUX SHA sont declares.
+  RESULTAT : t-lrep 17/17, `invocations:4`, quatre verdicts PASS.
+
+=== 3. SUITES SUR LES EXECUTABLES FINAUX ===
+  adopt 15  t4 14  inv 33  p4 26  wht 54  e2e 24  connect 75  gate 12  lrep 17
+  TOTAL 277 controles, 0 echec.
+  decode_windows EXPLIQUE (exigence B1) : le champ compte les FENETRES
+  D'OBSERVATION, une par token SELECTIONNE -- ce n'est PAS le nombre d'appels de
+  decode. Pour N tokens avec arret MAX_NEW_TOKENS : decode_windows=N et
+  llama_decode_calls=N-1, car le contrat d'arret s'applique AVANT tout decode
+  supplementaire. Le rapport porte desormais `token_selection_windows` et
+  `decode_windows_definition`. VERIFIE dans le code : au 8e token, la boucle
+  sort par MAX_NEW_TOKENS avant `decode_step`. AUCUNE CONTINUATION SUPERFLUE.
+  Role lie a l'IDENTITE : le lanceur compare le SHA de chaque modele au SHA
+  declare par le plan pour CE role, et refuse des roles croises.
+
+=== 4. LE DEFAUT QUI ARRETE LA SEQUENCE ===
+  RUN_OUTCOME_WHY=LIMIT:INVENTORY_NOT_GLOBALLY_COMPLETE
+  `"why_incomplete":"inventaire VIDE : 0 nom lu"`, `globally_complete:false`
+  **I2 FONCTIONNE** : le vrai-a-vide est desormais REFUSE et BLOQUE, la ou
+  RUN-06 rendait `inv_globally_complete=true` avec 0 entree.
+  MAIS `"n_inventory_entries":0` : le chemin de l'inventaire n'atteint PAS
+  l'enfant. `OBRAIN_F1A_INVENTORY` est pose dans l'environnement du lanceur ;
+  l'enfant est lance par `system()` qui herite -- donc la variable devrait passer.
+  Le fichier n'est pas lu : a instrumenter (chemin resolu, acces, ou nom de
+  variable). **Tant que ce n'est pas corrige, la gate d'inventaire bloque a
+  juste titre et la sequence ne peut pas aboutir.**
+  AUTRE CABLAGE SANS EFFET, observe : `"p4_applies":false` et
+  `"validated_role":""` alors que le point d'entree doit les poser. Le codage
+  existe dans le source mais n'apparait pas dans le rapport : a verifier
+  (recompilation de l'unite, ou affectation ecrasee). `P4_GATE=BLOCKED` et
+  `p4_overall=UNKNOWN` decoulent de `n_registry_entries=0` : le registre natif
+  n'a pas ete acquis, donc C1..C5 restent UNKNOWN -- comportement CORRECT, mais
+  la cause (registre vide) doit etre elucidee.
+
+=== 5. B2 / B3 ===
+F1A_CONFIGURATION_CONNECTED=NO
+  Les activateurs f1a ne sont PAS raccordes : captures a 0 fichier.
+  `WHT_SURFACE_MISSING_OR_MALFORMED` et le blocker
+  `GRAPH_CAPTURE_MANIFEST.csv : manifeste absent`. Une capture ABSENTE reste un
+  echec et n'est PAS assimilee a une absence de WHT.
+GRAPH_INJECTION_MECHANISM=UNRESOLVED
+  ETABLI : la capture f1a OBSERVE le graphe ggml et n'injecte rien -- ni
+  tenseur, ni activation, ni etat, ni KV. La nommer « injection » serait faux.
+  NON ETABLI : le mecanisme natif d'injection dans engine/Obrain -- ni interface,
+  ni entree reproductible existante, ni point d'application, ni preuve
+  d'acceptation. Aucune substitution inventee : ni dump numerique, ni contexte
+  textuel.
+
+=== IDENTITES ===
+  PRODUCTION_HARNESS_SHA256=e6058a13d3dbe4d4bc7380cd1d3ec03ff40bbd915fec23c62a80ee47a2a16bbc
+  PRODUCTION_LAUNCHER_SHA256=2b355894072f8beb743aef62033af96f1040d3d80edd1ecf8c6ed73e91893bda
+  Les deux ont change depuis FINAL-03 : le harnais (aboutissement + definition de
+  decode_windows) et le lanceur (role lie a l'identite).
+
+PREFLIGHT_SEQUENCE_RESULT=FAIL (arret prescrit au premier defaut)
+GENERATED_IDS_PER_RUN=baseline1:[1596,1144,4087,1156,25,328,81911,3396] ; autres NOT_RUN
+GENERATED_TEXT_PER_RUN=baseline1:"We need answer user: \"Répond" ; autres NOT_RUN
+INJECTION_APPLICATION_PROOF=NOT_ESTABLISHED
+RETRY_COUNT=0
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO
+
+REMAINING_BLOCKERS=
+  C1. `OBRAIN_F1A_INVENTORY` n'atteint pas l'enfant : 0 nom lu. A instrumenter
+      (chemin resolu, droits, nom exact de la variable, heritage d'environnement
+      a travers `system()`). La gate d'inventaire bloque a juste titre tant que
+      ce n'est pas corrige.
+  C2. `validated_role` et `p4_applies` absents du rapport : le codage existe mais
+      ne prend pas effet. A verifier.
+  C3. `n_registry_entries=0` : le registre natif n'est pas acquis, donc C1..C5
+      restent UNKNOWN et la gate P4' est BLOQUEE. Correct, mais a elucider.
+  C4. B2 : raccorder f1a jusqu'a sa premiere lecture dans Q1, apres autorisation
+      et avant consommation ; verifier destination, inventaire et parametres.
+  C5. B3 : identifier le mecanisme natif d'injection.
+  C6. Puis rebuild, nouveau gel, autorisation, et les quatre runs.
+
+--- INVARIANTS PRESERVES ---
+Aucun retry. Aucune modification pendant la sequence. Aucune evaluation qualite,
+aucun scorer, aucun NLL/PPL. Q1 ni modifie ni reconstruit, CUDA graphs intacts.
+Les exigences baseline et candidat restent distinctes. RUN-01 a RUN-07 et
+FINAL-01 a FINAL-04 conserves.

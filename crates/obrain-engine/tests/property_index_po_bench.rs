@@ -1,3 +1,5 @@
+//! Banc des index de proprietes sur la base Project Orchestrator.
+
 #![cfg(feature = "cypher")]
 //! Property index validation & benchmark on real Project Orchestrator database.
 //!
@@ -11,7 +13,7 @@
 //!   cargo test -p obrain-engine --features "cypher,wal,tiered-storage" --test property_index_po_bench -- --nocapture
 
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Measure a closure over N iterations, return (mean_ms, stddev_ms, min_ms, max_ms)
 fn measure<F: FnMut() -> R, R>(mut f: F, iterations: usize) -> (f64, f64, f64, f64) {
@@ -26,6 +28,143 @@ fn measure<F: FnMut() -> R, R>(mut f: F, iterations: usize) -> (f64, f64, f64, f
     let min = times.iter().copied().fold(f64::INFINITY, f64::min);
     let max = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     (mean, variance.sqrt(), min, max)
+}
+
+/// Mesure p50/mean sur N iterations.
+fn measure_p50<F: FnMut() -> R, R>(mut f: F, iterations: usize) -> (f64, f64) {
+    let mut times = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let start = Instant::now();
+        let _ = f();
+        times.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mean = times.iter().sum::<f64>() / times.len() as f64;
+    (times[times.len() / 2], mean)
+}
+
+// ============================================================================
+// Chantier #95 : jointure correlee multi-MATCH — seek d'index vs produit
+// cartesien. Modele de la requete de prod :
+//   MATCH (ev:Evidence) MATCH (c:Claim {id: ev.claim_id})
+//   WHERE NOT (ev)-[:SUPPORTS]->(c)      (324 s mesurees en prod)
+// Index OFF = ancien plan (ScanOperator x input via NestedLoopJoin Cross,
+// |A| x |B| paires materialisees puis filtrees par ligne).
+// Index ON  = IndexSeekJoinOperator (une sonde par ligne externe).
+// L'index passe par l'API programmatique db.create_property_index — le
+// GQL CREATE INDEX est retire depuis le cutover T17 substrate.
+// ============================================================================
+
+#[test]
+fn bench_correlated_multi_match_index_seek() {
+    println!("\n{}", "=".repeat(70));
+    println!("CORRELATED MULTI-MATCH — index seek vs produit cartesien (#95)");
+    println!("{}\n", "=".repeat(70));
+
+    let db = ObrainDB::new_in_memory();
+    let session = db.session();
+
+    let n_a = 1000;
+    let n_b = 1000;
+    let start = Instant::now();
+    for i in 0..n_a {
+        session
+            .execute_cypher(&format!("CREATE (a:A {{fk: 'key-{i}'}})"))
+            .expect("create A");
+    }
+    for i in 0..n_b {
+        session
+            .execute_cypher(&format!("CREATE (b:B {{k: 'key-{i}'}})"))
+            .expect("create B");
+    }
+    // Aretes SUPPORTS : un a sur dix vers son b apparie (paires exclues du
+    // NOT), et une arete vers un tiers (le piege du bug #95-2).
+    for i in (0..n_a).step_by(10) {
+        session
+            .execute_cypher(&format!(
+                "MATCH (a:A {{fk: 'key-{i}'}}) MATCH (b:B {{k: 'key-{i}'}}) \
+                 CREATE (a)-[:SUPPORTS]->(b)"
+            ))
+            .expect("create SUPPORTS");
+    }
+    session
+        .execute_cypher(
+            "MATCH (a:A {fk: 'key-1'}) CREATE (a)-[:SUPPORTS]->(:Z {name: 'tiers'})",
+        )
+        .expect("create SUPPORTS tiers");
+    println!(
+        "  Peuple {} A + {} B en {:.0}ms\n",
+        n_a,
+        n_b,
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let q_join = "MATCH (a:A) MATCH (b:B {k: a.fk}) RETURN count(b)";
+    let q_not = "MATCH (a:A) MATCH (b:B {k: a.fk}) \
+                 WHERE NOT (a)-[:SUPPORTS]->(b) RETURN count(b)";
+
+    // Verite terrain (independante de l'index)
+    let rows_join = session.execute_cypher(q_join).unwrap().scalar::<i64>().unwrap();
+    let rows_not = session.execute(q_not).unwrap().scalar::<i64>().unwrap();
+    assert_eq!(rows_join, n_a, "1 paire par a");
+    assert_eq!(rows_not, n_a - n_a / 10, "paires supportees exclues");
+
+    // ---- AVANT : sans index (= ancien plan, produit cartesien) ----
+    println!("--- AVANT : sans index (produit cartesien) ---");
+    let before_join = measure_p50(|| session.execute_cypher(q_join).unwrap(), 5);
+    println!(
+        "  {:<52} p50 {:>9.1}ms (mean {:.1}ms)",
+        "join correle (count)", before_join.0, before_join.1
+    );
+    let before_not = measure_p50(|| session.execute(q_not).unwrap(), 5);
+    println!(
+        "  {:<52} p50 {:>9.1}ms (mean {:.1}ms)",
+        "join correle + NOT pattern (count)", before_not.0, before_not.1
+    );
+
+    // ---- APRES : avec index (seek) ----
+    db.create_property_index("k");
+    println!("\n--- APRES : index sur B.k (IndexSeekJoin) ---");
+    let after_join = measure_p50(|| session.execute_cypher(q_join).unwrap(), 20);
+    println!(
+        "  {:<52} p50 {:>9.1}ms (mean {:.1}ms)",
+        "join correle (count)", after_join.0, after_join.1
+    );
+    let after_not = measure_p50(|| session.execute(q_not).unwrap(), 20);
+    println!(
+        "  {:<52} p50 {:>9.1}ms (mean {:.1}ms)",
+        "join correle + NOT pattern (count)", after_not.0, after_not.1
+    );
+
+    // Les resultats restent identiques avec l'index
+    assert_eq!(
+        session.execute_cypher(q_join).unwrap().scalar::<i64>().unwrap(),
+        rows_join
+    );
+    assert_eq!(
+        session.execute(q_not).unwrap().scalar::<i64>().unwrap(),
+        rows_not
+    );
+
+    println!("\n--- SPEEDUP ---");
+    println!(
+        "  join correle          : {:.1}ms -> {:.1}ms  ({:.0}x)",
+        before_join.0,
+        after_join.0,
+        before_join.0 / after_join.0
+    );
+    println!(
+        "  join correle + NOT    : {:.1}ms -> {:.1}ms  ({:.0}x)",
+        before_not.0,
+        after_not.0,
+        before_not.0 / after_not.0
+    );
+
+    // Garde-fou : le seek doit battre nettement le produit cartesien.
+    assert!(
+        after_join.0 < before_join.0,
+        "le seek indexe doit battre le produit cartesien"
+    );
 }
 
 fn print_bench(label: &str, stats: (f64, f64, f64, f64), row_count: usize) {
@@ -187,36 +326,40 @@ fn bench_property_index_on_po_data() {
     println!("\n--- PHASE 2: Create Indexes ---");
 
     let idx_start = Instant::now();
-    session
-        .execute_cypher("CREATE INDEX idx_project_slug FOR (p:Project) ON (p.slug)")
-        .expect("create index on Project.slug");
+    // ── L'INDEX SE DÉCLARE PAR L'API, PAS PAR LE GQL ────────────────────────
+    // `CREATE INDEX` est refusé depuis le cutover T17 ; le chemin supporté est
+    // programmatique (celui du pont MCP et du catalogue `substrate.indexcat`).
+    db.create_property_index("slug");
     println!(
         "  CREATE INDEX Project.slug:      {:.3}ms",
         idx_start.elapsed().as_secs_f64() * 1000.0
     );
 
     let idx_start = Instant::now();
-    session
-        .execute_cypher("CREATE INDEX idx_task_status FOR (t:Task) ON (t.status)")
-        .expect("create index on Task.status");
+    // ── L'INDEX SE DÉCLARE PAR L'API, PAS PAR LE GQL ────────────────────────
+    // `CREATE INDEX` est refusé depuis le cutover T17 ; le chemin supporté est
+    // programmatique (celui du pont MCP et du catalogue `substrate.indexcat`).
+    db.create_property_index("status");
     println!(
         "  CREATE INDEX Task.status:       {:.3}ms",
         idx_start.elapsed().as_secs_f64() * 1000.0
     );
 
     let idx_start = Instant::now();
-    session
-        .execute_cypher("CREATE INDEX idx_task_plan FOR (t:Task) ON (t.plan_id)")
-        .expect("create index on Task.plan_id");
+    // ── L'INDEX SE DÉCLARE PAR L'API, PAS PAR LE GQL ────────────────────────
+    // `CREATE INDEX` est refusé depuis le cutover T17 ; le chemin supporté est
+    // programmatique (celui du pont MCP et du catalogue `substrate.indexcat`).
+    db.create_property_index("plan_id");
     println!(
         "  CREATE INDEX Task.plan_id:      {:.3}ms",
         idx_start.elapsed().as_secs_f64() * 1000.0
     );
 
     let idx_start = Instant::now();
-    session
-        .execute_cypher("CREATE INDEX idx_note_slug FOR (n:Note) ON (n.project_slug)")
-        .expect("create index on Note.project_slug");
+    // ── L'INDEX SE DÉCLARE PAR L'API, PAS PAR LE GQL ────────────────────────
+    // `CREATE INDEX` est refusé depuis le cutover T17 ; le chemin supporté est
+    // programmatique (celui du pont MCP et du catalogue `substrate.indexcat`).
+    db.create_property_index("project_slug");
     println!(
         "  CREATE INDEX Note.project_slug: {:.3}ms",
         idx_start.elapsed().as_secs_f64() * 1000.0
@@ -333,9 +476,11 @@ fn test_property_index_wal_persistence() {
                 .expect("create node");
         }
 
-        session
-            .execute_cypher("CREATE INDEX idx_slug FOR (p:Project) ON (p.slug)")
-            .expect("create index");
+        // ── L'INDEX SE DÉCLARE PAR L'API, PAS PAR LE GQL ────────────────────
+        // `CREATE INDEX` est refusé depuis le cutover T17 (le substrat bâtit sa
+        // propre indexation). Le chemin supporté est programmatique — c'est
+        // celui du pont MCP et du catalogue `substrate.indexcat`.
+        db.create_property_index("slug");
 
         // Verify index works
         let r = session
@@ -399,13 +544,9 @@ fn test_property_index_mutation_hooks() {
             .expect("create");
     }
 
-    // Create index
-    session
-        .execute_cypher("CREATE INDEX idx_slug FOR (p:Project) ON (p.slug)")
-        .expect("create index");
-    session
-        .execute_cypher("CREATE INDEX idx_status FOR (p:Project) ON (p.status)")
-        .expect("create index");
+    // Create index — API programmatique (le GQL est refusé depuis T17).
+    db.create_property_index("slug");
+    db.create_property_index("status");
 
     // Test 1: New node is found via index
     session
@@ -550,9 +691,10 @@ fn bench_on_real_po_database() {
 
     // Create indexes
     println!("\n  --- Creating Indexes ---");
-    let _ = session.execute_cypher("CREATE INDEX idx_slug FOR (p:Project) ON (p.slug)");
-    let _ = session.execute_cypher("CREATE INDEX idx_task_status FOR (t:Task) ON (t.status)");
-    let _ = session.execute_cypher("CREATE INDEX idx_note_type FOR (n:Note) ON (n.note_type)");
+    // API programmatique : le GQL CREATE INDEX est refusé depuis T17.
+    db.create_property_index("slug");
+    db.create_property_index("status");
+    db.create_property_index("note_type");
 
     // With index
     println!("  --- With Index ---");

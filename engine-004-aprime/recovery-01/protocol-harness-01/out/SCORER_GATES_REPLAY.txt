@@ -1,0 +1,38 @@
+ENGINE-008 PROTOCOL-HARNESS-01 -- REJEU DES 15 GATES SCORERS
+==========================================================================
+LLAMA_DECODE_CALL_COUNT=0
+MODEL_LOGITS_USED=NO
+ENV=ENGINE008_IFEVAL_ROOT=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/external/mbpp
+
+=== SORTIE DES 6 MODULES DE SCORING ===
+  mmlu_pro_v1        EXIT=0  MMLU_SCORER_SELFTEST=PASS
+  gsm8k_v1           EXIT=0  GSM8K_SCORER_SELFTEST=PASS
+  mbpp_v1            EXIT=0  MBPP_SANDBOX_SELFTEST=PASS
+  ifeval_v1          EXIT=0  IFEVAL_SCORER_SELFTEST=PASS
+  long_context_v1    EXIT=0  LONG_CONTEXT_SCORER_SELFTEST=PASS
+  task_scorers_v1    EXIT=0  STRUCTURED_VALIDITY_SCORER_SELFTEST=PASS | TASK_AGGREGATE_SELFTEST=PASS | BOOTSTRAP_SELFTEST=PASS
+
+=== LES 15 GATES D ORIGINE ===
+  MMLU_SCORER_SELFTEST                           PASS                   OK
+  GSM8K_SCORER_SELFTEST                          PASS                   OK
+  MBPP_SANDBOX_SELFTEST                          PASS                   OK
+  MBPP_SANDBOX_READY                             YES                    OK
+  MBPP_SCORER_SELFTEST                           PASS                   OK
+  MBPP_SANDBOX_FORK_BLOCKED                      YES                    OK
+  IFEVAL_SCORER_SELFTEST                         PASS                   OK
+  LONG_CONTEXT_SCORER_SELFTEST                   PASS                   OK
+  STRUCTURED_VALIDITY_SCORER_SELFTEST            PASS                   OK
+  TASK_AGGREGATE_SELFTEST                        PASS                   OK
+  BOOTSTRAP_SELFTEST                             PASS                   OK
+  GSM8K_REFERENCE_PARSE_FAILURE_COUNT            0                      OK
+  STRUCTURED_VALIDITY_ITEM_COUNT                 370                    OK
+  IFEVAL_DUPLICATE_PROMPT_COUNT                  0                      OK
+  BOOTSTRAP_SEED_U64                             5833308329814621762    OK
+  BOOTSTRAP_REPEATABILITY_MISMATCH_COUNT         0                      OK
+  SCORER_UNIT_TEST_FAILED_COUNT                  0                      OK
+
+GATE_COUNT=15
+SCORER_GATE_FAILED_COUNT=0
+SCORERS_CURRENT_SELFTEST=PASS
+
+LLAMA_DECODE_CALL_COUNT=0

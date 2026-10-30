@@ -223,6 +223,47 @@ WHERE score > 0.5
 RETURN node.name, score
 ```
 
+#### 2D window query (`obrain.window_2d`) — RFC zorder-superposition C5
+
+Fenêtre rectangulaire sur le plan `(centrality_cached × out-degree)` d'une
+communauté, en syntaxe GQL. Bornes inclusives et insensibles à l'ordre.
+Accélérée par plages Z (zruns) quand le layout est trié (`topo hilbert` +
+grille persistée) ; **repli scan exact automatique** sinon — les résultats
+sont toujours identiques au scan (jamais de faux positif).
+
+```sql
+-- Hubs (degré sortant ≥ 50) de la communauté 43292
+CALL obrain.window_2d(43292, 0, 65535, 50, 4294967295) YIELD node_id
+RETURN node_id
+
+-- Fenêtre ouverte sur une communauté (tous ses nœuds vivants)
+CALL obrain.window_2d(7, 0, 65535, 0, 4294967295) YIELD node_id
+RETURN node_id
+```
+
+Arguments (tous requis) : `community_id` (u32), `c_lo`, `c_hi` (centralité
+Q0.16, u16), `d_lo`, `d_hi` (degré sortant, u32). Nécessite une base adossée
+au substrate — erreur explicite sinon. Lecture pure : exécutable sur session
+read-only.
+
+#### Fenêtre cognitive (`obrain.window_2d_energy`) — C3
+
+Variante de la fenêtre 2D qui ne retient que les nœuds dont l'**énergie**
+(colonne cognitive inline, Q1.15) est ≥ un seuil — « le sous-graphe vivant
+d'une communauté », sélection par bande d'énergie pendant l'inférence.
+
+```sql
+-- Nœuds de la communauté 43292 avec degré ≥ 50 ET énergie ≥ 0,5
+CALL obrain.window_2d_energy(43292, 0, 65535, 50, 4294967295, 16384)
+YIELD node_id, energy
+RETURN node_id, energy
+ORDER BY energy DESC
+```
+
+Arguments : les cinq de `window_2d` + `energy_min_q15` (seuil d'énergie en
+Q1.15 : `0` = aucun filtre, `16384` = 0,5, `32767` = 1,0). Rend `node_id`
+(u64) et `energy` (Float64 ∈ [0, 1], valeur réelle décodée). Lecture pure.
+
 ### Inline Subquery CALL
 
 `CALL { ... }` runs an inline subquery for each input row. Variables from the outer query are visible inside the block.

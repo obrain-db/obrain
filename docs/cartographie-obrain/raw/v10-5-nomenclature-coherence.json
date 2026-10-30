@@ -1,0 +1,59 @@
+{
+  "area": "nomenclature-coherence",
+  "summary": "obrain est le rebrand officiel d'un fork de GrafeoDB/grafeo (README.md, CHANGELOG.md : « forked from GrafeoDB/grafeo and rebranded as Obrain (obrain.dev) »), hébergé sous l'org this-rs (github.com/this-rs/obrain) mais sans remote git configuré. Le workspace Cargo déclare 28 membres : 23 packages Rust obrain-* (plus obrain et neo4j2obrain) et un conteneur crates/bindings qui se déploie en 5 sous-crates (python, node, c, wasm, common) — la nomenclature Go/C#/Dart annoncée dans le brief n'apparaît pas sous crates/bindings (seul docs/api/go existe, pas de crate csharp/dart). Le dépôt porte 75 branches locales et 59 worktrees enregistrés, auxquels s'ajoutent ~13 répertoires non enregistrés dont des worktrees d'autres repos (obrain-chat-mobile, llama-obrain) et deux répertoires orphelins sans .git (wt-this-audit, wt-this-projets). La convention de nommage est globalement cohérente en obrain-*, avec trois exceptions majeures : le crate neo4j2obrain (préfixe source en tête), l'héritage grafeo toujours présent dans 97 fichiers (docs/rfc, CHANGELOG-grafeo.md, commentaires), et une paire d'ADR quasi-dupliqués ne différant que par la casse. Des dérives worktree↔branche existent (banc-obrain-fix-ecrivain pointe sur feat/reliefs-n3-outils-cognitifs, wt-selfd-edit sur fix/selfd-exec-arriere-plan), et la séquence j01/j2..j5 mélange zéro-padding et séquence plan-jN sans correspondance 1:1 avec les branches.",
+  "components": [
+    "crates/ — 24 dossiers : obrain, obrain-adapters, obrain-aveugle, obrain-cli, obrain-coffre, obrain-cognitive, obrain-common, obrain-core, obrain-engine, obrain-garde, obrain-httpmin, obrain-iam, obrain-indexer, obrain-journal, obrain-migrate, obrain-rag, obrain-reactive, obrain-selfd, obrain-selflink, obrain-substrate, obrain-tls, obrain-viz, neo4j2obrain, bindings",
+    "crates/bindings/ — conteneur sans Cargo.toml racine, 5 sous-crates : python, node, c, wasm, common (members déclarés dans Cargo.toml)",
+    "Cargo.toml — workspace racine : 28 membres, repository = https://github.com/this-rs/obrain",
+    "CHANGELOG.md — renommage officiel Grafeo→Obrain, pointe vers CHANGELOG-grafeo.md comme historique upstream",
+    "CHANGELOG-grafeo.md — changelog historique Grafeo conservé (version 0.5.25)",
+    "README.md — badges npm @obrain-db/js, @obrain-db/wasm, NuGet Obrain, PyPI obrain, crates.io obrain",
+    "crates/obrain-engine/tests/coverage_rebrand.rs — test de couverture du renommage Grafeo→Obrain (ObrainDB::new_in_memory)",
+    "crates/neo4j2obrain/ — crate de migration, seul à ne pas suivre la convention obrain-*",
+    "docs/ — 383 fichiers .md (490 fichiers au total), 189 .md au niveau racine, 24 sous-dossiers",
+    "docs/rfc/substrate/ — format-spec.md, migration-audit.md, propszone-pages-partagees.md, multi-writer.md, tier-persistence.md, double-journalisation-wal-props.md, cognitive-quality*.md (références grafeo)",
+    "docs/api/ — c, go, node, python, rust, wasm, index.md (pas de csharp/dart)",
+    "docs/algorithms/ — 7 fichiers ; docs/cognitive/ ; docs/architecture/ ; docs/ecosystem/",
+    "docs/cartographie-obrain/raw/ — 45 fichiers JSON déjà produits (v1 à v9), le présent v10-5 s'y ajoute",
+    "docs/ADR-2026-09-13-chaine-iam-et-explosion-des-liens.md — ADR (157 lignes), doublon casse du suivant",
+    "docs/ADR-2026-09-13-CHAINE-IAM-ET-EXPLOSION-DES-LIENS.md — ADR (165 lignes), contenu réécrit ≠ du précédent",
+    "packages/obrain-dashboard/ — app Vue/Vite ; packages/obrain-cli-npm/ ; packages/obrain-cli-python/",
+    "docs/plan-j4.md .. plan-j9.md + plan-j5-bascule.md, plan-j9-protobuf.md — séquence plan-jN sans correspondance 1:1 avec les branches",
+    "runtime/ runtime-dev/ runtime-dev.obrain/ runtime-prod/ self-demo/ x/ acceptation-chat-* agent-synapse-triviere-dsh — répertoires racine contenant des fichiers substrate (substrate.community, substrate.degrees.node.u32, substrate.dict, substrate.props.idx.v2)"
+  ],
+  "relationships": [
+    "GrafeoDB/grafeo --fork/rebrand--> this-rs/obrain (README.md, CHANGELOG.md, Cargo.toml repository)",
+    "CHANGELOG-grafeo.md --conservé comme historique--> CHANGELOG.md (obrain)",
+    "crates/bindings/ --déploie--> 5 sous-crates python/node/c/wasm/common (members workspace)",
+    "crates/neo4j2obrain --migration--> obrain (import neo4j)",
+    "docs/rfc/* et docs/bench-verify/* --référencent encore--> 'grafeo' (97 fichiers au total)",
+    "crates/obrain-engine/tests/coverage_rebrand.rs --garantit--> absence de grafeo dans la surface publique",
+    "docs/cartographie-obrain/raw/*.json --consomme--> le dépôt (v1..v9 déjà produits)",
+    "worktrees wt-chat-* --appartiennent à--> obrain-chat-mobile (gitdir ../obrain-chat-mobile/.git)",
+    "worktree /mnt/obrain/wt-wht-dense --appartient à--> llama-obrain (gitdir ../llama-obrain/.git)",
+    "branches feat/principal-natif-j01..j5 --alimentent--> worktrees banc-obrain-natif, banc-obrain-j2..j5",
+    "branches feat/index-ordonne-j6, feat/payload-viz-j7, feat/orderby-epoque-j8, feat/transport-ws-j9 --alimentent--> worktrees banc-obrain-j6..j9 (thèmes ≠ principal-natif)"
+  ],
+  "notable_findings": [
+    "Doublon d'ADR : ADR-2026-09-13-chaine-iam-et-explosion-des-liens.md vs ADR-2026-09-13-CHAINE-IAM-ET-EXPLOSION-DES-LIENS.md — même date/titre, casse seule différente, mais contenus réellement divergents (157 vs 165 lignes, md5 différents) → deux versions concurrentes du même ADR coexistent",
+    "Renommage grafeo→obrain : le code est rebrandé (aucun package 'grafeo' dans les Cargo.toml, test coverage_rebrand.rs), mais 97 fichiers mentionnent encore 'grafeo' (docs/rfc, CHANGELOG-grafeo.md, commentaires de code) — l'assertion « aucune surface publique ne porte plus l'ancien nom » ne couvre pas la doc",
+    "neo4j2obrain est le seul crate hors convention obrain-* (préfixe = source neo4j, pas préfixe obrain)",
+    "Le brief annonce des bindings Python/Node/Go/C#/Dart/WASM, mais crates/bindings ne contient que python, node, c, wasm, common ; docs/api a go mais ni csharp ni dart → trou entre nomenclature annoncée et réalité",
+    "Dérives worktree↔branche : banc-obrain-fix-ecrivain pointe sur feat/reliefs-n3-outils-cognitifs (pas fix/ecrivain-unique-bridge) ; wt-selfd-edit pointe sur fix/selfd-exec-arriere-plan (pas feat/selfd-edit) ; wt-projets-moteur sur integration/projets",
+    "75 branches locales (le brief disait ~50) ; 59 worktrees enregistrés + ~13 répertoires non enregistrés, dont des worktrees d'AUTRES repos (obrain-chat-mobile, llama-obrain) mélangés aux worktrees banc-obrain",
+    "wt-this-audit et wt-this-projets ne sont PAS des repos git (aucun .git) — répertoires orphelins ; banc-obrain-release est un clone git plein (feat/data-load-bulk) non enregistré comme worktree",
+    "Incohérence de zéro-padding : feat/principal-natif-j01 (zéro en tête) vs j2..j5 (sans) ; docs/plan-jN ne correspond pas 1:1 aux branches (j6..j9 = index-ordonne/payload-viz/orderby-epoque/transport-ws, pas principal-natif)",
+    "Répertoires racine runtime/, runtime-dev/, runtime-dev.obrain/, runtime-prod/, self-demo/, x/, acceptation-chat-* contiennent des fichiers de données substrate (substrate.community, substrate.degrees.node.u32, substrate.props.idx.v2) — fuite de données runtime dans le dépôt, avec un nommage divergent runtime-dev vs runtime-dev.obrain",
+    "Aucun remote git configuré (git remote -v vide) malgré les références github.com/this-rs/obrain et l'historique de fork GrafeoDB"
+  ],
+  "gaps": [
+    "ADR dupliqué à réconcilier : choisir entre chaine-iam-et-explosion-des-liens (minuscules) et CHAINE-IAM-ET-EXPLOSION-DES-LIENS (majuscules) — une seule version canonique attendue",
+    "Bindings Go/C#/Dart annoncés mais absents de crates/bindings (seul docs/api/go existe) — où vivent les bindings go/csharp/dart, ou s'agit-il d'un écart doc vs code ?",
+    "97 fichiers référencent encore 'grafeo' — la doc (docs/rfc, bench) est en retard sur le rebrand du code ; CHANGELOG-grafeo.md est-il volontairement conservé ou à migrer ?",
+    "Worktrees orphelins wt-this-audit / wt-this-projets sans .git — à supprimer ou à ré-enregistrer ; banc-obrain-release est un clone non enregistré",
+    "Branches sans worktree (18) : feat/selfd-edit, feat/slots512-wiring, feat/zorder, feat/release-m6-zorder, feat/llama-obrain-index-persist (déplacé vers repo llama-obrain ?), fix/ecrivain-unique-bridge, fix/iam-pont-lecture, fix/ch8b-engrams, fusion/j4-final, fusion/tronc-plus-j6, main, v4, tmp-base, sauvegarde/*, consolidation/tronc-release-2026-09-15 — branches mortes ou en attente de worktree ?",
+    "Désalignement worktree/branche à clarifier : banc-obrain-fix-ecrivain (→feat/reliefs-n3-outils-cognitifs) et wt-selfd-edit (→fix/selfd-exec-arriere-plan) portent des noms qui ne reflètent pas leur branche",
+    "Le brief annonce « ~200 .md » et « ~24 crates » : la réalité est 383 .md (490 fichiers) et 24 dossiers crates = 23 packages + conteneur bindings (28 membres workspace) — périmètre à recaler",
+    "Données substrate (runtime*, x/, acceptation-chat-*, self-demo) présentes à la racine du dépôt : s'agit-il d'une fuite, d'un artefact de test ou d'un état voulu ? nommage runtime-dev.obrain vs runtime-dev incohérent"
+  ]
+}

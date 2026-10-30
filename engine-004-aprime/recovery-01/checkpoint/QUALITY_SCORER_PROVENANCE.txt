@@ -1,0 +1,55 @@
+QUALITY_SCORER_PROVENANCE
+
+scorer_id=gsm8k_v1
+  source_path=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/scorers/gsm8k_v1.py
+  source_sha256=3b8a3000275f1545a99b6ac9dd60c0c21fee71c526a80f4b438c60e8a7c8b239
+  selftest_gate=GSM8K_SCORER_SELFTEST
+  determinism_contract=DETERMINISTIC_NO_RNG_UNLESS_SEEDED
+
+scorer_id=ifeval_v1
+  source_path=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/scorers/ifeval_v1.py
+  source_sha256=cbd662d3d03743c781af0ba24571a3fd2b2ce91467e4afdb4567e136d2d8afb7
+  selftest_gate=IFEVAL_SCORER_SELFTEST
+  determinism_contract=DETERMINISTIC_NO_RNG_UNLESS_SEEDED
+
+scorer_id=long_context_v1
+  source_path=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/scorers/long_context_v1.py
+  source_sha256=049d1ffa4bf106d1447a781bddc9fcc6e9a0a5600a12a6ba10a65c3c3cd93645
+  selftest_gate=TASK_AGGREGATE_SELFTEST/BOOTSTRAP_SELFTEST
+  determinism_contract=DETERMINISTIC_NO_RNG_UNLESS_SEEDED
+
+scorer_id=mbpp_v1
+  source_path=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/scorers/mbpp_v1.py
+  source_sha256=6f4aee18b6c3eba31418d7099e86a67c0d695159814361233d295e6e826c1685
+  selftest_gate=MBPP_SANDBOX_SELFTEST
+  determinism_contract=DETERMINISTIC_NO_RNG_UNLESS_SEEDED
+
+scorer_id=mmlu_pro_v1
+  source_path=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/scorers/mmlu_pro_v1.py
+  source_sha256=c0c0134502abea0f68dfb34b169a47324f2b606d0453bab4c546f983785f4e31
+  selftest_gate=MMLU_SCORER_SELFTEST
+  determinism_contract=DETERMINISTIC_NO_RNG_UNLESS_SEEDED
+
+scorer_id=task_scorers_v1
+  source_path=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1/scorers/task_scorers_v1.py
+  source_sha256=db1e0f15109cef00b70b81c3862071fccc75810358d1d663cd5c8c0017dde95a
+  selftest_gate=TASK_AGGREGATE_SELFTEST
+  determinism_contract=DETERMINISTIC_NO_RNG_UNLESS_SEEDED
+
+config_files:
+  STRUCTURED_VALIDITY_CONFIG_v1.txt sha256=7896e65e4ba6c1d6749067db27eba26fc74ecfa25f0fb0418887fc3d17b289d3
+  TASK_PROMPT_CONTRACTS_v1.txt sha256=fa30f16d95a564491e6d02666350ba783d6f44493ea5d04cef024e92ef0c3bc6
+
+BOOTSTRAP_SEED_MATERIAL=ENGINE-008-QUALITY-v1|paired-bootstrap|v1
+BOOTSTRAP_SEED_U64=5833308329814621762
+BOOTSTRAP_RESAMPLES=10000
+PERCENTILE_ALGORITHM=empirical_linear_interpolation_k=(n-1)*p
+STRATIFICATION=per_category_matched_indices
+
+SANDBOX:
+  backend=docker
+  pids_limit=1 (SEULE valeur qui bloque os.fork : 64 et 2 le laissent passer)
+  network=none  read_only_rootfs=yes  no_new_privileges=yes
+  cpu=1.0  memory=512m  wall_timeout=30s  user=65534:65534
+  seccomp_nofork=NON_UTILISE (refuser execve empeche le conteneur de demarrer)
+

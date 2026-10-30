@@ -1,0 +1,6 @@
+--- A ---
+{"text":"kv_state:046f5945a8dc6fc9","fact_tokens":58,"blob_bytes":160697024,"per_token_ms":[],"fact_decode_ms":0.0,"query_decode_ms":0.0,"spec_draft_n":0,"spec_draft_accepted":0,"prefix_decode_calls":1,"prefix_token_count":58,"state_imported":false}
+--- B ---
+{"text":".\n</think>\n\nOK.","fact_tokens":58,"blob_bytes":160697024,"per_token_ms":[1427.885009765625,1497.6920166015625,1481.113037109375,1425.489990234375,1514.4239501953125,1453.321044921875],"fact_decode_ms":857.5260009765625,"query_decode_ms":1570.470947265625,"spec_draft_n":0,"spec_draft_accepted":0,"prefix_decode_calls":1,"prefix_token_count":58,"state_imported":false}
+--- C ---
+{"text":".\n</think>\n\nOK.","fact_tokens":58,"blob_bytes":160697024,"per_token_ms":[1477.5880126953125,1418.1600341796875,1467.843994140625,1498.241943359375,1472.4339599609375,1516.958984375],"fact_decode_ms":216.98699951171875,"query_decode_ms":1532.343017578125,"spec_draft_n":0,"spec_draft_accepted":0,"prefix_decode_calls":0,"prefix_token_count":0,"state_imported":true}

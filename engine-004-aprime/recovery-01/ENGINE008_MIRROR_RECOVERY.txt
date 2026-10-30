@@ -1,0 +1,61 @@
+ENGINE-008 RECOVERY-01 -- §3 RECUPERATION DEPUIS LES SOURCES DOCUMENTEES
+==========================================================================
+HOTE_D_EXECUTION=n3 (cette machine)
+DATE_UTC=2026-10-02
+
+=== SOURCES DE RECUPERATION EXAMINEES ===
+
+1. HOTE n3 -- emplacements examines
+   /home/triviere/exp-artifacts                      ABSENT
+   /mnt/obrain/**                                    ABSENT
+   couches overlay Docker                            ABSENT
+   archives du disque (7-15 sept.)                   NE CONTIENNENT PAS la passe (1-2 oct.)
+   git banc-obrain (engine-004-aprime non suivi)      AUCUN HISTORIQUE
+   RESULTAT=n3_ne_porte_pas_l_arbre_ENGINE-008
+   La recherche exhaustive anterieure n a pas ete refaite : aucun indice nouveau.
+
+2. HOTE dgx = spark-c578 (192.168.1.7, alias ssh 'dgx')
+   ACCES=ssh alias 'dgx', cle ~/.ssh/id_ed25519, SHELL COMPLET
+   RESULTAT=SUCCES COMPLET -- l arbre ENGINE-008 entier est present.
+   Racine=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/qualification/engine-008-quality-v1
+   SOURCE_DE_RECUPERATION_RETENUE=OUI
+
+3. HOTE n1 (192.168.1.101, alias ssh 'n1', shell complet)
+   /home/triviere/exp-artifacts                      ABSENT
+   /home/triviere/projects/llama-obrain              present, sans fork f1a
+   RESULTAT=pas de copie ENGINE-008
+
+4. MIROIRS rrsync (acces RESTREINT, commande forcee, LECTURE SEULE)
+   n1-miroir (192.168.1.101) racine exposee :
+     bundle_test.js, page_test.html, start_dragon.sh, test-ws.js, test-ws.py,
+     dragon-3d/, llama-obrain/ (25 juillet), snake-jotai/
+   n2-miroir (192.168.1.102) racine exposee :
+     aletheia/, llama-obrain/
+   RESULTAT=les miroirs ne portent AUCUN artefact ENGINE-008.
+     Leur 'llama-obrain' date du 25 juillet : ANTERIEUR au fork f1a.
+   PROTOCOLE RESPECTE=lecture seule via rsync --list-only. Aucun upload,
+     aucun --delete, aucune modification distante, aucune sortie de la racine
+     exposee, aucune exposition de cle, aucune tentative de contourner la
+     commande forcee.
+   L ACCES SANS SHELL N A PAS ETE TRADUIT EN IRRECUPERABILITE : il a ete
+     teste, et il s avere que la racine utile est simplement absente.
+
+5. n2 en shell direct : l alias 'n2' ne resout pas (echec DNS local).
+   Non requis : l arbre est sur le dgx.
+
+=== CONSTAT METHODOLOGIQUE IMPORTANT (CORRECTION DE LA PASSE PRECEDENTE) ===
+La passe precedente concluait « arbre supprime de la machine ». Ce constat
+etait EXACT pour n3 et FAUX comme affirmation globale. L arbre n a jamais ete
+supprime : il n a jamais reside sur n3. La passe HARNESS s executait sur n3,
+la passe DATA/SCORERS s executait sur le dgx.
+La clause §2 de cette passe avait nomme exactement ce piege : « suppression
+globale, qui n est pas prouvee par la seule absence locale ». Les faits la
+confirment. La correction est consignee, pas attenuee.
+
+=== RECUPERATION EFFECTUEE ===
+Aucune copie de masse. Le checkpoint local (n3) porte les fichiers CRITIQUES
+et LEGERS (56 fichiers, 3,5 Mo) sous recovery-01/checkpoint/, verifies par
+re-hachage sur n3.
+Les jeux de donnees volumineux (external/) et les MODELES restent sur le dgx :
+§8 interdit de dupliquer les grands modeles ; leurs chemins resolus, tailles
+et SHA sont consignes dans le manifeste.

@@ -35,6 +35,8 @@ fn row_values(key: &RowKey) -> Vec<Value> {
 fn materialize(op: &mut dyn Operator) -> Result<Vec<RowKey>, OperatorError> {
     let mut rows = Vec::new();
     while let Some(chunk) = op.next()? {
+        super::verifier_annulation()?;
+
         for row in chunk.selected_indices() {
             rows.push(row_key(&chunk, row));
         }
@@ -274,6 +276,7 @@ impl OtherwiseOperator {
 impl Operator for OtherwiseOperator {
     fn next(&mut self) -> OperatorResult {
         loop {
+            super::verifier_annulation()?;
             match &mut self.state {
                 OtherwiseState::Init => {
                     // Probe left for first chunk

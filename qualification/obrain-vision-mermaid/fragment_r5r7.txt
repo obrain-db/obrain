@@ -1,0 +1,101 @@
+SPHERE: q0_r5r7
+RESUME: La sphere Q0 R5 a R7 a ferme l infrastructure de capture du graphe soumis, graduee etape par etape, avec la passe no-rotation comme point de depart. Le no-rotation avait refute la residence du buffer a l extraction par un SIGABRT mesure, tout en n etablissant qu un smoke capture-off et une tracabilite d inventaire. R5 a etabli l atteignabilite descendante a 156 sur 168 en lisant le drapeau GGML_TENSOR_FLAG_OUTPUT au lieu de deviner la forme du graphe, avec 12 exceptions attn_k ecrites dans le cache KV et documentees comme topologie reelle. R6 a retire explicitement sa propre affirmation d un decalage d une soumission et a qualifie le chemin d ecriture KV et les 672 payloads, mais butait sur un hash fnv64x4 et sur la semantique d extraction backend. R7 a remplace ces trois gates par un SHA256 reel avec controle negatif, cinq garanties B1 a B5 et l egalite A B C sur 168 identifiants, ce qui autorise Q0_FULL_RUN_ALLOWED mais laisse Q0 non passe et Q1 interdit. Le gate de proprietaire de buffer independant reste ouvert car l API ne l expose pas, et la declaration q8_1 PASS portee par R5 R6 R7 est contredite par N4 qui retrouve le defaut sous le numero 57. Aucun chiffre de ce fragment n a ete produit ici, tous sont lus dans les rapports cites.
+NOEUDS:
+[PROUVE] r5r7_no_rotation_smoke_off :: Passe no-rotation Q0-S0 smoke capture desactivee passe avec RC zero et aucun payload ni entree de manifeste produit sur 8 tokens :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] r5r7_no_rotation_compteurs_inertie :: Passe no-rotation compteurs runtime d inertie non mesures car non implementes la reserve est declaree et non contournee :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] r5r7_no_rotation_q0_off :: Passe no-rotation Q0-S2 capture desactivee passe avec logits reels produits :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] r5r7_no_rotation_q0_on_echec :: Passe no-rotation Q0-S3 capture activee echoue par SIGABRT a l extraction et les etapes S4 a S6 ne sont pas atteintes :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] r5r7_no_rotation_harnais_libllama :: Passe no-rotation harnais minimal libllama en teacher forcing un token par decode sans chat ni sampling avec SHA256 1c340a9546c3df584b80ba5123b5491d907d0051639f3404599c9e8c11298384 :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] r5r7_no_rotation_inventaire :: Passe no-rotation inventaire fige charge avec 168 noms eligibles et zero doublon la chaine identification registre extraction est vivante :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[REFUTE] r5r7_no_rotation_residence_refutee :: Passe no-rotation le SIGABRT sur ggml_backend_tensor_get refute que la residence du buffer soit acquise la ou la preuve statique ne couvrait que l ordre :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[RETIRE] r5r7_no_rotation_preuve_statique_surinterpretee :: Passe no-rotation la presentation de CAPTURE_TENSOR_LIFETIME_STATIC_PROOF comme reglant la duree de vie est retiree elle n etablissait que l ordre COMPUTE avant SYNCHRONIZE avant EXTRACTION avant INVALIDATION :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] r5r7_no_rotation_mapping_operande :: Passe no-rotation mapping des operandes et dependance de graphe declares NO et usage du tenseur de capture comme src1 vrai par construction mais non confirme a l execution :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] r5r7_no_rotation_gates_q0_non_franchis :: Passe no-rotation aucun gate de Q0 franchi au dela du smoke pas de manifeste exploitable pas de comparaison OFF ON pas de validation de reference contre la sortie native :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] r5r7_no_rotation_perf_invalide :: Passe no-rotation donnees de performance de la capture declarees INVALID_NOT_MEASURED car les executions parasites ne mesuraient rien :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] r5r7_defaut_a_cli_interactif :: Defaut non numerote A le CLI llama-obrain reste interactif et consomme le heredoc SSH produisant 5 524 130 360 puis 4 295 057 795 octets de sortie parasite fichiers supprimes et aucun resultat exploitable RESOLU :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] r5r7_defaut_b_logits_all :: Defaut non numerote B le champ llama_context_params logits_all n existe pas dans ce fork RESOLU par retrait du champ :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[OUVERT] r5r7_defaut_c_backend_suppose :: Defaut non numerote C backend suppose au lieu d etre demande au tenseur dans f1a_capture_end_epoch cause identifiee du SIGABRT et NON RESOLU a la fin de la passe :: docs/ENGINE-007B-F1A-Q0-NO-ROTATION-CAPTURE-QUALIFICATION.md
+[PROUVE] r5r7_defaut_47 :: Defaut 47 CLI interactif llama-obrain consommant le heredoc SSH comme entree du modele numero attribue apres verification du registre et RESOLVED :: docs/ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r5r7_defaut_48 :: Defaut 48 extraction tentee sans controle de residence du buffer RESOLVED par conditionnement sur t_buffer non nul :: docs/ENGINE-007B-F1A-Q0-R1-TENSOR-RESIDENCY-BACKEND-QUALIFICATION.md
+[PROUVE] r5r7_defaut_49 :: Defaut 49 gf_n_nodes accede via un type ggml_cgraph incomplet declare RESOLVED :: docs/ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r5r7_defaut_46 :: Defaut 46 reference q8_1 utilisant l arrondi bancaire au lieu de roundf declare RESOLVED dans R4 R5 R6 et R7 :: docs/ENGINE-007B-F1A-Q0-R4-CAPTURE-INFRASTRUCTURE-QUALIFICATION.md
+[PROUVE] r5r7_defaut_50 :: Defaut 50 compteur de contexte actif mesurant des sondes et non des contextes declare RESOLVED_VERIFIED_BY_OFF_ON_DISCRIMINATION verifie par la discrimination OFF ON et non par l ecriture du patch :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[RETIRE] r5r7_defaut_51 :: Defaut 51 affirmation fausse d attribution decalee d une soumission dans le rapport RETRACTED_AFTER_MEASUREMENT :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_defaut_56 :: Defaut 56 declare RESOLVED_VERIFIED dans le ledger de N4 :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[RETIRE] r5r7_defaut_57 :: Defaut 57 reference q8_1 avec echelle fp16 inversee et arrondi bancaire declare RESOLVED_VERIFIED_BY_NATIVE_OUTPUT_AGREEMENT :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[PROUVE] r5r7_r5_lecture_drapeau :: R5 la sortie du graphe est DECLAREE par le drapeau GGML_TENSOR_FLAG_OUTPUT lu a llama-graph.cpp 1305-1337 et ggml.h 662 et non par une position dans le tableau :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[REFUTE] r5r7_r5_deviner_forme_graphe :: R5 deux tentatives par propriete topologique sont rejetees par la mesure 129 echecs puis 153 echecs pire contre 12 en lisant la declaration explicite :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[PARTIEL] r5r7_r5_atteignabilite_156 :: R5 atteignabilite descendante etablie sur 156 cibles sur 168 les 12 exceptions etant des attn_k et les 156 atteignant une sortie etant 48 ffn_up 48 ffn_gate 36 attn_gate 12 attn_q et 12 attn_output :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r5_exceptions_attn_k :: R5 les 12 cibles inatteignables sont les cles d attention des couches 11 a 55 par pas de 4 ecrites dans le cache KV sans consommateur marque et ne sont pas des defauts :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r5_gates_c :: R5 relations structurelles du graphe prouvees sur 168 sur 168 avec les trois compteurs de divergence de role a zero :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r5_off_on_inertie :: R5 discrimination OFF ON cinq zeros en OFF contre ctx_active 4479 note 1512 payload_write 672 et dup_added 3024 en ON avec 4477 sondes en OFF :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[PARTIEL] r5r7_r5_proprietaire_buffer :: R5-b propriete du backend enregistree sur le nom et le type CUDA0 avec reserve explicite sur l identite de proprietaire :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[PARTIEL] r5r7_proprietaire_non_expose :: La reserve est maintenue de R5 a R7 ggml_backend_buffer_name renvoie le nom du type de buffer donc INDEPENDENT_BUFFER_OWNER_ID NOT_EXPOSED :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r5_gate_d :: R5-d PAYLOAD_PROVENANCE_COMPLETE declare NON IMPLEMENTE :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r5_gate_e :: R5-e SUBMITTED_TARGET_CAPTURE_COMPLETENESS declare NON MESURE :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r5_compteurs_non_mesures :: R5 les compteurs de captures uniques cur et mul_mat sont declares NON MESURE :: docs/ENGINE-007B-F1A-Q0-R5-INFRASTRUCTURE-CLOSURE.md
+[RETIRE] r5r7_r6_retractation_off_by_one :: R6 retire explicitement l affirmation d une etiquette de soumission decalee d une soumission PAYLOAD_SUBMISSION_ATTRIBUTION passe a CORRECT_NO_OFFSET :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r6_chronologie :: R6 la chronologie lue montre que end_epoch s execute apres le decode qui vient de soumettre donc les etiquettes 1 puis 2 sont justes :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r6_kv_sink :: R6 chemin d ecriture KV identifie par lecture llama_kv_cache cpy_k a llama-kv-cache.cpp 1323 pose par ggml_build_forward_expand donc dans le graphe soumis :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r6_effet_cibles :: R6 156 cibles dependantes d une sortie et 12 cibles a effet de bord KV avec zero inexpliquee et completude du chemin d effet PASS :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r6_comptes_payloads :: R6 672 payloads soit 336 activation et 336 base_output repartis 336 sub 1 et 336 sub 2 verifies par un verificateur independant du chemin d ecriture avec zero manquant zero doublon zero divergence :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r6_hash_fnv :: R6 le hash des payloads est fnv64x4 et non SHA256 l exigence d un SHA256 calcule apres ecriture complete n est pas satisfaite :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r6_semantique_backend :: R6 BACKEND_EXTRACTION_SEMANTICS_QUALIFIED NO le contrat des API d extraction hote n a pas ete relu :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r6_gate_abc :: R6 SUBMITTED_TARGET_CAPTURE_COMPLETENESS declare non mesure :: docs/ENGINE-007B-F1A-Q0-R6-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r7_sha256 :: R7 SHA256 reel sur les 672 payloads zero manquant zero divergence de taille zero divergence de hash 64 caracteres hexadecimaux :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r7_controle_negatif :: R7 controle negatif un octet modifie dans une copie est detecte et le payload de qualification reste intact apres le test :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r7_semantique_extraite :: R7 cinq garanties B1 a B5 chacune etayee par la source ou la mesure qualifies sur la validite du transfert hote :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r7_abc :: R7 comparaison par identifiants epoque et cible A egale B egale C a 168 avec toutes les differences d ensembles vides et zero cible manquante ou inattendue :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_r7_infra_qualifiee :: R7 infrastructure de capture du graphe soumis qualifiee et Q0_FULL_RUN_ALLOWED passe a YES :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PARTIEL] r5r7_r7_post_traitement :: R7 est un post traitement hote binaire diagnostique inchange depuis R6 execution du modele non rejouee le SHA256 porte sur les fichiers existants :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_r7_controle_off_non_rejoue :: R7 le controle OFF n a pas ete rejoue et s appuie sur R4 et R6 sans contre exemple :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[REFUTE] r5r7_q8_ref_pass_contredit :: La declaration Q8_1_REFERENCE_UNIT_TESTS PASSE et ROUNDING_HALF_CASES_OK portee dans les ledgers R5 R6 et R7 est rejetee par la mesure de N4 qui retrouve une echelle fp16 inversee et un arrondi bancaire dans la reference anterieure :: docs/ENGINE-007B-F1A-Q0-N4-NATIVE-Q8-AND-OPERATOR-VALIDATION.md
+[OUVERT] r5r7_q0_non_passe :: Q0_STATUS NOT_PASSED a la fin de R7 la transparence numerique OFF ON et la comparaison de la reference q8_1 TQ2 contre la sortie CUDA native ne sont pas mesurees :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_q1_non_autorise :: Q1_ALLOWED NO le domaine POST-WHT n est pas qualifie :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[OUVERT] r5r7_produit_non_mesure :: SALIENCY_MEASURED NO QUALITY_ABLATION non mesuree et PRODUCT_GAIN NOT_MEASURED a la fin de R5 R6 et R7 :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+[PROUVE] r5r7_plumbing_failures :: PLUMBING_FAILURE_COUNT fige a 28 et PLUMBING_FAILURE_29 NOT_ASSIGNED dans les ledgers de R5 R6 et R7 :: docs/ENGINE-007B-F1A-Q0-R7-INFRASTRUCTURE-CLOSURE.md
+LIENS:
+r5r7_no_rotation_q0_on_echec -> r5r7_no_rotation_residence_refutee [DEMONTRE] le SIGABRT a l extraction mesure que la residence du buffer n etait pas acquise
+r5r7_no_rotation_preuve_statique_surinterpretee -> r5r7_no_rotation_residence_refutee [RETIRE] la preuve d ordre est retiree comme preuve de residence
+r5r7_no_rotation_residence_refutee -> r5r7_defaut_c_backend_suppose [OUVRE] la supposition de backend reste le correctif identifie mais non applique
+r5r7_defaut_a_cli_interactif -> r5r7_no_rotation_harnais_libllama [REMPLACE] le CLI interactif est remplace par le harnais libllama dedie
+r5r7_defaut_a_cli_interactif -> r5r7_no_rotation_perf_invalide [DEMONTRE] des executions qui ne mesurent rien invalident les donnees de performance associees
+r5r7_defaut_a_cli_interactif -> r5r7_defaut_47 [REMPLACE] le defaut non numerote A recoit le numero 47 apres verification du registre
+r5r7_defaut_c_backend_suppose -> r5r7_defaut_48 [REMPLACE] le defaut non numerote C recoit le numero 48 et est declare resolu par conditionnement sur buffer non nul
+r5r7_no_rotation_compteurs_inertie -> r5r7_r5_off_on_inertie [OUVRE] les compteurs manquants sont implementes puis lus en R5 sous forme de discrimination OFF ON
+r5r7_no_rotation_smoke_off -> r5r7_no_rotation_q0_off [DEMONTRE] le smoke capture desactivee precede l execution OFF complete de la trajectoire figee
+r5r7_no_rotation_harnais_libllama -> r5r7_no_rotation_q0_off [DEPEND] l execution OFF repose sur la trajectoire figee du nouveau harnais
+r5r7_no_rotation_q0_off -> r5r7_no_rotation_q0_on_echec [OUVRE] le OFF passe mais le ON echoue ce qui ouvre la qualification de la capture
+r5r7_no_rotation_gates_q0_non_franchis -> r5r7_defaut_c_backend_suppose [OUVRE] un gate de Q0 non franchi renvoie au correctif de residence laisse ouvert
+r5r7_no_rotation_mapping_operande -> r5r7_r5_gates_c [REMPLACE] le mapping operande non prouve est remplace par la preuve des relations structurelles sur 168 sur 168
+r5r7_defaut_50 -> r5r7_r5_off_on_inertie [DEMONTRE] le defaut de compteur est verifie par discrimination OFF ON et non par l ecriture du patch
+r5r7_r5_deviner_forme_graphe -> r5r7_r5_lecture_drapeau [REMPLACE] la lecture de la declaration explicite remplace les deux devinettes refutees
+r5r7_r5_lecture_drapeau -> r5r7_r5_atteignabilite_156 [DEMONTRE] la declaration explicite des sorties fonde le calcul d atteignabilite
+r5r7_r5_atteignabilite_156 -> r5r7_r5_exceptions_attn_k [DEPEND] les 12 exceptions sont le complement des 168 cibles soumises
+r5r7_r5_exceptions_attn_k -> r5r7_r6_kv_sink [DEMONTRE] le chemin d ecriture KV identifie par lecture en R6 confirme la classification des exceptions
+r5r7_proprietaire_non_expose -> r5r7_r5_proprietaire_buffer [DEPEND] la reserve sur la propriete du buffer est maintenue de R5 jusqu a R7
+r5r7_r5_off_on_inertie -> r5r7_r5_gate_d [OUVRE] l inertie etablie ne suffit pas la provenance des payloads reste non implementee
+r5r7_r5_gate_d -> r5r7_r6_hash_fnv [OUVRE] le gate de provenance est repris en R6 et bute sur l algorithme de hash
+r5r7_r5_gate_e -> r5r7_r6_gate_abc [OUVRE] la completude des cibles capturees reste non mesuree en R6
+r5r7_r6_chronologie -> r5r7_r6_retractation_off_by_one [DEMONTRE] la lecture de l ordre des evenements fonde la retractation
+r5r7_r6_retractation_off_by_one -> r5r7_defaut_51 [RETIRE] l affirmation d un decalage d une soumission est explicitement retiree apres mesure
+r5r7_r6_kv_sink -> r5r7_r6_effet_cibles [DEMONTRE] le chemin d ecriture qualifie les 12 cibles a effet de bord KV
+r5r7_r6_comptes_payloads -> r5r7_r7_sha256 [DEPEND] les 672 payloads comptes en R6 sont repris et hashes en R7
+r5r7_r6_hash_fnv -> r5r7_r7_sha256 [REMPLACE] fnv64x4 est remplace par SHA256 et n est plus presente comme un SHA256
+r5r7_r6_semantique_backend -> r5r7_r7_semantique_extraite [REMPLACE] le gate non franchi est remplace par les garanties B1 a B5 etayees
+r5r7_r6_gate_abc -> r5r7_r7_abc [REMPLACE] la completude non mesuree est remplacee par la comparaison par identifiants
+r5r7_r6_effet_cibles -> r5r7_r7_abc [DEPEND] l ensemble B de R7 est construit sur la classification des chemins d effet de R6
+r5r7_r7_controle_negatif -> r5r7_r7_infra_qualifiee [DEMONTRE] le controle negatif etablit que le verificateur discrimine au lieu de repondre toujours OK
+r5r7_no_rotation_inventaire -> r5r7_no_rotation_q0_on_echec [DEMONTRE] l inventaire charge et un payload ecrit prouvent que la chaine vit avant l arret sur le buffer
+r5r7_r7_sha256 -> r5r7_r7_controle_negatif [DEPEND] le verificateur est lui meme controle par une copie de payload alteree
+r5r7_r7_sha256 -> r5r7_r7_infra_qualifiee [DEMONTRE] la provenance complete avec SHA256 ferme le gate de provenance
+r5r7_r7_semantique_extraite -> r5r7_r7_infra_qualifiee [DEMONTRE] la validite du transfert hote ferme le gate de semantique d extraction
+r5r7_r7_abc -> r5r7_r7_infra_qualifiee [DEMONTRE] l egalite A B C sur 168 identifiants ferme le gate de completude des cibles
+r5r7_r7_post_traitement -> r5r7_r7_infra_qualifiee [DEPEND] la qualification repose sur des fichiers produits en R6 et non sur une re execution
+r5r7_r7_controle_off_non_rejoue -> r5r7_r7_infra_qualifiee [DEPEND] la qualification s appuie sur R4 et R6 sans contre exemple
+r5r7_proprietaire_non_expose -> r5r7_r7_semantique_extraite [OUVRE] le gate porte sur la validite du transfert et non sur un identifiant que l API n expose pas
+r5r7_r7_infra_qualifiee -> r5r7_q0_non_passe [OUVRE] une qualification d infrastructure n est pas une qualification numerique
+r5r7_defaut_46 -> r5r7_q8_ref_pass_contredit [RETIRE] le defaut 46 declare resolu est retrouve sous le numero 57 par N4
+r5r7_q8_ref_pass_contredit -> r5r7_q0_non_passe [DEMONTRE] la reference q8_1 TQ2 contre la sortie native n etait pas etablie a la fin de R7
+r5r7_q0_non_passe -> r5r7_q1_non_autorise [DEPEND] Q0 non passe interdit Q1
+r5r7_produit_non_mesure -> r5r7_q0_non_passe [DEPEND] salience ablation de qualite et gain produit non mesures maintiennent Q0 non passe

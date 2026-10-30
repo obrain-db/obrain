@@ -1,0 +1,93 @@
+ENGINE008_SELECTION_RULES_v2 -- GELÉES AVANT TOUTE SÉLECTION
+
+=== CANONICALISATION TEXTE ===
+encoding=UTF-8
+newline_normalization=CRLF_AND_CR_TO_LF
+unicode_normalization=NONE
+trailing_whitespace=PRESERVE
+final_newline_policy=NO_FORCED_FINAL_NEWLINE
+code_indentation=PRESERVED
+code_blank_lines=PRESERVED
+semantic_array_order=PRESERVED (jamais trie)
+
+=== CANONICALISATION JSON (pour hachage) ===
+utf8, cles triees lexicographiquement, separateurs compacts ",",":",
+arrays preservent l ordre upstream, ensure_ascii=false
+
+=== MMLU-PRO ===
+population      : split test, 12032 items, 14 categories
+selection_object: {question_id, question, options, answer, answer_index, category, src}
+                  cot_content EXCLU (jamais fourni au modele, jamais utilise par le scorer)
+selection_hash  : SHA256(canonical JSON object)
+regle           : pour CHAQUE categorie, tri ascendant par selection_hash, prendre 100
+cible           : 1400 = 14 x 100
+
+=== GSM8K ===
+population      : grade_school_math/data/test.jsonl, 1319 items
+selection_object: {question, answer}
+selection_hash  : SHA256(canonical JSON object)
+regle           : tri ascendant, prendre 500
+
+=== MBPP ===
+source          : sanitized-mbpp.json au commit pinne
+population      : task_id dans [11,510], AUCUNE selection par hash
+tri             : task_id ascendant
+cible           : le compte REEL (257), jamais force
+mbpp.jsonl      : provenance/cross-check uniquement, ne participe pas au score v1
+
+=== IFEVAL ===
+population      : toutes les lignes valides apres audit objectif prefreeze
+exclusion       : uniquement defaut objectif (id inconnu, constructeur en echec,
+                  kwargs invalide, item illisible). JAMAIS "semble difficile".
+tri             : ordre upstream preserve
+
+=== CORPUS TOKEN ===
+wikitext  : 32768 tokens scores, items non-vides, tri par content_sha256 ascendant
+obrain_docs: 16384 tokens scores, docs/*.md, tri par content_sha256 ascendant
+obrain_rust: 16384 tokens scores, crates/**/*.rs, tri par content_sha256 ascendant
+total     : 65536 tokens SCORES exactement
+
+=== REGLE FRONTIERE DU DERNIER ITEM ===
+parcourir dans l ordre hash gele ; ajouter les items COMPLETS tant que possible ;
+si le dernier depasse le besoin exact : tokeniser cet item, prendre le PREFIXE
+exact requis, le materialiser comme terminal_fragment ; NE PAS passer au suivant.
+
+=== BOS / EOS ===
+BOS_POLICY=NOT_ADDED
+EOS_POLICY=NOT_ADDED
+  Le prompt est rendu puis tokenise tel quel. Aucune politique de bibliotheque
+  ne doit differer entre baseline et candidat.
+
+=== SCORED vs CONTEXT ===
+Un token servant seulement d amorce au premier target NE COMPTE PAS dans les
+65536 scores. Le manifest distingue scored_start_index / scored_end_index.
+
+=== DEDUPLICATION ===
+exact canonical content duplicates uniquement. Pas de deduplication floue.
+
+=== IDENTITES GLOBALES ===
+mmlu_pro:<question_id>   gsm8k:<stable_hash>   mbpp:<task_id>   ifeval:<key>
+
+
+=== AMENDEMENT v2 (strate obrain_rust UNIQUEMENT) ===
+MAX_RUST_SCORED_TARGETS_PER_SOURCE_FILE=1024
+MIN_RUST_DISTINCT_SOURCE_FILE_COUNT=16
+SELECTION_RULES_V2_REASON=
+PREVENT_SINGLE_SOURCE_FILE_FROM_DOMINATING_25_PERCENT_OF_TOKEN_EVAL
+SELECTION_RULES_V2_WIKITEXT_CHANGE=NO
+SELECTION_RULES_V2_OBRAIN_DOCS_CHANGE=NO
+SELECTION_RULES_V2_OBRAIN_RUST_CHANGE=YES
+
+Fenetre deterministe si un fichier Rust depasse 1024 targets utilisables :
+  h = unsigned_big_endian(first_8_bytes(SHA256(canonical_content)))
+  window_start_target = h % (usable_targets - 1024 + 1)
+  -> 1025 input tokens selectionnes pour 1024 scored targets
+
+PREINFERENCE=YES  PRE_PROTOCOL_FREEZE=YES  NOT_RESULT_DRIVEN=YES
+
+=== CONTRAT DE TOKENISATION (etabli empiriquement) ===
+TOKENIZER_FLAGS=--ids --no-bos --no-parse-special --no-escape
+TOKEN_EVAL_NO_ESCAPE=YES   (le texte est pris LITTERALEMENT ; sans ce flag,
+                            un backslash-n du texte devient un vrai newline :
+                            token 1639 vs token 198, mesure)
+TOKEN_EVAL_ADD_EOS=NO      (aucun flag --no-eos n existe ; pas d EOS observe en fin)

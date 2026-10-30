@@ -1,0 +1,251 @@
+%% Ce que ce diagramme prouve : la surface du serveur MCP d obrain telle qu elle est ECRITE dans
+%% le depot — les 2 alias de commande qui l allument, les methodes JSON-RPC servies, la garde IAM
+%% traversee AVANT tout outil, les 35 outils que tools_list declare et que call_tool route, et
+%% pour CHACUN l appel moteur reellement atteint, nomme par fichier et numero de ligne.
+%% Source : lecture directe de crates/obrain-cli/src/mcp_server.rs — 8001 lignes mesurees par wc -l —
+%% plus main.rs, viz_extract.rs, viz_serve.rs, et les points d entree obrain-engine et obrain-selfd
+%% cites par leur fichier et leur ligne. Les LOC de chaque fonction d outil sont comptees sur le corps.
+%% MESURE : les 35 noms d outils, l egalite 35 declares = 35 routes, les numeros de ligne, les LOC par
+%% fonction, les valeurs par defaut des variables lues via std::env::var, et la liste outil_ecrivant
+%% de 10 noms. DEDUIT : la forme des aretes outil vers moteur vient du CORPS de chaque fonction lu,
+%% jamais d une trace d execution — aucune de ces aretes n a ete observee a l exec.
+%% NON ETABLI, et donc non dessine : la route HTTP MCP — un grep de /mcp dans viz_serve.rs et
+%% http_min.rs rend ZERO ligne, donc aucune surface streamable-http n est representee ici.
+%% NON ETABLI : docs/ecosystem/obrain-mcp.md decrit un paquet Python PyPI nomme obrain-mcp a 16 outils ;
+%% ce n est PAS ce binaire Rust, et il n est pas dessine. Le crate obrain-selfd porte une SECONDE
+%% surface MCP distincte, montree separement parce qu elle est lue, pas parce qu elle est la meme.
+
+flowchart TB
+
+  subgraph Client["Le client : le harness lance le pont en sous-processus stdio"]
+    harness["harness<br/>client MCP standard<br/>StdioClientTransport<br/>respawn du pont apres chaque requete"]
+  end
+
+  subgraph Entree["Le binaire obrain : deux commandes pour un seul run"]
+    cli_mcp["obrain mcp<br/>Commands::Mcp<br/>main.rs L369 puis L739"]
+    cli_bridge["obrain bridge<br/>Commands::Bridge<br/>alias, main.rs L373 puis L740<br/>log vers stderr, main.rs L650"]
+    run["mcp_server::run<br/>mcp_server.rs L105<br/>store resolu par --store ou OBRAIN_STORE"]
+    open_ro["ObrainDB::open_read_only<br/>plus with_query_timeout<br/>verrou PARTAGE LOCK_SH"]
+    open_rw["ObrainDB::open_shared_write<br/>si OBRAIN_WRITE vaut 1<br/>un seul ecrivain par store"]
+    retry["retry d ouverture<br/>OBRAIN_OPEN_RETRY_MS defaut 10000<br/>pause 100 ms entre essais"]
+  end
+
+  subgraph Boucle["La boucle stdin : cadrage et bornes mesurees"]
+    idle["thread d inactivite<br/>OBRAIN_IDLE_MS defaut 5000<br/>ferme fd 0 sur inactivite"]
+    veilleur["veilleur de requete<br/>OBRAIN_REQUETE_ALERTE_MS defaut 10000<br/>nomme la requete en cours"]
+    echeance["frontiere cancel autour du dispatch<br/>OBRAIN_QUERY_TIMEOUT_MS defaut 30000"]
+    plafond["reponse_bornee<br/>OBRAIN_REPONSE_MAX_MO defaut 32<br/>erreur -32001 au dela"]
+    debug["OBRAIN_DEBUG_LOG<br/>journal [req] et [resp]"]
+    sortie["ecrire_reponse<br/>une sortie cassee arrete la boucle"]
+  end
+
+  subgraph Protocole["Les methodes JSON-RPC servies par handle_line L486"]
+    init["initialize<br/>protocolVersion 2024-11-05<br/>serverInfo obrain-mcp<br/>publie iam et iam_armee"]
+    ping["ping"]
+    notif["notifications/initialized<br/>sans reponse"]
+    list["tools/list<br/>rend tools_list L589"]
+    call["tools/call<br/>name plus arguments"]
+    bridgeline["format bridge codebase-memory-mcp<br/>outil a la racine sans method<br/>normalise en tools/call<br/>reponse lue a la racine"]
+    unknown["methode inconnue<br/>erreur -32601"]
+  end
+
+  subgraph Garde["La garde IAM : appelee AVANT le match d outils, L1208"]
+    ecrivant["outil_ecrivant L1146<br/>10 noms declares ecrivants"]
+    gqlw["gql_ecrivante<br/>viz_serve.rs L1883<br/>une requete GQL qui ecrit"]
+    espace["espace_du_pont L1187<br/>radical du fichier OBRAIN_STORE"]
+    jeton["jeton_du_pont<br/>viz_serve.rs L1909<br/>lit OBRAIN_IAM_TOKEN"]
+    controler["GardeIam::controler<br/>viz_serve.rs L1587"]
+    refus["refus a PLAT<br/>error outil acces espace http iam<br/>isError vrai, structure conservee"]
+    trou_i["🔴 manage_adr mode update fait un MERGE ADR L6754<br/>puis set_node_props L6774<br/>mais manage_adr NE FIGURE PAS dans outil_ecrivant L1146<br/>la garde le classe donc en LECTURE"]
+    trou_ii["🔴 import_sessions ECRIT en delegant a import_events L6687<br/>mais ne figure PAS dans outil_ecrivant L1146<br/>et l appel interne est un appel Rust direct<br/>il ne repasse pas par call_tool, donc la garde ne le revoit pas"]
+  end
+
+  subgraph OutilsRecherche["Outils de recherche : BM25 sur un index de texte declare"]
+    t_search_graph["search_graph<br/>L1486, 117 lignes<br/>create_text_index puis text_search"]
+    t_runtime_search["runtime_search<br/>L1668, 84 lignes<br/>text_search plus current_epoch"]
+    t_search_code["search_code<br/>L4781, 68 lignes"]
+  end
+
+  subgraph OutilsRequete["Outils de lecture par requete : le texte de requete part au moteur"]
+    t_query["query<br/>execute_query L4001, 47 lignes<br/>execute_language, GQL par defaut"]
+    t_query_graph["query_graph<br/>L4056, 41 lignes<br/>langage cypher, limite 10000<br/>refuse graph valant missed"]
+    t_schema["get_graph_schema<br/>L3940, 53 lignes"]
+    t_snippet["get_code_snippet<br/>L4103, 132 lignes<br/>lit ensuite le fichier sur disque<br/>via file_path start_line end_line"]
+    t_trace["trace_path<br/>L4241, 102 lignes"]
+    t_roles["structural_roles<br/>L4348, 103 lignes<br/>CALL obrain.articulation_points<br/>et obrain.strongly_connected_components"]
+    t_impact["impact_set<br/>L5256, 96 lignes<br/>BFS multi-sources sur CALLS"]
+    t_projects["list_projects<br/>L4747, 29 lignes"]
+    t_docs["list_docs<br/>L5154, 25 lignes"]
+    t_index_status["index_status<br/>L4853, 57 lignes"]
+    t_payload["payload_get<br/>L5109, 43 lignes"]
+    t_sessions["sessions_list<br/>L1895, 131 lignes<br/>memo-cache par generation<br/>seulement si OBRAIN_WRITE vaut 1"]
+    t_ctx["context_build<br/>L2058, 205 lignes<br/>goals summaries weave engrams<br/>borne par un budget de jetons"]
+    t_checkpoint["checkpoint_material<br/>L2478, 183 lignes"]
+    t_session_load["session_load<br/>L5780, 218 lignes"]
+    t_recall["memory_recall<br/>L5719, 57 lignes"]
+  end
+
+  subgraph OutilsEcriture["Outils d ecriture : les 10 declares ecrivants, plus 2 qui ecrivent sans y figurer"]
+    t_graph_link["graph_link<br/>L4913, 159 lignes"]
+    t_ingest["ingest_traces<br/>L5181, 72 lignes"]
+    t_import_events["import_events<br/>L2693, 645 lignes<br/>le plus gros outil du fichier"]
+    t_journal_import["journal_import<br/>L6001, 31 lignes"]
+    t_prop_index["create_property_index<br/>L5589, 17 lignes"]
+    t_mem_register["memory_register<br/>L5673, 44 lignes"]
+    t_index_ok["index_repository avec la feature indexer<br/>L5368<br/>la feature est dans default, Cargo.toml L100"]
+    t_index_no["index_repository sans la feature<br/>L5354, 9 lignes<br/>refus explicite : rebuild avec la feature"]
+    t_import_owners["import_owners<br/>L6094, 103 lignes<br/>incremente SESSIONS_LIST_GEN"]
+    t_import_workspace["import_workspace<br/>L6203, 120 lignes<br/>incremente SESSIONS_LIST_GEN"]
+    t_import_docs["import_docs<br/>L6425, 93 lignes<br/>parcourt des fichiers markdown sur disque"]
+    t_import_sessions["import_sessions<br/>L6532, 191 lignes<br/>CHUNK 2000, MAX_PER_FILE 200000<br/>MAX_TOTAL 1000000, jsonl seulement"]
+    t_manage_adr["manage_adr<br/>L6729, 93 lignes<br/>mode update : MERGE du noeud ADR<br/>puis set_node_props"]
+  end
+
+  subgraph OutilsViz["Outils de restitution : sous-graphe, export, topologie, courbure"]
+    t_viz_sub["viz_subgraph<br/>L4524, 57 lignes"]
+    t_viz_export["viz_export<br/>L4583, 37 lignes"]
+    t_viz_topo["viz_topo<br/>L4669, 73 lignes<br/>triangles non diriges sur CALLS<br/>calculés en process, top 20"]
+    t_viz_curv["node_curvature<br/>L4622, 42 lignes"]
+  end
+
+  subgraph Moteur["Cote moteur : les points d entree atteints, nommes par fichier et ligne"]
+    db_handle["db, un et un seul ObrainDB<br/>ouvert dans run puis partage<br/>database/mod.rs, 2737 lignes"]
+    s_exec["Session::execute<br/>session/mod.rs L2403"]
+    s_execlang["Session::execute_language<br/>session/mod.rs L3435"]
+    s_getnode["Session::get_node"]
+    text_search["ObrainDB::text_search<br/>database/search.rs L581<br/>BM25, index recalcule a la demande"]
+    text_index["ObrainDB::create_text_index<br/>database/index.rs L462"]
+    prop_index["ObrainDB::create_property_index<br/>database/index.rs L34"]
+    crud["create_node, create_edge<br/>set_node_property"]
+    journ["read, write et append_session_journal<br/>database/mod.rs L1933, L1946, L1958<br/>journal_zone.rs, 492 lignes"]
+    cog["ObrainDB::cognitive_engine<br/>database/mod.rs L1491"]
+    engram["EngramManager<br/>recall, record_activation, tick, store"]
+    subh["ObrainDB::substrate_handle<br/>database/mod.rs L1891"]
+    subw["SubstrateStore, writer<br/>rec.energy_q15, rec.is_tombstoned"]
+    vizx["viz_extract::extract_subgraph<br/>viz_extract.rs L502"]
+    vizall["viz_extract::export_all<br/>viz_extract.rs L835"]
+    idxcrate["obrain_indexer::index::index_repository<br/>obrain-indexer/src/index.rs L59"]
+    rag["obrain_rag::budget::estimate_tokens"]
+  end
+
+  subgraph Selfd["Seconde surface MCP du depot, distincte : obrain-selfd"]
+    selfd_loop["mcp.rs, 250 lignes<br/>boucle L168, une trame JSON-RPC par ligne<br/>version defaut 2025-06-18<br/>serverInfo selfd"]
+    selfd_tools["7 outils<br/>exec read write list<br/>node_chat node_run node_status"]
+    selfd_native["methode_native L140<br/>traduit node_chat vers chat<br/>et node_run vers run"]
+    selfd_exec["protocole::executer_outil<br/>protocole.rs L115<br/>garde par jeton SI exiger_jeton"]
+    selfd_frontier["pas de jeton en mode MCP<br/>le lanceur est la frontiere<br/>dit dans l en-tete du module"]
+    selfd_outils["outils::exec read write list<br/>outils.rs L48 L156 L177 L198"]
+    selfd_status["outils::statut et identite<br/>outils.rs L228 L248"]
+  end
+
+  harness -->|lance en sous-processus| cli_mcp
+  harness -->|lance en sous-processus| cli_bridge
+  harness -->|ecrit sur stdin| bridgeline
+  cli_mcp -->|appelle| run
+  cli_bridge -->|appelle| run
+  run -->|lit OBRAIN_WRITE| open_rw
+  run -->|sinon| open_ro
+  run -->|depend de| retry
+  retry -->|ouvre| db_handle
+  open_rw -->|ouvre| db_handle
+  open_ro -->|ouvre| db_handle
+  run -->|arme| idle
+  run -->|arme| veilleur
+  run -->|arme| echeance
+  run -->|applique| plafond
+  run -->|ecrit si defini| debug
+  run -->|appelle par ligne| bridgeline
+  bridgeline -->|normalise en tools/call| call
+  call -->|dispatche vers| init
+  call -->|dispatche vers| ping
+  call -->|dispatche vers| notif
+  call -->|dispatche vers| list
+  call -->|dispatche vers| unknown
+  call -->|passe d abord| controler
+  controler -->|lit| ecrivant
+  controler -->|lit| gqlw
+  controler -->|lit| espace
+  controler -->|lit| jeton
+  controler -->|refuse| refus
+  ecrivant -.->|oublie| trou_i
+  ecrivant -.->|oublie| trou_ii
+  list -->|declare| t_search_graph
+  list -->|declare| t_import_events
+  list -->|declare| t_viz_sub
+  call -->|route 35 outils| t_search_graph
+  sortie -->|rend la reponse| harness
+  plafond -->|borne| sortie
+  echeance -->|borne| call
+
+  t_search_graph -->|lit| text_search
+  t_search_graph -->|ecrit| text_index
+  t_runtime_search -->|lit| text_search
+  t_search_code -->|lit| text_search
+  t_search_code -->|ecrit| text_index
+
+  t_query -->|appelle| s_execlang
+  t_query_graph -->|delegue a| t_query
+  t_schema -->|appelle| s_exec
+  t_snippet -->|appelle| s_exec
+  t_trace -->|appelle| s_exec
+  t_roles -->|appelle| s_exec
+  t_impact -->|appelle| s_exec
+  t_projects -->|appelle| s_exec
+  t_docs -->|appelle| s_exec
+  t_index_status -->|appelle| s_exec
+  t_payload -->|appelle| s_getnode
+  t_sessions -->|appelle| s_exec
+  t_sessions -->|lit| subh
+  t_ctx -->|appelle| s_exec
+  t_ctx -->|lit| text_search
+  t_ctx -->|lit| cog
+  t_ctx -->|depend de| rag
+  t_checkpoint -->|appelle| s_exec
+  t_session_load -->|appelle| s_exec
+  t_session_load -->|lit| journ
+  t_recall -->|lit| cog
+  cog -->|expose| engram
+
+  t_graph_link -->|ecrit| crud
+  t_ingest -->|ecrit| crud
+  t_import_events -->|ecrit| journ
+  t_import_events -->|ecrit| text_index
+  t_import_events -->|lit| cog
+  t_import_events -->|appelle| engram
+  t_journal_import -->|ecrit| journ
+  t_prop_index -->|ecrit| prop_index
+  t_mem_register -->|lit| cog
+  t_mem_register -->|appelle| engram
+  t_index_ok -->|appelle| idxcrate
+  t_index_no -.->|refuse avant| idxcrate
+  t_import_owners -->|ecrit| s_exec
+  t_import_workspace -->|ecrit| s_exec
+  t_import_docs -->|ecrit| s_exec
+  t_import_sessions -->|delegue a| t_import_events
+  t_manage_adr -->|ecrit| crud
+  t_manage_adr -->|ecrit| s_exec
+  engram -->|lit et ecrit| db_handle
+  crud -->|lit et ecrit| db_handle
+  journ -->|lit et ecrit| db_handle
+  s_exec -->|lit| db_handle
+  s_execlang -->|lit| db_handle
+  s_getnode -->|lit| db_handle
+  text_search -->|lit| db_handle
+  text_index -->|ecrit| db_handle
+  prop_index -->|ecrit| db_handle
+  subh -->|lit| db_handle
+
+  t_viz_sub -->|appelle| vizx
+  t_viz_export -->|appelle| vizall
+  t_viz_topo -->|appelle| vizx
+  t_viz_curv -->|lit| subh
+  subh -->|expose| subw
+  vizx -->|lit| s_exec
+  vizall -->|lit| s_exec
+
+  selfd_loop -->|sert| selfd_tools
+  selfd_tools -->|traduit par| selfd_native
+  selfd_native -->|appelle| selfd_exec
+  selfd_exec -->|depend de| selfd_frontier
+  selfd_exec -->|appelle| selfd_outils
+  selfd_exec -->|appelle| selfd_status

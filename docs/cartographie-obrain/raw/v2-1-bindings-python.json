@@ -1,0 +1,59 @@
+{
+  "area": "Bindings Python (crates/bindings/python + packages/obrain-cli-python + examples/python + sections Python du README)",
+  "summary": "Le binding Python d'obrain est une extension native PyO3 (crate `obrain-python`, lib `obrain`, crate-type cdylib) embarquée dans crates/bindings/python/, packagée via maturin sous le nom PyPI `obrain` (version 0.0.1, requires-python >=3.12) et publiée sous Apache-2.0. L'API principale tourne autour de `ObrainDB` (in-memory ou persistant via `Config::persistent`/`open`/`open_read_only`), qui expose l'exécution GQL/Cypher/SPARQL/Gremlin/GraphQL/SQL-PGQ, du CRUD nœud/arête, des transactions ACID (context manager avec auto-commit/rollback), des index de propriétés, la recherche vectorielle HNSW/MMR, la recherche texte BM25, le search hybride RRF, le CDC, l'embedding ONNX et l'export pandas/polars. Le module Rust se décompose en database.rs (~2900 lignes, `PyObrainDB`/`PyTransaction`/`AsyncQueryResult`), query.rs (`PyQueryResult`/`PyQueryBuilder`), types.rs (`PyValue` + conversion bidirectionnelle de types), graph.rs (`PyNode`/`PyEdge`), error.rs, bridges/ (algorithms/networkx/solvor), cognitive.rs (CognitiveEngine + GDS + CognitiveSearch) et quantization.rs (SQ/PQ/BQ). Les fonctionnalités sont entièrement feature-gated dans Cargo.toml (`embedded` par défaut, `full` pour tout) et propagées via maturin avec `features = [\"pyo3/extension-module\", \"full\"]`. Le package `obrain-cli-python` (packages/obrain-cli-python/) est un simple lanceur hatchling (console script `obrain`) qui localise puis exécute un binaire obrain pré-compilé (bundlé / venv bin / PATH). Les 4 exemples Python (examples/python/*.py) sont des notebooks marimo (fraude, vector search, NetworkX, visualisation), et la suite de tests compte 88 fichiers test_*.py couvrant les specs GQL/Cypher/GraphQL/Gremlin.",
+  "components": [
+    "crates/bindings/python/Cargo.toml — manifeste du crate `obrain-python` (lib `obrain`, cdylib, features miroir de l'engine: gql/cypher/sparql/gremlin/graphql/sql-pgq/vector-index/text-index/hybrid-search/cdc/embed/algos/cognitive/full)",
+    "crates/bindings/python/pyproject.toml — build maturin, nom PyPI `obrain` 0.0.1, requires-python >=3.12, features full, module-name obrain, dep solvor>=0.6.1",
+    "crates/bindings/python/src/lib.rs — `#[pymodule] obrain`: enregistre PyObrainDB/Node/Edge/QueryResult/AsyncQueryResult/Value + bridges algos + cognitive + quantization + fonctions simd_support/vector + __version__",
+    "crates/bindings/python/src/database.rs — PyObrainDB (execute*, CRUD, index, vector/text/hybrid search, embedding, admin/stats/schema/validate/WAL, import_df, nodes_df/edges_df, CDC) + PyTransaction + PyDatabaseStats + AsyncQueryResult (~2900 lignes)",
+    "crates/bindings/python/src/query.rs — PyQueryResult (colonnes/rows/nodes/edges, to_pandas/to_polars/to_list/scalar, metrics) + PyQueryBuilder (param)",
+    "crates/bindings/python/src/types.rs — PyValue + conversion bidirectionnelle Python<->Value (Null/Bool/Int64/Float64/String/List/Map/Vector/Bytes/Timestamp/Date/Time/Duration/ZonedDatetime/Path) + fn vector()",
+    "crates/bindings/python/src/graph.rs — PyNode (id/labels/get/has_label/properties) et PyEdge (id/edge_type/source_id/target_id/get/properties)",
+    "crates/bindings/python/src/error.rs — PyObrainError -> ValueError/RuntimeError via obrain_bindings_common::error::classify_error",
+    "crates/bindings/python/src/bridges/mod.rs + algorithms.rs (824 l) + networkx.rs (547 l) + solvor.rs (501 l) — db.algorithms / db.as_networkx() / db.as_solvor()",
+    "crates/bindings/python/src/cognitive.rs (683 l) — PyCognitiveEngine (energy/synapse/scar/fabric), PyGDS (pagerank/louvain/leiden/betweenness/similarity/project), PyCognitiveSearch",
+    "crates/bindings/python/src/quantization.rs (448 l) — PyQuantizationType + PyScalarQuantizer + PyProductQuantizer + PyBinaryQuantizer",
+    "crates/bindings/python/python/obrain/__init__.py + py.typed — ré-export ObrainDB/Node/Edge/QueryResult/Value/__version__/simd_support/vector depuis obrain.obrain",
+    "crates/bindings/python/tests/ — conftest.py (fixtures db/node_ids/social_graph/pattern_graph, markers gql/cypher/gremlin/graphql/sparql), fixtures/, bases/, lpg/{cypher,gql,graphql,gremlin}/spec/ (88 test_*.py)",
+    "crates/bindings/python/README.md — doc install/quickstart/API (Database, Query Languages, CRUD, Transactions, QueryResult, Vector Search)",
+    "crates/bindings/common/ — entity.rs (extract_entities), error.rs (ErrorCategory/classify_error), json.rs — partagés par les bindings (dont Python)",
+    "packages/obrain-cli-python/ — pyproject.toml (hatchling, console script obrain), README.md, obrain_cli/__init__.py (launcher: _find_binary bundlé/venv bin/PATH), obrain_cli/__main__.py",
+    "examples/python/fraud_detection.py, vector_search.py, networkx_integration.py, graph_visualization.py — notebooks marimo (`marimo run`)",
+    "README.md (racine) — sections Python (l.86-106, 505-509) + écosystème anywidget-graph/anywidget-vector"
+  ],
+  "relationships": [
+    "crates/bindings/python/src/*.rs -> obrain-engine, obrain-core, obrain-common, obrain-adapters, obrain-cognitive (optionnel), obrain-bindings-common (Cargo.toml deps)",
+    "PyObrainDB::execute_language_impl -> ObrainDB::execute_language + obrain_bindings_common::entity::extract_entities -> PyQueryResult",
+    "PyObrainDB::create_node/create_edge/set_*_property/get_node/get_edge -> ObrainDB (engine) et store() (nodes_by_label, get_nodes_properties_batch, get_node_property_batch)",
+    "PyObrainDB::vector_search/mmm_search/batch_vector_search -> db.vector_search/mmr_search/batch_vector_search (engine) ; hybrid_search -> obrain_core::index::text::FusionMethod",
+    "PyObrainDB::register_embedding_model -> obrain_engine::embedding::OnnxEmbeddingModel::from_files",
+    "PyTransaction::new -> obrain_engine::session::Session + transaction::IsolationLevel (ReadCommitted/Serializable/snapshot)",
+    "PyValue::from_py/to_py -> obrain_common::types::Value (conversion bi-directionnelle des types)",
+    "bridges/algorithms.rs -> obrain_adapters::plugins::algorithms (bfs/bfs_layers/dfs/dijkstra/...) ; networkx.rs/solvor.rs -> import réseau NetworkX/solvOR via pyo3",
+    "cognitive.rs -> obrain_cognitive::{EnergyStore, SynapseStore, scar::ScarStore, fabric::FabricStore} + obrain_adapters::plugins::algorithms::louvain (GDS)",
+    "quantization.rs -> obrain_core::index::vector::{BinaryQuantizer, ProductQuantizer, ScalarQuantizer, QuantizationType}",
+    "python/obrain/__init__.py -> import obrain.obrain (module natif compilé) et ré-export partiel",
+    "packages/obrain-cli-python/obrain_cli -> subprocess.run(binaire obrain) ; pyproject [project.scripts] obrain = obrain_cli:main",
+    "tests/conftest.py -> import obrain (extension compilée) + tests.fixtures.datasets/generators ; tests lpg spec couvrent les langages feature-gated"
+  ],
+  "notable_findings": [
+    "GDS `leiden()` est en réalité un alias de `louvain()`: cognitive.rs l.408-411 appelle `algorithms::louvain` alors que la doc annonce 'Louvain as the base with refinement pass' — pas d'implémentation de Leiden dédiée.",
+    "Surface d'API volontairement retirée mais conservée sous forme de stubs qui lèvent des erreurs: `save()`, `to_memory()`, `open_in_memory()` (commentaires 'T17 final cutover 2026-04-23', passage au substrate par répertoire).",
+    "Le module Python enregistre ~20 classes/fonctions au niveau natif (Algorithms, GDS, CognitiveEngine, quantizers, Transaction, DatabaseStats...) mais __init__.py n'en ré-exporte que 7 — le reste n'est accessible que via `obrain.obrain.*` ou getattr.",
+    "README.md du crate documente `from obrain import IsolationLevel` + `IsolationLevel.SERIALIZABLE` et `result.execution_time` (secondes) alors que l'API réelle utilise une string (`begin_transaction(\"serializable\")`) et `execution_time_ms` (millisecondes).",
+    "La conversion de types est ambigüe pour les listes de floats: `[1, 2, 3]` (int) devient List, `[0.1, 0.2]` devient Vector — distinction intentionnelle documentée dans types.rs l.147-149.",
+    "AsyncQueryResult stocke `column_types` marqué `#[allow(dead_code)]` (réservé pour un futur accès typé) et ne fait pas d'extraction de nœuds/arêtes en contexte async.",
+    "Incohérence de versionnage: lib `obrain` 0.0.1 (pyproject) vs `obrain_cli.__version__` = \"0.4.4\" vs badge README 'python 3.12+' — et requires-python diverge (>=3.12 pour la lib, >=3.9 pour le CLI).",
+    "Le search hybride et le vector search (HNSW, MMR, quantisation SQ/PQ/BQ) sont exposés très en profondeur côté Python, dépassant la simple couverture GQL."
+  ],
+  "gaps": [
+    "Pas de stubs .pyi générés (seul py.typed présent): les IDE s'appuient sur les docstrings Rust via maturin, mais aucune `__init__.pyi`/`*.pyi` n'est commitée.",
+    "`IsolationLevel` référencé dans README.md (l.83-84) n'existe pas comme classe/enum exportée — l'API prend une chaîne; documentation en décalage avec l'implémentation.",
+    "README.md l.96 documente `result.execution_time` (secondes) alors que le getter réel est `execution_time_ms` (Option[f64] en millisecondes).",
+    "PyGDS::leiden() n'implémente pas Leiden (appelle louvain) — soit un bug de dénomination, soit un algorithme manquant.",
+    "Stubs morts conservés (`save`/`to_memory`/`open_in_memory`) qui lèvent systématiquement des erreurs — code mort à supprimer ou à documenter comme breaking change.",
+    "__init__.py ne ré-exporte pas Algorithms/GDS/CognitiveEngine/quantizers/Transaction/DatabaseStats enregistrés côté natif — surface publique incomplète et incohérente.",
+    "Dépendance `solvor>=0.6.1` déclarée obligatoire dans pyproject.toml alors que `as_solvor()` est feature-gated (algos/full) — dépendance dure pour une fonctionnalité optionnelle.",
+    "Aucun script de build/wheel Python dans scripts/ (pas de scripts/*python*, *maturin*, *wheel*); le tableau des exemples du README racine ne liste que des exemples Rust, omettant les 4 notebooks marimo de examples/python/."
+  ]
+}

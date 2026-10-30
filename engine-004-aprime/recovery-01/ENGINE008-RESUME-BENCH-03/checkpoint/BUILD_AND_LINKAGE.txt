@@ -1,0 +1,6 @@
+BUILD=1
+NEEDED : libllama.so.0 libstdc++.so.6 libgcc_s.so.1 libc.so.6 ld-linux-aarch64.so.1 
+SYMBOLES_LLAMA : 20
+4eb6b8478633ed841a7cdc3328d5974a7964b125f16a35b4645f6749e142599a  /tmp/kv05/e8-bench.cpp
+0405ba91a4b0984a80b697fdf8bf35f504801ffd20cda69db468cfd5db360b58  /tmp/kv05/e8-bench
+fc39bb86b0a942c2855d4cd90016f87bf655d4463731631658324e897021dbab  /tmp/kv05/ids59.txt

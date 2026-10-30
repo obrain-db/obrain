@@ -1,0 +1,186 @@
+%% Ce que ce diagramme prouve : la carte des procedures cognitives du depot banc-obrain, soit le
+%% point de dispatch de CALL obrain.cognitive.* et obrain.engrams.*, les 11 noms reellement resolus,
+%% les sous-systemes cognitifs que chacune lit, et les zones du substrat ou du graphe qu elle ecrit.
+%% Source : lecture directe des fichiers Rust cites, chacun portant son nombre de lignes mesure par
+%% wc -l, plus les constantes, valeurs par defaut d arguments et numeros de ligne lus dans ces fichiers.
+%% MESURE : noms de procedures et chaines de resolution, valeurs par defaut des arguments, colonnes
+%% de sortie declarees, signatures des fonctions, whitelist PROCEDURES_DE_LECTURE, primitives
+%% substrate et colonnes appelees, sites de cablage du moteur cognitif. Trois ecarts code/doc sont
+%% mesures et portes par un noeud rouge : l option `direction` de bootstrap est documentee mais
+%% jamais lue, le signal vectoriel de search part d une liste de candidats vide, et le noeud de
+%% graphe :Engram declare par EngramStore n est atteint par aucun cablage de production.
+%% DEDUIT : la classification lecture/ecriture des procedures ABSENTES de la whitelist
+%% PROCEDURES_DE_LECTURE — le code ne la tranche pas, plan.rs dit explicitement ne pas pouvoir
+%% demontrer qu elles lisent, et le trait CognitiveEngine a mutabilite interieure ne prouve rien.
+%% NON ETABLI ici : aucune base vivante n a ete ouverte, donc aucun effet reel mesure sur disque,
+%% aucun comptage d octets ecrits, aucune duree d execution rejouee. `leiden` n est PAS dans le
+%% namespace cognitif : c est l algorithme obrain.leiden du registre BuiltinProcedures, documente a
+%% part et jamais compte comme procedure obrain.cognitive.*. Les procedures cognitives des
+%% bindings python, wasm et cli n ont pas ete relues : rien n est dessine pour elles.
+
+flowchart TB
+
+  subgraph Entree["Entree : le planificateur resout le nom AVANT tout acces aux donnees"]
+    session_wire["database/mod.rs<br/>set_cognitive_engine lignes 1362 et 1409<br/>chemin external_store = celui de TOUTE base reelle<br/>sans ce cablage la procedure tombe en Unknown procedure"]
+    features["features obrain-engine Cargo.toml<br/>cognitive, cognitive-fabric, cognitive-gap-detection,<br/>cognitive-synthesis, cognitive-engram<br/>aucune n est dans default = gql parallel wal spill mmap regex"]
+    planner["plan_call_procedure<br/>query/planner/lpg/mutation.rs lignes 865 a 875<br/>#[cfg feature = cognitive] et cognitive_engine present<br/>plan_static_result sur le YIELD"]
+    dispatcher["try_execute_cognitive_procedure<br/>crates/obrain-engine/src/cognitive_procedures.rs<br/>1025 lignes, un match, 11 noms resolus<br/>rend None si le nom ne matche pas"]
+    gate_readonly["PROCEDURES_DE_LECTURE<br/>query/plan.rs ligne 320, usage ligne 590<br/>1 seule procedure cognitive inscrite : spread<br/>tout le reste rend procedure_mute = true"]
+    engine_trait["trait CognitiveEngine<br/>obrain-cognitive/src/engine.rs 789 lignes<br/>7 accesseurs en Option, etat interne mutable<br/>energy, synapse, fabric, co_change, engram, metrics, vector"]
+  end
+
+  subgraph Procedures["Les 11 procedures resolues, avec leurs defauts LUS dans le code"]
+    p_spread["obrain.cognitive.spread<br/>execute_spread<br/>hops defaut 3, causal_boost defaut 1.0<br/>causal_edge_types defaut vide<br/>YIELD activated, energy"]
+    p_reinforce["obrain.cognitive.reinforce<br/>execute_reinforce<br/>amount defaut 0.3, self-synapse refusee<br/>YIELD source, target, amount"]
+    p_bootstrap["obrain.cognitive.bootstrap<br/>execute_bootstrap<br/>weight defaut 1.0, edge_types defaut toutes<br/>YIELD count<br/>🔴 option direction documentee mais JAMAIS lue<br/>seuls weight et edge_types sont extraits lignes 312 a 316"]
+    p_distill["obrain.cognitive.distill<br/>execute_distill<br/>min_weight defaut 0.1<br/>YIELD artifact"]
+    p_search["obrain.cognitive.search<br/>execute_search<br/>limit defaut 10<br/>poids similarity 0.3 energy 0.3 topology 0.3 synapse 0.1<br/>YIELD 6 colonnes"]
+    p_gaps["obrain.cognitive.detect_gaps<br/>execute_detect_gaps<br/>scope OBLIGATOIRE, top_k defaut 20<br/>YIELD kind, node_a, node_b, score, detail"]
+    p_synth["obrain.cognitive.synthesize<br/>execute_synthesize<br/>budget_tokens defaut 750<br/>NoopSummarizer, jamais de LLM<br/>YIELD text"]
+    p_elist["obrain.engrams.list<br/>execute_engrams_list<br/>YIELD 7 colonnes"]
+    p_einspect["obrain.engrams.inspect<br/>execute_engrams_inspect<br/>YIELD 13 colonnes"]
+    p_eforget["obrain.engrams.forget<br/>execute_engrams_forget<br/>YIELD id, status, relations_removed<br/>droit a l effacement RGPD"]
+    p_metrics["obrain.cognitive.metrics<br/>execute_cognitive_metrics<br/>YIELD 20 colonnes"]
+  end
+
+  subgraph Algorithmes["Implementations appelees : aucune n est ecrite dans le fichier de dispatch"]
+    fn_spread["activation::spread<br/>obrain-cognitive/src/activation.rs 523 lignes<br/>BFS, decay 0.5, min_propagated_energy 0.01<br/>max_activated_nodes 1000, bitset dense sous 2 puissance 26"]
+    src_syn["SynapseActivationSource<br/>neighbors via list_synapses<br/>edge_class toujours Associative"]
+    src_causal["CausalAwareActivationSource<br/>cache de paires causales construit<br/>en UNE passe node_ids et edges_from<br/>lookup O 1 par arete visitee"]
+    fn_gaps["gap_detection::detect_gaps<br/>obrain-cognitive/src/gap_detection.rs 656 lignes<br/>detect_missing_links et detect_dead_nodes<br/>signature and dyn GraphStore, jamais and dyn GraphStoreMut"]
+    fn_synth["synthesis::synthesize<br/>synthesis.rs 439 lignes<br/>appelle context_loader::load_context<br/>context_loader.rs 788 lignes"]
+    fn_search["SearchPipeline::search<br/>search.rs 666 lignes<br/>4 signaux calcules sur les candidats RECUS"]
+    fn_eproc["obrain_cognitive::procedures<br/>procedures.rs 806 lignes<br/>engrams_list, engrams_inspect<br/>engrams_forget, cognitive_metrics"]
+  end
+
+  subgraph Stores["Sous-systemes cognitifs : ce que les procedures atteignent par le trait"]
+    store_syn["SynapseStore<br/>synapse.rs 2323 lignes<br/>reinforce, bootstrap_batch, snapshot<br/>list_synapses, for_each_synapse, substrate_ref"]
+    store_energy["EnergyStore<br/>energy.rs 872 lignes<br/>get_energy, boost"]
+    store_engram["EngramStore<br/>engram/store.rs 679 lignes<br/>list, get, remove, count"]
+    store_vec["InMemoryVectorIndex<br/>cree dans engine.rs ligne 684<br/>remove appele par forget"]
+    store_metrics["EngramMetricsCollector<br/>snapshot de 20 champs"]
+    store_fabric["FabricStore<br/>fabric.rs 647 lignes<br/>community_of, community_cohesion"]
+  end
+
+  subgraph Substrat["Ce que les procedures lisent et ecrivent reellement dans le graphe"]
+    sub_syn_col["✅ colonne synapse EdgeRecord.weight_u16 en Q0.16<br/>reinforce_edge_synapse_f32 store.rs ligne 11396<br/>WAL journalise avant la mmap"]
+    sub_inc["✅ substrate.synapse_incidence<br/>synapse_edges_of ligne 11492<br/>create_synapse_slots_batch ligne 11514<br/>2N appends d incidence par lot"]
+    sub_energy_col["✅ colonne energie u16 Q1.15<br/>get_node_energy_f32 ligne 11262<br/>boost_node_energy_f32 ligne 11284"]
+    gs_read["lecture seule dyn GraphStore<br/>node_ids, edges_from, edge_type<br/>neighbors, out_degree, in_degree"]
+    lpg_meta["🟠 metadonnees LPG differees<br/>PROP_SYNAPSE_LAST_REINFORCED_EPOCH<br/>PROP_SYNAPSE_REINFORCEMENT_COUNT<br/>file drainee par le consolidateur, 30 s"]
+    engram_cols["✅ substrate.engram_members et substrate.engram_bitset<br/>attach_substrate database/mod.rs ligne 802<br/>bitset monotone, jamais efface"]
+    engram_node["🔴 noeud de graphe :Engram non atteint<br/>ENGRAM_LABEL et _engram_data declares store.rs<br/>EngramStore::new None manager.rs ligne 87<br/>aucune impl CognitiveStorage hors tests"]
+    madvise["⚪ on_node_activated store.rs ligne 10910<br/>prefetch_community, madvise WILLNEED<br/>community_id 0 ignoree, aucune mutation"]
+  end
+
+  subgraph Etats["Classification lecture et ecriture, telle qu ECRITE dans le code"]
+    st_spread_ro["✅ spread declare LECTURE PURE<br/>plan.rs lignes 344 a 352<br/>verifie au bench, for_each_synapse seulement"]
+    st_writers["✅ ecrivains prouves<br/>reinforce et engrams.forget ABSENTS<br/>de PROCEDURES_DE_LECTURE plan.rs ligne 349"]
+    st_signature_ro["🔴 mutation structurellement impossible<br/>detect_gaps et synthesize recoivent<br/>and dyn GraphStore et non and dyn GraphStoreMut<br/>test detect_gaps_never_mutates_the_graph<br/>gap_detection.rs lignes 553 a 587"]
+    st_unclassified["🟠 non classees<br/>distill, search, engrams.list<br/>engrams.inspect, cognitive.metrics<br/>non demontrees lisantes, transaction payee"]
+    st_search_vec["🔴 signal vectoriel non branche<br/>vector_candidates = Vec::new<br/>cognitive_procedures.rs ligne 460<br/>le pipeline part de 0 candidat et rend 0 ligne"]
+    st_forget_cascade["🟠 cascade incomplete sur le chemin CALL<br/>immune passe a None, procedures.rs ligne 158<br/>aretes CRYSTALLIZED_IN et marques epigenetiques<br/>non traitees, doc les met a la charge de l appelant"]
+  end
+
+  subgraph Leiden["Hors namespace obrain.cognitive.* : l algorithme voisin obrain.leiden"]
+    leiden_reg["procedure obrain.leiden<br/>obrain-engine/src/procedures.rs ligne 71<br/>registre BuiltinProcedures, algorithme et non cognitif<br/>colonnes node_id, community_id, modularity ligne 231"]
+    leiden_impl["LeidenAlgorithm<br/>obrain-adapters community.rs 1792 lignes<br/>execute recoit and dyn GraphStore<br/>donc lecture par construction, aucune mutation"]
+    ldleiden["LDleiden incrementale<br/>obrain-cognitive community/ldleiden.rs<br/>leiden_batch dans leiden.rs 1384 lignes<br/>pilote par CommunityWardenThinker, pas par un CALL"]
+  end
+
+  session_wire -->|depend de| features
+  features -->|conditionne| planner
+  planner -->|appelle| dispatcher
+  planner -->|interroge| gate_readonly
+  dispatcher -->|depend de| engine_trait
+  gate_readonly -->|protege| st_writers
+  gate_readonly -->|laisse passer| st_spread_ro
+
+  dispatcher -->|appelle| p_spread
+  dispatcher -->|appelle| p_reinforce
+  dispatcher -->|appelle| p_bootstrap
+  dispatcher -->|appelle| p_distill
+  dispatcher -->|appelle| p_search
+  dispatcher -->|appelle| p_gaps
+  dispatcher -->|appelle| p_synth
+  dispatcher -->|appelle| p_elist
+  dispatcher -->|appelle| p_einspect
+  dispatcher -->|appelle| p_eforget
+  dispatcher -->|appelle| p_metrics
+
+  p_spread -->|appelle| fn_spread
+  p_reinforce -->|appelle| store_syn
+  p_bootstrap -->|appelle| store_syn
+  p_distill -->|lit| store_syn
+  p_search -->|appelle| fn_search
+  p_gaps -->|appelle| fn_gaps
+  p_synth -->|appelle| fn_synth
+  p_elist -->|appelle| fn_eproc
+  p_einspect -->|appelle| fn_eproc
+  p_eforget -->|appelle| fn_eproc
+  p_metrics -->|appelle| fn_eproc
+
+  fn_spread -->|depend de| src_syn
+  fn_spread -->|depend de| src_causal
+  src_syn -->|lit| store_syn
+  src_causal -->|lit| store_syn
+  src_causal -->|lit| gs_read
+  fn_search -->|lit| store_energy
+  fn_search -->|lit| store_syn
+  fn_search -.->|optionnel| store_fabric
+  fn_synth -->|lit| store_syn
+  fn_synth -.->|optionnel| store_fabric
+  fn_gaps -->|lit| store_energy
+  fn_gaps -->|lit| gs_read
+  fn_eproc -->|lit| store_engram
+  fn_eproc -->|lit| store_metrics
+  fn_eproc -->|supprime de| store_vec
+
+  p_spread -->|lit| store_syn
+  p_bootstrap -->|lit| gs_read
+  p_synth -->|lit| gs_read
+  p_search -->|lit| store_energy
+  p_search -->|lit| store_syn
+  p_gaps -->|lit| gs_read
+
+  store_syn -->|ecrit| sub_syn_col
+  store_syn -->|ecrit| sub_inc
+  store_syn -->|ecrit| lpg_meta
+  store_syn -->|lit| sub_inc
+  store_syn -->|lit| gs_read
+  store_energy -->|lit| sub_energy_col
+  store_energy -->|ecrit| sub_energy_col
+  store_engram -->|ecrit| engram_cols
+  store_engram -.->|chemin mort| engram_node
+  src_syn -.->|hint sans mutation| madvise
+
+  p_reinforce -->|ecrit| st_writers
+  p_eforget -->|ecrit| st_writers
+  p_bootstrap -->|ecrit| st_writers
+  p_spread -->|prouve| st_spread_ro
+  fn_gaps -->|prouve| st_signature_ro
+  fn_synth -->|prouve| st_signature_ro
+  p_distill -->|tombe dans| st_unclassified
+  p_search -->|tombe dans| st_unclassified
+  p_elist -->|tombe dans| st_unclassified
+  p_einspect -->|tombe dans| st_unclassified
+  p_metrics -->|tombe dans| st_unclassified
+  fn_search -->|souffre de| st_search_vec
+  p_search -->|souffre de| st_search_vec
+  p_eforget -->|souffre de| st_forget_cascade
+
+  leiden_reg -->|depend de| leiden_impl
+  leiden_impl -->|lit| gs_read
+  leiden_reg -.->|n est pas dispatchee par| dispatcher
+  ldleiden -->|reutilise| leiden_impl
+  ldleiden -.->|n est pas dispatchee par| dispatcher
+
+  classDef mesure fill:#1f4fa1,stroke:#0f2857,color:#fff
+  classDef decide fill:#8a6a12,stroke:#4d3b0a,color:#fff
+  classDef refuse fill:#8a1f1f,stroke:#4d0f0f,color:#fff
+  classDef amont fill:#4a4a4a,stroke:#2a2a2a,color:#fff
+
+  class dispatcher,planner,engine_trait,fn_spread,src_syn,src_causal,fn_gaps,fn_synth,fn_search,fn_eproc,store_syn,store_energy,store_engram,store_vec,store_metrics,store_fabric,sub_syn_col,sub_inc,sub_energy_col,engram_cols,gs_read mesure
+  class features,gate_readonly,lpg_meta,st_unclassified,st_forget_cascade decide
+  class engram_node,st_search_vec,st_signature_ro refuse
+  class session_wire,madvise,st_spread_ro,st_writers amont

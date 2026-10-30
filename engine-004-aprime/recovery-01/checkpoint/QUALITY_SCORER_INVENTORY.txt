@@ -1,0 +1,18 @@
+QUALITY_SCORER_INVENTORY
+
+Scorers deterministes generiques (exact match, MC accuracy, numeric parser,
+JSON schema, unit tests, instruction rules, retrieval exact match) :
+  AUCUN scorer generique local trouve.
+
+Candidats a AUDITER (pas etablis comme scorers) :
+  /home/triviere/projects/obrain-llm-trainer/eic_score.py
+  /home/triviere/projects/obrain-llm-trainer/score_existing.py
+  /home/triviere/projects/obrain-llm-trainer/score_batch.py
+  -> role inconnu a ce stade. A auditer AVANT tout usage.
+     Je ne les declare pas comme scorers qualifiables.
+
+Scorer long-context (needle exact match) : CONSTRUCTIBLE trivialement
+  (egalite de chaine), mais pas encore ecrit.
+
+QUALITY_SCORER_COUNT=0_ETABLI
+SCORER_UNIT_TEST_FAILED_COUNT=NON_APPLICABLE (aucun scorer)

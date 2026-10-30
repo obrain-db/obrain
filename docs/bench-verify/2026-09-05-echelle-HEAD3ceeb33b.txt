@@ -1,0 +1,36 @@
+=== verify-engine 2026-09-05T20:27:20+00:00 ===
+=== VÉRIFICATION REQUÊTES & PERFORMANCES — 2026-09-05T20:27:20.114Z ===
+store code-all3 : 445493 nœuds / 1670005 arêtes
+GQL count(n)            = 445493   syntaxe : MATCH (n) RETURN count(n) AS n
+GQL count(n:File)       = 27501   syntaxe : MATCH (n:File) RETURN count(n) AS n
+GQL count(n:Function)   = 95386   syntaxe : MATCH (n:Function) RETURN count(n) AS n
+GQL count(CALLS) scan   = 349289   syntaxe : MATCH ()-[r:CALLS]->() RETURN count(r) AS n
+latence count(n)        : 47.5 µs (annoncé ~54)
+latence count(File)     : 24.0 µs (annoncé ~39)
+latence count(CALLS)    : 19302 µs (annoncé ~20 000)
+communauté testée : 43292 (19653 nœuds)
+window large exact==sorted : true (19653) ; hubs d≥50 exact==sorted : true
+fenêtre hubs d≥50 : scan 233.7 µs | zruns 69.0 µs (égalité vérifiée)
+lookup qualified_name (index) : 55.0 µs (annoncé ~65)   syntaxe : MATCH (n:Method) WHERE n.qualified_name = 'obrain-engine.crates.obrain-substrate.src.hilbert.zorder_key_2d' RETURN n.id AS id
+=== FIN VÉRIFICATION ===
+=== verify-imports-compare 2026-09-05T20:27:28+00:00 ===
+== 1) native-import (corpus.bin : 445 493 nœuds / 1 670 005 arêtes) ==
+  moteur : 0.374 s   (réf ~0,26 s ; cible ≤ 0.6 s)
+    "c": "445493"
+== 2) enrich --ricci (copie code-all3 : 445 k nœuds / 1,67 M arêtes) ==
+    "edges_visited": "1670005",
+  wall : 1.80 s   (réf moteur ~3,2 s / wall ~4 s ; cible ≤ 4.5 s)
+== 3) compare paire réelle (worktrees obrain : 35-38 k nœuds / ~247 k arêtes) ==
+  froid 0 ms (recalcul) · chaud 0 ms (empreintes) · mémorisé: compare: /tmp/ve.obrain vs /tmp/vg.obrain [mémorisé]
+scripts/bench-verify/verify-imports-compare.sh: line 52: 0.10: syntax error: invalid arithmetic operator (error token is ".10")
+== 4) compare gros (code-all vs code-all2 : 443 k nœuds / 1,67 M arêtes) ==
+scripts/bench-verify/verify-imports-compare.sh: line 59: 0.6: syntax error: invalid arithmetic operator (error token is ".6")
+== fin (nettoie les stores temporaires) ==
+
+--- compare (mesure directe, HEAD 3ceeb33b, runs uniques après purge des sidecars) ---
+paire 37 k n / 247 k e : run1 0,39 s · run2 0,32 s · run3 0,32 s   (réf min : froid ~85 ms / empreintes ~40 ms / mémorisé 0 ms)
+gros 443 k / 1,67 M e   : run1 4,11 s · run2 3,15 s · run3 2,94 s   (réf min : froid ~0,9 s / caches ~195 ms / mémorisé 0 ms)
+NOTE : runs uniques sous charge possible ; réf = min de runs machine calme (CHIFFRES-AMELIORATIONS, 19:03). À rejouer sur machine calme pour atteindre les minima (le mémo « 0 ms » n'a pas été atteint ici — invalidation mtime ou invocations différentes).
+--- kuzu (référence 2026-09-04, même corpus 445 k/1,67 M, même machine) ---
+kuzu LOAD (CSV) ~0,5 s · count(File) 3,47 ms · count(CALLS) scan 21,6 ms   (fichier 2026-09-04-ingest.txt)
+obrain même corpus : native-import 0,37 s (ce HEAD) · count(File) 24 µs · count(CALLS) scan 19,3 ms → ×2-3 ordres de grandeur sur les compteurs O(1)/indexés vs kuzu.

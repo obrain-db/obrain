@@ -25,6 +25,11 @@ pub mod admin;
 pub mod catalog;
 #[cfg(feature = "cdc")]
 pub mod cdc;
+#[cfg(feature = "cdc")]
+pub mod cdc_persist;
+pub mod journal_zone;
+#[cfg(feature = "cognitive")]
+pub mod cognitive_boost;
 #[cfg(feature = "cognitive")]
 pub mod cognitive_procedures;
 #[cfg(feature = "cognitive")]
@@ -41,6 +46,8 @@ pub mod procedures;
 pub mod query;
 pub mod session;
 pub mod transaction;
+#[cfg(feature = "algos")]
+pub mod window_procedures;
 
 pub use admin::{
     AdminService, CompactionStats, DatabaseInfo, DatabaseMode, DatabaseStats, DumpFormat,
@@ -56,3 +63,7 @@ pub use metrics::{MetricsRegistry, MetricsSnapshot};
 pub use obrain_core::graph::{GraphStore, GraphStoreMut};
 pub use session::Session;
 pub use transaction::{CommitInfo, PreparedCommit};
+
+// (O1) Pont mémoire zero-copy — vues empruntées au substrate.
+pub use obrain_substrate::view::{FactView, StrView, StrViewSource};
+pub use obrain_substrate::result_buf::ResultBuf;

@@ -9,8 +9,20 @@ use obrain_engine::ObrainDB;
 
 // Env-var mutation requires `unsafe` since Rust 2024; scoped to this helper.
 #[allow(unsafe_code)]
+/// Sérialise les tests qui posent une variable d'environnement du processus.
+fn verrou_env() -> std::sync::MutexGuard<'static, ()> {
+    static VERROU: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    VERROU
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn fresh_db() -> (tempfile::TempDir, ObrainDB) {
-    // SAFETY: setting the env before opening; tests run single-threaded.
+    // SAFETY : le verrou d'environnement est tenu (voir `verrou_env`). La
+    // justification qui figurait ici (« tests run single-threaded ») était
+    // FAUSSE : les tests d'un même binaire tournent en threads parallèles.
+    let _verrou = verrou_env();
     unsafe {
         std::env::set_var("OBRAIN_PROPS_V2", "1");
     }

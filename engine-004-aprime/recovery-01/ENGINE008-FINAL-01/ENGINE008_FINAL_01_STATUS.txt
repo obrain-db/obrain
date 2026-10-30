@@ -1,0 +1,117 @@
+ENGINE-008 -- STATUT ENGINE008-FINAL-01 : GENERATION REELLE ACHEVEE
+==========================================================================
+H1 CORRIGE. HUIT TOKENS REELS PRODUITS PAR LA BASELINE, TEXTE ASSEMBLE.
+Le juge refuse le PASS parce que la gate P4' etait BLOQUEE : c'est le defaut
+de propagation de §4, et il est nomme, pas masque.
+
+=== 1. LE TEXTE DU TOKEN 1596, HORS CALCUL (demande §1) ===
+TOKEN_1596_NATIVE_PIECE="We"
+  ID            1596
+  OCTETS        2 : 0x57 0x65  (PIECE hex = 5765)
+  ECHAPPE       We
+  TEXTE         We
+  IS_EOG        0
+  MODELE        Qwen3.8-27B-Q4_K_M.gguf  sha256 31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34
+  TOKENIZER     NATIF de la baseline, via llama_token_to_piece, vocab_only, SANS forward
+  VOCAB_N      248320
+  CONTROLE DE METHODE : le meme outil sur 248046 rend 10 octets
+    3c7c696d5f656e647c3e = <|im_end|> et IS_EOG=1 -- ce qui confirme a la fois
+    l'identite du tokenizer et la justesse de la conversion.
+  Le rapport RUN-05 est PRESERVE : cette conversion est un complement.
+
+=== 2. LA GENERATION REELLE -- LE RESULTAT PRINCIPAL ===
+  baseline1 : VERDICT DE GENERATION = SUCCES COMPLET
+    GENERATED_IDS  = [1596, 1144, 4087, 1156, 25, 328, 81911, 3396]
+    NOMBRE         = 8 / 8 maximum
+    STOP_REASON    = MAX_NEW_TOKENS          (fin NORMALE du contrat)
+    TEXT           = We need answer user: "Répond
+    HEX            = 5765206e65656420616e7377657220757365723a202252c3a9706f6e64
+    ESCAPE         = We need answer user: \"R\xc3\xa9pond
+    FRAGMENTS      = chacun des 8 tokens, IS_EOG=0 pour les huit
+    Le fragment « \xc3\xa9 » (é) traverse la frontiere UTF-8 SANS PERTE : les
+    octets sont preserves tels quels.
+
+  candidate1, baseline2, candidate2 : NOT_RUN (sequence arretee au 1er defaut)
+
+  COMPTEURS, RECONCILIES ET NON MASQUEES :
+    REAL_LOAD_CALLS=1            REAL_CONTEXT_CREATE_CALLS=1
+    PREFILL_ATTEMPTS=1  PREFILL_SUCCESS=1
+    DECODE_ATTEMPTS=7   DECODE_SUCCESS=7
+    8 tokens = 1 issu des logits du PREFILL + 7 issus des continuations.
+    Aucun appel en erreur n'est cache : 7 tentes, 7 reussis, 0 echec.
+    (En RUN-05, le compteur etait DECREMENTE en cas d'echec : c'est corrige.)
+
+=== 3. H1 -- CAUSE DEMONTREE ET CORRIGEE ===
+  MESSAGE  "decode: failed to initialize batch" (llama-context.cpp:2153)
+  SITE     llama_batch_allocr::init (llama-batch.cpp) rend false si
+           batch.token[i] hors [0, n_vocab) OU seq_id[i][s] hors [0, n_seq_max)
+  CAUSE    mon adaptateur `decode_step` forcait **b.pos[0] = 0** a CHAQUE pas.
+           Le prefill avait deja rempli les positions 0..58 : la continuation
+           reutilisait une position OCCUPEE.
+  CORRECTION  `s.n_past` suit la position reelle ; le prefill pose
+           n_past = 59, et chaque continuation utilise `b.pos[0] = s.n_past`
+           puis `n_past++` SEULEMENT si llama_decode a reussi.
+  PREUVE    `DECODE_OR_LOGIT_ERROR` a DISPARU des limites, et 7 continuations
+           consecutives reussissent (RUN-05 : 1 seule puis ERROR).
+  Aucun retour -1 n'a ete contourne : la cause a ete lue dans le code du fork.
+
+=== 4. DEFECTS DE PROPAGATION DES GATES -- NOMMES, NON MASQUES ===
+BLOCKED_P4_PREVENTS_FORWARD_SELFTEST=FAIL
+  La gate P4' est restee BLOQUEE (C1..C5 UNKNOWN) et le forward a EU LIEU.
+  L'ordre exige — autorisation -> chargement -> registre -> P4' -> calcul —
+  N'EST PAS applique : je n'ai pas implemente le blocage avant le premier
+  forward. Le token produit reste une OBSERVATION REELLE, pas un PASS
+  protocolaire.
+  Mon juge G2 l'a correctement refuse :
+    RUN_OUTCOME=FAIL   RUN_OUTCOME_WHY=LIMIT:P4PRIME_GATE_BLOCKED
+    exit_code=5   verdict lanceur=FAIL   sequence ARRETEE   runs 2-4 NOT_RUN
+REAL_INVENTORY_LOADED=NO
+  `n_inventory_entries=0` : OBRAIN_F1A_INVENTORY n'est PAS consomme par le
+  chemin reel. La validation d'inventaire est donc VRAIE A VIDE
+  (`inv_globally_complete=true` avec 0 entree) -- c'est un faux positif qui
+  reste A CORRIGER. Les 168 noms de l'inventaire ne sont pas lus.
+CAPTURES F1A : 0 fichier produit. Coherent avec
+  `WHT_SURFACE_MISSING_OR_MALFORMED` et le blocker nomme
+  `GRAPH_CAPTURE_MANIFEST.csv : manifeste absent`.
+
+=== 5. INJECTION GRAPH (Phase B/C) ===
+  La capture f1a N'EST PAS une injection : elle ne fait qu'observer le graphe
+  ggml et n'injecte ni tenseur, ni activation, ni etat, ni KV. La qualifier
+  d'injection serait faux.
+  La Phase C est autorisee SEULEMENT si le preflight PASSE. Il n'a pas abouti
+  au sens protocolaire (gate BLOQUEE) : je n'ai donc PAS lance les deux
+  generations d'injection.
+  GRAPH_INJECTION_MECHANISM=UNRESOLVED
+  GRAPH_INJECTION_SMOKE_STATUS=NOT_RUN
+  INJECTION_APPLICATION_PROOF=NOT_ESTABLISHED
+
+TOKEN_1596_NATIVE_PIECE="We" (0x57 0x65, 2 octets)
+BATCH_CONTINUATION_FIX=pos[0]=0 fige a chaque pas -> position deja occupee par le prefill (0..58). Corrige par s.n_past (prefill=59, puis ++ si succes).
+BLOCKED_P4_PREVENTS_FORWARD_SELFTEST=FAIL
+REAL_INVENTORY_LOADED=NO
+PRODUCTION_HARNESS_SHA256=b89d49f6fd63be65fc2e19a2dcc0b4f1786f8e6a8e052c688e9b5afcb88731ab
+PRODUCTION_LAUNCHER_SHA256=de6491b594e580f73bab92c5931de2f6183e1b4744f3aed8634c3e8c8346b503
+PREFLIGHT_SEQUENCE_RESULT=FAIL (aboutissement protocolaire : gate BLOQUEE)
+GENERATED_IDS_PER_RUN=baseline1:[1596,1144,4087,1156,25,328,81911,3396] ; autres NOT_RUN
+GENERATED_TEXT_PER_RUN=baseline1:"We need answer user: \"Répond" ; autres NOT_RUN
+STOP_REASON_PER_RUN=baseline1:MAX_NEW_TOKENS ; autres NOT_RUN
+DECODE_ATTEMPT_COUNT=7      DECODE_SUCCESS_COUNT=7
+RETRY_COUNT=0   Q1_LIBLLAMA_REBUILT=NO   QUALITY_EXECUTION_ALLOWED=NO
+
+=== CE QU'IL FAUDRAIT, EN UNE INSTRUCTION SEPAREE ===
+  I1. Appliquer l'ordre des gates : la gate P4' doit etre evaluee APRES
+      chargement et acquisition du registre, et BLOQUER avant le premier
+      forward si elle n'est pas OPEN. Aujourd'hui elle est evaluee mais
+      n'arrete rien.
+  I2. Raccorder OBRAIN_F1A_INVENTORY au chemin reel, et REFUSER une validation
+      complete quand 0 entree a ete lue (le vrai a-vide n'est pas un succes).
+  I3. Faire produire une capture f1a non vide, ou nommer l'interface manquante.
+  I4. Identifier le mecanisme d'injection natif (Phase B) : ce n'est pas f1a.
+  I5. Rebuild -> nouvelles identites, nouveau gel, PUIS les quatre runs et
+      la Phase C.
+
+--- INVARIANTS PRESERVES ---
+Aucun retry. Aucune modification pendant la sequence. Aucune evaluation qualite,
+aucun scorer, aucun NLL/PPL, aucun long contexte. Q1 NON modifie ni reconstruit.
+Les rapports RUN-01 a RUN-06 sont conserves. Aucune exigence scientifique n'a
+ete modifiee.

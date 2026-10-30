@@ -7,15 +7,30 @@ use obrain_engine::ObrainDB;
 
 pub mod backup;
 pub mod compact;
+pub mod compare;
+pub mod continuity;
 pub mod data;
+pub mod enrich;
+pub mod entretien_cmd;
+pub mod iam;
+pub mod import_journal;
 pub mod index;
 pub mod info;
 pub mod init;
+pub mod journal;
+pub mod jump;
+pub mod machines;
+pub mod memoire;
+pub mod native_import;
 pub mod query;
+pub mod resonance;
+pub mod repair;
 pub mod schema;
 pub mod stats;
+pub mod topo;
 pub mod validate;
 pub mod version;
+pub mod viz;
 pub mod wal;
 
 /// Open an existing database, returning a clear error if the path does not exist.

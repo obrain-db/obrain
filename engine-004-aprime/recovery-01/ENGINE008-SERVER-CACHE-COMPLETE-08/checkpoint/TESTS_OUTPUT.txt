@@ -1,0 +1,74 @@
+OBRAIN_KV_CACHE_TESTS -- fonctions de production
+
+=== A. MANIFESTE ABSENT / INCOMPLET / INCOMPATIBLE ===
+  manifeste ABSENT -> REFUSE                                       PASS
+  manifeste INCOMPLET (sha vide) -> REFUSE                         PASS
+  manifeste INCOMPLET (identite modele absente) -> REFUSE          PASS
+
+=== B. MODELE DIFFERENT malgre description ET topologie IDENTIQUES ===
+  SHA256 modele different, desc/topologie identiques -> REFUSE     PASS
+       raison : state INCOMPATIBLE : SHA256 du modele DIFFERENT (identite exacte)
+
+=== C. Q1, TYPES, MODE, CONFIG, SEQUENCE ===
+  identite du calcul Q1 differente -> REFUSE                       PASS
+  type KV different -> REFUSE                                      PASS
+  mode de serialisation different -> REFUSE                        PASS
+  configuration de contexte differente -> REFUSE                   PASS
+  convention de sequence differente -> REFUSE                      PASS
+  format d'etat inconnu -> REFUSE                                  PASS
+
+=== D. BLOB TRONQUE / ALTERE / SHA256 DISCORDANT ===
+  blob TRONQUE -> REFUSE                                           PASS
+  blob ALTERE (meme taille) -> SHA256 discordant -> REFUSE         PASS
+  SHA256 stocké falsifie -> REFUSE                                PASS
+
+=== E. CAS ACCEPTE + SET_DATA_CALLS ===
+  manifeste complet et concordant -> ACCEPT                        PASS
+  SET_DATA_CALLS=1 sur ACCEPT                                      PASS
+  SET_DATA_CALLS=0 sur les 4 refus                                 PASS
+
+=== F. BORNE MEMOIRE ET REFUS D'ENTREE TROP GROSSE ===
+  entree PLUS GROSSE que la borne -> REFUSEE                       PASS
+  compteur n_refuse_too_big=1                                      PASS
+  aucune entree stockee                                            PASS
+
+=== G. LRU : ORDRE, EVICTION, COMPTABILITE ===
+  3 insertions -> 3 entrees, 300 octets                            PASS
+  get(A) touche A                                                  PASS
+  insertion D evince B (le moins recemment utilise)                PASS
+  n_evict=1 apres l insertion de D                                 PASS
+  A survit (recemment utilise)                                     PASS
+  C survit                                                         PASS
+  D present                                                        PASS
+  comptabilite apres eviction = 300                                PASS
+  remplacement meme cle : taille inchangee                         PASS
+  remplacement meme cle : octets inchanges                         PASS
+       [diag] n_replace=1 n_evict=1 size=3 bytes=300
+  remplacement : AUCUNE eviction non liee (n_evict reste 1)        PASS
+  compteur n_replace=1                                             PASS
+  valeur remplacee                                                 PASS
+  remplacement par PLUS GROS que la borne -> refuse                PASS
+
+=== H. PERSISTANCE DISQUE : ALLER-RETOUR ET REFUS ===
+  save_state_file ecrit                                            PASS
+  rechargement : fichier lu                                        PASS
+  rechargement : octets IDENTIQUES                                 PASS
+  rechargement : SHA256 du manifeste concorde                      PASS
+  rechargement : PREFIXE EXACT restaure a l identique              PASS
+  rechargement : manifeste COMPLET apres restauration              PASS
+  rechargement : contexte (n_ctx) restaure                         PASS
+  rechargement : topologie restauree                               PASS
+  rechargement : positions restaurees                              PASS
+  rechargement avec manifeste VALIDE -> ACCEPT                     PASS
+       [diag] decision rechargement=ACCEPT
+  prefixe efface -> manifeste INCOMPLET -> REFUSE                  PASS
+  fichier TRONQUE -> refus au chargement                           PASS
+       raison : blob TRONQUE
+  fichier SANS manifeste -> refus                                  PASS
+  fichier ALTERE : lecture ok mais SHA256 discordant               PASS
+       [diag] decision=REFUSE_BAD_SHA256 why=state SHA256 MISMATCH
+  fichier ALTERE -> import REFUSE (le refus a lieu)                PASS
+  fichier ALTERE -> refus par SHA256 (le manifeste est desormais COMPLET) PASS
+
+OBRAIN_KV_CACHE_TESTS_RESULT=PASS
+PASSED=49 FAILED=0

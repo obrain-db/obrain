@@ -76,8 +76,18 @@ pub mod props {
     pub const CRED_TYPE: &str = "iam_cred_type";
     /// Token hash (bcrypt or similar — never store raw tokens).
     pub const TOKEN_HASH: &str = "iam_token_hash";
-    /// Expiration timestamp (ISO 8601).
+    /// Expiration timestamp (ISO 8601) — POUR LA LECTURE HUMAINE.
+    ///
+    /// L'ISO seule ne pouvait pas être comparée : le moteur n'embarque pas de
+    /// calendrier, et `now_iso()` était un compteur (voir `store::now_iso`).
     pub const EXPIRES_AT: &str = "iam_expires_at";
+    /// Expiration en SECONDES depuis l'époque — la seule comparable.
+    ///
+    /// Ajoutée le 2026-09-13 : sans elle, l'authentification rendait
+    /// « invalid or expired credentials » sans jamais rien vérifier, donc un
+    /// jeton n'expirait JAMAIS. Absente ⇒ pas d'expiration (compatibilité avec
+    /// les identités déjà écrites).
+    pub const EXPIRES_TS: &str = "iam_expires_ts";
 
     // Password-specific
     /// Whether the user must change their password on next login.

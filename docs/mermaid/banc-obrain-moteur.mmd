@@ -1,0 +1,202 @@
+%% Ce que ce diagramme prouve : le trajet COMPLET d un texte de requete dans le moteur de
+%% banc-obrain -- texte, parseur, plan logique, binder, optimiseur, plan physique, execution,
+%% resultat -- en nommant a chaque etage le fichier reel, la fonction reelle et le nombre de
+%% lignes lu. Il prouve trois choses qu on ne devine pas : il existe DEUX chemins d entree et
+%% non un seul, le parse est SAUTE sur un hit du cache de plans, et le moteur possede un refus
+%% place AVANT l execution et non pendant.
+%% Source lue : /home/triviere/projects/banc-obrain, HEAD 456d3794, arbre MODIFIE -- git status
+%% liste 24 fichiers modifies ou non suivis, dont AUCUN n appartient a obrain-engine/src/query/
+%% ni a obrain-adapters/src/query/, donc les chiffres de la zone decrite sont ceux du disque.
+%% Fichiers ouverts et lus : obrain-engine/src/query/ mod.rs, translators/mod.rs,
+%% planner/mod.rs, profile.rs, cache.rs, executor/mod.rs, binder.rs, optimizer/ mod.rs,
+%% optimizer/join_order.rs, optimizer/cardinality.rs, optimizer/cost.rs,
+%% planner/lpg/ mod.rs, scan.rs, filter.rs, join.rs, expand.rs, prefix_range.rs,
+%% reachable_pushdown.rs, typed_degree_rewrite.rs, planner/rdf/mod.rs,
+%% translators/gql/mod.rs, processor.rs, plan.rs ;
+%% obrain-engine/src/session/mod.rs ; obrain-engine/src/database/mod.rs ;
+%% obrain-adapters/src/query/gql/ mod.rs, parser.rs, lexer.rs, ast.rs ;
+%% obrain-core/src/execution/operators/mod.rs ; obrain-cli/src/commands/query.rs.
+%% Pour les fichiers de plus de 2000 lignes, les zones citees ont ete lues et le reste n a ete
+%% que compte par wc -l -- aucun numero de ligne cite ici ne vient d une estimation.
+%% MESURE : nombre de lignes par fichier, numeros de ligne des fonctions citees, nombre de
+%% variantes de l enum LogicalOperator compte sur la source, valeurs par defaut et plafonds lus
+%% dans le code, noms rendus par Operator::name. DEDUIT : la forme des aretes suit l ordre
+%% des appels dans les corps lus, elle n est pas instrumentee. Les durees citees entre
+%% guillemets dans certains noeuds sont des mesures RAPPORTEES par les commentaires du code
+%% source, pas des mesures faites ici -- elles sont marquees comme telles.
+%% NON ETABLI : le corps de chaque operateur physique n a pas ete lu un par un -- seuls leurs
+%% noms, fichiers, lignes et le trait Operator l ont ete ; le detail des 53 variantes logiques
+%% n est pas dessine ; les features reellement activees a la compilation n ont pas ete
+%% verifiees -- le defaut declare dans obrain-engine/Cargo.toml:81 est
+%% gql, parallel, wal, spill, mmap, regex ; le corps de RdfPlanner::plan n a pas ete lu -- seul
+%% son constructeur, sa constante de morceau et son fichier l ont ete. Aucune zone du perimetre
+%% n est sans source lisible.
+
+flowchart TB
+
+  classDef decide  fill:#c47a10,stroke:#6b420a,color:#fff
+  classDef ecrit   fill:#1f7a3f,stroke:#0d3d1f,color:#fff
+  classDef refuse  fill:#a11f1f,stroke:#5c0f0f,color:#fff
+  classDef amont   fill:#1f4fa1,stroke:#0f2857,color:#fff
+
+  subgraph Surface["Surface d entree -- deux chemins reels, et c est une mesure, pas un choix de dessin"]
+    cli_query["obrain-cli<br/>src/commands/query.rs -- 440 lignes<br/>le texte vient d un argument, de --file ou de --stdin"]
+    cli_exec["execute_query<br/>commands/query.rs:155<br/>dispatch par le QueryLanguage de la ligne de commande"]
+    sess_exec["Session::execute<br/>session/mod.rs:2403 -- chemin GQL sans parametres<br/>CORPS PROPRE : translate_full, Binder, Optimizer, Planner, Executor"]
+    sess_lang["Session::execute_language<br/>session/mod.rs:3435<br/>dispatch par NOM de langage en chaine de caracteres"]
+    proc_process["QueryProcessor::process<br/>query/processor.rs:319<br/>is_lpg decide process_lpg ou process_rdf"]
+    proc_lpg["process_lpg<br/>processor.rs:342<br/>1 parse 2 substitution 3 binder 4 optimiseur 5 plan 6 execute"]
+    proc_rdf["process_rdf<br/>processor.rs:582<br/>meme chaine, planner RDF a la place du planner LPG"]
+  end
+
+  subgraph Cache["Cache de plans optimises -- la seule raison pour laquelle le parse peut ne pas avoir lieu"]
+    ck["CacheKey::with_graph<br/>query/cache.rs:68<br/>cle = texte normalise + langage + graphe courant"]
+    get["QueryCache::get_optimized<br/>cache.rs:297<br/>incremente optimized_hits ou optimized_misses"]
+    put["QueryCache::put_optimized<br/>cache.rs:312"]
+    hit["execute_optimized_plan<br/>session/mod.rs:2507<br/>HIT : parse ET optimisation sautes<br/>commentaire source : environ 1 microseconde par operation economisee"]
+    noget["🔴 les commandes session et schema ne sont JAMAIS mises<br/>dans optimized_cache -- session/mod.rs:2432-2434<br/>donc un hit garantit un Plan, jamais une commande"]
+    physnocache["🔴 le plan PHYSIQUE n est pas cachable<br/>session/mod.rs:2576 -- depend de l etat de transaction<br/>mesure rapportee : 2e appel d un texte = cout du 1er"]
+  end
+
+  subgraph Parse["Parseurs -- obrain-adapters, query/ -- 20942 lignes de parseurs"]
+    lex_gql["gql/lexer.rs -- 1191 lignes<br/>Token, TokenKind, SourceSpan -- lexer.rs:7 et :17"]
+    parse_gql["gql/parser.rs -- 10080 lignes<br/>Parser::new -- parser.rs:71<br/>Parser::parse -- gql/mod.rs:20"]
+    ast_gql["gql/ast.rs -- 1387 lignes<br/>enum Statement -- ast.rs:7<br/>Query, DataModification, Schema, Call, CompositeQuery"]
+    parse_autres["cypher/parser.rs 3994 l.<br/>sparql/parser.rs 2583 l.<br/>sql_pgq/parser.rs 1973 l.<br/>gremlin/parser.rs 1620 l.<br/>graphql/parser.rs 692 l."]
+  end
+
+  subgraph Traduction["Traducteurs -- AST vers l IR partagee, obrain-engine query/translators/"]
+    tr_gql["gql::translate_full<br/>translators/gql/mod.rs:69 -- 3697 lignes<br/>appelle gql::parse puis GqlTranslator"]
+    tr_autres["cypher.rs 3905 l. -- gremlin.rs 3096 l.<br/>sparql.rs 2669 l. -- graphql.rs 1526 l.<br/>sql_pgq.rs 1441 l. -- common.rs 1001 l.<br/>graphql_rdf.rs 796 l."]
+    tr_res["GqlTranslationResult<br/>translators/gql/mod.rs:33<br/>trois issues : Plan, SessionCommand, SchemaCommand"]
+    plan_ir["LogicalPlan<br/>query/plan.rs:71 -- 2841 lignes<br/>root + explain + profile<br/>LogicalOperator -- enum a 53 VARIANTES comptees sur la source"]
+  end
+
+  subgraph Binder["Binder -- validation semantique avant toute execution"]
+    binder["Binder::bind<br/>binder.rs:147 -- fichier de 2477 lignes<br/>variable definie, type compatible, suggestion par find_similar"]
+    bctx["BindingContext<br/>binder.rs:59<br/>VariableInfo -- binder.rs:46<br/>nom, LogicalType, is_node, is_edge"]
+  end
+
+  subgraph Optimiseur["Optimiseur -- trois passes nommees, chacune activable separement"]
+    opt["Optimizer::optimize<br/>query/optimizer/mod.rs:213 -- 2363 lignes"]
+    opt_fp["push_filters_down<br/>mod.rs:218 et :219<br/>enable_filter_pushdown"]
+    opt_jr["reorder_joins<br/>mod.rs:222 et :223<br/>enable_join_reorder"]
+    opt_pp["push_projections_down<br/>mod.rs:226 et :227<br/>enable_projection_pushdown"]
+    dpccp["DPccp::optimize<br/>optimizer/join_order.rs:335 -- 1333 lignes<br/>algorithme de Moerkotte et Neumann, 2006<br/>reference citee en tete de join_order.rs:9"]
+    card["CardinalityEstimator<br/>optimizer/cardinality.rs -- 2447 lignes"]:::amont
+    costm["CostModel<br/>optimizer/cost.rs -- 1501 lignes<br/>choisit le plan le moins cher"]:::amont
+  end
+
+  subgraph Decision["Ce que le plan logique decide AVANT d etre physique"]
+    expl["EXPLAIN<br/>optimized_plan.explain -- processor.rs:367<br/>annotate_pushdown_hints puis explain_result -- processor.rs:814<br/>rend une seule colonne plan, sans executer"]
+    prof["PROFILE<br/>optimized_plan.profile -- session/mod.rs:2534<br/>plan_profiled -- planner/lpg/mod.rs:371<br/>puis build_profile_tree -- query/profile.rs:130 lignes"]
+    frontiere["frontiere ecriture lecture<br/>cancel::frontiere_heritee -- processor.rs:394<br/>la MUTATION est lue dans le plan, plus devinee dans le texte"]
+  end
+
+  subgraph Planificateur["Planificateur physique LPG -- c est ICI que le cout d acces se decide"]
+    planner_plan["Planner::plan<br/>planner/lpg/mod.rs:356 -- 2848 lignes<br/>rend un PhysicalPlan"]
+    planner_ctx["Planner::with_context<br/>lpg/mod.rs:173<br/>store + transaction_id + viewing_epoch"]
+    guard["🔴 garde_explosion<br/>planner/lpg/join.rs:35<br/>appele UNE SEULE FOIS par plan_operator -- lpg/mod.rs:639"]
+    plafond["plafond_produit<br/>join.rs:83<br/>defaut 1 000 000 000 paires<br/>OBRAIN_MAX_PRODUIT=0 leve le garde"]
+    refus["🔴 refus AVANT execution<br/>QueryErrorKind::Semantic<br/>l erreur NOMME la forme refusee et dit quoi ecrire a la place<br/>mesure rapportee par la source : 1 251 348 aretes x 406 335 noeuds faisaient tomber le serveur"]
+    dispatch["plan_operator<br/>lpg/mod.rs:633<br/>match sur les variantes logiques, un plan par variante"]
+    scan_p["plan_node_scan<br/>planner/lpg/scan.rs:10 -- 73 lignes<br/>ScanOperator, avec label ou sans<br/>ou NodeListOperator si restriction_scan est pose"]
+    filter_p["plan_filter<br/>planner/lpg/filter.rs:189 -- 3909 lignes<br/>le plus gros fichier du planificateur"]
+    routes["routes d acces essayees DANS CET ORDRE, chacune rendant None si elle ne s applique pas<br/>zone map, id lookup, liste IN, index d egalite, existence,<br/>sonde correlee, index de trigrammes, zone de trigrammes, intervalle,<br/>reancrage entrant, retournement sur cible id, poussee dans jointure"]
+    fallback["FilterOperator -- le filet generique<br/>filter.rs:381<br/>atteint seulement quand aucune route n a rendu Some"]
+    prange["prefix_range.rs -- 280 lignes<br/>STARTS WITH reecrit en intervalle borne<br/>de p a haute de p, pour l ordre lexicographique<br/>descend sur find_nodes_in_range"]
+    expand_p["plan_expand et plan_expand_chain<br/>planner/lpg/expand.rs:11 et :151<br/>factorized_execution vaut true par defaut -- lpg/mod.rs:150"]
+    agg_p["plan_aggregate<br/>planner/lpg/aggregate.rs -- 1246 lignes<br/>reachable_pushdown.rs 865 l. -- appele en aggregate.rs:50<br/>rewrites typed degree et ORDER BY index<br/>atteints depuis project.rs:502 et :585"]
+    rdf_p["RdfPlanner::new<br/>planner/rdf/mod.rs -- 3901 lignes<br/>DEFAULT_CHUNK_SIZE 1024 -- rdf/mod.rs:36<br/>chemin SPARQL et GraphQL-RDF seulement"]
+    physplan["PhysicalPlan<br/>planner/mod.rs:35<br/>operator + columns + adaptive_context<br/>obrain_core::execution::operators::Operator en boite"]
+  end
+
+  subgraph Execution["Execution -- tirage par morceaux, pas de materialisation complete"]
+    exec["Executor::with_columns puis Executor::execute<br/>query/executor/mod.rs:114 -- 682 lignes"]
+    loop["boucle d execution<br/>executor/mod.rs:120 a :132<br/>check_cancel puis check_deadline puis operator.next<br/>sortie sur Ok None, puis SECOND check_cancel -- executor/mod.rs:152"]
+    reason["raison du second controle, ecrite dans la source -- executor/mod.rs:139 a :148<br/>un balayage annule rend un Vec PARTIEL sans canal pour le dire<br/>sans ce controle un resultat TRONQUE sortirait en Ok"]
+    optrait["trait Operator<br/>obrain-core/execution/operators/mod.rs:331<br/>fn next et fn name -- mod.rs 478 lignes"]
+    ops["operateurs physiques, obrain-core/src/execution/operators/<br/>filter.rs 4901 l. -- aggregate.rs 1797 l.<br/>sort.rs 1186 l. -- join.rs 1178 l.<br/>expand.rs 600 l. -- project.rs 537 l.<br/>limit.rs 471 l. -- scan.rs 274 l.<br/>noms rendus par Operator::name : Scan, Expand, Filter,<br/>HashJoin, NestedLoopJoin, HashAggregate, SimpleAggregate, Sort"]
+    datechunk["DataChunk -- le morceau<br/>vectorise, colonnes, column_count"]
+  end
+
+  subgraph Resultat["Resultat"]
+    qr["QueryResult<br/>database/mod.rs:2063<br/>columns, column_types, rows,<br/>execution_time_ms, rows_scanned,<br/>status_message, gql_status"]
+    wasm["⚪ sur wasm32 il n existe aucune horloge<br/>session/mod.rs:2419 a :2427<br/>execution_time_ms reste None -- la mesure est ABSENTE, pas zero"]
+    timing["execution_time_ms et rows_scanned<br/>poses en session/mod.rs:2672 a :2677<br/>et en processor.rs:459 a :465"]
+  end
+
+  cli_query -->|appelle| cli_exec
+  cli_exec -->|appelle| sess_exec
+  cli_exec -->|appelle| sess_lang
+  sess_exec -->|lit| ck
+  sess_lang -->|appelle| proc_process
+  proc_process -->|appelle| proc_lpg
+  proc_process -->|appelle| proc_rdf
+
+  ck -->|lit| get
+  get -->|rend un plan optimise| hit
+  noget -.->|interdit le hit| get
+  hit -->|appelle| exec
+
+  sess_exec -->|appelle| tr_gql
+  proc_lpg -->|appelle| tr_autres
+  tr_gql -->|appelle| parse_gql
+  parse_gql -->|appelle| lex_gql
+  parse_gql -->|lit| ast_gql
+  tr_autres -->|appelle| parse_autres
+  tr_gql -->|rend| tr_res
+  tr_res -->|Plan| plan_ir
+  tr_res -->|SessionCommand ou SchemaCommand| refus_session["⚪ hors du trajet de requete<br/>execute_session_command et execute_schema_command<br/>session/mod.rs:2450 et :2473 -- ils ne prennent pas ce chemin"]
+  plan_ir -->|ecrit| put
+
+  plan_ir -->|appelle| binder
+  binder -->|ecrit| bctx
+  bctx -->|alimente| opt
+
+  opt -->|appelle| opt_fp
+  opt -->|appelle| opt_jr
+  opt -->|appelle| opt_pp
+  opt_jr -->|appelle| dpccp
+  dpccp -->|lit| card
+  dpccp -->|lit| costm
+
+  opt -->|rend un LogicalPlan optimise| expl
+  opt -->|rend un LogicalPlan optimise| prof
+  opt -->|rend un LogicalPlan optimise| frontiere
+  frontiere -->|arme ou desarme le jeton| planner_ctx
+  expl -->|ecrit| qr
+  prof -->|appelle| planner_plan
+
+  planner_ctx -->|appelle| planner_plan
+  planner_plan -->|appelle| dispatch
+  dispatch -->|appelle| guard
+  guard -->|lit| plafond
+  guard -->|refuse| refus
+  refus -->|ecrit| qr
+  dispatch -->|appelle| scan_p
+  dispatch -->|appelle| filter_p
+  dispatch -->|appelle| expand_p
+  dispatch -->|appelle| agg_p
+  filter_p -->|essaie| routes
+  routes -->|sinon| fallback
+  routes -.->|STARTS WITH| prange
+  prange -.->|ecrit| physplan
+  rdf_p -->|appelle| physplan
+  scan_p -->|ecrit| physplan
+  filter_p -->|ecrit| physplan
+  expand_p -->|ecrit| physplan
+  agg_p -->|ecrit| physplan
+  physplan -->|appelle| exec
+  physnocache -.->|interdit le cache| physplan
+
+  exec -->|appelle| loop
+  loop -->|lit| optrait
+  loop -->|appelle| optrait
+  optrait -->|implemente par| ops
+  ops -->|rend| datechunk
+  datechunk -->|lit| loop
+  loop -->|ecrit| qr
+  reason -.->|justifie| loop
+  wasm -.->|annote| qr
+  timing -->|ecrit| qr

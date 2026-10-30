@@ -1,0 +1,79 @@
+ENGINE-008 PROTOCOL-HARNESS-01 -- RAPPORT DE BUILD, LINKAGE ET DIFF
+==========================================================================
+LLAMA_DECODE_CALL_COUNT=0
+HARNESS_PREFREEZE_MODEL_FORWARD_CALL_COUNT=0
+
+=== SOURCE ===
+QUALITY_EVAL_HARNESS_SOURCE_PATH=/home/triviere/projects/llama-obrain-cuda-f1a/tools/engine008-quality-eval/engine008-quality-eval.cpp
+QUALITY_EVAL_HARNESS_SOURCE_SHA256=3e9691918fa5e861862f7068bbb4af0025d8c1ca2e21a978a0cd32c658aeab7d
+HARNESS_SOURCE_LINES=632
+
+=== BINAIRE ===
+QUALITY_EVAL_HARNESS_BINARY_PATH=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/build/engine008-quality-eval
+QUALITY_EVAL_HARNESS_BINARY_SHA256=011bd43880307fe1271eeb7b7865889a135f2689d6a4c74091177163892a0665
+HARNESS_BINARY_BYTES=323688
+
+=== COMMANDE DE BUILD ===
+g++ -std=c++17 -O2 -w \
+  -I/home/triviere/projects/llama-obrain-cuda-f1a/include -I/home/triviere/projects/llama-obrain-cuda-f1a/common -I/home/triviere/projects/llama-obrain-cuda-f1a/ggml/include -I/home/triviere/projects/llama-obrain-cuda-f1a/vendor \
+  /home/triviere/projects/llama-obrain-cuda-f1a/tools/engine008-quality-eval/engine008-quality-eval.cpp \
+  -o /home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/build/engine008-quality-eval \
+  -L/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin -lllama-common -lllama -lggml -lggml-base \
+  -Wl,-rpath,/home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin
+COMPILER=g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+BUILD_SPACE=/home/triviere/exp-artifacts/engine-004-steady-state/RUN-001/protocol-harness-01/build   (DISTINCT de /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda)
+CMAKE_FILES_MODIFIED=0
+FORK_CMAKELISTS_TOUCHED=NO
+
+=== LIBRARIES EFFECTIVEMENT RESOLUES (ldd) ===
+  libllama-common.so.0 -> /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama-common.so.0
+  libllama.so.0        -> /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libllama.so.0
+  libggml.so.0         -> /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml.so.0
+  libggml-base.so.0    -> /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-base.so.0
+  libggml-cpu.so.0     -> /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-cpu.so.0
+  libggml-cuda.so.0    -> /home/triviere/projects/llama-obrain-cuda-f1a/build-cuda/bin/libggml-cuda.so.0
+LIBLLAMA_Q1_SHA256=87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2
+LIBLLAMA_NOT_REBUILT=YES
+
+=== DIFF DE SOURCES ET PERIMETRE ===
+PERIMETRE_DEFINI=src/, ggml/, include/, common/  (implementation du calcul)
+REFERENCE=etat qualifie Q1 tel que trouve (c'est cet etat qui a produit libllama 87c42d5f...)
+MESURE=inventaire de fichiers + horodatage apres le debut de la passe
+  src/     : 0 fichier modifie depuis le debut de la passe
+  ggml/    : 0 fichier modifie depuis le debut de la passe
+  include/ : 0 fichier modifie depuis le debut de la passe
+  common/  : 0 fichier modifie depuis le debut de la passe
+PRODUCT_COMPUTE_SOURCE_DIFF_COUNT=0
+
+MODIFICATIONS PREEXISTANTES (etat Q1, NON attribuables a cette passe) :
+  M src/CMakeLists.txt       2026-09-30 01:09
+  M src/llama-context.cpp    2026-09-30 12:38   <- instrumentation f1a = Q1
+  M src/llama-graph.cpp      2026-09-30 14:49   <- instrumentation f1a = Q1
+  M tools/obrain/pstate-exp0a.cpp  2026-09-24
+  ?? src/f1a-capture.cpp     2026-10-01 12:43
+  ?? src/f1a-capture.h       2026-10-01 04:08
+  ?? tools/f1a-eval.cpp      2026-10-01 03:55
+  => ces fichiers DEFINISSENT Q1. Aucun n'a ete touche par cette passe.
+
+SEULE ADDITION ATTRIBUABLE A CETTE PASSE :
+  ?? tools/engine008-quality-eval/engine008-quality-eval.cpp
+  => hors du perimetre de calcul produit. Le hash de reference de libllama est
+     inchange, et libllama n'a pas ete reconstruite.
+
+=== MODES EXPOSES ===
+  --mode provenance        inspection de provenance (sans modele)
+  --mode selftest          selftests sans calcul modele + garde de calcul
+  --mode renderer-qualify  qualification du renderer (vocabulaire seul)
+  --mode render            rendu + tokenisation des entrees
+  --mode render-second     seconde passe independante (reproductibilite)
+  --mode execute           VERROUILLE : refuse tant qu'aucune autorisation
+                           d'execution correspondant au manifeste gele n'existe
+  --mode verify-freeze     validation des manifestes de gel
+
+=== GARDE DE CALCUL ===
+Centralisee : requireComputeAuthorization(), seul point d'entree de calcul.
+Refuse AVANT tout appel a libllama (exit 3, message COMPUTE_REFUSED_BEFORE_LLAMA_CALL).
+Le drapeau --allow-model-compute NE SUFFIT PAS : une autorisation d'execution
+correspondant au manifeste gele est requise en plus.
+Le selftest verifie le refus par SOUS-PROCESSUS, sans jamais appeler llama_decode.
+HARNESS_COMPUTE_GUARD_SELFTEST=PASS

@@ -1,0 +1,13 @@
+--- SHA256 vecteurs ---
+  fichier inexistant -> chaine vide              PASS
+SHA256_TESTS_RESULT=PASS PASSED=11 FAILED=0
+--- concurrence ---
+OBRAIN_SHA256_CONCURRENCE
+  32 threads x 2000 hachages : resultats corrects      PASS
+  AUCUN sous-processus cree (nb procs inchange)        PASS
+  aucun fichier temporaire de hachage                  PASS
+  procs avant=433 apres=433 threads=3
+SHA256_CONCURRENCE_RESULT=PASS
+--- cache ---
+OBRAIN_KV_CACHE_TESTS_RESULT=PASS
+PASSED=49 FAILED=0

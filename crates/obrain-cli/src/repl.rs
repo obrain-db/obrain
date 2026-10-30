@@ -252,6 +252,7 @@ fn handle_meta_command(
                 println!("  :stats        Show detailed statistics");
                 println!("  :format <f>   Set output format (table, json, csv)");
                 println!("  :timing       Toggle query timing display");
+                println!("  :checkpoint   Force a durability checkpoint (msync all zones)");
                 println!("  :begin        Start a transaction");
                 println!("  :commit       Commit the current transaction");
                 println!("  :rollback     Roll back the current transaction");
@@ -271,7 +272,11 @@ fn handle_meta_command(
                         }
                         println!("Edge Types:");
                         for et in &lpg.edge_types {
-                            println!("  :{} ({})", et.name, et.count);
+                            println!(
+                                "  :{} ({})",
+                                et.name,
+                                et.count.map_or_else(|| "?".to_string(), |c| c.to_string())
+                            );
                         }
                         println!("Property Keys:");
                         for key in &lpg.property_keys {
@@ -358,6 +363,17 @@ fn handle_meta_command(
             }
             if !quiet {
                 println!("Timing: {}", if *show_timing { "on" } else { "off" });
+            }
+            MetaResult::Continue
+        }
+        ":checkpoint" | ":ckpt" => {
+            match db.checkpoint() {
+                Ok(()) => {
+                    if !quiet {
+                        println!("Checkpoint complete (WAL + all mmap zones flushed).");
+                    }
+                }
+                Err(e) => return MetaResult::Error(e.to_string()),
             }
             MetaResult::Continue
         }

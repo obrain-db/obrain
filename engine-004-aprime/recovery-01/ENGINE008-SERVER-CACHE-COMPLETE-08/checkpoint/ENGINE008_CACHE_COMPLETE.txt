@@ -1,0 +1,144 @@
+ENGINE-008 -- ACHEVEMENT DU CODE : RAPPORT TERMINAL
+==========================================================================
+O1 RACCORDE ET COLLECTE DES DONNEES REELLES -- MAIS SA COLLECTE EST
+INCOMPLETE ET DEMONTABLEMENT FAUSSE. C EST REPRODUCTIBLE, CAUSE NON ETABLIE.
+
+=== 1. DIAGNOSTIC DE L'INTERRUPTION DE FINAL-07 ===
+PREVIOUS_C_INTERRUPTION_CAUSE=UNKNOWN (avec eliminations etablies)
+  Ce que j'ai observe, et qui ELIMINE des hypotheses :
+   - le processus serveur de FINAL-07 etait VIVANT, mais **ses 40 threads
+     etaient TOUS en etat `S`** avec `wchan = futex_do_wait` : il NE CALCULAIT
+     PAS. Une curl orpheline tenait la connexion etablie.
+   - **L'hypothese « SHA256 du modele en cours de calcul » est ELIMINEE par
+     cette observation** : un hachage aurait un thread en `R` (actif).
+   - `cancelled_write_bytes` valait 160 698 368, soit la taille du blob
+     (160 697 024) plus ~1,3 Ko : une ecriture d'environ 160 Mo a ete annulee.
+   - `C.json` n'a JAMAIS ete ecrit, meme tardivement : aucun resultat n'a ete
+     produit apres l'expiration du client.
+  **Je n'ai donc PAS ecrit « cause = SHA256 du modele ».**
+  Aucune requete precedente ne restait active : les orphelins ont ete arretes
+  avant tout nouveau calcul.
+
+=== 2. LA PANNE EST REPRODUCTIBLE -- C'EST LE FAIT NOUVEAU ===
+  L'experience COMPLETE-08 a ete lancee DETACHEE (nohup), avec un delai
+  maximal PREENREGISTRE de **240 s par requete**, non rallonge apres
+  observation. Traces par phase dans TRACES_PAR_PHASE.txt :
+    [A] 1790955416 -> 1790955424   (8 s)    HTTP=200  TIME=7.798023
+    [B] 1790955424 -> 1790955435   (11 s)   HTTP=200  TIME=11.083309
+    [C] 1790955435 -> 1790955675   (240 s)  HTTP=000  TIME=240.005164  rc=28
+  **C a expire a exactement le delai preenregistre**, comme en FINAL-07.
+  A et B aboutissent de facon reproductible ; **C est la seule requete qui
+  emprunte le chemin d'IMPORT par `state_ref`**.
+  Etat du serveur pendant la panne : **44 threads, tous en `S`**,
+  `wchan = futex_do_wait` -- la requete est **BLOQUEE, pas en calcul**.
+  Recherche de preuve directe : **AUCUN enfant `sha256sum`**, **AUCUN residu
+  `/tmp/.obrain_kvsha_*`**. Donc le `popen` n'etait pas en cours d'execution
+  au moment de la mesure.
+  **CAUSE NON ETABLIE.** Je nomme le maillon precis sans le declarer resolu :
+  le chemin d'import bloque sur un futex, apres des controles qui incluent
+  `kv_model_sha256()` et `kv_sha256_hex()`, tous deux implementes via
+  `popen`/`fork()` -- **et un `fork()` dans un processus a 44 threads tenant
+  des contextes CUDA est un candidat connu de blocage**. **Je ne le declare
+  PAS etabli : je n'ai pas fait le test qui discrimine.**
+
+=== 3. O1 -- RACCORDE, ET SA COLLECTE EST FAUSSE ===
+O1_IMPLEMENTED_AND_CONNECTED=PARTIAL
+  Ce qui FONCTIONNE, lu dans la reponse brute de B (`verify: true`) :
+    verify_enabled=True
+    **first_logits_n=248320**  (logits natifs COMPLETS, copies au bon point)
+    **decoded_ids_json='[13,198,248069,271,3793,13]'**
+    decoded_pos_json='[59,61,63,65,67,69]'
+    selection_method='llama_sampler_sample (argmax en greedy, egalites au plus petit ID)'
+    prefix_token_count=58
+  Les IDs viennent bien de `llama_sampler_sample`, le sampler de PRODUCTION :
+  **aucun ID n'est reconstruit depuis le texte**, et aucun pipeline de
+  generation parallele n'a ete ajoute.
+  **CE QUI EST FAUX, ET JE LE DECLARE :**
+   - **6 IDs enregistres pour 32 tokens generes** : la collecte en rate.
+   - **les positions avancent de 2** (59,61,63,65,67,69) : ma formule
+     `cur_pos + t` est fausse, `cur_pos` avance lui aussi.
+  **La collecte est donc incomplete et demontrablement incorrecte.** Elle doit
+  etre corrigee avant toute comparaison d'IDs : je ne la presente pas comme
+  raccordee.
+
+=== 4. METRIQUE EXPORT -- CORRIGEE, ET ELLE REVELE UN COUT ===
+EXPORT_METRIC_VERIFIED=YES
+  Le chemin `extract_only` finalise desormais ses metriques AVANT son retour.
+  A.json le montre : `fact_decode_ms=7796.822`, `ms_prefix_compute=7796.822`,
+  `ms_preparation_total=7796.822`, et `ms_state_lookup=-1.0` /
+  `ms_state_import=-1.0` (NON APPLICABLE) et `ms_model_sha256=-2.0`
+  (NON MESURE). **Plus aucun 0.0 implicite.**
+  Convention publiee : **>= 0 mesure reelle ; -1 NON APPLICABLE ; -2 NON MESURE.**
+
+  **MAIS ELLE REVELE UN COUT QUI N'ETAIT PAS ISOLE** : `ms_prefix_compute`
+  pour A vaut **7796.8 ms**, alors que le prefixe de B (memes 58 IDs) coute
+  **903.9 ms** (via `ms_preparation_total`). Auparavant, A prenait ~1,8 s.
+  L'ecart ~6-7 s est donc **dans `ms_prefix_compute`, et `ms_model_sha256`
+  n'est PAS mesure sur ce chemin (-2.0)** : le hachage du modele est
+  **inclus dans le prefixe au lieu d'etre separes**.
+  **Je ne presente PAS ces ~6-7 s comme la mesure du SHA256 du modele** : c'est
+  une INFERENCE de l'ecart entre runs, pas un chronometrage. C'est pourquoi :
+MODEL_SHA256_MS=NON ETABLI -- le hachage du modele n'est pas isole ; l'ordre de
+  grandeur ~6-7 s est INFERE de l'ecart 7796.8 vs 903.9 ms, non mesure.
+BLOB_SHA256_MS=NON ETABLI -- meme raison ; `ms_blob_sha256` vaut -2.0 sur les
+  chemins observes.
+  §3 demandait de distinguer les deux couts : **je ne l'ai pas fait**, et je ne
+  substitue pas une inference a une mesure.
+  Le contrat de reutilisation de l'identite du modele existe (`kv_model_sha256`
+  met en cache statique par chemin), mais **son effet n'a pas ete mesure** et
+  **je n'ai pas verifie la validite apres changement de modele**.
+
+=== 5. PERSISTANCE DU PREFIXE EXACT -- FAITE ET TESTEE ===
+EXACT_PREFIX_DISK_ROUNDTRIP_SELFTEST=PASS
+  Le format disque persiste desormais TOUS les champs necessaires, dont
+  **les IDs du prefixe exact**, les positions, la topologie, la configuration,
+  les identites modele/Q1, le SHA du blob et la sequence. Rechargement verifie :
+  prefixe restaure a l'identique, manifeste **COMPLET**, import **ACCEPT**.
+  Un prefixe efface rend le manifeste INCOMPLET et l'import est **REFUSE** :
+  aucun manifeste retroactif n'est fabrique.
+  Le fichier altere est desormais refuse par **SHA256** (et non plus par
+  incompletude) : le manifeste etant complet, le controle cryptographique
+  s'applique reellement.
+
+=== 6. GATE : TESTS REJOUES SUR L'ETAT FINAL ===
+REQUIRED_PRECOMPUTE_TESTS=PASS
+  **49 assertions, 49 PASSED, 0 FAILED, EXIT=0** (TESTS_OUTPUT.txt), sur
+  `obrain-kv-cache.h` **inclus par le serveur ET par les tests** : les regles
+  testees sont celles de la production, pas une copie.
+  Les 44 assertions acquises sont incluses et REJouees ; 5 nouvelles couvrent
+  le roundtrip du prefixe, la completude apres restauration, la restauration
+  de la topologie/contexte/positions, et le refus sur prefixe efface.
+  Identite Q1 inchangee : **87c42d5f5dd7ab3c10967b4d3eaac82636b6af11e2c18a7f2798bab2d01bb2b2**
+  HTTP_CALL_COUNT=3 (A, B, C -- C sans reponse)
+  ATTEMPT_COUNT=1 experience COMPLETE-08 (plus 2 lancements de diagnostic
+    en lecture seule). **Aucun retry de C.**
+
+=== 7. CRITERES DE CLOTURE (§6 de la mission precedente) ===
+  compatibilite connectee ET refus exerces ............ OUI (49 tests PASS)
+  integrite testee ................................... OUI
+  LRU et borne testees ............................... OUI
+  persistance/rechargement AVEC PREFIXE EXACT ........ OUI
+  metrique EXPORT corrigee et observee ............... OUI
+  IDs/logits recueillis par la route de production ... **PARTIEL ET FAUX**
+  comparaison numerique effectuee .................... **NON** (C expire)
+
+PURE_CACHE_HIT_OBSERVED=NOT_RUN
+  **Je ne reprends PAS le YES de CLOSURE-06** : C n'ayant pas abouti, la
+  restauration par cette route n'a pas ete re-observee sur l'etat final du code.
+START_LOGITS_BINARY_IDENTICAL=NOT_RUN
+TOKEN_IDS_MATCH=NOT_RUN
+TEXT_MATCH=NOT_RUN
+  Aucune comparaison n'est possible : C n'a produit aucune reponse, et la
+  collecte d'IDs de B est incomplete.
+REMAINING_WORK=
+  R1. CORRIGER la collecte d'IDs/positions de O1 (6 IDs pour 32 tokens,
+      positions par pas de 2) -- la formule `cur_pos + t` est fausse.
+  R2. ETABLIR la cause du blocage de C : un test qui discrimine le
+      `popen`/`fork()` dans le processus a 44 threads, sans supposer.
+  R3. ISOLER `ms_model_sha256` et `ms_blob_sha256` du prefixe, et les mesurer
+      directement -- l'inference ~6-7 s ne remplace pas un chronometrage.
+  R4. Verifier le CONTRAT de reutilisation de l'identite modele (validite
+      apres changement de modele, non testee).
+  R5. Terminer l'experience C et la comparaison numerique.
+Q1_LIBLLAMA_REBUILT=NO
+QUALITY_EXECUTION_ALLOWED=NO

@@ -1,0 +1,57 @@
+ENGINE-008 -- CONTRAT DE PREUVE RUNTIME v1 (preenregistre)
+========================================================================
+Ce document PREENREGISTRE les preuves qui seront executees APRES le gel,
+et AVANT le premier token score. Aucune de ces preuves n a ete executee
+dans la passe prefreeze courante.
+
+########## PARTIE A -- MTP / NextN ##########
+PREUVE MTP A EXECUTER (post-freeze, preflight) :
+  P1  charger le candidat par le chemin standard
+  P2  verifier l invocation du decodeur standard (log du fork)
+  P3  verifier l ABSENCE de configuration speculative/MTP
+  P4  verifier l ABSENCE de requete de graphe NextN
+  P5  normal layer count = 64
+  P6  nextn layer count = 1, PRESENT mais NON UTILISE
+RESULTATS EXIGES AVANT ADMISSION DES SCORES :
+  ENGINE008_STANDARD_DECODER_GRAPH_CONFIRMED=YES
+  ENGINE008_MTP_ACTIVE=NO
+  ENGINE008_NEXTN_LAYER_USED_IN_SCORING_PATH=NO
+ENGINE008_MTP_RUNTIME_CONFIRMED=NO   (etat de CETTE passe)
+ENGINE008_MTP_RUNTIME_PROOF_METHOD_DEFINED=YES
+
+########## PARTIE B -- WHT / OBRAIN_NO_ROTATION ##########
+CONDITION D ENVIRONNEMENT : OBRAIN_NO_ROTATION=UNSET
+  'UNSET' est un test de PRESENCE. OBRAIN_NO_ROTATION=0 serait INCORRECT.
+  Le wrapper futur doit utiliser explicitement : env -u OBRAIN_NO_ROTATION
+CHAINE DE PREUVE WHT A ETABLIR (post-freeze, premier preflight) :
+  W1  candidate model SHA exact = 1d7c9409ae7f2c7f6071c8ad32d2481f2c09da94fc2aec3f63a4d44777e2b937
+  W2  libllama SHA exact et qualifie Q1
+  W3  OBRAIN_NO_ROTATION ABSENT dans le parent
+  W4  OBRAIN_NO_ROTATION ABSENT dans le child
+  W5  source condition WHT inchangee
+  W6  chemin qtype eligible du candidat inchange
+  W7  si l instrumentation Q1 existante peut produire rotation_applied
+      SANS modifier le compute : collecter rotation_applied au runtime
+
+AUDIT STATIQUE DE L ATTENTE DE ROTATION (§61) :
+  ENGINE008_BASELINE_RUNTIME_ROTATION_EXPECTED=NO
+  ENGINE008_CANDIDATE_RUNTIME_ROTATION_EXPECTED=YES
+  References source exactes :
+    - baseline : qtypes = F32, Q8_0, Q4_K, Q6_K — aucun type au-dela des
+      types amont connus ; la rotation de Hadamard n est pas un chemin
+      de decodage du baseline.
+    - candidat : qtypes = F32, BF16, Q4_K, Q5_K, Q6_K, TQ2_G128
+      (168 tenseurs TQ2_G128, ~10.884 milliards de poids). Le type ggml 43
+      TQ2_G128 est declare dans ggml/include/ggml.h avec un commentaire
+      explicite : 'la rotation de Hadamard n est PAS dans le bloc — elle est
+      repliee dans les poids hors ligne et declaree dans les metadonnees'.
+      Le chemin de decodage du candidat PASSE donc par des tenseurs dont
+      la semantique depend de la rotation : la rotation est ATTENDUE au
+      runtime pour le candidat.
+HERITAGE Q1 (§60) :
+  SI candidate SHA exact ET libllama SHA Q1 exact ET sources compute
+  inchangees ET predicat d environnement exact, ALORS le lien avec
+  Q1_FORWARD_STATUS=PASS est documente. Ce lien n est PAS une observation
+  runtime de cette passe.
+ENGINE008_CANDIDATE_WHT_RUNTIME_CONFIRMED=NO   (etat de CETTE passe)
+ENGINE008_CANDIDATE_WHT_RUNTIME_PROOF_METHOD_DEFINED=YES
