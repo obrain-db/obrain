@@ -1,3 +1,5 @@
+//! Migration de la memoire de l'agent : les zones anciennes se relisent apres bascule de format.
+
 #![cfg(feature = "cypher")]
 //! Integration tests for the agent-memory migration scenario (Discussion #155).
 //!
@@ -16,7 +18,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
-use std::time::Instant;
+use web_time::Instant;
 
 use obrain_common::types::Value;
 use obrain_engine::{Config, ObrainDB};

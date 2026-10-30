@@ -1,3 +1,5 @@
+//! Disposition du repertoire WAL : creation, rotation, nettoyage.
+
 #![cfg(feature = "cypher")]
 //! Integration tests for WAL directory-format persistence.
 //!

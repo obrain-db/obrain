@@ -33,6 +33,9 @@ bytes.workspace = true
 parking_lot.workspace = true
 
 
+# Portable clock (std::time::Instant/SystemTime trap on wasm32-unknown-unknown)
+web-time = "1"
+
 [features]
 default = []
 tiered-storage = []

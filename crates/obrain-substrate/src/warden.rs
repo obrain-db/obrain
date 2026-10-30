@@ -7,7 +7,8 @@
 //! preserves community locality per-insert, but adversarial or time-varying
 //! access patterns (inter-community inserts, deletions, community-id
 //! drift from LDleiden) eventually fragment a community across many
-//! 4 KiB pages. The warden is a periodic scanner that:
+//! allocation pages (20 KiB = 512 records since jalon 2). The warden is a
+//! periodic scanner that:
 //!
 //! 1. Walks the Nodes zone once to compute, per community, the number of
 //!    **distinct pages** it lives in versus the **ideal** page count
@@ -51,8 +52,8 @@ const DEFAULT_HILBERT_MAX_DEGREE: u32 = 32;
 pub struct CommunityFragmentation {
     /// The community the report is about.
     pub community_id: u32,
-    /// Number of distinct 4 KiB pages containing at least one live node
-    /// of this community.
+    /// Number of distinct allocation pages (20 KiB, 512 slots) containing
+    /// at least one live node of this community.
     pub distinct_pages: u32,
     /// Live (non-tombstoned) node count for this community.
     pub live_count: u32,
@@ -148,25 +149,11 @@ impl CommunityWarden {
             let Some(rec) = self.store.writer().read_node(slot)? else {
                 continue;
             };
-            if rec.is_tombstoned() {
-                continue;
-            }
-            // Skip slots that look like zero-filled alignment padding
-            // (label_bitset == 0 AND community_id == 0 AND
-            // centrality_cached == 0 AND energy == 0). A real node
-            // created via `create_node_in_community(&[], 0)` also has
-            // bitset == 0, but it's expected to count under community 0
-            // — the test fixtures avoid this ambiguity by using
-            // non-empty labels or non-zero community ids.
-            let is_padding = rec.label_bitset == 0
-                && rec.community_id == 0
-                && rec.centrality_cached == 0
-                && rec.energy == 0
-                && rec.scar_util_affinity == 0
-                && rec.flags == 0
-                && rec.first_edge_off == crate::record::U48::ZERO
-                && rec.first_prop_off == crate::record::U48::ZERO;
-            if is_padding {
+            // (jalon 1) ALLOCATED remplace l'heuristique « tout-a-zero » :
+            // un creneau jamais ecrit ne porte pas le bit — trou, point
+            // final. L'ambiguite `create_node_in_community(&[], 0)` ≡ trou
+            // a disparu (le writer pose toujours ALLOCATED).
+            if !rec.is_live() {
                 continue;
             }
             let page = slot / NODES_PER_PAGE;
@@ -243,29 +230,25 @@ impl CommunityWarden {
             // the next sort re-runs over the post-mutation state.
             self.store.invalidate_layout_flag();
 
-            let node_hw = self.store.slot_high_water();
-            let edge_hw = self.store.edge_slot_high_water();
-            self.store.writer().bulk_sort_by_hilbert(
-                node_hw,
-                edge_hw,
-                DEFAULT_HILBERT_ORDER,
-                DEFAULT_HILBERT_MAX_DEGREE,
-            )?;
-
-            // T11 Step 5: bulk_sort_by_hilbert rewrites node slots, so
-            // `community_placements` / `community_first_slots` (the
-            // prefetch range maps on the store) are now stale. Rescan
-            // the Nodes zone once to rebuild them. Cost: O(high_water)
-            // — amortized across warden ticks, this is negligible next
-            // to the sort pass we just ran.
-            self.store.refresh_community_ranges()?;
+            // Chantier SlotRemappable — on passe par le point d'entrée
+            // ENCADRÉ du store (flush avant, tri, rafraîchissement des
+            // cartes de communautés, flush après). Appeler
+            // `writer().bulk_sort_by_hilbert` directement laisserait dans
+            // la fenêtre de rejeu des enregistrements pré-permutation que
+            // le prochain redémarrage réécrirait par-dessus la nouvelle
+            // disposition — voir la doc de
+            // `SubstrateStore::repermuter_par_hilbert`.
+            self.store
+                .repermuter_par_hilbert(DEFAULT_HILBERT_ORDER, DEFAULT_HILBERT_MAX_DEGREE)?;
         }
         Ok(fired)
     }
 }
 
 // Compile-time invariant sanity check: size_of(NodeRecord) must divide
-// evenly into the page boundary or the page/slot accounting above is
-// misaligned. Same assertion as in record.rs, kept here to document the
-// coupling for warden maintainers.
-const _: [(); 1] = [(); ((4096usize / NodeRecord::SIZE) == NODES_PER_PAGE as usize) as usize];
+// evenly into the ALLOCATION page boundary or the page/slot accounting
+// above is misaligned. Same assertion as in record.rs, kept here to
+// document the coupling for warden maintainers. (jalon 2 : la page
+// d'allocation est 20 480 o = 512 records de 40 o — plus la page OS.)
+const _: [(); 1] =
+    [(); ((crate::record::NODE_ALLOC_PAGE_BYTES / NodeRecord::SIZE) == NODES_PER_PAGE as usize) as usize];

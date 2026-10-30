@@ -1,3 +1,5 @@
+//! Passe rapide de la suite Rosetta : equivalence des formulations GQL d'une meme question.
+
 #![cfg(feature = "cypher")]
 //! Quick Rosetta tests for cross-language query comparison.
 

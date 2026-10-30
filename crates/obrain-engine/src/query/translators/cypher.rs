@@ -506,6 +506,7 @@ impl CypherTranslator {
             variable: variable.clone(),
             label,
             input: input.map(Box::new),
+            pushdown_hint: None,
         });
 
         // Add hasLabel filters for additional labels (AND semantics).
@@ -662,6 +663,7 @@ impl CypherTranslator {
             variable: source_var.clone(),
             label: source_label,
             input: input.map(Box::new),
+            pushdown_hint: None,
         });
 
         // Apply property filters on the source node if any
@@ -692,7 +694,8 @@ impl CypherTranslator {
                 variable: target_var.clone(),
                 label: target_label,
                 input: Some(Box::new(plan)),
-            });
+            pushdown_hint: None,
+        });
 
             // Apply property filters on the target node if any
             for (key, value) in &rel.target.properties {
@@ -1876,6 +1879,7 @@ impl CypherTranslator {
                         properties: vec![(property.clone(), value_expr)],
                         replace: false,
                         is_edge: self.is_edge_variable(variable),
+                        remove: false,
                         input: Box::new(plan),
                     });
                 }
@@ -1890,6 +1894,7 @@ impl CypherTranslator {
                         properties: vec![("*".to_string(), value_expr)],
                         replace: true,
                         is_edge: self.is_edge_variable(variable),
+                        remove: false,
                         input: Box::new(plan),
                     });
                 }
@@ -1904,6 +1909,7 @@ impl CypherTranslator {
                         properties: vec![("*".to_string(), value_expr)],
                         replace: false,
                         is_edge: self.is_edge_variable(variable),
+                        remove: false,
                         input: Box::new(plan),
                     });
                 }
@@ -1938,7 +1944,9 @@ impl CypherTranslator {
         for item in &remove_clause.items {
             match item {
                 ast::RemoveItem::Property { variable, property } => {
-                    // REMOVE n.prop sets the property to null
+                    // REMOVE n.prop really removes the key (remove: true) —
+                    // a tombstone plus a RemoveNodeProperty WAL record, not a
+                    // stored NULL. The Null literal is only a name carrier.
                     plan = LogicalOperator::SetProperty(SetPropertyOp {
                         variable: variable.clone(),
                         properties: vec![(
@@ -1947,6 +1955,7 @@ impl CypherTranslator {
                         )],
                         replace: false,
                         is_edge: self.is_edge_variable(variable),
+                        remove: true,
                         input: Box::new(plan),
                     });
                 }
@@ -2822,16 +2831,16 @@ mod tests {
 
         if let LogicalOperator::Return(ret) = &plan.root {
             if let LogicalOperator::SetProperty(set) = ret.input.as_ref() {
-                // REMOVE property is translated to SET property = null
+                // REMOVE property compiles to a real removal (remove: true),
+                // NOT to SET property = null — a stored NULL keeps the key.
                 assert_eq!(set.variable, "n");
                 assert_eq!(set.properties.len(), 1);
                 assert_eq!(set.properties[0].0, "name");
-                // Value should be Null
-                if let LogicalExpression::Literal(Value::Null) = &set.properties[0].1 {
-                    // OK
-                } else {
-                    panic!("Expected Null value for REMOVE");
-                }
+                assert!(
+                    set.remove,
+                    "REMOVE must compile with remove: true — compiling it as a \
+                     plain SET-to-null writes a stored NULL and keeps the key"
+                );
             } else {
                 panic!("Expected SetProperty");
             }

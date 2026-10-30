@@ -93,7 +93,7 @@ pub enum LevelSelection {
     },
     /// Only specific indices are selected (for low selectivity).
     ///
-    /// Uses `SelectionVector` which stores indices as `u16`.
+    /// Uses `SelectionVector` which stores indices as `u32`.
     Sparse(SelectionVector),
 }
 

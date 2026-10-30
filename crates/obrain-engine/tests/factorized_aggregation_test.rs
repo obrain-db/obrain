@@ -1,3 +1,5 @@
+//! Agregation factorisee : memes resultats que le chemin classique, sur des motifs a haut facteur de branchement.
+
 #![cfg(feature = "cypher")]
 //! Tests for factorized aggregation optimization.
 //!
@@ -274,7 +276,7 @@ fn test_factorized_aggregation_speedup_demonstration() {
     // Expected: 5 sources * 10 hop1 * 5 hop2 = 250 two-hop paths
 
     // Time factorized
-    let start_factorized = std::time::Instant::now();
+    let start_factorized = web_time::Instant::now();
     let factorized_result = db_factorized
         .session()
         .execute("MATCH (s:Source)-[:LINK]->(h1)-[:LINK]->(h2) RETURN COUNT(h2)")
@@ -282,7 +284,7 @@ fn test_factorized_aggregation_speedup_demonstration() {
     let factorized_time = start_factorized.elapsed();
 
     // Time flat
-    let start_flat = std::time::Instant::now();
+    let start_flat = web_time::Instant::now();
     let flat_result = db_flat
         .session()
         .execute("MATCH (s:Source)-[:LINK]->(h1)-[:LINK]->(h2) RETURN COUNT(h2)")

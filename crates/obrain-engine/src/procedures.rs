@@ -126,6 +126,31 @@ impl Default for BuiltinProcedures {
     }
 }
 
+/// LE registre des algorithmes integres — un seul, partage.
+///
+/// `plan_call_procedure` (qui EXECUTE) et `LogicalOperator::mutations_avec`
+/// (qui CLASSE) doivent repondre a partir de la MEME source. Deux
+/// `OnceLock` separes finiraient par diverger, et cette nuit a fourni assez
+/// d'exemples de deux chemins pour une meme decision.
+pub fn registre() -> &'static BuiltinProcedures {
+    static REGISTRE: std::sync::OnceLock<BuiltinProcedures> = std::sync::OnceLock::new();
+    REGISTRE.get_or_init(BuiltinProcedures::new)
+}
+
+/// Ce nom designe-t-il un algorithme du registre ?
+///
+/// ── POURQUOI C'EST UNE REPONSE DE LECTURE SURE ───────────────────────
+///
+/// Ce n'est pas une liste de noms tenue a la main : c'est une propriete de
+/// TYPE. Le trait `GraphAlgorithm` expose
+/// `fn execute(&self, store: &dyn GraphStore, params: &Parameters)` — un
+/// store en LECTURE SEULE. Aucun algorithme du registre ne peut ecrire dans
+/// le graphe, et le compilateur le garantit ; il n'y a pas de nom a oublier.
+#[must_use]
+pub fn est_algorithme_integre(nom: &[String]) -> bool {
+    registre().get(nom).is_some()
+}
+
 /// Metadata about a registered procedure.
 pub struct ProcedureInfo {
     /// Qualified name (e.g., `"obrain.pagerank"`).

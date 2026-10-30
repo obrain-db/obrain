@@ -169,3 +169,54 @@ fn test_merge_with_on_match() {
         Some(&Value::Bool(true))
     );
 }
+
+/// T17b (2026-08-05) : avec un index de propriété enregistré sur la clé de
+/// match, MERGE matche le nœud existant via l'index (candidats 0/1) au lieu
+/// du scan de label — même résultat, pas de doublon, et un second MERGE sur
+/// une valeur absente crée bien un nouveau nœud.
+#[test]
+fn t17b_merge_uses_property_index_and_stays_correct() {
+    let store: Arc<dyn GraphStoreMut> = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    store.create_property_index("id");
+    assert!(store.has_property_index("id"));
+
+    let existing = store.create_node_with_props(
+        &["Rec"],
+        &[(PropertyKey::new("id"), Value::String("pa_1".into()))],
+    );
+
+    let merge_for = |value: &str| {
+        MergeOperator::new(
+            Arc::clone(&store),
+            None,
+            MergeConfig {
+                variable: "n".to_string(),
+                labels: vec!["Rec".to_string()],
+                match_properties: const_props(vec![("id", Value::String(value.into()))]),
+                on_create_properties: vec![],
+                on_match_properties: vec![],
+                output_schema: vec![LogicalType::Node],
+                output_column: 0,
+                bound_variable_column: None,
+            },
+        )
+    };
+
+    // Match d'un existant : pas de création.
+    let mut m1 = merge_for("pa_1");
+    let _ = m1.next().unwrap();
+    assert_eq!(store.nodes_by_label("Rec").len(), 1);
+
+    // Valeur absente : création d'un nouveau nœud, indexé à son tour.
+    let mut m2 = merge_for("pa_2");
+    let _ = m2.next().unwrap();
+    let recs = store.nodes_by_label("Rec");
+    assert_eq!(recs.len(), 2);
+    assert!(recs.contains(&existing));
+
+    // Rejouer le MERGE sur pa_2 ne duplique pas (l'index a bien vu la
+    // création faite PAR le MergeOperator lui-même).
+    let mut m3 = merge_for("pa_2");
+    let _ = m3.next().unwrap();
+    assert_eq!(store.nodes_by_label("Rec").len(), 2);
+}

@@ -1,3 +1,4 @@
+#![cfg(feature = "algos")]
 //! Integration tests for CALL procedure support.
 //!
 //! Tests CALL statement parsing + execution across GQL, Cypher, and SQL/PGQ.
@@ -241,14 +242,28 @@ fn test_language_parity_pagerank() {
 fn test_call_bfs() {
     let db = setup_graph();
     let session = db.session();
-    // BFS from node 0 (first created node)
-    let result = session.execute("CALL obrain.bfs(0)").unwrap();
+    // BFS from the first created node. Node IDs are NOT guaranteed to start
+    // at 0 (e.g. substrate-backed stores reserve low IDs / start counters
+    // at 1) — hardcoding `CALL obrain.bfs(0)` silently ran BFS from a
+    // non-existent node and returned 0 rows instead of failing loudly,
+    // which is exactly what happened here (see note on this test's fix).
+    // Look up the real starting node ID instead of assuming a fixed value.
+    let start_id = db
+        .graph_store()
+        .node_ids()
+        .into_iter()
+        .min()
+        .expect("setup_graph() must create at least one node")
+        .0;
+    let result = session
+        .execute(&format!("CALL obrain.bfs({start_id})"))
+        .unwrap();
 
     assert_eq!(result.columns.len(), 2);
     assert_eq!(result.columns[0], "node_id");
     assert_eq!(result.columns[1], "depth");
-    // Should reach all 3 nodes from node 0
-    assert!(result.row_count() >= 1);
+    // Should reach all 3 nodes from the starting node (chain alix->gus->harm).
+    assert_eq!(result.row_count(), 3);
 }
 
 #[test]

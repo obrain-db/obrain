@@ -183,16 +183,17 @@ impl fmt::Display for ZonedDatetime {
             write!(f, "{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}")?;
         }
 
-        match self.offset_seconds {
-            0 => write!(f, "Z"),
-            off => {
-                let sign = if off >= 0 { '+' } else { '-' };
-                let abs = off.unsigned_abs();
-                let oh = abs / 3600;
-                let om = (abs % 3600) / 60;
-                write!(f, "{sign}{oh:02}:{om:02}")
-            }
-        }
+        // Offset nul écrit `+00:00` (jamais `Z`) : `+` (0x2B) se classe avant
+        // `.` (0x2E) et avant tout chiffre, donc l'ordre LEXICOGRAPHIQUE des
+        // écritures reste CHRONOLOGIQUE malgré les fractions rognées — la
+        // garantie prouvée par gql_15 (G6) et brisée par `Z` (0x5A, D6).
+        // Aligné sur la production obrain-tmn (chrono to_rfc3339 → `+00:00`).
+        let off = self.offset_seconds;
+        let sign = if off >= 0 { '+' } else { '-' };
+        let abs = off.unsigned_abs();
+        let oh = abs / 3600;
+        let om = (abs % 3600) / 60;
+        write!(f, "{sign}{oh:02}:{om:02}")
     }
 }
 
@@ -204,7 +205,7 @@ mod tests {
     fn test_parse_utc() {
         let zdt = ZonedDatetime::parse("2024-06-15T10:30:00Z").unwrap();
         assert_eq!(zdt.offset_seconds(), 0);
-        assert_eq!(zdt.to_string(), "2024-06-15T10:30:00Z");
+        assert_eq!(zdt.to_string(), "2024-06-15T10:30:00+00:00");
     }
 
     #[test]
@@ -284,6 +285,6 @@ mod tests {
     #[test]
     fn test_with_fractional_seconds() {
         let zdt = ZonedDatetime::parse("2024-06-15T10:30:00.123Z").unwrap();
-        assert_eq!(zdt.to_string(), "2024-06-15T10:30:00.123Z");
+        assert_eq!(zdt.to_string(), "2024-06-15T10:30:00.123+00:00");
     }
 }

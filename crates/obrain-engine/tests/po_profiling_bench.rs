@@ -1,3 +1,5 @@
+//! Banc de profilage sur la base Project Orchestrator — cout des lectures les plus frequentes.
+
 #![cfg(feature = "cypher")]
 //! Profiling bench to identify exact bottlenecks in slow PO queries.
 //!
@@ -5,7 +7,7 @@
 //!   --test po_profiling_bench -- --nocapture
 
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 fn measure(name: &str, session: &obrain_engine::Session, query: &str, iters: usize) {
     // Warmup

@@ -303,4 +303,58 @@ mod bare_pattern_predicate {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], Value::String("Harm".into()));
     }
+
+    /// (bug #95-2) `WHERE NOT (a)-[:SUPPORTS]->(b)` avec b LIE au scope
+    /// externe : la fast path ExistsSubquery ne code que
+    /// (start_var, direction, type) — elle testait « a n'a AUCUNE arete
+    /// SUPPORTS » au lieu de « pas d'arete vers CE b ». L'extremite liee
+    /// doit router vers l'anti-join (HashJoin Anti sur TOUTES les colonnes
+    /// partagees).
+    ///
+    /// Scenario discriminant : a1 supporte un noeud TIERS (pas son b
+    /// apparie). Semantique correcte : la paire (a1, b1) est GARDEE.
+    /// L'ancienne fast path la perdait (a1 a « une » arete SUPPORTS).
+    #[test]
+    fn test_not_bare_pattern_bound_endpoint_anti_join() {
+        let db = ObrainDB::new_in_memory();
+        let session = db.session();
+
+        session.execute("CREATE (:A {fk: 'x0'})").unwrap();
+        session.execute("CREATE (:A {fk: 'x1'})").unwrap();
+        session.execute("CREATE (:A {fk: 'x2'})").unwrap();
+        session.execute("CREATE (:B {k: 'x0'})").unwrap();
+        session.execute("CREATE (:B {k: 'x1'})").unwrap();
+        session.execute("CREATE (:B {k: 'x2'})").unwrap();
+        // a0 supporte SON b apparie -> paire (a0, b0) exclue
+        session
+            .execute("MATCH (a:A {fk: 'x0'}) MATCH (b:B {k: 'x0'}) CREATE (a)-[:SUPPORTS]->(b)")
+            .unwrap();
+        // a1 supporte un TIERS -> paire (a1, b1) GARDEE (le point du bug)
+        session
+            .execute("MATCH (a:A {fk: 'x1'}) CREATE (a)-[:SUPPORTS]->(:Z {name: 'tiers'})")
+            .unwrap();
+        // a2 ne supporte rien -> paire (a2, b2) gardee
+
+        let result = session
+            .execute(
+                "MATCH (a:A) MATCH (b:B {k: a.fk}) \
+                 WHERE NOT (a)-[:SUPPORTS]->(b) \
+                 RETURN a.fk ORDER BY a.fk",
+            )
+            .unwrap();
+
+        let fks: Vec<_> = result
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.to_string(),
+                other => panic!("expected string, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            fks,
+            vec!["x1", "x2"],
+            "x1 garde (arete vers un tiers, pas vers b1), x0 exclu, x2 garde"
+        );
+    }
 }

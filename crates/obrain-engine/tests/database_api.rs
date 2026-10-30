@@ -1,3 +1,5 @@
+//! Surface publique de `ObrainDB` : ouverture, CRUD, index, graphes nommes.
+
 #![cfg(feature = "cypher")]
 //! Integration tests for ObrainDB public API methods that lacked coverage.
 //!
@@ -321,8 +323,25 @@ fn test_is_persistent_in_memory() {
 fn test_wal_status_in_memory() {
     let db = ObrainDB::new_in_memory();
     let status = db.wal_status();
-    // In-memory databases have no WAL
-    assert!(!status.enabled);
+    // ── UNE BASE EN MÉMOIRE A UN WAL — MAIS AUCUN LIEU DURABLE ──────────────
+    // Ce test affirmait « pas de WAL » : c'était vrai sous LpgStore, où
+    // `Config::in_memory()` mettait `wal_enabled: false`. Depuis le cutover T17,
+    // une base en mémoire ouvre un substrat TEMPORAIRE, qui écrit son WAL
+    // (`substrate.wal`) exactement comme une base sur disque : dire « pas de
+    // WAL » serait faux, et pire, ferait croire qu'aucune écriture n'est
+    // journalière.
+    //
+    // Le contrat utile est plus fin, et c'est lui qu'on vérifie :
+    //   · `enabled` VRAI — les écritures passent par un journal ;
+    //   · `path` NUL — ce journal n'a PAS de lieu durable (répertoire
+    //     temporaire effacé à la fermeture), donc la durabilité s'arrête au
+    //     processus. Un chemin affiché ici serait un mensonge par omission.
+    assert!(status.enabled, "le substrat journalise aussi en mémoire");
+    assert!(
+        status.path.is_none(),
+        "une base en mémoire n'a pas d'emplacement durable (chemin : {:?})",
+        status.path
+    );
 }
 
 // ── Close in-memory ─────────────────────────────────────────────

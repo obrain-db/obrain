@@ -42,6 +42,12 @@ pub enum HashKey {
     Bool(bool),
     /// Integer key.
     Int64(i64),
+    /// Float key by raw IEEE bits (revue vague 3) : une variante DÉDIÉE pour
+    /// que `Float64(1.0)` ne partage plus sa clé avec
+    /// `Int64(4607182418800017408)` — la collision de type signalée par
+    /// fix/gql-divers (préexistante). Le comportement flottant↔flottant est
+    /// inchangé : mêmes bits → même clé.
+    Float64Bits(u64),
     /// String key (cheap clone via ArcStr refcount).
     String(ArcStr),
     /// Byte content key.
@@ -62,6 +68,9 @@ impl Ord for HashKey {
             (HashKey::Int64(a), HashKey::Int64(b)) => a.cmp(b),
             (HashKey::Int64(_), _) => Ordering::Less,
             (_, HashKey::Int64(_)) => Ordering::Greater,
+            (HashKey::Float64Bits(a), HashKey::Float64Bits(b)) => a.cmp(b),
+            (HashKey::Float64Bits(_), _) => Ordering::Less,
+            (_, HashKey::Float64Bits(_)) => Ordering::Greater,
             (HashKey::String(a), HashKey::String(b)) => a.cmp(b),
             (HashKey::String(_), _) => Ordering::Less,
             (_, HashKey::String(_)) => Ordering::Greater,
@@ -87,12 +96,13 @@ impl HashKey {
             Value::Bool(b) => HashKey::Bool(*b),
             Value::Int64(i) => HashKey::Int64(*i),
             Value::Float64(f) => {
-                // Convert float to bits for consistent hashing
-                HashKey::Int64(f.to_bits() as i64)
+                // Bits IEEE dans une variante dédiée — voir la note de la
+                // variante : plus de collision avec un Int64 de même motif.
+                HashKey::Float64Bits(f.to_bits())
             }
             Value::String(s) => HashKey::String(s.clone()),
             Value::Bytes(b) => HashKey::Bytes(b.to_vec()),
-            Value::Timestamp(t) => HashKey::Int64(t.as_micros()),
+            Value::Timestamp(t) => HashKey::Int64(t.as_nanos()),
             Value::Date(d) => HashKey::Int64(d.as_days() as i64),
             Value::Time(t) => HashKey::Int64(t.as_nanos() as i64),
             Value::Duration(d) => HashKey::Composite(vec![
@@ -100,7 +110,7 @@ impl HashKey {
                 HashKey::Int64(d.days()),
                 HashKey::Int64(d.nanos()),
             ]),
-            Value::ZonedDatetime(zdt) => HashKey::Int64(zdt.as_timestamp().as_micros()),
+            Value::ZonedDatetime(zdt) => HashKey::Int64(zdt.as_timestamp().as_nanos()),
             Value::List(items) => {
                 HashKey::Composite(items.iter().map(HashKey::from_value).collect())
             }
@@ -121,7 +131,7 @@ impl HashKey {
                 // Hash vectors by converting each f32 to its bit representation
                 HashKey::Composite(
                     v.iter()
-                        .map(|f| HashKey::Int64(f.to_bits() as i64))
+                        .map(|f| HashKey::Float64Bits(u64::from(f.to_bits())))
                         .collect(),
                 )
             }
@@ -225,6 +235,8 @@ impl HashJoinOperator {
     /// Builds the hash table from the build side.
     fn build_hash_table(&mut self) -> Result<(), OperatorError> {
         while let Some(chunk) = self.build_side.next()? {
+            super::verifier_annulation()?;
+
             let chunk_idx = self.build_chunks.len();
 
             // Initialize match tracking for outer joins
@@ -458,6 +470,7 @@ impl Operator for HashJoinOperator {
         let mut builder = DataChunkBuilder::with_capacity(&self.output_schema, 2048);
 
         loop {
+            super::verifier_annulation()?;
             // Get current probe chunk or fetch new one
             if self.current_probe_chunk.is_none() && !self.get_next_probe_chunk()? {
                 // No more probe data
@@ -725,6 +738,8 @@ impl NestedLoopJoinOperator {
     /// Materializes the right side.
     fn materialize_right(&mut self) -> Result<(), OperatorError> {
         while let Some(chunk) = self.right.next()? {
+            super::verifier_annulation()?;
+
             self.right_chunks.push(chunk);
         }
         self.right_materialized = true;
@@ -819,6 +834,7 @@ impl Operator for NestedLoopJoinOperator {
         let mut builder = DataChunkBuilder::with_capacity(&self.output_schema, 2048);
 
         loop {
+            super::verifier_annulation()?;
             // Get current left chunk
             if self.current_left_chunk.is_none() {
                 self.current_left_chunk = self.left.next()?;

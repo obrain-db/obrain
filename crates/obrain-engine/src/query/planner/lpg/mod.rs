@@ -9,7 +9,9 @@ mod expression;
 mod filter;
 mod join;
 mod mutation;
+mod prefix_range;
 mod project;
+mod reachable_pushdown;
 mod scan;
 mod typed_degree_rewrite;
 
@@ -34,7 +36,8 @@ use obrain_core::execution::operators::{
     EntityKind, ExecutionPathMode, ExpandOperator, ExpandStep, ExpressionPredicate,
     FactorizedAggregate, FactorizedAggregateOperator, FilterExpression, FilterOperator,
     HashAggregateOperator, HashJoinOperator, HorizontalAggregateOperator,
-    JoinType as PhysicalJoinType, LazyFactorizedChainOperator, LeapfrogJoinOperator,
+    IndexSeekJoinOperator, JoinType as PhysicalJoinType, LazyFactorizedChainOperator,
+    LeapfrogJoinOperator,
     LoadDataOperator, MapCollectOperator, MergeConfig, MergeOperator, MergeRelationshipConfig,
     MergeRelationshipOperator, NestedLoopJoinOperator, NodeListOperator, NullOrder, Operator,
     ParameterScanOperator, ProjectExpr, ProjectOperator, PropertySource, RemoveLabelOperator,
@@ -94,6 +97,13 @@ pub struct Planner {
     /// Variables from variable-length expand patterns (group-list variables).
     /// Used by the aggregate planner to detect horizontal aggregation (GE09).
     pub(super) group_list_variables: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// (NATIF-J6) Restriction du prochain NodeScan NU d'une variable a une
+    /// liste EXACTE de NodeId — les k rendus par l'index ordonne par valeur pour
+    /// `ORDER BY <prop> LIMIT k`. Pose par `try_plan_order_by_index` juste avant
+    /// `plan_sort`, consomme par `plan_node_scan` (qui emet alors un
+    /// `NodeListOperator` au lieu du balayage complet), remis a `None` apres.
+    pub(super) restriction_scan:
+        std::cell::RefCell<Option<(String, Vec<obrain_common::types::NodeId>)>>,
     /// When true, each physical operator is wrapped in `ProfiledOperator`.
     profiling: std::cell::Cell<bool>,
     /// Profile entries collected during planning (post-order).
@@ -109,6 +119,18 @@ pub struct Planner {
     /// Optional cognitive engine for cognitive UDFs and procedures.
     #[cfg(feature = "cognitive")]
     pub(super) cognitive_engine: Option<Arc<dyn obrain_cognitive::CognitiveEngine>>,
+    /// Optional typed substrate handle for substrate-native procedures
+    /// (`CALL obrain.window_2d`, RFC zorder-superposition C5). Mirrors the
+    /// `cognitive_engine` wiring pattern: ObrainDB → Session →
+    /// QueryProcessor → Planner. `None` on non-substrate backends → the
+    /// window procedure answers "requires a substrate-backed database".
+    pub(super) substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// Optional CDC log handle (feature `cdc`) for change-data procedures
+    /// (`CALL obrain.search_delta`). Mirrors `substrate_store` wiring:
+    /// ObrainDB → Session → QueryProcessor → Planner. `None` quand le CDC
+    /// n'est pas compilé/attaché → la procédure répond "CDC unavailable".
+    #[cfg(feature = "cdc")]
+    pub(super) cdc_log: Option<Arc<crate::cdc::CdcLog>>,
 }
 
 impl Planner {
@@ -132,6 +154,7 @@ impl Planner {
             catalog: None,
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
+            restriction_scan: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
             write_tracker: None,
@@ -139,6 +162,9 @@ impl Planner {
             read_only: false,
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
+            substrate_store: None,
+            #[cfg(feature = "cdc")]
+            cdc_log: None,
         }
     }
 
@@ -152,12 +178,19 @@ impl Planner {
     ) -> Self {
         use crate::transaction::TransactionWriteTracker;
 
+        // Scope du graphe écrit : deux graphes (stores substrate distincts)
+        // allouent chacun leurs NodeId de 1 → sans scope, le write_set global
+        // du manager crée des FAUX conflits inter-graphes (RFC multi-writer
+        // B1, 2026-09-06). Le tracker enregistre (scope, entité).
+        let scope = store.graph_scope();
+
         // Create write tracker when there's an active transaction
         let write_tracker: Option<obrain_core::execution::operators::SharedWriteTracker> =
             if transaction_id.is_some() {
-                Some(Arc::new(TransactionWriteTracker::new(Arc::clone(
-                    &transaction_manager,
-                ))))
+                Some(Arc::new(TransactionWriteTracker::new(
+                    Arc::clone(&transaction_manager),
+                    scope,
+                )))
             } else {
                 None
             };
@@ -175,6 +208,7 @@ impl Planner {
             catalog: None,
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
+            restriction_scan: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
             write_tracker,
@@ -182,6 +216,9 @@ impl Planner {
             read_only: false,
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
+            substrate_store: None,
+            #[cfg(feature = "cdc")]
+            cdc_log: None,
         }
     }
 
@@ -201,6 +238,29 @@ impl Planner {
         engine: Arc<dyn obrain_cognitive::CognitiveEngine>,
     ) -> Self {
         self.cognitive_engine = Some(engine);
+        self
+    }
+
+    /// Attaches the typed substrate handle so substrate-native procedures
+    /// (`CALL obrain.window_2d`) can resolve at plan time. Mirrors
+    /// [`Self::with_cognitive_engine`]; a planner built without it simply
+    /// reports "requires a substrate-backed database" for those procedures.
+    #[must_use]
+    pub fn with_substrate_store(
+        mut self,
+        store: Arc<obrain_substrate::SubstrateStore>,
+    ) -> Self {
+        self.substrate_store = Some(store);
+        self
+    }
+
+    /// Attaches the CDC log so change-data procedures (`CALL
+    /// obrain.search_delta`) resolve at plan time. Mirrors
+    /// [`Self::with_substrate_store`].
+    #[cfg(feature = "cdc")]
+    #[must_use]
+    pub fn with_cdc_log(mut self, cdc: Arc<crate::cdc::CdcLog>) -> Self {
+        self.cdc_log = Some(cdc);
         self
     }
 
@@ -523,12 +583,30 @@ impl Planner {
         expand: &ExpandOp,
     ) -> f64 {
         let outgoing = !matches!(expand.direction, ExpandDirection::Incoming);
-        if expand.edge_types.len() == 1 {
+        let interne = if expand.edge_types.len() == 1 {
             stats.estimate_avg_degree(&expand.edge_types[0], outgoing)
         } else if stats.total_nodes > 0 {
             (stats.total_edges as f64 / stats.total_nodes as f64).max(1.0)
         } else {
             10.0
+        };
+        // (V4, statistiques d'optimiseur — besoin nomme par l'entite) En
+        // session multi-store, les aretes EXTERNES participent au degre :
+        // sans elles, une expansion dominee par les frontieres serait
+        // sous-estimee et le plan mal choisi. Zero cout mono-base (gate).
+        if self.session_context.base_registry.is_some() && outgoing && stats.total_nodes > 0 {
+            let externes: u64 = if expand.edge_types.is_empty() {
+                self.store.external_edge_count_by_type(None)
+            } else {
+                expand
+                    .edge_types
+                    .iter()
+                    .map(|t| self.store.external_edge_count_by_type(Some(t)))
+                    .sum()
+            };
+            interne + externes as f64 / stats.total_nodes as f64
+        } else {
+            interne
         }
     }
 
@@ -553,10 +631,20 @@ impl Planner {
 
     /// Plans a single logical operator.
     fn plan_operator(&self, op: &LogicalOperator) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // ── LE CONTRÔLE PASSE ICI, UNE SEULE FOIS ──────────────────────────
+        // Toute planification descend par cette porte : c'est le seul endroit où
+        // une explosion de liens peut être refusée AVANT d'être exécutée, et donc
+        // la seule où l'erreur peut encore dire quoi écrire à la place.
+        // (Mesuré le 2026-09-12 : un produit cartésien tuait le serveur.)
+        self.garde_explosion(op)?;
         let result = match op {
             LogicalOperator::NodeScan(scan) => self.plan_node_scan(scan),
             LogicalOperator::Expand(expand) => {
-                if self.factorized_execution {
+                // Aretes inter-bases (V2) : la chaine factorisee ne connait
+                // pas le bras externe de l'expansion — avec un registre
+                // multi-store attache, on reste sur ExpandOperator pour ne
+                // perdre aucune arete.
+                if self.factorized_execution && self.session_context.base_registry.is_none() {
                     let (chain_len, _base) = Self::count_expand_chain(op);
                     if chain_len >= 2 {
                         return self.maybe_profile(self.plan_expand_chain(op), op);
@@ -569,7 +657,7 @@ impl Planner {
             LogicalOperator::Project(project) => self.plan_project(project),
             LogicalOperator::Limit(limit) => self.plan_limit(limit),
             LogicalOperator::Skip(skip) => self.plan_skip(skip),
-            LogicalOperator::Sort(sort) => self.plan_sort(sort),
+            LogicalOperator::Sort(sort) => self.plan_sort(sort, None),
             LogicalOperator::Aggregate(agg) => self.plan_aggregate(agg),
             LogicalOperator::Join(join) => self.plan_join(join),
             LogicalOperator::Union(union) => self.plan_union(union),
@@ -580,6 +668,9 @@ impl Planner {
             LogicalOperator::Distinct(distinct) => self.plan_distinct(distinct),
             LogicalOperator::CreateNode(create) => self.plan_create_node(create),
             LogicalOperator::CreateEdge(create) => self.plan_create_edge(create),
+            LogicalOperator::CreateExternalEdge(create) => {
+                self.plan_create_external_edge(create)
+            }
             LogicalOperator::DeleteNode(delete) => self.plan_delete_node(delete),
             LogicalOperator::DeleteEdge(delete) => self.plan_delete_edge(delete),
             LogicalOperator::LeftJoin(left_join) => self.plan_left_join(left_join),
@@ -801,7 +892,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -824,7 +916,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -847,7 +940,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -873,7 +967,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -896,7 +991,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -930,7 +1026,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -975,7 +1072,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1008,7 +1106,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1041,7 +1140,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1079,7 +1179,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1120,7 +1221,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1166,7 +1268,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1198,7 +1301,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -1224,7 +1328,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -1254,7 +1359,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -1284,7 +1390,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -1309,7 +1416,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 columns: None,
             })),
         }));
@@ -1335,7 +1443,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 columns: Some(vec!["n".to_string()]),
             })),
         }));
@@ -1362,7 +1471,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 columns: Some(vec!["nonexistent".to_string()]),
             })),
         }));
@@ -1400,7 +1510,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 having: None,
             })),
         }));
@@ -1433,7 +1544,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             having: None,
         }));
 
@@ -1465,7 +1577,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             having: None,
         }));
 
@@ -1497,7 +1610,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             having: None,
         }));
 
@@ -1543,7 +1657,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             having: None,
         }));
 
@@ -1577,12 +1692,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: Some("Company".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Inner,
                 conditions: vec![JoinCondition {
                     left: LogicalExpression::Variable("a".to_string()),
@@ -1607,12 +1724,14 @@ mod tests {
                 variable: "a".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                 variable: "b".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             join_type: JoinType::Cross,
             conditions: vec![],
         }));
@@ -1631,12 +1750,14 @@ mod tests {
                 variable: "a".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                 variable: "b".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             join_type: JoinType::Left,
             conditions: vec![],
         }));
@@ -1684,12 +1805,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Cross,
                 conditions: vec![],
             })),
@@ -1712,7 +1835,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -1747,7 +1871,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let result = planner.plan(&logical);
@@ -1823,6 +1948,7 @@ mod tests {
             variable: "n".to_string(),
             label: None,
             input: None,
+            pushdown_hint: None,
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -1850,7 +1976,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let physical = planner.plan_adaptive(&logical).unwrap();
@@ -1884,7 +2011,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1923,7 +2051,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1955,12 +2084,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Cross,
                 conditions: vec![],
             })),
@@ -1990,7 +2121,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             having: None,
         }));
 
@@ -2014,7 +2146,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 columns: None,
             })),
         }));
@@ -2040,7 +2173,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -2065,7 +2199,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -2094,7 +2229,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -2119,12 +2255,14 @@ mod tests {
                         variable: "n".to_string(),
                         label: Some("Person".to_string()),
                         input: None,
-                    }),
+            pushdown_hint: None,
+        }),
                     LogicalOperator::NodeScan(NodeScanOp {
                         variable: "n".to_string(),
                         label: Some("Company".to_string()),
                         input: None,
-                    }),
+            pushdown_hint: None,
+        }),
                 ],
             })),
         }));
@@ -2165,7 +2303,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2206,7 +2345,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: Some("p".to_string()),
                 path_mode: PathMode::Walk,
             })),
@@ -2248,7 +2388,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2289,7 +2430,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2361,7 +2503,8 @@ mod tests {
                         variable: "a".to_string(),
                         label: None,
                         input: None,
-                    })),
+            pushdown_hint: None,
+        })),
                     path_alias: None,
                     path_mode: PathMode::Walk,
                 })),
@@ -2402,7 +2545,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
             })),
         }));
 
@@ -2438,7 +2582,9 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
+                    pushdown_hint: None,
                 }))),
+                pushdown_hint: None,
             })),
         }));
 
@@ -2476,7 +2622,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -2507,7 +2654,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -2542,7 +2690,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -2589,12 +2738,111 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
         assert_eq!(physical.columns(), &["n"]);
+    }
+
+    // ==================== Correlated Index Seek (chantier #95) ====================
+
+    /// Construit le plan logique de `MATCH (a:A) MATCH (b:B {k: a.fk})` :
+    /// Filter(b.k = a.fk, NodeScan(b:B, input: NodeScan(a:A))).
+    fn correlated_filter_op() -> FilterOp {
+        FilterOp {
+            predicate: LogicalExpression::Binary {
+                left: Box::new(LogicalExpression::Property {
+                    variable: "b".to_string(),
+                    property: "k".to_string(),
+                }),
+                op: BinaryOp::Eq,
+                right: Box::new(LogicalExpression::Property {
+                    variable: "a".to_string(),
+                    property: "fk".to_string(),
+                }),
+            },
+            input: Box::new(LogicalOperator::NodeScan(NodeScanOp {
+                variable: "b".to_string(),
+                label: Some("B".to_string()),
+                input: Some(Box::new(LogicalOperator::NodeScan(NodeScanOp {
+                    variable: "a".to_string(),
+                    label: Some("A".to_string()),
+                    input: None,
+                    pushdown_hint: None,
+                }))),
+                pushdown_hint: None,
+            })),
+            pushdown_hint: None,
+        }
+    }
+
+    /// FORME du plan : la jointure correlee sur propriete indexee doit
+    /// produire un IndexSeekJoin, pas le produit cartesien NestedLoopJoin.
+    #[test]
+    fn test_correlated_index_seek_plan_shape() {
+        let store = Arc::new(SubstrateStore::open_tempfile().unwrap());
+        let a1 = store.create_node(&["A"]);
+        store.set_node_property(a1, "fk", Value::from("x1"));
+        let b1 = store.create_node(&["B"]);
+        store.set_node_property(b1, "k", Value::from("x1"));
+        store.create_property_index("k");
+
+        let planner = Planner::new(store as Arc<dyn GraphStoreMut>);
+        let (op, columns) = planner.plan_filter(&correlated_filter_op()).unwrap();
+
+        assert_eq!(
+            op.name(),
+            "IndexSeekJoin",
+            "jointure correlee indexee : seek attendu, pas de produit cartesien"
+        );
+        assert_eq!(columns, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// Sans index sur la propriete, le seek ne doit PAS s'activer (une sonde
+    /// non indexee par ligne externe serait un scan complet par ligne).
+    #[test]
+    fn test_correlated_seek_requires_index() {
+        let store = Arc::new(SubstrateStore::open_tempfile().unwrap());
+        let a1 = store.create_node(&["A"]);
+        store.set_node_property(a1, "fk", Value::from("x1"));
+        let b1 = store.create_node(&["B"]);
+        store.set_node_property(b1, "k", Value::from("x1"));
+        // PAS de create_property_index("k")
+
+        let planner = Planner::new(store as Arc<dyn GraphStoreMut>);
+        let (op, _columns) = planner.plan_filter(&correlated_filter_op()).unwrap();
+
+        assert_ne!(op.name(), "IndexSeekJoin", "sans index : chemin generique");
+    }
+
+    /// Cle NULL/absente : logique trivaluee — zero ligne appariee pour la
+    /// ligne externe sans propriete, pas d'erreur, l'index n'est jamais
+    /// sonde avec Null.
+    #[test]
+    fn test_correlated_index_seek_null_key_zero_rows() {
+        let store = Arc::new(SubstrateStore::open_tempfile().unwrap());
+        let a1 = store.create_node(&["A"]);
+        store.set_node_property(a1, "fk", Value::from("x1"));
+        // a2 : PAS de propriete fk -> cle NULL -> zero appariement
+        let _a2 = store.create_node(&["A"]);
+        let b1 = store.create_node(&["B"]);
+        store.set_node_property(b1, "k", Value::from("x1"));
+        let b2 = store.create_node(&["B"]);
+        store.set_node_property(b2, "k", Value::from("x2"));
+        store.create_property_index("k");
+
+        let planner = Planner::new(store as Arc<dyn GraphStoreMut>);
+        let (mut op, _columns) = planner.plan_filter(&correlated_filter_op()).unwrap();
+        assert_eq!(op.name(), "IndexSeekJoin");
+
+        let mut rows = 0;
+        while let Some(chunk) = op.next().unwrap() {
+            rows += chunk.row_count();
+        }
+        assert_eq!(rows, 1, "seule la paire (a1, b1) ; a2 (cle NULL) ne s'apparie pas");
     }
 }

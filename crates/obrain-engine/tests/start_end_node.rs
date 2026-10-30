@@ -1,3 +1,5 @@
+//! Fonctions `start_node` / `end_node` sur les aretes, y compris les boucles.
+
 #![cfg(feature = "cypher")]
 //! Tests for startNode(r) and endNode(r) functions (#180).
 //!

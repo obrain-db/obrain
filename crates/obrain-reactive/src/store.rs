@@ -213,6 +213,14 @@ impl<S: GraphStoreMut> GraphStore for InstrumentedStore<S> {
         self.inner.all_node_ids()
     }
 
+    fn node_ids_capped(&self, max: usize) -> Vec<NodeId> {
+        self.inner.node_ids_capped(max)
+    }
+
+    fn scan_visibility_is_trivial(&self) -> bool {
+        self.inner.scan_visibility_is_trivial()
+    }
+
     fn nodes_by_label(&self, label: &str) -> Vec<NodeId> {
         self.inner.nodes_by_label(label)
     }

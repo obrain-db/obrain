@@ -484,6 +484,8 @@ impl<'a> Parser<'a> {
             label_expression: None,
             properties,
             where_clause: None,
+            base_qualifier: None,
+            reference: None,
             span: None,
         })
     }

@@ -224,6 +224,17 @@ impl Binder {
             LogicalOperator::Distinct(distinct) => self.bind_operator(&distinct.input),
             LogicalOperator::Join(join) => self.bind_join(join),
             LogicalOperator::Aggregate(agg) => self.bind_aggregate(agg),
+            LogicalOperator::CreateExternalEdge(create) => {
+                self.bind_operator(&create.input)?;
+                if !self.context.contains(&create.from_variable) {
+                    return Err(undefined_variable_error(
+                        &create.from_variable,
+                        &self.context,
+                        " (source d'une arete inter-bases)",
+                    ));
+                }
+                Ok(())
+            }
             LogicalOperator::CreateEdge(create) => {
                 self.bind_operator(&create.input)?;
                 // Validate that source and target variables are defined
@@ -1297,7 +1308,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1321,7 +1333,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1347,7 +1360,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1379,7 +1393,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pushdown_hint: None,
             })),
         }));
@@ -1420,7 +1435,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1462,7 +1478,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1503,7 +1520,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1538,7 +1556,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1570,7 +1589,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1602,12 +1622,14 @@ mod tests {
                     variable: "n".to_string(),
                     label: Some("A".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "m".to_string(), // different variable is fine
                     label: Some("B".to_string()),
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1641,7 +1663,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1669,7 +1692,8 @@ mod tests {
                 variable: "b".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1694,7 +1718,8 @@ mod tests {
                 variable: "a".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1727,12 +1752,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: crate::query::plan::JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1755,11 +1782,13 @@ mod tests {
             )],
             replace: false,
             is_edge: false,
+            remove: false,
             input: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1781,7 +1810,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1799,7 +1829,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -1832,7 +1863,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 pass_through_input: false,
             })),
         }));
@@ -1975,7 +2007,8 @@ mod tests {
                 variable: "b".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
             source_var: "missing".to_string(), // not defined
             target_var: "b".to_string(),
             edge_types: vec![],
@@ -2002,12 +2035,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-                })),
+            pushdown_hint: None,
+        })),
                 join_type: JoinType::Cross,
                 conditions: vec![],
             })),
@@ -2074,7 +2109,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -2107,7 +2143,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -2136,7 +2173,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -2161,7 +2199,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -2310,7 +2349,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();
@@ -2358,7 +2398,8 @@ mod tests {
                 variable: "person".to_string(),
                 label: None,
                 input: None,
-            })),
+            pushdown_hint: None,
+        })),
         }));
 
         let mut binder = Binder::new();

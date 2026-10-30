@@ -63,7 +63,7 @@
 //! VM Tracker or a Linux VM. The `prefetch_on_warm_cache_is_cheap`
 //! test exercises the hot-path overhead on every OS.
 
-use std::time::Instant;
+use web_time::Instant;
 
 #[cfg(target_os = "linux")]
 use obrain_substrate::file::Zone;

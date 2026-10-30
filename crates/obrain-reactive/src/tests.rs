@@ -296,9 +296,9 @@ mod reactive_tests {
 
     #[test]
     fn mutation_batch_timestamp_is_set() {
-        let before = std::time::Instant::now();
+        let before = web_time::Instant::now();
         let batch = MutationBatch::new(vec![]);
-        let after = std::time::Instant::now();
+        let after = web_time::Instant::now();
         assert!(batch.timestamp >= before);
         assert!(batch.timestamp <= after);
     }

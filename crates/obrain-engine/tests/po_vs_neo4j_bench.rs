@@ -1,3 +1,5 @@
+//! Comparaison de debit avec Neo4j sur des requetes equivalentes.
+
 #![cfg(feature = "cypher")]
 //! Comparative benchmark: Obrain vs Neo4j for Project Orchestrator workloads.
 //!
@@ -14,7 +16,7 @@
 //!   cargo test -p obrain-engine --release --features "cypher,wal,tiered-storage,algos" \
 //!     --test po_vs_neo4j_bench -- --nocapture
 
-use std::time::Instant;
+use web_time::Instant;
 
 use obrain_core::graph::traits::GraphStore;
 use obrain_engine::ObrainDB;

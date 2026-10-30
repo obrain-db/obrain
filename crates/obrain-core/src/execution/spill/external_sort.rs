@@ -356,6 +356,11 @@ fn compare_rows(a: &[Value], b: &[Value], keys: &[SortKey]) -> Ordering {
         let a_val = a.get(key.column);
         let b_val = b.get(key.column);
 
+        // Placement des NULL ABSOLU : First/Last désignent une extrémité de
+        // la SORTIE, quelle que soit la direction. La direction n'inverse que
+        // la comparaison des valeurs non-NULL — jamais le verdict entier
+        // (même sémantique que operators/sort.rs, pour que le placement des
+        // NULL ne dépende pas du débordement sur disque).
         let ordering = match (a_val, b_val) {
             (Some(Value::Null), Some(Value::Null)) => Ordering::Equal,
             (Some(Value::Null), _) => match key.null_order {
@@ -366,13 +371,11 @@ fn compare_rows(a: &[Value], b: &[Value], keys: &[SortKey]) -> Ordering {
                 NullOrder::First => Ordering::Greater,
                 NullOrder::Last => Ordering::Less,
             },
-            (Some(a), Some(b)) => compare_values(a, b),
+            (Some(a), Some(b)) => match key.direction {
+                SortDirection::Ascending => compare_values(a, b),
+                SortDirection::Descending => compare_values(a, b).reverse(),
+            },
             _ => Ordering::Equal,
-        };
-
-        let ordering = match key.direction {
-            SortDirection::Ascending => ordering,
-            SortDirection::Descending => ordering.reverse(),
         };
 
         if ordering != Ordering::Equal {
@@ -383,18 +386,12 @@ fn compare_rows(a: &[Value], b: &[Value], keys: &[SortKey]) -> Ordering {
     Ordering::Equal
 }
 
-/// Compares two values.
+/// L'ORDRE TOTAL canonique — le MÊME que le tri en mémoire. Un dialecte
+/// local (copie morte n° parmi les 11 recensées) vivait ici : il rendait
+/// `Equal` entre types et sur NaN, donc le tri débordé sur disque pouvait
+/// ranger autrement que le tri en mémoire, silencieusement.
 fn compare_values(a: &Value, b: &Value) -> Ordering {
-    match (a, b) {
-        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-        (Value::Int64(a), Value::Int64(b)) => a.cmp(b),
-        (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
-        (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
-        (Value::Date(a), Value::Date(b)) => a.cmp(b),
-        (Value::Time(a), Value::Time(b)) => a.cmp(b),
-        _ => Ordering::Equal,
-    }
+    obrain_common::types::value_cmp::comparer_total(a, b)
 }
 
 /// Adapter to write to SpillFile through std::io::Write.

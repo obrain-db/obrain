@@ -52,7 +52,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use obrain_common::types::PropertyKey;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::file::SubstrateFile;
@@ -70,11 +70,23 @@ pub(crate) struct VecColumnRegistry {
     /// the prop-key names (so reads on a freshly-opened store can
     /// find the right spec from the property-key alone).
     by_key: DashMap<(PropertyKey, EntityKind), VecColSpec>,
-    /// `VecColSpec -> Arc<Mutex<VecColumnWriter>>`. A Mutex (rather
-    /// than an RwLock) because `write_slot` may grow the mmap via
-    /// `ensure_room`, which invalidates outstanding read borrows
-    /// into the old mapping — the lock-out is intentional.
-    writers: DashMap<VecColSpec, Arc<Mutex<VecColumnWriter>>>,
+    /// `VecColSpec -> Arc<RwLock<VecColumnWriter>>`.
+    ///
+    /// (2026-08-08) Mutex → RwLock — même correctif que
+    /// `BlobColumnRegistry::writers` (voir son commentaire pour la mesure
+    /// en production). L'exclusion lecteur/écrivain qui protège le remap
+    /// d'`ensure_room` est conservée par `.write()` sur `write_slot` ;
+    /// seule la sérialisation lecteur/lecteur — qui n'a jamais protégé
+    /// quoi que ce soit — disparaît.
+    writers: DashMap<VecColSpec, Arc<RwLock<VecColumnWriter>>>,
+    /// T2 get_node perf (plan b30650e2, gotcha 7940daa7): per-EntityKind
+    /// snapshot of the registered keys, maintained at registration time.
+    /// `iter_props_for_entity` runs on EVERY `get_node` — iterating and
+    /// cloning the whole `by_key` DashMap there made bulk hydration pay
+    /// O(all registered columns, both kinds) in iteration + key clones
+    /// per node. Columns are registered rarely (first write / open), so
+    /// a copy-on-write `Arc<Vec<_>>` snapshot is the right trade.
+    keys_by_kind: DashMap<EntityKind, Arc<Vec<PropertyKey>>>,
 }
 
 impl VecColumnRegistry {
@@ -82,7 +94,30 @@ impl VecColumnRegistry {
         Self {
             by_key: DashMap::new(),
             writers: DashMap::new(),
+            keys_by_kind: DashMap::new(),
         }
+    }
+
+    /// Record `key` in the per-kind key snapshot (idempotent). Must be
+    /// called wherever `by_key` gains an entry.
+    fn note_key(&self, key: &PropertyKey, ek: EntityKind) {
+        let mut entry = self
+            .keys_by_kind
+            .entry(ek)
+            .or_insert_with(|| Arc::new(Vec::new()));
+        if !entry.iter().any(|k| k == key) {
+            let mut v: Vec<PropertyKey> = (**entry).clone();
+            v.push(key.clone());
+            *entry = Arc::new(v);
+        }
+    }
+
+    /// O(1) snapshot of the keys registered for `ek`.
+    fn keys_for(&self, ek: EntityKind) -> Arc<Vec<PropertyKey>> {
+        self.keys_by_kind
+            .get(&ek)
+            .map(|e| Arc::clone(&e))
+            .unwrap_or_else(|| Arc::new(Vec::new()))
     }
 
     /// Rehydrate the registry from persisted specs. Takes the
@@ -118,7 +153,8 @@ impl VecColumnRegistry {
             };
             let key = PropertyKey::new(name.as_str());
             let writer = VecColumnWriter::create(sub, *spec)?;
-            self.writers.insert(*spec, Arc::new(Mutex::new(writer)));
+            self.writers.insert(*spec, Arc::new(RwLock::new(writer)));
+            self.note_key(&key, spec.entity_kind);
             self.by_key.insert((key, spec.entity_kind), *spec);
         }
         Ok(())
@@ -129,6 +165,108 @@ impl VecColumnRegistry {
     /// miss the caller falls through to the in-memory property map.
     pub(crate) fn spec_for(&self, key: &PropertyKey, ek: EntityKind) -> Option<VecColSpec> {
         self.by_key.get(&(key.clone(), ek)).map(|r| *r)
+    }
+
+    /// (2026-08-21) Résout l'écrivain d'une colonne UNE fois, pour un lot.
+    ///
+    /// Le chemin unitaire (`write` / `write_existing`) refait à CHAQUE vecteur :
+    /// une allocation `PropertyKey`, une recherche dans `by_key` (verrou de
+    /// shard + hachage), une recherche dans `writers` (idem), puis la prise du
+    /// `RwLock` de la colonne. Pour une clé et une colonne identiques d'un
+    /// appel à l'autre — le cas d'un enrichissement, 626 845 fois
+    /// `_hilbert_features` — cinq sixièmes de ce travail sont répétés pour rien.
+    ///
+    /// Mesuré avant : 438 ns par écriture, dont ~10 ns de `memcpy`.
+    ///
+    /// Cette méthode rend l'`Arc` de l'écrivain ; l'appelant boucle ensuite sur
+    /// `write_slot` sans plus rien résoudre. Le `RwLock` reste pris PAR
+    /// ÉCRITURE et non pour tout le lot : c'est délibéré — le tenir sur la
+    /// durée du lot bloquerait les lecteurs de la colonne pendant tout
+    /// l'enrichissement, ce que ce chantier cherche précisément à éviter.
+    ///
+    /// Rend `None` si la colonne n'existe pas ou si la spec diverge ; l'appelant
+    /// passe alors par `write`, qui crée ou produit l'erreur nommée.
+    pub(crate) fn ecrivain_existant(
+        &self,
+        key: &PropertyKey,
+        ek: EntityKind,
+        prop_key_id: u16,
+        dim: u32,
+    ) -> Option<Arc<RwLock<VecColumnWriter>>> {
+        let spec = VecColSpec {
+            prop_key_id,
+            entity_kind: ek,
+            dim,
+            dtype: VecDType::F32,
+        };
+        match self.by_key.get(&(key.clone(), ek)) {
+            Some(existant) => {
+                let ex = *existant;
+                drop(existant);
+                if ex != spec {
+                    return None;
+                }
+            }
+            None => return None,
+        }
+        self.writers.get(&spec).map(|w| w.clone())
+    }
+
+    /// (2026-08-21) CHEMIN RAPIDE — ecrire dans une colonne DEJA enregistree,
+    /// **sans le `SubstrateFile`** et donc sans le mutex global de la base.
+    ///
+    /// Pourquoi cette methode existe. `write()` ci-dessous prend `sub` en
+    /// argument, ce qui oblige l'appelant (`SubstrateStore::route_vector_write`)
+    /// a tenir `self.substrate.lock()` — le `Mutex<SubstrateFile>` GLOBAL — pour
+    /// la duree de l'appel. Or `sub` ne sert qu'a **une** chose : construire le
+    /// `VecColumnWriter` a la premiere ecriture de la colonne
+    /// (`VecColumnWriter::create(sub, spec)`). `write_slot`, lui, n'a meme pas
+    /// `sub` dans sa signature : il memcpy dans le mmap deja etabli.
+    ///
+    /// Consequence du contrat precedent : persister un vecteur par noeud sur une
+    /// base de 626 845 noeuds prenait le verrou global 626 845 fois pour proteger
+    /// une ressource utilisee une seule fois — une contention hachee sur tout le
+    /// chemin chaud, en concurrence avec chaque lecteur de la base.
+    ///
+    /// Rend `None` quand la colonne n'existe pas encore, quand la spec ne
+    /// correspond pas, ou quand le vecteur est invalide : dans ces trois cas
+    /// l'appelant doit prendre le verrou et passer par `write()`, qui produit
+    /// l'erreur exacte ou cree la colonne. Le `RwLock` par colonne, lui, est
+    /// conserve : c'est LUI qui serialise legitimement deux ecritures sur la
+    /// meme colonne.
+    pub(crate) fn write_existing(
+        &self,
+        key: &PropertyKey,
+        ek: EntityKind,
+        prop_key_id: u16,
+        slot: u32,
+        vector: &[f32],
+    ) -> Option<SubstrateResult<()>> {
+        // Vecteur invalide : on laisse le chemin lent produire l'erreur nommee.
+        if vector.is_empty() || vector.len() > u32::MAX as usize {
+            return None;
+        }
+        let spec = VecColSpec {
+            prop_key_id,
+            entity_kind: ek,
+            dim: vector.len() as u32,
+            dtype: VecDType::F32,
+        };
+        // La spec doit etre DEJA enregistree ET identique. Une divergence part
+        // au chemin lent, qui rend le message de rejet detaille.
+        match self.by_key.get(&(key.clone(), ek)) {
+            Some(existing) => {
+                let ex = *existing;
+                drop(existing);
+                if ex != spec {
+                    return None;
+                }
+            }
+            None => return None,
+        }
+        let writer = self.writers.get(&spec)?.clone();
+        let bytes: &[u8] = bytemuck::cast_slice(vector);
+        Some(writer.write().write_slot(slot, bytes))
     }
 
     /// Route a `Value::Vector` write for a node/edge slot. Creates
@@ -178,6 +316,7 @@ impl VecColumnRegistry {
                 )));
             }
         } else {
+            self.note_key(key, ek);
             self.by_key.insert((key.clone(), ek), spec);
         }
 
@@ -185,7 +324,7 @@ impl VecColumnRegistry {
         let writer = if let Some(w) = self.writers.get(&spec) {
             w.clone()
         } else {
-            let w = Arc::new(Mutex::new(VecColumnWriter::create(sub, spec)?));
+            let w = Arc::new(RwLock::new(VecColumnWriter::create(sub, spec)?));
             // `entry().or_insert_with` would race with another thread
             // creating the same spec. Use `entry` to be explicit.
             self.writers
@@ -195,9 +334,9 @@ impl VecColumnRegistry {
         };
 
         // Third: write the payload. `write_slot` takes `&mut self`
-        // so the Mutex lock brackets the mmap mutation.
+        // so the write lock brackets the mmap mutation.
         let bytes: &[u8] = bytemuck::cast_slice(vector);
-        writer.lock().write_slot(slot, bytes)
+        writer.write().write_slot(slot, bytes)
     }
 
     /// Copy the vector for `slot` out of the column registered for
@@ -208,10 +347,32 @@ impl VecColumnRegistry {
     pub(crate) fn read(&self, key: &PropertyKey, ek: EntityKind, slot: u32) -> Option<Arc<[f32]>> {
         let spec = self.spec_for(key, ek)?;
         let writer = self.writers.get(&spec)?.clone();
-        let guard = writer.lock();
+        let guard = writer.read();
         let data: &[f32] = guard.read_slot_f32(slot)?;
         // Copy out into an owned Arc<[f32]>. The borrow dies with
-        // the Mutex guard, so we cannot hand out the mmap slice.
+        // the lock guard, so we cannot hand out the mmap slice.
+        Some(Arc::from(data))
+    }
+
+    /// Like [`Self::read`] but applies the all-zero-sentinel presence
+    /// check on the mmap borrow, INSIDE the column lock, BEFORE the
+    /// heap copy (T2 get_node perf). Absent slots (grown past, never
+    /// written) cost a linear scan of `dim` floats but zero allocation
+    /// — on bulk hydration most registered columns are absent for any
+    /// given node, so this is the common case.
+    pub(crate) fn read_nonzero(
+        &self,
+        key: &PropertyKey,
+        ek: EntityKind,
+        slot: u32,
+    ) -> Option<Arc<[f32]>> {
+        let spec = self.spec_for(key, ek)?;
+        let writer = self.writers.get(&spec)?.clone();
+        let guard = writer.read();
+        let data: &[f32] = guard.read_slot_f32(slot)?;
+        if data.iter().all(|x| *x == 0.0) {
+            return None;
+        }
         Some(Arc::from(data))
     }
 
@@ -231,7 +392,7 @@ impl VecColumnRegistry {
     /// two must call [`Self::read`] with the specific key and inspect.
     ///
     /// Returns owned pairs because the underlying mmap borrows die
-    /// with the per-column Mutex guard — hot paths that need the
+    /// with the per-column lock guard — hot paths that need the
     /// whole property map of a node call this once and consume.
     ///
     /// Cost: `O(num_matching_cols × (lock + dim floats compared))`.
@@ -241,25 +402,14 @@ impl VecColumnRegistry {
         ek: EntityKind,
         slot: u32,
     ) -> Vec<(PropertyKey, Arc<[f32]>)> {
-        // Snapshot keys first so we release DashMap iterator locks
-        // before re-entering per-column Mutexes.
-        let keys: Vec<PropertyKey> = self
-            .by_key
-            .iter()
-            .filter(|e| e.key().1 == ek)
-            .map(|e| e.key().0.clone())
-            .collect();
-        keys.into_iter()
-            .filter_map(|k| {
-                let v = self.read(&k, ek, slot)?;
-                if v.iter().all(|x| *x == 0.0) {
-                    // All-zero sentinel: slot grown past but never
-                    // written meaningfully. Treat as absent.
-                    None
-                } else {
-                    Some((k, v))
-                }
-            })
+        // T2 get_node perf: O(1) Arc-cloned key snapshot instead of a
+        // full DashMap iteration + key clones per call, and the
+        // all-zero sentinel is checked on the mmap borrow INSIDE the
+        // column lock (`read_nonzero`) so absent columns cost a scan,
+        // not a scan + a heap copy of up to `dim` floats.
+        let keys = self.keys_for(ek);
+        keys.iter()
+            .filter_map(|k| Some((k.clone(), self.read_nonzero(k, ek, slot)?)))
             .collect()
     }
 
@@ -279,7 +429,42 @@ impl VecColumnRegistry {
     /// rest of the substrate.
     pub(crate) fn sync_all(&self) -> SubstrateResult<()> {
         for entry in self.writers.iter() {
-            entry.value().lock().sync()?;
+            entry.value().write().sync()?;
+        }
+        Ok(())
+    }
+}
+
+/// Chantier SlotRemappable — chemin VIF : les writers ouverts du registre
+/// portent l'état authoritaire (n_slots non synchronisés compris). Chaque
+/// colonne nœud est permutée out-of-place puis rendue durable en-tête en
+/// dernier (CRC + epoch) par [`VecColumnWriter::remap_node_slots`].
+/// Le chemin REJEU ne passe jamais ici (registre inexistant après crash) —
+/// il passe par `crate::vec_column::remap_node_file_for_replay`.
+impl crate::slot_remap::SlotRemappable for VecColumnRegistry {
+    fn remap_name(&self) -> &'static str {
+        "vec_columns"
+    }
+
+    fn remap_node_slots(
+        &self,
+        substrate: &Arc<parking_lot::Mutex<SubstrateFile>>,
+        old_to_new: &[u32],
+        epoch: u32,
+        _ctx: crate::slot_remap::RemapContext,
+    ) -> SubstrateResult<()> {
+        // Verrou pris PAR COLONNE, jamais tenu par l'appelant : c'est ce
+        // qui evite l'interblocage avec les implementeurs qui reprennent
+        // le mutex en interne (cf. la doc du trait `SlotRemappable`).
+        for entry in self.writers.iter() {
+            if entry.key().entity_kind != EntityKind::Node {
+                continue;
+            }
+            let sub = substrate.lock();
+            entry
+                .value()
+                .write()
+                .remap_node_slots(&sub, old_to_new, epoch)?;
         }
         Ok(())
     }

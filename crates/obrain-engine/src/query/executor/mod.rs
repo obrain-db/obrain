@@ -7,7 +7,7 @@ pub mod procedure_call;
 #[cfg(feature = "algos")]
 pub mod user_procedure;
 
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::config::AdaptiveConfig;
 use crate::database::QueryResult;
@@ -67,6 +67,34 @@ impl Executor {
         self
     }
 
+    /// Vérifie l'ANNULATION coopérative puis le délai.
+    ///
+    /// Les deux sont distincts : le délai est une constatation du moteur,
+    /// l'annulation une décision de l'appelant. `Error::is_cancelled` les
+    /// sépare pour que l'un ne soit pas compté comme l'autre.
+    ///
+    /// ── CE CONTRÔLE NE SUFFIT PAS, ET C'EST LE POINT ──────────────────
+    ///
+    /// Il ne s'exécute qu'ENTRE deux `operator.next()`. Les opérateurs
+    /// bloquants (Sort, HashAggregate, build de HashJoin, ScanOperator sur
+    /// un label entier) consomment tout leur enfant DANS un seul `next()` :
+    /// pour eux, ce contrôle-ci ne passe qu'une fois le travail déjà fait.
+    /// C'est précisément le trou que le délai existant laissait ouvert. Les
+    /// vrais points de contrôle sont dans les boucles des opérateurs
+    /// (`obrain_core::execution::operators::verifier_annulation`) et dans
+    /// les balayages du substrat. Celui-ci est le filet du dernier ressort.
+    #[inline]
+    fn check_cancel(&self) -> Result<()> {
+        use obrain_common::utils::cancel::{Raison, raison};
+        if obrain_common::utils::cancel::check().is_err() {
+            return Err(match raison() {
+                Some(Raison::Echeance) => Error::Query(QueryError::timeout()),
+                _ => Error::Query(QueryError::cancelled()),
+            });
+        }
+        Ok(())
+    }
+
     /// Checks whether the deadline has been exceeded.
     fn check_deadline(&self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -89,6 +117,7 @@ impl Executor {
         let mut types_captured = !result.column_types.iter().all(|t| *t == LogicalType::Any);
 
         loop {
+            self.check_cancel()?;
             self.check_deadline()?;
 
             match operator.next() {
@@ -105,6 +134,24 @@ impl Executor {
             }
         }
 
+        // ── CONTROLE DE SORTIE : LA FERMETURE DU MECANISME ───────────
+        //
+        // Le controle en tete de boucle ne suffit pas. La boucle sort sur
+        // `Ok(None)` — sans repasser par lui — et une douzaine d operateurs
+        // appellent `store.nodes_by_label()` sans post-controle propre
+        // (`scan_vector`, `typed_degree_topk`, `vector_join`, le balayage de
+        // label du planificateur de filtres...). Or un balayage du substrat
+        // annule rend un `Vec` PARTIEL : sa signature rend un `Vec` nu, il n a
+        // aucun canal pour dire « je n ai pas fini ». Sans ce controle-ci, un
+        // resultat TRONQUE sortirait en `Ok` — moins de lignes, aucune erreur,
+        // et un appelant qui n a aucun moyen de s en apercevoir. C est
+        // strictement pire que ne pas annuler du tout.
+        //
+        // Il est exhaustif parce que le jeton est MONOTONE : si une troncature
+        // a eu lieu, le jeton etait arme pendant, il l est donc encore ici.
+        self.check_cancel()?;
+
+        Self::affiner_types_any(&mut result);
         Ok(result)
     }
 
@@ -127,6 +174,7 @@ impl Executor {
                 break;
             }
 
+            self.check_cancel()?;
             self.check_deadline()?;
 
             match operator.next() {
@@ -144,7 +192,72 @@ impl Executor {
             }
         }
 
+        // Meme raisonnement que dans `execute` : la sortie de boucle ne
+        // repasse pas par le controle, et une sortie par `collected >= limit`
+        // non plus.
+        self.check_cancel()?;
+
+        Self::affiner_types_any(&mut result);
         Ok(result)
+    }
+
+    /// AFFINE les colonnes déclarées `Any` d'après le résultat COMPLET
+    /// (correctif E) : si toutes les valeurs non NULL d'une colonne portent
+    /// le même type scalaire, ce type est déclaré ; sinon `Any` reste —
+    /// l'aveu honnête. Nécessaire depuis que MIN/MAX déclarent `Any` comme
+    /// Sum (le câblage `Int64` écrasait la valeur en 0) : le contrat
+    /// `column_types` doit dire STRING pour `min()` d'une colonne de chaînes.
+    /// Balayage O(lignes) par discriminant, payé une fois le résultat déjà
+    /// matérialisé.
+    fn affiner_types_any(result: &mut QueryResult) {
+        /// Type scalaire d'une valeur, `None` pour NULL (neutre) et pour les
+        /// conteneurs/types complexes — pour lesquels `Any` reste l'aveu
+        /// honnête.
+        fn type_scalaire(v: &Value) -> Option<Option<LogicalType>> {
+            match v {
+                Value::Null => Some(None),
+                Value::Bool(_) => Some(Some(LogicalType::Bool)),
+                Value::Int64(_) => Some(Some(LogicalType::Int64)),
+                Value::Float64(_) => Some(Some(LogicalType::Float64)),
+                Value::String(_) => Some(Some(LogicalType::String)),
+                Value::Bytes(_) => Some(Some(LogicalType::Bytes)),
+                Value::Date(_) => Some(Some(LogicalType::Date)),
+                Value::Time(_) => Some(Some(LogicalType::Time)),
+                Value::Timestamp(_) => Some(Some(LogicalType::Timestamp)),
+                Value::Duration(_) => Some(Some(LogicalType::Duration)),
+                Value::ZonedDatetime(_) => Some(Some(LogicalType::ZonedDatetime)),
+                _ => None, // conteneur : colonne non affinable
+            }
+        }
+
+        for (col, t) in result.column_types.iter_mut().enumerate() {
+            if *t != LogicalType::Any {
+                continue;
+            }
+            let mut vu: Option<LogicalType> = None;
+            let mut affinable = true;
+            for ligne in &result.rows {
+                let Some(v) = ligne.get(col) else { continue };
+                match type_scalaire(v) {
+                    Some(None) => {} // NULL : neutre
+                    Some(Some(lt)) => match &vu {
+                        None => vu = Some(lt),
+                        Some(prev) if *prev == lt => {}
+                        Some(_) => {
+                            affinable = false;
+                            break;
+                        }
+                    },
+                    None => {
+                        affinable = false;
+                        break;
+                    }
+                }
+            }
+            if affinable && let Some(lt) = vu {
+                *t = lt;
+            }
+        }
     }
 
     /// Captures column types from a DataChunk.
@@ -272,6 +385,7 @@ impl Executor {
         let check_interval = config.min_rows;
 
         loop {
+            self.check_cancel()?;
             self.check_deadline()?;
 
             match wrapped.next() {
@@ -301,6 +415,9 @@ impl Executor {
             }
         }
 
+        // Meme raisonnement que dans `execute`.
+        self.check_cancel()?;
+
         // Get final summary
         let summary = shared_ctx.snapshot().map(|ctx| ctx.summary());
 
@@ -327,6 +444,22 @@ fn convert_operator_error(err: OperatorError) -> Error {
         }
         OperatorError::WriteConflict(msg) => {
             Error::Transaction(obrain_common::utils::error::TransactionError::WriteConflict(msg))
+        }
+        // Une annulation traverse la frontiere sans changer de nature : elle
+        // NE DOIT PAS devenir `Error::Internal`, qui est la categorie
+        // « bug du moteur ». Voir `Error::is_cancelled`.
+        // La boucle chaude qui a leve ce signal ignore POURQUOI elle s est
+        // arretee — c est voulu : `Cancelled` traverse trois crates sans
+        // alourdir aucune signature. La raison se relit ici, une fois, a la
+        // frontiere du moteur, la ou elle sert a choisir l erreur rendue.
+        OperatorError::Cancelled => {
+            use obrain_common::utils::cancel::{Raison, raison};
+            match raison() {
+                Some(Raison::Echeance) => {
+                    Error::Query(obrain_common::utils::error::QueryError::timeout())
+                }
+                _ => Error::Query(obrain_common::utils::error::QueryError::cancelled()),
+            }
         }
     }
 }
@@ -432,7 +565,8 @@ mod tests {
 
     #[test]
     fn test_executor_timeout_expired() {
-        use std::time::{Duration, Instant};
+        use web_time::Instant;
+        use std::time::Duration;
 
         // Set a deadline that has already passed
         let executor = Executor::with_columns(vec!["value".to_string()]).with_deadline(Some(
@@ -447,6 +581,93 @@ mod tests {
             err.to_string().contains("Query exceeded timeout"),
             "Expected timeout error, got: {err}"
         );
+    }
+
+    /// Operateur qui rend un chunk, puis rend `Ok(None)` EN ARMANT le jeton
+    /// au meme instant — le motif exact d un balayage du substrat tronque :
+    /// moins de lignes, aucune erreur.
+    struct SourceQuiTronque {
+        rendu: bool,
+        jeton: obrain_common::utils::cancel::CancelToken,
+    }
+
+    impl Operator for SourceQuiTronque {
+        fn next(&mut self) -> obrain_core::execution::operators::OperatorResult {
+            if self.rendu {
+                // La troncature se decide ICI, sur le dernier appel : la
+                // boucle sort par `Ok(None)` sans repasser par le controle
+                // en tete.
+                self.jeton.cancel();
+                return Ok(None);
+            }
+            self.rendu = true;
+            let mut chunk = DataChunk::with_capacity(&[LogicalType::Int64], 1);
+            chunk.column_mut(0).unwrap().push_int64(1);
+            chunk.set_count(1);
+            Ok(Some(chunk))
+        }
+
+        fn reset(&mut self) {
+            self.rendu = false;
+        }
+
+        fn name(&self) -> &'static str {
+            "SourceQuiTronque"
+        }
+    }
+
+    #[test]
+    fn un_resultat_tronque_ne_sort_jamais_en_ok() {
+        // LE TROU QUE CE TEST FERME. Une douzaine d operateurs appellent
+        // `store.nodes_by_label()` sans post-controle propre. Un balayage
+        // annule leur rend un `Vec` PARTIEL — sa signature rend un `Vec` nu,
+        // il n a aucun canal pour dire « je n ai pas fini ». La boucle de
+        // l executeur sort alors par `Ok(None)`, SANS repasser par le
+        // controle en tete, et un resultat tronque sortirait en `Ok` : moins
+        // de lignes, aucune erreur, aucun moyen pour l appelant de s en
+        // apercevoir. C est strictement pire que ne pas annuler du tout.
+        let jeton = obrain_common::utils::cancel::CancelToken::new();
+        let mut op = SourceQuiTronque {
+            rendu: false,
+            jeton: jeton.clone(),
+        };
+        let executor = Executor::with_columns(vec!["value".to_string()]);
+        let r =
+            obrain_common::utils::cancel::scope_en_vigueur(&jeton, || executor.execute(&mut op));
+        let err = r.expect_err("un resultat tronque doit remonter en Err");
+        assert!(
+            err.is_cancelled(),
+            "et l erreur doit etre une ANNULATION identifiable : {err}"
+        );
+    }
+
+    #[test]
+    fn un_resultat_tronque_ne_sort_jamais_en_ok_avec_limite() {
+        // Meme trou sur `execute_with_limit`, qui sort AUSSI par
+        // `collected >= limit` sans repasser par le controle.
+        let jeton = obrain_common::utils::cancel::CancelToken::new();
+        let mut op = SourceQuiTronque {
+            rendu: false,
+            jeton: jeton.clone(),
+        };
+        let executor = Executor::with_columns(vec!["value".to_string()]);
+        let r = obrain_common::utils::cancel::scope_en_vigueur(&jeton, || {
+            executor.execute_with_limit(&mut op, 100)
+        });
+        assert!(
+            r.is_err_and(|e| e.is_cancelled()),
+            "un resultat tronque doit remonter en Err meme sous LIMIT"
+        );
+    }
+
+    #[test]
+    fn sans_annulation_la_sortie_reste_un_ok() {
+        // CONTRE-EPREUVE du controle de sortie : sans jeton, il ne doit rien
+        // changer au comportement. Un controle de sortie trop zele
+        // transformerait des requetes normales en erreurs.
+        let executor = Executor::with_columns(vec!["value".to_string()]);
+        let mut op = MockIntOperator::new(vec![1, 2, 3], 10);
+        assert_eq!(executor.execute(&mut op).unwrap().row_count(), 3);
     }
 
     #[test]

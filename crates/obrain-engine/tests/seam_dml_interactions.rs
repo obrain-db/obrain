@@ -215,6 +215,10 @@ mod set_remove {
 
     #[test]
     fn set_property_to_null_removes_it() {
+        // DURCI par le correctif « remove réel » : ce test porte le retrait
+        // dans son NOM mais n'assertionnait que la lecture à NULL — vraie
+        // avec ou sans retrait (une clé écrite à NULL se lit NULL aussi).
+        // Il vérifie désormais ce que son nom annonce : la clé est RETIRÉE.
         let db = db();
         let session = db.session();
         session
@@ -234,6 +238,20 @@ mod set_remove {
             Value::Null,
             "Property set to NULL should read as NULL"
         );
+
+        let keys = session
+            .execute("MATCH (n:Person {name: 'Alix'}) RETURN keys(n)")
+            .unwrap();
+        assert_eq!(keys.row_count(), 1);
+        match &keys.rows[0][0] {
+            Value::List(items) => assert!(
+                !items
+                    .iter()
+                    .any(|i| *i == Value::String("age".into())),
+                "SET to NULL must REMOVE the key — keys(n) still lists 'age': {items:?}"
+            ),
+            other => panic!("keys(n) must return a list, got {other:?}"),
+        }
     }
 
     #[test]

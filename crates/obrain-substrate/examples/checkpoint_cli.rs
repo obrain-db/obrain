@@ -20,7 +20,7 @@
 //! files (either flat or nested under `substrate.obrain/`).
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use web_time::Instant;
 
 use obrain_substrate::{SubstrateFile, checkpoint, wal_io::SyncMode, writer::Writer};
 

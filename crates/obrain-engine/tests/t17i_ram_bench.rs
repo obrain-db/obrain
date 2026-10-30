@@ -18,7 +18,7 @@
 #![cfg(feature = "cypher")]
 
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 fn current_rss_mb() -> f64 {
     let pid = std::process::id();

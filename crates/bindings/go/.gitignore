@@ -1,5 +1,0 @@
-# Built shared libraries (copied during testing/development)
-*.dll
-*.dll.lib
-*.so
-*.dylib

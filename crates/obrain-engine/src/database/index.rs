@@ -32,20 +32,43 @@ impl super::ObrainDB {
     /// let nodes = db.find_nodes_by_property("email", &Value::from("alix@example.com"));
     /// ```
     pub fn create_property_index(&self, property: &str) {
-        // T17 W3c slice 5d: property-index registry lives on the dummy
-        // LpgStore in substrate mode (`self.store`). Writing an index there
-        // would succeed silently yet never be consulted — reads route through
-        // `data_store()` / substrate tiers. Make the no-op explicit.
+        // T17b (2026-08-05) : le substrat porte désormais son propre index
+        // de propriété natif (`SubstrateStore::create_property_index`) —
+        // l'ancien no-op explicite de la slice T17 W3c 5d est remplacé par
+        // un routage vers `data_store()`, le même chemin que les lectures.
         if self.substrate_store.is_some() {
-            tracing::warn!(
-                property,
-                "create_property_index is a no-op in substrate mode — the \
-                 LpgStore index registry is not consulted by substrate reads. \
-                 A substrate-native property index is tracked as T17b."
-            );
+            self.data_store().create_property_index(property);
             return;
         }
         self.store.create_property_index(property);
+    }
+
+    /// (NS-PARTOUT) Rebâtit depuis les chaînes, puis PERSISTE, les index
+    /// de toutes les propriétés déclarées au catalogue substrate — l'acte
+    /// de maintenance qui donne ses séries à une zone d'index introduite
+    /// APRÈS l'indexation du store (la zone trigrammes sur un store déjà
+    /// couvert par l'égalité : sous le régime couvert, la fusion ne peut
+    /// pas dériver les trigrammes, les valeurs ne sont plus en RAM).
+    ///
+    /// Rend le nombre de propriétés rebâties — `0` hors substrate ou sans
+    /// déclaration. Pendant la passe, les requêtes concernées balaient :
+    /// plus lentes, jamais fausses.
+    pub fn rebuild_property_indexes(&self) -> usize {
+        match self.substrate_store.as_ref() {
+            Some(s) => s.rebatir_index_declares(),
+            None => 0,
+        }
+    }
+
+    /// (NATIF-J6) Rebatit et persiste l'index ORDONNE PAR VALEUR des
+    /// proprietes donnees, depuis les seules chaines. C'est ce qui rend
+    /// `ORDER BY n.<prop> LIMIT k`, `min` et `max` instantanes (O(k) / O(1)).
+    /// Rend le nombre de proprietes indexees ; `0` hors substrate.
+    pub fn rebuild_ordered_value_index(&self, proprietes: &[String]) -> usize {
+        match self.substrate_store.as_ref() {
+            Some(s) => s.rebatir_ord_valeur(proprietes),
+            None => 0,
+        }
     }
 
     /// Drops an index on a node property.
@@ -53,7 +76,8 @@ impl super::ObrainDB {
     /// Returns `true` if the index existed and was removed.
     pub fn drop_property_index(&self, property: &str) -> bool {
         if self.substrate_store.is_some() {
-            return false; // Substrate has no LpgStore index registry.
+            // T17b : routé vers l'index natif substrate.
+            return self.data_store().drop_property_index(property);
         }
         self.store.drop_property_index(property)
     }
@@ -62,7 +86,8 @@ impl super::ObrainDB {
     #[must_use]
     pub fn has_property_index(&self, property: &str) -> bool {
         if self.substrate_store.is_some() {
-            return false; // Substrate has no LpgStore index registry.
+            // T17b : routé vers l'index natif substrate.
+            return self.data_store().has_property_index(property);
         }
         self.store.has_property_index(property)
     }
@@ -134,14 +159,106 @@ impl super::ObrainDB {
         // registry — creating an index on the dummy store would silently
         // succeed yet never be read. Refuse loudly for symmetry with
         // `vector_search()` (gated in slice 5c).
+        // (2026-08-13, T17b) LE REFUS DEVIENT UNE CONSTRUCTION.
+        //
+        // Ce bloc rendait une erreur « LpgStore-only ... tracked as T17b ».
+        // T17b, c'est ici. Le substrat sait deja tout faire — `SubstrateTieredIndex`
+        // implemente le contrat `VectorIndex`, se persiste en zones et se
+        // recharge — il ne lui manquait qu'un registre et deux branchements.
+        //
+        // On lit les vecteurs par le chemin PUBLIC des proprietes
+        // (`nodes_by_label` + `get_node_property`), donc sans toucher au
+        // `VecColumnRegistry` interne : le routage `Value::Vector` vers les
+        // colonnes est deja fait a l'ecriture.
         if self.substrate_store.is_some() {
-            let _ = (label, property, dimensions, metric, m, ef_construction);
-            return Err(obrain_common::utils::error::Error::Internal(
-                "ObrainDB::create_vector_index() is LpgStore-only — substrate \
-                 mode uses SubstrateTieredIndex built at migration time. A \
-                 unified retrieval API is tracked as T17b."
-                    .to_string(),
-            ));
+            let _ = (metric, m, ef_construction);
+            let prop_key = PropertyKey::new(property);
+            let data = self.data_store();
+            let nodes = data.nodes_by_label(label);
+
+            // Dimension : celle annoncee, sinon celle du premier vecteur trouve.
+            let mut pairs: Vec<(u32, Vec<f32>)> = Vec::new();
+            let mut dim = dimensions.unwrap_or(0);
+            for &node_id in &nodes {
+                if let Some(Value::Vector(v)) = data.get_node_property(node_id, &prop_key) {
+                    if dim == 0 {
+                        dim = v.len();
+                    }
+                    if v.len() == dim {
+                        pairs.push((node_id.0 as u32, v.to_vec()));
+                    }
+                    // Un vecteur de dimension incoherente est IGNORE, pas fatal :
+                    // une base peut porter des embeddings de plusieurs modeles sur
+                    // la meme propriete. Les compter serait mentir sur l'index.
+                }
+            }
+
+            if dim == 0 {
+                return Err(obrain_common::utils::error::Error::Internal(format!(
+                    "create_vector_index(:{label}({property})) : aucun vecteur trouve et \
+                     aucune dimension fournie — impossible de deviner la dimension. \
+                     Passe `dimensions`, ou ecris au moins un vecteur d'abord."
+                )));
+            }
+
+            // ── DIMENSION : ON PLONGE, ON NE REFUSE PLUS ───────────────────
+            // `SubstrateTieredIndex::new` PANIQUE si dim != L2_DIM (384) : son
+            // tier L2 est un f16 de longueur FIXE. Cette contrainte est reelle
+            // et structurelle — elle tient la largeur des enregistrements, donc
+            // le mmap et le SIMD. On ne la touche pas.
+            //
+            // Mais elle n'oblige pas a REFUSER les dimensions inferieures. Un
+            // espace de dimension d < 384 se plonge EXACTEMENT dans 384 par
+            // rembourrage de zeros : cosinus et euclidienne sont preservees au
+            // bit pres (demonstration dans `rembourrer_au_cascade`). Le
+            // voisinage rendu est identique a celui d'un index natif en d.
+            //
+            // Au-dessus de 384, en revanche, il faudrait une vraie projection,
+            // qui perd de l'information. La, on refuse — et on le dit.
+            if dim > obrain_substrate::L2_DIM {
+                return Err(obrain_common::utils::error::Error::Internal(format!(
+                    "create_vector_index(:{label}({property})) : le cascade du substrat \
+                     indexe au plus {} dimensions (tier L2 en f16 de longueur fixe), \
+                     et cette propriete en porte {}. Les dimensions inferieures sont \
+                     plongees sans perte ; au-dela, il faut une projection explicite \
+                     vers {} — la faire ici en silence changerait la qualite des \
+                     resultats sans que personne l'ait demande.",
+                    obrain_substrate::L2_DIM,
+                    dim,
+                    obrain_substrate::L2_DIM
+                )));
+            }
+
+            // Plongement dans la largeur du cascade. `dim` reste la dimension
+            // NATIVE, celle qu'on gardera au registre pour valider les requetes.
+            let pairs: Vec<(u32, Vec<f32>)> = pairs
+                .into_iter()
+                .filter_map(|(id, v)| super::rembourrer_au_cascade(&v).map(|plein| (id, plein)))
+                .collect();
+
+            // Le trait doit etre en portee pour que `rebuild` soit visible.
+            use obrain_core::index::vector::VectorIndex as _;
+            let index = obrain_substrate::SubstrateTieredIndex::new(obrain_substrate::L2_DIM);
+            index.rebuild(&pairs);
+            let key = format!("{label}:{property}");
+            self.substrate_vector_indexes
+                .write()
+                .insert(key, (dim, std::sync::Arc::new(index)));
+
+            // (2026-08-14) DECLARATION DURABLE. L'index lui-meme est une
+            // structure derivee — on sait toujours le rebatir depuis les
+            // proprietes. Ce qui ne se rebatit pas, c'est de SAVOIR qu'il doit
+            // exister : sans cette ligne, l'index disparaissait a la
+            // fermeture, et la recherche suivante repondait « aucun index »
+            // sur une base ou l'utilisateur en avait cree un.
+            self.declarer_index_substrat(obrain_substrate::DeclarationIndex {
+                genre: "vector".to_string(),
+                label: label.to_string(),
+                propriete: property.to_string(),
+                dimension: Some(dim),
+                metrique: metric.map(str::to_string),
+            });
+            return Ok(());
         }
 
         let metric = match metric {
@@ -258,8 +375,21 @@ impl super::ObrainDB {
     /// label+property pair will return an error.
     #[cfg(feature = "vector-index")]
     pub fn drop_vector_index(&self, label: &str, property: &str) -> bool {
+        // (T17b) Idem : le registre vectoriel du substrat vit sur la base.
         if self.substrate_store.is_some() {
-            return false; // Substrate has no LpgStore vector-index registry.
+            let retire = self
+                .substrate_vector_indexes
+                .write()
+                .remove(&format!("{label}:{property}"))
+                .is_some();
+            // La declaration part MEME si l'index n'etait pas en memoire : sur
+            // une base rouverte, il ne l'est justement pas encore, et un
+            // `DROP` doit valoir pour de bon.
+            self.retirer_declaration_substrat("vector", label, property);
+            if retire {
+                tracing::info!("Index vectoriel (substrat) retire : :{label}({property})");
+            }
+            return retire;
         }
         let removed = self.store.remove_vector_index(label, property);
         if removed {
@@ -282,13 +412,14 @@ impl super::ObrainDB {
     /// and no dimensions can be inferred).
     #[cfg(feature = "vector-index")]
     pub fn rebuild_vector_index(&self, label: &str, property: &str) -> Result<()> {
+        // (T17b) Reconstruire, c'est retirer puis recreer. La dimension est
+        // relue des donnees : c'est justement ce qu'on veut apres une
+        // migration d'embeddings.
         if self.substrate_store.is_some() {
-            return Err(obrain_common::utils::error::Error::Internal(
-                "ObrainDB::rebuild_vector_index() is LpgStore-only — substrate \
-                 mode rebuilds SubstrateTieredIndex via obrain-migrate. A \
-                 unified retrieval API is tracked as T17b."
-                    .to_string(),
-            ));
+            self.substrate_vector_indexes
+                .write()
+                .remove(&format!("{label}:{property}"));
+            return self.create_vector_index(label, property, None, None, None, None);
         }
         // Preserve config from existing index if available
         let config = self
@@ -332,14 +463,44 @@ impl super::ObrainDB {
         use obrain_common::types::{PropertyKey, Value};
         use obrain_core::index::text::{BM25Config, InvertedIndex};
 
+        // (2026-08-13, T17b) LE REFUS DEVIENT UNE CONSTRUCTION.
+        //
+        // Le message qu'il y avait ici etait FAUX : il renvoyait vers
+        // `SubstrateTieredIndex`, qui est un cascade VECTORIEL. Un grep sur
+        // tout obrain-substrate ne trouve ni InvertedIndex ni BM25 — le
+        // substrat n'a aucun index texte, et n'en a pas besoin : le BM25 de
+        // obrain-core se construit tres bien a partir de ses donnees, par le
+        // meme parcours que le chemin LpgStore juste en dessous.
         if self.substrate_store.is_some() {
-            let _ = (label, property);
-            return Err(obrain_common::utils::error::Error::Internal(
-                "ObrainDB::create_text_index() is LpgStore-only — substrate \
-                 mode exposes BM25 retrieval via SubstrateTieredIndex. A \
-                 unified retrieval API is tracked as T17b."
-                    .to_string(),
-            ));
+            let mut index = InvertedIndex::new(BM25Config::default());
+            let prop_key = PropertyKey::new(property);
+            let data = self.data_store();
+            // Meme boucle que le chemin legacy : un noeud a la fois, la chaine
+            // est relachee apres insertion. Sur un label a 8 M de documents,
+            // tout charger d'un coup allouerait des millions de String
+            // simultanement.
+            for &node_id in &data.nodes_by_label(label) {
+                if let Some(Value::String(text)) = data.get_node_property(node_id, &prop_key) {
+                    index.insert(node_id, text.as_str());
+                }
+            }
+            let key = format!("{label}:{property}");
+            // ── PERSISTER AVANT D'INSTALLER (l'index est déplacé au partage) ──
+            // L'export a lieu ici, une fois, pendant qu'on tient encore l'index
+            // par valeur : après le `Arc::new`, il appartient au registre et on
+            // ne le relirait plus sans verrou.
+            self.persister_index_texte(label, property, &index);
+            self.substrate_text_indexes
+                .write()
+                .insert(key, Arc::new(RwLock::new(index)));
+            self.declarer_index_substrat(obrain_substrate::DeclarationIndex {
+                genre: "text".to_string(),
+                label: label.to_string(),
+                propriete: property.to_string(),
+                dimension: None,
+                metrique: None,
+            });
+            return Ok(());
         }
 
         let mut index = InvertedIndex::new(BM25Config::default());
@@ -371,8 +532,17 @@ impl super::ObrainDB {
     /// Returns `true` if the index existed and was removed.
     #[cfg(feature = "text-index")]
     pub fn drop_text_index(&self, label: &str, property: &str) -> bool {
+        // (T17b) Le substrat a desormais SON registre — porte par la base.
         if self.substrate_store.is_some() {
-            return false; // Substrate has no LpgStore text-index registry.
+            let retire = self
+                .substrate_text_indexes
+                .write()
+                .remove(&format!("{label}:{property}"))
+                .is_some();
+            // Comme pour le vectoriel : la declaration part meme si l'index
+            // n'etait pas encore en memoire.
+            self.retirer_declaration_substrat("text", label, property);
+            return retire;
         }
         self.store.remove_text_index(label, property)
     }
@@ -386,15 +556,134 @@ impl super::ObrainDB {
     /// Returns an error if no text index exists for this label+property.
     #[cfg(feature = "text-index")]
     pub fn rebuild_text_index(&self, label: &str, property: &str) -> Result<()> {
+        // (T17b) Idem cote texte : on jette et on reconstruit depuis les
+        // donnees vivantes. `create_text_index` ecrase la cle de toute facon,
+        // mais le retrait explicite garde la semantique lisible — et laisse la
+        // base sans index si la reconstruction echoue, plutot qu'avec un
+        // ancien index qu'on croirait a jour.
         if self.substrate_store.is_some() {
-            return Err(obrain_common::utils::error::Error::Internal(
-                "ObrainDB::rebuild_text_index() is LpgStore-only — substrate \
-                 mode rebuilds BM25 via obrain-migrate. A unified retrieval \
-                 API is tracked as T17b."
-                    .to_string(),
-            ));
+            self.substrate_text_indexes
+                .write()
+                .remove(&format!("{label}:{property}"));
+            return self.create_text_index(label, property);
         }
         self.store.remove_text_index(label, property);
         self.create_text_index(label, property)
+    }
+
+    /// L'index texte (label, propriete) est-il PRESENT dans le registre ?
+    ///
+    /// (2026-09-09, P2) Predicat de presence pour le chemin a chaud de
+    /// `runtime_search`. « Present » ne dit pas « FRAIS » — la fraicheur est
+    /// jugee par l'appelant via une generation (epoch de commit, comparee
+    /// entre deux appels du meme process). Mais « absent » dit avec certitude
+    /// qu'une recherche echouerait ou declencherait une reconstruction : le
+    /// predicate permet de ne reconstruire qu'a bon escient, au lieu de
+    /// REBUILD integral a chaque requete (le comportement de
+    /// `create_text_index`, volontairement inchange : `import_events` s'en
+    /// sert pour rafraichir apres des ecritures GQL qui n'entretiennent pas
+    /// l'index incrementalement).
+    #[cfg(feature = "text-index")]
+    pub fn has_text_index(&self, label: &str, property: &str) -> bool {
+        let cle = format!("{label}:{property}");
+        if self.substrate_store.is_some() {
+            self.substrate_text_indexes.read().contains_key(&cle)
+        } else {
+            self.store.get_text_index(label, property).is_some()
+        }
+    }
+}
+
+/// Catalogue durable des index — declaration, retrait, reconstruction.
+///
+/// Ces trois methodes vivent dans leur PROPRE bloc `impl` a dessein. Les
+/// glisser au milieu du precedent revenait a s'inserer entre un doc-comment et
+/// l'element qu'il documente : l'element perd sa documentation, l'insertion
+/// herite d'une doc qui ne la decrit pas, et le seul signal est un
+/// « missing documentation » sur une ligne qui semble pourtant en avoir.
+impl super::ObrainDB {
+    /// Enregistre durablement l'intention « cet index doit exister ».
+    ///
+    /// (2026-08-14) L'index est une structure DERIVEE : on sait toujours le
+    /// rebatir depuis les proprietes. Ce qui ne se rebatit pas, c'est de
+    /// SAVOIR qu'il doit exister — et cette intention ne vivait nulle part.
+    pub(super) fn declarer_index_substrat(&self, decl: obrain_substrate::DeclarationIndex) {
+        let Some(ref sub) = self.substrate_store else {
+            return;
+        };
+        if let Err(e) = sub.declarer_index(decl) {
+            tracing::warn!(erreur = %e, "declaration d'index non persistee");
+        }
+    }
+
+    pub(super) fn retirer_declaration_substrat(&self, genre: &str, label: &str, propriete: &str) {
+        let Some(ref sub) = self.substrate_store else {
+            return;
+        };
+        if let Err(e) = sub.retirer_declaration_index(genre, label, propriete) {
+            tracing::warn!(erreur = %e, "retrait de declaration non persiste");
+        }
+    }
+
+    /// Rebatit un index DECLARE mais absent du registre — le cas d'une base
+    /// qu'on vient de rouvrir.
+    ///
+    /// PARESSEUX ET NON A L'OUVERTURE, deliberement : construire un cascade en
+    /// 384 dimensions sur une base de 151 Go ajouterait au demarrage un cout
+    /// non borne, sur un agent que le watchdog redemarre. On paie a la
+    /// premiere recherche qui en a besoin, et une seule fois.
+    ///
+    /// Rend `true` si un index a ete rebati.
+    pub(super) fn rebatir_index_declare(&self, genre: &str, label: &str, property: &str) -> bool {
+        let Some(ref sub) = self.substrate_store else {
+            return false;
+        };
+        let Some(decl) = sub
+            .declarations_index()
+            .into_iter()
+            .find(|d| d.genre == genre && d.label == label && d.propriete == property)
+        else {
+            return false;
+        };
+        tracing::info!(
+            genre,
+            label,
+            property,
+            "index declare absent du registre — reconstruction a la demande"
+        );
+        let ok = match genre {
+            "vector" => self
+                .create_vector_index(
+                    label,
+                    property,
+                    decl.dimension,
+                    decl.metrique.as_deref(),
+                    None,
+                    None,
+                )
+                .is_ok(),
+            #[cfg(feature = "text-index")]
+            "text" => self.create_text_index(label, property).is_ok(),
+            // Sans la feature `text-index`, la methode n'existe pas. On ne
+            // peut pas reconstruire : `false` dit l'echec, la declaration
+            // survit, et le journal juste en dessous l'explique.
+            #[cfg(not(feature = "text-index"))]
+            "text" => false,
+            _ => false,
+        };
+        if !ok {
+            // La declaration survit a un echec de reconstruction : les donnees
+            // peuvent etre revenues demain (propriete pas encore reecrite,
+            // dimension momentanement incoherente). Effacer l'intention parce
+            // qu'une tentative a echoue serait perdre l'information la plus
+            // durable au profit de la plus circonstancielle.
+            tracing::warn!(
+                genre,
+                label,
+                property,
+                "reconstruction de l'index declare echouee"
+            );
+        }
+        ok
     }
 }

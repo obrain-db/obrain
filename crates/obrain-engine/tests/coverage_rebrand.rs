@@ -1,3 +1,5 @@
+//! Couverture du renommage Grafeo -> Obrain : aucune surface publique ne porte plus l'ancien nom.
+
 #![cfg(feature = "cypher")]
 //! Coverage tests targeting the Grafeo→Obrain rebrand diff.
 //!
@@ -1683,7 +1685,7 @@ fn admin_schema_info_lpg_serde() {
         }],
         edge_types: vec![EdgeTypeInfo {
             name: "KNOWS".into(),
-            count: 5,
+            count: Some(5),
         }],
         property_keys: vec!["name".into()],
     });
@@ -2056,6 +2058,86 @@ fn query_empty_string_property() {
     db.execute("CREATE (:ES {name: ''})").unwrap();
     let result = db.execute("MATCH (n:ES) RETURN n.name AS name").unwrap();
     assert_eq!(result.rows[0][0], Value::String("".into()));
+}
+
+/// ── UN AGRÉGAT DE LISTE À TRAVERS UN `WITH` REND LA LISTE ──────────────────
+///
+/// Défaut mesuré le 2026-09-17, corrigé le même jour : `RETURN vals` rendait
+/// `Int64(0)` et `size(vals)` rendait `null`, alors que la MÊME requête en
+/// Cypher rendait `[10, 20]`.
+///
+/// La cause était dans le typage de la projection, pas dans l'agrégat :
+/// `plan_project` déclarait `LogicalType::Node` pour **toute** variable projetée,
+/// donc la liste était recopiée dans un vecteur de nœuds — où elle disparaît.
+/// Le plan portait la bonne valeur (`collect(...) AS vals` sur un vecteur
+/// générique) ; c'est la COPIE qui la perdait. Le type est désormais celui du
+/// planificateur (scalaire / arête / nœud), au lieu d'être supposé.
+///
+/// Ce test a été écrit d'abord en `#[ignore]`, pour que le défaut reste visible
+/// et exécutable plutôt que caché ; il est maintenant Actif, et il échouera de
+/// nouveau si le typage des projections redevient une supposition.
+#[test]
+fn with_collect_rend_la_liste_attendue() {
+    let db = ObrainDB::new_in_memory();
+    db.execute("CREATE (:WC {v: 10}), (:WC {v: 20})").unwrap();
+    let result = db
+        .execute("MATCH (n:WC) WITH collect(n.v) AS vals RETURN vals")
+        .unwrap();
+    assert_eq!(
+        result.rows[0][0],
+        Value::List(vec![Value::Int64(10), Value::Int64(20)].into()),
+        "collect() dans un WITH doit rendre la liste, pas un scalaire"
+    );
+}
+
+/// ── LES AUTRES FORMES QUE LE MÊME MENSONGE DE TYPE CASSAIT ─────────────────
+///
+/// Le typage faux de `plan_project` ne perdait pas qu'`un collect` : il perdait
+/// tout ce qui n'est pas un nœud. Ces formes ont été mesurées AVANT la
+/// correction, avec leurs valeurs fausses — elles disent donc précisément ce
+/// qui était cassé, et ce qui ne doit plus l'être.
+#[test]
+fn une_liste_traverse_un_with_et_reste_utilisable() {
+    let db = ObrainDB::new_in_memory();
+    db.execute("CREATE (:WCL {v: 10}), (:WCL {v: 20})").unwrap();
+
+    // La liste elle-même.
+    let r = db
+        .execute("MATCH (n:WCL) WITH collect(n.v) AS vals RETURN vals")
+        .unwrap();
+    assert_eq!(
+        r.rows[0][0],
+        Value::List(vec![Value::Int64(10), Value::Int64(20)].into()),
+        "la liste doit traverser le WITH intacte"
+    );
+
+    // Et elle reste UTILISABLE (avant : `size` d'un nœud-vecteur → null).
+    let r = db
+        .execute("MATCH (n:WCL) WITH collect(n.v) AS vals RETURN size(vals) AS n")
+        .unwrap();
+    assert_eq!(r.rows[0][0], Value::Int64(2), "size() doit voir 2 éléments");
+
+    // Un agrégat de liste sur une colonne déjà projetée par un WITH scalaire.
+    let r = db
+        .execute("MATCH (n:WCL) WITH n.v AS v RETURN collect(v) AS vals")
+        .unwrap();
+    assert_eq!(
+        r.rows[0][0],
+        Value::List(vec![Value::Int64(10), Value::Int64(20)].into()),
+        "collect() sur une colonne de WITH doit voir les valeurs, pas du vide"
+    );
+
+    // Deux agrégats dans le MÊME WITH : le scalaire ne doit pas être perdu par
+    // la présence de la liste (mesuré avant : [0, 0]).
+    let r = db
+        .execute("MATCH (n:WCL) WITH count(n) AS c, collect(n.v) AS vals RETURN c, vals")
+        .unwrap();
+    assert_eq!(r.rows[0][0], Value::Int64(2), "count() doit valoir 2");
+    assert_eq!(
+        r.rows[0][1],
+        Value::List(vec![Value::Int64(10), Value::Int64(20)].into()),
+        "la liste doit accompagner le compte"
+    );
 }
 
 #[test]

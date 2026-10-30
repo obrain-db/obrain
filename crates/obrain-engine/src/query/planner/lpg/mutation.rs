@@ -3,11 +3,12 @@
 use super::{
     AddLabelOp, AddLabelOperator, AntiJoinOp, Arc, CreateEdgeOp, CreateEdgeOperator, CreateNodeOp,
     CreateNodeOperator, DeleteEdgeOp, DeleteEdgeOperator, DeleteNodeOp, DeleteNodeOperator,
-    Direction, Error, ExpandDirection, GraphStore, HashMap, LeftJoinOp, LogicalExpression,
-    LogicalOperator, LogicalType, MergeConfig, MergeOp, MergeOperator, MergeRelationshipConfig,
-    MergeRelationshipOp, MergeRelationshipOperator, Operator, ProjectExpr, ProjectOperator,
-    PropertySource, RemoveLabelOp, RemoveLabelOperator, Result, SetPropertyOp, SetPropertyOperator,
-    ShortestPathOp, ShortestPathOperator, UnaryOp, UnwindOp, UnwindOperator, Value,
+    Direction, Error, ExpandDirection, ExpressionPredicate, GraphStore, HashMap, LeftJoinOp,
+    LogicalExpression, LogicalOperator, LogicalType, MergeConfig, MergeOp, MergeOperator,
+    MergeRelationshipConfig, MergeRelationshipOp, MergeRelationshipOperator, Operator, ProjectExpr,
+    ProjectOperator, PropertySource, RemoveLabelOp, RemoveLabelOperator, Result, SetPropertyOp,
+    SetPropertyOperator, ShortestPathOp, ShortestPathOperator, UnaryOp, UnwindOp, UnwindOperator,
+    Value,
 };
 #[cfg(feature = "algos")]
 use super::{CallProcedureOp, GraphStoreMut, StaticResultOperator};
@@ -137,6 +138,60 @@ impl super::Planner {
         Ok((operator, columns))
     }
 
+    /// Plans the creation of an inter-base (external) edge — V1.
+    ///
+    /// La ligne d'entree passe inchangee : pas de colonne de sortie (pas de
+    /// variable d'arete en V1). La SOURCE est resolue en indice de colonne,
+    /// exactement comme plan_create_edge.
+    pub(super) fn plan_create_external_edge(
+        &self,
+        create: &crate::query::plan::CreateExternalEdgeOp,
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // (V3) Refus enseignant : le registre externe est HORS journal
+        // d'annulation — dans une transaction explicite, un ROLLBACK ne
+        // saurait pas defaire cette ecriture. Refuser AVANT d'executer.
+        if self.session_context.in_explicit_transaction {
+            return Err(obrain_common::utils::error::Error::Query(
+                obrain_common::utils::error::QueryError::new(
+                    obrain_common::utils::error::QueryErrorKind::Semantic,
+                    "les aretes inter-bases sont hors journal d'annulation (V1) : \
+                     CREATE/MERGE ...->(ref(...)) est refuse dans une transaction \
+                     explicite — un ROLLBACK ne saurait pas les defaire. Execute \
+                     l'ecriture hors transaction (auto-commit), ou attends \
+                     l'integration au journal d'annulation",
+                ),
+            ));
+        }
+        let (input_op, columns) = self.plan_operator(&create.input)?;
+
+        let from_column = columns
+            .iter()
+            .position(|c| c == &create.from_variable)
+            .ok_or_else(|| {
+                Error::Internal(format!(
+                    "Source variable '{}' not found",
+                    create.from_variable
+                ))
+            })?;
+
+        let output_schema = self.derive_schema_from_columns(&columns);
+
+        let operator = obrain_core::execution::operators::CreateExternalEdgeOperator::new(
+            Arc::clone(&self.store) as Arc<dyn obrain_core::graph::GraphStoreMut>,
+            input_op,
+            from_column,
+            create.from_variable.clone(),
+            create.edge_type.clone(),
+            create.to_host.clone(),
+            create.to_store.clone(),
+            create.to_key.clone(),
+            create.merge,
+            output_schema,
+        );
+
+        Ok((Box::new(operator), columns))
+    }
+
     /// Plans a DELETE NODE operator.
     ///
     /// If the variable is tracked as an edge (via `edge_columns`), this
@@ -181,7 +236,10 @@ impl super::Planner {
                 output_schema,
                 delete.detach,
             )
-            .with_transaction_context(self.viewing_epoch, self.transaction_id);
+            .with_transaction_context(self.viewing_epoch, self.transaction_id)
+            // (V3) En transaction explicite, DETACH DELETE d'un noeud
+            // porteur d'aretes inter-bases est refuse (hors undo-log).
+            .with_detach_externes_refuses(self.session_context.in_explicit_transaction);
             if let Some(ref tracker) = self.write_tracker {
                 op = op.with_write_tracker(Arc::clone(tracker));
             }
@@ -686,10 +744,13 @@ impl super::Planner {
         &self,
         call: &CallProcedureOp,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
-        use crate::procedures::{self, BuiltinProcedures};
+        use crate::procedures;
 
-        static PROCEDURES: std::sync::OnceLock<BuiltinProcedures> = std::sync::OnceLock::new();
-        let registry = PROCEDURES.get_or_init(BuiltinProcedures::new);
+        // LE registre, celui-la meme que consulte la classification
+        // (`LogicalOperator::mutations_avec`). Un `OnceLock` local ici en
+        // ferait un second, et deux sources pour une meme decision finissent
+        // toujours par diverger.
+        let registry = procedures::registre();
 
         // Special case: obrain.procedures() lists all procedures
         let resolved_name = call.name.join(".");
@@ -710,6 +771,96 @@ impl super::Planner {
             return self.plan_static_result(result, &call.yield_items);
         }
 
+        // Window procedures (CALL obrain.window_2d — RFC zorder C5, fenêtres
+        // 2D en GQL). Substrate-native : nécessite le handle typé câblé via
+        // `with_substrate_store` (None sur backend non-substrate → erreur
+        // explicite de la procédure elle-même).
+        if let Some(result) = crate::window_procedures::try_execute_window_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.substrate_store.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Change-data procedures (CALL obrain.search_delta — diff CDC graphe,
+        // « ce qui a changé depuis ma dernière vue »). Nécessite le CDC
+        // câblé via `with_cdc_log` (None → erreur explicite de la procédure).
+        #[cfg(feature = "cdc")]
+        if let Some(result) = crate::database::search_delta::try_execute_search_delta_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.cdc_log.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Surprise d'activité (CALL obrain.search_surprise — « ce qui s'active
+        // contre les attentes ») : lecture pure CDC + degrés substrate.
+        #[cfg(feature = "cdc")]
+        if let Some(result) = crate::database::search_surprise::try_execute_search_surprise_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.substrate_store.as_ref(),
+            self.cdc_log.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Relief contextuel (CALL obrain.relief — projection R_q sur les
+        // signaux existants : surprise/recency/degré/conflits). Lecture pure.
+        #[cfg(feature = "cdc")]
+        if let Some(result) = crate::database::search_relief::try_execute_relief_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.substrate_store.as_ref(),
+            self.cdc_log.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Rôle structurel (CALL obrain.search_by_role — HKS 3 échelles,
+        // invariant au contenu). Lecture pure sur substrate.
+        if let Some(result) = crate::database::search_by_role::try_execute_search_by_role_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.substrate_store.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Spread directionnel causal (CALL obrain.search_causes/search_effects —
+        // BFS avant/inverse amorti). Lecture pure sur substrate.
+        if let Some(result) = crate::database::search_causality::try_execute_search_causality_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.substrate_store.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Comptage ensembliste de portée (CALL obrain.reachable_count —
+        // count(DISTINCT d) à k sauts par frontières distinctes, sans
+        // énumération de chemins). Lecture pure sur substrate.
+        if let Some(result) = crate::database::reachable_count::try_execute_reachable_count_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.substrate_store.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Dissonance d'état (CALL obrain.search_conflicts — valeurs qui
+        // oscillent A→B→A dans la fenêtre CDC). Lecture pure.
+        #[cfg(feature = "cdc")]
+        if let Some(result) = crate::database::search_conflicts::try_execute_search_conflicts_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.cdc_log.as_ref(),
+        )? {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
         // Cognitive procedures (CALL obrain.cognitive.*)
         #[cfg(feature = "cognitive")]
         if let Some(engine) = &self.cognitive_engine
@@ -717,6 +868,7 @@ impl super::Planner {
                 &resolved_name,
                 &call.arguments,
                 engine,
+                Arc::clone(&self.store) as Arc<dyn GraphStore>,
             )?
         {
             return self.plan_static_result(result, &call.yield_items);
@@ -900,6 +1052,7 @@ impl super::Planner {
                 transaction_id: self.transaction_id,
                 viewing_epoch: self.viewing_epoch,
                 catalog: self.catalog.clone(),
+                session_context: self.session_context.clone(),
             },
         ));
 
@@ -1069,6 +1222,7 @@ impl super::Planner {
                 output_schema,
             )
             .with_replace(set_prop.replace)
+            .with_remove(set_prop.remove)
             .with_transaction_context(self.viewing_epoch, self.transaction_id);
             if let Some(ref tracker) = self.write_tracker {
                 op = op.with_write_tracker(Arc::clone(tracker));
@@ -1086,6 +1240,7 @@ impl super::Planner {
                 output_schema,
             )
             .with_replace(set_prop.replace)
+            .with_remove(set_prop.remove)
             .with_transaction_context(self.viewing_epoch, self.transaction_id);
             if let Some(ref tracker) = self.write_tracker {
                 op = op.with_write_tracker(Arc::clone(tracker));
@@ -1132,7 +1287,24 @@ impl super::Planner {
                     obrain_common::types::Value::String(format!("${}", name).into()),
                 ))
             }
-            _ => {
+            // ── LES CARTES DYNAMIQUES RESTENT REFUSÉES, ET C'EST DÉLIBÉRÉ ──
+            //
+            // (2026-08-30, vague 4a) `SET n += {cible: n.fantome}` évalue bien
+            // sa carte, mais une propriété ABSENTE rend `None` à l'évaluateur,
+            // et l'entrée est alors OMISE de la carte produite — au lieu d'y
+            // figurer à NULL. La règle « NULL résolu = retrait » (vague 2) ne
+            // s'appliquerait donc pas : la clé survivrait avec son ANCIENNE
+            // valeur, silencieusement, là où `+= {cible: null}` la retire.
+            // Mesuré : keys = [cible, neuf, present] au lieu de [neuf, present].
+            //
+            // Ouvrir ce chemin à moitié échangerait un refus FRANC contre un
+            // résultat FAUX EN SILENCE — exactement ce que cette campagne
+            // combat. Le refus est donc conservé tel quel, et le témoin
+            // `temoin_carte_dynamique_encore_refusee_par_le_planificateur`
+            // (rev2_adversarial.rs) continue de le garder. Ouvrir les cartes
+            // dynamiques demande d'abord de faire porter le NULL par la carte
+            // évaluée — un chantier à soi, avec ses tests.
+            LogicalExpression::Map(_) | LogicalExpression::MapProjection { .. } => {
                 if let Some(value) = Self::try_fold_expression(expr) {
                     Ok(PropertySource::Constant(value))
                 } else {
@@ -1140,6 +1312,36 @@ impl super::Planner {
                         "Unsupported expression type for property source: {:?}",
                         expr
                     )))
+                }
+            }
+            _ => {
+                if let Some(value) = Self::try_fold_expression(expr) {
+                    Ok(PropertySource::Constant(value))
+                } else {
+                    // (2026-08-30, vague 4a) Expression composée qui LIT la
+                    // ligne — `SET n.x = n.x + 1` — donc non repliable à la
+                    // planification. Avant : erreur `Internal`, une frontière
+                    // indevinable depuis le langage (`SET n.x = n.y` passait,
+                    // `SET n.x = n.y + 1` non). Désormais : le MÊME évaluateur
+                    // que les filtres et projections (arithmétique gardée,
+                    // comparateur canonique compris), évalué par ligne sur
+                    // l'état d'AVANT l'écriture — les opérateurs de mutation
+                    // résolvent toutes les sources d'une ligne avant sa
+                    // première écriture.
+                    let variable_columns: HashMap<String, usize> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, name)| (name.clone(), i))
+                        .collect();
+                    let filter_expr = self.convert_expression(expr)?;
+                    let predicate = ExpressionPredicate::new(
+                        filter_expr,
+                        variable_columns,
+                        Arc::clone(&self.store) as Arc<dyn GraphStore>,
+                    )
+                    .with_transaction_context(self.viewing_epoch, self.transaction_id)
+                    .with_session_context(self.session_context.clone());
+                    Ok(PropertySource::Expression(Arc::new(predicate)))
                 }
             }
         }
@@ -1212,8 +1414,8 @@ impl super::Planner {
                     }
                     "timestamp" => {
                         // Neo4j-compatible: returns milliseconds since Unix epoch as Int64
-                        let duration = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
+                        let duration = web_time::SystemTime::now()
+                            .duration_since(web_time::UNIX_EPOCH)
                             .unwrap_or(std::time::Duration::ZERO);
                         Some(Value::Int64(duration.as_millis() as i64))
                     }

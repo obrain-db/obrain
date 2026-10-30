@@ -43,60 +43,15 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Node offset within a substrate store — an opaque u32 identity.
-///
-/// The index never interprets this value beyond returning it in search
-/// results. Callers map it back to an `ObjectId` / `NodeId` using whatever
-/// convention the consuming crate defines.
-pub type NodeOffset = u32;
-
-/// Contract for an embedding-based nearest-neighbor index.
-///
-/// Implementations must be thread-safe (`Send + Sync`). Search calls can
-/// run concurrently with reads to the same index; insert / delete /
-/// rebuild take exclusive access internally (see [`SubstrateTieredIndex`]
-/// for the concrete locking scheme).
-pub trait VectorIndex: Send + Sync {
-    /// Return the embedding dimensionality the index was built for.
-    /// All `insert` and `search_top_k` calls must pass slices of this
-    /// length.
-    fn dim(&self) -> usize;
-
-    /// Current number of indexed nodes.
-    fn len(&self) -> usize;
-
-    /// `len() == 0`.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Insert or update the embedding for `node_offset`.
-    ///
-    /// If `node_offset` was already indexed, its tier records are
-    /// overwritten in place — the underlying storage slot is kept stable.
-    /// Otherwise the embedding is appended.
-    fn insert(&self, node_offset: NodeOffset, embedding: &[f32]);
-
-    /// Remove `node_offset` from the index. No-op if it was not indexed.
-    fn delete(&self, node_offset: NodeOffset);
-
-    /// Bulk-rebuild the index from `(node_offset, embedding)` pairs.
-    ///
-    /// Equivalent to `clear` + `insert` for each pair, but may be faster
-    /// because the implementation can batch-project all three tiers in
-    /// one pass. Existing contents are discarded.
-    fn rebuild(&self, pairs: &[(NodeOffset, Vec<f32>)]);
-
-    /// Search the top-K node offsets closest to `query` by cosine
-    /// similarity.
-    ///
-    /// Returns `(node_offset, cosine)` pairs sorted by descending cosine
-    /// (i.e. closest first). Ties are broken by ascending `node_offset`
-    /// for determinism.
-    ///
-    /// If `k == 0` or the index is empty, returns an empty Vec.
-    fn search_top_k(&self, query: &[f32], k: usize) -> Vec<(NodeOffset, f32)>;
-}
+// (2026-08-13, T17b) `NodeOffset` et `VectorIndex` ont ete remontes dans
+// `obrain-core::index::vector` — le trait ne mentionnait que u32, &[f32] et
+// usize, donc rien qui appartienne au substrat, et `obrain-core::graph::traits`
+// avait besoin de pouvoir le nommer pour cesser de typer ses methodes d'index
+// sur le `HnswIndex` de LpgStore, retire depuis T17 Step 15.
+//
+// On les re-exporte ici pour que tout ce qui ecrivait
+// `obrain_substrate::retrieval::VectorIndex` continue de compiler sans changement.
+pub use obrain_core::index::vector::{NodeOffset, VectorIndex};
 
 // ---------------------------------------------------------------------------
 // SubstrateTieredIndex — in-memory implementation on top of the L0/L1/L2
@@ -131,6 +86,17 @@ pub struct SubstrateTieredIndex {
     b1: Tier1Builder,
     b2: Tier2Builder,
     dim: usize,
+    /// Chantier SlotRemappable — epoch de repermutation observé quand les
+    /// identifiants de slots de cet index ont été établis.
+    ///
+    /// `None` = index construit EN MÉMOIRE (`new`) à partir de l'état
+    /// courant : aucune garde, comportement historique inchangé.
+    /// `Some(e)` = index CHARGÉ depuis les zones alors que la base était à
+    /// l'epoch `e`. Si une repermutation survient ensuite, les slots que
+    /// cet index détient sont PÉRIMÉS ; réécrire sa table écraserait la
+    /// table déjà remappée sur disque par des valeurs fausses.
+    /// [`Self::persist_to_zones`] refuse alors d'écrire.
+    slots_epoch_at_load: Option<u32>,
 }
 
 struct Inner {
@@ -175,6 +141,7 @@ impl SubstrateTieredIndex {
             b1: Tier1Builder::with_default_seed(dim),
             b2: Tier2Builder::new(),
             dim,
+            slots_epoch_at_load: None,
         }
     }
 
@@ -228,7 +195,39 @@ impl SubstrateTieredIndex {
             b1: Tier1Builder::with_default_seed(dim),
             b2: Tier2Builder::new(),
             dim,
+            // Parts fournies par l'appelant, sans base de reference :
+            // pas de garde (voir `load_from_zones`, qui estampille).
+            slots_epoch_at_load: None,
         }
+    }
+
+    /// Estampille l'epoch de repermutation auquel les slots de cet index
+    /// ont été établis (chantier SlotRemappable). Voir
+    /// [`Self::persist_to_zones`] pour l'usage.
+    fn with_slots_epoch(mut self, epoch: u32) -> Self {
+        self.slots_epoch_at_load = Some(epoch);
+        self
+    }
+
+    /// Index neuf, LIÉ à l'état de repermutation courant de la base.
+    ///
+    /// À utiliser partout où un index est bâti depuis les données vivantes
+    /// puis persisté (reconstruction après un tier0 absent, migration).
+    /// La liaison atteste que son contenu a été établi APRÈS la dernière
+    /// repermutation ; sans elle, [`Self::persist_to_zones`] refuse de
+    /// persister sur une base déjà repermutée.
+    ///
+    /// L'appelant doit construire l'index (`rebuild` / `insert`) SANS
+    /// qu'une repermutation ne survienne entre cet appel et la
+    /// persistance — ce que garantit la fenêtre calme des passes de
+    /// maintenance.
+    ///
+    /// (Revue #3) Rend `Result` : une zone d'epoch presente mais illisible
+    /// ne doit pas se traduire par un index estampille `epoch 0`, qui se
+    /// croirait ensuite autorise a ecraser une table remappee.
+    pub fn new_lie_a_la_base(sub: &SubstrateFile, dim: usize) -> SubstrateResult<Self> {
+        let epoch = crate::slot_remap::current_remap_epoch(sub)?;
+        Ok(Self::new(dim).with_slots_epoch(epoch))
     }
 
     /// Persist the current state of the index to the three tier zones
@@ -248,16 +247,65 @@ impl SubstrateTieredIndex {
     pub fn persist_to_zones(&self, sub: &SubstrateFile) -> SubstrateResult<()> {
         let guard = self.inner.read();
         let n_slots = guard.slot_to_offset.len() as u32;
+        // Chantier SlotRemappable : la table écrite reflète la
+        // disposition ACTUELLE des slots nœuds — estampillée avec
+        // l'epoch de remap courant pour que le rejeu d'une
+        // repermutation antérieure ne la re-permute pas.
+        let remap_epoch = crate::slot_remap::current_remap_epoch(sub)?;
+
+        // GARDE — index chargé AVANT une repermutation.
+        //
+        // Cet index détient des identifiants de slots figés au moment de
+        // son chargement. Si la base a été repermutée depuis, sa table
+        // `slot_to_offset` est PÉRIMÉE : l'écrire écraserait la table déjà
+        // remappée sur disque par des slots faux, et l'estamperait de
+        // l'epoch courant — donc sans plus aucun moyen de s'en apercevoir.
+        //
+        // On REFUSE d'écrire : la table sur disque, elle, est correcte
+        // (remappée par la passe). L'index en mémoire reste périmé pour
+        // les recherches jusqu'à son rechargement — c'est la limite
+        // connue de son NON-ENRÔLEMENT (il appartient à `obrain-engine`,
+        // pas au substrat). Mieux vaut un index périmé qu'une table
+        // corrompue sur disque.
+        // Deux refus, tous deux OBSERVABLES (`Err`, pas `Ok(())`) : une
+        // persistance qui meurt en silence est un piège — l'appelant
+        // croit avoir sauvegardé.
+        match self.slots_epoch_at_load {
+            // (a) Index CHARGÉ à un epoch donné, base repermutée depuis.
+            Some(loaded_at) if loaded_at != remap_epoch => {
+                return Err(crate::error::SubstrateError::Internal(format!(
+                    "tier index: refus de persister — index charge a l'epoch de remap \
+                     {loaded_at}, base desormais a l'epoch {remap_epoch}. Sa table \
+                     slot_to_offset est PERIMEE et ecraserait la table deja remappee. \
+                     Rechargez l'index (load_from_zones) avant de persister."
+                )));
+            }
+            // (b) Index NON LIÉ (`new` / `from_parts`) sur une base qui a
+            //     déjà été repermutée au moins une fois. Rien ne prouve
+            //     que son contenu a été bâti APRÈS la dernière
+            //     repermutation ; c'est exactement le chemin du rebuild
+            //     quand tier0 est absent. On exige une liaison explicite.
+            None if remap_epoch != 0 => {
+                return Err(crate::error::SubstrateError::Internal(format!(
+                    "tier index: refus de persister — index non lie a un epoch de remap \
+                     sur une base qui en est a l'epoch {remap_epoch}. Construisez-le via \
+                     SubstrateTieredIndex::new_lie_a_la_base(&sub, dim) pour attester \
+                     qu'il a ete bati APRES la derniere repermutation."
+                )));
+            }
+            _ => {}
+        }
 
         // Tier0 carries slot_to_offset (master); tier1 and tier2 do not.
         {
             let mut zf0 = sub.open_zone(Zone::Tier0)?;
-            tier_persist::write_tier_zone::<Tier0>(
+            tier_persist::write_tier_zone_with_remap_epoch::<Tier0>(
                 &mut zf0,
                 TierMagic::Tier0,
                 n_slots,
                 Some(&guard.slot_to_offset),
                 &guard.l0,
+                remap_epoch,
             )?;
         }
         {
@@ -351,14 +399,14 @@ impl SubstrateTieredIndex {
             offset_to_slot.insert(offset, slot);
         }
 
-        Ok(Some(Self::from_parts(
-            dim,
-            slot_to_offset,
-            offset_to_slot,
-            l0,
-            l1,
-            l2,
-        )))
+        // Chantier SlotRemappable : mémorise l'epoch auquel ces slots ont
+        // été lus. Une repermutation ultérieure les rend PÉRIMÉS, et
+        // `persist_to_zones` refusera alors d'écraser la table remappée.
+        let epoch = crate::slot_remap::current_remap_epoch(sub)?;
+        Ok(Some(
+            Self::from_parts(dim, slot_to_offset, offset_to_slot, l0, l1, l2)
+                .with_slots_epoch(epoch),
+        ))
     }
 
     fn project_query(&self, query: &[f32]) -> TieredQuery {
@@ -738,5 +786,80 @@ mod tests {
         let hits = idx.search_top_k(&v, 5);
         let offsets: Vec<NodeOffset> = hits.iter().map(|h| h.0).collect();
         assert_eq!(offsets, vec![10, 20, 30, 40, 50]);
+    }
+}
+
+#[cfg(test)]
+mod tests_slot_remap {
+    use super::*;
+    use obrain_core::index::vector::VectorIndex;
+
+    const DIM: usize = L2_DIM;
+
+    fn emb(seed: u32) -> Vec<f32> {
+        (0..DIM)
+            .map(|i| ((seed as f32 + 1.0) * 0.017 * (i as f32 + 1.0)).sin())
+            .collect()
+    }
+
+    /// Chantier SlotRemappable — un index CHARGÉ avant une repermutation
+    /// ne doit jamais écraser la table remappée sur disque avec ses slots
+    /// périmés. Sans cette garde, la corruption serait silencieuse ET
+    /// estampillée de l'epoch courant, donc indétectable ensuite.
+    #[test]
+    fn un_index_charge_avant_un_remap_refuse_d_ecraser_la_table() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+
+        // Index initial persisté à l'epoch 0.
+        let index = SubstrateTieredIndex::new(DIM);
+        for offset in 1..5u32 {
+            index.insert(offset, &emb(offset));
+        }
+        index.persist_to_zones(&sub).unwrap();
+
+        // Rechargement : l'index mémorise l'epoch 0.
+        let charge = SubstrateTieredIndex::load_from_zones(&sub, DIM)
+            .unwrap()
+            .expect("tier0 doit se recharger");
+
+        // Une repermutation survient : la table sur disque est remappée
+        // (1 -> 3, 3 -> 1) et la base passe à l'epoch 1.
+        let perm: Vec<u32> = vec![0, 3, 2, 1, 4];
+        crate::slot_remap::remap_tier0_slot_table(&sub, &perm, 1).unwrap();
+        crate::slot_remap::commit_remap_epoch(&sub, 1).unwrap();
+
+        let apres_remap = {
+            let zf = sub.open_zone(Zone::Tier0).unwrap();
+            let (_, s2o, _) = tier_persist::read_tier_zone::<Tier0>(&zf, TierMagic::Tier0)
+                .unwrap()
+                .expect("table lisible apres remap");
+            s2o.unwrap()
+        };
+
+        // L'index périmé tente de persister : REFUS OBSERVABLE (Err), et
+        // la table remappée reste intacte.
+        let refus = charge.persist_to_zones(&sub);
+        assert!(
+            refus.is_err(),
+            "le refus doit etre OBSERVABLE : une persistance qui meurt en \
+             silence laisse croire a l'appelant qu'il a sauvegarde"
+        );
+        let apres_tentative = {
+            let zf = sub.open_zone(Zone::Tier0).unwrap();
+            let (_, s2o, _) = tier_persist::read_tier_zone::<Tier0>(&zf, TierMagic::Tier0)
+                .unwrap()
+                .expect("table toujours lisible");
+            s2o.unwrap()
+        };
+        assert_eq!(
+            apres_tentative, apres_remap,
+            "un index perime a ecrase la table remappee — corruption silencieuse"
+        );
+
+        // Un index rechargé APRÈS le remap, lui, persiste normalement.
+        let frais = SubstrateTieredIndex::load_from_zones(&sub, DIM)
+            .unwrap()
+            .expect("rechargement post-remap");
+        frais.persist_to_zones(&sub).unwrap();
     }
 }

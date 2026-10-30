@@ -31,6 +31,48 @@ use obrain_common::types::{EdgeId, EpochId, NodeId, PropertyKey, TransactionId, 
 use obrain_common::utils::hash::FxHashMap;
 use std::sync::Arc;
 
+// ---------------------------------------------------------------------------
+// Aretes inter-bases (2026-08-17, spec << aretes inter-bases natives >> V1)
+// ---------------------------------------------------------------------------
+
+/// Bit haut des identifiants d'aretes EXTERNES. Les aretes inter-bases
+/// vivent dans un registre sidecar du store SOURCE, avec un espace d'ids
+/// SEPARE des slots d'aretes internes ; le bit haut rend les deux espaces
+/// distinguables partout ou un `EdgeId` circule (suppression routee,
+/// projections). Aucun store n'approche 2^63 aretes internes.
+pub const EXTERNAL_EDGE_ID_BIT: u64 = 1 << 63;
+
+/// Arete inter-bases : la cible est un noeud d'un AUTRE store, adresse par
+/// `(to_host, to_store, to_key)` — une ADRESSE, pas un pointeur memoire.
+///
+/// - `to_host` : hote de la base cible. `None` = machine locale (seul cas
+///   resolu aujourd'hui) ; `Some(..)` (nom ou URL, format libre) est
+///   RESERVE pour le multi-host — encode et rejoue des maintenant pour ne
+///   jamais avoir a migrer le format, resolution reseau a venir (V5).
+/// - `to_store` : slug de la base cible (ex. "agent/system").
+/// - `to_key` : clef du noeud cible. Si elle est entierement numerique,
+///   elle designe un `NodeId` brut ; sinon la valeur de la propriete "id"
+///   du noeud cible (lookup indexe T17b, O(1) quand l'index existe).
+///
+/// L'arete est stockee dans le store SOURCE uniquement (une seule WAL par
+/// ecriture, atomicite mono-store — spec paragraphe 1). Une cible disparue ne
+/// casse rien : la resolution rend le noeud absent (logique trivaluee).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalEdge {
+    /// Identifiant (bit haut [`EXTERNAL_EDGE_ID_BIT`] pose).
+    pub id: EdgeId,
+    /// Noeud source, dans CE store.
+    pub from: NodeId,
+    /// Type d'arete, en clair.
+    pub edge_type: String,
+    /// Hote de la base cible (`None` = local).
+    pub to_host: Option<String>,
+    /// Slug de la base cible.
+    pub to_store: String,
+    /// Clef du noeud cible (voir doc du type).
+    pub to_key: String,
+}
+
 /// Read-only graph operations used by the query engine.
 ///
 /// This trait captures the minimal surface that scan, expand, filter,
@@ -41,6 +83,35 @@ use std::sync::Arc;
 ///
 /// This trait is object-safe: you can use `Arc<dyn GraphStore>` for dynamic
 /// dispatch. Traversal methods return `Vec` instead of `impl Iterator` to
+/// Prédicat TEXTE évaluable sur les octets stockés, SANS matérialiser de `Value`.
+///
+/// Voir [`GraphStore::verdicts_texte_batch`] : c'est le canal qui permet au
+/// substrat de répondre par un verdict sur les octets mmap, sans allouer de
+/// `ArcStr` par cellule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredicatTexte<'a> {
+    /// `CONTAINS`
+    Contient(&'a str),
+    /// `STARTS WITH`
+    CommencePar(&'a str),
+    /// `ENDS WITH`
+    FiniPar(&'a str),
+}
+
+impl PredicatTexte<'_> {
+    /// Le verdict sur des octets, ou `None` si ce ne sont pas des octets UTF-8
+    /// valides — même tolérance que `Value::as_str`.
+    #[must_use]
+    pub fn verdict(&self, octets: &[u8]) -> Option<bool> {
+        let texte = core::str::from_utf8(octets).ok()?;
+        Some(match self {
+            Self::Contient(aiguille) => texte.contains(aiguille),
+            Self::CommencePar(aiguille) => texte.starts_with(aiguille),
+            Self::FiniPar(aiguille) => texte.ends_with(aiguille),
+        })
+    }
+}
+
 /// enable this.
 pub trait GraphStore: Send + Sync {
     // --- Point lookups ---
@@ -153,6 +224,26 @@ pub trait GraphStore: Send + Sync {
         false
     }
 
+    /// Returns `true` when the per-edge-type degree sidecars backing
+    /// [`Self::out_degree_by_type`] / [`Self::in_degree_by_type`] can be
+    /// TRUSTED for `edge_type` on THIS store instance.
+    ///
+    /// (2026-09-05) Complète `supports_typed_degree` (capacité statique du
+    /// backend) par une garantie de QUALITÉ DE DONNÉES dynamique : les
+    /// sidecars `substrate.degrees.node.<TYPE>.u32` sont des fichiers mmap
+    /// que des écrivains non-moteur / des binaires plus anciens (mapping de
+    /// slots différent) peuvent laisser périmés — CRC valide, compteurs
+    /// faux → le pré-filtre typed-degree saute alors tous les nœuds et
+    /// `MATCH (a)-[:T]->(b)` renvoie 0 silencieusement (incidents prod
+    /// 2026-09-01 et runtime 2026-09-05). Les backends qui auto-guérissent
+    /// ou détectent la péremption renvoient `false` pour les types non
+    /// fiables ; le pré-filtre/rewrite retombe alors sur le chemin générique
+    /// (scan) qui reste correct. Défaut `true` (backend sans sidecars
+    /// dédiés — in-memory/legacy — toujours fiable).
+    fn typed_degree_reliable(&self, _edge_type: &str) -> bool {
+        true
+    }
+
     /// Returns the set of labels observed on the **target** nodes of
     /// every live edge whose type is `edge_type`. Backends with a
     /// persistent histogram (SubstrateStore T17i T2) answer in O(K)
@@ -205,6 +296,45 @@ pub trait GraphStore: Send + Sync {
         self.node_ids()
     }
 
+    /// Returns at most `max` non-deleted node IDs, sorted by ID — la
+    /// variante PLAFONNEE de [`GraphStore::node_ids`], pendant sans etiquette
+    /// de [`GraphStore::nodes_by_label_capped`].
+    ///
+    /// CONTRAT, et il est etroit : le resultat est EXACTEMENT le prefixe de
+    /// `node_ids()` de longueur `min(max, node_ids().len())`. Meme ordre,
+    /// meme predicat de vivacite. Un plafond, JAMAIS un filtre different —
+    /// c'est ce qui permet a l'appelant de substituer l'un a l'autre sans
+    /// changer le resultat, et c'est ce que verifie
+    /// `node_ids_capped_est_un_prefixe_de_node_ids`.
+    ///
+    /// `max` compte les noeuds VIVANTS rendus, pas les slots parcourus : un
+    /// substrat troue de tombstones (ou de creneaux jamais ecrits) doit
+    /// rendre `max` noeuds, pas `max` slots.
+    ///
+    /// Defaut : `node_ids()` puis troncature — correct, mais sans le gain.
+    /// Les backends qui balaient slot par slot doivent surcharger avec une
+    /// boucle qui S'ARRETE.
+    fn node_ids_capped(&self, max: usize) -> Vec<NodeId> {
+        let mut all = self.node_ids();
+        all.truncate(max);
+        all
+    }
+
+    /// Vrai quand `filter_visible_node_ids(ids, epoch)` est L'IDENTITE sur la
+    /// sortie de `node_ids()` / `all_node_ids()`, pour TOUTE epoque.
+    ///
+    /// POURQUOI CE PREDICAT EXISTE. `ScanOperator` plafonne son balayage
+    /// AVANT de filtrer par visibilite. Si le filtre peut ensuite jeter des
+    /// lignes, plafonner a k en rend moins de k — silencieusement. Le
+    /// plafond sans etiquette n'est donc arme que lorsque ce predicat rend
+    /// vrai.
+    ///
+    /// Defaut : `false` — aucun plafond. Un backend qui ne surcharge pas
+    /// garde exactement le comportement d'avant.
+    fn scan_visibility_is_trivial(&self) -> bool {
+        false
+    }
+
     /// Returns node IDs with a specific label.
     fn nodes_by_label(&self, label: &str) -> Vec<NodeId>;
 
@@ -252,6 +382,40 @@ pub trait GraphStore: Send + Sync {
         self.edge_type(id)
     }
 
+    // --- Aretes inter-bases (V1) ---
+
+    /// Aretes EXTERNES sortantes du noeud — cible dans un autre store,
+    /// voir [`ExternalEdge`]. Defaut : aucune ; seuls les backends qui
+    /// materialisent le registre (SubstrateStore) en rendent.
+    fn external_edges_from(&self, node: NodeId) -> Vec<ExternalEdge> {
+        let _ = node;
+        Vec::new()
+    }
+
+    /// Registre inverse (spec paragraphe 1, inbound_refs) : qui, dans CE
+    /// store, pointe vers `(to_store, to_key)` sur l'hote LOCAL ?
+    /// Rend des paires (source, id d'arete). Pour le janitor et les
+    /// sauvegardes — jamais sur le chemin de traversee.
+    fn external_inbound_refs(&self, to_store: &str, to_key: &str) -> Vec<(NodeId, EdgeId)> {
+        let _ = (to_store, to_key);
+        Vec::new()
+    }
+
+    /// Nombre d'aretes externes vivantes de CE store.
+    fn external_edge_count(&self) -> u64 {
+        0
+    }
+
+    /// (V4, statistiques d'optimiseur — besoin nomme par l'entite, spec
+    /// paragraphe 8) Nombre d'aretes externes vivantes d'un TYPE donne
+    /// (`None` = tous types). Le planificateur s'en sert pour estimer le
+    /// degre d'expansion en session multi-store — sans elle, les plans
+    /// sous-estiment les frontieres. Defaut : 0 (backends sans registre).
+    fn external_edge_count_by_type(&self, edge_type: Option<&str>) -> u64 {
+        let _ = edge_type;
+        0
+    }
+
     // --- Index introspection ---
 
     /// Returns `true` if a property index exists for the given property.
@@ -291,6 +455,179 @@ pub trait GraphStore: Send + Sync {
     /// Finds nodes matching multiple property equality conditions.
     fn find_nodes_by_properties(&self, conditions: &[(&str, Value)]) -> Vec<NodeId>;
 
+    /// ── EXISTENCE DE PROPRIÉTÉ : LA SOURCE DE `n.p IS NOT NULL` ──────────
+    ///
+    /// Rend la liste EXACTE et COMPLÈTE des nœuds vivants qui portent la
+    /// propriété `property`, **quelle que soit sa valeur** — ou `None`, et
+    /// l'appelant BALAIE.
+    ///
+    /// Mesuré sur `runtime-dev` (433 618 nœuds, 2026-09-14) : `MATCH (n)
+    /// WHERE n.id IS NOT NULL RETURN count(n)` coûtait **514 ms et 433 633
+    /// slots lus** pour rendre **110** lignes. Aucun chemin ne servait
+    /// l'existence : `IS NOT NULL` compile en `UnaryFilterOp::IsNotNull`, un
+    /// filtre d'expression nu, au-dessus d'un balayage complet.
+    ///
+    /// CONTRAIREMENT À L'ÉGALITÉ, l'existence n'a pas de valeur à hacher : la
+    /// seule source d'index qui la tranche est l'énumération COMPLÈTE d'une
+    /// série de propriété. C'est ce que portent les zones d'index déclarées —
+    /// d'où le contrat, identique à celui des index de propriété :
+    ///
+    /// * `Some(v)` : liste exacte, revérifiée sur les valeurs courantes, des
+    ///   nœuds vivants portant la propriété. Elle peut être VIDE — quand
+    ///   toutes les entrées d'une série fiable se sont révélées périmées
+    ///   (nœuds morts, propriétés retirées depuis la dernière fusion) ;
+    /// * `None` : « je ne sais pas répondre sans balayer » — propriété non
+    ///   déclarée, zone absente ou non fiable (ancres divergentes), série
+    ///   illisible, ou série VIDE (ambiguë entre « aucun nœud ne la porte »
+    ///   et « fusion sans contenu »). Jamais `Some(vec![])` par ignorance :
+    ///   un ensemble vide rendu par ignorance affirme « zéro », définitif et
+    ///   sans erreur, là où le balayage rendrait la vérité.
+    ///
+    /// Défaut : `None` — ne rien accélérer est toujours sûr, et les backends
+    /// sans série de propriété gardent le balayage d'origine.
+    fn find_nodes_with_property(&self, _property: &str) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// Verdicts d'un prédicat TEXTE sur une propriété, pour tout un LOT.
+    ///
+    /// POURQUOI (2026-09-12). `CONTAINS` / `STARTS WITH` / `ENDS WITH` ne
+    /// s'intéressent qu'aux OCTETS d'une chaîne. Les matérialiser en
+    /// `Value::String` alloue un `ArcStr` par cellule présente — mesuré ~1,1 ms
+    /// pour 2 000 cellules sur un banc contrôlé, dont la moitié est cette
+    /// allocation et son `free` — alors que le test lui-même coûte quelques ns
+    /// sur une tranche empruntée à l'arène. Cette méthode rend donc le VERDICT,
+    /// sans rien allouer.
+    ///
+    /// SÉMANTIQUE — celle de l'évaluateur, pas une approximation : il fait
+    /// `left.as_str()?` puis `l.contains(r)`. Une valeur absente ou NON
+    /// textuelle rend donc NULL (jamais `false`), ce que `None` signifie ici.
+    ///
+    /// CONTRAT DE RETOUR (tri-valué, pour ne rien confondre) :
+    ///   - `None`               : pas de verdict — l'appelant SUIT son chemin
+    ///                            d'origine (donc aucune divergence possible) ;
+    ///   - `Some(v)` avec `v[i]` = `None`     : NULL pour la ligne `i` ;
+    ///   - `Some(v)` avec `v[i]` = `Some(b)`  : verdict du prédicat.
+    ///
+    /// Le défaut rend `None` : les implémentations qui ne savent pas répondre
+    /// sans allouer (projections, wrappers) gardent le chemin d'origine.
+    ///
+    /// PLUSIEURS PRÉDICATS EN UNE FOIS — et c'est une correction de mesure, pas
+    /// une commodité. `n.name CONTAINS 'a' OR n.name CONTAINS 'b'` demandait
+    /// quatre verdicts sur la MÊME propriété ; les demander séparément faisait
+    /// quatre traversées de chaîne par cellule, là où la lecture de valeurs en
+    /// faisait UNE (mesuré : 270 ms contre 218 ms pour 347 970 cellules).
+    /// Le substrat rend donc un verdict PAR PRÉDICAT, en une seule traversée.
+    fn verdicts_texte_batch(
+        &self,
+        _ids: &[NodeId],
+        _key: &PropertyKey,
+        _predicats: &[PredicatTexte<'_>],
+    ) -> Option<Vec<Vec<Option<bool>>>> {
+        None
+    }
+
+    /// L'implémentation peut-elle RÉPONDRE par index d'égalité sur cette
+    /// propriété, même quand l'index n'est pas encore bâti ?
+    ///
+    /// POURQUOI CETTE QUESTION EXISTE, À CÔTÉ DE `has_property_index`. Le
+    /// substrat sait CONSTRUIRE l'index d'égalité d'une propriété à la demande
+    /// (`find_nodes_by_property` le fait déjà : « la construction reste payée
+    /// UNE fois par clé et par processus ; mesuré 80 ms au 1er appel puis
+    /// 429 µs »). Mais le planificateur ne demandait que `has_property_index`,
+    /// qui est FAUX tant que la construction n'a pas eu lieu : il choisissait
+    /// donc un balayage dont le résultat ne rebâtit jamais l'index. Cercle
+    /// vicieux mesuré sur le store vivant — `MATCH (m:Message) WHERE m.session
+    /// = … AND m.role = 'user'`, la requête du CHAT : **219 ms** en processus
+    /// long, 502 ms au CLI, à chaque appel.
+    ///
+    /// MESURÉ : la même requête, `session` DÉCLARÉ, tombe à **0,27 ms**. Ce
+    /// n'était donc pas un problème de données mais de porte.
+    ///
+    /// Le défaut rend `false` : aucune implémentation n'est présumée capable de
+    /// construire un index qu'elle n'a pas.
+    fn peut_indexer_propriete(&self, _propriete: &str) -> bool {
+        false
+    }
+
+    /// Les nœuds qui satisfont un prédicat TEXTE, quand l'implémentation sait y
+    /// répondre par un INDEX au lieu de balayer la propriété entière.
+    ///
+    /// POURQUOI CE CANAL EXISTE. `verdicts_texte_batch` rend le prédicat MOINS
+    /// CHER par ligne ; il ne réduit pas le NOMBRE de lignes. Sur le banc figé
+    /// (347 970 nœuds), `n.name CONTAINS 'iam'` coûte 148–190 ms de balayage
+    /// pour 12 lignes rendues. Un index de sous-chaînes (trigrammes) rend ces
+    /// 12 nœuds en quelques microsecondes — mesuré — mais le planificateur
+    /// n'avait aucun moyen de le savoir : toutes ses sondes d'index passent par
+    /// ce trait.
+    ///
+    /// CONTRAT DE RETOUR :
+    ///   - `None`        : l'implémentation NE SAIT PAS (pas d'index pour cette
+    ///                     propriété, index muet faute de grammes assez rares,
+    ///                     ou index débordé) — l'appelant garde son chemin
+    ///                     d'origine, balayage compris, donc aucune divergence
+    ///                     n'est possible ;
+    ///   - `Some(vide)`  : CONCLUSIF — l'index a PROUVÉ qu'aucun nœud ne
+    ///                     satisfait le prédicat ;
+    ///   - `Some(nœuds)` : les nœuds satisfaisant le prédicat, EXACTEMENT —
+    ///                     l'implémentation revérifie ses candidats, comme le
+    ///                     fait `find_nodes_in_range`. L'appelant n'a donc pas
+    ///                     à réévaluer le prédicat.
+    ///
+    /// Le défaut rend `None` : toute implémentation sans index de sous-chaînes
+    /// (projections, wrappers, magasins en mémoire) garde le chemin d'origine.
+    fn noeuds_par_predicat_texte(
+        &self,
+        _key: &PropertyKey,
+        _predicat: &PredicatTexte<'_>,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// La propriété a-t-elle une série ORDONNÉE EXPLOITABLE (déclarée, fiable,
+    /// construite) ? — la question que doit poser toute réécriture en intervalle.
+    ///
+    /// POURQUOI CETTE GARDE EXISTE (2026-09-13, mesuré). Réécrire un prédicat en
+    /// intervalle sur une propriété SANS index ordonné ne rend rien plus rapide :
+    /// `find_nodes_in_range` retombe alors sur un balayage vérifié par
+    /// `valeur_dans_intervalle`, mesuré **290 ms contre 65 ms** pour le filtre
+    /// d'expression — sur `name` du snapshot figé, la réécriture transformait un
+    /// gain en régression de 4,5×. Avec la garde : ×250 quand l'index sert
+    /// (`code` court, préfixe sélectif), ×1,5 sur un préfixe de chemin indexé,
+    /// et AUCUN changement quand l'index ne peut pas servir.
+    ///
+    /// Le défaut répond `false` : ne rien réécrire est toujours sûr, et les
+    /// implémentations sans index ordonné (projections, wrappers) gardent donc
+    /// le chemin d'origine.
+    fn index_ordonne_pour(&self, _propriete: &str) -> bool {
+        false
+    }
+
+    /// L'index ordonné est-il **déjà** là, sans rien construire ?
+    ///
+    /// ── POURQUOI CETTE GARDE EXISTE À CÔTÉ DE `index_ordonne_pour` ─────────
+    /// Défaut mesuré le 2026-09-13 sur le chat du 8432 (store `runtime-dev`,
+    /// 408 832 nœuds) : la réécriture de préfixe consultait `index_ordonne_pour`,
+    /// qui CONSTRUIT la série la première fois — un balayage complet des chaînes
+    /// de propriétés. Le premier préfixe d'un processus coûtait donc **3 027 à
+    /// 16 315 ms** (`MATCH (n:Class) WHERE n.qualified_name STARTS WITH …`, une
+    /// clé de cache distincte par mesure), là où le filtre d'expression répond en
+    /// **65 ms** et le balayage vérifié en ~200–350 ms. C'était le pire des deux
+    /// mondes : payer un balayage complet pour, ensuite, emprunter un chemin que
+    /// l'auteur a lui-même mesuré **4,5× plus lent** quand la clé de l'index est
+    /// trop courte pour être sélective (ici 11 octets tronqués, que TOUS les
+    /// `qualified_name` d'un projet partagent).
+    ///
+    /// Cette garde ne construit RIEN : elle dit seulement si la série est déjà
+    /// disponible (étage mémoire complet, ou série fiable sur disque). Le jour où
+    /// l'entretien l'a écrite, le chemin d'intervalle redevient disponible — et
+    /// c'est le bon moment pour le payer, pas au milieu d'une question.
+    ///
+    /// Le défaut répond `false` : on balaie, c'est-à-dire le chemin d'origine.
+    fn index_ordonne_disponible(&self, _propriete: &str) -> bool {
+        false
+    }
+
     /// Finds nodes whose property value falls within a range.
     fn find_nodes_in_range(
         &self,
@@ -300,6 +637,67 @@ pub trait GraphStore: Send + Sync {
         min_inclusive: bool,
         max_inclusive: bool,
     ) -> Vec<NodeId>;
+
+    /// (NS-PARTOUT) Réponse EXACTE et COMPLÈTE à `property CONTAINS needle`
+    /// (sensible à la casse, sémantique `str::contains`), quand une source
+    /// indexée complète existe — sinon `None`, et l'appelant BALAIE.
+    ///
+    /// Le contrat est celui des index de propriété : `Some(v)` est la
+    /// liste exacte, revérifiée sur les valeurs courantes, des nœuds
+    /// vivants dont la valeur CHAÎNE contient `needle` ; `None` veut dire
+    /// « je ne sais pas répondre sans balayer », jamais « zéro résultat ».
+    /// À distinguer de `find_nodes_by_label_property_contains_bounded`,
+    /// heuristique insensible à la casse et PLAFONNÉE, qui ne promet pas
+    /// la complétude.
+    ///
+    /// Défaut : `None` — seuls les backends portant un index adapté
+    /// (trigrammes substrate) surchargent.
+    fn find_nodes_by_property_contains(
+        &self,
+        _property: &str,
+        _needle: &str,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// (NATIF-J6) `min(property)` / `max(property)` en O(1) via l'index ORDONNE
+    /// PAR VALEUR, quand il est bati et fiable — sinon `None`, et l'appelant
+    /// retombe sur l'agregat balayant. Les NULL sont exclus (comme l'agregat).
+    ///
+    /// Defaut `None` : seuls les backends portant l'index ordonne par valeur
+    /// (substrate) surchargent.
+    fn min_par_index(&self, _property: &str) -> Option<Value> {
+        None
+    }
+
+    /// Voir [`GraphStore::min_par_index`].
+    fn max_par_index(&self, _property: &str) -> Option<Value> {
+        None
+    }
+
+    /// (NATIF-J6) Les `k` NodeId de plus PETITE valeur de `property`, en ordre
+    /// ASCENDANT du moteur (`comparer_total`), via l'index ordonne par valeur ;
+    /// `None` => l'appelant retombe sur le tri complet. Ne rend que des nœuds
+    /// VIVANTS a la construction ; l'appelant filtre encore la visibilite MVCC.
+    fn premiers_k_ordonnes(&self, _property: &str, _k: usize) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// (NATIF-J6) Les `k` NodeId de plus GRANDE valeur de `property`, rendus en
+    /// ordre ASCENDANT (l'appelant DESC re-trie par le vrai comparateur) ;
+    /// `None` => tri complet.
+    fn derniers_k_ordonnes(&self, _property: &str, _k: usize) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// (NATIF-J6) Nombre de valeurs non-null indexees par ORDRE pour
+    /// `property` (taille de la serie de l'index ordonne par valeur), ou `None`
+    /// si l'index n'est pas bati/fiable. Sert la garde "aucun NULL" de la route
+    /// ORDER BY : compare a `node_count()`, l'egalite prouve que tous les noeuds
+    /// portent la propriete (donc l'ordre ne place aucun NULL dans le top-k).
+    fn nb_valeurs_ordonnees(&self, _property: &str) -> Option<usize> {
+        None
+    }
 
     /// Finds nodes with a substring match on a property, optionally filtered by label.
     ///
@@ -415,15 +813,6 @@ pub trait GraphStore: Send + Sync {
         false
     }
 
-    /// Returns node IDs matching an operator-style filter value on a
-    /// given property (`{$gt: 5}`, `{$in: [..]}`, ...). Used by the
-    /// query engine's server-side filter path.
-    /// Default returns empty — backends without operator-filter support
-    /// should fall back to `node_ids()` + manual scan.
-    fn find_nodes_matching_filter(&self, _property: &str, _filter_value: &Value) -> Vec<NodeId> {
-        Vec::new()
-    }
-
     // --- Zone maps (skip pruning) ---
 
     /// Returns `true` if a node property predicate might match any nodes.
@@ -476,7 +865,128 @@ pub trait GraphStore: Send + Sync {
         Vec::new()
     }
 
+    /// Returns the number of LIVE edges per edge type, or `None` when this
+    /// store cannot count them.
+    ///
+    /// `None` is NOT zero, and the distinction is the whole point. The
+    /// previous census asked the (now dead) `LpgStore` for
+    /// `edges_with_type(t)`, got an empty `Vec`, and reported `count: 0` for
+    /// edge types that had thousands of live edges. Nothing failed; the
+    /// number was simply invented. An agent reading that census concluded it
+    /// had no working way to create edges — while the very same database was
+    /// answering `MATCH ()-[r]->()` with twelve distinct types.
+    ///
+    /// So: a store that does not know must SAY it does not know, and callers
+    /// must render the absence (`?`, `null`) rather than print a zero they
+    /// were never given. One call returns the whole map — asking per type
+    /// would re-walk every edge once per type.
+    fn edge_counts_by_type(&self) -> Option<std::collections::HashMap<String, usize>> {
+        None
+    }
+
+    /// Comptes par type d'arête **tels que le PARCOURS générique les voit** —
+    /// la clé exacte de `MATCH ()-[r]->() RETURN type(r) AS t, count(r) AS c`.
+    ///
+    /// ── POURQUOI `edge_counts_by_type` NE SUFFIT PAS ────────────────────
+    ///
+    /// `edge_counts_by_type` compte une arête dès que son enregistrement n'est
+    /// pas tombstoné et que ses deux extrémités sont non nulles. Ce n'est PAS
+    /// ce que voit `MATCH ()-[r]->()` : l'expansion part des **nœuds vivants**
+    /// (`node_ids()`), donc une arête dont la SOURCE est tombstonée n'est
+    /// jamais atteinte — pendant qu'une arête dont la CIBLE est nulle, elle,
+    /// est bien émise (`edges_from` ne filtre pas la cible).
+    ///
+    /// MESURÉ sur `runtime-dev` figé (1,29 M arêtes), le 2026-09-14 :
+    ///
+    ///   `count(r)` (compteur)                        = 1 158 516
+    ///   somme des groupes PAR LE PARCOURS            = 1 151 146
+    ///   somme des groupes PAR `edge_counts_by_type`  = 1 158 516
+    ///
+    /// Six types divergeaient DANS LES DEUX SENS (`EMITTED_BY` 44 vs 138,
+    /// `EVOLVES` 13 vs 2, `HAS_STATE` 10 050 vs 17 445…). Remplacer le parcours
+    /// par `edge_counts_by_type` aurait donc changé la réponse — le gain ne
+    /// vaut pas un compteur qui se met à dire autre chose que la requête qu'il
+    /// remplace.
+    ///
+    /// ── CE QUE CETTE MÉTHODE FAIT, ET CE QUE ÇA COÛTE ───────────────────
+    ///
+    /// Elle reproduit le parcours à la lettre : une arête compte si son
+    /// enregistrement n'est pas tombstoné ET si son nœud source est vivant (la
+    /// cible n'est PAS regardée — le parcours ne la regarde pas non plus). La
+    /// vivacité est d'abord matérialisée en UN balayage séquentiel de la zone
+    /// nœuds (un bit par emplacement), puis testée par un accès tableau pendant
+    /// la passe arêtes : aucune lecture aléatoire, aucun verrou supplémentaire.
+    /// Le coût mesuré reste celui d'un seul parcours de zone.
+    ///
+    /// `None` = « ce magasin ne sait pas le faire » ; l'appelant repasse alors
+    /// par le plan générique. Même contrat que [`GraphStore::edge_counts_by_type`].
+    fn walked_edge_counts_by_type(&self) -> Option<std::collections::HashMap<String, usize>> {
+        None
+    }
+
+    /// Compte les nœuds VIVANTS par PREMIER label — la clé exacte de
+    /// `RETURN labels(n)[0] AS l, count(n) AS c`, en UN SEUL balayage.
+    ///
+    /// ── POURQUOI CETTE MÉTHODE EXISTE, À CÔTÉ DE `node_count_by_label` ──
+    ///
+    /// `node_count_by_label` compte les nœuds **qui portent** le label. La
+    /// requête d'agrégat compte chaque nœud **UNE fois**, sous son PREMIER
+    /// label. Les deux questions ne coïncident que si aucun nœud ne porte deux
+    /// labels — ce qui est FAUX : mesuré le 2026-09-14 sur `runtime-dev`,
+    /// 15 nœuds portent `[Task, Node]` (14) ou `[Step, Task]` (1).
+    ///
+    /// Somme des `node_count_by_label` = 422 831 ; `count(n)` = 422 816. Les
+    /// 15 nœuds à deux labels seraient comptés DEUX fois, et le total des
+    /// groupes dépasserait le total des nœuds. Un `label → count` bâti sur
+    /// `node_count_by_label` est donc un agrégat FAUX, pas seulement imprécis.
+    ///
+    /// La clé ici est celle du moteur : le premier bit ALLUMÉ QUI A UN NOM dans
+    /// le registre — c'est exactement ce que rend `labels_for_bitset(...)[0]`,
+    /// donc `labels(n)[0]`. Un nœud sans label rend `None`, qui est la clé
+    /// `null` du group-by ; l'absence de label n'est pas l'absence de réponse,
+    /// et les deux ne se confondent pas avec « ce magasin ne sait pas ».
+    ///
+    /// `None` (défaut) = « ce magasin ne sait pas le faire » : l'appelant
+    /// renonce au raccourci et repasse par le balayage générique. Même contrat
+    /// que [`GraphStore::edge_counts_by_type`] : `None` n'est pas « zéro ».
+    fn node_counts_by_first_label(&self) -> Option<Vec<(Option<String>, usize)>> {
+        None
+    }
+
     // --- Visibility checks (fast path, avoids building full entities) ---
+
+    /// Vrai quand des écritures transactionnelles NON COMMITÉES sont en
+    /// attente dans ce store — c'est-à-dire quand « combien de nœuds ? »
+    /// n'a plus une réponse unique : elle dépend du lecteur.
+    ///
+    /// Les raccourcis qui répondent par un COMPTEUR GLOBAL (`node_count`,
+    /// `node_count_by_label`, `edge_count`) doivent se désarmer tant que
+    /// cette méthode rend vrai, et repasser par un balayage filtré : le
+    /// compteur inclut les écritures en attente de TOUTES les transactions,
+    /// alors que chaque lecteur ne doit voir que les siennes. Défaut mesuré
+    /// (gql_13) : le compte annonçait deux nœuds quand le balayage n'en
+    /// rendait qu'un.
+    ///
+    /// Le défaut (`false`) convient aux stores sans notion d'écriture en
+    /// attente : tout y est commité à l'instant où c'est écrit.
+    fn has_pending_writes(&self) -> bool {
+        false
+    }
+
+    /// (NATIF-J8) L'index ORDONNE PAR VALEUR (`substrate.props.ord.idx.v2`)
+    /// reflete-t-il TOUT l'etat committe COURANT ? Confrontation FRAICHE des
+    /// ancres (offset WAL + pages v2 posees a la derniere fusion) contre l'etat
+    /// present, en LECTURE seule. `true` autorise la route `ORDER BY LIMIT k` /
+    /// `min`/`max` a servir l'index sans risque de ligne commitee manquante ou
+    /// disparue ; `false` des qu'une ecriture (meme auto-commit, qui n'arme pas
+    /// `has_pending_writes`) a suivi la derniere fusion — la route doit alors
+    /// balayer, lent mais jamais faux.
+    ///
+    /// Defaut `false` : seuls les backends portant cet index (substrate) le
+    /// surchargent ; ailleurs la route ordonnee ne s'engage pas de toute facon.
+    fn index_ord_valeur_couvre_courant(&self) -> bool {
+        false
+    }
 
     /// Checks if a node is visible at the given epoch without building the full Node.
     ///
@@ -571,10 +1081,44 @@ pub trait GraphStore: Send + Sync {
 /// replicas) can implement only `GraphStore`. Any mutable store is also
 /// readable via the supertrait bound.
 pub trait GraphStoreMut: GraphStore {
+    /// (2026-09-05) Verrou de sérialisation du composé MERGE
+    /// find→create→re-query (unicité sous sessions concurrentes). Défaut :
+    /// pas de verrou ; les impls concernées (WalGraphStore par db) renvoient
+    /// un mutex PAR STORE. Object-safe (pas de générique).
+    fn merge_guard(&self) -> Option<std::sync::Arc<std::sync::Mutex<()>>> {
+        None
+    }
+
     // --- Node creation ---
 
     /// Creates a new node with the given labels.
     fn create_node(&self, labels: &[&str]) -> NodeId;
+
+    /// Les étiquettes demandées peuvent-elles être portées par un nœud NEUF ?
+    ///
+    /// ── POURQUOI CE CONTRÔLE EXISTE, ET POURQUOI IL EST SÉPARÉ ───────────────
+    /// `create_node` est INFAILLIBLE par contrat (des centaines d'appelants) :
+    /// le substrat ne peut donc pas lui rendre une erreur. Or il existe une
+    /// limite RÉELLE — le `label_bitset` d'un `NodeRecord` fait 64 bits, donc
+    /// 64 étiquettes distinctes par base — et dépasser cette limite faisait
+    /// **abandonner le processus** (`.expect("label registry overflow (>64
+    /// labels)")`). Une requête — ou un agent avec droit d'écriture — pouvait
+    /// donc tuer le démon.
+    ///
+    /// Ce contrôle est ADDITIF et FACULTATIF (défaut : « oui ») pour deux
+    /// raisons : il ne change pas une signature que tout le dépôt utilise, et il
+    /// ne prétend pas remplacer la garde profonde (le substrat continue de
+    /// refuser l'internement). Il donne à l'appelant qui PEUT rendre une erreur
+    /// (l'exécuteur de requête) le moyen de refuser PROPREMENT au lieu de
+    /// mourir.
+    ///
+    /// # Errors
+    ///
+    /// Une chaîne EXPLICATIVE quand les étiquettes ne pourraient pas être
+    /// internées (le message est destiné à l'utilisateur, pas au journal).
+    fn valider_etiquettes(&self, _labels: &[&str]) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Creates a new node within a transaction context.
     fn create_node_versioned(
@@ -601,6 +1145,32 @@ pub trait GraphStoreMut: GraphStore {
 
     /// Creates multiple edges in batch (single lock acquisition).
     fn batch_create_edges(&self, edges: &[(NodeId, NodeId, &str)]) -> Vec<EdgeId>;
+
+    // --- Aretes inter-bases (V1) ---
+
+    /// Cree une arete EXTERNE `src -[edge_type]-> (to_host, to_store,
+    /// to_key)`, stockee dans CE store (le store SOURCE — une seule WAL,
+    /// atomicite mono-store, spec paragraphe 1). `to_host = None` = hote local.
+    /// Rend `None` quand le backend ne materialise pas le registre :
+    /// l'appelant en fait une erreur enseignante, jamais un silence.
+    fn create_external_edge(
+        &self,
+        src: NodeId,
+        edge_type: &str,
+        to_host: Option<&str>,
+        to_store: &str,
+        to_key: &str,
+    ) -> Option<EdgeId> {
+        let _ = (src, edge_type, to_host, to_store, to_key);
+        None
+    }
+
+    /// Supprime une arete externe par id (bit haut
+    /// [`EXTERNAL_EDGE_ID_BIT`]). Rend `false` si inconnue.
+    fn delete_external_edge(&self, id: EdgeId) -> bool {
+        let _ = id;
+        false
+    }
 
     // --- Deletion ---
 
@@ -866,10 +1436,50 @@ pub trait GraphStoreMut: GraphStore {
         None
     }
 
+    /// Whether this backend implements named graphs AT ALL.
+    ///
+    /// (2026-08-13) Ce predicat existe parce que `create_named_graph`
+    /// confond deux choses depuis le 23 avril. Son defaut rend `Ok(false)`
+    /// pour dire « je ne sais pas faire », et l'appelant lit `false` comme
+    /// « il existe deja » — d'ou 150+ tests qui echouent sur un
+    /// « Graph 'alpha' already exists » leve contre une base VIERGE.
+    ///
+    /// L'enchainement est date : d77bba75 ajoute ce defaut en affirmant
+    /// « LpgStore overrides each via a thin delegation, so the legacy
+    /// semantics remain intact » ; 6d030291, le MEME JOUR, supprime
+    /// `lpg/store/` et donc les overrides en question ; 7a96ace9 bascule
+    /// `new_in_memory()` sur substrat et expose le defaut a tous les tests.
+    /// Un defaut poli a survecu a la seule implementation qui le rendait
+    /// vrai.
+    ///
+    /// Le trait se contredisait d'ailleurs lui-meme : `copy_named_graph`
+    /// rend deja `Err("named graphs are not supported by this backend")`.
+    /// On aligne le reste sur cette franchise-la.
+    fn supports_named_graphs(&self) -> bool {
+        false
+    }
+
+    /// Identité de SCOPE pour la détection de conflits write-write
+    /// multi-graphes (RFC multi-writer B1, 2026-09-06).
+    ///
+    /// Deux stores substrate distincts allouent chacun leurs NodeId à partir
+    /// de 1 : sans scope, le write_set GLOBAL du TransactionManager croit que
+    /// `NodeId(1)` du graphe g1 et `NodeId(1)` du graphe g2 sont la MÊME
+    /// entité → faux conflits inter-graphes (mesuré : 75 % d'échec sur des
+    /// transactions longues disjointes). Le scope distingue les espaces
+    /// d'identités. Défaut = 0 (mono-graphe / backends non partitionnés :
+    /// comportement inchangé). Object-safe, pas de générique.
+    fn graph_scope(&self) -> u64 {
+        0
+    }
+
     /// Creates a named graph. Returns `Ok(true)` on success, `Ok(false)`
-    /// if it already exists. The default implementation returns
-    /// `Ok(false)` — backends without named-graph support treat every
-    /// name as a no-op.
+    /// if it already exists.
+    ///
+    /// ATTENTION : `Ok(false)` signifie EXISTE DEJA, et rien d'autre. Un
+    /// backend qui ne sait pas faire de graphes nommes doit le declarer
+    /// via `supports_named_graphs()` — l'appelant interroge ce predicat
+    /// AVANT d'interpreter le booleen.
     fn create_named_graph(&self, _name: &str) -> Result<bool, AllocError> {
         Ok(false)
     }
