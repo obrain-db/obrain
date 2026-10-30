@@ -58,7 +58,10 @@ fn exists_sous_or_rend_le_bon_resultat() {
         "MATCH (s:Session) WHERE (s.origin IS NULL OR s.origin <> 'subagent' \
          OR EXISTS { MATCH (:Message)-[:PART_OF]->(s) }) RETURN count(*) AS c",
     );
-    assert_eq!(got, 2, "OR-EXISTS = union dédupliquée (racine + subagent-avec-message)");
+    assert_eq!(
+        got, 2,
+        "OR-EXISTS = union dédupliquée (racine + subagent-avec-message)"
+    );
 }
 
 #[test]

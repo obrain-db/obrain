@@ -19,8 +19,8 @@ use obrain_common::types::NodeId;
 use serde::{Deserialize, Serialize};
 
 use super::hopfield::{self, MmrResult, PatternMatrix};
-use super::spectral::SpectralEncoder;
 use super::position::{PosError, PosIndex, PositionProvider};
+use super::spectral::SpectralEncoder;
 use super::store::EngramStore;
 use super::traits::VectorIndex;
 use super::types::{Engram, EngramId};
@@ -376,8 +376,8 @@ impl RecallEngine {
             .into_iter()
             .filter_map(|(engram_id, s)| {
                 let engram = store.get(engram_id)?;
-                let confidence = (w_direct * s[0] + w_spectral * s[1] + w_position * s[2])
-                    .clamp(0.0, 1.0);
+                let confidence =
+                    (w_direct * s[0] + w_spectral * s[1] + w_position * s[2]).clamp(0.0, 1.0);
                 Some(RecallResult {
                     engram_id,
                     confidence,

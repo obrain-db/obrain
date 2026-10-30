@@ -86,7 +86,10 @@ impl<'a> Parser<'a> {
         if self.peeked.is_none() {
             self.peeked = Some(self.lexer.next_token());
         }
-        self.peeked.as_ref().map(|t| t.text.clone()).unwrap_or_default()
+        self.peeked
+            .as_ref()
+            .map(|t| t.text.clone())
+            .unwrap_or_default()
     }
 
     /// (V4) Resout un alias de base declare par USING BASE — erreur
@@ -1941,8 +1944,7 @@ impl<'a> Parser<'a> {
         {
             self.advance();
             Some(self.parse_string_value()?)
-        } else if self.current.kind == TokenKind::In && self.peek_kind() == TokenKind::Identifier
-        {
+        } else if self.current.kind == TokenKind::In && self.peek_kind() == TokenKind::Identifier {
             // (V4) `IN alias` — l'alias vient du preambule USING BASE.
             self.advance();
             let a = self.get_identifier_name();

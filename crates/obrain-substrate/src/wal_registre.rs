@@ -218,8 +218,10 @@ impl RegistreAppend {
         // fonction). Si un pair est en vol, sa réservation est donc PRÉSERVÉE :
         // `tete_reservee > fin_publiee` est exactement ce qui dit « la chaîne
         // n'est pas quiescente », et le premier append attendra sa publication.
-        reg.mot(OFF_TETE_RESERVEE).fetch_max(fin_initiale, Ordering::AcqRel);
-        reg.mot(OFF_FIN_PUBLIEE).fetch_max(fin_initiale, Ordering::AcqRel);
+        reg.mot(OFF_TETE_RESERVEE)
+            .fetch_max(fin_initiale, Ordering::AcqRel);
+        reg.mot(OFF_FIN_PUBLIEE)
+            .fetch_max(fin_initiale, Ordering::AcqRel);
         Ok(reg)
     }
 
@@ -300,12 +302,15 @@ impl RegistreAppend {
         // mappé). La GÉNÉRATION, elle, n'est JAMAIS remise à zéro : un pair a pu
         // l'incrémenter (troncature), et l'écraser ferait rater l'annonce à un
         // troisième processus — qui conclurait que rien n'a bougé.
-        self.mot(OFF_TETE_RESERVEE).fetch_max(fin_initiale, Ordering::AcqRel);
-        self.mot(OFF_FIN_PUBLIEE).fetch_max(fin_initiale, Ordering::AcqRel);
+        self.mot(OFF_TETE_RESERVEE)
+            .fetch_max(fin_initiale, Ordering::AcqRel);
+        self.mot(OFF_FIN_PUBLIEE)
+            .fetch_max(fin_initiale, Ordering::AcqRel);
         self.mot(OFF_ANCRE).fetch_max(ancre, Ordering::AcqRel);
         // La MAGIE en DERNIER (`Release`) : aucun pair ne peut voir un registre
         // à demi initialisé comme valide.
-        self.mot(OFF_VERSION).store(VERSION_LAYOUT, Ordering::Release);
+        self.mot(OFF_VERSION)
+            .store(VERSION_LAYOUT, Ordering::Release);
         self.mot(OFF_MAGIE).store(MAGIE, Ordering::Release);
     }
 }

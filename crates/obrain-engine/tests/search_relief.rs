@@ -8,8 +8,8 @@
 //! (contradiction → pénalité). H doit dominer le relief ; C doit porter une
 //! dimension `conflict > 0` et un relief inférieur.
 
-use web_time::SystemTime;
 use std::time::Duration;
+use web_time::SystemTime;
 
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
@@ -22,7 +22,11 @@ fn now_ms() -> u64 {
 }
 
 fn edge(db: &ObrainDB, a: u64, b: u64, t: &str) {
-    db.create_edge(obrain_common::types::NodeId(a), obrain_common::types::NodeId(b), t);
+    db.create_edge(
+        obrain_common::types::NodeId(a),
+        obrain_common::types::NodeId(b),
+        t,
+    );
 }
 
 #[test]
@@ -42,17 +46,29 @@ fn relief_domine_le_nouveau_hub_et_penalise_la_contradiction() {
         edge(&db, *leaf, dummies[0], "T");
     }
     let claim = db.create_node(&["Claim"]).0;
-    db.set_node_property(obrain_common::types::NodeId(claim), "epistemic", Value::String("OBSERVED".into()));
+    db.set_node_property(
+        obrain_common::types::NodeId(claim),
+        "epistemic",
+        Value::String("OBSERVED".into()),
+    );
     // Pré-valeur 0 posée AVANT la fenêtre (motif du test search_conflicts :
     // les reversals sont détectés sur les changements 1,2,1,2,1).
-    db.set_node_property(obrain_common::types::NodeId(claim), "state", Value::Int64(0));
+    db.set_node_property(
+        obrain_common::types::NodeId(claim),
+        "state",
+        Value::Int64(0),
+    );
 
     std::thread::sleep(Duration::from_millis(3));
     let since = now_ms();
 
     // Fenêtre : (a) contradiction A→B→A… sur le claim ; (b) rafale sur le hub.
     for v in [1i64, 2, 1, 2, 1] {
-        db.set_node_property(obrain_common::types::NodeId(claim), "state", Value::Int64(v));
+        db.set_node_property(
+            obrain_common::types::NodeId(claim),
+            "state",
+            Value::Int64(v),
+        );
     }
     // Séparation temporelle : la rafale du hub arrive APRÈS les flips du claim
     // (sinon span ≈ 0 → la dimension fraîcheur est dégénérée).
@@ -74,7 +90,11 @@ fn relief_domine_le_nouveau_hub_et_penalise_la_contradiction() {
     assert_eq!(rows[0].node_id, hub, "hub en tête du relief");
     let h = &rows[0];
     assert!(h.novelty > 0.0, "hub: nouveauté > 0 ({})", h.novelty);
-    assert!(h.recency >= 1.0 - 1e-9, "hub: fraîcheur max ({})", h.recency);
+    assert!(
+        h.recency >= 1.0 - 1e-9,
+        "hub: fraîcheur max ({})",
+        h.recency
+    );
     // DIAGNOSTIC : la même fenêtre vue par search_conflicts (méthode moteur).
     let conf = db.search_conflicts(since, 100).expect("conflicts(méthode)");
     assert!(
@@ -86,7 +106,11 @@ fn relief_domine_le_nouveau_hub_et_penalise_la_contradiction() {
         .iter()
         .find(|r| r.node_id == claim)
         .expect("claim actif");
-    assert!(c.conflict > 0.0, "claim: contradiction détectée ({})", c.conflict);
+    assert!(
+        c.conflict > 0.0,
+        "claim: contradiction détectée ({})",
+        c.conflict
+    );
     assert!(
         h.relief > c.relief,
         "relief(hub) {} > relief(claim contradictoire) {}",

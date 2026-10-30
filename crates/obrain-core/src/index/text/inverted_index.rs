@@ -357,8 +357,8 @@ impl InvertedIndex {
                     // flottantes) à la version d'origine : les tests d'égalité
                     // exacte des scores (persistance, top-k) restent bit-à-bit.
                     let tf_component = (tf * (self.config.k1 + 1.0))
-                        / (tf + self.config.k1
-                            * (1.0 - self.config.b + self.config.b * dl / avg_dl));
+                        / (tf
+                            + self.config.k1 * (1.0 - self.config.b + self.config.b * dl / avg_dl));
 
                     let idx = posting.doc_id as usize;
                     // Journal du PREMIER contact : chaque contribution BM25 est
@@ -756,25 +756,19 @@ mod tests {
                             let tf = f64::from(p.term_freq);
                             let dl = f64::from(p.doc_len);
                             let tc = (tf * (index.config.k1 + 1.0))
-                                / (tf + index.config.k1
-                                    * (1.0 - index.config.b
-                                        + index.config.b * dl / avg));
+                                / (tf
+                                    + index.config.k1
+                                        * (1.0 - index.config.b + index.config.b * dl / avg));
                             let node_id = index.doc_ids[p.doc_id as usize];
                             *scores.entry(node_id).or_insert(0.0) += idf * tc;
                         }
                     }
                     manual = scores.into_iter().collect();
                 }
-                manual.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                manual.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 manual.truncate(k);
 
-                assert_eq!(
-                    opt.len(),
-                    manual.len(),
-                    "même taille top-{k} pour «{q}»"
-                );
+                assert_eq!(opt.len(), manual.len(), "même taille top-{k} pour «{q}»");
                 // Comparaison des scores triés (l'ordre des ex-aequo n'est
                 // pas contractuel) : mêmes scores aux mêmes rangs.
                 let mut os: Vec<f64> = opt.iter().map(|x| x.1).collect();
@@ -839,8 +833,8 @@ mod tests {
                     let tf = f64::from(p.term_freq);
                     let dl = f64::from(p.doc_len);
                     let tc = (tf * (index.config.k1 + 1.0))
-                        / (tf + index.config.k1
-                            * (1.0 - index.config.b + index.config.b * dl / avg));
+                        / (tf
+                            + index.config.k1 * (1.0 - index.config.b + index.config.b * dl / avg));
                     all.push((index.doc_ids[p.doc_id as usize], idf * tc));
                 }
             }
@@ -882,7 +876,10 @@ mod tests {
         let n = 20_000u64;
         let mut index = InvertedIndex::new(BM25Config::default());
         for i in 0..n {
-            index.insert(NodeId::new(i), &format!("tokens common document number {i}"));
+            index.insert(
+                NodeId::new(i),
+                &format!("tokens common document number {i}"),
+            );
         }
 
         // Correctitude : « tokens » est dans TOUS les documents.
@@ -949,7 +946,11 @@ mod tests_export_import {
         );
 
         assert_eq!(reconstruit.len(), original.len(), "mêmes documents");
-        assert_eq!(reconstruit.term_count(), original.term_count(), "mêmes termes");
+        assert_eq!(
+            reconstruit.term_count(),
+            original.term_count(),
+            "mêmes termes"
+        );
         assert_eq!(reconstruit.doc_count(), original.doc_count());
 
         for requete in ["graph", "database rust", "web", "framework", "inexistant"] {
@@ -974,10 +975,8 @@ mod tests_export_import {
     /// partage plus son vocabulaire — et répondrait sans rien signaler.
     #[test]
     fn l_identite_distingue_les_reglages_et_la_config() {
-        let a = InvertedIndex::with_tokenizer(
-            BM25Config::default(),
-            Box::new(SimpleTokenizer::new()),
-        );
+        let a =
+            InvertedIndex::with_tokenizer(BM25Config::default(), Box::new(SimpleTokenizer::new()));
         let b = InvertedIndex::with_tokenizer(
             BM25Config::default(),
             Box::new(SimpleTokenizer::with_min_length(4)),
@@ -999,10 +998,8 @@ mod tests_export_import {
         );
 
         // Et elle est STABLE : la même construction donne la même identité.
-        let d = InvertedIndex::with_tokenizer(
-            BM25Config::default(),
-            Box::new(SimpleTokenizer::new()),
-        );
+        let d =
+            InvertedIndex::with_tokenizer(BM25Config::default(), Box::new(SimpleTokenizer::new()));
         assert_eq!(a.identite(), d.identite());
         assert!(
             a.identite().contains("min_length=2"),

@@ -76,8 +76,7 @@ fn bench_traversee_inter_store_vs_intra_store() {
     }
 
     let q_traverse = "MATCH (a:Note)-[:DOCUMENTS]->(b) RETURN count(b)";
-    let q_filtre =
-        "MATCH (a:Note)-[:DOCUMENTS]->(b) WHERE b.titre = 'T42' RETURN a.name, b.titre";
+    let q_filtre = "MATCH (a:Note)-[:DOCUMENTS]->(b) WHERE b.titre = 'T42' RETURN a.name, b.titre";
 
     // Verification de correction avant la mesure.
     let si = intra.session();

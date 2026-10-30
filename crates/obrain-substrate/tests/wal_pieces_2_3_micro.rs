@@ -108,7 +108,10 @@ fn mesure_piece_2_vec_du_lot_unitaire() {
         "PIÈCE 2 (Vec du lot de 1) : {collect:>6.1} ns/rec supprimés — c'est le poste que \
          `append_encoded(&rec)` ne paie plus"
     );
-    assert!(collect < 200.0, "un collect d'un élément doit rester sous 200 ns");
+    assert!(
+        collect < 200.0,
+        "un collect d'un élément doit rester sous 200 ns"
+    );
 }
 
 #[test]
@@ -116,7 +119,11 @@ fn mesure_piece_3_crc() {
     // Les trois tailles qui comptent : un record de propriété courant (~90 o avec
     // l'en-tête), une petite page (~1 Kio), un gros payload (~64 Kio).
     for taille_payload in [62usize, 1000, 65_000] {
-        let n = if taille_payload > 10_000 { 20_000 } else { 200_000 } as u64;
+        let n = if taille_payload > 10_000 {
+            20_000
+        } else {
+            200_000
+        } as u64;
         let mut frame = vec![0u8; 24 + taille_payload];
         for (i, b) in frame.iter_mut().enumerate() {
             *b = (i % 251) as u8;

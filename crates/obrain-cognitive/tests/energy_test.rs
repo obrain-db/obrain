@@ -6,8 +6,8 @@ use obrain_cognitive::{EnergyConfig, EnergyListener, EnergyStore, NodeEnergy};
 use obrain_common::types::NodeId;
 use obrain_reactive::{MutationBus, MutationEvent, MutationListener, NodeSnapshot};
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 // ---------------------------------------------------------------------------
 // NodeEnergy decay tests

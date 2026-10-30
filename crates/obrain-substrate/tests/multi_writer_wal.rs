@@ -98,7 +98,10 @@ fn append_multithread_ordre_physique_egal_ordre_lsn_zero_perte() {
     );
 
     let (n, croissant, derive, uniques) = auditer(&wal_path);
-    assert_eq!(n, total as usize, "zéro perte : tous les appends sont relus");
+    assert_eq!(
+        n, total as usize,
+        "zéro perte : tous les appends sont relus"
+    );
     assert!(
         croissant,
         "l'ORDRE PHYSIQUE est l'ORDRE LSN : les LSN croissent le long du fichier"

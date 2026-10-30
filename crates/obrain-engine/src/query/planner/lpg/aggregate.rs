@@ -1047,12 +1047,10 @@ impl super::Planner {
                         name,
                         args,
                         distinct: false,
-                    } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => {
-                        match &args[0] {
-                            LogicalExpression::Variable(v) => v.as_str(),
-                            _ => return None,
-                        }
-                    }
+                    } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => match &args[0] {
+                        LogicalExpression::Variable(v) => v.as_str(),
+                        _ => return None,
+                    },
                     _ => return None,
                 };
                 (false, v)
@@ -1094,8 +1092,11 @@ impl super::Planner {
             if scan.label.is_some() || scan.input.is_some() {
                 return None;
             }
-            let mut par_type: Vec<(String, usize)> =
-                self.store.walked_edge_counts_by_type()?.into_iter().collect();
+            let mut par_type: Vec<(String, usize)> = self
+                .store
+                .walked_edge_counts_by_type()?
+                .into_iter()
+                .collect();
             // Ordre rendu DÉTERMINÉ (clé croissante). Le chemin générique, lui,
             // itère une `HashMap` : son ordre est arbitraire. Un `ORDER BY` vit
             // au-dessus dans toutes les requêtes de ce raccourci ; là où il n'y
@@ -1224,7 +1225,6 @@ impl Operator for GroupedCountsOperator {
     fn name(&self) -> &'static str {
         "GroupedCounts"
     }
-
 }
 
 /// Le raccourci de comptage d'arêtes est-il seulement envisageable sur ce

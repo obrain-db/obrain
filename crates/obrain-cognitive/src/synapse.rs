@@ -13,8 +13,8 @@ use obrain_reactive::{MutationEvent, MutationListener};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use crate::store_trait::{
     OptionalGraphStore, PROP_SYNAPSE_LAST_REINFORCED_EPOCH, PROP_SYNAPSE_REINFORCEMENT_COUNT,
@@ -1176,7 +1176,8 @@ impl SynapseStore {
         if let (Some(sub), Some(gs)) = (self.substrate.as_ref(), self.graph_store.as_ref()) {
             use obrain_core::graph::Direction;
             let now = Instant::now();
-            let mut map: std::collections::HashMap<SynapseKey, Synapse> =                std::collections::HashMap::new();
+            let mut map: std::collections::HashMap<SynapseKey, Synapse> =
+                std::collections::HashMap::new();
             for dir in [Direction::Outgoing, Direction::Incoming] {
                 for (other, eid) in gs.edges_from(node_id, dir) {
                     if other == node_id {
@@ -1271,7 +1272,10 @@ impl SynapseStore {
                         } else {
                             NodeId(r.src as u64)
                         };
-                        f(neighbor, (r.weight_f32() as f64) * self.config.max_synapse_weight);
+                        f(
+                            neighbor,
+                            (r.weight_f32() as f64) * self.config.max_synapse_weight,
+                        );
                     }
                 }
             }
@@ -1355,7 +1359,7 @@ impl SynapseStore {
                 };
                 if etype.as_str() != SYNAPSE_EDGE_TYPE {
                     continue;
-                }                // Canonical (min, max) key — skip the mirror iteration.
+                } // Canonical (min, max) key — skip the mirror iteration.
                 let key = SynapseKey::new(nid, target);
                 if key.0 != nid {
                     continue;
@@ -2017,7 +2021,11 @@ mod substrate_tests {
             "le boot réhydrate la mémoire chaude (2026-08-31) — sans quoi cette épreuve ne prouve rien"
         );
         store2.synapses.clear();
-        assert_eq!(store2.synapses.len(), 0, "mémoire chaude vidée POUR l'épreuve");
+        assert_eq!(
+            store2.synapses.len(),
+            0,
+            "mémoire chaude vidée POUR l'épreuve"
+        );
         assert_eq!(store2.len(), 1, "native len() sees the column directly");
         // `load_from_graph` RECHARGE ce qui manque : depuis le boot (2026-08-31),
         // la colonne a déjà été lue à la construction, donc le compte n'est plus
@@ -2030,7 +2038,11 @@ mod substrate_tests {
             loaded <= 1,
             "la passe ne peut pas ajouter plus que la seule synapse existante (obtenu {loaded})"
         );
-        assert_eq!(store2.len(), 1, "le rechargement ne duplique pas la synapse");
+        assert_eq!(
+            store2.len(),
+            1,
+            "le rechargement ne duplique pas la synapse"
+        );
         let syn = store2
             .get_synapse(ids[0], ids[1])
             .expect("synapse visible after load_from_graph");

@@ -29,7 +29,11 @@ fn vue_arete_zone_egale_valeur_possedee() {
     let a = s.create_node(&["Fait"]);
     let b = s.create_node(&["Fait"]);
     let e = s.create_edge(a, b, "CITE");
-    s.set_edge_property(e, "contexte", Value::String("cité pendant le seeding".into()));
+    s.set_edge_property(
+        e,
+        "contexte",
+        Value::String("cité pendant le seeding".into()),
+    );
 
     let vue = s.edge_prop_str_view(e, "contexte").expect("vue présente");
     assert_eq!(&*vue, "cité pendant le seeding");
@@ -78,7 +82,10 @@ fn arete_lww_tombstone_et_arete_morte() {
     let e = s.create_edge(a, b, "CITE");
     s.set_edge_property(e, "contexte", Value::String("v1".into()));
     s.set_edge_property(e, "contexte", Value::String("v2 — corrigée".into()));
-    assert_eq!(&*s.edge_prop_str_view(e, "contexte").unwrap(), "v2 — corrigée");
+    assert_eq!(
+        &*s.edge_prop_str_view(e, "contexte").unwrap(),
+        "v2 — corrigée"
+    );
 
     // Tombstone : la propriété retirée est invisible à la vue.
     s.remove_edge_property(e, "contexte");
@@ -204,7 +211,10 @@ fn balayage_egal_boucle_par_noeud() {
         })
         .unwrap();
     assert_eq!(servies, reference.len() as u64);
-    assert_eq!(vus, reference, "le balayage dit EXACTEMENT ce que dit la boucle par nœud");
+    assert_eq!(
+        vus, reference,
+        "le balayage dit EXACTEMENT ce que dit la boucle par nœud"
+    );
 }
 
 #[test]
@@ -220,7 +230,10 @@ fn balayage_filtre_par_label() {
     assert_eq!(servies, 50, "40 zone + 10 blob, sans les `Autre`");
     for (id, texte) in &vus {
         assert_eq!(reference.get(id), Some(texte));
-        assert!(!texte.starts_with("autre"), "le filtre exclut l'autre label");
+        assert!(
+            !texte.starts_with("autre"),
+            "le filtre exclut l'autre label"
+        );
     }
     // Label jamais interné : zéro nœud, zéro appel.
     let servies = s

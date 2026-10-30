@@ -102,8 +102,14 @@ impl SynapseIncidenceZone {
             return Ok(None);
         }
         let s = &zf.as_slice()[off..off + INCIDENCE_ENTRY_SIZE];
-        let head = U48::from_u64(u64::from_le_bytes([s[0],s[1],s[2],s[3],s[4],s[5],0,0])).to_u64();
-        let tail = U48::from_u64(u64::from_le_bytes([s[6],s[7],s[8],s[9],s[10],s[11],0,0])).to_u64();
+        let head = U48::from_u64(u64::from_le_bytes([
+            s[0], s[1], s[2], s[3], s[4], s[5], 0, 0,
+        ]))
+        .to_u64();
+        let tail = U48::from_u64(u64::from_le_bytes([
+            s[6], s[7], s[8], s[9], s[10], s[11], 0, 0,
+        ]))
+        .to_u64();
         let count = u32::from_le_bytes(s[12..16].try_into().unwrap());
         if head == 0 && count == 0 {
             return Ok(None);
@@ -275,8 +281,14 @@ impl SynapseIncidenceZone {
             let mut off = INCIDENCE_HEADER_SIZE;
             while off + INCIDENCE_ENTRY_SIZE <= len {
                 let s = &inc.as_slice()[off..off + INCIDENCE_ENTRY_SIZE];
-                let head = U48::from_u64(u64::from_le_bytes([s[0],s[1],s[2],s[3],s[4],s[5],0,0])).to_u64();
-                let tail = U48::from_u64(u64::from_le_bytes([s[6],s[7],s[8],s[9],s[10],s[11],0,0])).to_u64();
+                let head = U48::from_u64(u64::from_le_bytes([
+                    s[0], s[1], s[2], s[3], s[4], s[5], 0, 0,
+                ]))
+                .to_u64();
+                let tail = U48::from_u64(u64::from_le_bytes([
+                    s[6], s[7], s[8], s[9], s[10], s[11], 0, 0,
+                ]))
+                .to_u64();
                 let count = u32::from_le_bytes(s[12..16].try_into().unwrap());
                 if head != 0 || count != 0 {
                     let mut postings = Vec::with_capacity(count as usize);
@@ -333,8 +345,12 @@ mod tests {
     fn setup() -> (tempfile::TempDir, ZoneFile, ZoneFile) {
         let td = tempfile::tempdir().expect("tempdir");
         let sub = SubstrateFile::create(td.path()).expect("create");
-        let inc = sub.open_named_zone(SYNAPSE_INCIDENCE_FILENAME).expect("inc");
-        let posts = sub.open_named_zone(SYNAPSE_POSTINGS_FILENAME).expect("posts");
+        let inc = sub
+            .open_named_zone(SYNAPSE_INCIDENCE_FILENAME)
+            .expect("inc");
+        let posts = sub
+            .open_named_zone(SYNAPSE_POSTINGS_FILENAME)
+            .expect("posts");
         (td, inc, posts)
     }
 
@@ -353,9 +369,11 @@ mod tests {
             assert_eq!(got[0], node as u64 * 100);
             assert_eq!(got[9], node as u64 * 100 + 9);
         }
-        assert!(SynapseIncidenceZone::postings(&inc, &posts, 99)
-            .expect("absent")
-            .is_empty());
+        assert!(
+            SynapseIncidenceZone::postings(&inc, &posts, 99)
+                .expect("absent")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -366,7 +384,11 @@ mod tests {
             SynapseIncidenceZone::append(&mut inc, &mut posts, 7, eid).expect("append");
         }
         let got = SynapseIncidenceZone::postings(&inc, &posts, 7).expect("postings");
-        assert_eq!(got, (0..10u64).collect::<Vec<_>>(), "chaîne multi-blocs intacte");
+        assert_eq!(
+            got,
+            (0..10u64).collect::<Vec<_>>(),
+            "chaîne multi-blocs intacte"
+        );
     }
 
     #[test]

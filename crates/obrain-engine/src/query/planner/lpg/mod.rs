@@ -35,9 +35,8 @@ use obrain_core::execution::operators::{
     CreateEdgeOperator, CreateNodeOperator, DeleteEdgeOperator, DeleteNodeOperator, EmptyOperator,
     EntityKind, ExecutionPathMode, ExpandOperator, ExpandStep, ExpressionPredicate,
     FactorizedAggregate, FactorizedAggregateOperator, FilterExpression, FilterOperator,
-    HashAggregateOperator, HashJoinOperator, HorizontalAggregateOperator,
-    IndexSeekJoinOperator, JoinType as PhysicalJoinType, LazyFactorizedChainOperator,
-    LeapfrogJoinOperator,
+    HashAggregateOperator, HashJoinOperator, HorizontalAggregateOperator, IndexSeekJoinOperator,
+    JoinType as PhysicalJoinType, LazyFactorizedChainOperator, LeapfrogJoinOperator,
     LoadDataOperator, MapCollectOperator, MergeConfig, MergeOperator, MergeRelationshipConfig,
     MergeRelationshipOperator, NestedLoopJoinOperator, NodeListOperator, NullOrder, Operator,
     ParameterScanOperator, ProjectExpr, ProjectOperator, PropertySource, RemoveLabelOperator,
@@ -246,10 +245,7 @@ impl Planner {
     /// [`Self::with_cognitive_engine`]; a planner built without it simply
     /// reports "requires a substrate-backed database" for those procedures.
     #[must_use]
-    pub fn with_substrate_store(
-        mut self,
-        store: Arc<obrain_substrate::SubstrateStore>,
-    ) -> Self {
+    pub fn with_substrate_store(mut self, store: Arc<obrain_substrate::SubstrateStore>) -> Self {
         self.substrate_store = Some(store);
         self
     }
@@ -668,9 +664,7 @@ impl Planner {
             LogicalOperator::Distinct(distinct) => self.plan_distinct(distinct),
             LogicalOperator::CreateNode(create) => self.plan_create_node(create),
             LogicalOperator::CreateEdge(create) => self.plan_create_edge(create),
-            LogicalOperator::CreateExternalEdge(create) => {
-                self.plan_create_external_edge(create)
-            }
+            LogicalOperator::CreateExternalEdge(create) => self.plan_create_external_edge(create),
             LogicalOperator::DeleteNode(delete) => self.plan_delete_node(delete),
             LogicalOperator::DeleteEdge(delete) => self.plan_delete_edge(delete),
             LogicalOperator::LeftJoin(left_join) => self.plan_left_join(left_join),
@@ -892,8 +886,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -916,8 +910,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -940,8 +934,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -967,8 +961,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -991,8 +985,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -1026,8 +1020,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1072,8 +1066,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1106,8 +1100,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1140,8 +1134,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1179,8 +1173,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1221,8 +1215,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1268,8 +1262,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -1301,8 +1295,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -1328,8 +1322,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -1359,8 +1353,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -1390,8 +1384,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -1416,8 +1410,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 columns: None,
             })),
         }));
@@ -1443,8 +1437,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 columns: Some(vec!["n".to_string()]),
             })),
         }));
@@ -1471,8 +1465,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 columns: Some(vec!["nonexistent".to_string()]),
             })),
         }));
@@ -1510,8 +1504,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 having: None,
             })),
         }));
@@ -1544,8 +1538,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             having: None,
         }));
 
@@ -1577,8 +1571,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             having: None,
         }));
 
@@ -1610,8 +1604,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             having: None,
         }));
 
@@ -1657,8 +1651,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             having: None,
         }));
 
@@ -1692,14 +1686,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: Some("Company".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 join_type: JoinType::Inner,
                 conditions: vec![JoinCondition {
                     left: LogicalExpression::Variable("a".to_string()),
@@ -1724,14 +1718,14 @@ mod tests {
                 variable: "a".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                 variable: "b".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             join_type: JoinType::Cross,
             conditions: vec![],
         }));
@@ -1750,14 +1744,14 @@ mod tests {
                 variable: "a".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                 variable: "b".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             join_type: JoinType::Left,
             conditions: vec![],
         }));
@@ -1805,14 +1799,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 join_type: JoinType::Cross,
                 conditions: vec![],
             })),
@@ -1835,8 +1829,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan(&logical).unwrap();
@@ -1871,8 +1865,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let result = planner.plan(&logical);
@@ -1976,8 +1970,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         let physical = planner.plan_adaptive(&logical).unwrap();
@@ -2011,8 +2005,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -2051,8 +2045,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2084,14 +2078,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 join_type: JoinType::Cross,
                 conditions: vec![],
             })),
@@ -2121,8 +2115,8 @@ mod tests {
                 variable: "n".to_string(),
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
             having: None,
         }));
 
@@ -2146,8 +2140,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 columns: None,
             })),
         }));
@@ -2173,8 +2167,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -2199,8 +2193,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -2229,8 +2223,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -2255,14 +2249,14 @@ mod tests {
                         variable: "n".to_string(),
                         label: Some("Person".to_string()),
                         input: None,
-            pushdown_hint: None,
-        }),
+                        pushdown_hint: None,
+                    }),
                     LogicalOperator::NodeScan(NodeScanOp {
                         variable: "n".to_string(),
                         label: Some("Company".to_string()),
                         input: None,
-            pushdown_hint: None,
-        }),
+                        pushdown_hint: None,
+                    }),
                 ],
             })),
         }));
@@ -2303,8 +2297,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2345,8 +2339,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: Some("p".to_string()),
                 path_mode: PathMode::Walk,
             })),
@@ -2388,8 +2382,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2430,8 +2424,8 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 path_alias: None,
                 path_mode: PathMode::Walk,
             })),
@@ -2503,8 +2497,8 @@ mod tests {
                         variable: "a".to_string(),
                         label: None,
                         input: None,
-            pushdown_hint: None,
-        })),
+                        pushdown_hint: None,
+                    })),
                     path_alias: None,
                     path_mode: PathMode::Walk,
                 })),
@@ -2545,8 +2539,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -2622,8 +2616,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -2654,8 +2648,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -2690,8 +2684,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -2738,8 +2732,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -2843,6 +2837,9 @@ mod tests {
         while let Some(chunk) = op.next().unwrap() {
             rows += chunk.row_count();
         }
-        assert_eq!(rows, 1, "seule la paire (a1, b1) ; a2 (cle NULL) ne s'apparie pas");
+        assert_eq!(
+            rows, 1,
+            "seule la paire (a1, b1) ; a2 (cle NULL) ne s'apparie pas"
+        );
     }
 }

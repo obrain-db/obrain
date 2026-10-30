@@ -6,8 +6,8 @@ use obrain_cognitive::{CoChangeConfig, CoChangeDetector, CoChangeRelation, CoCha
 use obrain_common::types::NodeId;
 use obrain_reactive::{MutationEvent, MutationListener, NodeSnapshot};
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 fn make_node(id: u64) -> NodeSnapshot {
     NodeSnapshot {

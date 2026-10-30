@@ -481,10 +481,7 @@ impl LogicalOperator {
     #[must_use]
     pub fn mutations_avec(&self, catalogue: Option<&crate::catalog::Catalog>) -> bool {
         self.mute_par_lui_meme(catalogue)
-            || self
-                .children()
-                .iter()
-                .any(|c| c.mutations_avec(catalogue))
+            || self.children().iter().any(|c| c.mutations_avec(catalogue))
     }
 
     /// Cet operateur, PRIS SEUL, ecrit-il ? Sans regarder ses enfants.
@@ -2553,8 +2550,8 @@ mod tests {
                 variable: "n".into(),
                 label: Some("Person".into()),
                 input: None,
-            pushdown_hint: None,
-        })),
+                pushdown_hint: None,
+            })),
         }));
 
         // Verify structure
@@ -2596,8 +2593,8 @@ mod tests {
                     variable: "n".into(),
                     label: Some("Person".into()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));

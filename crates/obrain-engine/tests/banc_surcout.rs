@@ -25,8 +25,8 @@
 //! machine au repos, l isolation de coeurs, et un nombre de repetitions
 //! calibre sur la variance observee — aucun des trois n est reuni ici.
 
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_engine::ObrainDB;
 

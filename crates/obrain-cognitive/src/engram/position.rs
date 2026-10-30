@@ -129,9 +129,16 @@ impl std::fmt::Display for PosError {
         match self {
             Self::UnknownNode(id) => write!(f, "no position recorded for node {}", id.0),
             Self::NotFinite(id) => write!(f, "non-finite coordinate for node {}", id.0),
-            Self::Negative(id) => write!(f, "negative coordinate for node {} (breaks exactness)", id.0),
+            Self::Negative(id) => write!(
+                f,
+                "negative coordinate for node {} (breaks exactness)",
+                id.0
+            ),
             Self::BadDimension { got, expected } => {
-                write!(f, "position has {got} coordinates, index expects {expected}")
+                write!(
+                    f,
+                    "position has {got} coordinates, index expects {expected}"
+                )
             }
             Self::BadIndexDimension(d) => write!(f, "invalid index dimension {d}"),
             Self::InconsistentDimensions { expected, got } => write!(
@@ -171,7 +178,11 @@ impl SlicePositionProvider {
 
     /// Number of `dim`-sized rows held.
     pub fn rows(&self) -> usize {
-        if self.dim == 0 { 0 } else { self.data.len() / self.dim }
+        if self.dim == 0 {
+            0
+        } else {
+            self.data.len() / self.dim
+        }
     }
 }
 
@@ -211,7 +222,11 @@ impl PosCentroid {
         if !(1..=POS_DIM_MAX).contains(&dim) {
             return Err(PosError::BadIndexDimension(dim));
         }
-        Ok(Self { dim, count: 0, sum: vec![0.0; dim] })
+        Ok(Self {
+            dim,
+            count: 0,
+            sum: vec![0.0; dim],
+        })
     }
 
     /// Number of members accumulated.
@@ -235,7 +250,10 @@ impl PosCentroid {
     /// sum stays exact for `count < 2^29`.
     pub fn add(&mut self, id: NodeId, weight: u32, p: &[f32]) -> Result<(), PosError> {
         if p.len() != self.dim {
-            return Err(PosError::BadDimension { got: p.len(), expected: self.dim });
+            return Err(PosError::BadDimension {
+                got: p.len(),
+                expected: self.dim,
+            });
         }
         if weight == 0 {
             return Ok(());
@@ -261,7 +279,10 @@ impl PosCentroid {
     /// Removes one member. Must have been added first, with the same weight.
     pub fn remove(&mut self, id: NodeId, weight: u32, p: &[f32]) -> Result<(), PosError> {
         if p.len() != self.dim {
-            return Err(PosError::BadDimension { got: p.len(), expected: self.dim });
+            return Err(PosError::BadDimension {
+                got: p.len(),
+                expected: self.dim,
+            });
         }
         if weight == 0 {
             return Ok(());
@@ -320,7 +341,6 @@ struct ScanEntry {
     /// Slot du centroïde dans le SoA (`means[slot * dim .. (slot + 1) * dim]`).
     slot: u32,
 }
-
 
 /// Exact, allocation-free nearest-centroid index over engrams.
 #[derive(Debug, Clone)]
@@ -609,7 +629,10 @@ impl PosIndex {
             }
             let p = provider.position(*nid).ok_or(PosError::UnknownNode(*nid))?;
             if p.len() != self.dim {
-                return Err(PosError::BadDimension { got: p.len(), expected: self.dim });
+                return Err(PosError::BadDimension {
+                    got: p.len(),
+                    expected: self.dim,
+                });
             }
             for (j, &x) in p.iter().enumerate() {
                 if !x.is_finite() {
@@ -787,7 +810,10 @@ mod tests {
     struct Rng(u64);
     impl Rng {
         fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0 >> 33
         }
         /// Non-negative f32 in [0,1] with a 24-bit mantissa, as the theorem requires.
@@ -834,8 +860,13 @@ mod tests {
         let q: Vec<(NodeId, u32)> = vec![(NodeId(1), 1u32)];
         let mut scratch: Vec<f32> = Vec::new();
         let mut out: Vec<(EngramId, f32)> = Vec::new();
-        idx.top_k_exact(&q, &p, 1, &mut scratch, &mut out, None).unwrap();
-        assert_eq!(out.len(), 1, "l'engramme porteur du membre doit être trouvé : {out:?}");
+        idx.top_k_exact(&q, &p, 1, &mut scratch, &mut out, None)
+            .unwrap();
+        assert_eq!(
+            out.len(),
+            1,
+            "l'engramme porteur du membre doit être trouvé : {out:?}"
+        );
         assert_eq!(out[0].0, EngramId(1));
 
         // Et le plafond restant est un garde-fou d'ALLOCATION, pas une dimension
@@ -899,18 +930,28 @@ mod tests {
 
         // Étape 2 : on retire 3 membres, on compare à un recalcul sans eux.
         for k in [2usize, 7, 19] {
-            assert!(incr.remove_member(EngramId(1), all[k].0, all[k].1, &p).unwrap());
+            assert!(
+                incr.remove_member(EngramId(1), all[k].0, all[k].1, &p)
+                    .unwrap()
+            );
         }
         let mut ref_idx = PosIndex::new(dim).unwrap();
-        let kept: Vec<(NodeId, u32)> =
-            all.iter().enumerate().filter(|(i, _)| ![2, 7, 19].contains(i)).map(|(_, x)| *x).collect();
+        let kept: Vec<(NodeId, u32)> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| ![2, 7, 19].contains(i))
+            .map(|(_, x)| *x)
+            .collect();
         ref_idx.insert(EngramId(1), &kept, &p).unwrap();
         assert_eq!(
             incr.exact_sum(EngramId(1)).unwrap(),
             ref_idx.exact_sum(EngramId(1)).unwrap(),
             "retrait incrémental != recalcul complet"
         );
-        assert_eq!(incr.mean_of(EngramId(1)).unwrap(), ref_idx.mean_of(EngramId(1)).unwrap());
+        assert_eq!(
+            incr.mean_of(EngramId(1)).unwrap(),
+            ref_idx.mean_of(EngramId(1)).unwrap()
+        );
     }
 
     /// GARANTIE 1 (suite) — un poids entier ne casse pas l'exactitude.
@@ -929,7 +970,11 @@ mod tests {
             }
             b.add(*nid, w, p.position(*nid).unwrap()).unwrap();
         }
-        assert_eq!(a.exact_sum(), b.exact_sum(), "poids entier : accumulateurs divergents");
+        assert_eq!(
+            a.exact_sum(),
+            b.exact_sum(),
+            "poids entier : accumulateurs divergents"
+        );
         assert_eq!(a.count(), b.count());
     }
 
@@ -938,7 +983,9 @@ mod tests {
     fn negative_coordinates_are_rejected() {
         let p = SlicePositionProvider::new(2, vec![0.5, -0.25, 0.5, 0.5]);
         let mut c = PosCentroid::new(2).unwrap();
-        let err = c.add(NodeId(0), 1, p.position(NodeId(0)).unwrap()).unwrap_err();
+        let err = c
+            .add(NodeId(0), 1, p.position(NodeId(0)).unwrap())
+            .unwrap_err();
         assert_eq!(err, PosError::Negative(NodeId(0)));
         // et l'accumulateur n'a pas été muté par l'échec
         assert_eq!(c.exact_sum(), &[0.0, 0.0]);
@@ -971,7 +1018,8 @@ mod tests {
                 let mut scratch = Vec::new();
                 let mut got = Vec::new();
                 let mut st = QueryStats::default();
-                idx.top_k_exact(&qm, &p, k, &mut scratch, &mut got, Some(&mut st)).unwrap();
+                idx.top_k_exact(&qm, &p, k, &mut scratch, &mut got, Some(&mut st))
+                    .unwrap();
                 let want = idx.brute_force_top_k(&qm, &p, k).unwrap();
                 assert_eq!(
                     got, want,
@@ -1040,7 +1088,8 @@ mod tests {
                 let mut scratch: Vec<f32> = Vec::new();
                 let mut out = Vec::new();
                 for q in &queries {
-                    idx.top_k_exact(q, &p, 10, &mut scratch, &mut out, None).unwrap();
+                    idx.top_k_exact(q, &p, 10, &mut scratch, &mut out, None)
+                        .unwrap();
                 }
                 let mut samples: Vec<u128> = Vec::with_capacity(2000);
                 let mut dims = 0usize;
@@ -1049,7 +1098,8 @@ mod tests {
                     let q = &queries[i % queries.len()];
                     let mut st = QueryStats::default();
                     let t = Instant::now();
-                    idx.top_k_exact(q, &p, 10, &mut scratch, &mut out, Some(&mut st)).unwrap();
+                    idx.top_k_exact(q, &p, 10, &mut scratch, &mut out, Some(&mut st))
+                        .unwrap();
                     samples.push(t.elapsed().as_nanos());
                     dims += st.dims_computed;
                     scan += st.candidates * dim;
@@ -1072,9 +1122,23 @@ mod tests {
                 // Le test encode donc le comportement réel à chaque taille au lieu
                 // d'affirmer ce que le code ne tient pas.
                 let (budget, what) = if n_engrams <= 1000 {
-                    (if cfg!(debug_assertions) { 3000.0 } else { 150.0 }, "microsecondes")
+                    (
+                        if cfg!(debug_assertions) {
+                            3000.0
+                        } else {
+                            150.0
+                        },
+                        "microsecondes",
+                    )
                 } else {
-                    (if cfg!(debug_assertions) { 8000.0 } else { 1500.0 }, "sub-milliseconde")
+                    (
+                        if cfg!(debug_assertions) {
+                            8000.0
+                        } else {
+                            1500.0
+                        },
+                        "sub-milliseconde",
+                    )
                 };
                 assert!(
                     p99 < budget,
@@ -1101,7 +1165,10 @@ mod tests {
         // les survivants gardent leur valeur exacte
         let mut ref_idx = PosIndex::new(dim).unwrap();
         ref_idx.insert(EngramId(23), &members(3), &p).unwrap();
-        assert_eq!(idx.exact_sum(EngramId(23)).unwrap(), ref_idx.exact_sum(EngramId(23)).unwrap());
+        assert_eq!(
+            idx.exact_sum(EngramId(23)).unwrap(),
+            ref_idx.exact_sum(EngramId(23)).unwrap()
+        );
     }
 }
 
@@ -1116,12 +1183,12 @@ mod tests {
 #[cfg(all(test, feature = "engram"))]
 mod recall_path_cost {
     use crate::engram::hopfield::PatternMatrix;
+    use crate::engram::position::{PosIndex, SlicePositionProvider};
     use crate::engram::recall::RecallEngine;
     use crate::engram::spectral::SpectralEncoder;
     use crate::engram::store::EngramStore;
     use crate::engram::traits::{InMemoryVectorIndex, VectorIndex};
     use crate::engram::types::{Engram, EngramId};
-    use crate::engram::position::{PosIndex, SlicePositionProvider};
     use obrain_common::types::NodeId;
     use web_time::Instant;
 
@@ -1210,7 +1277,10 @@ mod recall_path_cost {
         // état 4 : `update` change la précision (donc les logits) — doit aussi invalider
         let before = store.revision();
         store.update(EngramId(1), |e| e.precision = 9.0);
-        assert!(store.revision() > before, "`update` doit bumper la révision");
+        assert!(
+            store.revision() > before,
+            "`update` doit bumper la révision"
+        );
         let r4 = engine.recall(&store, &cues, &index, &spectral, 10);
         assert_eq!(
             r4.len(),
@@ -1274,7 +1344,9 @@ mod recall_path_cost {
         // de confiance porte de l'information — c'est ce qu'on compare ici.
         let legacy = engine.recall(&store, &cues, &index, &spectral, 10);
         let conf = |rs: &[crate::engram::recall::RecallResult], id: EngramId| -> f64 {
-            rs.iter().find(|r| r.engram_id == id).map_or(0.0, |r| r.confidence)
+            rs.iter()
+                .find(|r| r.engram_id == id)
+                .map_or(0.0, |r| r.confidence)
         };
         let legacy_y = conf(&legacy, y);
         let legacy_z = conf(&legacy, z);
@@ -1286,7 +1358,10 @@ mod recall_path_cost {
         let ids: Vec<EngramId> = with_pos.iter().map(|r| r.engram_id).collect();
         let new_y = conf(&with_pos, y);
         let new_z = conf(&with_pos, z);
-        assert!(ids.contains(&y), "l'engram de même position mais sans nœud commun doit être retrouvé : {ids:?}");
+        assert!(
+            ids.contains(&y),
+            "l'engram de même position mais sans nœud commun doit être retrouvé : {ids:?}"
+        );
         assert!(
             new_y > legacy_y,
             "la voie position doit ÉLEVER la confiance de l'engram de même région sans nœud commun \
@@ -1347,7 +1422,9 @@ mod recall_path_cost {
 
             // 3) index de position (le module proposé), même effectif
             let dim = 16;
-            let data: Vec<f32> = (0..n * 4 * dim).map(|i| ((i * 37) % 255) as f32 / 255.0).collect();
+            let data: Vec<f32> = (0..n * 4 * dim)
+                .map(|i| ((i * 37) % 255) as f32 / 255.0)
+                .collect();
             let p = SlicePositionProvider::new(dim, data);
             let mut pos_idx = PosIndex::new(dim).unwrap();
             for e in 0..n as u64 {
@@ -1381,7 +1458,6 @@ mod recall_path_cost {
     }
 }
 
-
 #[cfg(test)]
 mod scale_tests {
     use super::*;
@@ -1390,7 +1466,10 @@ mod scale_tests {
     struct Rng(u64);
     impl Rng {
         fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0 >> 33
         }
         fn coord(&mut self) -> f32 {
@@ -1451,7 +1530,8 @@ mod scale_tests {
             for k in [1usize, 10, 50] {
                 let mut scratch: Vec<f32> = Vec::new();
                 let mut got: Vec<(EngramId, f32)> = Vec::new();
-                idx.top_k_exact(&q, &provider, k, &mut scratch, &mut got, None).unwrap();
+                idx.top_k_exact(&q, &provider, k, &mut scratch, &mut got, None)
+                    .unwrap();
                 let want = idx.brute_force_top_k(&q, &provider, k).unwrap();
                 assert_eq!(canonical(got), canonical(want), "à n={n}, k={k} : inexact");
                 checked += 1;
@@ -1491,13 +1571,21 @@ mod scale_tests {
                 let mut scratch: Vec<f32> = Vec::new();
                 let mut out: Vec<(EngramId, f32)> = Vec::new();
                 for q in &queries {
-                    idx.top_k_exact(q, &provider, 10, &mut scratch, &mut out, None).unwrap();
+                    idx.top_k_exact(q, &provider, 10, &mut scratch, &mut out, None)
+                        .unwrap();
                 }
                 let mut ns = Vec::with_capacity(1000);
                 for i in 0..1000 {
                     let t = Instant::now();
-                    idx.top_k_exact(&queries[i % queries.len()], &provider, 10, &mut scratch, &mut out, None)
-                        .unwrap();
+                    idx.top_k_exact(
+                        &queries[i % queries.len()],
+                        &provider,
+                        10,
+                        &mut scratch,
+                        &mut out,
+                        None,
+                    )
+                    .unwrap();
                     ns.push(t.elapsed().as_nanos());
                 }
                 ns.sort_unstable();
@@ -1554,9 +1642,14 @@ mod scale_tests {
                 }
             }
             let mut got: Vec<(EngramId, f32)> = Vec::new();
-            idx.top_k_exact(&query, &provider, 10, &mut scratch, &mut got, None).unwrap();
+            idx.top_k_exact(&query, &provider, 10, &mut scratch, &mut got, None)
+                .unwrap();
             let want = idx.brute_force_top_k(&query, &provider, 10).unwrap();
-            assert_eq!(canonical(got), canonical(want), "round {round} : inexact après mutations");
+            assert_eq!(
+                canonical(got),
+                canonical(want),
+                "round {round} : inexact après mutations"
+            );
         }
         println!("exactitude conservée après 6 rounds × 40 mutations");
     }

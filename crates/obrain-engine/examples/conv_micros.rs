@@ -6,7 +6,9 @@ use obrain_substrate::SubstrateStore;
 use web_time::Instant;
 
 fn main() {
-    let base = std::env::args().nth(1).expect("usage: conv_micros <base_dir>");
+    let base = std::env::args()
+        .nth(1)
+        .expect("usage: conv_micros <base_dir>");
     let s = SubstrateStore::open(std::path::Path::new(&base)).expect("open substrate copy");
     let top = s
         .sessions_part_of()
@@ -14,18 +16,41 @@ fn main() {
         .map(|k| (k, s.count_messages_de_session(k).unwrap_or(0)))
         .max_by_key(|(_, n)| *n)
         .unwrap();
-    println!("session top (slot {}) : {} messages via API O(1)", top.0, top.1);
+    println!(
+        "session top (slot {}) : {} messages via API O(1)",
+        top.0, top.1
+    );
     // 1) exactitude croisée : count API == count GQL (scan) pour la même session
     let gql = {
         let db = ObrainDB::open_substrate(&base).expect("open gql");
-        let q = format!("MATCH ()-[r:PART_OF]->(x:Session) WHERE id(x) = {} RETURN count(r)", top.0);
+        let q = format!(
+            "MATCH ()-[r:PART_OF]->(x:Session) WHERE id(x) = {} RETURN count(r)",
+            top.0
+        );
         let r = db.session().execute(&q).expect("scan gql");
-        r.rows.first().and_then(|row| row.first()).map(|v| {
-            if let obrain_common::types::Value::Int64(n) = v { *n } else { -1 }
-        }).unwrap_or(-1)
+        r.rows
+            .first()
+            .and_then(|row| row.first())
+            .map(|v| {
+                if let obrain_common::types::Value::Int64(n) = v {
+                    *n
+                } else {
+                    -1
+                }
+            })
+            .unwrap_or(-1)
     };
-    println!("count GQL (scan, toutes sources) = {gql} -> {}", if gql as usize == top.1 { "ÉGAL ✓" } else { "DIFFÉRENT ✗" });
-    if gql as usize != top.1 { std::process::exit(2); }
+    println!(
+        "count GQL (scan, toutes sources) = {gql} -> {}",
+        if gql as usize == top.1 {
+            "ÉGAL ✓"
+        } else {
+            "DIFFÉRENT ✗"
+        }
+    );
+    if gql as usize != top.1 {
+        std::process::exit(2);
+    }
     // 2) µs : N appels O(1)
     let n = 200_000u64;
     let t0 = Instant::now();

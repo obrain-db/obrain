@@ -34,9 +34,8 @@ use obrain_common::types::Value;
 /// `Some(Ok(valeur))` = la fonction a répondu ; `Some(Err(message))` = elle la
 /// connaît mais a échoué (le message part tel quel dans l'erreur de requête) ;
 /// `None` = ce nom n'est pas le sien, le noyau garde son message.
-pub type ResolveurFonctions = dyn Fn(&str, &[Value]) -> Option<std::result::Result<Value, String>>
-    + Send
-    + Sync;
+pub type ResolveurFonctions =
+    dyn Fn(&str, &[Value]) -> Option<std::result::Result<Value, String>> + Send + Sync;
 
 static RESOLVEUR: OnceLock<&'static ResolveurFonctions> = OnceLock::new();
 

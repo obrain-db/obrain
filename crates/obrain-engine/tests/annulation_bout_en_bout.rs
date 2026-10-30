@@ -24,8 +24,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_common::types::Value;
 use obrain_common::utils::cancel::{self, CancelToken};
@@ -218,10 +218,7 @@ fn une_requete_annulee_en_vol_s_arrete_vraiment() {
         "[1] contre-épreuve : {:?}, {} lignes, erreur={:?}",
         complet.duree, complet.lignes, complet.erreur
     );
-    assert!(
-        !complet.annulee,
-        "sans annulation, la requete doit ABOUTIR"
-    );
+    assert!(!complet.annulee, "sans annulation, la requete doit ABOUTIR");
     assert_eq!(
         complet.lignes, NOEUDS,
         "la contre-epreuve doit rendre TOUTES les lignes"

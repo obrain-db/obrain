@@ -9,8 +9,8 @@
 
 #![cfg(feature = "algos")]
 
-use obrain_engine::config::Config;
 use obrain_engine::ObrainDB;
+use obrain_engine::config::Config;
 
 /// Crée un nœud de `cid` avec une centralité cible (Q0.16 approchée via f32)
 /// et rend son id u64 (slot substrate).
@@ -66,7 +66,10 @@ fn call_window_2d_egal_scan_moteur() {
         .expect("call window ouverte cid=7");
     let got = int_column(r.rows, 0);
     let want: Vec<i64> = c7.iter().map(|&x| x as i64).collect();
-    assert_eq!(got, want, "CALL window communauté 7, fenêtre ouverte == scan moteur");
+    assert_eq!(
+        got, want,
+        "CALL window communauté 7, fenêtre ouverte == scan moteur"
+    );
 
     // Alias court `window_2d` (résolution par dernier segment) sur cid=8.
     let r = session
@@ -78,10 +81,16 @@ fn call_window_2d_egal_scan_moteur() {
 
     // Fenêtre de centralité étroite : seul le nœud à haute centralité répond.
     let r = session
-        .execute("CALL obrain.window_2d(7, 50000, 65535, 0, 4294967295) YIELD node_id RETURN node_id")
+        .execute(
+            "CALL obrain.window_2d(7, 50000, 65535, 0, 4294967295) YIELD node_id RETURN node_id",
+        )
         .expect("call window haute centralite");
     let got = int_column(r.rows, 0);
-    assert_eq!(got, vec![c7[1] as i64], "communauté 7, haute centralité seulement");
+    assert_eq!(
+        got,
+        vec![c7[1] as i64],
+        "communauté 7, haute centralité seulement"
+    );
 
     // Communauté inconnue : vide, sans erreur.
     let r = session
@@ -141,8 +150,7 @@ fn call_window_2d_refuse_une_base_non_substrate() {
     let td = tempfile::tempdir().unwrap();
     // `with_store` ne renseigne PAS `substrate_store` : chemin legacy/externe.
     let raw = obrain_substrate::SubstrateStore::create(td.path().join("kb")).unwrap();
-    let erased: std::sync::Arc<dyn obrain_core::graph::GraphStoreMut> =
-        std::sync::Arc::new(raw);
+    let erased: std::sync::Arc<dyn obrain_core::graph::GraphStoreMut> = std::sync::Arc::new(raw);
     let db = ObrainDB::with_store(erased, Config::in_memory()).expect("with_store");
 
     let err = db
@@ -150,7 +158,8 @@ fn call_window_2d_refuse_une_base_non_substrate() {
         .execute("CALL obrain.window_2d(0, 0, 65535, 0, 4294967295) YIELD node_id RETURN node_id")
         .expect_err("base non substrate doit echouer");
     assert!(
-        err.to_string().contains("requires a substrate-backed database"),
+        err.to_string()
+            .contains("requires a substrate-backed database"),
         "message d'erreur inattendu: {err}"
     );
 }
@@ -172,7 +181,9 @@ fn call_window_2d_energy_filtre_par_energie() {
 
     // Fenêtre de base : les trois nœuds.
     let r = session
-        .execute("CALL obrain.window_2d(7, 50000, 65535, 0, 4294967295) YIELD node_id RETURN node_id")
+        .execute(
+            "CALL obrain.window_2d(7, 50000, 65535, 0, 4294967295) YIELD node_id RETURN node_id",
+        )
         .expect("window 2d");
     assert_eq!(r.rows.len(), 3, "fenêtre de base = 3 nœuds");
 

@@ -200,13 +200,7 @@ pub fn zorder_key_from_features(
 /// axis with unit height can produce up to O(n) single-cell runs — the
 /// bench (B2) measures the real distribution. Windows aligned on cell
 /// boundaries collapse to exactly one run.
-pub fn zorder_window_ranges(
-    cx0: u32,
-    cx1: u32,
-    cy0: u32,
-    cy1: u32,
-    order: u32,
-) -> Vec<(u32, u32)> {
+pub fn zorder_window_ranges(cx0: u32, cx1: u32, cy0: u32, cy1: u32, order: u32) -> Vec<(u32, u32)> {
     debug_assert!(order <= 15, "order out of range: {order}");
     let n = 1u32 << order;
     let last = n.saturating_sub(1);
@@ -835,7 +829,11 @@ mod tests {
             let z_out = zorder_key_2d(cell_side, 0, order);
             assert_ne!(z_out >> shift, 0, "out-of-cell point must differ in prefix");
             let z_out_y = zorder_key_2d(0, cell_side, order);
-            assert_ne!(z_out_y >> shift, 0, "out-of-cell point must differ in prefix");
+            assert_ne!(
+                z_out_y >> shift,
+                0,
+                "out-of-cell point must differ in prefix"
+            );
         }
     }
 
@@ -899,7 +897,10 @@ mod tests {
                 let inside = x >= qx0 && x <= qx1 && y >= qy0 && y <= qy1;
                 let z = zorder_key_2d(x, y, order);
                 let in_any_run = runs.iter().any(|&(lo, hi)| z >= lo && z <= hi);
-                assert_eq!(inside, in_any_run, "point ({x},{y}) mismatch for window ({cx0},{cx1},{cy0},{cy1})");
+                assert_eq!(
+                    inside, in_any_run,
+                    "point ({x},{y}) mismatch for window ({cx0},{cx1},{cy0},{cy1})"
+                );
             }
         }
     }

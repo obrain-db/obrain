@@ -100,9 +100,7 @@ impl PropertyMap {
     /// Returns `true` if the map contains the given key.
     #[must_use]
     pub fn contains_key(&self, key: &PropertyKey) -> bool {
-        self.entries
-            .binary_search_by(|(k, _)| k.cmp(key))
-            .is_ok()
+        self.entries.binary_search_by(|(k, _)| k.cmp(key)).is_ok()
     }
 
     /// Inserts a property, replacing any existing value for the same key.
@@ -407,7 +405,12 @@ mod tests {
     fn from_sorted_pairs_bulk_build_of_128_keys() {
         const P: usize = 128;
         let mut paires: Vec<(PropertyKey, Value)> = (0..P)
-            .map(|i| (PropertyKey::new(format!("prop{i:03}")), Value::from(i as i64)))
+            .map(|i| {
+                (
+                    PropertyKey::new(format!("prop{i:03}")),
+                    Value::from(i as i64),
+                )
+            })
             .collect();
         paires.sort_by(|a, b| a.0.cmp(&b.0));
 

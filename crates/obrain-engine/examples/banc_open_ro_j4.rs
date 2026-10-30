@@ -10,7 +10,9 @@ use obrain_engine::ObrainDB;
 use web_time::Instant;
 
 fn fds() -> usize {
-    std::fs::read_dir("/proc/self/fd").map(|d| d.count()).unwrap_or(0)
+    std::fs::read_dir("/proc/self/fd")
+        .map(|d| d.count())
+        .unwrap_or(0)
 }
 fn maps() -> usize {
     std::fs::read_to_string("/proc/self/maps")
@@ -20,7 +22,9 @@ fn maps() -> usize {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: banc_open_ro_j4 <store> [n | creer N]");
+    let path = args
+        .next()
+        .expect("usage: banc_open_ro_j4 <store> [n | creer N]");
     let deux = args.next();
 
     if deux.as_deref() == Some("creer") {
@@ -31,10 +35,7 @@ fn main() {
         let d = ObrainDB::open_substrate(&path).expect("open_substrate (creer)");
         let s = d.session();
         for i in 0..n as i64 {
-            s.create_node_with_props(
-                &["Doc"],
-                [("i", obrain_common::types::Value::Int64(i))],
-            );
+            s.create_node_with_props(&["Doc"], [("i", obrain_common::types::Value::Int64(i))]);
         }
         d.checkpoint().expect("checkpoint");
         println!("store cree : {n} noeuds Doc a {path}");

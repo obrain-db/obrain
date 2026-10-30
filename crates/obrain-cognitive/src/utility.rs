@@ -15,8 +15,8 @@ use dashmap::DashMap;
 use obrain_common::types::NodeId;
 use std::fmt;
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use crate::store_trait::{
     OptionalGraphStore, PROP_UTILITY_COUNT, PROP_UTILITY_LAST_UPDATED_EPOCH, PROP_UTILITY_SCORE,

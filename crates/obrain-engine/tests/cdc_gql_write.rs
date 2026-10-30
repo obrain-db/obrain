@@ -26,8 +26,10 @@ fn cdc_capture_les_creations_gql() {
     let s = db.session();
 
     // Chemin réel du runtime (import_events) : GQL CREATE puis MERGE d'arête.
-    s.execute("CREATE (:A {qualified_name: 'x1'})").expect("create x1");
-    s.execute("CREATE (:A {qualified_name: 'x2'})").expect("create x2");
+    s.execute("CREATE (:A {qualified_name: 'x1'})")
+        .expect("create x1");
+    s.execute("CREATE (:A {qualified_name: 'x2'})")
+        .expect("create x2");
     s.execute(
         "MATCH (a:A {qualified_name: 'x1'}), (b:A {qualified_name: 'x2'}) MERGE (a)-[:T]->(b)",
     )

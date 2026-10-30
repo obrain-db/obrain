@@ -336,5 +336,8 @@ fn une_queue_coupee_au_milieu_d_un_enregistrement_est_comptee() {
         "le rejeu doit s'arrêter à la coupure : stopped_at={} garde={garde}",
         stats.stopped_at
     );
-    assert!(stats.applied > 0, "tout ce qui précède la coupure est appliqué");
+    assert!(
+        stats.applied > 0,
+        "tout ce qui précède la coupure est appliqué"
+    );
 }

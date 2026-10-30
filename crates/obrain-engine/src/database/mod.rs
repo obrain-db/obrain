@@ -44,28 +44,28 @@ mod text_index_persist;
 // persistence.rs (1840 LOC) + mmap_store.rs (1315 LOC) +
 // nocache_reader.rs (104 LOC) + native_writer.rs (133 LOC) +
 // 26 feature-gated blocks in this file removed on 2026-04-23.
+#[cfg(feature = "cdc")]
+pub mod cdc_observer;
+pub mod contient;
 mod query;
 #[cfg(feature = "rdf")]
 mod rdf_ops;
+pub mod reachable_count;
 mod search;
+pub mod search_by_role;
+pub mod search_causality;
+#[cfg(feature = "cdc")]
+pub mod search_conflicts;
+#[cfg(feature = "cdc")]
+pub mod search_delta;
+#[cfg(feature = "cdc")]
+pub mod search_relief;
+#[cfg(feature = "cdc")]
+pub mod search_surprise;
 pub mod topological;
 #[cfg(feature = "wal")]
 pub mod wal_store;
 mod window;
-#[cfg(feature = "cdc")]
-pub mod search_delta;
-#[cfg(feature = "cdc")]
-pub mod search_surprise;
-#[cfg(feature = "cdc")]
-pub mod cdc_observer;
-#[cfg(feature = "cdc")]
-pub mod search_relief;
-#[cfg(feature = "cdc")]
-pub mod search_conflicts;
-pub mod search_causality;
-pub mod search_by_role;
-pub mod reachable_count;
-pub mod contient;
 
 #[cfg(feature = "wal")]
 use std::path::Path;
@@ -251,8 +251,7 @@ pub struct ObrainDB {
     /// L'empreinte (offset du WAL) à laquelle chaque index texte a été construit
     /// ou chargé : elle porte la validité INTER-SESSIONS (au réveil, l'offset du
     /// store dit si le fichier décrit encore ce store).
-    pub(super) index_texte_empreintes:
-        parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    pub(super) index_texte_empreintes: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
     /// L'EPOQUE à laquelle chaque index texte a été construit ou chargé : elle
     /// porte la validité INTRA-SESSION.
     ///
@@ -269,8 +268,7 @@ pub struct ObrainDB {
     /// chacun ce qu'il sait : l'époch décide « cet index a-t-il vu une écriture
     /// depuis sa construction ? » (donc : réécrire ou effacer), l'offset décide
     /// « ce fichier décrit-il encore ce store ? » (donc : charger ou reconstruire).
-    pub(super) index_texte_epochs:
-        parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    pub(super) index_texte_epochs: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
     #[cfg(feature = "text-index")]
     pub(super) substrate_text_indexes: parking_lot::RwLock<
         std::collections::HashMap<
@@ -376,7 +374,6 @@ fn substrat_vivant(path: &std::path::Path) -> Option<Arc<obrain_substrate::Subst
         .and_then(std::sync::Weak::upgrade)
 }
 
-
 /// Branche le vocabulaire de l'hôte (UDF du registre de plugins) sur
 /// l'évaluateur du moteur.
 ///
@@ -478,10 +475,7 @@ impl ObrainDB {
         Self::open_substrate_inner(path, true)
     }
 
-    fn open_substrate_inner(
-        path: impl AsRef<std::path::Path>,
-        read_only: bool,
-    ) -> Result<Self> {
+    fn open_substrate_inner(path: impl AsRef<std::path::Path>, read_only: bool) -> Result<Self> {
         let path_ref = path.as_ref();
         // Detect existing substrate: if `substrate.meta` is present, open;
         // otherwise create. This mirrors the semantics of ObrainDB::open(path)
@@ -751,22 +745,21 @@ impl ObrainDB {
             // mutation (~14 opens/nœud) — réservé au hot path applicatif.
             let cdc_off = std::env::var("OBRAIN_DISABLE_CDC").is_ok();
             if !cdc_off {
-                db.cdc_log.attach_persist(crate::cdc_persist::CdcPersist::open(Arc::clone(
-                    &typed,
-                )));
+                db.cdc_log
+                    .attach_persist(crate::cdc_persist::CdcPersist::open(Arc::clone(&typed)));
             }
         }
         #[cfg(feature = "cdc")]
         if std::env::var("OBRAIN_DISABLE_CDC").is_err() {
-                        // (2026-09-05) CDC×GQL : observe les créations substrate (le chemin
-                        // GQL/executor écrit directement dans le store, sans `crud`) →
-                        // search_delta/search_surprise voient le runtime réel.
-                        db.cdc_observer_active
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        let observateur = Arc::new(crate::database::cdc_observer::CdcObserver::new(
-                            Arc::clone(&db.cdc_log),
-                        )) as Arc<dyn obrain_substrate::StoreMutationObserver>;
-                        typed.set_mutation_observer(observateur);
+            // (2026-09-05) CDC×GQL : observe les créations substrate (le chemin
+            // GQL/executor écrit directement dans le store, sans `crud`) →
+            // search_delta/search_surprise voient le runtime réel.
+            db.cdc_observer_active
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let observateur = Arc::new(crate::database::cdc_observer::CdcObserver::new(Arc::clone(
+                &db.cdc_log,
+            ))) as Arc<dyn obrain_substrate::StoreMutationObserver>;
+            typed.set_mutation_observer(observateur);
         }
 
         // T17 Step 3 W1 — wire the cognitive engine to substrate column
@@ -810,9 +803,8 @@ impl ObrainDB {
             // deviennent réelles (engram_store câblé via set_engram_subsystem).
             #[cfg(feature = "cognitive-engram")]
             {
-                builder = builder.with_engrams(
-                    obrain_cognitive::engram::EngramManagerConfig::default(),
-                );
+                builder =
+                    builder.with_engrams(obrain_cognitive::engram::EngramManagerConfig::default());
             }
             let engine = builder.build(&scheduler);
             // (2026-08-31) PERSISTANCE ENGRAMS — attache le writer substrate au
@@ -1285,8 +1277,8 @@ impl ObrainDB {
     /// leur traversee rend absent (le registre n'existe pas). Les
     /// sessions ouvertes APRES l'appel voient le registre.
     pub fn attach_bases(&self, primary_slug: &str, root: Option<&std::path::Path>) {
-        let opener: Box<obrain_core::execution::base_registry::StoreOpener> =
-            Box::new(|path: &std::path::Path| {
+        let opener: Box<obrain_core::execution::base_registry::StoreOpener> = Box::new(
+            |path: &std::path::Path| {
                 // (V3, parade p8) REUTILISER l'instance vivante si une base
                 // de ce processus tient deja ce chemin — jamais deux
                 // instances des memes fichiers (sidecars divergents).
@@ -1306,10 +1298,10 @@ impl ObrainDB {
                         None
                     }
                 }
-            });
+            },
+        );
         let primary: Arc<dyn obrain_core::graph::GraphStore> = self.graph_store();
-        let mut registry =
-            obrain_core::execution::BaseRegistry::new(primary_slug, primary, opener);
+        let mut registry = obrain_core::execution::BaseRegistry::new(primary_slug, primary, opener);
         if let Some(root) = root {
             registry = registry.with_root(root);
         }

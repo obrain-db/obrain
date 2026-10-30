@@ -798,12 +798,14 @@ impl super::Planner {
         // Surprise d'activité (CALL obrain.search_surprise — « ce qui s'active
         // contre les attentes ») : lecture pure CDC + degrés substrate.
         #[cfg(feature = "cdc")]
-        if let Some(result) = crate::database::search_surprise::try_execute_search_surprise_procedure(
-            &resolved_name,
-            &call.arguments,
-            self.substrate_store.as_ref(),
-            self.cdc_log.as_ref(),
-        )? {
+        if let Some(result) =
+            crate::database::search_surprise::try_execute_search_surprise_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.substrate_store.as_ref(),
+                self.cdc_log.as_ref(),
+            )?
+        {
             return self.plan_static_result(result, &call.yield_items);
         }
 
@@ -831,33 +833,39 @@ impl super::Planner {
 
         // Spread directionnel causal (CALL obrain.search_causes/search_effects —
         // BFS avant/inverse amorti). Lecture pure sur substrate.
-        if let Some(result) = crate::database::search_causality::try_execute_search_causality_procedure(
-            &resolved_name,
-            &call.arguments,
-            self.substrate_store.as_ref(),
-        )? {
+        if let Some(result) =
+            crate::database::search_causality::try_execute_search_causality_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.substrate_store.as_ref(),
+            )?
+        {
             return self.plan_static_result(result, &call.yield_items);
         }
 
         // Comptage ensembliste de portée (CALL obrain.reachable_count —
         // count(DISTINCT d) à k sauts par frontières distinctes, sans
         // énumération de chemins). Lecture pure sur substrate.
-        if let Some(result) = crate::database::reachable_count::try_execute_reachable_count_procedure(
-            &resolved_name,
-            &call.arguments,
-            self.substrate_store.as_ref(),
-        )? {
+        if let Some(result) =
+            crate::database::reachable_count::try_execute_reachable_count_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.substrate_store.as_ref(),
+            )?
+        {
             return self.plan_static_result(result, &call.yield_items);
         }
 
         // Dissonance d'état (CALL obrain.search_conflicts — valeurs qui
         // oscillent A→B→A dans la fenêtre CDC). Lecture pure.
         #[cfg(feature = "cdc")]
-        if let Some(result) = crate::database::search_conflicts::try_execute_search_conflicts_procedure(
-            &resolved_name,
-            &call.arguments,
-            self.cdc_log.as_ref(),
-        )? {
+        if let Some(result) =
+            crate::database::search_conflicts::try_execute_search_conflicts_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.cdc_log.as_ref(),
+            )?
+        {
             return self.plan_static_result(result, &call.yield_items);
         }
 

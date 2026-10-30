@@ -30,8 +30,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 /// La porte de performance est-elle ARMÉE ?
 ///

@@ -276,10 +276,6 @@ fn anoncer_fin() -> ! {
     std::process::exit(0);
 }
 
-
-
-
-
 // ===========================================================================
 // R1 — DEUX PROCESSUS QUI INTERNENT DES NOMS DIFFÉRENTS OBTIENNENT DES BITS
 //      DIFFÉRENTS (et le disque dit la même chose)
@@ -387,13 +383,17 @@ fn r1_deux_processus_internant_des_noms_differents_obtiennent_des_bits_different
     }
     assert_eq!(
         bits_a,
-        ["Alpha".to_string()].into_iter().collect::<std::collections::BTreeSet<_>>(),
+        ["Alpha".to_string()]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
         "les nœuds du processus A doivent porter « Alpha » — ils portent {bits_a:?} : \
          le dictionnaire reconstruit après réouverture ne nomme plus ce que A a écrit"
     );
     assert_eq!(
         bits_b,
-        ["Beta".to_string()].into_iter().collect::<std::collections::BTreeSet<_>>(),
+        ["Beta".to_string()]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
         "les nœuds du processus B doivent porter « Beta » — ils portent {bits_b:?}"
     );
 
@@ -420,4 +420,3 @@ fn r1_deux_processus_internant_des_noms_differents_obtiennent_des_bits_different
         dict.labels
     );
 }
-

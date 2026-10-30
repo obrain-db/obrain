@@ -154,7 +154,11 @@ pub fn compute_search_surprise(
         .collect();
 
     if signed {
-        rows.sort_by(|a, b| b.surprise.partial_cmp(&a.surprise).unwrap_or(std::cmp::Ordering::Equal));
+        rows.sort_by(|a, b| {
+            b.surprise
+                .partial_cmp(&a.surprise)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     } else {
         rows.sort_by(|a, b| {
             b.surprise
@@ -191,9 +195,7 @@ impl super::ObrainDB {
         obrain_common::utils::cancel::check()?;
 
         let substrate = self.substrate_store.as_ref().ok_or_else(|| {
-            Error::Internal(
-                "search_surprise requires a substrate-backed database".to_string(),
-            )
+            Error::Internal("search_surprise requires a substrate-backed database".to_string())
         })?;
         Ok(compute_search_surprise(
             &self.cdc_log,
@@ -234,7 +236,12 @@ fn arg_u64(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<u64>
 }
 
 #[cfg(feature = "cdc")]
-fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usize) -> Result<usize> {
+fn arg_usize(
+    arguments: &[LogicalExpression],
+    i: usize,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
     match arguments.get(i) {
         None => Ok(default),
         Some(LogicalExpression::Literal(Value::Int64(v))) if *v >= 0 => Ok(*v as usize),

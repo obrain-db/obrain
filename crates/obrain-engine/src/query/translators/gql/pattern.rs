@@ -439,14 +439,13 @@ impl GqlTranslator {
                                      peut s'enchainer apres une cible d'une autre base",
                                 )));
                             }
-                            let edge_type =
-                                edge.types.first().cloned().ok_or_else(|| {
-                                    Error::Query(QueryError::new(
-                                        QueryErrorKind::Semantic,
-                                        "une arete inter-bases exige un type : \
+                            let edge_type = edge.types.first().cloned().ok_or_else(|| {
+                                Error::Query(QueryError::new(
+                                    QueryErrorKind::Semantic,
+                                    "une arete inter-bases exige un type : \
                                          CREATE (a)-[:TYPE]->(ref(...))",
-                                    ))
-                                })?;
+                                ))
+                            })?;
                             plan = LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
                                 from_variable: source_var.clone(),
                                 edge_type,

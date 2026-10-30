@@ -147,10 +147,7 @@ fn semer(valeurs: &[Value]) -> ObrainDB {
     {
         let s = db.session();
         for (i, v) in valeurs.iter().enumerate() {
-            s.create_node_with_props(
-                &["T"],
-                [("id", Value::Int64(i as i64)), ("v", v.clone())],
-            );
+            s.create_node_with_props(&["T"], [("id", Value::Int64(i as i64)), ("v", v.clone())]);
         }
         // Ancre : une ligne unique pour évaluer les expressions scalaires.
         s.create_node_with_props(&["Ancre"], [("k", Value::Int64(0))]);
@@ -166,7 +163,11 @@ fn lire(db: &ObrainDB, requete: &str) -> QueryResult {
 
 /// Première colonne d'un résultat, valeurs brutes.
 fn colonne0(db: &ObrainDB, requete: &str) -> Vec<Value> {
-    lire(db, requete).rows.into_iter().map(|l| l[0].clone()).collect()
+    lire(db, requete)
+        .rows
+        .into_iter()
+        .map(|l| l[0].clone())
+        .collect()
 }
 
 /// Évalue une expression scalaire GQL sur la ligne d'ancrage.
@@ -409,7 +410,10 @@ fn trier_quarante_valeurs_melangees_ne_panique_pas_et_conserve_le_cardinal() {
     let mut obtenu = etiquettes(&r.rows.iter().map(|l| l[0].clone()).collect::<Vec<_>>());
     attendu.sort();
     obtenu.sort();
-    assert_eq!(attendu, obtenu, "aucune valeur ne doit être perdue ni inventée");
+    assert_eq!(
+        attendu, obtenu,
+        "aucune valeur ne doit être perdue ni inventée"
+    );
 }
 
 /// Témoin. Entiers et flottants mêlés s'ordonnent NUMÉRIQUEMENT — le seul
@@ -498,8 +502,14 @@ fn le_tri_ne_depend_pas_de_l_ordre_d_insertion() {
     let mut inverse = semis.clone();
     inverse.reverse();
 
-    let a = etiquettes(&colonne0(&semer(&semis), "MATCH (n:T) RETURN n.v ORDER BY n.v"));
-    let b = etiquettes(&colonne0(&semer(&inverse), "MATCH (n:T) RETURN n.v ORDER BY n.v"));
+    let a = etiquettes(&colonne0(
+        &semer(&semis),
+        "MATCH (n:T) RETURN n.v ORDER BY n.v",
+    ));
+    let b = etiquettes(&colonne0(
+        &semer(&inverse),
+        "MATCH (n:T) RETURN n.v ORDER BY n.v",
+    ));
     assert_eq!(
         a, b,
         "les deux bases portent exactement les mêmes valeurs ; seul l'ordre \
@@ -525,11 +535,7 @@ fn les_entiers_restent_ordonnes_entre_eux_malgre_une_chaine_intercalee() {
     // `compare_values_total(String("m"), Int64(-2)) == Equal`, mais
     // `compare_values_total(Int64(3), Int64(-2)) == Greater`. Un comparateur
     // non transitif rend, par contrat Rust, un ordre NON SPÉCIFIÉ.
-    let db = semer(&[
-        Value::Int64(3),
-        Value::String("m".into()),
-        Value::Int64(-2),
-    ]);
+    let db = semer(&[Value::Int64(3), Value::String("m".into()), Value::Int64(-2)]);
     let trie = colonne0(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v");
     let entiers: Vec<i64> = trie
         .iter()
@@ -577,11 +583,11 @@ fn les_entiers_restent_ordonnes_entre_eux_malgre_une_chaine_intercalee() {
 /// numérique, flottant. Chaque valeur est à portée de la borne `5`.
 fn semis_borne() -> Vec<Value> {
     vec![
-        Value::Int64(1),          // id 0 — sous la borne
-        Value::Int64(7),          // id 1 — au-dessus
-        Value::String("7".into()), // id 2 — chaîne qui « ressemble » à 7
+        Value::Int64(1),             // id 0 — sous la borne
+        Value::Int64(7),             // id 1 — au-dessus
+        Value::String("7".into()),   // id 2 — chaîne qui « ressemble » à 7
         Value::String("abc".into()), // id 3 — chaîne qui ne ressemble à rien
-        Value::Float64(6.5),      // id 4 — au-dessus
+        Value::Float64(6.5),         // id 4 — au-dessus
     ]
 }
 
@@ -598,7 +604,11 @@ fn sur_colonne_homogene_les_deux_formes_du_meme_predicat_s_accordent() {
     ]);
     let direct = ids(&db, "MATCH (n:T) WHERE n.v > 5 RETURN n.id");
     let conjoint = ids(&db, "MATCH (n:T) WHERE n.v > 5 AND n.id >= 0 RETURN n.id");
-    assert_eq!(direct, vec![2, 3], "borne stricte : 5 exclu, 7 et 9 retenus");
+    assert_eq!(
+        direct,
+        vec![2, 3],
+        "borne stricte : 5 exclu, 7 et 9 retenus"
+    );
     assert_eq!(
         direct, conjoint,
         "`n.id >= 0` est vraie pour toutes les lignes : les deux formes posent \
@@ -892,10 +902,26 @@ fn litteraux_gql_produisent_les_types_annonces() {
         assert_eq!(r.rows.len(), 1, "le nœud `{k}` doit être unique");
         r.rows[0][0].clone()
     };
-    assert!(matches!(lu("ent"), Value::Int64(1)), "`1` est un INTEGER, obtenu {:?}", lu("ent"));
-    assert!(matches!(lu("flo"), Value::Float64(_)), "`1.5` est un FLOAT, obtenu {:?}", lu("flo"));
-    assert!(matches!(lu("cha"), Value::String(_)), "`'1'` est une STRING, obtenu {:?}", lu("cha"));
-    assert!(matches!(lu("boo"), Value::Bool(true)), "`true` est un BOOLEAN, obtenu {:?}", lu("boo"));
+    assert!(
+        matches!(lu("ent"), Value::Int64(1)),
+        "`1` est un INTEGER, obtenu {:?}",
+        lu("ent")
+    );
+    assert!(
+        matches!(lu("flo"), Value::Float64(_)),
+        "`1.5` est un FLOAT, obtenu {:?}",
+        lu("flo")
+    );
+    assert!(
+        matches!(lu("cha"), Value::String(_)),
+        "`'1'` est une STRING, obtenu {:?}",
+        lu("cha")
+    );
+    assert!(
+        matches!(lu("boo"), Value::Bool(true)),
+        "`true` est un BOOLEAN, obtenu {:?}",
+        lu("boo")
+    );
 }
 
 // ===========================================================================
@@ -928,7 +954,11 @@ fn is_typed_partitionne_une_colonne_heterogene() {
     let boo = ids(&db, "MATCH (n:T) WHERE n.v IS TYPED BOOLEAN RETURN n.id");
 
     assert_eq!(ent, vec![0], "seul le nœud 0 porte un INTEGER");
-    assert_eq!(cha, vec![1], "seul le nœud 1 porte une STRING — `'1'` n'est pas 1");
+    assert_eq!(
+        cha,
+        vec![1],
+        "seul le nœud 1 porte une STRING — `'1'` n'est pas 1"
+    );
     assert_eq!(flo, vec![2], "seul le nœud 2 porte un FLOAT");
     assert_eq!(boo, vec![3], "seul le nœud 3 porte un BOOLEAN");
 
@@ -1106,11 +1136,11 @@ fn toute_valeur_non_nulle_est_inferieure_ou_egale_a_elle_meme() {
     // une (`value_utils.rs:60`, `zone_map.rs:579`, `property.rs:1733`) ; celle
     // que l'évaluateur emprunte ne l'a pas.
     let db = semer(&[
-        Value::Int64(1),           // id 0
-        Value::Float64(2.5),       // id 1
+        Value::Int64(1),             // id 0
+        Value::Float64(2.5),         // id 1
         Value::String("abc".into()), // id 2
-        Value::Bool(true),         // id 3
-        Value::Bool(false),        // id 4
+        Value::Bool(true),           // id 3
+        Value::Bool(false),          // id 4
     ]);
     assert_eq!(
         ids(&db, "MATCH (n:T) WHERE n.v <= n.v RETURN n.id"),
@@ -1140,7 +1170,10 @@ fn l_ordre_des_booleens_ne_depend_pas_du_plan_choisi() {
     //     `compare_values`, sans branche (Bool, Bool), rend UNKNOWN.
     let db = semer(&[Value::Bool(true), Value::Bool(false)]);
     let direct = ids(&db, "MATCH (n:T) WHERE n.v > false RETURN n.id");
-    let conjoint = ids(&db, "MATCH (n:T) WHERE n.v > false AND n.id >= 0 RETURN n.id");
+    let conjoint = ids(
+        &db,
+        "MATCH (n:T) WHERE n.v > false AND n.id >= 0 RETURN n.id",
+    );
     assert_eq!(
         direct, conjoint,
         "`n.id >= 0` est vraie pour les deux lignes : ajouter cette conjonction \
@@ -1183,9 +1216,21 @@ fn une_liste_heterogene_conserve_le_type_de_chaque_element() {
     match scalaire(&db, "[1, 'a', true]") {
         Value::List(elems) => {
             assert_eq!(elems.len(), 3, "trois éléments attendus");
-            assert!(matches!(elems[0], Value::Int64(1)), "élément 0 : INTEGER, obtenu {:?}", elems[0]);
-            assert!(matches!(elems[1], Value::String(_)), "élément 1 : STRING, obtenu {:?}", elems[1]);
-            assert!(matches!(elems[2], Value::Bool(true)), "élément 2 : BOOLEAN, obtenu {:?}", elems[2]);
+            assert!(
+                matches!(elems[0], Value::Int64(1)),
+                "élément 0 : INTEGER, obtenu {:?}",
+                elems[0]
+            );
+            assert!(
+                matches!(elems[1], Value::String(_)),
+                "élément 1 : STRING, obtenu {:?}",
+                elems[1]
+            );
+            assert!(
+                matches!(elems[2], Value::Bool(true)),
+                "élément 2 : BOOLEAN, obtenu {:?}",
+                elems[2]
+            );
         }
         autre => panic!("une liste littérale doit rendre une LIST, obtenu {autre:?}"),
     }
@@ -1305,7 +1350,10 @@ fn une_propriete_absente_n_a_aucun_type_concret() {
     );
     for t in ["STRING", "FLOAT", "BOOLEAN"] {
         assert_eq!(
-            ids(&db, &format!("MATCH (n:T) WHERE n.v IS TYPED {t} RETURN n.id")),
+            ids(
+                &db,
+                &format!("MATCH (n:T) WHERE n.v IS TYPED {t} RETURN n.id")
+            ),
             Vec::<i64>::new(),
             "une propriété absente ne doit être d'aucun type concret, et {t} \
              n'est porté par aucun nœud de cette base"

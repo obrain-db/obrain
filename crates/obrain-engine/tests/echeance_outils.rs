@@ -17,8 +17,8 @@
 //!   refuser un travail légitime.
 #![cfg(feature = "cdc")]
 
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_engine::ObrainDB;
 
@@ -29,7 +29,8 @@ fn base_avec_cdc() -> ObrainDB {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
     for i in 0..20 {
-        s.execute(&format!("CREATE (:EC {{v: {i}}})")).expect("create");
+        s.execute(&format!("CREATE (:EC {{v: {i}}})"))
+            .expect("create");
     }
     db
 }
@@ -72,8 +73,10 @@ fn sans_echeance_ar_m_e_rien_n_est_refuse() {
     // intact pour les appelants qui n'en veulent pas (tests, outils hors pont).
     db.search_surprise(0, 5, false)
         .expect("sans échéance, aucune annulation");
-    db.search_conflicts(0, 5).expect("sans échéance, aucune annulation");
-    db.search_relief(0, 5).expect("sans échéance, aucune annulation");
+    db.search_conflicts(0, 5)
+        .expect("sans échéance, aucune annulation");
+    db.search_relief(0, 5)
+        .expect("sans échéance, aucune annulation");
 }
 
 #[test]

@@ -88,19 +88,19 @@ fn oracle_noms(db: &ObrainDB) -> Vec<String> {
 /// voisins lexicographiques immediats de part et d'autre du prefixe et de
 /// sa borne haute, casse, prefixe exact, prefixe strictement plus long.
 const JEU_PREFIXE: [&str; 14] = [
-    "self",      // plus court que le prefixe — DEHORS
-    "self:",     // egal au prefixe — DEDANS (starts_with est reflexif)
-    "self:a",    // DEDANS
-    "self:zzz",  // DEDANS
-    "self:9",    // DEDANS
-    "self9",     // '9' (0x39) < ':' (0x3A) — DEHORS, sous la borne basse
-    "self;",     // ';' (0x3B) = borne haute exclusive — DEHORS
-    "self;a",    // DEHORS
-    "selg",      // 'g' > 'f' — DEHORS, mais > "self:" en octets : piege
-    "sele",      // 'e' < 'f' — DEHORS
-    "Self:",     // casse differente — DEHORS
-    "",          // chaine vide — DEHORS
-    "s",         // DEHORS
+    "self",               // plus court que le prefixe — DEHORS
+    "self:",              // egal au prefixe — DEDANS (starts_with est reflexif)
+    "self:a",             // DEDANS
+    "self:zzz",           // DEDANS
+    "self:9",             // DEDANS
+    "self9",              // '9' (0x39) < ':' (0x3A) — DEHORS, sous la borne basse
+    "self;",              // ';' (0x3B) = borne haute exclusive — DEHORS
+    "self;a",             // DEHORS
+    "selg",               // 'g' > 'f' — DEHORS, mais > "self:" en octets : piege
+    "sele",               // 'e' < 'f' — DEHORS
+    "Self:",              // casse differente — DEHORS
+    "",                   // chaine vide — DEHORS
+    "s",                  // DEHORS
     "self:\u{e9}t\u{e9}", // unicode apres le prefixe — DEDANS
 ];
 
@@ -117,10 +117,7 @@ fn db_etiquettes() -> ObrainDB {
     let s = db.session();
     s.create_node_with_props(&["Task"], [("nom", Value::String("mono-task".into()))]);
     s.create_node_with_props(&["Node"], [("nom", Value::String("mono-node".into()))]);
-    s.create_node_with_props(
-        &["Task", "Node"],
-        [("nom", Value::String("multi".into()))],
-    );
+    s.create_node_with_props(&["Task", "Node"], [("nom", Value::String("multi".into()))]);
     s.create_node_with_props(&["Autre"], [("nom", Value::String("temoin".into()))]);
     db
 }
@@ -159,7 +156,10 @@ fn db_etiquettes() -> ObrainDB {
 #[test]
 fn a_labels_contains_egale_l_appartenance_donc_la_reecriture_est_legitime() {
     let db = db_etiquettes();
-    let par_contains = textes_tries(&db, "MATCH (n) WHERE labels(n) CONTAINS 'Task' RETURN n.nom");
+    let par_contains = textes_tries(
+        &db,
+        "MATCH (n) WHERE labels(n) CONTAINS 'Task' RETURN n.nom",
+    );
     let par_appartenance = textes_tries(&db, "MATCH (n) WHERE 'Task' IN labels(n) RETURN n.nom");
     let par_scan = textes_tries(&db, "MATCH (n:Task) RETURN n.nom");
 
@@ -355,7 +355,10 @@ fn b_repli_sur_balayage_quand_la_propriete_n_est_pas_declaree() {
         &db,
         "MATCH (n:S) WHERE n.nom STARTS WITH 'self:' RETURN n.nom",
     );
-    assert_eq!(obtenu, attendu, "sans declaration : balayage, et meme reponse");
+    assert_eq!(
+        obtenu, attendu,
+        "sans declaration : balayage, et meme reponse"
+    );
 }
 
 /// Prefixe VIDE : tout le monde commence par la chaine vide. Aucune borne
@@ -524,7 +527,10 @@ fn b_borne_haute_au_bord_des_surrogates() {
         &db,
         &format!("MATCH (n:S) WHERE n.nom STARTS WITH '{prefixe}' RETURN n.nom"),
     );
-    assert_eq!(obtenu, attendu, "bord des surrogates : reponse exacte exigee");
+    assert_eq!(
+        obtenu, attendu,
+        "bord des surrogates : reponse exacte exigee"
+    );
 }
 
 /// `STARTS WITH` SANS etiquette dans le motif : le chemin change (pas de
@@ -536,7 +542,10 @@ fn b_sans_etiquette_meme_reponse_qu_avec() {
         &db,
         "MATCH (n:S) WHERE n.nom STARTS WITH 'self:' RETURN n.nom",
     );
-    let sans = textes_tries(&db, "MATCH (n) WHERE n.nom STARTS WITH 'self:' RETURN n.nom");
+    let sans = textes_tries(
+        &db,
+        "MATCH (n) WHERE n.nom STARTS WITH 'self:' RETURN n.nom",
+    );
     assert_eq!(
         avec, sans,
         "tous les noeuds portent :S — les deux formes doivent coincider"
@@ -652,7 +661,10 @@ fn c_order_by_asc_limit_egale_le_tri_integral_coupe() {
 #[test]
 fn c_limite_superieure_au_nombre_de_lignes() {
     let db = db_versions(7);
-    let obtenu = textes(&db, "MATCH (n:S) RETURN n.nom ORDER BY n.nom DESC LIMIT 1000");
+    let obtenu = textes(
+        &db,
+        "MATCH (n:S) RETURN n.nom ORDER BY n.nom DESC LIMIT 1000",
+    );
     assert_eq!(obtenu, oracle_tri_coupe(&db, true, 1000));
     assert_eq!(obtenu.len(), 7, "sept noeuds, sept lignes");
 }
@@ -667,7 +679,10 @@ fn c_skip_et_limit_ensemble() {
         &db,
         "MATCH (n:S) RETURN n.nom ORDER BY n.nom DESC SKIP 5 LIMIT 10",
     );
-    let attendu: Vec<String> = oracle_tri_coupe(&db, true, 15).into_iter().skip(5).collect();
+    let attendu: Vec<String> = oracle_tri_coupe(&db, true, 15)
+        .into_iter()
+        .skip(5)
+        .collect();
     assert_eq!(
         obtenu, attendu,
         "SKIP 5 LIMIT 10 : le tas doit retenir 15 elements, pas 10"
@@ -721,7 +736,10 @@ fn c_ex_aequo_rend_les_k_plus_grandes_cles() {
         let mut ordonnees = cles.clone();
         ordonnees.sort_unstable();
         ordonnees.reverse();
-        assert_eq!(cles, ordonnees, "les cles rendues doivent etre triees, k={k}");
+        assert_eq!(
+            cles, ordonnees,
+            "les cles rendues doivent etre triees, k={k}"
+        );
         // …et former exactement le multi-ensemble des k plus grandes.
         cles.sort_unstable();
         toutes.sort_unstable();
@@ -810,10 +828,7 @@ fn c_tri_multi_cles_reste_un_prefixe_du_tri_complet() {
 #[test]
 fn c_order_by_sur_alias_projete() {
     let db = db_versions(40);
-    let complet = lignes(
-        &db,
-        "MATCH (n:S) RETURN n.version AS v ORDER BY v DESC",
-    );
+    let complet = lignes(&db, "MATCH (n:S) RETURN n.version AS v ORDER BY v DESC");
     for k in [1usize, 5, 40] {
         let coupe = lignes(
             &db,

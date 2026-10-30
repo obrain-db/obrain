@@ -102,7 +102,10 @@ impl Enfant {
 fn attendre_fichier(p: &Path) {
     let debut = std::time::Instant::now();
     while !p.exists() {
-        assert!(debut.elapsed() < Duration::from_secs(30), "attente du top départ");
+        assert!(
+            debut.elapsed() < Duration::from_secs(30),
+            "attente du top départ"
+        );
         std::thread::sleep(Duration::from_micros(200));
     }
 }
@@ -165,9 +168,8 @@ fn t2_zero_perte_inter_processus() {
             Err(_) => break,
         }
     }
-    let attendus: std::collections::HashSet<(u8, u64)> = (1..=n)
-        .flat_map(|t| (0..M).map(move |s| (t, s)))
-        .collect();
+    let attendus: std::collections::HashSet<(u8, u64)> =
+        (1..=n).flat_map(|t| (0..M).map(move |s| (t, s))).collect();
     let perdues = attendus.difference(&vus).count();
     eprintln!(
         "T2 (forme dure) : {n} processus × {M} frames · attendues={} · lues={lues} · \
@@ -177,7 +179,8 @@ fn t2_zero_perte_inter_processus() {
     );
 
     assert_eq!(
-        perdues, 0,
+        perdues,
+        0,
         "PERTE SILENCIEUSE de {perdues} frames sur {} ({:.1} %) : deux processus \
          écrivaient au MÊME offset de descripteur — l'append n'est pas atomique \
          au niveau du noyau (pas d'O_APPEND). C'est LE défaut que l'axe APPEND \

@@ -394,7 +394,10 @@ pub struct EntreeIndex {
 /// donc « par défaut » veut bien dire « aucune clé » — jamais une clé valide.
 impl Default for EntreeIndex {
     fn default() -> Self {
-        Self { cle: [0u8; LARGEUR_CLE], slot: 0 }
+        Self {
+            cle: [0u8; LARGEUR_CLE],
+            slot: 0,
+        }
     }
 }
 
@@ -973,7 +976,8 @@ impl PropsIndexZone {
                 page[..24].copy_from_slice(bytemuck::bytes_of(&entete));
                 if n > 0 {
                     let largeur = core::mem::size_of::<EntreeIndex>();
-                    page[24..24 + n * largeur].copy_from_slice(bytemuck::cast_slice(&entrees[d..f]));
+                    page[24..24 + n * largeur]
+                        .copy_from_slice(bytemuck::cast_slice(&entrees[d..f]));
                 }
                 let crc = crc32fast::hash(&page);
                 page[4..8].copy_from_slice(&crc.to_le_bytes());
@@ -1199,12 +1203,20 @@ mod tests {
         let long = "x".repeat(LARGEUR_CLE - 1);
         let a = encoder_cle(&Value::String(format!("{long}_ALPHA").into())).unwrap();
         let b = encoder_cle(&Value::String(format!("{long}_OMEGA").into())).unwrap();
-        assert_eq!(a, b, "collision attendue au-delà de {} octets", LARGEUR_CLE - 1);
+        assert_eq!(
+            a,
+            b,
+            "collision attendue au-delà de {} octets",
+            LARGEUR_CLE - 1
+        );
         // Deux préfixes qui diffèrent AVANT la troncature restent distincts — et
         // ordonnés : c'est ce que le chemin de préfixe exploite.
         let court = encoder_cle(&Value::String("abcdefghijk_ALPHA".into())).unwrap();
         let autre = encoder_cle(&Value::String("abcdefghijk_OMEGA".into())).unwrap();
-        assert_ne!(court, autre, "sous la troncature, deux valeurs DISTINCTES le restent");
+        assert_ne!(
+            court, autre,
+            "sous la troncature, deux valeurs DISTINCTES le restent"
+        );
         let c = encoder_cle(&Value::String("abcdefghijl".into())).unwrap();
         assert!(court < c, "l'ordre du préfixe doit tenir");
         assert!(a < autre || b < autre || true);
@@ -1359,12 +1371,7 @@ mod tests {
         let sf = SubstrateFile::open_tempfile().unwrap();
         // Fusion initiale : ancres (100, 10), slots 1..=50 (valeurs i*10).
         let entrees: Vec<EntreeIndex> = (1..=50)
-            .map(|i| {
-                EntreeIndex::new(
-                    encoder_cle(&Value::Int64(i64::from(i * 10))).unwrap(),
-                    i,
-                )
-            })
+            .map(|i| EntreeIndex::new(encoder_cle(&Value::Int64(i64::from(i * 10))).unwrap(), i))
             .collect();
         {
             let mut z = PropsIndexZone::ouvrir(&sf);
@@ -1406,12 +1413,7 @@ mod tests {
     fn une_fenetre_qui_reécrit_un_slot_remplace_l_ancienne_entree() {
         let sf = SubstrateFile::open_tempfile().unwrap();
         let entrees: Vec<EntreeIndex> = (1..=5)
-            .map(|i| {
-                EntreeIndex::new(
-                    encoder_cle(&Value::Int64(i64::from(i) * 10)).unwrap(),
-                    i,
-                )
-            })
+            .map(|i| EntreeIndex::new(encoder_cle(&Value::Int64(i64::from(i) * 10)).unwrap(), i))
             .collect();
         {
             let mut z = PropsIndexZone::ouvrir(&sf);
@@ -1429,9 +1431,13 @@ mod tests {
             )],
         )];
         assert!(z2.etendre_apres_fenetre(&ajouts, 10, 1).unwrap());
-        let autour_de_20 =
-            z2.candidats(1, encoder_cle(&Value::Int64(15)).unwrap(), encoder_cle(&Value::Int64(25)).unwrap())
-                .unwrap();
+        let autour_de_20 = z2
+            .candidats(
+                1,
+                encoder_cle(&Value::Int64(15)).unwrap(),
+                encoder_cle(&Value::Int64(25)).unwrap(),
+            )
+            .unwrap();
         assert!(
             !autour_de_20.contains(&2),
             "l'ancienne entrée (20, slot 2) doit avoir été retirée : {autour_de_20:?}"
@@ -1440,7 +1446,11 @@ mod tests {
             .candidats(1, encoder_cle(&Value::Int64(1_999)).unwrap(), CLE_MAX)
             .unwrap();
         assert_eq!(haut, vec![2]);
-        assert_eq!(z2.entrees_serie(1).len(), 5, "une entrée par slot, pas plus");
+        assert_eq!(
+            z2.entrees_serie(1).len(),
+            5,
+            "une entrée par slot, pas plus"
+        );
     }
 
     /// Un écart NON FORWARD (WAL tronqué sous l'ancre, zone réduite) n'est

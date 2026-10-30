@@ -48,8 +48,8 @@
 use dashmap::DashMap;
 use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::{Direction, GraphStore, GraphStoreMut};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::store_trait::{OptionalGraphStore, now_epoch_secs, persist_node_f64};
 
@@ -444,7 +444,9 @@ impl DecisionStore {
     /// Returns the `(n, k)` counts for an option, if known.
     pub fn option_counts(&self, question: &str, option: &str) -> Option<DecisionOption> {
         self.ensure_reloaded();
-        self.options.get(&option_key(question, option)).map(|entry| *entry)
+        self.options
+            .get(&option_key(question, option))
+            .map(|entry| *entry)
     }
 
     /// The calibrated distribution over `options`, in their given order.
@@ -724,8 +726,7 @@ mod tests {
         let gs = Arc::new(SubstrateStore::open_tempfile().expect("open_tempfile"));
         let options = vec!["billing".to_string(), "technical".to_string()];
         {
-            let store =
-                DecisionStore::with_graph_store(Arc::clone(&gs) as Arc<dyn GraphStoreMut>);
+            let store = DecisionStore::with_graph_store(Arc::clone(&gs) as Arc<dyn GraphStoreMut>);
             store.register("triage.department", "choice", &options);
             store.enregistrer("triage.department", "billing", true);
         }
@@ -740,6 +741,10 @@ mod tests {
 
         // Re-derived distribution, not the persisted cache (D5).
         let dist = store.distribution("triage.department", &options);
-        assert!((dist[0] - posterior_beta(1, 1)).abs() < 1e-9, "dist[0] = {}", dist[0]);
+        assert!(
+            (dist[0] - posterior_beta(1, 1)).abs() < 1e-9,
+            "dist[0] = {}",
+            dist[0]
+        );
     }
 }

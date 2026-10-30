@@ -1444,8 +1444,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         });

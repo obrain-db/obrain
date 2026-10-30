@@ -168,7 +168,9 @@ impl SlotPage {
 
     /// Itère les entrées du slot (tombes incluses — filtrage par les walkers),
     /// dans l'ordre d'écriture.
-    pub fn iter(&self) -> impl Iterator<Item = Result<(PropertyEntry, usize), PropertyCodecError>> + '_ {
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = Result<(PropertyEntry, usize), PropertyCodecError>> + '_ {
         let used = &self.payload[..self.header.free_offset as usize];
         let mut pos = 0usize;
         core::iter::from_fn(move || {
@@ -274,7 +276,9 @@ impl CarrierPack {
             return None;
         }
         let debut = (unite as usize) * UNITE_SIZE;
-        Some(bytemuck::from_bytes_mut(&mut self.0[debut..debut + UNITE_SIZE]))
+        Some(bytemuck::from_bytes_mut(
+            &mut self.0[debut..debut + UNITE_SIZE],
+        ))
     }
 
     /// Le contrôle du carrier (unité 0).
@@ -287,7 +291,9 @@ impl CarrierPack {
     pub fn allouer_slot(&mut self, owner: u32, kind: OwnerKind) -> Option<u8> {
         let mut ctrl = self.controle();
         let unite = ctrl.reserver_unite()?;
-        let brut = self.unite_brute(unite).expect("unité réservée → adressable");
+        let brut = self
+            .unite_brute(unite)
+            .expect("unité réservée → adressable");
         let slot = SlotPage::with_owner(owner, kind);
         brut.copy_from_slice(bytemuck::bytes_of(&slot));
         ctrl.seal_crc32();
@@ -332,7 +338,10 @@ mod tests {
                 let addr = encode_slot(carrier, unite).expect("adresse valide");
                 assert_eq!(addr & UNITE_SLOT_FLAG, UNITE_SLOT_FLAG);
                 match decode_unite(addr) {
-                    UniteAddr::Slot { carrier: c, unite: u } => {
+                    UniteAddr::Slot {
+                        carrier: c,
+                        unite: u,
+                    } => {
                         assert_eq!(c, carrier);
                         assert_eq!(u, unite);
                     }
@@ -419,7 +428,10 @@ mod tests {
             assert_eq!(s.header.node_id, owner, "owner stamp du slot {u}");
             assert_eq!(s.header.magic, crate::page::PROP_PAGE_MAGIC_NODE);
         }
-        assert!(cp.allouer_slot(99, OwnerKind::Node).is_none(), "carrier plein");
+        assert!(
+            cp.allouer_slot(99, OwnerKind::Node).is_none(),
+            "carrier plein"
+        );
         assert_eq!(cp.controle().nb_unites_utilisees, 8);
         // Isolation : chaque slot écrit ses propres entrées + CRC, sans
         // affecter ses voisins.

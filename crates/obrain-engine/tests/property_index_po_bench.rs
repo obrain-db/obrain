@@ -88,9 +88,7 @@ fn bench_correlated_multi_match_index_seek() {
             .expect("create SUPPORTS");
     }
     session
-        .execute_cypher(
-            "MATCH (a:A {fk: 'key-1'}) CREATE (a)-[:SUPPORTS]->(:Z {name: 'tiers'})",
-        )
+        .execute_cypher("MATCH (a:A {fk: 'key-1'}) CREATE (a)-[:SUPPORTS]->(:Z {name: 'tiers'})")
         .expect("create SUPPORTS tiers");
     println!(
         "  Peuple {} A + {} B en {:.0}ms\n",
@@ -104,7 +102,11 @@ fn bench_correlated_multi_match_index_seek() {
                  WHERE NOT (a)-[:SUPPORTS]->(b) RETURN count(b)";
 
     // Verite terrain (independante de l'index)
-    let rows_join = session.execute_cypher(q_join).unwrap().scalar::<i64>().unwrap();
+    let rows_join = session
+        .execute_cypher(q_join)
+        .unwrap()
+        .scalar::<i64>()
+        .unwrap();
     let rows_not = session.execute(q_not).unwrap().scalar::<i64>().unwrap();
     assert_eq!(rows_join, n_a, "1 paire par a");
     assert_eq!(rows_not, n_a - n_a / 10, "paires supportees exclues");
@@ -138,7 +140,11 @@ fn bench_correlated_multi_match_index_seek() {
 
     // Les resultats restent identiques avec l'index
     assert_eq!(
-        session.execute_cypher(q_join).unwrap().scalar::<i64>().unwrap(),
+        session
+            .execute_cypher(q_join)
+            .unwrap()
+            .scalar::<i64>()
+            .unwrap(),
         rows_join
     );
     assert_eq!(

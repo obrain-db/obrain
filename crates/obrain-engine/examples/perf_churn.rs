@@ -31,7 +31,12 @@ fn pct(sorted: &[u128], p: f64) -> u128 {
 }
 
 /// Mesure la latence de lecture d'un nœud après `rewrites` réécritures.
-fn measure_after_rewrites(db: &ObrainDB, key: &str, rewrites: usize, probes: usize) -> (u128, u128) {
+fn measure_after_rewrites(
+    db: &ObrainDB,
+    key: &str,
+    rewrites: usize,
+    probes: usize,
+) -> (u128, u128) {
     let session = db.session();
 
     // Phase de churn : on réécrit le MÊME nœud, encore et encore.

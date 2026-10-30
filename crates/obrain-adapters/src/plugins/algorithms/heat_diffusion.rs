@@ -608,13 +608,19 @@ mod tests {
         let froid = heat_kernel_diffusion(&store, &features, &seeds, &weights, &config);
         let chaud = heat_kernel_diffusion(&store, &features, &seeds, &weights, &config);
 
-        assert_eq!(froid.len(), chaud.len(), "le cache change le nombre de noeuds chauffes");
+        assert_eq!(
+            froid.len(),
+            chaud.len(),
+            "le cache change le nombre de noeuds chauffes"
+        );
         for (a, b) in froid.iter().zip(chaud.iter()) {
             assert_eq!(a.0, b.0, "le cache change l'ordre des noeuds");
             assert!(
                 (a.1 - b.1).abs() < 1e-6,
                 "le cache change la chaleur de {:?} : {} vs {}",
-                a.0, a.1, b.1
+                a.0,
+                a.1,
+                b.1
             );
         }
     }
@@ -659,7 +665,11 @@ mod tests {
             .iter()
             .filter_map(|f| r_etoile.iter().find(|(id, _)| id == f).map(|(_, h)| *h))
             .collect();
-        assert_eq!(chaleurs.len(), 4, "les quatre feuilles doivent etre chauffees");
+        assert_eq!(
+            chaleurs.len(),
+            4,
+            "les quatre feuilles doivent etre chauffees"
+        );
         for c in &chaleurs {
             assert!(
                 (c - chaleurs[0]).abs() < 1e-5,

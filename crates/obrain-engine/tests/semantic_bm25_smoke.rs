@@ -32,7 +32,12 @@ fn bm25_semantic_smoke_topk_and_latency() {
     }
     db.create_text_index("Doc", "text").unwrap();
 
-    let queries = ["vector search embeddings", "graph database memory locality", "spreading activation cognitive", "bm25 full text"];
+    let queries = [
+        "vector search embeddings",
+        "graph database memory locality",
+        "spreading activation cognitive",
+        "bm25 full text",
+    ];
     for q in &queries {
         let t0 = web_time::Instant::now();
         let res = db.text_search("Doc", "text", q, 3).unwrap();
@@ -54,7 +59,9 @@ fn bm25_semantic_smoke_topk_and_latency() {
         assert!(!res.is_empty(), "BM25 doit répondre");
     }
     // Sanité : la requête « embedding vectoriel » ramène bien le doc HNSW/vector.
-    let res = db.text_search("Doc", "text", "embeddings semantic similarity", 3).unwrap();
+    let res = db
+        .text_search("Doc", "text", "embeddings semantic similarity", 3)
+        .unwrap();
     let top1 = db.get_node(res[0].0).unwrap();
     let t = match top1
         .properties
@@ -63,7 +70,10 @@ fn bm25_semantic_smoke_topk_and_latency() {
         Some(obrain_common::types::Value::String(s)) => s.to_string(),
         _ => String::new(),
     };
-    assert!(t.contains("vector"), "top-1 attendu : doc vector, got : {t}");
+    assert!(
+        t.contains("vector"),
+        "top-1 attendu : doc vector, got : {t}"
+    );
     eprintln!("semantic smoke OK — pipeline BM25 engine fonctionnel (top-1 vérifié)");
 }
 
@@ -71,7 +81,10 @@ fn bm25_semantic_smoke_topk_and_latency() {
 fn bm25_latency_scale_20k_docs() {
     use obrain_engine::database::ObrainDB;
     let db = ObrainDB::new_in_memory();
-    let topics = ["graph", "vector", "search", "memory", "storage", "wal", "mmap", "spread", "engram", "index"];
+    let topics = [
+        "graph", "vector", "search", "memory", "storage", "wal", "mmap", "spread", "engram",
+        "index",
+    ];
     let n = 20_000usize;
     let t0 = web_time::Instant::now();
     for i in 0..n {
@@ -81,7 +94,11 @@ fn bm25_latency_scale_20k_docs() {
             topics[i % topics.len()],
             topics[(i / topics.len()) % topics.len()]
         );
-        db.set_node_property(d, "text", obrain_common::types::Value::String(text.as_str().into()));
+        db.set_node_property(
+            d,
+            "text",
+            obrain_common::types::Value::String(text.as_str().into()),
+        );
         db.set_node_property(d, "uid", obrain_common::types::Value::Int64(i as i64));
     }
     db.create_text_index("Doc", "text").unwrap();

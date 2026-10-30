@@ -28,10 +28,10 @@
 //! performance.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
-use std::hint::black_box;
 use obrain_core::graph::GraphStoreMut as _;
 use obrain_substrate::SubstrateStore;
 use obrain_substrate::borne_allocation::BorneAllocation;
+use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -106,7 +106,10 @@ fn mesurer(ecrivains: u32, n: u64) -> Mesure {
     let avant = SubstrateStore::open(&dir)
         .map(|s| s.slot_high_water())
         .unwrap_or(1);
-    assert_eq!(avant, 2, "le store pré-chauffé doit porter exactement un nœud");
+    assert_eq!(
+        avant, 2,
+        "le store pré-chauffé doit porter exactement un nœud"
+    );
     drop(SubstrateStore::open(&dir));
 
     let moi = std::env::current_exe().expect("current_exe");
@@ -257,11 +260,7 @@ fn bench_borne_allocation(c: &mut Criterion) {
     // compare le coût de l'allocation partagée, pas à zéro.
     let local = std::sync::atomic::AtomicU64::new(1);
     groupe.bench_function("reserver_local_temoin", |b| {
-        b.iter(|| {
-            black_box(
-                local.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
-            )
-        })
+        b.iter(|| black_box(local.fetch_add(1, std::sync::atomic::Ordering::AcqRel)))
     });
     groupe.finish();
 }

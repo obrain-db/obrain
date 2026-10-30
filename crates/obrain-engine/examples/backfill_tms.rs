@@ -19,11 +19,15 @@ fn call_id_of(data: &serde_json::Value) -> Option<String> {
             }
         }
     }
-    data.get("toolCallId").and_then(|v| v.as_str()).map(String::from)
+    data.get("toolCallId")
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: backfill_tms <store>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: backfill_tms <store>");
     let db = ObrainDB::open_substrate(&path).expect("open_substrate");
     let session = db.session();
 
@@ -34,22 +38,35 @@ fn main() {
     let mut noeuds = 0u64;
     let mut sessions = 0u64;
     for row in &r.rows {
-        let Some(sqn) = row.first().map(|v| v.to_string()) else { continue };
-        if sqn.is_empty() || sqn == "NULL" { continue; }
+        let Some(sqn) = row.first().map(|v| v.to_string()) else {
+            continue;
+        };
+        if sqn.is_empty() || sqn == "NULL" {
+            continue;
+        }
 
         let lines = db.read_session_journal(&sqn, -1, i64::MAX, 1_000_000);
-        if lines.is_empty() { continue; }
+        if lines.is_empty() {
+            continue;
+        }
         sessions += 1;
 
         for line in &lines {
-            let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let Some(ty) = ev.get("type").and_then(|v| v.as_str()) else { continue };
-            let Some(t) = ev.get("time").and_then(|v| v.as_i64()) else { continue };
+            let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(ty) = ev.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(t) = ev.get("time").and_then(|v| v.as_i64()) else {
+                continue;
+            };
 
             let qn: Option<String> = match ty {
-                "user/message" | "assistant/message" => {
-                    ev.get("seq").and_then(|v| v.as_i64()).map(|s| format!("{sqn}:msg:{s}"))
-                }
+                "user/message" | "assistant/message" => ev
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .map(|s| format!("{sqn}:msg:{s}")),
                 "tool/call" => ev
                     .get("data")
                     .and_then(|d| d.get("callId"))

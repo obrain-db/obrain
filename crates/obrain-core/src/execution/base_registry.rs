@@ -69,10 +69,7 @@ impl std::fmt::Debug for BaseRegistry {
         f.debug_struct("BaseRegistry")
             .field("primary_slug", &self.primary_slug)
             .field("attached", &self.opened.read().len())
-            .field(
-                "dangling_refs",
-                &self.dangling_refs.load(Ordering::Relaxed),
-            )
+            .field("dangling_refs", &self.dangling_refs.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
 }

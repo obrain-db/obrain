@@ -36,7 +36,9 @@ use std::time::{Duration, Instant};
 use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
 use obrain_substrate::SubstrateStore;
 use obrain_substrate::wal::{WalPayload, WalRecord};
-use obrain_substrate::wal_io::{ANCRE_INITIALE, CoordinationAppend, SyncMode, WalReader, WalWriter};
+use obrain_substrate::wal_io::{
+    ANCRE_INITIALE, CoordinationAppend, SyncMode, WalReader, WalWriter,
+};
 
 // ---------------------------------------------------------------------------
 // Harnais inter-processus
@@ -146,11 +148,7 @@ fn enfant_ecrivain(dir: &Path, n: u64) -> ! {
     for _ in 0..n {
         ids.push(s.create_node(&["MW"]).0);
     }
-    let liste = ids
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     annoncer(&format!("IDS {liste}"));
     std::process::exit(0);
 }
@@ -185,11 +183,7 @@ fn enfant_rafale(wal: &Path, sortie: &Path, arret: &Path, drapeau: &Path) -> ! {
         }
         i += 1;
     }
-    let corps = ok
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+    let corps = ok.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     std::fs::write(sortie, corps).expect("écrire le certificat");
     annoncer(&format!("OK {}", ok.len()));
     std::process::exit(0);
@@ -203,11 +197,7 @@ fn enfant_ecrivain_puis_meurt(dir: &Path, n: u64) -> ! {
     for _ in 0..n {
         ids.push(s.create_node(&["MW"]).0);
     }
-    let liste = ids
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     annoncer(&format!("IDS {liste}"));
     annoncer("PRET");
     // Boucle d'attente : le parent va nous SIGKILL.
@@ -332,8 +322,7 @@ fn t1_deux_processus_allouent_des_ids_distincts() {
         }
     }
     assert_eq!(
-        vivants,
-        300,
+        vivants, 300,
         "les 300 slots alloués doivent porter un nœud VIVANT après réouverture \
          (un slot écrasé par un pair rendrait un nœud manquant)"
     );
@@ -493,11 +482,7 @@ fn t4b_le_filigrane_est_repare_des_zones() {
                 // le relevé va lire. Un crash réel les laisserait dans le cache
                 // du noyau, donc visibles de tout processus — on le rend explicite.
                 s.writer().msync_zones().expect("msync des zones");
-                let liste = ids
-                    .iter()
-                    .map(u64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
                 annoncer(&format!("IDS {liste}"));
                 annoncer("PRET");
                 loop {
@@ -792,7 +777,8 @@ fn t7_checkpoint_concurrent_ne_laisse_ni_trou_ni_frame_illisible() {
         &doublons[..doublons.len().min(8)]
     );
     assert_eq!(
-        trous, 0,
+        trous,
+        0,
         "le WAL n'est PLUS un journal SÉQUENTIEL : le suffixe survivant \
          {}..={} porte {trous} trou(s) d'indice ({} appends ont rendu Ok, {} \
          frames survivent) — une frame a été intercalée hors de l'ordre du journal",

@@ -559,19 +559,22 @@ impl BlobColumnRegistry {
         slots: &[Option<u32>],
         predicats: &[obrain_core::graph::traits::PredicatTexte<'_>],
     ) -> Vec<Vec<Option<bool>>> {
-        let mut out: Vec<Vec<Option<bool>>> =
-            vec![vec![None; slots.len()]; predicats.len()];
+        let mut out: Vec<Vec<Option<bool>>> = vec![vec![None; slots.len()]; predicats.len()];
         let Some(writer) = self.writers.get(&spec).map(|w| w.clone()) else {
             return out;
         };
         let guard = writer.read();
         for (i, s) in slots.iter().enumerate() {
             let Some(slot) = *s else { continue };
-            let Some(data) = guard.read_slot(slot) else { continue };
+            let Some(data) = guard.read_slot(slot) else {
+                continue;
+            };
             // Charge étiquetée : 1 octet de tag, puis les octets. Une charge
             // non étiquetée `String` (BINCODE, qui peut porter une chaîne) reste
             // sans verdict : l'appelant reprend la chaîne des zones.
-            let Some((tag, charge)) = data.split_first() else { continue };
+            let Some((tag, charge)) = data.split_first() else {
+                continue;
+            };
             if *tag != BLOB_TAG_STRING {
                 continue;
             }

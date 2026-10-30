@@ -56,15 +56,9 @@ struct KeyTrace {
 
 /// Détecte les couples `(nœud, propriété)` dont la valeur oscille dans la
 /// fenêtre CDC. O(window) + tri O(k log k), mémoire bornée par la fenêtre.
-pub fn compute_search_conflicts(
-    log: &CdcLog,
-    since_ms: u64,
-    limit: usize,
-) -> Vec<ConflictRow> {
-    let events: Vec<ChangeEvent> = log.changes_since_timestamp(
-        since_ms,
-        |e| matches!(e.kind, ChangeKind::Update),
-    );
+pub fn compute_search_conflicts(log: &CdcLog, since_ms: u64, limit: usize) -> Vec<ConflictRow> {
+    let events: Vec<ChangeEvent> =
+        log.changes_since_timestamp(since_ms, |e| matches!(e.kind, ChangeKind::Update));
 
     let mut traces: HashMap<(u64, String), KeyTrace> = HashMap::new();
     let mut changed: Vec<(u64, String, usize)> = Vec::new();
@@ -99,7 +93,9 @@ pub fn compute_search_conflicts(
         }
     }
     changed.sort_by(|a, b| {
-        b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1))
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
     });
     changed
         .into_iter()
@@ -152,7 +148,12 @@ fn arg_u64(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<u64>
 }
 
 #[cfg(feature = "cdc")]
-fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usize) -> Result<usize> {
+fn arg_usize(
+    arguments: &[LogicalExpression],
+    i: usize,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
     match arguments.get(i) {
         None => Ok(default),
         Some(LogicalExpression::Literal(Value::Int64(v))) if *v >= 0 => Ok(*v as usize),

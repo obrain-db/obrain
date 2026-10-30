@@ -318,11 +318,15 @@ pub fn stats(octets: &[u8]) -> SubstrateResult<StatsInstantane> {
         let len_charge = cur.u64()?;
         let _crc = cur.u32()?;
         if nom == crate::file::zone::NODES {
-            slots_noeuds =
-                slots_pleins(len_logique, core::mem::size_of::<crate::record::NodeRecord>());
+            slots_noeuds = slots_pleins(
+                len_logique,
+                core::mem::size_of::<crate::record::NodeRecord>(),
+            );
         } else if nom == crate::file::zone::EDGES {
-            slots_aretes =
-                slots_pleins(len_logique, core::mem::size_of::<crate::record::EdgeRecord>());
+            slots_aretes = slots_pleins(
+                len_logique,
+                core::mem::size_of::<crate::record::EdgeRecord>(),
+            );
         }
         cur.sauter(len_charge as usize)?;
     }
@@ -343,11 +347,15 @@ fn slots_pleins(octets_zone: u64, taille_record: usize) -> u64 {
 /// Compte les nœuds et arêtes d'un substrat en lisant ses ZONES.
 fn compter_depuis_zones(sub: &SubstrateFile) -> SubstrateResult<(u64, u64)> {
     let nodes = sub.open_zone(crate::file::Zone::Nodes)?;
-    let slots_noeuds =
-        slots_pleins(nodes.len(), core::mem::size_of::<crate::record::NodeRecord>());
+    let slots_noeuds = slots_pleins(
+        nodes.len(),
+        core::mem::size_of::<crate::record::NodeRecord>(),
+    );
     let edges = sub.open_zone(crate::file::Zone::Edges)?;
-    let slots_aretes =
-        slots_pleins(edges.len(), core::mem::size_of::<crate::record::EdgeRecord>());
+    let slots_aretes = slots_pleins(
+        edges.len(),
+        core::mem::size_of::<crate::record::EdgeRecord>(),
+    );
     Ok((slots_noeuds, slots_aretes))
 }
 
@@ -504,9 +512,8 @@ mod tests {
         }
 
         // Et la méta restaurée porte le même node_count que la source.
-        let (nc, ec) = source.avec_substrate(|sub| {
-            (sub.meta_header().node_count, sub.meta_header().edge_count)
-        });
+        let (nc, ec) = source
+            .avec_substrate(|sub| (sub.meta_header().node_count, sub.meta_header().edge_count));
         assert_eq!(cible.meta_header().node_count, nc);
         assert_eq!(cible.meta_header().edge_count, ec);
     }
@@ -578,7 +585,9 @@ mod tests {
         );
 
         // 2. Le SENS : le dictionnaire du store RESTAURÉ porte encore ses labels.
-        let dict = restaure.octets_dictionnaire().expect("dict du store restauré");
+        let dict = restaure
+            .octets_dictionnaire()
+            .expect("dict du store restauré");
         let snap = crate::dict::DictSnapshot::from_bytes(&dict).expect("décodage");
         assert!(
             snap.labels.iter().any(|l| l == "Personne"),
@@ -606,7 +615,10 @@ mod tests {
 
         let mut cible = SubstrateFile::open_memory().expect("cible");
         let res = restaurer(&mut cible, &abime);
-        assert!(res.is_err(), "un CRC faux doit faire échouer la restauration");
+        assert!(
+            res.is_err(),
+            "un CRC faux doit faire échouer la restauration"
+        );
     }
 
     /// Un instantané tronqué est refusé proprement (pas de panique, pas de
@@ -637,11 +649,7 @@ mod tests {
         let mut ids = Vec::with_capacity(N);
         for i in 0..N {
             let id = store.create_node(&["Mesure"]);
-            store.set_node_property(
-                id,
-                "rang",
-                obrain_common::types::Value::Int64(i as i64),
-            );
+            store.set_node_property(id, "rang", obrain_common::types::Value::Int64(i as i64));
             store.set_node_property(
                 id,
                 "nom",

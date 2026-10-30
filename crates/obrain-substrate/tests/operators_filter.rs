@@ -1406,8 +1406,14 @@ fn test_cross_type_string_numeric_equality_is_unknown() {
         (s("7.25"), Value::Float64(7.25)),
         (Value::Float64(2.5), s("7.25")),
     ] {
-        assert!(!verdict(&store, g.clone(), BinaryFilterOp::Eq, d.clone()), "{g:?} = {d:?} doit être UNKNOWN");
-        assert!(!verdict(&store, g.clone(), BinaryFilterOp::Ne, d.clone()), "{g:?} <> {d:?} doit être UNKNOWN");
+        assert!(
+            !verdict(&store, g.clone(), BinaryFilterOp::Eq, d.clone()),
+            "{g:?} = {d:?} doit être UNKNOWN"
+        );
+        assert!(
+            !verdict(&store, g.clone(), BinaryFilterOp::Ne, d.clone()),
+            "{g:?} <> {d:?} doit être UNKNOWN"
+        );
     }
 }
 
@@ -1422,7 +1428,10 @@ fn test_cross_type_string_numeric_ordering_is_unknown() {
         (s("2.5"), BinaryFilterOp::Le, Value::Float64(2.5)),
         (Value::Float64(100.0), BinaryFilterOp::Ge, s("99.9")),
     ] {
-        assert!(!verdict(&store, g.clone(), op, d.clone()), "{g:?} {op:?} {d:?} doit être UNKNOWN");
+        assert!(
+            !verdict(&store, g.clone(), op, d.clone()),
+            "{g:?} {op:?} {d:?} doit être UNKNOWN"
+        );
     }
 }
 
@@ -1432,10 +1441,30 @@ fn test_cross_type_string_numeric_ordering_is_unknown() {
 #[test]
 fn test_cross_type_int_float_stays_exact() {
     let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
-    assert!(verdict(&store, Value::Int64(42), BinaryFilterOp::Eq, Value::Float64(42.0)));
-    assert!(!verdict(&store, Value::Int64(42), BinaryFilterOp::Eq, Value::Float64(42.5)));
-    assert!(verdict(&store, Value::Int64(42), BinaryFilterOp::Lt, Value::Float64(42.5)));
-    assert!(verdict(&store, Value::Float64(2.5), BinaryFilterOp::Ge, Value::Int64(2)));
+    assert!(verdict(
+        &store,
+        Value::Int64(42),
+        BinaryFilterOp::Eq,
+        Value::Float64(42.0)
+    ));
+    assert!(!verdict(
+        &store,
+        Value::Int64(42),
+        BinaryFilterOp::Eq,
+        Value::Float64(42.5)
+    ));
+    assert!(verdict(
+        &store,
+        Value::Int64(42),
+        BinaryFilterOp::Lt,
+        Value::Float64(42.5)
+    ));
+    assert!(verdict(
+        &store,
+        Value::Float64(2.5),
+        BinaryFilterOp::Ge,
+        Value::Int64(2)
+    ));
 }
 
 // ── TESTS DU MULTI-ÉCRIVAIN, CONSERVÉS (réunification 2026-10-06) ───────────
@@ -1466,15 +1495,30 @@ fn test_cross_type_string_int_equality() {
 
     // Chaîne contre entier : classes DISJOINTES → UNKNOWN → la ligne est filtrée.
     assert!(
-        !binaire(Value::String("42".into()), BinaryFilterOp::Eq, Value::Int64(42)).evaluate(&chunk, 0),
+        !binaire(
+            Value::String("42".into()),
+            BinaryFilterOp::Eq,
+            Value::Int64(42)
+        )
+        .evaluate(&chunk, 0),
         "« 42 » (chaîne) = 42 (entier) est UNKNOWN, pas VRAI"
     );
     assert!(
-        !binaire(Value::String("42".into()), BinaryFilterOp::Ne, Value::Int64(99)).evaluate(&chunk, 0),
+        !binaire(
+            Value::String("42".into()),
+            BinaryFilterOp::Ne,
+            Value::Int64(99)
+        )
+        .evaluate(&chunk, 0),
         "« 42 » <> 99 est UNKNOWN : `< >` ne décide pas plus que `=` entre classes disjointes"
     );
     assert!(
-        !binaire(Value::String("hello".into()), BinaryFilterOp::Eq, Value::Int64(42)).evaluate(&chunk, 0)
+        !binaire(
+            Value::String("hello".into()),
+            BinaryFilterOp::Eq,
+            Value::Int64(42)
+        )
+        .evaluate(&chunk, 0)
     );
 
     // ── TÉMOINS : le prédicat n'est pas cassé pour autant ─────────────────
@@ -1515,11 +1559,21 @@ fn test_cross_type_string_float_equality() {
     };
 
     assert!(
-        !binaire(Value::String("7.25".into()), BinaryFilterOp::Eq, Value::Float64(7.25)).evaluate(&chunk, 0),
+        !binaire(
+            Value::String("7.25".into()),
+            BinaryFilterOp::Eq,
+            Value::Float64(7.25)
+        )
+        .evaluate(&chunk, 0),
         "« 7.25 » (chaîne) = 7.25 (flottant) est UNKNOWN, pas VRAI"
     );
     assert!(
-        !binaire(Value::Float64(2.5), BinaryFilterOp::Ne, Value::String("7.25".into())).evaluate(&chunk, 0),
+        !binaire(
+            Value::Float64(2.5),
+            BinaryFilterOp::Ne,
+            Value::String("7.25".into())
+        )
+        .evaluate(&chunk, 0),
         "2.5 <> « 7.25 » est UNKNOWN"
     );
 
@@ -1550,19 +1604,39 @@ fn test_cross_type_string_numeric_ordering() {
     };
 
     assert!(
-        !binaire(Value::String("30".into()), BinaryFilterOp::Gt, Value::Int64(25)).evaluate(&chunk, 0),
+        !binaire(
+            Value::String("30".into()),
+            BinaryFilterOp::Gt,
+            Value::Int64(25)
+        )
+        .evaluate(&chunk, 0),
         "« 30 » (chaîne) > 25 (entier) est UNKNOWN : la chaîne ne s'ordonne pas avec le nombre"
     );
     assert!(
-        !binaire(Value::Int64(10), BinaryFilterOp::Lt, Value::String("20.5".into())).evaluate(&chunk, 0),
+        !binaire(
+            Value::Int64(10),
+            BinaryFilterOp::Lt,
+            Value::String("20.5".into())
+        )
+        .evaluate(&chunk, 0),
         "10 < « 20.5 » est UNKNOWN"
     );
     assert!(
-        !binaire(Value::String("2.5".into()), BinaryFilterOp::Le, Value::Float64(2.5)).evaluate(&chunk, 0),
+        !binaire(
+            Value::String("2.5".into()),
+            BinaryFilterOp::Le,
+            Value::Float64(2.5)
+        )
+        .evaluate(&chunk, 0),
         "« 2.5 » <= 2.5 est UNKNOWN"
     );
     assert!(
-        !binaire(Value::Float64(100.0), BinaryFilterOp::Ge, Value::String("99.9".into())).evaluate(&chunk, 0),
+        !binaire(
+            Value::Float64(100.0),
+            BinaryFilterOp::Ge,
+            Value::String("99.9".into())
+        )
+        .evaluate(&chunk, 0),
         "100.0 >= « 99.9 » est UNKNOWN"
     );
 

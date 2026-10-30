@@ -56,13 +56,22 @@ fn le_65e_label_est_refuse_proprement_et_le_processus_survit() {
     let apres = session
         .execute("MATCH (n) RETURN count(n) AS n")
         .expect("la base doit rester interrogeable après un refus");
-    assert_eq!(format!("{:?}", apres.rows), compte, "aucun nœud n'a été créé par la requête refusée");
+    assert_eq!(
+        format!("{:?}", apres.rows),
+        compte,
+        "aucun nœud n'a été créé par la requête refusée"
+    );
 
     // Une étiquette DÉJÀ connue reste utilisable : le refus porte sur la
     // capacité, pas sur l'écriture.
     session
         .execute("CREATE (:L0 {i: 0})")
         .expect("réutiliser une étiquette existante doit marcher");
-    let final_ = session.execute("MATCH (n) RETURN count(n) AS n").expect("comptage final");
-    assert!(format!("{:?}", final_.rows).contains("65"), "le nœud réutilisant L0 doit exister");
+    let final_ = session
+        .execute("MATCH (n) RETURN count(n) AS n")
+        .expect("comptage final");
+    assert!(
+        format!("{:?}", final_.rows).contains("65"),
+        "le nœud réutilisant L0 doit exister"
+    );
 }

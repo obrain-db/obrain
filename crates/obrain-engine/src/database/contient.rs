@@ -66,8 +66,8 @@ use web_time::Instant;
 
 use obrain_common::types::{LogicalType, NodeId, PropertyKey, Value};
 use obrain_common::utils::error::Result;
-use obrain_core::graph::traits::PredicatTexte;
 use obrain_core::graph::GraphStore;
+use obrain_core::graph::traits::PredicatTexte;
 
 use crate::database::{ObrainDB, QueryResult};
 
@@ -139,7 +139,9 @@ impl ObrainDB {
         aiguille: &str,
         limite: usize,
     ) -> Result<QueryResult> {
-        Ok(self.contient_avec_route(propriete, aiguille, Some(limite))?.result)
+        Ok(self
+            .contient_avec_route(propriete, aiguille, Some(limite))?
+            .result)
     }
 
     /// [`ObrainDB::contient`], avec la route utilisée en clair.

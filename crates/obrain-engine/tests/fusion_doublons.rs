@@ -55,7 +55,9 @@ fn la_fusion_garde_le_plus_recent_et_remonte_tout() {
     assert_eq!(rapport.perdants, 1);
     let s = db.session();
     // 1:1 : plus de doublon, le survivant est le PLUS RECENT.
-    let r = s.execute("MATCH (n:Obj {id: \x27dup\x27}) RETURN n.v").expect("verif");
+    let r = s
+        .execute("MATCH (n:Obj {id: \x27dup\x27}) RETURN n.v")
+        .expect("verif");
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0][0], obrain_common::types::Value::Int64(2));
     // Les aretes du perdant ont ete REMONTEES.
@@ -67,10 +69,9 @@ fn la_fusion_garde_le_plus_recent_et_remonte_tout() {
         .execute("MATCH (y)-[:DEPUIS]->(n:Obj {id: \x27dup\x27}) RETURN y.id")
         .expect("entrante remontee");
     assert_eq!(r.rows.len(), 1);
-    let survivant = db.graph_store().find_nodes_by_property(
-        "id",
-        &obrain_common::types::Value::String("dup".into()),
-    );
+    let survivant = db
+        .graph_store()
+        .find_nodes_by_property("id", &obrain_common::types::Value::String("dup".into()));
     let externes = db.graph_store().external_edges_from(survivant[0]);
     assert_eq!(externes.len(), 1, "l arete inter-bases doit etre remontee");
     assert_eq!(externes[0].to_store, "autre_base");

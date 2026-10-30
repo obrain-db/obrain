@@ -16,8 +16,8 @@ use obrain_reactive::{MutationEvent, MutationListener};
 use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use crate::store_trait::{OptionalGraphStore, PROP_CO_CHANGE_COUNT, persist_edge_f64};
 

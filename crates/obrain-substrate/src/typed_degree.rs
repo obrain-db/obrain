@@ -58,8 +58,8 @@
 
 #![allow(unsafe_code)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -370,11 +370,7 @@ impl TypedDegreeRegistry {
     /// (2026-09-05) Auto-guérison : remet à zéro la colonne d'un type
     /// (le rescan des arêtes suit dans `SubstrateStore`). L'appelant doit
     /// tenir le write-lock de la colonne — voir [`DegreeColumn::zero_out_in`].
-    pub(crate) fn zero_type(
-        &self,
-        edge_type_id: u16,
-        n_slots_hint: u32,
-    ) -> SubstrateResult<()> {
+    pub(crate) fn zero_type(&self, edge_type_id: u16, n_slots_hint: u32) -> SubstrateResult<()> {
         let tc = self.get_or_create(edge_type_id, n_slots_hint)?;
         // zero_out_in réécrit TOUT le payload : la colonne devient sale, même
         // si aucun `incr_*` ne suit (cas : type sans arête vivante après heal).
@@ -608,7 +604,8 @@ impl TypedDegreeRegistry {
                 // Corrupt CRC or unexpected shape — leave to rebuild.
                 continue;
             };
-            self.columns.insert(type_id, Arc::new(TypedColumn::opened(col)));
+            self.columns
+                .insert(type_id, Arc::new(TypedColumn::opened(col)));
             opened += 1;
         }
         Ok(opened)

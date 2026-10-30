@@ -232,12 +232,7 @@ impl SortOperator {
 ///
 /// This is the comparator the unbounded `sort_by` uses; it is deliberately
 /// NOT total, so that the stable sort is what settles ties.
-fn compare_rows(
-    chunks: &[DataChunk],
-    sort_keys: &[SortKey],
-    a: &SortRow,
-    b: &SortRow,
-) -> Ordering {
+fn compare_rows(chunks: &[DataChunk], sort_keys: &[SortKey], a: &SortRow, b: &SortRow) -> Ordering {
     for key in sort_keys {
         let chunk_a = &chunks[a.chunk_index];
         let chunk_b = &chunks[b.chunk_index];
@@ -293,7 +288,10 @@ fn bounded_top_k<F>(rows: Vec<SortRow>, k: usize, mut key_cmp: F) -> Vec<SortRow
 where
     F: FnMut(&SortRow, &SortRow) -> Ordering,
 {
-    debug_assert!(k > 0 && k < rows.len(), "caller handles the degenerate bounds");
+    debug_assert!(
+        k > 0 && k < rows.len(),
+        "caller handles the degenerate bounds"
+    );
 
     // Total order: sort keys first, arrival ordinal breaks every remaining tie.
     let mut total_cmp = |x: &(SortRow, usize), y: &(SortRow, usize)| {
@@ -932,9 +930,8 @@ mod tests {
         let l1 = [(3i64, "x1"), (1, "x2")];
         let l2 = [(3i64, "y1"), (2, "y2")];
         let l3 = [(1i64, "z1"), (3, "z2")];
-        let construire = || {
-            MockOperator::new(vec![lot_depuis(&l1), lot_depuis(&l2), lot_depuis(&l3)])
-        };
+        let construire =
+            || MockOperator::new(vec![lot_depuis(&l1), lot_depuis(&l2), lot_depuis(&l3)]);
         for k in 1..=6 {
             let complet = vider(SortOperator::new(
                 Box::new(construire()),
@@ -956,13 +953,7 @@ mod tests {
     /// Clés multiples : la seconde ne départage que si la première est égale.
     #[test]
     fn test_limit_matches_full_sort_prefix_multi_cles() {
-        let d = [
-            (1i64, "b"),
-            (1, "a"),
-            (2, "a"),
-            (1, "c"),
-            (2, "b"),
-        ];
+        let d = [(1i64, "b"), (1, "a"), (2, "a"), (1, "c"), (2, "b")];
         let cles = vec![SortKey::ascending(0), SortKey::ascending(1)];
         for k in 1..=5 {
             duel(&d, cles.clone(), k);
@@ -973,7 +964,12 @@ mod tests {
     #[test]
     fn test_limit_matches_full_sort_prefix_nulls() {
         let mut b = DataChunkBuilder::new(&schema2());
-        for (n, t) in [(Some(2i64), "deux"), (None, "nul_a"), (Some(1), "un"), (None, "nul_b")] {
+        for (n, t) in [
+            (Some(2i64), "deux"),
+            (None, "nul_a"),
+            (Some(1), "un"),
+            (None, "nul_b"),
+        ] {
             match n {
                 Some(v) => b.column_mut(0).unwrap().push_int64(v),
                 None => b.column_mut(0).unwrap().push_value(Value::Null),
@@ -1073,7 +1069,6 @@ mod tests {
         );
         assert!(rien.is_empty());
     }
-
 
     /// LE GAIN, COMPTÉ PLUTÔT QUE CHRONOMÉTRÉ.
     ///
@@ -1180,7 +1175,9 @@ mod tests {
             n_complet += 1;
             compare(a, b)
         });
-        assert_eq!(n_k_egal_n, n_complet, "le tri complet doit etre deterministe");
+        assert_eq!(
+            n_k_egal_n, n_complet,
+            "le tri complet doit etre deterministe"
+        );
     }
-
 }

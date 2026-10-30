@@ -27,7 +27,6 @@ pub mod catalog;
 pub mod cdc;
 #[cfg(feature = "cdc")]
 pub mod cdc_persist;
-pub mod journal_zone;
 #[cfg(feature = "cognitive")]
 pub mod cognitive_boost;
 #[cfg(feature = "cognitive")]
@@ -38,6 +37,7 @@ pub mod config;
 pub mod database;
 #[cfg(feature = "embed")]
 pub mod embedding;
+pub mod journal_zone;
 pub mod memory_usage;
 #[cfg(feature = "metrics")]
 pub mod metrics;
@@ -65,5 +65,5 @@ pub use session::Session;
 pub use transaction::{CommitInfo, PreparedCommit};
 
 // (O1) Pont mémoire zero-copy — vues empruntées au substrate.
-pub use obrain_substrate::view::{FactView, StrView, StrViewSource};
 pub use obrain_substrate::result_buf::ResultBuf;
+pub use obrain_substrate::view::{FactView, StrView, StrViewSource};

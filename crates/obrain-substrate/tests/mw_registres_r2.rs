@@ -222,11 +222,9 @@ fn creer_store(chemin: &Path) {
     s.flush().expect("flush initial");
 }
 
-
 // ---------------------------------------------------------------------------
 // Enfants
 // ---------------------------------------------------------------------------
-
 
 /// Enfant « deux noms distincts, deux bits » : rend les bits que le registre lui
 /// a donnés pour `a` et `b` — c'est la mesure directe de l'internement.
@@ -257,8 +255,6 @@ fn anoncer_fin() -> ! {
     std::io::stdout().flush().ok();
     std::process::exit(0);
 }
-
-
 
 // ===========================================================================
 // R2 — LE MÊME NOM DONNE LE MÊME BIT, DANS LES DEUX PROCESSUS (idempotent)
@@ -292,22 +288,28 @@ fn r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus() {
     let partir = racine.join("partir");
     let (da, db) = (racine.join("a.pret"), racine.join("b.pret"));
 
-    let mut a = Enfant::lancer("r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus", &[
-        ("MWR_ROLE", "bits".into()),
-        ("MWR_DIR", dir.display().to_string()),
-        ("MWR_A", "Partage".into()),
-        ("MWR_B", "AutreNom".into()),
-        ("MWR_PARTIR", partir.display().to_string()),
-        ("MWR_DRAPEAU", da.display().to_string()),
-    ]);
-    let mut b = Enfant::lancer("r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus", &[
-        ("MWR_ROLE", "bits".into()),
-        ("MWR_DIR", dir.display().to_string()),
-        ("MWR_A", "Partage".into()),
-        ("MWR_B", "EncoreUn".into()),
-        ("MWR_PARTIR", partir.display().to_string()),
-        ("MWR_DRAPEAU", db.display().to_string()),
-    ]);
+    let mut a = Enfant::lancer(
+        "r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus",
+        &[
+            ("MWR_ROLE", "bits".into()),
+            ("MWR_DIR", dir.display().to_string()),
+            ("MWR_A", "Partage".into()),
+            ("MWR_B", "AutreNom".into()),
+            ("MWR_PARTIR", partir.display().to_string()),
+            ("MWR_DRAPEAU", da.display().to_string()),
+        ],
+    );
+    let mut b = Enfant::lancer(
+        "r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus",
+        &[
+            ("MWR_ROLE", "bits".into()),
+            ("MWR_DIR", dir.display().to_string()),
+            ("MWR_A", "Partage".into()),
+            ("MWR_B", "EncoreUn".into()),
+            ("MWR_PARTIR", partir.display().to_string()),
+            ("MWR_DRAPEAU", db.display().to_string()),
+        ],
+    );
     attendre_fichier(&da, "l'enfant A");
     attendre_fichier(&db, "l'enfant B");
     std::fs::write(&partir, b"go").expect("départ");
@@ -325,15 +327,12 @@ fn r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus() {
         let (premier, second) = ligne.split_once(' ').expect("a=<id> b=<id>");
         let ida: u64 = premier.split_once('=').expect("a=<id>").1.parse().unwrap();
         let idb: u64 = second.split_once('=').expect("b=<id>").1.parse().unwrap();
-        let na = s
-            .get_node_labels(NodeId(ida))
-            .unwrap_or_default()
-            .join("|");
-        let nb = s
-            .get_node_labels(NodeId(idb))
-            .unwrap_or_default()
-            .join("|");
-        assert_eq!(na, "Partage", "processus {quoi} : le nœud partagé porte {na:?}");
+        let na = s.get_node_labels(NodeId(ida)).unwrap_or_default().join("|");
+        let nb = s.get_node_labels(NodeId(idb)).unwrap_or_default().join("|");
+        assert_eq!(
+            na, "Partage",
+            "processus {quoi} : le nœud partagé porte {na:?}"
+        );
         vus.push((quoi.to_string(), nb));
     }
     let propres: Vec<String> = vus.iter().map(|(_, n)| n.clone()).collect();
@@ -361,4 +360,3 @@ fn r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus() {
         dict.labels
     );
 }
-

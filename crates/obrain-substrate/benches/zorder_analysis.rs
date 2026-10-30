@@ -65,8 +65,8 @@
 //! counts printed once (not timed).
 
 use std::hint::black_box;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use obrain_substrate::hilbert::{
@@ -160,12 +160,7 @@ fn gen_sample(seed: u64, m: usize, degree_cap: u32) -> (Vec<u16>, Vec<u32>) {
 /// plane instead of collapsing into the quantizer's bottom-left corner), then
 /// returns mid-bin representative features that project back onto exactly the
 /// drawn cells through `grid_coords_from_features`.
-fn gen_community(
-    seed: u64,
-    m: usize,
-    order: u32,
-    max_degree: u32,
-) -> (Vec<u16>, Vec<u32>) {
+fn gen_community(seed: u64, m: usize, order: u32, max_degree: u32) -> (Vec<u16>, Vec<u32>) {
     let n = 1u32 << order; // grid side
     let last = u64::from(n - 1); // max coordinate
     let mut rng = Xs::new(seed);
@@ -189,12 +184,7 @@ fn gen_community(
 
 /// Project a feature sample onto the shared (cx, cy) grid via the crate's
 /// single point of definition `grid_coords_from_features`.
-fn project_points(
-    cen: &[u16],
-    deg: &[u32],
-    order: u32,
-    max_degree: u32,
-) -> (Vec<u32>, Vec<u32>) {
+fn project_points(cen: &[u16], deg: &[u32], order: u32, max_degree: u32) -> (Vec<u32>, Vec<u32>) {
     let mut cx = Vec::with_capacity(cen.len());
     let mut cy = Vec::with_capacity(cen.len());
     for i in 0..cen.len() {
@@ -242,9 +232,7 @@ fn gen_windows(seed: u64, n: u32, area_fraction: f64, count: usize) -> (Vec<Win>
     }
     let eff = wins
         .iter()
-        .map(|w| {
-            ((u64::from(w.x1 - w.x0 + 1)) * u64::from(w.y1 - w.y0 + 1)) as f64 / total
-        })
+        .map(|w| ((u64::from(w.x1 - w.x0 + 1)) * u64::from(w.y1 - w.y0 + 1)) as f64 / total)
         .sum::<f64>()
         / count.max(1) as f64;
     (wins, eff)
@@ -274,7 +262,13 @@ struct ZEntry {
 /// ZRUNS query: decompose the window into contiguous Z runs, binary-search the
 /// sorted table for each run, then re-verify the exact 2D predicate on every
 /// candidate (loading cx/cy). Returns (matches, candidates_checked, n_runs).
-fn zruns_query(sorted: &[ZEntry], cx: &[u32], cy: &[u32], w: &Win, order: u32) -> (u64, u64, usize) {
+fn zruns_query(
+    sorted: &[ZEntry],
+    cx: &[u32],
+    cy: &[u32],
+    w: &Win,
+    order: u32,
+) -> (u64, u64, usize) {
     let runs = zorder_window_ranges(w.x0, w.x1, w.y0, w.y1, order);
     let mut matches = 0u64;
     let mut candidates = 0u64;
@@ -487,10 +481,7 @@ fn bench_window_enumeration(c: &mut Criterion) {
     let mut zs: Vec<ZEntry> = Vec::with_capacity(n_points);
     for i in 0..n_points {
         let z = zorder_key_from_features(cen[i], deg[i], ORDER_B2, MAX_DEGREE_COMMUNITY);
-        zs.push(ZEntry {
-            z,
-            idx: i as u32,
-        });
+        zs.push(ZEntry { z, idx: i as u32 });
     }
     let t0 = Instant::now();
     zs.sort_unstable();
@@ -505,25 +496,25 @@ fn bench_window_enumeration(c: &mut Criterion) {
     g.measurement_time(Duration::from_secs(3));
 
     // Rebuild+sort the Z table per iteration (amortised construction cost).
-    g.bench_function(BenchmarkId::new("zsort_build", format!("m{n_points}")), |b| {
-        b.iter(|| {
-            let mut entries: Vec<ZEntry> = Vec::with_capacity(n_points);
-            for i in 0..n_points {
-                let z = zorder_key_from_features(
-                    black_box(cen[i]),
-                    black_box(deg[i]),
-                    ORDER_B2,
-                    MAX_DEGREE_COMMUNITY,
-                );
-                entries.push(ZEntry {
-                    z,
-                    idx: i as u32,
-                });
-            }
-            entries.sort_unstable();
-            black_box(entries.len())
-        });
-    });
+    g.bench_function(
+        BenchmarkId::new("zsort_build", format!("m{n_points}")),
+        |b| {
+            b.iter(|| {
+                let mut entries: Vec<ZEntry> = Vec::with_capacity(n_points);
+                for i in 0..n_points {
+                    let z = zorder_key_from_features(
+                        black_box(cen[i]),
+                        black_box(deg[i]),
+                        ORDER_B2,
+                        MAX_DEGREE_COMMUNITY,
+                    );
+                    entries.push(ZEntry { z, idx: i as u32 });
+                }
+                entries.sort_unstable();
+                black_box(entries.len())
+            });
+        },
+    );
 
     for &(label, frac) in &FRACTIONS {
         let seed = 0xB2_5EED_0000 ^ (frac.to_bits());

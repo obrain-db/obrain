@@ -100,10 +100,7 @@ fn open_close_ne_tronque_ni_ne_perd_les_props() {
             panic!("cycle {cycle} : open a echoue : {e}");
         });
         let relu = relire(&store);
-        assert_eq!(
-            relu, attendu,
-            "cycle {cycle} : les props relues ont change"
-        );
+        assert_eq!(relu, attendu, "cycle {cycle} : les props relues ont change");
         drop(store);
         let t = tailles_props(dir);
         assert_eq!(

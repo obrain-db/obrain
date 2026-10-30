@@ -12,8 +12,8 @@
 use obrain_common::types::NodeId;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use web_time::{SystemTime, UNIX_EPOCH};
 use std::time::Duration;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // CognitiveEventType

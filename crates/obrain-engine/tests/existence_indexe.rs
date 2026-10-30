@@ -112,7 +112,12 @@ fn le_noeud_sans_la_propriete_ne_sort_pas() {
     peupler(&d);
     d.create_property_index("id");
     let r = ids(&d, Q_TOUS);
-    assert_eq!(r.len(), 6, "6 porteurs attendus, {} rendus : {r:?}", r.len());
+    assert_eq!(
+        r.len(),
+        6,
+        "6 porteurs attendus, {} rendus : {r:?}",
+        r.len()
+    );
     assert!(!r.is_empty());
     // `rang = -1` est LE nœud sans `id` : il ne doit apparaître nulle part.
     //
@@ -151,11 +156,7 @@ fn l_etiquette_du_motif_est_respectee() {
         vec!["t"]
     );
     assert!(
-        ids(
-            &d,
-            "MATCH (n:Absente) WHERE n.id IS NOT NULL RETURN n.id"
-        )
-        .is_empty(),
+        ids(&d, "MATCH (n:Absente) WHERE n.id IS NOT NULL RETURN n.id").is_empty(),
         "une etiquette absente a rendu des lignes"
     );
 }
@@ -199,7 +200,11 @@ fn is_null_reste_juste() {
     d.create_property_index("id");
     let q = "MATCH (n) WHERE n.id IS NULL RETURN count(n)";
     let n = d.session().execute(q).unwrap().rows[0][0].clone();
-    assert_eq!(n, Value::Int64(1), "IS NULL doit rendre le seul noeud sans id");
+    assert_eq!(
+        n,
+        Value::Int64(1),
+        "IS NULL doit rendre le seul noeud sans id"
+    );
 }
 
 // ═══════════ 2. la preuve par les slots ═══════════
@@ -244,7 +249,10 @@ fn la_route_indexee_ne_balaie_pas_et_le_compteur_le_montre() {
         peupler(&d);
         let (temoin, slots_scan) = mesurer_slots(|| ids(&d, Q_TOUS));
         assert_eq!(temoin, attendus(), "le témoin lui-même diverge");
-        assert!(slots_scan > 0, "le témoin devait balayer (slots = {slots_scan})");
+        assert!(
+            slots_scan > 0,
+            "le témoin devait balayer (slots = {slots_scan})"
+        );
 
         // 2. L'INDEX, déclaré et PERSISTÉ.
         d.create_property_index("id");
@@ -337,4 +345,3 @@ fn apres_reouverture_l_index_sert_et_les_ecritures_de_session_aussi() {
     );
     d.close().unwrap();
 }
-

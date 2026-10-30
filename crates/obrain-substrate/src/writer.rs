@@ -3902,7 +3902,10 @@ mod tests {
         let items: Vec<_> = r.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
         // 5 NodeInsertV3 (trames tenant, jalon 2) + 1 NoOp commit
         assert_eq!(items.len(), 6);
-        assert!(matches!(items[0].0.payload, WalPayload::NodeInsertV3 { .. }));
+        assert!(matches!(
+            items[0].0.payload,
+            WalPayload::NodeInsertV3 { .. }
+        ));
         assert!(items.last().unwrap().0.is_commit());
     }
 
@@ -4776,9 +4779,7 @@ mod tests {
         w.commit().unwrap();
         w.vider_fenetre_de_rejeu().unwrap();
 
-        let res = w
-            .compact_community(community_id, 8, 5, 4, 32)
-            .unwrap();
+        let res = w.compact_community(community_id, 8, 5, 4, 32).unwrap();
         assert!(!res.relocations.is_empty(), "compaction doit relocaliser");
 
         // Vérifie la colonne Zorder au NOUVEAU slot de chaque membre : clé
@@ -4788,14 +4789,13 @@ mod tests {
         let zf = subg.open_zone(Zone::Zorder).unwrap();
         let bytes = zf.as_slice();
         for (old, new) in &res.relocations {
-            let key_at_new =
-                u32::from_le_bytes(bytes[(*new as usize) * 4..(*new as usize) * 4 + 4].try_into().unwrap());
-            let expected = zorder_key_from_features(
-                centr[*old as usize],
-                deg_expected[*old as usize],
-                4,
-                32,
+            let key_at_new = u32::from_le_bytes(
+                bytes[(*new as usize) * 4..(*new as usize) * 4 + 4]
+                    .try_into()
+                    .unwrap(),
             );
+            let expected =
+                zorder_key_from_features(centr[*old as usize], deg_expected[*old as usize], 4, 32);
             assert_eq!(
                 key_at_new, expected,
                 "zorder au slot {new} (orig {old}) doit refléter le degré réel {}",
@@ -4806,7 +4806,9 @@ mod tests {
         // Anciens slots zéro.
         for (old, _) in &res.relocations {
             let key_at_old = u32::from_le_bytes(
-                bytes[(*old as usize) * 4..(*old as usize) * 4 + 4].try_into().unwrap(),
+                bytes[(*old as usize) * 4..(*old as usize) * 4 + 4]
+                    .try_into()
+                    .unwrap(),
             );
             assert_eq!(key_at_old, 0, "ancien slot {old} doit être zéro");
         }

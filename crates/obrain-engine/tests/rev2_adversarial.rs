@@ -151,7 +151,10 @@ fn croisement_cd_set_puis_remove_meme_cle_dans_l_ordre_ecrit() {
 fn croisement_cd_remove_entrelace_sur_arete() {
     let db = ObrainDB::new_in_memory();
     ecrire(&db, &["INSERT (:Ea)-[:R {a: 1, b: 2}]->(:Eb)"]);
-    ecrire(&db, &["MATCH (:Ea)-[r:R]->(:Eb) SET r.x = 1 REMOVE r.a SET r.y = 2"]);
+    ecrire(
+        &db,
+        &["MATCH (:Ea)-[r:R]->(:Eb) SET r.x = 1 REMOVE r.a SET r.y = 2"],
+    );
     let k = en_ensemble(&scalaire(
         &db,
         "MATCH (:Ea)-[r:R]->(:Eb) RETURN keys(r) AS c",
@@ -176,15 +179,15 @@ fn croisement_cd_remove_entrelace_sur_arete() {
 #[test]
 fn null_resolu_copie_de_propriete_absente_retire_la_cle_cible() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &[
-        "INSERT (:Src4 {id: 1})",              // b JAMAIS écrite
-        "INSERT (:Dst4 {id: 1, a: 42, garde: 0})",
-    ]);
-    ecrire(&db, &["MATCH (s:Src4), (t:Dst4) SET t.a = s.b"]);
-    let k = en_ensemble(&scalaire(
+    ecrire(
         &db,
-        "MATCH (t:Dst4) RETURN keys(t) AS c",
-    ));
+        &[
+            "INSERT (:Src4 {id: 1})", // b JAMAIS écrite
+            "INSERT (:Dst4 {id: 1, a: 42, garde: 0})",
+        ],
+    );
+    ecrire(&db, &["MATCH (s:Src4), (t:Dst4) SET t.a = s.b"]);
+    let k = en_ensemble(&scalaire(&db, "MATCH (t:Dst4) RETURN keys(t) AS c"));
     assert_eq!(
         k,
         ens(&["garde", "id"]),
@@ -199,12 +202,16 @@ fn null_resolu_copie_de_propriete_absente_retire_la_cle_cible() {
 #[test]
 fn null_resolu_carte_litterale_retire_et_ne_pose_pas() {
     let db = ObrainDB::new_in_memory();
-    ecrire(&db, &[
-        "INSERT (:M5 {present: 1, cible: 2})", // mort_nee JAMAIS écrite
-    ]);
-    ecrire(&db, &[
-        "MATCH (n:M5) SET n += {cible: null, neuf: 7, mort_nee: null}",
-    ]);
+    ecrire(
+        &db,
+        &[
+            "INSERT (:M5 {present: 1, cible: 2})", // mort_nee JAMAIS écrite
+        ],
+    );
+    ecrire(
+        &db,
+        &["MATCH (n:M5) SET n += {cible: null, neuf: 7, mort_nee: null}"],
+    );
     assert_eq!(
         cles(&db, "(n:M5)"),
         ens(&["neuf", "present"]),
@@ -224,10 +231,7 @@ fn null_resolu_carte_litterale_retire_et_ne_pose_pas() {
 fn temoin_carte_dynamique_encore_refusee_par_le_planificateur() {
     let db = ObrainDB::new_in_memory();
     ecrire(&db, &["INSERT (:M5b {present: 1, cible: 2})"]);
-    let msg = erreur(
-        &db,
-        "MATCH (n:M5b) SET n += {cible: n.fantome, neuf: 7}",
-    );
+    let msg = erreur(&db, "MATCH (n:M5b) SET n += {cible: n.fantome, neuf: 7}");
     assert!(
         msg.contains("Unsupported expression type for property source"),
         "le refus attendu est celui du planificateur, obtenu : {msg}"
@@ -266,7 +270,11 @@ fn queue_point_virgule_terminal_tolere() {
     let rows = lire(&db, "MATCH (n:Q7) RETURN n.x AS x;");
     assert_eq!(rows.len(), 1, "un `;` final doit rester accepté");
     let rows = lire(&db, "MATCH (n:Q7) RETURN n.x AS x ;;");
-    assert_eq!(rows.len(), 1, "plusieurs `;` finaux doivent rester acceptés");
+    assert_eq!(
+        rows.len(),
+        1,
+        "plusieurs `;` finaux doivent rester acceptés"
+    );
 }
 
 /// Un jeton d'erreur du lexer qui n'est PAS `;` ne doit jamais être avalé.
@@ -332,11 +340,15 @@ fn queue_with_puis_set_refuse_franchement() {
 fn alter_propriete_nommee_property() {
     let db = ObrainDB::new_in_memory();
     let mut session = db.session();
-    session.execute("CREATE NODE TYPE Rev2Cap (id INT)").unwrap();
+    session
+        .execute("CREATE NODE TYPE Rev2Cap (id INT)")
+        .unwrap();
     session
         .execute("ALTER NODE TYPE Rev2Cap ADD PROPERTY PROPERTY STRING")
         .unwrap_or_else(|e| {
-            panic!("ADD PROPERTY PROPERTY STRING doit s'analyser (propriété nommée PROPERTY) : {e:?}")
+            panic!(
+                "ADD PROPERTY PROPERTY STRING doit s'analyser (propriété nommée PROPERTY) : {e:?}"
+            )
         });
     session
         .execute("ALTER NODE TYPE Rev2Cap DROP PROPERTY PROPERTY")

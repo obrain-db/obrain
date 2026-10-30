@@ -21,11 +21,17 @@ fn search_delta_retourne_les_changements_tries() {
 
     // Deux créations de nœuds + une propriété + une arête.
     let n1 = db.create_node(&["Doc"]);
-    db.set_node_property(n1, "title", obrain_common::types::Value::String("alpha".into()))
-        ;
+    db.set_node_property(
+        n1,
+        "title",
+        obrain_common::types::Value::String("alpha".into()),
+    );
     let n2 = db.create_node(&["Doc"]);
-    db.set_node_property(n2, "title", obrain_common::types::Value::String("beta".into()))
-        ;
+    db.set_node_property(
+        n2,
+        "title",
+        obrain_common::types::Value::String("beta".into()),
+    );
     db.create_edge(n1, n2, "LINK");
 
     // since=0 → toutes les mutations enregistrées.
@@ -43,7 +49,10 @@ fn search_delta_retourne_les_changements_tries() {
     assert_eq!(ts, ts_sorted, "tri par timestamp croissant");
 
     // since futur → vide.
-    let future = all.last().map(|e| e.timestamp + 1_000_000).unwrap_or(u64::MAX);
+    let future = all
+        .last()
+        .map(|e| e.timestamp + 1_000_000)
+        .unwrap_or(u64::MAX);
     let empty = db.search_delta(future, false, false).expect("futur");
     assert!(empty.is_empty(), "aucun changement après le dernier");
 
@@ -63,8 +72,7 @@ fn search_delta_retourne_les_changements_tries() {
 fn call_search_delta_expose_le_diff() {
     let db = setup_db();
     let a = db.create_node(&["Doc"]);
-    db.set_node_property(a, "title", obrain_common::types::Value::String("x".into()))
-        ;
+    db.set_node_property(a, "title", obrain_common::types::Value::String("x".into()));
     let b = db.create_node(&["Doc"]);
     db.create_edge(a, b, "LINK");
 
@@ -102,7 +110,10 @@ fn call_search_delta_expose_le_diff() {
     let r_ro = s_ro
         .execute("CALL obrain.search_delta(0) YIELD entity_id RETURN entity_id")
         .expect("search_delta en read-only");
-    assert!(!r_ro.rows.is_empty(), "read-only doit retourner les changements");
+    assert!(
+        !r_ro.rows.is_empty(),
+        "read-only doit retourner les changements"
+    );
 }
 
 /// (2026-09-05) RECHARGEMENT PARESSEUX — l'ouverture d'un store ne décode
@@ -154,8 +165,15 @@ fn cdc_recharge_paresseusement_a_la_premiere_lecture() {
     );
     let _ = n3;
     // Early-exit futur : vide (max_timestamp à jour après le load).
-    let future = all.last().map(|e| e.timestamp + 1_000_000).unwrap_or(u64::MAX);
-    assert!(db.search_delta(future, false, false).expect("futur").is_empty());
+    let future = all
+        .last()
+        .map(|e| e.timestamp + 1_000_000)
+        .unwrap_or(u64::MAX);
+    assert!(
+        db.search_delta(future, false, false)
+            .expect("futur")
+            .is_empty()
+    );
 }
 
 /// (2026-09-05) MÊME PROCESS écrivain puis lecteur : les événements déjà en

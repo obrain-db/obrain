@@ -99,8 +99,11 @@ pub fn compute_search_relief(
     {
         use std::collections::HashSet;
         let mut seen: HashSet<u64> = HashSet::new();
-        let mut note = |n: u64, ts: u64, last: &mut std::collections::HashMap<u64, u64>,
-                        seen: &mut HashSet<u64>, act: &mut Vec<u64>| {
+        let mut note = |n: u64,
+                        ts: u64,
+                        last: &mut std::collections::HashMap<u64, u64>,
+                        seen: &mut HashSet<u64>,
+                        act: &mut Vec<u64>| {
             let e = last.entry(n).or_insert(0);
             if ts > *e {
                 *e = ts;
@@ -172,8 +175,8 @@ pub fn compute_search_relief(
         } else {
             0.0
         };
-        let relief = theta[0] * novelty + theta[1] * recency + theta[2] * centrality
-            - theta[3] * conflict;
+        let relief =
+            theta[0] * novelty + theta[1] * recency + theta[2] * centrality - theta[3] * conflict;
         rows.push(ReliefRow {
             node_id: n,
             relief,
@@ -205,7 +208,12 @@ impl super::ObrainDB {
         let substrate = self.substrate_store.as_ref().ok_or_else(|| {
             Error::Internal("search_relief requires a substrate-backed database".to_string())
         })?;
-        Ok(compute_search_relief(&self.cdc_log, substrate, since_ms, limit))
+        Ok(compute_search_relief(
+            &self.cdc_log,
+            substrate,
+            since_ms,
+            limit,
+        ))
     }
 }
 
@@ -235,7 +243,12 @@ fn arg_u64(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<u64>
 }
 
 #[cfg(feature = "cdc")]
-fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usize) -> Result<usize> {
+fn arg_usize(
+    arguments: &[LogicalExpression],
+    i: usize,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
     match arguments.get(i) {
         None => Ok(default),
         Some(LogicalExpression::Literal(Value::Int64(v))) if *v >= 0 => Ok(*v as usize),

@@ -444,7 +444,10 @@ impl RegistresPartages {
             // l'état VIDE d'une case, l'état « libre » d'une revendication, et le
             // TROU (longueur 0) d'un slot dense : un seul memset remet les trois
             // tables dans l'état d'un fichier neuf.
-            self.zero(e.offset_espace(), TAILLE_CASES + TAILLE_INDICES + TAILLE_NOMS_DENSES);
+            self.zero(
+                e.offset_espace(),
+                TAILLE_CASES + TAILLE_INDICES + TAILLE_NOMS_DENSES,
+            );
         }
         mot(&self.map, OFF_BASE_LABELS).store(0, Ordering::Relaxed);
         mot(&self.map, OFF_BASE_TYPES).store(0, Ordering::Relaxed);
@@ -487,7 +490,9 @@ impl RegistresPartages {
     /// un balayage des 8 192 cases (160 ms par nom neuf, mesuré au banc).
     fn revendiquer_indice(&self, e: Espace, indice: u32, nom: &str) -> SubstrateResult<()> {
         let a = self.mot_indice(e, indice);
-        if a.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if a.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
             return Ok(());
         }
         // Déjà marqué. Par NOUS (le même nom revient : rejeu du WAL, republication
@@ -592,8 +597,7 @@ impl RegistresPartages {
         mot(map, c.base + 8).store(hash, Ordering::Relaxed);
         // SAFETY: offsets alignés sur 4/8 et dans la case, mapping page-aligné.
         unsafe {
-            (*(map.as_ptr().add(c.base + 16) as *const AtomicU32))
-                .store(indice, Ordering::Relaxed);
+            (*(map.as_ptr().add(c.base + 16) as *const AtomicU32)).store(indice, Ordering::Relaxed);
             let p = map.as_ptr().add(c.base + 20).cast_mut();
             std::ptr::copy_nonoverlapping(nom.as_ptr(), p, usize::from(len));
             (*(map.as_ptr().add(c.base + 20 + 64) as *const AtomicU8))
@@ -854,12 +858,7 @@ impl RegistresPartages {
     /// normal), `Ok(false)` si le nom manquait et a été publié à cet indice.
     /// Une case occupée par un AUTRE nom au même indice est une COLLISION
     /// d'identifiants : elle est rendue en `Err` pour être DITE, jamais tue.
-    pub fn publier(
-        &self,
-        e: Espace,
-        indice: u32,
-        nom: &str,
-    ) -> SubstrateResult<bool> {
+    pub fn publier(&self, e: Espace, indice: u32, nom: &str) -> SubstrateResult<bool> {
         // Un nom vide est un TROU du dictionnaire (indice consommé, nom jamais
         // connu de ce processus) : on relève la base pour ne pas le redistribuer,
         // sans écrire de case.
@@ -1019,7 +1018,8 @@ impl RegistresPartages {
         }
         let slot = self.base_dense(e, indice);
         // SAFETY: `slot` est aligné et `slot + 64` tient dans la région dense.
-        let len = unsafe { (*(self.map.as_ptr().add(slot) as *const AtomicU8)).load(Ordering::Acquire) };
+        let len =
+            unsafe { (*(self.map.as_ptr().add(slot) as *const AtomicU8)).load(Ordering::Acquire) };
         if len == 0 || len > 63 {
             // Un trou (indice réservé/relevé mais jamais nommé), ou une publication
             // incohérente : on ne lit pas hors du slot.
@@ -1075,8 +1075,8 @@ impl RegistresPartages {
         // La borne = `1 + le plus grand indice NOMMÉ`, lue en O(1). `min(CAPACITE_INDICES)`
         // borne la lecture à la région dense (un fichier bricolé ne peut pas faire
         // lire hors du mapping).
-        let filigrane = (self.borne_filigrane(e).load(Ordering::Acquire) as usize)
-            .min(CAPACITE_INDICES);
+        let filigrane =
+            (self.borne_filigrane(e).load(Ordering::Acquire) as usize).min(CAPACITE_INDICES);
         if filigrane == 0 {
             return Vec::new();
         }
@@ -1417,7 +1417,10 @@ mod tests {
         let cle = 0x0123_4567_89ab_cdefu64;
         let mut vues = std::collections::HashSet::new();
         for tour in 0..CASES {
-            assert!(vues.insert(RegistresPartages::sonde(cle, tour)), "case revisitée");
+            assert!(
+                vues.insert(RegistresPartages::sonde(cle, tour)),
+                "case revisitée"
+            );
         }
         assert_eq!(vues.len(), CASES);
     }

@@ -143,7 +143,10 @@ fn null_ecrit_explicitement_se_comporte_comme_propriete_absente() {
     s.execute("INSERT (:N {v: 5, k: 2})").unwrap();
     s.commit().unwrap();
 
-    let l = ligne_unique(&db, "MATCH (n:N) RETURN count(*), count(n.v), sum(n.v), avg(n.v)");
+    let l = ligne_unique(
+        &db,
+        "MATCH (n:N) RETURN count(*), count(n.v), sum(n.v), avg(n.v)",
+    );
     assert_eq!(l[0], Value::Int64(2), "deux lignes existent");
     assert_eq!(l[1], Value::Int64(1), "une seule valeur non nulle");
     assert_eq!(l[2], Value::Int64(5), "sum ignore le NULL");
@@ -217,7 +220,10 @@ fn avg_sur_ensemble_vide_rend_null_sans_nan_ni_erreur() {
     assert_eq!(v, Value::Null, "AVG sur ensemble vide vaut NULL");
     // Une division 0/0 non gardée produirait NaN : on le refuse explicitement.
     if let Value::Float64(f) = v {
-        panic!("avg a rendu un flottant {f} (NaN ? {}) au lieu de NULL", f.is_nan());
+        panic!(
+            "avg a rendu un flottant {f} (NaN ? {}) au lieu de NULL",
+            f.is_nan()
+        );
     }
 }
 
@@ -614,7 +620,10 @@ fn le_groupement_par_cle_nulle_produit_un_groupe_null_de_plein_droit() {
 #[test]
 fn count_expression_par_groupe_respecte_les_nulls_internes_au_groupe() {
     let db = base_avec_nulls();
-    let r = lignes(&db, "MATCH (t:T) RETURN t.g AS g, count(*) AS lignes, count(t.x) AS valeurs");
+    let r = lignes(
+        &db,
+        "MATCH (t:T) RETURN t.g AS g, count(*) AS lignes, count(t.x) AS valeurs",
+    );
     let trouve = |g: Value| -> Vec<Value> {
         r.iter()
             .find(|l| l[0] == g)
@@ -629,7 +638,10 @@ fn count_expression_par_groupe_respecte_les_nulls_internes_au_groupe() {
     let g2 = trouve(Value::String("G2".into()));
     assert_eq!(g2[1], Value::Int64(2), "G2 a deux lignes");
     assert_eq!(g2[2], Value::Int64(1), "une seule porte x");
-    assert_ne!(g2[1], g2[2], "la distinction lignes/valeurs vaut aussi par groupe");
+    assert_ne!(
+        g2[1], g2[2],
+        "la distinction lignes/valeurs vaut aussi par groupe"
+    );
 
     let gnull = trouve(Value::Null);
     assert_eq!(gnull[1], Value::Int64(1), "le groupe NULL a une ligne");
@@ -1001,8 +1013,14 @@ fn le_raccourci_count_voit_les_ecritures_non_commitees_comme_le_balayage() {
         Value::Int64(4),
         "la transaction courante doit voir sa propre écriture non commitée"
     );
-    assert_eq!(raccourci, balayage, "raccourci et balayage doivent s'accorder");
-    assert_eq!(raccourci, collecte, "raccourci et collect doivent s'accorder");
+    assert_eq!(
+        raccourci, balayage,
+        "raccourci et balayage doivent s'accorder"
+    );
+    assert_eq!(
+        raccourci, collecte,
+        "raccourci et collect doivent s'accorder"
+    );
     st.commit().unwrap();
 }
 
@@ -1050,7 +1068,13 @@ fn parite_des_agregats_entre_execution_factorisee_et_execution_plate() {
         s.commit().unwrap();
 
         s.begin_transaction().unwrap();
-        for (de, vers) in [("A", "B1"), ("A", "B2"), ("B1", "C1"), ("B1", "C2"), ("B2", "C3")] {
+        for (de, vers) in [
+            ("A", "B1"),
+            ("A", "B2"),
+            ("B1", "C1"),
+            ("B1", "C2"),
+            ("B2", "C3"),
+        ] {
             s.execute(&format!(
                 "MATCH (x:W {{nom: '{de}'}}), (y:W {{nom: '{vers}'}}) INSERT (x)-[:L]->(y)"
             ))

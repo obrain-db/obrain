@@ -11,7 +11,7 @@
 //! (défaut `MATCH (n) RETURN n.<cle>`). Sans variable : store synthétique
 //! (1000 faits ~150 o en PropsZone + 200 faits ~600 o en colonne blob).
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use obrain::{NodeId, ObrainDB, StrViewSource, Value};
 use std::hint::black_box;
 

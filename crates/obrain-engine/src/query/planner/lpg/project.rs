@@ -635,9 +635,7 @@ impl super::Planner {
             let store = std::sync::Arc::clone(&self.store)
                 as std::sync::Arc<dyn crate::query::planner::lpg::GraphStore>;
             let base = match &scan.label {
-                Some(label) => {
-                    crate::query::planner::lpg::ScanOperator::with_label(store, label)
-                }
+                Some(label) => crate::query::planner::lpg::ScanOperator::with_label(store, label),
                 None => crate::query::planner::lpg::ScanOperator::new(store),
             };
             let scan_op = base
@@ -684,10 +682,7 @@ impl super::Planner {
     /// possibles en TETE du resultat (placement NULLS FIRST sur store mixte) —
     /// voir la garde NULL NATIF-J6B ci-dessous : en NULLS LAST la route reste
     /// engagee malgre les NULLs des que l'index rend k ids.
-    fn try_plan_order_by_index(
-        &self,
-        limit: &LimitOp,
-    ) -> Option<(Box<dyn Operator>, Vec<String>)> {
+    fn try_plan_order_by_index(&self, limit: &LimitOp) -> Option<(Box<dyn Operator>, Vec<String>)> {
         let k = limit.count.try_value().ok()?;
         if k == 0 {
             return None;
@@ -1067,15 +1062,15 @@ impl super::Planner {
                 // Clé expression injectée dans le Return augmenté : résolue
                 // vers sa colonne synthétique, sinon résolution classique.
                 let col_idx = match complex_sort_cols.get(&format!("{:?}", key.expression)) {
-                    Some(col_name) => {
-                        *variable_columns.get(col_name).ok_or_else(|| {
-                            Error::Internal(format!(
-                                "Injected sort-key column '{col_name}' not found for ORDER BY"
-                            ))
-                        })?
-                    }
-                    None => self
-                        .resolve_sort_expression_with_properties(&key.expression, &variable_columns)?,
+                    Some(col_name) => *variable_columns.get(col_name).ok_or_else(|| {
+                        Error::Internal(format!(
+                            "Injected sort-key column '{col_name}' not found for ORDER BY"
+                        ))
+                    })?,
+                    None => self.resolve_sort_expression_with_properties(
+                        &key.expression,
+                        &variable_columns,
+                    )?,
                 };
                 Ok(PhysicalSortKey {
                     column: col_idx,

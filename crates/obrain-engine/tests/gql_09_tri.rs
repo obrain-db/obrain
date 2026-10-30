@@ -242,7 +242,10 @@ const FIXTURE_NULLS: &[(&str, Option<i64>)] = &[
 #[test]
 fn asc_nulls_last_place_les_null_en_queue() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v ASC NULLS LAST");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v ASC NULLS LAST",
+    );
     assert_eq!(
         entiers(&r, 1),
         vec![Some(10), Some(20), Some(30), None, None],
@@ -253,7 +256,10 @@ fn asc_nulls_last_place_les_null_en_queue() {
 #[test]
 fn asc_nulls_first_place_les_null_en_tete() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v ASC NULLS FIRST");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v ASC NULLS FIRST",
+    );
     assert_eq!(
         entiers(&r, 1),
         vec![None, None, Some(10), Some(20), Some(30)],
@@ -284,7 +290,10 @@ fn asc_nulls_first_place_les_null_en_tete() {
 // corrigé par ce commit (placement ABSOLU des NULL dans les comparateurs)
 fn desc_nulls_first_place_les_null_en_tete() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v DESC NULLS FIRST");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v DESC NULLS FIRST",
+    );
     assert_eq!(
         entiers(&r, 1),
         vec![None, None, Some(30), Some(20), Some(10)],
@@ -310,7 +319,10 @@ fn desc_nulls_first_place_les_null_en_tete() {
 // corrigé par ce commit (placement ABSOLU des NULL dans les comparateurs)
 fn desc_nulls_last_place_les_null_en_queue() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v DESC NULLS LAST");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v DESC NULLS LAST",
+    );
     assert_eq!(
         entiers(&r, 1),
         vec![Some(30), Some(20), Some(10), None, None],
@@ -331,8 +343,14 @@ fn desc_nulls_last_place_les_null_en_queue() {
 #[test]
 fn desc_la_clause_nulls_n_est_pas_ignoree() {
     let db = base_t(FIXTURE_NULLS);
-    let f = entiers(&lire(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v DESC NULLS FIRST"), 0);
-    let l = entiers(&lire(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v DESC NULLS LAST"), 0);
+    let f = entiers(
+        &lire(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v DESC NULLS FIRST"),
+        0,
+    );
+    let l = entiers(
+        &lire(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v DESC NULLS LAST"),
+        0,
+    );
     assert_ne!(
         f, l,
         "DESC NULLS FIRST et DESC NULLS LAST rendent le MÊME ordre : la clause \
@@ -606,7 +624,10 @@ fn borne_frontiere_plus_de_k_ex_aequo() {
         ("deux_C", Some(2)),
         ("deux_D", Some(2)),
     ]);
-    let r = lire(&db, "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v ASC LIMIT 3");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.nom, n.v ORDER BY n.v ASC LIMIT 3",
+    );
     assert_eq!(
         noms(&r, 0),
         vec!["un", "deux_A", "deux_B"],
@@ -634,11 +655,18 @@ fn borne_est_le_prefixe_exact_du_complet_pour_tout_k() {
         ("deux_D", Some(2)),
     ]);
     let complet = noms(&lire(&db, "MATCH (n:T) RETURN n.nom ORDER BY n.v ASC"), 0);
-    assert_eq!(complet.len(), 6, "le tri complet doit rendre les six lignes");
+    assert_eq!(
+        complet.len(),
+        6,
+        "le tri complet doit rendre les six lignes"
+    );
 
     for k in 0..=8usize {
         let borne = noms(
-            &lire(&db, &format!("MATCH (n:T) RETURN n.nom ORDER BY n.v ASC LIMIT {k}")),
+            &lire(
+                &db,
+                &format!("MATCH (n:T) RETURN n.nom ORDER BY n.v ASC LIMIT {k}"),
+            ),
             0,
         );
         let attendu: Vec<String> = complet.iter().take(k).cloned().collect();
@@ -663,7 +691,10 @@ fn borne_est_le_prefixe_exact_du_complet_en_desc() {
     let complet = noms(&lire(&db, "MATCH (n:T) RETURN n.nom ORDER BY n.v DESC"), 0);
     for k in 0..=6usize {
         let borne = noms(
-            &lire(&db, &format!("MATCH (n:T) RETURN n.nom ORDER BY n.v DESC LIMIT {k}")),
+            &lire(
+                &db,
+                &format!("MATCH (n:T) RETURN n.nom ORDER BY n.v DESC LIMIT {k}"),
+            ),
             0,
         );
         assert_eq!(
@@ -701,7 +732,10 @@ fn borne_avec_null_reste_le_prefixe_du_complet() {
         "DESC",
     ] {
         let complet = noms(
-            &lire(&db, &format!("MATCH (n:T) RETURN n.nom ORDER BY n.v {clause}")),
+            &lire(
+                &db,
+                &format!("MATCH (n:T) RETURN n.nom ORDER BY n.v {clause}"),
+            ),
             0,
         );
         for k in 0..=6usize {
@@ -742,7 +776,10 @@ fn limit_zero_sous_order_by_rend_zero_ligne() {
 #[test]
 fn limit_superieur_au_total_rend_tout_dans_l_ordre() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v ASC NULLS LAST LIMIT 999");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.v ORDER BY n.v ASC NULLS LAST LIMIT 999",
+    );
     assert_eq!(
         entiers(&r, 0),
         vec![Some(10), Some(20), Some(30), None, None],
@@ -788,7 +825,10 @@ fn skip_et_limit_rendent_la_fenetre_du_tri_complet() {
 #[test]
 fn skip_au_dela_du_total_rend_zero_ligne() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.nom ORDER BY n.v ASC SKIP 99 LIMIT 3");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.nom ORDER BY n.v ASC SKIP 99 LIMIT 3",
+    );
     assert!(
         r.rows.is_empty(),
         "SKIP au-delà du cardinal doit rendre zéro ligne, obtenu {:?}",
@@ -919,7 +959,10 @@ fn tri_sur_alias_de_projection() {
 #[test]
 fn tri_sur_expression_produisant_des_null() {
     let db = base_t(FIXTURE_NULLS);
-    let r = lire(&db, "MATCH (n:T) RETURN n.v ORDER BY n.v + 1 ASC NULLS LAST");
+    let r = lire(
+        &db,
+        "MATCH (n:T) RETURN n.v ORDER BY n.v + 1 ASC NULLS LAST",
+    );
     assert_eq!(
         entiers(&r, 0),
         vec![Some(10), Some(20), Some(30), None, None],
@@ -951,8 +994,7 @@ fn recence_desc_nulls_last_ne_remonte_pas_les_lignes_vides() {
     for i in 0..4 {
         lignes.push((format!("date_{i}"), Some(100 + i)));
     }
-    let refs: Vec<(&str, Option<i64>)> =
-        lignes.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    let refs: Vec<(&str, Option<i64>)> = lignes.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     let db = base_t(&refs);
 
     let r = lire(
@@ -1142,11 +1184,18 @@ fn justesse_du_tri_borne_a_l_echelle_de_la_mesure() {
     s.commit().unwrap();
 
     let complet = noms(&lire(&db, "MATCH (n:B) RETURN n.nom ORDER BY n.k DESC"), 0);
-    assert_eq!(complet.len(), 3000, "le tri complet doit rendre les 3 000 lignes");
+    assert_eq!(
+        complet.len(),
+        3000,
+        "le tri complet doit rendre les 3 000 lignes"
+    );
 
     for k in [1usize, 8, 299, 300, 301, 1500] {
         let borne = noms(
-            &lire(&db, &format!("MATCH (n:B) RETURN n.nom ORDER BY n.k DESC LIMIT {k}")),
+            &lire(
+                &db,
+                &format!("MATCH (n:B) RETURN n.nom ORDER BY n.k DESC LIMIT {k}"),
+            ),
             0,
         );
         assert_eq!(

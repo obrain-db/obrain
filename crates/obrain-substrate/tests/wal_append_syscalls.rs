@@ -102,5 +102,8 @@ fn sonde_oappend() {
 #[test]
 #[ignore = "sonde de mesure : à lancer sous strace -c (voir l'en-tête)"]
 fn sonde_verrou() {
-    sonde("verrou (exactitude demandée)", CoordinationAppend::VerrouExact);
+    sonde(
+        "verrou (exactitude demandée)",
+        CoordinationAppend::VerrouExact,
+    );
 }

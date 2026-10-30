@@ -45,8 +45,7 @@ fn mesurer(n: usize) -> std::time::Duration {
     }
     let ecriture = debut.elapsed();
     let t0 = Instant::now();
-    let evenements: Vec<obrain_engine::cdc::ChangeEvent> =
-        log.changes_since_timestamp(0, |_| true);
+    let evenements: Vec<obrain_engine::cdc::ChangeEvent> = log.changes_since_timestamp(0, |_| true);
     let lecture = t0.elapsed();
     eprintln!(
         "CDC n={n:>5} : écriture={ecriture:>9.1?} lecture={lecture:>9.1?} \
@@ -92,7 +91,10 @@ fn mesurer_froid(n: usize) -> std::time::Duration {
     let t0 = Instant::now();
     let evenements = db.cdc_log().changes_since_timestamp(0, |_| true);
     let duree = t0.elapsed();
-    eprintln!("CDC FROID n={n:>5} : lecture={duree:>10.1?} evenements={}", evenements.len());
+    eprintln!(
+        "CDC FROID n={n:>5} : lecture={duree:>10.1?} evenements={}",
+        evenements.len()
+    );
     // ── LE COMPTE PROUVE LES DEUX CONTRATS À LA FOIS ────────────────────────
     // Chaque événement enregistré diffère des autres (champ `i`) ET n'existe
     // qu'une fois dans la zone : le compte doit donc valoir exactement `n`.

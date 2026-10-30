@@ -91,7 +91,11 @@ fn par_index(store: &SubstrateStore, terme: &str) -> Option<Vec<NodeId>> {
 fn tous_les_ids(store: &SubstrateStore) -> Vec<NodeId> {
     let mut v: Vec<NodeId> = (1..store.slot_high_water() as u64)
         .map(NodeId::new)
-        .filter(|id| store.get_node_property(*id, &PropertyKey::new("name")).is_some())
+        .filter(|id| {
+            store
+                .get_node_property(*id, &PropertyKey::new("name"))
+                .is_some()
+        })
         .collect();
     v.sort_unstable_by_key(|n| n.0);
     v
@@ -126,7 +130,16 @@ fn le_chemin_indexe_rend_exactement_les_memes_noeuds_que_le_balayage() {
     let tous = tous_les_ids(&store);
     assert_eq!(tous.len(), valeurs.len());
 
-    for terme in ["iam", "IAM", "auth", "Auth", "token", "Token", "obrain-iam", "zzz-absent"] {
+    for terme in [
+        "iam",
+        "IAM",
+        "auth",
+        "Auth",
+        "token",
+        "Token",
+        "obrain-iam",
+        "zzz-absent",
+    ] {
         let attendu = par_balayage(&store, &tous, terme);
         let obtenu = par_index(&store, terme)
             .unwrap_or_else(|| panic!("l'index doit répondre pour « {terme} »"));
@@ -138,8 +151,9 @@ fn le_chemin_indexe_rend_exactement_les_memes_noeuds_que_le_balayage() {
         // le balayage — c'est la forme la plus banale d'une exploration de
         // graphe de code, et elle n'avait AUCUNE poussée avant le 2026-09-13.
         let pred = PredicatTexte::CommencePar("obr");
-        let obtenu = GraphStore::noeuds_par_predicat_texte(&store, &PropertyKey::new("name"), &pred)
-            .expect("STARTS WITH doit être servi par l'index de trigrammes");
+        let obtenu =
+            GraphStore::noeuds_par_predicat_texte(&store, &PropertyKey::new("name"), &pred)
+                .expect("STARTS WITH doit être servi par l'index de trigrammes");
         assert_eq!(
             obtenu,
             par_balayage_prefixe(&store, &tous, "obr"),
@@ -166,7 +180,10 @@ fn une_ecriture_apres_construction_est_trouvee() {
     // 1. Deuxième appel : l'index se construit ICI, sans le nœud à venir.
     chauffer(&store);
     let avant = par_index(&store, "zzqq").expect("réponse de l'index");
-    assert!(avant.is_empty(), "« zzqq » n'existe pas encore : zéro, conclusif");
+    assert!(
+        avant.is_empty(),
+        "« zzqq » n'existe pas encore : zéro, conclusif"
+    );
 
     // 2. ÉCRITURE APRÈS construction.
     let b = store.create_node(&["Test"]);
@@ -175,8 +192,14 @@ fn une_ecriture_apres_construction_est_trouvee() {
     // 3. Le nœud neuf DOIT sortir — et le balayage doit dire la même chose.
     let obtenu = par_index(&store, "zzqq").expect("réponse de l'index");
     let attendu = par_balayage(&store, &tous_les_ids(&store), "zzqq");
-    assert_eq!(obtenu, attendu, "le nœud écrit après la construction doit être trouvé");
-    assert!(obtenu.contains(&b), "c'est bien le nœud NEUF qui doit sortir");
+    assert_eq!(
+        obtenu, attendu,
+        "le nœud écrit après la construction doit être trouvé"
+    );
+    assert!(
+        obtenu.contains(&b),
+        "c'est bien le nœud NEUF qui doit sortir"
+    );
 }
 
 /// Réécrire une valeur : l'ancien posting peut rester (faux positif assumé),
@@ -191,7 +214,10 @@ fn une_reecriture_donne_un_resultat_exact() {
     store.flush().unwrap();
     // Construction de l'index sur la valeur d'origine.
     chauffer(&store);
-    assert_eq!(par_index(&store, "ancien").unwrap(), par_balayage(&store, &tous_les_ids(&store), "ancien"));
+    assert_eq!(
+        par_index(&store, "ancien").unwrap(),
+        par_balayage(&store, &tous_les_ids(&store), "ancien")
+    );
 
     // La valeur est REMPLACÉE : elle ne contient plus « ancien ».
     store.set_node_property(a, "name", Value::String("nouveau-mot".into()));
@@ -224,8 +250,7 @@ fn les_deux_silences_ne_se_confondent_pas() {
     // défaut (1024). Le terme « aaa » ne sera donc servi par AUCUN gramme.
     for i in 0..1_100u32 {
         let n = store.create_node(&["Test"]);
-        store
-            .set_node_property(n, "name", Value::String(format!("xxaaa{i:05}").into()));
+        store.set_node_property(n, "name", Value::String(format!("xxaaa{i:05}").into()));
     }
     store.flush().unwrap();
     chauffer(&store);
@@ -241,7 +266,10 @@ fn les_deux_silences_ne_se_confondent_pas() {
         "aucun gramme n'existe dans le corpus : l'absence est PROUVÉE, on conclut"
     );
     // Et le balayage, lui, trouve bel et bien les 1 100 porteurs de « aaa ».
-    assert_eq!(par_balayage(&store, &tous_les_ids(&store), "aaa").len(), 1_100);
+    assert_eq!(
+        par_balayage(&store, &tous_les_ids(&store), "aaa").len(),
+        1_100
+    );
 }
 
 /// LA GARDE ADAPTATIVE, FIGÉE ICI — c'est elle qui empêche le remède d'être

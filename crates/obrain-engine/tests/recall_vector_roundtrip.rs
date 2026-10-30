@@ -73,7 +73,9 @@ fn gql_set_bare_list_stays_list_the_slow_path() {
     match db.store().get_node_property(n, &key) {
         Some(Value::List(_)) => {} // attendu : liste nue → jamais veccol
         Some(Value::Vector(_)) => {
-            panic!("inattendu : la liste nue est devenue Vector — le write-path actuel ne serait pas lent")
+            panic!(
+                "inattendu : la liste nue est devenue Vector — le write-path actuel ne serait pas lent"
+            )
         }
         autre => panic!("inattendu : la liste nue rend {autre:?}"),
     }

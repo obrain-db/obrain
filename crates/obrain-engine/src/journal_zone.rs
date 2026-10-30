@@ -19,8 +19,8 @@
 
 use std::sync::Arc;
 
-use obrain_substrate::file::ZoneFile;
 use obrain_substrate::SubstrateStore;
+use obrain_substrate::file::ZoneFile;
 
 /// Nom de zone pour une session.
 pub fn zone_filename(session_id: &str) -> String {
@@ -67,11 +67,15 @@ fn create_zone(
     }
     let total = HEADER_LEN + frames.len();
 
-    let mut zf = guard.open_named_zone(name).map_err(|e| format!("journal: open: {e}"))?;
+    let mut zf = guard
+        .open_named_zone(name)
+        .map_err(|e| format!("journal: open: {e}"))?;
     if (total as u64) > zf.len() {
-        zf.grow_to(total as u64).map_err(|e| format!("journal: grow: {e}"))?;
+        zf.grow_to(total as u64)
+            .map_err(|e| format!("journal: grow: {e}"))?;
     }
-    zf.shrink_to(total as u64).map_err(|e| format!("journal: shrink: {e}"))?;
+    zf.shrink_to(total as u64)
+        .map_err(|e| format!("journal: shrink: {e}"))?;
 
     let slice = zf.as_slice_mut();
     slice[..4].copy_from_slice(MAGIC);
@@ -420,7 +424,11 @@ mod tests {
         let mut trie = seqs.clone();
         trie.sort_unstable();
         assert_eq!(seqs, trie, "sortie triée par seq: {seqs:?}");
-        assert!(all.len() >= 5, "toutes les lignes rendues (doublons inclus): {}", all.len());
+        assert!(
+            all.len() >= 5,
+            "toutes les lignes rendues (doublons inclus): {}",
+            all.len()
+        );
 
         // Pagination after_seq=2 : ordre trié garanti, tous > 2.
         let after = read_session_journal(&store, sid, 2, 0, 0);
@@ -524,9 +532,21 @@ mod tests {
         // doit PAS amputer la queue).
         let apres = read_session_journal(&store, sid, -1, 0, 0);
         let seqs: Vec<i64> = apres.iter().map(|l| event_seq(l)).collect();
-        assert!(seqs.len() >= 190, "queue récupérée après corruption: {} lignes", seqs.len());
-        assert!(seqs.contains(&0) && seqs.contains(&49), "début intact: {:?}", &seqs[..3.min(seqs.len())]);
-        assert!(seqs.contains(&199), "dernière frame rendue (queue non amputée): max={:?}", seqs.last());
+        assert!(
+            seqs.len() >= 190,
+            "queue récupérée après corruption: {} lignes",
+            seqs.len()
+        );
+        assert!(
+            seqs.contains(&0) && seqs.contains(&49),
+            "début intact: {:?}",
+            &seqs[..3.min(seqs.len())]
+        );
+        assert!(
+            seqs.contains(&199),
+            "dernière frame rendue (queue non amputée): max={:?}",
+            seqs.last()
+        );
         // L'ordre reste trié par seq.
         let mut trie = seqs.clone();
         trie.sort_unstable();
@@ -584,7 +604,10 @@ mod tests {
         let entete = format!(
             r#"{{"createdAt":1789000000000,"cwd":"/tmp","id":"{sid}","type":"session","version":0}}"#
         );
-        assert!(est_entete_de_session(&entete), "la ligne de test EST un en-tête");
+        assert!(
+            est_entete_de_session(&entete),
+            "la ligne de test EST un en-tête"
+        );
         assert_eq!(event_seq(&entete), -1, "un en-tête ne porte pas de seq");
 
         // Premier envoi : l'en-tête est écrit (la zone est vide).
@@ -618,7 +641,11 @@ mod tests {
         );
         append_session_journal(&store, sid, &[entete.clone()]).unwrap();
         let brut = lignes_brutes(&store, sid);
-        assert_eq!(brut.len(), 1, "l'en-tête d'une zone vierge est écrit: {brut:?}");
+        assert_eq!(
+            brut.len(),
+            1,
+            "l'en-tête d'une zone vierge est écrit: {brut:?}"
+        );
         assert!(est_entete_de_session(&brut[0]));
     }
 }

@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use obrain_core::graph::GraphStoreMut;
-use obrain_engine::config::Config;
 use obrain_engine::ObrainDB;
+use obrain_engine::config::Config;
 
 /// Crée un nœud de `cid` avec une centralité cible (Q0.16 approchée via f32,
 /// comme le fait la suite substrate) et rend son slot (== id u64).
@@ -84,7 +84,8 @@ fn window_query_2d_refuse_une_base_non_substrate() {
         .window_query_2d(1, 0, u16::MAX, 0, u32::MAX)
         .expect_err("base non substrate doit echouer");
     assert!(
-        err.to_string().contains("requires a substrate-backed database"),
+        err.to_string()
+            .contains("requires a substrate-backed database"),
         "message d'erreur inattendu: {err}"
     );
 }

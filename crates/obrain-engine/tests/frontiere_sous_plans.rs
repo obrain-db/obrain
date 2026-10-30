@@ -70,7 +70,10 @@ fn une_ecriture_sous_un_scan_est_classee_ecriture() {
 fn temoin_anti_vacuite_l_ecriture_nue_est_deja_classee_ecriture() {
     // Sans ce temoin, le test precedent passerait meme si `has_mutations()`
     // rendait `true` pour absolument tout.
-    assert!(mute(ECRITURE_NUE), "l'ecriture nue doit etre classee ecriture");
+    assert!(
+        mute(ECRITURE_NUE),
+        "l'ecriture nue doit etre classee ecriture"
+    );
     assert!(
         !mute("MATCH (b:Big) RETURN b.v"),
         "ANTI-VACUITE : une LECTURE pure doit rester classee lecture, sinon \
@@ -182,7 +185,10 @@ fn une_suppression_sous_un_scan_annulee_en_vol_ne_detruit_pas_a_moitie() {
          destruction de donnees ne se rattrape pas. Resultat : {r:?}",
         avant - reste
     );
-    assert_eq!(reste, 0, "une suppression n'est pas annulable : elle aboutit");
+    assert_eq!(
+        reste, 0,
+        "une suppression n'est pas annulable : elle aboutit"
+    );
 }
 
 /// ANTI-VACUITE DE LA SECTION II : le jeton employe est bien vivant, et il

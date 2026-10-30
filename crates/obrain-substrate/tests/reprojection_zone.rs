@@ -37,7 +37,11 @@ fn un_lecteur_voit_ce_qu_un_ecrivain_ecrit_apres_son_ouverture() {
         }
         // Clé EXISTANTE chez le lecteur (comme `qualified_name` dans le
         // harness) : sa nouvelle valeur vit dans une page de tas récente.
-        ecrivain.set_node_property(id, "qualified_name", Value::String(format!("tard-{i}").into()));
+        ecrivain.set_node_property(
+            id,
+            "qualified_name",
+            Value::String(format!("tard-{i}").into()),
+        );
     }
     ecrivain.flush().ok();
 
@@ -48,5 +52,8 @@ fn un_lecteur_voit_ce_qu_un_ecrivain_ecrit_apres_son_ouverture() {
             vues += 1;
         }
     }
-    assert_eq!(vues, n, "le lecteur doit voir les propriétés écrites après son ouverture");
+    assert_eq!(
+        vues, n,
+        "le lecteur doit voir les propriétés écrites après son ouverture"
+    );
 }

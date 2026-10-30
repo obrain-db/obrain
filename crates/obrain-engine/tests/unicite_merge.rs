@@ -98,7 +98,9 @@ fn merge_sur_doublons_existants_est_deterministe() {
 fn create_explicite_reste_permissif_et_nomme() {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
-    s.execute("CREATE (:Libre {id: \x27meme\x27})").expect("create 1");
-    s.execute("CREATE (:Libre {id: \x27meme\x27})").expect("create 2");
+    s.execute("CREATE (:Libre {id: \x27meme\x27})")
+        .expect("create 1");
+    s.execute("CREATE (:Libre {id: \x27meme\x27})")
+        .expect("create 2");
     assert_eq!(db.graph_store().nodes_by_label("Libre").len(), 2);
 }

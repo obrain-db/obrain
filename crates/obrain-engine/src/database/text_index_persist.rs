@@ -79,12 +79,7 @@ impl super::ObrainDB {
     /// est journalisé, jamais fatal — l'index en RAM sert la session courante,
     /// la reconstruction reste le filet des suivantes.
     #[cfg(feature = "text-index")]
-    pub(super) fn persister_index_texte(
-        &self,
-        label: &str,
-        property: &str,
-        index: &InvertedIndex,
-    ) {
+    pub(super) fn persister_index_texte(&self, label: &str, property: &str, index: &InvertedIndex) {
         let Some(chemin) = self.chemin_index_texte(label, property) else {
             return; // base en mémoire : rien à persister, et c'est honnête
         };
@@ -132,9 +127,10 @@ impl super::ObrainDB {
         self.index_texte_empreintes
             .write()
             .insert(format!("{label}:{property}"), offset);
-        self.index_texte_epochs
-            .write()
-            .insert(format!("{label}:{property}"), self.data_store().current_epoch().as_u64());
+        self.index_texte_epochs.write().insert(
+            format!("{label}:{property}"),
+            self.data_store().current_epoch().as_u64(),
+        );
         self.index_texte_persistes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -229,9 +225,10 @@ impl super::ObrainDB {
         self.index_texte_empreintes
             .write()
             .insert(format!("{label}:{property}"), offset);
-        self.index_texte_epochs
-            .write()
-            .insert(format!("{label}:{property}"), self.data_store().current_epoch().as_u64());
+        self.index_texte_epochs.write().insert(
+            format!("{label}:{property}"),
+            self.data_store().current_epoch().as_u64(),
+        );
         self.index_texte_charges
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Some(Arc::new(parking_lot::RwLock::new(index)))
@@ -298,13 +295,15 @@ impl super::ObrainDB {
     /// Le nombre d'index texte CHARGÉS depuis le disque (introspection).
     #[must_use]
     pub fn nb_index_texte_charges(&self) -> usize {
-        self.index_texte_charges.load(std::sync::atomic::Ordering::Relaxed)
+        self.index_texte_charges
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Le nombre d'index texte PERSISTÉS sur le disque (introspection).
     #[must_use]
     pub fn nb_index_texte_persistes(&self) -> usize {
-        self.index_texte_persistes.load(std::sync::atomic::Ordering::Relaxed)
+        self.index_texte_persistes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Hydrate les index texte DÉCLARÉS au catalogue du substrat.

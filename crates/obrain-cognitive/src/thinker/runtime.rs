@@ -34,8 +34,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use crossbeam::channel::{self, RecvTimeoutError};
 

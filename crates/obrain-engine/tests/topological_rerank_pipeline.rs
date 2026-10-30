@@ -1,4 +1,8 @@
-#![cfg(all(feature = "vector-index", feature = "text-index", feature = "hybrid-search"))]
+#![cfg(all(
+    feature = "vector-index",
+    feature = "text-index",
+    feature = "hybrid-search"
+))]
 //! Pipeline « RAG topologique » industrialisé (RFC zorder-superposition C2).
 //!
 //! Même scénario que la v1 (`vector_latency_scale.rs::
@@ -11,9 +15,9 @@
 //! Le test v1 existant n'est pas modifié (C6) : il reste la preuve du
 //! mécanisme avec oracle parfait ; celui-ci prouve le pipeline consommable.
 
+use obrain_common::types::NodeId;
 use obrain_engine::database::ObrainDB;
 use obrain_engine::database::topological::cluster_components_by_edge_type;
-use obrain_common::types::NodeId;
 
 #[test]
 fn hybrid_search_topological_ameliore_sans_oracle() {
@@ -34,7 +38,11 @@ fn hybrid_search_topological_ameliore_sans_oracle() {
                     format!("k{} alpha beta gamma", c % 10).as_str().into(),
                 ),
             );
-            db.set_node_property(d, "uid", obrain_common::types::Value::Int64((c * per + i) as i64));
+            db.set_node_property(
+                d,
+                "uid",
+                obrain_common::types::Value::Int64((c * per + i) as i64),
+            );
             docs.push(d);
         }
     }
@@ -52,7 +60,10 @@ fn hybrid_search_topological_ameliore_sans_oracle() {
 
     let uid_of = |nid: NodeId| -> i64 {
         let n = db.get_node(nid).unwrap();
-        match n.properties.get(&obrain_common::types::PropertyKey::new("uid")) {
+        match n
+            .properties
+            .get(&obrain_common::types::PropertyKey::new("uid"))
+        {
             Some(obrain_common::types::Value::Int64(x)) => *x,
             _ => -1,
         }
@@ -80,7 +91,13 @@ fn hybrid_search_topological_ameliore_sans_oracle() {
             let cand = if topo {
                 // Pipeline : hybrid sur-échantillonné + rerank par dominance.
                 db.hybrid_search_topological(
-                    "Doc", "text", "emb", qt, Some(qv), 5, 1.0,
+                    "Doc",
+                    "text",
+                    "emb",
+                    qt,
+                    Some(qv),
+                    5,
+                    1.0,
                     // cluster_of injecté : composantes réelles du pré-calcul.
                     |nid| cluster_real(&[nid]).get(&nid).copied(),
                 )
@@ -101,12 +118,16 @@ fn hybrid_search_topological_ameliore_sans_oracle() {
 
     let p_base = avg_p(false);
     let p_topo = avg_p(true);
-    eprintln!("C2 pipeline : precision@5 hybride seul = {p_base:.3} | hybride+composantes réelles = {p_topo:.3}");
+    eprintln!(
+        "C2 pipeline : precision@5 hybride seul = {p_base:.3} | hybride+composantes réelles = {p_topo:.3}"
+    );
     assert!(
         p_topo > p_base + 0.05,
         "le pipeline topologique doit améliorer la précision (basé {p_base} → topo {p_topo})"
     );
-    eprintln!("C2 pipeline OK — rerank par composantes réelles (sans oracle) améliore le retrieval");
+    eprintln!(
+        "C2 pipeline OK — rerank par composantes réelles (sans oracle) améliore le retrieval"
+    );
 }
 
 #[test]
@@ -162,5 +183,7 @@ fn rerank_pure_boost_zero_bit_identique() {
     });
     let ids: Vec<u64> = mordant.iter().map(|(id, _)| id.0).collect();
     assert_eq!(ids, vec![1, 3, 2, 4], "le boost doit réordonner A,C,B,D");
-    eprintln!("C2 bit-identité OK — boost=0/None ⇒ inchangé ; équilibré ⇒ ordre stable ; déséquilibré ⇒ réordonne");
+    eprintln!(
+        "C2 bit-identité OK — boost=0/None ⇒ inchangé ; équilibré ⇒ ordre stable ; déséquilibré ⇒ réordonne"
+    );
 }

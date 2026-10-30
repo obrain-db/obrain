@@ -92,7 +92,10 @@ fn main() {
             f.sync_all().unwrap();
             s.push(t.elapsed().as_secs_f64() * 1e6);
         }
-        println!("[0] fsync unitaire (sync_all 32 o)      : {:>8.1} µs", mediane(s));
+        println!(
+            "[0] fsync unitaire (sync_all 32 o)      : {:>8.1} µs",
+            mediane(s)
+        );
     }
 
     // ── 1. FENCE : élection flock ───────────────────────────────────────────
@@ -105,7 +108,10 @@ fn main() {
             drop(e);
             s.push(t.elapsed().as_secs_f64() * 1e6);
         }
-        println!("[1] fence élection (tenter+drop)       : {:>8.2} µs", mediane(s));
+        println!(
+            "[1] fence élection (tenter+drop)       : {:>8.2} µs",
+            mediane(s)
+        );
     }
 
     // ── 2. TRONCATURE : WalWriter::truncate selon la taille du WAL ──────────
@@ -124,7 +130,11 @@ fn main() {
             gonfler(&w, taille); // hors chrono : re-gonfler pour l'échantillon suivant
         }
         let ko = taille as f64 / 1024.0;
-        println!("    WAL {:>7.1} Ko  ->  truncate {:>8.1} µs", ko, mediane(s));
+        println!(
+            "    WAL {:>7.1} Ko  ->  truncate {:>8.1} µs",
+            ko,
+            mediane(s)
+        );
     }
 
     // ── 3. CHECKPOINT ÉLU complet : coût vs volume écrit (nœuds) ────────────
@@ -215,7 +225,10 @@ fn main() {
             s.push(t.elapsed().as_secs_f64() * 1e6);
             drop(sub2);
         }
-        println!("    {n_noeuds:>6} nœuds  ->  flush zones {:.1} µs", mediane(s));
+        println!(
+            "    {n_noeuds:>6} nœuds  ->  flush zones {:.1} µs",
+            mediane(s)
+        );
     }
 
     // ── 5. CHECKPOINT SUR STORE VIDE (le plancher fixe, sans donnée sale) ───
@@ -237,7 +250,10 @@ fn main() {
             drop(sub2);
             drop(wal_writer);
         }
-        println!("    0 nœud          ->  checkpoint_elu {:.1} µs (plancher fixe)", mediane(s));
+        println!(
+            "    0 nœud          ->  checkpoint_elu {:.1} µs (plancher fixe)",
+            mediane(s)
+        );
     }
 
     // ── 6. LE PLOMB DU COÛT FIXE : fsync de RÉPERTOIRE + publication atomique ──
@@ -254,7 +270,10 @@ fn main() {
             fdir.sync_all().unwrap();
             s.push(t.elapsed().as_secs_f64() * 1e6);
         }
-        println!("    fsync RÉPERTOIRE (sync_all)        : {:>8.1} µs", mediane(s));
+        println!(
+            "    fsync RÉPERTOIRE (sync_all)        : {:>8.1} µs",
+            mediane(s)
+        );
 
         let final_path = root.join("meta-probe");
         let tmp = root.join("meta-probe.tmp");

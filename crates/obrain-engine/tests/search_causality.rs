@@ -30,10 +30,18 @@ fn search_effects_suit_la_direction_des_aretes() {
     let fx = db.search_effects(a, 10, 3).expect("effects(A)");
     assert_eq!(fx[0].node_id, b, "effet direct d'abord");
     assert_eq!(fx[0].level, 1);
-    assert!((fx[0].score - 0.5).abs() < 1e-9, "score γ=0.5, got {}", fx[0].score);
+    assert!(
+        (fx[0].score - 0.5).abs() < 1e-9,
+        "score γ=0.5, got {}",
+        fx[0].score
+    );
     assert_eq!(fx[1].node_id, c);
     assert_eq!(fx[1].level, 2);
-    assert!((fx[1].score - 0.25).abs() < 1e-9, "score γ²=0.25, got {}", fx[1].score);
+    assert!(
+        (fx[1].score - 0.25).abs() < 1e-9,
+        "score γ²=0.25, got {}",
+        fx[1].score
+    );
     // Pas de retour arrière : causes(A) est vide (rien n'entre dans A).
     let cs = db.search_causes(a, 10, 3).expect("causes(A)");
     assert!(cs.is_empty(), "A n'a pas de conducteur: {cs:?}");

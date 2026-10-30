@@ -122,7 +122,11 @@ fn auditer(wal: &Path) -> Vec<Frame> {
     // qui commence là où une frame devrait commencer — et c'est exactement ce que
     // le lecteur publie (`WalIter::trou`), en plus de la contiguïté vérifiée
     // ci-dessous (taille du fichier == somme des longueurs de frames).
-    assert!(it.trou().is_none(), "TROU de zéros dans le WAL : {:?}", it.trou());
+    assert!(
+        it.trou().is_none(),
+        "TROU de zéros dans le WAL : {:?}",
+        it.trou()
+    );
     frames
 }
 
@@ -412,11 +416,9 @@ fn t1_quatre_processus_lsn_exact_et_ordre_physique() {
             (n as u64 * m) as usize,
             "aucune frame perdue, aucune dupliquée"
         );
-        let attendus: std::collections::HashSet<(u8, u64)> = (1..=n)
-            .flat_map(|t| (0..m).map(move |s| (t, s)))
-            .collect();
-        let vus: std::collections::HashSet<(u8, u64)> =
-            frames.iter().map(|f| f.identite).collect();
+        let attendus: std::collections::HashSet<(u8, u64)> =
+            (1..=n).flat_map(|t| (0..m).map(move |s| (t, s))).collect();
+        let vus: std::collections::HashSet<(u8, u64)> = frames.iter().map(|f| f.identite).collect();
         assert_eq!(vus, attendus, "zéro perte, zéro fantôme");
 
         // ── L'ORDRE INTERNE DE CHAQUE ÉCRIVAIN EST PRÉSERVÉ ──────────────────
@@ -501,10 +503,14 @@ fn t2_ecrivain_tue_apres_reservation_bloque_la_tete_puis_recuperation_froide() {
     let mut observe = None;
     while Instant::now() < limite {
         if let Some((reg, taille)) = registre_du_wal(&wal)
-            && reg.tete_reservee().load(std::sync::atomic::Ordering::Acquire) > taille
+            && reg
+                .tete_reservee()
+                .load(std::sync::atomic::Ordering::Acquire)
+                > taille
         {
             observe = Some((
-                reg.tete_reservee().load(std::sync::atomic::Ordering::Acquire),
+                reg.tete_reservee()
+                    .load(std::sync::atomic::Ordering::Acquire),
                 reg.fin_publiee().load(std::sync::atomic::Ordering::Acquire),
                 taille,
             ));
@@ -514,7 +520,10 @@ fn t2_ecrivain_tue_apres_reservation_bloque_la_tete_puis_recuperation_froide() {
     }
     let (tete_reservee, fin_publiee, taille) =
         observe.expect("l'enfant devait avoir RÉSERVÉ sa plage (tête > taille réelle)");
-    assert_eq!(fin_publiee, taille_saine, "rien n'a été PUBLIÉ par l'enfant");
+    assert_eq!(
+        fin_publiee, taille_saine,
+        "rien n'a été PUBLIÉ par l'enfant"
+    );
     assert!(
         tete_reservee > taille,
         "la tête réservée doit dépasser le fichier — c'est la définition du blocage"
@@ -533,7 +542,9 @@ fn t2_ecrivain_tue_apres_reservation_bloque_la_tete_puis_recuperation_froide() {
     // test prouve qu'il a ATTENDU (mesure ci-dessous) sans attendre pour rien.
     suivant.forcer_delai_tete_bloquee(Duration::from_millis(150));
     let debut = Instant::now();
-    let (pos, len) = suivant.append(record(2, 0)).expect("append de récupération");
+    let (pos, len) = suivant
+        .append(record(2, 0))
+        .expect("append de récupération");
     let attente = debut.elapsed();
     assert_eq!(
         pos, taille_saine,
@@ -558,10 +569,7 @@ fn t2_ecrivain_tue_apres_reservation_bloque_la_tete_puis_recuperation_froide() {
     // ── L'AUDIT : CONTIGU, EXACT, SANS ZÉROS ────────────────────────────────
     let frames = verifier_contiguite_et_lsn_exact(&wal, ANCRE_INITIALE);
     assert_eq!(
-        frames
-            .iter()
-            .map(|f| f.identite)
-            .collect::<Vec<_>>(),
+        frames.iter().map(|f| f.identite).collect::<Vec<_>>(),
         vec![(1, 0), (1, 1), (2, 0)],
         "les deux frames témoins, puis celle de la récupération — la plage du \
          mort n'a laissé AUCUN octet"
@@ -645,7 +653,9 @@ fn t3_troncature_etrangere_annoncee_le_pair_se_reancre_sans_attendre() {
     // hasard de timing.
     ecrivain.forcer_delai_tete_bloquee(Duration::from_secs(5));
     let debut = Instant::now();
-    let (pos, len) = ecrivain.append(record(2, 0)).expect("append après troncature");
+    let (pos, len) = ecrivain
+        .append(record(2, 0))
+        .expect("append après troncature");
     let duree = debut.elapsed();
     assert!(
         duree < Duration::from_secs(1),

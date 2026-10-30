@@ -394,8 +394,8 @@ impl GremlinTranslator {
                 variable: scan_var,
                 label: None,
                 input: None,
-            pushdown_hint: None,
-        });
+                pushdown_hint: None,
+            });
         }
 
         let edge_var = self.var_gen.next();
@@ -437,8 +437,8 @@ impl GremlinTranslator {
                     variable: target_var.clone(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        });
+                    pushdown_hint: None,
+                });
 
                 // Apply any steps from the sub-traversal
                 let mut sub_current_var = target_var.clone();
@@ -477,8 +477,8 @@ impl GremlinTranslator {
                     variable: var.clone(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        });
+                    pushdown_hint: None,
+                });
 
                 // If specific IDs, add filter
                 if let Some(ids) = ids
@@ -498,8 +498,8 @@ impl GremlinTranslator {
                     variable: var.clone(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        });
+                    pushdown_hint: None,
+                });
 
                 let edge_var = self.var_gen.next();
                 let target_var = self.var_gen.next();
@@ -1745,8 +1745,8 @@ impl GremlinTranslator {
                             variable: current_var.to_string(),
                             label: None,
                             input: None,
-            pushdown_hint: None,
-        })),
+                            pushdown_hint: None,
+                        })),
                         path_alias: None,
                         path_mode: PathMode::Walk,
                     });

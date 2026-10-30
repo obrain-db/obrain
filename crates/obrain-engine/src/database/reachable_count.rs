@@ -132,10 +132,9 @@ pub fn compute_reachable_counts(
         let mut next: hashbrown::HashSet<u64> =
             hashbrown::HashSet::with_capacity(frontier.len() * 2 + 8);
         for u in frontier.iter() {
-            for (v, eid) in substrate.edges_from(
-                obrain_common::types::NodeId(*u),
-                Direction::Outgoing,
-            ) {
+            for (v, eid) in
+                substrate.edges_from(obrain_common::types::NodeId(*u), Direction::Outgoing)
+            {
                 // Filtre du type d'arête du motif ([:CALLS]).
                 match substrate.edge_type(eid) {
                     Some(t) if t.as_str() == edge_type => {}
@@ -233,10 +232,7 @@ fn map_value<'a>(
     entries: &'a [(String, LogicalExpression)],
     key: &str,
 ) -> Option<&'a LogicalExpression> {
-    entries
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v)
+    entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
 /// Paramètres décodés de l'appel (forme map OU positionnelle).
@@ -260,7 +256,7 @@ fn execute_reachable_count(
             None => {
                 return Err(Error::Internal(
                     "obrain.reachable_count: missing key 'from_label'".to_string(),
-                ))
+                ));
             }
         };
         let edge_type = match map_value(entries, "edge_type") {
@@ -268,7 +264,7 @@ fn execute_reachable_count(
             None => {
                 return Err(Error::Internal(
                     "obrain.reachable_count: missing key 'edge_type'".to_string(),
-                ))
+                ));
             }
         };
         let min_hops = match map_value(entries, "min_hops") {
@@ -406,16 +402,14 @@ mod tests {
         edge(&store, 7, 8);
         edge(&store, 8, 9);
 
-        let rows =
-            compute_reachable_counts(&store, "L", "T", 1, 4).expect("compute");
+        let rows = compute_reachable_counts(&store, "L", "T", 1, 4).expect("compute");
         // Attendus calculés à la main (sémantique de marche, sommets
         // répétables) :
         //   F1 = {1,2,3,4,5,6,8,9}        → 8   (7 exclu : source pure)
         //   F2 = {1,2,3,4,5,6,9}          → 7   (8 sorti : 7 ∉ F1)
         //   F3 = {1,2,3,4,5,6}            → 6   (9 sorti : 8 ∉ F2)
         //   F4 = {1,2,3,4,5,6}            → 6   (le cycle maintient la base)
-        let expected: Vec<(usize, u64)> =
-            vec![(1, 8), (2, 7), (3, 6), (4, 6)];
+        let expected: Vec<(usize, u64)> = vec![(1, 8), (2, 7), (3, 6), (4, 6)];
         let got: Vec<(usize, u64)> = rows
             .iter()
             .map(|r| (r.hop_count, r.distinct_count))
@@ -445,10 +439,7 @@ mod tests {
             store.create_node(&["X"]).0,
             store.create_node(&["X"]).0,
         );
-        let (p, q) = (
-            store.create_node(&["Y"]).0,
-            store.create_node(&["Y"]).0,
-        );
+        let (p, q) = (store.create_node(&["Y"]).0, store.create_node(&["Y"]).0);
         // Chaîne X : a→b→c (T) ; croisements X→Y : a→p, c→p (T) ;
         // arête interne Y : p→q (T).
         edge(&store, a, b);

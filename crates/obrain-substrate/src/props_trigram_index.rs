@@ -219,8 +219,7 @@ impl PropsTrigramIndex {
             });
 
         // ── FILTRE : ne garder que les grammes RARES ─────────────────────
-        let connus: FxHashMap<[u8; LARGEUR_GRAMME], ()> =
-            freq.keys().map(|g| (*g, ())).collect();
+        let connus: FxHashMap<[u8; LARGEUR_GRAMME], ()> = freq.keys().map(|g| (*g, ())).collect();
         let retenus: FxHashMap<[u8; LARGEUR_GRAMME], ()> = freq
             .iter()
             .filter(|(_, df)| **df <= seuil)
@@ -485,7 +484,9 @@ impl TrigrammesDeStore {
     /// Le nombre de grammes indexés pour une propriété (0 si non construite).
     #[must_use]
     pub fn grammes(&self, propriete: &str) -> usize {
-        self.indexes.get(propriete).map_or(0, PropsTrigramIndex::grammes)
+        self.indexes
+            .get(propriete)
+            .map_or(0, PropsTrigramIndex::grammes)
     }
 
     /// L'index CONSTRUIT d'une propriété, s'il existe — c'est ce que le store
@@ -758,8 +759,16 @@ mod tests {
     fn un_gramme_absent_du_corpus_conclut_a_l_absence() {
         let valeurs = vec![(1u32, "alpha".to_string()), (2, "beta".to_string())];
         let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        assert_eq!(idx.candidats("zzz"), Some(vec![]), "« zzz » n'existe nulle part");
-        assert_eq!(idx.candidats("IAM"), Some(vec![]), "aucun trigramme « IAM »");
+        assert_eq!(
+            idx.candidats("zzz"),
+            Some(vec![]),
+            "« zzz » n'existe nulle part"
+        );
+        assert_eq!(
+            idx.candidats("IAM"),
+            Some(vec![]),
+            "aucun trigramme « IAM »"
+        );
     }
 
     /// Quand TOUS les grammes du terme sont trop communs pour être indexés,
@@ -848,7 +857,10 @@ mod tests {
         let c = etat.candidats("nom", "nouveau").expect("servi");
         assert!(c.contains(&1), "la VALEUR VIVANTE doit être trouvée");
         let c = etat.candidats("nom", "ancien").expect("servi");
-        assert!(c.contains(&1), "faux positif assumé, écarté par revérification");
+        assert!(
+            c.contains(&1),
+            "faux positif assumé, écarté par revérification"
+        );
     }
 
     /// Sans index construit ni écriture, l'état se TAIT — il ne nie rien.
@@ -871,11 +883,24 @@ mod tests {
         idx.ecrire_fichier(&chemin, 1234, 567).unwrap();
         let f = TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 567)
             .expect("ouvrable sous ses propres ancres");
-        for terme in ["iam", "IAM", "token", "Auth", "obrain-iam", "zzqq-absent", "ion", "aa"] {
+        for terme in [
+            "iam",
+            "IAM",
+            "token",
+            "Auth",
+            "obrain-iam",
+            "zzqq-absent",
+            "ion",
+            "aa",
+        ] {
             let mut a = idx.candidats(terme);
             let mut b = f.candidats(terme);
-            if let Some(v) = a.as_mut() { v.sort_unstable(); }
-            if let Some(v) = b.as_mut() { v.sort_unstable(); }
+            if let Some(v) = a.as_mut() {
+                v.sort_unstable();
+            }
+            if let Some(v) = b.as_mut() {
+                v.sort_unstable();
+            }
             assert_eq!(b, a, "« {terme} » : mêmes candidats, mêmes silences");
         }
     }
@@ -888,8 +913,14 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let chemin = td.path().join("t.v1");
         idx.ecrire_fichier(&chemin, 1234, 567).unwrap();
-        assert!(TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1235, 567).is_none(), "WAL");
-        assert!(TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 568).is_none(), "slots");
+        assert!(
+            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1235, 567).is_none(),
+            "WAL"
+        );
+        assert!(
+            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 568).is_none(),
+            "slots"
+        );
         assert!(
             TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT + 1, 1234, 567).is_none(),
             "seuil différent : l'index ne décrit pas la même chose"
@@ -935,7 +966,6 @@ mod tests {
         }
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PERSISTANCE — l'annuaire trié sur disque, lu par `mmap`
@@ -1135,11 +1165,7 @@ impl TrigrammesFichier {
     /// La sûreté tient à trois faits : le WAL est append-only (la fenêtre
     /// `[ancre_wal, maintenant]` est lisible), le fichier porte l'état d'avant,
     /// et le tampon porte le delta. Rien n'est supposé — voir l'appelant.
-    pub fn ouvrir_jusqua(
-        chemin: &std::path::Path,
-        seuil: u32,
-        ancre_wal_max: u64,
-    ) -> Option<Self> {
+    pub fn ouvrir_jusqua(chemin: &std::path::Path, seuil: u32, ancre_wal_max: u64) -> Option<Self> {
         let f = Self::lire(chemin, seuil)?;
         (f.ancre_wal <= ancre_wal_max).then_some(f)
     }
@@ -1270,7 +1296,7 @@ impl TrigrammesFichier {
         for g in grammes_distincts(octets) {
             match self.gramme(&g) {
                 Some(Some(l)) => listes.push(l),
-                Some(None) => {}          // connu, écarté : la réponse se relâche
+                Some(None) => {} // connu, écarté : la réponse se relâche
                 None => return Some(Vec::new()), // absent du corpus : absence prouvée
             }
         }

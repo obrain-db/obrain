@@ -43,7 +43,10 @@ fn label_counts_egale_histogramme_gql_en_mono_etiquette() {
     let direct = db.label_counts();
     let gql = histo_gql(&db);
 
-    assert_eq!(direct, gql, "mono-etiquette : les deux vues doivent coincider");
+    assert_eq!(
+        direct, gql,
+        "mono-etiquette : les deux vues doivent coincider"
+    );
     assert_eq!(direct, vec![("Alpha".into(), 7), ("Beta".into(), 3)]);
     // Et la somme ferme sur le compte total.
     assert_eq!(
@@ -72,7 +75,10 @@ fn label_counts_diverge_de_labels_zero_en_multi_etiquette() {
     // La somme DEPASSE le compte total : c'est la signature de la divergence.
     let somme: u64 = direct.values().sum();
     assert_eq!(db.node_count() as u64, 2);
-    assert_eq!(somme, 3, "somme > node_count des qu'il y a du multi-etiquette");
+    assert_eq!(
+        somme, 3,
+        "somme > node_count des qu'il y a du multi-etiquette"
+    );
 
     // L'histogramme GQL, lui, totalise exactement node_count.
     let somme_gql: u64 = histo_gql(&db).iter().map(|(_, c)| c).sum();
@@ -89,10 +95,8 @@ fn compteurs_nommes_accordent_avec_gql() {
         for i in 0..11 {
             s.execute(&format!("INSERT (:Noeud {{i: {i}}})")).unwrap();
         }
-        s.execute(
-            "MATCH (a:Noeud {i: 0}), (b:Noeud {i: 1}) INSERT (a)-[:LIE]->(b)",
-        )
-        .unwrap();
+        s.execute("MATCH (a:Noeud {i: 0}), (b:Noeud {i: 1}) INSERT (a)-[:LIE]->(b)")
+            .unwrap();
     }
 
     let un_entier = |q: &str| -> u64 {
@@ -103,7 +107,10 @@ fn compteurs_nommes_accordent_avec_gql() {
         }
     };
 
-    assert_eq!(db.node_count() as u64, un_entier("MATCH (n) RETURN count(n)"));
+    assert_eq!(
+        db.node_count() as u64,
+        un_entier("MATCH (n) RETURN count(n)")
+    );
     assert_eq!(
         db.edge_count() as u64,
         un_entier("MATCH ()-[r]->() RETURN count(r)")
@@ -148,7 +155,14 @@ fn cache_de_plans_ne_rend_pas_de_resultat_perime() {
     s.execute("INSERT (:Item {i: 1})").unwrap();
     let q = "MATCH (n:Item) RETURN count(n)";
     let lire = || -> u64 {
-        match db.session().execute(q).unwrap().rows.first().and_then(|r| r.first()) {
+        match db
+            .session()
+            .execute(q)
+            .unwrap()
+            .rows
+            .first()
+            .and_then(|r| r.first())
+        {
             Some(Value::Int64(n)) => *n as u64,
             autre => panic!("attendu Int64, recu {autre:?}"),
         }
@@ -159,5 +173,9 @@ fn cache_de_plans_ne_rend_pas_de_resultat_perime() {
     // MEME texte de requete -> plan en cache. Le resultat doit bouger.
     assert_eq!(lire(), 2, "le plan est cache, PAS le resultat");
     s.execute("MATCH (n:Item {i: 2}) DELETE n").unwrap();
-    assert_eq!(lire(), 1, "la suppression doit se voir malgre le plan cache");
+    assert_eq!(
+        lire(),
+        1,
+        "la suppression doit se voir malgre le plan cache"
+    );
 }

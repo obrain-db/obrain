@@ -70,7 +70,10 @@ pub fn rerank_by_cluster_dominance(
         .into_iter()
         .zip(resolved)
         .map(|((id, score), cl)| {
-            let dominance = cl.and_then(|c| cluster_count.get(&c).copied()).unwrap_or(0.0) / total;
+            let dominance = cl
+                .and_then(|c| cluster_count.get(&c).copied())
+                .unwrap_or(0.0)
+                / total;
             (id, score + dominance * boost)
         })
         .collect();
@@ -207,6 +210,8 @@ impl super::ObrainDB {
             sur_echantillon,
             None,
         )?;
-        Ok(rerank_by_cluster_dominance(candidates, k, boost, cluster_of))
+        Ok(rerank_by_cluster_dominance(
+            candidates, k, boost, cluster_of,
+        ))
     }
 }

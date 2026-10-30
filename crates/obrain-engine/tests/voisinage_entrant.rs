@@ -212,7 +212,10 @@ fn entrante_syntaxe_inversee_meme_ensemble() {
         &t.db,
         "MATCH (b {qualified_name: 'cible'})<-[r]-(a) RETURN a.nom, type(r)",
     );
-    assert_eq!(directe, inversee, "meme motif, deux ecritures, meme ensemble");
+    assert_eq!(
+        directe, inversee,
+        "meme motif, deux ecritures, meme ensemble"
+    );
 }
 
 #[test]
@@ -227,7 +230,10 @@ fn entrante_ordre_specifie_est_une_sequence() {
          ORDER BY a.nom",
     );
     let oracle = t.entrantes("hub", None); // triee (nom, type), noms uniques
-    assert_eq!(obtenu, oracle, "ORDER BY specifie : meme SEQUENCE, pas seulement meme ensemble");
+    assert_eq!(
+        obtenu, oracle,
+        "ORDER BY specifie : meme SEQUENCE, pas seulement meme ensemble"
+    );
 }
 
 // ══════════════ 2. LIMIT : le plafond ne doit jamais mentir ══════════════
@@ -240,7 +246,11 @@ fn entrante_limit_rend_k_lignes_du_bon_ensemble() {
         "MATCH (a)-[r]->(b {qualified_name: 'cible'}) RETURN a.nom, type(r) LIMIT 30",
     );
     let oracle = t.entrantes("hub", None);
-    assert_eq!(obtenu.len(), 30, "151 aretes entrantes, LIMIT 30 : 30 lignes");
+    assert_eq!(
+        obtenu.len(),
+        30,
+        "151 aretes entrantes, LIMIT 30 : 30 lignes"
+    );
     for ligne in &obtenu {
         assert!(
             oracle.contains(ligne),
@@ -273,7 +283,10 @@ fn entrante_limit_derriere_filtre_aval_doit_se_desarmer() {
          plafond se desarme, il ne coupe pas a 30 aretes AVANT le filtre"
     );
     for ligne in &obtenu {
-        assert!(oracle.contains(ligne), "ligne hors ensemble filtre : {ligne:?}");
+        assert!(
+            oracle.contains(ligne),
+            "ligne hors ensemble filtre : {ligne:?}"
+        );
     }
 }
 
@@ -429,7 +442,11 @@ fn preuve_comptable_seek_contre_balayage() {
             "MATCH (a)-[r]->(b {nom: 'hub'}) RETURN a.nom, type(r)",
         )
     });
-    assert_eq!(temoin, t.entrantes("hub", None), "le temoin rend le meme ensemble");
+    assert_eq!(
+        temoin,
+        t.entrantes("hub", None),
+        "le temoin rend le meme ensemble"
+    );
     assert!(
         slots_balayage >= n_noeuds,
         "temoin : l'ancien plan lit au moins tous les noeuds ({slots_balayage} slots \
@@ -459,7 +476,11 @@ fn preuve_comptable_seek_contre_balayage() {
             "MATCH (a)-[r]->(b {qualified_name: 'cible'}) RETURN a.nom, type(r)",
         )
     });
-    assert_eq!(obtenu, t.entrantes("hub", None), "l'egalite d'abord, toujours");
+    assert_eq!(
+        obtenu,
+        t.entrantes("hub", None),
+        "l'egalite d'abord, toujours"
+    );
     assert!(
         slots_seek < n_noeuds / 4,
         "ancree sur b par l'index, la traversee entrante ne balaie plus les \
@@ -527,8 +548,9 @@ fn banc_echelle_du_defaut() {
 
     // APRES (qualified_name indexe -> re-ancrage sur b).
     let debut = web_time::Instant::now();
-    let (compte_apres, slots_apres) =
-        mesurer_slots(|| compte("MATCH (a)-[r]->(b {qualified_name: 'plan:racine'}) RETURN count(r)"));
+    let (compte_apres, slots_apres) = mesurer_slots(|| {
+        compte("MATCH (a)-[r]->(b {qualified_name: 'plan:racine'}) RETURN count(r)")
+    });
     let t_apres = debut.elapsed();
 
     // LIMIT 30 avec projection du far-endpoint (piege n4 : lecture de a).

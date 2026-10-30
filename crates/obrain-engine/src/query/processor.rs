@@ -280,10 +280,7 @@ impl QueryProcessor {
     /// (`CALL obrain.window_2d`) resolve in this processor's own planner
     /// builds. Same pattern as [`Self::with_cognitive_engine`].
     #[must_use]
-    pub fn with_substrate_store(
-        mut self,
-        store: Arc<obrain_substrate::SubstrateStore>,
-    ) -> Self {
+    pub fn with_substrate_store(mut self, store: Arc<obrain_substrate::SubstrateStore>) -> Self {
         self.substrate_store = Some(store);
         self
     }
@@ -614,10 +611,9 @@ impl QueryProcessor {
         // Même frontière que sur le chemin LPG (voir `process_lpg`) : la
         // décision structurelle du plan, prise au seul endroit où le plan
         // existe sur ce chemin.
-        let _frontiere =
-            obrain_common::utils::cancel::frontiere_heritee(
-                optimized_plan.root.mutations_avec(Some(&self.catalog)),
-            );
+        let _frontiere = obrain_common::utils::cancel::frontiere_heritee(
+            optimized_plan.root.mutations_avec(Some(&self.catalog)),
+        );
 
         // 4. Convert to physical plan (using RDF planner)
         let planner = RdfPlanner::new(Arc::clone(rdf_store));

@@ -139,12 +139,17 @@ fn interdit_et_inexistant_sont_indistinguables_pour_le_lecteur() {
 fn mono_base_et_requetes_locales_inchangees() {
     let db = ObrainDB::new_in_memory();
     let s = db.session();
-    s.execute("INSERT (:Note {name: 'locale'})").expect("insert");
+    s.execute("INSERT (:Note {name: 'locale'})")
+        .expect("insert");
     s.set_access_context(contexte("personne", &[]));
     let r = s
         .execute("MATCH (n:Note) RETURN n.name")
         .expect("requete locale");
-    assert_eq!(r.rows.len(), 1, "aucun franchissement : la garde ne s'applique pas");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "aucun franchissement : la garde ne s'applique pas"
+    );
 }
 
 /// Les droits s'evaluent a CHAQUE saut : un chemin multi-bases s'arrete au
@@ -201,7 +206,11 @@ fn le_predicat_d_existence_respecte_la_garde() {
     let r = s
         .execute("MATCH (a:Note) WHERE NOT (a)-[:DOCUMENTS]->() RETURN a.name")
         .expect("not exists");
-    assert_eq!(r.rows.len(), 1, "NOT est vrai : l'arete est absente POUR LUI");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "NOT est vrai : l'arete est absente POUR LUI"
+    );
 }
 
 /// Le trou P1 ne doit pas se recreer : les requetes PARAMETREES portent le
@@ -216,12 +225,20 @@ fn les_requetes_parametrees_portent_les_droits() {
     let r = s
         .execute_with_params(q, std::collections::HashMap::new())
         .expect("parametree refusee sans erreur");
-    assert_eq!(r.rows.len(), 0, "execute_with_params doit appliquer la garde");
+    assert_eq!(
+        r.rows.len(),
+        0,
+        "execute_with_params doit appliquer la garde"
+    );
 
     let s2 = alpha.session();
     s2.set_access_context(contexte("agent", &["alpha", "beta"]));
     let r = s2
         .execute_with_params(q, std::collections::HashMap::new())
         .expect("parametree autorisee");
-    assert_eq!(r.rows.len(), 1, "execute_with_params doit laisser passer l'autorise");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "execute_with_params doit laisser passer l'autorise"
+    );
 }

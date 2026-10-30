@@ -31,8 +31,8 @@
 //! revérification par lot` + le coût fixe mesuré du chemin d'intervalle. Le
 //! branchement et la mesure de bout en bout viennent après.
 
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::traits::{GraphStore, PredicatTexte};
@@ -54,14 +54,11 @@ const TERMES: &[&str] = &[
     // chemin, dont les grammes sont des fragments de chemin (donc communs).
     "home.triviere.projects.banc_obrain.crates.obrain-iam",
     "home.triviere.projects.banc_obrain.crates.obrain-iam.src",
-    "ion",        // commun : tous ses grammes dépassent le seuil
+    "ion",         // commun : tous ses grammes dépassent le seuil
     "zzqq-absent", // absent du corpus
 ];
 
-fn collecter(
-    store: &SubstrateStore,
-    prop: &str,
-) -> (Vec<NodeId>, Vec<(u32, String)>, Duration) {
+fn collecter(store: &SubstrateStore, prop: &str) -> (Vec<NodeId>, Vec<(u32, String)>, Duration) {
     let t = Instant::now();
     let tous = store.find_nodes_in_range(prop, None, None, true, true);
     let cle = PropertyKey::new(prop);
@@ -90,7 +87,14 @@ fn main() {
 
     let store = SubstrateStore::open(&store_path).expect("ouverture du store");
     println!("store : {store_path}");
-    println!("seuil : {seuil}{}", if seuil == SEUIL_DEFAUT { " (défaut)" } else { "" });
+    println!(
+        "seuil : {seuil}{}",
+        if seuil == SEUIL_DEFAUT {
+            " (défaut)"
+        } else {
+            ""
+        }
+    );
     println!();
 
     for prop in ["name", "qualified_name"] {
@@ -240,17 +244,19 @@ fn main() {
                     format!("{n_balayage} (balayage)"),
                     "l'index se TAIT → on balaie".to_string(),
                 ),
-                Some(n) if n == n_balayage => (
-                    format!("{n} = {n_balayage}"),
-                    "MÊMES LIGNES ✓".to_string(),
-                ),
+                Some(n) if n == n_balayage => {
+                    (format!("{n} = {n_balayage}"), "MÊMES LIGNES ✓".to_string())
+                }
                 Some(n) => (
                     format!("{n} ≠ {n_balayage}"),
                     "DIVERGENCE — interdit".to_string(),
                 ),
             };
             let gain = if n_index.is_some() {
-                format!("{:.0}×", t_balayage.as_secs_f64() / t_index.as_secs_f64().max(1e-9))
+                format!(
+                    "{:.0}×",
+                    t_balayage.as_secs_f64() / t_index.as_secs_f64().max(1e-9)
+                )
             } else {
                 "—".to_string()
             };
@@ -288,8 +294,10 @@ fn main() {
     println!("  ⇒ `qn  CONTAINS 'iam'`    :  386 candidats → ~73 µs, contre 148–190 ms balayés");
     println!("  ⇒ `name CONTAINS 'token'` :  257 candidats → ~49 µs, contre 148–190 ms balayés");
     println!();
-    println!("  Ce qu'il reste à payer à ce moment-là n'est plus la donnée mais le PLAN :
-    le coût d'ouverture de l'index et le passage des candidats dans l'opérateur de");
+    println!(
+        "  Ce qu'il reste à payer à ce moment-là n'est plus la donnée mais le PLAN :
+    le coût d'ouverture de l'index et le passage des candidats dans l'opérateur de"
+    );
     println!("  filtre. C'est ce que mesurera le branchement — pas ce banc.");
     println!();
     println!("── et pour le chemin d'INTERVALLE (index ordonné), le coût fixe reste ──");

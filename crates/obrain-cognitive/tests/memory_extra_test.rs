@@ -9,8 +9,8 @@ use obrain_cognitive::memory::{
 use obrain_cognitive::{EnergyConfig, EnergyStore};
 use obrain_common::types::NodeId;
 use std::sync::Arc;
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 // ---------------------------------------------------------------------------
 // NodeMemoryState::Default impl

@@ -152,7 +152,10 @@ fn layout_40_octets_512_par_page_zero_slack() {
     assert_eq!(core::mem::align_of::<NodeRecord>(), 8);
     assert_eq!(NODES_PER_PAGE, 512);
     assert_eq!(NODE_ALLOC_PAGE_BYTES, 20480);
-    assert_eq!(NODES_PER_PAGE as usize * NodeRecord::SIZE, NODE_ALLOC_PAGE_BYTES);
+    assert_eq!(
+        NODES_PER_PAGE as usize * NodeRecord::SIZE,
+        NODE_ALLOC_PAGE_BYTES
+    );
     assert_eq!(NODE_ALLOC_PAGE_BYTES % 4096, 0, "5 pages OS exactement");
     // La colonne s'ajoute en QUEUE : les offsets v2 n'ont pas bouge.
     assert_eq!(core::mem::offset_of!(NodeRecord, flags), 30);
@@ -204,7 +207,11 @@ fn sentinelle_slot_zero_invisible_des_la_creation() {
     let store = SubstrateStore::create(td.path()).unwrap();
     assert!(zone_nodes_est_v3(td.path()).unwrap());
     store.create_node(&["Seul"]);
-    assert_eq!(store.node_ids().len(), 1, "la sentinelle n'est pas un noeud");
+    assert_eq!(
+        store.node_ids().len(),
+        1,
+        "la sentinelle n'est pas un noeud"
+    );
     assert_eq!(store.node_count(), 1);
     drop(store);
     let store = SubstrateStore::open(td.path()).unwrap();
@@ -230,7 +237,10 @@ fn migration_2_vers_3_pose_tenant_zero_partout_et_declare_public() {
 
     // L'ouverture EXCLUSIVE migre (machinerie jalon 0, etape 2→3).
     let store = SubstrateStore::open(td.path()).expect("open migrant");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     assert_eq!(store.node_ids(), ids_apres_suppression, "dump identique");
     assert_eq!(store.nodes_by_label("Locataire").len(), 9);
     drop(store);
@@ -244,7 +254,11 @@ fn migration_2_vers_3_pose_tenant_zero_partout_et_declare_public() {
     for slot in 1..n {
         let off = slot * NodeRecord::SIZE + 32;
         let t = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
-        assert_eq!(t, tenant::PUBLIC, "slot {slot} : tenant != 0 apres migration en bloc");
+        assert_eq!(
+            t,
+            tenant::PUBLIC,
+            "slot {slot} : tenant != 0 apres migration en bloc"
+        );
     }
     // Le tombstone a survecu tel quel.
     let f = flags_sur_disque(td.path(), victime.0 as u32);
@@ -267,7 +281,10 @@ fn migration_2_vers_3_idempotente_octet_pour_octet() {
 
     migrer_repertoire(td.path()).expect("premiere migration");
     let zone_1 = zone_nodes(td.path());
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
 
     migrer_repertoire(td.path()).expect("seconde migration = no-op");
     let zone_2 = zone_nodes(td.path());
@@ -289,8 +306,15 @@ fn chaine_complete_v1_vers_v3_en_une_ouverture() {
     // Une seule ouverture : 1→2 (benediction ALLOCATED, sur du 32 o) puis
     // 2→3 (reecriture 40 o, tenant 0) — dans la meme chaine.
     let store = SubstrateStore::open(td.path()).expect("open migrant v1");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
-    assert_eq!(store.node_ids(), ids_avant, "10 crees -> 10 lisibles, jamais 5120");
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
+    assert_eq!(
+        store.node_ids(),
+        ids_avant,
+        "10 crees -> 10 lisibles, jamais 5120"
+    );
     assert_eq!(store.node_count(), 10);
     for id in &ids_avant {
         assert_eq!(tenant_sur_disque(td.path(), id.0 as u32), tenant::PUBLIC);
@@ -321,7 +345,10 @@ fn props_aretes_et_wal_intacts_a_travers_la_migration() {
     migrer_repertoire(td.path()).expect("migration directe");
     let wal_apres = std::fs::read(td.path().join("substrate.wal")).unwrap();
     let edges_apres = std::fs::read(td.path().join("substrate.edges")).unwrap();
-    assert_eq!(wal_avant, wal_apres, "la migration ne draine ni ne tronque le WAL");
+    assert_eq!(
+        wal_avant, wal_apres,
+        "la migration ne draine ni ne tronque le WAL"
+    );
     assert_eq!(edges_avant, edges_apres, "zone edges intacte");
 
     // Et tout se relit : props par id (les ids n'ont pas bouge), aretes,
@@ -466,8 +493,15 @@ fn kill_9_pendant_reecriture_2v3_puis_reprise_par_ouverture() {
     // Reprise par l'OUVERTURE normale : reconstruction du tmp de zero,
     // bascule, bump — dump identique, tenant 0 partout.
     let store = SubstrateStore::open(td.path()).expect("reprise par open");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
-    assert_eq!(store.node_ids(), ids_avant, "40 crees -> 40 lisibles apres reprise");
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
+    assert_eq!(
+        store.node_ids(),
+        ids_avant,
+        "40 crees -> 40 lisibles apres reprise"
+    );
     assert_eq!(store.node_count(), 40);
     for id in &ids_avant {
         assert_eq!(tenant_sur_disque(td.path(), id.0 as u32), tenant::PUBLIC);

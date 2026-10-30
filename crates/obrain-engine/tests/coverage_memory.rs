@@ -50,7 +50,10 @@ fn test_memory_usage_with_data() {
     // implémenté (memory.rs ~0 % couvert) — memory_usage « refuse d'inventer »
     // et renvoie 0 honnête (commit « memory_usage rend enfin des chiffres »).
     // Les compteurs structurels (nœuds/arêtes/index) restent vérifiés.
-    assert_eq!(usage.store.node_properties_bytes, 0, "in-memory : pas d'accounting propriétés");
+    assert_eq!(
+        usage.store.node_properties_bytes, 0,
+        "in-memory : pas d'accounting propriétés"
+    );
     // Edges have no explicit properties, so edge_properties_bytes should be 0
     assert_eq!(
         usage.store.edge_properties_bytes, 0,

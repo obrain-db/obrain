@@ -51,10 +51,7 @@ fn banc_chemins_de_comparaison() {
             "ORDER BY (tri 100k)",
             "MATCH (n:B) RETURN n.v ORDER BY n.v DESC LIMIT 100",
         ),
-        (
-            "DISTINCT (1000 classes)",
-            "MATCH (n:B) RETURN DISTINCT n.s",
-        ),
+        ("DISTINCT (1000 classes)", "MATCH (n:B) RETURN DISTINCT n.s"),
         (
             "egalite planifiee (=)",
             "MATCH (n:B) WHERE n.v = 4242 RETURN count(*)",

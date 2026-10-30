@@ -89,14 +89,19 @@ fn i64_de(v: &Value) -> i64 {
 
 /// Premiere ligne, premiere colonne.
 fn scalaire(db: &ObrainDB, q: &str) -> Value {
-    let r = db.session().execute(q).unwrap_or_else(|e| panic!("requete refusee : {q}\n{e}"));
+    let r = db
+        .session()
+        .execute(q)
+        .unwrap_or_else(|e| panic!("requete refusee : {q}\n{e}"));
     r.rows[0][0].clone()
 }
 
 /// Comme `scalaire`, mais rend aussi le nombre de slots-noeuds balayes.
 fn scalaire_et_slots(db: &ObrainDB, q: &str) -> (Value, u64) {
     let (r, slots) = mesurer_slots(|| {
-        db.session().execute(q).unwrap_or_else(|e| panic!("requete refusee : {q}\n{e}"))
+        db.session()
+            .execute(q)
+            .unwrap_or_else(|e| panic!("requete refusee : {q}\n{e}"))
     });
     (r.rows[0][0].clone(), slots)
 }
@@ -111,7 +116,10 @@ fn instant_quand_a_jour() {
 
     let (v_min, slots_min) = mesurer_route(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1");
     assert_eq!(i64_de(&v_min), 1, "min global");
-    assert_eq!(slots_min, 0, "ORDER BY ASC LIMIT 1 doit etre 0-slot (index engage), pas un balayage");
+    assert_eq!(
+        slots_min, 0,
+        "ORDER BY ASC LIMIT 1 doit etre 0-slot (index engage), pas un balayage"
+    );
 
     let (v_max, slots_max) = mesurer_route(&db, "MATCH (n) RETURN n.v ORDER BY n.v DESC LIMIT 1");
     assert_eq!(i64_de(&v_max), 9, "max global");
@@ -136,20 +144,33 @@ fn correction_nouveau_min_sous_ecriture() {
     let (db, _td) = db_valeurs(&[5, 3, 9, 1, 7]);
     batir_index_v(&db);
     // Ancre posee. Verite courante : min=1.
-    assert_eq!(i64_de(&scalaire(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1")), 1);
+    assert_eq!(
+        i64_de(&scalaire(
+            &db,
+            "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1"
+        )),
+        1
+    );
 
     // ECRITURE AUTO-COMMIT qui devient le nouveau min, index NON rebati.
     db.session().execute("INSERT (:N {v: 0})").unwrap();
 
     // L'index est PERIME pour cette requete (WAL avance). Repli obligatoire.
     let vmin = scalaire(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1");
-    assert_eq!(i64_de(&vmin), 0, "ORDER BY ASC LIMIT 1 doit voir le nouveau min commite (0), jamais l'ancien (1)");
+    assert_eq!(
+        i64_de(&vmin),
+        0,
+        "ORDER BY ASC LIMIT 1 doit voir le nouveau min commite (0), jamais l'ancien (1)"
+    );
 
     let mn = scalaire(&db, "MATCH (n) RETURN min(n.v)");
     assert_eq!(i64_de(&mn), 0, "min() doit voir le nouveau min commite (0)");
 
     // Le top-2 aussi : [0, 1].
-    let page = db.session().execute("MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 2").unwrap();
+    let page = db
+        .session()
+        .execute("MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 2")
+        .unwrap();
     let vals: Vec<i64> = page.rows.iter().map(|r| i64_de(&r[0])).collect();
     assert_eq!(vals, vec![0, 1], "top-2 ASC apres ecriture");
 }
@@ -162,13 +183,25 @@ fn correction_nouveau_min_sous_ecriture() {
 fn correction_min_supprime_sous_ecriture() {
     let (db, _td) = db_valeurs(&[5, 3, 9, 1, 7]);
     batir_index_v(&db);
-    assert_eq!(i64_de(&scalaire(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1")), 1);
+    assert_eq!(
+        i64_de(&scalaire(
+            &db,
+            "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1"
+        )),
+        1
+    );
 
     // Supprime l'ancien min (v=1), index NON rebati.
-    db.session().execute("MATCH (n:N {v: 1}) DETACH DELETE n").unwrap();
+    db.session()
+        .execute("MATCH (n:N {v: 1}) DETACH DELETE n")
+        .unwrap();
 
     let vmin = scalaire(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1");
-    assert_eq!(i64_de(&vmin), 3, "apres suppression du min, la reponse est le min SUIVANT (3), jamais 1 disparu");
+    assert_eq!(
+        i64_de(&vmin),
+        3,
+        "apres suppression du min, la reponse est le min SUIVANT (3), jamais 1 disparu"
+    );
 
     let mn = scalaire(&db, "MATCH (n) RETURN min(n.v)");
     assert_eq!(i64_de(&mn), 3, "min() apres suppression du min");
@@ -190,8 +223,15 @@ fn instant_apres_flush() {
     db.checkpoint().expect("checkpoint");
 
     let (vmin, slots) = scalaire_et_slots(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1");
-    assert_eq!(i64_de(&vmin), 0, "apres flush, ORDER BY voit le nouveau min");
-    assert_eq!(slots, 0, "apres flush, la route ordonnee est RE-ENGAGEE (0-slot)");
+    assert_eq!(
+        i64_de(&vmin),
+        0,
+        "apres flush, ORDER BY voit le nouveau min"
+    );
+    assert_eq!(
+        slots, 0,
+        "apres flush, la route ordonnee est RE-ENGAGEE (0-slot)"
+    );
 
     let (mn, slots_mn) = scalaire_et_slots(&db, "MATCH (n) RETURN min(n.v)");
     assert_eq!(i64_de(&mn), 0);
@@ -206,12 +246,27 @@ fn instant_apres_flush() {
 fn non_regression_sans_index() {
     let (db, _td) = db_valeurs(&[5, 3, 9, 1, 7]);
     // PAS de batir_index_v : aucun index ordonne-valeur.
-    assert_eq!(i64_de(&scalaire(&db, "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1")), 1);
-    assert_eq!(i64_de(&scalaire(&db, "MATCH (n) RETURN n.v ORDER BY n.v DESC LIMIT 1")), 9);
+    assert_eq!(
+        i64_de(&scalaire(
+            &db,
+            "MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 1"
+        )),
+        1
+    );
+    assert_eq!(
+        i64_de(&scalaire(
+            &db,
+            "MATCH (n) RETURN n.v ORDER BY n.v DESC LIMIT 1"
+        )),
+        9
+    );
     assert_eq!(i64_de(&scalaire(&db, "MATCH (n) RETURN min(n.v)")), 1);
     assert_eq!(i64_de(&scalaire(&db, "MATCH (n) RETURN max(n.v)")), 9);
 
-    let page = db.session().execute("MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 3").unwrap();
+    let page = db
+        .session()
+        .execute("MATCH (n) RETURN n.v ORDER BY n.v ASC LIMIT 3")
+        .unwrap();
     let vals: Vec<i64> = page.rows.iter().map(|r| i64_de(&r[0])).collect();
     assert_eq!(vals, vec![1, 3, 5], "top-3 ASC");
 }

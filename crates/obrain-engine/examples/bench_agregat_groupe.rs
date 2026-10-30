@@ -31,8 +31,8 @@
 //! qu'une fois (index à la demande, pages mmap à froid). « min » et « médiane »
 //! sont le régime établi.
 
-use web_time::Instant;
 use std::time::Duration;
+use web_time::Instant;
 
 use obrain_engine::ObrainDB;
 
@@ -111,7 +111,10 @@ fn main() {
         }
         temps.sort();
         let min = temps.first().copied().unwrap_or(Duration::ZERO);
-        let med = temps.get(temps.len() / 2).copied().unwrap_or(Duration::ZERO);
+        let med = temps
+            .get(temps.len() / 2)
+            .copied()
+            .unwrap_or(Duration::ZERO);
         println!(
             "  {nom:<24} {:>8.2} ms {:>8.2} ms {:>8.2} ms {:>8}",
             premier.0.as_secs_f64() * 1e3,

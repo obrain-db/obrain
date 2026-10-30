@@ -69,7 +69,10 @@ fn textes(d: &ObrainDB, q: &str) -> Vec<String> {
 fn filtre_en_aval_le_plafond_doit_se_desarmer() {
     let d = db(1_000);
 
-    let obtenu = textes(&d, "MATCH (n) WHERE n.groupe = 'rare' RETURN n.nom LIMIT 30");
+    let obtenu = textes(
+        &d,
+        "MATCH (n) WHERE n.groupe = 'rare' RETURN n.nom LIMIT 30",
+    );
 
     // ORACLE independant du plan : le meme filtre, sans LIMIT.
     let oracle: Vec<String> = textes(&d, "MATCH (n) WHERE n.groupe = 'rare' RETURN n.nom")
@@ -104,7 +107,10 @@ fn filtre_tres_selectif_limite_sous_le_compte_disponible() {
             ],
         );
     }
-    let obtenu = textes(&d, "MATCH (n) WHERE n.groupe = 'queue' RETURN n.nom LIMIT 10");
+    let obtenu = textes(
+        &d,
+        "MATCH (n) WHERE n.groupe = 'queue' RETURN n.nom LIMIT 10",
+    );
     assert_eq!(obtenu.len(), 10, "10 lignes, toutes en fin de balayage");
     assert_eq!(obtenu[0], "n01950");
 }
@@ -240,16 +246,20 @@ fn transaction_ouverte_la_limite_voit_les_ecritures_de_sa_session() {
     let mut s = d.session();
     s.begin_transaction().expect("BEGIN");
     for i in 0..50 {
-        s.create_node_with_props(
-            &["S"],
-            [("nom", Value::String(format!("z{i:05}").into()))],
-        );
+        s.create_node_with_props(&["S"], [("nom", Value::String(format!("z{i:05}").into()))]);
     }
 
     let tout = s.execute("MATCH (n) RETURN n.nom").expect("scan").rows;
-    assert_eq!(tout.len(), 250, "200 commis + 50 en attente, vus par leur session");
+    assert_eq!(
+        tout.len(),
+        250,
+        "200 commis + 50 en attente, vus par leur session"
+    );
 
-    let borne = s.execute("MATCH (n) RETURN n.nom LIMIT 30").expect("scan borne").rows;
+    let borne = s
+        .execute("MATCH (n) RETURN n.nom LIMIT 30")
+        .expect("scan borne")
+        .rows;
     assert_eq!(borne.len(), 30, "un LIMIT 30 rend 30 lignes en transaction");
     assert_eq!(borne, tout[..30], "et ce sont les 30 premieres");
 
@@ -263,8 +273,7 @@ fn transaction_ouverte_la_limite_voit_les_ecritures_de_sa_session() {
 fn limite_sans_etiquette_ne_lit_plus_toute_la_base() {
     let d = db(20_000);
 
-    let (borne, slots_borne) =
-        mesurer_slots(|| textes(&d, "MATCH (n) RETURN n.nom LIMIT 30"));
+    let (borne, slots_borne) = mesurer_slots(|| textes(&d, "MATCH (n) RETURN n.nom LIMIT 30"));
     let (complet, slots_complet) = mesurer_slots(|| textes(&d, "MATCH (n) RETURN n.nom"));
 
     assert_eq!(borne.len(), 30);
@@ -289,7 +298,10 @@ fn le_plafond_ne_s_applique_pas_derriere_un_filtre_et_le_compteur_le_montre() {
     // integral. Le compteur sert ici a prouver qu'on n'a pas triche.
     let d = db(20_000);
     let (r, slots) = mesurer_slots(|| {
-        textes(&d, "MATCH (n) WHERE n.groupe = 'rare' RETURN n.nom LIMIT 30")
+        textes(
+            &d,
+            "MATCH (n) WHERE n.groupe = 'rare' RETURN n.nom LIMIT 30",
+        )
     });
     assert_eq!(r.len(), 30);
     assert!(

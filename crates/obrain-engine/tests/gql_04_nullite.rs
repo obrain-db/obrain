@@ -1156,10 +1156,7 @@ fn keys_distingue_la_cle_nulle_de_la_cle_absente() {
     db.create_node_with_props(&["K"], [("name", Value::String("absent".into()))]);
     db.create_node_with_props(
         &["K"],
-        [
-            ("name", Value::String("nul".into())),
-            ("x", Value::Null),
-        ],
+        [("name", Value::String("nul".into())), ("x", Value::Null)],
     );
 
     let session = db.session();

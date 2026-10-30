@@ -152,7 +152,10 @@ fn detecter_detenteur(fichier: &Path) -> String {
     let mut trouves: Vec<String> = Vec::new();
     for entree in procfs.flatten() {
         let nom = entree.file_name();
-        let Some(pid) = nom.to_str().filter(|p| p.chars().all(|c| c.is_ascii_digit())) else {
+        let Some(pid) = nom
+            .to_str()
+            .filter(|p| p.chars().all(|c| c.is_ascii_digit()))
+        else {
             continue;
         };
         if pid == std::process::id().to_string() {
@@ -762,9 +765,7 @@ impl ZoneFile {
     /// agrandi depuis notre projection).
     pub fn longueur_disque(&self) -> u64 {
         match &self.backing {
-            ZoneBacking::Mmap { file, .. } => {
-                file.metadata().map(|m| m.len()).unwrap_or(self.len)
-            }
+            ZoneBacking::Mmap { file, .. } => file.metadata().map(|m| m.len()).unwrap_or(self.len),
             // En mémoire il n'y a pas de « disque plus récent que nous » : la
             // `RamZone` EST l'état, et elle est partagée par le registre de
             // `RamDir` — `self.len` en est donc déjà la taille vraie.
@@ -794,8 +795,7 @@ impl ZoneFile {
                 let m = if self.lecture_seule {
                     // SAFETY: même contrat que `open_read_only_zone` — projection
                     // immuable, jamais écrite.
-                    let m: Mmap =
-                        unsafe { MmapOptions::new().len(disque as usize).map(&*file)? };
+                    let m: Mmap = unsafe { MmapOptions::new().len(disque as usize).map(&*file)? };
                     unsafe { std::mem::transmute::<Mmap, MmapMut>(m) }
                 } else {
                     // SAFETY: fichier ouvert en lecture-écriture, on ne tronque jamais.
@@ -966,11 +966,7 @@ impl ZoneFile {
                 map.take();
                 file.set_len(new_len)?;
                 // SAFETY: same invariants as `open_or_create`.
-                let m = unsafe {
-                    MmapOptions::new()
-                        .len(new_len as usize)
-                        .map_mut(&*file)?
-                };
+                let m = unsafe { MmapOptions::new().len(new_len as usize).map_mut(&*file)? };
                 advise_huge_pages(&m, new_len);
                 *map = Some(m);
             }
@@ -2684,7 +2680,10 @@ mod tests_memoire {
     fn en_tete_meta_aller_retour() {
         let mut sub = SubstrateFile::open_memory().unwrap();
         let vierge = sub.meta_header();
-        assert!(vierge.is_valid_magic(), "la méta vierge doit porter le magic");
+        assert!(
+            vierge.is_valid_magic(),
+            "la méta vierge doit porter le magic"
+        );
 
         let mut modifie = vierge;
         let avant = modifie.last_checkpoint;
@@ -2721,7 +2720,10 @@ mod tests_memoire {
     fn lecture_seule_sur_zone_absente_echoue() {
         let sub = SubstrateFile::open_memory().unwrap();
         let err = sub.open_named_zone_read_only("substrate.jamais.creee");
-        assert!(err.is_err(), "une zone absente ne doit pas être créée en RO");
+        assert!(
+            err.is_err(),
+            "une zone absente ne doit pas être créée en RO"
+        );
     }
 
     /// LE MODE MÉMOIRE NE SAIT PAS ENCORE CHECKPOINTER — ce test fige la raison.

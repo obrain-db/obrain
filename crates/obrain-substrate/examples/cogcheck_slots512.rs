@@ -67,7 +67,9 @@ fn main() {
     let base = args.first().expect("usage: cogcheck_slots512 <base_dir>");
     let dir = Path::new(base);
     println!("=== COGCHECK slots512 : {base} ===");
-    unsafe { std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1"); }
+    unsafe {
+        std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
+    }
 
     // Phase A — état cognitif initial.
     let (hw0, dig0, zones0) = {
@@ -75,8 +77,10 @@ fn main() {
         let hw = s.slot_high_water();
         let (h, n) = digest_cognitif(&s, hw);
         let z = tailles_zones(dir);
-        println!("[A] hw={hw} · digest cognitif = {h:#x} ({n} nœuds vivants) · {} zones cognitives",
-            z.len());
+        println!(
+            "[A] hw={hw} · digest cognitif = {h:#x} ({n} nœuds vivants) · {} zones cognitives",
+            z.len()
+        );
         (hw, (h, n), z)
     };
 
@@ -97,7 +101,10 @@ fn main() {
         for (i, &id) in nodes.iter().take(60).enumerate() {
             let key = format!("cog_{i}");
             s.set_node_property(id, &key, Value::Int64(i as i64));
-            assert_eq!(s.get_node_property(id, &PropertyKey::new(&key)), Some(Value::Int64(i as i64)));
+            assert_eq!(
+                s.get_node_property(id, &PropertyKey::new(&key)),
+                Some(Value::Int64(i as i64))
+            );
         }
         for i in 0..25u64 {
             let a = s.create_node(&["CogNew"]);
@@ -149,5 +156,7 @@ fn main() {
         zones0.len(),
         ajouts
     );
-    println!("=== COGCHECK TERMINÉ : couche cognitive strictement intacte après migration slots ===");
+    println!(
+        "=== COGCHECK TERMINÉ : couche cognitive strictement intacte après migration slots ==="
+    );
 }

@@ -922,8 +922,7 @@ impl Optimizer {
                     })
                 } else {
                     let a_pousser = Self::conjonction(dessous).expect("non vide");
-                    expand.input =
-                        Box::new(self.try_push_filter_into(a_pousser, *expand.input));
+                    expand.input = Box::new(self.try_push_filter_into(a_pousser, *expand.input));
                     match Self::conjonction(dessus) {
                         Some(reste) => LogicalOperator::Filter(FilterOp {
                             predicate: reste,
@@ -1256,8 +1255,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1309,8 +1308,8 @@ mod tests {
                         variable: "a".to_string(),
                         label: Some("Person".to_string()),
                         input: None,
-            pushdown_hint: None,
-        })),
+                        pushdown_hint: None,
+                    })),
                     path_alias: None,
                     path_mode: PathMode::Walk,
                 })),
@@ -1368,8 +1367,8 @@ mod tests {
                         variable: "a".to_string(),
                         label: Some("Person".to_string()),
                         input: None,
-            pushdown_hint: None,
-        })),
+                        pushdown_hint: None,
+                    })),
                     path_alias: None,
                     path_mode: PathMode::Walk,
                 })),
@@ -1445,8 +1444,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pushdown_hint: None,
             })),
         }));
@@ -1541,8 +1540,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pass_through_input: false,
             })),
         }));
@@ -1582,8 +1581,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 pass_through_input: false,
             })),
         }));
@@ -1612,8 +1611,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -1645,8 +1644,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
             })),
         }));
 
@@ -1673,8 +1672,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 columns: None,
             })),
         }));
@@ -1716,8 +1715,8 @@ mod tests {
                     variable: "n".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 having: None,
             })),
         }));
@@ -1753,14 +1752,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: Some("Company".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1797,14 +1796,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: Some("Person".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: Some("Company".to_string()),
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -1844,14 +1843,14 @@ mod tests {
                     variable: "a".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 right: Box::new(LogicalOperator::NodeScan(NodeScanOp {
                     variable: "b".to_string(),
                     label: None,
                     input: None,
-            pushdown_hint: None,
-        })),
+                    pushdown_hint: None,
+                })),
                 join_type: JoinType::Inner,
                 conditions: vec![],
             })),
@@ -2061,8 +2060,8 @@ mod tests {
                         variable: "n".to_string(),
                         label: None,
                         input: None,
-            pushdown_hint: None,
-        })),
+                        pushdown_hint: None,
+                    })),
                 })),
             })),
         }));
@@ -2108,8 +2107,8 @@ mod tests {
                         variable: "n".to_string(),
                         label: None,
                         input: None,
-            pushdown_hint: None,
-        })),
+                        pushdown_hint: None,
+                    })),
                 })),
             })),
         }));
@@ -2223,8 +2222,8 @@ mod tests {
                 variable: var.to_string(),
                 label: Some("Person".to_string()),
                 input: None,
-            pushdown_hint: None,
-        })
+                pushdown_hint: None,
+            })
         };
         let join_ab = LogicalOperator::Join(JoinOp {
             left: Box::new(mk_scan("a")),

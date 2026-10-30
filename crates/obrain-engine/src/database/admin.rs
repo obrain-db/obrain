@@ -98,7 +98,9 @@ impl super::ObrainDB {
         };
         store
             .bulk_import_node_props(premier_slot, props)
-            .map_err(|e| obrain_common::utils::error::Error::Internal(format!("bulk_import_props: {e}")))
+            .map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!("bulk_import_props: {e}"))
+            })
     }
 
     /// (T27) Plusieurs index d'égalité en une passe — voir
@@ -276,7 +278,9 @@ impl super::ObrainDB {
         let mut groupes: HashMap<String, Vec<(obrain_common::types::NodeId, String)>> =
             HashMap::new();
         for id in ids {
-            let Some(node) = store.get_node(id) else { continue };
+            let Some(node) = store.get_node(id) else {
+                continue;
+            };
             rapport.noeuds_examines += 1;
             let Some(Value::String(v)) = node.properties.get(&pk_cle) else {
                 continue;
@@ -296,8 +300,7 @@ impl super::ObrainDB {
             // Survivant : updated_at max, repli NodeId max (stable).
             porteurs.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.0.cmp(&b.0.0)));
             let (survivant, survivant_maj) = porteurs.last().cloned().expect(">= 2 porteurs");
-            let perdants: Vec<obrain_common::types::NodeId> = porteurs
-                [..porteurs.len() - 1]
+            let perdants: Vec<obrain_common::types::NodeId> = porteurs[..porteurs.len() - 1]
                 .iter()
                 .map(|(id, _)| *id)
                 .collect();
@@ -335,14 +338,12 @@ impl super::ObrainDB {
                 })?;
             }
             let tmp = chemin.with_extension("tmp");
-            let mut flux = std::io::BufWriter::new(std::fs::File::create(&tmp).map_err(
-                |e| {
-                    obrain_common::utils::error::Error::Internal(format!(
-                        "backup fusion: create {}: {e}",
-                        tmp.display()
-                    ))
-                },
-            )?);
+            let mut flux = std::io::BufWriter::new(std::fs::File::create(&tmp).map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "backup fusion: create {}: {e}",
+                    tmp.display()
+                ))
+            })?);
             let ecrire = |flux: &mut std::io::BufWriter<std::fs::File>,
                           ligne: &serde_json::Value|
              -> Result<()> {
@@ -370,7 +371,9 @@ impl super::ObrainDB {
             for g in &a_fusionner {
                 for perdant in &g.perdants {
                     let id = obrain_common::types::NodeId(*perdant);
-                    let Some(node) = store.get_node(id) else { continue };
+                    let Some(node) = store.get_node(id) else {
+                        continue;
+                    };
                     let props: serde_json::Map<String, serde_json::Value> = node
                         .properties
                         .iter()
@@ -420,8 +423,7 @@ impl super::ObrainDB {
                     )?;
                 }
             }
-            flux
-                .into_inner()
+            flux.into_inner()
                 .map_err(|e| {
                     obrain_common::utils::error::Error::Internal(format!(
                         "backup fusion: flush: {e}"
@@ -449,16 +451,12 @@ impl super::ObrainDB {
             let mut deja_sortantes: std::collections::HashSet<(String, u64)> = store
                 .edges_from(survivant, obrain_core::graph::Direction::Outgoing)
                 .into_iter()
-                .filter_map(|(dst, e)| {
-                    store.edge_type(e).map(|t| (t.to_string(), dst.0))
-                })
+                .filter_map(|(dst, e)| store.edge_type(e).map(|t| (t.to_string(), dst.0)))
                 .collect();
             let mut deja_entrantes: std::collections::HashSet<(String, u64)> = store
                 .edges_from(survivant, obrain_core::graph::Direction::Incoming)
                 .into_iter()
-                .filter_map(|(src, e)| {
-                    store.edge_type(e).map(|t| (t.to_string(), src.0))
-                })
+                .filter_map(|(src, e)| store.edge_type(e).map(|t| (t.to_string(), src.0)))
                 .collect();
             let mut deja_externes: std::collections::HashSet<(String, String, String)> = store
                 .external_edges_from(survivant)
@@ -472,7 +470,9 @@ impl super::ObrainDB {
                     if dst == survivant || g.perdants.contains(&dst.0) {
                         continue; // pas d auto-boucle ni d arete vers un futur mort
                     }
-                    let Some(t) = store.edge_type(e) else { continue };
+                    let Some(t) = store.edge_type(e) else {
+                        continue;
+                    };
                     if deja_sortantes.insert((t.to_string(), dst.0)) {
                         store.create_edge(survivant, dst, t.as_str());
                         g.aretes_remontees += 1;
@@ -482,7 +482,9 @@ impl super::ObrainDB {
                     if src == survivant || g.perdants.contains(&src.0) {
                         continue;
                     }
-                    let Some(t) = store.edge_type(e) else { continue };
+                    let Some(t) = store.edge_type(e) else {
+                        continue;
+                    };
                     if deja_entrantes.insert((t.to_string(), src.0)) {
                         store.create_edge(src, survivant, t.as_str());
                         g.aretes_remontees += 1;

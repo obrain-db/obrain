@@ -195,8 +195,7 @@ fn bulk_sort_groups_communities_and_remaps_edges() {
         assert_eq!(
             zorder_col[new as usize], expected,
             "zorder side-column mismatch at new slot {new} (old slot {old}, centrality {}, degree {})",
-            centrality[old],
-            deg[old]
+            centrality[old], deg[old]
         );
     }
 }

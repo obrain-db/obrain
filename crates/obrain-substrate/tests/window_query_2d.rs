@@ -107,9 +107,7 @@ fn window_query_2d_matches_bruteforce() {
         (10, 9),
     ];
     for &(a, b) in &idx_edges {
-        store
-            .create_synapse_slot(ids[a], ids[b], 0.9)
-            .unwrap();
+        store.create_synapse_slot(ids[a], ids[b], 0.9).unwrap();
     }
 
     // Tombstone the 7th created node (whatever its community).
@@ -164,7 +162,10 @@ fn window_query_2d_matches_bruteforce() {
     for (cid, c_lo, c_hi, d_lo, d_hi) in cases {
         let got = store.window_query_2d(cid, c_lo, c_hi, d_lo, d_hi).unwrap();
         let want = brute(&facts, &deg, &tomb, cid, c_lo, c_hi, d_lo, d_hi);
-        assert_eq!(got, want, "window cid={cid} c=[{c_lo},{c_hi}] d=[{d_lo},{d_hi}]");
+        assert_eq!(
+            got, want,
+            "window cid={cid} c=[{c_lo},{c_hi}] d=[{d_lo},{d_hi}]"
+        );
     }
     // Reversed bounds are normalized.
     let got = store

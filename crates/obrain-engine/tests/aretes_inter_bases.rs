@@ -43,9 +43,13 @@ fn create_vers_ref_ecrit_une_arete_externe_locale() {
 fn ref_a_trois_arguments_encode_l_hote() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
-    session.execute("INSERT (:Note {name: 'n'})").expect("insert");
     session
-        .execute("MATCH (a:Note) CREATE (a)-[:MIRRORS]->(ref(\"dgx-2\", \"agent/system\", \"note_x\"))")
+        .execute("INSERT (:Note {name: 'n'})")
+        .expect("insert");
+    session
+        .execute(
+            "MATCH (a:Note) CREATE (a)-[:MIRRORS]->(ref(\"dgx-2\", \"agent/system\", \"note_x\"))",
+        )
         .expect("create trois arguments");
     let store = db.graph_store();
     let noeud = store.nodes_by_label("Note")[0];
@@ -60,7 +64,9 @@ fn ref_a_trois_arguments_encode_l_hote() {
 fn merge_vers_ref_est_idempotent() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
-    session.execute("INSERT (:Note {name: 'n'})").expect("insert");
+    session
+        .execute("INSERT (:Note {name: 'n'})")
+        .expect("insert");
     for _ in 0..3 {
         session
             .execute("MATCH (a:Note) MERGE (a)-[:DOCUMENTS]->(ref(\"cible\", \"k1\"))")
@@ -84,7 +90,9 @@ fn merge_vers_ref_est_idempotent() {
 fn ref_comme_source_est_refuse_avec_un_message_enseignant() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
-    session.execute("INSERT (:Note {name: 'n'})").expect("insert");
+    session
+        .execute("INSERT (:Note {name: 'n'})")
+        .expect("insert");
     let err = session
         .execute("MATCH (a:Note) CREATE (ref(\"autre\", \"k\"))-[:DOCUMENTS]->(a)")
         .expect_err("la source distante doit etre refusee");
@@ -116,7 +124,9 @@ fn ref_hors_cible_d_ecriture_est_refuse() {
 fn arete_externe_riche_est_refusee_en_v1() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
-    session.execute("INSERT (:Note {name: 'n'})").expect("insert");
+    session
+        .execute("INSERT (:Note {name: 'n'})")
+        .expect("insert");
     let err = session
         .execute("MATCH (a:Note) CREATE (a)-[r:DOCUMENTS]->(ref(\"autre\", \"k\"))")
         .expect_err("variable d'arete refusee en V1");
@@ -133,8 +143,12 @@ fn arete_externe_riche_est_refusee_en_v1() {
 fn detach_delete_emporte_les_aretes_externes_sortantes() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
-    session.execute("INSERT (:Note {name: 'a'})").expect("insert");
-    session.execute("INSERT (:Autre {name: 'b'})").expect("insert");
+    session
+        .execute("INSERT (:Note {name: 'a'})")
+        .expect("insert");
+    session
+        .execute("INSERT (:Autre {name: 'b'})")
+        .expect("insert");
     session
         .execute("MATCH (a:Note) CREATE (a)-[:DOCUMENTS]->(ref(\"cible\", \"k1\"))")
         .expect("create");
@@ -167,7 +181,9 @@ fn les_aretes_externes_survivent_a_une_reouverture_moteur() {
     {
         let db = ObrainDB::open(&path).expect("open");
         let session = db.session();
-        session.execute("INSERT (:Note {name: 'n'})").expect("insert");
+        session
+            .execute("INSERT (:Note {name: 'n'})")
+            .expect("insert");
         session
             .execute("MATCH (a:Note) CREATE (a)-[:DOCUMENTS]->(ref(\"agent/system\", \"note_1\"))")
             .expect("create");
@@ -192,7 +208,9 @@ fn supprimer_la_cible_ne_touche_pas_le_store_source() {
     // Store source : pointe vers "cible"/42.
     let source = ObrainDB::new_in_memory();
     let s_source = source.session();
-    s_source.execute("INSERT (:Note {name: 'n'})").expect("insert");
+    s_source
+        .execute("INSERT (:Note {name: 'n'})")
+        .expect("insert");
     s_source
         .execute("MATCH (a:Note) CREATE (a)-[:DOCUMENTS]->(ref(\"cible\", \"42\"))")
         .expect("create");
@@ -200,8 +218,12 @@ fn supprimer_la_cible_ne_touche_pas_le_store_source() {
     // Store cible : vit sa vie, supprime son noeud.
     let cible = ObrainDB::new_in_memory();
     let s_cible = cible.session();
-    s_cible.execute("INSERT (:Doc {name: 'd'})").expect("insert");
-    s_cible.execute("MATCH (d:Doc) DETACH DELETE d").expect("delete");
+    s_cible
+        .execute("INSERT (:Doc {name: 'd'})")
+        .expect("insert");
+    s_cible
+        .execute("MATCH (d:Doc) DETACH DELETE d")
+        .expect("delete");
 
     // Rien n'a bouge cote source : l'adresse reste, la ref est pendante.
     let store = source.graph_store();
@@ -214,7 +236,9 @@ fn supprimer_la_cible_ne_touche_pas_le_store_source() {
 fn explain_montre_l_operateur_create_external_edge() {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
-    session.execute("INSERT (:Note {name: \x27n\x27})").expect("insert");
+    session
+        .execute("INSERT (:Note {name: \x27n\x27})")
+        .expect("insert");
     let r = session
         .execute(
             "EXPLAIN MATCH (a:Note) CREATE (a)-[:DOCUMENTS]->(ref(\"agent/system\", \"note_1\"))",
@@ -228,7 +252,9 @@ fn explain_montre_l_operateur_create_external_edge() {
     assert!(plan.contains("agent/system"));
     // La variante MERGE est marquee comme telle.
     let r = session
-        .execute("EXPLAIN MATCH (a:Note) MERGE (a)-[:DOCUMENTS]->(ref(\"agent/system\", \"note_1\"))")
+        .execute(
+            "EXPLAIN MATCH (a:Note) MERGE (a)-[:DOCUMENTS]->(ref(\"agent/system\", \"note_1\"))",
+        )
         .expect("explain merge");
     let plan = format!("{:?}", r.rows);
     assert!(plan.contains("CreateExternalEdge (merge)"), "recu : {plan}");

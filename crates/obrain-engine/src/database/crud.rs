@@ -150,9 +150,12 @@ impl super::ObrainDB {
         }
 
         #[cfg(feature = "cdc")]
-        if !self.cdc_observer_active.load(std::sync::atomic::Ordering::Relaxed) {
-        self.cdc_log
-            .record_create_node(id, self.data_store().current_epoch(), None);
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.cdc_log
+                .record_create_node(id, self.data_store().current_epoch(), None);
         }
 
         id
@@ -211,17 +214,20 @@ impl super::ObrainDB {
             }
         }
 
-        if !self.cdc_observer_active.load(std::sync::atomic::Ordering::Relaxed) {
-        #[cfg(feature = "cdc")]
-        self.cdc_log.record_create_node(
-            id,
-            self.data_store().current_epoch(),
-            if cdc_props.is_empty() {
-                None
-            } else {
-                Some(cdc_props)
-            },
-        );
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            #[cfg(feature = "cdc")]
+            self.cdc_log.record_create_node(
+                id,
+                self.data_store().current_epoch(),
+                if cdc_props.is_empty() {
+                    None
+                } else {
+                    Some(cdc_props)
+                },
+            );
         }
 
         // Auto-insert into matching text indexes for the new node
@@ -756,9 +762,12 @@ impl super::ObrainDB {
         }
 
         #[cfg(feature = "cdc")]
-        if !self.cdc_observer_active.load(std::sync::atomic::Ordering::Relaxed) {
-        self.cdc_log
-            .record_create_edge(id, self.data_store().current_epoch(), None);
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.cdc_log
+                .record_create_edge(id, self.data_store().current_epoch(), None);
         }
 
         id
@@ -770,7 +779,11 @@ impl super::ObrainDB {
     /// unitaire. L'appelant checkpoint/flush ensuite pour la durabilité.
     pub fn create_edges_batch(
         &self,
-        edges: &[(obrain_common::types::NodeId, obrain_common::types::NodeId, &str)],
+        edges: &[(
+            obrain_common::types::NodeId,
+            obrain_common::types::NodeId,
+            &str,
+        )],
     ) -> Vec<obrain_common::types::EdgeId> {
         if edges.is_empty() {
             return Vec::new();
@@ -791,9 +804,11 @@ impl super::ObrainDB {
         {
             let epoch = self.data_store().current_epoch();
             for id in &ids {
-                if !self.cdc_observer_active.load(std::sync::atomic::Ordering::Relaxed) {
-                self.cdc_log
-                    .record_create_edge(*id, epoch, None);
+                if !self
+                    .cdc_observer_active
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    self.cdc_log.record_create_edge(*id, epoch, None);
                 }
             }
         }
@@ -813,7 +828,11 @@ impl super::ObrainDB {
     /// imports de gros volumes jetables/en lot, pas au hot path applicatif.
     pub fn create_edges_batch_no_wal(
         &self,
-        edges: &[(obrain_common::types::NodeId, obrain_common::types::NodeId, &str)],
+        edges: &[(
+            obrain_common::types::NodeId,
+            obrain_common::types::NodeId,
+            &str,
+        )],
     ) -> Vec<obrain_common::types::EdgeId> {
         if edges.is_empty() {
             return Vec::new();
@@ -880,17 +899,20 @@ impl super::ObrainDB {
             }
         }
 
-        if !self.cdc_observer_active.load(std::sync::atomic::Ordering::Relaxed) {
-        #[cfg(feature = "cdc")]
-        self.cdc_log.record_create_edge(
-            id,
-            self.data_store().current_epoch(),
-            if cdc_props.is_empty() {
-                None
-            } else {
-                Some(cdc_props)
-            },
-        );
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            #[cfg(feature = "cdc")]
+            self.cdc_log.record_create_edge(
+                id,
+                self.data_store().current_epoch(),
+                if cdc_props.is_empty() {
+                    None
+                } else {
+                    Some(cdc_props)
+                },
+            );
         }
 
         id

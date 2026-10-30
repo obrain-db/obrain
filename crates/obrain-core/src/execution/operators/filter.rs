@@ -4,8 +4,8 @@ use super::{Operator, OperatorResult};
 use crate::execution::{ChunkZoneHints, DataChunk, SelectionVector, ValueVector};
 use crate::graph::Direction;
 use crate::graph::GraphStore;
-use crate::graph::traits::PredicatTexte;
 use crate::graph::lpg::{Edge, Node};
+use crate::graph::traits::PredicatTexte;
 use obrain_common::types::{
     EpochId, HashableValue, NodeId, PropertyKey, TransactionId, Value, value_cmp,
 };
@@ -214,10 +214,7 @@ mod trace_filtre {
 /// une supposition.
 fn collecte_proprietes(expr: &FilterExpression, out: &mut Vec<(String, String)>) {
     match expr {
-        FilterExpression::Property {
-            variable,
-            property,
-        } => {
+        FilterExpression::Property { variable, property } => {
             if !out.iter().any(|(v, p)| v == variable && p == property) {
                 out.push((variable.clone(), property.clone()));
             }
@@ -413,14 +410,11 @@ fn collecte_predicats_texte(
             op,
             BinaryFilterOp::Contains | BinaryFilterOp::StartsWith | BinaryFilterOp::EndsWith
         )
-        && let FilterExpression::Property {
-            variable,
-            property,
-        } = &**left
+        && let FilterExpression::Property { variable, property } = &**left
         && let FilterExpression::Literal(Value::String(aiguille)) = &**right
-        && !out
-            .iter()
-            .any(|(v, p, o, a)| v == variable && p == property && *o == *op && a == aiguille.as_str())
+        && !out.iter().any(|(v, p, o, a)| {
+            v == variable && p == property && *o == *op && a == aiguille.as_str()
+        })
     {
         out.push((
             variable.clone(),
@@ -511,12 +505,13 @@ fn collecte_predicats_texte(
 /// et payer deux traversées de chaîne coûtait 9 % de CPU de plus que n'en
 /// rapportait l'allocation économisée. Une propriété dont TOUTES les références
 /// sont couvertes n'a plus besoin d'être matérialisée du tout.
-fn compte_occurrences(expr: &FilterExpression, couvert: bool, out: &mut Vec<(String, String, usize, usize)>) {
+fn compte_occurrences(
+    expr: &FilterExpression,
+    couvert: bool,
+    out: &mut Vec<(String, String, usize, usize)>,
+) {
     match expr {
-        FilterExpression::Property {
-            variable,
-            property,
-        } => {
+        FilterExpression::Property { variable, property } => {
             let entree = match out
                 .iter_mut()
                 .find(|(v, p, _, _)| v == variable && p == property)
@@ -540,7 +535,10 @@ fn compte_occurrences(expr: &FilterExpression, couvert: bool, out: &mut Vec<(Str
                 BinaryFilterOp::Contains | BinaryFilterOp::StartsWith | BinaryFilterOp::EndsWith
             ) && matches!(
                 (&**left, &**right),
-                (FilterExpression::Property { .. }, FilterExpression::Literal(Value::String(_)))
+                (
+                    FilterExpression::Property { .. },
+                    FilterExpression::Literal(Value::String(_))
+                )
             );
             compte_occurrences(left, couvert || couvre_gauche, out);
             compte_occurrences(right, false, out);
@@ -1230,11 +1228,15 @@ impl ExpressionPredicate {
                 .filter_map(|&i| {
                     let entree = &entrees[i];
                     Some(match entree.op {
-                        BinaryFilterOp::Contains => PredicatTexte::Contient(entree.aiguille.as_str()),
+                        BinaryFilterOp::Contains => {
+                            PredicatTexte::Contient(entree.aiguille.as_str())
+                        }
                         BinaryFilterOp::StartsWith => {
                             PredicatTexte::CommencePar(entree.aiguille.as_str())
                         }
-                        BinaryFilterOp::EndsWith => PredicatTexte::FiniPar(entree.aiguille.as_str()),
+                        BinaryFilterOp::EndsWith => {
+                            PredicatTexte::FiniPar(entree.aiguille.as_str())
+                        }
                         // `collecte_predicats_texte` ne retient que ces trois-là.
                         _ => return None,
                     })
@@ -1284,11 +1286,7 @@ impl ExpressionPredicate {
         ) {
             return ReponseVerdict::Aucun;
         }
-        let FilterExpression::Property {
-            variable,
-            property,
-        } = gauche
-        else {
+        let FilterExpression::Property { variable, property } = gauche else {
             return ReponseVerdict::Aucun;
         };
         let FilterExpression::Literal(Value::String(aiguille)) = droite else {
@@ -1629,12 +1627,8 @@ impl ExpressionPredicate {
                 // comprise : U AND F → F, U OR T → T). Les erreurs signalées
                 // via `signale_erreur` survivent — le slot est relevé par
                 // l'opérateur après coup, indépendamment de la valeur rendue.
-                let left_val = self
-                    .eval_expr(left, chunk, row)
-                    .unwrap_or(Value::Null);
-                let right_val = self
-                    .eval_expr(right, chunk, row)
-                    .unwrap_or(Value::Null);
+                let left_val = self.eval_expr(left, chunk, row).unwrap_or(Value::Null);
+                let right_val = self.eval_expr(right, chunk, row).unwrap_or(Value::Null);
                 self.eval_binary_op(&left_val, *op, &right_val)
             }
             FilterExpression::Unary { op, operand } => {
@@ -2108,9 +2102,7 @@ impl ExpressionPredicate {
                     &e.to_store,
                     &e.to_key,
                 )
-                .and_then(|ts| {
-                    crate::execution::base_registry::resolve_node_key(&*ts, &e.to_key)
-                })
+                .and_then(|ts| crate::execution::base_registry::resolve_node_key(&*ts, &e.to_key))
                 .is_some();
             if resolue {
                 n += 1;
@@ -2551,9 +2543,9 @@ impl ExpressionPredicate {
                 (Value::String(l), Value::String(r)) => {
                     Some(Value::Bool(l.as_str().contains(r.as_str())))
                 }
-                (Value::List(items), r) => Some(Value::Bool(
-                    items.iter().any(|v| Self::values_equal(v, r)),
-                )),
+                (Value::List(items), r) => {
+                    Some(Value::Bool(items.iter().any(|v| Self::values_equal(v, r))))
+                }
                 // Classes disjointes : `None` (UNKNOWN) plutôt qu'un FAUX, pour que
                 // la logique trivaluée en tienne compte au lieu de rejeter la ligne
                 // en silence — c'est exactement le défaut corrigé ci-dessus.
@@ -2693,9 +2685,7 @@ impl ExpressionPredicate {
                 };
                 match r {
                     Ok(v) => Some(Value::Int64(v)),
-                    Err(e) => {
-                        self.signale_erreur(format!("{e}: {a} {} {b}", op.symbole()))
-                    }
+                    Err(e) => self.signale_erreur(format!("{e}: {a} {} {b}", op.symbole())),
                 }
             }
             (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(op.flottant(*a, *b))),
@@ -2893,8 +2883,7 @@ impl ExpressionPredicate {
                     let col = chunk.column(col_idx)?;
                     // Aretes inter-bases (V2) : noeud distant -> `_labels`.
                     if let Some(Value::Map(map)) = col.get_value(row)
-                        && let Some(l @ Value::List(_)) =
-                            map.get(&PropertyKey::new("_labels"))
+                        && let Some(l @ Value::List(_)) = map.get(&PropertyKey::new("_labels"))
                     {
                         return Some(l.clone());
                     }
@@ -3040,8 +3029,7 @@ impl ExpressionPredicate {
                                 && let Some(Value::List(labels)) =
                                     map.get(&PropertyKey::new("_labels"))
                             {
-                                let Value::String(label) =
-                                    self.eval_expr(&args[1], chunk, row)?
+                                let Value::String(label) = self.eval_expr(&args[1], chunk, row)?
                                 else {
                                     return None;
                                 };
@@ -4779,7 +4767,6 @@ impl ExpressionPredicate {
             }
         }
     }
-
 }
 
 impl Predicate for ExpressionPredicate {

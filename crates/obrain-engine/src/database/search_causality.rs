@@ -134,12 +134,7 @@ pub fn compute_causal_spread(
 impl super::ObrainDB {
     /// (2026-09-05) Conducteurs amont de `node_id` : BFS inverse amorti le
     /// long des arêtes entrantes. Nécessite un store substrate.
-    pub fn search_causes(
-        &self,
-        node_id: u64,
-        limit: usize,
-        depth: usize,
-    ) -> Result<Vec<CauseRow>> {
+    pub fn search_causes(&self, node_id: u64, limit: usize, depth: usize) -> Result<Vec<CauseRow>> {
         let substrate = self.substrate_store.as_ref().ok_or_else(|| {
             Error::Internal("search_causes requires a substrate-backed database".to_string())
         })?;
@@ -198,7 +193,12 @@ fn arg_u64(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<u64>
     }
 }
 
-fn arg_usize(arguments: &[LogicalExpression], i: usize, name: &str, default: usize) -> Result<usize> {
+fn arg_usize(
+    arguments: &[LogicalExpression],
+    i: usize,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
     match arguments.get(i) {
         None => Ok(default),
         Some(LogicalExpression::Literal(Value::Int64(v))) if *v >= 0 => Ok(*v as usize),

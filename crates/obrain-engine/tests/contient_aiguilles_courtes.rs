@@ -141,10 +141,16 @@ const AIGUILLES: &[(&str, &str)] = &[
     ("g0", "deux caractères"),
     ("a.g", "trois caractères"),
     ("a.g000", "la valeur entière d'un nœud"),
-    ("a.g0000", "plus longue que toute valeur : ne doit RIEN rendre"),
+    (
+        "a.g0000",
+        "plus longue que toute valeur : ne doit RIEN rendre",
+    ),
     ("zzz", "absente partout"),
     ("ixgbe", "à cheval sur un séparateur (`mixgbe_ready`)"),
-    ("é", "un caractère, DEUX octets : « courte » se compte en octets"),
+    (
+        "é",
+        "un caractère, DEUX octets : « courte » se compte en octets",
+    ),
     ("réacteur", "multi-octets, valeur entière"),
     ("a.g000.long", "valeur entière d'un seul nœud"),
 ];
@@ -266,7 +272,11 @@ fn la_premiere_requete_gql_en_lecture_seule_rend_zero() {
         attendu(".") as usize,
         "la primitive, au même instant que la GQL fausse"
     );
-    assert_eq!(compte_gql(&ro, "."), attendu("."), "le deuxième appel GQL, lui, est juste");
+    assert_eq!(
+        compte_gql(&ro, "."),
+        attendu("."),
+        "le deuxième appel GQL, lui, est juste"
+    );
 
     // 3. LA MATRICE COMPLÈTE, une fois réchauffé.
     verifier_tout(&ro, "LECTURE SEULE (après réchauffement)");
@@ -296,10 +306,14 @@ fn toutes_les_aiguilles_apres_rechauffement_sont_justes_en_lecture_seule() {
     // session neuve repaie le défaut.
     let r = ro
         .session()
-        .execute(&format!("MATCH (n) WHERE n.{PROP} CONTAINS '.' RETURN count(n)"))
+        .execute(&format!(
+            "MATCH (n) WHERE n.{PROP} CONTAINS '.' RETURN count(n)"
+        ))
         .expect("count");
     match r.rows.first().and_then(|l| l.first()) {
-        Some(Value::Int64(c)) => assert_eq!(*c, attendu("."), "une session neuve sur un handle chaud"),
+        Some(Value::Int64(c)) => {
+            assert_eq!(*c, attendu("."), "une session neuve sur un handle chaud")
+        }
         autre => panic!("count(n) doit rendre un entier, pas {autre:?}"),
     }
 }

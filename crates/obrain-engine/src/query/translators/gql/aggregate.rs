@@ -183,11 +183,13 @@ impl GqlTranslator {
                 // quel.)
                 for (cond, then) in whens {
                     if contains_aggregate(cond) {
-                        let _ = self.extract_wrapped_aggregates_into(cond, synthetic_alias, aggs)?;
+                        let _ =
+                            self.extract_wrapped_aggregates_into(cond, synthetic_alias, aggs)?;
                         return self.translate_expression(expr);
                     }
                     if contains_aggregate(then) {
-                        let _ = self.extract_wrapped_aggregates_into(then, synthetic_alias, aggs)?;
+                        let _ =
+                            self.extract_wrapped_aggregates_into(then, synthetic_alias, aggs)?;
                         return self.translate_expression(expr);
                     }
                 }

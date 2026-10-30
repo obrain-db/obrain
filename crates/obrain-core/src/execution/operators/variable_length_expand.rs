@@ -5,7 +5,9 @@ use crate::execution::DataChunk;
 use crate::execution::base_registry::{self, remote_node_value, resolve_node_key};
 use crate::graph::Direction;
 use crate::graph::GraphStore;
-use obrain_common::types::{EdgeId, EpochId, LogicalType, NodeId, PropertyKey, TransactionId, Value};
+use obrain_common::types::{
+    EdgeId, EpochId, LogicalType, NodeId, PropertyKey, TransactionId, Value,
+};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -316,8 +318,7 @@ impl VariableLengthExpandOperator {
                             if let Some(Value::Map(map)) = col.get_value(row_idx)
                                 && let Some(Value::String(slug)) =
                                     map.get(&PropertyKey::new(base_registry::BASE_KEY))
-                                && let Some(Value::Int64(id)) =
-                                    map.get(&PropertyKey::new("_id"))
+                                && let Some(Value::Int64(id)) = map.get(&PropertyKey::new("_id"))
                                 && let Some(store) = reg.store_for_reader(
                                     self.session_context.access_context.as_deref(),
                                     None,
@@ -432,7 +433,16 @@ impl VariableLengthExpandOperator {
                 if store.get_node_labels(t).is_none() {
                     continue;
                 }
-                out.push((NoeudM { base: node.base, id: t }, AreteM { base: node.base, id: e }));
+                out.push((
+                    NoeudM {
+                        base: node.base,
+                        id: t,
+                    },
+                    AreteM {
+                        base: node.base,
+                        id: e,
+                    },
+                ));
             }
         }
         // Bras EXTERNE : uniquement avec un registre (zero cout mono-base).

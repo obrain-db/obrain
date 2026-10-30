@@ -146,7 +146,11 @@ fn tombstone_reste_alloue_et_invisible() {
     drop(store);
 
     let flags = flags_sur_disque(td.path(), victime.0 as u32);
-    assert_ne!(flags & node_flags::ALLOCATED, 0, "tombstone reste ALLOCATED");
+    assert_ne!(
+        flags & node_flags::ALLOCATED,
+        0,
+        "tombstone reste ALLOCATED"
+    );
     assert_ne!(flags & node_flags::TOMBSTONED, 0, "et TOMBSTONED");
 
     let store = SubstrateStore::open(td.path()).unwrap();
@@ -170,7 +174,10 @@ fn store_v1_migre_a_l_ouverture_compte_juste() {
     // L'ouverture EXCLUSIVE migre (jalon 0) via la premiere entree reelle
     // de la table : 1→2 pose ALLOCATED sur tout record non-defaut.
     let store = SubstrateStore::open(td.path()).expect("open migrant");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
     assert_eq!(store.node_ids(), ids_avant, "dump identique avant/apres");
     assert_eq!(store.nodes_by_label("Troue").len(), 10);
     assert_eq!(store.node_count(), 10);
@@ -185,7 +192,10 @@ fn migration_1_vers_2_idempotente_octet_pour_octet() {
 
     migrer_repertoire(td.path()).expect("premiere migration");
     let zone_apres_1 = std::fs::read(td.path().join("substrate.nodes")).unwrap();
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
 
     migrer_repertoire(td.path()).expect("seconde migration = no-op");
     let zone_apres_2 = std::fs::read(td.path().join("substrate.nodes")).unwrap();
@@ -260,7 +270,14 @@ fn kill_9_pendant_migration_1v2_puis_reprise_par_ouverture() {
     // Reprise par l'OUVERTURE normale : la vraie table (1→2) rejoue
     // l'etape — idempotente sur les records deja benis — et bump en dernier.
     let store = SubstrateStore::open(td.path()).expect("reprise par open");
-    assert_eq!(lire_version_meta(td.path()).unwrap(), SUBSTRATE_FORMAT_VERSION);
-    assert_eq!(store.node_ids(), ids_avant, "20 crees -> 20 lisibles, jamais 2560");
+    assert_eq!(
+        lire_version_meta(td.path()).unwrap(),
+        SUBSTRATE_FORMAT_VERSION
+    );
+    assert_eq!(
+        store.node_ids(),
+        ids_avant,
+        "20 crees -> 20 lisibles, jamais 2560"
+    );
     assert_eq!(store.node_count(), 20);
 }

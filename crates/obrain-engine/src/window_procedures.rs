@@ -191,17 +191,11 @@ fn execute_window_2d_energy(
 
     let threshold = energy_min_q15.min(32767) as u16; // seuil Q1.15 saturé
 
-    let mut result =
-        AlgorithmResult::new(vec!["node_id".to_string(), "energy".to_string()]);
+    let mut result = AlgorithmResult::new(vec!["node_id".to_string(), "energy".to_string()]);
     for slot in slots {
         // Lecture du record du slot : énergie inline (Q1.15). Le slot est un
         // id de nœud u32 (contrat window_query_2d_sorted).
-        let Some(rec) = store
-            .writer()
-            .read_node(slot)
-            .ok()
-            .flatten()
-        else {
+        let Some(rec) = store.writer().read_node(slot).ok().flatten() else {
             continue; // slot non lisible (tombstone/borne) — ignoré
         };
         let energy = rec.energy; // u16 Q1.15
