@@ -586,6 +586,10 @@ impl RamZone {
     /// # Safety
     /// Même contrat qu'un mmap : aucune autre vue (lecture ou écriture) ne doit
     /// être vivante sur cette zone pendant la durée de celle-ci.
+    // Accès mmap : le contrat est dans `# Safety`, comme pour `memmap2`. Rendre
+    // un `&mut` depuis un `&self` est le geste même d une vue écriture sur une
+    // zone mappée ; l interdiction est ici explicite plutôt que silencieuse.
+    #[allow(clippy::mut_from_ref)]
     unsafe fn as_slice_mut(&self) -> &mut [u8] {
         // SAFETY: délégué à l'appelant (cf. `# Safety`).
         unsafe { &mut *self.data.get() }
