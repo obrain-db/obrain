@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Le runner GitHub meurt au link (ld, signal 7, bus error) quand il linke
+  # tous les binaires de test en parallele avec les infos de debogage.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
   test:
