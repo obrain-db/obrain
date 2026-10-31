@@ -7,7 +7,10 @@ name: Mesures (hors portillon)
 #
 # Ce workflow les exécute par nom, à la demande, et n'est PAS requis pour
 # fusionner : un rouge ici est une information à lire, pas un portillon. Pas
-# de continue-on-error, pas de retry — le verdict est celui du run.
+# de continue-on-error, pas de retry — le verdict est celui du run. Chaque
+# étape porte `if: !cancelled()` : une étape rouge n'empêche pas les suivantes
+# de rendre LEUR verdict (premier run : prefetch rouge sur le runner, trois
+# étapes sautées sans information), et le job reste rouge.
 #
 # La référence chiffrée reste une machine Linux calme ; relevé du 2026-10-31
 # dans les notes du projet (8 verts déterministes sur 9, 1 rouge déterministe).
@@ -32,14 +35,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Pièces 2 et 3 du WAL (budgets en nanosecondes)
+        if: ${{ !cancelled() }}
         run: cargo test -p obrain-substrate --test wal_pieces_2_3_micro -- --ignored mesure_piece
       - name: Prefetch (défauts de page, cache chaud)
+        if: ${{ !cancelled() }}
         run: cargo test -p obrain-substrate --test prefetch_page_faults -- --ignored
       - name: WAL interprocessus (t2b, t3, t4, débit à N écrivains)
+        if: ${{ !cancelled() }}
         run: |
           ulimit -n 8192
           cargo test -p obrain-substrate --test mw_interprocess_append -- --ignored
       - name: Lecteur RO pendant un écrivain (échec déterministe connu, cause à instruire)
+        if: ${{ !cancelled() }}
         run: cargo test -p obrain-engine --test multi_writer_invariants -- --ignored lecture_ro_pendant_writer_thread_sans_blocage
       - name: Lectures concurrentes des registres d'index (feature vector-index)
+        if: ${{ !cancelled() }}
         run: cargo test -p obrain-engine --features vector-index --test index_concurrency -- --ignored lectures_concurrentes_ne_se_serialisent_pas
