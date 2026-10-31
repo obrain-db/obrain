@@ -30,6 +30,7 @@ mod factorized_expand;
 mod factorized_filter;
 mod filter;
 mod horizontal_aggregate;
+mod index_seek;
 mod join;
 mod leapfrog_join;
 mod limit;
@@ -74,6 +75,7 @@ pub use filter::{
     ListPredicateKind, Predicate, SessionContext, UnaryFilterOp,
 };
 pub use horizontal_aggregate::{EntityKind, HorizontalAggregateOperator};
+pub use index_seek::IndexSeekJoinOperator;
 pub use join::{
     EqualityCondition, HashJoinOperator, HashKey, JoinCondition, JoinType, NestedLoopJoinOperator,
 };
@@ -83,9 +85,9 @@ pub use load_data::{LoadDataFormat, LoadDataOperator};
 pub use map_collect::MapCollectOperator;
 pub use merge::{MergeConfig, MergeOperator, MergeRelationshipConfig, MergeRelationshipOperator};
 pub use mutation::{
-    AddLabelOperator, ConstraintValidator, CreateEdgeOperator, CreateNodeOperator,
-    DeleteEdgeOperator, DeleteNodeOperator, PropertySource, RemoveLabelOperator,
-    SetPropertyOperator,
+    AddLabelOperator, ConstraintValidator, CreateEdgeOperator, CreateExternalEdgeOperator,
+    CreateNodeOperator, DeleteEdgeOperator, DeleteNodeOperator, PropertySource,
+    RemoveLabelOperator, SetPropertyOperator,
 };
 pub use parameter_scan::{ParameterScanOperator, ParameterState};
 pub use project::{ProjectExpr, ProjectOperator};
@@ -279,6 +281,47 @@ pub enum OperatorError {
     /// Write-write conflict detected (first-writer-wins).
     #[error("write conflict: {0}")]
     WriteConflict(String),
+    /// La requete a ete ANNULEE a un point de controle cooperatif.
+    ///
+    /// Ce n'est pas un echec de l'operateur : le plan etait valide et
+    /// progressait. La variante existe pour que l'erreur remonte comme un
+    /// `Err` ordinaire — donc en deroulant la pile, donc en relachant les
+    /// gardes RAII (verrous de zone, permis) au passage — et pour que
+    /// l'appelant la distingue d'une vraie panne.
+    #[error("cancelled")]
+    Cancelled,
+}
+
+impl From<obrain_common::utils::cancel::Cancelled> for OperatorError {
+    fn from(_: obrain_common::utils::cancel::Cancelled) -> Self {
+        OperatorError::Cancelled
+    }
+}
+
+/// Point de controle d'annulation pour les boucles d'operateurs.
+///
+/// ── OU LE PLACER, ET POURQUOI LA (2026-08-24) ────────────────────────
+///
+/// `Executor::execute` verifiait deja un delai ENTRE deux `operator.next()`.
+/// Ce point unique ne protege de rien : les operateurs BLOQUANTS (Sort,
+/// HashAggregate, Distinct, cote build d'un HashJoin) consomment la
+/// TOTALITE de leur enfant a l'interieur d'un SEUL `next()`. Une requete
+/// qui trie 700 000 lignes ne rend la main a l'executeur qu'une fois le tri
+/// fini — le controle de delai s'executait alors pour la premiere fois
+/// apres 60 s de travail deja consomme. C'est exactement le motif mesure en
+/// production : « 5, puis 6, puis 3 exemplaires du MEME tri en vol ».
+///
+/// Le controle appartient donc a la boucle QUI DRAINE, pas a celle qui
+/// collecte. Une iteration = un chunk (<= 2048 lignes), soit un controle
+/// toutes les ~2048 lignes sans compteur a tenir.
+///
+/// # Errors
+///
+/// [`OperatorError::Cancelled`] si le jeton du thread courant est arme.
+#[inline]
+pub(crate) fn verifier_annulation() -> Result<(), OperatorError> {
+    obrain_common::utils::cancel::check()?;
+    Ok(())
 }
 
 /// The core trait for pull-based operators.

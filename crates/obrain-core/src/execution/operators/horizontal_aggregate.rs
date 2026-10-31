@@ -127,7 +127,9 @@ impl Operator for HorizontalAggregateOperator {
                 for entity_val in list.iter() {
                     let prop_val = self.get_property_value(entity_val);
                     if prop_val.is_some() && !matches!(prop_val, Some(Value::Null)) {
-                        state.update(prop_val);
+                        // Arithmétique gardée : un débordement de somme
+                        // refuse la requête (cf. AggregateState::update).
+                        state.update(prop_val)?;
                     }
                 }
                 state.finalize()

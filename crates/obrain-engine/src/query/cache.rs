@@ -32,7 +32,11 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+// Horloge de la seule entrée de cache qui en dépend (`CacheEntry::last_accessed`,
+// « not available on WASM ») : son usage est déjà gaté, l'import doit l'être
+// aussi, sinon la cible wasm signale un import inutilisé.
+#[cfg(not(target_arch = "wasm32"))]
+use web_time::Instant;
 
 use crate::query::plan::LogicalPlan;
 use crate::query::processor::QueryLanguage;

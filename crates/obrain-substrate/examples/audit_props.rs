@@ -153,7 +153,7 @@ fn main() -> Result<(), BoxErr> {
     let mut node_entries_with_any_prop = 0u64;
     let mut node_props_total = 0u64;
 
-    let t_nodes = std::time::Instant::now();
+    let t_nodes = web_time::Instant::now();
     for i in 0..nodes_len {
         if i > 0 && i % 250_000 == 0 {
             eprintln!(
@@ -189,7 +189,7 @@ fn main() -> Result<(), BoxErr> {
     let mut edge_entries_with_any_prop = 0u64;
     let mut edge_props_total = 0u64;
 
-    let t_edges = std::time::Instant::now();
+    let t_edges = web_time::Instant::now();
     for i in 0..edges_len {
         if i > 0 && i % 500_000 == 0 {
             eprintln!(

@@ -51,12 +51,12 @@ fn main() -> Result<(), BoxErr> {
         .unwrap_or(DEFAULT_SAMPLE);
 
     eprintln!("inspect: opening {}", path.display());
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let store = SubstrateStore::open(&path)?;
     eprintln!("inspect: opened in {:.2}s", t0.elapsed().as_secs_f64());
 
     // ------- Structural counts (full-scan) -------
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     let n_nodes = store.node_count();
     let n_edges = store.edge_count();
     eprintln!(
@@ -70,7 +70,7 @@ fn main() -> Result<(), BoxErr> {
     println!("edges : {n_edges}");
 
     // ------- Full node_ids scan for label distribution -------
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     let node_ids = store.node_ids();
     eprintln!(
         "inspect: node_ids() in {:.2}s ({} ids)",

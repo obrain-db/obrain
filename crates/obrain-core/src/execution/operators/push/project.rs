@@ -98,6 +98,12 @@ impl ProjectExpression for BinaryExpr {
         let left_val = self.left.evaluate(chunk, row);
         let right_val = self.right.evaluate(chunk, row);
 
+        // DIVERGENT du chemin vif — voir campagne 2026-08-24 : cette
+        // arithmétique en `wrapping_*` est du code mort connu
+        // (`ProjectPushOperator` n'est jamais construit) et n'a PAS reçu
+        // les gardes `checked_*` de l'évaluateur de `filter.rs` (division
+        // par zéro → NULL ici, ERREUR là-bas ; débordement → enroulement
+        // ici, ERREUR là-bas). Ne pas raviver ce chemin sans l'aligner.
         match (&left_val, &right_val) {
             (Value::Int64(l), Value::Int64(r)) => match self.op {
                 ArithOp::Add => Value::Int64(l.wrapping_add(*r)),

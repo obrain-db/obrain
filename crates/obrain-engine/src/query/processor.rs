@@ -115,9 +115,30 @@ pub struct QueryProcessor {
     optimizer: Optimizer,
     /// Current transaction context (if any).
     transaction_context: Option<(EpochId, TransactionId)>,
+    /// Contexte de session (schema courant, introspection, registre
+    /// multi-store — aretes inter-bases V2). Ce processeur batit son
+    /// PROPRE Planner : sans ce champ, execute_with_params/gremlin/
+    /// graphql/sql perdaient le registre en silence (trou P1).
+    session_context: obrain_core::execution::operators::SessionContext,
     /// RDF store for triple pattern queries (optional).
     #[cfg(feature = "rdf")]
     rdf_store: Option<Arc<obrain_core::graph::rdf::RdfStore>>,
+    /// Optional cognitive engine (3 piliers), threaded from the owning
+    /// `Session` so `CALL obrain.cognitive.*` resolves in `execute()`'s own
+    /// `Planner::with_context` calls (this processor builds its own planner
+    /// independently of `Session::create_planner_for_store*`).
+    #[cfg(feature = "cognitive")]
+    cognitive_engine: Option<Arc<dyn obrain_cognitive::CognitiveEngine>>,
+    /// Optional typed substrate handle, threaded from the owning `Session`
+    /// so substrate-native procedures (`CALL obrain.window_2d`) resolve in
+    /// this processor's own planner builds (same pattern as the cognitive
+    /// engine above).
+    substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// Optional CDC log handle (feature `cdc`), threaded from the owning
+    /// `Session` so change-data procedures (`CALL obrain.search_delta`)
+    /// resolve in this processor's own planner builds (same pattern).
+    #[cfg(feature = "cdc")]
+    cdc_log: Option<Arc<crate::cdc::CdcLog>>,
 }
 
 impl QueryProcessor {
@@ -140,8 +161,14 @@ impl QueryProcessor {
             catalog: Arc::new(Catalog::new()),
             optimizer,
             transaction_context: None,
+            session_context: obrain_core::execution::operators::SessionContext::default(),
             #[cfg(feature = "rdf")]
             rdf_store: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
+            substrate_store: None,
+            #[cfg(feature = "cdc")]
+            cdc_log: None,
         }
     }
 
@@ -160,8 +187,14 @@ impl QueryProcessor {
             catalog: Arc::new(Catalog::new()),
             optimizer,
             transaction_context: None,
+            session_context: obrain_core::execution::operators::SessionContext::default(),
             #[cfg(feature = "rdf")]
             rdf_store: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
+            substrate_store: None,
+            #[cfg(feature = "cdc")]
+            cdc_log: None,
         }
     }
 
@@ -181,8 +214,14 @@ impl QueryProcessor {
             catalog: Arc::new(Catalog::new()),
             optimizer,
             transaction_context: None,
+            session_context: obrain_core::execution::operators::SessionContext::default(),
             #[cfg(feature = "rdf")]
             rdf_store: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
+            substrate_store: None,
+            #[cfg(feature = "cdc")]
+            cdc_log: None,
         })
     }
 
@@ -199,6 +238,17 @@ impl QueryProcessor {
         self
     }
 
+    /// Attache le contexte de session (registre multi-store compris —
+    /// aretes inter-bases V2) aux planners construits par ce processeur.
+    #[must_use]
+    pub fn with_session_context(
+        mut self,
+        context: obrain_core::execution::operators::SessionContext,
+    ) -> Self {
+        self.session_context = context;
+        self
+    }
+
     /// Sets a custom catalog.
     #[must_use]
     pub fn with_catalog(mut self, catalog: Arc<Catalog>) -> Self {
@@ -210,6 +260,37 @@ impl QueryProcessor {
     #[must_use]
     pub fn with_optimizer(mut self, optimizer: Optimizer) -> Self {
         self.optimizer = optimizer;
+        self
+    }
+
+    /// Sets the cognitive engine (3 piliers), so `CALL obrain.cognitive.*`
+    /// resolves in this processor's own `Planner::with_context` calls inside
+    /// `execute()`, instead of falling through to "Unknown procedure".
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn with_cognitive_engine(
+        mut self,
+        engine: Arc<dyn obrain_cognitive::CognitiveEngine>,
+    ) -> Self {
+        self.cognitive_engine = Some(engine);
+        self
+    }
+
+    /// Attaches the typed substrate handle so substrate-native procedures
+    /// (`CALL obrain.window_2d`) resolve in this processor's own planner
+    /// builds. Same pattern as [`Self::with_cognitive_engine`].
+    #[must_use]
+    pub fn with_substrate_store(mut self, store: Arc<obrain_substrate::SubstrateStore>) -> Self {
+        self.substrate_store = Some(store);
+        self
+    }
+
+    /// Attaches the CDC log so change-data procedures (`CALL
+    /// obrain.search_delta`) resolve in this processor's own planner builds.
+    #[cfg(feature = "cdc")]
+    #[must_use]
+    pub fn with_cdc_log(mut self, cdc: Arc<crate::cdc::CdcLog>) -> Self {
+        self.cdc_log = Some(cdc);
         self
     }
 
@@ -262,7 +343,7 @@ impl QueryProcessor {
         params: Option<&QueryParams>,
     ) -> Result<QueryResult> {
         #[cfg(not(target_arch = "wasm32"))]
-        let start_time = std::time::Instant::now();
+        let start_time = web_time::Instant::now();
 
         // 1. Parse and translate to logical plan
         let mut logical_plan = self.translate_lpg(query, language)?;
@@ -286,11 +367,33 @@ impl QueryProcessor {
             return Ok(explain_result(&plan));
         }
 
+        // ── FRONTIÈRE ÉCRITURE / LECTURE : LA DÉCISION QUI FAIT AUTORITÉ
+        //    (2026-08-24, revue adversariale) ───────────────────────────
+        //
+        // Les quatre entrées `_with_params` de la session remettent ici un
+        // TEXTE de requête ; elles n'ont pas de plan et ne peuvent donc pas
+        // répondre à « est-ce que ça mute ? » autrement qu'en devinant.
+        // Elles devinaient : `upper.contains("SET")`, vrai de
+        // `RETURN n.offset` — un identifiant utilisateur décidait de
+        // l'interruptibilité d'une lecture.
+        //
+        // Le plan optimisé est disponible ICI, et il répond
+        // structurellement. Cette frontière-ci est INTÉRIEURE à celle de
+        // `Session::with_auto_commit` : elle la corrige dans les DEUX sens —
+        // elle remet en vigueur une lecture que le texte avait prise pour
+        // une écriture, et elle met hors vigueur une écriture que le texte
+        // n'avait pas reconnue (gremlin `addV`, par exemple, ne contient
+        // aucun mot-clé de mutation).
+        //
+        // La garde vit jusqu'à la fin de la fonction, donc couvre la
+        // planification physique ET l'exécution.
+        let mute = optimized_plan.root.mutations_avec(Some(&self.catalog));
+        let _frontiere = obrain_common::utils::cancel::frontiere_heritee(mute);
+
         // 5. Convert to physical plan with transaction context
         // Read-only fast path: safe when no mutations AND no active transaction
         // (an active transaction may have prior uncommitted writes from earlier statements)
-        let is_read_only =
-            !optimized_plan.root.has_mutations() && self.transaction_context.is_none();
+        let is_read_only = !mute && self.transaction_context.is_none();
         let planner = if let Some((epoch, transaction_id)) = self.transaction_context {
             Planner::with_context(
                 Arc::clone(&self.graph_store),
@@ -306,7 +409,43 @@ impl QueryProcessor {
                 self.transaction_manager.current_epoch(),
             )
         }
-        .with_read_only(is_read_only);
+        .with_read_only(is_read_only)
+        // ── UN SEUL CATALOGUE POUR LES DEUX DECISIONS (2026-08-24) ───
+        //
+        // `mute` ci-dessus CLASSE contre `self.catalog` ; ce planificateur
+        // EXECUTE. Sans cette ligne, il n'avait pas de catalogue du tout :
+        // les deux repondaient a partir de sources differentes. C'est
+        // inerte aujourd'hui — les cinq constructions de production du
+        // `QueryProcessor` n'appellent jamais `with_catalog`, donc les deux
+        // cotes voient un catalogue vide et s'accordent par accident. Le
+        // jour ou quelqu'un cablerait `with_catalog` d'un seul cote, une
+        // procedure utilisateur serait EXECUTEE par l'un et classee LECTURE
+        // par l'autre : la frontiere armerait le jeton sur une ecriture.
+        //
+        // On ne laisse pas une divergence dormir en attendant ce jour-la :
+        // les deux consommateurs partagent desormais la meme source, et
+        // cabler le catalogue les servira tous les deux d'un coup.
+        .with_catalog(Arc::clone(&self.catalog))
+        // Aretes inter-bases (V2) : sans cette ligne, le planner du
+        // processeur ignorait le registre multi-store (trou P1).
+        .with_session_context(self.session_context.clone());
+        #[cfg(feature = "cognitive")]
+        let planner = if let Some(ref engine) = self.cognitive_engine {
+            planner.with_cognitive_engine(Arc::clone(engine))
+        } else {
+            planner
+        };
+        let planner = if let Some(ref sub) = self.substrate_store {
+            planner.with_substrate_store(Arc::clone(sub))
+        } else {
+            planner
+        };
+        #[cfg(feature = "cdc")]
+        let planner = if let Some(ref cdc) = self.cdc_log {
+            planner.with_cdc_log(Arc::clone(cdc))
+        } else {
+            planner
+        };
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // 6. Execute and collect results
@@ -412,7 +551,21 @@ impl QueryProcessor {
             catalog: Arc::new(Catalog::new()),
             optimizer,
             transaction_context: None,
+            session_context: obrain_core::execution::operators::SessionContext::default(),
             rdf_store: Some(rdf_store),
+            // (2026-08-14) CE CHAMP MANQUAIT, et le trou n'etait visible que
+            // sous `--all-features --all-targets` : `with_rdf` est
+            // `#[cfg(test)]` et exige `rdf`, tandis que `cognitive_engine` est
+            // derriere `cognitive`. Il fallait donc les TROIS a la fois pour
+            // que le compilateur en parle — combinaison que ni
+            // `cargo check --workspace` ni `cargo test` n'activent.
+            //
+            // L'etape clippy de la CI, elle, l'active
+            // (`--all-targets --all-features -- -D warnings`). Elle echouait
+            // donc AVANT le travail de cette nuit, pour une raison qui ne
+            // tient ni au gel de `main` ni a l'acces au depot.
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
         }
     }
 
@@ -455,6 +608,13 @@ impl QueryProcessor {
             return Ok(explain_result(&optimized_plan));
         }
 
+        // Même frontière que sur le chemin LPG (voir `process_lpg`) : la
+        // décision structurelle du plan, prise au seul endroit où le plan
+        // existe sur ce chemin.
+        let _frontiere = obrain_common::utils::cancel::frontiere_heritee(
+            optimized_plan.root.mutations_avec(Some(&self.catalog)),
+        );
+
         // 4. Convert to physical plan (using RDF planner)
         let planner = RdfPlanner::new(Arc::clone(rdf_store));
         let mut physical_plan = planner.plan(&optimized_plan)?;
@@ -494,13 +654,28 @@ pub(crate) fn annotate_pushdown_hints(
     op: &mut LogicalOperator,
     store: &dyn obrain_core::graph::GraphStore,
 ) {
+    annotate_pushdown_hints_capped(op, store, None);
+}
+
+/// Variante avec propagation d'un cap de sources (RUN 21).
+///
+/// `cap`: nombre de sources à demander au scan amont, posé par un `Limit`
+/// et propagé à travers Return/Filter/Expand jusqu'au NodeScan-feuille.
+/// Le facteur ×16 compense les sources rejetées par l'expand (un nœud sans
+/// arête du type demandé ne produit aucune ligne) — un sur-approvisionnement
+/// sûr : le LimitOperator au sommet garantit le contrat de sortie exact.
+fn annotate_pushdown_hints_capped(
+    op: &mut LogicalOperator,
+    store: &dyn obrain_core::graph::GraphStore,
+    cap: Option<usize>,
+) {
     #[allow(clippy::wildcard_imports)]
     use crate::query::plan::*;
 
     match op {
         LogicalOperator::Filter(filter) => {
-            // Recurse into children first
-            annotate_pushdown_hints(&mut filter.input, store);
+            // Recurse into children first (cap inchangé à travers le filtre)
+            annotate_pushdown_hints_capped(&mut filter.input, store, cap);
 
             // Annotate this filter if it sits on top of a NodeScan
             if let LogicalOperator::NodeScan(scan) = filter.input.as_ref() {
@@ -508,39 +683,53 @@ pub(crate) fn annotate_pushdown_hints(
             }
         }
         LogicalOperator::NodeScan(op) => {
+            // Feuille avec label + cap demandé → SourceCap pour
+            // nodes_by_label_capped.
+            if op.input.is_none()
+                && let Some(n) = cap
+                && op.label.is_some()
+            {
+                op.pushdown_hint = Some(PushdownHint::SourceCap { count: n });
+            }
             if let Some(input) = &mut op.input {
-                annotate_pushdown_hints(input, store);
+                annotate_pushdown_hints_capped(input, store, cap);
             }
         }
         LogicalOperator::EdgeScan(op) => {
             if let Some(input) = &mut op.input {
-                annotate_pushdown_hints(input, store);
+                annotate_pushdown_hints_capped(input, store, cap);
             }
         }
-        LogicalOperator::Expand(op) => annotate_pushdown_hints(&mut op.input, store),
-        LogicalOperator::Project(op) => annotate_pushdown_hints(&mut op.input, store),
+        // L'Expand propage le cap vers sa source (le NodeScan amont) : c'est
+        // lui qui a besoin de plusieurs sources pour trouver des arêtes.
+        LogicalOperator::Expand(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
+        LogicalOperator::Project(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
         LogicalOperator::Join(op) => {
-            annotate_pushdown_hints(&mut op.left, store);
-            annotate_pushdown_hints(&mut op.right, store);
+            annotate_pushdown_hints_capped(&mut op.left, store, cap);
+            annotate_pushdown_hints_capped(&mut op.right, store, cap);
         }
-        LogicalOperator::Aggregate(op) => annotate_pushdown_hints(&mut op.input, store),
-        LogicalOperator::Limit(op) => annotate_pushdown_hints(&mut op.input, store),
-        LogicalOperator::Skip(op) => annotate_pushdown_hints(&mut op.input, store),
-        LogicalOperator::Sort(op) => annotate_pushdown_hints(&mut op.input, store),
-        LogicalOperator::Distinct(op) => annotate_pushdown_hints(&mut op.input, store),
-        LogicalOperator::Return(op) => annotate_pushdown_hints(&mut op.input, store),
+        LogicalOperator::Aggregate(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
+        // Le Limit POSE le cap (×16, voir doc du variant SourceCap).
+        LogicalOperator::Limit(op) => {
+            let n = op.count.value().saturating_mul(16).max(1);
+            annotate_pushdown_hints_capped(&mut op.input, store, Some(n));
+        }
+        LogicalOperator::Skip(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
+        LogicalOperator::Sort(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
+        LogicalOperator::Distinct(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
+        LogicalOperator::Return(op) => annotate_pushdown_hints_capped(&mut op.input, store, cap),
         LogicalOperator::Union(op) => {
             for input in &mut op.inputs {
-                annotate_pushdown_hints(input, store);
+                annotate_pushdown_hints_capped(input, store, cap);
             }
         }
         LogicalOperator::Apply(op) => {
-            annotate_pushdown_hints(&mut op.input, store);
-            annotate_pushdown_hints(&mut op.subplan, store);
+            annotate_pushdown_hints_capped(&mut op.input, store, cap);
+            annotate_pushdown_hints_capped(&mut op.subplan, store, cap);
         }
         LogicalOperator::Otherwise(op) => {
-            annotate_pushdown_hints(&mut op.left, store);
-            annotate_pushdown_hints(&mut op.right, store);
+            annotate_pushdown_hints_capped(&mut op.left, store, cap);
+            annotate_pushdown_hints_capped(&mut op.right, store, cap);
         }
         _ => {}
     }
@@ -726,6 +915,9 @@ fn substitute_in_operator(op: &mut LogicalOperator, params: &QueryParams) -> Res
             for (_, expr) in &mut create.properties {
                 substitute_in_expression(expr, params)?;
             }
+            substitute_in_operator(&mut create.input, params)?;
+        }
+        LogicalOperator::CreateExternalEdge(create) => {
             substitute_in_operator(&mut create.input, params)?;
         }
         LogicalOperator::DeleteNode(delete) => {

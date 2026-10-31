@@ -124,21 +124,24 @@ impl Time {
 
         let parts: Vec<&str> = time_part.splitn(2, '.').collect();
         let hms: Vec<&str> = parts[0].splitn(3, ':').collect();
-        if hms.len() < 2 {
+        // RFC 3339 partial-time : TROIS champs, chacun en CHIFFRES stricts.
+        // `str::parse::<u32>` accepte un signe de tête (`"+10"` → 10) : c'est
+        // lui qui fabriquait un instant depuis `T+10:00:00Z` ou une fraction
+        // depuis `.+5` (gql_15 D9), et les secondes ne sont pas facultatives.
+        if hms.len() != 3 || !hms.iter().all(|c| champ_numerique(c)) {
             return None;
         }
 
         let hour: u32 = hms[0].parse().ok()?;
         let min: u32 = hms[1].parse().ok()?;
-        let sec: u32 = if hms.len() == 3 {
-            hms[2].parse().ok()?
-        } else {
-            0
-        };
+        let sec: u32 = hms[2].parse().ok()?;
 
         // Parse fractional seconds
         let nano: u32 = if parts.len() == 2 {
             let frac = parts[1];
+            if !champ_numerique(frac) {
+                return None;
+            }
             // Pad or truncate to 9 digits
             let padded = if frac.len() >= 9 {
                 &frac[..9]
@@ -245,10 +248,21 @@ impl PartialOrd for Time {
     }
 }
 
+/// Champ numérique STRICT : non vide, uniquement des chiffres ASCII.
+///
+/// `str::parse::<u32>` accepte un signe de tête (`"+5"` → 5, RFC du langage,
+/// pas du calendrier) : chaque champ d'une écriture RFC 3339 passe donc par
+/// ce garde avant tout `parse` (gql_15 D9).
+fn champ_numerique(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Parses an optional timezone offset suffix from a time string.
 /// Returns (time_part, offset_in_seconds).
 fn parse_offset_suffix(s: &str) -> (&str, Option<i32>) {
-    if let Some(rest) = s.strip_suffix('Z') {
+    // RFC 3339 §4.2 : les désignateurs 'T' et 'Z' sont insensibles à la
+    // casse. Le moteur acceptait 't' mais refusait 'z' (gql_15 D11).
+    if let Some(rest) = s.strip_suffix(['Z', 'z']) {
         return (rest, Some(0));
     }
     // Look for +HH:MM or -HH:MM at the end
@@ -257,6 +271,8 @@ fn parse_offset_suffix(s: &str) -> (&str, Option<i32>) {
         let candidate = &s[sign_pos..];
         if (candidate.starts_with('+') || candidate.starts_with('-'))
             && candidate.as_bytes()[3] == b':'
+            && champ_numerique(&candidate[1..3])
+            && champ_numerique(&candidate[4..6])
         {
             let sign: i32 = if candidate.starts_with('+') { 1 } else { -1 };
             if let (Ok(h), Ok(m)) = (

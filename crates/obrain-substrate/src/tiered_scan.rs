@@ -255,26 +255,49 @@ fn l0_top_k_parallel(query: Tier0, corpus: &[Tier0], k: usize) -> Vec<(u32, u32)
         .map(|start| (start, &corpus[start..(start + shard_size).min(n)]))
         .collect();
 
+    // ── ANNULATION À TRAVERS RAYON (2026-08-24) ──────────────────────
+    //
+    // Un thread-local ne franchit pas une frontière de thread : sans cette
+    // capture, un top-K parallèle continuerait de brûler ses N cœurs après
+    // l'annulation. La réinstallation coûte UNE portée par shard — donc
+    // par worker, pas par élément — parce que le sharding est déjà taillé
+    // sur `rayon::current_num_threads()`.
+    //
+    // `current()` ne rend un jeton que si la frontière écriture/lecture l'a
+    // mis en vigueur : sur un chemin d'ÉCRITURE, la capture vaut `None` et
+    // `propagate` est un `no-op`. Le câblage est donc sûr sans que ce site
+    // ait à savoir ce qu'il sert.
+    let jeton = obrain_common::utils::cancel::current();
     let local_tops: Vec<Vec<(u32, u32)>> = shards
         .par_iter()
         .map(|(start, slice)| {
-            let mut hist = [0u32; L0_LEVELS];
-            // Allocated once per worker — reused for the whole shard.
-            let mut buckets: Vec<u32> = vec![0u32; L0_LEVELS * k];
-            let mut level_base = [0usize; L0_LEVELS];
-            for (lv, slot) in level_base.iter_mut().enumerate() {
-                *slot = lv * k;
-            }
-            capture_l0_bucket(
-                slice,
-                query,
-                *start as u32,
-                &mut hist,
-                &mut buckets,
-                &level_base,
-                k,
-            );
-            drain_l0_bucket_asc(&hist, &buckets, &level_base, k)
+            obrain_common::utils::cancel::propagate(jeton.as_ref(), || {
+                // Contrôle en TÊTE de shard : rien n'est encore alloué, rien
+                // n'est en main. Un shard abandonné rend son top-K vide ; le
+                // jeton étant monotone, le contrôle que le moteur refait à la
+                // remontée voit le même jeton armé et convertit ce partiel en
+                // `Err`. Aucun top-K tronqué ne peut passer pour complet.
+                if obrain_common::utils::cancel::is_cancelled() {
+                    return Vec::new();
+                }
+                let mut hist = [0u32; L0_LEVELS];
+                // Allocated once per worker — reused for the whole shard.
+                let mut buckets: Vec<u32> = vec![0u32; L0_LEVELS * k];
+                let mut level_base = [0usize; L0_LEVELS];
+                for (lv, slot) in level_base.iter_mut().enumerate() {
+                    *slot = lv * k;
+                }
+                capture_l0_bucket(
+                    slice,
+                    query,
+                    *start as u32,
+                    &mut hist,
+                    &mut buckets,
+                    &level_base,
+                    k,
+                );
+                drain_l0_bucket_asc(&hist, &buckets, &level_base, k)
+            })
         })
         .collect();
 

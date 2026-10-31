@@ -126,6 +126,51 @@ impl ScanOperator {
                     self.store.nodes_by_label(label)
                 }
             }
+            // ── PLAFOND SANS ETIQUETTE (2026-09-11) ───────────────────
+            //
+            // C'est le chemin du `MATCH (n) ... LIMIT 30` de production. Il
+            // materialisait la TOTALITE des slots vivants avant la premiere
+            // ligne : le trait n'exposant aucun iterateur, `node_ids()` rend
+            // un `Vec` complet ou rien.
+            //
+            // TROIS CONDITIONS, et les trois sont necessaires :
+            //
+            //  1. `max_rows` est pose. Le planificateur ne le pose que pour
+            //     une forme dont il a prouve qu'elle PRESERVE LES LIGNES
+            //     entre le scan et le LIMIT — pas de Filter, pas de Sort,
+            //     pas de Join, pas d'Aggregate, pas de DISTINCT. Un filtre
+            //     en aval exigerait de lire JUSQU'A ce que k lignes passent,
+            //     pas de lire k slots ; c'est la faute la plus facile a
+            //     commettre ici et la plus difficile a voir, parce qu'elle
+            //     ne se manifeste que sur les jeux de donnees ou le filtre
+            //     rejette beaucoup.
+            //
+            //  2. Aucune transaction. Avec un `transaction_id`, le balayage
+            //     doit passer par `all_node_ids()` — qui inclut les versions
+            //     EN ATTENTE — puis filtrer ; le filtre jette alors des
+            //     lignes, et un plafond pose avant lui en rendrait moins que
+            //     k.
+            //
+            //  3. Le store declare son filtre de visibilite TRIVIAL. Sans
+            //     transaction mais avec des cartes MVCC peuplees, le filtre
+            //     peut encore jeter. Le predicat repond a la seule question
+            //     qui compte : `filter_visible_node_ids` peut-il retirer
+            //     quelque chose ? S'il le peut, on ne plafonne pas.
+            //
+            // Hors de ces trois, le comportement est celui d'avant, au
+            // caractere pres — et un scan SANS `LIMIT` (`max_rows == None`)
+            // voit donc toujours tous les noeuds.
+            None if self.max_rows.is_some()
+                && self.transaction_id.is_none()
+                && self.store.scan_visibility_is_trivial() =>
+            {
+                // `expect` impossible a declencher : garde `is_some()` juste
+                // au-dessus.
+                let max = self
+                    .max_rows
+                    .expect("max_rows is_some : teste par la garde du bras");
+                self.store.node_ids_capped(max)
+            }
             None if self.viewing_epoch.is_some() => self.store.all_node_ids(),
             None => self.store.node_ids(),
         };
@@ -152,7 +197,35 @@ impl ScanOperator {
 
 impl Operator for ScanOperator {
     fn next(&mut self) -> OperatorResult {
+        // ── ANNULATION : LE POINT LE PLUS PROFOND (2026-08-24) ─────────
+        //
+        // `load_batch` descend dans `store.nodes_by_label()` /
+        // `store.node_ids()`, qui MATERIALISENT un `Vec<NodeId>` en
+        // parcourant la totalite des slots du substrat. C'est le seul appel
+        // du plan qui puisse durer des minutes sans jamais rendre la main :
+        // 1,35 million de slots sur la base `po`, et le trait `GraphStore`
+        // n'expose aucun iterateur (choix delibere d'object-safety) — tout
+        // est materialise avant que le premier chunk n'existe.
+        //
+        // DEUX controles, et les deux comptent :
+        //
+        //   AVANT — evite d'ENGAGER un balayage integral pour une requete
+        //   deja condamnee (le cas exact d'une requete relancee alors que
+        //   la precedente vient d'expirer).
+        //
+        //   APRES — c'est la GARANTIE DE CORRECTION du mecanisme. Les scans
+        //   du substrat s'arretent sur annulation en rendant le `Vec`
+        //   PARTIEL deja rempli : ils n'ont aucun canal pour dire « je n'ai
+        //   pas fini », leur signature rendant un `Vec` nu. Ce partiel
+        //   ressemble a un resultat legitimement court. Le controle
+        //   ci-dessous le rattrape SANS FAUTE parce que le jeton est
+        //   MONOTONE : arme une fois, il ne se desarme jamais dans la
+        //   portee de la requete. Si le balayage a ete tronque, le jeton
+        //   etait arme pendant ; il l'est donc encore ici. Aucune ligne
+        //   tronquee ne peut sortir sous couvert de resultat complet.
+        super::verifier_annulation()?;
         self.load_batch();
+        super::verifier_annulation()?;
 
         if self.exhausted || self.position >= self.batch.len() {
             return Ok(None);

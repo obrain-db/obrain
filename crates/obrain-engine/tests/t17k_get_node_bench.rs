@@ -45,7 +45,7 @@ fn bench_get_node_bulk_hydrate() {
             let _ = store.get_node(*nid);
         }
         let n_iters = 1000;
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mut total_props = 0usize;
         for _ in 0..=(n_iters / samples.len().max(1)) {
             for nid in &samples {

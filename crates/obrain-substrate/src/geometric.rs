@@ -306,6 +306,16 @@ pub fn refresh_all_ricci(store: &SubstrateStore) -> SubstrateResult<RicciRefresh
             if rec.is_tombstoned() {
                 continue;
             }
+            // ── TROU-AWARE (allocation par blocs) ─────────────────────────
+            // `edge_hw` est désormais la BORNE (réservée par blocs de K), pas
+            // le nombre d'arêtes : les slots jamais écrits (src/dst == 0) sont
+            // des TROUS, pas des arêtes. Sans cette garde, `edges_visited`
+            // compterait les trous (256 au lieu de 6) et on écrirait une
+            // courbure dans des slots fantômes. On ne visite que les arêtes
+            // RÉELLEMENT écrites.
+            if rec.src == 0 || rec.dst == 0 {
+                continue;
+            }
             edges.push((slot, rec));
         }
     }
@@ -2608,6 +2618,43 @@ mod tests {
             "path endpoint and midpoint should have distinguishable HKS, got {}",
             hks_distance(&endpoint, &midpoint)
         );
+    }
+
+    /// (2026-09-05, enrich) — le refresh Ricci batch PERSISTE la courbure
+    /// dans l'EdgeRecord (survit à la réouverture) et est idempotent.
+    #[test]
+    fn enrich_ricci_persiste_et_idempotent() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("enrich");
+        {
+            let s = SubstrateStore::create(&path).unwrap();
+            let a = s.create_node(&["N"]);
+            let b = s.create_node(&["N"]);
+            let c = s.create_node(&["N"]);
+            link(&s, a, b);
+            link(&s, b, c);
+            link(&s, c, a); // triangle : arêtes « core »
+            let stats = refresh_all_ricci(&s).expect("refresh");
+            // `link` crée les deux sens (3 paires = 6 arêtes dirigées).
+            assert_eq!(stats.edges_visited, 6, "6 arêtes dirigées visitées");
+            assert!(stats.edges_updated > 0, "au moins une courbure changée");
+            s.flush().expect("flush");
+        }
+        // Réouverture : les courbures ont survécu.
+        let s = SubstrateStore::open(&path).unwrap();
+        let mut nonzero = 0usize;
+        for slot in 1..s.edge_slot_high_water() {
+            if let Some(rec) = s.writer().read_edge(slot).expect("read") {
+                if !rec.is_tombstoned() && rec.ricci_f32() != 0.0 {
+                    nonzero += 1;
+                }
+            }
+        }
+        assert!(nonzero > 0, "courbures persistées après réouverture");
+        // Idempotence : un second refresh ne casse rien et confirme les valeurs.
+        let stats2 = refresh_all_ricci(&s).expect("refresh 2");
+        assert_eq!(stats2.edges_visited, 6);
+        s.flush().expect("flush 2");
     }
 
     #[test]

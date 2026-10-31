@@ -9,7 +9,7 @@
 //! 5. Node similarity (Jaccard + Adamic-Adar) between subgraph nodes
 //! 6. Performance: full pipeline < 10ms on 1000-node graph
 
-use std::time::Instant;
+use web_time::Instant;
 
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;

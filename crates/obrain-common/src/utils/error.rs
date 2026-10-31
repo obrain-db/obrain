@@ -43,6 +43,13 @@ pub enum ErrorCode {
     QueryOptimization,
     /// Query execution failed.
     QueryExecution,
+    /// Query was cancelled cooperatively by its caller.
+    ///
+    /// DISTINCT de `QueryTimeout` a dessein : un delai depasse est une
+    /// constatation faite PAR le moteur ; une annulation est une DECISION
+    /// prise par l'appelant. Les confondre priverait l'appelant du seul
+    /// moyen de savoir si sa propre demande a ete honoree.
+    QueryCancelled,
 
     // Transaction errors (T)
     /// Write-write conflict (retry possible).
@@ -100,6 +107,7 @@ impl ErrorCode {
             Self::QueryUnsupported => "OBRAIN-Q004",
             Self::QueryOptimization => "OBRAIN-Q005",
             Self::QueryExecution => "OBRAIN-Q006",
+            Self::QueryCancelled => "OBRAIN-Q007",
 
             Self::TransactionConflict => "OBRAIN-T001",
             Self::TransactionTimeout => "OBRAIN-T002",
@@ -210,6 +218,24 @@ impl Error {
             Error::Io(_) => ErrorCode::IoError,
             Error::Internal(_) => ErrorCode::Internal,
         }
+    }
+
+    /// L'erreur est-elle une ANNULATION cooperative ?
+    ///
+    /// Le point de tout le mecanisme : un appelant qui a arme un jeton doit
+    /// pouvoir distinguer « ma demande a ete honoree » d'un vrai echec
+    /// (syntaxe, contrainte, donnees corrompues). Sans ce predicat, une
+    /// annulation ressemblerait a un bug du moteur dans les journaux, et les
+    /// compteurs d'erreurs seraient faux le jour ou l'annulation sert le plus.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self.error_code(), ErrorCode::QueryCancelled)
+    }
+}
+
+impl From<crate::utils::cancel::Cancelled> for Error {
+    fn from(_: crate::utils::cancel::Cancelled) -> Self {
+        Error::Query(QueryError::cancelled())
     }
 }
 
@@ -418,6 +444,15 @@ impl QueryError {
         Self::new(QueryErrorKind::Execution, "Query exceeded timeout")
     }
 
+    /// Creates a cooperative-cancellation error.
+    #[must_use]
+    pub fn cancelled() -> Self {
+        Self::new(
+            QueryErrorKind::Cancelled,
+            "Query cancelled at a cooperative check point",
+        )
+    }
+
     /// Returns the machine-readable error code for this query error.
     #[must_use]
     pub const fn error_code(&self) -> ErrorCode {
@@ -426,6 +461,7 @@ impl QueryError {
             QueryErrorKind::Semantic => ErrorCode::QuerySemantic,
             QueryErrorKind::Optimization => ErrorCode::QueryOptimization,
             QueryErrorKind::Execution => ErrorCode::QueryExecution,
+            QueryErrorKind::Cancelled => ErrorCode::QueryCancelled,
         }
     }
 
@@ -503,6 +539,12 @@ pub enum QueryErrorKind {
     Optimization,
     /// Execution error.
     Execution,
+    /// La requete a ete annulee par son appelant (annulation cooperative).
+    ///
+    /// N'est PAS un echec du moteur : la requete etait valide et progressait.
+    /// C'est un resultat, au meme titre qu'un succes — voir
+    /// [`Error::is_cancelled`].
+    Cancelled,
 }
 
 impl fmt::Display for QueryErrorKind {
@@ -513,6 +555,7 @@ impl fmt::Display for QueryErrorKind {
             QueryErrorKind::Semantic => write!(f, "semantic error"),
             QueryErrorKind::Optimization => write!(f, "optimization error"),
             QueryErrorKind::Execution => write!(f, "execution error"),
+            QueryErrorKind::Cancelled => write!(f, "query cancelled"),
         }
     }
 }

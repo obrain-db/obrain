@@ -9,7 +9,8 @@
 //! To run all benchmarks including heavy ones:
 //!   cargo test -p obrain-engine --release -- graph_benchmarks --nocapture --include-ignored
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;

@@ -1,13 +1,36 @@
 //! Variable-length expand operator for multi-hop path traversal.
 
-use super::{Operator, OperatorError, OperatorResult};
+use super::{Operator, OperatorError, OperatorResult, SessionContext};
 use crate::execution::DataChunk;
+use crate::execution::base_registry::{self, remote_node_value, resolve_node_key};
 use crate::graph::Direction;
 use crate::graph::GraphStore;
-use obrain_common::types::{EdgeId, EpochId, LogicalType, NodeId, TransactionId};
+use obrain_common::types::{
+    EdgeId, EpochId, LogicalType, NodeId, PropertyKey, TransactionId, Value,
+};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Noeud du parcours multi-bases (V4) : `(indice de base, id)`. L'indice 0
+/// est TOUJOURS la base primaire ; les autres indexent le petit interneur
+/// `bases` de l'operateur. En mono-base tout vit en base 0 et la clef se
+/// comporte exactement comme l'ancien `NodeId` nu — la generalisation
+/// evite la collision d'ids entre bases dans les modes TRAIL/SIMPLE/
+/// ACYCLIC (deux NodeId(7) de deux bases sont deux noeuds distincts).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NoeudM {
+    base: u16,
+    id: NodeId,
+}
+
+/// Arete du parcours multi-bases : `(base SOURCE de l'arete, id)`. Les
+/// aretes externes gardent leur bit haut — unique dans leur base source.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AreteM {
+    base: u16,
+    id: EdgeId,
+}
 
 /// Path traversal mode controlling which paths are allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +74,13 @@ pub struct VariableLengthExpandOperator {
     viewing_epoch: Option<EpochId>,
     /// When true, skip versioned MVCC lookups (fast path for read-only queries).
     read_only: bool,
+    /// Contexte de session — registre multi-store (aretes inter-bases V2).
+    session_context: SessionContext,
+    /// (V4) Bases internees du parcours : indice 0 = primaire. VIDE tant
+    /// qu'aucun franchissement n'a lieu — une session mono-base n'y touche
+    /// jamais (zero cout). Mutex jamais contendu (operateur
+    /// mono-thread) : le trait Operator exige Sync.
+    bases: parking_lot::Mutex<Vec<(String, Arc<dyn GraphStore>)>>,
     /// Materialized input rows.
     input_rows: Option<Vec<InputRow>>,
     /// Current input row index.
@@ -71,8 +101,8 @@ pub struct VariableLengthExpandOperator {
 struct InputRow {
     /// All column values from the input.
     columns: Vec<ColumnValue>,
-    /// The source node ID for expansion.
-    source_node: NodeId,
+    /// The source node for expansion (base 0 = primaire).
+    source_node: NoeudM,
 }
 
 /// A column value that can be node ID, edge ID, or generic value.
@@ -88,12 +118,14 @@ struct OutputRow {
     /// Index into input_rows for the source row.
     input_idx: usize,
     /// The final edge in the path.
-    edge_id: EdgeId,
+    edge_id: AreteM,
     /// The target node.
-    target_id: NodeId,
+    target_id: NoeudM,
     /// The path length (number of edges/hops).
     path_length: u32,
-    /// All nodes along the path (source through target), populated when tracking.
+    /// All nodes along the path (source through target), populated when
+    /// tracking. NB multi-bases : les listes de detail portent les ids
+    /// BRUTS sans qualification de base (limitation documentee V4).
     path_nodes: Option<Vec<NodeId>>,
     /// All edges along the path, populated when tracking.
     path_edges: Option<Vec<EdgeId>>,
@@ -106,10 +138,10 @@ struct OutputRow {
 /// prefixes. Expansion costs O(1) (one `Rc::clone` + one allocation). Full paths
 /// are only materialized when emitting output rows.
 struct PathSegment {
-    /// The node at this position in the path.
-    node: NodeId,
+    /// The node at this position in the path (multi-bases : (base, id)).
+    node: NoeudM,
     /// The edge taken to reach this node. `None` for the source/root node.
-    edge: Option<EdgeId>,
+    edge: Option<AreteM>,
     /// Parent segment, or `None` for the root.
     parent: Option<Rc<PathSegment>>,
 }
@@ -126,7 +158,7 @@ impl PathSegment {
         if let Some(parent) = &self.parent {
             parent.collect_nodes_into(nodes);
         }
-        nodes.push(self.node);
+        nodes.push(self.node.id);
     }
 
     /// Materializes the full edge path from root to this segment.
@@ -141,12 +173,13 @@ impl PathSegment {
             parent.collect_edges_into(edges);
         }
         if let Some(edge) = self.edge {
-            edges.push(edge);
+            edges.push(edge.id);
         }
     }
 
     /// Checks whether a node already appears in this path segment chain.
-    fn contains_node(&self, target: NodeId) -> bool {
+    /// La clef est (base, id) : pas de collision entre bases.
+    fn contains_node(&self, target: NoeudM) -> bool {
         if self.node == target {
             return true;
         }
@@ -157,7 +190,7 @@ impl PathSegment {
     }
 
     /// Checks whether an edge already appears in this path segment chain.
-    fn contains_edge(&self, target: EdgeId) -> bool {
+    fn contains_edge(&self, target: AreteM) -> bool {
         if self.edge == Some(target) {
             return true;
         }
@@ -191,6 +224,8 @@ impl VariableLengthExpandOperator {
             transaction_id: None,
             viewing_epoch: None,
             read_only: false,
+            session_context: SessionContext::default(),
+            bases: parking_lot::Mutex::new(Vec::new()),
             input_rows: None,
             current_input_idx: 0,
             output_buffer: Vec::new(),
@@ -242,11 +277,23 @@ impl VariableLengthExpandOperator {
         self
     }
 
+    /// Attache le contexte de session (registre multi-store — aretes
+    /// inter-bases V2). Le motif de longueur variable ne traverse pas
+    /// encore la frontiere (reste V4) : le registre sert uniquement a
+    /// honorer le contrat trivalue — une source DISTANTE (Map) donne une
+    /// ligne absente, jamais une erreur.
+    #[must_use]
+    pub fn with_session_context(mut self, ctx: SessionContext) -> Self {
+        self.session_context = ctx;
+        self
+    }
+
     /// Materializes all input rows.
     fn materialize_input(&mut self) -> Result<(), OperatorError> {
         let mut rows = Vec::new();
 
         while let Some(mut chunk) = self.input.next()? {
+            super::verifier_annulation()?;
             // Flatten to handle selection vectors
             chunk.flatten();
 
@@ -259,9 +306,40 @@ impl VariableLengthExpandOperator {
                     ))
                 })?;
 
-                let source_node = col.get_node_id(row_idx).ok_or_else(|| {
-                    OperatorError::Execution("Expected node ID in source column".into())
-                })?;
+                let source_node = match col.get_node_id(row_idx) {
+                    Some(id) => NoeudM { base: 0, id },
+                    None => {
+                        if let Some(reg) = self.session_context.base_registry.clone() {
+                            // (V4) Source DISTANTE (Map _base/_id) : le
+                            // parcours reprend dans SA base — c'est un
+                            // franchissement, donc resolution GARDEE
+                            // (droits du lecteur). Irresoluble/refuse/
+                            // absent = ligne ABSENTE, jamais une erreur.
+                            if let Some(Value::Map(map)) = col.get_value(row_idx)
+                                && let Some(Value::String(slug)) =
+                                    map.get(&PropertyKey::new(base_registry::BASE_KEY))
+                                && let Some(Value::Int64(id)) = map.get(&PropertyKey::new("_id"))
+                                && let Some(store) = reg.store_for_reader(
+                                    self.session_context.access_context.as_deref(),
+                                    None,
+                                    slug.as_str(),
+                                    "",
+                                )
+                            {
+                                NoeudM {
+                                    base: self.indice_base(slug.as_str(), &store),
+                                    id: NodeId(*id as u64),
+                                }
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            return Err(OperatorError::Execution(
+                                "Expected node ID in source column".into(),
+                            ));
+                        }
+                    }
+                };
 
                 // Materialize all columns
                 let mut columns = Vec::with_capacity(chunk.column_count());
@@ -290,6 +368,128 @@ impl VariableLengthExpandOperator {
 
         self.input_rows = Some(rows);
         Ok(())
+    }
+
+    /// (V4) Indice interne d'une base du parcours. 0 = primaire ;
+    /// l'interneur ne grandit qu'aux franchissements (mono-base : jamais).
+    fn indice_base(&self, slug: &str, store: &Arc<dyn GraphStore>) -> u16 {
+        let mut bases = self.bases.lock();
+        if bases.is_empty() {
+            let primaire = self
+                .session_context
+                .base_registry
+                .as_ref()
+                .map_or_else(String::new, |r| r.primary_slug().to_string());
+            bases.push((primaire, Arc::clone(&self.store)));
+        }
+        if let Some(i) = bases.iter().position(|(s, _)| s == slug) {
+            return u16::try_from(i).unwrap_or(0);
+        }
+        bases.push((slug.to_string(), Arc::clone(store)));
+        u16::try_from(bases.len() - 1).unwrap_or(0)
+    }
+
+    /// Slug et store d'un indice de base (0 = primaire meme sans interneur).
+    fn base_de(&self, idx: u16) -> (String, Arc<dyn GraphStore>) {
+        let bases = self.bases.lock();
+        if let Some((slug, store)) = bases.get(idx as usize) {
+            (slug.clone(), Arc::clone(store))
+        } else {
+            let primaire = self
+                .session_context
+                .base_registry
+                .as_ref()
+                .map_or_else(String::new, |r| r.primary_slug().to_string());
+            (primaire, Arc::clone(&self.store))
+        }
+    }
+
+    /// (V4) Expansion d'un niveau, multi-bases : aretes internes de la base
+    /// du noeud + bras EXTERNE (resolution GARDEE par saut — droits,
+    /// pendantes et refus = branche absente). Sans registre : strictement
+    /// equivalent a `get_edges` (le bras externe ne s'active jamais).
+    fn get_edges_multi(&self, node: NoeudM) -> Vec<(NoeudM, AreteM)> {
+        let mut out: Vec<(NoeudM, AreteM)> = Vec::new();
+        if node.base == 0 {
+            // Base primaire : chemin historique (filtres MVCC compris).
+            for (t, e) in self.get_edges(node.id) {
+                out.push((NoeudM { base: 0, id: t }, AreteM { base: 0, id: e }));
+            }
+        } else {
+            // Base distante : lectures NON versionnees (les epoques de la
+            // base primaire n'y ont aucun sens), type + vivacite.
+            let (_slug, store) = self.base_de(node.base);
+            for (t, e) in store.edges_from(node.id, self.direction) {
+                if !self.edge_types.is_empty() {
+                    let ok = store.edge_type(e).is_some_and(|ty| {
+                        self.edge_types
+                            .iter()
+                            .any(|et| ty.as_str().eq_ignore_ascii_case(et.as_str()))
+                    });
+                    if !ok {
+                        continue;
+                    }
+                }
+                if store.get_node_labels(t).is_none() {
+                    continue;
+                }
+                out.push((
+                    NoeudM {
+                        base: node.base,
+                        id: t,
+                    },
+                    AreteM {
+                        base: node.base,
+                        id: e,
+                    },
+                ));
+            }
+        }
+        // Bras EXTERNE : uniquement avec un registre (zero cout mono-base).
+        if let Some(reg) = self.session_context.base_registry.clone()
+            && !matches!(self.direction, Direction::Incoming)
+        {
+            let (_slug, src_store) = self.base_de(node.base);
+            for e in src_store.external_edges_from(node.id) {
+                if !self.edge_types.is_empty()
+                    && !self
+                        .edge_types
+                        .iter()
+                        .any(|et| e.edge_type.eq_ignore_ascii_case(et.as_str()))
+                {
+                    continue;
+                }
+                let Some(target_store) = reg.store_for_reader(
+                    self.session_context.access_context.as_deref(),
+                    e.to_host.as_deref(),
+                    &e.to_store,
+                    &e.to_key,
+                ) else {
+                    continue;
+                };
+                let Some(target_id) = resolve_node_key(&*target_store, &e.to_key) else {
+                    reg.note_dangling();
+                    continue;
+                };
+                let cible_base = if reg.is_primary(e.to_host.as_deref(), &e.to_store) {
+                    // Retour a la primaire : base 0, chemin natif.
+                    0
+                } else {
+                    self.indice_base(&e.to_store, &target_store)
+                };
+                out.push((
+                    NoeudM {
+                        base: cible_base,
+                        id: target_id,
+                    },
+                    AreteM {
+                        base: node.base,
+                        id: e.id,
+                    },
+                ));
+            }
+        }
+        out
     }
 
     /// Gets edges from a node, respecting filters and visibility.
@@ -337,9 +537,9 @@ impl VariableLengthExpandOperator {
     fn is_expansion_allowed(
         &self,
         segment: &PathSegment,
-        target: NodeId,
-        edge_id: EdgeId,
-        source_node: NodeId,
+        target: NoeudM,
+        edge_id: AreteM,
+        source_node: NoeudM,
     ) -> bool {
         match self.path_mode {
             PathMode::Walk => true,
@@ -353,14 +553,14 @@ impl VariableLengthExpandOperator {
     }
 
     /// Process one input row, generating all reachable outputs.
-    fn process_input_row(&self, input_idx: usize, source_node: NodeId) -> Vec<OutputRow> {
+    fn process_input_row(&self, input_idx: usize, source_node: NoeudM) -> Vec<OutputRow> {
         let mut results = Vec::new();
         let needs_tracking = self.output_path_detail || self.path_mode != PathMode::Walk;
 
         if needs_tracking {
             // BFS with shared-prefix path tracking via Rc<PathSegment>.
             // Required for path detail output or non-Walk path modes.
-            let mut frontier: VecDeque<(NodeId, u32, EdgeId, Rc<PathSegment>)> = VecDeque::new();
+            let mut frontier: VecDeque<(NoeudM, u32, AreteM, Rc<PathSegment>)> = VecDeque::new();
 
             let root = Rc::new(PathSegment {
                 node: source_node,
@@ -368,7 +568,7 @@ impl VariableLengthExpandOperator {
                 parent: None,
             });
 
-            for (target, edge_id) in self.get_edges(source_node) {
+            for (target, edge_id) in self.get_edges_multi(source_node) {
                 if !self.is_expansion_allowed(&root, target, edge_id, source_node) {
                     continue;
                 }
@@ -380,7 +580,19 @@ impl VariableLengthExpandOperator {
                 frontier.push_back((target, 1, edge_id, segment));
             }
 
+            // BFS a frontiere : le nombre de nœuds visites croit avec le
+            // degre a chaque saut. Sur un graphe dense, `*1..5` explose bien
+            // avant de rendre un seul chunk. Controle par lot de frontiere.
+            let mut vigie = obrain_common::utils::cancel::Vigie::avec_intervalle(256);
             while let Some((current_node, depth, edge_id, segment)) = frontier.pop_front() {
+                // `process_input_row` rend un `Vec<OutputRow>` nu — aucun
+                // canal pour dire « je n ai pas fini ». On sort donc de la
+                // BFS avec ce qui a ete trouve, et c est le controle de
+                // `next()` (jeton MONOTONE) qui convertit ce partiel en
+                // `Err(Cancelled)` avant qu il n atteigne l executeur.
+                if vigie.tick_bool() {
+                    break;
+                }
                 if depth >= self.min_hops && depth <= self.max_hops {
                     results.push(OutputRow {
                         input_idx,
@@ -401,7 +613,7 @@ impl VariableLengthExpandOperator {
                 }
 
                 if depth < self.max_hops {
-                    for (target, next_edge_id) in self.get_edges(current_node) {
+                    for (target, next_edge_id) in self.get_edges_multi(current_node) {
                         if !self.is_expansion_allowed(&segment, target, next_edge_id, source_node) {
                             continue;
                         }
@@ -416,13 +628,23 @@ impl VariableLengthExpandOperator {
             }
         } else {
             // BFS without path tracking (lightweight, Walk mode only)
-            let mut frontier: VecDeque<(NodeId, u32, EdgeId)> = VecDeque::new();
+            let mut frontier: VecDeque<(NoeudM, u32, AreteM)> = VecDeque::new();
 
-            for (target, edge_id) in self.get_edges(source_node) {
+            for (target, edge_id) in self.get_edges_multi(source_node) {
                 frontier.push_back((target, 1, edge_id));
             }
 
+            // Meme raisonnement que la variante avec segments ci-dessus.
+            let mut vigie = obrain_common::utils::cancel::Vigie::avec_intervalle(256);
             while let Some((current_node, depth, edge_id)) = frontier.pop_front() {
+                // `process_input_row` rend un `Vec<OutputRow>` nu — aucun
+                // canal pour dire « je n ai pas fini ». On sort donc de la
+                // BFS avec ce qui a ete trouve, et c est le controle de
+                // `next()` (jeton MONOTONE) qui convertit ce partiel en
+                // `Err(Cancelled)` avant qu il n atteigne l executeur.
+                if vigie.tick_bool() {
+                    break;
+                }
                 if depth >= self.min_hops && depth <= self.max_hops {
                     results.push(OutputRow {
                         input_idx,
@@ -435,7 +657,7 @@ impl VariableLengthExpandOperator {
                 }
 
                 if depth < self.max_hops {
-                    for (target, next_edge_id) in self.get_edges(current_node) {
+                    for (target, next_edge_id) in self.get_edges_multi(current_node) {
                         frontier.push_back((target, depth + 1, next_edge_id));
                     }
                 }
@@ -452,6 +674,11 @@ impl VariableLengthExpandOperator {
         };
 
         while self.output_buffer.is_empty() && self.current_input_idx < input_rows.len() {
+            // Une ligne d entree = une BFS complete. Sur une entree de
+            // 100 000 lignes, cette boucle est le vrai moteur du cout.
+            if obrain_common::utils::cancel::is_cancelled() {
+                break;
+            }
             let source_node = input_rows[self.current_input_idx].source_node;
             let results = self.process_input_row(self.current_input_idx, source_node);
             self.output_buffer.extend(results);
@@ -462,6 +689,11 @@ impl VariableLengthExpandOperator {
 
 impl Operator for VariableLengthExpandOperator {
     fn next(&mut self) -> OperatorResult {
+        // Le controle de SORTIE de tout le sous-arbre d expansion : les
+        // boucles internes (`process_input_row`, `fill_output_buffer`)
+        // s arretent en rendant un partiel faute de canal d erreur ; ce
+        // controle-ci le convertit en `Err`. Jeton MONOTONE, donc exhaustif.
+        super::verifier_annulation()?;
         if self.exhausted {
             return Ok(None);
         }
@@ -505,8 +737,16 @@ impl Operator for VariableLengthExpandOperator {
                 schema.push(ty);
             }
         }
-        schema.push(LogicalType::Edge);
-        schema.push(LogicalType::Node);
+        // (V4) Multi-bases : les colonnes arete/cible peuvent porter des
+        // valeurs distantes (Map) — type Any (Generic). Mono-base : types
+        // historiques, zero changement.
+        if self.session_context.base_registry.is_some() {
+            schema.push(LogicalType::Any);
+            schema.push(LogicalType::Any);
+        } else {
+            schema.push(LogicalType::Edge);
+            schema.push(LogicalType::Node);
+        }
         if self.output_path_length {
             schema.push(LogicalType::Int64);
         }
@@ -536,14 +776,38 @@ impl Operator for VariableLengthExpandOperator {
                 }
             }
 
-            // Add edge column
+            // Add edge column. (V4) Une arete d'une base distante s'emet
+            // en Map minimale {_id, _base} — son id nu serait ambigu.
             if let Some(col) = chunk.column_mut(num_input_cols) {
-                col.push_edge_id(out_row.edge_id);
+                if out_row.edge_id.base == 0 {
+                    col.push_edge_id(out_row.edge_id.id);
+                } else {
+                    let (slug, _) = self.base_de(out_row.edge_id.base);
+                    let mut map = std::collections::BTreeMap::new();
+                    map.insert(
+                        PropertyKey::new("_id"),
+                        Value::Int64(out_row.edge_id.id.as_u64() as i64),
+                    );
+                    map.insert(
+                        PropertyKey::new(base_registry::BASE_KEY),
+                        Value::String(slug.into()),
+                    );
+                    col.push_value(Value::Map(Arc::new(map)));
+                }
             }
 
-            // Add target node column
+            // Add target node column. (V4) Cible distante : hydratation
+            // frontiere (Map _base + proprietes), comme ExpandOperator.
             if let Some(col) = chunk.column_mut(num_input_cols + 1) {
-                col.push_node_id(out_row.target_id);
+                if out_row.target_id.base == 0 {
+                    col.push_node_id(out_row.target_id.id);
+                } else {
+                    let (slug, store) = self.base_de(out_row.target_id.base);
+                    match remote_node_value(&slug, &*store, out_row.target_id.id) {
+                        Some(v) => col.push_value(v),
+                        None => col.push_value(Value::Null),
+                    }
+                }
             }
 
             // Add path length column if requested

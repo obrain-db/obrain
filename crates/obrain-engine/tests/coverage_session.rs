@@ -1,3 +1,5 @@
+//! Couverture de la surface `Session` : parametres, graphe et schema actifs, fuseau horaire.
+
 #![cfg(feature = "cypher")]
 //! Tests for session API coverage gaps.
 //!
@@ -366,10 +368,22 @@ fn test_prepare_commit_lifecycle() {
     session.execute("INSERT (:Person {name: 'Alix'})").unwrap();
 
     let mut prepared = session.prepare_commit().unwrap();
-    // Inspect commit info (nodes_written uses node_count_delta which cannot
-    // see PENDING-epoch nodes, so it reports 0 before finalization at commit)
+    // ── LE COMPTE VOIT LE NŒUD EN ATTENTE, ET C'EST LE CONTRAT ──────────────
+    // Ce test affirmait 0, avec un commentaire qui décrivait une LIMITE de
+    // l'époque : « node_count_delta ne voit pas les nœuds d'époque PENDING ».
+    // La limite n'existe plus — `prepare_commit` annonce donc 1, ce qui est la
+    // seule réponse honnête : on vient d'écrire UN nœud, et il le sera.
+    //
+    // Ce n'est pas le test qui avait tort contre le code : c'est le code qui
+    // s'est amélioré sans que le test suive, alors que l'EXEMPLE DE LA
+    // DOCUMENTATION du même module affirmait déjà 1 (`prepared.rs:21`). Deux
+    // endroits se contredisaient ; le témoin qui reste est celui qui dit la
+    // vérité mesurée.
     let info = prepared.info();
-    assert_eq!(info.nodes_written, 0);
+    assert_eq!(
+        info.nodes_written, 1,
+        "un nœud écrit doit être compté AVANT le commit"
+    );
 
     // Attach metadata
     prepared.set_metadata("audit_user", "admin");

@@ -101,17 +101,20 @@ impl MergeOperator {
     }
 
     /// Resolves property sources to concrete values for a given row.
+    ///
+    /// `Err` = faute d'evaluation d'une source `Expression` (arithmetique
+    /// gardee) : la requete est refusee, jamais un NULL ecrit a la place.
     fn resolve_properties(
         props: &[(String, PropertySource)],
         chunk: Option<&DataChunk>,
         row: usize,
         store: &dyn GraphStore,
-    ) -> Vec<(String, Value)> {
+    ) -> Result<Vec<(String, Value)>, super::OperatorError> {
         props
             .iter()
             .map(|(name, source)| {
                 let value = if let Some(chunk) = chunk {
-                    source.resolve(chunk, row, store)
+                    source.resolve(chunk, row, store)?
                 } else {
                     // Standalone mode: only constants are valid
                     match source {
@@ -119,19 +122,49 @@ impl MergeOperator {
                         _ => Value::Null,
                     }
                 };
-                (name.clone(), value)
+                Ok((name.clone(), value))
             })
             .collect()
     }
 
     /// Tries to find a matching node with the given resolved properties.
     fn find_matching_node(&self, resolved_match_props: &[(String, Value)]) -> Option<NodeId> {
-        let candidates: Vec<NodeId> = if let Some(first_label) = self.config.labels.first() {
+        // (2026-08-17, unicite MERGE) Selection DETERMINISTE : le porteur
+        // de PLUS PETIT NodeId gagne. Avant, l'ordre d'iteration du
+        // HashSet de l'index decidait — sur une base poluee de doublons
+        // (jusqu'a 46 porteurs vivants du meme id logique mesures sur la
+        // base agent), deux MERGE successifs pouvaient cibler deux noeuds
+        // DIFFERENTS. La regle min-NodeId est stable, converge, et c'est
+        // la meme que la resolution de course post-creation ci-dessous.
+        self.porteurs_du_motif(resolved_match_props)
+            .into_iter()
+            .min()
+    }
+
+    /// (2026-08-17, unicite MERGE) TOUS les porteurs VIVANTS du motif de
+    /// match (labels + proprietes) — l'ancien corps de find_matching_node,
+    /// qui s'arretait au premier.
+    ///
+    /// T17b (2026-08-05) : si une des proprietes de match est indexee
+    /// (`MERGE (n:Label {id: ...})` — LE motif chaud de production, 46 059
+    /// occurrences lentes mesurees), on prend les candidats de l'index
+    /// (typiquement 0 ou 1) au lieu de balayer tout le label et de
+    /// materialiser chaque noeud. La boucle de verification en dessous
+    /// reste inchangee : labels ET toutes les proprietes sont recontrolees
+    /// sur chaque candidat, l'index n'est qu'un accelerateur.
+    fn porteurs_du_motif(&self, resolved_match_props: &[(String, Value)]) -> Vec<NodeId> {
+        let candidates: Vec<NodeId> = if let Some((key, value)) = resolved_match_props
+            .iter()
+            .find(|(k, _)| self.store.has_property_index(k))
+        {
+            self.store.find_nodes_by_property(key, value)
+        } else if let Some(first_label) = self.config.labels.first() {
             self.store.nodes_by_label(first_label)
         } else {
             self.store.node_ids()
         };
 
+        let mut porteurs = Vec::new();
         for node_id in candidates {
             if let Some(node) = self.store.get_node(node_id) {
                 let has_all_labels = self.config.labels.iter().all(|label| node.has_label(label));
@@ -146,12 +179,11 @@ impl MergeOperator {
                 });
 
                 if has_all_props {
-                    return Some(node_id);
+                    porteurs.push(node_id);
                 }
             }
         }
-
-        None
+        porteurs
     }
 
     /// Creates a new node with the specified labels and resolved properties.
@@ -199,19 +231,82 @@ impl MergeOperator {
         chunk: Option<&DataChunk>,
         row: usize,
     ) -> Result<NodeId, super::OperatorError> {
+        // (2026-09-05) Sérialisation PAR STORE du composé find→create→re-query :
+        // sans elle, deux MERGE concurrents peuvent créer chacun un nœud et
+        // requêter l'index AVANT que l'insertion de l'autre soit visible →
+        // chacun se croit vainqueur → doublons (flaky unicite_merge ~1/10).
+        if let Some(g) = self.store.merge_guard() {
+            let _guard = g.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.merge_node_for_row_impl(chunk, row)
+        } else {
+            self.merge_node_for_row_impl(chunk, row)
+        }
+    }
+
+    fn merge_node_for_row_impl(
+        &self,
+        chunk: Option<&DataChunk>,
+        row: usize,
+    ) -> Result<NodeId, super::OperatorError> {
         let store_ref: &dyn GraphStore = self.store.as_ref();
         let resolved_match =
-            Self::resolve_properties(&self.config.match_properties, chunk, row, store_ref);
+            Self::resolve_properties(&self.config.match_properties, chunk, row, store_ref)?;
 
         if let Some(existing_id) = self.find_matching_node(&resolved_match) {
             let resolved_on_match =
-                Self::resolve_properties(&self.config.on_match_properties, chunk, row, store_ref);
+                Self::resolve_properties(&self.config.on_match_properties, chunk, row, store_ref)?;
             self.apply_on_match(existing_id, &resolved_on_match);
             Ok(existing_id)
         } else {
             let resolved_on_create =
-                Self::resolve_properties(&self.config.on_create_properties, chunk, row, store_ref);
-            self.create_node(&resolved_match, &resolved_on_create)
+                Self::resolve_properties(&self.config.on_create_properties, chunk, row, store_ref)?;
+            let cree = self.create_node(&resolved_match, &resolved_on_create)?;
+
+            // ── (2026-08-17) UNICITE MERGE : re-verification apres creation ──
+            //
+            // Deux MERGE concurrents pouvaient tous deux ne rien trouver,
+            // puis creer CHACUN leur noeud — le chemin de secours createur
+            // des doublons (jusqu'a 46 porteurs vivants du meme id logique
+            // mesures sur la base agent, nes des tempetes de conflits).
+            //
+            // Regle de course DETERMINISTE, la meme que find_matching_node :
+            // le porteur de PLUS PETIT NodeId gagne. Un createur qui se
+            // decouvre perdant EFFACE son propre noeud et adopte le gagnant
+            // en semantique MATCH (ON MATCH appliquee, pas ON CREATE — pour
+            // ce statement, le noeud existait). Les deux perdants d'une
+            // course triple appliquent la meme regle : etat final, UN seul
+            // porteur. Un conflit d'ecriture sur l'adoption remonte comme
+            // d'habitude (la re-tentative auto-commit rejoue le statement).
+            //
+            // NB : CREATE explicite reste PERMISSIF — deux CREATE du meme
+            // id posent deux noeuds, c'est l'outil imperatif ; seule la
+            // garantie MERGE est renforcee (nomme dans la doc du module).
+            let survivant = self
+                .porteurs_du_motif(&resolved_match)
+                .into_iter()
+                .min()
+                .unwrap_or(cree);
+            if survivant != cree {
+                if let Some(tid) = self.transaction_id {
+                    self.store.delete_node_versioned(
+                        cree,
+                        self.viewing_epoch
+                            .unwrap_or_else(|| self.store.current_epoch()),
+                        tid,
+                    );
+                } else {
+                    self.store.delete_node(cree);
+                }
+                let resolved_on_match = Self::resolve_properties(
+                    &self.config.on_match_properties,
+                    chunk,
+                    row,
+                    store_ref,
+                )?;
+                self.apply_on_match(survivant, &resolved_on_match);
+                return Ok(survivant);
+            }
+            Ok(cree)
         }
     }
 
@@ -514,7 +609,7 @@ impl Operator for MergeRelationshipOperator {
                     Some(&chunk),
                     row,
                     store_ref,
-                );
+                )?;
 
                 let edge_id = if let Some(existing) =
                     self.find_matching_edge(src_val, dst_val, &resolved_match)
@@ -524,7 +619,7 @@ impl Operator for MergeRelationshipOperator {
                         Some(&chunk),
                         row,
                         store_ref,
-                    );
+                    )?;
                     self.apply_on_match_edge(existing, &resolved_on_match);
                     existing
                 } else {
@@ -533,7 +628,7 @@ impl Operator for MergeRelationshipOperator {
                         Some(&chunk),
                         row,
                         store_ref,
-                    );
+                    )?;
                     self.create_edge(src_val, dst_val, &resolved_match, &resolved_on_create)?
                 };
 

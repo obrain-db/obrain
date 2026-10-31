@@ -1,3 +1,5 @@
+//! Creation d'aretes vers des extremites absentes — le contrat permissif ne doit pas fabriquer de noeuds fantomes.
+
 #![cfg(feature = "cypher")]
 //! Regression tests for issue #181: phantom node creation on MATCH...CREATE
 //! relationship patterns.

@@ -140,16 +140,37 @@ impl DegreeColumn {
         filename: &str,
         n_slots: u32,
     ) -> SubstrateResult<Self> {
+        // Chantier SlotRemappable : une colonne fraîche reflète la
+        // disposition ACTUELLE des slots — elle est estampillée avec
+        // l'epoch de remap courant de la base, sinon le rejeu d'une
+        // repermutation antérieure la re-permuterait à tort.
+        let remap_epoch = crate::slot_remap::current_remap_epoch(sub)?;
         let mut zf = sub.open_named_zone(filename)?;
         let payload_bytes = (n_slots as usize) * DEGREE_RECORD_SIZE;
         let total_bytes = HEADER_SIZE + payload_bytes;
         ensure_room(&mut zf, total_bytes, 1 << 20)?;
-        // Zero-init payload (the underlying `ensure_room` grow_to already
-        // zero-fills new pages).
-        // Write header with crc32=0, flags=0 — the payload is all-zero so
-        // the canonical crc is the CRC of a zero-filled slice, but we
-        // leave it at 0 for simplicity and let `persist` recompute.
-        let header = DegreeHeader {
+        // ── LA MISE À ZÉRO EST EXPLICITE, ET ELLE A COÛTÉ CHER (2026-09-12) ──
+        //
+        // Le commentaire précédent disait : « zero-init payload (the underlying
+        // `ensure_room` grow_to already zero-fills new pages) ». C'est vrai pour
+        // les pages NEUVES — et **faux en réutilisation** : `open_named_zone` est
+        // un open_or_create, donc sur un fichier EXISTANT le payload garde ses
+        // anciennes valeurs, et `ensure_room` n'en efface aucune.
+        //
+        // Conséquence mesurée sur `runtime-dev` : quand la CRC de la colonne est
+        // invalidée (une écriture tronquée sur une base vivante suffit), la
+        // réouverture appelle `rebuild_degrees_from_scan`, qui **crée** la
+        // colonne — réutilise le fichier — puis **ajoute** le résultat du scan
+        // aux anciennes valeurs. La colonne ne se reconstruit pas : elle
+        // **s'additionne**. Mesuré : Σ = 197 476 156 pour ~1 243 111 arêtes, soit
+        // **159 fois** le réel — environ 158 reconstructions accumulées.
+        //
+        // On met donc à zéro NOUS-MÊMES la région du payload, sans supposer quoi
+        // que ce soit de `ensure_room`.
+        zf.as_slice_mut()[HEADER_SIZE..HEADER_SIZE + payload_bytes].fill(0);
+        // Write header with crc32=0, flags=0 — le payload est désormais
+        // réellement à zéro, et `persist` recalcule la CRC.
+        let mut header = DegreeHeader {
             magic: DEGREE_MAGIC,
             version: DEGREE_VERSION,
             n_slots,
@@ -158,6 +179,7 @@ impl DegreeColumn {
             flags: 0,
             _reserved: [0u32; 10],
         };
+        header._reserved[0] = remap_epoch;
         zf.as_slice_mut()[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
         Ok(Self { zf, n_slots })
     }
@@ -307,9 +329,11 @@ impl DegreeColumn {
         let total_bytes = HEADER_SIZE + payload_bytes;
         ensure_room(&mut self.zf, total_bytes, 1 << 20)?;
         // New payload region is zero-filled by ensure_room (grow_to
-        // zeroes new pages). Update header + n_slots.
+        // zeroes new pages). Update header + n_slots. L'epoch de remap
+        // courant de l'en-tête est PRÉSERVÉ (chantier SlotRemappable).
+        let remap_epoch = self.header_remap_epoch();
         self.n_slots = new_n_slots;
-        let header = DegreeHeader {
+        let mut header = DegreeHeader {
             magic: DEGREE_MAGIC,
             version: DEGREE_VERSION,
             n_slots: new_n_slots,
@@ -318,7 +342,93 @@ impl DegreeColumn {
             flags: 0,
             _reserved: [0u32; 10],
         };
+        header._reserved[0] = remap_epoch;
         self.zf.as_slice_mut()[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
+        Ok(())
+    }
+
+    /// Epoch de la dernière repermutation de slots appliquée à cette
+    /// colonne, lue depuis `header._reserved[0]` (chantier
+    /// SlotRemappable). 0 = jamais remappée.
+    pub fn header_remap_epoch(&self) -> u32 {
+        let slice = self.zf.as_slice();
+        if slice.len() < HEADER_SIZE {
+            return 0;
+        }
+        let header: &DegreeHeader = bytemuck::from_bytes(&slice[..HEADER_SIZE]);
+        header._reserved[0]
+    }
+
+    /// (2026-09-05) Remet TOUTES les paires (out, in) à zéro
+    /// (slots 0..n_slots) — l'étape « reset » de l'auto-guérison des
+    /// colonnes de degrés typées périmées, avant le rescan des arêtes.
+    /// L'appelant doit tenir le write-lock de la colonne et repersister
+    /// le CRC (via `persist_header_crc`/`flush`) après le rescan.
+    pub(crate) fn zero_out_in(&mut self) {
+        let payload_end = HEADER_SIZE + (self.n_slots as usize) * DEGREE_RECORD_SIZE;
+        self.zf.as_slice_mut()[HEADER_SIZE..payload_end].fill(0);
+    }
+
+    /// (2026-09-05) Sommes des degrés out et in sur les slots
+    /// `1..n_slots` (le slot 0, sentinelle nulle, est exclu : aucun
+    /// nœud réel ne l'occupe). C'est l'oracle côté colonne de la
+    /// vérification de péremption — comparé aux compteurs vivants par
+    /// type re-comptés à l'ouverture.
+    pub(crate) fn sum_out_in(&self) -> (u64, u64) {
+        let mut so: u64 = 0;
+        let mut si: u64 = 0;
+        for slot in 1..self.n_slots {
+            so += u64::from(self.out_degree(slot));
+            si += u64::from(self.in_degree(slot));
+        }
+        (so, si)
+    }
+
+    /// Chantier SlotRemappable — applique une repermutation des slots
+    /// nœuds à la colonne (chemin vif : le mmap est l'état authoritaire,
+    /// compteurs atomiques compris ; CRC d'en-tête périmé toléré).
+    ///
+    /// Out-of-place : paires `(out, in)` permutées en mémoire, memcpy
+    /// retour, puis en-tête complet (n_slots, CRC, epoch) écrit en
+    /// dernier et msync. Un crash au milieu laisse un CRC qui ne colle
+    /// plus ⇒ `open` rend `None` ⇒ `rebuild_from_scan` (jamais un
+    /// résultat faux).
+    pub fn remap_node_slots(&mut self, old_to_new: &[u32], epoch: u32) -> SubstrateResult<()> {
+        if epoch <= self.header_remap_epoch() {
+            return Ok(()); // défensif — déjà appliquée
+        }
+        let payload_end = HEADER_SIZE + (self.n_slots as usize) * DEGREE_RECORD_SIZE;
+        ensure_room(&mut self.zf, payload_end, 0)?;
+        let permuted = {
+            let payload = &self.zf.as_slice()[HEADER_SIZE..payload_end];
+            crate::slot_remap::permute_dense_payload(payload, DEGREE_RECORD_SIZE, old_to_new)
+        };
+        ensure_room(&mut self.zf, HEADER_SIZE + permuted.len(), 0)?;
+        self.zf.as_slice_mut()[HEADER_SIZE..HEADER_SIZE + permuted.len()]
+            .copy_from_slice(&permuted);
+        self.n_slots = (permuted.len() / DEGREE_RECORD_SIZE) as u32;
+
+        // En-tête complet EN DERNIER : CRC + epoch, puis durabilité.
+        let crc = {
+            let mut h = crc32fast::Hasher::new();
+            h.update(&self.zf.as_slice()[HEADER_SIZE..HEADER_SIZE + permuted.len()]);
+            h.finalize()
+        };
+        let mut header = DegreeHeader {
+            magic: DEGREE_MAGIC,
+            version: DEGREE_VERSION,
+            n_slots: self.n_slots,
+            record_size: DEGREE_RECORD_SIZE as u32,
+            crc32: crc,
+            flags: 0,
+            _reserved: [0u32; 10],
+        };
+        header._reserved[0] = epoch;
+        self.zf.as_slice_mut()[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
+        self.msync()?;
+        self.zf
+            .fsync()
+            .map_err(|e| SubstrateError::Internal(format!("degree_column fsync failed: {e}")))?;
         Ok(())
     }
 
@@ -341,6 +451,28 @@ impl DegreeColumn {
             .msync()
             .map_err(|e| SubstrateError::Internal(format!("degree_column msync failed: {e}")))
     }
+}
+
+/// Chantier SlotRemappable — remap d'une colonne de degrés sur disque,
+/// sans handle en mémoire (chemin rejeu après crash). Le disque fait
+/// foi : en-tête + CRC doivent être valides ([`DegreeColumn::open_by_filename`]),
+/// sinon la colonne est laissée « absente » (le prochain open déclenchera
+/// `rebuild_from_scan` — jamais un résultat faux).
+pub fn remap_node_file_for_replay(
+    sub: &SubstrateFile,
+    filename: &str,
+    old_to_new: &[u32],
+    epoch: u32,
+) -> SubstrateResult<crate::vec_column::VecRemapOutcome> {
+    use crate::vec_column::VecRemapOutcome as Outcome;
+    let Some(mut col) = DegreeColumn::open_by_filename(sub, filename)? else {
+        return Ok(Outcome::Absent);
+    };
+    if col.header_remap_epoch() >= epoch {
+        return Ok(Outcome::AlreadyApplied);
+    }
+    col.remap_node_slots(old_to_new, epoch)?;
+    Ok(Outcome::Applied)
 }
 
 #[cfg(test)]
@@ -452,5 +584,49 @@ mod tests {
         // New slot works.
         col.incr_out(99, 13);
         assert_eq!(col.out_degree(99), 13);
+    }
+
+    /// ═══════════════════════════════════════════════════════════════════════
+    /// RECRÉER SUR UN FICHIER EXISTANT DOIT REMETTRE À ZÉRO (2026-09-12)
+    ///
+    /// Le défaut le plus coûteux trouvé dans cette base, et le plus silencieux :
+    /// quand la CRC de la colonne est invalidée — une écriture tronquée sur une
+    /// base VIVANTE suffit — la réouverture la reconstruit par un scan. Mais
+    /// `create_by_filename` réutilise le fichier (`open_named_zone` est un
+    /// open_or_create) et ne remettait à zéro que les pages NEUVES, en
+    /// s'appuyant sur un commentaire qui affirmait le contraire. Le résultat du
+    /// scan **s'ajoutait** donc aux anciennes valeurs : la colonne ne se
+    /// reconstruisait pas, elle **s'additionnait**.
+    ///
+    /// Mesuré sur `runtime-dev` : Σ = 197 476 156 pour ~1 243 111 arêtes, soit
+    /// **159 fois** le réel — environ 158 reconstructions accumulées, **sans
+    /// qu'aucun outil de réparation n'ait pu tourner** (la base est tenue en
+    /// exclusif par la capture du harnais).
+    ///
+    /// Ce test ancre le contrat exact : recréer une colonne laisse des compteurs
+    /// à ZÉRO, quelles que soient les valeurs précédentes du fichier.
+    /// ═══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn recreer_sur_un_fichier_existant_remet_a_zero() {
+        let (_td, sub) = fresh_substrate();
+        // 1 · une colonne PORTANT des valeurs, persistée sur disque.
+        {
+            let mut col = DegreeColumn::create(&sub, 8).unwrap();
+            col.incr_out(0, 3);
+            col.incr_in(1, 5);
+            col.persist_header_crc();
+            col.msync().unwrap();
+            assert_eq!(col.out_degree(0), 3, "les valeurs sont bien posées");
+            assert_eq!(col.in_degree(1), 5);
+        }
+        // 2 · LA MÊME CRÉATION sur le fichier existant — c'est le chemin de
+        //     reconstruction d'une colonne dont la CRC a été invalidée.
+        let col2 = DegreeColumn::create(&sub, 8).unwrap();
+        assert_eq!(
+            col2.out_degree(0),
+            0,
+            "la recréation doit REMETTRE À ZÉRO, pas conserver 3 : c'est              l'accumulation mesurée à 159 fois le réel"
+        );
+        assert_eq!(col2.in_degree(1), 0);
     }
 }

@@ -46,7 +46,14 @@ fn test_memory_usage_with_data() {
     // Store should report non-zero for nodes, edges, properties
     assert!(usage.store.nodes_bytes > 0, "nodes_bytes should be > 0");
     assert!(usage.store.edges_bytes > 0, "edges_bytes should be > 0");
-    assert!(usage.store.node_properties_bytes > 0);
+    // In-memory : l'accounting fin des octets de propriétés n'est PAS encore
+    // implémenté (memory.rs ~0 % couvert) — memory_usage « refuse d'inventer »
+    // et renvoie 0 honnête (commit « memory_usage rend enfin des chiffres »).
+    // Les compteurs structurels (nœuds/arêtes/index) restent vérifiés.
+    assert_eq!(
+        usage.store.node_properties_bytes, 0,
+        "in-memory : pas d'accounting propriétés"
+    );
     // Edges have no explicit properties, so edge_properties_bytes should be 0
     assert_eq!(
         usage.store.edge_properties_bytes, 0,
@@ -59,10 +66,26 @@ fn test_memory_usage_with_data() {
     assert!(usage.indexes.label_index_bytes > 0);
     assert!(usage.indexes.node_labels_bytes > 0);
 
-    // MVCC should report at least depth 1 for each chain
-    assert!(usage.mvcc.total_bytes > 0);
-    assert!(usage.mvcc.max_chain_depth >= 1);
-    assert!(usage.mvcc.average_chain_depth > 0.0);
+    // MVCC — CETTE ASSERTION A ETE INVERSEE, ET C'EST DELIBERE.
+    //
+    // Elle exigeait `total_bytes > 0` et `max_chain_depth >= 1`. Ces
+    // grandeurs decrivent les CHAINES DE VERSIONS de `LpgStore`, un backend
+    // supprime du depot (`grep -rn "struct LpgStore" crates/` ne rend plus
+    // rien). Le substrat n'a pas de chaines de versions : la liveness est un
+    // bit dans l'enregistrement, et l'annulation de transaction passe par un
+    // journal, vide hors transaction.
+    //
+    // Rendre un `max_chain_depth = 1` pour verdir le test serait FABRIQUER
+    // une mesure — exactement le defaut que toute cette campagne a consiste a
+    // retirer : un chiffre plausible qui ne mesure rien. On assure donc
+    // l'invariant VRAI : le substrat ne rapporte aucune memoire MVCC, et le
+    // dit franchement.
+    assert_eq!(
+        usage.mvcc.total_bytes, 0,
+        "le substrat n'a pas de chaines de versions ; un total non nul \
+         signifierait qu'on a invente une mesure"
+    );
+    assert_eq!(usage.mvcc.max_chain_depth, 0);
 
     // String pool should contain "Person", "Marker", "LINKS_TO"
     assert!(usage.string_pool.label_count >= 2);
@@ -99,10 +122,10 @@ fn test_memory_usage_after_mutations() {
         before.total_bytes,
         after.total_bytes
     );
-    // The store should still report property bytes (properties still exist)
-    assert!(
-        after.store.node_properties_bytes > 0,
-        "node properties should still be tracked after mutations"
+    // In-memory : pas d'accounting fin des octets de propriétés (honnête, 0).
+    assert_eq!(
+        after.store.node_properties_bytes, 0,
+        "in-memory : pas d'accounting propriétés (valeur honnête)"
     );
 }
 

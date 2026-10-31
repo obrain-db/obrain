@@ -4,6 +4,123 @@
 use obrain_adapters::storage::wal::WalRecord;
 
 impl super::ObrainDB {
+    /// Indexe un noeud dans TOUS les registres du substrat portant ce label.
+    ///
+    /// (2026-08-13) Quatre chemins d'ecriture — `add_node_label`,
+    /// `remove_node_label`, `batch_create_nodes`, `delete_node` — entretenaient
+    /// les index par `self.store.get_vector_index()` /
+    /// `vector_index_entries()` / `get_text_index()`. En mode substrat,
+    /// `self.store` est le store FANTOCHE : ces appels rendent None ou vide, et
+    /// l'entretien ne se faisait tout simplement pas. Un index construit restait
+    /// fige des qu'on passait par l'un de ces chemins.
+    ///
+    /// Les deux helpers ci-dessous font le travail contre les VRAIS registres,
+    /// une bonne fois, pour que les quatre appelants disent la meme chose.
+    #[allow(dead_code)]
+    pub(super) fn substrat_indexer_pour_label(
+        &self,
+        id: obrain_common::types::NodeId,
+        label: &str,
+    ) {
+        if self.substrate_store.is_none() {
+            return;
+        }
+        let Some(node) = self.data_store().get_node(id) else {
+            return;
+        };
+        let prefixe = format!("{label}:");
+
+        #[cfg(feature = "vector-index")]
+        {
+            let entrees: Vec<(
+                String,
+                usize,
+                std::sync::Arc<dyn obrain_core::index::vector::VectorIndex>,
+            )> = self
+                .substrate_vector_indexes
+                .read()
+                .iter()
+                .filter(|(cle, _)| cle.starts_with(&prefixe))
+                .map(|(cle, (d, i))| (cle.clone(), *d, std::sync::Arc::clone(i)))
+                .collect();
+            for (cle, dim_native, idx) in entrees {
+                let Some(propriete) = cle.strip_prefix(&prefixe) else {
+                    continue;
+                };
+                let pk = obrain_common::types::PropertyKey::new(propriete);
+                if let Some(obrain_common::types::Value::Vector(v)) = node.properties.get(&pk)
+                    && v.len() == dim_native
+                    && let Some(plein) = super::rembourrer_au_cascade(v)
+                {
+                    idx.insert(id.0 as u32, &plein);
+                }
+            }
+        }
+
+        #[cfg(feature = "text-index")]
+        {
+            let entrees: Vec<(
+                String,
+                std::sync::Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+            )> = self
+                .substrate_text_indexes
+                .read()
+                .iter()
+                .filter(|(cle, _)| cle.starts_with(&prefixe))
+                .map(|(cle, i)| (cle.clone(), std::sync::Arc::clone(i)))
+                .collect();
+            for (cle, idx) in entrees {
+                let Some(propriete) = cle.strip_prefix(&prefixe) else {
+                    continue;
+                };
+                let pk = obrain_common::types::PropertyKey::new(propriete);
+                if let Some(obrain_common::types::Value::String(t)) = node.properties.get(&pk) {
+                    idx.write().insert(id, t);
+                }
+            }
+        }
+    }
+
+    /// Retire un noeud de tous les registres du substrat portant ce label.
+    ///
+    /// Ne consulte PAS le noeud : il peut deja avoir disparu (suppression), ou
+    /// avoir perdu le label. C'est justement pour ca qu'on prend le label en
+    /// argument au lieu de le relire.
+    #[allow(dead_code)]
+    pub(super) fn substrat_desindexer_pour_label(
+        &self,
+        id: obrain_common::types::NodeId,
+        label: &str,
+    ) {
+        if self.substrate_store.is_none() {
+            return;
+        }
+        let prefixe = format!("{label}:");
+
+        #[cfg(feature = "vector-index")]
+        for (cle, (_dim, idx)) in self.substrate_vector_indexes.read().iter() {
+            if cle.starts_with(&prefixe) {
+                idx.delete(id.0 as u32);
+            }
+        }
+
+        #[cfg(feature = "text-index")]
+        {
+            let entrees: Vec<
+                std::sync::Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+            > = self
+                .substrate_text_indexes
+                .read()
+                .iter()
+                .filter(|(cle, _)| cle.starts_with(&prefixe))
+                .map(|(_, i)| std::sync::Arc::clone(i))
+                .collect();
+            for idx in entrees {
+                idx.write().remove(id);
+            }
+        }
+    }
+
     // === Node Operations ===
 
     /// Creates a node with the given labels and returns its ID.
@@ -33,8 +150,13 @@ impl super::ObrainDB {
         }
 
         #[cfg(feature = "cdc")]
-        self.cdc_log
-            .record_create_node(id, self.data_store().current_epoch(), None);
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.cdc_log
+                .record_create_node(id, self.data_store().current_epoch(), None);
+        }
 
         id
     }
@@ -92,16 +214,21 @@ impl super::ObrainDB {
             }
         }
 
-        #[cfg(feature = "cdc")]
-        self.cdc_log.record_create_node(
-            id,
-            self.data_store().current_epoch(),
-            if cdc_props.is_empty() {
-                None
-            } else {
-                Some(cdc_props)
-            },
-        );
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            #[cfg(feature = "cdc")]
+            self.cdc_log.record_create_node(
+                id,
+                self.data_store().current_epoch(),
+                if cdc_props.is_empty() {
+                    None
+                } else {
+                    Some(cdc_props)
+                },
+            );
+        }
 
         // Auto-insert into matching text indexes for the new node
         #[cfg(feature = "text-index")]
@@ -240,9 +367,29 @@ impl super::ObrainDB {
                             indexes.push(index);
                         }
                     }
+                    // (2026-08-13, T17b) ENTRETIEN DU REGISTRE SUBSTRAT.
+                    // Sans ceci, un index texte construit par
+                    // `create_text_index` en mode substrat ne se nettoyait
+                    // JAMAIS a la suppression d'un noeud : le document
+                    // restait dans le BM25 et ressortait dans les
+                    // recherches, en pointant un noeud disparu.
+                    // Les deux registres portent le meme type, on fusionne.
+                    for (key, index) in self.substrate_text_indexes.read().iter() {
+                        if key.starts_with(&prefix) {
+                            indexes.push(std::sync::Arc::clone(index));
+                        }
+                    }
                 }
                 indexes
             })
+            .unwrap_or_default();
+
+        // Les labels doivent etre lus AVANT la suppression, et contre le VRAI
+        // store — apres, le noeud n'existe plus.
+        let labels_avant: Vec<String> = self
+            .data_store()
+            .get_node(id)
+            .map(|n| n.labels.iter().map(|l| l.as_str().to_string()).collect())
             .unwrap_or_default();
 
         let result = self.data_store().delete_node(id);
@@ -252,6 +399,19 @@ impl super::ObrainDB {
         if result {
             for index in indexes_to_clean {
                 index.remove(id);
+            }
+            // (2026-08-13) DEUX BUGS ICI, pas un.
+            //
+            // 1. `self.store.get_node(id)` : le store FANTOCHE en mode
+            //    substrat. Il rendait None, donc la boucle ne tournait jamais.
+            // 2. L'appel se faisait APRES `delete_node` — le noeud n'existait
+            //    plus, donc meme contre le bon store il n'y avait plus de
+            //    labels a lire.
+            //
+            // Les labels sont donc captures AVANT la suppression (voir
+            // `labels_avant` plus haut), et le nettoyage se fait dessus.
+            for label in &labels_avant {
+                self.substrat_desindexer_pour_label(id, label);
             }
         }
 
@@ -337,6 +497,29 @@ impl super::ObrainDB {
                     index.insert(id, &vec, &accessor);
                 }
             }
+            // (2026-08-13, T17b) ENTRETIEN DU REGISTRE SUBSTRAT.
+            // Sans ceci, un index construit par `create_vector_index` restait
+            // FIGE : l'ecriture d'un nouvel embedding ne l'atteignait pas, et
+            // la recherche rendait l'ancien voisinage sans le dire. Un index
+            // fige est plus dangereux qu'un index absent — l'absence se voit.
+            // La dimension est verifiee : le cascade n'accepte que L2_DIM, et
+            // un vecteur d'une autre largeur doit etre IGNORE, pas paniquer.
+            {
+                for label in &node.labels {
+                    let cle = format!("{}:{}", label.as_str(), key);
+                    let entree = self.substrate_vector_indexes.read().get(&cle).cloned();
+                    // Comparaison sur la dimension NATIVE de l'index, puis
+                    // plongement dans la largeur du cascade. Un embedding d'une
+                    // autre largeur est ignore — jamais fatal : une base peut
+                    // porter plusieurs modeles sur la meme propriete.
+                    if let Some((dim_native, idx)) = entree
+                        && dim_native == vec.len()
+                        && let Some(plein) = super::rembourrer_au_cascade(&vec)
+                    {
+                        idx.insert(id.0 as u32, &plein);
+                    }
+                }
+            }
         }
 
         // Auto-update matching text indexes
@@ -356,6 +539,23 @@ impl super::ObrainDB {
                         idx.insert(id, text);
                     } else {
                         idx.remove(id);
+                    }
+                }
+            }
+            // (T17b) Meme entretien pour le registre texte du substrat : un
+            // BM25 qui ne suit pas les ecritures rend des documents perimes
+            // en pointant des noeuds dont le texte a change.
+            {
+                for label in &node.labels {
+                    let cle = format!("{}:{}", label.as_str(), key);
+                    let idx = self.substrate_text_indexes.read().get(&cle).cloned();
+                    if let Some(idx) = idx {
+                        match text_val.as_deref() {
+                            Some(t) => idx.write().insert(id, t),
+                            None => {
+                                idx.write().remove(id);
+                            }
+                        }
                     }
                 }
             }
@@ -427,6 +627,14 @@ impl super::ObrainDB {
             }
         }
 
+        // (2026-08-13) Registres du substrat. Un vecteur ecrit AVANT que le
+        // label n'existe n'etait indexe par personne : le chemin d'ecriture de
+        // propriete ne voyait pas le label, et ce chemin-ci n'interrogeait que
+        // le store fantoche.
+        if result {
+            self.substrat_indexer_pour_label(id, label);
+        }
+
         result
     }
 
@@ -481,6 +689,12 @@ impl super::ObrainDB {
             for index in text_indexes_to_clean {
                 index.write().remove(id);
             }
+        }
+
+        // (2026-08-13) Le noeud perd ce label : il sort des index qui y sont
+        // attaches. Symetrique de `add_node_label`.
+        if result {
+            self.substrat_desindexer_pour_label(id, label);
         }
 
         result
@@ -548,10 +762,82 @@ impl super::ObrainDB {
         }
 
         #[cfg(feature = "cdc")]
-        self.cdc_log
-            .record_create_edge(id, self.data_store().current_epoch(), None);
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.cdc_log
+                .record_create_edge(id, self.data_store().current_epoch(), None);
+        }
 
         id
+    }
+
+    /// Crée un LOT d'arêtes (batch natif, chemin `GraphStoreMut::batch_create_edges`)
+    /// — import de gros volumes sans aller-retour par arête (RFC §12, index de
+    /// code cbm→substrate). WAL/CDC journalisés par arête comme le chemin
+    /// unitaire. L'appelant checkpoint/flush ensuite pour la durabilité.
+    pub fn create_edges_batch(
+        &self,
+        edges: &[(
+            obrain_common::types::NodeId,
+            obrain_common::types::NodeId,
+            &str,
+        )],
+    ) -> Vec<obrain_common::types::EdgeId> {
+        if edges.is_empty() {
+            return Vec::new();
+        }
+        let ids = self.data_store().batch_create_edges(edges);
+        #[cfg(feature = "wal")]
+        for (id, (src, dst, edge_type)) in ids.iter().zip(edges.iter()) {
+            if let Err(e) = self.log_wal(&WalRecord::CreateEdge {
+                id: *id,
+                src: *src,
+                dst: *dst,
+                edge_type: edge_type.to_string(),
+            }) {
+                tracing::warn!("Failed to log CreateEdge (batch) to WAL: {}", e);
+            }
+        }
+        #[cfg(feature = "cdc")]
+        {
+            let epoch = self.data_store().current_epoch();
+            for id in &ids {
+                if !self
+                    .cdc_observer_active
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    self.cdc_log.record_create_edge(*id, epoch, None);
+                }
+            }
+        }
+        ids
+    }
+
+    /// Crée un nœud SANS journalisation engine (WAL/CDC) — pour les imports
+    /// de gros volumes (l'importeur checkpoint ensuite). Le reste du chemin
+    /// (labels, slots, propriétés éventuelles) est identique.
+    pub fn create_node_no_wal(&self, labels: &[&str]) -> obrain_common::types::NodeId {
+        self.data_store().create_node(labels)
+    }
+
+    /// Variante BULK LOAD de [`Self::create_edges_batch`] : SANS journalisation
+    /// WAL/CDC par arête — l'importeur appelle `checkpoint()` à la fin pour la
+    /// durabilité (RFC §12, import index de code cbm→substrate). Destinée aux
+    /// imports de gros volumes jetables/en lot, pas au hot path applicatif.
+    pub fn create_edges_batch_no_wal(
+        &self,
+        edges: &[(
+            obrain_common::types::NodeId,
+            obrain_common::types::NodeId,
+            &str,
+        )],
+    ) -> Vec<obrain_common::types::EdgeId> {
+        if edges.is_empty() {
+            return Vec::new();
+        }
+        self.data_store().batch_create_edges(edges)
     }
 
     /// Creates a new edge with properties.
@@ -613,16 +899,21 @@ impl super::ObrainDB {
             }
         }
 
-        #[cfg(feature = "cdc")]
-        self.cdc_log.record_create_edge(
-            id,
-            self.data_store().current_epoch(),
-            if cdc_props.is_empty() {
-                None
-            } else {
-                Some(cdc_props)
-            },
-        );
+        if !self
+            .cdc_observer_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            #[cfg(feature = "cdc")]
+            self.cdc_log.record_create_edge(
+                id,
+                self.data_store().current_epoch(),
+                if cdc_props.is_empty() {
+                    None
+                } else {
+                    Some(cdc_props)
+                },
+            );
+        }
 
         id
     }
@@ -731,6 +1022,18 @@ impl super::ObrainDB {
                     index.write().remove(id);
                 }
             }
+            // (T17b) Ici la propriete est RETIREE : le document sort de
+            // l'index, il n'y a pas de nouveau texte a indexer. Le bloc
+            // symetrique du chemin d'ecriture, lui, reindexe.
+            {
+                for label in &node.labels {
+                    let cle = format!("{}:{}", label.as_str(), key);
+                    let idx = self.substrate_text_indexes.read().get(&cle).cloned();
+                    if let Some(idx) = idx {
+                        idx.write().remove(id);
+                    }
+                }
+            }
         }
 
         removed
@@ -824,6 +1127,13 @@ impl super::ObrainDB {
                     }
                 }
             }
+        }
+
+        // (2026-08-13) Meme entretien pour le substrat. Sans ceci, un lot cree
+        // APRES `create_vector_index` restait invisible a la recherche — la
+        // base repondait, sans les noeuds du lot, et rien ne le signalait.
+        for &id in &ids {
+            self.substrat_indexer_pour_label(id, label);
         }
 
         ids

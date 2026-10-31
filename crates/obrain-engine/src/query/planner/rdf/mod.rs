@@ -393,7 +393,15 @@ impl RdfPlanner {
         Ok(common::build_limit(
             input_op,
             columns,
-            limit.count.value(),
+            // (revue vague 3) Même garde que le LPG (project.rs:464) :
+            // un `CountExpr::Parameter` non substitué doit rendre une
+            // erreur sémantique, pas le panic de `value()`.
+            limit.count.try_value().map_err(|msg| {
+                Error::Query(obrain_common::utils::error::QueryError::new(
+                    obrain_common::utils::error::QueryErrorKind::Semantic,
+                    msg,
+                ))
+            })?,
             schema,
         ))
     }
@@ -406,7 +414,13 @@ impl RdfPlanner {
         Ok(common::build_skip(
             input_op,
             columns,
-            skip.count.value(),
+            // (revue vague 3) Même garde que le LPG (project.rs:613).
+            skip.count.try_value().map_err(|msg| {
+                Error::Query(obrain_common::utils::error::QueryError::new(
+                    obrain_common::utils::error::QueryErrorKind::Semantic,
+                    msg,
+                ))
+            })?,
             schema,
         ))
     }
@@ -435,7 +449,16 @@ impl RdfPlanner {
                         SortOrder::Ascending => SortDirection::Ascending,
                         SortOrder::Descending => SortDirection::Descending,
                     },
-                    null_order: NullOrder::NullsLast,
+                    // Ce traducteur IGNORE les clauses NULLS explicites (hors
+                    // périmètre du correctif de l'ordre des NULL) ; ce défaut
+                    // par direction préserve le comportement observé avant la
+                    // correction du comparateur : le `NullsLast` unique posé
+                    // ici était retourné en NullsFirst sous DESC par le
+                    // `.reverse()` fautif. ASC → queue, DESC → tête.
+                    null_order: match key.order {
+                        SortOrder::Ascending => NullOrder::NullsLast,
+                        SortOrder::Descending => NullOrder::NullsFirst,
+                    },
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -2443,6 +2466,15 @@ impl RdfExpressionPredicate {
             BinaryFilterOp::Le => compare_values(left, right, |o| o.is_le()),
             BinaryFilterOp::Gt => compare_values(left, right, |o| o.is_gt()),
             BinaryFilterOp::Ge => compare_values(left, right, |o| o.is_ge()),
+            // REVUE vague 1 — arithmétique i64 GARDÉE (checked_*) : une
+            // faute (débordement ; div/mod par zéro déjà filtrés par les
+            // gardes `*r != 0`) rend None -> NULL, la convention existante
+            // de ce chemin RDF. DIVERGENCE ASSUMÉE vs le chemin GQL/LPG
+            // (filter.rs), où la même faute REFUSE la requête via le canal
+            // take_eval_error : aligner le RDF sur le refus demande un
+            // canal d'erreur ici — travail de vague ultérieure. Avant ce
+            // patch : i64::MIN / -1 et i64::MIN % -1 PANIQUAIENT (tous
+            // profils), et +, -, *, -v enroulaient en release.
             BinaryFilterOp::Add => {
                 // Helper to convert to f64 for arithmetic
                 fn to_f64(v: &Value) -> Option<f64> {
@@ -2454,7 +2486,7 @@ impl RdfExpressionPredicate {
                     }
                 }
                 match (left, right) {
-                    (Value::Int64(l), Value::Int64(r)) => Some(Value::Int64(l + r)),
+                    (Value::Int64(l), Value::Int64(r)) => l.checked_add(*r).map(Value::Int64),
                     (Value::Float64(l), Value::Float64(r)) => Some(Value::Float64(l + r)),
                     (Value::Int64(l), Value::Float64(r)) => Some(Value::Float64(*l as f64 + r)),
                     (Value::Float64(l), Value::Int64(r)) => Some(Value::Float64(l + *r as f64)),
@@ -2476,7 +2508,7 @@ impl RdfExpressionPredicate {
                     }
                 }
                 match (left, right) {
-                    (Value::Int64(l), Value::Int64(r)) => Some(Value::Int64(l - r)),
+                    (Value::Int64(l), Value::Int64(r)) => l.checked_sub(*r).map(Value::Int64),
                     (Value::Float64(l), Value::Float64(r)) => Some(Value::Float64(l - r)),
                     (Value::Int64(l), Value::Float64(r)) => Some(Value::Float64(*l as f64 - r)),
                     (Value::Float64(l), Value::Int64(r)) => Some(Value::Float64(l - *r as f64)),
@@ -2497,7 +2529,7 @@ impl RdfExpressionPredicate {
                     }
                 }
                 match (left, right) {
-                    (Value::Int64(l), Value::Int64(r)) => Some(Value::Int64(l * r)),
+                    (Value::Int64(l), Value::Int64(r)) => l.checked_mul(*r).map(Value::Int64),
                     (Value::Float64(l), Value::Float64(r)) => Some(Value::Float64(l * r)),
                     (Value::Int64(l), Value::Float64(r)) => Some(Value::Float64(*l as f64 * r)),
                     (Value::Float64(l), Value::Int64(r)) => Some(Value::Float64(l * *r as f64)),
@@ -2518,7 +2550,9 @@ impl RdfExpressionPredicate {
                     }
                 }
                 match (left, right) {
-                    (Value::Int64(l), Value::Int64(r)) if *r != 0 => Some(Value::Int64(l / r)),
+                    (Value::Int64(l), Value::Int64(r)) if *r != 0 => {
+                        l.checked_div(*r).map(Value::Int64)
+                    }
                     (Value::Float64(l), Value::Float64(r)) if *r != 0.0 => {
                         Some(Value::Float64(l / r))
                     }
@@ -2540,7 +2574,9 @@ impl RdfExpressionPredicate {
                 }
             }
             BinaryFilterOp::Mod => match (left, right) {
-                (Value::Int64(l), Value::Int64(r)) if *r != 0 => Some(Value::Int64(l % r)),
+                (Value::Int64(l), Value::Int64(r)) if *r != 0 => {
+                    l.checked_rem(*r).map(Value::Int64)
+                }
                 _ => None,
             },
             BinaryFilterOp::Contains => match (left, right) {
@@ -2668,7 +2704,7 @@ impl RdfExpressionPredicate {
             UnaryFilterOp::IsNull => Some(Value::Bool(val.is_none())),
             UnaryFilterOp::IsNotNull => Some(Value::Bool(val.is_some())),
             UnaryFilterOp::Neg => match val? {
-                Value::Int64(v) => Some(Value::Int64(-v)),
+                Value::Int64(v) => v.checked_neg().map(Value::Int64),
                 Value::Float64(v) => Some(Value::Float64(-v)),
                 _ => None,
             },
@@ -3332,8 +3368,8 @@ impl RdfExpressionPredicate {
                 use std::sync::atomic::{AtomicU64, Ordering};
                 static UUID_COUNTER: AtomicU64 = AtomicU64::new(0);
                 let id = UUID_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let ts = web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos());
                 Some(Value::String(format!("urn:uuid:{ts:032x}-{id:04x}").into()))
             }
@@ -3343,8 +3379,8 @@ impl RdfExpressionPredicate {
                 use std::sync::atomic::{AtomicU64, Ordering};
                 static STRUUID_COUNTER: AtomicU64 = AtomicU64::new(0);
                 let id = STRUUID_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let ts = web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos());
                 Some(Value::String(format!("{ts:032x}-{id:04x}").into()))
             }
@@ -3372,8 +3408,8 @@ impl RdfExpressionPredicate {
                 let state = RAND_STATE.fetch_add(1, Ordering::Relaxed);
                 let mut hasher = DefaultHasher::new();
                 state.hash(&mut hasher);
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
                     .map_or(0u64, |d| d.as_nanos() as u64)
                     .hash(&mut hasher);
                 let bits = hasher.finish();

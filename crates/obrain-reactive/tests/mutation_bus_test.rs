@@ -185,7 +185,7 @@ fn publish_overhead_no_subscriber_under_5us() {
 
     // Measure
     let iterations = 10_000;
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     for i in 0..iterations {
         bus.publish(MutationEvent::NodeCreated {
             node: make_node(i, &["Person"]),

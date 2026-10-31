@@ -9,7 +9,7 @@
 
 use obrain_substrate::{
     EdgeRecord, NodeRecord, PackedScarUtilAff, SubstrateFile, U48, Writer, f32_to_q1_15,
-    file::Zone, meta::meta_flags, wal_io::SyncMode,
+    file::Zone, hilbert::zorder_key_from_features, meta::meta_flags, wal_io::SyncMode,
 };
 
 fn sample_node(community: u32, centrality: u16) -> NodeRecord {
@@ -22,6 +22,9 @@ fn sample_node(community: u32, centrality: u16) -> NodeRecord {
         scar_util_affinity: PackedScarUtilAff::new(0, 0, 0, false).pack(),
         centrality_cached: centrality,
         flags: 0,
+        // (jalon 2) appartenance : fixture publique.
+        tenant_id: 0,
+        _reserve: 0,
     }
 }
 
@@ -83,6 +86,16 @@ fn bulk_sort_groups_communities_and_remaps_edges() {
     w.commit().unwrap();
 
     // Sort.
+    // Chantier SlotRemappable — ces tests pilotent un `Writer` NU, sans
+    // store : ils font donc eux-memes le flush qui precede toute
+    // repermutation. Sans cela, `bulk_sort_by_hilbert` refuse
+    // (fenetre de rejeu non vide) — c'est la garde qui ferme R9.
+    // (Revue #3) `vider_fenetre_de_rejeu` REND la fenetre vide (msync
+    // des zones + fsync + troncature du WAL) la ou l'ancienne API se
+    // contentait de l'AFFIRMER. Une affirmation fausse produisait une
+    // base dont l'ouverture rejouait des `update_node` pre-permutation
+    // sur des zones post-permutation.
+    w.vider_fenetre_de_rejeu().unwrap();
     w.bulk_sort_by_hilbert(n, edges.len() as u64, 4, 32)
         .unwrap();
 
@@ -163,6 +176,28 @@ fn bulk_sort_groups_communities_and_remaps_edges() {
             "community side-column out of sync with NodeRecord at slot {slot}"
         );
     }
+
+    // ---- Assert 5: Z-order side-column matches the exact recomputation --
+    //
+    // The bulk sort fills `substrate.zorder` from the same (centrality,
+    // degree) inputs as the Hilbert key, evaluated at the OLD slots and
+    // written at the NEW slots. Degree per node = out-degree counted over
+    // the edge zone before the remap — permutation-invariant per node.
+    let mut deg = vec![0u32; n as usize];
+    for &(src, _) in &edges {
+        deg[src as usize] += 1;
+    }
+    let zz = sub.open_zone(Zone::Zorder).unwrap();
+    let zorder_col: &[u32] = bytemuck::cast_slice(&zz.as_slice()[..(n as usize) * 4]);
+    assert_eq!(zorder_col.len(), n as usize, "zorder column short");
+    for (old, &new) in old_to_new.iter().enumerate() {
+        let expected = zorder_key_from_features(centrality[old], deg[old], 4, 32);
+        assert_eq!(
+            zorder_col[new as usize], expected,
+            "zorder side-column mismatch at new slot {new} (old slot {old}, centrality {}, degree {})",
+            centrality[old], deg[old]
+        );
+    }
 }
 
 /// Calling bulk_sort_by_hilbert twice is a no-op on the second call
@@ -179,6 +214,16 @@ fn second_sort_is_a_noop() {
             .unwrap();
     }
     w.commit().unwrap();
+    // Chantier SlotRemappable — ces tests pilotent un `Writer` NU, sans
+    // store : ils font donc eux-memes le flush qui precede toute
+    // repermutation. Sans cela, `bulk_sort_by_hilbert` refuse
+    // (fenetre de rejeu non vide) — c'est la garde qui ferme R9.
+    // (Revue #3) `vider_fenetre_de_rejeu` REND la fenetre vide (msync
+    // des zones + fsync + troncature du WAL) la ou l'ancienne API se
+    // contentait de l'AFFIRMER. Une affirmation fausse produisait une
+    // base dont l'ouverture rejouait des `update_node` pre-permutation
+    // sur des zones post-permutation.
+    w.vider_fenetre_de_rejeu().unwrap();
     w.bulk_sort_by_hilbert(6, 0, 3, 16).unwrap();
 
     // Snapshot node bytes after first sort.
@@ -217,6 +262,16 @@ fn tombstones_sink_to_tail() {
     w.tombstone_node(5).unwrap();
     w.commit().unwrap();
 
+    // Chantier SlotRemappable — ces tests pilotent un `Writer` NU, sans
+    // store : ils font donc eux-memes le flush qui precede toute
+    // repermutation. Sans cela, `bulk_sort_by_hilbert` refuse
+    // (fenetre de rejeu non vide) — c'est la garde qui ferme R9.
+    // (Revue #3) `vider_fenetre_de_rejeu` REND la fenetre vide (msync
+    // des zones + fsync + troncature du WAL) la ou l'ancienne API se
+    // contentait de l'AFFIRMER. Une affirmation fausse produisait une
+    // base dont l'ouverture rejouait des `update_node` pre-permutation
+    // sur des zones post-permutation.
+    w.vider_fenetre_de_rejeu().unwrap();
     w.bulk_sort_by_hilbert(8, 0, 3, 16).unwrap();
 
     let sub = w.substrate();

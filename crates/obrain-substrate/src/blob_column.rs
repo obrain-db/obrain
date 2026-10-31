@@ -208,7 +208,7 @@ impl BlobColumnHeader {
     /// Parse a header out of the first [`BLOB_HEADER_SIZE`] bytes of
     /// a mmap region. Returns `None` if the region is too short or
     /// fails alignment; never panics.
-    fn try_read(bytes: &[u8]) -> Option<Self> {
+    pub(crate) fn try_read(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < BLOB_HEADER_SIZE {
             return None;
         }
@@ -289,6 +289,37 @@ pub struct BlobColumnWriter {
     n_slots: u32,
     /// Bytes written into the arena so far. Monotonic.
     arena_end: u64,
+    /// Running CRC32 over `dat[..arena_end]`, maintained INCRÉMENTALEMENT.
+    ///
+    /// (2026-08-17, mission perf DB) `sync` recalculait ce CRC sur toute
+    /// l'arène à CHAQUE appel — donc relisait l'intégralité de la colonne
+    /// même quand un seul payload avait bougé. Mesuré : 11,6 ms de flush
+    /// pour une arène de 4 Mo, 106,4 ms pour 1 Go, en réécrivant 64 Ko.
+    /// Coût LINÉAIRE EN L'ARÈNE, pas dans le volume écrit.
+    ///
+    /// En production (obrain-tmn appelle `checkpoint_all()` toutes les 60 s,
+    /// jusqu'à 24 bases), la base `agent` porte ~36,5 Go d'arènes vives :
+    /// ~608 Mo/s de relecture permanente, sous le verrou d'ÉCRITURE de
+    /// chaque colonne — donc toute lecture de la colonne bloquait derrière.
+    /// Mesuré sur le service : 2,83 To lus en 88 min (872 Mo/s soutenus),
+    /// `read_bytes` ≫ `rchar`, et un p50 de requête à 1 622 ms.
+    ///
+    /// L'arène est append-only sous `arena_end` (cf. `write_slot`), donc
+    /// `crc32(dat[..a+n]) = combine(crc32(dat[..a]), crc32(new), n)`. La
+    /// valeur produite est IDENTIQUE au recalcul complet — invariant
+    /// verrouillé par `incremental_arena_crc_matches_full_recompute`.
+    arena_crc: u32,
+    /// Y a-t-il eu une écriture depuis le dernier `sync` réussi ?
+    ///
+    /// Sans ce drapeau, `sync_all()` payait msync + fsync + CRC de l'idx sur
+    /// TOUTES les colonnes à chaque checkpoint, y compris celles que
+    /// personne n'avait touchées. Une colonne froide est désormais gratuite.
+    dirty: bool,
+    /// Epoch de la dernière repermutation de slots appliquée à cette
+    /// colonne (chantier SlotRemappable). Persisté dans
+    /// `header._reserved[0]` par chaque écriture d'en-tête, hérité au
+    /// `create` — 0 = « jamais remappée ». Voir `crate::slot_remap`.
+    remap_epoch: u32,
 }
 
 impl BlobColumnWriter {
@@ -302,16 +333,28 @@ impl BlobColumnWriter {
     pub fn create(sub: &SubstrateFile, spec: BlobColSpec) -> SubstrateResult<Self> {
         let idx = sub.open_named_zone(&spec.idx_filename())?;
         let dat = sub.open_named_zone(&spec.dat_filename())?;
-        let (n_slots, arena_end) = match BlobColumnHeader::try_read(idx.as_slice()) {
-            Some(h) if h.validate_against(&spec).is_ok() => (h.n_slots, h.arena_bytes),
-            _ => (0, 0),
-        };
+        // Le CRC d'arène stocké porte EXACTEMENT sur `dat[..arena_bytes]`,
+        // et on reprend `arena_end = arena_bytes` : la valeur est donc
+        // directement réutilisable comme préfixe de la chaîne incrémentale.
+        // En-tête absent ou invalide → (0, 0, 0), et crc32(&[]) == 0.
+        let (n_slots, arena_end, arena_crc, remap_epoch) =
+            match BlobColumnHeader::try_read(idx.as_slice()) {
+                Some(h) if h.validate_against(&spec).is_ok() => {
+                    (h.n_slots, h.arena_bytes, h.arena_crc32, h._reserved[0])
+                }
+                // Colonne fraîche : estampillée avec l'epoch de remap
+                // courant (même rationale que VecColumnWriter::create).
+                _ => (0, 0, 0, crate::slot_remap::current_remap_epoch(sub)?),
+            };
         Ok(Self {
             spec,
             idx,
             dat,
             n_slots,
             arena_end,
+            arena_crc,
+            dirty: false,
+            remap_epoch,
         })
     }
 
@@ -345,6 +388,17 @@ impl BlobColumnWriter {
             let region = self.dat.as_slice_mut();
             region[offset as usize..arena_needed_end].copy_from_slice(bytes);
         }
+        // Prolonge le CRC courant au lieu de le refaire au prochain `sync`.
+        // Valide UNIQUEMENT parce que rien sous `arena_end` n'est jamais
+        // réécrit : c'est la discipline append-only documentée ci-dessus, et
+        // toute réutilisation d'extent en place la casserait silencieusement.
+        {
+            let mut acc = crc32fast::Hasher::new_with_initial_len(self.arena_crc, self.arena_end);
+            let mut tail = crc32fast::Hasher::new();
+            tail.update(bytes);
+            acc.combine(&tail);
+            self.arena_crc = acc.finalize();
+        }
         self.arena_end = offset + (len as u64);
 
         // (2) Write slot entry into idx.
@@ -365,6 +419,51 @@ impl BlobColumnWriter {
         if slot + 1 > self.n_slots {
             self.n_slots = slot + 1;
         }
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Marque le slot `slot` ABSENT (`len == 0`) sans toucher l'arène.
+    ///
+    /// ── POURQUOI (2026-08-20) ──
+    ///
+    /// Il n'existait AUCUN moyen d'effacer une valeur d'une colonne blob :
+    /// `write_slot` REFUSE la charge vide, `len == 0` étant la sentinelle
+    /// d'absence. Une valeur blob était donc ineffaçable — et comme l'ordre
+    /// de lecture est vec → blob → v2 → DashMap, elle MASQUAIT toute
+    /// réécriture ultérieure plus courte.
+    ///
+    /// MESURÉ (2026-08-20, base v2 neuve) : `SET n.body = <300 o>` puis
+    /// `SET n.body = "court"` rend les 300 octets d'origine. Le défaut est
+    /// ANTÉRIEUR à ce correctif et porte déjà sur `String`, `Bytes` et les
+    /// listes routées le 19/08 ; il devient bloquant ici parce que router
+    /// les cartes vers les blobs y exposerait une famille de plus.
+    ///
+    /// L'ARÈNE N'EST PAS TOUCHÉE — les octets restent en déchet, exactement
+    /// comme lors d'un écrasement par `write_slot`. Le CRC d'arène, qui est
+    /// prolongé de façon incrémentale, reste donc valide : c'est précisément
+    /// la discipline append-only qui rend cette opération sûre. Seule
+    /// l'entrée du répertoire `idx` change, et son CRC est recalculé en
+    /// entier au prochain `sync`.
+    pub fn clear_slot(&mut self, slot: u32) -> SubstrateResult<()> {
+        if slot >= self.n_slots {
+            // Jamais écrit sur cette colonne : déjà absent. On n'étend pas
+            // `idx` pour y inscrire un zéro qu'il porte déjà.
+            return Ok(());
+        }
+        let slot_offset = BLOB_HEADER_SIZE + (slot as usize) * BLOB_SLOT_STRIDE;
+        let slot_end = slot_offset + BLOB_SLOT_STRIDE;
+        ensure_room(&mut self.idx, slot_end, 0)?;
+        let entry = BlobSlotEntry {
+            arena_offset: 0,
+            len: 0,
+            _pad: 0,
+        };
+        {
+            let region = self.idx.as_slice_mut();
+            region[slot_offset..slot_end].copy_from_slice(bytemuck::bytes_of(&entry));
+        }
+        self.dirty = true;
         Ok(())
     }
 
@@ -409,6 +508,14 @@ impl BlobColumnWriter {
     /// stays alive so subsequent `write_slot`s can extend the column.
     /// Called from `SubstrateStore::flush`.
     pub fn sync(&mut self) -> SubstrateResult<()> {
+        // Colonne froide : rien n'a bougé depuis le dernier sync réussi, donc
+        // l'en-tête sur disque est déjà exact. On ne paie ni CRC, ni msync,
+        // ni fsync. `sync_all()` balaie TOUTES les colonnes de la base à
+        // chaque checkpoint (60 s en prod) — la plupart sont froides.
+        if !self.dirty {
+            return Ok(());
+        }
+
         // Ensure idx file has room for the header + all slots.
         let idx_end = BLOB_HEADER_SIZE + (self.n_slots as usize) * BLOB_SLOT_STRIDE;
         ensure_room(&mut self.idx, idx_end, 0)?;
@@ -416,7 +523,10 @@ impl BlobColumnWriter {
         // Ensure dat file has room for the live arena.
         ensure_room(&mut self.dat, self.arena_end as usize, 0)?;
 
-        // CRC over slot region.
+        // CRC over slot region. Recalculé intégralement : le répertoire de
+        // slots est modifié EN PLACE (une réécriture change l'entrée du slot),
+        // donc la combinaison incrémentale ne s'y applique pas. C'est
+        // acceptable : 16 o par slot, soit ~3 ordres de grandeur sous l'arène.
         let idx_crc = {
             let slice = self.idx.as_slice();
             let payload = &slice[BLOB_HEADER_SIZE..idx_end];
@@ -425,18 +535,18 @@ impl BlobColumnWriter {
             h.finalize()
         };
 
-        // CRC over arena region.
-        let arena_crc = {
-            let slice = self.dat.as_slice();
-            let payload = &slice[..self.arena_end as usize];
-            let mut h = crc32fast::Hasher::new();
-            h.update(payload);
-            h.finalize()
-        };
+        // CRC over arena region — tenu à jour au fil des appends par
+        // `write_slot`. Plus aucune relecture de l'arène ici : c'est CE
+        // recalcul qui imposait ~608 Mo/s de lecture disque permanente en
+        // production. Voir le commentaire de `arena_crc`.
+        let arena_crc = self.arena_crc;
 
         let mut header = BlobColumnHeader::new(&self.spec, self.n_slots, self.arena_end);
         header.idx_crc32 = idx_crc;
         header.arena_crc32 = arena_crc;
+        // Préservation de l'epoch de remap : un flush ne doit jamais le
+        // remettre à zéro (sinon un rejeu ré-appliquerait la permutation).
+        header._reserved[0] = self.remap_epoch;
         {
             let slice = self.idx.as_slice_mut();
             slice[..BLOB_HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
@@ -446,6 +556,9 @@ impl BlobColumnWriter {
         self.idx.fsync()?;
         self.dat.msync()?;
         self.dat.fsync()?;
+        // Uniquement après que TOUT a réussi : un `?` plus haut laisse la
+        // colonne sale, et le prochain checkpoint réessaiera.
+        self.dirty = false;
         Ok(())
     }
 
@@ -469,6 +582,200 @@ impl BlobColumnWriter {
     pub fn spec(&self) -> &BlobColSpec {
         &self.spec
     }
+
+    /// Chantier SlotRemappable — applique une repermutation des slots
+    /// nœuds à cette colonne (chemin vif). Seul le RÉPERTOIRE idx est
+    /// permuté : l'arène est adressée par offset, elle ne bouge pas.
+    ///
+    /// ── M1 (revue adversariale #2, 2026-08-24) : POURQUOI PAR RENAME ──
+    ///
+    /// La version precedente ecrivait le repertoire permute EN PLACE dans
+    /// le mmap idx vivant, puis appelait `sync()`. Un rejet de pages sales
+    /// avant l'ecriture de l'en-tete laissait un idx a moitie permute avec
+    /// un CRC perime : la colonne devenait « absente » au prochain open.
+    ///
+    /// Or « absent » n'a pas le meme prix selon la famille de side-car :
+    ///
+    /// * veccol : « absent » = embedding a re-migrer, la source existe ;
+    /// * degres : `rebuild_from_scan` reconstruit depuis les aretes ;
+    /// * **blob : il n'existe AUCUN chemin de reconstruction.** L'arene
+    ///   `.dat` est intacte, mais le repertoire qui l'adresse est perdu —
+    ///   donc toutes les proprietes volumineuses de cette cle le sont
+    ///   aussi, definitivement. C'etait la SEULE famille ou un crash
+    ///   mi-remap perdait des donnees sans recours.
+    ///
+    /// Le modele temporaire + `rename` (celui deja ecrit pour veccol)
+    /// supprime la fenetre : le fichier idx vivant n'est jamais touche
+    /// avant la bascule, qui est atomique. Un crash avant le rename laisse
+    /// la colonne intacte en etat pre-permutation (epoch d'en-tete
+    /// inchange), et le rejeu refait le travail.
+    ///
+    /// Le cout est ici derisoire — a 72 Mo de repertoire, le doublement
+    /// transitoire est deux ordres de grandeur sous celui deja accepte
+    /// pour `embedding_vec` (3,8 Go).
+    pub fn remap_node_slots(
+        &mut self,
+        sub: &SubstrateFile,
+        old_to_new: &[u32],
+        epoch: u32,
+    ) -> SubstrateResult<()> {
+        if self.spec.entity_kind != EntityKind::Node {
+            return Ok(());
+        }
+        if epoch <= self.remap_epoch {
+            return Ok(()); // défensif — déjà appliquée
+        }
+        // La colonne peut porter des ecritures non encore synchronisees :
+        // le temporaire est bati depuis le mmap VIVANT (etat authoritaire),
+        // et l'arene doit etre rendue durable AVANT la bascule du
+        // repertoire, sinon un idx neuf pourrait pointer dans une arene
+        // dont la queue n'est pas sur disque.
+        self.sync()?;
+
+        let idx_end = BLOB_HEADER_SIZE + (self.n_slots as usize) * BLOB_SLOT_STRIDE;
+        ensure_room(&mut self.idx, idx_end, 0)?;
+        let permuted = {
+            let slots = &self.idx.as_slice()[BLOB_HEADER_SIZE..idx_end];
+            crate::slot_remap::permute_dense_payload(slots, BLOB_SLOT_STRIDE, old_to_new)
+        };
+        let n_slots = (permuted.len() / BLOB_SLOT_STRIDE) as u32;
+
+        let idx_name = self.spec.idx_filename();
+        // Temporaire DATE par l'epoch — cf. `vec_column` et
+        // `slot_remap::nom_temporaire_remap` (revue #4).
+        let tmp_name = crate::slot_remap::nom_temporaire_remap(&idx_name, epoch);
+        let live_path = sub.path().join(&idx_name);
+        let tmp_path = sub.path().join(&tmp_name);
+        crate::slot_remap::effacer_temporaires_de_colonne(sub, &idx_name);
+        {
+            let mut tmp = sub.open_named_zone(&tmp_name)?;
+            ensure_room(&mut tmp, BLOB_HEADER_SIZE + permuted.len(), 0)?;
+            tmp.as_slice_mut()[BLOB_HEADER_SIZE..BLOB_HEADER_SIZE + permuted.len()]
+                .copy_from_slice(&permuted);
+            let idx_crc = {
+                let mut h = crc32fast::Hasher::new();
+                h.update(&tmp.as_slice()[BLOB_HEADER_SIZE..BLOB_HEADER_SIZE + permuted.len()]);
+                h.finalize()
+            };
+            let mut header = BlobColumnHeader::new(&self.spec, n_slots, self.arena_end);
+            header.idx_crc32 = idx_crc;
+            header.arena_crc32 = self.arena_crc;
+            header._reserved[0] = epoch;
+            tmp.as_slice_mut()[..BLOB_HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
+            tmp.msync()?;
+            tmp.fsync()?;
+        }
+        std::fs::rename(&tmp_path, &live_path).map_err(|e| {
+            crate::error::SubstrateError::Internal(format!(
+                "blob_column: rename du remap ({tmp_name}) a echoue: {e}"
+            ))
+        })?;
+        // M2 — durabilite de la bascule (voir `slot_remap::fsync_repertoire`).
+        crate::slot_remap::fsync_repertoire(&live_path);
+        // L'ancien mmap pointe encore sur l'inode remplace : il ne doit
+        // plus servir.
+        self.idx = sub.open_named_zone(&idx_name)?;
+        self.n_slots = n_slots;
+        self.remap_epoch = epoch;
+        // L'en-tete sur disque est exact (ecrit dans le temporaire) : la
+        // colonne n'est PAS sale.
+        self.dirty = false;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remap de slots — chemin rejeu (fichier seul, sans registre en mémoire)
+// ---------------------------------------------------------------------------
+
+impl BlobColSpec {
+    /// Inverse de [`Self::idx_filename`] — parse un nom de fichier
+    /// `substrate.blobcol.<kind>.<key_id_hex04>.idx` en spec. `None`
+    /// pour tout nom qui ne colle pas au schéma.
+    pub fn parse_idx_filename(name: &str) -> Option<Self> {
+        let rest = name.strip_prefix("substrate.blobcol.")?;
+        let mut parts = rest.split('.');
+        let kind = match parts.next()? {
+            "node" => EntityKind::Node,
+            "edge" => EntityKind::Edge,
+            _ => return None,
+        };
+        let prop_key_id = u16::from_str_radix(parts.next()?, 16).ok()?;
+        if parts.next()? != "idx" || parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            prop_key_id,
+            entity_kind: kind,
+        })
+    }
+}
+
+/// Chantier SlotRemappable — remap d'une colonne blob sur disque, sans
+/// registre en mémoire (chemin rejeu après crash). Exige les DEUX CRC
+/// valides (idx + arène) : une colonne dont l'arène est invalide est déjà
+/// « absente » pour tout lecteur — permuter son répertoire n'apporterait
+/// rien et graverait un état non vérifiable.
+pub fn remap_node_file_for_replay(
+    sub: &SubstrateFile,
+    spec: BlobColSpec,
+    old_to_new: &[u32],
+    epoch: u32,
+) -> SubstrateResult<crate::vec_column::VecRemapOutcome> {
+    use crate::vec_column::VecRemapOutcome as Outcome;
+    if spec.entity_kind != EntityKind::Node {
+        return Ok(Outcome::Absent);
+    }
+    let idx = sub.open_named_zone(&spec.idx_filename())?;
+    let dat = sub.open_named_zone(&spec.dat_filename())?;
+    if idx.is_empty() {
+        return Ok(Outcome::Absent);
+    }
+    let Some(header) = BlobColumnHeader::try_read(idx.as_slice()) else {
+        return Ok(Outcome::Absent);
+    };
+    if header.validate_against(&spec).is_err() {
+        return Ok(Outcome::Absent);
+    }
+    if header._reserved[0] >= epoch {
+        return Ok(Outcome::AlreadyApplied);
+    }
+    let idx_end = BLOB_HEADER_SIZE + (header.n_slots as usize) * BLOB_SLOT_STRIDE;
+    if idx.as_slice().len() < idx_end || (dat.as_slice().len() as u64) < header.arena_bytes {
+        return Ok(Outcome::Absent);
+    }
+    let idx_crc = {
+        let mut h = crc32fast::Hasher::new();
+        h.update(&idx.as_slice()[BLOB_HEADER_SIZE..idx_end]);
+        h.finalize()
+    };
+    if idx_crc != header.idx_crc32 {
+        return Ok(Outcome::Absent);
+    }
+    let arena_crc = {
+        let mut h = crc32fast::Hasher::new();
+        h.update(&dat.as_slice()[..header.arena_bytes as usize]);
+        h.finalize()
+    };
+    if arena_crc != header.arena_crc32 {
+        return Ok(Outcome::Absent);
+    }
+
+    // Chemin REJEU : exactement le meme code que le chemin vif — c'est la
+    // meilleure garantie que les deux ne divergent pas (et donc que le
+    // rejeu beneficie aussi de la bascule par rename, M1).
+    let mut writer = BlobColumnWriter {
+        spec,
+        idx,
+        dat,
+        n_slots: header.n_slots,
+        arena_end: header.arena_bytes,
+        arena_crc: header.arena_crc32,
+        dirty: false,
+        remap_epoch: header._reserved[0],
+    };
+    writer.remap_node_slots(sub, old_to_new, epoch)?;
+    Ok(Outcome::Applied)
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +942,112 @@ mod tests {
     #[test]
     fn magic_bytes_are_ascii_blb1() {
         assert_eq!(BLOB_COLUMN_MAGIC.to_le_bytes(), *b"BLB1");
+    }
+
+    /// L'INVARIANT du CRC incrémental (2026-08-17, mission perf DB).
+    ///
+    /// `sync` ne relit plus l'arène : il écrit le CRC tenu à jour au fil des
+    /// appends. Ce test compare cette valeur au recalcul complet sur les
+    /// octets réellement présents sur disque. S'il casse, les colonnes
+    /// écrites deviennent illisibles au prochain open (le lecteur refuse un
+    /// `arena_crc32` qui ne correspond pas) — donc perte de données.
+    #[test]
+    fn incremental_arena_crc_matches_full_recompute() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(11);
+        let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+
+        // Tailles hétérogènes, réécritures du même slot, ordre non trivial :
+        // on veut sortir du cas « un append bien aligné ».
+        for i in 0..40u32 {
+            let payload = vec![(i % 251) as u8; 1 + (i as usize * 37) % 900];
+            w.write_slot(i % 9, &payload).unwrap();
+            if i % 7 == 0 {
+                w.sync().unwrap();
+            }
+        }
+        w.sync().unwrap();
+
+        let full = {
+            let dat = sub.open_named_zone(&spec.dat_filename()).unwrap();
+            let mut h = crc32fast::Hasher::new();
+            h.update(&dat.as_slice()[..w.arena_end() as usize]);
+            h.finalize()
+        };
+        assert_eq!(
+            w.arena_crc, full,
+            "le CRC incrémental doit être IDENTIQUE au recalcul complet"
+        );
+
+        // Et le juge qui compte vraiment : un lecteur neuf accepte le fichier.
+        let r = BlobColumnReader::open(&sub, spec)
+            .unwrap()
+            .expect("le lecteur doit accepter la colonne");
+        assert_eq!(r.arena_bytes(), w.arena_end());
+    }
+
+    /// Le CRC courant doit être repris depuis l'en-tête à la réouverture,
+    /// sinon la chaîne incrémentale repart d'un préfixe faux et produit un
+    /// fichier que plus personne ne peut ouvrir.
+    #[test]
+    fn incremental_arena_crc_survives_reopen() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(12);
+
+        let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+        w.write_slot(0, b"premiere generation").unwrap();
+        w.sync().unwrap();
+        drop(w);
+
+        // Réouverture : hérite n_slots / arena_end / arena_crc de l'en-tête.
+        let mut w2 = BlobColumnWriter::create(&sub, spec).unwrap();
+        w2.write_slot(1, b"seconde generation, apres reouverture")
+            .unwrap();
+        w2.sync().unwrap();
+
+        let full = {
+            let dat = sub.open_named_zone(&spec.dat_filename()).unwrap();
+            let mut h = crc32fast::Hasher::new();
+            h.update(&dat.as_slice()[..w2.arena_end() as usize]);
+            h.finalize()
+        };
+        assert_eq!(w2.arena_crc, full, "CRC faux après réouverture");
+
+        let r = BlobColumnReader::open(&sub, spec).unwrap().unwrap();
+        assert_eq!(r.read_slot(0).unwrap(), b"premiere generation");
+        assert_eq!(
+            r.read_slot(1).unwrap(),
+            b"seconde generation, apres reouverture"
+        );
+    }
+
+    /// Une colonne froide ne doit plus rien coûter — mais elle doit rester
+    /// parfaitement lisible. C'est l'autre moitié du gain : `sync_all()`
+    /// balaie toutes les colonnes de la base à chaque checkpoint.
+    #[test]
+    fn cold_column_sync_is_a_noop_and_stays_readable() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(13);
+        let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+        w.write_slot(0, b"donnee durable").unwrap();
+        w.sync().unwrap();
+        assert!(!w.dirty, "sync réussi doit rendre la colonne propre");
+
+        // Dix checkpoints sans une seule écriture : tous no-op.
+        for _ in 0..10 {
+            w.sync().unwrap();
+            assert!(!w.dirty);
+        }
+
+        let r = BlobColumnReader::open(&sub, spec).unwrap().unwrap();
+        assert_eq!(r.read_slot(0).unwrap(), b"donnee durable");
+
+        // Une écriture resalit, et le sync suivant reprend son travail.
+        w.write_slot(1, b"seconde").unwrap();
+        assert!(w.dirty, "une écriture doit resalir la colonne");
+        w.sync().unwrap();
+        let r2 = BlobColumnReader::open(&sub, spec).unwrap().unwrap();
+        assert_eq!(r2.read_slot(1).unwrap(), b"seconde");
     }
 
     #[test]

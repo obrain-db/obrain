@@ -73,3 +73,16 @@ mimalloc-allocator = ["mimalloc"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "zero_copy"
+harness = false
+
+[[bench]]
+name = "zero_copy_suite"
+harness = false

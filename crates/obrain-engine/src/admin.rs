@@ -92,8 +92,10 @@ pub struct LabelInfo {
 pub struct EdgeTypeInfo {
     /// The edge type name.
     pub name: String,
-    /// Number of edges with this type.
-    pub count: usize,
+    /// Number of live edges with this type, or `None` when the backing store
+    /// cannot count them. Absence is not zero — see
+    /// `GraphStore::edge_counts_by_type`.
+    pub count: Option<usize>,
 }
 
 /// Schema information for RDF databases.
@@ -145,6 +147,64 @@ pub struct IndexInfo {
     pub cardinality: Option<usize>,
     /// Size in bytes.
     pub size_bytes: Option<usize>,
+}
+
+/// (mission perf, feature 2.2) Rapport de FUSION des doublons d une base :
+/// groupes par cle logique, survivant (derniere version gagne), perdants.
+/// `execute = false` = dry-run, rien n a ete touche.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RapportFusion {
+    /// Label examine.
+    pub label: String,
+    /// Cle logique de regroupement (ex. "id").
+    pub cle: String,
+    /// Noeuds vivants examines.
+    pub noeuds_examines: usize,
+    /// Groupes en doublon (>= 2 porteurs).
+    pub groupes: Vec<GroupeFusion>,
+    /// Total de perdants (fusionnes si execute, comptes sinon).
+    pub perdants: usize,
+    /// La fusion a-t-elle ete EXECUTEE (sinon : dry-run pur) ?
+    pub execute: bool,
+    /// Chemin du backup des perdants, si execute et demande.
+    pub backup: Option<String>,
+}
+
+/// Un groupe de doublons : meme valeur de cle logique.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GroupeFusion {
+    /// Valeur de la cle logique partagee.
+    pub id_logique: String,
+    /// NodeId du survivant (updated_at le plus recent, repli : NodeId max).
+    pub survivant: u64,
+    /// updated_at du survivant (vide si absent).
+    pub survivant_maj: String,
+    /// NodeIds des perdants.
+    pub perdants: Vec<u64>,
+    /// Aretes internes remontees sur le survivant (execute seulement).
+    pub aretes_remontees: usize,
+    /// Aretes inter-bases remontees (execute seulement).
+    pub externes_remontees: usize,
+}
+
+/// (V4) Sante des aretes inter-bases — instantane SANS remise a zero.
+///
+/// Les compteurs de traversee (pendantes, hotes distants, refus de droits)
+/// vivent sur le registre de session (`db.base_registry()`) ; sans
+/// `attach_bases`, ils rendent zero. Chaque champ est un load atomique :
+/// l'instantane n'est pas transactionnel entre champs (fenetre de quelques
+/// nanosecondes, documente).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InterBaseHealth {
+    /// Aretes inter-bases vivantes portees par CE store.
+    pub external_edge_count: u64,
+    /// References pendantes rencontrees a la traversee (cible absente).
+    pub dangling_refs: u64,
+    /// References vers un hote distant, jamais resolues (reserve V5).
+    pub remote_refs_unresolved: u64,
+    /// Franchissements refuses par la garde de droits (V3). Visible de
+    /// l'ADMIN — le lecteur, lui, ne distingue pas interdit d'inexistant.
+    pub access_denied_refs: u64,
 }
 
 /// WAL (Write-Ahead Log) status.
@@ -466,7 +526,7 @@ mod tests {
             }],
             edge_types: vec![EdgeTypeInfo {
                 name: "KNOWS".to_string(),
-                count: 20,
+                count: Some(20),
             }],
             property_keys: vec!["name".to_string(), "age".to_string()],
         });
@@ -476,7 +536,7 @@ mod tests {
             SchemaInfo::Lpg(lpg) => {
                 assert_eq!(lpg.labels.len(), 1);
                 assert_eq!(lpg.labels[0].name, "Person");
-                assert_eq!(lpg.edge_types[0].count, 20);
+                assert_eq!(lpg.edge_types[0].count, Some(20));
             }
             SchemaInfo::Rdf(_) => panic!("Expected LPG schema"),
         }

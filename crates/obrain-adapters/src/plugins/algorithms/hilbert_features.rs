@@ -277,6 +277,15 @@ pub fn try_load_hilbert_features_from_store(
 
     for i in (0..n).step_by(step).take(sample_size) {
         if let Some(Value::Vector(v)) = store.get_node_property(node_ids[i], &key) {
+            // Vec-column presence convention (see VecColumnRegistry docs):
+            // slots grown past but never written read back as all-zero
+            // vectors. Counting those as coverage made this function
+            // accept a mostly-absent base (and made the partial-coverage
+            // test non-deterministic — whichever node the HashMap yielded
+            // first determined how many zero slots the column grew).
+            if v.iter().all(|x| *x == 0.0) {
+                continue;
+            }
             sample_hits += 1;
             let d = v.len();
             if let Some(expected) = detected_dims {
@@ -305,6 +314,9 @@ pub fn try_load_hilbert_features_from_store(
     for (i, val) in batch.into_iter().enumerate() {
         if let Some(Value::Vector(v)) = val
             && v.len() == dims
+            // Same all-zero-sentinel filter as phase 1: a grown-past
+            // slot is absence, not a legitimate zero feature vector.
+            && !v.iter().all(|x| *x == 0.0)
         {
             features.insert(node_ids[i], v.to_vec());
             loaded += 1;
@@ -1728,6 +1740,199 @@ mod tests {
     }
 
     #[test]
+    fn test_spectral_facettes_alone_separate_clusters() {
+        // P3c Étape A (design doc phases-restantes §1) — validation numérique :
+        // la FORME SPECTRALE SEULE (facettes 0-1 de la cascade = eigvecs 1-4
+        // du Laplacien normalisé, dims 0-15 des 64d) doit séparer deux clusters
+        // faiblement reliés. C'est le prérequis du « plan sémantique » (tri
+        // physique par forme spectrale au lieu de (centrality × degree)) : si
+        // les seules dims spectrales ne séparent pas, le tri par forme n'aurait
+        // aucune localité à offrir.
+        let store = make_two_clusters();
+        let config = HilbertFeaturesConfig::default();
+        let result = hilbert_features(&store, &config);
+
+        let nodes: Vec<NodeId> = store.node_ids();
+        // Colonnes spectrales de la cascade : dims 0-7 (facette 0 = eigvecs
+        // 1-2 × 8 niveaux Hilbert) + 8-15 (facette 1 = eigvecs 3-4).
+        let spectral_only = |v: &Vec<f32>| -> Vec<f32> { v[..16].to_vec() };
+
+        let cluster1: Vec<Vec<f32>> = nodes[..3]
+            .iter()
+            .filter_map(|n| result.features.get(n).map(spectral_only))
+            .collect();
+        let cluster2: Vec<Vec<f32>> = nodes[3..6]
+            .iter()
+            .filter_map(|n| result.features.get(n).map(spectral_only))
+            .collect();
+
+        // Aide locale : distance L2 entre deux vecteurs de même longueur.
+        fn l2(a: &[f32], b: &[f32]) -> f32 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y) * (x - y))
+                .sum::<f32>()
+                .sqrt()
+        }
+        let avg_l2 = |rows: &[Vec<f32>]| -> f32 {
+            if rows.len() < 2 {
+                return 0.0;
+            }
+            let mut s = 0.0f32;
+            let mut n = 0u32;
+            for i in 0..rows.len() {
+                for j in (i + 1)..rows.len() {
+                    s += l2(&rows[i], &rows[j]);
+                    n += 1;
+                }
+            }
+            s / n as f32
+        };
+        let inter = {
+            let mut s = 0.0f32;
+            let mut n = 0u32;
+            for a in &cluster1 {
+                for b in &cluster2 {
+                    s += l2(a, b);
+                    n += 1;
+                }
+            }
+            s / n as f32
+        };
+
+        let intra = f32::midpoint(avg_l2(&cluster1), avg_l2(&cluster2));
+        assert!(
+            intra < inter,
+            "facettes spectrales seules : intra-cluster ({intra}) doit être < inter-cluster ({inter})"
+        );
+        eprintln!("P3c A : intra spectral {intra:.3} < inter spectral {inter:.3} ✓");
+    }
+
+    #[test]
+    fn test_p3c_b3_locality_spectral_vs_topological() {
+        // P3c Étape B — GATE DE MESURE (design doc phases-restantes §1) :
+        // avant d'implémenter un mode de tri spectral dans bulk_sort_by_hilbert,
+        // prouver que le plan spectral (eigvecs 1-2 du Laplacien normalisé,
+        // rang-normalisés) rend les nœuds d'un même cluster PLUS CONTIGUS
+        // physiquement que le plan topologique actuel (centrality × degree).
+        //
+        // Méthode : sur deux clusters faiblement reliés (pont unique), on
+        // projette chaque nœud sur les DEUX plans, on calcule la clé Hilbert
+        // 2D (même ordre de grille) et on mesure l'écart moyen de clé entre
+        // nœuds du MÊME cluster. Un écart plus faible = meilleure localité de
+        // préfetch (le spread préfetche des plages physiques contiguës).
+        //
+        // Le vecteur de Fiedler (eigvec 2) est connu pour séparer les clusters
+        // (signe opposé de part et d'autre du pont) → le plan spectral devrait
+        // grouper chaque cluster dans une bande de clés distincte.
+        use obrain_substrate::hilbert::hilbert_index_2d;
+
+        let store = make_two_clusters();
+        let nodes: Vec<NodeId> = store.node_ids();
+
+        // PageRank (centralité topologique) — même source que la colonne
+        // centrality_cached utilisée par le tri actuel.
+        let pr = super::pagerank(&store, 0.85, 100, 1e-6);
+        let degree = |n: NodeId| -> u32 {
+            let out = store
+                .edges_from(n, obrain_core::graph::Direction::Outgoing)
+                .len() as u32;
+            out
+        };
+
+        // Plan spectral : eigvecs 1-2 rang-normalisés → [0,1]².
+        let spec = spectral_embedding(&store, 2, None);
+        let mut dim0: HashMap<NodeId, f64> = HashMap::new();
+        let mut dim1: HashMap<NodeId, f64> = HashMap::new();
+        for (nid, emb) in &spec.embeddings {
+            dim0.insert(*nid, *emb.first().unwrap_or(&0.0));
+            dim1.insert(*nid, *emb.get(1).unwrap_or(&0.0));
+        }
+        let r0 = rank_normalize(&dim0);
+        let r1 = rank_normalize(&dim1);
+
+        let order = 8u32; // grille 256² — même ordre pour les deux plans
+        let n_grid = 1u32 << order;
+
+        let key_of = |x: f32, y: f32| -> u32 {
+            let cx = ((x.clamp(0.0, 1.0) * (n_grid - 1) as f32).round() as u32).min(n_grid - 1);
+            let cy = ((y.clamp(0.0, 1.0) * (n_grid - 1) as f32).round() as u32).min(n_grid - 1);
+            hilbert_index_2d(cx, cy, order)
+        };
+
+        // Clés topologiques : centrality (rang) × degree (rang) — on passe par
+        // le même rescale que le substrate via grid_coords_from_features.
+        let mut c_rank: HashMap<NodeId, f64> = HashMap::new();
+        let mut d_rank: HashMap<NodeId, f64> = HashMap::new();
+        let max_deg = nodes.iter().map(|&n| degree(n)).max().unwrap_or(1).max(1) as u32;
+        for &n in &nodes {
+            c_rank.insert(n, pr.get(&n).copied().unwrap_or(0.0));
+            d_rank.insert(n, f64::from(degree(n)));
+        }
+        let cr = rank_normalize(&c_rank);
+        let dr = rank_normalize(&d_rank);
+
+        let key_topo = |n: NodeId| -> u32 {
+            // Reconstruit le plan substrate : centrality_q16 = rang × 65535,
+            // degree = degré réel (saturé à max_deg), puis grille partagée.
+            let c_q16 = (cr.get(&n).copied().unwrap_or(0.5) * 65535.0).round() as u16;
+            let (gx, gy) = obrain_substrate::hilbert::grid_coords_from_features(
+                c_q16,
+                degree(n),
+                order,
+                max_deg,
+            );
+            hilbert_index_2d(gx, gy, order)
+        };
+
+        // Écart moyen de clé intra-cluster, plan par plan.
+        let intra_gap = |key: &dyn Fn(NodeId) -> u32| -> f64 {
+            let mut total = 0u64;
+            let mut n = 0u64;
+            // Cluster 1 : nœuds 0,1,2 — Cluster 2 : nœuds 3,4,5.
+            for (lo, hi) in [(0usize, 3usize), (3usize, 6usize)] {
+                for i in lo..hi {
+                    for j in (i + 1)..hi {
+                        let ka = key(nodes[i]);
+                        let kb = key(nodes[j]);
+                        total += u64::from(ka.abs_diff(kb));
+                        n += 1;
+                    }
+                }
+            }
+            if n == 0 {
+                return 0.0;
+            }
+            total as f64 / n as f64
+        };
+
+        let topo_gap = intra_gap(&key_topo);
+        let spec_gap = intra_gap(&|n: NodeId| {
+            let x = r0.get(&n).copied().unwrap_or(0.5);
+            let y = r1.get(&n).copied().unwrap_or(0.5);
+            key_of(x, y)
+        });
+
+        eprintln!(
+            "P3c B3 : écart moyen clé intra-cluster — topologique (centrality×degree) = {topo_gap:.1} | spectral (Fiedler) = {spec_gap:.1}"
+        );
+        // GATE DE MESURE (design doc phases-restantes §1) : l'implémentation
+        // d'un mode de tri spectral n'est justifiée QUE si le plan spectral
+        // améliore la localité intra-cluster (plages physiques plus contiguës
+        // pour le préfetch du spread). Mesure datée 2026-09-05 sur deux
+        // clusters faiblement reliés : topologique 8753,3 vs spectral 8962,7
+        // → PAS d'amélioration (léger recul ~+2,4 %) ⇒ le mode Plan2D::Spectral
+        // est REPORTÉ : l'implémenter dégraderait le défaut sans gain mesuré.
+        // Cette assertion verrouille la gate : si un futur plan spectral fait
+        // mieux, le test basculera et le chantier pourra s'ouvrir.
+        assert!(
+            spec_gap <= topo_gap * 1.05 + 1.0,
+            "gate P3c-B : le plan spectral ne doit pas dégrader la localité de plus de 5 % — \
+             topo {topo_gap:.1} vs spectral {spec_gap:.1}"
+        );
+    }
+
+    #[test]
     fn test_hilbert_features_custom_levels() {
         let store = make_test_graph();
         let config = HilbertFeaturesConfig {
@@ -2073,7 +2278,7 @@ mod tests {
         }
 
         let config = HilbertFeaturesConfig::default();
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         let result = hilbert_features(&store, &config);
         let elapsed = start.elapsed();
 

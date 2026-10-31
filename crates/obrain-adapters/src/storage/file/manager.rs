@@ -6,7 +6,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use obrain_common::utils::error::{Error, Result};
@@ -439,7 +439,7 @@ impl ObrainFileManager {
         let expected = active_header.checksum;
         drop(active_header);
 
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let actual = crc32fast::hash(mmap);
         let elapsed = t0.elapsed();
 

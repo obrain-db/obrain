@@ -5,11 +5,12 @@ use obrain_common::types::{EpochId, TransactionId};
 use obrain_common::utils::error::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use web_time::Instant;
 
 /// State for a single async log file.
 struct AsyncLogFile {

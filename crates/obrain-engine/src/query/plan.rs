@@ -147,6 +147,10 @@ pub enum LogicalOperator {
 
     /// Create a new edge.
     CreateEdge(CreateEdgeOp),
+    /// (2026-08-17, aretes inter-bases V1) Creation d'une arete EXTERNE :
+    /// source locale (variable liee), cible = adresse (hote?, slug, clef)
+    /// dans une autre base. Voir [`CreateExternalEdgeOp`].
+    CreateExternalEdge(CreateExternalEdgeOp),
 
     /// Delete a node.
     DeleteNode(DeleteNodeOp),
@@ -285,14 +289,218 @@ pub enum LogicalOperator {
     LoadData(LoadDataOp),
 }
 
+/// Les procedures INTEGREES dont on SAIT qu'elles lisent. Rien d'autre.
+///
+/// ── L'INVERSION DE POLARITE, APPLIQUEE AUX NOMS ──────────────────────
+///
+/// Une version precedente ne testait qu'UNE des six familles que
+/// `plan_call_procedure` sait resoudre — la procedure utilisateur — et
+/// rendait `false` pour tout le reste. Les familles 3 et 4 sont pourtant
+/// executees PENDANT la planification, donc apres que la frontiere a arme
+/// le jeton, et au moins quatre d'entre elles ECRIVENT :
+/// `obrain.cognitive.reinforce`, `obrain.engrams.forget` (effacement),
+/// `obrain.projection.create`, `obrain.projection.drop`.
+///
+/// Mesure : `CALL obrain.cognitive.reinforce(1,2)` sous jeton arme rendait
+/// `Err(Cancelled)` avec la synapse ECRITE et aucune transaction ouverte.
+/// Le mecanisme n'etait pas ignore, il etait engage a l'envers. Et c'est un
+/// chemin de PRODUCTION : `obrain.query` d'obrain-tmn passe par
+/// `execute_annulable`, et le superviseur demande explicitement a l'agent
+/// d'appeler `reinforce`.
+///
+/// La liste est donc celle des LECTURES CONNUES, et tout ce qui n'y figure
+/// pas — nom inconnu, famille non reconnue, integree ajoutee demain —
+/// compte comme une ecriture. C'est le meme geste que `mute_par_lui_meme`
+/// sans bras attrape-tout, applique aux noms au lieu des variantes : ce
+/// qu'on oublie de declarer est sur-approxime, jamais sous-estime.
+///
+/// Les chaines sont celles que `plan_call_procedure` compare, mot pour mot,
+/// sur `call.name.join(".")`.
+#[cfg(feature = "algos")]
+const PROCEDURES_DE_LECTURE: &[&str] = &[
+    // Famille 1 — le catalogue des procedures lui-meme.
+    "obrain.procedures",
+    "procedures",
+    // Famille 2 — introspection de schema (`plan_catalog_procedure`).
+    "db.labels",
+    "obrain.labels",
+    "db.relationshipTypes",
+    "obrain.relationshipTypes",
+    "db.propertyKeys",
+    "obrain.propertyKeys",
+    // Famille 3 — projection : SEULE `list` lit. `create` et `drop`
+    // ecrivent, et leur absence d'ici est ce qui les protege.
+    "obrain.projection.list",
+    "projection.list",
+    // Famille 4 — cognitives : AUCUNE n'est listee, deliberement. Deux
+    // ecrivent de facon prouvee (`reinforce`, `engrams.forget`) et je ne
+    // peux pas DEMONTRER que les autres lisent : `CognitiveEngine` est un
+    // trait a mutabilite interieure, sa signature ne prouve rien. Le prix
+    // est que trois procedures d'introspection (`engrams.list`,
+    // `engrams.inspect`, `cognitive.metrics`) perdent l'annulation et
+    // paient une transaction — elles rendent quelques lignes, c'est sans
+    // consequence. Le prix inverse serait un effacement RGPD a moitie fait.
+    //
+    // (2026-08-31) EXCEPTION PROUVEE : `obrain.cognitive.spread`. Le code
+    // (verifie au bench) ne fait QUE lire : `execute_spread` → `spread()` →
+    // `for_each_synapse` → `synapse_edges_of` (colonne) + DashMap, aucune
+    // mutation. Sans cette entree, une session `open_read_only` (le mode
+    // serveur/www de lecture) refusait le spread avec `Transaction(ReadOnly)`
+    // alors que c'est la projection cognitive par excellence. `reinforce` et
+    // `engrams.forget` restent ABSENTS — ils ecrivent, prouve.
+    "obrain.cognitive.spread",
+    "cognitive.spread",
+    // (DEC-P1) EXCEPTION PROUVÉE : `obrain.decide`. Lecture pure — la
+    // distribution calibrée est recalculée depuis des comptes lus dans le
+    // cache chaud, aucune mutation (voir `execute_decide`). Sans cette entrée,
+    // une session `open_read_only` refuserait `decide` avec
+    // `Transaction(ReadOnly)` (même piège que `spread`). `obrain.settle`
+    // reste ABSENT — il écrit, prouvé (DEC-C2).
+    "obrain.decide",
+    "decide",
+    // Fenetre 2D substrate (RFC zorder C5) : `window_query_2d_sorted` est une
+    // pure lecture (scan exact + plages Z, repli scan) — aucune mutation.
+    // Sans cette entree, une session `open_read_only` refuserait la fenetre
+    // avec `Transaction(ReadOnly)` (meme piege que `spread`, corrige plus
+    // haut). `window_2d` n'ecrit jamais : il enumere des slots vivants.
+    "obrain.window_2d",
+    "window_2d",
+    // Variante cognitive C3 (fenêtre + seuil d'énergie) : même lecture pure —
+    // scan/plages Z + lecture inline du record. Jamais d'écriture.
+    "obrain.window_2d_energy",
+    "window_2d_energy",
+    // Diff CDC graphe (search_delta) : lecture pure de la fenêtre chaude —
+    // jamais d'écriture. Sans cette entrée, une session read-only refuserait
+    // la recherche (même piège que spread/window).
+    "obrain.search_delta",
+    "search_delta",
+    // Surprise d'activité (search_surprise) : lecture pure — fenêtre CDC +
+    // degrés substrate (edge_endpoints_by_id / out_degree). Jamais d'écriture.
+    "obrain.search_surprise",
+    "search_surprise",
+    // Relief contextuel (obrain.relief) : lecture pure — recompose surprise/
+    // recency/degré/conflits depuis la fenêtre CDC + degrés. Jamais d'écriture.
+    "obrain.relief",
+    "relief",
+    // Rôle structurel (search_by_role) : CSR + diffusions HKS en mémoire —
+    // aucune écriture, aucun refresh.
+    "obrain.search_by_role",
+    "search_by_role",
+    // Dissonance d'état (search_conflicts) : lecture pure de la fenêtre CDC.
+    "obrain.search_conflicts",
+    "search_conflicts",
+    // Spread directionnel causal (search_causes/search_effects) : BFS avant/
+    // inverse amorti — lecture pure substrate.
+    "obrain.search_causes",
+    "search_causes",
+    "obrain.search_effects",
+    "search_effects",
+    // Comptage de portée (reachable_count) : fermeture par frontières
+    // distinctes sur l'adjacence substrate — lecture pure, aucune écriture.
+    "obrain.reachable_count",
+    "reachable_count",
+];
+
 impl LogicalOperator {
     /// Returns `true` if this operator or any of its children perform mutations.
+    ///
+    /// ── DERIVEE DE `children()`, ET C'EST TOUT L'INTERET (2026-08-24) ──
+    ///
+    /// La version precedente re-declarait la structure de l'arbre a la main,
+    /// arme par arme. Elle mentait sur SEPT operateurs — `NodeScan`,
+    /// `EdgeScan`, `TripleScan`, `VectorScan` (enfant optionnel), `Expand`,
+    /// `ShortestPath`, `VectorJoin` (enfant REQUIS) — qu'elle traitait en
+    /// feuilles alors que `children()`, dans le meme `impl`, leur donne un
+    /// enfant. Une ecriture placee sous l'un d'eux etait invisible a la
+    /// frontiere d'annulation, bien qu'elle fut PRESENTE dans le plan.
+    ///
+    /// Deux consequences mesurees sur le commit precedent :
+    ///
+    ///   · `MATCH (b:Big) CREATE (c:Copie {v: b.v}) MATCH (z:S) RETURN
+    ///     count(z)` rendait `false`, et annule en vol laissait des milliers
+    ///     de noeuds persistes sans transaction ni retour arriere ;
+    ///   · `MATCH (b:Big) DETACH DELETE b MATCH (z:S) RETURN count(z)`
+    ///     rendait `false` aussi, et DETRUISAIT des milliers de noeuds sur
+    ///     une requete que le moteur declarait annulee.
+    ///
+    /// Corriger les sept aurait garanti un huitieme — c'est exactement le
+    /// raisonnement qui a sorti la frontiere de chaque point d'entree pour
+    /// la poser une fois. La recursion ne re-declare donc plus rien : elle
+    /// DEMANDE ses enfants a `children()`, seule autorite sur la forme de
+    /// l'arbre. Un operateur ajoute demain avec un enfant sera couvert sans
+    /// que son auteur y pense, pourvu qu'il le declare a `children()` — ce
+    /// que le profileur l'obligera de toute facon a faire.
+    ///
+    /// La condition de validite est que `children()` ne mente pas. Elle est
+    /// verifiee par `children_ne_ment_pas` (voir les tests) : aucun champ de
+    /// type `LogicalOperator` d'aucune struct d'operateur ne lui echappe, et
+    /// elle ne rend aucun enfant qui n'existe pas.
     #[must_use]
     pub fn has_mutations(&self) -> bool {
+        self.mutations_avec(None)
+    }
+
+    /// [`has_mutations`] en connaissance du CATALOGUE.
+    ///
+    /// ── POURQUOI UN CATALOGUE, ET POURQUOI PAS UN DRAPEAU ────────────
+    ///
+    /// `CallProcedure` couvre six familles. Cinq sont des lectures
+    /// certaines — `obrain.procedures()`, l'introspection de catalogue, les
+    /// procedures de projection (dont le resultat est calcule des la
+    /// PLANIFICATION), les procedures cognitives, et les algorithmes
+    /// integres `pagerank` / `sssp`. Une seule est inconnaissable depuis le
+    /// plan : la procedure UTILISATEUR, dont le corps vit en texte dans le
+    /// catalogue.
+    ///
+    /// Repondre `true` en bloc — ce que faisait la version precedente —
+    /// retirait l'annulation a `CALL obrain.pagerank` sur un gros graphe,
+    /// c'est-a-dire exactement au genre de calcul long qui a motive tout ce
+    /// travail (« 700-800 % de CPU en permanence »). C'etait une regression,
+    /// pas une precaution.
+    ///
+    /// Le test decisif est le MEME que celui du planificateur, mot pour
+    /// mot : `catalog.get_procedure(dernier_segment).is_some()`. Il n'y a
+    /// donc pas deux logiques de resolution a garder d'accord — la seule
+    /// facon connue de les faire diverger serait de les ecrire deux fois.
+    ///
+    /// SURETE, dans les deux sens :
+    ///
+    ///   · sans catalogue (`None`), tout `CALL` compte comme une ecriture.
+    ///     Un appelant qui oublie de fournir le catalogue sur-approxime,
+    ///     donc protege ;
+    ///   · avec catalogue, une procedure utilisateur rend toujours `true`,
+    ///     y compris si son nom est masque par une famille statique — le
+    ///     planificateur executerait alors la famille statique, qui LIT, et
+    ///     nous aurions sur-approxime. Encore la direction sure.
+    ///
+    /// Et le verdict n'est PAS memorise dans le plan. Un drapeau pose dans
+    /// `CallProcedureOp` serait fige au moment ou le plan entre au cache,
+    /// et un `CREATE PROCEDURE` ulterieur le rendrait faux sans que rien ne
+    /// l'invalide. Ici la question est reposee a chaque execution, contre le
+    /// catalogue vivant.
+    #[must_use]
+    pub fn mutations_avec(&self, catalogue: Option<&crate::catalog::Catalog>) -> bool {
+        self.mute_par_lui_meme(catalogue)
+            || self.children().iter().any(|c| c.mutations_avec(catalogue))
+    }
+
+    /// Cet operateur, PRIS SEUL, ecrit-il ? Sans regarder ses enfants.
+    ///
+    /// ── PAS DE BRAS `_` : LE COMPILATEUR TIENT LA LISTE ──────────────
+    ///
+    /// Le filet de `has_mutations` couvre l'oubli de RECURSION ; celui-ci
+    /// couvre l'oubli de CLASSIFICATION. Un bras attrape-tout rendrait
+    /// `false` par defaut pour toute variante ajoutee — c'est-a-dire
+    /// « lecture » pour un operateur dont personne n'a rien dit, la
+    /// mauvaise direction. L'enumeration est donc exhaustive et sans
+    /// joker : ajouter une variante a `LogicalOperator` ne compile plus
+    /// tant que son auteur n'a pas repondu a la question.
+    fn mute_par_lui_meme(&self, catalogue: Option<&crate::catalog::Catalog>) -> bool {
         match self {
-            // Direct mutation operators
+            // ── ECRIVENT ────────────────────────────────────────────
             Self::CreateNode(_)
             | Self::CreateEdge(_)
+            | Self::CreateExternalEdge(_)
             | Self::DeleteNode(_)
             | Self::DeleteEdge(_)
             | Self::SetProperty(_)
@@ -312,42 +520,92 @@ impl LogicalOperator {
             | Self::AddGraph(_)
             | Self::CreatePropertyGraph(_) => true,
 
-            // Operators with an `input` child
-            Self::Filter(op) => op.input.has_mutations(),
-            Self::Project(op) => op.input.has_mutations(),
-            Self::Aggregate(op) => op.input.has_mutations(),
-            Self::Limit(op) => op.input.has_mutations(),
-            Self::Skip(op) => op.input.has_mutations(),
-            Self::Sort(op) => op.input.has_mutations(),
-            Self::Distinct(op) => op.input.has_mutations(),
-            Self::Unwind(op) => op.input.has_mutations(),
-            Self::Bind(op) => op.input.has_mutations(),
-            Self::MapCollect(op) => op.input.has_mutations(),
-            Self::Return(op) => op.input.has_mutations(),
-            Self::HorizontalAggregate(op) => op.input.has_mutations(),
-            Self::VectorScan(_) | Self::VectorJoin(_) => false,
+            // ── LE CAS QU'ON NE PEUT PAS TRANCHER SUR LE PLAN SEUL ──
+            //
+            // `CallProcedure` couvre six familles, dont cinq sont des
+            // lectures certaines (introspection, projection, cognitif,
+            // algorithmes integres) et une seule est inconnaissable : la
+            // procedure UTILISATEUR, dont le corps n'est pas dans le plan
+            // mais en TEXTE dans le catalogue, et qui peut ecrire.
+            //
+            Self::CallProcedure(op) => Self::procedure_mute(op, catalogue),
 
-            // Operators with two children
-            Self::Join(op) => op.left.has_mutations() || op.right.has_mutations(),
-            Self::LeftJoin(op) => op.left.has_mutations() || op.right.has_mutations(),
-            Self::AntiJoin(op) => op.left.has_mutations() || op.right.has_mutations(),
-            Self::Except(op) => op.left.has_mutations() || op.right.has_mutations(),
-            Self::Intersect(op) => op.left.has_mutations() || op.right.has_mutations(),
-            Self::Otherwise(op) => op.left.has_mutations() || op.right.has_mutations(),
-            Self::Union(op) => op.inputs.iter().any(|i| i.has_mutations()),
-            Self::MultiWayJoin(op) => op.inputs.iter().any(|i| i.has_mutations()),
-            Self::Apply(op) => op.input.has_mutations() || op.subplan.has_mutations(),
-
-            // Leaf operators (read-only)
+            // ── NE FONT QUE LIRE, OU NE FONT QUE COMBINER ───────────
+            //
+            // Leurs enfants sont traites par `has_mutations`; ce bras ne
+            // parle QUE de l'operateur lui-meme.
             Self::NodeScan(_)
             | Self::EdgeScan(_)
-            | Self::Expand(_)
             | Self::TripleScan(_)
+            | Self::VectorScan(_)
+            | Self::VectorJoin(_)
+            | Self::Expand(_)
             | Self::ShortestPath(_)
-            | Self::Empty
+            | Self::Filter(_)
+            | Self::Project(_)
+            | Self::Aggregate(_)
+            | Self::HorizontalAggregate(_)
+            | Self::Limit(_)
+            | Self::Skip(_)
+            | Self::Sort(_)
+            | Self::Distinct(_)
+            | Self::Unwind(_)
+            | Self::Bind(_)
+            | Self::MapCollect(_)
+            | Self::Return(_)
+            | Self::Join(_)
+            | Self::LeftJoin(_)
+            | Self::AntiJoin(_)
+            | Self::Except(_)
+            | Self::Intersect(_)
+            | Self::Otherwise(_)
+            | Self::Union(_)
+            | Self::MultiWayJoin(_)
+            | Self::Apply(_)
             | Self::ParameterScan(_)
-            | Self::CallProcedure(_)
-            | Self::LoadData(_) => false,
+            | Self::LoadData(_)
+            | Self::Empty => false,
+        }
+    }
+
+    /// Un `CALL` mute-t-il ? Les six familles de `plan_call_procedure`,
+    /// dans SON ordre de resolution.
+    ///
+    ///   1-4. familles statiques, resolues sur le NOM avant tout acces au
+    ///        catalogue : lecture si et seulement si le nom figure dans
+    ///        [`PROCEDURES_DE_LECTURE`] ;
+    ///   5.   procedure UTILISATEUR — le corps vit en texte dans le
+    ///        catalogue et peut ecrire : toujours une ecriture ;
+    ///   6.   algorithme du registre — lecture par CONSTRUCTION, le trait
+    ///        `GraphAlgorithm` ne recoit qu'un `&dyn GraphStore`.
+    ///
+    /// Tout le reste rend `true`.
+    #[allow(unused_variables)]
+    fn procedure_mute(op: &CallProcedureOp, catalogue: Option<&crate::catalog::Catalog>) -> bool {
+        #[cfg(not(feature = "algos"))]
+        {
+            // Sans `algos`, `plan_call_procedure` n'existe pas et tout `CALL`
+            // echoue a la planification. Rien a classer, et la reponse sure
+            // reste la meme.
+            true
+        }
+        #[cfg(feature = "algos")]
+        {
+            let nom = op.name.join(".");
+            if PROCEDURES_DE_LECTURE.contains(&nom.as_str()) {
+                return false;
+            }
+            // Famille 5. Sans catalogue on ne peut pas trancher : on
+            // sur-approxime, donc on protege.
+            let Some(cat) = catalogue else {
+                return true;
+            };
+            let court = op.name.last().map_or("", String::as_str);
+            if cat.get_procedure(court).is_some() {
+                return true;
+            }
+            // Famille 6, puis l'inconnu.
+            !crate::procedures::est_algorithme_integre(&op.name)
         }
     }
 
@@ -384,6 +642,7 @@ impl LogicalOperator {
             Self::Merge(op) => vec![&*op.input],
             Self::MergeRelationship(op) => vec![&*op.input],
             Self::CreateEdge(op) => vec![&*op.input],
+            Self::CreateExternalEdge(op) => vec![&*op.input],
             Self::DeleteNode(op) => vec![&*op.input],
             Self::DeleteEdge(op) => vec![&*op.input],
             Self::SetProperty(op) => vec![&*op.input],
@@ -466,6 +725,9 @@ impl LogicalOperator {
                         format!(" [range: {property}]")
                     }
                     Some(PushdownHint::LabelFirst) => " [label-first]".to_string(),
+                    Some(PushdownHint::SourceCap { count }) => {
+                        format!(" [cap: {count}]")
+                    }
                     None => String::new(),
                 };
                 format!("{}{hint}", fmt_expr(&op.predicate))
@@ -622,6 +884,9 @@ impl LogicalOperator {
                         format!(" [range: {property}]")
                     }
                     Some(PushdownHint::LabelFirst) => " [label-first]".to_string(),
+                    Some(PushdownHint::SourceCap { count }) => {
+                        format!(" [cap: {count}]")
+                    }
                     None => String::new(),
                 };
                 let _ = writeln!(
@@ -818,6 +1083,19 @@ impl LogicalOperator {
                     input.fmt_tree(out, depth + 1);
                 }
             }
+            Self::CreateExternalEdge(op) => {
+                let hote = op.to_host.as_deref().unwrap_or("");
+                let _ = writeln!(
+                    out,
+                    "{indent}CreateExternalEdge{merge} ({from})-[:{ty}]->ref({hote:?}, {store:?}, {key:?})",
+                    merge = if op.merge { " (merge)" } else { "" },
+                    from = op.from_variable,
+                    ty = op.edge_type,
+                    store = op.to_store,
+                    key = op.to_key
+                );
+                op.input.fmt_tree(out, depth + 1);
+            }
             Self::CreateEdge(op) => {
                 let var = op.variable.as_deref().unwrap_or("?");
                 let _ = writeln!(
@@ -950,6 +1228,9 @@ pub struct NodeScanOp {
     pub label: Option<String>,
     /// Child operator (if any, for chained patterns).
     pub input: Option<Box<LogicalOperator>>,
+    /// (2026-08-31) Hint de pushdown posé par l'annotation (RUN 21) :
+    /// `SourceCap` borne le scan quand un Limit est au-dessus d'un Expand.
+    pub pushdown_hint: Option<PushdownHint>,
 }
 
 /// Scan edges from the graph.
@@ -1207,6 +1488,18 @@ pub enum PushdownHint {
     },
     /// No index available, but label narrows the scan before filtering.
     LabelFirst,
+    /// (2026-08-31) CAP DE SOURCES — un `Limit(n)` au-dessus d'une chaîne
+    /// `Limit → Return/Filter → Expand → NodeScan(label)` peut borner le
+    /// scan amont : le NodeScan ne matérialise qu'un petit lot de sources au
+    /// lieu de TOUT le label (mesuré : matérialiser 3 725 ids coûte ~1 ms
+    /// même pour un `LIMIT 3` dont les résultats sortent dès la 3e source).
+    /// Le facteur compense les sources rejetées par l'expand (pas d'arête du
+    /// type demandé). Consommé par le planner pour choisir
+    /// `nodes_by_label_capped`.
+    SourceCap {
+        /// Nombre de sources à demander au scan.
+        count: usize,
+    },
 }
 
 /// Filter rows based on a predicate.
@@ -1369,6 +1662,12 @@ pub struct SetPropertyOp {
     pub replace: bool,
     /// Whether the target variable is an edge (vs. node).
     pub is_edge: bool,
+    /// Whether the listed properties must be REMOVED (real key deletion)
+    /// rather than assigned. `REMOVE n.x` compiles with `remove: true` so the
+    /// executor calls `remove_*_property` (tombstone + `RemoveNodeProperty`
+    /// WAL record) instead of writing a stored NULL. The property expressions
+    /// are ignored on this path.
+    pub remove: bool,
     /// Input operator.
     pub input: Box<LogicalOperator>,
 }
@@ -1549,6 +1848,31 @@ pub struct MapCollectOp {
     /// Output variable alias.
     pub alias: String,
     /// Input operator (typically a grouped aggregate).
+    pub input: Box<LogicalOperator>,
+}
+
+/// (2026-08-17, aretes inter-bases V1) Creation d'une arete EXTERNE.
+///
+/// La SOURCE est une variable liee de la base courante ; la CIBLE est une
+/// ADRESSE `(to_host, to_store, to_key)` — jamais resolue a l'ecriture
+/// (spec : une seule WAL, celle du store source). `merge = true` pour la
+/// variante MERGE : idempotente, une arete identique n'est pas dupliquee.
+/// Pas de variable d'arete ni de proprietes en V1.
+#[derive(Debug, Clone)]
+pub struct CreateExternalEdgeOp {
+    /// Variable source (doit etre liee par l'amont).
+    pub from_variable: String,
+    /// Type d'arete.
+    pub edge_type: String,
+    /// Hote de la base cible (`None` = local ; multi-host reserve).
+    pub to_host: Option<String>,
+    /// Slug de la base cible.
+    pub to_store: String,
+    /// Clef du noeud cible (numerique = NodeId, sinon propriete "id").
+    pub to_key: String,
+    /// Variante MERGE (idempotente).
+    pub merge: bool,
+    /// Input operator.
     pub input: Box<LogicalOperator>,
 }
 
@@ -2226,6 +2550,7 @@ mod tests {
                 variable: "n".into(),
                 label: Some("Person".into()),
                 input: None,
+                pushdown_hint: None,
             })),
         }));
 
@@ -2268,6 +2593,7 @@ mod tests {
                     variable: "n".into(),
                     label: Some("Person".into()),
                     input: None,
+                    pushdown_hint: None,
                 })),
                 pushdown_hint: None,
             })),
@@ -2286,5 +2612,235 @@ mod tests {
         } else {
             panic!("Expected Return");
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LE VERROU STRUCTUREL
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod verrou_structurel {
+    //! Ce module ne teste pas des CAS, il teste une PROPRIETE.
+    //!
+    //! `has_mutations` est derivee de `children()`. La derivation rend la
+    //! classe « un operateur porte un sous-plan que la recursion ne visite
+    //! pas » structurellement impossible — A UNE CONDITION : que
+    //! `children()` ne mente pas lui-meme. C'est le seul point d'echec de
+    //! l'approche, et c'est celui que ce module ferme.
+    //!
+    //! Il relit le source de `plan.rs` et verifie, VARIANTE PAR VARIANTE,
+    //! que tout champ de type `LogicalOperator` — sous quelque forme que ce
+    //! soit, `Box`, `Option<Box>`, `Vec`, cote droit de jointure, sous-plan
+    //! de sous-requete — est bien rendu par `children()`. Une variante
+    //! ajoutee demain avec un sous-plan que ni l'une ni l'autre ne voit fait
+    //! ECHOUER ce test, et non passer la suite en silence.
+    //!
+    //! Analyse textuelle, donc faillible : elle est ecrite pour ECHOUER
+    //! quand elle ne comprend pas, jamais pour passer. Les gardes
+    //! d'anti-vacuite en tete de chaque test en sont la contrepartie.
+
+    const SOURCE: &str = include_str!("plan.rs");
+
+    /// Extrait le corps d'un bloc `entete { ... }` par comptage d'accolades.
+    fn corps_de(entete: &str) -> String {
+        let debut = SOURCE
+            .find(entete)
+            .unwrap_or_else(|| panic!("introuvable dans plan.rs : {entete}"));
+        let apres = debut + entete.len();
+        let reste = &SOURCE[apres..];
+        let mut profondeur = 1usize;
+        for (i, c) in reste.char_indices() {
+            match c {
+                '{' => profondeur += 1,
+                '}' => {
+                    profondeur -= 1;
+                    if profondeur == 0 {
+                        return reste[..i].to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("accolade non fermee apres : {entete}");
+    }
+
+    /// Les variantes de l'enum : `(Variante, Some(StructOp))`.
+    fn variantes() -> Vec<(String, Option<String>)> {
+        let corps = corps_de("pub enum LogicalOperator {");
+        let mut out = Vec::new();
+        for ligne in corps.lines() {
+            let l = ligne.trim();
+            if l.starts_with("//") || l.starts_with("#[") || l.is_empty() {
+                continue;
+            }
+            let Some(sans_virgule) = l.strip_suffix(',') else {
+                continue;
+            };
+            if let Some((nom, reste)) = sans_virgule.split_once('(') {
+                let Some(st) = reste.strip_suffix(')') else {
+                    continue;
+                };
+                if nom.chars().next().is_some_and(char::is_uppercase) {
+                    out.push((nom.to_string(), Some(st.to_string())));
+                }
+            } else if sans_virgule.chars().all(|c| c.is_alphanumeric())
+                && sans_virgule.chars().next().is_some_and(char::is_uppercase)
+            {
+                out.push((sans_virgule.to_string(), None));
+            }
+        }
+        out
+    }
+
+    /// Les champs d'une struct dont le TYPE mentionne `LogicalOperator`.
+    fn champs_sous_plan(struct_op: &str) -> Vec<String> {
+        let entete = format!("pub struct {struct_op} {{");
+        if !SOURCE.contains(&entete) {
+            return Vec::new();
+        }
+        let corps = corps_de(&entete);
+        let mut out = Vec::new();
+        for ligne in corps.lines() {
+            let l = ligne.trim();
+            if !l.starts_with("pub ") || !l.contains("LogicalOperator") {
+                continue;
+            }
+            let sans = l.trim_start_matches("pub ");
+            if let Some((nom, _typ)) = sans.split_once(':') {
+                out.push(nom.trim().to_string());
+            }
+        }
+        out
+    }
+
+    /// `corps` contient-il `op.<champ>` suivi d'un non-identifiant ?
+    /// (`op.input` ne doit PAS satisfaire une recherche de `op.inputs`.)
+    fn mentionne_champ(corps: &str, champ: &str) -> bool {
+        let motif = format!("op.{champ}");
+        let mut depuis = 0usize;
+        while let Some(i) = corps[depuis..].find(&motif) {
+            let fin = depuis + i + motif.len();
+            let suivant = corps[fin..].chars().next();
+            if !suivant.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                return true;
+            }
+            depuis = fin;
+        }
+        false
+    }
+
+    #[test]
+    fn children_ne_ment_pas() {
+        let vars = variantes();
+        assert!(
+            vars.len() >= 40,
+            "ANTI-VACUITE : seulement {} variantes reconnues, l'analyse du \
+             source est cassee et ce test ne prouverait rien",
+            vars.len()
+        );
+        let children = corps_de("pub fn children(&self) -> Vec<&LogicalOperator> {");
+
+        let mut avec_enfants = 0usize;
+        let mut fautes: Vec<String> = Vec::new();
+
+        for (variante, struct_op) in &vars {
+            let champs = struct_op
+                .as_deref()
+                .map(champs_sous_plan)
+                .unwrap_or_default();
+            let bras = format!("Self::{variante}(op) =>");
+            let lie_op = children.contains(&bras);
+
+            if champs.is_empty() {
+                // Vraie feuille : `children()` ne doit lier aucun `op` pour
+                // en tirer des enfants.
+                if lie_op {
+                    fautes.push(format!(
+                        "{variante} : aucun champ de type LogicalOperator dans \
+                         {struct_op:?}, mais children() en rend un — l'une des \
+                         deux lectures est fausse"
+                    ));
+                }
+                continue;
+            }
+
+            avec_enfants += 1;
+            if !lie_op {
+                fautes.push(format!(
+                    "{variante} porte un sous-plan {champs:?} et children() le \
+                     traite en FEUILLE : la recursion de has_mutations ne \
+                     descendra jamais dedans. C'est la classe de defaut qui a \
+                     produit deux ecritures fausses le 2026-08-24."
+                ));
+                continue;
+            }
+            // Le bras existe : il doit citer CHAQUE champ porteur.
+            let debut = children.find(&bras).expect("bras present");
+            let fin = children[debut..]
+                .find(",\n")
+                .map_or(children.len(), |o| debut + o);
+            let texte_bras = &children[debut..fin];
+            for champ in &champs {
+                if !mentionne_champ(texte_bras, champ) {
+                    fautes.push(format!(
+                        "{variante} : le champ `{champ}` porte un sous-plan et \
+                         n'apparait PAS dans le bras children() `{texte_bras}` \
+                         — un sous-arbre entier est invisible"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            avec_enfants >= 30,
+            "ANTI-VACUITE : seulement {avec_enfants} variantes a sous-plan \
+             reconnues, l'analyse est cassee"
+        );
+        assert!(
+            fautes.is_empty(),
+            "children() ment, donc has_mutations() herite du mensonge :\n  - {}",
+            fautes.join("\n  - ")
+        );
+    }
+
+    #[test]
+    fn mute_par_lui_meme_n_a_pas_de_bras_attrape_tout() {
+        let corps = corps_de(
+            "fn mute_par_lui_meme(&self, catalogue: Option<&crate::catalog::Catalog>) -> bool {",
+        );
+        assert!(
+            corps.contains("Self::CreateNode(_)"),
+            "ANTI-VACUITE : le corps lu ne ressemble pas a la classification"
+        );
+        for joker in ["_ =>", "_ if", "| _ =>"] {
+            assert!(
+                !corps.contains(joker),
+                "un bras attrape-tout ({joker}) rendrait `false` par defaut \
+                 pour toute variante ajoutee — c'est-a-dire « lecture » pour \
+                 un operateur dont personne n'a rien dit. L'exhaustivite sans \
+                 joker est ce qui transforme l'oubli de classification en \
+                 erreur de COMPILATION."
+            );
+        }
+    }
+
+    #[test]
+    fn has_mutations_derive_bien_de_children() {
+        let corps = corps_de(
+            "pub fn mutations_avec(&self, catalogue: Option<&crate::catalog::Catalog>) -> bool {",
+        );
+        let compact: String = corps.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("self.children()"),
+            "la recursion doit DEMANDER ses enfants a children(), pas les \
+             re-declarer arme par arme : c'est la re-declaration qui a menti \
+             sur sept operateurs. Corps lu : {corps}"
+        );
+        assert!(
+            compact.contains("mute_par_lui_meme"),
+            "la derivation doit combiner la mutation PROPRE et celle des \
+             enfants. Corps lu : {corps}"
+        );
     }
 }

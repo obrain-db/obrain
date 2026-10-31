@@ -656,7 +656,7 @@ fn render_node_signals_section(live_nodes: &[(u32, &NodeRecord)]) {
 fn iso_utc_now() -> String {
     // SystemTime is enough for a header stamp; avoid chrono to keep the
     // dep graph small. Format: RFC3339-ish minute precision.
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

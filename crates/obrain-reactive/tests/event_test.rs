@@ -362,11 +362,11 @@ fn batch_new_with_events() {
 
 #[test]
 fn batch_timestamp_is_recent() {
-    let before = std::time::Instant::now();
+    let before = web_time::Instant::now();
     let batch = MutationBatch::new(vec![MutationEvent::NodeCreated {
         node: make_node(1, &[]),
     }]);
-    let after = std::time::Instant::now();
+    let after = web_time::Instant::now();
     assert!(batch.timestamp >= before);
     assert!(batch.timestamp <= after);
 }

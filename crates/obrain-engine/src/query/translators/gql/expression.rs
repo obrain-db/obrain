@@ -278,19 +278,24 @@ impl GqlTranslator {
                 .map_or_else(|| Value::String(s.clone().into()), Value::Duration),
             ast::Literal::Datetime(s) => {
                 // Try full ISO datetime: YYYY-MM-DDTHH:MM:SS[.fff][Z|+HH:MM]
-                if let Some(pos) = s.find('T') {
+                // — séparateur 't' minuscule admis (RFC 3339 §4.2, gql_15
+                // D11). Une écriture ILLISIBLE rend NULL, comme
+                // `toDatetime()` : la dégrader en chaîne la faisait
+                // disparaître de tout filtre temporel sans erreur (gql_15
+                // D10 — deux régimes d'échec pour la même faute).
+                if let Some(pos) = s.find(['T', 't']) {
                     if let (Some(d), Some(t)) = (
                         obrain_common::types::Date::parse(&s[..pos]),
                         obrain_common::types::Time::parse(&s[pos + 1..]),
                     ) {
                         Value::Timestamp(obrain_common::types::Timestamp::from_date_time(d, t))
                     } else {
-                        Value::String(s.clone().into())
+                        Value::Null
                     }
                 } else if let Some(d) = obrain_common::types::Date::parse(s) {
                     Value::Timestamp(d.to_timestamp())
                 } else {
-                    Value::String(s.clone().into())
+                    Value::Null
                 }
             }
             ast::Literal::ZonedDatetime(s) => obrain_common::types::ZonedDatetime::parse(s)

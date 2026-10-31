@@ -125,73 +125,30 @@ impl ColumnPredicate {
         Self::new(level, column, CompareOp::Gt, value)
     }
 
+    /// Verdict via le comparateur canonique (`value_cmp`) — le dialecte
+    /// local est SUPPRIMÉ. Il portait DEUX défauts recensés : l'or-pattern
+    /// `(Int64(a), Float64(b)) | (Float64(b), Int64(a))` échangeait les
+    /// liaisons gauche/droite (un `<` devenait `>`), et l'égalité flottante
+    /// par EPSILON absolu. Sémantique désormais identique à l'évaluateur :
+    /// classes disjointes ou NULL → pas de correspondance (UNKNOWN n'est pas
+    /// vrai), NaN → faux partout sauf `<>`.
     fn compare_values(&self, left: &Value) -> bool {
-        match (&left, &self.value) {
-            (Value::Int64(a), Value::Int64(b)) => match self.op {
-                CompareOp::Eq => a == b,
-                CompareOp::Ne => a != b,
-                CompareOp::Lt => a < b,
-                CompareOp::Le => a <= b,
-                CompareOp::Gt => a > b,
-                CompareOp::Ge => a >= b,
-            },
-            (Value::Float64(a), Value::Float64(b)) => match self.op {
-                CompareOp::Eq => (a - b).abs() < f64::EPSILON,
-                CompareOp::Ne => (a - b).abs() >= f64::EPSILON,
-                CompareOp::Lt => a < b,
-                CompareOp::Le => a <= b,
-                CompareOp::Gt => a > b,
-                CompareOp::Ge => a >= b,
-            },
-            (Value::String(a), Value::String(b)) => match self.op {
-                CompareOp::Eq => a == b,
-                CompareOp::Ne => a != b,
-                CompareOp::Lt => a < b,
-                CompareOp::Le => a <= b,
-                CompareOp::Gt => a > b,
-                CompareOp::Ge => a >= b,
-            },
-            (Value::Bool(a), Value::Bool(b)) => match self.op {
-                CompareOp::Eq => a == b,
-                CompareOp::Ne => a != b,
-                _ => false,
-            },
-            (Value::Int64(a), Value::Float64(b)) | (Value::Float64(b), Value::Int64(a)) => {
-                let af = *a as f64;
-                match self.op {
-                    CompareOp::Eq => (af - b).abs() < f64::EPSILON,
-                    CompareOp::Ne => (af - b).abs() >= f64::EPSILON,
-                    CompareOp::Lt => af < *b,
-                    CompareOp::Le => af <= *b,
-                    CompareOp::Gt => af > *b,
-                    CompareOp::Ge => af >= *b,
+        use obrain_common::types::value_cmp::{self, Comparaison};
+        match self.op {
+            CompareOp::Eq => value_cmp::egaler(left, &self.value) == Some(true),
+            CompareOp::Ne => value_cmp::egaler(left, &self.value) == Some(false),
+            CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
+                match value_cmp::comparer(left, &self.value) {
+                    Comparaison::Ordonnees(o) => match self.op {
+                        CompareOp::Lt => o.is_lt(),
+                        CompareOp::Le => o.is_le(),
+                        CompareOp::Gt => o.is_gt(),
+                        CompareOp::Ge => o.is_ge(),
+                        _ => unreachable!(),
+                    },
+                    Comparaison::NonOrdonnees | Comparaison::Incomparables => false,
                 }
             }
-            (Value::Timestamp(a), Value::Timestamp(b)) => match self.op {
-                CompareOp::Eq => a == b,
-                CompareOp::Ne => a != b,
-                CompareOp::Lt => a < b,
-                CompareOp::Le => a <= b,
-                CompareOp::Gt => a > b,
-                CompareOp::Ge => a >= b,
-            },
-            (Value::Date(a), Value::Date(b)) => match self.op {
-                CompareOp::Eq => a == b,
-                CompareOp::Ne => a != b,
-                CompareOp::Lt => a < b,
-                CompareOp::Le => a <= b,
-                CompareOp::Gt => a > b,
-                CompareOp::Ge => a >= b,
-            },
-            (Value::Time(a), Value::Time(b)) => match self.op {
-                CompareOp::Eq => a == b,
-                CompareOp::Ne => a != b,
-                CompareOp::Lt => a < b,
-                CompareOp::Le => a <= b,
-                CompareOp::Gt => a > b,
-                CompareOp::Ge => a >= b,
-            },
-            _ => false, // Type mismatch
         }
     }
 }

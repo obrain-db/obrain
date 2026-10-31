@@ -101,6 +101,11 @@ fn compare_rows(a: &[Value], b: &[Value], keys: &[SortKey]) -> Ordering {
         let a_val = a.get(key.column);
         let b_val = b.get(key.column);
 
+        // Placement des NULL ABSOLU : First/Last désignent une extrémité de
+        // la SORTIE, quelle que soit la direction. La direction n'inverse que
+        // la comparaison des valeurs non-NULL — jamais le verdict entier
+        // (même sémantique que operators/sort.rs ; ce pipeline push est du
+        // code mort connu, corrigé en cohérence avec les trois autres sites).
         let ordering = match (a_val, b_val) {
             (Some(Value::Null), Some(Value::Null)) => Ordering::Equal,
             (Some(Value::Null), _) => match key.null_order {
@@ -111,13 +116,11 @@ fn compare_rows(a: &[Value], b: &[Value], keys: &[SortKey]) -> Ordering {
                 NullOrder::First => Ordering::Greater,
                 NullOrder::Last => Ordering::Less,
             },
-            (Some(a), Some(b)) => compare_values_total(a, b),
+            (Some(a), Some(b)) => match key.direction {
+                SortDirection::Ascending => compare_values_total(a, b),
+                SortDirection::Descending => compare_values_total(a, b).reverse(),
+            },
             _ => Ordering::Equal,
-        };
-
-        let ordering = match key.direction {
-            SortDirection::Ascending => ordering,
-            SortDirection::Descending => ordering.reverse(),
         };
 
         if ordering != Ordering::Equal {
