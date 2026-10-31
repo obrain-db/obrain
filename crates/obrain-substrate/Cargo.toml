@@ -16,6 +16,11 @@ description = "Topology-as-storage substrate: mmap + WAL + fixed-size Pod record
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fs2 = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# Verrou de répertoire PAR PROCESSUS (`fcntl(F_SETLK)`), non hérité par un
+# enfant pendant sa fenêtre clone→execve — voir `file::verrouiller_fichier`.
+libc = "0.2"
+
 [dependencies]
 # Graph traits + shared ID/value types. Kept default-features-off so we don't
 # pull in LpgStore's tree (rayon, tokio, mmap). The GraphStore trait surface
