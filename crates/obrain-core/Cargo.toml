@@ -93,6 +93,10 @@ workspace = true
 [[bench]]
 name = "index_bench"
 harness = false
+# Le banc exerce HnswIndex/HnswConfig, qui vivent derrière `vector-index` :
+# sans cette déclaration il compile en workspace (unification des features)
+# et casse en `cargo bench -p obrain-core` seul (E0432, mesuré le 2026-10-31).
+required-features = ["vector-index"]
 
 [[example]]
 name = "bench_bm25"
