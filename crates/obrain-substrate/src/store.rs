@@ -2382,6 +2382,14 @@ pub struct SubstrateStore {
     deces_noeuds: DashMap<NodeId, u64>,
     naissances_aretes: DashMap<EdgeId, u64>,
     deces_aretes: DashMap<EdgeId, u64>,
+    /// (2026-10-31) Arêtes créées par une transaction EXPLICITE encore
+    /// ouverte → identifiant de cette transaction. Ne porte PAS la visibilité
+    /// (une arête en attente reste visible aux autres sessions : trou connu,
+    /// voir `is_edge_visible_at_epoch`) ; elle porte la PROPRIÉTÉ, pour que
+    /// ROLLBACK et ROLLBACK TO SAVEPOINT ne suppriment que les arêtes de LEUR
+    /// transaction. Vidée au commit (`finalize_version_epochs`) et à
+    /// l'abandon (`discard_uncommitted_versions`).
+    aretes_creees_par_tx: DashMap<EdgeId, u64>,
     /// Drapeau de CHEMIN RAPIDE : faux tant que les trois cartes MVCC des
     /// noeuds sont restees vides depuis l'ouverture.
     ///
@@ -6577,6 +6585,7 @@ impl SubstrateStore {
             principal: std::sync::OnceLock::new(),
             attente_noeuds_active: std::sync::atomic::AtomicBool::new(false),
             naissances_aretes: DashMap::new(),
+            aretes_creees_par_tx: DashMap::new(),
             deces_aretes: DashMap::new(),
             dernier_offset_flush: AtomicU64::new(0),
             external_edges: DashMap::new(),
@@ -17392,10 +17401,12 @@ impl GraphStore for SubstrateStore {
     // réduit à `is_live_on_disk`, comme avant.
     //
     // Les surcharges ARÊTE, elles, se réduisent toujours à la vivacité :
-    // le substrat n'a PAS de carte `en_attente_aretes` — une arête créée
-    // dans une transaction ouverte reste visible aux autres sessions. Trou
-    // connu, non mesuré par un test : le fermer commence par écrire le test
-    // (méthode campagne), pas par deviner ici.
+    // le substrat n'a PAS de carte de VISIBILITÉ des arêtes en attente — une
+    // arête créée dans une transaction ouverte reste visible aux autres
+    // sessions. Trou connu, non mesuré par un test : le fermer commence par
+    // écrire le test (méthode campagne), pas par deviner ici.
+    // (2026-10-31) `aretes_creees_par_tx` existe, mais porte la PROPRIÉTÉ
+    // (qui peut rembobiner quoi au ROLLBACK), pas la visibilité.
     // ---------------------------------------------------------------
 
     fn is_node_visible_at_epoch(&self, id: NodeId, epoch: EpochId) -> bool {
@@ -21858,6 +21869,9 @@ impl GraphStoreMut for SubstrateStore {
                 self.note_mvcc_actif();
             }
         }
+        // Commitées : les arêtes de la transaction ne sont plus à elle seule.
+        self.aretes_creees_par_tx
+            .retain(|_, proprietaire| *proprietaire != transaction_id.0);
         // Les cartes peuvent etre redevenues vides : rendre sa chance au
         // chemin rapide.
         self.reevalue_mvcc_actif();
@@ -21876,12 +21890,44 @@ impl GraphStoreMut for SubstrateStore {
 
     fn discard_uncommitted_versions(&self, transaction_id: TransactionId) {
         self.rollback_transaction_properties(transaction_id);
-        // Les noeuds en attente de CETTE transaction disparaissent : le
-        // rembobinage par plage d'identifiants les supprimera juste apres,
-        // mais laisser les marqueurs derriere ferait fuir la carte a chaque
-        // transaction annulee.
-        self.en_attente_noeuds
-            .retain(|_, proprietaire| *proprietaire != transaction_id.0);
+        // ── LES CRÉATIONS DE CETTE TRANSACTION, ET SEULEMENT LES SIENNES ──
+        //
+        // (2026-10-31) Avant : on retirait ici les MARQUEURS et on laissait le
+        // « rembobinage par plage d'identifiants » de la session supprimer les
+        // entités — TOUTE la plage allouée depuis le `begin`, sans regarder le
+        // propriétaire. En sessions concurrentes, cette plage contient les
+        // nœuds créés ET COMMITÉS par les autres : un ROLLBACK les effaçait.
+        // Mesuré sur n3 : 2 threads qui commitent + 2 qui annulent → 46 à 49
+        // commits perdus sur 50 ; une transaction annulée après 30 ms de
+        // fenêtre → 100 commits voisins perdus sur 100 ; un ROLLBACK d'une
+        // transaction VIDE → 25 perdus. Reproducteur déterministe dans
+        // obrain-engine/tests/rollback_isolation.rs.
+        //
+        // Désormais le store, qui connaît le propriétaire de chaque création
+        // en attente, supprime lui-même ce qui appartient à `transaction_id`
+        // — arêtes d'abord, puis nœuds — et rien d'autre. La plage de la
+        // session, filtrée par propriétaire dans `discard_entities_by_id`,
+        // ne trouve ensuite plus rien à lui : elle est devenue inoffensive.
+        let aretes: Vec<EdgeId> = self
+            .aretes_creees_par_tx
+            .iter()
+            .filter(|e| *e.value() == transaction_id.0)
+            .map(|e| *e.key())
+            .collect();
+        let noeuds: Vec<NodeId> = self
+            .en_attente_noeuds
+            .iter()
+            .filter(|e| *e.value() == transaction_id.0)
+            .map(|e| *e.key())
+            .collect();
+        for id in &aretes {
+            self.aretes_creees_par_tx.remove(id);
+            self.delete_edge(*id);
+        }
+        for id in &noeuds {
+            self.en_attente_noeuds.remove(id);
+            self.delete_node(*id);
+        }
         self.reevalue_mvcc_actif();
     }
 
@@ -22018,6 +22064,15 @@ impl GraphStoreMut for SubstrateStore {
     // Ce mecanisme rembobine les CREATIONS. Les modifications de proprietes
     // sur des entites preexistantes demandent un journal d'annulation, qui
     // reste a faire (`rollback_transaction_properties_to`).
+    //
+    // (2026-10-31) ET LA PLAGE N'EST PAS LA PROPRIÉTÉ. Un compteur global
+    // d'identifiants avance pour TOUTES les sessions : la plage « depuis mon
+    // begin » contient les créations des voisins, commitées ou non. La
+    // supprimer en bloc faisait d'un ROLLBACK — même vide — une perte de
+    // données pour les autres (mesures dans `discard_uncommitted_versions`).
+    // `discard_entities_by_id` filtre désormais par propriétaire, et
+    // `discard_uncommitted_versions` supprime lui-même les créations de la
+    // transaction annulée.
 
     fn peek_next_node_id(&self) -> u64 {
         u64::from(self.next_node_id.load(Ordering::Relaxed))
@@ -22029,19 +22084,49 @@ impl GraphStoreMut for SubstrateStore {
 
     fn discard_entities_by_id(
         &self,
-        _transaction_id: TransactionId,
+        transaction_id: TransactionId,
         node_ids: &[NodeId],
         edge_ids: &[EdgeId],
     ) {
+        // ── LA PLAGE EST UNE LISTE DE CANDIDATS, PAS UNE SENTENCE ──────────
+        //
+        // (2026-10-31) La session calcule `(empreinte..prochain_id)` : tout ce
+        // qui a été alloué depuis son `begin` ou son SAVEPOINT. En sessions
+        // concurrentes, cette plage contient les créations — commitées ou en
+        // attente — des AUTRES transactions. Les supprimer toutes, comme
+        // avant, effaçait le travail des voisins (voir
+        // `discard_uncommitted_versions` pour la mesure). On ne supprime donc
+        // que ce qui appartient à `transaction_id` : les cartes de propriété
+        // tranchent, et une entité qu'elles ne connaissent pas (auto-commit,
+        // autre transaction) n'est pas touchée.
+        //
         // Les aretes D'ABORD : supprimer un noeud avant ses aretes laisserait
         // des aretes pendantes le temps de la boucle, et certaines routines de
         // suppression de noeud parcourent justement ses aretes.
+        if transaction_id == TransactionId::SYSTEM {
+            return;
+        }
         for &id in edge_ids {
-            self.delete_edge(id);
+            let a_elle = self
+                .aretes_creees_par_tx
+                .get(&id)
+                .is_some_and(|p| *p.value() == transaction_id.0);
+            if a_elle {
+                self.aretes_creees_par_tx.remove(&id);
+                self.delete_edge(id);
+            }
         }
         for &id in node_ids {
-            self.delete_node(id);
+            let a_elle = self
+                .en_attente_noeuds
+                .get(&id)
+                .is_some_and(|p| *p.value() == transaction_id.0);
+            if a_elle {
+                self.en_attente_noeuds.remove(&id);
+                self.delete_node(id);
+            }
         }
+        self.reevalue_mvcc_actif();
     }
 
     // ── GRAPHES NOMMES ───────────────────────────────────────────────
@@ -22353,11 +22438,16 @@ impl GraphStoreMut for SubstrateStore {
         dst: NodeId,
         edge_type: &str,
         epoch: EpochId,
-        _transaction_id: TransactionId,
+        transaction_id: TransactionId,
     ) -> EdgeId {
         let id = self.create_edge(src, dst, edge_type);
         if epoch.0 > 0 {
             self.naissances_aretes.insert(id, epoch.0);
+        }
+        // Propriété, pas visibilité (voir le champ) : SYSTEM = auto-commit,
+        // rien à rembobiner jamais.
+        if transaction_id != TransactionId::SYSTEM {
+            self.aretes_creees_par_tx.insert(id, transaction_id.0);
         }
         id
     }

@@ -635,7 +635,6 @@ fn test_stress_concurrent_reads_during_writes() {
 }
 
 #[test]
-#[ignore = "stress test: slow in CI, run locally with --ignored"]
 fn test_stress_transaction_conflicts() {
     // 4 threads with interleaved commit/rollback patterns
     let db = Arc::new(ObrainDB::new_in_memory());
@@ -644,12 +643,21 @@ fn test_stress_transaction_conflicts() {
     let iterations = 6;
     let barrier = Arc::new(Barrier::new(num_threads));
     let completed = Arc::new(AtomicUsize::new(0));
+    // Commits dont l'INSERT ET le commit ont rendu Ok : c'est CE compte que la
+    // visibilité doit égaler — pas le nombre d'itérations paires. L'ancienne
+    // version avalait les erreurs (`let _ = session.execute(..)`, `let _ =
+    // session.commit()`) puis exigeait 12 lignes : elle ne distinguait pas un
+    // commit REFUSÉ (légitime sous contention) d'un commit INVISIBLE (le
+    // défaut qu'elle prétend chercher), et échouait 5/5 en 0,11 s sur n3 le
+    // 2026-10-31 (4 à 8 visibles) — rien à voir avec « lent en CI ».
+    let commits_ok = Arc::new(AtomicUsize::new(0));
 
     let handles: Vec<_> = (0..num_threads)
         .map(|tid| {
             let db = Arc::clone(&db);
             let barrier = Arc::clone(&barrier);
             let completed = Arc::clone(&completed);
+            let commits_ok = Arc::clone(&commits_ok);
 
             thread::spawn(move || {
                 barrier.wait();
@@ -657,11 +665,13 @@ fn test_stress_transaction_conflicts() {
                     let mut session = db.session();
                     session.begin_transaction().unwrap();
                     let query = format!("INSERT (:TxNode {{thread: {tid}, iter: {i}}})");
-                    let _ = session.execute(&query);
+                    let inserted = session.execute(&query).is_ok();
 
                     // Commit even iterations, rollback odd
                     if i % 2 == 0 {
-                        let _ = session.commit();
+                        if session.commit().is_ok() && inserted {
+                            commits_ok.fetch_add(1, Ordering::Relaxed);
+                        }
                     } else {
                         let _ = session.rollback();
                     }
@@ -677,15 +687,20 @@ fn test_stress_transaction_conflicts() {
 
     assert_eq!(completed.load(Ordering::Relaxed), num_threads);
 
-    // Only committed nodes (even iterations) should exist
+    // Exactement les transactions commitées — et seulement elles — sont visibles.
     let session = db.session();
     let result = session.execute("MATCH (n:TxNode) RETURN n").unwrap();
-    // Each thread commits 5 of 10 iterations (0, 2, 4, 6, 8)
-    let expected = num_threads * (iterations / 2);
+    let tentatives = num_threads * ((iterations + 1) / 2); // itérations paires
+    let committed = commits_ok.load(Ordering::Relaxed);
+    assert!(
+        committed <= tentatives,
+        "{committed} commits réussis pour {tentatives} tentatives"
+    );
     assert_eq!(
         result.row_count(),
-        expected,
-        "Only committed transactions should be visible"
+        committed,
+        "visibles ≠ commités : {committed} commits réussis sur {tentatives} tentatives \
+         (les tentatives refusées sous contention ne comptent pas)"
     );
 }
 
