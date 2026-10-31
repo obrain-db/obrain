@@ -1407,10 +1407,13 @@ pub trait GraphStoreMut: GraphStore {
         0
     }
 
-    /// Discards nodes and edges with the given ID lists for the current
-    /// transaction. Used by savepoint rollback to cull entities allocated
-    /// after the savepoint. No-op for backends without savepoint-level
-    /// discard.
+    /// Discards, among the given ID lists, the nodes and edges that were
+    /// CREATED BY `transaction_id` — and only those. The lists are the
+    /// session's candidate range (everything allocated since its `begin` or
+    /// its savepoint); under concurrent sessions that range also holds other
+    /// transactions' creations, committed or pending, which must survive.
+    /// Used by ROLLBACK and ROLLBACK TO SAVEPOINT. No-op for backends without
+    /// per-transaction ownership tracking.
     fn discard_entities_by_id(
         &self,
         _transaction_id: TransactionId,
