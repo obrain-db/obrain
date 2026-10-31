@@ -304,7 +304,10 @@ fn threads_independants_substrate_zero_perte() {
 // ============================================================================
 
 #[test]
-#[ignore = "sensible au temps ou au debit : deterministe en local, flake sur runner partage"]
+#[ignore = "ÉCHEC DÉTERMINISTE mesuré le 2026-10-31 sur Linux calme (3/3 en 0,20 s, identique avec \
+            flock et fcntl) : le lecteur RO ne voit aucune écriture live en 100 ms (`dernier > 0`), \
+            et le thread écrivain échoue parfois (l. 328). Pas un flake de temps : un défaut à \
+            instruire. Exécuté par le workflow Mesures (hors portillon)."]
 fn lecture_ro_pendant_writer_thread_sans_blocage() {
     let td = tempfile::tempdir().unwrap();
     let chemin = td.path().join("mw-ro-pendant-write");
