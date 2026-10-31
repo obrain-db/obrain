@@ -28,9 +28,10 @@
 //! `memmap2::Mmap::map()` and friends are `unsafe`: the OS guarantees memory
 //! safety only if the backing file is not concurrently mutated by another
 //! process or truncated in a way that shrinks the mapped region. We enforce
-//! this by holding an exclusive file lock (`fs2::FileExt::try_lock_exclusive`)
-//! on `substrate.meta` for the lifetime of the `SubstrateFile`, so other
-//! processes cannot open the same directory.
+//! this by holding an exclusive file lock on `substrate.dirlock` for the
+//! lifetime of the `SubstrateFile` — un verrou de PROCESSUS (`fcntl(F_SETLK)`
+//! sur unix, voir `verrouiller_fichier`), so other processes cannot open the
+//! same directory.
 //!
 //! (2026-08-21) Ce paragraphe a decrit pendant longtemps un verrou qui
 //! N'EXISTAIT PAS : `fs2` n'etait meme pas une dependance de ce crate, et le
@@ -79,19 +80,79 @@ pub(crate) struct VerrouRepertoire {
     /// par une demande exclusive (elle autoriserait un écrivain là où des
     /// lecteurs partagent déjà le répertoire).
     exclusif: bool,
-    /// Porte le `flock`. Jamais lu — c'est sa DURÉE DE VIE qui compte.
-    _fichier: File,
+    /// Porte le verrou. Jamais lu — c'est sa DURÉE DE VIE qui compte. `Option`
+    /// pour que `Drop` puisse le fermer EXPLICITEMENT sous le mutex du registre
+    /// (voir `Drop for VerrouRepertoire`) ; `None` seulement après ce `take`.
+    fichier: Option<File>,
 }
 
-/// Verrou OS inter-processus (`flock`) — NATIFS SEULEMENT.
+/// Verrou OS inter-processus — NATIFS SEULEMENT.
 ///
-/// Sur wasm32 (navigateur/edge workers), il n'y a ni multi-process ni
-/// `flock` : le store est mono-instance en mémoire, et les ouvertures de
+/// ── POURQUOI `fcntl(F_SETLK)` ET PLUS `flock` SUR UNIX (2026-10-31) ────────
+///
+/// `flock` porte sur la DESCRIPTION DE FICHIER OUVERTE. Or une description est
+/// COPIÉE dans tout enfant engendré par ce processus (`fork`/`clone`, y compris
+/// le `posix_spawn` de `std::process::Command`) et n'en disparaît qu'à son
+/// `execve` (`O_CLOEXEC`). Pendant cette fenêtre, fermer NOTRE descripteur ne
+/// rend PAS le verrou : l'enfant le tient encore. Un `open` qui suit
+/// immédiatement un `drop` reçoit alors `EWOULDBLOCK` — sans détenteur
+/// nommable, l'enfant ayant déjà exécuté quand `detecter_detenteur` lit `/proc`.
+///
+/// C'est ce que la CI voyait sur `simplex_durability` : trois tests « drop puis
+/// réouverture » tombaient au hasard parce qu'un test voisin du même binaire
+/// engendre des processus (`kill_9_pendant_ecriture_reouverture_saine`).
+/// Mesuré le 2026-10-31 (n3, Linux) avec un programme minimal — un thread
+/// verrouille/ferme/reverrouille, un autre engendre des enfants en boucle :
+/// en `flock`, refus dès le premier reverrouillage ; en `fcntl`, 0 refus sur
+/// 1,5 million de cycles et 8 000 enfants.
+///
+/// Un verrou `fcntl` (POSIX record lock) appartient au PROCESSUS : jamais
+/// hérité par un enfant, rendu par le noyau quand le processus meurt (comme
+/// avant). Sa contrepartie, absorbée par le registre : il tombe dès que le
+/// processus ferme N'IMPORTE QUEL descripteur du fichier. D'où deux règles,
+/// toutes deux tenues ici : un seul descripteur par répertoire et par
+/// processus (`acquerir_verrou_repertoire`), fermé SOUS le mutex du registre
+/// (`Drop for VerrouRepertoire`) pour qu'aucune nouvelle part ne pose son
+/// verrou avant que l'ancien descripteur soit clos.
+///
+/// Sur wasm32 (navigateur/edge workers), il n'y a ni multi-process ni verrou
+/// de fichier : le store est mono-instance en mémoire, et les ouvertures de
 /// fichiers échouent de toute façon sans filesystem. Le no-op est donc
-/// sémantiquement correct — il préserve le contrat d'unicité là où un
-/// deuxième processus pourrait exister (natif) et ne bloque rien là où il
-/// ne peut pas (wasm).
-#[cfg(not(target_arch = "wasm32"))]
+/// sémantiquement correct. Hors unix et wasm32 (Windows), `fs2` (`LockFileEx`).
+#[cfg(unix)]
+pub(crate) fn verrouiller_fichier(fichier: &File, exclusif: bool) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `libc::flock` est un POD, rempli ici avant usage ; `F_SETLK` lit
+    // la structure pendant l'appel et n'en conserve aucun pointeur.
+    let mut verrou: libc::flock = unsafe { std::mem::zeroed() };
+    verrou.l_type = if exclusif {
+        libc::F_WRLCK
+    } else {
+        libc::F_RDLCK
+    } as libc::c_short;
+    verrou.l_whence = libc::SEEK_SET as libc::c_short;
+    verrou.l_start = 0;
+    verrou.l_len = 0; // 0 = jusqu'à la fin du fichier, quelle que soit sa taille
+    let rc = unsafe {
+        libc::fcntl(
+            fichier.as_raw_fd(),
+            libc::F_SETLK,
+            &verrou as *const libc::flock,
+        )
+    };
+    if rc == -1 {
+        // `EACCES` ou `EAGAIN` selon le système : un seul contrat pour
+        // l'appelant, `WouldBlock` (celui de `acquerir_verrou_repertoire`).
+        let e = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            e.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 pub(crate) fn verrouiller_fichier(fichier: &File, exclusif: bool) -> std::io::Result<()> {
     use fs2::FileExt;
     // fs2 0.4 : les variantes try_* rendent des types d'erreur différents
@@ -113,7 +174,27 @@ pub(crate) fn verrouiller_fichier(_fichier: &File, _exclusif: bool) -> std::io::
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
+pub(crate) fn deverrouiller_fichier(fichier: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: voir `verrouiller_fichier`.
+    let mut verrou: libc::flock = unsafe { std::mem::zeroed() };
+    verrou.l_type = libc::F_UNLCK as libc::c_short;
+    verrou.l_whence = libc::SEEK_SET as libc::c_short;
+    let rc = unsafe {
+        libc::fcntl(
+            fichier.as_raw_fd(),
+            libc::F_SETLK,
+            &verrou as *const libc::flock,
+        )
+    };
+    if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 pub(crate) fn deverrouiller_fichier(fichier: &File) -> std::io::Result<()> {
     use fs2::FileExt;
     fichier.unlock()
@@ -130,7 +211,13 @@ impl Drop for VerrouRepertoire {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         table.remove(&self.chemin);
-        // `_fichier` se ferme juste après : le noyau rend le `flock`.
+        // Fermeture SOUS le mutex, pas après : un verrou de processus (`fcntl`)
+        // tombe à la fermeture de N'IMPORTE QUEL descripteur du fichier. Si une
+        // nouvelle part posait son verrou entre notre retrait de la table et
+        // la fermeture de ce descripteur, cette fermeture lui rendrait le sien
+        // — un écrivain qui se croit exclusif sans l'être. Avec le registre
+        // tenu jusqu'ici, la nouvelle part n'ouvre son descripteur qu'après.
+        drop(self.fichier.take());
     }
 }
 
@@ -304,7 +391,7 @@ pub(crate) fn acquerir_verrou_repertoire(
     let part = std::sync::Arc::new(VerrouRepertoire {
         chemin: cle.clone(),
         exclusif,
-        _fichier: fichier,
+        fichier: Some(fichier),
     });
     table.insert(cle, std::sync::Arc::downgrade(&part));
     Ok(part)
@@ -1472,9 +1559,14 @@ impl SubstrateFile {
     /// l'invariant : elle modele ce que le noyau fait de toute facon.
     #[doc(hidden)]
     pub fn deverrouiller_pour_simuler_un_kill(&self) {
-        // Rien à rendre en mode mémoire : aucun verrou n'a été pris.
-        if let MetaBacking::Mmap { file, .. } = &self.meta {
-            let _ = deverrouiller_fichier(file);
+        // Rien à rendre en mode mémoire : aucun verrou n'a été pris. (Depuis
+        // le 2026-10-12 le verrou vit sur `substrate.dirlock`, porté par la
+        // part — pas sur `substrate.meta`, que cette méthode déverrouillait
+        // encore, sans effet.)
+        if let Some(part) = &self._verrou
+            && let Some(fichier) = &part.fichier
+        {
+            let _ = deverrouiller_fichier(fichier);
         }
     }
 
@@ -1991,16 +2083,52 @@ mod tests {
     //  VERROU DE RÉPERTOIRE
     // ═══════════════════════════════════════════════════════════════════
 
-    /// Un détenteur EXTÉRIEUR est simulé par un descripteur INDÉPENDANT sur le
-    /// même fichier. `flock` porte sur la description de fichier ouverte, pas
-    /// sur le processus : un second descripteur se comporte donc exactement
-    /// comme un autre processus, ce qui rend ce contrôle fidèle sans avoir à
-    /// engendrer un sous-processus.
+    /// Variable qui porte, à l'enfant de la sonde, le chemin du fichier de
+    /// verrou à tenter. Absente : `sonde_verrou_enfant_exterieur` est inerte.
+    const SONDE_VERROU_ENV: &str = "OBRAIN_SONDE_VERROU_EXTERIEUR";
+
+    /// Un détenteur EXTÉRIEUR est un AUTRE PROCESSUS, rien de moins. Le verrou
+    /// est un verrou de processus (`fcntl`, voir `verrouiller_fichier`) : un
+    /// second descripteur ouvert ICI l'obtiendrait (même processus) et, pire,
+    /// sa fermeture rendrait celui de la part vivante — la simulation d'avant
+    /// (un descripteur indépendant, fidèle pour `flock`) dirait désormais le
+    /// contraire de la réalité. La sonde engendre donc le binaire de test
+    /// lui-même, qui tente la pose depuis son propre processus et répond par
+    /// son code de sortie.
     fn un_autre_detenteur_peut_il_verrouiller(verrou: &Path) -> bool {
-        match OpenOptions::new().read(true).write(true).open(verrou) {
-            Ok(f) => verrouiller_fichier(&f, true).is_ok(),
-            Err(_) => false,
-        }
+        let exe = std::env::current_exe().expect("binaire de test");
+        std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "--test-threads=1",
+                "file::tests::sonde_verrou_enfant_exterieur",
+            ])
+            .env(SONDE_VERROU_ENV, verrou)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("engendrer la sonde")
+            .success()
+    }
+
+    /// Côté ENFANT de la sonde : tente le verrou exclusif sur le fichier que
+    /// désigne `OBRAIN_SONDE_VERROU_EXTERIEUR`, et échoue (code de sortie
+    /// non nul) s'il est refusé. Sans la variable — exécution ordinaire de la
+    /// suite — ne fait rien et passe.
+    #[test]
+    fn sonde_verrou_enfant_exterieur() {
+        let Some(verrou) = std::env::var_os(SONDE_VERROU_ENV) else {
+            return;
+        };
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&verrou)
+            .expect("ouvrir le fichier de verrou");
+        assert!(
+            verrouiller_fichier(&f, true).is_ok(),
+            "verrou tenu par un autre processus"
+        );
     }
 
     /// LE CAS QUI A CASSÉ LA PRODUCTION. Le pool d'`obrain-tmn` ouvre une même
