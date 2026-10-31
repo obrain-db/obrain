@@ -157,7 +157,13 @@ impl Enfant {
     fn lancer(test: &str, vars: &[(&str, String)]) -> Self {
         let moi = std::env::current_exe().expect("current_exe");
         let mut cmd = Command::new(moi);
-        cmd.args(["--exact", test, "--nocapture"])
+        // `--include-ignored` : l'enfant est CE MÊME test, rejoué avec un rôle.
+        // Quand le test est marqué #[ignore] (mesure de temps, échec connu),
+        // libtest le filtre dans l'enfant, qui sort sans « PRET » — le test
+        // devient inexécutable, même en `--ignored` (mesuré le 2026-10-31 :
+        // 4/4 « enfant terminé sans PRET (None) »). L'enfant doit donc jouer
+        // le test quel que soit son marquage.
+        cmd.args(["--exact", test, "--nocapture", "--include-ignored"])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         for (k, v) in vars {

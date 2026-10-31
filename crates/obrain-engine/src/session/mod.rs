@@ -788,8 +788,15 @@ impl Session {
         self.tx_baselines.lock().insert(cle.clone(), (n, e));
     }
 
-    /// Rembobine chaque graphe touche jusqu'a son empreinte, en supprimant les
-    /// entites allouees depuis. Utilise par ROLLBACK.
+    /// Rembobine chaque graphe touche jusqu'a son empreinte : la plage
+    /// d'identifiants allouee depuis est PROPOSEE au store, qui n'en supprime
+    /// que les entites creees par CETTE transaction (`discard_entities_by_id`
+    /// filtre par proprietaire). Utilise par ROLLBACK.
+    ///
+    /// (2026-10-31) La plage n'est pas la propriete : le compteur avance pour
+    /// toutes les sessions, et la supprimer en bloc effacait les creations
+    /// commitees des voisins (jusqu'a 100 sur 100 mesures sur n3). Le store
+    /// tranche, pas la session.
     fn rembobine_aux_empreintes(&self, transaction_id: TransactionId) {
         let empreintes = self.tx_baselines.lock().clone();
         for (cle, (n0, e0)) in &empreintes {

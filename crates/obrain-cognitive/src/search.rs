@@ -21,7 +21,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! CALL cognitive.search({
 //!     query_embedding: [...],
 //!     weights: {energy: 0.3, topology: 0.3, similarity: 0.3, synapse: 0.1},
