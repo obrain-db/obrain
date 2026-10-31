@@ -13,7 +13,8 @@ name: Mesures (hors portillon)
 # étapes sautées sans information), et le job reste rouge.
 #
 # La référence chiffrée reste une machine Linux calme ; relevé du 2026-10-31
-# dans les notes du projet (8 verts déterministes sur 9, 1 rouge déterministe).
+# dans les notes du projet (8 verts déterministes sur 9 ; le 9e, I10, était hors
+# contrat et rentre dans le portillon depuis sa réécriture).
 
 on:
   workflow_dispatch:
@@ -45,9 +46,6 @@ jobs:
         run: |
           ulimit -n 8192
           cargo test -p obrain-substrate --test mw_interprocess_append -- --ignored
-      - name: Lecteur RO pendant un écrivain (échec déterministe connu, cause à instruire)
-        if: ${{ !cancelled() }}
-        run: cargo test -p obrain-engine --test multi_writer_invariants -- --ignored lecture_ro_pendant_writer_thread_sans_blocage
       - name: Lectures concurrentes des registres d'index (feature vector-index)
         if: ${{ !cancelled() }}
         run: cargo test -p obrain-engine --features vector-index --test index_concurrency -- --ignored lectures_concurrentes_ne_se_serialisent_pas
