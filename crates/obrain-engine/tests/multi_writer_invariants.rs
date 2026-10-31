@@ -303,11 +303,20 @@ fn threads_independants_substrate_zero_perte() {
 // I10 — lecture RO pendant écriture active : pas de blocage, cohérence
 // ============================================================================
 
+/// (2026-10-31) CE TEST ÉTAIT HORS CONTRAT, PAS LE MOTEUR. Il tenait une
+/// poignée RO ouverte et attendait qu'elle voie les écritures « live ». Or un
+/// lecteur RO est un INSTANTANÉ À L'OUVERTURE : « les lecteurs rejouent le WAL
+/// à leur ouverture » (contrat de `open_shared_write`), et I3 ci-dessus ROUVRE
+/// pour voir la suite. Mesuré sur n3 : 20 lectures d'une même poignée rendent
+/// 20 fois le même compte (0, 10, 40 ou 2884 selon l'instant d'ouverture), et
+/// une réouverture rend l'état courant. Le `checkpoint failed: ENOENT` vu dans
+/// le thread écrivain n'était qu'une conséquence : le `TempDir` disparaissait
+/// avec le panic de l'assertion pendant que le thread tournait encore.
+///
+/// Lire « pendant » l'écriture, c'est donc rouvrir à chaque lecture. Ce que ce
+/// test protège : la réouverture RO ne bloque pas pendant qu'un writer partagé
+/// écrit et checkpointe, et les comptes successifs ne décroissent jamais.
 #[test]
-#[ignore = "ÉCHEC DÉTERMINISTE mesuré le 2026-10-31 sur Linux calme (3/3 en 0,20 s, identique avec \
-            flock et fcntl) : le lecteur RO ne voit aucune écriture live en 100 ms (`dernier > 0`), \
-            et le thread écrivain échoue parfois (l. 328). Pas un flake de temps : un défaut à \
-            instruire. Exécuté par le workflow Mesures (hors portillon)."]
 fn lecture_ro_pendant_writer_thread_sans_blocage() {
     let td = tempfile::tempdir().unwrap();
     let chemin = td.path().join("mw-ro-pendant-write");
@@ -317,28 +326,48 @@ fn lecture_ro_pendant_writer_thread_sans_blocage() {
     let writer = Arc::new(ObrainDB::open_shared_write(&chemin).expect("writer"));
 
     // Écriture de fond en continu (writer thread), comme le bridge de prod.
+    // `ecrits` compte les écritures ACCEPTÉES : le lecteur ne commence que
+    // lorsqu'il y a quelque chose à voir — sans cela, un lecteur plus rapide
+    // que le premier CREATE rendrait 0 sans que rien ne soit faux.
     let w2 = Arc::clone(&writer);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop2 = Arc::clone(&stop);
+    let ecrits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let ecrits2 = Arc::clone(&ecrits);
     let h = thread::spawn(move || {
         let s = w2.session();
         let mut i = 0u64;
         while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
             s.execute(&format!("CREATE (:Live {{n: {i}}})"))
                 .expect("écriture live");
+            ecrits2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             i += 1;
             if i % 10 == 0 {
                 w2.checkpoint().expect("checkpoint live");
             }
         }
     });
+    let debut = std::time::Instant::now();
+    while ecrits.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        assert!(
+            debut.elapsed() < Duration::from_secs(30),
+            "le writer n'a rien écrit en 30 s"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
 
-    // Pendant ce temps : un lecteur RO lit en boucle, sans jamais se bloquer
-    // ni lire un état corrompu (count monotone non décroissant).
-    let lecteur = ObrainDB::open_read_only(&chemin).expect("open RO");
+    // Pendant ce temps : un lecteur RO ROUVRE et lit, 20 fois, sans jamais se
+    // bloquer ni lire un état corrompu (count monotone non décroissant).
     let mut dernier = 0usize;
     for _ in 0..20 {
+        let t0 = std::time::Instant::now();
+        let lecteur = ObrainDB::open_read_only(&chemin).expect("open RO pendant écriture");
         let c = lecteur.node_count();
+        drop(lecteur);
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "l'ouverture RO a bloqué pendant l'écriture"
+        );
         assert!(
             c >= dernier,
             "le count RO ne décroît jamais (lu {c} après {dernier})"
@@ -346,11 +375,13 @@ fn lecture_ro_pendant_writer_thread_sans_blocage() {
         dernier = c;
         thread::sleep(Duration::from_millis(5));
     }
-    assert!(dernier > 0, "le RO a vu au moins une écriture live");
+    assert!(
+        dernier > 0,
+        "le RO rouvert a vu au moins une écriture acceptée par le writer"
+    );
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     h.join().expect("writer joint");
-    drop(lecteur);
     writer.checkpoint().expect("checkpoint final");
     // Le writer partagé doit être fermé avant une réouverture EXCLUSIVE
     // (invariant I4 : un writer vivant bloque l'ouverture exclusive).
