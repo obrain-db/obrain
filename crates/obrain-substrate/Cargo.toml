@@ -8,6 +8,19 @@ repository.workspace = true
 authors.workspace = true
 description = "Topology-as-storage substrate: mmap + WAL + fixed-size Pod records + tiered embeddings"
 
+# (2026-08-21) Verrou exclusif inter-processus sur `substrate.meta`.
+# Voir la section Safety de src/file.rs : la surete du mmap en depend.
+# (2026-09-01) NATIFS SEULEMENT : fs2 ne compile pas pour wasm32 (pas de
+# `flock` ni de multi-process dans le navigateur). Le shim de `file.rs`
+# (`verrouiller_fichier`/`deverrouiller_fichier`) fournit un no-op wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fs2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Verrou de répertoire PAR PROCESSUS (`fcntl(F_SETLK)`), non hérité par un
+# enfant pendant sa fenêtre clone→execve — voir `file::verrouiller_fichier`.
+libc = "0.2"
+
 [dependencies]
 # Graph traits + shared ID/value types. Kept default-features-off so we don't
 # pull in LpgStore's tree (rayon, tokio, mmap). The GraphStore trait surface
@@ -28,6 +41,10 @@ memmap2.workspace = true
 crc32fast.workspace = true
 foldhash.workspace = true
 sha2.workspace = true
+# xxh3 64 bits — key_hash canonique des simplexes (spec T3 271180c3 :
+# « xxh3 des u32 triés »). Contrat on-disk : changer d'algorithme est une
+# rupture de format de la zone SimplexDir.
+twox-hash = { version = "2.1", default-features = false, features = ["xxhash3_64"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -51,6 +68,9 @@ tracing.workspace = true
 arcstr.workspace = true
 byteorder.workspace = true
 
+# Portable clock (std::time::Instant/SystemTime trap on wasm32-unknown-unknown)
+web-time = "1"
+
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
@@ -69,6 +89,34 @@ obrain-core = { workspace = true, default-features = false, features = ["regex",
 # getrusage. Already transitively present through sha2/cpufeatures —
 # making it an explicit dev-dep keeps the bench self-contained.
 libc = "0.2"
+
+[[bench]]
+name = "wal_append"
+harness = false
+
+# Phase B — le débit de BOUT EN BOUT du store à N écrivains (pas seulement le
+# WAL) : `--multi-processus` lance N processus sur le même store.
+[[bench]]
+name = "multi_ecrivain_store"
+harness = false
+
+# Phase B, pièce 3 — le COÛT de l'internement partagé (table mmapée) face au
+# témoin local d'avant la pièce, et face au service entier (create_node).
+[[bench]]
+name = "intern_registres"
+harness = false
+
+[[bench]]
+name = "vec_write"
+harness = false
+
+[[bench]]
+name = "read_path"
+harness = false
+
+[[bench]]
+name = "memoire_vs_fichier"
+harness = false
 
 [[bench]]
 name = "decay_all"
@@ -108,6 +156,10 @@ harness = false
 
 [[bench]]
 name = "effective_resistance"
+harness = false
+
+[[bench]]
+name = "zorder_analysis"
 harness = false
 
 [features]

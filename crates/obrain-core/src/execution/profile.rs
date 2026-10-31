@@ -51,7 +51,7 @@ impl Operator for ProfiledOperator {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
 
         let result = self.inner.next();
 

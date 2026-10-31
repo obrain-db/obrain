@@ -159,6 +159,24 @@ pub fn write_tier_zone<T: Pod>(
     slot_to_offset: Option<&[u32]>,
     records: &[T],
 ) -> SubstrateResult<()> {
+    write_tier_zone_with_remap_epoch(zf, magic, n_slots, slot_to_offset, records, 0)
+}
+
+/// Variante de [`write_tier_zone`] qui estampille l'epoch de
+/// repermutation de slots dans `header._reserved[0]` (chantier
+/// SlotRemappable, voir `crate::slot_remap`). Les écrivains qui
+/// réécrivent une zone tier depuis l'état COURANT de la base doivent
+/// passer `crate::slot_remap::current_remap_epoch(sub)` pour que le rejeu
+/// d'une repermutation antérieure ne re-permute pas une table déjà à
+/// jour.
+pub fn write_tier_zone_with_remap_epoch<T: Pod>(
+    zf: &mut ZoneFile,
+    magic: TierMagic,
+    n_slots: u32,
+    slot_to_offset: Option<&[u32]>,
+    records: &[T],
+    remap_epoch: u32,
+) -> SubstrateResult<()> {
     // Sanity: dimensions agree.
     if records.len() != n_slots as usize {
         return Err(SubstrateError::WalBadFrame(format!(
@@ -227,6 +245,7 @@ pub fn write_tier_zone<T: Pod>(
     // Write header last.
     let mut header = TierPersistHeader::new(magic, n_slots, has_s2o);
     header.crc32 = crc;
+    header._reserved[0] = remap_epoch;
     {
         let slice = zf.as_slice_mut();
         slice[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
@@ -319,10 +338,30 @@ pub fn read_tier_zone<T: Pod + Default + Copy>(
     let records: Vec<T> = if n_slots == 0 {
         Vec::new()
     } else {
-        match bytemuck::try_cast_slice::<u8, T>(records_src) {
-            Ok(s) => s.to_vec(),
-            Err(_) => return Ok(None),
+        // Lecture NON ALIGNÉE, enregistrement par enregistrement.
+        //
+        // (2026-08-23) `try_cast_slice::<u8, T>` exigeait l'alignement de
+        // `T` sur le début de la région. Or, quand `slot_to_offset` est
+        // présent (tier0), cette région commence à
+        // `64 + 4 * n_slots` : pour un `n_slots` IMPAIR l'offset n'est
+        // pas multiple de 8, et `Tier0`/`Tier1` (`[u64; _]`, align 8)
+        // faisaient échouer le cast. Le tier était alors déclaré
+        // « absent » À CHAQUE OUVERTURE — dégradation silencieuse en
+        // reconstruction O(N), invisible car le contrat « corruption ⇒
+        // rebuild » absorbait le symptôme. Les tests existants ne
+        // l'attrapaient pas : ils n'utilisent que des `n_slots` pairs
+        // (0, 100, 500, 1000). Verrouillé par
+        // `roundtrip_tier0_avec_n_slots_impair`.
+        let mut out = Vec::with_capacity(n_slots);
+        let stride = core::mem::size_of::<T>();
+        for i in 0..n_slots {
+            match bytemuck::try_pod_read_unaligned::<T>(&records_src[i * stride..(i + 1) * stride])
+            {
+                Ok(v) => out.push(v),
+                Err(_) => return Ok(None),
+            }
         }
+        out
     };
 
     Ok(Some((header.n_slots, slot_to_offset, records)))
@@ -390,6 +429,31 @@ mod tests {
         assert_eq!(got_n, n);
         assert_eq!(got_s2o, Some(s2o));
         assert_eq!(got_r, records);
+    }
+
+    /// Régression (2026-08-23) : avec `slot_to_offset` présent et un
+    /// `n_slots` IMPAIR, la région des records commence à un offset non
+    /// multiple de 8 et l'ancien `try_cast_slice` échouait — le tier était
+    /// silencieusement « absent » à chaque ouverture. Les tests d'origine
+    /// n'utilisaient que des `n_slots` pairs.
+    #[test]
+    fn roundtrip_tier0_avec_n_slots_impair() {
+        for n in [1u32, 3, 5, 7, 101] {
+            let sub = SubstrateFile::open_tempfile().unwrap();
+            let records: Vec<Tier0> = (0..n).map(tier0_sample).collect();
+            let s2o: Vec<u32> = (0..n).map(|i| i * 3 + 1).collect();
+            {
+                let mut zf = sub.open_zone(Zone::Tier0).unwrap();
+                write_tier_zone(&mut zf, TierMagic::Tier0, n, Some(&s2o), &records).unwrap();
+            }
+            let zf = sub.open_zone(Zone::Tier0).unwrap();
+            let (got_n, got_s2o, got_r): LoadedTier<Tier0> = read_tier_zone(&zf, TierMagic::Tier0)
+                .unwrap()
+                .unwrap_or_else(|| panic!("n_slots={n} impair : tier0 déclaré absent à tort"));
+            assert_eq!(got_n, n);
+            assert_eq!(got_s2o, Some(s2o));
+            assert_eq!(got_r, records);
+        }
     }
 
     #[test]

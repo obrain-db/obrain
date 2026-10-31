@@ -399,7 +399,34 @@ impl super::Planner {
                         Error::Internal(format!("Variable '{}' not found in input", name))
                     })?;
                     projections.push(ProjectExpr::Column(col_idx));
-                    output_types.push(LogicalType::Node);
+                    // ── LE TYPE D'UNE VARIABLE PROJETÉE N'EST PAS TOUJOURS UN NŒUD ──
+                    // Défaut mesuré le 2026-09-17 : cette ligne disait
+                    // `LogicalType::Node` pour TOUTE variable projetée. Un nœud est
+                    // bien le cas le plus fréquent, mais une variable de projection
+                    // porte aussi des SCALAIRES (résultat d'agrégat, propriété
+                    // calculée, alias) — et le type déclaré décide du VECTEUR de
+                    // sortie. Recopier une liste (`WITH collect(n.v) AS vals RETURN
+                    // vals`) dans un vecteur de nœuds la perdait silencieusement :
+                    // mesuré, `RETURN vals` rendait `Int64(0)` et `size(vals)` rendait
+                    // null, alors que la même requête en Cypher rendait `[10, 20]`
+                    // (Cypher passe par un autre chemin de planification). Le plan,
+                    // lui, portait la bonne valeur : c'est la COPIE qui la perdait.
+                    //
+                    // L'information existe déjà dans le planificateur (les mêmes
+                    // ensembles que le conventionnel « ni scalaire ni arête ⇒ nœud »),
+                    // et le planificateur d'agrégats y inscrit ses colonnes de sortie.
+                    // On s'en sert au lieu de la supposer.
+                    let est_scalaire = self.scalar_columns.borrow().contains(name);
+                    let est_arete = self.edge_columns.borrow().contains(name);
+                    output_types.push(if est_scalaire {
+                        // GÉNÉRIQUE : accepte nombres, chaînes ET listes. Un type
+                        // scalaire précis (Int64) perdrait les autres.
+                        LogicalType::Any
+                    } else if est_arete {
+                        LogicalType::Edge
+                    } else {
+                        LogicalType::Node
+                    });
                     // Propagate scalar/edge status from input variable to output alias
                     if self.scalar_columns.borrow().contains(name) {
                         self.scalar_columns.borrow_mut().insert(col_name.clone());
@@ -457,6 +484,16 @@ impl super::Planner {
 
     /// Plans a LIMIT operator.
     pub(super) fn plan_limit(&self, limit: &LimitOp) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // Un `CountExpr::Parameter` encore présent ici signifie que la
+        // requête portait `LIMIT $k` mais qu'aucun paramètre n'a été fourni
+        // (chemin `execute()` sans substitution). Erreur propre plutôt que
+        // le panic de `count.value()` plus bas.
+        limit.count.try_value().map_err(|msg| {
+            Error::Query(obrain_common::utils::error::QueryError::new(
+                obrain_common::utils::error::QueryErrorKind::Semantic,
+                msg,
+            ))
+        })?;
         // T17h T9c fast-path : try the typed-degree top-K rewrite. On
         // a match, the entire `Limit → Sort → Return → Aggregate →
         // LeftJoin(s) → Expand` subtree is substituted with a single
@@ -476,18 +513,134 @@ impl super::Planner {
         //  - Input is NOT a direct NodeScan (could be Filter, Sort, Aggregate…)
         //  - NodeScan has its own child input (cross-join pattern)
         //  - count == 0 (degenerate)
+        // T17i : the fast-path below only ever matched `Limit → NodeScan`, a
+        // shape the GQL translator never produces — it applies `wrap_return`
+        // BEFORE `wrap_skip`/`wrap_limit`, so a real query is always
+        // `Limit → Return → NodeScan`. The push-down was therefore dead code
+        // for every user query: `MATCH (n:SupervisorObjective) RETURN n.id
+        // LIMIT 5` measured 447 ms on 31 357 nodes because the scan
+        // materialised the whole label before the LimitOperator trimmed to 5.
+        //
+        // We push the LIMIT *under* the projection when the projection is
+        // row-preserving, then let the recursion hit the NodeScan fast-path.
+        // Row-preserving means, structurally :
+        //  - not DISTINCT (DISTINCT can collapse rows → N inputs may yield <N)
+        //  - every item is a plain variable or property read. Any other shape
+        //    (function call, subquery…) may not be 1:1, and the aggregate path
+        //    builds an Aggregate node under the Return anyway, so requiring a
+        //    direct NodeScan already excludes it.
+        if limit.count.value() > 0
+            && let crate::query::plan::LogicalOperator::Return(ret) = limit.input.as_ref()
+            && !ret.distinct
+            && ret.items.iter().all(|item| {
+                matches!(
+                    &item.expression,
+                    LogicalExpression::Variable(_) | LogicalExpression::Property { .. }
+                )
+            })
+            && let crate::query::plan::LogicalOperator::NodeScan(scan) = ret.input.as_ref()
+            && scan.input.is_none()
+        {
+            // (2026-09-11) L'EXIGENCE D'ETIQUETTE EST LEVEE. Elle valait
+            // `scan.label.is_some()` et rendait ce chemin inapplicable a
+            // `MATCH (n) RETURN ... LIMIT k` — la forme exacte du `LIMIT 30`
+            // de production, qui payait donc 3,5 millions de slots pour 30
+            // lignes.
+            //
+            // CE QUI TIENT LA SURETE, ce n'est pas l'etiquette : c'est la
+            // FORME STRUCTURELLE exigee juste au-dessus. `ret.input` doit
+            // etre un `NodeScan` DIRECT. Un `WHERE` construit un
+            // `LogicalOperator::Filter` — un variant distinct, qui ne peut
+            // pas s'unifier avec `NodeScan` et fait donc tomber la requete
+            // dans le plan generique. Verifie aussi cote structure :
+            // `NodeScanOp` ne porte AUCUN predicat (variable, label, input,
+            // pushdown_hint) — il ne peut pas cacher un filtre. Idem pour
+            // Sort, Join, Aggregate, Distinct, tous des variants distincts,
+            // et `ret.distinct` est deja exclu.
+            //
+            // Autrement dit le plafond ne descend que si RIEN entre le scan
+            // et le LIMIT ne reduit le nombre de lignes.
+            let pushed = LogicalOperator::Return(ReturnOp {
+                items: ret.items.clone(),
+                distinct: ret.distinct,
+                input: Box::new(LogicalOperator::Limit(LimitOp {
+                    count: limit.count.clone(),
+                    input: ret.input.clone(),
+                })),
+            });
+            let (input_op, columns) = self.plan_operator(&pushed)?;
+            let schema = self.derive_schema_from_columns(&columns);
+            return Ok(crate::query::planner::common::build_limit(
+                input_op,
+                columns,
+                limit.count.value(),
+                schema,
+            ));
+        }
+
+        // (NATIF-J6) ROUTE ORDER BY <prop> LIMIT k VIA L INDEX ORDONNE PAR
+        // VALEUR : lit ~k slots au lieu de N. Prend le pas sur la descente de
+        // limite ci-dessous ; si non eligible, elle rend None et le heap borne
+        // (identique a l'ancien comportement) reprend la main.
+        if let Some(result) = self.try_plan_order_by_index(limit) {
+            return Ok(result);
+        }
+
+        // (2026-08-21) DESCENTE DE LA LIMITE DANS LE TRI.
+        //
+        // `SortOperator` matérialisait TOUT et triait TOUT, quelle que soit la
+        // limite au-dessus. Mesuré sur la forme de production
+        // `ORDER BY … LIMIT k` : `LIMIT 8` coûtait 126,2 ms et `LIMIT 20000`
+        // 129,4 ms — un rapport de 0,98. Rendre huit lignes coûtait le prix de
+        // seize mille.
+        //
+        // POURQUOI C'EST SÛR. `bounded_top_k` porte sa preuve : l'ordre utilisé
+        // est (clés de tri, ordinal d'arrivée). Les ordinaux étant distincts,
+        // cet ordre est TOTAL — aucune paire n'est égale, donc les k plus
+        // petits forment un ensemble unique dans une séquence unique. Or un tri
+        // stable produit exactement cette séquence. Le borné rend donc le
+        // préfixe exact du complet, ex æquo compris
+        // (`test_limit_matches_full_sort_prefix_*`).
+        //
+        // POURQUOI SEULEMENT UN `Sort` DIRECT. Un `Skip(s)` intercalé ferait de
+        // la limite utile `s + k`, pas `k` ; un `Distinct` au-dessus du tri
+        // pourrait réduire le nombre de lignes et en exiger plus que k. Ces
+        // formes tombent dans le chemin générique, où rien ne change.
+        //
+        // L'enveloppe `build_limit` est CONSERVÉE — même prudence que les
+        // chemins rapides voisins : la borne du tri est une optimisation, pas
+        // le contrat de sortie.
+        if limit.count.value() > 0
+            && let crate::query::plan::LogicalOperator::Sort(sort) = limit.input.as_ref()
+        {
+            let (input_op, columns) = self.plan_sort(sort, Some(limit.count.value()))?;
+            let schema = self.derive_schema_from_columns(&columns);
+            return Ok(crate::query::planner::common::build_limit(
+                input_op,
+                columns,
+                limit.count.value(),
+                schema,
+            ));
+        }
+
+        // Meme leve d'exigence que le chemin A, meme justification : c'est le
+        // `NodeScan` DIRECT sous le `Limit` qui porte la surete, pas
+        // l'etiquette. Le cas sans etiquette emprunte
+        // `ScanOperator::new` + `with_max_rows`, que `load_batch` route vers
+        // `node_ids_capped` sous ses trois gardes.
         if let crate::query::plan::LogicalOperator::NodeScan(scan) = limit.input.as_ref()
             && scan.input.is_none()
             && limit.count.value() > 0
-            && let Some(label) = &scan.label
         {
-            let scan_op = crate::query::planner::lpg::ScanOperator::with_label(
-                std::sync::Arc::clone(&self.store)
-                    as std::sync::Arc<dyn crate::query::planner::lpg::GraphStore>,
-                label,
-            )
-            .with_max_rows(limit.count.value())
-            .with_transaction_context(self.viewing_epoch, self.transaction_id);
+            let store = std::sync::Arc::clone(&self.store)
+                as std::sync::Arc<dyn crate::query::planner::lpg::GraphStore>;
+            let base = match &scan.label {
+                Some(label) => crate::query::planner::lpg::ScanOperator::with_label(store, label),
+                None => crate::query::planner::lpg::ScanOperator::new(store),
+            };
+            let scan_op = base
+                .with_max_rows(limit.count.value())
+                .with_transaction_context(self.viewing_epoch, self.transaction_id);
             let scan_box: Box<dyn Operator> = Box::new(scan_op);
             // Still wrap in a LIMIT operator for safety (the cap is a
             // store-level hint, but visibility filtering or
@@ -512,8 +665,133 @@ impl super::Planner {
         ))
     }
 
+    /// (NATIF-J6) Route `ORDER BY n.<prop> [ASC|DESC] LIMIT k` via l'index
+    /// ORDONNE PAR VALEUR : au lieu de balayer les N noeuds puis d'en garder k
+    /// (heap borne), on demande a l'index les k NodeId extremes et on les
+    /// injecte comme feuille (`NodeListOperator`) SOUS la meme projection et le
+    /// meme `SortOperator.with_limit(k)`. Le resultat est donc IDENTIQUE au tri
+    /// complet (memes lignes, meme ordre, ex-aequo compris — le tri final
+    /// depart par la valeur puis l'ordre d'arrivee = slot, comme le heap), mais
+    /// ne lit que ~k slots.
+    ///
+    /// `None` (repli sur le heap borne, jamais faux) des qu'une condition
+    /// manque : transaction active ou ecritures en attente (le jeu visible
+    /// pourrait differer du jeu committe), cle de tri multiple ou non-Property,
+    /// entree qui n'est pas un NodeScan NU de la meme variable (WHERE, label,
+    /// entree propre, DISTINCT), propriete non indexee par valeur, ou NULL
+    /// possibles en TETE du resultat (placement NULLS FIRST sur store mixte) —
+    /// voir la garde NULL NATIF-J6B ci-dessous : en NULLS LAST la route reste
+    /// engagee malgre les NULLs des que l'index rend k ids.
+    fn try_plan_order_by_index(&self, limit: &LimitOp) -> Option<(Box<dyn Operator>, Vec<String>)> {
+        let k = limit.count.try_value().ok()?;
+        if k == 0 {
+            return None;
+        }
+        // Sans ecriture en attente et EN VUE DE L'EPOQUE COURANTE, le jeu
+        // visible == le jeu vivant committe == le contenu de l'index : aucun
+        // filtrage de visibilite n'est requis (donc pas d'over-fetch). Une
+        // transaction de LECTURE seule est admise (comme les fast-paths count /
+        // min-max, qui ne gardent que has_pending_writes) ; une vue time-travel
+        // (epoque != courante) ou des ecritures en attente font renoncer.
+        // (NATIF-J8) Garde consciente de l'EPOQUE DE L'INDEX. En plus des deux
+        // conditions historiques (aucune ecriture en attente ; vue au present),
+        // on exige que l'index ORDONNE PAR VALEUR couvre TOUT l'etat committe
+        // courant. `has_pending_writes` seul etait aveugle aux ecritures
+        // auto-commit (SYSTEM), qui commitent sans l'armer mais font avancer le
+        // WAL : l'index (bati sur disque) restait en retard sur la requete et
+        // pouvait rendre une ligne perimee/disparue. `couvre_courant`
+        // reconfronte FRAICHEMENT les ancres de l'index a l'etat present ; des
+        // qu'une ecriture a suivi la derniere fusion, il rend faux -> balayage.
+        if self.store.has_pending_writes()
+            || self.viewing_epoch != self.store.current_epoch()
+            || !self.store.index_ord_valeur_couvre_courant()
+        {
+            return None;
+        }
+        let LogicalOperator::Sort(sort) = limit.input.as_ref() else {
+            return None;
+        };
+        if sort.keys.len() != 1 {
+            return None;
+        }
+        let LogicalExpression::Property { variable, property } = &sort.keys[0].expression else {
+            return None;
+        };
+        // L'entree du tri doit descendre DIRECTEMENT sur un NodeScan NU de la
+        // meme variable : `Sort -> Return(non distinct) -> NodeScan` ou
+        // `Sort -> NodeScan`. Un Filter (WHERE), un label, une entree propre ou
+        // un DISTINCT font renoncer (variants distincts, ne s'unifient pas).
+        let scan_ok = match sort.input.as_ref() {
+            LogicalOperator::Return(ret) if !ret.distinct => matches!(
+                ret.input.as_ref(),
+                LogicalOperator::NodeScan(s)
+                    if s.input.is_none() && s.label.is_none() && &s.variable == variable
+            ),
+            LogicalOperator::NodeScan(s) => {
+                s.input.is_none() && s.label.is_none() && &s.variable == variable
+            }
+            _ => false,
+        };
+        if !scan_ok {
+            return None;
+        }
+        // GARDE NULL (NATIF-J6B) : l'index ne porte que les valeurs non-null.
+        // Placement effectif des NULL = clause explicite, sinon defaut par
+        // direction (convention PostgreSQL/Neo4j : ASC->LAST, DESC->FIRST).
+        //
+        // * NULLS LAST : les NULL sortent en QUEUE du tri ; les k premieres
+        //   lignes sont les k valeurs non-null extremes. La route est EXACTE
+        //   des que l'index rend k ids — MEME en presence de NULLs (store
+        //   mixte, la forme de production). S'il en rend moins, des NULL
+        //   completeraient la queue du resultat => repli.
+        // * NULLS FIRST : les NULL sortent en TETE, l'index ne peut pas les
+        //   servir => route seulement si AUCUN NULL (nb == node_count) — ce
+        //   qui ne tient pas sur un store mixte => repli, jamais faux.
+        let ascending = matches!(sort.keys[0].order, SortOrder::Ascending);
+        let nulls_en_queue = match sort.keys[0].nulls {
+            Some(crate::query::plan::NullsOrdering::Last) => true,
+            Some(crate::query::plan::NullsOrdering::First) => false,
+            None => ascending,
+        };
+        if !nulls_en_queue
+            && self.store.nb_valeurs_ordonnees(property) != Some(self.store.node_count())
+        {
+            return None;
+        }
+        let ids = if ascending {
+            self.store.premiers_k_ordonnes(property, k)?
+        } else {
+            self.store.derniers_k_ordonnes(property, k)?
+        };
+        // NULLS LAST : il faut k ids pleins — ou tout le store si
+        // node_count < k, cas ou s'il existe des NULLs on a nb < node_count et
+        // cette meme borne fait replier. NULLS FIRST : sans NULL (garde
+        // ci-dessus), l'index rend min(k, node_count).
+        if ids.len() < k.min(self.store.node_count()) {
+            return None;
+        }
+        // Injecte la feuille et laisse le plan de tri INCHANGE l'envelopper —
+        // c'est ce qui garantit l'identite des resultats.
+        *self.restriction_scan.borrow_mut() = Some((variable.clone(), ids));
+        let planned = self.plan_sort(sort, Some(k));
+        *self.restriction_scan.borrow_mut() = None;
+        let (input_op, columns) = planned.ok()?;
+        let schema = self.derive_schema_from_columns(&columns);
+        Some(crate::query::planner::common::build_limit(
+            input_op, columns, k, schema,
+        ))
+    }
+
     /// Plans a SKIP operator.
     pub(super) fn plan_skip(&self, skip: &SkipOp) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // Même garde que `plan_limit` : `SKIP $k` sans paramètre fourni doit
+        // échouer proprement, pas paniquer dans `count.value()`.
+        skip.count.try_value().map_err(|msg| {
+            Error::Query(obrain_common::utils::error::QueryError::new(
+                obrain_common::utils::error::QueryErrorKind::Semantic,
+                msg,
+            ))
+        })?;
         let (input_op, columns) = self.plan_operator(&skip.input)?;
         let schema = self.derive_schema_from_columns(&columns);
         Ok(crate::query::planner::common::build_skip(
@@ -530,7 +808,21 @@ impl super::Planner {
     /// may reference entity variables that Return has already projected away. In
     /// that case we inject a property projection BEFORE the Return so the sort
     /// key is available in the output columns.
-    pub(super) fn plan_sort(&self, sort: &SortOp) -> Result<(Box<dyn Operator>, Vec<String>)> {
+    /// `limite` : quand l'appelant SAIT qu'au plus k lignes seront consommées
+    /// — c'est `plan_limit` qui le sait, en voyant `Limit(k) → Sort` — le tri
+    /// devient borné : `O(n log k)` au lieu de `O(n log n)`, et
+    /// `SortOperator` n'émet que k lignes. `None` conserve strictement le
+    /// comportement antérieur.
+    ///
+    /// La limite est un plafond de lignes ÉMISES. Un `Skip` intercalé la
+    /// changerait en `skip + limit` ; `plan_limit` ne descend donc la limite
+    /// que sur un `Sort` DIRECT, et laisse toute autre forme au chemin
+    /// générique.
+    pub(super) fn plan_sort(
+        &self,
+        sort: &SortOp,
+        limite: Option<usize>,
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         // Check if we need pre-Return property projections. This is necessary
         // when ORDER BY references a property on an entity variable (e.g. p.age)
         // that is not included in the RETURN clause (e.g. RETURN p.name).
@@ -546,7 +838,9 @@ impl super::Planner {
                             )
                     })
                 } else {
-                    false
+                    // Clé de tri EXPRESSION (`ORDER BY 0 - n.v`) : elle aussi
+                    // passe par le Return augmenté (voir plus bas).
+                    cle_de_tri_expression(&key.expression)
                 }
             })
         } else {
@@ -555,6 +849,13 @@ impl super::Planner {
 
         // Number of extra sort-key columns appended after Return items
         let mut sort_extra_count: usize = 0;
+
+        // Clés de tri expression injectées dans le Return augmenté :
+        // représentation Debug de l'expression -> nom de colonne synthétique.
+        // (`LogicalExpression` ne dérive pas PartialEq ; la représentation
+        // Debug est injective sur la structure, ce qui suffit pour retrouver
+        // LA colonne projetée pour LA clé qui l'a demandée.)
+        let mut complex_sort_cols: HashMap<String, String> = HashMap::new();
 
         let (mut input_op, input_columns) = if needs_pre_return {
             // Plan the Return's input, then build a combined projection that
@@ -595,6 +896,28 @@ impl super::Planner {
                     alias: Some(col_name.clone()),
                 });
                 extra_columns.push(col_name.clone());
+            }
+
+            // Clés de tri EXPRESSION (`ORDER BY 0 - n.v`, `ORDER BY n.v + 1`) :
+            // le Return sait déjà évaluer une expression arbitraire, donc la
+            // clé est projetée comme item supplémentaire du Return augmenté
+            // — pas d'évaluateur à écrire — puis retirée après le tri par le
+            // strip `sort_extra_count` (correctif borné du lot 09). Un NULL
+            // produit par l'expression suit la clause NULLS comme n'importe
+            // quelle colonne.
+            for key in &sort.keys {
+                if cle_de_tri_expression(&key.expression) {
+                    let repr = format!("{:?}", key.expression);
+                    if !complex_sort_cols.contains_key(&repr) {
+                        let col_name = format!("__sort_expr_{}", complex_sort_cols.len());
+                        augmented_items.push(crate::query::plan::ReturnItem {
+                            expression: key.expression.clone(),
+                            alias: Some(col_name.clone()),
+                        });
+                        extra_columns.push(col_name.clone());
+                        complex_sort_cols.insert(repr, col_name);
+                    }
+                }
             }
 
             let augmented_ret = crate::query::plan::ReturnOp {
@@ -736,8 +1059,19 @@ impl super::Planner {
             .keys
             .iter()
             .map(|key| {
-                let col_idx = self
-                    .resolve_sort_expression_with_properties(&key.expression, &variable_columns)?;
+                // Clé expression injectée dans le Return augmenté : résolue
+                // vers sa colonne synthétique, sinon résolution classique.
+                let col_idx = match complex_sort_cols.get(&format!("{:?}", key.expression)) {
+                    Some(col_name) => *variable_columns.get(col_name).ok_or_else(|| {
+                        Error::Internal(format!(
+                            "Injected sort-key column '{col_name}' not found for ORDER BY"
+                        ))
+                    })?,
+                    None => self.resolve_sort_expression_with_properties(
+                        &key.expression,
+                        &variable_columns,
+                    )?,
+                };
                 Ok(PhysicalSortKey {
                     column: col_idx,
                     direction: match key.order {
@@ -747,15 +1081,35 @@ impl super::Planner {
                     null_order: match key.nulls {
                         Some(crate::query::plan::NullsOrdering::First) => NullOrder::NullsFirst,
                         Some(crate::query::plan::NullsOrdering::Last) => NullOrder::NullsLast,
-                        None => NullOrder::NullsLast, // default
+                        // Défaut CALCULÉ PAR DIRECTION (convention
+                        // PostgreSQL/Neo4j : NULL est la plus grande valeur) :
+                        // ASC → queue, DESC → tête. Indissociable du placement
+                        // ABSOLU des NULL dans les comparateurs : avant, un
+                        // `NullsLast` unique était retourné en NullsFirst sous
+                        // DESC par le `.reverse()` fautif du comparateur — le
+                        // bon défaut obtenu par un chemin faux. Le comparateur
+                        // corrigé, ce défaut-ci préserve le comportement des
+                        // requêtes sans clause NULLS.
+                        None => match key.order {
+                            SortOrder::Ascending => NullOrder::NullsLast,
+                            SortOrder::Descending => NullOrder::NullsFirst,
+                        },
                     },
                 })
             })
             .collect::<Result<Vec<_>>>()?;
 
         let output_schema = self.derive_schema_from_columns(&output_columns);
-        let mut operator: Box<dyn Operator> =
-            Box::new(SortOperator::new(input_op, physical_keys, output_schema));
+        let tri = SortOperator::new(input_op, physical_keys, output_schema);
+        // Tri borné : voir la preuve de stabilité sur `bounded_top_k`. Le
+        // résultat est le PRÉFIXE EXACT du tri complet — mêmes lignes, même
+        // ordre, ex æquo compris — donc poser la limite ici ne change aucune
+        // sortie, seulement le travail fourni pour l'obtenir.
+        let tri = match limite {
+            Some(k) => tri.with_limit(k),
+            None => tri,
+        };
+        let mut operator: Box<dyn Operator> = Box::new(tri);
 
         // Strip extra sort-key columns that were injected for ORDER BY resolution
         if sort_extra_count > 0 {
@@ -818,4 +1172,17 @@ impl super::Planner {
     pub(super) fn derive_schema_from_columns(&self, columns: &[String]) -> Vec<LogicalType> {
         columns.iter().map(|_| LogicalType::Any).collect()
     }
+}
+
+/// Une clé de tri qui est une EXPRESSION à évaluer (`ORDER BY 0 - n.v`,
+/// `ORDER BY n.v + 1`, CASE…) — par opposition aux formes résolues par nom
+/// (`Variable`, `Property`, `FunctionCall` cognitif). Ces clés sont projetées
+/// en colonne supplémentaire via le Return augmenté de `plan_sort`.
+fn cle_de_tri_expression(expr: &LogicalExpression) -> bool {
+    matches!(
+        expr,
+        LogicalExpression::Binary { .. }
+            | LogicalExpression::Unary { .. }
+            | LogicalExpression::Case { .. }
+    )
 }

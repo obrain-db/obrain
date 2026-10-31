@@ -10,6 +10,7 @@ use obrain_adapters::storage::wal::{LpgWal, WalRecord};
 use obrain_common::types::{EdgeId, EpochId, NodeId, PropertyKey, TransactionId, Value};
 use obrain_common::utils::hash::FxHashMap;
 use obrain_core::graph::lpg::{CompareOp, Edge, Node};
+use obrain_core::graph::traits::PredicatTexte;
 use obrain_core::graph::{Direction, GraphStore, GraphStoreMut};
 use obrain_core::statistics::Statistics;
 
@@ -32,6 +33,9 @@ pub struct WalGraphStore {
     /// Shared tracker: the last graph context emitted to the WAL.
     /// Held across a (SwitchGraph + mutation) pair to prevent interleaving.
     wal_graph_context: Arc<parking_lot::Mutex<Option<String>>>,
+    /// (2026-09-05) Verrou par store du composé MERGE (unicité sous
+    /// sessions concurrentes) — voir `GraphStoreMut::merge_guard`.
+    merge_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl WalGraphStore {
@@ -46,6 +50,7 @@ impl WalGraphStore {
             wal,
             graph_name: None,
             wal_graph_context,
+            merge_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         }
     }
 
@@ -61,6 +66,7 @@ impl WalGraphStore {
             wal,
             graph_name: Some(graph_name),
             wal_graph_context,
+            merge_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         }
     }
 
@@ -89,6 +95,27 @@ impl WalGraphStore {
 // ---------------------------------------------------------------------------
 
 impl GraphStore for WalGraphStore {
+    // --- Aretes inter-bases (V1) : delegation pure. Pas de WalRecord
+    // dedie cote LpgWal — depuis le cutover T17 la durabilite vit dans le
+    // WAL substrate, ou le backend journalise deja ExternalEdgeInsert/
+    // Delete. Sans ces delegations, les defauts du trait rendraient
+    // silencieusement << aucune arete externe >> a travers ce decorateur.
+    fn external_edges_from(&self, node: NodeId) -> Vec<obrain_core::graph::ExternalEdge> {
+        self.inner.external_edges_from(node)
+    }
+
+    fn external_inbound_refs(&self, to_store: &str, to_key: &str) -> Vec<(NodeId, EdgeId)> {
+        self.inner.external_inbound_refs(to_store, to_key)
+    }
+
+    fn external_edge_count(&self) -> u64 {
+        self.inner.external_edge_count()
+    }
+
+    fn external_edge_count_by_type(&self, edge_type: Option<&str>) -> u64 {
+        self.inner.external_edge_count_by_type(edge_type)
+    }
+
     fn get_node(&self, id: NodeId) -> Option<Node> {
         self.inner.get_node(id)
     }
@@ -145,6 +172,35 @@ impl GraphStore for WalGraphStore {
 
     fn get_node_property_batch(&self, ids: &[NodeId], key: &PropertyKey) -> Vec<Option<Value>> {
         self.inner.get_node_property_batch(ids, key)
+    }
+
+    /// Délégation de la garde d'index ordonné (voir
+    /// [`GraphStore::index_ordonne_pour`]) : sans elle, le planificateur — qui
+    /// tient ce wrapper — ne verrait jamais l'index du substrat et refuserait
+    /// toutes les réécritures en intervalle.
+    fn index_ordonne_pour(&self, propriete: &str) -> bool {
+        self.inner.index_ordonne_pour(propriete)
+    }
+
+    /// Délégation de la garde SANS CONSTRUCTION (voir
+    /// [`GraphStore::index_ordonne_disponible`]) : c'est elle qu'interroge la
+    /// réécriture de préfixe, pour ne pas payer un balayage complet avant de
+    /// répondre.
+    fn index_ordonne_disponible(&self, propriete: &str) -> bool {
+        self.inner.index_ordonne_disponible(propriete)
+    }
+
+    /// Délégation du canal « verdicts texte » (voir
+    /// [`GraphStore::verdicts_texte_batch`]) : sans elle, le filtre — qui tient
+    /// un `Arc<dyn GraphStore>` sur CE wrapper — ne verrait jamais la voie sans
+    /// allocation du substrat et repasserait par la matérialisation des chaînes.
+    fn verdicts_texte_batch(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        predicats: &[PredicatTexte<'_>],
+    ) -> Option<Vec<Vec<Option<bool>>>> {
+        self.inner.verdicts_texte_batch(ids, key, predicats)
     }
 
     fn get_nodes_properties_batch(&self, ids: &[NodeId]) -> Vec<FxHashMap<PropertyKey, Value>> {
@@ -285,6 +341,10 @@ impl GraphStore for WalGraphStore {
         self.inner.all_property_keys()
     }
 
+    fn edge_counts_by_type(&self) -> Option<std::collections::HashMap<String, usize>> {
+        self.inner.edge_counts_by_type()
+    }
+
     fn is_node_visible_at_epoch(&self, id: NodeId, epoch: EpochId) -> bool {
         self.inner.is_node_visible_at_epoch(id, epoch)
     }
@@ -341,6 +401,27 @@ impl GraphStore for WalGraphStore {
 // ---------------------------------------------------------------------------
 
 impl GraphStoreMut for WalGraphStore {
+    fn merge_guard(&self) -> Option<std::sync::Arc<std::sync::Mutex<()>>> {
+        Some(self.merge_lock.clone())
+    }
+
+    // --- Aretes inter-bases (V1) : delegation pure (voir GraphStore). ---
+    fn create_external_edge(
+        &self,
+        src: NodeId,
+        edge_type: &str,
+        to_host: Option<&str>,
+        to_store: &str,
+        to_key: &str,
+    ) -> Option<EdgeId> {
+        self.inner
+            .create_external_edge(src, edge_type, to_host, to_store, to_key)
+    }
+
+    fn delete_external_edge(&self, id: EdgeId) -> bool {
+        self.inner.delete_external_edge(id)
+    }
+
     fn create_node(&self, labels: &[&str]) -> NodeId {
         let id = self.inner.create_node(labels);
         self.log_with_context(&WalRecord::CreateNode {

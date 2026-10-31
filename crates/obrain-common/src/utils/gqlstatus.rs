@@ -208,6 +208,9 @@ impl From<&super::error::Error> for GqlStatus {
                 QueryErrorKind::Semantic => GqlStatus::SYNTAX_INVALID_REFERENCE,
                 QueryErrorKind::Optimization => GqlStatus::SYNTAX_ERROR,
                 QueryErrorKind::Execution => GqlStatus::DATA_EXCEPTION,
+                // Une annulation n'est pas une exception de donnees : la
+                // requete a ete stoppee, pas mise en defaut.
+                QueryErrorKind::Cancelled => GqlStatus::DATA_EXCEPTION,
             },
             Error::Transaction(t) => match t {
                 TransactionError::ReadOnly => GqlStatus::INVALID_TX_READ_ONLY,

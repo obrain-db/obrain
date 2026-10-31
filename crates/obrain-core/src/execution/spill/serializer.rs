@@ -71,9 +71,10 @@ pub fn serialize_value<W: Write + ?Sized>(value: &Value, w: &mut W) -> std::io::
         }
         Value::Timestamp(t) => {
             w.write_all(&[TAG_TIMESTAMP])?;
-            // Timestamp is internally an i64 (microseconds since epoch)
-            let micros = t.as_micros();
-            w.write_all(&micros.to_le_bytes())?;
+            // Timestamp is internally an i64 (NANOseconds since epoch) —
+            // le spill transporte la précision pleine (gql_15 D8).
+            let nanos = t.as_nanos();
+            w.write_all(&nanos.to_le_bytes())?;
             Ok(9)
         }
         Value::List(items) => {
@@ -197,9 +198,9 @@ pub fn deserialize_value<R: Read + ?Sized>(r: &mut R) -> std::io::Result<Value> 
         TAG_TIMESTAMP => {
             let mut buf = [0u8; 8];
             r.read_exact(&mut buf)?;
-            let micros = i64::from_le_bytes(buf);
+            let nanos = i64::from_le_bytes(buf);
             Ok(Value::Timestamp(
-                obrain_common::types::Timestamp::from_micros(micros),
+                obrain_common::types::Timestamp::from_nanos(nanos),
             ))
         }
         TAG_LIST => {

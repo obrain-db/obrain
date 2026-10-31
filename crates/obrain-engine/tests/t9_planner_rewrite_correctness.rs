@@ -30,7 +30,7 @@
 
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Single-direction query without peer label — simplest shape that
 /// the rewrite handles. The correctness test walks this query
@@ -89,6 +89,17 @@ fn fingerprint(row: &[Value]) -> (String, i64, i64, i64) {
 /// env var, second run lets the rewrite fire.
 // Env-var mutation requires `unsafe` since Rust 2024; scoped to this helper.
 #[allow(unsafe_code)]
+/// Sérialise les appels qui posent `OBRAIN_DISABLE_TYPED_DEGREE_TOPK` : la
+/// variable est GLOBALE au processus, et plusieurs tests de ce binaire passent
+/// par ce helper — sans verrou, un test peut mesurer le réglage posé par un autre.
+fn verrou_env() -> std::sync::MutexGuard<'static, ()> {
+    static VERROU: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    VERROU
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn run_twice(
     session: &obrain_engine::Session,
     query: &str,
@@ -96,8 +107,16 @@ fn run_twice(
     Vec<Vec<obrain_common::types::Value>>,
     Vec<Vec<obrain_common::types::Value>>,
 ) {
-    // SAFETY: cargo runs integration tests single-binary — no concurrent env
-    // access in this test scope.
+    // ── LA JUSTIFICATION QUI FIGURAIT ICI ÉTAIT FAUSSE ─────────────────────
+    // Elle affirmait : « cargo runs integration tests single-binary — no
+    // concurrent env access in this test scope ». Faux : cargo exécute les tests
+    // d'un MÊME binaire en THREADS PARALLÈLES (c'est le défaut). Sans verrou, le
+    // `remove_var` ci-dessous peut tomber dans la fenêtre d'un autre test qui a
+    // posé « 1 », et les deux mesures ne comparent plus ce qu'elles croient :
+    // un `run_twice` peut mesurer deux fois la MÊME route, et le test passerait
+    // en ne prouvant rien (au mieux), ou échouerait selon l'ordonnancement.
+    let _verrou = verrou_env();
+    // SAFETY : le verrou d'environnement est tenu (voir `verrou_env`).
     unsafe {
         std::env::set_var("OBRAIN_DISABLE_TYPED_DEGREE_TOPK", "1");
     }

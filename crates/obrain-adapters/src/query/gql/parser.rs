@@ -18,6 +18,28 @@ fn unescape_string(s: &str) -> String {
                 Some('\\') => result.push('\\'),
                 Some('\'') => result.push('\''),
                 Some('"') => result.push('"'),
+                // Échappement unicode ISO/IEC 39075 : \uXXXX (4 hexa) et
+                // \UXXXXXXXX (8 hexa) — la seule façon d'écrire un caractère
+                // non saisissable dans une requête transportée en ASCII
+                // (gql_05). Une suite invalide (hexa incomplet, point de code
+                // hors plage) est REMISE telle quelle, comme les autres
+                // échappements inconnus.
+                Some(c @ ('u' | 'U')) => {
+                    let n = if c == 'u' { 4 } else { 8 };
+                    let hex: String = chars.by_ref().take(n).collect();
+                    let decode = (hex.len() == n && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .then(|| u32::from_str_radix(&hex, 16).ok())
+                        .flatten()
+                        .and_then(char::from_u32);
+                    match decode {
+                        Some(ch) => result.push(ch),
+                        None => {
+                            result.push('\\');
+                            result.push(c);
+                            result.push_str(&hex);
+                        }
+                    }
+                }
                 Some(other) => {
                     result.push('\\');
                     result.push(other);
@@ -38,6 +60,10 @@ pub struct Parser<'a> {
     peeked: Option<Token>,
     peeked_second: Option<Token>,
     source: &'a str,
+    /// (V4) Alias de bases du preambule `USING BASE alias AS "slug"` —
+    /// resolus dans `ref(alias, ...)` et `IN alias`. Sucre pur : sans
+    /// preambule, la carte reste vide et rien ne change.
+    base_aliases: std::collections::HashMap<String, String>,
 }
 
 impl<'a> Parser<'a> {
@@ -51,7 +77,32 @@ impl<'a> Parser<'a> {
             peeked: None,
             peeked_second: None,
             source: input,
+            base_aliases: std::collections::HashMap::new(),
         }
+    }
+
+    /// Texte brut du prochain token (pour discriminer USING BASE).
+    fn peek_token_text(&mut self) -> String {
+        if self.peeked.is_none() {
+            self.peeked = Some(self.lexer.next_token());
+        }
+        self.peeked
+            .as_ref()
+            .map(|t| t.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// (V4) Resout un alias de base declare par USING BASE — erreur
+    /// ENSEIGNANTE sinon (l'alias doit etre declare avant usage).
+    fn resoudre_alias_base(&mut self, alias: &str) -> Result<String> {
+        if let Some(slug) = self.base_aliases.get(alias) {
+            return Ok(slug.clone());
+        }
+        Err(self.error(&format!(
+            "alias de base inconnu : '{alias}'. Declare-le en tete de requete : \
+             USING BASE {alias} AS \"slug/de/la/base\" — ou ecris le slug en \
+             toutes lettres : ref(\"slug\", ...) / IN \"slug\"",
+        )))
     }
 
     /// Checks if the current token can be used as a label or type name.
@@ -176,6 +227,30 @@ impl<'a> Parser<'a> {
 
     /// Parses the input into a statement.
     pub fn parse(&mut self) -> Result<Statement> {
+        // (V4) Preambule d'alias de bases (sucre demande par l'entite) :
+        //   USING BASE ks AS "knowledge_substrat" [USING BASE ...]
+        // Les alias valent pour ref(ks, ...) et IN ks dans le corps.
+        while self.is_identifier()
+            && self.get_identifier_name().eq_ignore_ascii_case("USING")
+            && self.peek_kind() == TokenKind::Identifier
+        {
+            // Ne consommer que si le mot suivant est bien BASE.
+            let deuxieme = self.peek_token_text();
+            if !deuxieme.eq_ignore_ascii_case("BASE") {
+                break;
+            }
+            self.advance(); // USING
+            self.advance(); // BASE
+            if !self.is_identifier() {
+                return Err(self.error("USING BASE attend un alias (identifiant)"));
+            }
+            let alias = self.get_identifier_name();
+            self.advance();
+            self.expect(TokenKind::As)?;
+            let slug = self.parse_string_value()?;
+            self.base_aliases.insert(alias, slug);
+        }
+
         // Handle EXPLAIN/PROFILE prefix: wraps the entire following statement
         if self.is_identifier() && self.get_identifier_name().eq_ignore_ascii_case("EXPLAIN") {
             self.advance(); // consume EXPLAIN
@@ -262,6 +337,22 @@ impl<'a> Parser<'a> {
             };
         }
 
+        // (correctif parseur-queue) Fermeture de classe : l'entree doit etre
+        // entierement consommee. Avant ce controle, toute queue incomprise
+        // etait JETEE en silence — la requete repondait ok en n'ayant execute
+        // que sa tete. On tolere les terminateurs d'instruction finaux (';'),
+        // que le lexer rend comme jetons d'erreur faute de variante dediee.
+        while self.current.kind == TokenKind::Error && self.current.text == ";" {
+            self.advance();
+        }
+        if self.current.kind != TokenKind::Eof {
+            return Err(self.error(&format!(
+                "Unexpected token '{}' after the end of the statement (position {}): \
+                 the entire query must be consumed",
+                self.current.text, self.current.span.start
+            )));
+        }
+
         Ok(left)
     }
 
@@ -273,9 +364,11 @@ impl<'a> Parser<'a> {
             | TokenKind::Merge
             | TokenKind::For
             | TokenKind::Return => self.parse_query().map(Statement::Query),
-            TokenKind::Insert => self
-                .parse_insert()
-                .map(|s| Statement::DataModification(DataModificationStatement::Insert(s))),
+            // (correctif parseur-queue) INSERT peut etre suivi d'autres clauses
+            // (SET, REMOVE, RETURN, ...) : on passe par parse_query, qui sait
+            // les enchainer (comme MERGE). La forme nue est repliee en
+            // DataModification pour preserver la forme d'AST historique.
+            TokenKind::Insert => self.parse_insert_like_statement(),
             TokenKind::Delete | TokenKind::Detach | TokenKind::Nodetach => self
                 .parse_delete()
                 .map(|s| Statement::DataModification(DataModificationStatement::Delete(s))),
@@ -283,9 +376,11 @@ impl<'a> Parser<'a> {
                 // Check if CREATE is followed by a pattern (Cypher-style) or a DDL keyword
                 let next = self.peek_kind();
                 if next == TokenKind::LParen {
-                    // Cypher-style: CREATE (n:Label {...}) - treat as INSERT
-                    self.parse_create_as_insert()
-                        .map(|s| Statement::DataModification(DataModificationStatement::Insert(s)))
+                    // Cypher-style: CREATE (n:Label {...}) - treat as INSERT.
+                    // (correctif parseur-queue) route par parse_query pour que
+                    // les clauses suivantes (SET, REMOVE, RETURN, ...) soient
+                    // analysees, comme pour INSERT.
+                    self.parse_insert_like_statement()
                 } else {
                     // GQL schema/session: dispatches between DDL (NODE TYPE, EDGE TYPE,
                     // GRAPH TYPE, INDEX, CONSTRAINT, SCHEMA) and session (GRAPH instance)
@@ -374,6 +469,43 @@ impl<'a> Parser<'a> {
                  DROP, SHOW, LOAD, USE, SESSION, START, COMMIT, or ROLLBACK",
             )),
         }
+    }
+
+    /// (correctif parseur-queue) INSERT / CREATE-motif en tete d'instruction :
+    /// analyse par `parse_query`, qui sait enchainer les clauses suivantes
+    /// (SET, REMOVE, RETURN, ...). Une forme nue — le seul motif, aucune
+    /// clause — est repliee en `Statement::DataModification` pour preserver la
+    /// forme d'AST historique attendue par les appelants et les tests.
+    fn parse_insert_like_statement(&mut self) -> Result<Statement> {
+        let query = self.parse_query()?;
+        if let Some(insert) = Self::as_bare_insert(&query) {
+            return Ok(Statement::DataModification(
+                DataModificationStatement::Insert(insert),
+            ));
+        }
+        Ok(Statement::Query(query))
+    }
+
+    /// Rend l'INSERT nu si la requete ne contient rien d'autre que lui.
+    fn as_bare_insert(query: &QueryStatement) -> Option<InsertStatement> {
+        let rc = &query.return_clause;
+        if query.ordered_clauses.len() == 1
+            && query.where_clause.is_none()
+            && query.set_clauses.is_empty()
+            && query.remove_clauses.is_empty()
+            && query.with_clauses.is_empty()
+            && query.having_clause.is_none()
+            && rc.items.is_empty()
+            && !rc.is_wildcard
+            && !rc.is_finish
+            && rc.order_by.is_none()
+            && rc.skip.is_none()
+            && rc.limit.is_none()
+            && let QueryClause::Create(insert) = &query.ordered_clauses[0]
+        {
+            return Some(insert.clone());
+        }
+        None
     }
 
     /// Parses a CALL procedure statement.
@@ -633,18 +765,28 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Parse SET clauses
+        // Parse SET and REMOVE clauses, in written order.
+        // (correctif parseur-queue) l'ancien code imposait SET-puis-REMOVE :
+        // un SET ecrit apres un REMOVE n'etait pas consomme, et la queue etait
+        // jetee en silence. Les deux clauses s'entrelacent desormais et sont
+        // enregistrees dans ordered_clauses pour etre appliquees dans l'ordre
+        // ou elles sont ecrites.
         let mut set_clauses = Vec::new();
-        while self.current.kind == TokenKind::Set {
-            let clause = self.parse_set_clause()?;
-            ordered_clauses.push(QueryClause::Set(clause.clone()));
-            set_clauses.push(clause);
-        }
-
-        // Parse REMOVE clauses
         let mut remove_clauses = Vec::new();
-        while self.current.kind == TokenKind::Remove {
-            remove_clauses.push(self.parse_remove_clause()?);
+        loop {
+            match self.current.kind {
+                TokenKind::Set => {
+                    let clause = self.parse_set_clause()?;
+                    ordered_clauses.push(QueryClause::Set(clause.clone()));
+                    set_clauses.push(clause);
+                }
+                TokenKind::Remove => {
+                    let clause = self.parse_remove_clause()?;
+                    ordered_clauses.push(QueryClause::Remove(clause.clone()));
+                    remove_clauses.push(clause);
+                }
+                _ => break,
+            }
         }
 
         // Parse WITH clauses
@@ -1718,10 +1860,96 @@ impl<'a> Parser<'a> {
     fn parse_node_pattern(&mut self) -> Result<NodePattern> {
         self.expect(TokenKind::LParen)?;
 
+        // Aretes inter-bases (V1) : `(ref("slug", "clef"))` ou
+        // `(ref("hote", "slug", "clef"))`. `ref` n'est traite comme
+        // mot-cle que suivi d'une parenthese ouvrante — une variable
+        // nommee `ref` reste valide partout ailleurs.
+        if self.is_identifier()
+            && self.get_identifier_name().eq_ignore_ascii_case("ref")
+            && self.peek_kind() == TokenKind::LParen
+        {
+            self.advance(); // ref
+            self.advance(); // (
+            // (V4) Un IDENTIFIANT en position de base est un alias USING
+            // BASE (les hotes et les clefs restent des litteraux chaine).
+            let premier_alias = if self.is_identifier() {
+                let a = self.get_identifier_name();
+                self.advance();
+                Some(self.resoudre_alias_base(&a)?)
+            } else {
+                None
+            };
+            let premier = match &premier_alias {
+                Some(slug) => slug.clone(),
+                None => self.parse_string_value()?,
+            };
+            self.expect(TokenKind::Comma)?;
+            let deuxieme_alias = if premier_alias.is_none() && self.is_identifier() {
+                let a = self.get_identifier_name();
+                self.advance();
+                Some(self.resoudre_alias_base(&a)?)
+            } else {
+                None
+            };
+            let deuxieme = match &deuxieme_alias {
+                Some(slug) => slug.clone(),
+                None => self.parse_string_value()?,
+            };
+            let reference = if premier_alias.is_none()
+                && (deuxieme_alias.is_some() || self.current.kind == TokenKind::Comma)
+            {
+                // Forme a 3 arguments : (hote, base, clef).
+                self.expect(TokenKind::Comma)?;
+                let troisieme = self.parse_string_value()?;
+                NodeRefPattern {
+                    host: Some(premier),
+                    store: deuxieme,
+                    key: troisieme,
+                }
+            } else {
+                NodeRefPattern {
+                    host: None,
+                    store: premier,
+                    key: deuxieme,
+                }
+            };
+            self.expect(TokenKind::RParen)?;
+            self.expect(TokenKind::RParen)?;
+            return Ok(NodePattern {
+                variable: None,
+                labels: Vec::new(),
+                label_expression: None,
+                properties: Vec::new(),
+                where_clause: None,
+                reference: Some(reference),
+                base_qualifier: None,
+                span: None,
+            });
+        }
+
         let variable = if self.is_identifier() {
             let name = self.get_identifier_name();
             self.advance();
             Some(name)
+        } else {
+            None
+        };
+
+        // Aretes inter-bases (V2) : motif qualifie par base —
+        // `(b IN "slug")` ou `(b IN "slug":Label)`. `IN` n'est consomme
+        // que suivi d'un litteral chaine : les autres usages du mot-cle
+        // dans un motif restent intacts.
+        let base_qualifier = if self.current.kind == TokenKind::In
+            && self.peek_kind() == TokenKind::String
+        {
+            self.advance();
+            Some(self.parse_string_value()?)
+        } else if self.current.kind == TokenKind::In && self.peek_kind() == TokenKind::Identifier {
+            // (V4) `IN alias` — l'alias vient du preambule USING BASE.
+            self.advance();
+            let a = self.get_identifier_name();
+            self.advance();
+            Some(self.resoudre_alias_base(&a)?)
         } else {
             None
         };
@@ -1768,6 +1996,8 @@ impl<'a> Parser<'a> {
             label_expression,
             properties,
             where_clause,
+            reference: None,
+            base_qualifier,
             span: None,
         })
     }
@@ -3171,6 +3401,30 @@ impl<'a> Parser<'a> {
         match self.current.kind {
             TokenKind::Minus => {
                 self.advance();
+                // Absorbe le moins unaire dans un littéral entier décimal
+                // qui ne tiendrait pas SEUL dans i64 : la borne basse du
+                // type, -9223372036854775808 (i64::MIN), est écrivable,
+                // mais 9223372036854775808 isolé dépasse i64::MAX d'une
+                // unité — sans cette absorption, le lexeur ne collant
+                // jamais le signe au nombre (scan_number démarre sur un
+                // chiffre), la borne basse serait inatteignable en
+                // littéral. Un littéral qui tient seul garde le chemin
+                // `Unary(Neg, …)` habituel ; les formes 0x/0o/0b ne
+                // parsent pas via `str::parse` et restent donc inchangées.
+                if self.current.kind == TokenKind::Integer {
+                    let absorbe = {
+                        let text = &self.current.text;
+                        if text.parse::<i64>().is_err() {
+                            format!("-{text}").parse::<i64>().ok()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(v) = absorbe {
+                        self.advance();
+                        return Ok(Expression::Literal(Literal::Integer(v)));
+                    }
+                }
                 let operand = self.parse_unary_expression()?;
                 Ok(Expression::Unary {
                     op: UnaryOp::Neg,
@@ -3849,6 +4103,16 @@ impl<'a> Parser<'a> {
                     distinct: false,
                 })
             }
+            // (2026-08-14) `=~` se lexe en `=` puis `~` : l'echec tombe donc
+            // ICI, sur le tilde, quand on cherche l'operande droite. Sans ce
+            // bras, l'appelant lit « Expected expression » et n'apprend rien —
+            // mesure en production : l'agent reessayait la meme forme.
+            TokenKind::Tilde => Err(self.error(
+                "l'operateur `=~` (comparaison par expression reguliere) \
+                 n'existe pas ici. Pour comparer sans tenir compte de la \
+                 casse : `WHERE toLower(x) CONTAINS 'motif'`. Voir aussi \
+                 `STARTS WITH` et `ENDS WITH`",
+            )),
             _ => Err(self.error("Expected expression")),
         }
     }
@@ -4105,24 +4369,6 @@ impl<'a> Parser<'a> {
 
     fn parse_insert(&mut self) -> Result<InsertStatement> {
         self.expect(TokenKind::Insert)?;
-
-        let mut patterns = Vec::new();
-        patterns.push(self.parse_pattern()?);
-
-        while self.current.kind == TokenKind::Comma {
-            self.advance();
-            patterns.push(self.parse_pattern()?);
-        }
-
-        Ok(InsertStatement {
-            patterns,
-            span: None,
-        })
-    }
-
-    /// Parses CREATE as INSERT (Cypher-style data modification).
-    fn parse_create_as_insert(&mut self) -> Result<InsertStatement> {
-        self.expect(TokenKind::Create)?;
 
         let mut patterns = Vec::new();
         patterns.push(self.parse_pattern()?);
@@ -4442,6 +4688,14 @@ impl<'a> Parser<'a> {
                 let name = self.get_identifier_name();
                 self.advance();
 
+                // (2026-08-06) La forme usuelle place `IF NOT EXISTS` APRÈS le
+                // nom — `CREATE INDEX idx IF NOT EXISTS FOR (n:L) ON (n.p)` —
+                // et c'est celle qu'emploient les tests Cypher de ce dépôt.
+                // Seule la position avant le nom était tentée ici, si bien que
+                // la forme standard butait sur « Expected FOR after index
+                // name ». On accepte les deux placements.
+                let if_not_exists = if_not_exists || self.try_parse_if_not_exists();
+
                 self.parse_create_index_body(name, if_not_exists)
             }
             _ if self.is_identifier()
@@ -4570,7 +4824,31 @@ impl<'a> Parser<'a> {
         if_not_exists: bool,
     ) -> Result<SchemaStatement> {
         // Expect FOR
-        if !self.is_identifier() || !self.get_identifier_name().eq_ignore_ascii_case("FOR") {
+        //
+        // (2026-08-06) `FOR` est un MOT-CLÉ du langage — le lexer le rend en
+        // `TokenKind::For` (voir lexer.rs, `"FOR" => TokenKind::For`), et il
+        // ne figure pas parmi les mots-clés contextuels acceptés comme
+        // identifiants. La condition d'origine, qui exigeait un identifiant
+        // nommé « FOR », ne pouvait donc JAMAIS être satisfaite : toute
+        // déclaration `CREATE INDEX <nom> FOR (n:Label) ON (n.prop)` échouait
+        // sur « Expected FOR after index name », y compris la forme exacte
+        // documentée par cette fonction.
+        //
+        // CE QUE CE CORRECTIF FAIT — ET NE FAIT PAS. Il ne « rétablit » aucun
+        // index : depuis la bascule substrat T17 (2026-04-23), l'évaluation de
+        // CREATE INDEX rend délibérément une erreur, le stockage en zones
+        // (L0/L1/L2, CommunityWarden) et l'index inversé du substrat ayant
+        // remplacé les tables latérales par label/propriété. La session le dit
+        // explicitement : les statements sont CONSERVÉS « pour que les scripts
+        // existants parsent proprement ».
+        //
+        // C'est précisément ce qui n'avait pas lieu ici : par la voie GQL, la
+        // requête mourait sur une erreur de SYNTAXE — un diagnostic faux, qui
+        // pointe la forme de la requête au lieu de dire que la fonction n'existe
+        // plus. On rend donc l'erreur honnête, pas la capacité.
+        let est_mot_cle_for = self.current.kind == TokenKind::For
+            || (self.is_identifier() && self.get_identifier_name().eq_ignore_ascii_case("FOR"));
+        if !est_mot_cle_for {
             return Err(self.error("Expected FOR after index name"));
         }
         self.advance();
@@ -5361,7 +5639,20 @@ impl<'a> Parser<'a> {
             match action.as_str() {
                 "ADD" => {
                     self.advance();
-                    // ADD property_name type [NOT NULL]
+                    // ADD [PROPERTY] property_name type [NOT NULL]
+                    // (correctif parseur-queue) le mot-clef optionnel PROPERTY
+                    // n'etait pas reconnu : `ADD PROPERTY location STRING`
+                    // creait une propriete nommee PROPERTY, de type location,
+                    // et jetait STRING en queue muette.
+                    if self.is_identifier()
+                        && self.get_identifier_name().eq_ignore_ascii_case("PROPERTY")
+                        && matches!(
+                            self.peek_kind(),
+                            TokenKind::Identifier | TokenKind::QuotedIdentifier
+                        )
+                    {
+                        self.advance();
+                    }
                     if !self.is_identifier() {
                         return Err(self.error("Expected property name after ADD"));
                     }
@@ -5410,6 +5701,17 @@ impl<'a> Parser<'a> {
                 }
                 "DROP" => {
                     self.advance();
+                    // DROP [PROPERTY] property_name — meme mot-clef optionnel
+                    // que pour ADD.
+                    if self.is_identifier()
+                        && self.get_identifier_name().eq_ignore_ascii_case("PROPERTY")
+                        && matches!(
+                            self.peek_kind(),
+                            TokenKind::Identifier | TokenKind::QuotedIdentifier
+                        )
+                    {
+                        self.advance();
+                    }
                     if !self.is_identifier() {
                         return Err(self.error("Expected property name after DROP"));
                     }
@@ -6438,6 +6740,37 @@ mod tests {
 
         let stmt = result.unwrap();
         assert!(matches!(stmt, Statement::Query(_)));
+    }
+
+    /// `CREATE INDEX` était INACCESSIBLE par la voie GQL.
+    ///
+    /// `FOR` est un mot-clé du langage (`TokenKind::For`) et ne figure pas
+    /// parmi les mots-clés contextuels ; la garde exigeait pourtant un
+    /// identifiant nommé « FOR ». Aucune déclaration d'index ne pouvait donc
+    /// aboutir — pas même la forme documentée par la fonction elle-même. Le
+    /// défaut est resté invisible parce que les tests d'index existants
+    /// passent par `execute_cypher`, c'est-à-dire l'autre parser.
+    ///
+    /// Ce test porte sur le PARSING seul. L'évaluation, elle, rend
+    /// délibérément une erreur depuis la bascule substrat T17 : les index par
+    /// label/propriété ont été remplacés par le stockage en zones. L'intention
+    /// documentée est que ces requêtes « parsent proprement » pour rendre ce
+    /// message-là — au lieu de quoi la voie GQL rendait une erreur de syntaxe,
+    /// c'est-à-dire un diagnostic faux.
+    #[test]
+    fn create_index_est_accessible_en_gql() {
+        for requete in [
+            "CREATE INDEX idx_obj_id FOR (n:SupervisorObjective) ON (n.id)",
+            "CREATE INDEX idx_multi FOR (n:Claim) ON (n.id, n.mission_id)",
+            "CREATE INDEX idx_si_absent IF NOT EXISTS FOR (n:Person) ON (n.name)",
+        ] {
+            let resultat = Parser::new(requete).parse();
+            assert!(
+                resultat.is_ok(),
+                "CREATE INDEX refusé par le parser GQL : {requete}\n  → {:?}",
+                resultat.err()
+            );
+        }
     }
 
     #[test]

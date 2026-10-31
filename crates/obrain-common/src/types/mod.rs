@@ -17,6 +17,7 @@ mod time;
 mod timestamp;
 mod validity;
 mod value;
+pub mod value_cmp;
 mod zoned_datetime;
 
 #[allow(unsafe_code)]

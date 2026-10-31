@@ -119,7 +119,7 @@ fn main() -> Result<(), BoxErr> {
     );
 
     // Load (one full decode — peak anon tracks the file size).
-    let t_load = std::time::Instant::now();
+    let t_load = web_time::Instant::now();
     let mut snap = PropertiesSnapshotV1::load(&props_path)?;
     eprintln!(
         "strip: loaded snapshot in {:.2}s ({} node entries, {} edge entries)",
@@ -213,7 +213,7 @@ fn main() -> Result<(), BoxErr> {
 
     // Re-persist atomically. `PropertiesSnapshotV1::persist` uses tmp +
     // rename, so a crash leaves the file in either pre-or-post state.
-    let t_write = std::time::Instant::now();
+    let t_write = web_time::Instant::now();
     snap.persist(&props_path)?;
     let size_after = std::fs::metadata(&props_path)?.len();
     eprintln!(

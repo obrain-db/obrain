@@ -177,7 +177,11 @@ impl PropertiesSnapshotV1 {
     /// for the next open to trip over.
     pub fn persist(&self, path: &Path) -> SubstrateResult<()> {
         let bytes = self.to_bytes()?;
-        let tmp_path = path.with_extension("props.tmp");
+        // Temporaire UNIQUE par écrivain : deux processus du même store qui
+        // flushent ensemble se disputaient ce nom partagé, et le `rename` du
+        // perdant échouait en ENOENT (mesuré par `strace`). Voir
+        // `crate::wal_io::chemin_tmp_unique`.
+        let tmp_path = crate::wal_io::chemin_tmp_unique(path);
         std::fs::write(&tmp_path, &bytes).map_err(SubstrateError::Io)?;
         std::fs::rename(&tmp_path, path).map_err(SubstrateError::Io)?;
         Ok(())

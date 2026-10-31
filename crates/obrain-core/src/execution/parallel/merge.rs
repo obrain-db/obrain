@@ -216,6 +216,10 @@ impl SortKey {
     }
 
     /// Creates a descending sort key.
+    ///
+    /// Défaut par direction (NULL = plus grande valeur) : DESC → NULL en
+    /// tête. Le placement est ABSOLU dans le comparateur — `nulls_first`
+    /// veut dire ce qu'il dit, il n'est plus retourné par la direction.
     #[must_use]
     pub fn descending(column: usize) -> Self {
         Self {
@@ -242,13 +246,12 @@ impl MergeEntry {
             let a = self.row.get(key.column);
             let b = other.row.get(key.column);
 
-            let ordering = compare_values_for_sort(a, b, key.nulls_first);
-
-            let ordering = if key.ascending {
-                ordering
-            } else {
-                ordering.reverse()
-            };
+            // Placement des NULL ABSOLU : `nulls_first` désigne une extrémité
+            // de la SORTIE, quelle que soit la direction. L'inversion de
+            // direction est appliquée DANS le comparateur, sur les seules
+            // valeurs non-NULL — jamais après coup sur le verdict entier
+            // (même sémantique que operators/sort.rs).
+            let ordering = compare_values_for_sort(a, b, key.nulls_first, key.ascending);
 
             if ordering != Ordering::Equal {
                 return ordering;
@@ -279,7 +282,15 @@ impl Ord for MergeEntry {
     }
 }
 
-fn compare_values_for_sort(a: Option<&Value>, b: Option<&Value>, nulls_first: bool) -> Ordering {
+/// Compare deux valeurs optionnelles : placement des NULL ABSOLU
+/// (`nulls_first` désigne une extrémité de la sortie), direction appliquée
+/// aux seules valeurs non-NULL.
+fn compare_values_for_sort(
+    a: Option<&Value>,
+    b: Option<&Value>,
+    nulls_first: bool,
+    ascending: bool,
+) -> Ordering {
     match (a, b) {
         (None, None) | (Some(Value::Null), Some(Value::Null)) => Ordering::Equal,
         (None, _) | (Some(Value::Null), _) => {
@@ -296,21 +307,22 @@ fn compare_values_for_sort(a: Option<&Value>, b: Option<&Value>, nulls_first: bo
                 Ordering::Less
             }
         }
-        (Some(a), Some(b)) => compare_values(a, b),
+        (Some(a), Some(b)) => {
+            if ascending {
+                compare_values(a, b)
+            } else {
+                compare_values(a, b).reverse()
+            }
+        }
     }
 }
 
+/// L'ORDRE TOTAL canonique — le MÊME que le tri séquentiel. Le dialecte
+/// local (`Equal` entre types, `Equal` sur NaN) est SUPPRIMÉ : une fusion
+/// parallèle qui ne range pas comme le tri qu'elle fusionne perd des lignes
+/// d'ordre sans erreur.
 fn compare_values(a: &Value, b: &Value) -> Ordering {
-    match (a, b) {
-        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-        (Value::Int64(a), Value::Int64(b)) => a.cmp(b),
-        (Value::Float64(a), Value::Float64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
-        (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
-        (Value::Date(a), Value::Date(b)) => a.cmp(b),
-        (Value::Time(a), Value::Time(b)) => a.cmp(b),
-        _ => Ordering::Equal,
-    }
+    obrain_common::types::value_cmp::comparer_total(a, b)
 }
 
 /// Merges multiple sorted runs into a single sorted output.

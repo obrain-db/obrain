@@ -18,7 +18,7 @@
 #![cfg(feature = "cypher")]
 
 use obrain_engine::ObrainDB;
-use std::time::Instant;
+use web_time::Instant;
 
 fn measure_open(name: &str, path: std::path::PathBuf) {
     if !path.exists() {

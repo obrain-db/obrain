@@ -1,3 +1,5 @@
+//! `SET` d'un label sur une variable liee — la liaison doit survivre a la mutation.
+
 #![cfg(feature = "cypher")]
 //! Regression tests for SET/REMOVE label variable binding preservation.
 //!

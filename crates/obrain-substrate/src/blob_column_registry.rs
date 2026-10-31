@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use obrain_common::types::{PropertyKey, Value};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use crate::blob_column::{BlobColSpec, BlobColumnWriter};
 use crate::error::{SubstrateError, SubstrateResult};
@@ -58,6 +58,29 @@ pub(crate) const BLOB_TAG_STRING: u8 = b'S';
 /// Leading tag byte marking a blob-column payload that originated from a
 /// `Value::Bytes`. The raw bytes follow the tag.
 pub(crate) const BLOB_TAG_BYTES: u8 = b'B';
+/// Charge utile encodée en BINCODE derrière l'étiquette — voir
+/// `encode_blob_payload`. Posée le 19/08 pour les listes ; élargie le 20/08 à
+/// toutes les variantes à repli bincode (`Map`, `Path`, listes hétérogènes).
+///
+/// LE NOM A CHANGÉ, PAS LA VALEUR. `BLOB_TAG_LIST` disait le seul usage qu'on
+/// lui connaissait ; il en a désormais trois. Le décodeur, lui, n'a jamais eu
+/// à changer : il décode un `Value` bincode QUELCONQUE, ce qui rend une carte
+/// écrite aujourd'hui relisible par un binaire du 19/08 — argument décisif
+/// contre l'introduction d'une étiquette neuve, qui aurait rendu ces charges
+/// indécodables en cas de retour arrière.
+// NE PAS « harmoniser » CETTE VALEUR EN bL (2026-08-19).
+//
+// Les étiquettes voisines sont des lettres ASCII lisibles en hexdump, et 3
+// détonne — la tentation de l aligner est réelle. Elle serait destructrice :
+// cette valeur est DÉJÀ SÉRIALISÉE sur disque, dans les colonnes blob de
+// `agent/system` (16 669 embeddings) et `agent`, migrées le 19/08. Changer
+// l étiquette rendrait ces charges indécodables — `decode_blob_payload`
+// tomberait dans son cas par défaut et rendrait None, c est-à-dire une
+// propriété silencieusement DISPARUE, exactement le défaut que ce correctif
+// est venu réparer.
+//
+// Toute nouvelle étiquette doit simplement éviter 3, bS et bB.
+const BLOB_TAG_BINCODE: u8 = 3;
 
 /// Inspect a [`Value`] and decide whether it should be routed to a blob
 /// column. Returns `Some(tagged_bytes)` if the value is a `String` or
@@ -94,6 +117,71 @@ pub(crate) fn encode_blob_payload(value: &Value) -> Option<Vec<u8>> {
                 None
             }
         }
+        // ── (2026-08-19) LES GROSSES LISTES N AVAIENT AUCUNE ROUTE ──
+        //
+        // Une `Value::List` volumineuse — typiquement un embedding de 768
+        // flottants stocke comme liste plutot que comme `Value::Vector` —
+        // ne trouvait AUCUNE destination : pas un Vector (donc pas de
+        // colonne dense), pas un String/Bytes (donc pas de blob), et bien
+        // trop grosse pour tenir dans une page de proprietes. Elle partait
+        // sur le chemin scalaire, ou l append echouait avec « property
+        // entry of N B exceeds single-page payload » — un simple `warn`.
+        //
+        // CONSEQUENCE VECUE (19/08, migration de `agent/system`) : 16 669
+        // proprietes DISPARUES, toutes des `embedding`. L echec etant
+        // silencieux, `obrain-migrate --finalize-v2` supprimait le sidecar
+        // herite, et l ouverture suivante ne rehydratait plus rien
+        // (`load_properties` court-circuite des que v2 a des pages). La
+        // valeur n existait plus nulle part.
+        //
+        // On leur donne la route qui leur manquait, avec le meme seuil que
+        // les autres. La liste est encodee en bincode derriere son etiquette,
+        // et `decode_blob_payload` la reconstruit a l identique.
+        // ── (2026-08-20) LES CARTES, LES CHEMINS ET LES LISTES HÉTÉROGÈNES
+        //    N'AVAIENT PAS DE ROUTE NON PLUS ──
+        //
+        // Le 19/08 n'a ouvert cette porte qu'à `Value::List`. Les autres
+        // variantes à repli bincode — `Map`, `Path`, et par ricochet les
+        // listes hétérogènes qui n'y arrivaient que par le premier bras —
+        // restaient sur le chemin scalaire, donc sur `encode_bincode_fallback`,
+        // donc sur `intern_bytes`, borné à UNE page de tas (4 076 o utiles).
+        // Au-delà, l'ajout v2 est REFUSÉ, la valeur retombe sur la DashMap —
+        // qui n'est plus persistée sur une base finalisée — et DISPARAÎT à la
+        // réouverture. Écrite sans erreur, relue dans la session, absente au
+        // redémarrage.
+        //
+        // MESURÉ (2026-08-20, `carto` figée par
+        // `props_codec::tests::le_repli_bincode_deborde_bien_avant_la_page_de_tas`) :
+        //
+        //     famille              refus v2 à N     varint > 256 o à N   marge
+        //     Map<str,Int64>          163                  32            5,1×
+        //     Map imbriquée            89                  22            4,0×
+        //     List hétérogène         295                  75            3,9×
+        //     Path                    170                  64            2,7×
+        //
+        // C'est ce tableau qui justifie ce remède plutôt qu'un chaînage sur
+        // plusieurs pages de tas : le seuil de routage blob (256 o, encodage
+        // varint) mord entre 2,7 et 5,1 fois AVANT le plafond de la page de
+        // tas (4 076 o, encodage fixint). Il ne reste donc AUCUN intervalle
+        // où une valeur serait trop grosse pour v2 sans être déjà partie en
+        // colonne blob. Ce n'est pas un raisonnement, c'est une mesure.
+        //
+        // TEMPORELS EXCLUS À DESSEIN : `Timestamp`, `Date`, `Time`,
+        // `Duration`, `ZonedDatetime` sont des scalaires de largeur FIXE —
+        // 9 à 29 octets encodés, mesurés. Ils ne peuvent atteindre ni 256 o
+        // ni 4 076 o. Les faire passer par cet encodage coûterait une
+        // allocation par écriture pour un test toujours faux.
+        Value::List(_) | Value::Map(_) | Value::Path { .. } => {
+            let encoded = bincode::serde::encode_to_vec(value, bincode::config::standard()).ok()?;
+            if encoded.len() > BLOB_COLUMN_THRESHOLD_BYTES {
+                let mut out = Vec::with_capacity(1 + encoded.len());
+                out.push(BLOB_TAG_BINCODE);
+                out.extend_from_slice(&encoded);
+                Some(out)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -111,6 +199,11 @@ pub(crate) fn decode_blob_payload(bytes: &[u8]) -> Option<Value> {
             Some(Value::String(s.into()))
         }
         BLOB_TAG_BYTES => Some(Value::Bytes(Arc::from(payload))),
+        // (2026-08-19) Pendant de l encodage ci-dessus. Une charge illisible
+        // rend None comme les autres cas — meme contrat de tolerance.
+        BLOB_TAG_BINCODE => bincode::serde::decode_from_slice(payload, bincode::config::standard())
+            .ok()
+            .map(|(v, _)| v),
         _ => None,
     }
 }
@@ -145,11 +238,28 @@ pub(crate) struct BlobColumnRegistry {
     /// [`Self::hydrate_from_dict`] from the persisted
     /// `DictSnapshot.blob_columns` list plus the prop-key names.
     by_key: DashMap<(PropertyKey, EntityKind), BlobColSpec>,
-    /// `BlobColSpec -> Arc<Mutex<BlobColumnWriter>>`. A Mutex (rather
-    /// than an RwLock) because `write_slot` may grow either mmap via
-    /// `ensure_room`, which invalidates outstanding borrows into the
-    /// old mapping.
-    writers: DashMap<BlobColSpec, Arc<Mutex<BlobColumnWriter>>>,
+    /// `BlobColSpec -> Arc<RwLock<BlobColumnWriter>>`.
+    ///
+    /// (2026-08-08) Mutex → RwLock. L'argument historique du Mutex —
+    /// « write_slot peut faire grandir la mmap via ensure_room, ce qui
+    /// invalide les emprunts en cours » — est EXACTEMENT la garantie d'un
+    /// RwLock : `write_slot(&mut self)` passe par `.write()`, exclusif de
+    /// tout lecteur, donc aucun emprunt de lecture ne survit à un remap.
+    /// Ce que le Mutex ajoutait en trop : il sérialisait AUSSI les
+    /// lecteurs entre eux. Mesuré en production (agent/system, ~30
+    /// requêtes en vol) : chaque hydratation de nœud prend le verrou de
+    /// ~30 colonnes ; sur les colonnes chaudes (content, goal…) partagées
+    /// par toutes les requêtes concurrentes, le convoi faisait passer des
+    /// MATCH de 20 nœuds à 24 s et des MERGE unitaires à 24-40 s.
+    /// `read_slot(&self)` sous `.read()` : les lecteurs concourent.
+    writers: DashMap<BlobColSpec, Arc<RwLock<BlobColumnWriter>>>,
+    /// T2 get_node perf (plan b30650e2, gotcha 7940daa7): per-EntityKind
+    /// snapshot of the registered keys, maintained at registration time
+    /// — same rationale as `VecColumnRegistry::keys_by_kind`:
+    /// `iter_props_for_entity` runs on every `get_node`, and blob
+    /// registries hold the most columns (~30 on PO), so the full DashMap
+    /// iteration + key clones per node dominated bulk hydration.
+    keys_by_kind: DashMap<EntityKind, Arc<Vec<PropertyKey>>>,
 }
 
 impl BlobColumnRegistry {
@@ -157,7 +267,30 @@ impl BlobColumnRegistry {
         Self {
             by_key: DashMap::new(),
             writers: DashMap::new(),
+            keys_by_kind: DashMap::new(),
         }
+    }
+
+    /// Record `key` in the per-kind key snapshot (idempotent). Must be
+    /// called wherever `by_key` gains an entry.
+    fn note_key(&self, key: &PropertyKey, ek: EntityKind) {
+        let mut entry = self
+            .keys_by_kind
+            .entry(ek)
+            .or_insert_with(|| Arc::new(Vec::new()));
+        if !entry.iter().any(|k| k == key) {
+            let mut v: Vec<PropertyKey> = (**entry).clone();
+            v.push(key.clone());
+            *entry = Arc::new(v);
+        }
+    }
+
+    /// O(1) snapshot of the keys registered for `ek`.
+    fn keys_for(&self, ek: EntityKind) -> Arc<Vec<PropertyKey>> {
+        self.keys_by_kind
+            .get(&ek)
+            .map(|e| Arc::clone(&e))
+            .unwrap_or_else(|| Arc::new(Vec::new()))
     }
 
     /// Rehydrate the registry from persisted specs. Takes the
@@ -193,7 +326,8 @@ impl BlobColumnRegistry {
             };
             let key = PropertyKey::new(name.as_str());
             let writer = BlobColumnWriter::create(sub, *spec)?;
-            self.writers.insert(*spec, Arc::new(Mutex::new(writer)));
+            self.writers.insert(*spec, Arc::new(RwLock::new(writer)));
+            self.note_key(&key, spec.entity_kind);
             self.by_key.insert((key, spec.entity_kind), *spec);
         }
         Ok(())
@@ -234,20 +368,55 @@ impl BlobColumnRegistry {
         // Register the spec on first sighting. Unlike vec_columns
         // there is no dim/dtype to enforce — only the (key, ek) pair
         // identifies the column.
+        self.note_key(key, ek);
         self.by_key.entry((key.clone(), ek)).or_insert(spec);
 
         // Get-or-create the writer.
         let writer = if let Some(w) = self.writers.get(&spec) {
             w.clone()
         } else {
-            let w = Arc::new(Mutex::new(BlobColumnWriter::create(sub, spec)?));
+            let w = Arc::new(RwLock::new(BlobColumnWriter::create(sub, spec)?));
             self.writers
                 .entry(spec)
                 .or_insert_with(|| w.clone())
                 .clone()
         };
 
-        writer.lock().write_slot(slot, bytes)
+        writer.write().write_slot(slot, bytes)
+    }
+
+    /// Marque ABSENTE la valeur blob de `(key, ek)` pour `slot`.
+    ///
+    /// (2026-08-20) Pendant obligatoire de [`Self::write`] : sans lui, une
+    /// valeur longue MASQUE indéfiniment toute réécriture plus courte, l'ordre
+    /// de lecture consultant les colonnes blob avant la chaîne v2. Voir
+    /// [`crate::blob_column::BlobColumnWriter::clear_slot`].
+    ///
+    /// GARDE À COÛT NUL : sans colonne enregistrée pour cette clé — le cas de
+    /// l'écrasante majorité des propriétés, qui n'ont jamais vu de valeur de
+    /// plus de 256 octets — on sort sur un seul `get` de DashMap, avant tout
+    /// verrou de colonne.
+    ///
+    /// VERROUS : ne prend QUE le `RwLock` de la colonne, et seulement après
+    /// avoir relâché les deux gardes de DashMap. Aucun verrou de zone, aucun
+    /// `substrate.lock()` — contrairement à [`Self::write`], dont l'ordre de
+    /// prise est donc un sur-ensemble strict. Aucun cycle nouveau.
+    pub(crate) fn clear(
+        &self,
+        key: &PropertyKey,
+        ek: EntityKind,
+        slot: u32,
+    ) -> SubstrateResult<()> {
+        let Some(spec) = self.spec_for(key, ek) else {
+            return Ok(());
+        };
+        // Le garde de DashMap est relâché à la fin de CETTE instruction, avant
+        // que le verrou de colonne ne soit pris ci-dessous.
+        let writer = match self.writers.get(&spec) {
+            Some(w) => w.clone(),
+            None => return Ok(()),
+        };
+        writer.write().clear_slot(slot)
     }
 
     /// Copy the payload for `slot` out of the column registered for
@@ -257,13 +426,13 @@ impl BlobColumnRegistry {
     ///
     /// The returned `Arc<[u8]>` is an owned copy of the **raw bytes
     /// including the 1-byte type tag** — the writer's mmap borrow
-    /// cannot escape the Mutex guard. Callers that want a fully
+    /// cannot escape the lock guard. Callers that want a fully
     /// reconstructed [`Value`] should use [`Self::read_value`] instead,
     /// which strips the tag.
     pub(crate) fn read(&self, key: &PropertyKey, ek: EntityKind, slot: u32) -> Option<Arc<[u8]>> {
         let spec = self.spec_for(key, ek)?;
         let writer = self.writers.get(&spec)?.clone();
-        let guard = writer.lock();
+        let guard = writer.read();
         let data: &[u8] = guard.read_slot(slot)?;
         Some(Arc::from(data))
     }
@@ -278,6 +447,143 @@ impl BlobColumnRegistry {
         decode_blob_payload(&raw)
     }
 
+    /// (O1) Vue zero-copy sur un payload `String` : rend la garde de
+    /// lecture de la colonne (comptée par `Arc`, feature `arc_lock`) et le
+    /// slot, APRÈS avoir validé présence, tag [`BLOB_TAG_STRING`] et UTF-8.
+    /// `None` sur colonne absente, slot absent, tag non-String ou UTF-8
+    /// invalide — même politique de dégradation que [`Self::read`].
+    ///
+    /// VERROUS : mêmes prises que [`Self::read`] (gardes DashMap relâchées
+    /// avant la garde de colonne) ; la garde de LECTURE reste tenue par la
+    /// vue rendue — un écrivain de CETTE colonne attendra tant que la vue
+    /// vit. Bail court exigé (contrat de [`crate::view`]).
+    pub(crate) fn read_str_view(
+        &self,
+        key: &PropertyKey,
+        ek: EntityKind,
+        slot: u32,
+    ) -> Option<crate::view::BlobStrView> {
+        let spec = self.spec_for(key, ek)?;
+        let writer = self.writers.get(&spec)?.clone();
+        let guard = writer.read_arc();
+        {
+            let bytes = guard.read_slot(slot)?;
+            let (tag, payload) = bytes.split_first()?;
+            if *tag != BLOB_TAG_STRING {
+                return None;
+            }
+            std::str::from_utf8(payload).ok()?;
+        }
+        Some(crate::view::BlobStrView::new(guard, slot))
+    }
+
+    /// (VWS) Garde de lecture `Arc` de la colonne String `(key, ek)` — UNE
+    /// prise pour tout un balayage (contrat « une garde par zone » de
+    /// `SubstrateStore::for_each_node_prop_str_view`). `None` si la clé n'a
+    /// jamais débordé vers une colonne blob pour ce genre d'entité.
+    ///
+    /// VERROUS : mêmes prises que [`Self::read_str_view`] (gardes DashMap
+    /// relâchées avant la prise de colonne). L'appelant tient la garde le
+    /// temps du balayage — un écrivain de CETTE colonne attendrait d'ici
+    /// là : bail de balayage, pas de rétention au-delà.
+    pub(crate) fn str_col_read_guard(
+        &self,
+        key: &PropertyKey,
+        ek: EntityKind,
+    ) -> Option<parking_lot::lock_api::ArcRwLockReadGuard<parking_lot::RawRwLock, BlobColumnWriter>>
+    {
+        let spec = self.spec_for(key, ek)?;
+        let writer = self.writers.get(&spec)?.clone();
+        Some(writer.read_arc())
+    }
+
+    /// Lit les valeurs d'un LOT de slots d'UNE colonne, sous une seule prise du
+    /// verrou de colonne, et décode DANS le garde.
+    ///
+    /// POURQUOI (2026-09-12). `read_value` refait, PAR CELLULE : un `spec_for`
+    /// (DashMap), un `writers.get` (DashMap), une prise du `RwLock` de colonne,
+    /// puis `Arc::from(data)` — une copie allouée dont personne ne veut, car le
+    /// garde interdit d'emprunter l'arène — avant `decode_blob_payload`, qui
+    /// alloue À NOUVEAU la `String`. Cinq gestes partagés par valeur, mesurés
+    /// au total ~1 µs/cellule : un filtre qui touche 347 970 lignes payait
+    /// 827 ms pour UNE propriété (`scripts/bench-filtre-propriete.sh`, mesure B).
+    /// Ici : un seul `spec_for`, un seul `writers.get`, un seul verrou, et UNE
+    /// allocation par valeur (celle du `Value` rendu) au lieu de deux.
+    ///
+    /// CONTRAT — identique à `read_value`, au lot près : `slots[i] == None`
+    /// signifie « ne pas lire cette case » (nœud mort, hors borne, ou déjà servi
+    /// par une zone antérieure) et rend `None`. Un slot ABSENT de la colonne
+    /// (sentinelle `len == 0`) rend `None` lui aussi : c'est ce `None`-là qui
+    /// autorise l'appelant à reprendre le fil dans la chaîne v2 puis la DashMap,
+    /// exactement comme le faisait `read_value`.
+    ///
+    /// Le tableau rendu a TOUJOURS la longueur de `slots` : le lot ne peut pas
+    /// désaligner les indices.
+    pub(crate) fn read_values_avec_spec(
+        &self,
+        spec: BlobColSpec,
+        slots: &[Option<u32>],
+    ) -> Vec<Option<Value>> {
+        // Le garde de `writers` est relâché à la fin de CETTE instruction (le
+        // temporaire du `get`), avant que le verrou de colonne ne soit pris —
+        // même ordre que `read`, et pas de verrou de registry tenu pendant la
+        // lecture de l'arène.
+        let writer = match self.writers.get(&spec) {
+            Some(w) => w.clone(),
+            // Colonne déclarée sans écrivain ouvert : même contrat que
+            // `read_value` (qui sort par `?` sur le `get`) — tout est absent.
+            None => return vec![None; slots.len()],
+        };
+        let guard = writer.read();
+        slots
+            .iter()
+            .map(|s| {
+                let s = (*s)?;
+                let data = guard.read_slot(s)?;
+                decode_blob_payload(data)
+            })
+            .collect()
+    }
+
+    /// Verdicts d'un prédicat TEXTE pour un LOT de slots, sous une seule prise
+    /// du verrou de colonne, SANS allouer de `Value`.
+    ///
+    /// `None` (extérieur du tableau) = « pas de verdict pour cette case » :
+    /// le slot est absent (sentinelle `len == 0`) **ou** sa charge n'est pas
+    /// étiquetée `String`. L'appelant reprend alors la chaîne des zones — c'est
+    /// indispensable pour les charges `BINCODE`, qui peuvent porter une chaîne
+    /// et que seul `decode_blob_payload` sait trancher.
+    pub(crate) fn verdicts_texte_avec_spec(
+        &self,
+        spec: BlobColSpec,
+        slots: &[Option<u32>],
+        predicats: &[obrain_core::graph::traits::PredicatTexte<'_>],
+    ) -> Vec<Vec<Option<bool>>> {
+        let mut out: Vec<Vec<Option<bool>>> = vec![vec![None; slots.len()]; predicats.len()];
+        let Some(writer) = self.writers.get(&spec).map(|w| w.clone()) else {
+            return out;
+        };
+        let guard = writer.read();
+        for (i, s) in slots.iter().enumerate() {
+            let Some(slot) = *s else { continue };
+            let Some(data) = guard.read_slot(slot) else {
+                continue;
+            };
+            // Charge étiquetée : 1 octet de tag, puis les octets. Une charge
+            // non étiquetée `String` (BINCODE, qui peut porter une chaîne) reste
+            // sans verdict : l'appelant reprend la chaîne des zones.
+            let Some((tag, charge)) = data.split_first() else {
+                continue;
+            };
+            if *tag != BLOB_TAG_STRING {
+                continue;
+            }
+            for (k, predicat) in predicats.iter().enumerate() {
+                out[k][i] = predicat.verdict(charge);
+            }
+        }
+        out
+    }
     /// T17k — bulk iteration of every registered blob column whose
     /// `EntityKind` matches `ek`, yielding the `(PropertyKey, Value)`
     /// pair when `slot` has a live payload on that column. Absent
@@ -294,17 +600,13 @@ impl BlobColumnRegistry {
         ek: EntityKind,
         slot: u32,
     ) -> Vec<(PropertyKey, Value)> {
-        let keys: Vec<PropertyKey> = self
-            .by_key
-            .iter()
-            .filter(|e| e.key().1 == ek)
-            .map(|e| e.key().0.clone())
-            .collect();
-        keys.into_iter()
-            .filter_map(|k| {
-                let v = self.read_value(&k, ek, slot)?;
-                Some((k, v))
-            })
+        // T2 get_node perf: O(1) Arc-cloned key snapshot instead of a
+        // full DashMap iteration + key clones per call. Absent slots
+        // already short-circuit inside `read_slot` (len == 0) before
+        // any copy, so no further presence optimisation is needed here.
+        let keys = self.keys_for(ek);
+        keys.iter()
+            .filter_map(|k| Some((k.clone(), self.read_value(k, ek, slot)?)))
             .collect()
     }
 
@@ -325,7 +627,39 @@ impl BlobColumnRegistry {
     /// the same cadence as the rest of the substrate.
     pub(crate) fn sync_all(&self) -> SubstrateResult<()> {
         for entry in self.writers.iter() {
-            entry.value().lock().sync()?;
+            entry.value().write().sync()?;
+        }
+        Ok(())
+    }
+}
+
+/// Chantier SlotRemappable — chemin VIF, pendant blob de l'impl sur
+/// `VecColumnRegistry` (voir sa doc) : seul le répertoire idx est
+/// permuté, l'arène adressée par offset ne bouge pas.
+impl crate::slot_remap::SlotRemappable for BlobColumnRegistry {
+    fn remap_name(&self) -> &'static str {
+        "blob_columns"
+    }
+
+    fn remap_node_slots(
+        &self,
+        substrate: &Arc<parking_lot::Mutex<SubstrateFile>>,
+        old_to_new: &[u32],
+        epoch: u32,
+        _ctx: crate::slot_remap::RemapContext,
+    ) -> SubstrateResult<()> {
+        for entry in self.writers.iter() {
+            if entry.key().entity_kind != EntityKind::Node {
+                continue;
+            }
+            // Verrou pris PAR COLONNE, jamais tenu par l'appelant (cf. la
+            // doc du trait `SlotRemappable`) — meme discipline que le
+            // registre veccol.
+            let sub = substrate.lock();
+            entry
+                .value()
+                .write()
+                .remap_node_slots(&sub, old_to_new, epoch)?;
         }
         Ok(())
     }
@@ -724,4 +1058,18 @@ mod tests {
             other => panic!("expected Bytes, got {other:?}"),
         }
     }
+}
+
+/// (VWS) Le `&str` d'un slot blob quand le payload est un `String` UTF-8 —
+/// tag [`BLOB_TAG_STRING`] vérifié puis validation UTF-8, même politique de
+/// dégradation (`None`) que `BlobColumnRegistry::read_str_view`. Emprunte à
+/// la colonne : à appeler SOUS sa garde de lecture
+/// ([`BlobColumnRegistry::str_col_read_guard`]).
+pub(crate) fn blob_slot_str(col: &BlobColumnWriter, slot: u32) -> Option<&str> {
+    let bytes = col.read_slot(slot)?;
+    let (tag, payload) = bytes.split_first()?;
+    if *tag != BLOB_TAG_STRING {
+        return None;
+    }
+    std::str::from_utf8(payload).ok()
 }

@@ -781,6 +781,15 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
+/// Arithmétique GARDÉE du chemin des contraintes CHECK.
+///
+/// MIROIR : `crates/obrain-core/src/execution/operators/filter.rs` (fns
+/// `eval_arithmetic` / `eval_modulo` d'`ExpressionPredicate`, chemin vif des
+/// requêtes WHERE/RETURN) duplique cette sémantique — mêmes gardes
+/// `checked_*`, même refus de la division et du modulo par zéro. Le partage
+/// direct est impossible sans dépendance inverse (`obrain-engine` dépend
+/// d'`obrain-core`) ; toute évolution ici doit être répercutée là-bas, et
+/// réciproquement.
 fn eval_arithmetic(left: &Value, op: ArithOp, right: &Value) -> Result<Value, String> {
     match (left, right) {
         (Value::Int64(a), Value::Int64(b)) => {

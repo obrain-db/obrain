@@ -92,6 +92,17 @@ pub const VEC_COLUMN_VERSION: u32 = 1;
 /// sparse index; unused in v1).
 pub const HEADER_SIZE: usize = 64;
 
+/// `flags` bit 1 — colonne en cours de repermutation de slots
+/// (chantier SlotRemappable).
+///
+/// Le chemin nominal ne le pose PAS : la repermutation passe par un
+/// fichier temporaire suivi d'un `rename` atomique, de sorte que le
+/// fichier vivant n'est jamais dans un état intermédiaire. Le bit reste
+/// défini et VÉRIFIÉ à l'ouverture comme garde-fou : une colonne qu'un
+/// outil externe aurait promue à mi-chemin est traitée comme ABSENTE
+/// plutôt que servie à moitié permutée.
+pub const FLAG_REMAP_IN_PROGRESS: u32 = 1 << 1;
+
 // ---------------------------------------------------------------------------
 // Entity kind + dtype
 // ---------------------------------------------------------------------------
@@ -244,6 +255,36 @@ impl VecColSpec {
             self.dim
         )
     }
+
+    /// Inverse of [`Self::filename`] — parse a `substrate.veccol.*`
+    /// filename back into its spec. Returns `None` for anything that
+    /// does not match the scheme (a corrupt or foreign filename
+    /// degrades to "not a vec column", never a panic).
+    ///
+    /// Used by the crash-replay side of the slot-remap hook
+    /// (`crate::slot_remap`), which must enumerate every vec column on
+    /// disk without access to the store's in-memory registry.
+    pub fn parse_filename(name: &str) -> Option<Self> {
+        let rest = name.strip_prefix("substrate.veccol.")?;
+        let mut parts = rest.split('.');
+        let kind = match parts.next()? {
+            "node" => EntityKind::Node,
+            "edge" => EntityKind::Edge,
+            _ => return None,
+        };
+        let prop_key_id = u16::from_str_radix(parts.next()?, 16).ok()?;
+        let dtype = VecDType::from_suffix(parts.next()?)?;
+        let dim: u32 = parts.next()?.parse().ok()?;
+        if parts.next().is_some() || dim == 0 {
+            return None;
+        }
+        Some(Self {
+            prop_key_id,
+            entity_kind: kind,
+            dim,
+            dtype,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +354,7 @@ impl VecColumnHeader {
     /// Parse a header out of the first [`HEADER_SIZE`] bytes of a
     /// mmap region. Returns `None` if the region is too short or
     /// fails alignment; never panics.
-    fn try_read(bytes: &[u8]) -> Option<Self> {
+    pub(crate) fn try_read(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < HEADER_SIZE {
             return None;
         }
@@ -328,6 +369,11 @@ impl VecColumnHeader {
     fn validate_against(&self, spec: &VecColSpec) -> Result<(), &'static str> {
         if self.magic != VEC_COLUMN_MAGIC {
             return Err("magic mismatch");
+        }
+        if self.flags & FLAG_REMAP_IN_PROGRESS != 0 {
+            // Permutation de slots interrompue : le payload est à moitié
+            // réarrangé. « Absente » est la seule lecture honnête.
+            return Err("remap in progress (payload half-permuted)");
         }
         if self.version != VEC_COLUMN_VERSION {
             return Err("version mismatch");
@@ -381,6 +427,11 @@ pub struct VecColumnWriter {
     /// Highest slot index ever written (+1), i.e. `n_slots` at
     /// finalise time. Starts at zero and monotonically grows.
     n_slots: u32,
+    /// Epoch de la dernière repermutation de slots appliquée à cette
+    /// colonne (chantier SlotRemappable). Persisté dans
+    /// `header._reserved[0]` par chaque écriture d'en-tête, hérité au
+    /// `create` — 0 = « jamais remappée ». Voir `crate::slot_remap`.
+    remap_epoch: u32,
 }
 
 impl VecColumnWriter {
@@ -398,11 +449,19 @@ impl VecColumnWriter {
             ));
         }
         let zf = sub.open_named_zone(&spec.filename())?;
-        let n_slots = match VecColumnHeader::try_read(zf.as_slice()) {
-            Some(h) if h.validate_against(&spec).is_ok() => h.n_slots,
-            _ => 0,
+        let (n_slots, remap_epoch) = match VecColumnHeader::try_read(zf.as_slice()) {
+            Some(h) if h.validate_against(&spec).is_ok() => (h.n_slots, h._reserved[0]),
+            // Colonne fraîche : elle reflète la disposition ACTUELLE des
+            // slots — estampillée avec l'epoch de remap courant, sinon le
+            // rejeu d'une repermutation antérieure la re-permuterait.
+            _ => (0, crate::slot_remap::current_remap_epoch(sub)?),
         };
-        Ok(Self { spec, zf, n_slots })
+        Ok(Self {
+            spec,
+            zf,
+            n_slots,
+            remap_epoch,
+        })
     }
 
     /// Write (or overwrite) slot `slot` with the raw byte content
@@ -442,6 +501,13 @@ impl VecColumnWriter {
     /// `write_slot` is valid and produces a header with `n_slots=0`;
     /// a subsequent reader sees an empty column.
     pub fn finalize(mut self) -> SubstrateResult<()> {
+        self.write_header_crc_durable()
+    }
+
+    /// Corps commun de `finalize` / `sync` : CRC sur le payload vivant,
+    /// en-tête écrit EN DERNIER (avec le `remap_epoch` courant dans
+    /// `_reserved[0]`), puis `msync` + `fsync`.
+    fn write_header_crc_durable(&mut self) -> SubstrateResult<()> {
         let stride = self.spec.slot_stride();
         let payload_bytes = (self.n_slots as usize) * stride;
         let total = HEADER_SIZE + payload_bytes;
@@ -459,6 +525,11 @@ impl VecColumnWriter {
 
         let mut header = VecColumnHeader::new(&self.spec, self.n_slots);
         header.crc32 = crc;
+        // Préservation de l'epoch de remap : un flush ne doit JAMAIS
+        // remettre l'epoch à zéro, sinon un rejeu ultérieur du record de
+        // repermutation ré-appliquerait la permutation à une colonne
+        // déjà permutée (corruption silencieuse).
+        header._reserved[0] = self.remap_epoch;
         {
             let slice = self.zf.as_slice_mut();
             slice[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
@@ -466,6 +537,127 @@ impl VecColumnWriter {
 
         self.zf.msync()?;
         self.zf.fsync()?;
+        Ok(())
+    }
+
+    /// Chantier SlotRemappable — applique une repermutation des slots
+    /// nœuds à cette colonne (chemin vif : le mmap du writer est l'état
+    /// authoritaire, CRC d'en-tête périmé toléré).
+    ///
+    /// Out-of-place : payload permuté en mémoire, memcpy retour, puis
+    /// en-tête (CRC + epoch) écrit en dernier et rendu durable. Un crash
+    /// au milieu laisse un CRC d'en-tête qui ne colle plus au payload ⇒
+    /// la colonne devient « absente » au prochain open (fail-safe-absent,
+    /// jamais un résultat faux).
+    /// Chantier SlotRemappable — permutation des slots nœuds de cette
+    /// colonne, par FICHIER TEMPORAIRE + `rename` atomique.
+    ///
+    /// ── POURQUOI PAS UNE COPIE EN MÉMOIRE, NI UNE PERMUTATION EN PLACE ──
+    ///
+    /// La première version bâtissait le payload permuté dans un `Vec` :
+    /// sur `embedding_vec` en production (~3,8 Go) c'était un pic ANONYME
+    /// de 3,8 Go, donc un risque d'OOM tombant précisément dans la fenêtre
+    /// où les zones sont mutées sans que la durabilité soit acquise.
+    ///
+    /// Permuter EN PLACE aurait borné la mémoire, mais au prix fort : un
+    /// crash au milieu laisse un payload à moitié réarrangé, donc une
+    /// colonne PERDUE (« absente » à jamais, à re-migrer).
+    ///
+    /// Le fichier temporaire donne les deux : la copie va d'un mmap à un
+    /// autre — donc du cache de pages, réclamable, et non du tas anonyme —
+    /// et le fichier vivant n'est JAMAIS touché avant le `rename`, qui est
+    /// atomique. Un crash avant le `rename` laisse la colonne intacte dans
+    /// son état pré-permutation (epoch d'en-tête inchangé), et le rejeu
+    /// refait le travail. Coût : un doublement TRANSITOIRE de l'espace
+    /// disque de la colonne.
+    pub fn remap_node_slots(
+        &mut self,
+        sub: &SubstrateFile,
+        old_to_new: &[u32],
+        epoch: u32,
+    ) -> SubstrateResult<()> {
+        if self.spec.entity_kind != EntityKind::Node {
+            return Ok(());
+        }
+        if epoch <= self.remap_epoch {
+            // Déjà appliquée (défensif — le chemin vif ne repasse pas).
+            return Ok(());
+        }
+        let stride = self.spec.slot_stride();
+        let payload_bytes = (self.n_slots as usize) * stride;
+        ensure_room(&mut self.zf, HEADER_SIZE + payload_bytes, 0)?;
+
+        let needed_slots = crate::slot_remap::required_slots_after_permute(
+            &self.zf.as_slice()[HEADER_SIZE..HEADER_SIZE + payload_bytes],
+            stride,
+            old_to_new,
+        );
+
+        // Temporaire DATE par l'epoch (revue #4) : sans date, un temoin
+        // herite d'une passe precedente se faisait passer pour une preuve
+        // sur la passe EN COURS. Voir `slot_remap::nom_temporaire_remap`.
+        let tmp_name = crate::slot_remap::nom_temporaire_remap(&self.spec.filename(), epoch);
+        let live_path = sub.path().join(self.spec.filename());
+        let tmp_path = sub.path().join(&tmp_name);
+        // TOUS les temporaires de cette colonne, quelle que soit leur
+        // epoch : n'effacer que le sien laisserait s'accumuler ceux des
+        // passes precedentes sur un processus long-vivant dont le warden
+        // retente — c'est exactement ce qui a produit le faux diagnostic.
+        crate::slot_remap::effacer_temporaires_de_colonne(sub, &self.spec.filename());
+
+        {
+            let mut tmp = sub.open_named_zone(&tmp_name)?;
+            ensure_room(&mut tmp, HEADER_SIZE + needed_slots * stride, 0)?;
+
+            // Copie slot à slot, mmap → mmap : aucune allocation anonyme
+            // proportionnelle à la colonne.
+            {
+                let src = self.zf.as_slice();
+                let dst = tmp.as_slice_mut();
+                for old in 0..self.n_slots as usize {
+                    let new = old_to_new.get(old).copied().unwrap_or(old as u32) as usize;
+                    if new >= needed_slots {
+                        continue;
+                    }
+                    let (src_beg, src_end) =
+                        (HEADER_SIZE + old * stride, HEADER_SIZE + (old + 1) * stride);
+                    let (dst_beg, dst_end) =
+                        (HEADER_SIZE + new * stride, HEADER_SIZE + (new + 1) * stride);
+                    dst[dst_beg..dst_end].copy_from_slice(&src[src_beg..src_end]);
+                }
+            }
+
+            // En-tête du temporaire, CRC sur son payload définitif.
+            let crc = {
+                let mut h = crc32fast::Hasher::new();
+                h.update(&tmp.as_slice()[HEADER_SIZE..HEADER_SIZE + needed_slots * stride]);
+                h.finalize()
+            };
+            let mut header = VecColumnHeader::new(&self.spec, needed_slots as u32);
+            header.crc32 = crc;
+            header._reserved[0] = epoch;
+            tmp.as_slice_mut()[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
+            tmp.msync()?;
+            tmp.fsync()?;
+        }
+
+        // Bascule atomique, puis réouverture : l'ancien mmap pointe encore
+        // sur l'inode remplacé, il ne doit plus servir.
+        std::fs::rename(&tmp_path, &live_path).map_err(|e| {
+            SubstrateError::Internal(format!(
+                "vec_column: rename du remap ({tmp_name}) a echoue: {e}"
+            ))
+        })?;
+        // M2 (revue #2, 2026-08-24) — le rename est ATOMIQUE, il n'est pas
+        // DURABLE : l'entree de repertoire vit dans le cache jusqu'au fsync
+        // du repertoire parent. Voir `slot_remap::fsync_repertoire` pour la
+        // fenetre exacte que cela ferme (le crash post-flush-final, ou le
+        // record est sorti de la fenetre de rejeu et ou plus rien ne
+        // rattrape la colonne restee pre-permutation).
+        crate::slot_remap::fsync_repertoire(&live_path);
+        self.zf = sub.open_named_zone(&self.spec.filename())?;
+        self.n_slots = needed_slots as u32;
+        self.remap_epoch = epoch;
         Ok(())
     }
 
@@ -528,28 +720,84 @@ impl VecColumnWriter {
     /// `SubstrateStore::flush` to make all open vec columns durable
     /// without dropping the registry.
     pub fn sync(&mut self) -> SubstrateResult<()> {
-        let stride = self.spec.slot_stride();
-        let payload_bytes = (self.n_slots as usize) * stride;
-        let total = HEADER_SIZE + payload_bytes;
-        ensure_room(&mut self.zf, total, 0)?;
-
-        let crc = {
-            let slice = self.zf.as_slice();
-            let payload = &slice[HEADER_SIZE..HEADER_SIZE + payload_bytes];
-            let mut h = crc32fast::Hasher::new();
-            h.update(payload);
-            h.finalize()
-        };
-        let mut header = VecColumnHeader::new(&self.spec, self.n_slots);
-        header.crc32 = crc;
-        {
-            let slice = self.zf.as_slice_mut();
-            slice[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
-        }
-        self.zf.msync()?;
-        self.zf.fsync()?;
-        Ok(())
+        self.write_header_crc_durable()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Remap de slots — chemin rejeu (fichier seul, sans registre en mémoire)
+// ---------------------------------------------------------------------------
+
+/// Issue d'un remap fichier au rejeu — voir [`remap_node_file_for_replay`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum VecRemapOutcome {
+    /// Zone absente, en-tête invalide ou CRC faux : la colonne est déjà
+    /// « absente » pour tout lecteur — on ne remappe pas un payload non
+    /// vérifiable (le résultat porterait un CRC valide sur des octets
+    /// potentiellement mi-permutés : un résultat FAUX, pire qu'absent).
+    Absent,
+    /// `header._reserved[0] >= epoch` : remap déjà appliqué, skip.
+    AlreadyApplied,
+    /// Remap appliqué et rendu durable (en-tête CRC + epoch en dernier).
+    Applied,
+}
+
+/// Chantier SlotRemappable — applique une repermutation des slots nœuds à
+/// une colonne vec sur disque, SANS registre en mémoire (chemin rejeu
+/// après crash). Le disque fait foi : l'en-tête doit être valide et le
+/// CRC coller au payload, sinon la colonne est laissée dans son état
+/// « absent » détectable.
+pub fn remap_node_file_for_replay(
+    sub: &SubstrateFile,
+    spec: VecColSpec,
+    old_to_new: &[u32],
+    epoch: u32,
+) -> SubstrateResult<VecRemapOutcome> {
+    if spec.entity_kind != EntityKind::Node || spec.dim == 0 {
+        return Ok(VecRemapOutcome::Absent);
+    }
+    let zf = sub.open_named_zone(&spec.filename())?;
+    if zf.is_empty() {
+        return Ok(VecRemapOutcome::Absent);
+    }
+    let Some(header) = VecColumnHeader::try_read(zf.as_slice()) else {
+        return Ok(VecRemapOutcome::Absent);
+    };
+    if header.validate_against(&spec).is_err() {
+        return Ok(VecRemapOutcome::Absent);
+    }
+    if header._reserved[0] >= epoch {
+        return Ok(VecRemapOutcome::AlreadyApplied);
+    }
+    let stride = spec.slot_stride();
+    let payload_bytes = (header.n_slots as usize) * stride;
+    let expected_end = HEADER_SIZE + payload_bytes;
+    if zf.as_slice().len() < expected_end {
+        return Ok(VecRemapOutcome::Absent);
+    }
+    let crc = {
+        let payload = &zf.as_slice()[HEADER_SIZE..expected_end];
+        let mut h = crc32fast::Hasher::new();
+        h.update(payload);
+        h.finalize()
+    };
+    if crc != header.crc32 {
+        return Ok(VecRemapOutcome::Absent);
+    }
+
+    // Payload vérifié + epoch antérieur : même mécanique que le chemin
+    // vif — temporaire + rename atomique, mémoire bornée, colonne vivante
+    // intacte tant que la bascule n'a pas eu lieu.
+    let mut writer = VecColumnWriter {
+        spec,
+        zf,
+        n_slots: header.n_slots,
+        remap_epoch: header._reserved[0],
+    };
+    // Chemin REJEU : exactement le meme code que le chemin vif — c'est la
+    // meilleure garantie que les deux ne divergent pas.
+    writer.remap_node_slots(sub, old_to_new, epoch)?;
+    Ok(VecRemapOutcome::Applied)
 }
 
 // ---------------------------------------------------------------------------

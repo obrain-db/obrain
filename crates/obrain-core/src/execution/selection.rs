@@ -3,22 +3,30 @@
 /// A selection vector indicating which rows are active.
 ///
 /// Used for efficient filtering without copying data.
+///
+/// Les indices sont stockés en `u32`. L'ancien stockage `u16` tronquait EN
+/// SILENCE (`i as u16` dans `from_predicate`) tout indice ≥ 65 536 : sur le
+/// chunk aplati d'une chaîne factorisée (178 593 lignes mesurées en prod, base
+/// carto), les indices s'aliasaient modulo 65 536 — lignes dupliquées, lignes
+/// d'autrui rendues (fuite de label :Method sous un motif `:Function`), et un
+/// filtre EMPILÉ qui relisait ces indices corrompus rendait 20 liaisons sur
+/// 117 (note PO 563e670f, lot de tests `gql_16_chemins`).
 #[derive(Debug, Clone)]
 pub struct SelectionVector {
     /// Indices of selected rows.
-    indices: Vec<u16>,
+    indices: Vec<u32>,
 }
 
 impl SelectionVector {
-    /// Maximum capacity (limited to u16 for space efficiency).
-    pub const MAX_CAPACITY: usize = u16::MAX as usize;
+    /// Maximum representable row index.
+    pub const MAX_CAPACITY: usize = u32::MAX as usize;
 
     /// Creates a new selection vector selecting all rows up to count.
     #[must_use]
     pub fn new_all(count: usize) -> Self {
         assert!(count <= Self::MAX_CAPACITY);
         Self {
-            indices: (0..count as u16).collect(),
+            indices: (0..count as u32).collect(),
         }
     }
 
@@ -41,14 +49,22 @@ impl SelectionVector {
     /// Creates a selection vector from a predicate.
     ///
     /// Selects all indices where the predicate returns true.
+    ///
+    /// PANIQUE si `count` dépasse [`Self::MAX_CAPACITY`] : un indice
+    /// non représentable doit REFUSER la requête, jamais aliaser une autre
+    /// ligne en silence (c'était le défaut : `i as u16` sans garde).
     #[must_use]
     pub fn from_predicate<F>(count: usize, predicate: F) -> Self
     where
         F: Fn(usize) -> bool,
     {
-        let indices: Vec<u16> = (0..count)
+        assert!(
+            count <= Self::MAX_CAPACITY,
+            "selection sur {count} lignes : dépasse MAX_CAPACITY"
+        );
+        let indices: Vec<u32> = (0..count)
             .filter(|&i| predicate(i))
-            .map(|i| i as u16)
+            .map(|i| i as u32)
             .collect();
         Self { indices }
     }
@@ -74,12 +90,12 @@ impl SelectionVector {
     /// Pushes a new index.
     pub fn push(&mut self, index: usize) {
         assert!(index <= Self::MAX_CAPACITY);
-        self.indices.push(index as u16);
+        self.indices.push(index as u32);
     }
 
     /// Returns the indices as a slice.
     #[must_use]
-    pub fn as_slice(&self) -> &[u16] {
+    pub fn as_slice(&self) -> &[u32] {
         &self.indices
     }
 
@@ -96,7 +112,7 @@ impl SelectionVector {
     where
         F: Fn(usize) -> bool,
     {
-        let indices: Vec<u16> = self
+        let indices: Vec<u32> = self
             .indices
             .iter()
             .copied()
@@ -167,11 +183,11 @@ impl SelectionVector {
     /// Checks if a given index is in the selection.
     #[must_use]
     pub fn contains(&self, index: usize) -> bool {
-        if index > u16::MAX as usize {
+        if index > u32::MAX as usize {
             return false;
         }
         // Since indices are typically sorted, use binary search
-        self.indices.binary_search(&(index as u16)).is_ok()
+        self.indices.binary_search(&(index as u32)).is_ok()
     }
 }
 
@@ -183,7 +199,7 @@ impl Default for SelectionVector {
 
 impl IntoIterator for SelectionVector {
     type Item = usize;
-    type IntoIter = std::iter::Map<std::vec::IntoIter<u16>, fn(u16) -> usize>;
+    type IntoIter = std::iter::Map<std::vec::IntoIter<u32>, fn(u32) -> usize>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.indices.into_iter().map(|i| i as usize)

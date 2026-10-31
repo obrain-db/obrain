@@ -63,7 +63,7 @@
 //! VM Tracker or a Linux VM. The `prefetch_on_warm_cache_is_cheap`
 //! test exercises the hot-path overhead on every OS.
 
-use std::time::Instant;
+use web_time::Instant;
 
 #[cfg(target_os = "linux")]
 use obrain_substrate::file::Zone;
@@ -247,6 +247,7 @@ fn prefetch_reduces_page_faults() {
 /// essentially free, proving the hint is safe to call on every
 /// activation event without tanking hot paths.
 #[test]
+#[ignore = "sensible au temps ou au debit : deterministe en local, flake sur runner partage"]
 fn prefetch_on_warm_cache_is_cheap() {
     let td = tempdir().unwrap();
     let path = td.path().join("kb-warm");

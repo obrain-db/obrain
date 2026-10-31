@@ -45,6 +45,7 @@ impl Operator for LimitOperator {
         let remaining = self.limit - self.returned;
 
         loop {
+            super::verifier_annulation()?;
             let Some(chunk) = self.child.next()? else {
                 return Ok(None);
             };
@@ -226,6 +227,7 @@ impl Operator for LimitSkipOperator {
         }
 
         loop {
+            super::verifier_annulation()?;
             let Some(chunk) = self.child.next()? else {
                 return Ok(None);
             };

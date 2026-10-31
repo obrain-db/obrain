@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use arcstr::ArcStr;
 use obrain_common::types::{LogicalType, Value};
 
 use super::{Operator, OperatorResult};
@@ -20,7 +21,18 @@ enum KeyPart {
     Null,
     Bool(bool),
     Int64(i64),
-    String(String),
+    /// Flottant encodé par son motif binaire (`f64::to_bits`, injectif).
+    /// La variante dédiée évite la collision de type avec `Int64` : avant,
+    /// `Float64(2.0)` et l'entier portant le même motif binaire
+    /// (4611686018427387904) formaient la MÊME clé et DISTINCT les
+    /// confondait. Mêmes conventions que `GroupKeyPart::Float64Bits` :
+    /// NaN de même motif dédupliqués ensemble, +0.0 et -0.0 distincts.
+    Float64Bits(u64),
+    /// ArcStr : le clone est un incrément de refcompte — l'ancien
+    /// `s.to_string()` allouait une copie PAR LIGNE, mesuré par la revue
+    /// vague 3 comme le poste dominant du DISTINCT sur colonnes chaîne
+    /// (banc_comparateurs, 100k lignes). Mêmes Eq/Hash (par contenu).
+    String(ArcStr),
 }
 
 impl RowKey {
@@ -36,9 +48,9 @@ impl RowKey {
                         Value::Null => KeyPart::Null,
                         Value::Bool(b) => KeyPart::Bool(b),
                         Value::Int64(i) => KeyPart::Int64(i),
-                        Value::Float64(f) => KeyPart::Int64(f.to_bits() as i64),
-                        Value::String(s) => KeyPart::String(s.to_string()),
-                        _ => KeyPart::String(format!("{v:?}")),
+                        Value::Float64(f) => KeyPart::Float64Bits(f.to_bits()),
+                        Value::String(s) => KeyPart::String(s.clone()),
+                        _ => KeyPart::String(ArcStr::from(format!("{v:?}"))),
                     })
             })
             .collect();
@@ -95,6 +107,7 @@ impl DistinctOperator {
 impl Operator for DistinctOperator {
     fn next(&mut self) -> OperatorResult {
         loop {
+            super::verifier_annulation()?;
             let Some(chunk) = self.child.next()? else {
                 return Ok(None);
             };

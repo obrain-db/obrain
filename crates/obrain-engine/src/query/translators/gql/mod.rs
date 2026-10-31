@@ -15,12 +15,12 @@ use super::common::{
 };
 use crate::query::plan::{
     self as plan, AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp,
-    CallProcedureOp, CreateEdgeOp, CreateNodeOp, DeleteNodeOp, EntityKind, ExceptOp,
-    ExpandDirection, ExpandOp, HorizontalAggregateOp, IntersectOp, JoinCondition, JoinOp, JoinType,
-    LeftJoinOp, LoadDataFormat, LoadDataOp, LogicalExpression, LogicalOperator, LogicalPlan,
-    MergeOp, MergeRelationshipOp, NodeScanOp, NullsOrdering, OtherwiseOp, ParameterScanOp,
-    PathMode, ProcedureYield, ProjectOp, Projection, RemoveLabelOp, ReturnItem, SetPropertyOp,
-    ShortestPathOp, SortKey, SortOrder, UnaryOp, UnionOp, UnwindOp,
+    CallProcedureOp, CreateEdgeOp, CreateExternalEdgeOp, CreateNodeOp, DeleteNodeOp, EntityKind,
+    ExceptOp, ExpandDirection, ExpandOp, HorizontalAggregateOp, IntersectOp, JoinCondition, JoinOp,
+    JoinType, LeftJoinOp, LoadDataFormat, LoadDataOp, LogicalExpression, LogicalOperator,
+    LogicalPlan, MergeOp, MergeRelationshipOp, NodeScanOp, NullsOrdering, OtherwiseOp,
+    ParameterScanOp, PathMode, ProcedureYield, ProjectOp, Projection, RemoveLabelOp, ReturnItem,
+    SetPropertyOp, ShortestPathOp, SortKey, SortOrder, UnaryOp, UnionOp, UnwindOp,
 };
 #[cfg(test)]
 use crate::query::plan::{FilterOp, LimitOp, SkipOp};
@@ -477,17 +477,13 @@ impl GqlTranslator {
             }
 
             // Apply SKIP
-            if let Some(skip_expr) = &return_clause.skip
-                && let ast::Expression::Literal(ast::Literal::Integer(n)) = skip_expr
-            {
-                plan = wrap_skip(plan, *n as usize);
+            if let Some(skip_expr) = &return_clause.skip {
+                plan = wrap_skip(plan, self.translate_count_expr(skip_expr, "SKIP")?);
             }
 
             // Apply LIMIT
-            if let Some(limit_expr) = &return_clause.limit
-                && let ast::Expression::Literal(ast::Literal::Integer(n)) = limit_expr
-            {
-                plan = wrap_limit(plan, *n as usize);
+            if let Some(limit_expr) = &return_clause.limit {
+                plan = wrap_limit(plan, self.translate_count_expr(limit_expr, "LIMIT")?);
             }
         }
 
@@ -511,6 +507,7 @@ impl GqlTranslator {
                         ast::QueryClause::Create(_)
                             | ast::QueryClause::Delete(_)
                             | ast::QueryClause::Set(_)
+                            | ast::QueryClause::Remove(_)
                             | ast::QueryClause::Merge(_)
                             | ast::QueryClause::ForEach(_)
                     )
@@ -592,6 +589,7 @@ impl GqlTranslator {
                                 properties: vec![(assignment.property.clone(), value)],
                                 replace: false,
                                 is_edge: false,
+                                remove: false,
                                 input: Box::new(plan),
                             });
                         }
@@ -602,6 +600,7 @@ impl GqlTranslator {
                                 properties: vec![("*".to_string(), value)],
                                 replace: map_assign.replace,
                                 is_edge: false,
+                                remove: false,
                                 input: Box::new(plan),
                             });
                         }
@@ -609,6 +608,32 @@ impl GqlTranslator {
                             plan = LogicalOperator::AddLabel(AddLabelOp {
                                 variable: label_op.variable.clone(),
                                 labels: label_op.labels.clone(),
+                                input: Box::new(plan),
+                            });
+                        }
+                    }
+                    ast::QueryClause::Remove(remove_clause) => {
+                        for label_op in &remove_clause.label_operations {
+                            plan = LogicalOperator::RemoveLabel(RemoveLabelOp {
+                                variable: label_op.variable.clone(),
+                                labels: label_op.labels.clone(),
+                                input: Box::new(plan),
+                            });
+                        }
+                        for (variable, property) in &remove_clause.property_removals {
+                            // Meme semantique que la voie plate : REMOVE n.x
+                            // retire REELLEMENT la cle (remove: true), tombstone
+                            // + WAL RemoveNodeProperty/RemoveEdgeProperty, pas
+                            // un SET n.x = null. Le Null n'est qu'un porte-nom.
+                            plan = LogicalOperator::SetProperty(SetPropertyOp {
+                                variable: variable.clone(),
+                                properties: vec![(
+                                    property.clone(),
+                                    LogicalExpression::Literal(Value::Null),
+                                )],
+                                replace: false,
+                                is_edge: false,
+                                remove: true,
                                 input: Box::new(plan),
                             });
                         }
@@ -675,8 +700,25 @@ impl GqlTranslator {
             }
         } else {
             // Legacy path: process MATCH, then UNWIND, then MERGE separately
+            // (2026-08-31) FIX CORRÉLATION INTER-MATCH (INCIDENT triangle-faux).
+            //
+            // L'ancien code combinait les clauses MATCH successives par un
+            // `Join(Cross, conditions: [])` — un PRODUIT CARTÉSIEN SANS
+            // conditions. Quand le 2e MATCH référençait une variable du 1er
+            // (ex. `MATCH (a)→(b)→(c) MATCH (c)→(a)`), le plan re-scannait
+            // `c` depuis zéro au lieu de le corréler : vérifié, `count(a)`
+            // d'un triangle passait de 33 (correct) à 10 778 (faux, ×326).
+            // On calcule les variables de la clause courante et on pose les
+            // égalités sur celles déjà liées par les clauses précédentes.
+            let mut clause_bound_vars: HashSet<String> = HashSet::new();
             for match_clause in &query.match_clauses {
                 let match_plan = self.translate_match(match_clause)?;
+                // Variables introduites par cette clause (pour le prochain tour).
+                let clause_vars: HashSet<String> = match_clause
+                    .patterns
+                    .iter()
+                    .flat_map(|ap| Self::pattern_variables(&ap.pattern))
+                    .collect();
                 if matches!(plan, LogicalOperator::Empty) && match_clause.optional {
                     plan = LogicalOperator::LeftJoin(LeftJoinOp {
                         left: Box::new(LogicalOperator::Empty),
@@ -692,13 +734,32 @@ impl GqlTranslator {
                         condition: None,
                     });
                 } else {
+                    // Variables partagées avec les clauses précédentes → le
+                    // JOIN doit les égaliser (pas un Cross silencieux).
+                    let shared: Vec<String> = clause_vars
+                        .intersection(&clause_bound_vars)
+                        .cloned()
+                        .collect();
+                    let conditions: Vec<JoinCondition> = shared
+                        .iter()
+                        .map(|var| JoinCondition {
+                            left: LogicalExpression::Variable(var.clone()),
+                            right: LogicalExpression::Variable(var.clone()),
+                        })
+                        .collect();
+                    let join_type = if conditions.is_empty() {
+                        JoinType::Cross
+                    } else {
+                        JoinType::Inner
+                    };
                     plan = LogicalOperator::Join(JoinOp {
                         left: Box::new(plan),
                         right: Box::new(match_plan),
-                        join_type: JoinType::Cross,
-                        conditions: vec![],
+                        join_type,
+                        conditions,
                     });
                 }
+                clause_bound_vars.extend(clause_vars.iter().cloned());
             }
 
             for unwind_clause in &query.unwind_clauses {
@@ -734,6 +795,7 @@ impl GqlTranslator {
                         properties: vec![(assignment.property.clone(), value)],
                         replace: false,
                         is_edge: false,
+                        remove: false,
                         input: Box::new(plan),
                     });
                 }
@@ -744,6 +806,7 @@ impl GqlTranslator {
                         properties: vec![("*".to_string(), value)],
                         replace: map_assign.replace,
                         is_edge: false,
+                        remove: false,
                         input: Box::new(plan),
                     });
                 }
@@ -769,29 +832,83 @@ impl GqlTranslator {
             }
         }
 
-        // REMOVE clauses (not yet in ordered_clauses, always process)
-        for remove_clause in &query.remove_clauses {
-            for label_op in &remove_clause.label_operations {
-                plan = LogicalOperator::RemoveLabel(RemoveLabelOp {
-                    variable: label_op.variable.clone(),
-                    labels: label_op.labels.clone(),
-                    input: Box::new(plan),
-                });
-            }
-            for (variable, property) in &remove_clause.property_removals {
-                plan = LogicalOperator::SetProperty(SetPropertyOp {
-                    variable: variable.clone(),
-                    properties: vec![(property.clone(), LogicalExpression::Literal(Value::Null))],
-                    replace: false,
-                    is_edge: false,
-                    input: Box::new(plan),
-                });
+        // Legacy path: REMOVE clauses from the flat field. When ordered_clauses
+        // is populated they were already processed above, in written order.
+        if query.ordered_clauses.is_empty() {
+            for remove_clause in &query.remove_clauses {
+                for label_op in &remove_clause.label_operations {
+                    plan = LogicalOperator::RemoveLabel(RemoveLabelOp {
+                        variable: label_op.variable.clone(),
+                        labels: label_op.labels.clone(),
+                        input: Box::new(plan),
+                    });
+                }
+                for (variable, property) in &remove_clause.property_removals {
+                    // REMOVE n.x retire REELLEMENT la cle (remove: true) : le
+                    // planificateur emet un retrait (tombstone + enregistrement
+                    // WAL RemoveNodeProperty/RemoveEdgeProperty), pas un
+                    // SET n.x = null. L'expression Null ci-dessous n'est qu'un
+                    // porte-nom : seule la cle compte sur ce chemin.
+                    plan = LogicalOperator::SetProperty(SetPropertyOp {
+                        variable: variable.clone(),
+                        properties: vec![(
+                            property.clone(),
+                            LogicalExpression::Literal(Value::Null),
+                        )],
+                        replace: false,
+                        is_edge: false,
+                        remove: true,
+                        input: Box::new(plan),
+                    });
+                }
             }
         }
 
         // Handle WITH clauses (projection for query chaining)
         for with_clause in &query.with_clauses {
-            if !with_clause.is_wildcard {
+            // ── UN AGRÉGAT DANS `WITH` DOIT ÊTRE AGRÉGÉ, PAS ÉVALUÉ ────────
+            // Défaut mesuré le 2026-09-17 : `MATCH (n:WA) WITH sum(n.v) AS
+            // total RETURN total` rendait « fonction inconnue : sum » — cette
+            // boucle traduisait CHAQUE item en projection scalaire, sans jamais
+            // regarder s'il portait un agrégat. Le `RETURN` de GQL le fait
+            // (plus bas, `has_aggregates`), et le traducteur Cypher le fait
+            // depuis toujours pour son `WITH` (`cypher.rs::translate_with`) :
+            // c'est le `WITH` de GQL qui manquait. Un agrégat arrivé intact à
+            // l'évaluateur est une fonction scalaire inconnue — donc une erreur
+            // d'exécution à la place d'un résultat.
+            let has_aggregates = with_clause
+                .items
+                .iter()
+                .any(|item| contains_aggregate(&item.expression));
+            if has_aggregates {
+                let (aggregates, group_by, post_return) =
+                    self.extract_aggregates_and_groups(&with_clause.items)?;
+                plan = LogicalOperator::Aggregate(AggregateOp {
+                    group_by,
+                    aggregates,
+                    input: Box::new(plan),
+                    // `HAVING` n'existe pas sur un `WITH` : la condition d'un
+                    // `WITH` est son `WHERE`, appliqué plus bas, APRÈS la
+                    // projection — comme le veut Cypher/GQL.
+                    having: None,
+                });
+                // Les items qui ENVELOPPENT un agrégat (`sum(v) > 10 AS grand`)
+                // sont recalculés après l'agrégat, sur les colonnes
+                // synthétiques — sinon ils seraient évalués avant lui.
+                if let Some(items) = post_return {
+                    plan = LogicalOperator::Project(ProjectOp {
+                        projections: items
+                            .into_iter()
+                            .map(|item| Projection {
+                                expression: item.expression,
+                                alias: item.alias,
+                            })
+                            .collect(),
+                        input: Box::new(plan),
+                        pass_through_input: false,
+                    });
+                }
+            } else if !with_clause.is_wildcard {
                 let projections: Vec<Projection> = with_clause
                     .items
                     .iter()
@@ -1008,6 +1125,34 @@ impl GqlTranslator {
                     .items
                     .iter()
                     .map(|item| {
+                        // ORDER BY <agrégat direct> (`ORDER BY count(*)`) :
+                        // routé vers la MÊME résolution que la forme aliasée.
+                        // Si l'expression de tri est structurellement
+                        // identique à un item du RETURN qui porte un alias,
+                        // la clé devient Variable(alias) — exactement ce que
+                        // produit `ORDER BY <alias>`. (`ast::Expression` ne
+                        // dérive pas PartialEq ; la représentation Debug est
+                        // injective sur la structure et sert de comparateur.)
+                        if contains_aggregate(&item.expression) {
+                            let repr = format!("{:?}", item.expression);
+                            if let Some(alias) = query.return_clause.items.iter().find_map(|ri| {
+                                ri.alias
+                                    .as_ref()
+                                    .filter(|_| format!("{:?}", ri.expression) == repr)
+                            }) {
+                                return Ok(SortKey {
+                                    expression: LogicalExpression::Variable(alias.clone()),
+                                    order: match item.order {
+                                        ast::SortOrder::Asc => SortOrder::Ascending,
+                                        ast::SortOrder::Desc => SortOrder::Descending,
+                                    },
+                                    nulls: item.nulls.map(|n| match n {
+                                        ast::NullsOrdering::First => NullsOrdering::First,
+                                        ast::NullsOrdering::Last => NullsOrdering::Last,
+                                    }),
+                                });
+                            }
+                        }
                         let mut expression = self.translate_expression(&item.expression)?;
                         if let LogicalExpression::Property { .. } = &expression {
                             let col_name =
@@ -1116,18 +1261,59 @@ impl GqlTranslator {
 
         // Apply SKIP / LIMIT — MUST wrap the Sort: `ORDER BY … SKIP … LIMIT`
         // sorts the full result set first, then paginates (T13 fix).
-        if let Some(skip_expr) = &query.return_clause.skip
-            && let ast::Expression::Literal(ast::Literal::Integer(n)) = skip_expr
-        {
-            plan = wrap_skip(plan, *n as usize);
+        if let Some(skip_expr) = &query.return_clause.skip {
+            plan = wrap_skip(plan, self.translate_count_expr(skip_expr, "SKIP")?);
         }
-        if let Some(limit_expr) = &query.return_clause.limit
-            && let ast::Expression::Literal(ast::Literal::Integer(n)) = limit_expr
-        {
-            plan = wrap_limit(plan, *n as usize);
+        if let Some(limit_expr) = &query.return_clause.limit {
+            plan = wrap_limit(plan, self.translate_count_expr(limit_expr, "LIMIT")?);
         }
 
         Ok(LogicalPlan::new(plan))
+    }
+
+    /// Traduit l'opérande de SKIP/LIMIT.
+    ///
+    /// GQL (14.12/14.13) n'admet qu'une `<unsigned integer specification>` :
+    /// un littéral entier non signé ou un paramètre. Le littéral devient
+    /// `CountExpr::Literal`, le paramètre `CountExpr::Parameter` (résolu par
+    /// `resolve_count_param` à la substitution). TOUTE autre forme — entier
+    /// négatif, expression arithmétique (`LIMIT 2 + 1`), etc. — est REFUSÉE
+    /// franchement : l'ancien garde `if let Literal::Integer` sans `else`
+    /// jetait la clause en silence et servait un résultat plausible mais
+    /// faux (mauvaise fenêtre, mauvaise borne).
+    fn translate_count_expr(
+        &self,
+        expr: &ast::Expression,
+        clause: &str,
+    ) -> Result<plan::CountExpr> {
+        match expr {
+            ast::Expression::Literal(ast::Literal::Integer(n)) if *n >= 0 => {
+                Ok(plan::CountExpr::Literal(*n as usize))
+            }
+            ast::Expression::Literal(ast::Literal::Integer(n)) => {
+                Err(Error::Query(QueryError::new(
+                    QueryErrorKind::Semantic,
+                    format!("{clause} must be a non-negative integer, got {n}"),
+                )))
+            }
+            // `SKIP -1` parse en Unary(Neg, 1) : refus avec le même message
+            // clair que le littéral négatif absorbé.
+            ast::Expression::Unary {
+                op: ast::UnaryOp::Neg,
+                ..
+            } => Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                format!("{clause} must be a non-negative integer"),
+            ))),
+            ast::Expression::Parameter(name) => Ok(plan::CountExpr::Parameter(name.clone())),
+            other => Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                format!(
+                    "{clause} accepts only an unsigned integer literal or a parameter, \
+                     got expression {other:?}"
+                ),
+            ))),
+        }
     }
 
     /// Recursively replaces `Variable(name)` references in `expr` with the
@@ -1168,6 +1354,77 @@ impl GqlTranslator {
                 distinct,
             },
             other => other,
+        }
+    }
+
+    /// (2026-08-31) Collecte les variables de NŒUDS produites par un plan
+    /// logique (celles sur lesquelles un MATCH suivant peut corréler).
+    ///
+    /// Le fix de corrélation inter-MATCH : `translate_match_with_input` a
+    /// besoin de savoir quelles variables l'input a déjà liées pour JOINter
+    /// (au lieu de re-scanner). On parcourt les opérateurs clés :
+    /// NodeScan/Expand (variables de nœuds), Join/Apply (les deux côtés),
+    /// les wrappers (Filter/Project/etc. → input). Les variables d'arêtes
+    /// (`_anon_*`, edge_variable) sont exclues : on ne corrèle que sur les
+    /// nœuds.
+    fn collect_bound_variables(op: &LogicalOperator, vars: &mut HashSet<String>) {
+        use crate::query::plan::LogicalOperator as LO;
+        match op {
+            LO::NodeScan(n) => {
+                vars.insert(n.variable.clone());
+                if let Some(input) = &n.input {
+                    Self::collect_bound_variables(input, vars);
+                }
+            }
+            LO::Expand(e) => {
+                // from_variable est liée par l'input (ou le scan amont) ;
+                // to_variable est produite ici.
+                vars.insert(e.to_variable.clone());
+                Self::collect_bound_variables(&e.input, vars);
+            }
+            LO::EdgeScan(e) => {
+                if let Some(input) = &e.input {
+                    Self::collect_bound_variables(input, vars);
+                }
+            }
+            LO::Join(j) => {
+                Self::collect_bound_variables(&j.left, vars);
+                Self::collect_bound_variables(&j.right, vars);
+            }
+            LO::LeftJoin(j) => {
+                Self::collect_bound_variables(&j.left, vars);
+                Self::collect_bound_variables(&j.right, vars);
+            }
+            LO::AntiJoin(j) => {
+                Self::collect_bound_variables(&j.left, vars);
+                Self::collect_bound_variables(&j.right, vars);
+            }
+            LO::Apply(a) => {
+                Self::collect_bound_variables(&a.input, vars);
+                Self::collect_bound_variables(&a.subplan, vars);
+            }
+            LO::Filter(f) => Self::collect_bound_variables(&f.input, vars),
+            LO::Project(p) => Self::collect_bound_variables(&p.input, vars),
+            LO::Aggregate(a) => Self::collect_bound_variables(&a.input, vars),
+            LO::Limit(l) => Self::collect_bound_variables(&l.input, vars),
+            LO::Skip(s) => Self::collect_bound_variables(&s.input, vars),
+            LO::Sort(s) => Self::collect_bound_variables(&s.input, vars),
+            LO::Distinct(d) => Self::collect_bound_variables(&d.input, vars),
+            LO::Return(r) => Self::collect_bound_variables(&r.input, vars),
+            LO::Unwind(u) => {
+                // Unwind produit sa variable ; l'input reste en scope.
+                vars.insert(u.variable.clone());
+                Self::collect_bound_variables(&u.input, vars);
+            }
+            LO::ShortestPath(sp) => Self::collect_bound_variables(&sp.input, vars),
+            LO::ParameterScan(_) | LO::Empty => {}
+            _ => {
+                // Autres opérateurs (mutations, etc.) : on descend dans les
+                // enfants quand c'est possible via children().
+                for child in op.children() {
+                    Self::collect_bound_variables(child, vars);
+                }
+            }
         }
     }
 
@@ -1261,6 +1518,22 @@ impl GqlTranslator {
 
         let mut plan: Option<LogicalOperator> = initial_input;
         let mut bound_vars: HashSet<String> = HashSet::new();
+        // (2026-08-31) FIX CORRÉLATION INTER-MATCH (INCIDENT triangle-faux).
+        //
+        // Quand ce MATCH reçoit un input (il suit une clause précédente qui a
+        // déjà lié des variables), `bound_vars` démarrait VIDE : les
+        // variables du pattern partagées avec l'input (ex. `c` et `a` dans
+        // `MATCH (a)→(b)→(c) MATCH (c)→(a)`) n'étaient pas reconnues, le
+        // pattern était re-scanné depuis zéro (NodeScan complet) au lieu
+        // d'être JOINté sur les valeurs déjà liées. Vérifié : un triangle
+        // retournait 10 778 count(a) au lieu de 33 (faux, ×326). On
+        // initialise `bound_vars` avec les variables produites par l'input :
+        // les variables partagées déclenchent alors le Join corrélé (le code
+        // `if !shared.is_empty()` plus bas), qui égalise c et a — le plan
+        // devient correct.
+        if let Some(input) = &plan {
+            Self::collect_bound_variables(input, &mut bound_vars);
+        }
 
         for (index, aliased_pattern) in match_clause.patterns.iter().enumerate() {
             let current_vars = &pattern_vars[index];
@@ -1389,6 +1662,7 @@ impl GqlTranslator {
                             properties: vec![(assignment.property.clone(), value)],
                             replace: false,
                             is_edge: false,
+                            remove: false,
                             input: Box::new(plan),
                         });
                     }
@@ -1814,6 +2088,7 @@ impl GqlTranslator {
             variable: first_var.clone(),
             label: None,
             input: None,
+            pushdown_hint: None,
         });
 
         let plan = self.translate_delete_targets(&delete.targets, delete.detach, scan)?;
@@ -1883,6 +2158,7 @@ impl GqlTranslator {
             variable: var.clone(),
             label: None,
             input: None,
+            pushdown_hint: None,
         });
 
         // Build property assignments for this variable
@@ -1898,6 +2174,7 @@ impl GqlTranslator {
             properties,
             replace: false,
             is_edge: false,
+            remove: false,
             input: Box::new(scan),
         });
 
@@ -1920,6 +2197,12 @@ impl GqlTranslator {
         for pattern in &insert.patterns {
             match pattern {
                 ast::Pattern::Node(node) => {
+                    if node.reference.is_some() {
+                        return Err(Self::erreur_ref_hors_cible());
+                    }
+                    if node.base_qualifier.is_some() {
+                        return Err(Self::erreur_in_ecriture());
+                    }
                     let variable = node
                         .variable
                         .clone()
@@ -1940,6 +2223,14 @@ impl GqlTranslator {
                     last_variable = variable;
                 }
                 ast::Pattern::Path(path) => {
+                    if path.source.reference.is_some() {
+                        return Err(Self::erreur_source_ref());
+                    }
+                    if path.source.base_qualifier.is_some()
+                        || path.edges.iter().any(|e| e.target.base_qualifier.is_some())
+                    {
+                        return Err(Self::erreur_in_ecriture());
+                    }
                     // Decompose path into CreateNode + CreateEdge chain
                     let source_var = path
                         .source
@@ -1963,7 +2254,48 @@ impl GqlTranslator {
                     }
 
                     let mut current_src = source_var;
-                    for edge in &path.edges {
+                    for (edge_idx, edge) in path.edges.iter().enumerate() {
+                        // Aretes inter-bases (V1) : cible = ref(...).
+                        if let Some(reference) = &edge.target.reference {
+                            match edge.direction {
+                                ast::EdgeDirection::Outgoing => {}
+                                ast::EdgeDirection::Incoming => {
+                                    return Err(Self::erreur_source_ref());
+                                }
+                                ast::EdgeDirection::Undirected => {
+                                    return Err(Self::erreur_ref_orientation());
+                                }
+                            }
+                            if !edge.properties.is_empty() || edge.variable.is_some() {
+                                return Err(Self::erreur_ref_arete_riche());
+                            }
+                            if edge_idx + 1 != path.edges.len() {
+                                return Err(Error::Query(QueryError::new(
+                                    QueryErrorKind::Semantic,
+                                    "un ref(...) termine un motif d'ecriture : rien ne \
+                                     peut s'enchainer apres une cible d'une autre base",
+                                )));
+                            }
+                            let edge_type = edge.types.first().cloned().ok_or_else(|| {
+                                Error::Query(QueryError::new(
+                                    QueryErrorKind::Semantic,
+                                    "une arete inter-bases exige un type : \
+                                         CREATE (a)-[:TYPE]->(ref(...))",
+                                ))
+                            })?;
+                            plan =
+                                Some(LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
+                                    from_variable: current_src.clone(),
+                                    edge_type,
+                                    to_host: reference.host.clone(),
+                                    to_store: reference.store.clone(),
+                                    to_key: reference.key.clone(),
+                                    merge: false,
+                                    input: Box::new(plan.unwrap_or(LogicalOperator::Empty)),
+                                }));
+                            last_variable.clone_from(&current_src);
+                            break;
+                        }
                         let target_var = edge
                             .target
                             .variable
@@ -2956,6 +3288,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_translate_remove_property_compiles_to_real_removal() {
+        // Verrou anti-régression : REMOVE n.x doit compiler avec
+        // `remove: true`. L'ancienne compilation — un SetPropertyOp ordinaire
+        // portant Literal(Null) — écrivait un NULL stocké : la clé survivait
+        // dans keys()/properties() et le WAL portait SetNodeProperty{Null}
+        // au lieu de RemoveNodeProperty.
+        let query = "MATCH (n:Person) REMOVE n.name";
+        let plan = translate(query).expect("REMOVE property should translate");
+
+        fn find_set_property(op: &LogicalOperator) -> Option<&SetPropertyOp> {
+            match op {
+                LogicalOperator::SetProperty(set) => Some(set),
+                LogicalOperator::Return(ret) => find_set_property(&ret.input),
+                LogicalOperator::Project(p) => find_set_property(&p.input),
+                _ => None,
+            }
+        }
+        let set = find_set_property(&plan.root)
+            .expect("REMOVE n.name doit produire un SetPropertyOp de retrait");
+        assert_eq!(set.properties.len(), 1);
+        assert_eq!(set.properties[0].0, "name");
+        assert!(
+            set.remove,
+            "REMOVE doit compiler en retrait réel (remove: true), pas en \
+             SET n.name = null"
+        );
+    }
+
+    #[test]
+    fn test_translate_remove_property_ordered_pass_compiles_to_real_removal() {
+        // Verrou du croisement C×D : quand SET et REMOVE sont entrelacés, la
+        // traduction passe par ordered_clauses (bras ast::QueryClause::Remove),
+        // pas par la voie plate. Ce bras doit poser remove: true lui aussi —
+        // sinon REMOVE recompile en SET-null stocké sur ce chemin.
+        let query = "MATCH (n:Person) SET n.a = 1 REMOVE n.name SET n.b = 2 RETURN n";
+        let plan = translate(query).expect("SET/REMOVE/SET entrelacés doivent traduire");
+
+        fn collect_set_property(op: &LogicalOperator, out: &mut Vec<(String, bool)>) {
+            if let LogicalOperator::SetProperty(set) = op {
+                for (name, _) in &set.properties {
+                    out.push((name.clone(), set.remove));
+                }
+            }
+            for child in op.children() {
+                collect_set_property(child, out);
+            }
+        }
+        let mut ops = Vec::new();
+        collect_set_property(&plan.root, &mut ops);
+        assert!(
+            ops.iter().any(|(name, remove)| name == "name" && *remove),
+            "le bras Remove de la passe ordonnée doit poser remove: true \
+             (ops observés : {ops:?})"
+        );
+        for (name, remove) in &ops {
+            if name != "name" {
+                assert!(
+                    !remove,
+                    "SET n.{name} ne doit pas être marqué remove (ops : {ops:?})"
+                );
+            }
+        }
+    }
+
     // === Multiple aggregates ===
 
     #[test]
@@ -3267,6 +3664,31 @@ mod tests {
             result.is_ok(),
             "size(PC) > 3 should translate: {:?}",
             result.err()
+        );
+    }
+
+    /// (2026-08-31) RÉGRESSION — corrélation inter-MATCH (INCIDENT
+    /// triangle-faux). Deux MATCH qui partagent des variables (un triangle :
+    /// `MATCH (a)→(b)→(c) MATCH (c)→(a)`) doivent produire un JOIN corrélé,
+    /// pas un Cross silencieux qui re-scanne les variables (résultats faux :
+    /// 33 triangles devenaient 10 778). Le plan doit contenir un
+    /// `Join(Inner)` avec des conditions, jamais un `Join(Cross)` vide.
+    #[test]
+    fn test_inter_match_correlation_joins_on_shared_vars() {
+        let query = "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) MATCH (c:Person)-[:KNOWS]->(a:Person) RETURN a";
+        let plan = translate(query).expect("translate");
+        // Parcourt l'arbre : doit trouver un Join avec conditions (pas Cross vide).
+        fn has_correlated_join(op: &LogicalOperator) -> bool {
+            match op {
+                LogicalOperator::Join(j) => {
+                    !j.conditions.is_empty() && j.join_type == crate::query::plan::JoinType::Inner
+                }
+                _ => op.children().iter().any(|c| has_correlated_join(c)),
+            }
+        }
+        assert!(
+            has_correlated_join(&plan.root),
+            "inter-MATCH join must correlate shared variables (Inner, non-empty conditions)"
         );
     }
 }

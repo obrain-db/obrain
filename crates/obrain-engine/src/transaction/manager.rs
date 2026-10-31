@@ -90,10 +90,18 @@ pub struct TransactionInfo {
     pub isolation_level: IsolationLevel,
     /// Start epoch (snapshot epoch for reads).
     pub start_epoch: EpochId,
-    /// Set of entities written by this transaction.
-    pub write_set: HashSet<EntityId>,
-    /// Set of entities read by this transaction (for serializable isolation).
-    pub read_set: HashSet<EntityId>,
+    /// Set of entities written by this transaction, scopées par GRAPHE
+    /// (RFC multi-writer B1, 2026-09-06) : `(graph_scope, entité)`.
+    ///
+    /// Deux SubstrateStore distincts allouent chacun leurs NodeId à partir
+    /// de 1 — sans le scope, deux transactions sur des graphes différents
+    /// qui écrivent `NodeId(1)` chacune sont vues en conflit (faux conflit,
+    /// 75 % d'échec mesuré). Le scope 0 = mono-graphe / backends non
+    /// partitionnés (comportement historique inchangé).
+    pub write_set: HashSet<(u64, EntityId)>,
+    /// Set of entities read by this transaction (for serializable isolation),
+    /// scopées par graphe comme `write_set`.
+    pub read_set: HashSet<(u64, EntityId)>,
 }
 
 impl TransactionInfo {
@@ -174,12 +182,36 @@ impl TransactionManager {
     ///
     /// Returns an error if the transaction is not active or if another
     /// active transaction has already written to the same entity.
+    /// Records a write on the DEFAULT scope (0) — mono-graphe, comportement
+    /// historique. Multi-graphes : voir [`Self::record_write_scoped`].
     pub fn record_write(
         &self,
         transaction_id: TransactionId,
         entity: impl Into<EntityId>,
     ) -> Result<()> {
+        self.record_write_scoped(0, transaction_id, entity)
+    }
+
+    /// Records a write opération scopée par graphe (RFC multi-writer B1).
+    ///
+    /// `scope` = [`crate::graph::GraphStoreMut::graph_scope`] du store écrit.
+    /// La détection first-writer-wins ne compare que les `(scope, entité)`
+    /// identiques : deux transactions sur des graphes DIFFÉRENTS qui écrivent
+    /// chacune `NodeId(1)` ne conflictent PAS (avant ce scope : faux conflit
+    /// massif — mesuré 75 % d'échec sur transactions longues disjointes).
+    ///
+    /// # Errors
+    ///
+    /// Transaction introuvable / inactive, ou conflit write-write sur le
+    /// même `(scope, entité)`.
+    pub fn record_write_scoped(
+        &self,
+        scope: u64,
+        transaction_id: TransactionId,
+        entity: impl Into<EntityId>,
+    ) -> Result<()> {
         let entity = entity.into();
+        let paire = (scope, entity);
         let mut txns = self.transactions.write();
         let info = txns.get(&transaction_id).ok_or_else(|| {
             Error::Transaction(TransactionError::InvalidState(
@@ -194,7 +226,7 @@ impl TransactionManager {
         }
 
         // First-writer-wins: reject if another active transaction already
-        // wrote to the same entity. This prevents interleaved PENDING
+        // wrote to the same (scope, entity). This prevents interleaved PENDING
         // entries in VersionLogs that cannot be rolled back per-transaction.
         // Skip the scan when only one transaction is active (common case for
         // auto-commit): there is nobody to conflict with.
@@ -202,10 +234,10 @@ impl TransactionManager {
             for (other_tx, other_info) in txns.iter() {
                 if *other_tx != transaction_id
                     && other_info.state == TransactionState::Active
-                    && other_info.write_set.contains(&entity)
+                    && other_info.write_set.contains(&paire)
                 {
                     return Err(Error::Transaction(TransactionError::WriteConflict(
-                        format!("Write-write conflict on entity {entity:?}"),
+                        format!("Write-write conflict on entity {entity:?} (scope {scope})"),
                     )));
                 }
             }
@@ -213,11 +245,11 @@ impl TransactionManager {
 
         // Safe to record: re-borrow mutably
         let info = txns.get_mut(&transaction_id).expect("checked above");
-        info.write_set.insert(entity);
+        info.write_set.insert(paire);
         Ok(())
     }
 
-    /// Records a read operation for the transaction (for serializable isolation).
+    /// Records a read opération scopée par graphe (RFC multi-writer B1).
     ///
     /// # Errors
     ///
@@ -227,6 +259,7 @@ impl TransactionManager {
         transaction_id: TransactionId,
         entity: impl Into<EntityId>,
     ) -> Result<()> {
+        let entity = entity.into();
         let mut txns = self.transactions.write();
         let info = txns.get_mut(&transaction_id).ok_or_else(|| {
             Error::Transaction(TransactionError::InvalidState(
@@ -240,7 +273,7 @@ impl TransactionManager {
             )));
         }
 
-        info.read_set.insert(entity.into());
+        info.read_set.insert((0, entity));
         Ok(())
     }
 
@@ -406,6 +439,10 @@ impl TransactionManager {
     ///
     /// This returns a copy of the entities written by this transaction,
     /// used for rollback to discard uncommitted versions.
+    ///
+    /// Les entités sont DÉ-SCOPÉES (le scope est une distinction interne de
+    /// détection multi-graphes, RFC B1 — les appelants de rollback veulent
+    /// les NodeId réels du store).
     pub fn get_write_set(&self, transaction_id: TransactionId) -> Result<HashSet<EntityId>> {
         let txns = self.transactions.read();
         let info = txns.get(&transaction_id).ok_or_else(|| {
@@ -413,10 +450,12 @@ impl TransactionManager {
                 "Transaction not found".to_string(),
             ))
         })?;
-        Ok(info.write_set.clone())
+        Ok(info.write_set.iter().map(|(_, e)| *e).collect())
     }
 
     /// Replaces the write set of a transaction (used for savepoint rollback).
+    /// Les entités sont re-scopées à 0 (mono-graphe) — un savepoint rollback
+    /// ne traverse pas les graphes.
     ///
     /// # Errors
     ///
@@ -432,7 +471,7 @@ impl TransactionManager {
                 "Transaction not found".to_string(),
             ))
         })?;
-        info.write_set = write_set;
+        info.write_set = write_set.into_iter().map(|e| (0, e)).collect();
         Ok(())
     }
 

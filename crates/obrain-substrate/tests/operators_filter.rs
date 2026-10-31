@@ -1342,11 +1342,138 @@ fn test_comparison_with_boundary_values() {
     assert!(pred_le.evaluate(&chunk, 2)); // 0 <= 0
 }
 
-// ── Cross-type equality (String ↔ numeric) ──────────────────────────
+// ── Cross-type comparison (String ↔ numeric) ────────────────────────
+//
+// (2026-09-16) CES TESTS DÉCRIVAIENT UNE INTENTION ABANDONNÉE.
+//
+// Ils exigeaient `"42" = 42` vrai et `"30" > 25` vrai : la coercion par
+// `parse::<f64>` que l'évaluateur LPG portait pour le compte de RDF. Le
+// 2026-08-29, `27236201` (« l'évaluateur emprunte le canonique — fin du hack
+// RDF dans LPG ») l'a retirée DÉLIBÉRÉMENT : chaîne ↔ nombre rend UNKNOWN, comme
+// en GQL/Cypher, où `'42' = 42` n'est pas vrai. Le commit a changé
+// l'évaluateur sans toucher ces tests, qui sont restés rouges depuis — et un
+// test rouge dont personne ne lit plus l'échec ne protège plus rien.
+//
+// Le besoin d'origine n'est pas perdu : RDF convertit ses littéraux DANS SON
+// PROPRE planner (`planner/rdf`), et `FILTER(?age = 30)` sur « "30" » est
+// couvert de bout en bout par `obrain-engine/tests/database_creation_options.rs`.
+//
+// Ils affirment donc la sémantique décidée : UNKNOWN, et un filtre ne retient
+// pas une ligne dont le verdict est UNKNOWN — y compris pour `<>`, car deux
+// valeurs de classes disjointes ne sont pas « différentes » au sens ternaire.
 
-/// Regression test: RDF stores numeric literals as strings, so filters
-/// like `FILTER(?age = 30)` compare `Value::String("30")` with
-/// `Value::Int64(30)`.  The `values_equal` path must coerce.
+// ── RÉUNIFICATION (2026-10-06) — CES TROIS TESTS ONT ÉTÉ RÉÉCRITS DES DEUX
+//    CÔTÉS, ET LES DEUX ÉCRITURES SONT GARDÉES ────────────────────────────────
+// Les deux lignées ont constaté la MÊME chose au même moment : les anciens
+// tests affirmaient la coercition chaîne↔nombre (le « hack RDF »), coercition
+// qui a été RETIRÉE du moteur, donc ils échouaient. Les deux les ont réécrits
+// pour affirmer le contrat de MAINTENANT — deux classes disjointes rendent
+// UNKNOWN, ce qui ne satisfait pas un filtre.
+//
+// Les deux réécritures ne se remplacent pas :
+//   · la lignée servie a EXTRAIT le helper `verdict` ci-dessous et RENOMMÉ les
+//     tests (`*_is_unknown`, `*_stays_exact`) ;
+//   · le multi-écrivain a gardé les noms d'origine et ajouté des TÉMOINS de
+//     même classe (`42 = 42`, `42 <> 99`) que le jeu de la lignée servie ne
+//     porte pas.
+// Les trois tests de la lignée servie sont donc ici, et ceux du multi-écrivain
+// sont conservés à la suite (mêmes assertions, couverture témoin en plus) : on
+// ne supprime aucun test.
+fn verdict(store: &Arc<dyn GraphStore>, gauche: Value, op: BinaryFilterOp, droite: Value) -> bool {
+    let chunk = DataChunkBuilder::new(&[LogicalType::Int64]).finish();
+    ExpressionPredicate::new(
+        FilterExpression::Binary {
+            left: Box::new(FilterExpression::Literal(gauche)),
+            op,
+            right: Box::new(FilterExpression::Literal(droite)),
+        },
+        HashMap::new(),
+        Arc::clone(store),
+    )
+    .evaluate(&chunk, 0)
+}
+
+/// Chaîne ↔ entier / flottant : UNKNOWN, donc aucune ligne retenue — ni
+/// par `=`, ni par `<>`.
+#[test]
+fn test_cross_type_string_numeric_equality_is_unknown() {
+    let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    let s = |x: &str| Value::String(x.into());
+    for (g, d) in [
+        (s("42"), Value::Int64(42)),
+        (s("42"), Value::Int64(99)),
+        (s("hello"), Value::Int64(42)),
+        (s("7.25"), Value::Float64(7.25)),
+        (Value::Float64(2.5), s("7.25")),
+    ] {
+        assert!(
+            !verdict(&store, g.clone(), BinaryFilterOp::Eq, d.clone()),
+            "{g:?} = {d:?} doit être UNKNOWN"
+        );
+        assert!(
+            !verdict(&store, g.clone(), BinaryFilterOp::Ne, d.clone()),
+            "{g:?} <> {d:?} doit être UNKNOWN"
+        );
+    }
+}
+
+/// Chaîne ↔ nombre dans un ordre : UNKNOWN aux quatre comparateurs.
+#[test]
+fn test_cross_type_string_numeric_ordering_is_unknown() {
+    let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    let s = |x: &str| Value::String(x.into());
+    for (g, op, d) in [
+        (s("30"), BinaryFilterOp::Gt, Value::Int64(25)),
+        (Value::Int64(10), BinaryFilterOp::Lt, s("20.5")),
+        (s("2.5"), BinaryFilterOp::Le, Value::Float64(2.5)),
+        (Value::Float64(100.0), BinaryFilterOp::Ge, s("99.9")),
+    ] {
+        assert!(
+            !verdict(&store, g.clone(), op, d.clone()),
+            "{g:?} {op:?} {d:?} doit être UNKNOWN"
+        );
+    }
+}
+
+/// Ce que le canonique GARDE : entier ↔ flottant se compare exactement.
+/// C'est la frontière qui compte — la coercion retirée est celle des
+/// chaînes, pas celle des nombres entre eux.
+#[test]
+fn test_cross_type_int_float_stays_exact() {
+    let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    assert!(verdict(
+        &store,
+        Value::Int64(42),
+        BinaryFilterOp::Eq,
+        Value::Float64(42.0)
+    ));
+    assert!(!verdict(
+        &store,
+        Value::Int64(42),
+        BinaryFilterOp::Eq,
+        Value::Float64(42.5)
+    ));
+    assert!(verdict(
+        &store,
+        Value::Int64(42),
+        BinaryFilterOp::Lt,
+        Value::Float64(42.5)
+    ));
+    assert!(verdict(
+        &store,
+        Value::Float64(2.5),
+        BinaryFilterOp::Ge,
+        Value::Int64(2)
+    ));
+}
+
+// ── TESTS DU MULTI-ÉCRIVAIN, CONSERVÉS (réunification 2026-10-06) ───────────
+// Ces trois tests gardent leurs NOMS D'ORIGINE et affirment le même contrat que
+// les trois ci-dessus — mais ils portent une couverture TÉMOIN supplémentaire
+// (même classe : `42 = 42`, `42 <> 99` ; classes numériques mixtes) que le jeu
+// de la lignée servie ne porte pas. Ce ne sont donc pas des doublons exacts :
+// on les conserve pour ne perdre aucune assertion écrite par le multi-écrivain.
+
 #[test]
 fn test_cross_type_string_int_equality() {
     let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
@@ -1354,44 +1481,64 @@ fn test_cross_type_string_int_equality() {
     let builder = DataChunkBuilder::new(&[LogicalType::Int64]);
     let chunk = builder.finish();
 
-    // String "42" == Int64(42)
-    let pred = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::String("42".into()))),
-            op: BinaryFilterOp::Eq,
-            right: Box::new(FilterExpression::Literal(Value::Int64(42))),
-        },
-        vc.clone(),
-        Arc::clone(&store),
-    );
-    assert!(pred.evaluate(&chunk, 0));
+    let binaire = |gauche: Value, op: BinaryFilterOp, droite: Value| {
+        ExpressionPredicate::new(
+            FilterExpression::Binary {
+                left: Box::new(FilterExpression::Literal(gauche)),
+                op,
+                right: Box::new(FilterExpression::Literal(droite)),
+            },
+            vc.clone(),
+            Arc::clone(&store),
+        )
+    };
 
-    // String "42" != Int64(99)
-    let pred_ne = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::String("42".into()))),
-            op: BinaryFilterOp::Ne,
-            right: Box::new(FilterExpression::Literal(Value::Int64(99))),
-        },
-        vc.clone(),
-        Arc::clone(&store),
+    // Chaîne contre entier : classes DISJOINTES → UNKNOWN → la ligne est filtrée.
+    assert!(
+        !binaire(
+            Value::String("42".into()),
+            BinaryFilterOp::Eq,
+            Value::Int64(42)
+        )
+        .evaluate(&chunk, 0),
+        "« 42 » (chaîne) = 42 (entier) est UNKNOWN, pas VRAI"
     );
-    assert!(pred_ne.evaluate(&chunk, 0));
+    assert!(
+        !binaire(
+            Value::String("42".into()),
+            BinaryFilterOp::Ne,
+            Value::Int64(99)
+        )
+        .evaluate(&chunk, 0),
+        "« 42 » <> 99 est UNKNOWN : `< >` ne décide pas plus que `=` entre classes disjointes"
+    );
+    assert!(
+        !binaire(
+            Value::String("hello".into()),
+            BinaryFilterOp::Eq,
+            Value::Int64(42)
+        )
+        .evaluate(&chunk, 0)
+    );
 
-    // Non-numeric string should NOT equal any integer
-    let pred_bad = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::String("hello".into()))),
-            op: BinaryFilterOp::Eq,
-            right: Box::new(FilterExpression::Literal(Value::Int64(42))),
-        },
-        vc,
-        store,
+    // ── TÉMOINS : le prédicat n'est pas cassé pour autant ─────────────────
+    assert!(
+        binaire(Value::Int64(42), BinaryFilterOp::Eq, Value::Int64(42)).evaluate(&chunk, 0),
+        "même classe : 42 = 42 doit rester VRAI"
     );
-    assert!(!pred_bad.evaluate(&chunk, 0));
+    assert!(
+        binaire(Value::Int64(42), BinaryFilterOp::Ne, Value::Int64(99)).evaluate(&chunk, 0),
+        "même classe : 42 <> 99 doit rester VRAI"
+    );
+    // Entier contre flottant : deux classes NUMÉRIQUES, l'égalité est exacte et
+    // DÉCIDÉE — c'est la différence entre « classes disjointes » et « types
+    // différents mais comparables ».
+    assert!(
+        binaire(Value::Int64(7), BinaryFilterOp::Eq, Value::Float64(7.0)).evaluate(&chunk, 0),
+        "entier 7 = flottant 7.0 : égalité numérique exacte, VRAIE"
+    );
 }
 
-/// String ↔ Float64 equality: "7.25" == Float64(7.25)
 #[test]
 fn test_cross_type_string_float_equality() {
     let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
@@ -1399,34 +1546,44 @@ fn test_cross_type_string_float_equality() {
     let builder = DataChunkBuilder::new(&[LogicalType::Int64]);
     let chunk = builder.finish();
 
-    let pred = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::String("7.25".into()))),
-            op: BinaryFilterOp::Eq,
-            right: Box::new(FilterExpression::Literal(Value::Float64(7.25))),
-        },
-        vc.clone(),
-        Arc::clone(&store),
-    );
-    assert!(pred.evaluate(&chunk, 0));
+    let binaire = |gauche: Value, op: BinaryFilterOp, droite: Value| {
+        ExpressionPredicate::new(
+            FilterExpression::Binary {
+                left: Box::new(FilterExpression::Literal(gauche)),
+                op,
+                right: Box::new(FilterExpression::Literal(droite)),
+            },
+            vc.clone(),
+            Arc::clone(&store),
+        )
+    };
 
-    // "7.25" != 2.5
-    let pred_ne = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::Float64(2.5))),
-            op: BinaryFilterOp::Ne,
-            right: Box::new(FilterExpression::Literal(Value::String("7.25".into()))),
-        },
-        vc,
-        store,
+    assert!(
+        !binaire(
+            Value::String("7.25".into()),
+            BinaryFilterOp::Eq,
+            Value::Float64(7.25)
+        )
+        .evaluate(&chunk, 0),
+        "« 7.25 » (chaîne) = 7.25 (flottant) est UNKNOWN, pas VRAI"
     );
-    assert!(pred_ne.evaluate(&chunk, 0));
+    assert!(
+        !binaire(
+            Value::Float64(2.5),
+            BinaryFilterOp::Ne,
+            Value::String("7.25".into())
+        )
+        .evaluate(&chunk, 0),
+        "2.5 <> « 7.25 » est UNKNOWN"
+    );
+
+    // Témoin numérique mixte : entiers et flottants SE COMPARENT.
+    assert!(
+        binaire(Value::Int64(7), BinaryFilterOp::Lt, Value::Float64(7.25)).evaluate(&chunk, 0),
+        "7 (entier) < 7.25 (flottant) doit rester VRAI"
+    );
 }
 
-// ── Cross-type ordering (String ↔ numeric) ──────────────────────────
-
-/// Regression test: String-encoded numbers must support range comparisons
-/// so that `FILTER(?age > 25)` works when `?age` is stored as "30".
 #[test]
 fn test_cross_type_string_numeric_ordering() {
     let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
@@ -1434,53 +1591,69 @@ fn test_cross_type_string_numeric_ordering() {
     let builder = DataChunkBuilder::new(&[LogicalType::Int64]);
     let chunk = builder.finish();
 
-    // "30" > Int64(25)
-    let pred_gt = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::String("30".into()))),
-            op: BinaryFilterOp::Gt,
-            right: Box::new(FilterExpression::Literal(Value::Int64(25))),
-        },
-        vc.clone(),
-        Arc::clone(&store),
-    );
-    assert!(pred_gt.evaluate(&chunk, 0));
+    let binaire = |gauche: Value, op: BinaryFilterOp, droite: Value| {
+        ExpressionPredicate::new(
+            FilterExpression::Binary {
+                left: Box::new(FilterExpression::Literal(gauche)),
+                op,
+                right: Box::new(FilterExpression::Literal(droite)),
+            },
+            vc.clone(),
+            Arc::clone(&store),
+        )
+    };
 
-    // Int64(10) < "20.5" (cross Float64 path)
-    let pred_lt = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::Int64(10))),
-            op: BinaryFilterOp::Lt,
-            right: Box::new(FilterExpression::Literal(Value::String("20.5".into()))),
-        },
-        vc.clone(),
-        Arc::clone(&store),
+    assert!(
+        !binaire(
+            Value::String("30".into()),
+            BinaryFilterOp::Gt,
+            Value::Int64(25)
+        )
+        .evaluate(&chunk, 0),
+        "« 30 » (chaîne) > 25 (entier) est UNKNOWN : la chaîne ne s'ordonne pas avec le nombre"
     );
-    assert!(pred_lt.evaluate(&chunk, 0));
+    assert!(
+        !binaire(
+            Value::Int64(10),
+            BinaryFilterOp::Lt,
+            Value::String("20.5".into())
+        )
+        .evaluate(&chunk, 0),
+        "10 < « 20.5 » est UNKNOWN"
+    );
+    assert!(
+        !binaire(
+            Value::String("2.5".into()),
+            BinaryFilterOp::Le,
+            Value::Float64(2.5)
+        )
+        .evaluate(&chunk, 0),
+        "« 2.5 » <= 2.5 est UNKNOWN"
+    );
+    assert!(
+        !binaire(
+            Value::Float64(100.0),
+            BinaryFilterOp::Ge,
+            Value::String("99.9".into())
+        )
+        .evaluate(&chunk, 0),
+        "100.0 >= « 99.9 » est UNKNOWN"
+    );
 
-    // "2.5" <= Float64(2.5)
-    let pred_le = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::String("2.5".into()))),
-            op: BinaryFilterOp::Le,
-            right: Box::new(FilterExpression::Literal(Value::Float64(2.5))),
-        },
-        vc.clone(),
-        Arc::clone(&store),
+    // ── TÉMOINS : l'ordre fonctionne DANS une même classe, et entre les deux
+    //    classes numériques ─────────────────────────────────────────────────
+    assert!(
+        binaire(Value::Int64(30), BinaryFilterOp::Gt, Value::Int64(25)).evaluate(&chunk, 0),
+        "30 > 25 (entiers) doit rester VRAI"
     );
-    assert!(pred_le.evaluate(&chunk, 0));
-
-    // Float64(100.0) >= "99.9"
-    let pred_ge = ExpressionPredicate::new(
-        FilterExpression::Binary {
-            left: Box::new(FilterExpression::Literal(Value::Float64(100.0))),
-            op: BinaryFilterOp::Ge,
-            right: Box::new(FilterExpression::Literal(Value::String("99.9".into()))),
-        },
-        vc,
-        store,
+    assert!(
+        binaire(Value::Int64(10), BinaryFilterOp::Lt, Value::Float64(20.5)).evaluate(&chunk, 0),
+        "10 < 20.5 (entier contre flottant) doit rester VRAI"
     );
-    assert!(pred_ge.evaluate(&chunk, 0));
+    assert!(
+        binaire(Value::Float64(2.5), BinaryFilterOp::Le, Value::Float64(2.5)).evaluate(&chunk, 0),
+        "2.5 <= 2.5 (flottants) doit rester VRAI"
+    );
 }
 
 // ── Stacked filter (selection vector preservation) ───────────────────

@@ -428,6 +428,64 @@ pub fn encode_entry(entry: &PropertyEntry, dst: &mut [u8]) -> Result<usize, Prop
 
 /// Decode a single entry from `src`, returning the decoded entry and the
 /// number of bytes consumed.
+/// Clef d'une entrée et TAILLE TOTALE de cette entrée, SANS décoder sa valeur.
+///
+/// POURQUOI (2026-09-12). Le parcours d'une chaîne de propriétés cherche UNE
+/// clef mais décodait TOUTES les entrées de chaque unité traversée, avec
+/// `decode_entry` — qui construit un `PropertyEntry` complet et, pour les
+/// valeurs TABLEAU (`ArrI64`, `ArrF64`, `ArrStringRef`), **alloue un `Vec` par
+/// entrée**. Sur un nœud riche (57 propriétés, dont des listes), chercher une
+/// clef payait donc des dizaines de décodages et plusieurs allocations — pour
+/// des entrées dont seule la clef importait.
+///
+/// Mesure sur le snapshot figé (347 970 nœuds) : la lecture d'une cellule coûte
+/// ~320 ns sur un nœud moyen, mais **1 450 à 2 561 ns sur un nœud `File`** — le
+/// coût suit le nombre d'entrées de l'unité, pas la valeur cherchée.
+///
+/// Ce balayage-ci ne lit que l'en-tête (drapeaux, clef, tag) et la LONGUEUR de
+/// la charge, telle que `decode_entry` la calcule — mêmes bornes, mêmes refus.
+/// L'appelant ne décode que l'entrée retenue, et seulement s'il y en a une.
+///
+/// Rend `None` dès que l'entrée est tronquée ou de tag inconnu : l'appelant
+/// reprend alors le décodage complet, qui produira EXACTEMENT l'erreur qu'il
+/// produisait avant. Aucun cas douteux n'est donc avalé.
+#[must_use]
+pub fn clef_et_taille_entree(src: &[u8]) -> Option<(u16, usize)> {
+    if src.len() < ENTRY_HEADER_SIZE {
+        return None;
+    }
+    let prop_key = u16::from_le_bytes([src[1], src[2]]);
+    let tag = ValueTag::from_u8(src[3])?;
+    let body = &src[ENTRY_HEADER_SIZE..];
+    let body_len = match tag {
+        ValueTag::Null => 0,
+        ValueTag::Bool => {
+            if body.is_empty() {
+                return None;
+            }
+            1
+        }
+        ValueTag::I64 | ValueTag::F64 | ValueTag::StringRef | ValueTag::BytesRef => {
+            if body.len() < 8 {
+                return None;
+            }
+            8
+        }
+        ValueTag::ArrI64 | ValueTag::ArrF64 | ValueTag::ArrStringRef => {
+            if body.len() < 4 {
+                return None;
+            }
+            let n = u32::from_le_bytes(body[0..4].try_into().ok()?) as usize;
+            let besoin = 4usize.saturating_add(n.saturating_mul(8));
+            if body.len() < besoin {
+                return None;
+            }
+            besoin
+        }
+    };
+    Some((prop_key, ENTRY_HEADER_SIZE + body_len))
+}
+
 pub fn decode_entry(src: &[u8]) -> Result<(PropertyEntry, usize), PropertyCodecError> {
     if src.len() < ENTRY_HEADER_SIZE {
         return Err(PropertyCodecError::Truncated);
@@ -569,6 +627,19 @@ impl<'a> PropertyCursor<'a> {
     /// Number of payload bytes this cursor hasn't yet consumed.
     pub fn remaining(&self) -> usize {
         self.buf.len().saturating_sub(self.pos)
+    }
+
+    /// (feat slots512-wiring) Curseur sur un slice brut — utilisé par les
+    /// unités packées 512 dont le payload n'est pas une `PropertyPage` 4K.
+    pub(crate) fn au_dessus(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    /// Tranche d'octets que ce curseur n'a pas encore parcourue — exactement ce
+    /// que `Iterator::next` décoderait. Sert au balayage « clef + taille » de
+    /// [`clef_et_taille_entree`], qui ne décode rien.
+    pub(crate) fn tranche(&self) -> &'a [u8] {
+        &self.buf[self.pos..]
     }
 }
 

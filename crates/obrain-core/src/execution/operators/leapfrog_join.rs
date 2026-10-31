@@ -100,6 +100,8 @@ impl LeapfrogJoinOperator {
         for input in &mut self.inputs {
             let mut chunks = Vec::new();
             while let Some(chunk) = input.next()? {
+                super::verifier_annulation()?;
+
                 chunks.push(chunk);
             }
             self.materialized_inputs.push(chunks);

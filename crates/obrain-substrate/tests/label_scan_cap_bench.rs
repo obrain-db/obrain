@@ -7,7 +7,7 @@
 
 use obrain_core::graph::GraphStore;
 use obrain_substrate::SubstrateStore;
-use std::time::Instant;
+use web_time::Instant;
 
 #[test]
 #[ignore = "bench on prod base — read-only"]

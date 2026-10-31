@@ -42,7 +42,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use obrain_common::types::NodeId;
 use obrain_core::graph::Direction;

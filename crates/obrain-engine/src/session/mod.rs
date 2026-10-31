@@ -9,7 +9,8 @@ mod rdf;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use obrain_common::types::{EdgeId, EpochId, NodeId, TransactionId, Value};
 use obrain_common::utils::error::Result;
@@ -113,6 +114,20 @@ pub struct Session {
     adaptive_config: AdaptiveConfig,
     /// Whether to use factorized execution for multi-hop queries.
     factorized_execution: bool,
+    /// (2026-08-17, aretes inter-bases V2) Registre multi-store de la
+    /// session : `{slug -> store}`, ouverture paresseuse. `None` =
+    /// session mono-base (comportement historique). Pose par
+    /// `ObrainDB::session()` quand la base a des bases attachees.
+    base_registry: parking_lot::Mutex<Option<Arc<obrain_core::execution::BaseRegistry>>>,
+    /// (V3) Contexte de droits du LECTEUR de cette session — voyage dans
+    /// SessionContext, evalue a chaque franchissement de frontiere.
+    /// `None` = acces total (comportement historique).
+    access_context: parking_lot::Mutex<Option<Arc<obrain_core::execution::AccessContext>>>,
+    /// (V3) Vrai pendant une transaction AUTO-COMMIT (posee par
+    /// with_auto_commit) : permet de distinguer une transaction EXPLICITE
+    /// (START TRANSACTION) d'un simple auto-commit, alors que
+    /// `current_transaction` est Some dans les deux cas.
+    transaction_auto: std::sync::atomic::AtomicBool,
     /// The graph data model this session operates on.
     graph_model: GraphModel,
     /// Maximum time a query may run before being cancelled.
@@ -125,6 +140,18 @@ pub struct Session {
     transaction_start_node_count: AtomicUsize,
     /// Edge count at the start of the current transaction (for PreparedCommit stats).
     transaction_start_edge_count: AtomicUsize,
+    /// Optional cognitive engine (3 piliers : causal spreading activation,
+    /// gap detection, dynamic synthesis) shared with the owning `ObrainDB`.
+    /// Wired via `set_cognitive_engine` right after session creation (same
+    /// pattern as `set_wal`/`set_cdc_log`) so `CALL obrain.cognitive.*`
+    /// procedures can resolve `Planner::cognitive_engine` at query-plan time.
+    #[cfg(feature = "cognitive")]
+    cognitive_engine: Option<Arc<dyn obrain_cognitive::CognitiveEngine>>,
+    /// Typed substrate handle, shared with the owning `ObrainDB`. Wired via
+    /// `set_substrate_store` right after session creation (same pattern as
+    /// the cognitive engine above) so substrate-native procedures
+    /// (`CALL obrain.window_2d`) can resolve at query-plan time.
+    substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
     /// WAL for logging schema changes.
     #[cfg(feature = "wal")]
     wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
@@ -156,6 +183,20 @@ pub struct Session {
     /// `None` represents the default graph. Populated at `BEGIN` time and on each
     /// `USE GRAPH` / `SESSION SET GRAPH` switch within a transaction.
     touched_graphs: parking_lot::Mutex<Vec<Option<String>>>,
+    /// Empreinte de chaque graphe au moment ou la transaction courante l'a
+    /// touche pour la PREMIERE fois : les prochains identifiants de noeud et
+    /// d'arete a allouer.
+    ///
+    /// (2026-08-13) `rollback()` ne rembobinait rien. Il appelait
+    /// `discard_uncommitted_versions()` sur chaque graphe touche — une methode
+    /// de trait au corps vide, jamais implementee. La comptabilite etait
+    /// juste, l'effet nul.
+    ///
+    /// On ne peut pas se contenter de l'empreinte prise au BEGIN : un
+    /// `USE GRAPH alpha` en cours de transaction fait entrer un graphe qui
+    /// n'existait pas dans la photo de depart. L'empreinte est donc posee au
+    /// premier contact, graphe par graphe.
+    tx_baselines: parking_lot::Mutex<std::collections::HashMap<Option<String>, (u64, u64)>>,
     /// Shared metrics registry (populated when the `metrics` feature is enabled).
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<crate::metrics::MetricsRegistry>>,
@@ -195,6 +236,66 @@ struct SavepointState {
     active_graph: Option<String>,
 }
 
+/// (mission perf) Un conflit d ecriture MVCC (OBRAIN-T001 / write-write)
+/// est REJOUABLE pour un statement auto-commit : rien n a survecu au
+/// rollback, re-executer est sur. Detection par le code stable T001 et les
+/// libelles de conflit — deliberement etroite : tout le reste remonte.
+fn erreur_de_conflit_rejouable(e: &obrain_common::utils::error::Error) -> bool {
+    let texte = e.to_string();
+    texte.contains("OBRAIN-T001")
+        || texte.contains("Write conflict")
+        || texte.contains("write-write")
+        || texte.contains("TransactionConflict")
+}
+
+/// Ce qu'un point d'entrée SAIT du plan quand il franchit
+/// [`Session::with_auto_commit`].
+///
+/// Ce type existe pour rendre IMPOSSIBLE la confusion qui a produit le
+/// défaut. Deux décisions se prennent au même endroit à partir de la même
+/// question — « est-ce que cette requête mute ? » — mais elles ne tolèrent
+/// pas la même qualité de réponse :
+///
+///   · la TRANSACTION implicite tolère une devinette. Un faux négatif ne
+///     fait qu'omettre l'enveloppe, ce qui est le comportement d'avant ;
+///   · l'INTERRUPTIBILITÉ, non. Un faux positif désarme une lecture, un
+///     faux négatif rend une écriture annulable — et une écriture annulée
+///     en plein `MERGE` peut PERSISTER un doublon.
+///
+/// Passer un simple `bool` laissait la devinette textuelle décider des
+/// deux. Le type sépare les deux réponses et oblige chaque entrée à dire
+/// laquelle elle possède.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nature {
+    /// Le plan est là : `plan.root.has_mutations()`. Réponse structurelle,
+    /// valable pour les deux décisions.
+    Plan(bool),
+    /// Seul le TEXTE est là (les chemins qui délèguent au
+    /// `QueryProcessor`). Le booléen est l'heuristique
+    /// `query_looks_like_mutation` : il sert la transaction implicite, et
+    /// RIEN d'autre.
+    Texte(bool),
+}
+
+impl Nature {
+    /// Pour la transaction implicite : la meilleure réponse disponible.
+    const fn mute(self) -> bool {
+        match self {
+            Self::Plan(b) | Self::Texte(b) => b,
+        }
+    }
+
+    /// Pour la frontière d'annulation : la réponse STRUCTURELLE, ou
+    /// `None` — « je ne sais pas » — qui laisse la portée hors vigueur
+    /// jusqu'à la frontière intérieure du `QueryProcessor`.
+    const fn frontiere(self) -> Option<bool> {
+        match self {
+            Self::Plan(b) => Some(b),
+            Self::Texte(_) => None,
+        }
+    }
+}
+
 impl Session {
     /// Creates a new session with adaptive execution configuration.
     #[allow(dead_code)]
@@ -212,12 +313,18 @@ impl Session {
             auto_commit: true,
             adaptive_config: cfg.adaptive_config,
             factorized_execution: cfg.factorized_execution,
+            base_registry: parking_lot::Mutex::new(None),
+            access_context: parking_lot::Mutex::new(None),
+            transaction_auto: std::sync::atomic::AtomicBool::new(false),
             graph_model: cfg.graph_model,
             query_timeout: cfg.query_timeout,
             commit_counter: cfg.commit_counter,
             gc_interval: cfg.gc_interval,
             transaction_start_node_count: AtomicUsize::new(0),
             transaction_start_edge_count: AtomicUsize::new(0),
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
+            substrate_store: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -232,6 +339,7 @@ impl Session {
             savepoints: parking_lot::Mutex::new(Vec::new()),
             transaction_nesting_depth: parking_lot::Mutex::new(0),
             touched_graphs: parking_lot::Mutex::new(Vec::new()),
+            tx_baselines: parking_lot::Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "metrics")]
             metrics: None,
             #[cfg(feature = "metrics")]
@@ -239,6 +347,187 @@ impl Session {
             #[cfg(feature = "reactive")]
             post_commit_hook: None,
         }
+    }
+
+    /// (2026-08-17, aretes inter-bases V2) Attache le registre
+    /// multi-store de la session. Appele par `ObrainDB::session()` ; peut
+    /// aussi etre pose apres coup (les planners suivants le verront).
+    pub fn set_base_registry(&self, registry: Arc<obrain_core::execution::BaseRegistry>) {
+        *self.base_registry.lock() = Some(registry);
+    }
+
+    /// (V3) Attache le contexte de droits du lecteur de cette session.
+    /// Les planners construits ensuite (execute, execute_with_params,
+    /// procedures) le voient tous via build_session_context.
+    pub fn set_access_context(&self, access: Arc<obrain_core::execution::AccessContext>) {
+        *self.access_context.lock() = Some(access);
+    }
+
+    /// (V3) Note la requete en cours pour l'audit des refus (tronquee).
+    /// Best effort : appele par execute/execute_with_params/execute_cypher.
+    fn note_requete_pour_audit(&self, query: &str) {
+        if let Some(ctx) = &*self.access_context.lock() {
+            ctx.note_requete(query);
+        }
+    }
+
+    /// (V3) Sommes-nous dans une transaction EXPLICITE (START TRANSACTION),
+    /// par opposition a l'auto-commit ? `current_transaction` est Some dans
+    /// les deux cas — le drapeau `transaction_auto` fait la difference.
+    fn in_explicit_transaction(&self) -> bool {
+        self.current_transaction.lock().is_some()
+            && !self
+                .transaction_auto
+                .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Sets the cognitive engine for this session (shared with the database).
+    ///
+    /// Mirrors `set_wal`/`set_cdc_log`: `ObrainDB` calls this right after
+    /// constructing a session so `CALL obrain.cognitive.*` procedures (spread,
+    /// detect_gaps, synthesize) can resolve the engine at query-plan time
+    /// (see `Planner::with_cognitive_engine`, previously never wired from any
+    /// real query-execution path — only exercised directly in unit tests).
+    #[cfg(feature = "cognitive")]
+    pub(crate) fn set_cognitive_engine(
+        &mut self,
+        engine: Arc<dyn obrain_cognitive::CognitiveEngine>,
+    ) {
+        self.cognitive_engine = Some(engine);
+    }
+
+    /// Returns this session's cognitive engine, if any (threaded into
+    /// per-statement `QueryProcessor`s so `CALL obrain.cognitive.*` resolves).
+    #[cfg(feature = "cognitive")]
+    pub(crate) fn cognitive_engine(&self) -> Option<&Arc<dyn obrain_cognitive::CognitiveEngine>> {
+        self.cognitive_engine.as_ref()
+    }
+
+    /// Sets the typed substrate handle for this session (shared with the
+    /// database). Mirrors [`Self::set_cognitive_engine`]: `ObrainDB` calls it
+    /// right after constructing a session so substrate-native procedures
+    /// (`CALL obrain.window_2d`, RFC zorder-superposition C5) resolve at
+    /// query-plan time. `None` on non-substrate backends.
+    pub(crate) fn set_substrate_store(&mut self, store: Arc<obrain_substrate::SubstrateStore>) {
+        self.substrate_store = Some(store);
+    }
+
+    /// Returns this session's typed substrate handle, if any (threaded into
+    /// per-statement `QueryProcessor`s).
+    pub(crate) fn substrate_store(&self) -> Option<&Arc<obrain_substrate::SubstrateStore>> {
+        self.substrate_store.as_ref()
+    }
+
+    /// (O1) Vue zero-copy sur une propriété `String` d'un nœud : le `&str`
+    /// est EMPRUNTÉ aux pages mmap du substrate — aucune copie, aucune
+    /// sérialisation — et vit sous une garde de lecture relâchée au drop
+    /// de la vue. Contrat complet : `obrain_substrate::view`.
+    ///
+    /// `None` si le store actif n'est pas un substrate (base en mémoire),
+    /// si le nœud est mort, la clé absente ou la valeur non-`String`.
+    ///
+    /// Bail court : ne pas tenir la vue en écrivant sur la même base.
+    #[must_use]
+    pub fn prop_str_view(
+        &self,
+        id: NodeId,
+        key: &str,
+    ) -> Option<obrain_substrate::view::StrView<'_>> {
+        self.substrate_store()?.node_prop_str_view(id, key)
+    }
+
+    /// (O1) [`Self::prop_str_view`] emballée pour le seeding spéculatif :
+    /// le fait et son texte, prêts à tokeniser sans copie.
+    #[must_use]
+    pub fn fact_view(
+        &self,
+        id: NodeId,
+        text_key: &str,
+    ) -> Option<obrain_substrate::view::FactView<'_>> {
+        Some(obrain_substrate::view::FactView {
+            node: id,
+            text: self.prop_str_view(id, text_key)?,
+        })
+    }
+
+    /// (VWS) Jumeau ARÊTE de [`Self::prop_str_view`] : vue zero-copy sur
+    /// une propriété `String` d'une arête — mêmes trois chemins (colonne
+    /// blob, PropsZone v2 LWW, DashMap héritée), même contrat de lifetimes
+    /// (`obrain_substrate::view`), même bail court.
+    ///
+    /// `None` si le store actif n'est pas un substrate (base en mémoire),
+    /// si l'arête est morte, la clé absente ou la valeur non-`String`.
+    #[must_use]
+    pub fn edge_prop_str_view(
+        &self,
+        id: EdgeId,
+        key: &str,
+    ) -> Option<obrain_substrate::view::StrView<'_>> {
+        self.substrate_store()?.edge_prop_str_view(id, key)
+    }
+
+    /// (VWS) Chemin POSSÉDÉ symétrique de [`Self::get_node_property`] : la
+    /// valeur d'une propriété d'arête, clonée depuis l'arête matérialisée.
+    /// Sert de référence aux benchs vue-contre-possédé.
+    #[must_use]
+    pub fn get_edge_property(&self, id: EdgeId, key: &str) -> Option<Value> {
+        self.get_edge(id)
+            .and_then(|edge| edge.get_property(key).cloned())
+    }
+
+    /// (VWS) Balayage zero-copy d'une collection de nœuds : appelle `f`
+    /// avec le `&str` emprunté de chaque nœud vivant (filtré par `label`,
+    /// `None` = tous) porteur d'une valeur `String` sous `key` — sans
+    /// matérialiser ni la collection ni les valeurs (impl différée §3 du
+    /// design O1).
+    ///
+    /// UNE prise de garde par zone pour tout le balayage (zone nœuds,
+    /// colonne blob de la clé, PropsZone) — pas une par nœud : les appels
+    /// sont regroupés PAR SOURCE (blob, zone, héritée), slots croissants
+    /// dans chaque groupe. `ControlFlow::Break(())` arrête net. Rend le
+    /// nombre de nœuds servis ; `Ok(0)` si la base active n'est pas un
+    /// substrate.
+    ///
+    /// L'emprunt ne s'échappe pas du callback (borrow checker), et le
+    /// callback ne doit ni écrire dans la même base ni bloquer : des
+    /// gardes de lecture sont tenues pendant l'appel.
+    pub fn for_each_prop_view<F>(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        f: F,
+    ) -> obrain_substrate::SubstrateResult<u64>
+    where
+        F: FnMut(NodeId, &str) -> std::ops::ControlFlow<()>,
+    {
+        match self.substrate_store() {
+            Some(store) => store.for_each_node_prop_str_view(label, key, f),
+            None => Ok(0),
+        }
+    }
+
+    /// (VWS) Le chemin qui DOIT copier, sans allocations répétées : vide
+    /// `buf` (capacités conservées) puis y matérialise `(id, texte)` pour
+    /// chaque nœud servi par [`Self::for_each_prop_view`]. L'arène est
+    /// amortie entre requêtes — voir `obrain_substrate::ResultBuf`.
+    pub fn collect_props_into(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        buf: &mut obrain_substrate::ResultBuf,
+    ) -> obrain_substrate::SubstrateResult<u64> {
+        buf.clear();
+        self.for_each_prop_view(label, key, |id, s| {
+            buf.push(id.0, s);
+            std::ops::ControlFlow::Continue(())
+        })
+    }
+
+    /// Returns this session's CDC log (threaded into per-statement
+    /// `QueryProcessor`s so `CALL obrain.search_delta` resolves).
+    #[cfg(feature = "cdc")]
+    pub(crate) fn cdc_log(&self) -> &Arc<crate::cdc::CdcLog> {
+        &self.cdc_log
     }
 
     /// Sets the WAL for this session (shared with the database).
@@ -308,12 +597,18 @@ impl Session {
             auto_commit: true,
             adaptive_config: cfg.adaptive_config,
             factorized_execution: cfg.factorized_execution,
+            base_registry: parking_lot::Mutex::new(None),
+            access_context: parking_lot::Mutex::new(None),
+            transaction_auto: std::sync::atomic::AtomicBool::new(false),
             graph_model: cfg.graph_model,
             query_timeout: cfg.query_timeout,
             commit_counter: cfg.commit_counter,
             gc_interval: cfg.gc_interval,
             transaction_start_node_count: AtomicUsize::new(0),
             transaction_start_edge_count: AtomicUsize::new(0),
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
+            substrate_store: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -328,6 +623,7 @@ impl Session {
             savepoints: parking_lot::Mutex::new(Vec::new()),
             transaction_nesting_depth: parking_lot::Mutex::new(0),
             touched_graphs: parking_lot::Mutex::new(Vec::new()),
+            tx_baselines: parking_lot::Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "metrics")]
             metrics: None,
             #[cfg(feature = "metrics")]
@@ -466,7 +762,44 @@ impl Session {
             let key = self.active_graph_storage_key();
             let mut touched = self.touched_graphs.lock();
             if !touched.contains(&key) {
-                touched.push(key);
+                touched.push(key.clone());
+                drop(touched);
+                self.pose_empreinte(&key);
+            }
+        }
+    }
+
+    /// Pose l'empreinte d'un graphe : les prochains identifiants qu'il
+    /// allouera. Tout ce qui sera cree apres pourra donc etre rembobine.
+    ///
+    /// Un backend sans rembobinage rend `0` aux deux appels — c'est le contrat
+    /// documente du trait. On n'enregistre alors RIEN, plutot qu'une empreinte
+    /// a zero : `(0..courant)` designerait la base ENTIERE, et un ROLLBACK
+    /// effacerait tout. La difference entre « je ne sais pas » et « il n'y
+    /// avait rien » est exactement le genre de confusion qui a produit les
+    /// defauts de ce depot.
+    fn pose_empreinte(&self, cle: &Option<String>) {
+        let store = self.resolve_store(cle);
+        let n = store.peek_next_node_id();
+        let e = store.peek_next_edge_id();
+        if n == 0 && e == 0 {
+            return;
+        }
+        self.tx_baselines.lock().insert(cle.clone(), (n, e));
+    }
+
+    /// Rembobine chaque graphe touche jusqu'a son empreinte, en supprimant les
+    /// entites allouees depuis. Utilise par ROLLBACK.
+    fn rembobine_aux_empreintes(&self, transaction_id: TransactionId) {
+        let empreintes = self.tx_baselines.lock().clone();
+        for (cle, (n0, e0)) in &empreintes {
+            let store = self.resolve_store(cle);
+            let n1 = store.peek_next_node_id();
+            let e1 = store.peek_next_edge_id();
+            let node_ids: Vec<NodeId> = (*n0..n1).map(NodeId::new).collect();
+            let edge_ids: Vec<EdgeId> = (*e0..e1).map(EdgeId::new).collect();
+            if !node_ids.is_empty() || !edge_ids.is_empty() {
+                store.discard_entities_by_id(transaction_id, &node_ids, &edge_ids);
             }
         }
     }
@@ -623,6 +956,22 @@ impl Session {
                     }
                 }
 
+                // (2026-08-13) Distinguer « pas supporte » de « existe deja ».
+                // Sans ce test, un backend sans graphes nommes rend `false`
+                // et l'utilisateur lit « Graph 'x' already exists » sur une
+                // base vierge : un message qui designe le mauvais coupable et
+                // envoie chercher un doublon inexistant.
+                if !self.graph_store.supports_named_graphs() {
+                    return Err(Error::Query(QueryError::new(
+                        QueryErrorKind::Semantic,
+                        format!(
+                            "named graphs are not supported by this backend \
+                             (CREATE GRAPH '{name}') — le substrat n'a pas de \
+                             registre de graphes nommes depuis le retrait de \
+                             LpgStore ; utilise une base distincte"
+                        ),
+                    )));
+                }
                 let created = self
                     .graph_store
                     .create_named_graph(&storage_key)
@@ -881,6 +1230,13 @@ impl Session {
                     constraints: Vec::new(),
                     parent_types: stmt.parent_types.clone(),
                 };
+                // ── LA DÉFINITION PART AU CATALOGUE DURABLE AVANT D'ÊTRE DÉPLACÉE ──
+                // `CREATE NODE TYPE` écrivait un `WalRecord` que personne ne
+                // rejoue : le type disparaissait au redémarrage (quatre tests de
+                // `wal_recovery.rs` le constataient). On sérialise donc ici, à
+                // l'instant où la définition est complète — l'écriture durable
+                // se fait après le succès, plus bas.
+                let definition_json = serde_json::to_string(&def).ok();
                 let result = if stmt.or_replace {
                     let _ = self.catalog.drop_node_type(&stmt.name);
                     self.catalog.register_node_type(def)
@@ -897,6 +1253,21 @@ impl Session {
                                 constraints: Vec::new(),
                             }
                         );
+                        // DÉCLARATION DURABLE : c'est elle qui rend le type
+                        // visible après un redémarrage (le WAL moteur n'est
+                        // jamais rejoué). Un échec est journalisé, jamais fatal :
+                        // le type vaut pour la session courante, et le fichier
+                        // sera réécrit au prochain CREATE réussi.
+                        if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json)
+                        {
+                            if let Err(e) = sub.declarer_type("node", &stmt.name, json) {
+                                tracing::error!(
+                                    erreur = %e,
+                                    nom = %stmt.name,
+                                    "declaration de type de nœud NON persistee (substrate.typecat)"
+                                );
+                            }
+                        }
                         Ok(QueryResult::status(format!(
                             "Created node type '{}'",
                             stmt.name
@@ -938,6 +1309,7 @@ impl Session {
                     source_node_types: stmt.source_node_types.clone(),
                     target_node_types: stmt.target_node_types.clone(),
                 };
+                let definition_json = serde_json::to_string(&def).ok();
                 let result = if stmt.or_replace {
                     let _ = self.catalog.drop_edge_type_def(&stmt.name);
                     self.catalog.register_edge_type_def(def)
@@ -954,6 +1326,16 @@ impl Session {
                                 constraints: Vec::new(),
                             }
                         );
+                        if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json)
+                        {
+                            if let Err(e) = sub.declarer_type("edge", &stmt.name, json) {
+                                tracing::error!(
+                                    erreur = %e,
+                                    nom = %stmt.name,
+                                    "declaration de type d'arete NON persistee (substrate.typecat)"
+                                );
+                            }
+                        }
                         Ok(QueryResult::status(format!(
                             "Created edge type '{}'",
                             stmt.name
@@ -989,6 +1371,16 @@ impl Session {
                 match self.catalog.drop_node_type(&name) {
                     Ok(()) => {
                         wal_log!(self, WalRecord::DropNodeType { name: name.clone() });
+                        // Miroir du CREATE : le type retiré ne doit pas revenir
+                        // au prochain redémarrage par le catalogue durable.
+                        if let Some(sub) = self.substrate_store() {
+                            if let Err(e) = sub.retirer_type("node", &name) {
+                                tracing::error!(
+                                    erreur = %e, nom = %name,
+                                    "retrait de declaration de type NON persiste (substrate.typecat)"
+                                );
+                            }
+                        }
                         Ok(QueryResult::status(format!("Dropped node type '{name}'")))
                     }
                     Err(e) if if_exists => {
@@ -1005,6 +1397,14 @@ impl Session {
                 match self.catalog.drop_edge_type_def(&name) {
                     Ok(()) => {
                         wal_log!(self, WalRecord::DropEdgeType { name: name.clone() });
+                        if let Some(sub) = self.substrate_store() {
+                            if let Err(e) = sub.retirer_type("edge", &name) {
+                                tracing::error!(
+                                    erreur = %e, nom = %name,
+                                    "retrait de declaration de type NON persiste (substrate.typecat)"
+                                );
+                            }
+                        }
                         Ok(QueryResult::status(format!("Dropped edge type '{name}'")))
                     }
                     Err(e) if if_exists => {
@@ -1564,6 +1964,37 @@ impl Session {
                     }
                 }
 
+                // (2026-09-07) PERSISTANCE DURABLE — le catalogue RAM est par
+                // processus : la definition est aussi declaree cote substrate
+                // (`substrate.proccat`, hydrate au boot). Le corps GQL vit en
+                // donnees, pas seulement en RAM du process qui l'a cree.
+                // Note : `def` a ete consomme par register/replace ci-dessus —
+                // la declaration est reconstruite depuis `stmt` (succes garanti
+                // ici, donc meme nom/params/returns/body).
+                if let Some(sub) = self.substrate_store() {
+                    let decl = obrain_substrate::DeclarationProcedure {
+                        name: stmt.name.clone(),
+                        params: stmt
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), p.param_type.clone()))
+                            .collect(),
+                        returns: stmt
+                            .returns
+                            .iter()
+                            .map(|r| (r.name.clone(), r.return_type.clone()))
+                            .collect(),
+                        body: stmt.body.clone(),
+                    };
+                    if let Err(e) = sub.declarer_procedure(decl) {
+                        tracing::error!(
+                            erreur = %e,
+                            nom = %stmt.name,
+                            "declaration de procedure NON persistee (substrate.proccat)"
+                        );
+                    }
+                }
+
                 wal_log!(
                     self,
                     WalRecord::CreateProcedure {
@@ -1600,6 +2031,16 @@ impl Session {
                     }
                 }
                 wal_log!(self, WalRecord::DropProcedure { name: name.clone() });
+                // (2026-09-07) Retire la declaration durable, miroir du CREATE.
+                if let Some(sub) = self.substrate_store() {
+                    if let Err(e) = sub.retirer_declaration_procedure(&name) {
+                        tracing::error!(
+                            erreur = %e,
+                            nom = %name,
+                            "retrait de declaration de procedure NON persiste (substrate.proccat)"
+                        );
+                    }
+                }
                 Ok(QueryResult::status(format!("Dropped procedure '{name}'")))
             }
             SchemaStatement::ShowIndexes => {
@@ -1961,6 +2402,7 @@ impl Session {
     #[cfg(feature = "gql")]
     pub fn execute(&self, query: &str) -> Result<QueryResult> {
         self.require_lpg("GQL")?;
+        self.note_requete_pour_audit(query);
 
         use crate::query::{
             Executor, binder::Binder, cache::CacheKey, optimizer::Optimizer,
@@ -1974,13 +2416,37 @@ impl Session {
         )
         .entered();
 
+        // `Option` plutôt qu'un `Instant` nu : sur wasm32 il n'existe AUCUNE
+        // horloge (`Instant::now()` panique — « time not implemented on this
+        // platform »), donc l'absence de mesure doit être REPRÉSENTABLE, pas
+        // simulée. Le type reste `Option<Instant>` sur les deux cibles pour
+        // que les appelants ci-dessous n'aient pas deux formes.
         #[cfg(not(target_arch = "wasm32"))]
-        let start_time = std::time::Instant::now();
+        let start_time = Some(web_time::Instant::now());
+        #[cfg(target_arch = "wasm32")]
+        let start_time: Option<web_time::Instant> = None;
+
+        // Cache key construit AVANT le parse (RFC multi-writer, gain
+        // 2026-09-06) : sur un HIT du plan optimisé, le parse/translation
+        // (~1 µs/op mesuré) devient inutile — le plan optimisé est
+        // déterministe du texte + graphe. Les commandes session/schema ne
+        // sont JAMAIS mises dans `optimized_cache` → un hit garantit un
+        // `Plan`, donc sauter la translation est sûr.
+        let cache_key = CacheKey::with_graph(query, QueryLanguage::Gql, self.current_graph());
+        if let Some(plan_cache) = self.query_cache.get_optimized(&cache_key) {
+            return self.execute_optimized_plan(plan_cache, start_time);
+        }
 
         // Parse and translate, checking for session/schema commands first
         let translation = gql::translate_full(query)?;
         let logical_plan = match translation {
             gql::GqlTranslationResult::SessionCommand(cmd) => {
+                // Une commande de session MUTE l'etat de la session et ce
+                // `return` n'atteint pas `with_auto_commit`. REDONDANT avec
+                // l'inversion de polarite (le jeton n'est pas encore en
+                // vigueur ici) : conserve comme second verrou, parce qu'une
+                // commande de session ne s'annule pas non plus.
+                let _hors_vigueur = obrain_common::utils::cancel::frontiere(Some(true), None);
                 return self.execute_session_command(cmd);
             }
             gql::GqlTranslationResult::SchemaCommand(cmd) => {
@@ -1990,6 +2456,20 @@ impl Session {
                         obrain_common::utils::error::TransactionError::ReadOnly,
                     ));
                 }
+                // ── LE DDL N'ATTEINT PAS `with_auto_commit` ──────────────
+                //
+                // Ce `return` precede le point ou la frontiere est posee.
+                // REDONDANT avec l'inversion de polarite — le jeton confie
+                // par `cancel::scope` n'est pas encore en vigueur ici — mais
+                // conserve comme SECOND VERROU, et celui-la se justifie :
+                // le DDL construit des index (`create_vector_index`,
+                // `create_text_index`, le `rebatir_index_declare` du
+                // catalogue) en balayant `nodes_by_label`. Un index bati sur
+                // un balayage TRONQUE est PERSISTE, et toutes les requetes
+                // suivantes le croiront : le degat survivrait a la requete
+                // annulee. C'est la seule categorie de degat qui survit, elle
+                // merite ses deux verrous.
+                let _hors_vigueur = obrain_common::utils::cancel::frontiere(Some(true), None);
                 return self.execute_schema_command(cmd);
             }
             gql::GqlTranslationResult::Plan(plan) => {
@@ -2003,30 +2483,44 @@ impl Session {
             }
         };
 
-        // Create cache key for this query
-        let cache_key = CacheKey::with_graph(query, QueryLanguage::Gql, self.current_graph());
+        // Semantic validation
+        let mut binder = Binder::new();
+        let _binding_context = binder.bind(&logical_plan)?;
 
-        // Try to get cached optimized plan, or use the plan we just translated
-        let optimized_plan = if let Some(cached_plan) = self.query_cache.get_optimized(&cache_key) {
-            cached_plan
-        } else {
-            // Semantic validation
-            let mut binder = Binder::new();
-            let _binding_context = binder.bind(&logical_plan)?;
-
-            // Optimize the plan
-            let active = self.active_store();
-            let optimizer = Optimizer::from_graph_store(&*active);
-            let plan = optimizer.optimize(logical_plan)?;
-
-            // Cache the optimized plan for future use
-            self.query_cache.put_optimized(cache_key, plan.clone());
-
-            plan
-        };
-
-        // Resolve the active store for query execution
+        // Optimize the plan
         let active = self.active_store();
+        let optimizer = Optimizer::from_graph_store(&*active);
+        let plan = optimizer.optimize(logical_plan)?;
+
+        // Cache the optimized plan for future use
+        self.query_cache.put_optimized(cache_key, plan.clone());
+
+        // Execute the optimized plan (shared tail with the cache-hit path).
+        self.execute_optimized_plan(plan, start_time)
+    }
+
+    /// Exécute un plan optimisé (chemin commun cache-hit et cache-miss).
+    ///
+    /// Extraite de `execute` (2026-09-06) pour permettre le fast-path
+    /// « plan optimisé en cache → sauter le parse » : le corps était
+    /// inline dans `execute`, dupliquer ~120 lignes aurait été pire.
+    fn execute_optimized_plan(
+        &self,
+        optimized_plan: crate::query::plan::LogicalPlan,
+        start_time: Option<web_time::Instant>,
+    ) -> Result<QueryResult> {
+        use crate::query::{Executor, processor::QueryLanguage};
+        let active = self.active_store();
+
+        // ── CHEMIN CACHE-HIT : le parse a été sauté, donc le garde-fou
+        //    « mutation en tx read-only » du chemin normal (match Plan)
+        //    n'a pas tourné. On le reproduit ici pour les DEUX chemins
+        //    (sur miss il est redondant avec le match, mais inoffensif).
+        if *self.read_only_tx.lock() && optimized_plan.root.has_mutations() {
+            return Err(obrain_common::utils::error::Error::Transaction(
+                obrain_common::utils::error::TransactionError::ReadOnly,
+            ));
+        }
 
         // EXPLAIN: annotate pushdown hints and return the plan tree
         if optimized_plan.explain {
@@ -2038,8 +2532,8 @@ impl Session {
 
         // PROFILE: execute with per-operator instrumentation
         if optimized_plan.profile {
-            let has_mutations = optimized_plan.root.has_mutations();
-            return self.with_auto_commit(has_mutations, || {
+            let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
+            return self.with_auto_commit(Nature::Plan(has_mutations), || {
                 let (viewing_epoch, transaction_id) = self.get_transaction_context();
                 let planner = self.create_planner_for_store(
                     Arc::clone(&active),
@@ -2052,15 +2546,13 @@ impl Session {
                     .with_deadline(self.query_deadline());
                 let _result = executor.execute(physical_plan.operator.as_mut())?;
 
-                let total_time_ms;
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    total_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    total_time_ms = 0.0;
-                }
+                // wasm32 : il n'existe aucune horloge sur cette cible — la
+                // mesure est ABSENTE, et `0.0` est ce que le profileur en dit.
+                // Le `map` n'est jamais appelé quand `start_time` est `None`,
+                // donc `Instant::elapsed()` (qui appellerait `now()`) ne part pas.
+                let total_time_ms = start_time
+                    .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0);
 
                 let profile_tree = crate::query::profile::build_profile_tree(
                     &optimized_plan.root,
@@ -2073,14 +2565,57 @@ impl Session {
             });
         }
 
-        let has_mutations = optimized_plan.root.has_mutations();
+        let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
 
             // Convert to physical plan with transaction context
             // (Physical planning cannot be cached as it depends on transaction state)
+            //
+            // ── CETTE PHRASE EST VRAIE, ET ELLE A ÉTÉ MESURÉE (2026-09-14) ──
+            //
+            // « Physical planning cannot be cached as it depends on transaction
+            // state » était une affirmation sans mesure. Elle a été éprouvée
+            // avec `OBRAIN_PHASES` sur une COPIE de `runtime-dev` (432 910
+            // nœuds), textes UNIQUES (le cache de plans logiques ne peut donc
+            // pas servir), chaque texte joué DEUX fois — `banc_plan_froid` :
+            //
+            //   MATCH (n) RETURN count(n) AS c<i>              planif 1-3 µs (1er ET 2e)
+            //   MATCH (n:Message) WHERE n.session = '…' …      planif 192 237 µs puis
+            //                                                        192 081 µs
+            //   MATCH (n:Message) WHERE n.seq >= 3 …           planif 341 034 µs puis
+            //                                                        316 725 µs
+            //
+            // Le 2e appel d'un texte coûte EXACTEMENT ce que coûte le 1er :
+            // la planification physique est bien refaite, rien n'est mémoïsé.
+            // (Corollaire mesuré : le « premier appel d'un texte neuf » n'est
+            // pas plus cher que les suivants — seul le TOUT PREMIER appel du
+            // processus paie ~10 à 15 µs d'amorçage, une fois.)
+            //
+            // Ce que la mesure ajoute, et qui interdit le cache — au-delà du
+            // « transaction state » —, c'est POURQUOI ces centaines de
+            // microsecondes sont payées : sans index, les heuristiques
+            // d'accès ne rendent pas une DÉCISION, elles rendent une LISTE DE
+            // NŒUDS lue dans le store (balayage de label + hydratation d'un
+            // `Node` par nœud ; `find_nodes_in_range` sans série ordonnée).
+            // Un plan ainsi constitué MÉMORISE DES DONNÉES : le resservir sous
+            // une clé (empreinte du plan logique, génération de catalogue,
+            // époque de lecture) rendrait des lignes périmées dès la première
+            // écriture — et l'invalidation par époque rendrait le cache inutile
+            // sur toute charge qui écrit. Le cache de plans LOGIQUES ci-dessus
+            // reste légitime : un plan logique est une fonction du TEXTE.
+            //
+            // Ce qu'il fallait corriger n'était donc pas le cache mais le coût
+            // lui-même : ces listes sont désormais plafonnées
+            // (`OBRAIN_PLAN_MATERIALISATION_MAX`, défaut 1024, et
+            // `OBRAIN_PLAN_ELAGAGE=0` pour l'ancien comportement), et le
+            // travail repart à l'exécution pour ~0,2 µs/nœud au lieu de
+            // ~2,7 µs. Mesuré après : planification 13 µs, exécution 15 ms sur
+            // le cas `Message`/`session` (192 ms → 15 ms au total).
+            // Détail et protocole : `examples/banc_plan_froid.rs`.
+            //
             // Safe to use read-only fast path when: this query has no mutations AND
             // there is no active transaction that may have prior uncommitted writes.
             let has_active_tx = self.current_transaction.lock().is_some();
@@ -2091,20 +2626,52 @@ impl Session {
                 transaction_id,
                 read_only,
             );
-            let mut physical_plan = planner.plan(&optimized_plan)?;
+            // (2026-08-31) RUN 21 — annoter les hints de pushdown (dont
+            // SourceCap) sur une COPIE du plan logique avant la planification
+            // physique. `annotate_pushdown_hints` n'était appelé que pour
+            // EXPLAIN ; en exécution normale le hint SourceCap (Limit → Expand
+            // → NodeScan) n'atteignait jamais le ScanOperator. On clone pour
+            // ne pas muter le plan mis en cache (le hint est déterministe,
+            // mais le clone garde le cache immuable et sûr).
+            let mut plan_annote = optimized_plan.clone();
+            use crate::query::processor::annotate_pushdown_hints as annoter_hints;
+            annoter_hints(&mut plan_annote.root, active.as_ref());
+
+            // ── OÙ PASSENT LES MICROSECONDES D'UNE REQUÊTE ? (2026-09-14) ───
+            //
+            // Mesuré : 78 à 153 µs pour `MATCH (n) RETURN count(n)` — une
+            // requête qui ne lit RIEN, servie par les compteurs. Le cache de
+            // plans logiques (branche au-dessus) a déjà sauté l'analyse et
+            // l'optimisation ; il ne reste donc que DEUX candidates, et on les
+            // sépare sous `OBRAIN_PHASES=1` : la PLANIFICATION PHYSIQUE (les
+            // heuristiques de choix d'accès — index, intervalle, préfixe,
+            // trigrammes) et l'EXÉCUTION (opérateurs). Sans cette ventilation,
+            // on optimise à l'aveugle.
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_plan = web_time::Instant::now();
+            let mut physical_plan = planner.plan(&plan_annote)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let us_plan = t_plan.elapsed().as_secs_f64() * 1e6;
 
             // Execute the plan
+            #[cfg(not(target_arch = "wasm32"))]
+            let t_exec = web_time::Instant::now();
             let executor = Executor::with_columns(physical_plan.columns.clone())
                 .with_deadline(self.query_deadline());
             let mut result = executor.execute(physical_plan.operator.as_mut())?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var_os("OBRAIN_PHASES").is_some() {
+                eprintln!(
+                    "[phases] planification={us_plan:.0}us execution={:.0}us",
+                    t_exec.elapsed().as_secs_f64() * 1e6
+                );
+            }
 
             // Add execution metrics
             let rows_scanned = result.rows.len() as u64;
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let elapsed_ms = start_time.elapsed().as_secs_f64() * 1000.0;
-                result.execution_time_ms = Some(elapsed_ms);
-            }
+            // `None` sur wasm32 : la mesure est laissée ABSENTE, pas
+            // remplacée par un zéro qui se ferait passer pour elle.
+            result.execution_time_ms = start_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
             result.rows_scanned = Some(rows_scanned);
 
             Ok(result)
@@ -2121,6 +2688,58 @@ impl Session {
         }
 
         result
+    }
+
+    /// Exécute une requête GQL sous un JETON D'ANNULATION.
+    ///
+    /// Le jeton est installé pour la durée de l'appel, sur CE thread. Armer
+    /// le jeton depuis un autre thread fait remonter, au prochain point de
+    /// contrôle, une erreur que `Error::is_cancelled` identifie.
+    ///
+    /// ── CE QUE LE JETON PEUT ET NE PEUT PAS ─────────────────────────
+    ///
+    /// Le jeton est CONFIÉ au thread, pas mis en vigueur : il n'agit qu'à
+    /// partir de la frontière écriture/lecture (`Session::with_auto_commit`),
+    /// et seulement si le plan LIT. Un plan qui écrit s'exécute exactement
+    /// comme si ce mécanisme n'existait pas — voir `cancel::frontiere`.
+    ///
+    /// La conséquence pratique, à dire franchement : armer le jeton sur une
+    /// requête d'écriture ne fait RIEN, et c'est voulu. Une écriture
+    /// abandonnée en vol dépend, pour être sûre, de tout le chemin de
+    /// retour arrière ; tant que ce chemin n'est pas DÉMONTRÉ, l'annulation
+    /// ne s'y applique pas.
+    ///
+    /// # Errors
+    ///
+    /// `Error::Query(QueryError::cancelled())` si le jeton est armé pendant
+    /// l'exécution d'une LECTURE, ou toute erreur que `execute` peut rendre.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use obrain_engine::ObrainDB;
+    /// use obrain_common::utils::cancel::CancelToken;
+    ///
+    /// let db = ObrainDB::new_in_memory();
+    /// let jeton = CancelToken::new();
+    /// let chien_de_garde = jeton.clone();
+    /// std::thread::spawn(move || {
+    ///     std::thread::sleep(std::time::Duration::from_secs(60));
+    ///     chien_de_garde.cancel();
+    /// });
+    /// match db.session().execute_annulable("MATCH (n) RETURN n", &jeton) {
+    ///     Err(e) if e.is_cancelled() => eprintln!("annulée, cœur libéré"),
+    ///     autre => { autre?; }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "gql")]
+    pub fn execute_annulable(
+        &self,
+        query: &str,
+        token: &obrain_common::utils::cancel::CancelToken,
+    ) -> Result<QueryResult> {
+        obrain_common::utils::cancel::scope(token, || self.execute(query))
     }
 
     /// Executes a GQL query with visibility at the specified epoch.
@@ -2175,13 +2794,14 @@ impl Session {
         params: std::collections::HashMap<String, Value>,
     ) -> Result<QueryResult> {
         self.require_lpg("GQL")?;
+        self.note_requete_pour_audit(query);
 
         use crate::query::processor::{QueryLanguage, QueryProcessor};
 
         let has_mutations = Self::query_looks_like_mutation(query);
         let active = self.active_store();
 
-        self.with_auto_commit(has_mutations, || {
+        self.with_auto_commit(Nature::Texte(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
 
@@ -2190,6 +2810,8 @@ impl Session {
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
 
             // Apply transaction context if in a transaction
             let processor = if let Some(transaction_id) = transaction_id {
@@ -2197,6 +2819,20 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "cognitive")]
+            #[cfg(feature = "cognitive")]
+            let processor = if let Some(engine) = self.cognitive_engine() {
+                processor.with_cognitive_engine(Arc::clone(engine))
+            } else {
+                processor
+            };
+            let processor = if let Some(sub) = self.substrate_store() {
+                processor.with_substrate_store(Arc::clone(sub))
+            } else {
+                processor
+            };
+            #[cfg(feature = "cdc")]
+            let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
 
             processor.process(query, QueryLanguage::Gql, Some(&params))
         })
@@ -2237,6 +2873,7 @@ impl Session {
     /// Returns an error if the query fails to parse or execute.
     #[cfg(feature = "cypher")]
     pub fn execute_cypher(&self, query: &str) -> Result<QueryResult> {
+        self.note_requete_pour_audit(query);
         use crate::query::{
             Executor, binder::Binder, cache::CacheKey, optimizer::Optimizer,
             processor::QueryLanguage, translators::cypher,
@@ -2270,7 +2907,7 @@ impl Session {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        let start_time = std::time::Instant::now();
+        let start_time = web_time::Instant::now();
 
         // Create cache key for this query
         let cache_key = CacheKey::with_graph(query, QueryLanguage::Cypher, self.current_graph());
@@ -2310,8 +2947,8 @@ impl Session {
 
         // PROFILE
         if optimized_plan.profile {
-            let has_mutations = optimized_plan.root.has_mutations();
-            return self.with_auto_commit(has_mutations, || {
+            let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
+            return self.with_auto_commit(Nature::Plan(has_mutations), || {
                 let (viewing_epoch, transaction_id) = self.get_transaction_context();
                 let planner = self.create_planner_for_store(
                     Arc::clone(&active),
@@ -2345,9 +2982,9 @@ impl Session {
             });
         }
 
-        let has_mutations = optimized_plan.root.has_mutations();
+        let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
 
@@ -2416,9 +3053,9 @@ impl Session {
         let optimizer = Optimizer::from_graph_store(&*active);
         let optimized_plan = optimizer.optimize(logical_plan)?;
 
-        let has_mutations = optimized_plan.root.has_mutations();
+        let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             // Get transaction context for MVCC visibility
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
 
@@ -2464,17 +3101,32 @@ impl Session {
         let has_mutations = Self::query_looks_like_mutation(query);
         let active = self.active_store();
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let processor = QueryProcessor::for_graph_store_with_transaction(
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
             let processor = if let Some(transaction_id) = transaction_id {
                 processor.with_transaction_context(viewing_epoch, transaction_id)
             } else {
                 processor
             };
+            #[cfg(feature = "cognitive")]
+            let processor = if let Some(engine) = self.cognitive_engine() {
+                processor.with_cognitive_engine(Arc::clone(engine))
+            } else {
+                processor
+            };
+            let processor = if let Some(sub) = self.substrate_store() {
+                processor.with_substrate_store(Arc::clone(sub))
+            } else {
+                processor
+            };
+            #[cfg(feature = "cdc")]
+            let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::Gremlin, Some(&params))
         });
 
@@ -2527,9 +3179,9 @@ impl Session {
         let active = self.active_store();
         let optimizer = Optimizer::from_graph_store(&*active);
         let optimized_plan = optimizer.optimize(logical_plan)?;
-        let has_mutations = optimized_plan.root.has_mutations();
+        let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let planner =
                 self.create_planner_for_store(Arc::clone(&active), viewing_epoch, transaction_id);
@@ -2570,17 +3222,32 @@ impl Session {
         let has_mutations = Self::query_looks_like_mutation(query);
         let active = self.active_store();
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let processor = QueryProcessor::for_graph_store_with_transaction(
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
             let processor = if let Some(transaction_id) = transaction_id {
                 processor.with_transaction_context(viewing_epoch, transaction_id)
             } else {
                 processor
             };
+            #[cfg(feature = "cognitive")]
+            let processor = if let Some(engine) = self.cognitive_engine() {
+                processor.with_cognitive_engine(Arc::clone(engine))
+            } else {
+                processor
+            };
+            let processor = if let Some(sub) = self.substrate_store() {
+                processor.with_substrate_store(Arc::clone(sub))
+            } else {
+                processor
+            };
+            #[cfg(feature = "cdc")]
+            let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::GraphQL, Some(&params))
         });
 
@@ -2666,9 +3333,9 @@ impl Session {
         };
 
         let active = self.active_store();
-        let has_mutations = optimized_plan.root.has_mutations();
+        let has_mutations = optimized_plan.root.mutations_avec(Some(&self.catalog));
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Plan(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let planner =
                 self.create_planner_for_store(Arc::clone(&active), viewing_epoch, transaction_id);
@@ -2709,17 +3376,32 @@ impl Session {
         let has_mutations = Self::query_looks_like_mutation(query);
         let active = self.active_store();
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let processor = QueryProcessor::for_graph_store_with_transaction(
                 Arc::clone(&active),
                 Arc::clone(&self.transaction_manager),
             )?;
+            let processor =
+                processor.with_session_context(self.build_session_context(Arc::clone(&active)));
             let processor = if let Some(transaction_id) = transaction_id {
                 processor.with_transaction_context(viewing_epoch, transaction_id)
             } else {
                 processor
             };
+            #[cfg(feature = "cognitive")]
+            let processor = if let Some(engine) = self.cognitive_engine() {
+                processor.with_cognitive_engine(Arc::clone(engine))
+            } else {
+                processor
+            };
+            let processor = if let Some(sub) = self.substrate_store() {
+                processor.with_substrate_store(Arc::clone(sub))
+            } else {
+                processor
+            };
+            #[cfg(feature = "cdc")]
+            let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::SqlPgq, Some(&params))
         });
 
@@ -2773,17 +3455,32 @@ impl Session {
 
                     let has_mutations = Self::query_looks_like_mutation(query);
                     let active = self.active_store();
-                    let result = self.with_auto_commit(has_mutations, || {
+                    let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
                         let processor = QueryProcessor::for_graph_store_with_transaction(
                             Arc::clone(&active),
                             Arc::clone(&self.transaction_manager),
                         )?;
+                        let processor = processor
+                            .with_session_context(self.build_session_context(Arc::clone(&active)));
                         let (viewing_epoch, transaction_id) = self.get_transaction_context();
                         let processor = if let Some(transaction_id) = transaction_id {
                             processor.with_transaction_context(viewing_epoch, transaction_id)
                         } else {
                             processor
                         };
+                        #[cfg(feature = "cognitive")]
+                        let processor = if let Some(engine) = self.cognitive_engine() {
+                            processor.with_cognitive_engine(Arc::clone(engine))
+                        } else {
+                            processor
+                        };
+                        let processor = if let Some(sub) = self.substrate_store() {
+                            processor.with_substrate_store(Arc::clone(sub))
+                        } else {
+                            processor
+                        };
+                        #[cfg(feature = "cdc")]
+                        let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
                         processor.process(query, QueryLanguage::Cypher, Some(&p))
                     });
 
@@ -2941,7 +3638,10 @@ impl Session {
         let key = self.active_graph_storage_key();
         let mut touched = self.touched_graphs.lock();
         touched.clear();
-        touched.push(key);
+        touched.push(key.clone());
+        drop(touched);
+        self.tx_baselines.lock().clear();
+        self.pose_empreinte(&key);
 
         #[cfg(feature = "metrics")]
         {
@@ -3004,6 +3704,7 @@ impl Session {
                 *self.read_only_tx.lock() = self.db_read_only;
                 self.savepoints.lock().clear();
                 self.touched_graphs.lock().clear();
+                self.tx_baselines.lock().clear();
                 #[cfg(feature = "metrics")]
                 {
                     crate::metrics::record_metric!(self.metrics, tx_active, dec);
@@ -3018,6 +3719,21 @@ impl Session {
                         );
                     }
                 }
+                // (2026-08-17, mission perf — LE POISON) Cette branche ne
+                // marquait JAMAIS la transaction Aborted au manager : elle
+                // restait Active pour toujours, son write_set EMPOISONNAIT
+                // chaque futur ecrivain des memes entites (record_write,
+                // premier-ecrivain-gagne, voit un porteur Actif fantome) et
+                // active_count fuyait. Mesure sur la fixture agent : apres
+                // UN conflit de validation, MERGE sequentiel sur le noeud =
+                // echec A VIE (OBRAIN-T001), immunise contre tout backoff —
+                // la signature exacte des 225 conflits sur un seul NodeId
+                // et des conflits << soutenus >> de production.
+                let _ = self.transaction_manager.abort(transaction_id);
+                // Parite avec rollback_inner : rembobiner aussi les
+                // entites allouees par la transaction avortee (les zones
+                // substrat sont deja ecrites, l empreinte les reprend).
+                self.rembobine_aux_empreintes(transaction_id);
                 return Err(e);
             }
         };
@@ -3049,6 +3765,7 @@ impl Session {
         *self.read_only_tx.lock() = self.db_read_only;
         self.savepoints.lock().clear();
         self.touched_graphs.lock().clear();
+        self.tx_baselines.lock().clear();
 
         // Auto-GC: periodically prune old MVCC versions
         if self.gc_interval > 0 {
@@ -3145,6 +3862,12 @@ impl Session {
             store.discard_uncommitted_versions(transaction_id);
         }
 
+        // (2026-08-13) Rembobinage REEL. `discard_uncommitted_versions` ci-dessus
+        // est un no-op sur substrat — il n'y a pas de versions en attente, les
+        // ecritures sont deja dans les zones. On supprime donc les entites
+        // allouees depuis l'empreinte de chaque graphe touche.
+        self.rembobine_aux_empreintes(transaction_id);
+
         // Discard pending operations in the RDF store
         #[cfg(feature = "rdf")]
         self.rollback_rdf_transaction(transaction_id);
@@ -3152,6 +3875,7 @@ impl Session {
         // Clear savepoints and touched graphs
         self.savepoints.lock().clear();
         self.touched_graphs.lock().clear();
+        self.tx_baselines.lock().clear();
 
         // Mark transaction as aborted in the manager
         let result = self.transaction_manager.abort(transaction_id);
@@ -3248,8 +3972,39 @@ impl Session {
         savepoints.truncate(pos);
         drop(savepoints);
 
+        // (2026-08-13) LES GRAPHES ENTRES APRES LE POINT DE SAUVEGARDE.
+        //
+        // `graph_snapshots` ne contient que les graphes deja touches AU MOMENT
+        // du SAVEPOINT. Un `USE GRAPH alpha` fait ensuite entrer alpha dans la
+        // transaction : il n'a aucune photo, donc rien ne le rembobinait, et
+        // ses ecritures survivaient a un retour au point de sauvegarde.
+        //
+        // Or son cas est le plus simple de tous : s'il n'etait pas touche au
+        // moment du SAVEPOINT, alors TOUT ce qu'il a recu dans cette
+        // transaction est posterieur au point de sauvegarde. Son empreinte de
+        // premiere touche fait donc exactement office de photo.
+        let mut instantanes = sp_state.graph_snapshots.clone();
+        {
+            let empreintes = self.tx_baselines.lock();
+            for (cle, (n0, e0)) in empreintes.iter() {
+                if instantanes.iter().any(|gs| &gs.graph_name == cle) {
+                    continue;
+                }
+                instantanes.push(GraphSavepoint {
+                    graph_name: cle.clone(),
+                    next_node_id: *n0,
+                    next_edge_id: *e0,
+                    // Pas de journal de proprietes a rembobiner : le graphe
+                    // n'existait pas dans la transaction avant le point de
+                    // sauvegarde, donc aucune de ses proprietes preexistantes
+                    // n'a pu etre modifiee avant lui.
+                    undo_log_position: 0,
+                });
+            }
+        }
+
         // Roll back each graph that was captured in the savepoint.
-        for gs in &sp_state.graph_snapshots {
+        for gs in &instantanes {
             let store = self.resolve_store(&gs.graph_name);
 
             // Replay property/label undo entries recorded after the savepoint
@@ -3259,6 +4014,15 @@ impl Session {
             let current_next_node = store.peek_next_node_id();
             let current_next_edge = store.peek_next_edge_id();
 
+            // GARDE DU ZERO. Le trait documente `0` comme « ce backend ne
+            // sait pas rembobiner ». Sans ce test, `(0..courant)` designerait
+            // la base ENTIERE et le retour au point de sauvegarde effacerait
+            // tout. La garde etait inoffensive tant que
+            // `discard_entities_by_id` ne faisait rien ; elle devient
+            // indispensable maintenant qu'il agit.
+            if current_next_node == 0 && current_next_edge == 0 {
+                continue;
+            }
             let node_ids: Vec<NodeId> = (gs.next_node_id..current_next_node)
                 .map(NodeId::new)
                 .collect();
@@ -3421,20 +4185,136 @@ impl Session {
 
     /// Wraps `body` in an automatic begin/commit when [`needs_auto_commit`]
     /// returns `true`. On error the transaction is rolled back.
-    fn with_auto_commit<F>(&self, has_mutations: bool, body: F) -> Result<QueryResult>
+    fn with_auto_commit<F>(&self, nature: Nature, mut body: F) -> Result<QueryResult>
     where
-        F: FnOnce() -> Result<QueryResult>,
+        F: FnMut() -> Result<QueryResult>,
     {
+        let has_mutations = nature.mute();
+        // ── LA FRONTIÈRE ÉCRITURE / LECTURE, POSÉE ICI ET NULLE PART
+        //    AILLEURS (2026-08-24, revue adversariale) ──────────────────
+        //
+        // POURQUOI CE POINT, ET CE QU'IL NE GARANTIT PAS. Les treize
+        // entrées d'exécution LPG — `execute`, sa branche `PROFILE`,
+        // `execute_with_params`, les mêmes pour cypher / gremlin / graphql
+        // / sql, `execute_language`, et `execute_graphql_rdf_with_params` —
+        // passent toutes ici, parce que c'est ici que se décide l'ouverture
+        // de la transaction implicite.
+        //
+        // Une version antérieure de ce pavé affirmait qu'une entrée qui
+        // écrit sans traverser ce point « n'ouvre aucune transaction, donc
+        // ne fonctionne pas ». C'est FAUX, et la revue l'a montré :
+        // `execute_graphql_rdf`, `execute_sparql` et
+        // `execute_sparql_with_params` écrivent sans passer par ici — le
+        // chemin RDF a son propre couple `commit_rdf_transaction` /
+        // `rollback_rdf_transaction`. Ce point est donc très emprunté, pas
+        // universel, et c'est précisément pourquoi il ne peut pas être la
+        // seule protection.
+        //
+        // Ce sont ces trois-là qui valident l'inversion de polarité : elles
+        // écrivent, elles ne traversent aucune frontière, et elles restent
+        // pourtant HORS VIGUEUR — donc sûres — sans qu'une seule ligne ne
+        // les vise.
+        //
+        // La version précédente posait la même décision à la main devant
+        // chaque `with_auto_commit`. Sept sites, quatre oublis — dont
+        // `PROFILE CREATE`, prouvé annulable par exécution. Reposer la
+        // frontière à la main à chaque entrée garantissait un huitième
+        // oubli ; elle est donc posée une fois, ici, en amont de tout —
+        // planification physique comprise, car le planificateur balaie lui
+        // aussi.
+        //
+        // L'ÉCRITURE FAUSSE, elle, a bien eu lieu, mais par une autre porte
+        // que celle qu'on croyait : `has_mutations()` classait
+        // `CallProcedure` en lecture seule, si bien qu'un `CALL` de
+        // procédure annulé en vol laissait 4 096 nœuds sur 30 000, sans
+        // transaction et sans retour arrière. La frontière ne vaut que ce
+        // que vaut la réponse qu'on lui donne : voir le pavé de
+        // `LogicalOperator::has_mutations` (`plan.rs`).
+        //
+        // DEUX QUESTIONS, DEUX RÉPONSES, ET C'EST `Nature` QUI LES SÉPARE.
+        // La transaction implicite tolère une devinette (au pire elle
+        // n'enveloppe rien — c'est le comportement d'avant) ;
+        // l'interruptibilité, non : un `contains("SET")` vrai de
+        // `RETURN n.offset` désarmait une LECTURE parce qu'un utilisateur
+        // avait nommé une propriété `offset`. Les sept entrées qui ont le
+        // plan répondent `Nature::Plan`, décision structurelle. Les cinq qui
+        // n'ont que le texte répondent `Nature::Texte` : leur devinette sert
+        // la transaction, et la frontière reste INDÉCISE — c'est
+        // `QueryProcessor::process_lpg`, seul endroit de ce chemin où le
+        // plan existe, qui tranche (`cancel::frontiere_heritee`).
+        //
+        // Et la polarité est inversée en amont : un jeton confié par
+        // `cancel::scope` est INERTE tant que cette ligne ne l'a pas mis en
+        // vigueur. Une treizième entrée ajoutée dans six mois qui oublierait
+        // tout ceci ne serait pas annulable — une occasion manquée, jamais
+        // une écriture fausse.
+        let _frontiere =
+            obrain_common::utils::cancel::frontiere(nature.frontiere(), self.query_deadline());
+
         if self.needs_auto_commit(has_mutations) {
-            self.begin_transaction_inner(false, None)?;
-            match body() {
-                Ok(result) => {
-                    self.commit_inner()?;
-                    Ok(result)
-                }
-                Err(e) => {
-                    let _ = self.rollback_inner();
-                    Err(e)
+            // (2026-08-17, mission perf) RE-TENTATIVE BORNEE SUR CONFLIT.
+            // Mesure sur la fixture agent : 32 ecrivains x 10 MERGE sur le
+            // MEME noeud = 318/320 aborts OBRAIN-T001 — un MERGE concurrent
+            // sur un singleton chaud echouait a 99 %, et chaque appelant
+            // devait porter son propre retry (la plupart ne le font pas).
+            // Un statement AUTO-COMMIT est re-executable par construction :
+            // le rollback a tout defait, on rejoue le MEME statement avec
+            // un backoff court. Borne a 8 tentatives — au-dela, le conflit
+            // est soutenu et l erreur remonte comme avant. Les transactions
+            // EXPLICITES ne re-tentent JAMAIS (l appelant tient l etat).
+            let mut tentative = 0u32;
+            loop {
+                // (V3) Marque la transaction comme AUTO : les refus
+                // enseignants des ecritures inter-bases ne visent que les
+                // transactions EXPLICITES (in_explicit_transaction).
+                self.transaction_auto
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.begin_transaction_inner(false, None)?;
+                let resultat = match body() {
+                    // Le conflit peut AUSSI eclore a la validation du
+                    // commit — il doit passer par la meme boucle de
+                    // re-tentative, pas s echapper par un .
+                    Ok(result) => match self.commit_inner() {
+                        Ok(()) => Ok(result),
+                        Err(e) => {
+                            let _ = self.rollback_inner();
+                            Err(e)
+                        }
+                    },
+                    Err(e) => {
+                        let _ = self.rollback_inner();
+                        Err(e)
+                    }
+                };
+                self.transaction_auto
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                match resultat {
+                    Err(e) if tentative < 12 && erreur_de_conflit_rejouable(&e) => {
+                        tentative += 1;
+                        // Backoff micro AVEC JITTER. Mesure sans jitter :
+                        // 32 ecrivains re-tentaient en LOCKSTEP (meme
+                        // echeancier) et re-collisionnaient a chaque tour —
+                        // 319/320 echecs malgre 8 tentatives. Le jitter
+                        // desynchronise les cohortes ; la fenetre de commit
+                        // est ~50 us, la dispersion suffit.
+                        let plafond = 50u64 << tentative.min(7);
+                        let jitter = web_time::SystemTime::now()
+                            .duration_since(web_time::UNIX_EPOCH)
+                            .map(|d| d.subsec_nanos() as u64)
+                            .unwrap_or(0)
+                            % plafond.max(1);
+                        std::thread::sleep(std::time::Duration::from_micros(plafond / 2 + jitter));
+                        continue;
+                    }
+                    autre => {
+                        if tentative > 0 {
+                            tracing::debug!(target: "obrain::session",
+                                tentatives = tentative + 1,
+                                ok = autre.is_ok(),
+                                "statement auto-commit rejoue apres conflit(s)");
+                        }
+                        return autre;
+                    }
                 }
             }
         } else {
@@ -3442,21 +4322,38 @@ impl Session {
         }
     }
 
-    /// Quick heuristic: returns `true` when the query text looks like it
-    /// performs a mutation. Used by `_with_params` paths that go through the
-    /// `QueryProcessor` (where the logical plan isn't available before
-    /// execution). False negatives are harmless: the data just won't be
-    /// auto-committed, which matches the prior behaviour.
+    /// Heuristique : la requête a-t-elle l'AIR de muter ?
+    ///
+    /// Sert à décider l'ouverture de la transaction implicite sur les quatre
+    /// chemins `_with_params`, qui remettent le texte au `QueryProcessor`
+    /// sans jamais construire de plan côté session. Un faux négatif y est
+    /// bénin : la donnée n'est simplement pas auto-committée, comme avant.
+    ///
+    /// ── ELLE NE DÉCIDE PLUS DE L'INTERRUPTIBILITÉ (2026-08-24) ────────
+    ///
+    /// Elle l'a fait, et c'était la panne d'origine qui revenait par la
+    /// fenêtre : `upper.contains("SET")` est vrai de `RETURN n.offset`, donc
+    /// cette LECTURE devenait ininterruptible parce qu'un utilisateur avait
+    /// nommé une propriété `offset`. La décision d'interruptibilité est
+    /// désormais reprise par `cancel::frontiere_heritee` dans
+    /// `QueryProcessor::process_lpg`, sur `plan.root.has_mutations()` — la
+    /// réponse structurelle, une fois le plan optimisé disponible.
+    ///
+    /// Le test de sous-chaîne est néanmoins remplacé par un test de MOT :
+    /// il reste faux pour l'auto-commit lui-même (`n.offset` ouvrait et
+    /// validait une transaction pour rien), et un identifiant utilisateur
+    /// n'a aucune raison de peser sur quoi que ce soit. Les mots-clés d'une
+    /// mutation sont toujours des lexèmes isolés ; l'heuristique reste une
+    /// SUR-approximation (un mot-clé dans un littéral de chaîne compte
+    /// encore), ce qui est le bon côté pour l'auto-commit.
     fn query_looks_like_mutation(query: &str) -> bool {
+        const MOTS: [&str; 8] = [
+            "INSERT", "CREATE", "DELETE", "MERGE", "SET", "REMOVE", "DROP", "ALTER",
+        ];
         let upper = query.to_ascii_uppercase();
-        upper.contains("INSERT")
-            || upper.contains("CREATE")
-            || upper.contains("DELETE")
-            || upper.contains("MERGE")
-            || upper.contains("SET")
-            || upper.contains("REMOVE")
-            || upper.contains("DROP")
-            || upper.contains("ALTER")
+        upper
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|mot| MOTS.contains(&mot))
     }
 
     /// Computes the wall-clock deadline for query execution.
@@ -3560,6 +4457,33 @@ impl Session {
         self.create_planner_for_store_with_read_only(store, viewing_epoch, transaction_id, false)
     }
 
+    /// Construit le SessionContext porte par TOUT planner de cette
+    /// session : contexte schema/graphe, introspection paresseuse, et
+    /// registre multi-store (aretes inter-bases V2). Utilise par
+    /// `create_planner_for_store*` ET par les chemins QueryProcessor
+    /// (execute_with_params, gremlin, graphql, sql) et les procedures
+    /// stockees — un chemin qui batirait son planner sans lui perdrait le
+    /// registre EN SILENCE (trou P1 de la verification adversariale).
+    pub(crate) fn build_session_context(
+        &self,
+        store: Arc<dyn GraphStoreMut>,
+    ) -> obrain_core::execution::operators::SessionContext {
+        use obrain_core::execution::operators::{LazyValue, SessionContext};
+        // Capture store reference for lazy introspection (only computed if
+        // info()/schema() called).
+        let info_store = Arc::clone(&store);
+        let schema_store = store;
+        SessionContext {
+            base_registry: self.base_registry.lock().clone(),
+            access_context: self.access_context.lock().clone(),
+            in_explicit_transaction: self.in_explicit_transaction(),
+            current_schema: self.current_schema(),
+            current_graph: self.current_graph(),
+            db_info: LazyValue::new(move || Self::build_info_value(&*info_store)),
+            schema_info: LazyValue::new(move || Self::build_schema_value(&*schema_store)),
+        }
+    }
+
     fn create_planner_for_store_with_read_only(
         &self,
         store: Arc<dyn GraphStoreMut>,
@@ -3568,18 +4492,8 @@ impl Session {
         read_only: bool,
     ) -> crate::query::Planner {
         use crate::query::Planner;
-        use obrain_core::execution::operators::{LazyValue, SessionContext};
 
-        // Capture store reference for lazy introspection (only computed if info()/schema() called).
-        let info_store = Arc::clone(&store);
-        let schema_store = Arc::clone(&store);
-
-        let session_context = SessionContext {
-            current_schema: self.current_schema(),
-            current_graph: self.current_graph(),
-            db_info: LazyValue::new(move || Self::build_info_value(&*info_store)),
-            schema_info: LazyValue::new(move || Self::build_schema_value(&*schema_store)),
-        };
+        let session_context = self.build_session_context(Arc::clone(&store));
 
         let mut planner = Planner::with_context(
             Arc::clone(&store),
@@ -3596,6 +4510,23 @@ impl Session {
         let validator =
             CatalogConstraintValidator::new(Arc::clone(&self.catalog)).with_store(store);
         planner = planner.with_validator(Arc::new(validator));
+
+        // Wire the cognitive engine (3 piliers), if this session has one, so
+        // `CALL obrain.cognitive.*` procedures resolve instead of falling
+        // through to "Unknown procedure" (see `set_cognitive_engine`).
+        #[cfg(feature = "cognitive")]
+        if let Some(ref engine) = self.cognitive_engine {
+            planner = planner.with_cognitive_engine(Arc::clone(engine));
+        }
+        // Wire the typed substrate handle (same pattern) so substrate-native
+        // procedures (`CALL obrain.window_2d`) resolve at plan time.
+        if let Some(ref sub) = self.substrate_store {
+            planner = planner.with_substrate_store(Arc::clone(sub));
+        }
+        #[cfg(feature = "cdc")]
+        {
+            planner = planner.with_cdc_log(Arc::clone(self.cdc_log()));
+        }
 
         planner
     }
@@ -4411,6 +5342,66 @@ mod tests {
             assert_eq!(result.row_count(), 1);
             // id() returns the node id as i64
             assert_eq!(result.rows[0][0], Value::Int64(n0.as_u64() as i64));
+        }
+
+        #[test]
+        fn test_gql_id_in_list_multi_seed_seek() {
+            let db = ObrainDB::new_in_memory();
+            let session = db.session();
+
+            let a = session.create_node(&["N"]);
+            let b = session.create_node(&["N"]);
+            let c = session.create_node(&["N"]);
+            let d = session.create_node(&["N"]);
+            let e = session.create_node(&["N"]);
+            session.create_edge(a, b, "CALLS");
+            session.create_edge(a, c, "CALLS");
+            session.create_edge(d, e, "CALLS");
+
+            // `id(x) IN [...]` doit utiliser le seek multi-seed (adjacence) :
+            // mêmes résultats que l'union des seeks égalité, jamais un scan
+            // complet de la table des arêtes.
+            let one = session
+                .execute(&format!(
+                    "MATCH (x)-[r]->(y) WHERE id(x) IN [{}] RETURN count(r)",
+                    a.as_u64()
+                ))
+                .unwrap();
+            assert_eq!(one.rows[0][0], Value::Int64(2), "a→b, a→c");
+
+            let two = session
+                .execute(&format!(
+                    "MATCH (x)-[r]->(y) WHERE id(x) IN [{}, {}] RETURN count(r)",
+                    a.as_u64(),
+                    d.as_u64()
+                ))
+                .unwrap();
+            assert_eq!(two.rows[0][0], Value::Int64(3), "a→b, a→c, d→e");
+
+            // Ids inexistants dans la liste : filtrés (visibilité MVCC), les
+            // vrais voisins restent.
+            let ghost = session
+                .execute(&format!(
+                    "MATCH (x)-[r]->(y) WHERE id(x) IN [{}, 999999] RETURN count(r)",
+                    a.as_u64()
+                ))
+                .unwrap();
+            assert_eq!(ghost.rows[0][0], Value::Int64(2));
+
+            // Liste vide : zéro ligne, pas un scan complet.
+            let empty = session
+                .execute("MATCH (x)-[r]->(y) WHERE id(x) IN [] RETURN count(r)")
+                .unwrap();
+            assert_eq!(empty.rows[0][0], Value::Int64(0));
+
+            // L'expansion inbound (id(y) IN [...]) suit le même chemin.
+            let inbound = session
+                .execute(&format!(
+                    "MATCH (x)-[r]->(y) WHERE id(y) IN [{}] RETURN count(r)",
+                    b.as_u64()
+                ))
+                .unwrap();
+            assert_eq!(inbound.rows[0][0], Value::Int64(1), "a→b");
         }
 
         // ==================== Count Shortcut Tests ====================

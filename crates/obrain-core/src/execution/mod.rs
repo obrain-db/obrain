@@ -20,6 +20,8 @@
 //! The execution model is push-based: sources push data through a pipeline of
 //! operators until it reaches a sink.
 
+pub mod base_registry;
+pub use base_registry::{AccessContext, AccessDenied, BaseRegistry};
 pub mod adaptive;
 pub mod chunk;
 pub mod chunk_state;
@@ -27,6 +29,9 @@ pub mod collector;
 pub mod factorized_chunk;
 pub mod factorized_iter;
 pub mod factorized_vector;
+/// Le point d'extension des FONCTIONS FOURNIES PAR L'HÔTE (UDF) : le noyau ne
+/// peut pas dépendre d'`obrain-adapters`, donc l'hôte installe un résolveur.
+pub mod fonction_hote;
 pub mod memory;
 pub mod operators;
 #[cfg(feature = "parallel")]

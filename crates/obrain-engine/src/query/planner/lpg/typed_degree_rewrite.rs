@@ -514,6 +514,15 @@ pub(super) fn try_plan_typed_degree_topk(
         planner.store.as_ref() as &dyn obrain_core::graph::GraphStore;
     let pattern = extract_typed_degree_pattern(store_ref, limit)?;
 
+    // (2026-09-05) FIABILITÉ DES SIDECARS — une colonne de degrés typés
+    // périmée (CRC valide, compteurs faux) ferait rendre au top-K des
+    // résultats vides/faux en silence. On refuse le rewrite tant que le
+    // backend ne garantit pas la colonne du type demandé ; le chemin
+    // expand+count générique reste correct.
+    if !store_ref.typed_degree_reliable(&pattern.edge_type) {
+        return None;
+    }
+
     // Build the physical pipeline.
     let store = planner.store.clone() as std::sync::Arc<dyn obrain_core::graph::GraphStore>;
     let (operator, output_columns) = build_replacement(&pattern, store);

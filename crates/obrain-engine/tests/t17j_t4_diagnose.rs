@@ -123,7 +123,7 @@ fn repair_wiki_and_megalaw_outgoing_chains() {
             walked_before, mismatches_before
         );
 
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let (reset, rewired) = subs.repair_outgoing_chains().expect("repair");
         println!(
             "  REPAIR : reset {} nodes + rewired {} edges in {:.2} s",
@@ -175,7 +175,7 @@ fn repair_po_outgoing_chains() {
     );
 
     println!("\n=== Running repair_outgoing_chains ... ===");
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let (reset, rewired) = subs.repair_outgoing_chains().expect("repair");
     let elapsed = t0.elapsed().as_secs_f64();
     println!(

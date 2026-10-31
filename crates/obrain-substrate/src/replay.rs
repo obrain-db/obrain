@@ -43,6 +43,93 @@ pub struct ReplayStats {
     pub stopped_at: u64,
     /// Highest LSN seen during replay (or 0 if no records).
     pub last_lsn: u64,
+    /// AUDIT 2026-07-25 (« maladie des coquilles », mesuree en production :
+    /// 13/15 GoalNode, 25/25 AgentDirective echantillonnes sans AUCUNE
+    /// propriete). Le WAL ne porte pour NodeInsert que le label_bitset —
+    /// l ancre de proprietes (first_prop_off) vit dans la zone nodes en
+    /// mmap, synchronisee seulement au flush. Un kill entre les deux
+    /// rejoue donc des noeuds A LABELS SANS PROPRIETES : des coquilles,
+    /// indistinguables d un vrai noeud au comptage. Ces deux compteurs
+    /// rendent la corruption VISIBLE a l ouverture au lieu de silencieuse.
+    ///
+    /// Noeuds vivants dont le label est pose mais l ancre de props est
+    /// nulle apres rejeu. Ambigu en theorie (un noeud sans proprietes est
+    /// legal), massif en pratique uniquement apres un kill mid-flush.
+    pub label_only_nodes: u64,
+    /// Noeuds dont l ancre de props pointe AU-DELA de l etendue durable de
+    /// la zone props : reference pendante, corruption certaine.
+    pub dangling_prop_anchors: u64,
+    /// (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Nombre de records de
+    /// PERMUTATION de slots vus dans la fenêtre rejouée (`HilbertRepermute`,
+    /// `HilbertRepermuteV2`, `CompactCommunity`, `CompactCommunityV2`).
+    /// Consommé par `SubstrateStore::from_substrate` pour rafraîchir les owner
+    /// stamps des chaînes PropsZone v2 après le rejeu : un remap committé puis
+    /// un crash avant le flush suivant laisse les pages stampées à l'ancien
+    /// slot — sans ce rafraîchissement, la garde d'append détacherait les
+    /// chaînes à la 1ʳᵉ écriture (perte silencieuse).
+    pub remaps_appliques: u32,
+    /// (2026-10-06, perf #3) Nombre de slots de la zone nodes EFFECTIVEMENT
+    /// balayés par l'audit post-rejeu des ancres. Rendu observable à dessein :
+    /// c'est la preuve que l'audit est désormais O(fenêtre rejouée) et non
+    /// O(zone entière) — un test l'assert contre la taille de la fenêtre, pas
+    /// contre le nombre total de slots. Le silence (compter sans montrer le
+    /// coût) serait le même poison que celui dénoncé pour les coquilles.
+    pub audit_slots_scanned: u64,
+}
+
+/// Empreinte des slots de la zone nodes écrits par la fenêtre rejouée.
+///
+/// ── PERF #3 : borner l'audit post-rejeu aux slots touchés ──
+///
+/// L'audit des ancres (coquilles / pendantes) balayait TOUTE la zone nodes à
+/// chaque ouverture (`for i in 0..n`), en O(N) — mesuré 169 ms pour 5 M slots,
+/// INDÉPENDANT du nombre de records rejoués (3 records → même 169 ms). Or il
+/// ne sert qu'aux nœuds de la fenêtre rejouée : un nœud antérieur au checkpoint
+/// est déjà durable et ne peut pas porter la signature de coquille de CE crash.
+/// On collecte donc ici, pendant le rejeu, les slots que le dispatcher écrit
+/// réellement, sous forme d'un intervalle compact `[min, max]` — et on bascule
+/// sur « toute la zone » dès qu'un record global (décroissance, repermutation)
+/// a touché la zone entière, où l'intervalle ne bornerait plus.
+#[derive(Copy, Clone)]
+struct SlotsTouches {
+    min: u32,
+    max: u32,
+    /// Un record a touché la zone ENTIÈRE : l'intervalle compact ne suffit plus.
+    toute_la_zone: bool,
+}
+
+impl SlotsTouches {
+    /// Aucun slot touché (`min > max`) — état initial avant le rejeu.
+    const AUCUN: Self = Self {
+        min: u32::MAX,
+        max: 0,
+        toute_la_zone: false,
+    };
+
+    fn noter(&mut self, slot: u32) {
+        if self.toute_la_zone {
+            return; // déjà couvert par le balayage complet
+        }
+        self.min = self.min.min(slot);
+        self.max = self.max.max(slot);
+    }
+
+    fn noter_tout(&mut self) {
+        self.toute_la_zone = true;
+    }
+
+    /// Plage INCLUSIVE `[début, fin]` à auditer. `None` = rien à auditer
+    /// (fenêtre sans aucun slot de nœud écrit). L'appelant borne à la longueur
+    /// réelle de la zone.
+    fn plage(&self) -> Option<(u32, u32)> {
+        if self.toute_la_zone {
+            Some((0, u32::MAX))
+        } else if self.min <= self.max {
+            Some((self.min, self.max))
+        } else {
+            None
+        }
+    }
 }
 
 /// Replay the WAL of `substrate` starting at `from_offset`.
@@ -68,11 +155,35 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
     let mut engram_bitset: Option<ZoneFile> = None;
     let mut hilbert: Option<ZoneFile> = None;
     let mut community: Option<ZoneFile> = None;
+    let mut zorder: Option<ZoneFile> = None;
+    let mut simplex = SimplexReplayZones::default();
+    // ── PERF #3 ── empreinte des slots de nœuds touchés par le rejeu, pour
+    // borner l'audit post-rejeu des ancres à la fenêtre rejouée au lieu de la
+    // zone entière.
+    let mut touches = SlotsTouches::AUCUN;
 
-    for item in reader.iter_from(from_offset) {
+    // On tient l'itérateur (au lieu d'un `for`) pour pouvoir lire, APRÈS la
+    // boucle, le drapeau « queue incomplète » — l'information que l'itérateur
+    // ne rend plus comme une erreur (une écriture en vol n'est pas une
+    // corruption) mais qui reste due à l'appelant.
+    let mut iter = reader.iter_from(from_offset);
+    while let Some(item) = iter.next() {
         match item {
             Ok((rec, off, len)) => {
                 stats.last_lsn = stats.last_lsn.max(rec.lsn);
+                // (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Compte les
+                // records de permutation de slots de la fenêtre : le store
+                // rafraîchit ensuite les owner stamps des chaînes PropsZone v2
+                // (fenêtre power-loss entre le commit d'un remap et le flush).
+                if matches!(
+                    rec.payload,
+                    WalPayload::HilbertRepermute { .. }
+                        | WalPayload::HilbertRepermuteV2 { .. }
+                        | WalPayload::CompactCommunity { .. }
+                        | WalPayload::CompactCommunityV2 { .. }
+                ) {
+                    stats.remaps_appliques += 1;
+                }
                 match apply(
                     substrate,
                     &rec,
@@ -82,6 +193,9 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
                     &mut engram_bitset,
                     &mut hilbert,
                     &mut community,
+                    &mut zorder,
+                    &mut simplex,
+                    &mut touches,
                 )? {
                     Applied::Yes => stats.applied += 1,
                     Applied::Skipped => stats.skipped_unsupported += 1,
@@ -89,15 +203,83 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
                 stats.stopped_at = off + len as u64;
             }
             Err(e) => {
-                warn!(
-                    error = %e,
-                    stopped_at = stats.stopped_at,
-                    "wal replay halted at crash boundary"
-                );
+                // ── DEUX CAUSES, UNE SEULE SORTIE — et c'est le piege ──
+                //
+                // Un arret ici signifie soit une frontiere de crash (cas
+                // NORMAL : le WAL a ete tronque par une panne, tout ce qui
+                // precede est bon), soit un OPCODE INCONNU.
+                //
+                // Le second cas arrive apres un DOWNGRADE de binaire : les
+                // opcodes 0x54 / 0x55 (repermutations V2) n'existent pas
+                // dans un binaire anterieur, qui s'arreterait donc net —
+                // en silence, sur une base potentiellement a moitie
+                // remappee. D'ou le niveau ERROR et la mention explicite
+                // de la regle : voir `crate::slot_remap`, section
+                // « Retrograder un binaire ».
+                // Diagnostic du downgrade. `?` et non `unwrap_or_default` :
+                // une zone d'epoch illisible est elle-meme un refus (revue
+                // #3), et surtout pas une base a considerer comme vierge.
+                //
+                // ── UN TROU N'EST PAS UNE FRONTIÈRE DE CRASH (2026-10-06) ──
+                // Le message ci-dessous dit « crash boundary » : c'est vrai
+                // d'une queue déchirée, FAUX d'un trou de zéros suivi de
+                // données. Confondre les deux ferait passer une perte de
+                // contenu pour une panne ordinaire — et le rejeu s'arrêterait
+                // sans que personne ne sache qu'il reste des frames APRÈS le
+                // défaut. Le cas est donc nommé séparément, avant tout
+                // diagnostic de downgrade (qui, lui, n'a rien à en dire).
+                if let crate::SubstrateError::WalTrou { offset, longueur } = &e {
+                    tracing::error!(
+                        offset,
+                        longueur,
+                        stopped_at = stats.stopped_at,
+                        "rejeu WAL arrêté sur un TROU de zéros : ce n'est PAS une frontière \
+                         de crash — le fichier continue APRÈS le trou, et ces frames ne sont \
+                         PAS appliquées. Resynchronisez, ne tronquez pas."
+                    );
+                    stats.decode_errors += 1;
+                    break;
+                }
+                let epoch = crate::slot_remap::remap_epoch_state(substrate)?;
+                if epoch.committed != 0 || epoch.pending != 0 {
+                    tracing::error!(
+                        error = %e,
+                        stopped_at = stats.stopped_at,
+                        epoch_committed = epoch.committed,
+                        epoch_pending = epoch.pending,
+                        "rejeu WAL interrompu sur une base DEJA REPERMUTEE : si ce binaire \
+                         est anterieur au chantier SlotRemappable, il ne sait pas lire les \
+                         opcodes 0x54/0x55 et vient de s'arreter sur une base qu'il ne \
+                         comprend pas. REGLE : checkpoint force AVANT tout downgrade."
+                    );
+                } else {
+                    warn!(
+                        error = %e,
+                        stopped_at = stats.stopped_at,
+                        "wal replay halted at crash boundary"
+                    );
+                }
                 stats.decode_errors += 1;
                 break;
             }
         }
+    }
+    // ── LA FRONTIÈRE DE CRASH SE DIT TOUJOURS (2026-09-17) ──────────────────
+    // L'itérateur ne rend plus une queue incomplète comme une erreur — c'est une
+    // écriture en vol, pas une corruption, et le crier faisait échouer un test
+    // qui avait raison. Mais `decode_errors` documente « 1 si la queue du WAL a
+    // été déchirée par un crash » et `stopped_at` « pointe sur la frontière de
+    // crash » : rendre la queue SILENCIEUSE aurait transformé une panne en fin de
+    // fichier ordinaire. Le fait est donc compté ici, exactement comme avant —
+    // seul le canal a changé (un drapeau au lieu d'une erreur de décodage).
+    if iter.queue_incomplete() {
+        stats.decode_errors += 1;
+        warn!(
+            stopped_at = stats.stopped_at,
+            applied = stats.applied,
+            "rejeu WAL arrêté sur une queue INCOMPLÈTE (frontière de crash : écriture \
+             en vol ou arrêt brutal) — tout ce qui précède est appliqué"
+        );
     }
 
     // Msync + fsync whatever zones we touched so the replay state is durable.
@@ -125,14 +307,233 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
         zf.msync()?;
         zf.fsync()?;
     }
+    for zf in [
+        simplex.dir.as_ref(),
+        simplex.heap.as_ref(),
+        simplex.incidence.as_ref(),
+        simplex.postings.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        zf.msync()?;
+        zf.fsync()?;
+    }
+
+    // ── AUDIT 2026-07-25 : bilan de sante des ancres apres rejeu ──
+    // Scan lineaire de la zone nodes : compte les coquilles (labels sans
+    // ancre de props) et les ancres pendantes (pointant hors de l etendue
+    // durable de la zone props). Aucune mutation — v1 observabilite pure :
+    // le silence etait le vrai poison (l etage teleologique de l agent a
+    // ete detruit deux fois sans qu aucun signal n existe nulle part).
+    {
+        let nodes_zf = match nodes {
+            Some(zf) => Some(zf),
+            None => substrate.open_zone(Zone::Nodes).ok(),
+        };
+        if let Some(zf) = nodes_zf {
+            let regime = RegimeAncres::detecter(substrate);
+            let buf = zf.as_slice();
+            let n = buf.len() / NodeRecord::SIZE;
+            // ── PERF #3 : bornage de l'audit aux slots touchés ──
+            // L'ancien `for i in 0..n` balayait la zone entière à chaque
+            // ouverture (O(N), 169 ms pour 5 M slots même avec 3 records
+            // rejoués). Ici on ne balaie que [min_touché, max_touché] — ou
+            // rien si la fenêtre rejouée n'a écrit aucun nœud, ou toute la
+            // zone si un record global (décroissance / repermutation) l'a
+            // touchée entière. Un nœud hors de la fenêtre est antérieur au
+            // checkpoint : durable, il ne peut pas porter la coquille de CE
+            // crash — le sauter est correct, pas une approximation.
+            let (debut, fin_excl) = match touches.plage() {
+                None => (n, n),
+                Some((d, f)) => {
+                    let debut = (d as usize).min(n);
+                    let fin_excl = ((f as u64) + 1).min(n as u64) as usize;
+                    (debut, fin_excl)
+                }
+            };
+            stats.audit_slots_scanned = fin_excl.saturating_sub(debut) as u64;
+            for i in debut..fin_excl {
+                let rec: &NodeRecord =
+                    bytemuck::from_bytes(&buf[i * NodeRecord::SIZE..(i + 1) * NodeRecord::SIZE]);
+                // ── LE SLOT 0 N'EST PAS UN NŒUD (2026-09-16) ─────────────────
+                // Le prédicat est celui du substrat, PAS un test d'étiquette.
+                //
+                // Défaut mesuré : sur TOUT store v3 — y compris un store VIDE,
+                // `count(n) = 0` — cet audit annonçait `label_only = 1` et
+                // « properties written after the last flush were lost », alors
+                // qu'aucune propriété n'était perdue (la relecture rendait
+                // chacune). Cause, écrite dans `record.rs` : une zone v3 grave
+                // `NODES_ZONE_V3_MAGIC` dans le `label_bitset` de son SLOT 0 —
+                // c'est son marqueur de stride — et laisse ses flags à zéro.
+                // Ce record « n'existe pour aucun chemin de lecture »
+                // (`is_live()` faux), mais `label_bitset != 0` suffisait à
+                // l'ancien test pour le prendre pour une coquille.
+                //
+                // Conséquence : une garde qui criait sur 100 % des stores noie
+                // le seul signal qu'elle existe pour porter. Le doc du compteur
+                // ci-dessus dit d'ailleurs « Nœuds VIVANTS » — le code ne le
+                // faisait pas.
+                if !rec.is_live() {
+                    continue; // slot vide, sentinelle de zone, ou tombstone
+                }
+                let anchor: u64 = rec.first_prop_off.to_u64();
+                if anchor == 0 {
+                    stats.label_only_nodes += 1;
+                } else if regime.ancre_pendante(anchor) {
+                    stats.dangling_prop_anchors += 1;
+                }
+            }
+            if stats.label_only_nodes > 0 || stats.dangling_prop_anchors > 0 {
+                tracing::warn!(
+                    label_only = stats.label_only_nodes,
+                    dangling = stats.dangling_prop_anchors,
+                    regime = regime.nom(),
+                    "post-replay anchor audit: nodes with labels but no reachable properties                      (husk signature — properties written after the last flush were lost)"
+                );
+            }
+        }
+    }
 
     debug!(?stats, "wal replay complete");
     Ok(stats)
 }
 
+/// Comment lire `NodeRecord::first_prop_off` pour l audit d ancres.
+///
+/// ── (2026-08-19) L AUDIT CRIAIT AU LOUP SOUS PropsZone v2 ──
+///
+/// L audit du 25/07 comparait l ancre à la LONGUEUR du fichier
+/// `substrate.props`. C était juste tant que l ancre était un décalage en
+/// octets DANS ce fichier. Sous PropsZone v2 elle est un IDENTIFIANT DE PAGE
+/// dans `substrate.props.v2` (`encode_page_id` ; page 0 = sentinelle « pas de
+/// propriété ») : plus la même unité, plus le même fichier. Tant que
+/// `substrate.props` restait vide, la garde `props_len > 0` rendait
+/// `dangling = 0` PAR ACCIDENT ; la première écriture qui recrée ce fichier
+/// faisait basculer le compteur.
+///
+/// MESURE (19/08, validation sur base réelle) : `dangling = 49 850` sur une
+/// base saine, dont l intégrité venait d être vérifiée par ailleurs — 4,47 M
+/// de lectures comparées, zéro valeur perdue. Faux positif intégral. À
+/// ~1 528 bases à migrer, ce bruit noierait le seul signal que l audit existe
+/// pour porter : la « signature de coquille ».
+///
+/// CE QUE « PENDANT » VEUT DIRE SOUS v2 — 89f5ca5e a mesuré les formes de
+/// tête de chaîne invalide sur la base `messages` :
+///   · index au-delà de la zone            1 501 040 refus ;
+///   · page en magic 0x0, jamais écrite       112 280 refus.
+/// Les deux se ramènent à UN test : l index tombe hors de `1..frontière`, où
+/// `frontière` est le premier index jamais alloué. La région au-delà de la
+/// frontière EST la région jamais écrite — la frontière est franche par
+/// construction (invariant documenté sur `compute_next_page_idx` :
+/// allocation monotone, pas de trou) — et elle s obtient en O(log N) lectures
+/// par recherche dichotomique.
+///
+/// POURQUOI PAS UNE SONDE DE MAGIE PAR NŒUD : l audit tourne à CHAQUE
+/// ouverture, après le rejeu. Lire les 4 octets de magie de la page de chaque
+/// nœud ancré coûterait une page de 4 Kio par nœud — 1,8 Go sur `messages`
+/// (454 073 pages, 1:1 avec les nœuds), et l ordre de la Megalaw
+/// (props.v2 de 103 Go) — pour détecter ce que la frontière couvre déjà.
+///
+/// RESTE NON COUVERT, ASSUMÉ : une page allouée mais jamais écrite SOUS la
+/// frontière (trou laissé par un kill entre l allocation et l écriture), et
+/// les deux autres formes de 89f5ca5e — page d un autre genre, page d un
+/// AUTRE propriétaire. Ces trois-là désignent une page RÉELLE : ce n est plus
+/// une référence pendante mais une tête qui ment, et les débusquer demande
+/// exactement la lecture par nœud qu on vient d écarter.
+enum RegimeAncres {
+    /// `substrate.props.v2` présent : l ancre est un identifiant de page.
+    /// `frontiere` = premier index jamais alloué (pages vivantes = `1..frontiere`).
+    PagesV2 { frontiere: u64 },
+    /// Base héritée : l ancre est un décalage en octets dans `substrate.props`.
+    /// Critère d origine conservé tel quel — c est le seul qui ait un sens
+    /// là-bas, et ces bases restent la majorité tant que la migration n a pas
+    /// tourné.
+    OctetsHerites { longueur: u64 },
+}
+
+impl RegimeAncres {
+    fn detecter(substrate: &SubstrateFile) -> Self {
+        let chemin_v2 = substrate.path().join(crate::props_zone::PROPS_V2_FILENAME);
+        if chemin_v2.exists()
+            && let Ok(zf) = substrate.open_named_zone(crate::props_zone::PROPS_V2_FILENAME)
+            && !zf.is_empty()
+        {
+            return Self::PagesV2 {
+                frontiere: crate::props_zone::PropsZone::compute_next_page_idx(&zf) as u64,
+            };
+        }
+        // `substrate.props` n est ouvert QUE dans le régime hérité : `open_zone`
+        // est un `open_or_create`, et le recréer sous v2 ressusciterait
+        // précisément le fichier dont la longueur nous a menti.
+        Self::OctetsHerites {
+            longueur: substrate
+                .open_zone(Zone::Props)
+                .map(|p| p.as_slice().len() as u64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// `ancre` est non nulle (le zéro est compté en coquille par l appelant).
+    fn ancre_pendante(&self, ancre: u64) -> bool {
+        match *self {
+            Self::PagesV2 { frontiere } => {
+                // (feat slots512-wiring) Sous env slots, une tête peut être un
+                // SLOT packé (bit 47) : valide si carrier < frontière ET unité
+                // 1..=7 — sinon, tête legacy : index < frontière (règle
+                // d'origine, 19/08). Une tête slot est posée par le store
+                // APRÈS l'écriture du slot → pointe toujours une unité allouée.
+                if ancre & crate::unite::UNITE_SLOT_FLAG != 0 {
+                    let corps = ancre & !crate::unite::UNITE_SLOT_FLAG;
+                    let carrier = corps >> 4;
+                    let unite = (corps & 0xF) as u8;
+                    carrier >= frontiere
+                        || unite == 0
+                        || unite as usize > crate::unite::SLOTS_UTILISABLES_PAR_CARRIER
+                } else {
+                    ancre >= frontiere
+                }
+            }
+            Self::OctetsHerites { longueur } => longueur > 0 && ancre >= longueur,
+        }
+    }
+
+    fn nom(&self) -> &'static str {
+        match self {
+            Self::PagesV2 { .. } => "pages_v2",
+            Self::OctetsHerites { .. } => "octets_herites",
+        }
+    }
+}
+
 enum Applied {
     Yes,
     Skipped,
+}
+
+/// Handles paresseux des quatre zones simpliciales (T4). Ouvertes au
+/// premier record 0x72/0x73 rencontré, msync'ées en fin de rejeu.
+#[derive(Default)]
+struct SimplexReplayZones {
+    dir: Option<ZoneFile>,
+    heap: Option<ZoneFile>,
+    incidence: Option<ZoneFile>,
+    postings: Option<ZoneFile>,
+}
+
+impl SimplexReplayZones {
+    fn open(&mut self, substrate: &SubstrateFile) -> SubstrateResult<()> {
+        if self.dir.is_none() {
+            self.dir = Some(substrate.open_zone(Zone::SimplexDir)?);
+            self.heap =
+                Some(substrate.open_named_zone(crate::simplex_zone::SIMPLEX_HEAP_FILENAME)?);
+            self.incidence = Some(substrate.open_zone(Zone::SimplexIncidence)?);
+            self.postings = Some(
+                substrate.open_named_zone(crate::simplex_incidence::SIMPLEX_POSTINGS_FILENAME)?,
+            );
+        }
+        Ok(())
+    }
 }
 
 // Private WAL-replay dispatcher: the zone-file handles are naturally
@@ -143,16 +544,20 @@ fn apply(
     rec: &WalRecord,
     nodes: &mut Option<ZoneFile>,
     edges: &mut Option<ZoneFile>,
-    engram_members: &mut Option<ZoneFile>,
-    engram_bitset: &mut Option<ZoneFile>,
+    engram_members_zone: &mut Option<ZoneFile>,
+    engram_bitset_zone: &mut Option<ZoneFile>,
     hilbert: &mut Option<ZoneFile>,
     community: &mut Option<ZoneFile>,
+    zorder: &mut Option<ZoneFile>,
+    simplex: &mut SimplexReplayZones,
+    touches: &mut SlotsTouches,
 ) -> SubstrateResult<Applied> {
     match &rec.payload {
         WalPayload::NodeInsert {
             node_id,
             label_bitset,
         } => {
+            touches.noter(*node_id);
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -167,6 +572,36 @@ fn apply(
                 bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
             let mut updated = *existing;
             updated.label_bitset = *label_bitset;
+            // (jalon 1) un NodeInsert rejoue est un record reellement ecrit.
+            updated.flags |= crate::record::node_flags::ALLOCATED;
+            // (jalon 2) trame ANCIENNE, sans tenant : le tenant existant est
+            // PRESERVE (zone vierge -> 0 = public, coherent avec la
+            // migration en bloc declaree). Les writers v3 emettent
+            // NodeInsertV3.
+            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
+                .copy_from_slice(bytemuck::bytes_of(&updated));
+            Ok(Applied::Yes)
+        }
+
+        WalPayload::NodeInsertV3 {
+            node_id,
+            label_bitset,
+            tenant_id,
+        } => {
+            touches.noter(*node_id);
+            if nodes.is_none() {
+                *nodes = Some(substrate.open_zone(Zone::Nodes)?);
+            }
+            let zf = nodes.as_mut().unwrap();
+            let offset = (*node_id as usize) * NodeRecord::SIZE;
+            ensure_room(zf, offset + NodeRecord::SIZE, 1 << 20)?;
+            let existing: &NodeRecord =
+                bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
+            let mut updated = *existing;
+            updated.label_bitset = *label_bitset;
+            updated.flags |= crate::record::node_flags::ALLOCATED;
+            // (jalon 2) la trame V3 restaure l'appartenance.
+            updated.tenant_id = *tenant_id;
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -181,6 +616,7 @@ fn apply(
             flags,
             community_id,
         } => {
+            touches.noter(*node_id);
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -194,8 +630,44 @@ fn apply(
             updated.energy = *energy;
             updated.scar_util_affinity = *scar_util_affinity;
             updated.centrality_cached = *centrality_cached;
-            updated.flags = *flags;
+            // (jalon 1) OR force : un WAL v1 residuel ne porte pas le bit.
+            updated.flags = *flags | crate::record::node_flags::ALLOCATED;
             updated.community_id = *community_id;
+            // (jalon 2) trame ANCIENNE : tenant existant preserve — voir
+            // NodeInsert.
+            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
+                .copy_from_slice(bytemuck::bytes_of(&updated));
+            Ok(Applied::Yes)
+        }
+
+        WalPayload::NodeUpdateV3 {
+            node_id,
+            label_bitset,
+            energy,
+            scar_util_affinity,
+            centrality_cached,
+            flags,
+            community_id,
+            tenant_id,
+        } => {
+            touches.noter(*node_id);
+            if nodes.is_none() {
+                *nodes = Some(substrate.open_zone(Zone::Nodes)?);
+            }
+            let zf = nodes.as_mut().unwrap();
+            let offset = (*node_id as usize) * NodeRecord::SIZE;
+            ensure_room(zf, offset + NodeRecord::SIZE, 1 << 20)?;
+            let existing: &NodeRecord =
+                bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
+            let mut updated = *existing;
+            updated.label_bitset = *label_bitset;
+            updated.energy = *energy;
+            updated.scar_util_affinity = *scar_util_affinity;
+            updated.centrality_cached = *centrality_cached;
+            updated.flags = *flags | crate::record::node_flags::ALLOCATED;
+            updated.community_id = *community_id;
+            // (jalon 2) la trame V3 restaure l'appartenance.
+            updated.tenant_id = *tenant_id;
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -227,6 +699,7 @@ fn apply(
         }
 
         WalPayload::NodeDelete { node_id } => {
+            touches.noter(*node_id);
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -296,6 +769,7 @@ fn apply(
             node_id,
             new_energy,
         } => {
+            touches.noter(*node_id);
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -312,6 +786,10 @@ fn apply(
         }
 
         WalPayload::EnergyDecay { factor_q16 } => {
+            // Touche chaque slot vivant de la zone : l'intervalle compact ne
+            // borne plus, on retombe sur un balayage complet (correct, car la
+            // décroissance réécrit l'énergie de tous les nœuds).
+            touches.noter_tout();
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -371,6 +849,7 @@ fn apply(
         }
 
         WalPayload::ScarUtilAffinitySet { node_id, packed } => {
+            touches.noter(*node_id);
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -392,6 +871,7 @@ fn apply(
             }
             let zf = nodes.as_mut().unwrap();
             for (node_id, centrality) in updates {
+                touches.noter(*node_id);
                 let offset = (*node_id as usize) * NodeRecord::SIZE;
                 ensure_room(zf, offset + NodeRecord::SIZE, 1 << 20)?;
                 let existing: &NodeRecord =
@@ -415,6 +895,7 @@ fn apply(
             }
             let zf = nodes.as_mut().unwrap();
             for (node_id, community_id) in updates {
+                touches.noter(*node_id);
                 let offset = (*node_id as usize) * NodeRecord::SIZE;
                 ensure_room(zf, offset + NodeRecord::SIZE, 1 << 20)?;
                 let existing: &NodeRecord =
@@ -427,22 +908,103 @@ fn apply(
             Ok(Applied::Yes)
         }
 
+        // Zones simpliciales (T4) — etat absolu, gabarit 0x70/0x71.
+        WalPayload::SimplexSet {
+            simplex_id,
+            kind,
+            flags,
+            type_id,
+            members,
+            props,
+        } => {
+            simplex.open(substrate)?;
+            let applied = crate::simplex_zone::apply_set_raw(
+                simplex.dir.as_mut().unwrap(),
+                simplex.heap.as_mut().unwrap(),
+                *simplex_id,
+                *kind,
+                *flags,
+                *type_id,
+                members,
+                props,
+            )?;
+            // L'incidence n'est postee QUE sur materialisation : un rejeu
+            // repasse (Unchanged) ou une reecriture sous la meme identite
+            // (Rewritten) ne dupliquent jamais les postings.
+            if applied == crate::simplex_zone::AppliedSimplex::Materialized {
+                for &m in members {
+                    crate::simplex_incidence::SimplexIncidenceZone::append(
+                        simplex.incidence.as_mut().unwrap(),
+                        simplex.postings.as_mut().unwrap(),
+                        m,
+                        *simplex_id,
+                    )?;
+                }
+            }
+            Ok(Applied::Yes)
+        }
+
+        WalPayload::SimplexTombstone { simplex_id } => {
+            simplex.open(substrate)?;
+            // Idempotent : re-poser le flag est un no-op (retour ignore).
+            let _ = crate::simplex_zone::SimplexDirZone::tombstone_raw(
+                simplex.dir.as_mut().unwrap(),
+                *simplex_id,
+            )?;
+            Ok(Applied::Yes)
+        }
+
+        // Configuration des passes simpliciales (T5) — etat absolu des
+        // octets 16..26 de l'en-tete SPXD : rejouer reecrit les memes
+        // octets, idempotent.
+        WalPayload::SimplexPassesConfig {
+            flags,
+            clique_edge_type,
+            clique_label_mask,
+            dispatch_edge_type,
+            dispatch_prop_key,
+            dispatch_he_type,
+        } => {
+            simplex.open(substrate)?;
+            let dir = simplex.dir.as_mut().unwrap();
+            crate::simplex_zone::SimplexDirZone::init(dir)?;
+            let dispatch = if *dispatch_edge_type == crate::simplex_passes::DISPATCH_ABSENT {
+                None
+            } else {
+                Some(crate::simplex_passes::DispatchConfig {
+                    edge_type: *dispatch_edge_type,
+                    group_prop_key: *dispatch_prop_key,
+                    he_type: *dispatch_he_type,
+                })
+            };
+            crate::simplex_passes::write_config_raw(
+                dir,
+                &crate::simplex_passes::SimplexPassesConfig {
+                    flags: *flags,
+                    clique_edge_type: *clique_edge_type,
+                    clique_label_mask: *clique_label_mask,
+                    dispatch,
+                },
+            );
+            Ok(Applied::Yes)
+        }
+
         // Engram-membership side-table (T7).
         WalPayload::EngramMembersSet { engram_id, members } => {
-            if engram_members.is_none() {
-                *engram_members = Some(substrate.open_zone(Zone::EngramMembers)?);
+            if engram_members_zone.is_none() {
+                *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
             }
-            let zf = engram_members.as_mut().unwrap();
+            let zf = engram_members_zone.as_mut().unwrap();
             crate::engram::EngramZone::set_members_raw(zf, *engram_id, members)?;
             Ok(Applied::Yes)
         }
 
         // Per-node engram bitset column (T7 Step 1).
         WalPayload::EngramBitsetSet { node_id, bitset } => {
-            if engram_bitset.is_none() {
-                *engram_bitset = Some(substrate.open_zone(Zone::EngramBitset)?);
+            if engram_bitset_zone.is_none() {
+                *engram_bitset_zone = Some(substrate.open_zone(Zone::EngramBitset)?);
             }
-            let zf = engram_bitset.as_mut().unwrap();
+            let zf = engram_bitset_zone.as_mut().unwrap();
             crate::engram_bitset::EngramBitsetColumn::set_raw(zf, *node_id, *bitset)?;
             Ok(Applied::Yes)
         }
@@ -469,49 +1031,13 @@ fn apply(
             if already_sorted {
                 return Ok(Applied::Skipped);
             }
-            let n = permutation.len();
-
-            // Permute nodes out-of-place.
-            if nodes.is_none() {
-                *nodes = Some(substrate.open_zone(Zone::Nodes)?);
-            }
-            let zf = nodes.as_mut().unwrap();
-            let total = n * NodeRecord::SIZE;
-            ensure_room(zf, total, 1 << 20)?;
-            let src: Vec<NodeRecord> =
-                bytemuck::cast_slice::<u8, NodeRecord>(&zf.as_slice()[..total]).to_vec();
-            let mut dst = vec![NodeRecord::default(); n];
-            for old in 0..n {
-                let new = permutation[old] as usize;
-                if new < n {
-                    dst[new] = src[old];
-                }
-            }
-            zf.as_slice_mut()[..total].copy_from_slice(bytemuck::cast_slice(&dst));
-
-            // Rewrite edge.src/dst in place.
-            if edges.is_none() {
-                *edges = Some(substrate.open_zone(Zone::Edges)?);
-            }
-            let ezf = edges.as_mut().unwrap();
-            let edge_slots = ezf.len() as usize / EdgeRecord::SIZE;
-            for idx in 0..edge_slots {
-                let offset = idx * EdgeRecord::SIZE;
-                let rec: EdgeRecord =
-                    *bytemuck::from_bytes(&ezf.as_slice()[offset..offset + EdgeRecord::SIZE]);
-                if rec.is_tombstoned() {
-                    continue;
-                }
-                let mut updated = rec;
-                if (rec.src as usize) < n {
-                    updated.src = permutation[rec.src as usize];
-                }
-                if (rec.dst as usize) < n {
-                    updated.dst = permutation[rec.dst as usize];
-                }
-                ezf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
-                    .copy_from_slice(bytemuck::bytes_of(&updated));
-            }
+            // La permutation réécrit tout le domaine [0, n) de la zone nodes :
+            // une coquille peut atterrir n'importe où, l'intervalle ne borne plus.
+            touches.noter_tout();
+            // V1 : aucune annonce n'est posee sur ce chemin (l'epoch
+            // n'existait pas encore), donc le drapeau n'a personne a
+            // informer.
+            apply_hilbert_permutation(substrate, nodes, edges, permutation, None)?;
             // Set the flag so a subsequent replay skips this record.
             // (The writer also sets it at the end of the sort operation;
             // we duplicate the write here so replay converges regardless
@@ -593,7 +1119,15 @@ fn apply(
                 return Ok(Applied::Skipped);
             }
 
-            // Open the four zones we touch (lazy, cached across records).
+            // La compaction ne déplace que les slots de la communauté (old →
+            // new) dans la zone nodes : borner l'audit à ces slots suffit, la
+            // phase arêtes (phase 7) ne touchant pas la zone nodes.
+            for &(old, new) in relocations {
+                touches.noter(old);
+                touches.noter(new);
+            }
+
+            // Open the five zones we touch (lazy, cached across records).
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -606,6 +1140,9 @@ fn apply(
             if community.is_none() {
                 *community = Some(substrate.open_zone(Zone::Community)?);
             }
+            if zorder.is_none() {
+                *zorder = Some(substrate.open_zone(Zone::Zorder)?);
+            }
 
             // Size-up every zone to hold the highest new slot.
             let max_new = relocations.iter().map(|(_, new)| *new).max().unwrap_or(0) as usize;
@@ -616,6 +1153,7 @@ fn apply(
             )?;
             ensure_room(hilbert.as_mut().unwrap(), (max_new + 1) * 4, 1 << 20)?;
             ensure_room(community.as_mut().unwrap(), (max_new + 1) * 4, 1 << 20)?;
+            ensure_room(zorder.as_mut().unwrap(), (max_new + 1) * 4, 1 << 20)?;
 
             // Lookup structures for the edge remap.
             let old_to_new: std::collections::HashMap<u32, u32> =
@@ -725,6 +1263,26 @@ fn apply(
                 }
             }
 
+            // ---- Phase 8c — Z-order side-column (zero old slots only) -----
+            //
+            // Same hint semantics as the Hilbert column above: the zorder
+            // keys are a function of (centrality, degree) sampled at
+            // compaction time, not recoverable from the WAL payload. Zeroing
+            // the old slots keeps the column clean; the new slots keep what
+            // the writer's phase 8 wrote, and the CommunityWarden tick
+            // refreshes everything on the next bulk sort.
+            {
+                let zf = zorder.as_mut().unwrap();
+                let bytes = zf.as_slice_mut();
+                let zero_le = 0u32.to_le_bytes();
+                for (old, _) in relocations.iter() {
+                    let off = (*old as usize) * 4;
+                    if off + 4 <= bytes.len() {
+                        bytes[off..off + 4].copy_from_slice(&zero_le);
+                    }
+                }
+            }
+
             // Meta-header flag (HILBERT_SORTED clear) is the writer's
             // responsibility — same rationale as `HilbertRepermute` above:
             // the immutable `substrate` borrow here cannot rewrite the meta
@@ -735,10 +1293,221 @@ fn apply(
             Ok(Applied::Yes)
         }
 
+        // ── Chantier SlotRemappable (2026-08-23) ────────────────────────
+        //
+        // V2 des deux repermutations : gardées par l'epoch durable de la
+        // base (`substrate.remap.epoch`, écrivable ici contrairement au
+        // méta), et enrôlant les side-cars slot-indexés. Chaque side-car à
+        // en-tête se garde EN PLUS par son propre epoch + CRC, donc un
+        // rejeu répété converge : premier passage = remap + estampille,
+        // passages suivants = skip. Les zones engram ne sont pas touchées
+        // ici — le writer a journalisé leurs états absolus
+        // (`EngramMembersSet` / `EngramBitsetSet`) dans la même fenêtre de
+        // durabilité que ce record ; ils suivent dans l'ordre des LSN.
+        //
+        // Fenêtre résiduelle documentée (héritée du design in-place de la
+        // zone nœuds) : un crash entre le msync des zones et l'écriture de
+        // l'epoch fait ré-appliquer la permutation nœuds/arêtes au rejeu
+        // suivant (double application). La fermer exige la refonte
+        // out-of-place journalisée de bulk_sort — hors périmètre.
+        WalPayload::HilbertRepermuteV2 {
+            permutation,
+            epoch,
+            engram_members,
+            engram_bitsets,
+        } => {
+            let etat = crate::slot_remap::remap_epoch_state(substrate)?;
+
+            // (1) Zones DÉJÀ permutées et confirmées : on ne re-permute
+            //     pas, mais les side-cars peuvent être en retard (crash
+            //     entre la confirmation et leur estampillage). Ils se
+            //     gardent chacun par l'epoch de leur en-tête, donc les
+            //     relancer est sûr et nécessaire.
+            if etat.committed >= *epoch {
+                crate::slot_remap::remap_sidecar_files_for_replay(substrate, permutation, *epoch)?;
+                return Ok(Applied::Skipped);
+            }
+
+            // (2) Annonce sans confirmation : le processus est mort entre
+            //     le début des mutations et la barrière de durabilité.
+            //     Les zones peuvent être intactes, à moitié permutées ou
+            //     entièrement permutées — RIEN ne les distingue. Deviner,
+            //     c'est corrompre une fois sur deux, en silence et avec
+            //     des CRC valides. On refuse, bruyamment.
+            //     (2026-08-24, revue #2) VARIANTE DEDIEE, pas `Internal` :
+            //     l'appelant (`SubstrateStore::from_substrate`) doit pouvoir
+            //     DISTINGUER ce refus d'un WAL tronque par une panne, sans
+            //     quoi il est avale par le `warn!` historique et la base
+            //     s'ouvre quand meme sur des zones indeterminees.
+            if etat.pending == *epoch {
+                return Err(crate::error::SubstrateError::RepermutationIndeterminee {
+                    epoch: *epoch,
+                    base: substrate.path().display().to_string(),
+                });
+            }
+
+            // (3) Cas nominal : les zones sont dans leur état
+            //     pré-permutation (la fenêtre de rejeu était vide au
+            //     moment du tri — garanti par
+            //     `Writer::require_empty_replay_window`).
+            //
+            // ══ LE REJEU ANNONCE, LUI AUSSI (revue #4, 2026-08-24) ══
+            //
+            // Ce bras permutait les zones sans jamais poser d'annonce. Un
+            // second arret DANS cette fenetre — entre la premiere mutation
+            // et le `commit_remap_epoch` ci-dessous — laissait `committed`
+            // inchange : le rejeu suivant retombait dans ce meme cas 3 et
+            // RE-APPLIQUAIT la permutation. Noeuds a p², side-cars a p¹,
+            // CRC valides, aucun symptome.
+            //
+            // Le commentaire qui ecartait cette fenetre comme « residuelle
+            // et hors perimetre » datait de `ac0f3660`, AVANT que le couple
+            // `pending`/`committed` n'existe. Il est faux depuis. Deux
+            // lignes suffisent aujourd'hui a transformer une corruption
+            // silencieuse en refus bruyant : l'annonce posee ici fera
+            // tomber le rejeu suivant dans le cas (2) ci-dessus.
+            // Cas (3) : permutation effective de tout le domaine [0, n) — une
+            // coquille peut atterrir n'importe où, balayage complet requis.
+            touches.noter_tout();
+            let annonce = crate::slot_remap::AnnonceRemap::annoncer(substrate, *epoch)?;
+
+            // ══ ET LA DISCIPLINE QUI VA AVEC (revue #5) ══
+            //
+            // Poser l'annonce sans cabler son effacement, c'est
+            // transformer une correction en panne — ce module l'avait
+            // ecrit noir sur blanc en revue #2, et ne l'avait applique
+            // qu'au chemin vif. Sur CE chemin la faute coute plus cher :
+            // le rejeu tourne A L'OUVERTURE, donc un ENOSPC passager au
+            // demarrage briquait definitivement une base qu'il suffisait
+            // avant de reessayer.
+            //
+            // Meme drapeau ternaire, meme handler — celui de
+            // `slot_remap`, partage avec le writer, pour qu'il n'existe
+            // pas deux exemplaires de cette regle.
+            let mutations = (|| -> SubstrateResult<()> {
+                apply_hilbert_permutation(substrate, nodes, edges, permutation, Some(&annonce))?;
+                apply_engram_states(
+                    substrate,
+                    engram_members_zone,
+                    engram_bitset_zone,
+                    engram_members,
+                    engram_bitsets,
+                )?;
+                for z in [
+                    nodes.as_ref(),
+                    edges.as_ref(),
+                    engram_members_zone.as_ref(),
+                    engram_bitset_zone.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    z.msync()?;
+                    z.fsync()?;
+                }
+                // ══ BARRIERE FRANCHIE ══
+                annonce.barriere_franchie();
+                Ok(())
+            })();
+            match mutations {
+                Ok(()) => annonce.confirmer()?,
+                Err(e) => {
+                    annonce.abandonner(&e);
+                    return Err(e);
+                }
+            }
+            crate::slot_remap::remap_sidecar_files_for_replay(substrate, permutation, *epoch)?;
+            Ok(Applied::Yes)
+        }
+
+        WalPayload::CompactCommunityV2 {
+            community_id,
+            relocations,
+            page_range,
+            epoch,
+            engram_members,
+            engram_bitsets,
+        } => {
+            if *community_id == 0 || relocations.is_empty() {
+                return Ok(Applied::Skipped);
+            }
+            // PAS de garde d'epoch sur les phases de zones ici, à la
+            // différence de `HilbertRepermuteV2` : la relocation par
+            // communauté est idempotente PAR CONSTRUCTION (discriminant
+            // `community_id == cible` au vieux slot, ensemble fermé
+            // `old_slots` pour les arêtes). Elle est donc auto-corrective
+            // — y compris quand un rejeu depuis 0 vient de re-matérialiser
+            // les vieux slots via les NodeInsert antérieurs, cas où une
+            // garde d'epoch aurait laissé les nœuds en arrière pendant que
+            // les side-cars restaient compactés.
+            //
+            // Phases nœuds / arêtes / side-colonnes : identiques à la V1 —
+            // délégation au bras V1 via un record synthétique.
+            let v1 = WalRecord {
+                lsn: rec.lsn,
+                timestamp: rec.timestamp,
+                flags: rec.flags,
+                payload: WalPayload::CompactCommunity {
+                    community_id: *community_id,
+                    relocations: relocations.clone(),
+                    page_range: *page_range,
+                },
+            };
+            apply(
+                substrate,
+                &v1,
+                nodes,
+                edges,
+                engram_members_zone,
+                engram_bitset_zone,
+                hilbert,
+                community,
+                zorder,
+                simplex,
+                touches,
+            )?;
+            apply_engram_states(
+                substrate,
+                engram_members_zone,
+                engram_bitset_zone,
+                engram_members,
+                engram_bitsets,
+            )?;
+            // Side-cars : permutation totale équivalente (identité +
+            // échanges old ↔ new), auto-gardée par en-tête.
+            let domain = relocations
+                .iter()
+                .map(|&(old, new)| old.max(new))
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let total_perm = crate::slot_remap::permutation_from_relocations(relocations, domain)?;
+            // I3 — barrière de durabilité AVANT la confirmation, puis
+            // side-cars (auto-gardés par leurs epochs d'en-tête).
+            for z in [
+                nodes.as_ref(),
+                edges.as_ref(),
+                hilbert.as_ref(),
+                community.as_ref(),
+                engram_members_zone.as_ref(),
+                engram_bitset_zone.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                z.msync()?;
+                z.fsync()?;
+            }
+            crate::slot_remap::commit_remap_epoch(substrate, *epoch)?;
+            crate::slot_remap::remap_sidecar_files_for_replay(substrate, &total_perm, *epoch)?;
+            Ok(Applied::Yes)
+        }
+
         WalPayload::NodePropHeadUpdate {
             node_id,
             first_prop_off,
         } => {
+            touches.noter(*node_id);
             if nodes.is_none() {
                 *nodes = Some(substrate.open_zone(Zone::Nodes)?);
             }
@@ -786,13 +1555,166 @@ fn apply(
         // Markers — no mutation.
         WalPayload::NoOp | WalPayload::EndOfLog | WalPayload::Checkpoint { .. } => Ok(Applied::Yes),
 
-        // Payload variants that depend on subsystems not yet implemented.
-        // Property pages / string heap land in their own tasks; community /
-        // hilbert / ricci / tier-0/1/2 payloads land in T10–T12. Until
-        // those come online, replay counts them as skipped but does not
-        // error out — they're tolerated but inert.
-        _ => Ok(Applied::Skipped),
+        // ── VARIANTES DELIBEREMENT NON REJOUEES ──────────────────────────
+        //
+        // (2026-08-14) CETTE LISTE ETAIT UN `_ => Skipped`. Un fourre-tout
+        // silencieux : treize variantes y tombaient, dont les quatre familles
+        // de proprietes — et rien ne le disait. Le jour ou quelqu'un ajoute
+        // une variante au WAL, elle disparait sans un mot, et le rejeu perd
+        // une donnee de plus sans que la compilation bronche.
+        //
+        // La liste est desormais EXHAUSTIVE et NOMMEE. Une variante ajoutee
+        // demain CASSE LA COMPILATION ici — c'est la seule garantie qui
+        // survive a l'oubli ; tout le reste suppose quelqu'un qui pense a
+        // relire.
+        //
+        // Chaque ligne porte la RAISON du saut. « Non implemente » n'en est
+        // pas une : ou la donnee est reconstructible, ou elle est rejouee
+        // ailleurs, ou c'est un trou qu'il faut nommer comme tel.
+
+        // Rejouees AILLEURS, par `SubstrateStore::merge_wal_inline_props` :
+        // elles atterrissent dans les cartes en memoire (`node_properties`,
+        // `edge_properties`), que ce module — qui ne voit que le fichier et
+        // ses zones — ne peut pas atteindre. Les traiter ici serait les
+        // appliquer deux fois, ou pire, les appliquer a moitie.
+        WalPayload::PropSetInline { .. }
+        | WalPayload::PropRemoveInline { .. }
+        | WalPayload::EdgePropSetInline { .. }
+        | WalPayload::EdgePropRemoveInline { .. } => Ok(Applied::Skipped),
+
+        // Forme HERITEE des proprietes, adressee par `key_id`. Remplacee par
+        // les variantes `*Inline`, qui portent le nom de la cle et ne
+        // dependent donc pas d'un registre restaure au prealable.
+        WalPayload::PropSet { .. } | WalPayload::PropDelete { .. } => Ok(Applied::Skipped),
+
+        // Registres. Ils vivent dans la zone dict, ecrite par `persist_dict`
+        // au flush — MEME FENETRE DE PERTE que les proprietes.
+        // TROU CONNU, ET C'EN EST UN VRAI : un `label_bitset` restaure peut
+        // referencer un bit dont le nom est perdu. Le rejeu se fait cote
+        // store (`merge_wal_inline_props`), qui possede les registres.
+        // (2026-08-15) Les Intern ne touchent pas les ZONES : ils sont
+        // appliques aux registres par merge_wal_inline_props, qui tourne
+        // apres ce rejeu dans l ordre d ouverture. Ici : sautes, comptes.
+        WalPayload::LabelIntern { .. }
+        | WalPayload::KeyIntern { .. }
+        | WalPayload::EdgeTypeIntern { .. }
+        | WalPayload::StringIntern { .. } => Ok(Applied::Skipped),
+
+        // Donnees DERIVEES : entierement reconstructibles depuis le graphe.
+        // Les perdre coute un recalcul, jamais une information.
+        // Aretes inter-bases (V1) : elles vivent dans un sidecar DashMap du
+        // store, pas dans les zones — rejouees par
+        // `SubstrateStore::merge_wal_external_edges` a l'ouverture.
+        WalPayload::ExternalEdgeInsert { .. } | WalPayload::ExternalEdgeDelete { .. } => {
+            Ok(Applied::Skipped)
+        }
+
+        WalPayload::RicciUpdate { .. }
+        | WalPayload::Tier0Update { .. }
+        | WalPayload::Tier1Update { .. }
+        | WalPayload::Tier2Update { .. } => Ok(Applied::Skipped),
     }
+}
+
+/// Chantier SlotRemappable — applique les états ABSOLUS des zones engram
+/// portés par un record de repermutation. Idempotent par nature (ce sont
+/// des états complets, pas des deltas), et gardé par la même condition
+/// que la permutation des zones puisqu'il voyage dans le même record.
+fn apply_engram_states(
+    substrate: &SubstrateFile,
+    engram_members_zone: &mut Option<ZoneFile>,
+    engram_bitset_zone: &mut Option<ZoneFile>,
+    members: &[(u16, Vec<u32>)],
+    bitsets: &[(u32, u64)],
+) -> SubstrateResult<()> {
+    if !members.is_empty() {
+        if engram_members_zone.is_none() {
+            *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
+        }
+        let zf = engram_members_zone.as_mut().unwrap();
+        for (engram_id, list) in members {
+            crate::engram::EngramZone::set_members_raw(zf, *engram_id, list)?;
+        }
+    }
+    if !bitsets.is_empty() {
+        if engram_bitset_zone.is_none() {
+            *engram_bitset_zone = Some(substrate.open_zone(Zone::EngramBitset)?);
+        }
+        let zf = engram_bitset_zone.as_mut().unwrap();
+        for (node_id, bits) in bitsets {
+            crate::engram_bitset::EngramBitsetColumn::set_raw(zf, *node_id, *bits)?;
+        }
+    }
+    Ok(())
+}
+
+/// Corps commun des bras `HilbertRepermute` (V1) et `HilbertRepermuteV2` :
+/// permutation out-of-place de la zone Nodes + réécriture des `src`/`dst`
+/// d'arêtes. Le gating (flag `HILBERT_SORTED` pour la V1, epoch durable
+/// pour la V2) reste dans les bras appelants.
+/// `phase` est pose a `AvantBarriere` **sur la ligne meme** de la
+/// premiere ecriture d'octet, jamais deduit de la progression : c'est ce
+/// qui permet a l'appelant de distinguer « ENOSPC avant d'avoir rien
+/// touche » (zones prouvees intactes, on efface l'annonce) de « ENOSPC
+/// apres » (etat indetermine, on refuse). Voir
+/// `slot_remap::abandonner_annonce`.
+pub(crate) fn apply_hilbert_permutation(
+    substrate: &SubstrateFile,
+    nodes: &mut Option<ZoneFile>,
+    edges: &mut Option<ZoneFile>,
+    permutation: &[u32],
+    annonce: Option<&crate::slot_remap::AnnonceRemap<'_>>,
+) -> SubstrateResult<()> {
+    let n = permutation.len();
+
+    // Permute nodes out-of-place.
+    if nodes.is_none() {
+        *nodes = Some(substrate.open_zone(Zone::Nodes)?);
+    }
+    let zf = nodes.as_mut().unwrap();
+    let total = n * NodeRecord::SIZE;
+    ensure_room(zf, total, 1 << 20)?;
+    let src: Vec<NodeRecord> =
+        bytemuck::cast_slice::<u8, NodeRecord>(&zf.as_slice()[..total]).to_vec();
+    let mut dst = vec![NodeRecord::default(); n];
+    for old in 0..n {
+        let new = permutation[old] as usize;
+        if new < n {
+            dst[new] = src[old];
+        }
+    }
+    // ── PREMIERE MUTATION DE ZONE ──
+    // `ensure_room` ci-dessus peut echouer sans avoir touche un octet :
+    // c'est LA fenetre que ce drapeau protege.
+    if let Some(a) = annonce {
+        a.premiere_mutation();
+    }
+    zf.as_slice_mut()[..total].copy_from_slice(bytemuck::cast_slice(&dst));
+
+    // Rewrite edge.src/dst in place.
+    if edges.is_none() {
+        *edges = Some(substrate.open_zone(Zone::Edges)?);
+    }
+    let ezf = edges.as_mut().unwrap();
+    let edge_slots = ezf.len() as usize / EdgeRecord::SIZE;
+    for idx in 0..edge_slots {
+        let offset = idx * EdgeRecord::SIZE;
+        let rec: EdgeRecord =
+            *bytemuck::from_bytes(&ezf.as_slice()[offset..offset + EdgeRecord::SIZE]);
+        if rec.is_tombstoned() {
+            continue;
+        }
+        let mut updated = rec;
+        if (rec.src as usize) < n {
+            updated.src = permutation[rec.src as usize];
+        }
+        if (rec.dst as usize) < n {
+            updated.dst = permutation[rec.dst as usize];
+        }
+        ezf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
+            .copy_from_slice(bytemuck::bytes_of(&updated));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +1740,9 @@ mod tests {
             scar_util_affinity: PackedScarUtilAff::new(0, 0, 0, false).pack(),
             centrality_cached: 0,
             flags: 0,
+            // (jalon 2) appartenance : fixture publique.
+            tenant_id: 0,
+            _reserve: 0,
         }
     }
 
@@ -1103,6 +2028,10 @@ mod tests {
         // the mmap state "just before the crash" for tests that inject the
         // CompactCommunity record manually.
         w.msync_zones().unwrap();
+        // Chantier SlotRemappable — ce helper simule un store qui vient de
+        // flusher : on publie donc la baseline correspondante, sans quoi
+        // `compact_community` refuse (fenetre de rejeu non vide).
+        w.note_durable_baseline(w.wal().offset());
         w
     }
 
@@ -1130,29 +2059,49 @@ mod tests {
                 "old slot {old} label_bitset must be 0 after compaction"
             );
         }
-        for (i, &new) in new_slots.iter().enumerate() {
+        // Reconstitue le mapping old→new PAR LABEL (robuste à l'ordre de tri
+        // interne de `compact_community`, qui dépend du degré réel depuis
+        // Step 7 — les clés ne sont plus à égalité systématique).
+        let mut label_to_new: std::collections::HashMap<u64, u32> =
+            std::collections::HashMap::new();
+        for &new in new_slots {
             let rec = &nodes[new as usize];
             assert_eq!(rec.community_id, cid, "new slot {new} must carry cid={cid}");
-            assert_eq!(
+            assert!(
+                (1..=(old_slots.len() as u64)).contains(&rec.label_bitset),
+                "new slot {new}: label {} hors {1:?}..={}",
                 rec.label_bitset,
-                (i as u64) + 1,
-                "new slot {new} must carry the label from old slot {}",
-                old_slots[i]
+                old_slots.len()
             );
+            assert!(
+                label_to_new.insert(rec.label_bitset, new).is_none(),
+                "label {} présent deux fois parmi les nouveaux slots",
+                rec.label_bitset
+            );
+        }
+        let mut map_old_new: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        for (i, &old) in old_slots.iter().enumerate() {
+            let label = (i as u64) + 1;
+            let new = *label_to_new
+                .get(&label)
+                .expect("chaque label d'ancien slot doit avoir un nouveau slot");
+            map_old_new.insert(old, new);
         }
         // External node untouched.
         assert_eq!(nodes[42].label_bitset, 0xFF);
         assert_eq!(nodes[42].community_id, 0);
 
-        // Edges.
+        // Edges (endpoints d'origine reconstruits depuis la structure du
+        // fixture : old[0]→old[1], old[1]→old[2], old[0]→42).
+        let m = |old: u32| map_old_new[&old];
         let ez = sub.open_zone(Zone::Edges).unwrap();
         let edges: &[EdgeRecord] = bytemuck::cast_slice(&ez.as_slice()[..3 * EdgeRecord::SIZE]);
-        assert_eq!(edges[0].src, new_slots[0], "edge 0 src remapped");
-        assert_eq!(edges[0].dst, new_slots[1], "edge 0 dst remapped");
-        assert_eq!(edges[1].src, new_slots[1], "edge 1 src remapped");
-        assert_eq!(edges[1].dst, new_slots[2], "edge 1 dst remapped");
+        assert_eq!(edges[0].src, m(old_slots[0]), "edge 0 src remapped");
+        assert_eq!(edges[0].dst, m(old_slots[1]), "edge 0 dst remapped");
+        assert_eq!(edges[1].src, m(old_slots[1]), "edge 1 src remapped");
+        assert_eq!(edges[1].dst, m(old_slots[2]), "edge 1 dst remapped");
         // Cross-community edge: only the in-community endpoint is remapped.
-        assert_eq!(edges[2].src, new_slots[0], "edge 2 src remapped");
+        assert_eq!(edges[2].src, m(old_slots[0]), "edge 2 src remapped");
         assert_eq!(edges[2].dst, 42, "edge 2 dst (external) untouched");
 
         // Community side-column.
@@ -1348,10 +2297,11 @@ mod tests {
             w.wal().fsync().unwrap();
         }
 
-        // The writer's internal sort is by (hilbert_key, old_slot). With all
-        // energies/centralities identical the hilbert_keys tie, so the
-        // secondary key (old_slot ascending) drives the permutation and
-        // the mapping is 1→new_start, 2→new_start+1, 3→new_start+2.
+        // The writer's internal sort is by (hilbert_key, old_slot) où le
+        // hilbert_key tient compte du degré RÉEL (Step 7) — l'ordre des
+        // membres n'est donc plus trivial. Les nouveaux slots sont contigus
+        // et page-alignés (asserté plus haut) ; le helper d'assertion
+        // reconstitue le mapping old→new PAR LABEL, robuste à l'ordre.
         let new_slots = [new_start, new_start + 1, new_start + 2];
 
         // First replay pass — mmap is already post-compaction.
@@ -1370,5 +2320,316 @@ mod tests {
             "replay must apply the same number of records on every pass"
         );
         assert_post_compaction_state(&sub, &old_slots, &new_slots, cid);
+    }
+
+    // ── (2026-08-19) L AUDIT D ANCRES SOUS PropsZone v2 ──
+    //
+    // Les quatre tests qui suivent verrouillent les DEUX moitiés de la
+    // correction. Éteindre le faux positif ne vaut rien si l audit devient
+    // muet : un audit qui ne détecte plus rien serait pire que le bruit
+    // qu on lui reproche.
+
+    /// Construit une base v2 saine : une chaîne de propriétés par nœud, donc
+    /// des ancres qui sont des IDENTIFIANTS DE PAGE — ce que produit le
+    /// chemin d écriture réel. Rend le chemin de la base et les ancres.
+    fn base_v2_saine(dir: &std::path::Path, nb_noeuds: u32) -> (std::path::PathBuf, Vec<u32>) {
+        use crate::page::{PropertyEntry, PropertyValue};
+        let sub_path = dir.join("kb");
+        let sub = SubstrateFile::create(&sub_path).unwrap();
+        let mut pz = crate::props_zone::PropsZone::open(&sub).unwrap();
+        let ancres: Vec<u32> = (0..nb_noeuds)
+            .map(|id| {
+                let e = PropertyEntry::new(1, PropertyValue::I64(id as i64));
+                pz.append_entry_node(id, None, &e).unwrap()
+            })
+            .collect();
+        pz.flush().unwrap();
+        drop(pz);
+
+        let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+        for (id, page) in ancres.iter().copied().enumerate() {
+            let mut rec = n(id as u32, 1);
+            rec.first_prop_off = crate::props_zone::encode_page_id(page);
+            w.write_node(id as u32, rec).unwrap();
+        }
+        w.commit().unwrap();
+        w.msync_zones().unwrap();
+        (sub_path, ancres)
+    }
+
+    /// LE FAUX POSITIF MESURÉ : sur la base réelle, `dangling` est passé de 0
+    /// à 49 850 sans qu un octet de propriété ait bougé — il a suffi qu une
+    /// écriture recrée `substrate.props`, dont la longueur servait de borne.
+    /// On rejoue exactement cet enchaînement en miniature.
+    #[test]
+    fn audit_v2_base_saine_ne_declare_aucune_ancre_pendante() {
+        let dir = tempdir().unwrap();
+        let (sub_path, ancres) = base_v2_saine(dir.path(), 32);
+
+        // Le fichier hérité renaît, court (16 octets). Sous l ancien critère
+        // toute ancre >= 16 devenait « pendante » : ici 17 des 32 nœuds.
+        std::fs::write(sub_path.join(crate::file::zone::PROPS), [0u8; 16]).unwrap();
+        assert!(
+            ancres.iter().filter(|p| **p as u64 >= 16).count() > 0,
+            "le scénario doit vraiment exercer l ancien faux positif"
+        );
+
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, 0).unwrap();
+        assert_eq!(
+            stats.dangling_prop_anchors, 0,
+            "les ancres sont des index de page tous alloués : rien ne pend"
+        );
+        assert_eq!(
+            stats.label_only_nodes, 0,
+            "chaque nœud a une chaîne : aucune coquille"
+        );
+    }
+
+    /// LE FAUX POSITIF QUI CRIAIT SUR TOUS LES STORES (2026-09-16).
+    ///
+    /// Mesuré : sur un store v3 **vide** — `count(n) = 0` — l'audit annonçait
+    /// `label_only = 1` et « properties written after the last flush were lost »,
+    /// alors qu'aucune propriété n'était perdue (la relecture rendait chacune des
+    /// propriétés écrites). Il criait donc sur 100 % des stores, et noyait la
+    /// signature de coquille qu'il existe pour porter — la panne exacte que ses
+    /// deux compteurs devaient rendre VISIBLE.
+    ///
+    /// Cause : une zone v3 grave `NODES_ZONE_V3_MAGIC` dans le `label_bitset` de
+    /// son SLOT 0 (c'est son marqueur de stride) en laissant ses flags à zéro. Ce
+    /// record n'est vivant pour aucun chemin de lecture, mais `label_bitset != 0`
+    /// suffisait à l'ancien test pour le compter comme une coquille.
+    ///
+    /// POURQUOI LE TEST v2 EXISTANT NE POUVAIT PAS L'ATTRAPER : il construit une
+    /// zone **v2**, où le slot 0 est VIDE (`label_bitset == 0`) — donc jamais
+    /// compté. Il fallait rejouer un store v3 RÉEL, celui que `Self::create`
+    /// produit et que servent toutes les bases du dépôt.
+    #[test]
+    fn audit_v3_store_neuf_ne_declare_aucune_coquille() {
+        let dir = tempdir().unwrap();
+        let sub = SubstrateFile::create(dir.path().join("store")).unwrap();
+
+        // ── GARDE DE NON-VACUITÉ ───────────────────────────────────────────
+        // Le test ne prouve rien si la sentinelle n'a pas la FORME qui trompait
+        // l'audit : magie non nulle dans le label_bitset, ancre nulle, et pas
+        // vivante. Si sa forme change un jour, c'est ici qu'on l'apprend — au
+        // lieu de croire que le défaut a disparu tout seul.
+        {
+            let zf = sub.open_zone(Zone::Nodes).unwrap();
+            let buf = zf.as_slice();
+            assert!(
+                buf.len() >= NodeRecord::SIZE,
+                "la zone nodes doit porter au moins son slot 0, soit {} octets",
+                NodeRecord::SIZE
+            );
+            let slot0: &NodeRecord = bytemuck::from_bytes(&buf[..NodeRecord::SIZE]);
+            assert_eq!(
+                slot0.label_bitset,
+                crate::record::NODES_ZONE_V3_MAGIC,
+                "le slot 0 d'une zone v3 porte le marqueur de stride dans son label_bitset"
+            );
+            assert_ne!(
+                slot0.label_bitset, 0,
+                "c'est bien ce non-zéro qui trompait l'audit"
+            );
+            assert_eq!(
+                slot0.first_prop_off.to_u64(),
+                0,
+                "la sentinelle ne porte aucune propriété"
+            );
+            assert!(
+                !slot0.is_live(),
+                "et elle n'est vivante pour aucun chemin de lecture"
+            );
+        }
+
+        // ── L'ASSERTION QUI COMPTE ─────────────────────────────────────────
+        let sub = SubstrateFile::open(dir.path().join("store")).unwrap();
+        let stats = replay_from(&sub, 0).unwrap();
+        assert_eq!(
+            stats.label_only_nodes, 0,
+            "un store NEUF ne peut pas porter de coquille : la seule chose que \
+             l'audit voyait était la sentinelle de sa propre zone"
+        );
+        assert_eq!(
+            stats.dangling_prop_anchors, 0,
+            "et rien ne pend dans une zone neuve"
+        );
+    }
+
+    /// LE VRAI POSITIF QUI COMPTE : la signature de coquille du 25/07. Le WAL
+    /// ne porte pour `NodeInsert` que le `label_bitset` ; un rejeu sur une
+    /// zone nodes perdue recrée donc des nœuds À LABELS SANS ANCRE. L audit
+    /// doit continuer à les compter — sur une base v2 comme ailleurs.
+    #[test]
+    fn audit_v2_signale_toujours_la_signature_de_coquille() {
+        let dir = tempdir().unwrap();
+        let (sub_path, _) = base_v2_saine(dir.path(), 32);
+
+        // La zone nodes n avait pas atteint le disque au moment du kill.
+        std::fs::write(sub_path.join(crate::file::zone::NODES), []).unwrap();
+
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, 0).unwrap();
+        assert_eq!(
+            stats.label_only_nodes, 32,
+            "32 nœuds à labels sans propriétés atteignables — l audit doit crier"
+        );
+        assert_eq!(stats.dangling_prop_anchors, 0, "aucune ancre non nulle ici");
+    }
+
+    /// LES DEUX FORMES DE TÊTE PENDANTE MESURÉES EN 89f5ca5e, sous v2 :
+    /// l index au-delà du fichier (1 501 040 refus sur `messages`) et l index
+    /// qui tombe dans le rembourrage jamais écrit, en magic 0x0 (112 280).
+    /// Les deux sont hors de `1..frontière` : un seul test les attrape.
+    #[test]
+    fn audit_v2_signale_les_ancres_hors_zone_allouee() {
+        let dir = tempdir().unwrap();
+        let (sub_path, ancres) = base_v2_saine(dir.path(), 4);
+        let frontiere = *ancres.iter().max().unwrap() + 1;
+
+        // Du rembourrage : le fichier s étend bien au-delà des pages écrites.
+        {
+            let sub = SubstrateFile::open(&sub_path).unwrap();
+            let mut zf = sub
+                .open_named_zone(crate::props_zone::PROPS_V2_FILENAME)
+                .unwrap();
+            zf.grow_to(64 * crate::page::PAGE_SIZE as u64).unwrap();
+            zf.msync().unwrap();
+        }
+
+        {
+            let sub = SubstrateFile::open(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            // Nœud 10 : index dans le rembourrage — page jamais écrite.
+            let mut coquille_rembourrage = n(10, 1);
+            coquille_rembourrage.first_prop_off = crate::props_zone::encode_page_id(40);
+            w.write_node(10, coquille_rembourrage).unwrap();
+            // Nœud 11 : index au-delà du fichier entier.
+            let mut coquille_hors_fichier = n(11, 1);
+            coquille_hors_fichier.first_prop_off = crate::props_zone::encode_page_id(1_000_000);
+            w.write_node(11, coquille_hors_fichier).unwrap();
+            w.commit().unwrap();
+            w.msync_zones().unwrap();
+        }
+
+        assert!(frontiere < 40, "le rembourrage doit être hors zone allouée");
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, 0).unwrap();
+        assert_eq!(
+            stats.dangling_prop_anchors, 2,
+            "les deux ancres tombent hors de 1..{frontiere}"
+        );
+        assert_eq!(
+            stats.label_only_nodes, 0,
+            "les 4 nœuds sains gardent leur chaîne"
+        );
+    }
+
+    /// L autre régime doit rester intact : ~1 528 bases n ont pas migré, et
+    /// chez elles l ancre EST un décalage en octets dans `substrate.props`.
+    #[test]
+    fn audit_herite_conserve_le_critere_en_octets() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            let mut sain = n(0, 1);
+            sain.first_prop_off = U48::from_u64(100);
+            w.write_node(0, sain).unwrap();
+            let mut pendant = n(1, 1);
+            pendant.first_prop_off = U48::from_u64(999_999);
+            w.write_node(1, pendant).unwrap();
+            w.commit().unwrap();
+            w.msync_zones().unwrap();
+        }
+        // Aucun `substrate.props.v2` ici : régime hérité.
+        std::fs::write(sub_path.join(crate::file::zone::PROPS), vec![0u8; 4096]).unwrap();
+        assert!(
+            !sub_path.join(crate::props_zone::PROPS_V2_FILENAME).exists(),
+            "ce test doit rester sur le chemin hérité"
+        );
+
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, 0).unwrap();
+        assert_eq!(
+            stats.dangling_prop_anchors, 1,
+            "999 999 dépasse les 4 096 octets durables, 100 non"
+        );
+    }
+
+    /// ── PERF #3 : l'audit post-rejeu est O(fenêtre), pas O(zone) ──
+    ///
+    /// Preuve ROUGE → VERT du correctif : un store de `base` slots durables
+    /// (flush + checkpoint, WAL tronqué) puis une fenêtre de `fenetre` nœuds
+    /// post-checkpoint. Le rejeu n'écrit que la fenêtre : l'audit doit balayer
+    /// exactement `fenetre` slots, pas `base + fenetre`. Avant le correctif, le
+    /// compteur `audit_slots_scanned` vaudrait `base + fenetre` (la boucle
+    /// `for i in 0..n` balayait toute la zone) et ce test échouerait — c'est la
+    /// régression O(N) mesurée (169 ms / 5 M slots, indépendant du nombre de
+    /// records rejoués).
+    ///
+    /// Il verrouille AUSSI la sémantique du bornage : les nœuds de base portent
+    /// une ancre NON NULLE (nœud « sans propriétés » légal et durable), les
+    /// nœuds de fenêtre une ancre nulle (signature de coquille du crash). Seuls
+    /// les `fenetre` nœuds doivent être comptés en coquilles — jamais `base`.
+    #[test]
+    fn audit_post_rejeu_borne_a_la_fenetre_rejouee() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        let base: u32 = 100_000;
+        let fenetre: u32 = 10_000;
+
+        // Base durable : `base` nœuds avec une ancre NON NULLE (nœud « sans
+        // propriétés » légal, pas une coquille), flush puis checkpoint.
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::Group).unwrap();
+            for i in 0..base {
+                let mut rec = n(i, 1);
+                rec.first_prop_off = U48::from_u64(1);
+                w.write_node(i, rec).unwrap();
+            }
+            w.commit().unwrap();
+            let wal = w.wal();
+            drop(w);
+            let mut sub2 = SubstrateFile::open(&sub_path).unwrap();
+            crate::checkpoint(&mut sub2, &wal).unwrap();
+            drop(sub2);
+        }
+
+        // Fenêtre post-checkpoint : `fenetre` nœuds à ancre NULLE, puis
+        // « crash » sans flush des zones — le WAL fait foi.
+        {
+            let sub = SubstrateFile::open(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::Group).unwrap();
+            for i in 0..fenetre {
+                w.write_node(base + i, n(base + i, 1)).unwrap();
+            }
+            w.commit().unwrap();
+            w.fsync_wal().unwrap();
+            drop(w);
+        }
+
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+
+        // ── LE CŒUR DU CORRECTIF ──
+        // L'audit a balayé exactement la fenêtre rejouée, pas la zone entière.
+        assert_eq!(
+            stats.audit_slots_scanned, fenetre as u64,
+            "l'audit doit balayer la fenêtre rejouée ({fenetre} slots), pas la zone entière"
+        );
+
+        // ── ET LA SÉMANTIQUE EST PRÉSERVÉE ──
+        // Seuls les nœuds de la fenêtre (ancre nulle) sont des coquilles de CE
+        // crash ; les nœuds de base (ancre durable) n'en sont pas.
+        assert_eq!(
+            stats.label_only_nodes, fenetre as u64,
+            "seuls les {fenetre} nœuds de la fenêtre portent la signature de coquille"
+        );
+        assert_eq!(stats.dangling_prop_anchors, 0, "aucune ancre non nulle ici");
     }
 }

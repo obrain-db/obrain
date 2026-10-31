@@ -186,7 +186,10 @@ pub fn decode_value(zone: &PropsZone, pv: &PropertyValue) -> SubstrateResult<Val
 }
 
 fn decode_string_ref(zone: &PropsZone, h: HeapRef) -> SubstrateResult<Value> {
-    let bytes = zone.read_heap(h).ok_or_else(|| {
+    // `read_heap_slice` (2026-09-12) : LIT SUR PLACE au lieu de copier la page
+    // HEAP de 4 Ko puis la chaîne. Mêmes bornes, même erreur, un `Vec` en moins
+    // et une copie de page en moins par cellule.
+    let bytes = zone.read_heap_slice(h).ok_or_else(|| {
         SubstrateError::WalBadFrame(format!(
             "StringRef {{page_id={}, offset={}}} out of range",
             h.page_id, h.offset
@@ -198,7 +201,8 @@ fn decode_string_ref(zone: &PropsZone, h: HeapRef) -> SubstrateResult<Value> {
 }
 
 fn decode_bytes_ref(zone: &PropsZone, h: HeapRef) -> SubstrateResult<Value> {
-    let bytes = zone.read_heap(h).ok_or_else(|| {
+    // Même substitution que `decode_string_ref` : lecture SUR PLACE.
+    let bytes = zone.read_heap_slice(h).ok_or_else(|| {
         SubstrateError::WalBadFrame(format!(
             "BytesRef {{page_id={}, offset={}}} out of range",
             h.page_id, h.offset
@@ -483,6 +487,171 @@ mod tests {
         for (pv, want) in pvs.iter().zip(expected.iter()) {
             let got = decode_value(&pz, pv).unwrap();
             assert_eq!(&got, want);
+        }
+    }
+
+    /// ── (2026-08-20) LA CARTOGRAPHIE QUI JUSTIFIE LE ROUTAGE BLOB ───────
+    ///
+    /// Ce test ne vérifie pas un contrat de codec : il FIGE la mesure qui a
+    /// fait choisir le routage vers la colonne blob plutôt qu'un chaînage des
+    /// charges utiles sur plusieurs pages de tas.
+    ///
+    /// La question était : reste-t-il un INTERVALLE de tailles où une valeur
+    /// serait trop grosse pour une page de tas (donc REFUSÉE par v2, donc
+    /// perdue) sans être déjà partie en colonne blob ? Les deux seuils ne se
+    /// comparent pas de tête, car ils portent sur des ENCODAGES DIFFÉRENTS :
+    ///
+    ///   · le plafond du tas s'applique à l'encodage du codec — bincode
+    ///     LITTLE-ENDIAN à ENTIERS FIXES, choisi pour coïncider avec
+    ///     `props_snapshot` ; il gonfle chaque entier à 8 octets ;
+    ///   · le seuil de routage blob (256 o) s'applique à
+    ///     `bincode::config::standard()` — entiers VARIABLES, bien plus
+    ///     compact sur les mêmes données.
+    ///
+    /// Le second mord donc BEAUCOUP plus tôt, et c'est ce que ce test mesure
+    /// famille par famille, au lieu de l'affirmer. Marges relevées le
+    /// 20/08 : 5,1× (Map), 4,0× (Map imbriquée), 3,9× (liste hétérogène),
+    /// 2,7× (Path). Le test n'ancre pas ces chiffres — ils dépendent de la
+    /// longueur des clés — mais l'ORDRE des deux seuils, qui est l'invariant
+    /// dont dépend la correction.
+    ///
+    /// Il tombera le jour où un encodage changerait de config ou le seuil
+    /// blob de valeur, et c'est exactement ce qu'on veut être obligé de
+    /// relire.
+    #[test]
+    fn le_repli_bincode_deborde_bien_avant_la_page_de_tas() {
+        use crate::blob_column_registry::BLOB_COLUMN_THRESHOLD_BYTES;
+        use obrain_common::types::{Date, Time, Timestamp, ZonedDatetime};
+
+        // Le codec accepte-t-il cette valeur ? Zone NEUVE à chaque appel : le
+        // refus ne dépend que de la longueur, jamais du remplissage.
+        fn accepte(v: &Value) -> bool {
+            let sf = SubstrateFile::open_tempfile().unwrap();
+            let mut pz = PropsZone::open(&sf).unwrap();
+            encode_value(&mut pz, v).is_ok()
+        }
+        fn varint(v: &Value) -> usize {
+            bincode::serde::encode_to_vec(v, bincode::config::standard())
+                .unwrap()
+                .len()
+        }
+        // Plus petit N REFUSÉ par le codec, par doublement puis dichotomie.
+        fn premier_refuse(f: &dyn Fn(usize) -> Value) -> usize {
+            let mut hi = 1usize;
+            while accepte(&f(hi)) {
+                hi *= 2;
+                assert!(hi < 1_000_000, "aucun refus : le plafond a disparu ?");
+            }
+            let mut lo = hi / 2;
+            while lo + 1 < hi {
+                let mid = (lo + hi) / 2;
+                if accepte(&f(mid)) { lo = mid } else { hi = mid }
+            }
+            hi
+        }
+        // Plus petit N dont l'encodage VARINT dépasse le seuil de routage.
+        fn premier_route_en_blob(f: &dyn Fn(usize) -> Value) -> usize {
+            let mut n = 1usize;
+            while varint(&f(n)) <= BLOB_COLUMN_THRESHOLD_BYTES {
+                n += 1;
+                assert!(n < 1_000_000, "jamais routé ?");
+            }
+            n
+        }
+
+        let carte = |n: usize| {
+            let mut m = BTreeMap::new();
+            for i in 0..n {
+                m.insert(PropertyKey::new(format!("k{i:04}")), Value::Int64(i as i64));
+            }
+            Value::Map(Arc::new(m))
+        };
+        let carte_imbriquee = |n: usize| {
+            let mut m = BTreeMap::new();
+            for i in 0..n {
+                let mut inner = BTreeMap::new();
+                inner.insert(PropertyKey::new("v"), Value::Int64(i as i64));
+                m.insert(
+                    PropertyKey::new(format!("k{i:04}")),
+                    Value::Map(Arc::new(inner)),
+                );
+            }
+            Value::Map(Arc::new(m))
+        };
+        let liste_heterogene = |n: usize| {
+            let xs: Vec<Value> = (0..n)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        Value::Int64(i as i64)
+                    } else {
+                        Value::String(ArcStr::from(format!("s{i}")))
+                    }
+                })
+                .collect();
+            Value::List(Arc::from(xs.into_boxed_slice()))
+        };
+        let chemin = |n: usize| {
+            let noeuds: Vec<Value> = (0..n).map(|i| Value::Int64(i as i64)).collect();
+            let aretes: Vec<Value> = (0..n.saturating_sub(1))
+                .map(|i| Value::Int64(i as i64))
+                .collect();
+            Value::Path {
+                nodes: Arc::from(noeuds.into_boxed_slice()),
+                edges: Arc::from(aretes.into_boxed_slice()),
+            }
+        };
+
+        for (nom, f) in [
+            ("Map<str,Int64>", &carte as &dyn Fn(usize) -> Value),
+            ("Map imbriquee", &carte_imbriquee),
+            ("List heterogene", &liste_heterogene),
+            ("Path", &chemin),
+        ] {
+            let refuse = premier_refuse(f);
+            let route = premier_route_en_blob(f);
+            assert!(
+                route < refuse,
+                "{nom} : le routage blob doit mordre AVANT le refus du tas — \
+                 routé a partir de N={route}, refusé a partir de N={refuse}. \
+                 Si l'ordre s'inversait, il existerait des valeurs trop \
+                 grosses pour v2 et pas assez pour les blobs : elles \
+                 retomberaient sur la DashMap et DISPARAITRAIENT a la \
+                 reouverture"
+            );
+            // La valeur qui DÉBORDE doit, elle, être routée : c'est la
+            // formulation directe de « aucun trou ».
+            assert!(
+                varint(&f(refuse)) > BLOB_COLUMN_THRESHOLD_BYTES,
+                "{nom} : la premiere valeur refusee par le tas (N={refuse}) \
+                 doit etre routee vers la colonne blob"
+            );
+        }
+
+        // ── TEMPORELS : LARGEUR FIXE, JAMAIS DÉBORDANTS ─────────────────
+        //
+        // Ils empruntent le même repli bincode, mais leurs types Rust sont
+        // des scalaires de taille bornée (i64, i32, u64 + Option<i32>…).
+        // Mesuré : 9 à 29 octets. Ils ne peuvent atteindre ni le seuil de
+        // routage (256 o) ni le plafond du tas (4 076 o) — c'est ce qui
+        // justifie de les EXCLURE de `encode_blob_payload`, dont l'encodage
+        // spéculatif coûterait une allocation par écriture pour un test
+        // toujours faux.
+        for (nom, v) in [
+            ("Timestamp", Value::Timestamp(Timestamp::EPOCH)),
+            ("Date", Value::Date(Date::from_ymd(2026, 8, 20).unwrap())),
+            ("Time", Value::Time(Time::from_hms(12, 30, 45).unwrap())),
+            ("Duration", Value::Duration(Duration::new(1, 2, 3))),
+            (
+                "ZonedDatetime",
+                Value::ZonedDatetime(ZonedDatetime::from_timestamp_offset(Timestamp::EPOCH, 3600)),
+            ),
+        ] {
+            assert!(accepte(&v), "{nom} doit tenir dans une page de tas");
+            assert!(
+                varint(&v) <= BLOB_COLUMN_THRESHOLD_BYTES,
+                "{nom} : si un temporel depassait le seuil de routage, il \
+                 faudrait le rendre a `encode_blob_payload`"
+            );
         }
     }
 }

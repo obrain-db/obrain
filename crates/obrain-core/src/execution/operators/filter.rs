@@ -1,15 +1,19 @@
 //! Filter operator for applying predicates.
 
 use super::{Operator, OperatorResult};
-use crate::execution::{ChunkZoneHints, DataChunk, SelectionVector};
+use crate::execution::{ChunkZoneHints, DataChunk, SelectionVector, ValueVector};
 use crate::graph::Direction;
 use crate::graph::GraphStore;
 use crate::graph::lpg::{Edge, Node};
-use obrain_common::types::{EpochId, HashableValue, NodeId, PropertyKey, TransactionId, Value};
+use crate::graph::traits::PredicatTexte;
+use obrain_common::types::{
+    EpochId, HashableValue, NodeId, PropertyKey, TransactionId, Value, value_cmp,
+};
 #[cfg(feature = "regex")]
 use regex::Regex;
 #[cfg(all(feature = "regex-lite", not(feature = "regex")))]
 use regex_lite::Regex;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -45,6 +49,35 @@ pub trait Predicate: Send + Sync {
     fn might_match_chunk(&self, _hints: &ChunkZoneHints) -> bool {
         true
     }
+
+    /// Annonce le chunk dont les lignes vont être évaluées, AVANT la première.
+    ///
+    /// POURQUOI CETTE ANNONCE EXISTE (2026-09-12). Sans elle, un prédicat qui
+    /// veut amortir une lecture de propriété n'a aucun moyen de savoir que les
+    /// 2 048 `evaluate` qui suivent portent sur LE MÊME chunk : il ne peut que
+    /// refaire la lecture, par ligne et par occurrence de prédicat — soit
+    /// `get_node_property` scalaire, mesuré ~1 µs/cellule.
+    ///
+    /// `ExpressionPredicate` pré-extrait déjà la propriété de tout le chunk ici
+    /// (voir `prepare_chunk` de son impl), puis sert chaque ligne depuis sa
+    /// copie — une lecture pour 2 048 lignes au lieu d'une par ligne. Les
+    /// prédicats qui n'ont rien à amortir gardent le défaut : rien.
+    fn prepare_chunk(&self, _chunk: &DataChunk) {}
+
+    /// Relève (et efface) la première erreur d'évaluation consignée depuis
+    /// le dernier relevé.
+    ///
+    /// L'évaluateur d'expressions rend `Option<Value>` : `None` y signifie
+    /// « pas de valeur » et devient NULL en projection, `false` en filtre.
+    /// Une division par zéro ou un débordement i64 ne doivent être ni l'un
+    /// ni l'autre — la requête entière doit être REFUSÉE. Les prédicats qui
+    /// détectent une telle faute la consignent, et les opérateurs
+    /// (`FilterOperator`, `ProjectOperator`) la relèvent ici pour la
+    /// transformer en `OperatorError::Execution`. Par défaut : aucun
+    /// prédicat n'a d'erreur à signaler.
+    fn take_eval_error(&self) -> Option<String> {
+        None
+    }
 }
 
 // The `CompareOp` enum and `ComparisonPredicate` struct that used to live
@@ -52,6 +85,532 @@ pub trait Predicate: Send + Sync {
 // `crates/obrain-substrate/tests/operators_filter.rs` as part of T17 W4.p4
 // — substrate-backed fixtures cannot live in `obrain-core` due to the
 // dev-dep cycle. They were never part of the crate's public or internal API.
+
+/// Opération portée par l'arithmétique numérique GARDÉE de l'évaluateur.
+///
+/// Le modulo a son propre chemin ([`ExpressionPredicate::eval_modulo`]) ;
+/// voir [`ExpressionPredicate::eval_arithmetic`] pour la sémantique et le
+/// miroir avec `check_eval.rs`.
+#[derive(Clone, Copy)]
+enum ArithGardee {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl ArithGardee {
+    /// L'opération flottante correspondante — IEEE-754, non gardée à dessein.
+    fn flottant(self, a: f64, b: f64) -> f64 {
+        match self {
+            ArithGardee::Add => a + b,
+            ArithGardee::Sub => a - b,
+            ArithGardee::Mul => a * b,
+            ArithGardee::Div => a / b,
+        }
+    }
+
+    /// Le symbole de l'opération, pour les messages d'erreur.
+    fn symbole(self) -> char {
+        match self {
+            ArithGardee::Add => '+',
+            ArithGardee::Sub => '-',
+            ArithGardee::Mul => '*',
+            ArithGardee::Div => '/',
+        }
+    }
+}
+
+/// Une propriété référencée par un prédicat, EXTRAITE EN UN LOT par chunk.
+///
+/// POURQUOI CETTE STRUCTURE (2026-09-12). L'évaluateur lisait chaque cellule
+/// par sa route scalaire (`store.get_node_property`) : cinq à huit accès
+/// partagés et deux allocations par cellule — le commentaire de
+/// `eval_expr` le chiffre lui-même à « ~1 µs per cell ». Or un filtre
+/// n'évalue pas une ligne isolée : il évalue 2 048 lignes d'un même chunk,
+/// avec le MÊME couple (variable, propriété) souvent répété dans plusieurs
+/// termes. Deux amortissements deviennent alors possibles, et ce sont eux que
+/// cette structure achète :
+///
+///   1. la lecture par LOT (`GraphStore::get_node_property_batch`), qui résout
+///      UNE fois par lot ce qui ne dépend que de la clé (spec des zones, id de
+///      clé, verrous de zone) au lieu de le refaire par ligne ;
+///   2. la MISE EN COMMUN entre occurrences : `n.name CONTAINS 'a' OR
+///      n.name CONTAINS 'b' OR …` lisait `n.name` QUATRE fois par ligne.
+///      Mesuré : 4 termes sur la même propriété = 4 × le prix, soit 1 348 ms
+///      là où un seul terme en coûtait 362.
+///
+/// VALIDITÉ. `lignes[i].0` est l'identifiant du nœud lu à la ligne `i`, et il
+/// sert de PREUVE : la valeur d'une propriété ne dépend que de (identifiant,
+/// clé). Si l'identifiant de la ligne en cours d'évaluation est celui qu'on a
+/// extrait, la valeur en cache est la bonne — même si le chunk a changé entre
+/// l'extraction et la lecture (cas d'un `eval_at` appelé par un autre
+/// opérateur, qui ne prépare rien). Aucune valeur fausse n'est donc servie :
+/// en cas de désaccord, l'appelant reprend la route scalaire, inchangée.
+struct ProprietePreExtraite {
+    /// Nom de la variable (colonne du chunk).
+    variable: String,
+    /// Nom de la propriété.
+    propriete: String,
+    /// Clé construite UNE fois par requête : `PropertyKey::new` allouait un
+    /// `ArcStr` (arcstr::ArcStr::from(&str) alloue) à chaque cellule évaluée.
+    cle: PropertyKey,
+    /// Une case par ligne du chunk : (identifiant prouvant la validité, valeur).
+    lignes: Vec<(NodeId, Option<Value>)>,
+}
+
+/// Réponse de la pré-extraction pour une (ligne, variable, propriété).
+enum ReponsePre {
+    /// Valeur extraite pour CE nœud.
+    Valeur(Value),
+    /// Le lot a dit « absente » pour ce nœud (et l'identifiant concorde).
+    Absente,
+    /// Rien d'exploitable : le prédicat suit la route scalaire, inchangée.
+    Inconnue,
+}
+
+/// Trace opt-in du chemin de lecture des cellules (`OBRAIN_FILTRE_TRACE=1`).
+///
+/// Elle existe parce qu'un banc ne dit pas POURQUOI : sur le snapshot figé, la
+/// lecture par lot du lot entier (2 048 lignes) coûte 0,04 à 1,1 ms, et la
+/// requête coûte encore 1 300 ms — donc le temps est AILLEURS, dans la boucle
+/// par ligne. Ces compteurs disent lequel des trois chemins chaque ligne prend,
+/// sans quoi on optimise à l'aveugle.
+mod trace_filtre {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Positionné une fois par prédicat, depuis l'environnement.
+    pub(super) static ACTIVE: AtomicBool = AtomicBool::new(false);
+    pub(super) static VALEUR: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static ABSENTE: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static INCONNUE: AtomicUsize = AtomicUsize::new(0);
+
+    #[inline]
+    pub(super) fn actif() -> bool {
+        ACTIVE.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn remise_a_zero() {
+        VALEUR.store(0, Ordering::Relaxed);
+        ABSENTE.store(0, Ordering::Relaxed);
+        INCONNUE.store(0, Ordering::Relaxed);
+    }
+
+    pub(super) fn ligne() -> String {
+        format!(
+            "valeurs {} · absentes {} · scalaires {}",
+            VALEUR.load(Ordering::Relaxed),
+            ABSENTE.load(Ordering::Relaxed),
+            INCONNUE.load(Ordering::Relaxed)
+        )
+    }
+}
+
+/// Rassemble les couples (variable, propriété) référencés par une expression.
+///
+/// CONSERVATEUR À DESSEIN : un variant non traité (ou ajouté plus tard) n'est
+/// pas collecté, donc sa propriété est évaluée par la route scalaire —
+/// correct, seulement plus lent. Jamais l'inverse : rien n'est pré-extrait sur
+/// une supposition.
+fn collecte_proprietes(expr: &FilterExpression, out: &mut Vec<(String, String)>) {
+    match expr {
+        FilterExpression::Property { variable, property } => {
+            if !out.iter().any(|(v, p)| v == variable && p == property) {
+                out.push((variable.clone(), property.clone()));
+            }
+        }
+        FilterExpression::Binary { left, right, .. } => {
+            collecte_proprietes(left, out);
+            collecte_proprietes(right, out);
+        }
+        FilterExpression::Unary { operand, .. } => collecte_proprietes(operand, out),
+        FilterExpression::FunctionCall { args, .. } => {
+            for a in args {
+                collecte_proprietes(a, out);
+            }
+        }
+        FilterExpression::List(items) => {
+            for i in items {
+                collecte_proprietes(i, out);
+            }
+        }
+        FilterExpression::Map(pairs) => {
+            for (_, v) in pairs {
+                collecte_proprietes(v, out);
+            }
+        }
+        FilterExpression::IndexAccess { base, index } => {
+            collecte_proprietes(base, out);
+            collecte_proprietes(index, out);
+        }
+        FilterExpression::SliceAccess { base, start, end } => {
+            collecte_proprietes(base, out);
+            if let Some(s) = start {
+                collecte_proprietes(s, out);
+            }
+            if let Some(e) = end {
+                collecte_proprietes(e, out);
+            }
+        }
+        FilterExpression::Case {
+            operand,
+            when_clauses,
+            else_clause,
+        } => {
+            if let Some(o) = operand {
+                collecte_proprietes(o, out);
+            }
+            for (quand, alors) in when_clauses {
+                collecte_proprietes(quand, out);
+                collecte_proprietes(alors, out);
+            }
+            if let Some(e) = else_clause {
+                collecte_proprietes(e, out);
+            }
+        }
+        FilterExpression::ListComprehension {
+            list_expr,
+            filter_expr,
+            map_expr,
+            ..
+        } => {
+            collecte_proprietes(list_expr, out);
+            if let Some(f) = filter_expr {
+                collecte_proprietes(f, out);
+            }
+            collecte_proprietes(map_expr, out);
+        }
+        FilterExpression::ListPredicate {
+            list_expr,
+            predicate,
+            ..
+        } => {
+            collecte_proprietes(list_expr, out);
+            collecte_proprietes(predicate, out);
+        }
+        // Littéraux, variables, id/labels/type, Reduce, sous-requêtes : rien à
+        // collecter ici (voir la note « conservateur à dessein »).
+        _ => {}
+    }
+}
+
+/// Un prédicat TEXTE pré-évalué pour tout un chunk — voir
+/// [`GraphStore::verdicts_texte_batch`].
+///
+/// POURQUOI (2026-09-12). Les valeurs pré-extraites coûtent une allocation par
+/// cellule PRÉSENTE (le `ArcStr` du `Value`). Pour `CONTAINS` / `STARTS WITH` /
+/// `ENDS WITH`, la valeur n'a pas besoin d'exister : seuls ses OCTETS comptent.
+/// Ce verdict-ci vient du substrat, lu sur l'arène mmap, sans une allocation.
+///
+/// MESURE (banc contrôlé `micro-props`, 2 000 cellules 100 % présentes) : 1,1 ms
+/// → 0,64-0,89 ms pour la lecture seule, allocation comprise ; c'est cette
+/// allocation-ci que la voie des verdicts supprime.
+struct VerdictTexte {
+    /// Variable du chunk.
+    variable: String,
+    /// Propriété interrogée.
+    propriete: String,
+    /// Opérateur, pour ne servir le verdict qu'à l'expression EXACTE.
+    op: BinaryFilterOp,
+    /// Aiguille littérale (`'iam'` dans `CONTAINS 'iam'`).
+    aiguille: String,
+    /// Un identifiant par ligne : même PREUVE de validité que les valeurs
+    /// pré-extraites (la réponse ne dépend que du nœud).
+    ids: Vec<NodeId>,
+    /// Un verdict par ligne : `None` = NULL, `Some(b)` = verdict.
+    verdicts: Vec<Option<bool>>,
+    /// Lignes observées et lignes NON NULLES depuis l'activation — la densité
+    /// décide, et elle est MESURÉE, pas supposée.
+    vues: u64,
+    non_nulles: u64,
+    /// Faux quand la densité observée ne justifie plus cette voie : l'entrée
+    /// redevient inerte, donc la lecture de valeurs reprend la main (et la
+    /// propriété est matérialisée comme avant).
+    actif: bool,
+}
+
+/// Densité en dessous de laquelle la voie des verdicts est ABANDONNÉE.
+///
+/// MESURÉ (2026-09-12, temps CPU, `OBRAIN_VERDICTS_TEXTE` coupé/suivi) :
+///   `qualified_name` (100 % des lignes portent une valeur)  ×1,54
+///   `name` (15 %)                                            ×0,84
+/// Sur une propriété creuse, prouver NULL oblige à traverser toute la chaîne
+/// alors que la lecture de valeurs n'aurait payé aucun décodage : la voie coûte
+/// donc plus qu'elle ne rapporte. La frontière est franche ; un demi est un
+/// partage honnête, et il est vérifié par le banc des deux côtés.
+const DENSITE_MIN_VERDICTS: u64 = 2;
+
+/// Nombre de lignes observées avant de trancher (une seule tranche de 2 048
+/// suffit déjà à séparer 15 % de 100 %).
+const OBSERVATIONS_MIN_VERDICTS: u64 = 512;
+
+/// Réponse de la voie des verdicts pour une ligne.
+enum ReponseVerdict {
+    /// Le prédicat a un verdict.
+    Verdict(bool),
+    /// NULL — valeur absente ou non textuelle, exactement ce que l'évaluateur
+    /// rendrait (`left.as_str()?` échoue).
+    Nul,
+    /// Rien de pré-évalué : suivre le chemin d'origine, inchangé.
+    Aucun,
+}
+
+/// Réponse du chemin rapide `split(s, d)[k]` (`ReponseSplitIndexe`).
+///
+/// ── POURQUOI CE MOTIF MÉRITE SON PROPRE CHEMIN (2026-09-15) ────────────────
+///
+/// `split(qn, '.')[k]` est l'idiome d'indexation de chemin de TOUT ce dépôt :
+/// le dashboard agrège par module avec, la couche viz l'écrit dans chaque
+/// route, et le chat s'en sert pour nommer. Or la voie générale matérialise la
+/// liste ENTIÈRE — une `Vec<Value>` et une `ArcStr` ALLOUÉE PAR TOKEN — pour n'en
+/// lire qu'UN élément.
+///
+/// Coût mesuré sur `runtime-dev` (1 324 105 arêtes CALLS), par étage :
+///
+/// | étage                                   | wall   | delta    |
+/// |-----------------------------------------|--------|----------|
+/// | balayage des arêtes CALLS, `count(r)`   |   80 ms| —        |
+/// | + `a.qualified_name` / `b.qualified_name`|  340 ms| +260 ms  |
+/// | + `split(a.qn,'.')[4]`                  |  640 ms| +300 ms  |
+/// | + `split(b.qn,'.')[4]`                  | 1000 ms| +360 ms  |
+/// | + `GROUP BY sa, sb, count(r)`           | 1050 ms|  +50 ms  |
+///
+/// Le groupement — ce qu'on croit toujours être le coût — pèse 50 ms. Ce qui
+/// pèse, c'est de payer 2 allocations par arête (2,6 M) pour lire 2 tokens.
+/// Le nombre de NŒUDS distincts est pourtant 439 688 : le travail est fait six
+/// fois de trop, par construction de la voie générale.
+///
+/// Le chemin rapide ne change AUCUNE sémantique : il consomme le MÊME itérateur
+/// `str::split` que la voie générale, dans le MÊME ordre, et n'alloue que le
+/// token demandé. Il suit donc à l'identique les cas limites — séparateur vide
+/// (`"abc".split("")` rend 5 éléments, dont deux vides), index hors bornes
+/// (→ `None`), index négatif (compté depuis la fin), et arguments non textuels
+/// (→ `None`).
+enum ReponseSplitIndexe {
+    /// Le motif s'applique : voici ce que l'indexation rend (`None` = hors
+    /// bornes, exactement ce que `items.get(idx)` rendrait).
+    Valeur(Option<Value>),
+    /// Le motif ne s'applique pas : suivre l'évaluation générale, inchangée.
+    Aucun,
+}
+
+/// Rassemble les prédicats texte évaluables par le substrat :
+/// `Property <CONTAINS|STARTS WITH|ENDS WITH> 'littéral'`.
+///
+/// CONSERVATEUR À DESSEIN, comme `collecte_proprietes` : seule cette forme
+/// exacte est retenue (droit littéral de type chaîne). Tout le reste — opérande
+/// calculé, littéral non textuel, comparaison d'égalité — suit le chemin
+/// d'origine, donc aucune sémantique n'est réécrite ici.
+fn collecte_predicats_texte(
+    expr: &FilterExpression,
+    out: &mut Vec<(String, String, BinaryFilterOp, String)>,
+) {
+    if let FilterExpression::Binary { left, op, right } = expr
+        && matches!(
+            op,
+            BinaryFilterOp::Contains | BinaryFilterOp::StartsWith | BinaryFilterOp::EndsWith
+        )
+        && let FilterExpression::Property { variable, property } = &**left
+        && let FilterExpression::Literal(Value::String(aiguille)) = &**right
+        && !out.iter().any(|(v, p, o, a)| {
+            v == variable && p == property && *o == *op && a == aiguille.as_str()
+        })
+    {
+        out.push((
+            variable.clone(),
+            property.clone(),
+            *op,
+            aiguille.to_string(),
+        ));
+    }
+    match expr {
+        FilterExpression::Binary { left, right, .. } => {
+            collecte_predicats_texte(left, out);
+            collecte_predicats_texte(right, out);
+        }
+        FilterExpression::Unary { operand, .. } => collecte_predicats_texte(operand, out),
+        FilterExpression::FunctionCall { args, .. } => {
+            for a in args {
+                collecte_predicats_texte(a, out);
+            }
+        }
+        FilterExpression::List(items) => {
+            for i in items {
+                collecte_predicats_texte(i, out);
+            }
+        }
+        FilterExpression::Map(pairs) => {
+            for (_, v) in pairs {
+                collecte_predicats_texte(v, out);
+            }
+        }
+        FilterExpression::IndexAccess { base, index } => {
+            collecte_predicats_texte(base, out);
+            collecte_predicats_texte(index, out);
+        }
+        FilterExpression::SliceAccess { base, start, end } => {
+            collecte_predicats_texte(base, out);
+            if let Some(s) = start {
+                collecte_predicats_texte(s, out);
+            }
+            if let Some(e) = end {
+                collecte_predicats_texte(e, out);
+            }
+        }
+        FilterExpression::Case {
+            operand,
+            when_clauses,
+            else_clause,
+        } => {
+            if let Some(o) = operand {
+                collecte_predicats_texte(o, out);
+            }
+            for (quand, alors) in when_clauses {
+                collecte_predicats_texte(quand, out);
+                collecte_predicats_texte(alors, out);
+            }
+            if let Some(e) = else_clause {
+                collecte_predicats_texte(e, out);
+            }
+        }
+        FilterExpression::ListComprehension {
+            list_expr,
+            filter_expr,
+            map_expr,
+            ..
+        } => {
+            collecte_predicats_texte(list_expr, out);
+            if let Some(f) = filter_expr {
+                collecte_predicats_texte(f, out);
+            }
+            collecte_predicats_texte(map_expr, out);
+        }
+        FilterExpression::ListPredicate {
+            list_expr,
+            predicate,
+            ..
+        } => {
+            collecte_predicats_texte(list_expr, out);
+            collecte_predicats_texte(predicate, out);
+        }
+        _ => {}
+    }
+}
+
+/// Compte, par couple (variable, propriété), combien de fois la propriété est
+/// référencée et combien de ces références sont COUVERTES par un verdict texte.
+///
+/// POURQUOI (mesuré 2026-09-12). Sans ce compte, une propriété interrogée par
+/// `CONTAINS` était lue DEUX fois : une pour le verdict, une pour les valeurs —
+/// et payer deux traversées de chaîne coûtait 9 % de CPU de plus que n'en
+/// rapportait l'allocation économisée. Une propriété dont TOUTES les références
+/// sont couvertes n'a plus besoin d'être matérialisée du tout.
+fn compte_occurrences(
+    expr: &FilterExpression,
+    couvert: bool,
+    out: &mut Vec<(String, String, usize, usize)>,
+) {
+    match expr {
+        FilterExpression::Property { variable, property } => {
+            let entree = match out
+                .iter_mut()
+                .find(|(v, p, _, _)| v == variable && p == property)
+            {
+                Some(e) => e,
+                None => {
+                    out.push((variable.clone(), property.clone(), 0, 0));
+                    out.last_mut().expect("vient d'être poussée")
+                }
+            };
+            entree.2 += 1;
+            if couvert {
+                entree.3 += 1;
+            }
+        }
+        FilterExpression::Binary { left, op, right } => {
+            // La référence est COUVERTE quand elle est l'opérande gauche d'une
+            // forme reconnue par `collecte_predicats_texte`.
+            let couvre_gauche = matches!(
+                op,
+                BinaryFilterOp::Contains | BinaryFilterOp::StartsWith | BinaryFilterOp::EndsWith
+            ) && matches!(
+                (&**left, &**right),
+                (
+                    FilterExpression::Property { .. },
+                    FilterExpression::Literal(Value::String(_))
+                )
+            );
+            compte_occurrences(left, couvert || couvre_gauche, out);
+            compte_occurrences(right, false, out);
+        }
+        FilterExpression::Unary { operand, .. } => compte_occurrences(operand, false, out),
+        FilterExpression::FunctionCall { args, .. } => {
+            for a in args {
+                compte_occurrences(a, false, out);
+            }
+        }
+        FilterExpression::List(items) => {
+            for i in items {
+                compte_occurrences(i, false, out);
+            }
+        }
+        FilterExpression::Map(pairs) => {
+            for (_, v) in pairs {
+                compte_occurrences(v, false, out);
+            }
+        }
+        FilterExpression::IndexAccess { base, index } => {
+            compte_occurrences(base, false, out);
+            compte_occurrences(index, false, out);
+        }
+        FilterExpression::SliceAccess { base, start, end } => {
+            compte_occurrences(base, false, out);
+            if let Some(s) = start {
+                compte_occurrences(s, false, out);
+            }
+            if let Some(e) = end {
+                compte_occurrences(e, false, out);
+            }
+        }
+        FilterExpression::Case {
+            operand,
+            when_clauses,
+            else_clause,
+        } => {
+            if let Some(o) = operand {
+                compte_occurrences(o, false, out);
+            }
+            for (quand, alors) in when_clauses {
+                compte_occurrences(quand, false, out);
+                compte_occurrences(alors, false, out);
+            }
+            if let Some(e) = else_clause {
+                compte_occurrences(e, false, out);
+            }
+        }
+        FilterExpression::ListComprehension {
+            list_expr,
+            filter_expr,
+            map_expr,
+            ..
+        } => {
+            compte_occurrences(list_expr, false, out);
+            if let Some(f) = filter_expr {
+                compte_occurrences(f, false, out);
+            }
+            compte_occurrences(map_expr, false, out);
+        }
+        FilterExpression::ListPredicate {
+            list_expr,
+            predicate,
+            ..
+        } => {
+            compte_occurrences(list_expr, false, out);
+            compte_occurrences(predicate, false, out);
+        }
+        _ => {}
+    }
+}
 
 /// An expression-based predicate that evaluates logical expressions.
 ///
@@ -70,6 +629,31 @@ pub struct ExpressionPredicate {
     viewing_epoch: Option<EpochId>,
     /// Session context for introspection functions (info, schema, current_schema, etc.).
     session_context: SessionContext,
+    /// Première erreur d'évaluation (arithmétique gardée) en attente de relevé.
+    ///
+    /// Voir [`Predicate::take_eval_error`] : l'évaluation elle-même rend
+    /// `Option<Value>` et n'a pas de canal d'erreur ; ce logement, protégé
+    /// par un `Mutex` parce que `Predicate` exige `Send + Sync`, porte la
+    /// faute jusqu'à l'opérateur qui saura la transformer en erreur de
+    /// requête.
+    eval_error: std::sync::Mutex<Option<String>>,
+    /// Propriétés référencées par l'expression, avec leur extraction du chunk
+    /// en cours (voir [`ProprietePreExtraite`] et `Predicate::prepare_chunk`).
+    ///
+    /// `Mutex` pour la même raison que `eval_error` : `Predicate` exige
+    /// `Send + Sync`, et l'annonce du chunk arrive par `&self`. Le verrou est
+    /// pris une fois par LIGNE (et non une fois par cellule lue au store
+    /// comme avant) : un `Mutex` non contentieux vaut ~20 ns, à comparer aux
+    /// ~1 µs/cellule de la route scalaire qu'il remplace.
+    props_chunk: std::sync::Mutex<Vec<ProprietePreExtraite>>,
+    /// Prédicats texte pré-évalués par chunk (voir [`VerdictTexte`]) : le canal
+    /// qui évite toute allocation par cellule pour `CONTAINS` / `STARTS WITH` /
+    /// `ENDS WITH`.
+    verdicts_texte: std::sync::Mutex<Vec<VerdictTexte>>,
+    /// Par couple (variable, propriété) : nombre de références, et combien sont
+    /// couvertes par un verdict texte (voir [`compte_occurrences`]). Sert à ne
+    /// PAS matérialiser une propriété que les verdicts suffisent à trancher.
+    occurrences: Vec<(String, String, usize, usize)>,
 }
 
 /// A lazily-computed, cloneable value.
@@ -119,6 +703,19 @@ impl Default for LazyValue {
 /// on first access, so queries that never call `info()` or `schema()` pay zero cost.
 #[derive(Debug, Clone, Default)]
 pub struct SessionContext {
+    /// (2026-08-17, aretes inter-bases V2) Registre de la session
+    /// multi-store : `{slug -> store}`, ouverture paresseuse. `None` =
+    /// session mono-base, comportement historique inchange.
+    pub base_registry: Option<Arc<crate::execution::BaseRegistry>>,
+    /// (V3) Contexte de droits du LECTEUR — evalue sur le store CIBLE a
+    /// chaque franchissement de frontiere (`store_for_reader`). `None` =
+    /// acces total, comportement historique.
+    pub access_context: Option<Arc<crate::execution::AccessContext>>,
+    /// (V3) Vrai dans une transaction EXPLICITE (START TRANSACTION actif,
+    /// pas l'auto-commit) : les ecritures inter-bases y sont refusees avec
+    /// un message enseignant tant que le registre externe est hors
+    /// undo-log.
+    pub in_explicit_transaction: bool,
     /// Current session schema name (for `CURRENT_SCHEMA`).
     pub current_schema: Option<String>,
     /// Current session graph name (for `CURRENT_GRAPH`).
@@ -344,6 +941,54 @@ impl ExpressionPredicate {
         variable_columns: HashMap<String, usize>,
         store: Arc<dyn GraphStore>,
     ) -> Self {
+        // Ce que l'expression référence est connu ICI et ne changera plus :
+        // on collecte les couples (variable, propriété) et on construit leurs
+        // clés une seule fois, plutôt que par cellule évaluée.
+        // Interrupteur de la voie des verdicts (`OBRAIN_VERDICTS_TEXTE=0` la
+        // coupe). Il sert à DEUX choses, et la première est la plus importante :
+        // prouver que les lignes rendues sont IDENTIQUES avec et sans cette voie
+        // (mêmes résultats, pas seulement mêmes tests) ; la seconde est de
+        // mesurer les deux dans le MÊME binaire, donc sous la même charge.
+        let mut predicats: Vec<(String, String, BinaryFilterOp, String)> = Vec::new();
+        if std::env::var("OBRAIN_VERDICTS_TEXTE").map_or(true, |v| v != "0") {
+            collecte_predicats_texte(&expression, &mut predicats);
+        }
+        let mut occurrences: Vec<(String, String, usize, usize)> = Vec::new();
+        compte_occurrences(&expression, false, &mut occurrences);
+
+        let mut paires: Vec<(String, String)> = Vec::new();
+        collecte_proprietes(&expression, &mut paires);
+        // → une propriété dont TOUTES les références sont couvertes par un
+        //   verdict texte n'est pas matérialisée : le verdict suffit, et le
+        //   `Value` par cellule n'aurait servi à personne.
+        let _ = &occurrences;
+        let props_chunk = paires
+            .into_iter()
+            .map(|(variable, propriete)| ProprietePreExtraite {
+                cle: PropertyKey::new(propriete.as_str()),
+                variable,
+                propriete,
+                lignes: Vec::new(),
+            })
+            .collect();
+        let verdicts_texte = predicats
+            .into_iter()
+            .map(|(variable, propriete, op, aiguille)| VerdictTexte {
+                variable,
+                propriete,
+                op,
+                aiguille,
+                ids: Vec::new(),
+                verdicts: Vec::new(),
+                vues: 0,
+                non_nulles: 0,
+                actif: true,
+            })
+            .collect();
+        trace_filtre::ACTIVE.store(
+            std::env::var_os("OBRAIN_FILTRE_TRACE").is_some(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         Self {
             expression,
             variable_columns,
@@ -351,6 +996,390 @@ impl ExpressionPredicate {
             transaction_id: None,
             viewing_epoch: None,
             session_context: SessionContext::default(),
+            eval_error: std::sync::Mutex::new(None),
+            props_chunk: std::sync::Mutex::new(props_chunk),
+            verdicts_texte: std::sync::Mutex::new(verdicts_texte),
+            occurrences,
+        }
+    }
+
+    /// Consigne une erreur d'évaluation (la PREMIÈRE gagne) et rend `None`.
+    ///
+    /// `None` fait sortir proprement de l'évaluation en cours ; l'opérateur
+    /// appelant relèvera la faute via [`ExpressionPredicate::take_eval_error`]
+    /// et refusera la requête. Ne sert qu'aux fautes qui doivent REFUSER la
+    /// requête (division/modulo par zéro, débordement i64) — jamais aux
+    /// simples absences de valeur.
+    fn signale_erreur(&self, msg: String) -> Option<Value> {
+        let mut slot = self.eval_error.lock().unwrap_or_else(|e| e.into_inner());
+        slot.get_or_insert(msg);
+        None
+    }
+
+    /// Relève (et efface) la première erreur d'évaluation consignée.
+    ///
+    /// Méthode inhérente pour que les détenteurs directs (`ProjectOperator`,
+    /// via `eval_at`) n'aient pas besoin d'importer le trait [`Predicate`].
+    pub fn take_eval_error(&self) -> Option<String> {
+        self.eval_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// Lit une propriété à l'ÉPOQUE demandée, quand le store courant ne l'a
+    /// plus.
+    ///
+    /// C'est le seul chemin qui reste après qu'une cellule pré-extraite a été
+    /// déclarée absente : `resolve_node` rend le nœud tel qu'il était vu à
+    /// l'époque de la transaction, et c'est de LUI que vient la valeur — le
+    /// store courant, lui, vient d'être interrogé par le lot (mêmes zones,
+    /// même ordre) et n'a rien.
+    fn propriete_a_l_epoque(&self, node_id: NodeId, property: &str) -> Option<Value> {
+        self.resolve_node(node_id)
+            .and_then(|node| node.get_property(property).cloned())
+    }
+
+    /// Extrait, EN UN LOT, chaque propriété référencée par l'expression pour
+    /// TOUT le chunk annoncé.
+    ///
+    /// C'est ici que le prix par cellule tombe : une lecture
+    /// (`get_node_property_batch`) pour tout le chunk au lieu d'une par ligne,
+    /// et une seule lecture par couple (variable, propriété) même quand le
+    /// prédicat l'écrit plusieurs fois (`OR`, `CASE` répétant le même test).
+    ///
+    /// Le verrou `props_chunk` est tenu pendant la lecture du store. C'est sans
+    /// risque de cycle : le store ne rappelle JAMAIS un prédicat, et un prédicat
+    /// n'appartient qu'à un opérateur, lui-même tenu par un seul fil.
+    fn pre_extraire_chunk(&self, chunk: &DataChunk) {
+        let trace = std::env::var_os("OBRAIN_FILTRE_TRACE").is_some();
+        self.pre_extraire_verdicts(chunk);
+        let debut = web_time::Instant::now();
+        let mut entrees = self.props_chunk.lock().unwrap_or_else(|e| e.into_inner());
+        if entrees.is_empty() {
+            // Diagnostic : `prepare_chunk` EST appelé mais l'expression ne
+            // référence AUCUNE propriété reconnue par `collecte_proprietes`.
+            // Sans cette ligne, l'absence de trace se confond avec « le crochet
+            // n'est pas appelé » — deux causes très différentes (expression
+            // non reconnue ici, ou autre opérateur qui n'annonce pas le chunk).
+            if trace_filtre::actif() {
+                eprintln!("[filtre] prepare_chunk appelé, aucune propriété collectée");
+            }
+            return;
+        }
+        let lignes = chunk.total_row_count();
+        for entree in entrees.iter_mut() {
+            entree.lignes.clear();
+            // Couverte par des verdicts actifs : rien à matérialiser. Les
+            // verdicts ont été extraits AVANT cet appel, donc la densité du
+            // chunk courant est déjà connue — on ne paie pas une lecture pour
+            // une propriété que la voie sans allocation tranche déjà.
+            if self.couverte_par_verdicts_actifs(&entree.variable, &entree.propriete) {
+                continue;
+            }
+            let Some(colonne) = self
+                .variable_columns
+                .get(&entree.variable)
+                .and_then(|i| chunk.column(*i))
+            else {
+                // Variable absente du chunk (plan inattendu) : route scalaire.
+                continue;
+            };
+            let n = lignes.min(colonne.len());
+            let mut ids: Vec<NodeId> = Vec::with_capacity(n);
+            for r in 0..n {
+                match colonne.get_node_id(r) {
+                    Some(id) => ids.push(id),
+                    // La colonne ne porte pas d'identifiants de nœud (carte
+                    // issue d'un UNWIND, liste…) : rien à extraire. On exige
+                    // TOUTES les lignes en nœud — un mélange nœud/non-nœud
+                    // rendrait la preuve de validité fausse.
+                    None => {
+                        ids.clear();
+                        break;
+                    }
+                }
+            }
+            if ids.is_empty() {
+                continue;
+            }
+            let t_lot = web_time::Instant::now();
+            let valeurs = self.store.get_node_property_batch(&ids, &entree.cle);
+            let ms_lot = t_lot.elapsed().as_secs_f64() * 1000.0;
+            if trace {
+                let presents = valeurs.iter().filter(|v| v.is_some()).count();
+                eprintln!(
+                    "[filtre] {}.{} : {} lignes, {} valeurs présentes, lot {:.2} ms ({:.0} ns/ligne)",
+                    entree.variable,
+                    entree.propriete,
+                    ids.len(),
+                    presents,
+                    ms_lot,
+                    ms_lot * 1e6 / ids.len() as f64
+                );
+            }
+            entree.lignes = ids.into_iter().zip(valeurs).collect();
+        }
+        if trace {
+            eprintln!(
+                "[filtre] chunk de {} lignes préparé en {:.2} ms — {} · époque vue {:?} · courante {:?} · tx {:?}",
+                lignes,
+                debut.elapsed().as_secs_f64() * 1000.0,
+                trace_filtre::ligne(),
+                self.viewing_epoch,
+                self.store.current_epoch(),
+                self.transaction_id
+            );
+            trace_filtre::remise_a_zero();
+        }
+    }
+
+    /// La propriété est-elle ENTIÈREMENT couverte par des verdicts ACTIFS ?
+    ///
+    /// Si oui, la matérialiser serait un travail perdu : chaque référence est
+    /// déjà tranchée sur les octets, et un `Value` par cellule n'irait nulle
+    /// part. Si un seul verdict du couple est retombé (densité insuffisante),
+    /// on répond NON : la lecture de valeurs reprend ses droits pour tout le
+    /// couple, sans état intermédiaire à moitié valide.
+    fn couverte_par_verdicts_actifs(&self, variable: &str, propriete: &str) -> bool {
+        let Some(&(_, _, total, couvertes)) = self
+            .occurrences
+            .iter()
+            .find(|(v, p, _, _)| v == variable && p == propriete)
+        else {
+            return false;
+        };
+        if total == 0 || total != couvertes {
+            return false;
+        }
+        let verdicts = self
+            .verdicts_texte
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut au_moins_un = false;
+        for entree in verdicts
+            .iter()
+            .filter(|e| e.variable == variable && e.propriete == propriete)
+        {
+            if !entree.actif {
+                return false;
+            }
+            au_moins_un = true;
+        }
+        au_moins_un
+    }
+
+    /// Pré-évalue, POUR TOUT LE CHUNK, les prédicats texte reconnus — les
+    /// verdicts viennent du substrat, lus sur l'arène mmap, sans allouer.
+    fn pre_extraire_verdicts(&self, chunk: &DataChunk) {
+        let mut entrees = self
+            .verdicts_texte
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if entrees.is_empty() {
+            return;
+        }
+        let lignes = chunk.total_row_count();
+        for entree in entrees.iter_mut() {
+            entree.ids.clear();
+            entree.verdicts.clear();
+        }
+        // Les verdicts sont demandés GROUPÉS PAR (variable, propriété) : une
+        // seule traversée de chaîne pour toutes les aiguilles de la même
+        // propriété (`CONTAINS 'a' OR CONTAINS 'b'` demandait sinon N fois le
+        // même parcours — mesuré 270 ms contre 218 ms pour 347 970 cellules).
+        let mut deja_fait: Vec<(String, String)> = Vec::new();
+        for idx in 0..entrees.len() {
+            let variable = entrees[idx].variable.clone();
+            let propriete = entrees[idx].propriete.clone();
+            if deja_fait
+                .iter()
+                .any(|(v, p)| v == &variable && p == &propriete)
+            {
+                continue;
+            }
+            deja_fait.push((variable.clone(), propriete.clone()));
+            let groupe: Vec<usize> = (0..entrees.len())
+                .filter(|&i| entrees[i].variable == variable && entrees[i].propriete == propriete)
+                .collect();
+            let Some(colonne) = self
+                .variable_columns
+                .get(&variable)
+                .and_then(|i| chunk.column(*i))
+            else {
+                continue;
+            };
+            let n = lignes.min(colonne.len());
+            let mut ids: Vec<NodeId> = Vec::with_capacity(n);
+            for r in 0..n {
+                match colonne.get_node_id(r) {
+                    Some(id) => ids.push(id),
+                    None => {
+                        ids.clear();
+                        break;
+                    }
+                }
+            }
+            if ids.is_empty() {
+                continue;
+            }
+            let predicats: Vec<PredicatTexte<'_>> = groupe
+                .iter()
+                .filter_map(|&i| {
+                    let entree = &entrees[i];
+                    Some(match entree.op {
+                        BinaryFilterOp::Contains => {
+                            PredicatTexte::Contient(entree.aiguille.as_str())
+                        }
+                        BinaryFilterOp::StartsWith => {
+                            PredicatTexte::CommencePar(entree.aiguille.as_str())
+                        }
+                        BinaryFilterOp::EndsWith => {
+                            PredicatTexte::FiniPar(entree.aiguille.as_str())
+                        }
+                        // `collecte_predicats_texte` ne retient que ces trois-là.
+                        _ => return None,
+                    })
+                })
+                .collect();
+            if predicats.len() != groupe.len() {
+                continue;
+            }
+            let cle = PropertyKey::new(propriete.as_str());
+            // Fin de l'emprunt immuable d'`entrees` ici : la suite écrit.
+            let Some(par_predicat) = self.store.verdicts_texte_batch(&ids, &cle, &predicats) else {
+                continue;
+            };
+            if par_predicat.len() != groupe.len() {
+                continue;
+            }
+            for (rang, &i) in groupe.iter().enumerate() {
+                let verdicts = par_predicat[rang].clone();
+                let entree = &mut entrees[i];
+                entree.vues += verdicts.len() as u64;
+                entree.non_nulles += verdicts.iter().filter(|v| v.is_some()).count() as u64;
+                // La densité observée tranche : sous le seuil, la voie est
+                // abandonnée et la lecture de valeurs reprend la propriété.
+                if entree.vues >= OBSERVATIONS_MIN_VERDICTS
+                    && entree.non_nulles * DENSITE_MIN_VERDICTS < entree.vues
+                {
+                    entree.actif = false;
+                }
+                entree.ids = ids.clone();
+                entree.verdicts = verdicts;
+            }
+        }
+    }
+
+    /// Verdict pré-évalué pour cette ligne, si la forme ET la preuve concordent.
+    fn verdict_texte(
+        &self,
+        chunk: &DataChunk,
+        row: usize,
+        gauche: &FilterExpression,
+        droite: &FilterExpression,
+        op: BinaryFilterOp,
+    ) -> ReponseVerdict {
+        if !matches!(
+            op,
+            BinaryFilterOp::Contains | BinaryFilterOp::StartsWith | BinaryFilterOp::EndsWith
+        ) {
+            return ReponseVerdict::Aucun;
+        }
+        let FilterExpression::Property { variable, property } = gauche else {
+            return ReponseVerdict::Aucun;
+        };
+        let FilterExpression::Literal(Value::String(aiguille)) = droite else {
+            return ReponseVerdict::Aucun;
+        };
+        let Some(colonne) = self
+            .variable_columns
+            .get(variable)
+            .and_then(|i| chunk.column(*i))
+        else {
+            return ReponseVerdict::Aucun;
+        };
+        let Some(node_id) = colonne.get_node_id(row) else {
+            return ReponseVerdict::Aucun;
+        };
+        let entrees = self
+            .verdicts_texte
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(entree) = entrees.iter().find(|e| {
+            e.variable == *variable
+                && e.propriete == *property
+                && e.op == op
+                && e.aiguille == aiguille.as_str()
+        }) else {
+            return ReponseVerdict::Aucun;
+        };
+        if !entree.actif {
+            return ReponseVerdict::Aucun;
+        }
+        match (entree.ids.get(row), entree.verdicts.get(row)) {
+            // LA PREUVE : même nœud ⇒ même verdict. Sinon chemin d'origine.
+            (Some(id), Some(verdict)) if *id == node_id => match verdict {
+                Some(b) => ReponseVerdict::Verdict(*b),
+                None => ReponseVerdict::Nul,
+            },
+            _ => ReponseVerdict::Aucun,
+        }
+    }
+
+    /// Lit la valeur pré-extraite de `variable.propriete` pour cette ligne.
+    ///
+    /// Rend [`ReponsePre::Inconnue`] dès que la preuve manque (cache vide,
+    /// ligne hors cache, identifiant de nœud différent) : l'appelant reprend
+    /// alors la route scalaire, qui n'a pas été modifiée d'un octet.
+    fn propriete_pre_extraite(
+        &self,
+        node_id: Option<NodeId>,
+        row: usize,
+        variable: &str,
+        property: &str,
+    ) -> ReponsePre {
+        let trace = trace_filtre::actif();
+        let entrees = self.props_chunk.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entree) = entrees
+            .iter()
+            .find(|e| e.variable == variable && e.propriete == property)
+        else {
+            if trace {
+                trace_filtre::INCONNUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            return ReponsePre::Inconnue;
+        };
+        let Some((id_extrait, valeur)) = entree.lignes.get(row) else {
+            if trace {
+                trace_filtre::INCONNUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            return ReponsePre::Inconnue;
+        };
+        // LA PREUVE, et elle tient en une comparaison : la valeur d'une
+        // propriété ne dépend que de (identifiant, clé). Même identifiant à
+        // cette ligne ⇒ même valeur. Un autre chunk rend un autre identifiant,
+        // et la route scalaire reprend la main — aucune valeur fausse ne peut
+        // être servie, même par un `eval_at` qui n'a rien préparé.
+        if node_id != Some(*id_extrait) {
+            if trace {
+                trace_filtre::INCONNUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            return ReponsePre::Inconnue;
+        }
+        match valeur {
+            Some(v) => {
+                if trace {
+                    trace_filtre::VALEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                ReponsePre::Valeur(v.clone())
+            }
+            None => {
+                if trace {
+                    trace_filtre::ABSENTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                ReponsePre::Absente
+            }
         }
     }
 
@@ -369,6 +1398,37 @@ impl ExpressionPredicate {
     pub fn with_session_context(mut self, context: SessionContext) -> Self {
         self.session_context = context;
         self
+    }
+
+    /// Le repli d'ÉPOQUE peut-il apprendre quelque chose que le store courant
+    /// ignore ?
+    ///
+    /// POURQUOI CETTE QUESTION (2026-09-12, mesuré). Le filtre appelait
+    /// `resolve_node` — donc `get_node_versioned`/`get_node_at_epoch`, qui
+    /// HYDRATENT TOUTES les propriétés du nœud — dès qu'une propriété manquait
+    /// et qu'une époque était posée. Or le planificateur pose TOUJOURS une
+    /// époque : sur une lecture ordinaire on lit `EpochId(0)` alors que
+    /// `current_epoch()` vaut `EpochId(0)`, sans transaction. Lire l'époque
+    /// COURANTE sans transaction, c'est lire l'état du store : le repli ne peut
+    /// rien rendre de plus que le `None` déjà obtenu, et il le paie au prix
+    /// d'une hydratation complète du nœud, PAR LIGNE.
+    ///
+    /// Coût mesuré de ce zéro (snapshot figé, 347 970 nœuds) :
+    /// « balayage + 1 cellule ABSENTE » = 1 280 ms, contre 400 ms pour la même
+    /// cellule PRÉSENTE — soit 3,3 µs/ligne pour rendre `None`.
+    ///
+    /// Une propriété absente est le cas le PLUS fréquent d'un filtre (la
+    /// plupart des nœuds n'ont pas la plupart des propriétés) : ce n'était pas
+    /// un cas de bord, c'était le régime normal.
+    ///
+    /// Le repli reste donc entier dès qu'il peut voir autre chose : époque
+    /// différente de la courante (lecture historique) ou transaction en cours
+    /// (écritures non commitées, que la vue versionnée seule connaît).
+    fn repli_epoque_utile(&self) -> bool {
+        match self.viewing_epoch {
+            None => false,
+            Some(epoque) => self.transaction_id.is_some() || epoque != self.store.current_epoch(),
+        }
     }
 
     /// Resolves a node using transaction-aware access when available.
@@ -404,6 +1464,62 @@ impl ExpressionPredicate {
         self.eval_expr(&self.expression, chunk, row)
     }
 
+    /// `split(s, d)[k]` — rend le k-ième token SANS matérialiser la liste.
+    ///
+    /// Voir `ReponseSplitIndexe` pour la mesure qui justifie ce chemin et pour
+    /// l'inventaire des cas limites suivis à l'identique.
+    ///
+    /// L'ORDRE D'ÉVALUATION EST CELUI DE LA VOIE GÉNÉRALE : les arguments de
+    /// `split` (gauche → droite), PUIS l'index. Il compte : quand `split` rend
+    /// `None` (argument non textuel), la voie générale sort par `?` et
+    /// n'évalue JAMAIS l'index. On sort donc au même endroit, sans évaluer
+    /// l'index — un `UNWIND` ou une division gardée dans l'index ne doit pas se
+    /// mettre à s'exécuter parce qu'on a optimisé.
+    fn split_indexe_direct(
+        &self,
+        base: &FilterExpression,
+        index: &FilterExpression,
+        chunk: &DataChunk,
+        row: usize,
+    ) -> ReponseSplitIndexe {
+        let FilterExpression::FunctionCall { name, args } = base else {
+            return ReponseSplitIndexe::Aucun;
+        };
+        if args.len() != 2 || !name.eq_ignore_ascii_case("split") {
+            return ReponseSplitIndexe::Aucun;
+        }
+        // Types : `split` rend `None` dès qu'un argument n'est pas une chaîne.
+        let Some(Value::String(s)) = self.eval_expr(&args[0], chunk, row) else {
+            return ReponseSplitIndexe::Valeur(None);
+        };
+        let Some(Value::String(delim)) = self.eval_expr(&args[1], chunk, row) else {
+            return ReponseSplitIndexe::Valeur(None);
+        };
+        let Some(Value::Int64(k)) = self.eval_expr(index, chunk, row) else {
+            // Index absent ou non entier : la voie générale a d'autres bras que
+            // celui de la liste (`(_, Value::String(key))`…). On la laisse
+            // trancher plutôt que de réécrire ici une règle qu'elle seule porte.
+            return ReponseSplitIndexe::Aucun;
+        };
+        let token = |rang: usize| -> Option<Value> {
+            s.split(delim.as_str())
+                .nth(rang)
+                .map(|p| Value::String(p.to_string().into()))
+        };
+        if k >= 0 {
+            return ReponseSplitIndexe::Valeur(token(k as usize));
+        }
+        // Index NÉGATIF : il faut la longueur, donc un comptage — mais jamais la
+        // liste allouée. `count()` consomme le même itérateur que la voie
+        // générale, qui construisait la `Vec` uniquement pour en lire `.len()`.
+        let len = s.split(delim.as_str()).count() as i64;
+        let rang = len + k;
+        if rang < 0 {
+            return ReponseSplitIndexe::Valeur(None);
+        }
+        ReponseSplitIndexe::Valeur(token(rang as usize))
+    }
+
     fn eval_expr(&self, expr: &FilterExpression, chunk: &DataChunk, row: usize) -> Option<Value> {
         match expr {
             FilterExpression::Literal(v) => Some(v.clone()),
@@ -414,6 +1530,35 @@ impl ExpressionPredicate {
             FilterExpression::Property { variable, property } => {
                 let col_idx = *self.variable_columns.get(variable)?;
                 let col = chunk.column(col_idx)?;
+                // L'identifiant est lu UNE fois : il sert de clé de cache ET de
+                // preuve de validité (voir `propriete_pre_extraite`).
+                let node_id = col.get_node_id(row);
+                if node_id.is_some() {
+                    // PRÉ-EXTRAIT PAR CHUNK (voir `Predicate::prepare_chunk`) :
+                    // une lecture par chunk et par couple (variable, propriété),
+                    // au lieu d'une par ligne ET par occurrence du prédicat.
+                    match self.propriete_pre_extraite(node_id, row, variable, property) {
+                        ReponsePre::Valeur(v) => return Some(v),
+                        // ABSENTE : le lot vient d'interroger les MÊMES quatre
+                        // zones dans le MÊME ordre que `get_node_property`.
+                        // Rappeler le scalaire ne peut donc rien apprendre de
+                        // neuf — et ce rappel coûte mesuré ~3,3 µs/ligne : sur
+                        // le snapshot figé, « balayage + 1 cellule ABSENTE »
+                        // prend 1 280 ms contre 400 ms pour une cellule
+                        // PRÉSENTE, écart qui EST ce rappel.
+                        //
+                        // Ce qui reste, en revanche, est irremplaçable : le
+                        // repli d'ÉPOQUE, seule voie capable de voir une valeur
+                        // que le store COURANT n'a plus. On le garde tel quel.
+                        ReponsePre::Absente => {
+                            if !self.repli_epoque_utile() {
+                                return None;
+                            }
+                            return self.propriete_a_l_epoque(node_id?, property);
+                        }
+                        ReponsePre::Inconnue => {}
+                    }
+                }
                 // T17k : single-property access. Route directly through
                 // `store.get_node_property` / `get_edge_property` which
                 // do a targeted read (O(1) mmap lookup per zone) instead
@@ -431,10 +1576,12 @@ impl ExpressionPredicate {
                     // Fall through to MVCC-aware path only when the
                     // scalar store misses (lets `get_node_at_epoch` kick
                     // in for historical reads).
-                    if self.viewing_epoch.is_some()
-                        && let Some(node) = self.resolve_node(node_id)
-                    {
-                        return node.get_property(property).cloned();
+                    // …et seulement si ce repli peut voir autre chose que le
+                    // store courant : à l'époque courante sans transaction, il
+                    // hydratait tout le nœud pour rendre `None` (voir
+                    // `repli_epoque_utile`).
+                    if self.repli_epoque_utile() {
+                        return self.propriete_a_l_epoque(node_id, property);
                     }
                     return None;
                 }
@@ -442,7 +1589,7 @@ impl ExpressionPredicate {
                     if let Some(v) = self.store.get_edge_property(edge_id, &key) {
                         return Some(v);
                     }
-                    if self.viewing_epoch.is_some()
+                    if self.repli_epoque_utile()
                         && let Some(edge) = self.resolve_edge(edge_id)
                     {
                         return edge.get_property(property).cloned();
@@ -456,13 +1603,32 @@ impl ExpressionPredicate {
                 None
             }
             FilterExpression::Binary { left, op, right } => {
+                // VOIE DES VERDICTS (2026-09-12) : pour `CONTAINS` / `STARTS WITH`
+                // / `ENDS WITH` sur une propriété face à un littéral, le substrat
+                // a déjà répondu sur les octets mmap — sans matérialiser de
+                // `Value`, donc sans une allocation par cellule. `Nul` est le NULL
+                // que l'évaluateur rendrait (valeur absente ou non textuelle).
+                match self.verdict_texte(chunk, row, left, right, *op) {
+                    ReponseVerdict::Verdict(b) => return Some(Value::Bool(b)),
+                    ReponseVerdict::Nul => return None,
+                    ReponseVerdict::Aucun => {}
+                }
                 // For IN operator, right side is a list that we evaluate specially
                 if *op == BinaryFilterOp::In {
                     let left_val = self.eval_expr(left, chunk, row)?;
                     return self.eval_in_operator(&left_val, right, chunk, row);
                 }
-                let left_val = self.eval_expr(left, chunk, row)?;
-                let right_val = self.eval_expr(right, chunk, row)?;
+                // D7 (lot 02/04) : PAS de `?` ici. Une propriété absente
+                // remonte `None` ; le court-circuit Rust avalait TOUTE
+                // l'expression AVANT la table de vérité ternaire, et
+                // `UNKNOWN OR TRUE` perdait la ligne. L'absence de valeur
+                // EST l'UNKNOWN de la logique trivaluée : on le matérialise
+                // en `Value::Null` et on laisse la table décider (absorption
+                // comprise : U AND F → F, U OR T → T). Les erreurs signalées
+                // via `signale_erreur` survivent — le slot est relevé par
+                // l'opérateur après coup, indépendamment de la valeur rendue.
+                let left_val = self.eval_expr(left, chunk, row).unwrap_or(Value::Null);
+                let right_val = self.eval_expr(right, chunk, row).unwrap_or(Value::Null);
                 self.eval_binary_op(&left_val, *op, &right_val)
             }
             FilterExpression::Unary { op, operand } => {
@@ -496,6 +1662,15 @@ impl ExpressionPredicate {
                 Some(Value::Map(Arc::new(map)))
             }
             FilterExpression::IndexAccess { base, index } => {
+                // CHEMIN RAPIDE `split(s, d)[k]` : voir `ReponseSplitIndexe`.
+                // Placé AVANT l'évaluation de `base`, parce que c'est justement
+                // l'évaluation de `base` (qui alloue la liste entière) qu'on
+                // cherche à ne pas payer.
+                if let ReponseSplitIndexe::Valeur(v) =
+                    self.split_indexe_direct(base, index, chunk, row)
+                {
+                    return v;
+                }
                 let base_val = self.eval_expr(base, chunk, row)?;
                 let index_val = self.eval_expr(index, chunk, row)?;
                 match (&base_val, &index_val) {
@@ -749,49 +1924,19 @@ impl ExpressionPredicate {
                 edge_types,
                 ..
             } => {
-                // Get the start node ID from the current row
+                // Get the start node (local NodeId, or remote Map — V2)
                 let col_idx = *self.variable_columns.get(start_var)?;
                 let col = chunk.column(col_idx)?;
-                let start_node_id = col.get_node_id(row)?;
+                let (src_store, start_node_id) = self.subquery_source(col, row)?;
 
                 // Check if any matching edges exist
-                let exists = self
-                    .store
+                let exists = src_store
                     .edges_from(start_node_id, *direction)
                     .into_iter()
                     .any(|(_, edge_id)| {
                         // Check edge type if specified
                         if !edge_types.is_empty() {
-                            if let Some(actual_type) = self.store.edge_type(edge_id) {
-                                edge_types
-                                    .iter()
-                                    .any(|t| actual_type.as_str().eq_ignore_ascii_case(t.as_str()))
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        }
-                    });
-
-                Some(Value::Bool(exists))
-            }
-            FilterExpression::CountSubquery {
-                start_var,
-                direction,
-                edge_types,
-            } => {
-                let col_idx = *self.variable_columns.get(start_var)?;
-                let col = chunk.column(col_idx)?;
-                let start_node_id = col.get_node_id(row)?;
-
-                let count = self
-                    .store
-                    .edges_from(start_node_id, *direction)
-                    .into_iter()
-                    .filter(|(_, edge_id)| {
-                        if !edge_types.is_empty() {
-                            if let Some(actual_type) = self.store.edge_type(*edge_id) {
+                            if let Some(actual_type) = src_store.edge_type(edge_id) {
                                 edge_types
                                     .iter()
                                     .any(|t| actual_type.as_str().eq_ignore_ascii_case(t.as_str()))
@@ -802,7 +1947,56 @@ impl ExpressionPredicate {
                             true
                         }
                     })
-                    .count();
+                    // Aretes inter-bases (V2) : le predicat d'existence voit
+                    // aussi les aretes EXTERNES qui RESOLVENT — une ref
+                    // pendante reste absente (trivalue). Sans ce bras, NOT
+                    // (a)-[:T]->() rendait un FAUX POSITIF (trou P7 de la
+                    // verification adversariale).
+                    || self.external_subquery_count(
+                        &*src_store,
+                        start_node_id,
+                        *direction,
+                        edge_types,
+                        true,
+                    ) > 0;
+
+                Some(Value::Bool(exists))
+            }
+            FilterExpression::CountSubquery {
+                start_var,
+                direction,
+                edge_types,
+            } => {
+                let col_idx = *self.variable_columns.get(start_var)?;
+                let col = chunk.column(col_idx)?;
+                let (src_store, start_node_id) = self.subquery_source(col, row)?;
+
+                let count = src_store
+                    .edges_from(start_node_id, *direction)
+                    .into_iter()
+                    .filter(|(_, edge_id)| {
+                        if !edge_types.is_empty() {
+                            if let Some(actual_type) = src_store.edge_type(*edge_id) {
+                                edge_types
+                                    .iter()
+                                    .any(|t| actual_type.as_str().eq_ignore_ascii_case(t.as_str()))
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    })
+                    .count()
+                    // Aretes inter-bases (V2) : les aretes externes qui
+                    // resolvent comptent ; une ref pendante compte zero.
+                    + self.external_subquery_count(
+                        &*src_store,
+                        start_node_id,
+                        *direction,
+                        edge_types,
+                        false,
+                    );
 
                 Some(Value::Int64(count as i64))
             }
@@ -838,6 +2032,86 @@ impl ExpressionPredicate {
                 Some(acc)
             }
         }
+    }
+
+    /// Source d'un sous-predicat d'existence/comptage : le noeud LOCAL
+    /// (NodeId) ou DISTANT (Map `_base`/`_id`, resolue via le registre de
+    /// la session — aretes inter-bases V2). `None` = inconnu, le predicat
+    /// rend Null (trivalue) exactement comme l'historique.
+    fn subquery_source(
+        &self,
+        col: &ValueVector,
+        row: usize,
+    ) -> Option<(Arc<dyn GraphStore>, NodeId)> {
+        if let Some(id) = col.get_node_id(row) {
+            return Some((Arc::clone(&self.store), id));
+        }
+        let reg = self.session_context.base_registry.as_ref()?;
+        let Some(Value::Map(map)) = col.get_value(row) else {
+            return None;
+        };
+        let slug = match map.get(&PropertyKey::new(crate::execution::base_registry::BASE_KEY)) {
+            Some(Value::String(s)) => s.clone(),
+            _ => return None,
+        };
+        let id = match map.get(&PropertyKey::new("_id")) {
+            Some(Value::Int64(i)) => NodeId(*i as u64),
+            _ => return None,
+        };
+        let store = reg.store_for_reader(
+            self.session_context.access_context.as_deref(),
+            None,
+            slug.as_str(),
+            "",
+        )?;
+        Some((store, id))
+    }
+
+    /// Bras EXTERNE des predicats d'existence/comptage (aretes
+    /// inter-bases V2) : nombre d'aretes externes du bon type dont la
+    /// cible RESOUT dans une base attachee. `au_plus_une` court-circuite
+    /// au premier succes (EXISTS). Ref pendante, hote distant ou base
+    /// absente = absent — jamais compte, jamais une erreur.
+    fn external_subquery_count(
+        &self,
+        store: &dyn GraphStore,
+        source: NodeId,
+        direction: Direction,
+        edge_types: &[String],
+        au_plus_une: bool,
+    ) -> usize {
+        if matches!(direction, Direction::Incoming) {
+            return 0;
+        }
+        let Some(reg) = &self.session_context.base_registry else {
+            return 0;
+        };
+        let mut n = 0usize;
+        for e in store.external_edges_from(source) {
+            if !edge_types.is_empty()
+                && !edge_types
+                    .iter()
+                    .any(|t| e.edge_type.eq_ignore_ascii_case(t.as_str()))
+            {
+                continue;
+            }
+            let resolue = reg
+                .store_for_reader(
+                    self.session_context.access_context.as_deref(),
+                    e.to_host.as_deref(),
+                    &e.to_store,
+                    &e.to_key,
+                )
+                .and_then(|ts| crate::execution::base_registry::resolve_node_key(&*ts, &e.to_key))
+                .is_some();
+            if resolue {
+                n += 1;
+                if au_plus_une {
+                    return n;
+                }
+            }
+        }
+        n
     }
 
     /// Evaluates an expression in the context of a reduce() call.
@@ -1136,30 +2410,24 @@ impl ExpressionPredicate {
                 (Some(l), Some(r)) => Some(Value::Bool(l ^ r)),
                 _ => Some(Value::Null), // UNKNOWN
             },
-            // NULL = anything or anything = NULL is UNKNOWN (three-valued logic).
-            // values_equal is preserved for structural equality (DISTINCT, GROUP BY).
-            BinaryFilterOp::Eq => {
-                if left.is_null() || right.is_null() {
-                    Some(Value::Null)
-                } else {
-                    Some(Value::Bool(Self::values_equal(left, right)))
-                }
-            }
-            BinaryFilterOp::Ne => {
-                if left.is_null() || right.is_null() {
-                    Some(Value::Null)
-                } else {
-                    Some(Value::Bool(!Self::values_equal(left, right)))
-                }
-            }
-            BinaryFilterOp::Lt => self.compare_values(left, right).map(|c| Value::Bool(c < 0)),
-            BinaryFilterOp::Le => self
-                .compare_values(left, right)
-                .map(|c| Value::Bool(c <= 0)),
-            BinaryFilterOp::Gt => self.compare_values(left, right).map(|c| Value::Bool(c > 0)),
-            BinaryFilterOp::Ge => self
-                .compare_values(left, right)
-                .map(|c| Value::Bool(c >= 0)),
+            // COMPARATEUR CANONIQUE (correctif E) : `=`/`<>` et les quatre
+            // opérateurs d'ordre délèguent à obrain_common::types::value_cmp —
+            // la MÊME sémantique que le balayage par intervalle et le tri.
+            // NULL ou classes disjointes (chaîne vs nombre) → UNKNOWN ;
+            // NaN → tout FAUX sauf `<>` (IEEE) ; flottants stricts, sans
+            // EPSILON ; Int64↔Float64 exact ; branches temporelles incluses.
+            BinaryFilterOp::Eq => Some(match value_cmp::egaler(left, right) {
+                Some(b) => Value::Bool(b),
+                None => Value::Null,
+            }),
+            BinaryFilterOp::Ne => Some(match value_cmp::egaler(left, right) {
+                Some(b) => Value::Bool(!b),
+                None => Value::Null,
+            }),
+            BinaryFilterOp::Lt => Some(Self::verdict_ordre(left, right, Ordering::is_lt)),
+            BinaryFilterOp::Le => Some(Self::verdict_ordre(left, right, Ordering::is_le)),
+            BinaryFilterOp::Gt => Some(Self::verdict_ordre(left, right, Ordering::is_gt)),
+            BinaryFilterOp::Ge => Some(Self::verdict_ordre(left, right, Ordering::is_ge)),
             // Arithmetic operators
             BinaryFilterOp::Add => {
                 // String concatenation: string + string, or string + other
@@ -1197,7 +2465,7 @@ impl ExpressionPredicate {
                         Some(Value::Timestamp(ts.add_duration(dur)))
                     }
                     (Value::Duration(a), Value::Duration(b)) => Some(Value::Duration(a.add(*b))),
-                    _ => self.eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
+                    _ => self.eval_arithmetic(left, right, ArithGardee::Add),
                 }
             }
             BinaryFilterOp::Sub => match (left, right) {
@@ -1228,19 +2496,19 @@ impl ExpressionPredicate {
                     )))
                 }
                 (Value::Duration(a), Value::Duration(b)) => Some(Value::Duration(a.sub(*b))),
-                _ => self.eval_arithmetic(left, right, |a, b| a - b, |a, b| a - b),
+                _ => self.eval_arithmetic(left, right, ArithGardee::Sub),
             },
             BinaryFilterOp::Mul => match (left, right) {
                 (Value::Duration(d), Value::Int64(n)) | (Value::Int64(n), Value::Duration(d)) => {
                     Some(Value::Duration(d.mul(*n)))
                 }
-                _ => self.eval_arithmetic(left, right, |a, b| a * b, |a, b| a * b),
+                _ => self.eval_arithmetic(left, right, ArithGardee::Mul),
             },
             BinaryFilterOp::Div => match (left, right) {
                 (Value::Duration(d), Value::Int64(n)) if *n != 0 => {
                     Some(Value::Duration(d.div(*n)))
                 }
-                _ => self.eval_arithmetic(left, right, |a, b| a / b, |a, b| a / b),
+                _ => self.eval_arithmetic(left, right, ArithGardee::Div),
             },
             BinaryFilterOp::Mod => self.eval_modulo(left, right),
             // String operators
@@ -1254,11 +2522,35 @@ impl ExpressionPredicate {
                 let r = right.as_str()?;
                 Some(Value::Bool(l.ends_with(r)))
             }
-            BinaryFilterOp::Contains => {
-                let l = left.as_str()?;
-                let r = right.as_str()?;
-                Some(Value::Bool(l.contains(r)))
-            }
+            // ── `CONTAINS` SUR UNE LISTE EST UNE APPARTENANCE, PAS UNE SOUS-CHAÎNE ─
+            //
+            // Défaut mesuré le 2026-09-13, depuis le chat du dashboard : le modèle
+            // a écrit `MATCH (n) WHERE n.qualified_name STARTS WITH '…' AND
+            // labels(n) CONTAINS 'Class' RETURN …` — le moteur a rendu **0 ligne en
+            // 147 ms** alors que 15 004 nœuds portent ce label.
+            //
+            // La cause est ici : `labels(n)` est une LISTE (`Value::List`), donc
+            // `as_str()` rendait `None`, `eval_binary_op` rendait `None`, et la
+            // ligne était **silencieusement rejetée**. Un faux négatif se lit comme
+            // une réponse (« aucun nœud de ce type »), et il a coûté sept requêtes
+            // supplémentaires au modèle (181 s de conversation mesurées).
+            //
+            // Une liste ne contient pas une SOUS-CHAÎNE : elle contient un ÉLÉMENT.
+            // On évalue donc l'appartenance, avec l'égalité structurelle du moteur
+            // (`values_equal`) — la même que celle d'`IN`, qui rendait déjà les
+            // 15 004 lignes attendues.
+            BinaryFilterOp::Contains => match (left, right) {
+                (Value::String(l), Value::String(r)) => {
+                    Some(Value::Bool(l.as_str().contains(r.as_str())))
+                }
+                (Value::List(items), r) => {
+                    Some(Value::Bool(items.iter().any(|v| Self::values_equal(v, r))))
+                }
+                // Classes disjointes : `None` (UNKNOWN) plutôt qu'un FAUX, pour que
+                // la logique trivaluée en tienne compte au lieu de rejeter la ligne
+                // en silence — c'est exactement le défaut corrigé ci-dessus.
+                _ => None,
+            },
             // IN is handled separately
             BinaryFilterOp::In => None,
             // Regex match (=~)
@@ -1358,29 +2650,74 @@ impl ExpressionPredicate {
         }
     }
 
-    fn eval_arithmetic<F1, F2>(
-        &self,
-        left: &Value,
-        right: &Value,
-        int_op: F1,
-        float_op: F2,
-    ) -> Option<Value>
-    where
-        F1: Fn(i64, i64) -> i64,
-        F2: Fn(f64, f64) -> f64,
-    {
+    /// Arithmétique numérique GARDÉE du chemin vif des requêtes (WHERE et
+    /// RETURN partagent cet évaluateur).
+    ///
+    /// MIROIR de `crates/obrain-engine/src/catalog/check_eval.rs` (fn
+    /// `eval_arithmetic`, chemin des contraintes CHECK) : mêmes gardes
+    /// `checked_add`/`checked_sub`/`checked_mul`/`checked_div` et même refus
+    /// explicite de la division par zéro. Le partage direct du code est
+    /// impossible sans dépendance inverse — `obrain-engine` dépend
+    /// d'`obrain-core`, pas le contraire — la sémantique est donc DUPLIQUÉE
+    /// ici ; toute évolution doit être répercutée des deux côtés.
+    ///
+    /// Sur `i64`, une faute (division par zéro, débordement) REFUSE la
+    /// requête via [`Self::signale_erreur`] : jamais de panique, jamais
+    /// d'enroulement — le comportement est identique en debug et en release
+    /// puisqu'il ne dépend plus d'`overflow-checks`. Sur `f64`, IEEE-754
+    /// fait loi (`1.0 / 0.0` vaut `+∞`), inchangé.
+    fn eval_arithmetic(&self, left: &Value, right: &Value, op: ArithGardee) -> Option<Value> {
         match (left, right) {
-            (Value::Int64(a), Value::Int64(b)) => Some(Value::Int64(int_op(*a, *b))),
-            (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(float_op(*a, *b))),
-            (Value::Int64(a), Value::Float64(b)) => Some(Value::Float64(float_op(*a as f64, *b))),
-            (Value::Float64(a), Value::Int64(b)) => Some(Value::Float64(float_op(*a, *b as f64))),
+            (Value::Int64(a), Value::Int64(b)) => {
+                let r = match op {
+                    ArithGardee::Add => a.checked_add(*b).ok_or("integer overflow"),
+                    ArithGardee::Sub => a.checked_sub(*b).ok_or("integer underflow"),
+                    ArithGardee::Mul => a.checked_mul(*b).ok_or("integer overflow"),
+                    ArithGardee::Div => {
+                        if *b == 0 {
+                            Err("division by zero")
+                        } else {
+                            // Seul quotient d'entiers qui déborde :
+                            // i64::MIN / -1.
+                            a.checked_div(*b).ok_or("integer overflow")
+                        }
+                    }
+                };
+                match r {
+                    Ok(v) => Some(Value::Int64(v)),
+                    Err(e) => self.signale_erreur(format!("{e}: {a} {} {b}", op.symbole())),
+                }
+            }
+            (Value::Float64(a), Value::Float64(b)) => Some(Value::Float64(op.flottant(*a, *b))),
+            (Value::Int64(a), Value::Float64(b)) => {
+                Some(Value::Float64(op.flottant(*a as f64, *b)))
+            }
+            (Value::Float64(a), Value::Int64(b)) => {
+                Some(Value::Float64(op.flottant(*a, *b as f64)))
+            }
             _ => None,
         }
     }
 
+    /// Modulo gardé — même miroir de `check_eval.rs` que [`Self::eval_arithmetic`].
+    ///
+    /// Le modulo ENTIER par zéro refuse la requête (avant ce commit il
+    /// rendait un NULL silencieux, indiscernable d'une propriété absente),
+    /// et `i64::MIN % -1` — le seul reste qui déborde — est gardé par
+    /// `checked_rem`. Les chemins FLOTTANTS conservent leur sémantique
+    /// existante (diviseur nul → NULL) : l'arithmétique IEEE est hors du
+    /// périmètre de la campagne arithmétique gardée (cf. lot 02).
     fn eval_modulo(&self, left: &Value, right: &Value) -> Option<Value> {
         match (left, right) {
-            (Value::Int64(a), Value::Int64(b)) if *b != 0 => Some(Value::Int64(a % b)),
+            (Value::Int64(a), Value::Int64(b)) => {
+                if *b == 0 {
+                    return self.signale_erreur(format!("modulo by zero: {a} % {b}"));
+                }
+                match a.checked_rem(*b) {
+                    Some(v) => Some(Value::Int64(v)),
+                    None => self.signale_erreur(format!("integer overflow: {a} % {b}")),
+                }
+            }
             (Value::Float64(a), Value::Float64(b)) if *b != 0.0 => Some(Value::Float64(a % b)),
             (Value::Int64(a), Value::Float64(b)) if *b != 0.0 => {
                 Some(Value::Float64(*a as f64 % b))
@@ -1402,6 +2739,41 @@ impl ExpressionPredicate {
         chunk: &DataChunk,
         row: usize,
     ) -> Option<Value> {
+        // ── T17i : ne pas rematérialiser la liste à chaque ligne ──
+        //
+        // `MATCH (n:L) WHERE n.id IN [ …40 ids… ]` évaluait `right` par
+        // ligne : `FilterExpression::List` construit un `Value::List` neuf,
+        // ce qui clone les 40 chaînes. Sur un scan de 31 357 nœuds, c'est
+        // 1,25 million d'allocations de chaînes pour 1,25 million de
+        // comparaisons — l'allocation domine largement la comparaison.
+        //
+        // Quand le côté droit est syntaxiquement une liste, on itère
+        // dessus directement et on court-circuite au premier match. La
+        // sémantique est identique, y compris la logique trivaluée et le
+        // fait qu'un élément qui ne s'évalue pas est ignoré (le chemin
+        // générique le laissait tomber via `filter_map`).
+        if let FilterExpression::List(items) = right {
+            if left.is_null() {
+                return Some(Value::Null);
+            }
+            let mut has_null = false;
+            for item in items {
+                let Some(v) = self.eval_expr(item, chunk, row) else {
+                    continue;
+                };
+                if v.is_null() {
+                    has_null = true;
+                } else if Self::values_equal(left, &v) {
+                    return Some(Value::Bool(true));
+                }
+            }
+            return Some(if has_null {
+                Value::Null
+            } else {
+                Value::Bool(false)
+            });
+        }
+
         let right_val = self.eval_expr(right, chunk, row)?;
         match right_val {
             Value::List(items) => {
@@ -1474,6 +2846,34 @@ impl ExpressionPredicate {
                 }
                 None
             }
+            "base" => {
+                // Aretes inter-bases (V2) : slug de la base du noeud.
+                // - noeud local -> slug primaire du registre (Null si la
+                //   session n'a pas de registre : la notion n'existe pas) ;
+                // - noeud distant (Value::Map hydratee a la frontiere) ->
+                //   sa cle `_base` ;
+                // - absent/inconnu -> Null (trivalue, jamais une erreur).
+                if args.len() != 1 {
+                    return None;
+                }
+                if let FilterExpression::Variable(var) = &args[0] {
+                    let col_idx = *self.variable_columns.get(var)?;
+                    let col = chunk.column(col_idx)?;
+                    if let Some(Value::Map(map)) = col.get_value(row)
+                        && let Some(Value::String(slug)) =
+                            map.get(&PropertyKey::new(crate::execution::base_registry::BASE_KEY))
+                    {
+                        return Some(Value::String(slug.clone()));
+                    }
+                    if col.get_node_id(row).is_some() {
+                        if let Some(reg) = &self.session_context.base_registry {
+                            return Some(Value::String(reg.primary_slug().into()));
+                        }
+                        return Some(Value::Null);
+                    }
+                }
+                Some(Value::Null)
+            }
             "labels" => {
                 if args.len() != 1 {
                     return None;
@@ -1481,6 +2881,12 @@ impl ExpressionPredicate {
                 if let FilterExpression::Variable(var) = &args[0] {
                     let col_idx = *self.variable_columns.get(var)?;
                     let col = chunk.column(col_idx)?;
+                    // Aretes inter-bases (V2) : noeud distant -> `_labels`.
+                    if let Some(Value::Map(map)) = col.get_value(row)
+                        && let Some(l @ Value::List(_)) = map.get(&PropertyKey::new("_labels"))
+                    {
+                        return Some(l.clone());
+                    }
                     let node_id = col.get_node_id(row)?;
                     // Bitset path, no property hydration (T12) — epoch
                     // fallback on miss, same pattern as hasLabel.
@@ -1522,7 +2928,11 @@ impl ExpressionPredicate {
                 let val = self.eval_expr(&args[0], chunk, row)?;
                 match val {
                     Value::List(items) => Some(Value::Int64(items.len() as i64)),
-                    Value::String(s) => Some(Value::Int64(s.len() as i64)),
+                    // Des CARACTÈRES, pas des octets (gql_05) : size(s) doit
+                    // compter ce que left(s, size(s)) rend — left/substring
+                    // découpent en chars(). octet_length reste la porte des
+                    // octets.
+                    Value::String(s) => Some(Value::Int64(s.chars().count() as i64)),
                     Value::Path { edges, .. } => Some(Value::Int64(edges.len() as i64)),
                     _ => None,
                 }
@@ -1609,7 +3019,27 @@ impl ExpressionPredicate {
                 let node_id = if let FilterExpression::Variable(var) = &args[0] {
                     let col_idx = *self.variable_columns.get(var)?;
                     let col = chunk.column(col_idx)?;
-                    col.get_node_id(row)?
+                    match col.get_node_id(row) {
+                        Some(id) => id,
+                        None => {
+                            // Aretes inter-bases (V2) : noeud DISTANT
+                            // materialise en Map — ses labels voyagent dans
+                            // `_labels`, son store n'est pas ici.
+                            if let Some(Value::Map(map)) = col.get_value(row)
+                                && let Some(Value::List(labels)) =
+                                    map.get(&PropertyKey::new("_labels"))
+                            {
+                                let Value::String(label) = self.eval_expr(&args[1], chunk, row)?
+                                else {
+                                    return None;
+                                };
+                                return Some(Value::Bool(labels.iter().any(|l| {
+                                    matches!(l, Value::String(s) if s.as_str() == label.as_str())
+                                })));
+                            }
+                            return None;
+                        }
+                    }
                 } else {
                     return None;
                 };
@@ -2025,6 +3455,18 @@ impl ExpressionPredicate {
                             .map(|(k, _)| Value::String(k.as_str().into()))
                             .collect();
                         return Some(Value::List(keys.into()));
+                    } else if let Some(edge_id) = col.get_edge_id(row) {
+                        // keys(r) sur une ARETE : meme forme que sur un
+                        // noeud. Sans cette branche, keys(r) rendait NULL —
+                        // ce qui masquait l'etat reel de l'arete apres un
+                        // REMOVE r.p (gql_13, remove_sur_arete_...).
+                        let edge = self.resolve_edge(edge_id)?;
+                        let keys: Vec<Value> = edge
+                            .properties
+                            .iter()
+                            .map(|(k, _)| Value::String(k.as_str().into()))
+                            .collect();
+                        return Some(Value::List(keys.into()));
                     }
                 }
                 // keys(map) on a map value
@@ -2197,7 +3639,10 @@ impl ExpressionPredicate {
                     _ => None,
                 }
             }
-            "char_length" | "charlength" => {
+            // `CHARACTER_LENGTH` est le synonyme ISO/IEC 39075 de
+            // `CHAR_LENGTH` (gql_05) — les deux écritures sont
+            // interchangeables.
+            "char_length" | "charlength" | "character_length" | "characterlength" => {
                 if args.len() != 1 {
                     return None;
                 }
@@ -2267,8 +3712,8 @@ impl ExpressionPredicate {
                 use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 row.hash(&mut hasher);
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
                     .ok()?
                     .as_nanos()
                     .hash(&mut hasher);
@@ -2704,8 +4149,8 @@ impl ExpressionPredicate {
             }
             "timestamp" => {
                 // Neo4j-compatible: returns milliseconds since Unix epoch as Int64
-                let duration = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let duration = web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
                     .unwrap_or(std::time::Duration::ZERO);
                 Some(Value::Int64(duration.as_millis() as i64))
             }
@@ -2935,15 +4380,20 @@ impl ExpressionPredicate {
             }
             // --- GQL ISO standard functions ---
             "normalize" => {
-                // normalize(string) - returns the string as-is (NFC normalization).
-                // Rust strings are valid UTF-8; full NFC normalization requires the
-                // unicode-normalization crate, which is deferred to Phase 2.
+                // normalize(string) — NFC réelle (gql_05) : la sortie doit
+                // satisfaire le juge voisin `IS NFC NORMALIZED` (bras
+                // "isnormalized", même crate unicode-normalization). L'état
+                // antérieur rendait la chaîne TELLE QUELLE (« deferred to
+                // Phase 2 ») : le moteur se contredisait lui-même.
                 if args.len() != 1 {
                     return None;
                 }
                 let val = self.eval_expr(&args[0], chunk, row)?;
                 match val {
-                    Value::String(s) => Some(Value::String(s)),
+                    Value::String(s) => {
+                        use unicode_normalization::UnicodeNormalization;
+                        Some(Value::String(s.nfc().collect::<String>().into()))
+                    }
                     Value::Null => Some(Value::Null),
                     _ => None,
                 }
@@ -3134,7 +4584,38 @@ impl ExpressionPredicate {
                 let node = self.resolve_node(edge.dst)?;
                 Some(Value::Int64(node.id.0 as i64))
             }
-            _ => None, // Unknown function
+            // Une fonction INCONNUE est une erreur de requête (ISO/IEC
+            // 39075 §23, condition 42000) : rendre NULL transformait une
+            // faute de frappe en colonne silencieusement vide (gql_05).
+            // Même canal que la division par zéro (vague 1) : l'erreur est
+            // consignée, l'opérateur de projection la relève et l'exécution
+            // échoue franchement.
+            inconnue => {
+                // ── L'HÔTE A-T-IL CETTE FONCTION ? ──────────────────────────
+                // `obrain.energy(n)`, une métrique branchée par un embedder, un
+                // algorithme enregistré par un plugin : le noyau ne peut pas les
+                // connaître (il ne dépend pas d'`obrain-adapters`), mais il ne
+                // doit pas les DÉCLARER INCONNUES. Le vocabulaire est un point
+                // d'extension, et un hôte l'installe une fois par processus.
+                // Sans hôte, la conduite est celle d'avant — mot pour mot.
+                let valeurs: Option<Vec<Value>> =
+                    args.iter().map(|a| self.eval_expr(a, chunk, row)).collect();
+                if let Some(valeurs) = valeurs
+                    && let Some(resultat) =
+                        crate::execution::fonction_hote::appeler(inconnue, &valeurs)
+                {
+                    return match resultat {
+                        Ok(valeur) => Some(valeur),
+                        Err(raison) => self.signale_erreur(format!(
+                            "la fonction hôte '{inconnue}' a échoué : {raison}"
+                        )),
+                    };
+                }
+                self.signale_erreur(format!(
+                    "fonction inconnue : {inconnue} (aucune fonction de ce nom \
+                     dans l'évaluateur ; vérifier l'orthographe)"
+                ))
+            }
         }
     }
 
@@ -3193,69 +4674,37 @@ impl ExpressionPredicate {
                 val.is_some() && !matches!(val, Some(Value::Null)),
             )),
             UnaryFilterOp::Neg => match val? {
-                Value::Int64(i) => Some(Value::Int64(-i)),
+                // Gardé : `-i64::MIN` déborde (il vaudrait i64::MAX + 1) —
+                // même règle que l'arithmétique binaire, cf. eval_arithmetic.
+                Value::Int64(i) => match i.checked_neg() {
+                    Some(v) => Some(Value::Int64(v)),
+                    None => self.signale_erreur(format!("integer overflow: -({i})")),
+                },
                 Value::Float64(f) => Some(Value::Float64(-f)),
                 _ => None,
             },
         }
     }
 
-    /// Structural equality for DISTINCT, GROUP BY, and list/map comparison.
-    ///
-    /// Treats NULL == NULL as `true` (grouping semantics). For SQL/GQL
-    /// comparison operators, use [`eval_binary_op`] which returns UNKNOWN
-    /// when either operand is NULL.
+    /// Égalité STRUCTURELLE (IN, CASE simple, NULLIF, listes/maps) — délègue
+    /// au comparateur canonique : `NULL = NULL` VRAI (classes d'équivalence),
+    /// flottants IEEE stricts, Int64↔Float64 exact, branches temporelles,
+    /// et PLUS AUCUNE coercition chaîne↔nombre (le hack RDF vit désormais
+    /// dans le seul planificateur RDF). Pour `=`/`<>`, `eval_binary_op`
+    /// passe par `value_cmp::egaler` qui rend UNKNOWN sur classes disjointes.
     fn values_equal(left: &Value, right: &Value) -> bool {
-        match (left, right) {
-            (Value::Null, Value::Null) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Int64(a), Value::Int64(b)) => a == b,
-            (Value::Float64(a), Value::Float64(b)) => (a - b).abs() < f64::EPSILON,
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Int64(a), Value::Float64(b)) | (Value::Float64(b), Value::Int64(a)) => {
-                (*a as f64 - b).abs() < f64::EPSILON
-            }
-            // RDF stores numeric literals as strings; allow cross-type equality
-            (Value::String(s), Value::Int64(i)) | (Value::Int64(i), Value::String(s)) => {
-                s.parse::<i64>().is_ok_and(|n| n == *i)
-            }
-            (Value::String(s), Value::Float64(f)) | (Value::Float64(f), Value::String(s)) => {
-                s.parse::<f64>().is_ok_and(|n| (n - f).abs() < f64::EPSILON)
-            }
-            (Value::List(a), Value::List(b)) => {
-                a.len() == b.len()
-                    && a.iter()
-                        .zip(b.iter())
-                        .all(|(x, y)| Self::values_equal(x, y))
-            }
-            (Value::Map(a), Value::Map(b)) => {
-                a.len() == b.len()
-                    && a.iter()
-                        .zip(b.iter())
-                        .all(|((k1, v1), (k2, v2))| k1 == k2 && Self::values_equal(v1, v2))
-            }
-            (
-                Value::Path {
-                    nodes: n1,
-                    edges: e1,
-                },
-                Value::Path {
-                    nodes: n2,
-                    edges: e2,
-                },
-            ) => {
-                n1.len() == n2.len()
-                    && e1.len() == e2.len()
-                    && n1
-                        .iter()
-                        .zip(n2.iter())
-                        .all(|(a, b)| Self::values_equal(a, b))
-                    && e1
-                        .iter()
-                        .zip(e2.iter())
-                        .all(|(a, b)| Self::values_equal(a, b))
-            }
-            _ => false,
+        value_cmp::egalite_structurelle(left, right)
+    }
+
+    /// Verdict trivalué d'un opérateur d'ordre : VRAI/FAUX quand les valeurs
+    /// s'ordonnent, FAUX quand la classe est commune mais sans ordre (NaN —
+    /// IEEE : `<=` reste `<` OU `=`), NULL (UNKNOWN) quand les classes sont
+    /// disjointes ou qu'un opérande est NULL.
+    fn verdict_ordre(left: &Value, right: &Value, sens: fn(Ordering) -> bool) -> Value {
+        match value_cmp::comparer(left, right) {
+            value_cmp::Comparaison::Ordonnees(o) => Value::Bool(sens(o)),
+            value_cmp::Comparaison::NonOrdonnees => Value::Bool(false),
+            value_cmp::Comparaison::Incomparables => Value::Null,
         }
     }
 
@@ -3318,46 +4767,6 @@ impl ExpressionPredicate {
             }
         }
     }
-
-    fn compare_values(&self, left: &Value, right: &Value) -> Option<i32> {
-        match (left, right) {
-            (Value::Int64(a), Value::Int64(b)) => Some(a.cmp(b) as i32),
-            (Value::Float64(a), Value::Float64(b)) => {
-                if a < b {
-                    Some(-1)
-                } else if a > b {
-                    Some(1)
-                } else {
-                    Some(0)
-                }
-            }
-            (Value::String(a), Value::String(b)) => Some(a.cmp(b) as i32),
-            (Value::Int64(a), Value::Float64(b)) => (*a as f64).partial_cmp(b).map(|o| o as i32),
-            (Value::Float64(a), Value::Int64(b)) => a.partial_cmp(&(*b as f64)).map(|o| o as i32),
-            // RDF stores numeric literals as strings; allow cross-type comparison
-            (Value::String(s), Value::Int64(i)) => s
-                .parse::<f64>()
-                .ok()
-                .and_then(|n| n.partial_cmp(&(*i as f64)).map(|o| o as i32)),
-            (Value::Int64(i), Value::String(s)) => s
-                .parse::<f64>()
-                .ok()
-                .and_then(|n| (*i as f64).partial_cmp(&n).map(|o| o as i32)),
-            (Value::String(s), Value::Float64(f)) => s
-                .parse::<f64>()
-                .ok()
-                .and_then(|n| n.partial_cmp(f).map(|o| o as i32)),
-            (Value::Float64(f), Value::String(s)) => s
-                .parse::<f64>()
-                .ok()
-                .and_then(|n| f.partial_cmp(&n).map(|o| o as i32)),
-            // Temporal comparisons
-            (Value::Timestamp(a), Value::Timestamp(b)) => Some(a.cmp(b) as i32),
-            (Value::Date(a), Value::Date(b)) => Some(a.cmp(b) as i32),
-            (Value::Time(a), Value::Time(b)) => Some(a.cmp(b) as i32),
-            _ => None,
-        }
-    }
 }
 
 impl Predicate for ExpressionPredicate {
@@ -3366,6 +4775,14 @@ impl Predicate for ExpressionPredicate {
             Some(Value::Bool(b)) => b,
             _ => false,
         }
+    }
+
+    fn take_eval_error(&self) -> Option<String> {
+        ExpressionPredicate::take_eval_error(self)
+    }
+
+    fn prepare_chunk(&self, chunk: &DataChunk) {
+        self.pre_extraire_chunk(chunk);
     }
 }
 
@@ -3387,6 +4804,7 @@ impl FilterOperator {
 impl Operator for FilterOperator {
     fn next(&mut self) -> OperatorResult {
         loop {
+            super::verifier_annulation()?;
             // Get next chunk from child
             let Some(mut chunk) = self.child.next()? else {
                 return Ok(None);
@@ -3398,6 +4816,11 @@ impl Operator for FilterOperator {
             {
                 continue; // Skip entire chunk - zone map proves no matches
             }
+
+            // ANNONCE DU CHUNK, avant la première ligne : c'est le seul moment
+            // où un prédicat peut amortir une lecture de propriété sur les
+            // 2 048 lignes qui suivent (voir `Predicate::prepare_chunk`).
+            self.predicate.prepare_chunk(&chunk);
 
             // Apply predicate to create selection vector, respecting any
             // existing selection from child operators (stacked filters).
@@ -3415,6 +4838,14 @@ impl Operator for FilterOperator {
                 let count = chunk.total_row_count();
                 SelectionVector::from_predicate(count, |row| self.predicate.evaluate(&chunk, row))
             };
+
+            // Arithmétique gardée : une faute d'évaluation (division par
+            // zéro, débordement i64) consignée pendant le balayage du chunk
+            // REFUSE la requête — elle ne doit jamais se déguiser en
+            // « ligne non retenue ».
+            if let Some(e) = self.predicate.take_eval_error() {
+                return Err(super::OperatorError::Execution(e));
+            }
 
             // If nothing passes, skip to next chunk
             if selection.is_empty() {

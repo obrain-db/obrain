@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 #[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
-use std::time::Instant;
+use web_time::Instant;
 
 use obrain_common::types::{TransactionId, Value};
 use obrain_common::utils::error::Result;
@@ -15,7 +15,7 @@ use obrain_core::graph::rdf::RdfStore;
 
 use crate::database::QueryResult;
 
-use super::{Session, SessionConfig};
+use super::{Nature, Session, SessionConfig};
 
 impl Session {
     /// Creates a new session with RDF store and adaptive configuration.
@@ -46,6 +46,9 @@ impl Session {
             gc_interval: cfg.gc_interval,
             transaction_start_node_count: AtomicUsize::new(0),
             transaction_start_edge_count: AtomicUsize::new(0),
+            #[cfg(feature = "cognitive")]
+            cognitive_engine: None,
+            substrate_store: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -60,6 +63,24 @@ impl Session {
             savepoints: parking_lot::Mutex::new(Vec::new()),
             transaction_nesting_depth: parking_lot::Mutex::new(0),
             touched_graphs: parking_lot::Mutex::new(Vec::new()),
+            // (2026-08-29, fix/gql-divers) Meme lecon que la note du
+            // 2026-08-14 ci-dessous : les trois champs V2/V3 (registre
+            // multi-store, contexte de droits, drapeau auto-commit)
+            // avaient ete ajoutes a Session sans completer CE troisieme
+            // site de construction, invisible hors --features rdf/full.
+            // Memes valeurs que le constructeur de session/mod.rs:311-313.
+            base_registry: parking_lot::Mutex::new(None),
+            access_context: parking_lot::Mutex::new(None),
+            transaction_auto: std::sync::atomic::AtomicBool::new(false),
+            // (2026-08-14) TROISIEME SITE DE CONSTRUCTION, derriere la
+            // fonctionnalite `rdf`. Les deux autres etaient dans
+            // session/mod.rs et je les avais vus ; celui-ci ne compile
+            // qu'avec `--features rdf`, que ni `cargo check --workspace`
+            // ni la suite de tests n'activent. Meme classe d'erreur que le
+            // `use Value` sous cfg trouve plus tot cette nuit : un champ
+            // ajoute a une structure ne se voit complet QUE si l'on
+            // compile toutes les combinaisons de fonctionnalites.
+            tx_baselines: parking_lot::Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "reactive")]
             post_commit_hook: None,
             #[cfg(feature = "metrics")]
@@ -129,7 +150,7 @@ impl Session {
         let has_mutations = Self::query_looks_like_mutation(query);
         let active = self.active_store();
 
-        let result = self.with_auto_commit(has_mutations, || {
+        let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
             let (viewing_epoch, transaction_id) = self.get_transaction_context();
             let processor = QueryProcessor::for_graph_store_with_transaction(
                 Arc::clone(&active),
@@ -140,6 +161,19 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "cognitive")]
+            let processor = if let Some(engine) = self.cognitive_engine() {
+                processor.with_cognitive_engine(Arc::clone(engine))
+            } else {
+                processor
+            };
+            let processor = if let Some(sub) = self.substrate_store() {
+                processor.with_substrate_store(Arc::clone(sub))
+            } else {
+                processor
+            };
+            #[cfg(feature = "cdc")]
+            let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::GraphQLRdf, Some(&params))
         });
 

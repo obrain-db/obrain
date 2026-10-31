@@ -71,7 +71,10 @@ impl super::Planner {
             )
             .with_path_mode(exec_path_mode)
             .with_transaction_context(self.viewing_epoch, self.transaction_id)
-            .with_read_only(self.read_only);
+            .with_read_only(self.read_only)
+            // Aretes inter-bases (V2) : contrat trivalue sur source
+            // distante — voir VariableLengthExpandOperator.
+            .with_session_context(self.session_context.clone());
 
             // If a path alias is set, enable path length and detail output
             if needs_path_details {
@@ -91,7 +94,10 @@ impl super::Planner {
                 expand.edge_types.clone(),
             )
             .with_transaction_context(self.viewing_epoch, self.transaction_id)
-            .with_read_only(self.read_only);
+            .with_read_only(self.read_only)
+            // Aretes inter-bases (V2) : le registre multi-store voyage dans
+            // le contexte de session — sans lui, comportement historique.
+            .with_session_context(self.session_context.clone());
             Box::new(expand_op)
         };
 

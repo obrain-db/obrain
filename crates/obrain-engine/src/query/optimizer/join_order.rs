@@ -548,6 +548,7 @@ mod tests {
             variable: var.to_string(),
             label: Some(label.to_string()),
             input: None,
+            pushdown_hint: None,
         })
     }
 

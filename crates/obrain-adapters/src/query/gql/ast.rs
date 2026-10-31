@@ -217,6 +217,8 @@ pub enum QueryClause {
     Delete(DeleteStatement),
     /// A SET clause.
     Set(SetClause),
+    /// A REMOVE clause.
+    Remove(RemoveClause),
     /// A MERGE clause.
     Merge(MergeClause),
     /// A LET clause (variable bindings).
@@ -518,8 +520,31 @@ pub struct NodePattern {
     pub properties: Vec<(String, Expression)>,
     /// Element pattern WHERE clause: `(n WHERE n.age > 30)`.
     pub where_clause: Option<Expression>,
+    /// (2026-08-17, aretes inter-bases V1) Reference explicite a un noeud
+    /// d'une AUTRE base : `ref("slug", "clef")` ou
+    /// `ref("hote", "slug", "clef")`. Exclusif des autres champs — seule
+    /// une CIBLE d'arete en CREATE/MERGE peut la porter aujourd'hui.
+    pub reference: Option<NodeRefPattern>,
+    /// (2026-08-17, aretes inter-bases V2) Motif qualifie par base :
+    /// `(b IN "slug")` — en LECTURE, restreint le noeud a la base `slug`
+    /// (desucre en `base(b) = "slug"`).
+    pub base_qualifier: Option<String>,
     /// Source span.
     pub span: Option<SourceSpan>,
+}
+
+/// Adresse d'un noeud d'une autre base (aretes inter-bases V1) :
+/// `(hote?, slug, clef)`. `host = None` = machine locale ; la forme a trois
+/// arguments est RESERVEE multi-host (parse des maintenant, resolution
+/// reseau a venir).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRefPattern {
+    /// Hote de la base cible (None = machine locale ; multi-host reserve).
+    pub host: Option<String>,
+    /// Slug de la base cible.
+    pub store: String,
+    /// Clef du noeud cible (numerique = NodeId, sinon propriete "id").
+    pub key: String,
 }
 
 /// A path pattern like `(a)-[:KNOWS]->(b)`.

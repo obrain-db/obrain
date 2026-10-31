@@ -38,9 +38,42 @@
 //! ## Crash safety
 //!
 //! The zone is WAL-shadowed — every append is journalled before the
-//! mmap'd page is mutated. Per-page CRC32 (written by `seal_crc32` at
-//! every append) catches torn writes on cold reads. Recovery rolls the
-//! WAL forward.
+//! mmap'd page is mutated. Recovery rolls the WAL forward.
+//!
+//! ### CRC32 : ECRIT A CHAQUE APPEND, VERIFIE NULLE PART SUR LE CHEMIN CHAUD
+//!
+//! Ce paragraphe affirmait que le CRC par page « attrape les ecritures
+//! dechirees sur les lectures froides ». C'ETAIT FAUX, et faux de la
+//! maniere la plus couteuse : `seal_crc32` est appele a chaque ecriture
+//! (31 sites dans le crate), mais `verify_crc32` n'etait appele NULLE
+//! PART en dehors des tests. Le CRC etait paye a l'ecriture et jamais
+//! encaisse — et la documentation faisait croire a une protection qui
+//! n'existait pas.
+//!
+//! La verification N'A PAS ete mise sur le chemin de lecture, et c'est
+//! une decision MESUREE, pas un report :
+//!
+//! | operation                          | cout       |
+//! |------------------------------------|------------|
+//! | `read_at` (valeur de ~20 o)        |   1,4 ns   |
+//! | `compute_crc32` sur la page 4 KiB  | 106,6 ns   |
+//! | lecture + verification             | 103,9 ns   |
+//!
+//! (mesure n3, `--release`, 200 000 iterations, page de 150 entrees ;
+//! debit CRC 35,8 GiB/s — le materiel n'est pas en cause, c'est le
+//! rapport 4096 o hashes pour 20 o lus qui l'est.)
+//!
+//! Verifier a chaque lecture coute donc **x73** sur un chemin dont la
+//! raison d'etre est precisement d'etre zero-copie
+//! ([`PropsZone::read_heap_view`]). Verifier a l'ouverture, de son cote,
+//! forcerait a lire l'INTEGRALITE des zones vives (83 Mo de heap et 2,1 Go
+//! de props sur la base de production) et annulerait la paresse du mmap,
+//! qui est ce qui rend l'ouverture instantanee.
+//!
+//! Le CRC est donc verifie LA OU SON COUT EST JUSTIFIE : dans
+//! `obrain repair-props`, qui est un balayage integral explicite et
+//! deliberement hors du chemin chaud. C'est le seul endroit qui le
+//! verifie, et c'est desormais dit.
 
 #![allow(unsafe_code)]
 
@@ -49,15 +82,39 @@ use crate::file::{SubstrateFile, ZoneFile};
 use crate::heap::{HEAP_PAGE_SIZE, HeapPage};
 use crate::page::{
     OwnerKind, PAGE_SIZE, PROP_PAGE_MAGIC_EDGE, PROP_PAGE_MAGIC_NODE, PropertyCursor,
-    PropertyEntry, PropertyPage,
+    PropertyEntry, PropertyPage, decode_entry,
 };
 use crate::record::U48;
 use bytemuck;
+use obrain_common::utils::hash::{FxHashMap, FxHashSet};
 
 /// Canonical filename of the v2 property zone.
 pub const PROPS_V2_FILENAME: &str = "substrate.props.v2";
 /// Canonical filename of the v2 heap zone.
 pub const PROPS_HEAP_V2_FILENAME: &str = "substrate.props.heap.v2";
+
+/// ── (2026-08-19) MARQUEUR DE MIGRATION **ACHEVÉE** VERS v2 ──
+///
+/// La présence de `substrate.props.v2` ne dit RIEN de l'état d'une
+/// migration : le fichier naît dès la première page écrite, c'est-à-dire
+/// dès la PREMIÈRE paire drainée. Une zone v2 porteuse de pages est donc
+/// aussi bien une base entièrement migrée qu'une migration coupée en son
+/// milieu — deux états qui appellent des lectures OPPOSÉES (sidecar
+/// périmé d'un côté, sidecar autoritaire de l'autre) et qu'aucun octet
+/// existant ne permettait de distinguer.
+///
+/// Ce fichier est le signal qui manquait. Il n'est écrit qu'au moment où
+/// le sidecar hérité cesse d'être autoritaire — c'est-à-dire par
+/// `SubstrateStore::delete_legacy_props_sidecar`, dernière étape de
+/// `obrain-migrate --finalize-v2`, et jamais avant. Son ABSENCE est donc
+/// l'état par défaut, et l'état par défaut est le prudent : le sidecar
+/// est cru sur parole.
+///
+/// Écrit par tmp + `rename`, avec un contenu NON VIDE : on éprouve la
+/// TAILLE et pas seulement l'existence, parce qu'un fichier vide créé par
+/// une coupure au mauvais moment mentirait exactement comme
+/// `substrate.props` l'a fait dans `a4c1edaf`.
+pub const PROPS_V2_MIGRATION_ACHEVEE_FILENAME: &str = "substrate.props.v2.acheve";
 
 /// Initial file size = two 4 KiB slots (dummy sentinel + room for the
 /// first real page). Growth is exponential (×1.5) once the first real
@@ -85,6 +142,36 @@ pub fn decode_page_id(u: U48) -> Option<u32> {
 // PropsZone — owner of the two mmap'd zone files.
 // ---------------------------------------------------------------------------
 
+/// (T27) Pages contiguës accumulées pour une écriture par blocs (`pwrite`).
+#[derive(Default)]
+pub(crate) struct TamponPages {
+    debut: u32,
+    octets: Vec<u8>,
+}
+
+/// Taille d'un bloc d'écriture : assez grand pour amortir l'appel système,
+/// assez petit pour garder la mémoire bornée.
+const BLOC_ECRITURE: usize = 64 << 20;
+
+/// Banc A/B (T27) : `OBRAIN_LOT_MMAP=1` fait écrire les pages d'un lot par la
+/// projection, comme avant, au lieu de blocs `pwrite`. Sert à MESURER l'écart
+/// dans le même binaire ; le défaut est `pwrite`.
+fn lot_par_projection() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("OBRAIN_LOT_MMAP").is_ok_and(|v| v == "1"))
+}
+
+/// Page de queue du tas tenue en mémoire pendant une écriture en lot
+/// (voir [`PropsZone::intern_bytes_en_lot`]).
+#[derive(Default)]
+pub(crate) struct TasEnLot {
+    page: Option<(u32, HeapPage)>,
+    /// La page de queue REPRISE d'avant le lot (réécrite en place, par la
+    /// projection) — les pages neuves, elles, partent par blocs.
+    reprise: Option<u32>,
+    neuves: TamponPages,
+}
+
 pub struct PropsZone {
     props: ZoneFile,
     heap: ZoneFile,
@@ -94,6 +181,12 @@ pub struct PropsZone {
     /// a T17d concern.
     next_page_idx: u32,
     next_heap_page_idx: u32,
+    /// (feat slots512-wiring, étape 5) Carrier packé « ouvert » :
+    /// `(index du carrier, prochaine unité libre 1..=7)`. Réinitialisé à
+    /// l'ouverture (None) — un carrier laissé à moitié plein par un arrêt
+    /// n'est pas re-rempli après réouverture (correct, monotone ; densité
+    /// pleine au sein d'une session d'écriture).
+    carrier_pack_ouvert: Option<(u32, u8)>,
 }
 
 impl PropsZone {
@@ -114,6 +207,7 @@ impl PropsZone {
             heap,
             next_page_idx,
             next_heap_page_idx,
+            carrier_pack_ouvert: None,
         })
     }
 
@@ -133,7 +227,13 @@ impl PropsZone {
     /// via `ensure_page_addressable` — no gaps.
     ///
     /// Fast-path: the initial two-slot file returns 1 without any read.
-    fn compute_next_page_idx(zf: &ZoneFile) -> u32 {
+    ///
+    /// (2026-08-19) Rendue `pub(crate)` pour l audit d ancres post-rejeu :
+    /// c est la SEULE façon d obtenir la frontière « première page jamais
+    /// allouée » sans ouvrir une `PropsZone` complète — laquelle CRÉE les
+    /// deux fichiers v2 (`open_or_create` + `grow_to`), ce qu un audit en
+    /// lecture pure sur une base héritée ne doit surtout pas faire.
+    pub(crate) fn compute_next_page_idx(zf: &ZoneFile) -> u32 {
         let bytes = zf.as_slice();
         let total_slots = (bytes.len() / PAGE_SIZE) as u32;
         if total_slots <= 1 {
@@ -168,6 +268,39 @@ impl PropsZone {
     /// binary-search logic; different magic + page size.
     ///
     /// **T17g T2**: O(log N) instead of O(tail_padding) linear scan.
+    ///
+    /// ── CE QUE CETTE RECHERCHE SUPPOSE, ET QUAND C'EST FAUX ──
+    ///
+    /// Une recherche binaire n'est correcte que sur un predicat MONOTONE.
+    /// Le predicat est ici « la page porte le magic », et sa monotonie est
+    /// un INVARIANT DE L'ALLOCATEUR, pas une propriete du format : les
+    /// pages sont allouees dans l'ordre, donc les vivantes forment un
+    /// prefixe contigu. Si un TROU apparait (une page sans magic sous une
+    /// page vivante), la recherche rend une frontiere arbitrairement
+    /// BASSE — prouve par
+    /// `la_recherche_binaire_sous_estime_la_frontiere_si_le_heap_a_un_trou`,
+    /// qui rend 4 au lieu de 8.
+    ///
+    /// Un trou est physiquement possible : la reecriture des pages sales
+    /// d'un mmap n'est pas ordonnee, donc un `msync` interrompu peut avoir
+    /// ecrit un sous-ensemble QUELCONQUE des pages.
+    ///
+    /// POURQUOI CE DEFAUT N'EST PAS, MALGRE TOUT, UNE VOIE DE CORRUPTION —
+    /// A CONDITION QUE L'ORDRE DE FLUSH SOIT RESPECTE
+    /// ([`Self::zones_ordre_durabilite`]) : le heap devient durable
+    /// INTEGRALEMENT avant que les props ne le deviennent. Toute page
+    /// referencee par une entree props durable appartient donc a une
+    /// region deja fsync'ee, c'est-a-dire propre. Un trou ne peut naitre
+    /// que dans la region encore sale au moment de la coupure, laquelle
+    /// est par construction AU-DESSUS de la derniere region fsync'ee.
+    /// La frontiere rabattue reste donc >= toute page durablement
+    /// referencee : les pages reutilisees sont des ORPHELINES. On perd de
+    /// la place, jamais une valeur.
+    ///
+    /// Ce raisonnement est la seule chose qui tient ce code : il ne
+    /// survivrait PAS a une inversion de l'ordre de flush. La borne est
+    /// donc a la fois documentee ici et verrouillee par le test de
+    /// durabilite.
     fn compute_next_heap_page_idx(zf: &ZoneFile) -> u32 {
         let bytes = zf.as_slice();
         let total_slots = (bytes.len() / HEAP_PAGE_SIZE) as u32;
@@ -216,6 +349,31 @@ impl PropsZone {
 
     pub fn allocated_heap_page_count(&self) -> u32 {
         self.next_heap_page_idx
+    }
+
+    /// Shrink both zone files to their live extent (compact time).
+    ///
+    /// The exponential ×1.5 pre-allocation pads `substrate.props.v2` well
+    /// beyond the last live page (measured 2026-08-31 : 167 MB file for
+    /// 26 MB live on a 6,4k-node graph). The padding is zero-init and never
+    /// addressed (`next_page_idx` is the first unallocated slot), so
+    /// truncating to `next_page_idx * PAGE_SIZE` / `next_heap_page_idx *
+    /// HEAP_PAGE_SIZE` reclaims disk and shortens the msync/fsync at
+    /// checkpoint/close without touching live data.
+    ///
+    /// Caller contract : no concurrent reader/writer may hold a slice into
+    /// the zones (same discipline as `grow_to`). Safe at `compact`, where
+    /// the store is exclusively held.
+    pub fn shrink_to_fit(&mut self) -> SubstrateResult<()> {
+        let props_target = u64::from(self.next_page_idx) * PAGE_SIZE as u64;
+        if props_target < self.props.len() {
+            self.props.shrink_to(props_target)?;
+        }
+        let heap_target = u64::from(self.next_heap_page_idx) * HEAP_PAGE_SIZE as u64;
+        if heap_target < self.heap.len() {
+            self.heap.shrink_to(heap_target)?;
+        }
+        Ok(())
     }
 
     // ---- low-level page I/O -------------------------------------------
@@ -311,6 +469,549 @@ impl PropsZone {
         Ok(())
     }
 
+    // ── ÉCRITURE EN LOT (2026-09-16, T27) ─────────────────────────────────
+    //
+    // Le chemin unitaire (`append_entry` + `intern_bytes`) RELIT la page de
+    // tête (4 Ko), l'augmente, RECALCULE son CRC et la RÉÉCRIT — à chaque
+    // propriété, et la même chose pour la page de queue du tas à chaque chaîne.
+    // Mesuré sur le noyau Linux (1 553 071 nœuds, ≈ 12 M propriétés) : 96 % des
+    // 1 293 s d'indexation. Une page construite en mémoire, scellée et écrite
+    // UNE fois, donne exactement la même disposition sur disque : c'est ce
+    // que font les deux primitives ci-dessous.
+
+    /// Les zones ont-elles grandi sur disque depuis notre projection ?
+    pub(crate) fn a_grandi_sur_disque(&self) -> bool {
+        self.props.longueur_disque() > self.props.len()
+            || self.heap.longueur_disque() > self.heap.len()
+    }
+
+    /// Reprojette les deux zones si un autre processus les a agrandies (voir
+    /// `ZoneFile::rafraichir`). Rend `true` si l'une a grandi.
+    pub(crate) fn rafraichir_projection(&mut self) -> SubstrateResult<bool> {
+        let a = self.props.rafraichir()?;
+        let b = self.heap.rafraichir()?;
+        Ok(a || b)
+    }
+
+    /// Fin courante des pages de propriétés et du tas (prochains index libres).
+    pub(crate) fn fins(&self) -> (u32, u32) {
+        (self.next_page_idx, self.next_heap_page_idx)
+    }
+
+    /// (T27) Écrit en PARALLÈLE des blocs de pages déjà construits, chacun à
+    /// son index de départ, puis avance les fins de zone. Les blocs doivent
+    /// couvrir EXACTEMENT `[fin_courante, fin_props)` et `[fin_tas_courante,
+    /// fin_tas)`, sans trou : la fin de zone se retrouve à la réouverture par
+    /// dichotomie sur les pages vivantes, qui suppose la contiguïté.
+    pub(crate) fn ecrire_blocs_en_lot(
+        &mut self,
+        props: &[(u32, Vec<u8>)],
+        tas: &[(u32, Vec<u8>)],
+        fin_props: u32,
+        fin_tas: u32,
+    ) -> SubstrateResult<()> {
+        use rayon::prelude::*;
+        let contigu = |blocs: &[(u32, Vec<u8>)], debut: u32, fin: u32, taille: usize| {
+            let mut attendu = debut;
+            for (d, o) in blocs {
+                if o.is_empty() {
+                    continue;
+                }
+                if *d != attendu || o.len() % taille != 0 {
+                    return false;
+                }
+                attendu += (o.len() / taille) as u32;
+            }
+            attendu == fin
+        };
+        if !contigu(props, self.next_page_idx, fin_props, PAGE_SIZE)
+            || !contigu(tas, self.next_heap_page_idx, fin_tas, HEAP_PAGE_SIZE)
+        {
+            return Err(SubstrateError::Internal(
+                "ecrire_blocs_en_lot : blocs non contigus — refus d'écrire une zone trouée".into(),
+            ));
+        }
+        if fin_props > self.next_page_idx {
+            self.ensure_page_addressable(fin_props - 1)?;
+        }
+        if fin_tas > self.next_heap_page_idx {
+            self.ensure_heap_page_addressable(fin_tas - 1)?;
+        }
+        let (zp, zh) = (&self.props, &self.heap);
+        let r1: SubstrateResult<()> = props
+            .par_iter()
+            .try_for_each(|(d, o)| zp.ecrire_a(u64::from(*d) * PAGE_SIZE as u64, o));
+        r1?;
+        let r2: SubstrateResult<()> = tas
+            .par_iter()
+            .try_for_each(|(d, o)| zh.ecrire_a(u64::from(*d) * HEAP_PAGE_SIZE as u64, o));
+        r2?;
+        self.next_page_idx = fin_props;
+        self.next_heap_page_idx = fin_tas;
+        Ok(())
+    }
+
+    /// Réserve d'un coup la place de `pages_props` pages de propriétés et de
+    /// `pages_tas` pages de tas au-delà de la fin courante. Chaque croissance
+    /// (`grow_to`) libère et reprojette TOUTE la zone ; à ×1,5 par pas, porter
+    /// la zone à ≈ 9 Go en demandait des dizaines pendant un lot. Une
+    /// réservation trop large ne coûte qu'une fin de fichier creuse — l'état
+    /// normal après une croissance ×1,5 ; trop courte, la croissance à la
+    /// demande prend le relais.
+    pub(crate) fn reserver(&mut self, pages_props: u32, pages_tas: u32) -> SubstrateResult<()> {
+        if pages_props > 0 {
+            self.ensure_page_addressable(self.next_page_idx.saturating_add(pages_props - 1))?;
+        }
+        if pages_tas > 0 {
+            self.ensure_heap_page_addressable(
+                self.next_heap_page_idx.saturating_add(pages_tas - 1),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Pose une page de propriétés DÉJÀ REMPLIE : alloue son index, la chaîne
+    /// sur `suivante` (l'ancienne tête), la scelle et l'écrit. Rend son index.
+    /// Même disposition que `allouer_page_neuve` : la page la plus récente est
+    /// la tête, et elle pointe vers la précédente.
+    pub(crate) fn poser_page_remplie(
+        &mut self,
+        page: &mut PropertyPage,
+        suivante: Option<u32>,
+        tampon: &mut TamponPages,
+    ) -> SubstrateResult<u32> {
+        let idx = self.next_page_idx;
+        self.next_page_idx = self
+            .next_page_idx
+            .checked_add(1)
+            .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+        if let Some(prev) = suivante {
+            page.header.next_page = encode_page_id(prev);
+        }
+        page.seal_crc32();
+        self.ensure_page_addressable(idx)?;
+        if lot_par_projection() {
+            self.write_page(idx, page)?;
+            return Ok(idx);
+        }
+        if tampon.octets.is_empty() {
+            tampon.debut = idx;
+        }
+        debug_assert_eq!(
+            tampon.debut as usize + tampon.octets.len() / PAGE_SIZE,
+            idx as usize,
+            "les pages d'un lot sont contiguës"
+        );
+        tampon.octets.extend_from_slice(bytemuck::bytes_of(page));
+        if tampon.octets.len() >= BLOC_ECRITURE {
+            self.vider_pages(tampon)?;
+        }
+        Ok(idx)
+    }
+
+    /// Écrit d'un bloc les pages de propriétés accumulées.
+    pub(crate) fn vider_pages(&mut self, tampon: &mut TamponPages) -> SubstrateResult<()> {
+        if !tampon.octets.is_empty() {
+            self.props
+                .ecrire_a(tampon.debut as u64 * PAGE_SIZE as u64, &tampon.octets)?;
+            tampon.octets.clear();
+        }
+        Ok(())
+    }
+
+    /// Interne des octets dans le tas en gardant la page de queue EN MÉMOIRE
+    /// (`lot`) : elle n'est scellée et écrite que lorsqu'elle est pleine, puis
+    /// par [`Self::clore_tas_en_lot`]. Même contrat de taille et mêmes
+    /// références que [`Self::intern_bytes`].
+    pub(crate) fn intern_bytes_en_lot(
+        &mut self,
+        lot: &mut TasEnLot,
+        bytes: &[u8],
+    ) -> SubstrateResult<crate::page::HeapRef> {
+        let max_entry = HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>() - 4;
+        if bytes.len() > max_entry {
+            return Err(SubstrateError::WalBadFrame(format!(
+                "heap intern: entry of {} B exceeds single-page payload ({} B)",
+                bytes.len(),
+                max_entry
+            )));
+        }
+        // Première utilisation : reprendre la page de queue existante, comme
+        // le ferait `intern_bytes`.
+        if lot.page.is_none()
+            && lot.reprise.is_none()
+            && lot.neuves.octets.is_empty()
+            && self.next_heap_page_idx > 0
+        {
+            let tail = self.next_heap_page_idx - 1;
+            lot.page = Some((tail, self.read_heap_page(tail)?));
+            lot.reprise = Some(tail);
+        }
+        if let Some((idx, page)) = lot.page.as_mut()
+            && let Some(off) = page.append(bytes)
+        {
+            return Ok(crate::page::HeapRef {
+                page_id: *idx,
+                offset: off,
+            });
+        }
+        // Page pleine (ou aucune) : on scelle et on écrit la précédente, puis
+        // on en ouvre une neuve.
+        if let Some((idx, mut page)) = lot.page.take() {
+            page.seal_crc32();
+            self.poser_page_tas(lot, idx, &page)?;
+        }
+        let new_idx = self.next_heap_page_idx;
+        self.next_heap_page_idx = self
+            .next_heap_page_idx
+            .checked_add(1)
+            .ok_or_else(|| SubstrateError::WalBadFrame("heap zone page id overflow".into()))?;
+        let mut page = HeapPage::new(new_idx);
+        let off = page
+            .append(bytes)
+            .expect("fresh heap page fits single entry");
+        lot.page = Some((new_idx, page));
+        Ok(crate::page::HeapRef {
+            page_id: new_idx,
+            offset: off,
+        })
+    }
+
+    /// Scelle et écrit la page de queue tenue par `lot`. À appeler avant tout
+    /// `intern_bytes` unitaire (qui relit la queue sur disque) et en fin de lot.
+    pub(crate) fn clore_tas_en_lot(&mut self, lot: &mut TasEnLot) -> SubstrateResult<()> {
+        if let Some((idx, mut page)) = lot.page.take() {
+            page.seal_crc32();
+            self.poser_page_tas(lot, idx, &page)?;
+        }
+        if !lot.neuves.octets.is_empty() {
+            let debut = lot.neuves.debut as u64 * HEAP_PAGE_SIZE as u64;
+            self.heap.ecrire_a(debut, &lot.neuves.octets)?;
+            lot.neuves.octets.clear();
+        }
+        // Après clôture, la queue est sur disque : un nouveau lot la reprendra.
+        lot.reprise = None;
+        Ok(())
+    }
+
+    /// Une page de tas terminée : la page REPRISE est réécrite en place ; une
+    /// page neuve rejoint le bloc, vidé par `pwrite` quand il est plein.
+    fn poser_page_tas(
+        &mut self,
+        lot: &mut TasEnLot,
+        idx: u32,
+        page: &HeapPage,
+    ) -> SubstrateResult<()> {
+        if lot.reprise == Some(idx) || lot_par_projection() {
+            return self.write_heap_page(idx, page);
+        }
+        self.ensure_heap_page_addressable(idx)?;
+        if lot.neuves.octets.is_empty() {
+            lot.neuves.debut = idx;
+        }
+        debug_assert_eq!(
+            lot.neuves.debut as usize + lot.neuves.octets.len() / HEAP_PAGE_SIZE,
+            idx as usize,
+            "les pages de tas d'un lot sont contiguës"
+        );
+        lot.neuves
+            .octets
+            .extend_from_slice(bytemuck::bytes_of(page));
+        if lot.neuves.octets.len() >= BLOC_ECRITURE {
+            let debut = lot.neuves.debut as u64 * HEAP_PAGE_SIZE as u64;
+            self.heap.ecrire_a(debut, &lot.neuves.octets)?;
+            lot.neuves.octets.clear();
+        }
+        Ok(())
+    }
+
+    /// Porte de staging du chantier slots 512 (RFC propszone-pages-partagees,
+    /// branche feat/slots512-wiring). **DÉFAUT : OFF** — le comportement de
+    /// production est inchangé tant qu'elle n'est pas posée. `=1` autorise
+    /// l'écriture de débuts de chaîne PACKÉS (carriers 4K à 7 slots de 512).
+    /// Ne pas activer en prod sans la garde de version prévue au flip (les
+    /// vieux binaires compteraient le magic packé comme padding).
+    pub fn slots_512_actifs() -> bool {
+        std::env::var("OBRAIN_PROPS_SLOTS_512")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    }
+
+    /// (feat/slots512-wiring, étape 2a) Écrit un DÉBUT de chaîne packé :
+    /// crée un carrier 4K neuf à `carrier_idx` (unité 0 = `CarrierControl`
+    /// scellé), réserve l'unité 1 pour `owner` et y écrit `entry` (slot
+    /// scellé). Rend l'adresse `UnitéAddr` (u64 48 bits) du slot. Mécanique
+    /// posée et testée ici ; le câblage store (début de chaîne quand
+    /// `slots_512_actifs()`) l'appellera — non branché à ce stade.
+    pub fn ecrire_debut_chainee_pack(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        entry: &PropertyEntry,
+        carrier_idx: u32,
+    ) -> SubstrateResult<u64> {
+        self.ensure_page_addressable(carrier_idx)?;
+        // Unité 0 — contrôle (unités 1..=7 à réserver).
+        let mut ctrl = crate::unite::CarrierControl::new();
+        ctrl.reserver_unite()
+            .expect("unité 1 réservable sur carrier neuf");
+        ctrl.seal_crc32();
+        {
+            let page = self.page_slice_mut(carrier_idx).expect("adressable");
+            page[..core::mem::size_of::<crate::unite::CarrierControl>()]
+                .copy_from_slice(bytemuck::bytes_of(&ctrl));
+        }
+        // Unité 1 — slot de l'owner avec sa première entrée.
+        let mut slot = crate::unite::SlotPage::with_owner(owner_id, kind);
+        slot.append_entry(entry).map_err(|e| {
+            SubstrateError::WalBadFrame(format!("append début de chaîne packé refusé : {e:?}"))
+        })?;
+        slot.seal_crc32();
+        {
+            let page = self.page_slice_mut(carrier_idx).expect("adressable");
+            let debut = crate::unite::UNITE_SIZE;
+            page[debut..debut + crate::unite::UNITE_SIZE]
+                .copy_from_slice(bytemuck::bytes_of(&slot));
+        }
+        crate::unite::encode_slot(carrier_idx, 1)
+            .ok_or_else(|| SubstrateError::WalBadFrame("encodage slot impossible".to_string()))
+    }
+
+    /// (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Rafraîchit les
+    /// owner stamps (`header.node_id`) d'une chaîne déplacée par un remap de
+    /// slots. Parcourt la chaîne depuis `head` : toute page dont le stamp est
+    /// l'ANCIEN slot d'un nœud déplacé vers `proprietaire` (c.-à-d.
+    /// `old_to_new[stamp] == proprietaire`) est re-stampée à `proprietaire` et
+    /// re-scellée (CRC). Une page dont le stamp ne correspond à AUCUN
+    /// déplacement (vraie tête parasite d'une autre chaîne, correctif 19/08)
+    /// ARRÊTE le parcours sans rien toucher : la garde d'append continuera de
+    /// détacher, comportement préservé.
+    ///
+    /// Rend le nombre de pages re-stampées. Garde anti-cycle (une chaîne
+    /// corrompue ne doit jamais boucler) : au-delà de `1_000_000` pages
+    /// parcourues, erreur (le remap échoue proprement, rien n'est à moitié
+    /// réparé).
+    pub fn rafraichir_owners_de_chaine(
+        &mut self,
+        head: u32,
+        proprietaire: u32,
+        old_to_new: &[u32],
+    ) -> SubstrateResult<u32> {
+        const GARDE_PAGES: u32 = 1_000_000;
+        let mut cur = Some(head);
+        let mut patched = 0u32;
+        let mut pages = 0u32;
+        while let Some(page_idx) = cur {
+            pages += 1;
+            if pages > GARDE_PAGES {
+                return Err(SubstrateError::WalBadFrame(format!(
+                    "rafraichir_owners_de_chaine : chaîne de plus de {GARDE_PAGES} pages \
+                     depuis la tête {head} — cycle probable, remap abandonné"
+                )));
+            }
+            let mut page = self.read_page(page_idx)?;
+            let stamp = page.header.node_id;
+            if stamp == proprietaire {
+                cur = decode_page_id(page.header.next_page);
+                continue;
+            }
+            let deplacee_vers_ce_proprietaire =
+                (stamp as usize) < old_to_new.len() && old_to_new[stamp as usize] == proprietaire;
+            if !deplacee_vers_ce_proprietaire {
+                // Page étrangère / parasite : ne pas épisser, s'arrêter.
+                break;
+            }
+            page.header.node_id = proprietaire;
+            page.seal_crc32();
+            self.write_page(page_idx, &page)?;
+            patched += 1;
+            cur = decode_page_id(page.header.next_page);
+        }
+        Ok(patched)
+    }
+
+    /// (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Variante « auto-
+    /// guérison à l'ouverture » de [`Self::rafraichir_owners_de_chaine`],
+    /// SANS mapping : re-stampe TOUTE la chaîne depuis `head` au slot courant
+    /// `proprietaire`. Utilisée uniquement sur les bases FINALISÉES (marqueur
+    /// `migration_v2_achevee` posé) après un rejeu qui contenait un record de
+    /// permutation : sur ces bases les têtes parasites du régime hérité n'ont
+    /// plus cours, tout stamp divergent est donc le résidu d'un remap.
+    /// S'arrête (sans erreur) sur la première page illisible/hors zone —
+    /// auto-guérison best-effort, jamais fatale à l'ouverture.
+    pub fn restamper_apres_rejeu(&mut self, head: u32, proprietaire: u32) -> u32 {
+        const GARDE_PAGES: u32 = 1_000_000;
+        let mut cur = Some(head);
+        let mut patched = 0u32;
+        let mut pages = 0u32;
+        while let Some(page_idx) = cur {
+            pages += 1;
+            if pages > GARDE_PAGES {
+                break;
+            }
+            let mut page = match self.read_page(page_idx) {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            if page.header.node_id != proprietaire {
+                page.header.node_id = proprietaire;
+                page.seal_crc32();
+                if self.write_page(page_idx, &page).is_err() {
+                    break;
+                }
+                patched += 1;
+            }
+            cur = decode_page_id(page.header.next_page);
+        }
+        patched
+    }
+
+    /// (feat slots512-wiring, étape 4) Variante UNITE de
+    /// [`Self::rafraichir_owners_de_chaine`] : `head` est l'adresse brute
+    /// (page legacy OU slot packé). Parcourt les unités de la chaîne et
+    /// re-stampe chaque unité dont `old_to_new[stamp] == proprietaire` (arrêt
+    /// sur unité étrangère — sémantique identique au cas legacy).
+    pub fn rafraichir_owners_de_chainee_brute(
+        &mut self,
+        head: u64,
+        proprietaire: u32,
+        old_to_new: &[u32],
+    ) -> SubstrateResult<u32> {
+        use crate::unite::{UNITE_SIZE, UniteAddr};
+        const GARDE: u32 = 1_000_000;
+        let mut cur = if head == 0 { None } else { Some(head) };
+        let mut patched = 0u32;
+        let mut pages = 0u32;
+        while let Some(addr) = cur {
+            pages += 1;
+            if pages > GARDE {
+                return Err(SubstrateError::WalBadFrame(format!(
+                    "rafraichir_owners_de_chainee_brute : chaîne > {GARDE} unités depuis {head:#x}"
+                )));
+            }
+            match crate::unite::decode_unite(addr) {
+                UniteAddr::Aucune => break,
+                UniteAddr::Legacy(idx) => {
+                    let mut page = self.read_page(idx)?;
+                    let stamp = page.header.node_id;
+                    let deplacee = (stamp as usize) < old_to_new.len()
+                        && old_to_new[stamp as usize] == proprietaire;
+                    let suivante = page.header.next_page.to_u64();
+                    if stamp == proprietaire {
+                        cur = if suivante == 0 { None } else { Some(suivante) };
+                        continue;
+                    }
+                    if !deplacee {
+                        break;
+                    }
+                    page.header.node_id = proprietaire;
+                    page.seal_crc32();
+                    self.write_page(idx, &page)?;
+                    patched += 1;
+                    cur = if suivante == 0 { None } else { Some(suivante) };
+                }
+                UniteAddr::Slot { carrier, unite } => {
+                    let debut = usize::from(unite) * UNITE_SIZE;
+                    let mut slot = {
+                        let base = self.page_slice(carrier).ok_or_else(|| {
+                            SubstrateError::WalBadFrame(format!(
+                                "rafraichir_owners_de_chainee_brute : carrier {carrier} hors zone"
+                            ))
+                        })?;
+                        let s: &crate::unite::SlotPage =
+                            bytemuck::from_bytes(&base[debut..debut + UNITE_SIZE]);
+                        if crate::page::OwnerKind::from_magic(s.header.magic).is_none() {
+                            break;
+                        }
+                        *s
+                    };
+                    let stamp = slot.header.node_id;
+                    let suivante = slot.header.next_page.to_u64();
+                    if stamp == proprietaire {
+                        cur = if suivante == 0 { None } else { Some(suivante) };
+                        continue;
+                    }
+                    let deplacee = (stamp as usize) < old_to_new.len()
+                        && old_to_new[stamp as usize] == proprietaire;
+                    if !deplacee {
+                        break;
+                    }
+                    slot.header.node_id = proprietaire;
+                    slot.seal_crc32();
+                    let base = self.page_slice_mut(carrier).expect("adressable");
+                    base[debut..debut + UNITE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot));
+                    patched += 1;
+                    cur = if suivante == 0 { None } else { Some(suivante) };
+                }
+            }
+        }
+        Ok(patched)
+    }
+
+    /// (feat slots512-wiring, étape 4) Variante UNITE de
+    /// [`Self::restamper_apres_rejeu`] (auto-guérison, sans mapping) — patch
+    /// chaque unité (legacy ou slot) au slot courant ; best-effort.
+    pub fn restamper_apres_rejeu_brute(&mut self, head: u64, proprietaire: u32) -> u32 {
+        use crate::unite::{UNITE_SIZE, UniteAddr};
+        const GARDE: u32 = 1_000_000;
+        let mut cur = if head == 0 { None } else { Some(head) };
+        let mut patched = 0u32;
+        let mut pages = 0u32;
+        while let Some(addr) = cur {
+            pages += 1;
+            if pages > GARDE {
+                break;
+            }
+            match crate::unite::decode_unite(addr) {
+                UniteAddr::Aucune => break,
+                UniteAddr::Legacy(idx) => {
+                    let mut page = match self.read_page(idx) {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    };
+                    let suivante = page.header.next_page.to_u64();
+                    if page.header.node_id != proprietaire {
+                        page.header.node_id = proprietaire;
+                        page.seal_crc32();
+                        if self.write_page(idx, &page).is_err() {
+                            break;
+                        }
+                        patched += 1;
+                    }
+                    cur = if suivante == 0 { None } else { Some(suivante) };
+                }
+                UniteAddr::Slot { carrier, unite } => {
+                    let debut = usize::from(unite) * UNITE_SIZE;
+                    let mut slot = {
+                        let base = match self.page_slice(carrier) {
+                            Some(b) => b,
+                            None => break,
+                        };
+                        let s: &crate::unite::SlotPage =
+                            bytemuck::from_bytes(&base[debut..debut + UNITE_SIZE]);
+                        if crate::page::OwnerKind::from_magic(s.header.magic).is_none() {
+                            break;
+                        }
+                        *s
+                    };
+                    let suivante = slot.header.next_page.to_u64();
+                    if slot.header.node_id != proprietaire {
+                        slot.header.node_id = proprietaire;
+                        slot.seal_crc32();
+                        let base = match self.page_slice_mut(carrier) {
+                            Some(b) => b,
+                            None => break,
+                        };
+                        base[debut..debut + UNITE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot));
+                        patched += 1;
+                    }
+                    cur = if suivante == 0 { None } else { Some(suivante) };
+                }
+            }
+        }
+        patched
+    }
+
     fn read_heap_page(&self, page_idx: u32) -> SubstrateResult<HeapPage> {
         let bytes = self.heap_page_slice(page_idx).ok_or_else(|| {
             SubstrateError::WalBadFrame(format!(
@@ -362,25 +1063,65 @@ impl PropsZone {
             )));
         }
         if let Some(h) = head {
-            // Read-before-write: guard against the caller handing us a
-            // head from a different owner kind (would yield a silent
-            // cross-kind chain splice otherwise).
-            let mut page = self.read_page(h)?;
-            match page.owner_kind() {
-                Some(k) if k == kind => {}
-                Some(other) => {
-                    return Err(SubstrateError::WalBadFrame(format!(
-                        "append_entry_inner: head page {h} is {:?}, caller provided {:?}",
-                        other, kind
-                    )));
+            // ── (2026-08-19) UNE TÊTE INEXPLOITABLE VAUT UNE TÊTE ABSENTE ──
+            //
+            // `head` vient de `NodeRecord::first_prop_off`. Sur toute base
+            // antérieure à T17f, ce champ n existait pas sous cette forme
+            // (il a été inséré à l offset 24) : un enregistrement hérité rend
+            // donc une valeur PARASITE, que l on interprète en index de page.
+            //
+            // Cette valeur parasite prend quatre visages, et un seul était
+            // traité jusqu ici :
+            //   · index au-delà de la zone      → `read_page` rendait Err ;
+            //   · page en magic 0x0, jamais écrite → Err ;
+            //   · page d un autre genre (arête) → Err ;
+            //   · page d un AUTRE nœud          → corrigé le 19/08 au matin.
+            //
+            // MESURE (19/08, base `messages`, 2 890 017 scalaires) :
+            //   1 501 040 refus « props page N out of range »
+            //     112 280 refus « head page N has invalid magic 0x0 »
+            //   soit 1 613 320 propriétés qui n ont JAMAIS pu être écrites en
+            //   v2. `set_node_property` les traitait en best-effort (un warn,
+            //   puis repli DashMap) — donc la migration se croyait complète
+            //   alors qu il en manquait 56 %.
+            //
+            // Les quatre cas partagent la même vérité : cette tête ne désigne
+            // rien qui appartienne à ce propriétaire. Elle ne porte AUCUNE
+            // information récupérable pour lui. La seule suite correcte est
+            // celle déjà retenue pour le quatrième cas — repartir sur une page
+            // neuve, sans chaîner sur une tête qui ment. Rien n est écrit chez
+            // le voisin, et la chaîne du nœud redevient saine en la traversant.
+            //
+            // Échouer, à l inverse, condamnerait toute base héritée à rester
+            // en DashMap — ce qui est précisément ce qu on cherche à supprimer.
+            let lecture = self.read_page(h);
+            let tete = match &lecture {
+                Err(raison) => Err(format!("{raison}")),
+                Ok(p) => match p.owner_kind() {
+                    None => Err(format!(
+                        "page en magic {:#x} — jamais écrite",
+                        p.header.magic
+                    )),
+                    Some(k) if k != kind => Err(format!("page de genre {k:?}, attendu {kind:?}")),
+                    Some(_) if p.header.node_id != owner_id => Err(format!(
+                        "page appartenant au propriétaire {}",
+                        p.header.node_id
+                    )),
+                    Some(_) => Ok(*p),
+                },
+            };
+            let mut page = match tete {
+                Ok(p) => p,
+                Err(raison) => {
+                    tracing::debug!(
+                        page = h,
+                        demandeur = owner_id,
+                        raison = %raison,
+                        "tête de chaîne inexploitable — page neuve allouée"
+                    );
+                    return self.allouer_page_neuve(owner_id, kind, None, entry);
                 }
-                None => {
-                    return Err(SubstrateError::WalBadFrame(format!(
-                        "append_entry_inner: head page {h} has invalid magic {:#x}",
-                        page.header.magic
-                    )));
-                }
-            }
+            };
             // Try to append to the current head.
             match page.append_entry(entry) {
                 Ok(_) => {
@@ -398,6 +1139,21 @@ impl PropsZone {
                 }
             }
         }
+        self.allouer_page_neuve(owner_id, kind, head, entry)
+    }
+
+    /// Alloue une page neuve pour `owner_id`, chaînée sur `head`.
+    ///
+    /// Extraite d `append_entry_inner` (2026-08-19) pour que la garde de
+    /// propriétaire puisse y sauter directement quand la tête fournie
+    /// appartient à quelqu un d autre.
+    fn allouer_page_neuve(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        head: Option<u32>,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<u32> {
         // Allocate a fresh page with next_page = old head.
         let new_idx = self.next_page_idx;
         self.next_page_idx = self
@@ -407,6 +1163,33 @@ impl PropsZone {
         let mut page = PropertyPage::with_owner(owner_id, kind);
         if let Some(prev) = head {
             page.header.next_page = encode_page_id(prev);
+        }
+        page.append_entry(entry).map_err(|e| {
+            SubstrateError::WalBadFrame(format!("append to fresh page failed: {e}"))
+        })?;
+        page.seal_crc32();
+        self.write_page(new_idx, &page)?;
+        Ok(new_idx)
+    }
+
+    /// Comme [`Self::allouer_page_neuve`] mais chaîne sur une adresse BRUTE
+    /// (slot packé possible) — utilisée par le débordement d'une chaîne dont
+    /// la tête est un slot (feat slots512-wiring, étape 2).
+    fn allouer_page_neuve_sur(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        next_brut: Option<u64>,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<u32> {
+        let new_idx = self.next_page_idx;
+        self.next_page_idx = self
+            .next_page_idx
+            .checked_add(1)
+            .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+        let mut page = PropertyPage::with_owner(owner_id, kind);
+        if let Some(prev) = next_brut {
+            page.header.next_page = U48::from_u64(prev);
         }
         page.append_entry(entry).map_err(|e| {
             SubstrateError::WalBadFrame(format!("append to fresh page failed: {e}"))
@@ -454,39 +1237,264 @@ impl PropsZone {
         self.append_entry_node(node_id, head, entry)
     }
 
+    /// (feat slots512-wiring, étape 2 — utilisé quand `slots_512_actifs()`)
+    /// Append d'une entrée sur une chaîne adressée en BRUT (page legacy 4K ou
+    /// slot packé 512). Rend la nouvelle adresse de tête : IDENTIQUE quand
+    /// l'entrée tient dans l'unité courante (l'appelant ne met à jour le
+    /// record que si elle change) ; sinon :
+    /// - aucune tête → début de chaîne packé (env) sinon page legacy ;
+    /// - tête inexploitable (owner/kind/magic) → début de chaîne neuf
+    ///   (sémantique 19/08 conservée) ;
+    /// - unité pleine → page legacy 4K chaînée sur l'adresse précédente
+    ///   (mécanique simple ; l'overflow slot→slot reste une étape suivante).
+    pub fn append_entree_sur_chainee(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        head: Option<u64>,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<u64> {
+        use crate::unite::{UNITE_SIZE, UniteAddr};
+        let need = entry.encoded_len();
+        if need > PAGE_SIZE - core::mem::size_of::<crate::page::PropertyPageHeader>() {
+            return Err(SubstrateError::WalBadFrame(format!(
+                "property entry of {} B exceeds single-page payload",
+                need
+            )));
+        }
+        // (A) Début de chaîne.
+        if head.is_none() {
+            return self.demarrer_chainee(owner_id, kind, entry);
+        }
+        let addr = head.expect("Some");
+        match crate::unite::decode_unite(addr) {
+            UniteAddr::Aucune => self.demarrer_chainee(owner_id, kind, entry),
+            UniteAddr::Legacy(idx) => {
+                let nouveau = self.append_entry_inner(owner_id, kind, Some(idx), entry)?;
+                Ok(u64::from(nouveau))
+            }
+            UniteAddr::Slot { carrier, unite } => {
+                let debut = usize::from(unite) * UNITE_SIZE;
+                // Lecture + gardes de la tête (sémantique 19/08).
+                let copie = {
+                    let base = self.page_slice(carrier).ok_or_else(|| {
+                        SubstrateError::WalBadFrame(format!(
+                            "props chain: carrier {carrier} out of range"
+                        ))
+                    })?;
+                    let slot: &crate::unite::SlotPage =
+                        bytemuck::from_bytes(&base[debut..debut + UNITE_SIZE]);
+                    let exploitable = crate::page::OwnerKind::from_magic(slot.header.magic)
+                        .map(|k| k == kind)
+                        .unwrap_or(false)
+                        && slot.header.node_id == owner_id;
+                    if !exploitable {
+                        return self.demarrer_chainee(owner_id, kind, entry);
+                    }
+                    *slot
+                };
+                let mut slot = copie;
+                match slot.append_entry(entry) {
+                    Ok(_) => {
+                        slot.seal_crc32();
+                        let base = self.page_slice_mut(carrier).expect("adressable");
+                        base[debut..debut + UNITE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot));
+                        Ok(addr)
+                    }
+                    Err(crate::page::PropertyCodecError::PageFull { .. }) => {
+                        // Débordement → page legacy chaînée sur ce slot.
+                        let idx = self.allouer_page_neuve_sur(owner_id, kind, Some(addr), entry)?;
+                        Ok(u64::from(idx))
+                    }
+                    Err(e) => Err(SubstrateError::WalBadFrame(format!(
+                        "append packé encode error: {e}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// Début de chaîne : carrier packé si la porte env est ouverte, sinon
+    /// page legacy 4K. (Étape 5) Réutilise le carrier packé OUVERT tant qu'il
+    /// reste une unité (densité : jusqu'à 7 chaînages par 4K) ; sinon crée un
+    /// nouveau carrier.
+    fn demarrer_chainee(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<u64> {
+        if Self::slots_512_actifs() {
+            // Carrier ouvert avec une unité libre ?
+            if let Some((carrier, unite)) = self.carrier_pack_ouvert {
+                if unite <= crate::unite::SLOTS_UTILISABLES_PAR_CARRIER as u8 {
+                    self.ecrire_slot_unite(carrier, unite, owner_id, kind, entry)?;
+                    let suivant = unite + 1;
+                    self.maj_controle_carrier(carrier, suivant)?;
+                    self.carrier_pack_ouvert = Some((carrier, suivant));
+                    return crate::unite::encode_slot(carrier, unite).ok_or_else(|| {
+                        SubstrateError::WalBadFrame("encodage slot impossible".to_string())
+                    });
+                }
+            }
+            // Nouveau carrier : unité 0 = contrôle, unité 1 = 1re chaîne.
+            let carrier = self.next_page_idx;
+            self.next_page_idx = self
+                .next_page_idx
+                .checked_add(1)
+                .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+            self.ensure_page_addressable(carrier)?;
+            {
+                let mut ctrl = crate::unite::CarrierControl::new();
+                ctrl.seal_crc32();
+                let base = self.page_slice_mut(carrier).expect("adressable");
+                base[..core::mem::size_of::<crate::unite::CarrierControl>()]
+                    .copy_from_slice(bytemuck::bytes_of(&ctrl));
+            }
+            self.ecrire_slot_unite(carrier, 1, owner_id, kind, entry)?;
+            self.maj_controle_carrier(carrier, 2)?;
+            self.carrier_pack_ouvert = Some((carrier, 2));
+            return crate::unite::encode_slot(carrier, 1).ok_or_else(|| {
+                SubstrateError::WalBadFrame("encodage slot impossible".to_string())
+            });
+        }
+        let idx = self.allouer_page_neuve(owner_id, kind, None, entry)?;
+        Ok(u64::from(idx))
+    }
+
+    /// Écrit l'entrée de DÉBUT d'une chaîne dans l'unité `unite` du carrier
+    /// `carrier` (slot neuf dédié à l'owner, scellé). Ne touche pas au
+    /// contrôle (l'appelant met à jour le compteur d'unités).
+    fn ecrire_slot_unite(
+        &mut self,
+        carrier: u32,
+        unite: u8,
+        owner_id: u32,
+        kind: OwnerKind,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<()> {
+        use crate::unite::UNITE_SIZE;
+        let debut = usize::from(unite) * UNITE_SIZE;
+        let mut slot = crate::unite::SlotPage::with_owner(owner_id, kind);
+        slot.append_entry(entry).map_err(|e| {
+            SubstrateError::WalBadFrame(format!("append slot packé refusé : {e:?}"))
+        })?;
+        slot.seal_crc32();
+        let base = self
+            .page_slice_mut(carrier)
+            .ok_or_else(|| SubstrateError::WalBadFrame(format!("carrier {carrier} hors zone")))?;
+        base[debut..debut + UNITE_SIZE].copy_from_slice(bytemuck::bytes_of(&slot));
+        Ok(())
+    }
+
+    /// Met à jour le compteur d'unités utilisées du carrier (contrôle scellé).
+    fn maj_controle_carrier(&mut self, carrier: u32, nb: u8) -> SubstrateResult<()> {
+        let mut ctrl: crate::unite::CarrierControl = {
+            let base = self.page_slice(carrier).ok_or_else(|| {
+                SubstrateError::WalBadFrame(format!("carrier {carrier} hors zone"))
+            })?;
+            *bytemuck::from_bytes(&base[..core::mem::size_of::<crate::unite::CarrierControl>()])
+        };
+        ctrl.nb_unites_utilisees = nb;
+        ctrl.seal_crc32();
+        let base = self.page_slice_mut(carrier).expect("adressable");
+        base[..core::mem::size_of::<crate::unite::CarrierControl>()]
+            .copy_from_slice(bytemuck::bytes_of(&ctrl));
+        Ok(())
+    }
+
+    /// Décode une tête de chaîne LEGACY (index de page u32) en adresse brute
+    /// d'unité (bit 47 = 0 → `UniteAddr::Legacy`).
+    #[inline]
+    fn tete_legacy_u64(head: Option<u32>) -> Option<u64> {
+        head.map(u64::from)
+    }
+
+    /// (feat slots512-wiring, étape 1) Curseur unité-aware : lit l'unité
+    /// pointée par `addr` (page 4K legacy OU slot packé 512) et rend le
+    /// curseur sur ses entrées utilisées + l'adresse de l'unité plus ancienne
+    /// (`next_page` brut). `Ok(None)` = fin de chaîne. Le chemin legacy est
+    /// strictement identique à l'ancien (magic seul vérifié, zéro copie).
+    fn unite_cursor<'a>(&'a self, addr: u64) -> SubstrateResult<Option<(PropertyCursor<'a>, u64)>> {
+        use crate::unite::UNITE_SIZE;
+        match crate::unite::decode_unite(addr) {
+            crate::unite::UniteAddr::Aucune => Ok(None),
+            crate::unite::UniteAddr::Legacy(idx) => {
+                let bytes = self.page_slice(idx).ok_or_else(|| {
+                    SubstrateError::WalBadFrame(format!(
+                        "props chain: page {idx} out of range (addr {addr:#x})"
+                    ))
+                })?;
+                let page: &PropertyPage = bytemuck::from_bytes(bytes);
+                if !page.has_valid_prop_magic() {
+                    return Err(SubstrateError::WalBadFrame(format!(
+                        "props chain: page {idx} has bad magic {:#x}",
+                        page.header.magic
+                    )));
+                }
+                let next = page.header.next_page.to_u64();
+                Ok(Some((page.cursor(), next)))
+            }
+            crate::unite::UniteAddr::Slot { carrier, unite } => {
+                let base = self.page_slice(carrier).ok_or_else(|| {
+                    SubstrateError::WalBadFrame(format!(
+                        "props chain: carrier {carrier} out of range (addr {addr:#x})"
+                    ))
+                })?;
+                let debut = usize::from(unite) * UNITE_SIZE;
+                let slot: &crate::unite::SlotPage =
+                    bytemuck::from_bytes(&base[debut..debut + UNITE_SIZE]);
+                if crate::page::OwnerKind::from_magic(slot.header.magic).is_none() {
+                    return Err(SubstrateError::WalBadFrame(format!(
+                        "props chain: slot (carrier {carrier}, unité {unite}) bad magic {:#x}",
+                        slot.header.magic
+                    )));
+                }
+                let used = &slot.payload[..slot.header.free_offset as usize];
+                let next = slot.header.next_page.to_u64();
+                Ok(Some((PropertyCursor::au_dessus(used), next)))
+            }
+        }
+    }
+
     /// Walk the full property chain rooted at `head`, invoking `visit`
     /// for every non-tombstoned entry in chain order (newest → oldest).
     /// Tombstones are skipped transparently.
     ///
     /// If `head` is `None`, the visitor is never called.
-    pub fn walk_chain<F>(&self, head: Option<u32>, mut visit: F) -> SubstrateResult<()>
+    ///
+    /// (feat slots512-wiring) Délègue à la variante unité-aware ; les têtes
+    /// legacy (index u32) sont converties en adresse d'unité legacy — chemin
+    /// inchangé.
+    pub fn walk_chain<F>(&self, head: Option<u32>, visit: F) -> SubstrateResult<()>
+    where
+        F: FnMut(&PropertyEntry),
+    {
+        self.walk_chain_unite(Self::tete_legacy_u64(head), visit)
+    }
+
+    /// Variante unité-aware de [`Self::walk_chain`] : `head` est l'adresse
+    /// brute (U48) — page legacy ou slot packé.
+    pub(crate) fn walk_chain_unite<F>(&self, head: Option<u64>, mut visit: F) -> SubstrateResult<()>
     where
         F: FnMut(&PropertyEntry),
     {
         let mut cur = head;
-        while let Some(idx) = cur {
-            let bytes = self.page_slice(idx).ok_or_else(|| {
-                SubstrateError::WalBadFrame(format!("walk_chain: page {idx} out of range"))
-            })?;
-            let page: &PropertyPage = bytemuck::from_bytes(bytes);
-            if !page.has_valid_prop_magic() {
-                return Err(SubstrateError::WalBadFrame(format!(
-                    "walk_chain: page {idx} has bad magic {:#x}",
-                    page.header.magic
-                )));
-            }
-            let cursor: PropertyCursor<'_> = page.cursor();
+        while let Some(addr) = cur {
+            let Some((cursor, next)) = self.unite_cursor(addr)? else {
+                break;
+            };
             for entry in cursor {
                 let e = entry.map_err(|e| {
                     SubstrateError::WalBadFrame(format!(
-                        "walk_chain: decode error on page {idx}: {e}"
+                        "walk_chain: decode error on unit {addr:#x}: {e}"
                     ))
                 })?;
                 if !e.is_tombstone() {
                     visit(&e);
                 }
             }
-            cur = decode_page_id(page.header.next_page);
+            cur = if next == 0 { None } else { Some(next) };
         }
         Ok(())
     }
@@ -523,32 +1531,38 @@ impl PropsZone {
     pub fn collect_live_props_by_key(
         &self,
         head: Option<u32>,
-        live: &mut std::collections::HashMap<u16, PropertyEntry>,
-        tombstoned: &mut std::collections::HashSet<u16>,
+        live: &mut FxHashMap<u16, PropertyEntry>,
+        tombstoned: &mut FxHashSet<u16>,
+    ) -> SubstrateResult<()> {
+        self.collect_live_props_by_key_unite(Self::tete_legacy_u64(head), live, tombstoned)
+    }
+
+    /// Variante unité-aware de [`Self::collect_live_props_by_key`].
+    ///
+    /// POURQUOI `FxHashMap`/`FxHashSet` et non `std::collections` : la clef
+    /// est un `u16` (≤ 65 536 valeurs), le hachage SipHash de `std` est
+    /// inutilement coûteux pour ce domaine, et ces cartes sont allouées une
+    /// fois PAR NŒUD sur le chemin `get_node` (voir `read_all_properties_for_node`).
+    /// Le hachage `foldhash` (Fx) divise ce coût fixe tout en restant
+    /// insensible aux attaques DoS par collision — hors propos ici.
+    pub(crate) fn collect_live_props_by_key_unite(
+        &self,
+        head: Option<u64>,
+        live: &mut FxHashMap<u16, PropertyEntry>,
+        tombstoned: &mut FxHashSet<u16>,
     ) -> SubstrateResult<()> {
         let mut cur = head;
-        while let Some(idx) = cur {
-            let bytes = self.page_slice(idx).ok_or_else(|| {
-                SubstrateError::WalBadFrame(format!(
-                    "collect_live_props_by_key: page {idx} out of range"
-                ))
-            })?;
-            let page: &PropertyPage = bytemuck::from_bytes(bytes);
-            if !page.has_valid_prop_magic() {
-                return Err(SubstrateError::WalBadFrame(format!(
-                    "collect_live_props_by_key: page {idx} has bad magic {:#x}",
-                    page.header.magic
-                )));
-            }
-            // Within this page, build a "latest per key" map. Cursor
+        while let Some(addr) = cur {
+            let Some((cursor, next)) = self.unite_cursor(addr)? else {
+                break;
+            };
+            // Within this unit, build a "latest per key" map. Cursor
             // yields oldest → newest, so later writes overwrite.
-            let mut latest_in_page: std::collections::HashMap<u16, PropertyEntry> =
-                std::collections::HashMap::new();
-            let cursor: PropertyCursor<'_> = page.cursor();
+            let mut latest_in_page: FxHashMap<u16, PropertyEntry> = FxHashMap::default();
             for entry in cursor {
                 let e = entry.map_err(|e| {
                     SubstrateError::WalBadFrame(format!(
-                        "collect_live_props_by_key: decode error on page {idx}: {e}"
+                        "collect_live_props_by_key: decode error on unit {addr:#x}: {e}"
                     ))
                 })?;
                 // Only adopt a key that has not been claimed by a
@@ -564,7 +1578,7 @@ impl PropsZone {
                     live.insert(k, e);
                 }
             }
-            cur = decode_page_id(page.header.next_page);
+            cur = if next == 0 { None } else { Some(next) };
         }
         Ok(())
     }
@@ -597,34 +1611,84 @@ impl PropsZone {
         head: Option<u32>,
         prop_key: u16,
     ) -> SubstrateResult<Option<PropertyEntry>> {
+        self.get_latest_for_key_unite(Self::tete_legacy_u64(head), prop_key)
+    }
+
+    /// Variante unité-aware de [`Self::get_latest_for_key`] — `head` est
+    /// l'adresse brute (page legacy ou slot packé).
+    pub(crate) fn get_latest_for_key_unite(
+        &self,
+        head: Option<u64>,
+        prop_key: u16,
+    ) -> SubstrateResult<Option<PropertyEntry>> {
         let mut cur = head;
-        while let Some(idx) = cur {
-            let bytes = self.page_slice(idx).ok_or_else(|| {
-                SubstrateError::WalBadFrame(format!("get_latest_for_key: page {idx} out of range"))
-            })?;
-            let page: &PropertyPage = bytemuck::from_bytes(bytes);
-            if !page.has_valid_prop_magic() {
-                return Err(SubstrateError::WalBadFrame(format!(
-                    "get_latest_for_key: page {idx} has bad magic {:#x}",
-                    page.header.magic
-                )));
-            }
-            let mut latest_in_page: Option<PropertyEntry> = None;
-            let cursor: PropertyCursor<'_> = page.cursor();
-            for entry in cursor {
-                let e = entry.map_err(|e| {
-                    SubstrateError::WalBadFrame(format!(
-                        "get_latest_for_key: decode error on page {idx}: {e}"
-                    ))
-                })?;
-                if e.prop_key == prop_key {
-                    latest_in_page = Some(e);
+        while let Some(addr) = cur {
+            let Some((cursor, next)) = self.unite_cursor(addr)? else {
+                break;
+            };
+            // ── PASSE 1 : LES CLEFS SEULES (2026-09-12) ──
+            //
+            // Cette boucle décodait chaque entrée avec `decode_entry` — donc
+            // construisait un `PropertyEntry` complet, et allouait un `Vec` pour
+            // chaque valeur TABLEAU — alors que seule la clef décide. Sur un
+            // nœud à 57 propriétés (dont des listes), chercher UNE clef payait
+            // des dizaines de décodages et plusieurs allocations : mesuré
+            // 1 450 à 2 561 ns/cellule sur les nœuds `File`, contre 320 ns sur un
+            // nœud moyen, pour la MÊME clef.
+            //
+            // Ici on ne lit que l'en-tête et la longueur : aucune allocation,
+            // aucun `PropertyEntry`. On retient l'OFFSET de la DERNIÈRE entrée
+            // portant la clef — la sémantique LWW (« la dernière gagne ») est
+            // donc conservée à l'identique, et une entrée qui n'est pas la clef
+            // cherchée n'est plus décodée du tout.
+            let tranche = cursor.tranche();
+            let mut off = 0usize;
+            let mut dernier_off: Option<usize> = None;
+            let mut balayage_sur = true;
+            while off < tranche.len() {
+                match crate::page::clef_et_taille_entree(&tranche[off..]) {
+                    Some((clef, taille)) => {
+                        if clef == prop_key {
+                            dernier_off = Some(off);
+                        }
+                        off += taille;
+                    }
+                    // Entrée tronquée ou tag inconnu : on ne devine pas. La
+                    // passe 2 ci-dessous reprend le décodage complet, qui rendra
+                    // exactement l'erreur rendue avant ce correctif.
+                    None => {
+                        balayage_sur = false;
+                        break;
+                    }
                 }
             }
-            if latest_in_page.is_some() {
-                return Ok(latest_in_page);
+            if balayage_sur {
+                if let Some(o) = dernier_off {
+                    let (entree, _) = decode_entry(&tranche[o..]).map_err(|e| {
+                        SubstrateError::WalBadFrame(format!(
+                            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
+                        ))
+                    })?;
+                    return Ok(Some(entree));
+                }
+            } else {
+                // ── PASSE 2 : CHEMIN D'ORIGINE, INCHANGÉ ──
+                let mut latest_in_page: Option<PropertyEntry> = None;
+                for entry in cursor {
+                    let e = entry.map_err(|e| {
+                        SubstrateError::WalBadFrame(format!(
+                            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
+                        ))
+                    })?;
+                    if e.prop_key == prop_key {
+                        latest_in_page = Some(e);
+                    }
+                }
+                if latest_in_page.is_some() {
+                    return Ok(latest_in_page);
+                }
             }
-            cur = decode_page_id(page.header.next_page);
+            cur = if next == 0 { None } else { Some(next) };
         }
         Ok(None)
     }
@@ -674,20 +1738,161 @@ impl PropsZone {
         })
     }
 
+    /// Vue zero-copy : les octets derrière `href`, empruntés directement
+    /// à la page heap mmap — aucun octet copié, là où [`Self::read_heap`]
+    /// copiait la page entière (4 KiB) puis le payload.
+    ///
+    /// `None` si la réf sort de la zone allouée, si l'offset est invalide,
+    /// ou si l'alignement de page ne se vérifie pas
+    /// (`bytemuck::try_from_bytes` — vérifié à l'exécution, jamais de
+    /// transmute). Le `&[u8]` vit aussi longtemps que l'emprunt de `self` :
+    /// sous la garde de lecture du `RwLock<PropsZone>` du store, le mmap ne
+    /// peut pas être remappé (toute croissance passe par `&mut self`).
+    pub fn read_heap_view(&self, href: crate::page::HeapRef) -> Option<&[u8]> {
+        let bytes = self.heap_page_slice(href.page_id)?;
+        let page: &HeapPage = bytemuck::try_from_bytes(bytes).ok()?;
+        page.read_at(href.offset)
+    }
+
     /// Read the bytes behind a [`HeapRef`]. Returns `None` if the ref
     /// points outside the allocated region or the offset is invalid.
+    ///
+    /// (O1) Réécrit au-dessus de [`Self::read_heap_view`] : une seule copie
+    /// (le payload), plus la page 4 KiB intermédiaire.
     pub fn read_heap(&self, href: crate::page::HeapRef) -> Option<Vec<u8>> {
-        let page = self.read_heap_page(href.page_id).ok()?;
-        page.read_at(href.offset).map(|s| s.to_vec())
+        self.read_heap_view(href).map(|s| s.to_vec())
+    }
+
+    /// Compte les pages heap de l'extension VIVANTE dont le CRC32 ne se
+    /// verifie pas. Rend `(pages_examinees, pages_en_echec)`.
+    ///
+    /// ══ POURQUOI LE CRC N'EST VERIFIE QU'ICI, ET NULLE PART AILLEURS ══
+    ///
+    /// Le chemin de lecture chaud ([`Self::read_heap_view`]) ne verifie PAS
+    /// le CRC, et c'est voulu : il faudrait relire les 4 KiB de la page a
+    /// chaque resolution de `HeapRef` pour hacher, la ou la lecture utile ne
+    /// touche que quelques dizaines d'octets. Le cout serait paye par toutes
+    /// les requetes, en permanence, pour attraper un evenement rare.
+    ///
+    /// Le diagnostic, lui, peut se le permettre : il passe une seule fois,
+    /// hors du chemin de service, et l'operateur qui le lance a deja accepte
+    /// d'attendre. C'est donc ICI que la verification vit — un seul endroit,
+    /// explicitement nomme, plutot que dispersee dans le chemin chaud ou elle
+    /// serait tot ou tard retiree « pour la perf ».
+    ///
+    /// Une page en echec de CRC n'est PAS traitee comme une reference
+    /// pendante : ses octets peuvent parfaitement se resoudre (`read_at`
+    /// rend `Some`) tout en etant faux. Retirer les entrees qui la
+    /// referencent detruirait des donnees peut-etre recuperables. Le compte
+    /// est donc RAPPORTE, jamais agi.
+    ///
+    /// La borne est `next_heap_page_idx` (l'extension allouee), pas la
+    /// longueur du fichier : au-dela s'etend le rembourrage de
+    /// pre-allocation, qui n'a jamais porte ni magic ni CRC.
+    pub fn verifier_crc_pages_heap(&self) -> (u32, u32) {
+        let mut examinees = 0u32;
+        let mut en_echec = 0u32;
+        for page_idx in 0..self.next_heap_page_idx {
+            let Some(bytes) = self.heap_page_slice(page_idx) else {
+                // Hors de la region mappee : ce n'est pas un echec de CRC
+                // mais une extension incoherente, que le scan de references
+                // rapportera sous forme de refs pendantes.
+                continue;
+            };
+            let Ok(page) = bytemuck::try_from_bytes::<HeapPage>(bytes) else {
+                continue;
+            };
+            examinees += 1;
+            if !page.verify_crc32() {
+                en_echec += 1;
+            }
+        }
+        (examinees, en_echec)
+    }
+
+    /// Vue EMPRUNTÉE sur la charge d'un `HeapRef`, LUE SUR PLACE dans le mmap.
+    ///
+    /// POURQUOI (2026-09-12). `read_heap` passait par `read_heap_page`, qui fait
+    /// `*bytemuck::from_bytes::<HeapPage>(bytes)` : **une copie de 4 Ko — la page
+    /// HEAP entière — pour lire UNE chaîne**. Puis `.read_at(offset).to_vec()`
+    /// recopiait la chaîne, avant que `decode_string_ref` n'alloue encore un
+    /// `ArcStr`. Soit, par cellule lue : 1 copie de page (4 Ko), 1 `Vec`, 1
+    /// `ArcStr`. Mesuré sur le snapshot figé : ~330 ns par cellule pour la seule
+    /// phase de lecture du lot, et le décodage des entrées n'y était que pour
+    /// ~5 % (A/B entrelacé) — le reste était donc ici.
+    ///
+    /// Cette vue-ci ne copie RIEN : elle rend la tranche de l'arène mmap que
+    /// `HeapPage::read_at` aurait rendue, avec les MÊMES contrôles de bornes
+    /// (en-tête, longueur, dépassement). Appelant : garder le verrou de zone
+    /// pendant l'usage de la tranche — c'est le contrat de `read_heap_page`.
+    #[must_use]
+    pub fn read_heap_slice(&self, href: crate::page::HeapRef) -> Option<&[u8]> {
+        let bytes = self.heap_page_slice(href.page_id)?;
+        let page: &crate::heap::HeapPage = bytemuck::from_bytes(bytes);
+        page.read_at(href.offset)
     }
 
     /// Flush both zones to disk (`msync` + `fsync`).
+    ///
+    /// ORDRE CRITIQUE — LE HEAP D'ABORD, LES PROPS ENSUITE.
+    ///
+    /// Les entrees de la zone props contiennent des `HeapRef {page_id,
+    /// offset}` : le POINTEUR. Les octets pointes vivent dans la zone heap :
+    /// le POINTE. Rendre le pointeur durable avant le pointe ouvre une
+    /// fenetre ou un crash laisse sur disque des references pendantes : la
+    /// props survit, le heap non, et a la reouverture `HeapPage::read_at`
+    /// refuse l'offset (« StringRef {..} out of range ») — valeur perdue.
+    ///
+    /// Pire : `next_heap_page_idx` est recalcule a l'ouverture comme la
+    /// frontiere des pages PORTEUSES DU MAGIC (voir
+    /// `compute_next_heap_page_idx` — c'est une recherche de frontiere, PAS
+    /// une division de la longueur du fichier). Une queue de heap qui n'a
+    /// jamais atteint le disque fait donc repartir l'allocateur EN ARRIERE,
+    /// et les ecritures suivantes ECRASENT les pages que les props
+    /// survivantes referencent encore. La corruption devient alors
+    /// irreversible : les octets ne manquent pas, ils sont REMPLACES.
+    ///
+    /// Aucune troncature de fichier n'est requise pour cela — il suffit que
+    /// la queue soit sale et non synchronisee. C'est le mecanisme reproduit
+    /// par
+    /// `reouverture_apres_perte_de_la_queue_du_heap_ecrase_les_pages_vivantes`.
+    ///
+    /// L'ordre inverse (heap puis props) est sur : un crash peut laisser des
+    /// octets heap orphelins — du gaspillage, jamais une reference pendante.
     pub fn flush(&self) -> SubstrateResult<()> {
-        self.props.msync()?;
-        self.props.fsync()?;
-        self.heap.msync()?;
-        self.heap.fsync()?;
+        for zone in self.zones_ordre_durabilite() {
+            zone.msync()?;
+            zone.fsync()?;
+        }
         Ok(())
+    }
+
+    /// Les deux zones dans l'ordre ou elles DOIVENT devenir durables :
+    /// le POINTE (heap) avant le POINTEUR (props).
+    ///
+    /// L'ordre est defini ici et nulle part ailleurs : `flush()` comme le
+    /// test de durabilite le lisent depuis cette fonction, si bien qu'aucun
+    /// des deux ne peut deriver par rapport a l'autre.
+    fn zones_ordre_durabilite(&self) -> [&ZoneFile; 2] {
+        [&self.heap, &self.props]
+    }
+
+    /// (test) Ne rend durable que la PREMIERE zone de l'ordre de flush puis
+    /// s'arrete : modelise un crash survenu AU MILIEU de [`Self::flush`].
+    #[doc(hidden)]
+    pub fn flush_partiel_pour_test(&self) -> SubstrateResult<()> {
+        let [premiere, _seconde] = self.zones_ordre_durabilite();
+        premiere.msync()?;
+        premiere.fsync()?;
+        Ok(())
+    }
+
+    /// (test) Chemin de la zone qui devient durable EN DERNIER — celle dont
+    /// un crash au milieu de [`Self::flush`] fait perdre la queue.
+    #[doc(hidden)]
+    pub fn fichier_zone_la_moins_durable(&self) -> &std::path::Path {
+        let [_premiere, seconde] = self.zones_ordre_durabilite();
+        seconde.path()
     }
 }
 
@@ -699,6 +1904,356 @@ impl PropsZone {
 mod tests {
     use super::*;
     use crate::page::{HeapRef, PropertyValue};
+
+    // =================================================================
+    // ETAPE 1 — DURABILITE
+    //
+    // Invariant : apres un crash survenu au milieu de `PropsZone::flush()`,
+    // AUCUNE entree props durable ne doit referencer des octets heap qui,
+    // eux, ne le sont pas.
+    //
+    // Pourquoi ne pas simplement faire un SIGKILL ? Parce qu'un SIGKILL ne
+    // perd RIEN d'un mmap MAP_SHARED : les pages sales appartiennent au
+    // cache de pages du noyau, qui les ecrit meme si le processus meurt.
+    // Seule une coupure de courant (ou un crash noyau) perd la queue non
+    // fsync'ee. Le crash est donc modelise LA OU IL SE PRODUIT VRAIMENT :
+    // au niveau du stockage, en restaurant la zone non encore synchronisee
+    // a son dernier etat durable.
+    // =================================================================
+
+    fn copier_repertoire(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_file() {
+                std::fs::copy(e.path(), dst.join(e.file_name())).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn crash_au_milieu_du_flush_ne_laisse_aucune_reference_pendante() {
+        const N: usize = 20;
+        const TAILLE: usize = 200;
+
+        let sf = SubstrateFile::open_tempfile().unwrap();
+        let mut pz = PropsZone::open(&sf).unwrap();
+
+        // ---- lot 1 : ecrit, puis rendu ENTIEREMENT durable.
+        let mut head = None;
+        for i in 0..N {
+            let s = format!("lot1-{:03}-{}", i, "a".repeat(TAILLE));
+            let href = pz.intern_bytes(s.as_bytes()).unwrap();
+            let e = PropertyEntry::new(i as u16, PropertyValue::StringRef(href));
+            head = Some(pz.append_entry(1, head, &e).unwrap());
+        }
+        pz.flush().unwrap();
+        assert_eq!(
+            head,
+            Some(1),
+            "le lot 1 doit tenir sur une seule page props"
+        );
+
+        // Image disque de l'etat PLEINEMENT durable.
+        let dir_durable = tempfile::tempdir().unwrap();
+        copier_repertoire(sf.path(), dir_durable.path());
+
+        // ---- lot 2 : ecrit, puis CRASH au milieu de flush().
+        for i in 0..N {
+            let s = format!("lot2-{:03}-{}", i, "b".repeat(TAILLE));
+            let href = pz.intern_bytes(s.as_bytes()).unwrap();
+            let e = PropertyEntry::new((N + i) as u16, PropertyValue::StringRef(href));
+            head = Some(pz.append_entry(1, head, &e).unwrap());
+        }
+        assert_eq!(head, Some(1), "le lot 2 doit rester sur la meme page props");
+
+        // Seule la PREMIERE zone de l'ordre de flush atteint le disque.
+        pz.flush_partiel_pour_test().unwrap();
+        let nom_perdue = pz
+            .fichier_zone_la_moins_durable()
+            .file_name()
+            .unwrap()
+            .to_owned();
+
+        // ---- image disque APRES le crash : l'etat courant pour tout, sauf
+        // la zone qui n'a pas eu le temps d'etre synchronisee — restauree a
+        // son dernier etat durable (celui du lot 1).
+        let dir_crash = tempfile::tempdir().unwrap();
+        copier_repertoire(sf.path(), dir_crash.path());
+        std::fs::copy(
+            dir_durable.path().join(&nom_perdue),
+            dir_crash.path().join(&nom_perdue),
+        )
+        .unwrap();
+
+        drop(pz);
+
+        // ---- reouverture et audit de TOUTES les references durables.
+        let sf2 = SubstrateFile::open(dir_crash.path()).unwrap();
+        let pz2 = PropsZone::open(&sf2).unwrap();
+        let entrees = pz2.collect_entries(Some(1)).unwrap();
+
+        let mut pendantes: Vec<(u16, HeapRef)> = vec![];
+        let mut resolues = 0usize;
+        for e in &entrees {
+            if let PropertyValue::StringRef(h) = e.value {
+                match pz2.read_heap(h) {
+                    Some(_) => resolues += 1,
+                    None => pendantes.push((e.prop_key, h)),
+                }
+            }
+        }
+
+        assert!(
+            pendantes.is_empty(),
+            "{} reference(s) pendante(s) apres un crash au milieu de flush() \
+             — zone perdue = {:?}, {} entrees durables, {} resolues : {:?}",
+            pendantes.len(),
+            nom_perdue,
+            entrees.len(),
+            resolues,
+            &pendantes[..pendantes.len().min(5)]
+        );
+        assert!(
+            resolues > 0,
+            "l'audit doit avoir resolu au moins une reference (sinon il ne \
+             prouve rien) — {} entrees durables",
+            entrees.len()
+        );
+    }
+
+    // =================================================================
+    // ETAPE 2 — LA CAUSE PREMIERE : L'ALLOCATEUR QUI REPART EN ARRIERE
+    //
+    // Les deux tests qui suivent etablissent, par le code, le mecanisme
+    // qui a detruit les 92 proprietes — et delimitent ce qui n'y a PAS
+    // contribue.
+    //
+    // `reouverture_apres_perte_de_la_queue_du_heap_ecrase_les_pages_vivantes`
+    //   reproduit la sequence reelle : queue du heap non durable, puis
+    //   reallocation des memes index, puis ECRASEMENT. Aucune troncature
+    //   n'est necessaire : il suffit que la queue n'ait jamais atteint le
+    //   disque. C'est ce que corrige l'ordre de flush (heap avant props).
+    //
+    // `la_recherche_binaire_sous_estime_la_frontiere_si_le_heap_a_un_trou`
+    //   etablit un DEFAUT LATENT distinct : `compute_next_heap_page_idx`
+    //   fait une recherche binaire sur un predicat (« la page porte-t-elle
+    //   le magic ? ») qui n'est monotone que tant que les pages vivantes
+    //   forment un prefixe contigu. Un seul trou suffit a lui faire rendre
+    //   une frontiere arbitrairement basse.
+    // =================================================================
+
+    /// Nombre d'octets utiles d'une page heap (payload).
+    const HEAP_PAYLOAD: usize =
+        HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>();
+
+    /// Remplit une page heap entiere avec un enregistrement unique, de
+    /// sorte que chaque `intern_bytes` consomme exactement une page : les
+    /// index de page deviennent previsibles, et le test peut raisonner sur
+    /// « la page N » sans dependre du tassage.
+    fn intern_une_page_pleine(pz: &mut PropsZone, motif: u8) -> crate::page::HeapRef {
+        let charge = vec![motif; HEAP_PAYLOAD - 4];
+        pz.intern_bytes(&charge).unwrap()
+    }
+
+    /// LA CAUSE PREMIERE, reproduite de bout en bout.
+    ///
+    /// Sequence exacte, sans aucune troncature de fichier ni appel a
+    /// `compact` / `shrink_to_fit` :
+    ///
+    /// 1. lot 1 interne des pages heap, le tout rendu durable ;
+    /// 2. lot 2 interne d'AUTRES pages heap et ecrit les entrees props qui
+    ///    les referencent, mais seules les PROPS atteignent le disque —
+    ///    c'est l'ancien ordre de flush (le pointeur avant le pointe) ;
+    /// 3. a la reouverture, l'allocateur reprend a la derniere page heap
+    ///    DURABLE, donc EN DESSOUS des pages que les props survivantes
+    ///    referencent encore ;
+    /// 4. les ecritures suivantes reutilisent ces index et ECRASENT les
+    ///    octets referencees.
+    ///
+    /// L'etat final est celui observe sur la base de production : la
+    /// reference resout, elle rend des octets VALIDES, et ce sont ceux
+    /// d'une AUTRE donnee. C'est cette etape 4 qui rend la perte
+    /// irreversible — sans elle il manquerait des octets, avec elle ils
+    /// sont REMPLACES.
+    #[test]
+    fn reouverture_apres_perte_de_la_queue_du_heap_ecrase_les_pages_vivantes() {
+        let sf = SubstrateFile::open_tempfile().unwrap();
+        let mut pz = PropsZone::open(&sf).unwrap();
+
+        // ---- lot 1 : 2 pages heap, pleinement durables.
+        for _ in 0..2 {
+            intern_une_page_pleine(&mut pz, b'1');
+        }
+        pz.flush().unwrap();
+        let heap_durable = pz.allocated_heap_page_count();
+        assert_eq!(
+            heap_durable, 2,
+            "lot 1 doit occuper exactement 2 pages heap"
+        );
+
+        // Image disque de l'etat pleinement durable.
+        let dir_durable = tempfile::tempdir().unwrap();
+        copier_repertoire(sf.path(), dir_durable.path());
+
+        // ---- lot 2 : 3 pages heap de plus, referencees par des entrees props.
+        let mut head = None;
+        let mut refs_lot2 = vec![];
+        for i in 0..3u16 {
+            let href = intern_une_page_pleine(&mut pz, b'2');
+            refs_lot2.push(href);
+            let e = PropertyEntry::new(i, PropertyValue::StringRef(href));
+            head = Some(pz.append_entry(1, head, &e).unwrap());
+        }
+        assert_eq!(pz.allocated_heap_page_count(), 5);
+        pz.flush().unwrap();
+
+        // ---- le crash de l'ANCIEN ordre : les props ont atteint le disque,
+        // la queue du heap non. On le modelise la ou il se produit vraiment
+        // (au niveau du stockage) en restaurant le SEUL fichier heap a son
+        // dernier etat durable ; le fichier props, lui, garde le lot 2.
+        let dir_crash = tempfile::tempdir().unwrap();
+        copier_repertoire(sf.path(), dir_crash.path());
+        std::fs::copy(
+            dir_durable.path().join(PROPS_HEAP_V2_FILENAME),
+            dir_crash.path().join(PROPS_HEAP_V2_FILENAME),
+        )
+        .unwrap();
+        drop(pz);
+
+        // ---- reouverture : l'allocateur repart EN ARRIERE.
+        let sf2 = SubstrateFile::open(dir_crash.path()).unwrap();
+        let mut pz2 = PropsZone::open(&sf2).unwrap();
+        let reprise = pz2.allocated_heap_page_count();
+        assert_eq!(
+            reprise, heap_durable,
+            "l'allocateur reprend a la derniere page heap DURABLE"
+        );
+        let max_reference = refs_lot2.iter().map(|h| h.page_id).max().unwrap();
+        assert!(
+            reprise <= max_reference,
+            "PREUVE : l'allocateur reprend a {reprise}, or des entrees props \
+             durables referencent encore la page {max_reference} — les \
+             prochaines ecritures vont les reutiliser"
+        );
+
+        // A ce stade les references du lot 2 sont PENDANTES (pas encore
+        // ecrasees) : le heap ne va plus assez loin.
+        for h in &refs_lot2 {
+            assert!(
+                pz2.read_heap_view(*h).is_none(),
+                "avant reecriture, la reference {h:?} doit etre pendante"
+            );
+        }
+
+        // ---- lot 3 : des donnees SANS AUCUN RAPPORT reutilisent ces index.
+        for _ in 0..3 {
+            intern_une_page_pleine(&mut pz2, b'3');
+        }
+        pz2.flush().unwrap();
+
+        // ---- l'etat de production : la reference resout, et elle ment.
+        let mut ecrasees = 0usize;
+        for h in &refs_lot2 {
+            if let Some(octets) = pz2.read_heap_view(*h) {
+                assert!(
+                    octets.iter().all(|b| *b == b'3'),
+                    "la page {} rend desormais les octets du lot 3",
+                    h.page_id
+                );
+                ecrasees += 1;
+            }
+        }
+        assert!(
+            ecrasees > 0,
+            "PREUVE MANQUANTE : aucune reference du lot 2 n'a ete ecrasee \
+             par le lot 3 — le mecanisme d'ecrasement n'est pas reproduit"
+        );
+    }
+
+    /// DEFAUT LATENT — distinct de la cause premiere ci-dessus.
+    ///
+    /// `compute_next_heap_page_idx` cherche la frontiere « derniere page
+    /// vivante » par recherche binaire sur la presence du magic. Une
+    /// recherche binaire n'est correcte que sur un predicat MONOTONE : ici,
+    /// « les pages vivantes forment un prefixe contigu ». L'invariant tient
+    /// tant que les pages sont ecrites dans l'ordre ET que la reecriture du
+    /// mmap atteint le disque dans cet ordre — ce que le noyau ne garantit
+    /// pas : un `msync` interrompu peut laisser un sous-ensemble ARBITRAIRE
+    /// de pages sales ecrites, donc un TROU.
+    ///
+    /// Le test construit le cas minimal deterministe : 8 pages vivantes,
+    /// aucun remplissage, la page 4 remise a zero. La recherche sonde 4 en
+    /// premier, le croit vide, et rabat la frontiere a 4 — alors que les
+    /// pages 5, 6 et 7 sont vivantes et referencables. L'allocateur repart
+    /// alors 4 pages en arriere et les ecrase.
+    #[test]
+    fn la_recherche_binaire_sous_estime_la_frontiere_si_le_heap_a_un_trou() {
+        const PAGES: usize = 8;
+        const TROU: usize = 4;
+
+        let sf = SubstrateFile::open_tempfile().unwrap();
+        let mut pz = PropsZone::open(&sf).unwrap();
+        let mut refs = vec![];
+        for _ in 0..PAGES {
+            refs.push(intern_une_page_pleine(&mut pz, b'v'));
+        }
+        assert_eq!(pz.allocated_heap_page_count(), PAGES as u32);
+        pz.flush().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        copier_repertoire(sf.path(), dir.path());
+        drop(pz);
+
+        // Le fichier heap est ramene a exactement 8 pages (pas de
+        // remplissage : la frontiere est alors non ambigue), puis la page
+        // du TROU est remise a zero — exactement ce que laisse un msync
+        // interrompu qui n'a pas ecrit cette page-la.
+        let chemin_heap = dir.path().join(PROPS_HEAP_V2_FILENAME);
+        let mut octets = std::fs::read(&chemin_heap).unwrap();
+        octets.truncate(PAGES * HEAP_PAGE_SIZE);
+        octets[TROU * HEAP_PAGE_SIZE..(TROU + 1) * HEAP_PAGE_SIZE].fill(0);
+        std::fs::write(&chemin_heap, &octets).unwrap();
+
+        // Temoin : les pages au-dessus du trou sont bel et bien vivantes.
+        for p in (TROU + 1)..PAGES {
+            let magic = u32::from_le_bytes(
+                octets[p * HEAP_PAGE_SIZE..p * HEAP_PAGE_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert_eq!(
+                magic,
+                crate::heap::HEAP_PAGE_MAGIC,
+                "la page {p} doit rester vivante — sinon le test ne prouve rien"
+            );
+        }
+
+        let sf2 = SubstrateFile::open(dir.path()).unwrap();
+        let pz2 = PropsZone::open(&sf2).unwrap();
+        let frontiere = pz2.allocated_heap_page_count();
+
+        assert!(
+            frontiere < PAGES as u32,
+            "PREUVE MANQUANTE : la recherche binaire a rendu {frontiere} \
+             (= la bonne reponse) malgre le trou en {TROU}"
+        );
+        assert_eq!(
+            frontiere, TROU as u32,
+            "la recherche sonde la page du trou et rabat la frontiere dessus"
+        );
+
+        // La consequence : des pages vivantes ET REFERENCEES sont hors de
+        // l'etendue que l'allocateur croit occupee — il va les reutiliser.
+        let encore_vivantes: Vec<_> = refs
+            .iter()
+            .filter(|h| h.page_id >= frontiere && pz2.read_heap_view(**h).is_some())
+            .collect();
+        assert!(
+            !encore_vivantes.is_empty(),
+            "PREUVE MANQUANTE : aucune reference vivante au-dela de la frontiere"
+        );
+    }
 
     fn open_zone() -> (SubstrateFile, PropsZone) {
         let sf = SubstrateFile::open_tempfile().unwrap();
@@ -954,8 +2509,8 @@ mod tests {
         head = Some(pz.append_entry(0, head, &e_b_updated).unwrap());
         head = Some(pz.append_entry(0, head, &tomb_c).unwrap());
 
-        let mut live = std::collections::HashMap::new();
-        let mut tombstoned = std::collections::HashSet::new();
+        let mut live = FxHashMap::default();
+        let mut tombstoned = FxHashSet::default();
         pz.collect_live_props_by_key(head, &mut live, &mut tombstoned)
             .unwrap();
 
@@ -976,8 +2531,8 @@ mod tests {
     #[test]
     fn collect_live_props_by_key_empty_head() {
         let (_sf, pz) = open_zone();
-        let mut live = std::collections::HashMap::new();
-        let mut tombstoned = std::collections::HashSet::new();
+        let mut live = FxHashMap::default();
+        let mut tombstoned = FxHashSet::default();
         pz.collect_live_props_by_key(None, &mut live, &mut tombstoned)
             .unwrap();
         assert!(live.is_empty());
@@ -997,8 +2552,8 @@ mod tests {
         // This likely triggers a new page
         head = Some(pz.append_entry(0, head, &big(4)).unwrap());
 
-        let mut live = std::collections::HashMap::new();
-        let mut tombstoned = std::collections::HashSet::new();
+        let mut live = FxHashMap::default();
+        let mut tombstoned = FxHashSet::default();
         pz.collect_live_props_by_key(head, &mut live, &mut tombstoned)
             .unwrap();
         // Only 1 key exists (id=1), and its latest value is 4
@@ -1083,21 +2638,78 @@ mod tests {
     }
 
     #[test]
-    fn kind_mismatch_on_append_is_rejected() {
+    fn tete_d_un_autre_genre_alloue_une_page_neuve_sans_toucher_l_autre() {
+        // (2026-08-19) Ce test verrouillait l ancien contrat : « une tête de
+        // genre étranger est refusée ». Le refus s est révélé inapplicable —
+        // `set_node_property` avalait l erreur en `warn` puis repliait sur la
+        // DashMap, si bien que 1,6 M de propriétés de la base `messages` ne
+        // parvenaient jamais en v2, sans que rien n échoue.
+        //
+        // Le contrat utile n était pas « refuser » mais « NE PAS ÉCRIRE CHEZ
+        // AUTRUI ». C est ce que l on vérifie désormais, et c est plus fort :
+        // on exige en plus que la page étrangère ressorte octet pour octet
+        // identique, ce que l ancienne version ne regardait pas.
         let (_sf, mut pz) = open_zone();
         let entry = PropertyEntry::new(1, PropertyValue::I64(0));
         let node_head = pz.append_entry_node(1, None, &entry).unwrap();
-        // Splicing a node-kind head as an edge chain would corrupt the
-        // chain — the inner helper must refuse.
-        let err = pz
+        let avant = pz.read_page(node_head).unwrap();
+
+        // On présente la tête d un nœud comme si c était celle d une arête.
+        let edge_head = pz
             .append_entry_edge(2, Some(node_head), &entry)
-            .unwrap_err();
-        match err {
-            SubstrateError::WalBadFrame(msg) => {
-                assert!(msg.contains("Node") && msg.contains("Edge"));
-            }
-            e => panic!("expected WalBadFrame, got {e:?}"),
-        }
+            .expect("une tête inexploitable doit repartir sur une page neuve");
+
+        assert_ne!(
+            edge_head, node_head,
+            "l arête ne doit surtout pas réutiliser la page du nœud"
+        );
+
+        // La page du nœud est intacte — c est l invariant qui compte.
+        let apres = pz.read_page(node_head).unwrap();
+        assert_eq!(
+            bytemuck::bytes_of(&avant),
+            bytemuck::bytes_of(&apres),
+            "la page du nœud a été modifiée par un append d arête"
+        );
+
+        // Et chaque chaîne reste close sur son propre propriétaire.
+        assert_eq!(pz.read_page(node_head).unwrap().header.node_id, 1);
+        assert_eq!(pz.read_page(edge_head).unwrap().header.node_id, 2);
+        assert_eq!(
+            pz.collect_entries(Some(node_head)).unwrap(),
+            vec![entry.clone()]
+        );
+        assert_eq!(
+            pz.collect_entries(Some(edge_head)).unwrap(),
+            vec![entry.clone()]
+        );
+    }
+
+    #[test]
+    fn tete_hors_zone_ou_jamais_ecrite_alloue_une_page_neuve() {
+        // (2026-08-19) Les deux formes qui ont bloqué la migration de
+        // `messages` : 1 501 040 refus « props page N out of range » et
+        // 112 280 refus « invalid magic 0x0 ». Toutes deux viennent d un
+        // `first_prop_off` parasite lu sur un NodeRecord antérieur à T17f.
+        let (_sf, mut pz) = open_zone();
+        let entry = PropertyEntry::new(1, PropertyValue::I64(42));
+
+        // (a) index très au-delà de la zone allouée
+        let h = pz
+            .append_entry_node(11, Some(9_999_999), &entry)
+            .expect("une tête hors zone doit repartir sur une page neuve");
+        assert_eq!(pz.read_page(h).unwrap().header.node_id, 11);
+        assert_eq!(pz.collect_entries(Some(h)).unwrap(), vec![entry.clone()]);
+
+        // (b) page adressable mais jamais écrite (magic 0x0)
+        let vierge = pz.next_page_idx + 1;
+        pz.ensure_page_addressable(vierge).unwrap();
+        assert_eq!(pz.read_page(vierge).unwrap().header.magic, 0);
+        let h2 = pz
+            .append_entry_node(12, Some(vierge), &entry)
+            .expect("une page jamais écrite doit repartir sur une page neuve");
+        assert_eq!(pz.read_page(h2).unwrap().header.node_id, 12);
+        assert_eq!(pz.collect_entries(Some(h2)).unwrap(), vec![entry.clone()]);
     }
 
     #[test]
@@ -1268,5 +2880,37 @@ mod tests {
         assert_eq!(pz.read_heap(b).as_deref(), Some(&b"same"[..]));
         // Make sure HeapRef fields are consistent.
         assert_eq!(core::mem::size_of::<HeapRef>(), 8);
+    }
+
+    #[test]
+    fn debut_chainee_pack_ecrit_control_et_slot() {
+        let (_sub, mut pz) = open_zone();
+        let e = PropertyEntry::new(7, PropertyValue::I64(42));
+        let addr = pz
+            .ecrire_debut_chainee_pack(9, OwnerKind::Node, &e, 1)
+            .expect("début de chaîne packé écrit");
+        // L'adresse rendue est un slot (carrier 1, unité 1).
+        match crate::unite::decode_unite(addr) {
+            crate::unite::UniteAddr::Slot { carrier, unite } => {
+                assert_eq!(carrier, 1);
+                assert_eq!(unite, 1);
+            }
+            other => panic!("adresse inattendue : {other:?}"),
+        }
+        // Relecture depuis la zone : contrôle puis slot (owner, entrée, CRC).
+        let page = pz.page_slice(1).expect("carrier 1 lisible");
+        let ctrl: &crate::unite::CarrierControl =
+            bytemuck::from_bytes(&page[..core::mem::size_of::<crate::unite::CarrierControl>()]);
+        assert_eq!(ctrl.magic, crate::unite::CARRIER_PACKED_MAGIC);
+        assert_eq!(ctrl.nb_unites_utilisees, 2, "contrôle + unité 1 réservés");
+        assert_eq!(ctrl.crc32, ctrl.compute_crc32());
+        let slot: &crate::unite::SlotPage =
+            bytemuck::from_bytes(&page[crate::unite::UNITE_SIZE..2 * crate::unite::UNITE_SIZE]);
+        assert_eq!(slot.header.node_id, 9);
+        assert_eq!(slot.header.magic, crate::page::PROP_PAGE_MAGIC_NODE);
+        assert!(slot.verify_crc32(), "CRC du slot valide");
+        let (entree, _) = slot.iter().next().expect("une entrée").expect("décodable");
+        assert_eq!(entree.prop_key, 7);
+        assert_eq!(entree.value, PropertyValue::I64(42));
     }
 }

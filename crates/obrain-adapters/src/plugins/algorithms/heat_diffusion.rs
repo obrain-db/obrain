@@ -107,6 +107,103 @@ pub fn calibrate_sigma(
 /// weighted Hilbert distance.
 ///
 /// Returns nodes sorted by heat descending. Nodes with zero heat are excluded.
+/// (2026-08-15) TABLE DES VOISINS MISE EN CACHE — elle ne depend pas des graines.
+///
+/// `heat_kernel_diffusion` reconstruisait `neighbor_weights` pour les 480 000
+/// noeuds A CHAQUE APPEL. Mesure : la phase `retrieve` d'une construction de
+/// prompt coutait 3466 ms de mediane (p90 6122 ms), soit 89 % des 3,6 s de
+/// construction — et donc 89 % de l'occupation des 16 places de la fabrique,
+/// qui plafonne le debit du systeme entier.
+///
+/// Or cette table ne depend QUE de la topologie, des features et des poids.
+/// Seul le vecteur de chaleur initial depend des graines. On recalculait 99 %
+/// d'un resultat invariant entre deux requetes.
+struct CacheVoisins {
+    empreinte: u64,
+    sigma_sq: f32,
+    voisins: HashMap<NodeId, Vec<(NodeId, f32)>>,
+}
+
+/// (2026-08-15) UNE ENTREE PAR EMPREINTE, PAS UNE SEULE.
+///
+/// Premiere version : `Option<CacheVoisins>`. Mesure sur 200 appels de
+/// production : 93 CHAUD / 72 FROID, soit 56 % seulement. Deux chemins
+/// appellent la diffusion avec des poids differents —
+/// `ExocortexConfig::default()` pour l'endpoint, `WeightProfile::Proximity`
+/// pour la construction de prompt — et chacun evincait l'autre. 44 % des
+/// constructions repayaient les 3,3 s de table.
+///
+/// Quatre places : de quoi loger les deux profils connus avec de la marge.
+/// ~8 Mo l'entree (352 562 aretes x 2 sens), donc 32 Mo au pire.
+static CACHE_VOISINS: std::sync::OnceLock<std::sync::RwLock<Vec<CacheVoisins>>> =
+    std::sync::OnceLock::new();
+
+/// Nombre d'empreintes gardees simultanement. Deux profils sont en usage ;
+/// quatre laisse de la marge sans laisser la table croitre sans fin.
+const CACHE_PLACES: usize = 4;
+
+/// Un seul constructeur a la fois. Les autres NE DEGRADENT PAS : ils
+/// recalculent en entier. Servir un index partiel etait acceptable ailleurs
+/// (« perime, PAS faux ») ; servir une diffusion partielle donnerait un
+/// resultat FAUX en silence.
+static CACHE_EN_CONSTRUCTION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Empreinte de CONTENU, pas d'adresse.
+///
+/// Deux allocations successives peuvent tomber sur la meme adresse memoire ;
+/// se fier a un pointeur ferait servir la table d'anciennes features — une
+/// faute silencieuse qu'on passe des jours a chercher. On melange donc les
+/// tailles, les poids, et les vecteurs des NodeId extremes (deterministes et
+/// trouves en une passe).
+fn empreinte_features(
+    features: &HilbertFeaturesResult,
+    weights: &FacetteWeights,
+    n_noeuds: usize,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // (2026-08-15) LE NOMBRE DE NOEUDS EST VOLONTAIREMENT EXCLU.
+    //
+    // Premiere version : il en faisait partie. Mesure : « cache FROID » sur
+    // 100 % des appels — la base agent grandit en continu (371 995
+    // Perception, une de plus a chaque pas), donc l'empreinte changeait a
+    // chaque requete. Un cache dont la clef ne peut jamais se repeter.
+    //
+    // Et il n'a rien a faire ici : la table n'indexe que les noeuds PRESENTS
+    // DANS LES FEATURES (`features.features.get(&nid)` ecarte les autres).
+    // Un noeud arrive depuis le calcul des features n'y contribuerait pas,
+    // qu'on invalide ou non. La clef suit donc les FEATURES, dont le TTL de
+    // 120 s est exactement la duree de vie voulue pour ce cache.
+    let _ = n_noeuds;
+    features.dimensions.hash(&mut h);
+    features.features.len().hash(&mut h);
+    features.raw_facettes.len().hash(&mut h);
+    for w in weights.weights.iter() {
+        w.to_bits().hash(&mut h);
+    }
+    // Les deux extremes : deterministes quel que soit l'ordre de la table.
+    let mut mini: Option<(&NodeId, &Vec<f32>)> = None;
+    let mut maxi: Option<(&NodeId, &Vec<f32>)> = None;
+    for (id, v) in features.features.iter() {
+        match mini {
+            Some((m, _)) if m <= id => {}
+            _ => mini = Some((id, v)),
+        }
+        match maxi {
+            Some((m, _)) if m >= id => {}
+            _ => maxi = Some((id, v)),
+        }
+    }
+    for extreme in [mini, maxi].into_iter().flatten() {
+        extreme.0.hash(&mut h);
+        for x in extreme.1.iter().take(16) {
+            x.to_bits().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 pub fn heat_kernel_diffusion(
     store: &dyn GraphStore,
     features: &HilbertFeaturesResult,
@@ -118,7 +215,13 @@ pub fn heat_kernel_diffusion(
         return Vec::new();
     }
 
+    // (2026-08-15) CHRONOMETRAGE PAR PHASE — on mesure au lieu de supposer.
+    // Trois attributions fausses en une nuit ont suffi : famine CPU, plafond
+    // d'allumage, table des voisins. Le journal tranchera.
+    let chrono = std::env::var("OBRAIN_TMN_CHRONO_CHALEUR").is_ok();
+    let t_ids = web_time::Instant::now();
     let node_ids = store.node_ids();
+    let ms_ids = t_ids.elapsed().as_millis() as u64;
     if node_ids.is_empty() {
         return Vec::new();
     }
@@ -145,15 +248,36 @@ pub fn heat_kernel_diffusion(
     } else {
         sigma_sq
     };
+    let ms_sigma = t_ids.elapsed().as_millis() as u64 - ms_ids;
 
-    // Initialize heat map
-    let mut heat: HashMap<NodeId, f32> = HashMap::with_capacity(node_ids.len());
-    for &nid in &node_ids {
-        heat.insert(nid, 0.0);
-    }
-    for &seed in seeds {
-        if heat.contains_key(&seed) {
-            heat.insert(seed, 1.0);
+    // ── (2026-08-15) LA TABLE EST-ELLE DEJA LA ? ──
+    //
+    // Elle ne depend pas des graines : meme features + memes poids + meme
+    // graphe => meme table. Lecture BREVE sous verrou partage, puis on rend
+    // la main. Si la clef correspond, on saute les 480 000 reconstructions.
+    let empreinte = empreinte_features(features, weights, node_ids.len());
+    let cache = CACHE_VOISINS.get_or_init(|| std::sync::RwLock::new(Vec::new()));
+    {
+        let lu = match cache.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(c) = lu.iter().find(|c| c.empreinte == empreinte) {
+            {
+                let t_diff = web_time::Instant::now();
+                let r = diffuser(&node_ids, seeds, &c.voisins, config);
+                if chrono {
+                    tracing::info!(
+                        target: "obrain_tmn::exochrono",
+                        "CHRONO CHALEUR (cache CHAUD) ids={}ms sigma={}ms empreinte={}ms diffusion={}ms",
+                        ms_ids, ms_sigma,
+                        t_ids.elapsed().as_millis() as u64 - ms_ids - ms_sigma
+                            - t_diff.elapsed().as_millis() as u64,
+                        t_diff.elapsed().as_millis() as u64
+                    );
+                }
+                return r;
+            }
         }
     }
 
@@ -161,7 +285,16 @@ pub fn heat_kernel_diffusion(
     let mut neighbor_weights: HashMap<NodeId, Vec<(NodeId, f32)>> =
         HashMap::with_capacity(node_ids.len());
     for &nid in &node_ids {
-        let edges = store.edges_from(nid, Direction::Outgoing);
+        // (2026-07-18) Direction::Both, pas Outgoing : un noyau de chaleur
+        // est un operateur SYMETRIQUE (Laplacien de graphe) — la chaleur
+        // diffuse dans les deux sens. En Outgoing seul, la diffusion ne
+        // \"tirait\" que le long des aretes sortantes : toute graine
+        // puits/source (Evidence, feuille d un DAG...) ne rayonnait vers
+        // personne, et le resultat degenera it en {graines x alpha^iters}
+        // uniforme — mesure en prod sur la base agent : TOUTES les
+        // requetes exocortex.recall retournaient un plat 0.125 = 0.5^3
+        // exactement (alpha=0.5, 3 iterations), rerank structurel inerte.
+        let edges = store.edges_from(nid, Direction::Both);
         let mut nw: Vec<(NodeId, f32)> = Vec::with_capacity(edges.len());
         if let Some(feat_v) = features.features.get(&nid) {
             for (neighbor, _) in &edges {
@@ -179,13 +312,93 @@ pub fn heat_kernel_diffusion(
         neighbor_weights.insert(nid, nw);
     }
 
+    // ── POSE DU CACHE : verrou d'ecriture BREF, apres le calcul ──
+    //
+    // La table vient d'etre construite HORS de tout verrou (boucle
+    // ci-dessus). On ne prend l'ecriture que pour la deposer.
+    //
+    // UN SEUL DEPOSANT : les autres viennent de recalculer la meme chose,
+    // les faire attendre n'apporterait rien. Ils repartent avec leur propre
+    // table — correct, simplement pas mis en cache.
+    if CACHE_EN_CONSTRUCTION
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_ok()
+    {
+        {
+            let mut w = match cache.write() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            // Un autre fil a pu poser la meme empreinte pendant qu'on
+            // calculait : on ne la duplique pas.
+            if !w.iter().any(|c| c.empreinte == empreinte) {
+                // Eviction de la plus ancienne. Avec deux profils actifs et
+                // quatre places elle ne se declenchera pas en pratique ;
+                // elle existe pour qu'un troisieme profil ne fasse pas
+                // croitre la table sans fin.
+                if w.len() >= CACHE_PLACES {
+                    w.remove(0);
+                }
+                w.push(CacheVoisins {
+                    empreinte,
+                    sigma_sq,
+                    voisins: neighbor_weights.clone(),
+                });
+            }
+        }
+        CACHE_EN_CONSTRUCTION.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    let _ = sigma_sq;
+
+    let t_diff = web_time::Instant::now();
+    let r = diffuser(&node_ids, seeds, &neighbor_weights, config);
+    if chrono {
+        tracing::info!(
+            target: "obrain_tmn::exochrono",
+            "CHRONO CHALEUR (cache FROID) ids={}ms sigma={}ms table={}ms diffusion={}ms total={}ms",
+            ms_ids, ms_sigma,
+            t_ids.elapsed().as_millis() as u64 - ms_ids - ms_sigma
+                - t_diff.elapsed().as_millis() as u64,
+            t_diff.elapsed().as_millis() as u64,
+            t_ids.elapsed().as_millis() as u64
+        );
+    }
+    r
+}
+
+/// La diffusion proprement dite — extraite pour etre partagee entre le
+/// chemin « cache chaud » et le chemin « on vient de construire ».
+///
+/// C'est la SEULE partie qui depend des graines, et elle est bon marche :
+/// `iterations` passes sur une table deja construite. Tout le reste etait
+/// invariant, et c'est tout le reste qu'on recalculait.
+fn diffuser(
+    node_ids: &[NodeId],
+    seeds: &[NodeId],
+    neighbor_weights: &HashMap<NodeId, Vec<(NodeId, f32)>>,
+    config: &HeatKernelConfig,
+) -> Vec<(NodeId, f32)> {
+    let mut heat: HashMap<NodeId, f32> = HashMap::with_capacity(node_ids.len());
+    for &nid in node_ids {
+        heat.insert(nid, 0.0);
+    }
+    for &seed in seeds {
+        if heat.contains_key(&seed) {
+            heat.insert(seed, 1.0);
+        }
+    }
     let alpha = config.alpha.clamp(0.0, 1.0);
 
     // Iterative diffusion
     for _ in 0..config.iterations {
         let mut new_heat: HashMap<NodeId, f32> = HashMap::with_capacity(node_ids.len());
 
-        for &nid in &node_ids {
+        for &nid in node_ids {
             let self_heat = *heat.get(&nid).unwrap_or(&0.0);
 
             let Some(neighbors) = neighbor_weights.get(&nid) else {
@@ -370,6 +583,102 @@ mod tests {
             .map_or(8, |v| v.len() / config.levels);
         let weights = FacetteWeights::uniform(n_facettes);
         (features, weights)
+    }
+
+    /// LE CHEMIN CHAUD REND LE MEME RESULTAT QUE LE CHEMIN FROID.
+    ///
+    /// Premier appel : la table des voisins est construite et mise en cache.
+    /// Second appel : elle est servie depuis le cache. Les deux resultats
+    /// doivent etre IDENTIQUES, valeur par valeur — pas seulement de meme
+    /// taille ou de meme ordre.
+    ///
+    /// Sans ce test, le cache pourrait servir une table subtilement fausse
+    /// sans jamais planter : la diffusion rendrait des nombres plausibles.
+    #[test]
+    fn le_cache_rend_exactement_le_meme_resultat() {
+        let (store, nodes) = make_line_graph();
+        let (features, weights) = compute_features(&store);
+        let config = HeatKernelConfig {
+            iterations: 3,
+            alpha: 0.5,
+            sigma_sq: None,
+        };
+        let seeds = vec![nodes[0]];
+
+        let froid = heat_kernel_diffusion(&store, &features, &seeds, &weights, &config);
+        let chaud = heat_kernel_diffusion(&store, &features, &seeds, &weights, &config);
+
+        assert_eq!(
+            froid.len(),
+            chaud.len(),
+            "le cache change le nombre de noeuds chauffes"
+        );
+        for (a, b) in froid.iter().zip(chaud.iter()) {
+            assert_eq!(a.0, b.0, "le cache change l'ordre des noeuds");
+            assert!(
+                (a.1 - b.1).abs() < 1e-6,
+                "le cache change la chaleur de {:?} : {} vs {}",
+                a.0,
+                a.1,
+                b.1
+            );
+        }
+    }
+
+    /// UN AUTRE GRAPHE NE DOIT PAS RECEVOIR LA TABLE DU PREMIER.
+    ///
+    /// L'empreinte est une empreinte de CONTENU, pas une adresse memoire :
+    /// deux allocations successives peuvent tomber au meme endroit, et servir
+    /// la table d'anciennes features serait une faute silencieuse.
+    ///
+    /// Un graphe en LIGNE et un graphe en ETOILE n'ont pas la meme topologie :
+    /// diffuser depuis leur centre ne peut pas donner la meme distribution.
+    #[test]
+    fn un_autre_graphe_ninvalide_pas_le_cache_en_silence() {
+        let config = HeatKernelConfig {
+            iterations: 3,
+            alpha: 0.5,
+            sigma_sq: None,
+        };
+
+        // On chauffe d'abord le cache avec la ligne.
+        let (ligne, n_ligne) = make_line_graph();
+        let (f_ligne, w_ligne) = compute_features(&ligne);
+        let r_ligne = heat_kernel_diffusion(&ligne, &f_ligne, &[n_ligne[0]], &w_ligne, &config);
+
+        // Puis une etoile : centre relie a quatre feuilles.
+        let etoile = SubstrateStore::open_tempfile().unwrap();
+        let centre = etoile.create_node(&["Node"]);
+        let feuilles: Vec<NodeId> = (0..4).map(|_| etoile.create_node(&["Node"])).collect();
+        for &f in &feuilles {
+            etoile.create_edge(centre, f, "LINK");
+            etoile.create_edge(f, centre, "LINK");
+        }
+        let (f_etoile, w_etoile) = compute_features(&etoile);
+        let r_etoile = heat_kernel_diffusion(&etoile, &f_etoile, &[centre], &w_etoile, &config);
+
+        // Dans l'etoile, les quatre feuilles sont a EGALE distance du centre :
+        // leur chaleur doit etre identique. Dans la ligne, elle decroit.
+        // Si le cache de la ligne avait ete servi a l'etoile, cette egalite
+        // serait rompue.
+        let chaleurs: Vec<f32> = feuilles
+            .iter()
+            .filter_map(|f| r_etoile.iter().find(|(id, _)| id == f).map(|(_, h)| *h))
+            .collect();
+        assert_eq!(
+            chaleurs.len(),
+            4,
+            "les quatre feuilles doivent etre chauffees"
+        );
+        for c in &chaleurs {
+            assert!(
+                (c - chaleurs[0]).abs() < 1e-5,
+                "feuilles a egale distance mais chaleurs differentes {:?} — \
+                 la table de la LIGNE a ete servie a l'ETOILE",
+                chaleurs
+            );
+        }
+        assert!(!r_ligne.is_empty(), "la ligne doit aussi avoir chauffe");
     }
 
     #[test]
