@@ -34,10 +34,6 @@ comment:
 ignore:
   - "**/tests/**"
   - "**/benches/**"
-  - "crates/bindings/python/**"
-  - "crates/bindings/node/**"
-  - "crates/bindings/wasm/**"
-  - "crates/bindings/go/**"
   - "**/build.rs"
   - "scripts/**"
   - "docs/**"
@@ -54,19 +50,19 @@ component_management:
     - component_id: obrain-common
       name: Common (types, allocators, hashing)
       paths:
-        - crates/common/src/**
+        - crates/obrain-common/src/**
     - component_id: obrain-core
       name: Core (storage, indexes, execution)
       paths:
-        - crates/core/src/**
+        - crates/obrain-core/src/**
     - component_id: obrain-adapters
       name: Adapters (parsers, algorithms, plugins)
       paths:
-        - crates/adapters/src/**
+        - crates/obrain-adapters/src/**
     - component_id: obrain-engine
       name: Engine (database, sessions, transactions)
       paths:
-        - crates/engine/src/**
+        - crates/obrain-engine/src/**
     - component_id: obrain-reactive
       name: Reactive (event bus, scheduler, instrumented store)
       paths:
@@ -75,3 +71,7 @@ component_management:
       name: Cognitive (energy, synapses, fabric, memory, episodic)
       paths:
         - crates/obrain-cognitive/src/**
+    - component_id: obrain-substrate
+      name: Substrate (mmap zones, WAL, replay, migration)
+      paths:
+        - crates/obrain-substrate/src/**

@@ -1,9 +1,11 @@
 [package]
 name = "obrain"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "A high-performance, embeddable graph database with a Rust core and no required C dependencies"
 keywords = ["graph", "database", "gql", "knowledge-graph", "embedded"]
 categories = ["database-implementations", "data-structures"]
