@@ -432,7 +432,12 @@ fn parallel_executor_batch_reel_substrate() {
     );
 
     // Réouverture : le substrate a tout persisté (les écritures passent par le
-    // même Writer/WAL que la voie séquentielle).
+    // même Writer/WAL que la voie séquentielle). Les DEUX Arc doivent être
+    // rendus : tant qu'un clone vit, la base est encore ouverte dans ce
+    // processus et une seconde ouverture en écriture est refusée (garde
+    // « une base inscriptible par processus » — avant elle, cette réouverture
+    // créait silencieusement une seconde instance des mêmes fichiers).
+    drop(db2);
     drop(db);
     let db2 = ObrainDB::open_substrate(&chemin).expect("réouverture");
     assert_eq!(
