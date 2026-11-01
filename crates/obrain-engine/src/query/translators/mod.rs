@@ -5,7 +5,6 @@
 
 pub(crate) mod common;
 
-#[cfg(feature = "gql")]
 pub mod gql;
 
 #[cfg(feature = "cypher")]

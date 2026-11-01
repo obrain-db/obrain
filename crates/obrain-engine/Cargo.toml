@@ -14,7 +14,9 @@ categories = ["database-implementations", "database"]
 [dependencies]
 obrain-common.workspace = true
 obrain-core = { workspace = true, default-features = false }
-obrain-adapters = { workspace = true, default-features = false }
+# GQL est LE langage du moteur : toujours compilé (V1-FEATURES-HYGIENE, 01/11).
+# La feature `gql` reste déclarée, vide, pour ne casser aucun manifeste.
+obrain-adapters = { workspace = true, default-features = false, features = ["gql"] }
 obrain-substrate = { workspace = true }
 
 # Error handling
@@ -84,13 +86,13 @@ defauts-connus = []
 default = ["gql", "parallel", "wal", "spill", "mmap", "regex"]
 regex = ["dep:regex", "obrain-core/regex"]
 regex-lite = ["dep:regex-lite", "obrain-core/regex-lite"]
-gql = ["obrain-adapters/gql"]
-cypher = ["obrain-adapters/cypher"]
-sparql = ["obrain-adapters/sparql"]
-gremlin = ["obrain-adapters/gremlin"]
+gql = []  # sans effet : GQL est toujours compilé (voir la dépendance obrain-adapters)
+cypher = ["obrain-adapters/cypher", "regex"]  # le traducteur Cypher émet BinaryOp::Regex (core, gaté regex)
+sparql = ["obrain-adapters/sparql", "regex"]  # le planificateur RDF utilise Regex
+gremlin = ["obrain-adapters/gremlin", "regex"]  # idem Cypher : BinaryOp::Regex
 graphql = ["obrain-adapters/graphql"]
 sql-pgq = ["obrain-adapters/sql-pgq"]  # SQL/PGQ (SQL:2023 GRAPH_TABLE)
-rdf = ["obrain-core/rdf", "obrain-adapters/rdf", "md5", "sha1", "sha2"]  # RDF graph model and planner
+rdf = ["obrain-core/rdf", "obrain-adapters/rdf", "md5", "sha1", "sha2", "regex"]  # RDF graph model and planner
 parallel = ["rayon", "crossbeam", "obrain-core/parallel", "obrain-adapters/parallel"]  # Parallel execution
 algos = ["obrain-adapters/algos"]  # Graph algorithm plugin (SSSP, PageRank, etc.)
 wal = ["obrain-adapters/wal"]  # Write-ahead log storage

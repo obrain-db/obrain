@@ -26,7 +26,6 @@ use crate::transaction::TransactionManager;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryLanguage {
     /// GQL (ISO/IEC 39075:2024) - default for LPG
-    #[cfg(feature = "gql")]
     Gql,
     /// openCypher 9.0
     #[cfg(feature = "cypher")]
@@ -53,7 +52,6 @@ impl QueryLanguage {
     #[must_use]
     pub const fn is_lpg(&self) -> bool {
         match self {
-            #[cfg(feature = "gql")]
             Self::Gql => true,
             #[cfg(feature = "cypher")]
             Self::Cypher => true,
@@ -468,7 +466,6 @@ impl QueryProcessor {
     fn translate_lpg(&self, query: &str, language: QueryLanguage) -> Result<LogicalPlan> {
         let _span = tracing::debug_span!("obrain::query::parse", ?language).entered();
         match language {
-            #[cfg(feature = "gql")]
             QueryLanguage::Gql => {
                 use crate::query::translators::gql;
                 gql::translate(query)
@@ -1250,7 +1247,6 @@ mod tests {
 
     #[test]
     fn test_query_language_is_lpg() {
-        #[cfg(feature = "gql")]
         assert!(QueryLanguage::Gql.is_lpg());
         #[cfg(feature = "cypher")]
         assert!(QueryLanguage::Cypher.is_lpg());
@@ -1269,7 +1265,6 @@ mod tests {
         assert_eq!(store_for_assert.node_count(), 0);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_process_simple_gql() {
         let store = make_store();
@@ -1299,7 +1294,6 @@ mod tests {
         assert_eq!(result.row_count(), 1);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_process_with_params() {
         let store = make_store();
@@ -1325,7 +1319,6 @@ mod tests {
         assert_eq!(result.row_count(), 2);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_missing_param_error() {
         let store = make_store();
@@ -1351,7 +1344,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_params_in_filter_with_property() {
         // Tests parameter substitution in WHERE clause with property comparison
@@ -1378,7 +1370,6 @@ mod tests {
         assert_eq!(row[0], Value::Int64(20));
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_params_in_multiple_where_conditions() {
         // Tests multiple parameters in WHERE clause with AND
@@ -1417,7 +1408,6 @@ mod tests {
         assert_eq!(result.row_count(), 1);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_params_with_in_list() {
         // Tests parameter as a value checked against IN list
@@ -1455,7 +1445,6 @@ mod tests {
         assert_eq!(result.row_count(), 1);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_params_same_type_comparison() {
         // Tests that same-type parameter comparisons work correctly
@@ -1481,7 +1470,6 @@ mod tests {
         assert_eq!(result.row_count(), 1);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_process_empty_result_has_columns() {
         // Tests that empty results still have correct column names
@@ -1503,7 +1491,6 @@ mod tests {
         assert_eq!(result.columns[1], "age");
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_params_string_equality() {
         // Tests string parameter equality comparison

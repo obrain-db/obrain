@@ -37,7 +37,6 @@ pub use processor::{QueryLanguage, QueryParams, QueryProcessor};
 pub use planner::rdf::RdfPlanner;
 
 // Translator exports
-#[cfg(feature = "gql")]
 pub use translators::gql::translate as translate_gql;
 
 #[cfg(feature = "cypher")]
