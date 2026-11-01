@@ -133,7 +133,7 @@ MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 
 Ce qui n'est **pas** dans la v0.0.1 :
 
-- **Bindings** Python, Node.js, Go, C, C#, Dart, WebAssembly : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI.
+- **Bindings** Python, Node.js, Go, C, C#, Dart, WebAssembly : aucun code dans ce dépôt. Le CLI vit dans `obrain-db/obrain-cli` ; les anciennes enveloppes npm/python (releases inexistantes, versions incohérentes) ont été retirées.
 - **`CALL obrain.hybrid_search`** comme procédure GQL : les index texte/vecteur vivent dans `ObrainDB`, hors de portée du planificateur de `CALL`, et l'enchaînement `CALL … YIELD … MATCH` n'est pas consommé par le parseur. La recherche hybride existe en Rust : `ObrainDB::hybrid_search(label, text_property, vector_property, query_text, query_vector, k, fusion)` (fusion RRF ou pondérée).
 - Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : dépôts séparés, hors de cette version.
 - Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
@@ -148,7 +148,7 @@ Ce qui n'est **pas** dans la v0.0.1 :
 
 ## Contribuer
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, `cargo package` dans l'ordre de publication, et les tests d'intégrité sur macOS.
+Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, les métadonnées de publication des 8 crates et `cargo package` du premier d'entre eux (`obrain-common` ; les suivants exigent que leurs dépendances soient déjà sur crates.io), et les tests d'intégrité sur macOS.
 
 ## Remerciements
 
