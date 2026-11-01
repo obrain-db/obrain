@@ -3883,6 +3883,30 @@ impl<'a> Parser<'a> {
                     }
                     let property = self.get_identifier_name();
                     self.advance();
+                    // (2026-11-01, v0.0.1) NOM DE FONCTION QUALIFIÉ : `obrain.energy(id(n))`.
+                    // Jusqu'ici `a.b(` était lu comme l'accès de propriété `a.b`
+                    // suivi d'une parenthèse orpheline (« Unexpected token '(' »),
+                    // et les UDF enregistrées sous un nom à point (obrain.energy,
+                    // obrain.risk, obrain.synapses) étaient injoignables en
+                    // expression. Un accès de propriété n'est jamais suivi de
+                    // `(` : la parenthèse tranche sans ambiguïté.
+                    if self.current.kind == TokenKind::LParen {
+                        self.advance();
+                        let mut args = Vec::new();
+                        if self.current.kind != TokenKind::RParen {
+                            args.push(self.parse_expression()?);
+                            while self.current.kind == TokenKind::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                        return Ok(Expression::FunctionCall {
+                            name: format!("{name}.{property}"),
+                            args,
+                            distinct: false,
+                        });
+                    }
                     Ok(Expression::PropertyAccess {
                         variable: name,
                         property,

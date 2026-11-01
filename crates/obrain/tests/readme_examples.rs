@@ -215,6 +215,82 @@ fn gds_max_flow_et_min_cost_max_flow_avec_source_et_puits() {
     }
 }
 
+// ── (2026-11-01) Les promesses du README rendues VRAIES — alias, procédures
+// exposées, algorithmes enregistrés. Rouges avant V1-FEATURES-2, verts après.
+readme_procedure!(gds_k_core_alias, "CALL obrain.k_core()");
+readme_procedure!(gds_jaccard_procedure, "CALL obrain.jaccard(0, 1)");
+readme_procedure!(
+    gds_cosine_similarity_procedure,
+    "CALL obrain.cosine_similarity(0, 1)"
+);
+readme_procedure!(gds_adamic_adar_procedure, "CALL obrain.adamic_adar(0, 1)");
+readme_procedure!(gds_triangle_count_procedure, "CALL obrain.triangle_count()");
+readme_procedure!(gds_stable_communities, "CALL obrain.stable_communities()");
+readme_procedure!(gds_irreducible_kernel, "CALL obrain.irreducible_kernel()");
+readme_procedure!(gds_spectral_embedding, "CALL obrain.spectral_embedding()");
+readme_procedure!(gds_hilbert_features, "CALL obrain.hilbert_features()");
+
+#[test]
+fn gds_astar_entre_deux_noeuds() {
+    let (db, alix, harm) = graphe_avec_ids();
+    let r = db
+        .session()
+        .execute(&format!("CALL obrain.astar({alix}, {harm})"))
+        .unwrap_or_else(|e| panic!("README : astar(source, target) : {e}"));
+    assert_eq!(r.row_count(), 1, "une ligne source/target/distance/path");
+}
+
+#[test]
+fn gds_personalized_pagerank_et_heat_kernel_avec_graines() {
+    let (db, alix, _) = graphe_avec_ids();
+    for proc_ in ["personalized_pagerank", "heat_kernel_diffusion"] {
+        appel(
+            &db,
+            &format!("CALL obrain.{proc_}({{seed_nodes: [{alix}]}})"),
+        )
+        .unwrap_or_else(|e| panic!("README : {proc_}({{seed_nodes}}) : {e}"));
+    }
+}
+
+#[test]
+fn gds_subgraph_contraction_avec_noeuds() {
+    let (db, alix, harm) = graphe_avec_ids();
+    appel(
+        &db,
+        &format!("CALL obrain.subgraph_contraction({{node_ids: [{alix}, {harm}]}})"),
+    )
+    .unwrap_or_else(|e| panic!("README : subgraph_contraction({{node_ids}}) : {e}"));
+}
+
+// ── Cognitif DEPUIS LA FAÇADE, avec `--features cognitive` ─────────────────
+#[cfg(feature = "cognitive")]
+mod cognitif {
+    use super::*;
+
+    readme_procedure!(
+        cognitif_spread,
+        "CALL obrain.cognitive.spread([0], {hops: 2})"
+    );
+    readme_procedure!(
+        cognitif_distill,
+        "CALL obrain.cognitive.distill({min_weight: 0.1})"
+    );
+
+    #[test]
+    fn udf_cognitives_energy_risk_synapses() {
+        let db = graphe_du_readme();
+        for q in [
+            "MATCH (n:Person) RETURN n.name, obrain.energy(id(n)) AS energy",
+            "MATCH (n) RETURN obrain.risk(id(n)) AS risk ORDER BY risk DESC LIMIT 10",
+            "MATCH (n:Person {name: 'Alix'}) RETURN obrain.synapses(id(n)) AS connections",
+        ] {
+            if let Err(e) = appel(&db, q) {
+                panic!("README « Cognitive UDFs » : `{q}` échoue : {e}");
+            }
+        }
+    }
+}
+
 // ── « CALL Procedures Reference » : la syntaxe documentée ───────────────────
 
 readme_procedure!(

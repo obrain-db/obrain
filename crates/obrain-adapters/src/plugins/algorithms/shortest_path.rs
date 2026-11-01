@@ -899,6 +899,103 @@ impl GraphAlgorithm for FloydWarshallAlgorithm {
 }
 
 // ============================================================================
+// (2026-11-01, v0.0.1) A* comme procédure
+// ============================================================================
+//
+// La fonction `astar` existait ; aucune procédure ne l'exposait alors que le
+// README la documentait. Sans coordonnées sur les nœuds, l'heuristique est
+// nulle : A* dégénère alors en Dijkstra, ce qui reste exact (admissible). Une
+// heuristique géométrique viendra quand le graphe portera des positions.
+
+fn astar_params() -> &'static [ParameterDef] {
+    static PARAMS: OnceLock<Vec<ParameterDef>> = OnceLock::new();
+    PARAMS.get_or_init(|| {
+        vec![
+            ParameterDef {
+                name: "source".to_string(),
+                description: "Source node ID".to_string(),
+                param_type: ParameterType::NodeId,
+                required: true,
+                default: None,
+            },
+            ParameterDef {
+                name: "target".to_string(),
+                description: "Target node ID".to_string(),
+                param_type: ParameterType::NodeId,
+                required: true,
+                default: None,
+            },
+            ParameterDef {
+                name: "weight".to_string(),
+                description: "Edge property holding the weight (default: 1.0 per edge)".to_string(),
+                param_type: ParameterType::String,
+                required: false,
+                default: None,
+            },
+        ]
+    })
+}
+
+pub struct AStarAlgorithm;
+
+impl GraphAlgorithm for AStarAlgorithm {
+    fn name(&self) -> &str {
+        "astar"
+    }
+
+    fn description(&self) -> &str {
+        "A* shortest path between two nodes (zero heuristic without coordinates: exact, equals Dijkstra)"
+    }
+
+    fn parameters(&self) -> &[ParameterDef] {
+        astar_params()
+    }
+
+    fn execute(&self, store: &dyn GraphStore, params: &Parameters) -> Result<AlgorithmResult> {
+        let source_id = params
+            .get_int("source")
+            .ok_or_else(|| Error::InvalidValue("source parameter required".to_string()))?;
+        let target_id = params
+            .get_int("target")
+            .ok_or_else(|| Error::InvalidValue("target parameter required".to_string()))?;
+        let source = NodeId::new(source_id as u64);
+        let target = NodeId::new(target_id as u64);
+        let weight_prop = params.get_string("weight");
+
+        let mut result = AlgorithmResult::new(vec![
+            "source".to_string(),
+            "target".to_string(),
+            "distance".to_string(),
+            "path".to_string(),
+        ]);
+        match astar(store, source, target, weight_prop, |_| 0.0) {
+            Some((distance, path)) => {
+                let path_str: String = path
+                    .iter()
+                    .map(|n| n.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                result.add_row(vec![
+                    Value::Int64(source.0 as i64),
+                    Value::Int64(target.0 as i64),
+                    Value::Float64(distance),
+                    Value::String(path_str.into()),
+                ]);
+            }
+            None => {
+                result.add_row(vec![
+                    Value::Int64(source.0 as i64),
+                    Value::Int64(target.0 as i64),
+                    Value::Null,
+                    Value::String("unreachable".into()),
+                ]);
+            }
+        }
+        Ok(result)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

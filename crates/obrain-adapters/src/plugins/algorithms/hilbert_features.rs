@@ -1834,10 +1834,9 @@ mod tests {
         // centrality_cached utilisée par le tri actuel.
         let pr = super::pagerank(&store, 0.85, 100, 1e-6);
         let degree = |n: NodeId| -> u32 {
-            let out = store
+            store
                 .edges_from(n, obrain_core::graph::Direction::Outgoing)
-                .len() as u32;
-            out
+                .len() as u32
         };
 
         // Plan spectral : eigvecs 1-2 rang-normalisés → [0,1]².
@@ -1863,14 +1862,11 @@ mod tests {
         // Clés topologiques : centrality (rang) × degree (rang) — on passe par
         // le même rescale que le substrate via grid_coords_from_features.
         let mut c_rank: HashMap<NodeId, f64> = HashMap::new();
-        let mut d_rank: HashMap<NodeId, f64> = HashMap::new();
-        let max_deg = nodes.iter().map(|&n| degree(n)).max().unwrap_or(1).max(1) as u32;
+        let max_deg = nodes.iter().map(|&n| degree(n)).max().unwrap_or(1).max(1);
         for &n in &nodes {
             c_rank.insert(n, pr.get(&n).copied().unwrap_or(0.0));
-            d_rank.insert(n, f64::from(degree(n)));
         }
         let cr = rank_normalize(&c_rank);
-        let dr = rank_normalize(&d_rank);
 
         let key_topo = |n: NodeId| -> u32 {
             // Reconstruit le plan substrate : centrality_q16 = rang × 65535,

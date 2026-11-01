@@ -528,6 +528,29 @@ impl GraphAlgorithm for KCoreAlgorithm {
     }
 }
 
+/// (2026-11-01, v0.0.1) `obrain.k_core()` — le nom que le README a toujours
+/// documenté ; le registre ne connaissait que `kcore`. Même algorithme, même
+/// sortie : un alias, pas une copie.
+pub struct KCoreAliasAlgorithm;
+
+impl GraphAlgorithm for KCoreAliasAlgorithm {
+    fn name(&self) -> &str {
+        "k_core"
+    }
+
+    fn description(&self) -> &str {
+        "K-core decomposition of the graph (alias of kcore)"
+    }
+
+    fn parameters(&self) -> &[ParameterDef] {
+        kcore_params()
+    }
+
+    fn execute(&self, store: &dyn GraphStore, params: &Parameters) -> Result<AlgorithmResult> {
+        KCoreAlgorithm.execute(store, params)
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

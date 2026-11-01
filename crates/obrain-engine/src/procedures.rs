@@ -7,15 +7,20 @@
 use std::sync::Arc;
 
 use hashbrown::HashMap;
+use obrain_adapters::plugins::algorithms::kernel::IrreducibleKernel;
 use obrain_adapters::plugins::algorithms::{
-    ArticulationPointsAlgorithm, BellmanFordAlgorithm, BetweennessCentralityAlgorithm,
-    BfsAlgorithm, BridgesAlgorithm, ClosenessCentralityAlgorithm, ClusteringCoefficientAlgorithm,
-    ConnectedComponentsAlgorithm, DegreeCentralityAlgorithm, DfsAlgorithm, DijkstraAlgorithm,
-    FloydWarshallAlgorithm, GraphAlgorithm, HitsAlgorithm, KCoreAlgorithm, KHopAlgorithm,
-    KruskalAlgorithm, LabelPropagationAlgorithm, LeidenAlgorithm, LouvainAlgorithm,
-    MaxFlowAlgorithm, MinCostFlowAlgorithm, NodeSimilarityAlgorithm, PageRankAlgorithm,
-    PrimAlgorithm, ProjectionConfig, ProjectionRegistry, SsspAlgorithm,
-    StronglyConnectedComponentsAlgorithm, TopKSimilarAlgorithm, TopologicalSortAlgorithm,
+    AStarAlgorithm, AdamicAdarAlgorithm, ArticulationPointsAlgorithm, BellmanFordAlgorithm,
+    BetweennessCentralityAlgorithm, BfsAlgorithm, BridgesAlgorithm, ClosenessCentralityAlgorithm,
+    ClusteringCoefficientAlgorithm, ConnectedComponentsAlgorithm, CosineSimilarityAlgorithm,
+    DegreeCentralityAlgorithm, DfsAlgorithm, DijkstraAlgorithm, FloydWarshallAlgorithm,
+    GraphAlgorithm, HeatKernelAlgorithm, HilbertFeaturesAlgorithm, HitsAlgorithm, JaccardAlgorithm,
+    KCoreAlgorithm, KCoreAliasAlgorithm, KHopAlgorithm, KruskalAlgorithm,
+    LabelPropagationAlgorithm, LeidenAlgorithm, LouvainAlgorithm, MaxFlowAlgorithm,
+    MinCostFlowAlgorithm, NodeSimilarityAlgorithm, PageRankAlgorithm,
+    PersonalizedPageRankAlgorithm, PrimAlgorithm, ProjectionConfig, ProjectionRegistry,
+    SpectralEmbeddingAlgorithm, SsspAlgorithm, StableCommunitiesAlgorithm,
+    StronglyConnectedComponentsAlgorithm, SubgraphContractionAlgorithm, TopKSimilarAlgorithm,
+    TopologicalSortAlgorithm, TriangleCountAlgorithm,
 };
 use obrain_adapters::plugins::{AlgorithmResult, ParameterDef, Parameters};
 use obrain_common::types::Value;
@@ -32,9 +37,16 @@ impl BuiltinProcedures {
     /// Creates a new registry with all built-in algorithms registered.
     pub fn new() -> Self {
         let mut algorithms: HashMap<String, Arc<dyn GraphAlgorithm>> = HashMap::new();
+        // (2026-11-01, v0.0.1) La clé du registre est le nom SANS le préfixe
+        // `obrain.` : `resolve_name` le retire de `CALL obrain.x`, mais quatre
+        // algorithmes se nommaient déjà `obrain.spectral_embedding`, etc., et
+        // n'étaient donc joignables sous aucune forme. On normalise ici, une
+        // fois, plutôt que de renommer chaque implémentation.
         let register = |map: &mut HashMap<String, Arc<dyn GraphAlgorithm>>,
                         algo: Arc<dyn GraphAlgorithm>| {
-            map.insert(algo.name().to_string(), algo);
+            let nom = algo.name();
+            let cle = nom.strip_prefix("obrain.").unwrap_or(nom).to_string();
+            map.insert(cle, algo);
         };
 
         // Centrality
@@ -89,6 +101,28 @@ impl BuiltinProcedures {
         // Node similarity
         register(&mut algorithms, Arc::new(NodeSimilarityAlgorithm));
         register(&mut algorithms, Arc::new(TopKSimilarAlgorithm));
+
+        // (2026-11-01, v0.0.1) Promesses du README enfin tenues : alias et
+        // procédures qui existaient comme fonctions sans être exposées.
+        register(&mut algorithms, Arc::new(AStarAlgorithm));
+        register(&mut algorithms, Arc::new(TriangleCountAlgorithm));
+        register(&mut algorithms, Arc::new(KCoreAliasAlgorithm));
+        register(&mut algorithms, Arc::new(JaccardAlgorithm));
+        register(&mut algorithms, Arc::new(CosineSimilarityAlgorithm));
+        register(&mut algorithms, Arc::new(AdamicAdarAlgorithm));
+
+        // (2026-11-01, v0.0.1) Sept algorithmes implémentés dans les
+        // adaptateurs mais jamais enregistrés : mesuré « Unknown procedure »
+        // par crates/obrain/tests/readme_examples.rs.
+        register(&mut algorithms, Arc::new(PersonalizedPageRankAlgorithm));
+        register(&mut algorithms, Arc::new(StableCommunitiesAlgorithm));
+        // `IrreducibleKernel` porte un état (Φ₀ multi-têtes, graine) : graine
+        // fixe 0 pour que deux appels CALL rendent le même résultat.
+        register(&mut algorithms, Arc::new(IrreducibleKernel::new(0)));
+        register(&mut algorithms, Arc::new(SpectralEmbeddingAlgorithm));
+        register(&mut algorithms, Arc::new(HeatKernelAlgorithm));
+        register(&mut algorithms, Arc::new(HilbertFeaturesAlgorithm));
+        register(&mut algorithms, Arc::new(SubgraphContractionAlgorithm));
 
         Self { algorithms }
     }

@@ -115,7 +115,7 @@ pub use centrality::{
     BetweennessCentralityAlgorithm, ClosenessCentralityAlgorithm, DegreeCentralityAlgorithm,
     HitsAlgorithm, PageRankAlgorithm,
 };
-pub use clustering::ClusteringCoefficientAlgorithm;
+pub use clustering::{ClusteringCoefficientAlgorithm, TriangleCountAlgorithm};
 pub use community::{LabelPropagationAlgorithm, LeidenAlgorithm, LouvainAlgorithm};
 pub use components::{
     ConnectedComponentsAlgorithm, StronglyConnectedComponentsAlgorithm, TopologicalSortAlgorithm,
@@ -124,9 +124,11 @@ pub use ego_graph::{EgoEdge, EgoGraph, KHopAlgorithm, KHopConfig, khop_subgraph}
 pub use flow::{MaxFlowAlgorithm, MinCostFlowAlgorithm};
 pub use mst::{KruskalAlgorithm, PrimAlgorithm};
 pub use shortest_path::{
-    BellmanFordAlgorithm, DijkstraAlgorithm, FloydWarshallAlgorithm, SsspAlgorithm,
+    AStarAlgorithm, BellmanFordAlgorithm, DijkstraAlgorithm, FloydWarshallAlgorithm, SsspAlgorithm,
 };
-pub use structure::{ArticulationPointsAlgorithm, BridgesAlgorithm, KCoreAlgorithm};
+pub use structure::{
+    ArticulationPointsAlgorithm, BridgesAlgorithm, KCoreAlgorithm, KCoreAliasAlgorithm,
+};
 pub use traversal::{BfsAlgorithm, DfsAlgorithm};
 
 // Heat kernel diffusion
@@ -151,8 +153,9 @@ pub use hilbert_features::{
 
 // Node similarity algorithms
 pub use similarity::{
-    NodeSimilarityAlgorithm, SimilarityMetric, SimilarityScore, TopKSimilarAlgorithm, adamic_adar,
-    cosine_similarity, jaccard, overlap_coefficient, resource_allocation, top_k_similar,
+    AdamicAdarAlgorithm, CosineSimilarityAlgorithm, JaccardAlgorithm, NodeSimilarityAlgorithm,
+    SimilarityMetric, SimilarityScore, TopKSimilarAlgorithm, adamic_adar, cosine_similarity,
+    jaccard, overlap_coefficient, resource_allocation, top_k_similar,
 };
 
 // Personalized PageRank & relevance subgraph

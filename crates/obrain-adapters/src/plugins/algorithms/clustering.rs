@@ -661,6 +661,37 @@ fn sq_dist(a: &[f32], b: &[f32]) -> f32 {
         .sum()
 }
 
+/// (2026-11-01, v0.0.1) `obrain.triangle_count()` — documenté dans le README,
+/// jamais enregistré : le comptage existait comme colonne de
+/// `clustering_coefficient` et comme fonction `triangle_count`. Une ligne par
+/// nœud (`node_id`, `triangles`), chaque triangle compté une fois par sommet.
+pub struct TriangleCountAlgorithm;
+
+impl GraphAlgorithm for TriangleCountAlgorithm {
+    fn name(&self) -> &str {
+        "triangle_count"
+    }
+
+    fn description(&self) -> &str {
+        "Number of triangles each node participates in"
+    }
+
+    fn parameters(&self) -> &[ParameterDef] {
+        &[]
+    }
+
+    fn execute(&self, store: &dyn GraphStore, _params: &Parameters) -> Result<AlgorithmResult> {
+        let par_noeud = triangle_count(store);
+        let mut result = AlgorithmResult::new(vec!["node_id".to_string(), "triangles".to_string()]);
+        let mut lignes: Vec<(NodeId, u64)> = par_noeud.into_iter().collect();
+        lignes.sort_by_key(|(n, _)| n.0);
+        for (node, n) in lignes {
+            result.add_row(vec![Value::Int64(node.0 as i64), Value::Int64(n as i64)]);
+        }
+        Ok(result)
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

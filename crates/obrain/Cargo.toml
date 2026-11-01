@@ -40,6 +40,12 @@ text-index = ["obrain-engine/text-index"]
 hybrid-search = ["obrain-engine/hybrid-search"]
 cdc = ["obrain-engine/cdc"]
 reactive = ["obrain-engine/reactive"]  # Reactive mutation event bus for cognitive features
+# (2026-11-01, v0.0.1) La couche cognitive était injoignable depuis le crate
+# publié : aucune feature ne la relayait. `cognitive` = moteur (énergie,
+# synapses, UDF obrain.energy/risk/synapses, CALL obrain.cognitive.spread…) ;
+# `cognitive-full` = tous les sous-systèmes (detect_gaps, synthesize, engrams…).
+cognitive = ["obrain-engine/cognitive", "algos"]
+cognitive-full = ["obrain-engine/cognitive-full", "algos"]
 embed = ["obrain-engine/embed"]  # Opt-in ONNX embedding generation (~17MB)
 
 # Convenience groups
