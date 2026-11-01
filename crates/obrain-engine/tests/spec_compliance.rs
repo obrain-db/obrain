@@ -6787,7 +6787,8 @@ mod foreach_set_delete_translator {
     use obrain_engine::ObrainDB;
 
     #[test]
-    #[ignore = "FOREACH SET on Unwind values doesn't persist - node identity lost"]
+    // (2026-11-01) Ignoré pour « FOREACH SET … node identity lost » ; MESURÉ vert
+    // sur main e11bdd2a : la raison était périmée.
     fn foreach_set_on_matched_nodes() {
         // Tests translate_foreach_gql SET branch (lines 1262-1272)
         let db = ObrainDB::new_in_memory();

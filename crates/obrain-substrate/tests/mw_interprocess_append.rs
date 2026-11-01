@@ -443,7 +443,8 @@ fn t2_six_processus_zero_perte_eof_exact() {
 // (et dans le bench de débit) : le verrou coûte plus cher que le `write` qu'il
 // protège, et le débit cumulé BAISSE quand N monte.
 #[test]
-#[ignore = "échec connu et mesuré : 1876 écarts de LSN sur 6000 frames en multi-processus (voir docs)"]
+// (2026-11-01) Ignoré pour « 1876 écarts de LSN sur 6000 frames » ; MESURÉ vert
+// sur main e11bdd2a (4 écrivains, régime verrou) : la raison était périmée.
 fn t2b_lsn_exact_par_verrou_d_append() {
     let test = "t2b_lsn_exact_par_verrou_d_append";
     if role().as_deref() == Some("ecrivain") {
