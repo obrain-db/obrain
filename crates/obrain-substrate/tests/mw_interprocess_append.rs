@@ -237,6 +237,17 @@ fn role_ecrivain() {
     if std::env::var("MW_COORD").as_deref() == Ok("verrou") {
         w.coordination(obrain_substrate::wal_io::CoordinationAppend::VerrouExact);
     }
+    // Expérience V1-T2B : un délai de « tête bloquée » minuscule force le chemin
+    // de récupération (un prédécesseur simplement préempté est pris pour mort)
+    // à chaque contention, au lieu d'attendre qu'une préemption de 25 ms
+    // survienne par hasard sous charge.
+    if let Some(ns) = std::env::var("MW_DELAI_TETE_NS")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        let ns: u64 = ns.parse().expect("MW_DELAI_TETE_NS");
+        w.forcer_delai_tete_bloquee(std::time::Duration::from_nanos(ns));
+    }
     if mode == "course" || mode == "kill" {
         // L'enfant de T3 écrit sans discontinuer (payloads gros) : le parent le
         // tuera au milieu. Il n'attend AUCUN top départ — la fenêtre est serrée
@@ -275,11 +286,15 @@ fn role_ecrivain() {
     annoncer("FIN");
     // STATS lues par le parent : les compteurs de diagnostic de l'enfant.
     annoncer(&format!(
-        "STATS recalages={} courses={} records={} micros={}",
+        "STATS recalages={} courses={} records={} micros={} reancrees={} attentes={} reprises={} generations={}",
         w.recalages(),
         w.courses_suspectees(),
         w.records_ecrits(),
-        duree.as_micros()
+        duree.as_micros(),
+        w.tetes_reancrees(),
+        w.attentes_de_publication(),
+        w.reprises_de_reservation(),
+        w.generations_vues()
     ));
 }
 
@@ -443,10 +458,31 @@ fn t2_six_processus_zero_perte_eof_exact() {
 // (et dans le bench de débit) : le verrou coûte plus cher que le `write` qu'il
 // protège, et le débit cumulé BAISSE quand N monte.
 #[test]
-// (2026-11-01) Ignoré pour « 1876 écarts de LSN sur 6000 frames » ; MESURÉ vert
-// sur main e11bdd2a (4 écrivains, régime verrou) : la raison était périmée.
+// (2026-11-01, V1-T2B) Désignoré le matin (vert sur e11bdd2a), ré-ignoré le soir
+// avec sa MESURE : 3 échecs sur 172 exécutions à 25 ms (dont un sur le runner
+// GitHub, PR #30), et 4 sur 31 avec le délai forcé à 100 µs (`t2c`). Toujours la
+// même assertion : `lsn == ancre + position` — la frame d'un écrivain PRÉEMPTÉ
+// plus longtemps que `DELAI_TETE_BLOQUEE` est posée APRÈS celle du successeur
+// qui l'a pris pour mort et a ré-ancré la chaîne. Zéro perte, EOF exact ; seul
+// le LSN est inexact. Le défaut est dans le design (un délai ne prouve pas une
+// mort), pas dans le test ; correctif proposé dans la tâche V1-T2B (preuve de
+// vie par pid dans le registre). Reste exécuté par `mesures.yml` (--ignored).
+#[ignore = "V1-T2B — défaut réel mesuré le 2026-11-01 : LSN inexact quand un écrivain préempté est pris pour mort (3/172 à 25 ms, 4/31 à 100 µs) ; zéro perte ; voir docs/LIMITES-v0.0.1.md"]
 fn t2b_lsn_exact_par_verrou_d_append() {
-    let test = "t2b_lsn_exact_par_verrou_d_append";
+    t2b_corps("t2b_lsn_exact_par_verrou_d_append", None);
+}
+
+/// Même protocole que `t2b`, mais le délai de récupération d'une tête bloquée
+/// est forcé à 100 µs chez chaque écrivain : un pair préempté plus de 100 µs
+/// est pris pour mort et sa plage est ré-ancrée. Si l'exactitude des LSN tient
+/// ici, elle ne dépend pas de la rareté des préemptions de 25 ms.
+#[test]
+#[ignore = "V1-T2B — reproduction du défaut : 4 échecs sur 31 le 2026-11-01 (délai 100 µs) ; même assertion que t2b"]
+fn t2c_lsn_exact_malgre_recuperations_forcees() {
+    t2b_corps("t2c_lsn_exact_malgre_recuperations_forcees", Some(100_000));
+}
+
+fn t2b_corps(test: &str, delai_tete_ns: Option<u64>) {
     if role().as_deref() == Some("ecrivain") {
         role_ecrivain();
         return;
@@ -472,6 +508,10 @@ fn t2b_lsn_exact_par_verrou_d_append() {
                     ("MW_TAG", tag.to_string()),
                     ("MW_M", M_T2.to_string()),
                     ("MW_GO", go.display().to_string()),
+                    (
+                        "MW_DELAI_TETE_NS",
+                        delai_tete_ns.map(|d| d.to_string()).unwrap_or_default(),
+                    ),
                 ],
             ),
         ));
@@ -523,10 +563,15 @@ fn t2b_lsn_exact_par_verrou_d_append() {
     );
     eprintln!(
         "T2b (VerrouExact) : {n} processus × {M_T2} records = {total} frames · \
-         {:.3} s · {:.0} records/s cumulés · LSN non exacts (compteur)={}",
+         {:.3} s · {:.0} records/s cumulés · LSN non exacts (compteur)={} · \
+         têtes ré-ancrées={} attentes={} reprises CAS={} générations vues={}",
         ecoule.as_secs_f64(),
         total as f64 / ecoule.as_secs_f64(),
         stats.get("courses").copied().unwrap_or(0),
+        stats.get("reancrees").copied().unwrap_or(0),
+        stats.get("attentes").copied().unwrap_or(0),
+        stats.get("reprises").copied().unwrap_or(0),
+        stats.get("generations").copied().unwrap_or(0),
     );
 }
 
