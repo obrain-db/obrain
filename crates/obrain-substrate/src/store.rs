@@ -187,7 +187,7 @@ use crate::record::{
 };
 use crate::vec_column::EntityKind;
 use crate::vec_column_registry::VecColumnRegistry;
-use crate::wal::WalPayload;
+use crate::wal::{WalPayload, WalRecord};
 use crate::wal_io::SyncMode;
 use crate::writer::Writer;
 
@@ -5496,9 +5496,17 @@ impl SubstrateStore {
     ///
     /// This is the canonical post-T17 replacement for `LpgStore::new()` in
     /// unit tests and doctests that do not exercise cross-restart behaviour.
+    /// (2026-11-01, D-DUR) `SyncMode::Never`, et c'est voulu : un store
+    /// temporaire (`ObrainDB::new_in_memory`) disparaît avec le processus,
+    /// il n'a RIEN à protéger d'une coupure de courant. Depuis que chaque
+    /// commit — auto-commit compris — est scellé par un `fsync` sous
+    /// `EveryCommit`, le garder ici faisait payer un `F_FULLFSYNC` par
+    /// statement à des bases jetables (mesuré : `probe_in`, 22 000 INSERT,
+    /// > 60 s au lieu de quelques secondes). Le contrat de durabilité ne
+    /// concerne que `open()` sur un chemin.
     pub fn open_tempfile() -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_tempfile()?;
-        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
+        Self::from_substrate_partage(sub, SyncMode::Never, true)
     }
 
     /// Exécute `f` avec un accès VERROUILLÉ au substrat sous-jacent.
@@ -21823,6 +21831,43 @@ impl GraphStoreMut for SubstrateStore {
         self.epoque_courante.fetch_max(epoch.0, Ordering::Relaxed);
     }
 
+    /// D-DUR (2026-11-01). Avant cette méthode, `Session::commit()` ne
+    /// touchait jamais le WAL : les records de mutation partaient avec
+    /// `flags: 0`, et le seul `FLAG_COMMIT` (donc le seul `fsync` sous
+    /// `EveryCommit`) venait de `flush()` — appelé par `checkpoint()` et
+    /// `close()`, jamais par un commit. Mesuré en juillet 2026 : CREATE puis
+    /// SIGKILL → `node_count` 1 → 0. `Writer::commit()` fait exactement ce
+    /// qu'il faut : marqueur + `fsync` sous `EveryCommit` (le défaut),
+    /// marqueur seul sous `Group` (opt-in, l'appelant tient `fsync_wal`),
+    /// needle sous group commit armé. On ne change donc aucune sémantique
+    /// opt-in : on cesse d'oublier d'appeler ce qui existait.
+    fn seal_commit(
+        &self,
+        transaction_id: TransactionId,
+    ) -> std::result::Result<(), obrain_common::utils::error::Error> {
+        // Le marqueur porte l'identifiant de la transaction : au rejeu, il
+        // publie ce qu'elle avait déclaré en attente (`TxNoeudEnAttente`,
+        // `TxAreteEnAttente`). `FLAG_COMMIT` déclenche le `fsync` sous
+        // `SyncMode::EveryCommit` (le défaut) ; `Group` reste opt-in.
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: horodatage_micros(),
+            flags: WalRecord::FLAG_COMMIT,
+            payload: WalPayload::TxCommit {
+                tx: transaction_id.0,
+            },
+        };
+        self.writer
+            .wal()
+            .append_encoded(&rec)
+            .map(|_| ())
+            .map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "scellement du commit dans le WAL : {e}"
+                ))
+            })
+    }
+
     // ── TRANSACTIONS : JOURNAL D'ANNULATION DES PROPRIETES ET LABELS ─
     //
     // Le rembobinage par plage d'identifiants (plus bas) defait les
@@ -22368,6 +22413,10 @@ impl GraphStoreMut for SubstrateStore {
             self.note_mvcc_actif();
             self.attente_noeuds_active
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.declare_en_vol(WalPayload::TxNoeudEnAttente {
+                tx: transaction_id.0,
+                node_id: id.0 as u32,
+            });
         }
         id
     }
@@ -22448,6 +22497,10 @@ impl GraphStoreMut for SubstrateStore {
         // rien à rembobiner jamais.
         if transaction_id != TransactionId::SYSTEM {
             self.aretes_creees_par_tx.insert(id, transaction_id.0);
+            self.declare_en_vol(WalPayload::TxAreteEnAttente {
+                tx: transaction_id.0,
+                edge_id: id.0,
+            });
         }
         id
     }
@@ -36865,4 +36918,33 @@ mod sonde_v3_replay {
             "la prop ecrite sans flush doit etre relue"
         );
     }
+}
+
+impl SubstrateStore {
+    /// (2026-11-01, D-DUR) Déclare au journal qu'une entité appartient à une
+    /// transaction encore ouverte. Sans ce record, un processus qui disparaît
+    /// avec la transaction ouverte laisse l'entité PUBLIÉE à la réouverture.
+    /// L'échec d'écriture est journalisé, pas propagé : la création a déjà eu
+    /// lieu, et l'appelant n'a pas de chemin d'erreur ici — le commit, lui,
+    /// échouera si le WAL est hors service.
+    fn declare_en_vol(&self, payload: WalPayload) {
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: horodatage_micros(),
+            flags: 0,
+            payload,
+        };
+        if let Err(e) = self.writer.wal().append_encoded(&rec) {
+            tracing::error!(error = %e, "WAL : impossible de déclarer une entité en vol");
+        }
+    }
+}
+
+/// Horodatage des records de transaction (µs depuis l'époque Unix) ; 0 si
+/// l'horloge est antérieure à l'époque — l'horodatage est informatif.
+fn horodatage_micros() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0)
 }

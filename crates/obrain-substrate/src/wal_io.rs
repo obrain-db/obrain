@@ -10,10 +10,18 @@
 //!
 //! Three fsync policies are exposed via [`SyncMode`]:
 //!
-//! * [`SyncMode::EveryCommit`] — fsync every record with
-//!   [`WalRecord::FLAG_COMMIT`]. Strongest durability; slowest write path.
-//! * [`SyncMode::Group`] — batch fsyncs at a deadline (milliseconds). Group
-//!   commit: multiple writers share a single fsync. Default for hot paths.
+//! * [`SyncMode::EveryCommit`] — **le défaut** (`ObrainDB::open`). Un `fsync`
+//!   par lot contenant [`WalRecord::FLAG_COMMIT`]. Depuis le 2026-11-01
+//!   (contrat D-DUR, v0.0.1), `Session::commit()` pose ce marqueur à chaque
+//!   transaction commitée, explicite ou implicite : un commit acquitté
+//!   survit à un `kill -9` (test `durabilite_commit_kill9`). Avant cette
+//!   date, seul `flush()` (checkpoint / close) le posait — un commit rendait
+//!   `Ok` avec ses octets encore en tampon.
+//! * [`SyncMode::Group`] — opt-in (`ObrainDB::open_substrate_with_mode`).
+//!   Le marqueur est posé mais AUCUN `fsync` n'est émis par le writer : il
+//!   n'y a pas de minuterie. L'appelant borne lui-même sa fenêtre de perte
+//!   en appelant [`WalWriter::fsync`] (via `ObrainDB::flush_wal`) tous les N
+//!   commits ou en fin de lot. Pour les imports en masse.
 //! * [`SyncMode::Never`] — never fsync. Tests and benches only.
 //!
 //! ## Group commit à needle de durabilité (2026-10-06)

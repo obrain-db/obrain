@@ -5,10 +5,13 @@
 //! vraiment : des ecritures acceptees, un processus qui disparait sans
 //! `flush()`, une reouverture.
 //!
-//! ETAT AU 14/08 : deux de ces trois tests sont `#[ignore]`. Ils ECHOUENT, et
-//! c'est voulu — ils decrivent une capacite que la base n'a pas encore, avec
-//! la raison exacte en attribut. Les supprimer effacerait la mesure ; les
-//! faire passer en abaissant l'exigence serait pire.
+//! ETAT AU 14/08 : deux de ces trois tests etaient `#[ignore]` (ils
+//! echouaient, et c'etait voulu : ils decrivaient une capacite que la base
+//! n'avait pas encore). ETAT AU 01/11 : les trois tournent sans attribut et
+//! passent — le rejeu des enregistrements de noeuds et d'aretes a ete cable
+//! en production. Ce qu'ils ne couvrent PAS : la disparition du processus
+//! (SIGKILL) avec des octets encore en tampon utilisateur ; c'est l'objet de
+//! `obrain-engine/tests/durabilite_commit_kill9.rs` (D-DUR, v0.0.1).
 //!
 //! CE QU'ILS ONT ETABLI :
 //!   - les proprietes etaient deja recuperees (`merge_wal_inline_props`,
