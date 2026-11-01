@@ -275,7 +275,47 @@ fn detecter_detenteur(fichier: &Path) -> String {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS n'a pas de `/proc` : on demande à `lsof` (présent sur toute
+/// installation, `/usr/sbin/lsof`) les PID qui tiennent le fichier. Chemin
+/// d'ERREUR seulement — un refus de verrou est déjà un échec, le coût d'un
+/// processus de plus n'y change rien, et nommer le détenteur est ce qui rend
+/// le refus instruisible (mesuré le 01/11/2026 : `verrou_apres_drop` rouge
+/// sur macOS parce que ce stub rendait une chaîne vide).
+#[cfg(target_os = "macos")]
+fn detecter_detenteur(fichier: &Path) -> String {
+    let sortie = match std::process::Command::new("/usr/sbin/lsof")
+        .args(["-F", "pc", "--"])
+        .arg(fichier)
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    // `-F pc` : une ligne `p<pid>` puis une ligne `c<commande>` par processus
+    // (`-t` est incompatible avec `-F`, mesuré avec lsof 4.91).
+    let texte = String::from_utf8_lossy(&sortie.stdout);
+    let moi = std::process::id().to_string();
+    let mut trouves: Vec<String> = Vec::new();
+    let mut pid: Option<String> = None;
+    for ligne in texte.lines() {
+        if let Some(p) = ligne.strip_prefix('p') {
+            pid = (p != moi).then(|| p.to_string());
+        } else if let (Some(p), Some(c)) = (pid.take(), ligne.strip_prefix('c')) {
+            trouves.push(format!("pid {p} ({c})"));
+            if trouves.len() >= 4 {
+                break;
+            }
+        }
+    }
+    if trouves.is_empty() {
+        String::new()
+    } else {
+        format!(" (detenteur : {})", trouves.join(", "))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn detecter_detenteur(_fichier: &Path) -> String {
     String::new()
 }
