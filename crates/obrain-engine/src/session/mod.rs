@@ -911,7 +911,6 @@ impl Session {
     }
 
     /// Executes a session or transaction command, returning an empty result.
-    #[cfg(feature = "gql")]
     fn execute_session_command(
         &self,
         cmd: obrain_adapters::query::gql::ast::SessionCommand,
@@ -1190,7 +1189,6 @@ impl Session {
     }
 
     /// Executes a schema DDL command, returning a status result.
-    #[cfg(feature = "gql")]
     fn execute_schema_command(
         &self,
         cmd: obrain_adapters::query::gql::ast::SchemaStatement,
@@ -2406,7 +2404,6 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "gql")]
     pub fn execute(&self, query: &str) -> Result<QueryResult> {
         self.require_lpg("GQL")?;
         self.note_requete_pour_audit(query);
@@ -2740,7 +2737,6 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "gql")]
     pub fn execute_annulable(
         &self,
         query: &str,
@@ -2757,7 +2753,6 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if parsing or execution fails.
-    #[cfg(feature = "gql")]
     pub fn execute_at_epoch(&self, query: &str, epoch: EpochId) -> Result<QueryResult> {
         let previous = self.viewing_epoch_override.lock().replace(epoch);
         let result = self.execute(query);
@@ -2772,7 +2767,6 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if parsing or execution fails.
-    #[cfg(feature = "gql")]
     pub fn execute_at_epoch_with_params(
         &self,
         query: &str,
@@ -2794,7 +2788,6 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if the query fails to parse or execute.
-    #[cfg(feature = "gql")]
     pub fn execute_with_params(
         &self,
         query: &str,
@@ -2843,34 +2836,6 @@ impl Session {
 
             processor.process(query, QueryLanguage::Gql, Some(&params))
         })
-    }
-
-    /// Executes a GQL query with parameters.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no query language is enabled.
-    #[cfg(not(any(feature = "gql", feature = "cypher")))]
-    pub fn execute_with_params(
-        &self,
-        _query: &str,
-        _params: std::collections::HashMap<String, Value>,
-    ) -> Result<QueryResult> {
-        Err(obrain_common::utils::error::Error::Internal(
-            "No query language enabled".to_string(),
-        ))
-    }
-
-    /// Executes a GQL query.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no query language is enabled.
-    #[cfg(not(any(feature = "gql", feature = "cypher")))]
-    pub fn execute(&self, _query: &str) -> Result<QueryResult> {
-        Err(obrain_common::utils::error::Error::Internal(
-            "No query language enabled".to_string(),
-        ))
     }
 
     /// Executes a Cypher query.
@@ -5042,7 +5007,6 @@ mod tests {
         assert!(!session.in_transaction());
     }
 
-    #[cfg(feature = "gql")]
     mod gql_tests {
         use super::*;
 
@@ -5922,7 +5886,6 @@ mod tests {
         assert_eq!(session.graph_model(), GraphModel::Lpg);
     }
 
-    #[cfg(feature = "gql")]
     #[test]
     fn test_external_store_session() {
         use obrain_core::graph::GraphStoreMut;
@@ -5950,7 +5913,6 @@ mod tests {
 
     // ==================== Session Command Tests ====================
 
-    #[cfg(feature = "gql")]
     mod session_command_tests {
         use super::*;
         use obrain_common::types::Value;

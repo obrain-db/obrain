@@ -488,18 +488,8 @@ impl<P> CachingQueryProcessor<P> {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "gql")]
     fn test_language() -> QueryLanguage {
         QueryLanguage::Gql
-    }
-
-    #[cfg(not(feature = "gql"))]
-    fn test_language() -> QueryLanguage {
-        // Fallback for tests without gql feature
-        #[cfg(feature = "cypher")]
-        return QueryLanguage::Cypher;
-        #[cfg(feature = "sparql")]
-        return QueryLanguage::Sparql;
     }
 
     #[test]

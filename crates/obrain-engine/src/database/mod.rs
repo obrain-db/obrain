@@ -2591,7 +2591,6 @@ mod tests {
         let session = db.session();
 
         // Session should see data from the external store via execute
-        #[cfg(feature = "gql")]
         {
             let result = session.execute("MATCH (p:Person) RETURN p.name").unwrap();
             assert_eq!(result.rows.len(), 1);
@@ -2629,7 +2628,6 @@ mod tests {
         db.create_node(&["Person"]);
         db.create_node(&["Person"]);
 
-        #[cfg(feature = "gql")]
         {
             let result = db.execute("MATCH (n:Person) RETURN n").unwrap();
 
@@ -2647,7 +2645,6 @@ mod tests {
         let db = ObrainDB::new_in_memory();
         db.create_node(&["Person"]);
 
-        #[cfg(feature = "gql")]
         {
             // Query that matches nothing
             let result = db.execute("MATCH (n:NonExistent) RETURN n").unwrap();

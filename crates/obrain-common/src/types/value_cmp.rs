@@ -22,7 +22,7 @@
 //!    EXACTE ([`cmp_i64_f64`]) : pas de passage par `as f64` pour les entiers
 //!    hors plage sûre — `2^53` et `2^53 + 1` restent distincts face à
 //!    `9007199254740992.0`.
-//! 3. NaN — au PRÉDICAT, NaN est [`Comparaison::NonOrdonnes`] avec tout
+//! 3. NaN — au PRÉDICAT, NaN est [`Comparaison::NonOrdonnees`] avec tout
 //!    nombre, lui-même compris : `<`, `<=`, `>`, `>=`, `=` rendent FAUX et
 //!    `<>` rend VRAI (sémantique IEEE 754, cohérence `<=` ≡ `<` OU `=`).
 //!    AU TRI ([`comparer_total`]), NaN a une place FIXE : PLUS GRAND que tout
@@ -366,7 +366,7 @@ fn total_f64(a: f64, b: f64) -> Ordering {
 
 /// L'ORDRE TOTAL canonique — tri (`ORDER BY`), incumbents de MIN/MAX, fusions
 /// de tri externes. Total sur TOUTES les variantes : par rang de classe
-/// d'abord ([`rang_de_classe`]), par valeur dans la classe ensuite.
+/// d'abord (`rang_de_classe`, privé), par valeur dans la classe ensuite.
 ///
 /// C'est un ordre (réflexif, antisymétrique, transitif) au sens des classes
 /// d'équivalence de [`egalite_structurelle`] : `Equal` n'est rendu que pour
