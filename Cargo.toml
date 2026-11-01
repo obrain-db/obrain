@@ -128,6 +128,8 @@ rand = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
+# `defauts_connus` : cfg des tests de défauts connus (voir obrain-engine/Cargo.toml).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(defauts_connus)'] }
 missing_docs = "warn"
 # Required so version-specific clippy allows below don't trip older
 # toolchains (the 1.93 pre-push hook) as unknown lints under -D warnings.

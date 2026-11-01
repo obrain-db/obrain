@@ -13095,6 +13095,15 @@ impl SubstrateStore {
             sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME)?;
         let mut posts =
             sub_guard.open_named_zone(crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME)?;
+        // ── LE VERROU DU SUBSTRAT EST RENDU AVANT D'ÉCRIRE (V1-EXHAUSTIF) ──
+        // `write_edge` reprend ce même verrou (`with_edge_zone`), et le mutex
+        // n'est pas réentrant : le garder ici bloquait le fil sur lui-même —
+        // `bootstrap_rend_le_graphe_cognitif_et_idempotent` restait figé sans
+        // verdict (mesuré le 2026-11-01 : 10 min à 0 % CPU, pile prise par
+        // `sample` : create_synapse_slots_batch → write_edge → lock_slow). Les
+        // deux zones ouvertes ci-dessus sont des `ZoneFile` possédés : elles
+        // ne dépendent plus du garde.
+        drop(sub_guard);
         let mut out = Vec::with_capacity(entries.len());
         for &(src, dst, w) in entries {
             let id = self.allocate_edge_id();
@@ -13117,7 +13126,6 @@ impl SubstrateStore {
             SynapseIncidenceZone::append(&mut inc, &mut posts, dst.0 as u32, id.0)?;
             out.push(id);
         }
-        drop(sub_guard);
         Ok(out)
     }
 
@@ -19872,16 +19880,38 @@ impl GraphStore for SubstrateStore {
     // an empty list — break `InstrumentedStore` delegation tests and any
     // query planner that asks \"what labels exist?\". These overrides read
     // directly from the live registries.
+    // ── LES NOMS, PAS LES RANGS (V1-EXHAUSTIF, 2026-11-01) ───────────────────
+    // `names()` est POSITIONNEL (l'index est l'id, les trous sont rendus par
+    // "" — c'est le contrat du dictionnaire sérialisé, voir la capture des
+    // registres). Les trois listes publiques, elles, sont des listes de NOMS :
+    // un rang réservé ou un trou ne sont pas des types. Mesuré : une base
+    // neuve avec une seule arête `WORKS_AT` rendait `["", "WORKS_AT"]`, et
+    // `detailed_stats().edge_type_count` comptait 2 (`database_api`, rouge).
     fn all_labels(&self) -> Vec<String> {
-        self.labels.read().names()
+        self.labels
+            .read()
+            .names()
+            .into_iter()
+            .filter(|n| !n.is_empty())
+            .collect()
     }
 
     fn all_edge_types(&self) -> Vec<String> {
-        self.edge_types.read().names()
+        self.edge_types
+            .read()
+            .names()
+            .into_iter()
+            .filter(|n| !n.is_empty())
+            .collect()
     }
 
     fn all_property_keys(&self) -> Vec<String> {
-        self.prop_keys.read().names()
+        self.prop_keys
+            .read()
+            .names()
+            .into_iter()
+            .filter(|n| !n.is_empty())
+            .collect()
     }
 
     /// UN SEUL BALAYAGE (2026-08-14).

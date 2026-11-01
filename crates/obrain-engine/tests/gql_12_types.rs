@@ -12,12 +12,12 @@
 //!
 //! Chaque assertion encode l'INTENTION sémantique, jamais l'observation. Là où
 //! le moteur diverge, l'assertion reste conforme à la spécification et le test
-//! est placé derrière `#[cfg(feature = "defauts-connus")]`, précédé d'un
+//! est placé derrière `#[cfg(defauts_connus)]`, précédé d'un
 //! commentaire `// DÉFAUT:` nommant le code fautif en `fichier:ligne`.
 //!
 //! * `cargo test` (défaut) — les 22 tests conformes tournent, et ils passent ;
 //!   les tests de défauts ne sont pas même compilés.
-//! * `cargo test --features defauts-connus` — les 12 tests de défauts tournent
+//! * `cargo test --cfg defauts_connus (RUSTFLAGS)` — les 12 tests de défauts tournent
 //!   en plus, et ils ÉCHOUENT. C'est leur rôle : ils deviendront verts le jour
 //!   de la correction, sans qu'une ligne d'assertion ne bouge.
 //!
@@ -52,7 +52,7 @@
 //! production qu'il prétend couvrir, et en vérifiant qu'il rougit AVEC LE BON
 //! MESSAGE. Vingt et une mutations, chacune appliquée SEULE sur un arbre
 //! propre, puis révertée avec vérification que l'arbre est bit à bit celui
-//! d'avant. Les douze tests `defauts-connus` n'ont pas besoin de mutation :
+//! d'avant. Les douze tests `defauts_connus` n'ont pas besoin de mutation :
 //! ils sont rouges contre le code réel, c'est leur raison d'être.
 //!
 //! | # | mutation | tests qui rougissent |
@@ -101,7 +101,7 @@
 //!
 //! Un test de parité qui comparerait deux fois LE MÊME chemin serait vide, et
 //! passerait pour vert le jour d'une correction. M4 le réfute dans les deux
-//! sens à la fois. Avec `--features defauts-connus` et le chemin de balayage
+//! sens à la fois. Avec `--cfg defauts_connus (RUSTFLAGS)` et le chemin de balayage
 //! par intervalle désactivé :
 //!
 //! * les TROIS tests de parité (`une_borne_stricte_*`,
@@ -123,7 +123,7 @@
 //!
 //! ```bash
 //! cargo test -p obrain-engine --test gql_12_types
-//! cargo test -p obrain-engine --features defauts-connus --test gql_12_types
+//! cargo test -p obrain-engine --cfg defauts_connus (RUSTFLAGS) --test gql_12_types
 //! ```
 #![cfg(feature = "gql")]
 
@@ -1290,7 +1290,7 @@ fn distinct_ne_confond_pas_un_entier_et_la_chaine_homographe() {
 // DÉFAUT: la clé de déduplication encode Float64 par son motif binaire —
 //   `Value::Float64(f) => KeyPart::Int64(f.to_bits() as i64)`,
 //   obrain-core/src/execution/operators/distinct.rs:40.
-#[cfg(feature = "defauts-connus")]
+#[cfg(defauts_connus)]
 #[test]
 fn distinct_est_coherent_avec_l_egalite_sur_les_nombres() {
     // DÉFAUT: obrain-core/src/execution/operators/distinct.rs:40 — `RowKey`

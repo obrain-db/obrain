@@ -367,6 +367,13 @@ fn enregistrer_substrat_vivant(
 
 /// Rend l'instance VIVANTE d'un chemin, si une base de ce processus la
 /// tient encore ouverte.
+/// Retire une base du registre des substrats vivants : appelé par `close()`,
+/// parce qu'une base FERMÉE n'écrit plus — la rouvrir dans le même processus
+/// est légitime, même si l'ancienne instance n'est pas encore `Drop`-ée.
+fn desinscrire_substrat_vivant(path: &std::path::Path) {
+    SUBSTRATS_VIVANTS.lock().remove(&chemin_canonique(path));
+}
+
 fn substrat_vivant(path: &std::path::Path) -> Option<Arc<obrain_substrate::SubstrateStore>> {
     SUBSTRATS_VIVANTS
         .lock()
@@ -477,6 +484,28 @@ impl ObrainDB {
 
     fn open_substrate_inner(path: impl AsRef<std::path::Path>, read_only: bool) -> Result<Self> {
         let path_ref = path.as_ref();
+        // ── UNE BASE, UNE INSTANCE PAR PROCESSUS (V1-EXHAUSTIF, 2026-11-01) ──
+        // Le verrou de répertoire est PARTAGÉ entre les ouvertures d'un même
+        // processus (`acquerir_verrou_repertoire` : « même processus : on
+        // partage »), parce que plusieurs composants d'une même base le
+        // prennent. Il ne refuse donc pas une seconde `ObrainDB` ouverte en
+        // écriture sur le même chemin — deux instances des mêmes fichiers, aux
+        // sidecars et compteurs divergents : les écritures de l'une sont
+        // invisibles à l'autre (danger démontré par p8, et par
+        // `test_multi_process_file_lock_rejected`, rouge en `--all-features`).
+        // Le registre des substrats vivants, qui servait déjà l'ouvreur
+        // paresseux des bases attachées, tranche ici aussi : une ouverture en
+        // ÉCRITURE est refusée tant qu'une instance vit dans ce processus.
+        // Les ouvertures en lecture seule restent permises (même contrat que
+        // depuis un autre processus : verrou partagé, mmap propre).
+        if !read_only && substrat_vivant(path_ref).is_some() {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "substrate {} is already open in this process — one writable \
+                 ObrainDB per base and per process; drop the first instance (or \
+                 open the second one read-only)",
+                path_ref.display()
+            )));
+        }
         // Detect existing substrate: if `substrate.meta` is present, open;
         // otherwise create. This mirrors the semantics of ObrainDB::open(path)
         // on the legacy path (open-or-create idempotent).
@@ -1776,6 +1805,11 @@ impl ObrainDB {
         let mut is_open = self.is_open.write();
         if !*is_open {
             return Ok(());
+        }
+        // Une base fermée cesse d'être « vivante » pour l'ouvreur (voir
+        // `open_substrate_inner`) : la rouvrir après `close()` est permis.
+        if let Some(ref p) = self.config.path {
+            desinscrire_substrat_vivant(p);
         }
 
         // Read-only databases: just release the shared lock, no checkpointing

@@ -74,13 +74,10 @@ tokio.workspace = true
 crc32fast.workspace = true
 
 [features]
-# Tests de conformite GQL qui ECHOUENT tant que le defaut moteur documente
-# n est pas corrige. Un test place derriere ce drapeau enonce ce que la
-# SPECIFICATION exige : il n est pas compile par defaut (la suite reste verte)
-# et devient vert de plein droit le jour de la correction, sans qu une ligne
-# d assertion ne bouge.  cargo test --features defauts-connus  => la liste
-# vivante des defauts du moteur, en rouge legitime.
-defauts-connus = []
+# Les tests qui documentent les DÉFAUTS CONNUS du moteur (rouges par
+# construction, verts de plein droit le jour de la correction) sont derrière un
+# cfg et non une feature Cargo, pour que `--all-features` ne les active pas :
+#   RUSTFLAGS="--cfg defauts_connus" cargo test -p obrain-engine
 default = ["gql", "parallel", "wal", "spill", "mmap", "regex"]
 regex = ["dep:regex", "obrain-core/regex"]
 regex-lite = ["dep:regex-lite", "obrain-core/regex-lite"]
