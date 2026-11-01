@@ -1,0 +1,12 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.nupkg
+TestResults/
+
+# Native libraries (built from obrain-c, not checked in)
+obrain_c.dll
+libobrain_c.so
+libobrain_c.dylib

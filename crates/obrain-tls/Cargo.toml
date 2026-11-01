@@ -1,0 +1,28 @@
+[package]
+name = "obrain-tls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Étape 0 de l'ADR confidentialité : le transport chiffré des surfaces d'entrée d'Obrain. Sans repli en clair, par construction."
+
+[features]
+default = []
+
+[dependencies]
+# Fournisseur cryptographique « ring » : pas de cmake, pas de nasm, build léger.
+# Contrepartie assumée et documentée : pas d'échange de clés post-quantique.
+rustls = { workspace = true }
+rustls-pemfile.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+webpki-roots.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

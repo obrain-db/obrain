@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="qn" for="node" attr.name="qualified_name" attr.type="string"/>
+  <key id="label" for="node" attr.name="label" attr.type="string"/>
+  <key id="file" for="node" attr.name="file_path" attr.type="string"/>
+  <key id="etype" for="edge" attr.name="type" attr.type="string"/>
+  <key id="weight" for="edge" attr.name="weight" attr.type="double"/>
+  <key id="ricci" for="edge" attr.name="ricci" attr.type="double"/>
+  <graph id="obrain" edgedefault="directed">
+    <node id="crate:lib"><data key="qn">obrain_viz</data><data key="label">lib
+(core)</data><data key="file">crates/obrain-viz/src/lib.rs</data></node>
+    <node id="dep:/usr/deps.json"><data key="qn">serde_json</data><data key="label">serde_json</data><data key="file">Cargo.lock</data></node>
+    <node id="fn:hub"><data key="qn">obrain_viz::hub</data><data key="label">hub &quot;central&quot;</data><data key="file">crates/obrain-viz/src/hub.rs</data></node>
+    <node id="fn:parse"><data key="qn">obrain_viz::parse</data><data key="label">parse()</data><data key="file">crates/obrain-viz/src/parse.rs</data></node>
+    <node id="iso"><data key="qn">obrain_viz::iso</data><data key="label">isolé</data><data key="file">crates/obrain-viz/src/iso.rs</data></node>
+    <edge source="fn:hub" target="crate:lib"><data key="etype">CALLS</data><data key="ricci">-0.12</data></edge>
+    <edge source="fn:parse" target="dep:/usr/deps.json"><data key="etype">IMPORTS</data><data key="weight">1</data></edge>
+    <edge source="fn:parse" target="fn:hub"><data key="etype">CALLS</data><data key="weight">3</data><data key="ricci">-0.35</data></edge>
+  </graph>
+</graphml>

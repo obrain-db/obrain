@@ -1,0 +1,20 @@
+[package]
+name = "obrain-garde"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "La garde d'une génération : échéance, budget, répétition, arrêt — pure, sans E/S"
+
+[dependencies]
+# AUCUNE. C'est le point du crate : la garde doit pouvoir être appelée depuis
+# n'importe quelle boucle du dépôt, y compris depuis `selfd` — qui n'a que deux
+# dépendances par principe (« un nœud qu'on déploie sur N machines doit
+# s'installer sans chaîne d'outils »). Une garde qui tirerait `tokio`, `anyhow`
+# ou un client HTTP ne serait pas adoptable par les boucles qui en ont le plus
+# besoin. Elle ne fait donc que du texte et des horloges, en `std`.
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+[package]
+name = "obrain-iam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Identity and Access Management for Obrain — ORN system, policy evaluation, tenant-scoped sessions"
+
+[features]
+default = []
+
+[dependencies]
+# Internal crates
+obrain-common.workspace = true
+obrain-core = { workspace = true, default-features = false }
+# Audit chaîné et signé (ADR §4.1, réserve n° 1) — l'audit n'était ni chaîné ni
+# signé ; ce module le fait devenir, sans changer le store existant.
+obrain-journal.workspace = true
+
+# Password hashing
+bcrypt.workspace = true
+# Empreinte des jetons de session (SHA-256)
+sha2.workspace = true
+# Entropie des jetons de session
+rand.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Data structures
+smallvec.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+obrain-substrate.workspace = true
+# La frontière « la clé prime sur le droit » (tests/la_cle_prime_sur_le_droit.rs) :
+# un `Allow` de la garde ne doit pas donner le contenu d'un espace scellé.
+obrain-coffre.workspace = true
+
+[lints]
+workspace = true

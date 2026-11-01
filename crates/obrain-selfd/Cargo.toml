@@ -1,0 +1,32 @@
+[package]
+name = "obrain-selfd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "selfd — micro-harness d'un nœud : il agit sur la machine et le dit en JSON-RPC"
+
+[[bin]]
+name = "selfd"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+# Deux dépendances, comme `selflink`. Un nœud qu'on déploie sur N machines doit
+# s'installer sans chaîne d'outils, sans arbre `node_modules` et sans graphe de
+# plugins à résoudre : c'est le binaire, et rien d'autre.
+anyhow.workspace = true
+serde_json = "1"
+# Pour joindre le modèle du chat local, et pour la surface HTTP du nœud.
+obrain-httpmin = { path = "../obrain-httpmin" }
+# LA GARDE (échéance, budget, répétition, arrêt) : un nœud qui parle à un modèle
+# doit pouvoir l'ARRÊTER. Défaut mesuré le 2026-09-16 : cette boucle-ci n'avait
+# ni détection de répétition, ni budget, ni arrêt sur client parti — seule la
+# boucle du chat du moteur en avait. Crate interne, PUR et sans dépendance :
+# il n'ajoute rien à l'installation d'un nœud sur N machines.
+obrain-garde = { path = "../obrain-garde" }
+
+[lints]
+workspace = true

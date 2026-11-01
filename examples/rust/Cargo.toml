@@ -8,6 +8,13 @@ publish = false
 
 [dependencies]
 obrain = { path = "../../crates/obrain", default-features = false, features = ["embedded"] }
+obrain-engine = { path = "../../crates/obrain-engine", default-features = false }
+obrain-cognitive = { path = "../../crates/obrain-cognitive", default-features = false }
+obrain-common = { path = "../../crates/obrain-common", default-features = false }
+obrain-core = { path = "../../crates/obrain-core", default-features = false }
+obrain-reactive = { path = "../../crates/obrain-reactive", default-features = false }
+obrain-substrate = { path = "../../crates/obrain-substrate", default-features = false }
+sha2 = { workspace = true }
 
 [[bin]]
 name = "basic"
@@ -61,7 +68,43 @@ name = "bench-load"
 path = "bench_load.rs"
 required-features = ["storage"]
 
+[[bin]]
+name = "bench-head2head"
+path = "bench_head2head.rs"
+required-features = ["storage"]
+
+[[bin]]
+name = "bench-cognitive"
+path = "bench_cognitive.rs"
+required-features = ["storage", "cognitive-full"]
+
+[[bin]]
+name = "bench-croise"
+path = "bench_croise.rs"
+required-features = ["storage", "cognitive-full"]
+
 [features]
 default = []
 storage = ["obrain/storage", "obrain/tiered-storage"]
 full = ["obrain/full"]
+cognitive-full = ["obrain-engine/cognitive-full", "obrain/storage", "obrain-engine/gql", "obrain-engine/cypher"]
+enrichment = ["obrain-cognitive/enrichment", "obrain-cognitive/thinker"]
+engram = ["obrain-cognitive/engram", "obrain-cognitive/thinker", "obrain-engine/cognitive-engram"]
+
+[[bin]]
+name = "spread-pure"
+path = "spread_pure.rs"
+required-features = ["storage"]
+
+[[bin]]
+name = "poc-cognitive-store"
+path = "poc_cognitive_store.rs"
+required-features = ["storage", "cognitive-full", "enrichment"]
+
+[[bin]]
+name = "poc-engrams"
+path = "poc_engrams.rs"
+required-features = ["storage", "cognitive-full", "engram"]
+[[bin]]
+name = "wal-merkle"
+path = "wal_merkle.rs"

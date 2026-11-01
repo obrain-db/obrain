@@ -76,6 +76,7 @@ tokio.workspace = true
 crc32fast.workspace = true
 
 [features]
+cognitive-iam = ["cognitive", "obrain-cognitive/iam"]  # IAM opt-in (consolidé). Décision « c » en attente.
 # Les tests qui documentent les DÉFAUTS CONNUS du moteur (rouges par
 # construction, verts de plein droit le jour de la correction) sont derrière un
 # cfg et non une feature Cargo, pour que `--all-features` ne les active pas :

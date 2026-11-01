@@ -12,6 +12,8 @@ keywords = ["graph", "knowledge-graph", "cognitive", "memory", "obrain"]
 categories = ["database-implementations", "science"]
 
 [features]
+# IAM (consolidé d'octobre) : tire obrain-iam. Décision PO « c » en attente.
+iam = ["dep:obrain-iam"]
 default = ["cognitive-full"]
 
 # Individual subsystem features
@@ -105,6 +107,7 @@ cognitive-fabric = ["cognitive", "fabric", "co-change", "gds-refresh"]
 cognitive-full = ["cognitive-fabric", "kernel", "kernel-params", "session-metrics", "scar", "memory", "stagnation", "fingerprint", "distillation", "episodic", "consolidation", "persona", "gap-detection", "synthesis", "decision"]
 
 [dependencies]
+obrain-iam = { workspace = true, optional = true }
 obrain-common.workspace = true
 obrain-core = { workspace = true, default-features = false }
 obrain-reactive.workspace = true

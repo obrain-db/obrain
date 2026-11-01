@@ -1,0 +1,79 @@
+{
+  "schema": "obrain/json-graph@1",
+  "stats": {
+    "node_count": 5,
+    "edge_count": 3,
+    "truncated": false
+  },
+  "nodes": [
+    {
+      "id": "crate:lib",
+      "qn": "obrain_viz",
+      "label": "lib\n(core)",
+      "file_path": "crates/obrain-viz/src/lib.rs",
+      "curvature": 0.1,
+      "scc_id": 1
+    },
+    {
+      "id": "dep:/usr/deps.json",
+      "qn": "serde_json",
+      "label": "serde_json",
+      "file_path": "Cargo.lock",
+      "scc_id": 2
+    },
+    {
+      "id": "fn:hub",
+      "qn": "obrain_viz::hub",
+      "label": "hub \"central\"",
+      "file_path": "crates/obrain-viz/src/hub.rs",
+      "energy": 0.9,
+      "scc_id": 3,
+      "engram_state": "stable",
+      "color_hint": "#e45a32",
+      "size_hint": 2.1
+    },
+    {
+      "id": "fn:parse",
+      "qn": "obrain_viz::parse",
+      "label": "parse()",
+      "file_path": "crates/obrain-viz/src/parse.rs",
+      "energy": 0.75,
+      "curvature": -0.2,
+      "scc_id": 3,
+      "color_hint": "#eb8936",
+      "size_hint": 1.875
+    },
+    {
+      "id": "iso",
+      "qn": "obrain_viz::iso",
+      "label": "isolé",
+      "file_path": "crates/obrain-viz/src/iso.rs",
+      "energy": 0.5,
+      "scc_id": 0,
+      "color_hint": "#f5d63d",
+      "size_hint": 1.5
+    }
+  ],
+  "edges": [
+    {
+      "src": "fn:hub",
+      "dst": "crate:lib",
+      "type": "CALLS",
+      "ricci": -0.12,
+      "stale": true
+    },
+    {
+      "src": "fn:parse",
+      "dst": "dep:/usr/deps.json",
+      "type": "IMPORTS",
+      "weight": 1.0
+    },
+    {
+      "src": "fn:parse",
+      "dst": "fn:hub",
+      "type": "CALLS",
+      "weight": 3.0,
+      "ricci": -0.35
+    }
+  ]
+}

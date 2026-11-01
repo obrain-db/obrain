@@ -1,0 +1,36 @@
+[package]
+name = "obrain-coffre"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Confidentialité du calcul pour Obrain — enveloppes AEAD, clés par espace, jetons de capacité. La garantie est structurelle : l'engine ne peut pas lire ce qu'il n'a pas la clé de lire."
+
+[features]
+default = []
+
+[dependencies]
+# AEAD (AES-256-GCM, 96 bits de nonce, étiquette de 16 octets)
+aes-gcm.workspace = true
+# Dérivation de clé depuis une phrase (Argon2id) — mémoire dure, pas de GPU
+argon2.workspace = true
+# Séparation de domaines : une sous-clé par usage
+hkdf.workspace = true
+sha2.workspace = true
+# Entropie du système d'exploitation
+getrandom.workspace = true
+# Effacement des secrets à la destruction
+zeroize.workspace = true
+# Rendu hexadécimal des empreintes dans les messages (jamais des secrets)
+hex.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
