@@ -1376,6 +1376,32 @@ pub trait GraphStoreMut: GraphStore {
     /// backends without MVCC.
     fn sync_epoch(&self, _epoch: EpochId) {}
 
+    /// Scelle un commit dans le journal durable du backend : pose un marqueur
+    /// de commit et, dans le mode de synchronisation par défaut, attend que
+    /// le disque l'ait acquitté (`fsync`). Appelé par la session UNE fois par
+    /// transaction commitée (explicite ou implicite), sur chaque graphe
+    /// touché, APRÈS que les versions sont publiées.
+    ///
+    /// Contrat D-DUR (v0.0.1) : quand cette méthode rend `Ok`, tout ce que la
+    /// transaction a écrit est dans le journal ET acquitté par le disque
+    /// (`fsync` sous le mode par défaut) : la transaction survit à la
+    /// disparition du processus comme à une coupure de courant. Le marqueur
+    /// porte l'identifiant de la transaction : au rejeu, il PUBLIE ce qu'elle
+    /// avait déclaré en attente — sans lui, une transaction en vol est
+    /// écartée. Un backend sans journal rend `Ok` sans rien faire — il n'a
+    /// rien promis.
+    ///
+    /// # Errors
+    /// L'erreur du journal (écriture ou `fsync`) : la transaction est alors
+    /// visible en mémoire mais PAS garantie durable, et l'appelant doit le
+    /// savoir.
+    fn seal_commit(
+        &self,
+        _transaction_id: TransactionId,
+    ) -> std::result::Result<(), obrain_common::utils::error::Error> {
+        Ok(())
+    }
+
     /// Prunes version records strictly older than `min_epoch` when the
     /// backend maintains a version history. No-op for backends without MVCC.
     fn gc_versions(&self, _min_epoch: EpochId) {}
