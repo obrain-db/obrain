@@ -59,7 +59,7 @@ sequenceDiagram
 Obrain uses **SubstrateStore** (`obrain-substrate`) as its primary storage
 backend — a single mmap'd file where the topology *is* the storage
 (topology-as-storage). See [RFC-SUBSTRATE](../rfc/substrate/format-spec.md)
-and the [MIGRATION guide](../../MIGRATION.md) for details.
+and the [MIGRATION guide](../MIGRATION.md) for details.
 
 1. **SubstrateStore** — 32 B node records + 30 B edge records, WAL-native,
    index-free adjacency (inline linked lists), column-inline cognitive

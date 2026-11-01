@@ -1,0 +1,12 @@
+Obrain
+Copyright 2026 Theotime Riviere and the Obrain contributors
+
+This product is a fork of GrafeoDB (https://github.com/GrafeoDB/grafeo),
+an embedded graph database licensed under the Apache License, Version 2.0.
+The upstream copyright notices and license terms apply to the portions of
+this software derived from GrafeoDB. The upstream changelog is preserved in
+CHANGELOG-grafeo.md for historical reference.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0

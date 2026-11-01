@@ -16,7 +16,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.91.1"
 license = "Apache-2.0"
-repository = "https://github.com/this-rs/obrain"
+repository = "https://github.com/obrain-db/obrain"
 authors = ["S.T. Grond"]
 description = "A high-performance, embeddable graph database with support for LPG RDF and all major graph query languages."
 
