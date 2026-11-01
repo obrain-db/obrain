@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Topology-as-storage substrate: mmap + WAL + fixed-size Pod records + tiered embeddings"
+readme = "README.md"
+keywords = ["graph", "database", "mmap", "wal", "storage"]
+categories = ["database-implementations", "filesystem"]
 
 # (2026-08-21) Verrou exclusif inter-processus sur `substrate.meta`.
 # Voir la section Safety de src/file.rs : la surete du mmap en depend.

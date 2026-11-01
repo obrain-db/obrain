@@ -4,9 +4,9 @@
 //! a native WAL for durability, and tiered (binary + f16) embedding indexes.
 //!
 //! This crate implements the on-disk format specified in
-//! [`docs/rfc/substrate/format-spec.md`](../../docs/rfc/substrate/format-spec.md)
+//! [`docs/rfc/substrate/format-spec.md`](https://github.com/obrain-db/obrain/blob/main/docs/rfc/substrate/format-spec.md)
 //! and the WAL protocol in
-//! [`docs/rfc/substrate/wal-spec.md`](../../docs/rfc/substrate/wal-spec.md).
+//! [`docs/rfc/substrate/wal-spec.md`](https://github.com/obrain-db/obrain/blob/main/docs/rfc/substrate/wal-spec.md).
 //!
 //! ## Module map
 //!

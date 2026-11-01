@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Reactive event substrate for Obrain — MutationBus, listeners, and InstrumentedStore"
+readme = "README.md"
+keywords = ["graph", "database", "events", "reactive", "obrain"]
+categories = ["database-implementations", "asynchronous"]
 
 [dependencies]
 obrain-common.workspace = true

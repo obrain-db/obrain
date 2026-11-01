@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Core graph models, indexes, and execution primitives for Obrain"
+readme = "README.md"
+keywords = ["graph", "database", "index", "query", "obrain"]
+categories = ["database-implementations", "data-structures"]
 
 [dependencies]
 obrain-common.workspace = true

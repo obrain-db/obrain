@@ -1,4 +1,4 @@
-# lab/grafeo — top-level Makefile
+# obrain-db — top-level Makefile
 #
 # Benchmark + substrate targets. For general development, prefer per-crate
 # `cargo` commands. This Makefile orchestrates multi-step baselines and the
@@ -16,7 +16,7 @@ CARGO      ?= cargo
 
 .PHONY: help
 help:
-	@echo "Grafeo top-level targets:"
+	@echo "obrain-db top-level targets:"
 	@echo "  make bench-baseline          — Run LpgStore baseline on PO + megalaw"
 	@echo "  make bench-baseline-po       — Baseline on PO only"
 	@echo "  make bench-baseline-megalaw  — Baseline on megalaw only"

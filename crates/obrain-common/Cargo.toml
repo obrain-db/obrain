@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Common types, memory allocators, and utilities for Obrain"
+readme = "README.md"
+keywords = ["graph", "database", "memory", "allocator", "obrain"]
+categories = ["database-implementations", "data-structures"]
 
 [dependencies]
 # Error handling

@@ -553,6 +553,12 @@ impl QueryProcessor {
             transaction_context: None,
             session_context: obrain_core::execution::operators::SessionContext::default(),
             rdf_store: Some(rdf_store),
+            // (2026-11-01) Mêmes symptômes que ci-dessous pour deux autres
+            // champs : visibles seulement sous `--all-features --all-targets`,
+            // que la CI ne compilait pas.
+            substrate_store: None,
+            #[cfg(feature = "cdc")]
+            cdc_log: None,
             // (2026-08-14) CE CHAMP MANQUAIT, et le trou n'etait visible que
             // sous `--all-features --all-targets` : `with_rdf` est
             // `#[cfg(test)]` et exige `rdf`, tandis que `cognitive_engine` est
