@@ -52,7 +52,11 @@ fn main() -> Result<(), BoxErr> {
 
     eprintln!("inspect: opening {}", path.display());
     let t0 = web_time::Instant::now();
-    let store = SubstrateStore::open(&path)?;
+    // LECTURE SEULE (02/11/2026) : l'inspection ne doit jamais prendre le verrou
+    // exclusif d'une base vivante (passerelle, écrivain du harness) ni déclencher
+    // une reprise. Un verrou partagé coexiste avec les autres lecteurs ; face à un
+    // écrivain, l'ouverture est refusée — et c'est la bonne réponse.
+    let store = SubstrateStore::open_read_only(&path)?;
     eprintln!("inspect: opened in {:.2}s", t0.elapsed().as_secs_f64());
 
     // ------- Structural counts (full-scan) -------
