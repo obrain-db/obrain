@@ -1,11 +1,35 @@
 # Substrate Storage — Binary Format Specification
 
-**Status**: Draft
+**Status**: RFC de conception (avril 2026), conservé pour l'histoire. **La section 0 ci-dessous décrit l'état RÉEL du format en v0.0.1** ; en cas d'écart entre une section ≥ 1 et le code, le code fait foi, et la section 0 dit où le lire.
 **RFC**: Substrate — Replacement of LpgStore with mmap-native, topology-as-storage substrate
-**Target crate**: `obrain-substrate` (new, workspace member of `lab/grafeo`)
+**Target crate**: `obrain-substrate`
 **Endianness**: little-endian (native for x86_64 and aarch64 — no byte-swapping on these platforms)
 **Alignment**: all records are `#[repr(C)]` and `bytemuck::Pod`. Each section is 4 KiB page-aligned.
-**Version**: `SUBSTRATE_FORMAT_VERSION = 1`
+**Version du format en v0.0.1**: `SUBSTRATE_FORMAT_VERSION = 3` (`crates/obrain-substrate/src/meta.rs`)
+
+## 0. État réel du format en v0.0.1 (2026-11-01, relu dans le code)
+
+Ce que la v0.0.1 GÈLE, et où chaque fait se vérifie :
+
+| Élément | Valeur en v0.0.1 | Source de vérité |
+|---|---|---|
+| Version du répertoire substrat | `format_version = 3` | `meta.rs` : `SUBSTRATE_FORMAT_VERSION` |
+| En-tête `substrate.meta` | 96 octets utiles (`MetaHeader`, `#[repr(C)]`, Pod) dans un fichier de 4096 octets ; champs : magic, format_version, flags (bits : `COGNITIVE_ACTIVE`, `HILBERT_SORTED`, `MONO_TENANT_PUBLIC`), node_count, edge_count, property_page_count, string_heap_size, created_at, last_checkpoint, last_wal_offset, tier0_dim_bits, tier1_dim_bits, tier2_dim, hilbert_order, schema_crc32, embedding_matrix_seed (u32) | `meta.rs` : `MetaHeader`, `meta_flags` |
+| `NodeRecord` | **40 octets** (jalon 2 : colonne `tenant_id` + réserve ; la §3 ci-dessous décrit l'ancien 32 B des formats 1 et 2) | `record.rs` : `NodeRecord::SIZE`, assertion de taille |
+| `EdgeRecord` | **36 octets** | `record.rs` : `EdgeRecord::SIZE` |
+| Zones mmap (`Zone`) | nodes, edges, props, strings, tier0, tier1, tier2, hilbert, community, zorder, engram_members, engram_bitset, simplex_dir, simplex_incidence — fichiers `substrate.<zone>` ; plus `substrate.zgrid` | `file.rs` : `enum Zone`, module `zone` |
+| Journal | `substrate.wal` (frames : en-tête 28 octets + payload bincode + CRC32 ; opcodes dans `wal.rs::WalKind`, **ajouts en fin de table uniquement**), `substrate.checkpoint`, `substrate.dirlock` (verrou de processus, fcntl) | `wal.rs`, `wal_io.rs`, `file.rs` |
+| Sidecars versionnés chacun | `substrate.dict` (`DictSnapshot`, `FORMAT_VERSION = 7`, accepte 1..=7), `substrate.props` / `substrate.edge_props` (`PropertiesSnapshotV1`, version 1 — **une autre version ou un CRC faux est une ERREUR d'ouverture**, plus un snapshot vide, depuis le 2026-11-01), `substrate.props.v2` + `substrate.props.heap.v2` (zone de propriétés v2), `substrate.props.idx.v2`, `substrate.props.ord.idx.v2`, `substrate.props.eq.idx.v2`, `substrate.degrees.node.u32`, `substrate.alloc`, `substrate.synapse_incidence` / `substrate.synapse_postings` | constantes `*_FILENAME` des modules respectifs |
+| Migration | table de production **1 → 2 → 3** (`migration.rs::table()`), exécutée en place à l'ouverture sous verrou exclusif, idempotente, étape par étape (kill -9 au milieu : la version meta ne bouge pas, reprise à l'ouverture suivante — tests `migration_versionnee.rs`) | `migration.rs` |
+| Version plus récente que le binaire | **refus** net à l'ouverture (`UnsupportedVersion`) ; rien n'est touché | `migration.rs` |
+| Rétrograder un binaire | **checkpoint forcé AVANT tout downgrade** : un binaire antérieur s'arrête sur un opcode WAL inconnu (0x54/0x55 repermutations V2 ; 0x56–0x58 frontières de transaction, D-DUR 2026-11-01) | `slot_remap.rs` §« Retrograder un binaire », `wal.rs` |
+| Format mono-fichier `.obrain` | **n'existe plus** : le module `obrain-adapters::storage::file` (format v1/v2 mono-fichier) a été retiré à la bascule substrat (T17) ; ses sources orphelines ont été supprimées le 2026-11-01. Le seul format on-disk est le répertoire `substrate.*` | `obrain-adapters/src/storage/mod.rs` |
+| `schema_crc32` | écrit, **jamais vérifié à la lecture** (connu, non traité en v0.0.1) | `meta.rs` |
+| `reserved` non nul | aucun avertissement implémenté (la §12 le promettait) | — |
+
+Ce que la v0.0.1 ne promet PAS : la compatibilité ascendante d'un `substrate.wal` non checkpointé entre versions mineures du binaire (règle du checkpoint forcé) ; la lecture d'un répertoire écrit par un binaire plus récent.
+
+---
 
 ## 1. File layout
 
@@ -257,9 +281,10 @@ Compared to the current LpgStore snapshot approach (~110 GiB RSS for megalaw), t
 
 ## 12. Versioning and forward compatibility
 
-- Bumping `format_version` requires a migration step in `obrain-migrate`.
+- Bumping `format_version` requires a migration step in `crates/obrain-substrate/src/migration.rs::table()` (there is no `obrain-migrate` crate: the table is in the substrate crate and runs in place at open, under the exclusive lock). State as of v0.0.1: 1 → 2 → 3.
 - Unknown `flags` bits MUST be preserved on read-modify-write (mask-preserving update).
-- `reserved` bytes in `substrate.meta` MUST be zero; readers verify and log a warning if non-zero.
+- `reserved` bytes in `substrate.meta` MUST be zero. (Readers do NOT verify this in v0.0.1 — see §0.)
+- WAL opcodes are appended at the end of `WalKind`; an older binary stops at the first unknown opcode, hence the « forced checkpoint before any downgrade » rule (§0).
 
 ## 13. Validation Gates
 
