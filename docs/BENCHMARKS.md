@@ -13,8 +13,8 @@ sont lancés à la main (`make bench-v001`) ou par `mesures.yml` (manuel).
 | `m4max` | Apple M4 Max (16 cœurs) | 128 Go | macOS 26.5.2 | 1.97.1 | SSD interne (APFS) |
 
 Conditions : charge machine notée au moment de la mesure (`uptime`), profil
-`release`, Criterion par défaut (100 échantillons, ou la configuration du
-bench). Toute mesure prise avec une charge > 2 est rejetée.
+`release`, Criterion (`--warm-up-time 1 --measurement-time 5`). Un chiffre
+pris à charge > 2 est marqué provisoire.
 
 ## Commandes
 
@@ -26,14 +26,39 @@ cargo bench -p obrain-engine    --bench query_bench        # requêtes GQL élé
 cargo bench -p obrain-engine    --bench phase_a_write_goulot  # chemin d'écriture, commit scellé (D-DUR)
 ```
 
-## Chiffres (à produire — V1-PERF)
+## Chiffres — `main` e11bdd2a, machine `m4max`, 2026-11-01 15:22–15:29
 
-| Bench | Mesure | Valeur | Machine | Date | Charge |
-|---|---|---|---|---|---|
-| `tiered_scan` | p95 top-10, 10⁶ nœuds, mono-thread | — | — | — | — |
-| `wal_append` | records/s, lot de 1 | — | — | — | — |
-| `query_bench` | MATCH simple, µs/requête | — | — | — | — |
-| `phase_a_write_goulot` | commits/s, `EveryCommit` (fsync par commit) | — | — | — | — |
+Criterion, `--warm-up-time 1 --measurement-time 5`, profil release. **Charge
+machine pendant la mesure : 3 à 9** (d'autres compilations tournaient) — ces
+chiffres sont donc **provisoires** : bons pour l'ordre de grandeur et la
+non-régression relative, pas pour une plaquette. Les chiffres de référence
+définitifs seront repris à charge < 2.
+
+| Bench | Mesure | Valeur (médiane) | Charge |
+|---|---|---|---|
+| `tiered_scan_top10/single_thread/1000000` | retrieval vectoriel par paliers, top-10 sur 10⁶ nœuds, 1 thread | **845 µs** (1,18 Gelem/s) | 8,6 |
+| `tiered_scan_top10/rayon_pool/1000000` | idem, pool rayon | **743 µs** (1,35 Gelem/s) | 8,6 |
+| `wal_append_unitaire/seul_ecrivain` | un record WAL, un écrivain | 1,22 µs (822 Krec/s) | 5,8 |
+| `wal_append_batch/1024` | lot de 1 024 records | 77,4 µs (13,2 Mrec/s) | 5,8 |
+| `query_node_lookup_by_property` | `MATCH` par propriété | 379 µs | 4,9 |
+| `query_1hop_pattern` / `query_2hop_pattern` | motif 1 saut / 2 sauts | 386 µs / 392 µs | 4,9 |
+| `query_fan_out_expand_1k` | expansion à 1 000 voisins | 717 µs | 4,9 |
+| `query_count_all` | `MATCH (n) RETURN count(n)` | 1,28 µs | 4,9 |
+| `query_filter_range` | filtre par plage | 102 µs | 4,9 |
+| `query_insert_single_node` | `INSERT` d'un nœud, auto-commit, base en mémoire | 12,6 µs | 4,9 |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 4 sessions concurrentes, `EveryCommit` | 78,4 ms | 3,3 |
+| `phase_a_write/writer_unique_group_commit/4` | écrivain unique, group commit | 74,8 ms | 3,3 |
+| `phase_a_write/seq_1_thread_group` | séquentiel, 1 thread, `Group` | 78,0 ms | 3,3 |
+
+Ce que le README avançait et que ces chiffres ne confirment PAS tels quels :
+« p95 ≤ 1 ms sur 10⁶ nœuds » — la médiane mono-thread est à 845 µs sous
+charge, plausible, mais le p95 n'est pas mesuré par ce bench ; « recall
+≥ 99 % » — aucun bench ne le mesure. Les deux affirmations sont retirées du
+README jusqu'à mesure.
+
+Coût du commit scellé (D-DUR, PR #22) : à mesurer sur la branche
+`v001/durabilite-commit` avec `phase_a_write_goulot` (un `fsync` par commit
+sur base persistante ; `new_in_memory` n'est pas concerné, `SyncMode::Never`).
 
 ## Ce qui n'est PAS reproductible depuis ce dépôt
 
