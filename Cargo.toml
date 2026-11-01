@@ -40,12 +40,12 @@ thiserror = "2.0"
 anyhow = "1.0"
 
 # Concurrency & synchronization
-parking_lot = { version = "0.12", features = ["arc_lock"] }
+parking_lot = { version = "0.13", features = ["arc_lock"] }
 crossbeam = "0.8"
 rayon = "1"
 
 # Data structures
-hashbrown = "0.16"
+hashbrown = "0.17"
 smallvec = "1"
 bumpalo = "3"
 indexmap = "2"
@@ -64,8 +64,8 @@ bcrypt = "0.16"
 crc32fast = "1"
 foldhash = "0.2"
 md5 = "0.8"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 
 # Confidentialité du calcul — ADR 2026-09-15 (aucune de ces briques n'existait
 # dans ce workspace avant ; elles sont toutes déjà dans le cache du registre,
@@ -74,7 +74,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 hkdf = "0.12"
 zeroize = "1"
-getrandom = "0.3"
+getrandom = "0.4"
 hex = "0.4"
 
 # Transport chiffré des surfaces d'entrée (étape 0 de l'ADR) — fournisseur
@@ -119,7 +119,7 @@ criterion = "0.8"
 tempfile = "3"
 
 # Allocators (platform-optimized)
-tikv-jemallocator = "0.6"
+tikv-jemallocator = "0.7"
 mimalloc = "0.1"
 
 # Vector index support
