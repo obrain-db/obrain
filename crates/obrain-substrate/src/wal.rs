@@ -119,6 +119,21 @@ pub enum WalKind {
     /// (2026-08-23, chantier SlotRemappable) Compaction V2, porteuse d'un
     /// `remap_epoch` — pendant de `HilbertRepermuteV2`.
     CompactCommunityV2 = 0x55,
+    /// (2026-11-01, D-DUR v0.0.1) TRANSACTIONS EN VOL AU REJEU. Le WAL du
+    /// substrat est un journal PHYSIQUE : chaque création est écrite dans
+    /// les zones à l'instant où elle a lieu, et le marqueur « en attente »
+    /// qui la cache aux autres sessions ne vit qu'en mémoire. Un processus
+    /// qui disparaît avec une transaction ouverte laissait donc ses nœuds et
+    /// arêtes PUBLIÉS à la réouverture (mesuré : 50/50 sur
+    /// `durabilite_commit_kill9`). Ces trois records donnent au rejeu la
+    /// frontière de transaction qui lui manquait : une entité déclarée en
+    /// attente par une transaction dont aucun `TxCommit` n'est rejoué est
+    /// écartée (tombstone) en fin de rejeu. Opcodes en fin de table ; un
+    /// binaire antérieur s'arrête dessus (règle « checkpoint forcé avant tout
+    /// downgrade », comme pour 0x54/0x55).
+    TxNoeudEnAttente = 0x56,
+    TxAreteEnAttente = 0x57,
+    TxCommit = 0x58,
     Checkpoint = 0xF0,
     NoOp = 0xFE,
     EndOfLog = 0xFF,
@@ -171,6 +186,9 @@ impl WalKind {
             0x46 => CoactDecay,
             0x54 => HilbertRepermuteV2,
             0x55 => CompactCommunityV2,
+            0x56 => TxNoeudEnAttente,
+            0x57 => TxAreteEnAttente,
+            0x58 => TxCommit,
             0xF0 => Checkpoint,
             0xFE => NoOp,
             0xFF => EndOfLog,
@@ -597,6 +615,24 @@ pub enum WalPayload {
         community_id: u32,
         tenant_id: u32,
     },
+    /// (2026-11-01, D-DUR) Un nœud créé par une transaction encore ouverte.
+    /// Voir [`WalKind::TxNoeudEnAttente`]. EN FIN D'ENUM.
+    TxNoeudEnAttente {
+        tx: u64,
+        node_id: u32,
+    },
+    /// (2026-11-01, D-DUR) Une arête créée par une transaction encore ouverte.
+    TxAreteEnAttente {
+        tx: u64,
+        edge_id: u64,
+    },
+    /// (2026-11-01, D-DUR) La transaction `tx` est COMMITÉE : tout ce qu'elle
+    /// a déclaré en attente est publié. Porte `FLAG_COMMIT` (donc `fsync`
+    /// sous `SyncMode::EveryCommit`). Écrit par `Session::commit()` via
+    /// `GraphStoreMut::seal_commit`.
+    TxCommit {
+        tx: u64,
+    },
 }
 
 impl WalPayload {
@@ -647,6 +683,9 @@ impl WalPayload {
             PropRemoveInline { .. } => K::PropRemoveInline,
             EdgePropSetInline { .. } => K::EdgePropSetInline,
             EdgePropRemoveInline { .. } => K::EdgePropRemoveInline,
+            TxNoeudEnAttente { .. } => K::TxNoeudEnAttente,
+            TxAreteEnAttente { .. } => K::TxAreteEnAttente,
+            TxCommit { .. } => K::TxCommit,
             Checkpoint { .. } => K::Checkpoint,
             NoOp => K::NoOp,
             EndOfLog => K::EndOfLog,
@@ -1094,6 +1133,10 @@ mod tests {
         // Kinds distincts, dans la famille noeud.
         assert_eq!(WalKind::NodeInsertV3 as u8, 0x04);
         assert_eq!(WalKind::NodeUpdateV3 as u8, 0x05);
+        assert_eq!(WalKind::TxNoeudEnAttente as u8, 0x56);
+        assert_eq!(WalKind::TxAreteEnAttente as u8, 0x57);
+        assert_eq!(WalKind::TxCommit as u8, 0x58);
+        assert_eq!(WalKind::from_u8(0x58), Some(WalKind::TxCommit));
     }
 
     /// Chantier SlotRemappable — les variantes V2 font l'aller-retour, et

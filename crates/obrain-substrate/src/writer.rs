@@ -2966,7 +2966,12 @@ impl Writer {
     ///
     /// Under [`SyncMode::EveryCommit`] the `FLAG_COMMIT` bit triggers fsync
     /// automatically; under [`SyncMode::Group`] we still append the marker but
-    /// the caller's group-commit timer owns the actual fsync.
+    /// no fsync is issued here — the caller owns it, explicitly, through
+    /// [`Writer::fsync_wal`] (there is no timer in `Group` mode).
+    ///
+    /// (2026-11-01, D-DUR) `Session::commit()` calls this through
+    /// `GraphStoreMut::seal_commit` on every committed transaction; it is no
+    /// longer reserved to `flush()`.
     ///
     /// ── CE QUE DEVIENT CET APPEL SOUS GROUP COMMIT ARMÉ (2026-10-06) ────────
     /// Le `fsync` n'est plus indexé sur le LOT mais sur la NEEDLE (voir
