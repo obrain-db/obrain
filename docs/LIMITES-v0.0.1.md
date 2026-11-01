@@ -11,8 +11,9 @@ existe ; **mesurée** = chiffre daté, pas encore de test de non-régression.
 
 | Limite | État | Verrou |
 |---|---|---|
-| Après un **remap de slots** (repermutation Hilbert), la première écriture sur un nœud déplacé peut détacher sa chaîne de propriétés v2 (perte des propriétés pré-remap). Constat du 2026-09-06, classé P0. | à trancher en V1-IGNORES (corriger ou retirer la repermutation du chemin v0.0.1) | `obrain-substrate/src/store.rs` : `une_prop_ecrite_apres_un_remap_de_slot_ne_perd_pas_la_chaine` (`#[ignore]`) |
-| **Écriture multi-processus** sur un même WAL (`open_shared_write`) : le LSN n'est pas exactement la position (1 876 écarts sur 6 000 trames mesurés). Le mode partagé n'est PAS une garantie de la v0.0.1. | mesurée | `obrain-substrate/tests/mw_interprocess_append.rs` : `t2b_lsn_exact_par_verrou_d_append` (`#[ignore]`) |
+| Après un **remap de slots** (`repermuter_par_hilbert`), la première écriture sur un nœud déplacé détache sa chaîne de propriétés v2 (perte des propriétés pré-remap). Constat du 2026-09-06, classé P0, **confirmé rouge le 2026-11-01**. Portée réelle : le moteur n'appelle jamais le remap ; seul le warden du substrat (`warden.rs`) le déclenche, et le moteur ne démarre aucun warden. Hors d'atteinte en usage v0.0.1 ; à corriger AVANT d'activer les wardens. | mesurée | `obrain-substrate/src/store.rs` : `une_prop_ecrite_apres_un_remap_de_slot_ne_perd_pas_la_chaine` (`#[ignore]`) |
+| Des **ancres de propriétés divergentes** (index v2 vs chaîne) peuvent rendre un résultat amputé. Dette héritée du 2026-09-13, **confirmée rouge le 2026-11-01**. | mesurée | `store.rs` : `des_ancres_divergentes_ne_rendent_jamais_un_resultat_ampute` (`#[ignore]`) |
+| **Écriture multi-processus** sur un même WAL (`open_shared_write`) : fonctionne dans les tests (`t2b` vert le 2026-11-01, son `#[ignore]` « 1 876 écarts de LSN » était périmé), mais le mode partagé n'est PAS une garantie documentée de la v0.0.1. | mesurée | `obrain-substrate/tests/mw_interprocess_append.rs` |
 | `schema_crc32` de `substrate.meta` est écrit mais jamais vérifié à la lecture. | mesurée (relu 2026-11-01) | — |
 | Les octets `reserved` de `substrate.meta` ne sont pas vérifiés à zéro (la spec le promettait). | mesurée | — |
 | Un `substrate.wal` non checkpointé n'est pas lisible par un binaire ANTÉRIEUR qui ignore un opcode (0x54–0x58) : **checkpoint forcé avant tout downgrade**. | verrouillée par la règle d'exploitation | `slot_remap.rs` § « Retrograder un binaire » |
@@ -21,10 +22,12 @@ existe ; **mesurée** = chiffre daté, pas encore de test de non-régression.
 
 ## Langage de requête
 
+Trois `#[ignore]` dont la raison était périmée (tests verts sur `main` e11bdd2a le 2026-11-01) sont retirés par la PR « désignorer » : `session_transaction_persists`, `t2b_lsn_exact_par_verrou_d_append`, `foreach_set_on_matched_nodes`.
+
 | Limite | État | Verrou |
 |---|---|---|
 | Deux `FOREACH` séquentiels dans une requête : le second voit les lignes du premier (6 lignes au lieu de 4). | à trancher en V1-IGNORES | `obrain-engine/tests/spec_compliance.rs` : `gql_foreach_multiple_in_query` |
-| `FOREACH … SET` sur des valeurs d'`UNWIND` ne persiste pas (identité de nœud perdue). | à trancher en V1-IGNORES | `spec_compliance.rs` : `foreach_set_on_matched_nodes` |
+| `t9_planner_rewrite_correctness::row_correctness_single_direction_no_peer_label` compare le planificateur à une référence lente sur un **jeu de données local** (store PO d'une machine de développement) : rouge hors de cette machine, non reproductible. | mesurée (2026-11-01) | `#[ignore]`, à réécrire sur une fixture |
 | Cypher, SPARQL, Gremlin, GraphQL, SQL/PGQ : derrière des features non activées par défaut, non couverts par la CI par défaut. | mesurée (ci.yml) | job `features` (compilation seule) |
 
 ## Plateformes
