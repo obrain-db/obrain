@@ -1,51 +1,14 @@
-[![CI](https://github.com/this-rs/obrain/actions/workflows/ci.yml/badge.svg)](https://github.com/this-rs/obrain/actions/workflows/ci.yml)
-[![Docs](https://github.com/this-rs/obrain/actions/workflows/docs.yml/badge.svg)](https://github.com/this-rs/obrain/actions/workflows/docs.yml)
-[![codecov](https://codecov.io/gh/this-rs/obrain/graph/badge.svg)](https://codecov.io/gh/this-rs/obrain)
-[![Crates.io](https://img.shields.io/crates/v/obrain.svg)](https://crates.io/crates/obrain)
-[![PyPI](https://img.shields.io/pypi/v/obrain.svg)](https://pypi.org/project/obrain/)
-[![npm](https://img.shields.io/npm/v/@obrain-db/js.svg)](https://www.npmjs.com/package/@obrain-db/js)
-[![wasm](https://img.shields.io/npm/v/@obrain-db/wasm.svg?label=wasm)](https://www.npmjs.com/package/@obrain-db/wasm)
-[![NuGet](https://img.shields.io/nuget/v/Obrain.svg)](https://www.nuget.org/packages/Obrain)
-[![pub.dev](https://img.shields.io/pub/v/obrain.svg)](https://pub.dev/packages/obrain)
-[![Web](https://img.shields.io/npm/v/@obrain-db/web.svg?label=web)](https://www.npmjs.com/package/@obrain-db/web)
-[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8)](https://pkg.go.dev/github.com/this-rs/obrain/crates/bindings/go)
-[![Docker](https://img.shields.io/docker/v/obrain/obrain-server?label=server)](https://hub.docker.com/r/obrain/obrain-server)
+[![CI](https://github.com/obrain-db/obrain/actions/workflows/ci.yml/badge.svg)](https://github.com/obrain-db/obrain/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.91.1-blue)](https://www.rust-lang.org)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.91.1-blue)](Cargo.toml)
 
-# Obrain — The Graph Database That Learns
+# Obrain — base de données graphe embarquée, en Rust
 
-Obrain is a **cognitive graph database** — a high-performance graph engine where data forms **engrams**, connections become **Hebbian synapses**, and queries trigger **spreading activation** across the topology.
+Obrain est un moteur de graphe **embarqué** (une bibliothèque, pas un serveur) : stockage « topology-as-storage » sur fichiers mémoire-mappés, journal d'écriture anticipée (WAL) natif, transactions, langage GQL, algorithmes de graphe par procédures `CALL`, et vecteurs comme type de première classe.
 
-Built on **7 biomimetic layers** (Query → Engine → Storage → Reactive → Cognitive → Index → Bindings), Obrain continuously reasons about its own structure: nodes carry energy that decays like biological memory, edges strengthen through co-activation, and a knowledge fabric scores every node for risk, staleness, and structural importance.
+Ce README décrit **ce que la v0.0.1 fait et prouve**. Chaque exemple de code ci-dessous est exécuté tel quel par `crates/obrain/tests/readme_examples.rs` ; chaque garantie renvoie au test qui la verrouille ; chaque chiffre renvoie à [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Ce qui n'est pas vérifié est dans [Roadmap](#roadmap), pas ici. Les limites connues sont dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
 
-**Your graph isn't just data — it's a living system that remembers what matters, forgets what doesn't, and surfaces insights automatically.**
-
-> 🧠 Purpose-built for **RAG pipelines**, **AI agents**, and **knowledge management** — combine cognitive scoring with HNSW vector search, BM25 full-text, and hybrid retrieval.
-
-On the [LDBC Social Network Benchmark](https://github.com/this-rs/graph-bench), Obrain is the fastest tested graph database in both embedded and server configurations, while using a fraction of the memory.
-
-[![Obrain Playground](docs/assets/playground.png)](https://obrain.ai)
-
-## Overview
-
-Traditional graph databases store nodes and edges, then wait for you to ask questions. Obrain's cognitive engine does more — engrams, synapses, scars, and a knowledge fabric turn static data into a self-aware system:
-
-| Traditional Graph DB | Obrain (Cognitive Graph DB) |
-|---------------------|----------------------------|
-| Static storage | **Reactive** — mutations trigger cognitive updates |
-| Edges are inert | **Synapses** — edges strengthen with use, decay without it |
-| Nodes are passive | **Energy** — nodes have activation levels that decay exponentially |
-| Manual analysis | **Fabric** — continuous risk, staleness, and centrality scoring |
-| No memory of errors | **Scars** — persistent memory of failures that influence risk |
-| Uniform importance | **Spreading activation** — query one node, discover related hot zones |
-
-Obrain supports **Labeled Property Graph (LPG)** and **Resource Description Framework (RDF)** data models, all major query languages (GQL, Cypher, SPARQL, Gremlin, GraphQL, SQL/PGQ), and embeds with zero external dependencies.
-
-## Quick Start
-
-### Rust
+## Démarrage rapide (Rust)
 
 ```bash
 cargo add obrain
@@ -83,512 +46,101 @@ fn main() {
 }
 ```
 
-### Python
+Base persistante : `ObrainDB::open("chemin/vers/base")` ouvre ou crée un répertoire `substrate.*` ; `db.close()` le ferme proprement. **`open` exige la feature `storage`** (`cargo add obrain --features storage`) : le profil `embedded` par défaut est en mémoire seulement. (Test : `stockage_persistant_rouvrir_et_relire`, sous `--features wal`.)
 
-```bash
-uv add obrain
-```
+## Garanties
 
-```python
-import obrain
+| Garantie | Ce qu'elle veut dire | Test qui la verrouille |
+|---|---|---|
+| **Un commit acquitté est durable** | Quand `commit()` (explicite, ou implicite pour chaque statement hors transaction) rend `Ok`, les écritures sont dans le WAL **et** acquittées par le disque (`fsync` — `F_FULLFSYNC` sur macOS). Elles survivent à un `kill -9` et à une coupure de courant. | `obrain-engine/tests/durabilite_commit_kill9.rs` |
+| **Une transaction jamais commitée ne laisse rien** | Un processus qui disparaît avec une transaction ouverte ne publie rien à la réouverture : le WAL porte les frontières de transaction, le rejeu écarte ce qui n'a pas été scellé. | `durabilite_commit_kill9.rs` (test 2) |
+| **Un commit refusé ne laisse rien** | Un conflit de validation (deux sessions, même entité, la seconde commitée après le début de la première) est refusé, et rien de la transaction refusée ne reste — ni en mémoire, ni sur disque après réouverture. | `obrain-engine/tests/echec_commit_rembobinage.rs` |
+| **`ROLLBACK` ne retire que ses propres créations** | Deux sessions concurrentes : annuler l'une ne touche jamais aux commits de l'autre. | `obrain-engine/tests/rollback_isolation.rs` |
+| **Isolation par instantané** | Une transaction ouverte ne voit pas un commit voisin postérieur à son début. | `readme_examples.rs::mvcc_snapshot_isolation_…` |
+| **Reprise après crash** | Un WAL tronqué ou déchiré est rejoué jusqu'à la frontière valide, jamais au-delà ; un trou de zéros suivi de données est nommé, pas confondu avec une fin de fichier. | `obrain-substrate/tests/crash_safety.rs`, `wal_recovery_reelle.rs` |
+| **Format on-disk figé (v3)** | Une base écrite par la v0.0.1 se rouvre par toute v0.0.x ; une base d'une version plus récente est refusée, jamais lue comme vide. | `obrain-engine/tests/format_fige_v3.rs`, fixture `tests/golden/v3-mini` |
+| **Un seul écrivain par base** | Le répertoire est verrouillé (fcntl) ; un second processus est refusé, et le refus nomme le détenteur (Linux, macOS). | `obrain-substrate/tests/verrou_apres_drop.rs` |
 
-db = obrain.ObrainDB()
-db.execute("INSERT (:Person {name: 'Alix', age: 30})")
-db.execute("INSERT (:Person {name: 'Gus', age: 25})")
-db.execute("""
-    MATCH (a:Person {name: 'Alix'}), (b:Person {name: 'Gus'})
-    INSERT (a)-[:KNOWS {since: 2020}]->(b)
-""")
+Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus sur un même WAL, la lecture d'un WAL non checkpointé par un binaire antérieur (checkpoint forcé avant tout downgrade), et tout ce qui est listé dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
 
-result = db.execute("MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name, f.name")
-for row in result:
-    print(row)
-```
+## Fonctionnalités (features par défaut du crate `obrain`)
 
-### Node.js
+- **Modèle** : graphe de propriétés étiqueté (LPG). RDF et les autres langages (Cypher, SPARQL, Gremlin, GraphQL, SQL/PGQ) existent derrière des features non activées par défaut et ne sont pas couverts par ce README.
+- **Langage** : GQL (ISO/IEC 39075) — `INSERT`, `MATCH`, `SET`, `DELETE`, `RETURN`, agrégats, `CALL … YIELD`.
+- **Transactions** : `begin_transaction` / `commit` / `rollback`, savepoints, auto-commit par statement, détection de conflit write-write, isolation par instantané.
+- **Stockage** : en mémoire (`new_in_memory`, défaut) ou persistant (`open`, feature `storage`), format `substrate.*` v3, WAL + checkpoint.
+- **Vecteurs** : `Value::Vector` stocké avec le graphe ; retrieval par paliers L0/L1/L2 (binaire 128 bits → Hamming 512 bits → cosinus f16) ; BM25 ; recherche hybride (feature `hybrid-search`, incluse dans `embedded`).
+- **Algorithmes** (`CALL obrain.<nom>(…)`), chacun exécuté par le harnais sur un petit graphe :
 
-```bash
-npm install @obrain-db/js
-```
+| Famille | Procédures |
+|---|---|
+| Centralité | `pagerank`, `betweenness_centrality`, `closeness_centrality`, `degree_centrality`, `hits` |
+| Communautés | `louvain`, `leiden`, `label_propagation` |
+| Plus courts chemins | `dijkstra(source)`, `bellman_ford(source)`, `sssp({source: 'nom'})` (source désignée par sa propriété `name`), `floyd_warshall` |
+| Parcours et structure | `bfs(source)`, `dfs(source)`, `connected_components`, `strongly_connected_components`, `topological_sort`, `bridges`, `articulation_points`, `kcore`, `subgraph.khop(center, k)` |
+| Agrégation et similarité | `clustering_coefficient` (avec comptage de triangles par nœud), `similarity(a, b, metric)` et `similarity.topk(a, k, metric)` avec `metric` ∈ `jaccard` (défaut), `overlap`, `cosine`, `adamic_adar` |
+| Flot et arbres couvrants | `max_flow({source, sink})`, `min_cost_max_flow({source, sink})` (identifiants de nœuds), `kruskal`, `prim` |
 
-```js
-const { ObrainDB } = require('@obrain-db/js');
-const db = await ObrainDB.create();
-
-await db.execute("INSERT (:Person {name: 'Alix', age: 30})");
-await db.execute("INSERT (:Person {name: 'Gus', age: 25})");
-await db.execute(`
-    MATCH (a:Person {name: 'Alix'}), (b:Person {name: 'Gus'})
-    INSERT (a)-[:KNOWS {since: 2020}]->(b)
-`);
-
-const result = await db.execute(`
-    MATCH (p:Person)-[:KNOWS]->(friend)
-    RETURN p.name, friend.name
-`);
-console.log(result.rows);
-await db.close();
-```
-
-## RAG with Cognitive Scoring
-
-Obrain combines vector search with cognitive awareness — retrieve not just semantically similar nodes, but the ones your graph considers **most alive and relevant**:
-
-```python
-import obrain
-
-db = obrain.ObrainDB()
-
-# Store documents with embeddings
-db.execute("""
-    INSERT (:Document {title: 'Graph Theory', embedding: [0.1, 0.8, 0.3, ...]})
-    INSERT (:Document {title: 'Neural Networks', embedding: [0.7, 0.2, 0.9, ...]})
-""")
-
-# Hybrid search: vector similarity + cognitive energy
-result = db.execute("""
-    CALL obrain.hybrid_search({
-        query_vector: [0.5, 0.6, 0.4, ...],
-        top_k: 10
-    })
-    YIELD node_id, score
-    MATCH (d:Document) WHERE ID(d) = node_id
-    RETURN d.title, score, obrain.energy(node_id) AS vitality
-    ORDER BY score * vitality DESC
-""")
-```
-
-Frequently accessed documents gain energy; stale ones fade. Combined with spreading activation, related concepts light up even when they don't match the query vector directly.
-
-## Cognitive Primitives
-
-Obrain's cognitive layer operates on four core primitives that work together to create a self-aware graph:
-
-### Energy
-
-Every node carries an **energy** value that represents its current activation level. Energy decays exponentially over time following a configurable half-life:
-
-```
-E(t) = E₀ × 2^(-Δt / half_life)
-```
-
-- **Boost on mutation**: each INSERT/UPDATE to a node increases its energy
-- **Exponential decay**: unused nodes naturally fade toward zero
-- **Structural reinforcement**: highly connected nodes decay more slowly (degree-modulated half-life)
-- **Normalized score**: `energy_score(e) = 1 - exp(-e / ref_energy)` maps to [0, 1]
-
-Energy lets you distinguish *active* parts of your graph from *stale* ones — without timestamps or manual bookkeeping.
-
-### Synapse
-
-Edges between nodes can form **Hebbian synapses** — connections that strengthen when both endpoints are activated together (co-accessed, co-mutated, co-queried):
-
-```
-W(t) = W₀ × 2^(-Δt / half_life) + reinforcements
-```
-
-- **Hebbian learning**: "neurons that fire together wire together"
-- **Competitive normalization**: when total outgoing weight exceeds a threshold, all weights are scaled down — like biological synaptic competition
-- **Pruning**: synapses below a minimum weight are automatically removed
-- **Spreading activation**: energy propagates through synapses via BFS, attenuating with distance
-
-Synapses let the graph learn which connections *matter* based on actual usage patterns.
-
-### Scar
-
-When something goes wrong — a failed transaction, a rollback, an integrity violation — Obrain records a **scar** on the affected nodes:
-
-```
-I(t) = I₀ × 2^(-Δt / half_life)
-```
-
-- **Persistent error memory**: scars fade but don't immediately disappear
-- **Risk influence**: scar intensity feeds into the fabric risk score
-- **Per-node limit**: configurable maximum scars per node (oldest pruned first)
-
-Scars ensure the graph *remembers* past problems, making previously-failed areas more cautious.
-
-### Fabric
-
-The **knowledge fabric** is the integration layer that combines all cognitive signals into actionable scores for every node:
-
-| Metric | Source | Description |
-|--------|--------|-------------|
-| `mutation_frequency` | Reactive listener | How often this node changes |
-| `annotation_density` | External input | Coverage of documentation/metadata |
-| `staleness` | Time since last mutation | How long since anything happened |
-| `pagerank` | GDS refresh | Structural importance in the graph |
-| `betweenness` | GDS refresh | How often this node is on shortest paths |
-| `scar_intensity` | Scar store | Accumulated error memory |
-| `community_id` | Louvain | Which community this node belongs to |
-| **`risk_score`** | **Weighted composite** | **Single 0–1 score: how "risky" is this node?** |
-
-Risk is computed as:
-
-```
-risk = w₁×pagerank + w₂×mutation_frequency + w₃×annotation_gap + w₄×betweenness + w₅×scar
-```
-
-Default weights: 0.25, 0.25, 0.20, 0.15, 0.15 (configurable via `RiskWeights`).
-
-## GDS Algorithms
-
-Obrain includes a full Graph Data Science (GDS) library, accessible via `CALL` procedures or the Rust API:
-
-### Centrality
-| Algorithm | Procedure | Description |
-|-----------|-----------|-------------|
-| PageRank | `obrain.pagerank()` | Link-based importance scoring |
-| Betweenness | `obrain.betweenness_centrality()` | Shortest-path intermediary frequency |
-| Closeness | `obrain.closeness_centrality()` | Average distance to all other nodes |
-| Degree | `obrain.degree_centrality()` | In/out/total degree counts |
-| HITS | `obrain.hits()` | Hub and authority scores |
-
-### Community Detection
-| Algorithm | Procedure | Description |
-|-----------|-----------|-------------|
-| Louvain | `obrain.louvain()` | Modularity-optimizing community detection |
-| Leiden | `obrain.leiden()` | Improved Louvain with guaranteed connectivity |
-| Label Propagation | `obrain.label_propagation()` | Fast distributed community labeling |
-
-### Shortest Paths
-| Algorithm | Procedure | Description |
-|-----------|-----------|-------------|
-| Dijkstra | `obrain.dijkstra()` | Single-source shortest paths |
-| Bellman-Ford | `obrain.bellman_ford()` | Handles negative weights |
-| A* | `obrain.astar()` | Heuristic-guided search |
-| Floyd-Warshall | `obrain.floyd_warshall()` | All-pairs shortest paths |
-
-### Traversal & Structure
-| Algorithm | Procedure | Description |
-|-----------|-----------|-------------|
-| BFS/DFS | `obrain.bfs()` / `obrain.dfs()` | Graph traversal |
-| Connected Components | `obrain.connected_components()` | Component membership |
-| SCC | `obrain.strongly_connected_components()` | Strongly connected components |
-| Topological Sort | `obrain.topological_sort()` | DAG ordering |
-| Bridges | `obrain.bridges()` | Critical edges |
-| Articulation Points | `obrain.articulation_points()` | Critical nodes |
-| K-Core | `obrain.k_core()` | K-core decomposition |
-
-### Clustering & Similarity
-| Algorithm | Procedure | Description |
-|-----------|-----------|-------------|
-| Clustering Coefficient | `obrain.clustering_coefficient()` | Local clustering density |
-| Triangle Count | `obrain.triangle_count()` | Per-node triangle enumeration |
-| Jaccard | `obrain.jaccard()` | Neighbor overlap similarity |
-| Cosine Similarity | `obrain.cosine_similarity()` | Angular distance |
-| Adamic-Adar | `obrain.adamic_adar()` | Weighted common neighbors |
-
-### Network Flow & MST
-| Algorithm | Procedure | Description |
-|-----------|-----------|-------------|
-| Max Flow | `obrain.max_flow()` | Ford-Fulkerson / push-relabel |
-| Min-Cost Max Flow | `obrain.min_cost_max_flow()` | Cost-optimized flow |
-| Kruskal | `obrain.kruskal()` | Minimum spanning tree |
-| Prim | `obrain.prim()` | Alternative MST |
-
-## CALL Procedures Reference
-
-### Syntax
+Syntaxe :
 
 ```sql
--- Basic call
 CALL obrain.pagerank()
-
--- With parameters
 CALL obrain.pagerank({damping: 0.85, max_iterations: 20})
-
--- With YIELD to select columns
 CALL obrain.louvain() YIELD node_id, community_id
-
--- With aliases
 CALL obrain.pagerank() YIELD node_id AS id, score AS rank
 ```
 
-### Standard GDS Procedures
+## Couche cognitive (crate `obrain-engine`, feature `cognitive`)
 
-All GDS algorithms are exposed as `CALL obrain.<algorithm>()` procedures. See the [GDS Algorithms](#gds-algorithms) section for the full list.
+Obrain porte une couche cognitive — énergie des nœuds à demi-vie, synapses hebbiennes, cicatrices, tissu de connaissance (`risk_score`), activation propagée. Elle vit dans `obrain-cognitive` et s'active avec `obrain-engine --features cognitive` (procédures `obrain.cognitive.spread`, `distill`, `detect_gaps`, `synthesize`, `reinforce`, `bootstrap`, `metrics`). **Le crate façade `obrain` n'expose pas cette feature en v0.0.1** : voir [Roadmap](#roadmap). Documentation : `crates/obrain-cognitive`.
 
-### Cognitive Procedures
+## Performance
 
-These procedures access the cognitive subsystems at query time:
-
-| Procedure | Description | Columns |
-|-----------|-------------|---------|
-| `obrain.cognitive.spread(node_id_or_[ids], {hops: N, causal_edge_types: [...], causal_boost: B})` | Spreading activation from one or more source nodes. `causal_edge_types` optionally names relation types to prioritize (`causal_boost`×) over the rest — no fixed ontology, purely caller-supplied. | `activated`, `energy` |
-| `obrain.cognitive.distill({min_weight: 0.1})` | Extract high-weight synaptic connections | `artifact` |
-| `obrain.cognitive.detect_gaps([node_ids], {top_k: 20})` | Structural gap detection: missing-link candidates + dead/orphan nodes in the given scope. Read-only — never creates edges/nodes, only scored candidates. | `kind`, `node_a`, `node_b`, `score`, `detail` |
-| `obrain.cognitive.synthesize([node_ids], {budget_tokens: 750})` | Dynamic contextual synthesis: community-bounded spreading activation → schema-less structured text (grouped by label). No LLM call baked in — returns budget-truncated structured text; plug in your own `Summarizer` at the Rust API level (`obrain_cognitive::synthesis`) for LLM-backed summarization. | `text` |
-
-### Cognitive UDFs (User-Defined Functions)
-
-Cognitive functions can be used inline in any GQL expression:
-
-| Function | Description | Returns |
-|----------|-------------|---------|
-| `obrain.energy(node_id)` | Current energy (activation level) of a node | `Float64` |
-| `obrain.risk(node_id)` | Composite risk score from the knowledge fabric | `Float64` |
-| `obrain.synapses(node_id)` | List of Hebbian synapses connected to a node | `List<Map>` |
-
-```sql
--- Find high-energy nodes
-MATCH (n:Person)
-WHERE obrain.energy(ID(n)) > 0.5
-RETURN n.name, obrain.energy(ID(n)) AS energy
-
--- Find risky nodes
-MATCH (n)
-RETURN n, obrain.risk(ID(n)) AS risk
-ORDER BY risk DESC
-LIMIT 10
-
--- Inspect synaptic connections
-MATCH (n:Concept {name: 'GraphDB'})
-RETURN obrain.synapses(ID(n)) AS connections
-```
-
-## MCP Server
-
-Obrain exposes its full capabilities — queries, graph algorithms, cognitive features — through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io):
-
-```bash
-npm install -g @obrain-db/mcp
-```
-
-The MCP server lets LLM agents:
-- Execute GQL/Cypher/SPARQL queries against a Obrain instance
-- Run graph algorithms (PageRank, community detection, shortest paths)
-- Access cognitive features (energy, synapses, spreading activation)
-- Inspect schema, stats, and graph structure
-
-See [obrain-mcp](https://github.com/this-rs/obrain-mcp) for configuration and usage.
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Query Languages                          │
-│   GQL │ Cypher │ SPARQL │ Gremlin │ GraphQL │ SQL/PGQ           │
-├──────────────────────────────────────────────────────────────────┤
-│                      Query Engine                               │
-│   Parser → AST → Logical Plan → Optimizer → Physical Plan       │
-│   Push-based vectorized execution │ Morsel-driven parallelism   │
-├──────────────────────────────────────────────────────────────────┤
-│                     Graph Storage                               │
-│   SubstrateStore (mmap, topology-as-storage, WAL-native)        │
-│   32 B node records │ 30 B edge records │ inline column state  │
-│   MVCC Transactions          │  Snapshot Isolation              │
-│   Columnar + compressed      │  WAL + checkpoint               │
-├──────────────────────────────────────────────────────────────────┤
-│                    Reactive Layer                                │
-│   InstrumentedStore → MutationBus → Scheduler → Listeners       │
-│   Zero-cost when no subscribers (<5μs overhead)                 │
-├──────────────────────────────────────────────────────────────────┤
-│                   Cognitive Layer                                │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
-│   │  Energy   │ │ Synapse  │ │  Scar    │ │  Fabric  │          │
-│   │  (col view)│ │(col view)│ │(col view)│ │  Store   │          │
-│   └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
-│   Spreading Activation │ Co-Change Detection │ Stagnation       │
-│   GDS Refresh (PageRank, Louvain, Betweenness) │ Memory Mgmt   │
-├──────────────────────────────────────────────────────────────────┤
-│                    Index Layer                                  │
-│   L0 / L1 / L2 tiers (vectors) │ BM25 (text) │ Zone maps       │
-├──────────────────────────────────────────────────────────────────┤
-│                   Bindings & Integrations                       │
-│   Python │ Node.js │ Go │ C │ C# │ Dart │ WASM │ MCP           │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Reactive Pipeline
-
-Every mutation flows through the reactive pipeline:
-
-```
-INSERT/UPDATE/DELETE
-        ↓
-InstrumentedStore (transparent wrapper)
-        ↓ buffers events
-MutationBus (tokio::broadcast)
-        ↓ publishes MutationBatch
-Scheduler (batches, dispatches)
-        ↓
-┌───────────┬───────────┬───────────┬────────────┐
-│  Energy   │  Synapse  │  Fabric   │  Co-Change │
-│ Listener  │ Listener  │ Listener  │  Detector  │
-└───────────┴───────────┴───────────┴────────────┘
-        ↓
-Cognitive stores updated → risk recalculated
-```
-
-## Features
-
-### Core Capabilities
-
-- **Dual data model support**: LPG and RDF with optimized storage for each
-- **Multi-language queries**: GQL, Cypher, Gremlin, GraphQL, SPARQL and SQL/PGQ
-- Embeddable with zero external dependencies — no JVM, no Docker, no external processes
-- **Multi-language bindings**: Python (PyO3), Node.js/TypeScript (napi-rs), Go (CGO), C (FFI), C# (.NET 8 P/Invoke), Dart (dart:ffi), WebAssembly (wasm-bindgen)
-- In-memory and persistent storage modes
-- MVCC transactions with snapshot isolation
-
-### Vector Search & AI
-
-- **Vector as a first-class type**: `Value::Vector(Arc<[f32]>)` stored alongside graph data
-- **Tiered vector retrieval (L0 / L1 / L2)**: 128-bit binary scan → 512-bit Hamming re-rank → f16 cosine top-K. Replaces HNSW while preserving ≥ 99 % recall (p95 ≤ 1 ms on 10⁶ nodes).
-- **Distance functions**: Cosine, Euclidean, Dot Product, Manhattan (SIMD-accelerated: AVX2, SSE, NEON)
-- **Vector quantization**: Scalar (f32 → u8), Binary (1-bit) and Product Quantization (8-32x compression)
-- **BM25 text search**: Full-text inverted index with Unicode tokenizer and stop word removal
-- **Hybrid search**: Combined text + vector search with Reciprocal Rank Fusion (RRF) or weighted fusion
-- **Memory-mapped storage**: Disk-backed vectors with LRU cache for large datasets
-
-### Performance Features
-
-- **Push-based vectorized execution** with adaptive chunk sizing
-- **Morsel-driven parallelism** with auto-detected thread count
-- **Columnar storage** with dictionary, delta and RLE compression
-- **Cost-based optimizer** with DPccp join ordering and histograms
-- **Zone maps** for intelligent data skipping (including vector zone maps)
-- **Adaptive query execution** with runtime re-optimization
-- **Transparent spilling** for out-of-core processing
-
-### Benchmarks
-
-Tested with the [LDBC Social Network Benchmark](https://ldbcouncil.org/benchmarks/snb/) via [graph-bench](https://github.com/this-rs/graph-bench):
-
-**Embedded** (SF0.1, in-process):
-
-| Database | SNB Interactive | Memory | Graph Analytics | Memory |
-|----------|---------------:|-------:|----------------:|-------:|
-| **Obrain** | **2,904 ms** | 136 MB | **0.4 ms** | 43 MB |
-| LadybugDB(Kuzu) | 5,333 ms | 4,890 MB | 225 ms | 250 MB |
-| FalkorDB Lite | 7,454 ms | 156 MB | 89 ms | 88 MB |
-
-**Server** (SF0.1, over network):
-
-| Database | SNB Interactive | Graph Analytics |
-|----------|---------------:|----------------:|
-| **Obrain Server** | **730 ms** | **15 ms** |
-| Memgraph | 4,113 ms | 19 ms |
-| Neo4j | 6,788 ms | 253 ms |
-| ArangoDB | 40,043 ms | 22,739 ms |
-
-Full results: [embedded](https://github.com/this-rs/graph-bench/blob/main/RESULTS_EMBEDDED.md) | [server](https://github.com/this-rs/graph-bench/blob/main/RESULTS_SERVER.md)
+Les benchs reproductibles, la commande exacte, le matériel et les chiffres sont dans [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Aucun chiffre n'est repris ici.
 
 ## Installation
 
-### Rust
-
 ```bash
-cargo add obrain
+cargo add obrain                                           # profil embedded : GQL + vecteurs/texte/hybride + algorithmes + parallélisme (en mémoire)
+cargo add obrain --features storage                        # + bases persistantes (ObrainDB::open, WAL, checkpoint)
+cargo add obrain --no-default-features --features gql      # minimal
+cargo add obrain --no-default-features --features full     # tous les langages + stockage + RDF + CDC
 ```
 
-By default, the `embedded` profile is enabled: GQL, AI features (vector/text/hybrid search, CDC), graph algorithms and parallel execution. Use feature groups to customize:
+MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 
-```bash
-# Default (embedded profile): GQL + AI + algorithms + parallel
-cargo add obrain
+## Exemples
 
-# All query languages + AI + algorithms + storage
-cargo add obrain --no-default-features --features full
+`examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate_v2`.
 
-# Only GQL with AI features
-cargo add obrain --no-default-features --features gql,ai
+## Roadmap
 
-# Minimal: GQL only
-cargo add obrain --no-default-features --features gql
+Ce qui n'est **pas** dans la v0.0.1 et qui l'a été annoncé par le passé :
 
-# With graph algorithms (SSSP, PageRank, centrality, community detection, etc.)
-cargo add obrain --no-default-features --features gql,algos
-```
-
-### Python
-
-```bash
-uv add obrain
-```
-
-### Node.js / TypeScript
-
-```bash
-npm install @obrain-db/js
-```
-
-### Go
-
-```bash
-go get github.com/this-rs/obrain/crates/bindings/go
-```
-
-### WebAssembly
-
-```bash
-npm install @obrain-db/wasm
-```
-
-### C# / .NET
-
-```bash
-dotnet add package Obrain
-```
-
-### Dart
-
-```yaml
-# pubspec.yaml
-dependencies:
-  obrain: ^0.5.24
-```
-
-## Examples
-
-Standalone examples demonstrating cognitive graph database use cases:
-
-| Example | Description | Run |
-|---------|-------------|-----|
-| [Social Network](examples/rust/social_network.rs) | Energy decay on interactions, community detection, spreading activation | `cargo run -p obrain-examples --bin social_network` |
-| [Knowledge Base](examples/rust/knowledge_base.rs) | Synapse reinforcement, multi-signal search, stale node consolidation | `cargo run -p obrain-examples --bin knowledge_base` |
-| [IoT Stream](examples/rust/iot_stream.rs) | Co-change detection on sensor events, stagnation alerting | `cargo run -p obrain-examples --bin iot_stream` |
-| [Basic](examples/rust/basic.rs) | Create a social graph and query it | `cargo run -p obrain-examples --bin basic` |
-| [Algorithms](examples/rust/algorithms.rs) | PageRank, Louvain, degree centrality via CALL procedures | `cargo run -p obrain-examples --bin algorithms` |
-| [Vector Search](examples/rust/vector_search.rs) | HNSW index, cosine similarity, hybrid search | `cargo run -p obrain-examples --bin vector_search` |
-| [Transactions](examples/rust/transactions.rs) | ACID transactions with snapshot isolation | `cargo run -p obrain-examples --bin transactions` |
-
-## Ecosystem
-
-| Project | Description |
-|---------|-------------|
-| [**obrain-server**](https://github.com/this-rs/obrain-server) | HTTP server & web UI: REST API, transactions, single binary (~40MB Docker image) |
-| [**obrain-web**](https://github.com/this-rs/obrain-web) | Browser-based Obrain via WebAssembly with IndexedDB persistence |
-| [**gwp**](https://github.com/this-rs/gql-wire-protocol) | GQL Wire Protocol: gRPC wire protocol for GQL (ISO/IEC 39075) with client bindings in 5 languages |
-| [**boltr**](https://github.com/this-rs/boltr) | Bolt Wire Protocol: pure Rust Bolt v5.x implementation for Neo4j driver compatibility |
-| [**obrain-langchain**](https://github.com/this-rs/obrain-langchain) | LangChain integration: graph store, vector store, Graph RAG retrieval |
-| [**obrain-llamaindex**](https://github.com/this-rs/obrain-llamaindex) | LlamaIndex integration: PropertyGraphStore, vector search, knowledge graphs |
-| [**obrain-mcp**](https://github.com/this-rs/obrain-mcp) | Model Context Protocol server: expose Obrain as tools for LLM agents |
-| [**obrain-memory**](https://github.com/this-rs/obrain-memory) | AI memory layer for LLM applications: fact extraction, deduplication, semantic search |
-| [**anywidget-graph**](https://github.com/this-rs/anywidget-graph) | Interactive graph visualization for Python notebooks (Marimo, Jupyter, VS Code, Colab) |
-| [**anywidget-vector**](https://github.com/this-rs/anywidget-vector) | 3D vector/embedding visualization for Python notebooks |
-| [**playground**](https://obrain.ai) | Interactive browser playground: query in 6 languages, visualize graphs, explore schemas |
-| [**graph-bench**](https://github.com/this-rs/graph-bench) | Benchmark suite comparing graph databases across 25+ benchmarks |
-| [**ann-benchmarks**](https://github.com/this-rs/ann-benchmarks) | Fork of ann-benchmarks with a Obrain HNSW adapter for vector search benchmarking |
+- **Bindings** Python, Node.js, Go, C, C#, Dart, WebAssembly : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI.
+- **Feature `cognitive` sur le crate façade** `obrain` (procédures et UDF `obrain.energy` / `obrain.risk` / `obrain.synapses` depuis `obrain`).
+- **`CALL obrain.hybrid_search`** comme procédure GQL (la recherche hybride existe en Rust, `ObrainDB::hybrid_search`).
+- Procédures `astar` et `triangle_count` ; `jaccard`, `cosine_similarity`, `adamic_adar` comme procédures autonomes (elles existent comme métriques de `similarity`).
+- Algorithmes présents dans `obrain-adapters` mais non enregistrés comme procédures `CALL` : `personalized_pagerank`, `stable_communities`, `irreducible_kernel`, `spectral_embedding`, `heat_kernel_diffusion`, `hilbert_features`, `subgraph_contraction`.
+- Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : dépôts séparés, hors de cette version.
+- Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
 
 ## Documentation
 
-Full documentation is available at [obrain.dev](https://obrain.dev).
+- [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md) — limites connues, chacune avec son test.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — méthode et chiffres.
+- [docs/rfc/substrate/format-spec.md](docs/rfc/substrate/format-spec.md) — format on-disk (§ 0 : état réel v0.0.1).
+- [docs/MIGRATION.md](docs/MIGRATION.md), [docs/architecture/overview.md](docs/architecture/overview.md).
+- [CHANGELOG.md](CHANGELOG.md).
 
-## Contributing
+## Contribuer
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, `cargo package` dans l'ordre de publication, et les tests d'intégrité sur macOS.
 
-## Acknowledgments
+## Remerciements
 
-Obrain is a fork of [GrafeoDB](https://github.com/GrafeoDB/grafeo), the original embedded graph database. We build on its solid foundation — GQL/Cypher support, vectorized execution, ACID transactions — and extend it with a cognitive layer: semantic memory, neural knowledge graphs, and adaptive reasoning.
+Obrain est un fork de [GrafeoDB](https://github.com/GrafeoDB/grafeo) (Apache-2.0) — voir [NOTICE](NOTICE). Le moteur d'exécution s'inspire de [DuckDB](https://duckdb.org/) (exécution vectorisée push-based, parallélisme morsel-driven) et de [Kuzu](https://github.com/kuzudb/kuzu) (adjacence CSR, traitement factorisé).
 
-Obrain's execution engine draws inspiration from:
+## Licence
 
-- [DuckDB](https://duckdb.org/), vectorized push-based execution, morsel-driven parallelism
-- [Kuzu](https://github.com/kuzudb/kuzu), CSR-based adjacency indexing, factorized query processing
-
-## License
-
-Apache-2.0
+Apache-2.0 — voir [LICENSE](LICENSE) et [NOTICE](NOTICE).

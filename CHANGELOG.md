@@ -4,6 +4,58 @@ All notable changes to Obrain will be documented in this file.
 
 This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafeo) and rebranded as **Obrain** ([obrain.dev](https://obrain.dev)). The upstream Grafeo changelog is preserved in `CHANGELOG-grafeo.md` for historical reference.
 
+## [0.0.1] — en préparation (branche de release, 2026-11)
+
+Première version destinée à être publiée. Le numéro du workspace est `0.0.1`
+depuis des mois ; les tags `v0.5.x` du dépôt viennent de l'amont GrafeoDB et
+l'entrée `[0.2.0]` plus bas est un héritage du fork — aucune des deux n'est une
+release d'Obrain. Cette entrée est la première qui en soit une.
+
+### Intégrité des données (mesuré, test rouge sur `main` e11bdd2a puis vert)
+- **Transactions en vol au rejeu** : un processus qui disparaissait (`kill -9`)
+  avec une transaction OUVERTE laissait ses nœuds et arêtes publiés à la
+  réouverture (50/50 mesurés). Le WAL porte désormais des frontières de
+  transaction (`TxNoeudEnAttente` 0x56, `TxAreteEnAttente` 0x57, `TxCommit`
+  0x58) et le rejeu écarte ce qui n'a jamais été scellé. Test :
+  `obrain-engine/tests/durabilite_commit_kill9.rs`.
+- **Commit scellé et `fsync`** : `Session::commit()` pose un marqueur de commit
+  et, en `SyncMode::EveryCommit` (le défaut), attend le `fsync` — un commit
+  acquitté survit à une coupure de courant, pas seulement à un `kill -9`.
+  `SyncMode::Group` reste opt-in et sans minuterie (doc corrigée).
+- **Commit refusé** : un conflit de validation laissait les entités de la
+  transaction allouées sur disque (invisibles en mémoire, de retour après
+  réouverture). Le rembobinage a lieu avant le vidage des empreintes, comme
+  pour `ROLLBACK`. Test : `obrain-engine/tests/echec_commit_rembobinage.rs`.
+- **Sidecar de propriétés** : un `substrate.props` d'une autre version ou
+  corrompu était lu comme VIDE (warn) puis écrasé au flush suivant. C'est une
+  erreur d'ouverture, désormais.
+
+### Format on-disk
+- Format du répertoire substrat figé à la version 3 ; `docs/rfc/substrate/
+  format-spec.md` § 0 décrit l'état réel ; fixture de référence
+  `obrain-engine/tests/golden/v3-mini` verrouillée par `format_fige_v3.rs`.
+- Suppression du module orphelin (non compilé) du format mono-fichier
+  `.obrain` (`obrain-adapters/src/storage/file`).
+
+### Plateformes
+- macOS : un refus de verrou nomme le processus détenteur (`lsof`), comme sur
+  Linux (`/proc`).
+
+### CI
+- Actions épinglées par SHA, `permissions: contents: read`, jobs : lint
+  (cliquet clippy), tests, `--all-features` (compilation), MSRV, `cargo deny`,
+  `cargo package` dans l'ordre de publication, macOS (tests d'intégrité).
+- Chemins Codecov, Dependabot, Makefile et `ci-local.sh` débarrassés des
+  références à `lab/grafeo` et à des bindings absents.
+
+### Documentation
+- `NOTICE` (attribution GrafeoDB, Apache-2.0) ; `repository` du manifeste
+  pointe vers `obrain-db/obrain`.
+- `docs/LIMITES-v0.0.1.md` : chaque limite connue, avec le test qui la
+  verrouille. `scripts/check-links.sh` : plus aucun lien relatif cassé.
+- README : voir la PR V1-README (fonctionnalités = celles que
+  `crates/obrain/tests/readme_examples.rs` exécute).
+
 ## 2026-09-15 — LE FROID D'`/api/viz/arcs` CESSE D'ÊTRE PAYÉ PAR UNE REQUÊTE
 
 *Constat de départ : « cette requête met plus de 3 s, toutes les requêtes de ce

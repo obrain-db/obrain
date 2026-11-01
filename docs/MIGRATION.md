@@ -219,7 +219,7 @@ substrate node stream.
 - [RFC-SUBSTRATE](./rfc/substrate/format-spec.md) — on-disk format
   specification, bit-precise.
 - [WAL spec](./rfc/substrate/wal-spec.md) — durability semantics.
-- [T9 validation gates](../crates/obrain-substrate/README.md) — recall,
+- [T9 validation gates](./rfc/substrate/format-spec.md#13-validation-gates) — recall,
   p95, RSS, startup.
-- [Cognitive quality reports](./rfc/substrate/cognitive-quality.md) —
+- Cognitive quality reports (non publiés dans ce dépôt) —
   end-to-end quality measurements on PO / megalaw / wikipedia.
