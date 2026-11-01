@@ -264,7 +264,8 @@ mod tests {
     // =========================================================================
 
     #[test]
-    #[ignore = "Known bug: session transactions don't write to WAL in directory format. Tracked separately from checkpoint.meta fix."]
+    // (2026-11-01) Ignoré depuis des mois pour un « Known bug » ; MESURÉ vert
+    // sur main e11bdd2a (et sur la branche D-DUR) : la raison était périmée.
     fn session_transaction_persists() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("session_tx_db");
