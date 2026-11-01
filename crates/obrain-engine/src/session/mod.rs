@@ -3778,6 +3778,20 @@ impl Session {
             store.sync_epoch(current_epoch);
         }
 
+        // D-DUR (v0.0.1, 2026-11-01) : SCELLER LE COMMIT DANS LE WAL.
+        // Jusqu'ici rien, sur ce chemin, n'écrivait de marqueur de commit ni
+        // ne demandait de `fsync` : un `commit()` rendait `Ok` avec ses
+        // records encore en tampon, et un `kill -9` les emportait (test
+        // `durabilite_commit_kill9`). Le scellement vient APRÈS la
+        // publication des versions : ce qui est durable est exactement ce
+        // qui est visible. En cas d'erreur, l'état est visible en mémoire
+        // mais pas garanti sur disque — on le dit à l'appelant plutôt que de
+        // rendre un `Ok` faux.
+        for graph_name in &touched {
+            let store = self.resolve_store(graph_name);
+            store.seal_commit(transaction_id)?;
+        }
+
         // Reset read-only flag, clear savepoints and touched graphs
         *self.read_only_tx.lock() = self.db_read_only;
         self.savepoints.lock().clear();

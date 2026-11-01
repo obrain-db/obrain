@@ -43,6 +43,12 @@ pub struct ReplayStats {
     pub stopped_at: u64,
     /// Highest LSN seen during replay (or 0 if no records).
     pub last_lsn: u64,
+    /// (2026-11-01, D-DUR) Transactions dont le rejeu a vu des entités en
+    /// attente mais AUCUN `TxCommit` : elles étaient en vol au moment de la
+    /// disparition du processus.
+    pub transactions_en_vol: u64,
+    /// Nœuds + arêtes de ces transactions, écartés (tombstone) en fin de rejeu.
+    pub entites_en_vol_ecartees: u64,
     /// AUDIT 2026-07-25 (« maladie des coquilles », mesuree en production :
     /// 13/15 GoalNode, 25/25 AgentDirective echantillonnes sans AUCUNE
     /// propriete). Le WAL ne porte pour NodeInsert que le label_bitset —
@@ -161,6 +167,10 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
     // borner l'audit post-rejeu des ancres à la fenêtre rejouée au lieu de la
     // zone entière.
     let mut touches = SlotsTouches::AUCUN;
+    // (2026-11-01, D-DUR) Entités déclarées en attente par transaction, tant
+    // qu'aucun `TxCommit` ne les a publiées. Ce qui reste à la fin est en vol.
+    let mut en_vol: std::collections::HashMap<u64, (Vec<u32>, Vec<u64>)> =
+        std::collections::HashMap::new();
 
     // On tient l'itérateur (au lieu d'un `for`) pour pouvoir lire, APRÈS la
     // boucle, le drapeau « queue incomplète » — l'information que l'itérateur
@@ -171,6 +181,33 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
         match item {
             Ok((rec, off, len)) => {
                 stats.last_lsn = stats.last_lsn.max(rec.lsn);
+                match &rec.payload {
+                    WalPayload::TxNoeudEnAttente { tx, node_id } => {
+                        en_vol.entry(*tx).or_default().0.push(*node_id);
+                    }
+                    WalPayload::TxAreteEnAttente { tx, edge_id } => {
+                        en_vol.entry(*tx).or_default().1.push(*edge_id);
+                    }
+                    WalPayload::TxCommit { tx } => {
+                        en_vol.remove(tx);
+                    }
+                    // Une entité SUPPRIMÉE n'est plus en vol — et son slot
+                    // peut être réutilisé par une création ultérieure (hors
+                    // transaction, donc sans record d'attente). Sans ce
+                    // retrait, le rejeu d'un ROLLBACK (NodeDelete) suivi d'une
+                    // réutilisation du slot tombstonerait un nœud légitime.
+                    WalPayload::NodeDelete { node_id } => {
+                        for (n, _) in en_vol.values_mut() {
+                            n.retain(|id| id != node_id);
+                        }
+                    }
+                    WalPayload::EdgeDelete { edge_id } => {
+                        for (_, e) in en_vol.values_mut() {
+                            e.retain(|id| id != edge_id);
+                        }
+                    }
+                    _ => {}
+                }
                 // (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Compte les
                 // records de permutation de slots de la fenêtre : le store
                 // rafraîchit ensuite les owner stamps des chaînes PropsZone v2
@@ -264,6 +301,70 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
             }
         }
     }
+    // ── LES TRANSACTIONS EN VOL SONT ÉCARTÉES, PAS PUBLIÉES (2026-11-01) ────
+    // Une transaction qui a déclaré des entités en attente sans jamais être
+    // scellée par un `TxCommit` était ouverte quand le processus a disparu
+    // (ou a été refusée/annulée : ses tombstones sont alors déjà dans le
+    // journal, et les re-poser est idempotent). Sans ce bloc, ses nœuds et
+    // arêtes — physiquement dans les zones — revenaient publiés à la
+    // réouverture : 50/50 mesurés sur `durabilite_commit_kill9`.
+    en_vol.retain(|_, (n, e)| !n.is_empty() || !e.is_empty());
+    if !en_vol.is_empty() {
+        for (tx, (noeuds, aretes)) in &en_vol {
+            stats.transactions_en_vol += 1;
+            for edge_id in aretes {
+                let rec = WalRecord {
+                    lsn: 0,
+                    timestamp: 0,
+                    flags: 0,
+                    payload: WalPayload::EdgeDelete { edge_id: *edge_id },
+                };
+                apply(
+                    substrate,
+                    &rec,
+                    &mut nodes,
+                    &mut edges,
+                    &mut engram_members,
+                    &mut engram_bitset,
+                    &mut hilbert,
+                    &mut community,
+                    &mut zorder,
+                    &mut simplex,
+                    &mut touches,
+                )?;
+                stats.entites_en_vol_ecartees += 1;
+            }
+            for node_id in noeuds {
+                let rec = WalRecord {
+                    lsn: 0,
+                    timestamp: 0,
+                    flags: 0,
+                    payload: WalPayload::NodeDelete { node_id: *node_id },
+                };
+                apply(
+                    substrate,
+                    &rec,
+                    &mut nodes,
+                    &mut edges,
+                    &mut engram_members,
+                    &mut engram_bitset,
+                    &mut hilbert,
+                    &mut community,
+                    &mut zorder,
+                    &mut simplex,
+                    &mut touches,
+                )?;
+                stats.entites_en_vol_ecartees += 1;
+            }
+            tracing::warn!(
+                tx,
+                noeuds = noeuds.len(),
+                aretes = aretes.len(),
+                "rejeu WAL : transaction EN VOL (jamais scellée) — ses entités sont écartées, pas publiées"
+            );
+        }
+    }
+
     // ── LA FRONTIÈRE DE CRASH SE DIT TOUJOURS (2026-09-17) ──────────────────
     // L'itérateur ne rend plus une queue incomplète comme une erreur — c'est une
     // écriture en vol, pas une corruption, et le crier faisait échouer un test
@@ -1554,6 +1655,11 @@ fn apply(
 
         // Markers — no mutation.
         WalPayload::NoOp | WalPayload::EndOfLog | WalPayload::Checkpoint { .. } => Ok(Applied::Yes),
+        // (2026-11-01, D-DUR) Frontières de transaction : lues par la boucle
+        // de `replay_from` (registre `en_vol`), rien à appliquer aux zones.
+        WalPayload::TxNoeudEnAttente { .. }
+        | WalPayload::TxAreteEnAttente { .. }
+        | WalPayload::TxCommit { .. } => Ok(Applied::Yes),
 
         // ── VARIANTES DELIBEREMENT NON REJOUEES ──────────────────────────
         //
