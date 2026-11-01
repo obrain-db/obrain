@@ -1040,6 +1040,7 @@ mod tests {
     /// this expectation would indicate we've re-introduced a
     /// full-graph scan on the hot path.
     #[test]
+    #[ignore = "mesure de performance : sur le runner GitHub partagé (01/11/2026, job toutes features) le temps par delta a varié de 7,6× (173 ns → 1 320 ns) ; déterministe en local — à jouer dans mesures.yml"]
     fn perf_scales_near_linearly_in_avg_degree() {
         // Run the bench harness at two scales and check the ratio.
         // SBM(n_blocks, block=50, p_in=0.3, p_out=0.005).
