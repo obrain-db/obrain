@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Cognitive features for Obrain — energy, synapses, activation, fabric, memory"
+readme = "README.md"
+keywords = ["graph", "knowledge-graph", "cognitive", "memory", "obrain"]
+categories = ["database-implementations", "science"]
 
 [features]
 default = ["cognitive-full"]

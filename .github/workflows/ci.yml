@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Rien dans cette CI n'écrit sur le dépôt : lecture seule, partout.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -14,24 +18,40 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_BUILD_JOBS: "2"
 
+# Actions épinglées par SHA (résolus le 2026-11-01 via l'API GitHub) :
+#   actions/checkout@v7.0.1              -> 3d3c42e5aac5ba805825da76410c181273ba90b1
+#   dtolnay/rust-toolchain (branche stable) -> b725eda525362e7cf34af9a7243cac1e3f01a7ec
+#   Swatinem/rust-cache@v2.9.3           -> d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#   EmbarkStudios/cargo-deny-action@v2.1.1 -> 3c6349835b2b7b196a839186cb8b78e02f7b5f25
+# Une mise à jour change le SHA ET le commentaire, jamais l'un sans l'autre.
+
 jobs:
-  test:
-    name: Build, lint, test
+  lint:
+    name: Format, clippy (cliquet)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
         run: cargo fmt --all -- --check
+      # Le code porte des centaines d'avertissements hérités : `-D warnings`
+      # d'un coup est hors de portée. Le cliquet interdit d'en AJOUTER
+      # (plafond commité dans `clippy-baseline`, à abaisser quand ça descend).
+      - name: Clippy (cliquet)
+        run: scripts/clippy-ratchet.sh
+
+  test:
+    name: Tests (features par défaut)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build
         run: cargo build --workspace --all-targets
-      # Le code n a jamais ete crible par clippy : ce lot rapporte, il ne bloque pas.
-      # La porte reste le build et les tests ; un nettoyage dedie pourra serrer.
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets
       # Les tests du substrate ouvrent beaucoup de magasins à la fois : la limite
       # par défaut du runner (256) provoque « Too many open files » et fait
       # échouer une centaine de tests sans rapport avec le code.
@@ -39,3 +59,68 @@ jobs:
         run: |
           ulimit -n 8192
           cargo test --workspace --no-fail-fast
+
+  features:
+    name: Toutes les features compilent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Check --all-features
+        run: cargo check --workspace --all-targets --all-features
+
+  msrv:
+    name: MSRV (rust-version du manifeste)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Lire rust-version
+        id: msrv
+        run: echo "version=$(grep -E '^rust-version' Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (l'action lit `toolchain`)
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Check avec la MSRV déclarée
+        run: cargo check --workspace
+
+  deny:
+    name: cargo deny (licences, advisories, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  package:
+    name: Métadonnées de publication
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # `cargo package` / `publish --dry-run` exigent que les dépendances
+      # internes soient DÉJÀ sur crates.io : impossible avant la publication
+      # réelle, séquentielle. On vérifie donc les manifestes, et on package
+      # le seul crate sans dépendance interne.
+      - name: Manifestes des 8 crates
+        run: scripts/check-publish-metadata.sh
+      - name: cargo package (premier de l'ordre de publication)
+        run: cargo package --no-verify -p obrain-common
+
+  macos:
+    name: macOS — intégrité (durabilité, verrous, reprise)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # La suite complète prend ~12 min sur macOS ; sur PR on ne joue que ce
+      # qui dépend de la plateforme : fsync (F_FULLFSYNC), verrous fcntl,
+      # processus enfants tués, reprise après crash.
+      - name: Tests sensibles à la plateforme
+        run: |
+          ulimit -n 8192
+          cargo test -p obrain-substrate --test verrou_apres_drop --test crash_safety --test wal_recovery_reelle --test migration_versionnee --no-fail-fast
+          cargo test -p obrain-engine --test durabilite_commit_kill9 --test echec_commit_rembobinage --test format_fige_v3 --no-fail-fast

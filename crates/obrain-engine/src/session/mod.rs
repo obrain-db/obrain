@@ -2687,10 +2687,10 @@ impl Session {
         // Record metrics for this query execution.
         #[cfg(feature = "metrics")]
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            let elapsed_ms = Some(start_time.elapsed().as_secs_f64() * 1000.0);
-            #[cfg(target_arch = "wasm32")]
-            let elapsed_ms = None;
+            // (2026-11-01) `start_time` est une Option (voir plus haut) : ce
+            // bloc ne compilait que sans la feature `metrics`, et la CI ne
+            // compilait jamais avec. Mesuré par `cargo check --all-features`.
+            let elapsed_ms = start_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
             self.record_query_metrics("gql", elapsed_ms, &result);
         }
 

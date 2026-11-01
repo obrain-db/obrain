@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Storage, query language, and plugin adapters for Obrain"
+readme = "README.md"
+keywords = ["graph", "database", "gql", "cypher", "obrain"]
+categories = ["database-implementations", "parser-implementations"]
 
 [dependencies]
 obrain-common.workspace = true

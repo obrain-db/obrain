@@ -51,42 +51,8 @@ if [[ "$QUICK_MODE" == false ]]; then
     run_check "Rust Tests (Release)" "cargo test --all-features --workspace --release"
 fi
 
-# 6. Python tests (if venv exists)
-if [[ -d ".venv" ]]; then
-    # Rebuild Python package
-    echo -e "\n${YELLOW}[Python Build]${NC} Rebuilding..."
-    cd crates/bindings/python
-    maturin develop --features pyo3/extension-module,full 2>/dev/null || true
-    cd ../../..
-
-    # Check if networkx and solvor are installed
-    PYTHON_CMD=".venv/Scripts/python.exe"
-    if [[ ! -f "$PYTHON_CMD" ]]; then
-        PYTHON_CMD=".venv/bin/python"
-    fi
-
-    # Install test deps if needed
-    $PYTHON_CMD -c "import numpy" 2>/dev/null || {
-        echo -e "${YELLOW}Installing numpy...${NC}"
-        uv pip install numpy 2>/dev/null || pip install numpy
-    }
-    $PYTHON_CMD -c "import scipy" 2>/dev/null || {
-        echo -e "${YELLOW}Installing scipy...${NC}"
-        uv pip install scipy 2>/dev/null || pip install scipy
-    }
-    $PYTHON_CMD -c "import networkx" 2>/dev/null || {
-        echo -e "${YELLOW}Installing networkx...${NC}"
-        uv pip install networkx 2>/dev/null || pip install networkx
-    }
-    $PYTHON_CMD -c "import solvor" 2>/dev/null || {
-        echo -e "${YELLOW}Installing solvor...${NC}"
-        uv pip install solvor 2>/dev/null || pip install solvor
-    }
-
-    run_check "Python Tests" "$PYTHON_CMD -m pytest crates/bindings/python/tests/ -v --ignore=crates/bindings/python/tests/benchmark_phases.py"
-else
-    echo -e "${YELLOW}[Python Tests] Skipped (no .venv found)${NC}"
-fi
+# 6. Python : aucun binding dans ce dépôt (v0.0.1). Les paquets
+#    packages/obrain-cli-{npm,python} sont des wrappers du CLI, testés à part.
 
 # Summary
 echo -e "\n${YELLOW}========================================${NC}"

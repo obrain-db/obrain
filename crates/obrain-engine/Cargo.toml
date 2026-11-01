@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Query engine and database management for Obrain"
+readme = "README.md"
+keywords = ["graph", "database", "gql", "transactions", "obrain"]
+categories = ["database-implementations", "database"]
 
 [dependencies]
 obrain-common.workspace = true
