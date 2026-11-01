@@ -129,47 +129,51 @@ impl PropertiesSnapshotV1 {
         Ok(out)
     }
 
-    /// Decode from bytes. Validates magic, version, CRC. Returns
-    /// `Ok(Default)` with a tracing warning on any recoverable error.
-    fn from_bytes(bytes: &[u8]) -> Self {
+    /// Decode from bytes. Validates magic, version and CRC.
+    ///
+    /// (2026-11-01, audit v0.0.1 — INTÉGRITÉ) Avant : toute anomalie
+    /// (magic, version, CRC, décodage) rendait `Self::default()` avec un
+    /// simple `tracing::warn!`. Conséquence : une base dont le sidecar de
+    /// propriétés venait d'une autre version du format, ou avait été
+    /// corrompu, s'ouvrait SANS ERREUR avec toutes ses propriétés absentes —
+    /// et le `flush()` suivant réécrivait ce vide par-dessus l'original. Une
+    /// perte silencieuse, exactement ce qu'une base n'a pas le droit de
+    /// faire. Désormais : une erreur explicite, l'ouverture échoue, rien
+    /// n'est réécrit.
+    ///
+    /// Seul cas toléré : ZÉRO octet. Un sidecar vide est l'état d'une base
+    /// qui naît (voir `base_neuve` dans `SubstrateStore::from_substrate`),
+    /// pas une anomalie.
+    fn from_bytes(bytes: &[u8]) -> SubstrateResult<Self> {
+        if bytes.is_empty() {
+            return Ok(Self::default());
+        }
         // Minimum: 4 (magic) + 4 (version) + 0 (empty body possible) + 4 (crc) = 12.
         if bytes.len() < 12 {
-            tracing::warn!(
-                "props snapshot too short ({} bytes); treating as empty",
+            return Err(SubstrateError::Internal(format!(
+                "props snapshot trop court ({} octets, minimum 12)",
                 bytes.len()
-            );
-            return Self::default();
+            )));
         }
         let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
         if magic != MAGIC {
-            tracing::warn!(
-                "props snapshot magic mismatch: got {magic:#x}, expected {MAGIC:#x}; treating as empty"
-            );
-            return Self::default();
+            return Err(SubstrateError::BadMagic);
         }
         let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         if version != FORMAT_VERSION {
-            tracing::warn!(
-                "props snapshot version {version} unsupported (expected {FORMAT_VERSION}); treating as empty"
-            );
-            return Self::default();
+            return Err(SubstrateError::UnsupportedVersion(version, FORMAT_VERSION));
         }
         let body = &bytes[..bytes.len() - 4];
         let stored_crc = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
         let computed_crc = crc32_fast(body);
         if stored_crc != computed_crc {
-            tracing::warn!(
-                "props snapshot CRC mismatch: stored {stored_crc:#x}, computed {computed_crc:#x}; treating as empty"
-            );
-            return Self::default();
+            return Err(SubstrateError::Internal(format!(
+                "props snapshot : CRC stocké {stored_crc:#x}, calculé {computed_crc:#x}"
+            )));
         }
-        match bincode::serde::decode_from_slice::<Self, _>(&body[8..], bincode_config()) {
-            Ok((snap, _)) => snap,
-            Err(e) => {
-                tracing::warn!("props snapshot decode error: {e}; treating as empty");
-                Self::default()
-            }
-        }
+        bincode::serde::decode_from_slice::<Self, _>(&body[8..], bincode_config())
+            .map(|(snap, _)| snap)
+            .map_err(|e| SubstrateError::Internal(format!("props snapshot : décodage : {e}")))
     }
 
     /// Atomically write the snapshot to `<path>`. Uses a tmp file + rename
@@ -194,7 +198,7 @@ impl PropertiesSnapshotV1 {
             return Ok(Self::default());
         }
         let bytes = std::fs::read(path).map_err(SubstrateError::Io)?;
-        Ok(Self::from_bytes(&bytes))
+        Self::from_bytes(&bytes)
     }
 }
 
@@ -559,7 +563,7 @@ mod tests {
     fn roundtrip_empty() {
         let s = PropertiesSnapshotV1::default();
         let bytes = s.to_bytes().unwrap();
-        let back = PropertiesSnapshotV1::from_bytes(&bytes);
+        let back = PropertiesSnapshotV1::from_bytes(&bytes).unwrap();
         assert_eq!(back, s);
     }
 
@@ -581,7 +585,7 @@ mod tests {
             props: vec![("created_at".to_string(), Value::Int64(1_700_000_000))],
         });
         let bytes = s.to_bytes().unwrap();
-        let back = PropertiesSnapshotV1::from_bytes(&bytes);
+        let back = PropertiesSnapshotV1::from_bytes(&bytes).unwrap();
         assert_eq!(back, s);
     }
 
@@ -607,24 +611,32 @@ mod tests {
         assert_eq!(back, PropertiesSnapshotV1::default());
     }
 
+    // (2026-11-01) CONTRAT RETOURNÉ. Ces deux tests s'appelaient
+    // `corrupt_magic_yields_default` / `corrupt_crc_yields_default` et
+    // verrouillaient l'ancien comportement : un sidecar illisible = un
+    // snapshot VIDE. C'est précisément la perte silencieuse corrigée par
+    // `from_bytes` (voir sa doc) ; ils sont donc inversés explicitement, pas
+    // supprimés.
     #[test]
-    fn corrupt_magic_yields_default() {
+    fn corrupt_magic_is_an_error() {
         // Valid-length but wrong magic.
         let mut bytes = vec![0u8; 12];
         bytes[0..4].copy_from_slice(&0xdead_beefu32.to_le_bytes());
-        let back = PropertiesSnapshotV1::from_bytes(&bytes);
-        assert_eq!(back, PropertiesSnapshotV1::default());
+        assert!(matches!(
+            PropertiesSnapshotV1::from_bytes(&bytes),
+            Err(SubstrateError::BadMagic)
+        ));
     }
 
     #[test]
-    fn corrupt_crc_yields_default() {
+    fn corrupt_crc_is_an_error() {
         let s = PropertiesSnapshotV1::default();
         let mut bytes = s.to_bytes().unwrap();
         // Flip the last byte of the CRC.
         let last = bytes.len() - 1;
         bytes[last] ^= 0xff;
-        let back = PropertiesSnapshotV1::from_bytes(&bytes);
-        assert_eq!(back, PropertiesSnapshotV1::default());
+        let e = PropertiesSnapshotV1::from_bytes(&bytes).unwrap_err();
+        assert!(e.to_string().contains("CRC"), "{e}");
     }
 
     // --- PropertiesStreamingWriter -----------------------------------------
@@ -765,5 +777,46 @@ mod tests {
 
         assert!(!tmp.exists(), "tmp file must be removed on drop");
         assert!(!path.exists(), "final file must not exist");
+    }
+
+    /// (2026-11-01) Un sidecar d'une autre version ou corrompu est une
+    /// ERREUR d'ouverture, jamais un snapshot vide : avant ce test, les
+    /// propriétés disparaissaient sans un mot et le flush suivant écrasait
+    /// l'original.
+    #[test]
+    fn un_snapshot_d_une_autre_version_ou_corrompu_est_une_erreur_pas_un_vide() {
+        let mut snap = PropertiesSnapshotV1::default();
+        snap.nodes.push(PropEntry {
+            id: 7,
+            props: vec![("k".to_string(), Value::Int64(1))],
+        });
+        let bytes = snap.to_bytes().unwrap();
+
+        // Version inconnue (FORMAT_VERSION + 1), CRC recalculé pour isoler le cas.
+        let mut autre_version = bytes.clone();
+        autre_version[4..8].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+        let fin = autre_version.len() - 4;
+        let crc = crc32_fast(&autre_version[..fin]);
+        autre_version[fin..].copy_from_slice(&crc.to_le_bytes());
+        let e = PropertiesSnapshotV1::from_bytes(&autre_version).unwrap_err();
+        assert!(e.to_string().contains("version"), "{e}");
+
+        // CRC faux.
+        let mut corrompu = bytes.clone();
+        let dernier = corrompu.len() - 1;
+        corrompu[dernier] ^= 0xFF;
+        let e = PropertiesSnapshotV1::from_bytes(&corrompu).unwrap_err();
+        assert!(e.to_string().contains("CRC"), "{e}");
+
+        // Trop court mais non vide.
+        assert!(PropertiesSnapshotV1::from_bytes(&bytes[..5]).is_err());
+
+        // Zéro octet : base qui naît, pas une anomalie.
+        assert!(
+            PropertiesSnapshotV1::from_bytes(&[])
+                .unwrap()
+                .nodes
+                .is_empty()
+        );
     }
 }
