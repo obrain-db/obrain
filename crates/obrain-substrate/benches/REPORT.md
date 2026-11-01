@@ -1,5 +1,12 @@
 # SubstrateStore CRUD Micro-Benchmarks — Report
 
+> **Document historique (avril 2026), non reproductible depuis ce dépôt.** Le
+> bench `crud_micro` qu'il cite n'existe plus, et le commit mesuré n'est pas
+> identifié. Il est conservé comme trace de la comparaison LpgStore / Substrate
+> de l'époque ; les chiffres courants, avec commande, machine et charge, sont
+> dans [`docs/BENCHMARKS.md`](../../../docs/BENCHMARKS.md).
+
+
 **Generated**: 2026-04-20
 **Commit**: HEAD of substrate T4 work
 **Machine**: macOS arm64 (Apple Silicon), release profile

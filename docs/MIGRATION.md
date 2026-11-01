@@ -44,12 +44,14 @@ obrain-hub start
 | Aspect | Legacy (LpgStore) | Substrate |
 |---|---|---|
 | On-disk layout | `.obrain` bincode snapshot + sidecar WAL | `substrate.obrain/` directory (mmap zones + WAL) |
-| Open time (10⁶ nodes) | 5–15 s (full RAM materialization) | ≤ 100 ms (mmap lazy-load) |
-| RSS anonymous | 5–10 GiB | ≤ 1 GiB |
-| RSS total (10 users + 5 KBs) | ~110 GiB | ≤ 18 GiB |
-| Retrieval p95 (10⁶ nodes) | 30–100 ms (HNSW) | ≤ 1 ms (L0→L1→L2 cascade) |
-| Recall@10 vs HNSW f32 | 100 % | ≥ 99 % |
 | Cognitive state | 7 separate stores, rehydrated on open, WAL-bypass gotchas | Inline columns on nodes/edges, WAL-logged by construction |
+
+The performance figures that used to sit in this table (open time ≤ 100 ms on
+10⁶ nodes, RSS ≤ 1 GiB, retrieval p95 ≤ 1 ms, recall@10 ≥ 99 %) are the
+**targets of the Substrate RFC** (`docs/rfc/substrate/format-spec.md` §10),
+not measurements. What has actually been measured, with the command, the
+machine and the load, is in [`docs/BENCHMARKS.md`](BENCHMARKS.md); nothing
+there measures open time, RSS or recall yet.
 
 ## Snapshot and rollback plan
 
@@ -158,7 +160,7 @@ feature flag is needed.
 ### 6. Verify
 
 ```bash
-# Startup time (expect ≤ 100 ms on 10⁶ nodes):
+# Startup time (RFC target ≤ 100 ms on 10⁶ nodes — not yet measured, see docs/BENCHMARKS.md):
 time obrain-cli --db /var/lib/obrain/substrate.obrain ping
 
 # Counts match:
