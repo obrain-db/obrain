@@ -78,7 +78,25 @@ et appeler `flush_wal()` par lot. C'est le même arbitrage que
   vient de l'outil externe `graph-bench`, non versionné ici, sans commit ni
   matériel indiqués. Il est retiré du README tant qu'il n'est pas rejoué avec
   une version épinglée de `graph-bench`.
-- `docs/ecosystem/performance.md` (« ~2M ops/s », Ryzen 9 5900X) : aucun
-  bench du dépôt ne produit ces lignes.
+- `docs/ecosystem/performance.md` portait des tableaux (« ~2M ops/s »,
+  Ryzen 9 5900X, LDBC, exemples Python) qu'aucun bench du dépôt ne produit :
+  la page est réécrite, elle renvoie ici et ne garde que des règles d'usage.
 - `crates/obrain-substrate/benches/REPORT.md` (avril 2026) cite un bench
-  `crud_micro` qui n'existe plus.
+  `crud_micro` qui n'existe plus : conservé avec un bandeau « historique ».
+- `docs/MIGRATION.md` présentait les cibles de la RFC Substrate (ouverture
+  ≤ 100 ms, p95 ≤ 1 ms, recall ≥ 99 %) comme des faits : requalifiées en
+  cibles, non mesurées.
+
+## Non-régression
+
+`scripts/bench-v001.sh save <nom>` enregistre une ligne de base Criterion ;
+`scripts/bench-v001.sh compare <nom>` (ou `make bench-v001-compare BASE=<nom>`)
+rejoue les quatre benchs contre elle et sort 1 si Criterion juge qu'une mesure
+a régressé au-delà de `BENCH_SEUIL` (10 % par défaut, `--noise-threshold`).
+À faire sur une machine calme (charge < 2) : c'est le relevé, pas le portillon.
+Mesuré le 01/11 pour fixer les idées : le MÊME arbre, `save` puis `compare`
+sur `wal_append` à charge 20 (une autre session compilait), 1 s de mesure —
+Criterion a vu « +61 % » sur `wal_append_unitaire` et « −25 % » sur
+`wal_append_batch/256`. Rien n'avait changé : c'est la charge qu'il mesurait.
+`mesures.yml` lance les mêmes benchs sur un runner partagé, sans seuil, pour
+l'ordre de grandeur seulement.

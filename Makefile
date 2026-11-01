@@ -14,13 +14,18 @@ BENCH_DIR  := bench/substrate
 BENCH_OUT  := target/bench
 CARGO      ?= cargo
 
-.PHONY: bench-v001
+.PHONY: bench-v001 bench-v001-save bench-v001-compare
 # Les quatre benchs de référence de la v0.0.1 (voir docs/BENCHMARKS.md).
 bench-v001:
-	$(CARGO) bench -p obrain-substrate --bench tiered_scan
-	$(CARGO) bench -p obrain-substrate --bench wal_append
-	$(CARGO) bench -p obrain-engine --bench query_bench
-	$(CARGO) bench -p obrain-engine --bench phase_a_write_goulot
+	scripts/bench-v001.sh run
+
+# Ligne de base Criterion nommée (défaut : sha court) et comparaison avec seuil
+# (BENCH_SEUIL, 10 % par défaut) : `make bench-v001-compare BASE=<nom>` sort 1
+# si une mesure a régressé.
+bench-v001-save:
+	scripts/bench-v001.sh save $(BASE)
+bench-v001-compare:
+	scripts/bench-v001.sh compare $(BASE)
 
 .PHONY: help
 help:
@@ -33,6 +38,8 @@ help:
 	@echo "  make bench-smoke             — Quick smoke test (no real databases needed)"
 	@echo "  make bench-clean             — Remove target/bench/"
 	@echo "  make bench-v001              — Les 4 benchs de référence v0.0.1 (docs/BENCHMARKS.md)"
+	@echo "  make bench-v001-save BASE=x  — Ligne de base Criterion x"
+	@echo "  make bench-v001-compare BASE=x — Comparaison à x, seuil BENCH_SEUIL (10 %)"
 	@echo "  make check-substrate         — cargo check the bench harness"
 	@echo ""
 	@echo "Variables:"
