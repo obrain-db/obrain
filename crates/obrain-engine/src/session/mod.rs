@@ -3705,9 +3705,21 @@ impl Session {
                 for graph_name in &touched {
                     let store = self.resolve_store(graph_name);
                     store.rollback_transaction_properties(transaction_id);
+                    // Parité avec rollback_inner : écarter aussi les versions
+                    // en attente (no-op sur substrat, mais le contrat est le
+                    // même pour tout backend).
+                    store.discard_uncommitted_versions(transaction_id);
                 }
                 #[cfg(feature = "rdf")]
                 self.rollback_rdf_transaction(transaction_id);
+                // (2026-11-01, audit v0.0.1) REMBOBINER AVANT DE VIDER.
+                // `rembobine_aux_empreintes` lit `tx_baselines` ; l'ancien
+                // ordre vidait la liste ICI puis rembobinait plus bas sur une
+                // liste vide : rien n'était retiré, et les arêtes d'une
+                // transaction refusée restaient visibles de toutes les autres
+                // sessions (test `echec_commit_rembobinage`). Même ordre que
+                // `rollback_inner`, désormais.
+                self.rembobine_aux_empreintes(transaction_id);
                 *self.read_only_tx.lock() = self.db_read_only;
                 self.savepoints.lock().clear();
                 self.touched_graphs.lock().clear();
@@ -3737,10 +3749,8 @@ impl Session {
                 // la signature exacte des 225 conflits sur un seul NodeId
                 // et des conflits << soutenus >> de production.
                 let _ = self.transaction_manager.abort(transaction_id);
-                // Parite avec rollback_inner : rembobiner aussi les
-                // entites allouees par la transaction avortee (les zones
-                // substrat sont deja ecrites, l empreinte les reprend).
-                self.rembobine_aux_empreintes(transaction_id);
+                // Le rembobinage a eu lieu plus haut, AVANT le vidage de
+                // `tx_baselines` (voir le pavé 2026-11-01).
                 return Err(e);
             }
         };
