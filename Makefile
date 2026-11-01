@@ -14,6 +14,14 @@ BENCH_DIR  := bench/substrate
 BENCH_OUT  := target/bench
 CARGO      ?= cargo
 
+.PHONY: bench-v001
+# Les quatre benchs de référence de la v0.0.1 (voir docs/BENCHMARKS.md).
+bench-v001:
+	$(CARGO) bench -p obrain-substrate --bench tiered_scan
+	$(CARGO) bench -p obrain-substrate --bench wal_append
+	$(CARGO) bench -p obrain-engine --bench query_bench
+	$(CARGO) bench -p obrain-engine --bench phase_a_write_goulot
+
 .PHONY: help
 help:
 	@echo "obrain-db top-level targets:"
@@ -24,6 +32,7 @@ help:
 	@echo "  make bench-compare           — Compare baseline vs substrate, emit gates report"
 	@echo "  make bench-smoke             — Quick smoke test (no real databases needed)"
 	@echo "  make bench-clean             — Remove target/bench/"
+	@echo "  make bench-v001              — Les 4 benchs de référence v0.0.1 (docs/BENCHMARKS.md)"
 	@echo "  make check-substrate         — cargo check the bench harness"
 	@echo ""
 	@echo "Variables:"
