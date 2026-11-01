@@ -56,9 +56,21 @@ charge, plausible, mais le p95 n'est pas mesuré par ce bench ; « recall
 ≥ 99 % » — aucun bench ne le mesure. Les deux affirmations sont retirées du
 README jusqu'à mesure.
 
-Coût du commit scellé (D-DUR, PR #22) : à mesurer sur la branche
-`v001/durabilite-commit` avec `phase_a_write_goulot` (un `fsync` par commit
-sur base persistante ; `new_in_memory` n'est pas concerné, `SyncMode::Never`).
+### Coût du commit scellé (D-DUR, PR #22) — mesuré sur `v001/durabilite-commit` a7196d74, même machine, 15:32, charge 8,2
+
+| Bench | `main` e11bdd2a | avec D-DUR | Lecture |
+|---|---|---|---|
+| `phase_a_write/sessions_concurrentes_everycommit/4` (4 threads × 200 `CREATE` auto-commit sur base persistante `EveryCommit`) | 78,4 ms | **3,56 s** | 800 commits → **≈ 225 commits/s durables** (un `F_FULLFSYNC` par commit, SSD interne Apple). Avant : ≈ 10 000/s, mais rien n'était `fsync` — un commit acquitté pouvait disparaître à la coupure de courant. |
+| `phase_a_write/writer_unique_group_commit/4` (`SyncMode::Group`, opt-in) | 74,8 ms | 80,2 ms | inchangé (bruit) : le mode groupé reste le chemin des imports |
+| `phase_a_write/seq_1_thread_group` | 78,0 ms | 80,1 ms | inchangé |
+| `query_*` (lecture) | 1,28 µs – 717 µs | 1,28 µs – 700 µs | inchangé |
+| `query_insert_single_node` (base en mémoire, auto-commit) | 12,6 µs | 13,7 µs | inchangé : `new_in_memory` est en `SyncMode::Never` |
+
+Conclusion : **un commit = un `fsync`** sur une base ouverte par chemin. Pour
+écrire vite, grouper les écritures dans une transaction explicite (un seul
+`fsync` au `commit()`), ou ouvrir avec `open_substrate_with_mode(SyncMode::Group)`
+et appeler `flush_wal()` par lot. C'est le même arbitrage que
+`PRAGMA synchronous=FULL` de SQLite.
 
 ## Ce qui n'est PAS reproductible depuis ce dépôt
 
