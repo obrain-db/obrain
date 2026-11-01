@@ -6,6 +6,13 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Limite mesurée (V1-T2B)
+
+- Écriture multi-processus : le LSN d'un écrivain préempté plus de 25 ms peut
+  être inexact (frame posée après celle du successeur qui l'a pris pour mort) ;
+  zéro perte, EOF exact. `t2b`/`t2c` ré-ignorés avec la mesure (3/172 à 25 ms,
+  4/31 à 100 µs), exécutés par `mesures.yml`. Détail : `docs/LIMITES-v0.0.1.md`.
+
 Première version destinée à être publiée. Le numéro du workspace est `0.0.1`
 depuis des mois ; les tags `v0.5.x` du dépôt viennent de l'amont GrafeoDB et
 l'entrée `[0.2.0]` plus bas est un héritage du fork — aucune des deux n'est une
