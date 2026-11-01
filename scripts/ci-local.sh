@@ -54,8 +54,8 @@ if [[ "$QUICK_MODE" == false ]]; then
     run_check "Rust Tests (Release)" "cargo test --all-features --workspace --release"
 fi
 
-# 6. Pas de bindings (Python, WASM, Go) ni de wrappers CLI dans ce dépôt en
-#    v0.0.1 : le CLI vit dans obrain-db/obrain-cli.
+# 6. Python : aucun binding dans ce dépôt (v0.0.1). Les paquets
+#    packages/obrain-cli-{npm,python} sont des wrappers du CLI, testés à part.
 
 # Summary
 echo -e "\n${YELLOW}========================================${NC}"

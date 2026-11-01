@@ -473,6 +473,8 @@ impl<Id: EntityId> PropertyStorage<Id> {
     /// # Example
     ///
     /// ```
+    /// # #[cfg(not(feature = "temporal"))]
+    /// # {
     /// use obrain_core::graph::lpg::PropertyStorage;
     /// use obrain_common::types::{NodeId, PropertyKey, Value};
     ///
@@ -484,6 +486,7 @@ impl<Id: EntityId> PropertyStorage<Id> {
     /// let mut count = 0;
     /// storage.for_each_vector(&key, |_id, v| { count += 1; assert_eq!(v.len(), 2); });
     /// assert_eq!(count, 2);
+    /// # }
     /// ```
     pub fn for_each_vector(&self, key: &PropertyKey, mut f: impl FnMut(Id, &[f32])) {
         let columns = self.columns.read();

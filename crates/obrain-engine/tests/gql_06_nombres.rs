@@ -9,7 +9,7 @@
 //!
 //! Principe de rédaction : **chaque assertion encode l'intention, jamais
 //! l'observation.** Un test qui échoue est placé derrière `#[cfg(feature =
-//! "defauts-connus")]`, avec la cause en fichier:ligne juste au-dessus, et il
+//! defauts_connus)]`, avec la cause en fichier:ligne juste au-dessus, et il
 //! énonce toujours ce que la sémantique DOIT donner.
 //!
 //! Les HUIT défauts D1–D8 mesurés le 2026-08-24 ont été CORRIGÉS par la

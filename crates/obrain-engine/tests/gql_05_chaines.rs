@@ -36,11 +36,11 @@
 //! ── DÉFAUTS CONNUS ──
 //!
 //! Un test dont l'assertion est CORRECTE mais que le moteur ne tient pas
-//! aujourd'hui porte `#[cfg(feature = "defauts-connus")]` et un
+//! aujourd'hui porte `#[cfg(defauts_connus)]` et un
 //! commentaire `// DÉFAUT:` nommant la cause en fichier:ligne.
 //! `cargo test -p obrain-engine --test gql_05_chaines` est donc vert ;
-//! `cargo test -p obrain-engine --test gql_05_chaines --features
-//! defauts-connus` fait tourner les défauts, qui ÉCHOUENT — c'est la
+//! `cargo test -p obrain-engine --test gql_05_chaines --cfg defauts_connus
+//! (RUSTFLAGS)` fait tourner les défauts, qui ÉCHOUENT — c'est la
 //! liste vivante. L'assertion reste écrite depuis la spec, jamais depuis
 //! l'observation.
 //!
@@ -62,7 +62,7 @@
 //! attendu, un ordre inversé reste un ordre ; ces assertions-là sont
 //! tuées par la mutation qui APLATIT l'ordre (tout égal).
 //! Unique survivante : la mutation de `size()` — son seul test est
-//! derrière `defauts-connus`, donc absent de la suite par défaut. Les
+//! derrière `defauts_connus`, donc absent de la suite par défaut. Les
 //! trois RÉPARATIONS essayées (size en caractères, normalize en vraie
 //! NFC, CHARACTER_LENGTH reconnu) font chacune passer AU VERT le test
 //! de défaut correspondant, et lui seul : ces tests mesurent bien le

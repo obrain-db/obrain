@@ -50,13 +50,13 @@
 //! Chaque assertion encode une INTENTION SÉMANTIQUE, jamais une observation
 //! du moteur — les comptes attendus sont calculés à la main sur la fixture.
 //! Quand le moteur diverge de l'intention, le test est placé derrière
-//! `#[cfg(feature = "defauts-connus")]` et précédé d'un commentaire
+//! `#[cfg(defauts_connus)]` et précédé d'un commentaire
 //! `// DÉFAUT:` qui NOMME la divergence et son emplacement en fichier:ligne.
 //! Il reste rouge par construction — jamais réécrit pour devenir vert.
 //!
 //!   `cargo test -p obrain-engine --test gql_16_chemins`
 //!       la suite par défaut : verte, les défauts ne sont pas compilés.
-//!   `cargo test -p obrain-engine --test gql_16_chemins --features defauts-connus`
+//!   `cargo test -p obrain-engine --test gql_16_chemins --cfg defauts_connus (RUSTFLAGS)`
 //!       les défauts tournent et ÉCHOUENT — légitimement. Ce sont les tests
 //!       à faire passer, pas à supprimer.
 //!

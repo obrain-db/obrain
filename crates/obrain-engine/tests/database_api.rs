@@ -436,3 +436,20 @@ fn test_complex_graph_with_multiple_edge_types() {
     assert_eq!(stats.label_count, 2);
     assert_eq!(stats.edge_type_count, 2);
 }
+
+/// V1-EXHAUSTIF (2026-11-01) : les listes publiques de noms ne contiennent ni
+/// rang réservé ni trou. Mesuré avant : une base neuve avec une seule arête
+/// `WORKS_AT` rendait `["", "WORKS_AT"]`, et `edge_type_count` valait 2.
+#[test]
+fn les_listes_de_noms_ne_contiennent_pas_d_entree_vide() {
+    use obrain_core::graph::GraphStore as _;
+    let db = ObrainDB::new_in_memory();
+    assert!(db.store().all_edge_types().is_empty());
+    assert!(db.store().all_labels().is_empty());
+    let a = db.create_node(&["Person"]);
+    let b = db.create_node(&["Company"]);
+    db.create_edge(a, b, "WORKS_AT");
+    assert_eq!(db.store().all_edge_types(), vec!["WORKS_AT".to_string()]);
+    assert_eq!(db.detailed_stats().edge_type_count, 1);
+    assert_eq!(db.detailed_stats().label_count, 2);
+}

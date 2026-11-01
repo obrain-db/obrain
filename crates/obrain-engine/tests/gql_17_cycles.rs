@@ -8,7 +8,7 @@
 //!
 //!   `cargo test -p obrain-engine --test gql_17_cycles`
 //!       la suite par défaut : verte (les défauts ne sont pas compilés).
-//!   `cargo test -p obrain-engine --test gql_17_cycles --features defauts-connus`
+//!   `cargo test -p obrain-engine --test gql_17_cycles --cfg defauts_connus (RUSTFLAGS)`
 //!       le défaut tourne et ÉCHoue — légitimement. C'est le test à faire
 //!       passer, pas à supprimer.
 
@@ -36,7 +36,7 @@ fn cycle_a_b_c_a() -> ObrainDB {
 /// PROPRIÉTÉ EXIGÉE : fermer un cycle sur une variable déjà liée et
 /// projeter CE nœud doit renvoyer le nœud du cycle (1 ligne), pas une
 /// erreur d'exécution « Column not found ».
-#[cfg(feature = "defauts-connus")]
+#[cfg(defauts_connus)]
 #[test]
 fn fermer_un_cycle_sur_une_variable_deja_liee_projette_le_noeud() {
     // DÉFAUT: obrain-engine/src/query/planner/lpg/expand.rs:196
@@ -88,7 +88,7 @@ fn fermer_un_cycle_compte_les_lignes_sans_projeter_la_variable() {
 /// pour un motif de cycle. Le défaut renvoie des FAUX POSITIFS (le saut de
 /// fermeture n'impose pas l'égalité a == a2 — le 3ᵉ saut re-parcourt la
 /// 2ᵉ arête via la colonne source erronée).
-#[cfg(feature = "defauts-connus")]
+#[cfg(defauts_connus)]
 #[test]
 fn un_graphe_sans_cycle_ne_renvoie_rien_pour_un_motif_de_cycle() {
     // DÉFAUT: obrain-engine/src/query/planner/lpg/expand.rs:196

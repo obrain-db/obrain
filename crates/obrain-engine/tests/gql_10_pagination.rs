@@ -18,13 +18,13 @@
 //!
 //! Chaque assertion est écrite depuis la spécification, jamais depuis
 //! l'observation. Lorsque le moteur diverge, l'assertion RESTE conforme au
-//! texte normatif et le cas est placé derrière la feature `defauts-connus`,
+//! texte normatif et le cas est placé derrière la feature `defauts_connus`,
 //! précédé d'un commentaire `// DÉFAUT:` nommant fichier:ligne et d'un
 //! `// SYMPTÔME:` décrivant ce que le moteur rend aujourd'hui.
 //!
 //! * `cargo test -p obrain-engine --test gql_10_pagination`
 //!   → vert : les cas de défaut ne sont pas même compilés.
-//! * `… --features defauts-connus`
+//! * `… --cfg defauts_connus (RUSTFLAGS)`
 //!   → les cas de défaut tournent et ÉCHOUENT, légitimement : ils énoncent ce
 //!     que la spécification exige et que le moteur ne fait pas encore.
 #![cfg(feature = "gql")]

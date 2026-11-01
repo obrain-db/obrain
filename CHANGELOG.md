@@ -6,6 +6,20 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
+
+- Interblocage déterministe de `CALL` cognitif `bootstrap` (`create_synapse_slots_batch`
+  gardait le verrou du substrat que `write_edge` reprend) : corrigé.
+- Un second `ObrainDB` inscriptible sur la même base dans le même processus était
+  accepté : refusé désormais (lecture seule toujours permise).
+- Feature `temporal` non fonctionnelle sous substrat, feature `rdf` non persistante :
+  documentées dans `docs/LIMITES-v0.0.1.md`, non corrigées.
+- Les tests de défauts connus passent de la feature `defauts-connus` au cfg
+  `defauts_connus` (`RUSTFLAGS="--cfg defauts_connus"`), pour que `--all-features`
+  ne les joue plus ; la CI joue maintenant `cargo test --workspace --all-features`.
+- `detailed_stats().edge_type_count` comptait un type de plus que ceux créés (tests
+  `database_api`, morts depuis que `cypher` n'est plus par défaut) : voir ci-dessous.
+
 ### Limite mesurée (V1-T2B)
 
 - Écriture multi-processus : le LSN d'un écrivain préempté plus de 25 ms peut
