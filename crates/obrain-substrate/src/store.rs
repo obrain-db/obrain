@@ -22062,8 +22062,11 @@ impl GraphStoreMut for SubstrateStore {
     // plage. Il ne manquait que ces trois methodes.
     //
     // Ce mecanisme rembobine les CREATIONS. Les modifications de proprietes
-    // sur des entites preexistantes demandent un journal d'annulation, qui
-    // reste a faire (`rollback_transaction_properties_to`).
+    // sur des entites preexistantes passent par le journal d'annulation
+    // (`tx_undo`, rejoue par `rejoue_annulations` depuis
+    // `rollback_transaction_properties` / `..._to`) — il existe depuis
+    // l'ete 2026 ; ce commentaire disait encore « reste a faire » le
+    // 2026-11-01.
     //
     // (2026-10-31) ET LA PLAGE N'EST PAS LA PROPRIÉTÉ. Un compteur global
     // d'identifiants avance pour TOUTES les sessions : la plage « depuis mon
