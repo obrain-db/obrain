@@ -71,7 +71,10 @@ fn get_node_hydrates_blob_strings() {
     let store = fresh_store();
     let n = store.create_node(&["File"]);
     // Must exceed 256 B threshold to route to blob_columns (else PropsZone v2).
-    let long_path = format!("/CHEMIN/UTILISATEUR/projects/obrain-hub/{}", "a/".repeat(200));
+    let long_path = format!(
+        "/CHEMIN/UTILISATEUR/projects/obrain-hub/{}",
+        "a/".repeat(200)
+    );
     let long_title = format!("Incendie du bar Le Constellation {}", "x".repeat(300));
     store.set_node_property(n, "path", Value::from(long_path.as_str()));
     store.set_node_property(n, "title", Value::from(long_title.as_str()));
