@@ -818,8 +818,19 @@ impl ObrainDB {
                     mgr.attach_substrate(typed.writer_arc());
                 }
             }
-            db.cognitive_engine =
-                Some(Arc::new(engine) as Arc<dyn obrain_cognitive::CognitiveEngine>);
+            let engine_dyn: Arc<dyn obrain_cognitive::CognitiveEngine> = Arc::new(engine);
+            // (2026-11-01, v0.0.1) Les UDF `obrain.energy`, `obrain.risk` et
+            // `obrain.synapses` étaient définies (cognitive_udfs.rs) mais
+            // enregistrées SEULEMENT par un test : le README les promettait,
+            // aucune base ne les offrait. Enregistrées ici, à chaque
+            // construction d'un moteur cognitif, et le pont UDF → évaluateur
+            // installé (idempotent).
+            obrain_adapters::plugins::installer_udfs_dans_le_moteur();
+            crate::cognitive_udfs::register_cognitive_udfs(
+                obrain_adapters::plugins::registre_global(),
+                Arc::clone(&engine_dyn),
+            );
+            db.cognitive_engine = Some(engine_dyn);
             db._cognitive_scheduler = Some(scheduler);
         }
 
@@ -1104,10 +1115,18 @@ impl ObrainDB {
                 builder = builder.with_decision();
             }
             let engine = builder.build(&scheduler);
-            (
-                Some(Arc::new(engine) as Arc<dyn obrain_cognitive::CognitiveEngine>),
-                Some(scheduler),
-            )
+            let engine_dyn: Arc<dyn obrain_cognitive::CognitiveEngine> = Arc::new(engine);
+            // (2026-11-01, v0.0.1) Même oubli que les deux pavés ci-dessus : la
+            // copie inline de `with_config` (chemin de `new_in_memory`) ne
+            // passait pas par `with_substrate_store`, donc les UDF cognitives
+            // n'y étaient jamais enregistrées — mesuré « fonction inconnue :
+            // obrain.energy » avec le moteur cognitif pourtant construit.
+            obrain_adapters::plugins::installer_udfs_dans_le_moteur();
+            crate::cognitive_udfs::register_cognitive_udfs(
+                obrain_adapters::plugins::registre_global(),
+                Arc::clone(&engine_dyn),
+            );
+            (Some(engine_dyn), Some(scheduler))
         };
 
         Ok(Self {

@@ -74,12 +74,13 @@ Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus sur un même 
 
 | Famille | Procédures |
 |---|---|
-| Centralité | `pagerank`, `betweenness_centrality`, `closeness_centrality`, `degree_centrality`, `hits` |
-| Communautés | `louvain`, `leiden`, `label_propagation` |
-| Plus courts chemins | `dijkstra(source)`, `bellman_ford(source)`, `sssp({source: 'nom'})` (source désignée par sa propriété `name`), `floyd_warshall` |
-| Parcours et structure | `bfs(source)`, `dfs(source)`, `connected_components`, `strongly_connected_components`, `topological_sort`, `bridges`, `articulation_points`, `kcore`, `subgraph.khop(center, k)` |
-| Agrégation et similarité | `clustering_coefficient` (avec comptage de triangles par nœud), `similarity(a, b, metric)` et `similarity.topk(a, k, metric)` avec `metric` ∈ `jaccard` (défaut), `overlap`, `cosine`, `adamic_adar` |
+| Centralité | `pagerank`, `personalized_pagerank({seed_nodes})`, `betweenness_centrality`, `closeness_centrality`, `degree_centrality`, `hits` |
+| Communautés | `louvain`, `leiden`, `label_propagation`, `stable_communities` |
+| Plus courts chemins | `dijkstra(source)`, `astar(source, target)` (heuristique nulle sans coordonnées : exact, égal à Dijkstra), `bellman_ford(source)`, `sssp({source: 'nom'})` (source désignée par sa propriété `name`), `floyd_warshall` |
+| Parcours et structure | `bfs(source)`, `dfs(source)`, `connected_components`, `strongly_connected_components`, `topological_sort`, `bridges`, `articulation_points`, `kcore` (alias `k_core`), `subgraph.khop(center, k)`, `irreducible_kernel`, `subgraph_contraction({node_ids})` |
+| Agrégation et similarité | `clustering_coefficient`, `triangle_count`, `similarity(a, b, metric)` et `similarity.topk(a, k, metric)` avec `metric` ∈ `jaccard` (défaut), `overlap`, `cosine`, `adamic_adar` ; raccourcis `jaccard(a, b)`, `cosine_similarity(a, b)`, `adamic_adar(a, b)` |
 | Flot et arbres couvrants | `max_flow({source, sink})`, `min_cost_max_flow({source, sink})` (identifiants de nœuds), `kruskal`, `prim` |
+| Géométrie spectrale | `spectral_embedding`, `heat_kernel_diffusion({seed_nodes})`, `hilbert_features` |
 
 Syntaxe :
 
@@ -90,9 +91,24 @@ CALL obrain.louvain() YIELD node_id, community_id
 CALL obrain.pagerank() YIELD node_id AS id, score AS rank
 ```
 
-## Couche cognitive (crate `obrain-engine`, feature `cognitive`)
+## Couche cognitive (feature `cognitive`)
 
-Obrain porte une couche cognitive — énergie des nœuds à demi-vie, synapses hebbiennes, cicatrices, tissu de connaissance (`risk_score`), activation propagée. Elle vit dans `obrain-cognitive` et s'active avec `obrain-engine --features cognitive` (procédures `obrain.cognitive.spread`, `distill`, `detect_gaps`, `synthesize`, `reinforce`, `bootstrap`, `metrics`). **Le crate façade `obrain` n'expose pas cette feature en v0.0.1** : voir [Roadmap](#roadmap). Documentation : `crates/obrain-cognitive`.
+Obrain porte une couche cognitive — énergie des nœuds à demi-vie, synapses hebbiennes, cicatrices, tissu de connaissance (`risk_score`), activation propagée. Depuis le crate `obrain` :
+
+```bash
+cargo add obrain --features cognitive       # moteur : énergie, synapses, UDF, CALL obrain.cognitive.spread / distill
+cargo add obrain --features cognitive-full  # + detect_gaps, synthesize, engrams, décision
+```
+
+```sql
+CALL obrain.cognitive.spread([0], {hops: 2})                 -- activation propagée depuis un nœud
+CALL obrain.cognitive.distill({min_weight: 0.1})             -- connexions synaptiques fortes
+MATCH (n:Person) RETURN n.name, obrain.energy(id(n)) AS energy
+MATCH (n) RETURN obrain.risk(id(n)) AS risk ORDER BY risk DESC LIMIT 10
+MATCH (n:Person {name: 'Alix'}) RETURN obrain.synapses(id(n)) AS connections
+```
+
+Ces appels sont exécutés par `readme_examples.rs` sous `--features cognitive` (module `cognitif`). Documentation du modèle : `crates/obrain-cognitive`.
 
 ## Performance
 
@@ -115,13 +131,10 @@ MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 
 ## Roadmap
 
-Ce qui n'est **pas** dans la v0.0.1 et qui l'a été annoncé par le passé :
+Ce qui n'est **pas** dans la v0.0.1 :
 
 - **Bindings** Python, Node.js, Go, C, C#, Dart, WebAssembly : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI.
-- **Feature `cognitive` sur le crate façade** `obrain` (procédures et UDF `obrain.energy` / `obrain.risk` / `obrain.synapses` depuis `obrain`).
-- **`CALL obrain.hybrid_search`** comme procédure GQL (la recherche hybride existe en Rust, `ObrainDB::hybrid_search`).
-- Procédures `astar` et `triangle_count` ; `jaccard`, `cosine_similarity`, `adamic_adar` comme procédures autonomes (elles existent comme métriques de `similarity`).
-- Algorithmes présents dans `obrain-adapters` mais non enregistrés comme procédures `CALL` : `personalized_pagerank`, `stable_communities`, `irreducible_kernel`, `spectral_embedding`, `heat_kernel_diffusion`, `hilbert_features`, `subgraph_contraction`.
+- **`CALL obrain.hybrid_search`** comme procédure GQL : les index texte/vecteur vivent dans `ObrainDB`, hors de portée du planificateur de `CALL`, et l'enchaînement `CALL … YIELD … MATCH` n'est pas consommé par le parseur. La recherche hybride existe en Rust : `ObrainDB::hybrid_search(label, text_property, vector_property, query_text, query_vector, k, fusion)` (fusion RRF ou pondérée).
 - Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : dépôts séparés, hors de cette version.
 - Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
 

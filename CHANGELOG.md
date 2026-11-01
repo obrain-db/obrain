@@ -30,6 +30,18 @@ release d'Obrain. Cette entrée est la première qui en soit une.
   corrompu était lu comme VIDE (warn) puis écrasé au flush suivant. C'est une
   erreur d'ouverture, désormais.
 
+### Fonctionnalités rendues vraies (mesurées par `crates/obrain/tests/readme_examples.rs`)
+- Procédures nouvelles : `astar(source, target)`, `triangle_count`, `k_core` (alias de
+  `kcore`), `jaccard`, `cosine_similarity`, `adamic_adar` (raccourcis de `similarity`).
+- Sept algorithmes implémentés mais jamais enregistrés deviennent appelables :
+  `personalized_pagerank`, `stable_communities`, `irreducible_kernel`,
+  `spectral_embedding`, `heat_kernel_diffusion`, `hilbert_features`,
+  `subgraph_contraction` (clé du registre normalisée sans le préfixe `obrain.`).
+- Features `cognitive` / `cognitive-full` sur le crate `obrain` ; les UDF
+  `obrain.energy`, `obrain.risk`, `obrain.synapses` sont enregistrées à la
+  construction du moteur cognitif ; le parseur GQL accepte les noms de fonction
+  qualifiés (`obrain.energy(id(n))`).
+
 ### Format on-disk
 - Format du répertoire substrat figé à la version 3 ; `docs/rfc/substrate/
   format-spec.md` § 0 décrit l'état réel ; fixture de référence

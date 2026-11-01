@@ -1291,3 +1291,101 @@ mod tests {
         );
     }
 }
+
+// ============================================================================
+// (2026-11-01, v0.0.1) Procédures autonomes par métrique
+// ============================================================================
+//
+// Le README documentait `obrain.jaccard()`, `obrain.cosine_similarity()` et
+// `obrain.adamic_adar()` ; seule `obrain.similarity(a, b, metric)` existait.
+// Plutôt que de retirer la promesse, chacune devient une procédure qui fixe
+// la métrique et délègue à `NodeSimilarityAlgorithm` — même calcul, mêmes
+// colonnes, un nom de moins à deviner.
+
+fn similarity_alias_params() -> &'static [ParameterDef] {
+    static PARAMS: OnceLock<Vec<ParameterDef>> = OnceLock::new();
+    PARAMS.get_or_init(|| {
+        vec![
+            ParameterDef {
+                name: "node1".to_string(),
+                description: "First node ID".to_string(),
+                param_type: ParameterType::NodeId,
+                required: true,
+                default: None,
+            },
+            ParameterDef {
+                name: "node2".to_string(),
+                description: "Second node ID".to_string(),
+                param_type: ParameterType::NodeId,
+                required: true,
+                default: None,
+            },
+        ]
+    })
+}
+
+fn execute_with_metric(
+    store: &dyn GraphStore,
+    params: &Parameters,
+    metric: &str,
+    nom: &str,
+) -> Result<AlgorithmResult> {
+    let node1 = params
+        .get_int("node1")
+        .ok_or_else(|| Error::Internal(format!("{nom}: missing required parameter 'node1'")))?;
+    let node2 = params
+        .get_int("node2")
+        .ok_or_else(|| Error::Internal(format!("{nom}: missing required parameter 'node2'")))?;
+    let mut delegues = Parameters::new();
+    delegues.set_int("node1", node1);
+    delegues.set_int("node2", node2);
+    delegues.set_string("metric", metric);
+    NodeSimilarityAlgorithm.execute(store, &delegues)
+}
+
+macro_rules! procedure_de_similarite {
+    ($type:ident, $nom:literal, $metric:literal, $desc:literal) => {
+        pub struct $type;
+
+        impl GraphAlgorithm for $type {
+            fn name(&self) -> &str {
+                $nom
+            }
+
+            fn description(&self) -> &str {
+                $desc
+            }
+
+            fn parameters(&self) -> &[ParameterDef] {
+                similarity_alias_params()
+            }
+
+            fn execute(
+                &self,
+                store: &dyn GraphStore,
+                params: &Parameters,
+            ) -> Result<AlgorithmResult> {
+                execute_with_metric(store, params, $metric, $nom)
+            }
+        }
+    };
+}
+
+procedure_de_similarite!(
+    JaccardAlgorithm,
+    "jaccard",
+    "jaccard",
+    "Jaccard similarity of two nodes' neighbourhoods (= similarity with metric 'jaccard')"
+);
+procedure_de_similarite!(
+    CosineSimilarityAlgorithm,
+    "cosine_similarity",
+    "cosine",
+    "Cosine similarity of two nodes' neighbourhoods (= similarity with metric 'cosine')"
+);
+procedure_de_similarite!(
+    AdamicAdarAlgorithm,
+    "adamic_adar",
+    "adamic_adar",
+    "Adamic-Adar index of two nodes (= similarity with metric 'adamic_adar')"
+);

@@ -43,7 +43,7 @@ Trois `#[ignore]` dont la raison était périmée (tests verts sur `main` e11bdd
 | Limite | État | Verrou |
 |---|---|---|
 | Aucun binding (Python, Node, Go, C#, WASM, Dart) dans ce dépôt : seuls `packages/obrain-cli-{npm,python}` (wrappers du CLI). | mesurée (relu 2026-11-01) | README § Roadmap |
-| La façade `obrain` n'expose pas de feature `cognitive` : les procédures `obrain.cognitive.*` et les UDF `obrain.energy/risk/synapses` ne sont accessibles que depuis `obrain-engine` avec `--features cognitive`. | à confirmer par `crates/obrain/tests/readme_examples.rs` | harnais README |
+| `CALL obrain.hybrid_search` n'existe pas comme procédure GQL (les index texte/vecteur vivent dans `ObrainDB`, hors du planificateur de `CALL` ; l'enchaînement `CALL … YIELD … MATCH` n'est pas parsé). La recherche hybride existe en Rust : `ObrainDB::hybrid_search`. | mesurée (décision 5735aa32) | README § Roadmap |
 
 ## Performance
 
