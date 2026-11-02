@@ -25,7 +25,13 @@ const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // Utilisee UNIQUEMENT pour le `Sec-WebSocket-Accept` du handshake — jamais pour
 // de la securite. Vecteur de test RFC6455 dans les tests plus bas.
 fn sha1(msg: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
     let ml: u64 = (msg.len() as u64).wrapping_mul(8);
     let mut data = msg.to_vec();
     data.push(0x80);
@@ -128,10 +134,16 @@ fn header<'a>(entetes: &'a str, name: &str) -> Option<&'a str> {
 /// La requete est-elle un upgrade WebSocket bien forme ?
 #[must_use]
 pub(crate) fn is_websocket_upgrade(entetes: &str) -> bool {
-    let upgrade_ws = header(entetes, "Upgrade")
-        .is_some_and(|v| v.to_ascii_lowercase().split(',').any(|t| t.trim() == "websocket"));
-    let conn_upgrade = header(entetes, "Connection")
-        .is_some_and(|v| v.to_ascii_lowercase().split(',').any(|t| t.trim() == "upgrade"));
+    let upgrade_ws = header(entetes, "Upgrade").is_some_and(|v| {
+        v.to_ascii_lowercase()
+            .split(',')
+            .any(|t| t.trim() == "websocket")
+    });
+    let conn_upgrade = header(entetes, "Connection").is_some_and(|v| {
+        v.to_ascii_lowercase()
+            .split(',')
+            .any(|t| t.trim() == "upgrade")
+    });
     upgrade_ws && conn_upgrade && header(entetes, "Sec-WebSocket-Key").is_some()
 }
 
@@ -201,10 +213,7 @@ mod tests {
             hex(&sha1(b"abc")),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
         );
-        assert_eq!(
-            hex(&sha1(b"")),
-            "da39a3ee5e6b4b0d3255bfef95601890afd80709"
-        );
+        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(
             hex(&sha1(b"The quick brown fox jumps over the lazy dog")),
             "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
@@ -284,7 +293,10 @@ mod tests {
         assert!(ok);
         let s = String::from_utf8(out).unwrap();
         assert!(s.starts_with("HTTP/1.1 101 Switching Protocols\r\n"), "{s}");
-        assert!(s.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"), "{s}");
+        assert!(
+            s.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"),
+            "{s}"
+        );
     }
 
     #[test]

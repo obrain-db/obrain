@@ -124,7 +124,8 @@ pub fn apply_overlay(subgraph: &Subgraph, overlay: Overlay) -> (Subgraph, Overla
                 .nodes
                 .iter()
                 .all(|n| n.energy.unwrap_or(0.0) <= f64::EPSILON);
-            let mut degre: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+            let mut degre: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
             for e in &styled.edges {
                 *degre.entry(e.src.as_str()).or_insert(0) += 1;
                 *degre.entry(e.dst.as_str()).or_insert(0) += 1;
@@ -160,7 +161,8 @@ pub fn apply_overlay(subgraph: &Subgraph, overlay: Overlay) -> (Subgraph, Overla
                     }
                 }
                 report.legend.push(
-                    "energy: couleur froide→chaude (#3b4cc0→#f5d63d→#e03b2f), taille 0.75→2.25".into(),
+                    "energy: couleur froide→chaude (#3b4cc0→#f5d63d→#e03b2f), taille 0.75→2.25"
+                        .into(),
                 );
             }
         }

@@ -726,8 +726,7 @@ pub fn run_edge_chains(path: &Path, apply: bool, format: OutputFormat, quiet: bo
             for e in entrees.flatten() {
                 if let Ok(m) = e.metadata()
                     && let Ok(t) = m.modified()
-                    && let Ok(secs) =
-                        t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs())
+                    && let Ok(secs) = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs())
                     && secs <= maintenant
                 {
                     let age = maintenant - secs;
@@ -755,9 +754,8 @@ pub fn run_edge_chains(path: &Path, apply: bool, format: OutputFormat, quiet: bo
         .rebuild_edge_chains(!apply)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let sain = stats.next_from_fixed == 0
-        && stats.next_to_fixed == 0
-        && stats.first_edge_off_fixed == 0;
+    let sain =
+        stats.next_from_fixed == 0 && stats.next_to_fixed == 0 && stats.first_edge_off_fixed == 0;
 
     let entete = if !apply {
         "repair-edge-chains (DRY-RUN, aucune ecriture)"

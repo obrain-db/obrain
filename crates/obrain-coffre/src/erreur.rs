@@ -124,7 +124,9 @@ pub enum CoffreError {
     /// Refuser de l'utiliser est un choix : une clé que le voisin peut lire
     /// n'est pas une clé, et continuer donnerait à l'utilisateur l'illusion
     /// d'une garantie tenue.
-    #[error("fichier de clé trop permissif : {chemin} est lisible au-delà du propriétaire (mode {mode:o})")]
+    #[error(
+        "fichier de clé trop permissif : {chemin} est lisible au-delà du propriétaire (mode {mode:o})"
+    )]
     PermissionsTropLarges {
         /// Chemin du fichier refusé.
         chemin: String,

@@ -49,7 +49,9 @@ fn ecrire(args: &[String]) -> Result<(), String> {
         return Err("usage : journal ecrire <chemin> <identifiant> <cle-hex> <charge…>".to_owned());
     };
     if charges.is_empty() {
-        return Err("au moins une charge est nécessaire : un journal vide ne démontre rien".to_owned());
+        return Err(
+            "au moins une charge est nécessaire : un journal vide ne démontre rien".to_owned(),
+        );
     }
 
     let cle = CleJournal::depuis_octets(graine(cle_hex)?);

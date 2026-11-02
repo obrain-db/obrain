@@ -31,9 +31,9 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use obrain_garde::{Garde, Motif, index_appel_valide};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::identite::Identite;
 use crate::outils;
@@ -52,7 +52,10 @@ fn borner_sur_garde(
     derniere_reponse: &str,
 ) -> String {
     let phrase = motif.phrase();
-    let _ = sur(Evenement::Arret { code: motif.code(), phrase: phrase.clone() });
+    let _ = sur(Evenement::Arret {
+        code: motif.code(),
+        phrase: phrase.clone(),
+    });
     format!(
         "{derniere_reponse}\n\n[{phrase} — la boucle s'arrête ici et le dit : \
          l'objectif n'est pas conclu.]"
@@ -67,9 +70,17 @@ pub enum Evenement<'a> {
     /// Un morceau de texte du modèle (réponse en cours).
     Texte(&'a str),
     /// Le modèle a décidé d'un acte.
-    Acte { etape: usize, outil: &'a str, argument: &'a str },
+    Acte {
+        etape: usize,
+        outil: &'a str,
+        argument: &'a str,
+    },
     /// L'acte a rendu.
-    Rend { etape: usize, ok: bool, apercu: &'a str },
+    Rend {
+        etape: usize,
+        ok: bool,
+        apercu: &'a str,
+    },
     /// Aucun outil : le modèle a répondu.
     Fin { etapes: usize, ms: u64 },
     /// La boucle s'est arrêtée sur une borne, et le dit.
@@ -182,7 +193,11 @@ fn executer(nom: &str, arguments: &str, g: &Greement) -> Result<String> {
             soi::requete(g.moteur, store, gql, 10_000)?
         }
         "self_note" => {
-            let texte = args.get("texte").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let texte = args
+                .get("texte")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if texte.is_empty() {
                 bail!("self_note : « texte » requis");
             }
@@ -221,7 +236,12 @@ pub fn derouler(
     garde: &mut Garde,
     sur: &mut dyn FnMut(Evenement) -> Result<()>,
 ) -> Result<String> {
-    let g = Greement { politique, socle, moteur, notes };
+    let g = Greement {
+        politique,
+        socle,
+        moteur,
+        notes,
+    };
 
     let systeme = format!(
         "Tu es un harness de machine : tu AGIS sur la machine où tu tournes, et tu rends compte.\n\
@@ -365,8 +385,15 @@ pub fn derouler(
         // Aucun outil demandé : le modèle a répondu, la boucle est finie.
         if tour.appels.is_empty() {
             let etapes = etape;
-            sur(Evenement::Fin { etapes, ms: debut.elapsed().as_millis() as u64 })?;
-            return Ok(if tour.texte.trim().is_empty() { derniere_reponse } else { tour.texte });
+            sur(Evenement::Fin {
+                etapes,
+                ms: debut.elapsed().as_millis() as u64,
+            })?;
+            return Ok(if tour.texte.trim().is_empty() {
+                derniere_reponse
+            } else {
+                tour.texte
+            });
         }
 
         // Le message assistant DOIT être rejoué avec ses appels : sans lui, le
@@ -386,15 +413,26 @@ pub fn derouler(
         }
 
         for a in &tour.appels {
-            sur(Evenement::Acte { etape, outil: &a.nom, argument: &a.arguments })?;
+            sur(Evenement::Acte {
+                etape,
+                outil: &a.nom,
+                argument: &a.arguments,
+            })?;
             let (rendu, ok) = match executer(&a.nom, &a.arguments, &g) {
                 Ok(t) => (t, true),
                 // Un refus est un RÉSULTAT : le modèle doit le lire et changer
                 // d'approche. Le taire le ferait insister sur la même action.
-                Err(e) => (format!("{{\"error\": \"{:#}\"}}", e).replace('\n', " "), false),
+                Err(e) => (
+                    format!("{{\"error\": \"{:#}\"}}", e).replace('\n', " "),
+                    false,
+                ),
             };
             let apercu: String = rendu.chars().take(180).collect();
-            sur(Evenement::Rend { etape, ok, apercu: &apercu })?;
+            sur(Evenement::Rend {
+                etape,
+                ok,
+                apercu: &apercu,
+            })?;
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": a.id,
@@ -432,7 +470,9 @@ mod tests {
         let port = listener.local_addr().expect("adresse locale").port();
         std::thread::spawn(move || {
             for corps in reponses {
-                let Ok((mut flux, _)) = listener.accept() else { return };
+                let Ok((mut flux, _)) = listener.accept() else {
+                    return;
+                };
                 // On lit la requête jusqu'à la ligne vide : le corps ne nous
                 // intéresse pas, un serveur OpenAI-compatible n'en a pas besoin
                 // pour répondre en flux.
@@ -482,7 +522,10 @@ mod tests {
     /// touchée (racine = dossier temporaire, exécution NON autorisée, moteur
     /// injoignable — `Socle::lire` dégrade « sans socle », c'est sa conception).
     fn greement_de_laboratoire(dir: &Path, moteur: &str) -> (Politique, Identite, Socle) {
-        let politique = Politique { racine: dir.to_path_buf(), ..Politique::default() };
+        let politique = Politique {
+            racine: dir.to_path_buf(),
+            ..Politique::default()
+        };
         let identite = Identite::charger_ou_creer(dir, None).expect("identité de laboratoire");
         let socle = Socle::lire(moteur, 200);
         (politique, identite, socle)
@@ -552,9 +595,19 @@ mod tests {
         )
         .expect("un arrêt n'est pas une erreur : c'est un arrêt");
 
-        assert_eq!(codes, vec!["repetition".to_string()], "l'arrêt doit se dire, avec sa cause");
-        assert!(texte.contains("se répète"), "le texte rendu doit porter le motif : {texte}");
-        assert_eq!(actes, 0, "un tour arrêté n'exécute AUCUN outil (raisonnement tronqué)");
+        assert_eq!(
+            codes,
+            vec!["repetition".to_string()],
+            "l'arrêt doit se dire, avec sa cause"
+        );
+        assert!(
+            texte.contains("se répète"),
+            "le texte rendu doit porter le motif : {texte}"
+        );
+        assert_eq!(
+            actes, 0,
+            "un tour arrêté n'exécute AUCUN outil (raisonnement tronqué)"
+        );
         assert!(garde.arrete());
         // ── LA COUPE DOIT ÊTRE RÉELLE, PAS SEULEMENT FINALE ────────────────
         // Trouvé par le test de mutation : sans cette assertion, le test passait
@@ -582,7 +635,11 @@ mod tests {
         // tomber la machine du test — l'assertion porte sur le COMPORTEMENT
         // (l'appel est ignoré, donc le tour est une réponse), pas sur la
         // consommation mémoire.
-        let corps = format!("{}{}", trame_appel(100_000, "exec", "{}"), "data: [DONE]\n\n");
+        let corps = format!(
+            "{}{}",
+            trame_appel(100_000, "exec", "{}"),
+            "data: [DONE]\n\n"
+        );
         let moteur_llm = modele_de_laboratoire(vec![corps.clone(), corps.clone(), corps], 0);
         let dir = dossier_de_laboratoire("index-aberrant");
         let (politique, identite, socle) = greement_de_laboratoire(&dir, "http://127.0.0.1:1");
@@ -612,7 +669,14 @@ mod tests {
         )
         .expect("la boucle doit se terminer");
 
-        assert_eq!(etapes_fin, vec![1], "l'appel aberrant est ignoré : le tour 1 est une réponse");
-        assert_eq!(actes, 0, "un appel hors plafond ne doit jamais être exécuté");
+        assert_eq!(
+            etapes_fin,
+            vec![1],
+            "l'appel aberrant est ignoré : le tour 1 est une réponse"
+        );
+        assert_eq!(
+            actes, 0,
+            "un appel hors plafond ne doit jamais être exécuté"
+        );
     }
 }

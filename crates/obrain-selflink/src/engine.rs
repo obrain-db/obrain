@@ -12,7 +12,7 @@
 //! le bridge MCP en stdio. `selflink` ne peut donc pas encore consolider le
 //! self — et le dire vaut mieux que de le laisser croire.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use obrain_httpmin as http;
@@ -152,7 +152,9 @@ impl Moteur {
             1 => {
                 let (label, chemin) = trouve[0];
                 self.store = Some(chemin.clone());
-                Ok(Some(format!("base « {demande} » résolue : {label} → {chemin}")))
+                Ok(Some(format!(
+                    "base « {demande} » résolue : {label} → {chemin}"
+                )))
             }
             0 => bail!(
                 "base « {demande} » inconnue du moteur : ce n'est ni un chemin absolu, \
@@ -265,13 +267,21 @@ impl Moteur {
                 let l = c.get(1).and_then(Value::as_str).unwrap_or("");
                 mondes.push((
                     q.to_string(),
-                    if l.is_empty() { q.to_string() } else { l.to_string() },
+                    if l.is_empty() {
+                        q.to_string()
+                    } else {
+                        l.to_string()
+                    },
                 ));
             }
         }
         mondes.sort();
 
-        Ok(SelfNoeud { qn, sortances, mondes })
+        Ok(SelfNoeud {
+            qn,
+            sortances,
+            mondes,
+        })
     }
 
     /// Un tour de conversation ancré sur le self.

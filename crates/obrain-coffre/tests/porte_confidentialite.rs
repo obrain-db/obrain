@@ -364,7 +364,10 @@ fn le_depot_ne_garde_aucune_cle_en_clair() {
 
     let marqueur = b"TEMOIN-DE-CLE";
     let coffre = Coffre::neuf(&cle_relue).expect("coffre");
-    assert!(!contient(&coffre.sceller(marqueur).expect("scellement"), marqueur));
+    assert!(!contient(
+        &coffre.sceller(marqueur).expect("scellement"),
+        marqueur
+    ));
 }
 
 /// **§9 de l'ADR** : il n'y a aucune porte de récupération. Une phrase devinée ne
@@ -423,7 +426,13 @@ fn le_noyau_ne_contient_aucun_code_non_sur() {
         let source = std::fs::read_to_string(&chemin).expect("source lisible");
         for (numero, ligne) in source.lines().enumerate() {
             let sans_espaces: String = ligne.split_whitespace().collect::<Vec<_>>().join(" ");
-            for motif in ["unsafe fn", "unsafe impl", "unsafe trait", "unsafe {", "unsafe{"] {
+            for motif in [
+                "unsafe fn",
+                "unsafe impl",
+                "unsafe trait",
+                "unsafe {",
+                "unsafe{",
+            ] {
                 assert!(
                     !sans_espaces.contains(motif),
                     "{}:{} contient « {motif} » — le noyau doit rester sans code non sûr",
@@ -433,7 +442,10 @@ fn le_noyau_ne_contient_aucun_code_non_sur() {
             }
         }
     }
-    assert!(fichiers >= 7, "la porte doit lire tous les modules du noyau");
+    assert!(
+        fichiers >= 7,
+        "la porte doit lire tous les modules du noyau"
+    );
 }
 
 /// Le format d'enveloppe de clé porte une version, et une version inconnue est

@@ -415,11 +415,12 @@ mod tests {
         let sans: VizEdge = serde_json::from_str(r#"{"src":"a","dst":"b","type":"CALLS"}"#)
             .expect("un champ ABSENT doit rester un None, jamais une erreur");
         assert_eq!(sans.ricci, None);
-        let nul: VizEdge = serde_json::from_str(r#"{"src":"a","dst":"b","type":"CALLS","ricci":null}"#)
-            .expect("un champ NUL doit rester un None");
+        let nul: VizEdge =
+            serde_json::from_str(r#"{"src":"a","dst":"b","type":"CALLS","ricci":null}"#)
+                .expect("un champ NUL doit rester un None");
         assert_eq!(nul.ricci, None);
-        let sans_noeud: VizNode = serde_json::from_str(r#"{"id":"n"}"#)
-            .expect("idem pour un nœud sans curvature");
+        let sans_noeud: VizNode =
+            serde_json::from_str(r#"{"id":"n"}"#).expect("idem pour un nœud sans curvature");
         assert_eq!(sans_noeud.curvature, None);
     }
 

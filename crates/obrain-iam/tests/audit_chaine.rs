@@ -97,7 +97,8 @@ fn le_registre_survit_au_disque() {
     let relu = RegistreAudit::depuis_octets(ESPACE, cle_de_test(), &octets).expect("relecture");
     assert_eq!(relu.tete(), tete);
     assert_eq!(relu.longueur(), 3);
-    relu.verifier(&cle_de_test().publique()).expect("signatures");
+    relu.verifier(&cle_de_test().publique())
+        .expect("signatures");
 
     for (evenement, recu) in evenements.iter().zip(&recus) {
         relu.contient(recu, evenement).expect("toujours opposable");
@@ -119,7 +120,9 @@ fn un_verdict_reecrit_dans_le_store_est_demasque_par_le_recu() {
 
     // La garde a refusé, et le client a emporté le reçu.
     let refuse = evenement("evt-1", "iam:admin", PolicyDecision::Deny);
-    let recu = registre.enregistrer(&refuse, 1_700_000_000).expect("inscription");
+    let recu = registre
+        .enregistrer(&refuse, 1_700_000_000)
+        .expect("inscription");
 
     // L'opérateur réécrit le verdict dans ce qu'il montre. Le journal n'est pas
     // touché.
@@ -211,7 +214,10 @@ fn un_registre_ne_se_charge_pas_sous_un_autre_nom() {
 
     match RegistreAudit::depuis_octets("espace-beta", cle_de_test(), &octets) {
         Err(ErreurJournal::Reference(motif)) => {
-            assert!(motif.contains("espace-beta"), "le motif doit nommer : {motif}");
+            assert!(
+                motif.contains("espace-beta"),
+                "le motif doit nommer : {motif}"
+            );
         }
         autre => panic!("attendu Reference sur mauvais nom d'espace, obtenu {autre:?}"),
     }
@@ -249,8 +255,14 @@ fn le_verdict_change_l_empreinte() {
     let implicite = evenement("evt", "graph:read", PolicyDecision::ImplicitDeny);
 
     assert_ne!(empreinte_evenement(&permet), empreinte_evenement(&refuse));
-    assert_ne!(empreinte_evenement(&refuse), empreinte_evenement(&implicite));
-    assert_ne!(empreinte_evenement(&permet), empreinte_evenement(&implicite));
+    assert_ne!(
+        empreinte_evenement(&refuse),
+        empreinte_evenement(&implicite)
+    );
+    assert_ne!(
+        empreinte_evenement(&permet),
+        empreinte_evenement(&implicite)
+    );
 }
 
 /// L'empreinte est stable : deux fois le même événement, deux fois la même
@@ -269,8 +281,11 @@ fn deux_espaces_n_echangent_pas_leurs_recus() {
     let mut beta = RegistreAudit::neuf("espace-beta", cle_de_test()).expect("registre");
 
     let evenement = evenement("evt", "graph:read", PolicyDecision::Allow);
-    let recu_alpha = alpha.enregistrer(&evenement, 1_700_000_000).expect("inscription");
-    beta.enregistrer(&evenement, 1_700_000_000).expect("inscription");
+    let recu_alpha = alpha
+        .enregistrer(&evenement, 1_700_000_000)
+        .expect("inscription");
+    beta.enregistrer(&evenement, 1_700_000_000)
+        .expect("inscription");
 
     assert_ne!(alpha.tete(), beta.tete());
     match beta.contient(&recu_alpha, &evenement) {

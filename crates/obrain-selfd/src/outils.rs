@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::politique::Politique;
 
@@ -162,8 +162,8 @@ pub fn read(p: &Politique, args: &serde_json::Value) -> Result<serde_json::Value
         .get("maxBytes")
         .and_then(|v| v.as_u64())
         .unwrap_or(p.plafond_octets as u64) as usize;
-    let flux = std::fs::File::open(&cible)
-        .with_context(|| format!("ouverture de {}", cible.display()))?;
+    let flux =
+        std::fs::File::open(&cible).with_context(|| format!("ouverture de {}", cible.display()))?;
     let (gardes, total, tronque) = lire_borne(flux, max);
     Ok(serde_json::json!({
         "path": cible.display().to_string(),
@@ -186,8 +186,7 @@ pub fn write(p: &Politique, args: &serde_json::Value) -> Result<serde_json::Valu
         std::fs::create_dir_all(parent)
             .with_context(|| format!("création de {}", parent.display()))?;
     }
-    std::fs::write(&cible, contenu)
-        .with_context(|| format!("écriture de {}", cible.display()))?;
+    std::fs::write(&cible, contenu).with_context(|| format!("écriture de {}", cible.display()))?;
     Ok(serde_json::json!({
         "path": cible.display().to_string(),
         "bytes": contenu.len(),
@@ -199,9 +198,7 @@ pub fn list(p: &Politique, args: &serde_json::Value) -> Result<serde_json::Value
     let demande = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
     let cible = p.resoudre(demande)?;
     let mut entrees = Vec::new();
-    for e in std::fs::read_dir(&cible)
-        .with_context(|| format!("lecture de {}", cible.display()))?
-    {
+    for e in std::fs::read_dir(&cible).with_context(|| format!("lecture de {}", cible.display()))? {
         let e = e?;
         let md = e.metadata().ok();
         entrees.push(serde_json::json!({
@@ -333,7 +330,9 @@ fn ip_primaire() -> Option<String> {
 fn place(moteur: &str) -> serde_json::Value {
     let base = moteur.trim_end_matches('/');
     // Le jeton sert UNIQUEMENT à interroger le moteur : il n'est jamais RENDU.
-    let jeton = std::env::var("SELFD_MOTEUR_TOKEN").ok().filter(|t| !t.is_empty());
+    let jeton = std::env::var("SELFD_MOTEUR_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
 
     let sante = obrain_httpmin::get(&format!("{base}/api/harness/health"), &[], None);
     let joignable = sante.as_ref().map(|r| r.status < 500).unwrap_or(false);
@@ -390,9 +389,9 @@ fn place(moteur: &str) -> serde_json::Value {
                         .get("machines")
                         .and_then(|m| m.as_array())
                         .unwrap_or(&vide);
-                    let mienne = machines.iter().find(|m| {
-                        m.get("machine").and_then(|x| x.as_str()) == Some(nom.as_str())
-                    });
+                    let mienne = machines
+                        .iter()
+                        .find(|m| m.get("machine").and_then(|x| x.as_str()) == Some(nom.as_str()));
                     match mienne {
                         Some(m) => {
                             let vivante =
@@ -409,8 +408,10 @@ fn place(moteur: &str) -> serde_json::Value {
                             v["rattachee"] = serde_json::json!(true);
                             v["compte"] =
                                 m.get("compte").cloned().unwrap_or(serde_json::Value::Null);
-                            v["capacites_vues_par_le_moteur"] =
-                                m.get("capacites").cloned().unwrap_or(serde_json::Value::Null);
+                            v["capacites_vues_par_le_moteur"] = m
+                                .get("capacites")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
                         }
                         None => {
                             v["position"] = serde_json::json!(format!(

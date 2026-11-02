@@ -53,7 +53,11 @@ pub enum Intention {
     /// « tel est l'objectif » — un but, rattaché au Self par `HAS_GOAL`.
     Objectif { nom: String, texte: String },
     /// « voici comment interroger » — une recette du référentiel (auto-structuration).
-    Procedure { nom: String, description: String, corps: String },
+    Procedure {
+        nom: String,
+        description: String,
+        corps: String,
+    },
     /// « voilà où j'en suis » — un état daté et VERSIONNÉ du Self.
     EtatSelf {
         epithet: String,
@@ -91,10 +95,19 @@ impl Intention {
             Intention::Objectif { nom, texte } => {
                 serde_json::json!({ "kind": "objectif", "nom": nom, "texte": texte })
             }
-            Intention::Procedure { nom, description, corps } => serde_json::json!({
+            Intention::Procedure {
+                nom,
+                description,
+                corps,
+            } => serde_json::json!({
                 "kind": "procedure", "nom": nom, "description": description, "corps": corps
             }),
-            Intention::EtatSelf { epithet, objectif, prochaine_action, note } => serde_json::json!({
+            Intention::EtatSelf {
+                epithet,
+                objectif,
+                prochaine_action,
+                note,
+            } => serde_json::json!({
                 "kind": "etat-self", "epithet": epithet, "objectif": objectif,
                 "prochaine_action": prochaine_action, "note": note
             }),
@@ -104,8 +117,14 @@ impl Intention {
     fn depuis_json(v: &serde_json::Value) -> Option<Self> {
         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
         Some(match v.get("kind")?.as_str()? {
-            "note" => Intention::Note { texte: s("texte"), sujet: s("sujet") },
-            "objectif" => Intention::Objectif { nom: s("nom"), texte: s("texte") },
+            "note" => Intention::Note {
+                texte: s("texte"),
+                sujet: s("sujet"),
+            },
+            "objectif" => Intention::Objectif {
+                nom: s("nom"),
+                texte: s("texte"),
+            },
             "procedure" => Intention::Procedure {
                 nom: s("nom"),
                 description: s("description"),
@@ -146,8 +165,16 @@ impl Entree {
     fn depuis_json(v: &serde_json::Value) -> Option<Self> {
         Some(Entree {
             t_ms: v.get("t").and_then(|x| x.as_i64()).unwrap_or(0),
-            self_qn: v.get("self").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            provenance: v.get("provenance").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            self_qn: v
+                .get("self")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            provenance: v
+                .get("provenance")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             intention: Intention::depuis_json(v.get("intention")?)?,
         })
     }
@@ -295,7 +322,11 @@ fn temoigner(t: &Temoin) {
     {
         return;
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&chemin) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&chemin)
+    {
         use std::io::Write;
         let _ = writeln!(f, "{ligne}");
         let _ = f.flush();
@@ -377,15 +408,20 @@ pub fn lire_catalogue(
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(ligne) else {
                     continue;
                 };
-                let self_qn =
-                    v.get("self").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let self_qn = v
+                    .get("self")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if self_qn.is_empty() {
                     continue;
                 }
                 let t = v.get("t").and_then(|x| x.as_i64()).unwrap_or(0);
-                let fiche = par_self
-                    .entry(self_qn)
-                    .or_insert((0, 0, Some(chemin.to_string_lossy().to_string())));
+                let fiche = par_self.entry(self_qn).or_insert((
+                    0,
+                    0,
+                    Some(chemin.to_string_lossy().to_string()),
+                ));
                 fiche.0 += 1;
                 fiche.1 = fiche.1.max(t);
                 total += 1;
@@ -399,7 +435,11 @@ pub fn lire_catalogue(
     // omission sur le seul geste qui l'a fait connaître.
     let mut mondes_par_self: HashMap<String, Vec<String>> = HashMap::new();
     for (label, _store, proprietaire) in registre {
-        let Some(p) = proprietaire.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+        let Some(p) = proprietaire
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        else {
             continue;
         };
         // Le registre porte `utilisateur@compte` ; le self est nommé par
@@ -410,7 +450,10 @@ pub fn lire_catalogue(
             continue;
         }
         let cle = format!("self:{utilisateur}");
-        mondes_par_self.entry(cle.clone()).or_default().push(label.clone());
+        mondes_par_self
+            .entry(cle.clone())
+            .or_default()
+            .push(label.clone());
         par_self.entry(cle).or_insert((0, 0, None));
     }
 
@@ -455,9 +498,15 @@ pub fn lire_catalogue(
     // Du plus récemment actif au plus ancien : c'est l'ordre dans lequel on
     // cherche quelqu'un. Les selfs sans journal passent après (date absente).
     selfs.sort_by(|a, b| {
-        b.derniere_ms.cmp(&a.derniere_ms).then_with(|| a.self_qn.cmp(&b.self_qn))
+        b.derniere_ms
+            .cmp(&a.derniere_ms)
+            .then_with(|| a.self_qn.cmp(&b.self_qn))
     });
-    CatalogueSelfs { selfs, entrees_total: total, synapse_illisible }
+    CatalogueSelfs {
+        selfs,
+        entrees_total: total,
+        synapse_illisible,
+    }
 }
 
 /// Le journal est indexé par le **Self**, pas par le store : c'est SA mémoire, et
@@ -672,7 +721,10 @@ pub fn appliquer(store: &Path, self_qn: &str) -> Result<Rapport> {
     // laquelle, ET POURQUOI ». Un échec qu'on ne peut pas expliquer ne se répare
     // pas : on transporte donc le message exact du moteur.
     let run = |gql: &str| -> Result<(), String> {
-        db.session().execute(gql).map(|_| ()).map_err(|e| e.to_string())
+        db.session()
+            .execute(gql)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     };
 
     // Le Self est la racine de tout ce qu'on écrit : s'il manque, on le crée
@@ -740,7 +792,11 @@ pub fn appliquer(store: &Path, self_qn: &str) -> Result<Rapport> {
                 ));
                 (ok, format!("objectif {qn}"))
             }
-            Intention::Procedure { nom, description, corps } => {
+            Intention::Procedure {
+                nom,
+                description,
+                corps,
+            } => {
                 let qn = format!("proc:{}", nom.trim_start_matches("proc:"));
                 let ok = run(&format!(
                     "MERGE (p:Procedure {{qn: {}}}) SET p.name = {}, p.description = {}, \
@@ -760,7 +816,12 @@ pub fn appliquer(store: &Path, self_qn: &str) -> Result<Rapport> {
                 ));
                 (ok, format!("procedure {qn}"))
             }
-            Intention::EtatSelf { epithet, objectif, prochaine_action, note } => {
+            Intention::EtatSelf {
+                epithet,
+                objectif,
+                prochaine_action,
+                note,
+            } => {
                 // Le SEUL geste non idempotent — et c'est voulu : un état est un
                 // instantané DATÉ, pas une valeur écrasée. Le journal est consommé
                 // pour qu'il ne soit créé qu'une fois.
@@ -799,9 +860,10 @@ pub fn appliquer(store: &Path, self_qn: &str) -> Result<Rapport> {
                 // l'entrée (défaut mesuré : le rapport publiait « note note:ab12… »
                 // sous la clé « raison », une description à la place d'une cause).
                 echecs.insert(i);
-                rapport
-                    .refusees
-                    .push((e.intention.genre().to_string(), format!("{refus} : {erreur}")));
+                rapport.refusees.push((
+                    e.intention.genre().to_string(),
+                    format!("{refus} : {erreur}"),
+                ));
             }
         }
     }
@@ -829,7 +891,11 @@ pub fn appliquer(store: &Path, self_qn: &str) -> Result<Rapport> {
     // rendre visible. Il ne témoigne donc que d'une AVANCE, ou d'un refus —
     // jamais d'une absence, qui n'est pas un fait de mémoire.
     if rapport.appliquees > 0 || !rapport.refusees.is_empty() {
-        temoigner(&Temoin::application(crate::activation::now_ms(), self_qn, &rapport));
+        temoigner(&Temoin::application(
+            crate::activation::now_ms(),
+            self_qn,
+            &rapport,
+        ));
     }
     Ok(rapport)
 }
@@ -847,7 +913,10 @@ mod tests {
         };
         let j = i.vers_json();
         assert_eq!(Intention::depuis_json(&j), Some(i));
-        assert_eq!(Intention::depuis_json(&serde_json::json!({"kind": "inconnu"})), None);
+        assert_eq!(
+            Intention::depuis_json(&serde_json::json!({"kind": "inconnu"})),
+            None
+        );
     }
 
     #[test]
@@ -856,7 +925,10 @@ mod tests {
             t_ms: 42,
             self_qn: "self:test".into(),
             provenance: "world:x".into(),
-            intention: Intention::Note { texte: "hello".into(), sujet: "s".into() },
+            intention: Intention::Note {
+                texte: "hello".into(),
+                sujet: "s".into(),
+            },
         };
         let r = Entree::depuis_json(&e.vers_json()).expect("relu");
         assert_eq!(r.t_ms, 42);
@@ -917,7 +989,10 @@ mod tests {
             t_ms: 7,
             self_qn: "self:t".into(),
             provenance: "p".into(),
-            intention: Intention::Note { texte: "déjà vue".into(), sujet: "s".into() },
+            intention: Intention::Note {
+                texte: "déjà vue".into(),
+                sujet: "s".into(),
+            },
         };
         let pendant = concat!(
             "{\"t\":99,\"self\":\"self:t\",\"provenance\":\"p\",",
@@ -940,7 +1015,10 @@ mod tests {
             t_ms: 7,
             self_qn: "self:t".into(),
             provenance: "p".into(),
-            intention: Intention::Note { texte: "à reprendre".into(), sujet: "s".into() },
+            intention: Intention::Note {
+                texte: "à reprendre".into(),
+                sujet: "s".into(),
+            },
         };
         let mut echecs = std::collections::HashSet::new();
         echecs.insert(0usize);
@@ -995,13 +1073,19 @@ mod tests {
             j.display(),
             t.display()
         );
-        assert_eq!(t.file_name().and_then(|x| x.to_str()), Some("memoire-temoins.jsonl"));
+        assert_eq!(
+            t.file_name().and_then(|x| x.to_str()),
+            Some("memoire-temoins.jsonl")
+        );
 
         let e = Entree {
             t_ms: 1234,
             self_qn: "self:alice".into(),
             provenance: "monde · /tmp/w.obrain".into(),
-            intention: Intention::Note { texte: "un loup gris".into(), sujet: "s".into() },
+            intention: Intention::Note {
+                texte: "un loup gris".into(),
+                sujet: "s".into(),
+            },
         };
         let ligne = Temoin::journalisation(&e).ligne().expect("sérialisation");
         let v: serde_json::Value = serde_json::from_str(&ligne).expect("le témoin est du JSON");
@@ -1100,15 +1184,25 @@ mod tests {
         // Synapse illisible (chemin inexistant) : c'est le cas à vérifier.
         let cat = lire_catalogue(Some(&base.join("synapse-absente.obrain")), &jdir, &registre);
 
-        assert!(cat.synapse_illisible, "une synaptique illisible doit être DITE");
+        assert!(
+            cat.synapse_illisible,
+            "une synaptique illisible doit être DITE"
+        );
         let alice = cat
             .selfs
             .iter()
             .find(|s| s.self_qn == "self:alice")
             .expect("alice doit apparaître (elle a un journal)");
         assert_eq!(alice.entrees, 2, "les deux entrées doivent être comptées");
-        assert_eq!(alice.derniere_ms, Some(50), "la date la plus récente est retenue");
-        assert_eq!(alice.journal.as_deref(), Some(ja.to_string_lossy().as_ref()));
+        assert_eq!(
+            alice.derniere_ms,
+            Some(50),
+            "la date la plus récente est retenue"
+        );
+        assert_eq!(
+            alice.journal.as_deref(),
+            Some(ja.to_string_lossy().as_ref())
+        );
         let bob = cat
             .selfs
             .iter()
@@ -1116,7 +1210,10 @@ mod tests {
             .expect("bob doit apparaître (il a apporté un monde)");
         assert_eq!(bob.entrees, 0);
         assert_eq!(bob.mondes.len(), 1, "son monde lui est attribué");
-        assert!(!bob.noeud_dans_synapse, "synaptique illisible → aucun nœud affirmé");
+        assert!(
+            !bob.noeud_dans_synapse,
+            "synaptique illisible → aucun nœud affirmé"
+        );
         assert_eq!(cat.entrees_total, 2);
         assert_eq!(
             cat.selfs.first().map(|s| s.self_qn.as_str()),

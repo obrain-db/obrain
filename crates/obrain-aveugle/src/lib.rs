@@ -117,7 +117,9 @@ pub enum ErreurAveugle {
     },
 
     /// La boîte du destinataire est pleine.
-    #[error("boîte de {destinataire} pleine ({quota} en attente) : le porteur n'est pas un amplificateur")]
+    #[error(
+        "boîte de {destinataire} pleine ({quota} en attente) : le porteur n'est pas un amplificateur"
+    )]
     BoitePleine {
         /// Le destinataire dont la boîte est pleine.
         destinataire: String,

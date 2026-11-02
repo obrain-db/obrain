@@ -68,8 +68,8 @@ fn requete(
 
 fn get(addr: &str, chemin: &str) -> (u16, serde_json::Value) {
     let (st, corps) = requete(addr, "GET", chemin, None, &[]);
-    let v: serde_json::Value =
-        serde_json::from_str(&corps).unwrap_or_else(|e| panic!("{chemin} non-JSON ({st}): {corps} / {e}"));
+    let v: serde_json::Value = serde_json::from_str(&corps)
+        .unwrap_or_else(|e| panic!("{chemin} non-JSON ({st}): {corps} / {e}"));
     (st, v)
 }
 
@@ -226,7 +226,10 @@ fn deux_harnesses_sur_deux_stores_se_disent_differents() {
         ia["store_racine"], ib["store_racine"],
         "deux dossiers de store : {ia} / {ib}"
     );
-    assert_eq!(ia["store_racine"], a.store.parent().unwrap().display().to_string());
+    assert_eq!(
+        ia["store_racine"],
+        a.store.parent().unwrap().display().to_string()
+    );
     assert_eq!(ia["racine_declaree"], racine_a.display().to_string());
     assert_eq!(ib["racine_declaree"], racine_b.display().to_string());
     assert_ne!(ia["instance"], ib["instance"], "instance : {ia} / {ib}");
@@ -369,7 +372,10 @@ fn le_contexte_sans_session_ne_se_declare_pas_ok() {
 
     // 1. Demande LISIBLE qui ne nomme aucune session : refusee, motivee, 400.
     let (st, corps) = requete(&a.addr, "POST", "/api/harness/context", Some("{}"), &[]);
-    assert_eq!(st, 400, "une demande lisible sans session est refusee : {corps}");
+    assert_eq!(
+        st, 400,
+        "une demande lisible sans session est refusee : {corps}"
+    );
     let v: serde_json::Value = serde_json::from_str(&corps).expect("corps JSON");
     assert_ne!(v["status"], "ok", "plus de ok sur un vide : {v}");
     assert_eq!(v["status"], "aucune_session");
@@ -409,6 +415,9 @@ fn le_contexte_sans_session_ne_se_declare_pas_ok() {
     let v: serde_json::Value = serde_json::from_str(&corps).expect("corps JSON");
     assert_eq!(v["status"], "ok", "{v}");
     for champ in ["goals", "summaries", "weave", "engrams", "tissage"] {
-        assert!(v.get(champ).is_some(), "section '{champ}' absente : {corps}");
+        assert!(
+            v.get(champ).is_some(),
+            "section '{champ}' absente : {corps}"
+        );
     }
 }

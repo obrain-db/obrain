@@ -817,8 +817,7 @@ mod tests {
         let input_path = temp.path().join("widget.jsonl");
         let db_path = temp.path().join("target.obrain");
 
-        let content =
-            "{\"type\":\"node\",\"id\":1,\"labels\":[\"T\"],\"properties\":{\"size\":{\"Widget\":1}}}\n";
+        let content = "{\"type\":\"node\",\"id\":1,\"labels\":[\"T\"],\"properties\":{\"size\":{\"Widget\":1}}}\n";
         std::fs::write(&input_path, content).unwrap();
 
         let result = run(
@@ -831,7 +830,10 @@ mod tests {
             true,
         );
 
-        assert!(result.is_err(), "une variante inconnue doit faire échouer le load");
+        assert!(
+            result.is_err(),
+            "une variante inconnue doit faire échouer le load"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Widget"), "message: {err_msg}");
         assert!(err_msg.contains("line 1"), "message: {err_msg}");

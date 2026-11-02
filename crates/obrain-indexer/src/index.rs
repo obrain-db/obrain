@@ -171,9 +171,7 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
             // même FQN (nœud fusionné → arêtes attribuées au mauvais fichier)
             // et la résolution same-module franchit les scopes réels.
             let is_file_scope = isolation_scope(root, file).is_some()
-                || (ex_lang_is_rust(file)
-                    && !file_is_mod_root
-                    && ISOLATE_SRC_FILE_MODULES);
+                || (ex_lang_is_rust(file) && !file_is_mod_root && ISOLATE_SRC_FILE_MODULES);
             let module_qn = if is_file_scope {
                 module_qn_per_file(&project_name, root, file)
             } else {
@@ -234,17 +232,28 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                         ..Default::default()
                     };
                     if let Some(sig) = &def.signature {
-                        props.extra.insert("signature".into(), serde_json::Value::String(sig.clone()));
+                        props
+                            .extra
+                            .insert("signature".into(), serde_json::Value::String(sig.clone()));
                     }
                     if let Some(pc) = &def.parent_class {
-                        props.extra.insert("parent_class".into(), serde_json::Value::String(pc.clone()));
+                        props
+                            .extra
+                            .insert("parent_class".into(), serde_json::Value::String(pc.clone()));
                     }
                     if let Some(doc) = &def.docstring {
-                        props.extra.insert("docstring".into(), serde_json::Value::String(doc.clone()));
+                        props
+                            .extra
+                            .insert("docstring".into(), serde_json::Value::String(doc.clone()));
                     }
                     let est_test = file_is_test
-                        || crate::tests_detect::is_test_function(&def.name, lang_for_ext(file_lang));
-                    props.extra.insert("is_test".into(), serde_json::Value::Bool(est_test));
+                        || crate::tests_detect::is_test_function(
+                            &def.name,
+                            lang_for_ext(file_lang),
+                        );
+                    props
+                        .extra
+                        .insert("is_test".into(), serde_json::Value::Bool(est_test));
                     props.extra.insert(
                         "is_exported".into(),
                         serde_json::Value::Bool(crate::tests_detect::is_exported(
@@ -253,21 +262,37 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                         )),
                     );
                     if let Some(m) = &def.metrics {
-                        props.extra.insert("complexity".into(), serde_json::Value::from(m.complexity));
-                        props.extra.insert("cognitive".into(), serde_json::Value::from(m.cognitive));
-                        props.extra.insert("loop_count".into(), serde_json::Value::from(m.loop_count));
-                        props.extra.insert("loop_depth".into(), serde_json::Value::from(m.loop_depth));
+                        props
+                            .extra
+                            .insert("complexity".into(), serde_json::Value::from(m.complexity));
+                        props
+                            .extra
+                            .insert("cognitive".into(), serde_json::Value::from(m.cognitive));
+                        props
+                            .extra
+                            .insert("loop_count".into(), serde_json::Value::from(m.loop_count));
+                        props
+                            .extra
+                            .insert("loop_depth".into(), serde_json::Value::from(m.loop_depth));
                         props.extra.insert(
                             "max_access_depth".into(),
                             serde_json::Value::from(m.max_access_depth),
                         );
                     }
-                    let cls_qn = def.parent_class.as_ref().map(|p| format!("{}.{}", module_qn, p));
+                    let cls_qn = def
+                        .parent_class
+                        .as_ref()
+                        .map(|p| format!("{}.{}", module_qn, p));
                     let ret = def
                         .signature
                         .as_deref()
                         .and_then(crate::resolve::SymbolRegistry::return_type_of_signature);
-                    DefPrete { fqn, props, cls_qn, ret }
+                    DefPrete {
+                        fqn,
+                        props,
+                        cls_qn,
+                        ret,
+                    }
                 })
                 .collect();
             Some(FichierExtrait {
@@ -290,7 +315,11 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
             "[prof]     indexeur · cache d'extraction : {} fichiers servis, {} analysés{}",
             files_scanned - analyses,
             analyses,
-            if cache.is_some() { "" } else { " (pas de cache utilisable)" }
+            if cache.is_some() {
+                ""
+            } else {
+                " (pas de cache utilisable)"
+            }
         );
     }
     drop(cache);
@@ -384,7 +413,12 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
         );
 
         for (def, prete) in fe.ex.definitions.iter().zip(prepares) {
-            let DefPrete { fqn, props, cls_qn, ret } = prete;
+            let DefPrete {
+                fqn,
+                props,
+                cls_qn,
+                ret,
+            } = prete;
             let sym_id = graph.upsert_node(def.kind, fqn.clone(), props);
             graph.insert_edge(EdgeKind::Defines, file_id, sym_id, Default::default());
             if def.parent_class.is_some() {
@@ -470,7 +504,12 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
         /// préparées dans la phase parallèle. La boucle séquentielle ne fait
         /// plus que les insérer. Le graphe ne reçoit aucun nœud entre les deux :
         /// `node_by_qn` y rend donc exactement ce que rendait `link_qns`.
-        liens: Vec<(crate::graph::NodeId, crate::graph::NodeId, crate::graph::EdgeProps, &'static str)>,
+        liens: Vec<(
+            crate::graph::NodeId,
+            crate::graph::NodeId,
+            crate::graph::EdgeProps,
+            &'static str,
+        )>,
         non_resolus: usize,
     }
     /// Une arête CALLS résolue, avec provenance.
@@ -577,7 +616,10 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                     let hop = bindings.iter().any(|b2| {
                         b2.line >= call.line
                             && scope_start.map(|s| b2.line >= s).unwrap_or(true)
-                            && b2.init_call.as_ref().is_some_and(|(r, m)| r == base && m == name)
+                            && b2
+                                .init_call
+                                .as_ref()
+                                .is_some_and(|(r, m)| r == base && m == name)
                     });
                     if hop {
                         continue;
@@ -618,10 +660,21 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                     continue;
                 };
                 let mut props = crate::graph::EdgeProps::default();
-                props.extra.insert("strategy".into(), serde_json::Value::String(edge.strategy.into()));
-                props.extra.insert("confidence".into(), serde_json::Value::from(edge.confidence));
-                props.extra.insert("line".into(), serde_json::Value::from(edge.line));
-                props.extra.insert("caller_scope".into(), serde_json::Value::String(edge.caller_qn));
+                props.extra.insert(
+                    "strategy".into(),
+                    serde_json::Value::String(edge.strategy.into()),
+                );
+                props.extra.insert(
+                    "confidence".into(),
+                    serde_json::Value::from(edge.confidence),
+                );
+                props
+                    .extra
+                    .insert("line".into(), serde_json::Value::from(edge.line));
+                props.extra.insert(
+                    "caller_scope".into(),
+                    serde_json::Value::String(edge.caller_qn),
+                );
                 out.liens.push((src, dst, props, edge.strategy));
             }
             out
@@ -776,8 +829,10 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
 
     sonde("historique git");
     let empreinte_depot = {
-        let mut refs: Vec<(&str, u128)> =
-            extraits.iter().map(|fe| (fe.file_rel.as_str(), fe.empreinte)).collect();
+        let mut refs: Vec<(&str, u128)> = extraits
+            .iter()
+            .map(|fe| (fe.file_rel.as_str(), fe.empreinte))
+            .collect();
         crate::cache_extraction::combiner(&mut refs, &git_ctx)
     };
     // (T27) Le cache n'est réécrit que si quelque chose a été analysé : une
@@ -786,7 +841,9 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
         let r = crate::cache_extraction::ecrire(
             root,
             opts.cache_dir.as_deref(),
-            extraits.par_iter().map(|fe| (fe.file_rel.as_str(), fe.empreinte, &fe.ex)),
+            extraits
+                .par_iter()
+                .map(|fe| (fe.file_rel.as_str(), fe.empreinte, &fe.ex)),
         );
         if let Err(e) = r {
             warnings.push(format!("cache d'extraction non écrit : {e}"));
@@ -1014,22 +1071,32 @@ fn eval(n: i64) -> i64 { if n <= 0 { 0 } else { eval(n - 1) } }
             .collect();
         // receiver_self : run → helper (méthode du MÊME type).
         assert!(
-            pairs.iter().any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.helper")),
+            pairs
+                .iter()
+                .any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.helper")),
             "run->helper manquant: {pairs:?}"
         );
         // self.run() résolu en self-loop → filtré (qualifier présent, pas de
         // récursion directe par nom nu).
         assert!(
-            !pairs.iter().any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.run")),
+            !pairs
+                .iter()
+                .any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.run")),
             "self-loop self.run() non filtré: {pairs:?}"
         );
         // récursion directe par nom nu → gardée.
         assert!(
-            pairs.iter().any(|(a, b)| a.ends_with(".eval") && b.ends_with(".eval")),
+            pairs
+                .iter()
+                .any(|(a, b)| a.ends_with(".eval") && b.ends_with(".eval")),
             "récursion eval perdue: {pairs:?}"
         );
         // provenance : chaque CALLS porte strategy + confidence.
-        let n_calls = g.edges().iter().filter(|e| e.kind == EdgeKind::Calls).count();
+        let n_calls = g
+            .edges()
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls)
+            .count();
         let n_props = g
             .edges()
             .iter()
@@ -1076,8 +1143,14 @@ fn eval(n: i64) -> i64 { if n <= 0 { 0 } else { eval(n - 1) } }
         // Deux FQN distincts pour `setup` (un par fichier isolé).
         let setup_a = format!("{proj}.tests.a.setup");
         let setup_b = format!("{proj}.tests.b.setup");
-        assert!(g.node_by_qn(&setup_a).is_some(), "setup de tests/a manquant");
-        assert!(g.node_by_qn(&setup_b).is_some(), "setup de tests/b manquant");
+        assert!(
+            g.node_by_qn(&setup_a).is_some(),
+            "setup de tests/a manquant"
+        );
+        assert!(
+            g.node_by_qn(&setup_b).is_some(),
+            "setup de tests/b manquant"
+        );
         let pairs: Vec<(String, String)> = g
             .edges()
             .iter()
@@ -1147,9 +1220,7 @@ mod tests {
             "inner->helper attribué au mauvais scope: {pairs:?}"
         );
         assert!(
-            pairs
-                .iter()
-                .all(|(a, _)| a != &module_tests),
+            pairs.iter().all(|(a, _)| a != &module_tests),
             "caller = Module (attribution non corrigée): {pairs:?}"
         );
     }

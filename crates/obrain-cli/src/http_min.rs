@@ -48,7 +48,9 @@ fn lire_reponse(stream: &mut TcpStream) -> Result<Reponse> {
     // L'en-tête peut arriver en plusieurs morceaux : on lit jusqu'au double CRLF.
     let mut tmp = [0u8; 8192];
     let fin_entetes = loop {
-        let n = stream.read(&mut tmp).context("http_min : lecture des en-têtes")?;
+        let n = stream
+            .read(&mut tmp)
+            .context("http_min : lecture des en-têtes")?;
         if n == 0 {
             bail!("http_min : connexion fermée sans en-têtes");
         }
@@ -77,23 +79,38 @@ fn lire_reponse(stream: &mut TcpStream) -> Result<Reponse> {
         loop {
             while rest.is_empty() {
                 let n = stream.read(&mut tmp).context("http_min : lecture chunk")?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 rest.extend_from_slice(&tmp[..n]);
             }
-            let Some(p) = rest.windows(2).position(|w| w == b"\r\n") else { break };
+            let Some(p) = rest.windows(2).position(|w| w == b"\r\n") else {
+                break;
+            };
             let taille = usize::from_str_radix(
-                String::from_utf8_lossy(&rest[..p]).trim().split(';').next().unwrap_or("0"),
+                String::from_utf8_lossy(&rest[..p])
+                    .trim()
+                    .split(';')
+                    .next()
+                    .unwrap_or("0"),
                 16,
-            ).unwrap_or(0);
-            if taille == 0 { break; }
+            )
+            .unwrap_or(0);
+            if taille == 0 {
+                break;
+            }
             let debut = p + 2;
             // On garantit d'avoir tout le bloc.
             while rest.len() < debut + taille + 2 {
                 let n = stream.read(&mut tmp).context("http_min : lecture bloc")?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 rest.extend_from_slice(&tmp[..n]);
             }
-            if rest.len() < debut + taille { break; }
+            if rest.len() < debut + taille {
+                break;
+            }
             out.extend_from_slice(&rest[debut..debut + taille]);
             rest.drain(..(debut + taille + 2).min(rest.len()));
         }
@@ -104,28 +121,39 @@ fn lire_reponse(stream: &mut TcpStream) -> Result<Reponse> {
         .and_then(|v| v.trim().parse::<usize>().ok())
     {
         while corps.len() < len {
-            let n = stream.read(&mut tmp).context("http_min : lecture du corps")?;
-            if n == 0 { break; }
+            let n = stream
+                .read(&mut tmp)
+                .context("http_min : lecture du corps")?;
+            if n == 0 {
+                break;
+            }
             corps.extend_from_slice(&tmp[..n]);
         }
         corps.truncate(len);
     } else {
         // Ni longueur ni chunked (connexion fermée comme délimiteur).
         loop {
-            let n = stream.read(&mut tmp).context("http_min : lecture jusqu'à fermeture")?;
-            if n == 0 { break; }
+            let n = stream
+                .read(&mut tmp)
+                .context("http_min : lecture jusqu'à fermeture")?;
+            if n == 0 {
+                break;
+            }
             corps.extend_from_slice(&tmp[..n]);
         }
     }
-    Ok(Reponse { status, body: String::from_utf8_lossy(&corps).to_string() })
+    Ok(Reponse {
+        status,
+        body: String::from_utf8_lossy(&corps).to_string(),
+    })
 }
 
 /// Requête POST JSON. `delai` borne l'attente (un LLM local peut être lent).
 pub fn post_json(url: &str, payload: &str, delai: Duration) -> Result<Reponse> {
     let (hote, port, chemin) = parse_url(url)?;
     let addr = format!("{hote}:{port}");
-    let mut stream = TcpStream::connect(&addr)
-        .with_context(|| format!("http_min : connexion à {addr}"))?;
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("http_min : connexion à {addr}"))?;
     stream.set_read_timeout(Some(delai)).ok();
     stream.set_write_timeout(Some(delai)).ok();
     let requete = format!(
@@ -133,7 +161,9 @@ pub fn post_json(url: &str, payload: &str, delai: Duration) -> Result<Reponse> {
          Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
     );
-    stream.write_all(requete.as_bytes()).context("http_min : envoi")?;
+    stream
+        .write_all(requete.as_bytes())
+        .context("http_min : envoi")?;
     stream.flush().ok();
     lire_reponse(&mut stream)
 }
@@ -142,12 +172,13 @@ pub fn post_json(url: &str, payload: &str, delai: Duration) -> Result<Reponse> {
 pub fn get(url: &str, delai: Duration) -> Result<Reponse> {
     let (hote, port, chemin) = parse_url(url)?;
     let addr = format!("{hote}:{port}");
-    let mut stream = TcpStream::connect(&addr)
-        .with_context(|| format!("http_min : connexion à {addr}"))?;
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("http_min : connexion à {addr}"))?;
     stream.set_read_timeout(Some(delai)).ok();
-    let requete =
-        format!("GET {chemin} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    stream.write_all(requete.as_bytes()).context("http_min : envoi")?;
+    let requete = format!("GET {chemin} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(requete.as_bytes())
+        .context("http_min : envoi")?;
     stream.flush().ok();
     lire_reponse(&mut stream)
 }
@@ -213,8 +244,8 @@ where
 {
     let (hote, port, chemin) = parse_url(url)?;
     let addr = format!("{hote}:{port}");
-    let mut stream = TcpStream::connect(&addr)
-        .with_context(|| format!("http_min : connexion à {addr}"))?;
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("http_min : connexion à {addr}"))?;
     stream.set_read_timeout(Some(delai)).ok();
     stream.set_write_timeout(Some(delai)).ok();
     let requete = format!(
@@ -222,14 +253,18 @@ where
          Accept: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
     );
-    stream.write_all(requete.as_bytes()).context("http_min : envoi")?;
+    stream
+        .write_all(requete.as_bytes())
+        .context("http_min : envoi")?;
     stream.flush().ok();
 
     // En-têtes jusqu'au double CRLF (ils peuvent arriver en morceaux).
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut tmp = [0u8; 8192];
     let fin_entetes = loop {
-        let n = stream.read(&mut tmp).context("http_min : lecture des en-têtes")?;
+        let n = stream
+            .read(&mut tmp)
+            .context("http_min : lecture des en-têtes")?;
         if n == 0 {
             return Ok(false); // connexion fermée avant tout corps : rien à diffuser
         }
@@ -332,7 +367,7 @@ where
             let ligne: Vec<u8> = lignes.drain(..=p).collect();
             let texte = String::from_utf8_lossy(&ligne).trim().to_string();
             if !texte.is_empty() && !on_ligne(&texte) {
-                return Ok(true);   // arrêt demandé par le rappel : on ne lit plus
+                return Ok(true); // arrêt demandé par le rappel : on ne lit plus
             }
         }
     }

@@ -41,9 +41,9 @@
 use std::io::{BufRead, Write};
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::protocole::{analyser, executer_outil, Etat};
+use crate::protocole::{Etat, analyser, executer_outil};
 
 /// Version du protocole annoncée quand le client n'en propose aucune.
 /// On **renvoie celle du client** quand il en propose une : refuser une version
@@ -207,7 +207,11 @@ pub fn boucle(etat: &mut Etat, _secret: Option<&str>) -> Result<()> {
             "ping" => json!({}),
             "tools/list" => json!({ "tools": outils() }),
             "tools/call" => {
-                let nom = appel.params.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                let nom = appel
+                    .params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 let arguments = appel
                     .params
                     .get("arguments")
@@ -229,10 +233,9 @@ pub fn boucle(etat: &mut Etat, _secret: Option<&str>) -> Result<()> {
                             ),
                         }
                     }
-                    None => reponse_texte(
-                        &json!({ "error": format!("outil inconnu : {nom}") }),
-                        true,
-                    ),
+                    None => {
+                        reponse_texte(&json!({ "error": format!("outil inconnu : {nom}") }), true)
+                    }
                 }
             }
             autre => {

@@ -29,10 +29,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
-use crate::protocole::{analyser, repondre, Etat};
+use crate::protocole::{Etat, analyser, repondre};
 
 /// Chemin par défaut de la socket.
 ///
@@ -77,8 +77,9 @@ pub fn servir(chemin: &Path, etat: Arc<Mutex<Etat>>, secret: Option<String>) -> 
                 chemin.display()
             ),
             Err(_) => {
-                std::fs::remove_file(chemin)
-                    .with_context(|| format!("retrait de la socket périmée {}", chemin.display()))?;
+                std::fs::remove_file(chemin).with_context(|| {
+                    format!("retrait de la socket périmée {}", chemin.display())
+                })?;
             }
         }
     }
@@ -86,8 +87,8 @@ pub fn servir(chemin: &Path, etat: Arc<Mutex<Etat>>, secret: Option<String>) -> 
         std::fs::create_dir_all(parent).ok();
     }
 
-    let ecoute = UnixListener::bind(chemin)
-        .with_context(|| format!("écoute sur {}", chemin.display()))?;
+    let ecoute =
+        UnixListener::bind(chemin).with_context(|| format!("écoute sur {}", chemin.display()))?;
     // 0600 : le propriétaire seul. Posé APRÈS `bind` parce que le mode du
     // fichier n'existe qu'à partir de là — et avant d'accepter, pour qu'aucune
     // connexion ne soit servie pendant que la socket est encore ouverte.
@@ -103,10 +104,22 @@ pub fn servir(chemin: &Path, etat: Arc<Mutex<Etat>>, secret: Option<String>) -> 
     eprintln!(
         "selfd {} — nœud {} · socket {} · racine {} · exec {}",
         env!("CARGO_PKG_VERSION"),
-        etat.lock().map(|e| e.identite.node_id.clone()).unwrap_or_default(),
+        etat.lock()
+            .map(|e| e.identite.node_id.clone())
+            .unwrap_or_default(),
         chemin.display(),
-        etat.lock().map(|e| e.politique.racine.display().to_string()).unwrap_or_default(),
-        if etat.lock().map(|e| e.politique.exec_autorise).unwrap_or(false) { "autorise" } else { "REFUSE" },
+        etat.lock()
+            .map(|e| e.politique.racine.display().to_string())
+            .unwrap_or_default(),
+        if etat
+            .lock()
+            .map(|e| e.politique.exec_autorise)
+            .unwrap_or(false)
+        {
+            "autorise"
+        } else {
+            "REFUSE"
+        },
     );
 
     for flux in ecoute.incoming() {
@@ -184,13 +197,20 @@ pub fn appeler(
     ecriture.flush()?;
 
     let mut ligne = String::new();
-    lecteur.read_line(&mut ligne).context("lecture de la réponse du nœud")?;
+    lecteur
+        .read_line(&mut ligne)
+        .context("lecture de la réponse du nœud")?;
     if ligne.trim().is_empty() {
         bail!("le nœud a fermé la connexion sans répondre");
     }
     let v: Value = serde_json::from_str(&ligne).context("réponse illisible du nœud")?;
     if let Some(e) = v.get("error") {
-        bail!("{}", e.get("message").and_then(|m| m.as_str()).unwrap_or("erreur du nœud"));
+        bail!(
+            "{}",
+            e.get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("erreur du nœud")
+        );
     }
     Ok(v.get("result").cloned().unwrap_or(Value::Null))
 }

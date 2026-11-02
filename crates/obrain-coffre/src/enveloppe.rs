@@ -38,7 +38,7 @@ use zeroize::Zeroizing;
 
 use crate::aleatoire;
 use crate::cle::{
-    CleEspace, EmpreinteEspace, Usage, LONGUEUR_EMPREINTE, LONGUEUR_ETIQUETTE, LONGUEUR_NONCE,
+    CleEspace, EmpreinteEspace, LONGUEUR_EMPREINTE, LONGUEUR_ETIQUETTE, LONGUEUR_NONCE, Usage,
 };
 use crate::erreur::{CoffreError, Resultat};
 
@@ -600,7 +600,10 @@ mod tests {
     #[test]
     fn la_classe_se_lit_sans_la_cle() {
         let scellee = enveloppe("secret").sceller(&vec![0u8; 5000]).unwrap();
-        assert_eq!(ClasseTaille::lue(&scellee).unwrap(), ClasseTaille::Octets16384);
+        assert_eq!(
+            ClasseTaille::lue(&scellee).unwrap(),
+            ClasseTaille::Octets16384
+        );
         assert_eq!(
             ClasseTaille::lue(&scellee).unwrap().capacite(),
             16_384,
@@ -609,7 +612,10 @@ mod tests {
 
         let mut faux = scellee.clone();
         faux[5] = 99;
-        assert!(matches!(ClasseTaille::lue(&faux), Err(CoffreError::Format(_))));
+        assert!(matches!(
+            ClasseTaille::lue(&faux),
+            Err(CoffreError::Format(_))
+        ));
     }
 
     /// Les classes sont ordonnées et sans trou : `pour` rend la plus petite qui

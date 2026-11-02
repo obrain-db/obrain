@@ -1163,7 +1163,13 @@ mod tests {
         assert_eq!(graphe.edge_count(), aretes, "aucune arête PERFORMED écrite");
 
         // L'écrivain, lui, journalise toujours.
-        ecrivain.log_audit_event("e2", &principal, "graph:read", &Orn::node("alice", 1), PolicyDecision::Allow);
+        ecrivain.log_audit_event(
+            "e2",
+            &principal,
+            "graph:read",
+            &Orn::node("alice", 1),
+            PolicyDecision::Allow,
+        );
         assert_eq!(graphe.node_count(), noeuds + 1);
     }
 
@@ -1312,7 +1318,10 @@ mod tests {
 
         iam.delete_policy("p1").unwrap();
 
-        assert!(iam.get_policy("p1").is_none(), "une politique supprimée ne se lit plus");
+        assert!(
+            iam.get_policy("p1").is_none(),
+            "une politique supprimée ne se lit plus"
+        );
         assert!(iam.list_policies().is_empty());
         assert!(
             !iam.evaluate_access("u1", "graph:read", &ressource)
@@ -1346,7 +1355,10 @@ mod tests {
 
         iam.delete_role("r1").unwrap();
 
-        assert!(iam.get_role("r1").is_none(), "un rôle supprimé ne se lit plus");
+        assert!(
+            iam.get_role("r1").is_none(),
+            "un rôle supprimé ne se lit plus"
+        );
         assert!(iam.list_roles().is_empty());
         assert!(
             !iam.evaluate_access("u1", "graph:read", &ressource)

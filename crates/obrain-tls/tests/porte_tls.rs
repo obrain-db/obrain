@@ -46,7 +46,10 @@ use obrain_tls::{ConfigTls, EcouteTls, ErreurTls};
 /// comme feuillet par webpki (`CaUsedAsEndEntity`), et à raison : c'est
 /// exactement le genre de raccourci de test qui finit en production.
 const CHEMIN_AUTORITE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/donnees/ca.pem");
-const CHEMIN_CERTIFICAT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/donnees/cert-de-test.pem");
+const CHEMIN_CERTIFICAT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/donnees/cert-de-test.pem"
+);
 const CHEMIN_CLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/donnees/cle-de-test.pem");
 
 /// Ce qu'un observateur ne doit **jamais** pouvoir lire. Ces trois chaînes sont
@@ -114,10 +117,7 @@ fn config_de_test() -> ConfigTls {
 /// Un serveur chiffré qui sert **un** échange, puis rend son rapport.
 fn serveur_tls() -> (u16, mpsc::Receiver<Rapport>) {
     let ecoute = EcouteTls::lier("127.0.0.1:0", config_de_test()).expect("écoute");
-    let port = ecoute
-        .adresse_locale()
-        .expect("adresse locale")
-        .port();
+    let port = ecoute.adresse_locale().expect("adresse locale").port();
 
     let (emetteur, recepteur) = mpsc::channel();
     thread::spawn(move || {
@@ -169,8 +169,10 @@ fn relais_enregistreur(vers_port: u16) -> (u16, Arc<Mutex<Vec<u8>>>) {
             let _ = flux.set_read_timeout(Some(Duration::from_secs(5)));
         }
 
-        let (mut client_aller, mut serveur_aller) =
-            (client.try_clone().expect("clone"), serveur.try_clone().expect("clone"));
+        let (mut client_aller, mut serveur_aller) = (
+            client.try_clone().expect("clone"),
+            serveur.try_clone().expect("clone"),
+        );
         let vu_aller = Arc::clone(&vu);
         let vers_serveur = thread::spawn(move || {
             copier(&mut client_aller, &mut serveur_aller, &vu_aller);
@@ -225,7 +227,8 @@ fn client_tls(
         .with_root_certificates(racines)
         .with_no_client_auth();
     let nom = rustls::pki_types::ServerName::try_from("localhost").expect("nom de serveur");
-    let connexion = rustls::ClientConnection::new(Arc::new(config), nom).expect("connexion cliente");
+    let connexion =
+        rustls::ClientConnection::new(Arc::new(config), nom).expect("connexion cliente");
     let socket = TcpStream::connect(("127.0.0.1", port)).expect("connexion TCP");
     rustls::StreamOwned::new(connexion, socket)
 }
@@ -440,7 +443,8 @@ fn un_client_qui_ne_croit_pas_le_certificat_est_refuse() {
 /// C'est ce qui autorise une surface à annoncer « je ne suis pas démarré »
 /// plutôt que de laisser croire qu'elle sert quelque chose.
 #[test]
-fn sans_certificat_aucune_ecoute_n_existe() {    let erreur = ConfigTls::depuis_fichiers(
+fn sans_certificat_aucune_ecoute_n_existe() {
+    let erreur = ConfigTls::depuis_fichiers(
         Path::new("/inexistant/certificat.pem"),
         Path::new(CHEMIN_CLE),
     )

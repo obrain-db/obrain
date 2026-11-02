@@ -548,7 +548,9 @@ mod tests {
         // Le mot de passe se pose par un fournisseur CONCRET — mais il vit dans
         // le magasin, donc la garde (qui a le sien) le vérifiera.
         let amorceur = ObrainIamProvider::new(Arc::clone(&store), "obrain");
-        amorceur.set_user_password("u1", "mot-de-passe-de-test").unwrap();
+        amorceur
+            .set_user_password("u1", "mot-de-passe-de-test")
+            .unwrap();
         (
             Garde::nouvelle(magasin, armee, "obrain"),
             "mot-de-passe-de-test".to_string(),
@@ -576,10 +578,17 @@ mod tests {
 
         // 2) ce jeton ouvre ce que la politique permet
         let session = garde.authentifier(Some(&jeton)).unwrap().unwrap();
-        assert!(garde.controler(Some(&session), false, "runtime-dev").is_ok());
+        assert!(
+            garde
+                .controler(Some(&session), false, "runtime-dev")
+                .is_ok()
+        );
 
         // 3) se déconnecter le ferme POUR DE BON
-        assert!(garde.deconnecter(&jeton).unwrap(), "un credential a été révoqué");
+        assert!(
+            garde.deconnecter(&jeton).unwrap(),
+            "un credential a été révoqué"
+        );
         assert!(
             garde.authentifier(Some(&jeton)).is_err(),
             "après déconnexion, le jeton ne doit plus rien ouvrir"
@@ -594,7 +603,11 @@ mod tests {
     fn un_mauvais_mot_de_passe_n_emet_aucun_jeton() {
         let (garde, _) = amorce_avec_mot_de_passe(true);
         assert!(garde.connecter("amorce", "mauvais", 3600).is_err());
-        assert!(garde.connecter("inconnu", "mot-de-passe-de-test", 3600).is_err());
+        assert!(
+            garde
+                .connecter("inconnu", "mot-de-passe-de-test", 3600)
+                .is_err()
+        );
     }
 
     /// Un jeton EXPIRÉ ne vaut plus rien. Défaut corrigé le 2026-09-13 :
@@ -604,7 +617,10 @@ mod tests {
     fn un_jeton_expire_ne_vaut_plus_rien() {
         let (garde, mot_de_passe) = amorce_avec_mot_de_passe(true);
         let jeton = garde.connecter("amorce", &mot_de_passe, 1).unwrap();
-        assert!(garde.authentifier(Some(&jeton)).is_ok(), "valable à l'émission");
+        assert!(
+            garde.authentifier(Some(&jeton)).is_ok(),
+            "valable à l'émission"
+        );
         std::thread::sleep(std::time::Duration::from_millis(1100));
         assert!(
             garde.authentifier(Some(&jeton)).is_err(),
@@ -650,9 +666,17 @@ mod tests {
         let jeton = garde.connecter("amorce", &mot_de_passe, 3600).unwrap();
         let session = garde.authentifier(Some(&jeton)).unwrap().unwrap();
         // 3) une autorisation…
-        assert!(garde.controler(Some(&session), false, "runtime-dev").is_ok());
+        assert!(
+            garde
+                .controler(Some(&session), false, "runtime-dev")
+                .is_ok()
+        );
         // …et un refus (autre base)
-        assert!(garde.controler(Some(&session), false, "autre-base").is_err());
+        assert!(
+            garde
+                .controler(Some(&session), false, "autre-base")
+                .is_err()
+        );
 
         let evenements = garde.audit(100);
         let actions: Vec<&str> = evenements.iter().map(|e| e.action.as_str()).collect();
@@ -701,7 +725,10 @@ mod tests {
         // pas connaître HTTP.
         match garde.controler(None, false, "runtime-dev") {
             Err(IamError::AccessDenied { reason }) => {
-                assert!(reason.contains("aucune identité"), "raison utile : {reason}");
+                assert!(
+                    reason.contains("aucune identité"),
+                    "raison utile : {reason}"
+                );
             }
             autre => panic!("attendu AccessDenied, obtenu {autre:?}"),
         }
@@ -719,7 +746,11 @@ mod tests {
     fn armee_autorise_ce_que_la_politique_autorise() {
         let (garde, jeton) = amorce(true);
         let session = garde.authentifier(Some(&jeton)).unwrap().unwrap();
-        assert!(garde.controler(Some(&session), false, "runtime-dev").is_ok());
+        assert!(
+            garde
+                .controler(Some(&session), false, "runtime-dev")
+                .is_ok()
+        );
     }
 
     /// La portée tient : la même identité n'obtient RIEN sur une autre base.
@@ -746,9 +777,15 @@ mod tests {
     fn une_ecriture_exige_le_droit_d_ecrire() {
         let (garde, jeton) = amorce(true);
         let session = garde.authentifier(Some(&jeton)).unwrap().unwrap();
-        assert!(garde.controler(Some(&session), false, "runtime-dev").is_ok());
         assert!(
-            garde.controler(Some(&session), true, "runtime-dev").is_err(),
+            garde
+                .controler(Some(&session), false, "runtime-dev")
+                .is_ok()
+        );
+        assert!(
+            garde
+                .controler(Some(&session), true, "runtime-dev")
+                .is_err(),
             "graph:read ne doit pas ouvrir l'écriture"
         );
     }

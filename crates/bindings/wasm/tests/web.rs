@@ -106,9 +106,11 @@ fn test_roundtrip_entre_deux_bases() {
     assert_eq!(db.node_count(), 1);
 
     // Relecture par la surface publique : la valeur relue est la source de vérité.
-    let rows = db.execute("MATCH (n:Person) RETURN n.name AS name").expect("read");
-    let premiere = js_sys::Reflect::get(&rows, &wasm_bindgen::JsValue::from_f64(0.0))
-        .expect("ligne 0");
+    let rows = db
+        .execute("MATCH (n:Person) RETURN n.name AS name")
+        .expect("read");
+    let premiere =
+        js_sys::Reflect::get(&rows, &wasm_bindgen::JsValue::from_f64(0.0)).expect("ligne 0");
     let nom = js_sys::Reflect::get(&premiere, &wasm_bindgen::JsValue::from_str("name"))
         .expect("colonne name")
         .as_string()
@@ -440,8 +442,8 @@ fn test_roundtrip_avec_arete() {
     let rows = db
         .execute("MATCH (:Person)-[r:KNOWS]->(:Person) RETURN type(r) AS t")
         .expect("read edge");
-    let ligne = js_sys::Reflect::get(&rows, &wasm_bindgen::JsValue::from_f64(0.0))
-        .expect("ligne 0");
+    let ligne =
+        js_sys::Reflect::get(&rows, &wasm_bindgen::JsValue::from_f64(0.0)).expect("ligne 0");
     let t = js_sys::Reflect::get(&ligne, &wasm_bindgen::JsValue::from_str("t"))
         .expect("colonne t")
         .as_string()

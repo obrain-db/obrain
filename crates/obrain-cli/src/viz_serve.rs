@@ -120,13 +120,25 @@ mod vent {
                 .map(|(i, us)| format!("{}={us:.0}", NOM[i]))
                 .collect::<Vec<_>>()
                 .join(" ");
-            eprintln!("[surface] {chemin} octets={octets} total={:.0}us {postes}", v[ROUTE]);
+            eprintln!(
+                "[surface] {chemin} octets={octets} total={:.0}us {postes}",
+                v[ROUTE]
+            );
         });
     }
 
     const NOM: [&str; POSTES] = [
-        "lecture", "route", "params", "mtime", "generation", "cle", "qcache", "sans_mesure",
-        "moteur", "ecriture", "activation",
+        "lecture",
+        "route",
+        "params",
+        "mtime",
+        "generation",
+        "cle",
+        "qcache",
+        "sans_mesure",
+        "moteur",
+        "ecriture",
+        "activation",
     ];
 }
 
@@ -158,8 +170,8 @@ static HANDLES_RO: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, EntreeRo>>,
 > = std::sync::OnceLock::new();
 
-pub(crate) fn carte_handles_ro(
-) -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, EntreeRo>> {
+pub(crate) fn carte_handles_ro()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, EntreeRo>> {
     HANDLES_RO.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -201,15 +213,15 @@ pub(crate) fn cached_ro_si_present(
 /// chemins qui s'en servent (atlas, self) la trouvent déjà ouverte ; sinon ils
 /// gardent leurs replis, et le service reste vivant.
 pub(crate) fn prechauffer_synapse(config: &ServeConfig) {
-    let Some(p) = config.synapse_store.clone() else { return };
-    std::thread::spawn(move || {
-        match cached_ro(&p) {
-            Ok(_) => tracing::info!(store = %p.display(), "base synaptique ouverte (tâche de fond)"),
-            Err(e) => tracing::warn!(
-                store = %p.display(), erreur = %e,
-                "base synaptique indisponible — l'atlas et le self se rabattront sur leurs replis"
-            ),
-        }
+    let Some(p) = config.synapse_store.clone() else {
+        return;
+    };
+    std::thread::spawn(move || match cached_ro(&p) {
+        Ok(_) => tracing::info!(store = %p.display(), "base synaptique ouverte (tâche de fond)"),
+        Err(e) => tracing::warn!(
+            store = %p.display(), erreur = %e,
+            "base synaptique indisponible — l'atlas et le self se rabattront sur leurs replis"
+        ),
     });
 }
 
@@ -323,7 +335,10 @@ pub(crate) fn cached_ro(path: &std::path::Path) -> Result<std::sync::Arc<obrain_
     {
         let mut g = verrou(&map);
         if g.len() >= MAX_BASES_GARDEES && !g.contains_key(path) {
-            let plus_ancien = g.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone());
+            let plus_ancien = g
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone());
             if let Some(k) = plus_ancien {
                 // `Arc` retiré ⇒ base fermée ⇒ descripteurs rendus (sauf si un
                 // appel en cours en détient encore une copie : c'est voulu).
@@ -413,7 +428,11 @@ fn lire_mtime(path: &std::path::Path) -> Option<u128> {
     // journal. C'est exactement la sémantique voulue pour un cache d'agrégat :
     // « ce que j'ai calculé est-il encore vrai ? »
     let meta = path.join("substrate.meta");
-    let cible = if meta.exists() { meta } else { path.to_path_buf() };
+    let cible = if meta.exists() {
+        meta
+    } else {
+        path.to_path_buf()
+    };
     std::fs::metadata(&cible)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -457,7 +476,9 @@ fn dir_cache() -> std::path::PathBuf {
         let base = std::env::var_os("XDG_CACHE_HOME")
             .map(std::path::PathBuf::from)
             .filter(|p| p.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")));
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
+            });
         let Some(base) = base else {
             return std::path::PathBuf::from("/tmp/obrain-viz-cache");
         };
@@ -482,14 +503,18 @@ fn migrer_depuis_tmp(neuf: &std::path::Path) {
     if !ancien.is_dir() || ancien == neuf {
         return;
     }
-    let Ok(entrees) = std::fs::read_dir(ancien) else { return };
+    let Ok(entrees) = std::fs::read_dir(ancien) else {
+        return;
+    };
     let mut repris = 0usize;
     for e in entrees.flatten() {
         let chemin = e.path();
         if !chemin.is_file() || chemin.extension().and_then(|x| x.to_str()) != Some("json") {
             continue;
         }
-        let Some(nom) = chemin.file_name() else { continue };
+        let Some(nom) = chemin.file_name() else {
+            continue;
+        };
         let cible = neuf.join(nom);
         if cible.exists() {
             continue;
@@ -524,16 +549,31 @@ fn rang_ecrire(store: &std::path::Path, rank: usize) {
     let _ = std::fs::write(p, serde_json::json!({ "rank": rank }).to_string());
 }
 
-pub(crate) fn disk_load(kind: &str, store: &std::path::Path, extra: &str, mt: Option<u128>) -> Option<String> {
+pub(crate) fn disk_load(
+    kind: &str,
+    store: &std::path::Path,
+    extra: &str,
+    mt: Option<u128>,
+) -> Option<String> {
     let text = std::fs::read_to_string(disk_path(kind, store, extra)).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     let m = v.get("m").and_then(|x| x.as_u64());
-    if m != mt.map(|m| m as u64) { return None; }
+    if m != mt.map(|m| m as u64) {
+        return None;
+    }
     v.get("b").and_then(|x| x.as_str()).map(String::from)
 }
-pub(crate) fn disk_save(kind: &str, store: &std::path::Path, extra: &str, mt: Option<u128>, body: &str) {
+pub(crate) fn disk_save(
+    kind: &str,
+    store: &std::path::Path,
+    extra: &str,
+    mt: Option<u128>,
+    body: &str,
+) {
     let p = disk_path(kind, store, extra);
-    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
     let j = serde_json::json!({ "m": mt.map(|m| m as u64), "b": body });
     let _ = std::fs::write(p, j.to_string());
 }
@@ -633,7 +673,8 @@ const VENDOR_FILES: &[&str] = &["three.min.js", "OrbitControls.js"];
 /// page périmée sans le dire serait un mensonge de plus.
 fn derniere_page() -> &'static std::sync::Mutex<Option<(String, Option<std::time::SystemTime>)>> {
     use std::sync::{Mutex, OnceLock};
-    static DERNIERE: OnceLock<Mutex<Option<(String, Option<std::time::SystemTime>)>>> = OnceLock::new();
+    static DERNIERE: OnceLock<Mutex<Option<(String, Option<std::time::SystemTime>)>>> =
+        OnceLock::new();
     DERNIERE.get_or_init(|| Mutex::new(None))
 }
 
@@ -657,8 +698,7 @@ fn app_dir() -> std::path::PathBuf {
     {
         return std::path::PathBuf::from(d);
     }
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/obrain-dashboard/dist")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/obrain-dashboard/dist")
 }
 pub(crate) const VIZ_JSON: &str = "application/json";
 
@@ -710,7 +750,9 @@ fn mondes_visibles(
     config: &ServeConfig,
 ) -> Vec<(String, std::path::PathBuf)> {
     let tous = tous_les_mondes(config);
-    let Some(g) = garde_interieure() else { return tous };
+    let Some(g) = garde_interieure() else {
+        return tous;
+    };
     let Some(jeton) = jeton_presente(entetes, query).filter(|j| !j.trim().is_empty()) else {
         return Vec::new();
     };
@@ -718,12 +760,15 @@ fn mondes_visibles(
         return Vec::new();
     };
     let espace = |p: &std::path::Path| -> String {
-        p.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default()
+        p.file_stem()
+            .map(|x| x.to_string_lossy().to_string())
+            .unwrap_or_default()
     };
     let moi = format!("{}@{}", s.username(), compte_iam());
     tous.into_iter()
         .filter(|(_, path)| {
-            g.controler_action(Some(&s), ACTION_LECTURE_HTTP, &espace(path)).is_ok()
+            g.controler_action(Some(&s), ACTION_LECTURE_HTTP, &espace(path))
+                .is_ok()
                 || crate::worlds::proprietaire_de(path).is_some_and(|p| p == moi)
         })
         .collect()
@@ -748,7 +793,10 @@ impl ServeConfig {
         if let Some((_, path)) = self.presets.iter().find(|(l, _)| l == param) {
             return Some(path.clone());
         }
-        if let Some(m) = crate::worlds::enregistres().into_iter().find(|m| m.label == param) {
+        if let Some(m) = crate::worlds::enregistres()
+            .into_iter()
+            .find(|m| m.label == param)
+        {
             return Some(m.store);
         }
         Some(PathBuf::from(param))
@@ -1065,7 +1113,10 @@ fn prechauffer_les_bases(config: &ServeConfig) {
                 // Phase 1 : les propriétés LÉGÈRES (6 168 ms mesurés en tout).
                 // Les lourdes (`text`) sont traitées en phase 2, après la pause
                 // et pour le seul monde par défaut — voir `PROPS_LOURDES`.
-                for prop in PROPS_TEXTUELLES.iter().filter(|p| !PROPS_LOURDES.contains(p)) {
+                for prop in PROPS_TEXTUELLES
+                    .iter()
+                    .filter(|p| !PROPS_LOURDES.contains(p))
+                {
                     // Une propriété ABSENTE du catalogue ferait balayer tout le
                     // store pour rien (et « construirait » un index vide) : on
                     // ne sonde que ce que la base déclare.
@@ -1155,7 +1206,10 @@ fn prechauffer_les_bases(config: &ServeConfig) {
                     };
                     let echeance2 = std::time::Instant::now()
                         + std::time::Duration::from_millis(budget_precho_trigrammes_ms());
-                    for prop in PROPS_TEXTUELLES.iter().filter(|p| PROPS_LOURDES.contains(p)) {
+                    for prop in PROPS_TEXTUELLES
+                        .iter()
+                        .filter(|p| PROPS_LOURDES.contains(p))
+                    {
                         if !presentes.contains(prop) {
                             continue;
                         }
@@ -1295,7 +1349,9 @@ fn spawn_entretien(config: &ServeConfig, minutes: u64) {
                             // le classement n'existe pas, et pourquoi — sinon il
                             // croira qu'aucun nœud n'est connecté.
                             let _ = crate::hubs::persister(&path, &classement);
-                            eprintln!("viz serve : entretien {label} — classement REFUSÉ : {refus}");
+                            eprintln!(
+                                "viz serve : entretien {label} — classement REFUSÉ : {refus}"
+                            );
                         } else if !classement.hubs.is_empty() {
                             let _ = crate::hubs::persister(&path, &classement);
                             eprintln!(
@@ -1494,7 +1550,12 @@ impl GardeIam {
     fn depuis_env() -> Self {
         #[cfg(feature = "iam")]
         {
-            let inerte = |etat: String| GardeIam { interieure: None, identites: None, ecriture: false, etat };
+            let inerte = |etat: String| GardeIam {
+                interieure: None,
+                identites: None,
+                ecriture: false,
+                etat,
+            };
             let Some(chemin) = std::env::var("OBRAIN_IAM_STORE")
                 .ok()
                 .map(|v| v.trim().to_string())
@@ -1521,23 +1582,31 @@ impl GardeIam {
             // seule — mais on le DIT, et les routes de session le disent aussi :
             // mieux vaut une connexion annoncée impossible qu'une déconnexion
             // qui ne ferme rien.
-            let ouverture: std::result::Result<obrain_engine::ObrainDB, String> =
-                if IAM_EN_LECTURE.load(std::sync::atomic::Ordering::SeqCst) {
-                    Err("processus lecteur (pont) : le magasin d'identités n'a qu'un écrivain, viz serve".to_string())
-                } else {
-                    obrain_engine::ObrainDB::open_shared_write(std::path::Path::new(&chemin))
-                        .map_err(|e| e.to_string())
-                };
+            let ouverture: std::result::Result<obrain_engine::ObrainDB, String> = if IAM_EN_LECTURE
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                Err("processus lecteur (pont) : le magasin d'identités n'a qu'un écrivain, viz serve".to_string())
+            } else {
+                obrain_engine::ObrainDB::open_shared_write(std::path::Path::new(&chemin))
+                    .map_err(|e| e.to_string())
+            };
             match ouverture {
                 Ok(db) => {
                     let graphe = db.graph_store();
                     let garde = std::sync::Arc::new(obrain_iam::Garde::depuis_env(
                         std::sync::Arc::clone(&graphe),
                     ));
-                    let identites =
-                        std::sync::Arc::new(obrain_iam::IamStore::new(graphe));
-                    let etat = format!("{} (magasin en écriture : sessions émises et révoquées)", garde.etat());
-                    GardeIam { interieure: Some(garde), identites: Some(identites), ecriture: true, etat }
+                    let identites = std::sync::Arc::new(obrain_iam::IamStore::new(graphe));
+                    let etat = format!(
+                        "{} (magasin en écriture : sessions émises et révoquées)",
+                        garde.etat()
+                    );
+                    GardeIam {
+                        interieure: Some(garde),
+                        identites: Some(identites),
+                        ecriture: true,
+                        etat,
+                    }
                 }
                 Err(e_ecriture) => {
                     match obrain_engine::ObrainDB::open_read_only(std::path::Path::new(&chemin)) {
@@ -1545,9 +1614,9 @@ impl GardeIam {
                             let graphe = db.graph_store();
                             // Ouvert en lecture : le substrate n'y refuse pas les
                             // mutations, c'est donc la garde qui s'abstient d'écrire.
-                            let garde = std::sync::Arc::new(
-                                obrain_iam::Garde::depuis_env_lecteur(std::sync::Arc::clone(&graphe)),
-                            );
+                            let garde = std::sync::Arc::new(obrain_iam::Garde::depuis_env_lecteur(
+                                std::sync::Arc::clone(&graphe),
+                            ));
                             let identites =
                                 std::sync::Arc::new(obrain_iam::IamStore::new(graphe).sans_audit());
                             let etat = format!(
@@ -1556,7 +1625,12 @@ impl GardeIam {
                                  l'administration des comptes est fermée.",
                                 garde.etat()
                             );
-                            GardeIam { interieure: Some(garde), identites: Some(identites), ecriture: false, etat }
+                            GardeIam {
+                                interieure: Some(garde),
+                                identites: Some(identites),
+                                ecriture: false,
+                                etat,
+                            }
                         }
                         Err(e) => inerte(format!(
                             "IAM NON ARMÉ — le magasin d'identités « {chemin} » n'a pas pu être \
@@ -2099,7 +2173,6 @@ pub(crate) fn jeton_du_pont() -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-
 /// ── LE SERVEUR SERT-IL CE CHEMIN ? (manque 6, 2026-09-16) ───────────────────
 ///
 /// Défaut mesuré par le donneur d'ordre, et qui lui a coûté du temps : avec
@@ -2209,7 +2282,9 @@ fn vise_sa_propre_base(config: &ServeConfig, query: Option<&str>, identite: Opti
     if utilisateur.is_empty() {
         return false;
     }
-    let Some(dossier) = config.default_path().and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    let Some(dossier) = config
+        .default_path()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
     else {
         return false;
     };
@@ -2217,7 +2292,10 @@ fn vise_sa_propre_base(config: &ServeConfig, query: Option<&str>, identite: Opti
     let Some(vise) = config.resolve(parse_query(query).get("store").map(String::as_str)) else {
         return false;
     };
-    match (std::fs::canonicalize(&attendu), std::fs::canonicalize(&vise)) {
+    match (
+        std::fs::canonicalize(&attendu),
+        std::fs::canonicalize(&vise),
+    ) {
         (Ok(a), Ok(v)) => a == v,
         _ => false,
     }
@@ -2263,7 +2341,6 @@ fn garde_interieure() -> Option<&'static std::sync::Arc<obrain_iam::Garde>> {
         None
     }
 }
-
 
 /// L'espace d'une requête d'ADMINISTRATION : `?espace=` ou `espace=` du corps.
 ///
@@ -2531,7 +2608,9 @@ fn encodage_negocie(accepte: Option<&str>, type_mime: &str, taille: usize) -> En
         let q = morceaux
             .find_map(|p| {
                 let p = p.trim();
-                p.strip_prefix("q=").or_else(|| p.strip_prefix("Q=")).map(str::trim)
+                p.strip_prefix("q=")
+                    .or_else(|| p.strip_prefix("Q="))
+                    .map(str::trim)
             })
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(1.0);
@@ -2562,8 +2641,8 @@ fn encodage_negocie(accepte: Option<&str>, type_mime: &str, taille: usize) -> En
 /// format **zlib** (RFC 1950), qui est celui que la RFC 9110 nomme, et non du
 /// deflate brut (RFC 1951) que certains serveurs envoient par erreur.
 fn compresser(corps: &[u8], encodage: Encodage) -> std::io::Result<Vec<u8>> {
-    use flate2::write::{GzEncoder, ZlibEncoder};
     use flate2::Compression;
+    use flate2::write::{GzEncoder, ZlibEncoder};
     // Niveau 6 = le défaut de zlib, et celui des mesures : 1 286 462 → 377 771
     // octets sur le bundle, pour 30-40 ms de processeur, une fois par visite.
     let niveau = Compression::new(6);
@@ -2632,7 +2711,10 @@ fn date_http_a(t: SystemTime) -> String {
     const MOIS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let secs = t.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let jours = secs.div_euclid(86_400);
     let reste = secs.rem_euclid(86_400);
     let (annee, mois, jour) = civil_depuis_jours(jours);
@@ -2716,7 +2798,10 @@ struct Requete {
 
 impl Requete {
     fn entete(&self, nom: &str) -> Option<&str> {
-        self.entetes.iter().find(|(n, _)| n == nom).map(|(_, v)| v.as_str())
+        self.entetes
+            .iter()
+            .find(|(n, _)| n == nom)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -2729,7 +2814,10 @@ fn trouver(meule: &[u8], aiguille: &[u8]) -> Option<usize> {
 }
 
 fn est_delai(e: &std::io::Error) -> bool {
-    matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
 }
 
 /// Extrait UNE requête du tampon, sans toucher à la socket.
@@ -2741,14 +2829,20 @@ fn est_delai(e: &std::io::Error) -> bool {
 fn extraire_requete(tampon: &mut Vec<u8>) -> Result<Extraction, ErreurLecture> {
     let Some(fin) = trouver(tampon, b"\r\n\r\n") else {
         if tampon.len() > MAX_ENTETES {
-            return Err(ErreurLecture::Refus(431, format!("en-têtes au-delà de {MAX_ENTETES} octets")));
+            return Err(ErreurLecture::Refus(
+                431,
+                format!("en-têtes au-delà de {MAX_ENTETES} octets"),
+            ));
         }
         return Ok(Extraction::Incomplete);
     };
     // Le plafond vaut aussi quand le terminateur EST là : un client peut envoyer
     // 1 Mo d'en-têtes d'un seul coup, et le tampon les aurait acceptés.
     if fin > MAX_ENTETES {
-        return Err(ErreurLecture::Refus(431, format!("bloc d'en-têtes de {fin} octets")));
+        return Err(ErreurLecture::Refus(
+            431,
+            format!("bloc d'en-têtes de {fin} octets"),
+        ));
     }
     let bloc = String::from_utf8_lossy(&tampon[..fin]).into_owned();
 
@@ -2769,18 +2863,32 @@ fn extraire_requete(tampon: &mut Vec<u8>) -> Result<Extraction, ErreurLecture> {
     }
     let (methode, cible, version) = (champs[0], champs[1], champs[2]);
     if ligne.len() > MAX_CIBLE {
-        return Err(ErreurLecture::Refus(414, format!("cible de {} octets", ligne.len())));
+        return Err(ErreurLecture::Refus(
+            414,
+            format!("cible de {} octets", ligne.len()),
+        ));
     }
     if !methode.bytes().all(|c| c.is_ascii_uppercase() || c == b'-') {
-        return Err(ErreurLecture::Refus(400, format!("méthode invalide : « {} »", tronque(methode, 32))));
+        return Err(ErreurLecture::Refus(
+            400,
+            format!("méthode invalide : « {} »", tronque(methode, 32)),
+        ));
     }
     let http11 = match version {
         "HTTP/1.1" => true,
         "HTTP/1.0" => false,
         v if v.starts_with("HTTP/") => {
-            return Err(ErreurLecture::Refus(505, format!("version « {v} » non servie (1.0 et 1.1 le sont)")));
+            return Err(ErreurLecture::Refus(
+                505,
+                format!("version « {v} » non servie (1.0 et 1.1 le sont)"),
+            ));
         }
-        v => return Err(ErreurLecture::Refus(400, format!("version illisible : « {} »", tronque(v, 32)))),
+        v => {
+            return Err(ErreurLecture::Refus(
+                400,
+                format!("version illisible : « {} »", tronque(v, 32)),
+            ));
+        }
     };
 
     // ── LES EN-TÊTES ───────────────────────────────────────────────────────
@@ -2790,18 +2898,27 @@ fn extraire_requete(tampon: &mut Vec<u8>) -> Result<Extraction, ErreurLecture> {
             continue;
         }
         let Some((nom, valeur)) = l.split_once(':') else {
-            return Err(ErreurLecture::Refus(400, format!("en-tête sans deux-points : « {} »", tronque(l, 60))));
+            return Err(ErreurLecture::Refus(
+                400,
+                format!("en-tête sans deux-points : « {} »", tronque(l, 60)),
+            ));
         };
         // Un nom d'en-tête est un `token` (RFC 9110 §5.6.2) : ni espace, ni
         // caractère hors ASCII. Un espace avant les deux-points est refusé par la
         // RFC, et c'est aussi la technique classique de désynchronisation entre
         // deux analyseurs qui ne lisent pas la même chose.
         if nom.is_empty() || !nom.bytes().all(|c| c.is_ascii_graphic() && c != b' ') {
-            return Err(ErreurLecture::Refus(400, format!("nom d'en-tête invalide : « {} »", tronque(nom, 40))));
+            return Err(ErreurLecture::Refus(
+                400,
+                format!("nom d'en-tête invalide : « {} »", tronque(nom, 40)),
+            ));
         }
         let valeur = valeur.trim();
         if valeur.len() > 8192 {
-            return Err(ErreurLecture::Refus(431, format!("valeur de « {nom} » : {} octets", valeur.len())));
+            return Err(ErreurLecture::Refus(
+                431,
+                format!("valeur de « {nom} » : {} octets", valeur.len()),
+            ));
         }
         entetes.push((nom.to_ascii_lowercase(), valeur.to_string()));
     }
@@ -2810,32 +2927,51 @@ fn extraire_requete(tampon: &mut Vec<u8>) -> Result<Extraction, ErreurLecture> {
     // `Host` recevait 200 — deux clients pouvaient donc viser deux ressources
     // différentes avec la même requête, et ce serveur répondait aux deux.
     // En 1.0 il reste FACULTATIF : l'exiger casserait des clients légitimes.
-    let hote = entetes.iter().find(|(n, _)| n == "host").map(|(_, v)| v.as_str()).unwrap_or("");
+    let hote = entetes
+        .iter()
+        .find(|(n, _)| n == "host")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
     if http11 && hote.is_empty() {
-        return Err(ErreurLecture::Refus(400, "HTTP/1.1 sans en-tête Host".to_string()));
+        return Err(ErreurLecture::Refus(
+            400,
+            "HTTP/1.1 sans en-tête Host".to_string(),
+        ));
     }
 
     // ── LE CORPS : LONGUEUR D'ABORD, ET SANS AMBIGUÏTÉ ─────────────────────
     if entetes.iter().any(|(n, _)| n == "transfer-encoding") {
         return Err(ErreurLecture::Refus(
             501,
-            "Transfer-Encoding non pris en charge (ce serveur ne lit pas les corps par blocs)".to_string(),
+            "Transfer-Encoding non pris en charge (ce serveur ne lit pas les corps par blocs)"
+                .to_string(),
         ));
     }
-    let longueurs: Vec<&str> =
-        entetes.iter().filter(|(n, _)| n == "content-length").map(|(_, v)| v.as_str()).collect();
+    let longueurs: Vec<&str> = entetes
+        .iter()
+        .filter(|(n, _)| n == "content-length")
+        .map(|(_, v)| v.as_str())
+        .collect();
     let longueur = match longueurs.as_slice() {
         [] => 0,
         [une] => match une.trim().parse::<usize>() {
             Ok(n) => n,
             Err(_) => {
-                return Err(ErreurLecture::Refus(400, format!("Content-Length illisible : « {} »", tronque(une, 32))));
+                return Err(ErreurLecture::Refus(
+                    400,
+                    format!("Content-Length illisible : « {} »", tronque(une, 32)),
+                ));
             }
         },
         // DEUX `Content-Length` : on refuse au lieu de choisir. C'est la signature
         // d'une désynchronisation de requête (deux analyseurs, deux longueurs), et
         // « choisir » revient à décider lequel des deux ment.
-        _ => return Err(ErreurLecture::Refus(400, "Content-Length répété".to_string())),
+        _ => {
+            return Err(ErreurLecture::Refus(
+                400,
+                "Content-Length répété".to_string(),
+            ));
+        }
     };
     if longueur > MAX_CORPS {
         // Refusé AVANT de lire : mesuré, un `Content-Length` menteur de 10 Mo
@@ -2906,7 +3042,10 @@ struct Lecteur {
 
 impl Lecteur {
     fn nouveau(flux: TcpStream) -> Self {
-        Self { flux, tampon: Vec::with_capacity(8192) }
+        Self {
+            flux,
+            tampon: Vec::with_capacity(8192),
+        }
     }
 
     fn delai_lecture(&mut self, d: Duration) {
@@ -2937,7 +3076,9 @@ impl Lecteur {
                         // rien, il n'y a rien à lui répondre.
                         ErreurLecture::Fin
                     } else {
-                        ErreurLecture::Partielle("le client a fermé avant la fin de sa requête".to_string())
+                        ErreurLecture::Partielle(
+                            "le client a fermé avant la fin de sa requête".to_string(),
+                        )
                     });
                 }
                 Ok(_) => {}
@@ -2958,7 +3099,10 @@ impl Lecteur {
 /// qu'à la requête), donc la règle de keep-alive est vérifiable sans socket.
 fn etat_du_client(req: &Requete) -> EtatConnexion {
     let connexion = req.entete("connection").unwrap_or("");
-    let jetons: Vec<String> = connexion.split(',').map(|t| t.trim().to_ascii_lowercase()).collect();
+    let jetons: Vec<String> = connexion
+        .split(',')
+        .map(|t| t.trim().to_ascii_lowercase())
+        .collect();
     let fermeture_demandee = jetons.iter().any(|t| t == "close");
     let garde_demandee = jetons.iter().any(|t| t == "keep-alive");
     // HTTP/1.1 garde la connexion PAR DÉFAUT ; 1.0 seulement si le client le
@@ -2989,7 +3133,9 @@ fn etat_du_client(req: &Requete) -> EtatConnexion {
 /// sources pour une même vérité).
 fn methode_refusee(chemin: &str, methode: &str) -> Option<&'static str> {
     match chemin {
-        "/api/auth/login" | "/api/auth/logout" | "/api/auth/refresh" if methode != "POST" => Some("POST"),
+        "/api/auth/login" | "/api/auth/logout" | "/api/auth/refresh" if methode != "POST" => {
+            Some("POST")
+        }
         // ── LES GESTES D'ADMINISTRATION SE POSTENT, ILS NE SE LIENT PAS ─────
         // Sans cette liste, `GET /api/iam/utilisateur/desactiver?nom=alice`
         // fermerait un compte : il suffirait qu'un navigateur ou un préchargeur
@@ -3028,8 +3174,10 @@ fn methode_refusee(chemin: &str, methode: &str) -> Option<&'static str> {
 /// immobile en fil ET descripteur perdus pour toujours. Le keep-alive n'est sûr
 /// QUE parce que les délais existent.
 fn handle(flux: TcpStream, config: &ServeConfig) -> Result<()> {
-    flux.set_read_timeout(Some(DELAI_LECTURE)).context("délai de lecture de la socket")?;
-    flux.set_write_timeout(Some(DELAI_ECRITURE)).context("délai d'écriture de la socket")?;
+    flux.set_read_timeout(Some(DELAI_LECTURE))
+        .context("délai de lecture de la socket")?;
+    flux.set_write_timeout(Some(DELAI_ECRITURE))
+        .context("délai d'écriture de la socket")?;
     // `nodelay` : une réponse tient en une écriture, et l'algorithme de Nagle y
     // ajoutait jusqu'à 40 ms d'attente pour rien.
     let _ = flux.set_nodelay(true);
@@ -3050,7 +3198,11 @@ fn handle(flux: TcpStream, config: &ServeConfig) -> Result<()> {
         // qui naissent avant qu'une requête existe.
         poser_etat_connexion(EtatConnexion::vierge());
         let reste = INACTIVITE_MAX.saturating_sub(debut.elapsed());
-        lecteur.delai_lecture(if servies == 0 { DELAI_LECTURE } else { reste.max(Duration::from_millis(1)) });
+        lecteur.delai_lecture(if servies == 0 {
+            DELAI_LECTURE
+        } else {
+            reste.max(Duration::from_millis(1))
+        });
 
         vent::remise_a_zero();
         let requete = match vent::chrono(vent::LECTURE, || lecteur.lire_requete()) {
@@ -3062,7 +3214,8 @@ fn handle(flux: TcpStream, config: &ServeConfig) -> Result<()> {
                 // attend. Sur une connexion déjà servie, c'est la fin normale de
                 // la fenêtre d'inactivité, et se taire est correct.
                 if servies == 0 {
-                    let _ = repondre_erreur(&mut lecteur.flux, 408, "aucun octet reçu dans le délai");
+                    let _ =
+                        repondre_erreur(&mut lecteur.flux, 408, "aucun octet reçu dans le délai");
                 }
                 break;
             }
@@ -3080,7 +3233,9 @@ fn handle(flux: TcpStream, config: &ServeConfig) -> Result<()> {
         };
 
         poser_etat_connexion(etat_du_client(&requete));
-        let resultat = vent::chrono(vent::ROUTE, || router_requete(&mut lecteur.flux, &requete, config));
+        let resultat = vent::chrono(vent::ROUTE, || {
+            router_requete(&mut lecteur.flux, &requete, config)
+        });
         vent::debit(&requete.chemin);
         let (garde, repondu) = etat_connexion(|e| (e.keep_alive && !e.fermer, e.repondu));
         servies += 1;
@@ -3289,7 +3444,11 @@ fn router_requete(
                          — ce n'est PAS un refus de droit (l'IAM est {}). Un refus de droit se \
                          corrige en accordant un espace ; une route inconnue, en nommant la \
                          bonne route.",
-                        if garde.est_armee() { "armé" } else { "non armé" }
+                        if garde.est_armee() {
+                            "armé"
+                        } else {
+                            "non armé"
+                        }
                     ),
                 )),
             }
@@ -3437,7 +3596,14 @@ fn router_requete(
             } else {
                 Vec::new()
             };
-            return respond_entetes(&mut stream, code, VIZ_JSON, "no-store", &entetes_refus, &corps);
+            return respond_entetes(
+                &mut stream,
+                code,
+                VIZ_JSON,
+                "no-store",
+                &entetes_refus,
+                &corps,
+            );
         }
     }
 
@@ -3478,7 +3644,11 @@ fn router_requete(
                     // On RETIENT ce qui a été servi : c'est le filet de la
                     // reconstruction en cours (voir `derniere_page`).
                     *verrou(derniere_page()) = Some((html.clone(), mtime_fichier));
-                    let body = if dev_enabled() { inject_dev(&html) } else { html };
+                    let body = if dev_enabled() {
+                        inject_dev(&html)
+                    } else {
+                        html
+                    };
                     // ── LA PAGE EST REVALIDABLE, ELLE N'ÉTAIT PAS « no-store » ─
                     // Mesuré : le commentaire de `respond_cache` promettait
                     // `no-cache` pour la page d'entrée, mais CETTE route-ci passait
@@ -3512,7 +3682,11 @@ fn router_requete(
                                 erreur = %e,
                                 "index.html absent (reconstruction en cours ?) —                                  on ressert la dernière page servie"
                             );
-                            let body = if dev_enabled() { inject_dev(html) } else { html.clone() };
+                            let body = if dev_enabled() {
+                                inject_dev(html)
+                            } else {
+                                html.clone()
+                            };
                             let etag = etag_de(body.len() as u64, *mtime_fichier);
                             respond_octets(
                                 &mut stream,
@@ -3599,9 +3773,7 @@ fn router_requete(
         "/api/auth/logout" if method == "POST" => api_auth_logout(&mut stream, &entetes, query),
         "/api/auth/whoami" => api_auth_whoami(&mut stream, &entetes, query),
         // ROTATION de session : nouveau jeton, l'ancien meurt.
-        "/api/auth/refresh" if method == "POST" => {
-            api_auth_refresh(&mut stream, &entetes, query)
-        }
+        "/api/auth/refresh" if method == "POST" => api_auth_refresh(&mut stream, &entetes, query),
         // LA PISTE D'AUDIT : qui a été refusé, quand, et pourquoi.
         "/api/auth/audit" => api_auth_audit(&mut stream, &entetes, query, config),
         // ── L'ADMINISTRATION DES COMPTES ────────────────────────────────────
@@ -3632,7 +3804,11 @@ fn router_requete(
             let body = serde_json::json!({ "version": dev_version() }).to_string();
             respond(&mut stream, 200, VIZ_JSON, &body)
         }
-        "/app" | "/app/" => static_file(&mut stream, &app_dir().join("index.html"), "text/html; charset=utf-8"),
+        "/app" | "/app/" => static_file(
+            &mut stream,
+            &app_dir().join("index.html"),
+            "text/html; charset=utf-8",
+        ),
         // ── `/app/*` : LE CHEMIN EST DÉCODÉ, ASSAINI, PUIS VÉRIFIÉ ──────────
         // La faille fermée ici était mesurée : `app_dir().join(rel)` sur un `rel`
         // ni décodé ni assaini, donc
@@ -3732,12 +3908,20 @@ fn est_compressible(content_type: &str) -> bool {
 /// gzip d'un corps. Niveau 6 : meilleur compromis debit/ratio pour ce JSON.
 fn gzip_corps(corps: &[u8]) -> std::io::Result<Vec<u8>> {
     use flate2::{Compression, write::GzEncoder};
-    let mut enc = GzEncoder::new(Vec::with_capacity(corps.len() / 3 + 64), Compression::new(6));
+    let mut enc = GzEncoder::new(
+        Vec::with_capacity(corps.len() / 3 + 64),
+        Compression::new(6),
+    );
     enc.write_all(corps)?;
     enc.finish()
 }
 
-pub(crate) fn respond(stream: &mut TcpStream, code: u16, content_type: &str, body: &str) -> Result<()> {
+pub(crate) fn respond(
+    stream: &mut TcpStream,
+    code: u16,
+    content_type: &str,
+    body: &str,
+) -> Result<()> {
     // Les réponses d'API sont dynamiques : jamais de cache.
     respond_cache(stream, code, content_type, "no-store", body)
 }
@@ -3810,7 +3994,15 @@ fn respond_entetes(
     entetes: &[(&str, &str)],
     body: &str,
 ) -> Result<()> {
-    respond_octets(stream, code, content_type, cache, None, entetes, body.as_bytes())
+    respond_octets(
+        stream,
+        code,
+        content_type,
+        cache,
+        None,
+        entetes,
+        body.as_bytes(),
+    )
 }
 
 /// ── L'ÉCRITURE D'UNE RÉPONSE : UN SEUL ENDROIT DÉCIDE ──────────────────────
@@ -3846,7 +4038,13 @@ fn respond_octets(
     corps: &[u8],
 ) -> Result<()> {
     let (head, keep_alive, accepte, if_none_match, deja_ferme) = etat_connexion(|e| {
-        (e.head, e.keep_alive, e.accepte_encodage.clone(), e.if_none_match.clone(), e.fermer)
+        (
+            e.head,
+            e.keep_alive,
+            e.accepte_encodage.clone(),
+            e.if_none_match.clone(),
+            e.fermer,
+        )
     });
     // L'état est relu puis RELÂCHÉ : la suite n'écrit pas sous l'emprunt du
     // `RefCell` (voir `etat_connexion`), et marque la réponse comme écrite pour
@@ -3862,12 +4060,17 @@ fn respond_octets(
         // un corps absent ferait attendre le client.
         corps = Cow::Borrowed(&[]);
     }
-    let encodage =
-        if code == 304 { Encodage::Aucun } else { encodage_negocie(accepte.as_deref(), content_type, corps.len()) };
+    let encodage = if code == 304 {
+        Encodage::Aucun
+    } else {
+        encodage_negocie(accepte.as_deref(), content_type, corps.len())
+    };
     match encodage {
         Encodage::Aucun => {}
         Encodage::Gzip | Encodage::Deflate => {
-            corps = Cow::Owned(compresser(&corps, encodage).map_err(|e| anyhow::anyhow!("compression : {e}"))?);
+            corps = Cow::Owned(
+                compresser(&corps, encodage).map_err(|e| anyhow::anyhow!("compression : {e}"))?,
+            );
         }
     }
 
@@ -3902,7 +4105,11 @@ fn respond_octets(
     for (nom, valeur) in entetes {
         tete.push_str(&format!("{nom}: {valeur}\r\n"));
     }
-    tete.push_str(if garder { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" });
+    tete.push_str(if garder {
+        "Connection: keep-alive\r\n"
+    } else {
+        "Connection: close\r\n"
+    });
     tete.push_str("\r\n");
     vent::note_octets(corps.len());
     vent::chrono(vent::ECRITURE, || -> Result<()> {
@@ -3927,7 +4134,15 @@ fn repondre_erreur(stream: &mut TcpStream, code: u16, quoi: &str) -> Result<()> 
     // requête soit identifiée, donc la réponse ferme la connexion et porte son
     // corps (aucun `HEAD` ne peut être en cours).
     poser_etat_connexion(EtatConnexion::vierge());
-    respond_octets(stream, code, "text/plain; charset=utf-8", "no-store", None, &[], corps.as_bytes())
+    respond_octets(
+        stream,
+        code,
+        "text/plain; charset=utf-8",
+        "no-store",
+        None,
+        &[],
+        corps.as_bytes(),
+    )
 }
 
 /// Sert un fichier vendor (allowlist stricte) depuis `docs/examples/viz/vendor`.
@@ -3953,7 +4168,12 @@ fn static_vendor(stream: &mut TcpStream, name: &str) -> Result<()> {
     // Servi en OCTETS (et non en `String`) : un actif n'est pas forcément de
     // l'UTF-8 valide, et `from_utf8_lossy` remplaçait alors chaque octet invalide
     // par U+FFFD — un fichier servi CORROMPU, silencieusement.
-    static_octets(stream, &dir.join(&name), "application/javascript", "no-cache")
+    static_octets(
+        stream,
+        &dir.join(&name),
+        "application/javascript",
+        "no-cache",
+    )
 }
 
 pub(crate) fn parse_query(query: Option<&str>) -> HashMap<String, String> {
@@ -4011,10 +4231,13 @@ fn percent_decode(input: &str) -> String {
 /// d'exploration (bascules d'échelle 1/2/∞, allers-retours d'ancres).
 const RESOLVE_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 static RESOLVE_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, String), (std::time::Instant, u64)>>,
+    std::sync::Mutex<
+        std::collections::HashMap<(std::path::PathBuf, String), (std::time::Instant, u64)>,
+    >,
 > = std::sync::OnceLock::new();
 fn resolve_memo(store: &std::path::Path, arg: &str) -> Option<u64> {
-    let cache = RESOLVE_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cache =
+        RESOLVE_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let map = verrou(&cache);
     if let Some((t, id)) = map.get(&(store.to_path_buf(), arg.to_string())) {
         if t.elapsed() < RESOLVE_TTL {
@@ -4024,7 +4247,8 @@ fn resolve_memo(store: &std::path::Path, arg: &str) -> Option<u64> {
     None
 }
 fn resolve_memo_put(store: &std::path::Path, arg: &str, id: u64) {
-    let cache = RESOLVE_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cache =
+        RESOLVE_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let mut map = verrou(&cache);
     map.insert(
         (store.to_path_buf(), arg.to_string()),
@@ -4128,10 +4352,7 @@ struct SubgraphCacheKey {
 /// est celle de l'écriture dans la socket, inévitable.
 static SUBGRAPH_CACHE: std::sync::OnceLock<
     std::sync::Mutex<
-        std::collections::HashMap<
-            SubgraphCacheKey,
-            (std::time::Instant, std::sync::Arc<str>),
-        >,
+        std::collections::HashMap<SubgraphCacheKey, (std::time::Instant, std::sync::Arc<str>)>,
     >,
 > = std::sync::OnceLock::new();
 fn subgraph_cache_get(key: &SubgraphCacheKey) -> Option<std::sync::Arc<str>> {
@@ -4296,10 +4517,7 @@ fn prepare_subgraph(
     };
     // ── Cache court : re-jeu des mêmes requêtes ~0 ms (bascules d'échelle,
     //    retours d'ancres, overlays) sans repayer résolution + extraction.
-    let overlay_raw = params
-        .get("overlay")
-        .cloned()
-        .unwrap_or_default();
+    let overlay_raw = params.get("overlay").cloned().unwrap_or_default();
     let cache_key = SubgraphCacheKey {
         store: store.clone(),
         centers: centers.join(","),
@@ -4367,12 +4585,16 @@ fn prepare_subgraph(
         edge_types: types_filtre,
         ..Default::default()
     };
-    let (sg, _rep) = match crate::viz_extract::extract_subgraph_centers(&db, &resolved_centers, &opts) {
-        Ok(ok) => ok,
-        Err(e) => {
-            return PreparedSubgraph::Error(400, format!("{{\"error\":\"extraction : {e:#}\"}}"));
-        }
-    };
+    let (sg, _rep) =
+        match crate::viz_extract::extract_subgraph_centers(&db, &resolved_centers, &opts) {
+            Ok(ok) => ok,
+            Err(e) => {
+                return PreparedSubgraph::Error(
+                    400,
+                    format!("{{\"error\":\"extraction : {e:#}\"}}"),
+                );
+            }
+        };
     let styled = match overlay {
         Some(o) => obrain_viz::apply_overlay(&sg, o).0,
         None => sg,
@@ -4558,7 +4780,10 @@ fn api_subgraph_stream(
         // Snapshot initial (begin/nodes*/edges*/end, priorise par importance).
         match subgraph_for_stream(query, config) {
             Err((_, body)) => {
-                crate::viz_ws::send_text(stream, &format!("{{\"t\":\"error\",\"detail\":{body}}}"))?;
+                crate::viz_ws::send_text(
+                    stream,
+                    &format!("{{\"t\":\"error\",\"detail\":{body}}}"),
+                )?;
                 crate::viz_ws::send_close(stream)?;
                 return Ok(());
             }
@@ -4588,7 +4813,10 @@ fn live_loop(
     mut last_epoch: u128,
     mut baseline: Option<obrain_viz::Subgraph>,
 ) -> Result<()> {
-    crate::viz_ws::send_text(stream, &format!("{{\"t\":\"live\",\"epoch\":{last_epoch}}}"))?;
+    crate::viz_ws::send_text(
+        stream,
+        &format!("{{\"t\":\"live\",\"epoch\":{last_epoch}}}"),
+    )?;
     let debut = std::time::Instant::now();
     let mut dernier_battement = std::time::Instant::now();
     while debut.elapsed() < WS_LIVE_MAX {
@@ -4799,8 +5027,11 @@ fn api_stores(
 
     // Sans IAM armé, il n'y a pas de droits à appliquer : la liste est entière.
     // (Et si l'IAM est armé, la garde a déjà refusé une requête sans identité.)
-    let espace_du_chemin =
-        |p: &std::path::Path| -> String { p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() };
+    let espace_du_chemin = |p: &std::path::Path| -> String {
+        p.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
 
     let mut lus: Vec<serde_json::Value> = Vec::new();
     let mut refuses: Vec<String> = Vec::new();
@@ -4822,7 +5053,8 @@ fn api_stores(
             // `.obrain` — la même règle que `espace_vise`, donc la même
             // décision que celle qu'appliquera la garde à la requête suivante.
             let lisible = |espace: &str| {
-                g.controler_action(Some(s), ACTION_LECTURE_HTTP, espace).is_ok()
+                g.controler_action(Some(s), ACTION_LECTURE_HTTP, espace)
+                    .is_ok()
             };
             // ── ET UN MONDE AJOUTÉ APPARTIENT À SON AUTEUR ──────────────────
             // Un monde neuf est nommé d'après son dépôt : son espace n'existe
@@ -4846,7 +5078,10 @@ fn api_stores(
                     refuses.push(label);
                 }
             }
-            for (label, path) in crate::worlds::enregistres().into_iter().map(|m| (m.label, m.store)) {
+            for (label, path) in crate::worlds::enregistres()
+                .into_iter()
+                .map(|m| (m.label, m.store))
+            {
                 // Un monde est LISTÉ s'il se lit sur son propre espace, ou s'il
                 // est le sien.
                 if lisible(&espace_du_chemin(&path)) || mien(&path) {
@@ -4879,9 +5114,15 @@ fn api_stores(
     let default_label = config
         .default_label
         .as_ref()
-        .filter(|l| lus.iter().any(|p| p["label"] == serde_json::Value::String((*l).clone())))
+        .filter(|l| {
+            lus.iter()
+                .any(|p| p["label"] == serde_json::Value::String((*l).clone()))
+        })
         .cloned()
-        .or_else(|| lus.first().and_then(|p| p["label"].as_str().map(str::to_string)))
+        .or_else(|| {
+            lus.first()
+                .and_then(|p| p["label"].as_str().map(str::to_string))
+        })
         .unwrap_or_default();
 
     // (2026-09-15) LE CHEMIN PAR DEFAUT SUIT LE LABEL PAR DEFAUT, PAS LE
@@ -4939,13 +5180,15 @@ fn api_functions(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
     let fextra = format!("{}|{}", q, limit);
     {
         use std::sync::{Mutex, OnceLock};
-        static FNC: OnceLock<Mutex<std::collections::HashMap<
-            (std::path::PathBuf, String), (Option<u128>, String)
-        >>> = OnceLock::new();
+        static FNC: OnceLock<
+            Mutex<std::collections::HashMap<(std::path::PathBuf, String), (Option<u128>, String)>>,
+        > = OnceLock::new();
         let cache = FNC.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
         let ck = (store.clone(), fextra.clone());
         if let Some((m, b)) = verrou(&cache).get(&ck).map(|(m, b)| (*m, b.clone())) {
-            if m == mt { return respond(stream, 200, VIZ_JSON, &b); }
+            if m == mt {
+                return respond(stream, 200, VIZ_JSON, &b);
+            }
         }
         if let Some(b) = disk_load("fn", &store, &fextra, mt) {
             verrou(&cache).insert(ck, (mt, b.clone()));
@@ -4978,7 +5221,9 @@ fn api_functions(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
         let q_full = format!(
             "{t} RETURN id(n), n.qualified_name, n.name, labels(n)[0], n.file_path LIMIT 12"
         );
-        let Ok(res) = db.session().execute(&q_full) else { continue };
+        let Ok(res) = db.session().execute(&q_full) else {
+            continue;
+        };
         for row in res.rows {
             let (Some(OV::Int64(id)), Some(OV::String(qn)), Some(OV::String(name))) =
                 (row.first(), row.get(1), row.get(2))
@@ -5030,7 +5275,11 @@ fn api_functions(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
 // et un watcher qui relance `pnpm build` quand src/ change.
 fn dev_enabled() -> bool {
     static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *D.get_or_init(|| std::env::var("OBRAIN_DEV").map(|v| v != "0").unwrap_or(false))
+    *D.get_or_init(|| {
+        std::env::var("OBRAIN_DEV")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
 }
 fn pkg_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/obrain-dashboard")
@@ -5038,9 +5287,12 @@ fn pkg_dir() -> std::path::PathBuf {
 fn dev_version() -> String {
     match std::fs::metadata(pkg_dir().join("dist/index.html")) {
         Ok(m) => {
-            let t = m.modified().ok()
+            let t = m
+                .modified()
+                .ok()
                 .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis()).unwrap_or(0);
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
             format!("{t}-{}", m.len())
         }
         Err(_) => "0".into(),
@@ -5048,36 +5300,63 @@ fn dev_version() -> String {
 }
 const DEV_SCRIPT: &str = r#"<script>(function(){let v=null;setInterval(async()=>{try{const r=await fetch('/__dev/version',{cache:'no-store'});const j=await r.json();if(v===null){v=j.version;}else if(j.version!==v){console.log('[obrain dev] rebuild -> reload');location.reload();}}catch(e){}},1000);})();</script>"#;
 fn inject_dev(html: &str) -> String {
-    if html.contains("</body>") { html.replace("</body>", &format!("{DEV_SCRIPT}</body>")) }
-    else { format!("{html}{DEV_SCRIPT}") }
+    if html.contains("</body>") {
+        html.replace("</body>", &format!("{DEV_SCRIPT}</body>"))
+    } else {
+        format!("{html}{DEV_SCRIPT}")
+    }
 }
 fn newest_mtime(dir: &std::path::Path) -> std::time::SystemTime {
     let mut newest = std::time::SystemTime::UNIX_EPOCH;
-    let Ok(rd) = std::fs::read_dir(dir) else { return newest };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return newest;
+    };
     for e in rd.flatten() {
         let p = e.path();
-        if p.is_dir() { let m = newest_mtime(&p); if m > newest { newest = m; } }
-        else if let Ok(m) = e.metadata().and_then(|md| md.modified()) { if m > newest { newest = m; } }
+        if p.is_dir() {
+            let m = newest_mtime(&p);
+            if m > newest {
+                newest = m;
+            }
+        } else if let Ok(m) = e.metadata().and_then(|md| md.modified()) {
+            if m > newest {
+                newest = m;
+            }
+        }
     }
     newest
 }
 fn spawn_dev_watcher() {
-    if !dev_enabled() { return; }
+    if !dev_enabled() {
+        return;
+    }
     std::thread::spawn(|| {
         let pkg = pkg_dir();
         let src = pkg.join("src");
         let mut last = newest_mtime(&src);
-        eprintln!("[dev] watcher actif sur {} (rebuild auto + reload)", src.display());
+        eprintln!(
+            "[dev] watcher actif sur {} (rebuild auto + reload)",
+            src.display()
+        );
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1200));
             let now = newest_mtime(&src);
             if now > last {
                 last = now;
                 eprintln!("[dev] changement détecté -> pnpm build");
-                match std::process::Command::new("pnpm").arg("build").current_dir(&pkg).output() {
+                match std::process::Command::new("pnpm")
+                    .arg("build")
+                    .current_dir(&pkg)
+                    .output()
+                {
                     Ok(o) if o.status.success() => eprintln!("[dev] build OK — reload envoyé"),
-                    Ok(o) => eprintln!("[dev] build ÉCHEC : {}",
-                        String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")),
+                    Ok(o) => eprintln!(
+                        "[dev] build ÉCHEC : {}",
+                        String::from_utf8_lossy(&o.stderr)
+                            .lines()
+                            .last()
+                            .unwrap_or("")
+                    ),
                     Err(e) => eprintln!("[dev] pnpm indisponible : {e}"),
                 }
                 std::thread::sleep(std::time::Duration::from_millis(800));
@@ -5190,26 +5469,44 @@ fn percent_decode_chemin(input: &str) -> String {
 }
 
 fn mime_of(name: &str) -> &'static str {
-    if name.ends_with(".js") { "application/javascript" }
-    else if name.ends_with(".mjs") { "application/javascript" }
-    else if name.ends_with(".css") { "text/css" }
-    else if name.ends_with(".html") { "text/html; charset=utf-8" }
-    else if name.ends_with(".svg") { "image/svg+xml" }
+    if name.ends_with(".js") {
+        "application/javascript"
+    } else if name.ends_with(".mjs") {
+        "application/javascript"
+    } else if name.ends_with(".css") {
+        "text/css"
+    } else if name.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if name.ends_with(".svg") {
+        "image/svg+xml"
+    }
     // ── `.map` ÉTAIT DU BINAIRE ───────────────────────────────────────────
     // `index-*.js.map` (5 324 912 octets) partait en
     // `application/octet-stream` : le navigateur ne pouvait donc pas l'afficher
     // dans ses outils, et aucun cache ne le traitait comme du JSON.
-    else if name.ends_with(".map") || name.ends_with(".json") { "application/json" }
-    else if name.ends_with(".png") { "image/png" }
-    else if name.ends_with(".jpg") || name.ends_with(".jpeg") { "image/jpeg" }
-    else if name.ends_with(".webp") { "image/webp" }
-    else if name.ends_with(".ico") { "image/x-icon" }
-    else if name.ends_with(".woff2") { "font/woff2" }
-    else if name.ends_with(".woff") { "font/woff" }
-    else if name.ends_with(".wasm") { "application/wasm" }
-    else if name.ends_with(".txt") { "text/plain; charset=utf-8" }
-    else if name.ends_with(".webmanifest") { "application/manifest+json" }
-    else { "application/octet-stream" }
+    else if name.ends_with(".map") || name.ends_with(".json") {
+        "application/json"
+    } else if name.ends_with(".png") {
+        "image/png"
+    } else if name.ends_with(".jpg") || name.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if name.ends_with(".webp") {
+        "image/webp"
+    } else if name.ends_with(".ico") {
+        "image/x-icon"
+    } else if name.ends_with(".woff2") {
+        "font/woff2"
+    } else if name.ends_with(".woff") {
+        "font/woff"
+    } else if name.ends_with(".wasm") {
+        "application/wasm"
+    } else if name.ends_with(".txt") {
+        "text/plain; charset=utf-8"
+    } else if name.ends_with(".webmanifest") {
+        "application/manifest+json"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 /// `GET /api/query?store=&query=&language=` — exécution RO (gql|cypher) pour
@@ -5272,11 +5569,7 @@ fn qcache() -> &'static Mutex<HashMap<(PathBuf, String), (Option<u128>, String)>
     QCACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn api_query(
-    stream: &mut TcpStream,
-    query: Option<&str>,
-    config: &ServeConfig,
-) -> Result<()> {
+fn api_query(stream: &mut TcpStream, query: Option<&str>, config: &ServeConfig) -> Result<()> {
     use obrain_common::types::Value as OV;
     let (params, store) = vent::chrono(vent::PARAMS, || {
         let params = parse_query(query);
@@ -5291,7 +5584,10 @@ fn api_query(
     };
     // NB : la requête est exécutée telle quelle (aucune interpolation) —
     // les guillemets simples des littéraux GQL sont donc autorisés.
-    let lang = params.get("language").cloned().unwrap_or_else(|| "gql".into());
+    let lang = params
+        .get("language")
+        .cloned()
+        .unwrap_or_else(|| "gql".into());
     // ── LE MÊME DÉPLACEMENT DE LABEL QUE POUR LE MODÈLE ─────────────────────
     // `crate::outils::label_dans_le_motif` est ce qui fait passer la forme
     // `… AND labels(n) CONTAINS 'Class'` de 68,6 ms à 2,4 ms (le planificateur
@@ -5396,18 +5692,24 @@ fn api_query(
             // (contiennent un point ou deux-points et sont assez longues). C'est
             // une HEURISTIQUE, assumée : on ne prétend pas savoir quels nœuds la
             // requête a touchés, seulement ce qu'elle a ramené de lisible.
-            let mut touched: Vec<String> = vec![format!("query:{}", q.chars().take(80).collect::<String>())];
+            let mut touched: Vec<String> =
+                vec![format!("query:{}", q.chars().take(80).collect::<String>())];
             for row in r.rows.iter().take(120) {
                 for v in row {
                     if let OV::String(s2) = v {
                         let s2 = s2.to_string();
-                        if s2.len() > 12 && (s2.contains('.') || s2.contains(':')) && !s2.contains(' ') {
+                        if s2.len() > 12
+                            && (s2.contains('.') || s2.contains(':'))
+                            && !s2.contains(' ')
+                        {
                             touched.push(s2);
                         }
                     }
                 }
             }
-            vent::chrono(vent::ACTIVATION, || crate::activation::record(&store, &touched, "query"));
+            vent::chrono(vent::ACTIVATION, || {
+                crate::activation::record(&store, &touched, "query")
+            });
             if let Some(ms) = r.execution_time_ms {
                 out["execution_time_ms"] = serde_json::json!(ms);
             }
@@ -5457,7 +5759,9 @@ fn qenc(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 16);
     for b in input.bytes() {
         match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -5480,7 +5784,9 @@ fn api_sitemap_xml(stream: &mut TcpStream, config: &ServeConfig) -> Result<()> {
                 if let Some(mods) = v.get("modules").and_then(|m| m.as_array()) {
                     for m in mods.iter().take(14) {
                         if let Some(name) = m.get("name").and_then(|n| n.as_str()) {
-                            if name.is_empty() || name.contains('@') || name.starts_with('0') { continue; }
+                            if name.is_empty() || name.contains('@') || name.starts_with('0') {
+                                continue;
+                            }
                             urls.push(format!("{BASE}/?store={st}&dive={}", qenc(name)));
                         }
                     }
@@ -5489,9 +5795,14 @@ fn api_sitemap_xml(stream: &mut TcpStream, config: &ServeConfig) -> Result<()> {
         }
     }
     let today = "2026-09-10";
-    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">");
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">",
+    );
     for u in urls {
-        xml.push_str(&format!("<url><loc>{}</loc><lastmod>{today}</lastmod></url>", u.replace('&', "&amp;")));
+        xml.push_str(&format!(
+            "<url><loc>{}</loc><lastmod>{today}</lastmod></url>",
+            u.replace('&', "&amp;")
+        ));
     }
     xml.push_str("</urlset>");
     respond(stream, 200, "application/xml; charset=utf-8", &xml)
@@ -5502,7 +5813,10 @@ fn api_sitemap_xml(stream: &mut TcpStream, config: &ServeConfig) -> Result<()> {
 fn api_status(stream: &mut TcpStream, config: &ServeConfig) -> Result<()> {
     use std::sync::OnceLock;
     static START: OnceLock<std::time::Instant> = OnceLock::new();
-    let uptime = START.get_or_init(std::time::Instant::now).elapsed().as_secs();
+    let uptime = START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs();
     let dir = std::env::var_os("OBRAIN_VIZ_CACHE_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/obrain-viz-cache"));
@@ -5521,7 +5835,8 @@ fn api_status(stream: &mut TcpStream, config: &ServeConfig) -> Result<()> {
         "cache_dir": dir,
         "files_by_kind": files,
         "stores_exposes": tous_les_mondes(config).len(),
-    }).to_string();
+    })
+    .to_string();
     respond(stream, 200, VIZ_JSON, &body)
 }
 
@@ -5538,14 +5853,12 @@ fn api_auth_login(stream: &mut TcpStream, entetes: &str, corps: &str) -> Result<
     // formulaire, on RENVOIE le navigateur vers l'accueil avec son cookie ; un
     // script, lui, reçoit le jeton en JSON. Sans cette distinction, la page de
     // connexion affichait l'objet JSON — techniquement correct, inutilisable.
-    let du_formulaire = entetes
-        .lines()
-        .any(|l| {
-            let l = l.trim();
-            l.len() > 13
-                && l[..13].eq_ignore_ascii_case("content-type:")
-                && l[13..].contains("form-urlencoded")
-        });
+    let du_formulaire = entetes.lines().any(|l| {
+        let l = l.trim();
+        l.len() > 13
+            && l[..13].eq_ignore_ascii_case("content-type:")
+            && l[13..].contains("form-urlencoded")
+    });
     let garde = GardeIam::partagee();
     if !garde.disponible() {
         return respond(
@@ -5563,8 +5876,16 @@ fn api_auth_login(stream: &mut TcpStream, entetes: &str, corps: &str) -> Result<
     // (`username=…&password=…`) : les deux se rencontrent.
     let (mut utilisateur, mut mot_de_passe) = (String::new(), String::new());
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(corps) {
-        utilisateur = v.get("username").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        mot_de_passe = v.get("password").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        utilisateur = v
+            .get("username")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        mot_de_passe = v
+            .get("password")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
     } else {
         let params = parse_query(Some(corps));
         utilisateur = params.get("username").cloned().unwrap_or_default();
@@ -5586,10 +5907,11 @@ fn api_auth_login(stream: &mut TcpStream, entetes: &str, corps: &str) -> Result<
         .unwrap_or(8 * 3600);
     match garde.connecter(utilisateur.trim(), &mot_de_passe, ttl) {
         Ok(jeton) => {
-            let identite = garde.identite(&jeton).unwrap_or_else(|| utilisateur.clone());
-            let cookie = format!(
-                "obrain_session={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}"
-            );
+            let identite = garde
+                .identite(&jeton)
+                .unwrap_or_else(|| utilisateur.clone());
+            let cookie =
+                format!("obrain_session={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}");
             if du_formulaire {
                 return respond_entetes(
                     stream,
@@ -5610,9 +5932,8 @@ fn api_auth_login(stream: &mut TcpStream, entetes: &str, corps: &str) -> Result<
             // `HttpOnly` : le script de la page ne peut pas lire le cookie (une
             // injection ne peut donc pas l'exfiltrer). `SameSite=Strict` : il
             // n'est pas envoyé depuis un autre site.
-            let cookie = format!(
-                "obrain_session={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}"
-            );
+            let cookie =
+                format!("obrain_session={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}");
             respond_entetes(
                 stream,
                 200,
@@ -5856,10 +6177,7 @@ fn administration_appelant(
 
 /// Une opération d'administration rendue en JSON, ou son refus.
 #[cfg(feature = "iam")]
-fn resultat_iam(
-    stream: &mut TcpStream,
-    r: obrain_iam::IamResult<serde_json::Value>,
-) -> Result<()> {
+fn resultat_iam(stream: &mut TcpStream, r: obrain_iam::IamResult<serde_json::Value>) -> Result<()> {
     match r {
         Ok(valeur) => respond(stream, 200, VIZ_JSON, &valeur.to_string()),
         Err(e) => refus_iam(stream, code_pour_erreur(&e), &e.to_string()),
@@ -5915,7 +6233,11 @@ fn api_iam(
             | "/api/iam/effacer"
     );
     if vise_un_compte && nom.is_empty() {
-        return refus_iam(stream, 400, "« nom » est requis : il désigne le compte visé");
+        return refus_iam(
+            stream,
+            400,
+            "« nom » est requis : il désigne le compte visé",
+        );
     }
 
     match path {
@@ -5991,9 +6313,12 @@ fn api_iam(
             respond(stream, 200, VIZ_JSON, &reponse.to_string())
         }
         // ── La lecture d'un compte ──────────────────────────────────────────
-        "/api/iam/utilisateur" => {
-            resultat_iam(stream, admin.montrer_utilisateur(&nom).map(|r| serde_json::json!({ "compte": r })))
-        }
+        "/api/iam/utilisateur" => resultat_iam(
+            stream,
+            admin
+                .montrer_utilisateur(&nom)
+                .map(|r| serde_json::json!({ "compte": r })),
+        ),
         "/api/iam/utilisateur/jetons" => resultat_iam(
             stream,
             admin
@@ -6063,16 +6388,16 @@ fn api_iam(
             if param("retirer") == "1" {
                 resultat_iam(
                     stream,
-                    admin.retirer_admin(&nom, &espace).map(|()| {
-                        serde_json::json!({ "compte": nom, "espace": espace, "admin": false })
-                    }),
+                    admin.retirer_admin(&nom, &espace).map(
+                        |()| serde_json::json!({ "compte": nom, "espace": espace, "admin": false }),
+                    ),
                 )
             } else {
                 resultat_iam(
                     stream,
-                    admin.promouvoir_admin(&nom, &espace).map(|()| {
-                        serde_json::json!({ "compte": nom, "espace": espace, "admin": true })
-                    }),
+                    admin.promouvoir_admin(&nom, &espace).map(
+                        |()| serde_json::json!({ "compte": nom, "espace": espace, "admin": true }),
+                    ),
                 )
             }
         }
@@ -6107,9 +6432,9 @@ fn api_iam(
             }
             resultat_iam(
                 stream,
-                admin
-                    .effacer_utilisateur(&nom)
-                    .map(|certificat| serde_json::json!({ "compte": nom, "certificat": certificat })),
+                admin.effacer_utilisateur(&nom).map(
+                    |certificat| serde_json::json!({ "compte": nom, "certificat": certificat }),
+                ),
             )
         }
         _ => refus_iam(
@@ -6395,11 +6720,14 @@ fn api_overview(stream: &mut TcpStream, query: Option<&str>, config: &ServeConfi
     let mt = store_mtime(&store);
     {
         use std::sync::{Mutex, OnceLock};
-        static OVC: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, (Option<u128>, String)>>> =
-            OnceLock::new();
+        static OVC: OnceLock<
+            Mutex<std::collections::HashMap<std::path::PathBuf, (Option<u128>, String)>>,
+        > = OnceLock::new();
         let cache = OVC.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
         if let Some((m, b)) = verrou(&cache).get(&store).map(|(m, b)| (*m, b.clone())) {
-            if m == mt { return respond(stream, 200, VIZ_JSON, &b); }
+            if m == mt {
+                return respond(stream, 200, VIZ_JSON, &b);
+            }
         }
         if let Some(b) = disk_load("ov", &store, "", mt) {
             verrou(&cache).insert(store.clone(), (mt, b.clone()));
@@ -6469,7 +6797,7 @@ fn api_overview(stream: &mut TcpStream, query: Option<&str>, config: &ServeConfi
         "by_label_semantique": "noeuds_portant_l_etiquette",
     })
     .to_string();
-        disk_save("ov", &store, "", mt, &body);
+    disk_save("ov", &store, "", mt, &body);
     respond(stream, 200, VIZ_JSON, &body)
 }
 
@@ -6543,9 +6871,26 @@ const ARTEFACTS_MODULE: &[&str] = &["dist", "target", "node_modules", "build", "
 // celui du tronc. Le jour où le dériveur remplace vraiment cette liste, il
 // faudra déplacer la mémoïsation avec lui — pas seulement supprimer la constante.
 const KNOWN_ROOTS: &[&str] = &[
-    "drivers", "net", "kernel", "mm", "fs", "arch", "include", "init", "lib",
-    "block", "ipc", "security", "crypto", "sound", "tools", "samples", "rust",
-    "virt", "usr", "Documentation",
+    "drivers",
+    "net",
+    "kernel",
+    "mm",
+    "fs",
+    "arch",
+    "include",
+    "init",
+    "lib",
+    "block",
+    "ipc",
+    "security",
+    "crypto",
+    "sound",
+    "tools",
+    "samples",
+    "rust",
+    "virt",
+    "usr",
+    "Documentation",
 ];
 // ── `KNOWN_ROOTS` A ETE RETIRE ──────────────────────────────────────────────
 //
@@ -6555,7 +6900,6 @@ const KNOWN_ROOTS: &[&str] = &[
 // La garder ici en aurait fait une SECONDE source de verite pour une seule
 // question : deux listes qui divergent un jour, c'est `modules` et `arcs` qui
 // cessent de parler du meme monde.
-
 
 /// LA STRUCTURE D'ORBITES DU STORE, calculee UNE FOIS et gardee.
 ///
@@ -6579,18 +6923,28 @@ fn orbites_du_store(store: &std::path::Path) -> Option<crate::orbites::Orbites> 
         return None;
     }
     static ORB: OnceLock<
-        Mutex<std::collections::HashMap<std::path::PathBuf, (Option<u128>, crate::orbites::Orbites)>>,
+        Mutex<
+            std::collections::HashMap<std::path::PathBuf, (Option<u128>, crate::orbites::Orbites)>,
+        >,
     > = OnceLock::new();
     let cache = ORB.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mt = store_mtime(store);
-    if let Some((m, o)) = cache.lock().unwrap().get(store).map(|(m, o)| (*m, o.clone())) {
+    if let Some((m, o)) = cache
+        .lock()
+        .unwrap()
+        .get(store)
+        .map(|(m, o)| (*m, o.clone()))
+    {
         if m == mt {
             return Some(o);
         }
     }
     if let Some(b) = disk_load("orb", store, "", mt) {
         if let Ok(o) = serde_json::from_str::<crate::orbites::Orbites>(&b) {
-            cache.lock().unwrap().insert(store.to_path_buf(), (mt, o.clone()));
+            cache
+                .lock()
+                .unwrap()
+                .insert(store.to_path_buf(), (mt, o.clone()));
             return Some(o);
         }
     }
@@ -6601,7 +6955,10 @@ fn orbites_du_store(store: &std::path::Path) -> Option<crate::orbites::Orbites> 
     if let Ok(b) = serde_json::to_string(&o) {
         disk_save("orb", store, "", mt, &b);
     }
-    cache.lock().unwrap().insert(store.to_path_buf(), (mt, o.clone()));
+    cache
+        .lock()
+        .unwrap()
+        .insert(store.to_path_buf(), (mt, o.clone()));
     Some(o)
 }
 
@@ -6615,7 +6972,11 @@ fn orbites_du_store(store: &std::path::Path) -> Option<crate::orbites::Orbites> 
 /// Le rendu n'a donc plus a sonder ni a deviner : `rang_racine` se LIT, et la
 /// profondeur est donnee PAR BRANCHE (`drivers` n'a pas celle de `fs` — une
 /// profondeur globale unique serait un mensonge).
-fn api_viz_orbites(stream: &mut TcpStream, query: Option<&str>, config: &ServeConfig) -> Result<()> {
+fn api_viz_orbites(
+    stream: &mut TcpStream,
+    query: Option<&str>,
+    config: &ServeConfig,
+) -> Result<()> {
     let params = parse_query(query);
     let Some(store) = config.resolve(params.get("store").map(String::as_str)) else {
         return respond(stream, 400, VIZ_JSON, r#"{"error":"store requis"}"#);
@@ -6629,14 +6990,23 @@ fn api_viz_orbites(stream: &mut TcpStream, query: Option<&str>, config: &ServeCo
         );
     }
     let Some(o) = orbites_du_store(&store) else {
-        return respond(stream, 500, VIZ_JSON, r#"{"error":"derivation des orbites impossible"}"#);
+        return respond(
+            stream,
+            500,
+            VIZ_JSON,
+            r#"{"error":"derivation des orbites impossible"}"#,
+        );
     };
     let mut v = serde_json::to_value(&o).unwrap_or_else(|_| serde_json::json!({}));
     v["store"] = serde_json::json!(store);
     respond(stream, 200, VIZ_JSON, &v.to_string())
 }
 
-fn api_viz_modules(stream: &mut TcpStream, query: Option<&str>, config: &ServeConfig) -> Result<()> {
+fn api_viz_modules(
+    stream: &mut TcpStream,
+    query: Option<&str>,
+    config: &ServeConfig,
+) -> Result<()> {
     let params = parse_query(query);
     let Some(store) = config.resolve(params.get("store").map(String::as_str)) else {
         return respond(stream, 400, VIZ_JSON, r#"{"error":"store requis"}"#);
@@ -6650,8 +7020,9 @@ fn api_viz_modules(stream: &mut TcpStream, query: Option<&str>, config: &ServeCo
     // ne change pas — plus de TTL arbitraire) : ~0 ms aux revisites.
     let mt = store_mtime(&store);
     use std::sync::{Mutex, OnceLock};
-    static MOD_CACHE: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, (Option<u128>, String)>>> =
-        OnceLock::new();
+    static MOD_CACHE: OnceLock<
+        Mutex<std::collections::HashMap<std::path::PathBuf, (Option<u128>, String)>>,
+    > = OnceLock::new();
     let cache = MOD_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     if let Some((m, body)) = verrou(&cache).get(&store).map(|(m, b)| (*m, b.clone())) {
         if m == mt {
@@ -6736,7 +7107,8 @@ fn api_viz_modules(stream: &mut TcpStream, query: Option<&str>, config: &ServeCo
     // `rank` = index de découpage effectif (g2/g3) : il permet au front de
     // descendre DANS un module (sous-espace au rang rank+1) — dimension
     // « projets → sous-espaces » du Monde.
-    let body = serde_json::json!({ "store": store, "rank": rank_eff, "modules": modules }).to_string();
+    let body =
+        serde_json::json!({ "store": store, "rank": rank_eff, "modules": modules }).to_string();
     disk_save("mod", &store, "", mt, &body);
     verrou(&cache).insert(store.clone(), (mt, body.clone()));
     respond(stream, 200, VIZ_JSON, &body)
@@ -6764,7 +7136,12 @@ fn api_viz_ramifications(
         return respond(stream, 400, VIZ_JSON, r#"{"error":"store requis"}"#);
     };
     let Some(centres_brut) = params.get("center").or_else(|| params.get("centers")) else {
-        return respond(stream, 400, VIZ_JSON, r#"{"error":"center (ou centers) requis"}"#);
+        return respond(
+            stream,
+            400,
+            VIZ_JSON,
+            r#"{"error":"center (ou centers) requis"}"#,
+        );
     };
     let centres: Vec<String> = centres_brut
         .split(',')
@@ -6782,7 +7159,9 @@ fn api_viz_ramifications(
         std::sync::Mutex<std::collections::HashMap<(String, String), (u64, String)>>,
     > = std::sync::OnceLock::new();
     let memo = MEMO.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let mt = store_mtime(std::path::Path::new(&store)).map(|m| m as u64).unwrap_or(0);
+    let mt = store_mtime(std::path::Path::new(&store))
+        .map(|m| m as u64)
+        .unwrap_or(0);
     let cle_memo = (store.to_string_lossy().to_string(), centres.join(","));
     if let Some((m, corps)) = memo.lock().unwrap().get(&cle_memo).cloned() {
         if m == mt {
@@ -6819,7 +7198,11 @@ fn api_viz_ramifications(
                 "MATCH (n) WHERE n.qualified_name = '{cq}' RETURN id(n) LIMIT 1"
             ))
             .ok()
-            .and_then(|r| r.rows.first().and_then(|row| row.first().and_then(|v| v.as_int64())))?;
+            .and_then(|r| {
+                r.rows
+                    .first()
+                    .and_then(|row| row.first().and_then(|v| v.as_int64()))
+            })?;
         ids.lock().unwrap().insert(cle, id);
         Some(id)
     };
@@ -6852,12 +7235,14 @@ fn api_viz_ramifications(
     };
     for c in &centres {
         let Some(id) = resoudre(c) else { continue };
-        grouper(&mut sortantes, &format!(
-            "MATCH (n)-[r]->() WHERE id(n) = {id} RETURN type(r), count(*)"
-        ));
-        grouper(&mut entrantes, &format!(
-            "MATCH ()-[r]->(n) WHERE id(n) = {id} RETURN type(r), count(*)"
-        ));
+        grouper(
+            &mut sortantes,
+            &format!("MATCH (n)-[r]->() WHERE id(n) = {id} RETURN type(r), count(*)"),
+        );
+        grouper(
+            &mut entrantes,
+            &format!("MATCH ()-[r]->(n) WHERE id(n) = {id} RETURN type(r), count(*)"),
+        );
         if let Ok(r) = session.execute(&format!(
             "MATCH (n) WHERE id(n) = {id} RETURN labels(n) LIMIT 1"
         )) {
@@ -6877,12 +7262,14 @@ fn api_viz_ramifications(
         if !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             continue; // un label exotique ne passe pas en syntaxe :Label
         }
-        grouper(&mut possibles_sortants, &format!(
-            "MATCH (a:{l})-[r]->() RETURN type(r), count(*)"
-        ));
-        grouper(&mut possibles_entrants, &format!(
-            "MATCH ()-[r]->(a:{l}) RETURN type(r), count(*)"
-        ));
+        grouper(
+            &mut possibles_sortants,
+            &format!("MATCH (a:{l})-[r]->() RETURN type(r), count(*)"),
+        );
+        grouper(
+            &mut possibles_entrants,
+            &format!("MATCH ()-[r]->(a:{l}) RETURN type(r), count(*)"),
+        );
     }
     let en_liste = |carte: &BTreeMap<String, u64>| -> Vec<serde_json::Value> {
         let mut v: Vec<_> = carte.iter().collect();
@@ -6892,7 +7279,10 @@ fn api_viz_ramifications(
             .collect()
     };
     let a_construire = |possibles: &BTreeMap<String, u64>, reelles: &BTreeMap<String, u64>| {
-        let mut v: Vec<_> = possibles.iter().filter(|(t, _)| !reelles.contains_key(*t)).collect();
+        let mut v: Vec<_> = possibles
+            .iter()
+            .filter(|(t, _)| !reelles.contains_key(*t))
+            .collect();
         v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
         v.into_iter()
             .map(|(t, n)| serde_json::json!({ "type": t, "indice_store": n }))
@@ -7032,10 +7422,7 @@ fn arcs_corps(
     use std::sync::{Mutex, OnceLock};
     static ARCS_CACHE: OnceLock<
         Mutex<
-            std::collections::HashMap<
-                (std::path::PathBuf, usize, usize),
-                (Option<u128>, String),
-            >,
+            std::collections::HashMap<(std::path::PathBuf, usize, usize), (Option<u128>, String)>,
         >,
     > = OnceLock::new();
     let cache = ARCS_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
@@ -7082,7 +7469,8 @@ fn arcs_corps(
                 r.rows
                     .iter()
                     .filter_map(|row| {
-                        let (Some(OV::String(m)), Some(OV::Int64(c))) = (row.first(), row.get(1)) else {
+                        let (Some(OV::String(m)), Some(OV::Int64(c))) = (row.first(), row.get(1))
+                        else {
                             return None;
                         };
                         Some((m.to_string(), *c as u64))
@@ -7102,7 +7490,9 @@ fn arcs_corps(
         g
     };
     let known = |g: &[(String, u64)]| {
-        g.iter().filter(|(m, _)| KNOWN_ROOTS.contains(&m.as_str())).count()
+        g.iter()
+            .filter(|(m, _)| KNOWN_ROOTS.contains(&m.as_str()))
+            .count()
     };
     // MÊME RÈGLE QUE `api_viz_modules` — c'est la doc de cette route qui l'exige
     // (« même normalisation que /api/viz/modules »), et sans ça les modules
@@ -7115,7 +7505,11 @@ fn arcs_corps(
     // ÉCRASÉE par le mémo (`idx_final = r`, plus bas). Le jouer quand même,
     // c'était payer 1 à 5 agrégats de rang — mesuré 407-478 ms chacun — pour un
     // résultat jeté. On lit donc le mémo AVANT, et on saute le choix.
-    let memorise = if rank_impose.is_some() { None } else { rang_memo(&store) };
+    let memorise = if rank_impose.is_some() {
+        None
+    } else {
+        rang_memo(&store)
+    };
     let mut idx = 2usize;
     if let Some(r) = memorise {
         idx = r.clamp(2, 7);
@@ -7290,7 +7684,11 @@ fn arcs_corps(
                  WITH split(a.qualified_name, '.')[{d}] AS sa, split(b.qualified_name, '.')[{d}] AS sb, r \
                  WHERE sa <> sb RETURN 1 AS existe LIMIT 1"
             );
-            if sess.execute(&qc).map(|res| !res.rows.is_empty()).unwrap_or(false) {
+            if sess
+                .execute(&qc)
+                .map(|res| !res.rows.is_empty())
+                .unwrap_or(false)
+            {
                 secours = d;
                 break;
             }
@@ -7351,10 +7749,7 @@ fn arcs_corps(
 /// tomber le nombre d'entrées de cache à un par store et par rang.
 fn palier_arcs(limit: usize) -> usize {
     const PALIERS: [usize; 4] = [1024, 4096, 65_536, 500_000];
-    *PALIERS
-        .iter()
-        .find(|p| limit <= **p)
-        .unwrap_or(&500_000)
+    *PALIERS.iter().find(|p| limit <= **p).unwrap_or(&500_000)
 }
 
 /// Sert un corps d'`arcs` calculé à `palier` sous la forme demandée (`limit`).
@@ -7401,14 +7796,20 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
     // toute entrée hostile au littéral GQL (guillemets, backslash, espaces,
     // contrôle…) reste refusée — anti-injection + bornage de longueur.
     let prefix_ok = prefix.len() <= 400
-        && prefix.chars().all(|c| matches!(
-            c,
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' | '@' | '+' | '%'
-        ));
+        && prefix.chars().all(|c| {
+            matches!(
+                c,
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' | '@' | '+' | '%'
+            )
+        });
     if !prefix_ok {
         return respond(stream, 400, VIZ_JSON, r#"{"error":"prefix invalide"}"#);
     }
-    let rank = params.get("rank").and_then(|r| r.parse::<usize>().ok()).unwrap_or(2).min(32);
+    let rank = params
+        .get("rank")
+        .and_then(|r| r.parse::<usize>().ok())
+        .unwrap_or(2)
+        .min(32);
     let links = params.get("links").map(|v| v != "0").unwrap_or(true);
     // ── LA PAGE SUIVANTE DU MÊME NIVEAU (densifier, pas approfondir) ────────
     // DÉFAUT MESURÉ (2026-09-15) : le front coupait la liste reçue à 24 groupes
@@ -7444,10 +7845,14 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
     // 2 se servirait la page 1 depuis le cache — un mensonge silencieux.
     let mt = store_mtime(&store);
     use std::sync::{Mutex, OnceLock};
-    static SP_CACHE: OnceLock<Mutex<std::collections::HashMap<
-        (std::path::PathBuf, String, usize, bool, usize),
-        (Option<u128>, String),
-    >>> = OnceLock::new();
+    static SP_CACHE: OnceLock<
+        Mutex<
+            std::collections::HashMap<
+                (std::path::PathBuf, String, usize, bool, usize),
+                (Option<u128>, String),
+            >,
+        >,
+    > = OnceLock::new();
     let cache = SP_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let key = (store.clone(), prefix.clone(), rank, links, offset);
     if let Some((m, body)) = verrou(&cache).get(&key).map(|(m, b)| (*m, b.clone())) {
@@ -7499,7 +7904,8 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
             r.rows
                 .iter()
                 .filter_map(|row| {
-                    let (Some(OV::String(m)), Some(OV::Int64(c))) = (row.first(), row.get(1)) else {
+                    let (Some(OV::String(m)), Some(OV::Int64(c))) = (row.first(), row.get(1))
+                    else {
                         return None;
                     };
                     Some(serde_json::json!({ "name": m.to_string(), "count": *c as u64 }))
@@ -7563,9 +7969,10 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
     // plongées suivants sont servis par cache, dans n'importe quel graphe.
     {
         static WARM_BUSY: std::sync::OnceLock<
-            std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>
+            std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
         > = std::sync::OnceLock::new();
-        let busy = WARM_BUSY.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+        let busy =
+            WARM_BUSY.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
         let already = {
             let mut b = verrou(&busy);
             !b.insert(store.clone())
@@ -7601,11 +8008,18 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
                 if let Ok(db) = cached_ro(&s2) {
                     let sess = db.session();
                     let mt2 = store_mtime(&s2);
-                    let cache2 = SP_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+                    let cache2 =
+                        SP_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
                     for c in &children {
-                        let cp = if p2.is_empty() { c.clone() } else { format!("{p2}.{c}") };
+                        let cp = if p2.is_empty() {
+                            c.clone()
+                        } else {
+                            format!("{p2}.{c}")
+                        };
                         let ck = (s2.clone(), cp.clone(), rank + 1, false, 0);
-                        if verrou(&cache2).contains_key(&ck) { continue; }
+                        if verrou(&cache2).contains_key(&ck) {
+                            continue;
+                        }
                         let q = format!(
                             "MATCH (n) WHERE n.qualified_name CONTAINS '.{cp}.' \
                              RETURN split(n.qualified_name, '.')[{}] AS m, count(n) AS c \
@@ -7628,7 +8042,8 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
                         let b2 = serde_json::json!({
                             "store": s2, "prefix": cp, "rank": rank + 1, "ensembles": ens,
                             "offset": 0, "tronque": ens.len() >= 200
-                        }).to_string();
+                        })
+                        .to_string();
                         verrou(&cache2).insert(ck, (mt2, b2));
                         if first_child.is_none() {
                             first_child = Some((cp.clone(), ens));
@@ -7636,8 +8051,11 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
                     }
                     // Étape C-lite : préchauffe aussi les petits-enfants du rameau dominant
                     if let Some((cp1, ens1)) = first_child.clone() {
-                        if let Some(top) = ens1.iter()
-                            .filter_map(|e| e.get("name").and_then(|n| n.as_str()).map(String::from))
+                        if let Some(top) = ens1
+                            .iter()
+                            .filter_map(|e| {
+                                e.get("name").and_then(|n| n.as_str()).map(String::from)
+                            })
                             .find(|n| !n.is_empty() && !n.contains('@') && !n.starts_with('0'))
                         {
                             let gp = format!("{cp1}.{top}");
@@ -7661,7 +8079,8 @@ fn api_viz_space(stream: &mut TcpStream, query: Option<&str>, config: &ServeConf
                                 let bg = serde_json::json!({
                                     "store": s2, "prefix": gp, "rank": rank + 2, "ensembles": gens,
                                     "offset": 0, "tronque": gens.len() >= 200
-                                }).to_string();
+                                })
+                                .to_string();
                                 verrou(&cache2).insert(gk, (mt2, bg));
                             }
                         }
@@ -7698,7 +8117,11 @@ fn api_viz_signatures(
     } else {
         wanted
             .split(',')
-            .filter_map(|t| config.resolve(Some(t.trim())).map(|p| (t.trim().to_string(), p)))
+            .filter_map(|t| {
+                config
+                    .resolve(Some(t.trim()))
+                    .map(|p| (t.trim().to_string(), p))
+            })
             .filter(|(_, p)| visibles.iter().any(|(_, v)| v == p))
             .collect()
     };
@@ -7955,7 +8378,9 @@ fn api_viz_weave(
         if let Some(arr) = obj.get_mut("fibers").and_then(|f| f.as_array_mut()) {
             arr.retain(|f| {
                 let bout = |k: &str| {
-                    f.get(k).and_then(|v| v.as_str()).is_some_and(|q| qns_gardes.contains(q))
+                    f.get(k)
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|q| qns_gardes.contains(q))
                 };
                 bout("a") && bout("b")
             });
@@ -8001,7 +8426,9 @@ fn api_viz_weave(
             // arêtes, types), mais validée par le mtime DU MONDE : une écriture
             // dans A ne peut plus rendre la signature de B fausse — seulement la
             // laisser en cache.
-            let Some(sig) = signature_monde(&path) else { continue };
+            let Some(sig) = signature_monde(&path) else {
+                continue;
+            };
             let types: Vec<serde_json::Value> = sig
                 .get("types")
                 .and_then(|t| t.as_array())
@@ -8039,7 +8466,8 @@ fn api_viz_weave(
                         .fold((1.0f64 + nodes as f64).log10(), f64::max)
                 })
                 .unwrap_or(1.0);
-            let masse = ((1.0f64 + nodes as f64).log10() / max_log.max(1e-9) * 1000.0).round() / 1000.0;
+            let masse =
+                ((1.0f64 + nodes as f64).log10() / max_log.max(1e-9) * 1000.0).round() / 1000.0;
 
             ajoutes += 1;
             nouveaux.push(serde_json::json!({
@@ -8095,7 +8523,8 @@ fn api_viz_weave(
 /// 60 s (les presets ne changent pas d'une seconde à l'autre).
 fn cached_foci(config: &ServeConfig) -> serde_json::Value {
     use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<Option<(std::time::Instant, serde_json::Value)>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<Option<(std::time::Instant, serde_json::Value)>>> =
+        OnceLock::new();
     let cell = CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(g) = cell.lock()
         && let Some((t, v)) = g.as_ref()
@@ -8191,11 +8620,7 @@ fn compute_foci(config: &ServeConfig) -> serde_json::Value {
             if let (Some(qn), Some(t)) = (qn, t)
                 && best_session.as_ref().is_none_or(|(_, bt, _)| t > *bt)
             {
-                best_session = Some((
-                    qn,
-                    t,
-                    str_of(r.get(2)).unwrap_or_else(|| label.clone()),
-                ));
+                best_session = Some((qn, t, str_of(r.get(2)).unwrap_or_else(|| label.clone())));
             }
         }
         // Objectifs : on garde ceux qui portent un NOM lisible. Un monde qui
@@ -8265,7 +8690,10 @@ fn api_viz_activation(
     // l'engine vient de consulter. Chaque hit porte donc son store.
     let targets: Vec<std::path::PathBuf> = match params.get("store") {
         Some(st) => config.resolve(Some(st)).into_iter().collect(),
-        None => tous_les_mondes(config).into_iter().map(|(_, p)| p).collect(),
+        None => tous_les_mondes(config)
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect(),
     };
     if targets.is_empty() {
         let body = serde_json::json!({ "error": "aucun store" }).to_string();
@@ -8292,7 +8720,9 @@ fn api_viz_activation(
         }
     }
     hits.sort_by(|a, b| {
-        b["energy"].as_f64().unwrap_or(0.0)
+        b["energy"]
+            .as_f64()
+            .unwrap_or(0.0)
             .partial_cmp(&a["energy"].as_f64().unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
@@ -8446,10 +8876,8 @@ fn api_engine_memoire(
     // question, c'est deux mémoires possibles : on passe par `self_qn_pour`, et
     // la portée qu'il rend dit si le nœud `Self` est déjà dans la base ou si les
     // souvenirs attendent encore dans le journal de l'utilisateur.
-    let (self_qn, portee) = crate::ancrage::self_qn_pour(
-        config.synapse_store.as_deref(),
-        compte_connecte.as_deref(),
-    );
+    let (self_qn, portee) =
+        crate::ancrage::self_qn_pour(config.synapse_store.as_deref(), compte_connecte.as_deref());
     let entrees = crate::memoire::en_attente(&self_qn);
     let items: Vec<serde_json::Value> = entrees
         .iter()
@@ -8548,7 +8976,11 @@ fn api_resonance(
     config: &ServeConfig,
 ) -> Result<()> {
     let Some(moi) = self_de_l_appelant(entetes, query, config) else {
-        return refus_iam(stream, 401, "la résonance est un rapport entre selfs : présentez une identité");
+        return refus_iam(
+            stream,
+            401,
+            "la résonance est un rapport entre selfs : présentez une identité",
+        );
     };
     let cat = crate::memoire::catalogue(config.synapse_store.as_deref());
 
@@ -8586,13 +9018,15 @@ fn api_resonance(
         .selfs
         .iter()
         .filter(|s| s.self_qn != moi && !deja.contains(&s.self_qn))
-        .map(|s| serde_json::json!({
-            "self": s.self_qn,
-            "mondes": s.mondes,
-            "entrees": s.entrees,
-            "derniere_ms": s.derniere_ms,
-            "noeud_dans_synapse": s.noeud_dans_synapse,
-        }))
+        .map(|s| {
+            serde_json::json!({
+                "self": s.self_qn,
+                "mondes": s.mondes,
+                "entrees": s.entrees,
+                "derniere_ms": s.derniere_ms,
+                "noeud_dans_synapse": s.noeud_dans_synapse,
+            })
+        })
         .collect();
 
     let body = serde_json::json!({
@@ -8631,9 +9065,15 @@ fn abonnes_lecteur(lecteur: &str) -> Vec<String> {
         if p.extension().and_then(|x| x.to_str()) != Some("json") {
             continue;
         }
-        let Ok(txt) = std::fs::read_to_string(&p) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
-        let Some(publieur) = v.get("publieur").and_then(|x| x.as_str()) else { continue };
+        let Ok(txt) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+            continue;
+        };
+        let Some(publieur) = v.get("publieur").and_then(|x| x.as_str()) else {
+            continue;
+        };
         let abonne = v
             .get("abonnes")
             .and_then(|x| x.as_array())
@@ -8665,14 +9105,27 @@ fn api_resonance_geste(
     config: &ServeConfig,
 ) -> Result<()> {
     let Some(moi) = self_de_l_appelant(entetes, query, config) else {
-        return refus_iam(stream, 401, "la résonance est un geste de self : présentez une identité");
+        return refus_iam(
+            stream,
+            401,
+            "la résonance est un geste de self : présentez une identité",
+        );
     };
     let v: serde_json::Value =
         serde_json::from_str(corps).unwrap_or_else(|_| serde_json::json!({}));
-    let lecteur = v.get("lecteur").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let lecteur = v
+        .get("lecteur")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let delier = v.get("delier").and_then(|x| x.as_bool()).unwrap_or(false);
     if lecteur.is_empty() {
-        return refus_iam(stream, 400, "« lecteur » est requis (le self qui verra vos facettes)");
+        return refus_iam(
+            stream,
+            400,
+            "« lecteur » est requis (le self qui verra vos facettes)",
+        );
     }
     // Le self visé doit EXISTER et ne pas être le mien : on refuse tôt, avec la
     // liste des noms qui existent, plutôt que d'écrire un lien vers personne.
@@ -8774,7 +9227,12 @@ fn api_engine_ask(
     let db = match cached_ro(&store) {
         Ok(db) => db,
         Err(e) => {
-            return respond(stream, 400, VIZ_JSON, &format!("{{\"error\":\"ouverture RO : {e}\"}}"));
+            return respond(
+                stream,
+                400,
+                VIZ_JSON,
+                &format!("{{\"error\":\"ouverture RO : {e}\"}}"),
+            );
         }
     };
     let max_tokens = params
@@ -8801,7 +9259,16 @@ fn api_engine_ask(
     // Niveau d effort : `?pensee=` s il est donne, sinon le defaut NEUTRE du
     // template (jamais xhigh par omission — 37 s mesures pour un comptage).
     let effort = crate::engine::effort_de_pensee(params.get("pensee").map(String::as_str));
-    match crate::engine::demander(&db, &store, &qn, &question, max_tokens, pensee, effort, compte_connecte.as_deref()) {
+    match crate::engine::demander(
+        &db,
+        &store,
+        &qn,
+        &question,
+        max_tokens,
+        pensee,
+        effort,
+        compte_connecte.as_deref(),
+    ) {
         Ok(r) => respond(stream, 200, VIZ_JSON, &serde_json::to_string(&r)?),
         Err(e) => {
             let body = serde_json::json!({ "error": format!("{e}") }).to_string();
@@ -8809,7 +9276,6 @@ fn api_engine_ask(
         }
     }
 }
-
 
 /// L'ATLAS, MÉMORISÉ — la carte des mondes et de leurs synapses.
 ///
@@ -8922,11 +9388,17 @@ fn api_engine_chat(
     // raisonnement un peu plus long atteignait le plafond et la réponse était
     // coupée. On laisse de la marge, et surtout on RAPPORTE la coupure (voir
     // `raison` ci-dessous) au lieu de la laisser passer pour une fin naturelle.
-    let max_tokens = params.get("max_tokens").and_then(|v| v.parse::<u32>().ok()).unwrap_or(4096);
+    let max_tokens = params
+        .get("max_tokens")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(4096);
     // ── LE RAISONNEMENT SE DEMANDE, IL NE SE SUBIT PLUS (rapatrie mc) ──
     // `?pensee=non|courte|moyenne|profonde`, defaut neutre du template.
     let pensee_demande = params.get("pensee").map(String::as_str);
-    let pensee = !matches!(pensee_demande, Some("non") | Some("off") | Some("0") | Some("sans"));
+    let pensee = !matches!(
+        pensee_demande,
+        Some("non") | Some("off") | Some("0") | Some("sans")
+    );
     let effort = crate::engine::effort_de_pensee(pensee_demande);
     // Historique multi-tours : `h` = JSON `[["user","…"],["assistant","…"]]`.
     // ── L'HISTORIQUE EST BORNÉ CÔTÉ SERVEUR AUSSI ─────────────────────────
@@ -9083,7 +9555,9 @@ fn api_engine_chat(
     let Ok(secours) = stream.try_clone() else {
         // Sans second descripteur, pas de battement possible : mieux vaut le dire
         // que servir un flux qui peut mourir en silence au premier proxy venu.
-        return Err(anyhow::anyhow!("SSE : socket non duplicable (descripteurs épuisés ?)"));
+        return Err(anyhow::anyhow!(
+            "SSE : socket non duplicable (descripteurs épuisés ?)"
+        ));
     };
     let flux: Arc<Mutex<(TcpStream, Instant)>> = Arc::new(Mutex::new((secours, Instant::now())));
     let vivant = Arc::new(AtomicBool::new(true));
@@ -9132,7 +9606,8 @@ fn api_engine_chat(
     // Le premier paramètre est conservé pour ne pas toucher aux huit appels qui
     // suivent : c'est le `&mut TcpStream` d'origine, désormais inutilisé puisque
     // l'écriture passe par le descripteur PARTAGÉ ci-dessus.
-    let pousser = |_stream: &mut TcpStream, nom: &str, donnees: serde_json::Value| ecrire(nom, donnees);
+    let pousser =
+        |_stream: &mut TcpStream, nom: &str, donnees: serde_json::Value| ecrire(nom, donnees);
     let mut pousser = pousser;
     let atlas = atlas_memo(config);
     let ouvrir = ouvreur_de_mondes(config);
@@ -9209,7 +9684,15 @@ fn api_engine_chat(
             // L'APPEL D'OUTIL EST VISIBLE : c'est ce qui rend la densification
             // observable — on voit quelle requête a été exécutée, sur quel monde,
             // combien de lignes, en combien de temps, et l'erreur s'il y en a une.
-            crate::engine::Evenement::Outil { nom, arguments, lignes, ms, monde, erreur, tronque } => {
+            crate::engine::Evenement::Outil {
+                nom,
+                arguments,
+                lignes,
+                ms,
+                monde,
+                erreur,
+                tronque,
+            } => {
                 // `tronque` est TRANSMIS : le plafond de caractères était annoncé
                 // au modèle mais pas à l'écran, qui affichait « 29 lignes » pour
                 // un résultat dont 17 étaient parvenues au modèle (mesuré).
@@ -9225,24 +9708,28 @@ fn api_engine_chat(
             // LA MÉMOIRE EST ANNONCÉE. Ce n'est pas une lecture : c'est une
             // écriture journalisée, en attente d'application. Le dire évite de
             // laisser croire qu'elle est déjà dans la base.
-            crate::engine::Evenement::Memoire { genre, reference, self_qn } => {
-                pousser(
-                    stream,
-                    "memoire",
-                    serde_json::json!({
-                        "genre": genre, "reference": reference, "self_qn": self_qn,
-                    }),
-                )
-            }
+            crate::engine::Evenement::Memoire {
+                genre,
+                reference,
+                self_qn,
+            } => pousser(
+                stream,
+                "memoire",
+                serde_json::json!({
+                    "genre": genre, "reference": reference, "self_qn": self_qn,
+                }),
+            ),
             crate::engine::Evenement::Think(t) => {
                 pousser(stream, "think", serde_json::json!({ "t": t }))
             }
             crate::engine::Evenement::Texte(t) => {
                 pousser(stream, "texte", serde_json::json!({ "t": t }))
             }
-            crate::engine::Evenement::Fin { ms_llm, raison } => {
-                pousser(stream, "fin", serde_json::json!({ "ms_llm": ms_llm, "raison": raison }))
-            }
+            crate::engine::Evenement::Fin { ms_llm, raison } => pousser(
+                stream,
+                "fin",
+                serde_json::json!({ "ms_llm": ms_llm, "raison": raison }),
+            ),
         },
         // Le client parti arrête la génération (voir `client_parti` plus haut).
         // Un `Arc` et non une référence : la garde (`obrain-garde`) le partage
@@ -9258,7 +9745,11 @@ fn api_engine_chat(
     vivant.store(false, Ordering::Relaxed);
     let _ = battement.join();
     if let Err(e) = resultat {
-        pousser(stream, "erreur", serde_json::json!({ "error": format!("{e}") }));
+        pousser(
+            stream,
+            "erreur",
+            serde_json::json!({ "error": format!("{e}") }),
+        );
     }
     Ok(())
 }
@@ -9278,7 +9769,9 @@ fn api_engine_chat(
 /// et on le DIT (`local`) plutôt que de refuser un service qui n'a alors aucune
 /// frontière à défendre.
 fn compte_appelant(entetes: &str, query: Option<&str>) -> Option<String> {
-    let Some(g) = garde_interieure() else { return Some("local".to_string()) };
+    let Some(g) = garde_interieure() else {
+        return Some("local".to_string());
+    };
     let jeton = jeton_presente(entetes, query).filter(|j| !j.trim().is_empty())?;
     let s = g.authentifier(Some(&jeton)).ok().flatten()?;
     Some(s.username().to_string())
@@ -9327,14 +9820,23 @@ fn api_remote(
             .unwrap_or_default()
     };
     let erreur = |stream: &mut TcpStream, code: u16, message: &str| -> Result<()> {
-        respond(stream, code, VIZ_JSON, &serde_json::json!({ "error": message }).to_string())
+        respond(
+            stream,
+            code,
+            VIZ_JSON,
+            &serde_json::json!({ "error": message }).to_string(),
+        )
     };
 
     match (path, method) {
         ("/api/remote/attacher", "POST") => {
             let machine = {
                 let m = champ("machine");
-                if m.trim().is_empty() { "machine sans nom".to_string() } else { m }
+                if m.trim().is_empty() {
+                    "machine sans nom".to_string()
+                } else {
+                    m
+                }
             };
             // ── LE CORPS ENTIER, ET PAS SEULEMENT LES CAPACITÉS ────────────
             // Ce handler n'extrayait que `capacites` : la moitié « ce que la
@@ -9389,7 +9891,10 @@ fn api_remote(
         ("/api/remote/resultat", "POST") => {
             let client = champ("client_id");
             let appel = champ("appel_id");
-            let resultat = v.get("resultat").cloned().unwrap_or(serde_json::Value::Null);
+            let resultat = v
+                .get("resultat")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             match crate::remote::deposer_resultat(&compte, &client, &appel, resultat) {
                 Ok(()) => respond(stream, 200, VIZ_JSON, "{\"recu\":true}"),
                 Err(e) => erreur(stream, 403, &e),
@@ -9398,11 +9903,18 @@ fn api_remote(
         ("/api/remote/detacher", "POST") => {
             let client = champ("client_id");
             let parti = crate::remote::detacher(&compte, &client);
-            respond(stream, 200, VIZ_JSON, &serde_json::json!({ "detache": parti }).to_string())
+            respond(
+                stream,
+                200,
+                VIZ_JSON,
+                &serde_json::json!({ "detache": parti }).to_string(),
+            )
         }
         ("/api/remote/clients", "GET") => {
-            let liste: Vec<serde_json::Value> =
-                crate::remote::clients_du_compte(&compte).iter().map(|c| c.en_json()).collect();
+            let liste: Vec<serde_json::Value> = crate::remote::clients_du_compte(&compte)
+                .iter()
+                .map(|c| c.en_json())
+                .collect();
             let body = serde_json::json!({
                 "compte": compte,
                 "clients": liste,
@@ -9435,8 +9947,7 @@ fn api_remote(
         ("/api/remote/machines", "GET") => {
             let clients = crate::remote::clients_du_compte(&compte);
             let joignables = clients.iter().filter(|c| c.vivant).count();
-            let machines: Vec<serde_json::Value> =
-                clients.iter().map(|c| c.en_json()).collect();
+            let machines: Vec<serde_json::Value> = clients.iter().map(|c| c.en_json()).collect();
             let reponse = if machines.is_empty() {
                 "ce compte ne connaît AUCUNE machine : rien ne s'est rattaché, ou rien ne \
                  s'est rattaché SOUS CE COMPTE. Sur une machine : `selfd attacher --moteur \
@@ -9474,7 +9985,11 @@ fn api_remote(
         ("/api/remote/memoire", "POST") => {
             let client = {
                 let c = champ("client_id");
-                if c.trim().is_empty() { champ("client") } else { c }
+                if c.trim().is_empty() {
+                    champ("client")
+                } else {
+                    c
+                }
             };
             api_remote_memoire(stream, &compte, &v, &client)
         }
@@ -9482,7 +9997,11 @@ fn api_remote(
             let client = champ("client_id");
             let outil = champ("outil");
             if outil.trim().is_empty() {
-                return erreur(stream, 400, "« outil » requis : que doit faire la machine ?");
+                return erreur(
+                    stream,
+                    400,
+                    "« outil » requis : que doit faire la machine ?",
+                );
             }
             let arguments = v.get("arguments").cloned().unwrap_or(serde_json::json!({}));
             let delai = v
@@ -9545,7 +10064,12 @@ fn api_remote_memoire(
     client_id: &str,
 ) -> Result<()> {
     let erreur = |stream: &mut TcpStream, code: u16, message: &str| -> Result<()> {
-        respond(stream, code, VIZ_JSON, &serde_json::json!({ "error": message }).to_string())
+        respond(
+            stream,
+            code,
+            VIZ_JSON,
+            &serde_json::json!({ "error": message }).to_string(),
+        )
     };
 
     // ── 1. VALIDER AVANT D'ÉCRIRE ──────────────────────────────────────────
@@ -9772,7 +10296,9 @@ fn intention_recue(v: &serde_json::Value) -> Result<crate::memoire::Intention, S
     };
     let exiger = |valeur: String, nom: &str| -> Result<String, String> {
         if valeur.is_empty() {
-            Err(format!("« {nom} » requis (non vide) pour une intention « {kind} »"))
+            Err(format!(
+                "« {nom} » requis (non vide) pour une intention « {kind} »"
+            ))
         } else {
             Ok(valeur)
         }
@@ -9818,7 +10344,12 @@ fn api_worlds_ajouter(
 ) -> Result<()> {
     let v: serde_json::Value =
         serde_json::from_str(corps).unwrap_or_else(|_| serde_json::json!({}));
-    let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let url = v
+        .get("url")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let label = v.get("label").and_then(|x| x.as_str()).map(String::from);
     if url.is_empty() {
         let body = serde_json::json!({
@@ -9829,8 +10360,7 @@ fn api_worlds_ajouter(
     }
     // L'identité telle que l'IAM la rend (`utilisateur@compte`). `None` quand
     // l'IAM n'est pas armé : on n'invente pas d'auteur, on enregistre l'absence.
-    let auteur = jeton_presente(entetes, query)
-        .and_then(|j| GardeIam::partagee().identite(&j));
+    let auteur = jeton_presente(entetes, query).and_then(|j| GardeIam::partagee().identite(&j));
     match crate::worlds::lancer(url, label, auteur) {
         Ok(id) => {
             let body = serde_json::json!({ "job": id }).to_string();
@@ -9941,11 +10471,17 @@ mod tests {
         assert_eq!(d.removed_nodes, vec!["gone".to_string()]);
         assert_eq!(d.added_edges.len(), 1);
         assert_eq!(d.added_edges[0].dst, "b");
-        assert_eq!(d.removed_edges, vec![("hub".into(), "gone".into(), "CALLS".into())]);
+        assert_eq!(
+            d.removed_edges,
+            vec![("hub".into(), "gone".into(), "CALLS".into())]
+        );
 
         // Application du delta sur `old` -> doit egaler `new` (en ensembles).
-        let mut etat: std::collections::HashMap<String, VizNode> =
-            old.nodes.iter().map(|n| (n.id.clone(), n.clone())).collect();
+        let mut etat: std::collections::HashMap<String, VizNode> = old
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.clone()))
+            .collect();
         for id in &d.removed_nodes {
             etat.remove(id);
         }
@@ -9961,8 +10497,11 @@ mod tests {
         for e in &d.added_edges {
             edges.insert(ekey(e));
         }
-        let attendu_nodes: std::collections::HashMap<String, VizNode> =
-            new.nodes.iter().map(|n| (n.id.clone(), n.clone())).collect();
+        let attendu_nodes: std::collections::HashMap<String, VizNode> = new
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.clone()))
+            .collect();
         let attendu_edges: std::collections::HashSet<(String, String, String)> =
             new.edges.iter().map(ekey).collect();
         assert_eq!(etat, attendu_nodes, "noeuds reconstruits != new");
@@ -10017,7 +10556,10 @@ mod tests {
         let (node_order, _edge_order, label) = importance_order(&sg);
         assert_eq!(label, "canonical");
         // canon a deja trie par id ; l'ordre reste (0,1,2) -> a,m,z.
-        let ids: Vec<&str> = node_order.iter().map(|&i| sg.nodes[i].id.as_str()).collect();
+        let ids: Vec<&str> = node_order
+            .iter()
+            .map(|&i| sg.nodes[i].id.as_str())
+            .collect();
         assert_eq!(ids, vec!["a", "m", "z"]);
     }
 
@@ -10078,7 +10620,10 @@ mod tests_jeton {
         assert_eq!(jeton_presente(mixte, None).as_deref(), Some("b"));
 
         // `EventSource` ne pose pas d'en-tête : le paramètre sert au flux SSE.
-        assert_eq!(jeton_presente("", Some("token=sse")).as_deref(), Some("sse"));
+        assert_eq!(
+            jeton_presente("", Some("token=sse")).as_deref(),
+            Some("sse")
+        );
         assert_eq!(jeton_presente("", None), None);
     }
 }
@@ -10123,12 +10668,17 @@ mod tests_transport {
     /// contre le système de fichiers réel, pas contre une maquette — c'est le
     /// seul moyen de tester la canonicalisation (donc les liens symboliques).
     fn dossier_jetable(nom: &str) -> PathBuf {
-        let racine = std::env::temp_dir().join(format!("obrain-transport-{}-{nom}", std::process::id()));
+        let racine =
+            std::env::temp_dir().join(format!("obrain-transport-{}-{nom}", std::process::id()));
         let _ = std::fs::remove_dir_all(&racine);
         std::fs::create_dir_all(racine.join("assets")).expect("dossier de test");
         std::fs::write(racine.join("index.html"), b"<!doctype html>").unwrap();
         std::fs::write(racine.join("assets/index-abc.js"), b"console.log(1)").unwrap();
-        std::fs::write(std::env::temp_dir().join("obrain-transport-secret.txt"), b"secret").unwrap();
+        std::fs::write(
+            std::env::temp_dir().join("obrain-transport-secret.txt"),
+            b"secret",
+        )
+        .unwrap();
         racine
     }
 
@@ -10152,7 +10702,11 @@ mod tests_transport {
             Extraction::Incomplete => panic!("la seconde requête est dans le même tampon"),
         };
         assert_eq!(deux.chemin, "/app/index.html");
-        assert!(tampon.is_empty(), "le tampon doit être consommé exactement : {:?}", tampon);
+        assert!(
+            tampon.is_empty(),
+            "le tampon doit être consommé exactement : {:?}",
+            tampon
+        );
     }
 
     /// Le corps d'un `POST` arrivé en deux morceaux : c'est le même problème que
@@ -10160,13 +10714,22 @@ mod tests_transport {
     /// requête n'est pas complète.
     #[test]
     fn un_corps_en_deux_morceaux_est_attendu_sans_consommer_le_tampon() {
-        let complet = b"POST /api/worlds HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\n{\"url\":\"a\"}".to_vec();
+        let complet =
+            b"POST /api/worlds HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\n{\"url\":\"a\"}"
+                .to_vec();
         let coupe = complet.len() - 4;
         let mut tampon = complet[..coupe].to_vec();
         let avant = tampon.len();
         let premier = extraire_requete(&mut tampon).unwrap();
-        assert!(matches!(premier, Extraction::Incomplete), "corps incomplet : {premier:?}");
-        assert_eq!(tampon.len(), avant, "rien ne doit être consommé tant qu'il manque des octets");
+        assert!(
+            matches!(premier, Extraction::Incomplete),
+            "corps incomplet : {premier:?}"
+        );
+        assert_eq!(
+            tampon.len(),
+            avant,
+            "rien ne doit être consommé tant qu'il manque des octets"
+        );
         tampon.extend_from_slice(&complet[coupe..]);
         match extraire_requete(&mut tampon).unwrap() {
             Extraction::Prete(r) => {
@@ -10181,7 +10744,11 @@ mod tests_transport {
     #[test]
     fn la_recherche_du_terminateur_est_exacte() {
         assert_eq!(trouver(b"a\r\n\r\nb", b"\r\n\r\n"), Some(1));
-        assert_eq!(trouver(b"a\n\nb", b"\r\n\r\n"), None, "un terminateur LF seul n'en est pas un");
+        assert_eq!(
+            trouver(b"a\n\nb", b"\r\n\r\n"),
+            None,
+            "un terminateur LF seul n'en est pas un"
+        );
         assert_eq!(trouver(b"", b"\r\n\r\n"), None);
     }
 
@@ -10190,11 +10757,31 @@ mod tests_transport {
     /// le client pendait jusqu'à son propre délai sans apprendre pourquoi.
     #[test]
     fn une_ligne_de_requete_vide_ou_illisible_est_un_400() {
-        assert_eq!(refus("\r\n\r\n"), 400, "`\\r\\n\\r\\n` d'entrée = ligne de requête vide");
-        assert_eq!(refus("GET\r\nHost: x\r\n\r\n"), 400, "il manque la cible et la version");
-        assert_eq!(refus("GET / HTTP/1.1 extra\r\nHost: x\r\n\r\n"), 400, "quatre champs");
-        assert_eq!(refus("GET / HTTP/1.1\r\nHost x\r\n\r\n"), 400, "en-tête sans deux-points");
-        assert_eq!(refus("GET / HTTP/1.1\r\nHost : x\r\n\r\n"), 400, "espace avant les deux-points");
+        assert_eq!(
+            refus("\r\n\r\n"),
+            400,
+            "`\\r\\n\\r\\n` d'entrée = ligne de requête vide"
+        );
+        assert_eq!(
+            refus("GET\r\nHost: x\r\n\r\n"),
+            400,
+            "il manque la cible et la version"
+        );
+        assert_eq!(
+            refus("GET / HTTP/1.1 extra\r\nHost: x\r\n\r\n"),
+            400,
+            "quatre champs"
+        );
+        assert_eq!(
+            refus("GET / HTTP/1.1\r\nHost x\r\n\r\n"),
+            400,
+            "en-tête sans deux-points"
+        );
+        assert_eq!(
+            refus("GET / HTTP/1.1\r\nHost : x\r\n\r\n"),
+            400,
+            "espace avant les deux-points"
+        );
     }
 
     /// RFC 9112 §3.2 : `Host` est OBLIGATOIRE en 1.1, facultatif en 1.0. Mesuré
@@ -10222,10 +10809,24 @@ mod tests_transport {
     /// test mesurait autre chose que ce qu'il annonçait.
     #[test]
     fn un_content_length_menteur_est_refuse_avant_toute_lecture() {
-        assert_eq!(refus("POST /api/worlds HTTP/1.1\r\nHost: x\r\nContent-Length: 10000000\r\n\r\n{}"), 413);
-        assert_eq!(refus("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}"), 400);
-        assert_eq!(refus("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n"), 400);
-        assert_eq!(refus("POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"), 501);
+        assert_eq!(
+            refus("POST /api/worlds HTTP/1.1\r\nHost: x\r\nContent-Length: 10000000\r\n\r\n{}"),
+            413
+        );
+        assert_eq!(
+            refus(
+                "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}"
+            ),
+            400
+        );
+        assert_eq!(
+            refus("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n"),
+            400
+        );
+        assert_eq!(
+            refus("POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"),
+            501
+        );
     }
 
     #[test]
@@ -10251,18 +10852,29 @@ mod tests_transport {
         assert!(onze.keep_alive, "HTTP/1.1 garde par défaut");
         assert!(!onze.head && !onze.fermer && !onze.repondu);
 
-        let ferme = etat_du_client(&requete("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
-        assert!(!ferme.keep_alive, "`Connection: close` du client doit être honoré");
+        let ferme = etat_du_client(&requete(
+            "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        ));
+        assert!(
+            !ferme.keep_alive,
+            "`Connection: close` du client doit être honoré"
+        );
 
-        let dix_garde = etat_du_client(&requete("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"));
+        let dix_garde =
+            etat_du_client(&requete("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"));
         assert!(dix_garde.keep_alive);
         let dix = etat_du_client(&requete("GET / HTTP/1.0\r\n\r\n"));
-        assert!(!dix.keep_alive, "HTTP/1.0 ferme par défaut : la garder ouverte ferait pendre le client");
+        assert!(
+            !dix.keep_alive,
+            "HTTP/1.0 ferme par défaut : la garder ouverte ferait pendre le client"
+        );
 
         // `HEAD` : reconnu ici, retenu au dernier moment par `respond_octets`.
         assert!(etat_du_client(&requete("HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")).head);
         // La négociation est transportée telle quelle (l'analyse est pure).
-        let negocie = etat_du_client(&requete("GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nIf-None-Match: \"a\"\r\n\r\n"));
+        let negocie = etat_du_client(&requete(
+            "GET / HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nIf-None-Match: \"a\"\r\n\r\n",
+        ));
         assert_eq!(negocie.accepte_encodage.as_deref(), Some("gzip"));
         assert_eq!(negocie.if_none_match.as_deref(), Some("\"a\""));
     }
@@ -10303,13 +10915,19 @@ mod tests_transport {
             "",
             "index.html%00.png",
         ] {
-            assert!(chemin_sous(&racine, hostile).is_none(), "{hostile:?} doit être refusé");
+            assert!(
+                chemin_sous(&racine, hostile).is_none(),
+                "{hostile:?} doit être refusé"
+            );
         }
         // Ce qui est légitime continue de passer — une garde qui refuse tout
         // « pour être sûre » casse le service qu'elle protège.
         assert!(chemin_sous(&racine, "index.html").is_some());
         assert!(chemin_sous(&racine, "assets/index-abc.js").is_some());
-        assert!(chemin_sous(&racine, "assets/index..js").is_none(), "ce fichier n'existe pas — 404");
+        assert!(
+            chemin_sous(&racine, "assets/index..js").is_none(),
+            "ce fichier n'existe pas — 404"
+        );
         // Absent = refusé aussi : c'est le 404 de la route.
         assert!(chemin_sous(&racine, "assets/inexistant.js").is_none());
         let _ = std::fs::remove_dir_all(&racine);
@@ -10324,7 +10942,10 @@ mod tests_transport {
         let racine = dossier_jetable("lien");
         let dehors = std::env::temp_dir().join("obrain-transport-secret.txt");
         std::os::unix::fs::symlink(&dehors, racine.join("evasion.txt")).expect("lien symbolique");
-        assert!(chemin_sous(&racine, "evasion.txt").is_none(), "le lien doit être refusé");
+        assert!(
+            chemin_sous(&racine, "evasion.txt").is_none(),
+            "le lien doit être refusé"
+        );
         let _ = std::fs::remove_dir_all(&racine);
     }
 
@@ -10344,26 +10965,51 @@ mod tests_transport {
     // ── LA NÉGOCIATION DE CONTENU ──────────────────────────────────────────
     #[test]
     fn l_encodage_se_negocie_et_le_flux_n_est_jamais_degonfle() {
-        assert_eq!(encodage_negocie(None, "application/javascript", 10_000), Encodage::Aucun);
         assert_eq!(
-            encodage_negocie(Some("gzip, deflate, br, zstd"), "application/javascript", 10_000),
+            encodage_negocie(None, "application/javascript", 10_000),
+            Encodage::Aucun
+        );
+        assert_eq!(
+            encodage_negocie(
+                Some("gzip, deflate, br, zstd"),
+                "application/javascript",
+                10_000
+            ),
             Encodage::Gzip,
             "c'est l'en-tête que le navigateur envoie réellement"
         );
-        assert_eq!(encodage_negocie(Some("deflate"), "application/json", 10_000), Encodage::Deflate);
-        assert_eq!(encodage_negocie(Some("*"), "application/json", 10_000), Encodage::Gzip);
+        assert_eq!(
+            encodage_negocie(Some("deflate"), "application/json", 10_000),
+            Encodage::Deflate
+        );
+        assert_eq!(
+            encodage_negocie(Some("*"), "application/json", 10_000),
+            Encodage::Gzip
+        );
         // Sous le seuil, on ne dégonfle pas (un corps de 200 octets grossit).
-        assert_eq!(encodage_negocie(Some("gzip"), "application/json", 200), Encodage::Aucun);
+        assert_eq!(
+            encodage_negocie(Some("gzip"), "application/json", 200),
+            Encodage::Aucun
+        );
         // `q=0` est un REFUS, pas une acceptation.
-        assert_eq!(encodage_negocie(Some("gzip;q=0"), "application/json", 10_000), Encodage::Aucun);
+        assert_eq!(
+            encodage_negocie(Some("gzip;q=0"), "application/json", 10_000),
+            Encodage::Aucun
+        );
         assert_eq!(
             encodage_negocie(Some("gzip;q=0, deflate"), "application/json", 10_000),
             Encodage::Deflate
         );
         // LE FLUX : jamais, même quand le client le demande — un déflateur
         // tamponne, et un flux tamponné n'arrive qu'à la fin.
-        assert_eq!(encodage_negocie(Some("gzip"), TYPE_SSE, 100_000), Encodage::Aucun);
-        assert_eq!(encodage_negocie(Some("gzip, deflate"), "text/event-stream", 5_000), Encodage::Aucun);
+        assert_eq!(
+            encodage_negocie(Some("gzip"), TYPE_SSE, 100_000),
+            Encodage::Aucun
+        );
+        assert_eq!(
+            encodage_negocie(Some("gzip, deflate"), "text/event-stream", 5_000),
+            Encodage::Aucun
+        );
     }
 
     #[test]
@@ -10371,18 +11017,29 @@ mod tests_transport {
         let corps = "obrain ".repeat(500);
         for encodage in [Encodage::Gzip, Encodage::Deflate] {
             let gonfle = compresser(corps.as_bytes(), encodage).expect("compression");
-            assert!(gonfle.len() < corps.len() / 2, "aucun gain sur {encodage:?}");
+            assert!(
+                gonfle.len() < corps.len() / 2,
+                "aucun gain sur {encodage:?}"
+            );
             let mut relu = Vec::new();
             match encodage {
                 Encodage::Gzip => {
-                    flate2::read::GzDecoder::new(&gonfle[..]).read_to_end(&mut relu).unwrap();
+                    flate2::read::GzDecoder::new(&gonfle[..])
+                        .read_to_end(&mut relu)
+                        .unwrap();
                 }
                 Encodage::Deflate => {
-                    flate2::read::ZlibDecoder::new(&gonfle[..]).read_to_end(&mut relu).unwrap();
+                    flate2::read::ZlibDecoder::new(&gonfle[..])
+                        .read_to_end(&mut relu)
+                        .unwrap();
                 }
                 Encodage::Aucun => unreachable!(),
             }
-            assert_eq!(relu, corps.as_bytes(), "le corps doit se relire à l'identique");
+            assert_eq!(
+                relu,
+                corps.as_bytes(),
+                "le corps doit se relire à l'identique"
+            );
         }
     }
 
@@ -10391,23 +11048,50 @@ mod tests_transport {
     fn l_etag_se_derive_de_la_longueur_et_de_la_date() {
         let t = UNIX_EPOCH + Duration::from_secs(1_757_782_999);
         let un = etag_de(42, Some(t));
-        assert_eq!(un, etag_de(42, Some(t)), "déterministe : deux appels, même étiquette");
+        assert_eq!(
+            un,
+            etag_de(42, Some(t)),
+            "déterministe : deux appels, même étiquette"
+        );
         assert_ne!(un, etag_de(43, Some(t)), "la longueur compte");
-        assert_ne!(un, etag_de(42, Some(t + Duration::from_secs(1))), "la date compte");
-        assert!(un.starts_with('"') && un.ends_with('"'), "un ETag fort est entre guillemets");
+        assert_ne!(
+            un,
+            etag_de(42, Some(t + Duration::from_secs(1))),
+            "la date compte"
+        );
+        assert!(
+            un.starts_with('"') && un.ends_with('"'),
+            "un ETag fort est entre guillemets"
+        );
     }
 
     #[test]
     fn if_none_match_declenche_304_et_ne_trompe_personne() {
         let etag = "\"1a-2b\"";
         assert!(revalidation_304(200, Some(etag), Some(etag)));
-        assert!(revalidation_304(200, Some(etag), Some("W/\"1a-2b\"")), "comparaison faible");
-        assert!(revalidation_304(200, Some(etag), Some("\"autre\", \"1a-2b\"")));
+        assert!(
+            revalidation_304(200, Some(etag), Some("W/\"1a-2b\"")),
+            "comparaison faible"
+        );
+        assert!(revalidation_304(
+            200,
+            Some(etag),
+            Some("\"autre\", \"1a-2b\"")
+        ));
         assert!(revalidation_304(200, Some(etag), Some("*")));
         assert!(!revalidation_304(200, Some(etag), Some("\"autre\"")));
-        assert!(!revalidation_304(200, Some(etag), None), "sans If-None-Match, pas de 304");
-        assert!(!revalidation_304(200, None, Some(etag)), "sans ETag, pas de 304");
-        assert!(!revalidation_304(404, Some(etag), Some(etag)), "un 404 ne devient pas un 304");
+        assert!(
+            !revalidation_304(200, Some(etag), None),
+            "sans If-None-Match, pas de 304"
+        );
+        assert!(
+            !revalidation_304(200, None, Some(etag)),
+            "sans ETag, pas de 304"
+        );
+        assert!(
+            !revalidation_304(404, Some(etag), Some(etag)),
+            "un 404 ne devient pas un 304"
+        );
         // Deux étiquettes VOISINES ne doivent pas se confondre.
         assert!(!etag_correspond("\"1a-2b\"", "\"1a-2\""));
         assert!(!etag_correspond("\"1a-2\"", "\"1a-2b\""));
@@ -10443,7 +11127,11 @@ mod tests_transport {
             200u16, 204, 206, 301, 302, 303, 304, 400, 401, 403, 404, 405, 408, 411, 413, 414, 429,
             431, 500, 501, 503, 505,
         ] {
-            assert_ne!(raison_http(code), "Statut inconnu", "code {code} sans phrase de raison");
+            assert_ne!(
+                raison_http(code),
+                "Statut inconnu",
+                "code {code} sans phrase de raison"
+            );
         }
         // Le repli DIT qu'il ne sait pas — il ne prétend plus « Error ».
         assert_eq!(raison_http(999), "Statut inconnu");
@@ -10456,10 +11144,16 @@ mod tests_transport {
         // Client parti sans rien dire : rien à répondre (et surtout PAS un 400
         // sur une socket muette, qui serait un mensonge).
         let mut vide: Vec<u8> = Vec::new();
-        assert!(matches!(extraire_requete(&mut vide), Ok(Extraction::Incomplete)));
+        assert!(matches!(
+            extraire_requete(&mut vide),
+            Ok(Extraction::Incomplete)
+        ));
         // Des octets, mais pas de requête : 400 — jamais un silence.
         let mut partiel = b"GET / HTTP/1.1\r\nHost: x\r\n".to_vec();
-        assert!(matches!(extraire_requete(&mut partiel), Ok(Extraction::Incomplete)));
+        assert!(matches!(
+            extraire_requete(&mut partiel),
+            Ok(Extraction::Incomplete)
+        ));
         assert!(!partiel.is_empty(), "les octets reçus restent en attente");
     }
 }

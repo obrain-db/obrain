@@ -44,8 +44,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use anyhow::{bail, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, bail};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 pub struct Politique {
@@ -194,7 +194,11 @@ impl Politique {
             .filter(|v| v.exercable)
             .map(|v| v.nom.to_string())
             .collect();
-        let refusees = verdicts.iter().filter(|v| !v.exercable).map(Verdict::en_json).collect();
+        let refusees = verdicts
+            .iter()
+            .filter(|v| !v.exercable)
+            .map(Verdict::en_json)
+            .collect();
         (ouvertes, refusees)
     }
 
@@ -366,12 +370,20 @@ pub struct Verdict {
 impl Verdict {
     /// Une capacité mesurée comme exercable.
     pub fn ouvert(nom: &'static str) -> Self {
-        Self { nom, exercable: true, motif: None }
+        Self {
+            nom,
+            exercable: true,
+            motif: None,
+        }
     }
 
     /// Une capacité refusée, avec le motif qui la rend actionnable.
     pub fn refuse(nom: &'static str, motif: String) -> Self {
-        Self { nom, exercable: false, motif: Some(motif) }
+        Self {
+            nom,
+            exercable: false,
+            motif: Some(motif),
+        }
     }
 
     /// La forme lisible par un client.

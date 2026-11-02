@@ -13,7 +13,11 @@ use obrain_engine::ObrainDB;
 fn median(v: &mut Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
 }
 
 fn bench<F: FnMut()>(rep: usize, mut f: F) -> f64 {
@@ -30,7 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let path = PathBuf::from(&args[1]);
     let rep: usize = args.get(2).map(|s| s.parse().unwrap_or(7)).unwrap_or(7);
-    let base = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let base = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     // Structure par base : label_noeud, label_result, arête de production,
     // et le pattern de jointure fermée (triangle).
@@ -61,7 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // search : CONTAINS sur name
     let search_ms = bench(rep, || {
-        let _ = session.execute("MATCH (n) WHERE toLower(n.name) CONTAINS 'x' RETURN n.name LIMIT 10");
+        let _ =
+            session.execute("MATCH (n) WHERE toLower(n.name) CONTAINS 'x' RETURN n.name LIMIT 10");
     });
     println!("search   {:8.1} ms   (CONTAINS name, LIMIT 10)", search_ms);
 
@@ -72,7 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let onehop_ms = bench(rep, || {
         let _ = session.execute(&q_1hop);
     });
-    println!("1hop     {:8.1} ms   (MATCH 1-saut {produce_edge}, LIMIT 3)", onehop_ms);
+    println!(
+        "1hop     {:8.1} ms   (MATCH 1-saut {produce_edge}, LIMIT 3)",
+        onehop_ms
+    );
 
     // triangle : jointure fermée sur le même type
     let q_tri = format!(
@@ -92,20 +104,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let k4_ms = bench(rep, || {
         let _ = session.execute(&q_k4);
     });
-    println!("k4       {:8.1} ms   (4-sauts + 3 jointures fermées)", k4_ms);
+    println!(
+        "k4       {:8.1} ms   (4-sauts + 3 jointures fermées)",
+        k4_ms
+    );
 
     // orderby / distinct sur le label dominant
     let q_order = format!("MATCH (n:{node_label}) RETURN n.name ORDER BY n.name DESC LIMIT 50");
     let order_ms = bench(rep, || {
         let _ = session.execute(&q_order);
     });
-    println!("orderby  {:8.1} ms   (ORDER BY sur :{node_label}, LIMIT 50)", order_ms);
+    println!(
+        "orderby  {:8.1} ms   (ORDER BY sur :{node_label}, LIMIT 50)",
+        order_ms
+    );
 
     let q_dist = format!("MATCH (n:{node_label}) RETURN DISTINCT n.name");
     let dist_ms = bench(rep, || {
         let _ = session.execute(&q_dist);
     });
-    println!("distinct {:8.1} ms   (RETURN DISTINCT sur :{node_label})", dist_ms);
+    println!(
+        "distinct {:8.1} ms   (RETURN DISTINCT sur :{node_label})",
+        dist_ms
+    );
 
     // ── Cognitif : bootstrap + spread sur la structure réelle ──
     if db.cognitive_engine().is_some() {
@@ -126,7 +147,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let syn_ms = bench(rep, || {
                 let _ = session.execute(&q_syn);
             });
-            println!("spread-synapse {:5.2} ms   ({} lignes, seeds={})", syn_ms, r.row_count(), seeds.len());
+            println!(
+                "spread-synapse {:5.2} ms   ({} lignes, seeds={})",
+                syn_ms,
+                r.row_count(),
+                seeds.len()
+            );
         }
     } else {
         println!("(moteur cognitif non construit — feature cognitive-full requise)");

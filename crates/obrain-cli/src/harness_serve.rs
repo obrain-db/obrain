@@ -426,12 +426,18 @@ fn chemin_declaration(dir: &Path, store_servi: &str) -> std::path::PathBuf {
 /// arrive et c'est mesure (`chemin_declaration`). On ecrit donc la ligne entiere
 /// en un `write_all`, atomique en `O_APPEND` pour une ligne de cette taille.
 fn journaliser_declaration(dir: &Path, ligne: &Value) -> std::io::Result<std::path::PathBuf> {
-    let store = ligne.get("store").and_then(Value::as_str).unwrap_or_default();
+    let store = ligne
+        .get("store")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let chemin = chemin_declaration(dir, store);
     if let Some(d) = chemin.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&chemin)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&chemin)?;
     use std::io::Write;
     let mut complete = ligne.to_string();
     complete.push('\n');
@@ -516,7 +522,9 @@ fn handle(mut stream: TcpStream, db: &Arc<ObrainDB>, store_label: &str, identite
     };
     let tete = String::from_utf8_lossy(&raw[..hf]).into_owned();
     let corps = String::from_utf8_lossy(&raw[hf..(hf + clen).min(raw.len())]).into_owned();
-    let Some(ligne) = tete.lines().next() else { return };
+    let Some(ligne) = tete.lines().next() else {
+        return;
+    };
     let mut parts = ligne.split_whitespace();
     let (Some(_methode), Some(cible)) = (parts.next(), parts.next()) else {
         return respond(&mut stream, 400, r#"{"error":"requete invalide"}"#);
@@ -803,7 +811,12 @@ fn handle(mut stream: TcpStream, db: &Arc<ObrainDB>, store_label: &str, identite
 /// la sortie d'erreur (`tracing::warn`, comme le registre, et visible par defaut :
 /// le niveau est WARN), et on continue.
 pub fn serve_on(listener: TcpListener, db: Arc<ObrainDB>, store_label: &str) -> Result<()> {
-    serve_on_journalisant(listener, db, store_label, &crate::machines::dir_journal_machines())
+    serve_on_journalisant(
+        listener,
+        db,
+        store_label,
+        &crate::machines::dir_journal_machines(),
+    )
 }
 
 /// La meme boucle, avec le journal **impose**.
@@ -856,8 +869,7 @@ pub fn run(addr: &str, store: &Path, quiet: bool) -> Result<()> {
         ObrainDB::open_read_only(store)
             .with_context(|| format!("harness: ouverture RO de {}", store.display()))?,
     );
-    let listener =
-        TcpListener::bind(addr).with_context(|| format!("harness: bind {addr}"))?;
+    let listener = TcpListener::bind(addr).with_context(|| format!("harness: bind {addr}"))?;
     if !quiet {
         eprintln!(
             "obrain-harness: pret sur http://{addr} (store {}, {}, v{})",
@@ -988,7 +1000,10 @@ mod tests {
             ("substrate.nodes", -5),
         ]);
         let b = bloc_tissage_a(d.path(), maintenant_ms());
-        assert_eq!(b["journaux"], 0, "aucun de ces noms n'est une zone de journal");
+        assert_eq!(
+            b["journaux"], 0,
+            "aucun de ces noms n'est une zone de journal"
+        );
         assert_eq!(etat(&b), "sans_journal");
     }
 
@@ -1108,9 +1123,8 @@ mod tests {
     fn demon(journaux: &[(&str, i64)]) -> Demon {
         let store = tempfile::tempdir().expect("tempdir store");
         let chemin = store.path().join("t.obrain");
-        let db = Arc::new(
-            ObrainDB::open_substrate(chemin.to_str().unwrap()).expect("store de test"),
-        );
+        let db =
+            Arc::new(ObrainDB::open_substrate(chemin.to_str().unwrap()).expect("store de test"));
         let j = store_avec_journaux(journaux);
         let cache = tempfile::tempdir().expect("tempdir cache");
         let cache_machines = cache.path().join("machines");
@@ -1150,10 +1164,8 @@ mod tests {
         ]);
         let (code, rep) = requete(d.port, "GET", "/api/harness/continuity", None);
         assert_eq!(code, 200, "{rep}");
-        let v: Value = serde_json::from_str(
-            rep.split("\r\n\r\n").nth(1).unwrap_or("{}"),
-        )
-        .expect("corps JSON");
+        let v: Value =
+            serde_json::from_str(rep.split("\r\n\r\n").nth(1).unwrap_or("{}")).expect("corps JSON");
         assert_eq!(v["etat"], "frais");
         assert_eq!(v["journaux"], 7);
         assert_eq!(v["sessions_actives"], 6);
@@ -1285,7 +1297,10 @@ mod tests {
     fn la_ligne_declaration_ne_porte_ni_compte_ni_capacite_ni_id() {
         let l = ligne_declaration(&identite_de_test(), 1);
         for absent in ["id", "compte", "capacites", "vivant", "joignable"] {
-            assert!(l.get(absent).is_none(), "« {absent} » ne doit pas être journalisé : {l}");
+            assert!(
+                l.get(absent).is_none(),
+                "« {absent} » ne doit pas être journalisé : {l}"
+            );
         }
     }
 
@@ -1296,7 +1311,8 @@ mod tests {
         let d = demon(&[]);
         let (code, rep) = requete(d.port, "GET", "/api/harness/machine", None);
         assert_eq!(code, 200, "{rep}");
-        let annonce: Value = serde_json::from_str(rep.split("\r\n\r\n").nth(1).unwrap_or("{}")).unwrap();
+        let annonce: Value =
+            serde_json::from_str(rep.split("\r\n\r\n").nth(1).unwrap_or("{}")).unwrap();
 
         let cache = d._cache.path().join("machines");
         let fichiers: Vec<std::path::PathBuf> = std::fs::read_dir(&cache)
@@ -1305,15 +1321,25 @@ mod tests {
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
             .collect();
-        assert_eq!(fichiers.len(), 1, "un fichier par store servi : {fichiers:?}");
+        assert_eq!(
+            fichiers.len(),
+            1,
+            "un fichier par store servi : {fichiers:?}"
+        );
         let txt = std::fs::read_to_string(&fichiers[0]).expect("journal lisible");
         let lignes: Vec<&str> = txt.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(lignes.len(), 1, "une déclaration, une ligne : {txt}");
         let l: Value = serde_json::from_str(lignes[0]).expect("ligne JSON");
         assert_eq!(l["kind"], "machine");
-        assert_eq!(l["store"], annonce["store"], "le journal dit ce que la route annonce");
+        assert_eq!(
+            l["store"], annonce["store"],
+            "le journal dit ce que la route annonce"
+        );
         assert_eq!(l["instance"], annonce["instance"]);
-        assert_eq!(l["mode"], "ro", "le mode offert est journalisé, pas supposé");
+        assert_eq!(
+            l["mode"], "ro",
+            "le mode offert est journalisé, pas supposé"
+        );
         assert!(l["declaree_ms"].as_i64().unwrap_or(0) > 0, "{l}");
     }
 
@@ -1352,9 +1378,16 @@ mod tests {
             e.join().expect("fil d'écriture");
         }
 
-        let fichiers: Vec<std::path::PathBuf> =
-            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
-        assert_eq!(fichiers.len(), 1, "un seul store servi, donc un seul fichier : {fichiers:?}");
+        let fichiers: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(
+            fichiers.len(),
+            1,
+            "un seul store servi, donc un seul fichier : {fichiers:?}"
+        );
         let txt = std::fs::read_to_string(&fichiers[0]).expect("journal lisible");
         let lignes: Vec<&str> = txt.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(
@@ -1381,13 +1414,19 @@ mod tests {
         let dir = td.path().join("machines");
         let i1 = identite_machine("/data/a/kb.obrain", "127.0.0.1:8401", 1);
         let i2 = identite_machine("/data/b/kb.obrain", "127.0.0.1:8402", 2);
-        assert_eq!(i1["instance"], i2["instance"], "même nom de base, même instance");
+        assert_eq!(
+            i1["instance"], i2["instance"],
+            "même nom de base, même instance"
+        );
         assert_ne!(i1["store"], i2["store"]);
         journaliser_declaration(&dir, &ligne_declaration(&i1, 10)).expect("journal A");
         journaliser_declaration(&dir, &ligne_declaration(&i2, 20)).expect("journal B");
 
-        let fichiers: Vec<std::path::PathBuf> =
-            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+        let fichiers: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
         assert_eq!(
             fichiers.len(),
             2,
@@ -1422,7 +1461,10 @@ mod tests {
         });
 
         let (code, rep) = requete(port, "GET", "/api/harness/machine", None);
-        assert_eq!(code, 200, "le harness doit servir MALGRÉ la journalisation perdue : {rep}");
+        assert_eq!(
+            code, 200,
+            "le harness doit servir MALGRÉ la journalisation perdue : {rep}"
+        );
         assert!(rep.contains("\"status\":\"ok\""), "{rep}");
     }
 }

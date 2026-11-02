@@ -441,7 +441,10 @@ mod tests {
         let mut stats_unit = PipelineStats::default();
         run_ldleiden_batch(&sub, &mut stats_unit).unwrap();
         let part_unit = read_communities(&sub);
-        assert_eq!(stats_unit.communities, 2, "partition historique = 2 communautés");
+        assert_eq!(
+            stats_unit.communities, 2,
+            "partition historique = 2 communautés"
+        );
 
         // Variante ricci avec boost = 0 : résultats identiques (A/B).
         let mut stats_zero = PipelineStats::default();

@@ -14,9 +14,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rustls::ServerConfig;
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::ServerConfig;
 
 use crate::erreur::{ErreurTls, Resultat};
 
@@ -155,8 +155,7 @@ fn lire_cle(pem: &[u8]) -> Resultat<PrivateKeyDer<'static>> {
 mod tests {
     use super::*;
 
-    const CERTIFICAT: &[u8] =
-        include_bytes!("../tests/donnees/cert-de-test.pem");
+    const CERTIFICAT: &[u8] = include_bytes!("../tests/donnees/cert-de-test.pem");
     const CLE: &[u8] = include_bytes!("../tests/donnees/cle-de-test.pem");
     const AUTRE_CLE: &[u8] = include_bytes!("../tests/donnees/autre-cle-de-test.pem");
 
@@ -209,8 +208,9 @@ mod tests {
     fn une_erreur_de_configuration_precede_toute_ecoute() {
         let e = ConfigTls::depuis_pem(CERTIFICAT, AUTRE_CLE).unwrap_err();
         assert!(e.avant_toute_ecoute());
-        let e = ConfigTls::depuis_fichiers(Path::new("/inexistant.pem"), Path::new("/inexistant.pem"))
-            .unwrap_err();
+        let e =
+            ConfigTls::depuis_fichiers(Path::new("/inexistant.pem"), Path::new("/inexistant.pem"))
+                .unwrap_err();
         assert!(e.avant_toute_ecoute());
         assert!(matches!(e, ErreurTls::CertificatAbsent { .. }));
     }

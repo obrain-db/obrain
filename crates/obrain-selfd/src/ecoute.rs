@@ -36,7 +36,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use obrain_garde::{Garde, Motif, Reglages};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent;
 use crate::chat;
@@ -123,7 +123,9 @@ fn lire_requete(flux: &mut TcpStream) -> Result<Requete> {
     let mut tampon = vec![0u8; longueur];
     let mut lu = 0;
     while lu < longueur {
-        let n = lecteur.read(&mut tampon[lu..]).context("corps de la requête")?;
+        let n = lecteur
+            .read(&mut tampon[lu..])
+            .context("corps de la requête")?;
         if n == 0 {
             break;
         }
@@ -274,7 +276,11 @@ q.focus();
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         racine = s.politique.racine.display(),
-        exec = if s.politique.exec_autorise { "autorisé" } else { "refusé" },
+        exec = if s.politique.exec_autorise {
+            "autorisé"
+        } else {
+            "refusé"
+        },
     )
 }
 
@@ -333,10 +339,14 @@ fn traiter(mut flux: TcpStream, s: Arc<Surface>) -> Result<()> {
                         400,
                         TYPE_JSON,
                         &json!({ "error": format!("corps JSON illisible : {e}") }).to_string(),
-                    )
+                    );
                 }
             };
-            let question = corps.get("message").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let question = corps
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if question.is_empty() {
                 return repondre(
                     &mut flux,
@@ -354,9 +364,11 @@ fn traiter(mut flux: TcpStream, s: Arc<Surface>) -> Result<()> {
             s.historique.ajouter("user", &question);
 
             flux.write_all(
-                format!("HTTP/1.1 200 OK\r\nContent-Type: {TYPE_SSE}\r\n\
-                         Cache-Control: no-cache\r\nConnection: close\r\n\r\n")
-                    .as_bytes(),
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {TYPE_SSE}\r\n\
+                         Cache-Control: no-cache\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
             )?;
             flux.flush()?;
 
@@ -445,10 +457,14 @@ fn traiter(mut flux: TcpStream, s: Arc<Surface>) -> Result<()> {
                         400,
                         TYPE_JSON,
                         &json!({ "error": format!("corps JSON illisible : {e}") }).to_string(),
-                    )
+                    );
                 }
             };
-            let objectif = corps.get("objectif").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let objectif = corps
+                .get("objectif")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if objectif.is_empty() {
                 return repondre(
                     &mut flux,
@@ -465,13 +481,15 @@ fn traiter(mut flux: TcpStream, s: Arc<Surface>) -> Result<()> {
                 .clamp(1, 40) as usize;
 
             flux.write_all(
-                format!("HTTP/1.1 200 OK
+                format!(
+                    "HTTP/1.1 200 OK
 Content-Type: {TYPE_SSE}
                          Cache-Control: no-cache
 Connection: close
 
-")
-                    .as_bytes(),
+"
+                )
+                .as_bytes(),
             )?;
             flux.flush()?;
 
@@ -499,7 +517,11 @@ Connection: close
                 }
                 let r = match ev {
                     agent::Evenement::Texte(t) => pousser(&mut flux, "texte", &json!({ "t": t })),
-                    agent::Evenement::Acte { etape, outil, argument } => pousser(
+                    agent::Evenement::Acte {
+                        etape,
+                        outil,
+                        argument,
+                    } => pousser(
                         &mut flux,
                         "acte",
                         &json!({ "etape": etape, "outil": outil, "argument": argument }),
@@ -515,9 +537,11 @@ Connection: close
                     agent::Evenement::Borne { etapes } => {
                         pousser(&mut flux, "borne", &json!({ "etapes": etapes }))
                     }
-                    agent::Evenement::Arret { code, phrase } => {
-                        pousser(&mut flux, "arret", &json!({ "code": code, "phrase": phrase }))
-                    }
+                    agent::Evenement::Arret { code, phrase } => pousser(
+                        &mut flux,
+                        "arret",
+                        &json!({ "code": code, "phrase": phrase }),
+                    ),
                 };
                 if r.is_err() {
                     ferme.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -579,8 +603,8 @@ pub fn servir(e: &Ecoute, surface: Surface) -> Result<()> {
         );
     }
     let adresse = format!("{}:{}", e.host, e.port);
-    let ecoute = TcpListener::bind(&adresse)
-        .with_context(|| format!("écoute HTTP sur {adresse}"))?;
+    let ecoute =
+        TcpListener::bind(&adresse).with_context(|| format!("écoute HTTP sur {adresse}"))?;
     let port_reel = ecoute.local_addr().map(|a| a.port()).unwrap_or(e.port);
 
     eprintln!(

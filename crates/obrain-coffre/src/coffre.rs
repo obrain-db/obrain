@@ -77,7 +77,7 @@ use zeroize::Zeroizing;
 
 use crate::aleatoire;
 use crate::cle::{
-    CleEspace, EmpreinteEspace, Usage, LONGUEUR_EMPREINTE, LONGUEUR_ETIQUETTE, LONGUEUR_NONCE,
+    CleEspace, EmpreinteEspace, LONGUEUR_EMPREINTE, LONGUEUR_ETIQUETTE, LONGUEUR_NONCE, Usage,
 };
 use crate::erreur::{CoffreError, Resultat};
 
@@ -173,12 +173,11 @@ impl Coffre {
             maximum: usize::MAX,
         })?;
         let capacite = u64::from(taille_bloc);
-        let nb_blocs = u32::try_from(longueur.div_ceil(capacite)).map_err(|_| {
-            CoffreError::TropGrand {
+        let nb_blocs =
+            u32::try_from(longueur.div_ceil(capacite)).map_err(|_| CoffreError::TropGrand {
                 taille: clair.len(),
                 maximum: usize::MAX,
-            }
-        })?;
+            })?;
 
         // L'identifiant est neuf à chaque scellement : deux coffres du même
         // espace, de même forme et de même clé ne partagent donc **aucun** AAD.
@@ -333,13 +332,8 @@ impl Coffre {
             let fin = curseur + longueur_bloc + LONGUEUR_ETIQUETTE;
             let aad = aad_bloc(&en_tete, index, longueur_bloc);
             let mut tampon = Zeroizing::new(vec![0u8; longueur_bloc]);
-            ouvrir(
-                &self.sous_cle_contenu,
-                &nonce,
-                &aad,
-                &scelle[curseur..fin],
-            )
-            .map(|octets| tampon.copy_from_slice(&octets))?;
+            ouvrir(&self.sous_cle_contenu, &nonce, &aad, &scelle[curseur..fin])
+                .map(|octets| tampon.copy_from_slice(&octets))?;
             clair.extend_from_slice(&tampon[..]);
             curseur = fin;
             reste -= longueur_bloc as u64;
@@ -631,7 +625,10 @@ mod tests {
             ("nombre de blocs", 10),
             ("longueur", 14),
             ("identifiant de coffre", POSITION_ID),
-            ("dernier octet de l'identifiant", POSITION_ID + LONGUEUR_ID_COFFRE - 1),
+            (
+                "dernier octet de l'identifiant",
+                POSITION_ID + LONGUEUR_ID_COFFRE - 1,
+            ),
         ] {
             let mut faux = bon.clone();
             faux[position] ^= 0x01;
@@ -719,10 +716,7 @@ mod tests {
         faux[debut..debut + bloc].copy_from_slice(&b[debut..debut + bloc]);
 
         assert!(
-            matches!(
-                coffre.desceller(&faux),
-                Err(CoffreError::Authentification)
-            ),
+            matches!(coffre.desceller(&faux), Err(CoffreError::Authentification)),
             "un bloc greffé depuis un autre coffre doit être refusé, pas descellé"
         );
     }

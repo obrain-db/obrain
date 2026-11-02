@@ -554,14 +554,8 @@ impl CleEspace {
             .try_into()
             .map_err(|_| CoffreError::Format("nonce illisible".to_owned()))?;
         let mut clair = Zeroizing::new([0u8; LONGUEUR_CLE]);
-        ouvrir_sous(
-            kek,
-            &nonce,
-            &brut[0..TETE_CLE],
-            &brut[80..],
-            &mut clair[..],
-        )
-        .map_err(|_| CoffreError::CleMaitresseIncorrecte)?;
+        ouvrir_sous(kek, &nonce, &brut[0..TETE_CLE], &brut[80..], &mut clair[..])
+            .map_err(|_| CoffreError::CleMaitresseIncorrecte)?;
 
         let mut empreinte = [0u8; LONGUEUR_EMPREINTE];
         empreinte.copy_from_slice(&brut[36..68]);

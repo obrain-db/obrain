@@ -71,7 +71,11 @@ fn obrain() -> Command {
 
 /// Un port RÉELLEMENT libre : le noyau le rend, on ne le devine pas.
 fn port_libre() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// Une requête HTTP brute — le test parle au serveur RÉEL, par le réseau.
@@ -187,41 +191,79 @@ impl Dispositif {
 
         for b in [&iam, &store_service, &base_alice, &base_bob] {
             let o = obrain().arg("init").arg(b).output().expect("init");
-            assert!(o.status.success(), "init {} : {}", b.display(), String::from_utf8_lossy(&o.stderr));
+            assert!(
+                o.status.success(),
+                "init {} : {}",
+                b.display(),
+                String::from_utf8_lossy(&o.stderr)
+            );
         }
         // ── LA BASE D'ALICE N'EST PAS VIDE ─────────────────────────────────
         // Une base vide ne prouverait rien : « lue » et « ouverte sans contenu »
         // seraient indiscernables. Ce repère rend la lecture MESURABLE.
         let o = obrain()
-            .arg("query").arg(&base_alice)
+            .arg("query")
+            .arg(&base_alice)
             .arg("CREATE (:Repere {qn: 'repere-alice'})")
-            .output().expect("peuplement de la base d'alice");
-        assert!(o.status.success(), "peuplement : {}", String::from_utf8_lossy(&o.stderr));
+            .output()
+            .expect("peuplement de la base d'alice");
+        assert!(
+            o.status.success(),
+            "peuplement : {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
         // ── LES COMPTES EXISTENT AVANT QUE LE MOTEUR N'OUVRE LE MAGASIN ────
         // `obrain iam` exige le verrou EXCLUSIF : créés après le démarrage, ils
         // échoueraient sur « substrate … already open by another process », et le
         // test mesurerait cet accident d'ordonnancement au lieu de son sujet.
         let o = obrain()
-            .arg("iam").arg("amorcer").arg(&iam).arg("esp-alice")
-            .arg("--utilisateur").arg("alice").arg("--mot-de-passe").arg(MDP_ALICE)
-            .output().expect("iam amorcer");
-        assert!(o.status.success(), "amorçage : {}", String::from_utf8_lossy(&o.stderr));
+            .arg("iam")
+            .arg("amorcer")
+            .arg(&iam)
+            .arg("esp-alice")
+            .arg("--utilisateur")
+            .arg("alice")
+            .arg("--mot-de-passe")
+            .arg(MDP_ALICE)
+            .output()
+            .expect("iam amorcer");
+        assert!(
+            o.status.success(),
+            "amorçage : {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         let o = obrain()
-            .arg("iam").arg("ajouter").arg(&iam).arg("bob")
-            .arg("--espace").arg("esp-bob").arg("--mot-de-passe").arg(MDP_BOB)
-            .output().expect("iam ajouter");
-        assert!(o.status.success(), "ajout de bob : {}", String::from_utf8_lossy(&o.stderr));
+            .arg("iam")
+            .arg("ajouter")
+            .arg(&iam)
+            .arg("bob")
+            .arg("--espace")
+            .arg("esp-bob")
+            .arg("--mot-de-passe")
+            .arg(MDP_BOB)
+            .output()
+            .expect("iam ajouter");
+        assert!(
+            o.status.success(),
+            "ajout de bob : {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
 
         let port = port_libre();
         let addr = format!("127.0.0.1:{port}");
         let journal = td.path().join("serveur.log");
         let mut c = Command::new(env!("CARGO_BIN_EXE_obrain"));
-        c.arg("viz").arg("serve")
-            .arg("--store").arg(&store_service)
-            .arg("--enrich-ricci").arg("0")
-            .arg("--host").arg("127.0.0.1")
-            .arg("--port").arg(port.to_string())
+        c.arg("viz")
+            .arg("serve")
+            .arg("--store")
+            .arg(&store_service)
+            .arg("--enrich-ricci")
+            .arg("0")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
             .env("OBRAIN_VIZ_CACHE_DIR", &cache)
             // ── AUCUN MONDE ÉTRANGER DANS CE DISPOSITIF ────────────────────
             // Le registre des mondes vit sous `OBRAIN_WORLDS_DIR` (défaut
@@ -232,7 +274,9 @@ impl Dispositif {
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&journal).expect("log du serveur"));
         if armer {
-            c.env("OBRAIN_IAM", "1").env("OBRAIN_IAM_STORE", &iam).env("OBRAIN_IAM_ACCOUNT", "obrain");
+            c.env("OBRAIN_IAM", "1")
+                .env("OBRAIN_IAM_STORE", &iam)
+                .env("OBRAIN_IAM_ACCOUNT", "obrain");
         } else {
             c.env_remove("OBRAIN_IAM").env_remove("OBRAIN_IAM_STORE");
         }
@@ -258,7 +302,10 @@ impl Dispositif {
         if armer {
             // La garde ARMÉE est la condition de tout ce qui suit : sans elle, il
             // n'y aurait ni refus ni jugement, et le test ne prouverait rien.
-            assert!(texte.contains("IAM ARMÉ"), "le serveur de test devait être armé :\n{texte}");
+            assert!(
+                texte.contains("IAM ARMÉ"),
+                "le serveur de test devait être armé :\n{texte}"
+            );
         } else {
             assert!(
                 !texte.contains("IAM ARMÉ"),
@@ -267,14 +314,21 @@ impl Dispositif {
         }
         eprintln!(
             "── GARDE DU SERVEUR DE TEST ──\n{}",
-            texte.lines().filter(|l| l.contains("viz serve :")).collect::<Vec<_>>().join("\n")
+            texte
+                .lines()
+                .filter(|l| l.contains("viz serve :"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
 
         let connexion = |nom: &str, mdp: &str| -> String {
             let corps = serde_json::json!({ "username": nom, "password": mdp }).to_string();
             let (st, c) = http(&addr, "POST", "/api/auth/login", None, Some(&corps));
             assert_eq!(st, 200, "connexion de {nom} : {c}");
-            json(&c)["jeton"].as_str().unwrap_or_else(|| panic!("jeton absent : {c}")).to_string()
+            json(&c)["jeton"]
+                .as_str()
+                .unwrap_or_else(|| panic!("jeton absent : {c}"))
+                .to_string()
         };
         let (jeton_alice, jeton_bob) = if armer {
             (connexion("alice", MDP_ALICE), connexion("bob", MDP_BOB))
@@ -309,16 +363,27 @@ const MDP_BOB: &str = "mdp-bob-ch6";
 fn une_route_inconnue_se_dit_inconnue_avec_une_identite() {
     let d = Dispositif::monter(true);
 
-    for chemin in ["/api/harness/health", "/api/harness/machine", "/api/route-absente-ch6"] {
+    for chemin in [
+        "/api/harness/health",
+        "/api/harness/machine",
+        "/api/route-absente-ch6",
+    ] {
         let (code, corps) = http(&d.addr, "GET", chemin, Some(&d.jeton_alice), None);
-        assert_eq!(code, 404, "GET {chemin} devrait dire « inconnue » : {corps}");
+        assert_eq!(
+            code, 404,
+            "GET {chemin} devrait dire « inconnue » : {corps}"
+        );
         let v = json(&corps);
         assert!(
-            v["error"].as_str().is_some_and(|e| e.contains("route inconnue")),
+            v["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("route inconnue")),
             "GET {chemin} : le corps doit NOMMER « route inconnue », pas « permission denied » : {corps}"
         );
         assert!(
-            v["error"].as_str().is_some_and(|e| !e.contains("permission denied")),
+            v["error"]
+                .as_str()
+                .is_some_and(|e| !e.contains("permission denied")),
             "GET {chemin} : un refus de droit ne doit pas se déguiser en route inconnue : {corps}"
         );
         assert_eq!(
@@ -337,15 +402,28 @@ fn une_route_inconnue_se_dit_inconnue_avec_une_identite() {
     // ── LE CONTRASTE : UNE ROUTE QUI EXISTE, ET QUI EST REFUSÉE ─────────────
     // `/api/query` existe, et `alice` n'a aucun droit sur l'espace du store
     // servi (`service`). Elle doit donc recevoir un refus de DROIT — pas un 404.
-    let (code, corps) =
-        lire_base(&d.addr, Some(&d.jeton_alice), &d.store_service, "MATCH (n) RETURN n");
-    assert_eq!(code, 403, "un refus de droit reste un refus de droit : {corps}");
+    let (code, corps) = lire_base(
+        &d.addr,
+        Some(&d.jeton_alice),
+        &d.store_service,
+        "MATCH (n) RETURN n",
+    );
+    assert_eq!(
+        code, 403,
+        "un refus de droit reste un refus de droit : {corps}"
+    );
     let v = json(&corps);
     assert!(
-        v["error"].as_str().is_some_and(|e| e.contains("permission denied")),
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("permission denied")),
         "le refus doit être MOTIVÉ par le droit : {corps}"
     );
-    assert_eq!(v["connue"], serde_json::json!(true), "cette route existe : {corps}");
+    assert_eq!(
+        v["connue"],
+        serde_json::json!(true),
+        "cette route existe : {corps}"
+    );
     assert_eq!(
         v["espace"],
         serde_json::json!("service"),
@@ -365,10 +443,15 @@ fn sans_identite_le_refus_ne_dit_pas_quelles_routes_existent() {
     let d = Dispositif::monter(true);
 
     let (c_connue, corps_connue) = http(&d.addr, "GET", "/api/query", None, None);
-    let (c_inconnue, corps_inconnue) =
-        http(&d.addr, "GET", "/api/route-absente-ch6", None, None);
-    assert_eq!(c_connue, 401, "sans identité, une route connue se refuse : {corps_connue}");
-    assert_eq!(c_inconnue, 401, "sans identité, une route inconnue se refuse AUSSI : {corps_inconnue}");
+    let (c_inconnue, corps_inconnue) = http(&d.addr, "GET", "/api/route-absente-ch6", None, None);
+    assert_eq!(
+        c_connue, 401,
+        "sans identité, une route connue se refuse : {corps_connue}"
+    );
+    assert_eq!(
+        c_inconnue, 401,
+        "sans identité, une route inconnue se refuse AUSSI : {corps_inconnue}"
+    );
     assert_eq!(
         corps_connue, corps_inconnue,
         "LE CORPS DU 401 DOIT ÊTRE IDENTIQUE — sinon le refus énumère la carte des routes \
@@ -376,9 +459,20 @@ fn sans_identite_le_refus_ne_dit_pas_quelles_routes_existent() {
     );
 
     // Et un jeton qui ne vaut rien ne doit pas ouvrir la distinction non plus.
-    let (c_faux, corps_faux) = http(&d.addr, "GET", "/api/route-absente-ch6", Some("jeton-faux"), None);
-    let (c_faux_connue, corps_faux_connue) = http(&d.addr, "GET", "/api/query", Some("jeton-faux"), None);
-    assert_eq!((c_faux, c_faux_connue), (401, 401), "un jeton invalide ne vaut pas mieux que pas de jeton");
+    let (c_faux, corps_faux) = http(
+        &d.addr,
+        "GET",
+        "/api/route-absente-ch6",
+        Some("jeton-faux"),
+        None,
+    );
+    let (c_faux_connue, corps_faux_connue) =
+        http(&d.addr, "GET", "/api/query", Some("jeton-faux"), None);
+    assert_eq!(
+        (c_faux, c_faux_connue),
+        (401, 401),
+        "un jeton invalide ne vaut pas mieux que pas de jeton"
+    );
     assert_eq!(
         corps_faux, corps_faux_connue,
         "même règle pour un jeton invalide : le corps ne trahit pas l'existence de la route"
@@ -390,7 +484,10 @@ fn sans_identite_le_refus_ne_dit_pas_quelles_routes_existent() {
     // du serveur. Un texte différent aurait suffi à deviner la route par la forme
     // de son refus — le défaut qu'on vient de fermer, par la porte d'à côté.
     let (c_memoire, corps_memoire) = http(&d.addr, "GET", "/api/engine/memoire", None, None);
-    assert_eq!(c_memoire, 401, "sans identité, la mémoire du compte se refuse : {corps_memoire}");
+    assert_eq!(
+        c_memoire, 401,
+        "sans identité, la mémoire du compte se refuse : {corps_memoire}"
+    );
     assert_eq!(
         corps_memoire, corps_connue,
         "le refus d'identité doit être le MÊME sur toutes les routes de données — \
@@ -409,10 +506,15 @@ fn sans_iam_une_route_inconnue_se_dit_aussi_inconnue() {
     let d = Dispositif::monter(false);
 
     let (code, corps) = http(&d.addr, "GET", "/api/route-absente-ch6", None, None);
-    assert_eq!(code, 404, "sans IAM, une route inconnue se dit inconnue : {corps}");
+    assert_eq!(
+        code, 404,
+        "sans IAM, une route inconnue se dit inconnue : {corps}"
+    );
     let v = json(&corps);
     assert!(
-        v["error"].as_str().is_some_and(|e| e.contains("route inconnue")),
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("route inconnue")),
         "la phrase doit être la MÊME qu'avec l'IAM armé : {corps}"
     );
     assert_eq!(v["connue"], serde_json::json!(false), "{corps}");
@@ -420,8 +522,14 @@ fn sans_iam_une_route_inconnue_se_dit_aussi_inconnue() {
     // Une route connue, elle, RÉPOND (le dispositif non armé n'a pas de droits à
     // juger) : le test ne doit pas confondre « inconnue » et « plus rien ne marche ».
     let (code, corps) = lire_base(&d.addr, None, &d.store_service, "MATCH (n) RETURN n");
-    assert_eq!(code, 200, "une route connue répond sur un moteur non armé : {corps}");
-    assert!(json(&corps)["rows"].is_array(), "et elle rend des rangées : {corps}");
+    assert_eq!(
+        code, 200,
+        "une route connue répond sur un moteur non armé : {corps}"
+    );
+    assert!(
+        json(&corps)["rows"].is_array(),
+        "et elle rend des rangées : {corps}"
+    );
 }
 
 /// ── DÉFAUT 2 : LE COMPTE EST JUGÉ SUR SON ESPACE, PAS SUR UN NOM DE FICHIER ──
@@ -439,10 +547,15 @@ fn un_compte_lit_la_base_qui_lui_appartient_malgre_son_espace() {
     let d = Dispositif::monter(true);
 
     // 1. LA BASE QUI LUI APPARTIENT — et l'on vérifie que c'est bien SON contenu.
-    let (code, corps) =
-        lire_base(&d.addr, Some(&d.jeton_alice), &d.base_alice, "MATCH (n:Repere) RETURN n.qn");
+    let (code, corps) = lire_base(
+        &d.addr,
+        Some(&d.jeton_alice),
+        &d.base_alice,
+        "MATCH (n:Repere) RETURN n.qn",
+    );
     assert_eq!(
-        code, 200,
+        code,
+        200,
         "alice doit lire sa propre base `{}` (espace `esp-alice`, store servi `{}`) : {corps}\n\
          AVANT ce chantier, la ressource jugée était le nom du fichier (`tenant/alice`), \
          et le compte était refusé chez lui.",
@@ -455,7 +568,13 @@ fn un_compte_lit_la_base_qui_lui_appartient_malgre_son_espace() {
     );
 
     // 2. SA MÉMOIRE — le cas exact de la défaillance 5.2.
-    let (code, corps) = http(&d.addr, "GET", "/api/engine/memoire", Some(&d.jeton_alice), None);
+    let (code, corps) = http(
+        &d.addr,
+        "GET",
+        "/api/engine/memoire",
+        Some(&d.jeton_alice),
+        None,
+    );
     assert_eq!(
         code, 200,
         "alice doit lire SA mémoire ; le refus mesuré parlait de \
@@ -470,8 +589,12 @@ fn un_compte_lit_la_base_qui_lui_appartient_malgre_son_espace() {
 
     // 3. LA BASE DU VOISIN RESTE FERMÉE — la propriété vient de l'IDENTITÉ, jamais
     //    d'un chemin que l'appelant déclare.
-    let (code, corps) =
-        lire_base(&d.addr, Some(&d.jeton_bob), &d.base_alice, "MATCH (n:Repere) RETURN n.qn");
+    let (code, corps) = lire_base(
+        &d.addr,
+        Some(&d.jeton_bob),
+        &d.base_alice,
+        "MATCH (n:Repere) RETURN n.qn",
+    );
     assert_eq!(
         code, 403,
         "bob ne doit PAS lire la base d'alice en nommant son chemin : {corps}"
@@ -483,9 +606,16 @@ fn un_compte_lit_la_base_qui_lui_appartient_malgre_son_espace() {
 
     // 4. L'ESPACE DU STORE SERVI N'EST PAS LE SIEN — la règle ne doit rien ouvrir
     //    de plus que la base du compte.
-    let (code, corps) =
-        lire_base(&d.addr, Some(&d.jeton_alice), &d.store_service, "MATCH (n) RETURN n");
-    assert_eq!(code, 403, "alice ne doit pas lire le store servi (`service`) : {corps}");
+    let (code, corps) = lire_base(
+        &d.addr,
+        Some(&d.jeton_alice),
+        &d.store_service,
+        "MATCH (n) RETURN n",
+    );
+    assert_eq!(
+        code, 403,
+        "alice ne doit pas lire le store servi (`service`) : {corps}"
+    );
     assert_eq!(
         json(&corps)["espace"],
         serde_json::json!("service"),
@@ -494,13 +624,25 @@ fn un_compte_lit_la_base_qui_lui_appartient_malgre_son_espace() {
 
     // 5. SANS IDENTITÉ, AUCUNE BASE DE COMPTE N'EST SERVIE.
     let (code, corps) = lire_base(&d.addr, None, &d.base_alice, "MATCH (n:Repere) RETURN n.qn");
-    assert_eq!(code, 401, "sans identité, la base d'un compte reste fermée : {corps}");
+    assert_eq!(
+        code, 401,
+        "sans identité, la base d'un compte reste fermée : {corps}"
+    );
 
     // 6. BOB LIT LA SIENNE — deux comptes, deux bases, aucune confusion : c'est le
     //    fond de l'objectif « chaque utilisateur a un agent sur SA base ».
-    let (code, corps) =
-        lire_base(&d.addr, Some(&d.jeton_bob), &d.base_bob, "MATCH (n) RETURN n");
-    assert_eq!(code, 200, "bob doit lire SA propre base `{}` : {corps}", d.base_bob.display());
+    let (code, corps) = lire_base(
+        &d.addr,
+        Some(&d.jeton_bob),
+        &d.base_bob,
+        "MATCH (n) RETURN n",
+    );
+    assert_eq!(
+        code,
+        200,
+        "bob doit lire SA propre base `{}` : {corps}",
+        d.base_bob.display()
+    );
 }
 
 /// ── LA GARDE DE LA GARDE : LE PRÉDICAT COUVRE LE ROUTEUR ────────────────────
@@ -545,7 +687,9 @@ fn le_predicat_de_routes_couvre_toutes_les_routes_servies() {
     let servies = litteraux_api(&source[dispatch..repli]);
 
     // La table du PRÉDICAT.
-    let p_debut = source.find("fn route_api_connue").expect("route_api_connue");
+    let p_debut = source
+        .find("fn route_api_connue")
+        .expect("route_api_connue");
     let p_fin = source[p_debut..].find("\n}\n").expect("fin du prédicat") + p_debut;
     let declarees = litteraux_api(&source[p_debut..p_fin]);
 

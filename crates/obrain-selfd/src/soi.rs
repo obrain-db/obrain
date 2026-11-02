@@ -89,7 +89,9 @@ impl Socle {
         // (T12), le socle lu est LE SELF DE CE COMPTE, pas celui d un autre.
         // Transport : `?token=` (accepte au meme titre que Bearer), pour ne
         // pas toucher au client HTTP minimal.
-        let jeton = std::env::var("SELFD_MOTEUR_TOKEN").ok().filter(|t| !t.is_empty());
+        let jeton = std::env::var("SELFD_MOTEUR_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty());
         let avec_jeton = |url: String| -> String {
             match &jeton {
                 Some(t) => {
@@ -141,7 +143,11 @@ impl Socle {
             .as_deref()
             .map(|p| vec![("store", p)])
             .unwrap_or_default();
-        if let Ok(v) = get_borne_params(&avec_jeton(format!("{base}/api/engine/memoire")), &params, delai_ms) {
+        if let Ok(v) = get_borne_params(
+            &avec_jeton(format!("{base}/api/engine/memoire")),
+            &params,
+            delai_ms,
+        ) {
             if let Some(e) = v["entrees"].as_array() {
                 for x in e.iter().take(20) {
                     let genre = x["genre"].as_str().unwrap_or("?");
@@ -173,7 +179,10 @@ impl Socle {
             }
         }
         if !self.foyers.is_empty() {
-            t.push_str(&format!("- foyers d'attention : {}\n", self.foyers.join(", ")));
+            t.push_str(&format!(
+                "- foyers d'attention : {}\n",
+                self.foyers.join(", ")
+            ));
         }
         if !self.en_attente.is_empty() {
             t.push_str("- ce qui est EN ATTENTE chez le self :\n");
@@ -349,11 +358,7 @@ pub fn publier(vers: &VersLeSelf, intentions: &[Value]) -> Result<Publication> {
 
 /// Publier une NOTE — le geste le plus courant d'un nœud (« retiens ceci »).
 #[allow(dead_code)] // voir « CE QUI N'EST PAS ENCORE BRANCHÉ » plus haut
-pub fn publier_note(
-    vers: &VersLeSelf,
-    texte: &str,
-    sujet: &str,
-) -> Result<Publication> {
+pub fn publier_note(vers: &VersLeSelf, texte: &str, sujet: &str) -> Result<Publication> {
     let texte = texte.trim();
     if texte.is_empty() {
         bail!("publier_note : « texte » requis (une note sans texte ne s'applique pas)");
@@ -384,7 +389,11 @@ fn mon_client(vers: &VersLeSelf) -> Result<String> {
     let vide: Vec<Value> = Vec::new();
     let liste = v["clients"].as_array().unwrap_or(&vide);
     let vues: Vec<&str> = liste.iter().filter_map(|c| c["machine"].as_str()).collect();
-    let vues = if vues.is_empty() { "aucune".to_string() } else { vues.join(", ") };
+    let vues = if vues.is_empty() {
+        "aucune".to_string()
+    } else {
+        vues.join(", ")
+    };
     liste
         .iter()
         .find(|c| c["machine"].as_str() == Some(vers.machine))
@@ -459,7 +468,10 @@ mod tests {
                         }
                     }
                 }
-                vues2.lock().unwrap().push(String::from_utf8_lossy(&brut).to_string());
+                vues2
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&brut).to_string());
                 let rep = format!(
                     "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{corps}",
@@ -491,23 +503,49 @@ mod tests {
                     "en_attente":1,"dans_la_base":false}"#,
             ),
         ]);
-        let vers = VersLeSelf { moteur: &moteur, jeton: "jeton-de-test", machine: "poste-test" };
+        let vers = VersLeSelf {
+            moteur: &moteur,
+            jeton: "jeton-de-test",
+            machine: "poste-test",
+        };
         let p = publier_note(&vers, " le nœud a mesuré 91 % de disque ", "disque")
             .expect("publication acceptée");
 
-        assert_eq!(p.client_id, "cl-2", "le client est celui de CETTE machine, pas d'une autre");
+        assert_eq!(
+            p.client_id, "cl-2",
+            "le client est celui de CETTE machine, pas d'une autre"
+        );
         assert_eq!(p.self_qn, "self:alice");
         assert_eq!(p.journal, "/tmp/memoire/x.jsonl");
         assert_eq!(p.journalisees, 1);
         assert_eq!(p.en_attente, 1);
-        assert_eq!(p.self_ignore, None, "le nœud n'a nommé aucun self : il n'y a rien à ignorer");
+        assert_eq!(
+            p.self_ignore, None,
+            "le nœud n'a nommé aucun self : il n'y a rien à ignorer"
+        );
 
         let vues = vues.lock().unwrap();
-        assert_eq!(vues.len(), 2, "deux appels : les machines, puis la publication");
-        assert!(vues[0].starts_with("GET /api/remote/clients"), "{}", vues[0]);
-        assert!(vues[1].starts_with("POST /api/remote/memoire"), "{}", vues[1]);
+        assert_eq!(
+            vues.len(),
+            2,
+            "deux appels : les machines, puis la publication"
+        );
+        assert!(
+            vues[0].starts_with("GET /api/remote/clients"),
+            "{}",
+            vues[0]
+        );
+        assert!(
+            vues[1].starts_with("POST /api/remote/memoire"),
+            "{}",
+            vues[1]
+        );
         assert!(vues[1].contains(r#""client_id":"cl-2""#), "{}", vues[1]);
-        assert!(vues[1].contains("91 % de disque"), "le texte est publié tel quel : {}", vues[1]);
+        assert!(
+            vues[1].contains("91 % de disque"),
+            "le texte est publié tel quel : {}",
+            vues[1]
+        );
         assert!(
             !vues[1].contains("self:"),
             "le nœud ne NOMME pas le self — il se déduit du compte côté moteur : {}",
@@ -515,18 +553,33 @@ mod tests {
         );
         // Le jeton voyage en en-tête, jamais dans l'URL : une URL finit dans les
         // journaux des mandataires.
-        assert!(vues[1].contains("Authorization: jeton-de-test"), "{}", vues[1]);
+        assert!(
+            vues[1].contains("Authorization: jeton-de-test"),
+            "{}",
+            vues[1]
+        );
     }
 
     /// Sans machine attachée à ce nom, le nœud REFUSE — et le motif dit quoi
     /// faire, avec la liste de ce que le moteur voit.
     #[test]
     fn sans_machine_attachee_le_refus_est_motive() {
-        let (moteur, _) =
-            faux_moteur(vec![(200, r#"{"compte":"alice","clients":[{"id":"cl-9","machine":"autre"}]}"#)]);
-        let vers = VersLeSelf { moteur: &moteur, jeton: "jeton-de-test", machine: "poste-test" };
-        let e = publier_note(&vers, "note", "sujet").unwrap_err().to_string();
-        assert!(e.contains("n'est pas attachée"), "le motif doit le dire : {e}");
+        let (moteur, _) = faux_moteur(vec![(
+            200,
+            r#"{"compte":"alice","clients":[{"id":"cl-9","machine":"autre"}]}"#,
+        )]);
+        let vers = VersLeSelf {
+            moteur: &moteur,
+            jeton: "jeton-de-test",
+            machine: "poste-test",
+        };
+        let e = publier_note(&vers, "note", "sujet")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("n'est pas attachée"),
+            "le motif doit le dire : {e}"
+        );
         assert!(e.contains("autre"), "et nommer ce que le moteur voit : {e}");
         assert!(e.contains("selfd attacher"), "et dire quoi faire : {e}");
     }
@@ -536,13 +589,28 @@ mod tests {
     #[test]
     fn le_refus_du_moteur_remonte_sans_recopier_le_jeton() {
         let (moteur, _) = faux_moteur(vec![
-            (200, r#"{"compte":"alice","clients":[{"id":"cl-2","machine":"poste-test"}]}"#),
-            (403, r#"{"error":"le client « cl-2 » n'est pas attaché à votre compte"}"#),
+            (
+                200,
+                r#"{"compte":"alice","clients":[{"id":"cl-2","machine":"poste-test"}]}"#,
+            ),
+            (
+                403,
+                r#"{"error":"le client « cl-2 » n'est pas attaché à votre compte"}"#,
+            ),
         ]);
-        let vers = VersLeSelf { moteur: &moteur, jeton: "jeton-secret-a-ne-pas-journaliser", machine: "poste-test" };
-        let e = publier_note(&vers, "note", "sujet").unwrap_err().to_string();
+        let vers = VersLeSelf {
+            moteur: &moteur,
+            jeton: "jeton-secret-a-ne-pas-journaliser",
+            machine: "poste-test",
+        };
+        let e = publier_note(&vers, "note", "sujet")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("403"), "{e}");
-        assert!(e.contains("n'est pas attaché à votre compte"), "la cause du moteur remonte : {e}");
+        assert!(
+            e.contains("n'est pas attaché à votre compte"),
+            "la cause du moteur remonte : {e}"
+        );
         assert!(
             !e.contains("jeton-secret"),
             "un jeton dans un message d'erreur finit dans un journal : {e}"
@@ -553,16 +621,32 @@ mod tests {
     /// moteur (aucune requête n'est même envoyée).
     #[test]
     fn sans_jeton_on_ne_public_rien() {
-        let vers = VersLeSelf { moteur: "http://127.0.0.1:1", jeton: "  ", machine: "poste-test" };
-        let e = publier_note(&vers, "note", "sujet").unwrap_err().to_string();
+        let vers = VersLeSelf {
+            moteur: "http://127.0.0.1:1",
+            jeton: "  ",
+            machine: "poste-test",
+        };
+        let e = publier_note(&vers, "note", "sujet")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("aucun jeton"), "{e}");
-        assert!(e.contains("SELFD_MOTEUR_TOKEN"), "et dire où le prendre : {e}");
+        assert!(
+            e.contains("SELFD_MOTEUR_TOKEN"),
+            "et dire où le prendre : {e}"
+        );
 
         // Un envoi vide n'est pas un succès — et il est refusé AVANT tout appel
         // au moteur (le port ci-dessous n'écoute personne : si une requête
         // partait, ce test échouerait par un délai, pas par ce motif).
-        let avec_jeton = VersLeSelf { moteur: "http://127.0.0.1:1", jeton: "jeton", machine: "m" };
+        let avec_jeton = VersLeSelf {
+            moteur: "http://127.0.0.1:1",
+            jeton: "jeton",
+            machine: "m",
+        };
         let e = publier(&avec_jeton, &[]).unwrap_err().to_string();
-        assert!(e.contains("aucune intention"), "un envoi vide n'est pas un succès : {e}");
+        assert!(
+            e.contains("aucune intention"),
+            "un envoi vide n'est pas un succès : {e}"
+        );
     }
 }

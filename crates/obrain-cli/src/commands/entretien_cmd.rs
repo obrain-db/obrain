@@ -42,7 +42,10 @@ pub struct EntretienArgs {
 
 pub fn run(args: EntretienArgs, quiet: bool) -> Result<()> {
     let Some(genre) = Genre::depuis_publique(&args.genre) else {
-        anyhow::bail!("genre inconnu : « {} » — attendu degres ou enregistrements", args.genre);
+        anyhow::bail!(
+            "genre inconnu : « {} » — attendu degres ou enregistrements",
+            args.genre
+        );
     };
     if let Some(store) = args.attacher.as_deref() {
         crate::entretien::attacher(store, genre, &args.raison, &args.source)?;
@@ -57,7 +60,11 @@ pub fn run(args: EntretienArgs, quiet: bool) -> Result<()> {
     if let Some(store) = args.accorder.as_deref() {
         crate::entretien::accorder(store, genre);
         if !quiet {
-            eprintln!("entretien : demande accordée — {} / {}", store.display(), genre.nom());
+            eprintln!(
+                "entretien : demande accordée — {} / {}",
+                store.display(),
+                genre.nom()
+            );
         }
     }
     let demandes: Vec<Demande> = crate::entretien::en_attente();

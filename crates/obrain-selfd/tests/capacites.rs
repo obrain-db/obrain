@@ -99,10 +99,7 @@ impl Drop for Bac {
     fn drop(&mut self) {
         // Une racine rendue non inscriptible doit redevenir supprimable : sans
         // cela, /tmp se remplirait de bacs orphelins à chaque exécution.
-        let _ = std::fs::set_permissions(
-            self.racine(),
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(self.racine(), std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::remove_dir_all(&self.base);
     }
 }
@@ -220,7 +217,11 @@ fn exercer(nom: &str, bac: &Bac, allow_exec: bool) {
                 &[],
             );
             let v = s.json();
-            assert_eq!(v["bytes"].as_u64(), Some(7), "write annoncé doit écrire : {v}");
+            assert_eq!(
+                v["bytes"].as_u64(),
+                Some(7),
+                "write annoncé doit écrire : {v}"
+            );
             let relu = std::fs::read_to_string(bac.racine().join("ecrit-par-le-noeud.txt"))
                 .expect("le fichier écrit doit exister dans la racine");
             assert_eq!(relu, "bonjour");
@@ -277,7 +278,10 @@ fn a_racine_inscriptible_exec_ouvert_annonce_est_exercable() {
         "tout est ouvert ici : l'ensemble annoncé doit être complet et dans l'ordre stable"
     );
     assert!(
-        c["capacites_refusees"].as_array().map(Vec::is_empty).unwrap_or(false),
+        c["capacites_refusees"]
+            .as_array()
+            .map(Vec::is_empty)
+            .unwrap_or(false),
         "aucune capacité ne doit être refusée quand rien ne l'est : {}",
         c["capacites_refusees"]
     );
@@ -296,8 +300,14 @@ fn a_racine_inscriptible_exec_ouvert_annonce_est_exercable() {
     );
     assert_eq!(c["limites"]["exec"].as_str(), Some("ouvert"));
     assert_eq!(c["limites"]["delai_ms_par_defaut"].as_u64(), Some(60_000));
-    assert_eq!(c["limites"]["plafond_octets_par_flux"].as_u64(), Some(262_144));
-    assert_eq!(c["limites"]["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        c["limites"]["plafond_octets_par_flux"].as_u64(),
+        Some(262_144)
+    );
+    assert_eq!(
+        c["limites"]["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,7 +339,10 @@ fn b_racine_non_inscriptible_write_nest_pas_annonce() {
 
     // Le refus est DIT, avec un motif — pas seulement absent de la liste.
     let motif = motif_refus(&c, "write").expect("write doit être annoncé comme refusé, motivé");
-    assert!(!motif.trim().is_empty(), "un refus sans motif ne se corrige pas");
+    assert!(
+        !motif.trim().is_empty(),
+        "un refus sans motif ne se corrige pas"
+    );
     assert!(
         motif.contains("write"),
         "le motif doit nommer ce qui est refusé : {motif}"
@@ -359,7 +372,12 @@ fn b_racine_non_inscriptible_write_nest_pas_annonce() {
         "status ne doit pas annoncer l'écriture sur une racine en lecture seule : {}",
         s["capabilities"]
     );
-    assert_eq!(s["capabilities"]["exec"].as_bool(), Some(true), "{}", s["capabilities"]);
+    assert_eq!(
+        s["capabilities"]["exec"].as_bool(),
+        Some(true),
+        "{}",
+        s["capabilities"]
+    );
     assert!(
         s["politique"]["capacites_refusees"]
             .as_array()
@@ -382,7 +400,10 @@ fn c_sans_allow_exec_exec_est_absent_et_refuse_avec_motif() {
 
     // Moitié 1 : l'annonce.
     let a = annoncees(&c);
-    assert!(!a.contains(&"exec".to_string()), "sans --allow-exec : {a:?}");
+    assert!(
+        !a.contains(&"exec".to_string()),
+        "sans --allow-exec : {a:?}"
+    );
     let motif = motif_refus(&c, "exec").expect("exec doit être annoncé comme refusé, motivé");
     assert!(
         motif.contains("--allow-exec"),
@@ -390,7 +411,13 @@ fn c_sans_allow_exec_exec_est_absent_et_refuse_avec_motif() {
     );
 
     // Moitié 2 : l'appel, refusé par la POLITIQUE (pas par une panne).
-    let essai = appel(&bac, "exec", r#"{"cmd":"/bin/sh","args":["-c","exit 0"]}"#, false, &[]);
+    let essai = appel(
+        &bac,
+        "exec",
+        r#"{"cmd":"/bin/sh","args":["-c","exit 0"]}"#,
+        false,
+        &[],
+    );
     assert!(!essai.ok, "sans --allow-exec, exec doit être refusé");
     assert!(
         est_refus_de_politique(&essai.motif()),
@@ -487,7 +514,11 @@ fn e_les_limites_annoncees_sont_celles_qui_s_appliquent() {
         &["--max-output", "4096"],
     )
     .json();
-    assert_eq!(v["bytes"].as_u64(), Some(9000), "l'appel doit dire la taille réelle");
+    assert_eq!(
+        v["bytes"].as_u64(),
+        Some(9000),
+        "l'appel doit dire la taille réelle"
+    );
     assert_eq!(v["tronque"].as_bool(), Some(true));
     assert_eq!(
         v["content"].as_str().map(str::len),
@@ -530,8 +561,7 @@ fn annonce_au_moteur(bac: &Bac, allow_exec: bool) -> Value {
         }
         let mut corps = vec![0u8; longueur];
         let _ = lecteur.read_exact(&mut corps);
-        *garde.lock().expect("verrou du corps capté") =
-            String::from_utf8_lossy(&corps).to_string();
+        *garde.lock().expect("verrou du corps capté") = String::from_utf8_lossy(&corps).to_string();
 
         let mut flux = flux;
         let _ = flux.write_all(
@@ -590,7 +620,10 @@ fn f_lannonce_au_moteur_porte_les_capacites_verifiees_et_les_limites() {
         .iter()
         .map(|v| v.as_str().unwrap_or_default().to_string())
         .collect();
-    assert!(a.contains(&"write".to_string()), "racine inscriptible : {a:?}");
+    assert!(
+        a.contains(&"write".to_string()),
+        "racine inscriptible : {a:?}"
+    );
     assert!(
         !a.contains(&"exec".to_string()),
         "sans --allow-exec, exec ne doit pas partir dans l'annonce : {a:?}"
@@ -602,7 +635,10 @@ fn f_lannonce_au_moteur_porte_les_capacites_verifiees_et_les_limites() {
         .expect("« capacites_refusees » doit accompagner l'annonce");
     assert!(
         refus.iter().any(|r| r["nom"].as_str() == Some("exec")
-            && r["motif"].as_str().unwrap_or_default().contains("--allow-exec")),
+            && r["motif"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("--allow-exec")),
         "exec doit être annoncé comme refusé ET motivé : {refus:?}"
     );
 
@@ -612,9 +648,18 @@ fn f_lannonce_au_moteur_porte_les_capacites_verifiees_et_les_limites() {
         corps["limites"]["racine_reelle"].as_str(),
         Some(reelle.display().to_string().as_str())
     );
-    assert_eq!(corps["limites"]["delai_ms_par_defaut"].as_u64(), Some(60_000));
-    assert_eq!(corps["limites"]["plafond_octets_par_flux"].as_u64(), Some(262_144));
-    assert_eq!(corps["limites"]["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        corps["limites"]["delai_ms_par_defaut"].as_u64(),
+        Some(60_000)
+    );
+    assert_eq!(
+        corps["limites"]["plafond_octets_par_flux"].as_u64(),
+        Some(262_144)
+    );
+    assert_eq!(
+        corps["limites"]["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]

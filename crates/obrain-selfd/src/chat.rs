@@ -25,8 +25,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
 use obrain_garde::{Garde, Motif};
 
@@ -97,15 +97,25 @@ pub fn contexte(p: &Politique, id: &Identite, debut: Instant, mode: &str) -> Str
     ));
 
     c.push_str("\n## État de marche\n");
-    c.push_str(&format!("- en marche depuis : {:.0} s\n", debut.elapsed().as_secs_f64()));
+    c.push_str(&format!(
+        "- en marche depuis : {:.0} s\n",
+        debut.elapsed().as_secs_f64()
+    ));
     if let Ok(txt) = std::fs::read_to_string("/proc/loadavg") {
         let ch: Vec<&str> = txt.split_whitespace().collect();
         if ch.len() >= 3 {
-            c.push_str(&format!("- charge          : {} {} {}\n", ch[0], ch[1], ch[2]));
+            c.push_str(&format!(
+                "- charge          : {} {} {}\n",
+                ch[0], ch[1], ch[2]
+            ));
         }
     }
     if let Some(brut) = lister_racine(&p.racine) {
-        c.push_str(&format!("\n## Racine du nœud ({})\n{}\n", p.racine.display(), brut));
+        c.push_str(&format!(
+            "\n## Racine du nœud ({})\n{}\n",
+            p.racine.display(),
+            brut
+        ));
     }
     c
 }
@@ -115,7 +125,11 @@ fn lister_racine(racine: &Path) -> Option<String> {
     let mut entrees: Vec<String> = Vec::new();
     for e in std::fs::read_dir(racine).ok()?.flatten().take(40) {
         let nom = e.file_name().to_string_lossy().to_string();
-        let suffixe = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { "/" } else { "" };
+        let suffixe = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            "/"
+        } else {
+            ""
+        };
         entrees.push(format!("- {nom}{suffixe}"));
     }
     entrees.sort();
@@ -133,7 +147,9 @@ pub struct Historique {
 
 impl Historique {
     pub fn nouveau(state_dir: &Path) -> Self {
-        Self { fichier: state_dir.join("chat.jsonl") }
+        Self {
+            fichier: state_dir.join("chat.jsonl"),
+        }
     }
 
     /// Ajoute un tour, en JSONL append-only.
@@ -307,7 +323,10 @@ where
         let _ = arrete_par_nous;
         bail!("le modèle n'a rendu aucun texte (vérifier {url})");
     }
-    Ok(Tour { texte: complet, arret })
+    Ok(Tour {
+        texte: complet,
+        arret,
+    })
 }
 
 /// Le modèle répond-il ? (sonde courte, pour que `status` puisse le dire)

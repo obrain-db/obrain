@@ -40,7 +40,8 @@ const MAGIC: &[u8; 8] = b"OBJRNL01";
 
 /// Taille d'une entrée sur le disque : tous les champs sont à taille fixe, donc
 /// une entrée occupe toujours la même place et ne peut pas se décaler.
-const TAILLE_ENTREE_DISQUE: usize = TAILLE_EMPREINTE + 8 + 8 + TAILLE_EMPREINTE + TAILLE_EMPREINTE + TAILLE_SIGNATURE;
+const TAILLE_ENTREE_DISQUE: usize =
+    TAILLE_EMPREINTE + 8 + 8 + TAILLE_EMPREINTE + TAILLE_EMPREINTE + TAILLE_SIGNATURE;
 
 /// Taille maximale d'un identifiant de journal, en octets.
 pub const IDENTIFIANT_MAXIMUM: usize = 255;
@@ -372,18 +373,14 @@ impl Journal {
                 "signature de format de journal absente ou inconnue".to_owned(),
             ));
         }
-        let longueur_nom = usize::from(
-            u16::from_le_bytes(
-                octets
-                    .get(8..10)
-                    .ok_or_else(trop_court)?
-                    .try_into()
-                    .map_err(|_| trop_court())?,
-            ),
-        );
-        let fin_nom = 10usize
-            .checked_add(longueur_nom)
-            .ok_or_else(trop_court)?;
+        let longueur_nom = usize::from(u16::from_le_bytes(
+            octets
+                .get(8..10)
+                .ok_or_else(trop_court)?
+                .try_into()
+                .map_err(|_| trop_court())?,
+        ));
+        let fin_nom = 10usize.checked_add(longueur_nom).ok_or_else(trop_court)?;
         let nom = octets.get(10..fin_nom).ok_or_else(trop_court)?;
         let nom = core::str::from_utf8(nom)
             .map_err(|_| ErreurJournal::Reference("identifiant de journal non UTF-8".to_owned()))?;

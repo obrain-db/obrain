@@ -36,7 +36,7 @@ use zeroize::Zeroizing;
 
 use crate::aleatoire;
 use crate::cle::{
-    CleEspace, EmpreinteEspace, Usage, LONGUEUR_EMPREINTE, LONGUEUR_ETIQUETTE, LONGUEUR_NONCE,
+    CleEspace, EmpreinteEspace, LONGUEUR_EMPREINTE, LONGUEUR_ETIQUETTE, LONGUEUR_NONCE, Usage,
 };
 use crate::erreur::{CoffreError, Resultat};
 
@@ -396,7 +396,10 @@ mod tests {
         let octets = j.emettre("graph:read", 1_000).unwrap();
 
         assert!(j.verifier(&octets, "graph:read", 999).is_ok());
-        assert!(j.verifier(&octets, "graph:read", 1_000).is_err(), "l'échéance est exclue");
+        assert!(
+            j.verifier(&octets, "graph:read", 1_000).is_err(),
+            "l'échéance est exclue"
+        );
         match j.verifier(&octets, "graph:read", 1_001) {
             Err(CoffreError::JetonExpire {
                 echeance,
@@ -506,7 +509,10 @@ mod tests {
     #[test]
     fn un_jeton_n_est_pas_une_enveloppe() {
         let k = cle("e1");
-        let octets = Jeton::neuf(&k).unwrap().emettre("graph:read", 1_000).unwrap();
+        let octets = Jeton::neuf(&k)
+            .unwrap()
+            .emettre("graph:read", 1_000)
+            .unwrap();
 
         let enveloppe = crate::Enveloppe::neuf(&k).unwrap();
         assert!(

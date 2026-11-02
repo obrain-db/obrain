@@ -96,8 +96,10 @@ impl Charge {
         let reste = octets
             .strip_prefix(DOMAINE_MESSAGE)
             .ok_or_else(|| illisible("domaine de message absent"))?;
-        let (expediteur, reste) = couper(reste, TAILLE_ADRESSE).ok_or_else(|| illisible("expéditeur"))?;
-        let (destinataire, reste) = couper(reste, TAILLE_ADRESSE).ok_or_else(|| illisible("destinataire"))?;
+        let (expediteur, reste) =
+            couper(reste, TAILLE_ADRESSE).ok_or_else(|| illisible("expéditeur"))?;
+        let (destinataire, reste) =
+            couper(reste, TAILLE_ADRESSE).ok_or_else(|| illisible("destinataire"))?;
         let (quoi, reste) = lire_champ(reste).ok_or_else(|| illisible("charge"))?;
         let quoi = quoi.ok_or_else(|| illisible("charge absente"))?;
         let (jeton, reste) = lire_champ(reste).ok_or_else(|| illisible("jeton"))?;
@@ -107,9 +109,13 @@ impl Charge {
         }
 
         Ok(Self {
-            expediteur: Adresse::depuis_octets(expediteur.try_into().map_err(|_| illisible("expéditeur"))?),
+            expediteur: Adresse::depuis_octets(
+                expediteur.try_into().map_err(|_| illisible("expéditeur"))?,
+            ),
             destinataire: Adresse::depuis_octets(
-                destinataire.try_into().map_err(|_| illisible("destinataire"))?,
+                destinataire
+                    .try_into()
+                    .map_err(|_| illisible("destinataire"))?,
             ),
             quoi: quoi.to_vec(),
             jeton: jeton.map(<[u8]>::to_vec),
@@ -137,9 +143,10 @@ impl core::fmt::Debug for Charge {
             .field("quoi", &format!("{} octets", self.quoi.len()))
             .field(
                 "jeton",
-                &self.jeton.as_ref().map_or("aucun".to_owned(), |j| {
-                    format!("{} octets", j.len())
-                }),
+                &self
+                    .jeton
+                    .as_ref()
+                    .map_or("aucun".to_owned(), |j| format!("{} octets", j.len())),
             )
             .finish()
     }

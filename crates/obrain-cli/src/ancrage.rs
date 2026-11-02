@@ -169,11 +169,7 @@ impl Atlas {
                     .iter()
                     .find(|m| cle_canonique(m.qn.trim_start_matches("world:")) == cle)
             })
-            .or_else(|| {
-                self.mondes
-                    .iter()
-                    .find(|m| cle_canonique(&m.label) == cle)
-            })
+            .or_else(|| self.mondes.iter().find(|m| cle_canonique(&m.label) == cle))
             .or_else(|| {
                 // Fragment : « self » doit trouver « Self-demo (engrams) ».
                 self.mondes
@@ -206,9 +202,10 @@ pub fn atlas(synapse: Option<&Path>, mondes: &[(String, PathBuf)]) -> Atlas {
         && let Some(db) = lire_synapse(p)
     {
         a.base_synaptique_lue = true;
-        if let Ok(r) = db.session().execute(
-            "MATCH (w:World) RETURN w.qn, w.label, w.path, w.nature, w.nodes, w.edges",
-        ) {
+        if let Ok(r) = db
+            .session()
+            .execute("MATCH (w:World) RETURN w.qn, w.label, w.path, w.nature, w.nodes, w.edges")
+        {
             for row in &r.rows {
                 let (Some(qn), Some(label), Some(path)) =
                     (as_str(row.first()), as_str(row.get(1)), as_str(row.get(2)))
@@ -363,7 +360,12 @@ pub fn monde_du_sujet(
                 continue;
             }
             if ws_qn == qn {
-                return Some(Monde { qn: ws_qn, label, path, source: "synapse" });
+                return Some(Monde {
+                    qn: ws_qn,
+                    label,
+                    path,
+                    source: "synapse",
+                });
             }
             if canonique.is_none() && cle_canonique(ws_qn.trim_start_matches("world:")) == cle {
                 canonique = Some(Monde {
@@ -423,9 +425,7 @@ pub fn monde_du_sujet(
 pub fn self_qn(synapse: Option<&Path>) -> String {
     if let Some(p) = synapse
         && let Some(db) = lire_synapse(p)
-        && let Ok(r) = db
-            .session()
-            .execute("MATCH (s:Self) RETURN s.qn LIMIT 1")
+        && let Ok(r) = db.session().execute("MATCH (s:Self) RETURN s.qn LIMIT 1")
         && let Some(v) = r.rows.first().and_then(|row| as_str(row.first()))
         && !v.is_empty()
     {
@@ -607,8 +607,8 @@ mod tests {
         let mondes = vec![("this-rs/this (GitHub)".to_string(), tmp.clone())];
 
         for qn in ["world:this-rs-this--github", "world:this-rs-this-github"] {
-            let m = monde_du_sujet(None, qn, &mondes)
-                .unwrap_or_else(|| panic!("{qn} doit résoudre"));
+            let m =
+                monde_du_sujet(None, qn, &mondes).unwrap_or_else(|| panic!("{qn} doit résoudre"));
             assert_eq!(m.path, tmp, "{qn}");
             assert_eq!(m.label, "this-rs/this (GitHub)", "{qn}");
         }
@@ -626,18 +626,33 @@ mod tests {
     #[test]
     fn monde_inconnu_ne_retombe_pas_sur_un_autre() {
         let mondes = vec![
-            ("Runtime dev (engrams)".to_string(), PathBuf::from("/inexistant")),
-            ("Linux complet (v6.6)".to_string(), PathBuf::from("/inexistant2")),
+            (
+                "Runtime dev (engrams)".to_string(),
+                PathBuf::from("/inexistant"),
+            ),
+            (
+                "Linux complet (v6.6)".to_string(),
+                PathBuf::from("/inexistant2"),
+            ),
         ];
-        assert_eq!(monde_du_sujet(None, "world:monde-inexistant", &mondes), None);
+        assert_eq!(
+            monde_du_sujet(None, "world:monde-inexistant", &mondes),
+            None
+        );
     }
 
     /// Un monde connu mais dont le store a disparu du disque ne résout pas non
     /// plus : mieux vaut dire « je ne peux pas ouvrir » que servir un autre monde.
     #[test]
     fn store_absent_du_disque_ne_resout_pas() {
-        let mondes = vec![("this-rs/this (GitHub)".to_string(), PathBuf::from("/n-existe-pas"))];
-        assert_eq!(monde_du_sujet(None, "world:this-rs-this--github", &mondes), None);
+        let mondes = vec![(
+            "this-rs/this (GitHub)".to_string(),
+            PathBuf::from("/n-existe-pas"),
+        )];
+        assert_eq!(
+            monde_du_sujet(None, "world:this-rs-this--github", &mondes),
+            None
+        );
     }
 
     #[test]
@@ -668,7 +683,10 @@ mod tests {
         let universel = self_qn(None);
         // Aucune identité → self de l'instance, portée annoncée.
         assert_eq!(self_qn_pour(None, None), (universel.clone(), "instance"));
-        assert_eq!(self_qn_pour(None, Some("   ")), (universel.clone(), "instance"));
+        assert_eq!(
+            self_qn_pour(None, Some("   ")),
+            (universel.clone(), "instance")
+        );
         // Une identité du compte HISTORIQUE → la forme historique : c'est le nom
         // sous lequel la ligne déployée porte déjà sa mémoire (`selfs/*.obrain`),
         // il ne change pas. Sans base synaptique lisible, la portée dit que le
@@ -678,11 +696,17 @@ mod tests {
         assert_eq!(portee, "journal");
         // Le nom NU (sans compte) est inchangé : c'est le chemin en service
         // (`POST /api/remote/memoire`), on ne lui invente pas un compte.
-        assert_eq!(self_qn_pour(None, Some("alice")), ("self:alice".to_string(), "journal"));
+        assert_eq!(
+            self_qn_pour(None, Some("alice")),
+            ("self:alice".to_string(), "journal")
+        );
         // Deux personnes, deux selfs — la séparation est la raison d'être.
         let (a, _) = self_qn_pour(None, Some("alice@obrain"));
         let (b, _) = self_qn_pour(None, Some("bob@obrain"));
-        assert_ne!(a, b, "deux personnes du même compte ne partagent jamais un self");
+        assert_ne!(
+            a, b,
+            "deux personnes du même compte ne partagent jamais un self"
+        );
     }
 
     /// ── DEUX COMPTES, UN MÊME NOM D'UTILISATEUR : DEUX SELF ─────────────────
@@ -697,16 +721,28 @@ mod tests {
         let (b, pb) = self_qn_pour(None, Some("alice@compteB"));
         assert_eq!(a, "self:alice@compteA");
         assert_eq!(b, "self:alice@compteB");
-        assert_ne!(a, b, "deux comptes ne doivent JAMAIS converger sur le même self");
+        assert_ne!(
+            a, b,
+            "deux comptes ne doivent JAMAIS converger sur le même self"
+        );
         assert_eq!(pa, "journal");
         assert_eq!(pb, "journal");
         // Le nom se relit : on retrouve les deux parties, sans ambiguïté — c'est
         // l'injectivité, vue de l'autre bout.
-        assert_eq!(decouper_identite(a.trim_start_matches("self:")), ("alice", "compteA"));
-        assert_eq!(decouper_identite(b.trim_start_matches("self:")), ("alice", "compteB"));
+        assert_eq!(
+            decouper_identite(a.trim_start_matches("self:")),
+            ("alice", "compteA")
+        );
+        assert_eq!(
+            decouper_identite(b.trim_start_matches("self:")),
+            ("alice", "compteB")
+        );
         // La grammaire d'`obrain-iam` n'accepte que des minuscules : la forme
         // réelle d'un compte est plutôt `compte-a`. Les deux doivent séparer.
-        assert_eq!(self_qn_pour(None, Some("alice@compte-a")).0, "self:alice@compte-a");
+        assert_eq!(
+            self_qn_pour(None, Some("alice@compte-a")).0,
+            "self:alice@compte-a"
+        );
         assert_ne!(self_qn_pour(None, Some("alice@compte-a")).0, a);
         // Un même utilisateur sur trois comptes : trois selfs, deux à deux distincts.
         let (c, _) = self_qn_pour(None, Some("alice@compteC"));

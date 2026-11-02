@@ -197,7 +197,11 @@ impl Annonce {
         let capacites = v
             .get("capacites")
             .and_then(|c| c.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         // Un refus annoncé est un OBJET (`nom`, `exercable`, `motif`). On ne garde
         // que les objets : un refus sans nom ne se corrige pas, et le stocker
@@ -219,7 +223,12 @@ impl Annonce {
         if v.get("limites").is_none() {
             manquante.push("limites".to_string());
         }
-        Self { capacites, capacites_refusees, limites, manquante }
+        Self {
+            capacites,
+            capacites_refusees,
+            limites,
+            manquante,
+        }
     }
 }
 
@@ -388,7 +397,11 @@ impl Client {
             );
         }
         if refusees.is_empty() {
-            format!("« {} » annonce {} et ne refuse rien", self.machine, self.capacites.join(", "))
+            format!(
+                "« {} » annonce {} et ne refuse rien",
+                self.machine,
+                self.capacites.join(", ")
+            )
         } else {
             format!(
                 "« {} » annonce {} ; elle REFUSE {}",
@@ -419,7 +432,11 @@ impl Client {
             "attache_ms": self.attache_ms,
             "vue_ms": self.derniere_vue_ms,
         });
-        if !self.annonce_manquante.iter().any(|m| m == "capacites_refusees") {
+        if !self
+            .annonce_manquante
+            .iter()
+            .any(|m| m == "capacites_refusees")
+        {
             l["capacites_refusees"] = serde_json::json!(self.capacites_refusees);
         }
         if let Some(lim) = &self.limites {
@@ -432,7 +449,12 @@ impl Client {
     }
 
     fn depuis_ligne(v: &serde_json::Value) -> Option<Self> {
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
         let id = s("id");
         let compte = s("compte");
         // Une ligne sans identifiant ou sans compte ne désigne rien : un client
@@ -443,7 +465,11 @@ impl Client {
         let capacites = v
             .get("capacites")
             .and_then(|c| c.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let capacites_refusees: Vec<serde_json::Value> = v
             .get("capacites_refusees")
@@ -455,20 +481,23 @@ impl Client {
         // antérieur, qui n'a jamais su garder ces moitiés — on le DÉDUIT de
         // l'absence des clés : « je ne l'ai pas » et « il n'y en avait pas » ne
         // sont pas la même chose, et c'est la première qui est vraie ici.
-        let annonce_manquante: Vec<String> = match v.get("annonce_manquante").and_then(|m| m.as_array())
-        {
-            Some(a) => a.iter().filter_map(|x| x.as_str().map(String::from)).collect(),
-            None => {
-                let mut m = Vec::new();
-                if v.get("capacites_refusees").is_none() {
-                    m.push("capacites_refusees".to_string());
+        let annonce_manquante: Vec<String> =
+            match v.get("annonce_manquante").and_then(|m| m.as_array()) {
+                Some(a) => a
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect(),
+                None => {
+                    let mut m = Vec::new();
+                    if v.get("capacites_refusees").is_none() {
+                        m.push("capacites_refusees".to_string());
+                    }
+                    if limites.is_none() {
+                        m.push("limites".to_string());
+                    }
+                    m
                 }
-                if limites.is_none() {
-                    m.push("limites".to_string());
-                }
-                m
-            }
-        };
+            };
         let t = |k: &str| v.get(k).and_then(serde_json::Value::as_i64).unwrap_or(0);
         let derniere_vue_ms = t("vue_ms");
         Some(Client {
@@ -543,7 +572,12 @@ fn dir() -> PathBuf {
 /// qu'on puisse dire laquelle des deux incarnations parle.
 fn identifiant(prefixe: &str, compteur: &mut u64) -> String {
     *compteur += 1;
-    format!("{prefixe}-{:x}-{:x}-{:x}", std::process::id(), crate::activation::now_ms(), compteur)
+    format!(
+        "{prefixe}-{:x}-{:x}-{:x}",
+        std::process::id(),
+        crate::activation::now_ms(),
+        compteur
+    )
 }
 
 /// Un identifiant qui n'est porté par AUCUNE machine du registre : les
@@ -609,7 +643,10 @@ fn rejouer(clients: &mut HashMap<String, Client>, ligne: &str) {
             // Un battement que nulle attache ne nomme n'INVENTE pas une machine :
             // annoncer est décider, et le journal tronqué ne doit pas peupler la
             // flotte d'inconnues.
-            let t = v.get("vue_ms").and_then(serde_json::Value::as_i64).unwrap_or(0);
+            let t = v
+                .get("vue_ms")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
             if let Some(c) = clients.get_mut(id)
                 && t > c.derniere_vue_ms
             {
@@ -651,11 +688,17 @@ impl Registre {
         // recevrait l'identifiant de la morte, et deux incarnations se
         // confondraient dans le journal.
         etat.compteur = rejouees;
-        Registre { etat: Mutex::new(etat), signal: Condvar::new(), dir: dir.to_path_buf() }
+        Registre {
+            etat: Mutex::new(etat),
+            signal: Condvar::new(),
+            dir: dir.to_path_buf(),
+        }
     }
 
     fn verrou(&self) -> std::sync::MutexGuard<'_, Etat> {
-        self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// UN FICHIER PAR COMPTE. Le nom est le hachage du compte — un compte peut
@@ -693,7 +736,10 @@ impl Registre {
         if let Some(d) = chemin.parent() {
             std::fs::create_dir_all(d)?;
         }
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&chemin)?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&chemin)?;
         use std::io::Write;
         writeln!(f, "{ligne}")?;
         f.flush()
@@ -736,11 +782,19 @@ impl Registre {
     fn machines(&self, compte: &str) -> Vec<Client> {
         let mut etat = self.verrou();
         eteindre_les_muets(&mut etat);
-        let mut v: Vec<Client> =
-            etat.clients.values().filter(|c| c.compte == compte).cloned().collect();
+        let mut v: Vec<Client> = etat
+            .clients
+            .values()
+            .filter(|c| c.compte == compte)
+            .cloned()
+            .collect();
         // Une machine qui répond passe avant une machine connue mais muette :
         // c'est l'ordre dans lequel on adresse quelqu'un.
-        v.sort_by(|a, b| b.vivant.cmp(&a.vivant).then_with(|| a.machine.cmp(&b.machine)));
+        v.sort_by(|a, b| {
+            b.vivant
+                .cmp(&a.vivant)
+                .then_with(|| a.machine.cmp(&b.machine))
+        });
         v
     }
 
@@ -818,8 +872,12 @@ impl Registre {
         // Journaliser AVANT de rendre l'identifiant : l'appelant ne doit pas
         // repartir avec un identifiant que le prochain redémarrage ignorera.
         self.journaliser(compte, &client.ligne_attache());
-        let du_compte: Vec<Client> =
-            etat.clients.values().filter(|c| c.compte == compte).cloned().collect();
+        let du_compte: Vec<Client> = etat
+            .clients
+            .values()
+            .filter(|c| c.compte == compte)
+            .cloned()
+            .collect();
         self.compacter_si_besoin(compte, &du_compte);
         id
     }
@@ -968,7 +1026,10 @@ impl Registre {
                 arguments,
                 emis_ms: crate::activation::now_ms(),
             };
-            etat.files.entry(client_id.to_string()).or_default().push_back(ordre);
+            etat.files
+                .entry(client_id.to_string())
+                .or_default()
+                .push_back(ordre);
         }
         self.signal.notify_all();
 
@@ -986,7 +1047,10 @@ impl Registre {
                 if let Some(f) = etat.files.get_mut(client_id) {
                     f.retain(|o| o.appel_id != appel_id);
                 }
-                Err(format!("le client n'a pas répondu en {} s", delai.as_secs()))
+                Err(format!(
+                    "le client n'a pas répondu en {} s",
+                    delai.as_secs()
+                ))
             }
             None => Err("appel interrompu".into()),
         }
@@ -1019,7 +1083,10 @@ fn refus_annonce(c: &Client, outil: &str) -> Option<String> {
         .iter()
         .find(|r| r.get("nom").and_then(|n| n.as_str()) == Some(outil))
     {
-        let motif = r.get("motif").and_then(|m| m.as_str()).unwrap_or("refus sans motif");
+        let motif = r
+            .get("motif")
+            .and_then(|m| m.as_str())
+            .unwrap_or("refus sans motif");
         return Some(format!(
             "« {} » a ANNONCÉ qu'elle refusait « {outil} » : {motif}",
             c.machine
@@ -1037,7 +1104,11 @@ fn refus_annonce(c: &Client, outil: &str) -> Option<String> {
         && !c.capacites.is_empty()
         && !c.capacites.iter().any(|x| x == outil)
     {
-        let suite = if c.annonce_manquante.iter().any(|m| m == "capacites_refusees") {
+        let suite = if c
+            .annonce_manquante
+            .iter()
+            .any(|m| m == "capacites_refusees")
+        {
             " ; le motif de ce refus n'est PAS arrivé avec son annonce, ce moteur ne peut donc \
              pas le donner — rechargez le nœud, ou demandez-lui `status`"
         } else {
@@ -1145,17 +1216,31 @@ mod tests {
         let a = r.attacher("alice", "portable-alice", vec!["read".into()]);
         let _b = r.attacher("bob", "tour-bob", vec!["read".into()]);
 
-        let vus: Vec<String> =
-            r.machines("alice").into_iter().map(|c| c.machine).collect();
+        let vus: Vec<String> = r.machines("alice").into_iter().map(|c| c.machine).collect();
         assert_eq!(vus, vec!["portable-alice"], "alice ne voit que sa machine");
 
         // Et même en CONNAISSANT l'identifiant, bob ne peut pas s'en servir.
-        let refus = r.appeler("bob", &a, "read", serde_json::json!({}), Duration::from_millis(50));
-        assert!(refus.is_err(), "connaître un identifiant ne donne aucun droit");
+        let refus = r.appeler(
+            "bob",
+            &a,
+            "read",
+            serde_json::json!({}),
+            Duration::from_millis(50),
+        );
+        assert!(
+            refus.is_err(),
+            "connaître un identifiant ne donne aucun droit"
+        );
         assert!(refus.unwrap_err().contains("pas à vous"));
 
-        assert!(r.prochain_ordre("bob", &a, Duration::from_millis(10)).is_err());
-        assert!(!r.detacher("bob", &a), "bob ne détache pas le client d'alice");
+        assert!(
+            r.prochain_ordre("bob", &a, Duration::from_millis(10))
+                .is_err()
+        );
+        assert!(
+            !r.detacher("bob", &a),
+            "bob ne détache pas le client d'alice"
+        );
         assert!(r.detacher("alice", &a));
     }
 
@@ -1194,14 +1279,30 @@ mod tests {
         let r = registre_isole(&td);
         let id = r.attacher("dan", "poste-dan", vec![]);
         let debut = Instant::now();
-        let res = r.appeler("dan", &id, "exec", serde_json::json!({}), Duration::from_millis(300));
+        let res = r.appeler(
+            "dan",
+            &id,
+            "exec",
+            serde_json::json!({}),
+            Duration::from_millis(300),
+        );
         assert!(res.is_err(), "sans client à l'écoute, l'appel expire");
-        assert!(debut.elapsed() >= Duration::from_millis(250), "il a bien attendu");
-        assert!(debut.elapsed() < Duration::from_secs(3), "et pas indéfiniment");
+        assert!(
+            debut.elapsed() >= Duration::from_millis(250),
+            "il a bien attendu"
+        );
+        assert!(
+            debut.elapsed() < Duration::from_secs(3),
+            "et pas indéfiniment"
+        );
         // L'ordre abandonné ne doit plus attendre personne.
-        let reste =
-            r.prochain_ordre("dan", &id, Duration::from_millis(50)).expect("client connu");
-        assert!(reste.is_none(), "un appel expiré ne laisse pas d'ordre derrière lui");
+        let reste = r
+            .prochain_ordre("dan", &id, Duration::from_millis(50))
+            .expect("client connu");
+        assert!(
+            reste.is_none(),
+            "un appel expiré ne laisse pas d'ordre derrière lui"
+        );
         r.detacher("dan", &id);
     }
 
@@ -1212,9 +1313,13 @@ mod tests {
         let id = r.attacher("erin", "poste-erin", vec![]);
         let avant = r.machines("erin")[0].derniere_vue_ms;
         std::thread::sleep(Duration::from_millis(20));
-        let res =
-            r.prochain_ordre("erin", &id, Duration::from_millis(100)).expect("client connu");
-        assert!(res.is_none(), "aucun ordre : on rend None, le client rappellera");
+        let res = r
+            .prochain_ordre("erin", &id, Duration::from_millis(100))
+            .expect("client connu");
+        assert!(
+            res.is_none(),
+            "aucun ordre : on rend None, le client rappellera"
+        );
         let apres = r.machines("erin")[0].derniere_vue_ms;
         assert!(apres > avant, "l'attente elle-même vaut battement de cœur");
         r.detacher("erin", &id);
@@ -1239,13 +1344,22 @@ mod tests {
         assert!(!vu[0].vivant, "mais elle n'est pas annoncée comme vivante");
 
         let debut = Instant::now();
-        let refus = r.appeler("frank", &id, "read", serde_json::json!({}), Duration::from_millis(500));
+        let refus = r.appeler(
+            "frank",
+            &id,
+            "read",
+            serde_json::json!({}),
+            Duration::from_millis(500),
+        );
         assert!(refus.is_err(), "et on n'attend pas une machine partie");
         assert!(
             refus.unwrap_err().contains("pas joignable"),
             "le refus dit POURQUOI, au lieu d'un délai qui ressemble à une panne"
         );
-        assert!(debut.elapsed() < Duration::from_millis(100), "il refuse tout de suite");
+        assert!(
+            debut.elapsed() < Duration::from_millis(100),
+            "il refuse tout de suite"
+        );
     }
 
     #[test]
@@ -1255,14 +1369,21 @@ mod tests {
         let attache_ms;
         {
             let r = registre_isole(&td);
-            id_alice = r.attacher("alice", "portable-alice", vec!["read".into(), "exec".into()]);
+            id_alice = r.attacher(
+                "alice",
+                "portable-alice",
+                vec!["read".into(), "exec".into()],
+            );
             r.attacher("bob", "tour-bob", vec!["read".into()]);
             attache_ms = r.machines("alice")[0].attache_ms;
             // Le journal existe, et il nomme la machine : c'est la preuve que
             // « attacher » ÉCRIT quelque chose quelque part.
             let chemin = r.journal("alice");
             let txt = std::fs::read_to_string(&chemin).expect("journal écrit");
-            assert!(txt.contains("portable-alice"), "le journal nomme la machine : {txt}");
+            assert!(
+                txt.contains("portable-alice"),
+                "le journal nomme la machine : {txt}"
+            );
             assert!(txt.contains("alice"), "et son compte propriétaire");
         }
 
@@ -1271,9 +1392,18 @@ mod tests {
         let alice = r2.machines("alice");
         assert_eq!(alice.len(), 1, "la machine d'alice est retrouvée");
         assert_eq!(alice[0].machine, "portable-alice");
-        assert_eq!(alice[0].id, id_alice, "avec le MÊME identifiant : rien n'est réattribué");
-        assert_eq!(alice[0].attache_ms, attache_ms, "et sa première attache est datée");
-        assert_eq!(alice[0].capacites, vec!["read".to_string(), "exec".to_string()]);
+        assert_eq!(
+            alice[0].id, id_alice,
+            "avec le MÊME identifiant : rien n'est réattribué"
+        );
+        assert_eq!(
+            alice[0].attache_ms, attache_ms,
+            "et sa première attache est datée"
+        );
+        assert_eq!(
+            alice[0].capacites,
+            vec!["read".to_string(), "exec".to_string()]
+        );
         assert!(
             !alice[0].vivant,
             "relue ne veut pas dire vivante : personne n'a battu depuis ce processus"
@@ -1296,21 +1426,42 @@ mod tests {
         }
         let r = relire(&td);
 
-        let vus_alice: Vec<String> =
-            r.machines("alice").into_iter().map(|c| c.machine).collect();
+        let vus_alice: Vec<String> = r.machines("alice").into_iter().map(|c| c.machine).collect();
         let vus_bob: Vec<String> = r.machines("bob").into_iter().map(|c| c.machine).collect();
-        assert_eq!(vus_alice, vec!["portable-alice"], "alice ne relit que la sienne");
+        assert_eq!(
+            vus_alice,
+            vec!["portable-alice"],
+            "alice ne relit que la sienne"
+        );
         assert_eq!(vus_bob, vec!["tour-bob"], "bob ne relit que la sienne");
 
         // Et un identifiant relu n'ouvre rien à un autre compte.
-        let refus =
-            r.appeler("bob", &id_alice, "read", serde_json::json!({}), Duration::from_millis(50));
+        let refus = r.appeler(
+            "bob",
+            &id_alice,
+            "read",
+            serde_json::json!({}),
+            Duration::from_millis(50),
+        );
         assert!(refus.is_err());
         assert!(refus.unwrap_err().contains("pas à vous"));
         // Deux machines, deux journaux : la frontière est aussi sur le disque.
-        assert_ne!(r.journal("alice"), r.journal("bob"), "un fichier par compte");
-        assert!(r.appeler("bob", &id_bob, "read", serde_json::json!({}), Duration::from_millis(50)).is_err(),
-            "et bob ne peut pas davantage attendre la sienne, qui ne bat pas");
+        assert_ne!(
+            r.journal("alice"),
+            r.journal("bob"),
+            "un fichier par compte"
+        );
+        assert!(
+            r.appeler(
+                "bob",
+                &id_bob,
+                "read",
+                serde_json::json!({}),
+                Duration::from_millis(50)
+            )
+            .is_err(),
+            "et bob ne peut pas davantage attendre la sienne, qui ne bat pas"
+        );
     }
 
     #[test]
@@ -1334,7 +1485,13 @@ mod tests {
             "et son silence est dit en clair : {}",
             vus[0].en_json()
         );
-        let refus = r.appeler("alice", "cl-vielli-1", "read", serde_json::json!({}), Duration::from_secs(5));
+        let refus = r.appeler(
+            "alice",
+            "cl-vielli-1",
+            "read",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        );
         assert!(refus.is_err(), "on ne lui envoie pas d'ordre");
         assert!(refus.unwrap_err().contains("pas joignable"));
     }
@@ -1351,9 +1508,14 @@ mod tests {
         let r = relire(&td);
         assert!(!r.machines("alice")[0].vivant);
         // Elle redemande du travail : c'est le seul geste qui prouve qu'elle est là.
-        let rien = r.prochain_ordre("alice", &id, Duration::from_millis(20)).expect("connue");
+        let rien = r
+            .prochain_ordre("alice", &id, Duration::from_millis(20))
+            .expect("connue");
         assert!(rien.is_none(), "aucun ordre en attente");
-        assert!(r.machines("alice")[0].vivant, "elle redevient vivante en se rappelant à nous");
+        assert!(
+            r.machines("alice")[0].vivant,
+            "elle redevient vivante en se rappelant à nous"
+        );
     }
 
     #[test]
@@ -1378,7 +1540,10 @@ mod tests {
             assert!(r.detacher("alice", &id));
         }
         let r = relire(&td);
-        assert!(r.machines("alice").is_empty(), "une machine détachée ne ressuscite pas");
+        assert!(
+            r.machines("alice").is_empty(),
+            "une machine détachée ne ressuscite pas"
+        );
     }
 
     #[test]
@@ -1392,18 +1557,32 @@ mod tests {
         // Le moteur redémarre, puis `selfd` se réattache sous le MÊME nom.
         let r = relire(&td);
         assert_eq!(r.machines("alice").len(), 1, "elle est connue, non vivante");
-        let second = r.attacher("alice", "portable-alice", vec!["read".into(), "exec".into()]);
+        let second = r.attacher(
+            "alice",
+            "portable-alice",
+            vec!["read".into(), "exec".into()],
+        );
 
         let vus = r.machines("alice");
         assert_eq!(vus.len(), 1, "un fantôme ne s'ajoute pas : {vus:?}");
         assert_eq!(vus[0].id, second);
         assert!(vus[0].vivant, "et c'est bien la nouvelle incarnation");
-        assert_eq!(vus[0].capacites, vec!["read".to_string(), "exec".to_string()]);
-        assert_ne!(vus[0].id, premier, "un nouvel identifiant, l'ancien est mort");
+        assert_eq!(
+            vus[0].capacites,
+            vec!["read".to_string(), "exec".to_string()]
+        );
+        assert_ne!(
+            vus[0].id, premier,
+            "un nouvel identifiant, l'ancien est mort"
+        );
 
         // Le fantôme est retiré DURABLEMENT, pas seulement de l'affichage.
         let r3 = relire(&td);
-        assert_eq!(r3.machines("alice").len(), 1, "et il ne revient pas du journal");
+        assert_eq!(
+            r3.machines("alice").len(),
+            1,
+            "et il ne revient pas du journal"
+        );
         assert_eq!(r3.machines("alice")[0].id, second);
     }
 
@@ -1442,25 +1621,38 @@ mod tests {
         let chemin = Registre::charger(td.path()).journal("alice");
         std::fs::write(&chemin, txt).unwrap();
         let avant = std::fs::metadata(&chemin).unwrap().len();
-        assert!(avant > JOURNAL_MAX_OCTETS, "le journal de départ dépasse le seuil : {avant}");
+        assert!(
+            avant > JOURNAL_MAX_OCTETS,
+            "le journal de départ dépasse le seuil : {avant}"
+        );
 
         // Une écriture quelconque déclenche le compactage.
         let r = relire(&td);
         r.attacher("alice", "deuxieme-machine", vec![]);
         let apres = std::fs::metadata(&chemin).unwrap().len();
-        assert!(apres < JOURNAL_MAX_OCTETS, "le journal est retombé : {avant} → {apres}");
+        assert!(
+            apres < JOURNAL_MAX_OCTETS,
+            "le journal est retombé : {avant} → {apres}"
+        );
 
         // Et rien n'a été perdu au passage.
         let r2 = relire(&td);
-        let machines: Vec<String> =
-            r2.machines("alice").into_iter().map(|c| c.machine).collect();
+        let machines: Vec<String> = r2
+            .machines("alice")
+            .into_iter()
+            .map(|c| c.machine)
+            .collect();
         assert_eq!(
             machines,
             vec!["deuxieme-machine".to_string(), "portable-alice".to_string()],
             "les deux machines survivent au compactage"
         );
         assert_eq!(
-            r2.machines("alice").iter().find(|c| c.machine == "portable-alice").unwrap().id,
+            r2.machines("alice")
+                .iter()
+                .find(|c| c.machine == "portable-alice")
+                .unwrap()
+                .id,
             "cl-long-1",
             "et la machine compactée garde son identifiant"
         );
@@ -1502,7 +1694,10 @@ mod tests {
             let r = registre_isole(&td);
             id = r.attacher("alice", "portable-alice", &corps_annonce());
             let c = &r.machines("alice")[0];
-            assert_eq!(c.capacites, vec!["read".to_string(), "list".into(), "status".into()]);
+            assert_eq!(
+                c.capacites,
+                vec!["read".to_string(), "list".into(), "status".into()]
+            );
             assert_eq!(
                 c.capacites_refusees.len(),
                 2,
@@ -1511,7 +1706,10 @@ mod tests {
             );
             assert!(
                 c.capacites_refusees.iter().any(|x| x["nom"] == "write"
-                    && x["motif"].as_str().unwrap_or_default().contains("Permission denied")),
+                    && x["motif"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("Permission denied")),
                 "et avec leur MOTIF — c'est lui qui rend l'échec actionnable"
             );
             assert_eq!(
@@ -1519,7 +1717,10 @@ mod tests {
                 Some("ferme"),
                 "les limites annoncées doivent arriver telles quelles"
             );
-            assert!(c.annonce_manquante.is_empty(), "le corps portait les deux moitiés");
+            assert!(
+                c.annonce_manquante.is_empty(),
+                "le corps portait les deux moitiés"
+            );
         }
 
         // « REDÉMARRAGE » : un registre neuf sur le même répertoire. C'est LA
@@ -1528,7 +1729,10 @@ mod tests {
         let r2 = relire(&td);
         let c = &r2.machines("alice")[0];
         assert_eq!(c.id, id);
-        assert_eq!(c.capacites, vec!["read".to_string(), "list".into(), "status".into()]);
+        assert_eq!(
+            c.capacites,
+            vec!["read".to_string(), "list".into(), "status".into()]
+        );
         assert_eq!(
             c.capacites_refusees.len(),
             2,
@@ -1537,7 +1741,10 @@ mod tests {
         );
         assert!(
             c.capacites_refusees.iter().any(|x| x["nom"] == "exec"
-                && x["motif"].as_str().unwrap_or_default().contains("--allow-exec")),
+                && x["motif"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("--allow-exec")),
             "et le motif avec eux : {:?}",
             c.capacites_refusees
         );
@@ -1546,7 +1753,12 @@ mod tests {
             Some("/srv/data"),
             "les limites aussi : racine réelle, délai, octets, exec, version"
         );
-        assert_eq!(c.limites.as_ref().and_then(|l| l["delai_ms_par_defaut"].as_u64()), Some(60_000));
+        assert_eq!(
+            c.limites
+                .as_ref()
+                .and_then(|l| l["delai_ms_par_defaut"].as_u64()),
+            Some(60_000)
+        );
         assert!(
             c.annonce_manquante.is_empty(),
             "et la relecture ne la déclare pas tronquée : {:?}",
@@ -1556,11 +1768,17 @@ mod tests {
         // Ce qu'un client de `/api/remote/machines` reçoit, dans la forme qui
         // sert aux deux moitiés de la question.
         let j = c.en_json();
-        assert_eq!(j["capacites"], serde_json::json!(["read", "list", "status"]));
+        assert_eq!(
+            j["capacites"],
+            serde_json::json!(["read", "list", "status"])
+        );
         assert_eq!(j["refusees"], serde_json::json!(["write", "exec"]));
         assert_eq!(j["annonce"]["complete"], serde_json::json!(true));
         assert!(
-            j["annonce"]["reponse"].as_str().unwrap_or_default().contains("REFUSE"),
+            j["annonce"]["reponse"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("REFUSE"),
             "la réponse doit dire ce qu'elle ne fait pas, en clair : {}",
             j["annonce"]["reponse"]
         );
@@ -1572,7 +1790,11 @@ mod tests {
         let r = registre_isole(&td);
         // L'ancien chemin : la seule liste de capacités. C'est l'état dans lequel
         // le moteur recevait autrefois TOUTES les annonces.
-        r.attacher("alice", "portable-alice", vec!["read".into(), "list".into()]);
+        r.attacher(
+            "alice",
+            "portable-alice",
+            vec!["read".into(), "list".into()],
+        );
 
         let j = r.machines("alice")[0].en_json();
         assert_eq!(
@@ -1586,7 +1808,10 @@ mod tests {
             "ce qui manque est NOMMÉ : {j}"
         );
         assert!(
-            j["annonce"]["reponse"].as_str().unwrap_or_default().contains("INCOMPLÈTE"),
+            j["annonce"]["reponse"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("INCOMPLÈTE"),
             "et dit en clair, pour que « rien de refusé » ne se confonde pas avec « on ne sait pas » : {}",
             j["annonce"]["reponse"]
         );
@@ -1608,7 +1833,10 @@ mod tests {
         let j2 = r2.machines("bob")[0].en_json();
         assert_eq!(j2["annonce"]["complete"], serde_json::json!(true), "{j2}");
         assert!(
-            j2["annonce"]["reponse"].as_str().unwrap_or_default().contains("ne refuse rien"),
+            j2["annonce"]["reponse"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("ne refuse rien"),
             "et la réponse le dit sans détour : {}",
             j2["annonce"]["reponse"]
         );
@@ -1623,7 +1851,13 @@ mod tests {
         // `write` est ANNONCÉ comme refusé : le moteur ne pousse pas l'ordre pour
         // le voir échouer trente secondes plus tard.
         let debut = Instant::now();
-        let refus = r.appeler("alice", &id, "write", serde_json::json!({}), Duration::from_secs(30));
+        let refus = r.appeler(
+            "alice",
+            &id,
+            "write",
+            serde_json::json!({}),
+            Duration::from_secs(30),
+        );
         let e = refus.expect_err("une capacité annoncée refusée ne part pas en ordre");
         assert!(
             debut.elapsed() < Duration::from_millis(500),
@@ -1652,7 +1886,13 @@ mod tests {
                 .expect("dépôt");
         });
         let v = r2
-            .appeler("alice", &id2, "read", serde_json::json!({}), Duration::from_secs(5))
+            .appeler(
+                "alice",
+                &id2,
+                "read",
+                serde_json::json!({}),
+                Duration::from_secs(5),
+            )
             .expect("read est annoncée : l'ordre part et le verdict revient");
         assert_eq!(v["ok"], serde_json::json!(true));
         fil.join().unwrap();
@@ -1664,14 +1904,31 @@ mod tests {
         let r = registre_isole(&td);
         // Une annonce PARTIELLE (sans les refus) : c'est exactement l'état dans
         // lequel le moteur ne savait rien du refus de `write`.
-        let id = r.attacher("alice", "portable-alice", vec!["read".into(), "list".into()]);
+        let id = r.attacher(
+            "alice",
+            "portable-alice",
+            vec!["read".into(), "list".into()],
+        );
 
         let debut = Instant::now();
-        let refus = r.appeler("alice", &id, "write", serde_json::json!({}), Duration::from_secs(30));
+        let refus = r.appeler(
+            "alice",
+            &id,
+            "write",
+            serde_json::json!({}),
+            Duration::from_secs(30),
+        );
         let e = refus.expect_err("write n'est pas annoncée");
-        assert!(debut.elapsed() < Duration::from_millis(500), "{:?}", debut.elapsed());
+        assert!(
+            debut.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            debut.elapsed()
+        );
         assert!(e.contains("n'annonce PAS « write »"), "{e}");
-        assert!(e.contains("read, list"), "elle nomme ce qu'elle annonce : {e}");
+        assert!(
+            e.contains("read, list"),
+            "elle nomme ce qu'elle annonce : {e}"
+        );
         assert!(
             e.contains("n'est PAS arrivé avec son annonce"),
             "et elle dit que le MOTIF ne lui est pas parvenu, au lieu de le fabriquer : {e}"
@@ -1683,7 +1940,13 @@ mod tests {
         // qui tranche, comme avant.
         let id_muet = r.attacher("alice", "poste-muet", vec![]);
         let debut = Instant::now();
-        let res = r.appeler("alice", &id_muet, "write", serde_json::json!({}), Duration::from_millis(300));
+        let res = r.appeler(
+            "alice",
+            &id_muet,
+            "write",
+            serde_json::json!({}),
+            Duration::from_millis(300),
+        );
         assert!(res.is_err(), "personne n'écoute : l'appel expire");
         assert!(
             debut.elapsed() >= Duration::from_millis(250),
@@ -1701,7 +1964,13 @@ mod tests {
         // connaît pas cette table de routes : il ne doit pas la refuser.
         let id = r.attacher("alice", "portable-alice", &corps_annonce());
         let debut = Instant::now();
-        let res = r.appeler("alice", &id, "chat", serde_json::json!({}), Duration::from_millis(300));
+        let res = r.appeler(
+            "alice",
+            &id,
+            "chat",
+            serde_json::json!({}),
+            Duration::from_millis(300),
+        );
         let e = res.expect_err("personne n'écoute");
         assert!(
             !e.contains("n'annonce PAS"),
@@ -1709,6 +1978,10 @@ mod tests {
              symétrique : {e}"
         );
         assert!(e.contains("pas répondu"), "l'ordre a bien été poussé : {e}");
-        assert!(debut.elapsed() >= Duration::from_millis(250), "{:?}", debut.elapsed());
+        assert!(
+            debut.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            debut.elapsed()
+        );
     }
 }

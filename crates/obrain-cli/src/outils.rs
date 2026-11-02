@@ -398,27 +398,39 @@ fn limite_de(gql: &str) -> Option<(usize, usize, u64)> {
                 let q = b[i];
                 i += 1;
                 while i < b.len() && b[i] != q {
-                    if b[i] == b'\\' { i += 1; }
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
                     i += 1;
                 }
                 i += 1;
             }
             b'/' if b.get(i + 1) == Some(&b'/') => {
-                while i < b.len() && b[i] != b'\n' { i += 1; }
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') { i += 1; }
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
                 i += 2;
             }
             c if c.is_ascii_alphabetic() => {
                 let debut = i;
-                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
                 if gql[debut..i].eq_ignore_ascii_case("LIMIT") {
                     let mut j = i;
-                    while j < b.len() && b[j].is_ascii_whitespace() { j += 1; }
+                    while j < b.len() && b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
                     let debut_nombre = j;
-                    while j < b.len() && b[j].is_ascii_digit() { j += 1; }
+                    while j < b.len() && b[j].is_ascii_digit() {
+                        j += 1;
+                    }
                     if j > debut_nombre
                         && let Ok(n) = gql[debut_nombre..j].parse::<u64>()
                     {
@@ -571,7 +583,10 @@ fn echec(msg: String, ms: u64) -> Resultat {
 
 /// Argmuent chaîne d'un JSON d'appel (tolérant).
 fn arg<'a>(v: &'a serde_json::Value, nom: &str) -> Option<&'a str> {
-    v.get(nom).and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty())
+    v.get(nom)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 /// ── LE LABEL DOIT ÊTRE DANS LE MOTIF, PAS DANS LE PRÉDICAT ─────────────────
@@ -614,7 +629,10 @@ pub fn label_dans_le_motif(gql: &str) -> String {
         let Some(position) = position_du_motif(&sortie, &nu) else {
             continue;
         };
-        sortie.replace_range(position..position + nu.len(), &format!("({variable}:{label})"));
+        sortie.replace_range(
+            position..position + nu.len(),
+            &format!("({variable}:{label})"),
+        );
     }
     sortie
 }
@@ -750,7 +768,12 @@ pub fn appels_du_texte(texte: &str) -> Vec<Appel> {
                 autre => Some(autre.clone()),
             };
             if let Some(o) = obj {
-                let nom = o.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+                let nom = o
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 let arguments = match o.get("arguments") {
                     Some(serde_json::Value::String(s)) => s.clone(),
                     Some(a) => a.to_string(),
@@ -884,7 +907,10 @@ fn arguments_du_corps(corps: &str) -> String {
         let valeur_debut = debut + fin_cle + usize::from(fin_cle < suite.len());
         let reste = &corps[valeur_debut.min(corps.len())..];
         let (valeur, fin) = match reste.find("</parameter>") {
-            Some(q) => (reste[..q].to_string(), valeur_debut + q + "</parameter>".len()),
+            Some(q) => (
+                reste[..q].to_string(),
+                valeur_debut + q + "</parameter>".len(),
+            ),
             // Sans fermeture : jusqu'à la balise suivante, ou la fin du corps.
             None => {
                 let q = reste.find("<parameter=").unwrap_or(reste.len());
@@ -974,9 +1000,12 @@ pub fn executer(
         None => None,
     };
     let db: &ObrainDB = garde.as_deref().unwrap_or(db_ancre);
-    let nom_base = autre
-        .map(|m| m.label.clone())
-        .unwrap_or_else(|| ancrage.monde.clone().unwrap_or_else(|| "le monde ancré".into()));
+    let nom_base = autre.map(|m| m.label.clone()).unwrap_or_else(|| {
+        ancrage
+            .monde
+            .clone()
+            .unwrap_or_else(|| "le monde ancré".into())
+    });
 
     // ── LES OUTILS D'ÉCRITURE ───────────────────────────────────────────────
     // Ils n'ouvrent AUCUNE base : ils JOURNALISENT une intention, qui sera
@@ -986,7 +1015,10 @@ pub fn executer(
     if appareil_ecriture(appel.nom.as_str()) {
         let provenance = format!(
             "{} · {}",
-            ancrage.monde.clone().unwrap_or_else(|| "graphe global".into()),
+            ancrage
+                .monde
+                .clone()
+                .unwrap_or_else(|| "graphe global".into()),
             ancrage.store
         );
         let intention = match appel.nom.as_str() {
@@ -1018,7 +1050,10 @@ pub fn executer(
                         epithet: arg(&args, "nom").unwrap_or("").to_string(),
                         objectif: texte,
                         prochaine_action: arg(&args, "prochaine_action").unwrap_or("").to_string(),
-                        note: format!("journalisé depuis {}", ancrage.monde.clone().unwrap_or_default()),
+                        note: format!(
+                            "journalisé depuis {}",
+                            ancrage.monde.clone().unwrap_or_default()
+                        ),
                     },
                     autre => {
                         return echec(
@@ -1102,7 +1137,10 @@ pub fn executer(
                 return echec("`type` est requis".into(), t.elapsed().as_millis() as u64);
             };
             if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                return echec(format!("type invalide : « {label} »"), t.elapsed().as_millis() as u64);
+                return echec(
+                    format!("type invalide : « {label} »"),
+                    t.elapsed().as_millis() as u64,
+                );
             }
             let n = args
                 .get("n")
@@ -1119,7 +1157,9 @@ pub fn executer(
                 .map(|row| {
                     let qn = txt(row.first());
                     match row.get(1) {
-                        Some(OV::String(f)) if !f.is_empty() && f.as_str() != "{}" => format!("{qn} ({f})"),
+                        Some(OV::String(f)) if !f.is_empty() && f.as_str() != "{}" => {
+                            format!("{qn} ({f})")
+                        }
                         _ => qn,
                     }
                 })
@@ -1133,18 +1173,21 @@ pub fn executer(
                 return echec("`qn` est requis".into(), t.elapsed().as_millis() as u64);
             };
             if qn.contains(['\'', '"', '\\']) {
-                return echec("qualified_name invalide".into(), t.elapsed().as_millis() as u64);
+                return echec(
+                    "qualified_name invalide".into(),
+                    t.elapsed().as_millis() as u64,
+                );
             }
             // Deux directions, bornées : les sortantes puis les entrantes.
             let gql_sortantes = format!(
                 "MATCH (a {{qualified_name: '{qn}'}})-[r]->(b) \
                  RETURN a.qualified_name, type(r), b.qualified_name LIMIT {}",
-                    max_lignes()
+                max_lignes()
             );
             let gql_entrantes = format!(
                 "MATCH (a)-[r]->(b {{qualified_name: '{qn}'}}) \
                  RETURN a.qualified_name, type(r), b.qualified_name LIMIT {}",
-                    max_lignes()
+                max_lignes()
             );
             let sortantes = match lire(db, &gql_sortantes) {
                 Ok(r) => r,
@@ -1156,14 +1199,22 @@ pub fn executer(
             };
             let lignes = sortantes
                 .into_iter()
-                .map(|row| format!("{} -[{}]-> {}", txt(row.first()), txt(row.get(1)), txt(row.get(2))))
-                .chain(
-                    entrantes
-                        .into_iter()
-                        .map(|row| {
-                            format!("{} -[{}]-> {}", txt(row.first()), txt(row.get(1)), txt(row.get(2)))
-                        }),
-                )
+                .map(|row| {
+                    format!(
+                        "{} -[{}]-> {}",
+                        txt(row.first()),
+                        txt(row.get(1)),
+                        txt(row.get(2))
+                    )
+                })
+                .chain(entrantes.into_iter().map(|row| {
+                    format!(
+                        "{} -[{}]-> {}",
+                        txt(row.first()),
+                        txt(row.get(1)),
+                        txt(row.get(2))
+                    )
+                }))
                 .collect();
             let mut r = rendre_sur(lignes, t.elapsed().as_millis() as u64, &nom_base);
             r.texte = format!("[{nom_base}] voisinage de {qn} :\n{}", r.texte);
@@ -1181,7 +1232,9 @@ pub fn executer(
             recherche(db, &nom_base, q, arg(&args, "label"), k, &t)
         }
         "obrain_mondes" => {
-            let cible = arg(&args, "monde").and_then(|d| atlas.trouver(d)).map(|m| m.qn.clone());
+            let cible = arg(&args, "monde")
+                .and_then(|d| atlas.trouver(d))
+                .map(|m| m.qn.clone());
             let mut lignes: Vec<String> = Vec::new();
             // L'ATLAS EST-IL COMPLET ? Sans la base synaptique il n'a ni
             // volumétrie ni fibres, et le rendu disait « NON TISSÉ » pour tout le
@@ -1294,14 +1347,12 @@ pub fn executer(
             let cible: std::path::PathBuf = ancre
                 .map(|m| m.path.clone())
                 .unwrap_or_else(|| std::path::PathBuf::from(&ancrage.store));
-            let etiquette = ancre
-                .map(|m| m.label.clone())
-                .unwrap_or_else(|| {
-                    cible
-                        .file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "le monde ancré".to_string())
-                });
+            let etiquette = ancre.map(|m| m.label.clone()).unwrap_or_else(|| {
+                cible
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "le monde ancré".to_string())
+            });
             let classement = crate::hubs::lire(&cible, crate::viz_serve::store_mtime(&cible));
             match classement {
                 Some(c) if c.refus.is_some() => echec(
@@ -1386,7 +1437,8 @@ pub fn executer(
                 mondes.sort();
                 mondes.dedup();
                 if !mondes.is_empty() {
-                    source = "échantillons de clés des fibres (la base synaptique n'est pas ouverte)";
+                    source =
+                        "échantillons de clés des fibres (la base synaptique n'est pas ouverte)";
                 }
             }
 
@@ -1409,7 +1461,10 @@ pub fn executer(
                         .map(|m| m.label.clone())
                         .unwrap_or_else(|| qn.clone());
                     let ici = depart.as_deref() == Some(qn.as_str());
-                    lignes.push(format!("\n── {nom}{} ──", if ici { " (le monde ancré)" } else { "" }));
+                    lignes.push(format!(
+                        "\n── {nom}{} ──",
+                        if ici { " (le monde ancré)" } else { "" }
+                    ));
                     match db_du_monde(qn) {
                         Some(base) => {
                             // Ce que la clé EST là-bas : le nœud, puis ses voisins.
@@ -1434,7 +1489,11 @@ pub fn executer(
                                 "MATCH (a {{qualified_name: '{cle}'}})-[r]->(b)                                  RETURN type(r), b.qualified_name LIMIT 5"
                             );
                             for row in lire(base.as_ref(), &q_voisins).unwrap_or_default() {
-                                lignes.push(format!("  → {} {}", txt(row.first()), txt(row.get(1))));
+                                lignes.push(format!(
+                                    "  → {} {}",
+                                    txt(row.first()),
+                                    txt(row.get(1))
+                                ));
                             }
                         }
                         // Une base non ouverte n'est pas une absence : on le DIT.
@@ -1481,11 +1540,8 @@ pub fn executer(
             // part, c'est le REFUS qu'on rend — pas « aucune recette trouvée ».
             let mut refus: Option<String> = None;
             for (nom, qn) in &cibles {
-                let base: Option<std::sync::Arc<ObrainDB>> = if qn.is_empty() {
-                    None
-                } else {
-                    db_du_monde(qn)
-                };
+                let base: Option<std::sync::Arc<ObrainDB>> =
+                    if qn.is_empty() { None } else { db_du_monde(qn) };
                 let session_db: &ObrainDB = base.as_deref().unwrap_or(db_ancre);
                 let v = match lire(session_db, requete) {
                     Ok(v) => v,
@@ -1500,7 +1556,12 @@ pub fn executer(
                 let lignes: Vec<String> = v
                     .into_iter()
                     .map(|row| {
-                        format!("[{}] {} — {}", txt(row.first()), txt(row.get(1)), txt(row.get(2)))
+                        format!(
+                            "[{}] {} — {}",
+                            txt(row.first()),
+                            txt(row.get(1)),
+                            txt(row.get(2))
+                        )
                     })
                     .collect();
                 let r = rendre_sur(lignes, t.elapsed().as_millis() as u64, nom);
@@ -1529,7 +1590,11 @@ pub fn executer(
                 return echec("`nom` est requis".into(), t.elapsed().as_millis() as u64);
             };
             // Le nom peut être court (`code.hot`) ou complet (`proc:ref.code.hot`).
-            let complet = if nom.starts_with("proc:") { nom.to_string() } else { format!("proc:ref.{nom}") };
+            let complet = if nom.starts_with("proc:") {
+                nom.to_string()
+            } else {
+                format!("proc:ref.{nom}")
+            };
             let gql = format!(
                 "MATCH (p:Procedure {{qualified_name: '{complet}'}}) \
                  RETURN p.name, p.family, p.params, p.returns, p.body LIMIT 1"
@@ -1585,7 +1650,10 @@ pub fn executer(
                 })
                 .collect();
             match rendre_sur(lignes, t.elapsed().as_millis() as u64, &ou) {
-                r if r.lignes > 0 => Resultat { texte: format!("[{ou}] {}", r.texte), ..r },
+                r if r.lignes > 0 => Resultat {
+                    texte: format!("[{ou}] {}", r.texte),
+                    ..r
+                },
                 r => Resultat {
                     erreur: Some(format!("recette inconnue : {complet}")),
                     texte: format!(
@@ -1597,7 +1665,10 @@ pub fn executer(
                 },
             }
         }
-        autre => echec(format!("outil inconnu : {autre}"), t.elapsed().as_millis() as u64),
+        autre => echec(
+            format!("outil inconnu : {autre}"),
+            t.elapsed().as_millis() as u64,
+        ),
     }
 }
 
@@ -1710,12 +1781,18 @@ fn recherche(
     let lignes: Vec<String> = resultats
         .into_iter()
         .map(|(nid, score)| {
-            let props = session.get_node(nid).map(|n| n.properties).unwrap_or_default();
+            let props = session
+                .get_node(nid)
+                .map(|n| n.properties)
+                .unwrap_or_default();
             let cherche = |cle: &str| {
-                props.iter().find(|(pk, _)| pk.as_str() == cle).and_then(|(_, v)| match v {
-                    OV::String(s) => Some(s.to_string()),
-                    _ => None,
-                })
+                props
+                    .iter()
+                    .find(|(pk, _)| pk.as_str() == cle)
+                    .and_then(|(_, v)| match v {
+                        OV::String(s) => Some(s.to_string()),
+                        _ => None,
+                    })
             };
             let qn = cherche("qualified_name")
                 .or_else(|| cherche("name"))
@@ -1738,7 +1815,11 @@ fn recherche(
             vecteurs.join(", ")
         )
     };
-    let mode = if fusionne { " · fusion RRF k=60" } else { " (scores BM25 bruts)" };
+    let mode = if fusionne {
+        " · fusion RRF k=60"
+    } else {
+        " (scores BM25 bruts)"
+    };
     let mut r = rendre_sur(lignes, t.elapsed().as_millis() as u64, nom_base);
     r.texte = format!(
         "[{nom_base}] recherche « {q} » — BM25 sur {}{mode}{note_vecteurs}\n{}",
@@ -1751,7 +1832,9 @@ fn recherche(
 /// La requête est-elle sûre ? (contrôle exposé pour les tests et le serveur)
 pub fn controle(gql: &str) -> Result<String, String> {
     if let Some(mot) = est_lecture_seule(gql) {
-        return Err(format!("écriture refusée (`{mot}`) : base en lecture seule"));
+        return Err(format!(
+            "écriture refusée (`{mot}`) : base en lecture seule"
+        ));
     }
     Ok(borner(gql))
 }
@@ -1788,7 +1871,10 @@ mod tests {
             format!("MATCH (n) RETURN n LIMIT {LIMITE_IMPOSEE}")
         );
         // Un LIMIT sous le plafond est respecté tel quel.
-        assert_eq!(borner("MATCH (n) RETURN n LIMIT 5"), "MATCH (n) RETURN n LIMIT 5");
+        assert_eq!(
+            borner("MATCH (n) RETURN n LIMIT 5"),
+            "MATCH (n) RETURN n LIMIT 5"
+        );
     }
 
     /// ── LES TROIS TROUS QUE LA SOUS-CHAÎNE LAISSAIT PASSER ────────────────
@@ -1799,7 +1885,9 @@ mod tests {
         // 1. Le mot dans un LITTÉRAL n'est pas un LIMIT.
         assert_eq!(
             borner("MATCH (n:Function) WHERE n.name CONTAINS 'limit' RETURN n"),
-            format!("MATCH (n:Function) WHERE n.name CONTAINS 'limit' RETURN n LIMIT {LIMITE_IMPOSEE}")
+            format!(
+                "MATCH (n:Function) WHERE n.name CONTAINS 'limit' RETURN n LIMIT {LIMITE_IMPOSEE}"
+            )
         );
         // 2. Un LIMIT démesuré du modèle est RAMENÉ au plafond.
         assert_eq!(
@@ -1832,7 +1920,11 @@ mod tests {
             .collect();
         let r = rendre(lignes, 0);
         assert!(r.tronque, "le plafond doit être atteint");
-        assert!(r.texte.contains("COUPÉ"), "la coupe doit être écrite : {}", r.texte);
+        assert!(
+            r.texte.contains("COUPÉ"),
+            "la coupe doit être écrite : {}",
+            r.texte
+        );
         assert!(r.texte.len() <= max_caracteres() + 200);
     }
 
@@ -1852,8 +1944,14 @@ mod tests {
     fn le_label_passe_dans_le_motif_sans_rien_retirer() {
         let q = "MATCH (n) WHERE n.qualified_name STARTS WITH 'home' AND labels(n) CONTAINS 'Class' RETURN n.qualified_name LIMIT 30";
         let r = label_dans_le_motif(q);
-        assert!(r.starts_with("MATCH (n:Class)"), "le motif doit porter le label : {r}");
-        assert!(r.contains("labels(n) CONTAINS 'Class'"), "le prédicat reste (redondant, donc sûr) : {r}");
+        assert!(
+            r.starts_with("MATCH (n:Class)"),
+            "le motif doit porter le label : {r}"
+        );
+        assert!(
+            r.contains("labels(n) CONTAINS 'Class'"),
+            "le prédicat reste (redondant, donc sûr) : {r}"
+        );
         assert!(r.contains("LIMIT 30"), "la borne est intacte");
     }
 
@@ -1872,10 +1970,15 @@ mod tests {
     #[test]
     fn la_traduction_ne_touche_pas_ce_qu_elle_ne_comprend_pas() {
         assert_eq!(
-            label_dans_le_motif("MATCH (n:Function) WHERE labels(n) CONTAINS 'Class' RETURN n LIMIT 5"),
+            label_dans_le_motif(
+                "MATCH (n:Function) WHERE labels(n) CONTAINS 'Class' RETURN n LIMIT 5"
+            ),
             "MATCH (n:Function) WHERE labels(n) CONTAINS 'Class' RETURN n LIMIT 5"
         );
-        assert_eq!(label_dans_le_motif("MATCH (n) RETURN n LIMIT 5"), "MATCH (n) RETURN n LIMIT 5");
+        assert_eq!(
+            label_dans_le_motif("MATCH (n) RETURN n LIMIT 5"),
+            "MATCH (n) RETURN n LIMIT 5"
+        );
         assert_eq!(
             label_dans_le_motif("MATCH (m) WHERE labels(n) CONTAINS 'Class' RETURN m LIMIT 5"),
             "MATCH (m) WHERE labels(n) CONTAINS 'Class' RETURN m LIMIT 5"
@@ -1900,9 +2003,18 @@ mod tests {
         let args: serde_json::Value = serde_json::from_str(&appels[0].arguments).unwrap();
         let q = args.get("query").and_then(|x| x.as_str()).unwrap();
         assert!(q.starts_with("MATCH (n) WHERE"), "requête non vide : {q}");
-        assert!(q.ends_with("LIMIT 30"), "requête complète, sans balise : {q}");
-        assert!(!q.contains("<parameter"), "la balise ne doit pas entrer dans la requête");
-        assert!(!appels[0].id.is_empty(), "un identifiant est exigé pour le résultat d'outil");
+        assert!(
+            q.ends_with("LIMIT 30"),
+            "requête complète, sans balise : {q}"
+        );
+        assert!(
+            !q.contains("<parameter"),
+            "la balise ne doit pas entrer dans la requête"
+        );
+        assert!(
+            !appels[0].id.is_empty(),
+            "un identifiant est exigé pour le résultat d'outil"
+        );
     }
 
     /// DEUX appels dans un même bloc, et une seconde syntaxe (`name=`).
@@ -1917,7 +2029,10 @@ mod tests {
         assert_eq!(appels[0].nom, "obrain_hubs");
         assert_eq!(appels[1].nom, "obrain_echantillon");
         assert_eq!(appels[1].arguments, r#"{"type":"Class"}"#);
-        assert_ne!(appels[0].id, appels[1].id, "deux appels ne partagent pas d'id");
+        assert_ne!(
+            appels[0].id, appels[1].id,
+            "deux appels ne partagent pas d'id"
+        );
     }
 
     /// ── LA FERMETURE MANQUANTE N'ANNULE PAS L'APPEL ────────────────────────
@@ -1932,7 +2047,10 @@ mod tests {
         assert_eq!(appels.len(), 1, "{appels:?}");
         assert_eq!(appels[0].nom, "obrain_query");
         let args: serde_json::Value = serde_json::from_str(&appels[0].arguments).unwrap();
-        assert_eq!(args.get("query").and_then(|x| x.as_str()).unwrap(), "MATCH (n) RETURN n LIMIT 5");
+        assert_eq!(
+            args.get("query").and_then(|x| x.as_str()).unwrap(),
+            "MATCH (n) RETURN n LIMIT 5"
+        );
     }
 
     /// La syntaxe JSON dans le texte (certains services n'émettent que celle-là).

@@ -16,9 +16,7 @@
 use std::process::ExitCode;
 
 use obrain_coffre::cle::ParametresKdf;
-use obrain_coffre::{
-    ClasseTaille, CleEspace, Coffre, Enveloppe, ecrire_enveloppe, lire_enveloppe,
-};
+use obrain_coffre::{ClasseTaille, CleEspace, Coffre, Enveloppe, ecrire_enveloppe, lire_enveloppe};
 
 /// Le plancher : ce que la porte paie, et rien de moins.
 const PARAMS: ParametresKdf = ParametresKdf {
@@ -86,8 +84,7 @@ fn desceller(arguments: &[String]) -> Result<(), String> {
         return Err(USAGE.to_owned());
     };
 
-    let enveloppe =
-        lire_enveloppe(std::path::Path::new(chemin_cle)).map_err(|e| e.to_string())?;
+    let enveloppe = lire_enveloppe(std::path::Path::new(chemin_cle)).map_err(|e| e.to_string())?;
     let kek = enveloppe.deriver_kek(phrase).map_err(|e| e.to_string())?;
     let cle = CleEspace::desceller(&enveloppe, &kek).map_err(|e| e.to_string())?;
     let coffre = Coffre::neuf(&cle).map_err(|e| e.to_string())?;

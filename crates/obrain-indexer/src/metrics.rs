@@ -253,7 +253,10 @@ pub fn complexity_pass(graph: &mut crate::graph::CodeGraph) {
     let nodes = graph.nodes();
     let n = nodes.len();
     let premier = nodes.first().map(|x| x.id.0).unwrap_or(0);
-    let dense = nodes.iter().enumerate().all(|(i, x)| x.id.0 == premier + i as u64);
+    let dense = nodes
+        .iter()
+        .enumerate()
+        .all(|(i, x)| x.id.0 == premier + i as u64);
     if !dense {
         return complexity_pass_generique(graph);
     }
@@ -264,7 +267,12 @@ pub fn complexity_pass(graph: &mut crate::graph::CodeGraph) {
     let mut loop_depth: Vec<Option<u32>> = vec![None; n];
     for (i, x) in nodes.iter().enumerate() {
         if x.kind == NodeKind::Function || x.kind == NodeKind::Method {
-            let ld = x.props.extra.get("loop_depth").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let ld = x
+                .props
+                .extra
+                .get("loop_depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             loop_depth[i] = Some(ld);
         }
     }
@@ -319,7 +327,16 @@ pub fn complexity_pass(graph: &mut crate::graph::CodeGraph) {
         let ld = loop_depth[id].unwrap_or(0);
         let mut best = 0u32;
         for k in degre[id]..degre[id + 1] {
-            let r = dfs(cibles[k as usize] as usize, loop_depth, degre, cibles, state, tld, rec, stack);
+            let r = dfs(
+                cibles[k as usize] as usize,
+                loop_depth,
+                degre,
+                cibles,
+                state,
+                tld,
+                rec,
+                stack,
+            );
             if r > best {
                 best = r;
             }
@@ -334,13 +351,27 @@ pub fn complexity_pass(graph: &mut crate::graph::CodeGraph) {
     let mut stack = Vec::new();
     for id in 0..n {
         if loop_depth[id].is_some() {
-            dfs(id, &loop_depth, &degre, &cibles, &mut state, &mut tld, &mut rec, &mut stack);
+            dfs(
+                id,
+                &loop_depth,
+                &degre,
+                &cibles,
+                &mut state,
+                &mut tld,
+                &mut rec,
+                &mut stack,
+            );
         }
     }
     for (i, x) in graph.nodes_mut().iter_mut().enumerate() {
         if state[i] == 2 {
-            x.props.extra.insert("transitive_loop_depth".into(), serde_json::Value::from(tld[i]));
-            x.props.extra.insert("recursive".into(), serde_json::Value::Bool(rec[i]));
+            x.props.extra.insert(
+                "transitive_loop_depth".into(),
+                serde_json::Value::from(tld[i]),
+            );
+            x.props
+                .extra
+                .insert("recursive".into(), serde_json::Value::Bool(rec[i]));
         }
     }
 }

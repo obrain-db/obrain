@@ -47,7 +47,7 @@ mod engine;
 
 use std::io::Write;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use engine::{Moteur, URL_DEFAUT};
@@ -178,7 +178,9 @@ fn lignes(v: &Value) -> Vec<Vec<String>> {
     let mut out = Vec::new();
     if let Some(rows) = v["rows"].as_array() {
         for r in rows {
-            let Some(cellules) = r.as_array() else { continue };
+            let Some(cellules) = r.as_array() else {
+                continue;
+            };
             let ligne: Vec<String> = cellules
                 .iter()
                 .enumerate()
@@ -308,7 +310,10 @@ fn commande_mondes(moteur: &Moteur, args: &Args) -> Result<()> {
         return rendre_json(&v);
     }
 
-    println!("A. registre du serveur — /api/worlds ({} mondes)", liste_serveur.len());
+    println!(
+        "A. registre du serveur — /api/worlds ({} mondes)",
+        liste_serveur.len()
+    );
     for (label, path, n, e, chaud) in &liste_serveur {
         println!(
             "   {:<28} {:>9} nœuds {:>10} arêtes  {}{}",
@@ -320,14 +325,20 @@ fn commande_mondes(moteur: &Moteur, args: &Args) -> Result<()> {
         );
     }
 
-    println!("\nB. presets configurés — /api/stores ({} bases)", liste_presets.len());
+    println!(
+        "\nB. presets configurés — /api/stores ({} bases)",
+        liste_presets.len()
+    );
     for (label, path) in &liste_presets {
         println!("   {label:<28} {path}");
     }
 
     // Divergences PROUVABLES : comparaison par chemin, pas par ressemblance de
     // libellé — deux libellés qui se ressemblent ne prouvent rien.
-    let chemins_serveur: Vec<&str> = liste_serveur.iter().map(|(_, p, _, _, _)| p.as_str()).collect();
+    let chemins_serveur: Vec<&str> = liste_serveur
+        .iter()
+        .map(|(_, p, _, _, _)| p.as_str())
+        .collect();
     let chemins_presets: Vec<&str> = liste_presets.iter().map(|(_, p)| p.as_str()).collect();
     let hors_presets: Vec<&(String, String, i64, i64, bool)> = liste_serveur
         .iter()
@@ -450,7 +461,11 @@ fn commande_hubs(moteur: &Moteur, args: &Args) -> Result<()> {
         .first()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
-    let sens = args.positionnels.get(1).map(String::as_str).unwrap_or("entrant");
+    let sens = args
+        .positionnels
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or("entrant");
 
     // Le degré se compte **par nœud**, et le chemin accompagne chaque ligne : un
     // hub sans son chemin ne se classe pas.
@@ -658,7 +673,10 @@ fn executer() -> Result<()> {
                     println!("{}", ligne.join("  "));
                 }
                 if let Some(ms) = v["execution_time_ms"].as_f64() {
-                    eprintln!("{:?} ligne(s) en {ms:.1} ms", v["rows"].as_array().map_or(0, Vec::len));
+                    eprintln!(
+                        "{:?} ligne(s) en {ms:.1} ms",
+                        v["rows"].as_array().map_or(0, Vec::len)
+                    );
                 }
             }
         }

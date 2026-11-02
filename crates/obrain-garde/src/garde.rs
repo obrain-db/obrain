@@ -48,7 +48,10 @@ impl Default for Reglages {
     fn default() -> Self {
         // Les valeurs du chat : mesurées, pas choisies par goût (voir le
         // commentaire de `BUDGET_QUESTION_S` dans `obrain-cli/src/engine.rs`).
-        Self { budget: Duration::from_secs(300), max_appels_par_tour: 8 }
+        Self {
+            budget: Duration::from_secs(300),
+            max_appels_par_tour: 8,
+        }
     }
 }
 
@@ -101,7 +104,13 @@ pub struct Garde {
 impl Garde {
     /// Une garde qui ne surveille que le temps et la répétition.
     pub fn nouvelle(reglages: Reglages) -> Self {
-        Self { debut: Instant::now(), reglages, client_parti: None, prose: String::new(), motif: None }
+        Self {
+            debut: Instant::now(),
+            reglages,
+            client_parti: None,
+            prose: String::new(),
+            motif: None,
+        }
     }
 
     /// Une garde qui surveille en plus le départ du client.
@@ -127,7 +136,9 @@ impl Garde {
 
     /// Le client est-il parti ? (`false` quand aucun drapeau n'est surveillé.)
     pub fn client_parti(&self) -> bool {
-        self.client_parti.as_ref().is_some_and(|d| d.load(Ordering::Relaxed))
+        self.client_parti
+            .as_ref()
+            .is_some_and(|d| d.load(Ordering::Relaxed))
     }
 
     /// La prose vue jusqu'ici (raisonnement ET réponse confondus).
@@ -246,7 +257,11 @@ impl Veille {
     /// `true` = on lit la suite. `false` = le client est parti ou le budget
     /// est épuisé : la boucle appelante doit poser le motif (`Garde::tour`).
     pub fn continuer(&self) -> bool {
-        if self.client_parti.as_ref().is_some_and(|d| d.load(Ordering::Relaxed)) {
+        if self
+            .client_parti
+            .as_ref()
+            .is_some_and(|d| d.load(Ordering::Relaxed))
+        {
             return false;
         }
         self.debut.elapsed() < self.budget
@@ -271,14 +286,20 @@ mod tests {
     fn prose_longue(suite: &str) -> String {
         // Un préambule plausible, assez long pour que la détection ait le droit
         // de conclure (voir `repetition::MIN_TEXTE`).
-        "Dans la base obrain, la lecture a porté sur les nœuds du module demandé.\n".repeat(10) + suite
+        "Dans la base obrain, la lecture a porté sur les nœuds du module demandé.\n".repeat(10)
+            + suite
     }
 
     #[test]
     fn une_generation_normale_ne_declenche_rien() {
         let mut g = Garde::nouvelle(Reglages::default());
         assert!(g.tour().is_ok());
-        assert!(g.prose(&prose_longue("Le module contient 1 234 nœuds et 12 communautés.")).is_ok());
+        assert!(
+            g.prose(&prose_longue(
+                "Le module contient 1 234 nœuds et 12 communautés."
+            ))
+            .is_ok()
+        );
         assert!(!g.arrete());
         assert_eq!(g.phrase_arret(), "");
         assert!(g.continuer());
@@ -286,7 +307,10 @@ mod tests {
 
     #[test]
     fn le_budget_s_arrete_et_se_dit() {
-        let reglages = Reglages { budget: Duration::from_millis(1), ..Reglages::default() };
+        let reglages = Reglages {
+            budget: Duration::from_millis(1),
+            ..Reglages::default()
+        };
         let mut g = Garde::nouvelle(reglages);
         std::thread::sleep(Duration::from_millis(4));
         let motif = g.tour().expect_err("le budget dépassé doit arrêter");
@@ -302,7 +326,10 @@ mod tests {
         // Deux tours courts dans un budget total court : c'est la somme qui
         // décide, pas chaque appel. Sans cette règle, dix tours de 30 s
         // passeraient sous un budget de 300 s sans jamais l'atteindre.
-        let reglages = Reglages { budget: Duration::from_millis(30), ..Reglages::default() };
+        let reglages = Reglages {
+            budget: Duration::from_millis(30),
+            ..Reglages::default()
+        };
         let mut g = Garde::nouvelle(reglages);
         let mut tours = 0usize;
         while g.tour().is_ok() {
@@ -329,7 +356,10 @@ mod tests {
     fn la_prose_qui_boucle_est_detectee_et_l_arret_est_pose() {
         let mut g = Garde::nouvelle(Reglages::default());
         let bloc = "D'après le graphe, la fonction tcp_v4_rcv reçoit 11 077 appels entrants. ";
-        assert!(g.prose(&prose_longue(&bloc.repeat(2))).is_ok(), "deux fois n'est pas encore une boucle");
+        assert!(
+            g.prose(&prose_longue(&bloc.repeat(2))).is_ok(),
+            "deux fois n'est pas encore une boucle"
+        );
         let motif = g.prose(bloc).expect_err("la troisième fois doit arrêter");
         assert_eq!(motif.code(), "repetition");
         assert!(matches!(motif, Motif::Repetition(_)));
@@ -342,12 +372,19 @@ mod tests {
     fn le_premier_motif_gagne_et_ne_se_reecrit_pas() {
         // Un budget dépassé APRÈS un client parti ne doit pas raconter l'histoire
         // du budget : le journal doit dire la cause réelle du premier arrêt.
-        let mut g = Garde::nouvelle(Reglages { budget: Duration::from_millis(1), ..Reglages::default() });
+        let mut g = Garde::nouvelle(Reglages {
+            budget: Duration::from_millis(1),
+            ..Reglages::default()
+        });
         let premier = g.arreter(Motif::ClientParti);
         assert_eq!(premier.code(), "client_parti");
         std::thread::sleep(Duration::from_millis(4));
         let suivant = g.arreter(Motif::Budget(1));
-        assert_eq!(suivant.code(), "client_parti", "le premier arrêt ne se réécrit pas");
+        assert_eq!(
+            suivant.code(),
+            "client_parti",
+            "le premier arrêt ne se réécrit pas"
+        );
         assert_eq!(g.motif().map(Motif::code), Some("client_parti"));
     }
 
@@ -356,7 +393,10 @@ mod tests {
         // Le défaut mesuré : `while appels.len() <= i` avec i = 1e9.
         assert!(index_appel_valide(0, 8));
         assert!(index_appel_valide(7, 8));
-        assert!(!index_appel_valide(8, 8), "un index égal au plafond est hors plafond");
+        assert!(
+            !index_appel_valide(8, 8),
+            "un index égal au plafond est hors plafond"
+        );
         assert!(!index_appel_valide(1_000_000_000, 8));
         assert!(!index_appel_valide(usize::MAX, 8));
     }
@@ -378,20 +418,32 @@ mod tests {
 
     #[test]
     fn la_veille_arrete_sur_le_budget_sans_attendre_le_tour_suivant() {
-        let g = Garde::nouvelle(Reglages { budget: Duration::from_millis(1), ..Reglages::default() });
+        let g = Garde::nouvelle(Reglages {
+            budget: Duration::from_millis(1),
+            ..Reglages::default()
+        });
         let v = g.veille();
         std::thread::sleep(Duration::from_millis(4));
-        assert!(!v.continuer(), "le budget épuisé se voit AVANT la lecture suivante");
+        assert!(
+            !v.continuer(),
+            "le budget épuisé se voit AVANT la lecture suivante"
+        );
     }
 
     #[test]
     fn une_nouvelle_page_oublie_la_prose_mais_pas_l_horloge() {
-        let mut g = Garde::nouvelle(Reglages { budget: Duration::from_millis(1), ..Reglages::default() });
+        let mut g = Garde::nouvelle(Reglages {
+            budget: Duration::from_millis(1),
+            ..Reglages::default()
+        });
         assert!(g.prose(&prose_longue("premier tour")).is_ok());
         assert!(!g.prose_vue().is_empty());
         std::thread::sleep(Duration::from_millis(4));
         g.nouvelle_page();
-        assert!(g.prose_vue().is_empty(), "la prose d'un tour ne déborde pas sur le suivant");
+        assert!(
+            g.prose_vue().is_empty(),
+            "la prose d'un tour ne déborde pas sur le suivant"
+        );
         assert!(g.tour().is_err(), "l'horloge, elle, ne repart pas à zéro");
     }
 

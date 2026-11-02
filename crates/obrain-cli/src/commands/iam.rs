@@ -529,11 +529,7 @@ fn executer(cmd: IamCommands, format: OutputFormat) -> Result<()> {
                     &lignes
                 )
             );
-            println!(
-                "{} compte(s) — magasin {}",
-                comptes.len(),
-                path.display()
-            );
+            println!("{} compte(s) — magasin {}", comptes.len(), path.display());
             Ok(())
         }
 
@@ -565,10 +561,7 @@ fn executer(cmd: IamCommands, format: OutputFormat) -> Result<()> {
                     "AUCUN — ce compte ne peut pas se connecter"
                 },
             );
-            champ(
-                "à changer",
-                oui_non(resume.doit_changer_mot_de_passe),
-            );
+            champ("à changer", oui_non(resume.doit_changer_mot_de_passe));
             champ("rôles", liste(&resume.roles));
             champ("espaces", liste(&resume.espaces));
             champ("actions", liste(&resume.actions));
@@ -598,7 +591,10 @@ fn executer(cmd: IamCommands, format: OutputFormat) -> Result<()> {
             );
             println!("  aucun droit d'administration : `admin-ajouter` est un geste distinct");
             println!();
-            secret(&titre_mot_de_passe(&identifiants), &identifiants.mot_de_passe);
+            secret(
+                &titre_mot_de_passe(&identifiants),
+                &identifiants.mot_de_passe,
+            );
             Ok(())
         }
 
@@ -658,7 +654,10 @@ fn executer(cmd: IamCommands, format: OutputFormat) -> Result<()> {
                 identifiants.utilisateur
             );
             println!();
-            secret(&titre_mot_de_passe(&identifiants), &identifiants.mot_de_passe);
+            secret(
+                &titre_mot_de_passe(&identifiants),
+                &identifiants.mot_de_passe,
+            );
             Ok(())
         }
 
@@ -736,9 +735,7 @@ fn executer(cmd: IamCommands, format: OutputFormat) -> Result<()> {
             administration.retirer_admin(&nom, &espace)?;
             confirmation(
                 machine(json, format),
-                &format!(
-                    "administration RETIRÉE à {nom} sur l'espace « {espace} » (iam:admin)"
-                ),
+                &format!("administration RETIRÉE à {nom} sur l'espace « {espace} » (iam:admin)"),
                 serde_json::json!({ "utilisateur": nom, "espace": espace, "admin": false }),
             )
         }
@@ -773,10 +770,7 @@ fn executer(cmd: IamCommands, format: OutputFormat) -> Result<()> {
                 .collect();
             print!(
                 "{}",
-                tableau(
-                    &["ID", "TYPE", "CRÉÉ LE", "EXPIRE LE", "VIVANT"],
-                    &lignes
-                )
+                tableau(&["ID", "TYPE", "CRÉÉ LE", "EXPIRE LE", "VIVANT"], &lignes)
             );
             println!(
                 "{} jeton(s) pour « {nom} » — {} vivant(s) ; leur valeur n'est pas relisible \

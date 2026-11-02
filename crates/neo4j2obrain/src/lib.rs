@@ -54,7 +54,7 @@ pub mod sentence_transformer;
 
 // Réexports de confort : l'appelant type n'a besoin que de ces trois-là
 // (c'est exactement ce que la CLI utilise).
-pub use pipeline::{run, PipelineOptions, DEFAULT_TEXT_KEYS};
+pub use pipeline::{DEFAULT_TEXT_KEYS, PipelineOptions, run};
 
 /// ── (2026-08-19) CE QUE `main()` FAISAIT AUTOUR DES MODULES ──
 ///

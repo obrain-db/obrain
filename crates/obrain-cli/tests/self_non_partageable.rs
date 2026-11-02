@@ -44,7 +44,11 @@ fn obrain() -> Command {
 }
 
 fn port_libre() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// Une requête HTTP brute — le test parle au serveur RÉEL, par le réseau.
@@ -147,7 +151,10 @@ fn lancer_serveur(
 /// rien à séparer : le test ne prouverait rien.
 fn exiger_garde_armee(log: &Path) {
     let texte = std::fs::read_to_string(log).unwrap_or_default();
-    assert!(texte.contains("IAM ARMÉ"), "le serveur de test devait être armé :\n{texte}");
+    assert!(
+        texte.contains("IAM ARMÉ"),
+        "le serveur de test devait être armé :\n{texte}"
+    );
 }
 
 /// Le chemin du journal de mémoire d'un self, DEMANDÉ AU BINAIRE (le nom du
@@ -165,7 +172,9 @@ fn journal_de(cache: &Path, self_qn: &str) -> PathBuf {
     let txt = String::from_utf8_lossy(&out.stdout);
     let d = json(txt.trim());
     PathBuf::from(
-        d["journal"].as_str().unwrap_or_else(|| panic!("journal absent pour {self_qn} : {txt}")),
+        d["journal"]
+            .as_str()
+            .unwrap_or_else(|| panic!("journal absent pour {self_qn} : {txt}")),
     )
 }
 
@@ -182,14 +191,20 @@ fn self_de_l_appelant(addr: &str, jeton: &str) -> String {
     let (st, c) = http(addr, "GET", "/api/engine/resonance", Some(jeton), None);
     assert_eq!(st, 200, "résonance : {c}");
     let v = json(&c);
-    v["moi"].as_str().unwrap_or_else(|| panic!("« moi » absent de la résonance : {c}")).to_string()
+    v["moi"]
+        .as_str()
+        .unwrap_or_else(|| panic!("« moi » absent de la résonance : {c}"))
+        .to_string()
 }
 
 fn connexion(addr: &str, nom: &str, mdp: &str) -> String {
     let corps = serde_json::json!({ "username": nom, "password": mdp }).to_string();
     let (st, c) = http(addr, "POST", "/api/auth/login", None, Some(&corps));
     assert_eq!(st, 200, "connexion de {nom} : {c}");
-    json(&c)["jeton"].as_str().unwrap_or_else(|| panic!("jeton absent : {c}")).to_string()
+    json(&c)["jeton"]
+        .as_str()
+        .unwrap_or_else(|| panic!("jeton absent : {c}"))
+        .to_string()
 }
 
 /// Un magasin d'identités portant UN compte : c'est la forme réelle du défaut
@@ -205,12 +220,12 @@ fn connexion(addr: &str, nom: &str, mdp: &str) -> String {
 /// sur toutes les routes — mesuré en écrivant ce test, et déjà payé une fois par
 /// la porte d'acceptation (`acceptation-self-par-compte.sh`, étape 0).
 fn magasin_iam(chemin: &Path, compte: &str, espace: &str, utilisateur: &str, mdp: &str) {
-    let o = obrain()
-        .arg("init")
-        .arg(chemin)
-        .output()
-        .expect("init IAM");
-    assert!(o.status.success(), "init IAM : {}", String::from_utf8_lossy(&o.stderr));
+    let o = obrain().arg("init").arg(chemin).output().expect("init IAM");
+    assert!(
+        o.status.success(),
+        "init IAM : {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let o = obrain()
         .arg("iam")
         .arg("amorcer")
@@ -234,8 +249,17 @@ fn magasin_iam(chemin: &Path, compte: &str, espace: &str, utilisateur: &str, mdp
 /// Un store servi par le serveur de test (jamais la base d'un compte : c'est ce
 /// qui laisse la passe d'application prendre l'exclusif plus tard).
 fn store_neuf(chemin: &Path) {
-    let o = obrain().arg("init").arg(chemin).output().expect("init store");
-    assert!(o.status.success(), "init {} : {}", chemin.display(), String::from_utf8_lossy(&o.stderr));
+    let o = obrain()
+        .arg("init")
+        .arg(chemin)
+        .output()
+        .expect("init store");
+    assert!(
+        o.status.success(),
+        "init {} : {}",
+        chemin.display(),
+        String::from_utf8_lossy(&o.stderr)
+    );
 }
 
 #[test]
@@ -246,8 +270,14 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
     let cache = td.path().join("cache");
     std::fs::create_dir_all(cache.join("memoire")).unwrap();
 
-    let (iam_a, iam_b) = (td.path().join("iam-a.obrain"), td.path().join("iam-b.obrain"));
-    let (store_a, store_b) = (td.path().join("service-a.obrain"), td.path().join("service-b.obrain"));
+    let (iam_a, iam_b) = (
+        td.path().join("iam-a.obrain"),
+        td.path().join("iam-b.obrain"),
+    );
+    let (store_a, store_b) = (
+        td.path().join("service-a.obrain"),
+        td.path().join("service-b.obrain"),
+    );
     store_neuf(&store_a);
     store_neuf(&store_b);
     let (mdp_a, mdp_b) = ("mdp-compte-a", "mdp-compte-b");
@@ -274,9 +304,18 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
     let self_a = self_de_l_appelant(&addr_a, &jeton_a);
     let self_b = self_de_l_appelant(&addr_b, &jeton_b);
     eprintln!("── SELF RÉSOLU ── compte-a : {self_a} · compte-b : {self_b}");
-    assert_eq!(self_a, "self:alice@compte-a", "le self doit porter l'utilisateur ET son compte");
-    assert_eq!(self_b, "self:alice@compte-b", "le self doit porter l'utilisateur ET son compte");
-    assert_ne!(self_a, self_b, "DEUX COMPTES NE DOIVENT JAMAIS CONVERGER SUR LE MÊME SELF");
+    assert_eq!(
+        self_a, "self:alice@compte-a",
+        "le self doit porter l'utilisateur ET son compte"
+    );
+    assert_eq!(
+        self_b, "self:alice@compte-b",
+        "le self doit porter l'utilisateur ET son compte"
+    );
+    assert_ne!(
+        self_a, self_b,
+        "DEUX COMPTES NE DOIVENT JAMAIS CONVERGER SUR LE MÊME SELF"
+    );
 
     // ── 2. LES JOURNAUX SONT DEUX FICHIERS ─────────────────────────────────
     let journal_a = journal_de(&cache, &self_a);
@@ -288,9 +327,18 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
         journal_b.display(),
         journal_nu.display()
     );
-    assert_ne!(journal_a, journal_b, "deux selfs distincts, donc deux journaux distincts");
-    assert_ne!(journal_a, journal_nu, "le self qualifié ne partage pas le journal du nom nu");
-    assert_ne!(journal_b, journal_nu, "le self qualifié ne partage pas le journal du nom nu");
+    assert_ne!(
+        journal_a, journal_b,
+        "deux selfs distincts, donc deux journaux distincts"
+    );
+    assert_ne!(
+        journal_a, journal_nu,
+        "le self qualifié ne partage pas le journal du nom nu"
+    );
+    assert_ne!(
+        journal_b, journal_nu,
+        "le self qualifié ne partage pas le journal du nom nu"
+    );
     assert!(!journal_a.exists(), "aucune mémoire avant qu'Alice écrive");
 
     // ── 3. LE CHEMIN EN SERVICE : UN NOM NU RESTE UN NOM NU ────────────────
@@ -306,7 +354,10 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
         Some(&serde_json::json!({ "machine": "tour-alice", "capacites": ["write"] }).to_string()),
     );
     assert_eq!(st, 200, "attachement : {c}");
-    let client_b = json(&c)["client_id"].as_str().expect("client_id").to_string();
+    let client_b = json(&c)["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_string();
     let envoi = serde_json::json!({
         "client_id": client_b,
         "intentions": [
@@ -314,7 +365,13 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
         ]
     })
     .to_string();
-    let (st, c) = http(&addr_b, "POST", "/api/remote/memoire", Some(&jeton_b), Some(&envoi));
+    let (st, c) = http(
+        &addr_b,
+        "POST",
+        "/api/remote/memoire",
+        Some(&jeton_b),
+        Some(&envoi),
+    );
     assert_eq!(st, 200, "publication : {c}");
     let r = json(&c);
     assert_eq!(
@@ -323,13 +380,28 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
         "le chemin nu garde EXACTEMENT son comportement d'avant (self:alice) : {c}"
     );
     let journal_publie = PathBuf::from(r["journal"].as_str().expect("journal"));
-    assert_eq!(journal_publie, journal_nu, "le nom nu désigne toujours le même journal qu'avant");
-    assert_eq!(lignes(&journal_nu), 1, "la note est bien dans le journal du nom nu");
-    assert_eq!(lignes(&journal_b), 0, "…et PAS dans celui du self qualifié : deux mémoires séparées");
+    assert_eq!(
+        journal_publie, journal_nu,
+        "le nom nu désigne toujours le même journal qu'avant"
+    );
+    assert_eq!(
+        lignes(&journal_nu),
+        1,
+        "la note est bien dans le journal du nom nu"
+    );
+    assert_eq!(
+        lignes(&journal_b),
+        0,
+        "…et PAS dans celui du self qualifié : deux mémoires séparées"
+    );
 
     // ── 4. STABILITÉ DANS LE TEMPS ─────────────────────────────────────────
     for _ in 0..3 {
-        assert_eq!(self_de_l_appelant(&addr_a, &jeton_a), self_a, "le self ne doit pas bouger");
+        assert_eq!(
+            self_de_l_appelant(&addr_a, &jeton_a),
+            self_a,
+            "le self ne doit pas bouger"
+        );
     }
     // Relance du serveur : même self, même journal. Un nom qui dépendrait d'un
     // état de processus (ou d'une horloge) changerait ici.
@@ -338,11 +410,22 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
     let (_serveur_a2, addr_a2) = lancer_serveur(&store_a, &cache, &iam_a, "compte-a", &log_a2);
     let jeton_a2 = connexion(&addr_a2, "alice", mdp_a);
     let self_a2 = self_de_l_appelant(&addr_a2, &jeton_a2);
-    assert_eq!(self_a2, self_a, "le self est STABLE d'un processus à l'autre");
-    assert_eq!(journal_de(&cache, &self_a2), journal_a, "…et son journal aussi");
+    assert_eq!(
+        self_a2, self_a,
+        "le self est STABLE d'un processus à l'autre"
+    );
+    assert_eq!(
+        journal_de(&cache, &self_a2),
+        journal_a,
+        "…et son journal aussi"
+    );
 
     drop(serveur_b);
-    assert_eq!(lignes(&journal_nu), 1, "rien n'a été ajouté au journal du nom nu entre-temps");
+    assert_eq!(
+        lignes(&journal_nu),
+        1,
+        "rien n'a été ajouté au journal du nom nu entre-temps"
+    );
 
     // ── 5. LE COMPTE HISTORIQUE GARDE SON NOM — LA MÉMOIRE N'EST PAS ORPHELINÉE
     // `obrain` est le compte sous lequel la ligne déployée porte déjà du contenu
@@ -353,7 +436,10 @@ fn deux_comptes_de_meme_utilisateur_ne_partagent_pas_de_memoire() {
     // pas une tolérance cachée : c'est la liste `COMPTES_A_SELF_HISTORIQUE`
     // d'`ancrage.rs`, et elle est faite pour être relue.
     let mdp_h = "mdp-compte-historique";
-    let (iam_h, store_h) = (td.path().join("iam-h.obrain"), td.path().join("service-h.obrain"));
+    let (iam_h, store_h) = (
+        td.path().join("iam-h.obrain"),
+        td.path().join("service-h.obrain"),
+    );
     store_neuf(&store_h);
     magasin_iam(&iam_h, "obrain", "service-h", "alice", mdp_h);
     let log_h = td.path().join("serveur-h.log");

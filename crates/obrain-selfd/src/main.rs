@@ -44,10 +44,10 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use politique::Politique;
-use protocole::{analyser, executer_outil, repondre, Etat};
-use serde_json::{json, Value};
+use protocole::{Etat, analyser, executer_outil, repondre};
+use serde_json::{Value, json};
 
 const AIDE: &str = "\
 selfd — micro-harness d'un nœud : il agit sur la machine, et il le dit
@@ -153,8 +153,13 @@ fn parser(args: &[String]) -> Result<Options> {
     // `--socket` ou `$SELFD_SOCKET` l'ont dit autrement — sans quoi déplacer
     // l'état laisserait la socket ailleurs, et deux nœuds se croiraient seuls.
     let mut state_dir_explicite = false;
-    let mut socket_explicite = std::env::var("SELFD_SOCKET").ok().filter(|s| !s.is_empty()).map(PathBuf::from);
-    let mut socket = socket_explicite.clone().unwrap_or_else(serveur::socket_defaut);
+    let mut socket_explicite = std::env::var("SELFD_SOCKET")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    let mut socket = socket_explicite
+        .clone()
+        .unwrap_or_else(serveur::socket_defaut);
     let mut base = std::env::var("SELFD_BASE").ok().filter(|s| !s.is_empty());
     // Le secret par environnement d'abord : un argument est visible dans `ps`.
     let mut secret = std::env::var("SELFD_TOKEN").ok().filter(|s| !s.is_empty());
@@ -168,8 +173,9 @@ fn parser(args: &[String]) -> Result<Options> {
     let mut llm = chat::llm_par_defaut();
     let mut jeton_sur_socket = false;
     let mut moteur: Option<String> = std::env::var("SELFD_MOTEUR").ok().filter(|s| !s.is_empty());
-    let mut jeton_moteur: Option<String> =
-        std::env::var("SELFD_MOTEUR_TOKEN").ok().filter(|s| !s.is_empty());
+    let mut jeton_moteur: Option<String> = std::env::var("SELFD_MOTEUR_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
     let mut machine: Option<String> = None;
 
     let mut i = 0;
@@ -198,54 +204,71 @@ fn parser(args: &[String]) -> Result<Options> {
             }
             "--moteur" => {
                 i += 1;
-                let Some(u) = args.get(i) else { bail!("--moteur attend une URL") };
+                let Some(u) = args.get(i) else {
+                    bail!("--moteur attend une URL")
+                };
                 moteur = Some(u.clone());
             }
             "--chat-port" => {
                 i += 1;
-                let Some(p) = args.get(i) else { bail!("--chat-port attend un port") };
-                chat_port = Some(
-                    p.parse()
-                        .map_err(|_| anyhow::anyhow!("--chat-port attend un entier (0 = port libre)"))?,
-                );
+                let Some(p) = args.get(i) else {
+                    bail!("--chat-port attend un port")
+                };
+                chat_port = Some(p.parse().map_err(|_| {
+                    anyhow::anyhow!("--chat-port attend un entier (0 = port libre)")
+                })?);
             }
             "--chat-host" => {
                 i += 1;
-                let Some(h) = args.get(i) else { bail!("--chat-host attend une adresse") };
+                let Some(h) = args.get(i) else {
+                    bail!("--chat-host attend une adresse")
+                };
                 chat_host = h.clone();
             }
             "--llm" => {
                 i += 1;
-                let Some(u) = args.get(i) else { bail!("--llm attend une URL") };
+                let Some(u) = args.get(i) else {
+                    bail!("--llm attend une URL")
+                };
                 llm = u.clone();
             }
             "--allow-exec" => politique.exec_autorise = true,
             "--root" => {
                 i += 1;
-                let Some(d) = args.get(i) else { bail!("--root attend un répertoire") };
+                let Some(d) = args.get(i) else {
+                    bail!("--root attend un répertoire")
+                };
                 politique.racine = std::fs::canonicalize(d)
                     .map_err(|e| anyhow::anyhow!("--root inexistant ({d}) : {e}"))?;
             }
             "--socket" => {
                 i += 1;
-                let Some(p) = args.get(i) else { bail!("--socket attend un chemin") };
+                let Some(p) = args.get(i) else {
+                    bail!("--socket attend un chemin")
+                };
                 socket = PathBuf::from(p);
                 socket_explicite = Some(socket.clone());
             }
             "--state-dir" => {
                 i += 1;
-                let Some(p) = args.get(i) else { bail!("--state-dir attend un chemin") };
+                let Some(p) = args.get(i) else {
+                    bail!("--state-dir attend un chemin")
+                };
                 state_dir = PathBuf::from(p);
                 state_dir_explicite = true;
             }
             "--base" => {
                 i += 1;
-                let Some(u) = args.get(i) else { bail!("--base attend une URL") };
+                let Some(u) = args.get(i) else {
+                    bail!("--base attend une URL")
+                };
                 base = Some(u.clone());
             }
             "--token" => {
                 i += 1;
-                let Some(t) = args.get(i) else { bail!("--token attend un secret") };
+                let Some(t) = args.get(i) else {
+                    bail!("--token attend un secret")
+                };
                 eprintln!(
                     "selfd : AVERTISSEMENT — un secret en argument est visible dans `ps`. \
                      Préférer SELFD_TOKEN dans l'environnement."
@@ -268,7 +291,9 @@ fn parser(args: &[String]) -> Result<Options> {
             }
             "--call" => {
                 i += 1;
-                let Some(m) = args.get(i) else { bail!("--call attend une méthode") };
+                let Some(m) = args.get(i) else {
+                    bail!("--call attend une méthode")
+                };
                 let (valeur, avance) = parametres_suivants(args, i + 1)?;
                 i += avance;
                 un_coup = Some((m.clone(), valeur));
@@ -277,7 +302,11 @@ fn parser(args: &[String]) -> Result<Options> {
             a => {
                 if commande.is_none() {
                     commande = Some(a.to_string());
-                } else if commande.as_deref().map(est_commande_de_mode).unwrap_or(false) {
+                } else if commande
+                    .as_deref()
+                    .map(est_commande_de_mode)
+                    .unwrap_or(false)
+                {
                     bail!("argument inattendu : {a}");
                 } else {
                     // En mode CLI, le second positionnel est le JSON des paramètres.
@@ -342,8 +371,7 @@ fn executer(o: Options) -> Result<()> {
             let delai = std::time::Duration::from_millis(o.politique.delai_ms.max(60_000) + 30_000);
             // La CLI présente le jeton de son environnement, s'il y en a un : un
             // opérateur qui l'a exporté n'a pas à le répéter à chaque commande.
-            let resultat =
-                serveur::appeler(&o.socket, &m, &o.params, delai, o.secret.as_deref())?;
+            let resultat = serveur::appeler(&o.socket, &m, &o.params, delai, o.secret.as_deref())?;
             afficher(&m, &resultat, o.json);
             return Ok(());
         }
@@ -368,7 +396,11 @@ fn executer(o: Options) -> Result<()> {
              le lanceur (configuration du harness, accès ssh, permissions du fichier)."
         );
     }
-    let verrou = if mode == "mcp" { None } else { o.secret.as_deref() };
+    let verrou = if mode == "mcp" {
+        None
+    } else {
+        o.secret.as_deref()
+    };
 
     // ── MODE UN-COUP (diagnostic) ───────────────────────────────────────────
     let historique = chat::Historique::nouveau(&o.state_dir);
@@ -393,7 +425,9 @@ fn executer(o: Options) -> Result<()> {
             }
             Err(e) => bail!(
                 "{}",
-                e.get("message").and_then(|m| m.as_str()).unwrap_or("erreur")
+                e.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("erreur")
             ),
         }
     } else if mode == "attache" {
@@ -482,7 +516,10 @@ fn executer(o: Options) -> Result<()> {
         // La surface HTTP tourne À CÔTÉ de la socket : deux publics, deux
         // autorités — permissions de fichier en local, jeton pour le réseau.
         if let Some(port) = o.chat_port {
-            let ecoute = ecoute::Ecoute { host: o.chat_host.clone(), port };
+            let ecoute = ecoute::Ecoute {
+                host: o.chat_host.clone(),
+                port,
+            };
             let surface = ecoute::Surface {
                 politique: o.politique.clone(),
                 identite: id.clone(),
@@ -552,12 +589,18 @@ fn boucle_stdio(etat: &mut Etat, secret: Option<&str>) -> Result<()> {
 /// reste en JSON.
 fn afficher(methode: &str, v: &Value, json_flag: bool) {
     if json_flag || methode != "status" {
-        println!("{}", serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+        );
         return;
     }
     let n = &v["node"];
     println!("nœud      : {}", n["nodeId"].as_str().unwrap_or("?"));
-    println!("machine   : {}", n["hostnameCourant"].as_str().unwrap_or("?"));
+    println!(
+        "machine   : {}",
+        n["hostnameCourant"].as_str().unwrap_or("?")
+    );
     if n["hostnameChange"].as_bool().unwrap_or(false) {
         println!(
             "            (identité créée sous « {} » — machine renommée depuis)",
@@ -580,7 +623,11 @@ fn afficher(methode: &str, v: &Value, json_flag: bool) {
         println!(
             "moteur    : {} {}",
             p["moteur"].as_str().unwrap_or("?"),
-            if joignable { "· joignable" } else { "· INJOIGNABLE" }
+            if joignable {
+                "· joignable"
+            } else {
+                "· INJOIGNABLE"
+            }
         );
         if let Some(ailleurs) = p["moteur_trouve_ailleurs"].as_str() {
             println!("            un moteur répond en {ailleurs} — poser SELFD_MOTEUR={ailleurs}");
@@ -589,7 +636,10 @@ fn afficher(methode: &str, v: &Value, json_flag: bool) {
             println!("place     : {pos}");
         }
     }
-    println!("racine    : {}", v["politique"]["racine"].as_str().unwrap_or("?"));
+    println!(
+        "racine    : {}",
+        v["politique"]["racine"].as_str().unwrap_or("?")
+    );
     println!(
         "exec      : {}",
         if v["capabilities"]["exec"].as_bool().unwrap_or(false) {

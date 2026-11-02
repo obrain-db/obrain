@@ -61,7 +61,9 @@ fn la_chaine_tient_et_la_tete_avance_a_chaque_ecriture() {
     let mut tetes = vec![genese];
     for i in 0..5 {
         let quoi = empreinte_de(format!("calcul-{i}").as_bytes());
-        journal.recevoir(&cle, quoi, 1_700_000_000).expect("écriture");
+        journal
+            .recevoir(&cle, quoi, 1_700_000_000)
+            .expect("écriture");
         tetes.push(journal.tete());
     }
 
@@ -184,7 +186,9 @@ fn tronquer_est_detecte_par_la_tete_souvenue() {
 
     // Et sans tête souvenue, la vérification de chaîne ne dit rien — c'est
     // exactement ce que la doc de la crate annonce.
-    ampute.verifier().expect("la chaîne seule ne voit pas la troncature");
+    ampute
+        .verifier()
+        .expect("la chaîne seule ne voit pas la troncature");
 }
 
 // ---------------------------------------------------------------------------
@@ -259,13 +263,17 @@ fn omettre_un_calcul_est_detecte_par_les_recus_du_client() {
     let mut gardes: Vec<Entree> = Vec::new();
     for i in 0..5u64 {
         let quoi = empreinte_de(format!("calcul-{i}").as_bytes());
-        let recu = journal.recevoir(&cle, quoi, 1_700_000_000 + i).expect("écriture");
+        let recu = journal
+            .recevoir(&cle, quoi, 1_700_000_000 + i)
+            .expect("écriture");
         if i != 2 {
             gardes.push(recu);
         }
     }
 
-    journal.verifier().expect("le journal est cohérent avec lui-même");
+    journal
+        .verifier()
+        .expect("le journal est cohérent avec lui-même");
     assert_eq!(journal.longueur(), 5, "les cinq calculs sont bien inscrits");
     assert_eq!(
         sequences_manquantes(&gardes),
@@ -277,7 +285,9 @@ fn omettre_un_calcul_est_detecte_par_les_recus_du_client() {
     // un manque — deux signalements différents, et l'appelant doit pouvoir les
     // distinguer.
     for recu in &gardes {
-        journal.accorde_avec(recu).expect("les reçus détenus s'accordent");
+        journal
+            .accorde_avec(recu)
+            .expect("les reçus détenus s'accordent");
     }
 }
 

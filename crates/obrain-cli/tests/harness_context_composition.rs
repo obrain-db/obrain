@@ -31,7 +31,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn port_libre() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn post(addr: &str, chemin: &str, body: &str) -> (u16, String) {
@@ -53,8 +57,20 @@ fn post(addr: &str, chemin: &str, body: &str) -> (u16, String) {
 /// compresse par le moteur de jetons et ne franchirait jamais le budget).
 fn corpus(n: usize, graine: &str) -> String {
     let mots = [
-        "relief", "engram", "prefill", "segment", "budget", "session", "objectif",
-        "weave", "coactivation", "signal", "routeur", "injection", "page", "etat",
+        "relief",
+        "engram",
+        "prefill",
+        "segment",
+        "budget",
+        "session",
+        "objectif",
+        "weave",
+        "coactivation",
+        "signal",
+        "routeur",
+        "injection",
+        "page",
+        "etat",
     ];
     (0..n)
         .map(|i| format!("{graine}{} {} ", i, mots[i % mots.len()]))
@@ -71,13 +87,15 @@ fn requete(addr: &str, body: &str) -> serde_json::Value {
 fn la_frontiere_stable_volatile_de_l_injection() {
     let td = tempfile::tempdir().unwrap();
     let store = td.path().join("kb-compo");
-    assert!(Command::new(env!("CARGO_BIN_EXE_obrain"))
-        .arg("init")
-        .arg(&store)
-        .output()
-        .unwrap()
-        .status
-        .success());
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_obrain"))
+            .arg("init")
+            .arg(&store)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
 
     // ── Le monde semE ──────────────────────────────────────────────────────
     // Un goal LONG (le STABLE : il ne depend que de la session) et huit
@@ -105,7 +123,11 @@ fn la_frontiere_stable_volatile_de_l_injection() {
             .arg(q)
             .output()
             .expect("query");
-        assert!(o.status.success(), "seed: {q}\n{}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "seed: {q}\n{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
     }
 
     let port = port_libre();
@@ -140,13 +162,27 @@ fn la_frontiere_stable_volatile_de_l_injection() {
     );
     let (_, corps_a) = (&brut_a.0, &brut_a.1);
     let (_, corps_b) = (&brut_b.0, &brut_b.1);
-    let a = requete(&addr, r#"{"session_id":"session-compo","prompt":"relief routage injection","limit":8}"#);
-    let b = requete(&addr, r#"{"session_id":"session-compo","prompt":"prefill segments quota","limit":8}"#);
+    let a = requete(
+        &addr,
+        r#"{"session_id":"session-compo","prompt":"relief routage injection","limit":8}"#,
+    );
+    let b = requete(
+        &addr,
+        r#"{"session_id":"session-compo","prompt":"prefill segments quota","limit":8}"#,
+    );
 
     // (a) LE STABLE EST LA : le goal et les resumes viennent de la SESSION, pas
     //     du sujet — ils sont donc presents dans les deux tours.
-    assert_eq!(a["goals"].as_array().map(Vec::len), Some(1), "le goal de la session doit remonter : {corps_a}");
-    assert_eq!(b["goals"].as_array().map(Vec::len), Some(1), "le goal doit remonter au tour 2 : {corps_b}");
+    assert_eq!(
+        a["goals"].as_array().map(Vec::len),
+        Some(1),
+        "le goal de la session doit remonter : {corps_a}"
+    );
+    assert_eq!(
+        b["goals"].as_array().map(Vec::len),
+        Some(1),
+        "le goal doit remonter au tour 2 : {corps_b}"
+    );
     assert_eq!(
         a["goals"], b["goals"],
         "le goal est STABLE : il ne depend que de la session, jamais du sujet"
@@ -159,7 +195,10 @@ fn la_frontiere_stable_volatile_de_l_injection() {
         // Le sujet du tour A et celui du tour B peuvent rendre le meme ensemble
         // sur un store pauvre : la propriete testable est alors l'ORDRE des cles,
         // pas la difference de contenu (voir (c)).
-        assert!(b["weave"].is_array(), "weave doit rester un tableau : {corps_b}");
+        assert!(
+            b["weave"].is_array(),
+            "weave doit rester un tableau : {corps_b}"
+        );
     }
 
     // (c) LE PREFIXE DE LA SERIALISATION EST STABLE — la propriete qui rend une
@@ -168,7 +207,9 @@ fn la_frontiere_stable_volatile_de_l_injection() {
     //     precede `weave` est identique octet pour octet entre deux tours dont
     //     seul le sujet change.
     let coupe = |s: &str| -> String {
-        let i = s.find("\"weave\"").unwrap_or_else(|| panic!("pas de champ weave : {s}"));
+        let i = s
+            .find("\"weave\"")
+            .unwrap_or_else(|| panic!("pas de champ weave : {s}"));
         s[..i].to_string()
     };
     assert_eq!(
@@ -178,8 +219,14 @@ fn la_frontiere_stable_volatile_de_l_injection() {
          c'est lui qui peut devenir une page d'etat chainee"
     );
     let (ka, kb) = (coupe(corps_a), coupe(corps_b));
-    assert!(ka.contains("\"goals\""), "goals est dans le prefixe stable : {ka}");
-    assert!(ka.contains("\"summaries\""), "summaries est dans le prefixe stable : {ka}");
+    assert!(
+        ka.contains("\"goals\""),
+        "goals est dans le prefixe stable : {ka}"
+    );
+    assert!(
+        ka.contains("\"summaries\""),
+        "summaries est dans le prefixe stable : {ka}"
+    );
 
     // ── 2. LA COUPE DU BUDGET N'AMPUTE PAS LE STABLE ───────────────────────
     let troncature = a.get("troncature");

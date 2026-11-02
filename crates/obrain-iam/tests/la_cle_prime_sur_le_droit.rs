@@ -115,7 +115,9 @@ fn tous_les_droits_ne_donnent_pas_le_contenu() {
 
     // 4. Et l'engine ne peut pas davantage se donner la clé depuis l'enveloppe :
     //    une phrase devinée produit une KEK qui ne descelle rien.
-    let kek_devinee = enveloppe.deriver_kek("phrase-que-l-engine-ne-connait-pa").unwrap();
+    let kek_devinee = enveloppe
+        .deriver_kek("phrase-que-l-engine-ne-connait-pa")
+        .unwrap();
     assert!(matches!(
         CleEspace::desceller(&enveloppe, &kek_devinee),
         Err(CoffreError::CleMaitresseIncorrecte)
@@ -125,7 +127,10 @@ fn tous_les_droits_ne_donnent_pas_le_contenu() {
     let kek = enveloppe.deriver_kek(PHRASE).unwrap();
     let cle_du_client = CleEspace::desceller(&enveloppe, &kek).unwrap();
     assert_eq!(
-        Coffre::neuf(&cle_du_client).unwrap().desceller(&scelle).unwrap(),
+        Coffre::neuf(&cle_du_client)
+            .unwrap()
+            .desceller(&scelle)
+            .unwrap(),
         GRAPHE
     );
 }

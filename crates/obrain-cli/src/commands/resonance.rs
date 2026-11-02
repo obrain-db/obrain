@@ -33,13 +33,22 @@ pub fn run(
         let retire = crate::resonance::delier(publieur, lecteur)?;
         if !quiet {
             if retire {
-                eprintln!("résonance : lien refermé — « {lecteur} » ne voit plus les facettes de « {publieur} »");
+                eprintln!(
+                    "résonance : lien refermé — « {lecteur} » ne voit plus les facettes de « {publieur} »"
+                );
             } else {
-                eprintln!("résonance : aucun lien à refermer entre « {publieur} » et « {lecteur} »");
+                eprintln!(
+                    "résonance : aucun lien à refermer entre « {publieur} » et « {lecteur} »"
+                );
             }
         }
         output::print_result_table(
-            &["geste".into(), "publieur".into(), "lecteur".into(), "change".into()],
+            &[
+                "geste".into(),
+                "publieur".into(),
+                "lecteur".into(),
+                "change".into(),
+            ],
             &[vec![
                 "delier".into(),
                 publieur.into(),
@@ -55,7 +64,9 @@ pub fn run(
     let pose = crate::resonance::lier(publieur, lecteur)?;
     if !quiet {
         if pose {
-            eprintln!("résonance : lien établi — « {lecteur} » peut lire les facettes publiques de « {publieur} »");
+            eprintln!(
+                "résonance : lien établi — « {lecteur} » peut lire les facettes publiques de « {publieur} »"
+            );
         } else {
             eprintln!("résonance : le lien existait déjà — il n'est ni dupliqué ni redaté");
         }

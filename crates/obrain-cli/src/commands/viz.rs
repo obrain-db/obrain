@@ -361,12 +361,10 @@ pub fn run(cmd: VizCommands, quiet: bool) -> Result<()> {
                         None => (rest, None),
                     };
                     let (label, path) = (label.trim(), path.trim());
-                    (!label.is_empty() && !path.is_empty()).then(|| {
-                        crate::viz_weave::WorldSpec {
-                            label: label.to_string(),
-                            path: std::path::PathBuf::from(path),
-                            root: root.filter(|r| !r.is_empty()),
-                        }
+                    (!label.is_empty() && !path.is_empty()).then(|| crate::viz_weave::WorldSpec {
+                        label: label.to_string(),
+                        path: std::path::PathBuf::from(path),
+                        root: root.filter(|r| !r.is_empty()),
                     })
                 })
                 .collect();

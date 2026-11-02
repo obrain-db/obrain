@@ -59,7 +59,15 @@ const FLOW_SAMPLE: usize = 24;
 
 /// Labels servant d'ancres par défaut : ce qui relie réellement les mondes.
 pub const DEFAULT_ANCHOR_LABELS: &[&str] = &[
-    "Session", "SelfState", "Goal", "Skill", "Procedure", "Note", "Function", "File", "Struct",
+    "Session",
+    "SelfState",
+    "Goal",
+    "Skill",
+    "Procedure",
+    "Note",
+    "Function",
+    "File",
+    "Struct",
     "Module",
 ];
 
@@ -292,7 +300,10 @@ fn as_i64(v: Option<&OV>) -> Option<i64> {
 /// Exécute une requête et renvoie ses lignes (erreur = liste vide, jamais un
 /// crash : un monde sans tel label n'est pas une panne).
 fn rows(db: &ObrainDB, gql: &str) -> Vec<Vec<OV>> {
-    db.session().execute(gql).map(|r| r.rows).unwrap_or_default()
+    db.session()
+        .execute(gql)
+        .map(|r| r.rows)
+        .unwrap_or_default()
 }
 
 /// Lit `count(n)` pour un label donné (0 si absent).
@@ -380,15 +391,13 @@ fn read_qns(db: &ObrainDB, label: &str, limit: usize) -> Vec<String> {
 /// Labels de sortie sûrs pour une requête GQL (garde-fou anti-injection sur
 /// un nom de label qui viendrait d'une donnée).
 fn safe_label(l: &str) -> Option<&str> {
-    (!l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-        .then_some(l)
+    (!l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(l)
 }
 
 /// Idem pour un nom de type de relation (les types réels portent des
 /// underscores : `DEFINES_METHOD`, `HAS_STATE`).
 fn safe_rel(t: &str) -> Option<&str> {
-    (!t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-        .then_some(t)
+    (!t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(t)
 }
 
 /// Lit la signature de flux d'un monde, **par marges fiables** (voir `Flow`) :
@@ -406,7 +415,9 @@ fn read_flows(db: &ObrainDB, rel_types: usize, labels: usize) -> Vec<Flow> {
         ),
     );
     for row in tops {
-        let Some(rel) = as_str(row.first()) else { continue };
+        let Some(rel) = as_str(row.first()) else {
+            continue;
+        };
         if safe_rel(&rel).is_none() {
             continue;
         }
@@ -622,15 +633,8 @@ fn compute(opts: &WeaveOptions) -> Result<Weave> {
                 .flows
                 .iter()
                 .filter_map(|f| {
-                    left.get(&f.key()).map(|na| {
-                        (
-                            f.src.clone(),
-                            f.rel.clone(),
-                            f.dst.clone(),
-                            *na,
-                            f.bound(),
-                        )
-                    })
+                    left.get(&f.key())
+                        .map(|na| (f.src.clone(), f.rel.clone(), f.dst.clone(), *na, f.bound()))
                 })
                 .collect();
             if shared.is_empty() {
@@ -811,21 +815,18 @@ fn persist(out: &Path, payload: &serde_json::Value, self_qn: &str) -> Result<ser
     // (constaté : reinforcement figé à 1 après trois tissages). Une synapse
     // qui ne s'épaissit pas n'est pas durable. `scripts/weave.sh` arrête le
     // service, tisse, puis le relance : le tissage est franc.
-    let db = ObrainDB::open_substrate(out)
-        .with_context(|| {
-            format!(
-                "weave : ouverture RW de {} — si le dashboard tourne, il tient la base \
+    let db = ObrainDB::open_substrate(out).with_context(|| {
+        format!(
+            "weave : ouverture RW de {} — si le dashboard tourne, il tient la base \
                  ouverte en lecture seule : utilisez `scripts/weave.sh` (arrêt, tissage, \
                  relance) ou arrêtez `obrain viz serve`",
-                out.display()
-            )
-        })?;
+            out.display()
+        )
+    })?;
     let now = now_ms();
     let mut written = 0usize;
 
-    let run = |gql: &str| -> bool {
-        db.session().execute(gql).is_ok()
-    };
+    let run = |gql: &str| -> bool { db.session().execute(gql).is_ok() };
 
     // Le Self propriétaire de la base synaptique.
     let _ = run(&format!(
@@ -1095,9 +1096,7 @@ pub fn read_persisted(out: &Path) -> Option<serde_json::Value> {
     // affiche des trous après un simple redémarrage.
     let flow_ties = fibers
         .iter()
-        .filter(|f| {
-            f["weight"].as_i64().unwrap_or(0) == 0 && f["flows"].as_i64().unwrap_or(0) > 0
-        })
+        .filter(|f| f["weight"].as_i64().unwrap_or(0) == 0 && f["flows"].as_i64().unwrap_or(0) > 0)
         .count();
 
     Some(serde_json::json!({

@@ -10,7 +10,11 @@ fn ecrire(racine: &Path, rel: &str, contenu: &str) {
 }
 
 fn depot(racine: &Path) {
-    ecrire(racine, "src/a.c", "int aide(int x) { return x; }\nint appel(void) { return aide(3); }\n");
+    ecrire(
+        racine,
+        "src/a.c",
+        "int aide(int x) { return x; }\nint appel(void) { return aide(3); }\n",
+    );
     ecrire(racine, "src/b.c", "int b(void) { return appel(); }\n");
 }
 
@@ -54,7 +58,14 @@ fn un_commit_change_l_empreinte_meme_a_contenu_egal() {
     depot(d.path());
     let git = |args: &[&str]| {
         std::process::Command::new("git")
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
             .args(args)
             .current_dir(d.path())
             .output()
@@ -67,7 +78,15 @@ fn un_commit_change_l_empreinte_meme_a_contenu_egal() {
     assert!(git(&["add", "."]) && git(&["commit", "-q", "-m", "un"]));
     let apres_un = e(d.path());
     assert!(git(&["commit", "-q", "--allow-empty", "-m", "deux"]));
-    assert_ne!(apres_un, e(d.path()), "nouvelle tête git : la branche et l'historique indexés bougent");
+    assert_ne!(
+        apres_un,
+        e(d.path()),
+        "nouvelle tête git : la branche et l'historique indexés bougent"
+    );
     let r = index_repository(d.path(), &IndexOptions::default());
-    assert_eq!(e(d.path()), r.empreinte_depot, "égalité aussi dans un dépôt git");
+    assert_eq!(
+        e(d.path()),
+        r.empreinte_depot,
+        "égalité aussi dans un dépôt git"
+    );
 }

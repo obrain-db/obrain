@@ -282,10 +282,7 @@ impl Write for FluxTls {
 /// jamais immobiliser un fil parce qu'un pair ne lit plus.
 impl Drop for FluxTls {
     fn drop(&mut self) {
-        let _ = self
-            .flux
-            .sock
-            .set_write_timeout(Some(DELAI_DE_FERMETURE));
+        let _ = self.flux.sock.set_write_timeout(Some(DELAI_DE_FERMETURE));
         self.flux.conn.send_close_notify();
         let _ = self.flux.flush();
     }
@@ -296,7 +293,12 @@ impl core::fmt::Debug for FluxTls {
         f.debug_struct("FluxTls")
             .field("pair", &self.pair_distante())
             .field("protocole", &self.protocole())
-            .field("suite", &self.suite_de_chiffrement().map(|s| format!("{:?}", s.suite())))
+            .field(
+                "suite",
+                &self
+                    .suite_de_chiffrement()
+                    .map(|s| format!("{:?}", s.suite())),
+            )
             .finish()
     }
 }

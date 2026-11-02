@@ -42,10 +42,18 @@ fn port_libre() -> u16 {
 fn get(addr: &str, chemin: &str) -> (u16, String) {
     let mut s = TcpStream::connect(addr).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
-    write!(s, "GET {chemin} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        s,
+        "GET {chemin} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut buf = String::new();
     s.read_to_string(&mut buf).unwrap();
-    let statut: u16 = buf.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let statut: u16 = buf
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
     let corps = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
     (statut, corps)
 }
@@ -99,11 +107,18 @@ impl Serveur {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn viz serve");
-        let s = Serveur { enfant, port, _td: td };
+        let s = Serveur {
+            enfant,
+            port,
+            _td: td,
+        };
         let debut = Instant::now();
         while debut.elapsed() < Duration::from_secs(30) {
             if let Ok(mut c) = TcpStream::connect(format!("127.0.0.1:{}", s.port)) {
-                let _ = write!(c, "GET /api/info HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+                let _ = write!(
+                    c,
+                    "GET /api/info HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n"
+                );
                 let mut b = String::new();
                 if c.read_to_string(&mut b).is_ok() && b.contains("200") {
                     return s;
@@ -123,7 +138,10 @@ impl Serveur {
             q.push_str(&format!("&offset={o}"));
         }
         let (statut, corps) = get(&format!("127.0.0.1:{}", self.port), &q);
-        assert_eq!(statut, 200, "la route doit répondre 200 (offset={offset:?}) : {corps}");
+        assert_eq!(
+            statut, 200,
+            "la route doit répondre 200 (offset={offset:?}) : {corps}"
+        );
         serde_json::from_str(&corps).expect("corps JSON")
     }
 
@@ -170,7 +188,11 @@ fn peupler(store: &Path, n: usize, prefixe: &str) {
         .arg(store)
         .output()
         .expect("init");
-    assert!(init.status.success(), "init : {}", String::from_utf8_lossy(&init.stderr));
+    assert!(
+        init.status.success(),
+        "init : {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
     let motifs: Vec<String> = (0..n)
         .map(|i| format!("(:G {{qualified_name: 'x.{prefixe}{i:04}'}})"))
         .collect();
@@ -181,7 +203,11 @@ fn peupler(store: &Path, n: usize, prefixe: &str) {
         .arg(&q)
         .output()
         .expect("query");
-    assert!(o.status.success(), "peuplement : {}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "peuplement : {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }
 
 fn noms(page: &serde_json::Value) -> Vec<String> {
@@ -208,7 +234,11 @@ fn la_page_suivante_n_est_ni_la_premiere_ni_la_meme() {
     let p2 = srv.space(&store, Some("200"), 1);
     let (n0, n2) = (noms(&p0), noms(&p2));
 
-    assert_eq!(n0.len(), 200, "la première page porte exactement le plafond du serveur");
+    assert_eq!(
+        n0.len(),
+        200,
+        "la première page porte exactement le plafond du serveur"
+    );
     assert_eq!(n2.len(), 50, "la deuxième page porte ce qui reste");
     assert_eq!(p0["offset"].as_u64(), Some(0));
     assert_eq!(p2["offset"].as_u64(), Some(200));
@@ -217,12 +247,19 @@ fn la_page_suivante_n_est_ni_la_premiere_ni_la_meme() {
     // n'entre pas dans la clé de cache, la page 2 est servie par la page 1 — et
     // le défaut ne se voit pas à l'œil nu, puisque la réponse est bien formée.
     let communs: Vec<&String> = n0.iter().filter(|x| n2.contains(x)).collect();
-    assert!(communs.is_empty(), "les deux pages se recouvrent : {communs:?}");
+    assert!(
+        communs.is_empty(),
+        "les deux pages se recouvrent : {communs:?}"
+    );
     let mut toutes = n0.clone();
     toutes.extend(n2.clone());
     toutes.sort();
     toutes.dedup();
-    assert_eq!(toutes.len(), 250, "les deux pages couvrent les 250 groupes, sans doublon");
+    assert_eq!(
+        toutes.len(),
+        250,
+        "les deux pages couvrent les 250 groupes, sans doublon"
+    );
 }
 
 #[test]
@@ -238,16 +275,35 @@ fn les_bornes_du_dernier_element_et_de_l_apres_dernier() {
     srv.chauffer(&store);
 
     let dernier = srv.space(&store, Some("29"), 1);
-    assert_eq!(noms(&dernier).len(), 1, "offset = total − 1 rend le dernier groupe");
+    assert_eq!(
+        noms(&dernier).len(),
+        1,
+        "offset = total − 1 rend le dernier groupe"
+    );
     assert_eq!(dernier["tronque"].as_bool(), Some(false));
 
     let apres = srv.space(&store, Some("30"), 1);
-    assert!(noms(&apres).is_empty(), "offset = total ne rend rien : le niveau est épuisé");
-    assert_eq!(apres["tronque"].as_bool(), Some(false), "une page vide n'est pas pleine");
+    assert!(
+        noms(&apres).is_empty(),
+        "offset = total ne rend rien : le niveau est épuisé"
+    );
+    assert_eq!(
+        apres["tronque"].as_bool(),
+        Some(false),
+        "une page vide n'est pas pleine"
+    );
 
     let premier = srv.space(&store, Some("0"), 1);
-    assert_eq!(noms(&premier).len(), 30, "le store porte 30 groupes, tous sur une page");
-    assert_eq!(premier["tronque"].as_bool(), Some(false), "30 < 200 : le serveur n'a rien coupé");
+    assert_eq!(
+        noms(&premier).len(),
+        30,
+        "le store porte 30 groupes, tous sur une page"
+    );
+    assert_eq!(
+        premier["tronque"].as_bool(),
+        Some(false),
+        "30 < 200 : le serveur n'a rien coupé"
+    );
 }
 
 #[test]
@@ -263,7 +319,11 @@ fn la_page_pleine_s_annonce_tronquee_et_la_derniere_non() {
     // coûterait un second parcours complet pour un compteur.
     let pleine = srv.space(&store, Some("1"), 1);
     assert_eq!(noms(&pleine).len(), 200);
-    assert_eq!(pleine["tronque"].as_bool(), Some(true), "une page pleine s'annonce tronquée");
+    assert_eq!(
+        pleine["tronque"].as_bool(),
+        Some(true),
+        "une page pleine s'annonce tronquée"
+    );
 
     // La dernière page ne l'est pas : au-delà, il n'y a rien.
     let derniere = srv.space(&store, Some("200"), 1);
@@ -295,7 +355,10 @@ fn offset_malforme_ou_hors_bornes_est_borne_et_le_dit() {
     // très profonde ne sert personne et ferait payer un SKIP coûteux.
     let loin = srv.space(&store, Some("999999"), 1);
     assert_eq!(loin["offset"].as_u64(), Some(40_000));
-    assert!(noms(&loin).is_empty(), "au-delà de ce que le store porte, la page est vide");
+    assert!(
+        noms(&loin).is_empty(),
+        "au-delà de ce que le store porte, la page est vide"
+    );
     assert_eq!(loin["tronque"].as_bool(), Some(false));
 }
 
@@ -305,12 +368,24 @@ fn un_store_sans_noeud_rend_une_page_vide_qui_ne_se_dit_pas_tronquee() {
     // les deux ferait proposer « densifier » à l'infini sur un monde vide.
     let td = tempfile::tempdir().unwrap();
     let store = td.path().join("kb-vide");
-    assert!(Command::new(env!("CARGO_BIN_EXE_obrain")).arg("init").arg(&store).output().unwrap().status.success());
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_obrain"))
+            .arg("init")
+            .arg(&store)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     let srv = Serveur::sur(&store);
 
     let p = srv.space(&store, None, 1);
     assert!(noms(&p).is_empty());
-    assert_eq!(p["tronque"].as_bool(), Some(false), "vide n'est pas « il y a une suite »");
+    assert_eq!(
+        p["tronque"].as_bool(),
+        Some(false),
+        "vide n'est pas « il y a une suite »"
+    );
     assert_eq!(p["offset"].as_u64(), Some(0));
 }
 
@@ -345,6 +420,11 @@ fn offset_absent_rend_la_premiere_page() {
     // SANS chauffe : c'est exactement l'appel que fait la navigation en arrivant.
     let p = srv.space(&store, None, 1);
     let n = noms(&p);
-    assert_eq!(n.len(), 200, "la première page doit être pleine, pas vide (offset={})", p["offset"]);
+    assert_eq!(
+        n.len(),
+        200,
+        "la première page doit être pleine, pas vide (offset={})",
+        p["offset"]
+    );
     assert_eq!(p["tronque"].as_bool(), Some(true));
 }

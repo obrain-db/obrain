@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// L'identité durable d'un nœud.
 #[derive(Debug, Clone)]
@@ -124,7 +124,10 @@ impl Identite {
         let (node_id, premier_vu, hote_creation) = match node_id {
             Some(id) => (
                 id,
-                valeur.get("premierVuMs").and_then(|v| v.as_i64()).unwrap_or_else(maintenant_ms),
+                valeur
+                    .get("premierVuMs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_else(maintenant_ms),
                 valeur
                     .get("hostname")
                     .and_then(|v| v.as_str())
@@ -140,9 +143,12 @@ impl Identite {
             }
         };
 
-        let base_effective = base
-            .map(str::to_string)
-            .or_else(|| valeur.get("base").and_then(|v| v.as_str()).map(str::to_string));
+        let base_effective = base.map(str::to_string).or_else(|| {
+            valeur
+                .get("base")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
 
         valeur["schema"] = json!("selfd/node/1");
         valeur["nodeId"] = json!(node_id);

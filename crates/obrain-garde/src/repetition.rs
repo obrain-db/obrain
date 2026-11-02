@@ -42,10 +42,7 @@ impl Repetition {
     pub fn phrase(&self) -> String {
         format!(
             "génération arrêtée : le modèle se répète ({} fois « {}… », motif de {} caractères, règle « {} »)",
-            self.fois,
-            self.extrait,
-            self.motif,
-            self.regle
+            self.fois, self.extrait, self.motif, self.regle
         )
     }
 }
@@ -54,7 +51,7 @@ impl Repetition {
 ///
 /// Chacun se lit comme une raison, pas comme un réglage : c'est ce que les sept
 /// cas de ce module vérifient, bords compris.
-pub const MOTIF_MIN: usize = 40;      // un bloc plus court est trop banal pour conclure
+pub const MOTIF_MIN: usize = 40; // un bloc plus court est trop banal pour conclure
 /// Trois fois le MÊME bloc : ce n'est plus une liste.
 pub const FOIS_MIN: usize = 3;
 /// Une ligne courte se répète souvent légitimement.
@@ -109,7 +106,11 @@ fn bloc_repete(fin: &str) -> Option<Repetition> {
             return Some(Repetition {
                 fois,
                 motif,
-                extrait: reference.chars().take(60).collect::<String>().replace('\n', " "),
+                extrait: reference
+                    .chars()
+                    .take(60)
+                    .collect::<String>()
+                    .replace('\n', " "),
                 regle: "bloc",
             });
         }
@@ -210,13 +211,15 @@ mod tests {
     #[test]
     fn le_raisonnement_boucle_est_detecte_comme_le_texte() {
         // Le même détecteur sert aux deux canaux : c'est là que le défaut est né.
-        let pensee = long_reponse(&"Je dois appeler l'outil pour compter les nœuds du module. ".repeat(4));
+        let pensee =
+            long_reponse(&"Je dois appeler l'outil pour compter les nœuds du module. ".repeat(4));
         assert!(boucle(&pensee).is_some());
     }
 
     #[test]
     fn le_message_dit_la_regle_et_le_motif() {
-        let texte = long_reponse(&"la même phrase encore et encore et encore, mot pour mot. ".repeat(4));
+        let texte =
+            long_reponse(&"la même phrase encore et encore et encore, mot pour mot. ".repeat(4));
         let r = boucle(&texte).unwrap();
         let p = r.phrase();
         assert!(p.contains("génération arrêtée"), "{p}");

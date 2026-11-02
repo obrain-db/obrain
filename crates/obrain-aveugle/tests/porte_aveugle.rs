@@ -87,8 +87,8 @@ fn ce_que_le_porteur_voit_ne_contient_aucun_secret() {
     let cle = cle_espace();
 
     // Un aller : la requête.
-    let en_avant = sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec()))
-        .expect("scellement");
+    let en_avant =
+        sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec())).expect("scellement");
     porteur
         .deposer(a, b, en_avant.clone(), 1_700_000_000)
         .expect("dépôt");
@@ -97,11 +97,7 @@ fn ce_que_le_porteur_voit_ne_contient_aucun_secret() {
     // Un retour : le résultat, et un jeton de capacité.
     let mut charge = Charge::nouvelle(b, a, RESULTAT.as_bytes().to_vec());
     let jeton = Jeton::neuf(&cle).expect("jeton");
-    charge.jeton = Some(
-        jeton
-            .emettre("iam:admin", 2_000_000_000)
-            .expect("émission"),
-    );
+    charge.jeton = Some(jeton.emettre("iam:admin", 2_000_000_000).expect("émission"));
     let en_retour = sceller(&cle, &charge).expect("scellement");
     porteur
         .deposer(b, a, en_retour.clone(), 1_700_000_001)
@@ -154,8 +150,8 @@ fn sans_la_cle_le_porteur_n_obtient_rien() {
     let cle = cle_espace();
     let autre_espace = CleEspace::engendrer("espace-beta").expect("clé");
 
-    let enveloppe = sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec()))
-        .expect("scellement");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec())).expect("scellement");
 
     // Avec la clé d'un autre espace.
     match ouvrir(&autre_espace, &b, &enveloppe) {
@@ -216,7 +212,8 @@ fn un_depot_hors_classe_de_taille_est_refuse() {
 
     // Une taille conforme, elle, passe.
     let cle = cle_espace();
-    let enveloppe = sceller(&cle, &Charge::nouvelle(a, b, b"RETURN 1".to_vec())).expect("scellement");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, b, b"RETURN 1".to_vec())).expect("scellement");
     porteur.deposer(a, b, enveloppe, 1).expect("dépôt conforme");
 }
 
@@ -228,8 +225,8 @@ fn le_meme_message_deux_fois_est_refuse() {
     let (mut porteur, _, a, b) = porteur(8);
     let cle = cle_espace();
 
-    let enveloppe = sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec()))
-        .expect("scellement");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec())).expect("scellement");
     porteur
         .deposer(a, b, enveloppe.clone(), 1)
         .expect("premier dépôt");
@@ -257,7 +254,8 @@ fn une_boite_pleine_refuse_au_lieu_de_grandir() {
         porteur.deposer(a, b, enveloppe, i).expect("dépôt");
     }
 
-    let enveloppe = sceller(&cle, &Charge::nouvelle(a, b, b"troisieme".to_vec())).expect("scellement");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, b, b"troisieme".to_vec())).expect("scellement");
     match porteur.deposer(a, b, enveloppe, 3) {
         Err(ErreurAveugle::BoitePleine { quota, .. }) => assert_eq!(quota, 2),
         autre => panic!("attendu BoitePleine, obtenu {autre:?}"),
@@ -271,11 +269,8 @@ fn deposer_vers_une_extremite_inconnue_est_refuse() {
     let (_, _, inconnue) = adresses();
     let cle = cle_espace();
 
-    let enveloppe = sceller(
-        &cle,
-        &Charge::nouvelle(a, inconnue, b"RETURN 1".to_vec()),
-    )
-    .expect("scellement");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, inconnue, b"RETURN 1".to_vec())).expect("scellement");
 
     match porteur.deposer(a, inconnue, enveloppe, 1) {
         Err(ErreurAveugle::DestinataireInconnu(_)) => {}
@@ -297,8 +292,8 @@ fn un_detournement_est_detecte_par_le_destinataire() {
     porteur.enregistrer(c);
     let cle = cle_espace();
 
-    let enveloppe = sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec()))
-        .expect("scellement");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec())).expect("scellement");
     porteur.deposer(a, b, enveloppe, 1).expect("dépôt");
 
     // Le porteur détourne : il livre à C ce qui était scellé pour B.
@@ -361,27 +356,29 @@ fn ce_que_le_porteur_a_livre_ne_peut_pas_etre_renie() {
     let cle = cle_espace();
     let publique = CleJournal::depuis_octets([7u8; 32]).publique();
 
-    let enveloppe = sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec()))
-        .expect("scellement");
-    let recu = porteur.deposer(a, b, enveloppe, 1_700_000_000).expect("dépôt");
+    let enveloppe =
+        sceller(&cle, &Charge::nouvelle(a, b, REQUETE.as_bytes().to_vec())).expect("scellement");
+    let recu = porteur
+        .deposer(a, b, enveloppe, 1_700_000_000)
+        .expect("dépôt");
 
-    porteur.verifier(&publique).expect("registre cohérent et signé");
+    porteur
+        .verifier(&publique)
+        .expect("registre cohérent et signé");
     porteur
         .journal()
         .accorde_avec(&recu)
         .expect("le reçu de l'extrémité s'accorde");
 
     // Le porteur reconstruit son registre : autres destinataires, resigné.
-    let mut reecrit = Porteur::neuf("porteur-alpha", CleJournal::depuis_octets([7u8; 32]), 8)
-        .expect("porteur");
+    let mut reecrit =
+        Porteur::neuf("porteur-alpha", CleJournal::depuis_octets([7u8; 32]), 8).expect("porteur");
     reecrit.enregistrer(a);
     reecrit.enregistrer(b);
     let (_, _, c) = adresses();
     reecrit.enregistrer(c);
     let autre = sceller(&cle, &Charge::nouvelle(a, c, b"RETURN 1".to_vec())).expect("scellement");
-    reecrit
-        .deposer(a, c, autre, 1_700_000_000)
-        .expect("dépôt");
+    reecrit.deposer(a, c, autre, 1_700_000_000).expect("dépôt");
 
     reecrit
         .verifier(&publique)

@@ -147,7 +147,10 @@ impl CodeGraph {
         if Self::est_type(kind)
             && let Some((_, dernier)) = qualified_name.rsplit_once('.')
         {
-            self.types_par_segment.entry(dernier.to_string()).or_default().push(id);
+            self.types_par_segment
+                .entry(dernier.to_string())
+                .or_default()
+                .push(id);
         }
         self.nodes.push(Node {
             id,
@@ -189,7 +192,11 @@ impl CodeGraph {
     fn est_type(kind: NodeKind) -> bool {
         matches!(
             kind,
-            NodeKind::Struct | NodeKind::Interface | NodeKind::Enum | NodeKind::Type | NodeKind::Class
+            NodeKind::Struct
+                | NodeKind::Interface
+                | NodeKind::Enum
+                | NodeKind::Type
+                | NodeKind::Class
         )
     }
 

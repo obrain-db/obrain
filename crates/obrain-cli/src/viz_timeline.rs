@@ -15,7 +15,7 @@ use std::net::TcpStream;
 use anyhow::Result;
 use obrain_common::types::Value as OV;
 
-use crate::viz_serve::{cached_ro, parse_query, respond, ServeConfig, VIZ_JSON};
+use crate::viz_serve::{ServeConfig, VIZ_JSON, cached_ro, parse_query, respond};
 
 /// `GET /api/viz/timeline?session=…&store=…` — le fil d'une session, trié.
 pub(crate) fn api_viz_timeline(

@@ -42,7 +42,11 @@ fn obrain() -> Command {
 }
 
 fn port_libre() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// Une requête HTTP brute — le test parle au serveur RÉEL, par le réseau.
@@ -105,7 +109,11 @@ fn journal_de(cache: &Path, self_qn: &str) -> PathBuf {
         .expect("memoire --self");
     let txt = String::from_utf8_lossy(&out.stdout);
     let d = json(txt.trim());
-    PathBuf::from(d["journal"].as_str().unwrap_or_else(|| panic!("journal absent : {txt}")))
+    PathBuf::from(
+        d["journal"]
+            .as_str()
+            .unwrap_or_else(|| panic!("journal absent : {txt}")),
+    )
 }
 
 fn lignes(chemin: &Path) -> usize {
@@ -129,14 +137,19 @@ fn compte(base: &Path, cache: &Path, gql: &str) -> usize {
     let txt = String::from_utf8_lossy(&out.stdout);
     let err = String::from_utf8_lossy(&out.stderr);
     // Le stdout peut porter des avertissements avant le JSON.
-    let debut = txt
-        .find(['[', '{'])
-        .unwrap_or_else(|| panic!("aucun JSON dans « {txt} » (statut {:?}, stderr : {err})", out.status));
+    let debut = txt.find(['[', '{']).unwrap_or_else(|| {
+        panic!(
+            "aucun JSON dans « {txt} » (statut {:?}, stderr : {err})",
+            out.status
+        )
+    });
     let v = json(&txt[debut..]);
     match &v {
-        serde_json::Value::Object(o) => {
-            o.get("rows").and_then(|r| r.as_array()).map(Vec::len).unwrap_or(0)
-        }
+        serde_json::Value::Object(o) => o
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
         serde_json::Value::Array(a) => a.len(),
         _ => 0,
     }
@@ -183,25 +196,27 @@ fn empreinte(base: &Path) -> Vec<String> {
 ///
 /// `iam: None` = serveur SANS identité (le cas de l'occupant unique), pour
 /// vérifier qu'il refuse d'écrire plutôt que de deviner.
-fn lancer_serveur(
-    store: &Path,
-    cache: &Path,
-    iam: Option<&Path>,
-    log: &Path,
-) -> (Serveur, String) {
+fn lancer_serveur(store: &Path, cache: &Path, iam: Option<&Path>, log: &Path) -> (Serveur, String) {
     let port = port_libre();
     let addr = format!("127.0.0.1:{port}");
     let mut c = Command::new(env!("CARGO_BIN_EXE_obrain"));
-    c.arg("viz").arg("serve")
-        .arg("--store").arg(store)
-        .arg("--enrich-ricci").arg("0")
-        .arg("--host").arg("127.0.0.1")
-        .arg("--port").arg(port.to_string())
+    c.arg("viz")
+        .arg("serve")
+        .arg("--store")
+        .arg(store)
+        .arg("--enrich-ricci")
+        .arg("0")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
         .env("OBRAIN_VIZ_CACHE_DIR", cache)
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(log).expect("log du serveur"));
     if let Some(i) = iam {
-        c.env("OBRAIN_IAM", "1").env("OBRAIN_IAM_STORE", i).env("OBRAIN_IAM_ACCOUNT", "obrain");
+        c.env("OBRAIN_IAM", "1")
+            .env("OBRAIN_IAM_STORE", i)
+            .env("OBRAIN_IAM_ACCOUNT", "obrain");
     } else {
         // ── « SANS GARDE » DOIT VOULOIR DIRE SANS GARDE ────────────────────
         // Le cas `iam: None` veut un serveur NU, pour éprouver qu'il refuse
@@ -238,10 +253,17 @@ fn lancer_serveur(
 /// rien de l'isolation.
 fn exiger_garde_armee(log: &Path) {
     let texte = std::fs::read_to_string(log).unwrap_or_default();
-    assert!(texte.contains("IAM ARMÉ"), "le serveur de test devait être armé :\n{texte}");
+    assert!(
+        texte.contains("IAM ARMÉ"),
+        "le serveur de test devait être armé :\n{texte}"
+    );
     eprintln!(
         "── GARDE DU SERVEUR DE TEST ──\n{}",
-        texte.lines().filter(|l| l.contains("viz serve :")).collect::<Vec<_>>().join("\n")
+        texte
+            .lines()
+            .filter(|l| l.contains("viz serve :"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -260,7 +282,12 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
 
     for b in [&iam, &store_service, &base_a, &base_b] {
         let o = obrain().arg("init").arg(b).output().expect("init");
-        assert!(o.status.success(), "init {} : {}", b.display(), String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "init {} : {}",
+            b.display(),
+            String::from_utf8_lossy(&o.stderr)
+        );
     }
 
     // ── 1. DEUX COMPTES RÉELS, DEUX JETONS ─────────────────────────────────
@@ -269,30 +296,63 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
     // comme le service déployé.
     let (mdp_a, mdp_b) = ("alice-mdp-de-test", "bob-mdp-de-test");
     let o = obrain()
-        .arg("iam").arg("amorcer").arg(&iam).arg("service")
-        .arg("--utilisateur").arg("alice").arg("--mot-de-passe").arg(mdp_a)
-        .output().expect("iam amorcer");
-    assert!(o.status.success(), "amorçage : {}", String::from_utf8_lossy(&o.stderr));
+        .arg("iam")
+        .arg("amorcer")
+        .arg(&iam)
+        .arg("service")
+        .arg("--utilisateur")
+        .arg("alice")
+        .arg("--mot-de-passe")
+        .arg(mdp_a)
+        .output()
+        .expect("iam amorcer");
+    assert!(
+        o.status.success(),
+        "amorçage : {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let o = obrain()
-        .arg("iam").arg("ajouter").arg(&iam).arg("bob")
-        .arg("--espace").arg("service").arg("--mot-de-passe").arg(mdp_b)
-        .output().expect("iam ajouter");
-    assert!(o.status.success(), "ajout de bob : {}", String::from_utf8_lossy(&o.stderr));
+        .arg("iam")
+        .arg("ajouter")
+        .arg(&iam)
+        .arg("bob")
+        .arg("--espace")
+        .arg("service")
+        .arg("--mot-de-passe")
+        .arg(mdp_b)
+        .output()
+        .expect("iam ajouter");
+    assert!(
+        o.status.success(),
+        "ajout de bob : {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 
     // ── 2. LA BASE DE BOB EXISTE DÉJÀ, ET PORTE DES NŒUDS ──────────────────
     // Une base VIDE ne prouverait rien : « intacte » et « pas encore écrite »
     // seraient indiscernables. On y met donc des nœuds, et on mesure.
     for qn in ["repere-bob-1", "repere-bob-2", "repere-bob-3"] {
         let q = format!("CREATE (:Repere {{qn: '{qn}'}})");
-        let o = obrain().arg("query").arg(&base_b).arg(&q).output().expect("create repere");
-        assert!(o.status.success(), "peuplement de B : {}", String::from_utf8_lossy(&o.stderr));
+        let o = obrain()
+            .arg("query")
+            .arg(&base_b)
+            .arg(&q)
+            .output()
+            .expect("create repere");
+        assert!(
+            o.status.success(),
+            "peuplement de B : {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
     }
     let noeuds_b_avant = compte(&base_b, &cache, "MATCH (n) RETURN n");
     assert_eq!(noeuds_b_avant, 3, "la base de Bob part de trois nœuds");
     // L'empreinte est prise APRÈS la lecture ci-dessus : si une lecture laissait
     // une trace, elle serait déjà dans la référence.
     let empreinte_b_avant = empreinte(&base_b);
-    eprintln!("── BASE DU COMPTE B (avant) : nœuds = {noeuds_b_avant} ; empreinte = {empreinte_b_avant:?}");
+    eprintln!(
+        "── BASE DU COMPTE B (avant) : nœuds = {noeuds_b_avant} ; empreinte = {empreinte_b_avant:?}"
+    );
 
     // ── 3. LE SERVEUR RÉEL, ARMÉ, SUR UN PORT LIBRE ────────────────────────
     let journal_serveur = td.path().join("serveur.log");
@@ -304,24 +364,43 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         let corps = serde_json::json!({ "username": nom, "password": mdp }).to_string();
         let (st, c) = http(&addr, "POST", "/api/auth/login", None, Some(&corps));
         assert_eq!(st, 200, "connexion de {nom} : {c}");
-        json(&c)["jeton"].as_str().unwrap_or_else(|| panic!("jeton absent : {c}")).to_string()
+        json(&c)["jeton"]
+            .as_str()
+            .unwrap_or_else(|| panic!("jeton absent : {c}"))
+            .to_string()
     };
     let jeton_a = connexion("alice", mdp_a);
     let jeton_b = connexion("bob", mdp_b);
 
     let attacher = |jeton: &str, machine: &str| -> String {
-        let corps = serde_json::json!({ "machine": machine, "capacites": ["read", "write"] }).to_string();
-        let (st, c) = http(&addr, "POST", "/api/remote/attacher", Some(jeton), Some(&corps));
+        let corps =
+            serde_json::json!({ "machine": machine, "capacites": ["read", "write"] }).to_string();
+        let (st, c) = http(
+            &addr,
+            "POST",
+            "/api/remote/attacher",
+            Some(jeton),
+            Some(&corps),
+        );
         assert_eq!(st, 200, "attachement de {machine} : {c}");
-        json(&c)["client_id"].as_str().unwrap_or_else(|| panic!("client_id absent : {c}")).to_string()
+        json(&c)["client_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("client_id absent : {c}"))
+            .to_string()
     };
     let client_a = attacher(&jeton_a, "portable-alice");
     let client_b = attacher(&jeton_b, "tour-bob");
 
     let journal_a = journal_de(&cache, "self:alice");
     let journal_b = journal_de(&cache, "self:bob");
-    assert!(!journal_a.exists(), "aucune mémoire d'Alice avant qu'elle publie");
-    assert!(!journal_b.exists(), "aucune mémoire de Bob avant qu'il publie");
+    assert!(
+        !journal_a.exists(),
+        "aucune mémoire d'Alice avant qu'elle publie"
+    );
+    assert!(
+        !journal_b.exists(),
+        "aucune mémoire de Bob avant qu'il publie"
+    );
 
     // ── 5. LE COMPTE A PUBLIE — PAR SA MACHINE, ET PAR ELLE SEULE ──────────
     let envoi = serde_json::json!({
@@ -334,7 +413,13 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         ]
     })
     .to_string();
-    let (st, c) = http(&addr, "POST", "/api/remote/memoire", Some(&jeton_a), Some(&envoi));
+    let (st, c) = http(
+        &addr,
+        "POST",
+        "/api/remote/memoire",
+        Some(&jeton_a),
+        Some(&envoi),
+    );
     assert_eq!(st, 200, "publication d'Alice : {c}");
     let r = json(&c);
     assert_eq!(
@@ -347,14 +432,34 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         Some("self:bob"),
         "le self du corps est signalé IGNORÉ — le taire laisserait croire qu'il a servi : {c}"
     );
-    assert_eq!(r["dans_la_base"], serde_json::json!(false), "le serveur ne peut pas écrire dans une base qu'il tient en lecture");
-    eprintln!("── RÉPONSE DE POST /api/remote/memoire ──\n{}", serde_json::to_string_pretty(&r).unwrap());
+    assert_eq!(
+        r["dans_la_base"],
+        serde_json::json!(false),
+        "le serveur ne peut pas écrire dans une base qu'il tient en lecture"
+    );
+    eprintln!(
+        "── RÉPONSE DE POST /api/remote/memoire ──\n{}",
+        serde_json::to_string_pretty(&r).unwrap()
+    );
     let journal_a = PathBuf::from(r["journal"].as_str().expect("journal rendu par la route"));
     let contenu = std::fs::read_to_string(&journal_a).expect("journal d'Alice");
-    assert_eq!(lignes(&journal_a), 2, "deux intentions journalisées :\n{contenu}");
-    eprintln!("── JOURNAL DE self:alice ({}) ──\n{contenu}", journal_a.display());
-    assert!(contenu.contains("\"self\":\"self:alice\""), "chaque ligne porte le self :\n{contenu}");
-    assert!(contenu.contains("Le disque de la machine d'Alice est à 91 %"), "le texte est intact :\n{contenu}");
+    assert_eq!(
+        lignes(&journal_a),
+        2,
+        "deux intentions journalisées :\n{contenu}"
+    );
+    eprintln!(
+        "── JOURNAL DE self:alice ({}) ──\n{contenu}",
+        journal_a.display()
+    );
+    assert!(
+        contenu.contains("\"self\":\"self:alice\""),
+        "chaque ligne porte le self :\n{contenu}"
+    );
+    assert!(
+        contenu.contains("Le disque de la machine d'Alice est à 91 %"),
+        "le texte est intact :\n{contenu}"
+    );
     assert!(
         contenu.contains("remote:portable-alice:"),
         "la provenance nomme la machine qui a publié (une mémoire sans provenance n'est pas vérifiable) :\n{contenu}"
@@ -363,7 +468,10 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         !contenu.contains("self:bob"),
         "rien de la publication d'Alice ne nomme le self de Bob :\n{contenu}"
     );
-    assert!(!journal_b.exists(), "la publication d'Alice n'a PAS créé de mémoire chez Bob");
+    assert!(
+        !journal_b.exists(),
+        "la publication d'Alice n'a PAS créé de mémoire chez Bob"
+    );
 
     // ── LE MÊME SELF QUE LA VUE MÉMOIRE DU COMPTE ──────────────────────────
     // La route d'ÉCRITURE et celle que l'écran lit (`/api/engine/memoire`)
@@ -380,15 +488,28 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         Some("self:alice"),
         "l'écriture et la lecture doivent nommer LE MÊME self : {c}"
     );
-    assert_eq!(vue["en_attente"].as_i64(), Some(2), "la vue du compte voit les deux intentions : {c}");
+    assert_eq!(
+        vue["en_attente"].as_i64(),
+        Some(2),
+        "la vue du compte voit les deux intentions : {c}"
+    );
 
     // ── 6. CE QUI EST REFUSÉ NE S'ÉCRIT PAS ────────────────────────────────
     // « ANNONCER EST DECIDER » : un refus qui laisserait une ligne derrière lui
     // serait une promesse non tenue, et le journal ne se viderait jamais.
     let refus = |corps: serde_json::Value, jeton: Option<&str>, code: u16, extrait: &str| {
-        let (st, c) = http(&addr, "POST", "/api/remote/memoire", jeton, Some(&corps.to_string()));
+        let (st, c) = http(
+            &addr,
+            "POST",
+            "/api/remote/memoire",
+            jeton,
+            Some(&corps.to_string()),
+        );
         assert_eq!(st, code, "attendu {code} pour {corps} — reçu : {c}");
-        assert!(c.contains(extrait), "le refus doit dire « {extrait} » : {c}");
+        assert!(
+            c.contains(extrait),
+            "le refus doit dire « {extrait} » : {c}"
+        );
     };
     // a) le client d'un AUTRE compte, avec un jeton pourtant valide
     refus(
@@ -442,7 +563,12 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         401,
         "identité",
     );
-    assert_eq!(lignes(&journal_a), 2, "AUCUN refus n'a écrit une ligne :\n{}", std::fs::read_to_string(&journal_a).unwrap());
+    assert_eq!(
+        lignes(&journal_a),
+        2,
+        "AUCUN refus n'a écrit une ligne :\n{}",
+        std::fs::read_to_string(&journal_a).unwrap()
+    );
 
     // ── 7. LE COMPTE B PUBLIE — CHEZ LUI, PAS CHEZ ALICE ──────────────────
     let (st, c) = http(
@@ -450,29 +576,73 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
         "POST",
         "/api/remote/memoire",
         Some(&jeton_b),
-        Some(&serde_json::json!({
-            "client_id": client_b,
-            "intentions": [{ "kind": "note", "texte": "Repère propre à Bob", "sujet": "bob" }]
-        }).to_string()),
+        Some(
+            &serde_json::json!({
+                "client_id": client_b,
+                "intentions": [{ "kind": "note", "texte": "Repère propre à Bob", "sujet": "bob" }]
+            })
+            .to_string(),
+        ),
     );
     assert_eq!(st, 200, "publication de Bob : {c}");
     let r_b = json(&c);
     assert_eq!(r_b["self"].as_str(), Some("self:bob"));
-    assert_eq!(PathBuf::from(r_b["journal"].as_str().unwrap()), journal_b, "le journal de Bob est le sien");
-    assert_eq!(lignes(&journal_a), 2, "la publication de Bob n'ajoute rien chez Alice");
+    assert_eq!(
+        PathBuf::from(r_b["journal"].as_str().unwrap()),
+        journal_b,
+        "le journal de Bob est le sien"
+    );
+    assert_eq!(
+        lignes(&journal_a),
+        2,
+        "la publication de Bob n'ajoute rien chez Alice"
+    );
 
     // ── 8. LA PASSE D'APPLICATION FAIT ATTERRIR, DANS LA BASE DU COMPTE A ──
     // Le serveur ne tient PAS la base d'Alice : la passe peut donc prendre le
     // verrou exclusif sans arrêter de service (c'est tout l'intérêt du journal).
     let o = obrain()
         .env("OBRAIN_VIZ_CACHE_DIR", &cache)
-        .arg("memoire").arg("--store").arg(&base_a)
-        .arg("--self").arg("self:alice").arg("--appliquer")
-        .output().expect("appliquer");
-    assert!(o.status.success(), "application : {}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(compte(&base_a, &cache, "MATCH (s:Self {qn: 'self:alice'}) RETURN s"), 1, "le Self du compte A");
-    assert_eq!(compte(&base_a, &cache, "MATCH (:Self)-[:HAS_NOTE]->(n:Note) RETURN n"), 1, "la note publiée est dans la base");
-    assert_eq!(compte(&base_a, &cache, "MATCH (:Self)-[:HAS_GOAL]->(g:Goal) RETURN g"), 1, "l'objectif publié est dans la base");
+        .arg("memoire")
+        .arg("--store")
+        .arg(&base_a)
+        .arg("--self")
+        .arg("self:alice")
+        .arg("--appliquer")
+        .output()
+        .expect("appliquer");
+    assert!(
+        o.status.success(),
+        "application : {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        compte(
+            &base_a,
+            &cache,
+            "MATCH (s:Self {qn: 'self:alice'}) RETURN s"
+        ),
+        1,
+        "le Self du compte A"
+    );
+    assert_eq!(
+        compte(
+            &base_a,
+            &cache,
+            "MATCH (:Self)-[:HAS_NOTE]->(n:Note) RETURN n"
+        ),
+        1,
+        "la note publiée est dans la base"
+    );
+    assert_eq!(
+        compte(
+            &base_a,
+            &cache,
+            "MATCH (:Self)-[:HAS_GOAL]->(g:Goal) RETURN g"
+        ),
+        1,
+        "l'objectif publié est dans la base"
+    );
     let (st, c) = http(&addr, "GET", "/api/engine/memoire", Some(&jeton_a), None);
     assert_eq!(st, 200, "vue mémoire après application : {c}");
     assert_eq!(
@@ -482,9 +652,13 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
     );
     let texte = obrain()
         .env("OBRAIN_VIZ_CACHE_DIR", &cache)
-        .arg("query").arg(&base_a)
-        .arg("MATCH (n:Note) RETURN n.text").arg("--format").arg("json")
-        .output().expect("query note");
+        .arg("query")
+        .arg(&base_a)
+        .arg("MATCH (n:Note) RETURN n.text")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("query note");
     let txt = String::from_utf8_lossy(&texte.stdout);
     assert!(
         txt.contains("Le disque de la machine d'Alice est à 91 %"),
@@ -509,9 +683,20 @@ fn une_machine_attachee_nourrit_la_base_de_son_compte() {
     //     de publication, pas la sonde).
     let noeuds_b_apres = compte(&base_b, &cache, "MATCH (n) RETURN n");
     eprintln!("── BASE DU COMPTE B (après) : nœuds = {noeuds_b_apres}");
-    assert_eq!(noeuds_b_apres, noeuds_b_avant, "le nombre de nœuds de Bob n'a pas bougé");
-    assert_eq!(compte(&base_b, &cache, "MATCH (n:Note) RETURN n"), 0, "aucune note d'Alice n'est allée chez Bob");
-    assert_eq!(compte(&base_b, &cache, "MATCH (g:Goal) RETURN g"), 0, "ni aucun objectif");
+    assert_eq!(
+        noeuds_b_apres, noeuds_b_avant,
+        "le nombre de nœuds de Bob n'a pas bougé"
+    );
+    assert_eq!(
+        compte(&base_b, &cache, "MATCH (n:Note) RETURN n"),
+        0,
+        "aucune note d'Alice n'est allée chez Bob"
+    );
+    assert_eq!(
+        compte(&base_b, &cache, "MATCH (g:Goal) RETURN g"),
+        0,
+        "ni aucun objectif"
+    );
 }
 
 /// ── SANS IDENTITÉ, LE MOTEUR REFUSE D'ÉCRIRE — IL NE DEVINE PAS ────────────
@@ -528,7 +713,11 @@ fn sans_identite_le_moteur_refuse_de_deviner_le_self() {
     std::fs::create_dir_all(cache.join("memoire")).unwrap();
     let store = td.path().join("service.obrain");
     let o = obrain().arg("init").arg(&store).output().expect("init");
-    assert!(o.status.success(), "init : {}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "init : {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 
     let journal_serveur = td.path().join("serveur.log");
     // `iam: None` — le serveur tourne sans garde, comme un poste de travail.
@@ -543,19 +732,28 @@ fn sans_identite_le_moteur_refuse_de_deviner_le_self() {
         Some(&serde_json::json!({ "machine": "poste-sans-iam" }).to_string()),
     );
     assert_eq!(st, 200, "attachement sans IAM : {c}");
-    let client = json(&c)["client_id"].as_str().expect("client_id").to_string();
+    let client = json(&c)["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_string();
 
     let (st, c) = http(
         &addr,
         "POST",
         "/api/remote/memoire",
         None,
-        Some(&serde_json::json!({
-            "client_id": client,
-            "intentions": [{ "kind": "note", "texte": "chez qui cette note atterrit-elle ?" }]
-        }).to_string()),
+        Some(
+            &serde_json::json!({
+                "client_id": client,
+                "intentions": [{ "kind": "note", "texte": "chez qui cette note atterrit-elle ?" }]
+            })
+            .to_string(),
+        ),
     );
-    assert_eq!(st, 403, "un moteur sans identité ne peut pas placer une écriture : {c}");
+    assert_eq!(
+        st, 403,
+        "un moteur sans identité ne peut pas placer une écriture : {c}"
+    );
     assert!(
         c.contains("IAM non armé") && c.contains("deviner"),
         "le refus doit dire POURQUOI et quoi faire : {c}"

@@ -105,8 +105,8 @@ impl Entree {
     /// [`ErreurJournal::SignatureInvalide`] si la signature ne vaut pas pour
     /// cette entrée et cette clé.
     pub fn verifier_signature(&self, publique: &[u8; 32]) -> Resultat<()> {
-        let cle = VerifyingKey::from_bytes(publique)
-            .map_err(|_| ErreurJournal::SignatureInvalide {
+        let cle =
+            VerifyingKey::from_bytes(publique).map_err(|_| ErreurJournal::SignatureInvalide {
                 sequence: self.sequence,
             })?;
         let signature = Signature::from_bytes(&self.signature);

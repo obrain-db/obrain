@@ -152,10 +152,14 @@ impl Porteur {
         quand: u64,
     ) -> Resultat<Entree> {
         if !taille_conforme(&octets) {
-            return Err(ErreurAveugle::TailleNonConforme { taille: octets.len() });
+            return Err(ErreurAveugle::TailleNonConforme {
+                taille: octets.len(),
+            });
         }
         if !self.connus.contains(&destinataire) {
-            return Err(ErreurAveugle::DestinataireInconnu(format!("{destinataire:?}")));
+            return Err(ErreurAveugle::DestinataireInconnu(format!(
+                "{destinataire:?}"
+            )));
         }
 
         let empreinte = empreinte_de(&octets);
@@ -182,10 +186,7 @@ impl Porteur {
             });
         }
 
-        boite.push_back(EnveloppeTransportee {
-            expediteur,
-            octets,
-        });
+        boite.push_back(EnveloppeTransportee { expediteur, octets });
         self.vues.push(vue);
 
         // La transition est inscrite **après** que la livraison est certaine :
@@ -227,7 +228,9 @@ impl Porteur {
     ///
     /// Celles de [`Journal::verifier_signatures`].
     pub fn verifier(&self, publique: &[u8; 32]) -> Resultat<()> {
-        self.journal.verifier_signatures(publique).map_err(Into::into)
+        self.journal
+            .verifier_signatures(publique)
+            .map_err(Into::into)
     }
 
     /// Le registre lui-même, pour le persister ou le confronter.

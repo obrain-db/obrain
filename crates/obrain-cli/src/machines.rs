@@ -198,7 +198,12 @@ impl Declaration {
         if v.get("kind").and_then(|k| k.as_str()) != Some(Self::GENRE) {
             return None;
         }
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
         let machine = s("machine");
         let instance = s("instance");
         if machine.is_empty() || instance.is_empty() {
@@ -210,7 +215,10 @@ impl Declaration {
         let base = {
             let b = s("base");
             if b.is_empty() {
-                instance.split_once('#').map(|(_, x)| x.to_string()).unwrap_or_default()
+                instance
+                    .split_once('#')
+                    .map(|(_, x)| x.to_string())
+                    .unwrap_or_default()
             } else {
                 b
             }
@@ -227,8 +235,14 @@ impl Declaration {
             mode: s("mode"),
             racine_declaree: s("racine_declaree"),
             ecoute: s("ecoute"),
-            pid: v.get("pid").and_then(serde_json::Value::as_i64).unwrap_or(0),
-            declaree_ms: v.get("declaree_ms").and_then(serde_json::Value::as_i64).unwrap_or(0),
+            pid: v
+                .get("pid")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+            declaree_ms: v
+                .get("declaree_ms")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
             version: s("version"),
             commit: s("commit"),
             arbre: s("arbre"),
@@ -239,7 +253,10 @@ impl Declaration {
 /// Les déclarations d'un flot de lignes, dans l'ordre du journal. Fonction PURE :
 /// c'est le contrat de lecture, éprouvé sans répertoire.
 pub fn declarations_depuis<'a>(lignes: impl IntoIterator<Item = &'a str>) -> Vec<Declaration> {
-    lignes.into_iter().filter_map(Declaration::depuis_ligne).collect()
+    lignes
+        .into_iter()
+        .filter_map(Declaration::depuis_ligne)
+        .collect()
 }
 
 impl FaitMachine {
@@ -256,8 +273,12 @@ impl FaitMachine {
     /// servir plusieurs (deux comptes, deux environnements), et le graphe doit
     /// pouvoir le dire sans en perdre un.
     pub fn stores_servis(&self) -> Vec<String> {
-        let mut v: Vec<String> =
-            self.declarations.iter().map(|d| d.store.clone()).filter(|s| !s.is_empty()).collect();
+        let mut v: Vec<String> = self
+            .declarations
+            .iter()
+            .map(|d| d.store.clone())
+            .filter(|s| !s.is_empty())
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -295,7 +316,9 @@ pub fn lire_declarations(dir: &Path) -> Vec<Declaration> {
             if chemin.extension().and_then(|x| x.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Ok(txt) = std::fs::read_to_string(&chemin) else { continue };
+            let Ok(txt) = std::fs::read_to_string(&chemin) else {
+                continue;
+            };
             for ligne in txt.lines().filter(|l| !l.trim().is_empty()) {
                 if let Some(d) = Declaration::depuis_ligne(ligne) {
                     toutes.push(d);
@@ -309,7 +332,11 @@ pub fn lire_declarations(dir: &Path) -> Vec<Declaration> {
     // une machine dont la déclaration est la plus récente. Le tri par instance
     // puis par instant rend la relecture indépendante de l'ordre des fichiers,
     // donc deux passes successives écrivent le même graphe.
-    toutes.sort_by(|a, b| a.instance.cmp(&b.instance).then(a.declaree_ms.cmp(&b.declaree_ms)));
+    toutes.sort_by(|a, b| {
+        a.instance
+            .cmp(&b.instance)
+            .then(a.declaree_ms.cmp(&b.declaree_ms))
+    });
     let mut par_instance: BTreeMap<String, Declaration> = BTreeMap::new();
     for d in toutes {
         par_instance.insert(d.instance.clone(), d);
@@ -322,15 +349,17 @@ pub fn lire_declarations(dir: &Path) -> Vec<Declaration> {
 pub fn faits_depuis(clients: &[crate::remote::Client]) -> Vec<FaitMachine> {
     let mut par_machine: BTreeMap<String, FaitMachine> = BTreeMap::new();
     for c in clients {
-        let e = par_machine.entry(c.machine.clone()).or_insert_with(|| FaitMachine {
-            machine: c.machine.clone(),
-            comptes: Vec::new(),
-            capacites: c.capacites.clone(),
-            premier_attache_ms: c.attache_ms,
-            derniere_presence_ms: c.derniere_vue_ms,
-            incarnations: 0,
-            declarations: Vec::new(),
-        });
+        let e = par_machine
+            .entry(c.machine.clone())
+            .or_insert_with(|| FaitMachine {
+                machine: c.machine.clone(),
+                comptes: Vec::new(),
+                capacites: c.capacites.clone(),
+                premier_attache_ms: c.attache_ms,
+                derniere_presence_ms: c.derniere_vue_ms,
+                incarnations: 0,
+                declarations: Vec::new(),
+            });
         if !e.comptes.contains(&c.compte) {
             e.comptes.push(c.compte.clone());
         }
@@ -370,26 +399,33 @@ pub fn faits_avec_declarations(
     clients: &[crate::remote::Client],
     declarations: &[Declaration],
 ) -> Vec<FaitMachine> {
-    let mut par_machine: BTreeMap<String, FaitMachine> =
-        faits_depuis(clients).into_iter().map(|f| (f.machine.clone(), f)).collect();
+    let mut par_machine: BTreeMap<String, FaitMachine> = faits_depuis(clients)
+        .into_iter()
+        .map(|f| (f.machine.clone(), f))
+        .collect();
     for d in declarations {
-        let e = par_machine.entry(d.machine.clone()).or_insert_with(|| FaitMachine {
-            machine: d.machine.clone(),
-            comptes: Vec::new(),
-            // AUCUNE capacité : un moteur seul n'en annonce pas. C'est le point
-            // délicat du chantier — « annoncer est décider » — et une liste vide
-            // ici est un fait, pas un trou.
-            capacites: Vec::new(),
-            premier_attache_ms: 0,
-            derniere_presence_ms: 0,
-            incarnations: 0,
-            declarations: Vec::new(),
-        });
+        let e = par_machine
+            .entry(d.machine.clone())
+            .or_insert_with(|| FaitMachine {
+                machine: d.machine.clone(),
+                comptes: Vec::new(),
+                // AUCUNE capacité : un moteur seul n'en annonce pas. C'est le point
+                // délicat du chantier — « annoncer est décider » — et une liste vide
+                // ici est un fait, pas un trou.
+                capacites: Vec::new(),
+                premier_attache_ms: 0,
+                derniere_presence_ms: 0,
+                incarnations: 0,
+                declarations: Vec::new(),
+            });
         e.declarations.push(d.clone());
     }
     for e in par_machine.values_mut() {
-        e.declarations
-            .sort_by(|a, b| a.declaree_ms.cmp(&b.declaree_ms).then(a.instance.cmp(&b.instance)));
+        e.declarations.sort_by(|a, b| {
+            a.declaree_ms
+                .cmp(&b.declaree_ms)
+                .then(a.instance.cmp(&b.instance))
+        });
     }
     par_machine.into_values().collect()
 }
@@ -481,7 +517,10 @@ pub fn appliquer(store: &Path, compte_filtre: Option<&str>) -> Result<Rapport> {
         )
     })?;
     let run = |gql: &str| -> Result<(), String> {
-        db.session().execute(gql).map(|_| ()).map_err(|e| e.to_string())
+        db.session()
+            .execute(gql)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     };
     let applique_ms = crate::activation::now_ms();
     for f in &faits {
@@ -507,7 +546,10 @@ pub fn appliquer(store: &Path, compte_filtre: Option<&str>) -> Result<Rapport> {
         }
         if !f.comptes.is_empty() {
             sets.push(format!("m.premier_attache_ms = {}", f.premier_attache_ms));
-            sets.push(format!("m.derniere_presence_ms = {}", f.derniere_presence_ms));
+            sets.push(format!(
+                "m.derniere_presence_ms = {}",
+                f.derniere_presence_ms
+            ));
             sets.push(format!("m.incarnations = {}", f.incarnations));
         }
         if let Some(d) = f.declaration_recente() {
@@ -520,14 +562,20 @@ pub fn appliquer(store: &Path, compte_filtre: Option<&str>) -> Result<Rapport> {
             // servir plusieurs bases et qu'en perdre une serait perdre une
             // machine de la flotte.
             sets.push(format!("m.store_servi = {}", lit(&d.store)));
-            sets.push(format!("m.stores_servis = {}", lit(&f.stores_servis().join(","))));
+            sets.push(format!(
+                "m.stores_servis = {}",
+                lit(&f.stores_servis().join(","))
+            ));
             sets.push(format!("m.instances_declarees = {}", f.declarations.len()));
             sets.push(format!("m.declaration_ms = {}", d.declaree_ms));
             sets.push(format!("m.instance_recente = {}", lit(&d.instance)));
             sets.push(format!("m.racine_declaree = {}", lit(&d.racine_declaree)));
         }
-        let gql =
-            format!("MERGE (m:Machine {{qn: {}}}) SET {} RETURN m", lit(&qn), sets.join(", "));
+        let gql = format!(
+            "MERGE (m:Machine {{qn: {}}}) SET {} RETURN m",
+            lit(&qn),
+            sets.join(", ")
+        );
         match run(&gql) {
             Ok(()) => rapport.machines += 1,
             Err(e) => rapport.refusees.push((qn, e)),
@@ -592,7 +640,14 @@ mod tests {
     use super::*;
     use crate::remote::Client;
 
-    fn client(id: &str, compte: &str, machine: &str, caps: &[&str], attache: i64, vue: i64) -> Client {
+    fn client(
+        id: &str,
+        compte: &str,
+        machine: &str,
+        caps: &[&str],
+        attache: i64,
+        vue: i64,
+    ) -> Client {
         Client::pour_test(id, compte, machine, caps, attache, vue, true)
     }
 
@@ -607,9 +662,18 @@ mod tests {
         ];
         let f = faits_depuis(&cs);
         assert_eq!(f.len(), 1, "un nom d'hôte, un nœud");
-        assert_eq!(f[0].incarnations, 2, "les deux incarnations restent comptées");
-        assert_eq!(f[0].premier_attache_ms, 100, "la PREMIÈRE attache est le minimum");
-        assert_eq!(f[0].derniere_presence_ms, 400, "la dernière présence est le maximum");
+        assert_eq!(
+            f[0].incarnations, 2,
+            "les deux incarnations restent comptées"
+        );
+        assert_eq!(
+            f[0].premier_attache_ms, 100,
+            "la PREMIÈRE attache est le minimum"
+        );
+        assert_eq!(
+            f[0].derniere_presence_ms, 400,
+            "la dernière présence est le maximum"
+        );
     }
 
     /// ── LA PLUS RÉCENTE FAIT AUTORITÉ POUR LES CAPACITÉS ────────────────────
@@ -663,7 +727,10 @@ mod tests {
         inverses.reverse();
         let noms = |v: &[FaitMachine]| v.iter().map(|f| f.machine.clone()).collect::<Vec<_>>();
         assert_eq!(noms(&faits_depuis(&cs)), noms(&faits_depuis(&inverses)));
-        assert_eq!(noms(&faits_depuis(&cs)), vec!["alpha".to_string(), "zulu".to_string()]);
+        assert_eq!(
+            noms(&faits_depuis(&cs)),
+            vec!["alpha".to_string(), "zulu".to_string()]
+        );
     }
 
     /// Un registre VIDE ne produit aucun fait — et la passe n'ouvrira donc pas la
@@ -743,10 +810,23 @@ mod tests {
             &decls(&[ligne("n2", "kb.obrain", "/data/kb.obrain", 10)]),
         );
         assert_eq!(fs.len(), 1, "un hôte déclaré est une machine");
-        assert!(fs[0].capacites.is_empty(), "aucune capacité annoncée : {:?}", fs[0].capacites);
-        assert!(fs[0].comptes.is_empty(), "et aucun compte : un moteur n'appartient à personne");
-        assert_eq!(fs[0].incarnations, 0, "aucune incarnation : rien ne s'est attaché");
-        assert_eq!(fs[0].premier_attache_ms, 0, "aucun fait d'attache — la passe ne l'écrira pas");
+        assert!(
+            fs[0].capacites.is_empty(),
+            "aucune capacité annoncée : {:?}",
+            fs[0].capacites
+        );
+        assert!(
+            fs[0].comptes.is_empty(),
+            "et aucun compte : un moteur n'appartient à personne"
+        );
+        assert_eq!(
+            fs[0].incarnations, 0,
+            "aucune incarnation : rien ne s'est attaché"
+        );
+        assert_eq!(
+            fs[0].premier_attache_ms, 0,
+            "aucun fait d'attache — la passe ne l'écrira pas"
+        );
         assert_eq!(fs[0].stores_servis(), vec!["/data/kb.obrain".to_string()]);
     }
 
@@ -759,13 +839,31 @@ mod tests {
         let cs = vec![client("cl-1", "alice", "n3", &["read", "exec"], 100, 200)];
         let fs = faits_avec_declarations(
             &cs,
-            &decls(&[ligne("n3", "runtime-dev.obrain", "/data/runtime-dev.obrain", 300)]),
+            &decls(&[ligne(
+                "n3",
+                "runtime-dev.obrain",
+                "/data/runtime-dev.obrain",
+                300,
+            )]),
         );
-        assert_eq!(fs.len(), 1, "deux sources, un seul nœud : l'agrégation reste par nom d'hôte");
-        assert_eq!(fs[0].capacites, vec!["exec".to_string(), "read".to_string()]);
+        assert_eq!(
+            fs.len(),
+            1,
+            "deux sources, un seul nœud : l'agrégation reste par nom d'hôte"
+        );
+        assert_eq!(
+            fs[0].capacites,
+            vec!["exec".to_string(), "read".to_string()]
+        );
         assert_eq!(fs[0].comptes, vec!["alice".to_string()]);
-        assert_eq!(fs[0].derniere_presence_ms, 200, "le fait d'attache reste intact");
-        assert_eq!(fs[0].declaration_recente().unwrap().store, "/data/runtime-dev.obrain");
+        assert_eq!(
+            fs[0].derniere_presence_ms, 200,
+            "le fait d'attache reste intact"
+        );
+        assert_eq!(
+            fs[0].declaration_recente().unwrap().store,
+            "/data/runtime-dev.obrain"
+        );
     }
 
     /// Deux instances d'un MÊME hôte : l'agrégation reste par nom d'hôte (un
@@ -781,7 +879,11 @@ mod tests {
             ]),
         );
         assert_eq!(fs.len(), 1);
-        assert_eq!(fs[0].declarations.len(), 2, "les deux instances sont conservées");
+        assert_eq!(
+            fs[0].declarations.len(),
+            2,
+            "les deux instances sont conservées"
+        );
         assert_eq!(
             fs[0].stores_servis(),
             vec!["/data/a.obrain".to_string(), "/data/b.obrain".to_string()]
@@ -807,8 +909,11 @@ mod tests {
         std::fs::write(td.path().join("b.jsonl"), format!("{autre}\n")).expect("journal");
         // Un `.tmp` n'est PAS un journal (écriture interrompue) : le lire à moitié
         // serait pire que l'ignorer — même règle que le registre.
-        std::fs::write(td.path().join("c.jsonl.tmp"), format!("{}\n", ligne("n9", "x", "/x", 1)))
-            .expect("tmp");
+        std::fs::write(
+            td.path().join("c.jsonl.tmp"),
+            format!("{}\n", ligne("n9", "x", "/x", 1)),
+        )
+        .expect("tmp");
 
         let ds = lire_declarations(td.path());
         assert_eq!(ds.len(), 2, "deux instances, pas trois : {ds:?}");

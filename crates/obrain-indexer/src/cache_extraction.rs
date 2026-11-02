@@ -64,9 +64,12 @@ fn dossier(choisi: Option<&Path>) -> Option<PathBuf> {
     if std::env::var("OBRAIN_INDEX_CACHE").is_ok_and(|v| v == "0") {
         return None;
     }
-    choisi
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::var("OBRAIN_INDEX_CACHE_DIR").ok().filter(|d| !d.is_empty()).map(PathBuf::from))
+    choisi.map(Path::to_path_buf).or_else(|| {
+        std::env::var("OBRAIN_INDEX_CACHE_DIR")
+            .ok()
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 fn fichier_pour(racine: &Path, choisi: Option<&Path>) -> Option<PathBuf> {
@@ -166,7 +169,11 @@ where
         .into_par_iter()
         .map(|(chemin, empreinte, extraction)| {
             bincode::serde::encode_to_vec(
-                EntreeRef { chemin, empreinte, extraction },
+                EntreeRef {
+                    chemin,
+                    empreinte,
+                    extraction,
+                },
                 bincode::config::standard(),
             )
             .unwrap_or_default()
@@ -199,10 +206,7 @@ where
 /// l'historique de co-évolution, qui bougent avec la tête même à contenu égal).
 /// Deux empreintes égales ⇒ le graphe produit serait le même : une
 /// réindexation n'a rien à faire.
-pub(crate) fn combiner(
-    fichiers: &mut [(&str, u128)],
-    git: &crate::git_ctx::GitContext,
-) -> u128 {
+pub(crate) fn combiner(fichiers: &mut [(&str, u128)], git: &crate::git_ctx::GitContext) -> u128 {
     fichiers.sort_unstable_by(|a, b| a.0.cmp(b.0));
     let mut tampon: Vec<u8> = Vec::with_capacity(fichiers.len() * 80 + 256);
     tampon.extend_from_slice(b"obrain-empreinte-depot/1\0");

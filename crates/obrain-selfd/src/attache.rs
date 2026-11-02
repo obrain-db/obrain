@@ -143,8 +143,12 @@ fn rendre_verdict(
 ) -> Result<()> {
     let corps =
         json!({ "client_id": client_id, "appel_id": appel_id, "resultat": resultat }).to_string();
-    obrain_httpmin::post_json(&format!("{}/api/remote/resultat", racine(moteur)), &corps, Some(jeton))
-        .context("dépôt du verdict")?;
+    obrain_httpmin::post_json(
+        &format!("{}/api/remote/resultat", racine(moteur)),
+        &corps,
+        Some(jeton),
+    )
+    .context("dépôt du verdict")?;
     Ok(())
 }
 
@@ -179,14 +183,16 @@ fn verifier_annonce_retenue(moteur: &str, jeton: &str, client_id: &str, etat: &E
         }
     };
     let Ok(v) = r.json() else {
-        eprintln!("[attache] annonce non vérifiable : relecture illisible (HTTP {})", r.status);
+        eprintln!(
+            "[attache] annonce non vérifiable : relecture illisible (HTTP {})",
+            r.status
+        );
         return;
     };
-    let Some(nous) = v
-        .get("clients")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.iter().find(|c| c.get("id").and_then(|i| i.as_str()) == Some(client_id)))
-    else {
+    let Some(nous) = v.get("clients").and_then(|c| c.as_array()).and_then(|a| {
+        a.iter()
+            .find(|c| c.get("id").and_then(|i| i.as_str()) == Some(client_id))
+    }) else {
         eprintln!(
             "[attache] annonce non vérifiable : le moteur ne rend pas « {client_id} » dans la \
              liste de ce compte — il a accepté cette machine sans la garder"
@@ -198,7 +204,12 @@ fn verifier_annonce_retenue(moteur: &str, jeton: &str, client_id: &str, etat: &E
     // connaît pas ce bloc : « il ne dit rien » n'est pas « tout va bien », et on
     // ne l'écrit pas comme si c'était la même chose.
     let Some(annonce) = nous.get("annonce") else {
-        let refus = etat.politique.verdicts_retenus().iter().filter(|v| !v.exercable).count();
+        let refus = etat
+            .politique
+            .verdicts_retenus()
+            .iter()
+            .filter(|v| !v.exercable)
+            .count();
         eprintln!(
             "[attache] ce moteur ne dit pas ce qu'il a gardé de l'annonce : il ne retient \
              peut-être que les capacités, et la moitié « ce que cette machine REFUSE » \
@@ -210,7 +221,12 @@ fn verifier_annonce_retenue(moteur: &str, jeton: &str, client_id: &str, etat: &E
         let manquante = annonce
             .get("manquante")
             .and_then(|m| m.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_else(|| "on ne sait pas quoi".to_string());
         eprintln!(
             "[attache] le moteur a gardé l'annonce INCOMPLÈTE : « {manquante} » n'est pas \
@@ -259,7 +275,9 @@ pub fn boucle(etat: &mut Etat, moteur: &str, jeton: &str, machine: &str) -> Resu
                         // encore : on le dit, et on s'arrête.
                         return Err(e);
                     }
-                    eprintln!("[attache] moteur injoignable ({texte}) — nouvelle tentative dans {repos} ms");
+                    eprintln!(
+                        "[attache] moteur injoignable ({texte}) — nouvelle tentative dans {repos} ms"
+                    );
                     std::thread::sleep(Duration::from_millis(repos));
                     repos = (repos * 2).min(REPOS_MAX_MS);
                     continue;

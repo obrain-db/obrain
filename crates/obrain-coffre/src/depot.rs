@@ -214,7 +214,10 @@ mod tests {
         std::os::unix::fs::symlink(&vraie, &lien).unwrap();
 
         assert!(matches!(lire_enveloppe(&lien), Err(CoffreError::Depot(_))));
-        assert!(lire_enveloppe(&vraie).is_ok(), "le fichier ordinaire, lui, passe");
+        assert!(
+            lire_enveloppe(&vraie).is_ok(),
+            "le fichier ordinaire, lui, passe"
+        );
     }
 
     /// **Un fichier absent est une impossibilité, pas un refus.** La distinction

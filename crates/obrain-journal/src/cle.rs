@@ -78,7 +78,11 @@ impl Drop for CleJournal {
 
 impl core::fmt::Debug for CleJournal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "CleJournal(publique={}, privée=•••)", hex::encode(&self.publique()[..6]))
+        write!(
+            f,
+            "CleJournal(publique={}, privée=•••)",
+            hex::encode(&self.publique()[..6])
+        )
     }
 }
 

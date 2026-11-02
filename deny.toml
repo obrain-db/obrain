@@ -11,6 +11,7 @@ yanked = "warn"
 ignore = [
     # bincode team ceased development; we use v2.0 which is stable and complete
     { id = "RUSTSEC-2025-0141", reason = "bincode 2.0 is stable; no migration needed yet" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile non maintenu, aucune mise à jour sûre (le crate est désormais un fin wrapper de rustls-pki-types). Usage : lecture de PEM dans obrain-tls et neo4rs (neo4j2obrain, outil de migration). À remplacer par rustls-pki-types quand neo4rs le permettra." },
 ]
 
 [licenses]

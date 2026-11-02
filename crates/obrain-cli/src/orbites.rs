@@ -124,7 +124,9 @@ struct Arbre {
 
 impl Arbre {
     fn neuf() -> Self {
-        Self { noeuds: vec![NoeudArene::default()] }
+        Self {
+            noeuds: vec![NoeudArene::default()],
+        }
     }
 
     /// Insere un chemin deja decoupe. Iteratif : pas de pile de recursion a
@@ -138,7 +140,9 @@ impl Arbre {
                 None => {
                     let i = self.noeuds.len();
                     self.noeuds.push(NoeudArene::default());
-                    self.noeuds[courant].enfants.insert(seg.to_string(), i as u32);
+                    self.noeuds[courant]
+                        .enfants
+                        .insert(seg.to_string(), i as u32);
                     i
                 }
             };
@@ -213,8 +217,26 @@ pub fn diverge(groupes: &[(String, u64)]) -> bool {
 /// l'arbre Linux, leur presence au rang 2 fige `rang_racine = 2`, exactement
 /// comme avant.
 const RACINES_CONNUES: &[&str] = &[
-    "drivers", "net", "kernel", "mm", "fs", "arch", "include", "init", "lib", "block", "ipc",
-    "security", "crypto", "sound", "tools", "samples", "rust", "virt", "usr", "Documentation",
+    "drivers",
+    "net",
+    "kernel",
+    "mm",
+    "fs",
+    "arch",
+    "include",
+    "init",
+    "lib",
+    "block",
+    "ipc",
+    "security",
+    "crypto",
+    "sound",
+    "tools",
+    "samples",
+    "rust",
+    "virt",
+    "usr",
+    "Documentation",
 ];
 
 /// Trie un groupement comme le faisait le moteur : effectif decroissant. A
@@ -235,7 +257,10 @@ pub struct Deriveur {
 
 impl Deriveur {
     pub fn neuf() -> Self {
-        Self { arbre: Arbre::neuf(), noeuds: 0 }
+        Self {
+            arbre: Arbre::neuf(),
+            noeuds: 0,
+        }
     }
 
     /// Absorbe un `qualified_name`. Le decoupage est borne : au-dela de
@@ -253,7 +278,10 @@ impl Deriveur {
     /// `top` — la meme forme que rendait `split(qn,'.')[rang] / count(n)`.
     pub fn groupes_au_rang(&self, rang: usize, top: usize) -> Vec<(String, u64)> {
         let par_rang = self.arbre.collecter(0, RANG_MAX + 1);
-        par_rang.get(rang).map(|m| trier(m, top)).unwrap_or_default()
+        par_rang
+            .get(rang)
+            .map(|m| trier(m, top))
+            .unwrap_or_default()
     }
 
     /// Tous les rangs d'un coup — c'est l'interet de la passe unique.
@@ -372,9 +400,14 @@ impl Deriveur {
                 t3.elapsed().as_millis()
             );
         }
-        Orbites { rang_racine, noeuds: self.noeuds, orbites, branches, groupes: rangs }
+        Orbites {
+            rang_racine,
+            noeuds: self.noeuds,
+            orbites,
+            branches,
+            groupes: rangs,
+        }
     }
-
 }
 
 /// La passe unique : une projection brute, aucun agregat.
@@ -514,8 +547,26 @@ mod parite {
     use obrain_common::types::Value as OV;
 
     const RACINES_LINUX: &[&str] = &[
-        "drivers", "net", "kernel", "mm", "fs", "arch", "include", "init", "lib", "block", "ipc",
-        "security", "crypto", "sound", "tools", "samples", "rust", "virt", "usr", "Documentation",
+        "drivers",
+        "net",
+        "kernel",
+        "mm",
+        "fs",
+        "arch",
+        "include",
+        "init",
+        "lib",
+        "block",
+        "ipc",
+        "security",
+        "crypto",
+        "sound",
+        "tools",
+        "samples",
+        "rust",
+        "virt",
+        "usr",
+        "Documentation",
     ];
 
     /// L'ANCIEN CHEMIN, recopie depuis `api_viz_modules` avant ce chantier :
@@ -549,7 +600,9 @@ mod parite {
                 .unwrap_or_default()
         };
         let known = |g: &[(String, u64)]| {
-            g.iter().filter(|(m, _)| RACINES_LINUX.contains(&m.as_str())).count()
+            g.iter()
+                .filter(|(m, _)| RACINES_LINUX.contains(&m.as_str()))
+                .count()
         };
         let mut rank_eff = 2usize;
         let mut groups = group_at(2, &mut parcours);
@@ -592,8 +645,11 @@ mod parite {
         let d = deriver(&sess).expect("derivation");
         let s = d.structure(top);
         let ms_neuf = t1.elapsed().as_millis();
-        let groupes_neuf: Vec<(String, u64)> =
-            s.groupes_au_rang(s.rang_racine).into_iter().take(top).collect();
+        let groupes_neuf: Vec<(String, u64)> = s
+            .groupes_au_rang(s.rang_racine)
+            .into_iter()
+            .take(top)
+            .collect();
 
         eprintln!(
             "parite : ancien {ms_ancien} ms ({parcours} parcours) / neuf {ms_neuf} ms (1 parcours)"
@@ -616,7 +672,11 @@ mod parite {
         };
         let a = tri(groupes_ancien.clone());
         let b = tri(groupes_neuf.clone());
-        assert_eq!(a.len(), b.len(), "nombre d'ensembles different\nancien={a:?}\nneuf={b:?}");
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "nombre d'ensembles different\nancien={a:?}\nneuf={b:?}"
+        );
         assert_eq!(a, b, "les effectifs par ensemble different");
 
         // 3. L'ORDRE des effectifs decroissants doit tenir de part et d'autre.

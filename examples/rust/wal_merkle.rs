@@ -29,7 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for item in wal.iter_from(0) {
         let (rec, _off, _len) = item?;
-        if rec.lsn > last_lsn { last_lsn = rec.lsn; }
+        if rec.lsn > last_lsn {
+            last_lsn = rec.lsn;
+        }
         count += 1;
         let bytes = rec.encode()?;
         let mut hasher = Sha256::new();

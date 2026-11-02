@@ -70,7 +70,8 @@ impl Bac {
     fn neuf(nom: &str) -> Self {
         static COMPTEUR: AtomicU64 = AtomicU64::new(0);
         let n = COMPTEUR.fetch_add(1, Ordering::Relaxed);
-        let base = std::env::temp_dir().join(format!("selfd-annonce-{}-{nom}-{n}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("selfd-annonce-{}-{nom}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("racine")).expect("création de la racine du bac");
         std::fs::create_dir_all(base.join("etat")).expect("création de l'état du bac");
@@ -191,7 +192,9 @@ fn lancer_jusqua(mut commande: Command, motif: &str) -> String {
     let garde = Arc::clone(&tampon);
     let fil = std::thread::spawn(move || {
         for ligne in BufReader::new(erreur).lines().map_while(|l| l.ok()) {
-            let mut t = garde.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut t = garde
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             t.push_str(&ligne);
             t.push('\n');
         }
@@ -201,7 +204,9 @@ fn lancer_jusqua(mut commande: Command, motif: &str) -> String {
     let mut sorti = false;
     loop {
         let vu = {
-            let t = tampon.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let t = tampon
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             t.contains(motif)
         };
         if vu {
@@ -220,7 +225,10 @@ fn lancer_jusqua(mut commande: Command, motif: &str) -> String {
     let _ = enfant.wait();
     let _ = fil.join();
 
-    let texte = tampon.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let texte = tampon
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     assert!(
         texte.contains(motif),
         "le nœud n'a jamais dit « {motif} » (processus {} ; {:.1} s écoulées) :\n{texte}",
@@ -293,7 +301,11 @@ fn lire_requete(flux: &mut TcpStream) -> Option<(String, String)> {
     if lecteur.read_line(&mut premiere).ok()? == 0 {
         return None;
     }
-    let chemin = premiere.split_whitespace().nth(1).unwrap_or_default().to_string();
+    let chemin = premiere
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
     let mut longueur = 0usize;
     loop {
         let mut ligne = String::new();
@@ -337,7 +349,9 @@ fn annonce_partie(bac: &Bac, allow_exec: bool, extra: &[&str], machine: &str) ->
             return;
         };
         if let Some((_, corps)) = lire_requete(&mut flux) {
-            *garde.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = corps;
+            *garde
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = corps;
         }
         repondre(&mut flux, 401, "{}");
     });
@@ -361,16 +375,25 @@ fn annonce_partie(bac: &Bac, allow_exec: bool, extra: &[&str], machine: &str) ->
         c.arg(a);
     }
     let sortie = lancer(c);
-    assert!(!sortie.ok, "un jeton refusé doit faire sortir le nœud en erreur, pas en silence");
+    assert!(
+        !sortie.ok,
+        "un jeton refusé doit faire sortir le nœud en erreur, pas en silence"
+    );
 
     let debut = Instant::now();
     loop {
-        let corps = capte.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let corps = capte
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if !corps.is_empty() {
             return serde_json::from_str(&corps)
                 .unwrap_or_else(|e| panic!("corps d'attachement non-JSON ({e}) : {corps}"));
         }
-        assert!(debut.elapsed() < Duration::from_secs(5), "aucun corps d'attachement capté");
+        assert!(
+            debut.elapsed() < Duration::from_secs(5),
+            "aucun corps d'attachement capté"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -460,12 +483,19 @@ fn a_l_annonce_est_exactement_ce_qui_s_execute_dans_les_deux_sens() {
             .iter()
             .map(|v| v.as_str().expect("capacité non textuelle").to_string())
             .collect();
-        assert!(!ouvertes.is_empty(), "un nœud qui n'annonce RIEN n'annonce pas : {corps}");
+        assert!(
+            !ouvertes.is_empty(),
+            "un nœud qui n'annonce RIEN n'annonce pas : {corps}"
+        );
 
         // Sens 1 : ce qui est annoncé s'exécute vraiment.
         for nom in &ouvertes {
             let s = essayer(nom, &bac, allow_exec, &[]);
-            assert!(s.ok, "« {nom} » est ANNONCÉE mais l'appel échoue : {}", s.motif());
+            assert!(
+                s.ok,
+                "« {nom} » est ANNONCÉE mais l'appel échoue : {}",
+                s.motif()
+            );
             // Le canal d'erreur est vide sur un succès : un refus de politique
             // y laisserait son motif.
             assert!(
@@ -500,19 +530,31 @@ fn a_bis_un_changement_de_politique_change_l_annonce_et_l_usage_ensemble() {
     let sans = annonce_partie(&bac, false, &[], "m1");
     let avec = annonce_partie(&bac, true, &[], "m2");
     assert!(
-        !sans["capacites"].as_array().unwrap().iter().any(|c| c == "exec"),
+        !sans["capacites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "exec"),
         "sans --allow-exec, exec ne doit pas être annoncé : {}",
         sans["capacites"]
     );
     assert!(
-        avec["capacites"].as_array().unwrap().iter().any(|c| c == "exec"),
+        avec["capacites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "exec"),
         "avec --allow-exec, exec doit l'être : {}",
         avec["capacites"]
     );
     // Et l'usage suit dans le même sens : la capacité vient d'être OUVERTE, donc
     // elle s'exécute réellement.
     let s = essayer("exec", &bac, true, &[]);
-    assert!(s.ok, "exec annoncée sous --allow-exec doit s'exécuter : {}", s.motif());
+    assert!(
+        s.ok,
+        "exec annoncée sous --allow-exec doit s'exécuter : {}",
+        s.motif()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,7 +578,10 @@ fn refus_annonce(corps: &Value, nom: &str) -> Value {
         .clone();
     assert_eq!(trouve["exercable"].as_bool(), Some(false), "{trouve}");
     let motif = trouve["motif"].as_str().unwrap_or_default().to_string();
-    assert!(!motif.trim().is_empty(), "un refus sans motif ne se corrige pas : {trouve}");
+    assert!(
+        !motif.trim().is_empty(),
+        "un refus sans motif ne se corrige pas : {trouve}"
+    );
     trouve
 }
 
@@ -551,8 +596,12 @@ fn b_write_refuse_par_la_racine_est_annonce_motive_et_le_reste() {
         return;
     }
     let corps = annonce_partie(&bac, true, &[], "machine-ro");
-    let annonces: Vec<&str> =
-        corps["capacites"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+    let annonces: Vec<&str> = corps["capacites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c.as_str())
+        .collect();
 
     // Les deux moitiés ne se contredisent pas : ce qui est refusé n'est pas
     // aussi annoncé.
@@ -564,7 +613,10 @@ fn b_write_refuse_par_la_racine_est_annonce_motive_et_le_reste() {
 
     // ── ET LE REFUS EST TENU ────────────────────────────────────────────────
     let s = essayer("write", &bac, true, &[]);
-    assert!(!s.ok, "write est annoncé refusé : l'appel doit échouer, or il réussit");
+    assert!(
+        !s.ok,
+        "write est annoncé refusé : l'appel doit échouer, or il réussit"
+    );
     assert!(
         !bac.racine().join("ecrit-par-l-annonce.txt").exists(),
         "et rien ne doit avoir été écrit"
@@ -593,7 +645,11 @@ fn b_bis_exec_ferme_est_annonce_avec_le_geste_qui_l_ouvre() {
     let corps = annonce_partie(&bac, false, &[], "machine-sans-exec");
 
     assert!(
-        !corps["capacites"].as_array().unwrap().iter().any(|c| c == "exec"),
+        !corps["capacites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "exec"),
         "sans --allow-exec, exec ne doit pas être dans les capacités : {}",
         corps["capacites"]
     );
@@ -609,7 +665,11 @@ fn b_bis_exec_ferme_est_annonce_avec_le_geste_qui_l_ouvre() {
     // s'applique, et non un texte décoratif.
     let s = essayer("exec", &bac, false, &[]);
     assert!(!s.ok, "exec doit être refusé sans --allow-exec");
-    assert!(est_refus_de_politique(&s.motif()), "et par la POLITIQUE : {}", s.motif());
+    assert!(
+        est_refus_de_politique(&s.motif()),
+        "et par la POLITIQUE : {}",
+        s.motif()
+    );
     assert!(
         s.motif().contains("--allow-exec"),
         "le refus réel doit porter le même marqueur que l'annonce : {}",
@@ -619,7 +679,11 @@ fn b_bis_exec_ferme_est_annonce_avec_le_geste_qui_l_ouvre() {
     // Et la moitié ouverte n'est pas sacrifiée au passage.
     assert!(s.motif().len() > 0);
     let w = essayer("write", &bac, false, &[]);
-    assert!(w.ok, "write reste ouvert sur une racine inscriptible : {}", w.motif());
+    assert!(
+        w.ok,
+        "write reste ouvert sur une racine inscriptible : {}",
+        w.motif()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -635,7 +699,10 @@ fn c_les_limites_annoncees_sont_celles_qui_coupent_vraiment() {
 
     // 1. La racine annoncée est la racine RÉELLE (celle qui confine).
     let reelle = std::fs::canonicalize(bac.racine()).expect("canonicalisation");
-    assert_eq!(lim["racine_reelle"].as_str(), Some(reelle.display().to_string().as_str()));
+    assert_eq!(
+        lim["racine_reelle"].as_str(),
+        Some(reelle.display().to_string().as_str())
+    );
     assert_eq!(lim["delai_ms_par_defaut"].as_u64(), Some(800), "{lim}");
     assert_eq!(lim["plafond_octets_par_flux"].as_u64(), Some(4096), "{lim}");
     assert_eq!(lim["exec"].as_str(), Some("ouvert"));
@@ -644,9 +711,19 @@ fn c_les_limites_annoncees_sont_celles_qui_coupent_vraiment() {
     // ── 2. UN REFUS RÉEL : un chemin hors racine ────────────────────────────
     // La limite de confinement est annoncée par la racine réelle, et c'est bien
     // ELLE qui refuse — le motif nomme la racine annoncée.
-    let evasion = appel(&bac, "read", r#"{"path":"../../etc/passwd"}"#, true, &limites_flags);
+    let evasion = appel(
+        &bac,
+        "read",
+        r#"{"path":"../../etc/passwd"}"#,
+        true,
+        &limites_flags,
+    );
     assert!(!evasion.ok, "sortir de la racine doit être refusé");
-    assert!(est_refus_de_politique(&evasion.motif()), "{}", evasion.motif());
+    assert!(
+        est_refus_de_politique(&evasion.motif()),
+        "{}",
+        evasion.motif()
+    );
     assert!(
         evasion.motif().contains(&reelle.display().to_string()),
         "le refus doit nommer la racine ANNONCÉE : {} vs {}",
@@ -658,7 +735,11 @@ fn c_les_limites_annoncees_sont_celles_qui_coupent_vraiment() {
     let gros = "a".repeat(9000);
     std::fs::write(bac.racine().join("gros.txt"), &gros).expect("pose du gros fichier");
     let v = appel(&bac, "read", r#"{"path":"gros.txt"}"#, true, &limites_flags).json();
-    assert_eq!(v["bytes"].as_u64(), Some(9000), "l'appel dit la taille réelle : {v}");
+    assert_eq!(
+        v["bytes"].as_u64(),
+        Some(9000),
+        "l'appel dit la taille réelle : {v}"
+    );
     assert_eq!(v["tronque"].as_bool(), Some(true), "{v}");
     assert_eq!(
         v["content"].as_str().map(str::len),
@@ -691,7 +772,11 @@ fn c_les_limites_annoncees_sont_celles_qui_coupent_vraiment() {
         ecoule >= Duration::from_millis(700) && ecoule < Duration::from_secs(10),
         "et il doit tuer à l'échéance annoncée, ni avant ni bien après : {ecoule:?}"
     );
-    assert_eq!(e["exitCode"], Value::Null, "un enfant tué n'a pas de code de sortie : {e}");
+    assert_eq!(
+        e["exitCode"],
+        Value::Null,
+        "un enfant tué n'a pas de code de sortie : {e}"
+    );
     assert!(
         e["durationMs"].as_u64().unwrap_or(u64::MAX) < 5_000,
         "et la DURÉE rapportée doit être celle de l'échéance, pas celle du programme : {e}"

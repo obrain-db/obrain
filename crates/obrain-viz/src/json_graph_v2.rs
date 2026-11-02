@@ -132,7 +132,10 @@ impl Table {
 /// Colonne optionnelle : `None` si AUCUNE arête ne porte le champ (la colonne
 /// disparaît alors du document au lieu d'être écrite en `null` partout).
 fn colonne<T: Clone>(valeurs: &[Option<T>]) -> Option<Vec<Option<T>>> {
-    valeurs.iter().any(Option::is_some).then(|| valeurs.to_vec())
+    valeurs
+        .iter()
+        .any(Option::is_some)
+        .then(|| valeurs.to_vec())
 }
 
 impl JsonGraphDocV2 {
@@ -251,7 +254,12 @@ impl JsonGraphDocV2 {
                     .as_ref()
                     .and_then(|c| c.get(i).copied().flatten()),
                 pheromone: self.edges.pheromone.as_ref().and_then(|c| optionnel(c)),
-                color_hint: match self.edges.color_hint.as_ref().and_then(|c| c.get(i).copied().flatten()) {
+                color_hint: match self
+                    .edges
+                    .color_hint
+                    .as_ref()
+                    .and_then(|c| c.get(i).copied().flatten())
+                {
                     Some(idx) => Some(table.lire(idx)?.to_string()),
                     None => None,
                 },
@@ -272,7 +280,9 @@ impl JsonGraphDocV2 {
 /// l'ordre d'extraction — c'est ce qui permet de mémoïser le corps tel quel.
 pub fn to_json_string_v2(subgraph: &Subgraph) -> VizResult<String> {
     let canon = subgraph.clone().canonical();
-    Ok(serde_json::to_string(&JsonGraphDocV2::from_subgraph(&canon))?)
+    Ok(serde_json::to_string(&JsonGraphDocV2::from_subgraph(
+        &canon,
+    ))?)
 }
 
 /// Reconstruit un sous-graphe depuis une chaîne json-graph v2.
@@ -315,7 +325,10 @@ mod tests {
         let json = to_json_string_v2(&original).unwrap();
         assert!(json.contains(JSON_GRAPH_SCHEMA_V2), "{json}");
         let back = from_json_str_v2(&json).unwrap();
-        assert_eq!(back, original, "la v2 doit rendre le MEME sous-graphe que la v1");
+        assert_eq!(
+            back, original,
+            "la v2 doit rendre le MEME sous-graphe que la v1"
+        );
     }
 
     #[test]
@@ -376,12 +389,19 @@ mod tests {
         let doc = JsonGraphDocV2::from_subgraph(&s);
         // "hub" et "CALLS" n'apparaissent qu'une fois dans la table, quelle que
         // soit le nombre d'aretes qui les referencent.
-        assert_eq!(doc.strings.iter().filter(|x| x.as_str() == "hub").count(), 1);
+        assert_eq!(
+            doc.strings.iter().filter(|x| x.as_str() == "hub").count(),
+            1
+        );
         assert_eq!(
             doc.strings.iter().filter(|x| x.as_str() == "CALLS").count(),
             1
         );
-        assert!(doc.strings.len() < 410, "table = {} entrées", doc.strings.len());
+        assert!(
+            doc.strings.len() < 410,
+            "table = {} entrées",
+            doc.strings.len()
+        );
     }
 
     #[test]
@@ -436,13 +456,17 @@ mod tests {
         let doc = JsonGraphDocV2::from_subgraph(&s);
         let mut ragged = serde_json::to_value(doc).unwrap();
         ragged["edges"]["dst"].as_array_mut().unwrap().pop();
-        let err = from_json_str_v2(&ragged.to_string()).unwrap_err().to_string();
+        let err = from_json_str_v2(&ragged.to_string())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("colonne dst"), "{err}");
         // et une colonne optionnelle courte est refusée aussi
         let doc2 = JsonGraphDocV2::from_subgraph(&s);
         let mut ragged2 = serde_json::to_value(doc2).unwrap();
         ragged2["edges"]["ricci"].as_array_mut().unwrap().pop();
-        let err2 = from_json_str_v2(&ragged2.to_string()).unwrap_err().to_string();
+        let err2 = from_json_str_v2(&ragged2.to_string())
+            .unwrap_err()
+            .to_string();
         assert!(err2.contains("colonne ricci"), "{err2}");
         s.truncated = true;
         assert!(JsonGraphDocV2::from_subgraph(&s).stats.truncated);

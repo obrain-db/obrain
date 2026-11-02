@@ -160,7 +160,11 @@ pub(crate) fn fenetre_jetons() -> usize {
 /// question qu'on se pose devant un contexte tronqué.
 pub(crate) fn source_fenetre() -> String {
     if std::env::var("OBRAIN_LLM_CTX").is_ok() {
-        return format!("env (OBRAIN_LLM_CTX) · service {} ({})", url_llm(), modele());
+        return format!(
+            "env (OBRAIN_LLM_CTX) · service {} ({})",
+            url_llm(),
+            modele()
+        );
     }
     let nom = url_llm();
     if fenetre_jetons() != 8192 {
@@ -327,7 +331,11 @@ fn gabarit_de_pensee(pensee: bool, effort: &str) -> Option<serde_json::Value> {
 /// autre fait **lever le template**, donc on ne laisse rien passer : ce qui
 /// n'est pas reconnu retombe sur `medium`.
 pub(crate) fn effort_de_pensee(demande: Option<&str>) -> &'static str {
-    match demande.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+    match demande
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("courte") | Some("court") | Some("low") => "low",
         Some("profonde") | Some("profond") | Some("xhigh") => "xhigh",
         Some("moyenne") | Some("medium") => "medium",
@@ -368,7 +376,10 @@ partir de lui, et dis ce qui manque.]",
 // ── lecture tolérante des valeurs du moteur ─────────────────────────────────
 
 fn lire(db: &ObrainDB, gql: &str) -> Vec<Vec<OV>> {
-    db.session().execute(gql).map(|r| r.rows).unwrap_or_default()
+    db.session()
+        .execute(gql)
+        .map(|r| r.rows)
+        .unwrap_or_default()
 }
 
 fn txt(v: Option<&OV>) -> Option<String> {
@@ -505,10 +516,7 @@ fn paires(v: &serde_json::Value) -> Vec<(String, i64)> {
 /// le mtime du store : exactement le mécanisme dont se sert déjà l'`overview` de
 /// la vue. Sans cette mémoire, chaque tour de conversation repayait 2,3 s
 /// (runtime-dev) à 3,5 s (linux-full3).
-pub fn signature_du_store(
-    db: &ObrainDB,
-    store: &Path,
-) -> (Vec<(String, i64)>, Vec<(String, i64)>) {
+pub fn signature_du_store(db: &ObrainDB, store: &Path) -> (Vec<(String, i64)>, Vec<(String, i64)>) {
     let mt = crate::viz_serve::store_mtime(store);
     if let Some(b) = crate::viz_serve::disk_load("engsig", store, "", mt)
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(&b)
@@ -763,12 +771,22 @@ fn carte_du_store(db: &ObrainDB, store: &Path) -> (CarteStore, bool) {
         return (c, true);
     }
     let (labels, rels) = signature_du_store(db, store);
-    let mut carte = CarteStore { labels, rels, ..Default::default() };
+    let mut carte = CarteStore {
+        labels,
+        rels,
+        ..Default::default()
+    };
 
     // ── Le noyau structurel : de VRAIES arêtes, par type ────────────────────
     // Le libellé des extrémités est lu DANS la même requête : on ne cite jamais
     // une arête dont on n'a pas les deux bouts.
-    for (t, _) in carte.rels.iter().take(types_aretes()).cloned().collect::<Vec<_>>() {
+    for (t, _) in carte
+        .rels
+        .iter()
+        .take(types_aretes())
+        .cloned()
+        .collect::<Vec<_>>()
+    {
         if !type_interpolable(&t) {
             continue;
         }
@@ -803,7 +821,13 @@ fn carte_du_store(db: &ObrainDB, store: &Path) -> (CarteStore, bool) {
     }
 
     // ── La représentativité par type : n nœuds par label ────────────────────
-    for (label, total) in carte.labels.iter().take(labels_echantillonnes()).cloned().collect::<Vec<_>>() {
+    for (label, total) in carte
+        .labels
+        .iter()
+        .take(labels_echantillonnes())
+        .cloned()
+        .collect::<Vec<_>>()
+    {
         // Un label ne s'interpole que s'il est un identifiant.
         if !type_interpolable(&label) {
             carte.par_label.push((label, total, 0));
@@ -844,7 +868,13 @@ fn carte_du_store(db: &ObrainDB, store: &Path) -> (CarteStore, bool) {
         .filter_map(|r| txt(r.first()))
         .collect();
 
-    crate::viz_serve::disk_save("engcarte2", store, &cle_fenetre, mt, &carte.vers_json().to_string());
+    crate::viz_serve::disk_save(
+        "engcarte2",
+        store,
+        &cle_fenetre,
+        mt,
+        &carte.vers_json().to_string(),
+    );
     (carte, false)
 }
 
@@ -858,7 +888,9 @@ fn profil_du_self(ancrage: &Ancrage) -> Option<String> {
     let compte = ancrage.self_qn.strip_prefix("self:")?;
     if compte.is_empty()
         || compte == "agent"
-        || !compte.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !compte
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return None; // le Self de l agent a deja son propre circuit
     }
@@ -888,9 +920,8 @@ fn profil_du_self(ancrage: &Ancrage) -> Option<String> {
         }
     };
     let mut lignes: Vec<String> = Vec::new();
-    if let Ok(r) = s.execute(
-        "MATCH (:Self)-[:HAS_NOTE]->(n:Note) RETURN n.sujet, n.text LIMIT 12",
-    ) {
+    if let Ok(r) = s.execute("MATCH (:Self)-[:HAS_NOTE]->(n:Note) RETURN n.sujet, n.text LIMIT 12")
+    {
         for row in &r.rows {
             let sujet = row.first().map(|v| v.to_string()).unwrap_or_default();
             let texte = row.get(1).map(|v| v.to_string()).unwrap_or_default();
@@ -899,9 +930,7 @@ fn profil_du_self(ancrage: &Ancrage) -> Option<String> {
             }
         }
     }
-    if let Ok(r) = s.execute(
-        "MATCH (:Self)-[:HAS_GOAL]->(g:Goal) RETURN g.name, g.text LIMIT 6",
-    ) {
+    if let Ok(r) = s.execute("MATCH (:Self)-[:HAS_GOAL]->(g:Goal) RETURN g.name, g.text LIMIT 6") {
         for row in &r.rows {
             let nom = row.first().map(|v| v.to_string()).unwrap_or_default();
             let texte = row.get(1).map(|v| v.to_string()).unwrap_or_default();
@@ -942,13 +971,24 @@ fn contexte_du_monde(
 ) -> Result<Contexte> {
     let t = Instant::now();
     let (total_noeuds, total_aretes) = totaux(db);
-    let mut dec = Decomposition { totaux_ms: t.elapsed().as_millis() as u64, ..Default::default() };
+    let mut dec = Decomposition {
+        totaux_ms: t.elapsed().as_millis() as u64,
+        ..Default::default()
+    };
 
     let t = Instant::now();
     let (carte, memoire) = carte_du_store(db, Path::new(&ancrage.store));
     dec.signature_ms = t.elapsed().as_millis() as u64;
     dec.carte_memoire = memoire;
-    let CarteStore { rels, aretes: relations, ancre_reelle, echantillons, par_label, tetes, .. } = carte;
+    let CarteStore {
+        rels,
+        aretes: relations,
+        ancre_reelle,
+        echantillons,
+        par_label,
+        tetes,
+        ..
+    } = carte;
 
     // Les extrémités d'arêtes réelles rejoignent l'échantillon : ce sont les
     // nœuds dont on sait qu'ils PORTENT de la structure.
@@ -965,8 +1005,10 @@ fn contexte_du_monde(
     //
     // Les hubs ont leur PROPRE fichier (l'entretien les recalcule à chaque
     // passe) : on ne les duplique pas dans la carte mémorisée du store.
-    let classement: Option<crate::hubs::Classement> =
-        crate::hubs::lire(std::path::Path::new(&ancrage.store), crate::viz_serve::store_mtime(std::path::Path::new(&ancrage.store)));
+    let classement: Option<crate::hubs::Classement> = crate::hubs::lire(
+        std::path::Path::new(&ancrage.store),
+        crate::viz_serve::store_mtime(std::path::Path::new(&ancrage.store)),
+    );
     let mut lignes_hubs: Vec<String> = Vec::new();
     let (hubs, hubs_ms) = match &classement {
         Some(c) => (c.hubs.as_slice(), c.calcul_ms),
@@ -1032,7 +1074,11 @@ fn contexte_du_monde(
     } else {
         ajouter(&mut texte, format!("SUJET : {soumis}"), &mut coupe);
     }
-    ajouter(&mut texte, format!("STORE LU : {}", ancrage.store), &mut coupe);
+    ajouter(
+        &mut texte,
+        format!("STORE LU : {}", ancrage.store),
+        &mut coupe,
+    );
     ajouter(
         &mut texte,
         format!(
@@ -1079,7 +1125,11 @@ fn contexte_du_monde(
         &mut coupe,
     );
 
-    ajouter(&mut texte, "\nTYPES DE CONNAISSANCE (label — nœuds — dont lus) :".into(), &mut coupe);
+    ajouter(
+        &mut texte,
+        "\nTYPES DE CONNAISSANCE (label — nœuds — dont lus) :".into(),
+        &mut coupe,
+    );
     for (label, total, lus_label) in &par_label {
         ajouter(
             &mut texte,
@@ -1088,7 +1138,11 @@ fn contexte_du_monde(
         );
     }
 
-    ajouter(&mut texte, "\nRELATIONS RÉELLES (type — arêtes) :".into(), &mut coupe);
+    ajouter(
+        &mut texte,
+        "\nRELATIONS RÉELLES (type — arêtes) :".into(),
+        &mut coupe,
+    );
     for (t, w) in &rels {
         ajouter(&mut texte, format!("  - {t} — {w}"), &mut coupe);
     }
@@ -1117,7 +1171,10 @@ fn contexte_du_monde(
 
     ajouter(
         &mut texte,
-        format!("\nÉCHANTILLON PAR TYPE ({} nœuds, un par ligne) :", noeuds.len()),
+        format!(
+            "\nÉCHANTILLON PAR TYPE ({} nœuds, un par ligne) :",
+            noeuds.len()
+        ),
         &mut coupe,
     );
     for n in &noeuds {
@@ -1184,7 +1241,10 @@ pub fn contexte_du_sujet(db: &ObrainDB, sujet: &str, ancrage: &Ancrage) -> Resul
     // contrôle d'existence par index coûte 0,08 ms. On le fait donc AVANT.
     let t = Instant::now();
     let (total_avant, _) = totaux(db);
-    let mut dec = Decomposition { totaux_ms: t.elapsed().as_millis() as u64, ..Default::default() };
+    let mut dec = Decomposition {
+        totaux_ms: t.elapsed().as_millis() as u64,
+        ..Default::default()
+    };
     let t = Instant::now();
     let resolution = resoudre_sujet(db, sujet, total_avant);
     dec.resolution_ms = t.elapsed().as_millis() as u64;
@@ -1298,7 +1358,10 @@ pub fn contexte_du_sujet(db: &ObrainDB, sujet: &str, ancrage: &Ancrage) -> Resul
         texte.push_str(n);
         texte.push('\n');
     }
-    texte.push_str(&format!("\nRELATIONS RÉELLES ({} lues) :\n", relations.len()));
+    texte.push_str(&format!(
+        "\nRELATIONS RÉELLES ({} lues) :\n",
+        relations.len()
+    ));
     for r in &relations {
         texte.push_str("  - ");
         texte.push_str(r);
@@ -1542,7 +1605,11 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
         .trim()
         .to_string();
     let depuis_raisonnement = content.is_empty() && !raisonnement.is_empty();
-    let reponse = if depuis_raisonnement { raisonnement } else { content };
+    let reponse = if depuis_raisonnement {
+        raisonnement
+    } else {
+        content
+    };
     // DEUXIÈME IMPULSION : la consultation est instantanée (elle a allumé le
     // graphe au début), mais un modèle local met ici ~75 s à répondre — le
     // temps que la réponse arrive, la première activation a décru. On réinscrit
@@ -1592,7 +1659,13 @@ pub fn sante() -> serde_json::Value {
         Ok(r) => {
             let modele = serde_json::from_str::<serde_json::Value>(&r.body)
                 .ok()
-                .and_then(|v| v.get("models")?.get(0)?.get("name")?.as_str().map(String::from))
+                .and_then(|v| {
+                    v.get("models")?
+                        .get(0)?
+                        .get("name")?
+                        .as_str()
+                        .map(String::from)
+                })
                 .unwrap_or_else(|| "(non annoncé)".into());
             serde_json::json!({ "disponible": r.status == 200, "url": url, "modele": modele })
         }
@@ -1713,21 +1786,104 @@ pub enum Evenement {
 /// prix assumé, et il est bien moindre que celui d'une réponse inventée.
 fn exige_un_outil(question: &str, contexte: &str) -> Option<String> {
     const VIDES: &[&str] = &[
-        "avec", "cette", "celle", "celui", "dans", "donne", "entre", "elle", "elles", "encore",
-        "faire", "faut", "leur", "leurs", "liste", "meme", "montre", "nous", "plus", "pour",
-        "pourquoi", "projet", "quand", "quel", "quelle", "quelles", "quels", "sans", "selon",
-        "sont", "sous", "tout", "tous", "toute", "toutes", "tres", "utilise", "voici", "vous",
-        "combien", "comment", "depuis", "alors", "aussi", "apres", "avant",
+        "avec",
+        "cette",
+        "celle",
+        "celui",
+        "dans",
+        "donne",
+        "entre",
+        "elle",
+        "elles",
+        "encore",
+        "faire",
+        "faut",
+        "leur",
+        "leurs",
+        "liste",
+        "meme",
+        "montre",
+        "nous",
+        "plus",
+        "pour",
+        "pourquoi",
+        "projet",
+        "quand",
+        "quel",
+        "quelle",
+        "quelles",
+        "quels",
+        "sans",
+        "selon",
+        "sont",
+        "sous",
+        "tout",
+        "tous",
+        "toute",
+        "toutes",
+        "tres",
+        "utilise",
+        "voici",
+        "vous",
+        "combien",
+        "comment",
+        "depuis",
+        "alors",
+        "aussi",
+        "apres",
+        "avant",
         // Verbes et adverbes à haute fréquence : « Que fait ceci ? » ne doit pas
         // exiger un outil. Trouvé par le test `mots_vides_ignores`.
-        "fait", "faites", "peut", "peuvent", "doit", "doivent", "etre", "avoir", "sais",
-        "quoi", "quelque", "chose", "dire", "explique", "decris", "resume", "parle",
+        "fait",
+        "faites",
+        "peut",
+        "peuvent",
+        "doit",
+        "doivent",
+        "etre",
+        "avoir",
+        "sais",
+        "quoi",
+        "quelque",
+        "chose",
+        "dire",
+        "explique",
+        "decris",
+        "resume",
+        "parle",
         // Démonstratifs, pronoms et adverbes — la classe est fermée, on peut
         // l'épuiser : ce sont eux qui faisaient exiger un outil pour rien.
-        "ceci", "cela", "ceux", "celles", "ici", "voila", "ainsi", "donc", "toujours",
-        "jamais", "souvent", "surtout", "notamment", "egalement", "encore", "enfin",
-        "plutot", "surtout", "aussitot", "ensuite", "puis", "enfin", "enfin",
-        "est", "sont", "etait", "sera", "serait", "etait-ce", "sert", "servent",
+        "ceci",
+        "cela",
+        "ceux",
+        "celles",
+        "ici",
+        "voila",
+        "ainsi",
+        "donc",
+        "toujours",
+        "jamais",
+        "souvent",
+        "surtout",
+        "notamment",
+        "egalement",
+        "encore",
+        "enfin",
+        "plutot",
+        "surtout",
+        "aussitot",
+        "ensuite",
+        "puis",
+        "enfin",
+        "enfin",
+        "est",
+        "sont",
+        "etait",
+        "sera",
+        "serait",
+        "etait-ce",
+        "sert",
+        "servent",
     ];
     let bas = contexte.to_lowercase();
     let mut vus: Vec<String> = Vec::new();
@@ -1743,7 +1899,6 @@ fn exige_un_outil(question: &str, contexte: &str) -> Option<String> {
     }
     None
 }
-
 
 /// Les ouvertures d'appel reconnues dans un TEXTE (pas dans le canal
 /// `tool_calls`) : `<tool_call>` du gabarit Qwen, et `<function=…>` qu'il contient.
@@ -1817,7 +1972,8 @@ impl ExtracteurAppels {
                     Some(p) => {
                         let bloc: String = self.tampon.drain(..p + fermeture.len()).collect();
                         self.capture.push_str(&bloc);
-                        self.appels.extend(crate::outils::appels_du_texte(&self.capture));
+                        self.appels
+                            .extend(crate::outils::appels_du_texte(&self.capture));
                         self.capture.clear();
                         self.fermeture = None;
                         self.intercepte = true;
@@ -1890,7 +2046,8 @@ impl ExtracteurAppels {
         if self.fermeture.take().is_some() {
             self.capture.push_str(&self.tampon);
             self.tampon.clear();
-            self.appels.extend(crate::outils::appels_du_texte(&self.capture));
+            self.appels
+                .extend(crate::outils::appels_du_texte(&self.capture));
             self.capture.clear();
             self.intercepte = true;
             self.inacheve = true;
@@ -2133,7 +2290,11 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
     // une boîte noire de plus. En REPRISE, aucun outil n'est offert : la question
     // est de continuer une prose, pas d'ouvrir une lecture — et l'exiger ferait
     // écrire un appel d'outil là où la réponse doit finir.
-    let hors_contexte = if reprise.is_some() { None } else { exige_un_outil(question, &texte_contexte) };
+    let hors_contexte = if reprise.is_some() {
+        None
+    } else {
+        exige_un_outil(question, &texte_contexte)
+    };
     if let Some(mot) = &hors_contexte {
         on_ev(Evenement::Think(format!(
             "[« {mot} » n'apparaît pas dans le contexte lu : l'appel d'un outil est exigé              plutôt que de laisser le modèle combler le vide]\n"
@@ -2145,7 +2306,8 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
     /// Un tour SUPPLÉMENTAIRE a-t-il été accordé au tour précédent, parce qu'un
     /// appel d'outil avait été récupéré d'un texte (voir `ExtracteurAppels`) ?
     let mut tour_sup_du_texte = false;
-    let mut jetons_conversation = jetons_estimes(&messages.iter().map(|m| m.to_string()).collect::<String>());
+    let mut jetons_conversation =
+        jetons_estimes(&messages.iter().map(|m| m.to_string()).collect::<String>());
 
     /**
      * Le budget d'une question, en secondes. Il borne la SOMME des appels au
@@ -2320,105 +2482,114 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
         // ressemblent sont le lot d'une conversation, pas une boucle.
         garde.nouvelle_page();
         let veille = garde.veille();
-        let arrete_par_le_rappel = crate::http_min::post_sse(&url, &payload, Duration::from_secs(600), |ligne| {
-            // Le client a fermé, ou la question a dépassé son budget : inutile de
-            // lire la suite du flux, et le service doit cesser d'écrire (le
-            // rappel en a le pouvoir depuis `post_sse` → `Ok(true)`).
-            if !veille.continuer() {
-                return false;
-            }
-            let Some(donnees) = ligne.strip_prefix("data:") else { return true };
-            let donnees = donnees.trim();
-            if donnees == "[DONE]" {
-                vu_done = true;
-                return true;
-            }
-            if donnees.is_empty() {
-                return true;
-            }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(donnees) else { return true };
-            if let Some(e) = v.get("error") {
-                erreur = Some(e.to_string());
-                return true;   // on lit jusqu'au bout : le verdict est rendu après l'appel
-            }
-            if let Some(f) = v
-                .get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("finish_reason"))
-                .and_then(|x| x.as_str())
-            {
-                raison = Some(f.to_string());
-            }
-            let Some(delta) = v.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("delta")) else {
-                return true;   // trame sans delta (rôle, fin) : rien à émettre
-            };
-            // Les appels d'outils arrivent EN MORCEAUX : `index` identifie l'appel,
-            // le nom arrive d'un coup, les arguments caractère par caractère. On
-            // les recolle par index — sans quoi on exécuterait un JSON tronqué.
-            if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
-                for tc in tcs {
-                    let i = tc.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-                    // ── UN INDEX ABERRANT N'ALLOCUE PAS DES GO ──────────────
-                    // `i` vient du flux distant : `while appels.len() <= i` avec
-                    // un index à 1e9 allouait un milliard de structures (~70 Go)
-                    // et faisait avorter le processus. Au-delà du plafond par
-                    // tour, on ignore l'entrée plutôt que de mourir pour elle.
-                    if i >= crate::outils::MAX_APPELS_PAR_TOUR {
-                        continue;
-                    }
-                    while appels.len() <= i {
-                        appels.push(crate::outils::Appel::default());
-                    }
-                    if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
-                        appels[i].id = id.to_string();
-                    }
-                    if let Some(f) = tc.get("function") {
-                        if let Some(n) = f.get("name").and_then(|x| x.as_str()) {
-                            appels[i].nom.push_str(n);
+        let arrete_par_le_rappel =
+            crate::http_min::post_sse(&url, &payload, Duration::from_secs(600), |ligne| {
+                // Le client a fermé, ou la question a dépassé son budget : inutile de
+                // lire la suite du flux, et le service doit cesser d'écrire (le
+                // rappel en a le pouvoir depuis `post_sse` → `Ok(true)`).
+                if !veille.continuer() {
+                    return false;
+                }
+                let Some(donnees) = ligne.strip_prefix("data:") else {
+                    return true;
+                };
+                let donnees = donnees.trim();
+                if donnees == "[DONE]" {
+                    vu_done = true;
+                    return true;
+                }
+                if donnees.is_empty() {
+                    return true;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(donnees) else {
+                    return true;
+                };
+                if let Some(e) = v.get("error") {
+                    erreur = Some(e.to_string());
+                    return true; // on lit jusqu'au bout : le verdict est rendu après l'appel
+                }
+                if let Some(f) = v
+                    .get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("finish_reason"))
+                    .and_then(|x| x.as_str())
+                {
+                    raison = Some(f.to_string());
+                }
+                let Some(delta) = v
+                    .get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("delta"))
+                else {
+                    return true; // trame sans delta (rôle, fin) : rien à émettre
+                };
+                // Les appels d'outils arrivent EN MORCEAUX : `index` identifie l'appel,
+                // le nom arrive d'un coup, les arguments caractère par caractère. On
+                // les recolle par index — sans quoi on exécuterait un JSON tronqué.
+                if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
+                    for tc in tcs {
+                        let i = tc.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                        // ── UN INDEX ABERRANT N'ALLOCUE PAS DES GO ──────────────
+                        // `i` vient du flux distant : `while appels.len() <= i` avec
+                        // un index à 1e9 allouait un milliard de structures (~70 Go)
+                        // et faisait avorter le processus. Au-delà du plafond par
+                        // tour, on ignore l'entrée plutôt que de mourir pour elle.
+                        if i >= crate::outils::MAX_APPELS_PAR_TOUR {
+                            continue;
                         }
-                        if let Some(a) = f.get("arguments").and_then(|x| x.as_str()) {
-                            appels[i].arguments.push_str(a);
+                        while appels.len() <= i {
+                            appels.push(crate::outils::Appel::default());
+                        }
+                        if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
+                            appels[i].id = id.to_string();
+                        }
+                        if let Some(f) = tc.get("function") {
+                            if let Some(n) = f.get("name").and_then(|x| x.as_str()) {
+                                appels[i].nom.push_str(n);
+                            }
+                            if let Some(a) = f.get("arguments").and_then(|x| x.as_str()) {
+                                appels[i].arguments.push_str(a);
+                            }
                         }
                     }
                 }
-            }
-            // ── LE MARKUP D'APPEL NE SORT JAMAIS D'ICI ──────────────────────
-            // Ce qui est de la PROSE part à l'écran (raisonnement ou texte) ; ce
-            // qui est un APPEL est mis de côté et rendu exécutable. Un tour ne
-            // peut donc plus « répondre un tool_call » : c'est le défaut mesuré
-            // le 2026-09-13, et il se produisait dans le raisonnement.
-            if let Some(t) = delta.get("reasoning_content").and_then(|x| x.as_str())
-                && !t.is_empty()
-            {
-                let prose = filtre_think.pousser(t);
-                if !prose.is_empty() {
-                    // La garde juge AVANT l'affichage, mais la prose part à
-                    // l'écran dans le même ordre qu'avant : ce qui a été émis
-                    // doit rester visible, même quand c'est ce qui a conclu.
-                    let boucle = garde.prose(&prose).is_err();
-                    on_ev(Evenement::Think(prose));
-                    if boucle {
-                        return false;   // on cesse de lire : le modèle boucle
+                // ── LE MARKUP D'APPEL NE SORT JAMAIS D'ICI ──────────────────────
+                // Ce qui est de la PROSE part à l'écran (raisonnement ou texte) ; ce
+                // qui est un APPEL est mis de côté et rendu exécutable. Un tour ne
+                // peut donc plus « répondre un tool_call » : c'est le défaut mesuré
+                // le 2026-09-13, et il se produisait dans le raisonnement.
+                if let Some(t) = delta.get("reasoning_content").and_then(|x| x.as_str())
+                    && !t.is_empty()
+                {
+                    let prose = filtre_think.pousser(t);
+                    if !prose.is_empty() {
+                        // La garde juge AVANT l'affichage, mais la prose part à
+                        // l'écran dans le même ordre qu'avant : ce qui a été émis
+                        // doit rester visible, même quand c'est ce qui a conclu.
+                        let boucle = garde.prose(&prose).is_err();
+                        on_ev(Evenement::Think(prose));
+                        if boucle {
+                            return false; // on cesse de lire : le modèle boucle
+                        }
                     }
                 }
-            }
-            if let Some(t) = delta.get("content").and_then(|x| x.as_str())
-                && !t.is_empty()
-            {
-                let prose = filtre_texte.pousser(t);
-                if !prose.is_empty() {
-                    // La garde juge AVANT l'affichage, mais la prose part à
-                    // l'écran dans le même ordre qu'avant : ce qui a été émis
-                    // doit rester visible, même quand c'est ce qui a conclu.
-                    let boucle = garde.prose(&prose).is_err();
-                    on_ev(Evenement::Texte(prose));
-                    if boucle {
-                        return false;   // le modèle boucle : on cesse de lire
+                if let Some(t) = delta.get("content").and_then(|x| x.as_str())
+                    && !t.is_empty()
+                {
+                    let prose = filtre_texte.pousser(t);
+                    if !prose.is_empty() {
+                        // La garde juge AVANT l'affichage, mais la prose part à
+                        // l'écran dans le même ordre qu'avant : ce qui a été émis
+                        // doit rester visible, même quand c'est ce qui a conclu.
+                        let boucle = garde.prose(&prose).is_err();
+                        on_ev(Evenement::Texte(prose));
+                        if boucle {
+                            return false; // le modèle boucle : on cesse de lire
+                        }
                     }
                 }
-            }
-            true   // rien de dégénéré dans cette ligne : on continue
-        })?;
+                true // rien de dégénéré dans cette ligne : on continue
+            })?;
         ms_llm_reel += t_llm.elapsed().as_millis() as u64;
         // ── L'ARRÊT DU RAPPEL SE DIT ICI, LÀ OÙ IL A EU LIEU ────────────────
         // MESURÉ : un client qui part fait échouer la prochaine écriture SSE ; le
@@ -2476,7 +2647,8 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
                 // appel ; celui du parseur est propre et neutre.
                 appels.push(a);
             }
-        } else if bloc_inacheve || bloc_rejete || filtre_think.intercepte || filtre_texte.intercepte {
+        } else if bloc_inacheve || bloc_rejete || filtre_think.intercepte || filtre_texte.intercepte
+        {
             // Un markup a été RETIRÉ et n'a produit aucun appel exploitable : le
             // dire, plutôt que de laisser l'utilisateur devant un texte qui
             // s'arrête sans raison visible.
@@ -2580,7 +2752,10 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
                 // Le monde vient du RÉSULTAT : c'est celui qui a été réellement
                 // interrogé, pas celui qu'on croyait viser.
                 monde: if r.monde.is_empty() {
-                    ancrage.monde.clone().unwrap_or_else(|| "le monde ancré".into())
+                    ancrage
+                        .monde
+                        .clone()
+                        .unwrap_or_else(|| "le monde ancré".into())
                 } else {
                     r.monde.clone()
                 },
@@ -2607,7 +2782,10 @@ sortie réservée {sortie_demandee} · contexte gardé {pour_contexte})",
     // Le tour entier reste mesurable (`debut`), mais `ms_llm` dit ce que son nom
     // annonce : le temps passé DANS le modèle.
     let _ = &debut;
-    on_ev(Evenement::Fin { ms_llm: ms_llm_reel, raison });
+    on_ev(Evenement::Fin {
+        ms_llm: ms_llm_reel,
+        raison,
+    });
     Ok(())
 }
 
@@ -2687,13 +2865,17 @@ mod tests {
         // décide tout seul n'est pas neutre, c'est un choix qu'on n'a pas fait.
         // On l'envoie donc, et on l'épingle.
         let g = gabarit_de_pensee(true, "medium").expect("la pensée doit être dite, pas héritée");
-        assert_eq!(g.get("enable_thinking").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            g.get("enable_thinking").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(
             g.get("reasoning_effort").and_then(|v| v.as_str()),
             Some("medium"),
             "l'effort demandé doit partir tel quel"
         );
-        let coupe = gabarit_de_pensee(false, "medium").expect("pensée coupée : le réglage doit partir");
+        let coupe =
+            gabarit_de_pensee(false, "medium").expect("pensée coupée : le réglage doit partir");
         assert_eq!(
             coupe.get("enable_thinking").and_then(|v| v.as_bool()),
             Some(false),
@@ -2870,7 +3052,10 @@ mod tests {
     #[test]
     fn mots_vides_ignores() {
         let contexte = "STORE LU : /tmp/x.obrain";
-        assert_eq!(exige_un_outil("Montre-moi la liste de tout ce projet", contexte), None);
+        assert_eq!(
+            exige_un_outil("Montre-moi la liste de tout ce projet", contexte),
+            None
+        );
         assert_eq!(exige_un_outil("Que fait ceci ?", contexte), None);
     }
 }

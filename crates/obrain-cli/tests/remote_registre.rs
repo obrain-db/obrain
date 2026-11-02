@@ -41,7 +41,11 @@ fn obrain() -> Command {
 }
 
 fn port_libre() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// L'horloge du test — la même que celle du registre (`activation::now_ms`),
@@ -111,7 +115,11 @@ fn tenter(
     s.write_all(req.as_bytes()).expect("écriture de la requête");
     let mut buf = String::new();
     s.read_to_string(&mut buf).expect("lecture de la réponse");
-    let statut: u16 = buf.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let statut: u16 = buf
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
     let corps = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
     Some((statut, corps))
 }
@@ -164,7 +172,11 @@ impl Serveur {
             .spawn()
             .expect("spawn viz serve");
 
-        let mut serveur = Serveur { enfant, addr, log: log.to_path_buf() };
+        let mut serveur = Serveur {
+            enfant,
+            addr,
+            log: log.to_path_buf(),
+        };
         let fin = Instant::now() + Duration::from_secs(90);
         while Instant::now() < fin {
             if let Ok(Some(statut)) = serveur.enfant.try_wait() {
@@ -175,13 +187,23 @@ impl Serveur {
             }
             // Un port qui écoute ne veut pas dire un serveur qui a fini de
             // démarrer : on exige une VRAIE réponse authentifiée.
-            let reponse = tenter(&serveur.addr, "GET", "/api/remote/clients", Some(jeton), None);
+            let reponse = tenter(
+                &serveur.addr,
+                "GET",
+                "/api/remote/clients",
+                Some(jeton),
+                None,
+            );
             if matches!(reponse, Some((200, _))) {
                 return serveur;
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        panic!("viz serve jamais prêt sur {} — journal :\n{}", serveur.addr, lire(&serveur.log));
+        panic!(
+            "viz serve jamais prêt sur {} — journal :\n{}",
+            serveur.addr,
+            lire(&serveur.log)
+        );
     }
 }
 
@@ -204,7 +226,10 @@ fn journaux(cache: &Path) -> Vec<PathBuf> {
 fn machines(addr: &str, jeton: &str) -> Vec<serde_json::Value> {
     let (code, corps) = requete(addr, "GET", "/api/remote/clients", Some(jeton), None);
     assert_eq!(code, 200, "clients : {corps}");
-    json_de(&corps)["clients"].as_array().cloned().unwrap_or_default()
+    json_de(&corps)["clients"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn noms(v: &[serde_json::Value]) -> Vec<String> {
@@ -221,7 +246,11 @@ fn noms(v: &[serde_json::Value]) -> Vec<String> {
 fn amorcer_iam(td: &Path) -> (PathBuf, String, String) {
     let iam = td.join("iam.obrain");
     let init = obrain().arg("init").arg(&iam).output().expect("init iam");
-    assert!(init.status.success(), "init iam : {}", String::from_utf8_lossy(&init.stderr));
+    assert!(
+        init.status.success(),
+        "init iam : {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
 
     let admin = obrain()
         .arg("iam")
@@ -240,7 +269,9 @@ fn amorcer_iam(td: &Path) -> (PathBuf, String, String) {
         "iam amorcer : {}",
         String::from_utf8_lossy(&admin.stderr)
     );
-    let _ = json_de(&String::from_utf8_lossy(&admin.stdout))["jeton"].as_str().expect("jeton admin");
+    let _ = json_de(&String::from_utf8_lossy(&admin.stdout))["jeton"]
+        .as_str()
+        .expect("jeton admin");
 
     let mut jetons = Vec::new();
     for (nom, mdp) in [("alice", "Motdepasse!2"), ("bob", "Motdepasse!3")] {
@@ -256,7 +287,11 @@ fn amorcer_iam(td: &Path) -> (PathBuf, String, String) {
             .arg("--json")
             .output()
             .expect("iam ajouter");
-        assert!(a.status.success(), "iam ajouter {nom} : {}", String::from_utf8_lossy(&a.stderr));
+        assert!(
+            a.status.success(),
+            "iam ajouter {nom} : {}",
+            String::from_utf8_lossy(&a.stderr)
+        );
         let j = obrain()
             .arg("iam")
             .arg("jeton")
@@ -265,7 +300,11 @@ fn amorcer_iam(td: &Path) -> (PathBuf, String, String) {
             .arg("--json")
             .output()
             .expect("iam jeton");
-        assert!(j.status.success(), "iam jeton {nom} : {}", String::from_utf8_lossy(&j.stderr));
+        assert!(
+            j.status.success(),
+            "iam jeton {nom} : {}",
+            String::from_utf8_lossy(&j.stderr)
+        );
         let v = json_de(&String::from_utf8_lossy(&j.stdout));
         jetons.push(v["jeton"].as_str().expect("jeton").to_string());
     }
@@ -279,12 +318,22 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
     std::fs::create_dir_all(&cache).unwrap();
     let store = td.path().join("kb.obrain");
     let init = obrain().arg("init").arg(&store).output().expect("init kb");
-    assert!(init.status.success(), "init kb : {}", String::from_utf8_lossy(&init.stderr));
+    assert!(
+        init.status.success(),
+        "init kb : {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
 
     let (iam, jeton_alice, jeton_bob) = amorcer_iam(td.path());
 
     // ── 1. PREMIER MOTEUR : les deux machines s'annoncent ───────────────────
-    let s1 = Serveur::demarrer(&store, &cache, &iam, &td.path().join("moteur-1.log"), &jeton_alice);
+    let s1 = Serveur::demarrer(
+        &store,
+        &cache,
+        &iam,
+        &td.path().join("moteur-1.log"),
+        &jeton_alice,
+    );
 
     // Sans identité, le canal ne parle à personne : même une liste vide serait
     // une réponse, et ce serait une fuite déguisée en service.
@@ -299,7 +348,10 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
         Some(r#"{"machine":"portable-alice","capacites":["read","exec"]}"#),
     );
     assert_eq!(code, 200, "attacher alice : {corps}");
-    let id_alice = json_de(&corps)["client_id"].as_str().expect("client_id").to_string();
+    let id_alice = json_de(&corps)["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_string();
 
     let (code, corps) = requete(
         &s1.addr,
@@ -309,24 +361,46 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
         Some(r#"{"machine":"tour-bob","capacites":["read"]}"#),
     );
     assert_eq!(code, 200, "attacher bob : {corps}");
-    let id_bob = json_de(&corps)["client_id"].as_str().expect("client_id").to_string();
+    let id_bob = json_de(&corps)["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_string();
 
     // (a) ATTACHER ÉCRIT QUELQUE PART — et pas n'importe où : un journal par
     // compte, qui nomme la machine ET son propriétaire.
     let js = journaux(&cache);
     assert_eq!(js.len(), 2, "un journal par compte : {js:?}");
     let textes: Vec<String> = js.iter().map(|p| lire(p)).collect();
-    let chez_alice = textes.iter().find(|t| t.contains("portable-alice")).expect("journal alice");
-    let chez_bob = textes.iter().find(|t| t.contains("tour-bob")).expect("journal bob");
-    assert!(chez_alice.contains(id_alice.as_str()), "l'identifiant est écrit : {chez_alice}");
-    assert!(chez_alice.contains("\"compte\":\"alice\""), "et le compte : {chez_alice}");
-    assert!(!chez_alice.contains("tour-bob"), "le journal d'alice ne nomme pas bob");
+    let chez_alice = textes
+        .iter()
+        .find(|t| t.contains("portable-alice"))
+        .expect("journal alice");
+    let chez_bob = textes
+        .iter()
+        .find(|t| t.contains("tour-bob"))
+        .expect("journal bob");
+    assert!(
+        chez_alice.contains(id_alice.as_str()),
+        "l'identifiant est écrit : {chez_alice}"
+    );
+    assert!(
+        chez_alice.contains("\"compte\":\"alice\""),
+        "et le compte : {chez_alice}"
+    );
+    assert!(
+        !chez_alice.contains("tour-bob"),
+        "le journal d'alice ne nomme pas bob"
+    );
     assert!(!chez_bob.contains("portable-alice"), "et réciproquement");
 
     // Vivante, la machine est annoncée vivante (le battement vient d'avoir lieu).
     let chez_alice_vu = machines(&s1.addr, &jeton_alice);
     assert_eq!(noms(&chez_alice_vu), vec!["portable-alice"]);
-    assert_eq!(chez_alice_vu[0]["vivant"], serde_json::json!(true), "elle vient de s'annoncer");
+    assert_eq!(
+        chez_alice_vu[0]["vivant"],
+        serde_json::json!(true),
+        "elle vient de s'annoncer"
+    );
     assert_eq!(
         noms(&machines(&s1.addr, &jeton_bob)),
         vec!["tour-bob"],
@@ -335,14 +409,28 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
 
     // ── 2. REDÉMARRAGE : le premier moteur s'arrête (le `Drop` le tue) ──────
     drop(s1);
-    let s2 = Serveur::demarrer(&store, &cache, &iam, &td.path().join("moteur-2.log"), &jeton_alice);
+    let s2 = Serveur::demarrer(
+        &store,
+        &cache,
+        &iam,
+        &td.path().join("moteur-2.log"),
+        &jeton_alice,
+    );
 
     // (b) LA MACHINE EST RETROUVÉE — avec son identifiant, ses capacités et sa
     // date de première attache : le registre neuf ne réinvente rien.
     let apres = machines(&s2.addr, &jeton_alice);
-    assert_eq!(apres.len(), 1, "une liste vide après redémarrage serait le défaut d'origine");
+    assert_eq!(
+        apres.len(),
+        1,
+        "une liste vide après redémarrage serait le défaut d'origine"
+    );
     assert_eq!(apres[0]["machine"], serde_json::json!("portable-alice"));
-    assert_eq!(apres[0]["id"], serde_json::json!(id_alice), "le MÊME identifiant");
+    assert_eq!(
+        apres[0]["id"],
+        serde_json::json!(id_alice),
+        "le MÊME identifiant"
+    );
     assert_eq!(apres[0]["capacites"], serde_json::json!(["read", "exec"]));
     assert!(
         apres[0]["attache_ms"].as_i64().unwrap_or(0) > 0,
@@ -370,16 +458,26 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
             r#"{{"client_id":"{id_alice}","outil":"read","arguments":{{}},"delai_s":30}}"#
         )),
     );
-    assert_eq!(code, 409, "un ordre vers une machine absente est refusé : {corps}");
+    assert_eq!(
+        code, 409,
+        "un ordre vers une machine absente est refusé : {corps}"
+    );
     assert!(
         corps.contains("pas joignable"),
         "le refus est MOTIVÉ (le silence ressemble à une panne) : {corps}"
     );
-    assert!(debut.elapsed() < Duration::from_secs(5), "et il ne fait pas attendre le délai");
+    assert!(
+        debut.elapsed() < Duration::from_secs(5),
+        "et il ne fait pas attendre le délai"
+    );
 
     // (c) LE CLOISONNEMENT SURVIT À LA RELECTURE.
     let bob_apres = machines(&s2.addr, &jeton_bob);
-    assert_eq!(noms(&bob_apres), vec!["tour-bob"], "bob relit la sienne, et rien d'autre");
+    assert_eq!(
+        noms(&bob_apres),
+        vec!["tour-bob"],
+        "bob relit la sienne, et rien d'autre"
+    );
     assert_eq!(bob_apres[0]["id"], serde_json::json!(id_bob));
     // Un identifiant relu et DEVINÉ n'ouvre toujours rien.
     let (code, corps) = requete(
@@ -387,9 +485,14 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
         "POST",
         "/api/remote/appel",
         Some(&jeton_bob),
-        Some(&format!(r#"{{"client_id":"{id_alice}","outil":"read","arguments":{{}}}}"#)),
+        Some(&format!(
+            r#"{{"client_id":"{id_alice}","outil":"read","arguments":{{}}}}"#
+        )),
     );
-    assert_eq!(code, 409, "bob ne commande pas la machine d'alice : {corps}");
+    assert_eq!(
+        code, 409,
+        "bob ne commande pas la machine d'alice : {corps}"
+    );
     assert!(corps.contains("pas à vous"), "et le refus le dit : {corps}");
 
     // Et la machine revient d'elle-même : elle redemande du travail (204 = rien
@@ -401,7 +504,10 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
         Some(&jeton_alice),
         None,
     );
-    assert_eq!(code, 204, "aucun ordre en attente : le rythme normal du canal");
+    assert_eq!(
+        code, 204,
+        "aucun ordre en attente : le rythme normal du canal"
+    );
     assert_eq!(
         machines(&s2.addr, &jeton_alice)[0]["vivant"],
         serde_json::json!(true),
@@ -431,14 +537,27 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
         std::fs::write(&j, ligne).unwrap();
         reculee = Some(j);
     }
-    assert!(reculee.is_some(), "le journal d'alice est retrouvé pour le reculer");
+    assert!(
+        reculee.is_some(),
+        "le journal d'alice est retrouvé pour le reculer"
+    );
 
-    let s3 = Serveur::demarrer(&store, &cache, &iam, &td.path().join("moteur-3.log"), &jeton_alice);
+    let s3 = Serveur::demarrer(
+        &store,
+        &cache,
+        &iam,
+        &td.path().join("moteur-3.log"),
+        &jeton_alice,
+    );
     // (d) ELLE EST CONNUE, MAIS PAS ANNONCÉE VIVANTE — et sa liste n'est pas
     // vide pour autant : une réponse vide aurait la forme d'une bonne réponse.
     let ancienne = machines(&s3.addr, &jeton_alice);
     assert_eq!(noms(&ancienne), vec!["portable-alice"], "elle reste connue");
-    assert_eq!(ancienne[0]["vivant"], serde_json::json!(false), "mais pas vivante");
+    assert_eq!(
+        ancienne[0]["vivant"],
+        serde_json::json!(false),
+        "mais pas vivante"
+    );
     assert!(
         ancienne[0]["silence_ms"].as_i64().unwrap_or(0) >= 3_600_000,
         "et son silence est dit en clair : {}",
@@ -449,7 +568,9 @@ fn le_registre_des_machines_survit_a_un_redemarrage_et_ne_trahit_pas_les_comptes
         "POST",
         "/api/remote/appel",
         Some(&jeton_alice),
-        Some(&format!(r#"{{"client_id":"{id_alice}","outil":"read","arguments":{{}}}}"#)),
+        Some(&format!(
+            r#"{{"client_id":"{id_alice}","outil":"read","arguments":{{}}}}"#
+        )),
     );
     assert_eq!(code, 409, "on ne commande pas une machine muette : {corps}");
     assert!(corps.contains("pas joignable"), "refus motivé : {corps}");

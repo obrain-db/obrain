@@ -1,4 +1,7 @@
 [workspace]
+# Binding Python (pyo3 0.27 : RUSTSEC-2026-0176/0177, correctif >= 0.29). Hors périmètre
+# v0.0.1 — aucun binding n'est publié ; le crate reste dans le dépôt, hors workspace.
+exclude = ["crates/bindings/python"]
 resolver = "2"
 members = [
     "crates/obrain",
@@ -24,7 +27,6 @@ members = [
     "crates/obrain-selflink",
     "crates/obrain-selfd",
     "crates/obrain-viz",
-    "crates/bindings/python",
     "crates/bindings/node",
     "crates/bindings/c",
     "crates/bindings/wasm",

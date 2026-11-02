@@ -28,14 +28,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_open = Instant::now();
     let db = ObrainDB::open(&store_path)?;
     let session = db.session();
-    println!("open: {:.1} ms — store {}", t_open.elapsed().as_secs_f64() * 1000.0, store_path.display());
+    println!(
+        "open: {:.1} ms — store {}",
+        t_open.elapsed().as_secs_f64() * 1000.0,
+        store_path.display()
+    );
 
     // ── Le manager du MOTEUR (câblé par with_engrams au boot) ──
     let engine = db.cognitive_engine().expect("cognitive engine construit");
     let manager = engine
         .engram_manager()
         .expect("engram manager câblé (feature cognitive-engram)");
-    println!("engram manager : câblé ✓ (store={} engrams)", manager.store().count());
+    println!(
+        "engram manager : câblé ✓ (store={} engrams)",
+        manager.store().count()
+    );
 
     // ── Épisodes : les FICHIERS touchés par session (co-activation sémantique)
     //   Les ids de Message sont uniques par session (jamais co-occurrents) ;
@@ -54,7 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "MATCH (tc:ToolCall)-[:TOUCHES]->(f:File) WHERE tc.session = '{}' RETURN id(f) LIMIT 300",
             sid
         );
-        let Ok(rows) = session.execute(&q) else { continue };
+        let Ok(rows) = session.execute(&q) else {
+            continue;
+        };
         let nodes: Vec<NodeId> = rows
             .rows
             .iter()
@@ -73,8 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             total_nodes += nodes.len();
         }
     }
-    println!("épisodes (sessions→fichiers) : {episodes} — {total_nodes} co-activations en {:.1} ms",
-        t_ep.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "épisodes (sessions→fichiers) : {episodes} — {total_nodes} co-activations en {:.1} ms",
+        t_ep.elapsed().as_secs_f64() * 1000.0
+    );
 
     // ── Consolidation + rappel ──
     manager.tick(); // FSRS decay / homéostasie
@@ -87,20 +98,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cues: Vec<NodeId> = first.ensemble.iter().take(3).map(|(id, _)| *id).collect();
         let t_recall = Instant::now();
         let results = manager.recall(&cues, 5);
-        println!("rappel (cues={} nœuds) : {} résultats en {:.2} ms",
-            cues.len(), results.len(), t_recall.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "rappel (cues={} nœuds) : {} résultats en {:.2} ms",
+            cues.len(),
+            results.len(),
+            t_recall.elapsed().as_secs_f64() * 1000.0
+        );
         for (i, r) in results.iter().take(3).enumerate() {
-            println!("  rappel {i}: engram {} — confiance {:.3}, force {:.3}, valence {:.3}",
-                r.engram_id.0, r.confidence, r.engram.strength, r.engram.valence);
+            println!(
+                "  rappel {i}: engram {} — confiance {:.3}, force {:.3}, valence {:.3}",
+                r.engram_id.0, r.confidence, r.engram.strength, r.engram.valence
+            );
         }
 
         // ── PREUVE : la procédure obrain.engrams.list() voit les engrams ──
         let t_proc = Instant::now();
         let r = session.execute("CALL obrain.engrams.list() YIELD id, strength, recall_count RETURN id, strength, recall_count LIMIT 5")?;
-        println!("\nprocédure obrain.engrams.list() : {} lignes en {:.2} ms",
-            r.rows.len(), t_proc.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "\nprocédure obrain.engrams.list() : {} lignes en {:.2} ms",
+            r.rows.len(),
+            t_proc.elapsed().as_secs_f64() * 1000.0
+        );
         for row in r.rows.iter().take(3) {
-            println!("  engram: {:?}", row.iter().map(|v| v.to_string()).collect::<Vec<_>>());
+            println!(
+                "  engram: {:?}",
+                row.iter().map(|v| v.to_string()).collect::<Vec<_>>()
+            );
         }
     } else {
         println!("(0 engram consolidé — seuils de formation non atteints avec cette limite)");
@@ -109,4 +132,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nPOC engrams terminé — le relais vers CH6 : recall(cues,k) = indices d'injection.");
     Ok(())
 }
-

@@ -33,8 +33,7 @@ impl Adresse {
     /// adresse devinable n'étant plus une adresse.
     pub fn tirer() -> crate::Resultat<Self> {
         let mut octets = [0u8; TAILLE_ADRESSE];
-        getrandom::fill(&mut octets)
-            .map_err(|e| crate::ErreurAveugle::Entropie(e.to_string()))?;
+        getrandom::fill(&mut octets).map_err(|e| crate::ErreurAveugle::Entropie(e.to_string()))?;
         Ok(Self(octets))
     }
 

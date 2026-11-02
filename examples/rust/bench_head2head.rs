@@ -42,7 +42,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let file_size = std::fs::metadata(&db_path)?.len();
     println!("=== bench-head2head (obrain) ===");
-    println!("File: {} ({:.2} MB)", db_path.display(), file_size as f64 / 1_048_576.0);
+    println!(
+        "File: {} ({:.2} MB)",
+        db_path.display(),
+        file_size as f64 / 1_048_576.0
+    );
     println!("Project nodes/edges: (voir info)");
 
     // (2026-08-31) Mode read-only par défaut pour le bench : le vrai coût de
@@ -77,9 +81,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // search (BM25 sur name — équivalent de cbm_store_search name_pattern)
     let search_ms = bench(rep, || {
-        let _ = session.execute("MATCH (n) WHERE toLower(n.name) CONTAINS 'handler' RETURN n.name LIMIT 10");
+        let _ = session
+            .execute("MATCH (n) WHERE toLower(n.name) CONTAINS 'handler' RETURN n.name LIMIT 10");
     });
-    println!("search   {:8.1} ms   (toLower CONTAINS name, LIMIT 10)", search_ms);
+    println!(
+        "search   {:8.1} ms   (toLower CONTAINS name, LIMIT 10)",
+        search_ms
+    );
 
     // search-BM25 (vrai index inversé BM25 d'obrain, construit une fois puis
     // interrogé — le même geste que create_text_index + text_search, qui est
@@ -94,7 +102,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let q = bench(rep, || {
             let _ = db.text_search("Function", "name", "handler", 10);
         });
-        println!("bm25idx  {:8.1} ms   (build index Function.name)", build_us as f64 / 1000.0);
+        println!(
+            "bm25idx  {:8.1} ms   (build index Function.name)",
+            build_us as f64 / 1000.0
+        );
         q
     };
     println!("searchBM25 {:6.1} ms   (BM25 indexé, LIMIT 10)", bm25_ms);
@@ -120,21 +131,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let k4_ms = bench(rep, || {
         let _ = session.execute(q_k4);
     });
-    println!("k4       {:8.1} ms   (4-sauts + 3 jointures fermées)", k4_ms);
+    println!(
+        "k4       {:8.1} ms   (4-sauts + 3 jointures fermées)",
+        k4_ms
+    );
 
     // ORDER BY (tri de toutes les fonctions)
     let q_order = "MATCH (n:Function) RETURN n.name ORDER BY n.name DESC LIMIT 50";
     let order_ms = bench(rep, || {
         let _ = session.execute(q_order);
     });
-    println!("orderby  {:8.1} ms   (ORDER BY sur toutes les fonctions, LIMIT 50)", order_ms);
+    println!(
+        "orderby  {:8.1} ms   (ORDER BY sur toutes les fonctions, LIMIT 50)",
+        order_ms
+    );
 
     // DISTINCT (dédup de toutes les fonctions)
     let q_dist = "MATCH (n:Function) RETURN DISTINCT n.name";
     let dist_ms = bench(rep, || {
         let _ = session.execute(q_dist);
     });
-    println!("distinct {:8.1} ms   (RETURN DISTINCT sur toutes les fonctions)", dist_ms);
+    println!(
+        "distinct {:8.1} ms   (RETURN DISTINCT sur toutes les fonctions)",
+        dist_ms
+    );
 
     Ok(())
 }

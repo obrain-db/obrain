@@ -5,8 +5,12 @@ use std::time::Instant;
 
 fn main() {
     let mut a = std::env::args().skip(1);
-    let depot = a.next().expect("usage: banc_reindex <depot> <dossier-cache>");
-    let cache = a.next().expect("usage: banc_reindex <depot> <dossier-cache>");
+    let depot = a
+        .next()
+        .expect("usage: banc_reindex <depot> <dossier-cache>");
+    let cache = a
+        .next()
+        .expect("usage: banc_reindex <depot> <dossier-cache>");
     let opts = obrain_indexer::index::IndexOptions {
         cache_dir: Some(cache.into()),
         ..Default::default()

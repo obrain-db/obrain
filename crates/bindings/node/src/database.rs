@@ -339,8 +339,11 @@ impl JsObrainDB {
             .into());
         }
         let db = self.inner.read();
-        let mut edges: Vec<(obrain_common::types::NodeId, obrain_common::types::NodeId, &str)> =
-            Vec::with_capacity(src_ids.len());
+        let mut edges: Vec<(
+            obrain_common::types::NodeId,
+            obrain_common::types::NodeId,
+            &str,
+        )> = Vec::with_capacity(src_ids.len());
         for i in 0..src_ids.len() {
             edges.push((
                 obrain_common::types::NodeId(u64::from(src_ids[i])),
@@ -377,8 +380,11 @@ impl JsObrainDB {
             .into());
         }
         let db = self.inner.read();
-        let mut edges: Vec<(obrain_common::types::NodeId, obrain_common::types::NodeId, &str)> =
-            Vec::with_capacity(src_ids.len());
+        let mut edges: Vec<(
+            obrain_common::types::NodeId,
+            obrain_common::types::NodeId,
+            &str,
+        )> = Vec::with_capacity(src_ids.len());
         for i in 0..src_ids.len() {
             edges.push((
                 obrain_common::types::NodeId(u64::from(src_ids[i])),

@@ -99,9 +99,17 @@ fn depuis_json(v: &serde_json::Value) -> Option<Demande> {
     Some(Demande {
         store: v.get("store")?.as_str()?.to_string(),
         genre: Genre::depuis(v.get("genre")?.as_str()?)?,
-        raison: v.get("raison").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        raison: v
+            .get("raison")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         t_ms: v.get("t").and_then(|x| x.as_i64()).unwrap_or(0),
-        source: v.get("source").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        source: v
+            .get("source")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -242,7 +250,10 @@ mod tests {
         assert_eq!(att.len(), 1, "dix attachements, une demande : {att:?}");
         assert_eq!(att[0].raison, "raison 9", "la DERNIÈRE mesure est gardée");
         accorder_dans(&td, s, Genre::Degres);
-        assert!(en_attente_dans(&td).is_empty(), "accorder retire la demande");
+        assert!(
+            en_attente_dans(&td).is_empty(),
+            "accorder retire la demande"
+        );
         let _ = std::fs::remove_file(&td);
     }
 
@@ -259,7 +270,11 @@ mod tests {
         assert_eq!(en_attente_dans(&td).len(), 2);
         accorder_dans(&td, s, Genre::Degres);
         let reste = en_attente_dans(&td);
-        assert_eq!(reste.len(), 1, "accorder les degrés ne doit pas acquitter le reste");
+        assert_eq!(
+            reste.len(),
+            1,
+            "accorder les degrés ne doit pas acquitter le reste"
+        );
         assert_eq!(reste[0].genre, Genre::Enregistrements);
         let _ = std::fs::remove_file(&td);
     }

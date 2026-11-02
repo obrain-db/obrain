@@ -37,8 +37,7 @@ fn executer() -> Result<(), String> {
     // aucune clé d'espace : c'est structurel, pas une convention.
     let cle_porteur = CleJournal::engendrer().map_err(|e| e.to_string())?;
     let publique = cle_porteur.publique();
-    let mut porteur =
-        Porteur::neuf("porteur-alpha", cle_porteur, 8).map_err(|e| e.to_string())?;
+    let mut porteur = Porteur::neuf("porteur-alpha", cle_porteur, 8).map_err(|e| e.to_string())?;
     porteur.enregistrer(alice);
     porteur.enregistrer(bob);
 
@@ -46,9 +45,16 @@ fn executer() -> Result<(), String> {
     let cle_espace = CleEspace::engendrer("espace-alpha").map_err(|e| e.to_string())?;
 
     println!("── 1. Ce qui traverse ──────────────────────────────────────────────");
-    let aller = sceller(&cle_espace, &Charge::nouvelle(alice, bob, REQUETE.as_bytes().to_vec()))
-        .map_err(|e| e.to_string())?;
-    println!("  la requête fait {} octets, scellée : {} octets", REQUETE.len(), aller.len());
+    let aller = sceller(
+        &cle_espace,
+        &Charge::nouvelle(alice, bob, REQUETE.as_bytes().to_vec()),
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "  la requête fait {} octets, scellée : {} octets",
+        REQUETE.len(),
+        aller.len()
+    );
 
     let jeton = Jeton::neuf(&cle_espace).map_err(|e| e.to_string())?;
     let mut retour = Charge::nouvelle(bob, alice, RESULTAT.as_bytes().to_vec());
@@ -99,7 +105,10 @@ fn executer() -> Result<(), String> {
         let portee = jeton
             .verifier(jeton_recu, "graph:write", 1_700_000_002)
             .map_err(|e| e.to_string())?;
-        println!("  son jeton autorise « {} » : vérifié à l'arrivée", portee.action);
+        println!(
+            "  son jeton autorise « {} » : vérifié à l'arrivée",
+            portee.action
+        );
     }
 
     // ── Ce que le porteur ne peut pas faire ─────────────────────────────────

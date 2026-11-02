@@ -268,21 +268,24 @@ pub fn run(args: McpArgs) -> Result<()> {
     // calcul qui ne vérifie rien) : il NOMME le coupable — la requête en cours
     // et son âge — pour qu'un `top` sur un pont se lise dans le journal au lieu
     // de se deviner.
-    let requete_en_cours: std::sync::Arc<
-        std::sync::Mutex<Option<(String, std::time::Instant)>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let requete_en_cours: std::sync::Arc<std::sync::Mutex<Option<(String, std::time::Instant)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
     {
         let en_cours = std::sync::Arc::clone(&requete_en_cours);
         let seuil = seuil_alerte_requete();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            let vue = en_cours
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .map(|(outil, debut)| (outil.clone(), debut.elapsed()));
-            if let Some(message) = alerte_requete(vue.as_ref().map(|(o, d)| (o.as_str(), *d)), seuil) {
-                tracing::warn!("{message}");
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let vue = en_cours
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .map(|(outil, debut)| (outil.clone(), debut.elapsed()));
+                if let Some(message) =
+                    alerte_requete(vue.as_ref().map(|(o, d)| (o.as_str(), *d)), seuil)
+                {
+                    tracing::warn!("{message}");
+                }
             }
         });
     }
@@ -319,9 +322,10 @@ pub fn run(args: McpArgs) -> Result<()> {
         // l'échéance autour de la DISPATCH ENTIÈRE, pas seulement du texte GQL.
         let _portee = obrain_common::utils::cancel::frontiere(
             Some(false),
-            Some(std::time::Instant::now() + echeance_requete_pont().unwrap_or(
-                std::time::Duration::from_secs(30),
-            )),
+            Some(
+                std::time::Instant::now()
+                    + echeance_requete_pont().unwrap_or(std::time::Duration::from_secs(30)),
+            ),
         );
         let response = match handle_line(&db, &line) {
             Ok(Some(resp)) => resp,
@@ -361,7 +365,9 @@ pub fn run(args: McpArgs) -> Result<()> {
         let response = reponse_bornee(
             response,
             &outil,
-            serde_json::from_str::<Value>(&line).ok().and_then(|v| v.get("id").cloned()),
+            serde_json::from_str::<Value>(&line)
+                .ok()
+                .and_then(|v| v.get("id").cloned()),
             plafond_reponse_octets(),
         );
         if let Err(e) = ecrire_reponse(&mut stdout, &response) {
@@ -1219,7 +1225,11 @@ fn tronquer_avec_marque(texte: &str, max: usize) -> String {
         return texte.to_string();
     }
     let coupe: String = texte.chars().take(max).collect();
-    format!("{coupe}… [tronqué : {} caractères sur {}]", max, texte.chars().count())
+    format!(
+        "{coupe}… [tronqué : {} caractères sur {}]",
+        max,
+        texte.chars().count()
+    )
 }
 
 fn espace_du_pont() -> String {
@@ -1253,8 +1263,7 @@ fn call_tool(db: &ObrainDB, name: &str, arguments: &Value) -> (Value, bool) {
                     .is_some_and(gql_ecrivante);
         let espace = espace_du_pont();
         let garde = GardeIam::partagee();
-        if let Err((code, raison)) =
-            garde.controler(jeton_du_pont().as_deref(), ecriture, &espace)
+        if let Err((code, raison)) = garde.controler(jeton_du_pont().as_deref(), ecriture, &espace)
         {
             // Champs à PLAT : un client doit pouvoir lire `http` et `acces`
             // sans re-décoder une chaîne.
@@ -1694,7 +1703,9 @@ fn runtime_ensure_text_index(db: &ObrainDB, label: &str, prop: &str, generation:
     let memo = RUNTIME_TEXT_INDEX_GEN
         .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let stale = {
-        let guard = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.get(&db_key).and_then(|m| m.get(&key)) {
             Some(last) if *last == generation => !db.has_text_index(label, prop),
             _ => true,
@@ -1707,7 +1718,9 @@ fn runtime_ensure_text_index(db: &ObrainDB, label: &str, prop: &str, generation:
     // reference, rescan Message) : le bridge est sequentiel, mais ne pas
     // tenir le memo.
     if db.create_text_index(label, prop).is_ok() {
-        let mut guard = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.entry(db_key).or_default().insert(key, generation);
     }
 }
@@ -1851,7 +1864,10 @@ fn sessions_rows_from_substrate(
         // sessions du set passent — le set vient d une traversee OWNED_BY
         // legere (qn seul), les props restent servies en colonnaire.
         if let Some(set) = possedes {
-            let qn = qn_col.get(i).and_then(|o| o.as_ref()).map(|v| v.to_string());
+            let qn = qn_col
+                .get(i)
+                .and_then(|o| o.as_ref())
+                .map(|v| v.to_string());
             match qn {
                 Some(q) if set.contains(&q) => {}
                 _ => continue,
@@ -2051,13 +2067,17 @@ pub(crate) fn sessions_list(db: &ObrainDB, arguments: &Value) -> (Value, bool) {
         ),
         (None, true) => (
             // id(s) en colonne 8 = slot substrate pour le test de contenu O(1).
-            format!("MATCH (s:Session) RETURN s.qualified_name, s.cwd, s.createdAt, s.title, s.source_path, s.agentPreset, s.origin, s.parentSession, id(s) LIMIT 5000"),
+            format!(
+                "MATCH (s:Session) RETURN s.qualified_name, s.cwd, s.createdAt, s.title, s.source_path, s.agentPreset, s.origin, s.parentSession, id(s) LIMIT 5000"
+            ),
             "toutes-fast",
             true,
         ),
         (None, false) => (
             // Repli GQL d'origine (limite moteur OR-EXISTS ci-dessus).
-            format!("MATCH (s:Session)              WHERE (s.origin IS NULL OR s.origin <> 'subagent' OR EXISTS {{ MATCH (:Message)-[:PART_OF]->(s) }})              RETURN s.qualified_name, s.cwd, s.createdAt, s.title, s.source_path,              s.agentPreset, s.origin, s.parentSession              LIMIT 5000"),
+            format!(
+                "MATCH (s:Session)              WHERE (s.origin IS NULL OR s.origin <> 'subagent' OR EXISTS {{ MATCH (:Message)-[:PART_OF]->(s) }})              RETURN s.qualified_name, s.cwd, s.createdAt, s.title, s.source_path,              s.agentPreset, s.origin, s.parentSession              LIMIT 5000"
+            ),
             "toutes",
             false,
         ),
@@ -2084,7 +2104,9 @@ pub(crate) fn sessions_list(db: &ObrainDB, arguments: &Value) -> (Value, bool) {
             }
             // (2026-09-14) Tri recent-d-abord en Rust : LIMITE MOTEUR constatee,
             // ORDER BY sur motif avec arete rend des props NULL apres tri.
-            raw.sort_by_key(|r| std::cmp::Reverse(r.get(2).and_then(|v| v.as_int64()).unwrap_or(0)));
+            raw.sort_by_key(|r| {
+                std::cmp::Reverse(r.get(2).and_then(|v| v.as_int64()).unwrap_or(0))
+            });
             let fin = offset.saturating_add(limit).min(raw.len());
             let debut = offset.min(fin);
             let raw = raw[debut..fin].to_vec();
@@ -2459,7 +2481,11 @@ fn borner_injection_par_jetons(payload: &mut Value) {
 /// le plus éclairant : c'est lui qui survit à une coupe).
 fn sections_injectables(payload: &Value) -> Vec<(&'static str, usize, String)> {
     let mut sortie = Vec::new();
-    for (section, genre) in [("goals", "goals"), ("summaries", "summaries"), ("weave", "weave")] {
+    for (section, genre) in [
+        ("goals", "goals"),
+        ("summaries", "summaries"),
+        ("weave", "weave"),
+    ] {
         let Some(items) = payload.get(section).and_then(Value::as_array) else {
             continue;
         };
@@ -2504,7 +2530,11 @@ fn sections_injectables(payload: &Value) -> Vec<(&'static str, usize, String)> {
 /// découpant. Chaque tranche est une propriété, leur somme est le texte entier,
 /// et c'est bien `estimate_tokens` qui décide — le budget reste celui
 /// d'`obrain-rag`.
-fn node_pour_estimation(section: &str, index: usize, texte: &str) -> obrain_rag::traits::RetrievedNode {
+fn node_pour_estimation(
+    section: &str,
+    index: usize,
+    texte: &str,
+) -> obrain_rag::traits::RetrievedNode {
     const TRANCHE: usize = 500;
     let mut properties = std::collections::HashMap::new();
     if texte.is_empty() {
@@ -2522,7 +2552,11 @@ fn node_pour_estimation(section: &str, index: usize, texte: &str) -> obrain_rag:
             let Some(morceau) = texte.get(n * TRANCHE..borne) else {
                 break;
             };
-            let cle = if n == 0 { "text".to_string() } else { format!("text_{}", n + 1) };
+            let cle = if n == 0 {
+                "text".to_string()
+            } else {
+                format!("text_{}", n + 1)
+            };
             properties.insert(cle, morceau.to_string());
             let _ = morceau;
         }
@@ -2532,7 +2566,10 @@ fn node_pour_estimation(section: &str, index: usize, texte: &str) -> obrain_rag:
         labels: vec![section.to_string()],
         properties,
         score: 1.0,
-        source: obrain_rag::traits::RetrievalSource::SpreadingActivation { depth: 0, activation: 1.0 },
+        source: obrain_rag::traits::RetrievalSource::SpreadingActivation {
+            depth: 0,
+            activation: 1.0,
+        },
         outgoing_relations: Vec::new(),
         incoming_relations: Vec::new(),
     }
@@ -2922,7 +2959,14 @@ fn import_events(db: &ObrainDB, arguments: &Value) -> (Value, bool) {
                 if !node_exists(&session, "Account", &aqn) {
                     merge_node(&session, "Account", &aqn, None);
                 }
-                link_edge(&session, "Session", &session_qn, "Account", &aqn, "OWNED_BY");
+                link_edge(
+                    &session,
+                    "Session",
+                    &session_qn,
+                    "Account",
+                    &aqn,
+                    "OWNED_BY",
+                );
             }
         }
     }
@@ -5087,9 +5131,7 @@ fn graph_link(db: &ObrainDB, arguments: &Value) -> (Value, bool) {
                 .get("qn")
                 .or_else(|| ep.get("qualified_name"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    "qn (ou qualified_name) manquant dans source/target".to_string()
-                })?;
+                .ok_or_else(|| "qn (ou qualified_name) manquant dans source/target".to_string())?;
             if qn.contains(['\'', '"', '\\']) {
                 return Err("qualified_name invalide".to_string());
             }
@@ -5139,8 +5181,10 @@ fn graph_link(db: &ObrainDB, arguments: &Value) -> (Value, bool) {
             // qui est là : faire converger deux conventions ne doit pas réécrire
             // une identité. (Un nœud créé juste au-dessus les porte déjà toutes
             // les deux ; la lecture ne coûte alors qu'un aller-retour.)
-            let q_props =
-                format!("MATCH (n) WHERE id(n) = {} RETURN n.qn, n.qualified_name", nid.0);
+            let q_props = format!(
+                "MATCH (n) WHERE id(n) = {} RETURN n.qn, n.qualified_name",
+                nid.0
+            );
             if let Ok(res) = session.execute(&q_props)
                 && let Some(row) = res.rows.first()
             {
@@ -5239,7 +5283,8 @@ fn resoudre_noeud_par_identite(
         let Ok(res) = session.execute(&q) else {
             continue;
         };
-        if let Some(obrain_common::types::Value::Int64(i)) = res.rows.first().and_then(|r| r.first())
+        if let Some(obrain_common::types::Value::Int64(i)) =
+            res.rows.first().and_then(|r| r.first())
         {
             return Some(obrain_common::types::NodeId(*i as u64));
         }
@@ -5347,11 +5392,7 @@ fn ingest_traces(db: &ObrainDB, arguments: &Value) -> (Value, bool) {
         let nid = db.create_node(&["Function"]);
         // Les DEUX conventions, comme le prescrit `machines.rs` : un nœud écrit
         // avec une seule est invisible à l'autre lecteur.
-        let _ = db.set_node_property(
-            nid,
-            "qn",
-            obrain_common::types::Value::from(qn.to_string()),
-        );
+        let _ = db.set_node_property(nid, "qn", obrain_common::types::Value::from(qn.to_string()));
         let _ = db.set_node_property(
             nid,
             "qualified_name",
@@ -5542,9 +5583,13 @@ fn ingestion_native(
         types.push(e.kind.label());
     }
     let n_edges = src.len() as u64;
-    db.bulk_import_refs(&labels, &src, &dst, &types).map_err(|e| format!("{e}"))?;
+    db.bulk_import_refs(&labels, &src, &dst, &types)
+        .map_err(|e| format!("{e}"))?;
     if prof {
-        eprintln!("[prof]   nœuds+arêtes (zones) : {:.2}s", t.elapsed().as_secs_f64());
+        eprintln!(
+            "[prof]   nœuds+arêtes (zones) : {:.2}s",
+            t.elapsed().as_secs_f64()
+        );
     }
     let t = std::time::Instant::now();
     // Propriétés, par paquets (la mémoire reste bornée), avec EXACTEMENT les
@@ -5564,7 +5609,10 @@ fn ingestion_native(
             .par_iter()
             .map(|n| {
                 let mut l: Vec<(&str, OV)> = Vec::with_capacity(10);
-                l.push(("qualified_name", OV::String(n.qualified_name.clone().into())));
+                l.push((
+                    "qualified_name",
+                    OV::String(n.qualified_name.clone().into()),
+                ));
                 if let Some(name) = &n.props.name {
                     l.push(("name", OV::String(name.clone().into())));
                 }
@@ -5613,7 +5661,10 @@ fn ingestion_native(
         );
     }
     if prof {
-        eprintln!("[prof]   propriétés (zones) : {:.2}s ({ecrites})", t.elapsed().as_secs_f64());
+        eprintln!(
+            "[prof]   propriétés (zones) : {:.2}s ({ecrites})",
+            t.elapsed().as_secs_f64()
+        );
     }
     // ── POURQUOI 0, ET PAS UN MENSONGE (réunification 2026-10-06) ───────────
     // Le multi-écrivain a corrigé la PERTE de provenance d'arêtes en passant par
@@ -5630,7 +5681,11 @@ fn ingestion_native(
 
 /// Le chemin historique, propriété par propriété (base déjà peuplée).
 /// Rend `(arêtes écrites, paires de provenance écrites)`.
-fn ingestion_unitaire(db: &ObrainDB, g: &obrain_indexer::graph::CodeGraph, empreinte: &str) -> (u64, u64) {
+fn ingestion_unitaire(
+    db: &ObrainDB,
+    g: &obrain_indexer::graph::CodeGraph,
+    empreinte: &str,
+) -> (u64, u64) {
     use obrain_common::types::Value as OV;
     use std::collections::HashMap;
     let mut map: HashMap<u64, obrain_common::types::NodeId> = HashMap::new();
@@ -5727,7 +5782,11 @@ fn ingestion_unitaire(db: &ObrainDB, g: &obrain_indexer::graph::CodeGraph, empre
         if n.kind == obrain_indexer::NodeKind::Project
             && let Some(&nid) = map.get(&n.id.0)
         {
-            db.set_node_property(nid, "empreinte_depot", OV::String(empreinte.to_string().into()));
+            db.set_node_property(
+                nid,
+                "empreinte_depot",
+                OV::String(empreinte.to_string().into()),
+            );
         }
     }
     (n_edges, n_props_aretes)
@@ -5810,8 +5869,12 @@ pub(crate) fn index_repository(db: &ObrainDB, arguments: &Value) -> (Value, bool
     let empreinte = format!("{:032x}", idx.empreinte_depot);
     let t_parse = t0.elapsed();
     if prof {
-        eprintln!("[prof] parse+resolve+graph : {:.1}s ({} nœuds / {} arêtes en mémoire)",
-            t_parse.as_secs_f64(), idx.graph.node_count(), idx.graph.edges().len());
+        eprintln!(
+            "[prof] parse+resolve+graph : {:.1}s ({} nœuds / {} arêtes en mémoire)",
+            t_parse.as_secs_f64(),
+            idx.graph.node_count(),
+            idx.graph.edges().len()
+        );
     }
     let g = &idx.graph;
     // ── INGESTION NATIVE SUR BASE NEUVE (T27, 2026-09-16) ─────────────────
@@ -5858,8 +5921,14 @@ pub(crate) fn index_repository(db: &ObrainDB, arguments: &Value) -> (Value, bool
     let t_idx = std::time::Instant::now();
     db.create_property_indexes(&["qualified_name", "name"]);
     if prof {
-        eprintln!("[prof] index d'égalité (qualified_name, name) : {:.2}s", t_idx.elapsed().as_secs_f64());
-        eprintln!("[prof] TOTAL index_repository : {:.2}s", t0.elapsed().as_secs_f64());
+        eprintln!(
+            "[prof] index d'égalité (qualified_name, name) : {:.2}s",
+            t_idx.elapsed().as_secs_f64()
+        );
+        eprintln!(
+            "[prof] TOTAL index_repository : {:.2}s",
+            t0.elapsed().as_secs_f64()
+        );
         // ── LA TÉLÉMÉTRIE DU GROUP COMMIT, SI ELLE EST DEMANDÉE ─────────────
         // `OBRAIN_GC_DIAG=1` rend les compteurs du group commit sur le flux de
         // profil : c'est ce qui permet de dire OÙ le temps passe au lieu de le
@@ -7465,8 +7534,16 @@ mod tests {
             }),
         );
         assert!(!err2, "{c2}");
-        let (r, _) = call_tool(&db, "query", &json!({ "query": "MATCH (n) RETURN count(n)" }));
-        assert_eq!(r["rows"][0][0].as_i64(), Some(2), "aucun doublon attendu : {r}");
+        let (r, _) = call_tool(
+            &db,
+            "query",
+            &json!({ "query": "MATCH (n) RETURN count(n)" }),
+        );
+        assert_eq!(
+            r["rows"][0][0].as_i64(),
+            Some(2),
+            "aucun doublon attendu : {r}"
+        );
 
         // 4. Un nœud ANCIEN (une seule clé) est complété, sans écraser l'existante.
         let vieux = db.create_node(&["Machine"]);
@@ -7487,7 +7564,8 @@ mod tests {
             &json!({ "query": "MATCH (n) WHERE n.qn = 'machine:ancienne' RETURN n.qualified_name" }),
         );
         assert_eq!(
-            r3["rows"][0][0], json!("machine:ancienne"),
+            r3["rows"][0][0],
+            json!("machine:ancienne"),
             "la clé manquante doit être complétée : {r3}"
         );
 
@@ -7507,7 +7585,11 @@ mod tests {
             "query",
             &json!({ "query": "MATCH (n) WHERE n.qn = 'machine:ancienne' RETURN count(n)" }),
         );
-        assert_eq!(r4["rows"][0][0].as_i64(), Some(1), "toujours un seul nœud : {r4}");
+        assert_eq!(
+            r4["rows"][0][0].as_i64(),
+            Some(1),
+            "toujours un seul nœud : {r4}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -7560,7 +7642,12 @@ mod tests {
         // lecture d'environnement. Le crate interdit `unsafe` globalement ; il est
         // autorisé ici et SEULEMENT ici pour retirer des variables héritées.
         unsafe {
-            for v in ["OBRAIN_IAM", "OBRAIN_IAM_STORE", "OBRAIN_IAM_ACCOUNT", "OBRAIN_IAM_TOKEN"] {
+            for v in [
+                "OBRAIN_IAM",
+                "OBRAIN_IAM_STORE",
+                "OBRAIN_IAM_ACCOUNT",
+                "OBRAIN_IAM_TOKEN",
+            ] {
                 std::env::remove_var(v);
             }
         }
@@ -7582,15 +7669,24 @@ mod tests {
         // Sous le plafond : inchangée, au caractère près.
         let petite = json!({"jsonrpc": "2.0", "id": 7, "result": {"rows": []}});
         let inchangee = reponse_bornee(petite.clone(), "query", Some(json!(7)), plafond);
-        assert_eq!(inchangee, petite, "une réponse normale ne doit pas être touchée");
+        assert_eq!(
+            inchangee, petite,
+            "une réponse normale ne doit pas être touchée"
+        );
 
         // Au-dessus : un refus explicite, qui dit QUI, COMBIEN, et JUSQU'OÙ.
         let enorme = json!({"jsonrpc": "2.0", "id": 9, "result": {"blob": "x".repeat(4096)}});
         let refus = reponse_bornee(enorme, "runtime_search", Some(json!(9)), plafond);
         assert_eq!(refus["id"], json!(9), "le refus répond à la MÊME requête");
         let message = refus["error"]["message"].as_str().expect("message");
-        assert!(message.contains("runtime_search"), "il doit nommer l'outil : {message}");
-        assert!(message.contains("1024"), "il doit donner le plafond : {message}");
+        assert!(
+            message.contains("runtime_search"),
+            "il doit nommer l'outil : {message}"
+        );
+        assert!(
+            message.contains("1024"),
+            "il doit donner le plafond : {message}"
+        );
         assert!(
             message.contains("LIMIT"),
             "il doit orienter le correctif : {message}"
@@ -7623,15 +7719,23 @@ mod tests {
             seuil,
         )
         .expect("au-delà du seuil, le veilleur doit parler");
-        assert!(message.contains("context_build"), "le message doit nommer l'outil : {message}");
-        assert!(message.contains("41.0"), "le message doit donner l'âge : {message}");
+        assert!(
+            message.contains("context_build"),
+            "le message doit nommer l'outil : {message}"
+        );
+        assert!(
+            message.contains("41.0"),
+            "le message doit donner l'âge : {message}"
+        );
     }
 
     /// Le nom de l'outil se lit dans la ligne JSON-RPC, quelle que soit sa forme.
     #[test]
     fn le_nom_de_la_requete_se_lit_dans_la_ligne() {
         assert_eq!(
-            nom_requete(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"context_build","arguments":{}}}"#),
+            nom_requete(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"context_build","arguments":{}}}"#
+            ),
             "context_build"
         );
         assert_eq!(
@@ -7775,8 +7879,14 @@ mod tests {
             "engrams": [],
         });
         borner_injection_par_jetons(&mut payload);
-        let goals = payload.get("goals").and_then(serde_json::Value::as_array).map_or(0, Vec::len);
-        assert_eq!(goals, 1, "l'injection ne doit JAMAIS être vidée : {payload}");
+        let goals = payload
+            .get("goals")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+        assert_eq!(
+            goals, 1,
+            "l'injection ne doit JAMAIS être vidée : {payload}"
+        );
     }
 
     /// Un payload PETIT ne doit pas être touché — ni amputé, ni marqué.
@@ -8267,7 +8377,11 @@ mod tests {
             .lines()
             .filter(|l| l.contains(&marker) && l.trim_end().ends_with('}'))
             .collect();
-        assert_eq!(lines.len(), 2, "2 lignes complètes attendues, obtenues : {lines:?}");
+        assert_eq!(
+            lines.len(),
+            2,
+            "2 lignes complètes attendues, obtenues : {lines:?}"
+        );
         for l in &lines {
             let rec: Value = serde_json::from_str(l).expect("ligne JSON valide");
             assert_eq!(rec["tool"], json!("query"), "{rec}");
@@ -8488,7 +8602,10 @@ mod tests {
         let (c3, _err3) = call_tool(&db, "runtime_search", &json!({ "query": "panda" }));
         assert_eq!(c3["total"], 3, "{c3}");
         for row in c3["rows"].as_array().unwrap() {
-            assert!(row["qn"].is_string() && !row["qn"].as_str().unwrap().is_empty(), "{row}");
+            assert!(
+                row["qn"].is_string() && !row["qn"].as_str().unwrap().is_empty(),
+                "{row}"
+            );
             assert!(row["text"].is_string(), "{row}");
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -8520,7 +8637,9 @@ mod tests {
             .execute("MERGE (m:Message {qualified_name: 'msg:2'}) RETURN id(m)")
             .unwrap();
         session
-            .execute("MATCH (m:Message {qualified_name: 'msg:2'}) SET m.text = 'le mandrill bleu court'")
+            .execute(
+                "MATCH (m:Message {qualified_name: 'msg:2'}) SET m.text = 'le mandrill bleu court'",
+            )
             .unwrap();
         let gen1 = db.current_epoch().as_u64();
         assert!(
@@ -8532,12 +8651,18 @@ mod tests {
         // Génération avancée → REBUILD → le nouveau message est trouvé.
         let (c2, err2) = call_tool(&db, "runtime_search", &json!({ "query": "mandrill" }));
         assert!(!err2, "{c2}");
-        assert_eq!(c2["total"], 2, "rebuild attendu après avance de génération : {c2}");
+        assert_eq!(
+            c2["total"], 2,
+            "rebuild attendu après avance de génération : {c2}"
+        );
 
         // Génération constante → réutilisation → résultats identiques.
         let (c3, err3) = call_tool(&db, "runtime_search", &json!({ "query": "mandrill" }));
         assert!(!err3, "{c3}");
-        assert_eq!(c3["total"], 2, "réutilisation à génération constante : {c3}");
+        assert_eq!(
+            c3["total"], 2,
+            "réutilisation à génération constante : {c3}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

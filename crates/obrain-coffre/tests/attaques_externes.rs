@@ -111,7 +111,8 @@ impl Hasard {
 /// La charge utile de test : un motif qui ne doit apparaître **nulle part** dans
 /// les octets scellés, et qui est assez long pour n'être pas confondu avec du
 /// bruit par hasard.
-const SECRET_DU_CALCUL: &[u8] = b"graph:read MATCH (n:Client) WHERE n.iban = 'FR76-LE-SECRET-A-NE-PAS-LIRE'";
+const SECRET_DU_CALCUL: &[u8] =
+    b"graph:read MATCH (n:Client) WHERE n.iban = 'FR76-LE-SECRET-A-NE-PAS-LIRE'";
 
 fn charge(multiplier: usize) -> Vec<u8> {
     let mut charge = Vec::new();
@@ -194,7 +195,8 @@ fn en_tete_hostile_ne_panique_pas_et_se_refuse_sans_allouer() {
 
     // Les champs tels que le scellement les a produits, pour ne changer qu'un
     // champ à la fois.
-    let lire_u32 = |o: usize| u32::from_le_bytes([en_tete[o], en_tete[o + 1], en_tete[o + 2], en_tete[o + 3]]);
+    let lire_u32 =
+        |o: usize| u32::from_le_bytes([en_tete[o], en_tete[o + 1], en_tete[o + 2], en_tete[o + 3]]);
     assert_eq!(lire_u32(6), BLOC);
     assert_eq!(lire_u32(10), 1);
 
@@ -324,8 +326,12 @@ fn reordonnancement_des_blocs_refuse() {
 #[test]
 fn greffe_d_un_bloc_entre_deux_coffres_refusee() {
     let c = coffre("e1");
-    let a = c.sceller_avec_bloc(&charge_blocs(2), BLOC).expect("scellement A");
-    let b = c.sceller_avec_bloc(&charge_blocs(2), BLOC).expect("scellement B");
+    let a = c
+        .sceller_avec_bloc(&charge_blocs(2), BLOC)
+        .expect("scellement A");
+    let b = c
+        .sceller_avec_bloc(&charge_blocs(2), BLOC)
+        .expect("scellement B");
 
     // Les deux coffres ont la même forme : la greffe est donc invisible à
     // quiconque ne regarde que les longueurs.
@@ -417,7 +423,9 @@ fn les_usages_ne_se_confondent_pas() {
     let jeton = Jeton::neuf(&cle("e1")).expect("jeton");
     let enveloppe = Enveloppe::neuf(&cle("e1")).expect("enveloppe");
 
-    let scelle = c.sceller_avec_bloc(&charge_blocs(1), BLOC).expect("scellement");
+    let scelle = c
+        .sceller_avec_bloc(&charge_blocs(1), BLOC)
+        .expect("scellement");
     let jeton_octets = jeton.emettre("graph:read", u64::MAX).expect("émission");
     let env_octets = enveloppe
         .sceller_dans(
@@ -429,8 +437,14 @@ fn les_usages_ne_se_confondent_pas() {
     // Un jeton n'est pas un coffre, ni une enveloppe, ni l'inverse.
     doit_refuser(c.desceller(&jeton_octets), "jeton présenté comme coffre");
     doit_refuser(c.desceller(&env_octets), "enveloppe présentée comme coffre");
-    doit_refuser(enveloppe.desceller(&scelle), "coffre présenté comme enveloppe");
-    doit_refuser(enveloppe.desceller(&jeton_octets), "jeton présenté comme enveloppe");
+    doit_refuser(
+        enveloppe.desceller(&scelle),
+        "coffre présenté comme enveloppe",
+    );
+    doit_refuser(
+        enveloppe.desceller(&jeton_octets),
+        "jeton présenté comme enveloppe",
+    );
     doit_refuser(jeton.lire(&scelle), "coffre présenté comme jeton");
     doit_refuser(jeton.lire(&env_octets), "enveloppe présentée comme jeton");
 
@@ -591,8 +605,7 @@ fn enveloppe_deux_charges_differentes_ont_la_meme_taille() {
         "deux charges de la même classe doivent avoir la même longueur"
     );
     assert_eq!(
-        petite[5],
-        grosse[5],
+        petite[5], grosse[5],
         "la classe doit être la même (indice en clair, position 5)"
     );
     assert_ne!(petite, grosse, "les octets, eux, doivent différer");
@@ -651,7 +664,10 @@ fn enveloppe_classe_abaissée_ou_inconnue_refusee() {
     // Une charge plus grande que la plus grande classe est refusée, jamais
     // tronquée — une charge tronquée ferait exécuter un autre calcul.
     let trop = vec![0u8; ClasseTaille::maximum() + 1];
-    doit_refuser(enveloppe.sceller(&trop), "charge au-delà de la dernière classe");
+    doit_refuser(
+        enveloppe.sceller(&trop),
+        "charge au-delà de la dernière classe",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -661,7 +677,9 @@ fn enveloppe_classe_abaissée_ou_inconnue_refusee() {
 #[test]
 fn jeton_aucun_octet_n_echappe_a_l_authentification() {
     let jeton = Jeton::neuf(&cle("e1")).expect("jeton");
-    let emis = jeton.emettre("graph:read", 2_000_000_000).expect("émission");
+    let emis = jeton
+        .emettre("graph:read", 2_000_000_000)
+        .expect("émission");
     assert_eq!(emis.len(), TETE_JETON + LONGUEUR_NONCE + 64 + 16);
 
     for position in 0..emis.len() {
@@ -712,7 +730,10 @@ fn jeton_echeance_et_verifier_s_accordent() {
 
     // Et le bon sens, pour que l'accord ne soit pas un accord sur du faux.
     assert!(jeton.verifier(&emis, "graph:read", echeance - 1).is_ok());
-    doit_refuser(jeton.verifier(&emis, "graph:read", echeance + 1), "échéance passée");
+    doit_refuser(
+        jeton.verifier(&emis, "graph:read", echeance + 1),
+        "échéance passée",
+    );
 }
 
 #[test]
@@ -846,7 +867,16 @@ fn longueur_scellee_ne_depend_que_de_la_longueur_claire() {
     let c = coffre("e1");
     let bloc = BLOC as usize;
 
-    for longueur in [0usize, 1, 2, bloc - 1, bloc, bloc + 1, 2 * bloc, 2 * bloc + 1] {
+    for longueur in [
+        0usize,
+        1,
+        2,
+        bloc - 1,
+        bloc,
+        bloc + 1,
+        2 * bloc,
+        2 * bloc + 1,
+    ] {
         let attendu = longueur_scellee(longueur, bloc);
 
         // Deux contenus différents de même longueur : même forme.
@@ -857,7 +887,10 @@ fn longueur_scellee_ne_depend_que_de_la_longueur_claire() {
 
         assert_eq!(scelle_a.len(), attendu, "longueur {longueur}");
         assert_eq!(scelle_b.len(), attendu, "longueur {longueur}");
-        assert_ne!(scelle_a, scelle_b, "deux contenus différents, mêmes octets ?");
+        assert_ne!(
+            scelle_a, scelle_b,
+            "deux contenus différents, mêmes octets ?"
+        );
 
         // Et l'aller-retour.
         assert_eq!(c.desceller(&scelle_a).expect("déscellement"), a);
@@ -1042,7 +1075,9 @@ fn la_chaine_phrase_enveloppe_cle_coffre_ne_se_substitue_pas() {
     );
 
     // Une autre phrase n'ouvre pas l'enveloppe.
-    let autre = enveloppe.deriver_kek("une autre phrase").expect("dérivation");
+    let autre = enveloppe
+        .deriver_kek("une autre phrase")
+        .expect("dérivation");
     assert!(matches!(
         CleEspace::desceller(&enveloppe, &autre),
         Err(CoffreError::CleMaitresseIncorrecte)
@@ -1058,10 +1093,7 @@ fn la_chaine_phrase_enveloppe_cle_coffre_ne_se_substitue_pas() {
     let kek_beta = enveloppe_beta.deriver_kek(PHRASE).expect("dérivation");
     let cle_beta = CleEspace::desceller(&enveloppe_beta, &kek_beta).expect("déscellement");
 
-    match Coffre::neuf(&cle_beta)
-        .expect("coffre")
-        .desceller(&scelle)
-    {
+    match Coffre::neuf(&cle_beta).expect("coffre").desceller(&scelle) {
         Err(CoffreError::EspaceIncoherent { .. }) => {}
         autre => panic!("attendu EspaceIncoherent, obtenu {autre:?}"),
     }
@@ -1266,7 +1298,17 @@ fn aux_bornes_exactes_le_format_tient_pour_plusieurs_tailles_de_bloc() {
         BLOC_MAXIMUM,
     ] {
         let b = bloc as usize;
-        for longueur in [0usize, 1, b - 1, b, b + 1, 2 * b - 1, 2 * b, 2 * b + 1, 3 * b] {
+        for longueur in [
+            0usize,
+            1,
+            b - 1,
+            b,
+            b + 1,
+            2 * b - 1,
+            2 * b,
+            2 * b + 1,
+            3 * b,
+        ] {
             let contexte = format!("bloc {bloc}, longueur {longueur}");
             let clair: Vec<u8> = (0..longueur).map(|i| (i % 251) as u8).collect();
 
@@ -1295,7 +1337,10 @@ fn aux_bornes_exactes_le_format_tient_pour_plusieurs_tailles_de_bloc() {
             // Et l'ajout d'un seul octet.
             let mut etendu = scelle.clone();
             etendu.push(0);
-            doit_refuser(c.desceller(&etendu), &format!("{contexte} : ajout d'un octet"));
+            doit_refuser(
+                c.desceller(&etendu),
+                &format!("{contexte} : ajout d'un octet"),
+            );
         }
     }
 }

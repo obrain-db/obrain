@@ -183,7 +183,11 @@ impl SymbolRegistry {
                 }
             }
         }
-        pousser(&mut self.by_module, module_qn, (name.to_string(), fqn.clone()));
+        pousser(
+            &mut self.by_module,
+            module_qn,
+            (name.to_string(), fqn.clone()),
+        );
         pousser(&mut self.by_name, name, fqn.clone());
         let last = fqn.rsplit('.').next().unwrap_or("");
         if !last.is_empty() {
@@ -208,7 +212,10 @@ impl SymbolRegistry {
                 if !self.module_by_rust_rel.contains_key(rel) {
                     self.module_by_rust_rel.insert(rel.to_string(), Vec::new());
                 }
-                let v = self.module_by_rust_rel.get_mut(rel).expect("insérée juste avant");
+                let v = self
+                    .module_by_rust_rel
+                    .get_mut(rel)
+                    .expect("insérée juste avant");
                 // Un module peut être enregistré plusieurs fois (type + ses
                 // méthodes…) — la déduplication préserve l'unicité du module.
                 if !v.iter().any(|m| m == module_qn) {
@@ -487,7 +494,9 @@ impl SymbolRegistry {
     /// Type brut d'un champ de struct : `(module, struct)` → champ (`struct
     /// Wal { store: T }`, `self.store` → `T`).
     fn field_type_of(&self, module: &str, struct_name: &str, field: &str) -> Option<String> {
-        let fields = self.struct_field.get(&(module.to_string(), struct_name.to_string()))?;
+        let fields = self
+            .struct_field
+            .get(&(module.to_string(), struct_name.to_string()))?;
         let mut hits: Vec<&String> = fields
             .iter()
             .filter(|(f, _)| f == field)
@@ -570,11 +579,7 @@ impl SymbolRegistry {
                 hits.push(r);
             }
         }
-        if hits.len() == 1 {
-            hits.pop()
-        } else {
-            None
-        }
+        if hits.len() == 1 { hits.pop() } else { None }
     }
 
     /// Résout un chemin rust complet (`crate::a::b::Type`, `super::Type`,
@@ -659,11 +664,7 @@ impl SymbolRegistry {
                     hits.push(r);
                 }
             }
-            if hits.len() == 1 {
-                hits.pop()
-            } else {
-                None
-            }
+            if hits.len() == 1 { hits.pop() } else { None }
         }
     }
 
@@ -688,11 +689,7 @@ impl SymbolRegistry {
             found = Some(imp.module.clone());
             count += 1;
         }
-        if count == 1 {
-            found
-        } else {
-            None
-        }
+        if count == 1 { found } else { None }
     }
 
     /// Résout un type importé : chemin d'import `crate.a.b.Type` (ou
@@ -726,11 +723,7 @@ impl SymbolRegistry {
                     hits.push(r);
                 }
             }
-            if hits.len() == 1 {
-                hits.pop()
-            } else {
-                None
-            }
+            if hits.len() == 1 { hits.pop() } else { None }
         }
     }
 
@@ -950,8 +943,22 @@ mod tests {
     fn recepteur_self() {
         // Méthode d'impl S appelant self.helper() → méthode du MÊME type.
         let mut r = SymbolRegistry::new();
-        r.register_full("pkg.s", Some("s"), Some("S"), "helper", "pkg.s.S.helper".into(), false);
-        r.register_full("pkg.s", Some("s"), Some("S"), "run", "pkg.s.S.run".into(), false);
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            Some("S"),
+            "helper",
+            "pkg.s.S.helper".into(),
+            false,
+        );
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            Some("S"),
+            "run",
+            "pkg.s.S.run".into(),
+            false,
+        );
         r.register_full("pkg.s", Some("s"), None, "S", "pkg.s.S".into(), true);
         let res = r
             .resolve_receiver("helper", "self", &base_ctx("pkg.s", Some("S"), &[], &[]))
@@ -965,9 +972,10 @@ mod tests {
     fn self_sans_impl_non_resolu() {
         let r = reg();
         // `self.x()` hors méthode (fn libre) → on n'invente pas d'arête.
-        assert!(r
-            .resolve_receiver("helper", "self", &base_ctx("pkg.other", None, &[], &[]))
-            .is_none());
+        assert!(
+            r.resolve_receiver("helper", "self", &base_ctx("pkg.other", None, &[], &[]))
+                .is_none()
+        );
     }
 
     #[test]
@@ -981,7 +989,14 @@ mod tests {
             "pkg.s.ObrainDB.flush".into(),
             false,
         );
-        r.register_full("pkg.s", Some("s"), None, "ObrainDB", "pkg.s.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            None,
+            "ObrainDB",
+            "pkg.s.ObrainDB".into(),
+            true,
+        );
         let res = r
             .resolve_receiver("flush", "ObrainDB", &base_ctx("pkg.s", None, &[], &[]))
             .unwrap();
@@ -992,11 +1007,19 @@ mod tests {
     #[test]
     fn recepteur_type_sans_methodes_non_resolu() {
         let mut r = SymbolRegistry::new();
-        r.register_full("pkg.s", Some("s"), None, "ObrainDB", "pkg.s.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            None,
+            "ObrainDB",
+            "pkg.s.ObrainDB".into(),
+            true,
+        );
         // Le type existe mais la méthode n'y est pas → pas d'arête inventée.
-        assert!(r
-            .resolve_receiver("flush", "ObrainDB", &base_ctx("pkg.s", None, &[], &[]))
-            .is_none());
+        assert!(
+            r.resolve_receiver("flush", "ObrainDB", &base_ctx("pkg.s", None, &[], &[]))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1010,7 +1033,14 @@ mod tests {
             "pkg.db.ObrainDB.flush".into(),
             false,
         );
-        r.register_full("pkg.db", Some("db"), None, "ObrainDB", "pkg.db.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.db",
+            Some("db"),
+            None,
+            "ObrainDB",
+            "pkg.db.ObrainDB".into(),
+            true,
+        );
         let imports = [Import {
             module: "crate.db.ObrainDB".to_string(),
             local_name: None,
@@ -1041,7 +1071,14 @@ mod tests {
             "pkg.s.ObrainDB.flush".into(),
             false,
         );
-        r.register_full("pkg.s", Some("s"), None, "ObrainDB", "pkg.s.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            None,
+            "ObrainDB",
+            "pkg.s.ObrainDB".into(),
+            true,
+        );
         let binding = Binding {
             name: "db".to_string(),
             type_ref: Some("ObrainDB".to_string()),
@@ -1061,9 +1098,10 @@ mod tests {
     fn recepteur_inconnu_non_resolu() {
         let r = reg();
         // qualifier inconnu → None (pas d'arête au nom seul).
-        assert!(r
-            .resolve_receiver("helper", "mystere", &base_ctx("pkg.other", None, &[], &[]))
-            .is_none());
+        assert!(
+            r.resolve_receiver("helper", "mystere", &base_ctx("pkg.other", None, &[], &[]))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1077,7 +1115,14 @@ mod tests {
             "pkg.src.db.ObrainDB.flush".into(),
             false,
         );
-        r.register_full("pkg.src.db", Some("db"), None, "ObrainDB", "pkg.src.db.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.src.db",
+            Some("db"),
+            None,
+            "ObrainDB",
+            "pkg.src.db.ObrainDB".into(),
+            true,
+        );
         // `crate::db::ObrainDB::flush` depuis pkg.src.query.
         let c = CallContext {
             module_qn: "pkg.src.query",
@@ -1096,19 +1141,58 @@ mod tests {
         assert_eq!(res.strategy, "receiver_import");
     }
 
-
     #[test]
     fn cascade_binding_retour_methode() {
         // `let db = ObrainDB::…; let session = db.session(); session.execute(…)`
         // — typage en cascade par les types de retour enregistrés.
         let mut r = SymbolRegistry::new();
-        r.register_full("pkg.src.database", Some("database"), Some("ObrainDB"), "session", "pkg.src.database.ObrainDB.session".into(), false);
-        r.register_full("pkg.src.database", Some("database"), None, "ObrainDB", "pkg.src.database.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.src.database",
+            Some("database"),
+            Some("ObrainDB"),
+            "session",
+            "pkg.src.database.ObrainDB.session".into(),
+            false,
+        );
+        r.register_full(
+            "pkg.src.database",
+            Some("database"),
+            None,
+            "ObrainDB",
+            "pkg.src.database.ObrainDB".into(),
+            true,
+        );
         r.register_method_return("pkg.src.database", "ObrainDB", "session", "Session");
-        r.register_full("pkg.src.session", Some("session"), Some("Session"), "execute", "pkg.src.session.Session.execute".into(), false);
-        r.register_full("pkg.src.session", Some("session"), None, "Session", "pkg.src.session.Session".into(), true);
-        let db_b = Binding { name: "db".into(), type_ref: Some("ObrainDB".into()), line: 5, init_call: None, init_fn: None };
-        let session_b = Binding { name: "session".into(), type_ref: None, line: 6, init_call: Some(("db".into(), "session".into())), init_fn: None };
+        r.register_full(
+            "pkg.src.session",
+            Some("session"),
+            Some("Session"),
+            "execute",
+            "pkg.src.session.Session.execute".into(),
+            false,
+        );
+        r.register_full(
+            "pkg.src.session",
+            Some("session"),
+            None,
+            "Session",
+            "pkg.src.session.Session".into(),
+            true,
+        );
+        let db_b = Binding {
+            name: "db".into(),
+            type_ref: Some("ObrainDB".into()),
+            line: 5,
+            init_call: None,
+            init_fn: None,
+        };
+        let session_b = Binding {
+            name: "session".into(),
+            type_ref: None,
+            line: 6,
+            init_call: Some(("db".into(), "session".into())),
+            init_fn: None,
+        };
         let bindings = [&db_b, &session_b];
         let c = CallContext {
             module_qn: "pkg.bench",
@@ -1138,7 +1222,14 @@ mod tests {
             "pkg.s.WalStore.has_backward_adjacency".into(),
             false,
         );
-        r.register_full("pkg.s", Some("s"), None, "WalStore", "pkg.s.WalStore".into(), true);
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            None,
+            "WalStore",
+            "pkg.s.WalStore".into(),
+            true,
+        );
         let res = r
             .resolve_receiver(
                 "has_backward_adjacency",
@@ -1146,10 +1237,7 @@ mod tests {
                 &base_ctx("pkg.s", Some("WalStore"), &[], &[]),
             )
             .unwrap();
-        assert_eq!(
-            res.target_qn,
-            "pkg.s.WalStore.has_backward_adjacency"
-        );
+        assert_eq!(res.target_qn, "pkg.s.WalStore.has_backward_adjacency");
         assert_eq!(res.strategy, "receiver_self");
     }
 
@@ -1162,7 +1250,14 @@ mod tests {
         // module (stratégie receiver_fn_return).
         let mut r = SymbolRegistry::new();
         // Fonction libre + son type de retour enregistré.
-        r.register_full("pkg.tf", Some("tf"), None, "setup", "pkg.tf.setup".into(), false);
+        r.register_full(
+            "pkg.tf",
+            Some("tf"),
+            None,
+            "setup",
+            "pkg.tf.setup".into(),
+            false,
+        );
         r.register_fn_return("pkg.tf.setup", "ObrainDB");
         // Type cible : ObrainDB.session (défini ailleurs dans le repo).
         r.register_full(
@@ -1173,7 +1268,14 @@ mod tests {
             "pkg.db.ObrainDB.session".into(),
             false,
         );
-        r.register_full("pkg.db", Some("db"), None, "ObrainDB", "pkg.db.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.db",
+            Some("db"),
+            None,
+            "ObrainDB",
+            "pkg.db.ObrainDB".into(),
+            true,
+        );
         let binding = Binding {
             name: "db".to_string(),
             type_ref: None,
@@ -1202,9 +1304,10 @@ mod tests {
             init_fn: Some("mystere".to_string()),
         };
         let bindings = [&binding];
-        assert!(r
-            .resolve_receiver("session", "db", &base_ctx("pkg.tf", None, &[], &bindings))
-            .is_none());
+        assert!(
+            r.resolve_receiver("session", "db", &base_ctx("pkg.tf", None, &[], &bindings))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1213,7 +1316,14 @@ mod tests {
         // s.execute()` — la cascade traverse le retour de la fonction libre
         // puis le retour de méthode (session → Session.execute).
         let mut r = SymbolRegistry::new();
-        r.register_full("pkg.tf", Some("tf"), None, "setup", "pkg.tf.setup".into(), false);
+        r.register_full(
+            "pkg.tf",
+            Some("tf"),
+            None,
+            "setup",
+            "pkg.tf.setup".into(),
+            false,
+        );
         r.register_fn_return("pkg.tf.setup", "ObrainDB");
         r.register_full(
             "pkg.db",
@@ -1223,7 +1333,14 @@ mod tests {
             "pkg.db.ObrainDB.session".into(),
             false,
         );
-        r.register_full("pkg.db", Some("db"), None, "ObrainDB", "pkg.db.ObrainDB".into(), true);
+        r.register_full(
+            "pkg.db",
+            Some("db"),
+            None,
+            "ObrainDB",
+            "pkg.db.ObrainDB".into(),
+            true,
+        );
         r.register_method_return("pkg.db", "ObrainDB", "session", "Session");
         r.register_full(
             "pkg.s",
@@ -1233,9 +1350,28 @@ mod tests {
             "pkg.s.Session.execute".into(),
             false,
         );
-        r.register_full("pkg.s", Some("s"), None, "Session", "pkg.s.Session".into(), true);
-        let db_b = Binding { name: "db".into(), type_ref: None, line: 5, init_call: None, init_fn: Some("setup".into()) };
-        let session_b = Binding { name: "session".into(), type_ref: None, line: 6, init_call: Some(("db".into(), "session".into())), init_fn: None };
+        r.register_full(
+            "pkg.s",
+            Some("s"),
+            None,
+            "Session",
+            "pkg.s.Session".into(),
+            true,
+        );
+        let db_b = Binding {
+            name: "db".into(),
+            type_ref: None,
+            line: 5,
+            init_call: None,
+            init_fn: Some("setup".into()),
+        };
+        let session_b = Binding {
+            name: "session".into(),
+            type_ref: None,
+            line: 6,
+            init_call: Some(("db".into(), "session".into())),
+            init_fn: None,
+        };
         let bindings = [&db_b, &session_b];
         let c = CallContext {
             module_qn: "pkg.tf",
@@ -1269,7 +1405,14 @@ mod tests {
             "pkg.w.WalStore.flush".into(),
             false,
         );
-        r.register_full("pkg.w", Some("w"), None, "WalStore", "pkg.w.WalStore".into(), true);
+        r.register_full(
+            "pkg.w",
+            Some("w"),
+            None,
+            "WalStore",
+            "pkg.w.WalStore".into(),
+            true,
+        );
         // Méthode de l'impl Wal appelant self.store.flush().
         let res = r
             .resolve_receiver(

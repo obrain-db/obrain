@@ -90,7 +90,10 @@ pub struct Classement {
 /// 400 000 `qualified_name` serait le vrai piège).
 pub fn calculer(db: &obrain_engine::ObrainDB, store: &Path, n: usize) -> Classement {
     let t = std::time::Instant::now();
-    let mut c = Classement { source: "registres".into(), ..Default::default() };
+    let mut c = Classement {
+        source: "registres".into(),
+        ..Default::default()
+    };
     let Some(sub) = db.substrate_handle() else {
         c.refus = Some("store sans substrat : les registres de degrés sont inaccessibles".into());
         return c;
@@ -224,9 +227,7 @@ pub fn calculer(db: &obrain_engine::ObrainDB, store: &Path, n: usize) -> Classem
         });
         degres.truncate(marge);
     }
-    degres.sort_unstable_by(|a, b| {
-        b.0.saturating_add(b.1).cmp(&a.0.saturating_add(a.1))
-    });
+    degres.sort_unstable_by(|a, b| b.0.saturating_add(b.1).cmp(&a.0.saturating_add(a.1)));
     // Les noms, UNIQUEMENT pour les retenus — résoudre 400 000 `qualified_name`
     // serait le vrai piège, pas la sélection.
     let session = db.session();
@@ -234,10 +235,15 @@ pub fn calculer(db: &obrain_engine::ObrainDB, store: &Path, n: usize) -> Classem
         .into_iter()
         .filter_map(|(deg_out, deg_in, id)| {
             let nd = session.get_node(NodeId(id))?;
-            let qn = prop(&nd.properties, "qualified_name")
-                .or_else(|| prop(&nd.properties, "name"))?;
+            let qn =
+                prop(&nd.properties, "qualified_name").or_else(|| prop(&nd.properties, "name"))?;
             let label = prop(&nd.properties, "name").unwrap_or_default();
-            Some(Hub { qn, label, deg_out, deg_in })
+            Some(Hub {
+                qn,
+                label,
+                deg_out,
+                deg_in,
+            })
         })
         .collect();
     // UN SEUL HUB PAR `qualified_name` : mesuré, le classement de
@@ -317,7 +323,11 @@ pub fn lire(store: &Path, fraicheur: Option<u128>) -> Option<Classement> {
         hubs,
         calcul_ms: v.get("calcul_ms").and_then(|x| x.as_u64()).unwrap_or(0),
         refus: v.get("refus").and_then(|x| x.as_str()).map(String::from),
-        source: v.get("source").and_then(|x| x.as_str()).unwrap_or("registres").to_string(),
+        source: v
+            .get("source")
+            .and_then(|x| x.as_str())
+            .unwrap_or("registres")
+            .to_string(),
     })
 }
 
@@ -346,7 +356,12 @@ mod tests {
     use super::*;
 
     fn hub(qn: &str, o: u32, i: u32) -> Hub {
-        Hub { qn: qn.into(), label: String::new(), deg_out: o, deg_in: i }
+        Hub {
+            qn: qn.into(),
+            label: String::new(),
+            deg_out: o,
+            deg_in: i,
+        }
     }
 
     #[test]
@@ -366,7 +381,9 @@ mod tests {
     /// Le plafond d'affichage est respecté — on ne noie pas la fenêtre.
     #[test]
     fn le_plafond_borne_laffichage() {
-        let hs: Vec<Hub> = (0..50).map(|i| hub(&format!("n{i}"), i as u32, 0)).collect();
+        let hs: Vec<Hub> = (0..50)
+            .map(|i| hub(&format!("n{i}"), i as u32, 0))
+            .collect();
         assert_eq!(lignes(&hs, 8).len(), 8);
         assert_eq!(lignes(&hs, 100).len(), 50);
     }
@@ -390,7 +407,10 @@ mod tests {
         };
         let refus = c.refus.expect("le refus doit être porté");
         assert!(refus.contains("4779754"));
-        assert!(refus.contains("repair-degrees"), "la raison doit dire quoi faire");
+        assert!(
+            refus.contains("repair-degrees"),
+            "la raison doit dire quoi faire"
+        );
     }
 
     /// LES DEUX SILENCES SONT DISTINCTS, et le message doit dire lequel.
@@ -411,8 +431,14 @@ mod tests {
              de degrés serait abîmée.",
             4_779_754
         );
-        assert!(!vide.contains("AUCUN enregistrement"), "les deux cas ne se confondent pas");
-        assert!(sans_records.contains("4779754"), "le chiffre annoncé est cité");
+        assert!(
+            !vide.contains("AUCUN enregistrement"),
+            "les deux cas ne se confondent pas"
+        );
+        assert!(
+            sans_records.contains("4779754"),
+            "le chiffre annoncé est cité"
+        );
         assert!(sans_records.contains("VIDES"), "la cause est nommée");
         assert!(
             sans_records.contains("pas parce que la colonne"),
@@ -427,7 +453,12 @@ mod tests {
         let store = std::env::temp_dir().join("hubs-fraicheur-test.obrain");
         persister(
             &store,
-            &Classement { hubs: vec![hub("a", 1, 1)], calcul_ms: 3, refus: None, source: "registres".into() },
+            &Classement {
+                hubs: vec![hub("a", 1, 1)],
+                calcul_ms: 3,
+                refus: None,
+                source: "registres".into(),
+            },
         )
         .unwrap();
         // Le fichier ne porte pas encore d'empreinte : on l'ajoute à la main
@@ -439,7 +470,10 @@ mod tests {
         std::fs::write(&p, v.to_string()).unwrap();
 
         assert!(lire(&store, Some(111)).is_some(), "même empreinte : servi");
-        assert!(lire(&store, Some(222)).is_none(), "empreinte différente : périmé");
+        assert!(
+            lire(&store, Some(222)).is_none(),
+            "empreinte différente : périmé"
+        );
         let _ = std::fs::remove_file(&p);
     }
 }

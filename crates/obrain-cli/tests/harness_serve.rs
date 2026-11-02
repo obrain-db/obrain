@@ -36,15 +36,33 @@ fn harness_serve_health_et_sessions() {
     let td = tempfile::tempdir().unwrap();
     let store = td.path().join("kb-harness");
     let init = Command::new(env!("CARGO_BIN_EXE_obrain"))
-        .arg("init").arg(&store)
-        .output().expect("init");
-    assert!(init.status.success(), "init: {}", String::from_utf8_lossy(&init.stderr));
-    for (qn, cwd, ts) in [("session-a", "/tmp/a", 100), ("session-b", "/tmp/b", 300), ("session-c", "/tmp/c", 200)] {
-        let q = format!("CREATE (:Session {{qualified_name: '{qn}', cwd: '{cwd}', createdAt: {ts}}})");
+        .arg("init")
+        .arg(&store)
+        .output()
+        .expect("init");
+    assert!(
+        init.status.success(),
+        "init: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    for (qn, cwd, ts) in [
+        ("session-a", "/tmp/a", 100),
+        ("session-b", "/tmp/b", 300),
+        ("session-c", "/tmp/c", 200),
+    ] {
+        let q =
+            format!("CREATE (:Session {{qualified_name: '{qn}', cwd: '{cwd}', createdAt: {ts}}})");
         let o = Command::new(env!("CARGO_BIN_EXE_obrain"))
-            .arg("query").arg(&store).arg(&q)
-            .output().expect("query create");
-        assert!(o.status.success(), "create {qn}: {}", String::from_utf8_lossy(&o.stderr));
+            .arg("query")
+            .arg(&store)
+            .arg(&q)
+            .output()
+            .expect("query create");
+        assert!(
+            o.status.success(),
+            "create {qn}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
     }
 
     // 2. daemon sur port ephemere
@@ -80,13 +98,19 @@ fn harness_serve_health_et_sessions() {
     if !pret {
         let _ = enfant.kill();
         let sortie = enfant.wait_with_output().unwrap();
-        panic!("daemon jamais pret sur {addr}\nstderr:\n{}", String::from_utf8_lossy(&sortie.stderr));
+        panic!(
+            "daemon jamais pret sur {addr}\nstderr:\n{}",
+            String::from_utf8_lossy(&sortie.stderr)
+        );
     }
 
     // 4. health
     let (st, corps) = get(&addr, "/api/harness/health");
     assert_eq!(st, 200, "health: {corps}");
-    assert!(corps.contains("\"mode\":\"ro\""), "mode ro attendu: {corps}");
+    assert!(
+        corps.contains("\"mode\":\"ro\""),
+        "mode ro attendu: {corps}"
+    );
 
     // 5. sessions : contrat pagine recent-d-abord
     let (st, corps) = get(&addr, "/api/harness/sessions?limit=2");

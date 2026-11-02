@@ -152,6 +152,10 @@ pub fn read(store: &Path, window_ms: i64) -> Vec<Hit> {
         }
     }
     let mut out: Vec<Hit> = best.into_values().collect();
-    out.sort_by(|a, b| b.energy.partial_cmp(&a.energy).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.energy
+            .partial_cmp(&a.energy)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }

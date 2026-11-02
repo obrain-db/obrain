@@ -122,8 +122,12 @@ fn mtime_registre() -> u64 {
 /// le 2026-09-15 : 4 mondes posés dans le fichier, effacés par le premier
 /// `POST /api/worlds` venu d'un processus à la mémoire plus vieille.
 fn fusionner_du_disque(g: &mut Vec<Monde>) {
-    let Ok(txt) = std::fs::read_to_string(registre()) else { return };
-    let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(&txt) else { return };
+    let Ok(txt) = std::fs::read_to_string(registre()) else {
+        return;
+    };
+    let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(&txt) else {
+        return;
+    };
     for e in v {
         let (Some(l), Some(p)) = (
             e.get("label").and_then(|x| x.as_str()),
@@ -170,7 +174,9 @@ fn registre() -> PathBuf {
 /// disparaître des bases bien réelles du disque, ce qui est pire que de ne pas
 /// savoir qui les a ajoutées.
 pub fn enregistres() -> Vec<Monde> {
-    let Ok(mut g) = mondes().lock() else { return Vec::new() };
+    let Ok(mut g) = mondes().lock() else {
+        return Vec::new();
+    };
     // Le fichier a-t-il bougé depuis notre dernière lecture ? Si oui, une autre
     // main a écrit : on FUSIONNE au lieu d'ignorer. Le premier appel (mémoire
     // vide, mtime mémorisé à 0) passe par le même chemin.
@@ -192,7 +198,13 @@ pub fn enregistres() -> Vec<Monde> {
 pub fn registre_des_mondes() -> Vec<(String, String, Option<String>)> {
     enregistres()
         .into_iter()
-        .map(|m| (m.label, m.store.to_string_lossy().to_string(), m.proprietaire))
+        .map(|m| {
+            (
+                m.label,
+                m.store.to_string_lossy().to_string(),
+                m.proprietaire,
+            )
+        })
         .collect()
 }
 
@@ -246,7 +258,10 @@ fn enregistrer(label: String, store: PathBuf, proprietaire: Option<String>) {
                 })
             })
             .collect();
-        let _ = std::fs::write(registre(), serde_json::to_string_pretty(&v).unwrap_or_default());
+        let _ = std::fs::write(
+            registre(),
+            serde_json::to_string_pretty(&v).unwrap_or_default(),
+        );
         REGISTRE_MTIME.store(mtime_registre(), std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -281,8 +296,10 @@ fn analyser(url: &str) -> Result<(String, String, String)> {
         .strip_prefix("github.com/")
         .or_else(|| sans_schema.strip_prefix("github.com:"))
         .with_context(|| {
-            format!("monde : seul github.com est accepté (reçu « {url} ») — \
-                     copiez l'adresse du dépôt depuis GitHub")
+            format!(
+                "monde : seul github.com est accepté (reçu « {url} ») — \
+                     copiez l'adresse du dépôt depuis GitHub"
+            )
         })?;
     let mut parts = reste.split('/');
     let proprietaire = parts.next().unwrap_or("").trim();
@@ -310,7 +327,11 @@ fn analyser(url: &str) -> Result<(String, String, String)> {
 /// `auteur` = l'identité de l'ajoutant (`utilisateur@compte`), quand le serveur
 /// en a une. Elle part dans le registre : c'est ce qui permet de répondre à
 /// « qui a ajouté ce monde » une fois qu'ils sont plusieurs.
-pub fn lancer(url: String, label_demande: Option<String>, auteur: Option<String>) -> Result<String> {
+pub fn lancer(
+    url: String,
+    label_demande: Option<String>,
+    auteur: Option<String>,
+) -> Result<String> {
     let (proprietaire, depot, clone_url) = analyser(&url)?;
     let id = format!("monde-{}-{}", depot, crate::activation::now_ms());
     let label = label_demande
@@ -357,7 +378,10 @@ pub fn lancer(url: String, label_demande: Option<String>, auteur: Option<String>
                 t.etape = if e.erreurs.is_empty() {
                     "monde prêt, enrichi".into()
                 } else {
-                    format!("monde prêt — enrichissement PARTIEL : {}", e.erreurs.join(" · "))
+                    format!(
+                        "monde prêt — enrichissement PARTIEL : {}",
+                        e.erreurs.join(" · ")
+                    )
                 };
                 t.store = Some(store.to_string_lossy().to_string());
                 t.noeuds = Some(*noeuds);
@@ -464,7 +488,9 @@ fn enrichir(
     }
 
     // ── 3. LES HUBS ───────────────────────────────────────────────────────
-    maj(id, &|t| t.etape = "classement des hubs (registres de degrés)".into());
+    maj(id, &|t| {
+        t.etape = "classement des hubs (registres de degrés)".into()
+    });
     let classement = crate::hubs::calculer(db, store, crate::hubs::HUBS_PAR_DEFAUT);
     if let Some(refus) = classement.refus.clone() {
         // On PERSISTE le refus : un lecteur doit savoir que le classement
@@ -531,11 +557,21 @@ fn travailler(
     std::fs::create_dir_all(&src_dir).context("monde : création du répertoire de travail")?;
 
     // ── 1. CLONE ──────────────────────────────────────────────────────────
-    maj(id, &|t| { t.etat = "clone".into(); t.etape = "git clone --depth 1".into(); });
+    maj(id, &|t| {
+        t.etat = "clone".into();
+        t.etape = "git clone --depth 1".into();
+    });
     if depot_dir.join(".git").is_dir() {
         // Déjà cloné : on rafraîchit plutôt que de retélécharger tout le dépôt.
         let out = Command::new("git")
-            .args(["-C", &depot_dir.to_string_lossy(), "pull", "--ff-only", "--depth", "1"])
+            .args([
+                "-C",
+                &depot_dir.to_string_lossy(),
+                "pull",
+                "--ff-only",
+                "--depth",
+                "1",
+            ])
             .output()
             .context("monde : git pull")?;
         if !out.status.success() {
@@ -544,14 +580,22 @@ fn travailler(
             maj(id, &|t| {
                 t.etape = format!(
                     "git pull a échoué ({}), indexation de la copie existante",
-                    String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("").to_string()
+                    String::from_utf8_lossy(&out.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
                 );
             });
         }
     } else {
         let out = Command::new("git")
             .args([
-                "clone", "--depth", "1", "--single-branch", clone_url,
+                "clone",
+                "--depth",
+                "1",
+                "--single-branch",
+                clone_url,
                 &depot_dir.to_string_lossy(),
             ])
             .output()
@@ -559,11 +603,17 @@ fn travailler(
         if !out.status.success() {
             bail!(
                 "git clone a échoué : {}",
-                String::from_utf8_lossy(&out.stderr).lines().take(3).collect::<Vec<_>>().join(" / ")
+                String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
             );
         }
     }
-    maj(id, &|t| t.depot = Some(depot_dir.to_string_lossy().to_string()));
+    maj(id, &|t| {
+        t.depot = Some(depot_dir.to_string_lossy().to_string())
+    });
 
     // ── 2. STORE + INDEXATION ─────────────────────────────────────────────
     maj(id, &|t| {

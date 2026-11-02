@@ -24,8 +24,8 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "inconnu".to_string());
-    let describe =
-        git(&["describe", "--tags", "--always", "--dirty"]).unwrap_or_else(|| "inconnu".to_string());
+    let describe = git(&["describe", "--tags", "--always", "--dirty"])
+        .unwrap_or_else(|| "inconnu".to_string());
     let sale = git(&["status", "--porcelain"])
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);

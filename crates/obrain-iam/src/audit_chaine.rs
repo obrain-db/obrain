@@ -109,11 +109,7 @@ impl RegistreAudit {
     ///
     /// Celles de [`Journal::recevoir`] — notamment si la queue du registre ne se
     /// tient plus, auquel cas rien n'est écrit.
-    pub fn enregistrer(
-        &mut self,
-        evenement: &AuditEvent,
-        horodatage: u64,
-    ) -> Resultat<Entree> {
+    pub fn enregistrer(&mut self, evenement: &AuditEvent, horodatage: u64) -> Resultat<Entree> {
         let quoi = empreinte_evenement(evenement);
         self.journal.recevoir(&self.cle, quoi, horodatage)
     }

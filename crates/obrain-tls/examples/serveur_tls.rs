@@ -190,9 +190,7 @@ fn traiter<S: Read + Write>(flux: &mut S, jeton: &str, transport: &str) -> std::
         if !autorise {
             return repondre(flux, 401, "{\"erreur\":\"jeton requis\"}");
         }
-        let requete = chemin
-            .split_once("q=")
-            .map_or("(sans requete)", |(_, q)| q);
+        let requete = chemin.split_once("q=").map_or("(sans requete)", |(_, q)| q);
         return repondre(
             flux,
             200,

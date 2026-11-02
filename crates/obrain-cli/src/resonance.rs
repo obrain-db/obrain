@@ -128,7 +128,8 @@ pub fn abonnements_de(lecteur: &str) -> Vec<(String, i64)> {
     for e in entrees.flatten() {
         let chemin = e.path();
         let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !nom.starts_with("resonance-") || chemin.extension().and_then(|x| x.to_str()) != Some("json")
+        if !nom.starts_with("resonance-")
+            || chemin.extension().and_then(|x| x.to_str()) != Some("json")
         {
             continue;
         }
@@ -159,7 +160,8 @@ pub fn abonnements_de(lecteur: &str) -> Vec<(String, i64)> {
 
 /// Écrit la liste des abonnés d'un publieur (le fichier est petit, et relu à
 /// chaque appel : un lien externe devient visible sans redémarrer le service).
-fn ecrire(publieur: &str, abonnes: &[Abonnement]) -> std::io::Result<()> {    let corps = serde_json::json!({
+fn ecrire(publieur: &str, abonnes: &[Abonnement]) -> std::io::Result<()> {
+    let corps = serde_json::json!({
         "publieur": publieur,
         "maj_ms": crate::activation::now_ms(),
         "abonnes": abonnes,
@@ -189,10 +191,19 @@ fn ecrire_prive(chemin: &Path, corps: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     let mut f = {
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(chemin)?
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(chemin)?
     };
     #[cfg(not(unix))]
-    let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(chemin)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(chemin)?;
     f.write_all(corps.as_bytes())?;
     f.flush()?;
     #[cfg(unix)]
@@ -224,7 +235,10 @@ pub fn lier(publieur: &str, lecteur: &str) -> anyhow::Result<bool> {
         // rafraîchit pas sa date — sinon « depuis quand » deviendrait faux.
         return Ok(false);
     }
-    abonnes.push(Abonnement { lecteur: lecteur.to_string(), depuis_ms: crate::activation::now_ms() });
+    abonnes.push(Abonnement {
+        lecteur: lecteur.to_string(),
+        depuis_ms: crate::activation::now_ms(),
+    });
     ecrire(publieur, &abonnes)?;
     Ok(true)
 }
@@ -287,8 +301,16 @@ pub fn facettes(publieur: &str, journal: &Path) -> Facettes {
         f.entrees += 1;
         let t = v.get("t").and_then(|x| x.as_i64()).unwrap_or(0);
         f.derniere_ms = Some(f.derniere_ms.map_or(t, |d| d.max(t)));
-        let Some(intention) = v.get("intention") else { continue };
-        let nom = |k: &str| intention.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let Some(intention) = v.get("intention") else {
+            continue;
+        };
+        let nom = |k: &str| {
+            intention
+                .get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
         match intention.get("kind").and_then(|x| x.as_str()).unwrap_or("") {
             "objectif" => {
                 let n = nom("nom");
@@ -373,7 +395,10 @@ mod tests {
     fn un_fichier_ne_rend_que_les_abonnes_de_son_publieur() {
         let d = dir();
         std::fs::create_dir_all(&d).expect("répertoire des liens");
-        let f = d.join(format!("resonance-{:016x}.json", empreinte("self:test-publieur")));
+        let f = d.join(format!(
+            "resonance-{:016x}.json",
+            empreinte("self:test-publieur")
+        ));
         let _ = std::fs::remove_file(&f);
 
         assert!(
@@ -431,7 +456,10 @@ mod tests {
             "ré-établir ne duplique pas et ne rafraîchit pas la date"
         );
         assert_eq!(abonnes_de(&p).len(), 1, "toujours un seul abonné");
-        assert!(abonnes_de(&l).is_empty(), "le lien a un SENS : l inverse est vide");
+        assert!(
+            abonnes_de(&l).is_empty(),
+            "le lien a un SENS : l inverse est vide"
+        );
 
         // ── LA QUESTION DU LECTEUR : À QUOI SUIS-JE ABONNÉ ? ────────────────
         // C'est la même vérité vue de l'autre côté : si elle divergeait, un self
@@ -483,11 +511,15 @@ mod tests {
         );
         let mdir = std::fs::metadata(dir()).expect("le répertoire existe");
         let mdir_mode = mdir.permissions().mode() & 0o777;
-        assert_eq!(mdir_mode, 0o700, "le répertoire des liens doit être privé (0700)");
+        assert_eq!(
+            mdir_mode, 0o700,
+            "le répertoire des liens doit être privé (0700)"
+        );
 
         // Un fichier ÉCRIT AVANT ce correctif doit être resserré à la réécriture,
         // sinon la correction ne vaudrait que pour les liens neufs.
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o664)).expect("droits larges");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o664))
+            .expect("droits larges");
         assert!(delier(&p, &l).expect("délier"));
         let m2 = std::fs::metadata(&f).expect("le fichier existe encore");
         assert_eq!(

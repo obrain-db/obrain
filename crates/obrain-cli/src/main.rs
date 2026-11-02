@@ -5,22 +5,17 @@
 #![deny(unsafe_code)]
 
 // ── Allocateur global de rechange (banc T7 perf/RAM) ────────────────────
-// Par défaut : allocateur système (aucune feature). Les deux features sont
-// exclusives — un binaire au double allocateur n'aurait pas de sens et le
-// second `#[global_allocator]` serait de toute façon refusé par rustc ; le
-// message ci-dessous rend le refus lisible.
-#[cfg(all(feature = "alloc-jemalloc", feature = "alloc-mimalloc"))]
-compile_error!("alloc-jemalloc et alloc-mimalloc sont exclusifs : n'en activer qu'une");
-
+// Par défaut : allocateur système (aucune feature). `--all-features` active les
+// DEUX features (Cargo unifie) : jemalloc l'emporte alors, mimalloc n'est pas
+// compilé. Un seul `#[global_allocator]` est donc toujours présent.
 #[cfg(feature = "alloc-jemalloc")]
 #[global_allocator]
 static ALLOCATEUR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "alloc-mimalloc")]
+#[cfg(all(feature = "alloc-mimalloc", not(feature = "alloc-jemalloc")))]
 #[global_allocator]
 static ALLOCATEUR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod viz_ws;
 mod activation;
 mod ancrage;
 mod commands;
@@ -30,10 +25,10 @@ mod harness_serve;
 mod http_min;
 mod hubs;
 mod machines;
-mod memoire;
 mod mcp_server;
-mod outils;
+mod memoire;
 mod orbites;
+mod outils;
 mod output;
 mod remote;
 mod repl;
@@ -42,6 +37,7 @@ mod viz_extract;
 mod viz_serve;
 mod viz_timeline;
 mod viz_weave;
+mod viz_ws;
 mod worlds;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -694,7 +690,11 @@ fn main() {
         Commands::Enrich { path, ricci } => {
             commands::enrich::run_enrich(&path, ricci, cli.format, cli.quiet)
         }
-        Commands::Resonance { publieur, lecteur, delier } => {
+        Commands::Resonance {
+            publieur,
+            lecteur,
+            delier,
+        } => {
             // Le geste vit dans `commands/resonance`, mais la règle
             // (« ce qui se partage », « ce qui ne sort jamais ») vit dans le
             // module `resonance`, avec ses tests : le CLI ne fait que la

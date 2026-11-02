@@ -17,7 +17,11 @@ use obrain_engine::ObrainDB;
 fn median(v: &mut Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
 }
 
 fn bench<F: FnMut()>(rep: usize, mut f: F) -> f64 {
@@ -92,7 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let syn_ms = bench(rep, || {
             let _ = session.execute(&q_syn);
         });
-        println!("spread-synapse {:5.2} ms   (spreading sur synapses)", syn_ms);
+        println!(
+            "spread-synapse {:5.2} ms   (spreading sur synapses)",
+            syn_ms
+        );
     }
 
     // ── 2. Overhead du cognitif sur une requête chaude ──
@@ -100,7 +107,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hot_ms = bench(rep, || {
         let _ = session.execute(q_hot);
     });
-    println!("1hop     {:8.2} ms   (avec cognitive engine construit)", hot_ms);
+    println!(
+        "1hop     {:8.2} ms   (avec cognitive engine construit)",
+        hot_ms
+    );
 
     Ok(())
 }

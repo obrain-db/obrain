@@ -188,7 +188,8 @@ pub async fn stream_into_substrate(
         // Capacite du canal : assez pour absorber une rafale du lecteur sans
         // laisser la memoire filer. 16 384 lignes converties tiennent
         // largement, et bornent l avance a une fraction de seconde.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(i64, Vec<String>, Vec<(PropertyKey, Value)>)>(16_384);
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<(i64, Vec<String>, Vec<(PropertyKey, Value)>)>(16_384);
 
         let sub = Arc::clone(substrate);
         let lot_flush = lot;
@@ -344,9 +345,11 @@ pub async fn stream_into_substrate(
             secondes = tot.as_secs(),
             debit_par_s = (counts.nodes as f64 / tot.as_secs_f64().max(1e-9)) as u64,
             lecture_pct = (100.0 * t_lecture.as_secs_f64() / tot.as_secs_f64().max(1e-9)) as u32,
-            conversion_pct = (100.0 * t_conversion.as_secs_f64() / tot.as_secs_f64().max(1e-9)) as u32,
+            conversion_pct =
+                (100.0 * t_conversion.as_secs_f64() / tot.as_secs_f64().max(1e-9)) as u32,
             envoi_pct = (100.0 * t_envoi.as_secs_f64() / tot.as_secs_f64().max(1e-9)) as u32,
-            ecriture_thread_pct = (100.0 * t_ecriture.as_secs_f64() / tot.as_secs_f64().max(1e-9)) as u32,
+            ecriture_thread_pct =
+                (100.0 * t_ecriture.as_secs_f64() / tot.as_secs_f64().max(1e-9)) as u32,
             "Stage 1 (nodes) TERMINE"
         );
     }

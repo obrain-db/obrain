@@ -289,7 +289,6 @@ impl ObrainIamProvider {
         }
         sortie
     }
-
 }
 
 impl AuthProvider for ObrainIamProvider {
@@ -422,7 +421,9 @@ impl AuthProvider for ObrainIamProvider {
         // pouvoir les révoquer n'est pas une chaîne : une déconnexion rendait
         // `Ok(())` en laissant le jeton vivant.
         use crate::model::LABEL_CREDENTIAL;
-        let Some(nid) = self.store.find_node_by_label_and_id(LABEL_CREDENTIAL, credential_id)
+        let Some(nid) = self
+            .store
+            .find_node_by_label_and_id(LABEL_CREDENTIAL, credential_id)
         else {
             return Err(IamError::ResourceNotFound {
                 resource: format!("credential:{credential_id}"),
@@ -767,7 +768,8 @@ impl ObrainIamProvider {
             // n'expirait donc jamais. On lit maintenant `iam_expires_ts`
             // (époque en secondes) ; absente ⇒ pas d'expiration, pour ne pas
             // invalider les identités écrites avant ce correctif.
-            if let Some(Value::Int64(echeance)) = store.get_node_property(cred_nid, &props::EXPIRES_TS.into())
+            if let Some(Value::Int64(echeance)) =
+                store.get_node_property(cred_nid, &props::EXPIRES_TS.into())
                 && (echeance as u64) <= crate::store::maintenant_ts()
             {
                 // (Pas de journal ici : `obrain-iam` n'embarque pas `tracing`.)

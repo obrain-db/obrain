@@ -1279,8 +1279,7 @@ mod tests {
             signals: false,
             ..Default::default()
         };
-        let (sg, slots) =
-            mesurer_slots(|| extract_subgraph(&db, "cible", &opts).unwrap());
+        let (sg, slots) = mesurer_slots(|| extract_subgraph(&db, "cible", &opts).unwrap());
         // cible + ses 6 voisins entrants.
         assert_eq!(sg.0.nodes.len(), 7, "voisinage entrant complet");
         assert_eq!(
@@ -1355,7 +1354,10 @@ mod tests {
         let (sg_plein, _) = extract_subgraph(&db, "hub", &plein).unwrap();
         let n_plein = sg_plein.nodes.len();
         let e_plein = sg_plein.edges.len();
-        assert!(n_plein > 150, "le 2-hop complet doit etre large : {n_plein}");
+        assert!(
+            n_plein > 150,
+            "le 2-hop complet doit etre large : {n_plein}"
+        );
 
         // Borne serree : arret anticipe.
         let borne = ExtractOptions {
@@ -1479,7 +1481,8 @@ mod tests_conventions_identite {
         // 2. Et un nœud du graphe de code reste résolu par `qualified_name`.
         let code = db.create_node(&["Function"]);
         db.set_node_property(code, "qualified_name", OV::from("test.repo.f".to_string()));
-        let id2 = resolve_node_opts(&db, "test.repo.f", false).expect("résolu par `qualified_name`");
+        let id2 =
+            resolve_node_opts(&db, "test.repo.f", false).expect("résolu par `qualified_name`");
         assert_eq!(id2.0, code.0);
         // 3. Le suffixe, côté `qn` : on peut nommer la fin d'une identité préfixée.
         let id3 = resolve_node_opts(&db, "n3:viz", true).expect("résolu par suffixe de `qn`");

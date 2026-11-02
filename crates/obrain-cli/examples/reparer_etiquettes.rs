@@ -96,7 +96,10 @@ fn main() -> Result<()> {
         );
     }
 
-    println!("ouverture en écriture (seul écrivain) : {}", store.display());
+    println!(
+        "ouverture en écriture (seul écrivain) : {}",
+        store.display()
+    );
     let db = ObrainDB::open_shared_write(store)
         .with_context(|| format!("ouverture en écriture de {}", store.display()))?;
     let session = db.session();

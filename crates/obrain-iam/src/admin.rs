@@ -62,8 +62,8 @@ use serde::Serialize;
 use crate::error::{IamError, IamResult};
 use crate::gdpr::{ErasureCertificate, GdprManager, UserDataExport};
 use crate::model::{
-    AuditEvent, EDGE_HAS_CREDENTIAL, EntityStatus, LABEL_POLICY, LABEL_USER, Policy, PolicyDecision,
-    PolicyEffect, Role, User, props,
+    AuditEvent, EDGE_HAS_CREDENTIAL, EntityStatus, LABEL_POLICY, LABEL_USER, Policy,
+    PolicyDecision, PolicyEffect, Role, User, props,
 };
 use crate::orn::Orn;
 use crate::provider::{AuthProvider, AuthRequest, ObrainIamProvider};
@@ -230,7 +230,11 @@ impl Administration {
     /// d'exploitation arbitre déjà les droits, et prétendre le contraire ici
     /// serait une comédie.
     #[must_use]
-    pub fn hors_bande(magasin: Arc<IamStore>, compte: impl Into<String>, acteur: impl Into<String>) -> Self {
+    pub fn hors_bande(
+        magasin: Arc<IamStore>,
+        compte: impl Into<String>,
+        acteur: impl Into<String>,
+    ) -> Self {
         let compte = compte.into();
         let fournisseur = ObrainIamProvider::new(Arc::clone(&magasin), compte.clone());
         Self {
@@ -313,11 +317,12 @@ impl Administration {
     ) -> IamResult<Self> {
         let compte = compte.into();
         let acteur = acteur.into();
-        let utilisateur = magasin
-            .find_user_by_name(&acteur)
-            .ok_or_else(|| IamError::ResourceNotFound {
-                resource: format!("user:{acteur}"),
-            })?;
+        let utilisateur =
+            magasin
+                .find_user_by_name(&acteur)
+                .ok_or_else(|| IamError::ResourceNotFound {
+                    resource: format!("user:{acteur}"),
+                })?;
         if utilisateur.status != EntityStatus::Active {
             return Err(IamError::AccessDenied {
                 reason: format!(
@@ -415,11 +420,9 @@ impl Administration {
         let jeton = self
             .fournisseur
             .create_session(
-                &self
-                    .fournisseur
-                    .authenticate(&AuthRequest::Internal {
-                        username: utilisateur.to_string(),
-                    })?,
+                &self.fournisseur.authenticate(&AuthRequest::Internal {
+                    username: utilisateur.to_string(),
+                })?,
                 TTL_JETON_DEFAUT,
             )?
             .token;
@@ -473,8 +476,11 @@ impl Administration {
         let id_role = id_role(utilisateur);
         creer_ou_retrouver_utilisateur(&self.magasin, &id_utilisateur, utilisateur)?;
         if self.magasin.get_role(&id_role).is_none() {
-            self.magasin
-                .create_role(&id_role, utilisateur, Some("compte créé par l'administration"))?;
+            self.magasin.create_role(
+                &id_role,
+                utilisateur,
+                Some("compte créé par l'administration"),
+            )?;
         }
         self.magasin.attach_role(&id_utilisateur, &id_role)?;
 
@@ -538,9 +544,11 @@ impl Administration {
             .ok_or_else(|| IamError::ResourceNotFound {
                 resource: format!("user:{utilisateur}"),
             })?;
-        self.magasin
-            .inner()
-            .set_node_property(nid, props::STATUS, obrain_common::Value::from("active"));
+        self.magasin.inner().set_node_property(
+            nid,
+            props::STATUS,
+            obrain_common::Value::from("active"),
+        );
         self.tracer("iam:user:enable", utilisateur, "statut=active")
     }
 
@@ -631,7 +639,11 @@ impl Administration {
             std::slice::from_ref(&ressource),
         )?;
         self.magasin.attach_policy_to_role(&id_role, &id)?;
-        self.tracer("iam:user:admin-grant", &u.username, &format!("espace={espace}"))
+        self.tracer(
+            "iam:user:admin-grant",
+            &u.username,
+            &format!("espace={espace}"),
+        )
     }
 
     /// Dégrade un compte : son droit d'administration sur cet espace est retiré.
@@ -695,11 +707,9 @@ impl Administration {
                 reason: format!("compte {} : aucun jeton ne doit être émis", u.status),
             });
         }
-        let identite = self
-            .fournisseur
-            .authenticate(&AuthRequest::Internal {
-                username: u.username.clone(),
-            })?;
+        let identite = self.fournisseur.authenticate(&AuthRequest::Internal {
+            username: u.username.clone(),
+        })?;
         let jeton = self.fournisseur.create_session(&identite, ttl_secs)?.token;
         self.tracer("iam:token:issue", utilisateur, &format!("ttl={ttl_secs}s"))?;
         Ok(JetonEmis {
@@ -741,12 +751,13 @@ impl Administration {
             if !est_credential {
                 continue;
             }
-            let Some(id) = store
-                .get_node_property(cible, &props::ID.into())
-                .and_then(|v| match v {
-                    Value::String(s) => Some(s.to_string()),
-                    _ => None,
-                })
+            let Some(id) =
+                store
+                    .get_node_property(cible, &props::ID.into())
+                    .and_then(|v| match v {
+                        Value::String(s) => Some(s.to_string()),
+                        _ => None,
+                    })
             else {
                 continue;
             };
@@ -872,7 +883,8 @@ impl Administration {
     // -- Garanties internes -------------------------------------------------
 
     /// Vérifie qu'un espace est dans le plafond, s'il y en a un.
-    fn verifier_plafond_espace(&self, espace: &str) -> IamResult<()> {        let Some(plafond) = &self.plafond else {
+    fn verifier_plafond_espace(&self, espace: &str) -> IamResult<()> {
+        let Some(plafond) = &self.plafond else {
             return Ok(());
         };
         if plafond.espaces.iter().any(|e| e == espace) {
@@ -990,9 +1002,9 @@ impl Administration {
     /// Vrai si le compte détient `iam:admin` par au moins une politique `Allow`.
     #[must_use]
     pub fn est_admin(&self, user_id: &str) -> bool {
-        self.politiques_de(user_id).iter().any(|p| {
-            p.effect == PolicyEffect::Allow && p.actions.iter().any(|a| a == ACTION_ADMIN)
-        })
+        self.politiques_de(user_id)
+            .iter()
+            .any(|p| p.effect == PolicyEffect::Allow && p.actions.iter().any(|a| a == ACTION_ADMIN))
     }
 
     /// Les noms des comptes actifs détenant `iam:admin`.
@@ -1210,7 +1222,12 @@ impl Administration {
     }
 
     /// Accorde lecture, écriture et audit sur un espace au rôle donné.
-    fn accorder_espace_a_role(&self, id_role: &str, utilisateur: &str, espace: &str) -> IamResult<()> {
+    fn accorder_espace_a_role(
+        &self,
+        id_role: &str,
+        utilisateur: &str,
+        espace: &str,
+    ) -> IamResult<()> {
         let ressource = Orn::tenant(self.compte.as_str(), espace.to_string());
         let id = format!("p-{espace}-{utilisateur}");
         self.poser_politique(
@@ -1245,13 +1262,8 @@ impl Administration {
         static COMPTEUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let n = COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = format!("adm-{}-{n:08x}", crate::store::maintenant_ts());
-        self.magasin.log_audit_event(
-            &id,
-            &principal,
-            action,
-            &ressource,
-            PolicyDecision::Allow,
-        );
+        self.magasin
+            .log_audit_event(&id, &principal, action, &ressource, PolicyDecision::Allow);
         // Le détail n'a pas de champ dans le modèle d'audit : on le rattache au
         // nom de l'action pour qu'il soit lisible sans relire le graphe.
         let _ = detail;
@@ -1357,11 +1369,7 @@ pub fn engendrer_mot_de_passe() -> String {
 }
 
 /// Crée l'utilisateur, ou retrouve celui qui porte déjà ce nom.
-fn creer_ou_retrouver_utilisateur(
-    magasin: &Arc<IamStore>,
-    id: &str,
-    nom: &str,
-) -> IamResult<()> {
+fn creer_ou_retrouver_utilisateur(magasin: &Arc<IamStore>, id: &str, nom: &str) -> IamResult<()> {
     match magasin.create_user(id, nom, None) {
         Ok(_) => Ok(()),
         Err(IamError::ResourceExists { .. }) => Ok(()),
@@ -1412,7 +1420,9 @@ mod tests {
     #[test]
     fn amorcage_pose_un_administrateur() {
         let admin = administration();
-        let a = admin.amorcer("root", "runtime-dev", Some("secret-1".to_string())).unwrap();
+        let a = admin
+            .amorcer("root", "runtime-dev", Some("secret-1".to_string()))
+            .unwrap();
         assert_eq!(a.mot_de_passe, "secret-1");
         assert!(!a.jeton.is_empty());
         assert_eq!(a.politiques.len(), 3);
@@ -1428,9 +1438,13 @@ mod tests {
     #[test]
     fn amorcage_est_idempotent() {
         let admin = administration();
-        admin.amorcer("root", "runtime-dev", Some("a".to_string())).unwrap();
+        admin
+            .amorcer("root", "runtime-dev", Some("a".to_string()))
+            .unwrap();
         // Rappeler l'amorçage doit réussir, pas échouer sur « existe déjà ».
-        admin.amorcer("root", "runtime-dev", Some("b".to_string())).unwrap();
+        admin
+            .amorcer("root", "runtime-dev", Some("b".to_string()))
+            .unwrap();
         assert_eq!(admin.lister_utilisateurs().len(), 1);
         assert_eq!(admin.lister_politiques().len(), 3);
     }
@@ -1438,12 +1452,17 @@ mod tests {
     #[test]
     fn amorcage_refuse_sur_une_administration_plafonnee() {
         let store = SubstrateStore::open_tempfile().unwrap();
-        let magasin = Arc::new(IamStore::new(Arc::new(store) as Arc<dyn obrain_core::graph::GraphStoreMut>));
+        let magasin = Arc::new(IamStore::new(
+            Arc::new(store) as Arc<dyn obrain_core::graph::GraphStoreMut>
+        ));
         let admin = Administration::avec_plafond(
             magasin,
             "obrain",
             "intrus",
-            Plafond::nouveau(vec!["runtime-dev".to_string()], vec![ACTION_ADMIN.to_string()]),
+            Plafond::nouveau(
+                vec!["runtime-dev".to_string()],
+                vec![ACTION_ADMIN.to_string()],
+            ),
         );
         let err = admin.amorcer("root", "runtime-dev", None).unwrap_err();
         assert!(
@@ -1457,7 +1476,9 @@ mod tests {
     #[test]
     fn ajouter_un_utilisateur_et_le_lire() {
         let admin = administration();
-        admin.amorcer("root", "runtime-dev", Some("x".to_string())).unwrap();
+        admin
+            .amorcer("root", "runtime-dev", Some("x".to_string()))
+            .unwrap();
         let ids = admin
             .ajouter_utilisateur("alice", &[espace("runtime-dev")], None)
             .unwrap();
@@ -1465,7 +1486,10 @@ mod tests {
         assert!(ids.mot_de_passe.starts_with("obrain-"));
 
         let r = admin.montrer_utilisateur("alice").unwrap();
-        assert!(!r.admin, "créer un compte ne doit pas donner l'administration");
+        assert!(
+            !r.admin,
+            "créer un compte ne doit pas donner l'administration"
+        );
         assert_eq!(r.espaces, vec!["runtime-dev".to_string()]);
         assert!(r.actions.contains(&ACTION_LECTURE.to_string()));
         assert!(r.actions.contains(&ACTION_AUDIT.to_string()));
@@ -1476,7 +1500,9 @@ mod tests {
     fn ajouter_deux_fois_le_meme_nom_est_refuse() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("bob", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("bob", &[espace("e1")], None)
+            .unwrap();
         let err = admin
             .ajouter_utilisateur("bob", &[espace("e1")], None)
             .unwrap_err();
@@ -1495,13 +1521,18 @@ mod tests {
     fn accorder_et_retirer_un_espace() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("dave", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("dave", &[espace("e1")], None)
+            .unwrap();
         admin.accorder_espace("dave", "e2").unwrap();
         let r = admin.montrer_utilisateur("dave").unwrap();
         assert_eq!(r.espaces, vec!["e1".to_string(), "e2".to_string()]);
 
         let n = admin.retirer_espace("dave", "e2").unwrap();
-        assert_eq!(n, 2, "la politique d'espace et celle d'audit partent ensemble");
+        assert_eq!(
+            n, 2,
+            "la politique d'espace et celle d'audit partent ensemble"
+        );
         let r = admin.montrer_utilisateur("dave").unwrap();
         assert_eq!(r.espaces, vec!["e1".to_string()]);
     }
@@ -1519,7 +1550,10 @@ mod tests {
             );
         }
         for bon in ["alice", "a", "a.b-c_d", "u1", "x9"] {
-            assert!(valider_nom(bon, "utilisateur").is_ok(), "« {bon} » doit passer");
+            assert!(
+                valider_nom(bon, "utilisateur").is_ok(),
+                "« {bon} » doit passer"
+            );
         }
     }
 
@@ -1551,7 +1585,11 @@ mod tests {
             .ajouter_utilisateur("eve", &[espace("e2")], None)
             .unwrap_err();
         assert!(matches!(err, IamError::AccessDenied { .. }));
-        assert!(borne.ajouter_utilisateur("eve", &[espace("e1")], None).is_ok());
+        assert!(
+            borne
+                .ajouter_utilisateur("eve", &[espace("e1")], None)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1607,13 +1645,18 @@ mod tests {
     fn avec_un_second_administrateur_la_desactivation_passe() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("second", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("second", &[espace("e1")], None)
+            .unwrap();
         admin.promouvoir_admin("second", "e1").unwrap();
         assert_eq!(admin.admins_actifs().len(), 2);
 
         // Maintenant root peut être désactivé : il reste « second ».
         admin.desactiver_utilisateur("root").unwrap();
-        assert_eq!(admin.montrer_utilisateur("root").unwrap().statut, "inactive");
+        assert_eq!(
+            admin.montrer_utilisateur("root").unwrap().statut,
+            "inactive"
+        );
         assert_eq!(admin.admins_actifs(), vec!["second".to_string()]);
     }
 
@@ -1626,11 +1669,20 @@ mod tests {
         let magasin = Arc::clone(admin.magasin());
 
         let borne = Administration::plafonnee_par_l_acteur(magasin, "obrain", "root").unwrap();
-        assert!(!borne.est_hors_bande(), "l'acteur réseau n'est pas hors bande");
+        assert!(
+            !borne.est_hors_bande(),
+            "l'acteur réseau n'est pas hors bande"
+        );
         // Ce que root détient : il peut donc l'accorder.
-        assert!(borne.ajouter_utilisateur("sara", &[espace("e1")], None).is_ok());
+        assert!(
+            borne
+                .ajouter_utilisateur("sara", &[espace("e1")], None)
+                .is_ok()
+        );
         // Ce qu'il ne détient pas : il ne peut pas l'accorder.
-        let err = borne.ajouter_utilisateur("tara", &[espace("e2")], None).unwrap_err();
+        let err = borne
+            .ajouter_utilisateur("tara", &[espace("e2")], None)
+            .unwrap_err();
         assert!(
             matches!(err, IamError::AccessDenied { .. }),
             "un administrateur d'un espace ne doit pas en ouvrir un autre"
@@ -1651,7 +1703,9 @@ mod tests {
         // Un plafond vide ne veut pas dire « aucune restriction » : il veut dire
         // qu'on n'accorde rien. Le contraire — ouvert tant qu'on n'a rien
         // déclaré — est le défaut qu'on ne veut pas.
-        let err = borne.ajouter_utilisateur("ursula", &[espace("e1")], None).unwrap_err();
+        let err = borne
+            .ajouter_utilisateur("ursula", &[espace("e1")], None)
+            .unwrap_err();
         assert!(matches!(err, IamError::AccessDenied { .. }));
     }
 
@@ -1659,7 +1713,9 @@ mod tests {
     fn un_compte_ferme_ne_fournit_pas_de_plafond() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("second", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("second", &[espace("e1")], None)
+            .unwrap();
         admin.promouvoir_admin("second", "e1").unwrap();
         admin.desactiver_utilisateur("root").unwrap();
         let magasin = Arc::clone(admin.magasin());
@@ -1698,7 +1754,10 @@ mod tests {
             let err = match geste {
                 "montrer" => borne.montrer_utilisateur("voisin").map(|_| ()).unwrap_err(),
                 "desactiver" => borne.desactiver_utilisateur("voisin").unwrap_err(),
-                "mot-de-passe" => borne.changer_mot_de_passe("voisin", None).map(|_| ()).unwrap_err(),
+                "mot-de-passe" => borne
+                    .changer_mot_de_passe("voisin", None)
+                    .map(|_| ())
+                    .unwrap_err(),
                 _ => borne.effacer_utilisateur("voisin").map(|_| ()).unwrap_err(),
             };
             assert!(
@@ -1707,14 +1766,19 @@ mod tests {
             );
         }
         // La cible est intacte : un refus qui laisse des traces n'est pas un refus.
-        assert_eq!(admin.montrer_utilisateur("voisin").unwrap().statut, "active");
+        assert_eq!(
+            admin.montrer_utilisateur("voisin").unwrap().statut,
+            "active"
+        );
     }
 
     #[test]
     fn on_administre_un_compte_dans_sa_portee() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("proche", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("proche", &[espace("e1")], None)
+            .unwrap();
         let magasin = Arc::clone(admin.magasin());
 
         let borne = Administration::plafonnee_par_l_acteur(magasin, "obrain", "root").unwrap();
@@ -1728,9 +1792,14 @@ mod tests {
     fn desactiver_puis_reactiver() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("gwen", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("gwen", &[espace("e1")], None)
+            .unwrap();
         admin.desactiver_utilisateur("gwen").unwrap();
-        assert_eq!(admin.montrer_utilisateur("gwen").unwrap().statut, "inactive");
+        assert_eq!(
+            admin.montrer_utilisateur("gwen").unwrap().statut,
+            "inactive"
+        );
         admin.reactiver_utilisateur("gwen").unwrap();
         assert_eq!(admin.montrer_utilisateur("gwen").unwrap().statut, "active");
     }
@@ -1739,7 +1808,9 @@ mod tests {
     fn emettre_lister_et_revoquer_des_jetons() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("hugo", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("hugo", &[espace("e1")], None)
+            .unwrap();
 
         let j1 = admin.emettre_jeton("hugo", 3600).unwrap();
         assert!(j1.jeton.starts_with("obt_"));
@@ -1766,7 +1837,9 @@ mod tests {
     fn emettre_un_jeton_exige_le_hors_bande() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("ivy", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("ivy", &[espace("e1")], None)
+            .unwrap();
         let magasin = Arc::clone(admin.magasin());
         let borne = Administration::avec_plafond(
             magasin,
@@ -1785,7 +1858,9 @@ mod tests {
     fn un_jeton_emet_est_accepte_par_la_garde_de_la_bibliotheque() {
         let (admin, graphe) = bac_a_sable();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("jane", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("jane", &[espace("e1")], None)
+            .unwrap();
         let jeton = admin.emettre_jeton("jane", 3600).unwrap().jeton;
 
         let garde = garde(&graphe);
@@ -1793,7 +1868,9 @@ mod tests {
             .authentifier(Some(&jeton))
             .expect("jeton accepté")
             .expect("session");
-        garde.controler(Some(&session), false, "e1").expect("lecture autorisée");
+        garde
+            .controler(Some(&session), false, "e1")
+            .expect("lecture autorisée");
         assert!(
             garde.controler(Some(&session), false, "e2").is_err(),
             "la portée tient : un autre espace est refusé"
@@ -1804,7 +1881,9 @@ mod tests {
     fn un_jeton_d_un_compte_desactive_est_refuse() {
         let (admin, graphe) = bac_a_sable();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("kate", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("kate", &[espace("e1")], None)
+            .unwrap();
         let jeton = admin.emettre_jeton("kate", 3600).unwrap().jeton;
 
         let garde = garde(&graphe);
@@ -1821,7 +1900,9 @@ mod tests {
     fn retirer_un_espace_mord_sans_purge_de_session() {
         let (admin, graphe) = bac_a_sable();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("liam", &[espace("e1"), espace("e2")], None).unwrap();
+        admin
+            .ajouter_utilisateur("liam", &[espace("e1"), espace("e2")], None)
+            .unwrap();
         let jeton = admin.emettre_jeton("liam", 3600).unwrap().jeton;
 
         let garde = garde(&graphe);
@@ -1841,7 +1922,9 @@ mod tests {
     fn changer_le_mot_de_passe_marque_le_compte() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("mona", &[espace("e1")], Some("ancien".to_string())).unwrap();
+        admin
+            .ajouter_utilisateur("mona", &[espace("e1")], Some("ancien".to_string()))
+            .unwrap();
         let ids = admin.changer_mot_de_passe("mona", None).unwrap();
         assert!(ids.genere);
         let r = admin.montrer_utilisateur("mona").unwrap();
@@ -1867,7 +1950,9 @@ mod tests {
     fn exporter_et_effacer_un_compte() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("nina", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("nina", &[espace("e1")], None)
+            .unwrap();
 
         let export = admin.exporter_utilisateur("nina").unwrap();
         assert_eq!(export.user.username, "nina");
@@ -1884,7 +1969,9 @@ mod tests {
     fn les_gestes_sont_traces() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("omar", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("omar", &[espace("e1")], None)
+            .unwrap();
         admin.desactiver_utilisateur("omar").unwrap();
 
         let piste = admin.piste_audit(100);
@@ -1906,8 +1993,12 @@ mod tests {
     fn lister_utilisateurs_est_trie() {
         let admin = administration();
         admin.amorcer("root", "e1", Some("x".to_string())).unwrap();
-        admin.ajouter_utilisateur("zoe", &[espace("e1")], None).unwrap();
-        admin.ajouter_utilisateur("anna", &[espace("e1")], None).unwrap();
+        admin
+            .ajouter_utilisateur("zoe", &[espace("e1")], None)
+            .unwrap();
+        admin
+            .ajouter_utilisateur("anna", &[espace("e1")], None)
+            .unwrap();
         let noms: Vec<String> = admin
             .lister_utilisateurs()
             .into_iter()

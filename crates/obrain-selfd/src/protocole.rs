@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use obrain_garde::{Garde, Reglages};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent;
 use crate::chat;
@@ -178,7 +178,10 @@ pub fn executer_outil(
     // information. Un outil ajouté demain l'hérite sans qu'on y pense.
     if etat.exiger_jeton {
         let attendu = secret.unwrap_or_default();
-        let fourni = params.get("token").and_then(|v| v.as_str()).unwrap_or_default();
+        let fourni = params
+            .get("token")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if !secret_egal(fourni, attendu) {
             return Err(refus_jeton(methode));
         }
@@ -241,7 +244,14 @@ pub fn executer_outil(
             // rend un motif pour arrêter — ici personne n'écoute en flux, donc
             // il rend toujours `None` (continuer).
             let mut garde = Garde::nouvelle(Reglages::default());
-            match chat::converser(&etat.llm, &systeme, &historique, &question, &mut garde, |_| None) {
+            match chat::converser(
+                &etat.llm,
+                &systeme,
+                &historique,
+                &question,
+                &mut garde,
+                |_| None,
+            ) {
                 Ok(tour) => {
                     // Un arrêt se DIT, il ne se fait pas passer pour une fin : le
                     // motif et sa phrase sont dans la réponse, pas seulement dans
@@ -342,10 +352,12 @@ pub fn repondre(etat: &mut Etat, appel: &Appel, secret: Option<&str>) -> Option<
     let id = appel.id.clone()?;
     // Une notification (sans `id`) ne reçoit JAMAIS de réponse : en rendre une
     // ferait diverger le protocole pour un client qui compte les réponses.
-    Some(match executer_outil(etat, &appel.methode, &appel.params, secret) {
-        Ok(v) => json!({ "jsonrpc": "2.0", "id": id, "result": v }),
-        Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
-    })
+    Some(
+        match executer_outil(etat, &appel.methode, &appel.params, secret) {
+            Ok(v) => json!({ "jsonrpc": "2.0", "id": id, "result": v }),
+            Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
+        },
+    )
 }
 
 /// Lit un objet JSON-RPC d'une ligne, en tolérant l'absence de `id`.
@@ -353,7 +365,11 @@ pub fn analyser(ligne: &str) -> Result<Appel, String> {
     let v: Value = serde_json::from_str(ligne).map_err(|e| format!("trame illisible : {e}"))?;
     Ok(Appel {
         id: v.get("id").cloned(),
-        methode: v.get("method").and_then(|m| m.as_str()).unwrap_or_default().to_string(),
+        methode: v
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string(),
         params: v.get("params").cloned().unwrap_or_else(|| json!({})),
     })
 }

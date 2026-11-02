@@ -28,7 +28,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Délai d'une requête. Le moteur répond en quelques millisecondes ; une requête
 /// lourde dépasse la seconde, et un tour de conversation passe par un modèle —
@@ -165,12 +165,15 @@ fn envoyer_avec_delai(
         }
         None => requete.push_str("\r\n"),
     }
-    flux.write_all(requete.as_bytes()).context("écriture de la requête")?;
+    flux.write_all(requete.as_bytes())
+        .context("écriture de la requête")?;
     flux.flush().ok();
 
     let mut lecteur = BufReader::new(flux);
     let mut ligne = String::new();
-    lecteur.read_line(&mut ligne).context("lecture de la ligne de statut")?;
+    lecteur
+        .read_line(&mut ligne)
+        .context("lecture de la ligne de statut")?;
     let status = ligne
         .split_whitespace()
         .nth(1)
@@ -191,7 +194,14 @@ fn envoyer_avec_delai(
             chunked = true;
         }
     }
-    Ok((Entete { status, longueur, chunked }, lecteur))
+    Ok((
+        Entete {
+            status,
+            longueur,
+            chunked,
+        },
+        lecteur,
+    ))
 }
 
 /// Lit le corps entier selon ce que l'en-tête annonce.
@@ -209,7 +219,11 @@ fn lire_corps(mut lecteur: BufReader<TcpStream>, e: &Entete) -> Result<String> {
         }
     }
     let texte = String::from_utf8_lossy(&brut).to_string();
-    Ok(if e.chunked { decoder_chunked(&texte) } else { texte })
+    Ok(if e.chunked {
+        decoder_chunked(&texte)
+    } else {
+        texte
+    })
 }
 
 /// Décode un corps `Transfer-Encoding: chunked`.
@@ -254,7 +268,10 @@ fn entetes_auth(jeton: Option<&str>) -> Vec<(&str, &str)> {
 pub fn get(url: &str, params: &[(&str, &str)], jeton: Option<&str>) -> Result<Reponse> {
     let (entete, lecteur) = envoyer(&avec_params(url, params), "GET", &entetes_auth(jeton), None)?;
     let corps = lire_corps(lecteur, &entete)?;
-    Ok(Reponse { status: entete.status, corps })
+    Ok(Reponse {
+        status: entete.status,
+        corps,
+    })
 }
 
 /// `POST` d'un corps JSON.
@@ -263,7 +280,10 @@ pub fn post_json(url: &str, corps: &str, jeton: Option<&str>) -> Result<Reponse>
     entetes.extend(entetes_auth(jeton));
     let (entete, lecteur) = envoyer(url, "POST", &entetes, Some(corps))?;
     let corps = lire_corps(lecteur, &entete)?;
-    Ok(Reponse { status: entete.status, corps })
+    Ok(Reponse {
+        status: entete.status,
+        corps,
+    })
 }
 
 /// Lit un flux SSE sur un `GET` et rappelle `sur_evenement(nom, données)`.
@@ -293,16 +313,14 @@ where
 /// flux s'obtient par **POST** avec un corps. Un `GET` y répondrait une erreur —
 /// et une erreur lue comme un flux donnerait une conversation vide, sans que
 /// rien ne dise pourquoi.
-pub fn post_sse<F>(
-    url: &str,
-    corps: &str,
-    jeton: Option<&str>,
-    sur_evenement: F,
-) -> Result<()>
+pub fn post_sse<F>(url: &str, corps: &str, jeton: Option<&str>, sur_evenement: F) -> Result<()>
 where
     F: FnMut(&str, &str),
 {
-    let mut entetes = vec![("Content-Type", "application/json"), ("Accept", "text/event-stream")];
+    let mut entetes = vec![
+        ("Content-Type", "application/json"),
+        ("Accept", "text/event-stream"),
+    ];
     entetes.extend(entetes_auth(jeton));
     let (entete, lecteur) = envoyer(url, "POST", &entetes, Some(corps))?;
     lire_flux(entete, lecteur, sur_evenement)
@@ -351,7 +369,10 @@ where
     F: FnMut(&str, &str) -> bool,
     C: FnMut() -> bool,
 {
-    let mut entetes = vec![("Content-Type", "application/json"), ("Accept", "text/event-stream")];
+    let mut entetes = vec![
+        ("Content-Type", "application/json"),
+        ("Accept", "text/event-stream"),
+    ];
     entetes.extend(entetes_auth(jeton));
     let (entete, lecteur) = envoyer_avec_delai(url, "POST", &entetes, Some(corps), delai)?;
     lire_flux_supervise(entete, lecteur, sur_ligne, continuer)
@@ -362,8 +383,16 @@ fn lire_flux<F>(entete: Entete, lecteur: BufReader<TcpStream>, mut sur_evenement
 where
     F: FnMut(&str, &str),
 {
-    lire_flux_supervise(entete, lecteur, |nom, donnees| { sur_evenement(nom, donnees); true }, || true)
-        .map(|_| ())
+    lire_flux_supervise(
+        entete,
+        lecteur,
+        |nom, donnees| {
+            sur_evenement(nom, donnees);
+            true
+        },
+        || true,
+    )
+    .map(|_| ())
 }
 
 /// Le cœur de la lecture SSE, avec les deux points d'arrêt.
@@ -392,7 +421,9 @@ where
             return Ok(true);
         }
         let mut ligne = String::new();
-        let n = lecteur.read_line(&mut ligne).context("lecture du flux SSE")?;
+        let n = lecteur
+            .read_line(&mut ligne)
+            .context("lecture du flux SSE")?;
         if n == 0 {
             break;
         }
@@ -432,7 +463,9 @@ mod tests {
         let ecrites = Arc::new(AtomicUsize::new(0));
         let compteur = Arc::clone(&ecrites);
         thread::spawn(move || {
-            let Ok((mut flux, _)) = listener.accept() else { return };
+            let Ok((mut flux, _)) = listener.accept() else {
+                return;
+            };
             // Lire la requête jusqu'à la ligne vide (le corps ne nous intéresse pas).
             let mut lecteur = BufReader::new(match flux.try_clone() {
                 Ok(c) => c,
@@ -453,7 +486,10 @@ mod tests {
             compteur.store(trames.matches("\n\n").count(), Ordering::Relaxed);
             thread::sleep(apres);
         });
-        (format!("http://127.0.0.1:{port}/v1/chat/completions"), ecrites)
+        (
+            format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            ecrites,
+        )
     }
 
     const TROIS_TRAMES: &str =
@@ -476,7 +512,10 @@ mod tests {
             || true,
         )
         .expect("le flux doit être lisible");
-        assert!(!arrete, "un flux terminé ne doit pas se dire « arrêté par nous »");
+        assert!(
+            !arrete,
+            "un flux terminé ne doit pas se dire « arrêté par nous »"
+        );
         assert_eq!(vus, vec!["{\"a\":1}", "{\"a\":2}", "{\"a\":3}", "[DONE]"]);
     }
 
@@ -485,7 +524,11 @@ mod tests {
         // Le service tient la connexion ouverte APRÈS ses trames : sans arrêt,
         // cette lecture attendrait le délai. C'est le défaut mesuré — le rappel
         // rendait `()` et l'appelant ne pouvait pas cesser de lire.
-        let (url, _) = serveur_sse("200 OK".into(), TROIS_TRAMES.into(), Duration::from_millis(300));
+        let (url, _) = serveur_sse(
+            "200 OK".into(),
+            TROIS_TRAMES.into(),
+            Duration::from_millis(300),
+        );
         let mut vus = 0usize;
         let arrete = post_sse_supervise(
             &url,
@@ -505,7 +548,11 @@ mod tests {
 
     #[test]
     fn la_commande_du_client_arrete_la_lecture_avant_la_trame_suivante() {
-        let (url, _) = serveur_sse("200 OK".into(), TROIS_TRAMES.into(), Duration::from_millis(300));
+        let (url, _) = serveur_sse(
+            "200 OK".into(),
+            TROIS_TRAMES.into(),
+            Duration::from_millis(300),
+        );
         let lectures = Arc::new(AtomicUsize::new(0));
         let compteur = Arc::clone(&lectures);
         let mut vus = 0usize;
@@ -522,18 +569,38 @@ mod tests {
         )
         .expect("l'arrêt est un succès");
         assert!(arrete);
-        assert!(vus <= 4, "on ne lit pas au-delà de l'ordre d'arrêt (vus = {vus})");
-        assert!(lectures.load(Ordering::Relaxed) <= 3, "l'état extérieur est consulté à chaque tour");
+        assert!(
+            vus <= 4,
+            "on ne lit pas au-delà de l'ordre d'arrêt (vus = {vus})"
+        );
+        assert!(
+            lectures.load(Ordering::Relaxed) <= 3,
+            "l'état extérieur est consulté à chaque tour"
+        );
     }
 
     #[test]
     fn un_statut_non_200_est_une_erreur_qui_montre_le_corps() {
-        let (url, _) = serveur_sse("500 Internal Server Error".into(), "{\"error\":\"modele absent\"}\n\n".into(), Duration::ZERO);
-        let err = post_sse_supervise(&url, "{}", None, Duration::from_secs(5), |_, _| true, || true)
-            .expect_err("un 500 doit être une erreur, jamais un flux vide");
+        let (url, _) = serveur_sse(
+            "500 Internal Server Error".into(),
+            "{\"error\":\"modele absent\"}\n\n".into(),
+            Duration::ZERO,
+        );
+        let err = post_sse_supervise(
+            &url,
+            "{}",
+            None,
+            Duration::from_secs(5),
+            |_, _| true,
+            || true,
+        )
+        .expect_err("un 500 doit être une erreur, jamais un flux vide");
         let message = format!("{err:#}");
         assert!(message.contains("500"), "{message}");
-        assert!(message.contains("modele absent"), "le corps doit être montré : {message}");
+        assert!(
+            message.contains("modele absent"),
+            "le corps doit être montré : {message}"
+        );
     }
 
     #[test]
@@ -543,7 +610,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("port éphémère");
         let port = listener.local_addr().expect("adresse locale").port();
         thread::spawn(move || {
-            let Ok((mut flux, _)) = listener.accept() else { return };
+            let Ok((mut flux, _)) = listener.accept() else {
+                return;
+            };
             let _ = flux.write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
             );
@@ -552,9 +621,19 @@ mod tests {
         });
         let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
         let debut = std::time::Instant::now();
-        let err = post_sse_supervise(&url, "{}", None, Duration::from_millis(200), |_, _| true, || true)
-            .expect_err("le silence doit rendre la main, pas bloquer");
+        let err = post_sse_supervise(
+            &url,
+            "{}",
+            None,
+            Duration::from_millis(200),
+            |_, _| true,
+            || true,
+        )
+        .expect_err("le silence doit rendre la main, pas bloquer");
         assert!(format!("{err:#}").contains("flux"), "{err:#}");
-        assert!(debut.elapsed() < Duration::from_secs(2), "l'attente a dépassé le délai demandé");
+        assert!(
+            debut.elapsed() < Duration::from_secs(2),
+            "l'attente a dépassé le délai demandé"
+        );
     }
 }

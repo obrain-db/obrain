@@ -29,7 +29,11 @@ use obrain_substrate::SubstrateStore;
 fn median(v: &mut Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
 }
 
 fn bench<F: FnMut()>(rep: usize, mut f: F) -> f64 {
@@ -45,7 +49,9 @@ fn bench<F: FnMut()>(rep: usize, mut f: F) -> f64 {
 fn sample_coverage(store: &Arc<SubstrateStore>, key: &PropertyKey, sample_n: usize) -> f64 {
     let ids = store.node_ids();
     let n = ids.len().min(sample_n);
-    if n == 0 { return 0.0; }
+    if n == 0 {
+        return 0.0;
+    }
     let mut hits = 0usize;
     for nid in ids.iter().take(n) {
         if let Some(Value::Vector(_)) = store.get_node_property(*nid, key) {
@@ -86,15 +92,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let key = PropertyKey::from("_hilbert_features");
     let before = sample_coverage(&store, &key, 1000);
-    println!("\n_hilbert_features coverage AVANT : {:.1}% (sample 1000)", before * 100.0);
+    println!(
+        "\n_hilbert_features coverage AVANT : {:.1}% (sample 1000)",
+        before * 100.0
+    );
 
     let enricher = HilbertEnricher::new(HilbertEnricherConfig::default());
     let t_tick = Instant::now();
     let report = enricher.tick(&store)?;
     let tick_ms = t_tick.elapsed().as_secs_f64() * 1000.0;
     let after = sample_coverage(&store, &key, 1000);
-    println!("tick Hilbert   : {:.1} ms (nodes_touched={})", tick_ms, report.nodes_touched);
-    println!("_hilbert_features coverage APRÈS : {:.1}% (sample 1000)", after * 100.0);
+    println!(
+        "tick Hilbert   : {:.1} ms (nodes_touched={})",
+        tick_ms, report.nodes_touched
+    );
+    println!(
+        "_hilbert_features coverage APRÈS : {:.1}% (sample 1000)",
+        after * 100.0
+    );
 
     // ── 3. Flotte standard de thinkers (intervalle court) ──
     let mut tcfg = ThinkersConfig {
@@ -129,8 +144,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             seeds.join(",")
         );
         let r = session.execute(&q)?;
-        println!("\nspread-causal (INVOKED/PRODUCED, hops=2) : {} lignes retournées", r.row_count());
-        let spread_ms = bench(rep, || { let _ = session.execute(&q); });
+        println!(
+            "\nspread-causal (INVOKED/PRODUCED, hops=2) : {} lignes retournées",
+            r.row_count()
+        );
+        let spread_ms = bench(rep, || {
+            let _ = session.execute(&q);
+        });
         println!("spread-causal  : {:.1} ms (médiane {})", spread_ms, rep);
     }
 

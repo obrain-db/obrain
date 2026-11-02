@@ -12,17 +12,29 @@ fn main() -> anyhow::Result<()> {
     let p = "'";
     let q = match var.as_str() {
         // a : la requete ACTUELLE (un rang)
-        "a" => format!("MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN split(n.qualified_name, {p}.{p})[2] AS m, count(n) AS c ORDER BY c DESC LIMIT 200"),
+        "a" => format!(
+            "MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN split(n.qualified_name, {p}.{p})[2] AS m, count(n) AS c ORDER BY c DESC LIMIT 200"
+        ),
         // b : multi-cles via WITH (tuple de segments)
-        "b" => format!("MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} WITH split(n.qualified_name, {p}.{p}) AS s, n RETURN s[0] AS a0, s[1] AS a1, s[2] AS a2, s[3] AS a3, s[4] AS a4, s[5] AS a5, s[6] AS a6, count(n) AS c"),
+        "b" => format!(
+            "MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} WITH split(n.qualified_name, {p}.{p}) AS s, n RETURN s[0] AS a0, s[1] AS a1, s[2] AS a2, s[3] AS a3, s[4] AS a4, s[5] AS a5, s[6] AS a6, count(n) AS c"
+        ),
         // c : projection brute du qualified_name
-        "c" => format!("MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN n.qualified_name AS q"),
+        "c" => format!(
+            "MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN n.qualified_name AS q"
+        ),
         // d : groupement sur le qualified_name entier
-        "d" => format!("MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN n.qualified_name AS q, count(n) AS c"),
+        "d" => format!(
+            "MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN n.qualified_name AS q, count(n) AS c"
+        ),
         // e : deux rangs en une requete (RETURN direct)
-        "e" => format!("MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN split(n.qualified_name, {p}.{p})[2] AS a2, split(n.qualified_name, {p}.{p})[3] AS a3, count(n) AS c"),
+        "e" => format!(
+            "MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN split(n.qualified_name, {p}.{p})[2] AS a2, split(n.qualified_name, {p}.{p})[3] AS a3, count(n) AS c"
+        ),
         // f : cinq rangs en une requete (RETURN direct) - la cible
-        "f" => format!("MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN split(n.qualified_name, {p}.{p})[2] AS a2, split(n.qualified_name, {p}.{p})[3] AS a3, split(n.qualified_name, {p}.{p})[4] AS a4, split(n.qualified_name, {p}.{p})[5] AS a5, split(n.qualified_name, {p}.{p})[6] AS a6, count(n) AS c"),
+        "f" => format!(
+            "MATCH (n) WHERE n.qualified_name CONTAINS {p}.{p} RETURN split(n.qualified_name, {p}.{p})[2] AS a2, split(n.qualified_name, {p}.{p})[3] AS a3, split(n.qualified_name, {p}.{p})[4] AS a4, split(n.qualified_name, {p}.{p})[5] AS a5, split(n.qualified_name, {p}.{p})[6] AS a6, count(n) AS c"
+        ),
         // g : projection brute sans filtre CONTAINS
         "g" => format!("MATCH (n) RETURN n.qualified_name AS q"),
         // h : comptage nu
