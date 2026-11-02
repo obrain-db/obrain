@@ -1,0 +1,87 @@
+{
+  "schema": "obrain/json-graph@1",
+  "stats": {
+    "node_count": 5,
+    "edge_count": 5,
+    "truncated": false
+  },
+  "nodes": [
+    {
+      "id": "2373",
+      "qn": "CHEMIN.UTILISATEUR.projects.banc_obrain.crates.obrain_engine.src.query.processor.rs.__file__",
+      "label": "__file__",
+      "file_path": "/CHEMIN/UTILISATEUR/projects/banc-obrain/crates/obrain-engine/src/query/processor.rs",
+      "energy": 0.0,
+      "curvature": -1.0
+    },
+    {
+      "id": "2403",
+      "qn": "CHEMIN.UTILISATEUR.projects.banc_obrain.crates.obrain_engine.src.query.substitute_params",
+      "label": "substitute_params",
+      "file_path": "/CHEMIN/UTILISATEUR/projects/banc-obrain/crates/obrain-engine/src/query/processor.rs",
+      "energy": 0.0,
+      "curvature": -1.0
+    },
+    {
+      "id": "2404",
+      "qn": "CHEMIN.UTILISATEUR.projects.banc_obrain.crates.obrain_engine.src.query.substitute_in_operator",
+      "label": "substitute_in_operator",
+      "file_path": "/CHEMIN/UTILISATEUR/projects/banc-obrain/crates/obrain-engine/src/query/processor.rs",
+      "energy": 0.0,
+      "curvature": -1.0
+    },
+    {
+      "id": "2405",
+      "qn": "CHEMIN.UTILISATEUR.projects.banc_obrain.crates.obrain_engine.src.query.resolve_count_param",
+      "label": "resolve_count_param",
+      "file_path": "/CHEMIN/UTILISATEUR/projects/banc-obrain/crates/obrain-engine/src/query/processor.rs",
+      "energy": 0.0,
+      "curvature": -1.0
+    },
+    {
+      "id": "2406",
+      "qn": "CHEMIN.UTILISATEUR.projects.banc_obrain.crates.obrain_engine.src.query.substitute_in_expression",
+      "label": "substitute_in_expression",
+      "file_path": "/CHEMIN/UTILISATEUR/projects/banc-obrain/crates/obrain-engine/src/query/processor.rs",
+      "energy": 0.0,
+      "curvature": -1.0
+    }
+  ],
+  "edges": [
+    {
+      "src": "2373",
+      "dst": "2404",
+      "type": "DEFINES",
+      "weight": 0.0,
+      "ricci": -1.0
+    },
+    {
+      "src": "2403",
+      "dst": "2404",
+      "type": "CALLS",
+      "weight": 0.0,
+      "ricci": -1.0
+    },
+    {
+      "src": "2404",
+      "dst": "2404",
+      "type": "CALLS",
+      "weight": 0.0,
+      "ricci": -1.0
+    },
+    {
+      "src": "2404",
+      "dst": "2405",
+      "type": "CALLS",
+      "weight": 0.0,
+      "ricci": -1.0
+    },
+    {
+      "src": "2404",
+      "dst": "2406",
+      "type": "CALLS",
+      "weight": 0.0,
+      "ricci": -1.0
+    }
+  ]
+}
