@@ -51,6 +51,16 @@ obrain = { path = "crates/obrain", version = "0.0.1" }
 obrain-reactive = { path = "crates/obrain-reactive", version = "0.0.1" }
 obrain-substrate = { path = "crates/obrain-substrate", version = "0.0.1" }
 obrain-cognitive = { path = "crates/obrain-cognitive", version = "0.0.1", default-features = false }
+obrain-indexer = { path = "crates/obrain-indexer", version = "0.0.1" }
+obrain-rag = { path = "crates/obrain-rag", version = "0.0.1", default-features = false }
+obrain-iam = { path = "crates/obrain-iam", version = "0.0.1", default-features = false }
+obrain-coffre = { path = "crates/obrain-coffre", version = "0.0.1", default-features = false }
+obrain-tls = { path = "crates/obrain-tls", version = "0.0.1", default-features = false }
+obrain-journal = { path = "crates/obrain-journal", version = "0.0.1", default-features = false }
+obrain-aveugle = { path = "crates/obrain-aveugle", version = "0.0.1", default-features = false }
+obrain-viz = { path = "crates/obrain-viz", version = "0.0.1" }
+obrain-garde = { path = "crates/obrain-garde", version = "0.0.1" }
+obrain-bindings-common = { path = "crates/bindings/common", version = "0.0.1", default-features = false }
 # LA GARDE d'une génération (échéance, budget, répétition, arrêt) — pure, sans
 # dépendance, pour que TOUTES les boucles de modèle du dépôt la partagent au
 # lieu d'en recopier une partie (défaut mesuré le 2026-09-16 : l'arrêt n'existait
