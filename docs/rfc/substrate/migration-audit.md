@@ -1,5 +1,7 @@
 # T5 Step 0 — Migration Audit
 
+> **Document historique** (audit de migration, 2026) : « grafeo » et « lab/grafeo » désignent le monorepo d'origine, et les chemins `crates/bindings/*` n'existent plus dans ce dépôt. Conservé pour la traçabilité de la bascule vers le substrat.
+
 **Generated**: 2026-04-20
 **Scope**: Substrate — plan SUBSTRATE, task T5
 **Goal**: exhaustive inventory of every call site that touches

@@ -190,4 +190,4 @@ SESSION CLOSE
 
 ## Programmatic API
 
-For transaction control from host languages (Python, Node.js, Rust), see [Transactions](../transactions.md).
+For transaction control from Rust (`Session::begin_transaction`, `commit`, `rollback`), see the README section « Durabilité » and `docs/LIMITES-v0.0.1.md`.

@@ -2,7 +2,7 @@
 """GQL ISO/IEC 39075:2024 conformance tracking.
 
 Scans test files for ``// ISO:`` annotations and cross-references them against
-the conformance matrix in ``docs/user-guide/gql/conformance.md``.
+the conformance matrix in ``docs/gql/conformance.md``.
 
 Usage:
     python scripts/gql-conformance.py report      # Human-readable coverage report
@@ -346,7 +346,7 @@ def main() -> None:
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
 
-    conformance_path = project_root / "docs" / "user-guide" / "gql" / "conformance.md"
+    conformance_path = project_root / "docs" / "gql" / "conformance.md"
     test_dir = project_root / "crates" / "obrain-engine" / "tests"
     cargo_toml = project_root / "Cargo.toml"
 
