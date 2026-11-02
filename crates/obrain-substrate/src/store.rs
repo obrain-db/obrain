@@ -12787,7 +12787,14 @@ impl SubstrateStore {
     {
         let hw = self.next_edge_id.load(Ordering::Acquire);
         self.writer.for_each_edge_record(hw, |slot, rec| {
-            if rec.is_tombstoned() {
+            // (2026-11-02) Un slot RÉSERVÉ mais jamais écrit n'est pas une arête.
+            // La zone est dimensionnée par bloc (`TAILLE_BLOC_ALLOCATION`) et
+            // `next_edge_id` peut valoir la borne du bloc : les records entre la
+            // dernière arête écrite et cette borne sont à zéro — ni tombstone,
+            // ni arête. Une vraie arête a toujours `src != 0 && dst != 0` (le
+            // slot 0 des nœuds est réservé). Mesuré : 1 arête créée → 256
+            // rendues ; `edge_count()` (compteur atomique) disait 1.
+            if rec.is_tombstoned() || (rec.src == 0 && rec.dst == 0) {
                 return true;
             }
             f(slot, rec);
