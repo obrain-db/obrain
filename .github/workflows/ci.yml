@@ -1,3 +1,10 @@
+# ── RUNNERS AUTO-HÉBERGÉS (2026-11-03) ───────────────────────────────────────
+# Les dépôts sont privés et les minutes GitHub-hosted sont bloquées par la
+# facturation (jobs tués en 2–4 s : « recent account payments have failed »).
+# Les jobs Linux tournent sur les runners de l'organisation installés sur
+# ffs-n1 / ffs-n2 / ffs-n3 (étiquette `obrain-ci`, 16 cœurs, CARGO_BUILD_JOBS=8).
+# Quand ce dépôt deviendra public, revenir à `ubuntu-latest` (minutes gratuites,
+# et un runner auto-hébergé ne doit pas exécuter les PR de forks).
 name: CI
 
 on:
@@ -28,7 +35,7 @@ env:
 jobs:
   lint:
     name: Format, clippy (cliquet)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -45,7 +52,7 @@ jobs:
 
   test:
     name: Tests (features par défaut)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -62,7 +69,7 @@ jobs:
 
   tests-all-features:
     name: Tests (toutes features)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,7 +86,7 @@ jobs:
 
   features:
     name: Toutes les features compilent
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -89,7 +96,7 @@ jobs:
 
   msrv:
     name: MSRV (rust-version du manifeste)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Lire rust-version
@@ -104,7 +111,7 @@ jobs:
 
   deny:
     name: cargo deny (licences, advisories, sources)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -113,7 +120,7 @@ jobs:
 
   package:
     name: Métadonnées de publication
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -129,6 +136,10 @@ jobs:
   macos:
     name: macOS — intégrité (durabilité, verrous, reprise)
     runs-on: macos-latest
+    # Aucun runner macOS auto-hébergé pour l'instant : ce job ne tourne que si la
+    # variable de dépôt CI_MACOS vaut "true" (Settings → Variables). Sinon il est
+    # « skipped » — ce n'est pas un vert, et il ne faut pas le lire comme tel.
+    if: ${{ vars.CI_MACOS == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
