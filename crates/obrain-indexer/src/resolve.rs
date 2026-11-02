@@ -816,8 +816,23 @@ fn type_short_name(ty_raw: &str) -> Option<String> {
         if WRAPPERS.contains(&head.trim_end_matches("::")) {
             // Contenu entre le premier '<' et le dernier '>' (génériques
             // imbriqués : on remonte au type le plus intérieur).
-            let end = tail.rfind('>').map(|i| i + 1).unwrap_or(tail.len());
-            ty = &tail[..end - 1];
+            //
+            // ── POURQUOI `rfind` SANS `unwrap_or(tail.len())` ─────────────
+            // Un type MALFORMÉ (`Arc<` sans `>` fermant, vu en retour de
+            // méthode) donne `tail = ""` : l'ancien `unwrap_or(tail.len())`
+            // rendait `end = 0`, puis `end - 1` débordait en `usize::MAX` et
+            // `&tail[..usize::MAX]` paniquait en découpant une chaîne vide
+            // (panique mesurée sur uzu, resolve.rs:820). Sans `>` du tout, on
+            // cesse de dérouler le wrapper et on garde le type tel quel, au
+            // lieu de le tronquer d'un caractère.
+            let Some(pos) = tail.rfind('>') else {
+                break;
+            };
+            let inner = &tail[..pos];
+            if inner.is_empty() {
+                break;
+            }
+            ty = inner;
             continue;
         }
         break;
