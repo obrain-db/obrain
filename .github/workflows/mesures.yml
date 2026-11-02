@@ -1,3 +1,10 @@
+# ── RUNNERS AUTO-HÉBERGÉS (2026-11-03) ───────────────────────────────────────
+# Les dépôts sont privés et les minutes GitHub-hosted sont bloquées par la
+# facturation (jobs tués en 2–4 s : « recent account payments have failed »).
+# Les jobs Linux tournent sur les runners de l'organisation installés sur
+# ffs-n1 / ffs-n2 / ffs-n3 (étiquette `obrain-ci`, 16 cœurs, CARGO_BUILD_JOBS=8).
+# Quand ce dépôt deviendra public, revenir à `ubuntu-latest` (minutes gratuites,
+# et un runner auto-hébergé ne doit pas exécuter les PR de forks).
 name: Mesures (hors portillon)
 
 # Les tests de temps, de débit et de performance sont marqués #[ignore] : un
@@ -29,7 +36,7 @@ env:
 jobs:
   mesures:
     name: Tests de temps, débit et performance (--ignored, informatif)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,7 +59,7 @@ jobs:
 
   bench-v001:
     name: Benchs de référence v0.0.1 (Criterion, informatif — un runner partagé ne mesure pas)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, obrain-ci]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
