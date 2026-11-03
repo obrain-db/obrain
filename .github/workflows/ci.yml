@@ -42,6 +42,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # La chaîne ÉPINGLÉE (rust-toolchain.toml, 1.91.1) n'est pas celle que
+      # `dtolnay/rust-toolchain` équipe de rustfmt/clippy : sur un runner qui ne
+      # l'avait pas encore installée, « cargo-fmt is not installed for the
+      # toolchain 1.91.1 » (n2, PR #42). Idempotent, sans effet si présent.
+      - name: Composants de la chaîne épinglée
+        run: rustup component add rustfmt clippy
       - name: Format
         run: cargo fmt --all -- --check
       # Le code porte des centaines d'avertissements hérités : `-D warnings`
