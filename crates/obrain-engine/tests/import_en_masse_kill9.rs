@@ -129,8 +129,12 @@ fn le_registre_des_types_survit_a_un_kill9_pendant_l_import() {
     let b = obrain_common::types::NodeId(2);
     db.create_edge(a, b, "NOUVEAU");
     assert_eq!(compte(&db, "MATCH ()-[r:NOUVEAU]->() RETURN count(r)"), 1);
+    // Puis un type DÉJÀ importé avant le kill : c'est le geste du synchroniser de
+    // la plateforme, qui a produit le panic `EdgeTypeRegistry : l'id 9 porte déjà`.
+    db.create_edge(a, b, "PARENT");
+    db.create_edge(a, b, "FILE_CHANGES_WITH");
     assert_eq!(
         compte(&db, "MATCH ()-[r:PARENT]->() RETURN count(r)"),
-        parent
+        parent + 1
     );
 }
