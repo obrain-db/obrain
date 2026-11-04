@@ -37042,15 +37042,33 @@ mod indice_libre_tests {
     #[test]
     fn un_type_nouveau_saute_le_trou_du_dictionnaire() {
         let mut r = EdgeTypeRegistry::default();
-        let dict: Vec<String> = ["", "HAS_BRANCH", "HAS_WORKTREE", "CONTAINS_FILE", "CONTENT",
-            "DEFINES", "CALLS", "TOUCHES", "AT_COMMIT"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let dict: Vec<String> = [
+            "",
+            "HAS_BRANCH",
+            "HAS_WORKTREE",
+            "CONTAINS_FILE",
+            "CONTENT",
+            "DEFINES",
+            "CALLS",
+            "TOUCHES",
+            "AT_COMMIT",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         r.load_from(&dict).unwrap();
-        let id = r.interner_a("PARENT", None).expect("pas de collision avec AT_COMMIT");
-        assert_eq!(id, 9, "le premier indice libre est au-delà du dernier porté");
-        assert_eq!(r.name_for(8).as_deref(), Some("AT_COMMIT"), "AT_COMMIT n'est pas écrasé");
+        let id = r
+            .interner_a("PARENT", None)
+            .expect("pas de collision avec AT_COMMIT");
+        assert_eq!(
+            id, 9,
+            "le premier indice libre est au-delà du dernier porté"
+        );
+        assert_eq!(
+            r.name_for(8).as_deref(),
+            Some("AT_COMMIT"),
+            "AT_COMMIT n'est pas écrasé"
+        );
         assert_eq!(r.name_for(id).as_deref(), Some("PARENT"));
     }
 
