@@ -392,6 +392,11 @@ impl super::ObrainDB {
             .map(|n| n.labels.iter().map(|l| l.as_str().to_string()).collect())
             .unwrap_or_default();
 
+        // Contrat documenté (« Deletes a node and all its edges ») : les arêtes
+        // incidentes partent AVANT le nœud. Sans ce détachement, une arête entrante
+        // survivait à son nœud — mesuré sur le noyau : une arête CONTENT fantôme
+        // pointait vers un Blob après la suppression du fichier qui le contenait.
+        self.data_store().delete_node_edges(id);
         let result = self.data_store().delete_node(id);
 
         // Remove from vector indexes after successful deletion
