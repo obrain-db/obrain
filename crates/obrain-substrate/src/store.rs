@@ -554,6 +554,21 @@ struct LabelRegistry {
 }
 
 impl LabelRegistry {
+    /// Le prochain bit LIBRE : au-delà du plus grand bit PORTÉ.
+    ///
+    /// `bit_to_name.len()` compte les noms et ignore les TROUS (indices consommés
+    /// ailleurs, ou absents du dictionnaire). Avec un trou, il désigne un bit déjà
+    /// pris : mesuré sur le noyau, le même défaut existait pour les types d'arêtes
+    /// (« l'id 8 porte déjà AT_COMMIT »).
+    fn prochain_bit_libre(&self) -> usize {
+        self.par_bit
+            .keys()
+            .map(|&b| usize::from(b) + 1)
+            .max()
+            .unwrap_or(0)
+            .max(self.bit_to_name.len())
+    }
+
     /// Nombre d'étiquettes internées (compté, pas déduit d'un rang : les indices
     /// peuvent être espacés).
     fn len(&self) -> usize {
@@ -574,7 +589,7 @@ impl LabelRegistry {
         }
         let bit = match bit {
             Some(b) => b,
-            None => self.bit_to_name.len().try_into().map_err(|_| {
+            None => self.prochain_bit_libre().try_into().map_err(|_| {
                 SubstrateError::Internal(format!(
                     "LabelRegistry overflow: more than 64 distinct labels (requested {name:?})"
                 ))
@@ -775,6 +790,18 @@ pub(crate) struct EdgeTypeRegistry {
 }
 
 impl EdgeTypeRegistry {
+    /// Le prochain id LIBRE : au-delà du plus grand id porté, jamais 0 (« pas
+    /// d'arête »). Voir `LabelRegistry::prochain_bit_libre` pour le défaut corrigé.
+    fn prochain_id_libre(&self) -> usize {
+        self.par_id
+            .keys()
+            .map(|&i| usize::from(i) + 1)
+            .max()
+            .unwrap_or(1)
+            .max(self.id_to_name.len())
+            .max(1)
+    }
+
     /// Nombre de types internés (compté, pas déduit d'un rang).
     fn len(&self) -> usize {
         self.par_id.len()
@@ -790,7 +817,7 @@ impl EdgeTypeRegistry {
         let id = match id {
             Some(i) => i,
             None => {
-                let i = self.id_to_name.len();
+                let i = self.prochain_id_libre();
                 if i >= u16::MAX as usize {
                     return Err(SubstrateError::Internal(format!(
                         "EdgeTypeRegistry overflow: more than {} distinct edge types \
@@ -912,6 +939,17 @@ struct PropertyKeyRegistry {
 }
 
 impl PropertyKeyRegistry {
+    /// Le prochain id LIBRE (même règle que `EdgeTypeRegistry::prochain_id_libre`).
+    fn prochain_id_libre(&self) -> usize {
+        self.par_id
+            .keys()
+            .map(|&i| usize::from(i) + 1)
+            .max()
+            .unwrap_or(1)
+            .max(self.id_to_name.len())
+            .max(1)
+    }
+
     /// Nombre de clés internées (compté, pas déduit d'un rang).
     fn len(&self) -> usize {
         self.par_id.len()
@@ -932,7 +970,7 @@ impl PropertyKeyRegistry {
         let id = match id {
             Some(i) => i,
             None => {
-                let i = self.id_to_name.len();
+                let i = self.prochain_id_libre();
                 if i >= u16::MAX as usize {
                     return Err(SubstrateError::Internal(format!(
                         "PropertyKeyRegistry overflow: more than {} distinct property keys \
@@ -36992,4 +37030,67 @@ fn horodatage_micros() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod indice_libre_tests {
+    use super::*;
+
+    /// Le cas mesuré : un dictionnaire dont l'indice 0 est un trou (« pas d'arête »,
+    /// jamais chargé). `id_to_name.len()` valait 8 ; l'indice 8 était déjà AT_COMMIT.
+    /// Avant le correctif, `PARENT` recevait 8 et le registre refusait (panic).
+    #[test]
+    fn un_type_nouveau_saute_le_trou_du_dictionnaire() {
+        let mut r = EdgeTypeRegistry::default();
+        let dict: Vec<String> = [
+            "",
+            "HAS_BRANCH",
+            "HAS_WORKTREE",
+            "CONTAINS_FILE",
+            "CONTENT",
+            "DEFINES",
+            "CALLS",
+            "TOUCHES",
+            "AT_COMMIT",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        r.load_from(&dict).unwrap();
+        let id = r
+            .interner_a("PARENT", None)
+            .expect("pas de collision avec AT_COMMIT");
+        assert_eq!(
+            id, 9,
+            "le premier indice libre est au-delà du dernier porté"
+        );
+        assert_eq!(
+            r.name_for(8).as_deref(),
+            Some("AT_COMMIT"),
+            "AT_COMMIT n'est pas écrasé"
+        );
+        assert_eq!(r.name_for(id).as_deref(), Some("PARENT"));
+    }
+
+    /// Même défaut pour les clés de propriétés : un trou ne doit pas être réattribué.
+    #[test]
+    fn une_cle_nouvelle_saute_le_trou() {
+        let mut r = PropertyKeyRegistry::default();
+        r.interner_a("name", Some(1)).unwrap();
+        r.interner_a("line", Some(3)).unwrap(); // trou en 2
+        let id = r.interner_a("signature", None).unwrap();
+        assert_eq!(id, 4, "au-delà du plus grand indice porté");
+        assert_eq!(r.name_for(3).as_deref(), Some("line"));
+    }
+
+    /// Même défaut pour les étiquettes (bits).
+    #[test]
+    fn une_etiquette_nouvelle_saute_le_trou() {
+        let mut r = LabelRegistry::default();
+        r.interner_a("Function", Some(0)).unwrap();
+        r.interner_a("Blob", Some(2)).unwrap(); // trou en 1
+        let bit = r.interner_a("Class", None).unwrap();
+        assert_eq!(bit, 3);
+        assert_eq!(r.name_for(2).as_deref(), Some("Blob"));
+    }
 }
