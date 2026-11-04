@@ -11799,6 +11799,11 @@ impl SubstrateStore {
             };
             edges_typed.push((src, dst, id));
         }
+        // (03/11/2026) Le dictionnaire est persisté AVANT toute écriture de zone :
+        // un type interné que le dictionnaire ne connaît pas ne doit jamais avoir
+        // d'arêtes sur disque. Sans cela, une interruption entre l'écriture des
+        // arêtes et le checkpoint laissait des types sans nom à la réouverture.
+        self.persist_dict()?;
         let (_nw, mw) = self.writer.bulk_write(&bitsets, &edges_typed)?;
         // Compteurs.
         self.next_node_id.store(n + 1, Ordering::Release);
