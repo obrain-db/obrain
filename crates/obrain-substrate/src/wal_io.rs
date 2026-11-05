@@ -944,7 +944,7 @@ pub fn lire_ancre_durable(wal: &Path) -> Option<AncreDurable> {
 /// [`lire_ancre_durable`] sur un chemin de side-car explicite.
 #[must_use]
 pub fn lire_ancre_sur(chemin: &Path) -> Option<AncreDurable> {
-    let octets = std::fs::read(chemin).ok()?;
+    let octets = crate::es::espace().lire_tout(chemin).ok()?;
     if octets.len() != TAILLE_ANCRE || octets[0..4] != MAGIE_ANCRE {
         return None;
     }
@@ -979,19 +979,13 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
     let crc = crc_ancre(&buf[0..24]);
     buf[24..28].copy_from_slice(&crc.to_le_bytes());
 
+    let es = crate::es::espace();
     let tmp = chemin_tmp_ancre(chemin);
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
-        if let Err(e) = f.write_all(&buf).and_then(|()| f.sync_all()) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.into());
-        }
+    if let Err(e) = es.ecrire_synchronise(&tmp, &buf) {
+        let _ = es.supprimer(&tmp);
+        return Err(e.into());
     }
-    if let Err(e) = std::fs::rename(&tmp, chemin) {
+    if let Err(e) = es.renommer(&tmp, chemin) {
         // ── LA COURSE À LA PUBLICATION N'A PAS DE PERDANT ────────────────────
         // MESURÉ : six processus ouvrant un WAL VIDE en même temps publient tous
         // la même ancre. Avec un nom de temporaire PARTAGÉ (`<ancre>.tmp`), le
@@ -999,21 +993,16 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
         // emporté par le premier — et l'OUVERTURE ÉCHOUAIT. Le nom est donc
         // unique par publication ; et si le rename échoue quand même, on relit :
         // une ancre LISIBLE vaut publication faite.
-        let _ = std::fs::remove_file(&tmp);
+        let _ = es.supprimer(&tmp);
         if lire_ancre_sur(chemin).is_none() {
             return Err(e.into());
         }
     }
     // Fsync du RÉPERTOIRE : sans lui, le rename peut survivre au crash sans que
     // l'entrée qu'il crée soit elle-même durable.
-    #[cfg(unix)]
-    {
-        let dir = chemin.parent().filter(|p| !p.as_os_str().is_empty());
-        let dir = dir.unwrap_or_else(|| Path::new("."));
-        if let Ok(d) = File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
+    let dir = chemin.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = dir.unwrap_or_else(|| Path::new("."));
+    let _ = es.synchroniser_repertoire(dir);
     Ok(())
 }
 

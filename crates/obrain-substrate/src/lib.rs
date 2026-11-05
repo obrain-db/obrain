@@ -33,6 +33,7 @@ pub mod blob_column_registry;
 pub mod borne_allocation;
 pub mod checkpoint;
 pub mod compteurs;
+pub mod es;
 pub mod degree_column;
 pub mod dict;
 pub mod engram;

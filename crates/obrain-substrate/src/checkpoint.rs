@@ -30,7 +30,6 @@ use crate::meta::MetaHeader;
 use crate::wal::{WalPayload, WalRecord};
 use crate::wal_io::{ElectionCheckpoint, WalWriter};
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -279,22 +278,11 @@ fn atomically_write_meta(dir: &Path, header: &MetaHeader) -> SubstrateResult<()>
     let mut buf = vec![0u8; current_len.max(crate::meta::META_FILE_SIZE)];
     buf[..core::mem::size_of::<MetaHeader>()].copy_from_slice(bytemuck::bytes_of(header));
 
-    {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        f.write_all(&buf)?;
-        f.sync_all()?;
-    }
-    fs::rename(&tmp_path, &final_path)?;
+    let es = crate::es::espace();
+    es.ecrire_synchronise(&tmp_path, &buf)?;
+    es.renommer(&tmp_path, &final_path)?;
     // Fsync the directory so the rename is durable.
-    #[cfg(unix)]
-    {
-        let d = fs::File::open(dir)?;
-        d.sync_all()?;
-    }
+    es.synchroniser_repertoire(dir)?;
     Ok(())
 }
 
