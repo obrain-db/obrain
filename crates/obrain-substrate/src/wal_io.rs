@@ -115,7 +115,6 @@ use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
