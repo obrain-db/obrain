@@ -3550,7 +3550,7 @@ impl SubstrateStore {
     /// des suivantes. Sur un store ouvert en lecture seule l'écriture
     /// échoue proprement ici (warn), sans toucher au fichier existant.
     fn persister_index_apres_construction(&self) {
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let r = self.fusionner_index_egalite();
         if std::env::var("OBRAIN_INDEX_PROF").is_ok() {
             eprintln!(
@@ -12168,7 +12168,7 @@ impl SubstrateStore {
             ));
         };
         let prof = std::env::var("OBRAIN_INDEX_PROF").is_ok();
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let cpu0 = crate::compteurs::temps_cpu("thread-self");
         let mut cles: std::collections::HashMap<&str, u16> = std::collections::HashMap::new();
         for liste in props {
@@ -12284,7 +12284,7 @@ impl SubstrateStore {
         let cpu_pages = crate::compteurs::temps_cpu("thread-self") - cpu0;
         self.writer.poser_tetes_props_en_lot(&tetes)?;
         let t_tetes = t0.elapsed() - t_pages;
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         let n_differees = differees.len();
         // Hors verrou de zone : le chemin unitaire le reprend lui-même.
         for (slot, k, v) in differees {
@@ -23925,7 +23925,7 @@ mod tests {
             let _ = tiers.unlock();
         });
 
-        let debut = std::time::Instant::now();
+        let debut = web_time::Instant::now();
         tx.send(()).unwrap();
         s.flush().unwrap();
         let attente = debut.elapsed();
@@ -37026,8 +37026,8 @@ impl SubstrateStore {
 /// Horodatage des records de transaction (µs depuis l'époque Unix) ; 0 si
 /// l'horloge est antérieure à l'époque — l'horodatage est informatif.
 fn horodatage_micros() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
 }

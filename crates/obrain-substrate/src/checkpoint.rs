@@ -308,7 +308,7 @@ fn atomically_write_meta(dir: &Path, header: &MetaHeader) -> SubstrateResult<()>
 fn unix_seconds() -> i64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use web_time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -323,7 +323,7 @@ fn unix_seconds() -> i64 {
 fn unix_micros() -> i64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use web_time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as i64)
