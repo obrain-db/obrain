@@ -40,6 +40,7 @@ pub mod engram_bitset;
 pub mod engram_recall;
 pub mod error;
 pub mod es;
+pub mod miroir;
 pub mod file;
 pub mod geometric;
 pub mod heap;
