@@ -1030,16 +1030,30 @@ pub fn chemin_tmp_unique(chemin: &Path) -> PathBuf {
     chemin_tmp_ancre(chemin)
 }
 
+/// Identifiant de processus PORTABLE.
+///
+/// `std::process::id()` PANIQUE sur wasm32 (« no pids on this platform »). Il n'y a
+/// pas de multi-processus là-bas : zéro suffit pour nommer un fichier temporaire ou
+/// signer un message. En natif, c'est exactement `std::process::id()`.
+#[inline]
+pub(crate) fn pid_portable() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::process::id()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
 fn chemin_tmp_ancre(chemin: &Path) -> PathBuf {
     static COMPTEUR_TMP: AtomicU64 = AtomicU64::new(0);
     let n = COMPTEUR_TMP.fetch_add(1, Ordering::Relaxed);
     let mut s = chemin.as_os_str().to_os_string();
     // `std::process::id()` PANIQUE sur wasm32 (« no pids on this platform ») : il
     // n'y a pas de multi-processus là-bas, un zéro suffit.
-    #[cfg(not(target_arch = "wasm32"))]
-    let pid = u64::from(std::process::id());
-    #[cfg(target_arch = "wasm32")]
-    let pid = 0u64;
+    let pid = u64::from(pid_portable());
     s.push(format!(".tmp.{pid}.{n}"));
     PathBuf::from(s)
 }

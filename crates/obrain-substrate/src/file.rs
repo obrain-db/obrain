@@ -245,7 +245,7 @@ fn detecter_detenteur(fichier: &Path) -> String {
         else {
             continue;
         };
-        if pid == std::process::id().to_string() {
+        if pid == crate::wal_io::pid_portable().to_string() {
             continue; // nous-mêmes : c'est le cas « déjà ouvert ici », traité ailleurs
         }
         let fd_dir = entree.path().join("fd");
@@ -295,7 +295,7 @@ fn detecter_detenteur(fichier: &Path) -> String {
     // `-F pc` : une ligne `p<pid>` puis une ligne `c<commande>` par processus
     // (`-t` est incompatible avec `-F`, mesuré avec lsof 4.91).
     let texte = String::from_utf8_lossy(&sortie.stdout);
-    let moi = std::process::id().to_string();
+    let moi = crate::wal_io::pid_portable().to_string();
     let mut trouves: Vec<String> = Vec::new();
     let mut pid: Option<String> = None;
     for ligne in texte.lines() {
@@ -1958,7 +1958,7 @@ mod tempfile_guard {
                 .unwrap_or(0);
             let path = std::env::temp_dir().join(format!(
                 "{prefix}{pid}-{nanos}-{n}",
-                pid = std::process::id()
+                pid = crate::wal_io::pid_portable()
             ));
             std::fs::create_dir_all(&path)?;
             Ok(Self { path })
