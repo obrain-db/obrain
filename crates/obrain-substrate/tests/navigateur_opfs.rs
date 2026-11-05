@@ -84,3 +84,33 @@ async fn un_etat_non_publie_est_perdu_a_la_fermeture() {
         "rien n'a été publié : rien ne revient"
     );
 }
+
+/// Compatibilité natif ↔ navigateur : le journal produit par le natif (fixture
+/// `store-v1.journal`, régénérée par `regenere_fixture`) est relu tel quel par le
+/// navigateur. Même format, mêmes octets, même store.
+#[wasm_bindgen_test]
+async fn un_journal_produit_en_natif_se_relit_dans_le_navigateur() {
+    use obrain_common::types::NodeId;
+    use obrain_core::graph::GraphStore as _;
+    use obrain_substrate::es::FichierJournal as _;
+
+    const FIXTURE: &[u8] = include_bytes!("fixtures/store-v1.journal");
+
+    let nom = nom_unique("fixture-natif");
+    let mut journal = JournalOpfs::ouvrir(&nom).await.expect("ouverture OPFS");
+    journal.ajouter(FIXTURE).expect("copie de la fixture");
+    journal.synchroniser(true).expect("synchronisation");
+    drop(journal);
+
+    let (store, _miroir) = SubstrateStore::ouvrir_navigateur(&nom)
+        .await
+        .expect("restauration");
+    assert_eq!(
+        store.node_count(),
+        4,
+        "les 4 nœuds produits en natif sont là"
+    );
+    for i in 1..=4 {
+        assert!(store.get_node(NodeId(i)).is_some(), "le nœud {i} se relit");
+    }
+}

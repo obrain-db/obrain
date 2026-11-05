@@ -33,6 +33,8 @@ pub trait Miroir: Send + Sync + std::fmt::Debug {
     fn supprimer(&self, nom: &str) -> io::Result<()>;
     /// Rend durables TOUTES les écritures tamponnées.
     fn synchroniser(&self) -> io::Result<()>;
+    /// Volume occupé sur le support, en octets (journal : taille du fichier).
+    fn volume(&self) -> io::Result<u64>;
 }
 
 /// Miroir en mémoire, qui simule la frontière de durabilité.
@@ -117,6 +119,14 @@ impl Miroir for MiroirMemoire {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         e.tampon.insert(nom.to_string(), None);
         Ok(())
+    }
+
+    fn volume(&self) -> io::Result<u64> {
+        let e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(e.durable.values().map(|v| v.len() as u64).sum())
     }
 
     fn synchroniser(&self) -> io::Result<()> {
@@ -600,6 +610,14 @@ impl Miroir for MiroirJournal {
         self.ajouter_enreg(Enreg::Del(nom.to_string()))
     }
 
+    fn volume(&self) -> io::Result<u64> {
+        let f = self
+            .fichier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f.taille()
+    }
+
     fn synchroniser(&self) -> io::Result<()> {
         let mut f = self
             .fichier
@@ -615,6 +633,12 @@ impl Miroir for MiroirJournal {
 
 /// Nom logique de la dernière image du store sur le miroir.
 const IMAGE_STORE: &str = "store.image";
+
+/// Budget de persistance d'un store navigateur : 2 Gio. wasm32 adresse 4 Gio au
+/// total ; le reste sert au travail du moteur. Un dépassement est une erreur
+/// explicite (décision du RFC). Sans compaction, le journal ne fait que croître :
+/// ce plafond en est la borne.
+pub const PLAFOND_PERSISTANCE_OCTETS: u64 = 2 * 1024 * 1024 * 1024;
 
 impl crate::store::SubstrateStore {
     /// Ouvre le store depuis le miroir : restaure la DERNIÈRE image publiée, ou
@@ -642,8 +666,30 @@ impl crate::store::SubstrateStore {
         &self,
         miroir: std::sync::Arc<dyn Miroir>,
     ) -> crate::error::SubstrateResult<()> {
-        let espace = EspaceMiroir::nouveau(miroir);
+        self.persister_sur_miroir_avec_plafond(miroir, PLAFOND_PERSISTANCE_OCTETS)
+    }
+
+    /// Variante de [`persister_sur_miroir`] au plafond explicite (tests et
+    /// configurations spécifiques).
+    pub fn persister_sur_miroir_avec_plafond(
+        &self,
+        miroir: std::sync::Arc<dyn Miroir>,
+        plafond: u64,
+    ) -> crate::error::SubstrateResult<()> {
+        let espace = EspaceMiroir::nouveau(miroir.clone());
         let image = self.instantane()?;
+        // Plafond explicite : une publication qui dépasserait le budget du support est
+        // REFUSÉE, jamais tronquée ni laissée croître en silence. Chaque publication
+        // ajoute une image complète au journal.
+        let total = miroir.volume()?.saturating_add(image.len() as u64);
+        if total > plafond {
+            return Err(crate::error::SubstrateError::Io(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "persistance refusée : {total} o dépasseraient le plafond de {PLAFOND_PERSISTANCE_OCTETS} o"
+                ),
+            )));
+        }
         let tmp = Path::new("store.image.tmp");
         espace.ecrire_synchronise(tmp, &image)?;
         espace.renommer(tmp, Path::new(IMAGE_STORE))?;
@@ -861,5 +907,80 @@ impl crate::store::SubstrateStore {
             std::sync::Arc::new(MiroirJournal::ouvrir(Box::new(fichier))?);
         let store = Self::ouvrir_sur_miroir(miroir.clone())?;
         Ok((store, miroir))
+    }
+}
+
+#[cfg(test)]
+mod tests_fixture {
+    use super::*;
+    use crate::es::espace;
+    use obrain_common::types::Value;
+    use obrain_core::graph::GraphStoreMut as _;
+
+    /// Régénère la fixture partagée avec le test navigateur, UNIQUEMENT sur demande :
+    /// `OBRAIN_REGENERE_FIXTURE=1 cargo test -p obrain-substrate --lib regenere_fixture`.
+    /// Le store est construit de façon déterministe ; la fixture est le journal natif
+    /// produit, que Chrome doit relire tel quel.
+    #[test]
+    fn regenere_fixture() {
+        if std::env::var("OBRAIN_REGENERE_FIXTURE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let chemin = d.path().join("store-v1.journal");
+        {
+            let s = crate::store::SubstrateStore::open_memory().unwrap();
+            for i in 0..4 {
+                let id = s.create_node(&["Personne"]);
+                s.set_node_property(id, "nom", Value::String(format!("p{i}").into()));
+            }
+            let m: std::sync::Arc<dyn Miroir> = std::sync::Arc::new(
+                MiroirJournal::ouvrir(espace().ouvrir_journal(&chemin).unwrap()).unwrap(),
+            );
+            s.persister_sur_miroir(m).unwrap();
+        }
+        let dest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/store-v1.journal");
+        std::fs::copy(&chemin, &dest).unwrap();
+        println!(
+            "fixture écrite : {} ({} octets)",
+            dest.display(),
+            std::fs::metadata(&dest).unwrap().len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_plafond {
+    use super::*;
+    use obrain_common::types::Value;
+    use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+    use std::sync::Arc;
+
+    #[test]
+    fn une_publication_au_dela_du_plafond_est_refusee_et_ne_change_rien() {
+        let m = Arc::new(MiroirMemoire::default());
+        let s = crate::store::SubstrateStore::open_memory().unwrap();
+        let id = s.create_node(&["Personne"]);
+        s.set_node_property(id, "nom", Value::String("a".into()));
+        // Premier état publié sous un plafond généreux.
+        s.persister_sur_miroir_avec_plafond(m.clone(), u64::MAX)
+            .unwrap();
+        let avant = m.volume().unwrap();
+        // Un plafond minuscule : la publication suivante doit être refusée…
+        let err = s
+            .persister_sur_miroir_avec_plafond(m.clone(), avant + 1)
+            .expect_err("doit dépasser le plafond");
+        assert!(err.to_string().contains("plafond"), "{err}");
+        // …sans rien changer : le volume et l'état publié restent ceux d'avant.
+        assert_eq!(m.volume().unwrap(), avant);
+        m.couper();
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(m.clone()).unwrap();
+        assert_eq!(r.node_count(), 1, "l'état précédent est intact");
+    }
+
+    #[test]
+    fn le_plafond_du_navigateur_est_de_deux_gio() {
+        assert_eq!(PLAFOND_PERSISTANCE_OCTETS, 2 * 1024 * 1024 * 1024);
     }
 }
