@@ -40,6 +40,76 @@ pub trait EspaceFichiers: Send + Sync + std::fmt::Debug {
 
     /// Le chemin existe-t-il ?
     fn existe(&self, chemin: &Path) -> bool;
+
+    /// Ouvre (ou crée) un journal en ajout : le WAL.
+    fn ouvrir_journal(&self, chemin: &Path) -> io::Result<Box<dyn FichierJournal>>;
+}
+
+/// Un journal ouvert en AJOUT (le WAL) : écrire à la fin, lire à décalage,
+/// tronquer, synchroniser. Reproduit la sémantique de `File` ouvert avec
+/// `append(true)` : chaque écriture va à la fin, atomiquement.
+pub trait FichierJournal: Send + std::fmt::Debug {
+    /// Ajoute `buf` à la fin (un seul appel système, nombre d'octets rendu).
+    fn ajouter(&mut self, buf: &[u8]) -> io::Result<usize>;
+    /// Taille courante, mesurée sur le support.
+    fn taille(&self) -> io::Result<u64>;
+    /// Tronque ou raccourcit à `longueur` (jamais un allongement par l'appelant).
+    fn tronquer(&mut self, longueur: u64) -> io::Result<()>;
+    /// Remplit `buf` depuis `debut` (lecture exacte à décalage, sans curseur).
+    fn lire_a(&self, debut: u64, buf: &mut [u8]) -> io::Result<()>;
+    /// Ramène le curseur au début (sans effet sur les ajouts).
+    fn rembobiner(&mut self) -> io::Result<()>;
+    /// Synchronise. `tout = true` : données et métadonnées ; `false` : données.
+    fn synchroniser(&mut self, tout: bool) -> io::Result<()>;
+}
+
+/// Implémentation native de [`FichierJournal`] sur un `File`.
+#[derive(Debug)]
+pub struct JournalNatif {
+    fichier: File,
+}
+
+impl FichierJournal for JournalNatif {
+    fn ajouter(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.fichier.write(buf)
+    }
+
+    fn taille(&self) -> io::Result<u64> {
+        Ok(self.fichier.metadata()?.len())
+    }
+
+    fn tronquer(&mut self, longueur: u64) -> io::Result<()> {
+        self.fichier.set_len(longueur)
+    }
+
+    fn lire_a(&self, debut: u64, buf: &mut [u8]) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt as _;
+            self.fichier.read_exact_at(buf, debut)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (debut, buf);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "lecture à décalage non disponible sur cette cible",
+            ))
+        }
+    }
+
+    fn rembobiner(&mut self) -> io::Result<()> {
+        use std::io::Seek as _;
+        self.fichier.seek(io::SeekFrom::Start(0)).map(|_| ())
+    }
+
+    fn synchroniser(&mut self, tout: bool) -> io::Result<()> {
+        if tout {
+            self.fichier.sync_all()
+        } else {
+            self.fichier.sync_data()
+        }
+    }
 }
 
 /// Implémentation native : le système de fichiers de l'OS.
@@ -87,6 +157,18 @@ impl EspaceFichiers for Natif {
 
     fn existe(&self, chemin: &Path) -> bool {
         chemin.exists()
+    }
+
+    fn ouvrir_journal(&self, chemin: &Path) -> io::Result<Box<dyn FichierJournal>> {
+        // Mêmes options que le WAL : lecture, ajout, création. Le texte exact
+        // compte : `append` est ce qui rend chaque écriture atomique vis-à-vis des
+        // autres processus (voir `wal_io`).
+        let fichier = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(chemin)?;
+        Ok(Box::new(JournalNatif { fichier }))
     }
 }
 

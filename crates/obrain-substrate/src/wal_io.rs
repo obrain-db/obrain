@@ -115,7 +115,7 @@ use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -1506,7 +1506,7 @@ struct WriterInner {
 /// mémoire ne se rouvre jamais.
 #[derive(Debug)]
 enum WalMedium {
-    File(File),
+    File(Box<dyn crate::es::FichierJournal>),
     /// Les octets du WAL. L'écriture se fait toujours à la FIN (le fichier natif
     /// est ouvert en ajout, sans `seek`), donc `extend_from_slice` suffit.
     Memoire(Vec<u8>),
@@ -1525,7 +1525,7 @@ impl WriterInner {
     /// avec le compte exact, pour pouvoir ANNULER.
     fn ecrire_atomique(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match &mut self.medium {
-            WalMedium::File(f) => f.write(buf),
+            WalMedium::File(f) => f.ajouter(buf),
             WalMedium::Memoire(v) => {
                 v.extend_from_slice(buf);
                 Ok(buf.len())
@@ -1536,7 +1536,7 @@ impl WriterInner {
     /// Taille RÉELLE du média (le noyau est l'arbitre, pas notre compteur).
     fn taille_reelle(&mut self) -> std::io::Result<u64> {
         match &mut self.medium {
-            WalMedium::File(f) => Ok(f.metadata()?.len()),
+            WalMedium::File(f) => f.taille(),
             WalMedium::Memoire(v) => Ok(v.len() as u64),
         }
     }
@@ -1564,12 +1564,12 @@ impl WriterInner {
         match &mut self.medium {
             // `set_len` (ftruncate) ignore `O_APPEND` : on peut raccourcir.
             WalMedium::File(f) => {
-                let courante = f.metadata()?.len();
+                let courante = f.taille()?;
                 if position >= courante {
                     // JAMAIS d'allongement : c'est ce chemin qui fabriquait le trou.
                     return Ok(());
                 }
-                f.set_len(position)
+                f.tronquer(position)
             }
             WalMedium::Memoire(v) => {
                 if position as usize >= v.len() {
@@ -1598,8 +1598,7 @@ impl WriterInner {
     /// `tout = true` → `sync_all` (métadonnées + données), sinon `sync_data`.
     fn synchroniser(&mut self, tout: bool) -> std::io::Result<()> {
         match &mut self.medium {
-            WalMedium::File(f) if tout => f.sync_all(),
-            WalMedium::File(f) => f.sync_data(),
+            WalMedium::File(f) => f.synchroniser(tout),
             // En mémoire, il n'y a rien à pousser : les octets SONT l'état.
             WalMedium::Memoire(_) => Ok(()),
         }
@@ -1651,8 +1650,7 @@ impl WriterInner {
             WalMedium::File(f) => {
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::FileExt as _;
-                    f.read_exact_at(&mut zone, debut)?;
+                    f.lire_a(debut, &mut zone)?;
                 }
                 #[cfg(not(unix))]
                 {
@@ -1673,9 +1671,9 @@ impl WriterInner {
     fn tronquer(&mut self) -> std::io::Result<()> {
         match &mut self.medium {
             WalMedium::File(f) => {
-                f.set_len(0)?;
-                f.seek(SeekFrom::Start(0))?;
-                f.sync_all()
+                f.tronquer(0)?;
+                f.rembobiner()?;
+                f.synchroniser(true)
             }
             WalMedium::Memoire(v) => {
                 v.clear();
@@ -1786,12 +1784,8 @@ impl WalWriter {
         // `mw_interprocess_probe::p1`). Avec `O_APPEND`, le noyau place chaque
         // écriture à la fin du fichier, atomiquement : aucune écriture ne peut en
         // recouvrir une autre.
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&path)?;
-        let taille = file.metadata()?.len();
+        let file = crate::es::espace().ouvrir_journal(&path)?;
+        let taille = file.taille()?;
         let (ancre, reconciliation, publier) =
             reconcilier_ouverture(&ancre_path, &path, taille, ancre_repli);
         // Le side-car n'est écrit QUE s'il n'est pas déjà juste : une ouverture
@@ -4136,11 +4130,12 @@ impl WalReader {
     /// file does not exist.
     pub fn open(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let path = path.as_ref();
-        let mut bytes = Vec::new();
-        if path.exists() {
-            let mut f = File::open(path)?;
-            f.read_to_end(&mut bytes)?;
-        }
+        let es = crate::es::espace();
+        let bytes = if es.existe(path) {
+            es.lire_tout(path)?
+        } else {
+            Vec::new()
+        };
         Ok(Self { bytes })
     }
 
