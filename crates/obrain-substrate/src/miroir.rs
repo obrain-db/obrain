@@ -386,3 +386,101 @@ mod tests {
         assert!(!e.existe(Path::new("absent")));
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Persistance du store sur un miroir (P1.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Nom logique de la dernière image du store sur le miroir.
+const IMAGE_STORE: &str = "store.image";
+
+impl crate::store::SubstrateStore {
+    /// Ouvre le store depuis le miroir : restaure la DERNIÈRE image publiée, ou
+    /// rend un store vide si aucune n'a jamais été publiée.
+    ///
+    /// Une image présente mais illisible est une ERREUR, jamais un store vide
+    /// silencieux : un store vide à la place d'une base perdrait les données sans
+    /// rien signaler.
+    pub fn ouvrir_sur_miroir(miroir: std::sync::Arc<dyn Miroir>) -> crate::error::SubstrateResult<Self> {
+        let espace = EspaceMiroir::nouveau(miroir);
+        let chemin = Path::new(IMAGE_STORE);
+        if espace.existe(chemin) {
+            let image = espace.lire_tout(chemin)?;
+            Self::depuis_instantane(&image)
+        } else {
+            Self::open_memory()
+        }
+    }
+
+    /// Publie l'état courant dans le miroir. Durable quand cet appel rend `Ok` :
+    /// l'image précédente reste lisible à toute coupure pendant la publication.
+    pub fn persister_sur_miroir(&self, miroir: std::sync::Arc<dyn Miroir>) -> crate::error::SubstrateResult<()> {
+        let espace = EspaceMiroir::nouveau(miroir);
+        let image = self.instantane()?;
+        let tmp = Path::new("store.image.tmp");
+        espace.ecrire_synchronise(tmp, &image)?;
+        espace.renommer(tmp, Path::new(IMAGE_STORE))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_store {
+    use super::*;
+    use obrain_common::types::Value;
+    use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+    use std::sync::Arc;
+
+    fn terrain(store: &crate::store::SubstrateStore, n: usize) {
+        for i in 0..n {
+            let id = store.create_node(&["Personne"]);
+            store.set_node_property(id, "nom", Value::String(format!("p{i}").into()));
+        }
+    }
+
+    #[test]
+    fn un_miroir_vide_donne_un_store_vide() {
+        let m: Arc<dyn Miroir> = Arc::new(MiroirMemoire::default());
+        let s = crate::store::SubstrateStore::ouvrir_sur_miroir(m).expect("ouverture");
+        assert_eq!(s.node_count(), 0);
+    }
+
+    #[test]
+    fn un_etat_publie_survit_a_la_coupure_et_se_relit() {
+        let m = Arc::new(MiroirMemoire::default());
+        {
+            let s = crate::store::SubstrateStore::open_memory().unwrap();
+            terrain(&s, 5);
+            s.persister_sur_miroir(m.clone()).expect("publication");
+        }
+        m.couper();
+        let s = crate::store::SubstrateStore::ouvrir_sur_miroir(m.clone()).expect("réouverture");
+        assert_eq!(s.node_count(), 5, "les 5 nœuds publiés sont revenus");
+    }
+
+    #[test]
+    fn ce_qui_n_est_pas_publie_est_perdu_a_la_coupure() {
+        let m = Arc::new(MiroirMemoire::default());
+        let s = crate::store::SubstrateStore::open_memory().unwrap();
+        terrain(&s, 3);
+        s.persister_sur_miroir(m.clone()).unwrap();
+        terrain(&s, 4); // 4 nœuds de plus, JAMAIS publiés
+        drop(s);
+        m.couper();
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(m.clone()).unwrap();
+        assert_eq!(r.node_count(), 3, "seul l'état publié survit");
+    }
+
+    #[test]
+    fn une_publication_ulterieure_remplace_la_precedente() {
+        let m = Arc::new(MiroirMemoire::default());
+        let s = crate::store::SubstrateStore::open_memory().unwrap();
+        terrain(&s, 2);
+        s.persister_sur_miroir(m.clone()).unwrap();
+        terrain(&s, 3);
+        s.persister_sur_miroir(m.clone()).unwrap();
+        m.couper();
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(m.clone()).unwrap();
+        assert_eq!(r.node_count(), 5);
+    }
+}
