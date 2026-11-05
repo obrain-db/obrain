@@ -388,6 +388,178 @@ mod tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Journal de blobs : un miroir réel, sur UN fichier (P2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// En-tête d'un enregistrement : `MAGIE(4) TAG(1) LONG_NOM(2) LONG_VAL(4)`, puis
+/// le nom, la valeur, et un CRC32 sur tout ce qui précède.
+const MAGIE_ENREG: [u8; 4] = *b"OBRL";
+const TAG_PUT: u8 = 1;
+const TAG_APPEND: u8 = 2;
+const TAG_TRUNC: u8 = 3;
+const TAG_DEL: u8 = 4;
+
+/// Un enregistrement décodé.
+#[derive(Debug, PartialEq, Eq)]
+enum Enreg {
+    Put(String, Vec<u8>),
+    Append(String, Vec<u8>),
+    Trunc(String, u64),
+    Del(String),
+}
+
+fn encoder_enreg(e: &Enreg) -> Vec<u8> {
+    let (tag, nom, val): (u8, &str, Vec<u8>) = match e {
+        Enreg::Put(n, v) => (TAG_PUT, n, v.clone()),
+        Enreg::Append(n, v) => (TAG_APPEND, n, v.clone()),
+        Enreg::Trunc(n, l) => (TAG_TRUNC, n, l.to_le_bytes().to_vec()),
+        Enreg::Del(n) => (TAG_DEL, n, Vec::new()),
+    };
+    let mut out = Vec::with_capacity(11 + nom.len() + val.len() + 4);
+    out.extend_from_slice(&MAGIE_ENREG);
+    out.push(tag);
+    out.extend_from_slice(&(nom.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(val.len() as u32).to_le_bytes());
+    out.extend_from_slice(nom.as_bytes());
+    out.extend_from_slice(&val);
+    let crc = crc32fast::hash(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out
+}
+
+/// Décode le premier enregistrement de `octets`. `Ok((enreg, longueur))`, ou `Err`
+/// si l'enregistrement est absent, tronqué ou corrompu : c'est la fin valide du journal.
+fn decoder_enreg(octets: &[u8]) -> Result<(Enreg, usize), ()> {
+    if octets.len() < 11 || octets[0..4] != MAGIE_ENREG {
+        return Err(());
+    }
+    let tag = octets[4];
+    let lnom = u16::from_le_bytes([octets[5], octets[6]]) as usize;
+    let lval = u32::from_le_bytes([octets[7], octets[8], octets[9], octets[10]]) as usize;
+    let total = 11 + lnom + lval + 4;
+    if octets.len() < total {
+        return Err(());
+    }
+    let crc = u32::from_le_bytes(octets[total - 4..total].try_into().map_err(|_| ())?);
+    if crc32fast::hash(&octets[..total - 4]) != crc {
+        return Err(());
+    }
+    let nom = std::str::from_utf8(&octets[11..11 + lnom]).map_err(|_| ())?.to_string();
+    let val = octets[11 + lnom..11 + lnom + lval].to_vec();
+    let enreg = match tag {
+        TAG_PUT => Enreg::Put(nom, val),
+        TAG_APPEND => Enreg::Append(nom, val),
+        TAG_TRUNC => {
+            let arr: [u8; 8] = val.as_slice().try_into().map_err(|_| ())?;
+            Enreg::Trunc(nom, u64::from_le_bytes(arr))
+        }
+        TAG_DEL => Enreg::Del(nom),
+        _ => return Err(()),
+    };
+    Ok((enreg, total))
+}
+
+/// Miroir réel, sur un journal append-only : chaque opération est un enregistrement
+/// à CRC, l'état courant se reconstruit en rejouant le journal à l'ouverture.
+///
+/// Reprise : à l'ouverture, on rejoue les enregistrements valides ; le premier
+/// déchiré ou corrompu marque la FIN du journal, et tout ce qui le suit est
+/// tronqué. Une coupure en plein enregistrement ne peut donc jamais produire un état
+/// mélangé.
+#[derive(Debug)]
+pub struct MiroirJournal {
+    fichier: std::sync::Mutex<Box<dyn crate::es::FichierJournal>>,
+    etat: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl MiroirJournal {
+    /// Ouvre le journal et rejoue ses enregistrements valides.
+    pub fn ouvrir(fichier: Box<dyn crate::es::FichierJournal>) -> io::Result<Self> {
+        let mut fichier = fichier;
+        let taille = fichier.taille()? as usize;
+        let mut octets = vec![0u8; taille];
+        if taille > 0 {
+            fichier.lire_a(0, &mut octets)?;
+        }
+        let mut etat: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut pos = 0usize;
+        while pos < octets.len() {
+            match decoder_enreg(&octets[pos..]) {
+                Ok((enreg, longueur)) => {
+                    appliquer(&mut etat, enreg);
+                    pos += longueur;
+                }
+                Err(()) => break,
+            }
+        }
+        if pos < taille {
+            // Fin valide dépassée : on abandonne le reste (coupure en cours d'écriture).
+            fichier.tronquer(pos as u64)?;
+            fichier.synchroniser(true)?;
+        }
+        Ok(Self {
+            fichier: std::sync::Mutex::new(fichier),
+            etat: Mutex::new(etat),
+        })
+    }
+
+    fn ajouter_enreg(&self, e: Enreg) -> io::Result<()> {
+        let octets = encoder_enreg(&e);
+        let mut f = self.fichier.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        f.ajouter(&octets)?;
+        drop(f);
+        let mut etat = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        appliquer(&mut etat, e);
+        Ok(())
+    }
+}
+
+fn appliquer(etat: &mut HashMap<String, Vec<u8>>, e: Enreg) {
+    match e {
+        Enreg::Put(n, v) => {
+            etat.insert(n, v);
+        }
+        Enreg::Append(n, v) => etat.entry(n).or_default().extend_from_slice(&v),
+        Enreg::Trunc(n, l) => {
+            if let Some(b) = etat.get_mut(&n) {
+                b.truncate(l as usize);
+            }
+        }
+        Enreg::Del(n) => {
+            etat.remove(&n);
+        }
+    }
+}
+
+impl Miroir for MiroirJournal {
+    fn lire(&self, nom: &str) -> io::Result<Option<Vec<u8>>> {
+        let etat = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(etat.get(nom).cloned())
+    }
+
+    fn ecrire(&self, nom: &str, octets: &[u8]) -> io::Result<()> {
+        self.ajouter_enreg(Enreg::Put(nom.to_string(), octets.to_vec()))
+    }
+
+    fn ajouter(&self, nom: &str, octets: &[u8]) -> io::Result<()> {
+        self.ajouter_enreg(Enreg::Append(nom.to_string(), octets.to_vec()))
+    }
+
+    fn tronquer(&self, nom: &str, longueur: u64) -> io::Result<()> {
+        self.ajouter_enreg(Enreg::Trunc(nom.to_string(), longueur))
+    }
+
+    fn supprimer(&self, nom: &str) -> io::Result<()> {
+        self.ajouter_enreg(Enreg::Del(nom.to_string()))
+    }
+
+    fn synchroniser(&self) -> io::Result<()> {
+        let mut f = self.fichier.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        f.synchroniser(true)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Persistance du store sur un miroir (P1.2)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -482,5 +654,123 @@ mod tests_store {
         m.couper();
         let r = crate::store::SubstrateStore::ouvrir_sur_miroir(m.clone()).unwrap();
         assert_eq!(r.node_count(), 5);
+    }
+}
+
+#[cfg(test)]
+mod tests_journal {
+    use super::*;
+    use crate::es::{espace, EspaceFichiers as _};
+    use obrain_common::types::Value;
+    use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+    use std::sync::Arc;
+
+    fn ouvrir(chemin: &Path) -> MiroirJournal {
+        let j = espace().ouvrir_journal(chemin).expect("journal");
+        MiroirJournal::ouvrir(j).expect("reprise du journal")
+    }
+
+    fn tmp(nom: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join(nom);
+        (d, p)
+    }
+
+    #[test]
+    fn toutes_les_operations_se_rejouent_a_la_reouverture() {
+        let (_d, p) = tmp("journal.bin");
+        {
+            let m = ouvrir(&p);
+            m.ecrire("a", b"abc").unwrap();
+            m.ajouter("a", b"def").unwrap();
+            m.ecrire("b", b"xyz").unwrap();
+            m.tronquer("a", 4).unwrap();
+            m.supprimer("b").unwrap();
+            m.ecrire("c", b"gone").unwrap();
+            m.supprimer("c").unwrap();
+            m.synchroniser().unwrap();
+        }
+        let m = ouvrir(&p);
+        assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"abcd"[..]));
+        assert_eq!(m.lire("b").unwrap(), None);
+        assert_eq!(m.lire("c").unwrap(), None);
+    }
+
+    #[test]
+    fn un_enregistrement_dechire_en_fin_est_abandonne_et_le_fichier_est_tronque() {
+        let (_d, p) = tmp("journal.bin");
+        let taille_saine;
+        {
+            let m = ouvrir(&p);
+            m.ecrire("a", b"valide").unwrap();
+            m.synchroniser().unwrap();
+            taille_saine = std::fs::metadata(&p).unwrap().len();
+        }
+        // Coupure en plein enregistrement : quelques octets, pas un enregistrement entier.
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            f.write_all(&encoder_enreg(&Enreg::Put("b".into(), b"incomplet".to_vec()))[..9]).unwrap();
+        }
+        let m = ouvrir(&p);
+        assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"valide"[..]));
+        assert_eq!(m.lire("b").unwrap(), None);
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), taille_saine, "reprise : fin tronquée");
+    }
+
+    #[test]
+    fn la_partie_non_synchronisee_disparait_a_la_coupure() {
+        let (_d, p) = tmp("journal.bin");
+        let taille_synchro;
+        {
+            let m = ouvrir(&p);
+            m.ecrire("a", b"synchro").unwrap();
+            m.synchroniser().unwrap();
+            taille_synchro = std::fs::metadata(&p).unwrap().len();
+            m.ecrire("a", b"perdu").unwrap();
+            m.ecrire("b", b"perdu").unwrap();
+        }
+        // La coupure n'a conservé que ce qui était synchronisé.
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(taille_synchro).unwrap();
+        let m = ouvrir(&p);
+        assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"synchro"[..]));
+        assert_eq!(m.lire("b").unwrap(), None);
+    }
+
+    #[test]
+    fn une_corruption_au_milieu_arrete_la_reprise_a_la_fin_valide() {
+        let (_d, p) = tmp("journal.bin");
+        let fin_premier;
+        {
+            let m = ouvrir(&p);
+            m.ecrire("a", b"un").unwrap();
+            fin_premier = std::fs::metadata(&p).unwrap().len() as usize;
+            m.ecrire("a", b"deux").unwrap();
+            m.ecrire("a", b"trois").unwrap();
+            m.synchroniser().unwrap();
+        }
+        // Un octet flippé dans le DEUXIÈME enregistrement : seul le premier est valide.
+        let mut octets = std::fs::read(&p).unwrap();
+        octets[fin_premier + 15] ^= 0xFF;
+        std::fs::write(&p, &octets).unwrap();
+        let m = ouvrir(&p);
+        assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"un"[..]));
+    }
+
+    #[test]
+    fn le_store_complet_survit_a_une_reouverture_du_fichier() {
+        let (_d, p) = tmp("journal.bin");
+        {
+            let s = crate::store::SubstrateStore::open_memory().unwrap();
+            for i in 0..6 {
+                let id = s.create_node(&["Personne"]);
+                s.set_node_property(id, "nom", Value::String(format!("p{i}").into()));
+            }
+            let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
+            s.persister_sur_miroir(m).unwrap();
+        }
+        let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
+        let s = crate::store::SubstrateStore::ouvrir_sur_miroir(m).expect("store restauré");
+        assert_eq!(s.node_count(), 6, "les 6 nœuds sont revenus depuis le fichier");
     }
 }
