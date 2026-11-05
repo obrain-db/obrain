@@ -187,7 +187,8 @@ impl PropertiesSnapshotV1 {
         // `crate::wal_io::chemin_tmp_unique`.
         let tmp_path = crate::wal_io::chemin_tmp_unique(path);
         let es = crate::es::espace();
-        es.ecrire_tout(&tmp_path, &bytes).map_err(SubstrateError::Io)?;
+        es.ecrire_tout(&tmp_path, &bytes)
+            .map_err(SubstrateError::Io)?;
         es.renommer(&tmp_path, path).map_err(SubstrateError::Io)?;
         Ok(())
     }
@@ -198,7 +199,9 @@ impl PropertiesSnapshotV1 {
         if !crate::es::espace().existe(path) {
             return Ok(Self::default());
         }
-        let bytes = crate::es::espace().lire_tout(path).map_err(SubstrateError::Io)?;
+        let bytes = crate::es::espace()
+            .lire_tout(path)
+            .map_err(SubstrateError::Io)?;
         Self::from_bytes(&bytes)
     }
 }

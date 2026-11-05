@@ -114,7 +114,6 @@ use crate::wal::{WAL_HEADER_SIZE, WalRecord, crc_over};
 use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -1096,7 +1095,7 @@ pub fn chemin_fence_checkpoint(wal: &Path) -> PathBuf {
 #[derive(Debug)]
 pub struct ElectionCheckpoint {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fichier: Option<File>,
+    fichier: Option<Box<dyn crate::es::FichierVerrou>>,
     chemin: PathBuf,
 }
 
@@ -1124,22 +1123,15 @@ impl ElectionCheckpoint {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use fs2::FileExt as _;
-            let fichier = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&chemin)
-                .ok()?;
-            match fichier.try_lock_exclusive() {
-                Ok(()) => Some(Self {
-                    fichier: Some(fichier),
+            let verrou = crate::es::espace().ouvrir_verrou(&chemin).ok()?;
+            match verrou.essayer_exclusif() {
+                Ok(true) => Some(Self {
+                    fichier: Some(verrou),
                     chemin,
                 }),
-                // `WouldBlock` = un pair checkpointe. Toute autre erreur (système
+                // `Ok(false)` = un pair checkpointe. Toute autre erreur (système
                 // de fichiers sans `flock`) est traitée pareil : on renonce.
-                Err(_) => None,
+                Ok(false) | Err(_) => None,
             }
         }
     }
@@ -1173,9 +1165,7 @@ impl Drop for ElectionCheckpoint {
         if let Some(f) = self.fichier.take() {
             // Rend le verrou explicitement : le noyau le rendrait à la fermeture
             // du descripteur, mais un `Drop` qui dit ce qu'il fait se relit.
-            // (`File::unlock` de la bibliothèque standard fait le même
-            // `flock(LOCK_UN)` que celui qui a été pris par `fs2`.)
-            let _ = f.unlock();
+            let _ = f.liberer();
         }
     }
 }
