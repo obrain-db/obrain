@@ -55,7 +55,10 @@ struct EtatMiroir {
 impl MiroirMemoire {
     /// Simule une coupure de courant : tout ce qui n'a pas été synchronisé est perdu.
     pub fn couper(&self) {
-        let mut e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         e.tampon.clear();
     }
 
@@ -69,18 +72,27 @@ impl MiroirMemoire {
 
 impl Miroir for MiroirMemoire {
     fn lire(&self, nom: &str) -> io::Result<Option<Vec<u8>>> {
-        let e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(Self::visible(&e, nom))
     }
 
     fn ecrire(&self, nom: &str, octets: &[u8]) -> io::Result<()> {
-        let mut e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         e.tampon.insert(nom.to_string(), Some(octets.to_vec()));
         Ok(())
     }
 
     fn ajouter(&self, nom: &str, octets: &[u8]) -> io::Result<()> {
-        let mut e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut courant = Self::visible(&e, nom).unwrap_or_default();
         courant.extend_from_slice(octets);
         e.tampon.insert(nom.to_string(), Some(courant));
@@ -88,7 +100,10 @@ impl Miroir for MiroirMemoire {
     }
 
     fn tronquer(&self, nom: &str, longueur: u64) -> io::Result<()> {
-        let mut e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut courant = Self::visible(&e, nom).unwrap_or_default();
         courant.truncate(longueur as usize);
         e.tampon.insert(nom.to_string(), Some(courant));
@@ -96,13 +111,19 @@ impl Miroir for MiroirMemoire {
     }
 
     fn supprimer(&self, nom: &str) -> io::Result<()> {
-        let mut e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         e.tampon.insert(nom.to_string(), None);
         Ok(())
     }
 
     fn synchroniser(&self) -> io::Result<()> {
-        let mut e = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut e = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tampon = std::mem::take(&mut e.tampon);
         for (nom, valeur) in tampon {
             match valeur {
@@ -172,12 +193,11 @@ impl EspaceMiroir {
     fn meilleur(&self, nom: &str) -> io::Result<Option<(u64, u8, Vec<u8>)>> {
         let mut meilleur: Option<(u64, u8, Vec<u8>)> = None;
         for (suffixe, lettre) in [("A", 0u8), ("B", 1u8)] {
-            if let Some(octets) = self.miroir.lire(&format!("{nom}.{suffixe}"))? {
-                if let Some((generation, charge)) = decoder_emplacement(&octets) {
-                    if meilleur.as_ref().is_none_or(|(g, _, _)| generation > *g) {
-                        meilleur = Some((generation, lettre, charge));
-                    }
-                }
+            if let Some(octets) = self.miroir.lire(&format!("{nom}.{suffixe}"))?
+                && let Some((generation, charge)) = decoder_emplacement(&octets)
+                && meilleur.as_ref().is_none_or(|(g, _, _)| generation > *g)
+            {
+                meilleur = Some((generation, lettre, charge));
             }
         }
         Ok(meilleur)
@@ -222,7 +242,8 @@ impl EspaceFichiers for EspaceMiroir {
         };
         let cible = if lettre_actuelle == 0 { "B" } else { "A" };
         let nouvel = encoder_emplacement(gen_actuelle + 1, &contenu);
-        self.miroir.ecrire(&format!("{nom_vers}.{cible}"), &nouvel)?;
+        self.miroir
+            .ecrire(&format!("{nom_vers}.{cible}"), &nouvel)?;
         self.miroir.supprimer(&Self::tmp(&nom_de(de)))?;
         self.miroir.synchroniser()
     }
@@ -240,7 +261,9 @@ impl EspaceFichiers for EspaceMiroir {
     }
 
     fn existe(&self, chemin: &Path) -> bool {
-        self.meilleur(&nom_de(chemin)).map(|m| m.is_some()).unwrap_or(false)
+        self.meilleur(&nom_de(chemin))
+            .map(|m| m.is_some())
+            .unwrap_or(false)
     }
 
     fn ouvrir_journal(&self, _chemin: &Path) -> io::Result<Box<dyn crate::es::FichierJournal>> {
@@ -250,7 +273,11 @@ impl EspaceFichiers for EspaceMiroir {
         ))
     }
 
-    fn ouvrir_donnees(&self, _chemin: &Path, _ecriture: bool) -> io::Result<Box<dyn crate::es::FichierDonnees>> {
+    fn ouvrir_donnees(
+        &self,
+        _chemin: &Path,
+        _ecriture: bool,
+    ) -> io::Result<Box<dyn crate::es::FichierDonnees>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "réécriture en place sur miroir : hors périmètre (migration)",
@@ -288,7 +315,11 @@ mod tests {
     fn une_ecriture_non_synchronisee_disparait_a_la_coupure() {
         let m = MiroirMemoire::default();
         m.ecrire("a", b"tampon").unwrap();
-        assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"tampon"[..]), "visible du processus");
+        assert_eq!(
+            m.lire("a").unwrap().as_deref(),
+            Some(&b"tampon"[..]),
+            "visible du processus"
+        );
         m.couper();
         assert_eq!(m.lire("a").unwrap(), None, "non durable : perdu");
     }
@@ -306,7 +337,8 @@ mod tests {
     fn publication_puis_relecture() {
         let (_m, e) = espace();
         let p = Path::new("substrate.meta");
-        e.ecrire_synchronise(&Path::new("substrate.meta.tmp"), b"v1").unwrap();
+        e.ecrire_synchronise(Path::new("substrate.meta.tmp"), b"v1")
+            .unwrap();
         e.renommer(Path::new("substrate.meta.tmp"), p).unwrap();
         assert_eq!(e.lire_tout(p).unwrap(), b"v1");
         assert!(e.existe(p));
@@ -332,7 +364,11 @@ mod tests {
         // Nouveau contenu tamponné, jamais publié, puis coupure.
         m.ecrire("x.tmp", b"nouveau").unwrap();
         m.couper();
-        assert_eq!(e.lire_tout(p).unwrap(), b"ancien", "l'ancien état reste intact");
+        assert_eq!(
+            e.lire_tout(p).unwrap(),
+            b"ancien",
+            "l'ancien état reste intact"
+        );
     }
 
     #[test]
@@ -444,7 +480,9 @@ fn decoder_enreg(octets: &[u8]) -> Result<(Enreg, usize), ()> {
     if crc32fast::hash(&octets[..total - 4]) != crc {
         return Err(());
     }
-    let nom = std::str::from_utf8(&octets[11..11 + lnom]).map_err(|_| ())?.to_string();
+    let nom = std::str::from_utf8(&octets[11..11 + lnom])
+        .map_err(|_| ())?
+        .to_string();
     let val = octets[11 + lnom..11 + lnom + lval].to_vec();
     let enreg = match tag {
         TAG_PUT => Enreg::Put(nom, val),
@@ -505,10 +543,16 @@ impl MiroirJournal {
 
     fn ajouter_enreg(&self, e: Enreg) -> io::Result<()> {
         let octets = encoder_enreg(&e);
-        let mut f = self.fichier.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut f = self
+            .fichier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.ajouter(&octets)?;
         drop(f);
-        let mut etat = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut etat = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         appliquer(&mut etat, e);
         Ok(())
     }
@@ -533,7 +577,10 @@ fn appliquer(etat: &mut HashMap<String, Vec<u8>>, e: Enreg) {
 
 impl Miroir for MiroirJournal {
     fn lire(&self, nom: &str) -> io::Result<Option<Vec<u8>>> {
-        let etat = self.etat.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let etat = self
+            .etat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(etat.get(nom).cloned())
     }
 
@@ -554,7 +601,10 @@ impl Miroir for MiroirJournal {
     }
 
     fn synchroniser(&self) -> io::Result<()> {
-        let mut f = self.fichier.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut f = self
+            .fichier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.synchroniser(true)
     }
 }
@@ -573,7 +623,9 @@ impl crate::store::SubstrateStore {
     /// Une image présente mais illisible est une ERREUR, jamais un store vide
     /// silencieux : un store vide à la place d'une base perdrait les données sans
     /// rien signaler.
-    pub fn ouvrir_sur_miroir(miroir: std::sync::Arc<dyn Miroir>) -> crate::error::SubstrateResult<Self> {
+    pub fn ouvrir_sur_miroir(
+        miroir: std::sync::Arc<dyn Miroir>,
+    ) -> crate::error::SubstrateResult<Self> {
         let espace = EspaceMiroir::nouveau(miroir);
         let chemin = Path::new(IMAGE_STORE);
         if espace.existe(chemin) {
@@ -586,7 +638,10 @@ impl crate::store::SubstrateStore {
 
     /// Publie l'état courant dans le miroir. Durable quand cet appel rend `Ok` :
     /// l'image précédente reste lisible à toute coupure pendant la publication.
-    pub fn persister_sur_miroir(&self, miroir: std::sync::Arc<dyn Miroir>) -> crate::error::SubstrateResult<()> {
+    pub fn persister_sur_miroir(
+        &self,
+        miroir: std::sync::Arc<dyn Miroir>,
+    ) -> crate::error::SubstrateResult<()> {
         let espace = EspaceMiroir::nouveau(miroir);
         let image = self.instantane()?;
         let tmp = Path::new("store.image.tmp");
@@ -660,7 +715,7 @@ mod tests_store {
 #[cfg(test)]
 mod tests_journal {
     use super::*;
-    use crate::es::{espace, EspaceFichiers as _};
+    use crate::es::espace;
     use obrain_common::types::Value;
     use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
     use std::sync::Arc;
@@ -710,12 +765,17 @@ mod tests_journal {
         {
             use std::io::Write as _;
             let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-            f.write_all(&encoder_enreg(&Enreg::Put("b".into(), b"incomplet".to_vec()))[..9]).unwrap();
+            f.write_all(&encoder_enreg(&Enreg::Put("b".into(), b"incomplet".to_vec()))[..9])
+                .unwrap();
         }
         let m = ouvrir(&p);
         assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"valide"[..]));
         assert_eq!(m.lire("b").unwrap(), None);
-        assert_eq!(std::fs::metadata(&p).unwrap().len(), taille_saine, "reprise : fin tronquée");
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().len(),
+            taille_saine,
+            "reprise : fin tronquée"
+        );
     }
 
     #[test]
@@ -731,7 +791,12 @@ mod tests_journal {
             m.ecrire("b", b"perdu").unwrap();
         }
         // La coupure n'a conservé que ce qui était synchronisé.
-        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(taille_synchro).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_len(taille_synchro)
+            .unwrap();
         let m = ouvrir(&p);
         assert_eq!(m.lire("a").unwrap().as_deref(), Some(&b"synchro"[..]));
         assert_eq!(m.lire("b").unwrap(), None);
@@ -771,6 +836,30 @@ mod tests_journal {
         }
         let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
         let s = crate::store::SubstrateStore::ouvrir_sur_miroir(m).expect("store restauré");
-        assert_eq!(s.node_count(), 6, "les 6 nœuds sont revenus depuis le fichier");
+        assert_eq!(
+            s.node_count(),
+            6,
+            "les 6 nœuds sont revenus depuis le fichier"
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl crate::store::SubstrateStore {
+    /// Ouvre un store PERSISTANT dans le navigateur : le journal OPFS `nom`, rejoué,
+    /// puis le store restauré depuis sa dernière image publiée.
+    ///
+    /// Rend le miroir avec le store : c'est lui que [`persister_sur_miroir`] doit
+    /// recevoir pour publier. Le store ne persiste rien tant qu'on ne publie pas.
+    ///
+    /// [`persister_sur_miroir`]: crate::store::SubstrateStore::persister_sur_miroir
+    pub async fn ouvrir_navigateur(
+        nom: &str,
+    ) -> crate::error::SubstrateResult<(Self, std::sync::Arc<dyn Miroir>)> {
+        let fichier = crate::opfs::JournalOpfs::ouvrir(nom).await?;
+        let miroir: std::sync::Arc<dyn Miroir> =
+            std::sync::Arc::new(MiroirJournal::ouvrir(Box::new(fichier))?);
+        let store = Self::ouvrir_sur_miroir(miroir.clone())?;
+        Ok((store, miroir))
     }
 }
