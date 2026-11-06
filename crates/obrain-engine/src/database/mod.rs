@@ -19,6 +19,9 @@ mod crud;
 #[cfg(feature = "embed")]
 mod embed;
 mod index;
+/// Persistance navigateur (wasm32 seulement) : `open_browser` et `persist`.
+#[cfg(target_arch = "wasm32")]
+mod navigateur;
 /// (2026-09-07) Catalogue DURABLE des procedures stockees. Le catalogue GQL
 /// (`CREATE PROCEDURE`) vit en RAM par processus — la persistance substrate
 /// (`substrate.proccat`, meme pattern que les index) le rend rejouable a
@@ -33,9 +36,6 @@ mod schema_catalog;
 /// persistees (`substrate.textidx.<label>.<propriete>`) avec une EMPREINTE du
 /// store, et rechargees a l'ouverture quand elle correspond encore.
 mod text_index_persist;
-/// Persistance navigateur (wasm32 seulement) : `open_browser` et `persist`.
-#[cfg(target_arch = "wasm32")]
-mod navigateur;
 // T17 final cutover (2026-04-23): the `persistence`, `mmap_store`,
 // `nocache_reader`, and `native_writer` modules were deleted. They
 // implemented the legacy single-file `.obrain` v1 (bincode snapshot)
