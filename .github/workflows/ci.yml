@@ -100,6 +100,41 @@ jobs:
       - name: Check --all-features
         run: cargo check --workspace --all-targets --all-features
 
+  # Navigateur (wasm32-unknown-unknown, feature `browser`). Sans ce job, rien ne
+  # garantit que la cible compile ni qu'elle s'exécute : le défaut de `main` (la
+  # première création de base paniquait) est passé inaperçu faute de cette
+  # vérification. Le runner exige node >= 20 et wasm-bindgen-cli à la version
+  # EXACTEMENT verrouillée dans Cargo.lock (0.2.130).
+  wasm:
+    name: Navigateur (wasm32)
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: wasm-bindgen-cli (version verrouillée)
+        run: |
+          VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          echo "wasm-bindgen verrouillé : $VERSION"
+          cargo install --locked --version "$VERSION" wasm-bindgen-cli
+      - name: Compilation de la cible navigateur
+        run: cargo check --target wasm32-unknown-unknown -p obrain --no-default-features --features browser
+      - name: Tests navigateur (profil browser)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          NODE_OPTIONS: --stack-trace-limit=100
+        run: cargo test --target wasm32-unknown-unknown -p obrain --no-default-features --features browser --test navigateur_features
+      - name: Tests navigateur (requêtes, index, cognitif, métriques, CDC)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          NODE_OPTIONS: --stack-trace-limit=100
+        run: cargo test --target wasm32-unknown-unknown -p obrain --no-default-features --features browser,cypher,sparql,gremlin,graphql,sql-pgq,vector-index,text-index,hybrid-search,cdc,algos,cognitive,cognitive-full,metrics,temporal --test navigateur_features
+
   msrv:
     name: MSRV (rust-version du manifeste)
     runs-on: [self-hosted, linux, x64, obrain-ci]

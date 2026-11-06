@@ -104,3 +104,10 @@ required-features = ["vector-index"]
 [[example]]
 name = "bench_bm25"
 required-features = ["text-index"]
+
+# `rand` 0.10 tire `getrandom` 0.4, qui ne choisit AUCUNE source d'aléa sur
+# wasm32-unknown-unknown (erreur de compilation sans cette feature). Le backend
+# `wasm_js` s'appuie sur `crypto.getRandomValues` : navigateur ou node. Cible
+# wasm32 sans OS uniquement : le natif ne change pas.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

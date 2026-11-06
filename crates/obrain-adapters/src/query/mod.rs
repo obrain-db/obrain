@@ -12,6 +12,7 @@
 //! | GraphQL | June 2018 spec | `graphql` | API query language |
 //! | SQL/PGQ | SQL:2023 (ISO 9075-16) | `sql-pgq` | SQL-native graph queries via GRAPH_TABLE |
 
+pub mod imbrication;
 pub mod keywords;
 
 #[cfg(feature = "gql")]

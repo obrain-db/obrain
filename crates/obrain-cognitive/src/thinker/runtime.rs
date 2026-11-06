@@ -260,35 +260,48 @@ impl ThinkerRuntime {
         let (completion_tx, completion_rx) = channel::bounded::<()>(1);
 
         let name = format!("thinker-{}", kind.as_str());
-        let join = thread::Builder::new()
-            .name(name)
-            .spawn(move || {
-                run_thinker_loop(
-                    thinker,
-                    store,
-                    sensor,
-                    pause_flag,
-                    stop_c,
-                    paused_c,
-                    cv_c,
-                    interval,
-                    ticks_c,
-                    errors_c,
-                    over_c,
-                    paused_count_c,
-                    budget.max_tick_duration,
+        let join = thread::Builder::new().name(name).spawn(move || {
+            run_thinker_loop(
+                thinker,
+                store,
+                sensor,
+                pause_flag,
+                stop_c,
+                paused_c,
+                cv_c,
+                interval,
+                ticks_c,
+                errors_c,
+                over_c,
+                paused_count_c,
+                budget.max_tick_duration,
+            );
+            // Best-effort signal — the receiver might already be
+            // dropped (shutdown timed out and detached us); that's
+            // fine, the thread can exit silently.
+            let _ = completion_tx.send(());
+        });
+        // wasm32 (et toute cible sans threads) : `Builder::spawn` renvoie TOUJOURS
+        // une erreur « operation not supported on this platform ». Un `expect`
+        // ici faisait tomber l'instance entière (panique = abort sur wasm32).
+        // Le Thinker est alors enregistré SANS thread : il ne tourne pas, ses
+        // compteurs restent à zéro, et `shutdown` n'a rien à attendre.
+        let (join, completion) = match join {
+            Ok(j) => (Some(j), Some(completion_rx)),
+            Err(e) => {
+                tracing::warn!(
+                    thinker = kind.as_str(),
+                    erreur = %e,
+                    "thinker non démarré : pas de thread sur cette cible"
                 );
-                // Best-effort signal — the receiver might already be
-                // dropped (shutdown timed out and detached us); that's
-                // fine, the thread can exit silently.
-                let _ = completion_tx.send(());
-            })
-            .expect("thinker thread spawn");
+                (None, None)
+            }
+        };
 
         self.handles.push(ThinkerHandle {
             kind,
-            join: Some(join),
-            completion: Some(completion_rx),
+            join,
+            completion,
             stop,
             paused: paused_individual,
             cv,

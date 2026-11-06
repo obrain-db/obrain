@@ -83,8 +83,11 @@ mimalloc-allocator = ["mimalloc"]
 workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
 serde_json.workspace = true
+
+# Bancs et tests natifs : `criterion` tire `rayon`, qui ne compile pas pour wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion.workspace = true
 tempfile.workspace = true
 
 [[bench]]
@@ -94,3 +97,7 @@ harness = false
 [[bench]]
 name = "zero_copy_suite"
 harness = false
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# Fumée navigateur (tests/navigateur.rs) : runner wasm-bindgen-test (node ou navigateur).
+wasm-bindgen-test = "0.3"

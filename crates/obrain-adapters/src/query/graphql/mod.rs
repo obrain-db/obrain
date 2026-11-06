@@ -41,6 +41,7 @@ use obrain_common::utils::error::Result;
 ///
 /// Returns a `QueryError` if the query is syntactically invalid.
 pub fn parse(query: &str) -> Result<Document> {
+    crate::query::imbrication::verifier(query)?;
     let mut parser = Parser::new(query);
     parser.parse()
 }

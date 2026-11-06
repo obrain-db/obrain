@@ -15,6 +15,8 @@ pub struct Parser<'a> {
     source: &'a str,
     /// Counter for generating unique blank node labels (used by RDF collections).
     collection_counter: u32,
+    /// Profondeur de récursion courante des expressions (garde de pile).
+    profondeur: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -23,6 +25,7 @@ impl<'a> Parser<'a> {
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
         Self {
+            profondeur: 0,
             lexer,
             current,
             source,
@@ -1195,7 +1198,18 @@ impl<'a> Parser<'a> {
         Ok(path)
     }
 
+    /// Garde de pile : un chemin de propriété entre parenthèses se rappelle lui-même.
     fn parse_path_primary(&mut self) -> Result<PropertyPath> {
+        self.profondeur += 1;
+        if self.profondeur > crate::query::imbrication::PROFONDEUR_EXPRESSION_MAX {
+            return Err(self.error("expression trop imbriquée (profondeur maximale dépassée)"));
+        }
+        let resultat = self.parse_path_primary_interne();
+        self.profondeur -= 1;
+        resultat
+    }
+
+    fn parse_path_primary_interne(&mut self) -> Result<PropertyPath> {
         match self.current.kind {
             TokenKind::Iri => {
                 let iri = self.parse_iri()?;
@@ -1569,7 +1583,20 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Garde de pile : une expression imbriquée au-delà de
+    /// `PROFONDEUR_EXPRESSION_MAX` est refusée au lieu d'épuiser la pile (sur
+    /// wasm32, 1 Mio : l'instance entière tombe). Voir `query::imbrication`.
     fn parse_primary_expression(&mut self) -> Result<Expression> {
+        self.profondeur += 1;
+        if self.profondeur > crate::query::imbrication::PROFONDEUR_EXPRESSION_MAX {
+            return Err(self.error("expression trop imbriquée (profondeur maximale dépassée)"));
+        }
+        let resultat = self.parse_primary_expression_interne();
+        self.profondeur -= 1;
+        resultat
+    }
+
+    fn parse_primary_expression_interne(&mut self) -> Result<Expression> {
         match self.current.kind {
             TokenKind::LeftParen => {
                 self.advance();
