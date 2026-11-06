@@ -108,6 +108,13 @@ jobs:
   wasm:
     name: Navigateur (wasm32)
     runs-on: [self-hosted, linux, x64, obrain-ci]
+    # La cible wasm32 n'est installée que sur `stable`. Le rustup des runners est
+    # en 1.26 : il refuse `rustup default stable --force-non-host` de l'action, et
+    # le défaut de la machine reste celui qu'elle avait (1.91.1 sur n2, sans cible
+    # wasm → « can't find crate for `core` »). On nomme la chaîne au lieu de
+    # dépendre du défaut de chaque runner.
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
