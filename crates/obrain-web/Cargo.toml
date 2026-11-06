@@ -18,7 +18,7 @@ wasm-bindgen-test = "0.3"
 
 [features]
 # Profil minimal : GQL seul (le plus petit module).
-default = ["browser"]
+default = []
 browser = []
 # Tout ce qui s'exécute dans un navigateur : langages, recherche, algorithmes, cognitif.
 complet = [
