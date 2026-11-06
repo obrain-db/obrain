@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires network access (~23MB download on first run)"]
+    #[ignore = "requires network access (~90MB download on first run)"]
     fn preset_downloads_minilm_l6() {
         let config = EmbeddingModelConfig::MiniLmL6v2;
         let resolved = resolve(&config).unwrap();
