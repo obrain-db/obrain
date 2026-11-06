@@ -47,6 +47,13 @@ fn log_rdf_wal(wal: &Option<Arc<RdfWal>>, record: &obrain_adapters::storage::wal
 
 /// Converts a Term to its N-Triples string for WAL serialization.
 #[cfg(feature = "wal")]
+
+/// Hexadécimal minuscule d'un digest. `sha1`/`sha2` 0.11 ne sont plus `LowerHex`
+/// (leur sortie est un tableau d'octets) : on formate octet par octet.
+fn hex_minuscule(octets: impl AsRef<[u8]>) -> String {
+    octets.as_ref().iter().map(|o| format!("{o:02x}")).collect()
+}
+
 fn term_to_wal(term: &Term) -> String {
     term.to_string()
 }
@@ -3262,7 +3269,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha1::Digest as _;
                 let hash = sha1::Sha1::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             "SHA256" => {
@@ -3270,7 +3277,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha2::Digest as _;
                 let hash = sha2::Sha256::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             "SHA384" => {
@@ -3278,7 +3285,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha2::Digest as _;
                 let hash = sha2::Sha384::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             "SHA512" => {
@@ -3286,7 +3293,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha2::Digest as _;
                 let hash = sha2::Sha512::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             // ================================================================
