@@ -1,7 +1,7 @@
-//! Liaison navigateur d'obrain : une base EN MÉMOIRE, interrogée par texte.
+//! Liaison navigateur d'obrain : une base interrogée par texte, en mémoire
+//! (`new Base()`) ou persistée sur OPFS (`Base.ouvrir(nom)` + `persister()`, instantané).
 //!
-//! Paquet d'essai : pas de persistance (le navigateur n'a pas encore de backend
-//! durable fusionné), pas de publication de version. Les résultats sont rendus en JSON.
+//! Paquet d'essai : pas de publication de version. Les résultats sont rendus en JSON.
 //!
 //! Chaque méthode qui peut échouer rend une erreur JavaScript (jamais une panique :
 //! une panique wasm abattrait toute l'instance de la page).
@@ -84,6 +84,25 @@ impl Base {
         Base {
             db: ObrainDB::new_in_memory(),
         }
+    }
+
+    /// Ouvre la base persistante `nom` (journal OPFS, créée si absente). Rend une
+    /// Promise. À appeler depuis un worker dédié : OPFS n'y expose son accès
+    /// synchrone que dans ce contexte. Hors worker, ou sans OPFS (node), la Promise
+    /// est rejetée par une erreur lisible, jamais par une trappe.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn ouvrir(nom: String) -> Result<Base, JsValue> {
+        ObrainDB::open_browser(&nom)
+            .await
+            .map(|db| Base { db })
+            .map_err(err)
+    }
+
+    /// Publie l'état courant dans le journal OPFS. Instantané : une écriture faite
+    /// depuis la dernière publication est perdue à une coupure.
+    #[cfg(target_arch = "wasm32")]
+    pub fn persister(&self) -> Result<(), JsValue> {
+        self.db.persist().map_err(err)
     }
 
     /// Une session (transactions explicites).

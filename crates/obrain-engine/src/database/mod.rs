@@ -33,6 +33,9 @@ mod schema_catalog;
 /// persistees (`substrate.textidx.<label>.<propriete>`) avec une EMPREINTE du
 /// store, et rechargees a l'ouverture quand elle correspond encore.
 mod text_index_persist;
+/// Persistance navigateur (wasm32 seulement) : `open_browser` et `persist`.
+#[cfg(target_arch = "wasm32")]
+mod navigateur;
 // T17 final cutover (2026-04-23): the `persistence`, `mmap_store`,
 // `nocache_reader`, and `native_writer` modules were deleted. They
 // implemented the legacy single-file `.obrain` v1 (bincode snapshot)
@@ -176,6 +179,10 @@ pub struct ObrainDB {
     ///
     /// [`SubstrateStore`]: obrain_substrate::SubstrateStore
     pub(super) substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// Miroir du journal OPFS, rempli par `open_browser` (wasm32 seulement).
+    /// `persist` y publie l'instantané du store ; absent pour toute autre base.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) miroir: Option<Arc<dyn obrain_substrate::miroir::Miroir>>,
     /// (2026-08-17, aretes inter-bases V2) Registre multi-store de la
     /// base : slug primaire + bases attachees (ouverture paresseuse).
     /// `None` tant que `attach_bases` n'a pas ete appele — une base
@@ -1206,6 +1213,8 @@ impl ObrainDB {
             // les tests concernes echouent avec le VRAI motif au lieu d'un message
             // qui envoie chercher au mauvais endroit.
             substrate_store: Some(typed),
+            #[cfg(target_arch = "wasm32")]
+            miroir: None,
             base_registry: parking_lot::RwLock::new(None),
             substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
@@ -1296,6 +1305,8 @@ impl ObrainDB {
             embedding_models: RwLock::new(hashbrown::HashMap::new()),
             external_store: Some(store),
             substrate_store: None,
+            #[cfg(target_arch = "wasm32")]
+            miroir: None,
             base_registry: parking_lot::RwLock::new(None),
             substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
