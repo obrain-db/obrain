@@ -91,6 +91,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use memmap2::{MmapMut, MmapOptions};
 
 use crate::error::SubstrateResult;
+use crate::wal_presence::{EtatProcessus, etat_processus};
 
 /// Suffixe du registre, ajouté au chemin du WAL : `substrate.wal` →
 /// `substrate.wal.reg`.
@@ -132,6 +133,29 @@ const OFF_FIN_PUBLIEE: usize = 128;
 const OFF_GENERATION: usize = 192;
 /// Base des LSN du segment courant. Ligne de cache 4.
 const OFF_ANCRE: usize = 256;
+
+// ── LES EMPLACEMENTS DE PRÉSENCE (preuve de vie, V1-T2B) ────────────────────
+//
+// Zone AJOUTÉE dans les octets inutilisés de la même page, après `OFF_ANCRE`
+// (qui se termine à 264). Aucun décalage existant ne bouge, et `VERSION_LAYOUT`
+// reste 1 : un registre écrit avant cette zone a des zéros, lus comme « aucun
+// emplacement » (aucune preuve, donc le comportement d'avant). Un registre
+// écrit par un binaire antérieur est lu sans erreur ; un binaire antérieur ignore
+// la zone. C'est une extension ADDITIVE, pas un changement de layout.
+//
+// Chaque emplacement (32 octets, 64 emplacements) porte :
+//   · pid du détenteur (0 = libre) ;
+//   · heure de démarrage du détenteur (voir `wal_presence`) ;
+//   · début de la plage réservée EN COURS, plus un (0 = aucune) : la plage
+//     annoncée AVANT le CAS, effacée à la publication ou à toute sortie.
+const OFF_EMPLACEMENTS: usize = 512;
+/// Nombre d'écrivains (`WalWriter`) identifiables à la fois dans un même registre.
+/// Un écrivain sans emplacement reste correct : il n'est simplement pas une preuve.
+pub const NB_EMPLACEMENTS: usize = 64;
+const TAILLE_EMPLACEMENT: usize = 32;
+const EMP_PID: usize = 0;
+const EMP_DEMARRAGE: usize = 8;
+const EMP_DEBUT_PLUS_UN: usize = 16;
 
 /// Chemin du registre d'append d'un WAL.
 #[must_use]
@@ -275,6 +299,98 @@ impl RegistreAppend {
         self.mot(OFF_ANCRE)
     }
 
+    fn mot_emplacement(&self, i: usize, champ: usize) -> &AtomicU64 {
+        self.mot(OFF_EMPLACEMENTS + i * TAILLE_EMPLACEMENT + champ)
+    }
+
+    /// Prend un emplacement pour cet écrivain et y écrit son identité. Rend son
+    /// indice, ou `None` si la table est pleine de détenteurs VIVANTS.
+    ///
+    /// Un emplacement dont le détenteur est MORT est repris : son éventuelle plage
+    /// annoncée ne peut plus être publiée par personne, elle est donc effacée.
+    /// L'ordre compte : la prise (CAS) précède l'effacement, car un autre écrivain
+    /// peut avoir pris l'emplacement entre-temps, et son annonce ne doit pas être
+    /// effacée par nous.
+    pub(crate) fn reclamer_emplacement(&self, pid: u64, demarrage: u64) -> Option<usize> {
+        for i in 0..NB_EMPLACEMENTS {
+            let proprietaire = self.mot_emplacement(i, EMP_PID);
+            let actuel = proprietaire.load(Ordering::Acquire);
+            if actuel != 0 {
+                let demarrage_actuel = self
+                    .mot_emplacement(i, EMP_DEMARRAGE)
+                    .load(Ordering::Acquire);
+                if etat_processus(actuel, demarrage_actuel) == EtatProcessus::Vivant {
+                    continue;
+                }
+            }
+            if proprietaire
+                .compare_exchange(actuel, pid, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.mot_emplacement(i, EMP_DEBUT_PLUS_UN)
+                    .store(0, Ordering::Release);
+                self.mot_emplacement(i, EMP_DEMARRAGE)
+                    .store(demarrage, Ordering::Release);
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Libère l'emplacement `i` : l'annonce d'abord, le pid ensuite, pour qu'un
+    /// lecteur ne voie jamais un détenteur sans plage (et inversement).
+    pub(crate) fn liberer_emplacement(&self, i: usize) {
+        self.mot_emplacement(i, EMP_DEBUT_PLUS_UN)
+            .store(0, Ordering::Release);
+        self.mot_emplacement(i, EMP_PID).store(0, Ordering::Release);
+    }
+
+    /// Annonce, avant le CAS, la plage que l'écrivain `i` s'apprête à réserver à
+    /// `debut`. Un CAS perdu laisse une annonce périmée : elle est réécrite à la
+    /// tentative suivante, et elle ne désigne jamais qu'un écrivain VIVANT (son
+    /// propre pid), jamais un pair mort.
+    pub(crate) fn annoncer_reservation(&self, i: usize, debut: u64) {
+        self.mot_emplacement(i, EMP_DEBUT_PLUS_UN)
+            .store(debut + 1, Ordering::Release);
+    }
+
+    /// Efface l'annonce de l'écrivain `i` : sa plage est publiée, ou abandonnée.
+    pub(crate) fn effacer_reservation(&self, i: usize) {
+        self.mot_emplacement(i, EMP_DEBUT_PLUS_UN)
+            .store(0, Ordering::Release);
+    }
+
+    /// ── LA QUESTION QUE LE DÉLAI NE SAVAIT PAS POSER ────────────────────────
+    ///
+    /// Un écrivain a-t-il réservé la plage qui commence à `fin_publiee` (la plage
+    /// que tout le monde attend), et est-il ENCORE VIVANT ? Si oui, il finira de
+    /// publier : on doit l'attendre, et ne pas le déclarer mort.
+    ///
+    /// Rend `false` s'il n'existe AUCUNE annonce pour cette plage (écrivain sans
+    /// emplacement, binaire antérieur, ou plateforme sans preuve) : c'est alors
+    /// le comportement d'avant, le délai, qui tranche.
+    pub(crate) fn predecesseur_vivant(&self, fin_publiee: u64) -> bool {
+        for i in 0..NB_EMPLACEMENTS {
+            let annonce = self
+                .mot_emplacement(i, EMP_DEBUT_PLUS_UN)
+                .load(Ordering::Acquire);
+            if annonce != fin_publiee + 1 {
+                continue;
+            }
+            let pid = self.mot_emplacement(i, EMP_PID).load(Ordering::Acquire);
+            if pid == 0 {
+                continue;
+            }
+            let demarrage = self
+                .mot_emplacement(i, EMP_DEMARRAGE)
+                .load(Ordering::Acquire);
+            if etat_processus(pid, demarrage) == EtatProcessus::Vivant {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Première création (fichier neuf, d'une autre magie, ou d'un autre layout).
     ///
     /// ── LE `flock` ICI N'EST PAS UN VERROU CHAUD ────────────────────────────
@@ -312,5 +428,83 @@ impl RegistreAppend {
         self.mot(OFF_VERSION)
             .store(VERSION_LAYOUT, Ordering::Release);
         self.mot(OFF_MAGIE).store(MAGIE, Ordering::Release);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests_presence {
+    use super::*;
+    use crate::wal_presence::identite_du_processus_courant;
+
+    fn registre_neuf() -> (tempfile::TempDir, RegistreAppend) {
+        let td = tempfile::tempdir().unwrap();
+        let wal = td.path().join("substrate.wal");
+        std::fs::write(&wal, b"").unwrap();
+        let reg = RegistreAppend::ouvrir(&wal, 0, 0).unwrap();
+        (td, reg)
+    }
+
+    #[test]
+    fn sans_annonce_aucun_pair_vivant() {
+        let (_td, reg) = registre_neuf();
+        assert!(!reg.predecesseur_vivant(0));
+    }
+
+    #[test]
+    fn un_pair_vivant_qui_a_annonce_sa_plage_bloque_la_recuperation() {
+        let (_td, reg) = registre_neuf();
+        let (pid, demarrage) = identite_du_processus_courant();
+        let i = reg
+            .reclamer_emplacement(pid, demarrage)
+            .expect("emplacement libre");
+        reg.annoncer_reservation(i, 100);
+        assert!(reg.predecesseur_vivant(100), "pair vivant annoncé en 100");
+        assert!(!reg.predecesseur_vivant(101), "aucune annonce en 101");
+        reg.effacer_reservation(i);
+        assert!(!reg.predecesseur_vivant(100), "annonce effacée");
+    }
+
+    #[test]
+    fn un_pair_mort_qui_a_annonce_sa_plage_ne_bloque_pas() {
+        let (_td, reg) = registre_neuf();
+        // Un pid qui n'existe plus : un enfant lancé puis récolté.
+        let mut enfant = std::process::Command::new("true").spawn().unwrap();
+        let pid_mort = u64::from(enfant.id());
+        enfant.wait().unwrap();
+        let i = reg
+            .reclamer_emplacement(pid_mort, 0)
+            .expect("emplacement libre");
+        reg.annoncer_reservation(i, 200);
+        assert!(
+            !reg.predecesseur_vivant(200),
+            "pair MORT : la plage est récupérable"
+        );
+    }
+
+    #[test]
+    fn un_emplacement_libere_ne_bloque_plus() {
+        let (_td, reg) = registre_neuf();
+        let (pid, demarrage) = identite_du_processus_courant();
+        let i = reg.reclamer_emplacement(pid, demarrage).unwrap();
+        reg.annoncer_reservation(i, 300);
+        reg.liberer_emplacement(i);
+        assert!(!reg.predecesseur_vivant(300));
+    }
+
+    #[test]
+    fn un_emplacement_de_pair_mort_est_repris() {
+        let (_td, reg) = registre_neuf();
+        let mut enfant = std::process::Command::new("true").spawn().unwrap();
+        let pid_mort = u64::from(enfant.id());
+        enfant.wait().unwrap();
+        let i_mort = reg.reclamer_emplacement(pid_mort, 0).unwrap();
+        reg.annoncer_reservation(i_mort, 400);
+        let (pid, demarrage) = identite_du_processus_courant();
+        let i = reg.reclamer_emplacement(pid, demarrage).expect("repris");
+        assert_eq!(i, i_mort, "le pair mort cède son emplacement");
+        assert!(
+            !reg.predecesseur_vivant(400),
+            "l'annonce du mort a été effacée à la reprise"
+        );
     }
 }

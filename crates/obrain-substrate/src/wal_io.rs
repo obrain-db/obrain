@@ -117,7 +117,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -1380,6 +1380,13 @@ pub struct WalWriter {
     /// Nombre de tentatives de création du registre (voir
     /// [`MAX_TENTATIVES_REGISTRE`]).
     tentatives_registre: AtomicU64,
+    /// Indice de l'emplacement de présence de cet écrivain dans le registre
+    /// (`usize::MAX` = aucun). C'est ce qui permet à un pair de savoir s'il attend
+    /// un écrivain VIVANT ou MORT (voir `wal_presence`).
+    emplacement_registre: AtomicUsize,
+    /// Attentes où le prédécesseur a dépassé le délai [`DELAI_TETE_BLOQUEE`] mais
+    /// s'est révélé VIVANT : la preuve de vie a évité un ré-ancrage faux.
+    attentes_sur_pair_vivant: AtomicU64,
     /// ── LA VALEUR DE CHAÎNE QUE CET ÉCRIVAIN SAIT ÊTRE LA FIN RÉELLE ────────
     /// Sa propre publication (après un `write` complet), ou une valeur qu'il a
     /// VÉRIFIÉE par une mesure. C'est ce mot qui répond, avec deux lectures
@@ -1818,6 +1825,8 @@ impl WalWriter {
             borne_frame_atomique: AtomicU64::new(MAX_FRAME_BYTES as u64),
             registre: OnceLock::new(),
             tentatives_registre: AtomicU64::new(0),
+            emplacement_registre: AtomicUsize::new(usize::MAX),
+            attentes_sur_pair_vivant: AtomicU64::new(0),
             // ── LA VUE DE DÉPART DE LA CHAÎNE EST LA TAILLE RÉELLE MESURÉE ───
             // À l'ouverture, `taille` est une mesure (`file.metadata()`) : la tête
             // de chaîne peut donc lui être comparée sans rien devoir au noyau. Elle
@@ -1875,6 +1884,8 @@ impl WalWriter {
             borne_frame_atomique: AtomicU64::new(MAX_FRAME_BYTES as u64),
             registre: OnceLock::new(),
             tentatives_registre: AtomicU64::new(0),
+            emplacement_registre: AtomicUsize::new(usize::MAX),
+            attentes_sur_pair_vivant: AtomicU64::new(0),
             // Un WAL en mémoire n'a NI fichier NI registre : la chaîne de
             // réservation ne concerne qu'un média fichier partagé (aucun autre
             // processus ne peut l'écrire, et `registre` refusera de se créer).
@@ -1992,6 +2003,14 @@ impl WalWriter {
     /// alors qu'un CAS et un `write`.
     pub fn attentes_de_publication(&self) -> u64 {
         self.attentes_de_publication.load(Ordering::Acquire)
+    }
+
+    /// Attentes où la réservation d'un prédécesseur a dépassé le délai
+    /// [`DELAI_TETE_BLOQUEE`] mais s'est révélée VIVANTE (preuve de vie, V1-T2B) :
+    /// chaque comptage est une récupération que l'ancien délai aurait faussement
+    /// déclenchée. Un WAL sans concurrence la laisse à 0.
+    pub fn attentes_sur_pair_vivant(&self) -> u64 {
+        self.attentes_sur_pair_vivant.load(Ordering::Acquire)
     }
 
     /// Têtes de chaîne RÉ-ANCRÉES sur la taille réelle : un écrivain est mort
@@ -2897,13 +2916,15 @@ impl WalWriter {
                 CoordinationAppend::Aucune => None,
                 _ => self.registre(guard),
             };
-            let (position, chemin_froid) = match reg {
+            // `_engagement` vit jusqu'à la fin de cette fonction : toute sortie sans
+            // publication efface l'annonce de notre plage (voir `EngagementReservation`).
+            let (position, chemin_froid, _engagement) = match reg {
                 None if guard.coordination == CoordinationAppend::Aucune => {
-                    (self.offset.load(Ordering::Acquire), false)
+                    (self.offset.load(Ordering::Acquire), false, None)
                 }
                 None => {
                     let taille = guard.taille_reelle()?;
-                    (self.caler_sur_la_fin(guard, taille)?, true)
+                    (self.caler_sur_la_fin(guard, taille)?, true, None)
                 }
                 Some(reg) => self.reserver_dans_la_chaine(guard, reg, buf.len() as u64)?,
             };
@@ -3348,6 +3369,16 @@ impl WalWriter {
                 self.reg_fin_connue.store(taille, Ordering::Release);
                 self.reg_generation_vue
                     .store(reg.generation().load(Ordering::Acquire), Ordering::Release);
+                // ── NOTRE PREUVE DE VIE (V1-T2B) ────────────────────────────
+                // Un emplacement porte notre pid et notre heure de démarrage : un
+                // pair qui attend notre plage peut ainsi savoir si nous sommes
+                // VIVANTS (on attend) ou MORTS (on récupère), au lieu de deviner
+                // par un délai. `None` (table pleine) = pas de preuve, comportement
+                // d'avant : ce n'est jamais une erreur.
+                let (pid, demarrage) = crate::wal_presence::identite_du_processus_courant();
+                if let Some(i) = reg.reclamer_emplacement(pid, demarrage) {
+                    self.emplacement_registre.store(i, Ordering::Release);
+                }
                 self.adopter_l_ancre_partagee(reg);
                 // ── LE REGISTRE PEUT ÊTRE EN AVANCE SUR LE FICHIER ──────────
                 // Cas vécu (`wal_append_unite::cas_3`) : le WAL a été tronqué
@@ -3405,12 +3436,12 @@ impl WalWriter {
     /// (tête bloquée, voir [`DELAI_TETE_BLOQUEE`]) ou des octets publiés au-delà
     /// de notre début (écriture hors chaîne). Deux événements par crash et par
     /// checkpoint — jamais par record.
-    fn reserver_dans_la_chaine(
+    fn reserver_dans_la_chaine<'r>(
         &self,
         guard: &mut WriterInner,
-        reg: &RegistreAppend,
+        reg: &'r RegistreAppend,
         len: u64,
-    ) -> SubstrateResult<(u64, bool)> {
+    ) -> SubstrateResult<(u64, bool, Option<EngagementReservation<'r>>)> {
         let mut chemin_froid = false;
         loop {
             // ── 1. LA GÉNÉRATION : L'ANNONCE D'UNE TRONCATURE ───────────────
@@ -3440,7 +3471,19 @@ impl WalWriter {
                 chemin_froid = true;
             }
             // ── 3. RÉSERVER (le CAS rend l'offset) ──────────────────────────
-            let debut = self.reserver_depuis(reg, tete, len);
+            let emplacement = match self.emplacement_registre.load(Ordering::Acquire) {
+                usize::MAX => None,
+                i => Some(i),
+            };
+            let debut = self.reserver_depuis(reg, emplacement, tete, len);
+            // ── L'ENGAGEMENT : TANT QU'IL VIT, NOTRE PLAGE EST ANNONCÉE ─────
+            // Créé AUSSITÔT après le CAS, avant toute attente : si l'attente échoue
+            // (`?`) ou si la chaîne est ré-ancrée, l'annonce est effacée — un pair ne
+            // doit jamais attendre un écrivain qui ne publiera plus.
+            let engagement = emplacement.map(|i| EngagementReservation {
+                reg,
+                emplacement: i,
+            });
             // ── 4. ATTENDRE QUE LE PRÉDÉCESSEUR AIT PUBLIÉ ──────────────────
             if self.attendre_la_publication(guard, reg, debut)? {
                 // Notre `write` va publier `debut + len` : c'est donc cette valeur
@@ -3448,8 +3491,9 @@ impl WalWriter {
                 // elle ne l'est qu'après un `write` COMPLET (voir la publication
                 // sous le verrou, et la libération en cas d'échec).
                 self.reg_fin_connue.store(debut + len, Ordering::Release);
-                return Ok((debut, chemin_froid));
+                return Ok((debut, chemin_froid, engagement));
             }
+            // La récupération a ré-ancré : l'engagement est effacé en sortant du tour.
             // La récupération a ré-ancré la chaîne : on réserve à nouveau (la
             // boucle reprend par la vérification de génération, qui est gratuite).
             chemin_froid = true;
@@ -3464,8 +3508,23 @@ impl WalWriter {
     /// valeur — au-dessus de sa plage, jamais dedans. Le nombre de tours est borné
     /// par le nombre d'écrivains actifs, pas par une durée, et il ne coûte aucun
     /// appel système.
-    fn reserver_depuis(&self, reg: &RegistreAppend, mut tete: u64, len: u64) -> u64 {
+    fn reserver_depuis(
+        &self,
+        reg: &RegistreAppend,
+        emplacement: Option<usize>,
+        mut tete: u64,
+        len: u64,
+    ) -> u64 {
         loop {
+            // ── L'ANNONCE PRÉCÈDE LE CAS ────────────────────────────────────
+            // Un pair qui voit la tête avancer sans voir notre annonce ne pourrait
+            // pas distinguer notre réservation d'une réservation sans détenteur.
+            // Annoncer AVANT le CAS garantit que toute réservation RÉUSSIE est
+            // annoncée (le CAS publie, `Release`, l'annonce qui le précède). Un CAS
+            // perdu laisse une annonce périmée, réécrite à la tentative suivante.
+            if let Some(i) = emplacement {
+                reg.annoncer_reservation(i, tete);
+            }
             match reg.tete_reservee().compare_exchange(
                 tete,
                 tete + len,
@@ -3511,6 +3570,7 @@ impl WalWriter {
         let delai = Duration::from_nanos(self.delai_tete_bloquee_ns.load(Ordering::Acquire));
         let generation_vue = self.reg_generation_vue.load(Ordering::Acquire);
         let mut premier_tour = true;
+        let mut signale_vivant = false;
         loop {
             let publiee = reg.fin_publiee().load(Ordering::Acquire);
             if publiee == debut {
@@ -3560,9 +3620,26 @@ impl WalWriter {
                 return Ok(false);
             }
             // ── LE PRÉDÉCESSEUR N'A PAS ENCORE PUBLIÉ ───────────────────────
-            if depart.elapsed() >= delai {
-                // Tête ABANDONNÉE : personne ne publiera jamais cette plage (son
-                // détenteur est mort), donc attendre plus longtemps serait attendre
+            // ── LE DÉLAI NE SUFFIT PLUS, LA PREUVE DE VIE TRANCHE (V1-T2B) ──
+            // Au-delà du délai, on ne ré-ancre QUE si le détenteur de la plage est
+            // PROUVÉ mort (pid absent, zombie, ou démarrage différent : voir
+            // `wal_presence`). Un détenteur vivant mais préempté plus longtemps que
+            // le délai est ATTENDU : le ré-ancrer aurait posé sa frame après celle du
+            // successeur, avec un LSN inférieur à sa position (défaut mesuré).
+            // ── LA DÉCISION « MORT » SE PREND SUR UNE FIN ENCORE VALIDE ─────
+            // `publiee` date du DÉBUT du tour : une préemption peut l'avoir rendue
+            // périmée. Le détenteur qu'elle désignait a pu publier entre-temps, et
+            // un nouveau détenteur, vivant, attend alors la nouvelle fin. Décider
+            // « mort » sur la valeur périmée ré-ancrerait la chaîne sous un écrivain
+            // VIVANT (défaut mesuré : `t2c`, 4 échecs sur 10 après la preuve de vie,
+            // dont le déclencheur était exactement cette lecture périmée). On ne
+            // décide donc que si la fin n'a pas bougé depuis la vérification.
+            if depart.elapsed() >= delai
+                && !reg.predecesseur_vivant(publiee)
+                && reg.fin_publiee().load(Ordering::Acquire) == publiee
+            {
+                // Tête ABANDONNÉE : son détenteur est PROUVÉ mort, personne ne
+                // publiera jamais cette plage, donc attendre serait attendre
                 // indéfiniment. On mesure, et on ré-ancre.
                 self.tetes_reancrees.fetch_add(1, Ordering::Relaxed);
                 let taille = guard.taille_reelle()?;
@@ -3586,6 +3663,14 @@ impl WalWriter {
             if premier_tour {
                 self.attentes_de_publication.fetch_add(1, Ordering::Relaxed);
                 premier_tour = false;
+            }
+            // Délai dépassé ET détenteur vivant (le bloc précédent n'a pas rendu la
+            // main) : c'est exactement le cas que la preuve de vie protège. Compté
+            // une fois par attente.
+            if depart.elapsed() >= delai && !signale_vivant {
+                signale_vivant = true;
+                self.attentes_sur_pair_vivant
+                    .fetch_add(1, Ordering::Relaxed);
             }
             if depart.elapsed() < ATTENTE_ACTIVE {
                 // Attente ACTIVE : le prédécesseur publie en ~1 µs (le temps d'un
@@ -4076,10 +4161,9 @@ impl Drop for WalWriter {
             self.veille.reveil.notify_all();
         }
         let mut guard = self.inner.lock();
-        if guard.groupe.vide() {
-            return;
-        }
-        if let Err(e) = self.poser_le_tampon(&mut guard, PoseTampon::Durable) {
+        if !guard.groupe.vide()
+            && let Err(e) = self.poser_le_tampon(&mut guard, PoseTampon::Durable)
+        {
             // Un Drop ne peut pas rendre d'erreur : on la TRACE, au lieu de la
             // perdre. Le tampon, lui, n'est plus réessayable (l'écrivain
             // disparaît) — c'est la seule perte que ce chemin assume.
@@ -4087,6 +4171,15 @@ impl Drop for WalWriter {
                 error = %e,
                 "group commit : la pose du tampon au Drop a échoué — les records en attente                  sont perdus (ils avaient été acceptés par `append`)"
             );
+        }
+        // ── L'EMPLACEMENT NE SERT PLUS : ON LE REND (V1-T2B) ─────────────────
+        // Rendu APRÈS la pose du tampon, qui peut encore réserver et publier sous
+        // notre identité. Un pair ne doit plus voir en nous un détenteur possible.
+        if let Some(reg) = self.registre_existant() {
+            let i = self.emplacement_registre.load(Ordering::Acquire);
+            if i != usize::MAX {
+                reg.liberer_emplacement(i);
+            }
         }
     }
 }
@@ -4391,6 +4484,25 @@ impl<'a> Iterator for WalIter<'a> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// ── L'ENGAGEMENT D'UNE RÉSERVATION (V1-T2B) ────────────────────────────────
+///
+/// Tant qu'il vit, l'emplacement de cet écrivain annonce la plage qu'il a réservée
+/// dans la chaîne. Il s'efface à TOUTE sortie sans publication (erreur d'écriture,
+/// ré-ancrage, panique) : une annonce qui survivrait à son détenteur ferait attendre
+/// indéfiniment les pairs d'un écrivain qui ne publiera plus. Publier fait sortir
+/// la plage de l'annonce (la fin publiée dépasse son début), et l'effacement qui
+/// suit la publication est sans effet sur la chaîne.
+struct EngagementReservation<'a> {
+    reg: &'a RegistreAppend,
+    emplacement: usize,
+}
+
+impl Drop for EngagementReservation<'_> {
+    fn drop(&mut self) {
+        self.reg.effacer_reservation(self.emplacement);
+    }
+}
 
 #[cfg(test)]
 mod tests {

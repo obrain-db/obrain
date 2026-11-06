@@ -84,6 +84,7 @@ pub mod vec_column_registry;
 pub mod view;
 pub mod wal;
 pub mod wal_io;
+mod wal_presence;
 pub mod wal_registre;
 pub mod warden;
 pub mod writer;
