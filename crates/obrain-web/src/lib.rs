@@ -57,7 +57,9 @@ fn parametres(json: &str) -> Result<HashMap<String, Value>, JsValue> {
     let serde_json::Value::Object(o) = v else {
         return Err(err("les paramètres doivent être un objet JSON"));
     };
-    Ok(o.iter().map(|(k, v)| (k.clone(), json_vers_valeur(v))).collect())
+    Ok(o.iter()
+        .map(|(k, v)| (k.clone(), json_vers_valeur(v)))
+        .collect())
 }
 
 fn resultat_json(colonnes: &[String], rows: &[Vec<Value>]) -> String {
@@ -79,12 +81,16 @@ impl Base {
     /// Crée une base vide, en mémoire.
     #[wasm_bindgen(constructor)]
     pub fn nouvelle() -> Base {
-        Base { db: ObrainDB::new_in_memory() }
+        Base {
+            db: ObrainDB::new_in_memory(),
+        }
     }
 
     /// Une session (transactions explicites).
     pub fn session(&self) -> Session {
-        Session { s: self.db.session() }
+        Session {
+            s: self.db.session(),
+        }
     }
 
     /// Exécute une requête GQL. Rend `{"colonnes":[...],"lignes":[[...]]}` en JSON.
@@ -189,7 +195,10 @@ impl Base {
         requete: &str,
         k: usize,
     ) -> Result<String, JsValue> {
-        let r = self.db.text_search(etiquette, propriete, requete, k).map_err(err)?;
+        let r = self
+            .db
+            .text_search(etiquette, propriete, requete, k)
+            .map_err(err)?;
         Ok(serde_json::Value::Array(
             r.iter()
                 .map(|(n, s)| serde_json::json!({ "noeud": n.0 as f64, "score": s }))
@@ -208,7 +217,14 @@ impl Base {
         metrique: &str,
     ) -> Result<(), JsValue> {
         self.db
-            .create_vector_index(etiquette, propriete, Some(dimensions), Some(metrique), None, None)
+            .create_vector_index(
+                etiquette,
+                propriete,
+                Some(dimensions),
+                Some(metrique),
+                None,
+                None,
+            )
             .map_err(err)
     }
 
@@ -244,10 +260,22 @@ impl Base {
         vecteur: Vec<f32>,
         k: usize,
     ) -> Result<String, JsValue> {
-        let v = if vecteur.is_empty() { None } else { Some(vecteur.as_slice()) };
+        let v = if vecteur.is_empty() {
+            None
+        } else {
+            Some(vecteur.as_slice())
+        };
         let r = self
             .db
-            .hybrid_search(etiquette, propriete_texte, propriete_vecteur, texte, v, k, None)
+            .hybrid_search(
+                etiquette,
+                propriete_texte,
+                propriete_vecteur,
+                texte,
+                v,
+                k,
+                None,
+            )
             .map_err(err)?;
         Ok(serde_json::Value::Array(
             r.iter()
@@ -274,7 +302,10 @@ pub struct Session {
 #[wasm_bindgen]
 impl Session {
     pub fn executer(&self, requete: &str) -> Result<String, JsValue> {
-        self.s.execute(requete).map(|r| resultat_json(&r.columns, &r.rows)).map_err(err)
+        self.s
+            .execute(requete)
+            .map(|r| resultat_json(&r.columns, &r.rows))
+            .map_err(err)
     }
 
     pub fn commencer(&mut self) -> Result<(), JsValue> {
