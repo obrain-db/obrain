@@ -217,6 +217,38 @@ impl EspaceMiroir {
     fn tmp(nom: &str) -> String {
         format!("{nom}.tmp")
     }
+
+    /// Présence de `nom`, en PROPAGEANT les erreurs d'E/S. `existe` (booléen, lossy)
+    /// ne doit pas servir à décider d'ouvrir un store vide : une lecture en panne
+    /// ou un emplacement corrompu ne sont pas « rien n'a jamais été publié ».
+    fn presence(&self, nom: &str) -> io::Result<Presence> {
+        let mut present = false;
+        for suffixe in ["A", "B"] {
+            if let Some(octets) = self.miroir.lire(&format!("{nom}.{suffixe}"))? {
+                present = true;
+                if decoder_emplacement(&octets).is_some() {
+                    return Ok(Presence::Valide);
+                }
+            }
+        }
+        Ok(if present {
+            Presence::Corrompue
+        } else {
+            Presence::Absente
+        })
+    }
+}
+
+/// État d'un nom dans un [`EspaceMiroir`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    /// Aucun emplacement : rien n'a jamais été publié.
+    Absente,
+    /// Au moins un emplacement lisible (génération et CRC justes).
+    Valide,
+    /// Des emplacements existent, aucun n'est lisible : image perdue, ne jamais la
+    /// remplacer par un store vide en silence.
+    Corrompue,
 }
 
 impl EspaceFichiers for EspaceMiroir {
@@ -652,11 +684,19 @@ impl crate::store::SubstrateStore {
     ) -> crate::error::SubstrateResult<Self> {
         let espace = EspaceMiroir::nouveau(miroir);
         let chemin = Path::new(IMAGE_STORE);
-        if espace.existe(chemin) {
-            let image = espace.lire_tout(chemin)?;
-            Self::depuis_instantane(&image)
-        } else {
-            Self::open_memory()
+        match espace.presence(IMAGE_STORE)? {
+            Presence::Absente => Self::open_memory(),
+            Presence::Valide => {
+                let image = espace.lire_tout(chemin)?;
+                Self::depuis_instantane(&image)
+            }
+            Presence::Corrompue => Err(crate::error::SubstrateError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "image `{IMAGE_STORE}` présente sans emplacement lisible (CRC faux ou tronqué) : \
+                     refus d'ouvrir un store vide à la place"
+                ),
+            ))),
         }
     }
 
@@ -716,6 +756,72 @@ mod tests_store {
         let m: Arc<dyn Miroir> = Arc::new(MiroirMemoire::default());
         let s = crate::store::SubstrateStore::ouvrir_sur_miroir(m).expect("ouverture");
         assert_eq!(s.node_count(), 0);
+    }
+
+    /// Miroir dont la LECTURE échoue : une panne d'E/S à l'ouverture.
+    #[derive(Debug)]
+    struct MiroirEnPanne;
+
+    impl Miroir for MiroirEnPanne {
+        fn lire(&self, _: &str) -> io::Result<Option<Vec<u8>>> {
+            Err(io::Error::other("panne de lecture simulée"))
+        }
+        fn ecrire(&self, _: &str, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+        fn ajouter(&self, _: &str, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+        fn tronquer(&self, _: &str, _: u64) -> io::Result<()> {
+            Ok(())
+        }
+        fn supprimer(&self, _: &str) -> io::Result<()> {
+            Ok(())
+        }
+        fn synchroniser(&self) -> io::Result<()> {
+            Ok(())
+        }
+        fn volume(&self) -> io::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn deux_emplacements_corrompus_refusent_le_store_vide() {
+        // Des emplacements existent mais aucun n'est lisible : ouvrir un store vide
+        // effacerait silencieusement la base à la publication suivante.
+        let m = Arc::new(MiroirMemoire::default());
+        m.ecrire(&format!("{IMAGE_STORE}.A"), b"ordure").unwrap();
+        m.ecrire(&format!("{IMAGE_STORE}.B"), b"autre ordure")
+            .unwrap();
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(m);
+        assert!(
+            r.is_err(),
+            "une image corrompue ne doit pas donner un store vide"
+        );
+    }
+
+    #[test]
+    fn une_panne_de_lecture_a_l_ouverture_n_est_pas_un_store_vide() {
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(Arc::new(MiroirEnPanne));
+        assert!(
+            r.is_err(),
+            "une erreur d'E/S ne doit pas être prise pour « absent »"
+        );
+    }
+
+    #[test]
+    fn un_etat_publie_puis_corrompu_refuse_l_ouverture() {
+        let m = Arc::new(MiroirMemoire::default());
+        {
+            let s = crate::store::SubstrateStore::open_memory().unwrap();
+            terrain(&s, 3);
+            s.persister_sur_miroir(m.clone()).expect("publication");
+        }
+        // Les deux emplacements sont écrasés : la publication existe, elle est perdue.
+        m.ecrire(&format!("{IMAGE_STORE}.A"), b"x").unwrap();
+        m.ecrire(&format!("{IMAGE_STORE}.B"), b"y").unwrap();
+        assert!(crate::store::SubstrateStore::ouvrir_sur_miroir(m).is_err());
     }
 
     #[test]
