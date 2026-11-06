@@ -144,6 +144,31 @@ impl SlotsTouches {
 /// and applies each to the corresponding zone mmap. It stops at the first
 /// decode error.
 pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResult<ReplayStats> {
+    replay_from_avec(substrate, from_offset, true)
+}
+
+/// Rejeu d'un LECTEUR RO : identique à [`replay_from`], sauf qu'il n'écarte PAS
+/// les transactions en vol.
+///
+/// Écarter une transaction non scellée, c'est poser des tombstones dans les
+/// zones. C'est la bonne reprise quand son propriétaire est mort ; ce ne l'est
+/// pas quand un écrivain partagé VIVANT l'a ouverte et n'a pas encore posé son
+/// `TxCommit` : le lecteur (verrou `LOCK_SH`, comme l'écrivain) tuerait alors un
+/// nœud légitime, et personne ne le republierait. Un lecteur ne sait pas si
+/// l'écrivain est vivant ; il ne doit donc rien écrire dans les zones qu'il
+/// partage.
+pub fn replay_from_lecteur(
+    substrate: &SubstrateFile,
+    from_offset: u64,
+) -> SubstrateResult<ReplayStats> {
+    replay_from_avec(substrate, from_offset, false)
+}
+
+fn replay_from_avec(
+    substrate: &SubstrateFile,
+    from_offset: u64,
+    ecarter_en_vol: bool,
+) -> SubstrateResult<ReplayStats> {
     let wal_path = substrate.wal_path();
     let reader = WalReader::open(&wal_path)?;
     let mut stats = ReplayStats {
@@ -309,7 +334,7 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
     // arêtes — physiquement dans les zones — revenaient publiés à la
     // réouverture : 50/50 mesurés sur `durabilite_commit_kill9`.
     en_vol.retain(|_, (n, e)| !n.is_empty() || !e.is_empty());
-    if !en_vol.is_empty() {
+    if ecarter_en_vol && !en_vol.is_empty() {
         for (tx, (noeuds, aretes)) in &en_vol {
             stats.transactions_en_vol += 1;
             for edge_id in aretes {
