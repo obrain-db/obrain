@@ -953,6 +953,16 @@ impl super::Planner {
         for key in &sort.keys {
             if let LogicalExpression::Property { variable, property } = &key.expression {
                 let col_name = format!("{}_{}", variable, property);
+                // La propriété peut DÉJÀ être une colonne de sortie, nommée `d.g` : c'est
+                // le cas de `RETURN d.g, count(d) ORDER BY d.g`. Après l'agrégation, la
+                // variable `d` n'existe plus, donc re-projeter échouait (« Variable 'd'
+                // not found »). On réutilise alors la colonne existante.
+                let deja_projetee = format!("{}.{}", variable, property);
+                if !variable_columns.contains_key(&col_name)
+                    && let Some(&idx) = variable_columns.get(&deja_projetee)
+                {
+                    variable_columns.insert(col_name.clone(), idx);
+                }
                 if !variable_columns.contains_key(&col_name) {
                     property_projections.push((
                         variable.clone(),
