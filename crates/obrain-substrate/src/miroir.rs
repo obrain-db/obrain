@@ -835,6 +835,21 @@ mod tests_store {
         m.couper();
         let s = crate::store::SubstrateStore::ouvrir_sur_miroir(m.clone()).expect("réouverture");
         assert_eq!(s.node_count(), 5, "les 5 nœuds publiés sont revenus");
+        let nom = obrain_common::types::PropertyKey::new("nom");
+        let avec_nom = (0..=8)
+            .filter(|&i| {
+                obrain_core::graph::GraphStore::get_node_property(
+                    &s,
+                    obrain_common::types::NodeId(i),
+                    &nom,
+                )
+                .is_some()
+            })
+            .count();
+        assert_eq!(
+            avec_nom, 5,
+            "les propriétés publiées reviennent avec les nœuds"
+        );
     }
 
     #[test]
