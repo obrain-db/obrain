@@ -135,6 +135,51 @@ jobs:
           NODE_OPTIONS: --stack-trace-limit=100
         run: cargo test --target wasm32-unknown-unknown -p obrain --no-default-features --features browser,cypher,sparql,gremlin,graphql,sql-pgq,vector-index,text-index,hybrid-search,cdc,algos,cognitive,cognitive-full,metrics,temporal --test navigateur_features
 
+  # Paquet navigateur obrain-web : construit le wasm (profil complet), génère les
+  # liaisons JS (nodejs + web) et exécute la batterie partagée de 35 tests sous node.
+  # Chrome n'est lancé que si un binaire est présent sur le runner (CHROME_BIN) ;
+  # sinon l'étape l'écrit en clair au lieu de passer en silence.
+  # Le paquet est publié comme artefact de CI, pas comme version.
+  web-paquet:
+    name: Paquet navigateur (obrain-web)
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: wasm-bindgen-cli (version verrouillée)
+        run: |
+          VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          cargo install --locked --version "$VERSION" wasm-bindgen-cli
+      - name: Compilation (profil complet)
+        run: cargo build --target wasm32-unknown-unknown -p obrain-web --release --features complet
+      - name: Liaisons JS
+        run: |
+          W=target/wasm32-unknown-unknown/release/obrain_web.wasm
+          wasm-bindgen --target nodejs --out-dir pkg "$W"
+          wasm-bindgen --target web --out-dir pkg-web "$W"
+      - name: Batterie node
+        run: node crates/obrain-web/tests/js/node.mjs pkg
+      - name: Batterie Chrome (si disponible)
+        run: |
+          if [ -n "${CHROME_BIN:-}" ] && [ -x "$CHROME_BIN" ]; then
+            CHROME="$CHROME_BIN" bash crates/obrain-web/tests/js/lancer.sh .
+          else
+            echo "::warning::Chrome absent du runner : batterie navigateur NON exécutée (node seul)"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: obrain-web-pkg
+          path: |
+            pkg
+            pkg-web
+          retention-days: 14
+
   msrv:
     name: MSRV (rust-version du manifeste)
     runs-on: [self-hosted, linux, x64, obrain-ci]

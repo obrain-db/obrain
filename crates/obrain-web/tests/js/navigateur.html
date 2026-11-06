@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>obrain-web : batterie</title>
+<body><pre id="sortie">en attente</pre>
+<script type="module">
+import init, { Base } from "../../../../pkg-web/obrain_web.js";
+import { executer } from "./suite.mjs";
+const out = document.getElementById("sortie");
+try {
+  await init();
+  const journal = [];
+  const rapport = await executer(Base, (l) => journal.push(l));
+  out.textContent = "RAPPORT " + JSON.stringify({ ...rapport, journal });
+} catch (e) { out.textContent = "ERREUR " + (e && e.stack || e); }
+</script>
