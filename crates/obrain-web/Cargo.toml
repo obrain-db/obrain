@@ -2,6 +2,7 @@
 name = "obrain-web"
 version = "0.0.0"
 edition = "2024"
+license.workspace = true
 publish = false
 description = "Liaison wasm-bindgen d'obrain pour le navigateur (paquet d'essai, non publié)"
 
