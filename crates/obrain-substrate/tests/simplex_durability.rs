@@ -446,3 +446,45 @@ fn drop_sans_flush_rejeu_reconstruit() {
         "l'upsert d'une clé existante doit retrouver l'id {id0}"
     );
 }
+
+/// Crash entre l'écriture du record du répertoire et la fin de la pose des
+/// postings d'incidence (`Writer::upsert_simplex` : WAL, puis
+/// `apply_set_raw`, puis une `SimplexIncidenceZone::append` par membre).
+/// Après kill -9 à cet endroit, le WAL et le record sont durables, les
+/// postings ne le sont pas. Simulé ici en effaçant l'incidence après un commit
+/// complet : le rejeu voit le record déjà présent (`Unchanged`) et, sans
+/// reposter, laisse chaque membre sans son simplexe.
+#[test]
+fn rejeu_repose_l_incidence_d_un_record_deja_present() {
+    let td = tempfile::tempdir().unwrap();
+    let sub_path = td.path().join("kb");
+    {
+        let sub = SubstrateFile::create(&sub_path).unwrap();
+        let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+        let (id, created) = w
+            .upsert_simplex(simplex_kind::TRIANGLE, 0, 0, &[10, 20, 30], &[])
+            .unwrap();
+        assert!(created);
+        assert_eq!(id, 0);
+        w.commit().unwrap();
+    }
+    // État post-crash : record et WAL présents, postings absents.
+    for f in ["substrate.simplex_incidence", SIMPLEX_POSTINGS_FILENAME] {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(sub_path.join(f))
+            .unwrap();
+    }
+
+    let sub = SubstrateFile::open(&sub_path).unwrap();
+    let stats = replay_from(&sub, 0).unwrap();
+    assert_eq!(stats.decode_errors, 0);
+
+    let inc = sub.open_zone(Zone::SimplexIncidence).unwrap();
+    let posts = sub.open_named_zone(SIMPLEX_POSTINGS_FILENAME).unwrap();
+    for m in [10u32, 20, 30] {
+        let p = SimplexIncidenceZone::postings(&inc, &posts, m).unwrap();
+        assert_eq!(p, vec![0], "nœud {m} : incidence absente après rejeu");
+    }
+}

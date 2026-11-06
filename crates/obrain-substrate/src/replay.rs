@@ -1029,9 +1029,6 @@ fn apply(
                 members,
                 props,
             )?;
-            // L'incidence n'est postee QUE sur materialisation : un rejeu
-            // repasse (Unchanged) ou une reecriture sous la meme identite
-            // (Rewritten) ne dupliquent jamais les postings.
             if applied == crate::simplex_zone::AppliedSimplex::Materialized {
                 for &m in members {
                     crate::simplex_incidence::SimplexIncidenceZone::append(
@@ -1040,6 +1037,28 @@ fn apply(
                         m,
                         *simplex_id,
                     )?;
+                }
+            } else {
+                // Record DÉJÀ présent (Unchanged/Rewritten) : c'est l'état d'un
+                // kill -9 pendant la pose des postings (le record du répertoire
+                // est écrit avant eux). Un record vivant doit avoir son
+                // incidence complète : on comble les manques, sans doublon.
+                // Un tombstone n'est pas reposté (ses postings peuvent avoir été
+                // réclamés par compact_simplexes).
+                let vivant = crate::simplex_zone::SimplexDirZone::read(
+                    simplex.dir.as_ref().unwrap(),
+                    *simplex_id,
+                )?
+                .is_some_and(|rec| !rec.is_tombstoned());
+                if vivant {
+                    for &m in members {
+                        crate::simplex_incidence::SimplexIncidenceZone::ensure_posted(
+                            simplex.incidence.as_mut().unwrap(),
+                            simplex.postings.as_mut().unwrap(),
+                            m,
+                            *simplex_id,
+                        )?;
+                    }
                 }
             }
             Ok(Applied::Yes)
