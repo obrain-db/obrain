@@ -295,6 +295,12 @@ fn role_ecrivain() {
         Ok("verrou") => CoordinationAppend::VerrouExact,
         _ => CoordinationAppend::OAppend,
     });
+    // RÉGIME TESTÉ : aucun écrivain n'est préempté plus de 5 s. Un écrivain vivant
+    // mais préempté plus de `DELAI_TETE_BLOQUEE` (25 ms par défaut) est pris pour
+    // mort et ré-ancré : LSN inexact, décrit dans docs/LIMITES-v0.0.1.md. Cette
+    // limite est mesurée par `t2b`/`t2c` (mesures.yml), pas par ce test. Sans ce
+    // réglage, le test échoue sur tout runner chargé, pour une raison documentée.
+    w.forcer_delai_tete_bloquee(std::time::Duration::from_secs(5));
     annoncer("PRET");
     attendre_fichier(&go, "le top départ");
     for seq in 0..m {
