@@ -191,6 +191,58 @@ jobs:
             pkg-web
           retention-days: 14
 
+  # Persistance navigateur (OPFS) : exécutée dans un Chrome HEADLESS épinglé, en
+  # worker dédié (le seul contexte où `createSyncAccessHandle` existe). NON
+  # BLOQUANT pour l'instant (décision du RFC) : un échec est signalé, il ne bloque
+  # pas la fusion, le temps de stabiliser le navigateur sur les runners.
+  persistance-navigateur:
+    name: Persistance navigateur (OPFS, Chrome headless)
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    continue-on-error: true
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      CHROME_VERSION: "157.0.8103.38"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Chrome et chromedriver (version épinglée)
+        # Les runners n'ont pas `unzip` : l'installateur lit les archives avec `yauzl`
+        # (lecteur ZIP en JavaScript pur). Installé DANS un répertoire temporaire du job,
+        # sans rien modifier sur l'hôte.
+        run: |
+          set -e
+          OUTIL="$RUNNER_TEMP/navigateur"
+          mkdir -p "$OUTIL" && cd "$OUTIL"
+          # $RUNNER_TEMP persiste entre les jobs : une installation interrompue laisse un
+          # dossier de Chrome incomplet, et `browsers install` refuse alors de réinstaller
+          # (vu sur n2, 06/11). On repart d'un cache vide à chaque exécution.
+          rm -rf "$OUTIL/cache"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund @puppeteer/browsers@3.2.6 yauzl@3.4.0
+          ./node_modules/.bin/browsers install chrome@$CHROME_VERSION --path "$OUTIL/cache"
+          ./node_modules/.bin/browsers install chromedriver@$CHROME_VERSION --path "$OUTIL/cache"
+          CD=$(find "$OUTIL/cache" -name chromedriver -type f | head -1)
+          echo "$(dirname "$CD")" >> "$GITHUB_PATH"
+          # chromedriver ne trouve Chrome qu'à son emplacement par défaut : on indique
+          # le binaire installé dans le cache du job, et les options headless.
+          CHROME=$(find "$OUTIL/cache" -type f -name chrome | head -1)
+          printf '{"goog:chromeOptions": {"binary": "%s", "args": ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]}}\n' "$CHROME" > "$OUTIL/webdriver.json"
+          echo "WASM_BINDGEN_TEST_WEBDRIVER_JSON=$OUTIL/webdriver.json" >> "$GITHUB_ENV"
+      - name: wasm-bindgen-cli (version verrouillée)
+        run: |
+          VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          cargo install --locked --version "$VERSION" wasm-bindgen-cli
+      - name: Test OPFS dans Chrome headless
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test --target wasm32-unknown-unknown -p obrain-substrate --test navigateur_opfs
+
   msrv:
     name: MSRV (rust-version du manifeste)
     runs-on: [self-hosted, linux, x64, obrain-ci]

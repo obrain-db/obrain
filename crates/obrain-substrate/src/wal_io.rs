@@ -114,8 +114,6 @@ use crate::wal::{WAL_HEADER_SIZE, WalRecord, crc_over};
 use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -944,7 +942,7 @@ pub fn lire_ancre_durable(wal: &Path) -> Option<AncreDurable> {
 /// [`lire_ancre_durable`] sur un chemin de side-car explicite.
 #[must_use]
 pub fn lire_ancre_sur(chemin: &Path) -> Option<AncreDurable> {
-    let octets = std::fs::read(chemin).ok()?;
+    let octets = crate::es::espace().lire_tout(chemin).ok()?;
     if octets.len() != TAILLE_ANCRE || octets[0..4] != MAGIE_ANCRE {
         return None;
     }
@@ -979,19 +977,13 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
     let crc = crc_ancre(&buf[0..24]);
     buf[24..28].copy_from_slice(&crc.to_le_bytes());
 
+    let es = crate::es::espace();
     let tmp = chemin_tmp_ancre(chemin);
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
-        if let Err(e) = f.write_all(&buf).and_then(|()| f.sync_all()) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.into());
-        }
+    if let Err(e) = es.ecrire_synchronise(&tmp, &buf) {
+        let _ = es.supprimer(&tmp);
+        return Err(e.into());
     }
-    if let Err(e) = std::fs::rename(&tmp, chemin) {
+    if let Err(e) = es.renommer(&tmp, chemin) {
         // ── LA COURSE À LA PUBLICATION N'A PAS DE PERDANT ────────────────────
         // MESURÉ : six processus ouvrant un WAL VIDE en même temps publient tous
         // la même ancre. Avec un nom de temporaire PARTAGÉ (`<ancre>.tmp`), le
@@ -999,21 +991,16 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
         // emporté par le premier — et l'OUVERTURE ÉCHOUAIT. Le nom est donc
         // unique par publication ; et si le rename échoue quand même, on relit :
         // une ancre LISIBLE vaut publication faite.
-        let _ = std::fs::remove_file(&tmp);
+        let _ = es.supprimer(&tmp);
         if lire_ancre_sur(chemin).is_none() {
             return Err(e.into());
         }
     }
     // Fsync du RÉPERTOIRE : sans lui, le rename peut survivre au crash sans que
     // l'entrée qu'il crée soit elle-même durable.
-    #[cfg(unix)]
-    {
-        let dir = chemin.parent().filter(|p| !p.as_os_str().is_empty());
-        let dir = dir.unwrap_or_else(|| Path::new("."));
-        if let Ok(d) = File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
+    let dir = chemin.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = dir.unwrap_or_else(|| Path::new("."));
+    let _ = es.synchroniser_repertoire(dir);
     Ok(())
 }
 
@@ -1108,7 +1095,7 @@ pub fn chemin_fence_checkpoint(wal: &Path) -> PathBuf {
 #[derive(Debug)]
 pub struct ElectionCheckpoint {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fichier: Option<File>,
+    fichier: Option<Box<dyn crate::es::FichierVerrou>>,
     chemin: PathBuf,
 }
 
@@ -1136,22 +1123,15 @@ impl ElectionCheckpoint {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use fs2::FileExt as _;
-            let fichier = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&chemin)
-                .ok()?;
-            match fichier.try_lock_exclusive() {
-                Ok(()) => Some(Self {
-                    fichier: Some(fichier),
+            let verrou = crate::es::espace().ouvrir_verrou(&chemin).ok()?;
+            match verrou.essayer_exclusif() {
+                Ok(true) => Some(Self {
+                    fichier: Some(verrou),
                     chemin,
                 }),
-                // `WouldBlock` = un pair checkpointe. Toute autre erreur (système
+                // `Ok(false)` = un pair checkpointe. Toute autre erreur (système
                 // de fichiers sans `flock`) est traitée pareil : on renonce.
-                Err(_) => None,
+                Ok(false) | Err(_) => None,
             }
         }
     }
@@ -1185,9 +1165,7 @@ impl Drop for ElectionCheckpoint {
         if let Some(f) = self.fichier.take() {
             // Rend le verrou explicitement : le noyau le rendrait à la fermeture
             // du descripteur, mais un `Drop` qui dit ce qu'il fait se relit.
-            // (`File::unlock` de la bibliothèque standard fait le même
-            // `flock(LOCK_UN)` que celui qui a été pris par `fs2`.)
-            let _ = f.unlock();
+            let _ = f.liberer();
         }
     }
 }
@@ -1517,7 +1495,7 @@ struct WriterInner {
 /// mémoire ne se rouvre jamais.
 #[derive(Debug)]
 enum WalMedium {
-    File(File),
+    File(Box<dyn crate::es::FichierJournal>),
     /// Les octets du WAL. L'écriture se fait toujours à la FIN (le fichier natif
     /// est ouvert en ajout, sans `seek`), donc `extend_from_slice` suffit.
     Memoire(Vec<u8>),
@@ -1536,7 +1514,7 @@ impl WriterInner {
     /// avec le compte exact, pour pouvoir ANNULER.
     fn ecrire_atomique(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match &mut self.medium {
-            WalMedium::File(f) => f.write(buf),
+            WalMedium::File(f) => f.ajouter(buf),
             WalMedium::Memoire(v) => {
                 v.extend_from_slice(buf);
                 Ok(buf.len())
@@ -1547,7 +1525,7 @@ impl WriterInner {
     /// Taille RÉELLE du média (le noyau est l'arbitre, pas notre compteur).
     fn taille_reelle(&mut self) -> std::io::Result<u64> {
         match &mut self.medium {
-            WalMedium::File(f) => Ok(f.metadata()?.len()),
+            WalMedium::File(f) => f.taille(),
             WalMedium::Memoire(v) => Ok(v.len() as u64),
         }
     }
@@ -1575,12 +1553,12 @@ impl WriterInner {
         match &mut self.medium {
             // `set_len` (ftruncate) ignore `O_APPEND` : on peut raccourcir.
             WalMedium::File(f) => {
-                let courante = f.metadata()?.len();
+                let courante = f.taille()?;
                 if position >= courante {
                     // JAMAIS d'allongement : c'est ce chemin qui fabriquait le trou.
                     return Ok(());
                 }
-                f.set_len(position)
+                f.tronquer(position)
             }
             WalMedium::Memoire(v) => {
                 if position as usize >= v.len() {
@@ -1609,8 +1587,7 @@ impl WriterInner {
     /// `tout = true` → `sync_all` (métadonnées + données), sinon `sync_data`.
     fn synchroniser(&mut self, tout: bool) -> std::io::Result<()> {
         match &mut self.medium {
-            WalMedium::File(f) if tout => f.sync_all(),
-            WalMedium::File(f) => f.sync_data(),
+            WalMedium::File(f) => f.synchroniser(tout),
             // En mémoire, il n'y a rien à pousser : les octets SONT l'état.
             WalMedium::Memoire(_) => Ok(()),
         }
@@ -1662,8 +1639,7 @@ impl WriterInner {
             WalMedium::File(f) => {
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::FileExt as _;
-                    f.read_exact_at(&mut zone, debut)?;
+                    f.lire_a(debut, &mut zone)?;
                 }
                 #[cfg(not(unix))]
                 {
@@ -1684,9 +1660,9 @@ impl WriterInner {
     fn tronquer(&mut self) -> std::io::Result<()> {
         match &mut self.medium {
             WalMedium::File(f) => {
-                f.set_len(0)?;
-                f.seek(SeekFrom::Start(0))?;
-                f.sync_all()
+                f.tronquer(0)?;
+                f.rembobiner()?;
+                f.synchroniser(true)
             }
             WalMedium::Memoire(v) => {
                 v.clear();
@@ -1797,12 +1773,8 @@ impl WalWriter {
         // `mw_interprocess_probe::p1`). Avec `O_APPEND`, le noyau place chaque
         // écriture à la fin du fichier, atomiquement : aucune écriture ne peut en
         // recouvrir une autre.
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&path)?;
-        let taille = file.metadata()?.len();
+        let file = crate::es::espace().ouvrir_journal(&path)?;
+        let taille = file.taille()?;
         let (ancre, reconciliation, publier) =
             reconcilier_ouverture(&ancre_path, &path, taille, ancre_repli);
         // Le side-car n'est écrit QUE s'il n'est pas déjà juste : une ouverture
@@ -4147,11 +4119,12 @@ impl WalReader {
     /// file does not exist.
     pub fn open(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let path = path.as_ref();
-        let mut bytes = Vec::new();
-        if path.exists() {
-            let mut f = File::open(path)?;
-            f.read_to_end(&mut bytes)?;
-        }
+        let es = crate::es::espace();
+        let bytes = if es.existe(path) {
+            es.lire_tout(path)?
+        } else {
+            Vec::new()
+        };
         Ok(Self { bytes })
     }
 

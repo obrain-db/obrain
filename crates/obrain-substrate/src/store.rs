@@ -273,7 +273,7 @@ fn chemin_fence_dictionnaire(dict: &Path) -> PathBuf {
 struct VerrouDictionnaire {
     /// Porte le `flock`. Jamais lu — c'est sa DURÉE DE VIE qui compte.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fichier: Option<std::fs::File>,
+    fichier: Option<Box<dyn crate::es::FichierVerrou>>,
 }
 
 impl VerrouDictionnaire {
@@ -289,19 +289,12 @@ impl VerrouDictionnaire {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use fs2::FileExt as _;
             let chemin = chemin_fence_dictionnaire(dict);
-            let fichier = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&chemin)
-                .ok()?;
-            // `lock_exclusive` BLOQUANT : voir le pavé sur la structure.
-            fichier.lock_exclusive().ok()?;
+            let verrou = crate::es::espace().ouvrir_verrou(&chemin).ok()?;
+            // `exclusif` BLOQUANT : voir le pavé sur la structure.
+            verrou.exclusif().ok()?;
             Some(Self {
-                fichier: Some(fichier),
+                fichier: Some(verrou),
             })
         }
     }
@@ -314,7 +307,7 @@ impl Drop for VerrouDictionnaire {
             // Rend le verrou explicitement : le noyau le rendrait à la fermeture du
             // descripteur, mais un `Drop` qui dit ce qu'il fait se relit. (`File::unlock`
             // fait le même `flock(LOCK_UN)` que le `lock_exclusive` pris ci-dessus.)
-            let _ = fs2::FileExt::unlock(&f);
+            let _ = f.liberer();
             #[cfg(target_arch = "wasm32")]
             let _ = f;
         }

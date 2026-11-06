@@ -1934,6 +1934,9 @@ dependencies = [
  "thiserror",
  "tracing",
  "twox-hash",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "web-time",
 ]
 

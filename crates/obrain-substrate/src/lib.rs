@@ -39,6 +39,7 @@ pub mod engram;
 pub mod engram_bitset;
 pub mod engram_recall;
 pub mod error;
+pub mod es;
 pub mod file;
 pub mod geometric;
 pub mod heap;
@@ -47,6 +48,9 @@ pub mod instantane;
 pub mod jump;
 pub mod meta;
 pub mod migration;
+pub mod miroir;
+#[cfg(target_arch = "wasm32")]
+pub mod opfs;
 pub mod page;
 pub mod popcount;
 pub mod principal;
