@@ -41,7 +41,7 @@ thiserror = "2.0"
 anyhow = "1.0"
 
 # Concurrency & synchronization
-parking_lot = { version = "0.12", features = ["arc_lock"] }
+parking_lot = { version = "0.13", features = ["arc_lock"] }
 crossbeam = "0.8"
 rayon = "1"
 
