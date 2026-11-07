@@ -1333,6 +1333,17 @@ pub struct WalWriter {
     /// inter-processus, lui, tranche par RELECTURE (`lsn == ancre + position`),
     /// frame par frame. Ce compteur dit s'il y a lieu de regarder.
     courses_suspectees: AtomicU64,
+    /// ── PUBLICATIONS DEVANCÉES (MP-1, 2026-11-07) ──────────────────────────
+    /// Appends dont la fin a été PUBLIÉE PAR UN AUTRE avant nous : à notre
+    /// publication, `fin_publiee >= position + len`. Notre frame est pourtant à
+    /// sa position — on n'écrit qu'après avoir attendu `fin_publiee == position`,
+    /// et ce qui a été publié au-delà l'a été par un pair qui a écrit AU-DESSUS
+    /// de nos octets. Ce n'est donc PAS un LSN suspect (voir `courses_suspectees`),
+    /// c'est une publication faite à notre place : l'ouverture d'un registre par
+    /// un pair (avant le recalage conditionnel de `RegistreAppend::ouvrir`), ou
+    /// un ré-ancrage sur mesure. Compté à part pour que `courses_suspectees` reste
+    /// ce que `t2b` exige : nul quand tous les LSN sont exacts.
+    publications_devancees: AtomicU64,
     /// Nombre d'enregistrements APPENDÉS par cet écrivain depuis son ouverture.
     ///
     /// ── POURQUOI CE COMPTEUR EXISTE (2026-10-06) ─────────────────────────────
@@ -1833,6 +1844,7 @@ impl WalWriter {
             sync_mode,
             recalages: AtomicU64::new(0),
             courses_suspectees: AtomicU64::new(0),
+            publications_devancees: AtomicU64::new(0),
             records_ecrits: AtomicU64::new(0),
             troncatures_subies: AtomicU64::new(0),
             reprises_apres_troncature: AtomicU64::new(0),
@@ -1892,6 +1904,7 @@ impl WalWriter {
             sync_mode,
             recalages: AtomicU64::new(0),
             courses_suspectees: AtomicU64::new(0),
+            publications_devancees: AtomicU64::new(0),
             records_ecrits: AtomicU64::new(0),
             troncatures_subies: AtomicU64::new(0),
             reprises_apres_troncature: AtomicU64::new(0),
@@ -1976,6 +1989,15 @@ impl WalWriter {
     /// et c'est le test inter-processus qui mesure le taux vrai par relecture.
     pub fn courses_suspectees(&self) -> u64 {
         self.courses_suspectees.load(Ordering::Acquire)
+    }
+
+    /// Nombre d'appends dont la fin a été publiée PAR UN PAIR avant notre propre
+    /// publication (`fin_publiee >= position + len` à ce moment-là). Sur ces frames
+    /// la position est EXACTE (on n'écrit qu'après `fin_publiee == position`) :
+    /// ce compteur sépare « quelqu'un a publié à notre place » de « quelqu'un s'est
+    /// glissé avant nous » (`courses_suspectees`). Voir le champ (MP-1, 2026-11-07).
+    pub fn publications_devancees(&self) -> u64 {
+        self.publications_devancees.load(Ordering::Acquire)
     }
 
     /// ── COMBIEN DE FRAMES ONT ÉTÉ EMPORTÉES PAR UNE TRONCATURE CONCURRENTE ──
@@ -3104,17 +3126,36 @@ impl WalWriter {
             // rend l'observation obligatoire — la mesure, elle, dira où nous sommes.
             let mut chaine_intacte = true;
             if let Some(reg) = reg {
-                if reg.fin_publiee().load(Ordering::Acquire) == position {
+                let publiee = reg.fin_publiee().load(Ordering::Acquire);
+                if publiee == position {
                     reg.publier_la_fin(fin);
                 } else {
                     chaine_intacte = false;
-                    self.courses_suspectees.fetch_add(1, Ordering::Relaxed);
+                    // ── DEVANCÉ OU DOUBLÉ ? (MP-1, 2026-11-07) ────────────────
+                    // `publiee >= fin` : quelqu'un a publié AU-DELÀ de toute notre
+                    // plage. Nos octets sont bien à `position` (on n'a écrit qu'après
+                    // `fin_publiee == position`, et un pair ne publie qu'après avoir
+                    // écrit AU-DESSUS de nous) : ce n'est pas un LSN suspect, c'est
+                    // une publication faite à notre place — comptée à part, parce que
+                    // `courses_suspectees` doit rester nul quand tous les LSN sont
+                    // exacts (défaut mesuré : `t2b`, 2 échecs sur 40 sur ce seul
+                    // compteur). La mesure qui suit reste due : notre vue de la chaîne
+                    // (`reg_fin_connue`) ne vaut plus rien.
+                    //
+                    // `position < publiee < fin` : une fin a été publiée DANS notre
+                    // plage, donc hors chaîne — le cas d'avant, inchangé.
+                    if publiee >= fin {
+                        self.publications_devancees.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        self.courses_suspectees.fetch_add(1, Ordering::Relaxed);
+                    }
                     guard.surveiller_les_courses = true;
                     self.oublier_la_tete();
                     tracing::warn!(
                         position,
                         fin,
-                        fin_publiee = reg.fin_publiee().load(Ordering::Acquire),
+                        fin_publiee = publiee,
+                        devancee = publiee >= fin,
                         "WAL partagé : la chaîne n'attendait plus notre plage à la fin de notre \
                          write (un pair a publié avant nous, ou une récupération a ré-ancré la \
                          chaîne) — la position est vérifiée par mesure"

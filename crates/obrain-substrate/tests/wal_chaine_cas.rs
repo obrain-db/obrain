@@ -272,9 +272,17 @@ impl Enfant {
 
 /// Ouvre le registre d'un WAL en LECTURE (le parent observe la chaîne sans
 /// écrire) : `None` si le fichier n'existe pas encore.
+///
+/// ── SANS RECALER (MP-1, 2026-11-07) ─────────────────────────────────────────
+/// `RegistreAppend::ouvrir` est un acte d'ÉCRIVAIN : il peut recaler les têtes sur
+/// la taille mesurée. Un observateur qui l'appelait PUBLIAIT donc, à la place
+/// d'un enfant entre son `write` et sa publication, la plage de celui-ci — et
+/// l'enfant comptait ensuite une course sur un LSN exact. L'observateur ouvre
+/// désormais SANS toucher à la chaîne ; la taille rendue reste la mesure prise
+/// AVANT l'ouverture.
 fn registre_du_wal(wal: &Path) -> Option<(RegistreAppend, u64)> {
     let taille = std::fs::metadata(wal).map(|m| m.len()).unwrap_or(0);
-    RegistreAppend::ouvrir(wal, taille, ANCRE_INITIALE)
+    RegistreAppend::ouvrir_sans_recaler(wal)
         .ok()
         .map(|r| (r, taille))
 }
@@ -890,6 +898,108 @@ fn t6_sans_registre_le_chemin_d_avant_est_repris() {
     eprintln!(
         "T6 : sans registre, l'append reprend le chemin d'avant (mesure sous verrou) \
          et rend la MÊME erreur — le registre est une optimisation, pas une condition"
+    );
+}
+
+// ===========================================================================
+// T8 — LA CRÉATION (OU L'OUVERTURE) DU REGISTRE NE DEVANCE PAS UNE PUBLICATION
+// ===========================================================================
+//
+// ── LE DÉFAUT (MP-1, 2026-11-07) ───────────────────────────────────────────
+// `t2b` (`mw_interprocess_append`) échouait 2 fois sur 40 sous charge sur son
+// assertion `courses == 0`, avec TOUS les LSN exacts : le compteur montait donc
+// dans un cas où la position était juste. Cause déduite par lecture, et que ce
+// test rend DÉTERMINISTE :
+//
+// 1. A réserve [0, l_A), écrit (le fichier fait l_A), et est préempté AVANT de
+//    publier `fin_publiee = l_A` (ici : le seam `forcer_pause_apres_ecriture`) ;
+// 2. B ouvre le registre (`RegistreAppend::ouvrir`, ce que fait aussi son
+//    premier append, paresseusement) avec la taille MESURÉE `l_A` : l'ouverture
+//    faisait `fin_publiee.fetch_max(l_A)` INCONDITIONNELLEMENT, et PUBLIAIT donc
+//    la plage de A à sa place ;
+// 3. B réserve [l_A, …), voit `fin_publiee == l_A`, écrit (à la bonne place :
+//    les octets de A existent bien), publie ;
+// 4. A reprend : `fin_publiee != 0` → « un pair a publié avant nous » →
+//    `courses_suspectees += 1`, alors que sa frame est EXACTEMENT à 0.
+//
+// Le LSN est juste dans les deux cas : c'est le COMPTEUR qui mentait, et avec lui
+// `surveiller_les_courses` (un `statx` par append jusqu'à la fin de vie de A).
+//
+// ── CE QUE LE TEST EXIGE ──────────────────────────────────────────────────
+// Deux écrivains du MÊME processus suffisent ici (contrairement aux autres tests
+// de ce fichier) : la fenêtre est ouverte par le seam, pas par l'ordonnanceur,
+// et l'ouverture du registre est faite explicitement par le test — comme la fait
+// `registre_du_wal`, qui prétend « lire » le registre.
+#[test]
+fn la_creation_du_registre_ne_devance_pas_une_publication() {
+    use std::sync::Arc;
+
+    let td = tempfile::tempdir().unwrap();
+    let wal = td.path().join("substrate.wal");
+    std::fs::write(&wal, b"").unwrap();
+
+    // A : une pause de 300 ms entre son `write` et sa publication.
+    let a = Arc::new(WalWriter::open(&wal, SyncMode::Never, ANCRE_INITIALE).expect("open A"));
+    a.coordination(CoordinationAppend::OAppend);
+    a.forcer_pause_apres_ecriture(Duration::from_millis(300));
+    let a_fil = Arc::clone(&a);
+    let fil_a = std::thread::spawn(move || a_fil.append(record(1, 0)).expect("append A"));
+
+    // Après ~50 ms, A a écrit sa frame mais ne l'a pas publiée.
+    std::thread::sleep(Duration::from_millis(50));
+    let taille = std::fs::metadata(&wal).unwrap().len();
+    assert!(
+        taille > 0,
+        "A doit avoir écrit avant sa pause (seam mal placé ?)"
+    );
+    let (reg, _) = registre_du_wal(&wal).expect("A a créé le registre à son premier append");
+    assert_eq!(
+        reg.fin_publiee().load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "A n'a pas encore publié : ouvrir le registre ne doit PAS publier à sa place"
+    );
+    assert_eq!(
+        reg.tete_reservee()
+            .load(std::sync::atomic::Ordering::Acquire),
+        taille,
+        "la réservation de A est intacte"
+    );
+
+    // B : un second écrivain, dont le premier append ouvre (paresseusement) le
+    // registre avec la taille mesurée, puis réserve au-dessus de A et attend sa
+    // publication (A est VIVANT : la preuve de vie doit faire attendre, pas
+    // ré-ancrer).
+    let b = WalWriter::open(&wal, SyncMode::Never, ANCRE_INITIALE).expect("open B");
+    b.coordination(CoordinationAppend::OAppend);
+    let off_b = b.append(record(2, 0)).expect("append B");
+    let off_a = fil_a.join().expect("fil A");
+
+    assert_eq!(off_a.0, 0, "A est à 0");
+    assert_eq!(off_b.0, taille, "B est juste après A");
+    assert_eq!(
+        a.courses_suspectees(),
+        0,
+        "A : sa frame est à sa position, le compteur de LSN suspects doit rester NUL"
+    );
+    assert_eq!(b.courses_suspectees(), 0, "B : idem");
+    assert_eq!(
+        a.tetes_reancrees() + b.tetes_reancrees(),
+        0,
+        "aucune chaîne ré-ancrée"
+    );
+
+    let frames = verifier_contiguite_et_lsn_exact(&wal, ANCRE_INITIALE);
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].identite, (1, 0));
+    assert_eq!(frames[1].identite, (2, 0));
+    eprintln!(
+        "T8 : A (pause {} ms après write) puis B (ouverture du registre + append) : \
+         courses A={} B={}, devancées A={} B={}, LSN exacts et contigus",
+        300,
+        a.courses_suspectees(),
+        b.courses_suspectees(),
+        a.publications_devancees(),
+        b.publications_devancees(),
     );
 }
 

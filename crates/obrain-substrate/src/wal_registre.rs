@@ -195,25 +195,114 @@ pub struct RegistreAppend {
 impl RegistreAppend {
     /// Ouvre (ou crée) le registre d'append du WAL `wal`.
     ///
-    /// `fin_initiale` est la taille RÉELLE du WAL au moment de l'ouverture : elle
-    /// est publiée en `fetch_max` (jamais en arrière), pour qu'un registre neuf
-    /// posé à côté d'un WAL déjà écrit ne fasse pas repartir la chaîne de zéro —
-    /// ce qui ferait écrire la prochaine frame à un offset déjà occupé.
+    /// `fin_initiale` est la taille RÉELLE du WAL au moment de l'ouverture. Elle
+    /// sert à la CRÉATION (un registre neuf posé à côté d'un WAL déjà écrit ne
+    /// doit pas faire repartir la chaîne de zéro — ce qui ferait écrire la
+    /// prochaine frame à un offset déjà occupé), et au RECALAGE d'un registre
+    /// existant mais EN RETARD sur le fichier (voir ci-dessous) — et à rien
+    /// d'autre.
     ///
-    /// ── POURQUOI `fetch_max` ET PAS `store` ─────────────────────────────────
+    /// ── POURQUOI LE RECALAGE EST CONDITIONNEL (défaut MESURÉ, MP-1, 2026-11-07)
     /// L'ouverture d'un processus n'est PAS un point de synchronisation : un pair
-    /// peut être en train d'appender. Un `store` de notre taille (mesurée il y a
-    /// quelques microsecondes) reculerait la tête SOUS sa réservation, et le pair
-    /// suivant réserverait la même plage. `fetch_max` ne recule jamais : au pire
-    /// la tête est en avance sur le fichier, et c'est le chemin froid du premier
-    /// append qui la ré-ancrera (avec la mesure, et avec l'attente bornée qui
-    /// distingue un pair lent d'un pair mort).
+    /// peut être en train d'appender. La version précédente faisait
+    /// `fetch_max(fin_initiale)` sur les DEUX têtes, inconditionnellement, au
+    /// motif que « `fetch_max` ne recule jamais ». C'est vrai, mais il AVANCE : un
+    /// pair A qui a RÉSERVÉ [0, l_A), ÉCRIT (le fichier fait l_A) et n'a pas
+    /// encore PUBLIÉ voyait sa plage publiée à sa place par l'ouverture d'un pair
+    /// B (qui avait mesuré l_A). B écrivait alors au-dessus — à la bonne place,
+    /// les octets de A existent — puis A, à sa publication, trouvait
+    /// `fin_publiee != position` et comptait une course (`courses_suspectees`)
+    /// sur une frame dont le LSN était EXACT. Mesuré : `mw_interprocess_append::t2b`,
+    /// 2 échecs sur 40 sous charge, tous les LSN exacts ; reproduit à volonté
+    /// par `wal_chaine_cas::la_creation_du_registre_ne_devance_pas_une_publication`.
+    ///
+    /// Le recalage n'a donc lieu que si la chaîne est QUIESCENTE
+    /// (`tete_reservee == fin_publiee` : aucune plage en vol) ET EN RETARD sur la
+    /// taille mesurée. Une plage en vol se reconnaît à `tete > fin`, et c'est le
+    /// premier append qui l'attendra (ou la récupérera par le chemin froid si son
+    /// détenteur est mort : preuve de vie, puis ré-ancrage sur une MESURE prise
+    /// dans ce chemin-là). Le recalage lui-même est un `compare_exchange` depuis
+    /// les valeurs LUES : si la chaîne a bougé entre la lecture et le CAS, il est
+    /// REFUSÉ au lieu d'écraser la réservation d'un pair.
+    ///
+    /// ── CE QUE LE RECALAGE CONDITIONNEL CONSERVE ─────────────────────────────
+    /// Le cas qui justifiait l'ancien `fetch_max` — un registre existant mais
+    /// PÉRIMÉ (le WAL a été écrit HORS chaîne : mono-écrivain prouvé, fichier
+    /// restauré) — est exactement « quiescent et en retard », et il est toujours
+    /// recalé. Le cas « écrivain mort entre son `write` et sa publication » n'est
+    /// plus recalé ICI (sa plage est en vol : `tete > fin`) : il l'est par le
+    /// chemin froid du premier append, qui PROUVE la mort avant de ré-ancrer — au
+    /// prix du délai de récupération, une fois par crash, jamais par record.
+    ///
+    /// La mesure `fin_initiale` doit être prise AVANT la lecture des têtes (c'est
+    /// le cas : l'appelant mesure puis appelle) : la chaîne n'avance jamais à
+    /// reculons, donc une fin publiée lue APRÈS la mesure et pourtant inférieure
+    /// à elle ne peut venir que d'octets écrits hors chaîne.
     pub fn ouvrir(wal: &Path, fin_initiale: u64, ancre: u64) -> SubstrateResult<Self> {
+        let reg = Self::mapper(wal, true)?;
+        if reg.mot(OFF_MAGIE).load(Ordering::Acquire) != MAGIE
+            || reg.mot(OFF_VERSION).load(Ordering::Acquire) != VERSION_LAYOUT
+        {
+            reg.creer(fin_initiale, ancre);
+        }
+        // ── RECALAGE : SEULEMENT SI LA CHAÎNE EST QUIESCENTE ET EN RETARD ───
+        // (voir la doc de la fonction). L'ordre des deux CAS suit l'invariant
+        // `tete_reservee >= fin_publiee` lu par les pairs : la fin d'abord, puis
+        // la tête. Dans la fenêtre entre les deux, un pair qui réserverait depuis
+        // l'ancienne tête verrait `fin_publiee > debut` et passerait par la
+        // récupération (une mesure, pas un délai) ; son CAS aurait de toute façon
+        // fait échouer le nôtre sur la tête.
+        let tete = reg.mot(OFF_TETE_RESERVEE).load(Ordering::Acquire);
+        let fin = reg.mot(OFF_FIN_PUBLIEE).load(Ordering::Acquire);
+        if tete == fin && fin < fin_initiale {
+            let _ = reg.mot(OFF_FIN_PUBLIEE).compare_exchange(
+                fin,
+                fin_initiale,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            let _ = reg.mot(OFF_TETE_RESERVEE).compare_exchange(
+                tete,
+                fin_initiale,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        Ok(reg)
+    }
+
+    /// Ouvre un registre EXISTANT sans rien y recaler (2026-11-07, MP-1).
+    ///
+    /// Pour les OBSERVATEURS (tests, diagnostic) qui veulent lire la chaîne sans
+    /// y prendre part : [`RegistreAppend::ouvrir`] peut recaler les têtes, ce qui
+    /// est un acte d'ÉCRIVAIN. Rend une erreur si le fichier n'existe pas ou
+    /// n'est pas un registre valide (magie ou layout inconnus) : un observateur
+    /// n'a rien à créer.
+    pub fn ouvrir_sans_recaler(wal: &Path) -> SubstrateResult<Self> {
+        let reg = Self::mapper(wal, false)?;
+        if reg.mot(OFF_MAGIE).load(Ordering::Acquire) != MAGIE
+            || reg.mot(OFF_VERSION).load(Ordering::Acquire) != VERSION_LAYOUT
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{} : pas un registre d'append valide (magie ou layout inconnus)",
+                    reg.chemin.display()
+                ),
+            )
+            .into());
+        }
+        Ok(reg)
+    }
+
+    /// Le mapping commun aux deux ouvertures : ouvre le fichier (le crée si
+    /// `creer_si_absent`), le dimensionne à TAILLE, et le mappe en partagé.
+    fn mapper(wal: &Path, creer_si_absent: bool) -> SubstrateResult<Self> {
         let chemin = chemin_registre(wal);
         let fichier = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(creer_si_absent)
             .truncate(false)
             .open(&chemin)?;
         if fichier.metadata()?.len() != TAILLE as u64 {
@@ -228,25 +317,11 @@ impl RegistreAppend {
         // condition du partage entre processus (un remap la changerait sous les
         // pieds d'un pair).
         let map = unsafe { MmapOptions::new().len(TAILLE).map_mut(&fichier)? };
-        let reg = Self {
+        Ok(Self {
             chemin,
             map,
             _fichier: fichier,
-        };
-        if reg.mot(OFF_MAGIE).load(Ordering::Acquire) != MAGIE
-            || reg.mot(OFF_VERSION).load(Ordering::Acquire) != VERSION_LAYOUT
-        {
-            reg.creer(fin_initiale, ancre);
-        }
-        // Les deux têtes ne reculent jamais à l'ouverture (voir la doc de la
-        // fonction). Si un pair est en vol, sa réservation est donc PRÉSERVÉE :
-        // `tete_reservee > fin_publiee` est exactement ce qui dit « la chaîne
-        // n'est pas quiescente », et le premier append attendra sa publication.
-        reg.mot(OFF_TETE_RESERVEE)
-            .fetch_max(fin_initiale, Ordering::AcqRel);
-        reg.mot(OFF_FIN_PUBLIEE)
-            .fetch_max(fin_initiale, Ordering::AcqRel);
-        Ok(reg)
+        })
     }
 
     fn mot(&self, offset: usize) -> &AtomicU64 {
