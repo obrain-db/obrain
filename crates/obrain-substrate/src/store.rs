@@ -199,7 +199,46 @@ const DICT_FILENAME: &str = "substrate.dict";
 pub const DICT_FILENAME_PUB: &str = DICT_FILENAME;
 /// Sidecar des aretes inter-bases (V1) — snapshot bincode ecrit au flush,
 /// fusionne avec la fenetre WAL a l'ouverture (`merge_wal_external_edges`).
-const EXTEDGES_FILENAME: &str = "substrate.extedges";
+pub(crate) const EXTEDGES_FILENAME: &str = "substrate.extedges";
+
+/// (MP-5) Premier sidecar du régime hérité qui porte une donnée, s'il existe.
+///
+/// Un sidecar absent, de longueur nulle, ou dont le snapshot décode SANS nœud
+/// ni arête ne porte rien : c'est ce qu'un `flush` écrit pour une base neuve,
+/// donc une telle base reste ouvrable en écriture partagée. Un sidecar
+/// illisible ou indécodable est compté comme portant des données : on ne peut
+/// pas prouver qu'il est vide, et le refus est le côté sûr.
+pub(crate) fn premier_sidecar_herite_non_vide(dir: &Path) -> Option<&'static str> {
+    type EntreesExtedges = (u32, Vec<(u64, u64, String, Option<String>, String, String)>);
+    for nom in [PROPS_FILENAME, EDGE_PROPS_FILENAME, EXTEDGES_FILENAME] {
+        let octets = match std::fs::read(dir.join(nom)) {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Some(nom),
+        };
+        if octets.is_empty() {
+            continue;
+        }
+        let porte = if nom == EXTEDGES_FILENAME {
+            match bincode::serde::decode_from_slice::<EntreesExtedges, _>(
+                &octets,
+                bincode::config::standard(),
+            ) {
+                Ok(((_version, entrees), _)) => !entrees.is_empty(),
+                Err(_) => true,
+            }
+        } else {
+            match PropertiesSnapshotV1::from_bytes(&octets) {
+                Ok(snap) => !snap.nodes.is_empty() || !snap.edges.is_empty(),
+                Err(_) => true,
+            }
+        };
+        if porte {
+            return Some(nom);
+        }
+    }
+    None
+}
 
 /// Suffixe du FENCE de publication du dictionnaire : `substrate.dict` →
 /// `substrate.dict.lock`.
@@ -5400,9 +5439,14 @@ impl SubstrateStore {
 
     /// Open an existing substrate in SHARED-WRITE mode : verrou PARTAGÉ
     /// (coexiste avec les lecteurs RO du service), écriture permise via le
-    /// WAL. Réservé au GraphWriter unique (langextract) — un seul écrivain.
-    /// Les lecteurs rejouent le WAL à leur ouverture (les écritures sont
-    /// visibles). Le moteur ne refuse pas les mutations (read_only=false).
+    /// WAL. Plusieurs processus peuvent écrire : les appends WAL sont
+    /// sérialisés par `O_APPEND` et le registre partagé. Les lecteurs
+    /// rejouent le WAL à leur ouverture (les écritures sont visibles). Le
+    /// moteur ne refuse pas les mutations (read_only=false).
+    ///
+    /// Refuse une base à sidecar hérité non vide ([`SubstrateError::BaseHeritee`]) :
+    /// la garantie v0.0.1 ne couvre que nœuds et arêtes sans propriété. Voir
+    /// [`SubstrateFile::open_shared_write`].
     pub fn open_shared_write(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_shared_write(path.as_ref())?;
         Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
