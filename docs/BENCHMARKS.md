@@ -100,3 +100,12 @@ Criterion a vu « +61 % » sur `wal_append_unitaire` et « −25 % » sur
 `wal_append_batch/256`. Rien n'avait changé : c'est la charge qu'il mesurait.
 `mesures.yml` lance les mêmes benchs sur un runner partagé, sans seuil, pour
 l'ordre de grandeur seulement.
+
+Garde-fous du script (appliqués, pas seulement recommandés) : en `save` et
+`compare`, la charge est lue avant et après la passe. À charge ≥ 2 au départ,
+le script refuse (sortie 3) sans rien compiler ni mesurer ; à charge ≥ 2 à
+l'arrivée, il imprime « ATTENTION charge » et sort 4, pour qu'un relevé
+provisoire ne ressemble jamais à une ligne de base propre. La compilation de
+chaque bench a lieu avant la boucle mesurée, et une commande cargo en échec
+arrête le script (sortie 1). Les lignes de base vivent dans `target/criterion` :
+elles ne se comparent qu'entre arbres partageant le même `CARGO_TARGET_DIR`.
