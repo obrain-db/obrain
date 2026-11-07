@@ -6722,7 +6722,14 @@ impl SubstrateStore {
             // si la fenêtre rejouée contient une permutation de slots, les
             // chaînes PropsZone v2 peuvent porter des stamps d'avant-remap
             // (auto-guérison juste avant Ok(store)).
-            match crate::replay::replay_from(&guard, debut) {
+            // `partage == false` : ouverture LECTEUR. Il ne doit rien écrire
+            // dans les zones d'un écrivain vivant (cf. `replay_from_lecteur`).
+            let rejeu = if partage {
+                crate::replay::replay_from(&guard, debut)
+            } else {
+                crate::replay::replay_from_lecteur(&guard, debut)
+            };
+            match rejeu {
                 Ok(st) => {
                     remaps_au_rejeu = st.remaps_appliques;
                     if st.applied > 0 || st.decode_errors > 0 {
@@ -37085,5 +37092,110 @@ mod indice_libre_tests {
         let bit = r.interner_a("Class", None).unwrap();
         assert_eq!(bit, 3);
         assert_eq!(r.name_for(2).as_deref(), Some("Blob"));
+    }
+}
+
+/// Cohérence d'un lecteur RO face à un checkpoint de l'écrivain partagé.
+///
+/// Un lecteur RO prend `LOCK_SH`, comme l'écrivain partagé : le checkpoint ne
+/// l'exclut pas. On pilote donc À LA MAIN l'entrelacement le plus défavorable
+/// (écritures APRÈS le `flush()` du checkpoint, donc absentes du dict, puis
+/// troncature du WAL qui efface leur trace) et on exige qu'un lecteur ouvert
+/// après ne voie jamais moins qu'un lecteur ouvert avant.
+#[cfg(test)]
+mod coherence_lecteur_ro {
+    use super::*;
+    use obrain_core::graph::traits::GraphStore;
+
+    #[test]
+    fn lecteur_ouvert_apres_troncature_ne_voit_pas_moins_qu_un_lecteur_ouvert_avant() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("ro-coherence");
+        drop(SubstrateStore::create(&path).unwrap());
+
+        let w = SubstrateStore::open_shared_write(&path).unwrap();
+        for _ in 0..5 {
+            w.create_node(&["A"]);
+        }
+        // Première moitié du checkpoint : le dict décrit 5 nœuds.
+        w.flush().unwrap();
+        // Écritures entre le flush et la troncature (autre thread, autre
+        // processus) : dans les zones et le WAL, PAS dans le dict.
+        for _ in 0..3 {
+            w.create_node(&["B"]);
+        }
+
+        let avant = {
+            let r = SubstrateStore::open_read_only(&path).unwrap();
+            r.node_count()
+        };
+        assert_eq!(avant, 8, "le lecteur d'avant voit les 8 nœuds");
+
+        // Seconde moitié du checkpoint, SANS nouveau flush : meta, troncature.
+        let wal = w.writer.wal();
+        let election = crate::wal_io::ElectionCheckpoint::tenter(wal.path()).unwrap();
+        let substrate = w.writer.substrate();
+        w.writer
+            .sous_exclusion_ecritures(|| {
+                let mut g = substrate.lock();
+                crate::checkpoint::checkpoint_sous_election(&mut g, &wal, &election)
+            })
+            .unwrap();
+        drop(election);
+
+        let apres = {
+            let r = SubstrateStore::open_read_only(&path).unwrap();
+            r.node_count()
+        };
+        assert_eq!(w.node_count(), 8, "l'écrivain voit toujours 8 nœuds");
+        assert!(
+            apres >= avant,
+            "un lecteur ouvert après la troncature voit {apres} nœuds, \
+             moins que les {avant} d'un lecteur ouvert avant"
+        );
+    }
+
+    /// Un lecteur RO ne doit RIEN écrire dans les zones d'un écrivain vivant.
+    ///
+    /// Défaut mesuré : `replay_from` écarte en fin de rejeu toute transaction
+    /// « en vol » (entités déclarées sans `TxCommit`) en posant des tombstones
+    /// DANS LES ZONES PARTAGÉES. Pour un écrivain mort, c'est la bonne reprise ;
+    /// pour un lecteur qui ouvre pendant la transaction OUVERTE d'un écrivain
+    /// vivant, c'est tuer un nœud légitime (compte lu en baisse, 23 nœuds
+    /// relus pour 24 écritures acceptées).
+    #[test]
+    fn lecteur_ro_n_ecarte_pas_la_transaction_en_vol_d_un_ecrivain_vivant() {
+        use crate::wal::{WalPayload, WalRecord};
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("ro-en-vol");
+        drop(SubstrateStore::create(&path).unwrap());
+
+        let w = SubstrateStore::open_shared_write(&path).unwrap();
+        let a = w.create_node(&["A"]);
+        // L'écrivain a déclaré `a` en attente dans une transaction, pas encore
+        // scellée par son `TxCommit`.
+        w.writer
+            .wal()
+            .append(WalRecord {
+                lsn: 0,
+                timestamp: 0,
+                flags: 0,
+                payload: WalPayload::TxNoeudEnAttente {
+                    tx: 7,
+                    node_id: a.0 as u32,
+                },
+            })
+            .unwrap();
+        assert!(w.get_node(a).is_some(), "précondition : `a` est vivant");
+
+        drop(SubstrateStore::open_read_only(&path).unwrap());
+
+        assert!(
+            w.get_node(a).is_some(),
+            "l'ouverture d'un lecteur RO a tombstoné le nœud d'une transaction \
+             encore ouverte chez l'écrivain vivant"
+        );
+        let r = SubstrateStore::open_read_only(&path).unwrap();
+        assert_eq!(r.node_count(), 1, "le lecteur suivant voit toujours `a`");
     }
 }

@@ -388,8 +388,15 @@ fn lecture_ro_pendant_writer_thread_sans_blocage() {
     drop(writer);
 
     // Réouverture propre : count exact, cohérent.
+    // Les lecteurs RO n'ont rien écrit dans les zones : aucune écriture acceptée
+    // n'a disparu (avant le correctif de `replay_from_lecteur`, un lecteur
+    // tombstonait la transaction ouverte du writer : 23 relus pour 24 écrits).
     let db2 = creer_store(&chemin);
-    assert!(db2.node_count() > 0, "store cohérent après writer + RO");
+    assert_eq!(
+        db2.node_count(),
+        ecrits.load(std::sync::atomic::Ordering::SeqCst) as usize,
+        "écrivain arrêté, la réouverture voit exactement toutes les écritures acceptées"
+    );
 }
 
 // ============================================================================
