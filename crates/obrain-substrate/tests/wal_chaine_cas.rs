@@ -934,6 +934,14 @@ fn t6_sans_registre_le_chemin_d_avant_est_repris() {
 fn la_creation_du_registre_ne_devance_pas_une_publication() {
     use std::sync::Arc;
 
+    // Pause de A entre son `write` et sa publication. Elle doit durer bien plus
+    // longtemps que le temps de lancement du thread de A sur un runner chargé :
+    // les vérifications ci-dessous sont déclenchées par la CONDITION (A a écrit),
+    // jamais par un délai fixe. Un `sleep(50 ms)` supposait que A avait déjà écrit,
+    // ce qui est faux sur le runner partagé (échec CI du 07/11/2026 : « A doit avoir
+    // écrit avant sa pause », taille == 0).
+    const PAUSE_A_MS: u64 = 3_000;
+
     let td = tempfile::tempdir().unwrap();
     let wal = td.path().join("substrate.wal");
     std::fs::write(&wal, b"").unwrap();
@@ -941,13 +949,24 @@ fn la_creation_du_registre_ne_devance_pas_une_publication() {
     // A : une pause de 300 ms entre son `write` et sa publication.
     let a = Arc::new(WalWriter::open(&wal, SyncMode::Never, ANCRE_INITIALE).expect("open A"));
     a.coordination(CoordinationAppend::OAppend);
-    a.forcer_pause_apres_ecriture(Duration::from_millis(300));
+    a.forcer_pause_apres_ecriture(Duration::from_millis(PAUSE_A_MS));
     let a_fil = Arc::clone(&a);
     let fil_a = std::thread::spawn(move || a_fil.append(record(1, 0)).expect("append A"));
 
-    // Après ~50 ms, A a écrit sa frame mais ne l'a pas publiée.
-    std::thread::sleep(Duration::from_millis(50));
-    let taille = std::fs::metadata(&wal).unwrap().len();
+    // On attend que A ait ÉCRIT sa frame (taille > 0) ; il ne l'a pas encore publiée
+    // (sa pause court). Attente bornée à 10 s, sondée toutes les 2 ms.
+    let debut_attente = std::time::Instant::now();
+    let taille = loop {
+        let t = std::fs::metadata(&wal).unwrap().len();
+        if t > 0 {
+            break t;
+        }
+        assert!(
+            debut_attente.elapsed() < Duration::from_secs(10),
+            "A n'a pas écrit sa frame en 10 s"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
     assert!(
         taille > 0,
         "A doit avoir écrit avant sa pause (seam mal placé ?)"
@@ -995,7 +1014,7 @@ fn la_creation_du_registre_ne_devance_pas_une_publication() {
     eprintln!(
         "T8 : A (pause {} ms après write) puis B (ouverture du registre + append) : \
          courses A={} B={}, devancées A={} B={}, LSN exacts et contigus",
-        300,
+        PAUSE_A_MS,
         a.courses_suspectees(),
         b.courses_suspectees(),
         a.publications_devancees(),
