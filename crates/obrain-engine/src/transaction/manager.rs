@@ -147,6 +147,25 @@ impl TransactionManager {
         }
     }
 
+    /// MP-8 — Ancre la numérotation des transactions sur une identité de
+    /// PROCESSUS, pour qu'un identifiant de transaction soit unique ENTRE
+    /// processus écrivant le même WAL.
+    ///
+    /// Défaut mesuré : chaque processus démarre à 2. Or le scellement d'une
+    /// transaction (`TxCommit { tx }`) est clé de l'identifiant seul : le
+    /// `TxCommit` d'un survivant, portant le même numéro que la transaction
+    /// ouverte d'un processus mort, la scellait à tort au rejeu, et ses
+    /// entités étaient publiées.
+    ///
+    /// Les `id` sont `identite << 32 | 2`, avec `identite` non nulle sur 31 bits :
+    /// `SYSTEM` (1) et `INVALID` (`u64::MAX`) restent hors d'atteinte. À appeler
+    /// sur un gestionnaire NEUF, avant toute transaction (`open_shared_write`).
+    pub fn numeroter_pour_processus(&self, identite: u64) {
+        let identite = (identite & 0x7FFF_FFFF).max(1);
+        self.next_transaction_id
+            .store((identite << 32) | 2, Ordering::Relaxed);
+    }
+
     /// Begins a new transaction with the default isolation level (Snapshot Isolation).
     pub fn begin(&self) -> TransactionId {
         self.begin_with_isolation(IsolationLevel::default())

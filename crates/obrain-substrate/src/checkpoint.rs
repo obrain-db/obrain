@@ -68,6 +68,14 @@ pub enum CheckpointOutcome {
         /// « quoi » l'est).
         fence: PathBuf,
     },
+    /// MP-8 : nous étions élus, mais une transaction en vol non scellée borne la
+    /// troncature. RIEN n'a été tronqué ; la borne est celle de la déclaration.
+    Differe {
+        /// Offset de la déclaration la plus ancienne non scellée.
+        offset: u64,
+        /// Transaction à laquelle elle appartient.
+        tx: u64,
+    },
 }
 
 impl CheckpointOutcome {
@@ -76,7 +84,7 @@ impl CheckpointOutcome {
     pub fn stats(&self) -> Option<CheckpointStats> {
         match self {
             Self::Fait(s) => Some(*s),
-            Self::NonElu { .. } => None,
+            Self::NonElu { .. } | Self::Differe { .. } => None,
         }
     }
 
@@ -105,8 +113,13 @@ pub fn checkpoint_elu(
             fence: crate::wal_io::chemin_fence_checkpoint(&fence),
         });
     };
-    let stats = checkpoint_sous_fence(substrate, wal, &election)?;
-    Ok(CheckpointOutcome::Fait(stats))
+    match checkpoint_sous_fence(substrate, wal, &election) {
+        Ok(stats) => Ok(CheckpointOutcome::Fait(stats)),
+        Err(SubstrateError::CheckpointDiffere { offset, tx }) => {
+            Ok(CheckpointOutcome::Differe { offset, tx })
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Le corps du checkpoint, pour un appelant qui a DÉJÀ gagné l'élection.
@@ -146,6 +159,9 @@ pub fn checkpoint(
         CheckpointOutcome::NonElu { fence } => Err(SubstrateError::CheckpointNonElu {
             fence: fence.display().to_string(),
         }),
+        CheckpointOutcome::Differe { offset, tx } => {
+            Err(SubstrateError::CheckpointDiffere { offset, tx })
+        }
     }
 }
 
@@ -189,6 +205,29 @@ fn checkpoint_sous_fence(
             zf.msync()?;
             zf.fsync()?;
         }
+    }
+
+    // ---- (1 bis) MP-8 : la troncature ne passe pas une transaction en vol. --
+    // Le balayage porte sur TOUT le WAL (un checkpoint est rare : un par seuil).
+    // Le tampon du group commit est posé d'abord, pour que le balayage voie ce
+    // qui sera tronqué. Refus AVANT toute écriture de méta : rien n'a changé
+    // hors les msync de zones, qui sont sans effet sur le contenu logique.
+    if wal.octets_en_tampon() > 0 {
+        wal.fsync()?;
+    }
+    if let Some(decl) = crate::wal_io::plus_ancienne_declaration_en_vol(wal.path(), 0)? {
+        tracing::warn!(
+            tx = decl.tx,
+            offset = decl.offset,
+            wal_octets = before,
+            "checkpoint REFUSÉ : une transaction en vol non scellée borne la troncature — le \
+             WAL grossit jusqu'à son scellement ou son abandon (rejeu d'un processus mort \
+             possible à partir de ce décalage)"
+        );
+        return Err(SubstrateError::CheckpointDiffere {
+            offset: decl.offset,
+            tx: decl.tx,
+        });
     }
 
     // ---- (2) Build the new meta header and atomically write it. ------------
