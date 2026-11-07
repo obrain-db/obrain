@@ -26,6 +26,16 @@ existe ; **mesurée** = chiffre daté, pas encore de test de non-régression.
 | **Écriture multi-processus** — voir ci-dessous. Et, corrigé par la batterie exhaustive : un second `ObrainDB` **inscriptible** ouvert sur la même base **dans le même processus** était accepté (deux instances, sidecars divergents) ; il est maintenant refusé (`open_substrate_inner`). Une ouverture en lecture seule reste permise. | corrigée | `obrain-engine/src/database/mod.rs` |
 | **Retrieval vectoriel par paliers** (L0 128 bits → L1 512 bits Hamming → L2 f16, k0 = 1 000, k1 = 100) : recall@10 **mesuré 0,365** sur 2 000 vecteurs 384-d **aléatoires** (quasi orthogonaux : hors contrat d'une quantification binaire) ; le contrat est mesuré sur vecteurs structurés par `agent_memory_migration::recall_sur_vecteurs_structures_2k` (seuil 0,80). Pas d'index HNSW sous substrat. | mesurée | `obrain-substrate/src/retrieval.rs`, `tiered_scan.rs` |
 
+## Persistance navigateur (obrain-web, OPFS)
+
+| Limite | État | Verrou |
+|---|---|---|
+| **Décision C : pas de WAL sur OPFS en v0.0.1.** La durabilité navigateur est celle de la dernière publication (`persister()`). Une écriture non publiée n'atteint pas OPFS et disparaît à la fermeture, au rechargement ou au crash. Le WAL est reporté après v0.0.1. | verrouillée | `crates/obrain-web/tests/navigateur.rs` : `les_ecritures_apres_la_derniere_publication_sont_perdues` (Chrome headless, CI « Persistance navigateur ») ; `obrain-substrate/src/miroir.rs` : `les_ecritures_apres_la_publication_n_atteignent_pas_le_journal` |
+| Une publication coupée en cours ouvre la génération précédente (une base vide si c'était la première), jamais une erreur ni un mélange. Mesuré sur le format de journal réel, coupures réparties sur toute la publication. | verrouillée | `obrain-substrate/src/miroir.rs` : `un_persist_coupe_ouvre_une_generation_complete` |
+| Une publication réussie remplace la précédente ; l'état relu est le dernier publié. | verrouillée | `crates/obrain-web/tests/navigateur.rs` : `une_seconde_publication_remplace_la_premiere` |
+| Chaque publication écrit **deux** images complètes dans un journal jamais compacté. Le plafond de 2 Gio porte sur le journal cumulé, pas sur la base : une base dont l'image pèse S octets ne peut être republiée qu'environ 1 Gio / S fois. | mesurée | `obrain-substrate/src/miroir.rs` : `chaque_publication_ajoute_deux_images_au_journal` |
+| Une corruption **au milieu** du journal (ce n'est pas une coupure) n'est pas détectée : la reprise tronque le fichier au dernier enregistrement valide, et la publication suivante, intacte, est effacée. Le store rouvert est plus ancien que la dernière publication, sans erreur. | mesurée | `obrain-substrate/src/miroir.rs` : `une_corruption_au_milieu_efface_les_publications_suivantes` |
+
 ## Langage de requête
 
 Trois `#[ignore]` dont la raison était périmée (tests verts sur `main` e11bdd2a le 2026-11-01) sont retirés par la PR « désignorer » : `session_transaction_persists`, `t2b_lsn_exact_par_verrou_d_append`, `foreach_set_on_matched_nodes`. Le second est **ré-ignoré le soir même** avec une mesure neuve (voir « Écriture multi-processus » ci-dessus) : une mesure verte unique n'était pas une preuve.
