@@ -64,6 +64,36 @@ async fn un_etat_non_publie_est_perdu_a_la_fermeture() {
     assert_eq!(base.noeuds(), 0, "rien n'a été publié : rien ne revient");
 }
 
+/// Contrat : une publication REMPLACE la précédente ; l'état relu est le dernier publié.
+#[wasm_bindgen_test]
+async fn une_seconde_publication_remplace_la_premiere() {
+    let nom = nom_unique("remplace");
+    {
+        let base = Base::ouvrir(nom.clone()).await.expect("ouverture");
+        creer_personnes(&base, 2);
+        base.persister().expect("publication 1");
+        creer_personnes(&base, 3);
+        base.persister().expect("publication 2");
+    }
+    let base = Base::ouvrir(nom).await.expect("réouverture");
+    assert_eq!(base.noeuds(), 5, "l'état de la dernière publication");
+}
+
+/// Contrat : les écritures faites APRÈS la dernière publication ne sont pas promises.
+/// Elles ne touchent pas OPFS avant `persister()` : rien ne revient à la réouverture.
+#[wasm_bindgen_test]
+async fn les_ecritures_apres_la_derniere_publication_sont_perdues() {
+    let nom = nom_unique("apres-publication");
+    {
+        let base = Base::ouvrir(nom.clone()).await.expect("ouverture");
+        creer_personnes(&base, 3);
+        base.persister().expect("publication");
+        creer_personnes(&base, 4); // jamais publiées
+    }
+    let base = Base::ouvrir(nom).await.expect("réouverture");
+    assert_eq!(base.noeuds(), 3, "seule la publication survit");
+}
+
 #[wasm_bindgen_test]
 async fn un_second_ouvreur_du_meme_fichier_est_refuse() {
     let nom = nom_unique("exclusif");

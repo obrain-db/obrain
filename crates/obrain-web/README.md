@@ -45,21 +45,33 @@ panique : une panique wasm abattrait toute l'instance.
 
 ## Ce qui est persisté, et ce qui ne l'est pas
 
-**Persisté : l'instantané publié.** `persister()` écrit l'état complet de la base (nœuds, arêtes,
-propriétés, dictionnaires) dans le journal OPFS, en deux emplacements alternés avec numéro de
-génération et CRC. Une publication interrompue ne rend jamais l'état précédent illisible.
+**Décision C (v0.0.1) : pas de WAL sur OPFS.** La durabilité de ce paquet est celle de
+l'instantané publié par `persister()`. Un journal écrit à chaque mutation n'existe pas en
+v0.0.1 : il est reporté, et la limite est listée dans `docs/LIMITES-v0.0.1.md`.
 
-**Non persisté : les écritures faites depuis la dernière publication.** Ce n'est pas un journal.
-Une écriture non suivie d'un `persister()` est **perdue à la coupure** (fermeture d'onglet,
-rechargement, crash). Pour rendre une série d'écritures durable, appelez `persister()` après elle.
-Le coût est proportionnel à la taille de la base, et la publication est refusée au-delà de 2 Gio.
+**Persisté : la dernière publication réussie.** `persister()` écrit l'état complet de la base
+(nœuds, arêtes, propriétés, dictionnaires) dans le journal OPFS, sous la forme de deux
+emplacements logiques A/B portant un numéro de génération et un CRC. Quand `persister()` rend
+`Ok`, cet état survit à la fermeture et au rechargement. Une publication coupée en cours ouvre
+la publication précédente, ou une base vide si aucune n'a jamais abouti : jamais une erreur
+d'ouverture, jamais un mélange des deux. Verrou : `obrain-substrate`,
+`miroir::tests_journal::un_persist_coupe_ouvre_une_generation_complete` (coupures réparties sur
+toute la publication, sur le format de journal réel).
+
+**Non promis : les écritures faites depuis la dernière publication.** Ce n'est pas un journal.
+Une écriture non suivie d'un `persister()` n'est pas promise : elle n'atteint pas OPFS avant la
+publication suivante, et elle est perdue à la fermeture, au rechargement ou au crash. Pour rendre
+une série d'écritures durable, appelez `persister()` après elle. Verrou :
+`tests/navigateur.rs::les_ecritures_apres_la_derniere_publication_sont_perdues`.
+
+**Coût et plafond.** Chaque publication ajoute au journal **deux** images complètes de la base
+(`obrain-substrate`, `miroir::tests_journal::chaque_publication_ajoute_deux_images_au_journal`),
+et le journal n'est jamais compacté. Le plafond de 2 Gio porte sur la taille totale du journal,
+pas sur la taille de la base : une base dont l'image pèse S octets ne peut être publiée qu'environ
+1 Gio / S fois. Au-delà, la publication est refusée avant toute écriture.
 
 **Non vérifié : les index.** La survie des index vectoriels et plein texte (`creer_index_*`) à la
 réouverture n'est pas testée. Ne pas la supposer : recréez-les après `Base.ouvrir` au besoin.
-
-**Pas encore fait : le WAL sur OPFS** (décision C). Un journal écrit à chaque mutation, qui
-rendrait chaque écriture durable sans `persister()`, n'existe pas encore. Il n'est pas dans ce
-paquet.
 
 Un seul écrivain par journal : un second `Base.ouvrir(nom)` sur le même fichier est refusé tant
 que le premier existe.

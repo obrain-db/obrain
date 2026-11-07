@@ -1009,6 +1009,156 @@ mod tests_journal {
             "les 6 nœuds sont revenus depuis le fichier"
         );
     }
+
+    /// Limite mesurée : une corruption AU MILIEU du journal (ce n'est pas une coupure)
+    /// n'est pas distinguée d'une fin déchirée. La reprise s'arrête au dernier
+    /// enregistrement valide et TRONQUE le fichier : la publication suivante, pourtant
+    /// intacte, disparaît. Le store rouvert est donc plus ancien que la dernière publication.
+    #[test]
+    fn une_corruption_au_milieu_efface_les_publications_suivantes() {
+        let (_d, p) = tmp("journal.bin");
+        let fin_premier;
+        {
+            let s = crate::store::SubstrateStore::open_memory().unwrap();
+            let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
+            peupler(&s, 2);
+            s.persister_sur_miroir(m.clone()).unwrap();
+            fin_premier = std::fs::metadata(&p).unwrap().len();
+            peupler(&s, 2);
+            s.persister_sur_miroir(m).unwrap();
+        }
+        let mut octets = std::fs::read(&p).unwrap();
+        assert!(octets.len() as u64 > fin_premier);
+        // Un octet flippé au début de la DEUXIÈME publication (son nom de blob).
+        octets[fin_premier as usize + 15] ^= 0xFF;
+        std::fs::write(&p, &octets).unwrap();
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(Arc::new(ouvrir(&p))).unwrap();
+        assert_eq!(
+            r.node_count(),
+            2,
+            "la publication 1 revient, la 2 est perdue"
+        );
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().len(),
+            fin_premier,
+            "la reprise a tronqué le fichier à la fin valide"
+        );
+    }
+
+    /// Store à `n` nœuds, à la même forme que le navigateur (propriété `nom`).
+    fn peupler(s: &crate::store::SubstrateStore, n: usize) {
+        for i in 0..n {
+            let id = s.create_node(&["Personne"]);
+            s.set_node_property(id, "nom", Value::String(format!("p{i}").into()));
+        }
+    }
+
+    /// Décrit le contrat de `persist` interrompu, sur le VRAI format de journal :
+    /// on coupe le fichier à des points répartis sur les DEUX publications, puis on rouvre.
+    /// - jamais d'erreur, jamais un store illisible ;
+    /// - avant la fin de la publication précédente : l'état précédent (0 si aucune) ;
+    /// - après : l'état précédent ou le nouveau, jamais un mélange ;
+    /// - une coupure ne fait jamais reculer la génération (suite monotone).
+    #[test]
+    fn un_persist_coupe_ouvre_une_generation_complete() {
+        let (d, p) = tmp("journal.bin");
+        let s = crate::store::SubstrateStore::open_memory().unwrap();
+        let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
+        peupler(&s, 3);
+        s.persister_sur_miroir(m.clone()).unwrap();
+        let fin_n1 = std::fs::metadata(&p).unwrap().len() as usize;
+        peupler(&s, 4);
+        s.persister_sur_miroir(m.clone()).unwrap();
+        let octets = std::fs::read(&p).unwrap();
+        drop(m);
+
+        // Coupures : un pas régulier (≈ 400 points) plus une fenêtre serrée autour
+        // de la frontière entre les deux publications, et la fin du fichier.
+        let pas = (octets.len() / 400).max(1);
+        let mut coupures: Vec<usize> = (0..=octets.len()).step_by(pas).collect();
+        coupures.extend(
+            (fin_n1.saturating_sub(64)..=(fin_n1 + 64).min(octets.len())).collect::<Vec<_>>(),
+        );
+        coupures.push(octets.len());
+        coupures.sort_unstable();
+        coupures.dedup();
+
+        let q = d.path().join("coupe.bin");
+        let mut precedent = 0;
+        for c in coupures {
+            std::fs::write(&q, &octets[..c]).unwrap();
+            let r = crate::store::SubstrateStore::ouvrir_sur_miroir(Arc::new(ouvrir(&q)))
+                .unwrap_or_else(|e| panic!("coupure à {c} o : {e}"));
+            let n = r.node_count();
+            if c < fin_n1 {
+                assert!(
+                    n == 0 || n == 3,
+                    "coupure à {c} o (1re publication) : {n} nœuds"
+                );
+            } else {
+                assert!(
+                    n == 3 || n == 7,
+                    "coupure à {c} o (2e publication) : {n} nœuds"
+                );
+            }
+            if c == fin_n1 {
+                assert_eq!(n, 3, "publication précédente entière : son état, pas 0");
+            }
+            if c == octets.len() {
+                assert_eq!(n, 7, "publication complète : le nouvel état");
+            }
+            assert!(
+                n >= precedent,
+                "coupure à {c} o : retour arrière de {precedent} à {n}"
+            );
+            precedent = n;
+        }
+        assert_eq!(precedent, 7);
+    }
+
+    /// Ce qui suit la dernière publication n'atteint pas le fichier : rien à coupure.
+    /// Le fichier ne change pas entre deux publications, quelles que soient les écritures.
+    #[test]
+    fn les_ecritures_apres_la_publication_n_atteignent_pas_le_journal() {
+        let (_d, p) = tmp("journal.bin");
+        let s = crate::store::SubstrateStore::open_memory().unwrap();
+        let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
+        peupler(&s, 3);
+        s.persister_sur_miroir(m.clone()).unwrap();
+        let apres_publication = std::fs::read(&p).unwrap();
+        peupler(&s, 4);
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            apres_publication,
+            "écritures non publiées : aucun octet écrit dans le journal"
+        );
+        drop(m);
+        let r = crate::store::SubstrateStore::ouvrir_sur_miroir(Arc::new(ouvrir(&p))).unwrap();
+        assert_eq!(r.node_count(), 3, "seule la publication survit");
+    }
+
+    /// Mesure de la croissance du journal : chaque publication y écrit DEUX images
+    /// complètes (`store.image.tmp`, puis `store.image.A` ou `.B`) et rien n'est
+    /// compacté. Le plafond de 2 Gio porte sur la taille du journal, donc sur la somme.
+    #[test]
+    fn chaque_publication_ajoute_deux_images_au_journal() {
+        let (_d, p) = tmp("journal.bin");
+        let s = crate::store::SubstrateStore::open_memory().unwrap();
+        let m: Arc<dyn Miroir> = Arc::new(ouvrir(&p));
+        let mut avant = std::fs::metadata(&p).unwrap().len();
+        for etape in 1..=3 {
+            peupler(&s, 3);
+            let image = s.instantane().unwrap().len() as u64;
+            s.persister_sur_miroir(m.clone()).unwrap();
+            let apres = std::fs::metadata(&p).unwrap().len();
+            let croissance = apres - avant;
+            assert!(
+                croissance >= 2 * image && croissance < 2 * image + 4096,
+                "publication {etape} : +{croissance} o pour une image de {image} o"
+            );
+            avant = apres;
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
