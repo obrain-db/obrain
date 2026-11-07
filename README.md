@@ -52,7 +52,7 @@ Base persistante : `ObrainDB::open("chemin/vers/base")` ouvre ou crée un réper
 
 | Garantie | Ce qu'elle veut dire | Test qui la verrouille |
 |---|---|---|
-| **Un commit acquitté est durable** | Quand `commit()` (explicite, ou implicite pour chaque statement hors transaction) rend `Ok`, les écritures sont dans le WAL **et** acquittées par le disque (`fsync` — `F_FULLFSYNC` sur macOS). Elles survivent à un `kill -9` et à une coupure de courant. | `obrain-engine/tests/durabilite_commit_kill9.rs` |
+| **Un commit acquitté est durable** | Quand `commit()` (explicite, ou implicite pour chaque statement hors transaction) rend `Ok`, les écritures sont dans le WAL **et** acquittées par le disque (`fsync` — `F_FULLFSYNC` sur macOS). Elles survivent à un `kill -9` (testé ; la coupure de courant n'est pas testée). | `obrain-engine/tests/durabilite_commit_kill9.rs` |
 | **Une transaction jamais commitée ne laisse rien** | Un processus qui disparaît avec une transaction ouverte ne publie rien à la réouverture : le WAL porte les frontières de transaction, le rejeu écarte ce qui n'a pas été scellé. | `durabilite_commit_kill9.rs` (test 2) |
 | **Un commit refusé ne laisse rien** | Un conflit de validation (deux sessions, même entité, la seconde commitée après le début de la première) est refusé, et rien de la transaction refusée ne reste — ni en mémoire, ni sur disque après réouverture. | `obrain-engine/tests/echec_commit_rembobinage.rs` |
 | **`ROLLBACK` ne retire que ses propres créations** | Deux sessions concurrentes : annuler l'une ne touche jamais aux commits de l'autre. | `obrain-engine/tests/rollback_isolation.rs` |
@@ -127,13 +127,13 @@ MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 
 ## Exemples
 
-`examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate_v2`.
+`examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate-v2` (le nom du binaire contient un tiret).
 
 ## Roadmap
 
 Ce qui n'est **pas** dans la v0.0.1 :
 
-- **Bindings** Python, Node.js, Go, C, C#, Dart, WebAssembly : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI.
+- **Bindings** Python, Node.js, Go, C, C#, Dart : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI. WebAssembly n'a qu'un paquet d'essai, non publié : `crates/obrain-web` (voir son README).
 - **`CALL obrain.hybrid_search`** comme procédure GQL : les index texte/vecteur vivent dans `ObrainDB`, hors de portée du planificateur de `CALL`, et l'enchaînement `CALL … YIELD … MATCH` n'est pas consommé par le parseur. La recherche hybride existe en Rust : `ObrainDB::hybrid_search(label, text_property, vector_property, query_text, query_vector, k, fusion)` (fusion RRF ou pondérée).
 - Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : dépôts séparés, hors de cette version.
 - Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
@@ -148,7 +148,7 @@ Ce qui n'est **pas** dans la v0.0.1 :
 
 ## Contribuer
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, `cargo package` dans l'ordre de publication, et les tests d'intégrité sur macOS.
+Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, vérification des manifestes de publication et `cargo package` du premier crate de l'ordre de publication, les jobs navigateur (wasm32, `obrain-web`, persistance OPFS sous Chrome headless), et les tests d'intégrité sur macOS (job conditionné à la variable de dépôt `CI_MACOS`, sinon « skipped »).
 
 ## Remerciements
 
