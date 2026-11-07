@@ -60,9 +60,12 @@ obrain-reactive = { workspace = true, optional = true }
 obrain-cognitive = { workspace = true, optional = true, default-features = false }
 
 # Embedding (optional, for ONNX embedding generation)
-ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
-tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
-hf-hub = { version = "0.5", optional = true }
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
+# hf-hub 1.0 -> hf-xet 1.8 -> xet-runtime 1.8 -> sysinfo 0.39 requires Rust 1.95 (> MSRV 1.91.1).
+# Cargo.lock is therefore pinned to hf-xet 1.5.3, xet-client/xet-core-structures/xet-data/xet-runtime 1.5.3,
+# sysinfo 0.38.4 (Rust 1.88). Do NOT let Dependabot bump these without re-checking the MSRV.
+hf-hub = { version = "1.0", optional = true, features = ["blocking"] }
 libc = "0.2.185"
 
 # Portable clock (std::time::Instant/SystemTime trap on wasm32-unknown-unknown)

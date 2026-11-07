@@ -61,7 +61,7 @@ const BGE_SMALL_EN_V15: ModelSpec = ModelSpec {
 /// ```
 #[derive(Debug, Clone)]
 pub enum EmbeddingModelConfig {
-    /// all-MiniLM-L6-v2 (384 dims, ~23MB, fast).
+    /// all-MiniLM-L6-v2 (384 dims, ~90MB, fast).
     MiniLmL6v2,
     /// all-MiniLM-L12-v2 (384 dims, ~33MB, better quality).
     MiniLmL12v2,
