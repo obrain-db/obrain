@@ -40,6 +40,22 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
+      # Les tests écrivent leurs stores dans std::env::temp_dir(). Le TMPDIR du
+      # runner n'était jamais vidé (21 Go de restes sur n3). Chaque job balaie
+      # d'abord les restes de plus de 6 h du TMPDIR du runner, refuse de tourner
+      # sous 20 Go libres, puis travaille dans SON répertoire sous RUNNER_TEMP
+      # (purgé par le runner entre deux jobs) et le supprime en fin de job.
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/tests"
+          echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Pièces 2 et 3 du WAL (budgets en nanosecondes)
@@ -56,6 +72,9 @@ jobs:
       - name: Lectures concurrentes des registres d'index (feature vector-index)
         if: ${{ !cancelled() }}
         run: cargo test -p obrain-engine --features vector-index --test index_concurrency -- --ignored lectures_concurrentes_ne_se_serialisent_pas
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tests"
 
   bench-v001:
     name: Benchs de référence v0.0.1 (Criterion, informatif — un runner partagé ne mesure pas)
@@ -63,6 +82,22 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
+      # Les tests écrivent leurs stores dans std::env::temp_dir(). Le TMPDIR du
+      # runner n'était jamais vidé (21 Go de restes sur n3). Chaque job balaie
+      # d'abord les restes de plus de 6 h du TMPDIR du runner, refuse de tourner
+      # sous 20 Go libres, puis travaille dans SON répertoire sous RUNNER_TEMP
+      # (purgé par le runner entre deux jobs) et le supprime en fin de job.
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/tests"
+          echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: make bench-v001 (mesure courte, sans seuil)
@@ -74,3 +109,6 @@ jobs:
           name: criterion-${{ github.sha }}
           path: target/criterion
           if-no-files-found: warn
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tests"
