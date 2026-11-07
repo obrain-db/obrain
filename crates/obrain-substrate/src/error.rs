@@ -28,6 +28,26 @@ pub enum SubstrateError {
     #[error("WAL frame invalid: {0}")]
     WalBadFrame(String),
 
+    /// ── UN OPCODE INCONNU N'EST NI UNE CORRUPTION NI UNE FRONTIÈRE DE CRASH ─
+    ///
+    /// Une frame COMPLÈTE, à CRC valide (le CRC couvre l'octet `kind`), dont
+    /// le `kind` n'est pas dans la table de CE binaire : elle a été écrite par
+    /// un binaire PLUS RÉCENT, et tout ce qui la suit lui est illisible.
+    /// Jusqu'au 2026-11-07 elle sortait en `WalBadFrame`, que le rejeu
+    /// confondait avec une queue déchirée : la base s'ouvrait sur un préfixe,
+    /// des tombstones se posaient sur un rejeu tronqué, et le checkpoint
+    /// suivant TRONQUAIT le WAL — perte définitive des frames postérieures.
+    ///
+    /// Cette variante existe pour que l'ouverture REFUSE, en nommant l'opcode
+    /// et l'offset, sans rien écrire. `offset` est absolu dans
+    /// `substrate.wal` (posé par l'itérateur ; `WalRecord::decode`, qui ne
+    /// voit qu'une tranche, le met à 0).
+    #[error(
+        "opcode WAL inconnu {kind:#04X} à l'offset {offset} : ce WAL a été écrit par une \
+         version plus récente ; rouvrir avec cette version ou checkpointer avant de rétrograder"
+    )]
+    WalOpcodeInconnu { kind: u8, offset: u64 },
+
     #[error("WAL CRC mismatch: claimed {claimed:#x}, actual {actual:#x}")]
     WalCrcMismatch { claimed: u32, actual: u32 },
 

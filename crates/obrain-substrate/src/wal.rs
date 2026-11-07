@@ -129,8 +129,12 @@ pub enum WalKind {
     /// frontière de transaction qui lui manquait : une entité déclarée en
     /// attente par une transaction dont aucun `TxCommit` n'est rejoué est
     /// écartée (tombstone) en fin de rejeu. Opcodes en fin de table ; un
-    /// binaire antérieur s'arrête dessus (règle « checkpoint forcé avant tout
-    /// downgrade », comme pour 0x54/0x55).
+    /// binaire antérieur REFUSE d'ouvrir la base dessus
+    /// (`SubstrateError::WalOpcodeInconnu`, qui nomme l'opcode et l'offset —
+    /// jamais une base lue comme vide ou partielle ; depuis le 2026-11-07,
+    /// comme pour 0x54/0x55 et tout opcode futur). Pour rendre la base
+    /// lisible par l'ancien binaire : checkpoint avec le récent, qui tronque
+    /// le WAL.
     TxNoeudEnAttente = 0x56,
     TxAreteEnAttente = 0x57,
     TxCommit = 0x58,
@@ -865,9 +869,18 @@ impl WalRecord {
                 actual: actual_crc,
             });
         }
-        // Sanity check: kind byte matches payload decode.
-        let _kind = WalKind::from_u8(kind_byte)
-            .ok_or_else(|| SubstrateError::WalBadFrame(format!("unknown kind byte {kind_byte}")))?;
+        // ── KIND INCONNU SUR UNE FRAME ENTIÈRE À CRC VALIDE (2026-11-07) ────
+        // Le CRC couvre l'octet `kind` : on ne peut arriver ici qu'avec une
+        // frame écrite par un binaire PLUS RÉCENT, jamais par corruption ni
+        // par queue déchirée (ces deux cas sont sortis plus haut). Ce n'est
+        // donc PAS une `WalBadFrame` : l'ouverture doit REFUSER en nommant
+        // l'opcode (`replay.rs`, `store.rs`), pas s'arrêter sur un préfixe
+        // que le checkpoint suivant tronquerait. L'offset absolu est posé par
+        // l'itérateur (`wal_io::WalIter`), qui seul le connaît.
+        let _kind = WalKind::from_u8(kind_byte).ok_or(SubstrateError::WalOpcodeInconnu {
+            kind: kind_byte,
+            offset: 0,
+        })?;
 
         let cfg = bincode_config();
         let (payload, _used): (WalPayload, usize) =

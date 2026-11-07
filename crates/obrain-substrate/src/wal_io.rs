@@ -110,7 +110,7 @@
 //! boundary.
 
 use crate::error::{SubstrateError, SubstrateResult};
-use crate::wal::{WAL_HEADER_SIZE, WalRecord, crc_over};
+use crate::wal::{WAL_HEADER_SIZE, WalKind, WalRecord, crc_over};
 use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
@@ -4306,6 +4306,53 @@ impl WalReader {
             trou: None,
         }
     }
+
+    /// ── PRÉ-BALAYAGE : L'OPCODE INCONNU SE DÉTECTE AVANT D'APPLIQUER (2026-11-07)
+    ///
+    /// Parcourt les frames à partir de `from_offset` par leurs EN-TÊTES
+    /// (longueur, kind, CRC vérifié — pas de décodage bincode) et rend la
+    /// première frame ENTIÈRE, à CRC valide, dont le `kind` est hors table :
+    /// une frame d'un binaire plus récent. Le rejeu l'appelle AVANT d'appliquer
+    /// quoi que ce soit, pour que le refus d'ouverture ne laisse aucune zone
+    /// touchée — pas même par un préfixe de frames connues.
+    ///
+    /// CONSERVATEUR : la moindre anomalie rencontrée AVANT un opcode inconnu
+    /// (en-tête incomplet, payload tronqué, octets réservés non nuls, CRC
+    /// faux — un trou de zéros tombe dans ce dernier cas) arrête le balayage
+    /// avec `None`. Ces cas restent jugés par l'itérateur de rejeu, qui porte
+    /// lui-même [`SubstrateError::WalOpcodeInconnu`] s'il atteint une telle
+    /// frame après coup. Ce balayage ne refuse donc jamais ce que le rejeu
+    /// n'aurait pas refusé ; il ne fait que le refuser PLUS TÔT.
+    #[must_use]
+    pub fn premier_opcode_inconnu(&self, from_offset: u64) -> Option<SubstrateError> {
+        let mut cursor = usize::try_from(from_offset).ok()?;
+        loop {
+            let reste = self.bytes.get(cursor..)?;
+            if reste.len() < WAL_HEADER_SIZE {
+                return None;
+            }
+            let length = u32::from_le_bytes(reste[0..4].try_into().ok()?) as usize;
+            let kind = reste[4];
+            if reste[6..8] != [0, 0] {
+                return None;
+            }
+            let total = WAL_HEADER_SIZE.checked_add(length)?;
+            if reste.len() < total {
+                return None;
+            }
+            let annonce = u32::from_le_bytes(reste[24..28].try_into().ok()?);
+            if crc_over(&reste[0..24], &reste[WAL_HEADER_SIZE..total]) != annonce {
+                return None;
+            }
+            if WalKind::from_u8(kind).is_none() {
+                return Some(SubstrateError::WalOpcodeInconnu {
+                    kind,
+                    offset: cursor as u64,
+                });
+            }
+            cursor = cursor.checked_add(total)?;
+        }
+    }
 }
 
 impl WalIter<'_> {
@@ -4409,6 +4456,14 @@ impl WalIter<'_> {
                     );
                     self.cursor = cand + used;
                     return Some(Ok((rec, cand as u64, used)));
+                }
+                // (2026-11-07) Même discipline qu'au fil de l'eau : l'offset
+                // absolu de l'opcode inconnu est posé ici, pas par `decode`.
+                Err(crate::SubstrateError::WalOpcodeInconnu { kind, .. }) => {
+                    derniere_erreur = Some(crate::SubstrateError::WalOpcodeInconnu {
+                        kind,
+                        offset: cand as u64,
+                    })
                 }
                 Err(e) => derniere_erreur = Some(e),
             }
@@ -4530,6 +4585,20 @@ impl<'a> Iterator for WalIter<'a> {
                 // besoin de savoir (rejeu, audit, réparation) le lira.
                 self.queue_incomplete = true;
                 None
+            }
+            // ── UN OPCODE INCONNU N'EST PAS UNE CORRUPTION NON PLUS (2026-11-07)
+            // Frame entière, CRC valide, `kind` hors table : écrite par un
+            // binaire plus récent. `decode` ne connaît pas sa position ; c'est
+            // ici qu'on pose l'offset ABSOLU que le refus d'ouverture nomme.
+            Err(crate::SubstrateError::WalOpcodeInconnu { kind, .. }) => {
+                let offset = self.cursor as u64;
+                if self.stop_on_error {
+                    self.cursor = self.bytes.len();
+                }
+                Some(Err(crate::SubstrateError::WalOpcodeInconnu {
+                    kind,
+                    offset,
+                }))
             }
             Err(e) => {
                 if self.stop_on_error {
@@ -5084,5 +5153,106 @@ mod tests {
         let r = WalReader::open(&wal).unwrap();
         assert!(r.is_empty());
         assert!(r.iter_from(0).next().is_none());
+    }
+
+    // ── OPCODE INCONNU : REFUS NOMMÉ, JAMAIS UNE FRONTIÈRE DE CRASH (2026-11-07)
+
+    /// Frame complète au framing de `wal.rs`, CRC valide, `kind` arbitraire.
+    fn frame_forgee(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut entete = Vec::with_capacity(24);
+        entete.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        entete.push(kind);
+        entete.push(0);
+        entete.extend_from_slice(&[0, 0]);
+        entete.extend_from_slice(&7u64.to_le_bytes());
+        entete.extend_from_slice(&0i64.to_le_bytes());
+        let crc = crc_over(&entete, payload);
+        let mut frame = entete;
+        frame.extend_from_slice(&crc.to_le_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[test]
+    fn un_opcode_inconnu_entier_est_nomme_avec_son_offset_absolu() {
+        let mut bytes = sample(1, true).encode().unwrap();
+        bytes.extend(sample(2, true).encode().unwrap());
+        let offset_attendu = bytes.len() as u64;
+        bytes.extend(frame_forgee(0x7E, b"futur"));
+        bytes.extend(sample(3, true).encode().unwrap());
+        let reader = WalReader { bytes };
+
+        // Pré-balayage : trouvé, avant toute application.
+        match reader.premier_opcode_inconnu(0) {
+            Some(SubstrateError::WalOpcodeInconnu { kind: 0x7E, offset }) => {
+                assert_eq!(offset, offset_attendu);
+            }
+            autre => panic!("attendu WalOpcodeInconnu 0x7E, reçu {autre:?}"),
+        }
+        // Depuis un offset situé APRÈS la frame future : plus rien d'inconnu.
+        assert!(
+            reader
+                .premier_opcode_inconnu(offset_attendu + 28 + 5)
+                .is_none()
+        );
+
+        // Itérateur : les deux frames connues, puis l'erreur nommée, puis stop.
+        let mut iter = reader.iter_from(0);
+        assert_eq!(iter.next().unwrap().unwrap().0.lsn, 1);
+        assert_eq!(iter.next().unwrap().unwrap().0.lsn, 2);
+        match iter.next() {
+            Some(Err(SubstrateError::WalOpcodeInconnu { kind: 0x7E, offset })) => {
+                assert_eq!(
+                    offset, offset_attendu,
+                    "l'offset est ABSOLU, pas relatif à la tranche"
+                );
+            }
+            autre => panic!("attendu Err(WalOpcodeInconnu), reçu {autre:?}"),
+        }
+        assert!(
+            iter.next().is_none(),
+            "l'itérateur s'arrête net après le refus"
+        );
+        assert!(
+            !iter.queue_incomplete(),
+            "ce n'est PAS une queue incomplète"
+        );
+    }
+
+    #[test]
+    fn une_frame_d_opcode_inconnu_dechiree_reste_une_queue_incomplete() {
+        let frame = frame_forgee(0x7E, b"payload assez long pour etre coupe");
+        for coupe in [3usize, 4, 5, 27, 28, 28 + 10, frame.len() - 1] {
+            let mut bytes = sample(1, true).encode().unwrap();
+            bytes.extend_from_slice(&frame[..coupe]);
+            let reader = WalReader { bytes };
+            assert!(
+                reader.premier_opcode_inconnu(0).is_none(),
+                "coupée à {coupe} octets : sans CRC vérifiable, rien à refuser"
+            );
+            let mut iter = reader.iter_from(0);
+            assert_eq!(iter.next().unwrap().unwrap().0.lsn, 1);
+            assert!(
+                iter.next().is_none(),
+                "coupée à {coupe} : frontière de crash, pas d'erreur"
+            );
+            assert!(
+                iter.queue_incomplete(),
+                "coupée à {coupe} : la queue incomplète se dit"
+            );
+        }
+    }
+
+    #[test]
+    fn un_crc_faux_sur_un_kind_inconnu_n_est_pas_un_opcode_inconnu() {
+        let mut frame = frame_forgee(0x7E, b"futur");
+        frame[24] ^= 0x01; // CRC altéré
+        let mut bytes = sample(1, true).encode().unwrap();
+        bytes.extend(frame);
+        let reader = WalReader { bytes };
+        assert!(reader.premier_opcode_inconnu(0).is_none());
+        let lus: Vec<_> = reader.iter_from(0).collect();
+        assert_eq!(lus.len(), 2);
+        assert!(matches!(lus[1], Err(SubstrateError::WalCrcMismatch { .. })));
     }
 }
