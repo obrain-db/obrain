@@ -528,8 +528,10 @@ mod tests {
     fn le_dictionnaire_voyage_et_se_recharge() {
         let source = terrain();
         let image = source.instantane().expect("instantané complet");
+        // Le flux des zones, sans l'enveloppe des propriétés (voir SubstrateStore::instantane).
+        let (_, image) = crate::store::dissocier_enveloppe(&image).expect("enveloppe");
 
-        let dict = dict_du_flux(&image)
+        let dict = dict_du_flux(image)
             .expect("lecture du flux")
             .expect("le dictionnaire doit être transporté");
         let snap = crate::dict::DictSnapshot::from_bytes(&dict).expect("décodage");

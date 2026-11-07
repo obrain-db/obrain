@@ -242,6 +242,10 @@ jobs:
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
         run: cargo test --target wasm32-unknown-unknown -p obrain-substrate --test navigateur_opfs
+      - name: Persistance de obrain-web dans Chrome headless (worker dédié)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test --target wasm32-unknown-unknown -p obrain-web --test navigateur
 
   msrv:
     name: MSRV (rust-version du manifeste)

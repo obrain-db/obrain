@@ -316,6 +316,28 @@ export function suite(Base) {
     }
   });
 
+  // ───────────── persistance (OPFS) : côté hors worker ─────────────
+  // Le aller-retour persistant (publier, recharger) est dans crates/obrain-web/tests/navigateur.rs,
+  // exécuté en worker dédié : seul contexte où OPFS donne son accès synchrone. Ici, on vérifie
+  // que hors de ce contexte (node) rien ne trappe. Sur la page principale, la Promise
+  // d'OPFS ne se résout pas sous --virtual-time-budget (le dump de lancer.sh) ; le rejet
+  // réel y a été vérifié en temps réel par WebDriver (createSyncAccessHandle y est absent).
+  test("persistance : ouvrir hors worker dédié rejette par une erreur lisible", async () => {
+    if (typeof Base.ouvrir !== "function") return "ignoré : persistance absente";
+    if (typeof window !== "undefined") return "ignoré : OPFS asynchrone non servi par le budget de temps virtuel";
+    let e = null;
+    try { await Base.ouvrir("suite-" + Date.now() + ".journal"); } catch (x) { e = x; }
+    assert.ok(e !== null, "ouvrir doit échouer sans OPFS synchrone");
+    assert.ok(String(e).length > 0, "message non vide");
+  });
+
+  test("persistance : persister une base en mémoire est une erreur, pas une trappe", () => {
+    const b = a();
+    if (typeof b.persister !== "function") return "ignoré : persistance absente";
+    assert.leve(() => b.persister(), "ouvert", "base non ouverte par ouvrir");
+    assert.egal(b.noeuds(), 0, "la base reste utilisable");
+  });
+
   return tests;
 }
 

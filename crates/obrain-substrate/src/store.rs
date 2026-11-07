@@ -514,6 +514,24 @@ fn amorcer_registres_partages(
 pub const SKIP_ON_LOAD_PROP_KEYS: &[&str] =
     &["_st_embedding", "_kernel_embedding", "_hilbert_features"];
 
+/// Magic de l'enveloppe de [`SubstrateStore::instantane`] : elle précède l'image des
+/// zones et porte les propriétés logiques.
+const ENVELOPPE_PROPS_MAGIC: &[u8; 8] = b"OBRPROP1";
+
+/// Sépare l'enveloppe de [`SubstrateStore::instantane`] : (propriétés, image des zones).
+pub(crate) fn dissocier_enveloppe(image: &[u8]) -> SubstrateResult<(&[u8], &[u8])> {
+    let entete = ENVELOPPE_PROPS_MAGIC.len() + 8;
+    if image.len() < entete || &image[..ENVELOPPE_PROPS_MAGIC.len()] != ENVELOPPE_PROPS_MAGIC {
+        return Err(SubstrateError::BadMagic);
+    }
+    let longueur = u64::from_le_bytes(image[8..entete].try_into().unwrap()) as usize;
+    let fin = entete
+        .checked_add(longueur)
+        .filter(|&f| f <= image.len())
+        .ok_or_else(|| SubstrateError::Internal("instantané : enveloppe tronquée".into()))?;
+    Ok((&image[entete..fin], &image[fin..]))
+}
+
 // ---------------------------------------------------------------------------
 // Label registry (step 1 in-memory version)
 //
@@ -8309,15 +8327,93 @@ impl SubstrateStore {
     /// besoin). Un instantané produit par `instantane()` se restaure donc sans
     /// système de fichiers.
     pub fn depuis_instantane(image: &[u8]) -> SubstrateResult<Self> {
+        let (proprietes, zones) = dissocier_enveloppe(image)?;
         let mut sub = SubstrateFile::open_memory()?;
-        crate::instantane::restaurer(&mut sub, image)?;
-        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
+        crate::instantane::restaurer(&mut sub, zones)?;
+        let store = Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)?;
+        store.appliquer_proprietes_logiques(PropertiesSnapshotV1::from_bytes(proprietes)?);
+        Ok(store)
     }
 
-    /// Instantané EXACT du store : dictionnaire + zones + méta.
+    /// Instantané EXACT du store : propriétés logiques, puis dictionnaire + zones + méta.
+    ///
+    /// Les propriétés ne vivent pas toutes dans les zones (sidecar, colonnes, blobs,
+    /// PropsZone) : l'image des zones seule perdait les propriétés scalaires au
+    /// rechargement. Elles sont donc sérialisées à part, par l'API publique.
+    /// Enveloppe : `OBRPROP1` · u64 longueur des propriétés · propriétés · image.
     pub fn instantane(&self) -> SubstrateResult<Vec<u8>> {
+        let proprietes = self.proprietes_logiques()?.to_bytes()?;
         let dict = self.octets_dictionnaire()?;
-        self.avec_substrate(|sub| crate::instantane::exporter_avec_dict(sub, Some(&dict)))
+        let zones =
+            self.avec_substrate(|sub| crate::instantane::exporter_avec_dict(sub, Some(&dict)))?;
+        let mut out =
+            Vec::with_capacity(ENVELOPPE_PROPS_MAGIC.len() + 8 + proprietes.len() + zones.len());
+        out.extend_from_slice(ENVELOPPE_PROPS_MAGIC);
+        out.extend_from_slice(&(proprietes.len() as u64).to_le_bytes());
+        out.extend_from_slice(&proprietes);
+        out.extend_from_slice(&zones);
+        Ok(out)
+    }
+
+    /// Propriétés LOGIQUES du store, lues par l'API publique : indépendantes du
+    /// routage interne. Les clés de [`SKIP_ON_LOAD_PROP_KEYS`] sont reconstruites
+    /// au chargement, elles ne sont donc pas sauvées.
+    fn proprietes_logiques(&self) -> SubstrateResult<PropertiesSnapshotV1> {
+        let cles: Vec<String> = self
+            .all_property_keys()
+            .into_iter()
+            .filter(|k| !SKIP_ON_LOAD_PROP_KEYS.contains(&k.as_str()))
+            .collect();
+        let mut snap = PropertiesSnapshotV1::default();
+        let mut aretes: FxHashSet<EdgeId> = FxHashSet::default();
+        for n in self.node_ids() {
+            let props: Vec<(String, Value)> = cles
+                .iter()
+                .filter_map(|k| {
+                    GraphStore::get_node_property(self, n, &PropertyKey::new(k.as_str()))
+                        .map(|v| (k.clone(), v))
+                })
+                .collect();
+            if !props.is_empty() {
+                snap.nodes.push(PropEntry { id: n.0, props });
+            }
+            aretes.extend(
+                self.edges_from(n, Direction::Outgoing)
+                    .into_iter()
+                    .map(|(_, e)| e),
+            );
+        }
+        let mut aretes: Vec<EdgeId> = aretes.into_iter().collect();
+        aretes.sort_by_key(|e| e.0);
+        for e in aretes {
+            let props: Vec<(String, Value)> = cles
+                .iter()
+                .filter_map(|k| {
+                    GraphStore::get_edge_property(self, e, &PropertyKey::new(k.as_str()))
+                        .map(|v| (k.clone(), v))
+                })
+                .collect();
+            if !props.is_empty() {
+                snap.edges.push(PropEntry { id: e.0, props });
+            }
+        }
+        Ok(snap)
+    }
+
+    /// Réapplique des propriétés logiques par le setter PUBLIC : le routage est
+    /// refait comme à l'écriture d'origine. Le setter ignore lui-même les entités
+    /// absentes ou mortes.
+    fn appliquer_proprietes_logiques(&self, snap: PropertiesSnapshotV1) {
+        for e in snap.nodes {
+            for (k, v) in e.props {
+                GraphStoreMut::set_node_property(self, NodeId(e.id), &k, v);
+            }
+        }
+        for e in snap.edges {
+            for (k, v) in e.props {
+                GraphStoreMut::set_edge_property(self, EdgeId(e.id), &k, v);
+            }
+        }
     }
 
     /// Persist le dict SANS condition. Réservé aux chemins qui VEULENT un dict
@@ -23868,7 +23964,8 @@ mod tests {
             fence.display()
         );
         let image = s.instantane().unwrap();
-        let zones: Vec<String> = crate::instantane::repartition(&image)
+        let (_, image) = dissocier_enveloppe(&image).unwrap();
+        let zones: Vec<String> = crate::instantane::repartition(image)
             .unwrap()
             .into_iter()
             .map(|(nom, _, _)| nom)
