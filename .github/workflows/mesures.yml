@@ -48,7 +48,7 @@ jobs:
       - name: Prefetch (défauts de page, cache chaud)
         if: ${{ !cancelled() }}
         run: cargo test -p obrain-substrate --test prefetch_page_faults -- --ignored
-      - name: WAL interprocessus (t2b, t3, t4, débit à N écrivains)
+      - name: WAL interprocessus (t3, t4, débit à N écrivains)
         if: ${{ !cancelled() }}
         run: |
           ulimit -n 8192
