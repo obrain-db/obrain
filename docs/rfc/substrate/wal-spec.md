@@ -149,7 +149,7 @@ Per-call override via `SubstrateStore::with_durability(...)`.
 - **CRC mismatch on replay** → truncate at offset, log a `corruption_detected` event, continue.
 - **Short tail write** (EOF mid-record) → same as CRC mismatch.
 - **Fsync error** during checkpoint → retry up to 3 times with 100 ms backoff, then PANIC with diagnostic (disk full or hardware failure).
-- **Unknown `WalKind`** during replay → abort; indicates version mismatch. Use `obrain-migrate` to upgrade.
+- **Unknown `WalKind`** on a COMPLETE frame with a valid CRC (the CRC covers the `kind` byte) → the frame was written by a NEWER binary. `WalRecord::decode` returns `SubstrateError::WalOpcodeInconnu { kind, offset }`, replay returns it unchanged (no partial apply, no in-flight tombstones), and every open path (`SubstrateStore::open`, `open_read_only`, `open_shared_write`, …) refuses the store with that error — the WAL is never read as empty or partial, and never truncated or modified by the refused open. Remedy: reopen with the newer binary, or checkpoint with it before downgrading. A torn tail (short read before or after the `kind` byte) is NOT this case: it stays a crash boundary (open succeeds, earlier frames replayed). Locked by `obrain-substrate/tests/wal_opcode_inconnu.rs` and `obrain-engine/tests/format_fige_v3.rs`.
 
 ## 9. Concurrency model
 

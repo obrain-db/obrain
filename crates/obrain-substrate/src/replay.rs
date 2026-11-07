@@ -179,6 +179,28 @@ fn replay_from_avec(
         return Ok(stats);
     }
 
+    // ── UN OPCODE INCONNU REFUSE LE REJEU AVANT D'APPLIQUER (2026-11-07) ───
+    // Une frame entière à CRC valide dont le `kind` est hors table vient d'un
+    // binaire PLUS RÉCENT ; tout ce qui la suit nous est illisible. Jusqu'ici
+    // elle sortait en `WalBadFrame`, confondue avec une frontière de crash :
+    // la base s'ouvrait sur un préfixe, les transactions en vol étaient
+    // tombstonées sur un rejeu tronqué, et le checkpoint suivant TRONQUAIT le
+    // WAL — perte définitive des frames postérieures. Le balayage se fait
+    // AVANT d'ouvrir la moindre zone pour que le refus ne laisse rien
+    // derrière lui : ni frame appliquée, ni tombstone. (Le bras `Err` de la
+    // boucle porte le même refus pour le cas que le balayage ne tranche pas :
+    // un opcode inconnu situé APRÈS une anomalie.)
+    if let Some(e) = reader.premier_opcode_inconnu(from_offset) {
+        tracing::error!(
+            error = %e,
+            from_offset,
+            "rejeu WAL REFUSÉ : opcode inconnu — ce WAL a été écrit par une version \
+             plus récente. Rien n'a été appliqué ; rouvrir avec cette version, ou \
+             checkpointer avec elle avant de rétrograder."
+        );
+        return Err(e);
+    }
+
     // Lazily open zones we need.
     let mut nodes: Option<ZoneFile> = None;
     let mut edges: Option<ZoneFile> = None;
@@ -290,6 +312,24 @@ fn replay_from_avec(
                 // sans que personne ne sache qu'il reste des frames APRÈS le
                 // défaut. Le cas est donc nommé séparément, avant tout
                 // diagnostic de downgrade (qui, lui, n'a rien à en dire).
+                //
+                // ── UN OPCODE INCONNU N'EST PAS UNE FRONTIÈRE DE CRASH (2026-11-07)
+                // Le pré-balayage en tête de fonction a déjà refusé le cas
+                // ordinaire ; on n'arrive ici qu'avec un opcode inconnu situé
+                // APRÈS une anomalie (trou sauté, par exemple). Le verdict est
+                // le même : REFUS propagé, pas de `break` vers un `Ok(stats)`
+                // tronqué, pas de tombstones sur un rejeu partiel.
+                if let crate::SubstrateError::WalOpcodeInconnu { kind, offset } = &e {
+                    tracing::error!(
+                        kind = format_args!("{kind:#04X}"),
+                        offset,
+                        stopped_at = stats.stopped_at,
+                        "rejeu WAL REFUSÉ sur un opcode inconnu : ce WAL a été écrit par une \
+                         version plus récente ; rouvrir avec cette version, ou checkpointer \
+                         avec elle avant de rétrograder."
+                    );
+                    return Err(e);
+                }
                 if let crate::SubstrateError::WalTrou { offset, longueur } = &e {
                     tracing::error!(
                         offset,

@@ -59,9 +59,10 @@ Base persistante : `ObrainDB::open("chemin/vers/base")` ouvre ou crée un réper
 | **Isolation par instantané** | Une transaction ouverte ne voit pas un commit voisin postérieur à son début. | `readme_examples.rs::mvcc_snapshot_isolation_…` |
 | **Reprise après crash** | Un WAL tronqué ou déchiré est rejoué jusqu'à la frontière valide, jamais au-delà ; un trou de zéros suivi de données est nommé, pas confondu avec une fin de fichier. | `obrain-substrate/tests/crash_safety.rs`, `wal_recovery_reelle.rs` |
 | **Format on-disk figé (v3)** | Une base écrite par la v0.0.1 se rouvre par toute v0.0.x ; une base d'une version plus récente est refusée, jamais lue comme vide. | `obrain-engine/tests/format_fige_v3.rs`, fixture `tests/golden/v3-mini` |
+| **Opcode WAL inconnu ⇒ refus nommé, jamais lu comme vide** | Un `substrate.wal` qui porte une frame complète (CRC valide) d'un opcode que ce binaire ne connaît pas a été écrit par une version plus récente : l'ouverture est refusée avec une erreur qui nomme l'opcode et l'offset, le WAL n'est ni rejoué partiellement ni tronqué ni modifié. Une queue déchirée (frame incomplète) reste une frontière de crash. | `obrain-substrate/tests/wal_opcode_inconnu.rs`, `obrain-engine/tests/format_fige_v3.rs` (tests `…opcode…`), fixture `tests/golden/v3-mini-opcode-futur` |
 | **Un seul écrivain par base** | Le répertoire est verrouillé (fcntl) ; un second processus est refusé, et le refus nomme le détenteur (Linux, macOS). | `obrain-substrate/tests/verrou_apres_drop.rs` |
 
-Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus sur un même WAL, la lecture d'un WAL non checkpointé par un binaire antérieur (checkpoint forcé avant tout downgrade), et tout ce qui est listé dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
+Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus sur un même WAL, et tout ce qui est listé dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
 
 ## Fonctionnalités (features par défaut du crate `obrain`)
 

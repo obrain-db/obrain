@@ -6779,6 +6779,20 @@ impl SubstrateStore {
                         "OUVERTURE REFUSEE depuis le rejeu WAL — etat de repermutation INDETERMINE");
                     return Err(e);
                 }
+                // ── OPCODE INCONNU : REFUS, PAS « BASE UTILISABLE » (2026-11-07)
+                // Une frame entière à CRC valide d'un `kind` hors table vient
+                // d'un binaire PLUS RÉCENT. L'avaler dans le `warn!` générique
+                // ouvrait la base sur un préfixe, et le checkpoint suivant
+                // (`slot_remap.rs` § Retrograder) TRONQUAIT le WAL : perte
+                // définitive des frames postérieures. Garantie v0.0.1 : refus
+                // nommé, jamais lu comme vide ni partiel, rien de modifié.
+                // Vaut pour TOUTES les ouvertures (inscriptible, lecteur,
+                // partagée, miroir) : elles passent toutes par ici.
+                Err(e @ SubstrateError::WalOpcodeInconnu { .. }) => {
+                    tracing::error!(error = %e,
+                        "OUVERTURE REFUSEE depuis le rejeu WAL — opcode inconnu : WAL ecrit par une version plus recente");
+                    return Err(e);
+                }
                 Err(e) => tracing::warn!(error = %e,
                     "rejeu WAL impossible a l'ouverture — la base reste utilisable sur son dernier checkpoint"),
             }
@@ -6822,6 +6836,20 @@ impl SubstrateStore {
                                 erreur = %e,
                                 "graphe nomme NON MONTE : repermutation indeterminee. Il ne \
                                  sert aucune requete tant qu'il n'est pas repare."
+                            );
+                        }
+                        // (2026-11-07) Même discipline pour un WAL d'enfant
+                        // écrit par une version plus récente : NON MONTÉ, en
+                        // ERROR — une indisponibilité nommée, jamais un
+                        // sous-graphe lu comme vide. Le parent reste
+                        // accessible ; l'enfant n'est ni rejoué ni tronqué.
+                        Err(e @ SubstrateError::WalOpcodeInconnu { .. }) => {
+                            tracing::error!(
+                                graphe = nom,
+                                erreur = %e,
+                                "graphe nomme NON MONTE : son WAL porte un opcode inconnu \
+                                 (version plus recente). Il ne sert aucune requete tant \
+                                 qu'il n'est pas rouvert avec cette version."
                             );
                         }
                         Err(e) => {
