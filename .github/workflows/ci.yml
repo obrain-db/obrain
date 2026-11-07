@@ -73,6 +73,31 @@ jobs:
           ulimit -n 8192
           cargo test --workspace --no-fail-fast
 
+  # (MP-6, 2026-11-07) WAL PARTAGÉ : les tests INTER-PROCESSUS (le binaire de
+  # test se relance lui-même en enfants, `kill -9` compris) jouent dans un job
+  # à part, un seul à la fois par branche (`concurrency`) : ils mesurent des
+  # fenêtres entre processus et ne doivent pas se superposer à un autre run de
+  # la même branche. Verdict NOMMÉ : la ligne `test result` est le contrat.
+  wal-partage:
+    name: WAL partagé (inter-processus)
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    timeout-minutes: 10
+    concurrency:
+      group: wal-partage-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Substrat — append multi-processus et chaîne CAS
+        run: |
+          ulimit -n 8192
+          cargo test -p obrain-substrate --test mw_interprocess_append --test wal_chaine_cas --no-fail-fast
+      - name: Moteur — écriture multi-processus (open_shared_write, kill -9)
+        run: |
+          ulimit -n 8192
+          cargo test -p obrain-engine --test ecriture_multi_processus --no-fail-fast
+
   tests-all-features:
     name: Tests (toutes features)
     runs-on: [self-hosted, linux, x64, obrain-ci]
