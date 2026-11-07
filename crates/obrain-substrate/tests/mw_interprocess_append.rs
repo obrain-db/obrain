@@ -467,7 +467,7 @@ fn t2_six_processus_zero_perte_eof_exact() {
 // le LSN est inexact. Le défaut est dans le design (un délai ne prouve pas une
 // mort), pas dans le test ; correctif proposé dans la tâche V1-T2B (preuve de
 // vie par pid dans le registre). Reste exécuté par `mesures.yml` (--ignored).
-#[ignore = "V1-T2B — défaut réel mesuré le 2026-11-01 : LSN inexact quand un écrivain préempté est pris pour mort (3/172 à 25 ms, 4/31 à 100 µs) ; zéro perte ; voir docs/LIMITES-v0.0.1.md"]
+#[ignore = "V1-T2B — après preuve de vie : 38/40 sous charge (2 échecs résiduels sur `courses`, cause non isolée) ; avant : 10/40 ; pas bloquant tant que la mesure n'est pas nulle"]
 fn t2b_lsn_exact_par_verrou_d_append() {
     t2b_corps("t2b_lsn_exact_par_verrou_d_append", None);
 }
@@ -477,7 +477,7 @@ fn t2b_lsn_exact_par_verrou_d_append() {
 /// est pris pour mort et sa plage est ré-ancrée. Si l'exactitude des LSN tient
 /// ici, elle ne dépend pas de la rareté des préemptions de 25 ms.
 #[test]
-#[ignore = "V1-T2B — reproduction du défaut : 4 échecs sur 31 le 2026-11-01 (délai 100 µs) ; même assertion que t2b"]
+#[ignore = "V1-T2B — après preuve de vie : 40/40 sous charge (avant : 34 échecs sur 40) ; à dés-ignorer après une série plus longue"]
 fn t2c_lsn_exact_malgre_recuperations_forcees() {
     t2b_corps("t2c_lsn_exact_malgre_recuperations_forcees", Some(100_000));
 }
