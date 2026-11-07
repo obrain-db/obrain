@@ -135,7 +135,7 @@ Ce qui n'est **pas** dans la v0.0.1 :
 
 - **Bindings** Python, Node.js, Go, C, C#, Dart : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI. WebAssembly n'a qu'un paquet d'essai, non publié : `crates/obrain-web` (voir son README).
 - **`CALL obrain.hybrid_search`** comme procédure GQL : les index texte/vecteur vivent dans `ObrainDB`, hors de portée du planificateur de `CALL`, et l'enchaînement `CALL … YIELD … MATCH` n'est pas consommé par le parseur. La recherche hybride existe en Rust : `ObrainDB::hybrid_search(label, text_property, vector_property, query_text, query_vector, k, fusion)` (fusion RRF ou pondérée).
-- Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : dépôts séparés, hors de cette version.
+- Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : non implémentés dans ce dépôt, hors de cette version.
 - Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
 
 ## Documentation
