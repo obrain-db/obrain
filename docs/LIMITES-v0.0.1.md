@@ -49,9 +49,11 @@ Trois `#[ignore]` dont la raison était périmée (tests verts sur `main` e11bdd
 |---|---|---|
 | Aucun binding (Python, Node, Go, C#, Dart) dans ce dépôt. WebAssembly : seul `crates/obrain-web` existe (wrapper `wasm-bindgen`, `publish = false`, paquet d'essai). Seuls `packages/obrain-cli-{npm,python}` sont des wrappers du CLI. | mesurée (relu 2026-11-07) | `crates/obrain-web/Cargo.toml` ; README § Roadmap (ligne 136, à mettre à jour : cite WebAssembly comme absent) |
 | `CALL obrain.hybrid_search` n'existe pas comme procédure GQL (les index texte/vecteur vivent dans `ObrainDB`, hors du planificateur de `CALL` ; l'enchaînement `CALL … YIELD … MATCH` n'est pas parsé). La recherche hybride existe en Rust : `ObrainDB::hybrid_search`. | mesurée (décision 5735aa32) | README § Roadmap |
+| **Persistance navigateur sur OPFS** : `open_browser` / `persist` passent par le snapshot, **le WAL n'est pas sur OPFS** (décision C, non traitée pour la v0.0.1). Les écritures faites après le dernier `persist()` ne sont pas garanties : comportement non mesuré. | non mesurée | `crates/obrain-web` (suite Chrome headless) |
 
 ## Performance
 
 | Limite | État | Verrou |
 |---|---|---|
 | Les chiffres publiés ne sont reproductibles que par les benchs listés dans `docs/BENCHMARKS.md` ; le tableau LDBC dépend d'un outil externe (`graph-bench`) non versionné ici. | à produire en V1-PERF | `docs/BENCHMARKS.md` |
+| **Régression mesurée de l'insertion d'un nœud** (auto-commit, base en mémoire) : **+18 à +21 %** entre `e11bdd2a` et main sur 5 tours sur 6 (11,2 µs → 13,4 µs), **sous charge 2,2 à 5,1**. Non attribuée : le commit fautif n'est pas recherché. Pas une erreur de justesse ni de durabilité. | provisoire (mesure entrelacée, charge > 2) | `docs/BENCHMARKS.md` |
