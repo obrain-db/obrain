@@ -339,6 +339,23 @@ impl SimplexIncidenceZone {
         Self::write_entry(inc, node, e)
     }
 
+    /// Poste `id` dans `node` seulement s'il n'y figure pas déjà. Réservé au
+    /// REJEU : après un kill -9 au milieu de la pose des postings d'un
+    /// simplexe, le record du répertoire est présent et les postings sont
+    /// partiels. Le rejeu doit compléter sans dupliquer. Coût O(degré) : jamais
+    /// sur le chemin d'écriture en direct.
+    pub fn ensure_posted(
+        inc: &mut ZoneFile,
+        posts: &mut ZoneFile,
+        node: u32,
+        id: SimplexId,
+    ) -> SubstrateResult<()> {
+        if Self::postings(inc, posts, node)?.contains(&id) {
+            return Ok(());
+        }
+        Self::append(inc, posts, node, id)
+    }
+
     /// Liste BRUTE des postings du nœud (ids tombstonés compris — le
     /// filtrage de vie appartient à l'appelant, qui tient le répertoire
     /// des simplexes). O(degré simplicial du nœud).

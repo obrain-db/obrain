@@ -197,6 +197,30 @@ pub const SEUIL_TEMPS: Duration = Duration::from_millis(2);
 /// [`WalWriter::forcer_delai_tete_bloquee`].
 pub const DELAI_TETE_BLOQUEE: Duration = Duration::from_millis(25);
 
+/// Des octets PUBLIÉS ont-ils disparu du fichier ? Rend `Some((fin_publiee,
+/// taille))` si une troncature est avérée, `None` sinon.
+///
+/// ── L'ORDRE DES DEUX LECTURES EST TOUT LE SUJET (défaut MESURÉ) ─────────────
+/// La fin publiée se lit AVANT la taille. Un écrivain publie après son `write` :
+/// à l'instant de la lecture de la fin, le fichier contient donc déjà ces octets,
+/// et il ne fait que grandir ensuite. Une taille mesurée APRÈS est donc au moins
+/// égale à cette fin, sauf si le fichier a été tronqué. L'ordre inverse (mesurer
+/// puis lire la fin, avec trois reprises) prenait pour une troncature un pair qui
+/// avait écrit entre les deux lectures : la chaîne était reculée d'une frame
+/// (153 à 158 octets mesurés en CI), et TOUS les LSN suivants portaient ce
+/// décalage constant (`t1`, 1 522 à 5 987 écarts sur 6 000 frames, `tetes=0`).
+///
+/// Fonction pure (les deux lectures sont injectées) pour que l'ordre soit testable
+/// sans processus ni charge.
+fn troncature_averee(
+    lire_fin_publiee: impl FnOnce() -> u64,
+    mesurer: impl FnOnce() -> std::io::Result<u64>,
+) -> std::io::Result<Option<(u64, u64)>> {
+    let fin = lire_fin_publiee();
+    let taille = mesurer()?;
+    Ok((fin > taille).then_some((fin, taille)))
+}
+
 /// Attente ACTIVE (rotation pure sur un atome partagé, sans aucun appel système)
 /// avant de rendre le processeur. L'attente d'un prédécesseur dure le temps d'un
 /// `write`, soit ~1 µs : un `yield_now` dès le premier tour coûterait un changement
@@ -3637,24 +3661,19 @@ impl WalWriter {
         guard: &mut WriterInner,
         reg: &RegistreAppend,
     ) -> SubstrateResult<Option<u64>> {
-        /// Trois mesures : la première peut être en retard d'une écriture de pair, la
-        /// deuxième de quelques-unes ; au-delà, seule une troncature explique qu'elles
-        /// restent TOUTES sous la fin publiée.
-        const MESURES: u32 = 3;
-        let mut taille = guard.taille_reelle()?;
-        let mut tours = 0u32;
-        while reg.fin_publiee().load(Ordering::Acquire) > taille && tours < MESURES {
-            std::thread::yield_now();
-            taille = guard.taille_reelle()?;
-            tours += 1;
-        }
-        if reg.fin_publiee().load(Ordering::Acquire) <= taille {
+        let Some((fin, taille)) = troncature_averee(
+            || reg.fin_publiee().load(Ordering::Acquire),
+            || {
+                std::thread::yield_now();
+                guard.taille_reelle()
+            },
+        )?
+        else {
             return Ok(None);
-        }
+        };
         tracing::warn!(
-            fin_publiee = reg.fin_publiee().load(Ordering::Acquire),
+            fin_publiee = fin,
             taille_reelle = taille,
-            mesures = tours + 1,
             "WAL partagé : des octets PUBLIÉS ont disparu du fichier (troncature NON annoncée \
              par la génération) — les deux têtes sont ré-ancrées sur la taille réelle et \
              l'événement est annoncé aux pairs"
@@ -4397,6 +4416,42 @@ mod tests {
     use super::*;
     use crate::wal::WalPayload;
     use tempfile::tempdir;
+
+    /// Un pair écrit UNE frame (153 octets) entre deux lectures quelconques : le
+    /// fichier et la fin publiée avancent ensemble. Aucun octet publié n'a disparu,
+    /// donc il n'y a PAS de troncature, quel que soit l'entrelacement.
+    /// Mesuré en CI (t1) : 153 et 158 octets de LSN en moins sur toute la suite.
+    #[test]
+    fn un_pair_qui_ecrit_entre_deux_lectures_n_est_pas_une_troncature() {
+        use std::cell::Cell;
+        let monde = Cell::new((1_000u64, 1_000u64)); // (taille fichier, fin publiée)
+        let pas = || {
+            let (t, f) = monde.get();
+            monde.set((t + 153, f + 153));
+        };
+        let r = troncature_averee(
+            || {
+                let f = monde.get().1;
+                pas();
+                f
+            },
+            || {
+                let t = monde.get().0;
+                pas();
+                Ok(t)
+            },
+        )
+        .unwrap();
+        assert_eq!(r, None, "faux positif : un pair a écrit entre les lectures");
+    }
+
+    /// Une vraie troncature (fin publiée 1 000, fichier à 500, stable) est toujours
+    /// reconnue : le correctif ne désarme pas la détection.
+    #[test]
+    fn une_vraie_troncature_reste_avérée() {
+        let r = troncature_averee(|| 1_000, || Ok(500)).unwrap();
+        assert_eq!(r, Some((1_000, 500)));
+    }
 
     /// Le scénario MESURÉ sur runtime-dev : un processus tronque le WAL
     /// (checkpoint) pendant qu'un autre le tient ouvert ; ce dernier écrit

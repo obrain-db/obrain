@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use hf_hub::api::sync::Api;
+use hf_hub::{HFClientSync, split_id};
 use obrain_common::utils::error::{Error, Result};
 
 use super::config::{EmbeddingModelConfig, ResolveInfo};
@@ -43,23 +43,32 @@ pub(crate) fn resolve(config: &EmbeddingModelConfig) -> Result<ResolvedModel> {
             model_file,
             tokenizer_file,
         } => {
-            let api = Api::new().map_err(|e| {
+            let client = HFClientSync::new().map_err(|e| {
                 Error::Internal(format!("Failed to initialize HuggingFace Hub client: {e}"))
             })?;
 
-            let repo = api.model(repo_id.to_string());
+            let (owner, repo_name) = split_id(repo_id);
+            let repo = client.model(owner, repo_name);
 
-            let model_path = repo.get(model_file).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to download model file '{model_file}' from '{repo_id}': {e}"
-                ))
-            })?;
+            let model_path = repo
+                .download_file()
+                .filename(model_file.to_string())
+                .send()
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to download model file '{model_file}' from '{repo_id}': {e}"
+                    ))
+                })?;
 
-            let tokenizer_path = repo.get(tokenizer_file).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to download tokenizer file '{tokenizer_file}' from '{repo_id}': {e}"
-                ))
-            })?;
+            let tokenizer_path = repo
+                .download_file()
+                .filename(tokenizer_file.to_string())
+                .send()
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to download tokenizer file '{tokenizer_file}' from '{repo_id}': {e}"
+                    ))
+                })?;
 
             Ok(ResolvedModel {
                 model_path,
@@ -90,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires network access (~23MB download on first run)"]
+    #[ignore = "requires network access (~90MB download on first run)"]
     fn preset_downloads_minilm_l6() {
         let config = EmbeddingModelConfig::MiniLmL6v2;
         let resolved = resolve(&config).unwrap();
