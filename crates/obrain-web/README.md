@@ -29,7 +29,9 @@ const r = JSON.parse(b.executer("MATCH (p:Personne) RETURN p.nom AS nom"));
 ```
 
 Persistant. `Base.ouvrir` doit être appelé dans un **worker dédié** : OPFS n'expose son accès
-synchrone que là. Hors worker (page principale, node), la Promise est rejetée par une erreur.
+synchrone que là. Hors worker, la Promise est rejetée par une erreur lisible. Vérifié dans node
+(`tests/js/suite.mjs`, « persistance : ouvrir hors worker dédié rejette… ») ; sur la page principale,
+ce rejet n'est pas couvert par la batterie automatique.
 
 ```js
 // worker.js
@@ -62,7 +64,9 @@ rendrait chaque écriture durable sans `persister()`, n'existe pas encore. Il n'
 paquet.
 
 Un seul écrivain par journal : un second `Base.ouvrir(nom)` sur le même fichier est refusé tant
-que le premier existe.
+que le premier n'est pas libéré (`free()`, ou ramassage par le GC, non déterministe). Le refus vient
+d'OPFS (`createSyncAccessHandle`) ; il ne nomme pas le détenteur. Test :
+`tests/navigateur.rs::un_second_ouvreur_du_meme_fichier_est_refuse`.
 
 ## Limites
 
