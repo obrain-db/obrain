@@ -40,7 +40,10 @@ fn un_modele_int8_local_rend_des_vecteurs_qui_portent_du_sens() {
     let inference = debut.elapsed();
     assert_eq!(v.len(), 3);
     assert!(v.iter().all(|x| x.len() == 384));
-    assert!(v.iter().all(|x| x.iter().all(|f| f.is_finite())), "un vecteur porte NaN/inf");
+    assert!(
+        v.iter().all(|x| x.iter().all(|f| f.is_finite())),
+        "un vecteur porte NaN/inf"
+    );
 
     let proche = cosinus(&v[0], &v[1]);
     let loin = cosinus(&v[0], &v[2]);
@@ -48,5 +51,7 @@ fn un_modele_int8_local_rend_des_vecteurs_qui_portent_du_sens() {
         proche > loin,
         "car~automobile ({proche:.3}) doit battre car~pie ({loin:.3})"
     );
-    eprintln!("MESURE int8 Mac : chargement {chargement:?} ; 3 textes {inference:?} ; cos proche {proche:.3} / loin {loin:.3}");
+    eprintln!(
+        "MESURE int8 Mac : chargement {chargement:?} ; 3 textes {inference:?} ; cos proche {proche:.3} / loin {loin:.3}"
+    );
 }
