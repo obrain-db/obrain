@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use crate::discovery::{DiscoveryOptions, Exclusion, discover};
+use crate::discovery::{DiscoveryOptions, Exclusion, discover_depuis};
 use crate::graph::{CodeGraph, NodeProps};
 use crate::lang;
 use crate::schema::{EdgeKind, NodeKind};
@@ -57,13 +57,28 @@ fn ex_lang_is_rust(file: &Path) -> bool {
 ///    registre (chaîne de confiance : même module → nom unique → suffixe) et
 ///    crée les arêtes CALLS (quand le callee est résolu).
 pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
+    index_repository_depuis(&crate::source::Disque::new(root), root, opts)
+}
+
+/// Indexe un arbre lu par `source`.
+///
+/// C'est le seul chemin d'indexation : `index_repository` n'est que ceci avec
+/// le disque. Un VFS — dont les opérations sont asynchrones — matérialise son
+/// arbre dans [`crate::source::Memoire`] puis appelle cette fonction ; il
+/// obtient le même graphe qu'une indexation sur disque, aux nœuds git près
+/// (voir [`crate::source::Source::racine_disque`]).
+pub fn index_repository_depuis(
+    source: &dyn crate::source::Source,
+    root: &Path,
+    opts: &IndexOptions,
+) -> IndexOutcome {
     let mut warnings = Vec::new();
     let registre = lang::build_registry();
 
     // Nom de projet : chemin absolu, `/` → `.` (contrat C, fqn.c).
     let project_name = project_name_from_path(root);
 
-    let disco = discover(root, &opts.discovery);
+    let disco = discover_depuis(source, root, &opts.discovery);
 
     // ── Phase 1 PARALLÈLE : structure + extraction (map) ────────────────
     // Chaque thread de rayon extrait ses fichiers localement (parser
@@ -107,11 +122,17 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                 .to_string_lossy()
                 .replace('/', ".");
             let file_qn = format!("{project_name}.{rel}.__file__");
-            let Ok(source) = std::fs::read_to_string(file) else {
+            let Ok(octets) = source.lire(file) else {
+                return None;
+            };
+            // Même contrat qu'avant (`read_to_string`) : un fichier qui n'est
+            // pas de l'UTF-8 valide n'est pas indexé. Passer en `lossy` ferait
+            // entrer des fichiers que l'indexeur n'a jamais vus.
+            let Ok(texte) = String::from_utf8(octets) else {
                 return None;
             };
             let lang = registre.language_for_path(file)?;
-            let ex = lang.extract(&source, file);
+            let ex = lang.extract(&texte, file);
             let base = file
                 .file_name()
                 .map(|b| b.to_string_lossy().to_string())
@@ -126,9 +147,7 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
             // même FQN (nœud fusionné → arêtes attribuées au mauvais fichier)
             // et la résolution same-module franchit les scopes réels.
             let is_file_scope = isolation_scope(root, file).is_some()
-                || (ex_lang_is_rust(file)
-                    && !file_is_mod_root
-                    && ISOLATE_SRC_FILE_MODULES);
+                || (ex_lang_is_rust(file) && !file_is_mod_root && ISOLATE_SRC_FILE_MODULES);
             let module_qn = if is_file_scope {
                 module_qn_per_file(&project_name, root, file)
             } else {
@@ -198,7 +217,14 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
     );
 
     // ── Contexte git : nœud Branch + HAS_BRANCH (tissage code ↔ historique) ──
-    let git_ctx = crate::git_ctx::capture(root);
+    // Git n'existe que sur un disque. Une source virtuelle n'a pas
+    // d'historique : `racine_disque()` rend `None`, et l'on n'écrit alors
+    // aucun nœud `Branch` — plutôt que d'interroger le vrai dépôt pour un
+    // chemin qui ne lui appartient pas.
+    let git_ctx = match source.racine_disque() {
+        Some(racine) => crate::git_ctx::capture(racine),
+        None => crate::git_ctx::GitContext::default(),
+    };
     if git_ctx.is_git {
         let branch_qn = format!("{project_name}:branch:{}", git_ctx.branch);
         let mut bprops = NodeProps {
@@ -341,10 +367,8 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                 // ne matche plus → repli sur le type parent unique global.
                 let parent = def.parent_class.as_deref().unwrap();
                 let cls_qn = format!("{}.{}", fe.module_qn, parent);
-                let cls: Option<crate::graph::NodeId> = graph
-                    .node_by_qn(&cls_qn)
-                    .map(|n| n.id)
-                    .or_else(|| {
+                let cls: Option<crate::graph::NodeId> =
+                    graph.node_by_qn(&cls_qn).map(|n| n.id).or_else(|| {
                         let suffix = format!(".{parent}");
                         let found: Vec<crate::graph::NodeId> = graph
                             .nodes()
@@ -536,7 +560,10 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
                     let hop = bindings.iter().any(|b2| {
                         b2.line >= call.line
                             && scope_start.map(|s| b2.line >= s).unwrap_or(true)
-                            && b2.init_call.as_ref().is_some_and(|(r, m)| r == base && m == name)
+                            && b2
+                                .init_call
+                                .as_ref()
+                                .is_some_and(|(r, m)| r == base && m == name)
                     });
                     if hop {
                         continue;
@@ -582,25 +609,23 @@ pub fn index_repository(root: &Path, opts: &IndexOptions) -> IndexOutcome {
         self_loops_gardes += fr.self_loops_gardes;
         for edge in &fr.edges {
             let mut props = crate::graph::EdgeProps::default();
-            props
-                .extra
-                .insert("strategy".into(), serde_json::Value::String(edge.strategy.into()));
-            props
-                .extra
-                .insert("confidence".into(), serde_json::Value::from(edge.confidence));
+            props.extra.insert(
+                "strategy".into(),
+                serde_json::Value::String(edge.strategy.into()),
+            );
+            props.extra.insert(
+                "confidence".into(),
+                serde_json::Value::from(edge.confidence),
+            );
             props
                 .extra
                 .insert("line".into(), serde_json::Value::from(edge.line));
-            props
-                .extra
-                .insert("caller_scope".into(), serde_json::Value::String(edge.caller_qn.clone()));
+            props.extra.insert(
+                "caller_scope".into(),
+                serde_json::Value::String(edge.caller_qn.clone()),
+            );
             if graph
-                .link_qns(
-                    EdgeKind::Calls,
-                    &edge.caller_qn,
-                    &edge.target_qn,
-                    props,
-                )
+                .link_qns(EdgeKind::Calls, &edge.caller_qn, &edge.target_qn, props)
                 .is_some()
             {
                 calls_resolus += 1;
@@ -922,22 +947,32 @@ fn eval(n: i64) -> i64 { if n <= 0 { 0 } else { eval(n - 1) } }
             .collect();
         // receiver_self : run → helper (méthode du MÊME type).
         assert!(
-            pairs.iter().any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.helper")),
+            pairs
+                .iter()
+                .any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.helper")),
             "run->helper manquant: {pairs:?}"
         );
         // self.run() résolu en self-loop → filtré (qualifier présent, pas de
         // récursion directe par nom nu).
         assert!(
-            !pairs.iter().any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.run")),
+            !pairs
+                .iter()
+                .any(|(a, b)| a.ends_with(".Wal.run") && b.ends_with(".Wal.run")),
             "self-loop self.run() non filtré: {pairs:?}"
         );
         // récursion directe par nom nu → gardée.
         assert!(
-            pairs.iter().any(|(a, b)| a.ends_with(".eval") && b.ends_with(".eval")),
+            pairs
+                .iter()
+                .any(|(a, b)| a.ends_with(".eval") && b.ends_with(".eval")),
             "récursion eval perdue: {pairs:?}"
         );
         // provenance : chaque CALLS porte strategy + confidence.
-        let n_calls = g.edges().iter().filter(|e| e.kind == EdgeKind::Calls).count();
+        let n_calls = g
+            .edges()
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls)
+            .count();
         let n_props = g
             .edges()
             .iter()
@@ -984,8 +1019,14 @@ fn eval(n: i64) -> i64 { if n <= 0 { 0 } else { eval(n - 1) } }
         // Deux FQN distincts pour `setup` (un par fichier isolé).
         let setup_a = format!("{proj}.tests.a.setup");
         let setup_b = format!("{proj}.tests.b.setup");
-        assert!(g.node_by_qn(&setup_a).is_some(), "setup de tests/a manquant");
-        assert!(g.node_by_qn(&setup_b).is_some(), "setup de tests/b manquant");
+        assert!(
+            g.node_by_qn(&setup_a).is_some(),
+            "setup de tests/a manquant"
+        );
+        assert!(
+            g.node_by_qn(&setup_b).is_some(),
+            "setup de tests/b manquant"
+        );
         let pairs: Vec<(String, String)> = g
             .edges()
             .iter()
@@ -1055,9 +1096,7 @@ mod tests {
             "inner->helper attribué au mauvais scope: {pairs:?}"
         );
         assert!(
-            pairs
-                .iter()
-                .all(|(a, _)| a != &module_tests),
+            pairs.iter().all(|(a, _)| a != &module_tests),
             "caller = Module (attribution non corrigée): {pairs:?}"
         );
     }

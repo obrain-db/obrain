@@ -113,7 +113,10 @@ impl DiscoveryResult {
 
     /// Nombre d'exclusions qui sont des artéfacts.
     pub fn nb_artefacts(&self) -> usize {
-        self.excluded.iter().filter(|e| e.raison.est_artefact()).count()
+        self.excluded
+            .iter()
+            .filter(|e| e.raison.est_artefact())
+            .count()
     }
 }
 
@@ -239,7 +242,10 @@ fn classer(nom: &str, est_repertoire: bool, exclure_artefacts: bool) -> Option<R
         }
     } else {
         let bas = nom.to_ascii_lowercase();
-        if FICHIERS_VERROUILLAGE.iter().any(|l| l.eq_ignore_ascii_case(&bas)) {
+        if FICHIERS_VERROUILLAGE
+            .iter()
+            .any(|l| l.eq_ignore_ascii_case(&bas))
+        {
             return Some(Raison::Verrouillage);
         }
         if SUFFIXES_MINIFIES.iter().any(|s| bas.ends_with(s)) {
@@ -259,37 +265,50 @@ fn classer(nom: &str, est_repertoire: bool, exclure_artefacts: bool) -> Option<R
 /// sans l'appliquer serait pire que pas d'exclusion du tout, parce qu'on la
 /// croirait en vigueur — c'est écrit ici pour que personne ne s'y trompe.
 pub fn discover(root: &Path, opts: &DiscoveryOptions) -> DiscoveryResult {
+    discover_depuis(&crate::source::Disque::new(root), root, opts)
+}
+
+/// Découvre les fichiers indexables sous `root`, en lisant par `source`.
+///
+/// `discover` n'est que ceci avec le disque. Un arbre en mémoire
+/// ([`crate::source::Memoire`]) traverse exactement les mêmes règles
+/// d'exclusion et le même budget — donc il rend les mêmes chemins, et
+/// l'indexation qui suit produit les mêmes FQN.
+pub fn discover_depuis(
+    source: &dyn crate::source::Source,
+    root: &Path,
+    opts: &DiscoveryOptions,
+) -> DiscoveryResult {
     let mut files = Vec::new();
     let mut excluded = Vec::new();
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = source.lister(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let nom = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        for entry in entries {
+            let nom = entry.nom;
+            let path = entry.chemin;
+            let is_dir = entry.est_repertoire;
+            let is_file = entry.est_fichier;
 
             if is_dir {
                 match classer(&nom, true, opts.exclure_artefacts) {
-                    Some(raison) => excluded.push(Exclusion { chemin: path, raison }),
+                    Some(raison) => excluded.push(Exclusion {
+                        chemin: path,
+                        raison,
+                    }),
                     None => stack.push(path),
                 }
             } else if is_file {
                 match classer(&nom, false, opts.exclure_artefacts) {
-                    Some(raison) => excluded.push(Exclusion { chemin: path, raison }),
+                    Some(raison) => excluded.push(Exclusion {
+                        chemin: path,
+                        raison,
+                    }),
                     None => {
-                        let trop_gros = entry
-                            .metadata()
-                            .map(|m| m.len() > opts.max_file_bytes)
-                            .unwrap_or(false);
+                        let trop_gros = entry.taille > opts.max_file_bytes;
                         if trop_gros {
                             excluded.push(Exclusion {
                                 chemin: path,
@@ -338,10 +357,11 @@ mod tests {
         fs::write(td.path().join("small.rs"), "fn f() {}".as_bytes()).unwrap();
         let r = discover(td.path(), &DiscoveryOptions::default());
         assert!(r.files.iter().any(|f| f.ends_with("small.rs")));
-        assert!(r
-            .excluded
-            .iter()
-            .any(|e| e.chemin.ends_with("big.rs") && e.raison == Raison::TropGros));
+        assert!(
+            r.excluded
+                .iter()
+                .any(|e| e.chemin.ends_with("big.rs") && e.raison == Raison::TropGros)
+        );
     }
 
     #[test]
@@ -350,7 +370,11 @@ mod tests {
         let p = td.path();
         // Exactement ce qui a été MESURÉ comme contaminant le graphe :
         fs::create_dir_all(p.join("dist/static/assets")).unwrap();
-        fs::write(p.join("dist/static/assets/_app-B22zkXm.js"), "function t(){}").unwrap();
+        fs::write(
+            p.join("dist/static/assets/_app-B22zkXm.js"),
+            "function t(){}",
+        )
+        .unwrap();
         fs::create_dir_all(p.join("web/git/vendor")).unwrap();
         fs::write(p.join("web/git/vendor/three.module.js"), "class A{}").unwrap();
         fs::create_dir_all(p.join("node_modules/x")).unwrap();
@@ -362,10 +386,21 @@ mod tests {
         fs::write(p.join("src/main.rs"), "fn main(){}").unwrap();
 
         let r = discover(p, &DiscoveryOptions::default());
-        assert!(r.files.iter().any(|f| f.ends_with("src/main.rs")), "le source doit rester");
+        assert!(
+            r.files.iter().any(|f| f.ends_with("src/main.rs")),
+            "le source doit rester"
+        );
         assert!(!r.files.iter().any(|f| f.to_string_lossy().contains("dist")));
-        assert!(!r.files.iter().any(|f| f.to_string_lossy().contains("vendor")));
-        assert!(!r.files.iter().any(|f| f.to_string_lossy().contains("node_modules")));
+        assert!(
+            !r.files
+                .iter()
+                .any(|f| f.to_string_lossy().contains("vendor"))
+        );
+        assert!(
+            !r.files
+                .iter()
+                .any(|f| f.to_string_lossy().contains("node_modules"))
+        );
         assert!(!r.files.iter().any(|f| f.ends_with("pnpm-lock.yaml")));
 
         let compte = r.par_raison();
@@ -386,7 +421,12 @@ mod tests {
         fs::write(p.join("src/main.rs"), "fn main(){}").unwrap();
 
         let avec = discover(p, &DiscoveryOptions::default());
-        assert!(!avec.files.iter().any(|f| f.to_string_lossy().contains("vendor")));
+        assert!(
+            !avec
+                .files
+                .iter()
+                .any(|f| f.to_string_lossy().contains("vendor"))
+        );
 
         let sans = discover(
             p,
@@ -396,7 +436,9 @@ mod tests {
             },
         );
         assert!(
-            sans.files.iter().any(|f| f.to_string_lossy().contains("vendor")),
+            sans.files
+                .iter()
+                .any(|f| f.to_string_lossy().contains("vendor")),
             "sans la politique, le vendoris revient — c'est ce qui permet le avant/après"
         );
     }

@@ -40,6 +40,7 @@ pub mod pack_langs;
 pub mod parse;
 pub mod resolve;
 pub mod schema;
+pub mod source;
 pub mod spec_engine;
 pub mod spec_langs;
 pub mod tests_detect;
@@ -47,6 +48,7 @@ pub mod tests_detect;
 pub use graph::{CodeGraph, Edge, Node};
 pub use index::IndexOptions;
 pub use schema::{EdgeKind, NodeKind};
+pub use source::{Disque, Entree, Memoire, Source, SourceError};
 
 /// Version du contrat de graphe produit (indépendante de
 /// `SUBSTRATE_FORMAT_VERSION` — ce crate écrit dans le format substrate
