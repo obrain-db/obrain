@@ -1,0 +1,5340 @@
+{
+ "CBM_LANG_GO": {
+  "name": "go",
+  "function": [
+   "function_declaration",
+   "method_declaration",
+   "method_elem",
+   "func_literal"
+  ],
+  "class": [
+   "type_spec",
+   "type_alias",
+   "type_declaration"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "import_declaration",
+   "import"
+  ],
+  "import_from": [
+   "import_declaration",
+   "import"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "expression_switch_statement",
+   "type_switch_statement",
+   "select_statement",
+   "expression_case",
+   "type_case",
+   "communication_case",
+   "default_case",
+   "defer_statement",
+   "go_statement"
+  ],
+  "var": [
+   "var_declaration",
+   "const_declaration"
+  ],
+  "assign": [
+   "assignment_statement",
+   "short_var_declaration"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PYTHON": {
+  "name": "python",
+  "function": [
+   "function_definition"
+  ],
+  "class": [
+   "class_definition"
+  ],
+  "field": [],
+  "module": [
+   "module"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "import_statement",
+   "import"
+  ],
+  "import_from": [
+   "import_from_statement",
+   "future_import_statement"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "try_statement",
+   "except_clause",
+   "with_statement",
+   "elif_clause"
+  ],
+  "var": [
+   "assignment",
+   "augmented_assignment"
+  ],
+  "assign": [
+   "assignment",
+   "augmented_assignment"
+  ],
+  "throw": [
+   "raise_statement"
+  ],
+  "decorator": [
+   "decorator"
+  ]
+ },
+ "CBM_LANG_JAVASCRIPT": {
+  "name": "javascript",
+  "function": [
+   "function_declaration",
+   "generator_function_declaration",
+   "function_expression",
+   "arrow_function",
+   "method_definition"
+  ],
+  "class": [
+   "class_declaration",
+   "class"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import_statement",
+   "export_statement",
+   "import",
+   "extends",
+   "require"
+  ],
+  "import_from": [
+   "import_statement",
+   "export_statement",
+   "import",
+   "extends",
+   "require"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "switch_statement",
+   "switch_case",
+   "switch_default",
+   "try_statement",
+   "catch_clause",
+   "do_statement"
+  ],
+  "var": [
+   "lexical_declaration",
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression",
+   "augmented_assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_TYPESCRIPT": {
+  "name": "typescript",
+  "function": [
+   "function_declaration",
+   "generator_function_declaration",
+   "function_expression",
+   "arrow_function",
+   "method_definition",
+   "function_signature"
+  ],
+  "class": [
+   "class_declaration",
+   "class",
+   "abstract_class_declaration",
+   "enum_declaration",
+   "interface_declaration",
+   "type_alias_declaration",
+   "internal_module"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import_statement",
+   "export_statement",
+   "import",
+   "extends",
+   "require"
+  ],
+  "import_from": [
+   "import_statement",
+   "export_statement",
+   "import",
+   "extends",
+   "require"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "switch_statement",
+   "switch_case",
+   "switch_default",
+   "try_statement",
+   "catch_clause",
+   "do_statement"
+  ],
+  "var": [
+   "lexical_declaration",
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression",
+   "augmented_assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": [
+   "decorator"
+  ]
+ },
+ "CBM_LANG_TSX": {
+  "name": "tsx",
+  "function": [
+   "function_declaration",
+   "generator_function_declaration",
+   "function_expression",
+   "arrow_function",
+   "method_definition",
+   "function_signature"
+  ],
+  "class": [
+   "class_declaration",
+   "class",
+   "abstract_class_declaration",
+   "enum_declaration",
+   "interface_declaration",
+   "type_alias_declaration",
+   "internal_module"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import_statement",
+   "export_statement",
+   "import",
+   "extends",
+   "require"
+  ],
+  "import_from": [
+   "import_statement",
+   "export_statement",
+   "import",
+   "extends",
+   "require"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "switch_statement",
+   "switch_case",
+   "switch_default",
+   "try_statement",
+   "catch_clause",
+   "do_statement"
+  ],
+  "var": [
+   "lexical_declaration",
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression",
+   "augmented_assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": [
+   "decorator"
+  ]
+ },
+ "CBM_LANG_RUST": {
+  "name": "rust",
+  "function": [
+   "function_item",
+   "function_signature_item",
+   "closure_expression"
+  ],
+  "class": [
+   "struct_item",
+   "enum_item",
+   "union_item",
+   "trait_item",
+   "type_item",
+   "impl_item"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "source_file",
+   "mod_item"
+  ],
+  "call": [
+   "call_expression",
+   "macro_invocation"
+  ],
+  "import": [
+   "use_declaration",
+   "extern_crate_declaration"
+  ],
+  "import_from": [
+   "use_declaration"
+  ],
+  "branch": [
+   "if_expression",
+   "for_expression",
+   "while_expression",
+   "loop_expression",
+   "match_expression",
+   "match_arm"
+  ],
+  "var": [
+   "static_item",
+   "const_item"
+  ],
+  "assign": [
+   "assignment_expression",
+   "compound_assignment_expr"
+  ],
+  "throw": [],
+  "decorator": [
+   "attribute_item"
+  ]
+ },
+ "CBM_LANG_JAVA": {
+  "name": "java",
+  "function": [
+   "method_declaration",
+   "constructor_declaration",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_declaration",
+   "interface_declaration",
+   "enum_declaration",
+   "annotation_type_declaration",
+   "record_declaration",
+   "module_declaration",
+   "package_declaration"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "method_invocation",
+   "object_creation_expression"
+  ],
+  "import": [
+   "import_declaration",
+   "extends",
+   "import"
+  ],
+  "import_from": [
+   "import_declaration",
+   "extends",
+   "import"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "enhanced_for_statement",
+   "while_statement",
+   "switch_expression",
+   "switch_block_statement_group",
+   "try_statement",
+   "catch_clause"
+  ],
+  "var": [
+   "field_declaration",
+   "local_variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "throws_clause": "throws",
+  "decorator": [
+   "marker_annotation",
+   "annotation"
+  ]
+ },
+ "CBM_LANG_CPP": {
+  "name": "cpp",
+  "function": [
+   "function_definition",
+   "declaration",
+   "field_declaration",
+   "template_declaration",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_specifier",
+   "struct_specifier",
+   "union_specifier",
+   "enum_specifier",
+   "type_definition"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "translation_unit",
+   "namespace_definition",
+   "linkage_specification",
+   "declaration"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "preproc_include"
+  ],
+  "import_from": [
+   "preproc_include"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_range_loop",
+   "while_statement",
+   "switch_statement",
+   "case_statement",
+   "try_statement",
+   "catch_clause"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_CSHARP": {
+  "name": "csharp",
+  "function": [
+   "destructor_declaration",
+   "local_function_statement",
+   "function_pointer_type",
+   "constructor_declaration",
+   "anonymous_method_expression",
+   "lambda_expression",
+   "method_declaration"
+  ],
+  "class": [
+   "class_declaration",
+   "struct_declaration",
+   "enum_declaration",
+   "interface_declaration",
+   "record_declaration",
+   "type_declaration"
+  ],
+  "field": [
+   "field_declaration",
+   "property_declaration"
+  ],
+  "module": [
+   "compilation_unit"
+  ],
+  "call": [
+   "invocation_expression",
+   "object_creation_expression"
+  ],
+  "import": [
+   "using_directive",
+   "namespace_use_declaration",
+   "using_statement",
+   "namespace_declaration"
+  ],
+  "import_from": [
+   "using_directive",
+   "namespace_use_declaration",
+   "using_statement",
+   "namespace_declaration"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "foreach_statement",
+   "while_statement",
+   "switch_statement",
+   "case_switch_label",
+   "try_statement",
+   "catch_clause"
+  ],
+  "var": [
+   "field_declaration",
+   "local_declaration_statement"
+  ],
+  "assign": [
+   "assignment_expression",
+   "postfix_unary_expression",
+   "prefix_unary_expression"
+  ],
+  "throw": [
+   "throw_statement",
+   "throw_expression"
+  ],
+  "decorator": [
+   "attribute"
+  ]
+ },
+ "CBM_LANG_PHP": {
+  "name": "php",
+  "function": [
+   "function_static_declaration",
+   "anonymous_function",
+   "function_definition",
+   "arrow_function",
+   "method_declaration"
+  ],
+  "class": [
+   "trait_declaration",
+   "enum_declaration",
+   "interface_declaration",
+   "class_declaration"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "member_call_expression",
+   "scoped_call_expression",
+   "function_call_expression",
+   "object_creation_expression",
+   "nullsafe_member_call_expression"
+  ],
+  "import": [
+   "extends",
+   "include",
+   "namespace_use_declaration",
+   "require",
+   "use_declaration"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "foreach_statement",
+   "while_statement",
+   "switch_statement",
+   "case_statement",
+   "try_statement",
+   "catch_clause"
+  ],
+  "var": [
+   "expression_statement"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_expression"
+  ],
+  "decorator": [
+   "attribute_group"
+  ]
+ },
+ "CBM_LANG_LUA": {
+  "name": "lua",
+  "function": [
+   "function_declaration",
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "chunk"
+  ],
+  "call": [
+   "function_call"
+  ],
+  "import": [
+   "function_call"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "repeat_statement"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SCALA": {
+  "name": "scala",
+  "function": [
+   "function_definition",
+   "function_declaration",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_definition",
+   "object_definition",
+   "trait_definition",
+   "enum_definition",
+   "type_definition"
+  ],
+  "field": [],
+  "module": [
+   "compilation_unit"
+  ],
+  "call": [
+   "call_expression",
+   "infix_expression",
+   "instance_expression"
+  ],
+  "import": [
+   "import_declaration",
+   "extends",
+   "import",
+   "using_directive"
+  ],
+  "import_from": [
+   "import_declaration",
+   "extends",
+   "import",
+   "using_directive"
+  ],
+  "branch": [
+   "if_expression",
+   "for_expression",
+   "while_expression",
+   "match_expression",
+   "case_clause",
+   "try_expression",
+   "catch_clause"
+  ],
+  "var": [
+   "val_definition",
+   "var_definition",
+   "val_declaration",
+   "var_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_expression"
+  ],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_KOTLIN": {
+  "name": "kotlin",
+  "function": [
+   "function_declaration",
+   "secondary_constructor",
+   "anonymous_function"
+  ],
+  "class": [
+   "class_declaration",
+   "object_declaration",
+   "companion_object",
+   "type_alias"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "import"
+  ],
+  "import_from": [
+   "import"
+  ],
+  "branch": [
+   "if_expression",
+   "for_statement",
+   "while_statement",
+   "when_expression",
+   "when_entry",
+   "try_expression",
+   "catch_block"
+  ],
+  "var": [
+   "property_declaration"
+  ],
+  "assign": [
+   "assignment",
+   "directly_assignable_expression"
+  ],
+  "throw": [
+   "throw_expression"
+  ],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_RUBY": {
+  "name": "ruby",
+  "function": [
+   "method",
+   "singleton_method"
+  ],
+  "class": [
+   "class",
+   "module"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "call"
+  ],
+  "import_from": [],
+  "branch": [
+   "if",
+   "unless",
+   "while",
+   "until",
+   "for",
+   "case",
+   "when",
+   "rescue",
+   "elsif"
+  ],
+  "var": [
+   "assignment"
+  ],
+  "assign": [
+   "assignment",
+   "operator_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_C": {
+  "name": "c",
+  "function": [
+   "function_definition"
+  ],
+  "class": [
+   "struct_specifier",
+   "enum_specifier",
+   "union_specifier",
+   "type_definition"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "do_statement",
+   "switch_statement",
+   "case_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_BASH": {
+  "name": "bash",
+  "function": [
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "command"
+  ],
+  "import": [
+   "command"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "while_statement",
+   "for_statement",
+   "case_statement",
+   "elif_clause"
+  ],
+  "var": [
+   "variable_assignment"
+  ],
+  "assign": [
+   "variable_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ZIG": {
+  "name": "zig",
+  "function": [
+   "function_declaration",
+   "test_declaration",
+   "function_signature"
+  ],
+  "class": [
+   "struct_declaration",
+   "enum_declaration",
+   "union_declaration"
+  ],
+  "field": [
+   "container_field"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "builtin_function"
+  ],
+  "import": [
+   "builtin_function"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "switch_expression"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ELIXIR": {
+  "name": "elixir",
+  "function": [
+   "call",
+   "anonymous_function"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [
+   "call",
+   "binary_operator"
+  ],
+  "import": [
+   "call"
+  ],
+  "import_from": [],
+  "branch": [
+   "call"
+  ],
+  "var": [
+   "binary_operator"
+  ],
+  "assign": [
+   "binary_operator"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_HASKELL": {
+  "name": "haskell",
+  "function": [
+   "function",
+   "signature",
+   "bind"
+  ],
+  "class": [
+   "class",
+   "data_type",
+   "newtype"
+  ],
+  "field": [],
+  "module": [
+   "haskell"
+  ],
+  "call": [
+   "infix",
+   "apply"
+  ],
+  "import": [
+   "import",
+   "instance"
+  ],
+  "import_from": [],
+  "branch": [
+   "match",
+   "guards",
+   "if",
+   "case",
+   "do",
+   "boolean"
+  ],
+  "var": [
+   "function"
+  ],
+  "assign": [
+   "function"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_OCAML": {
+  "name": "ocaml",
+  "function": [
+   "value_definition",
+   "constructor_declaration",
+   "method_definition"
+  ],
+  "class": [
+   "type_definition",
+   "class_definition",
+   "module_definition",
+   "exception_definition",
+   "record_declaration"
+  ],
+  "field": [],
+  "module": [
+   "compilation_unit"
+  ],
+  "call": [
+   "application_expression",
+   "infix_expression",
+   "method_invocation",
+   "module_application",
+   "new_expression"
+  ],
+  "import": [
+   "open_module",
+   "include"
+  ],
+  "import_from": [],
+  "branch": [
+   "match_expression",
+   "if_expression",
+   "match_case"
+  ],
+  "var": [
+   "value_definition"
+  ],
+  "assign": [
+   "value_definition"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_OBJC": {
+  "name": "objc",
+  "function": [
+   "function_definition",
+   "method_definition",
+   "method_declaration"
+  ],
+  "class": [
+   "class_interface",
+   "class_implementation",
+   "protocol_declaration",
+   "class_declaration",
+   "enum_specifier",
+   "struct_declaration",
+   "struct_specifier",
+   "type_definition",
+   "union_specifier"
+  ],
+  "field": [
+   "property_declaration"
+  ],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "call_expression",
+   "message_expression"
+  ],
+  "import": [
+   "preproc_import",
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "switch_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SWIFT": {
+  "name": "swift",
+  "function": [
+   "function_declaration",
+   "protocol_function_declaration",
+   "macro_declaration"
+  ],
+  "class": [
+   "class_declaration",
+   "protocol_declaration",
+   "struct_declaration",
+   "enum_declaration"
+  ],
+  "field": [
+   "property_declaration"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "constructor_expression",
+   "macro_invocation"
+  ],
+  "import": [
+   "import_declaration",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "guard_statement",
+   "for_statement",
+   "while_statement",
+   "switch_statement"
+  ],
+  "var": [
+   "property_declaration"
+  ],
+  "assign": [
+   "assignment"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": [
+   "attribute"
+  ]
+ },
+ "CBM_LANG_DART": {
+  "name": "dart",
+  "function": [
+   "function_signature",
+   "method_signature",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_definition",
+   "enum_declaration",
+   "mixin_declaration",
+   "type_alias"
+  ],
+  "field": [
+   "declaration"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "selector",
+   "new_expression"
+  ],
+  "import": [
+   "import_or_export",
+   "extends",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "switch_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_expression"
+  ],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_PERL": {
+  "name": "perl",
+  "function": [
+   "subroutine_declaration_statement"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "ambiguous_function_call_expression",
+   "function_call_expression",
+   "func1op_call_expression",
+   "method_call_expression"
+  ],
+  "import": [
+   "use_statement",
+   "require_statement",
+   "require"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "unless_statement",
+   "for_statement",
+   "foreach_statement",
+   "while_statement"
+  ],
+  "var": [
+   "variable_declaration",
+   "expression_statement"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GROOVY": {
+  "name": "groovy",
+  "function": [
+   "function_definition",
+   "function_declaration"
+  ],
+  "class": [
+   "class_definition"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_call",
+   "juxt_function_call"
+  ],
+  "import": [
+   "groovy_import",
+   "extends",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "switch_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_ERLANG": {
+  "name": "erlang",
+  "function": [
+   "function_clause"
+  ],
+  "class": [
+   "type_alias"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "module_attribute",
+   "import",
+   "include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression",
+   "case_expression",
+   "receive_expression"
+  ],
+  "var": [
+   "pp_define",
+   "record_decl"
+  ],
+  "assign": [
+   "match_expression"
+  ],
+  "throw": [
+   "call"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_R": {
+  "name": "r",
+  "function": [
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "call"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement"
+  ],
+  "var": [
+   "binary_operator"
+  ],
+  "assign": [
+   "binary_operator"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_HTML": {
+  "name": "html",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CSS": {
+  "name": "css",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "stylesheet"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "import_statement"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SCSS": {
+  "name": "scss",
+  "function": [
+   "mixin_statement",
+   "function_statement"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "stylesheet"
+  ],
+  "call": [
+   "call_expression",
+   "include_statement"
+  ],
+  "import": [
+   "import_statement",
+   "use_statement",
+   "include_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_YAML": {
+  "name": "yaml",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "stream"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "block_mapping_pair"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_TOML": {
+  "name": "toml",
+  "function": [],
+  "class": [
+   "table",
+   "table_array_element"
+  ],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "pair"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_HCL": {
+  "name": "hcl",
+  "function": [],
+  "class": [
+   "block"
+  ],
+  "field": [],
+  "module": [
+   "config_file"
+  ],
+  "call": [
+   "function_call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "attribute"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SQL": {
+  "name": "sql",
+  "function": [
+   "create_function",
+   "function_declaration",
+   "create_procedure"
+  ],
+  "class": [
+   "custom_type",
+   "create_table",
+   "create_view",
+   "create_materialized_view"
+  ],
+  "field": [
+   "column_definition"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "invocation"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "case_expression"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_DOCKERFILE": {
+  "name": "dockerfile",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "env_instruction",
+   "arg_instruction"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CLOJURE": {
+  "name": "clojure",
+  "function": [
+   "list_lit"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [
+   "list_lit"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_FSHARP": {
+  "name": "fsharp",
+  "function": [
+   "function_declaration",
+   "value_declaration",
+   "function_or_value_defn"
+  ],
+  "class": [
+   "type_definition",
+   "exception_definition"
+  ],
+  "field": [],
+  "module": [
+   "file"
+  ],
+  "call": [
+   "application_expression"
+  ],
+  "import": [
+   "import_decl",
+   "open_expression",
+   "instance"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression",
+   "for_expression",
+   "while_expression",
+   "match_expression",
+   "elif_expression"
+  ],
+  "var": [
+   "value_declaration"
+  ],
+  "assign": [
+   "value_declaration"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JULIA": {
+  "name": "julia",
+  "function": [
+   "function_definition",
+   "short_function_definition",
+   "assignment"
+  ],
+  "class": [
+   "struct_definition",
+   "abstract_definition",
+   "primitive_definition"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "broadcast_call_expression"
+  ],
+  "import": [
+   "import_statement",
+   "using_statement",
+   "export_statement",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "try_statement"
+  ],
+  "var": [
+   "const_statement",
+   "assignment"
+  ],
+  "assign": [
+   "assignment",
+   "compound_assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_VIMSCRIPT": {
+  "name": "vimscript",
+  "function": [
+   "function_definition",
+   "function_declaration",
+   "lambda_expression"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "script_file"
+  ],
+  "call": [
+   "call_expression",
+   "call",
+   "command"
+  ],
+  "import": [
+   "include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "try_statement"
+  ],
+  "var": [
+   "let_statement"
+  ],
+  "assign": [
+   "let_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_NIX": {
+  "name": "nix",
+  "function": [
+   "function_expression"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_expression"
+  ],
+  "call": [
+   "apply_expression"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_expression"
+  ],
+  "var": [
+   "binding"
+  ],
+  "assign": [
+   "binding"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_COMMONLISP": {
+  "name": "commonlisp",
+  "function": [
+   "defun"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [
+   "list_lit"
+  ],
+  "import": [
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ELM": {
+  "name": "elm",
+  "function": [
+   "value_declaration",
+   "function_declaration"
+  ],
+  "class": [
+   "type_declaration",
+   "type_alias_declaration",
+   "module_declaration"
+  ],
+  "field": [],
+  "module": [
+   "file"
+  ],
+  "call": [
+   "function_call_expr"
+  ],
+  "import": [
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "case_of_expr",
+   "if_else_expr"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_FORTRAN": {
+  "name": "fortran",
+  "function": [
+   "function",
+   "subroutine",
+   "function_statement",
+   "subroutine_statement"
+  ],
+  "class": [
+   "derived_type_definition",
+   "enum_statement"
+  ],
+  "field": [],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "call_expression",
+   "subroutine_call"
+  ],
+  "import": [
+   "use_statement",
+   "include_statement",
+   "extends",
+   "import",
+   "import_statement",
+   "include",
+   "open_statement",
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "do_loop_statement",
+   "where_statement",
+   "select_case_statement"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CUDA": {
+  "name": "cuda",
+  "function": [
+   "function_definition",
+   "declaration",
+   "field_declaration",
+   "template_declaration",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_specifier",
+   "struct_specifier",
+   "union_specifier",
+   "enum_specifier",
+   "type_definition"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "translation_unit",
+   "namespace_definition",
+   "linkage_specification",
+   "declaration"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "preproc_include"
+  ],
+  "import_from": [
+   "preproc_include"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_range_loop",
+   "while_statement",
+   "switch_statement",
+   "case_statement",
+   "try_statement",
+   "catch_clause"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_COBOL": {
+  "name": "cobol",
+  "function": [
+   "program_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_statement"
+  ],
+  "import": [
+   "open_statement",
+   "use_statement",
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "evaluate_statement",
+   "perform_statement"
+  ],
+  "var": [
+   "data_description_entry"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_VERILOG": {
+  "name": "verilog",
+  "function": [
+   "function_declaration",
+   "task_declaration",
+   "function_body_declaration",
+   "function_statement"
+  ],
+  "class": [
+   "module_declaration",
+   "class_declaration",
+   "interface_declaration",
+   "package_declaration",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "system_tf_call",
+   "subroutine_call",
+   "function_subroutine_call",
+   "method_call"
+  ],
+  "import": [
+   "extends",
+   "import",
+   "package_import_declaration"
+  ],
+  "import_from": [],
+  "branch": [
+   "conditional_statement",
+   "case_statement",
+   "loop_statement"
+  ],
+  "var": [
+   "net_declaration",
+   "data_declaration"
+  ],
+  "assign": [
+   "blocking_assignment",
+   "nonblocking_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_EMACSLISP": {
+  "name": "emacslisp",
+  "function": [
+   "function_definition",
+   "macro_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "list"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JSON": {
+  "name": "json",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "pair"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_XML": {
+  "name": "xml",
+  "function": [],
+  "class": [
+   "element"
+  ],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MARKDOWN": {
+  "name": "markdown",
+  "function": [],
+  "class": [
+   "atx_heading",
+   "setext_heading"
+  ],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MAKEFILE": {
+  "name": "makefile",
+  "function": [
+   "rule",
+   "recipe"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "makefile"
+  ],
+  "call": [
+   "function_call",
+   "call",
+   "shell_function"
+  ],
+  "import": [
+   "include_directive",
+   "include"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "variable_assignment"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CMAKE": {
+  "name": "cmake",
+  "function": [
+   "function_def",
+   "macro_def"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "normal_command"
+  ],
+  "import": [
+   "include",
+   "include_directive"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PROTOBUF": {
+  "name": "protobuf",
+  "function": [
+   "rpc"
+  ],
+  "class": [
+   "message",
+   "enum",
+   "service"
+  ],
+  "field": [
+   "field",
+   "map_field",
+   "oneof_field"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "import"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GRAPHQL": {
+  "name": "graphql",
+  "function": [],
+  "class": [
+   "object_type_definition",
+   "input_object_type_definition",
+   "enum_type_definition",
+   "interface_type_definition",
+   "union_type_definition",
+   "scalar_type_definition",
+   "type_definition"
+  ],
+  "field": [
+   "field_definition",
+   "input_value_definition"
+  ],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_VUE": {
+  "name": "vue",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SVELTE": {
+  "name": "svelte",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "each_statement",
+   "await_statement"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MESON": {
+  "name": "meson",
+  "function": [
+   "function_expression"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "normal_command"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "foreach_statement"
+  ],
+  "var": [
+   "assignment_statement"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GLSL": {
+  "name": "glsl",
+  "function": [
+   "function_definition"
+  ],
+  "class": [
+   "struct_specifier",
+   "enum_specifier",
+   "union_specifier",
+   "type_definition"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "do_statement",
+   "switch_statement",
+   "case_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_INI": {
+  "name": "ini",
+  "function": [],
+  "class": [
+   "section"
+  ],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "setting"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MATLAB": {
+  "name": "matlab",
+  "function": [
+   "function_definition",
+   "function_signature"
+  ],
+  "class": [
+   "class_definition"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_call",
+   "command"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "switch_statement",
+   "try_statement"
+  ],
+  "var": [
+   "assignment"
+  ],
+  "assign": [
+   "assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_LEAN": {
+  "name": "lean",
+  "function": [
+   "def",
+   "theorem",
+   "instance",
+   "abbrev"
+  ],
+  "class": [
+   "structure",
+   "class_inductive",
+   "inductive"
+  ],
+  "field": [],
+  "module": [
+   "module"
+  ],
+  "call": [
+   "apply"
+  ],
+  "import": [
+   "import",
+   "extends",
+   "instance"
+  ],
+  "import_from": [],
+  "branch": [
+   "if",
+   "match",
+   "do"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_FORM": {
+  "name": "form",
+  "function": [
+   "procedure_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_statement"
+  ],
+  "import": [
+   "include_directive"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "repeat_statement",
+   "do_loop"
+  ],
+  "var": [
+   "declaration_statement"
+  ],
+  "assign": [
+   "substitution_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MAGMA": {
+  "name": "magma",
+  "function": [
+   "function_definition",
+   "procedure_definition",
+   "intrinsic_definition",
+   "anonymous_function"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "load_statement",
+   "require",
+   "require_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "repeat_statement",
+   "case_statement"
+  ],
+  "var": [
+   "assignment_statement"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_WOLFRAM": {
+  "name": "wolfram",
+  "function": [
+   "set_delayed_top",
+   "set_top",
+   "set_delayed",
+   "set"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "apply"
+  ],
+  "import": [
+   "get_top"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SOLIDITY": {
+  "name": "solidity",
+  "function": [
+   "function_definition",
+   "constructor_definition",
+   "modifier_definition",
+   "fallback_receive_definition"
+  ],
+  "class": [
+   "contract_declaration",
+   "interface_declaration",
+   "library_declaration",
+   "struct_declaration",
+   "enum_declaration",
+   "type_alias"
+  ],
+  "field": [
+   "state_variable_declaration",
+   "struct_member"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "call",
+   "new_expression"
+  ],
+  "import": [
+   "import_directive",
+   "import",
+   "using_directive"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "do_while_statement",
+   "try_statement"
+  ],
+  "var": [
+   "variable_declaration_statement",
+   "state_variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression",
+   "augmented_assignment_expression"
+  ],
+  "throw": [
+   "revert_statement",
+   "emit_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_TYPST": {
+  "name": "typst",
+  "function": [
+   "lambda",
+   "let"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "import",
+   "include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if",
+   "for",
+   "while"
+  ],
+  "var": [
+   "let"
+  ],
+  "assign": [
+   "assign",
+   "set"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GDSCRIPT": {
+  "name": "gdscript",
+  "function": [
+   "function_definition",
+   "constructor_definition",
+   "lambda"
+  ],
+  "class": [
+   "class_definition",
+   "enum_definition"
+  ],
+  "field": [
+   "variable_statement",
+   "export_variable_statement",
+   "onready_variable_statement",
+   "signal_statement"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call",
+   "attribute_call",
+   "base_call"
+  ],
+  "import": [
+   "extends_statement",
+   "class_name_statement",
+   "extends"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "match_statement"
+  ],
+  "var": [
+   "variable_statement",
+   "const_statement"
+  ],
+  "assign": [
+   "assignment",
+   "augmented_assignment"
+  ],
+  "throw": [],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_QML": {
+  "name": "qml",
+  "function": [
+   "function_declaration",
+   "generator_function_declaration",
+   "function_expression",
+   "arrow_function",
+   "method_definition",
+   "function_signature"
+  ],
+  "class": [
+   "class_declaration",
+   "class",
+   "abstract_class_declaration",
+   "enum_declaration",
+   "interface_declaration",
+   "ui_inline_component"
+  ],
+  "field": [
+   "ui_property",
+   "ui_signal",
+   "public_field_definition"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import_statement",
+   "import",
+   "ui_import"
+  ],
+  "import_from": [
+   "import_statement",
+   "import",
+   "ui_import"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "switch_statement",
+   "switch_case",
+   "switch_default",
+   "try_statement",
+   "catch_clause",
+   "do_statement"
+  ],
+  "var": [
+   "lexical_declaration",
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression",
+   "augmented_assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": [
+   "decorator"
+  ]
+ },
+ "CBM_LANG_CFSCRIPT": {
+  "name": "cfscript",
+  "function": [
+   "function_declaration",
+   "function_expression",
+   "arrow_function",
+   "method_definition"
+  ],
+  "class": [],
+  "field": [
+   "property_declaration"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import_statement",
+   "import"
+  ],
+  "import_from": [
+   "import_statement",
+   "import"
+  ],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "switch_statement",
+   "switch_case",
+   "switch_default",
+   "try_statement",
+   "catch_clause",
+   "do_statement"
+  ],
+  "var": [
+   "lexical_declaration",
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression",
+   "augmented_assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_CFML": {
+  "name": "cfml",
+  "function": [
+   "cf_function_tag",
+   "function_declaration",
+   "function_expression"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program",
+   "component_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "cf_if_tag",
+   "cf_elseif_tag",
+   "cf_else_tag",
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "switch_statement"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GLEAM": {
+  "name": "gleam",
+  "function": [
+   "function",
+   "anonymous_function",
+   "external_function"
+  ],
+  "class": [
+   "type_definition",
+   "type_alias",
+   "custom_type"
+  ],
+  "field": [
+   "field"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_call"
+  ],
+  "import": [
+   "import",
+   "unqualified_import"
+  ],
+  "import_from": [],
+  "branch": [
+   "case",
+   "case_clause"
+  ],
+  "var": [
+   "let",
+   "constant"
+  ],
+  "assign": [
+   "let_assert"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_POWERSHELL": {
+  "name": "powershell",
+  "function": [
+   "function_statement"
+  ],
+  "class": [
+   "class_statement",
+   "enum_statement",
+   "type_spec"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "invokation_expression",
+   "command"
+  ],
+  "import": [
+   "using_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "foreach_statement",
+   "while_statement",
+   "do_statement",
+   "switch_statement",
+   "try_statement",
+   "catch_clause"
+  ],
+  "var": [
+   "variable"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_PASCAL": {
+  "name": "pascal",
+  "function": [
+   "defProc",
+   "declProc"
+  ],
+  "class": [
+   "declClass",
+   "declIntf",
+   "declHelper",
+   "declObject",
+   "declRecord"
+  ],
+  "field": [
+   "declField",
+   "declProp"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "exprCall"
+  ],
+  "import": [
+   "declUses"
+  ],
+  "import_from": [],
+  "branch": [
+   "if",
+   "ifElse",
+   "while",
+   "repeat",
+   "for",
+   "foreach",
+   "try",
+   "case"
+  ],
+  "var": [
+   "declVar",
+   "declConst"
+  ],
+  "assign": [
+   "assignment"
+  ],
+  "throw": [
+   "raise"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_DLANG": {
+  "name": "dlang",
+  "function": [
+   "function_declaration",
+   "constructor",
+   "destructor"
+  ],
+  "class": [
+   "class_declaration",
+   "struct_declaration",
+   "interface_declaration",
+   "union_declaration",
+   "enum_declaration",
+   "module_declaration",
+   "module_def"
+  ],
+  "field": [
+   "variable_declaration"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import_declaration",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "foreach_statement",
+   "while_statement",
+   "do_statement",
+   "switch_statement",
+   "try_statement",
+   "catch_statement"
+  ],
+  "var": [
+   "auto_declaration",
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_expression"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_SCHEME": {
+  "name": "scheme",
+  "function": [
+   "list"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "list"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "symbol"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_FENNEL": {
+  "name": "fennel",
+  "function": [
+   "fn",
+   "lambda",
+   "hashfn"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "list"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "each",
+   "for",
+   "match"
+  ],
+  "var": [
+   "symbol"
+  ],
+  "assign": [
+   "set",
+   "var",
+   "local",
+   "global",
+   "let"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_FISH": {
+  "name": "fish",
+  "function": [
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "command"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "switch_statement",
+   "while_statement",
+   "for_statement"
+  ],
+  "var": [
+   "variable"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_AWK": {
+  "name": "awk",
+  "function": [
+   "func_def"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "func_call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement",
+   "do_while_statement",
+   "switch_statement"
+  ],
+  "var": [
+   "identifier"
+  ],
+  "assign": [
+   "assignment_exp",
+   "update_exp"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ZSH": {
+  "name": "zsh",
+  "function": [
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "command",
+   "call_expression"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "case_statement",
+   "while_statement",
+   "for_statement"
+  ],
+  "var": [
+   "variable_name"
+  ],
+  "assign": [
+   "variable_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_TCL": {
+  "name": "tcl",
+  "function": [
+   "procedure"
+  ],
+  "class": [
+   "namespace"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "command"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if",
+   "while",
+   "foreach",
+   "try",
+   "catch"
+  ],
+  "var": [
+   "variable_substitution"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ADA": {
+  "name": "ada",
+  "function": [
+   "subprogram_declaration",
+   "subprogram_body",
+   "entry_declaration",
+   "expression_function_declaration"
+  ],
+  "class": [
+   "type_declaration",
+   "full_type_declaration",
+   "package_declaration",
+   "protected_type_declaration",
+   "task_type_declaration",
+   "component_declaration",
+   "object_declaration",
+   "record_type_definition"
+  ],
+  "field": [
+   "component_declaration"
+  ],
+  "module": [
+   "compilation"
+  ],
+  "call": [
+   "function_call",
+   "procedure_call_statement"
+  ],
+  "import": [
+   "with_clause",
+   "use_clause"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_loop_statement",
+   "loop_statement",
+   "while_loop_statement",
+   "case_statement",
+   "select_statement"
+  ],
+  "var": [
+   "object_declaration",
+   "number_declaration"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [
+   "raise_statement"
+  ],
+  "decorator": []
+ },
+ "CBM_LANG_AGDA": {
+  "name": "agda",
+  "function": [
+   "function"
+  ],
+  "class": [
+   "data",
+   "record"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "module_application",
+   "expr"
+  ],
+  "import": [
+   "import",
+   "open",
+   "import_directive",
+   "instance"
+  ],
+  "import_from": [],
+  "branch": [
+   "lambda",
+   "match",
+   "do"
+  ],
+  "var": [
+   "typed_binding"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_RACKET": {
+  "name": "racket",
+  "function": [
+   "list"
+  ],
+  "class": [
+   "structure"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "list"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "symbol"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ODIN": {
+  "name": "odin",
+  "function": [
+   "procedure_declaration",
+   "overloaded_procedure_declaration"
+  ],
+  "class": [
+   "struct_declaration",
+   "enum_declaration",
+   "union_declaration",
+   "package_declaration"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "selector_call_expression"
+  ],
+  "import": [
+   "import_declaration",
+   "import",
+   "using_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "switch_statement",
+   "when_statement"
+  ],
+  "var": [
+   "variable_declaration",
+   "const_declaration"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_RESCRIPT": {
+  "name": "rescript",
+  "function": [
+   "function"
+  ],
+  "class": [
+   "module_declaration",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "open_statement",
+   "include_statement",
+   "include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression",
+   "switch_expression",
+   "try_expression"
+  ],
+  "var": [
+   "let_binding"
+  ],
+  "assign": [
+   "let_declaration",
+   "mutation_expression"
+  ],
+  "throw": [
+   "exception_declaration"
+  ],
+  "decorator": [
+   "decorator"
+  ]
+ },
+ "CBM_LANG_PURESCRIPT": {
+  "name": "purescript",
+  "function": [
+   "function"
+  ],
+  "class": [
+   "class_declaration",
+   "data",
+   "newtype",
+   "type_alias"
+  ],
+  "field": [],
+  "module": [
+   "module"
+  ],
+  "call": [
+   "exp_apply"
+  ],
+  "import": [
+   "import",
+   "import_item",
+   "instance"
+  ],
+  "import_from": [],
+  "branch": [
+   "exp_if",
+   "exp_case",
+   "exp_do"
+  ],
+  "var": [
+   "signature"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_NICKEL": {
+  "name": "nickel",
+  "function": [
+   "fun_expr"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "applicative"
+  ],
+  "import": [
+   "import",
+   "include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if",
+   "match"
+  ],
+  "var": [
+   "let"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CRYSTAL": {
+  "name": "crystal",
+  "function": [
+   "method_def",
+   "abstract_method_def"
+  ],
+  "class": [
+   "class_def",
+   "struct_def",
+   "module_def",
+   "enum_def",
+   "annotation_def",
+   "type_declaration"
+  ],
+  "field": [
+   "instance_var",
+   "class_var"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call",
+   "command",
+   "implicit_object_call"
+  ],
+  "import": [
+   "require"
+  ],
+  "import_from": [],
+  "branch": [
+   "if",
+   "unless",
+   "case",
+   "while",
+   "until",
+   "begin_block",
+   "rescue_block"
+  ],
+  "var": [
+   "assign",
+   "multi_assign"
+  ],
+  "assign": [
+   "assign",
+   "operator_assign"
+  ],
+  "throw": [],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_TEAL": {
+  "name": "teal",
+  "function": [
+   "function_statement",
+   "anon_function",
+   "function_signature"
+  ],
+  "class": [
+   "record_declaration",
+   "interface_declaration",
+   "enum_declaration",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "function_call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "while_statement",
+   "repeat_statement",
+   "for_statement",
+   "generic_for_statement"
+  ],
+  "var": [
+   "var_declaration"
+  ],
+  "assign": [
+   "var_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_HARE": {
+  "name": "hare",
+  "function": [
+   "function_declaration"
+  ],
+  "class": [
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "use_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "switch_expression",
+   "match_expression"
+  ],
+  "var": [
+   "let_declaration",
+   "const_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PONY": {
+  "name": "pony",
+  "function": [
+   "method",
+   "constructor",
+   "ffi_method",
+   "lambda_expression"
+  ],
+  "class": [
+   "actor_definition",
+   "class_definition",
+   "struct_definition",
+   "trait_definition",
+   "interface_definition",
+   "primitive_definition",
+   "type_alias"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "use_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "match_statement",
+   "for_statement",
+   "while_statement",
+   "repeat_statement",
+   "try_statement"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_LUAU": {
+  "name": "luau",
+  "function": [
+   "function_declaration",
+   "function_definition"
+  ],
+  "class": [
+   "type_definition"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "function_call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "while_statement",
+   "repeat_statement",
+   "for_statement"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JANET": {
+  "name": "janet",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SWAY": {
+  "name": "sway",
+  "function": [
+   "function_item",
+   "closure_expression",
+   "function_signature_item"
+  ],
+  "class": [
+   "struct_item",
+   "enum_item",
+   "trait_item",
+   "impl_item",
+   "abi_item"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "abi_call_expression"
+  ],
+  "import": [
+   "use_declaration"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression",
+   "match_expression",
+   "while_expression",
+   "for_expression"
+  ],
+  "var": [
+   "let_declaration",
+   "const_item"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_NASM": {
+  "name": "nasm",
+  "function": [
+   "label",
+   "preproc_def",
+   "preproc_multiline_macro"
+  ],
+  "class": [
+   "struc_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_syntax_expression",
+   "actual_instruction"
+  ],
+  "import": [
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "label"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ASSEMBLY": {
+  "name": "assembly",
+  "function": [
+   "label"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "label"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ASTRO": {
+  "name": "astro",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_BLADE": {
+  "name": "blade",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JUST": {
+  "name": "just",
+  "function": [
+   "recipe"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_call",
+   "dependency"
+  ],
+  "import": [
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression"
+  ],
+  "var": [],
+  "assign": [
+   "assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GOTEMPLATE": {
+  "name": "gotemplate",
+  "function": [
+   "define_action"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "template"
+  ],
+  "call": [
+   "function_call",
+   "method_call",
+   "template_action"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_TEMPL": {
+  "name": "templ",
+  "function": [
+   "function_declaration",
+   "method_declaration",
+   "method_elem"
+  ],
+  "class": [
+   "component_declaration",
+   "type_alias",
+   "type_declaration",
+   "type_spec"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "import",
+   "import_declaration"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_LIQUID": {
+  "name": "liquid",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "template"
+  ],
+  "call": [],
+  "import": [
+   "include",
+   "include_statement"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JINJA2": {
+  "name": "jinja2",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PRISMA": {
+  "name": "prisma",
+  "function": [],
+  "class": [
+   "model_declaration",
+   "enum_declaration",
+   "type_declaration",
+   "generator_declaration",
+   "datasource_declaration",
+   "view_declaration"
+  ],
+  "field": [
+   "column_declaration"
+  ],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_HYPRLANG": {
+  "name": "hyprlang",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_DOTENV": {
+  "name": "dotenv",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_DIFF": {
+  "name": "diff",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_WGSL": {
+  "name": "wgsl",
+  "function": [
+   "function_declaration"
+  ],
+  "class": [
+   "struct_declaration",
+   "type_alias_declaration",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "type_constructor_or_function_call_expression"
+  ],
+  "import": [
+   "enable_directive"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "switch_statement",
+   "for_statement",
+   "while_statement",
+   "loop_statement"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_KDL": {
+  "name": "kdl",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JSON5": {
+  "name": "json5",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JSONNET": {
+  "name": "jsonnet",
+  "function": [
+   "anonymous_function",
+   "bind"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [
+   "functioncall"
+  ],
+  "import": [
+   "import",
+   "importstr"
+  ],
+  "import_from": [],
+  "branch": [
+   "conditional"
+  ],
+  "var": [
+   "local_bind"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_RON": {
+  "name": "ron",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_THRIFT": {
+  "name": "thrift",
+  "function": [
+   "function_definition",
+   "service_definition"
+  ],
+  "class": [
+   "struct_definition",
+   "union_definition",
+   "enum_definition",
+   "exception_definition",
+   "interaction_definition",
+   "package_declaration",
+   "service_definition"
+  ],
+  "field": [
+   "field"
+  ],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [
+   "include_statement",
+   "extends",
+   "include",
+   "namespace_declaration"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "const_definition"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CAPNP": {
+  "name": "capnp",
+  "function": [
+   "method"
+  ],
+  "class": [
+   "struct",
+   "enum",
+   "interface"
+  ],
+  "field": [
+   "field"
+  ],
+  "module": [
+   "source"
+  ],
+  "call": [],
+  "import": [
+   "import",
+   "extends",
+   "using_directive"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "const"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PROPERTIES": {
+  "name": "properties",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "file",
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "property"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SSHCONFIG": {
+  "name": "sshconfig",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_BIBTEX": {
+  "name": "bibtex",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_STARLARK": {
+  "name": "starlark",
+  "function": [
+   "function_definition",
+   "lambda"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "module"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement"
+  ],
+  "var": [
+   "identifier"
+  ],
+  "assign": [
+   "assignment",
+   "augmented_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_BICEP": {
+  "name": "bicep",
+  "function": [
+   "user_defined_function",
+   "lambda_expression"
+  ],
+  "class": [
+   "resource_declaration",
+   "type_declaration",
+   "module_declaration"
+  ],
+  "field": [],
+  "module": [
+   "program"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "import_statement",
+   "module_declaration",
+   "import",
+   "using_statement"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "variable_declaration",
+   "parameter_declaration",
+   "output_declaration"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CSV": {
+  "name": "csv",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_REQUIREMENTS": {
+  "name": "requirements",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_HLSL": {
+  "name": "hlsl",
+  "function": [
+   "function_definition",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_specifier",
+   "struct_specifier",
+   "enum_specifier",
+   "module_declaration",
+   "type_definition",
+   "union_specifier"
+  ],
+  "field": [],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "preproc_include",
+   "import",
+   "import_declaration"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "do_statement",
+   "switch_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_VHDL": {
+  "name": "vhdl",
+  "function": [
+   "subprogram_declaration",
+   "subprogram_definition"
+  ],
+  "class": [
+   "entity_declaration",
+   "architecture_definition",
+   "component_declaration",
+   "interface_declaration",
+   "package_declaration",
+   "protected_type_declaration",
+   "record_type_definition",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "design_file"
+  ],
+  "call": [
+   "function_call",
+   "procedure_call_statement",
+   "component_instantiation_statement",
+   "parenthesis_group"
+  ],
+  "import": [
+   "library_clause",
+   "use_clause"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "case_statement",
+   "loop_statement"
+  ],
+  "var": [
+   "variable_declaration",
+   "signal_declaration",
+   "constant_declaration"
+  ],
+  "assign": [
+   "variable_assignment",
+   "signal_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SYSTEMVERILOG": {
+  "name": "systemverilog",
+  "function": [
+   "function_declaration",
+   "task_declaration",
+   "function_body_declaration",
+   "function_statement"
+  ],
+  "class": [
+   "class_declaration",
+   "module_declaration",
+   "interface_declaration",
+   "library_declaration",
+   "package_declaration",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_subroutine_call",
+   "system_tf_call",
+   "method_call"
+  ],
+  "import": [
+   "package_import_declaration",
+   "extends",
+   "import",
+   "include",
+   "include_statement",
+   "instance",
+   "use_clause"
+  ],
+  "import_from": [],
+  "branch": [
+   "case_statement",
+   "if"
+  ],
+  "var": [
+   "parameter",
+   "localparam"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_DEVICETREE": {
+  "name": "devicetree",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "dtsi_include",
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_LINKERSCRIPT": {
+  "name": "linkerscript",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "linkerscript"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GN": {
+  "name": "gn",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "import_statement",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "foreach_statement"
+  ],
+  "var": [],
+  "assign": [
+   "assignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_KCONFIG": {
+  "name": "kconfig",
+  "function": [],
+  "class": [
+   "config",
+   "menuconfig",
+   "choice",
+   "type_definition"
+  ],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [],
+  "import": [
+   "source"
+  ],
+  "import_from": [],
+  "branch": [
+   "if"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_BITBAKE": {
+  "name": "bitbake",
+  "function": [
+   "function_definition",
+   "anonymous_python_function"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "export_statement",
+   "import",
+   "import_from_statement",
+   "import_statement",
+   "include",
+   "include_directive",
+   "require",
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "variable_assignment"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SMALI": {
+  "name": "smali",
+  "function": [
+   "method_definition"
+  ],
+  "class": [
+   "class_definition"
+  ],
+  "field": [
+   "field_definition"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "super_directive",
+   "implements_directive"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_TABLEGEN": {
+  "name": "tablegen",
+  "function": [
+   "def",
+   "multiclass",
+   "defm"
+  ],
+  "class": [
+   "class"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "include",
+   "include_directive"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_ISPC": {
+  "name": "ispc",
+  "function": [
+   "function_definition"
+  ],
+  "class": [
+   "struct_specifier",
+   "enum_specifier",
+   "type_definition",
+   "union_specifier"
+  ],
+  "field": [],
+  "module": [
+   "translation_unit"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "switch_statement",
+   "while_statement"
+  ],
+  "var": [
+   "declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_CAIRO": {
+  "name": "cairo",
+  "function": [
+   "function_definition",
+   "function_signature"
+  ],
+  "class": [
+   "struct_definition",
+   "enum_item",
+   "trait_item",
+   "impl_item",
+   "struct_item",
+   "type_definition"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "call"
+  ],
+  "import": [
+   "use_declaration",
+   "import",
+   "import_statement"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression",
+   "match_expression",
+   "loop_expression"
+  ],
+  "var": [
+   "let_declaration",
+   "const_item"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MOVE": {
+  "name": "move",
+  "function": [
+   "function_item"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "use_declaration"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_expression",
+   "while_expression",
+   "loop_expression"
+  ],
+  "var": [
+   "let",
+   "const"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SQUIRREL": {
+  "name": "squirrel",
+  "function": [
+   "function_declaration",
+   "anonymous_function",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_declaration",
+   "enum_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression"
+  ],
+  "import": [
+   "extends"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "switch_statement",
+   "while_statement"
+  ],
+  "var": [
+   "local_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_FUNC": {
+  "name": "func",
+  "function": [
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "method_call",
+   "function_application"
+  ],
+  "import": [
+   "include_directive"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_REGEX": {
+  "name": "regex",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "pattern"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_JSDOC": {
+  "name": "jsdoc",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_RST": {
+  "name": "rst",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_BEANCOUNT": {
+  "name": "beancount",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "file"
+  ],
+  "call": [],
+  "import": [
+   "include"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MERMAID": {
+  "name": "mermaid",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PUPPET": {
+  "name": "puppet",
+  "function": [
+   "function_declaration",
+   "lambda"
+  ],
+  "class": [
+   "class_definition",
+   "node_definition",
+   "resource_declaration",
+   "type_declaration"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_call",
+   "include_statement"
+  ],
+  "import": [
+   "include_statement",
+   "require_statement",
+   "include",
+   "require"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "unless_statement",
+   "case_statement"
+  ],
+  "var": [
+   "variable"
+  ],
+  "assign": [
+   "assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PO": {
+  "name": "po",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GITATTRIBUTES": {
+  "name": "gitattributes",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GITIGNORE": {
+  "name": "gitignore",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "document"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SLANG": {
+  "name": "slang",
+  "function": [
+   "function_definition",
+   "lambda_expression"
+  ],
+  "class": [
+   "class_specifier",
+   "enum_specifier",
+   "module_declaration",
+   "struct_specifier",
+   "type_definition",
+   "union_specifier"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call_expression",
+   "new_expression"
+  ],
+  "import": [
+   "import",
+   "import_declaration",
+   "import_statement",
+   "preproc_include"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_LLVM_IR": {
+  "name": "llvm_ir",
+  "function": [
+   "function_header"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call",
+   "invoke",
+   "instruction_call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "br",
+   "switch"
+  ],
+  "var": [
+   "local_var",
+   "global_var"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SMITHY": {
+  "name": "smithy",
+  "function": [
+   "operation_statement",
+   "service_statement",
+   "resource_statement"
+  ],
+  "class": [
+   "structure_statement",
+   "union_statement",
+   "enum_statement"
+  ],
+  "field": [
+   "shape_member"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "use_statement"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_WIT": {
+  "name": "wit",
+  "function": [
+   "func_item",
+   "resource_method",
+   "export_item",
+   "import_item"
+  ],
+  "class": [
+   "record_item",
+   "resource_item",
+   "enum_items",
+   "variant_items",
+   "flags_items"
+  ],
+  "field": [
+   "record_field"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "import_item",
+   "toplevel_use_item",
+   "export_item",
+   "import",
+   "include",
+   "include_item"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_TLAPLUS": {
+  "name": "tlaplus",
+  "function": [
+   "operator_definition",
+   "function_definition"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "function_evaluation",
+   "call",
+   "bound_op"
+  ],
+  "import": [
+   "extends",
+   "instance"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_then_else",
+   "case"
+  ],
+  "var": [
+   "variable_declaration"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PKL": {
+  "name": "pkl",
+  "function": [
+   "classMethod",
+   "objectMethod"
+  ],
+  "class": [
+   "clazz"
+  ],
+  "field": [],
+  "module": [
+   "module"
+  ],
+  "call": [],
+  "import": [
+   "importClause",
+   "extendsOrAmendsClause",
+   "extends",
+   "import"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "classProperty",
+   "objectProperty"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_GOMOD": {
+  "name": "gomod",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "require"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [
+   "require_directive",
+   "replace_directive"
+  ],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_APEX": {
+  "name": "apex",
+  "function": [
+   "method_declaration",
+   "constructor_declaration",
+   "trigger_declaration"
+  ],
+  "class": [
+   "class_declaration",
+   "interface_declaration",
+   "enum_declaration"
+  ],
+  "field": [
+   "field_declaration"
+  ],
+  "module": [
+   "parser_output"
+  ],
+  "call": [
+   "method_invocation"
+  ],
+  "import": [
+   "extends",
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "for_statement",
+   "while_statement",
+   "do_statement",
+   "switch_expression",
+   "try_statement",
+   "catch_clause",
+   "enhanced_for_statement"
+  ],
+  "var": [
+   "local_variable_declaration"
+  ],
+  "assign": [
+   "assignment_expression"
+  ],
+  "throw": [
+   "throw_statement"
+  ],
+  "decorator": [
+   "annotation"
+  ]
+ },
+ "CBM_LANG_SOQL": {
+  "name": "soql",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_SOSL": {
+  "name": "sosl",
+  "function": [],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [],
+  "import": [
+   "with_clause"
+  ],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_KUSTOMIZE": {
+  "name": "kustomize",
+  "function": [
+   "block_mapping_pair"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "stream"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_K8S": {
+  "name": "k8s",
+  "function": [
+   "block_mapping_pair"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "stream"
+  ],
+  "call": [],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_PINE": {
+  "name": "pine",
+  "function": [
+   "function_declaration_statement"
+  ],
+  "class": [
+   "type_definition_statement"
+  ],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "if_statement",
+   "switch_statement",
+   "for_statement",
+   "for_in_statement",
+   "while_statement"
+  ],
+  "var": [
+   "variable_definition_statement",
+   "tuple_declaration_statement"
+  ],
+  "assign": [
+   "reassignment_statement"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_MOJO": {
+  "name": "mojo",
+  "function": [
+   "function_definition"
+  ],
+  "class": [
+   "class_definition",
+   "trait_definition"
+  ],
+  "field": [],
+  "module": [
+   "module"
+  ],
+  "call": [
+   "call"
+  ],
+  "import": [
+   "import_statement",
+   "import_from_statement",
+   "future_import_statement"
+  ],
+  "import_from": [
+   "import_statement",
+   "import_from_statement",
+   "future_import_statement"
+  ],
+  "branch": [
+   "if_statement",
+   "match_statement",
+   "for_statement",
+   "while_statement",
+   "try_statement",
+   "with_statement"
+  ],
+  "var": [
+   "assignment"
+  ],
+  "assign": [
+   "assignment",
+   "augmented_assignment"
+  ],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_OBJECTSCRIPT_UDL": {
+  "name": "objectscript_udl",
+  "function": [
+   "method",
+   "classmethod",
+   "query"
+  ],
+  "class": [
+   "class_definition"
+  ],
+  "field": [
+   "property",
+   "parameter",
+   "index",
+   "trigger",
+   "xdata",
+   "storage",
+   "foreignkey"
+  ],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "class_method_call",
+   "method_call",
+   "relative_dot_method",
+   "macro"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [
+   "command_if",
+   "command_for",
+   "command_while",
+   "elseif_block",
+   "catch_block"
+  ],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ },
+ "CBM_LANG_OBJECTSCRIPT_ROUTINE": {
+  "name": "objectscript_routine",
+  "function": [
+   "procedure",
+   "tag"
+  ],
+  "class": [],
+  "field": [],
+  "module": [
+   "source_file"
+  ],
+  "call": [
+   "extrinsic_function",
+   "routine_tag_call"
+  ],
+  "import": [],
+  "import_from": [],
+  "branch": [],
+  "var": [],
+  "assign": [],
+  "throw": [],
+  "decorator": []
+ }
+}

@@ -32,6 +32,8 @@ impl Session {
             graph_store,
             catalog: cfg.catalog,
             rdf_store,
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             transaction_manager: cfg.transaction_manager,
             query_cache: cfg.query_cache,
             current_transaction: parking_lot::Mutex::new(None),
@@ -111,8 +113,8 @@ impl Session {
 
         let planner = RdfPlanner::new(Arc::clone(&self.rdf_store))
             .with_transaction_id(*self.current_transaction.lock());
-        #[cfg(feature = "wal")]
-        let planner = planner.with_wal(self.wal.clone());
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        let planner = planner.with_wal(self.rdf_wal.clone());
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         let executor = Executor::with_columns(physical_plan.columns.clone())
@@ -172,6 +174,8 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            let processor = processor.with_rdf_wal(self.rdf_wal.clone());
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::GraphQLRdf, Some(&params))
@@ -216,8 +220,8 @@ impl Session {
 
         let planner = RdfPlanner::new(Arc::clone(&self.rdf_store))
             .with_transaction_id(*self.current_transaction.lock());
-        #[cfg(feature = "wal")]
-        let planner = planner.with_wal(self.wal.clone());
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        let planner = planner.with_wal(self.rdf_wal.clone());
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         let executor = Executor::with_columns(physical_plan.columns.clone())
@@ -270,8 +274,8 @@ impl Session {
 
         let planner = RdfPlanner::new(Arc::clone(&self.rdf_store))
             .with_transaction_id(*self.current_transaction.lock());
-        #[cfg(feature = "wal")]
-        let planner = planner.with_wal(self.wal.clone());
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        let planner = planner.with_wal(self.rdf_wal.clone());
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         let executor = Executor::with_columns(physical_plan.columns.clone())
@@ -288,6 +292,25 @@ impl Session {
         }
 
         result
+    }
+
+    /// Shares the RDF store of the owning database. A session built by
+    /// `with_external_store` starts with a private store; without this, its
+    /// SPARQL writes and reads would not see the database's triples (nor the
+    /// triples replayed from the journal on open).
+    #[cfg(feature = "rdf")]
+    pub(crate) fn set_rdf_store(&mut self, rdf_store: Arc<RdfStore>) {
+        self.rdf_store = rdf_store;
+    }
+
+    /// Wires the RDF journal of the owning database (persistent substrate
+    /// databases only). Called by `ObrainDB` right after session creation.
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    pub(crate) fn set_rdf_wal(
+        &mut self,
+        rdf_wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
+    ) {
+        self.rdf_wal = rdf_wal;
     }
 
     /// Commits RDF transaction state.

@@ -148,6 +148,20 @@ pub enum SubstrateError {
     )]
     CheckpointNonElu { fence: String },
 
+    /// ── MP-8 : LE CHECKPOINT NE TRONQUE PAS AU-DELÀ D'UNE TRANSACTION EN VOL ──
+    ///
+    /// Une déclaration `TxNoeudEnAttente` / `TxAreteEnAttente` dont la
+    /// transaction n'est pas scellée (ni `TxCommit`, ni suppression) est encore
+    /// nécessaire au rejeu d'un processus qui pourrait être mort. Tronquer le
+    /// WAL la ferait disparaître : ses entités, déjà dans les zones, seraient
+    /// publiées à la réouverture. Le checkpoint est donc REFUSÉ, le WAL intact.
+    #[error(
+        "checkpoint DIFFÉRÉ : la transaction {tx} n'est pas scellée, et sa déclaration est \
+         au décalage {offset} du WAL — rien n'a été tronqué. La troncature reprendra quand \
+         cette transaction sera scellée ou abandonnée"
+    )]
+    CheckpointDiffere { offset: u64, tx: u64 },
+
     /// ── PHASE B, PIÈCE 1 : LA FRAME A ÉTÉ DÉTRUITE, PUIS ENCORE ───────────
     ///
     /// Un checkpoint d'un AUTRE processus a tronqué le WAL entre notre lecture de

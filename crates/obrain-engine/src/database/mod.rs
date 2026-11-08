@@ -147,6 +147,10 @@ pub struct ObrainDB {
     /// records only when the context actually changes.
     #[cfg(feature = "wal")]
     pub(super) wal_graph_context: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Journal WAL of the RDF store (persistent substrate databases only).
+    /// Triples are appended here and replayed on open; see `rdf_ops`.
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    pub(super) rdf_wal: Option<Arc<LpgWal>>,
     /// Query cache for parsed and optimized plans.
     pub(super) query_cache: Arc<QueryCache>,
     /// Shared commit counter for auto-GC across sessions.
@@ -541,7 +545,7 @@ impl ObrainDB {
                 ))
             })?
         };
-        Self::with_substrate_store(store, Some(path_ref))
+        Self::with_substrate_store(store, Some(path_ref), read_only)
     }
 
     /// Opens (or creates) a substrate-backed database with an explicit WAL
@@ -557,6 +561,21 @@ impl ObrainDB {
     ///
     /// Returns an error if the substrate store cannot be created/opened at
     /// `path`.
+    /// Identité de ce processus pour la numérotation des transactions (MP-8) :
+    /// hachage aléatoire (graine par processus) de l'identifiant système et de
+    /// l'horloge. Deux processus concurrents ont donc, en pratique, des identités
+    /// distinctes ; la collision résiduelle est de l'ordre de 2^-31 par paire.
+    fn identite_de_processus() -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u32(std::process::id());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        h.write_u128(nanos);
+        h.finish() >> 33
+    }
+
     /// Ouvre le store en SHARED-WRITE (verrou partagé + écriture WAL) :
     /// coexiste avec les lecteurs RO du service. Réservé au GraphWriter
     /// unique (langextract) — les mutations sont journalisées dans le WAL,
@@ -577,7 +596,12 @@ impl ObrainDB {
                 path_ref.display()
             )));
         };
-        Self::with_substrate_store(store, Some(path_ref))
+        let db = Self::with_substrate_store(store, Some(path_ref), false)?;
+        // MP-8 : identifiants de transaction uniques ENTRE processus (voir
+        // `TransactionManager::numeroter_pour_processus`).
+        db.transaction_manager
+            .numeroter_pour_processus(Self::identite_de_processus());
+        Ok(db)
     }
 
     pub fn open_substrate_with_mode(
@@ -603,7 +627,7 @@ impl ObrainDB {
                 },
             )?
         };
-        Self::with_substrate_store(store, Some(path_ref))
+        Self::with_substrate_store(store, Some(path_ref), false)
     }
 
     /// Arme l'ÉCHÉANCE GLOBALE des requêtes sur une base déjà ouverte.
@@ -759,6 +783,7 @@ impl ObrainDB {
     fn with_substrate_store(
         store: obrain_substrate::SubstrateStore,
         path: Option<&std::path::Path>,
+        read_only: bool,
     ) -> Result<Self> {
         // Keep a typed handle in addition to the erased `GraphStoreMut` one:
         // cognitive stores reach for the substrate column APIs (reinforce /
@@ -793,6 +818,16 @@ impl ObrainDB {
         };
         let mut db = Self::with_store(erased, config)?;
         db.substrate_store = Some(Arc::clone(&typed));
+
+        // Journal RDF : replay des triplets persistés, puis ouverture en
+        // ajout (écriture seule). Sans chemin (substrat temporaire), pas de
+        // journal : l'état RDF n'a pas vocation à survivre.
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        if let Some(p) = path {
+            db.ouvrir_journal_rdf(p, read_only)?;
+        }
+        #[cfg(not(all(feature = "rdf", feature = "wal")))]
+        let _ = read_only;
 
         // (2026-08-31) PERSISTANCE CDC — le journal survit au redémarrage.
         // `with_store` construit un `CdcLog` vide ; on y attache le persistor
@@ -1200,6 +1235,8 @@ impl ObrainDB {
             wal,
             #[cfg(feature = "wal")]
             wal_graph_context: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             query_cache,
             commit_counter: Arc::new(AtomicUsize::new(0)),
             is_open: RwLock::new(true),
@@ -1318,6 +1355,8 @@ impl ObrainDB {
             wal: None,
             #[cfg(feature = "wal")]
             wal_graph_context: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             query_cache,
             commit_counter: Arc::new(AtomicUsize::new(0)),
             is_open: RwLock::new(true),
@@ -1487,6 +1526,14 @@ impl ObrainDB {
             // external_store est celui que prend TOUTE base réelle).
             #[cfg(feature = "cdc")]
             ext_session.set_cdc_log(Arc::clone(&self.cdc_log));
+            // Store RDF partagé avec la base (chemin substrat, celui de toute
+            // base réelle) : sans ce câblage, la session écrit et lit dans un
+            // store privé, et les triplets rejoués du journal lui sont invisibles.
+            #[cfg(feature = "rdf")]
+            ext_session.set_rdf_store(Arc::clone(&self.rdf_store));
+            // Journal RDF, même chemin.
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            ext_session.set_rdf_wal(self.rdf_wal.clone());
             // Aretes inter-bases (V2) : la session herite du registre
             // multi-store declare sur la base.
             if let Some(registry) = self.base_registry.read().clone() {
@@ -1511,6 +1558,8 @@ impl ObrainDB {
         if let Some(ref wal) = self.wal {
             session.set_wal(Arc::clone(wal), Arc::clone(&self.wal_graph_context));
         }
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        session.set_rdf_wal(self.rdf_wal.clone());
 
         #[cfg(feature = "cdc")]
         session.set_cdc_log(Arc::clone(&self.cdc_log));
@@ -1850,6 +1899,12 @@ impl ObrainDB {
         if self.read_only {
             *is_open = false;
             return Ok(());
+        }
+
+        // Journal RDF : fsync des records en attente (mode batch/nosync).
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        if let Some(ref rdf_wal) = self.rdf_wal {
+            rdf_wal.sync()?;
         }
 
         // T17 final cutover: `is_single_file` is always `false` — substrate

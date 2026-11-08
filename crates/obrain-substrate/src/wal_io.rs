@@ -115,7 +115,7 @@
 
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::es::PoigneeSynchro;
-use crate::wal::{WAL_HEADER_SIZE, WalKind, WalRecord, crc_over};
+use crate::wal::{WAL_HEADER_SIZE, WalKind, WalPayload, WalRecord, crc_over};
 use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
@@ -4551,6 +4551,99 @@ impl WalReader {
             cursor = cursor.checked_add(total)?;
         }
     }
+}
+
+/// Déclaration en vol NON SCELLÉE : une entité déclarée (`TxNoeudEnAttente` ou
+/// `TxAreteEnAttente`) dont la transaction n'a ni `TxCommit` ni suppression de
+/// l'entité qui la suive, à l'offset `offset` du WAL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclarationEnVol {
+    /// Offset OCTET du record de déclaration dans le WAL.
+    pub offset: u64,
+    /// Transaction déclarante (identifiant de PROCESSUS D'ÉMISSION : voir la
+    /// collision d'identifiants signalée dans la PR MP-8).
+    pub tx: u64,
+}
+
+/// Balaie le WAL à partir de `depuis` et rend la déclaration en vol NON SCELLÉE
+/// la plus ancienne, s'il en existe une. C'est la BORNE de la fenêtre de rejeu
+/// (MP-8) : tant qu'une déclaration de ce genre existe, le rejeu doit la voir,
+/// donc ni le `wal_offset_at_flush` ni la troncature ne doivent la dépasser.
+///
+/// Même automate que le rejeu (`replay_from_avec`) : une déclaration entre dans
+/// l'état « en vol » de sa transaction ; `TxCommit` le retire ; `NodeDelete` /
+/// `EdgeDelete` retirent l'entité (son slot peut être réutilisé).
+///
+/// `depuis` doit être une frontière de frame (offset rendu par le balayage
+/// précédent, ou 0). S'il dépasse la taille du fichier (troncature étrangère),
+/// le balayage repart de 0, comme le rejeu.
+pub fn plus_ancienne_declaration_en_vol(
+    wal: &Path,
+    depuis: u64,
+) -> SubstrateResult<Option<DeclarationEnVol>> {
+    let es = crate::es::espace();
+    if !es.existe(wal) {
+        return Ok(None);
+    }
+    let fichier = es.ouvrir_donnees(wal, false)?;
+    let taille = fichier.taille()?;
+    let depuis = if depuis > taille { 0 } else { depuis };
+    if depuis == taille {
+        return Ok(None);
+    }
+    let mut octets = vec![0u8; (taille - depuis) as usize];
+    fichier.lire_a(depuis, &mut octets)?;
+    let lecteur = WalReader { bytes: octets };
+
+    enum Entite {
+        Noeud(u32),
+        Arete(u64),
+    }
+    let mut en_vol: std::collections::HashMap<u64, Vec<(u64, Entite)>> =
+        std::collections::HashMap::new();
+    for item in lecteur.iter_from(0) {
+        // Même frontière que le rejeu : une erreur (queue, trou non résolu,
+        // opcode inconnu) arrête le balayage. Le rejeu s'arrête au même endroit.
+        let Ok((rec, off, _)) = item else { break };
+        let absolu = depuis + off;
+        match rec.payload {
+            WalPayload::TxNoeudEnAttente { tx, node_id } => {
+                en_vol
+                    .entry(tx)
+                    .or_default()
+                    .push((absolu, Entite::Noeud(node_id)));
+            }
+            WalPayload::TxAreteEnAttente { tx, edge_id } => {
+                en_vol
+                    .entry(tx)
+                    .or_default()
+                    .push((absolu, Entite::Arete(edge_id)));
+            }
+            WalPayload::TxCommit { tx } => {
+                en_vol.remove(&tx);
+            }
+            WalPayload::NodeDelete { node_id } => {
+                for v in en_vol.values_mut() {
+                    v.retain(|(_, e)| !matches!(e, Entite::Noeud(n) if *n == node_id));
+                }
+            }
+            WalPayload::EdgeDelete { edge_id } => {
+                for v in en_vol.values_mut() {
+                    v.retain(|(_, e)| !matches!(e, Entite::Arete(a) if *a == edge_id));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(en_vol
+        .iter()
+        .flat_map(|(tx, v)| {
+            v.iter().map(move |(offset, _)| DeclarationEnVol {
+                offset: *offset,
+                tx: *tx,
+            })
+        })
+        .min_by_key(|d| d.offset))
 }
 
 impl WalIter<'_> {
