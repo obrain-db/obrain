@@ -814,10 +814,26 @@ fn main() {
 "#;
         let ex = extract_src(src);
         let b = |n: &str| ex.bindings.iter().find(|b| b.name == n);
-        assert_eq!(b("db").and_then(|x| x.type_ref.clone()).as_deref(), Some("ObrainDB"), "constructeur scoped");
-        assert_eq!(b("db2").and_then(|x| x.type_ref.clone()).as_deref(), Some("ObrainDB"), "annotation");
-        assert_eq!(b("db3").and_then(|x| x.type_ref.clone()).as_deref(), Some("crate::database::ObrainDB"), "chemin crate");
-        assert_eq!(b("p").and_then(|x| x.type_ref.clone()).as_deref(), Some("Point"), "struct literal");
+        assert_eq!(
+            b("db").and_then(|x| x.type_ref.clone()).as_deref(),
+            Some("ObrainDB"),
+            "constructeur scoped"
+        );
+        assert_eq!(
+            b("db2").and_then(|x| x.type_ref.clone()).as_deref(),
+            Some("ObrainDB"),
+            "annotation"
+        );
+        assert_eq!(
+            b("db3").and_then(|x| x.type_ref.clone()).as_deref(),
+            Some("crate::database::ObrainDB"),
+            "chemin crate"
+        );
+        assert_eq!(
+            b("p").and_then(|x| x.type_ref.clone()).as_deref(),
+            Some("Point"),
+            "struct literal"
+        );
         // patterns non-identificateur : ignorés.
         assert!(b("a").is_none());
         assert!(b("v").is_none());
@@ -843,10 +859,7 @@ fn monter(db: &ObrainDB) {
         // init_call : `let session = db.session()` → cascade de bindings.
         let s = ex.bindings.iter().find(|b| b.name == "session").unwrap();
         assert!(s.type_ref.is_none(), "pas d'annotation: {:?}", s);
-        assert_eq!(
-            s.init_call,
-            Some(("db".to_string(), "session".to_string()))
-        );
+        assert_eq!(s.init_call, Some(("db".to_string(), "session".to_string())));
         // Appel de fonction inconnue (init_fn) : ignoré.
         assert!(ex.bindings.iter().all(|b| b.name != "r"));
     }
@@ -863,14 +876,16 @@ struct Wal {
 struct Vide;
 "#;
         let ex = extract_src(src);
-        assert!(ex
-            .struct_fields
-            .iter()
-            .any(|(s, f, t)| s == "Wal" && f == "store" && t == "Arc<WalStore>"));
-        assert!(ex
-            .struct_fields
-            .iter()
-            .any(|(s, f, t)| s == "Wal" && f == "n" && t == "u32"));
+        assert!(
+            ex.struct_fields
+                .iter()
+                .any(|(s, f, t)| s == "Wal" && f == "store" && t == "Arc<WalStore>")
+        );
+        assert!(
+            ex.struct_fields
+                .iter()
+                .any(|(s, f, t)| s == "Wal" && f == "n" && t == "u32")
+        );
         assert!(ex.struct_fields.iter().all(|(s, ..)| s != "Vide"));
     }
 
