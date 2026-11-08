@@ -251,6 +251,14 @@ fn erreur_de_conflit_rejouable(e: &obrain_common::utils::error::Error) -> bool {
         || texte.contains("TransactionConflict")
 }
 
+/// (2026-11-08, CONC-1) Budget de TEMPS des re-tentatives d un statement
+/// auto-commit sur conflit rejouable. Voir le pave de
+/// [`Session::with_auto_commit`] : la borne etait un nombre d essais (12),
+/// qui ne mesurait pas la bonne grandeur — c est la duree de drainage de
+/// la file des contendants qu il faut absorber. `query_timeout`, s il est
+/// pose, plafonne ce budget.
+pub(crate) const BUDGET_RETENTATIVE_CONFLIT: Duration = Duration::from_secs(1);
+
 /// Ce qu'un point d'entrée SAIT du plan quand il franchit
 /// [`Session::with_auto_commit`].
 ///
@@ -4262,10 +4270,68 @@ impl Session {
             // devait porter son propre retry (la plupart ne le font pas).
             // Un statement AUTO-COMMIT est re-executable par construction :
             // le rollback a tout defait, on rejoue le MEME statement avec
-            // un backoff court. Borne a 8 tentatives — au-dela, le conflit
-            // est soutenu et l erreur remonte comme avant. Les transactions
-            // EXPLICITES ne re-tentent JAMAIS (l appelant tient l etat).
+            // un backoff court. Les transactions EXPLICITES ne re-tentent
+            // JAMAIS (l appelant tient l etat).
+            //
+            // ── (2026-11-08, CONC-1) BORNE DE TEMPS, PAS DE NOMBRE ──────
+            //
+            // La borne etait un NOMBRE (12 tentatives, backoff 50 us →
+            // 6,4 ms, soit 22 a 45 ms de sommeil cumule). Mesure sur
+            // `unicite_merge::merge_concurrent_avec_index_reste_unique`
+            // (16 fils x 12 `MERGE … SET` sur le meme noeud) sous 32
+            // boucles CPU : 3/40 runs rouges ici, 13/40 sur la machine de
+            // reference. Le conflit remonte est TOUJOURS celui de
+            // `record_write_scoped` (manager.rs, premier-ecrivain-gagne) :
+            // un AUTRE statement auto-commit tient le noeud et n a pas
+            // encore valide. Sous charge, ce porteur est preempte au milieu
+            // de son statement pendant un ou plusieurs quanta d ordonnanceur
+            // (~10 ms chacun) ; les 15 autres fils epuisent alors leurs 12
+            // essais — 45 ms au plus — en attendant UN seul porteur, et
+            // le pire d entre eux doit en attendre quinze d affilee (le
+            // premier-ecrivain-gagne n est pas equitable). Un nombre
+            // d essais ne mesure pas la bonne grandeur : ce qu il faut
+            // absorber, c est une DUREE — celle du drainage de la file des
+            // contendants — et elle depend de la charge, pas de nous.
+            //
+            // Relire la cle avant de re-tenter ne change rien : le
+            // statement rejoue DEJA en semantique MATCH des la deuxieme
+            // passe (le noeud du gagnant est la), et le conflit porte sur
+            // le `SET` qui suit — une ecriture legitime, voulue, sur le
+            // noeud partage. Elle doit attendre son tour, pas echouer. Et
+            // le conflit de VALIDATION (`TransactionManager::commit`) n est
+            // pas a contourner : il refuse une mise a jour perdue.
+            //
+            // LE BUDGET SEUL NE SUFFIT PAS — MESURE. Avec la seule borne de
+            // temps : 5 rouges sur 60 runs sous charge. Trace des perdants :
+            // 18 a 29 passes en une seconde (~50 ms chacune, preemptees),
+            // rejetees autant par `record_write_scoped` (porteur actif) que
+            // par la validation du commit (un autre a valide le noeud
+            // pendant notre passe). C est une FAMINE : l optimiste n est pas
+            // equitable, la passe lente perd contre chaque passe courte. Le
+            // remede est la file equitable des rejoues
+            // (`TransactionManager::file_des_rejoues`) : des le premier
+            // conflit, chaque passe rejouee tient le verrou de begin a
+            // commit ; les rejoues passent un a un, et le porteur du verrou
+            // ne concourt plus qu avec des premieres tentatives — qui, si
+            // elles perdent, se rangent derriere lui.
+            //
+            // Le budget (une seconde) reste le garde-fou : une ERREUR
+            // franche face a une transaction explicite oubliee ouverte —
+            // l appelant la voit en une seconde, pas jamais. Il couvre
+            // l attente dans la file. `query_timeout`, s il est pose, le
+            // plafonne : on ne re-tente jamais au-dela de l echeance.
+            let debut = Instant::now();
+            let echeance = {
+                let budget = debut + BUDGET_RETENTATIVE_CONFLIT;
+                match self.query_deadline() {
+                    Some(limite) if limite < budget => limite,
+                    _ => budget,
+                }
+            };
             let mut tentative = 0u32;
+            // Jeton de la file des rejoues : pris au premier conflit, tenu
+            // jusqu a la sortie de la boucle (succes ou erreur finale).
+            let mut jeton_file: Option<parking_lot::FairMutexGuard<'_, ()>> = None;
             loop {
                 // (V3) Marque la transaction comme AUTO : les refus
                 // enseignants des ecritures inter-bases ne visent que les
@@ -4292,27 +4358,54 @@ impl Session {
                 self.transaction_auto
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 match resultat {
-                    Err(e) if tentative < 12 && erreur_de_conflit_rejouable(&e) => {
+                    Err(e) if erreur_de_conflit_rejouable(&e) && Instant::now() < echeance => {
                         tentative += 1;
                         // Backoff micro AVEC JITTER. Mesure sans jitter :
                         // 32 ecrivains re-tentaient en LOCKSTEP (meme
                         // echeancier) et re-collisionnaient a chaque tour —
                         // 319/320 echecs malgre 8 tentatives. Le jitter
                         // desynchronise les cohortes ; la fenetre de commit
-                        // est ~50 us, la dispersion suffit.
+                        // est ~50 us, la dispersion suffit. Le plafond
+                        // (6,4 ms) reste court : il est de l ordre d un
+                        // quantum d ordonnanceur, et c est le budget de
+                        // temps, pas la pause, qui absorbe la duree.
                         let plafond = 50u64 << tentative.min(7);
                         let jitter = web_time::SystemTime::now()
                             .duration_since(web_time::UNIX_EPOCH)
                             .map(|d| d.subsec_nanos() as u64)
                             .unwrap_or(0)
                             % plafond.max(1);
-                        std::thread::sleep(std::time::Duration::from_micros(plafond / 2 + jitter));
+                        let pause = Duration::from_micros(plafond / 2 + jitter);
+                        // Jamais au-dela de l echeance : la derniere passe
+                        // part AU plus tard a l echeance, puis l erreur
+                        // remonte si elle echoue encore.
+                        let restant = echeance.saturating_duration_since(Instant::now());
+                        if jeton_file.is_none() {
+                            // Premier conflit : on se range dans la file.
+                            // L attente du verrou TIENT lieu de backoff ;
+                            // elle est bornee par l echeance — au-dela, le
+                            // conflit remonte tel quel.
+                            match self
+                                .transaction_manager
+                                .file_des_rejoues()
+                                .try_lock_for(restant)
+                            {
+                                Some(jeton) => jeton_file = Some(jeton),
+                                None => return Err(e),
+                            }
+                        } else {
+                            // Deja en tete de file : le conflit vient d une
+                            // premiere tentative ou d un porteur explicite,
+                            // on lui laisse le temps de valider.
+                            std::thread::sleep(pause.min(restant));
+                        }
                         continue;
                     }
                     autre => {
                         if tentative > 0 {
                             tracing::debug!(target: "obrain::session",
                                 tentatives = tentative + 1,
+                                attente_ms = debut.elapsed().as_millis() as u64,
                                 ok = autre.is_ok(),
                                 "statement auto-commit rejoue apres conflit(s)");
                         }
