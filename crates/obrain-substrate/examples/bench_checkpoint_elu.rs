@@ -161,6 +161,8 @@ fn main() {
             match checkpoint_elu(&mut sub2, &wal_writer).unwrap() {
                 CheckpointOutcome::Fait(_) => fait += 1,
                 CheckpointOutcome::NonElu { .. } => non_elu += 1,
+                // Aucune transaction en vol dans ce bench : cas non attendu, non compté.
+                CheckpointOutcome::Differe { .. } => {}
             }
             s.push(t.elapsed().as_secs_f64() * 1e6);
             drop(sub2);
