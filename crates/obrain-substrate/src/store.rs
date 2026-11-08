@@ -1763,6 +1763,11 @@ pub struct SubstrateStore {
     /// capture AVANT commit/msync, persiste dans le dict, borne le rejeu
     /// a l'ouverture a la seule fenetre non encore duree.
     dernier_offset_flush: AtomicU64,
+    /// MP-8 : borne de la fenêtre de rejeu persistée = min(offset du flush,
+    /// plus ancienne déclaration en vol non scellée). Ne sert QU'À la persistance
+    /// (`wal_offset_at_flush`) ; `dernier_offset_flush` garde son rôle d'offset
+    /// brut pour la détection « WAL immobile ».
+    borne_fenetre_rejeu: AtomicU64,
     /// Next engram id to allocate. Id 0 is the null-engram sentinel
     /// (see [`crate::engram::MAX_ENGRAM_ID`]); allocation starts at 1.
     /// Persisted via `substrate.dict` v2.
@@ -6689,6 +6694,7 @@ impl SubstrateStore {
             aretes_creees_par_tx: DashMap::new(),
             deces_aretes: DashMap::new(),
             dernier_offset_flush: AtomicU64::new(0),
+            borne_fenetre_rejeu: AtomicU64::new(0),
             external_edges: DashMap::new(),
             external_inbound: DashMap::new(),
             external_by_id: DashMap::new(),
@@ -8371,7 +8377,8 @@ impl SubstrateStore {
             // format always includes counters so subsequent opens
             // restore in O(1) (no zone scan).
             counters: Some(self.snapshot_counters()),
-            wal_offset_at_flush: self.dernier_offset_flush.load(Ordering::Acquire),
+            // MP-8 : la BORNE (pas l'offset brut) — voir `borne_de_fenetre`.
+            wal_offset_at_flush: self.borne_fenetre_rejeu.load(Ordering::Acquire),
         }
     }
 
@@ -8747,6 +8754,13 @@ impl SubstrateStore {
         // chaque appelant devrait penser a cabler — c'est precisement cet
         // oubli qui a laisse le WAL atteindre 12,8 Go.
         self.writer.commit()?;
+        // ── MP-8 : LA FENÊTRE DE REJEU NE SE REFERME PAS SUR UNE TRANSACTION EN VOL ──
+        // Le `wal_offset_at_flush` persisté ne peut pas être la fin du WAL partagé :
+        // une déclaration `TxNoeudEnAttente` d'un pair encore non scellée (ou d'un
+        // processus mort) sortirait de la fenêtre, et ses entités, déjà dans les
+        // zones msyncées ci-dessous, seraient publiées à la réouverture.
+        let borne = self.borne_de_fenetre(offset_du_flush)?;
+        self.borne_fenetre_rejeu.store(borne, Ordering::Release);
         self.writer.msync_zones()?;
         self.vec_columns.sync_all()?;
         self.blob_columns.sync_all()?;
@@ -8894,7 +8908,44 @@ impl SubstrateStore {
                     fence: fence.display().to_string(),
                 })
             }
+            crate::checkpoint::CheckpointOutcome::Differe { offset, tx } => {
+                Err(SubstrateError::CheckpointDiffere { offset, tx })
+            }
         }
+    }
+
+    /// MP-8 — BORNE DE LA FENÊTRE DE REJEU, calculée à chaque `flush()`.
+    ///
+    /// Rend `min(offset_du_flush, déclaration en vol non scellée la plus ancienne)`.
+    /// Le balayage repart de la borne PRÉCÉDENTE (persistée) : toute déclaration
+    /// antérieure était scellée au moment où cette borne a été fixée, et un
+    /// scellement est définitif. Il n'y a donc rien à relire avant elle. Coût :
+    /// les octets écrits depuis la plus ancienne déclaration en vol — rien quand
+    /// aucune transaction n'est ouverte.
+    ///
+    /// Si une transaction reste ouverte, la borne reste figée et le WAL ne se
+    /// tronque plus (refus au checkpoint, journalisé en `warn`).
+    fn borne_de_fenetre(&self, offset_du_flush: u64) -> SubstrateResult<u64> {
+        let wal = self.writer.wal();
+        // Poser le tampon du group commit : le balayage doit voir toutes les
+        // déclarations, y compris celles encore en mémoire.
+        if wal.octets_en_tampon() > 0 {
+            wal.fsync()?;
+        }
+        let fin = wal.offset();
+        let depuis = self.borne_fenetre_rejeu.load(Ordering::Acquire);
+        let bord = match crate::wal_io::plus_ancienne_declaration_en_vol(wal.path(), depuis)? {
+            Some(decl) => {
+                tracing::debug!(
+                    tx = decl.tx,
+                    offset = decl.offset,
+                    "flush : fenêtre de rejeu bornée par une transaction en vol"
+                );
+                decl.offset.min(fin)
+            }
+            None => fin,
+        };
+        Ok(offset_du_flush.min(bord))
     }
 
     /// ── CHECKPOINT ÉLU (Phase B, pièce 1) ────────────────────────────────────
@@ -8959,10 +9010,20 @@ impl SubstrateStore {
         // donnée de cet écrivain n'est pas perdue non plus : elle est dans les
         // zones, que CE checkpoint msync avant de tronquer.
         let substrate = self.writer.substrate();
-        let stats = self.writer.sous_exclusion_ecritures(|| {
+        let stats = match self.writer.sous_exclusion_ecritures(|| {
             let mut guard = substrate.lock();
             crate::checkpoint::checkpoint_sous_election(&mut guard, &wal, &election)
-        })?;
+        }) {
+            Ok(s) => s,
+            // MP-8 : une transaction en vol non scellée borne la troncature. Rien
+            // n'a été tronqué ; la fenêtre persistée reste celle du flush ci-dessus.
+            Err(SubstrateError::CheckpointDiffere { offset, tx }) => {
+                return Ok(CheckpointOutcome::Differe { offset, tx });
+            }
+            Err(e) => return Err(e),
+        };
+        // Le WAL est neuf : la fenêtre repart de son début.
+        self.borne_fenetre_rejeu.store(0, Ordering::Release);
         // La troncature vient d'invalider l'ancre WAL posée par le `flush()`
         // ci-dessus. On la repose sur le WAL NEUF, sans quoi l'index serait
         // declare non fiable a chaque reouverture suivant un checkpoint.
@@ -9071,6 +9132,11 @@ impl SubstrateStore {
                 wal_avant_octets = stats.wal_offset_before,
                 ms = t.elapsed().as_millis() as u64,
                 "checkpoint automatique (élu) : WAL tronque"
+            ),
+            // MP-8 : refus journalisé en `warn` par `checkpoint_sous_fence` ; ici seulement.
+            Ok(crate::checkpoint::CheckpointOutcome::Differe { .. }) => tracing::debug!(
+                ms = t.elapsed().as_millis() as u64,
+                "checkpoint automatique différé : transaction en vol non scellée"
             ),
             Ok(crate::checkpoint::CheckpointOutcome::NonElu { ref fence }) => tracing::debug!(
                 fence = %fence.display(),
@@ -11790,13 +11856,13 @@ impl SubstrateStore {
         crate::retrieval::SubstrateTieredIndex::load_from_zones(&sub, dim)
     }
 
-    /// Offset WAL couvert par le dernier flush — c'est exactement d'ici
-    /// que le rejeu repartira à la prochaine ouverture
-    /// (`wal_offset_at_flush` du dict). Exposé pour l'observabilité et
-    /// pour les tests de rejeu, qui doivent pouvoir se placer dans le
-    /// mode de PRODUCTION plutôt que de rejouer depuis zéro.
+    /// Offset WAL d'où le rejeu repartira à la prochaine ouverture
+    /// (`wal_offset_at_flush` du dict) : la BORNE de MP-8, et non la fin du WAL
+    /// au flush, qui peut dépasser une transaction pair encore en vol. Exposé pour
+    /// l'observabilité et pour les tests de rejeu, qui doivent pouvoir se placer
+    /// dans le mode de PRODUCTION plutôt que de rejouer depuis zéro.
     pub fn offset_wal_du_dernier_flush(&self) -> u64 {
-        self.dernier_offset_flush.load(Ordering::Acquire)
+        self.borne_fenetre_rejeu.load(Ordering::Acquire)
     }
 
     /// Chantier SlotRemappable — SEUL point d'entrée supporté pour une

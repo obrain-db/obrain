@@ -557,6 +557,21 @@ impl ObrainDB {
     ///
     /// Returns an error if the substrate store cannot be created/opened at
     /// `path`.
+    /// Identité de ce processus pour la numérotation des transactions (MP-8) :
+    /// hachage aléatoire (graine par processus) de l'identifiant système et de
+    /// l'horloge. Deux processus concurrents ont donc, en pratique, des identités
+    /// distinctes ; la collision résiduelle est de l'ordre de 2^-31 par paire.
+    fn identite_de_processus() -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u32(std::process::id());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        h.write_u128(nanos);
+        h.finish() >> 33
+    }
+
     /// Ouvre le store en SHARED-WRITE (verrou partagé + écriture WAL) :
     /// coexiste avec les lecteurs RO du service. Réservé au GraphWriter
     /// unique (langextract) — les mutations sont journalisées dans le WAL,
@@ -577,7 +592,12 @@ impl ObrainDB {
                 path_ref.display()
             )));
         };
-        Self::with_substrate_store(store, Some(path_ref))
+        let db = Self::with_substrate_store(store, Some(path_ref))?;
+        // MP-8 : identifiants de transaction uniques ENTRE processus (voir
+        // `TransactionManager::numeroter_pour_processus`).
+        db.transaction_manager
+            .numeroter_pour_processus(Self::identite_de_processus());
+        Ok(db)
     }
 
     pub fn open_substrate_with_mode(
