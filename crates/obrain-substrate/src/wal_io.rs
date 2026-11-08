@@ -16,7 +16,11 @@
 //!   transaction commitée, explicite ou implicite : un commit acquitté
 //!   survit à un `kill -9` (test `durabilite_commit_kill9`). Avant cette
 //!   date, seul `flush()` (checkpoint / close) le posait — un commit rendait
-//!   `Ok` avec ses octets encore en tampon.
+//!   `Ok` avec ses octets encore en tampon. Depuis le 2026-11-08, les commits
+//!   CONCURRENTS d'un écrivain exclusif partagent leur `fsync` (chef de lot /
+//!   suiveurs, voir `attendre_durable`) : la sémantique ne bouge pas — aucun
+//!   commit n'est acquitté avant un `fsync` terminé qui couvre ses octets —
+//!   mais 4 threads × 200 commits passent de 3,7 s à 1,9 s (mesuré).
 //! * [`SyncMode::Group`] — opt-in (`ObrainDB::open_substrate_with_mode`).
 //!   Le marqueur est posé mais AUCUN `fsync` n'est émis par le writer : il
 //!   n'y a pas de minuterie. L'appelant borne lui-même sa fenêtre de perte
@@ -110,6 +114,7 @@
 //! boundary.
 
 use crate::error::{SubstrateError, SubstrateResult};
+use crate::es::PoigneeSynchro;
 use crate::wal::{WAL_HEADER_SIZE, WalKind, WalPayload, WalRecord, crc_over};
 use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
@@ -169,6 +174,51 @@ pub const SEUIL_RECORDS: usize = 4096;
 pub const SEUIL_OCTETS: usize = 4 * 1024 * 1024;
 /// Seuil de temps du group commit : la fenêtre de perte MAXIMALE assumée.
 pub const SEUIL_TEMPS: Duration = Duration::from_millis(2);
+
+// ---------------------------------------------------------------------------
+// Fsync partagé des commits concurrents (`SyncMode::EveryCommit`)
+// ---------------------------------------------------------------------------
+
+/// Poignée de fsync hors verrou, enveloppée pour `Debug` (le `dyn Fn` n'en a pas).
+struct PoigneeFsync(PoigneeSynchro);
+
+impl std::fmt::Debug for PoigneeFsync {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PoigneeFsync")
+    }
+}
+
+/// Résultat d'un fsync partagé. `Err` porte (genre, message) : chaque commit du
+/// groupe reçoit SA copie de l'erreur, pas seulement le chef de lot.
+type ResultatSynchro = Result<(), (std::io::ErrorKind, String)>;
+
+fn resultat_en_erreur(res: ResultatSynchro) -> SubstrateResult<()> {
+    res.map_err(|(kind, msg)| SubstrateError::Io(std::io::Error::new(kind, msg)))
+}
+
+/// Un fsync en vol, partagé par tous les commits dont les octets sont couverts.
+#[derive(Debug)]
+struct LotSynchro {
+    /// Dernière frame écrite au moment où ce fsync a été lancé (figée).
+    cible_seq: u64,
+    cible_octets: u64,
+    resultat: Mutex<Option<ResultatSynchro>>,
+}
+
+/// État du fsync partagé, sous SON verrou. Ordre de verrouillage : `inner` puis
+/// `synchro` ; un fsync partagé n'est JAMAIS fait en tenant `inner` ni `synchro`.
+#[derive(Debug, Default)]
+struct EtatSynchro {
+    /// Numéro de la dernière frame écrite (incrémenté après chaque `write` réussi).
+    ecrit_seq: u64,
+    /// Fin de la dernière frame écrite.
+    ecrit_octets: u64,
+    /// Toute frame de numéro `<= durable_seq` est couverte par un fsync terminé.
+    durable_seq: u64,
+    durable_octets: u64,
+    /// Le fsync partagé en vol, s'il y en a un.
+    en_cours: Option<Arc<LotSynchro>>,
+}
 
 // ---------------------------------------------------------------------------
 // Registre d'append mmapé partagé (2026-10-06) — voir `crate::wal_registre`
@@ -1382,6 +1432,16 @@ pub struct WalWriter {
     /// sur le lot : `tests/wal_group_commit_needle.rs` compare ce compteur au
     /// nombre d'`append` (lots de 1) et au nombre de seuils franchis.
     fsyncs: AtomicU64,
+    /// Plus grand offset de fin dont les octets sont couverts par un `fsync`
+    /// terminé. Sert au test de cohérence (un commit n'est rendu qu'une fois ses
+    /// octets durables) ; mis à jour sous le verrou `inner`.
+    octets_durables: AtomicU64,
+    /// État du fsync partagé des commits concurrents (voir `EtatSynchro`).
+    synchro: Mutex<EtatSynchro>,
+    /// Réveille les commits en attente d'un fsync partagé.
+    synchro_cv: Condvar,
+    /// Poignée de fsync hors verrou (`None` : pas de fsync partagé possible).
+    poignee_synchro: Option<PoigneeFsync>,
     /// Nombre de `write` réellement posés dans le média (un par flush de needle).
     poses: AtomicU64,
     /// État et condvar de la veille de temps, dans un `Arc` SÉPARÉ (voir
@@ -1826,6 +1886,7 @@ impl WalWriter {
         if publier {
             publier_ancre_sur(&ancre_path, ancre, taille)?;
         }
+        let poignee_synchro = file.poignee_synchro().ok().flatten().map(PoigneeFsync);
         Ok(Self {
             path,
             ancre_path,
@@ -1856,6 +1917,10 @@ impl WalWriter {
             group_actif: AtomicBool::new(false),
             octets_en_tampon: AtomicU64::new(0),
             fsyncs: AtomicU64::new(0),
+            octets_durables: AtomicU64::new(0),
+            synchro: Mutex::new(EtatSynchro::default()),
+            synchro_cv: Condvar::new(),
+            poignee_synchro,
             poses: AtomicU64::new(0),
             veille: Arc::new(VeillePartagee::neuve()),
             borne_frame_atomique: AtomicU64::new(MAX_FRAME_BYTES as u64),
@@ -1916,6 +1981,10 @@ impl WalWriter {
             group_actif: AtomicBool::new(false),
             octets_en_tampon: AtomicU64::new(0),
             fsyncs: AtomicU64::new(0),
+            octets_durables: AtomicU64::new(0),
+            synchro: Mutex::new(EtatSynchro::default()),
+            synchro_cv: Condvar::new(),
+            poignee_synchro: None,
             poses: AtomicU64::new(0),
             veille: Arc::new(VeillePartagee::neuve()),
             borne_frame_atomique: AtomicU64::new(MAX_FRAME_BYTES as u64),
@@ -2402,10 +2471,121 @@ impl WalWriter {
             encodeur(&mut buf, ancre + prediction)?;
             verifier_borne(buf.len(), borne)?;
             let mut guard = self.inner.lock();
-            self.poser_sous_verrou_avec_garde(
-                &mut guard, &mut buf, 1, commit, prediction, ancre, false,
-            )
+            let poignee = self.poignee_differable(&guard);
+            // Un commit dont le fsync est partagé n'en fait PAS un sous verrou : il
+            // écrit, puis attend un fsync (le sien ou celui d'un chef de lot).
+            let (position, len) = self.poser_sous_verrou_avec_garde(
+                &mut guard,
+                &mut buf,
+                1,
+                commit && poignee.is_none(),
+                prediction,
+                ancre,
+                false,
+            )?;
+            let Some(poignee) = poignee.filter(|_| commit) else {
+                return Ok((position, len));
+            };
+            let seq = self.synchro.lock().ecrit_seq;
+            drop(guard);
+            self.attendre_durable(&poignee, seq)?;
+            Ok((position, len))
         })
+    }
+
+    /// ── LE FSYNC PARTAGÉ : QUAND S'APPLIQUE-T-IL ? ───────────────────────────
+    /// Seulement en `SyncMode::EveryCommit`, avec une poignée hors verrou, group
+    /// commit à needle ÉTEINT et écrivain PROUVÉ seul (`Aucune`). Les autres
+    /// régimes gardent leur chemin d'avant, bit pour bit.
+    fn poignee_differable(&self, guard: &WriterInner) -> Option<PoigneeSynchro> {
+        if self.sync_mode != SyncMode::EveryCommit
+            || self.group_actif.load(Ordering::Acquire)
+            || guard.coordination != CoordinationAppend::Aucune
+        {
+            return None;
+        }
+        self.poignee_synchro
+            .as_ref()
+            .map(|p| std::sync::Arc::clone(&p.0))
+    }
+
+    /// Publie comme durable tout ce qui est écrit à ce jour. Appelé après un fsync
+    /// qui a été fait en tenant `inner`, donc couvrant toutes les frames écrites.
+    fn marquer_tout_ecrit_durable(&self) {
+        let mut etat = self.synchro.lock();
+        etat.durable_seq = etat.durable_seq.max(etat.ecrit_seq);
+        etat.durable_octets = etat.durable_octets.max(etat.ecrit_octets);
+        self.octets_durables
+            .fetch_max(etat.durable_octets, Ordering::AcqRel);
+        self.synchro_cv.notify_all();
+    }
+
+    /// Avant de tronquer le segment, tout ce qui y est écrit doit être durable :
+    /// un commit acquitté après la troncature ne doit pas dépendre d'un fsync qui
+    /// ne couvre plus ses octets.
+    fn rendre_durable_avant_troncature(&self, guard: &mut WriterInner) -> SubstrateResult<()> {
+        let a_faire = {
+            let etat = self.synchro.lock();
+            etat.durable_seq < etat.ecrit_seq
+        };
+        if a_faire {
+            guard.synchroniser(false)?;
+            self.fsyncs.fetch_add(1, Ordering::Relaxed);
+            self.marquer_tout_ecrit_durable();
+        }
+        Ok(())
+    }
+
+    /// ── ATTENDRE LE FSYNC QUI COUVRE NOTRE FRAME (leader / followers) ────────
+    ///
+    /// INVARIANT D'ACQUITTEMENT : rien ne rend la main avant qu'un fsync terminé
+    /// couvre la frame de numéro `seq`.
+    ///
+    /// - Si un fsync en vol couvre `seq`, on attend SON résultat (y compris une
+    ///   erreur : tous les commits de ce fsync reçoivent la même erreur).
+    /// - Sinon, on devient chef : on fige la cible (tout ce qui est écrit à
+    ///   cet instant), on fsync HORS de tout verrou — les autres écrivent et se
+    ///   rangent derrière nous —, puis on publie le résultat à tous.
+    /// - Si un fsync en vol ne couvre pas encore `seq`, on attend qu'il finisse
+    ///   puis on réessaie.
+    fn attendre_durable(&self, poignee: &PoigneeSynchro, seq: u64) -> SubstrateResult<()> {
+        let mut etat = self.synchro.lock();
+        loop {
+            if etat.durable_seq >= seq {
+                return Ok(());
+            }
+            match etat.en_cours.clone() {
+                Some(lot) if lot.cible_seq >= seq => loop {
+                    if let Some(res) = lot.resultat.lock().clone() {
+                        return resultat_en_erreur(res);
+                    }
+                    self.synchro_cv.wait(&mut etat);
+                },
+                Some(_) => self.synchro_cv.wait(&mut etat),
+                None => {
+                    let lot = Arc::new(LotSynchro {
+                        cible_seq: etat.ecrit_seq,
+                        cible_octets: etat.ecrit_octets,
+                        resultat: Mutex::new(None),
+                    });
+                    etat.en_cours = Some(Arc::clone(&lot));
+                    self.fsyncs.fetch_add(1, Ordering::Relaxed);
+                    let res = parking_lot::MutexGuard::unlocked(&mut etat, || {
+                        poignee(false).map_err(|e| (e.kind(), e.to_string()))
+                    });
+                    if res.is_ok() {
+                        etat.durable_seq = etat.durable_seq.max(lot.cible_seq);
+                        etat.durable_octets = etat.durable_octets.max(lot.cible_octets);
+                        self.octets_durables
+                            .fetch_max(etat.durable_octets, Ordering::AcqRel);
+                    }
+                    etat.en_cours = None;
+                    *lot.resultat.lock() = Some(res.clone());
+                    self.synchro_cv.notify_all();
+                    return resultat_en_erreur(res);
+                }
+            }
+        }
     }
 
     /// ── LE PUSH DU GROUP COMMIT : METTRE EN TAMPON, OU POSER ────────────────
@@ -2836,6 +3016,14 @@ impl WalWriter {
     /// 12 288. Voir `tests/wal_group_commit_needle.rs`.
     pub fn fsyncs(&self) -> u64 {
         self.fsyncs.load(Ordering::Acquire)
+    }
+
+    /// Offset de fin jusqu'où les octets du WAL sont couverts par un `fsync`
+    /// terminé. Un `append` acquitté doit avoir `position + len` au plus égal à
+    /// cette valeur au moment où il rend la main (voir `tests/wal_fsync_partage.rs`).
+    #[doc(hidden)]
+    pub fn octets_durables(&self) -> u64 {
+        self.octets_durables.load(Ordering::Acquire)
     }
 
     /// Nombre de `write` réellement posés dans le média (un par flush de needle).
@@ -3347,6 +3535,13 @@ impl WalWriter {
             self.records_ecrits
                 .fetch_add(records as u64, Ordering::Relaxed);
             self.poses.fetch_add(1, Ordering::Relaxed);
+            // Frame écrite : le fsync partagé (sous `inner`, donc sans course) doit
+            // la voir pour pouvoir la couvrir. Sa fin sert de cible d'octets.
+            {
+                let mut etat = self.synchro.lock();
+                etat.ecrit_seq += 1;
+                etat.ecrit_octets = position + len as u64;
+            }
             // ── LE FSYNC EST INDEXÉ SUR LA NEEDLE, PLUS SUR LE LOT ──────────
             // `forcer_fsync` vient du group commit (needle franchie, exigence
             // d'un record, échéance de temps, `fsync()` explicite). Le mode
@@ -3363,6 +3558,8 @@ impl WalWriter {
             if should_fsync {
                 guard.synchroniser(false)?;
                 self.fsyncs.fetch_add(1, Ordering::Relaxed);
+                // Ce fsync est fait sous `inner` : il couvre tout ce qui est écrit.
+                self.marquer_tout_ecrit_durable();
             }
             return Ok((position, len));
         }
@@ -4065,6 +4262,7 @@ impl WalWriter {
         if matches!(guard.medium, WalMedium::File(_)) {
             publier_ancre_sur(&self.ancre_path, nouvelle, 0)?;
         }
+        self.rendre_durable_avant_troncature(&mut guard)?;
         guard.tronquer()?;
         self.ancre.store(nouvelle, Ordering::Release);
         self.offset.store(0, Ordering::Release);

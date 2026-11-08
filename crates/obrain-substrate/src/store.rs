@@ -5587,6 +5587,28 @@ impl SubstrateStore {
         self.writer.fsync_wal()
     }
 
+    /// ── ORACLE DE DURABILITÉ (test/diagnostic) ─────────────────────────────
+    /// Offset de fin du WAL couvert par un `fsync` TERMINÉ. Un `commit()`
+    /// acquitté sous `EveryCommit` doit, au moment où il rend la main, avoir la
+    /// fin de sa frame au plus égale à cette valeur — sinon l'acquittement
+    /// précède la durabilité. C'est la seule mesure qu'un test en processus
+    /// peut faire d'un `fsync` : un `kill -9` ne vide pas le cache de pages, et
+    /// la réouverture après kill passe donc AVEC ou SANS fsync (voir
+    /// `obrain-engine/tests/durabilite_commit_kill9.rs`).
+    #[doc(hidden)]
+    pub fn wal_octets_durables(&self) -> u64 {
+        self.writer.wal().octets_durables()
+    }
+
+    /// Nombre de `fsync` réellement exécutés sur le WAL (voir
+    /// [`crate::wal_io::WalWriter::fsyncs`]). Oracle de repli quand la fin de
+    /// la frame n'est pas connue de l'appelant (commits concurrents) : entre
+    /// deux acquittements successifs d'un même fil, il doit avoir augmenté.
+    #[doc(hidden)]
+    pub fn wal_fsyncs(&self) -> u64 {
+        self.writer.wal().fsyncs()
+    }
+
     /// Create a throw-away substrate rooted in a fresh temp directory and
     /// open it in `EveryCommit` mode. The temp directory is owned by the
     /// underlying [`SubstrateFile`] (via an internal `TempDirGuard`) and
