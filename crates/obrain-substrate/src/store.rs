@@ -199,7 +199,46 @@ const DICT_FILENAME: &str = "substrate.dict";
 pub const DICT_FILENAME_PUB: &str = DICT_FILENAME;
 /// Sidecar des aretes inter-bases (V1) — snapshot bincode ecrit au flush,
 /// fusionne avec la fenetre WAL a l'ouverture (`merge_wal_external_edges`).
-const EXTEDGES_FILENAME: &str = "substrate.extedges";
+pub(crate) const EXTEDGES_FILENAME: &str = "substrate.extedges";
+
+/// (MP-5) Premier sidecar du régime hérité qui porte une donnée, s'il existe.
+///
+/// Un sidecar absent, de longueur nulle, ou dont le snapshot décode SANS nœud
+/// ni arête ne porte rien : c'est ce qu'un `flush` écrit pour une base neuve,
+/// donc une telle base reste ouvrable en écriture partagée. Un sidecar
+/// illisible ou indécodable est compté comme portant des données : on ne peut
+/// pas prouver qu'il est vide, et le refus est le côté sûr.
+pub(crate) fn premier_sidecar_herite_non_vide(dir: &Path) -> Option<&'static str> {
+    type EntreesExtedges = (u32, Vec<(u64, u64, String, Option<String>, String, String)>);
+    for nom in [PROPS_FILENAME, EDGE_PROPS_FILENAME, EXTEDGES_FILENAME] {
+        let octets = match std::fs::read(dir.join(nom)) {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Some(nom),
+        };
+        if octets.is_empty() {
+            continue;
+        }
+        let porte = if nom == EXTEDGES_FILENAME {
+            match bincode::serde::decode_from_slice::<EntreesExtedges, _>(
+                &octets,
+                bincode::config::standard(),
+            ) {
+                Ok(((_version, entrees), _)) => !entrees.is_empty(),
+                Err(_) => true,
+            }
+        } else {
+            match PropertiesSnapshotV1::from_bytes(&octets) {
+                Ok(snap) => !snap.nodes.is_empty() || !snap.edges.is_empty(),
+                Err(_) => true,
+            }
+        };
+        if porte {
+            return Some(nom);
+        }
+    }
+    None
+}
 
 /// Suffixe du FENCE de publication du dictionnaire : `substrate.dict` →
 /// `substrate.dict.lock`.
@@ -273,7 +312,7 @@ fn chemin_fence_dictionnaire(dict: &Path) -> PathBuf {
 struct VerrouDictionnaire {
     /// Porte le `flock`. Jamais lu — c'est sa DURÉE DE VIE qui compte.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fichier: Option<std::fs::File>,
+    fichier: Option<Box<dyn crate::es::FichierVerrou>>,
 }
 
 impl VerrouDictionnaire {
@@ -289,19 +328,12 @@ impl VerrouDictionnaire {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use fs2::FileExt as _;
             let chemin = chemin_fence_dictionnaire(dict);
-            let fichier = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&chemin)
-                .ok()?;
-            // `lock_exclusive` BLOQUANT : voir le pavé sur la structure.
-            fichier.lock_exclusive().ok()?;
+            let verrou = crate::es::espace().ouvrir_verrou(&chemin).ok()?;
+            // `exclusif` BLOQUANT : voir le pavé sur la structure.
+            verrou.exclusif().ok()?;
             Some(Self {
-                fichier: Some(fichier),
+                fichier: Some(verrou),
             })
         }
     }
@@ -314,7 +346,7 @@ impl Drop for VerrouDictionnaire {
             // Rend le verrou explicitement : le noyau le rendrait à la fermeture du
             // descripteur, mais un `Drop` qui dit ce qu'il fait se relit. (`File::unlock`
             // fait le même `flock(LOCK_UN)` que le `lock_exclusive` pris ci-dessus.)
-            let _ = fs2::FileExt::unlock(&f);
+            let _ = f.liberer();
             #[cfg(target_arch = "wasm32")]
             let _ = f;
         }
@@ -521,6 +553,24 @@ fn amorcer_registres_partages(
 pub const SKIP_ON_LOAD_PROP_KEYS: &[&str] =
     &["_st_embedding", "_kernel_embedding", "_hilbert_features"];
 
+/// Magic de l'enveloppe de [`SubstrateStore::instantane`] : elle précède l'image des
+/// zones et porte les propriétés logiques.
+const ENVELOPPE_PROPS_MAGIC: &[u8; 8] = b"OBRPROP1";
+
+/// Sépare l'enveloppe de [`SubstrateStore::instantane`] : (propriétés, image des zones).
+pub(crate) fn dissocier_enveloppe(image: &[u8]) -> SubstrateResult<(&[u8], &[u8])> {
+    let entete = ENVELOPPE_PROPS_MAGIC.len() + 8;
+    if image.len() < entete || &image[..ENVELOPPE_PROPS_MAGIC.len()] != ENVELOPPE_PROPS_MAGIC {
+        return Err(SubstrateError::BadMagic);
+    }
+    let longueur = u64::from_le_bytes(image[8..entete].try_into().unwrap()) as usize;
+    let fin = entete
+        .checked_add(longueur)
+        .filter(|&f| f <= image.len())
+        .ok_or_else(|| SubstrateError::Internal("instantané : enveloppe tronquée".into()))?;
+    Ok((&image[entete..fin], &image[fin..]))
+}
+
 // ---------------------------------------------------------------------------
 // Label registry (step 1 in-memory version)
 //
@@ -554,6 +604,21 @@ struct LabelRegistry {
 }
 
 impl LabelRegistry {
+    /// Le prochain bit LIBRE : au-delà du plus grand bit PORTÉ.
+    ///
+    /// `bit_to_name.len()` compte les noms et ignore les TROUS (indices consommés
+    /// ailleurs, ou absents du dictionnaire). Avec un trou, il désigne un bit déjà
+    /// pris : mesuré sur le noyau, le même défaut existait pour les types d'arêtes
+    /// (« l'id 8 porte déjà AT_COMMIT »).
+    fn prochain_bit_libre(&self) -> usize {
+        self.par_bit
+            .keys()
+            .map(|&b| usize::from(b) + 1)
+            .max()
+            .unwrap_or(0)
+            .max(self.bit_to_name.len())
+    }
+
     /// Nombre d'étiquettes internées (compté, pas déduit d'un rang : les indices
     /// peuvent être espacés).
     fn len(&self) -> usize {
@@ -574,7 +639,7 @@ impl LabelRegistry {
         }
         let bit = match bit {
             Some(b) => b,
-            None => self.bit_to_name.len().try_into().map_err(|_| {
+            None => self.prochain_bit_libre().try_into().map_err(|_| {
                 SubstrateError::Internal(format!(
                     "LabelRegistry overflow: more than 64 distinct labels (requested {name:?})"
                 ))
@@ -775,6 +840,18 @@ pub(crate) struct EdgeTypeRegistry {
 }
 
 impl EdgeTypeRegistry {
+    /// Le prochain id LIBRE : au-delà du plus grand id porté, jamais 0 (« pas
+    /// d'arête »). Voir `LabelRegistry::prochain_bit_libre` pour le défaut corrigé.
+    fn prochain_id_libre(&self) -> usize {
+        self.par_id
+            .keys()
+            .map(|&i| usize::from(i) + 1)
+            .max()
+            .unwrap_or(1)
+            .max(self.id_to_name.len())
+            .max(1)
+    }
+
     /// Nombre de types internés (compté, pas déduit d'un rang).
     fn len(&self) -> usize {
         self.par_id.len()
@@ -790,7 +867,7 @@ impl EdgeTypeRegistry {
         let id = match id {
             Some(i) => i,
             None => {
-                let i = self.id_to_name.len();
+                let i = self.prochain_id_libre();
                 if i >= u16::MAX as usize {
                     return Err(SubstrateError::Internal(format!(
                         "EdgeTypeRegistry overflow: more than {} distinct edge types \
@@ -912,6 +989,17 @@ struct PropertyKeyRegistry {
 }
 
 impl PropertyKeyRegistry {
+    /// Le prochain id LIBRE (même règle que `EdgeTypeRegistry::prochain_id_libre`).
+    fn prochain_id_libre(&self) -> usize {
+        self.par_id
+            .keys()
+            .map(|&i| usize::from(i) + 1)
+            .max()
+            .unwrap_or(1)
+            .max(self.id_to_name.len())
+            .max(1)
+    }
+
     /// Nombre de clés internées (compté, pas déduit d'un rang).
     fn len(&self) -> usize {
         self.par_id.len()
@@ -932,7 +1020,7 @@ impl PropertyKeyRegistry {
         let id = match id {
             Some(i) => i,
             None => {
-                let i = self.id_to_name.len();
+                let i = self.prochain_id_libre();
                 if i >= u16::MAX as usize {
                     return Err(SubstrateError::Internal(format!(
                         "PropertyKeyRegistry overflow: more than {} distinct property keys \
@@ -1675,6 +1763,11 @@ pub struct SubstrateStore {
     /// capture AVANT commit/msync, persiste dans le dict, borne le rejeu
     /// a l'ouverture a la seule fenetre non encore duree.
     dernier_offset_flush: AtomicU64,
+    /// MP-8 : borne de la fenêtre de rejeu persistée = min(offset du flush,
+    /// plus ancienne déclaration en vol non scellée). Ne sert QU'À la persistance
+    /// (`wal_offset_at_flush`) ; `dernier_offset_flush` garde son rôle d'offset
+    /// brut pour la détection « WAL immobile ».
+    borne_fenetre_rejeu: AtomicU64,
     /// Next engram id to allocate. Id 0 is the null-engram sentinel
     /// (see [`crate::engram::MAX_ENGRAM_ID`]); allocation starts at 1.
     /// Persisted via `substrate.dict` v2.
@@ -3512,7 +3605,7 @@ impl SubstrateStore {
     /// des suivantes. Sur un store ouvert en lecture seule l'écriture
     /// échoue proprement ici (warn), sans toucher au fichier existant.
     fn persister_index_apres_construction(&self) {
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let r = self.fusionner_index_egalite();
         if std::env::var("OBRAIN_INDEX_PROF").is_ok() {
             eprintln!(
@@ -5351,9 +5444,14 @@ impl SubstrateStore {
 
     /// Open an existing substrate in SHARED-WRITE mode : verrou PARTAGÉ
     /// (coexiste avec les lecteurs RO du service), écriture permise via le
-    /// WAL. Réservé au GraphWriter unique (langextract) — un seul écrivain.
-    /// Les lecteurs rejouent le WAL à leur ouverture (les écritures sont
-    /// visibles). Le moteur ne refuse pas les mutations (read_only=false).
+    /// WAL. Plusieurs processus peuvent écrire : les appends WAL sont
+    /// sérialisés par `O_APPEND` et le registre partagé. Les lecteurs
+    /// rejouent le WAL à leur ouverture (les écritures sont visibles). Le
+    /// moteur ne refuse pas les mutations (read_only=false).
+    ///
+    /// Refuse une base à sidecar hérité non vide ([`SubstrateError::BaseHeritee`]) :
+    /// la garantie v0.0.1 ne couvre que nœuds et arêtes sans propriété. Voir
+    /// [`SubstrateFile::open_shared_write`].
     pub fn open_shared_write(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_shared_write(path.as_ref())?;
         Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
@@ -6596,6 +6694,7 @@ impl SubstrateStore {
             aretes_creees_par_tx: DashMap::new(),
             deces_aretes: DashMap::new(),
             dernier_offset_flush: AtomicU64::new(0),
+            borne_fenetre_rejeu: AtomicU64::new(0),
             external_edges: DashMap::new(),
             external_inbound: DashMap::new(),
             external_by_id: DashMap::new(),
@@ -6691,7 +6790,14 @@ impl SubstrateStore {
             // si la fenêtre rejouée contient une permutation de slots, les
             // chaînes PropsZone v2 peuvent porter des stamps d'avant-remap
             // (auto-guérison juste avant Ok(store)).
-            match crate::replay::replay_from(&guard, debut) {
+            // `partage == false` : ouverture LECTEUR. Il ne doit rien écrire
+            // dans les zones d'un écrivain vivant (cf. `replay_from_lecteur`).
+            let rejeu = if partage {
+                crate::replay::replay_from(&guard, debut)
+            } else {
+                crate::replay::replay_from_lecteur(&guard, debut)
+            };
+            match rejeu {
                 Ok(st) => {
                     remaps_au_rejeu = st.remaps_appliques;
                     if st.applied > 0 || st.decode_errors > 0 {
@@ -6721,6 +6827,20 @@ impl SubstrateStore {
                 Err(e @ SubstrateError::RepermutationIndeterminee { .. }) => {
                     tracing::error!(error = %e,
                         "OUVERTURE REFUSEE depuis le rejeu WAL — etat de repermutation INDETERMINE");
+                    return Err(e);
+                }
+                // ── OPCODE INCONNU : REFUS, PAS « BASE UTILISABLE » (2026-11-07)
+                // Une frame entière à CRC valide d'un `kind` hors table vient
+                // d'un binaire PLUS RÉCENT. L'avaler dans le `warn!` générique
+                // ouvrait la base sur un préfixe, et le checkpoint suivant
+                // (`slot_remap.rs` § Retrograder) TRONQUAIT le WAL : perte
+                // définitive des frames postérieures. Garantie v0.0.1 : refus
+                // nommé, jamais lu comme vide ni partiel, rien de modifié.
+                // Vaut pour TOUTES les ouvertures (inscriptible, lecteur,
+                // partagée, miroir) : elles passent toutes par ici.
+                Err(e @ SubstrateError::WalOpcodeInconnu { .. }) => {
+                    tracing::error!(error = %e,
+                        "OUVERTURE REFUSEE depuis le rejeu WAL — opcode inconnu : WAL ecrit par une version plus recente");
                     return Err(e);
                 }
                 Err(e) => tracing::warn!(error = %e,
@@ -6766,6 +6886,20 @@ impl SubstrateStore {
                                 erreur = %e,
                                 "graphe nomme NON MONTE : repermutation indeterminee. Il ne \
                                  sert aucune requete tant qu'il n'est pas repare."
+                            );
+                        }
+                        // (2026-11-07) Même discipline pour un WAL d'enfant
+                        // écrit par une version plus récente : NON MONTÉ, en
+                        // ERROR — une indisponibilité nommée, jamais un
+                        // sous-graphe lu comme vide. Le parent reste
+                        // accessible ; l'enfant n'est ni rejoué ni tronqué.
+                        Err(e @ SubstrateError::WalOpcodeInconnu { .. }) => {
+                            tracing::error!(
+                                graphe = nom,
+                                erreur = %e,
+                                "graphe nomme NON MONTE : son WAL porte un opcode inconnu \
+                                 (version plus recente). Il ne sert aucune requete tant \
+                                 qu'il n'est pas rouvert avec cette version."
                             );
                         }
                         Err(e) => {
@@ -8243,7 +8377,8 @@ impl SubstrateStore {
             // format always includes counters so subsequent opens
             // restore in O(1) (no zone scan).
             counters: Some(self.snapshot_counters()),
-            wal_offset_at_flush: self.dernier_offset_flush.load(Ordering::Acquire),
+            // MP-8 : la BORNE (pas l'offset brut) — voir `borne_de_fenetre`.
+            wal_offset_at_flush: self.borne_fenetre_rejeu.load(Ordering::Acquire),
         }
     }
 
@@ -8271,15 +8406,93 @@ impl SubstrateStore {
     /// besoin). Un instantané produit par `instantane()` se restaure donc sans
     /// système de fichiers.
     pub fn depuis_instantane(image: &[u8]) -> SubstrateResult<Self> {
+        let (proprietes, zones) = dissocier_enveloppe(image)?;
         let mut sub = SubstrateFile::open_memory()?;
-        crate::instantane::restaurer(&mut sub, image)?;
-        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
+        crate::instantane::restaurer(&mut sub, zones)?;
+        let store = Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)?;
+        store.appliquer_proprietes_logiques(PropertiesSnapshotV1::from_bytes(proprietes)?);
+        Ok(store)
     }
 
-    /// Instantané EXACT du store : dictionnaire + zones + méta.
+    /// Instantané EXACT du store : propriétés logiques, puis dictionnaire + zones + méta.
+    ///
+    /// Les propriétés ne vivent pas toutes dans les zones (sidecar, colonnes, blobs,
+    /// PropsZone) : l'image des zones seule perdait les propriétés scalaires au
+    /// rechargement. Elles sont donc sérialisées à part, par l'API publique.
+    /// Enveloppe : `OBRPROP1` · u64 longueur des propriétés · propriétés · image.
     pub fn instantane(&self) -> SubstrateResult<Vec<u8>> {
+        let proprietes = self.proprietes_logiques()?.to_bytes()?;
         let dict = self.octets_dictionnaire()?;
-        self.avec_substrate(|sub| crate::instantane::exporter_avec_dict(sub, Some(&dict)))
+        let zones =
+            self.avec_substrate(|sub| crate::instantane::exporter_avec_dict(sub, Some(&dict)))?;
+        let mut out =
+            Vec::with_capacity(ENVELOPPE_PROPS_MAGIC.len() + 8 + proprietes.len() + zones.len());
+        out.extend_from_slice(ENVELOPPE_PROPS_MAGIC);
+        out.extend_from_slice(&(proprietes.len() as u64).to_le_bytes());
+        out.extend_from_slice(&proprietes);
+        out.extend_from_slice(&zones);
+        Ok(out)
+    }
+
+    /// Propriétés LOGIQUES du store, lues par l'API publique : indépendantes du
+    /// routage interne. Les clés de [`SKIP_ON_LOAD_PROP_KEYS`] sont reconstruites
+    /// au chargement, elles ne sont donc pas sauvées.
+    fn proprietes_logiques(&self) -> SubstrateResult<PropertiesSnapshotV1> {
+        let cles: Vec<String> = self
+            .all_property_keys()
+            .into_iter()
+            .filter(|k| !SKIP_ON_LOAD_PROP_KEYS.contains(&k.as_str()))
+            .collect();
+        let mut snap = PropertiesSnapshotV1::default();
+        let mut aretes: FxHashSet<EdgeId> = FxHashSet::default();
+        for n in self.node_ids() {
+            let props: Vec<(String, Value)> = cles
+                .iter()
+                .filter_map(|k| {
+                    GraphStore::get_node_property(self, n, &PropertyKey::new(k.as_str()))
+                        .map(|v| (k.clone(), v))
+                })
+                .collect();
+            if !props.is_empty() {
+                snap.nodes.push(PropEntry { id: n.0, props });
+            }
+            aretes.extend(
+                self.edges_from(n, Direction::Outgoing)
+                    .into_iter()
+                    .map(|(_, e)| e),
+            );
+        }
+        let mut aretes: Vec<EdgeId> = aretes.into_iter().collect();
+        aretes.sort_by_key(|e| e.0);
+        for e in aretes {
+            let props: Vec<(String, Value)> = cles
+                .iter()
+                .filter_map(|k| {
+                    GraphStore::get_edge_property(self, e, &PropertyKey::new(k.as_str()))
+                        .map(|v| (k.clone(), v))
+                })
+                .collect();
+            if !props.is_empty() {
+                snap.edges.push(PropEntry { id: e.0, props });
+            }
+        }
+        Ok(snap)
+    }
+
+    /// Réapplique des propriétés logiques par le setter PUBLIC : le routage est
+    /// refait comme à l'écriture d'origine. Le setter ignore lui-même les entités
+    /// absentes ou mortes.
+    fn appliquer_proprietes_logiques(&self, snap: PropertiesSnapshotV1) {
+        for e in snap.nodes {
+            for (k, v) in e.props {
+                GraphStoreMut::set_node_property(self, NodeId(e.id), &k, v);
+            }
+        }
+        for e in snap.edges {
+            for (k, v) in e.props {
+                GraphStoreMut::set_edge_property(self, EdgeId(e.id), &k, v);
+            }
+        }
     }
 
     /// Persist le dict SANS condition. Réservé aux chemins qui VEULENT un dict
@@ -8541,6 +8754,13 @@ impl SubstrateStore {
         // chaque appelant devrait penser a cabler — c'est precisement cet
         // oubli qui a laisse le WAL atteindre 12,8 Go.
         self.writer.commit()?;
+        // ── MP-8 : LA FENÊTRE DE REJEU NE SE REFERME PAS SUR UNE TRANSACTION EN VOL ──
+        // Le `wal_offset_at_flush` persisté ne peut pas être la fin du WAL partagé :
+        // une déclaration `TxNoeudEnAttente` d'un pair encore non scellée (ou d'un
+        // processus mort) sortirait de la fenêtre, et ses entités, déjà dans les
+        // zones msyncées ci-dessous, seraient publiées à la réouverture.
+        let borne = self.borne_de_fenetre(offset_du_flush)?;
+        self.borne_fenetre_rejeu.store(borne, Ordering::Release);
         self.writer.msync_zones()?;
         self.vec_columns.sync_all()?;
         self.blob_columns.sync_all()?;
@@ -8688,7 +8908,44 @@ impl SubstrateStore {
                     fence: fence.display().to_string(),
                 })
             }
+            crate::checkpoint::CheckpointOutcome::Differe { offset, tx } => {
+                Err(SubstrateError::CheckpointDiffere { offset, tx })
+            }
         }
+    }
+
+    /// MP-8 — BORNE DE LA FENÊTRE DE REJEU, calculée à chaque `flush()`.
+    ///
+    /// Rend `min(offset_du_flush, déclaration en vol non scellée la plus ancienne)`.
+    /// Le balayage repart de la borne PRÉCÉDENTE (persistée) : toute déclaration
+    /// antérieure était scellée au moment où cette borne a été fixée, et un
+    /// scellement est définitif. Il n'y a donc rien à relire avant elle. Coût :
+    /// les octets écrits depuis la plus ancienne déclaration en vol — rien quand
+    /// aucune transaction n'est ouverte.
+    ///
+    /// Si une transaction reste ouverte, la borne reste figée et le WAL ne se
+    /// tronque plus (refus au checkpoint, journalisé en `warn`).
+    fn borne_de_fenetre(&self, offset_du_flush: u64) -> SubstrateResult<u64> {
+        let wal = self.writer.wal();
+        // Poser le tampon du group commit : le balayage doit voir toutes les
+        // déclarations, y compris celles encore en mémoire.
+        if wal.octets_en_tampon() > 0 {
+            wal.fsync()?;
+        }
+        let fin = wal.offset();
+        let depuis = self.borne_fenetre_rejeu.load(Ordering::Acquire);
+        let bord = match crate::wal_io::plus_ancienne_declaration_en_vol(wal.path(), depuis)? {
+            Some(decl) => {
+                tracing::debug!(
+                    tx = decl.tx,
+                    offset = decl.offset,
+                    "flush : fenêtre de rejeu bornée par une transaction en vol"
+                );
+                decl.offset.min(fin)
+            }
+            None => fin,
+        };
+        Ok(offset_du_flush.min(bord))
     }
 
     /// ── CHECKPOINT ÉLU (Phase B, pièce 1) ────────────────────────────────────
@@ -8753,10 +9010,20 @@ impl SubstrateStore {
         // donnée de cet écrivain n'est pas perdue non plus : elle est dans les
         // zones, que CE checkpoint msync avant de tronquer.
         let substrate = self.writer.substrate();
-        let stats = self.writer.sous_exclusion_ecritures(|| {
+        let stats = match self.writer.sous_exclusion_ecritures(|| {
             let mut guard = substrate.lock();
             crate::checkpoint::checkpoint_sous_election(&mut guard, &wal, &election)
-        })?;
+        }) {
+            Ok(s) => s,
+            // MP-8 : une transaction en vol non scellée borne la troncature. Rien
+            // n'a été tronqué ; la fenêtre persistée reste celle du flush ci-dessus.
+            Err(SubstrateError::CheckpointDiffere { offset, tx }) => {
+                return Ok(CheckpointOutcome::Differe { offset, tx });
+            }
+            Err(e) => return Err(e),
+        };
+        // Le WAL est neuf : la fenêtre repart de son début.
+        self.borne_fenetre_rejeu.store(0, Ordering::Release);
         // La troncature vient d'invalider l'ancre WAL posée par le `flush()`
         // ci-dessus. On la repose sur le WAL NEUF, sans quoi l'index serait
         // declare non fiable a chaque reouverture suivant un checkpoint.
@@ -8865,6 +9132,11 @@ impl SubstrateStore {
                 wal_avant_octets = stats.wal_offset_before,
                 ms = t.elapsed().as_millis() as u64,
                 "checkpoint automatique (élu) : WAL tronque"
+            ),
+            // MP-8 : refus journalisé en `warn` par `checkpoint_sous_fence` ; ici seulement.
+            Ok(crate::checkpoint::CheckpointOutcome::Differe { .. }) => tracing::debug!(
+                ms = t.elapsed().as_millis() as u64,
+                "checkpoint automatique différé : transaction en vol non scellée"
             ),
             Ok(crate::checkpoint::CheckpointOutcome::NonElu { ref fence }) => tracing::debug!(
                 fence = %fence.display(),
@@ -11584,13 +11856,13 @@ impl SubstrateStore {
         crate::retrieval::SubstrateTieredIndex::load_from_zones(&sub, dim)
     }
 
-    /// Offset WAL couvert par le dernier flush — c'est exactement d'ici
-    /// que le rejeu repartira à la prochaine ouverture
-    /// (`wal_offset_at_flush` du dict). Exposé pour l'observabilité et
-    /// pour les tests de rejeu, qui doivent pouvoir se placer dans le
-    /// mode de PRODUCTION plutôt que de rejouer depuis zéro.
+    /// Offset WAL d'où le rejeu repartira à la prochaine ouverture
+    /// (`wal_offset_at_flush` du dict) : la BORNE de MP-8, et non la fin du WAL
+    /// au flush, qui peut dépasser une transaction pair encore en vol. Exposé pour
+    /// l'observabilité et pour les tests de rejeu, qui doivent pouvoir se placer
+    /// dans le mode de PRODUCTION plutôt que de rejouer depuis zéro.
     pub fn offset_wal_du_dernier_flush(&self) -> u64 {
-        self.dernier_offset_flush.load(Ordering::Acquire)
+        self.borne_fenetre_rejeu.load(Ordering::Acquire)
     }
 
     /// Chantier SlotRemappable — SEUL point d'entrée supporté pour une
@@ -11799,6 +12071,11 @@ impl SubstrateStore {
             };
             edges_typed.push((src, dst, id));
         }
+        // (03/11/2026) Le dictionnaire est persisté AVANT toute écriture de zone :
+        // un type interné que le dictionnaire ne connaît pas ne doit jamais avoir
+        // d'arêtes sur disque. Sans cela, une interruption entre l'écriture des
+        // arêtes et le checkpoint laissait des types sans nom à la réouverture.
+        self.persist_dict()?;
         let (_nw, mw) = self.writer.bulk_write(&bitsets, &edges_typed)?;
         // Compteurs.
         self.next_node_id.store(n + 1, Ordering::Release);
@@ -12125,7 +12402,7 @@ impl SubstrateStore {
             ));
         };
         let prof = std::env::var("OBRAIN_INDEX_PROF").is_ok();
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let cpu0 = crate::compteurs::temps_cpu("thread-self");
         let mut cles: std::collections::HashMap<&str, u16> = std::collections::HashMap::new();
         for liste in props {
@@ -12241,7 +12518,7 @@ impl SubstrateStore {
         let cpu_pages = crate::compteurs::temps_cpu("thread-self") - cpu0;
         self.writer.poser_tetes_props_en_lot(&tetes)?;
         let t_tetes = t0.elapsed() - t_pages;
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         let n_differees = differees.len();
         // Hors verrou de zone : le chemin unitaire le reprend lui-même.
         for (slot, k, v) in differees {
@@ -12787,7 +13064,14 @@ impl SubstrateStore {
     {
         let hw = self.next_edge_id.load(Ordering::Acquire);
         self.writer.for_each_edge_record(hw, |slot, rec| {
-            if rec.is_tombstoned() {
+            // (2026-11-02) Un slot RÉSERVÉ mais jamais écrit n'est pas une arête.
+            // La zone est dimensionnée par bloc (`TAILLE_BLOC_ALLOCATION`) et
+            // `next_edge_id` peut valoir la borne du bloc : les records entre la
+            // dernière arête écrite et cette borne sont à zéro — ni tombstone,
+            // ni arête. Une vraie arête a toujours `src != 0 && dst != 0` (le
+            // slot 0 des nœuds est réservé). Mesuré : 1 arête créée → 256
+            // rendues ; `edge_count()` (compteur atomique) disait 1.
+            if rec.is_tombstoned() || (rec.src == 0 && rec.dst == 0) {
                 return true;
             }
             f(slot, rec);
@@ -23818,7 +24102,8 @@ mod tests {
             fence.display()
         );
         let image = s.instantane().unwrap();
-        let zones: Vec<String> = crate::instantane::repartition(&image)
+        let (_, image) = dissocier_enveloppe(&image).unwrap();
+        let zones: Vec<String> = crate::instantane::repartition(image)
             .unwrap()
             .into_iter()
             .map(|(nom, _, _)| nom)
@@ -23875,7 +24160,7 @@ mod tests {
             let _ = tiers.unlock();
         });
 
-        let debut = std::time::Instant::now();
+        let debut = web_time::Instant::now();
         tx.send(()).unwrap();
         s.flush().unwrap();
         let attente = debut.elapsed();
@@ -36976,8 +37261,176 @@ impl SubstrateStore {
 /// Horodatage des records de transaction (µs depuis l'époque Unix) ; 0 si
 /// l'horloge est antérieure à l'époque — l'horodatage est informatif.
 fn horodatage_micros() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod indice_libre_tests {
+    use super::*;
+
+    /// Le cas mesuré : un dictionnaire dont l'indice 0 est un trou (« pas d'arête »,
+    /// jamais chargé). `id_to_name.len()` valait 8 ; l'indice 8 était déjà AT_COMMIT.
+    /// Avant le correctif, `PARENT` recevait 8 et le registre refusait (panic).
+    #[test]
+    fn un_type_nouveau_saute_le_trou_du_dictionnaire() {
+        let mut r = EdgeTypeRegistry::default();
+        let dict: Vec<String> = [
+            "",
+            "HAS_BRANCH",
+            "HAS_WORKTREE",
+            "CONTAINS_FILE",
+            "CONTENT",
+            "DEFINES",
+            "CALLS",
+            "TOUCHES",
+            "AT_COMMIT",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        r.load_from(&dict).unwrap();
+        let id = r
+            .interner_a("PARENT", None)
+            .expect("pas de collision avec AT_COMMIT");
+        assert_eq!(
+            id, 9,
+            "le premier indice libre est au-delà du dernier porté"
+        );
+        assert_eq!(
+            r.name_for(8).as_deref(),
+            Some("AT_COMMIT"),
+            "AT_COMMIT n'est pas écrasé"
+        );
+        assert_eq!(r.name_for(id).as_deref(), Some("PARENT"));
+    }
+
+    /// Même défaut pour les clés de propriétés : un trou ne doit pas être réattribué.
+    #[test]
+    fn une_cle_nouvelle_saute_le_trou() {
+        let mut r = PropertyKeyRegistry::default();
+        r.interner_a("name", Some(1)).unwrap();
+        r.interner_a("line", Some(3)).unwrap(); // trou en 2
+        let id = r.interner_a("signature", None).unwrap();
+        assert_eq!(id, 4, "au-delà du plus grand indice porté");
+        assert_eq!(r.name_for(3).as_deref(), Some("line"));
+    }
+
+    /// Même défaut pour les étiquettes (bits).
+    #[test]
+    fn une_etiquette_nouvelle_saute_le_trou() {
+        let mut r = LabelRegistry::default();
+        r.interner_a("Function", Some(0)).unwrap();
+        r.interner_a("Blob", Some(2)).unwrap(); // trou en 1
+        let bit = r.interner_a("Class", None).unwrap();
+        assert_eq!(bit, 3);
+        assert_eq!(r.name_for(2).as_deref(), Some("Blob"));
+    }
+}
+
+/// Cohérence d'un lecteur RO face à un checkpoint de l'écrivain partagé.
+///
+/// Un lecteur RO prend `LOCK_SH`, comme l'écrivain partagé : le checkpoint ne
+/// l'exclut pas. On pilote donc À LA MAIN l'entrelacement le plus défavorable
+/// (écritures APRÈS le `flush()` du checkpoint, donc absentes du dict, puis
+/// troncature du WAL qui efface leur trace) et on exige qu'un lecteur ouvert
+/// après ne voie jamais moins qu'un lecteur ouvert avant.
+#[cfg(test)]
+mod coherence_lecteur_ro {
+    use super::*;
+    use obrain_core::graph::traits::GraphStore;
+
+    #[test]
+    fn lecteur_ouvert_apres_troncature_ne_voit_pas_moins_qu_un_lecteur_ouvert_avant() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("ro-coherence");
+        drop(SubstrateStore::create(&path).unwrap());
+
+        let w = SubstrateStore::open_shared_write(&path).unwrap();
+        for _ in 0..5 {
+            w.create_node(&["A"]);
+        }
+        // Première moitié du checkpoint : le dict décrit 5 nœuds.
+        w.flush().unwrap();
+        // Écritures entre le flush et la troncature (autre thread, autre
+        // processus) : dans les zones et le WAL, PAS dans le dict.
+        for _ in 0..3 {
+            w.create_node(&["B"]);
+        }
+
+        let avant = {
+            let r = SubstrateStore::open_read_only(&path).unwrap();
+            r.node_count()
+        };
+        assert_eq!(avant, 8, "le lecteur d'avant voit les 8 nœuds");
+
+        // Seconde moitié du checkpoint, SANS nouveau flush : meta, troncature.
+        let wal = w.writer.wal();
+        let election = crate::wal_io::ElectionCheckpoint::tenter(wal.path()).unwrap();
+        let substrate = w.writer.substrate();
+        w.writer
+            .sous_exclusion_ecritures(|| {
+                let mut g = substrate.lock();
+                crate::checkpoint::checkpoint_sous_election(&mut g, &wal, &election)
+            })
+            .unwrap();
+        drop(election);
+
+        let apres = {
+            let r = SubstrateStore::open_read_only(&path).unwrap();
+            r.node_count()
+        };
+        assert_eq!(w.node_count(), 8, "l'écrivain voit toujours 8 nœuds");
+        assert!(
+            apres >= avant,
+            "un lecteur ouvert après la troncature voit {apres} nœuds, \
+             moins que les {avant} d'un lecteur ouvert avant"
+        );
+    }
+
+    /// Un lecteur RO ne doit RIEN écrire dans les zones d'un écrivain vivant.
+    ///
+    /// Défaut mesuré : `replay_from` écarte en fin de rejeu toute transaction
+    /// « en vol » (entités déclarées sans `TxCommit`) en posant des tombstones
+    /// DANS LES ZONES PARTAGÉES. Pour un écrivain mort, c'est la bonne reprise ;
+    /// pour un lecteur qui ouvre pendant la transaction OUVERTE d'un écrivain
+    /// vivant, c'est tuer un nœud légitime (compte lu en baisse, 23 nœuds
+    /// relus pour 24 écritures acceptées).
+    #[test]
+    fn lecteur_ro_n_ecarte_pas_la_transaction_en_vol_d_un_ecrivain_vivant() {
+        use crate::wal::{WalPayload, WalRecord};
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("ro-en-vol");
+        drop(SubstrateStore::create(&path).unwrap());
+
+        let w = SubstrateStore::open_shared_write(&path).unwrap();
+        let a = w.create_node(&["A"]);
+        // L'écrivain a déclaré `a` en attente dans une transaction, pas encore
+        // scellée par son `TxCommit`.
+        w.writer
+            .wal()
+            .append(WalRecord {
+                lsn: 0,
+                timestamp: 0,
+                flags: 0,
+                payload: WalPayload::TxNoeudEnAttente {
+                    tx: 7,
+                    node_id: a.0 as u32,
+                },
+            })
+            .unwrap();
+        assert!(w.get_node(a).is_some(), "précondition : `a` est vivant");
+
+        drop(SubstrateStore::open_read_only(&path).unwrap());
+
+        assert!(
+            w.get_node(a).is_some(),
+            "l'ouverture d'un lecteur RO a tombstoné le nœud d'une transaction \
+             encore ouverte chez l'écrivain vivant"
+        );
+        let r = SubstrateStore::open_read_only(&path).unwrap();
+        assert_eq!(r.node_count(), 1, "le lecteur suivant voit toujours `a`");
+    }
 }

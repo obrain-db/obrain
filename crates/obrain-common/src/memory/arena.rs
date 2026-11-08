@@ -38,8 +38,14 @@ const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
 /// If the primary chunk fills up, new chunks are allocated transparently.
 /// With 16-bit chunk indices and 48-bit offsets, the theoretical maximum is
 /// 65536 chunks × 256 TB per chunk — effectively unlimited.
-#[cfg(feature = "tiered-storage")]
+/// Taille d'un chunk du mode tiered. 8 GB sur les cibles 64 bits ; sur les cibles
+/// 32 bits (wasm32) `usize` ne tient pas 8 GB : constante qui débordait à la
+/// compilation. Une arène de 32 bits ne peut de toute façon pas dépasser 4 GB.
+#[cfg(all(feature = "tiered-storage", target_pointer_width = "64"))]
 const TIERED_CHUNK_SIZE: usize = 8 * 1024 * 1024 * 1024; // 8 GB
+
+#[cfg(all(feature = "tiered-storage", not(target_pointer_width = "64")))]
+const TIERED_CHUNK_SIZE: usize = 256 * 1024 * 1024; // 256 MB
 
 /// Errors from arena allocation operations.
 #[derive(Debug, Clone)]

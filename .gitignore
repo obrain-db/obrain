@@ -72,3 +72,4 @@ cargo-timing*.html
 docs/changelog.md
 site/
 .cache/
+pkg-web

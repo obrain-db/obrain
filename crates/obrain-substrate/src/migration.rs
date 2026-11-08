@@ -199,12 +199,13 @@ pub fn poser_allocated_zone_nodes(dir: &Path, borne_slots: Option<u32>) -> Subst
     } else {
         NoeudV2::SIZE
     };
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&chemin)?;
+    let mut f = crate::es::espace().ouvrir_donnees(&chemin, true)?;
     let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes)?;
+    {
+        let taille = f.taille()? as usize;
+        bytes.resize(taille, 0);
+        f.lire_a(0, &mut bytes)?;
+    }
     let n_slots = (bytes.len() / stride) as u32;
     let borne = borne_slots.map_or(n_slots, |b| b.min(n_slots));
     for slot in 1..borne {
@@ -216,10 +217,9 @@ pub fn poser_allocated_zone_nodes(dir: &Path, borne_slots: Option<u32>) -> Subst
             continue;
         }
         let flags = rec.flags | node_flags::ALLOCATED;
-        f.seek(SeekFrom::Start((base + OFF_FLAGS) as u64))?;
-        f.write_all(&flags.to_le_bytes())?;
+        f.ecrire_a((base + OFF_FLAGS) as u64, &flags.to_le_bytes())?;
     }
-    f.sync_all()?;
+    f.synchroniser(true)?;
     Ok(())
 }
 
@@ -340,12 +340,9 @@ pub fn reecrire_zone_nodes_2_vers_3(
 /// OR un bit dans le champ `flags` du header meta (offset 12), write + fsync.
 /// Idempotent.
 fn poser_drapeau_meta(dir: &Path, bit: u32) -> SubstrateResult<()> {
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(dir.join(zone::META))?;
+    let mut f = crate::es::espace().ouvrir_donnees(&dir.join(zone::META), true)?;
     let mut tete = [0u8; 16];
-    f.read_exact(&mut tete)?;
+    f.lire_a(0, &mut tete)?;
     if tete[..8] != SUBSTRATE_MAGIC {
         return Err(SubstrateError::BadMagic);
     }
@@ -353,9 +350,8 @@ fn poser_drapeau_meta(dir: &Path, bit: u32) -> SubstrateResult<()> {
     if flags & bit == bit {
         return Ok(());
     }
-    f.seek(SeekFrom::Start(12))?;
-    f.write_all(&(flags | bit).to_le_bytes())?;
-    f.sync_all()?;
+    f.ecrire_a(12, &(flags | bit).to_le_bytes())?;
+    f.synchroniser(true)?;
     Ok(())
 }
 

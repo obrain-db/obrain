@@ -136,11 +136,11 @@ fn debit_du_chemin_reel_writer_commit() {
         x_needle > 10.0,
         "la needle ne rend que ×{x_needle:.1} : le fsync est-il retombé sur le lot ?"
     );
-    assert!(
-        apres > 200_000.0,
-        "le chemin groupé plafonne à {apres:.0} rec/s — attendu ≥ 200 000 sur ce \
-         disque (4096 records par fsync de 2,65 ms ≈ 1,5 M)"
-    );
+    // PAS de plancher en rec/s : il dépend du disque et de la charge du runner
+    // (184 031 rec/s mesurés sur n3 chargé, rouge pour un seuil à 200 000 alors
+    // que le gain était de ×131). Le gain relatif et la rareté des fsync
+    // ci-dessous disent la même chose sans dépendre de la machine ; le débit est
+    // imprimé plus haut pour qui veut le lire.
     assert!(
         fsyncs_apres * 100 < n_apres,
         "les fsync doivent être RARES : {fsyncs_apres} pour {n_apres} commits"

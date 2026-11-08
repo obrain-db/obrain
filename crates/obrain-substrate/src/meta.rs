@@ -100,7 +100,7 @@ fn now_unix_seconds() -> i64 {
     // fournir (l'hôte JS en a une : `Date.now()`).
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use web_time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)

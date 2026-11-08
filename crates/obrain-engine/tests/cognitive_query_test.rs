@@ -43,7 +43,7 @@ fn call(
 #[tokio::test]
 async fn energy_udf_returns_zero_for_unknown_node() {
     let engine = make_engine();
-    let udf = EnergyUdf::new(Arc::clone(&engine));
+    let udf = EnergyUdf::new(&engine);
     let result = udf.evaluate(&[Value::Int64(999)]).unwrap();
     match result {
         Value::Float64(v) => assert!(v >= 0.0),
@@ -57,7 +57,7 @@ async fn energy_udf_returns_boosted_energy() {
     if let Some(store) = engine.energy_store() {
         store.boost(NodeId(42), 5.0);
     }
-    let udf = EnergyUdf::new(engine);
+    let udf = EnergyUdf::new(&engine);
     let result = udf.evaluate(&[Value::Int64(42)]).unwrap();
     match result {
         Value::Float64(v) => assert!(v >= 4.99, "Expected >= 4.99, got {}", v),
@@ -68,7 +68,7 @@ async fn energy_udf_returns_boosted_energy() {
 #[tokio::test]
 async fn energy_udf_rejects_missing_args() {
     let engine = make_engine();
-    let udf = EnergyUdf::new(engine);
+    let udf = EnergyUdf::new(&engine);
     let result = udf.evaluate(&[]);
     assert!(result.is_err());
 }
@@ -76,7 +76,7 @@ async fn energy_udf_rejects_missing_args() {
 #[tokio::test]
 async fn energy_udf_name() {
     let engine = make_engine();
-    let udf = EnergyUdf::new(engine);
+    let udf = EnergyUdf::new(&engine);
     assert_eq!(udf.name(), "obrain.energy");
 }
 
@@ -87,7 +87,7 @@ async fn energy_udf_name() {
 #[tokio::test]
 async fn risk_udf_returns_zero_without_fabric() {
     let engine = make_engine();
-    let udf = RiskUdf::new(engine);
+    let udf = RiskUdf::new(&engine);
     let result = udf.evaluate(&[Value::Int64(1)]).unwrap();
     match result {
         Value::Float64(v) => assert!((v - 0.0).abs() < f64::EPSILON),
@@ -98,7 +98,7 @@ async fn risk_udf_returns_zero_without_fabric() {
 #[tokio::test]
 async fn risk_udf_name() {
     let engine = make_engine();
-    let udf = RiskUdf::new(engine);
+    let udf = RiskUdf::new(&engine);
     assert_eq!(udf.name(), "obrain.risk");
 }
 
@@ -109,7 +109,7 @@ async fn risk_udf_name() {
 #[tokio::test]
 async fn synapses_udf_returns_empty_list_without_synapse() {
     let engine = make_engine();
-    let udf = SynapsesUdf::new(engine);
+    let udf = SynapsesUdf::new(&engine);
     let result = udf.evaluate(&[Value::Int64(1)]).unwrap();
     match result {
         Value::List(list) => assert!(list.is_empty()),
@@ -120,7 +120,7 @@ async fn synapses_udf_returns_empty_list_without_synapse() {
 #[tokio::test]
 async fn synapses_udf_name() {
     let engine = make_engine();
-    let udf = SynapsesUdf::new(engine);
+    let udf = SynapsesUdf::new(&engine);
     assert_eq!(udf.name(), "obrain.synapses");
 }
 
@@ -550,6 +550,9 @@ async fn synthesize_procedure_respects_budget_tokens() {
 //      que de seeds) ;
 //   3. un second bootstrap est idempotent (les synapses existantes sont
 //      renforcées, pas dupliquées à l'infini — count reste borné).
+// `CALL` exige la feature `algos` (« CALL procedures require the 'algos'
+// feature ») : sans elle le test était rouge en `--features cognitive` seul.
+#[cfg(feature = "algos")]
 #[test]
 fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
     use obrain_cognitive::CognitiveEngine;

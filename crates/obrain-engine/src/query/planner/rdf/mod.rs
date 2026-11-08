@@ -45,6 +45,12 @@ fn log_rdf_wal(wal: &Option<Arc<RdfWal>>, record: &obrain_adapters::storage::wal
     }
 }
 
+/// Hexadécimal minuscule d'un digest. `sha1`/`sha2` 0.11 ne sont plus `LowerHex`
+/// (leur sortie est un tableau d'octets) : on formate octet par octet.
+fn hex_minuscule(octets: impl AsRef<[u8]>) -> String {
+    octets.as_ref().iter().map(|o| format!("{o:02x}")).collect()
+}
+
 /// Converts a Term to its N-Triples string for WAL serialization.
 #[cfg(feature = "wal")]
 fn term_to_wal(term: &Term) -> String {
@@ -106,6 +112,20 @@ impl RdfPlanner {
     pub fn with_transaction_id(mut self, transaction_id: Option<TransactionId>) -> Self {
         self.transaction_id = transaction_id;
         self
+    }
+
+    /// WAL to journal this plan's mutations into.
+    ///
+    /// Explicit transactions are not journaled here: their inserts and deletes
+    /// are buffered until commit, and journaling them at execution time would
+    /// persist work that a rollback later discards.
+    #[cfg(feature = "wal")]
+    fn journal(&self) -> Option<Arc<RdfWal>> {
+        if self.transaction_id.is_some() {
+            None
+        } else {
+            self.wal.clone()
+        }
     }
 
     /// Sets the WAL for logging RDF mutations.
@@ -867,7 +887,7 @@ impl RdfPlanner {
                     insert.object.clone(),
                     column_map,
                     #[cfg(feature = "wal")]
-                    self.wal.clone(),
+                    self.journal(),
                 ));
 
                 return Ok((operator, Vec::new()));
@@ -886,7 +906,7 @@ impl RdfPlanner {
             insert.graph.clone(),
             self.transaction_id,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
 
         // Insert operations don't output columns
@@ -951,7 +971,7 @@ impl RdfPlanner {
                     delete.object.clone(),
                     column_map,
                     #[cfg(feature = "wal")]
-                    self.wal.clone(),
+                    self.journal(),
                 ));
 
                 return Ok((operator, Vec::new()));
@@ -970,7 +990,7 @@ impl RdfPlanner {
             delete.graph.clone(),
             self.transaction_id,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
 
         Ok((operator, Vec::new()))
@@ -983,7 +1003,7 @@ impl RdfPlanner {
             clear.graph.clone(),
             clear.silent,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
         Ok((operator, Vec::new()))
     }
@@ -998,7 +1018,7 @@ impl RdfPlanner {
             create.graph.clone(),
             create.silent,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
         Ok((operator, Vec::new()))
     }
@@ -1010,7 +1030,7 @@ impl RdfPlanner {
             drop_op.graph.clone(),
             drop_op.silent,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
         Ok((operator, Vec::new()))
     }
@@ -3262,7 +3282,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha1::Digest as _;
                 let hash = sha1::Sha1::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             "SHA256" => {
@@ -3270,7 +3290,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha2::Digest as _;
                 let hash = sha2::Sha256::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             "SHA384" => {
@@ -3278,7 +3298,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha2::Digest as _;
                 let hash = sha2::Sha384::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             "SHA512" => {
@@ -3286,7 +3306,7 @@ impl RdfExpressionPredicate {
                 let s = value_to_string(&val);
                 use sha2::Digest as _;
                 let hash = sha2::Sha512::digest(s.as_bytes());
-                Some(Value::String(format!("{hash:x}").into()))
+                Some(Value::String(hex_minuscule(hash).into()))
             }
 
             // ================================================================

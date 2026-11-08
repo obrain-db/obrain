@@ -245,7 +245,7 @@ fn detecter_detenteur(fichier: &Path) -> String {
         else {
             continue;
         };
-        if pid == std::process::id().to_string() {
+        if pid == crate::wal_io::pid_portable().to_string() {
             continue; // nous-mêmes : c'est le cas « déjà ouvert ici », traité ailleurs
         }
         let fd_dir = entree.path().join("fd");
@@ -295,7 +295,7 @@ fn detecter_detenteur(fichier: &Path) -> String {
     // `-F pc` : une ligne `p<pid>` puis une ligne `c<commande>` par processus
     // (`-t` est incompatible avec `-F`, mesuré avec lsof 4.91).
     let texte = String::from_utf8_lossy(&sortie.stdout);
-    let moi = std::process::id().to_string();
+    let moi = crate::wal_io::pid_portable().to_string();
     let mut trouves: Vec<String> = Vec::new();
     let mut pid: Option<String> = None;
     for ligne in texte.lines() {
@@ -1365,11 +1365,17 @@ impl SubstrateFile {
     }
 
     /// Open an existing substrate in SHARED-WRITE mode : verrou PARTAGÉ
-    /// (`LOCK_SH`), coexiste avec les lecteurs RO. L'écriture est permise
-    /// (WAL append) — réservé au GraphWriter unique (langextract) : un seul
-    /// écrivain à la fois, les lecteurs rejouent le WAL à leur ouverture.
-    /// Le verrou partagé garantit l'absence d'écrivain CONCURRENT, la
-    /// sérialisation des append WAL reste à la charge de l'appelant.
+    /// (`LOCK_SH`), coexiste avec les lecteurs RO et avec d'autres écrivains
+    /// du même répertoire. L'écriture est permise par append WAL : plusieurs
+    /// processus écrivent, leurs appends sont sérialisés par `O_APPEND` et le
+    /// registre partagé `substrate.wal.reg` (réservation de position). Les
+    /// lecteurs rejouent le WAL à leur ouverture.
+    ///
+    /// Périmètre de la garantie v0.0.1 : seuls nœuds et arêtes SANS propriété
+    /// sont garantis en écriture partagée. Une base dont un sidecar du régime
+    /// hérité (`substrate.props`, `substrate.edge_props`, `substrate.extedges`)
+    /// est non vide est refusée avec [`SubstrateError::BaseHeritee`], sans rien
+    /// modifier, car ses propriétés sont tenues par l'état local d'un processus.
     pub fn open_shared_write(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let path = path.as_ref();
         if !path.is_dir() {
@@ -1377,6 +1383,16 @@ impl SubstrateFile {
                 std::io::ErrorKind::NotFound,
                 format!("substrate directory does not exist: {}", path.display()),
             )));
+        }
+        // ── BASE HÉRITÉE : REFUS AVANT TOUTE OUVERTURE ───────────────────────
+        // Un sidecar non vide du régime hérité porte des propriétés ou des arêtes
+        // externes tenus par l'état LOCAL d'un processus. En écriture partagée,
+        // le premier flush d'un pair les écraserait en silence. On refuse ici,
+        // avant d'ouvrir zones, WAL ou index, pour ne rien modifier.
+        if let Some(sidecar) = crate::store::premier_sidecar_herite_non_vide(path) {
+            return Err(SubstrateError::BaseHeritee {
+                sidecar: sidecar.to_string(),
+            });
         }
         Self::open_inner(path.to_path_buf(), None, false)
     }
@@ -1958,7 +1974,7 @@ mod tempfile_guard {
                 .unwrap_or(0);
             let path = std::env::temp_dir().join(format!(
                 "{prefix}{pid}-{nanos}-{n}",
-                pid = std::process::id()
+                pid = crate::wal_io::pid_portable()
             ));
             std::fs::create_dir_all(&path)?;
             Ok(Self { path })

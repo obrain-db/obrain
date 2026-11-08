@@ -110,17 +110,16 @@
 //! boundary.
 
 use crate::error::{SubstrateError, SubstrateResult};
-use crate::wal::{WAL_HEADER_SIZE, WalRecord, crc_over};
+use crate::wal::{WAL_HEADER_SIZE, WalKind, WalPayload, WalRecord, crc_over};
 use crate::wal_registre::RegistreAppend;
 use parking_lot::{Condvar, Mutex};
 use std::cell::RefCell;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
+use web_time::Instant;
 
 /// WAL durability policy.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -197,6 +196,30 @@ pub const SEUIL_TEMPS: Duration = Duration::from_millis(2);
 /// `mw_chaine_cas::*` (tête bloquée) réduit ce délai par le seam
 /// [`WalWriter::forcer_delai_tete_bloquee`].
 pub const DELAI_TETE_BLOQUEE: Duration = Duration::from_millis(25);
+
+/// Des octets PUBLIÉS ont-ils disparu du fichier ? Rend `Some((fin_publiee,
+/// taille))` si une troncature est avérée, `None` sinon.
+///
+/// ── L'ORDRE DES DEUX LECTURES EST TOUT LE SUJET (défaut MESURÉ) ─────────────
+/// La fin publiée se lit AVANT la taille. Un écrivain publie après son `write` :
+/// à l'instant de la lecture de la fin, le fichier contient donc déjà ces octets,
+/// et il ne fait que grandir ensuite. Une taille mesurée APRÈS est donc au moins
+/// égale à cette fin, sauf si le fichier a été tronqué. L'ordre inverse (mesurer
+/// puis lire la fin, avec trois reprises) prenait pour une troncature un pair qui
+/// avait écrit entre les deux lectures : la chaîne était reculée d'une frame
+/// (153 à 158 octets mesurés en CI), et TOUS les LSN suivants portaient ce
+/// décalage constant (`t1`, 1 522 à 5 987 écarts sur 6 000 frames, `tetes=0`).
+///
+/// Fonction pure (les deux lectures sont injectées) pour que l'ordre soit testable
+/// sans processus ni charge.
+fn troncature_averee(
+    lire_fin_publiee: impl FnOnce() -> u64,
+    mesurer: impl FnOnce() -> std::io::Result<u64>,
+) -> std::io::Result<Option<(u64, u64)>> {
+    let fin = lire_fin_publiee();
+    let taille = mesurer()?;
+    Ok((fin > taille).then_some((fin, taille)))
+}
 
 /// Attente ACTIVE (rotation pure sur un atome partagé, sans aucun appel système)
 /// avant de rendre le processeur. L'attente d'un prédécesseur dure le temps d'un
@@ -943,7 +966,7 @@ pub fn lire_ancre_durable(wal: &Path) -> Option<AncreDurable> {
 /// [`lire_ancre_durable`] sur un chemin de side-car explicite.
 #[must_use]
 pub fn lire_ancre_sur(chemin: &Path) -> Option<AncreDurable> {
-    let octets = std::fs::read(chemin).ok()?;
+    let octets = crate::es::espace().lire_tout(chemin).ok()?;
     if octets.len() != TAILLE_ANCRE || octets[0..4] != MAGIE_ANCRE {
         return None;
     }
@@ -978,19 +1001,13 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
     let crc = crc_ancre(&buf[0..24]);
     buf[24..28].copy_from_slice(&crc.to_le_bytes());
 
+    let es = crate::es::espace();
     let tmp = chemin_tmp_ancre(chemin);
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
-        if let Err(e) = f.write_all(&buf).and_then(|()| f.sync_all()) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.into());
-        }
+    if let Err(e) = es.ecrire_synchronise(&tmp, &buf) {
+        let _ = es.supprimer(&tmp);
+        return Err(e.into());
     }
-    if let Err(e) = std::fs::rename(&tmp, chemin) {
+    if let Err(e) = es.renommer(&tmp, chemin) {
         // ── LA COURSE À LA PUBLICATION N'A PAS DE PERDANT ────────────────────
         // MESURÉ : six processus ouvrant un WAL VIDE en même temps publient tous
         // la même ancre. Avec un nom de temporaire PARTAGÉ (`<ancre>.tmp`), le
@@ -998,21 +1015,16 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
         // emporté par le premier — et l'OUVERTURE ÉCHOUAIT. Le nom est donc
         // unique par publication ; et si le rename échoue quand même, on relit :
         // une ancre LISIBLE vaut publication faite.
-        let _ = std::fs::remove_file(&tmp);
+        let _ = es.supprimer(&tmp);
         if lire_ancre_sur(chemin).is_none() {
             return Err(e.into());
         }
     }
     // Fsync du RÉPERTOIRE : sans lui, le rename peut survivre au crash sans que
     // l'entrée qu'il crée soit elle-même durable.
-    #[cfg(unix)]
-    {
-        let dir = chemin.parent().filter(|p| !p.as_os_str().is_empty());
-        let dir = dir.unwrap_or_else(|| Path::new("."));
-        if let Ok(d) = File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
+    let dir = chemin.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = dir.unwrap_or_else(|| Path::new("."));
+    let _ = es.synchroniser_repertoire(dir);
     Ok(())
 }
 
@@ -1029,16 +1041,30 @@ pub fn chemin_tmp_unique(chemin: &Path) -> PathBuf {
     chemin_tmp_ancre(chemin)
 }
 
+/// Identifiant de processus PORTABLE.
+///
+/// `std::process::id()` PANIQUE sur wasm32 (« no pids on this platform »). Il n'y a
+/// pas de multi-processus là-bas : zéro suffit pour nommer un fichier temporaire ou
+/// signer un message. En natif, c'est exactement `std::process::id()`.
+#[inline]
+pub(crate) fn pid_portable() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::process::id()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
 fn chemin_tmp_ancre(chemin: &Path) -> PathBuf {
     static COMPTEUR_TMP: AtomicU64 = AtomicU64::new(0);
     let n = COMPTEUR_TMP.fetch_add(1, Ordering::Relaxed);
     let mut s = chemin.as_os_str().to_os_string();
     // `std::process::id()` PANIQUE sur wasm32 (« no pids on this platform ») : il
     // n'y a pas de multi-processus là-bas, un zéro suffit.
-    #[cfg(not(target_arch = "wasm32"))]
-    let pid = u64::from(std::process::id());
-    #[cfg(target_arch = "wasm32")]
-    let pid = 0u64;
+    let pid = u64::from(pid_portable());
     s.push(format!(".tmp.{pid}.{n}"));
     PathBuf::from(s)
 }
@@ -1093,7 +1119,7 @@ pub fn chemin_fence_checkpoint(wal: &Path) -> PathBuf {
 #[derive(Debug)]
 pub struct ElectionCheckpoint {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    fichier: Option<File>,
+    fichier: Option<Box<dyn crate::es::FichierVerrou>>,
     chemin: PathBuf,
 }
 
@@ -1121,22 +1147,15 @@ impl ElectionCheckpoint {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use fs2::FileExt as _;
-            let fichier = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&chemin)
-                .ok()?;
-            match fichier.try_lock_exclusive() {
-                Ok(()) => Some(Self {
-                    fichier: Some(fichier),
+            let verrou = crate::es::espace().ouvrir_verrou(&chemin).ok()?;
+            match verrou.essayer_exclusif() {
+                Ok(true) => Some(Self {
+                    fichier: Some(verrou),
                     chemin,
                 }),
-                // `WouldBlock` = un pair checkpointe. Toute autre erreur (système
+                // `Ok(false)` = un pair checkpointe. Toute autre erreur (système
                 // de fichiers sans `flock`) est traitée pareil : on renonce.
-                Err(_) => None,
+                Ok(false) | Err(_) => None,
             }
         }
     }
@@ -1170,9 +1189,7 @@ impl Drop for ElectionCheckpoint {
         if let Some(f) = self.fichier.take() {
             // Rend le verrou explicitement : le noyau le rendrait à la fermeture
             // du descripteur, mais un `Drop` qui dit ce qu'il fait se relit.
-            // (`File::unlock` de la bibliothèque standard fait le même
-            // `flock(LOCK_UN)` que celui qui a été pris par `fs2`.)
-            let _ = f.unlock();
+            let _ = f.liberer();
         }
     }
 }
@@ -1316,6 +1333,17 @@ pub struct WalWriter {
     /// inter-processus, lui, tranche par RELECTURE (`lsn == ancre + position`),
     /// frame par frame. Ce compteur dit s'il y a lieu de regarder.
     courses_suspectees: AtomicU64,
+    /// ── PUBLICATIONS DEVANCÉES (MP-1, 2026-11-07) ──────────────────────────
+    /// Appends dont la fin a été PUBLIÉE PAR UN AUTRE avant nous : à notre
+    /// publication, `fin_publiee >= position + len`. Notre frame est pourtant à
+    /// sa position — on n'écrit qu'après avoir attendu `fin_publiee == position`,
+    /// et ce qui a été publié au-delà l'a été par un pair qui a écrit AU-DESSUS
+    /// de nos octets. Ce n'est donc PAS un LSN suspect (voir `courses_suspectees`),
+    /// c'est une publication faite à notre place : l'ouverture d'un registre par
+    /// un pair (avant le recalage conditionnel de `RegistreAppend::ouvrir`), ou
+    /// un ré-ancrage sur mesure. Compté à part pour que `courses_suspectees` reste
+    /// ce que `t2b` exige : nul quand tous les LSN sont exacts.
+    publications_devancees: AtomicU64,
     /// Nombre d'enregistrements APPENDÉS par cet écrivain depuis son ouverture.
     ///
     /// ── POURQUOI CE COMPTEUR EXISTE (2026-10-06) ─────────────────────────────
@@ -1387,6 +1415,13 @@ pub struct WalWriter {
     /// Nombre de tentatives de création du registre (voir
     /// [`MAX_TENTATIVES_REGISTRE`]).
     tentatives_registre: AtomicU64,
+    /// Indice de l'emplacement de présence de cet écrivain dans le registre
+    /// (`usize::MAX` = aucun). C'est ce qui permet à un pair de savoir s'il attend
+    /// un écrivain VIVANT ou MORT (voir `wal_presence`).
+    emplacement_registre: AtomicUsize,
+    /// Attentes où le prédécesseur a dépassé le délai [`DELAI_TETE_BLOQUEE`] mais
+    /// s'est révélé VIVANT : la preuve de vie a évité un ré-ancrage faux.
+    attentes_sur_pair_vivant: AtomicU64,
     /// ── LA VALEUR DE CHAÎNE QUE CET ÉCRIVAIN SAIT ÊTRE LA FIN RÉELLE ────────
     /// Sa propre publication (après un `write` complet), ou une valeur qu'il a
     /// VÉRIFIÉE par une mesure. C'est ce mot qui répond, avec deux lectures
@@ -1502,7 +1537,7 @@ struct WriterInner {
 /// mémoire ne se rouvre jamais.
 #[derive(Debug)]
 enum WalMedium {
-    File(File),
+    File(Box<dyn crate::es::FichierJournal>),
     /// Les octets du WAL. L'écriture se fait toujours à la FIN (le fichier natif
     /// est ouvert en ajout, sans `seek`), donc `extend_from_slice` suffit.
     Memoire(Vec<u8>),
@@ -1521,7 +1556,7 @@ impl WriterInner {
     /// avec le compte exact, pour pouvoir ANNULER.
     fn ecrire_atomique(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match &mut self.medium {
-            WalMedium::File(f) => f.write(buf),
+            WalMedium::File(f) => f.ajouter(buf),
             WalMedium::Memoire(v) => {
                 v.extend_from_slice(buf);
                 Ok(buf.len())
@@ -1532,7 +1567,7 @@ impl WriterInner {
     /// Taille RÉELLE du média (le noyau est l'arbitre, pas notre compteur).
     fn taille_reelle(&mut self) -> std::io::Result<u64> {
         match &mut self.medium {
-            WalMedium::File(f) => Ok(f.metadata()?.len()),
+            WalMedium::File(f) => f.taille(),
             WalMedium::Memoire(v) => Ok(v.len() as u64),
         }
     }
@@ -1560,12 +1595,12 @@ impl WriterInner {
         match &mut self.medium {
             // `set_len` (ftruncate) ignore `O_APPEND` : on peut raccourcir.
             WalMedium::File(f) => {
-                let courante = f.metadata()?.len();
+                let courante = f.taille()?;
                 if position >= courante {
                     // JAMAIS d'allongement : c'est ce chemin qui fabriquait le trou.
                     return Ok(());
                 }
-                f.set_len(position)
+                f.tronquer(position)
             }
             WalMedium::Memoire(v) => {
                 if position as usize >= v.len() {
@@ -1594,8 +1629,7 @@ impl WriterInner {
     /// `tout = true` → `sync_all` (métadonnées + données), sinon `sync_data`.
     fn synchroniser(&mut self, tout: bool) -> std::io::Result<()> {
         match &mut self.medium {
-            WalMedium::File(f) if tout => f.sync_all(),
-            WalMedium::File(f) => f.sync_data(),
+            WalMedium::File(f) => f.synchroniser(tout),
             // En mémoire, il n'y a rien à pousser : les octets SONT l'état.
             WalMedium::Memoire(_) => Ok(()),
         }
@@ -1647,8 +1681,7 @@ impl WriterInner {
             WalMedium::File(f) => {
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::FileExt as _;
-                    f.read_exact_at(&mut zone, debut)?;
+                    f.lire_a(debut, &mut zone)?;
                 }
                 #[cfg(not(unix))]
                 {
@@ -1669,9 +1702,9 @@ impl WriterInner {
     fn tronquer(&mut self) -> std::io::Result<()> {
         match &mut self.medium {
             WalMedium::File(f) => {
-                f.set_len(0)?;
-                f.seek(SeekFrom::Start(0))?;
-                f.sync_all()
+                f.tronquer(0)?;
+                f.rembobiner()?;
+                f.synchroniser(true)
             }
             WalMedium::Memoire(v) => {
                 v.clear();
@@ -1782,12 +1815,8 @@ impl WalWriter {
         // `mw_interprocess_probe::p1`). Avec `O_APPEND`, le noyau place chaque
         // écriture à la fin du fichier, atomiquement : aucune écriture ne peut en
         // recouvrir une autre.
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&path)?;
-        let taille = file.metadata()?.len();
+        let file = crate::es::espace().ouvrir_journal(&path)?;
+        let taille = file.taille()?;
         let (ancre, reconciliation, publier) =
             reconcilier_ouverture(&ancre_path, &path, taille, ancre_repli);
         // Le side-car n'est écrit QUE s'il n'est pas déjà juste : une ouverture
@@ -1815,6 +1844,7 @@ impl WalWriter {
             sync_mode,
             recalages: AtomicU64::new(0),
             courses_suspectees: AtomicU64::new(0),
+            publications_devancees: AtomicU64::new(0),
             records_ecrits: AtomicU64::new(0),
             troncatures_subies: AtomicU64::new(0),
             reprises_apres_troncature: AtomicU64::new(0),
@@ -1831,6 +1861,8 @@ impl WalWriter {
             borne_frame_atomique: AtomicU64::new(MAX_FRAME_BYTES as u64),
             registre: OnceLock::new(),
             tentatives_registre: AtomicU64::new(0),
+            emplacement_registre: AtomicUsize::new(usize::MAX),
+            attentes_sur_pair_vivant: AtomicU64::new(0),
             // ── LA VUE DE DÉPART DE LA CHAÎNE EST LA TAILLE RÉELLE MESURÉE ───
             // À l'ouverture, `taille` est une mesure (`file.metadata()`) : la tête
             // de chaîne peut donc lui être comparée sans rien devoir au noyau. Elle
@@ -1872,6 +1904,7 @@ impl WalWriter {
             sync_mode,
             recalages: AtomicU64::new(0),
             courses_suspectees: AtomicU64::new(0),
+            publications_devancees: AtomicU64::new(0),
             records_ecrits: AtomicU64::new(0),
             troncatures_subies: AtomicU64::new(0),
             reprises_apres_troncature: AtomicU64::new(0),
@@ -1888,6 +1921,8 @@ impl WalWriter {
             borne_frame_atomique: AtomicU64::new(MAX_FRAME_BYTES as u64),
             registre: OnceLock::new(),
             tentatives_registre: AtomicU64::new(0),
+            emplacement_registre: AtomicUsize::new(usize::MAX),
+            attentes_sur_pair_vivant: AtomicU64::new(0),
             // Un WAL en mémoire n'a NI fichier NI registre : la chaîne de
             // réservation ne concerne qu'un média fichier partagé (aucun autre
             // processus ne peut l'écrire, et `registre` refusera de se créer).
@@ -1956,6 +1991,15 @@ impl WalWriter {
         self.courses_suspectees.load(Ordering::Acquire)
     }
 
+    /// Nombre d'appends dont la fin a été publiée PAR UN PAIR avant notre propre
+    /// publication (`fin_publiee >= position + len` à ce moment-là). Sur ces frames
+    /// la position est EXACTE (on n'écrit qu'après `fin_publiee == position`) :
+    /// ce compteur sépare « quelqu'un a publié à notre place » de « quelqu'un s'est
+    /// glissé avant nous » (`courses_suspectees`). Voir le champ (MP-1, 2026-11-07).
+    pub fn publications_devancees(&self) -> u64 {
+        self.publications_devancees.load(Ordering::Acquire)
+    }
+
     /// ── COMBIEN DE FRAMES ONT ÉTÉ EMPORTÉES PAR UNE TRONCATURE CONCURRENTE ──
     ///
     /// Un checkpoint d'un autre processus avance l'ancre puis tronque. Une frame
@@ -2005,6 +2049,14 @@ impl WalWriter {
     /// alors qu'un CAS et un `write`.
     pub fn attentes_de_publication(&self) -> u64 {
         self.attentes_de_publication.load(Ordering::Acquire)
+    }
+
+    /// Attentes où la réservation d'un prédécesseur a dépassé le délai
+    /// [`DELAI_TETE_BLOQUEE`] mais s'est révélée VIVANTE (preuve de vie, V1-T2B) :
+    /// chaque comptage est une récupération que l'ancien délai aurait faussement
+    /// déclenchée. Un WAL sans concurrence la laisse à 0.
+    pub fn attentes_sur_pair_vivant(&self) -> u64 {
+        self.attentes_sur_pair_vivant.load(Ordering::Acquire)
     }
 
     /// Têtes de chaîne RÉ-ANCRÉES sur la taille réelle : un écrivain est mort
@@ -2910,13 +2962,15 @@ impl WalWriter {
                 CoordinationAppend::Aucune => None,
                 _ => self.registre(guard),
             };
-            let (position, chemin_froid) = match reg {
+            // `_engagement` vit jusqu'à la fin de cette fonction : toute sortie sans
+            // publication efface l'annonce de notre plage (voir `EngagementReservation`).
+            let (position, chemin_froid, _engagement) = match reg {
                 None if guard.coordination == CoordinationAppend::Aucune => {
-                    (self.offset.load(Ordering::Acquire), false)
+                    (self.offset.load(Ordering::Acquire), false, None)
                 }
                 None => {
                     let taille = guard.taille_reelle()?;
-                    (self.caler_sur_la_fin(guard, taille)?, true)
+                    (self.caler_sur_la_fin(guard, taille)?, true, None)
                 }
                 Some(reg) => self.reserver_dans_la_chaine(guard, reg, buf.len() as u64)?,
             };
@@ -3072,17 +3126,36 @@ impl WalWriter {
             // rend l'observation obligatoire — la mesure, elle, dira où nous sommes.
             let mut chaine_intacte = true;
             if let Some(reg) = reg {
-                if reg.fin_publiee().load(Ordering::Acquire) == position {
+                let publiee = reg.fin_publiee().load(Ordering::Acquire);
+                if publiee == position {
                     reg.publier_la_fin(fin);
                 } else {
                     chaine_intacte = false;
-                    self.courses_suspectees.fetch_add(1, Ordering::Relaxed);
+                    // ── DEVANCÉ OU DOUBLÉ ? (MP-1, 2026-11-07) ────────────────
+                    // `publiee >= fin` : quelqu'un a publié AU-DELÀ de toute notre
+                    // plage. Nos octets sont bien à `position` (on n'a écrit qu'après
+                    // `fin_publiee == position`, et un pair ne publie qu'après avoir
+                    // écrit AU-DESSUS de nous) : ce n'est pas un LSN suspect, c'est
+                    // une publication faite à notre place — comptée à part, parce que
+                    // `courses_suspectees` doit rester nul quand tous les LSN sont
+                    // exacts (défaut mesuré : `t2b`, 2 échecs sur 40 sur ce seul
+                    // compteur). La mesure qui suit reste due : notre vue de la chaîne
+                    // (`reg_fin_connue`) ne vaut plus rien.
+                    //
+                    // `position < publiee < fin` : une fin a été publiée DANS notre
+                    // plage, donc hors chaîne — le cas d'avant, inchangé.
+                    if publiee >= fin {
+                        self.publications_devancees.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        self.courses_suspectees.fetch_add(1, Ordering::Relaxed);
+                    }
                     guard.surveiller_les_courses = true;
                     self.oublier_la_tete();
                     tracing::warn!(
                         position,
                         fin,
-                        fin_publiee = reg.fin_publiee().load(Ordering::Acquire),
+                        fin_publiee = publiee,
+                        devancee = publiee >= fin,
                         "WAL partagé : la chaîne n'attendait plus notre plage à la fin de notre \
                          write (un pair a publié avant nous, ou une récupération a ré-ancré la \
                          chaîne) — la position est vérifiée par mesure"
@@ -3361,6 +3434,16 @@ impl WalWriter {
                 self.reg_fin_connue.store(taille, Ordering::Release);
                 self.reg_generation_vue
                     .store(reg.generation().load(Ordering::Acquire), Ordering::Release);
+                // ── NOTRE PREUVE DE VIE (V1-T2B) ────────────────────────────
+                // Un emplacement porte notre pid et notre heure de démarrage : un
+                // pair qui attend notre plage peut ainsi savoir si nous sommes
+                // VIVANTS (on attend) ou MORTS (on récupère), au lieu de deviner
+                // par un délai. `None` (table pleine) = pas de preuve, comportement
+                // d'avant : ce n'est jamais une erreur.
+                let (pid, demarrage) = crate::wal_presence::identite_du_processus_courant();
+                if let Some(i) = reg.reclamer_emplacement(pid, demarrage) {
+                    self.emplacement_registre.store(i, Ordering::Release);
+                }
                 self.adopter_l_ancre_partagee(reg);
                 // ── LE REGISTRE PEUT ÊTRE EN AVANCE SUR LE FICHIER ──────────
                 // Cas vécu (`wal_append_unite::cas_3`) : le WAL a été tronqué
@@ -3418,12 +3501,12 @@ impl WalWriter {
     /// (tête bloquée, voir [`DELAI_TETE_BLOQUEE`]) ou des octets publiés au-delà
     /// de notre début (écriture hors chaîne). Deux événements par crash et par
     /// checkpoint — jamais par record.
-    fn reserver_dans_la_chaine(
+    fn reserver_dans_la_chaine<'r>(
         &self,
         guard: &mut WriterInner,
-        reg: &RegistreAppend,
+        reg: &'r RegistreAppend,
         len: u64,
-    ) -> SubstrateResult<(u64, bool)> {
+    ) -> SubstrateResult<(u64, bool, Option<EngagementReservation<'r>>)> {
         let mut chemin_froid = false;
         loop {
             // ── 1. LA GÉNÉRATION : L'ANNONCE D'UNE TRONCATURE ───────────────
@@ -3453,7 +3536,19 @@ impl WalWriter {
                 chemin_froid = true;
             }
             // ── 3. RÉSERVER (le CAS rend l'offset) ──────────────────────────
-            let debut = self.reserver_depuis(reg, tete, len);
+            let emplacement = match self.emplacement_registre.load(Ordering::Acquire) {
+                usize::MAX => None,
+                i => Some(i),
+            };
+            let debut = self.reserver_depuis(reg, emplacement, tete, len);
+            // ── L'ENGAGEMENT : TANT QU'IL VIT, NOTRE PLAGE EST ANNONCÉE ─────
+            // Créé AUSSITÔT après le CAS, avant toute attente : si l'attente échoue
+            // (`?`) ou si la chaîne est ré-ancrée, l'annonce est effacée — un pair ne
+            // doit jamais attendre un écrivain qui ne publiera plus.
+            let engagement = emplacement.map(|i| EngagementReservation {
+                reg,
+                emplacement: i,
+            });
             // ── 4. ATTENDRE QUE LE PRÉDÉCESSEUR AIT PUBLIÉ ──────────────────
             if self.attendre_la_publication(guard, reg, debut)? {
                 // Notre `write` va publier `debut + len` : c'est donc cette valeur
@@ -3461,8 +3556,9 @@ impl WalWriter {
                 // elle ne l'est qu'après un `write` COMPLET (voir la publication
                 // sous le verrou, et la libération en cas d'échec).
                 self.reg_fin_connue.store(debut + len, Ordering::Release);
-                return Ok((debut, chemin_froid));
+                return Ok((debut, chemin_froid, engagement));
             }
+            // La récupération a ré-ancré : l'engagement est effacé en sortant du tour.
             // La récupération a ré-ancré la chaîne : on réserve à nouveau (la
             // boucle reprend par la vérification de génération, qui est gratuite).
             chemin_froid = true;
@@ -3477,8 +3573,23 @@ impl WalWriter {
     /// valeur — au-dessus de sa plage, jamais dedans. Le nombre de tours est borné
     /// par le nombre d'écrivains actifs, pas par une durée, et il ne coûte aucun
     /// appel système.
-    fn reserver_depuis(&self, reg: &RegistreAppend, mut tete: u64, len: u64) -> u64 {
+    fn reserver_depuis(
+        &self,
+        reg: &RegistreAppend,
+        emplacement: Option<usize>,
+        mut tete: u64,
+        len: u64,
+    ) -> u64 {
         loop {
+            // ── L'ANNONCE PRÉCÈDE LE CAS ────────────────────────────────────
+            // Un pair qui voit la tête avancer sans voir notre annonce ne pourrait
+            // pas distinguer notre réservation d'une réservation sans détenteur.
+            // Annoncer AVANT le CAS garantit que toute réservation RÉUSSIE est
+            // annoncée (le CAS publie, `Release`, l'annonce qui le précède). Un CAS
+            // perdu laisse une annonce périmée, réécrite à la tentative suivante.
+            if let Some(i) = emplacement {
+                reg.annoncer_reservation(i, tete);
+            }
             match reg.tete_reservee().compare_exchange(
                 tete,
                 tete + len,
@@ -3524,6 +3635,7 @@ impl WalWriter {
         let delai = Duration::from_nanos(self.delai_tete_bloquee_ns.load(Ordering::Acquire));
         let generation_vue = self.reg_generation_vue.load(Ordering::Acquire);
         let mut premier_tour = true;
+        let mut signale_vivant = false;
         loop {
             let publiee = reg.fin_publiee().load(Ordering::Acquire);
             if publiee == debut {
@@ -3573,9 +3685,26 @@ impl WalWriter {
                 return Ok(false);
             }
             // ── LE PRÉDÉCESSEUR N'A PAS ENCORE PUBLIÉ ───────────────────────
-            if depart.elapsed() >= delai {
-                // Tête ABANDONNÉE : personne ne publiera jamais cette plage (son
-                // détenteur est mort), donc attendre plus longtemps serait attendre
+            // ── LE DÉLAI NE SUFFIT PLUS, LA PREUVE DE VIE TRANCHE (V1-T2B) ──
+            // Au-delà du délai, on ne ré-ancre QUE si le détenteur de la plage est
+            // PROUVÉ mort (pid absent, zombie, ou démarrage différent : voir
+            // `wal_presence`). Un détenteur vivant mais préempté plus longtemps que
+            // le délai est ATTENDU : le ré-ancrer aurait posé sa frame après celle du
+            // successeur, avec un LSN inférieur à sa position (défaut mesuré).
+            // ── LA DÉCISION « MORT » SE PREND SUR UNE FIN ENCORE VALIDE ─────
+            // `publiee` date du DÉBUT du tour : une préemption peut l'avoir rendue
+            // périmée. Le détenteur qu'elle désignait a pu publier entre-temps, et
+            // un nouveau détenteur, vivant, attend alors la nouvelle fin. Décider
+            // « mort » sur la valeur périmée ré-ancrerait la chaîne sous un écrivain
+            // VIVANT (défaut mesuré : `t2c`, 4 échecs sur 10 après la preuve de vie,
+            // dont le déclencheur était exactement cette lecture périmée). On ne
+            // décide donc que si la fin n'a pas bougé depuis la vérification.
+            if depart.elapsed() >= delai
+                && !reg.predecesseur_vivant(publiee)
+                && reg.fin_publiee().load(Ordering::Acquire) == publiee
+            {
+                // Tête ABANDONNÉE : son détenteur est PROUVÉ mort, personne ne
+                // publiera jamais cette plage, donc attendre serait attendre
                 // indéfiniment. On mesure, et on ré-ancre.
                 self.tetes_reancrees.fetch_add(1, Ordering::Relaxed);
                 let taille = guard.taille_reelle()?;
@@ -3599,6 +3728,14 @@ impl WalWriter {
             if premier_tour {
                 self.attentes_de_publication.fetch_add(1, Ordering::Relaxed);
                 premier_tour = false;
+            }
+            // Délai dépassé ET détenteur vivant (le bloc précédent n'a pas rendu la
+            // main) : c'est exactement le cas que la preuve de vie protège. Compté
+            // une fois par attente.
+            if depart.elapsed() >= delai && !signale_vivant {
+                signale_vivant = true;
+                self.attentes_sur_pair_vivant
+                    .fetch_add(1, Ordering::Relaxed);
             }
             if depart.elapsed() < ATTENTE_ACTIVE {
                 // Attente ACTIVE : le prédécesseur publie en ~1 µs (le temps d'un
@@ -3650,24 +3787,19 @@ impl WalWriter {
         guard: &mut WriterInner,
         reg: &RegistreAppend,
     ) -> SubstrateResult<Option<u64>> {
-        /// Trois mesures : la première peut être en retard d'une écriture de pair, la
-        /// deuxième de quelques-unes ; au-delà, seule une troncature explique qu'elles
-        /// restent TOUTES sous la fin publiée.
-        const MESURES: u32 = 3;
-        let mut taille = guard.taille_reelle()?;
-        let mut tours = 0u32;
-        while reg.fin_publiee().load(Ordering::Acquire) > taille && tours < MESURES {
-            std::thread::yield_now();
-            taille = guard.taille_reelle()?;
-            tours += 1;
-        }
-        if reg.fin_publiee().load(Ordering::Acquire) <= taille {
+        let Some((fin, taille)) = troncature_averee(
+            || reg.fin_publiee().load(Ordering::Acquire),
+            || {
+                std::thread::yield_now();
+                guard.taille_reelle()
+            },
+        )?
+        else {
             return Ok(None);
-        }
+        };
         tracing::warn!(
-            fin_publiee = reg.fin_publiee().load(Ordering::Acquire),
+            fin_publiee = fin,
             taille_reelle = taille,
-            mesures = tours + 1,
             "WAL partagé : des octets PUBLIÉS ont disparu du fichier (troncature NON annoncée \
              par la génération) — les deux têtes sont ré-ancrées sur la taille réelle et \
              l'événement est annoncé aux pairs"
@@ -4089,10 +4221,9 @@ impl Drop for WalWriter {
             self.veille.reveil.notify_all();
         }
         let mut guard = self.inner.lock();
-        if guard.groupe.vide() {
-            return;
-        }
-        if let Err(e) = self.poser_le_tampon(&mut guard, PoseTampon::Durable) {
+        if !guard.groupe.vide()
+            && let Err(e) = self.poser_le_tampon(&mut guard, PoseTampon::Durable)
+        {
             // Un Drop ne peut pas rendre d'erreur : on la TRACE, au lieu de la
             // perdre. Le tampon, lui, n'est plus réessayable (l'écrivain
             // disparaît) — c'est la seule perte que ce chemin assume.
@@ -4100,6 +4231,15 @@ impl Drop for WalWriter {
                 error = %e,
                 "group commit : la pose du tampon au Drop a échoué — les records en attente                  sont perdus (ils avaient été acceptés par `append`)"
             );
+        }
+        // ── L'EMPLACEMENT NE SERT PLUS : ON LE REND (V1-T2B) ─────────────────
+        // Rendu APRÈS la pose du tampon, qui peut encore réserver et publier sous
+        // notre identité. Un pair ne doit plus voir en nous un détenteur possible.
+        if let Some(reg) = self.registre_existant() {
+            let i = self.emplacement_registre.load(Ordering::Acquire);
+            if i != usize::MAX {
+                reg.liberer_emplacement(i);
+            }
         }
     }
 }
@@ -4132,11 +4272,12 @@ impl WalReader {
     /// file does not exist.
     pub fn open(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let path = path.as_ref();
-        let mut bytes = Vec::new();
-        if path.exists() {
-            let mut f = File::open(path)?;
-            f.read_to_end(&mut bytes)?;
-        }
+        let es = crate::es::espace();
+        let bytes = if es.existe(path) {
+            es.lire_tout(path)?
+        } else {
+            Vec::new()
+        };
         Ok(Self { bytes })
     }
 
@@ -4165,6 +4306,146 @@ impl WalReader {
             trou: None,
         }
     }
+
+    /// ── PRÉ-BALAYAGE : L'OPCODE INCONNU SE DÉTECTE AVANT D'APPLIQUER (2026-11-07)
+    ///
+    /// Parcourt les frames à partir de `from_offset` par leurs EN-TÊTES
+    /// (longueur, kind, CRC vérifié — pas de décodage bincode) et rend la
+    /// première frame ENTIÈRE, à CRC valide, dont le `kind` est hors table :
+    /// une frame d'un binaire plus récent. Le rejeu l'appelle AVANT d'appliquer
+    /// quoi que ce soit, pour que le refus d'ouverture ne laisse aucune zone
+    /// touchée — pas même par un préfixe de frames connues.
+    ///
+    /// CONSERVATEUR : la moindre anomalie rencontrée AVANT un opcode inconnu
+    /// (en-tête incomplet, payload tronqué, octets réservés non nuls, CRC
+    /// faux — un trou de zéros tombe dans ce dernier cas) arrête le balayage
+    /// avec `None`. Ces cas restent jugés par l'itérateur de rejeu, qui porte
+    /// lui-même [`SubstrateError::WalOpcodeInconnu`] s'il atteint une telle
+    /// frame après coup. Ce balayage ne refuse donc jamais ce que le rejeu
+    /// n'aurait pas refusé ; il ne fait que le refuser PLUS TÔT.
+    #[must_use]
+    pub fn premier_opcode_inconnu(&self, from_offset: u64) -> Option<SubstrateError> {
+        let mut cursor = usize::try_from(from_offset).ok()?;
+        loop {
+            let reste = self.bytes.get(cursor..)?;
+            if reste.len() < WAL_HEADER_SIZE {
+                return None;
+            }
+            let length = u32::from_le_bytes(reste[0..4].try_into().ok()?) as usize;
+            let kind = reste[4];
+            if reste[6..8] != [0, 0] {
+                return None;
+            }
+            let total = WAL_HEADER_SIZE.checked_add(length)?;
+            if reste.len() < total {
+                return None;
+            }
+            let annonce = u32::from_le_bytes(reste[24..28].try_into().ok()?);
+            if crc_over(&reste[0..24], &reste[WAL_HEADER_SIZE..total]) != annonce {
+                return None;
+            }
+            if WalKind::from_u8(kind).is_none() {
+                return Some(SubstrateError::WalOpcodeInconnu {
+                    kind,
+                    offset: cursor as u64,
+                });
+            }
+            cursor = cursor.checked_add(total)?;
+        }
+    }
+}
+
+/// Déclaration en vol NON SCELLÉE : une entité déclarée (`TxNoeudEnAttente` ou
+/// `TxAreteEnAttente`) dont la transaction n'a ni `TxCommit` ni suppression de
+/// l'entité qui la suive, à l'offset `offset` du WAL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclarationEnVol {
+    /// Offset OCTET du record de déclaration dans le WAL.
+    pub offset: u64,
+    /// Transaction déclarante (identifiant de PROCESSUS D'ÉMISSION : voir la
+    /// collision d'identifiants signalée dans la PR MP-8).
+    pub tx: u64,
+}
+
+/// Balaie le WAL à partir de `depuis` et rend la déclaration en vol NON SCELLÉE
+/// la plus ancienne, s'il en existe une. C'est la BORNE de la fenêtre de rejeu
+/// (MP-8) : tant qu'une déclaration de ce genre existe, le rejeu doit la voir,
+/// donc ni le `wal_offset_at_flush` ni la troncature ne doivent la dépasser.
+///
+/// Même automate que le rejeu (`replay_from_avec`) : une déclaration entre dans
+/// l'état « en vol » de sa transaction ; `TxCommit` le retire ; `NodeDelete` /
+/// `EdgeDelete` retirent l'entité (son slot peut être réutilisé).
+///
+/// `depuis` doit être une frontière de frame (offset rendu par le balayage
+/// précédent, ou 0). S'il dépasse la taille du fichier (troncature étrangère),
+/// le balayage repart de 0, comme le rejeu.
+pub fn plus_ancienne_declaration_en_vol(
+    wal: &Path,
+    depuis: u64,
+) -> SubstrateResult<Option<DeclarationEnVol>> {
+    let es = crate::es::espace();
+    if !es.existe(wal) {
+        return Ok(None);
+    }
+    let fichier = es.ouvrir_donnees(wal, false)?;
+    let taille = fichier.taille()?;
+    let depuis = if depuis > taille { 0 } else { depuis };
+    if depuis == taille {
+        return Ok(None);
+    }
+    let mut octets = vec![0u8; (taille - depuis) as usize];
+    fichier.lire_a(depuis, &mut octets)?;
+    let lecteur = WalReader { bytes: octets };
+
+    enum Entite {
+        Noeud(u32),
+        Arete(u64),
+    }
+    let mut en_vol: std::collections::HashMap<u64, Vec<(u64, Entite)>> =
+        std::collections::HashMap::new();
+    for item in lecteur.iter_from(0) {
+        // Même frontière que le rejeu : une erreur (queue, trou non résolu,
+        // opcode inconnu) arrête le balayage. Le rejeu s'arrête au même endroit.
+        let Ok((rec, off, _)) = item else { break };
+        let absolu = depuis + off;
+        match rec.payload {
+            WalPayload::TxNoeudEnAttente { tx, node_id } => {
+                en_vol
+                    .entry(tx)
+                    .or_default()
+                    .push((absolu, Entite::Noeud(node_id)));
+            }
+            WalPayload::TxAreteEnAttente { tx, edge_id } => {
+                en_vol
+                    .entry(tx)
+                    .or_default()
+                    .push((absolu, Entite::Arete(edge_id)));
+            }
+            WalPayload::TxCommit { tx } => {
+                en_vol.remove(&tx);
+            }
+            WalPayload::NodeDelete { node_id } => {
+                for v in en_vol.values_mut() {
+                    v.retain(|(_, e)| !matches!(e, Entite::Noeud(n) if *n == node_id));
+                }
+            }
+            WalPayload::EdgeDelete { edge_id } => {
+                for v in en_vol.values_mut() {
+                    v.retain(|(_, e)| !matches!(e, Entite::Arete(a) if *a == edge_id));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(en_vol
+        .iter()
+        .flat_map(|(tx, v)| {
+            v.iter().map(move |(offset, _)| DeclarationEnVol {
+                offset: *offset,
+                tx: *tx,
+            })
+        })
+        .min_by_key(|d| d.offset))
 }
 
 impl WalIter<'_> {
@@ -4268,6 +4549,14 @@ impl WalIter<'_> {
                     );
                     self.cursor = cand + used;
                     return Some(Ok((rec, cand as u64, used)));
+                }
+                // (2026-11-07) Même discipline qu'au fil de l'eau : l'offset
+                // absolu de l'opcode inconnu est posé ici, pas par `decode`.
+                Err(crate::SubstrateError::WalOpcodeInconnu { kind, .. }) => {
+                    derniere_erreur = Some(crate::SubstrateError::WalOpcodeInconnu {
+                        kind,
+                        offset: cand as u64,
+                    })
                 }
                 Err(e) => derniere_erreur = Some(e),
             }
@@ -4390,6 +4679,20 @@ impl<'a> Iterator for WalIter<'a> {
                 self.queue_incomplete = true;
                 None
             }
+            // ── UN OPCODE INCONNU N'EST PAS UNE CORRUPTION NON PLUS (2026-11-07)
+            // Frame entière, CRC valide, `kind` hors table : écrite par un
+            // binaire plus récent. `decode` ne connaît pas sa position ; c'est
+            // ici qu'on pose l'offset ABSOLU que le refus d'ouverture nomme.
+            Err(crate::SubstrateError::WalOpcodeInconnu { kind, .. }) => {
+                let offset = self.cursor as u64;
+                if self.stop_on_error {
+                    self.cursor = self.bytes.len();
+                }
+                Some(Err(crate::SubstrateError::WalOpcodeInconnu {
+                    kind,
+                    offset,
+                }))
+            }
             Err(e) => {
                 if self.stop_on_error {
                     self.cursor = self.bytes.len(); // halt the iterator
@@ -4404,11 +4707,66 @@ impl<'a> Iterator for WalIter<'a> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// ── L'ENGAGEMENT D'UNE RÉSERVATION (V1-T2B) ────────────────────────────────
+///
+/// Tant qu'il vit, l'emplacement de cet écrivain annonce la plage qu'il a réservée
+/// dans la chaîne. Il s'efface à TOUTE sortie sans publication (erreur d'écriture,
+/// ré-ancrage, panique) : une annonce qui survivrait à son détenteur ferait attendre
+/// indéfiniment les pairs d'un écrivain qui ne publiera plus. Publier fait sortir
+/// la plage de l'annonce (la fin publiée dépasse son début), et l'effacement qui
+/// suit la publication est sans effet sur la chaîne.
+struct EngagementReservation<'a> {
+    reg: &'a RegistreAppend,
+    emplacement: usize,
+}
+
+impl Drop for EngagementReservation<'_> {
+    fn drop(&mut self) {
+        self.reg.effacer_reservation(self.emplacement);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::wal::WalPayload;
     use tempfile::tempdir;
+
+    /// Un pair écrit UNE frame (153 octets) entre deux lectures quelconques : le
+    /// fichier et la fin publiée avancent ensemble. Aucun octet publié n'a disparu,
+    /// donc il n'y a PAS de troncature, quel que soit l'entrelacement.
+    /// Mesuré en CI (t1) : 153 et 158 octets de LSN en moins sur toute la suite.
+    #[test]
+    fn un_pair_qui_ecrit_entre_deux_lectures_n_est_pas_une_troncature() {
+        use std::cell::Cell;
+        let monde = Cell::new((1_000u64, 1_000u64)); // (taille fichier, fin publiée)
+        let pas = || {
+            let (t, f) = monde.get();
+            monde.set((t + 153, f + 153));
+        };
+        let r = troncature_averee(
+            || {
+                let f = monde.get().1;
+                pas();
+                f
+            },
+            || {
+                let t = monde.get().0;
+                pas();
+                Ok(t)
+            },
+        )
+        .unwrap();
+        assert_eq!(r, None, "faux positif : un pair a écrit entre les lectures");
+    }
+
+    /// Une vraie troncature (fin publiée 1 000, fichier à 500, stable) est toujours
+    /// reconnue : le correctif ne désarme pas la détection.
+    #[test]
+    fn une_vraie_troncature_reste_avérée() {
+        let r = troncature_averee(|| 1_000, || Ok(500)).unwrap();
+        assert_eq!(r, Some((1_000, 500)));
+    }
 
     /// Le scénario MESURÉ sur runtime-dev : un processus tronque le WAL
     /// (checkpoint) pendant qu'un autre le tient ouvert ; ce dernier écrit
@@ -4888,5 +5246,106 @@ mod tests {
         let r = WalReader::open(&wal).unwrap();
         assert!(r.is_empty());
         assert!(r.iter_from(0).next().is_none());
+    }
+
+    // ── OPCODE INCONNU : REFUS NOMMÉ, JAMAIS UNE FRONTIÈRE DE CRASH (2026-11-07)
+
+    /// Frame complète au framing de `wal.rs`, CRC valide, `kind` arbitraire.
+    fn frame_forgee(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut entete = Vec::with_capacity(24);
+        entete.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        entete.push(kind);
+        entete.push(0);
+        entete.extend_from_slice(&[0, 0]);
+        entete.extend_from_slice(&7u64.to_le_bytes());
+        entete.extend_from_slice(&0i64.to_le_bytes());
+        let crc = crc_over(&entete, payload);
+        let mut frame = entete;
+        frame.extend_from_slice(&crc.to_le_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[test]
+    fn un_opcode_inconnu_entier_est_nomme_avec_son_offset_absolu() {
+        let mut bytes = sample(1, true).encode().unwrap();
+        bytes.extend(sample(2, true).encode().unwrap());
+        let offset_attendu = bytes.len() as u64;
+        bytes.extend(frame_forgee(0x7E, b"futur"));
+        bytes.extend(sample(3, true).encode().unwrap());
+        let reader = WalReader { bytes };
+
+        // Pré-balayage : trouvé, avant toute application.
+        match reader.premier_opcode_inconnu(0) {
+            Some(SubstrateError::WalOpcodeInconnu { kind: 0x7E, offset }) => {
+                assert_eq!(offset, offset_attendu);
+            }
+            autre => panic!("attendu WalOpcodeInconnu 0x7E, reçu {autre:?}"),
+        }
+        // Depuis un offset situé APRÈS la frame future : plus rien d'inconnu.
+        assert!(
+            reader
+                .premier_opcode_inconnu(offset_attendu + 28 + 5)
+                .is_none()
+        );
+
+        // Itérateur : les deux frames connues, puis l'erreur nommée, puis stop.
+        let mut iter = reader.iter_from(0);
+        assert_eq!(iter.next().unwrap().unwrap().0.lsn, 1);
+        assert_eq!(iter.next().unwrap().unwrap().0.lsn, 2);
+        match iter.next() {
+            Some(Err(SubstrateError::WalOpcodeInconnu { kind: 0x7E, offset })) => {
+                assert_eq!(
+                    offset, offset_attendu,
+                    "l'offset est ABSOLU, pas relatif à la tranche"
+                );
+            }
+            autre => panic!("attendu Err(WalOpcodeInconnu), reçu {autre:?}"),
+        }
+        assert!(
+            iter.next().is_none(),
+            "l'itérateur s'arrête net après le refus"
+        );
+        assert!(
+            !iter.queue_incomplete(),
+            "ce n'est PAS une queue incomplète"
+        );
+    }
+
+    #[test]
+    fn une_frame_d_opcode_inconnu_dechiree_reste_une_queue_incomplete() {
+        let frame = frame_forgee(0x7E, b"payload assez long pour etre coupe");
+        for coupe in [3usize, 4, 5, 27, 28, 28 + 10, frame.len() - 1] {
+            let mut bytes = sample(1, true).encode().unwrap();
+            bytes.extend_from_slice(&frame[..coupe]);
+            let reader = WalReader { bytes };
+            assert!(
+                reader.premier_opcode_inconnu(0).is_none(),
+                "coupée à {coupe} octets : sans CRC vérifiable, rien à refuser"
+            );
+            let mut iter = reader.iter_from(0);
+            assert_eq!(iter.next().unwrap().unwrap().0.lsn, 1);
+            assert!(
+                iter.next().is_none(),
+                "coupée à {coupe} : frontière de crash, pas d'erreur"
+            );
+            assert!(
+                iter.queue_incomplete(),
+                "coupée à {coupe} : la queue incomplète se dit"
+            );
+        }
+    }
+
+    #[test]
+    fn un_crc_faux_sur_un_kind_inconnu_n_est_pas_un_opcode_inconnu() {
+        let mut frame = frame_forgee(0x7E, b"futur");
+        frame[24] ^= 0x01; // CRC altéré
+        let mut bytes = sample(1, true).encode().unwrap();
+        bytes.extend(frame);
+        let reader = WalReader { bytes };
+        assert!(reader.premier_opcode_inconnu(0).is_none());
+        let lus: Vec<_> = reader.iter_from(0).collect();
+        assert_eq!(lus.len(), 2);
+        assert!(matches!(lus[1], Err(SubstrateError::WalCrcMismatch { .. })));
     }
 }

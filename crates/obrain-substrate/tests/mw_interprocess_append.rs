@@ -248,6 +248,17 @@ fn role_ecrivain() {
         let ns: u64 = ns.parse().expect("MW_DELAI_TETE_NS");
         w.forcer_delai_tete_bloquee(std::time::Duration::from_nanos(ns));
     }
+    // (MP-1, 2026-11-07, `t2d`) Un pair VIVANT mais lent entre sa réservation et
+    // son `write` : la pause est prise SOUS le mutex d'append, à chaque append
+    // tant qu'elle est posée — le pair reste vivant, et c'est la preuve de vie
+    // (pas le délai) qui doit faire attendre les autres.
+    if let Some(ns) = std::env::var("MW_PAUSE_RESERVATION_NS")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        let ns: u64 = ns.parse().expect("MW_PAUSE_RESERVATION_NS");
+        w.forcer_pause_apres_reservation(Duration::from_nanos(ns));
+    }
     if mode == "course" || mode == "kill" {
         // L'enfant de T3 écrit sans discontinuer (payloads gros) : le parent le
         // tuera au milieu. Il n'attend AUCUN top départ — la fenêtre est serrée
@@ -286,9 +297,10 @@ fn role_ecrivain() {
     annoncer("FIN");
     // STATS lues par le parent : les compteurs de diagnostic de l'enfant.
     annoncer(&format!(
-        "STATS recalages={} courses={} records={} micros={} reancrees={} attentes={} reprises={} generations={}",
+        "STATS recalages={} courses={} devancees={} records={} micros={} reancrees={} attentes={} reprises={} generations={}",
         w.recalages(),
         w.courses_suspectees(),
+        w.publications_devancees(),
         w.records_ecrits(),
         duree.as_micros(),
         w.tetes_reancrees(),
@@ -466,8 +478,15 @@ fn t2_six_processus_zero_perte_eof_exact() {
 // qui l'a pris pour mort et a ré-ancré la chaîne. Zéro perte, EOF exact ; seul
 // le LSN est inexact. Le défaut est dans le design (un délai ne prouve pas une
 // mort), pas dans le test ; correctif proposé dans la tâche V1-T2B (preuve de
-// vie par pid dans le registre). Reste exécuté par `mesures.yml` (--ignored).
-#[ignore = "V1-T2B — défaut réel mesuré le 2026-11-01 : LSN inexact quand un écrivain préempté est pris pour mort (3/172 à 25 ms, 4/31 à 100 µs) ; zéro perte ; voir docs/LIMITES-v0.0.1.md"]
+// vie par pid dans le registre). Désormais exécuté par la suite par défaut.
+// (2026-11-07, MP-1) Les 2 échecs résiduels sur `courses` (LSN tous exacts) sont
+// isolés : `RegistreAppend::ouvrir` publiait, à l'ouverture d'un pair, la plage
+// d'un écrivain entre son `write` et sa publication (reproduit par
+// `wal_chaine_cas::la_creation_du_registre_ne_devance_pas_une_publication`, rouge
+// sur 3d81c35e, vert après le recalage conditionnel). Mesuré après : 20/20.
+// (2026-11-07) DÉS-IGNORÉS après la série de 3 000 exécutions de chacun, sous 32
+// boucles CPU, arrêt au premier échec : t2b 3 000/3 000, t2c 3 000/3 000 (0 échec),
+// sur le commit 7f1dd9bb de MP-1 (PR #73). Reste dans la suite par défaut.
 fn t2b_lsn_exact_par_verrou_d_append() {
     t2b_corps("t2b_lsn_exact_par_verrou_d_append", None);
 }
@@ -477,7 +496,6 @@ fn t2b_lsn_exact_par_verrou_d_append() {
 /// est pris pour mort et sa plage est ré-ancrée. Si l'exactitude des LSN tient
 /// ici, elle ne dépend pas de la rareté des préemptions de 25 ms.
 #[test]
-#[ignore = "V1-T2B — reproduction du défaut : 4 échecs sur 31 le 2026-11-01 (délai 100 µs) ; même assertion que t2b"]
 fn t2c_lsn_exact_malgre_recuperations_forcees() {
     t2b_corps("t2c_lsn_exact_malgre_recuperations_forcees", Some(100_000));
 }
@@ -564,11 +582,142 @@ fn t2b_corps(test: &str, delai_tete_ns: Option<u64>) {
     eprintln!(
         "T2b (VerrouExact) : {n} processus × {M_T2} records = {total} frames · \
          {:.3} s · {:.0} records/s cumulés · LSN non exacts (compteur)={} · \
-         têtes ré-ancrées={} attentes={} reprises CAS={} générations vues={}",
+         publications devancées={} · têtes ré-ancrées={} attentes={} reprises CAS={} \
+         générations vues={}",
         ecoule.as_secs_f64(),
         total as f64 / ecoule.as_secs_f64(),
         stats.get("courses").copied().unwrap_or(0),
+        stats.get("devancees").copied().unwrap_or(0),
         stats.get("reancrees").copied().unwrap_or(0),
+        stats.get("attentes").copied().unwrap_or(0),
+        stats.get("reprises").copied().unwrap_or(0),
+        stats.get("generations").copied().unwrap_or(0),
+    );
+}
+
+// ===========================================================================
+// T2d — UN PAIR VIVANT MAIS LENT ENTRE SA RÉSERVATION ET SON `write`
+// ===========================================================================
+//
+// (MP-1, 2026-11-07) Le scénario que `t2b`/`t2c` ne rencontrent que par hasard,
+// sous charge : un écrivain RÉSERVE sa plage, puis est préempté bien plus
+// longtemps que `DELAI_TETE_BLOQUEE` (25 ms) avant d'écrire. Ici la préemption
+// est FORCÉE (seam `forcer_pause_apres_reservation`, 200 ms, chez UN enfant)
+// pendant que trois pairs appendent sans relâche. Ce que le test exige :
+//
+// * `reancrees == 0` — les pairs attendent le détenteur (preuve de vie : il est
+//   VIVANT), personne ne ré-ancre la chaîne sous lui ;
+// * `courses == 0` — aucun LSN suspect : le lent écrit à sa position réservée,
+//   les pairs au-dessus de lui ;
+// * `lsn == ancre + position` sur CHAQUE frame, zéro perte, EOF exact.
+//
+// Déterministe par construction : la fenêtre est tenue ouverte 200 ms par le
+// seam, pas par l'ordonnanceur. Coordination `OAppend` (le régime de production) :
+// sous `VerrouExact`, le `flock` serait tenu pendant la pause et les pairs ne
+// réserveraient même pas — il n'y aurait rien à prouver.
+#[test]
+fn t2d_pair_lent_apres_reservation_est_attendu_pas_reancre() {
+    let test = "t2d_pair_lent_apres_reservation_est_attendu_pas_reancre";
+    if role().as_deref() == Some("ecrivain") {
+        role_ecrivain();
+        return;
+    }
+
+    let td = tempfile::tempdir().unwrap();
+    let wal = td.path().join("substrate.wal");
+    std::fs::write(&wal, b"").unwrap();
+
+    // L'enfant 1 est le LENT : 3 records, chacun précédé d'une pause de 200 ms
+    // entre sa réservation et son `write`. Les enfants 2..=4 écrivent M_T2 records.
+    const M_LENT: u64 = 3;
+    const PAUSE_NS: u64 = 200_000_000;
+    let n: u8 = 4;
+    let mut enfants = Vec::new();
+    for tag in 1..=n {
+        let go = td.path().join(format!("go_{tag}"));
+        let (m, pause) = if tag == 1 {
+            (M_LENT, PAUSE_NS.to_string())
+        } else {
+            (M_T2, String::new())
+        };
+        enfants.push((
+            go.clone(),
+            Enfant::lancer(
+                test,
+                &[
+                    ("MW_ROLE", "ecrivain".into()),
+                    ("MW_MODE", "unitaire".into()),
+                    ("MW_WAL", wal.display().to_string()),
+                    ("MW_TAG", tag.to_string()),
+                    ("MW_M", m.to_string()),
+                    ("MW_GO", go.display().to_string()),
+                    ("MW_PAUSE_RESERVATION_NS", pause),
+                ],
+            ),
+        ));
+    }
+    for (_, e) in enfants.iter_mut() {
+        e.attendre("PRET");
+    }
+    let debut = Instant::now();
+    for (go, _) in enfants.iter() {
+        std::fs::write(go, b"go").unwrap();
+    }
+    let mut stats = HashMap::new();
+    for (_, e) in enfants.iter_mut() {
+        e.attendre_et_cumuler("FIN", &mut stats);
+        e.drainer(&mut stats);
+    }
+    let ecoule = debut.elapsed();
+
+    let audit = auditer(&wal);
+    let attendus: HashSet<(u8, u64)> = (0..M_LENT)
+        .map(|s| (1u8, s))
+        .chain((2..=n).flat_map(|t| (0..M_T2).map(move |s| (t, s))))
+        .collect();
+    let vus: HashSet<(u8, u64)> = audit.frames.iter().copied().collect();
+    assert_eq!(vus, attendus, "zéro perte, le lent compris");
+    assert_eq!(vus.len(), audit.frames.len(), "aucun doublon");
+    assert_eq!(audit.taille_fichier, audit.octets_frames, "EOF exact");
+
+    // ── LE LSN EST EXACTEMENT LA POSITION, SUR CHAQUE FRAME ────────────────
+    let r = WalReader::open(&wal).unwrap();
+    let mut dernier = 0u64;
+    let mut n_frames = 0usize;
+    for item in r.iter_from(0) {
+        let (rec, off, _) = item.unwrap();
+        assert_eq!(
+            rec.lsn,
+            ANCRE_INITIALE + off,
+            "lsn == ancre + position — y compris pour les frames posées au-dessus \
+             d'un pair lent"
+        );
+        assert!(rec.lsn > dernier, "et donc strictement croissants");
+        dernier = rec.lsn;
+        n_frames += 1;
+    }
+    assert_eq!(n_frames, attendus.len());
+    assert_eq!(
+        stats.get("reancrees").copied().unwrap_or(u64::MAX),
+        0,
+        "un pair VIVANT entre sa réservation et son write est ATTENDU (preuve de \
+         vie), jamais pris pour mort : aucune tête ré-ancrée"
+    );
+    assert_eq!(
+        stats.get("courses").copied().unwrap_or(u64::MAX),
+        0,
+        "aucun LSN suspect : la chaîne a mis chacun à sa place"
+    );
+    eprintln!(
+        "T2d (OAppend, 1 lent à {} ms × {M_LENT} + 3 × {M_T2}) : {} frames · {:.3} s · \
+         têtes ré-ancrées={} LSN suspects={} publications devancées={} attentes={} \
+         reprises CAS={} générations vues={}",
+        PAUSE_NS / 1_000_000,
+        n_frames,
+        ecoule.as_secs_f64(),
+        stats.get("reancrees").copied().unwrap_or(0),
+        stats.get("courses").copied().unwrap_or(0),
+        stats.get("devancees").copied().unwrap_or(0),
         stats.get("attentes").copied().unwrap_or(0),
         stats.get("reprises").copied().unwrap_or(0),
         stats.get("generations").copied().unwrap_or(0),

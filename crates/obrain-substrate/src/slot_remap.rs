@@ -65,18 +65,27 @@
 //! ## Retrograder un binaire (regle d'exploitation)
 //!
 //! Les repermutations s'ecrivent avec les opcodes WAL `0x54` / `0x55`. Un
-//! binaire ANTERIEUR a ce chantier ne les connait pas : son rejeu s'arrete
-//! net a la premiere occurrence — et le WAL restant n'est jamais applique.
-//! Sur une base dont une repermutation est en cours, cela laisse un etat
-//! partiel, sans que rien ne le signale.
+//! binaire ANTERIEUR a ce chantier ne les connait pas. Depuis le 2026-11-07,
+//! il **refuse d'ouvrir la base** des qu'il rencontre une frame entiere, a
+//! CRC valide, d'un opcode hors de sa table : `SubstrateError::WalOpcodeInconnu`
+//! nomme l'opcode et l'offset, rien n'est rejoue ni tombstone, le WAL n'est
+//! ni tronque ni modifie (`replay.rs`, `store.rs`, test
+//! `tests/wal_opcode_inconnu.rs`). Avant cette date, le rejeu s'arretait
+//! net en silence sur un prefixe, et le checkpoint suivant tronquait le WAL :
+//! sur une base dont une repermutation etait en cours, cela laissait un etat
+//! partiel — c'est ce que la garantie v0.0.1 interdit desormais.
 //!
-//! **REGLE : checkpoint force AVANT tout downgrade.** Un checkpoint tronque
-//! le WAL ; l'ancien binaire ne rencontre alors plus aucun opcode inconnu.
+//! **REGLE D'EXPLOITATION : checkpoint AVANT tout downgrade.** Un checkpoint
+//! (par le binaire recent) tronque le WAL ; l'ancien binaire ne rencontre
+//! alors plus aucun opcode inconnu et peut ouvrir la base. Cette regle rend
+//! la base LISIBLE par l'ancien binaire ; elle n'est plus ce qui protege les
+//! donnees — le refus s'en charge.
 //!
-//! Outillage : `replay_from` remonte desormais cet arret en `ERROR` (et non
-//! en `warn`) des lors que la base porte un epoch de repermutation non nul,
-//! avec la regle citee dans le message. C'est le signal qu'un exploitant
-//! peut brancher sur une alerte.
+//! Outillage : `replay_from` remonte le refus en `ERROR`, avec la regle citee
+//! dans le message. C'est le signal qu'un exploitant peut brancher sur une
+//! alerte. Le diagnostic « base deja repermutee » du bras `Err` du rejeu ne
+//! concerne plus que les arrets sur anomalie (CRC, decodage), pas l'opcode
+//! inconnu.
 //!
 //! ## Memoire des passes de remap
 //!

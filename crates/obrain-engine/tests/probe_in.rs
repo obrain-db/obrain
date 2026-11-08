@@ -39,18 +39,19 @@ fn build(n: usize, indexed: bool) -> (ObrainDB, u128) {
 
 #[test]
 fn in_probes_index_instead_of_scanning_label() {
-    let (_a, petit) = build(2_000, true);
-    let (_b, grand) = build(20_000, true);
-    println!("IN indexé : 2k → {petit} µs, 20k → {grand} µs");
-
-    // Un balayage de label coûterait ~10× de plus à 10× la taille. Une
-    // sonde d'index ne dépend pas de la cardinalité. Marge large pour
-    // absorber le bruit de l'ordonnanceur, mais suffisante pour
-    // distinguer les deux régimes.
+    // Comparer deux tailles à quelques microsecondes près mesurait le bruit
+    // (7 µs → 28 µs sur un runner chargé : rouge sur `main` le 03/11/2026).
+    // On compare à la place les DEUX régimes sur les MÊMES données : avec index
+    // la sonde ne dépend pas de la cardinalité, sans index le plan générique
+    // balaie le label. Meilleur de 5 séries pour écarter l'ordonnanceur.
+    let meilleur = |indexed: bool| (0..5).map(|_| build(20_000, indexed).1).min().unwrap();
+    let avec_index = meilleur(true);
+    let sans_index = meilleur(false);
+    println!("IN à 20k nœuds : indexé {avec_index} µs, balayage {sans_index} µs");
     assert!(
-        grand < petit.max(1) * 4,
-        "IN semble balayer le label : 2k={petit} µs, 20k={grand} µs \
-         (une sonde d'index devrait rester du même ordre)"
+        avec_index.max(1) * 5 < sans_index,
+        "IN semble balayer le label même indexé : indexé={avec_index} µs, \
+         balayage={sans_index} µs (une sonde devrait être ≥5× plus rapide)"
     );
 }
 

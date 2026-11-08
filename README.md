@@ -52,16 +52,18 @@ Base persistante : `ObrainDB::open("chemin/vers/base")` ouvre ou crée un réper
 
 | Garantie | Ce qu'elle veut dire | Test qui la verrouille |
 |---|---|---|
-| **Un commit acquitté est durable** | Quand `commit()` (explicite, ou implicite pour chaque statement hors transaction) rend `Ok`, les écritures sont dans le WAL **et** acquittées par le disque (`fsync` — `F_FULLFSYNC` sur macOS). Elles survivent à un `kill -9` et à une coupure de courant. | `obrain-engine/tests/durabilite_commit_kill9.rs` |
+| **Un commit acquitté est durable** | Quand `commit()` (explicite, ou implicite pour chaque statement hors transaction) rend `Ok`, les écritures sont dans le WAL **et** acquittées par le disque (`fsync` — `F_FULLFSYNC` sur macOS). Elles survivent à un `kill -9` (testé ; la coupure de courant n'est pas testée). | `obrain-engine/tests/durabilite_commit_kill9.rs` |
 | **Une transaction jamais commitée ne laisse rien** | Un processus qui disparaît avec une transaction ouverte ne publie rien à la réouverture : le WAL porte les frontières de transaction, le rejeu écarte ce qui n'a pas été scellé. | `durabilite_commit_kill9.rs` (test 2) |
 | **Un commit refusé ne laisse rien** | Un conflit de validation (deux sessions, même entité, la seconde commitée après le début de la première) est refusé, et rien de la transaction refusée ne reste — ni en mémoire, ni sur disque après réouverture. | `obrain-engine/tests/echec_commit_rembobinage.rs` |
 | **`ROLLBACK` ne retire que ses propres créations** | Deux sessions concurrentes : annuler l'une ne touche jamais aux commits de l'autre. | `obrain-engine/tests/rollback_isolation.rs` |
 | **Isolation par instantané** | Une transaction ouverte ne voit pas un commit voisin postérieur à son début. | `readme_examples.rs::mvcc_snapshot_isolation_…` |
 | **Reprise après crash** | Un WAL tronqué ou déchiré est rejoué jusqu'à la frontière valide, jamais au-delà ; un trou de zéros suivi de données est nommé, pas confondu avec une fin de fichier. | `obrain-substrate/tests/crash_safety.rs`, `wal_recovery_reelle.rs` |
 | **Format on-disk figé (v3)** | Une base écrite par la v0.0.1 se rouvre par toute v0.0.x ; une base d'une version plus récente est refusée, jamais lue comme vide. | `obrain-engine/tests/format_fige_v3.rs`, fixture `tests/golden/v3-mini` |
-| **Un seul écrivain par base** | Le répertoire est verrouillé (fcntl) ; un second processus est refusé, et le refus nomme le détenteur (Linux, macOS). | `obrain-substrate/tests/verrou_apres_drop.rs` |
+| **Opcode WAL inconnu ⇒ refus nommé, jamais lu comme vide** | Un `substrate.wal` qui porte une frame complète (CRC valide) d'un opcode que ce binaire ne connaît pas a été écrit par une version plus récente : l'ouverture est refusée avec une erreur qui nomme l'opcode et l'offset, le WAL n'est ni rejoué partiellement ni tronqué ni modifié. Une queue déchirée (frame incomplète) reste une frontière de crash. | `obrain-substrate/tests/wal_opcode_inconnu.rs`, `obrain-engine/tests/format_fige_v3.rs` (tests `…opcode…`), fixture `tests/golden/v3-mini-opcode-futur` |
+| **Un seul écrivain par base (`open`)** | Le répertoire est verrouillé (fcntl) ; un second processus est refusé, et le refus nomme le détenteur (Linux, macOS). | `obrain-substrate/tests/verrou_apres_drop.rs` |
+| **Écriture partagée restreinte (`open_shared_write`)** | N processus créent des **nœuds et arêtes sans propriétés** : aucune perte, aucune collision de slots, et chacun voit les écritures des autres à sa **réouverture**. Une base héritée (sidecar non vide) est refusée, nommée, sans modification. Ne sont **pas** garantis : propriétés écrites par plusieurs processus, transactions concurrentes entre processus, visibilité sans réouverture (voir LIMITES). | `obrain-engine/tests/ecriture_multi_processus.rs`, `obrain-substrate/tests/wal_chaine_cas.rs`, `obrain-substrate/tests/mw_interprocess_append.rs`, `obrain-substrate/tests/base_heritee_shared_write.rs` |
 
-Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus sur un même WAL, la lecture d'un WAL non checkpointé par un binaire antérieur (checkpoint forcé avant tout downgrade), et tout ce qui est listé dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
+Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus au-delà du périmètre restreint ci-dessus (propriétés partagées, transactions concurrentes entre processus, visibilité sans réouverture), et tout ce qui est listé dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
 
 ## Fonctionnalités (features par défaut du crate `obrain`)
 
@@ -127,15 +129,15 @@ MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 
 ## Exemples
 
-`examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate_v2`.
+`examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate-v2` (le nom du binaire contient un tiret).
 
 ## Roadmap
 
 Ce qui n'est **pas** dans la v0.0.1 :
 
-- **Bindings** Python, Node.js, Go, C, C#, Dart, WebAssembly : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI.
+- **Bindings** Python, Node.js, Go, C, C#, Dart : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI. WebAssembly n'a qu'un paquet d'essai, non publié : `crates/obrain-web` (voir son README).
 - **`CALL obrain.hybrid_search`** comme procédure GQL : les index texte/vecteur vivent dans `ObrainDB`, hors de portée du planificateur de `CALL`, et l'enchaînement `CALL … YIELD … MATCH` n'est pas consommé par le parseur. La recherche hybride existe en Rust : `ObrainDB::hybrid_search(label, text_property, vector_property, query_text, query_vector, k, fusion)` (fusion RRF ou pondérée).
-- Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : dépôts séparés, hors de cette version.
+- Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : non implémentés dans ce dépôt, hors de cette version.
 - Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
 
 ## Documentation
@@ -148,7 +150,7 @@ Ce qui n'est **pas** dans la v0.0.1 :
 
 ## Contribuer
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, `cargo package` dans l'ordre de publication, et les tests d'intégrité sur macOS.
+Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy (cliquet, jamais en hausse), tests, compilation `--all-features`, MSRV, `cargo deny`, vérification des manifestes de publication et `cargo package` du premier crate de l'ordre de publication, les jobs navigateur (wasm32, `obrain-web`, persistance OPFS sous Chrome headless), et les tests d'intégrité sur macOS (job conditionné à la variable de dépôt `CI_MACOS`, sinon « skipped »).
 
 ## Remerciements
 

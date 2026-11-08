@@ -729,7 +729,7 @@ impl PropsEqIndexZone {
         // d'écriture ; le `rename` reste le point de sérialisation.)
         let tmp = self
             .chemin
-            .with_extension(format!("tmp.{}", std::process::id()));
+            .with_extension(format!("tmp.{}", crate::wal_io::pid_portable()));
         {
             use std::io::Write as _;
             let mut f = std::fs::File::create(&tmp)?;

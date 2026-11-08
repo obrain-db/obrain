@@ -41,8 +41,6 @@
 //! step-3-sized change would need a format bump; the separate file is
 //! a pragmatic interim.
 
-use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::blob_column::BlobColSpec;
@@ -724,11 +722,7 @@ impl DictSnapshot {
     pub fn persist_tmp(&self, path: &Path) -> SubstrateResult<(PathBuf, Vec<u8>)> {
         let bytes = self.to_bytes()?;
         let tmp = crate::wal_io::chemin_tmp_unique(path);
-        {
-            let mut f = fs::File::create(&tmp)?;
-            f.write_all(&bytes)?;
-            f.sync_all()?;
-        }
+        crate::es::espace().ecrire_synchronise(&tmp, &bytes)?;
         Ok((tmp, bytes))
     }
 
@@ -736,7 +730,7 @@ impl DictSnapshot {
     /// par un `rename` atomique. NE fsync PAS le répertoire parent — c'est la
     /// phase (vi), différée HORS du verrou par `persist_dict`.
     pub fn publier_tmp(tmp: &Path, path: &Path) -> SubstrateResult<()> {
-        fs::rename(tmp, path)?;
+        crate::es::espace().renommer(tmp, path)?;
         Ok(())
     }
 
@@ -745,22 +739,18 @@ impl DictSnapshot {
     /// `fsync` de répertoire ne sérialise pas N processus derrière le `flock`.
     pub fn synchroniser_repertoire(path: &Path) {
         // fsync parent dir to make the rename durable.
-        if let Some(parent) = path.parent()
-            && let Ok(d) = fs::File::open(parent)
-        {
-            let _ = d.sync_all();
+        if let Some(parent) = path.parent() {
+            let _ = crate::es::espace().synchroniser_repertoire(parent);
         }
     }
 
     /// Load a snapshot from `path`. Returns an empty snapshot if the file
     /// does not exist (fresh database).
     pub fn load(path: &Path) -> SubstrateResult<Self> {
-        if !path.exists() {
+        if !crate::es::espace().existe(path) {
             return Ok(Self::default());
         }
-        let mut f = fs::File::open(path)?;
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf)?;
+        let buf = crate::es::espace().lire_tout(path)?;
         Self::from_bytes(&buf)
     }
 }

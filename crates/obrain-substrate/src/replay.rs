@@ -144,6 +144,31 @@ impl SlotsTouches {
 /// and applies each to the corresponding zone mmap. It stops at the first
 /// decode error.
 pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResult<ReplayStats> {
+    replay_from_avec(substrate, from_offset, true)
+}
+
+/// Rejeu d'un LECTEUR RO : identique à [`replay_from`], sauf qu'il n'écarte PAS
+/// les transactions en vol.
+///
+/// Écarter une transaction non scellée, c'est poser des tombstones dans les
+/// zones. C'est la bonne reprise quand son propriétaire est mort ; ce ne l'est
+/// pas quand un écrivain partagé VIVANT l'a ouverte et n'a pas encore posé son
+/// `TxCommit` : le lecteur (verrou `LOCK_SH`, comme l'écrivain) tuerait alors un
+/// nœud légitime, et personne ne le republierait. Un lecteur ne sait pas si
+/// l'écrivain est vivant ; il ne doit donc rien écrire dans les zones qu'il
+/// partage.
+pub fn replay_from_lecteur(
+    substrate: &SubstrateFile,
+    from_offset: u64,
+) -> SubstrateResult<ReplayStats> {
+    replay_from_avec(substrate, from_offset, false)
+}
+
+fn replay_from_avec(
+    substrate: &SubstrateFile,
+    from_offset: u64,
+    ecarter_en_vol: bool,
+) -> SubstrateResult<ReplayStats> {
     let wal_path = substrate.wal_path();
     let reader = WalReader::open(&wal_path)?;
     let mut stats = ReplayStats {
@@ -152,6 +177,28 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
     };
     if reader.is_empty() {
         return Ok(stats);
+    }
+
+    // ── UN OPCODE INCONNU REFUSE LE REJEU AVANT D'APPLIQUER (2026-11-07) ───
+    // Une frame entière à CRC valide dont le `kind` est hors table vient d'un
+    // binaire PLUS RÉCENT ; tout ce qui la suit nous est illisible. Jusqu'ici
+    // elle sortait en `WalBadFrame`, confondue avec une frontière de crash :
+    // la base s'ouvrait sur un préfixe, les transactions en vol étaient
+    // tombstonées sur un rejeu tronqué, et le checkpoint suivant TRONQUAIT le
+    // WAL — perte définitive des frames postérieures. Le balayage se fait
+    // AVANT d'ouvrir la moindre zone pour que le refus ne laisse rien
+    // derrière lui : ni frame appliquée, ni tombstone. (Le bras `Err` de la
+    // boucle porte le même refus pour le cas que le balayage ne tranche pas :
+    // un opcode inconnu situé APRÈS une anomalie.)
+    if let Some(e) = reader.premier_opcode_inconnu(from_offset) {
+        tracing::error!(
+            error = %e,
+            from_offset,
+            "rejeu WAL REFUSÉ : opcode inconnu — ce WAL a été écrit par une version \
+             plus récente. Rien n'a été appliqué ; rouvrir avec cette version, ou \
+             checkpointer avec elle avant de rétrograder."
+        );
+        return Err(e);
     }
 
     // Lazily open zones we need.
@@ -265,6 +312,24 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
                 // sans que personne ne sache qu'il reste des frames APRÈS le
                 // défaut. Le cas est donc nommé séparément, avant tout
                 // diagnostic de downgrade (qui, lui, n'a rien à en dire).
+                //
+                // ── UN OPCODE INCONNU N'EST PAS UNE FRONTIÈRE DE CRASH (2026-11-07)
+                // Le pré-balayage en tête de fonction a déjà refusé le cas
+                // ordinaire ; on n'arrive ici qu'avec un opcode inconnu situé
+                // APRÈS une anomalie (trou sauté, par exemple). Le verdict est
+                // le même : REFUS propagé, pas de `break` vers un `Ok(stats)`
+                // tronqué, pas de tombstones sur un rejeu partiel.
+                if let crate::SubstrateError::WalOpcodeInconnu { kind, offset } = &e {
+                    tracing::error!(
+                        kind = format_args!("{kind:#04X}"),
+                        offset,
+                        stopped_at = stats.stopped_at,
+                        "rejeu WAL REFUSÉ sur un opcode inconnu : ce WAL a été écrit par une \
+                         version plus récente ; rouvrir avec cette version, ou checkpointer \
+                         avec elle avant de rétrograder."
+                    );
+                    return Err(e);
+                }
                 if let crate::SubstrateError::WalTrou { offset, longueur } = &e {
                     tracing::error!(
                         offset,
@@ -309,7 +374,7 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
     // arêtes — physiquement dans les zones — revenaient publiés à la
     // réouverture : 50/50 mesurés sur `durabilite_commit_kill9`.
     en_vol.retain(|_, (n, e)| !n.is_empty() || !e.is_empty());
-    if !en_vol.is_empty() {
+    if ecarter_en_vol && !en_vol.is_empty() {
         for (tx, (noeuds, aretes)) in &en_vol {
             stats.transactions_en_vol += 1;
             for edge_id in aretes {
@@ -1029,9 +1094,6 @@ fn apply(
                 members,
                 props,
             )?;
-            // L'incidence n'est postee QUE sur materialisation : un rejeu
-            // repasse (Unchanged) ou une reecriture sous la meme identite
-            // (Rewritten) ne dupliquent jamais les postings.
             if applied == crate::simplex_zone::AppliedSimplex::Materialized {
                 for &m in members {
                     crate::simplex_incidence::SimplexIncidenceZone::append(
@@ -1040,6 +1102,28 @@ fn apply(
                         m,
                         *simplex_id,
                     )?;
+                }
+            } else {
+                // Record DÉJÀ présent (Unchanged/Rewritten) : c'est l'état d'un
+                // kill -9 pendant la pose des postings (le record du répertoire
+                // est écrit avant eux). Un record vivant doit avoir son
+                // incidence complète : on comble les manques, sans doublon.
+                // Un tombstone n'est pas reposté (ses postings peuvent avoir été
+                // réclamés par compact_simplexes).
+                let vivant = crate::simplex_zone::SimplexDirZone::read(
+                    simplex.dir.as_ref().unwrap(),
+                    *simplex_id,
+                )?
+                .is_some_and(|rec| !rec.is_tombstoned());
+                if vivant {
+                    for &m in members {
+                        crate::simplex_incidence::SimplexIncidenceZone::ensure_posted(
+                            simplex.incidence.as_mut().unwrap(),
+                            simplex.postings.as_mut().unwrap(),
+                            m,
+                            *simplex_id,
+                        )?;
+                    }
                 }
             }
             Ok(Applied::Yes)

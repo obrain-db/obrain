@@ -19,6 +19,8 @@ pub struct OnnxEmbeddingModel {
     dimensions: usize,
     name: String,
     batch_size: usize,
+    /// Whether the model declares a `token_type_ids` input (BERT-style exports).
+    with_token_type_ids: bool,
 }
 
 // SAFETY: Tokenizer is !Send+!Sync by default, but our usage is safe because
@@ -72,7 +74,8 @@ impl OnnxEmbeddingModel {
         let tokenizer = Tokenizer::from_file(&resolved.tokenizer_path)
             .map_err(|e| Error::Internal(format!("Failed to load tokenizer: {e}")))?;
 
-        let dimensions = Self::probe_dimensions(&mut session, &tokenizer)?;
+        let with_token_type_ids = Self::session_wants_token_type_ids(&session);
+        let dimensions = Self::probe_dimensions(&mut session, &tokenizer, with_token_type_ids)?;
 
         Ok(Self {
             session: Mutex::new(session),
@@ -80,6 +83,7 @@ impl OnnxEmbeddingModel {
             dimensions,
             name: resolved.name,
             batch_size: options.batch_size,
+            with_token_type_ids,
         })
     }
 
@@ -112,7 +116,8 @@ impl OnnxEmbeddingModel {
             .map_err(|e| Error::Internal(format!("Failed to load tokenizer: {e}")))?;
 
         // Probe dimensions by running a dummy input
-        let dimensions = Self::probe_dimensions(&mut session, &tokenizer)?;
+        let with_token_type_ids = Self::session_wants_token_type_ids(&session);
+        let dimensions = Self::probe_dimensions(&mut session, &tokenizer, with_token_type_ids)?;
 
         Ok(Self {
             session: Mutex::new(session),
@@ -120,6 +125,7 @@ impl OnnxEmbeddingModel {
             dimensions,
             name: name.into(),
             batch_size: 32,
+            with_token_type_ids,
         })
     }
 
@@ -139,8 +145,34 @@ impl OnnxEmbeddingModel {
             .map_err(|e| Error::Internal(format!("Failed to create tensor: {e}")))
     }
 
+    /// Whether the session declares a `token_type_ids` input.
+    fn session_wants_token_type_ids(session: &Session) -> bool {
+        declares_token_type_ids(session.inputs().iter().map(|input| input.name()))
+    }
+
+    /// Runs the model. `token_type_ids` is only passed when the model declares it:
+    /// two-input models (e.g. DistilBERT) reject unknown inputs.
+    fn run_model(
+        session: &mut Session,
+        input_ids: ort::value::Value<ort::value::TensorValueType<i64>>,
+        attention_mask: ort::value::Value<ort::value::TensorValueType<i64>>,
+        token_type_ids: Option<ort::value::Value<ort::value::TensorValueType<i64>>>,
+    ) -> Result<ort::session::SessionOutputs<'_>> {
+        let outputs = match token_type_ids {
+            Some(token_type_ids) => {
+                session.run(ort::inputs![input_ids, attention_mask, token_type_ids])
+            }
+            None => session.run(ort::inputs![input_ids, attention_mask]),
+        };
+        outputs.map_err(|e| Error::Internal(format!("Model inference failed: {e}")))
+    }
+
     /// Probes model output dimensions with a dummy input.
-    fn probe_dimensions(session: &mut Session, tokenizer: &Tokenizer) -> Result<usize> {
+    fn probe_dimensions(
+        session: &mut Session,
+        tokenizer: &Tokenizer,
+        with_token_type_ids: bool,
+    ) -> Result<usize> {
         let encoding = tokenizer
             .encode("hello", false)
             .map_err(|e| Error::Internal(format!("Tokenizer encode error: {e}")))?;
@@ -155,10 +187,13 @@ impl OnnxEmbeddingModel {
 
         let input_ids = Self::make_i64_tensor(vec![1, len], ids)?;
         let attention_mask = Self::make_i64_tensor(vec![1, len], mask)?;
+        let token_type_ids = if with_token_type_ids {
+            Some(Self::make_i64_tensor(vec![1, len], vec![0i64; len])?)
+        } else {
+            None
+        };
 
-        let outputs = session
-            .run(ort::inputs![input_ids, attention_mask])
-            .map_err(|e| Error::Internal(format!("Model inference failed: {e}")))?;
+        let outputs = Self::run_model(session, input_ids, attention_mask, token_type_ids)?;
 
         let output = &outputs[0];
         let (shape, _data) = output
@@ -207,11 +242,19 @@ impl OnnxEmbeddingModel {
 
         let input_ids = Self::make_i64_tensor(vec![batch, max_len], all_ids)?;
         let attention_mask = Self::make_i64_tensor(vec![batch, max_len], all_mask)?;
+        // BERT-style models (e.g. all-MiniLM-L6-v2) declare a third input.
+        // Single-sentence inputs use segment 0 everywhere.
+        let token_type_ids = if self.with_token_type_ids {
+            Some(Self::make_i64_tensor(
+                vec![batch, max_len],
+                vec![0i64; batch * max_len],
+            )?)
+        } else {
+            None
+        };
 
         let mut session = self.session.lock();
-        let outputs = session
-            .run(ort::inputs![input_ids, attention_mask])
-            .map_err(|e| Error::Internal(format!("Model inference failed: {e}")))?;
+        let outputs = Self::run_model(&mut session, input_ids, attention_mask, token_type_ids)?;
 
         let output = &outputs[0];
         let (shape, data) = output
@@ -250,6 +293,15 @@ impl OnnxEmbeddingModel {
     }
 }
 
+/// Returns `true` when the declared model input names include `token_type_ids`.
+///
+/// BERT-style exports (all-MiniLM, bge-small) declare it and fail without it;
+/// other models (e.g. DistilBERT) only take `input_ids` and `attention_mask`
+/// and would reject an extra input.
+fn declares_token_type_ids<'a>(input_names: impl IntoIterator<Item = &'a str>) -> bool {
+    input_names.into_iter().any(|name| name == "token_type_ids")
+}
+
 impl EmbeddingModel for OnnxEmbeddingModel {
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let mut results = Vec::with_capacity(texts.len());
@@ -265,5 +317,43 @@ impl EmbeddingModel for OnnxEmbeddingModel {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(all(test, feature = "embed"))]
+mod tests {
+    use super::*;
+    use crate::embedding::EmbeddingModelConfig;
+
+    #[test]
+    fn token_type_ids_not_requested_for_two_input_models() {
+        assert!(!declares_token_type_ids(["input_ids", "attention_mask"]));
+    }
+
+    #[test]
+    fn token_type_ids_requested_for_three_input_models() {
+        assert!(declares_token_type_ids([
+            "input_ids",
+            "attention_mask",
+            "token_type_ids"
+        ]));
+    }
+
+    #[test]
+    fn token_type_ids_not_requested_without_inputs() {
+        assert!(!declares_token_type_ids(std::iter::empty::<&str>()));
+    }
+
+    #[test]
+    #[ignore = "requires ONNX Runtime (ORT_DYLIB_PATH) and the all-MiniLM-L6-v2 model (~90MB download on first run)"]
+    fn minilm_l6_embeds_fixed_sentence() {
+        let model = OnnxEmbeddingModel::from_config(EmbeddingModelConfig::MiniLmL6v2)
+            .expect("all-MiniLM-L6-v2 must load");
+        let vectors = model
+            .embed(&["Obrain stores graph nodes in a single file."])
+            .expect("embedding must succeed");
+        assert_eq!(vectors.len(), 1);
+        assert_eq!(vectors[0].len(), 384);
+        assert!(vectors[0].iter().any(|x| *x != 0.0));
     }
 }

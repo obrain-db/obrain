@@ -117,7 +117,7 @@ pub struct PropertiesSnapshotV1 {
 
 impl PropertiesSnapshotV1 {
     /// Encode to bytes with magic, version, and trailing CRC32C.
-    fn to_bytes(&self) -> SubstrateResult<Vec<u8>> {
+    pub(crate) fn to_bytes(&self) -> SubstrateResult<Vec<u8>> {
         let body = bincode::serde::encode_to_vec(self, bincode_config())
             .map_err(|e| SubstrateError::Internal(format!("props encode: {e}")))?;
         let mut out = Vec::with_capacity(4 + 4 + body.len() + 4);
@@ -144,7 +144,7 @@ impl PropertiesSnapshotV1 {
     /// Seul cas toléré : ZÉRO octet. Un sidecar vide est l'état d'une base
     /// qui naît (voir `base_neuve` dans `SubstrateStore::from_substrate`),
     /// pas une anomalie.
-    fn from_bytes(bytes: &[u8]) -> SubstrateResult<Self> {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> SubstrateResult<Self> {
         if bytes.is_empty() {
             return Ok(Self::default());
         }
@@ -186,18 +186,22 @@ impl PropertiesSnapshotV1 {
         // perdant échouait en ENOENT (mesuré par `strace`). Voir
         // `crate::wal_io::chemin_tmp_unique`.
         let tmp_path = crate::wal_io::chemin_tmp_unique(path);
-        std::fs::write(&tmp_path, &bytes).map_err(SubstrateError::Io)?;
-        std::fs::rename(&tmp_path, path).map_err(SubstrateError::Io)?;
+        let es = crate::es::espace();
+        es.ecrire_tout(&tmp_path, &bytes)
+            .map_err(SubstrateError::Io)?;
+        es.renommer(&tmp_path, path).map_err(SubstrateError::Io)?;
         Ok(())
     }
 
     /// Load the snapshot from `<path>`. Returns `Default` if the file
     /// does not exist (fresh store).
     pub fn load(path: &Path) -> SubstrateResult<Self> {
-        if !path.exists() {
+        if !crate::es::espace().existe(path) {
             return Ok(Self::default());
         }
-        let bytes = std::fs::read(path).map_err(SubstrateError::Io)?;
+        let bytes = crate::es::espace()
+            .lire_tout(path)
+            .map_err(SubstrateError::Io)?;
         Self::from_bytes(&bytes)
     }
 }

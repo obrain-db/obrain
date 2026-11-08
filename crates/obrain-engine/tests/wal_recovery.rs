@@ -804,7 +804,6 @@ mod wal {
 
     #[cfg(all(feature = "sparql", feature = "rdf"))]
     #[test]
-    #[ignore = "V1-RDF — défaut réel mesuré le 2026-11-01 : les triplets ne survivent pas à une réouverture (0 au lieu de 2) ; voir docs/LIMITES-v0.0.1.md"]
     fn test_rdf_triples_persist_across_restart() {
         use obrain_engine::{Config, GraphModel};
 
@@ -844,7 +843,6 @@ mod wal {
 
     #[cfg(all(feature = "sparql", feature = "rdf"))]
     #[test]
-    #[ignore = "V1-RDF — défaut réel mesuré le 2026-11-01 : les triplets ne survivent pas à une réouverture (0 au lieu de 2) ; voir docs/LIMITES-v0.0.1.md"]
     fn test_rdf_named_graph_persists_across_restart() {
         use obrain_engine::{Config, GraphModel};
 
@@ -890,7 +888,6 @@ mod wal {
 
     #[cfg(all(feature = "sparql", feature = "rdf"))]
     #[test]
-    #[ignore = "V1-RDF — défaut réel mesuré le 2026-11-01 : les triplets ne survivent pas à une réouverture (0 au lieu de 2) ; voir docs/LIMITES-v0.0.1.md"]
     fn test_rdf_delete_persists_across_restart() {
         use obrain_engine::{Config, GraphModel};
 
@@ -948,10 +945,19 @@ mod wal {
                 .execute_sparql(
                     r#"INSERT DATA {
                         <http://ex.org/alix> <http://ex.org/name> "Alix" .
+                        <http://ex.org/gus> <http://ex.org/name> "Gus" .
                     }"#,
                 )
                 .unwrap();
             session.execute_sparql("CLEAR DEFAULT").unwrap();
+            // Written after the CLEAR: must survive, and the cleared triples must not.
+            session
+                .execute_sparql(
+                    r#"INSERT DATA {
+                        <http://ex.org/after> <http://ex.org/name> "After" .
+                    }"#,
+                )
+                .unwrap();
             db.close().expect("close");
         }
 
@@ -960,9 +966,14 @@ mod wal {
             let db = ObrainDB::with_config(config).expect("reopen");
             let session = db.session();
             let result = session
-                .execute_sparql("SELECT ?s WHERE { ?s ?p ?o }")
+                .execute_sparql("SELECT ?name WHERE { ?s ?p ?name }")
                 .unwrap();
-            assert_eq!(result.rows.len(), 0, "CLEAR should persist");
+            assert_eq!(
+                result.rows.len(),
+                1,
+                "only the post-CLEAR triple should survive"
+            );
+            assert_eq!(result.rows[0][0], Value::String("After".into()));
             db.close().expect("close");
         }
     }
@@ -979,6 +990,13 @@ mod wal {
             let config = Config::persistent(&path).with_graph_model(GraphModel::Rdf);
             let db = ObrainDB::with_config(config).expect("open");
             let session = db.session();
+            session
+                .execute_sparql(
+                    r#"INSERT DATA {
+                        <http://ex.org/keep> <http://ex.org/p> "kept" .
+                    }"#,
+                )
+                .unwrap();
             session
                 .execute_sparql("CREATE GRAPH <http://ex.org/g1>")
                 .unwrap();
@@ -1010,6 +1028,15 @@ mod wal {
                 )
                 .unwrap();
             assert_eq!(result.rows.len(), 0, "dropped RDF graph should not survive");
+            // The default-graph triple written before the graph lifecycle must survive.
+            let default = session
+                .execute_sparql("SELECT ?o WHERE { ?s ?p ?o }")
+                .unwrap();
+            assert_eq!(
+                default.rows.len(),
+                1,
+                "default-graph triple should survive restart"
+            );
             db.close().expect("close");
         }
     }

@@ -28,6 +28,41 @@ pub enum SubstrateError {
     #[error("WAL frame invalid: {0}")]
     WalBadFrame(String),
 
+    /// ── UN OPCODE INCONNU N'EST NI UNE CORRUPTION NI UNE FRONTIÈRE DE CRASH ─
+    ///
+    /// Une frame COMPLÈTE, à CRC valide (le CRC couvre l'octet `kind`), dont
+    /// le `kind` n'est pas dans la table de CE binaire : elle a été écrite par
+    /// un binaire PLUS RÉCENT, et tout ce qui la suit lui est illisible.
+    /// Jusqu'au 2026-11-07 elle sortait en `WalBadFrame`, que le rejeu
+    /// confondait avec une queue déchirée : la base s'ouvrait sur un préfixe,
+    /// des tombstones se posaient sur un rejeu tronqué, et le checkpoint
+    /// suivant TRONQUAIT le WAL — perte définitive des frames postérieures.
+    ///
+    /// Cette variante existe pour que l'ouverture REFUSE, en nommant l'opcode
+    /// et l'offset, sans rien écrire. `offset` est absolu dans
+    /// `substrate.wal` (posé par l'itérateur ; `WalRecord::decode`, qui ne
+    /// voit qu'une tranche, le met à 0).
+    #[error(
+        "opcode WAL inconnu {kind:#04X} à l'offset {offset} : ce WAL a été écrit par une \
+         version plus récente ; rouvrir avec cette version ou checkpointer avant de rétrograder"
+    )]
+    WalOpcodeInconnu { kind: u8, offset: u64 },
+
+    /// ── BASE HÉRITÉE EN ÉCRITURE PARTAGÉE : REFUS NOMMÉ ─────────────────────
+    ///
+    /// Un sidecar du régime hérité (`substrate.props`, `substrate.edge_props`,
+    /// `substrate.extedges`) porte des données. Ces données vivent dans l'état
+    /// LOCAL du processus (DashMap) et sont réécrites au flush depuis lui : un
+    /// second écrivain partagé les écraserait ou les perdrait en silence. La
+    /// garantie v0.0.1 ne couvre que nœuds et arêtes sans propriété, donc
+    /// `open_shared_write` refuse, sans rien écrire.
+    #[error(
+        "base héritée : le sidecar `{sidecar}` porte des données, et l'écriture partagée \
+         n'est pas garantie sur ce régime (propriétés perdues ou écrasées entre \
+         processus) ; migrer la base vers le format v2, ou l'ouvrir en exclusif"
+    )]
+    BaseHeritee { sidecar: String },
+
     #[error("WAL CRC mismatch: claimed {claimed:#x}, actual {actual:#x}")]
     WalCrcMismatch { claimed: u32, actual: u32 },
 
@@ -112,6 +147,20 @@ pub enum SubstrateError {
          segment sur ceux du précédent)"
     )]
     CheckpointNonElu { fence: String },
+
+    /// ── MP-8 : LE CHECKPOINT NE TRONQUE PAS AU-DELÀ D'UNE TRANSACTION EN VOL ──
+    ///
+    /// Une déclaration `TxNoeudEnAttente` / `TxAreteEnAttente` dont la
+    /// transaction n'est pas scellée (ni `TxCommit`, ni suppression) est encore
+    /// nécessaire au rejeu d'un processus qui pourrait être mort. Tronquer le
+    /// WAL la ferait disparaître : ses entités, déjà dans les zones, seraient
+    /// publiées à la réouverture. Le checkpoint est donc REFUSÉ, le WAL intact.
+    #[error(
+        "checkpoint DIFFÉRÉ : la transaction {tx} n'est pas scellée, et sa déclaration est \
+         au décalage {offset} du WAL — rien n'a été tronqué. La troncature reprendra quand \
+         cette transaction sera scellée ou abandonnée"
+    )]
+    CheckpointDiffere { offset: u64, tx: u64 },
 
     /// ── PHASE B, PIÈCE 1 : LA FRAME A ÉTÉ DÉTRUITE, PUIS ENCORE ───────────
     ///

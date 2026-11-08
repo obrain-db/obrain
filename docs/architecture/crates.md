@@ -12,38 +12,37 @@ Obrain is organized into core library crates and language binding crates.
 
 ## Dependency Graph
 
-```mermaid
-graph BT
-    COMMON[obrain-common]
-    CORE[obrain-core]
-    ADAPTERS[obrain-adapters]
-    ENGINE[obrain-engine]
-    OBRAIN[obrain]
-    PYTHON[obrain-python]
-    NODE[obrain-node]
-    CFFI[obrain-c]
-    WASM[obrain-wasm]
-    CSHARP[obrain-csharp]
-    DART[obrain-dart]
-    COMMON_BIND[obrain-bindings-common]
-    CLI[obrain-cli]
+Relu dans les manifestes (`crates/*/Cargo.toml`, 2026-11-01) :
 
-    CORE --> COMMON
-    ADAPTERS --> COMMON
+```mermaid
+graph TD
+    COMMON[obrain-common]
+    CORE[obrain-core] --> COMMON
+    SUBSTRATE[obrain-substrate] --> COMMON
+    SUBSTRATE --> CORE
+    REACTIVE[obrain-reactive] --> COMMON
+    REACTIVE --> CORE
+    ADAPTERS[obrain-adapters] --> COMMON
     ADAPTERS --> CORE
-    ENGINE --> COMMON
+    ADAPTERS --> SUBSTRATE
+    COGNITIVE[obrain-cognitive] --> COMMON
+    COGNITIVE --> CORE
+    COGNITIVE --> REACTIVE
+    COGNITIVE -.->|optionnel| ADAPTERS
+    COGNITIVE -.->|optionnel| SUBSTRATE
+    ENGINE[obrain-engine] --> COMMON
     ENGINE --> CORE
     ENGINE --> ADAPTERS
-    OBRAIN --> ENGINE
-    COMMON_BIND --> ENGINE
-    PYTHON --> COMMON_BIND
-    NODE --> COMMON_BIND
-    CFFI --> COMMON_BIND
-    WASM --> COMMON_BIND
-    CSHARP --> CFFI
-    DART --> CFFI
-    CLI --> ENGINE
+    ENGINE --> SUBSTRATE
+    ENGINE --> REACTIVE
+    ENGINE --> COGNITIVE
+    OBRAIN[obrain] --> ENGINE
+    OBRAIN --> CORE
+    OBRAIN --> COMMON
+    OBRAIN --> ADAPTERS
 ```
+
+Ordre de publication (chaque crate après ses dépendances) : common → core → substrate → reactive → adapters → cognitive → engine → obrain.
 
 ## obrain
 
@@ -149,97 +148,12 @@ Database facade and coordination.
 use obrain_engine::{ObrainDB, Session, Config};
 ```
 
-## obrain-python
+## Ce qui n'est pas dans ce dépôt
 
-Python bindings via PyO3. Located at `crates/bindings/python`.
-
-| Module | Purpose |
-|--------|---------|
-| `database.rs` | PyObrainDB class |
-| `query.rs` | Query execution |
-| `types.rs` | Type conversions |
-
-```python
-import obrain
-db = obrain.ObrainDB()
-```
-
-## obrain-node
-
-Node.js/TypeScript bindings via napi-rs. Located at `crates/bindings/node`.
-
-| Module | Purpose |
-|--------|---------|
-| `database.rs` | JsObrainDB class |
-| `query.rs` | Query execution and result conversion |
-| `types.rs` | JavaScript ↔ Rust type conversions |
-
-```javascript
-const { ObrainDB } = require('@obrain-db/js');
-const db = await ObrainDB.create();
-```
-
-## obrain-c
-
-C FFI layer for cross-language interop. Located at `crates/bindings/c`.
-
-| Module | Purpose |
-|--------|---------|
-| `lib.rs` | C-compatible function exports |
-| `types.rs` | C-safe type wrappers |
-
-Also used by Go (CGO), C# (P/Invoke) and Dart (dart:ffi) bindings.
-
-## obrain-csharp
-
-C# / .NET 8 bindings via source-generated P/Invoke. Located at `crates/bindings/csharp`.
-
-Wraps obrain-c with a .NET-native API including `ObrainDB`, typed CRUD, transactions, vector search and `SafeHandle`-based resource management.
-
-## obrain-dart
-
-Dart bindings via dart:ffi. Located at `crates/bindings/dart`.
-
-Wraps obrain-c with `NativeFinalizer` for automatic resource cleanup, sealed exception hierarchy and `late final` cached FFI lookups.
-
-## obrain-bindings-common
-
-Shared library for all language bindings. Located at `crates/bindings/common`.
-
-| Module | Purpose |
-|--------|---------|
-| `entities.rs` | Entity extraction (RawNode, RawEdge) |
-| `errors.rs` | Error classification |
-| `json.rs` | JSON to/from Value conversion |
-
-## obrain-wasm
-
-WebAssembly bindings via wasm-bindgen. Located at `crates/bindings/wasm`.
-
-| Module | Purpose |
-|--------|---------|
-| `lib.rs` | WASM-compatible database API |
-| `types.rs` | JavaScript ↔ WASM type conversions |
-
-```javascript
-import init, { Database } from '@obrain-db/wasm';
-await init();
-const db = new Database();
-```
-
-## obrain-cli
-
-Command-line interface for database administration.
-
-| Module | Purpose |
-|--------|---------|
-| `commands/` | CLI command implementations |
-| `output.rs` | Output formatting (table, JSON) |
-
-```bash
-obrain info ./mydb
-obrain stats ./mydb --format json
-```
+Les bindings (Python, Node.js, C, C#, Dart, WebAssembly) et le CLI ne font pas
+partie de ce dépôt en v0.0.1 : le CLI vit dans `obrain-db/obrain-cli`, et aucun
+binding n'est publié. La couche cognitive est aussi extraite, à l'identique,
+dans `obrain-db/obrain-cognitive`.
 
 ## Crate Guidelines
 

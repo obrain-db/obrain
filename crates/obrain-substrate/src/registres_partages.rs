@@ -800,7 +800,7 @@ impl RegistresPartages {
         octets: &[u8],
         interdire: bool,
     ) -> SubstrateResult<Option<u32>> {
-        let debut = std::time::Instant::now();
+        let debut = web_time::Instant::now();
         loop {
             for tour in 0..SONDES_MAX {
                 let c = self.case(e, Self::sonde(cle, tour));
@@ -907,7 +907,7 @@ impl RegistresPartages {
         // balayage : c'était 160 ms par nom neuf au banc. `revendiquer_indice`
         // refuse la collision en nommant le nom déjà en place.
         self.revendiquer_indice(e, indice, nom)?;
-        let debut = std::time::Instant::now();
+        let debut = web_time::Instant::now();
         loop {
             for tour in 0..SONDES_MAX {
                 let c = self.case(e, Self::sonde(cle, tour));

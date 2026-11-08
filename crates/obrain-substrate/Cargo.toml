@@ -19,6 +19,14 @@ categories = ["database-implementations", "filesystem"]
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fs2 = { workspace = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Navigateur : colle JS du journal OPFS (voir src/opfs.rs).
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 [target.'cfg(unix)'.dependencies]
 # Verrou de répertoire PAR PROCESSUS (`fcntl(F_SETLK)`), non hérité par un
 # enfant pendant sa fenêtre clone→execve — voir `file::verrouiller_fichier`.
@@ -74,11 +82,14 @@ byteorder.workspace = true
 # Portable clock (std::time::Instant/SystemTime trap on wasm32-unknown-unknown)
 web-time = "1"
 
-[dev-dependencies]
+# Tests et bancs natifs : proptest, criterion et tempfile ne compilent pas pour wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
 rand.workspace = true
 criterion.workspace = true
+
+[dev-dependencies]
 # Enable obrain-core's `regex` + `parallel` features only for tests — the
 # production dep above keeps `default-features = false`.
 # `regex` needed by the relocated `operators_filter` integration tests that

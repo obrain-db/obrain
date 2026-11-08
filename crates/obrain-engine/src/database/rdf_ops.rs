@@ -4,8 +4,12 @@
 //! across `query.rs`, `crud.rs`, `admin.rs`, and `mod.rs`. The entire module
 //! is gated behind `#[cfg(feature = "rdf")]` in the parent.
 
+#[cfg(all(feature = "rdf", feature = "wal"))]
+use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(all(feature = "rdf", feature = "wal"))]
+use obrain_adapters::storage::wal::WalRecord;
 use obrain_common::utils::error::Result;
 use obrain_core::graph::rdf::RdfStore;
 
@@ -57,8 +61,8 @@ impl ObrainDB {
 
         // Convert to physical plan using RDF planner
         let planner = RdfPlanner::new(Arc::clone(&self.rdf_store));
-        #[cfg(feature = "wal")]
-        let planner = planner.with_wal(self.wal.as_ref().map(Arc::clone));
+        #[cfg(all(feature = "wal", feature = "rdf"))]
+        let planner = planner.with_wal(self.rdf_wal.clone());
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // Execute the plan
@@ -90,6 +94,21 @@ impl ObrainDB {
         &self,
         triples: impl IntoIterator<Item = obrain_core::graph::rdf::Triple>,
     ) -> usize {
+        let triples: Vec<_> = triples.into_iter().collect();
+        #[cfg(all(feature = "wal", feature = "rdf"))]
+        if let Some(wal) = &self.rdf_wal {
+            for t in &triples {
+                journaliser_rdf(
+                    wal,
+                    &WalRecord::InsertRdfTriple {
+                        subject: t.subject().to_string(),
+                        predicate: t.predicate().to_string(),
+                        object: t.object().to_string(),
+                        graph: None,
+                    },
+                );
+            }
+        }
         self.rdf_store.batch_insert(triples)
     }
 }
@@ -129,16 +148,59 @@ impl ObrainDB {
 }
 
 // =========================================================================
-// WAL replay helper
+// RDF journal (WAL) — persistence of triples on the substrate backend
 // =========================================================================
+
+/// Name of the directory, inside a database path, that holds the RDF journal.
+///
+/// The substrate has its own WAL for the LPG graph; the RDF store is a
+/// separate in-memory structure, so its mutations go to this dedicated WAL
+/// and are replayed on open.
+#[cfg(all(feature = "rdf", feature = "wal"))]
+pub(crate) const RDF_JOURNAL_DIR: &str = "rdf_wal";
+
+/// Appends one RDF record to the journal. A failure is logged, not propagated:
+/// the in-memory mutation has already happened, matching the LPG behaviour of
+/// `log_schema_wal`.
+#[cfg(all(feature = "rdf", feature = "wal"))]
+pub(crate) fn journaliser_rdf(
+    wal: &Arc<obrain_adapters::storage::wal::LpgWal>,
+    record: &WalRecord,
+) {
+    if let Err(err) = wal.log(record) {
+        tracing::warn!("RDF WAL log failed: {err}");
+    }
+}
+
+impl ObrainDB {
+    /// Opens the RDF journal of a persistent database and replays it into the
+    /// (freshly created, empty) RDF store.
+    ///
+    /// Replay is idempotent for every record type, so a journal that was
+    /// partially applied before a crash is safe to replay again. A writable
+    /// open also attaches the journal for appending; a read-only open never
+    /// creates the directory.
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    pub(super) fn ouvrir_journal_rdf(&mut self, base: &Path, read_only: bool) -> Result<()> {
+        use obrain_adapters::storage::wal::{WalConfig, WalRecovery};
+
+        let dir = base.join(RDF_JOURNAL_DIR);
+        for record in WalRecovery::new(&dir).recover()? {
+            replay_rdf_wal_record(&self.rdf_store, &record);
+        }
+        if !read_only {
+            let wal =
+                obrain_adapters::storage::wal::LpgWal::with_config(&dir, WalConfig::default())?;
+            self.rdf_wal = Some(Arc::new(wal));
+        }
+        Ok(())
+    }
+}
 
 /// Replays a single RDF WAL record into the RDF store.
 ///
-/// Returns `true` if the record was handled, `false` if it was not an RDF record.
-#[cfg(feature = "wal")]
-// TODO(revisit): orphaned since the T17 cutover removed LpgWal replay; kept
-// until RDF WAL replay is rewired through the substrate recovery path.
-#[allow(dead_code)]
+/// Records that are not RDF records are ignored.
+#[cfg(all(feature = "rdf", feature = "wal"))]
 pub(super) fn replay_rdf_wal_record(
     rdf_store: &Arc<RdfStore>,
     record: &obrain_adapters::storage::wal::WalRecord,
