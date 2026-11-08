@@ -48,6 +48,21 @@ pub enum SubstrateError {
     )]
     WalOpcodeInconnu { kind: u8, offset: u64 },
 
+    /// ── BASE HÉRITÉE EN ÉCRITURE PARTAGÉE : REFUS NOMMÉ ─────────────────────
+    ///
+    /// Un sidecar du régime hérité (`substrate.props`, `substrate.edge_props`,
+    /// `substrate.extedges`) porte des données. Ces données vivent dans l'état
+    /// LOCAL du processus (DashMap) et sont réécrites au flush depuis lui : un
+    /// second écrivain partagé les écraserait ou les perdrait en silence. La
+    /// garantie v0.0.1 ne couvre que nœuds et arêtes sans propriété, donc
+    /// `open_shared_write` refuse, sans rien écrire.
+    #[error(
+        "base héritée : le sidecar `{sidecar}` porte des données, et l'écriture partagée \
+         n'est pas garantie sur ce régime (propriétés perdues ou écrasées entre \
+         processus) ; migrer la base vers le format v2, ou l'ouvrir en exclusif"
+    )]
+    BaseHeritee { sidecar: String },
+
     #[error("WAL CRC mismatch: claimed {claimed:#x}, actual {actual:#x}")]
     WalCrcMismatch { claimed: u32, actual: u32 },
 
