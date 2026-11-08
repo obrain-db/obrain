@@ -158,6 +158,9 @@ pub struct Session {
     /// Shared WAL graph context tracker for named graph awareness.
     #[cfg(feature = "wal")]
     wal_graph_context: Option<Arc<parking_lot::Mutex<Option<String>>>>,
+    /// Journal WAL of the RDF store (persistent substrate databases only).
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    rdf_wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
     /// CDC log for change tracking.
     #[cfg(feature = "cdc")]
     cdc_log: Arc<crate::cdc::CdcLog>,
@@ -329,6 +332,8 @@ impl Session {
             wal: None,
             #[cfg(feature = "wal")]
             wal_graph_context: None,
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             #[cfg(feature = "cdc")]
             cdc_log: Arc::new(crate::cdc::CdcLog::new()),
             current_graph: parking_lot::Mutex::new(None),
@@ -613,6 +618,8 @@ impl Session {
             wal: None,
             #[cfg(feature = "wal")]
             wal_graph_context: None,
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             #[cfg(feature = "cdc")]
             cdc_log: Arc::new(crate::cdc::CdcLog::new()),
             current_graph: parking_lot::Mutex::new(None),

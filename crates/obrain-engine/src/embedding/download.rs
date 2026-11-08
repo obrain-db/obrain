@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "embed-hub")]
 use hf_hub::{HFClientSync, split_id};
 use obrain_common::utils::error::{Error, Result};
 
@@ -43,24 +44,34 @@ pub(crate) fn resolve(config: &EmbeddingModelConfig) -> Result<ResolvedModel> {
             model_file,
             tokenizer_file,
         } => {
-            let client = HFClientSync::new().map_err(|e| {
-                Error::Internal(format!("Failed to initialize HuggingFace Hub client: {e}"))
-            })?;
-
-            let (owner, repo_name) = split_id(repo_id);
-            let repo = client.model(owner, repo_name);
-
-            let model_path = repo
-                .download_file()
-                .filename(model_file.to_string())
-                .send()
-                .map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to download model file '{model_file}' from '{repo_id}': {e}"
-                    ))
+            #[cfg(not(feature = "embed-hub"))]
+            {
+                let _ = (repo_id, model_file, tokenizer_file);
+                Err(Error::Internal(format!(
+                    "modèle « {name} » absent : ce build ne télécharge pas depuis Hugging Face \
+                     (feature embed-hub). Fournis les fichiers ONNX et tokenizer.json en local."
+                )))
+            }
+            #[cfg(feature = "embed-hub")]
+            {
+                let client = HFClientSync::new().map_err(|e| {
+                    Error::Internal(format!("Failed to initialize HuggingFace Hub client: {e}"))
                 })?;
 
-            let tokenizer_path = repo
+                let (owner, repo_name) = split_id(repo_id);
+                let repo = client.model(owner, repo_name);
+
+                let model_path = repo
+                    .download_file()
+                    .filename(model_file.to_string())
+                    .send()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to download model file '{model_file}' from '{repo_id}': {e}"
+                        ))
+                    })?;
+
+                let tokenizer_path = repo
                 .download_file()
                 .filename(tokenizer_file.to_string())
                 .send()
@@ -70,11 +81,12 @@ pub(crate) fn resolve(config: &EmbeddingModelConfig) -> Result<ResolvedModel> {
                     ))
                 })?;
 
-            Ok(ResolvedModel {
-                model_path,
-                tokenizer_path,
-                name,
-            })
+                Ok(ResolvedModel {
+                    model_path,
+                    tokenizer_path,
+                    name,
+                })
+            }
         }
     }
 }
