@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "embed-hub")]
 use hf_hub::{HFClientSync, split_id};
 use obrain_common::utils::error::{Error, Result};
 
@@ -43,6 +44,16 @@ pub(crate) fn resolve(config: &EmbeddingModelConfig) -> Result<ResolvedModel> {
             model_file,
             tokenizer_file,
         } => {
+            #[cfg(not(feature = "embed-hub"))]
+            {
+                let _ = (repo_id, model_file, tokenizer_file);
+                Err(Error::Internal(format!(
+                    "modèle « {name} » absent : ce build ne télécharge pas depuis Hugging Face \
+                     (feature embed-hub). Fournis les fichiers ONNX et tokenizer.json en local."
+                )))
+            }
+            #[cfg(feature = "embed-hub")]
+            {
             let client = HFClientSync::new().map_err(|e| {
                 Error::Internal(format!("Failed to initialize HuggingFace Hub client: {e}"))
             })?;
@@ -75,6 +86,7 @@ pub(crate) fn resolve(config: &EmbeddingModelConfig) -> Result<ResolvedModel> {
                 tokenizer_path,
                 name,
             })
+            }
         }
     }
 }
