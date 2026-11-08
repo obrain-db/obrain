@@ -130,9 +130,35 @@ pub struct TransactionManager {
     /// Committed transaction epochs (for conflict detection).
     /// Maps TransactionId -> commit epoch.
     committed_epochs: RwLock<FxHashMap<TransactionId, EpochId>>,
+    /// (2026-11-08, CONC-1) File EQUITABLE des statements auto-commit
+    /// REJOUES apres un conflit write-write. Voir
+    /// [`Self::file_des_rejoues`].
+    file_rejoues: parking_lot::FairMutex<()>,
 }
 
 impl TransactionManager {
+    /// (2026-11-08, CONC-1) File d attente equitable des statements
+    /// auto-commit qui REJOUENT apres un conflit.
+    ///
+    /// Le controle optimiste (premier-ecrivain-gagne dans
+    /// [`Self::record_write_scoped`], premier-validateur-gagne dans
+    /// [`Self::commit`]) n est pas equitable : un statement LENT — preempte
+    /// par l ordonnanceur sous charge — perd contre chaque statement court
+    /// qui touche le meme noeud, a l ecriture comme a la validation. Mesure
+    /// (`unicite_merge`, 16 fils sous 32 boucles CPU) : les perdants
+    /// rejouaient 18 a 29 fois en une seconde, autant rejetes par l un que
+    /// par l autre, et ne passaient jamais. Un budget plus long ne fait que
+    /// deplacer la famine.
+    ///
+    /// Un rejoue prend ce verrou pour toute sa passe (begin → commit) :
+    /// les rejoues passent UN A LA FOIS, dans l ordre d arrivee, et le
+    /// porteur du verrou ne concourt plus qu avec des PREMIERES tentatives
+    /// — chacune, si elle perd, vient se ranger derriere lui. Le trafic sans
+    /// conflit ne le touche jamais.
+    pub(crate) fn file_des_rejoues(&self) -> &parking_lot::FairMutex<()> {
+        &self.file_rejoues
+    }
+
     /// Creates a new transaction manager.
     #[must_use]
     pub fn new() -> Self {
@@ -144,6 +170,7 @@ impl TransactionManager {
             active_count: AtomicU64::new(0),
             transactions: RwLock::new(FxHashMap::default()),
             committed_epochs: RwLock::new(FxHashMap::default()),
+            file_rejoues: parking_lot::FairMutex::new(()),
         }
     }
 
