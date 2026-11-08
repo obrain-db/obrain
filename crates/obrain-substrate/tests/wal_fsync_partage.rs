@@ -13,9 +13,16 @@
 //! 3. **Cohérence des compteurs** : au repos, chaque commit est couvert, le
 //!    nombre de fsync ne dépasse pas le nombre de commits, et le nombre de
 //!    frames acquittées est exactement celui attendu.
-use obrain_substrate::SyncMode;
+//! 4. **(2026-11-08, DUR-ORACLE) Le même oracle au niveau du store.** Après
+//!    chaque `Writer::commit()` acquitté d'un `SubstrateStore` ouvert en
+//!    `EveryCommit`, `SubstrateStore::wal_octets_durables()` couvre la fin du
+//!    fichier WAL (l'écrivain est seul : c'est la fin de la frame du commit).
+//!    MESURÉ ROUGE (`durable=0`) avec le fsync neutralisé dans `wal_io.rs` —
+//!    alors que les tests `kill -9` du moteur restent verts sans fsync, le
+//!    cache de pages survivant au processus.
 use obrain_substrate::wal::{WalPayload, WalRecord};
 use obrain_substrate::wal_io::{ANCRE_INITIALE, CoordinationAppend, WalWriter};
+use obrain_substrate::{SubstrateStore, SyncMode};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -85,4 +92,29 @@ fn commit_rendu_seulement_une_fois_ses_octets_fsynces() {
         fsyncs < total,
         "les commits concurrents ne partagent pas leur fsync : {fsyncs} fsync pour {total} commits"
     );
+}
+
+#[test]
+fn chaque_commit_du_store_est_couvert_par_la_ligne_durable() {
+    let td = tempfile::tempdir().unwrap();
+    let store = SubstrateStore::create_with_mode(td.path(), SyncMode::EveryCommit).unwrap();
+    let wal = td.path().join("substrate.wal");
+    let mut fsyncs_avant = store.wal_fsyncs();
+    for k in 0..50u32 {
+        store.writer().commit().unwrap();
+        // L'écrivain est seul : la fin du fichier EST la fin de la frame du
+        // commit que l'on vient d'acquitter.
+        let fin = std::fs::metadata(&wal).unwrap().len();
+        let durable = store.wal_octets_durables();
+        assert!(
+            durable >= fin,
+            "commit {k} acquitté avant son fsync : fin de frame={fin}, ligne durable={durable}"
+        );
+        let fsyncs = store.wal_fsyncs();
+        assert!(
+            fsyncs > fsyncs_avant,
+            "commit {k} acquitté sans fsync nouveau ({fsyncs}, déjà {fsyncs_avant})"
+        );
+        fsyncs_avant = fsyncs;
+    }
 }

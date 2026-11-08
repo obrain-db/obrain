@@ -684,6 +684,29 @@ impl ObrainDB {
         Ok(())
     }
 
+    /// ── ORACLE DE DURABILITÉ (test/diagnostic) ─────────────────────────────
+    /// Offset de fin du WAL couvert par un `fsync` terminé, `None` pour une
+    /// base en mémoire. Après un `commit()` acquitté en `EveryCommit`, la fin
+    /// de la frame du commit doit être au plus égale à cette valeur : c'est ce
+    /// que `tests/durabilite_commit_kill9.rs` vérifie après chaque ack, parce
+    /// qu'un `kill -9` seul ne distingue pas « écrit » de « fsyncé ».
+    /// Voir [`obrain_substrate::SubstrateStore::wal_octets_durables`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn wal_octets_durables(&self) -> Option<u64> {
+        self.substrate_store
+            .as_ref()
+            .map(|s| s.wal_octets_durables())
+    }
+
+    /// Nombre de `fsync` exécutés sur le WAL, `None` pour une base en mémoire.
+    /// Voir [`obrain_substrate::SubstrateStore::wal_fsyncs`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn wal_fsyncs(&self) -> Option<u64> {
+        self.substrate_store.as_ref().map(|s| s.wal_fsyncs())
+    }
+
     /// Force a full durability checkpoint: [`obrain_substrate::SubstrateStore::flush`]
     /// (WAL commit marker + msync of every mmap zone, including the v2
     /// props zone -- see that method's doc for the exact ordering).
