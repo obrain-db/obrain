@@ -35,6 +35,9 @@ use std::time::Duration;
 const N: i64 = 50;
 const ENV_COMMITE: &str = "OBRAIN_TEST_KILL9_COMMITE";
 const ENV_SANS_COMMIT: &str = "OBRAIN_TEST_KILL9_SANS_COMMIT";
+const ENV_CONCURRENT: &str = "OBRAIN_TEST_KILL9_CONCURRENT";
+const THREADS_CONCURRENTS: usize = 4;
+const PAR_THREAD: i64 = 50;
 
 fn compte(db: &ObrainDB, label: &str) -> i64 {
     let s = db.session();
@@ -107,6 +110,33 @@ fn enfant_ecrit_commite_et_dort() {
 }
 
 #[test]
+fn enfant_commits_concurrents_et_dort() {
+    let Ok(dir) = std::env::var(ENV_CONCURRENT) else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    let db = std::sync::Arc::new(ObrainDB::open(dir.join("base")).expect("open enfant"));
+    // Auto-commit depuis plusieurs sessions : leurs fsync sont partagés. Chaque
+    // `execute` rend la main seulement une fois son commit durable.
+    let mut fils = Vec::new();
+    for _ in 0..THREADS_CONCURRENTS {
+        let db = std::sync::Arc::clone(&db);
+        fils.push(std::thread::spawn(move || {
+            let s = db.session();
+            for i in 0..PAR_THREAD {
+                s.execute(&format!("INSERT (:Concurrent {{k: {i}}})"))
+                    .expect("insert concurrent");
+            }
+        }));
+    }
+    for f in fils {
+        f.join().unwrap();
+    }
+    std::fs::write(dir.join("commite_concurrent"), b"ok").unwrap();
+    dormir_pour_toujours();
+}
+
+#[test]
 fn enfant_ecrit_sans_commiter_et_dort() {
     let Ok(dir) = std::env::var(ENV_SANS_COMMIT) else {
         return;
@@ -138,6 +168,26 @@ fn un_commit_acquitte_survit_a_un_kill_9() {
         compte(&db, "Durable"),
         N,
         "des commits acquittés ont disparu après kill -9 : contrat D-DUR violé"
+    );
+}
+
+#[test]
+fn commits_concurrents_acquittes_survivent_a_un_kill_9() {
+    let td = tempfile::tempdir().unwrap();
+    let mut enfant = lancer_enfant(
+        "enfant_commits_concurrents_et_dort",
+        ENV_CONCURRENT,
+        td.path(),
+    );
+    attendre(&td.path().join("commite_concurrent"));
+    enfant.kill().expect("kill -9");
+    let _ = enfant.wait();
+
+    let db = ObrainDB::open(td.path().join("base")).expect("réouverture après kill");
+    assert_eq!(
+        compte(&db, "Concurrent"),
+        THREADS_CONCURRENTS as i64 * PAR_THREAD,
+        "des commits concurrents acquittés ont disparu après kill -9"
     );
 }
 

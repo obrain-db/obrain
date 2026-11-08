@@ -68,7 +68,18 @@ pub trait FichierJournal: Send + std::fmt::Debug {
     fn rembobiner(&mut self) -> io::Result<()>;
     /// Synchronise. `tout = true` : données et métadonnées ; `false` : données.
     fn synchroniser(&mut self, tout: bool) -> io::Result<()>;
+    /// Poignée de synchronisation INDÉPENDANTE du verrou du journal (un `dup` du
+    /// descripteur) : elle permet de fsyncer hors du verrou d'écriture, ce qui
+    /// rend possible le fsync partagé des commits concurrents. `None` si le support
+    /// ne peut pas la rendre ; l'appelant retombe alors sur `synchroniser` sous verrou.
+    fn poignee_synchro(&self) -> io::Result<Option<PoigneeSynchro>> {
+        Ok(None)
+    }
 }
+
+/// Poignée de synchronisation d'un journal, utilisable hors de son verrou.
+/// L'argument est `tout` (données + métadonnées si `true`, données sinon).
+pub type PoigneeSynchro = std::sync::Arc<dyn Fn(bool) -> io::Result<()> + Send + Sync>;
 
 /// Implémentation native de [`FichierJournal`] sur un `File`.
 #[derive(Debug)]
@@ -77,6 +88,17 @@ pub struct JournalNatif {
 }
 
 impl FichierJournal for JournalNatif {
+    fn poignee_synchro(&self) -> io::Result<Option<PoigneeSynchro>> {
+        let clone = self.fichier.try_clone()?;
+        Ok(Some(std::sync::Arc::new(move |tout: bool| {
+            if tout {
+                clone.sync_all()
+            } else {
+                clone.sync_data()
+            }
+        })))
+    }
+
     fn ajouter(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.fichier.write(buf)
     }

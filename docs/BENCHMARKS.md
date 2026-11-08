@@ -66,7 +66,19 @@ README jusqu'à mesure.
 | `query_*` (lecture) | 1,28 µs – 717 µs | 1,28 µs – 700 µs | inchangé |
 | `query_insert_single_node` (base en mémoire, auto-commit) | 12,6 µs | 13,7 µs | inchangé : `new_in_memory` est en `SyncMode::Never` |
 
-Conclusion : **un commit = un `fsync`** sur une base ouverte par chemin. Pour
+Mise à jour 2026-11-08 (fsync partagé, `perf/fsync-partage`) : les commits
+concurrents d'un écrivain exclusif partagent désormais leur `fsync` (chef de
+lot / suiveurs dans `WalWriter::attendre_durable`). Même protocole, mesures en
+alternance : `sessions_concurrentes_everycommit/4` avant **3,76 s** [3,71 ; 3,81]
+puis **3,71 s** [3,65 ; 3,76] ; après **1,95 s** [1,92 ; 1,98] puis **1,86 s**
+[1,81 ; 1,91] (charge 5–8 dans les quatre cas). Le test
+`wal_fsync_partage` compte les `fsync` réels : 377 `fsync` pour 800 commits
+sur 4 threads (ratio 0,47, mesuré). Un commit seul fait toujours exactement un `fsync` avant
+de rendre la main ; la règle « un commit acquitté a été `fsync`é » est
+inchangée (test `commits_concurrents_acquittes_survivent_a_un_kill_9`).
+
+Conclusion : **un commit = un `fsync`** (au plus — partagé s'il y a des
+commits simultanés) sur une base ouverte par chemin. Pour
 écrire vite, grouper les écritures dans une transaction explicite (un seul
 `fsync` au `commit()`), ou ouvrir avec `open_substrate_with_mode(SyncMode::Group)`
 et appeler `flush_wal()` par lot. C'est le même arbitrage que
