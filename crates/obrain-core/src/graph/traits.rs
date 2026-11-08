@@ -159,6 +159,69 @@ pub trait GraphStore: Send + Sync {
     /// Gets a property for multiple nodes in a single batch operation.
     fn get_node_property_batch(&self, ids: &[NodeId], key: &PropertyKey) -> Vec<Option<Value>>;
 
+    /// ONE property of a node under PURE epoch visibility — exactly what
+    /// `get_node_at_epoch(id, epoch).and_then(|n| n.get_property(key))`
+    /// returns, without building the `Node` (labels + every property).
+    ///
+    /// (2026-11-08, C1) The planner's label-first equality path hydrated
+    /// each candidate of a label to test ONE property: 1 000 `Person` nodes,
+    /// 503 µs per `MATCH (n:Person {id: 42})` without an index. The contract
+    /// of this method is semantic identity with `get_node_at_epoch` —
+    /// visibility (birth/death epochs, tombstone, tenant) AND value (same
+    /// zone order, same LWW). The default honours it by construction.
+    fn get_node_property_at_epoch(
+        &self,
+        id: NodeId,
+        key: &PropertyKey,
+        epoch: EpochId,
+    ) -> Option<Value> {
+        self.get_node_at_epoch(id, epoch)
+            .and_then(|n| n.get_property(key.as_str()).cloned())
+    }
+
+    /// ONE property of a node as a transaction sees it — exactly what
+    /// `get_node_versioned(id, epoch, tx).and_then(|n| n.get_property(key))`
+    /// returns, without building the `Node`. Same contract as
+    /// [`Self::get_node_property_at_epoch`].
+    fn get_node_property_versioned(
+        &self,
+        id: NodeId,
+        key: &PropertyKey,
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> Option<Value> {
+        self.get_node_versioned(id, epoch, transaction_id)
+            .and_then(|n| n.get_property(key.as_str()).cloned())
+    }
+
+    /// Batch form of [`Self::get_node_property_at_epoch`] — one `Option` per
+    /// input id, in input order. Implementations may resolve the per-key
+    /// invariants once and test visibility under a single lock.
+    fn get_node_property_batch_at_epoch(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        epoch: EpochId,
+    ) -> Vec<Option<Value>> {
+        ids.iter()
+            .map(|id| self.get_node_property_at_epoch(*id, key, epoch))
+            .collect()
+    }
+
+    /// Batch form of [`Self::get_node_property_versioned`] — one `Option`
+    /// per input id, in input order.
+    fn get_node_property_batch_versioned(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> Vec<Option<Value>> {
+        ids.iter()
+            .map(|id| self.get_node_property_versioned(*id, key, epoch, transaction_id))
+            .collect()
+    }
+
     /// Gets all properties for multiple nodes in a single batch operation.
     fn get_nodes_properties_batch(&self, ids: &[NodeId]) -> Vec<FxHashMap<PropertyKey, Value>>;
 

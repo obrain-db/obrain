@@ -17476,6 +17476,190 @@ impl SubstrateStore {
 /// des dizaines de secondes et des centaines de Mo pour une requête.
 const PLAFOND_VALEURS_TRIGRAMMES: usize = 2_000_000;
 
+impl SubstrateStore {
+    /// Corps commun des lots de propriété APRÈS la passe de vivacité — voir
+    /// `get_node_property_batch` pour l'historique et les mesures (tranche
+    /// de 16, colonne blob en lot, ordre des verrous). `vivants[i]` décide si
+    /// la cellule `i` est lue ; `tetes[i]` est la tête de chaîne v2 relevée
+    /// dans la même passe. Aucune valeur ne change : mêmes zones, même ordre
+    /// (vec → blob → v2 → DashMap), même LWW, même ordre de sortie.
+    #[allow(clippy::too_many_arguments)]
+    fn lire_lot_apres_vivacite(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        vivants: &[bool],
+        tetes: &[U48],
+        trace: bool,
+        t_debut: web_time::Instant,
+        t_viv: std::time::Duration,
+    ) -> Vec<Option<Value>> {
+        const LOT: usize = 16;
+
+        // ── COLONNE VECTORIELLE : chemin d'origine, INCHANGÉ ──
+        //
+        // Les vecteurs gardent la route scalaire : une propriété vectorielle
+        // n'est pas une propriété qu'on filtre (`CONTAINS` sur un embedding
+        // n'existe pas), leur lecture rend un `Arc<[f32]>` déjà partagé, et
+        // leur spec est absente sur toute base qui n'a pas d'embeddings. Les
+        // mettre au lot n'achèterait rien et toucherait un chemin chaud qu'on
+        // n'a pas mesuré.
+        if self.vec_columns.spec_for(key, EntityKind::Node).is_some() {
+            return ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    if !vivants[i] {
+                        return None;
+                    }
+                    self.lire_propriete_noeud_vivant(*id, key)
+                })
+                .collect();
+        }
+
+        let pz_lock = self.props_zone.as_ref();
+        let pkid = pz_lock.and_then(|_| self.prop_keys.read().lookup(key.as_str()));
+
+        let mut out: Vec<Option<Value>> = std::iter::repeat_with(|| None).take(ids.len()).collect();
+        // Indices dont la zone v2 n'a rien dit : ils iront au sidecar DashMap,
+        // mais HORS du garde `props_zone` (voir plus bas).
+        let mut replis: Vec<usize> = Vec::new();
+
+        // ── COLONNE BLOB : EN UN LOT, PAS 347 970 FOIS ──
+        //
+        // (2026-09-12) CETTE BRANCHE-CI RENDAIT LE LOT INUTILE. Elle était
+        // groupée avec la colonne vectorielle : dès qu'un type d'entité avait
+        // UNE propriété routée en colonne blob, TOUT le lot repartait en
+        // scalaire — `lire_propriete_noeud_vivant` par identifiant, donc les
+        // cinq verrous partagés et les deux allocations par valeur que ce
+        // commentaire-ci décrit plus haut. Or les `String` longues SONT des
+        // colonnes blob : sur runtime-dev, `Message.text`, `Extraction.text`,
+        // `Plan.payload`… Le lot ne servait donc jamais sur les propriétés
+        // textuelles, précisément celles qu'un filtre interroge.
+        //
+        // MESURE (banc `scripts/bench-filtre-propriete.sh`, snapshot figé du
+        // 2026-09-09, 347 970 nœuds) : A) balayage nu sans cellule 35,9 ms
+        // (103 ns/ligne) ; B) le même balayage + UNE cellule `n.name` 827,9 ms
+        // (2 379 ns/ligne). Tout l'écart est la cellule. `filter.rs` l'écrit
+        // noir sur blanc depuis T17k : « Scalar route is ~1 µs per cell ».
+        //
+        // ORDRE DES ZONES RESPECTÉ : vec (ci-dessus) → blob (ici) → chaîne v2
+        // (plus bas) → DashMap héritée (le repli, plus bas). Une valeur absente
+        // de la colonne blob (sentinelle `len == 0`, cas d'une valeur longue
+        // écrasée par une plus courte — voir `clear`) rend `None` et reprend
+        // donc le fil exactement où le scalaire le reprenait.
+        let mut restants: Vec<usize> = Vec::with_capacity(ids.len());
+        if let Some(spec) = self.blob_columns.spec_for(key, EntityKind::Node) {
+            let slots: Vec<Option<u32>> = (0..ids.len())
+                .map(|i| {
+                    if vivants[i] {
+                        Some(ids[i].0 as u32)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let valeurs = self.blob_columns.read_values_avec_spec(spec, &slots);
+            for (i, v) in valeurs.into_iter().enumerate() {
+                match v {
+                    Some(val) => out[i] = Some(val),
+                    // Blob muet : la chaîne v2 puis la DashMap décideront —
+                    // même ordre que `lire_propriete_noeud_vivant`.
+                    None => {
+                        if vivants[i] {
+                            restants.push(i);
+                        }
+                    }
+                }
+            }
+        } else {
+            restants.extend((0..ids.len()).filter(|&i| vivants[i]));
+        }
+        let t_blob = t_debut.elapsed();
+
+        // (2026-09-16) Vue périmée : un autre processus a peut-être agrandi la
+        // zone depuis notre projection — on vérifie une fois par lot de lecture.
+        self.reprojeter_si_zone_agrandie();
+        for tranche in restants.chunks(LOT) {
+            replis.clear();
+            {
+                let pz = match (pz_lock, pkid) {
+                    (Some(l), Some(_)) => Some(l.read()),
+                    _ => None,
+                };
+                for &i in tranche {
+                    // `restants` ne contient déjà que des vivants : le contrôle
+                    // est conservé comme garde-fou d'index, il ne coûte qu'un
+                    // bit chargé.
+                    if !vivants[i] {
+                        continue;
+                    }
+                    let mut tranche_a_repondu = false;
+                    if let (Some(pz), Some(pkid)) = (pz.as_ref(), pkid) {
+                        if tetes[i].to_u64() != 0 {
+                            match pz.get_latest_for_key_unite(Some(tetes[i].to_u64()), pkid) {
+                                // LWW : la pierre tombale gagne, et INTERDIT le
+                                // repli DashMap — exactement `Some(None)`.
+                                Ok(Some(e)) if e.is_tombstone() => tranche_a_repondu = true,
+                                Ok(Some(e)) => match decode_value(pz, &e.value) {
+                                    Ok(v) => {
+                                        out[i] = Some(v);
+                                        tranche_a_repondu = true;
+                                    }
+                                    Err(err) => tracing::warn!(
+                                        node_id = ids[i].0, key = %key, error = %err,
+                                        "props zone v2 decode failed — falling back to DashMap"
+                                    ),
+                                },
+                                Ok(None) => {}
+                                Err(err) => tracing::warn!(
+                                    node_id = ids[i].0, key = %key, error = %err,
+                                    "props zone v2 read failed — falling back to DashMap"
+                                ),
+                            }
+                        }
+                    }
+                    if !tranche_a_repondu {
+                        replis.push(i);
+                    }
+                }
+            }
+            // ORDRE DES VERROUS. Le garde `props_zone` est relâché À LA
+            // FERMETURE DU BLOC CI-DESSUS, avant tout accès au sidecar.
+            // `node_properties` est une DashMap : y toucher en tenant
+            // `props_zone` installerait l'ordre (props_zone → shard), soit
+            // l'inverse exact de celui que `lire_propriete_arete_vivante`
+            // interdit noir sur blanc — « c'est l'inversion qui avait
+            // interbloqué index et PropsZone ». Aucun chemin réciproque n'est
+            // connu aujourd'hui, mais on ne fait pas dépendre l'absence
+            // d'interblocage de l'inexistence durable d'un tel chemin.
+            for &i in &replis {
+                out[i] = self
+                    .node_properties
+                    .get(&ids[i])
+                    .and_then(|e| e.get(key).cloned());
+            }
+        }
+        if trace {
+            let total = t_debut.elapsed();
+            eprintln!(
+                "[lot] {} cellules · vivacité {} · blob {} · chaîne v2 {} · repli DashMap {} · total {:.2} ms ({:.0} ns/cellule) · présentes {} · repli {} · DashMap {} entrées",
+                ids.len(),
+                ms(t_viv),
+                ms(t_blob - t_viv),
+                ms(total - t_blob),
+                ms(t_debut.elapsed() - (total - t_blob) - t_blob),
+                total.as_secs_f64() * 1000.0,
+                total.as_secs_f64() * 1e9 / ids.len().max(1) as f64,
+                out.iter().filter(|v| v.is_some()).count(),
+                replis.len(),
+                self.node_properties.len(),
+            );
+        }
+        out
+    }
+}
+
 impl GraphStore for SubstrateStore {
     // --- Aretes inter-bases (V1) ---
 
@@ -17888,7 +18072,12 @@ impl GraphStore for SubstrateStore {
         // testable par un lot ordinaire. `batch_franchit_les_frontieres_de_
         // tranche` passe 50 nœuds, donc quatre tranches, et échoue si
         // l'arithmétique de `base` dérive.
-        const LOT: usize = 16;
+        //
+        // (2026-11-08, C1) Le corps APRÈS la passe de vivacité vit dans
+        // `lire_lot_apres_vivacite` : la variante par époque
+        // (`get_node_property_batch_at_epoch`) calcule une AUTRE vivacité
+        // (naissance/décès datés, tombstone traversé) puis lit les mêmes
+        // zones, dans le même ordre, par le même code.
 
         // Trace de phase, opt-in (`OBRAIN_LOT_TRACE=1`). Elle existe parce
         // qu'un total ne dit pas OÙ : sur le snapshot figé, la lecture d'un lot
@@ -17932,168 +18121,131 @@ impl GraphStore for SubstrateStore {
             }
         });
         let t_viv = t_debut.elapsed();
+        self.lire_lot_apres_vivacite(ids, key, &vivants, &tetes, trace, t_debut, t_viv)
+    }
 
-        // ── COLONNE VECTORIELLE : chemin d'origine, INCHANGÉ ──
-        //
-        // Les vecteurs gardent la route scalaire : une propriété vectorielle
-        // n'est pas une propriété qu'on filtre (`CONTAINS` sur un embedding
-        // n'existe pas), leur lecture rend un `Arc<[f32]>` déjà partagé, et
-        // leur spec est absente sur toute base qui n'a pas d'embeddings. Les
-        // mettre au lot n'achèterait rien et toucherait un chemin chaud qu'on
-        // n'a pas mesuré.
-        if self.vec_columns.spec_for(key, EntityKind::Node).is_some() {
-            return ids
-                .iter()
-                .enumerate()
-                .map(|(i, id)| {
-                    if !vivants[i] {
-                        return None;
-                    }
-                    self.lire_propriete_noeud_vivant(*id, key)
-                })
-                .collect();
+    /// (2026-11-08, C1) UNE propriété sous visibilité PURE par époque — le
+    /// jumeau sans hydratation de `get_node_at_epoch(..).get_property(key)`.
+    ///
+    /// Même visibilité, terme à terme : `noeud_vivant_a` (naissance/décès
+    /// datés, tombstone non daté = mort à l'époque 0) puis
+    /// `tenant_visible_disque` — et la lecture TRAVERSE le tombstone comme
+    /// `noeud_brut`, parce qu'un nœud supprimé plus tard doit rester lisible
+    /// aux époques antérieures à sa mort. Même valeur : `lire_propriete_noeud_
+    /// vivant` applique l'ordre vec → blob → chaîne v2 → DashMap, celui que
+    /// `read_all_properties_for_node` applique en LWW (voir `get_node`).
+    ///
+    /// Ce que cette méthode NE fait PAS, comme `get_node_at_epoch` ne le fait
+    /// pas : consulter `en_attente_noeuds`. Un nœud créé par une transaction
+    /// ouverte ailleurs est rendu ; c'est `is_node_visible_at_epoch` qui
+    /// l'écarte, et le planificateur le garde en second passage.
+    fn get_node_property_at_epoch(
+        &self,
+        id: NodeId,
+        key: &PropertyKey,
+        epoch: EpochId,
+    ) -> Option<Value> {
+        if id.0 == 0 || id.0 as u32 >= self.next_node_id.load(Ordering::Acquire) {
+            return None;
         }
+        if !self.noeud_vivant_a(id, epoch.0) || !self.tenant_visible_disque(id) {
+            return None;
+        }
+        self.lire_propriete_noeud_vivant(id, key)
+    }
 
-        let pz_lock = self.props_zone.as_ref();
-        let pkid = pz_lock.and_then(|_| self.prop_keys.read().lookup(key.as_str()));
+    /// (2026-11-08, C1) Jumeau sans hydratation de
+    /// `get_node_versioned(..).get_property(key)`.
+    ///
+    /// `get_node_versioned` IGNORE l'époque et la transaction (« MVCC deferred
+    /// to T5 ») et rend `get_node` : vivant sur disque ET dans la portée
+    /// tenant. `get_node_property` applique exactement ce prédicat
+    /// (`is_live_on_disk`) avant de lire — on ne réinvente rien, on nomme le
+    /// miroir. Le jour où `get_node_versioned` apprendra l'époque, cette
+    /// méthode devra l'apprendre le même jour : c'est le test
+    /// `filtre_sans_index_mvcc` côté moteur qui le dira.
+    fn get_node_property_versioned(
+        &self,
+        id: NodeId,
+        key: &PropertyKey,
+        _epoch: EpochId,
+        _transaction_id: TransactionId,
+    ) -> Option<Value> {
+        self.get_node_property(id, key)
+    }
 
-        let mut out: Vec<Option<Value>> = std::iter::repeat_with(|| None).take(ids.len()).collect();
-        // Indices dont la zone v2 n'a rien dit : ils iront au sidecar DashMap,
-        // mais HORS du garde `props_zone` (voir plus bas).
-        let mut replis: Vec<usize> = Vec::new();
-
-        // ── COLONNE BLOB : EN UN LOT, PAS 347 970 FOIS ──
-        //
-        // (2026-09-12) CETTE BRANCHE-CI RENDAIT LE LOT INUTILE. Elle était
-        // groupée avec la colonne vectorielle : dès qu'un type d'entité avait
-        // UNE propriété routée en colonne blob, TOUT le lot repartait en
-        // scalaire — `lire_propriete_noeud_vivant` par identifiant, donc les
-        // cinq verrous partagés et les deux allocations par valeur que ce
-        // commentaire-ci décrit plus haut. Or les `String` longues SONT des
-        // colonnes blob : sur runtime-dev, `Message.text`, `Extraction.text`,
-        // `Plan.payload`… Le lot ne servait donc jamais sur les propriétés
-        // textuelles, précisément celles qu'un filtre interroge.
-        //
-        // MESURE (banc `scripts/bench-filtre-propriete.sh`, snapshot figé du
-        // 2026-09-09, 347 970 nœuds) : A) balayage nu sans cellule 35,9 ms
-        // (103 ns/ligne) ; B) le même balayage + UNE cellule `n.name` 827,9 ms
-        // (2 379 ns/ligne). Tout l'écart est la cellule. `filter.rs` l'écrit
-        // noir sur blanc depuis T17k : « Scalar route is ~1 µs per cell ».
-        //
-        // ORDRE DES ZONES RESPECTÉ : vec (ci-dessus) → blob (ici) → chaîne v2
-        // (plus bas) → DashMap héritée (le repli, plus bas). Une valeur absente
-        // de la colonne blob (sentinelle `len == 0`, cas d'une valeur longue
-        // écrasée par une plus courte — voir `clear`) rend `None` et reprend
-        // donc le fil exactement où le scalaire le reprenait.
-        let mut restants: Vec<usize> = Vec::with_capacity(ids.len());
-        if let Some(spec) = self.blob_columns.spec_for(key, EntityKind::Node) {
-            let slots: Vec<Option<u32>> = (0..ids.len())
-                .map(|i| {
-                    if vivants[i] {
-                        Some(ids[i].0 as u32)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let valeurs = self.blob_columns.read_values_avec_spec(spec, &slots);
-            for (i, v) in valeurs.into_iter().enumerate() {
-                match v {
-                    Some(val) => out[i] = Some(val),
-                    // Blob muet : la chaîne v2 puis la DashMap décideront —
-                    // même ordre que `lire_propriete_noeud_vivant`.
-                    None => {
-                        if vivants[i] {
-                            restants.push(i);
-                        }
-                    }
+    /// (2026-11-08, C1) Lot de [`Self::get_node_property_at_epoch`] : la
+    /// vivacité PAR ÉPOQUE est calculée pour tout le lot sous UN verrou de
+    /// zone, puis les zones de propriétés sont lues par le corps commun
+    /// `lire_lot_apres_vivacite` — mêmes zones, même ordre, mêmes tranches
+    /// que `get_node_property_batch`.
+    ///
+    /// CHEMIN RAPIDE : quand aucune carte MVCC n'est peuplée
+    /// (`visibilite_triviale`), naissance = 0 pour tous et le seul décès
+    /// possible est le tombstone (daté 0) : « vivant à l'époque e » se réduit
+    /// à « non tombstoné », et le lot ordinaire rend exactement la même chose.
+    fn get_node_property_batch_at_epoch(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        epoch: EpochId,
+    ) -> Vec<Option<Value>> {
+        if self.visibilite_triviale() {
+            return self.get_node_property_batch(ids, key);
+        }
+        let trace = std::env::var_os("OBRAIN_LOT_TRACE").is_some();
+        let t_debut = web_time::Instant::now();
+        let hw = self.next_node_id.load(Ordering::Acquire);
+        let portee = self.portee_tenant();
+        // Sous le verrou de zone : ce que l'enregistrement seul sait dire
+        // (existence, tombstone, tenant, tête de chaîne). Les cartes MVCC
+        // (DashMap) sont consultées APRÈS, hors du verrou — `noeud_vivant_a`
+        // ne les tient jamais pendant une lecture de zone, on ne crée pas
+        // d'ordre de verrous nouveau.
+        let mut lus = vec![false; ids.len()];
+        let mut tombstones = vec![false; ids.len()];
+        let mut tetes: Vec<U48> = vec![U48::ZERO; ids.len()];
+        let _ = self.writer.with_node_zone_records(|lire| {
+            for (i, id) in ids.iter().enumerate() {
+                if id.0 == 0 || id.0 as u32 >= hw {
+                    continue;
+                }
+                if let Some(rec) = lire(id.0 as u32) {
+                    lus[i] = tenant::visible(rec.tenant_id, portee);
+                    tombstones[i] = rec.is_tombstoned();
+                    tetes[i] = rec.first_prop_off;
                 }
             }
-        } else {
-            restants.extend((0..ids.len()).filter(|&i| vivants[i]));
+        });
+        let mut vivants = vec![false; ids.len()];
+        for (i, id) in ids.iter().enumerate() {
+            if !lus[i] {
+                continue;
+            }
+            // Terme à terme `noeud_vivant_a` : décès daté s'il existe, sinon
+            // le tombstone vaut « mort à l'époque 0 », sinon vivant.
+            let deces = match self.deces_noeuds.get(id) {
+                Some(e) => Some(*e.value()),
+                None => tombstones[i].then_some(0),
+            };
+            let naissance = self.naissances_noeuds.get(id).map_or(0, |e| *e.value());
+            vivants[i] = Self::vivante_a(naissance, deces, epoch.0);
         }
-        let t_blob = t_debut.elapsed();
+        let t_viv = t_debut.elapsed();
+        self.lire_lot_apres_vivacite(ids, key, &vivants, &tetes, trace, t_debut, t_viv)
+    }
 
-        // (2026-09-16) Vue périmée : un autre processus a peut-être agrandi la
-        // zone depuis notre projection — on vérifie une fois par lot de lecture.
-        self.reprojeter_si_zone_agrandie();
-        for tranche in restants.chunks(LOT) {
-            replis.clear();
-            {
-                let pz = match (pz_lock, pkid) {
-                    (Some(l), Some(_)) => Some(l.read()),
-                    _ => None,
-                };
-                for &i in tranche {
-                    // `restants` ne contient déjà que des vivants : le contrôle
-                    // est conservé comme garde-fou d'index, il ne coûte qu'un
-                    // bit chargé.
-                    if !vivants[i] {
-                        continue;
-                    }
-                    let mut tranche_a_repondu = false;
-                    if let (Some(pz), Some(pkid)) = (pz.as_ref(), pkid) {
-                        if tetes[i].to_u64() != 0 {
-                            match pz.get_latest_for_key_unite(Some(tetes[i].to_u64()), pkid) {
-                                // LWW : la pierre tombale gagne, et INTERDIT le
-                                // repli DashMap — exactement `Some(None)`.
-                                Ok(Some(e)) if e.is_tombstone() => tranche_a_repondu = true,
-                                Ok(Some(e)) => match decode_value(pz, &e.value) {
-                                    Ok(v) => {
-                                        out[i] = Some(v);
-                                        tranche_a_repondu = true;
-                                    }
-                                    Err(err) => tracing::warn!(
-                                        node_id = ids[i].0, key = %key, error = %err,
-                                        "props zone v2 decode failed — falling back to DashMap"
-                                    ),
-                                },
-                                Ok(None) => {}
-                                Err(err) => tracing::warn!(
-                                    node_id = ids[i].0, key = %key, error = %err,
-                                    "props zone v2 read failed — falling back to DashMap"
-                                ),
-                            }
-                        }
-                    }
-                    if !tranche_a_repondu {
-                        replis.push(i);
-                    }
-                }
-            }
-            // ORDRE DES VERROUS. Le garde `props_zone` est relâché À LA
-            // FERMETURE DU BLOC CI-DESSUS, avant tout accès au sidecar.
-            // `node_properties` est une DashMap : y toucher en tenant
-            // `props_zone` installerait l'ordre (props_zone → shard), soit
-            // l'inverse exact de celui que `lire_propriete_arete_vivante`
-            // interdit noir sur blanc — « c'est l'inversion qui avait
-            // interbloqué index et PropsZone ». Aucun chemin réciproque n'est
-            // connu aujourd'hui, mais on ne fait pas dépendre l'absence
-            // d'interblocage de l'inexistence durable d'un tel chemin.
-            for &i in &replis {
-                out[i] = self
-                    .node_properties
-                    .get(&ids[i])
-                    .and_then(|e| e.get(key).cloned());
-            }
-        }
-        if trace {
-            let total = t_debut.elapsed();
-            eprintln!(
-                "[lot] {} cellules · vivacité {} · blob {} · chaîne v2 {} · repli DashMap {} · total {:.2} ms ({:.0} ns/cellule) · présentes {} · repli {} · DashMap {} entrées",
-                ids.len(),
-                ms(t_viv),
-                ms(t_blob - t_viv),
-                ms(total - t_blob),
-                ms(t_debut.elapsed() - (total - t_blob) - t_blob),
-                total.as_secs_f64() * 1000.0,
-                total.as_secs_f64() * 1e9 / ids.len().max(1) as f64,
-                out.iter().filter(|v| v.is_some()).count(),
-                replis.len(),
-                self.node_properties.len(),
-            );
-        }
-        out
+    /// (2026-11-08, C1) Lot de [`Self::get_node_property_versioned`] : même
+    /// miroir que l'unitaire — `get_node_versioned` ignore époque et
+    /// transaction, le lot aussi.
+    fn get_node_property_batch_versioned(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        _epoch: EpochId,
+        _transaction_id: TransactionId,
+    ) -> Vec<Option<Value>> {
+        self.get_node_property_batch(ids, key)
     }
 
     /// Verdicts d'un prédicat TEXTE pour tout un lot — sans matérialiser de
@@ -31366,6 +31518,117 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
+        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+    }
+
+    /// (2026-11-08, C1) LWW sur la MÊME page, par le chemin CIBLÉ par époque :
+    /// `get_node_property_at_epoch` et son lot doivent rendre la dernière
+    /// écriture — et EXACTEMENT ce que `get_node_at_epoch(..).get_property`
+    /// rend, puisque c'est le contrat du trait.
+    #[test]
+    #[allow(unsafe_code)]
+    fn get_node_property_at_epoch_lww_same_page() {
+        let _guard = props_v2_env_lock();
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let a = s.create_node(&["Doc"]);
+        s.set_node_property(a, "title", Value::String("v1".into()));
+        s.set_node_property(a, "title", Value::String("v2".into()));
+        s.set_node_property(a, "title", Value::String("v3".into()));
+        assert_eq!(collect_node_props_v2(&s, a.0 as u32).len(), 3);
+
+        let key = PropertyKey::new("title");
+        let e = s.current_epoch();
+        let oracle = s
+            .get_node_at_epoch(a, e)
+            .and_then(|n| n.get_property("title").cloned());
+        assert_eq!(oracle, Some(Value::String("v3".into())));
+        assert_eq!(s.get_node_property_at_epoch(a, &key, e), oracle);
+        assert_eq!(
+            s.get_node_property_batch_at_epoch(&[a], &key, e),
+            vec![oracle.clone()]
+        );
+        assert_eq!(
+            s.get_node_property_versioned(a, &key, e, TransactionId(7)),
+            s.get_node_versioned(a, e, TransactionId(7))
+                .and_then(|n| n.get_property("title").cloned())
+        );
+
+        // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
+        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+    }
+
+    /// (2026-11-08, C1) Le chemin ciblé TRAVERSE le tombstone comme
+    /// `noeud_brut` : un nœud né à l'époque 5 et mort à l'époque 7 porte sa
+    /// propriété aux époques 5 et 6, rien avant, rien après — terme à terme
+    /// avec `get_node_at_epoch`, en unitaire comme en lot (les cartes MVCC
+    /// sont peuplées : c'est le chemin NON trivial du lot qui est exercé).
+    ///
+    /// FIXTURE : la propriété doit vivre dans la chaîne PropsZone v2, qui
+    /// survit au tombstone. Sans v2, elle est dans la carte `node_properties`,
+    /// que `delete_node` vide : à toute époque, `get_node_at_epoch` lui-même
+    /// rend alors un nœud SANS propriété. Le test dépendait donc de la
+    /// variable `OBRAIN_PROPS_V2` lue à l'ouverture, qu'un autre test pose
+    /// et retire en parallèle — d'où vert en local, rouge en CI. On la pose
+    /// ici, sous le même verrou que les tests v2 voisins.
+    #[test]
+    #[allow(unsafe_code)]
+    fn get_node_property_at_epoch_traverse_le_tombstone_comme_get_node_at_epoch() {
+        let _guard = props_v2_env_lock();
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let (_td, s) = store();
+        let temoin = s.create_node(&["Doc"]);
+        s.set_node_property(temoin, "title", Value::String("témoin".into()));
+        s.sync_epoch(EpochId(5));
+        let a = s.create_node(&["Doc"]);
+        s.set_node_property(a, "title", Value::String("vivant".into()));
+        s.sync_epoch(EpochId(7));
+        assert!(s.delete_node(a));
+
+        let key = PropertyKey::new("title");
+        for e in 3..=9u64 {
+            let e = EpochId(e);
+            let oracle = s
+                .get_node_at_epoch(a, e)
+                .and_then(|n| n.get_property("title").cloned());
+            assert_eq!(
+                s.get_node_property_at_epoch(a, &key, e),
+                oracle,
+                "unitaire à l'époque {e:?}"
+            );
+            let lot = s.get_node_property_batch_at_epoch(&[temoin, a, NodeId(0)], &key, e);
+            assert_eq!(lot.len(), 3);
+            assert_eq!(lot[1], oracle, "lot à l'époque {e:?}");
+            assert_eq!(
+                lot[0],
+                Some(Value::String("témoin".into())),
+                "le témoin, né avant l'époque 5, est visible partout"
+            );
+            assert_eq!(lot[2], None, "le slot 0 est réservé");
+        }
+        assert_eq!(
+            s.get_node_property_at_epoch(a, &key, EpochId(6)),
+            Some(Value::String("vivant".into())),
+            "vivant à 6 : né à 5, mort à 7"
+        );
+        assert_eq!(
+            s.get_node_property_at_epoch(a, &key, EpochId(4)),
+            None,
+            "pas encore né"
+        );
+        assert_eq!(
+            s.get_node_property_at_epoch(a, &key, EpochId(7)),
+            None,
+            "mort à 7"
+        );
+        assert_eq!(
+            s.get_node_property(a, &key),
+            None,
+            "la lecture courante, elle, ne traverse pas le tombstone"
+        );
+        // SAFETY: serialised via `props_v2_env_lock`.
         unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
     }
 

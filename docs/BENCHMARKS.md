@@ -40,7 +40,7 @@ définitifs seront repris à charge < 2.
 | `tiered_scan_top10/rayon_pool/1000000` | idem, pool rayon | **743 µs** (1,35 Gelem/s) | 8,6 |
 | `wal_append_unitaire/seul_ecrivain` | un record WAL, un écrivain | 1,22 µs (822 Krec/s) | 5,8 |
 | `wal_append_batch/1024` | lot de 1 024 records | 77,4 µs (13,2 Mrec/s) | 5,8 |
-| `query_node_lookup_by_property` | `MATCH` par propriété | 379 µs | 4,9 |
+| `query_node_lookup_by_property` | `MATCH` par propriété (sans index, 1 000 `Person`) | 379 µs → **52,5 µs** après C1 (voir ci-dessous) | 4,9 / 10–14 |
 | `query_1hop_pattern` / `query_2hop_pattern` | motif 1 saut / 2 sauts | 386 µs / 392 µs | 4,9 |
 | `query_fan_out_expand_1k` | expansion à 1 000 voisins | 717 µs | 4,9 |
 | `query_count_all` | `MATCH (n) RETURN count(n)` | 1,28 µs | 4,9 |
@@ -83,6 +83,27 @@ commits simultanés) sur une base ouverte par chemin. Pour
 `fsync` au `commit()`), ou ouvrir avec `open_substrate_with_mode(SyncMode::Group)`
 et appeler `flush_wal()` par lot. C'est le même arbitrage que
 `PRAGMA synchronous=FULL` de SQLite.
+
+### Filtre sans index sans hydratation (C1, `perf/filtre-sans-hydratation`) — `m4max`, 2026-11-08 15:08–15:11, base `main` 8f1672e4
+
+`MATCH (n:Person {id: 42}) RETURN n.name` sur 1 000 nœuds, SANS index de
+propriété : la planification matérialisait le label puis hydratait CHAQUE
+candidat (`get_node_at_epoch` → `Node` complet, labels + toutes les
+propriétés) pour lire une seule clef. C1 lit cette clef en lot
+(`get_node_property_batch_at_epoch`), sous la même visibilité MVCC, sans
+construire de `Node`. Même commande Criterion, passes ALTERNÉES avant/après
+(le « avant » rejoué juste avant le « après », même charge) :
+
+| Variante | Médiane | Intervalle | Charge (`uptime`) |
+|---|---|---|---|
+| avant (filter.rs de `main`) | **508 µs** | 492 – 527 µs | 9,9 → 25 |
+| après C1 | **52,5 µs** | 51,3 – 53,9 µs | 14 → 11 |
+
+Gain ≈ 9,7× sur ce bench. `OBRAIN_PHASES=1` (dernières 10 000 requêtes,
+médianes ; l'instrumentation gonfle les totaux, seule la ventilation compte) :
+planification 845 µs → 56 µs, exécution 10 µs → 8 µs. Le coût était donc la
+lecture à la planification, pas l'exécution. Chiffres **provisoires** (charge
+10–25), bons pour le rapport avant/après, pas pour une plaquette.
 
 ## Ce qui n'est PAS reproductible depuis ce dépôt
 

@@ -174,6 +174,49 @@ impl GraphStore for WalGraphStore {
         self.inner.get_node_property_batch(ids, key)
     }
 
+    // (2026-11-08, C1) Délégations explicites : sans elles, les défauts du
+    // trait passeraient par `self.get_node_at_epoch` / `get_node_versioned`
+    // — l'hydratation complète que ces méthodes existent pour éviter.
+    fn get_node_property_at_epoch(
+        &self,
+        id: NodeId,
+        key: &PropertyKey,
+        epoch: EpochId,
+    ) -> Option<Value> {
+        self.inner.get_node_property_at_epoch(id, key, epoch)
+    }
+
+    fn get_node_property_versioned(
+        &self,
+        id: NodeId,
+        key: &PropertyKey,
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> Option<Value> {
+        self.inner
+            .get_node_property_versioned(id, key, epoch, transaction_id)
+    }
+
+    fn get_node_property_batch_at_epoch(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        epoch: EpochId,
+    ) -> Vec<Option<Value>> {
+        self.inner.get_node_property_batch_at_epoch(ids, key, epoch)
+    }
+
+    fn get_node_property_batch_versioned(
+        &self,
+        ids: &[NodeId],
+        key: &PropertyKey,
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> Vec<Option<Value>> {
+        self.inner
+            .get_node_property_batch_versioned(ids, key, epoch, transaction_id)
+    }
+
     /// Délégation de la garde d'index ordonné (voir
     /// [`GraphStore::index_ordonne_pour`]) : sans elle, le planificateur — qui
     /// tient ce wrapper — ne verrait jamais l'index du substrat et refuserait

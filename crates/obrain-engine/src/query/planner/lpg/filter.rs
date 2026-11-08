@@ -2179,26 +2179,65 @@ impl super::Planner {
                 return Ok(None);
             }
 
-            let label_nodes = self.store.nodes_by_label(label);
+            // ── (2026-11-08, C1) UNE PROPRIÉTÉ, PAS LE NŒUD ─────────────────
+            //
+            // AVANT : pour CHAQUE candidat du label, `get_node_at_epoch` /
+            // `get_node_versioned` construisait le `Node` complet — labels
+            // résolus + TOUTES les propriétés (`read_all_properties_for_node`,
+            // quatre zones, tri LWW) — pour lire ensuite UNE clef. Mesuré sur
+            // le banc `query_node_lookup_by_property` (1 000 `Person`, sans
+            // index) : 503 µs par requête, dont ~99 % en planification
+            // (`OBRAIN_PHASES=1` : planification 845 µs, exécution 10 µs,
+            // sous charge 20-30).
+            //
+            // APRÈS : une lecture PAR LOT de la seule propriété testée,
+            // sous la MÊME visibilité que l'accès nœud qu'elle remplace —
+            // `get_node_property_batch_at_epoch` est le jumeau de
+            // `get_node_at_epoch(..).get_property(..)`,
+            // `get_node_property_batch_versioned` celui de
+            // `get_node_versioned(..)` (contrat du trait, test
+            // `filtre_sans_index_mvcc`). Les conditions d'un AND sont
+            // appliquées l'une après l'autre sur un lot qui rétrécit : la
+            // seconde propriété n'est lue que pour les survivants de la
+            // première. Résultat : même ensemble de candidats qu'avant —
+            // « visible ET toutes les propriétés égales » — sans aucune
+            // hydratation.
+            //
+            // Le SECOND passage de visibilité (ci-dessous) reste NÉCESSAIRE,
+            // exactement comme avant : `get_node_at_epoch` ignore
+            // `en_attente_noeuds` (un nœud créé par une transaction ouverte
+            // ailleurs est rendu — gql_13 `un_predicat_de_propriete_ne_lit_
+            // pas_l_ecriture_non_commitee_d_autrui`), et `get_node_versioned`
+            // ignore l'époque ET la transaction (« MVCC deferred to T5 »).
+            // C'est `is_node_visible_*` qui porte l'isolation ; les lectures
+            // ci-dessus n'en portent que la part qu'elles portaient déjà.
+            let mut candidats = self.store.nodes_by_label(label);
             let epoch = self.viewing_epoch;
             let tx_id = self.transaction_id;
-            label_nodes
-                .into_iter()
-                .filter(|&node_id| {
-                    // Use versioned/epoch-aware node access for correct properties
-                    let node = if let Some(tx) = tx_id {
-                        self.store.get_node_versioned(node_id, epoch, tx)
-                    } else {
-                        self.store.get_node_at_epoch(node_id, epoch)
-                    };
-                    node.is_some_and(|n| {
-                        conditions.iter().all(|(prop, val)| {
-                            n.get_property(prop)
-                                .is_some_and(|v| values_equal_coerced(v, val))
-                        })
+            for (prop, val) in &conditions {
+                if candidats.is_empty() {
+                    break;
+                }
+                let key = obrain_common::types::PropertyKey::new(prop.as_str());
+                let valeurs = match tx_id {
+                    Some(tx) => self
+                        .store
+                        .get_node_property_batch_versioned(&candidats, &key, epoch, tx),
+                    None => self
+                        .store
+                        .get_node_property_batch_at_epoch(&candidats, &key, epoch),
+                };
+                debug_assert_eq!(valeurs.len(), candidats.len());
+                candidats = candidats
+                    .into_iter()
+                    .zip(valeurs)
+                    .filter_map(|(id, v)| {
+                        v.is_some_and(|v| values_equal_coerced(&v, val))
+                            .then_some(id)
                     })
-                })
-                .collect()
+                    .collect();
+            }
+            candidats
         };
 
         // MVCC visibility: filter out nodes not visible at the current epoch/tx.
@@ -3882,6 +3921,12 @@ fn elagage_actif() -> bool {
 /// Réglé à 1024 : au coût mesuré de l'hydratation (~2,7 µs/nœud), la
 /// matérialisation reste sous ~3 ms — l'ordre de grandeur d'une planification
 /// ordinaire — au lieu des 192 ms que coûte un label de 71 445 nœuds.
+///
+/// (2026-11-08, C1) Sous le plafond, l'égalité sans index ne paie plus
+/// l'hydratation : UNE propriété par candidat, en lot
+/// (`get_node_property_batch_at_epoch`). Le plafond reste à 1024, non
+/// remesuré — le relever est une décision à prendre sur une mesure du coût
+/// par nœud du lot, pas une conséquence automatique de C1.
 /// `OBRAIN_PLAN_MATERIALISATION_MAX=<n>` règle le plafond (0 = jamais
 /// matérialiser) ; lire l'interrupteur ne coûte rien, il est lu une fois par
 /// processus.
