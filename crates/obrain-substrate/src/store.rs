@@ -31477,8 +31477,19 @@ mod tests {
     /// propriété aux époques 5 et 6, rien avant, rien après — terme à terme
     /// avec `get_node_at_epoch`, en unitaire comme en lot (les cartes MVCC
     /// sont peuplées : c'est le chemin NON trivial du lot qui est exercé).
+    ///
+    /// FIXTURE : la propriété doit vivre dans la chaîne PropsZone v2, qui
+    /// survit au tombstone. Sans v2, elle est dans la carte `node_properties`,
+    /// que `delete_node` vide : à toute époque, `get_node_at_epoch` lui-même
+    /// rend alors un nœud SANS propriété. Le test dépendait donc de la
+    /// variable `OBRAIN_PROPS_V2` lue à l'ouverture, qu'un autre test pose
+    /// et retire en parallèle — d'où vert en local, rouge en CI. On la pose
+    /// ici, sous le même verrou que les tests v2 voisins.
     #[test]
+    #[allow(unsafe_code)]
     fn get_node_property_at_epoch_traverse_le_tombstone_comme_get_node_at_epoch() {
+        let _guard = props_v2_env_lock();
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
         let (_td, s) = store();
         let temoin = s.create_node(&["Doc"]);
         s.set_node_property(temoin, "title", Value::String("témoin".into()));
@@ -31529,6 +31540,8 @@ mod tests {
             None,
             "la lecture courante, elle, ne traverse pas le tombstone"
         );
+        // SAFETY: serialised via `props_v2_env_lock`.
+        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
     }
 
     /// Tombstone: `set` then `remove` must make `get` return `None`
