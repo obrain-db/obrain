@@ -478,13 +478,15 @@ fn t2_six_processus_zero_perte_eof_exact() {
 // qui l'a pris pour mort et a ré-ancré la chaîne. Zéro perte, EOF exact ; seul
 // le LSN est inexact. Le défaut est dans le design (un délai ne prouve pas une
 // mort), pas dans le test ; correctif proposé dans la tâche V1-T2B (preuve de
-// vie par pid dans le registre). Reste exécuté par `mesures.yml` (--ignored).
+// vie par pid dans le registre). Désormais exécuté par la suite par défaut.
 // (2026-11-07, MP-1) Les 2 échecs résiduels sur `courses` (LSN tous exacts) sont
 // isolés : `RegistreAppend::ouvrir` publiait, à l'ouverture d'un pair, la plage
 // d'un écrivain entre son `write` et sa publication (reproduit par
 // `wal_chaine_cas::la_creation_du_registre_ne_devance_pas_une_publication`, rouge
 // sur 3d81c35e, vert après le recalage conditionnel). Mesuré après : 20/20.
-#[ignore = "MP-1 — 2026-11-07 : 20/20 en --ignored après le recalage conditionnel du registre (avant : 38/40 sous charge, 2 échecs sur `courses` à LSN exacts, cause isolée) ; à dés-ignorer après la série de 3 000 exécutions"]
+// (2026-11-07) DÉS-IGNORÉS après la série de 3 000 exécutions de chacun, sous 32
+// boucles CPU, arrêt au premier échec : t2b 3 000/3 000, t2c 3 000/3 000 (0 échec),
+// sur le commit 7f1dd9bb de MP-1 (PR #73). Reste dans la suite par défaut.
 fn t2b_lsn_exact_par_verrou_d_append() {
     t2b_corps("t2b_lsn_exact_par_verrou_d_append", None);
 }
@@ -494,7 +496,6 @@ fn t2b_lsn_exact_par_verrou_d_append() {
 /// est pris pour mort et sa plage est ré-ancrée. Si l'exactitude des LSN tient
 /// ici, elle ne dépend pas de la rareté des préemptions de 25 ms.
 #[test]
-#[ignore = "MP-1 — 2026-11-07 : 20/20 en --ignored après le recalage conditionnel du registre (V1-T2B : 40/40 sous charge après preuve de vie, 34 échecs sur 40 avant) ; à dés-ignorer après la série de 3 000 exécutions"]
 fn t2c_lsn_exact_malgre_recuperations_forcees() {
     t2b_corps("t2c_lsn_exact_malgre_recuperations_forcees", Some(100_000));
 }
