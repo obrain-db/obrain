@@ -114,6 +114,20 @@ impl RdfPlanner {
         self
     }
 
+    /// WAL to journal this plan's mutations into.
+    ///
+    /// Explicit transactions are not journaled here: their inserts and deletes
+    /// are buffered until commit, and journaling them at execution time would
+    /// persist work that a rollback later discards.
+    #[cfg(feature = "wal")]
+    fn journal(&self) -> Option<Arc<RdfWal>> {
+        if self.transaction_id.is_some() {
+            None
+        } else {
+            self.wal.clone()
+        }
+    }
+
     /// Sets the WAL for logging RDF mutations.
     #[cfg(feature = "wal")]
     #[must_use]
@@ -873,7 +887,7 @@ impl RdfPlanner {
                     insert.object.clone(),
                     column_map,
                     #[cfg(feature = "wal")]
-                    self.wal.clone(),
+                    self.journal(),
                 ));
 
                 return Ok((operator, Vec::new()));
@@ -892,7 +906,7 @@ impl RdfPlanner {
             insert.graph.clone(),
             self.transaction_id,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
 
         // Insert operations don't output columns
@@ -957,7 +971,7 @@ impl RdfPlanner {
                     delete.object.clone(),
                     column_map,
                     #[cfg(feature = "wal")]
-                    self.wal.clone(),
+                    self.journal(),
                 ));
 
                 return Ok((operator, Vec::new()));
@@ -976,7 +990,7 @@ impl RdfPlanner {
             delete.graph.clone(),
             self.transaction_id,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
 
         Ok((operator, Vec::new()))
@@ -989,7 +1003,7 @@ impl RdfPlanner {
             clear.graph.clone(),
             clear.silent,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
         Ok((operator, Vec::new()))
     }
@@ -1004,7 +1018,7 @@ impl RdfPlanner {
             create.graph.clone(),
             create.silent,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
         Ok((operator, Vec::new()))
     }
@@ -1016,7 +1030,7 @@ impl RdfPlanner {
             drop_op.graph.clone(),
             drop_op.silent,
             #[cfg(feature = "wal")]
-            self.wal.clone(),
+            self.journal(),
         ));
         Ok((operator, Vec::new()))
     }

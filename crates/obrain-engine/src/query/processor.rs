@@ -121,6 +121,9 @@ pub struct QueryProcessor {
     /// RDF store for triple pattern queries (optional).
     #[cfg(feature = "rdf")]
     rdf_store: Option<Arc<obrain_core::graph::rdf::RdfStore>>,
+    /// Journal WAL of the RDF store, so RDF mutations planned here are logged.
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    rdf_wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
     /// Optional cognitive engine (3 piliers), threaded from the owning
     /// `Session` so `CALL obrain.cognitive.*` resolves in `execute()`'s own
     /// `Planner::with_context` calls (this processor builds its own planner
@@ -162,6 +165,8 @@ impl QueryProcessor {
             session_context: obrain_core::execution::operators::SessionContext::default(),
             #[cfg(feature = "rdf")]
             rdf_store: None,
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
             substrate_store: None,
@@ -188,6 +193,8 @@ impl QueryProcessor {
             session_context: obrain_core::execution::operators::SessionContext::default(),
             #[cfg(feature = "rdf")]
             rdf_store: None,
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
             substrate_store: None,
@@ -215,6 +222,8 @@ impl QueryProcessor {
             session_context: obrain_core::execution::operators::SessionContext::default(),
             #[cfg(feature = "rdf")]
             rdf_store: None,
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
             substrate_store: None,
@@ -550,6 +559,8 @@ impl QueryProcessor {
             transaction_context: None,
             session_context: obrain_core::execution::operators::SessionContext::default(),
             rdf_store: Some(rdf_store),
+            #[cfg(all(feature = "rdf", feature = "wal"))]
+            rdf_wal: None,
             // (2026-11-01) Mêmes symptômes que ci-dessous pour deux autres
             // champs : visibles seulement sous `--all-features --all-targets`,
             // que la CI ne compilait pas.
@@ -570,6 +581,18 @@ impl QueryProcessor {
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
         }
+    }
+
+    /// Attaches the RDF journal so RDF mutations planned by this processor are
+    /// logged. Same pattern as [`Self::with_substrate_store`].
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    #[must_use]
+    pub fn with_rdf_wal(
+        mut self,
+        rdf_wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
+    ) -> Self {
+        self.rdf_wal = rdf_wal;
+        self
     }
 
     /// Returns a reference to the RDF store (if configured).
@@ -620,6 +643,8 @@ impl QueryProcessor {
 
         // 4. Convert to physical plan (using RDF planner)
         let planner = RdfPlanner::new(Arc::clone(rdf_store));
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        let planner = planner.with_wal(self.rdf_wal.clone());
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // 5. Execute and collect results

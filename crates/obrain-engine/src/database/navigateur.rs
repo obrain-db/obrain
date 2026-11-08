@@ -36,7 +36,7 @@ impl ObrainDB {
         let (store, miroir) = obrain_substrate::SubstrateStore::ouvrir_navigateur(nom)
             .await
             .map_err(erreur_navigateur)?;
-        let mut db = Self::with_substrate_store(store, None)?;
+        let mut db = Self::with_substrate_store(store, None, false)?;
         db.miroir = Some(miroir);
         Ok(db)
     }
