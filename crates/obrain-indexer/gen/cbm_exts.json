@@ -1,0 +1,599 @@
+{
+ "CBM_LANG_BASH": [
+  ".bash",
+  ".sh",
+  "sh",
+  "bash",
+  "dash",
+  "ksh",
+  "zsh"
+ ],
+ "CBM_LANG_C": [
+  ".c"
+ ],
+ "CBM_LANG_CPP": [
+  ".cc",
+  ".ccm",
+  ".cpp",
+  ".cppm",
+  ".cxx",
+  ".h",
+  ".hh",
+  ".hpp",
+  ".hxx",
+  ".ixx"
+ ],
+ "CBM_LANG_CSHARP": [
+  ".cs"
+ ],
+ "CBM_LANG_CLOJURE": [
+  ".clj",
+  ".cljc",
+  ".cljs"
+ ],
+ "CBM_LANG_CMAKE": [
+  ".cmake",
+  "CMakeLists.txt"
+ ],
+ "CBM_LANG_COBOL": [
+  ".cbl",
+  ".cob"
+ ],
+ "CBM_LANG_COMMONLISP": [
+  ".cl",
+  ".lisp",
+  ".lsp"
+ ],
+ "CBM_LANG_CSS": [
+  ".css"
+ ],
+ "CBM_LANG_CUDA": [
+  ".cu",
+  ".cuh"
+ ],
+ "CBM_LANG_DART": [
+  ".dart"
+ ],
+ "CBM_LANG_DOCKERFILE": [
+  ".dockerfile",
+  "Dockerfile"
+ ],
+ "CBM_LANG_ELIXIR": [
+  ".ex",
+  ".exs"
+ ],
+ "CBM_LANG_DOTENV": [
+  ".env",
+  ".env",
+  ".env.local"
+ ],
+ "CBM_LANG_ELM": [
+  ".elm"
+ ],
+ "CBM_LANG_EMACSLISP": [
+  ".el"
+ ],
+ "CBM_LANG_ERLANG": [
+  ".erl"
+ ],
+ "CBM_LANG_FSHARP": [
+  ".fs",
+  ".fsi",
+  ".fsx"
+ ],
+ "CBM_LANG_FORM": [
+  ".frm",
+  ".prc"
+ ],
+ "CBM_LANG_FORTRAN": [
+  ".f03",
+  ".f08",
+  ".f90",
+  ".f95"
+ ],
+ "CBM_LANG_GLSL": [
+  ".frag",
+  ".glsl",
+  ".vert"
+ ],
+ "CBM_LANG_GO": [
+  ".go"
+ ],
+ "CBM_LANG_GRAPHQL": [
+  ".gql",
+  ".graphql"
+ ],
+ "CBM_LANG_GROOVY": [
+  ".gradle",
+  ".groovy"
+ ],
+ "CBM_LANG_HASKELL": [
+  ".hs"
+ ],
+ "CBM_LANG_HCL": [
+  ".hcl",
+  ".tf"
+ ],
+ "CBM_LANG_HTML": [
+  ".htm",
+  ".html"
+ ],
+ "CBM_LANG_INI": [
+  ".cfg",
+  ".conf",
+  ".ini"
+ ],
+ "CBM_LANG_JAVA": [
+  ".java"
+ ],
+ "CBM_LANG_JAVASCRIPT": [
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  "node",
+  "nodejs"
+ ],
+ "CBM_LANG_JSON": [
+  ".json"
+ ],
+ "CBM_LANG_JULIA": [
+  ".jl"
+ ],
+ "CBM_LANG_KOTLIN": [
+  ".kt",
+  ".kts"
+ ],
+ "CBM_LANG_LEAN": [
+  ".lean"
+ ],
+ "CBM_LANG_LUA": [
+  ".lua",
+  "lua"
+ ],
+ "CBM_LANG_MAGMA": [
+  ".mag",
+  ".magma"
+ ],
+ "CBM_LANG_MAKEFILE": [
+  ".mk",
+  "GNUmakefile",
+  "Makefile",
+  "makefile"
+ ],
+ "CBM_LANG_MARKDOWN": [
+  ".md",
+  ".mdx"
+ ],
+ "CBM_LANG_MATLAB": [
+  ".m",
+  ".matlab",
+  ".mlx"
+ ],
+ "CBM_LANG_MESON": [
+  ".meson",
+  "meson.build",
+  "meson.options",
+  "meson_options.txt"
+ ],
+ "CBM_LANG_MOJO": [
+  ".mojo"
+ ],
+ "CBM_LANG_NIX": [
+  ".nix"
+ ],
+ "CBM_LANG_OCAML": [
+  ".ml",
+  ".mli"
+ ],
+ "CBM_LANG_PERL": [
+  ".pl",
+  ".pm",
+  "perl"
+ ],
+ "CBM_LANG_PHP": [
+  ".php",
+  "php"
+ ],
+ "CBM_LANG_PROTOBUF": [
+  ".proto"
+ ],
+ "CBM_LANG_PYTHON": [
+  ".py"
+ ],
+ "CBM_LANG_R": [
+  ".R",
+  ".r"
+ ],
+ "CBM_LANG_RUBY": [
+  ".gemspec",
+  ".rake",
+  ".rb",
+  "ruby"
+ ],
+ "CBM_LANG_RUST": [
+  ".rs"
+ ],
+ "CBM_LANG_SCALA": [
+  ".sc",
+  ".scala"
+ ],
+ "CBM_LANG_SCSS": [
+  ".scss"
+ ],
+ "CBM_LANG_SQL": [
+  ".sql"
+ ],
+ "CBM_LANG_SVELTE": [
+  ".svelte"
+ ],
+ "CBM_LANG_SWIFT": [
+  ".swift"
+ ],
+ "CBM_LANG_VERILOG": [
+  ".sv",
+  ".v"
+ ],
+ "CBM_LANG_TOML": [
+  ".toml"
+ ],
+ "CBM_LANG_TSX": [
+  ".tsx"
+ ],
+ "CBM_LANG_TYPESCRIPT": [
+  ".ts",
+  ".mts",
+  ".cts"
+ ],
+ "CBM_LANG_VIMSCRIPT": [
+  ".vim",
+  ".vimrc",
+  ".vimrc"
+ ],
+ "CBM_LANG_JUST": [
+  "justfile",
+  "Justfile",
+  ".justfile",
+  ".just",
+  "justfile",
+  "Justfile",
+  ".justfile"
+ ],
+ "CBM_LANG_HYPRLANG": [
+  "hyprland.conf",
+  ".hl",
+  "hyprland.conf"
+ ],
+ "CBM_LANG_SSHCONFIG": [
+  "ssh_config",
+  "sshd_config",
+  "ssh_config",
+  "sshd_config",
+  ".ssh/config"
+ ],
+ "CBM_LANG_STARLARK": [
+  "BUILD",
+  "BUILD.bazel",
+  "WORKSPACE",
+  "WORKSPACE.bazel",
+  ".bzl",
+  ".star",
+  "BUILD",
+  "BUILD.bazel",
+  "WORKSPACE",
+  "WORKSPACE.bazel"
+ ],
+ "CBM_LANG_BITBAKE": [
+  ".inc",
+  ".bb",
+  ".bbappend",
+  ".bbclass"
+ ],
+ "CBM_LANG_OBJECTSCRIPT_ROUTINE": [
+  ".mac",
+  ".int",
+  ".rtn"
+ ],
+ "CBM_LANG_VUE": [
+  ".vue"
+ ],
+ "CBM_LANG_WOLFRAM": [
+  ".wl",
+  ".wls"
+ ],
+ "CBM_LANG_XML": [
+  ".xml",
+  ".xsd",
+  ".xsl",
+  ".svg"
+ ],
+ "CBM_LANG_YAML": [
+  ".yaml",
+  ".yml"
+ ],
+ "CBM_LANG_ADA": [
+  ".adb",
+  ".ads"
+ ],
+ "CBM_LANG_AGDA": [
+  ".agda"
+ ],
+ "CBM_LANG_ASTRO": [
+  ".astro"
+ ],
+ "CBM_LANG_AWK": [
+  ".awk"
+ ],
+ "CBM_LANG_BEANCOUNT": [
+  ".beancount"
+ ],
+ "CBM_LANG_BIBTEX": [
+  ".bib"
+ ],
+ "CBM_LANG_BICEP": [
+  ".bicep"
+ ],
+ "CBM_LANG_CAIRO": [
+  ".cairo"
+ ],
+ "CBM_LANG_CAPNP": [
+  ".capnp"
+ ],
+ "CBM_LANG_APEX": [
+  ".cls",
+  ".trigger"
+ ],
+ "CBM_LANG_CRYSTAL": [
+  ".cr"
+ ],
+ "CBM_LANG_CSV": [
+  ".csv"
+ ],
+ "CBM_LANG_DLANG": [
+  ".d"
+ ],
+ "CBM_LANG_DIFF": [
+  ".diff",
+  ".patch"
+ ],
+ "CBM_LANG_PASCAL": [
+  ".dpr",
+  ".lpr",
+  ".pas"
+ ],
+ "CBM_LANG_DEVICETREE": [
+  ".dts",
+  ".dtsi",
+  ".overlay"
+ ],
+ "CBM_LANG_FUNC": [
+  ".fc"
+ ],
+ "CBM_LANG_FISH": [
+  ".fish"
+ ],
+ "CBM_LANG_FENNEL": [
+  ".fnl"
+ ],
+ "CBM_LANG_HLSL": [
+  ".fx",
+  ".hlsl",
+  ".hlsli"
+ ],
+ "CBM_LANG_GDSCRIPT": [
+  ".gd"
+ ],
+ "CBM_LANG_GLEAM": [
+  ".gleam"
+ ],
+ "CBM_LANG_GN": [
+  ".gn",
+  ".gni"
+ ],
+ "CBM_LANG_GOTEMPLATE": [
+  ".gotmpl",
+  ".tpl",
+  ".tmpl"
+ ],
+ "CBM_LANG_HARE": [
+  ".ha"
+ ],
+ "CBM_LANG_ISPC": [
+  ".ispc"
+ ],
+ "CBM_LANG_JINJA2": [
+  ".j2",
+  ".jinja",
+  ".jinja2"
+ ],
+ "CBM_LANG_JANET": [
+  ".janet"
+ ],
+ "CBM_LANG_JSON5": [
+  ".json5"
+ ],
+ "CBM_LANG_JSONNET": [
+  ".jsonnet",
+  ".libsonnet"
+ ],
+ "CBM_LANG_KDL": [
+  ".kdl"
+ ],
+ "CBM_LANG_LINKERSCRIPT": [
+  ".ld",
+  ".lds"
+ ],
+ "CBM_LANG_LIQUID": [
+  ".liquid"
+ ],
+ "CBM_LANG_LLVM_IR": [
+  ".ll"
+ ],
+ "CBM_LANG_LUAU": [
+  ".luau"
+ ],
+ "CBM_LANG_QML": [
+  ".qml"
+ ],
+ "CBM_LANG_CFSCRIPT": [
+  ".cfc"
+ ],
+ "CBM_LANG_CFML": [
+  ".cfm"
+ ],
+ "CBM_LANG_MERMAID": [
+  ".mermaid",
+  ".mmd"
+ ],
+ "CBM_LANG_MOVE": [
+  ".move"
+ ],
+ "CBM_LANG_NASM": [
+  ".nasm"
+ ],
+ "CBM_LANG_NICKEL": [
+  ".ncl"
+ ],
+ "CBM_LANG_SQUIRREL": [
+  ".nut"
+ ],
+ "CBM_LANG_ODIN": [
+  ".odin"
+ ],
+ "CBM_LANG_PINE": [
+  ".pine"
+ ],
+ "CBM_LANG_PKL": [
+  ".pkl"
+ ],
+ "CBM_LANG_PO": [
+  ".po",
+  ".pot"
+ ],
+ "CBM_LANG_PONY": [
+  ".pony"
+ ],
+ "CBM_LANG_PUPPET": [
+  ".pp"
+ ],
+ "CBM_LANG_PRISMA": [
+  ".prisma"
+ ],
+ "CBM_LANG_PROPERTIES": [
+  ".properties"
+ ],
+ "CBM_LANG_POWERSHELL": [
+  ".ps1",
+  ".psd1",
+  ".psm1"
+ ],
+ "CBM_LANG_PURESCRIPT": [
+  ".purs"
+ ],
+ "CBM_LANG_RESCRIPT": [
+  ".res",
+  ".resi"
+ ],
+ "CBM_LANG_REGEX": [
+  ".re"
+ ],
+ "CBM_LANG_RACKET": [
+  ".rkt"
+ ],
+ "CBM_LANG_RON": [
+  ".ron"
+ ],
+ "CBM_LANG_RST": [
+  ".rst"
+ ],
+ "CBM_LANG_ASSEMBLY": [
+  ".s",
+  ".S"
+ ],
+ "CBM_LANG_SCHEME": [
+  ".scm",
+  ".ss"
+ ],
+ "CBM_LANG_SLANG": [
+  ".slang"
+ ],
+ "CBM_LANG_SMALI": [
+  ".smali"
+ ],
+ "CBM_LANG_SMITHY": [
+  ".smithy"
+ ],
+ "CBM_LANG_SOLIDITY": [
+  ".sol"
+ ],
+ "CBM_LANG_SOQL": [
+  ".soql"
+ ],
+ "CBM_LANG_SOSL": [
+  ".sosl"
+ ],
+ "CBM_LANG_SWAY": [
+  ".sw"
+ ],
+ "CBM_LANG_TCL": [
+  ".tcl"
+ ],
+ "CBM_LANG_TABLEGEN": [
+  ".td"
+ ],
+ "CBM_LANG_TEMPL": [
+  ".templ"
+ ],
+ "CBM_LANG_THRIFT": [
+  ".thrift"
+ ],
+ "CBM_LANG_TEAL": [
+  ".tl"
+ ],
+ "CBM_LANG_TLAPLUS": [
+  ".tla"
+ ],
+ "CBM_LANG_TYPST": [
+  ".typ"
+ ],
+ "CBM_LANG_VHDL": [
+  ".vhd",
+  ".vhdl"
+ ],
+ "CBM_LANG_WGSL": [
+  ".wgsl"
+ ],
+ "CBM_LANG_WIT": [
+  ".wit"
+ ],
+ "CBM_LANG_ZSH": [
+  ".zsh",
+  ".zshrc",
+  ".zshenv",
+  ".zprofile"
+ ],
+ "CBM_LANG_ZIG": [
+  ".zig"
+ ],
+ "CBM_LANG_KUSTOMIZE": [
+  "kustomization.yaml",
+  "kustomization.yml"
+ ],
+ "CBM_LANG_REQUIREMENTS": [
+  "requirements.txt",
+  "requirements-dev.txt",
+  "requirements-test.txt"
+ ],
+ "CBM_LANG_KCONFIG": [
+  "Kconfig"
+ ],
+ "CBM_LANG_GOMOD": [
+  "go.mod"
+ ],
+ "CBM_LANG_GITATTRIBUTES": [
+  ".gitattributes"
+ ],
+ "CBM_LANG_BLADE": [
+  ".blade.php"
+ ]
+}

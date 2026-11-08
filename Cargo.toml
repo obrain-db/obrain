@@ -10,6 +10,7 @@ members = [
     "crates/obrain-reactive",
     "crates/obrain-substrate",
     "crates/obrain-cognitive",
+    "crates/obrain-indexer",
 ]
 
 [workspace.package]
