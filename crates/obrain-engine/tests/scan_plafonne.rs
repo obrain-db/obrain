@@ -189,7 +189,7 @@ fn limite_plus_grande_que_la_base_rend_tout() {
 #[test]
 fn limite_zero_rend_zero() {
     let d = db(100);
-    assert!(textes(&d, "MATCH (n) RETURN n.nom LIMIT 0").is_empty());
+    assert_eq!(textes(&d, "MATCH (n) RETURN n.nom LIMIT 0").len(), 0);
 }
 
 // ══════════ 3. LE CAS LEGITIME : sans etiquette, sans filtre, sans tri ══════════
