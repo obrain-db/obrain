@@ -4408,9 +4408,8 @@ impl Session {
                     }
                 }
             }
-        } else {
-            body()
         }
+        body()
     }
 
     /// Heuristique : la requête a-t-elle l'AIR de muter ?
