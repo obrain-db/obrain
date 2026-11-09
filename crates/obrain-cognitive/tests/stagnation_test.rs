@@ -297,7 +297,7 @@ fn get_stagnant_zones_empty_when_all_below_threshold() {
     );
 
     let zones = store.get_stagnant_zones(0.5);
-    assert_eq!(zones.len(), 0);
+    assert!(zones.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +393,7 @@ fn detector_store_accessor() {
 #[test]
 fn stagnation_store_len_and_is_empty() {
     let store = StagnationStore::new(default_config());
-    assert_eq!(store.len(), 0);
+    assert!(store.is_empty());
     assert_eq!(store.len(), 0);
 
     store.update(
@@ -408,7 +408,7 @@ fn stagnation_store_len_and_is_empty() {
         },
     );
 
-    assert_ne!(store.len(), 0);
+    assert!(!store.is_empty());
     assert_eq!(store.len(), 1);
 }
 

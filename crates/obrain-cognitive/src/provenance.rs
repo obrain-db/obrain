@@ -538,7 +538,7 @@ mod tests {
     fn test_empty_history() {
         let recorder = ProvenanceRecorder::new();
         let history = recorder.get_history(node(999));
-        assert_eq!(history.len(), 0);
+        assert!(history.is_empty());
     }
 
     #[test]

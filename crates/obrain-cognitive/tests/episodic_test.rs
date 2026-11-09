@@ -92,7 +92,7 @@ fn list_by_node_returns_empty_for_unknown_node() {
     record_sample_episode(&store, vec![1], vec![]);
 
     let episodes = store.list_by_node(9999);
-    assert_eq!(episodes.len(), 0);
+    assert!(episodes.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ fn search_by_tags_returns_empty_for_unknown_tags() {
     record_sample_episode(&store, vec![1], vec!["alpha".to_string()]);
 
     let results = store.search_by_tags(&["nonexistent".to_string()]);
-    assert_eq!(results.len(), 0);
+    assert!(results.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -358,11 +358,11 @@ fn outcome_with_counts_tracks_changes() {
 fn len_and_is_empty_work_correctly() {
     let store = default_store();
 
-    assert_eq!(store.len(), 0);
+    assert!(store.is_empty());
     assert_eq!(store.len(), 0);
 
     record_sample_episode(&store, vec![1], vec![]);
-    assert_ne!(store.len(), 0);
+    assert!(!store.is_empty());
     assert_eq!(store.len(), 1);
 
     record_sample_episode(&store, vec![2], vec![]);

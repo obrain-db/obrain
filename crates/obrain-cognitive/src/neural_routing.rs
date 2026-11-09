@@ -317,7 +317,7 @@ mod tests {
     fn test_empty_candidates() {
         let graph = MockGraph::new();
         let result = neural_route(&graph, NodeId::from(0u64), &[], &Default::default());
-        assert_eq!(result.len(), 0);
+        assert!(result.is_empty());
     }
 
     #[test]

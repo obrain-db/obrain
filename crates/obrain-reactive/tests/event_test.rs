@@ -80,8 +80,8 @@ fn node_snapshot_fields() {
 fn node_snapshot_no_labels_no_props() {
     let snap = make_node(1, &[]);
     assert_eq!(snap.id, NodeId::new(1));
-    assert_eq!(snap.labels.len(), 0);
-    assert_eq!(snap.properties.len(), 0);
+    assert!(snap.labels.is_empty());
+    assert!(snap.properties.is_empty());
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn edge_snapshot_no_props() {
     assert_eq!(snap.src, NodeId::new(10));
     assert_eq!(snap.dst, NodeId::new(20));
     assert_eq!(snap.edge_type.as_str(), "FOLLOWS");
-    assert_eq!(snap.properties.len(), 0);
+    assert!(snap.properties.is_empty());
 }
 
 #[test]
@@ -327,7 +327,7 @@ fn event_debug_all_variants() {
     ];
     for event in &events {
         let debug = format!("{:?}", event);
-        assert_ne!(debug.len(), 0);
+        assert!(!debug.is_empty());
     }
 }
 
@@ -338,7 +338,7 @@ fn event_debug_all_variants() {
 #[test]
 fn batch_new_empty() {
     let batch = MutationBatch::new(vec![]);
-    assert_eq!(batch.len(), 0);
+    assert!(batch.is_empty());
     assert_eq!(batch.len(), 0);
 }
 
@@ -356,7 +356,7 @@ fn batch_new_with_events() {
         },
     ];
     let batch = MutationBatch::new(events);
-    assert_ne!(batch.len(), 0);
+    assert!(!batch.is_empty());
     assert_eq!(batch.len(), 3);
 }
 
@@ -415,7 +415,7 @@ fn batch_single_event() {
     let batch = MutationBatch::new(vec![MutationEvent::EdgeDeleted {
         edge: make_edge(5, 1, 2, "LIKES"),
     }]);
-    assert_ne!(batch.len(), 0);
+    assert!(!batch.is_empty());
     assert_eq!(batch.len(), 1);
 }
 
@@ -428,5 +428,5 @@ fn batch_large() {
         .collect();
     let batch = MutationBatch::new(events);
     assert_eq!(batch.len(), 1000);
-    assert_ne!(batch.len(), 0);
+    assert!(!batch.is_empty());
 }

@@ -449,8 +449,8 @@ mod tests {
     fn test_validation_result_default_is_valid() {
         let result = ValidationResult::default();
         assert!(result.is_valid());
-        assert_eq!(result.errors.len(), 0);
-        assert_eq!(result.warnings.len(), 0);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
     }
 
     #[test]

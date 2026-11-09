@@ -100,7 +100,7 @@ fn store_snapshot_includes_decayed_energy() {
 fn store_list_low_energy_empty_store() {
     let store = EnergyStore::new(EnergyConfig::default());
     let low = store.list_low_energy(1.0);
-    assert_eq!(low.len(), 0);
+    assert!(low.is_empty());
 }
 
 // ---------------------------------------------------------------------------

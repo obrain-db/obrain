@@ -1224,7 +1224,7 @@ mod tests {
         let r = RegistresPartages::ouvrir(td.path()).unwrap();
         // Table vide : ni filigrane, ni nom. C'est ce qui fait que la fusion
         // n'ajoute RIEN quand il n'y a pas de pair (le cas mono-écrivain).
-        assert_eq!(r.noms_indexes(Espace::Labels).len(), 0);
+        assert!(r.noms_indexes(Espace::Labels).is_empty());
 
         let a = r.interner(Espace::Labels, "Alpha").unwrap().unwrap();
         let b = r.interner(Espace::Labels, "Beta").unwrap().unwrap();
@@ -1252,7 +1252,7 @@ mod tests {
 
         // Les types et les clés commencent à l'indice 1 (0 est la sentinelle
         // nulle des données) : le filigrane suit l'INDICE, pas le rang.
-        assert_eq!(r.noms_indexes(Espace::Types).len(), 0);
+        assert!(r.noms_indexes(Espace::Types).is_empty());
         r.interner(Espace::Types, "PART_OF").unwrap();
         assert_eq!(
             r.noms_indexes(Espace::Types),

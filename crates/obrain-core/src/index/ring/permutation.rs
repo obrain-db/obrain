@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn test_empty() {
         let perm = SuccinctPermutation::new(&[]);
-        assert_eq!(perm.len(), 0);
+        assert!(perm.is_empty());
         assert_eq!(perm.apply(0), None);
         assert_eq!(perm.apply_inverse(0), None);
     }

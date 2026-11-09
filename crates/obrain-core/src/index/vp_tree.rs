@@ -520,7 +520,7 @@ mod tests {
         let tree = VpTree::build(points, euclidean);
         // Very small radius around (5,5) — no points nearby
         let results = tree.range_search(&[5.0, 5.0], 0.1, euclidean);
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
     }
 
     #[test]
@@ -582,14 +582,14 @@ mod tests {
     #[test]
     fn test_build_empty() {
         let tree: VpTree<u32> = VpTree::build(vec![], euclidean);
-        assert_eq!(tree.len(), 0);
+        assert!(tree.is_empty());
         assert_eq!(tree.len(), 0);
 
         let results = tree.knn(&[0.0], 5, euclidean);
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
 
         let range = tree.range_search(&[0.0], 100.0, euclidean);
-        assert_eq!(range.len(), 0);
+        assert!(range.is_empty());
     }
 
     #[test]

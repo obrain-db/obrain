@@ -722,7 +722,7 @@ mod tests {
 
         // Cue with NodeId(2) — should match engrams containing node 2.
         let results = engine.recall(&store, &[NodeId(2)], &index, &spectral, 10);
-        assert_ne!(results.len(), 0);
+        assert!(!results.is_empty());
 
         // All results should have non-negative confidence.
         for r in &results {
@@ -755,7 +755,7 @@ mod tests {
         let (store, index, spectral) = make_store_and_index();
         let engine = RecallEngine::new();
         let results = engine.recall(&store, &[], &index, &spectral, 10);
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
     }
 
     #[test]
@@ -980,7 +980,7 @@ mod tests {
 
         let results =
             WarmupSelector::select_warmup_engrams(&store, &[], &index, &spectral, &config);
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
     }
 
     #[test]

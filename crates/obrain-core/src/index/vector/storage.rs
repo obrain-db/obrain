@@ -667,7 +667,7 @@ mod tests {
         assert!(storage.cache.read().contains_key(&NodeId::new(1)));
 
         storage.clear_cache();
-        assert_eq!(storage.cache.read().len(), 0);
+        assert!(storage.cache.read().is_empty());
 
         // Should still retrieve from file
         let vec = storage.get(NodeId::new(1)).unwrap();
@@ -727,12 +727,12 @@ mod tests {
     #[test]
     fn test_ram_storage_is_empty() {
         let storage = RamStorage::new(4);
-        assert_eq!(storage.len(), 0);
+        assert!(storage.is_empty());
 
         storage
             .insert(NodeId::new(1), &[1.0, 2.0, 3.0, 4.0])
             .unwrap();
-        assert_ne!(storage.len(), 0);
+        assert!(!storage.is_empty());
     }
 
     #[test]
@@ -740,7 +740,7 @@ mod tests {
         let storage = RamStorage::with_capacity(4, 100);
 
         assert_eq!(storage.dimensions(), 4);
-        assert_eq!(storage.len(), 0);
+        assert!(storage.is_empty());
 
         // Should be able to insert without reallocation up to capacity
         for i in 0..100 {
@@ -798,12 +798,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let storage = MmapStorage::create(&path, 4).unwrap();
-        assert_eq!(storage.len(), 0);
+        assert!(storage.is_empty());
 
         storage
             .insert(NodeId::new(1), &[1.0, 2.0, 3.0, 4.0])
             .unwrap();
-        assert_ne!(storage.len(), 0);
+        assert!(!storage.is_empty());
 
         let _ = std::fs::remove_file(&path);
     }

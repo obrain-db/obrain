@@ -161,13 +161,13 @@ mod tests {
         assert_eq!(morsel.start_row, 0);
         assert_eq!(morsel.end_row, 1000);
         assert_eq!(morsel.row_count(), 1000);
-        assert_ne!(morsel.len(), 0);
+        assert!(!morsel.is_empty());
     }
 
     #[test]
     fn test_morsel_empty() {
         let morsel = Morsel::new(0, 0, 100, 100);
-        assert_eq!(morsel.len(), 0);
+        assert!(morsel.is_empty());
         assert_eq!(morsel.row_count(), 0);
     }
 
@@ -247,8 +247,8 @@ mod tests {
 
     #[test]
     fn test_generate_morsels_empty() {
-        assert_eq!(generate_morsels(0, 100, 0).len(), 0);
-        assert_eq!(generate_morsels(100, 0, 0).len(), 0);
+        assert!(generate_morsels(0, 100, 0).is_empty());
+        assert!(generate_morsels(100, 0, 0).is_empty());
     }
 
     #[test]

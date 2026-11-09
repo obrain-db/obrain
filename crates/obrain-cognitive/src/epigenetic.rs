@@ -1365,7 +1365,7 @@ mod tests {
     fn test_export_empty_bridge() {
         let bridge = EpigeneticBridge::new();
         let exported = bridge.export();
-        assert_eq!(exported.len(), 0);
+        assert!(exported.is_empty());
     }
 
     #[test]
@@ -1389,7 +1389,7 @@ mod tests {
         let ctx = ProjectContext::new();
         let template = EngramTemplate::any();
         let active = bridge.get_active_marks(&template, &ctx);
-        assert_eq!(active.len(), 0);
+        assert!(active.is_empty());
     }
 
     #[test]
@@ -1410,7 +1410,7 @@ mod tests {
         // Template has no description_pattern → mark's pattern can't match
         let template = EngramTemplate::any();
         let active = bridge.get_active_marks(&template, &ctx);
-        assert_eq!(active.len(), 0);
+        assert!(active.is_empty());
     }
 
     #[test]

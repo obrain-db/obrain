@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(edges[0].3, "CRYSTALLIZED_IN");
 
         // Check result
-        assert_ne!(result.summary.len(), 0);
+        assert!(!result.summary.is_empty());
     }
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         let props = &nodes[0].2;
         // Check "content" is a non-empty string
         if let Value::String(s) = props.get("content").unwrap() {
-            assert_ne!(s.len(), 0);
+            assert!(!s.is_empty());
         } else {
             panic!("content should be String");
         }
@@ -659,7 +659,7 @@ mod tests {
         // Check valence and strength
         assert_eq!(props.get("valence"), Some(&Value::Float64(-0.3)));
         assert_eq!(props.get("strength"), Some(&Value::Float64(0.91)));
-        assert_ne!(result.summary.len(), 0);
+        assert!(!result.summary.is_empty());
     }
 
     #[test]

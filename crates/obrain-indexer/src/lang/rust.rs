@@ -914,7 +914,7 @@ fn run() {
 #[test]
 fn t() {
     let catalog = Catalog::new();
-    assert_eq!(catalog.indexes_for_label(LabelId::new(999)).len(), 0);
+    assert!(catalog.indexes_for_label(LabelId::new(999)).is_empty());
 }
 "#;
         let ex = extract_src(src);

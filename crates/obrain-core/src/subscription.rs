@@ -448,7 +448,7 @@ mod tests {
         // Should be essentially a no-op
         mgr.notify(&node_created_event(NodeId(1), &["A"]));
         mgr.notify(&edge_created_event());
-        assert_eq!(mgr.len(), 0);
+        assert!(mgr.is_empty());
     }
 
     #[test]

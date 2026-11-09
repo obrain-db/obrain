@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn iter_props_empty_registry_returns_empty() {
         let reg = BlobColumnRegistry::new();
-        assert_eq!(reg.iter_props_for_entity(EntityKind::Node, 42).len(), 0);
+        assert!(reg.iter_props_for_entity(EntityKind::Node, 42).is_empty());
     }
 
     #[test]

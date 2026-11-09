@@ -398,7 +398,7 @@ mod tests {
             .iter()
             .filter(|s| s.pattern == vec!["read", "edit"])
             .collect();
-        assert_ne!(read_edit.len(), 0);
+        assert!(!read_edit.is_empty());
         assert!(read_edit[0].count >= 2);
     }
 
@@ -424,14 +424,14 @@ mod tests {
 
         let inefficient = vec![vec!["delete".into(), "undo".into()]];
         let alerts = detect_regressions(&recorder, &inefficient);
-        assert_eq!(alerts.len(), 0);
+        assert!(alerts.is_empty());
     }
 
     #[test]
     fn test_delays() {
         let recorder = TrajectoryRecorder::new(None);
         // Empty recorder → no delays
-        assert_eq!(recorder.delays().len(), 0);
+        assert!(recorder.delays().is_empty());
     }
 
     #[test]

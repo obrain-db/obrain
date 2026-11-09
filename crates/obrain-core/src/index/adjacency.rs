@@ -1051,7 +1051,7 @@ mod tests {
         let compressed = chunk.compress();
 
         assert_eq!(compressed.len(), 0);
-        assert_eq!(compressed.len(), 0);
+        assert!(compressed.is_empty());
         assert_eq!(compressed.iter().count(), 0);
     }
 
@@ -1416,7 +1416,7 @@ mod tests {
 
         // Out-of-range query should return empty
         let empty = adj.edges_in_range(NodeId::new(0), NodeId::new(200), NodeId::new(300));
-        assert_eq!(empty.len(), 0);
+        assert!(empty.is_empty());
     }
 
     #[test]

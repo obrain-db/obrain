@@ -143,7 +143,7 @@ fn detach_delete_emporte_les_externes_sortantes_et_survit_au_kill() {
         // (elles vivent chez lui — spec paragraphe 4) ; celles de b restent.
         store.delete_node_edges(a);
         assert!(store.delete_node(a));
-        assert_eq!(store.external_edges_from(a).len(), 0);
+        assert!(store.external_edges_from(a).is_empty());
         assert_eq!(store.external_edge_count(), 1);
         drop(store);
     }
@@ -154,7 +154,7 @@ fn detach_delete_emporte_les_externes_sortantes_et_survit_au_kill() {
         1,
         "apres kill-sans-flush, seule l'arete de b doit revenir"
     );
-    assert_eq!(store.external_edges_from(a).len(), 0);
+    assert!(store.external_edges_from(a).is_empty());
     assert_eq!(store.external_edges_from(b).len(), 1);
 }
 

@@ -819,7 +819,7 @@ mod tests {
 
         let result = algo.execute(&store, &params).unwrap();
         assert_eq!(result.columns, vec!["neighbor", "score"]);
-        assert_ne!(result.rows.len(), 0);
+        assert!(!result.rows.is_empty());
     }
 
     #[test]

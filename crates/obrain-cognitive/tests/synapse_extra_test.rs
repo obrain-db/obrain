@@ -84,7 +84,7 @@ fn store_list_synapses_unconnected_node() {
     let store = SynapseStore::new(SynapseConfig::default());
     store.reinforce(NodeId::new(1), NodeId::new(2), 0.5);
     let synapses = store.list_synapses(NodeId::new(99));
-    assert_eq!(synapses.len(), 0);
+    assert!(synapses.is_empty());
 }
 
 // ---------------------------------------------------------------------------

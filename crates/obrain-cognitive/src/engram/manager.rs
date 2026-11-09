@@ -649,7 +649,7 @@ mod tests {
             "surprise hors de [0,1] : {}",
             prediction.surprise
         );
-        assert_ne!(prediction.attention.len(), 0);
+        assert!(!prediction.attention.is_empty());
     }
 
     #[test]

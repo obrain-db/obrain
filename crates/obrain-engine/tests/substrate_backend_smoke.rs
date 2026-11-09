@@ -45,7 +45,7 @@ fn open_substrate_write_then_read_via_direct_store() {
     assert_eq!(got, Some(Value::String("Atlas".into())));
 
     let out_edges = store.edges_from(n, Direction::Outgoing);
-    assert_eq!(out_edges.len(), 0);
+    assert!(out_edges.is_empty());
 }
 
 #[test]

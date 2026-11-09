@@ -2434,14 +2434,14 @@ mod tests {
         assert_eq!(log.entries().len(), 1);
 
         log.clear();
-        assert_eq!(log.entries().len(), 0);
+        assert!(log.entries().is_empty());
         assert!(!log.should_replan());
     }
 
     #[test]
     fn test_create_estimation_log() {
         let log = CardinalityEstimator::create_estimation_log();
-        assert_eq!(log.entries().len(), 0);
+        assert!(log.entries().is_empty());
         assert!(!log.should_replan());
     }
 }

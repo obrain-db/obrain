@@ -166,7 +166,7 @@ fn detach_delete_emporte_les_aretes_externes_sortantes() {
         1,
         "les sortantes du noeud supprime partent avec lui, celles de b restent"
     );
-    assert_eq!(store.external_inbound_refs("cible", "k1").len(), 0);
+    assert!(store.external_inbound_refs("cible", "k1").is_empty());
     assert_eq!(store.external_inbound_refs("cible", "k2").len(), 1);
 }
 

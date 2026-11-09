@@ -531,7 +531,7 @@ mod tests {
             l2: Tier2([0u16; 384]),
         };
         let hits = scan_tiered(&q, &[], &[], &[], 0, ScanConfig::default());
-        assert_eq!(hits.len(), 0);
+        assert!(hits.is_empty());
     }
 
     #[test]

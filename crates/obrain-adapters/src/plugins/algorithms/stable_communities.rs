@@ -486,7 +486,7 @@ mod tests {
 
         // Should have communities
         assert!(stable.num_communities >= 2);
-        assert_ne!(stable.mapping.len(), 0);
+        assert!(!stable.mapping.is_empty());
     }
 
     #[test]
@@ -502,7 +502,7 @@ mod tests {
         let stable = stabilize_communities(&prev, &curr, &store, 0.3);
 
         assert_eq!(stable.communities.len(), curr.communities.len());
-        assert_eq!(stable.mapping.len(), 0); // No mapping for first run
+        assert!(stable.mapping.is_empty()); // No mapping for first run
     }
 
     #[test]

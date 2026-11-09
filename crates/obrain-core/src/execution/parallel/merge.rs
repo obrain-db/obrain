@@ -531,7 +531,7 @@ mod tests {
     fn test_merge_sorted_runs_empty() {
         let runs: Vec<Vec<Vec<Value>>> = Vec::new();
         let result = merge_sorted_runs(runs, &[]).unwrap();
-        assert_eq!(result.len(), 0);
+        assert!(result.is_empty());
     }
 
     #[test]

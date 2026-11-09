@@ -124,7 +124,7 @@ fn test_deleted_node_history_preserves_epoch() {
     let result = session
         .execute("MATCH (p:Person {name: 'Vincent'}) RETURN p")
         .unwrap();
-    assert_eq!(result.rows.len(), 0);
+    assert!(result.rows.is_empty());
 
     // The version history API still tracks the deletion metadata.
     // Note: MATCH-based time-travel on deleted nodes is not supported
@@ -335,7 +335,7 @@ fn test_node_history_deleted() {
 
     let history = db.get_node_history(id);
     // Version chain should still exist with a deleted marker
-    assert_ne!(history.len(), 0);
+    assert!(!history.is_empty());
     let (_, deleted_epoch, _) = &history[0];
     assert!(deleted_epoch.is_some());
 }
@@ -346,7 +346,7 @@ fn test_node_history_nonexistent() {
     use obrain_common::types::NodeId;
 
     let history = db.get_node_history(NodeId::new(9999));
-    assert_eq!(history.len(), 0);
+    assert!(history.is_empty());
 }
 
 #[test]

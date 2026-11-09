@@ -146,7 +146,7 @@ fn sweep_at_operational_not_promoted_if_too_young() {
     let manager = MemoryManager::new(mem.clone(), config, energy);
     let result = manager.sweep_at(Instant::now() + Duration::from_secs(5));
 
-    assert_eq!(result.promoted.len(), 0);
+    assert!(result.promoted.is_empty());
     assert_eq!(mem.get_horizon(node), MemoryHorizon::Operational);
 }
 
@@ -186,7 +186,7 @@ fn sweep_at_consolidated_not_demoted_if_recent() {
     // Only 10 seconds have passed — below demotion_max_idle of 300s
     let result = manager.sweep_at(Instant::now() + Duration::from_secs(10));
 
-    assert_eq!(result.demoted.len(), 0);
+    assert!(result.demoted.is_empty());
     assert_eq!(mem.get_horizon(node), MemoryHorizon::Consolidated);
 }
 
@@ -226,8 +226,8 @@ fn sweep_at_operational_stays_if_energy_between_thresholds() {
     let result = manager.sweep_at(future);
 
     // Neither promoted nor demoted
-    assert_eq!(result.promoted.len(), 0);
-    assert_eq!(result.demoted.len(), 0);
+    assert!(result.promoted.is_empty());
+    assert!(result.demoted.is_empty());
     assert_eq!(mem.get_horizon(node), MemoryHorizon::Operational);
 }
 
@@ -263,7 +263,7 @@ fn sweep_at_archived_stays_if_low_energy() {
     let manager = MemoryManager::new(mem.clone(), config, energy);
     let result = manager.sweep_at(Instant::now());
 
-    assert_eq!(result.reactivated.len(), 0);
+    assert!(result.reactivated.is_empty());
     assert_eq!(mem.get_horizon(node), MemoryHorizon::Archived);
 }
 

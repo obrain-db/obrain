@@ -286,7 +286,7 @@ fn empty_graph_fingerprint() {
 
     assert_eq!(fp.node_count, 0);
     assert_eq!(fp.edge_count, 0);
-    assert_eq!(fp.degree_distribution.len(), 0);
+    assert!(fp.degree_distribution.is_empty());
     assert!((fp.clustering_coeff - 0.0).abs() < 1e-10);
 }
 

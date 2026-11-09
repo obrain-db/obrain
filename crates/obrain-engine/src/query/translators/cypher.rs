@@ -3429,7 +3429,7 @@ mod tests {
         );
         if let LogicalOperator::CallProcedure(call) = &plan.root {
             assert_eq!(call.name, vec!["db", "labels"]);
-            assert_eq!(call.arguments.len(), 0);
+            assert!(call.arguments.is_empty());
             assert!(call.yield_items.is_none());
         }
     }

@@ -533,7 +533,7 @@ mod tests {
         let pipeline = ParallelPipeline::simple(source, factory);
         let result = pipeline.execute().unwrap();
 
-        assert_eq!(result.chunks.len(), 0);
+        assert!(result.chunks.is_empty());
         assert_eq!(result.morsels_processed, 0);
         assert_eq!(result.rows_processed, 0);
     }
@@ -614,13 +614,13 @@ mod tests {
     #[test]
     fn test_collector_sink() {
         let mut sink = CollectorSink::new();
-        assert_eq!(sink.len(), 0);
+        assert!(sink.is_empty());
 
         let values = vec![Value::Int64(1), Value::Int64(2), Value::Int64(3)];
         let chunk = DataChunk::new(vec![ValueVector::from_values(&values)]);
 
         sink.consume(chunk).unwrap();
-        assert_ne!(sink.len(), 0);
+        assert!(!sink.is_empty());
         assert_eq!(sink.len(), 1);
         assert_eq!(sink.row_count(), 3);
 

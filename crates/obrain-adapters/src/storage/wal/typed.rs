@@ -296,7 +296,7 @@ mod tests {
         assert!(wal.last_checkpoint_timestamp().is_none());
 
         let files = wal.log_files().unwrap();
-        assert_ne!(files.len(), 0);
+        assert!(!files.is_empty());
 
         let _path = wal.path();
         let _mode = wal.durability_mode();

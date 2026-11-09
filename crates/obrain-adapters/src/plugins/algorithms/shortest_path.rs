@@ -1287,7 +1287,7 @@ mod tests {
     fn test_dijkstra_nonexistent_source() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = dijkstra(&store, NodeId::new(999), None);
-        assert_eq!(result.distances.len(), 0);
+        assert!(result.distances.is_empty());
     }
 
     #[test]

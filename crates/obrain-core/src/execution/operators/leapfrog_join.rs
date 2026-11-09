@@ -499,7 +499,7 @@ mod tests {
         // but the reset logic itself should work
         leapfrog.reset();
         assert!(!leapfrog.materialized);
-        assert_eq!(leapfrog.results.len(), 0);
+        assert!(leapfrog.results.is_empty());
     }
 
     #[test]

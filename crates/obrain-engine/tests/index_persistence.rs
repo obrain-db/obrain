@@ -144,10 +144,11 @@ fn index_texte_se_rebatit_a_la_premiere_recherche() {
             );
         }
         db.create_text_index("Doc", "corps").expect("creation");
-        let hits = db
-            .text_search("Doc", "corps", "substrats", 10)
-            .expect("recherche");
-        assert_ne!(hits.len(), 0);
+        assert!(
+            !db.text_search("Doc", "corps", "substrats", 10)
+                .expect("recherche")
+                .is_empty()
+        );
     }
 
     let db = base(tmp.path());

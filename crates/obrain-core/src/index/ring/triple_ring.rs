@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn test_empty() {
         let ring = TripleRing::from_triples(std::iter::empty());
-        assert_eq!(ring.len(), 0);
+        assert!(ring.is_empty());
         assert_eq!(ring.len(), 0);
         assert_eq!(ring.num_terms(), 0);
     }
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn test_term_dictionary_with_capacity() {
         let mut dict = TermDictionary::with_capacity(100);
-        assert_eq!(dict.len(), 0);
+        assert!(dict.is_empty());
         assert_eq!(dict.len(), 0);
 
         // Add some terms
@@ -800,7 +800,7 @@ mod tests {
         let ring = TripleRing::from_triples(triples.into_iter());
 
         let dict = ring.dictionary();
-        assert_ne!(dict.len(), 0);
+        assert!(!dict.is_empty());
         // Should have 5 unique terms: alix, knows, gus, likes, vincent
         assert_eq!(dict.len(), 5);
 
@@ -841,7 +841,7 @@ mod tests {
 
         let pattern = TriplePattern::with_subject(Term::iri("nonexistent"));
         let results: Vec<Triple> = ring.find(&pattern).collect();
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
     }
 
     #[test]
@@ -908,7 +908,7 @@ mod tests {
     fn test_empty_ring_operations() {
         let ring = TripleRing::from_triples(std::iter::empty());
 
-        assert_eq!(ring.len(), 0);
+        assert!(ring.is_empty());
         assert_eq!(ring.len(), 0);
         assert!(ring.get_spo(0).is_none());
         assert_eq!(ring.count(&TriplePattern::any()), 0);
@@ -918,6 +918,6 @@ mod tests {
 
         // Find on empty ring
         let results: Vec<Triple> = ring.find(&TriplePattern::any()).collect();
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
     }
 }

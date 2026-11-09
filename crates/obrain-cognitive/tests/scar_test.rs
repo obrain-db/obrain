@@ -152,7 +152,7 @@ fn store_add_and_get_scars() {
 fn store_get_scars_empty_node() {
     let store = ScarStore::new(ScarConfig::default());
     let scars = store.get_scars(NodeId(999));
-    assert_eq!(scars.len(), 0);
+    assert!(scars.is_empty());
 }
 
 #[test]

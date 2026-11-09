@@ -197,7 +197,7 @@ fn cascade_i5_suppression_de_noeud() {
     assert!(store.get_simplex(h1).unwrap().is_none());
     assert!(store.get_simplex(t2).unwrap().is_some());
     assert!(store.get_simplex(h2).unwrap().is_some());
-    assert_eq!(store.simplices_of_node(n[0]).unwrap().len(), 0);
+    assert!(store.simplices_of_node(n[0]).unwrap().is_empty());
     assert_eq!(store.simplices_of_node(n[1]).unwrap(), vec![t2]);
     assert_eq!(store.simplices_of_node(n[4]).unwrap(), vec![h2]);
 

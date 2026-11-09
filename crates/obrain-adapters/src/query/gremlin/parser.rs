@@ -1078,7 +1078,7 @@ mod tests {
         assert!(result.is_ok());
         let stmt = result.unwrap();
         assert!(matches!(stmt.source, TraversalSource::V(None)));
-        assert_eq!(stmt.steps.len(), 0);
+        assert!(stmt.steps.is_empty());
     }
 
     #[test]

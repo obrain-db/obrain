@@ -71,7 +71,7 @@ fn update_staleness_noop_for_untracked_node() {
     let store = FabricStore::new();
     // Should not panic or create an entry
     store.update_staleness(NodeId(999));
-    assert_eq!(store.len(), 0);
+    assert!(store.is_empty());
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn recalculate_risk_nonexistent_node_is_noop() {
     let store = FabricStore::new();
     // Should not panic
     store.recalculate_risk(NodeId(999), 1.0, 1.0, 1.0);
-    assert_eq!(store.len(), 0);
+    assert!(store.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ fn record_mutation_at_uses_specified_time() {
 fn get_hotspots_empty_store() {
     let store = FabricStore::new();
     let hotspots = store.get_hotspots(10);
-    assert_eq!(hotspots.len(), 0);
+    assert!(hotspots.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ fn get_hotspots_empty_store() {
 fn get_risk_zones_empty_store() {
     let store = FabricStore::new();
     let zones = store.get_risk_zones(0.0);
-    assert_eq!(zones.len(), 0);
+    assert!(zones.is_empty());
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn get_risk_zones_zero_threshold_returns_all_with_risk() {
 
     let zones = store.get_risk_zones(0.0);
     // Node has risk > 0 (churn > 0, pagerank > 0, betweenness > 0, density = 0)
-    assert_ne!(zones.len(), 0);
+    assert!(!zones.is_empty());
 }
 
 // ---------------------------------------------------------------------------

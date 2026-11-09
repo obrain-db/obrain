@@ -150,7 +150,7 @@ fn recalculate_all_risks_uses_global_maxima() {
 fn recalculate_all_risks_on_empty_store_is_noop() {
     let store = FabricStore::new();
     store.recalculate_all_risks(); // should not panic
-    assert_eq!(store.len(), 0);
+    assert!(store.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ fn update_staleness_none_case_for_untracked() {
     let store = FabricStore::new();
     store.update_staleness(NodeId(42));
     // Store should remain empty — no entry created
-    assert_eq!(store.len(), 0);
+    assert!(store.is_empty());
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn community_ids_and_get_community_nodes_roundtrip() {
 
     // None community nodes not returned for any community
     let c_missing = store.get_community_nodes(999);
-    assert_eq!(c_missing.len(), 0);
+    assert!(c_missing.is_empty());
 }
 
 #[test]
@@ -294,7 +294,7 @@ fn community_ids_with_no_communities_assigned() {
     store.record_mutation(NodeId(1));
     store.set_annotation_density(NodeId(2), 0.5);
     // No community_id set on any node
-    assert_eq!(store.community_ids().len(), 0);
+    assert!(store.community_ids().is_empty());
 }
 
 // ---------------------------------------------------------------------------

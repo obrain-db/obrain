@@ -1250,7 +1250,7 @@ mod tests {
     fn empty_graph_yields_empty_partition() {
         let g = Graph::new(0);
         let p = leiden_batch(&g, LeidenConfig::default());
-        assert_eq!(p.len(), 0);
+        assert!(p.is_empty());
         assert_eq!(modularity(&g, &p, 1.0), 0.0);
     }
 

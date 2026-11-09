@@ -649,7 +649,7 @@ mod tests {
         let clusters = vec![0, 0, 0, 0];
         let mut rng = Rng::new(42);
         let triplets = sample_triplets(&clusters, 10, &mut rng);
-        assert_eq!(triplets.len(), 0);
+        assert!(triplets.is_empty());
     }
 
     // ── Cluster similarity tests ──

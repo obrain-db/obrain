@@ -1992,7 +1992,7 @@ mod tests {
 
         // Without filter: f1 has 2 outgoing neighbors (fn1 via IMPORTS, fn1 via CONTAINS)
         let all_neighbors: Vec<NodeId> = store.neighbors(f1, Direction::Outgoing);
-        assert_ne!(all_neighbors.len(), 0);
+        assert!(!all_neighbors.is_empty());
 
         // With edge type filter: only IMPORTS
         let projection = ProjectionBuilder::new(&store)
@@ -2164,19 +2164,19 @@ mod tests {
     #[test]
     fn test_node_filter_is_empty() {
         let filter = NodeFilter::new();
-        assert_eq!(filter.len(), 0);
+        assert!(filter.is_empty());
 
         let filter = NodeFilter::new().labels(vec!["A".into()]);
-        assert_ne!(filter.len(), 0);
+        assert!(!filter.is_empty());
     }
 
     #[test]
     fn test_edge_filter_is_empty() {
         let filter = EdgeFilter::new();
-        assert_eq!(filter.len(), 0);
+        assert!(filter.is_empty());
 
         let filter = EdgeFilter::new().types(vec!["X".into()]);
-        assert_ne!(filter.len(), 0);
+        assert!(!filter.is_empty());
     }
 
     #[test]
@@ -2228,8 +2228,8 @@ mod tests {
     fn test_projection_config_new() {
         let config = ProjectionConfig::new("test_view");
         assert_eq!(config.name(), "test_view");
-        assert_eq!(config.node_labels_ref().len(), 0);
-        assert_eq!(config.edge_types_ref().len(), 0);
+        assert!(config.node_labels_ref().is_empty());
+        assert!(config.edge_types_ref().is_empty());
     }
 
     #[test]
@@ -2296,11 +2296,11 @@ mod tests {
     #[test]
     fn test_registry_len_and_is_empty() {
         let registry = ProjectionRegistry::new();
-        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
 
         registry.create(ProjectionConfig::new("v")).unwrap();
-        assert_ne!(registry.len(), 0);
+        assert!(!registry.is_empty());
         assert_eq!(registry.len(), 1);
     }
 
@@ -2565,11 +2565,11 @@ mod tests {
 
         // n0 is filtered out — edges_from should return empty
         let edges = projection.edges_from(n0, Direction::Outgoing);
-        assert_eq!(edges.len(), 0);
+        assert!(edges.is_empty());
 
         // neighbors from filtered node should be empty
         let neighbors = projection.neighbors(n0, Direction::Both);
-        assert_eq!(neighbors.len(), 0);
+        assert!(neighbors.is_empty());
     }
 
     #[test]
@@ -2627,7 +2627,7 @@ mod tests {
 
         // Label not in filter should return empty
         let notes = projection.nodes_by_label("Note");
-        assert_eq!(notes.len(), 0);
+        assert!(notes.is_empty());
     }
 
     #[test]
@@ -2690,8 +2690,8 @@ mod tests {
             .build();
 
         let batch = projection.get_nodes_properties_batch(&[n0, n1]);
-        assert_ne!(batch[0].len(), 0);
-        assert_eq!(batch[1].len(), 0); // Note filtered out
+        assert!(!batch[0].is_empty());
+        assert!(batch[1].is_empty()); // Note filtered out
     }
 
     #[test]
@@ -2783,7 +2783,7 @@ mod tests {
 
         // Note label is filtered out → must be empty regardless of backend.
         let history = projection.get_node_history(n1);
-        assert_eq!(history.len(), 0);
+        assert!(history.is_empty());
     }
 
     #[test]
@@ -2809,7 +2809,7 @@ mod tests {
 
         // Edge to Note with SYNAPSE type should be filtered regardless of backend.
         let history = projection.get_edge_history(e1);
-        assert_eq!(history.len(), 0);
+        assert!(history.is_empty());
     }
 
     #[test]
@@ -2879,8 +2879,8 @@ mod tests {
 
         let keys = vec!["path".into(), "size".into()];
         let batch = projection.get_nodes_properties_selective_batch(&[n0, n1], &keys);
-        assert_ne!(batch[0].len(), 0);
-        assert_eq!(batch[1].len(), 0); // Note filtered
+        assert!(!batch[0].is_empty());
+        assert!(batch[1].is_empty()); // Note filtered
     }
 
     #[test]
@@ -2899,8 +2899,8 @@ mod tests {
 
         let keys = vec!["weight".into()];
         let batch = projection.get_edges_properties_selective_batch(&[e0, e1], &keys);
-        assert_ne!(batch[0].len(), 0);
-        assert_eq!(batch[1].len(), 0); // SYNAPSE filtered
+        assert!(!batch[0].is_empty());
+        assert!(batch[1].is_empty()); // SYNAPSE filtered
     }
 
     #[test]
@@ -3004,7 +3004,7 @@ mod tests {
 
         // n1 is filtered — neighbor should be empty
         let neighbors = projection.neighbors(n0, Direction::Outgoing);
-        assert_eq!(neighbors.len(), 0);
+        assert!(neighbors.is_empty());
     }
 
     // ========================================================================

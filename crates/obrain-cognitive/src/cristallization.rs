@@ -264,7 +264,7 @@ mod tests {
         }]);
 
         let stable = tracker.find_stable(3, 0.8);
-        assert_eq!(stable.len(), 0);
+        assert!(stable.is_empty());
     }
 
     #[test]
@@ -290,7 +290,7 @@ mod tests {
         }]);
 
         let stable = tracker.find_stable(3, 0.8);
-        assert_eq!(stable.len(), 0);
+        assert!(stable.is_empty());
     }
 
     #[test]

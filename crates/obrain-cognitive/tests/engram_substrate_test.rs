@@ -74,7 +74,7 @@ fn recall_returns_engrams_containing_node() {
 
     // Node 999 is in nothing.
     let got = store.recall(NodeId(999)).unwrap();
-    assert_eq!(got.len(), 0);
+    assert!(got.is_empty());
 }
 
 #[test]

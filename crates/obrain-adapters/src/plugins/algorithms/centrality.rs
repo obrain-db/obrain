@@ -1038,7 +1038,7 @@ mod tests {
     fn test_pagerank_empty() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let scores = pagerank(&store, 0.85, 100, 1e-6);
-        assert_eq!(scores.len(), 0);
+        assert!(scores.is_empty());
     }
 
     #[test]
@@ -1137,7 +1137,7 @@ mod tests {
 
         // Test trait methods
         assert_eq!(algo.name(), "pagerank");
-        assert_ne!(algo.description().len(), 0);
+        assert!(!algo.description().is_empty());
         assert_eq!(algo.parameters().len(), 3);
 
         // Test execute with default params
@@ -1162,7 +1162,7 @@ mod tests {
 
         // Test trait methods
         assert_eq!(algo.name(), "betweenness_centrality");
-        assert_ne!(algo.description().len(), 0);
+        assert!(!algo.description().is_empty());
         assert_eq!(algo.parameters().len(), 1);
 
         // Test execute with default params (normalized=true)
@@ -1185,7 +1185,7 @@ mod tests {
 
         // Test trait methods
         assert_eq!(algo.name(), "closeness_centrality");
-        assert_ne!(algo.description().len(), 0);
+        assert!(!algo.description().is_empty());
         assert_eq!(algo.parameters().len(), 1);
 
         // Test execute with default params (wf_improved=false)
@@ -1208,7 +1208,7 @@ mod tests {
 
         // Test trait methods
         assert_eq!(algo.name(), "degree_centrality");
-        assert_ne!(algo.description().len(), 0);
+        assert!(!algo.description().is_empty());
         assert_eq!(algo.parameters().len(), 1);
 
         // Test execute with default params (normalized=false) - returns 4 columns
@@ -1247,10 +1247,10 @@ mod tests {
     fn test_closeness_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let scores = closeness_centrality(&store, false);
-        assert_eq!(scores.len(), 0);
+        assert!(scores.is_empty());
 
         let scores_wf = closeness_centrality(&store, true);
-        assert_eq!(scores_wf.len(), 0);
+        assert!(scores_wf.is_empty());
     }
 
     #[test]
@@ -1271,10 +1271,10 @@ mod tests {
     fn test_degree_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = degree_centrality(&store);
-        assert_eq!(result.total_degree.len(), 0);
+        assert!(result.total_degree.is_empty());
 
         let normalized = degree_centrality_normalized(&store);
-        assert_eq!(normalized.len(), 0);
+        assert!(normalized.is_empty());
     }
 
     #[test]
@@ -1405,8 +1405,8 @@ mod tests {
     fn test_hits_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = hits(&store, 100, 1e-6);
-        assert_eq!(result.hub_scores.len(), 0);
-        assert_eq!(result.authority_scores.len(), 0);
+        assert!(result.hub_scores.is_empty());
+        assert!(result.authority_scores.is_empty());
         assert!(result.converged);
         assert_eq!(result.iterations, 0);
     }
@@ -1551,7 +1551,7 @@ mod tests {
         let algo = HitsAlgorithm;
 
         assert_eq!(algo.name(), "hits");
-        assert_ne!(algo.description().len(), 0);
+        assert!(!algo.description().is_empty());
         assert_eq!(algo.parameters().len(), 2);
 
         let params = Parameters::new();

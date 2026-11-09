@@ -1295,9 +1295,9 @@ mod tests {
             store.insert(triple);
         }
 
-        assert_ne!(store.len(), 0);
+        assert!(!store.is_empty());
         store.clear();
-        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
         assert_eq!(store.len(), 0);
     }
 
@@ -1752,7 +1752,7 @@ mod tests {
         let result = store.bulk_load(Vec::<Triple>::new());
         assert_eq!(result.triple_count, 0);
         assert_eq!(store.len(), 0);
-        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
     }
 
     #[test]

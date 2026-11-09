@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn test_empty() {
         let sbv = SuccinctBitVector::from_bools(&[]);
-        assert_eq!(sbv.len(), 0);
+        assert!(sbv.is_empty());
         assert_eq!(sbv.rank1(0), 0);
         assert_eq!(sbv.rank0(0), 0);
         assert_eq!(sbv.select1(0), None);

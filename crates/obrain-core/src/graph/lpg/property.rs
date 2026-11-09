@@ -1835,7 +1835,7 @@ mod tests {
         col.set(NodeId::new(2), "Gus".into());
 
         assert_eq!(col.len(), 2);
-        assert_ne!(col.len(), 0);
+        assert!(!col.is_empty());
 
         assert_eq!(col.get(NodeId::new(1)), Some(Value::String("Alix".into())));
 
@@ -2048,7 +2048,7 @@ mod tests {
         let key = PropertyKey::new("any");
 
         let values = storage.get_batch(&[], &key);
-        assert_eq!(values.len(), 0);
+        assert!(values.is_empty());
     }
 
     #[test]
@@ -2087,6 +2087,6 @@ mod tests {
         let storage: PropertyStorage<NodeId> = PropertyStorage::new();
 
         let all_props = storage.get_all_batch(&[]);
-        assert_eq!(all_props.len(), 0);
+        assert!(all_props.is_empty());
     }
 }

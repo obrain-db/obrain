@@ -787,7 +787,7 @@ mod tests {
         let chunk = FactorizedChunk::empty();
         let iter = PrecomputedIter::new(&chunk);
 
-        assert_eq!(iter.len(), 0);
+        assert!(iter.is_empty());
         assert_eq!(iter.len(), 0);
     }
 

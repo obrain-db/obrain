@@ -316,7 +316,7 @@ mod tests {
         let vectors: Vec<(NodeId, &[f32])> = vec![];
         let query = [0.0f32, 0.0];
         let results = brute_force_knn(vectors.into_iter(), &query, 10, DistanceMetric::Cosine);
-        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
     }
 
     #[test]
