@@ -202,7 +202,7 @@ impl Default for SynthesisConfig {
             budget_tokens: 750,
             content_properties: DEFAULT_CONTENT_PROPERTIES
                 .iter()
-                .map(|s| s.to_string())
+                .map(|&s| s.to_string())
                 .collect(),
         }
     }

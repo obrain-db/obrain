@@ -36,7 +36,7 @@ fn deux_bases() -> (ObrainDB, ObrainDB) {
 
 /// Contexte de droits : `reader` n'a acces qu'aux slugs listes.
 fn contexte(reader: &str, autorises: &[&str]) -> Arc<AccessContext> {
-    let autorises: Vec<String> = autorises.iter().map(|s| s.to_string()).collect();
+    let autorises: Vec<String> = autorises.iter().map(|&s| s.to_string()).collect();
     Arc::new(AccessContext::new(
         reader,
         Box::new(move |_lecteur, slug| autorises.iter().any(|s| s == slug)),

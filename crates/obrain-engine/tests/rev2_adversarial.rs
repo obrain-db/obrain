@@ -86,7 +86,7 @@ fn erreur(db: &ObrainDB, requete: &str) -> String {
 }
 
 fn ens(items: &[&str]) -> Vec<String> {
-    let mut v: Vec<String> = items.iter().map(|s| s.to_string()).collect();
+    let mut v: Vec<String> = items.iter().map(|&s| s.to_string()).collect();
     v.sort();
     v
 }

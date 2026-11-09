@@ -169,7 +169,7 @@ fn identifiants(db: &ObrainDB, label: &str) -> Vec<String> {
 
 /// Raccourci de lisibilité pour les attentes d'ensembles de clés.
 fn ens(cles: &[&str]) -> Vec<String> {
-    let mut v: Vec<String> = cles.iter().map(|s| s.to_string()).collect();
+    let mut v: Vec<String> = cles.iter().map(|&s| s.to_string()).collect();
     v.sort();
     v
 }
