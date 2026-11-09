@@ -5,7 +5,6 @@
 //! que les agents de lots doivent étendre pour chaque langage.
 
 use obrain_indexer::lang::build_registry;
-use obrain_indexer::parse::Language;
 use obrain_indexer::schema::NodeKind;
 use std::path::Path;
 
@@ -177,12 +176,6 @@ fn swift_extrait_classes_et_fonctions() {
 fn dart_extrait_classes_et_fonctions() {
     let src = "int helper(int a) => a + 1;\n\nclass Point {\n  int x;\n  int dist() => x;\n}\n";
     let ex = extract(src, "x.dart");
-    let fns: Vec<&str> = ex
-        .definitions
-        .iter()
-        .filter(|d| d.kind == NodeKind::Function)
-        .map(|d| d.name.as_str())
-        .collect();
     let classes: Vec<&str> = ex
         .definitions
         .iter()
@@ -236,12 +229,6 @@ fn lua_extrait_fonctions() {
 fn elixir_extrait_fonctions() {
     let src = "defmodule Point do\n  def helper(a) do\n    a + 1\n  end\nend\n";
     let ex = extract(src, "x.ex");
-    let classes: Vec<&str> = ex
-        .definitions
-        .iter()
-        .filter(|d| d.kind == NodeKind::Class || d.kind == NodeKind::Module)
-        .map(|d| d.name.as_str())
-        .collect();
     let fns: Vec<&str> = ex
         .definitions
         .iter()

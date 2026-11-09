@@ -225,12 +225,12 @@ impl Source for Memoire {
             }
             // Sous-répertoire : on ne rend que le PREMIER segment sous
             // `repertoire`, comme le ferait `read_dir`.
-            if let Ok(relatif) = chemin.strip_prefix(repertoire) {
-                if let Some(premier) = relatif.components().next() {
-                    let sous = repertoire.join(premier);
-                    if sous != *chemin {
-                        repertoires.insert(sous);
-                    }
+            if let Ok(relatif) = chemin.strip_prefix(repertoire)
+                && let Some(premier) = relatif.components().next()
+            {
+                let sous = repertoire.join(premier);
+                if sous != *chemin {
+                    repertoires.insert(sous);
                 }
             }
         }

@@ -414,20 +414,18 @@ pub fn index_repository_depuis(
             // `let s = db.session(); s.execute(…)`).
             if let (Some(parent), Some(sig)) =
                 (def.parent_class.as_deref(), def.signature.as_deref())
+                && let Some(ret) = crate::resolve::SymbolRegistry::return_type_of_signature(sig)
             {
-                if let Some(ret) = crate::resolve::SymbolRegistry::return_type_of_signature(sig) {
-                    symbol_registry.register_method_return(&fe.module_qn, parent, &def.name, &ret);
-                }
+                symbol_registry.register_method_return(&fe.module_qn, parent, &def.name, &ret);
             }
             // Type de retour des FONCTIONS LIBRES (étape 2 du chantier :
             // `fn setup() -> ObrainDB` puis `let db = setup(); db.…()`).
             if def.parent_class.is_none()
                 && def.kind == NodeKind::Function
                 && let Some(sig) = def.signature.as_deref()
+                && let Some(ret) = crate::resolve::SymbolRegistry::return_type_of_signature(sig)
             {
-                if let Some(ret) = crate::resolve::SymbolRegistry::return_type_of_signature(sig) {
-                    symbol_registry.register_fn_return(&fqn, &ret);
-                }
+                symbol_registry.register_fn_return(&fqn, &ret);
             }
         }
         // Champs de struct (étape 2) : registre (module, struct) → [(champ,
@@ -636,7 +634,7 @@ pub fn index_repository_depuis(
         }
     }
     let mut strategies: Vec<(&str, usize)> = par_strategie.into_iter().collect();
-    strategies.sort_by(|a, b| b.1.cmp(&a.1));
+    strategies.sort_by_key(|e| std::cmp::Reverse(e.1));
 
     warnings.push(format!(
         "{files_scanned} fichiers reconnus parsés ; {} fichiers découverts ; {} langages branchés ; calls résolus {calls_resolus} / non résolus {calls_non_resolus} ; self-loops filtrés {self_loops_filtres} / gardés {self_loops_gardes} ; stratégies : {}",

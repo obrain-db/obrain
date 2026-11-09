@@ -129,7 +129,7 @@ fn main() {
     );
     println!("noeuds  : {}  aretes : {}", g.node_count(), edges);
     let mut v: Vec<_> = bykind.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (k, c) in v.iter().take(10) {
         println!("  {:<10} {}", k, c);
     }
