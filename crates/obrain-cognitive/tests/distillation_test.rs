@@ -112,9 +112,9 @@ async fn distill_empty_engine_returns_empty_artifact() {
     let config = DistillConfig::default();
     let artifact = distill(&config, &[], engine.as_ref());
 
-    assert!(artifact.synapses.is_empty());
-    assert!(artifact.energies.is_empty());
-    assert!(artifact.fingerprints.is_empty());
+    assert_eq!(artifact.synapses.len(), 0);
+    assert_eq!(artifact.energies.len(), 0);
+    assert_eq!(artifact.fingerprints.len(), 0);
     assert_eq!(artifact.version, "1.0");
 }
 

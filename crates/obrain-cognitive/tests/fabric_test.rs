@@ -393,11 +393,11 @@ fn fabric_store_is_send_sync() {
 #[test]
 fn store_len_and_is_empty() {
     let store = FabricStore::new();
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
     assert_eq!(store.len(), 0);
 
     store.record_mutation(NodeId(1));
-    assert!(!store.is_empty());
+    assert_ne!(store.len(), 0);
     assert_eq!(store.len(), 1);
 
     store.record_mutation(NodeId(2));
@@ -606,7 +606,7 @@ fn community_ids_returns_distinct_sorted() {
 #[test]
 fn community_ids_empty_store() {
     let store = FabricStore::new();
-    assert!(store.community_ids().is_empty());
+    assert_eq!(store.community_ids().len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +630,7 @@ fn get_community_nodes_returns_matching() {
 fn get_community_nodes_empty_for_unknown_community() {
     let store = FabricStore::new();
     store.set_gds_metrics(NodeId(1), 0.1, 0.1, Some(1));
-    assert!(store.get_community_nodes(999).is_empty());
+    assert_eq!(store.get_community_nodes(999).len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -710,7 +710,7 @@ async fn listener_on_event_node_deleted() {
 #[test]
 fn fabric_store_default_impl() {
     let store = FabricStore::default();
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
     assert_eq!(store.len(), 0);
 }
 

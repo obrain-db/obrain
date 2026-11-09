@@ -410,7 +410,7 @@ mod tests {
             .unwrap();
         assert_eq!(got.0, 0);
         assert_eq!(got.1, Some(Vec::<u32>::new()));
-        assert!(got.2.is_empty());
+        assert_eq!(got.2.len(), 0);
     }
 
     #[test]

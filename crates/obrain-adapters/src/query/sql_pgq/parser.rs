@@ -1827,7 +1827,7 @@ mod tests {
         ));
         assert_eq!(cpg.name, "SimpleGraph");
         assert_eq!(cpg.node_tables.len(), 1);
-        assert!(cpg.edge_tables.is_empty());
+        assert_eq!(cpg.edge_tables.len(), 0);
     }
 
     #[test]

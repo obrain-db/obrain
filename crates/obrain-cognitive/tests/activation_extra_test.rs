@@ -127,7 +127,7 @@ fn spread_cycle_terminates() {
 
     // Should terminate (not infinite loop) because of decay
     let map = spread_single(n(1), 1.0, &g, &config);
-    assert!(!map.is_empty());
+    assert_ne!(map.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ fn spread_threshold_filters_low_energy_source() {
 
     let map = spread_single(n(1), 1.0, &g, &config);
     // Source has energy 1.0 < threshold 2.0 → filtered out
-    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
 }
 
 // ---------------------------------------------------------------------------

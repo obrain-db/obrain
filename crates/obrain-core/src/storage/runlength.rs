@@ -439,10 +439,10 @@ mod tests {
 
         assert_eq!(encoded.run_count(), 0);
         assert_eq!(encoded.total_count(), 0);
-        assert!(encoded.is_empty());
+        assert_eq!(encoded.len(), 0);
 
         let decoded = encoded.decode();
-        assert!(decoded.is_empty());
+        assert_eq!(decoded.len(), 0);
     }
 
     #[test]

@@ -162,7 +162,7 @@ fn spread_activation_threshold_filters() {
 fn spread_empty_sources() {
     let g = MockGraph::new();
     let map = spread(&[], &g, &SpreadConfig::default());
-    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
 }
 
 #[test]

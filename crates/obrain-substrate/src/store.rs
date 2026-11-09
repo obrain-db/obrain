@@ -24051,7 +24051,7 @@ mod tests {
         // Un tombstone TERMINAL retire réellement la clef.
         let carte2 =
             property_map_depuis_ops(vec![(mk("x"), Some(Value::from(1i64))), (mk("x"), None)]);
-        assert!(carte2.is_empty());
+        assert_eq!(carte2.len(), 0);
 
         // L'itération sort triée (invariant de `from_sorted_pairs`).
         let cles: Vec<&PropertyKey> = carte.iter().map(|(k, _)| k).collect();
@@ -25137,7 +25137,7 @@ mod tests {
         );
         // Le scan exact reste correct.
         let scan = s.window_query_2d(1, 0, u16::MAX, 0, u32::MAX).unwrap();
-        assert!(!scan.is_empty());
+        assert_ne!(scan.len(), 0);
         // Nouveau tri → vue saine à nouveau.
         s.repermuter_par_hilbert(4, 32).unwrap();
         assert!(s.sorted_view_valid(), "re-tri : vue saine restaurée");
@@ -25194,7 +25194,7 @@ mod tests {
         );
         // Le scan exact reste correct.
         let scan = s.window_query_2d(1, 0, u16::MAX, 0, u32::MAX).unwrap();
-        assert!(!scan.is_empty());
+        assert_ne!(scan.len(), 0);
     }
 
     #[test]
@@ -25902,7 +25902,7 @@ mod tests {
         let (_td, s) = store();
         let id = s.create_node(&[]);
         let n = s.get_node(id).unwrap();
-        assert!(n.labels.is_empty());
+        assert_eq!(n.labels.len(), 0);
         assert_eq!(n.id, id);
     }
 
@@ -25915,7 +25915,7 @@ mod tests {
         assert_eq!(n.labels.len(), 2);
         let names: Vec<&str> = n.labels.iter().map(|l| l.as_str()).collect();
         assert!(names.contains(&"Person") && names.contains(&"Employee"));
-        assert!(n.properties.is_empty());
+        assert_eq!(n.properties.len(), 0);
     }
 
     #[test]
@@ -26236,7 +26236,7 @@ mod tests {
         assert_eq!(s.nodes_by_label("B").len(), 6, "balayage");
         assert_eq!(s.node_count_by_label("B"), 6, "compteur");
         assert_eq!(s.node_count_by_label("A"), 10, "le voisin ne bouge pas");
-        assert!(s.recount_live_counters().expect("recount").is_empty());
+        assert_eq!(s.recount_live_counters().expect("recount").len(), 0);
     }
 
     /// L'idempotence ne doit pas compter deux fois — un `SET n:B` répété sur
@@ -26255,7 +26255,7 @@ mod tests {
         assert!(s.remove_label(n, "B"));
         assert!(!s.remove_label(n, "B"), "retrait répété : sans effet");
         assert_eq!(s.node_count_by_label("B"), 0);
-        assert!(s.recount_live_counters().expect("recount").is_empty());
+        assert_eq!(s.recount_live_counters().expect("recount").len(), 0);
     }
 
     /// LE TEST DE PARITÉ QUE LES AGENTS RÉCLAMENT, et qui garde la porte du
@@ -26856,7 +26856,7 @@ mod tests {
         let (_td, s) = store();
         s.create_node(&["Person"]);
         s.create_node(&["Company"]);
-        assert!(s.recount_live_counters().expect("recount").is_empty());
+        assert_eq!(s.recount_live_counters().expect("recount").len(), 0);
     }
 
     #[test]
@@ -27058,7 +27058,7 @@ mod tests {
         assert_eq!(hits, vec![a]);
         let none =
             s.find_nodes_by_properties(&[("id", Value::from("x")), ("kind", Value::from("bad"))]);
-        assert!(none.is_empty());
+        assert_eq!(none.len(), 0);
     }
 
     #[test]
@@ -27343,7 +27343,7 @@ mod tests {
         assert_eq!(edge.src, a);
         assert_eq!(edge.dst, b);
         assert_eq!(edge.edge_type.as_str(), "WORKS_AT");
-        assert!(edge.properties.is_empty());
+        assert_eq!(edge.properties.len(), 0);
     }
 
     #[test]
@@ -28326,7 +28326,7 @@ mod tests {
         let res = s.get_edges_properties_selective_batch(&[e0, e1, e2], &[PropertyKey::new("w")]);
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].get(&PropertyKey::new("w")), Some(&Value::Int64(10)));
-        assert!(res[1].is_empty());
+        assert_eq!(res[1].len(), 0);
         assert_eq!(res[2].get(&PropertyKey::new("w")), Some(&Value::Int64(30)));
     }
 
@@ -28616,8 +28616,8 @@ mod tests {
         // Reload the snapshot directly and confirm its contents.
         let snap = crate::dict::DictSnapshot::load(&path.join(DICT_FILENAME)).unwrap();
         assert_eq!(snap.labels, vec!["X".to_string()]);
-        assert!(snap.edge_types.is_empty());
-        assert!(snap.prop_keys.is_empty());
+        assert_eq!(snap.edge_types.len(), 0);
+        assert_eq!(snap.prop_keys.len(), 0);
         // ── TROU-AWARE (allocation par blocs) ────────────────────────────
         // Un seul noeud créé (slot 1) réserve quand même un bloc [1, 1+256) :
         // le dict porte la BORNE (257), pas le « prochain slot dense » (2).
@@ -31848,7 +31848,7 @@ mod tests {
             let s = SubstrateStore::open(&root).unwrap();
             assert!(s.props_v2_enabled());
             // Sidecar loaded into DashMap because v2 zone was empty.
-            assert!(!s.node_properties.is_empty());
+            assert_ne!(s.node_properties.len(), 0);
             assert_eq!(s.props_v2_page_count(), Some(0));
 
             // Drain DashMap into v2 chain.
@@ -31957,7 +31957,7 @@ mod tests {
         unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
-        assert!(!s.node_properties.is_empty());
+        assert_ne!(s.node_properties.len(), 0);
 
         SABOTAGE_REGISTRE_CLES.with(|c| c.set(true));
         let resultat = s.finalize_props_v2();
@@ -32362,8 +32362,8 @@ mod tests {
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert!(s.props_v2_enabled());
-            assert!(!s.node_properties.is_empty());
-            assert!(!s.edge_properties.is_empty());
+            assert_ne!(s.node_properties.len(), 0);
+            assert_ne!(s.edge_properties.len(), 0);
 
             let stats = s.finalize_props_v2().unwrap();
             assert_eq!(stats.nodes_processed, 2, "2 nodes drained");
@@ -32466,7 +32466,7 @@ mod tests {
 
         unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
         let s = SubstrateStore::open(&root).unwrap();
-        assert!(!s.edge_properties.is_empty());
+        assert_ne!(s.edge_properties.len(), 0);
 
         // Direct delete without finalize → must refuse.
         let err = s.delete_legacy_props_sidecar().unwrap_err();
@@ -34100,7 +34100,7 @@ mod tests {
         let nouveau = s.create_node(&["Doc"]);
         s.set_node_property(nouveau, "seau", Value::Int64(0));
         s.set_node_property(nouveau, "genre", Value::String("note".into()));
-        assert!(!s.node_properties.is_empty());
+        assert_ne!(s.node_properties.len(), 0);
 
         let mut attendus = migres.clone();
         attendus.push(nouveau);
@@ -34149,7 +34149,7 @@ mod tests {
         ancrer_la_dashmap_des_noeuds(&s);
         let marqueur = s.create_node(&["Autre"]);
         s.set_node_property(marqueur, "marqueur", Value::Int64(1));
-        assert!(!s.node_properties.is_empty());
+        assert_ne!(s.node_properties.len(), 0);
 
         s.create_property_index("seau");
         let trouves = s.find_nodes_by_property("seau", &Value::Int64(0));
@@ -37205,7 +37205,7 @@ mod tests {
 
         // Retrait : le fichier est vide.
         s2.retirer_declaration_procedure("bonjour").unwrap();
-        assert!(s2.declarations_procedure().is_empty());
+        assert_eq!(s2.declarations_procedure().len(), 0);
         let contenu_vide = std::fs::read_to_string(&proccat).unwrap();
         assert!(
             !contenu_vide.contains("bonjour"),

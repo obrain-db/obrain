@@ -346,7 +346,7 @@ fn sweep_does_not_reactivate_low_energy_archived_node() {
     let manager = MemoryManager::new(memory_store.clone(), config, energy_store);
     let result = manager.sweep();
 
-    assert!(result.reactivated.is_empty());
+    assert_eq!(result.reactivated.len(), 0);
     assert_eq!(memory_store.get_horizon(node), MemoryHorizon::Archived);
 }
 
@@ -414,7 +414,7 @@ async fn in_memory_archive_roundtrip() {
 
     backend.remove(node).await.unwrap();
     assert!(!backend.exists(node).await.unwrap());
-    assert!(backend.is_empty());
+    assert_eq!(backend.len(), 0);
 }
 
 #[tokio::test]
@@ -657,5 +657,5 @@ fn sweep_result_total_transitions_empty() {
 #[test]
 fn memory_store_default_impl() {
     let store = MemoryStore::default();
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }

@@ -695,7 +695,7 @@ mod tests {
         let ego = khop_subgraph(&store, &config);
 
         assert_eq!(ego.node_count(), 2);
-        assert!(!ego.node_properties.is_empty());
+        assert_ne!(ego.node_properties.len(), 0);
         // Check that properties are loaded
         let n0_props = ego.node_properties.get(&n0).unwrap();
         assert_eq!(
@@ -785,7 +785,7 @@ mod tests {
         params.set_int("k", 1);
 
         let result = algo.execute(&store, &params).unwrap();
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
     }
 
     #[test]
@@ -800,7 +800,7 @@ mod tests {
 
         let result = algo.execute(&store, &params).unwrap();
         // Should have node rows and edge rows
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
     }
 
     #[test]
@@ -825,7 +825,7 @@ mod tests {
 
         // Empty string should mean no filter (all types)
         let result = algo.execute(&store, &params).unwrap();
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
     }
 
     #[test]
@@ -840,7 +840,7 @@ mod tests {
 
         // 0 means unlimited
         let result = algo.execute(&store, &params).unwrap();
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
     }
 
     #[test]

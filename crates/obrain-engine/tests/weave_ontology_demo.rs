@@ -104,7 +104,7 @@ fn tissage_claims_preuves_causalite_saillance() {
         edge(&db, *leaf, hub, "T");
     }
     let surprise = db.search_surprise(since, 20, false).expect("surprise");
-    assert!(!surprise.is_empty());
+    assert_ne!(surprise.len(), 0);
     let top = &surprise[0];
     assert_eq!(
         top.node_id, hub.0,

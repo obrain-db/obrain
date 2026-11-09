@@ -138,7 +138,7 @@ fn search_by_role_est_une_lecture_pure() {
         let k1 = clique5(&w, "L1");
         let _k2 = clique5(&w, "L2");
         let rows = w.search_by_role(k1[0], 50, None).expect("rw ok");
-        assert!(!rows.is_empty());
+        assert_ne!(rows.len(), 0);
     }
     let db_ro = ObrainDB::open_read_only(&path).expect("open ro");
     // On re-monte le graphe ? non : read-only, on lit l'existant. L'ancre k1[0]

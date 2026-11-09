@@ -888,7 +888,7 @@ mod tests {
         // le type des éléments de `vec![]` n'est pas déductible (E0282/E0283).
         // Conséquence mesurée : la cible de test de ce crate ne se construisait
         // plus, donc AUCUN test de ce fichier ne tournait.
-        assert!(vides.is_empty());
+        assert_eq!(vides.len(), 0);
         // Propriété inconnue : `None`, JAMAIS `Some(vec![])`.
         assert_eq!(z.candidats(9, hachage_int(0)), None);
     }
@@ -945,7 +945,7 @@ mod tests {
         assert_eq!(z.entrees_serie(4).len(), 80, "fiable : la série se lit");
         z.confronter_ancres(11, 2); // le WAL a avancé : on ne sait plus.
         assert!(!z.fiable());
-        assert!(z.entrees_serie(4).is_empty());
+        assert_eq!(z.entrees_serie(4).len(), 0);
     }
 
     #[test]

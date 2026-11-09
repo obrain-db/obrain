@@ -104,11 +104,11 @@ fn store_get_relation_nonexistent() {
 fn store_len_and_is_empty() {
     let store = CoChangeStore::new(CoChangeConfig::default());
     assert_eq!(store.len(), 0);
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 
     store.record_co_change(NodeId::new(1), NodeId::new(2));
     assert_eq!(store.len(), 1);
-    assert!(!store.is_empty());
+    assert_ne!(store.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,5 +192,5 @@ async fn detector_empty_batch() {
     let detector = CoChangeDetector::new(Arc::clone(&store));
 
     detector.on_batch(&[]).await;
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }

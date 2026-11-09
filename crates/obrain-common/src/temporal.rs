@@ -231,19 +231,19 @@ mod tests {
     #[test]
     fn test_empty_log() {
         let log: VersionLog<i32> = VersionLog::new();
-        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
         assert_eq!(log.len(), 0);
         assert!(log.latest().is_none());
         assert!(log.latest_entry().is_none());
         assert!(log.latest_epoch().is_none());
         assert!(log.at(epoch(0)).is_none());
-        assert!(log.history().is_empty());
+        assert_eq!(log.history().len(), 0);
     }
 
     #[test]
     fn test_single_entry() {
         let log = VersionLog::with_value(epoch(5), 42);
-        assert!(!log.is_empty());
+        assert_ne!(log.len(), 0);
         assert_eq!(log.len(), 1);
         assert_eq!(log.latest(), Some(&42));
         assert_eq!(log.latest_epoch(), Some(epoch(5)));
@@ -343,7 +343,7 @@ mod tests {
         log.append(EpochId::PENDING, 10);
 
         log.remove_pending();
-        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
     }
 
     #[test]
@@ -399,7 +399,7 @@ mod tests {
 
         log.truncate_after(epoch(1));
 
-        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
     }
 
     #[test]
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn test_default() {
         let log: VersionLog<i32> = VersionLog::default();
-        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
     }
 
     #[test]

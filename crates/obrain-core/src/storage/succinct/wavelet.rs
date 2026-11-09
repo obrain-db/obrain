@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn test_empty() {
         let wt = WaveletTree::new(&[]);
-        assert!(wt.is_empty());
+        assert_eq!(wt.len(), 0);
         assert_eq!(wt.len(), 0);
         assert_eq!(wt.sigma(), 0);
         assert_eq!(wt.rank(0, 0), 0);

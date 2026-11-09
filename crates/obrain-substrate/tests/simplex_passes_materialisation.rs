@@ -572,7 +572,7 @@ fn incremental_suppression_noeud_cascade() {
         s.iter_simplices_kind(simplex_kind::TRIANGLE).unwrap().len(),
         1
     );
-    assert!(s.iter_simplices_kind(simplex_kind::K4).unwrap().is_empty());
+    assert_eq!(s.iter_simplices_kind(simplex_kind::K4).unwrap().len(), 0);
     // Rebuild de contrôle : rien à réparer.
     let st = s.materialiser_simplexes().unwrap();
     assert_eq!((st.crees, st.reecrits, st.tombstones), (0, 0, 0));

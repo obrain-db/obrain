@@ -2535,8 +2535,8 @@ mod tests {
         let mut tombstoned = FxHashSet::default();
         pz.collect_live_props_by_key(None, &mut live, &mut tombstoned)
             .unwrap();
-        assert!(live.is_empty());
-        assert!(tombstoned.is_empty());
+        assert_eq!(live.len(), 0);
+        assert_eq!(tombstoned.len(), 0);
     }
 
     #[test]

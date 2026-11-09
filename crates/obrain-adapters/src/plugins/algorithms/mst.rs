@@ -508,7 +508,7 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = kruskal(&store, None);
 
-        assert!(result.edges.is_empty());
+        assert_eq!(result.edges.len(), 0);
         assert_eq!(result.total_weight, 0.0);
     }
 
@@ -519,7 +519,7 @@ mod tests {
 
         let result = kruskal(&store, None);
 
-        assert!(result.edges.is_empty());
+        assert_eq!(result.edges.len(), 0);
         assert!(result.is_spanning_tree(1));
     }
 
@@ -558,7 +558,7 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = prim(&store, None, None);
 
-        assert!(result.edges.is_empty());
+        assert_eq!(result.edges.len(), 0);
     }
 
     #[test]

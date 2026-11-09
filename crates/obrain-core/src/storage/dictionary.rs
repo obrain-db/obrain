@@ -437,7 +437,7 @@ mod tests {
         let builder = DictionaryBuilder::new();
         let dict = builder.build();
 
-        assert!(dict.is_empty());
+        assert_eq!(dict.len(), 0);
         assert_eq!(dict.dictionary_size(), 0);
         assert_eq!(dict.get(0), None);
     }

@@ -157,7 +157,7 @@ fn search_surprise_est_une_lecture_pure() {
             w.create_edge(a, pool[i % 64], "T");
         }
         let rows = w.search_surprise(since, 50, false).expect("rw ok");
-        assert!(!rows.is_empty());
+        assert_ne!(rows.len(), 0);
     }
     let db_ro = ObrainDB::open_read_only(&path).expect("open ro");
     let since = 0u64; // recharge la fenêtre persistée (aucune mutation possible)

@@ -231,7 +231,7 @@ fn fabric_store_accessor_shares_same_instance() {
     let (fabric, sched) = make_scheduler_with_fabric(100);
     // Both references point to the same store
     assert_eq!(fabric.len(), sched.fabric_store().len());
-    assert!(sched.fabric_store().is_empty());
+    assert_eq!(sched.fabric_store().len(), 0);
 }
 
 #[test]

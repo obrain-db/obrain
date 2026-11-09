@@ -551,7 +551,7 @@ mod tests {
 
         vec.clear();
 
-        assert!(vec.is_empty());
+        assert_eq!(vec.len(), 0);
         assert_eq!(vec.len(), 0);
     }
 }

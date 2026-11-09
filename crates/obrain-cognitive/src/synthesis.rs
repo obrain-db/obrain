@@ -387,7 +387,7 @@ mod tests {
         assert!(result.text.contains("## Mission"));
         assert!(result.text.contains("Reach orbit"));
         assert!(result.text.contains("Energy is conserved"));
-        assert!(!result.bundle.nodes.is_empty());
+        assert_ne!(result.bundle.nodes.len(), 0);
     }
 
     #[test]

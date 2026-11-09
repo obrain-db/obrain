@@ -436,7 +436,7 @@ fn recherche_hybride_trouve_le_bon_document() {
             None,
         )
         .expect("recherche hybride");
-    assert!(!r.is_empty());
+    assert_ne!(r.len(), 0);
     assert_eq!(
         r[0].0, renard,
         "texte et vecteur désignent le même document"

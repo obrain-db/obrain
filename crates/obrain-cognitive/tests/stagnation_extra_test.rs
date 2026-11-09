@@ -163,7 +163,7 @@ fn store_tracks_multiple_communities() {
     }
 
     assert_eq!(store.len(), 5);
-    assert!(!store.is_empty());
+    assert_ne!(store.len(), 0);
 }
 
 // ---------------------------------------------------------------------------

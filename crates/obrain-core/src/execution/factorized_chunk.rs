@@ -1347,11 +1347,11 @@ mod tests {
     fn test_chunk_variant_is_empty() {
         let empty_flat = DataChunk::empty();
         let variant = ChunkVariant::flat(empty_flat);
-        assert!(variant.is_empty());
+        assert_eq!(variant.len(), 0);
 
         let non_empty = make_flat_chunk();
         let variant2 = ChunkVariant::flat(non_empty);
-        assert!(!variant2.is_empty());
+        assert_ne!(variant2.len(), 0);
     }
 
     #[test]
@@ -1362,7 +1362,7 @@ mod tests {
         assert_eq!(chunk.physical_size(), 0);
 
         let flat = chunk.flatten();
-        assert!(flat.is_empty());
+        assert_eq!(flat.len(), 0);
     }
 
     #[test]
@@ -1454,7 +1454,7 @@ mod tests {
     fn test_compute_path_multiplicities_empty() {
         let chunk = FactorizedChunk::empty();
         let mults = chunk.compute_path_multiplicities();
-        assert!(mults.is_empty());
+        assert_eq!(mults.len(), 0);
     }
 
     #[test]

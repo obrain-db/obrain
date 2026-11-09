@@ -3065,7 +3065,7 @@ mod gql_parser_unit {
         let stmt = gql::parse("MATCH (n:Person) SELECT n.name").unwrap();
         match stmt {
             Statement::Query(q) => {
-                assert!(!q.return_clause.items.is_empty());
+                assert_ne!(q.return_clause.items.len(), 0);
             }
             other => panic!("Expected Query with SELECT, got {other:?}"),
         }
@@ -4734,7 +4734,7 @@ mod pattern_comprehension_deep {
         );
         if let Ok(r) = result {
             // Alice(1) + Bob(1) + Carol(1) + Dave(1) = 4 rows
-            assert!(!r.rows.is_empty());
+            assert_ne!(r.rows.len(), 0);
         }
     }
 
@@ -4932,7 +4932,7 @@ mod optional_match_deep {
             .unwrap();
         // Only Y matches WHERE, Z doesn't → but OPTIONAL keeps the row with null for Z
         // Actually: OPTIONAL MATCH + WHERE filters the optional match, not the outer
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
         session.execute("MATCH (n:OM3) DETACH DELETE n").unwrap();
     }
 }

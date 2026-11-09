@@ -633,7 +633,7 @@ mod tests {
                 }
             })
             .collect();
-        assert!(!wal_files.is_empty());
+        assert_ne!(wal_files.len(), 0);
 
         // Append a partial record: just a length prefix, then truncate
         use std::io::Write;
@@ -684,7 +684,7 @@ mod tests {
                 }
             })
             .collect();
-        assert!(!wal_files.is_empty());
+        assert_ne!(wal_files.len(), 0);
 
         let mut data = std::fs::read(&wal_files[0]).unwrap();
         // Flip a byte in the middle of the data (after the 4-byte length prefix)

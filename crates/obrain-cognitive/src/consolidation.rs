@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let config = ConsolidationConfig::default();
-        assert!(config.label_filter.is_empty());
+        assert_eq!(config.label_filter.len(), 0);
         assert!((config.energy_threshold - 0.3).abs() < f64::EPSILON);
         assert!((config.pagerank_protection - 0.1).abs() < f64::EPSILON);
         assert_eq!(config.min_cluster_size, 2);

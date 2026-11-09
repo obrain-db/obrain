@@ -217,7 +217,7 @@ fn test_exists_multi_hop_no_match() {
          WHERE EXISTS { MATCH (n)-[:MANAGES]->(m)-[:LIVES_IN]->(c:City) } \
          RETURN n.name",
     );
-    assert!(names.is_empty());
+    assert_eq!(names.len(), 0);
 }
 
 #[test]
@@ -698,7 +698,7 @@ fn test_return_type_function() {
         .execute("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN type(r)")
         .unwrap();
 
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
     for row in &result.rows {
         assert_eq!(row[0], Value::String("KNOWS".into()));
     }
@@ -1324,7 +1324,7 @@ mod cypher_filter_ops {
             .unwrap();
 
         // Harm has no outgoing KNOWS edges in the create_test_graph fixture
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
     }
 
     #[test]

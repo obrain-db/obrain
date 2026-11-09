@@ -478,7 +478,7 @@ mod tests {
 
         assert_eq!(chunk.column_count(), 2);
         assert_eq!(chunk.row_count(), 0);
-        assert!(chunk.is_empty());
+        assert_eq!(chunk.len(), 0);
     }
 
     #[test]
@@ -537,7 +537,7 @@ mod tests {
 
         chunk.reset();
         assert_eq!(chunk.row_count(), 0);
-        assert!(chunk.is_empty());
+        assert_eq!(chunk.len(), 0);
     }
 
     #[test]
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn test_chunk_zone_hints_default() {
         let hints = ChunkZoneHints::default();
-        assert!(hints.column_hints.is_empty());
+        assert_eq!(hints.column_hints.len(), 0);
     }
 
     #[test]

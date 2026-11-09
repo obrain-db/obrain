@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn empty_index_returns_empty_top_k() {
         let idx = SubstrateTieredIndex::new(DIM);
-        assert!(idx.is_empty());
+        assert_eq!(idx.len(), 0);
         assert_eq!(idx.search_top_k(&emb(0, DIM), 10), Vec::new());
     }
 
@@ -771,7 +771,7 @@ mod tests {
             .unwrap()
             .expect("empty-index persist must be loadable");
         assert_eq!(loaded.len(), 0);
-        assert!(loaded.is_empty());
+        assert_eq!(loaded.len(), 0);
     }
 
     #[test]

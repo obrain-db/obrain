@@ -640,10 +640,10 @@ mod tests {
     fn test_batch_request() {
         let batch = BatchRequest::new(vec!["op1", "op2", "op3"]);
         assert_eq!(batch.len(), 3);
-        assert!(!batch.is_empty());
+        assert_ne!(batch.len(), 0);
 
         let empty_batch = BatchRequest::new(Vec::<String>::new());
-        assert!(empty_batch.is_empty());
+        assert_eq!(empty_batch.len(), 0);
     }
 
     #[test]
@@ -652,8 +652,8 @@ mod tests {
 
         assert_eq!(result.batch_index, 5);
         assert_eq!(result.status, ExecutionStatus::Success);
-        assert!(result.read_set.is_empty());
-        assert!(result.write_set.is_empty());
+        assert_eq!(result.read_set.len(), 0);
+        assert_eq!(result.write_set.len(), 0);
 
         result.record_read(EntityId::Node(NodeId::new(1)), EpochId::new(10));
         result.record_write(EntityId::Node(NodeId::new(2)));

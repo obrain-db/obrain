@@ -109,7 +109,7 @@ fn store_reinforce_symmetric() {
 fn store_no_self_synapses() {
     let store = SynapseStore::new(SynapseConfig::default());
     store.reinforce(NodeId::new(1), NodeId::new(1), 1.0);
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn store_prune_removes_weak_synapses() {
 
     let pruned = store.prune(0.01);
     assert_eq!(pruned, 1);
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }
 
 #[test]
@@ -262,7 +262,7 @@ async fn listener_single_node_batch_no_synapse() {
     listener.on_batch(&events).await;
 
     // Only one node — no pairs to co-activate
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +376,7 @@ fn store_snapshot_returns_all_synapses() {
 #[test]
 fn store_snapshot_empty() {
     let store = SynapseStore::new(SynapseConfig::default());
-    assert!(store.snapshot().is_empty());
+    assert_eq!(store.snapshot().len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -386,9 +386,9 @@ fn store_snapshot_empty() {
 #[test]
 fn store_is_empty_initially() {
     let store = SynapseStore::new(SynapseConfig::default());
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
     store.reinforce(NodeId::new(1), NodeId::new(2), 0.1);
-    assert!(!store.is_empty());
+    assert_ne!(store.len(), 0);
 }
 
 // ---------------------------------------------------------------------------

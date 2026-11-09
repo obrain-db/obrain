@@ -2699,7 +2699,7 @@ mod tests {
         {
             if let Pattern::Path(path) = &patterns[0] {
                 assert!(path.chain[0].where_clause.is_some());
-                assert!(path.chain[0].types.is_empty());
+                assert_eq!(path.chain[0].types.len(), 0);
             } else {
                 panic!("Expected Path pattern");
             }
@@ -3936,7 +3936,7 @@ mod tests {
         {
             assert_eq!(create.name, "__current__");
             assert!(create.or_replace);
-            assert!(create.inline_types.is_empty());
+            assert_eq!(create.inline_types.len(), 0);
         } else {
             panic!("Expected Schema(CreateGraphType) with empty body");
         }

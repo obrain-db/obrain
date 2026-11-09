@@ -172,7 +172,7 @@ fn test_property_index_lifecycle() {
 
     // No matches
     let results = db.find_nodes_by_property("name", &Value::String("Harm".into()));
-    assert!(results.is_empty());
+    assert_eq!(results.len(), 0);
 
     // Drop index
     assert!(db.drop_property_index("name"));
@@ -443,8 +443,8 @@ fn test_complex_graph_with_multiple_edge_types() {
 #[test]
 fn les_listes_de_noms_ne_contiennent_pas_d_entree_vide() {
     let db = ObrainDB::new_in_memory();
-    assert!(db.store().all_edge_types().is_empty());
-    assert!(db.store().all_labels().is_empty());
+    assert_eq!(db.store().all_edge_types().len(), 0);
+    assert_eq!(db.store().all_labels().len(), 0);
     let a = db.create_node(&["Person"]);
     let b = db.create_node(&["Company"]);
     db.create_edge(a, b, "WORKS_AT");

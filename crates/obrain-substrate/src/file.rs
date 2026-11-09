@@ -2366,7 +2366,7 @@ mod tests {
         let attendu = motif(len, 0);
         {
             let mut zf = ZoneFile::open_or_create(&p).unwrap();
-            assert!(zf.is_empty());
+            assert_eq!(zf.len(), 0);
             zf.grow_to(len as u64).unwrap();
             zf.as_slice_mut().copy_from_slice(&attendu);
             zf.msync().unwrap();
@@ -2507,7 +2507,7 @@ mod tests {
     fn mmap_dontneed_sur_zone_vide_est_un_noop() {
         let dir = tempdir().unwrap();
         let zf = zone_jetable(&dir, "z");
-        assert!(zf.is_empty());
+        assert_eq!(zf.len(), 0);
         // SAFETY: zone vide, aucune reference vivante.
         unsafe {
             zf.advise_dontneed().unwrap();
@@ -2622,13 +2622,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut zf = zone_jetable(&dir, "z");
         assert_eq!(zf.len(), 0);
-        assert!(zf.is_empty());
+        assert_eq!(zf.len(), 0);
         assert!(
             matches!(&zf.backing, ZoneBacking::Mmap { map: None, .. }),
             "un fichier vide ne doit pas etre mappe"
         );
         assert_eq!(zf.as_slice(), &[] as &[u8]);
-        assert!(zf.as_slice_mut().is_empty());
+        assert_eq!(zf.as_slice_mut().len(), 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════

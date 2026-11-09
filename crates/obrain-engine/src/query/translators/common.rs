@@ -856,7 +856,7 @@ mod tests {
             1,
             "left-only should be post-filter"
         );
-        assert!(result.right_filters.is_empty());
+        assert_eq!(result.right_filters.len(), 0);
     }
 
     #[test]
@@ -869,7 +869,7 @@ mod tests {
         };
 
         let result = classify_optional_predicates(pred, &left_vars, &right_vars);
-        assert!(result.post_filters.is_empty());
+        assert_eq!(result.post_filters.len(), 0);
         assert_eq!(
             result.right_filters.len(),
             1,
@@ -897,7 +897,7 @@ mod tests {
         };
 
         let result = classify_optional_predicates(pred, &left_vars, &right_vars);
-        assert!(result.post_filters.is_empty());
+        assert_eq!(result.post_filters.len(), 0);
         assert_eq!(
             result.right_filters.len(),
             1,
@@ -996,6 +996,6 @@ mod tests {
         let expr = LogicalExpression::Literal(Value::Int64(42));
         let mut vars = HashSet::new();
         collect_expression_variables(&expr, &mut vars);
-        assert!(vars.is_empty());
+        assert_eq!(vars.len(), 0);
     }
 }

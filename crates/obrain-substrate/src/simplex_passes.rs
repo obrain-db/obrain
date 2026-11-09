@@ -577,7 +577,7 @@ mod tests {
         enumerer_triangles(&adj2, |a, b, c, _| tris2.push([a, b, c]));
         let (k4s2, k5s2) = enumerer_cliques(&adj2, &tris2);
         assert!(k4s2.iter().all(|q| !(q.contains(&2) && q.contains(&4))));
-        assert!(k5s2.is_empty());
+        assert_eq!(k5s2.len(), 0);
     }
 
     #[test]

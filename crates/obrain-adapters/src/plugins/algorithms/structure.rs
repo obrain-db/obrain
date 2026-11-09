@@ -643,7 +643,7 @@ mod tests {
         let ap = articulation_points(&store);
 
         // Diamond has no articulation points (it's 2-connected)
-        assert!(ap.is_empty());
+        assert_eq!(ap.len(), 0);
     }
 
     #[test]
@@ -661,7 +661,7 @@ mod tests {
     fn test_articulation_points_empty() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let ap = articulation_points(&store);
-        assert!(ap.is_empty());
+        assert_eq!(ap.len(), 0);
     }
 
     #[test]
@@ -679,14 +679,14 @@ mod tests {
         let br = bridges(&store);
 
         // Diamond has no bridges (every edge is part of a cycle)
-        assert!(br.is_empty());
+        assert_eq!(br.len(), 0);
     }
 
     #[test]
     fn test_bridges_empty() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let br = bridges(&store);
-        assert!(br.is_empty());
+        assert_eq!(br.len(), 0);
     }
 
     #[test]
@@ -728,7 +728,7 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = kcore_decomposition(&store);
 
-        assert!(result.core_numbers.is_empty());
+        assert_eq!(result.core_numbers.len(), 0);
         assert_eq!(result.max_core, 0);
     }
 

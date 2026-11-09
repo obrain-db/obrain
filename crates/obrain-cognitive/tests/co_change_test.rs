@@ -110,7 +110,7 @@ fn store_record_is_symmetric() {
 fn store_no_self_co_change() {
     let store = CoChangeStore::new(CoChangeConfig::default());
     store.record_co_change(NodeId::new(1), NodeId::new(1));
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn store_get_co_changed_sorted_by_strength() {
 fn store_get_co_changed_empty_for_unknown_node() {
     let store = CoChangeStore::new(CoChangeConfig::default());
     let result = store.get_co_changed(NodeId::new(999));
-    assert!(result.is_empty());
+    assert_eq!(result.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ async fn detector_single_node_no_co_change() {
     let events = vec![MutationEvent::NodeCreated { node: make_node(1) }];
     detector.on_batch(&events).await;
 
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }
 
 #[tokio::test]
@@ -347,7 +347,7 @@ fn detector_store_accessor() {
     let store = Arc::new(CoChangeStore::new(CoChangeConfig::default()));
     let detector = CoChangeDetector::new(Arc::clone(&store));
     // store accessor returns a reference to the underlying store
-    assert!(detector.store().is_empty());
+    assert_eq!(detector.store().len(), 0);
     store.record_co_change(NodeId::new(1), NodeId::new(2));
     assert_eq!(detector.store().len(), 1);
 }
@@ -446,7 +446,7 @@ async fn detector_window_duration_pairs_cross_batch_nodes() {
     let events1 = vec![MutationEvent::NodeCreated { node: make_node(1) }];
     detector.on_batch(&events1).await;
     // Single node → no co-change yet
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 
     // Batch 2: node 2 (within window of batch 1)
     let events2 = vec![MutationEvent::NodeCreated { node: make_node(2) }];
@@ -577,7 +577,7 @@ async fn adversarial_empty_batch_no_panic() {
 
     // Empty batch should be a no-op
     detector.on_batch(&[]).await;
-    assert!(store.is_empty());
+    assert_eq!(store.len(), 0);
 }
 
 #[tokio::test]
