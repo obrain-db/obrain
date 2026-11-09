@@ -5433,7 +5433,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let wal = dir.path().join("empty.wal");
         let r = WalReader::open(&wal).unwrap();
-        assert!(r.is_empty());
+        assert!(r.is_empty(), "résultat attendu vide");
         assert!(r.iter_from(0).next().is_none());
     }
 

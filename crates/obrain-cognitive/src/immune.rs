@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn shape_descriptor_empty() {
         let sd = ShapeDescriptor::new(vec![]);
-        assert!(sd.is_empty());
+        assert!(sd.is_empty(), "résultat attendu vide");
         assert_eq!(sd.dim(), 0);
     }
 
@@ -746,7 +746,7 @@ mod tests {
         let system = ImmuneSystem::new();
         let ctx = ShapeDescriptor::new(vec![1.0, 0.0, 0.0]);
         let results = system.scan(&ctx);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1298,21 +1298,21 @@ mod tests {
         system.register(ImmuneDetector::new(shape, 0.5, EngramId(1)));
 
         let propagated = system.idiotypic_propagate(&DetectorId(99999));
-        assert!(propagated.is_empty());
+        assert!(propagated.is_empty(), "résultat attendu vide");
     }
 
     #[test]
     fn test_idiotypic_neighbours_nonexistent() {
         let system = ImmuneSystem::new();
         let neighbours = system.idiotypic_neighbours(&DetectorId(99999));
-        assert!(neighbours.is_empty());
+        assert!(neighbours.is_empty(), "résultat attendu vide");
     }
 
     #[test]
     fn test_list_detectors_empty() {
         let system = ImmuneSystem::new();
         let list = system.list_detectors();
-        assert!(list.is_empty());
+        assert!(list.is_empty(), "résultat attendu vide");
     }
 
     #[test]

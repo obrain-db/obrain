@@ -106,7 +106,7 @@ fn search_pipeline_with_synapse_store_builder() {
     let results = pipeline.search(&candidates, &config);
 
     // The synapse traversal should discover connected nodes
-    assert!(!results.is_empty());
+    assert!(!results.is_empty(), "résultat attendu non vide");
     // Node 1 should be in results
     assert!(results.iter().any(|r| r.node_id == nid(1)));
 }
@@ -411,7 +411,10 @@ fn tenant_store_accessors_scar() {
     assert!(scar.is_some());
     let store = scar.unwrap();
     let id = store.add_scar(nid(1), 0.8, ScarReason::Rollback);
-    assert!(!store.get_scars(nid(1)).is_empty());
+    assert!(
+        !store.get_scars(nid(1)).is_empty(),
+        "résultat attendu non vide"
+    );
     let _ = id;
 }
 
@@ -643,7 +646,7 @@ fn provenance_get_derived_from_edges() {
 
     // Non-existent node should return empty
     let empty = recorder.get_derived_from_edges(nid(999));
-    assert!(empty.is_empty());
+    assert!(empty.is_empty(), "résultat attendu vide");
 }
 
 #[test]

@@ -502,7 +502,7 @@ mod tests {
         let (store, nodes) = create_test_graph();
         let visited = bfs(&store, nodes[0]);
 
-        assert!(!visited.is_empty());
+        assert!(!visited.is_empty(), "résultat attendu non vide");
         assert_eq!(visited[0], nodes[0]);
         // Start node should be first
     }
@@ -512,7 +512,7 @@ mod tests {
         let (store, nodes) = create_test_graph();
         let layers = bfs_layers(&store, nodes[0]);
 
-        assert!(!layers.is_empty());
+        assert!(!layers.is_empty(), "résultat attendu non vide");
         assert_eq!(layers[0], vec![nodes[0]]);
         // Distance 0: just the start node
     }
@@ -522,7 +522,7 @@ mod tests {
         let (store, nodes) = create_test_graph();
         let finished = dfs(&store, nodes[0]);
 
-        assert!(!finished.is_empty());
+        assert!(!finished.is_empty(), "résultat attendu non vide");
         // Post-order means leaves are finished first
     }
 
@@ -530,14 +530,14 @@ mod tests {
     fn test_bfs_nonexistent_start() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let visited = bfs(&store, NodeId::new(999));
-        assert!(visited.is_empty());
+        assert!(visited.is_empty(), "résultat attendu vide");
     }
 
     #[test]
     fn test_dfs_nonexistent_start() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let finished = dfs(&store, NodeId::new(999));
-        assert!(finished.is_empty());
+        assert!(finished.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -583,7 +583,7 @@ mod tests {
     fn test_bfs_layers_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let layers = bfs_layers(&store, NodeId::new(0));
-        assert!(layers.is_empty());
+        assert!(layers.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -648,7 +648,7 @@ mod tests {
         });
 
         // There's at least one non-tree edge (3->4 or 1->4)
-        assert!(!non_tree_edges.is_empty());
+        assert!(!non_tree_edges.is_empty(), "résultat attendu non vide");
     }
 
     #[test]
@@ -756,7 +756,7 @@ mod tests {
     fn test_dfs_all_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let finished = dfs_all(&store);
-        assert!(finished.is_empty());
+        assert!(finished.is_empty(), "résultat attendu vide");
     }
 
     #[test]

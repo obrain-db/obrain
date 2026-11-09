@@ -772,7 +772,7 @@ mod tests {
         let vec = FactorizedVector::flat(data);
         let items: Vec<_> = vec.iter_with_parent().collect();
 
-        assert!(items.is_empty());
+        assert!(items.is_empty(), "résultat attendu vide");
     }
 
     #[test]

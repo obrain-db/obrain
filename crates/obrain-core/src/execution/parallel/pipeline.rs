@@ -533,7 +533,7 @@ mod tests {
         let pipeline = ParallelPipeline::simple(source, factory);
         let result = pipeline.execute().unwrap();
 
-        assert!(result.chunks.is_empty());
+        assert!(result.chunks.is_empty(), "résultat attendu vide");
         assert_eq!(result.morsels_processed, 0);
         assert_eq!(result.rows_processed, 0);
     }
@@ -614,13 +614,13 @@ mod tests {
     #[test]
     fn test_collector_sink() {
         let mut sink = CollectorSink::new();
-        assert!(sink.is_empty());
+        assert!(sink.is_empty(), "résultat attendu vide");
 
         let values = vec![Value::Int64(1), Value::Int64(2), Value::Int64(3)];
         let chunk = DataChunk::new(vec![ValueVector::from_values(&values)]);
 
         sink.consume(chunk).unwrap();
-        assert!(!sink.is_empty());
+        assert!(!sink.is_empty(), "résultat attendu non vide");
         assert_eq!(sink.len(), 1);
         assert_eq!(sink.row_count(), 3);
 

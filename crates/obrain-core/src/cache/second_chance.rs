@@ -310,7 +310,7 @@ mod tests {
         cache.insert("b", 2);
         cache.clear();
 
-        assert!(cache.is_empty());
+        assert!(cache.is_empty(), "résultat attendu vide");
         assert_eq!(cache.len(), 0);
     }
 

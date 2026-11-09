@@ -539,7 +539,7 @@ mod tests {
         let mut op = EmptyOperator;
 
         let result = executor.execute(&mut op).unwrap();
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "résultat attendu vide");
         assert_eq!(result.column_count(), 1);
     }
 

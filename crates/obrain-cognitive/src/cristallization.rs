@@ -264,7 +264,7 @@ mod tests {
         }]);
 
         let stable = tracker.find_stable(3, 0.8);
-        assert!(stable.is_empty());
+        assert!(stable.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -290,7 +290,7 @@ mod tests {
         }]);
 
         let stable = tracker.find_stable(3, 0.8);
-        assert!(stable.is_empty());
+        assert!(stable.is_empty(), "résultat attendu vide");
     }
 
     #[test]

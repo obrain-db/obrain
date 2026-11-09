@@ -2078,7 +2078,7 @@ mod tests {
             }
         }
         let agg = find_aggregate(&plan.root).expect("Expected Aggregate");
-        assert!(!agg.group_by.is_empty());
+        assert!(!agg.group_by.is_empty(), "résultat attendu non vide");
     }
 
     // === Expression Tests ===
@@ -2136,7 +2136,7 @@ mod tests {
     #[test]
     fn test_translator_new() {
         let translator = SparqlTranslator::new();
-        assert!(translator.prefixes.is_empty());
+        assert!(translator.prefixes.is_empty(), "résultat attendu vide");
         assert!(translator.base.is_none());
         assert_eq!(translator.anon_counter, 0);
     }

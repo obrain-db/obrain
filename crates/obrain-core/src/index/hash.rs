@@ -156,13 +156,13 @@ mod tests {
     fn test_hash_index_len() {
         let index: HashIndex<u64, NodeId> = HashIndex::new();
 
-        assert!(index.is_empty());
+        assert!(index.is_empty(), "résultat attendu vide");
         assert_eq!(index.len(), 0);
 
         index.insert(1, NodeId::new(100));
         index.insert(2, NodeId::new(200));
 
-        assert!(!index.is_empty());
+        assert!(!index.is_empty(), "résultat attendu non vide");
         assert_eq!(index.len(), 2);
     }
 
@@ -175,7 +175,7 @@ mod tests {
 
         index.clear();
 
-        assert!(index.is_empty());
+        assert!(index.is_empty(), "résultat attendu vide");
         assert_eq!(index.get(&1), None);
     }
 

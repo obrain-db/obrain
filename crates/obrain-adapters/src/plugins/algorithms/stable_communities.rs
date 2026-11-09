@@ -486,7 +486,7 @@ mod tests {
 
         // Should have communities
         assert!(stable.num_communities >= 2);
-        assert!(!stable.mapping.is_empty());
+        assert!(!stable.mapping.is_empty(), "résultat attendu non vide");
     }
 
     #[test]

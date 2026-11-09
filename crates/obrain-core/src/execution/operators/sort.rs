@@ -1067,7 +1067,7 @@ mod tests {
             )
             .with_limit(5),
         );
-        assert!(rien.is_empty());
+        assert!(rien.is_empty(), "résultat attendu vide");
     }
 
     /// LE GAIN, COMPTÉ PLUTÔT QUE CHRONOMÉTRÉ.

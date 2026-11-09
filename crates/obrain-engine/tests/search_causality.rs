@@ -91,7 +91,7 @@ fn search_causes_effects_etoile_et_cycle_terminent() {
     e(&db, x, y);
     e(&db, y, x);
     let fx2 = db.search_effects(x, 10, 6).expect("cycle effects");
-    assert!(!fx2.is_empty());
+    assert!(!fx2.is_empty(), "résultat attendu non vide");
     // Chaque nœud n'apparaît qu'UNE fois (première découverte).
     let mut seen: Vec<u64> = fx2.iter().map(|r| r.node_id).collect();
     seen.sort_unstable();

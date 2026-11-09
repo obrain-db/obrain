@@ -795,7 +795,7 @@ mod tests {
     fn test_empty_history() {
         let log = CdcLog::new();
         let history = log.history(EntityId::Node(NodeId::new(999)));
-        assert!(history.is_empty());
+        assert!(history.is_empty(), "résultat attendu vide");
     }
 
     #[test]

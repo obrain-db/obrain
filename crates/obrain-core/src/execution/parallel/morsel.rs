@@ -161,13 +161,13 @@ mod tests {
         assert_eq!(morsel.start_row, 0);
         assert_eq!(morsel.end_row, 1000);
         assert_eq!(morsel.row_count(), 1000);
-        assert!(!morsel.is_empty());
+        assert!(!morsel.is_empty(), "résultat attendu non vide");
     }
 
     #[test]
     fn test_morsel_empty() {
         let morsel = Morsel::new(0, 0, 100, 100);
-        assert!(morsel.is_empty());
+        assert!(morsel.is_empty(), "résultat attendu vide");
         assert_eq!(morsel.row_count(), 0);
     }
 

@@ -943,7 +943,7 @@ mod tests {
         let listener = StigmergicQueryListener::new(Arc::clone(&engine));
 
         listener.on_traversal(&[]);
-        assert!(engine.pheromone_map().is_empty());
+        assert!(engine.pheromone_map().is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1027,7 +1027,7 @@ mod tests {
 
         listener.on_event(&event).await;
         // No edges deposited
-        assert!(engine.pheromone_map().is_empty());
+        assert!(engine.pheromone_map().is_empty(), "résultat attendu vide");
     }
 
     #[tokio::test]
@@ -1243,7 +1243,7 @@ mod tests {
     fn anti_lock_in_noop_on_empty_map() {
         let map = PheromoneMap::new();
         map.inject_noise(0.9, 0.05, 0); // should not panic
-        assert!(map.is_empty());
+        assert!(map.is_empty(), "résultat attendu vide");
     }
 
     #[test]

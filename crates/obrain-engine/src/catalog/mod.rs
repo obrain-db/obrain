@@ -2270,7 +2270,10 @@ mod tests {
         let invalid_label = LabelId::new(999);
         let invalid_property = PropertyKeyId::new(999);
 
-        assert!(catalog.indexes_for_label(invalid_label).is_empty());
+        assert!(
+            catalog.indexes_for_label(invalid_label).is_empty(),
+            "résultat attendu vide"
+        );
         assert!(
             catalog
                 .indexes_for_label_property(invalid_label, invalid_property)

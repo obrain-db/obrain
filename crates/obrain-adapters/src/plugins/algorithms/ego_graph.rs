@@ -695,7 +695,7 @@ mod tests {
         let ego = khop_subgraph(&store, &config);
 
         assert_eq!(ego.node_count(), 2);
-        assert!(!ego.node_properties.is_empty());
+        assert!(!ego.node_properties.is_empty(), "résultat attendu non vide");
         // Check that properties are loaded
         let n0_props = ego.node_properties.get(&n0).unwrap();
         assert_eq!(

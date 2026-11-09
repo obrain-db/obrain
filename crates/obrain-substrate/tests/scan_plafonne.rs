@@ -105,8 +105,8 @@ fn capped_reste_un_prefixe_meme_troue_en_alternance() {
 #[test]
 fn store_vide_rend_vide_et_ne_boucle_pas() {
     let s: Arc<dyn GraphStoreMut> = Arc::new(SubstrateStore::open_tempfile().unwrap());
-    assert!(s.node_ids_capped(30).is_empty());
-    assert!(s.node_ids().is_empty());
+    assert!(s.node_ids_capped(30).is_empty(), "résultat attendu vide");
+    assert!(s.node_ids().is_empty(), "résultat attendu vide");
 }
 
 // ─────────────────────── 3. la preuve comptable du gain ───────────────────────

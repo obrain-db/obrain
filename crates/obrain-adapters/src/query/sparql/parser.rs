@@ -2566,7 +2566,7 @@ mod tests {
         if let QueryForm::Select(select) = &query.query_form {
             let triples = extract_triples(&select.where_clause);
             if let PropertyPath::Negation(iris) = &triples[0].predicate {
-                assert!(iris.is_empty());
+                assert!(iris.is_empty(), "résultat attendu vide");
             } else {
                 panic!("expected Negation path");
             }

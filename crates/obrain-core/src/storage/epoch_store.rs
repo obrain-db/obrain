@@ -1105,8 +1105,8 @@ mod tests {
         // Freeze empty epoch
         let (node_entries, edge_entries) = store.freeze_epoch(EpochId::new(1), vec![], vec![]);
 
-        assert!(node_entries.is_empty());
-        assert!(edge_entries.is_empty());
+        assert!(node_entries.is_empty(), "résultat attendu vide");
+        assert!(edge_entries.is_empty(), "résultat attendu vide");
         assert_eq!(store.epoch_count(), 1);
 
         // Zone map should indicate no nodes/edges

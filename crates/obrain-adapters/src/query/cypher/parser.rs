@@ -3936,7 +3936,7 @@ mod tests {
         {
             assert_eq!(create.name, "__current__");
             assert!(create.or_replace);
-            assert!(create.inline_types.is_empty());
+            assert!(create.inline_types.is_empty(), "résultat attendu vide");
         } else {
             panic!("Expected Schema(CreateGraphType) with empty body");
         }

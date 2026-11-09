@@ -149,13 +149,13 @@ async fn accessor_stores_are_functional() {
 
     // Energy store is functional
     let energy = engine.energy_store().unwrap();
-    assert!(energy.is_empty());
+    assert!(energy.is_empty(), "résultat attendu vide");
     energy.boost(obrain_common::types::NodeId::new(1), 1.0);
     assert_eq!(energy.len(), 1);
 
     // Synapse store is functional
     let synapse = engine.synapse_store().unwrap();
-    assert!(synapse.is_empty());
+    assert!(synapse.is_empty(), "résultat attendu vide");
 
     // Fabric store is functional
     let fabric = engine.fabric_store().unwrap();
@@ -163,7 +163,7 @@ async fn accessor_stores_are_functional() {
 
     // Co-change store is functional
     let co_change = engine.co_change_store().unwrap();
-    assert!(co_change.is_empty());
+    assert!(co_change.is_empty(), "résultat attendu vide");
 
     scheduler.shutdown().await;
 }

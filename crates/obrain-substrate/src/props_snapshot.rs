@@ -704,7 +704,7 @@ mod tests {
         let back = PropertiesSnapshotV1::load(&path).unwrap();
         assert_eq!(back.nodes.len(), 1);
         assert_eq!(back.nodes[0].id, 7);
-        assert!(back.edges.is_empty());
+        assert!(back.edges.is_empty(), "résultat attendu vide");
     }
 
     #[test]

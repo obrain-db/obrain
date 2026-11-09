@@ -753,7 +753,7 @@ fn sentinelle_d_absence_blob_voyage_avec_le_noeud() {
             effaces.push(marker);
         }
     }
-    assert!(!effaces.is_empty());
+    assert!(!effaces.is_empty(), "résultat attendu non vide");
 
     bulk_sort(&store);
     let by_marker = markers_by_slot(&store);

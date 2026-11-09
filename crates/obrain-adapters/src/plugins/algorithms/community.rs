@@ -1096,7 +1096,7 @@ mod tests {
     fn test_label_propagation_empty() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let communities = label_propagation(&store, 100);
-        assert!(communities.is_empty());
+        assert!(communities.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1137,7 +1137,7 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = louvain(&store, 1.0);
 
-        assert!(result.communities.is_empty());
+        assert!(result.communities.is_empty(), "résultat attendu vide");
         assert_eq!(result.modularity, 0.0);
         assert_eq!(result.num_communities, 0);
     }
@@ -1167,8 +1167,14 @@ mod tests {
         let result_high = louvain(&store, 2.0);
 
         // Both should be valid
-        assert!(!result_low.communities.is_empty());
-        assert!(!result_high.communities.is_empty());
+        assert!(
+            !result_low.communities.is_empty(),
+            "résultat attendu non vide"
+        );
+        assert!(
+            !result_high.communities.is_empty(),
+            "résultat attendu non vide"
+        );
     }
 
     #[test]
@@ -1214,7 +1220,7 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = leiden(&store, 1.0, 0.01);
 
-        assert!(result.communities.is_empty());
+        assert!(result.communities.is_empty(), "résultat attendu vide");
         assert_eq!(result.modularity, 0.0);
         assert_eq!(result.num_communities, 0);
     }
@@ -1484,8 +1490,14 @@ mod tests {
         let result_low = leiden(&store, 0.5, 0.01);
         let result_high = leiden(&store, 2.0, 0.01);
 
-        assert!(!result_low.communities.is_empty());
-        assert!(!result_high.communities.is_empty());
+        assert!(
+            !result_low.communities.is_empty(),
+            "résultat attendu non vide"
+        );
+        assert!(
+            !result_high.communities.is_empty(),
+            "résultat attendu non vide"
+        );
     }
 
     #[test]
@@ -1497,8 +1509,14 @@ mod tests {
         // High gamma: more refinement
         let result_high = leiden(&store, 1.0, 1.0);
 
-        assert!(!result_low.communities.is_empty());
-        assert!(!result_high.communities.is_empty());
+        assert!(
+            !result_low.communities.is_empty(),
+            "résultat attendu non vide"
+        );
+        assert!(
+            !result_high.communities.is_empty(),
+            "résultat attendu non vide"
+        );
     }
 
     #[test]
@@ -1517,7 +1535,7 @@ mod tests {
         let algo = LeidenAlgorithm;
 
         assert_eq!(algo.name(), "leiden");
-        assert!(!algo.description().is_empty());
+        assert!(!algo.description().is_empty(), "résultat attendu non vide");
         assert_eq!(algo.parameters().len(), 2);
 
         let params = Parameters::new();
@@ -1529,7 +1547,7 @@ mod tests {
     fn test_leiden_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = leiden(&store, 1.0, 0.01);
-        assert!(result.communities.is_empty());
+        assert!(result.communities.is_empty(), "résultat attendu vide");
         assert_eq!(result.num_communities, 0);
         assert_eq!(result.modularity, 0.0);
     }
@@ -1585,7 +1603,7 @@ mod tests {
     fn test_louvain_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = louvain(&store, 1.0);
-        assert!(result.communities.is_empty());
+        assert!(result.communities.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1594,7 +1612,7 @@ mod tests {
         let algo = LouvainAlgorithm;
 
         assert_eq!(algo.name(), "louvain");
-        assert!(!algo.description().is_empty());
+        assert!(!algo.description().is_empty(), "résultat attendu non vide");
         assert_eq!(algo.parameters().len(), 1);
 
         let params = Parameters::new();
@@ -1608,7 +1626,7 @@ mod tests {
         let algo = LabelPropagationAlgorithm;
 
         assert_eq!(algo.name(), "label_propagation");
-        assert!(!algo.description().is_empty());
+        assert!(!algo.description().is_empty(), "résultat attendu non vide");
         assert_eq!(algo.parameters().len(), 1);
 
         let params = Parameters::new();
@@ -1620,7 +1638,7 @@ mod tests {
     fn test_label_propagation_empty_graph() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let communities = label_propagation(&store, 100);
-        assert!(communities.is_empty());
+        assert!(communities.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1677,8 +1695,8 @@ mod tests {
         let store = create_two_cliques_graph();
         let r_low = louvain(&store, 0.1);
         let r_high = louvain(&store, 5.0);
-        assert!(!r_low.communities.is_empty());
-        assert!(!r_high.communities.is_empty());
+        assert!(!r_low.communities.is_empty(), "résultat attendu non vide");
+        assert!(!r_high.communities.is_empty(), "résultat attendu non vide");
     }
 
     #[test]

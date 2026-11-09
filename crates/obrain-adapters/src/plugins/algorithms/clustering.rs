@@ -838,8 +838,8 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let result = clustering_coefficient(&store);
 
-        assert!(result.coefficients.is_empty());
-        assert!(result.triangle_counts.is_empty());
+        assert!(result.coefficients.is_empty(), "résultat attendu vide");
+        assert!(result.triangle_counts.is_empty(), "résultat attendu vide");
         assert_eq!(result.total_triangles, 0);
         assert_eq!(result.global_coefficient, 0.0);
     }
@@ -951,7 +951,7 @@ mod tests {
         let algo = ClusteringCoefficientAlgorithm;
 
         assert_eq!(algo.name(), "clustering_coefficient");
-        assert!(!algo.description().is_empty());
+        assert!(!algo.description().is_empty(), "résultat attendu non vide");
         assert_eq!(algo.parameters().len(), 2);
 
         let params = Parameters::new();
@@ -1098,7 +1098,7 @@ mod tests {
 
         // All banks should be non-empty (empty ones are removed)
         for bank in &banks {
-            assert!(!bank.is_empty());
+            assert!(!bank.is_empty(), "résultat attendu non vide");
         }
 
         // Total nodes = 10
@@ -1137,7 +1137,7 @@ mod tests {
         };
 
         let banks = hilbert_bank_allocation(&features, 4, 50);
-        assert!(banks.is_empty());
+        assert!(banks.is_empty(), "résultat attendu vide");
     }
 
     #[test]

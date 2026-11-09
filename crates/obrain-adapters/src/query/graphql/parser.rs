@@ -560,7 +560,10 @@ mod tests {
         let mut parser = Parser::new("");
         let result = parser.parse();
         assert!(result.is_ok(), "Empty input produces empty document");
-        assert!(result.unwrap().definitions.is_empty());
+        assert!(
+            result.unwrap().definitions.is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]

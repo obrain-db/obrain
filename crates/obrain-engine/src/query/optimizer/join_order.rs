@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn test_bitset_empty() {
         let empty = BitSet::empty();
-        assert!(empty.is_empty());
+        assert!(empty.is_empty(), "résultat attendu vide");
         assert_eq!(empty.len(), 0);
         assert!(!empty.contains(0));
     }

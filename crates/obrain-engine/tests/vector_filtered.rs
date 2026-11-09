@@ -70,7 +70,7 @@ fn test_filtered_vector_search_by_user_id() {
         .expect("filtered search");
 
     // Should only return user_id=2 nodes (n3, n4)
-    assert!(!results.is_empty());
+    assert!(!results.is_empty(), "résultat attendu non vide");
     assert!(results.len() <= 2);
 
     // Verify all results have user_id=2
@@ -175,7 +175,7 @@ fn test_mmr_search_with_filters() {
         )
         .expect("mmr filtered search");
 
-    assert!(!results.is_empty());
+    assert!(!results.is_empty(), "résultat attendu non vide");
     assert!(results.len() <= 2);
 
     for (id, _) in &results {
@@ -573,7 +573,7 @@ fn test_filtered_vector_search_results_ordered_by_distance() {
         .vector_search("Doc", "emb", &[0.5, 0.5, 0.0], 5, None, Some(&filters))
         .expect("filtered search");
 
-    assert!(!results.is_empty());
+    assert!(!results.is_empty(), "résultat attendu non vide");
     for window in results.windows(2) {
         let (_, dist_a) = window[0];
         let (_, dist_b) = window[1];

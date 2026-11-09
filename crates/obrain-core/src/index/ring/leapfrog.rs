@@ -563,7 +563,7 @@ mod tests {
 
         let iter = RingIterator::with_subject(&ring, &Term::iri("nonexistent"));
         let results: Vec<Triple> = iter.collect();
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -617,7 +617,7 @@ mod tests {
 
         let iter = RingIterator::with_object(&ring, &Term::iri("nonexistent"));
         let results: Vec<Triple> = iter.collect();
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]

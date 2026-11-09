@@ -336,6 +336,6 @@ mod tests {
 
         // No transition for this trigger from this state
         let none = protocol.available_transitions("draft", "approve");
-        assert!(none.is_empty());
+        assert!(none.is_empty(), "résultat attendu vide");
     }
 }

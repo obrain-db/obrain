@@ -344,7 +344,7 @@ mod tests {
         let releaser = MockReleaser::new();
 
         let mut composite = CompositeGrant::new();
-        assert!(composite.is_empty());
+        assert!(composite.is_empty(), "résultat attendu vide");
 
         composite.add(MemoryGrant::new(
             Arc::clone(&releaser) as Arc<dyn GrantReleaser>,

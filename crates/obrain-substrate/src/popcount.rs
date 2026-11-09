@@ -477,7 +477,7 @@ mod tests {
         let mut out: Vec<u32> = Vec::new();
         xor_popcount_t0(&[], Tier0([0, 0]), &mut out);
         xor_popcount_t1(&[], &Tier1([0u64; 8]), &mut out);
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "résultat attendu vide");
     }
 
     /// Exercise the scalar fallback explicitly even on hosts where the

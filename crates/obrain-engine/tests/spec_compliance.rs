@@ -3065,7 +3065,10 @@ mod gql_parser_unit {
         let stmt = gql::parse("MATCH (n:Person) SELECT n.name").unwrap();
         match stmt {
             Statement::Query(q) => {
-                assert!(!q.return_clause.items.is_empty());
+                assert!(
+                    !q.return_clause.items.is_empty(),
+                    "résultat attendu non vide"
+                );
             }
             other => panic!("Expected Query with SELECT, got {other:?}"),
         }

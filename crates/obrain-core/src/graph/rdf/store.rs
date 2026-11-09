@@ -1295,9 +1295,9 @@ mod tests {
             store.insert(triple);
         }
 
-        assert!(!store.is_empty());
+        assert!(!store.is_empty(), "résultat attendu non vide");
         store.clear();
-        assert!(store.is_empty());
+        assert!(store.is_empty(), "résultat attendu vide");
         assert_eq!(store.len(), 0);
     }
 
@@ -1752,7 +1752,7 @@ mod tests {
         let result = store.bulk_load(Vec::<Triple>::new());
         assert_eq!(result.triple_count, 0);
         assert_eq!(store.len(), 0);
-        assert!(store.is_empty());
+        assert!(store.is_empty(), "résultat attendu vide");
     }
 
     #[test]

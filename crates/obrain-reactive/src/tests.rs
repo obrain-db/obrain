@@ -140,13 +140,13 @@ mod reactive_tests {
     #[test]
     fn mutation_batch_len_and_empty() {
         let empty = MutationBatch::new(vec![]);
-        assert!(empty.is_empty());
+        assert!(empty.is_empty(), "résultat attendu vide");
         assert_eq!(empty.len(), 0);
 
         let batch = MutationBatch::new(vec![MutationEvent::NodeCreated {
             node: make_node_snapshot(1, &[]),
         }]);
-        assert!(!batch.is_empty());
+        assert!(!batch.is_empty(), "résultat attendu non vide");
         assert_eq!(batch.len(), 1);
     }
 
@@ -321,7 +321,7 @@ mod reactive_tests {
             node: make_node_snapshot(1, &["A"]),
         };
         let debug = format!("{:?}", event);
-        assert!(!debug.is_empty());
+        assert!(!debug.is_empty(), "résultat attendu non vide");
         assert!(debug.contains("NodeCreated"));
     }
 

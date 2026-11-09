@@ -1004,7 +1004,7 @@ mod tests {
         let (store, a, _b, _c, _d, e) = create_test_graph();
         // A and E have identical neighborhoods {B, D}
         let results = top_k_similar(&store, a, 3, SimilarityMetric::Jaccard);
-        assert!(!results.is_empty());
+        assert!(!results.is_empty(), "résultat attendu non vide");
         // E should be the most similar to A
         assert_eq!(results[0].node, e, "E should be most similar to A");
         assert!((results[0].score - 1.0).abs() < 1e-10);
@@ -1021,7 +1021,7 @@ mod tests {
     fn test_top_k_zero() {
         let (store, a, _b, _c, _d, _e) = create_test_graph();
         let results = top_k_similar(&store, a, 0, SimilarityMetric::Jaccard);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1192,8 +1192,14 @@ mod tests {
 
     #[test]
     fn test_algorithm_descriptions() {
-        assert!(!NodeSimilarityAlgorithm.description().is_empty());
-        assert!(!TopKSimilarAlgorithm.description().is_empty());
+        assert!(
+            !NodeSimilarityAlgorithm.description().is_empty(),
+            "résultat attendu non vide"
+        );
+        assert!(
+            !TopKSimilarAlgorithm.description().is_empty(),
+            "résultat attendu non vide"
+        );
     }
 
     #[test]

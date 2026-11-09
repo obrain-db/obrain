@@ -1706,7 +1706,7 @@ mod tests {
         let store = SubstrateStore::open_tempfile().unwrap();
         let config = HilbertFeaturesConfig::default();
         let result = hilbert_features(&store, &config);
-        assert!(result.features.is_empty());
+        assert!(result.features.is_empty(), "résultat attendu vide");
         assert_eq!(result.dimensions, 64);
     }
 
@@ -2744,7 +2744,7 @@ mod tests {
         // Step 1: Compute features
         let config = HilbertFeaturesConfig::default();
         let computed = hilbert_features(&store, &config);
-        assert!(!computed.features.is_empty());
+        assert!(!computed.features.is_empty(), "résultat attendu non vide");
 
         // Step 2: Store features as _hilbert_features property
         let key = "_hilbert_features";

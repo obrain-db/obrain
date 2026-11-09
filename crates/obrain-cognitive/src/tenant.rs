@@ -555,7 +555,7 @@ mod tests {
         {
             let g = tm.get_tenant("cleanup").unwrap();
             g.energy_store.boost(obrain_common::types::NodeId(1), 5.0);
-            assert!(!g.energy_store.is_empty());
+            assert!(!g.energy_store.is_empty(), "résultat attendu non vide");
         }
 
         // Delete

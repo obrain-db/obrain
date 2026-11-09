@@ -22,7 +22,7 @@ fn new_store() -> InstrumentedStore<SubstrateStore> {
 fn new_store_has_no_pending_events() {
     let store = new_store();
     assert_eq!(store.pending_count(), 0);
-    assert!(store.drain_pending().is_empty());
+    assert!(store.drain_pending().is_empty(), "résultat attendu vide");
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn create_node_no_labels() {
     assert_eq!(events.len(), 1);
     if let MutationEvent::NodeCreated { node } = &events[0] {
         assert_eq!(node.id, id);
-        assert!(node.labels.is_empty());
+        assert!(node.labels.is_empty(), "résultat attendu vide");
     } else {
         panic!("expected NodeCreated");
     }
@@ -300,7 +300,7 @@ fn set_node_property_emits_node_updated() {
             assert_eq!(before.id, id);
             assert_eq!(after.id, id);
             // Before should have no properties, after should have one
-            assert!(before.properties.is_empty());
+            assert!(before.properties.is_empty(), "résultat attendu vide");
             assert_eq!(after.properties.len(), 1);
         }
         other => panic!("expected NodeUpdated, got {:?}", other),
@@ -340,7 +340,7 @@ fn remove_node_property_emits_node_updated() {
     assert_eq!(events.len(), 1);
     if let MutationEvent::NodeUpdated { before, after } = &events[0] {
         assert_eq!(before.properties.len(), 1);
-        assert!(after.properties.is_empty());
+        assert!(after.properties.is_empty(), "résultat attendu vide");
     } else {
         panic!("expected NodeUpdated");
     }
@@ -377,7 +377,7 @@ fn set_edge_property_emits_edge_updated() {
         MutationEvent::EdgeUpdated { before, after } => {
             assert_eq!(before.id, eid);
             assert_eq!(after.id, eid);
-            assert!(before.properties.is_empty());
+            assert!(before.properties.is_empty(), "résultat attendu vide");
             assert_eq!(after.properties.len(), 1);
         }
         other => panic!("expected EdgeUpdated, got {:?}", other),
@@ -400,7 +400,7 @@ fn remove_edge_property_emits_edge_updated() {
     assert_eq!(events.len(), 1);
     if let MutationEvent::EdgeUpdated { before, after } = &events[0] {
         assert_eq!(before.properties.len(), 1);
-        assert!(after.properties.is_empty());
+        assert!(after.properties.is_empty(), "résultat attendu vide");
     } else {
         panic!("expected EdgeUpdated");
     }
@@ -500,7 +500,7 @@ fn drain_pending_clears_buffer() {
 
     // After drain, should be empty
     assert_eq!(store.pending_count(), 0);
-    assert!(store.drain_pending().is_empty());
+    assert!(store.drain_pending().is_empty(), "résultat attendu vide");
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn clear_pending_discards_events() {
     store.clear_pending();
 
     assert_eq!(store.pending_count(), 0);
-    assert!(store.drain_pending().is_empty());
+    assert!(store.drain_pending().is_empty(), "résultat attendu vide");
 }
 
 #[test]
@@ -1304,7 +1304,7 @@ fn get_node_history_delegates_to_inner() {
 
     let history = store.get_node_history(id);
     // At least one version should exist
-    assert!(!history.is_empty());
+    assert!(!history.is_empty(), "résultat attendu non vide");
     assert_eq!(history[0].2.id, id);
 }
 
@@ -1318,7 +1318,7 @@ fn get_edge_history_delegates_to_inner() {
     store.drain_pending();
 
     let history = store.get_edge_history(eid);
-    assert!(!history.is_empty());
+    assert!(!history.is_empty(), "résultat attendu non vide");
     assert_eq!(history[0].2.id, eid);
 }
 
@@ -1589,7 +1589,7 @@ fn set_node_property_versioned_emits_node_updated() {
         MutationEvent::NodeUpdated { before, after } => {
             assert_eq!(before.id, id);
             assert_eq!(after.id, id);
-            assert!(before.properties.is_empty());
+            assert!(before.properties.is_empty(), "résultat attendu vide");
             assert_eq!(after.properties.len(), 1);
         }
         other => panic!("expected NodeUpdated, got {:?}", other),
@@ -1618,7 +1618,7 @@ fn set_edge_property_versioned_emits_edge_updated() {
         MutationEvent::EdgeUpdated { before, after } => {
             assert_eq!(before.id, eid);
             assert_eq!(after.id, eid);
-            assert!(before.properties.is_empty());
+            assert!(before.properties.is_empty(), "résultat attendu vide");
             assert_eq!(after.properties.len(), 1);
         }
         other => panic!("expected EdgeUpdated, got {:?}", other),
@@ -1729,7 +1729,7 @@ fn remove_node_property_versioned_emits_node_updated() {
     match &events[0] {
         MutationEvent::NodeUpdated { before, after } => {
             assert_eq!(before.properties.len(), 1);
-            assert!(after.properties.is_empty());
+            assert!(after.properties.is_empty(), "résultat attendu vide");
         }
         other => panic!("expected NodeUpdated, got {:?}", other),
     }
@@ -1769,7 +1769,7 @@ fn remove_edge_property_versioned_emits_edge_updated() {
     match &events[0] {
         MutationEvent::EdgeUpdated { before, after } => {
             assert_eq!(before.properties.len(), 1);
-            assert!(after.properties.is_empty());
+            assert!(after.properties.is_empty(), "résultat attendu vide");
         }
         other => panic!("expected EdgeUpdated, got {:?}", other),
     }

@@ -417,7 +417,7 @@ mod tests {
     fn test_bitpack_empty() {
         let values: Vec<u64> = vec![];
         let packed = BitPackedInts::pack(&values);
-        assert!(packed.is_empty());
+        assert!(packed.is_empty(), "résultat attendu vide");
         assert_eq!(packed.unpack(), values);
     }
 
@@ -508,7 +508,7 @@ mod tests {
     fn test_delta_bitpacked_empty() {
         let values: Vec<u64> = vec![];
         let encoded = DeltaBitPacked::encode(&values);
-        assert!(encoded.is_empty());
+        assert!(encoded.is_empty(), "résultat attendu vide");
         assert_eq!(encoded.decode(), values);
     }
 
