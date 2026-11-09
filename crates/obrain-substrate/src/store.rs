@@ -7170,7 +7170,9 @@ impl SubstrateStore {
         // est nécessaire ou si elle serait un no-op payé à chaque ouverture.
         // L'offset passé est celui du dernier flush (même repli que le rejeu
         // si le WAL a été tronqué depuis).
-        let fenetre_structurelle = store.merge_wal_inline_props(snapshot.wal_offset_at_flush);
+        // Le booléen n'est plus lu : la vérification pleine est systématique
+        // (voir plus bas). L'appel reste indispensable pour ses effets.
+        let _fenetre_structurelle = store.merge_wal_inline_props(snapshot.wal_offset_at_flush);
 
         // Aretes inter-bases (V1) : snapshot sidecar puis fenetre WAL,
         // meme sequence que les proprietes inline. Jamais fatal.
@@ -7269,14 +7271,9 @@ impl SubstrateStore {
         // (IN_MISSION 4660 pour 2347) est nee AVANT le flush et se serait
         // re-endormie sous la garde. Cout mesure du recompte : 17 ms sur
         // 434 000 noeuds — paye a chaque ouverture, compteurs jamais faux.
-        if false && !fenetre_structurelle {
-            tracing::debug!(
-                target: "substrate::counters",
-                ms = t_verif.elapsed().as_millis() as u64,
-                "fenetre WAL post-flush sans record structurel — compteurs d'instantane \
-                 encore exacts, verification pleine sautee (scan O(N+E) non paye)"
-            );
-        } else {
+        // Branche « fenêtre sans record structurel → vérification sautée » retirée :
+        // elle était morte (`false &&`). La vérification pleine tourne toujours.
+        {
             store.verifications_pleines.fetch_add(1, Ordering::Relaxed);
             let avant_n = store.total_live_nodes.load(Ordering::Relaxed);
             let avant_e = store.total_live_edges.load(Ordering::Relaxed);
