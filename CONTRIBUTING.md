@@ -28,8 +28,8 @@ Ordre de publication (chaque crate dépend des précédents) : common → core �
 ## Faire un changement
 
 1. Une branche par changement, coupée de `main` ; jamais de push sur `main` : tout passe par une PR.
-2. Avant de pousser : `./scripts/ci-local.sh --quick` (format, clippy, doc, tests), ou au minimum `cargo fmt --all` et `scripts/clippy-ratchet.sh`.
-3. La CI (`.github/workflows/ci.yml`) joue : format ; clippy en **cliquet** (`clippy-baseline`, le nombre d'avertissements ne monte jamais dans une PR ; s'il descend, abaissez le plafond avec `scripts/clippy-ratchet.sh --update`) ; tests en features par défaut ; compilation `--all-features` ; MSRV ; `cargo deny` ; métadonnées de publication ; tests d'intégrité sur macOS.
+2. Avant de pousser : `./scripts/ci-local.sh --quick` (format, clippy, doc, tests), ou au minimum `cargo fmt --all` et `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+3. La CI (`.github/workflows/ci.yml`) joue : format ; clippy en `-D warnings` (aucun avertissement toléré) ; `cargo doc` en `RUSTDOCFLAGS=-D warnings` ; tests en features par défaut ; compilation `--all-features` en `RUSTFLAGS=-D warnings` ; MSRV ; `cargo deny` ; métadonnées de publication ; tests d'intégrité sur macOS.
 4. Fusion en *squash* ; une PR = un sujet.
 
 Ce que la CI ne joue pas et qu'il faut lancer à la main avant une version : `cargo test --workspace --all-features`, `cargo test --workspace --release`, les tests `#[ignore]` (`mesures.yml`, à la demande), les benchs (`make bench-v001`, voir `docs/BENCHMARKS.md`).

@@ -37,7 +37,7 @@ env:
 
 jobs:
   lint:
-    name: Format, clippy (cliquet)
+    name: Format, clippy, doc (zéro avertissement)
     runs-on: [self-hosted, linux, x64, obrain-ci]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,11 +69,16 @@ jobs:
         run: rustup component add rustfmt clippy
       - name: Format
         run: cargo fmt --all -- --check
-      # Le code porte des centaines d'avertissements hérités : `-D warnings`
-      # d'un coup est hors de portée. Le cliquet interdit d'en AJOUTER
-      # (plafond commité dans `clippy-baseline`, à abaisser quand ça descend).
-      - name: Clippy (cliquet)
-        run: scripts/clippy-ratchet.sh
+      # ZÉRO avertissement (2026-11-09) : le cliquet `clippy-baseline` est retiré,
+      # tout avertissement clippy (lints rustc compris) fait échouer la PR.
+      - name: Clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # La documentation doit se construire SANS avertissement : liens intra-doc
+      # cassés, liens vers des items privés, HTML non fermé.
+      - name: Rustdoc (-D warnings)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features
       - name: Nettoyage du répertoire temporaire du job
         if: always()
         run: rm -rf "$RUNNER_TEMP/tests"
@@ -198,7 +203,10 @@ jobs:
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Un avertissement rustc (code mort, import inutile…) fait échouer la PR.
       - name: Check --all-features
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo check --workspace --all-targets --all-features
 
   # Navigateur (wasm32-unknown-unknown, feature `browser`). Sans ce job, rien ne
