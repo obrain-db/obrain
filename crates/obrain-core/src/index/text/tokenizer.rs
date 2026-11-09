@@ -66,6 +66,8 @@ impl SimpleTokenizer {
         format!("simple(min_length={})", self.min_token_length)
     }
 
+    /// Crée un tokenizer simple qui écarte les termes de moins de
+    /// `min_token_length` octets (et les mots vides).
     pub fn with_min_length(min_token_length: usize) -> Self {
         Self { min_token_length }
     }

@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 
 /// A node with its labels and properties fully loaded.
 ///
-/// This is what you get back from [`LpgStore::get_node()`](super::LpgStore::get_node).
+/// This is what you get back from `LpgStore::get_node()`.
 /// For bulk operations, the store works with [`NodeRecord`] internally.
 ///
 /// # Example

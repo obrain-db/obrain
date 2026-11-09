@@ -10,15 +10,15 @@
 //! Chaque cas ci-dessous est donc un TRIPLET, et le triplet est la preuve :
 //!
 //!   1. ANNULÉ      — le jeton est armé au N-ième appel de l'enfant.
-//!                    L'opérateur doit rendre `Cancelled` ET s'être arrêté
-//!                    à ~N appels, non à la fin de la source.
+//!      L'opérateur doit rendre `Cancelled` ET s'être arrêté
+//!      à ~N appels, non à la fin de la source.
 //!   2. CONTRE-ÉPREUVE (rien n'annule) — même montage, jeton jamais armé.
-//!                    L'opérateur doit consommer la source ENTIÈRE. C'est ce
-//!                    qui établit que le compte de l'étape 1 est bien un
-//!                    arrêt anticipé et non la longueur naturelle du travail.
+//!      L'opérateur doit consommer la source ENTIÈRE. C'est ce
+//!      qui établit que le compte de l'étape 1 est bien un
+//!      arrêt anticipé et non la longueur naturelle du travail.
 //!   3. ANTI-VACUITÉ (mécanisme neutralisé) — jeton armé, mais AUCUNE portée
-//!                    installée. L'opérateur doit consommer la source
-//!                    ENTIÈRE, exactement comme en 2.
+//!      installée. L'opérateur doit consommer la source
+//!      ENTIÈRE, exactement comme en 2.
 //!
 //! L'étape 3 est celle qui a de la valeur. Elle exécute le même code, avec
 //! le même drapeau armé, et le seul écart avec l'étape 1 est que le point de
@@ -310,7 +310,9 @@ fn l_echeance_arrete_les_memes_boucles_que_le_jeton() {
         vec![LogicalType::Int64],
     );
     let _portee = cancel::installer_echeance(Some(
-        web_time::Instant::now() - std::time::Duration::from_secs(1),
+        web_time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap(),
     ));
     let (err, appels) = drainer(&mut op, &compteur);
     assert!(

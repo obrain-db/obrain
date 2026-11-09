@@ -1265,7 +1265,7 @@ impl ExpressionPredicate {
                 {
                     entree.actif = false;
                 }
-                entree.ids = ids.clone();
+                entree.ids.clone_from(&ids);
                 entree.verdicts = verdicts;
             }
         }
@@ -3200,10 +3200,9 @@ impl ExpressionPredicate {
                         let col = chunk.column(col_idx)?;
                         if let Some(nid) = col.get_node_id(row) {
                             ids.push(nid.0);
-                        } else if let Some(eid) = col.get_edge_id(row) {
-                            ids.push(eid.0);
                         } else {
-                            return None;
+                            let eid = col.get_edge_id(row)?;
+                            ids.push(eid.0);
                         }
                     } else {
                         return None;
@@ -3245,10 +3244,9 @@ impl ExpressionPredicate {
                         let col = chunk.column(col_idx)?;
                         let current_id = if let Some(nid) = col.get_node_id(row) {
                             nid.0
-                        } else if let Some(eid) = col.get_edge_id(row) {
-                            eid.0
                         } else {
-                            return None;
+                            let eid = col.get_edge_id(row)?;
+                            eid.0
                         };
                         match first_id {
                             None => first_id = Some(current_id),
