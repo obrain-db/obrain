@@ -1763,7 +1763,7 @@ mod tests {
         let results = index.batch_search(&queries, 10, &accessor);
 
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_empty());
+        assert!(results[0].is_empty(), "résultat attendu vide");
     }
 
     /// Brute-force k-NN for recall verification.

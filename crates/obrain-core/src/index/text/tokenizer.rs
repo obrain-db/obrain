@@ -202,13 +202,16 @@ mod tests {
     #[test]
     fn test_empty_string() {
         let t = SimpleTokenizer::new();
-        assert!(t.tokenize("").is_empty());
+        assert!(t.tokenize("").is_empty(), "résultat attendu vide");
     }
 
     #[test]
     fn test_only_stop_words() {
         let t = SimpleTokenizer::new();
-        assert!(t.tokenize("the a an is").is_empty());
+        assert!(
+            t.tokenize("the a an is").is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]

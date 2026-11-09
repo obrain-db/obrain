@@ -2690,7 +2690,7 @@ mod tests {
             .build();
 
         let batch = projection.get_nodes_properties_batch(&[n0, n1]);
-        assert!(!batch[0].is_empty());
+        assert!(!batch[0].is_empty(), "résultat attendu non vide");
         assert!(batch[1].is_empty()); // Note filtered out
     }
 
@@ -2879,7 +2879,7 @@ mod tests {
 
         let keys = vec!["path".into(), "size".into()];
         let batch = projection.get_nodes_properties_selective_batch(&[n0, n1], &keys);
-        assert!(!batch[0].is_empty());
+        assert!(!batch[0].is_empty(), "résultat attendu non vide");
         assert!(batch[1].is_empty()); // Note filtered
     }
 
@@ -2899,7 +2899,7 @@ mod tests {
 
         let keys = vec!["weight".into()];
         let batch = projection.get_edges_properties_selective_batch(&[e0, e1], &keys);
-        assert!(!batch[0].is_empty());
+        assert!(!batch[0].is_empty(), "résultat attendu non vide");
         assert!(batch[1].is_empty()); // SYNAPSE filtered
     }
 

@@ -26236,7 +26236,10 @@ mod tests {
         assert_eq!(s.nodes_by_label("B").len(), 6, "balayage");
         assert_eq!(s.node_count_by_label("B"), 6, "compteur");
         assert_eq!(s.node_count_by_label("A"), 10, "le voisin ne bouge pas");
-        assert!(s.recount_live_counters().expect("recount").is_empty());
+        assert!(
+            s.recount_live_counters().expect("recount").is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     /// L'idempotence ne doit pas compter deux fois — un `SET n:B` répété sur
@@ -26255,7 +26258,10 @@ mod tests {
         assert!(s.remove_label(n, "B"));
         assert!(!s.remove_label(n, "B"), "retrait répété : sans effet");
         assert_eq!(s.node_count_by_label("B"), 0);
-        assert!(s.recount_live_counters().expect("recount").is_empty());
+        assert!(
+            s.recount_live_counters().expect("recount").is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     /// LE TEST DE PARITÉ QUE LES AGENTS RÉCLAMENT, et qui garde la porte du
@@ -26856,7 +26862,10 @@ mod tests {
         let (_td, s) = store();
         s.create_node(&["Person"]);
         s.create_node(&["Company"]);
-        assert!(s.recount_live_counters().expect("recount").is_empty());
+        assert!(
+            s.recount_live_counters().expect("recount").is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
@@ -28326,7 +28335,7 @@ mod tests {
         let res = s.get_edges_properties_selective_batch(&[e0, e1, e2], &[PropertyKey::new("w")]);
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].get(&PropertyKey::new("w")), Some(&Value::Int64(10)));
-        assert!(res[1].is_empty());
+        assert!(res[1].is_empty(), "résultat attendu vide");
         assert_eq!(res[2].get(&PropertyKey::new("w")), Some(&Value::Int64(30)));
     }
 

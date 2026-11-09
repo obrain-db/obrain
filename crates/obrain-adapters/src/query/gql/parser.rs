@@ -8287,7 +8287,7 @@ mod tests {
         let edges = get_first_path_edges(&result);
         assert_eq!(edges[0].direction, EdgeDirection::Undirected);
         assert!(edges[0].variable.is_none());
-        assert!(edges[0].types.is_empty());
+        assert!(edges[0].types.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -8310,7 +8310,7 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].direction, EdgeDirection::Outgoing);
         assert!(edges[0].variable.is_none());
-        assert!(edges[0].types.is_empty());
+        assert!(edges[0].types.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -8322,7 +8322,7 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].direction, EdgeDirection::Incoming);
         assert!(edges[0].variable.is_none());
-        assert!(edges[0].types.is_empty());
+        assert!(edges[0].types.is_empty(), "résultat attendu vide");
     }
 
     #[test]

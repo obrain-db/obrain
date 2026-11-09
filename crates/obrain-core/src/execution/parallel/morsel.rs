@@ -247,8 +247,14 @@ mod tests {
 
     #[test]
     fn test_generate_morsels_empty() {
-        assert!(generate_morsels(0, 100, 0).is_empty());
-        assert!(generate_morsels(100, 0, 0).is_empty());
+        assert!(
+            generate_morsels(0, 100, 0).is_empty(),
+            "résultat attendu vide"
+        );
+        assert!(
+            generate_morsels(100, 0, 0).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]

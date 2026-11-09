@@ -732,7 +732,10 @@ mod tests {
             p.cold_zone_delta(0).unwrap().is_empty(),
             "résultat attendu vide"
         );
-        assert!(p.cold_zone_delta(u64::MAX).unwrap().is_empty());
+        assert!(
+            p.cold_zone_delta(u64::MAX).unwrap().is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]

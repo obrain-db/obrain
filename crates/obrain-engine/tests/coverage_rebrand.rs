@@ -1594,7 +1594,10 @@ fn database_memory_limit() {
 
 #[test]
 fn database_version_constant() {
-    assert!(!obrain_engine::VERSION.is_empty());
+    assert!(
+        !obrain_engine::VERSION.is_empty(),
+        "résultat attendu non vide"
+    );
 }
 
 // ===========================================================================
