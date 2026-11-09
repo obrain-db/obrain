@@ -102,7 +102,7 @@ fn bench_pont(c: &mut Criterion) {
                     .and_then(|r| r.as_array())
                     .map_or(0, |a| a.len()),
             )
-        })
+        });
     });
     ga.finish();
 
@@ -117,7 +117,7 @@ fn bench_pont(c: &mut Criterion) {
                 Some(Value::String(s)) => s.len(),
                 _ => 0,
             })
-        })
+        });
     });
 
     // (c) vue zero-copy par nœud (&str emprunté au mmap, garde relâchée au drop).
@@ -128,7 +128,7 @@ fn bench_pont(c: &mut Criterion) {
             i += 1;
             let vue = session.prop_str_view(black_box(id), &cle).expect("vue");
             black_box(vue.len())
-        })
+        });
     });
 
     // (c') la même, en consommant le texte comme le ferait un tokenizer
@@ -140,7 +140,7 @@ fn bench_pont(c: &mut Criterion) {
             i += 1;
             let vue = session.prop_str_view(black_box(id), &cle).expect("vue");
             black_box(vue.as_bytes().iter().map(|&b| b as u64).sum::<u64>())
-        })
+        });
     });
 }
 

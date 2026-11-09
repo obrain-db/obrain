@@ -72,6 +72,7 @@ fn construit_store() -> (ObrainDB, tempfile::TempDir) {
     (db, tmp)
 }
 
+#[allow(clippy::many_single_char_names)] // notation de banc : c (Criterion), i, v, n, b (bencher) dans des portées courtes
 fn bench_suite(c: &mut Criterion) {
     let (db, _tmp) = construit_store();
     let session = db.session();
@@ -120,7 +121,7 @@ fn bench_suite(c: &mut Criterion) {
         b.iter(|| {
             let res = session.execute(black_box(requete)).expect("execute");
             black_box(res.rows.len())
-        })
+        });
     });
     g.bench_function("b_boucle_prop_str_view_par_noeud", |b| {
         b.iter(|| {
@@ -130,7 +131,7 @@ fn bench_suite(c: &mut Criterion) {
                 octets += vue.len() as u64;
             }
             black_box(octets)
-        })
+        });
     });
     g.bench_function("c_for_each_prop_view_une_garde_par_zone", |b| {
         b.iter(|| {
@@ -142,7 +143,7 @@ fn bench_suite(c: &mut Criterion) {
                 })
                 .expect("balayage");
             black_box((n, octets))
-        })
+        });
     });
     g.finish();
 
@@ -161,7 +162,7 @@ fn bench_suite(c: &mut Criterion) {
                 })
                 .expect("balayage");
             black_box(sortie.len())
-        })
+        });
     });
     g.bench_function("b_resultbuf_reutilise", |b| {
         let mut buf = ResultBuf::new();
@@ -170,7 +171,7 @@ fn bench_suite(c: &mut Criterion) {
                 .collect_props_into(Some("Fait"), "texte", &mut buf)
                 .expect("collecte");
             black_box((n, buf.octets()))
-        })
+        });
     });
     g.finish();
 
@@ -209,7 +210,7 @@ fn bench_suite(c: &mut Criterion) {
                 Some(Value::String(s)) => s.len(),
                 _ => 0,
             })
-        })
+        });
     });
     g.bench_function("b_edge_prop_str_view_zero_copy", |b| {
         let mut i = 0usize;
@@ -220,7 +221,7 @@ fn bench_suite(c: &mut Criterion) {
                 .edge_prop_str_view(black_box(id), "contexte")
                 .expect("vue");
             black_box(vue.len())
-        })
+        });
     });
     g.bench_function("b_edge_prop_str_view_consommee", |b| {
         let mut i = 0usize;
@@ -231,7 +232,7 @@ fn bench_suite(c: &mut Criterion) {
                 .edge_prop_str_view(black_box(id), "contexte")
                 .expect("vue");
             black_box(vue.as_bytes().iter().map(|&b| b as u64).sum::<u64>())
-        })
+        });
     });
     g.finish();
 }
