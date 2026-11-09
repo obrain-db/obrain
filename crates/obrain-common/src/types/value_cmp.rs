@@ -100,6 +100,7 @@ pub fn cmp_i64_f64(i: i64, f: f64) -> Option<Ordering> {
 /// NULL rend [`Comparaison::Incomparables`] (UNKNOWN), comme deux classes
 /// disjointes.
 #[must_use]
+#[allow(clippy::many_single_char_names)] // a, b (opérandes) déstructurés par variante, x, y, o : notation de comparateur
 pub fn comparer(a: &Value, b: &Value) -> Comparaison {
     use Comparaison::{Incomparables, NonOrdonnees, Ordonnees};
     match (a, b) {
@@ -160,6 +161,7 @@ pub fn comparer(a: &Value, b: &Value) -> Comparaison {
 /// des tests gardés gql_12), un élément NULL rend l'égalité indécidable
 /// seulement si le reste ne tranche pas déjà.
 #[must_use]
+#[allow(clippy::many_single_char_names)] // a, b (opérandes) déstructurés par variante, x, y, i, j : notation de comparateur
 pub fn egaler(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Null, _) | (_, Value::Null) => None,
@@ -373,6 +375,7 @@ fn total_f64(a: f64, b: f64) -> Ordering {
 /// des valeurs interchangeables au tri (dont `Int64(1)`/`Float64(1.0)`,
 /// `-0.0`/`0.0`, NaN/NaN).
 #[must_use]
+#[allow(clippy::many_single_char_names)] // a, b (opérandes) déstructurés par variante, x, y : notation de comparateur
 pub fn comparer_total(a: &Value, b: &Value) -> Ordering {
     match (a, b) {
         (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
@@ -529,7 +532,7 @@ mod tests {
             Ordering::Greater
         );
         assert_eq!(comparer_total(&Value::Int64(7), &nan), Ordering::Less);
-        assert_eq!(egalite_structurelle(&nan, &nan), true);
+        assert!(egalite_structurelle(&nan, &nan));
     }
 
     #[test]
