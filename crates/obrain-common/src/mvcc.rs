@@ -1478,7 +1478,7 @@ mod tiered_storage_tests {
     #[test]
     fn test_version_index_default() {
         let index = VersionIndex::default();
-        assert!(index.is_empty());
+        assert!(index.is_empty(), "résultat attendu vide");
         assert_eq!(index.version_count(), 0);
     }
 

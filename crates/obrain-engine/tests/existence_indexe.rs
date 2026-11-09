@@ -118,7 +118,7 @@ fn le_noeud_sans_la_propriete_ne_sort_pas() {
         "6 porteurs attendus, {} rendus : {r:?}",
         r.len()
     );
-    assert!(!r.is_empty());
+    assert!(!r.is_empty(), "résultat attendu non vide");
     // `rang = -1` est LE nœud sans `id` : il ne doit apparaître nulle part.
     //
     // LA REQUÊTE PORTE L'EXISTENCE, et ce n'est pas un détail de rédaction :

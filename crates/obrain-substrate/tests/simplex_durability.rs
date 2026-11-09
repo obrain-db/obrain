@@ -228,7 +228,9 @@ fn enfant_ecrit_des_simplexes_en_boucle() {
     };
     let sub = SubstrateFile::create(Path::new(&dir).join("kb")).unwrap();
     let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
-    for i in 0u32.. {
+    // Boucle volontairement sans fin : le parent la tue (kill -9).
+    let mut i: u32 = 0;
+    loop {
         let base = i * 10;
         w.upsert_simplex(
             simplex_kind::TRIANGLE,
@@ -253,6 +255,7 @@ fn enfant_ecrit_des_simplexes_en_boucle() {
         let tmp = Path::new(&dir).join("progress.tmp");
         std::fs::write(&tmp, format!("{i}")).unwrap();
         std::fs::rename(&tmp, Path::new(&dir).join("progress")).unwrap();
+        i += 1;
     }
 }
 

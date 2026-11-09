@@ -655,7 +655,7 @@ mod tests {
         // Compact au-delà de la fenêtre → tout est retiré.
         p.compact(100).unwrap();
         assert_eq!(p.count(), 0);
-        assert!(p.load(0).unwrap().is_empty());
+        assert!(p.load(0).unwrap().is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -728,8 +728,14 @@ mod tests {
         let store = obrain_substrate::SubstrateStore::create(dir.path().join("cdc_tail0")).unwrap();
         let p = CdcPersist::open(std::sync::Arc::new(store));
         // Aucune zone → used (0,0) ; fenêtre vide → réponse vide fiable, µs.
-        assert!(p.cold_zone_delta(0).unwrap().is_empty());
-        assert!(p.cold_zone_delta(u64::MAX).unwrap().is_empty());
+        assert!(
+            p.cold_zone_delta(0).unwrap().is_empty(),
+            "résultat attendu vide"
+        );
+        assert!(
+            p.cold_zone_delta(u64::MAX).unwrap().is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
@@ -748,7 +754,10 @@ mod tests {
         let ts: Vec<u64> = got.iter().map(|e| e.timestamp).collect();
         assert_eq!(ts, (5..=10).collect::<Vec<u64>>());
         // Rien de neuf → Some(vide), sans décodage.
-        assert!(p.cold_zone_delta(11).unwrap().is_empty());
+        assert!(
+            p.cold_zone_delta(11).unwrap().is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
@@ -772,7 +781,10 @@ mod tests {
         // queue vidée → cohérent → Some(vide) sans rechargement.
         p.compact(100).unwrap();
         assert_eq!(p.count(), 0);
-        assert!(p.cold_zone_delta(0).unwrap().is_empty());
+        assert!(
+            p.cold_zone_delta(0).unwrap().is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]

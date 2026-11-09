@@ -787,7 +787,7 @@ mod tests {
         assert_eq!(rec.flags, simplex_flags::CYCLIC);
         let (members, props) = read_members_props(&rec, &heap).unwrap();
         assert_eq!(members, vec![10, 20, 30]);
-        assert!(props.is_empty());
+        assert!(props.is_empty(), "résultat attendu vide");
         assert_eq!(SimplexDirZone::high_water(&dir).unwrap(), 1);
         // Idempotence : ré-appliquer le même état = Unchanged.
         let r2 = apply_set_raw(

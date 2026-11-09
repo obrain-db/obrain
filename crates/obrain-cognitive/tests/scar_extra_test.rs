@@ -157,7 +157,7 @@ fn store_cumulative_intensity_untracked() {
 fn store_nodes_with_active_scars_empty() {
     let store = ScarStore::new(ScarConfig::default());
     let result = store.nodes_with_active_scars(0.0);
-    assert!(result.is_empty());
+    assert!(result.is_empty(), "résultat attendu vide");
 }
 
 // ---------------------------------------------------------------------------

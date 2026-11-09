@@ -8287,7 +8287,7 @@ mod tests {
         let edges = get_first_path_edges(&result);
         assert_eq!(edges[0].direction, EdgeDirection::Undirected);
         assert!(edges[0].variable.is_none());
-        assert!(edges[0].types.is_empty());
+        assert!(edges[0].types.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -8310,7 +8310,7 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].direction, EdgeDirection::Outgoing);
         assert!(edges[0].variable.is_none());
-        assert!(edges[0].types.is_empty());
+        assert!(edges[0].types.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -8322,7 +8322,7 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].direction, EdgeDirection::Incoming);
         assert!(edges[0].variable.is_none());
-        assert!(edges[0].types.is_empty());
+        assert!(edges[0].types.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -9705,10 +9705,10 @@ mod tests {
             // Node should have no properties
             for t in &stmt.inline_types {
                 if let InlineElementType::Node { properties, .. } = t {
-                    assert!(properties.is_empty());
+                    assert!(properties.is_empty(), "résultat attendu vide");
                 }
                 if let InlineElementType::Edge { properties, .. } = t {
-                    assert!(properties.is_empty());
+                    assert!(properties.is_empty(), "résultat attendu vide");
                 }
             }
         } else {
@@ -9853,7 +9853,10 @@ mod tests {
         let result = parser.parse();
         assert!(result.is_ok(), "LOAD DATA CSV parse failed: {result:?}");
         if let Statement::Query(query) = result.unwrap() {
-            assert!(!query.ordered_clauses.is_empty());
+            assert!(
+                !query.ordered_clauses.is_empty(),
+                "résultat attendu non vide"
+            );
             assert!(matches!(query.ordered_clauses[0], QueryClause::LoadData(_)));
             if let QueryClause::LoadData(ref ld) = query.ordered_clauses[0] {
                 assert_eq!(ld.path, "people.csv");

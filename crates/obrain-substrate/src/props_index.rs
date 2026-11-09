@@ -1219,7 +1219,8 @@ mod tests {
         );
         let c = encoder_cle(&Value::String("abcdefghijl".into())).unwrap();
         assert!(court < c, "l'ordre du préfixe doit tenir");
-        assert!(a < autre || b < autre || true);
+        // (une ancienne assertion `a < autre || b < autre || true` ne testait rien
+        // et a été retirée ; l'ordre sous la troncature reste à spécifier.)
         let _ = (a, b);
     }
 

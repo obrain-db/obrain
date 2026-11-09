@@ -508,7 +508,7 @@ mod tests {
             detector.record_episode(&[NodeId(1), NodeId(2)]);
         }
         let patterns = detector.detect_patterns(3, 0.5);
-        assert!(patterns.is_empty());
+        assert!(patterns.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -528,13 +528,16 @@ mod tests {
             hebb.record_activation(&nodes, 0.1);
         }
         // Cumulative surprise = 0.5, threshold = 1.0 → no formation.
-        assert!(hebb.should_form_engram().is_empty());
+        assert!(
+            hebb.should_form_engram().is_empty(),
+            "résultat attendu vide"
+        );
 
         // Push surprise over the threshold.
         hebb.record_activation(&nodes, 0.6);
         // Cumulative surprise = 1.1, threshold = 1.0 → should form.
         let ensembles = hebb.should_form_engram();
-        assert!(!ensembles.is_empty());
+        assert!(!ensembles.is_empty(), "résultat attendu non vide");
     }
 
     #[test]
@@ -612,7 +615,10 @@ mod tests {
         }
 
         // Without marks: min_episodes=3, only 2 episodes → no formation
-        assert!(hebb.should_form_engram().is_empty());
+        assert!(
+            hebb.should_form_engram().is_empty(),
+            "résultat attendu vide"
+        );
 
         // With a +0.5 mark → adjusted min_episodes = 2 → should form
         let mut bridge = EpigeneticBridge::new();
@@ -655,7 +661,10 @@ mod tests {
         }
 
         // Without marks: should form (4 >= 3)
-        assert!(!hebb.should_form_engram().is_empty());
+        assert!(
+            !hebb.should_form_engram().is_empty(),
+            "résultat attendu non vide"
+        );
 
         // With -0.5 mark → adjusted min_episodes = 5 → 4 < 5 → no formation
         let mut bridge = EpigeneticBridge::new();
@@ -692,7 +701,7 @@ mod tests {
     fn test_detect_patterns_zero_episodes() {
         let detector = CoActivationDetector::new();
         let patterns = detector.detect_patterns(1, 0.0);
-        assert!(patterns.is_empty());
+        assert!(patterns.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -715,7 +724,7 @@ mod tests {
         detector.record_episode(&[]);
         assert_eq!(detector.episode_count, 1);
         // No co-occurrences should be recorded
-        assert!(detector.co_occurrences.is_empty());
+        assert!(detector.co_occurrences.is_empty(), "résultat attendu vide");
     }
 
     #[test]

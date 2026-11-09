@@ -325,29 +325,29 @@ fn collections_constructors() {
 
     // Test all constructor variants
     let map = obrain_map::<String, i32>();
-    assert!(map.is_empty());
+    assert!(map.is_empty(), "résultat attendu vide");
 
     let map = obrain_map_with_capacity::<String, i32>(100);
-    assert!(map.is_empty());
+    assert!(map.is_empty(), "résultat attendu vide");
     assert!(map.capacity() >= 100);
 
     let set = obrain_set::<i32>();
-    assert!(set.is_empty());
+    assert!(set.is_empty(), "résultat attendu vide");
 
     let set = obrain_set_with_capacity::<i32>(100);
-    assert!(set.is_empty());
+    assert!(set.is_empty(), "résultat attendu vide");
 
     let cmap = obrain_concurrent_map::<String, i32>();
-    assert!(cmap.is_empty());
+    assert!(cmap.is_empty(), "résultat attendu vide");
 
     let cmap = obrain_concurrent_map_with_capacity::<String, i32>(100);
-    assert!(cmap.is_empty());
+    assert!(cmap.is_empty(), "résultat attendu vide");
 
     let imap = obrain_index_map::<String, i32>();
-    assert!(imap.is_empty());
+    assert!(imap.is_empty(), "résultat attendu vide");
 
     let imap = obrain_index_map_with_capacity::<String, i32>(100);
-    assert!(imap.is_empty());
+    assert!(imap.is_empty(), "résultat attendu vide");
 }
 
 #[test]
@@ -808,7 +808,7 @@ fn database_close() {
 #[test]
 fn query_result_empty() {
     let result = obrain_engine::database::QueryResult::empty();
-    assert!(result.is_empty());
+    assert!(result.is_empty(), "résultat attendu vide");
     assert_eq!(result.row_count(), 0);
     assert_eq!(result.column_count(), 0);
     assert!(result.execution_time_ms().is_none());
@@ -818,7 +818,7 @@ fn query_result_empty() {
 #[test]
 fn query_result_status() {
     let result = obrain_engine::database::QueryResult::status("Node type created");
-    assert!(result.is_empty());
+    assert!(result.is_empty(), "résultat attendu vide");
     assert_eq!(result.status_message, Some("Node type created".to_string()));
 }
 
@@ -827,7 +827,7 @@ fn query_result_new_with_columns() {
     let result =
         obrain_engine::database::QueryResult::new(vec!["a".into(), "b".into(), "c".into()]);
     assert_eq!(result.column_count(), 3);
-    assert!(result.is_empty());
+    assert!(result.is_empty(), "résultat attendu vide");
 }
 
 #[test]
@@ -882,7 +882,7 @@ fn query_result_display() {
     db.execute("CREATE (:D {name: 'test'})").unwrap();
     let result = db.execute("MATCH (n:D) RETURN n.name AS name").unwrap();
     let display = format!("{result}");
-    assert!(!display.is_empty());
+    assert!(!display.is_empty(), "résultat attendu non vide");
 }
 
 // ===========================================================================
@@ -1012,10 +1012,10 @@ fn builtin_procedures_list_sorted() {
     use obrain_engine::procedures::BuiltinProcedures;
     let procs = BuiltinProcedures::new();
     let list = procs.list();
-    assert!(!list.is_empty());
+    assert!(!list.is_empty(), "résultat attendu non vide");
     for proc in &list {
         assert!(proc.name.starts_with("obrain."));
-        assert!(!proc.description.is_empty());
+        assert!(!proc.description.is_empty(), "résultat attendu non vide");
     }
     let names: Vec<&str> = list.iter().map(|p| p.name.as_str()).collect();
     let mut sorted = names.clone();
@@ -1289,7 +1289,7 @@ fn query_syntax_error() {
 fn query_empty_result() {
     let db = ObrainDB::new_in_memory();
     let result = db.execute("MATCH (n:NonExistent) RETURN n").unwrap();
-    assert!(result.is_empty());
+    assert!(result.is_empty(), "résultat attendu vide");
 }
 
 #[test]
@@ -1557,7 +1557,7 @@ fn config_error_display() {
     ];
     for err in &errors {
         let msg = err.to_string();
-        assert!(!msg.is_empty());
+        assert!(!msg.is_empty(), "résultat attendu non vide");
     }
 }
 
@@ -1594,7 +1594,10 @@ fn database_memory_limit() {
 
 #[test]
 fn database_version_constant() {
-    assert!(!obrain_engine::VERSION.is_empty());
+    assert!(
+        !obrain_engine::VERSION.is_empty(),
+        "résultat attendu non vide"
+    );
 }
 
 // ===========================================================================
@@ -2331,7 +2334,7 @@ fn query_result_status_message() {
         result.status_message,
         Some("Index created successfully".to_string())
     );
-    assert!(result.is_empty());
+    assert!(result.is_empty(), "résultat attendu vide");
     assert_eq!(result.row_count(), 0);
 }
 

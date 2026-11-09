@@ -5758,7 +5758,7 @@ mod tests {
 
             // No edges of this type
             let no_neighbors = session.get_neighbors_outgoing_by_type(alix, "LIKES");
-            assert!(no_neighbors.is_empty());
+            assert!(no_neighbors.is_empty(), "résultat attendu vide");
         }
 
         #[test]
@@ -5917,12 +5917,19 @@ mod tests {
 
             let lonely = session.create_node(&["Person"]);
 
-            assert!(session.get_neighbors_outgoing(lonely).is_empty());
-            assert!(session.get_neighbors_incoming(lonely).is_empty());
+            assert!(
+                session.get_neighbors_outgoing(lonely).is_empty(),
+                "résultat attendu vide"
+            );
+            assert!(
+                session.get_neighbors_incoming(lonely).is_empty(),
+                "résultat attendu vide"
+            );
             assert!(
                 session
                     .get_neighbors_outgoing_by_type(lonely, "KNOWS")
-                    .is_empty()
+                    .is_empty(),
+                "résultat attendu"
             );
         }
     }

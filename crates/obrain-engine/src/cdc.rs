@@ -795,7 +795,7 @@ mod tests {
     fn test_empty_history() {
         let log = CdcLog::new();
         let history = log.history(EntityId::Node(NodeId::new(999)));
-        assert!(history.is_empty());
+        assert!(history.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -853,7 +853,10 @@ mod tests {
         let ts: Vec<u64> = got.iter().map(|e| e.timestamp).collect();
         assert_eq!(ts, (10..=20).collect::<Vec<u64>>());
         // Rien de neuf depuis le dernier événement → vide, sans rechargement.
-        assert!(log.changes_since_timestamp(21, |_| true).is_empty());
+        assert!(
+            log.changes_since_timestamp(21, |_| true).is_empty(),
+            "résultat attendu vide"
+        );
         // Le filtre est appliqué sur la voie froide.
         let got1 =
             log.changes_since_timestamp(10, |e| e.entity_id == EntityId::Node(NodeId::new(1)));
@@ -893,7 +896,8 @@ mod tests {
         // Rien de neuf très récent → vide (toujours sans rechargement).
         assert!(
             log.changes_since_timestamp(u64::MAX - 1, |_| true)
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 }

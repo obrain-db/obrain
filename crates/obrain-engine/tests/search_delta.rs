@@ -166,7 +166,8 @@ fn cdc_recharge_paresseusement_a_la_premiere_lecture() {
     assert!(
         db.search_delta(future, false, false)
             .expect("futur")
-            .is_empty()
+            .is_empty(),
+        "résultat attendu vide"
     );
 }
 

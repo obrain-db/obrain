@@ -291,7 +291,7 @@ mod tests {
     fn test_delta_empty() {
         let values: Vec<u64> = vec![];
         let encoded = DeltaEncoding::encode(&values);
-        assert!(encoded.is_empty());
+        assert!(encoded.is_empty(), "résultat attendu vide");
         assert_eq!(encoded.decode(), values);
     }
 

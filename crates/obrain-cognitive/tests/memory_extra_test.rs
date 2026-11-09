@@ -79,7 +79,7 @@ fn store_get_state_returns_none_for_untracked() {
 #[test]
 fn store_set_horizon_creates_entry_if_absent() {
     let store = MemoryStore::new();
-    assert!(store.is_empty());
+    assert!(store.is_empty(), "résultat attendu vide");
 
     store.set_horizon(NodeId(1), MemoryHorizon::Archived);
     assert_eq!(store.len(), 1);
@@ -93,12 +93,12 @@ fn store_set_horizon_creates_entry_if_absent() {
 #[test]
 fn store_is_empty_and_len() {
     let store = MemoryStore::new();
-    assert!(store.is_empty());
+    assert!(store.is_empty(), "résultat attendu vide");
     assert_eq!(store.len(), 0);
 
     store.track(NodeId(1));
     store.track(NodeId(2));
-    assert!(!store.is_empty());
+    assert!(!store.is_empty(), "résultat attendu non vide");
     assert_eq!(store.len(), 2);
 }
 
@@ -155,9 +155,9 @@ fn memory_manager_with_archive_sets_backend() {
 #[test]
 fn sweep_result_default_all_empty() {
     let result = SweepResult::default();
-    assert!(result.promoted.is_empty());
-    assert!(result.demoted.is_empty());
-    assert!(result.reactivated.is_empty());
+    assert!(result.promoted.is_empty(), "résultat attendu vide");
+    assert!(result.demoted.is_empty(), "résultat attendu vide");
+    assert!(result.reactivated.is_empty(), "résultat attendu vide");
     assert_eq!(result.total_transitions(), 0);
 }
 
@@ -224,7 +224,7 @@ fn sweep_consolidated_high_energy_stays() {
     let future = Instant::now() + Duration::from_secs(600);
     let result = manager.sweep_at(future);
 
-    assert!(result.demoted.is_empty());
+    assert!(result.demoted.is_empty(), "résultat attendu vide");
     assert_eq!(memory_store.get_horizon(node), MemoryHorizon::Consolidated);
 }
 
@@ -236,12 +236,12 @@ fn sweep_consolidated_high_energy_stays() {
 async fn in_memory_archive_len_is_empty() {
     let backend = InMemoryArchiveBackend::new();
     assert_eq!(backend.len(), 0);
-    assert!(backend.is_empty());
+    assert!(backend.is_empty(), "résultat attendu vide");
 
     use obrain_cognitive::memory::ArchiveBackend;
     backend.archive(NodeId(1), b"data").await.unwrap();
     assert_eq!(backend.len(), 1);
-    assert!(!backend.is_empty());
+    assert!(!backend.is_empty(), "résultat attendu non vide");
 }
 
 // ---------------------------------------------------------------------------

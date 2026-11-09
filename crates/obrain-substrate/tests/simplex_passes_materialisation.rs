@@ -275,7 +275,8 @@ fn passe_cliques_et_hyperedges_dispatch() {
     assert!(
         s.iter_simplices_kind(simplex_kind::HYPEREDGE)
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "résultat attendu"
     );
 }
 
@@ -306,7 +307,8 @@ fn dispatch_bornes_i3_groupe_jete_entier() {
     assert!(
         s.iter_simplices_kind(simplex_kind::HYPEREDGE)
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "résultat attendu"
     );
 }
 
@@ -572,7 +574,10 @@ fn incremental_suppression_noeud_cascade() {
         s.iter_simplices_kind(simplex_kind::TRIANGLE).unwrap().len(),
         1
     );
-    assert!(s.iter_simplices_kind(simplex_kind::K4).unwrap().is_empty());
+    assert!(
+        s.iter_simplices_kind(simplex_kind::K4).unwrap().is_empty(),
+        "résultat attendu vide"
+    );
     // Rebuild de contrôle : rien à réparer.
     let st = s.materialiser_simplexes().unwrap();
     assert_eq!((st.crees, st.reecrits, st.tombstones), (0, 0, 0));

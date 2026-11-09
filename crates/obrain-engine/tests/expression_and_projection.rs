@@ -217,7 +217,7 @@ fn test_exists_multi_hop_no_match() {
          WHERE EXISTS { MATCH (n)-[:MANAGES]->(m)-[:LIVES_IN]->(c:City) } \
          RETURN n.name",
     );
-    assert!(names.is_empty());
+    assert!(names.is_empty(), "résultat attendu vide");
 }
 
 #[test]

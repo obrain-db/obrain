@@ -115,6 +115,12 @@ fn edge_target_labels_unknown_type_is_empty() {
     let b = store.create_node(&["File"]);
     store.create_edge(a, b, "IMPORTS");
 
-    assert!(store.edge_target_labels("NOSUCHTYPE").is_empty());
-    assert!(store.edge_source_labels("NOSUCHTYPE").is_empty());
+    assert!(
+        store.edge_target_labels("NOSUCHTYPE").is_empty(),
+        "résultat attendu vide"
+    );
+    assert!(
+        store.edge_source_labels("NOSUCHTYPE").is_empty(),
+        "résultat attendu vide"
+    );
 }

@@ -1835,7 +1835,7 @@ mod tests {
         col.set(NodeId::new(2), "Gus".into());
 
         assert_eq!(col.len(), 2);
-        assert!(!col.is_empty());
+        assert!(!col.is_empty(), "résultat attendu non vide");
 
         assert_eq!(col.get(NodeId::new(1)), Some(Value::String("Alix".into())));
 
@@ -2048,7 +2048,7 @@ mod tests {
         let key = PropertyKey::new("any");
 
         let values = storage.get_batch(&[], &key);
-        assert!(values.is_empty());
+        assert!(values.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -2087,6 +2087,6 @@ mod tests {
         let storage: PropertyStorage<NodeId> = PropertyStorage::new();
 
         let all_props = storage.get_all_batch(&[]);
-        assert!(all_props.is_empty());
+        assert!(all_props.is_empty(), "résultat attendu vide");
     }
 }

@@ -232,7 +232,7 @@ mod tests {
 
         // Get should return a cleared object
         let obj2 = pool.get();
-        assert!(obj2.is_empty());
+        assert!(obj2.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -305,7 +305,7 @@ mod tests {
         drop(v);
 
         let v2 = pool.get();
-        assert!(v2.is_empty()); // Should be cleared
+        assert!(v2.is_empty(), "résultat attendu vide"); // Should be cleared
     }
 
     #[test]

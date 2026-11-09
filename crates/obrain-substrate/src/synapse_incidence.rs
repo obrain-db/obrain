@@ -368,7 +368,8 @@ mod tests {
         assert!(
             SynapseIncidenceZone::postings(&inc, &posts, 99)
                 .expect("absent")
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 

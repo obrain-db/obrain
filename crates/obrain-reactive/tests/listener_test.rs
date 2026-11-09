@@ -123,7 +123,7 @@ async fn default_on_batch_empty_events() {
     };
 
     listener.on_batch(&[]).await;
-    assert!(events_log.lock().is_empty());
+    assert!(events_log.lock().is_empty(), "résultat attendu vide");
 }
 
 // ========================================================================

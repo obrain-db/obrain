@@ -2031,10 +2031,16 @@ mod tests {
         let optimizer = Optimizer::new();
 
         let literal = LogicalExpression::Literal(Value::Int64(42));
-        assert!(optimizer.extract_variables(&literal).is_empty());
+        assert!(
+            optimizer.extract_variables(&literal).is_empty(),
+            "résultat attendu vide"
+        );
 
         let param = LogicalExpression::Parameter("p".to_string());
-        assert!(optimizer.extract_variables(&param).is_empty());
+        assert!(
+            optimizer.extract_variables(&param).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     // Recursive filter pushdown tests

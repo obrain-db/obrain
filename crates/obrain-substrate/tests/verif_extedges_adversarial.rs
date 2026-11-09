@@ -128,7 +128,10 @@ fn p4_detach_delete_apres_flush_kill_l_arete_ne_revient_pas() {
         "l'arete du snapshot supprimee ensuite (fenetre WAL) ne doit pas ressusciter"
     );
     assert_eq!(store.external_inbound_refs("cible", "k1").len(), 0);
-    assert!(store.external_edges_from(a).is_empty());
+    assert!(
+        store.external_edges_from(a).is_empty(),
+        "résultat attendu vide"
+    );
 }
 
 /// Sidecar TRONQUE : l'ouverture ne doit jamais etre fatale, et le
@@ -151,7 +154,7 @@ fn p4_sidecar_tronque_jamais_fatal() {
     }
     let chemin = tmp.path().join("substrate.extedges");
     let octets = std::fs::read(&chemin).expect("lire sidecar");
-    assert!(!octets.is_empty());
+    assert!(!octets.is_empty(), "résultat attendu non vide");
     std::fs::write(&chemin, &octets[..octets.len() / 2]).expect("tronquer");
 
     let store = SubstrateStore::open(tmp.path()).expect("ouverture JAMAIS fatale");

@@ -545,7 +545,10 @@ mod tests {
     #[test]
     fn iter_props_empty_registry_returns_empty() {
         let reg = VecColumnRegistry::new();
-        assert!(reg.iter_props_for_entity(EntityKind::Node, 42).is_empty());
+        assert!(
+            reg.iter_props_for_entity(EntityKind::Node, 42).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]

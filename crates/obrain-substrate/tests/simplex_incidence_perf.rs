@@ -197,7 +197,10 @@ fn cascade_i5_suppression_de_noeud() {
     assert!(store.get_simplex(h1).unwrap().is_none());
     assert!(store.get_simplex(t2).unwrap().is_some());
     assert!(store.get_simplex(h2).unwrap().is_some());
-    assert!(store.simplices_of_node(n[0]).unwrap().is_empty());
+    assert!(
+        store.simplices_of_node(n[0]).unwrap().is_empty(),
+        "résultat attendu vide"
+    );
     assert_eq!(store.simplices_of_node(n[1]).unwrap(), vec![t2]);
     assert_eq!(store.simplices_of_node(n[4]).unwrap(), vec![h2]);
 
@@ -244,7 +247,9 @@ fn octets_par_simplexe_mesures() {
         }
         if let Ok(inc) = std::fs::read(sub.path().join("substrate.simplex_incidence")) {
             let entries = inc[64..]
-                .chunks_exact(16)
+                .as_chunks::<16>()
+                .0
+                .iter()
                 .filter(|e| e.iter().any(|&b| b != 0))
                 .count() as u64;
             total += entries * 16;

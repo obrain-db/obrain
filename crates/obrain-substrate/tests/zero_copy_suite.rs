@@ -310,7 +310,7 @@ fn resultbuf_contenu_et_clear_sans_dealloc() {
 
     let (co, cl) = (buf.capacite_octets(), buf.capacite_lignes());
     buf.clear();
-    assert!(buf.is_empty());
+    assert!(buf.is_empty(), "résultat attendu vide");
     assert_eq!(buf.octets(), 0);
     assert_eq!(buf.capacite_octets(), co, "clear() ne rend pas l'arène");
     assert_eq!(buf.capacite_lignes(), cl, "clear() ne rend pas les lignes");

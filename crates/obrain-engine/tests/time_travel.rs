@@ -335,7 +335,7 @@ fn test_node_history_deleted() {
 
     let history = db.get_node_history(id);
     // Version chain should still exist with a deleted marker
-    assert!(!history.is_empty());
+    assert!(!history.is_empty(), "résultat attendu non vide");
     let (_, deleted_epoch, _) = &history[0];
     assert!(deleted_epoch.is_some());
 }
@@ -346,7 +346,7 @@ fn test_node_history_nonexistent() {
     use obrain_common::types::NodeId;
 
     let history = db.get_node_history(NodeId::new(9999));
-    assert!(history.is_empty());
+    assert!(history.is_empty(), "résultat attendu vide");
 }
 
 #[test]

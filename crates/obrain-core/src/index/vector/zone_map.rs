@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn test_vector_zone_map_empty() {
         let zm = VectorZoneMap::new(3);
-        assert!(zm.is_empty());
+        assert!(zm.is_empty(), "résultat attendu vide");
         assert_eq!(zm.count, 0);
     }
 }

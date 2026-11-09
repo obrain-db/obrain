@@ -144,11 +144,11 @@ fn store_list_low_energy_mixed() {
 #[test]
 fn store_len_and_empty() {
     let store = EnergyStore::new(EnergyConfig::default());
-    assert!(store.is_empty());
+    assert!(store.is_empty(), "résultat attendu vide");
     assert_eq!(store.len(), 0);
 
     store.boost(NodeId::new(1), 1.0);
-    assert!(!store.is_empty());
+    assert!(!store.is_empty(), "résultat attendu non vide");
     assert_eq!(store.len(), 1);
 }
 
@@ -386,7 +386,7 @@ fn listener_store_accessor() {
     let store = Arc::new(EnergyStore::new(EnergyConfig::default()));
     let listener = EnergyListener::new(Arc::clone(&store));
     // Should return a reference to the same store
-    assert!(listener.store().is_empty());
+    assert!(listener.store().is_empty(), "résultat attendu vide");
     store.boost(NodeId::new(1), 1.0);
     assert_eq!(listener.store().len(), 1);
 }

@@ -51,7 +51,7 @@ fn test_return_star() {
         .unwrap();
     assert_eq!(result.rows.len(), 1);
     // Should have at least the 'n' variable
-    assert!(!result.columns.is_empty());
+    assert_ne!(result.columns.len(), 0);
 }
 
 #[test]

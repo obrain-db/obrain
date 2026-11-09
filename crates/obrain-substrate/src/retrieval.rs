@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn empty_index_returns_empty_top_k() {
         let idx = SubstrateTieredIndex::new(DIM);
-        assert!(idx.is_empty());
+        assert!(idx.is_empty(), "résultat attendu vide");
         assert_eq!(idx.search_top_k(&emb(0, DIM), 10), Vec::new());
     }
 
@@ -699,7 +699,10 @@ mod tests {
     fn search_top_k_zero_returns_empty() {
         let idx = SubstrateTieredIndex::new(DIM);
         idx.insert(1, &emb(1, DIM));
-        assert!(idx.search_top_k(&emb(1, DIM), 0).is_empty());
+        assert!(
+            idx.search_top_k(&emb(1, DIM), 0).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
@@ -771,7 +774,7 @@ mod tests {
             .unwrap()
             .expect("empty-index persist must be loadable");
         assert_eq!(loaded.len(), 0);
-        assert!(loaded.is_empty());
+        assert!(loaded.is_empty(), "résultat attendu vide");
     }
 
     #[test]

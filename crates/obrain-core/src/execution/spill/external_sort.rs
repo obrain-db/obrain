@@ -441,7 +441,7 @@ mod tests {
         let mut sort = ExternalSort::new(manager, 1, vec![SortKey::ascending(0)]);
 
         let result = sort.merge_all(Vec::new()).unwrap();
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "résultat attendu vide");
     }
 
     #[test]

@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_bitvec_empty() {
         let bitvec = BitVector::new();
-        assert!(bitvec.is_empty());
+        assert!(bitvec.is_empty(), "résultat attendu vide");
         assert_eq!(bitvec.get(0), None);
     }
 

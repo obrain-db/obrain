@@ -1465,12 +1465,13 @@ mod tests {
         let map: HashMap<NodeId, Arc<[f32]>> = HashMap::new();
         let accessor = make_accessor(&map);
 
-        assert!(index.is_empty());
+        assert!(index.is_empty(), "résultat attendu vide");
         assert_eq!(index.len(), 0);
         assert!(
             index
                 .search(&[0.0, 0.0, 0.0, 0.0], 10, &accessor)
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 
@@ -1763,7 +1764,7 @@ mod tests {
         let results = index.batch_search(&queries, 10, &accessor);
 
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_empty());
+        assert!(results[0].is_empty(), "résultat attendu vide");
     }
 
     /// Brute-force k-NN for recall verification.
@@ -1974,7 +1975,7 @@ mod tests {
         let accessor = make_accessor(&map);
 
         let results = index.search(&[1.0, 0.0, 0.0], 5, &accessor);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -2104,7 +2105,7 @@ mod tests {
         let config = HnswConfig::new(3, DistanceMetric::Euclidean);
         let index = HnswIndex::with_capacity(config, 100);
         assert_eq!(index.len(), 0);
-        assert!(index.is_empty());
+        assert!(index.is_empty(), "résultat attendu vide");
 
         let mut map: HashMap<NodeId, Arc<[f32]>> = HashMap::new();
         map.insert(NodeId::new(0), vec![1.0, 0.0, 0.0].into());
@@ -2112,7 +2113,7 @@ mod tests {
 
         index.insert(NodeId::new(0), &[1.0, 0.0, 0.0], &accessor);
         assert_eq!(index.len(), 1);
-        assert!(!index.is_empty());
+        assert!(!index.is_empty(), "résultat attendu non vide");
     }
 
     #[test]
@@ -2158,7 +2159,7 @@ mod tests {
         let allowlist: HashSet<NodeId> = (1..=50).filter(|i| i % 2 == 0).map(NodeId::new).collect();
 
         let results = index.search_with_filter(&vectors[25], 5, &allowlist, &accessor);
-        assert!(!results.is_empty());
+        assert!(!results.is_empty(), "résultat attendu non vide");
         assert!(results.len() <= 5);
 
         // Every result must be in the allowlist
@@ -2188,7 +2189,7 @@ mod tests {
 
         let allowlist: HashSet<NodeId> = HashSet::new();
         let results = index.search_with_filter(&vectors[5], 5, &allowlist, &accessor);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -2397,7 +2398,7 @@ mod tests {
         let results = index.search_with_filter(&[0.9, 0.1, 0.0, 0.0], 2, &allowlist, &accessor);
 
         // Node 1 is closest overall but not in allowlist
-        assert!(!results.is_empty());
+        assert!(!results.is_empty(), "résultat attendu non vide");
         for (id, _) in &results {
             assert!(allowlist.contains(id));
         }
@@ -2477,7 +2478,7 @@ mod tests {
         assert_eq!(flat.header.entry_point, u64::MAX);
 
         let restored = HnswIndex::from_flat(&flat).expect("from_flat empty should succeed");
-        assert!(restored.is_empty());
+        assert!(restored.is_empty(), "résultat attendu vide");
     }
 
     #[test]

@@ -441,14 +441,14 @@ mod tests {
     #[test]
     fn test_chunk_collector() {
         let mut collector = ChunkCollector::new();
-        assert!(collector.is_empty());
+        assert!(collector.is_empty(), "résultat attendu vide");
 
         let values: Vec<Value> = vec![Value::Int64(1), Value::Int64(2)];
         let vector = ValueVector::from_values(&values);
         let chunk = DataChunk::new(vec![vector]);
 
         collector.consume(chunk).unwrap();
-        assert!(!collector.is_empty());
+        assert!(!collector.is_empty(), "résultat attendu non vide");
         assert_eq!(collector.row_count(), 2);
 
         let merged = collector.into_single_chunk();

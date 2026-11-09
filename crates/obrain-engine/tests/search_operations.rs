@@ -87,7 +87,7 @@ mod vector {
         // Each query should return up to 2 results
         for result_set in &results {
             assert!(result_set.len() <= 2);
-            assert!(!result_set.is_empty());
+            assert!(!result_set.is_empty(), "résultat attendu non vide");
         }
     }
 
@@ -260,7 +260,7 @@ mod text {
 
         // Search works
         let r1 = db.text_search("Article", "title", "Rust", 10).unwrap();
-        assert!(!r1.is_empty());
+        assert!(!r1.is_empty(), "résultat attendu non vide");
 
         // Drop index
         assert!(db.drop_text_index("Article", "title"));
@@ -274,7 +274,7 @@ mod text {
 
         // Search works again
         let r2 = db.text_search("Article", "title", "Rust", 10).unwrap();
-        assert!(!r2.is_empty());
+        assert!(!r2.is_empty(), "résultat attendu non vide");
     }
 }
 

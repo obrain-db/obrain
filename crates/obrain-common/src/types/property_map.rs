@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn empty() {
         let map = PropertyMap::new();
-        assert!(map.is_empty());
+        assert!(map.is_empty(), "résultat attendu vide");
         assert_eq!(map.len(), 0);
         assert!(map.get(&PropertyKey::new("x")).is_none());
     }
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn from_empty_iterator() {
         let map: PropertyMap = std::iter::empty().collect();
-        assert!(map.is_empty());
+        assert!(map.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn default_is_empty() {
         let map = PropertyMap::default();
-        assert!(map.is_empty());
+        assert!(map.is_empty(), "résultat attendu vide");
     }
 
     #[test]

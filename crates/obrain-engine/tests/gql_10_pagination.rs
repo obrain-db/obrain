@@ -481,7 +481,7 @@ fn limit_apres_filtre_vide_ne_repeche_rien() {
 fn params(pairs: &[(&str, i64)]) -> HashMap<String, Value> {
     pairs
         .iter()
-        .map(|(k, v)| (k.to_string(), Value::Int64(*v)))
+        .map(|(k, v)| ((*k).to_string(), Value::Int64(*v)))
         .collect()
 }
 

@@ -415,7 +415,7 @@ mod tests {
     fn empty_base_loads_empty_provider() {
         let store = SubstrateStore::open_tempfile().unwrap();
         let p = SubstratePositionProvider::load(&store, DEFAULT_POSITION_KEY).unwrap();
-        assert!(p.is_empty());
+        assert!(p.is_empty(), "résultat attendu vide");
         assert_eq!(p.dim(), 0);
         assert!(p.position(NodeId(1)).is_none());
     }

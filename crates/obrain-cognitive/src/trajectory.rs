@@ -398,7 +398,7 @@ mod tests {
             .iter()
             .filter(|s| s.pattern == vec!["read", "edit"])
             .collect();
-        assert!(!read_edit.is_empty());
+        assert!(!read_edit.is_empty(), "résultat attendu non vide");
         assert!(read_edit[0].count >= 2);
     }
 
@@ -424,14 +424,14 @@ mod tests {
 
         let inefficient = vec![vec!["delete".into(), "undo".into()]];
         let alerts = detect_regressions(&recorder, &inefficient);
-        assert!(alerts.is_empty());
+        assert!(alerts.is_empty(), "résultat attendu vide");
     }
 
     #[test]
     fn test_delays() {
         let recorder = TrajectoryRecorder::new(None);
         // Empty recorder → no delays
-        assert!(recorder.delays().is_empty());
+        assert!(recorder.delays().is_empty(), "résultat attendu vide");
     }
 
     #[test]

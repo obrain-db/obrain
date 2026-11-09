@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn pattern_matrix_add_and_remove() {
         let mut matrix = PatternMatrix::new(3);
-        assert!(matrix.is_empty());
+        assert!(matrix.is_empty(), "résultat attendu vide");
 
         matrix.add_pattern(EngramId(1), &[1.0, 0.0, 0.0], 1.0);
         assert_eq!(matrix.len(), 1);
@@ -835,7 +835,7 @@ mod tests {
     fn pattern_matrix_ignores_wrong_dimension() {
         let mut matrix = PatternMatrix::new(3);
         matrix.add_pattern(EngramId(1), &[1.0, 0.0], 1.0); // dim 2 != 3
-        assert!(matrix.is_empty());
+        assert!(matrix.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -846,7 +846,7 @@ mod tests {
         let query = vec![1.0, 0.0, 0.0, 0.0];
         let results = hopfield_retrieve(&matrix, &query, &store, 3);
 
-        assert!(!results.is_empty());
+        assert!(!results.is_empty(), "résultat attendu non vide");
         // Engram 1 should dominate with high attention weight
         assert_eq!(results[0].engram_id, EngramId(1));
         assert!(
@@ -894,14 +894,14 @@ mod tests {
         let store = EngramStore::new(None);
         let matrix = PatternMatrix::new(4);
         let results = hopfield_retrieve(&matrix, &[1.0, 0.0, 0.0, 0.0], &store, 5);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
     fn hopfield_retrieve_wrong_query_dim() {
         let (store, matrix) = make_test_store_and_matrix();
         let results = hopfield_retrieve(&matrix, &[1.0, 0.0], &store, 5); // dim 2 != 4
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn softmax_compete_empty_input() {
         let results = softmax_compete(&[], 0.15);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -969,7 +969,7 @@ mod tests {
 
         let competed = softmax_compete(&candidates, 0.15);
         // The dominant engram should survive, weak ones should be filtered out
-        assert!(!competed.is_empty());
+        assert!(!competed.is_empty(), "résultat attendu non vide");
         // All surviving activations >= 0.15
         for c in &competed {
             assert!(
@@ -1006,7 +1006,7 @@ mod tests {
         let candidates = hopfield_retrieve(&matrix, &query, &store, 3);
 
         let competed = softmax_compete(&candidates, 0.0);
-        assert!(!competed.is_empty());
+        assert!(!competed.is_empty(), "résultat attendu non vide");
         assert!(competed[0].is_dominant);
         assert_eq!(competed[0].engram_id, EngramId(1));
     }
@@ -1016,7 +1016,7 @@ mod tests {
     #[test]
     fn mmr_empty_input() {
         let results = max_marginal_relevance(&[], 0.7);
-        assert!(results.is_empty());
+        assert!(results.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -1424,7 +1424,7 @@ mod tests {
     fn test_pattern_matrix_new_empty() {
         let matrix = PatternMatrix::new(8);
         assert_eq!(matrix.len(), 0);
-        assert!(matrix.is_empty());
+        assert!(matrix.is_empty(), "résultat attendu vide");
         assert_eq!(matrix.dim(), 8);
     }
 

@@ -454,7 +454,10 @@ mod tests {
         assert_eq!(event_seq(&all[0]), 1);
         assert_eq!(event_seq(&all[2]), 3);
         // Session inconnue → vide, sans erreur.
-        assert!(read_session_journal(&store, "session-inconnue", -1, 0, 0).is_empty());
+        assert!(
+            read_session_journal(&store, "session-inconnue", -1, 0, 0).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     /// Corrompt la zone d'une session en zéroïsant une plage d'octets au

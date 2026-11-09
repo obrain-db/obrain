@@ -3781,7 +3781,7 @@ mod tests {
         let w = Writer::new(sub, SyncMode::Never).unwrap();
         // Node 99 has never been given any engram bit.
         let got = w.hopfield_recall(99, 10).unwrap();
-        assert!(got.is_empty());
+        assert!(got.is_empty(), "résultat attendu vide");
     }
 
     #[test]
@@ -3791,7 +3791,7 @@ mod tests {
         w.add_engram_bit(1, 1).unwrap();
         w.add_engram_bit(2, 1).unwrap();
         let got = w.hopfield_recall(1, 0).unwrap();
-        assert!(got.is_empty());
+        assert!(got.is_empty(), "résultat attendu vide");
     }
 
     #[test]

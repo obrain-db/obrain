@@ -802,7 +802,7 @@ mod tests {
 
         // Flow edges should be non-empty if there's positive flow
         assert!(result.max_flow > 0.0);
-        assert!(!result.flow_edges.is_empty());
+        assert!(!result.flow_edges.is_empty(), "résultat attendu non vide");
 
         // All flow values should be positive
         for (_, _, flow) in &result.flow_edges {

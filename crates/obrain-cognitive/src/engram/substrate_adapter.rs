@@ -197,7 +197,7 @@ mod tests {
     fn empty_adapter_reports_substrate_dim() {
         let a = make_adapter();
         assert_eq!(a.dimensions(), DIM);
-        assert!(a.nearest(&emb(0), 5).is_empty());
+        assert!(a.nearest(&emb(0), 5).is_empty(), "résultat attendu vide");
     }
 
     #[test]
