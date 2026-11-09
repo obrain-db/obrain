@@ -93,7 +93,7 @@ fn p4_insert_puis_delete_dans_la_meme_fenetre_wal() {
         0,
         "l'arete inseree puis supprimee dans la fenetre WAL ne doit pas revenir"
     );
-    assert!(store.external_inbound_refs("b", "k1").is_empty());
+    assert_eq!(store.external_inbound_refs("b", "k1").len(), 0);
     let neuf = store
         .create_external_edge(a, "T", None, "b", "k2")
         .expect("neuf");
@@ -127,7 +127,7 @@ fn p4_detach_delete_apres_flush_kill_l_arete_ne_revient_pas() {
         0,
         "l'arete du snapshot supprimee ensuite (fenetre WAL) ne doit pas ressusciter"
     );
-    assert!(store.external_inbound_refs("cible", "k1").is_empty());
+    assert_eq!(store.external_inbound_refs("cible", "k1").len(), 0);
     assert!(store.external_edges_from(a).is_empty());
 }
 
