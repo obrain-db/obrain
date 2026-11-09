@@ -285,7 +285,7 @@ impl EngramMetricsCollector {
         let _ =
             self.metrics
                 .engrams_active
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                     if v > 0 { Some(v - 1) } else { Some(0) }
                 });
     }
