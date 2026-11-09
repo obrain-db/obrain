@@ -4,7 +4,7 @@
 //! qu'un moteur d'inférence embarquant obrain lise le texte d'un fait ou la
 //! propriété d'un nœud **sans une seule copie intermédiaire** — là où le
 //! chemin historique payait : copie de page 4 KiB (`read_heap_page`),
-//! `to_vec()` du payload, `ArcStr::from` à la matérialisation en [`Value`],
+//! `to_vec()` du payload, `ArcStr::from` à la matérialisation en [`Value`](obrain_common::types::Value),
 //! puis sérialisation JSON côté appelant.
 //!
 //! ## Contrat de lifetimes — une vue est un bail de lecture

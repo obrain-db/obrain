@@ -215,6 +215,7 @@ pub fn zorder_window_ranges(cx0: u32, cx1: u32, cy0: u32, cy1: u32, order: u32) 
         return out;
     }
 
+    #[allow(clippy::too_many_arguments)] // récursion de quadtree : fenêtre, cellule et ordre passés tels quels
     fn visit(
         ox: u32,
         oy: u32,

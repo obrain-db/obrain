@@ -363,7 +363,7 @@ fn lire_etat_epoch(sub: &SubstrateFile) -> SubstrateResult<RemapEpochState> {
 /// État de repermutation durable de la base (voir [`RemapEpochState`]).
 ///
 /// `Err` si la zone d'epoch est presente mais illisible — voir
-/// [`lire_etat_epoch`]. Ne JAMAIS rattraper cette erreur en rendant
+/// `lire_etat_epoch`. Ne JAMAIS rattraper cette erreur en rendant
 /// `default()` : c'est precisement le defaut corrige en revue #3.
 pub fn remap_epoch_state(sub: &SubstrateFile) -> SubstrateResult<RemapEpochState> {
     lire_etat_epoch(sub)
@@ -601,7 +601,7 @@ pub enum DiagnosticRemap {
     ///
     /// Un diagnostic « base saine » rendu sur une zone qu'on n'a pas su
     /// lire serait pire que l'absence de diagnostic, parce qu'il en
-    /// porterait l'autorité. Voir [`lire_etat_epoch`].
+    /// porterait l'autorité. Voir `lire_etat_epoch`.
     OracleIllisible { raison: String },
     /// Une repermutation est ANNONCÉE et jamais CONFIRMÉE.
     RepermutationInterrompue {
@@ -1034,7 +1034,7 @@ const DELAI_REPRISE_VERROU: std::time::Duration = std::time::Duration::from_secs
 ///   personne n'a tranche (oubli, `?` qui saute par-dessus, panique), la
 ///   garde tranche elle-meme selon la phase atteinte, avec la logique
 ///   ternaire de [`abandonner_annonce`].
-/// * **Privatisation de [`announce_remap_epoch`] — PORTEUSE, mais
+/// * **Privatisation de `announce_remap_epoch` — PORTEUSE, mais
 ///   partielle.** Elle ferme la route evidente ; elle ne ferme pas
 ///   `use ... as alias`, ce que la revue a compile. Le balayage de
 ///   `aucun_chemin_ne_peut_annoncer_sans_pouvoir_effacer` couvre
@@ -1067,7 +1067,7 @@ impl<'a> AnnonceRemap<'a> {
     /// mutation de zone.
     /// ── LE CONSTRUCTEUR S'APPLIQUE SA PROPRE DISCIPLINE (revue #6) ──
     ///
-    /// Il portait un `?` nu. Or [`write_epoch_state`] ECRIT la page avant
+    /// Il portait un `?` nu. Or `write_epoch_state` ECRIT la page avant
     /// de demander sa durabilite : une erreur d'E/S a cette couture fait
     /// echouer l'annonce APRES que `pending` soit dans le fichier. Aucune
     /// garde n'est alors rendue — donc ni `Drop`, ni `#[must_use]`, ni la

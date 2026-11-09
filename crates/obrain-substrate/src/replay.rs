@@ -224,7 +224,7 @@ fn replay_from_avec(
     // ne rend plus comme une erreur (une écriture en vol n'est pas une
     // corruption) mais qui reste due à l'appelant.
     let mut iter = reader.iter_from(from_offset);
-    while let Some(item) = iter.next() {
+    for item in iter.by_ref() {
         match item {
             Ok((rec, off, len)) => {
                 stats.last_lsn = stats.last_lsn.max(rec.lsn);

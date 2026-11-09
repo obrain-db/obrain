@@ -36,7 +36,7 @@
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use obrain_common::types::NodeId;
 use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
@@ -57,18 +57,6 @@ fn env_obligatoire(cle: &str) -> String {
 fn annoncer(ligne: &str) {
     println!("{ligne}");
     std::io::stdout().flush().ok();
-}
-
-fn attendre_fichier(p: &Path, quoi: &str) {
-    let debut = Instant::now();
-    while !p.exists() {
-        assert!(
-            debut.elapsed() < Duration::from_secs(30),
-            "attente de {quoi} ({}) : délai dépassé",
-            p.display()
-        );
-        std::thread::sleep(Duration::from_micros(200));
-    }
 }
 
 struct Enfant {
@@ -106,11 +94,6 @@ impl Enfant {
                 autre => panic!("enfant terminé sans « {prefixe} » ({autre:?})"),
             }
         }
-    }
-
-    fn terminer(mut self) {
-        let statut = self.process.wait().expect("attendre l'enfant");
-        assert!(statut.success(), "l'enfant a échoué : {statut:?}");
     }
 
     /// `SIGKILL` : aucun `Drop`, aucun flush, aucun msync.

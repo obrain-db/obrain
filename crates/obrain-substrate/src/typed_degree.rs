@@ -1,6 +1,6 @@
 //! # Per-edge-type degree registry (T17h T8)
 //!
-//! Maintains one [`DegreeColumn`](crate::degree_column::DegreeColumn)
+//! Maintains one [`DegreeColumn`]
 //! per `edge_type_id: u16`, persisted as
 //! `substrate.degrees.node.<edge_type_name>.u32`.
 //!
@@ -123,7 +123,7 @@ enum InitState {
 /// drapeau → O(E_types) msync par flush, ~0,83 ms/type, soit ~6 s à 7000
 /// types, même quand RIEN n'a changé. Le drapeau fait tomber le coût
 /// périodique à O(types_sales) : une colonne propre ne paie ni CRC ni msync.
-struct TypedColumn {
+pub(crate) struct TypedColumn {
     col: RwLock<DegreeColumn>,
     dirty: AtomicBool,
 }
@@ -172,7 +172,7 @@ impl TypedColumn {
 /// The registry is now constructed empty at open time, and the
 /// first hot-path call (`typed_degrees()` from `SubstrateStore`
 /// accessor, triggered by create_edge / delete_edge / query
-/// planner) invokes [`Self::ensure_initialized`] which takes an
+/// planner) invokes `Self::ensure_initialized` which takes an
 /// exclusive lock and does the work exactly once. Concurrent
 /// `create_edge` calls wait on the lock and do not double-count
 /// (the in-flight edge is either fully incremented before the init

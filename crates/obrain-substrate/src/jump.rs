@@ -44,10 +44,10 @@
 
 use std::collections::HashMap;
 
+use crate::SubstrateResult;
 use crate::file::ZoneFile;
 use crate::record::EdgeRecord;
 use crate::writer::Writer;
-use crate::{SubstrateError, SubstrateResult};
 
 /// Préfixe des zones jump : `substrate.jump.<A>_<B>`.
 pub const JUMP_ZONE_PREFIX: &str = "substrate.jump.";

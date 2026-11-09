@@ -29,8 +29,8 @@
 //! so the decoder can disambiguate without looking at the tag alone.
 //!
 //! `Vector(Arc<[f32]>)` is NOT handled here — vector writes are routed
-//! to [`crate::vec_column_registry::VecColumnRegistry`] upstream in
-//! [`crate::store::SubstrateStore::set_node_property`]. Calling the
+//! to `crate::vec_column_registry::VecColumnRegistry` upstream in
+//! `crate::store::SubstrateStore::set_node_property`. Calling the
 //! encoder with a `Value::Vector` returns an error.
 //!
 //! ## Decoder invariants
@@ -195,7 +195,7 @@ fn decode_string_ref(zone: &PropsZone, h: HeapRef) -> SubstrateResult<Value> {
             h.page_id, h.offset
         ))
     })?;
-    let s = std::str::from_utf8(&bytes)
+    let s = std::str::from_utf8(bytes)
         .map_err(|e| SubstrateError::WalBadFrame(format!("StringRef payload not utf8: {e}")))?;
     Ok(Value::String(ArcStr::from(s)))
 }

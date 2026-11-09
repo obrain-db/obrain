@@ -53,11 +53,14 @@ fn identite(rec: &WalRecord) -> (u8, u64) {
     }
 }
 
-fn lus(wal: &Path) -> (Vec<(u8, u64)>, bool, Option<(u64, u64)>) {
+/// Identités des records lus, queue incomplète, trou éventuel (voir `lus`).
+type Lecture = (Vec<(u8, u64)>, bool, Option<(u64, u64)>);
+
+fn lus(wal: &Path) -> Lecture {
     let r = WalReader::open(wal).unwrap();
     let mut it = r.iter_from(0);
     let mut v = Vec::new();
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         match item {
             Ok((rec, _, _)) => v.push(identite(&rec)),
             Err(_) => break,
@@ -184,7 +187,7 @@ fn t7_group_commit_un_seul_write_et_ordre_preserve() {
     let r = WalReader::open(&wal).unwrap();
     let mut it = r.iter_from(0);
     let mut vus = Vec::new();
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         let (rec, off, _) = item.unwrap();
         assert_eq!(rec.lsn, ANCRE_INITIALE + off, "lsn = ancre + position");
         vus.push(identite(&rec));
@@ -529,7 +532,7 @@ fn un_trou_de_zeros_est_nomme_et_la_reparation_refuse_de_trancher() {
     let mut it = r.iter_from(0);
     let mut vus = 0usize;
     let mut erreur = None;
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         match item {
             Ok((rec, _, _)) => {
                 assert_eq!(identite(&rec).0, 1);

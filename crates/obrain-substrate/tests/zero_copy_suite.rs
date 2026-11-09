@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
-use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
+use obrain_common::types::{EdgeId, PropertyKey, Value};
 use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
 use obrain_substrate::result_buf::ResultBuf;
 use obrain_substrate::store::SubstrateStore;

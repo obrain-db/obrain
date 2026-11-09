@@ -52,10 +52,10 @@ fn tailles_zones(dir: &Path) -> BTreeMap<String, u64> {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let n = e.file_name().into_string().unwrap_or_default();
-            if est_zone_cognitive(&n) {
-                if let Ok(md) = e.metadata() {
-                    m.insert(n, md.len());
-                }
+            if est_zone_cognitive(&n)
+                && let Ok(md) = e.metadata()
+            {
+                m.insert(n, md.len());
             }
         }
     }
@@ -119,21 +119,21 @@ fn main() {
         }
     }
     for c in 1..=2u32 {
-        let s = SubstrateStore::open(dir).expect("reopen");
+        let _s = SubstrateStore::open(dir).expect("reopen");
         println!("[E{c}] réouverture {c}/2 OK");
     }
 
     // Phase R — état cognitif final, restreint à l'ancien hw.
     let s = SubstrateStore::open(dir).expect("open R");
-    let (digA, nA) = digest_cognitif(&s, hw0);
+    let (dig_a, n_a) = digest_cognitif(&s, hw0);
     let digest_initial = dig0.0;
     assert_eq!(
-        digA, digest_initial,
-        "digest cognitif CHANGÉ sur les nœuds préexistants : {digest_initial:#x} → {digA:#x}"
+        dig_a, digest_initial,
+        "digest cognitif CHANGÉ sur les nœuds préexistants : {digest_initial:#x} → {dig_a:#x}"
     );
-    assert_eq!(nA, dig0.1, "compte de nœuds préexistants changé");
-    let (_, nTot) = digest_cognitif(&s, s.slot_high_water());
-    assert_eq!(nTot, dig0.1 + 50, "nouveaux nœuds packés attendus : +50");
+    assert_eq!(n_a, dig0.1, "compte de nœuds préexistants changé");
+    let (_, n_tot) = digest_cognitif(&s, s.slot_high_water());
+    assert_eq!(n_tot, dig0.1 + 50, "nouveaux nœuds packés attendus : +50");
     let zones1 = tailles_zones(dir);
     // Tous les fichiers cognitifs EXISTANTS doivent être strictement
     // identiques (taille). Les AJOUTS sont autorisés : créer des arêtes de
@@ -151,8 +151,8 @@ fn main() {
         }
     }
     println!(
-        "[R] digest cognitif INCHANGÉ ({digA:#x}, {} nœuds préexistants) · +50 nœuds packés · {} zones cognitives existantes identiques ({} ajout(s) de fichiers de degrés pour types d'arêtes de contrôle)",
-        nA,
+        "[R] digest cognitif INCHANGÉ ({dig_a:#x}, {} nœuds préexistants) · +50 nœuds packés · {} zones cognitives existantes identiques ({} ajout(s) de fichiers de degrés pour types d'arêtes de contrôle)",
+        n_a,
         zones0.len(),
         ajouts
     );

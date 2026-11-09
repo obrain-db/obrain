@@ -1319,8 +1319,8 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let r = RegistresPartages::ouvrir(td.path()).unwrap();
         // Un dictionnaire existant : "A" au bit 0, "B" au bit 1.
-        assert!(r.publier(Espace::Labels, 0, "A").unwrap() == false);
-        assert!(r.publier(Espace::Labels, 1, "B").unwrap() == false);
+        assert!(!r.publier(Espace::Labels, 0, "A").unwrap());
+        assert!(!r.publier(Espace::Labels, 1, "B").unwrap());
         // Republier est idempotent (vrai = déjà là, au même indice).
         assert!(r.publier(Espace::Labels, 0, "A").unwrap());
         // Et un nom NEUF après publication prend l'indice suivant, pas 0.
@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn publier_un_nom_a_un_indice_divergent_le_DIT() {
+    fn publier_un_nom_a_un_indice_divergent_le_dit() {
         let td = tempfile::tempdir().unwrap();
         let r = RegistresPartages::ouvrir(td.path()).unwrap();
         r.publier(Espace::Labels, 0, "A").unwrap();
@@ -1338,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn collision_d_indice_entre_deux_noms_le_DIT() {
+    fn collision_d_indice_entre_deux_noms_le_dit() {
         let td = tempfile::tempdir().unwrap();
         let r = RegistresPartages::ouvrir(td.path()).unwrap();
         r.publier(Espace::Types, 7, "PART_OF").unwrap();

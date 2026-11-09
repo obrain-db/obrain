@@ -130,7 +130,7 @@ fn ecriture_courte_le_quota_dechire_la_frame_et_l_append_l_annule() {
     let r = WalReader::open(&wal).unwrap();
     let mut it = r.iter_from(0);
     let mut n = 0usize;
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         item.expect("aucune frame illisible après annulation");
         n += 1;
     }

@@ -136,14 +136,13 @@ fn debit_du_chemin_reel_writer_commit() {
     let x_needle = apres / avant;
     let x_code = durable / avant;
     eprintln!(
-        "\nBANC — CHEMIN RÉEL `Writer::commit()`, mesuré le {} :\n  \
+        "\nBANC — CHEMIN RÉEL `Writer::commit()`, mesuré le 2026-10-06 :\n  \
          AVANT (1 fsync/commit)         : {:>12.0} rec/s\n  \
          APRÈS (needle 4096)            : {:>12.0} rec/s  → ×{x_needle:.0}  \
          ({} fsync pour {n_apres} commits)\n  \
          APRÈS durable par commit       : {:>12.0} rec/s  → ×{x_code:.2}  \
          (pièces 2-3 seules, 1 fsync/commit)\n  \
          coût unitaire : AVANT {:.0} ns/commit · APRÈS {:.0} ns/commit",
-        "2026-10-06",
         avant,
         apres,
         fsyncs_apres,

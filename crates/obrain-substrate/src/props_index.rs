@@ -31,7 +31,7 @@
 //!    `(clé d'ordre, slot)` — 16 octets — d'où l'on ne peut RIEN reconstituer.
 //!    L'index énumère des CANDIDATS, il ne répond pas.
 //! 2. Il se rebâtit intégralement depuis les seules chaînes
-//!    ([`SubstrateStore::batir_index_ordonne_depuis_v2`]). Corrompu, périmé,
+//!    (`SubstrateStore::batir_index_ordonne_depuis_v2`). Corrompu, périmé,
 //!    d'une version antérieure : on le jette.
 //! 3. Il s'EFFACE au moindre doute — [`PropsIndexZone::fiable`] rend `false`
 //!    et l'appelant retombe sur le balayage, lent mais juste. C'est la

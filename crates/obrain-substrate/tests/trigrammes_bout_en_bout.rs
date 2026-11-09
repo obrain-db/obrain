@@ -104,7 +104,7 @@ fn tous_les_ids(store: &SubstrateStore) -> Vec<NodeId> {
 #[test]
 fn le_chemin_indexe_rend_exactement_les_memes_noeuds_que_le_balayage() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
 
     // Un corpus où les termes rares et communs coexistent.
     let valeurs = [
@@ -171,7 +171,7 @@ fn le_chemin_indexe_rend_exactement_les_memes_noeuds_que_le_balayage() {
 #[test]
 fn une_ecriture_apres_construction_est_trouvee() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
 
     let a = store.create_node(&["Test"]);
     store.set_node_property(a, "name", Value::String("alpha".into()));
@@ -207,7 +207,7 @@ fn une_ecriture_apres_construction_est_trouvee() {
 #[test]
 fn une_reecriture_donne_un_resultat_exact() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
 
     let a = store.create_node(&["Test"]);
     store.set_node_property(a, "name", Value::String("ancien-mot".into()));
@@ -244,7 +244,7 @@ fn une_reecriture_donne_un_resultat_exact() {
 #[test]
 fn les_deux_silences_ne_se_confondent_pas() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
 
     // Un gramme rendu COMMUN : 1 100 valeurs le portent, au-delà du seuil par
     // défaut (1024). Le terme « aaa » ne sera donc servi par AUCUN gramme.
@@ -278,7 +278,7 @@ fn les_deux_silences_ne_se_confondent_pas() {
 #[test]
 fn la_premiere_demande_ne_construit_pas_l_index() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let a = store.create_node(&["Test"]);
     store.set_node_property(a, "name", Value::String("iam_controller".into()));
     store.flush().unwrap();

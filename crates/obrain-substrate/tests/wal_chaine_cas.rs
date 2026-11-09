@@ -100,7 +100,7 @@ fn auditer(wal: &Path) -> Vec<Frame> {
     let reader = WalReader::open(wal).expect("ouvrir le WAL");
     let mut it = reader.iter_from(0);
     let mut frames = Vec::new();
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         match item {
             Ok((rec, off, len)) => frames.push(Frame {
                 identite: identite(&rec),

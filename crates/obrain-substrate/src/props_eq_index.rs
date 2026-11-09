@@ -303,7 +303,7 @@ impl PropsEqIndexZone {
     ///
     /// Repose les ancres de couverture sur l'état COURANT, en mémoire ET sur
     /// disque, et rend l'index fiable. L'appelant ne doit y venir QUE muni
-    /// d'une preuve : [`SubstrateStore::fenetre_wal_neutre_pour_index`] a établi
+    /// d'une preuve : `SubstrateStore::fenetre_wal_neutre_pour_index` a établi
     /// que la fenêtre `[ancre, offset)` ne contient que des trames dont le
     /// rejeu ne touche pas la chaîne PropsZone. Sans cette preuve, adopter
     /// ferait servir un index INCOMPLET — la faute que `confronter_ancres`
@@ -761,6 +761,42 @@ impl PropsEqIndexZone {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Trigrammes — le code d'un trigramme est ses trois OCTETS, tels quels.
+// Pas de hachage : 24 bits distinguent tous les trigrammes possibles, et
+// l'absence de projection supprime toute question de collision.
+// ---------------------------------------------------------------------------
+
+/// Code d'un trigramme d'octets — stable sur disque par construction
+/// (aucun hachage, les octets eux-mêmes).
+#[inline]
+#[must_use]
+pub fn code_trigramme(t: [u8; 3]) -> u64 {
+    (u64::from(t[0]) << 16) | (u64::from(t[1]) << 8) | u64::from(t[2])
+}
+
+/// Codes des trigrammes d'OCTETS d'une chaîne, DISTINCTS et triés.
+///
+/// On fenêtre les octets UTF-8, pas les points de code : `x CONTAINS y` est un
+/// `str::contains`, c'est-à-dire une recherche de SOUS-CHAÎNE d'octets — tout
+/// trigramme d'octets de `y` figure donc parmi ceux de `x`. C'est cette
+/// implication, et elle seule, qui rend l'index complet ; elle est vraie pour
+/// l'UTF-8 multi-octets sans traitement particulier.
+///
+/// Chaîne de moins de 3 octets : aucun trigramme — l'appelant ne peut pas
+/// router par l'index et doit balayer.
+#[must_use]
+pub fn trigrammes_de(s: &str) -> Vec<u64> {
+    let o = s.as_bytes();
+    let mut v: Vec<u64> = o
+        .windows(3)
+        .map(|w| code_trigramme([w[0], w[1], w[2]]))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,40 +1098,4 @@ mod tests {
         z.confronter_ancres(5, 5);
         assert!(!z.fiable(), "magic étranger ⇒ jeté");
     }
-}
-
-// ---------------------------------------------------------------------------
-// Trigrammes — le code d'un trigramme est ses trois OCTETS, tels quels.
-// Pas de hachage : 24 bits distinguent tous les trigrammes possibles, et
-// l'absence de projection supprime toute question de collision.
-// ---------------------------------------------------------------------------
-
-/// Code d'un trigramme d'octets — stable sur disque par construction
-/// (aucun hachage, les octets eux-mêmes).
-#[inline]
-#[must_use]
-pub fn code_trigramme(t: [u8; 3]) -> u64 {
-    (u64::from(t[0]) << 16) | (u64::from(t[1]) << 8) | u64::from(t[2])
-}
-
-/// Codes des trigrammes d'OCTETS d'une chaîne, DISTINCTS et triés.
-///
-/// On fenêtre les octets UTF-8, pas les points de code : `x CONTAINS y` est un
-/// `str::contains`, c'est-à-dire une recherche de SOUS-CHAÎNE d'octets — tout
-/// trigramme d'octets de `y` figure donc parmi ceux de `x`. C'est cette
-/// implication, et elle seule, qui rend l'index complet ; elle est vraie pour
-/// l'UTF-8 multi-octets sans traitement particulier.
-///
-/// Chaîne de moins de 3 octets : aucun trigramme — l'appelant ne peut pas
-/// router par l'index et doit balayer.
-#[must_use]
-pub fn trigrammes_de(s: &str) -> Vec<u64> {
-    let o = s.as_bytes();
-    let mut v: Vec<u64> = o
-        .windows(3)
-        .map(|w| code_trigramme([w[0], w[1], w[2]]))
-        .collect();
-    v.sort_unstable();
-    v.dedup();
-    v
 }

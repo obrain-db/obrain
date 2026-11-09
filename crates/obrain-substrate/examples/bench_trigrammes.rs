@@ -129,8 +129,8 @@ fn main() {
         );
         println!();
         println!(
-            "  {:<14} {:>9} {:>11} {:>22} {:>12}   {}",
-            "terme", "vraies", "candidats", "sur-ensemble ?", "recherche", "verdict"
+            "  {:<14} {:>9} {:>11} {:>22} {:>12}   verdict",
+            "terme", "vraies", "candidats", "sur-ensemble ?", "recherche"
         );
 
         for terme in TERMES {
@@ -199,8 +199,8 @@ fn main() {
             continue;
         }
         println!(
-            "  {:<14} {:>13} {:>16} {:>9} {:>14}   {}",
-            "terme", "balayage", "index+revérif", "gain", "lignes", "verdict"
+            "  {:<14} {:>13} {:>16} {:>9} {:>14}   verdict",
+            "terme", "balayage", "index+revérif", "gain", "lignes"
         );
         for terme in TERMES {
             let pred = PredicatTexte::Contient(terme);

@@ -47,7 +47,7 @@ impl OwnerKind {
         }
     }
 
-    /// Inverse of [`magic`]: decode a magic word into an owner kind, or
+    /// Inverse of [`magic`](Self::magic): decode a magic word into an owner kind, or
     /// `None` for unknown/zero magics (uninitialised pages or bit rot).
     #[inline]
     pub const fn from_magic(m: u32) -> Option<Self> {

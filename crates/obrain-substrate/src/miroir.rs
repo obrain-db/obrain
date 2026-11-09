@@ -709,7 +709,7 @@ impl crate::store::SubstrateStore {
         self.persister_sur_miroir_avec_plafond(miroir, PLAFOND_PERSISTANCE_OCTETS)
     }
 
-    /// Variante de [`persister_sur_miroir`] au plafond explicite (tests et
+    /// Variante de [`persister_sur_miroir`](Self::persister_sur_miroir) au plafond explicite (tests et
     /// configurations spécifiques).
     pub fn persister_sur_miroir_avec_plafond(
         &self,

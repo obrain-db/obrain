@@ -112,12 +112,6 @@ impl Enfant {
         let statut = self.process.wait().expect("attendre l'enfant");
         assert!(statut.success(), "l'enfant a échoué : {statut:?}");
     }
-
-    /// `SIGKILL` : aucun `Drop`, aucun flush, aucun msync.
-    fn tuer(mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -115,12 +115,6 @@ fn base_peuplee(n: usize) -> (SubstrateStore, Vec<NodeId>) {
     (store, ids)
 }
 
-/// Amorce la colonne : une écriture, donc une création, hors mesure.
-fn amorcer_colonne(store: &SubstrateStore, id: NodeId) {
-    let mut rng = Xs64::new(1);
-    store.set_node_property(id, "_bench_vec", Value::Vector(vecteur(&mut rng)));
-}
-
 // ───────────────────────────────────────────────────────────────────────────
 //  MONTAGE HORS BOUCLE — pourquoi
 // ───────────────────────────────────────────────────────────────────────────

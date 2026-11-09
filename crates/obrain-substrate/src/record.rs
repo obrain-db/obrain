@@ -134,7 +134,7 @@ pub const NODE_ALLOC_PAGE_BYTES: usize = 20480;
 // zero slack dans les deux directions.
 const _: [(); 1] =
     [(); (NODES_PER_PAGE as usize * NodeRecord::SIZE == NODE_ALLOC_PAGE_BYTES) as usize];
-const _: [(); 1] = [(); (NODE_ALLOC_PAGE_BYTES % 4096 == 0) as usize];
+const _: [(); 1] = [(); NODE_ALLOC_PAGE_BYTES.is_multiple_of(4096) as usize];
 
 /// Identifiants de tenant reserves (jalon 2, RFC principal-natif-v2 §4-J2 / A5).
 pub mod tenant {
@@ -160,7 +160,7 @@ pub mod tenant {
     ///   refuse `u32::MAX`).
     ///
     /// Ce predicat ne parle QUE d'appartenance — la vivacite (`is_live`)
-    /// est l'autre moitie, composee par [`NodeRecord::est_visible_pour`].
+    /// est l'autre moitie, composee par [`NodeRecord::est_visible_pour`](crate::record::NodeRecord::est_visible_pour).
     #[inline]
     pub fn visible(tenant_noeud: u32, portee: Option<u32>) -> bool {
         if tenant_noeud == SENTINELLE_NON_MIGRE {
@@ -419,7 +419,7 @@ pub struct EdgeRecord {
     /// PropsZone v2 yet (legacy DashMap sidecar remains the fallback).
     ///
     /// Added in T17f Step 1 (layout bump 32 B → 36 B). Byte offset inside
-    /// the record is **24** — see [`Writer::update_edge_first_prop_off`].
+    /// the record is **24** — see [`Writer::update_edge_first_prop_off`](crate::writer::Writer::update_edge_first_prop_off).
     pub first_prop_off: U48,
     /// Quantized Ricci-Ollivier curvature in [-1, 1] → (x + 1) × 127.5.
     pub ricci_u8: u8,

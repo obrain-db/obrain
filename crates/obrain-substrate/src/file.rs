@@ -56,11 +56,6 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-/// Threshold below which `advise_huge_pages` refuses to apply the THP hint:
-/// mappings smaller than this are too small to benefit from a 2 MB huge
-/// page (they would waste TLB entries and fragment the address space).
-/// 8 MB covers typical zone files on bootstrap while still letting growing
-/// zones acquire huge-page backing as soon as they cross this threshold.
 // ═══════════════════════════════════════════════════════════════════════════
 //  VERROU DE RÉPERTOIRE — inter-processus dehors, partagé dedans
 // ═══════════════════════════════════════════════════════════════════════════
@@ -399,6 +394,7 @@ pub(crate) fn acquerir_verrou_repertoire(
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(verrou_path)
         .map_err(SubstrateError::Io)?;
     let res = verrouiller_fichier(&fichier, exclusif);
@@ -437,6 +433,11 @@ pub(crate) fn acquerir_verrou_repertoire(
     Ok(part)
 }
 
+/// Threshold below which `advise_huge_pages` refuses to apply the THP hint:
+/// mappings smaller than this are too small to benefit from a 2 MB huge
+/// page (they would waste TLB entries and fragment the address space).
+/// 8 MB covers typical zone files on bootstrap while still letting growing
+/// zones acquire huge-page backing as soon as they cross this threshold.
 const HUGE_PAGE_MIN_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Cross-platform huge-page / Transparent-Huge-Pages hint for a mmap region.
@@ -670,7 +671,7 @@ const MEMORY_DIR: &str = "<memoire:obrain>";
 /// tampons possédés par poignée divergeraient EN SILENCE : corruption, pas
 /// erreur. D'où l'`Arc` ici et le registre de [`RamDir`].
 #[derive(Debug)]
-struct RamZone {
+pub(crate) struct RamZone {
     /// Octets de la zone. `UnsafeCell` parce que les vues sont rendues depuis
     /// `&self`, comme `as_slice` sur un mmap, alors que plusieurs poignées
     /// partagent la même allocation.

@@ -285,10 +285,6 @@ impl SynapseIncidenceZone {
                     s[0], s[1], s[2], s[3], s[4], s[5], 0, 0,
                 ]))
                 .to_u64();
-                let tail = U48::from_u64(u64::from_le_bytes([
-                    s[6], s[7], s[8], s[9], s[10], s[11], 0, 0,
-                ]))
-                .to_u64();
                 let count = u32::from_le_bytes(s[12..16].try_into().unwrap());
                 if head != 0 || count != 0 {
                     let mut postings = Vec::with_capacity(count as usize);

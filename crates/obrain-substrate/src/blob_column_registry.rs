@@ -13,14 +13,14 @@
 //! ```
 //!
 //! The registry is the sole gatekeeper of the `substrate.blobcol.*`
-//! zone family, mirroring [`crate::vec_column_registry::VecColumnRegistry`]:
+//! zone family, mirroring `crate::vec_column_registry::VecColumnRegistry`:
 //!
 //! 1. **One writer per (key, entity)** — kept open for the store's
 //!    lifetime so a migration loop does not pay per-write `mmap` costs.
 //! 2. **Read consistency** — reads issued after a write see the new
 //!    payload via the writer's own mmap, even before the header CRCs
 //!    have been `sync`'d.
-//! 3. **Durability at flush cadence** — [`Self::sync_all`] walks every
+//! 3. **Durability at flush cadence** — `Self::sync_all` walks every
 //!    writer and `sync`s it, computing both CRCs and `msync`+`fsync`'ing
 //!    the two files of each column.
 //!
@@ -665,6 +665,20 @@ impl crate::slot_remap::SlotRemappable for BlobColumnRegistry {
     }
 }
 
+/// (VWS) Le `&str` d'un slot blob quand le payload est un `String` UTF-8 —
+/// tag [`BLOB_TAG_STRING`] vérifié puis validation UTF-8, même politique de
+/// dégradation (`None`) que `BlobColumnRegistry::read_str_view`. Emprunte à
+/// la colonne : à appeler SOUS sa garde de lecture
+/// ([`BlobColumnRegistry::str_col_read_guard`]).
+pub(crate) fn blob_slot_str(col: &BlobColumnWriter, slot: u32) -> Option<&str> {
+    let bytes = col.read_slot(slot)?;
+    let (tag, payload) = bytes.split_first()?;
+    if *tag != BLOB_TAG_STRING {
+        return None;
+    }
+    std::str::from_utf8(payload).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,18 +1072,4 @@ mod tests {
             other => panic!("expected Bytes, got {other:?}"),
         }
     }
-}
-
-/// (VWS) Le `&str` d'un slot blob quand le payload est un `String` UTF-8 —
-/// tag [`BLOB_TAG_STRING`] vérifié puis validation UTF-8, même politique de
-/// dégradation (`None`) que `BlobColumnRegistry::read_str_view`. Emprunte à
-/// la colonne : à appeler SOUS sa garde de lecture
-/// ([`BlobColumnRegistry::str_col_read_guard`]).
-pub(crate) fn blob_slot_str(col: &BlobColumnWriter, slot: u32) -> Option<&str> {
-    let bytes = col.read_slot(slot)?;
-    let (tag, payload) = bytes.split_first()?;
-    if *tag != BLOB_TAG_STRING {
-        return None;
-    }
-    std::str::from_utf8(payload).ok()
 }

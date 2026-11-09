@@ -158,7 +158,7 @@ fn t2_zero_perte_inter_processus() {
     let mut vus = std::collections::HashSet::new();
     let mut octets = 0u64;
     let mut lues = 0usize;
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         match item {
             Ok((rec, _, len)) => {
                 vus.insert((tag_de(&rec), seq_de(&rec)));
