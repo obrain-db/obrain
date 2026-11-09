@@ -592,7 +592,7 @@ mod tests {
         let parsed = roundtrip(&record);
         match parsed {
             WalRecord::CreateNode { labels, .. } => {
-                assert!(labels.is_empty(), "résultat attendu vide")
+                assert!(labels.is_empty(), "résultat attendu vide");
             }
             _ => panic!("Wrong variant"),
         }
