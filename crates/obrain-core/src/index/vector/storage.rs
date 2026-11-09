@@ -426,7 +426,10 @@ impl VectorStorage for MmapStorage {
         // `as_chunks` : même découpage que `chunks_exact(4)`, reste sans reliquat
         // (`bytes` vaut `dimensions * 4` octets).
         let (chunks, _) = bytes.as_chunks::<4>();
-        let vector: Vec<f32> = chunks.iter().map(|chunk| f32::from_le_bytes(*chunk)).collect();
+        let vector: Vec<f32> = chunks
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect();
 
         let arc: Arc<[f32]> = vector.into();
 
