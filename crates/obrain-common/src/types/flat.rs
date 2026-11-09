@@ -579,7 +579,7 @@ mod tests {
 
         let empty = StringRef::EMPTY;
         assert_eq!(empty.resolve(table), Some(""));
-        assert_eq!(empty.len(), 0);
+        assert_eq!(empty, StringRef::default());
     }
 
     #[test]
