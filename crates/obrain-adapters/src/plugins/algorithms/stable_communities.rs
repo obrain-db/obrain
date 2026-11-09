@@ -502,7 +502,7 @@ mod tests {
         let stable = stabilize_communities(&prev, &curr, &store, 0.3);
 
         assert_eq!(stable.communities.len(), curr.communities.len());
-        assert!(stable.mapping.is_empty()); // No mapping for first run
+        assert!(stable.mapping.is_empty(), "résultat attendu vide"); // No mapping for first run
     }
 
     #[test]

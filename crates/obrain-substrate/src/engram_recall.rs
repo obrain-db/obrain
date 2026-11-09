@@ -375,18 +375,27 @@ mod tests {
     #[test]
     fn top_k_k_zero_yields_empty() {
         let col = vec![0xFFu64; 4];
-        assert!(top_k_by_overlap(&col, u64::MAX, 0).is_empty());
+        assert!(
+            top_k_by_overlap(&col, u64::MAX, 0).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
     fn top_k_empty_column_yields_empty() {
         let col: Vec<u64> = Vec::new();
-        assert!(top_k_by_overlap(&col, u64::MAX, 5).is_empty());
+        assert!(
+            top_k_by_overlap(&col, u64::MAX, 5).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
     fn top_k_zero_query_yields_empty() {
         let col = vec![0xFFu64; 10];
-        assert!(top_k_by_overlap(&col, 0, 5).is_empty());
+        assert!(
+            top_k_by_overlap(&col, 0, 5).is_empty(),
+            "résultat attendu vide"
+        );
     }
 }

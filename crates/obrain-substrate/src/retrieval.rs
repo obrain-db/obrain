@@ -699,7 +699,10 @@ mod tests {
     fn search_top_k_zero_returns_empty() {
         let idx = SubstrateTieredIndex::new(DIM);
         idx.insert(1, &emb(1, DIM));
-        assert!(idx.search_top_k(&emb(1, DIM), 0).is_empty());
+        assert!(
+            idx.search_top_k(&emb(1, DIM), 0).is_empty(),
+            "résultat attendu vide"
+        );
     }
 
     #[test]
