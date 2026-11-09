@@ -316,8 +316,53 @@ impl Session {
     /// Commits RDF transaction state.
     ///
     /// Called from the main commit path to finalize RDF changes.
+    ///
+    /// Explicit-transaction writes are not journaled while they execute (the
+    /// planner buffers them), so their journal records are written here, before
+    /// the in-memory apply, and the journal is synced. Without this, a committed
+    /// triple vanished on reopen. Every graph is committed, default and named:
+    /// named-graph writes are buffered in their own store.
     pub(super) fn commit_rdf_transaction(&self, transaction_id: TransactionId) {
+        #[cfg(all(feature = "rdf", feature = "wal"))]
+        if let Some(wal) = &self.rdf_wal {
+            for (graph, store) in self.rdf_stores_with_pending() {
+                for (is_insert, triple) in store.pending_ops(transaction_id) {
+                    let (subject, predicate, object) = (
+                        triple.subject().to_string(),
+                        triple.predicate().to_string(),
+                        triple.object().to_string(),
+                    );
+                    let record = if is_insert {
+                        obrain_adapters::storage::wal::WalRecord::InsertRdfTriple {
+                            subject,
+                            predicate,
+                            object,
+                            graph: graph.clone(),
+                        }
+                    } else {
+                        obrain_adapters::storage::wal::WalRecord::DeleteRdfTriple {
+                            subject,
+                            predicate,
+                            object,
+                            graph: graph.clone(),
+                        }
+                    };
+                    if let Err(err) = wal.log(&record) {
+                        tracing::warn!("RDF WAL log failed at commit: {err}");
+                    }
+                }
+            }
+            if let Err(err) = wal.sync() {
+                tracing::warn!("RDF WAL sync failed at commit: {err}");
+            }
+        }
+
         self.rdf_store.commit_transaction(transaction_id);
+        for name in self.rdf_store.graph_names() {
+            if let Some(graph) = self.rdf_store.graph(&name) {
+                graph.commit_transaction(transaction_id);
+            }
+        }
     }
 
     /// Rolls back RDF transaction state.
@@ -325,5 +370,23 @@ impl Session {
     /// Called from the main commit-conflict and rollback paths to discard RDF changes.
     pub(super) fn rollback_rdf_transaction(&self, transaction_id: TransactionId) {
         self.rdf_store.rollback_transaction(transaction_id);
+        for name in self.rdf_store.graph_names() {
+            if let Some(graph) = self.rdf_store.graph(&name) {
+                graph.rollback_transaction(transaction_id);
+            }
+        }
+    }
+
+    /// The default store and every named graph, each tagged with its graph name
+    /// (`None` for the default graph), for journaling a transaction's writes.
+    #[cfg(all(feature = "rdf", feature = "wal"))]
+    fn rdf_stores_with_pending(&self) -> Vec<(Option<String>, Arc<RdfStore>)> {
+        let mut stores = vec![(None, Arc::clone(&self.rdf_store))];
+        for name in self.rdf_store.graph_names() {
+            if let Some(graph) = self.rdf_store.graph(&name) {
+                stores.push((Some(name), graph));
+            }
+        }
+        stores
     }
 }
