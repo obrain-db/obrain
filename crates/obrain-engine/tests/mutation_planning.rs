@@ -546,7 +546,7 @@ fn test_remove_label() {
         .unwrap();
 
     let result = session.execute("MATCH (n:Temp) RETURN n.name").unwrap();
-    assert!(result.rows.is_empty());
+    assert_eq!(result.rows.len(), 0);
 }
 
 // ============================================================================
@@ -1257,7 +1257,7 @@ fn test_call_list_procedures() {
     let result = session.execute("CALL obrain.procedures()").unwrap();
 
     // Should return a list of available procedures
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
 }
 
 #[test]
@@ -1268,7 +1268,7 @@ fn test_call_degree_centrality() {
     let result = session.execute("CALL obrain.degree_centrality()").unwrap();
 
     // Should return results for each node
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
 }
 
 #[test]
@@ -1280,7 +1280,7 @@ fn test_call_procedure_with_yield() {
         .execute("CALL obrain.pagerank() YIELD node_id, score RETURN node_id, score")
         .unwrap();
 
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
     // Each row should have node_id and score
     assert!(result.columns.len() >= 2);
 }
@@ -1701,7 +1701,7 @@ mod cypher_mutations {
             )
             .unwrap();
 
-        assert!(!result.rows.is_empty());
+        assert_ne!(result.rows.len(), 0);
         for row in &result.rows {
             assert_eq!(row[1], Value::String("TechCorp".into()));
         }

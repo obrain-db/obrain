@@ -318,7 +318,7 @@ fn test_session_recovers_after_parse_error() {
     let result = session
         .execute("MATCH (n:Person) RETURN n.name ORDER BY n.name")
         .unwrap();
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
 }
 
 #[test]
