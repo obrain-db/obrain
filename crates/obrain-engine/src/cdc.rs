@@ -896,7 +896,8 @@ mod tests {
         // Rien de neuf très récent → vide (toujours sans rechargement).
         assert!(
             log.changes_since_timestamp(u64::MAX - 1, |_| true)
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 }

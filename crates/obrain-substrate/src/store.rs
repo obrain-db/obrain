@@ -26941,7 +26941,8 @@ mod tests {
         // Valeur absente : vide, pas d'erreur.
         assert!(
             s.find_nodes_by_property("id", &Value::from("pa_absent"))
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 
@@ -26959,7 +26960,8 @@ mod tests {
         s.set_node_property(a, "id", Value::from("v2"));
         assert!(
             s.find_nodes_by_property("id", &Value::from("v1"))
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
         assert_eq!(s.find_nodes_by_property("id", &Value::from("v2")), vec![a]);
 
@@ -26967,7 +26969,8 @@ mod tests {
         s.remove_node_property(a, "id");
         assert!(
             s.find_nodes_by_property("id", &Value::from("v2"))
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 
@@ -26985,7 +26988,8 @@ mod tests {
         assert!(s.delete_node(a));
         assert!(
             s.find_nodes_by_property("id", &Value::from("gone"))
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 

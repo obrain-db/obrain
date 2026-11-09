@@ -275,7 +275,8 @@ fn passe_cliques_et_hyperedges_dispatch() {
     assert!(
         s.iter_simplices_kind(simplex_kind::HYPEREDGE)
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "résultat attendu"
     );
 }
 
@@ -306,7 +307,8 @@ fn dispatch_bornes_i3_groupe_jete_entier() {
     assert!(
         s.iter_simplices_kind(simplex_kind::HYPEREDGE)
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "résultat attendu"
     );
 }
 

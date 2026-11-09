@@ -1470,7 +1470,8 @@ mod tests {
         assert!(
             index
                 .search(&[0.0, 0.0, 0.0, 0.0], 10, &accessor)
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 

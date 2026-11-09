@@ -820,7 +820,8 @@ mod tests {
             PropertiesSnapshotV1::from_bytes(&[])
                 .unwrap()
                 .nodes
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 }

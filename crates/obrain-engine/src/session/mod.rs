@@ -5928,7 +5928,8 @@ mod tests {
             assert!(
                 session
                     .get_neighbors_outgoing_by_type(lonely, "KNOWS")
-                    .is_empty()
+                    .is_empty(),
+                "résultat attendu"
             );
         }
     }

@@ -461,7 +461,8 @@ mod tests {
         assert!(
             SimplexIncidenceZone::postings(&inc, &posts, 42)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 
@@ -483,7 +484,8 @@ mod tests {
         assert!(
             SimplexIncidenceZone::postings(&inc, &posts, 7)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 

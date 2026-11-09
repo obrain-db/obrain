@@ -2277,7 +2277,8 @@ mod tests {
         assert!(
             catalog
                 .indexes_for_label_property(invalid_label, invalid_property)
-                .is_empty()
+                .is_empty(),
+            "résultat attendu"
         );
     }
 
