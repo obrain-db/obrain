@@ -1337,7 +1337,7 @@ impl<'a> ProjectionBuilder<'a> {
     ///     .with_node_labels(&["Person", "Company"]);
     /// ```
     pub fn with_node_labels(mut self, labels: &[&str]) -> Self {
-        self.node_filter.labels = labels.iter().map(|s| s.to_string()).collect();
+        self.node_filter.labels = labels.iter().map(|&s| s.to_string()).collect();
         self
     }
 
@@ -1366,7 +1366,7 @@ impl<'a> ProjectionBuilder<'a> {
     ///     .with_edge_types(&["KNOWS", "WORKS_AT"]);
     /// ```
     pub fn with_edge_types(mut self, types: &[&str]) -> Self {
-        self.edge_filter.edge_types = types.iter().map(|s| s.to_string()).collect();
+        self.edge_filter.edge_types = types.iter().map(|&s| s.to_string()).collect();
         self
     }
 
