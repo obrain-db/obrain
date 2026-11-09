@@ -1039,7 +1039,7 @@ fn builtin_procedures_known_algorithms() {
         "bridges",
     ] {
         assert!(
-            procs.get(&[name.to_string()]).is_some(),
+            procs.get(&[(*name).to_string()]).is_some(),
             "{name} should be registered"
         );
     }
