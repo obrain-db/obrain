@@ -22,7 +22,7 @@
 //!
 //! # Schema-less by construction
 //!
-//! [`ContextBundle`](crate::context_loader::ContextBundle) mixes whatever
+//! [`ContextBundle`] mixes whatever
 //! node types/labels the seeds happen to activate (missions, notes,
 //! axioms, ...) — the formatter groups by label without assuming any fixed
 //! schema, and opportunistically surfaces a text snippet only when a node

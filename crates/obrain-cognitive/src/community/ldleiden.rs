@@ -26,7 +26,7 @@
 //!      actually moves. The cascade is bounded at `max_passes = 2`
 //!      moves to keep per-delta cost in `O(d̄)`.
 //!
-//!   3. **No implicit GC.** [`reclaim_empty_communities`] is only
+//!   3. **No implicit GC.** [`reclaim_empty_communities`](LDleiden::reclaim_empty_communities) is only
 //!      called on the `on_edge_remove` path (where splits can free
 //!      ids) and from the explicit public API. It is `O(|empty|)`
 //!      because it consults `members_count` instead of scanning
@@ -195,8 +195,8 @@ impl LDleiden {
     ///
     /// ## When to call this
     ///
-    /// The incremental hot-path ([`on_edge_add`], [`on_edge_remove`],
-    /// [`on_edge_reweight`]) caps its local-move cascade at
+    /// The incremental hot-path ([`on_edge_add`](Self::on_edge_add), [`on_edge_remove`](Self::on_edge_remove),
+    /// [`on_edge_reweight`](Self::on_edge_reweight)) caps its local-move cascade at
     /// `max_passes = 2` — that is what makes each delta cost `O(avg_deg)`
     /// and not `O(|V|)` (see the T10 Step 5 bench and gotcha note
     /// `2b27f4d3`). The cost is a **quality drift**: after a stream of

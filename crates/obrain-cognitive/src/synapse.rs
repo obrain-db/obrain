@@ -582,8 +582,8 @@ impl SynapseStore {
     /// The `EdgeRecord.weight_u16` Q0.16 column is the source of truth for
     /// synapse weights — every `reinforce` translates to a dedicated
     /// `SynapseReinforce` WAL record + mmap column mutation via
-    /// [`SubstrateStore::reinforce_edge_synapse_f32`] /
-    /// [`SubstrateStore::boost_edge_synapse_f32`]. The in-memory `DashMap`
+    /// [`SubstrateStore::reinforce_edge_synapse_f32`](obrain_substrate::SubstrateStore::reinforce_edge_synapse_f32) /
+    /// [`SubstrateStore::boost_edge_synapse_f32`](obrain_substrate::SubstrateStore::boost_edge_synapse_f32). The in-memory `DashMap`
     /// cache is retained as a warm-read accelerator and for cross-session
     /// bookkeeping (`reinforcement_count`, `last_reinforced` timestamps —
     /// neither currently fits on the 30 B `EdgeRecord`).
@@ -745,9 +745,8 @@ impl SynapseStore {
             return sub
                 .create_synapse_slot(key.0, key.1, initial as f32)
                 .ok()
-                .map(|eid| {
+                .inspect(|&eid| {
                     self.edge_ids.insert(key, eid);
-                    eid
                 });
         }
         let gs = self.graph_store.as_ref()?;
@@ -768,7 +767,7 @@ impl SynapseStore {
     ///
     /// In **substrate-backed mode**, the authoritative weight column
     /// (`EdgeRecord.weight_u16`, Q0.16 in `[0, 1]`) is mutated via
-    /// [`SubstrateStore::reinforce_edge_synapse_f32`] — WAL-logged
+    /// [`SubstrateStore::reinforce_edge_synapse_f32`](obrain_substrate::SubstrateStore::reinforce_edge_synapse_f32) — WAL-logged
     /// synchronously before the mmap write. The in-memory cache is updated
     /// as a mirror for reinforcement-count and timestamp bookkeeping.
     pub fn reinforce(&self, source: NodeId, target: NodeId, amount: f64) {
@@ -878,7 +877,7 @@ impl SynapseStore {
     }
 
     /// Plan 69e59065 T3 — Drain the queued metadata writes
-    /// ([`MetadataDelta`]) to the LPG side. Returns the number of
+    /// (`MetadataDelta`) to the LPG side. Returns the number of
     /// deltas flushed. Idempotent and safe to call concurrently with
     /// `reinforce()` — concurrent pushes that race against the drain
     /// are not lost; they simply land in the next drain.
@@ -1291,7 +1290,7 @@ impl SynapseStore {
             }
             return;
         }
-        for entry in self.synapses.iter() {
+        for entry in &self.synapses {
             let k = entry.key();
             let neighbor = if k.0 == node_id {
                 Some(k.1)
@@ -1532,7 +1531,7 @@ impl SynapseStore {
     /// survives restarts by construction — no [`Self::load_from_graph`]
     /// required) and the DashMap keys not yet visible on the column (e.g.
     /// a reinforce whose edge creation raced the scan). Both sides are
-    /// keyed by canonical [`SynapseKey`] so duplicates count once. If the
+    /// keyed by canonical `SynapseKey` so duplicates count once. If the
     /// column scan fails (I/O error), falls back to the DashMap count.
     ///
     /// Legacy mode (no substrate): DashMap count, unchanged.

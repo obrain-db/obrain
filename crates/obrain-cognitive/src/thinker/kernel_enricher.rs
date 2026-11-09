@@ -78,7 +78,7 @@ pub struct KernelEnricherConfig {
     pub coverage_threshold: f64,
     /// Kernel sampling hyper-parameters (alpha, max neighbors, threads).
     /// `Default` keeps the algorithm defaults ; the seed is pinned to
-    /// [`KERNEL_SEED`] for reproducibility.
+    /// `KERNEL_SEED` for reproducibility.
     pub alpha: f64,
     /// Maximum sampled neighbors per node for the single-pass attention.
     pub max_neighbors: usize,

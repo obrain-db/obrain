@@ -1,6 +1,6 @@
 //! # Kernel Adaptation
 //!
-//! Feedback loop that adjusts [`KernelParam`]s based on [`SessionMetric`]s.
+//! Feedback loop that adjusts [`KernelParam`](crate::kernel_params::KernelParam)s based on [`SessionMetric`](crate::session_metrics::SessionMetric)s.
 //!
 //! After each session, the adaptation engine:
 //! 1. Reads the latest session metrics

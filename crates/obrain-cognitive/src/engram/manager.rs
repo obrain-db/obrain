@@ -257,7 +257,9 @@ impl EngramManager {
                     }
                     None => {
                         // Premier outcome observé → initialise le modèle prédictif.
-                        if let Some(pm) = PredictiveModel::from_observations(&[outcome.clone()]) {
+                        if let Some(pm) =
+                            PredictiveModel::from_observations(std::slice::from_ref(&outcome))
+                        {
                             e.predictive_model = Some(pm);
                         }
                     }
@@ -318,7 +320,7 @@ impl EngramManager {
     /// s'écarte de ce que les modèles prédictifs des engrams rappelés
     /// attendaient. Une surprise forte est le signal qui doit faire basculer
     /// la couche de décision vers l'exploration
-    /// ([`crate::decision::acting_source`]).
+    /// (`crate::decision::acting_source`).
     ///
     /// Retourne `None` si aucun engram n'est rappelé ou si aucune signature
     /// spectrale exploitable n'est disponible.

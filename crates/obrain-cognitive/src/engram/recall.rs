@@ -137,7 +137,7 @@ impl RecallEngine {
             // REFUSE un poids négatif ou non fini au lieu de le coercer.
             let mut membres: Vec<(NodeId, u32)> = Vec::with_capacity(engram.ensemble.len());
             let mut mauvais_poids: Option<PosError> = None;
-            for (nid, w) in engram.ensemble.iter() {
+            for (nid, w) in &engram.ensemble {
                 if !w.is_finite() || *w < 0.0 {
                     mauvais_poids = Some(PosError::Negative(*nid));
                     break;
@@ -224,6 +224,7 @@ impl RecallEngine {
     ///
     /// Returns `Err` when the provider cannot supply a member's position - a
     /// silent zero would look like "nothing similar", which is a different claim.
+    #[allow(clippy::too_many_arguments)] // API publique : chaque paramètre est un réglage distinct du rappel
     pub fn recall_with_position(
         &self,
         store: &EngramStore,

@@ -249,8 +249,8 @@ impl EnergyStore {
     /// The `NodeRecord.energy` u16 Q1.15 column is the source of truth —
     /// every `boost` / `set` translates to a dedicated `EnergyReinforce`
     /// WAL record + mmap column mutation via
-    /// [`SubstrateStore::boost_node_energy_f32`] /
-    /// [`SubstrateStore::set_node_energy_f32`]. The in-memory `DashMap`
+    /// [`SubstrateStore::boost_node_energy_f32`](obrain_substrate::SubstrateStore::boost_node_energy_f32) /
+    /// [`SubstrateStore::set_node_energy_f32`](obrain_substrate::SubstrateStore::set_node_energy_f32). The in-memory `DashMap`
     /// cache is retained as a warm-read accelerator.
     ///
     /// Decay semantics shift from lazy-per-read (legacy) to eager-periodic-
@@ -369,7 +369,7 @@ impl EnergyStore {
     /// Boosts a node's energy by `amount`.
     ///
     /// **Substrate mode**: dispatches to
-    /// [`SubstrateStore::boost_node_energy_f32`] which logs an
+    /// [`SubstrateStore::boost_node_energy_f32`](obrain_substrate::SubstrateStore::boost_node_energy_f32) which logs an
     /// `EnergyReinforce` WAL record + mutates the u16 Q1.15 column.
     /// The column saturates at `config.max_energy` clamped to the Q1.15
     /// range (`[0, 1.0]` — values > 1.0 in the legacy config are silently
@@ -436,7 +436,7 @@ impl EnergyStore {
     /// Apply an eager multiplicative decay to every live node's energy
     /// column. `factor` is in `[0.0, 1.0]` (`0.5` halves all energies).
     ///
-    /// **Substrate mode**: dispatches to [`SubstrateStore::decay_all_energy`]
+    /// **Substrate mode**: dispatches to [`SubstrateStore::decay_all_energy`](obrain_substrate::SubstrateStore::decay_all_energy)
     /// which logs a single `EnergyDecay` WAL record and rewrites every live
     /// slot in one pass. This is the replacement for the legacy
     /// per-read exponential decay.

@@ -367,7 +367,8 @@ impl DecisionStore {
         // `:Decision`, ses `:DecisionOption` et ses arêtes `DECIDES_ON` dans le
         // substrat. L'ancien `get` + `insert` (check-then-act) n'était
         // idempotent que séquentiellement.
-        let node_id = *self
+
+        *self
             .decision_node_ids
             .entry(question.to_string())
             .or_insert_with(|| {
@@ -417,8 +418,7 @@ impl DecisionStore {
 
                 self.decisions.insert(question.to_string(), decision);
                 id
-            });
-        node_id
+            })
     }
 
     /// Returns the `:Decision` NodeId for a question, if registered.
@@ -485,10 +485,7 @@ impl DecisionStore {
         // de shard jusqu'à la fin du bloc, donc l'incrément ET les deux
         // `persist_node_f64` sont ordonnés ensemble.
         {
-            let mut counts = self
-                .options
-                .entry(key.clone())
-                .or_insert_with(DecisionOption::default);
+            let mut counts = self.options.entry(key.clone()).or_default();
             counts.n += 1;
             if success {
                 counts.k += 1;

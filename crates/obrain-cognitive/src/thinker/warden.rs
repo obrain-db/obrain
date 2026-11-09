@@ -22,7 +22,7 @@ use super::{Thinker, ThinkerBudget, ThinkerKind, ThinkerTickError, ThinkerTickRe
 #[derive(Debug, Clone)]
 pub struct WardenConfig {
     /// Fragmentation trigger — see
-    /// [`obrain_substrate::CommunityWarden::new_with_trigger`].
+    /// `obrain_substrate::CommunityWarden::new_with_trigger`.
     /// Default: `1.30` (30% more pages than perfect packing).
     pub fragmentation_trigger: f32,
     /// Sleep between fragmentation-scan ticks.

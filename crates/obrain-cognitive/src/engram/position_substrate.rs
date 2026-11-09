@@ -86,7 +86,7 @@ impl SubstratePositionProvider {
     ///
     /// Fails when two position dimensions coexist in the base (see
     /// [`PosError::InconsistentDimensions`]) or when the dimension exceeds
-    /// [`POS_DIM`]. Absent nodes are simply not in the snapshot:
+    /// [`POS_DIM`](crate::engram::position::POS_DIM). Absent nodes are simply not in the snapshot:
     /// [`PositionProvider::position`] returns `None` for them.
     pub fn load(store: &SubstrateStore, key: &str) -> Result<Self, PosError> {
         Self::load_with_coverage(store, key, DEFAULT_MIN_COVERAGE)
