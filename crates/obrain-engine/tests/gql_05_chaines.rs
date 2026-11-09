@@ -751,8 +751,14 @@ fn like_est_ancre_aux_deux_extremites() {
     // SQL/GQL : LIKE compare le motif à la chaîne ENTIÈRE, pas à une
     // sous-chaîne. C'est la différence avec CONTAINS.
     let db = db_avec(&["abc"]);
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom LIKE 'b' RETURN n.nom").len(), 0);
-    assert_eq!(lignes(&db, "MATCH (n:S) WHERE n.nom LIKE 'ab' RETURN n.nom").len(), 0);
+    assert_eq!(
+        lignes(&db, "MATCH (n:S) WHERE n.nom LIKE 'b' RETURN n.nom").len(),
+        0
+    );
+    assert_eq!(
+        lignes(&db, "MATCH (n:S) WHERE n.nom LIKE 'ab' RETURN n.nom").len(),
+        0
+    );
     assert_eq!(
         textes(&db, "MATCH (n:S) WHERE n.nom LIKE '%b%' RETURN n.nom"),
         ["abc"]
