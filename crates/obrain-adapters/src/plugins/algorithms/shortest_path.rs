@@ -936,6 +936,8 @@ fn astar_params() -> &'static [ParameterDef] {
     })
 }
 
+/// Plus court chemin A* entre deux nœuds (`source`, `target`). Sans coordonnées,
+/// l'heuristique est nulle : le résultat est exact et égal à Dijkstra.
 pub struct AStarAlgorithm;
 
 impl GraphAlgorithm for AStarAlgorithm {

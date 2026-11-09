@@ -329,7 +329,7 @@ pub fn contract_subgraph(
 ///
 /// Unlike [`contract_subgraph`] and [`contract_by_communities`] (which take
 /// `&dyn GraphStoreMut`), this function is bound to `&LpgStore` because it
-/// needs [`LpgStore::create_node_with_id`] to restore the original node IDs
+/// needs `LpgStore::create_node_with_id` to restore the original node IDs
 /// recorded in the snapshot. `GraphStoreMut::create_node` assigns a fresh
 /// ID on every call, which would break external references to the snapshotted
 /// nodes. Adding `create_node_with_id` to the trait (and implementing it on
