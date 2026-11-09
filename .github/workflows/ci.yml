@@ -11,6 +11,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Appelée par release.yml sur un tag : la publication n'a lieu que si la CI
+  # complète est verte SUR LE COMMIT TAGUÉ (pas sur celui d'une PR antérieure).
+  workflow_call:
 
 # Rien dans cette CI n'écrit sur le dépôt : lecture seule, partout.
 permissions:
@@ -380,10 +383,10 @@ jobs:
           rm -rf "$OUTIL/cache"
           npm init -y > /dev/null
           npm install --no-audit --no-fund @puppeteer/browsers@3.2.6 yauzl@3.4.0
-          ./node_modules/.bin/browsers install chrome@$CHROME_VERSION --path "$OUTIL/cache"
-          ./node_modules/.bin/browsers install chromedriver@$CHROME_VERSION --path "$OUTIL/cache"
+          ./node_modules/.bin/browsers install "chrome@$CHROME_VERSION" --path "$OUTIL/cache"
+          ./node_modules/.bin/browsers install "chromedriver@$CHROME_VERSION" --path "$OUTIL/cache"
           CD=$(find "$OUTIL/cache" -name chromedriver -type f | head -1)
-          echo "$(dirname "$CD")" >> "$GITHUB_PATH"
+          dirname "$CD" >> "$GITHUB_PATH"
           # chromedriver ne trouve Chrome qu'à son emplacement par défaut : on indique
           # le binaire installé dans le cache du job, et les options headless.
           CHROME=$(find "$OUTIL/cache" -type f -name chrome | head -1)

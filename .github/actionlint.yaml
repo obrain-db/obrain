@@ -1,0 +1,5 @@
+# Étiquettes des runners auto-hébergés de l'organisation (ffs-n1 / n2 / n3),
+# déclarées pour qu'actionlint ne les signale pas comme inconnues.
+self-hosted-runner:
+  labels:
+    - obrain-ci

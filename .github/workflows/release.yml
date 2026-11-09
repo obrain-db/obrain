@@ -1,0 +1,155 @@
+# Publication d'une version : déclenchée par un tag `vX.Y.Z`, rien d'autre.
+#
+# Ordre des barrières (chacune arrête tout si elle échoue) :
+#   1. verifier : le tag désigne un commit de `main`, sa version est celle du
+#      workspace, et le CHANGELOG porte une section DATÉE pour cette version
+#      (pas « en préparation »).
+#   2. ci       : la CI complète (ci.yml) rejouée SUR LE COMMIT TAGUÉ.
+#   3. publier  : `cargo publish` crate par crate, dans l'ordre du graphe de
+#      dépendances. Rejouable : une version déjà présente sur crates.io est
+#      sautée, pas republiée (crates.io est immuable).
+#   4. release  : GitHub Release avec la section du CHANGELOG.
+#
+# Prérequis côté dépôt (Settings) :
+#   - secret `CARGO_REGISTRY_TOKEN` (jeton crates.io, portée publish-update) ;
+#   - environnement `crates-io` : y ajouter un relecteur obligatoire si l'on
+#     veut une validation humaine avant l'écriture irréversible sur crates.io.
+#
+# Ordre de publication, dérivé des dépendances internes (normales et
+# optionnelles ; les dev-dependencies par chemin sont retirées par cargo) :
+#   common → core → substrate → adapters → reactive → cognitive → engine → obrain
+# `cognitive` précède `engine`, qui en dépend (feature optionnelle).
+# `obrain-indexer` n'est PAS publié : il existe aussi dans obrain-platform, avec
+# un contenu différent, et la source de vérité n'est pas tranchée (tâche PO
+# V1-INDEXER-DOUBLE). `obrain-web` est `publish = false`.
+#
+# Actions épinglées par SHA (résolus le 2026-11-09 via l'API GitHub) :
+#   actions/checkout@v7.0.1                 -> 3d3c42e5aac5ba805825da76410c181273ba90b1
+#   dtolnay/rust-toolchain (branche stable) -> b725eda525362e7cf34af9a7243cac1e3f01a7ec
+#   softprops/action-gh-release@v3.0.3      -> efb35369e0ad2afab669f228072c1b0d510eae64
+#     (v3.0.3 du 2026-08-30 plutôt que v3.0.4 du 2026-11-05 : une version
+#      publiée depuis plus de deux semaines)
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CRATES: "obrain-common obrain-core obrain-substrate obrain-adapters obrain-reactive obrain-cognitive obrain-engine obrain"
+
+jobs:
+  verifier:
+    name: Tag, version, CHANGELOG
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Version du tag
+        id: version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag $GITHUB_REF_NAME → version $v"
+      - name: Le commit tagué appartient à main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::le tag $GITHUB_REF_NAME ($GITHUB_SHA) n'est pas sur main"; exit 1
+          fi
+      - name: Chaque crate publié porte la version du tag
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          echec=0
+          for c in $CRATES; do
+            id=$(cargo pkgid -p "$c")
+            case "$id" in
+              *"@$V") echo "$c : $V" ;;
+              *) echo "::error::$c : $id ne porte pas la version $V"; echec=1 ;;
+            esac
+          done
+          exit $echec
+      - name: Le CHANGELOG a une section datée pour cette version
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          entete=$(grep -m1 -E "^## \[$V\]" CHANGELOG.md || true)
+          if [ -z "$entete" ]; then echo "::error::CHANGELOG.md : aucune section « ## [$V] »"; exit 1; fi
+          echo "$entete"
+          case "$entete" in
+            *"préparation"*|*"Unreleased"*|*"unreleased"*)
+              echo "::error::la section $V du CHANGELOG n'est pas finalisée : $entete"; exit 1 ;;
+          esac
+      - name: Métadonnées de publication
+        run: scripts/check-publish-metadata.sh
+
+  ci:
+    name: CI complète sur le commit tagué
+    needs: verifier
+    uses: ./.github/workflows/ci.yml
+
+  publier:
+    name: Publication crates.io
+    needs: [verifier, ci]
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: cargo publish, dans l'ordre des dépendances
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          V: ${{ needs.verifier.outputs.version }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::secret CARGO_REGISTRY_TOKEN absent : rien n'est publié"; exit 1
+          fi
+          for c in $CRATES; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -A "obrain-release (https://github.com/obrain-db/obrain)" \
+              "https://crates.io/api/v1/crates/$c/$V")
+            if [ "$code" = "200" ]; then
+              echo "$c $V : déjà sur crates.io, sauté"
+              continue
+            fi
+            echo "── cargo publish -p $c ($V)"
+            # cargo attend que la version soit visible dans l'index avant de
+            # rendre la main : le crate suivant peut la résoudre.
+            cargo publish -p "$c" --locked
+          done
+
+  release:
+    name: GitHub Release
+    needs: [verifier, publier]
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Notes de version (section du CHANGELOG)
+        env:
+          V: ${{ needs.verifier.outputs.version }}
+        run: |
+          awk -v v="$V" '
+            $0 ~ "^## \\[" v "\\]" { dedans = 1; next }
+            dedans && /^## / { exit }
+            dedans { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          test -s "$RUNNER_TEMP/notes.md" || { echo "::error::section $V vide"; exit 1; }
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/notes.md
