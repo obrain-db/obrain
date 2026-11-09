@@ -158,10 +158,9 @@ fn l_etiquette_du_motif_est_respectee() {
     let d = ObrainDB::new_in_memory();
     peupler(&d);
     d.create_property_index("qualified_name");
-    let avec = format!(
-        "MATCH (n:S) WHERE n.qualified_name CONTAINS 'ixgbe_read' \
+    let avec = "MATCH (n:S) WHERE n.qualified_name CONTAINS 'ixgbe_read' \
          RETURN n.qualified_name ORDER BY n.qualified_name"
-    );
+        .to_string();
     assert_eq!(textes(&d, &avec), attendus("ixgbe_read"));
     let absente = "MATCH (n:Absente) WHERE n.qualified_name CONTAINS 'ixgbe_read' \
                    RETURN n.qualified_name";

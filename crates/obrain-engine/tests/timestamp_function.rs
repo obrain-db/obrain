@@ -272,12 +272,12 @@ fn test_timestamp_vs_now_different_types() {
     assert!(
         matches!(&result.rows[0][0], Value::Int64(_)),
         "timestamp() should be Int64, got {:?}",
-        &result.rows[0][0]
+        result.rows[0][0]
     );
     assert!(
         matches!(&result.rows[0][1], Value::Timestamp(_)),
         "now() should be Timestamp, got {:?}",
-        &result.rows[0][1]
+        result.rows[0][1]
     );
 }
 

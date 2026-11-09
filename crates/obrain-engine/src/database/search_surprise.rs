@@ -23,7 +23,7 @@
 //!
 //! # Surfaces
 //!
-//! - [`ObrainDB::search_surprise`] — méthode moteur.
+//! - [`ObrainDB::search_surprise`](crate::ObrainDB::search_surprise) — méthode moteur.
 //! - `CALL obrain.search_surprise(since_ms, limit, signed)`
 //!   YIELD node_id, activity, degree, expected, surprise — procédure GQL
 //!   classée LECTURE (exécutable en read-only). `limit` (défaut 20, cap
@@ -73,8 +73,7 @@ pub fn compute_search_surprise(
     let events: Vec<ChangeEvent> = log.changes_since_timestamp(since_ms, |_| true);
 
     // Activité par nœud (les arêtes comptent pour leurs deux extrémités).
-    let mut counts: Vec<(u64, u64)> = Vec::new();
-    {
+    let counts: Vec<(u64, u64)> = {
         use std::collections::HashMap;
         let mut map: HashMap<u64, u64> = HashMap::new();
         for e in &events {
@@ -90,8 +89,8 @@ pub fn compute_search_surprise(
                 }
             }
         }
-        counts = map.into_iter().collect();
-    }
+        map.into_iter().collect()
+    };
     if counts.is_empty() {
         return Vec::new();
     }
@@ -107,11 +106,11 @@ pub fn compute_search_surprise(
         let mut out_window: Hm<u64, u64> = Hm::new();
         let mut in_window: Hm<u64, u64> = Hm::new();
         for e in &events {
-            if let crate::cdc::EntityId::Edge(eid) = e.entity_id {
-                if let Some((src, dst)) = substrate.edge_endpoints_by_id(eid) {
-                    *out_window.entry(src.0).or_insert(0) += 1;
-                    *in_window.entry(dst.0).or_insert(0) += 1;
-                }
+            if let crate::cdc::EntityId::Edge(eid) = e.entity_id
+                && let Some((src, dst)) = substrate.edge_endpoints_by_id(eid)
+            {
+                *out_window.entry(src.0).or_insert(0) += 1;
+                *in_window.entry(dst.0).or_insert(0) += 1;
             }
         }
         for (n, _) in &counts {

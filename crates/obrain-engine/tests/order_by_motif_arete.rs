@@ -7,15 +7,15 @@
 //! NON-BUG requalifie le 2026-09-15. Ces tests fixent le contrat :
 //! 1) les props sont conservees apres ORDER BY (avec et sans LIMIT) ;
 //! 2) la position des NULL est documentee et stable.
-//! Consequence produit : un tri applicatif recent-d-abord doit rester en
-//! Rust avec cle par defaut (unwrap_or(0) -> nulls derniers), comme dans
-//! sessions_list.
+//!    Consequence produit : un tri applicatif recent-d-abord doit rester en
+//!    Rust avec cle par defaut (unwrap_or(0) -> nulls derniers), comme dans
+//!    sessions_list.
 
 use obrain_engine::ObrainDB;
 
 fn base() -> (tempfile::TempDir, ObrainDB) {
     let td = tempfile::tempdir().unwrap();
-    let db = ObrainDB::open_substrate(&td.path().join("kb-orderby-arete")).expect("open_substrate");
+    let db = ObrainDB::open_substrate(td.path().join("kb-orderby-arete")).expect("open_substrate");
     {
         let s = db.session();
         s.execute("CREATE (:S {qualified_name: 's1', createdAt: 100})")

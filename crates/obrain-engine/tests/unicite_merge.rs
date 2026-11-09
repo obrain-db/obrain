@@ -8,7 +8,6 @@
 
 #![cfg(feature = "gql")]
 
-use obrain_core::graph::GraphStore;
 use obrain_engine::ObrainDB;
 
 /// 16 fils x 12 MERGE du meme id : UN seul porteur a la fin, zero echec.

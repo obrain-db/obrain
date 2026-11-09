@@ -442,7 +442,6 @@ fn test_complex_graph_with_multiple_edge_types() {
 /// `WORKS_AT` rendait `["", "WORKS_AT"]`, et `edge_type_count` valait 2.
 #[test]
 fn les_listes_de_noms_ne_contiennent_pas_d_entree_vide() {
-    use obrain_core::graph::GraphStore as _;
     let db = ObrainDB::new_in_memory();
     assert!(db.store().all_edge_types().is_empty());
     assert!(db.store().all_labels().is_empty());

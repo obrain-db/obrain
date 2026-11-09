@@ -12,10 +12,11 @@ use std::path::Path;
 fn live_nodes(s: &SubstrateStore) -> Vec<NodeId> {
     let mut v = Vec::new();
     for slot in 1..s.slot_high_water() {
-        if let Ok(Some(rec)) = s.writer().read_node(slot) {
-            if !rec.is_tombstoned() && rec.label_bitset != 0 {
-                v.push(NodeId(slot as u64));
-            }
+        if let Ok(Some(rec)) = s.writer().read_node(slot)
+            && !rec.is_tombstoned()
+            && rec.label_bitset != 0
+        {
+            v.push(NodeId(slot as u64));
         }
     }
     v
@@ -23,15 +24,17 @@ fn live_nodes(s: &SubstrateStore) -> Vec<NodeId> {
 fn live_edges(s: &SubstrateStore) -> Vec<EdgeId> {
     let mut v = Vec::new();
     for slot in 1..s.edge_slot_high_water() {
-        if let Ok(Some(rec)) = s.writer().read_edge(slot) {
-            if !rec.is_tombstoned() {
-                v.push(EdgeId(slot));
-            }
+        if let Ok(Some(rec)) = s.writer().read_edge(slot)
+            && !rec.is_tombstoned()
+        {
+            v.push(EdgeId(slot));
         }
     }
     v
 }
 
+#[allow(unsafe_code)] // set_var (unsafe en édition 2024) au démarrage, avant tout fil
+#[allow(clippy::many_single_char_names)] // outil de migration : s, n, e, a, b… (store, nœud, arête, extrémités)
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let base = args.first().expect("usage: migbase <base_dir>");
@@ -89,10 +92,8 @@ fn main() {
     // Phase C — créations packées (nœuds + arêtes avec props).
     {
         let s = SubstrateStore::open(Path::new(base)).expect("open C");
-        let mut last = None;
         for i in 0..40u64 {
             let n = s.create_node(&["MigQC"]);
-            last = Some(n);
             for (j, p) in [("a", 1i64), ("b", 2), ("c", 3)].iter().enumerate() {
                 s.set_node_property(n, format!("mC_{j}").as_str(), Value::Int64(p.1 + i as i64));
             }
@@ -109,11 +110,7 @@ fn main() {
         let pack_node = ids.iter().rev().find(|id| {
             s.writer()
                 .read_node(id.0 as u32)
-                .map(|r| {
-                    r.map(|rec| rec.first_prop_off.to_u64() & (1 << 47) != 0)
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
+                .is_ok_and(|r| r.is_some_and(|rec| rec.first_prop_off.to_u64() & (1 << 47) != 0))
         });
         assert!(pack_node.is_some(), "au moins un nœud packé présent");
         let pn = *pack_node.unwrap();
@@ -140,21 +137,8 @@ fn main() {
                 assert_eq!(s.get_node_property(id, &PropertyKey::new(&key)), None);
             }
         }
-        let pack_qc: Vec<NodeId> = nodes
-            .iter()
-            .copied()
-            .filter(|id| {
-                s.writer()
-                    .read_node(id.0 as u32)
-                    .map(|r| {
-                        r.map(|rec| rec.label_bitset & (1 << 0) != 0)
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false)
-            })
-            .collect();
         // (repérage MigQC par label brut peu fiable — on retire par 'a' si présent)
-        for id in nodes.iter() {
+        for id in &nodes {
             if s.get_node_property(*id, &PropertyKey::new("mC_0"))
                 .is_some()
             {

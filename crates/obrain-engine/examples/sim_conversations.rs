@@ -41,10 +41,9 @@ fn main() {
                 Some(obrain_common::types::Value::String(k)),
                 Some(obrain_common::types::Value::Int64(c)),
             ) = (k, c)
+                && *c > best.1
             {
-                if *c > best.1 {
-                    best = (k.to_string(), *c);
-                }
+                best = (k.to_string(), *c);
             }
         }
         best.0
@@ -53,17 +52,13 @@ fn main() {
     let total_msgs: u64 = {
         let q = format!("MATCH (m:Message) WHERE m.session = '{sid}' RETURN count(m)");
         let r = s.execute(&q).expect("count messages");
-        r.rows
-            .first()
-            .and_then(|row| row.first())
-            .map(|v| {
-                if let obrain_common::types::Value::Int64(n) = v {
-                    *n as u64
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+        r.rows.first().and_then(|row| row.first()).map_or(0, |v| {
+            if let obrain_common::types::Value::Int64(n) = v {
+                *n as u64
+            } else {
+                0
+            }
+        })
     };
     println!("messages de la session : {total_msgs}");
 
@@ -143,17 +138,13 @@ fn main() {
         let r = s
             .execute("MATCH (s:Session) RETURN id(s) LIMIT 1")
             .expect("id session");
-        r.rows
-            .first()
-            .and_then(|row| row.first())
-            .map(|v| {
-                if let obrain_common::types::Value::Int64(n) = v {
-                    *n
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+        r.rows.first().and_then(|row| row.first()).map_or(0, |v| {
+            if let obrain_common::types::Value::Int64(n) = v {
+                *n
+            } else {
+                0
+            }
+        })
     };
     let mut te_count = Vec::new();
     let mut te_list = Vec::new();
@@ -165,12 +156,11 @@ fn main() {
         let t0 = Instant::now();
         let r = s.execute(&q);
         te_count.push(t0.elapsed().as_secs_f64() * 1e6);
-        if let Ok(r) = r {
-            if let Some(row) = r.rows.first() {
-                if let Some(obrain_common::types::Value::Int64(n)) = row.first() {
-                    n_msgs = *n as usize;
-                }
-            }
+        if let Ok(r) = r
+            && let Some(row) = r.rows.first()
+            && let Some(obrain_common::types::Value::Int64(n)) = row.first()
+        {
+            n_msgs = *n as usize;
         }
     }
     stats(
@@ -213,8 +203,7 @@ fn main() {
     let top = par_session
         .iter()
         .max_by_key(|(_, c)| **c)
-        .map(|(k, _)| *k)
-        .unwrap_or(0);
+        .map_or(0, |(k, _)| *k);
     for _ in 0..reps {
         let t0 = Instant::now();
         somme = *par_session.get(&top).unwrap_or(&0);
@@ -235,33 +224,25 @@ fn main() {
         let r = s
             .execute("MATCH (m:Message)-[r:PART_OF]->() RETURN count(r)")
             .expect("count part_of messages");
-        r.rows
-            .first()
-            .and_then(|row| row.first())
-            .map(|v| {
-                if let obrain_common::types::Value::Int64(n) = v {
-                    *n as usize
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+        r.rows.first().and_then(|row| row.first()).map_or(0, |v| {
+            if let obrain_common::types::Value::Int64(n) = v {
+                *n as usize
+            } else {
+                0
+            }
+        })
     };
     let total_m: usize = {
         let r = s
             .execute("MATCH (m:Message) RETURN count(m)")
             .expect("count total");
-        r.rows
-            .first()
-            .and_then(|row| row.first())
-            .map(|v| {
-                if let obrain_common::types::Value::Int64(n) = v {
-                    *n as usize
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0)
+        r.rows.first().and_then(|row| row.first()).map_or(0, |v| {
+            if let obrain_common::types::Value::Int64(n) = v {
+                *n as usize
+            } else {
+                0
+            }
+        })
     };
     let parite = total_par == total_e;
     println!("[G] build unique : {build_us:.1} µs · servie : 0,0 µs");

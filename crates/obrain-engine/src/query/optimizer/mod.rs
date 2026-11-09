@@ -871,8 +871,6 @@ impl Optimizer {
 
             // Can push through Expand if predicate doesn't use variables introduced by this expand
             LogicalOperator::Expand(mut expand) => {
-                let predicate_vars = self.extract_variables(&predicate);
-
                 // Variables introduced by this expand are:
                 // - The target variable (to_variable)
                 // - The edge variable (if any)

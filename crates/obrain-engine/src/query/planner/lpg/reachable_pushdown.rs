@@ -219,12 +219,12 @@ fn parse_homogeneous_chain(agg_input: &LogicalOperator) -> Option<HomogeneousCha
                 }
                 // Le scan porte le label commun (F₀ du noyau).
                 let scan_label = scan.label.as_deref()?;
-                if let Some(l) = label {
-                    if scan_label != l {
-                        return None;
-                    }
+                if let Some(l) = label
+                    && scan_label != l
+                {
+                    return None;
                 }
-                if hops < 1 || hops > REACHABLE_MAX_HOPS {
+                if !(1..=REACHABLE_MAX_HOPS).contains(&hops) {
                     return None;
                 }
                 // Le terminal est la variable du premier filtre (le plus haut
@@ -322,7 +322,7 @@ mod tests {
     use std::sync::Arc;
 
     use obrain_common::types::NodeId;
-    use obrain_core::graph::{GraphStore, GraphStoreMut};
+    use obrain_core::graph::GraphStoreMut;
     use obrain_substrate::SubstrateStore;
 
     use crate::query::executor::Executor;

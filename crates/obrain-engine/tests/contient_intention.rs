@@ -201,6 +201,7 @@ fn une_valeur_non_textuelle_ne_matche_jamais() {
 // ══════════════ 2. index contre balayage : même réponse, route nommée ══════════════
 
 #[test]
+#[allow(unsafe_code)] // set_var/remove_var sont unsafe en édition 2024 ; `verrou_env` sérialise l'accès
 fn la_route_change_la_reponse_non() {
     // Ce test POSE le plafond à 0 (route de balayage forcée) : il prend le verrou.
     let _verrou = verrou_env();
@@ -299,6 +300,7 @@ fn la_route_change_la_reponse_non() {
 /// La garde de coût est celle du planificateur : au-delà du plafond, on balaie.
 /// On abaisse le plafond par la variable d'environnement de MESURE pour forcer
 /// la bascule sur un corpus minuscule.
+#[allow(unsafe_code)] // set_var/remove_var sont unsafe en édition 2024 ; `verrou_env` sérialise l'accès
 #[test]
 fn la_garde_de_cout_rend_la_main_au_balayage() {
     let _verrou = verrou_env();

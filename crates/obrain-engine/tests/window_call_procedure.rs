@@ -165,6 +165,7 @@ fn call_window_2d_refuse_une_base_non_substrate() {
 }
 
 #[test]
+#[allow(clippy::many_single_char_names)] // nœuds a, b, c… du scénario, r : résultat lu
 fn call_window_2d_energy_filtre_par_energie() {
     let td = tempfile::tempdir().unwrap();
     let db = ObrainDB::open_substrate(td.path().join("kb")).expect("open_substrate");

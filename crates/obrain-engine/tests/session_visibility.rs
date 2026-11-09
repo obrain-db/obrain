@@ -1,6 +1,6 @@
-// Diagnostic (2026-09-04) : le binding NAPI renvoie 0 ligne à MATCH tandis que
-// le CLI fonctionne. Hypothèse : with_session (session NEUVE par appel) ne voit
-// pas les écritures d'une autre session ; une session TENUE les voit.
+//! Diagnostic (2026-09-04) : le binding NAPI renvoie 0 ligne à MATCH tandis que
+//! le CLI fonctionne. Hypothèse : with_session (session NEUVE par appel) ne voit
+//! pas les écritures d'une autre session ; une session TENUE les voit.
 use obrain_engine::ObrainDB;
 
 #[test]
@@ -41,7 +41,7 @@ fn with_session_vs_held_session_visibility() {
 
     std::fs::remove_dir_all(&dir).ok();
     assert!(
-        ra.rows.len() >= 1 || rb.rows.len() >= 1,
+        !ra.rows.is_empty() || !rb.rows.is_empty(),
         "au moins un chemin doit voir ses écritures"
     );
 }

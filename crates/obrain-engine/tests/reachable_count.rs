@@ -6,6 +6,7 @@
 
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
+use std::fmt::Write as _;
 
 fn e(db: &ObrainDB, a: u64, b: u64) {
     db.create_edge(NodeId(a), NodeId(b), "T");
@@ -82,10 +83,10 @@ fn reachable_count_egale_match_explicite_saut_par_saut() {
     assert_eq!(rows, vec![(1, 8), (2, 7), (3, 6)], "formes positionnelles");
 
     // Parité avec la requête MATCH explicite du moteur, saut par saut.
-    for (hop, _count) in &rows {
+    for (hop, count) in &rows {
         let matched = match_distinct_endpoints(&db, *hop as usize);
         assert_eq!(
-            matched, *_count as i64,
+            matched, *count,
             "saut {hop} : reachable_count vs MATCH count(DISTINCT d)"
         );
     }
@@ -179,9 +180,9 @@ fn homogeneous_pattern(k: usize, label: &str, edge_type: &str) -> String {
     let mut pattern = String::new();
     for (i, v) in vars.iter().enumerate() {
         if i > 0 {
-            pattern.push_str(&format!("-[:{edge_type}]->"));
+            let _ = write!(pattern, "-[:{edge_type}]->");
         }
-        pattern.push_str(&format!("({v}:{label})"));
+        let _ = write!(pattern, "({v}:{label})");
     }
     pattern
 }

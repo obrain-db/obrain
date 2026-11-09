@@ -10,12 +10,12 @@ use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
 
 fn call_id_of(data: &serde_json::Value) -> Option<String> {
-    if let Some(msg) = data.get("message") {
-        if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
-            for block in content.iter().take(16) {
-                if let Some(tcid) = block.get("toolCallId").and_then(|v| v.as_str()) {
-                    return Some(tcid.to_string());
-                }
+    if let Some(msg) = data.get("message")
+        && let Some(content) = msg.get("content").and_then(|c| c.as_array())
+    {
+        for block in content.iter().take(16) {
+            if let Some(tcid) = block.get("toolCallId").and_then(|v| v.as_str()) {
+                return Some(tcid.to_string());
             }
         }
     }
@@ -84,13 +84,12 @@ fn main() {
                 "MATCH (n {{qualified_name: '{}'}}) RETURN id(n) LIMIT 1",
                 qn.replace('\'', "\\'")
             );
-            if let Ok(rr) = session.execute(&fq) {
-                if let Some(row) = rr.rows.first() {
-                    if let Some(id) = row.first().and_then(|v| v.as_int64()) {
-                        db.set_node_property(NodeId(id as u64), "t_ms", Value::Int64(t));
-                        noeuds += 1;
-                    }
-                }
+            if let Ok(rr) = session.execute(&fq)
+                && let Some(row) = rr.rows.first()
+                && let Some(id) = row.first().and_then(|v| v.as_int64())
+            {
+                db.set_node_property(NodeId(id as u64), "t_ms", Value::Int64(t));
+                noeuds += 1;
             }
         }
     }

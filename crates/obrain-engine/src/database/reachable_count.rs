@@ -45,7 +45,7 @@
 //!
 //! # Surfaces
 //!
-//! - [`ObrainDB::reachable_count`] — méthode moteur.
+//! - [`ObrainDB::reachable_count`](crate::ObrainDB::reachable_count) — méthode moteur.
 //! - `CALL obrain.reachable_count({from_label, edge_type, min_hops, max_hops})
 //!   YIELD hop_count, distinct_count` — procédure GQL classée LECTURE
 //!   (exécutable en read-only). Forme positionnelle équivalente :
@@ -131,7 +131,7 @@ pub fn compute_reachable_counts(
     for hop in 1..=max_hops {
         let mut next: hashbrown::HashSet<u64> =
             hashbrown::HashSet::with_capacity(frontier.len() * 2 + 8);
-        for u in frontier.iter() {
+        for u in &frontier {
             for (v, eid) in
                 substrate.edges_from(obrain_common::types::NodeId(*u), Direction::Outgoing)
             {
@@ -431,6 +431,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)] // nœuds du graphe de test nommés a, b, c, p, q comme dans le schéma
     fn reachable_count_filtre_label_et_type_d_arete() {
         let store = SubstrateStore::open_tempfile().expect("temp substrate");
         // Trois nœuds X (a,b,c) + deux nœuds Y (p,q), handles explicites.

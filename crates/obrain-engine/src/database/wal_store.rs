@@ -1,6 +1,6 @@
 //! WAL-aware graph store wrapper.
 //!
-//! Wraps an [`LpgStore`] and logs every mutation to the WAL so that
+//! Wraps an `LpgStore` and logs every mutation to the WAL so that
 //! query-engine mutations (INSERT, DELETE, SET via GQL/Cypher/etc.)
 //! survive a close/reopen cycle.
 
@@ -17,7 +17,7 @@ use obrain_core::statistics::Statistics;
 use arcstr::ArcStr;
 
 /// A [`GraphStoreMut`] decorator that delegates every call to an inner
-/// [`LpgStore`] and additionally logs mutation operations to the WAL.
+/// `LpgStore` and additionally logs mutation operations to the WAL.
 ///
 /// Read-only methods are forwarded without any WAL interaction.
 ///

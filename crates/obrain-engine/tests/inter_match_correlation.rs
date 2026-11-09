@@ -79,8 +79,7 @@ fn triangles_chemin_fermeture(db: &ObrainDB) -> i64 {
     r.rows
         .first()
         .and_then(|row| row.first())
-        .map(|v| v.to_string().parse().unwrap_or(-1))
-        .unwrap_or(-1)
+        .map_or(-1, |v| v.to_string().parse().unwrap_or(-1))
 }
 
 /// Compte les triangles par la formulation « trois arêtes dans un seul MATCH »
@@ -97,8 +96,7 @@ fn triangles_trois_aretes(db: &ObrainDB) -> i64 {
     r.rows
         .first()
         .and_then(|row| row.first())
-        .map(|v| v.to_string().parse().unwrap_or(-1))
-        .unwrap_or(-1)
+        .map_or(-1, |v| v.to_string().parse().unwrap_or(-1))
 }
 
 #[test]

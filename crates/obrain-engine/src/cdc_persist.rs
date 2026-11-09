@@ -121,8 +121,7 @@ pub fn cdc_reload_cap() -> usize {
     std::env::var("OBRAIN_CDC_RELOAD_CAP")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.clamp(1, CDC_RELOAD_CAP))
-        .unwrap_or(20_000)
+        .map_or(20_000, |v| v.clamp(1, CDC_RELOAD_CAP))
 }
 
 /// Persistor du journal CDC, attaché à un store substrate.
@@ -165,9 +164,8 @@ impl CdcPersist {
         // fenêtre (seconde lecture ciblée, seek par frame). `0` = tout.
         use std::io::{BufReader, Read, Seek, SeekFrom};
         let path = guard.path().join(CDC_JOURNAL_FILENAME);
-        let mut file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => return Ok(Vec::new()),
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            return Ok(Vec::new());
         };
         let mut hdr = [0u8; HEADER_LEN];
         if file.read_exact(&mut hdr).is_err() || &hdr[..4] != MAGIC {
@@ -176,7 +174,7 @@ impl CdcPersist {
         let used = u64::from_le_bytes(hdr[16..24].try_into().unwrap_or([0; 8])) as usize;
         let first_off = u64::from_le_bytes(hdr[24..32].try_into().unwrap_or([0; 8])) as usize;
         let start = first_off.max(HEADER_LEN);
-        let keep = max_events.max(0);
+        let keep = max_events;
         // Passe 1 : marcher les préfixes, mémoriser les offsets des dernières
         // `keep` charges utiles (filet glissant, aucune allocation par frame).
         let mut win: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
@@ -351,7 +349,7 @@ impl CdcPersist {
         if zf.len() < HEADER_LEN as u64 || &zf.as_slice()[..4] != MAGIC {
             return Ok(());
         }
-        let mut first_off =
+        let first_off =
             u64::from_le_bytes(zf.as_slice()[24..32].try_into().unwrap_or([0; 8])) as usize;
         let used = u64::from_le_bytes(zf.as_slice()[16..24].try_into().unwrap_or([0; 8])) as usize;
         let end = used.min(zf.len() as usize);
@@ -410,9 +408,8 @@ impl CdcPersist {
         let guard = sub.lock();
         let path = guard.path().join(CDC_TAIL_FILENAME);
         use std::io::{Read, Seek, SeekFrom};
-        let mut file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => return Vec::new(),
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            return Vec::new();
         };
         let mut hdr = [0u8; TAIL_HEADER_LEN];
         if file.read_exact(&mut hdr).is_err() || &hdr[..4] != TAIL_MAGIC {
@@ -445,9 +442,8 @@ impl CdcPersist {
         let guard = sub.lock();
         let path = guard.path().join(CDC_JOURNAL_FILENAME);
         use std::io::Read;
-        let mut file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => return (0, 0),
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            return (0, 0);
         };
         let mut hdr = [0u8; HEADER_LEN];
         if file.read_exact(&mut hdr).is_err() || &hdr[..4] != MAGIC {
@@ -473,9 +469,8 @@ impl CdcPersist {
         let guard = sub.lock();
         let path = guard.path().join(CDC_JOURNAL_FILENAME);
         use std::io::{Read, Seek, SeekFrom};
-        let mut file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => return Vec::new(),
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            return Vec::new();
         };
         let mut hdr = [0u8; HEADER_LEN];
         if file.read_exact(&mut hdr).is_err() || &hdr[..4] != MAGIC {

@@ -314,7 +314,7 @@ impl super::ObrainDB {
                 externes_remontees: 0,
             });
         }
-        a_fusionner.sort_by(|a, b| b.perdants.len().cmp(&a.perdants.len()));
+        a_fusionner.sort_by_key(|g| std::cmp::Reverse(g.perdants.len()));
 
         if !execute {
             rapport.groupes = a_fusionner;
@@ -364,8 +364,7 @@ impl super::ObrainDB {
                     "label": label, "cle": cle,
                     "at_unix": web_time::SystemTime::now()
                         .duration_since(web_time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
+                        .map_or(0, |d| d.as_secs()),
                 }),
             )?;
             for g in &a_fusionner {

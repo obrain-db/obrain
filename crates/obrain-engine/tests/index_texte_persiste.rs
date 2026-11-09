@@ -82,7 +82,7 @@ fn classement(db: &ObrainDB, requete: &str) -> Vec<(u64, u64)> {
 }
 
 #[test]
-fn une_reouverture_sans_ecriture_CHARGE_l_index() {
+fn une_reouverture_sans_ecriture_charge_l_index() {
     let td = tempdir().unwrap();
     let chemin = td.path().join("idx-charge");
     let attendus = {

@@ -17,12 +17,12 @@
 //!
 //! # Surfaces
 //!
-//! - [`ObrainDB::search_causes`] / [`ObrainDB::search_effects`].
+//! - [`ObrainDB::search_causes`](crate::ObrainDB::search_causes) / [`ObrainDB::search_effects`](crate::ObrainDB::search_effects).
 //! - `CALL obrain.search_causes(node_id, limit, depth)` /
 //!   `CALL obrain.search_effects(node_id, limit, depth)`
 //!   YIELD node_id, level, score — procédures GQL classées LECTURE.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use obrain_common::types::Value;
 use obrain_common::utils::error::{Error, Result};

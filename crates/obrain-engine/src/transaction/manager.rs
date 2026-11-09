@@ -240,7 +240,7 @@ impl TransactionManager {
 
     /// Records a write opération scopée par graphe (RFC multi-writer B1).
     ///
-    /// `scope` = [`crate::graph::GraphStoreMut::graph_scope`] du store écrit.
+    /// `scope` = [`crate::graph::GraphStoreMut::graph_scope`](obrain_core::graph::GraphStoreMut::graph_scope) du store écrit.
     /// La détection first-writer-wins ne compare que les `(scope, entité)`
     /// identiques : deux transactions sur des graphes DIFFÉRENTS qui écrivent
     /// chacune `NodeId(1)` ne conflictent PAS (avant ce scope : faux conflit

@@ -204,7 +204,7 @@ pub struct Session {
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<crate::metrics::MetricsRegistry>>,
     /// Transaction start time for duration tracking.
-    #[cfg(feature = "metrics")]
+    #[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
     tx_start_time: parking_lot::Mutex<Option<Instant>>,
     /// Optional post-commit hook for reactive event publishing.
     ///
@@ -355,7 +355,7 @@ impl Session {
             tx_baselines: parking_lot::Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "metrics")]
             metrics: None,
-            #[cfg(feature = "metrics")]
+            #[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
             tx_start_time: parking_lot::Mutex::new(None),
             #[cfg(feature = "reactive")]
             post_commit_hook: None,
@@ -641,7 +641,7 @@ impl Session {
             tx_baselines: parking_lot::Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "metrics")]
             metrics: None,
-            #[cfg(feature = "metrics")]
+            #[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
             tx_start_time: parking_lot::Mutex::new(None),
             #[cfg(feature = "reactive")]
             post_commit_hook: None,
@@ -1279,14 +1279,13 @@ impl Session {
                         // le type vaut pour la session courante, et le fichier
                         // sera réécrit au prochain CREATE réussi.
                         if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json)
+                            && let Err(e) = sub.declarer_type("node", &stmt.name, json)
                         {
-                            if let Err(e) = sub.declarer_type("node", &stmt.name, json) {
-                                tracing::error!(
-                                    erreur = %e,
-                                    nom = %stmt.name,
-                                    "declaration de type de nœud NON persistee (substrate.typecat)"
-                                );
-                            }
+                            tracing::error!(
+                                erreur = %e,
+                                nom = %stmt.name,
+                                "declaration de type de nœud NON persistee (substrate.typecat)"
+                            );
                         }
                         Ok(QueryResult::status(format!(
                             "Created node type '{}'",
@@ -1347,14 +1346,13 @@ impl Session {
                             }
                         );
                         if let (Some(sub), Some(json)) = (self.substrate_store(), &definition_json)
+                            && let Err(e) = sub.declarer_type("edge", &stmt.name, json)
                         {
-                            if let Err(e) = sub.declarer_type("edge", &stmt.name, json) {
-                                tracing::error!(
-                                    erreur = %e,
-                                    nom = %stmt.name,
-                                    "declaration de type d'arete NON persistee (substrate.typecat)"
-                                );
-                            }
+                            tracing::error!(
+                                erreur = %e,
+                                nom = %stmt.name,
+                                "declaration de type d'arete NON persistee (substrate.typecat)"
+                            );
                         }
                         Ok(QueryResult::status(format!(
                             "Created edge type '{}'",
@@ -1393,13 +1391,13 @@ impl Session {
                         wal_log!(self, WalRecord::DropNodeType { name: name.clone() });
                         // Miroir du CREATE : le type retiré ne doit pas revenir
                         // au prochain redémarrage par le catalogue durable.
-                        if let Some(sub) = self.substrate_store() {
-                            if let Err(e) = sub.retirer_type("node", &name) {
-                                tracing::error!(
-                                    erreur = %e, nom = %name,
-                                    "retrait de declaration de type NON persiste (substrate.typecat)"
-                                );
-                            }
+                        if let Some(sub) = self.substrate_store()
+                            && let Err(e) = sub.retirer_type("node", &name)
+                        {
+                            tracing::error!(
+                                erreur = %e, nom = %name,
+                                "retrait de declaration de type NON persiste (substrate.typecat)"
+                            );
                         }
                         Ok(QueryResult::status(format!("Dropped node type '{name}'")))
                     }
@@ -1417,13 +1415,13 @@ impl Session {
                 match self.catalog.drop_edge_type_def(&name) {
                     Ok(()) => {
                         wal_log!(self, WalRecord::DropEdgeType { name: name.clone() });
-                        if let Some(sub) = self.substrate_store() {
-                            if let Err(e) = sub.retirer_type("edge", &name) {
-                                tracing::error!(
-                                    erreur = %e, nom = %name,
-                                    "retrait de declaration de type NON persiste (substrate.typecat)"
-                                );
-                            }
+                        if let Some(sub) = self.substrate_store()
+                            && let Err(e) = sub.retirer_type("edge", &name)
+                        {
+                            tracing::error!(
+                                erreur = %e, nom = %name,
+                                "retrait de declaration de type NON persiste (substrate.typecat)"
+                            );
                         }
                         Ok(QueryResult::status(format!("Dropped edge type '{name}'")))
                     }
@@ -2052,14 +2050,14 @@ impl Session {
                 }
                 wal_log!(self, WalRecord::DropProcedure { name: name.clone() });
                 // (2026-09-07) Retire la declaration durable, miroir du CREATE.
-                if let Some(sub) = self.substrate_store() {
-                    if let Err(e) = sub.retirer_declaration_procedure(&name) {
-                        tracing::error!(
-                            erreur = %e,
-                            nom = %name,
-                            "retrait de declaration de procedure NON persiste (substrate.proccat)"
-                        );
-                    }
+                if let Some(sub) = self.substrate_store()
+                    && let Err(e) = sub.retirer_declaration_procedure(&name)
+                {
+                    tracing::error!(
+                        erreur = %e,
+                        nom = %name,
+                        "retrait de declaration de procedure NON persiste (substrate.proccat)"
+                    );
                 }
                 Ok(QueryResult::status(format!("Dropped procedure '{name}'")))
             }
@@ -2424,8 +2422,8 @@ impl Session {
         self.note_requete_pour_audit(query);
 
         use crate::query::{
-            Executor, binder::Binder, cache::CacheKey, optimizer::Optimizer,
-            processor::QueryLanguage, translators::gql,
+            binder::Binder, cache::CacheKey, optimizer::Optimizer, processor::QueryLanguage,
+            translators::gql,
         };
 
         let _span = tracing::info_span!(
@@ -2528,7 +2526,7 @@ impl Session {
         optimized_plan: crate::query::plan::LogicalPlan,
         start_time: Option<web_time::Instant>,
     ) -> Result<QueryResult> {
-        use crate::query::{Executor, processor::QueryLanguage};
+        use crate::query::Executor;
         let active = self.active_store();
 
         // ── CHEMIN CACHE-HIT : le parse a été sauté, donc le garde-fou
@@ -2569,9 +2567,7 @@ impl Session {
                 // mesure est ABSENTE, et `0.0` est ce que le profileur en dit.
                 // Le `map` n'est jamais appelé quand `start_time` est `None`,
                 // donc `Instant::elapsed()` (qui appellerait `now()`) ne part pas.
-                let total_time_ms = start_time
-                    .map(|t| t.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0);
+                let total_time_ms = start_time.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
 
                 let profile_tree = crate::query::profile::build_profile_tree(
                     &optimized_plan.root,
@@ -4372,8 +4368,7 @@ impl Session {
                         let plafond = 50u64 << tentative.min(7);
                         let jitter = web_time::SystemTime::now()
                             .duration_since(web_time::UNIX_EPOCH)
-                            .map(|d| d.subsec_nanos() as u64)
-                            .unwrap_or(0)
+                            .map_or(0, |d| d.subsec_nanos() as u64)
                             % plafond.max(1);
                         let pause = Duration::from_micros(plafond / 2 + jitter);
                         // Jamais au-dela de l echeance : la derniere passe
@@ -5440,6 +5435,7 @@ mod tests {
         }
 
         #[test]
+        #[allow(clippy::many_single_char_names)] // nœuds du scénario nommés a, b, c, d, e
         fn test_gql_id_in_list_multi_seed_seek() {
             let db = ObrainDB::new_in_memory();
             let session = db.session();

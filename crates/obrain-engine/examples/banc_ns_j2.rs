@@ -52,8 +52,8 @@ fn banc(db: &ObrainDB, nom: &str, requetes: &[String]) {
     println!(
         "{nom} : mediane {:.3} ms  (min {:.3}, max {:.3}, {} exec, {} lignes cumulees)",
         mediane(ms.clone()),
-        ms.iter().cloned().fold(f64::INFINITY, f64::min),
-        ms.iter().cloned().fold(0.0, f64::max),
+        ms.iter().copied().fold(f64::INFINITY, f64::min),
+        ms.iter().copied().fold(0.0, f64::max),
         MESURES,
         lignes_vues
     );

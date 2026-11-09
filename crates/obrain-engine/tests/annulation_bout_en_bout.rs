@@ -22,6 +22,7 @@
 //! Le troisième est celui qui donne sa valeur aux deux autres. Si le
 //! mécanisme n'existait pas, le cas ANNULÉ se comporterait comme lui.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -261,11 +262,12 @@ fn une_requete_annulee_en_vol_s_arrete_vraiment() {
         let m = executer(&db, Some(&jeton), false);
         chien.join().unwrap();
         let touche = m.annulee;
-        journal.push_str(&format!(
+        let _ = write!(
+            journal,
             "\n  sonde /{diviseur} : armement à {delai:?} → {:?}, {} lignes, \
              annulée={touche}, erreur={:?}",
             m.duree, m.lignes, m.erreur
-        ));
+        );
         if touche {
             retenue = Some((diviseur, delai, m));
             break;

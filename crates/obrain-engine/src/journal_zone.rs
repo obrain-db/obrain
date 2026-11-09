@@ -33,8 +33,6 @@ pub fn zone_filename(session_id: &str) -> String {
 const MAGIC: &[u8; 4] = b"OBJ1";
 /// Taille de l'en-tête (magic 4 + count 8 + used 8).
 const HEADER_LEN: usize = 20;
-/// Croissance initiale.
-const INITIAL_GROW: u64 = 64 * 1024;
 
 /// Écrit le journal d'une session dans sa zone (remplace l'existant).
 /// `lines` = les lignes JSON brutes du journal, triées par seq.
@@ -47,7 +45,7 @@ pub fn write_session_journal(
     let sub = store.writer().substrate();
     let guard = sub.lock();
     // (ré)crée la zone (mmap truncate à la taille finale)
-    let mut zf = create_zone(&guard, &name, lines)?;
+    let zf = create_zone(&guard, &name, lines)?;
     zf.msync().map_err(|e| format!("journal: msync: {e}"))?;
     Ok(())
 }
@@ -112,7 +110,7 @@ pub fn append_session_journal(
         let existing = zf.as_slice();
         let valid = existing.len() >= HEADER_LEN && &existing[..4] == MAGIC;
         if !valid {
-            let mut nz = create_zone(&guard, &name, lines)?;
+            let nz = create_zone(&guard, &name, lines)?;
             nz.msync().map_err(|e| format!("journal: msync: {e}"))?;
             return Ok(());
         }
@@ -502,7 +500,6 @@ mod tests {
         let used = u64::from_le_bytes(bytes[12..20].try_into().unwrap()) as usize;
         let mut off = HEADER_LEN;
         let mut debut_seq50 = None;
-        let mut seq_courante = 0i64;
         while off + 4 <= used {
             let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
             let payload = off + 4;
@@ -515,7 +512,7 @@ mod tests {
             ) else {
                 break;
             };
-            seq_courante = event_seq(&ligne);
+            let seq_courante = event_seq(&ligne);
             if seq_courante == 50 {
                 debut_seq50 = Some(payload);
                 break;
@@ -615,7 +612,7 @@ mod tests {
         // Rejeu du MÊME lot — le cas du timeout de bridge.
         append_session_journal(&store, sid, &[entete.clone(), line(0)]).unwrap();
         // Et l'envoi d'en-tête SEUL — le cas de la passe de réparation.
-        append_session_journal(&store, sid, &[entete.clone()]).unwrap();
+        append_session_journal(&store, sid, std::slice::from_ref(&entete)).unwrap();
 
         let brut = lignes_brutes(&store, sid);
         let entetes = brut.iter().filter(|l| est_entete_de_session(l)).count();
@@ -639,7 +636,7 @@ mod tests {
         let entete = format!(
             r#"{{"createdAt":1789000000000,"cwd":"/tmp","id":"{sid}","type":"session","version":0}}"#
         );
-        append_session_journal(&store, sid, &[entete.clone()]).unwrap();
+        append_session_journal(&store, sid, std::slice::from_ref(&entete)).unwrap();
         let brut = lignes_brutes(&store, sid);
         assert_eq!(
             brut.len(),

@@ -277,6 +277,7 @@ fn la_route_indexee_ne_balaie_pas_et_le_compteur_le_montre() {
 /// ligne, et les slots repassent au balayage complet — c'est la preuve que
 /// la garde est branchée, et qu'elle renonce au lieu de mentir.
 #[test]
+#[allow(unsafe_code)] // set_var/remove_var sont unsafe en édition 2024 ; `verrou_env` sérialise l'accès
 fn la_garde_rend_la_main_au_balayage() {
     let _verrou = verrou_env();
     let d = ObrainDB::new_in_memory();

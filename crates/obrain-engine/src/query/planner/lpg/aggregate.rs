@@ -979,9 +979,7 @@ impl super::Planner {
         if std::env::var("OBRAIN_AGREGAT_GROUPE").is_ok_and(|v| v == "0") {
             return None;
         }
-        let Some(cle) = agg.group_by.first() else {
-            return None;
-        };
+        let cle = agg.group_by.first()?;
         if agg.aggregates.len() != 1 || agg.having.is_some() {
             return None;
         }

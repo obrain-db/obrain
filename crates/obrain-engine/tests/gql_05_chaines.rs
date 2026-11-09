@@ -321,8 +321,7 @@ fn ordre_est_total_transitif_et_antisymetrique() {
         paires
             .iter()
             .find(|l| l[0] == Value::String(x.into()) && l[1] == Value::String(y.into()))
-            .map(|l| l[2] == VRAI)
-            .unwrap_or_else(|| panic!("paire absente : {x:?} {y:?}"))
+            .map_or_else(|| panic!("paire absente : {x:?} {y:?}"), |l| l[2] == VRAI)
     };
 
     for x in JEU {

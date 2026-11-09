@@ -19,7 +19,7 @@
 //!
 //! # Surfaces
 //!
-//! - [`ObrainDB::search_by_role`] — méthode moteur.
+//! - [`ObrainDB::search_by_role`](crate::ObrainDB::search_by_role) — méthode moteur.
 //! - `CALL obrain.search_by_role(node_id, limit, label)`
 //!   YIELD node_id, distance — procédure GQL classée LECTURE.
 
@@ -71,14 +71,15 @@ fn store_dir(substrate: &SubstrateStore) -> std::path::PathBuf {
 /// écrivain gagne). Un process NEUF lit 1,7 Mo en ~ms au lieu de recalculer
 /// (~845 ms sur runtime-dev).
 fn hks_descriptors_cached(substrate: &SubstrateStore) -> Result<std::sync::Arc<Vec<[f32; 3]>>> {
-    let ptr = (substrate as *const SubstrateStore) as usize;
+    let ptr = std::ptr::from_ref::<SubstrateStore>(substrate) as usize;
     let hw = substrate.edge_slot_high_water();
     {
         let g = HKS_CACHE.lock().unwrap();
-        if let Some((p, h, cached)) = &*g {
-            if *p == ptr && *h == hw {
-                return Ok(std::sync::Arc::clone(cached));
-            }
+        if let Some((p, h, cached)) = &*g
+            && *p == ptr
+            && *h == hw
+        {
+            return Ok(std::sync::Arc::clone(cached));
         }
     }
     let dir = store_dir(substrate);
@@ -120,13 +121,14 @@ fn hks_descriptors_cached(substrate: &SubstrateStore) -> Result<std::sync::Arc<V
                 buf.extend_from_slice(&v.to_le_bytes());
             }
         }
-        let _ = std::fs::write(&tmp, &buf).and_then(|_| std::fs::rename(&tmp, &path));
+        let _ = std::fs::write(&tmp, &buf).and_then(|()| std::fs::rename(&tmp, &path));
     }
     let mut g = HKS_CACHE.lock().unwrap();
-    if let Some((p, h, cached)) = &*g {
-        if *p == ptr && *h == hw {
-            return Ok(std::sync::Arc::clone(cached));
-        }
+    if let Some((p, h, cached)) = &*g
+        && *p == ptr
+        && *h == hw
+    {
+        return Ok(std::sync::Arc::clone(cached));
     }
     *g = Some((ptr, hw, std::sync::Arc::clone(&arc)));
     Ok(arc)
@@ -203,8 +205,7 @@ pub fn compute_search_by_role(
     const CLUSTER_LAMBDA: f32 = 0.25;
     const CLUSTER_MAX_DEGREE: usize = 2048;
     let cluster_of = |sub: &SubstrateStore, n: u64| -> f32 {
-        let mut nbrs: Vec<u64> = Vec::new();
-        {
+        let nbrs: Vec<u64> = {
             let mut vu = std::collections::HashSet::new();
             for (t, _) in sub.edges_from(
                 obrain_common::types::NodeId(n),
@@ -214,8 +215,8 @@ pub fn compute_search_by_role(
                     break;
                 }
             }
-            nbrs = vu.into_iter().collect();
-        }
+            vu.into_iter().collect()
+        };
         let d = nbrs.len();
         if d < 2 {
             return 0.0;

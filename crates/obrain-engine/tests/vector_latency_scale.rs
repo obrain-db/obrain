@@ -30,7 +30,7 @@ fn vector_search_latency_scale_20k() {
         v[base % 64] = 1.0;
         v
     }
-    let queries: Vec<Vec<f32>> = (0..200).map(|q| qvec(q)).collect();
+    let queries: Vec<Vec<f32>> = (0..200).map(qvec).collect();
     let _ = db
         .vector_search("Doc", "emb", &queries[0], 5, None, None)
         .unwrap();
@@ -60,7 +60,7 @@ fn vector_search_latency_scale_20k() {
         _ => -1,
     };
     assert!(
-        uid >= 0 && uid < 200,
+        (0..200).contains(&uid),
         "top-1 doit être dans le cluster 0, got {uid}"
     );
     eprintln!("vector scale smoke OK — top-1 cohérent (cluster 0)");
@@ -86,7 +86,7 @@ fn hybrid_latency_scale_20k() {
         let text = format!("document {i} about {topic} with tokens gamma delta");
         db.set_node_property(d, "text", Value::String(text.as_str().into()));
         let mut v = vec![0.0f32; 64];
-        v[(i % topics.len()) as usize] = 1.0;
+        v[i % topics.len()] = 1.0;
         v[(i + 1) % 64] = 0.3;
         db.set_node_property(d, "emb", Value::Vector(v.into()));
         db.set_node_property(d, "uid", Value::Int64(i as i64));
@@ -183,7 +183,7 @@ fn hybrid_latency_scale_20k() {
         _ => -1,
     };
     assert!(
-        uid >= 0 && (uid as usize) % topics.len() == 0,
+        uid >= 0 && (uid as usize).is_multiple_of(topics.len()),
         "top-1 cluster 0, got {uid}"
     );
     eprintln!("hybrid scale smoke OK — top-1 cluster cohérent");
@@ -283,7 +283,7 @@ fn topological_rerank_synthetic_c2() {
                     })
                     .collect();
                 scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-                cand = scored.into_iter().map(|(id, s)| (id, s)).collect();
+                cand = scored.into_iter().collect();
             }
             let ok = cand
                 .iter()

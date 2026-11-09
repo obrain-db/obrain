@@ -198,9 +198,9 @@ fn count_sur_ensemble_vide_vaut_zero() {
 /// AMBIGUÏTÉ ASSUMÉE — les deux familles de spécifications divergent :
 ///   * SQL / ISO GQL : `SUM` sur ensemble vide vaut NULL ;
 ///   * openCypher : `sum()` sur ensemble vide vaut 0.
-/// Ce fichier teste la conformité **GQL**, donc NULL. Si le projet tranchait
-/// un jour pour la lecture openCypher, ce test devrait être retourné
-/// sciemment — et non « corrigé » parce qu'il rougit.
+///     Ce fichier teste la conformité **GQL**, donc NULL. Si le projet tranchait
+///     un jour pour la lecture openCypher, ce test devrait être retourné
+///     sciemment — et non « corrigé » parce qu'il rougit.
 #[test]
 fn sum_sur_ensemble_vide_rend_null_et_non_zero() {
     let db = base_avec_nulls();
@@ -394,6 +394,7 @@ fn sum_de_flottants_rend_un_flottant() {
 /// tandis que la somme exacte vaut 3.0. Aucune des deux n'est « fausse » au
 /// regard de la spec ; on n'en fige donc aucune, on fige la reproductibilité.
 #[test]
+#[allow(clippy::many_single_char_names)] // s, q, a, b, c : session, requête et trois exécutions comparées
 fn sum_flottante_est_deterministe_meme_si_non_associative() {
     let db = ObrainDB::new_in_memory();
     let mut s = db.session();

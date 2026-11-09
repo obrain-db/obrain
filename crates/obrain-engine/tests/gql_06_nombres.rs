@@ -603,9 +603,10 @@ fn sum_qui_deborde_i64_est_signalee_et_jamais_enroulee() {
     let q = "MATCH (b:B) RETURN sum(b.v)";
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.session().execute(q)));
     match r {
-        Err(_) => panic!(
+        Err(charge) => panic!(
             "un débordement de `sum` ne doit pas PANIQUER : c'est une donnée \
-             d'entrée ordinaire — {q}"
+             d'entrée ordinaire — {q} (panique : {:?})",
+            charge.downcast_ref::<String>()
         ),
         Ok(Ok(res)) => {
             if let Some(Value::Int64(n)) = res.rows.first().map(|l| l[0].clone()) {

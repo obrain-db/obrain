@@ -28,17 +28,13 @@ fn main() {
             top.0
         );
         let r = db.session().execute(&q).expect("scan gql");
-        r.rows
-            .first()
-            .and_then(|row| row.first())
-            .map(|v| {
-                if let obrain_common::types::Value::Int64(n) = v {
-                    *n
-                } else {
-                    -1
-                }
-            })
-            .unwrap_or(-1)
+        r.rows.first().and_then(|row| row.first()).map_or(-1, |v| {
+            if let obrain_common::types::Value::Int64(n) = v {
+                *n
+            } else {
+                -1
+            }
+        })
     };
     println!(
         "count GQL (scan, toutes sources) = {gql} -> {}",

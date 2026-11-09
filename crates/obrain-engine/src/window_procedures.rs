@@ -23,7 +23,7 @@
 //! pendant l'inférence (C3). La valeur `energy` rendue est l'énergie
 //! réelle (décodée en [0, 1]).
 //!
-//! Sémantique strictement identique à [`ObrainDB::window_query_2d_sorted`] :
+//! Sémantique strictement identique à [`ObrainDB::window_query_2d_sorted`](crate::ObrainDB::window_query_2d_sorted) :
 //! voie accélérée zruns quand le layout est trié (`HILBERT_SORTED` + grille
 //! `substrate.zgrid` présentes), **repli scan exact automatique** sinon (layout
 //! non trié, grille absente, fenêtre large > ~⅓ de la communauté) — jamais de

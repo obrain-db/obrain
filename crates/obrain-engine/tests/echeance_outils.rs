@@ -40,7 +40,7 @@ fn une_echeance_depassee_coupe_la_consolidation() {
     let db = base_avec_cdc();
     // Échéance DÉJÀ expirée : c'est le cas d'un budget consommé par une étape
     // précédente de la même consolidation.
-    let expiree = Instant::now() - Duration::from_secs(1);
+    let expiree = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
     let _portee = obrain_common::utils::cancel::frontiere(Some(false), Some(expiree));
 
     let err = db
@@ -89,7 +89,7 @@ fn les_trois_lectures_de_la_consolidation_consultent_l_echeance() {
         ("search_conflicts", 1),
         ("search_relief", 2),
     ] {
-        let expiree = Instant::now() - Duration::from_secs(1);
+        let expiree = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         let _portee = obrain_common::utils::cancel::frontiere(Some(false), Some(expiree));
         let coupe = match appel {
             0 => db.search_surprise(0, 5, false).is_err(),

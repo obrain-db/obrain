@@ -92,7 +92,7 @@ mod tests {
     /// active) : le manager le refuse et le pont le propage.
     #[test]
     fn ecriture_sans_transaction_active_est_refusee() {
-        let (manager, pont) = tracker();
+        let (_, pont) = tracker();
         // Aucune transaction commencée : record_write échoue (transaction absente).
         let err = pont.record_node_write(TransactionId::new(999), NodeId::new(1));
         assert!(err.is_err(), "écriture hors transaction refusée");

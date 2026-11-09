@@ -34,6 +34,7 @@ use obrain_common::utils::error::Result;
 /// Une valeur INCOMPARABLE (types sans ordre commun) ne correspond pas : c'est
 /// la logique trivaluee — inconnu n'est pas vrai. Un noeud sans la propriete
 /// est ecarte en amont, pour la meme raison.
+#[cfg(feature = "vector-index")]
 fn value_matches_operators(
     valeur: &obrain_common::types::Value,
     filtre: &obrain_common::types::Value,
@@ -577,6 +578,9 @@ impl super::ObrainDB {
         Ok(fusion)
     }
 
+    /// Recherche BM25 dans l'index texte du couple (`label`, `property`) :
+    /// rend au plus `k` nœuds avec leur score. Sur une base substrate, un index
+    /// déclaré mais absent du registre est reconstruit à la demande.
     #[cfg(feature = "text-index")]
     pub fn text_search(
         &self,

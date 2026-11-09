@@ -59,19 +59,14 @@ fn trop_de_candidats(candidats: usize, total: usize, variable: &str) -> bool {
     let plafond = std::env::var(variable)
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .map(|pct| total.saturating_mul(pct) / 100)
-        .unwrap_or_else(|| (total / 100).max(256));
+        .map_or_else(
+            || (total / 100).max(256),
+            |pct| total.saturating_mul(pct) / 100,
+        );
     candidats > plafond
 }
 
 impl super::Planner {
-    /// Plans a filter operator.
-    ///
-    /// Uses zone map pre-filtering to potentially skip scans when predicates
-    /// definitely won't match any data. Also uses property indexes when available
-    /// for O(1) lookups instead of full scans. Complex EXISTS/NOT EXISTS subqueries
-    /// are rewritten as semi-joins or anti-joins.
-
     /// (2026-09-07) Planifie une disjonction contenant des EXISTS par
     /// UNION-DISTINCT de ses branches : forme normale disjonctive (une
     /// branche par disjonctif), chaque branche planifiée séparément (le
@@ -185,6 +180,12 @@ impl super::Planner {
         }
     }
 
+    /// Plans a filter operator.
+    ///
+    /// Uses zone map pre-filtering to potentially skip scans when predicates
+    /// definitely won't match any data. Also uses property indexes when available
+    /// for O(1) lookups instead of full scans. Complex EXISTS/NOT EXISTS subqueries
+    /// are rewritten as semi-joins or anti-joins.
     pub(super) fn plan_filter(
         &self,
         filter: &FilterOp,
@@ -643,8 +644,8 @@ impl super::Planner {
     ///   * un prédicat dont une forme n'est pas répertoriée (sous-requête,
     ///     compréhension de liste…) : OUBLIER une variable ferait évaluer le
     ///     prédicat là où elle n'est pas liée. On préfère ne pas pousser.
-    /// Dans tous ces cas le plan d'origine reste en place : on perd une
-    /// accélération, jamais un résultat.
+    ///     Dans tous ces cas le plan d'origine reste en place : on perd une
+    ///     accélération, jamais un résultat.
     fn plan_filtre_pousse_dans_jointure(
         &self,
         filter: &FilterOp,
@@ -2838,7 +2839,7 @@ impl super::Planner {
                 op: BinaryOp::Eq,
                 right,
             } => {
-                let mut references_scan_var = |expr: &LogicalExpression| {
+                let references_scan_var = |expr: &LogicalExpression| {
                     let mut vars = HashSet::new();
                     Self::collect_expression_variables(expr, &mut vars);
                     vars.contains(scan_variable)
@@ -3191,33 +3192,6 @@ impl super::Planner {
         Ok(None)
     }
 
-    /// `n.propriete STARTS WITH 'litteral'` → (variable, propriété, préfixe).
-    ///
-    /// Aucune autre forme n'est retenue : ni l'opérande calculé, ni le littéral
-    /// non textuel, ni le préfixe à droite (`'p' STARTS WITH n.prop`, qui n'est
-    /// pas un test de préfixe sur la propriété). Tout le reste suit le chemin
-    /// d'origine, donc aucune sémantique n'est réécrite à l'aveugle.
-    fn extract_prefix_predicate(
-        &self,
-        predicate: &LogicalExpression,
-    ) -> Option<(String, String, String)> {
-        let LogicalExpression::Binary {
-            left,
-            op: BinaryOp::StartsWith,
-            right,
-        } = predicate
-        else {
-            return None;
-        };
-        match (left.as_ref(), right.as_ref()) {
-            (
-                LogicalExpression::Property { variable, property },
-                LogicalExpression::Literal(Value::String(prefixe)),
-            ) => Some((variable.clone(), property.clone(), prefixe.to_string())),
-            _ => None,
-        }
-    }
-
     /// Plans a range filter using `find_nodes_in_range`.
     pub(super) fn plan_range_filter(
         &self,
@@ -3384,8 +3358,10 @@ impl super::Planner {
         let plafond = std::env::var("OBRAIN_TEXTE_CANDIDATS_MAX")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .map(|pct| total.saturating_mul(pct) / 100)
-            .unwrap_or_else(|| (total / 100).max(256));
+            .map_or_else(
+                || (total / 100).max(256),
+                |pct| total.saturating_mul(pct) / 100,
+            );
         if total > 0 && nodes.len() > plafond {
             tracing::debug!(
                 candidats = nodes.len(),
@@ -3524,8 +3500,10 @@ impl super::Planner {
         let plafond = std::env::var("OBRAIN_TEXTE_CANDIDATS_MAX")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .map(|pct| total.saturating_mul(pct) / 100)
-            .unwrap_or_else(|| (total / 100).max(256));
+            .map_or_else(
+                || (total / 100).max(256),
+                |pct| total.saturating_mul(pct) / 100,
+            );
         if total > 0 && trouves.len() > plafond {
             tracing::debug!(
                 candidats = trouves.len(),
@@ -3603,7 +3581,7 @@ impl super::Planner {
         let mut choisi: Option<usize> = None;
         for (i, c) in conjoints.iter().enumerate() {
             let mut conditions: Vec<(String, BinaryOp, String)> = Vec::new();
-            if self.collecte_contains(c, variable, &mut conditions) && !conditions.is_empty() {
+            if Self::collecte_contains(c, variable, &mut conditions) && !conditions.is_empty() {
                 choisi = Some(i);
                 break;
             }
@@ -3611,7 +3589,7 @@ impl super::Planner {
         let i = choisi?;
 
         let mut conditions: Vec<(String, BinaryOp, String)> = Vec::new();
-        if !self.collecte_contains(conjoints[i], variable, &mut conditions) {
+        if !Self::collecte_contains(conjoints[i], variable, &mut conditions) {
             return None;
         }
 
@@ -3662,7 +3640,6 @@ impl super::Planner {
     /// C'est CONSERVATEUR À DESSEIN : le chemin lent reste juste, un plan qui
     /// ne servirait qu'une partie du prédicat serait faux.
     fn collecte_contains(
-        &self,
         expr: &LogicalExpression,
         variable: &str,
         out: &mut Vec<(String, BinaryOp, String)>,
@@ -3683,11 +3660,10 @@ impl super::Planner {
                     },
                     LogicalExpression::Literal(Value::String(aiguille)),
                 ) = (left.as_ref(), right.as_ref())
+                    && v == variable
                 {
-                    if v == variable {
-                        out.push((property.clone(), op, aiguille.to_string()));
-                        return true;
-                    }
+                    out.push((property.clone(), op, aiguille.to_string()));
+                    return true;
                 }
                 false
             }
@@ -3698,8 +3674,8 @@ impl super::Planner {
             } => {
                 // Les deux côtés doivent être servis : `a CONTAINS x OR b > 3`
                 // n'est PAS planifiable ici.
-                self.collecte_contains(left, variable, out)
-                    && self.collecte_contains(right, variable, out)
+                Self::collecte_contains(left, variable, out)
+                    && Self::collecte_contains(right, variable, out)
             }
             _ => false,
         }
@@ -3825,32 +3801,6 @@ impl super::Planner {
 
         Some((left_var, left_prop, min_val, max_val, min_inc, max_inc))
     }
-}
-
-/// Plus petite chaîne STRICTEMENT supérieure à toutes celles qui commencent par
-/// `prefixe` — ou `None` quand elle n'existe pas (voir la démonstration dans
-/// `try_plan_filter_with_range_index`).
-///
-/// Le DERNIER point de code est remplacé par le suivant VALIDE : les substituts
-/// U+D800-U+DFFF ne sont pas des caractères, donc le suivant de U+D7FF est
-/// U+E000 — sauter ce trou n'est pas une approximation, c'est la définition du
-/// successeur dans l'ensemble des chaînes UTF-8. Rendre U+E000 plutôt que de
-/// retomber sur l'avant-dernier caractère est ce qui garde la borne EXACTE : un
-/// `STARTS WITH` réécrit en intervalle doit rendre exactement les mêmes lignes.
-#[must_use]
-pub fn successeur_de_prefixe(prefixe: &str) -> Option<String> {
-    let mut points: Vec<char> = prefixe.chars().collect();
-    while let Some(dernier) = points.pop() {
-        let mut suivant = u32::from(dernier) + 1;
-        if (0xD800..=0xDFFF).contains(&suivant) {
-            suivant = 0xE000;
-        }
-        if let Some(c) = char::from_u32(suivant) {
-            points.push(c);
-            return Some(points.into_iter().collect());
-        }
-    }
-    None
 }
 
 /// `OBRAIN_PREFIXE_INTERVALLE=0` coupe la réécriture `STARTS WITH` → intervalle.

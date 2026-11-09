@@ -14,6 +14,7 @@
 //!   - débit qui MONTE avec le nombre de threads (lectures concurrentes)
 
 use obrain_engine::ObrainDB;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 use web_time::Instant;
@@ -61,9 +62,10 @@ fn main() {
         const BATCH: usize = 500;
         let mut stmt = String::new();
         for i in 0..n_nodes {
-            stmt.push_str(&format!(
-                "INSERT (:Obj {{id: 'obj_{i:08}', v: {i}, singleton: 'obj_{i:08}'}})\n"
-            ));
+            let _ = writeln!(
+                stmt,
+                "INSERT (:Obj {{id: 'obj_{i:08}', v: {i}, singleton: 'obj_{i:08}'}})"
+            );
             if (i + 1) % BATCH == 0 || i + 1 == n_nodes {
                 session.execute(stmt.trim_end()).expect("insert batch");
                 stmt.clear();

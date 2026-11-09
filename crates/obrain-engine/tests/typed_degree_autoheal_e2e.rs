@@ -9,7 +9,7 @@
 //!   2. réouverture en LECTURE SEULE (pas de guérison possible) → le
 //!      pré-filtre typed-degree est désactivé pour le type douteux → le
 //!      chemin scan générique rend le résultat vrai.
-//! Aucune variable d'environnement (kill switch), aucun `repair-degrees`.
+//!      Aucune variable d'environnement (kill switch), aucun `repair-degrees`.
 
 use obrain_engine::ObrainDB;
 

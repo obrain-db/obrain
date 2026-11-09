@@ -126,6 +126,7 @@ fn search_causes_effects_depth_et_limite() {
 }
 
 #[test]
+#[allow(clippy::many_single_char_names)] // nœuds a, b, c du scénario, r et s : résultats lus
 fn call_search_causes_effects_exposent_le_classement() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb-caus-call");

@@ -616,6 +616,7 @@ impl super::ObrainDB {
         }
     }
 
+    #[cfg(any(feature = "vector-index", feature = "text-index"))]
     pub(super) fn retirer_declaration_substrat(&self, genre: &str, label: &str, propriete: &str) {
         let Some(ref sub) = self.substrate_store else {
             return;
@@ -634,6 +635,7 @@ impl super::ObrainDB {
     /// premiere recherche qui en a besoin, et une seule fois.
     ///
     /// Rend `true` si un index a ete rebati.
+    #[cfg(any(feature = "vector-index", feature = "text-index"))]
     pub(super) fn rebatir_index_declare(&self, genre: &str, label: &str, property: &str) -> bool {
         let Some(ref sub) = self.substrate_store else {
             return false;
