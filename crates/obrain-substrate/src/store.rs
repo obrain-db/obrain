@@ -20178,7 +20178,7 @@ impl GraphStore for SubstrateStore {
                 let valeurs = self.get_node_property_batch(lot, &key);
                 out.extend(
                     lot.iter().zip(valeurs).filter_map(|(id, v)| {
-                        v.as_ref().is_some_and(&dans_les_bornes).then_some(*id)
+                        v.as_ref().is_some_and(dans_les_bornes).then_some(*id)
                     }),
                 );
             }

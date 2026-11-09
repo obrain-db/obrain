@@ -174,8 +174,7 @@ pub fn top_k_by_overlap(column: &[u64], query: u64, k: usize) -> Vec<(u32, u32)>
     //
     // With 4 popcounts in flight per chunk the popcount latency hides;
     // the only true serial cost is the per-element hist load/store.
-    let chunks = column.chunks_exact(4);
-    let rem = chunks.remainder();
+    let (chunks, rem) = column.as_chunks::<4>();
     let rem_start = column.len() - rem.len();
     let mut idx: u32 = 0;
 

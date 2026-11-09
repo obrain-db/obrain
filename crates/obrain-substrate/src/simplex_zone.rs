@@ -348,10 +348,8 @@ impl SimplexHeapZone {
                 slice.len()
             )));
         }
-        let members: Vec<u32> = slice[start..start + member_count * 4]
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let (chunks, _) = slice[start..start + member_count * 4].as_chunks::<4>();
+        let members: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
         let props = slice[start + member_count * 4..end].to_vec();
         Ok((members, props))
     }

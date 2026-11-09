@@ -905,10 +905,8 @@ impl TrigrammesFichier {
                     if crc32fast::hash(valeurs) != lire_u32(b, off)? {
                         return None; // liste corrompue : on se tait
                     }
-                    let liste: Vec<u32> = valeurs
-                        .chunks_exact(4)
-                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect();
+                    let (chunks, _) = valeurs.as_chunks::<4>();
+                    let liste: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
                     return Some(Some(liste));
                 }
             }

@@ -332,8 +332,7 @@ fn capture_l0_bucket(
     // within a chunk (the `hist[level] += 1` is a RAW chain that can't
     // be vectorised without split state), but the popcount latency hides
     // behind the capture work.
-    let chunks = corpus.chunks_exact(4);
-    let rem = chunks.remainder();
+    let (chunks, rem) = corpus.as_chunks::<4>();
     let rem_start = corpus.len() - rem.len();
     let mut idx: u32 = offset_base;
 
