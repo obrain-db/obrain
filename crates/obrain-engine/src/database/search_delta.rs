@@ -89,7 +89,6 @@ fn arg_bool(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<boo
 }
 
 #[cfg(feature = "cdc")]
-#[cfg(feature = "cdc")]
 fn arg_usize(
     arguments: &[LogicalExpression],
     i: usize,

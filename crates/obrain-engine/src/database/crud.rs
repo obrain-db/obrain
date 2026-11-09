@@ -813,7 +813,7 @@ impl super::ObrainDB {
                 id: *id,
                 src: *src,
                 dst: *dst,
-                edge_type: edge_type.to_string(),
+                edge_type: (*edge_type).to_string(),
             }) {
                 tracing::warn!("Failed to log CreateEdge (batch) to WAL: {}", e);
             }
