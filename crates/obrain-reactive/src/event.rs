@@ -8,7 +8,7 @@ use web_time::Instant;
 
 /// Authentication/tenant context carried by mutation events.
 ///
-/// When mutations are performed through an [`AuthenticatedSession`],
+/// When mutations are performed through an `AuthenticatedSession`,
 /// the context is attached to the resulting [`MutationBatch`]. Listeners
 /// can use this to filter events by tenant or principal.
 #[derive(Debug, Clone)]
