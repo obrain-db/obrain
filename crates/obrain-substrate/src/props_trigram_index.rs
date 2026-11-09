@@ -611,362 +611,6 @@ impl TrigrammesDeStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Un corpus déterministe, avec des répétitions voulues : les grammes
-    /// communs doivent être écartés par le seuil, les rares gardés.
-    fn corpus() -> Vec<(u32, String)> {
-        let mut v: Vec<(u32, String)> = Vec::new();
-        for i in 0..200u32 {
-            v.push((i, format!("function_module_{i:03}")));
-        }
-        for i in 0..200u32 {
-            v.push((1000 + i, format!("Miami_token_{i:03}")));
-        }
-        v.push((9000, "obrain-iam".into()));
-        v.push((9001, "obrain-iam.src".into()));
-        v.push((9002, "auth_token".into()));
-        v
-    }
-
-    /// LA GARANTIE DE LA DOCTRINE : jamais de faux négatif. Tout slot dont la
-    /// valeur contient le terme DOIT figurer parmi les candidats — sans quoi
-    /// l'appelant, qui ne revérifie que les candidats, sortirait le résultat
-    /// amputé, sans erreur ni trace.
-    #[test]
-    fn le_superset_contient_tous_les_vrais() {
-        let valeurs = corpus();
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        for terme in [
-            "iam",
-            "IAM",
-            "token",
-            "auth",
-            "Miami",
-            "obrain-iam",
-            "module_0",
-            "function_module_007",
-            "absent-du-corpus",
-        ] {
-            let vrais: Vec<u32> = valeurs
-                .iter()
-                .filter(|(_, v)| v.contains(terme))
-                .map(|(s, _)| *s)
-                .collect();
-            if vrais.is_empty() {
-                // Même sans vrai match, l'index doit répondre (ou se taire) —
-                // mais jamais rendre un candidat qui n'existe pas.
-                if let Some(c) = idx.candidats(terme) {
-                    assert!(
-                        c.iter().all(|s| valeurs.iter().any(|(vs, _)| vs == s)),
-                        "candidat inconnu du corpus pour « {terme} »"
-                    );
-                }
-                continue;
-            }
-            let candidats = idx
-                .candidats(terme)
-                .unwrap_or_else(|| panic!("l'index doit servir « {terme} »"));
-            for s in &vrais {
-                assert!(
-                    candidats.binary_search(s).is_ok(),
-                    "FAUX NÉGATIF : le slot {s} contient « {terme} » et n'est pas candidat"
-                );
-            }
-        }
-    }
-
-    /// Toute liste retenue est bornée par le seuil — c'est ce qui rend
-    /// l'intersection prévisible, et c'est la propriété dont dépend le coût
-    /// annoncé dans l'en-tête du module.
-    #[test]
-    fn aucune_liste_ne_depasse_le_seuil() {
-        let valeurs = corpus();
-        for seuil in [1u32, 3, 10, 50] {
-            let idx = PropsTrigramIndex::construire(&valeurs, seuil);
-            for (g, l) in &idx.postings {
-                assert!(
-                    l.len() as u32 <= seuil,
-                    "gramme {:?} : {} postings pour un seuil de {seuil}",
-                    core::str::from_utf8(g).unwrap_or("???"),
-                    l.len()
-                );
-            }
-        }
-    }
-
-    /// Un seuil nul n'indexe rien : l'index se TAIT partout, et l'appelant
-    /// balaie. C'est l'échappatoire de mesure, et elle doit être honnête —
-    /// pas un « zéro résultat ».
-    #[test]
-    fn un_seuil_nul_fait_taire_l_index_au_lieu_de_rendre_vide() {
-        let valeurs = corpus();
-        let idx = PropsTrigramIndex::construire(&valeurs, 0);
-        assert_eq!(idx.postings(), 0);
-        assert_eq!(idx.candidats("iam"), None);
-        assert_eq!(idx.candidats("token"), None);
-    }
-
-    /// Un terme plus court que la fenêtre n'a pas de gramme : `None`, jamais
-    /// un ensemble vide qui affirmerait « aucun résultat ».
-    #[test]
-    fn un_terme_plus_court_que_la_fenetre_rend_None() {
-        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
-        assert_eq!(idx.candidats("ia"), None);
-        assert_eq!(idx.candidats(""), None);
-        assert_eq!(idx.candidats("a"), None);
-    }
-
-    /// L'intersection est PLUS SERRÉE que le gramme le plus rare : c'est tout
-    /// l'intérêt d'intersecter au lieu de rendre la plus petite liste.
-    #[test]
-    fn l_intersection_est_plus_serree_que_la_liste_la_plus_courte() {
-        let valeurs = vec![
-            (1u32, "aaa_bbb_ccc".to_string()),
-            (2, "aaa_zzz_yyy".to_string()),
-            (3, "aaa_www_vvv".to_string()),
-        ];
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        // « aaa » est porté par les trois ; « ccc » par un seul.
-        let c = idx.candidats("aaa_bbb_ccc").expect("servi");
-        assert_eq!(c, vec![1], "l'intersection doit rendre le seul vrai match");
-    }
-
-    /// L'intersection VIDE est une RÉPONSE, pas un silence : elle prouve
-    /// qu'aucune valeur ne porte tous les grammes indexés du terme, donc
-    /// qu'aucune ne le contient. C'est la différence assumée avec les index
-    /// d'égalité et ordonné, où le vecteur vide est ambigu et interdit.
-    #[test]
-    fn une_intersection_vide_est_conclusive_et_non_un_silence() {
-        let valeurs = vec![(1u32, "abcXXX".to_string()), (2, "YYYxyz".to_string())];
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        assert!(idx.candidats("abc").is_some(), "« abc » est servi");
-        assert!(idx.candidats("xyz").is_some(), "« xyz » est servi");
-        assert_eq!(
-            idx.candidats("abcxyz"),
-            Some(vec![]),
-            "aucune valeur ne peut porter « abcxyz » : l'index le SAIT, il ne se tait pas"
-        );
-    }
-
-    /// Un gramme ABSENT DU CORPUS ENTIER est une preuve d'absence, pas une
-    /// ignorance : la passe de comptage a vu toutes les valeurs. L'index doit
-    /// CONCLURE au lieu de faire balayer — mesuré sur le store figé,
-    /// `CONTAINS 'IAM'` (zéro vraie ligne) tombait sinon sur 279 084 lignes.
-    #[test]
-    fn un_gramme_absent_du_corpus_conclut_a_l_absence() {
-        let valeurs = vec![(1u32, "alpha".to_string()), (2, "beta".to_string())];
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        assert_eq!(
-            idx.candidats("zzz"),
-            Some(vec![]),
-            "« zzz » n'existe nulle part"
-        );
-        assert_eq!(
-            idx.candidats("IAM"),
-            Some(vec![]),
-            "aucun trigramme « IAM »"
-        );
-    }
-
-    /// Quand TOUS les grammes du terme sont trop communs pour être indexés,
-    /// l'index se TAIT : il ne sait pas si des valeurs le contiennent, et
-    /// rendre `Some(vec![])` affirmerait « zéro résultat » à tort.
-    #[test]
-    fn un_terme_entierement_commun_se_tait_au_lieu_de_conclure() {
-        // Douze valeurs contenant « aaa » : au seuil 3, les grammes « xxa »,
-        // « xaa » et « aaa » sont tous écartés — et « aaa » est le seul gramme
-        // de la requête.
-        let valeurs: Vec<(u32, String)> = (0..12u32).map(|i| (i, format!("xxaaa{i:02}"))).collect();
-        let idx = PropsTrigramIndex::construire(&valeurs, 3);
-        assert_eq!(
-            idx.candidats("aaa"),
-            None,
-            "l'index doit se TAIRE, pas nier : il ignore si le terme est présent"
-        );
-        // Et il sait toujours répondre dès qu'un gramme rare est disponible.
-        assert_eq!(idx.candidats("aaa03"), Some(vec![3]));
-    }
-
-    /// Un gramme répété dans une même valeur ne produit QU'UN posting : sinon
-    /// chaque intersection paierait des doublons, et le seuil compterait des
-    /// occurrences au lieu de documents.
-    #[test]
-    fn un_gramme_repete_ne_compte_qu_une_fois_par_valeur() {
-        let valeurs = vec![(7u32, "aaaaaaaa".to_string())];
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        assert_eq!(idx.postings(), 1, "un seul gramme distinct : « aaa »");
-        assert_eq!(idx.candidats("aaa"), Some(vec![7]));
-    }
-
-    /// Le vocabulaire d'un corpus réel n'a rien à voir avec les chaînes de
-    /// test : on vérifie ici que la construction ne s'effondre pas quand une
-    /// valeur n'a aucun gramme (moins de trois octets).
-    #[test]
-    fn les_valeurs_sans_gramme_sont_ignorees_sans_bruit() {
-        let valeurs = vec![
-            (1u32, "ab".to_string()),
-            (2, String::new()),
-            (3, "abc".to_string()),
-        ];
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        assert_eq!(idx.valeurs_vues(), 3);
-        assert_eq!(idx.candidats("abc"), Some(vec![3]));
-        assert_eq!(idx.candidats("ab"), None);
-    }
-
-    /// LA GARANTIE APRÈS ÉCRITURE — celle qui a motivé le tampon.
-    ///
-    /// Sans lui, ce test échouerait : l'index construit avant l'écriture ne
-    /// connaît pas le nœud neuf, et le résultat serait AMPUTÉ sans erreur ni
-    /// trace. C'est exactement le faux négatif que la doctrine interdit.
-    #[test]
-    fn une_ecriture_apres_construction_est_trouvee_par_le_tampon() {
-        let mut etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
-        etat.construire("nom", &[(1, "alpha".to_string()), (2, "beta".to_string())]);
-        assert_eq!(
-            etat.candidats("nom", "zzz"),
-            Some(vec![]),
-            "absence prouvée AVANT l'écriture"
-        );
-        etat.noter_ecriture("nom", 3, "contient-zzz-maintenant");
-        assert_eq!(etat.candidats("nom", "zzz"), Some(vec![3]));
-        assert_eq!(etat.candidats("nom", "maintenant"), Some(vec![3]));
-    }
-
-    /// Le tampon ne remplace pas l'index : les deux se RÉUNISSENT, sinon
-    /// l'écriture ferait disparaître les nœuds d'avant.
-    #[test]
-    fn l_index_et_le_tampon_se_reunissent() {
-        let mut etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
-        etat.construire("nom", &[(1, "token-ancien".to_string())]);
-        etat.noter_ecriture("nom", 2, "token-nouveau");
-        assert_eq!(etat.candidats("nom", "token"), Some(vec![1, 2]));
-    }
-
-    /// Une réécriture laisse l'ancien posting : un FAUX POSITIF, écarté par la
-    /// revérification. Le contraire — retirer l'ancien sans ajouter le nouveau —
-    /// serait un manque définitif.
-    #[test]
-    fn une_reecriture_laisse_un_faux_positif_et_jamais_un_manque() {
-        let mut etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
-        etat.construire("nom", &[(1, "ancien-mot".to_string())]);
-        etat.noter_ecriture("nom", 1, "nouveau-mot");
-        let c = etat.candidats("nom", "nouveau").expect("servi");
-        assert!(c.contains(&1), "la VALEUR VIVANTE doit être trouvée");
-        let c = etat.candidats("nom", "ancien").expect("servi");
-        assert!(
-            c.contains(&1),
-            "faux positif assumé, écarté par revérification"
-        );
-    }
-
-    /// Sans index construit ni écriture, l'état se TAIT — il ne nie rien.
-    #[test]
-    fn un_etat_vide_se_tait() {
-        let etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
-        assert_eq!(etat.candidats("nom", "abc"), None);
-        assert!(!etat.est_construit("nom"));
-        assert_eq!(etat.tampon_postings("nom"), 0);
-    }
-
-    /// LE TOUR COMPLET : écrire, rouvrir par `mmap`, et rendre EXACTEMENT les
-    /// mêmes candidats que l'index en mémoire — y compris ses deux silences.
-    #[test]
-    fn la_persistance_rend_les_memes_candidats() {
-        let valeurs = corpus();
-        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
-        let td = tempfile::tempdir().unwrap();
-        let chemin = td.path().join("t.v1");
-        idx.ecrire_fichier(&chemin, 1234, 567).unwrap();
-        let f = TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 567)
-            .expect("ouvrable sous ses propres ancres");
-        for terme in [
-            "iam",
-            "IAM",
-            "token",
-            "Auth",
-            "obrain-iam",
-            "zzqq-absent",
-            "ion",
-            "aa",
-        ] {
-            let mut a = idx.candidats(terme);
-            let mut b = f.candidats(terme);
-            if let Some(v) = a.as_mut() {
-                v.sort_unstable();
-            }
-            if let Some(v) = b.as_mut() {
-                v.sort_unstable();
-            }
-            assert_eq!(b, a, "« {terme} » : mêmes candidats, mêmes silences");
-        }
-    }
-
-    /// LES ANCRES SONT LA PREUVE : si le store a été écrit depuis, des valeurs
-    /// neuves manquent à l'index, donc répondre rendrait un résultat AMPUTÉ.
-    #[test]
-    fn des_ancres_differentes_font_refuser_le_fichier() {
-        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
-        let td = tempfile::tempdir().unwrap();
-        let chemin = td.path().join("t.v1");
-        idx.ecrire_fichier(&chemin, 1234, 567).unwrap();
-        assert!(
-            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1235, 567).is_none(),
-            "WAL"
-        );
-        assert!(
-            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 568).is_none(),
-            "slots"
-        );
-        assert!(
-            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT + 1, 1234, 567).is_none(),
-            "seuil différent : l'index ne décrit pas la même chose"
-        );
-    }
-
-    /// UN ANNUAIRE CORROMPU EST REFUSÉ — il ne répond pas de travers.
-    #[test]
-    fn un_annuaire_corrompu_est_refuse() {
-        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
-        let td = tempfile::tempdir().unwrap();
-        let chemin = td.path().join("t.v1");
-        idx.ecrire_fichier(&chemin, 1, 1).unwrap();
-        let mut octets = std::fs::read(&chemin).unwrap();
-        octets[ENTETE + 2] ^= 0xFF; // dans l'annuaire : son CRC doit refuser
-        std::fs::write(&chemin, &octets).unwrap();
-        assert!(
-            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1, 1).is_none(),
-            "annuaire corrompu ⇒ refus"
-        );
-    }
-
-    /// LE FICHIER SURVIT À UN CYCLE COMPLET, et son annuaire reste trié : c'est
-    /// ce qui autorise la recherche binaire — donc le fait de ne PAS charger
-    /// 34 Mo pour répondre à une requête d'un seul terme.
-    #[test]
-    fn l_annuaire_est_trie_pour_la_recherche_binaire() {
-        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
-        let td = tempfile::tempdir().unwrap();
-        let chemin = td.path().join("t.v1");
-        idx.ecrire_fichier(&chemin, 1, 1).unwrap();
-        let octets = std::fs::read(&chemin).unwrap();
-        let nb = u32::from_le_bytes(octets[24..28].try_into().unwrap()) as usize;
-        assert!(nb > 0);
-        let mut precedent: Option<[u8; 3]> = None;
-        for k in 0..nb {
-            let o = ENTETE + k * 12;
-            let g: [u8; 3] = octets[o..o + 3].try_into().unwrap();
-            if let Some(p) = precedent {
-                assert!(p < g, "l'annuaire doit être strictement trié");
-            }
-            precedent = Some(g);
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // PERSISTANCE — l'annuaire trié sur disque, lu par `mmap`
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1261,10 +905,8 @@ impl TrigrammesFichier {
                     if crc32fast::hash(valeurs) != lire_u32(b, off)? {
                         return None; // liste corrompue : on se tait
                     }
-                    let liste: Vec<u32> = valeurs
-                        .chunks_exact(4)
-                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect();
+                    let (chunks, _) = valeurs.as_chunks::<4>();
+                    let liste: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
                     return Some(Some(liste));
                 }
             }
@@ -1312,5 +954,361 @@ impl TrigrammesFichier {
             courant.retain(|s| l.binary_search(s).is_ok());
         }
         Some(courant)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un corpus déterministe, avec des répétitions voulues : les grammes
+    /// communs doivent être écartés par le seuil, les rares gardés.
+    fn corpus() -> Vec<(u32, String)> {
+        let mut v: Vec<(u32, String)> = Vec::new();
+        for i in 0..200u32 {
+            v.push((i, format!("function_module_{i:03}")));
+        }
+        for i in 0..200u32 {
+            v.push((1000 + i, format!("Miami_token_{i:03}")));
+        }
+        v.push((9000, "obrain-iam".into()));
+        v.push((9001, "obrain-iam.src".into()));
+        v.push((9002, "auth_token".into()));
+        v
+    }
+
+    /// LA GARANTIE DE LA DOCTRINE : jamais de faux négatif. Tout slot dont la
+    /// valeur contient le terme DOIT figurer parmi les candidats — sans quoi
+    /// l'appelant, qui ne revérifie que les candidats, sortirait le résultat
+    /// amputé, sans erreur ni trace.
+    #[test]
+    fn le_superset_contient_tous_les_vrais() {
+        let valeurs = corpus();
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        for terme in [
+            "iam",
+            "IAM",
+            "token",
+            "auth",
+            "Miami",
+            "obrain-iam",
+            "module_0",
+            "function_module_007",
+            "absent-du-corpus",
+        ] {
+            let vrais: Vec<u32> = valeurs
+                .iter()
+                .filter(|(_, v)| v.contains(terme))
+                .map(|(s, _)| *s)
+                .collect();
+            if vrais.is_empty() {
+                // Même sans vrai match, l'index doit répondre (ou se taire) —
+                // mais jamais rendre un candidat qui n'existe pas.
+                if let Some(c) = idx.candidats(terme) {
+                    assert!(
+                        c.iter().all(|s| valeurs.iter().any(|(vs, _)| vs == s)),
+                        "candidat inconnu du corpus pour « {terme} »"
+                    );
+                }
+                continue;
+            }
+            let candidats = idx
+                .candidats(terme)
+                .unwrap_or_else(|| panic!("l'index doit servir « {terme} »"));
+            for s in &vrais {
+                assert!(
+                    candidats.binary_search(s).is_ok(),
+                    "FAUX NÉGATIF : le slot {s} contient « {terme} » et n'est pas candidat"
+                );
+            }
+        }
+    }
+
+    /// Toute liste retenue est bornée par le seuil — c'est ce qui rend
+    /// l'intersection prévisible, et c'est la propriété dont dépend le coût
+    /// annoncé dans l'en-tête du module.
+    #[test]
+    fn aucune_liste_ne_depasse_le_seuil() {
+        let valeurs = corpus();
+        for seuil in [1u32, 3, 10, 50] {
+            let idx = PropsTrigramIndex::construire(&valeurs, seuil);
+            for (g, l) in &idx.postings {
+                assert!(
+                    l.len() as u32 <= seuil,
+                    "gramme {:?} : {} postings pour un seuil de {seuil}",
+                    core::str::from_utf8(g).unwrap_or("???"),
+                    l.len()
+                );
+            }
+        }
+    }
+
+    /// Un seuil nul n'indexe rien : l'index se TAIT partout, et l'appelant
+    /// balaie. C'est l'échappatoire de mesure, et elle doit être honnête —
+    /// pas un « zéro résultat ».
+    #[test]
+    fn un_seuil_nul_fait_taire_l_index_au_lieu_de_rendre_vide() {
+        let valeurs = corpus();
+        let idx = PropsTrigramIndex::construire(&valeurs, 0);
+        assert_eq!(idx.postings(), 0);
+        assert_eq!(idx.candidats("iam"), None);
+        assert_eq!(idx.candidats("token"), None);
+    }
+
+    /// Un terme plus court que la fenêtre n'a pas de gramme : `None`, jamais
+    /// un ensemble vide qui affirmerait « aucun résultat ».
+    #[test]
+    fn un_terme_plus_court_que_la_fenetre_rend_none() {
+        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
+        assert_eq!(idx.candidats("ia"), None);
+        assert_eq!(idx.candidats(""), None);
+        assert_eq!(idx.candidats("a"), None);
+    }
+
+    /// L'intersection est PLUS SERRÉE que le gramme le plus rare : c'est tout
+    /// l'intérêt d'intersecter au lieu de rendre la plus petite liste.
+    #[test]
+    fn l_intersection_est_plus_serree_que_la_liste_la_plus_courte() {
+        let valeurs = vec![
+            (1u32, "aaa_bbb_ccc".to_string()),
+            (2, "aaa_zzz_yyy".to_string()),
+            (3, "aaa_www_vvv".to_string()),
+        ];
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        // « aaa » est porté par les trois ; « ccc » par un seul.
+        let c = idx.candidats("aaa_bbb_ccc").expect("servi");
+        assert_eq!(c, vec![1], "l'intersection doit rendre le seul vrai match");
+    }
+
+    /// L'intersection VIDE est une RÉPONSE, pas un silence : elle prouve
+    /// qu'aucune valeur ne porte tous les grammes indexés du terme, donc
+    /// qu'aucune ne le contient. C'est la différence assumée avec les index
+    /// d'égalité et ordonné, où le vecteur vide est ambigu et interdit.
+    #[test]
+    fn une_intersection_vide_est_conclusive_et_non_un_silence() {
+        let valeurs = vec![(1u32, "abcXXX".to_string()), (2, "YYYxyz".to_string())];
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        assert!(idx.candidats("abc").is_some(), "« abc » est servi");
+        assert!(idx.candidats("xyz").is_some(), "« xyz » est servi");
+        assert_eq!(
+            idx.candidats("abcxyz"),
+            Some(vec![]),
+            "aucune valeur ne peut porter « abcxyz » : l'index le SAIT, il ne se tait pas"
+        );
+    }
+
+    /// Un gramme ABSENT DU CORPUS ENTIER est une preuve d'absence, pas une
+    /// ignorance : la passe de comptage a vu toutes les valeurs. L'index doit
+    /// CONCLURE au lieu de faire balayer — mesuré sur le store figé,
+    /// `CONTAINS 'IAM'` (zéro vraie ligne) tombait sinon sur 279 084 lignes.
+    #[test]
+    fn un_gramme_absent_du_corpus_conclut_a_l_absence() {
+        let valeurs = vec![(1u32, "alpha".to_string()), (2, "beta".to_string())];
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        assert_eq!(
+            idx.candidats("zzz"),
+            Some(vec![]),
+            "« zzz » n'existe nulle part"
+        );
+        assert_eq!(
+            idx.candidats("IAM"),
+            Some(vec![]),
+            "aucun trigramme « IAM »"
+        );
+    }
+
+    /// Quand TOUS les grammes du terme sont trop communs pour être indexés,
+    /// l'index se TAIT : il ne sait pas si des valeurs le contiennent, et
+    /// rendre `Some(vec![])` affirmerait « zéro résultat » à tort.
+    #[test]
+    fn un_terme_entierement_commun_se_tait_au_lieu_de_conclure() {
+        // Douze valeurs contenant « aaa » : au seuil 3, les grammes « xxa »,
+        // « xaa » et « aaa » sont tous écartés — et « aaa » est le seul gramme
+        // de la requête.
+        let valeurs: Vec<(u32, String)> = (0..12u32).map(|i| (i, format!("xxaaa{i:02}"))).collect();
+        let idx = PropsTrigramIndex::construire(&valeurs, 3);
+        assert_eq!(
+            idx.candidats("aaa"),
+            None,
+            "l'index doit se TAIRE, pas nier : il ignore si le terme est présent"
+        );
+        // Et il sait toujours répondre dès qu'un gramme rare est disponible.
+        assert_eq!(idx.candidats("aaa03"), Some(vec![3]));
+    }
+
+    /// Un gramme répété dans une même valeur ne produit QU'UN posting : sinon
+    /// chaque intersection paierait des doublons, et le seuil compterait des
+    /// occurrences au lieu de documents.
+    #[test]
+    fn un_gramme_repete_ne_compte_qu_une_fois_par_valeur() {
+        let valeurs = vec![(7u32, "aaaaaaaa".to_string())];
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        assert_eq!(idx.postings(), 1, "un seul gramme distinct : « aaa »");
+        assert_eq!(idx.candidats("aaa"), Some(vec![7]));
+    }
+
+    /// Le vocabulaire d'un corpus réel n'a rien à voir avec les chaînes de
+    /// test : on vérifie ici que la construction ne s'effondre pas quand une
+    /// valeur n'a aucun gramme (moins de trois octets).
+    #[test]
+    fn les_valeurs_sans_gramme_sont_ignorees_sans_bruit() {
+        let valeurs = vec![
+            (1u32, "ab".to_string()),
+            (2, String::new()),
+            (3, "abc".to_string()),
+        ];
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        assert_eq!(idx.valeurs_vues(), 3);
+        assert_eq!(idx.candidats("abc"), Some(vec![3]));
+        assert_eq!(idx.candidats("ab"), None);
+    }
+
+    /// LA GARANTIE APRÈS ÉCRITURE — celle qui a motivé le tampon.
+    ///
+    /// Sans lui, ce test échouerait : l'index construit avant l'écriture ne
+    /// connaît pas le nœud neuf, et le résultat serait AMPUTÉ sans erreur ni
+    /// trace. C'est exactement le faux négatif que la doctrine interdit.
+    #[test]
+    fn une_ecriture_apres_construction_est_trouvee_par_le_tampon() {
+        let mut etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
+        etat.construire("nom", &[(1, "alpha".to_string()), (2, "beta".to_string())]);
+        assert_eq!(
+            etat.candidats("nom", "zzz"),
+            Some(vec![]),
+            "absence prouvée AVANT l'écriture"
+        );
+        etat.noter_ecriture("nom", 3, "contient-zzz-maintenant");
+        assert_eq!(etat.candidats("nom", "zzz"), Some(vec![3]));
+        assert_eq!(etat.candidats("nom", "maintenant"), Some(vec![3]));
+    }
+
+    /// Le tampon ne remplace pas l'index : les deux se RÉUNISSENT, sinon
+    /// l'écriture ferait disparaître les nœuds d'avant.
+    #[test]
+    fn l_index_et_le_tampon_se_reunissent() {
+        let mut etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
+        etat.construire("nom", &[(1, "token-ancien".to_string())]);
+        etat.noter_ecriture("nom", 2, "token-nouveau");
+        assert_eq!(etat.candidats("nom", "token"), Some(vec![1, 2]));
+    }
+
+    /// Une réécriture laisse l'ancien posting : un FAUX POSITIF, écarté par la
+    /// revérification. Le contraire — retirer l'ancien sans ajouter le nouveau —
+    /// serait un manque définitif.
+    #[test]
+    fn une_reecriture_laisse_un_faux_positif_et_jamais_un_manque() {
+        let mut etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
+        etat.construire("nom", &[(1, "ancien-mot".to_string())]);
+        etat.noter_ecriture("nom", 1, "nouveau-mot");
+        let c = etat.candidats("nom", "nouveau").expect("servi");
+        assert!(c.contains(&1), "la VALEUR VIVANTE doit être trouvée");
+        let c = etat.candidats("nom", "ancien").expect("servi");
+        assert!(
+            c.contains(&1),
+            "faux positif assumé, écarté par revérification"
+        );
+    }
+
+    /// Sans index construit ni écriture, l'état se TAIT — il ne nie rien.
+    #[test]
+    fn un_etat_vide_se_tait() {
+        let etat = TrigrammesDeStore::new(SEUIL_DEFAUT);
+        assert_eq!(etat.candidats("nom", "abc"), None);
+        assert!(!etat.est_construit("nom"));
+        assert_eq!(etat.tampon_postings("nom"), 0);
+    }
+
+    /// LE TOUR COMPLET : écrire, rouvrir par `mmap`, et rendre EXACTEMENT les
+    /// mêmes candidats que l'index en mémoire — y compris ses deux silences.
+    #[test]
+    fn la_persistance_rend_les_memes_candidats() {
+        let valeurs = corpus();
+        let idx = PropsTrigramIndex::construire(&valeurs, SEUIL_DEFAUT);
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("t.v1");
+        idx.ecrire_fichier(&chemin, 1234, 567).unwrap();
+        let f = TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 567)
+            .expect("ouvrable sous ses propres ancres");
+        for terme in [
+            "iam",
+            "IAM",
+            "token",
+            "Auth",
+            "obrain-iam",
+            "zzqq-absent",
+            "ion",
+            "aa",
+        ] {
+            let mut a = idx.candidats(terme);
+            let mut b = f.candidats(terme);
+            if let Some(v) = a.as_mut() {
+                v.sort_unstable();
+            }
+            if let Some(v) = b.as_mut() {
+                v.sort_unstable();
+            }
+            assert_eq!(b, a, "« {terme} » : mêmes candidats, mêmes silences");
+        }
+    }
+
+    /// LES ANCRES SONT LA PREUVE : si le store a été écrit depuis, des valeurs
+    /// neuves manquent à l'index, donc répondre rendrait un résultat AMPUTÉ.
+    #[test]
+    fn des_ancres_differentes_font_refuser_le_fichier() {
+        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("t.v1");
+        idx.ecrire_fichier(&chemin, 1234, 567).unwrap();
+        assert!(
+            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1235, 567).is_none(),
+            "WAL"
+        );
+        assert!(
+            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1234, 568).is_none(),
+            "slots"
+        );
+        assert!(
+            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT + 1, 1234, 567).is_none(),
+            "seuil différent : l'index ne décrit pas la même chose"
+        );
+    }
+
+    /// UN ANNUAIRE CORROMPU EST REFUSÉ — il ne répond pas de travers.
+    #[test]
+    fn un_annuaire_corrompu_est_refuse() {
+        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("t.v1");
+        idx.ecrire_fichier(&chemin, 1, 1).unwrap();
+        let mut octets = std::fs::read(&chemin).unwrap();
+        octets[ENTETE + 2] ^= 0xFF; // dans l'annuaire : son CRC doit refuser
+        std::fs::write(&chemin, &octets).unwrap();
+        assert!(
+            TrigrammesFichier::ouvrir(&chemin, SEUIL_DEFAUT, 1, 1).is_none(),
+            "annuaire corrompu ⇒ refus"
+        );
+    }
+
+    /// LE FICHIER SURVIT À UN CYCLE COMPLET, et son annuaire reste trié : c'est
+    /// ce qui autorise la recherche binaire — donc le fait de ne PAS charger
+    /// 34 Mo pour répondre à une requête d'un seul terme.
+    #[test]
+    fn l_annuaire_est_trie_pour_la_recherche_binaire() {
+        let idx = PropsTrigramIndex::construire(&corpus(), SEUIL_DEFAUT);
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("t.v1");
+        idx.ecrire_fichier(&chemin, 1, 1).unwrap();
+        let octets = std::fs::read(&chemin).unwrap();
+        let nb = u32::from_le_bytes(octets[24..28].try_into().unwrap()) as usize;
+        assert!(nb > 0);
+        let mut precedent: Option<[u8; 3]> = None;
+        for k in 0..nb {
+            let o = ENTETE + k * 12;
+            let g: [u8; 3] = octets[o..o + 3].try_into().unwrap();
+            if let Some(p) = precedent {
+                assert!(p < g, "l'annuaire doit être strictement trié");
+            }
+            precedent = Some(g);
+        }
     }
 }

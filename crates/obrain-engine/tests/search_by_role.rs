@@ -11,13 +11,6 @@
 
 use obrain_engine::ObrainDB;
 
-fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .expect("horloge")
-        .as_millis() as u64
-}
-
 /// Crée une K5 (clique de 5) avec le label donné ; rend les 5 ids.
 fn clique5(db: &ObrainDB, label: &str) -> Vec<u64> {
     let nodes: Vec<u64> = (0..5).map(|_| db.create_node(&[label]).0).collect();

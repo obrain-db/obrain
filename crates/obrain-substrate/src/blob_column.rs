@@ -51,7 +51,7 @@
 //! freshly-grown file carries. Empty blobs are rejected on write, the
 //! same way empty vectors are rejected in
 //! [`crate::vec_column::VecColumnWriter::write_slot`]. Callers who
-//! need to represent "present but empty" should use [`Value::Null`]
+//! need to represent "present but empty" should use [`Value::Null`](obrain_common::types::Value::Null)
 //! or remove the key.
 //!
 //! ## Crash safety

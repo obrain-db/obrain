@@ -32,8 +32,7 @@ fn main() {
         .unwrap_or_else(|e| panic!("ouverture {store} : {e}"));
     let est = db
         .substrate_handle()
-        .map(|s| s.node_count_live_estimate())
-        .unwrap_or(0);
+        .map_or(0, |s| s.node_count_live_estimate());
     println!("store {store} : ~{est} nœuds — déclaration des index d'égalité…");
 
     // Idempotent : `create_property_index` ne refait rien sur une clé déjà

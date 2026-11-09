@@ -178,11 +178,7 @@ impl SlicePositionProvider {
 
     /// Number of `dim`-sized rows held.
     pub fn rows(&self) -> usize {
-        if self.dim == 0 {
-            0
-        } else {
-            self.data.len() / self.dim
-        }
+        self.data.len().checked_div(self.dim).unwrap_or(0)
     }
 }
 
@@ -877,6 +873,7 @@ mod tests {
 
     /// GARANTIE 1 — l'accumulateur exact ne dépend pas de l'ordre des membres.
     #[test]
+    #[allow(clippy::many_single_char_names)] // notation du test : p, r, m, c, s (fournisseur, aléa, membres, centroïde, somme)
     fn exactness_is_order_independent() {
         let dim = 16;
         let p = provider(64, dim);
@@ -956,6 +953,7 @@ mod tests {
 
     /// GARANTIE 1 (suite) — un poids entier ne casse pas l'exactitude.
     #[test]
+    #[allow(clippy::many_single_char_names)] // notation du test : p, m, a, b, c (fournisseur, membres, centroïdes comparés)
     fn integer_weights_preserve_exactness() {
         let dim = 16;
         let p = provider(32, dim);
@@ -1060,7 +1058,7 @@ mod tests {
                 .map(|i| {
                     if clustered {
                         let centre = ((i / dim) % 40) as f32 / 40.0;
-                        ((centre * 0.6 + r.coord() * 0.4) as f32).clamp(0.0, 1.0)
+                        (centre * 0.6 + r.coord() * 0.4).clamp(0.0, 1.0)
                     } else {
                         r.coord()
                     }
@@ -1203,7 +1201,7 @@ mod recall_path_cost {
                 .collect();
             let sig = spectral.encode(&nodes);
             let mut engram = Engram::new(id, nodes);
-            engram.spectral_signature = sig.clone();
+            engram.spectral_signature.clone_from(&sig);
             index.upsert(&id.0.to_string(), &sig);
             store.insert(engram);
         }
@@ -1236,7 +1234,7 @@ mod recall_path_cost {
             let nodes: Vec<(NodeId, f64)> = vec![(NodeId(1000 + e), 1.0)];
             let sig = spectral.encode(&nodes);
             let mut engram = Engram::new(id, nodes);
-            engram.spectral_signature = sig.clone();
+            engram.spectral_signature.clone_from(&sig);
             index.upsert(&id.0.to_string(), &sig);
             store.insert(engram);
         }
@@ -1255,7 +1253,7 @@ mod recall_path_cost {
         let nodes: Vec<(NodeId, f64)> = cues.iter().map(|&n| (n, 1.0)).collect();
         let sig = spectral.encode(&nodes);
         let mut engram = Engram::new(id, nodes);
-        engram.spectral_signature = sig.clone();
+        engram.spectral_signature.clone_from(&sig);
         engram.precision = 4.0;
         index.upsert(&id.0.to_string(), &sig);
         store.insert(engram);
@@ -1635,7 +1633,7 @@ mod scale_tests {
                         let _ = idx.remove_member(id, node, 1, &provider);
                     }
                     _ => {
-                        if r.next_u64() % 4 == 0 {
+                        if r.next_u64().is_multiple_of(4) {
                             idx.remove(id);
                         }
                     }

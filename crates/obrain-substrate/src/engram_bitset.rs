@@ -102,8 +102,9 @@ impl EngramBitsetColumn {
     pub fn count_nonzero(zf: &ZoneFile) -> u64 {
         let slice = zf.as_slice();
         let mut n = 0u64;
-        for chunk in slice.chunks_exact(BITSET_ENTRY_SIZE) {
-            let v = u64::from_le_bytes(chunk.try_into().unwrap());
+        let (chunks, _) = slice.as_chunks::<BITSET_ENTRY_SIZE>();
+        for chunk in chunks {
+            let v = u64::from_le_bytes(*chunk);
             if v != 0 {
                 n += 1;
             }

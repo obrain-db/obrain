@@ -124,7 +124,7 @@ fn test_deleted_node_history_preserves_epoch() {
     let result = session
         .execute("MATCH (p:Person {name: 'Vincent'}) RETURN p")
         .unwrap();
-    assert!(result.rows.is_empty());
+    assert_eq!(result.rows.len(), 0);
 
     // The version history API still tracks the deletion metadata.
     // Note: MATCH-based time-travel on deleted nodes is not supported

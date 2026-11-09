@@ -4,7 +4,6 @@
 
 #![cfg(feature = "gql")]
 
-use obrain_core::graph::GraphStore;
 use obrain_engine::ObrainDB;
 
 fn base_avec_doublons() -> ObrainDB {

@@ -257,7 +257,7 @@ fn classer(nom: &str, est_repertoire: bool, exclure_artefacts: bool) -> Option<R
 
 /// Découvre les fichiers indexables sous `root`.
 ///
-/// Liste récursive, exclusions **comptées et motivées** (voir [`classer`]), budget
+/// Liste récursive, exclusions **comptées et motivées** (voir `classer`), budget
 /// par fichier, ordre déterministe pour des indexations reproductibles.
 ///
 /// `honor_cbmignore` reste déclaré et **n'est pas encore appliqué** : le suivi de

@@ -253,7 +253,7 @@ impl fmt::Display for Timestamp {
         // Rendu historique à 6 décimales conservé pour toute valeur à la
         // microseconde près (100 % de l'existant) ; 9 décimales dès qu'une
         // partie sub-microseconde existe, pour ne rien perdre à l'affichage.
-        if nano_frac % 1000 == 0 {
+        if nano_frac.is_multiple_of(1000) {
             write!(
                 f,
                 "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",

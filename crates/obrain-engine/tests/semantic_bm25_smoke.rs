@@ -43,7 +43,7 @@ fn bm25_semantic_smoke_topk_and_latency() {
         let res = db.text_search("Doc", "text", q, 3).unwrap();
         let us = t0.elapsed().as_micros();
         let mut top = Vec::new();
-        for (id, _) in res.iter() {
+        for (id, _) in &res {
             let node = db.get_node(*id).expect("node");
             let i = match node
                 .properties

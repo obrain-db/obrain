@@ -213,6 +213,7 @@ impl Executor {
         /// Type scalaire d'une valeur, `None` pour NULL (neutre) et pour les
         /// conteneurs/types complexes — pour lesquels `Any` reste l'aveu
         /// honnête.
+        #[allow(clippy::option_option)] // `Some(None)` = NULL (neutre), `None` = complexe : deux sens distincts
         fn type_scalaire(v: &Value) -> Option<Option<LogicalType>> {
             match v {
                 Value::Null => Some(None),

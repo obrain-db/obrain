@@ -17,7 +17,7 @@
 //! ## What this module adds
 //!
 //! A flat bincode snapshot written atomically to
-//! `<substrate-dir>/substrate.props` at every [`SubstrateStore::flush`]
+//! `<substrate-dir>/substrate.props` at every [`SubstrateStore::flush`](crate::store::SubstrateStore::flush)
 //! boundary, and loaded at open. Durability is **at-flush-granularity**:
 //! a crash between two flushes loses the interim properties. Callers
 //! that want tighter durability (e.g. the hub's per-message write path)

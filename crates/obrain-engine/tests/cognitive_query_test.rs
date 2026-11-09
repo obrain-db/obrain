@@ -555,7 +555,6 @@ async fn synthesize_procedure_respects_budget_tokens() {
 #[cfg(feature = "algos")]
 #[test]
 fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
-    use obrain_cognitive::CognitiveEngine;
     use obrain_common::types::Value;
 
     let db = obrain_engine::ObrainDB::new_in_memory();
@@ -576,14 +575,10 @@ fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
     assert_eq!(ids.len(), 3, "3 nœuds créés");
     let (a, b, c) = (ids[0], ids[1], ids[2]);
     session
-        .execute(&format!(
-            "MATCH (x:Function {{name:'a'}}), (y:Function {{name:'b'}}) CREATE (x)-[:CALLS]->(y)"
-        ))
+        .execute("MATCH (x:Function {name:'a'}), (y:Function {name:'b'}) CREATE (x)-[:CALLS]->(y)")
         .expect("edge a→b");
     session
-        .execute(&format!(
-            "MATCH (x:Function {{name:'b'}}), (y:Function {{name:'c'}}) CREATE (x)-[:CALLS]->(y)"
-        ))
+        .execute("MATCH (x:Function {name:'b'}), (y:Function {name:'c'}) CREATE (x)-[:CALLS]->(y)")
         .expect("edge b→c");
 
     // 1. bootstrap : 2 synapses pour 2 arêtes.
@@ -596,8 +591,7 @@ fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
         .rows
         .first()
         .and_then(|row| row.first())
-        .map(|v| v.to_string().parse().unwrap_or(-1))
-        .unwrap_or(-1);
+        .map_or(-1, |v| v.to_string().parse().unwrap_or(-1));
     assert_eq!(count, 2, "une synapse par arête CALLS");
 
     // 2. spread depuis a : doit propager (au moins b, probablement c).
@@ -623,8 +617,7 @@ fn bootstrap_rend_le_graphe_cognitif_et_idempotent() {
         .rows
         .first()
         .and_then(|row| row.first())
-        .map(|v| v.to_string().parse().unwrap_or(-1))
-        .unwrap_or(-1);
+        .map_or(-1, |v| v.to_string().parse().unwrap_or(-1));
     assert_eq!(
         count2, 2,
         "idempotent : toujours 2 synapses (renforcées, pas dupliquées)"

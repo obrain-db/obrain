@@ -9,6 +9,7 @@
 //! Sortie machine : une ligne `BANC_SEEK_MS: <f64>` et `BANC_COUNT_MS: <f64>`.
 
 use obrain_engine::ObrainDB;
+use std::fmt::Write as _;
 use web_time::Instant;
 
 #[test]
@@ -24,7 +25,7 @@ fn banc_seek_mvcc() {
             if i > 0 {
                 stmt.push_str(", ");
             }
-            stmt.push_str(&format!("(:B {{id: {id}}})"));
+            let _ = write!(stmt, "(:B {{id: {id}}})");
         }
         session.execute(&stmt).expect("insertion du lot");
     }

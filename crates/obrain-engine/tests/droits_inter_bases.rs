@@ -36,7 +36,7 @@ fn deux_bases() -> (ObrainDB, ObrainDB) {
 
 /// Contexte de droits : `reader` n'a acces qu'aux slugs listes.
 fn contexte(reader: &str, autorises: &[&str]) -> Arc<AccessContext> {
-    let autorises: Vec<String> = autorises.iter().map(|s| s.to_string()).collect();
+    let autorises: Vec<String> = autorises.iter().map(|&s| s.to_string()).collect();
     Arc::new(AccessContext::new(
         reader,
         Box::new(move |_lecteur, slug| autorises.iter().any(|s| s == slug)),
@@ -158,10 +158,7 @@ fn mono_base_et_requetes_locales_inchangees() {
 fn les_droits_s_evaluent_a_chaque_saut_y_compris_le_cycle() {
     let (alpha, beta) = deux_bases();
     // beta -> alpha : le Doc annote la Note (cycle A -> B -> A).
-    let note_id = {
-        use obrain_core::graph::GraphStore;
-        alpha.graph_store().nodes_by_label("Note")[0]
-    };
+    let note_id = { alpha.graph_store().nodes_by_label("Note")[0] };
     beta.attach_bases("beta", None);
     beta.session()
         .execute(&format!(

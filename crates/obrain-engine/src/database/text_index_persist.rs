@@ -28,10 +28,12 @@
 //! absent, illisible, d'une autre version ou d'une autre empreinte fait
 //! simplement reconstruire.
 
-use std::path::PathBuf;
-
+#[cfg(feature = "text-index")]
+use std::fmt::Write as _;
 #[cfg(feature = "text-index")]
 use std::io::{BufReader, BufWriter, Read, Write};
+#[cfg(feature = "text-index")]
+use std::path::PathBuf;
 #[cfg(feature = "text-index")]
 use std::sync::Arc;
 
@@ -42,6 +44,7 @@ use std::sync::Arc;
 use obrain_core::index::text::{BM25Config, InvertedIndex, SimpleTokenizer};
 
 /// Signature du fichier — un format qui se reconnaît, et qui se refuse.
+#[cfg(feature = "text-index")]
 const MAGIC: &[u8; 8] = b"OBTIDX01";
 
 impl super::ObrainDB {
@@ -261,7 +264,6 @@ impl super::ObrainDB {
         if self.substrate_store.is_none() {
             return; // base en mémoire : rien de durable à écrire
         }
-        let (offset, _) = self.empreinte_store();
         let cles: Vec<String> = self.substrate_text_indexes.read().keys().cloned().collect();
         for cle in cles {
             let Some((label, property)) = cle.split_once(':') else {
@@ -382,7 +384,9 @@ fn echapper_nom(nom: &str) -> String {
     for octet in nom.bytes() {
         match octet {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' => sortie.push(octet as char),
-            _ => sortie.push_str(&format!("%{octet:02X}")),
+            _ => {
+                let _ = write!(sortie, "%{octet:02X}");
+            }
         }
     }
     sortie

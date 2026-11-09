@@ -23,7 +23,7 @@
 //!
 //! - Neighborhood similarity: [`obrain_adapters::plugins::algorithms::top_k_similar`]
 //!   (Jaccard / Adamic-Adar / Cosine / Overlap / Resource-Allocation).
-//! - Structural-twin detection: [`crate::fingerprint`] (`fingerprint()` +
+//! - Structural-twin detection: [`crate::fingerprint`](mod@crate::fingerprint) (`fingerprint()` +
 //!   `detect_twins()`), computed over a bounded ego-network adjacency.
 //! - Dead/orphan detection: [`crate::energy`] (`EnergyStore::get_energy`)
 //!   crossed with [`obrain_core::graph::GraphStore`] out-degree/edge-type.

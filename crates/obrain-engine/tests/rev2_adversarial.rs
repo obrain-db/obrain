@@ -86,7 +86,7 @@ fn erreur(db: &ObrainDB, requete: &str) -> String {
 }
 
 fn ens(items: &[&str]) -> Vec<String> {
-    let mut v: Vec<String> = items.iter().map(|s| s.to_string()).collect();
+    let mut v: Vec<String> = items.iter().map(|&s| s.to_string()).collect();
     v.sort();
     v
 }
@@ -339,7 +339,7 @@ fn queue_with_puis_set_refuse_franchement() {
 #[test]
 fn alter_propriete_nommee_property() {
     let db = ObrainDB::new_in_memory();
-    let mut session = db.session();
+    let session = db.session();
     session
         .execute("CREATE NODE TYPE Rev2Cap (id INT)")
         .unwrap();
@@ -364,7 +364,7 @@ fn alter_propriete_nommee_property() {
 #[test]
 fn alter_drop_property_sans_identifiant_est_refuse() {
     let db = ObrainDB::new_in_memory();
-    let mut session = db.session();
+    let session = db.session();
     session.execute("CREATE NODE TYPE Rev2Nu (id INT)").unwrap();
     let res = session.execute("ALTER NODE TYPE Rev2Nu DROP PROPERTY");
     assert!(

@@ -156,8 +156,8 @@ impl CdcLog {
     /// (2026-08-31) Attache un persistor substrate. Depuis 2026-09-05 le
     /// rechargement de la zone est PARESSEUX : `attach_persist` ne fait
     /// qu'armer la persistance des `record` ; l'historique persisté n'est
-    /// décodé (fenêtre bornée [`CDC_RELOAD_CAP`]) qu'à la première lecture
-    /// d'historique ([`Self::ensure_history_loaded`]). Une ouverture de
+    /// décodé (fenêtre bornée [`CDC_RELOAD_CAP`](crate::cdc_persist::CDC_RELOAD_CAP)) qu'à la première lecture
+    /// d'historique (`Self::ensure_history_loaded`). Une ouverture de
     /// store ne paie donc plus le décodage de la zone CDC (régression
     /// 2026-09-05 : +0,7 s / +1 Go d'ouverture CLI/bridge sur stores runtime).
     pub fn attach_persist(&self, persist: crate::cdc_persist::CdcPersist) {
@@ -202,63 +202,63 @@ impl CdcLog {
             return;
         }
         let persist = self.persist.read().clone();
-        if let Some(persist) = persist {
-            if let Ok(loaded) = persist.load(crate::cdc_persist::cdc_reload_cap()) {
-                let mut events = self.events.write();
-                let mut deja = DedupCdc::default();
-                for vec in events.values() {
-                    for ev in vec.iter() {
-                        deja.deja_connu(ev);
+        if let Some(persist) = persist
+            && let Ok(loaded) = persist.load(crate::cdc_persist::cdc_reload_cap())
+        {
+            let mut events = self.events.write();
+            let mut deja = DedupCdc::default();
+            for vec in events.values() {
+                for ev in vec {
+                    deja.deja_connu(ev);
+                }
+            }
+            let mut max_ts = self
+                .max_timestamp
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let mut importes = 0usize;
+            for (_ts, mut ev) in loaded {
+                if !deja.neuf(&ev) {
+                    continue; // EXACTEMENT le même événement, déjà en mémoire
+                }
+                // (2026-09-05) RÉTENTION LÉGÈRE au rechargement : la zone
+                // garde tout ; la vue mémoire ne retient les payloads
+                // (before/after, souvent lourds : textes/arguments) que
+                // pour les Update (search_conflicts en a besoin) — les
+                // Create/Delete ne servent aux formes que par (id, kind,
+                // ts). Mesuré : fenêtre 10-20 k × payloads ≈ +150-200 Mo
+                // RSS par process sur stores runtime ; stripé → ~métadonnées.
+                if !matches!(ev.kind, ChangeKind::Update) {
+                    ev.before = None;
+                    ev.after = None;
+                }
+                max_ts = max_ts.max(ev.timestamp);
+                events.entry(ev.entity_id).or_default().push(ev);
+                importes += 1;
+            }
+            if importes > 0 {
+                self.max_timestamp
+                    .store(max_ts, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Miroir dans l'index temporel : on le REBÂTIT depuis la map
+            // (une fois par process, au premier rechargement — O(fenêtre),
+            // coût noyé dans le rechargement lui-même). Pas de verrou
+            // imbriqué : on relâche events AVANT de prendre by_ts.
+            drop(events);
+            let rebuilt: Vec<(u64, EntityId, usize)> = {
+                let g = self.events.read();
+                let mut b = Vec::new();
+                for (ent, vec) in g.iter() {
+                    for (i, ev) in vec.iter().enumerate() {
+                        b.push((ev.timestamp, *ent, i));
                     }
                 }
-                let mut max_ts = self
-                    .max_timestamp
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let mut importes = 0usize;
-                for (_ts, mut ev) in loaded {
-                    if !deja.neuf(&ev) {
-                        continue; // EXACTEMENT le même événement, déjà en mémoire
-                    }
-                    // (2026-09-05) RÉTENTION LÉGÈRE au rechargement : la zone
-                    // garde tout ; la vue mémoire ne retient les payloads
-                    // (before/after, souvent lourds : textes/arguments) que
-                    // pour les Update (search_conflicts en a besoin) — les
-                    // Create/Delete ne servent aux formes que par (id, kind,
-                    // ts). Mesuré : fenêtre 10-20 k × payloads ≈ +150-200 Mo
-                    // RSS par process sur stores runtime ; stripé → ~métadonnées.
-                    if !matches!(ev.kind, ChangeKind::Update) {
-                        ev.before = None;
-                        ev.after = None;
-                    }
-                    max_ts = max_ts.max(ev.timestamp);
-                    events.entry(ev.entity_id).or_default().push(ev);
-                    importes += 1;
-                }
-                if importes > 0 {
-                    self.max_timestamp
-                        .store(max_ts, std::sync::atomic::Ordering::Relaxed);
-                }
-                // Miroir dans l'index temporel : on le REBÂTIT depuis la map
-                // (une fois par process, au premier rechargement — O(fenêtre),
-                // coût noyé dans le rechargement lui-même). Pas de verrou
-                // imbriqué : on relâche events AVANT de prendre by_ts.
-                drop(events);
-                let rebuilt: Vec<(u64, EntityId, usize)> = {
-                    let g = self.events.read();
-                    let mut b = Vec::new();
-                    for (ent, vec) in g.iter() {
-                        for (i, ev) in vec.iter().enumerate() {
-                            b.push((ev.timestamp, *ent, i));
-                        }
-                    }
-                    b
-                };
-                if !rebuilt.is_empty() {
-                    let mut by = self.by_ts.lock();
-                    by.clear();
-                    by.extend(rebuilt);
-                    by.sort_unstable_by_key(|(t, _, _)| *t);
-                }
+                b
+            };
+            if !rebuilt.is_empty() {
+                let mut by = self.by_ts.lock();
+                by.clear();
+                by.extend(rebuilt);
+                by.sort_unstable_by_key(|(t, _, _)| *t);
             }
         }
         self.history_loaded
@@ -888,7 +888,7 @@ mod tests {
         // Zone vide + mémoire session → la voie froide sert les records.
         let got = log.changes_since_timestamp(0, |_| true);
         let mut ids: Vec<u64> = got.iter().map(|e| e.entity_id.as_u64()).collect();
-        ids.sort();
+        ids.sort_unstable();
         assert_eq!(ids, vec![7, 8]);
         // Rien de neuf très récent → vide (toujours sans rechargement).
         assert!(

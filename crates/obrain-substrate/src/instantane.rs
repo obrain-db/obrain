@@ -55,8 +55,6 @@
 //! restauré depuis cet instantané a donc ses zones exactes ; ce qui vit HORS des
 //! zones est à raccorder avant de crier victoire.
 
-use std::io::Write as _;
-
 use crate::error::SubstrateResult;
 use crate::file::SubstrateFile;
 
@@ -408,7 +406,7 @@ pub fn repartition(octets: &[u8]) -> SubstrateResult<Vec<(String, u64, u64)>> {
         cur.sauter(len_charge as usize)?;
         out.push((nom, len_logique, len_charge));
     }
-    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out.sort_by_key(|e| std::cmp::Reverse(e.2));
     Ok(out)
 }
 
@@ -466,7 +464,7 @@ impl<'a> Lecteur<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+    use obrain_core::graph::GraphStoreMut as _;
 
     /// Construit un petit store avec des nœuds, des propriétés et des arêtes.
     fn terrain() -> crate::store::SubstrateStore {
@@ -487,7 +485,7 @@ mod tests {
     #[test]
     fn round_trip_bit_a_bit_sur_les_zones() {
         let source = terrain();
-        let image = source.avec_substrate(|sub| exporter(sub)).expect("export");
+        let image = source.avec_substrate(exporter).expect("export");
         assert!(image.len() > 8, "une image non vide");
 
         let mut cible = SubstrateFile::open_memory().expect("cible en mémoire");
@@ -554,9 +552,7 @@ mod tests {
 
         // Et un instantané SANS dictionnaire en est ABSENT — pas « présent et
         // vide », ce qui laisserait croire à un store sans aucun label.
-        let nu = source
-            .avec_substrate(|sub| exporter(sub))
-            .expect("export nu");
+        let nu = source.avec_substrate(exporter).expect("export nu");
         assert!(
             dict_du_flux(&nu).expect("lecture").is_none(),
             "un export nu ne porte pas de dictionnaire"
@@ -608,7 +604,7 @@ mod tests {
     #[test]
     fn un_instantane_corrompu_est_refuse() {
         let source = terrain();
-        let image = source.avec_substrate(|sub| exporter(sub)).expect("export");
+        let image = source.avec_substrate(exporter).expect("export");
         // On abîme un octet au MILIEU des données d'une zone (pas l'en-tête, qui
         // n'est pas couvert par un CRC : le manifeste d'abord, puis les zones).
         let mut abime = image.clone();
@@ -628,7 +624,7 @@ mod tests {
     #[test]
     fn un_instantane_tronque_est_refuse_sans_panique() {
         let source = terrain();
-        let image = source.avec_substrate(|sub| exporter(sub)).expect("export");
+        let image = source.avec_substrate(exporter).expect("export");
         let mut cible = SubstrateFile::open_memory().expect("cible");
         for coupe in [4usize, 9, 20, image.len() - 1] {
             let res = restaurer(&mut cible, &image[..coupe]);
@@ -663,7 +659,7 @@ mod tests {
             store.create_edge(ids[i - 1], ids[i], "SUIT");
         }
 
-        let image = store.avec_substrate(|sub| exporter(sub)).expect("export");
+        let image = store.avec_substrate(exporter).expect("export");
         let s = stats(&image).expect("stats");
         let par_slot = s.octets_par_slot().expect("des slots");
         let rembourrage = s.slots_noeuds as f64 / N as f64;
@@ -700,7 +696,7 @@ mod tests {
     #[test]
     fn les_stats_se_lisent_sans_restaurer() {
         let source = terrain();
-        let image = source.avec_substrate(|sub| exporter(sub)).expect("export");
+        let image = source.avec_substrate(exporter).expect("export");
         let s = stats(&image).expect("stats");
         // Le socle (ALL_MMAPPED) compte 13 zones, mais l'instantané en emporte
         // PLUS : les side-cars créés par la construction du store voyagent aussi

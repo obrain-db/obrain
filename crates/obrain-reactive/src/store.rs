@@ -69,7 +69,7 @@ impl<S: GraphStoreMut> InstrumentedStore<S> {
     /// Sets the event context for this store's pending mutations.
     ///
     /// When [`drain_pending`](Self::drain_pending) is called, the caller can
-    /// use this context to create a [`MutationBatch::with_context`].
+    /// use this context to create a [`MutationBatch::with_context`](crate::MutationBatch::with_context).
     pub fn set_event_context(&self, context: Arc<EventContext>) {
         *self.event_context.lock() = Some(context);
     }

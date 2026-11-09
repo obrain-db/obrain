@@ -87,7 +87,7 @@ impl Session {
             post_commit_hook: None,
             #[cfg(feature = "metrics")]
             metrics: None,
-            #[cfg(feature = "metrics")]
+            #[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
             tx_start_time: parking_lot::Mutex::new(None),
         }
     }

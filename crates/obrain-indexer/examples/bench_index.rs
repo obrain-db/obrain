@@ -22,7 +22,7 @@ fn main() {
         *counts.entry(n.kind).or_default() += 1;
     }
     let mut v: Vec<_> = counts.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (k, c) in v.iter().take(8) {
         println!("  {:<10} {}", k.label(), c);
     }

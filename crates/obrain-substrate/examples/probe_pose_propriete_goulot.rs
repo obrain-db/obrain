@@ -45,10 +45,8 @@ fn main() {
     let d = time_median(
         || {
             let t = Instant::now();
-            let mut i = 0usize;
-            for _ in 0..N {
+            for i in 0..N {
                 let id = ids[i % ids.len()];
-                i += 1;
                 black_box(store.get_node_property(id, &k));
             }
             t.elapsed().as_nanos()
@@ -60,10 +58,8 @@ fn main() {
     let e = time_median(
         || {
             let t = Instant::now();
-            let mut i = 0usize;
-            for _ in 0..N {
+            for i in 0..N {
                 let id = ids[i % ids.len()];
-                i += 1;
                 black_box(store.get_node(id).is_some());
             }
             t.elapsed().as_nanos()
@@ -88,10 +84,8 @@ fn main() {
     let b = time_median(
         || {
             let t = Instant::now();
-            let mut i = 0usize;
-            for _ in 0..N {
+            for i in 0..N {
                 let id = ids[i % ids.len()];
-                i += 1;
                 store.set_node_property(id, "compteur", Value::Int64(i as i64));
                 black_box(id);
             }

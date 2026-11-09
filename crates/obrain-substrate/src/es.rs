@@ -154,7 +154,7 @@ pub trait FichierDonnees: Send + std::fmt::Debug {
     fn synchroniser(&mut self, tout: bool) -> io::Result<()>;
 }
 
-/// Un verrou EXCLUSIF tenu tant que l'objet vit (ou jusqu'à [`liberer`]). Sur
+/// Un verrou EXCLUSIF tenu tant que l'objet vit (ou jusqu'à [`liberer`](Self::liberer)). Sur
 /// natif : `flock` via `fs2`, comme les fences du checkpoint et du dictionnaire.
 /// Le navigateur le réalisera par l'exclusivité d'un `SyncAccessHandle`.
 pub trait FichierVerrou: Send + std::fmt::Debug {

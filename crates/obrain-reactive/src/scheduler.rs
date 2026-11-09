@@ -11,6 +11,7 @@
 //! need reactive features).
 
 use crate::bus::MutationBus;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::event::EventContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::event::MutationEvent;

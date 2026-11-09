@@ -195,8 +195,7 @@ fn search_conflicts_concorde_avec_l_oracle_naif() {
         let found = rows
             .iter()
             .find(|r| r.node_id == node.0 && r.property == key)
-            .map(|r| r.reversals)
-            .unwrap_or(0);
+            .map_or(0, |r| r.reversals);
         assert_eq!(
             found, expected,
             "graine {graine} (seq {seq:?}) : oracle {expected} vs moteur {found}"

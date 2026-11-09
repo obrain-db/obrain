@@ -786,7 +786,9 @@ mod tests {
     #[test]
     fn echeance_passee_declenche_le_meme_point_de_controle() {
         let _g = installer_echeance(Some(
-            web_time::Instant::now() - std::time::Duration::from_secs(1),
+            web_time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
         ));
         assert_eq!(check(), Err(Cancelled));
         assert_eq!(raison(), Some(Raison::Echeance));
@@ -831,7 +833,9 @@ mod tests {
         t.cancel();
         scope_en_vigueur(&t, || {
             let _g = installer_echeance(Some(
-                web_time::Instant::now() - std::time::Duration::from_secs(1),
+                web_time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap(),
             ));
             // Les deux sont vraies ; la DEMANDE explicite l'emporte, parce
             // qu'elle est la seule information que l'appelant ne peut pas
@@ -843,7 +847,9 @@ mod tests {
     #[test]
     fn suspend_neutralise_aussi_l_echeance() {
         let _g = installer_echeance(Some(
-            web_time::Instant::now() - std::time::Duration::from_secs(1),
+            web_time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
         ));
         assert_eq!(check(), Err(Cancelled));
         {
@@ -942,7 +948,11 @@ mod tests {
         scope(&t, || {
             let _ext = frontiere(
                 None,
-                Some(web_time::Instant::now() - std::time::Duration::from_secs(1)),
+                Some(
+                    web_time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(1))
+                        .unwrap(),
+                ),
             );
             assert!(check().is_ok(), "hors vigueur : l'échéance non plus");
             let _int = frontiere_heritee(false);
@@ -974,7 +984,11 @@ mod tests {
         scope(&t, || {
             let _ext = frontiere(
                 Some(false),
-                Some(web_time::Instant::now() - std::time::Duration::from_secs(1)),
+                Some(
+                    web_time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(1))
+                        .unwrap(),
+                ),
             );
             assert_eq!(raison(), Some(Raison::Echeance));
             let _int = frontiere_heritee(false);

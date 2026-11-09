@@ -10,7 +10,7 @@
 //! Ce module extrait le rerank du test vers une API consommable :
 //! - [`rerank_by_cluster_dominance`] — fonction pure, réordonne des candidats
 //!   `(node_id, score)` par score + dominance de cluster (résolveur injecté) ;
-//! - [`ObrainDB::hybrid_search_topological`] — pipeline complet : hybrid
+//! - [`ObrainDB::hybrid_search_topological`](crate::ObrainDB::hybrid_search_topological) — pipeline complet : hybrid
 //!   search sur-échantillonné → résolution du cluster de chaque candidat via
 //!   la closure fournie → rerank par dominance → top-k.
 //!
@@ -189,6 +189,7 @@ impl super::ObrainDB {
     /// `boost = 0.0` ⇒ comportement identique à `hybrid_search` (à un léger
     /// sur-échantillonnage près, invisible sur le top-k quand `k × 4` ≥ k).
     #[cfg(feature = "hybrid-search")]
+    #[allow(clippy::too_many_arguments)] // API publique : paramètres de `hybrid_search` (sans `fusion`), plus `boost` et `cluster_of`
     pub fn hybrid_search_topological(
         &self,
         label: &str,

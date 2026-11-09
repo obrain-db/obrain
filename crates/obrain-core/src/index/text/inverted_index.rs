@@ -186,7 +186,7 @@ struct Scratch {
 
 thread_local! {
     static SCRATCH: std::cell::RefCell<Scratch> =
-        std::cell::RefCell::new(Scratch { scores: Vec::new(), touched: Vec::new() });
+        const { std::cell::RefCell::new(Scratch { scores: Vec::new(), touched: Vec::new() }) };
 }
 
 impl InvertedIndex {
@@ -740,8 +740,7 @@ mod tests {
                 let opt = index.search(q, k);
                 // Calcul de référence : même formule, hasher std.
                 let tokens = index.tokenizer.tokenize(q);
-                let mut manual: Vec<(NodeId, f64)> = Vec::new();
-                {
+                let mut manual: Vec<(NodeId, f64)> = {
                     use std::collections::HashMap as StdMap;
                     let mut scores: StdMap<NodeId, f64> = StdMap::new();
                     let nf = index.live_docs as f64;
@@ -763,8 +762,8 @@ mod tests {
                             *scores.entry(node_id).or_insert(0.0) += idf * tc;
                         }
                     }
-                    manual = scores.into_iter().collect();
-                }
+                    scores.into_iter().collect()
+                };
                 manual.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 manual.truncate(k);
 

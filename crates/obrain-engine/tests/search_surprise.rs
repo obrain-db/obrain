@@ -206,14 +206,13 @@ fn search_surprise_concorde_avec_l_oracle() {
     };
 
     for graine in 0..10u64 {
-        st ^= graine.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         // Nœuds pré-créés + arêtes de « ligne de base » (AVANT la fenêtre).
         let n: u64 = 12 + (rnd() % 12);
         let nodes: Vec<u64> = (0..n).map(|_| db.create_node(&["L"]).0).collect();
         let mut prior: Vec<(usize, usize)> = Vec::new();
         for _ in 0..(3 + rnd() % 8) {
-            let a = (rnd() % n as u64) as usize;
-            let b = (rnd() % n as u64) as usize;
+            let a = (rnd() % n) as usize;
+            let b = (rnd() % n) as usize;
             if a != b {
                 prior.push((a, b));
                 db.create_edge(
@@ -230,8 +229,8 @@ fn search_surprise_concorde_avec_l_oracle() {
         let mut burst: Vec<(usize, usize)> = Vec::new();
         let m = 3 + rnd() % 10;
         for _ in 0..m {
-            let a = (rnd() % n as u64) as usize;
-            let b = (rnd() % n as u64) as usize;
+            let a = (rnd() % n) as usize;
+            let b = (rnd() % n) as usize;
             if a != b {
                 burst.push((a, b));
                 db.create_edge(

@@ -282,12 +282,20 @@ impl EngramMetricsCollector {
     pub fn record_decay(&self) {
         self.metrics.engrams_decayed.fetch_add(1, Ordering::Relaxed);
         // Saturating decrement for the active counter.
-        let _ =
-            self.metrics
-                .engrams_active
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    if v > 0 { Some(v - 1) } else { Some(0) }
-                });
+        // Boucle `compare_exchange` : `try_update` est instable sur la toolchain CI.
+        let active = &self.metrics.engrams_active;
+        let mut courant = active.load(Ordering::Relaxed);
+        while courant > 0 {
+            match active.compare_exchange_weak(
+                courant,
+                courant - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(reel) => courant = reel,
+            }
+        }
     }
 
     /// Records a recall attempt and its outcome.

@@ -324,8 +324,8 @@ impl AccessContext {
 ///   propriete id = "007" est MASQUEE par la regle numerique ;
 /// - en cas de collision (NodeId N vivant ET propriete id = "N"), le
 ///   NodeId gagne, deterministe.
-/// Regle de survie pour l'outillage : des clefs applicatives JAMAIS
-/// entierement numeriques (prefixe type, ex. "note_...").
+///   Regle de survie pour l'outillage : des clefs applicatives JAMAIS
+///   entierement numeriques (prefixe type, ex. "note_...").
 #[must_use]
 pub fn resolve_node_key(store: &dyn GraphStore, key: &str) -> Option<NodeId> {
     if !key.is_empty() && key.bytes().all(|b| b.is_ascii_digit()) {

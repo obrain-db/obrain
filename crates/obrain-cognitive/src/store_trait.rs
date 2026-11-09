@@ -160,7 +160,7 @@ pub type OptionalGraphStore = Option<Arc<dyn GraphStoreMut>>;
 // Epoch ↔ Instant conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Converts a persisted epoch-seconds value to an [`Instant`].
+/// Converts a persisted epoch-seconds value to an [`Instant`](web_time::Instant).
 ///
 /// `web_time::Instant` is monotonic and process-local — it cannot be
 /// serialized. We persist `SystemTime` as epoch-seconds (`f64`) and

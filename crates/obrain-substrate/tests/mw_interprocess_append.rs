@@ -95,7 +95,7 @@ fn auditer(wal: &Path) -> Audit {
     let mut octets_frames = 0u64;
     let mut erreurs = 0usize;
     let mut dernier_bon = 0u64;
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         match item {
             Ok((rec, off, len)) => {
                 dernier_bon = off + len as u64;
@@ -975,7 +975,7 @@ fn t4_reparation_de_queue_par_un_autre_processus_puis_100_appends() {
 
     let avant = auditer(&wal);
     assert!(
-        avant.frames.len() >= 1,
+        !avant.frames.is_empty(),
         "l'écrivain mort a laissé des frames"
     );
     assert_eq!(avant.octets_frames, avant.dernier_bon);

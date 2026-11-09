@@ -18,7 +18,7 @@
 //!
 //! # Surfaces
 //!
-//! - [`ObrainDB::search_conflicts`] — méthode moteur.
+//! - [`ObrainDB::search_conflicts`](crate::ObrainDB::search_conflicts) — méthode moteur.
 //! - `CALL obrain.search_conflicts(since_ms, limit)`
 //!   YIELD node_id, property, reversals — procédure GQL classée LECTURE.
 
@@ -77,9 +77,7 @@ pub fn compute_search_conflicts(log: &CdcLog, since_ms: u64, limit: usize) -> Ve
         if old_val == Some(new_val) {
             continue;
         }
-        let trace = traces
-            .entry((nid.0, key.clone()))
-            .or_insert_with(KeyTrace::default);
+        let trace = traces.entry((nid.0, key.clone())).or_default();
         // Reversal : retour à l'état d'avant le changement (A→B→A).
         if trace.before_last.as_ref() == Some(new_val) {
             trace.reversals += 1;

@@ -1265,7 +1265,7 @@ impl ExpressionPredicate {
                 {
                     entree.actif = false;
                 }
-                entree.ids = ids.clone();
+                entree.ids.clone_from(&ids);
                 entree.verdicts = verdicts;
             }
         }
@@ -1888,18 +1888,16 @@ impl ExpressionPredicate {
             } => {
                 let list_val = self.eval_expr(list_expr, chunk, row)?;
                 // Accept both List and Vector as iterable sequences
-                let items: Vec<&Value>;
+                // `vec_items` doit survivre à `items`, qui peut l'emprunter.
                 let vec_items: Vec<Value>;
-                match &list_val {
-                    Value::List(list) => {
-                        items = list.iter().collect();
-                    }
+                let items: Vec<&Value> = match &list_val {
+                    Value::List(list) => list.iter().collect(),
                     Value::Vector(vec) => {
                         vec_items = vec.iter().map(|&f| Value::Float64(f64::from(f))).collect();
-                        items = vec_items.iter().collect();
+                        vec_items.iter().collect()
                     }
                     _ => return None,
-                }
+                };
 
                 let mut match_count: u32 = 0;
                 for item in &items {
@@ -3200,10 +3198,9 @@ impl ExpressionPredicate {
                         let col = chunk.column(col_idx)?;
                         if let Some(nid) = col.get_node_id(row) {
                             ids.push(nid.0);
-                        } else if let Some(eid) = col.get_edge_id(row) {
-                            ids.push(eid.0);
                         } else {
-                            return None;
+                            let eid = col.get_edge_id(row)?;
+                            ids.push(eid.0);
                         }
                     } else {
                         return None;
@@ -3245,10 +3242,9 @@ impl ExpressionPredicate {
                         let col = chunk.column(col_idx)?;
                         let current_id = if let Some(nid) = col.get_node_id(row) {
                             nid.0
-                        } else if let Some(eid) = col.get_edge_id(row) {
-                            eid.0
                         } else {
-                            return None;
+                            let eid = col.get_edge_id(row)?;
+                            eid.0
                         };
                         match first_id {
                             None => first_id = Some(current_id),

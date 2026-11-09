@@ -192,7 +192,7 @@ fn main() {
             }
             w.commit().unwrap();
             drop(w);
-            let mut sub2 = SubstrateFile::open(&dir).unwrap();
+            let sub2 = SubstrateFile::open(&dir).unwrap();
             let t = Instant::now();
             for zone in [
                 obrain_substrate::Zone::Nodes,

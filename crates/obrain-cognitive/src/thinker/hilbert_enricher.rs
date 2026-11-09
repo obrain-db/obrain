@@ -38,7 +38,7 @@
 //! feature (see `Cargo.toml`). `enrichment` pulls in `obrain-adapters`
 //! with the `algos` sub-feature to access [`hilbert_features`][1].
 //!
-//! [1]: obrain_adapters::plugins::algorithms::hilbert_features
+//! [1]: mod@obrain_adapters::plugins::algorithms::hilbert_features
 
 use std::sync::Arc;
 use std::time::Duration;

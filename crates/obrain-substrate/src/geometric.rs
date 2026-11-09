@@ -2644,10 +2644,11 @@ mod tests {
         let s = SubstrateStore::open(&path).unwrap();
         let mut nonzero = 0usize;
         for slot in 1..s.edge_slot_high_water() {
-            if let Some(rec) = s.writer().read_edge(slot).expect("read") {
-                if !rec.is_tombstoned() && rec.ricci_f32() != 0.0 {
-                    nonzero += 1;
-                }
+            if let Some(rec) = s.writer().read_edge(slot).expect("read")
+                && !rec.is_tombstoned()
+                && rec.ricci_f32() != 0.0
+            {
+                nonzero += 1;
             }
         }
         assert!(nonzero > 0, "courbures persistées après réouverture");

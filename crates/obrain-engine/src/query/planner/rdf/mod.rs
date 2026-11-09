@@ -48,7 +48,11 @@ fn log_rdf_wal(wal: &Option<Arc<RdfWal>>, record: &obrain_adapters::storage::wal
 /// Hexadécimal minuscule d'un digest. `sha1`/`sha2` 0.11 ne sont plus `LowerHex`
 /// (leur sortie est un tableau d'octets) : on formate octet par octet.
 fn hex_minuscule(octets: impl AsRef<[u8]>) -> String {
-    octets.as_ref().iter().map(|o| format!("{o:02x}")).collect()
+    use std::fmt::Write as _;
+    octets.as_ref().iter().fold(String::new(), |mut s, o| {
+        let _ = write!(s, "{o:02x}");
+        s
+    })
 }
 
 /// Converts a Term to its N-Triples string for WAL serialization.
@@ -2782,7 +2786,7 @@ impl RdfExpressionPredicate {
                 {
                     // Regex-based replace
                     let regex_pattern = if flags.contains('i') {
-                        format!("(?i){}", &pattern)
+                        format!("(?i){}", pattern)
                     } else {
                         pattern.clone()
                     };

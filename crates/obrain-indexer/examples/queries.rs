@@ -118,12 +118,12 @@ fn main() {
             Some((score, co, src, dst))
         })
         .collect();
-    cw.sort_by(|a, b| b.1.cmp(&a.1));
+    cw.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("\n— CO-ÉVOLUTION (top FILE_CHANGES_WITH) —");
     for (score, co, a, b) in cw.iter().take(5) {
         let (a, b) = (
-            a.rsplit('/').next().unwrap_or(&a),
-            b.rsplit('/').next().unwrap_or(&b),
+            a.rsplit('/').next().unwrap_or(a),
+            b.rsplit('/').next().unwrap_or(b),
         );
         println!("  {a} ↔ {b} : {co} co-chg (score {score:.2})");
     }

@@ -458,7 +458,7 @@ fn execute_bootstrap(
         .into_iter()
         .collect();
 
-    let mut result = AlgorithmResult::new(vec![
+    let result = AlgorithmResult::new(vec![
         "source".to_string(),
         "target".to_string(),
         "weight".to_string(),

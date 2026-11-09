@@ -2,7 +2,7 @@
 //!
 //! The substrate is designed to maintain itself: rather than relying on
 //! external cron-like loops or explicit maintenance calls, each
-//! [`SubstrateStore`](obrain_substrate::SubstrateStore) spawns a set of
+//! [`SubstrateStore`] spawns a set of
 //! **Thinker** threads at open time. Each Thinker runs a small, bounded
 //! amount of work at a fixed interval, and is responsible for one
 //! cognitive invariant of the graph.

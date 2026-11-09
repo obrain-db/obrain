@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 /// Helper — string set from a sequence of &str.
 fn set(items: &[&str]) -> HashSet<String> {
-    items.iter().map(|s| s.to_string()).collect()
+    items.iter().map(|&s| s.to_string()).collect()
 }
 
 /// T17i T2 — a fresh edge populates the target & source histograms for

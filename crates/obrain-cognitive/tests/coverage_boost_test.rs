@@ -349,7 +349,7 @@ fn tenant_graph_debug_impl() {
     tm.create_tenant("dbg-tenant").unwrap();
 
     let graph = tm.get_tenant("dbg-tenant").unwrap();
-    let debug_str = format!("{:?}", &*graph);
+    let debug_str = format!("{:?}", *graph);
     assert!(debug_str.contains("TenantGraph"));
     assert!(debug_str.contains("dbg-tenant"));
     assert!(debug_str.contains("energy_nodes"));

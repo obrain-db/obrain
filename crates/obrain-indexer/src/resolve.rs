@@ -201,14 +201,14 @@ impl SymbolRegistry {
                 v.push(module_qn.to_string());
             }
         }
-        if let Some(rel) = rust_rel {
-            if !rel.is_empty() {
-                let v = self.module_by_rust_rel.entry(rel.to_string()).or_default();
-                // Un module peut être enregistré plusieurs fois (type + ses
-                // méthodes…) — la déduplication préserve l'unicité du module.
-                if !v.iter().any(|m| m == module_qn) {
-                    v.push(module_qn.to_string());
-                }
+        if let Some(rel) = rust_rel
+            && !rel.is_empty()
+        {
+            let v = self.module_by_rust_rel.entry(rel.to_string()).or_default();
+            // Un module peut être enregistré plusieurs fois (type + ses
+            // méthodes…) — la déduplication préserve l'unicité du module.
+            if !v.iter().any(|m| m == module_qn) {
+                v.push(module_qn.to_string());
             }
         }
     }
@@ -218,13 +218,13 @@ impl SymbolRegistry {
     /// `ObrainDB::session`).
     pub fn register_method_return(&mut self, module_qn: &str, parent: &str, name: &str, ret: &str) {
         let ret = type_short_name(ret);
-        if let Some(ret) = ret {
-            if !ret.is_empty() {
-                self.method_return.insert(
-                    (module_qn.to_string(), parent.to_string(), name.to_string()),
-                    ret,
-                );
-            }
+        if let Some(ret) = ret
+            && !ret.is_empty()
+        {
+            self.method_return.insert(
+                (module_qn.to_string(), parent.to_string(), name.to_string()),
+                ret,
+            );
         }
     }
 
@@ -232,10 +232,10 @@ impl SymbolRegistry {
     /// `fn setup() -> ObrainDB` → `let db = setup(); db.…()`).
     pub fn register_fn_return(&mut self, fqn: &str, ret: &str) {
         let ret = type_short_name(ret);
-        if let Some(ret) = ret {
-            if !ret.is_empty() {
-                self.fn_return.insert(fqn.to_string(), ret);
-            }
+        if let Some(ret) = ret
+            && !ret.is_empty()
+        {
+            self.fn_return.insert(fqn.to_string(), ret);
         }
     }
 
@@ -263,9 +263,7 @@ impl SymbolRegistry {
         let idx = sig.find("->")?;
         let rest = &sig[idx + 2..];
         // Jusqu'au corps/contrainte/génériques de fin.
-        let end = rest
-            .find(|c: char| matches!(c, '{' | ';' | '=' | '\n'))
-            .unwrap_or(rest.len());
+        let end = rest.find(['{', ';', '=', '\n']).unwrap_or(rest.len());
         let ty = rest[..end].trim();
         if ty.is_empty() || ty == "_" {
             None
@@ -391,9 +389,7 @@ impl SymbolRegistry {
         }
         // self / Self dans une méthode d'impl.
         if base == "self" || base == "Self" {
-            let Some(parent) = ctx.caller_parent else {
-                return None;
-            };
+            let parent = ctx.caller_parent?;
             // Étape 2 : `self.<champ>.<méthode>()` — le récepteur réel est le
             // type du champ, pas le type du self. Résolution via la
             // définition du champ dans la struct du self (type local/importé
@@ -409,18 +405,17 @@ impl SymbolRegistry {
             return self.resolve_method_of(ctx.module_qn, parent, name, "receiver_self");
         }
         // Nom de type connu du module appelant.
-        if self.module_has_type(ctx.module_qn, base) {
-            if let Some(res) = self.resolve_method_of(ctx.module_qn, base, name, "receiver_type") {
-                return Some(res);
-            }
+        if self.module_has_type(ctx.module_qn, base)
+            && let Some(res) = self.resolve_method_of(ctx.module_qn, base, name, "receiver_type")
+        {
+            return Some(res);
         }
         // Import du fichier dont le segment final (ou l'alias) == base.
-        if let Some(import_module) = self.import_module_for(ctx, base) {
-            if let Some(res) =
+        if let Some(import_module) = self.import_module_for(ctx, base)
+            && let Some(res) =
                 self.resolve_imported_type(name, &import_module, base, "receiver_import")
-            {
-                return Some(res);
-            }
+        {
+            return Some(res);
         }
         // Binding local : `let x = Type::…` / `let x: Type` / `let x = r.m()`
         // / `let x = fn_libre()` puis `x.méthode()`.
@@ -436,10 +431,10 @@ impl SymbolRegistry {
                 {
                     return Some(res);
                 }
-                if let Some((recv, m)) = &b.init_call {
-                    if let Some(res) = self.resolve_binding_cascade(name, recv, m, ctx, depth) {
-                        return Some(res);
-                    }
+                if let Some((recv, m)) = &b.init_call
+                    && let Some(res) = self.resolve_binding_cascade(name, recv, m, ctx, depth)
+                {
+                    return Some(res);
                 }
             }
         }
@@ -536,16 +531,16 @@ impl SymbolRegistry {
             return self.resolve_rel_path(name, &segs, ctx);
         }
         // 1. même module.
-        if self.module_has_type(ctx.module_qn, ty) {
-            if let Some(res) = self.resolve_method_of(ctx.module_qn, ty, name, strategy) {
-                return Some(res);
-            }
+        if self.module_has_type(ctx.module_qn, ty)
+            && let Some(res) = self.resolve_method_of(ctx.module_qn, ty, name, strategy)
+        {
+            return Some(res);
         }
         // 2. importé par le fichier.
-        if let Some(import_module) = self.import_module_for(ctx, ty) {
-            if let Some(res) = self.resolve_imported_type(name, &import_module, ty, strategy) {
-                return Some(res);
-            }
+        if let Some(import_module) = self.import_module_for(ctx, ty)
+            && let Some(res) = self.resolve_imported_type(name, &import_module, ty, strategy)
+        {
+            return Some(res);
         }
         // 3. type global unique (défini ailleurs dans le repo).
         self.resolve_methods_global(ty, name, strategy)
@@ -586,8 +581,9 @@ impl SymbolRegistry {
             let ty = *segs.last().unwrap();
             return self.resolve_method_of(ctx.module_qn, ty, name, "receiver_type");
         }
-        if segs[0] == "Self" && ctx.caller_parent.is_some() {
-            let ty = ctx.caller_parent.unwrap();
+        if segs[0] == "Self"
+            && let Some(ty) = ctx.caller_parent
+        {
             return self.resolve_method_of(ctx.module_qn, ty, name, "receiver_self");
         }
         // super::… : remonte les niveaux depuis le module du fichier.
@@ -658,7 +654,7 @@ impl SymbolRegistry {
 
     /// Import du fichier dont le segment final (ou l'alias) == `base`.
     /// Retourne le chemin d'import complet (ex: `crate.db.ObrainDB`).
-    fn import_module_for<'a>(&self, ctx: &'a CallContext, base: &str) -> Option<String> {
+    fn import_module_for(&self, ctx: &CallContext, base: &str) -> Option<String> {
         let mut found: Option<String> = None;
         let mut count = 0usize;
         for imp in ctx.imports {
@@ -766,10 +762,8 @@ impl SymbolRegistry {
 /// Nettoie un jeton de qualifier (références, génériques, parenthèses…).
 fn clean_token(t: &str) -> &str {
     let t = t.trim();
-    let t = t.trim_start_matches(|c: char| matches!(c, '&' | '*' | '(' | ')' | '!' | '?'));
-    let end = t
-        .find(|c: char| matches!(c, '<' | '(' | ' ' | '\t' | ';'))
-        .unwrap_or(t.len());
+    let t = t.trim_start_matches(['&', '*', '(', ')', '!', '?']);
+    let end = t.find(['<', '(', ' ', '\t', ';']).unwrap_or(t.len());
     &t[..end]
 }
 

@@ -261,6 +261,12 @@ pub struct CarrierPack(pub [u8; 4096]);
 
 const _: [(); 1] = [(); (core::mem::size_of::<CarrierPack>() == 4096) as usize];
 
+impl Default for CarrierPack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CarrierPack {
     pub fn new() -> Self {
         let mut region = [0u8; 4096];
@@ -363,7 +369,7 @@ mod tests {
         assert_eq!(decode_unite(1 << 40), UniteAddr::Aucune);
         assert_eq!(decode_unite(1 << 32), UniteAddr::Aucune);
         // Drapeau posé, unité hors bornes : refus.
-        assert_eq!(decode_unite(UNITE_SLOT_FLAG | 0), UniteAddr::Aucune);
+        assert_eq!(decode_unite(UNITE_SLOT_FLAG), UniteAddr::Aucune);
         assert_eq!(decode_unite(UNITE_SLOT_FLAG | 8), UniteAddr::Aucune);
     }
 
@@ -381,7 +387,10 @@ mod tests {
                 Err(other) => panic!("erreur inattendue : {other:?}"),
             }
         }
-        assert!(n >= 38 && n <= 41, "capacité d'un slot ~40 Int64, reçu {n}");
+        assert!(
+            (38..=41).contains(&n),
+            "capacité d'un slot ~40 Int64, reçu {n}"
+        );
         assert_eq!(slot.header.entry_count, n as u16);
         // CRC + itération AVANT toute corruption.
         slot.seal_crc32();

@@ -17,6 +17,12 @@ impl super::ObrainDB {
     /// Les deux helpers ci-dessous font le travail contre les VRAIS registres,
     /// une bonne fois, pour que les quatre appelants disent la meme chose.
     #[allow(dead_code)]
+    // Sans `vector-index` ni `text-index`, il n'y a aucun index à tenir : `id`, `label` et
+    // leurs dérivés ne servent qu'aux blocs gatés ci-dessous.
+    #[cfg_attr(
+        not(any(feature = "vector-index", feature = "text-index")),
+        allow(unused_variables)
+    )]
     pub(super) fn substrat_indexer_pour_label(
         &self,
         id: obrain_common::types::NodeId,
@@ -86,6 +92,12 @@ impl super::ObrainDB {
     /// Ne consulte PAS le noeud : il peut deja avoir disparu (suppression), ou
     /// avoir perdu le label. C'est justement pour ca qu'on prend le label en
     /// argument au lieu de le relire.
+    // Sans `vector-index` ni `text-index`, il n'y a aucun index à tenir : `id`, `label` et
+    // leurs dérivés ne servent qu'aux blocs gatés ci-dessous.
+    #[cfg_attr(
+        not(any(feature = "vector-index", feature = "text-index")),
+        allow(unused_variables)
+    )]
     #[allow(dead_code)]
     pub(super) fn substrat_desindexer_pour_label(
         &self,
@@ -386,6 +398,7 @@ impl super::ObrainDB {
 
         // Les labels doivent etre lus AVANT la suppression, et contre le VRAI
         // store — apres, le noeud n'existe plus.
+        #[cfg(feature = "vector-index")]
         let labels_avant: Vec<String> = self
             .data_store()
             .get_node(id)
@@ -800,7 +813,7 @@ impl super::ObrainDB {
                 id: *id,
                 src: *src,
                 dst: *dst,
-                edge_type: edge_type.to_string(),
+                edge_type: (*edge_type).to_string(),
             }) {
                 tracing::warn!("Failed to log CreateEdge (batch) to WAL: {}", e);
             }

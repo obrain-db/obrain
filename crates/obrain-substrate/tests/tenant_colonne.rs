@@ -2,14 +2,14 @@
 //!
 //! La rupture de format : `NodeRecord` 32 → 40 octets (colonne `tenant_id`
 //! + reserve, en QUEUE de record — aucun offset v2 ne bouge), page
-//! d'allocation 20 480 o = 512 records exactement, migration 2→3 par
-//! reecriture de la zone nodes vers un temporaire + rename atomique.
-//! Chaque noeud existant recoit `tenant_id = 0` — public DECLARE
-//! (`meta_flags::MONO_TENANT_PUBLIC` pose dans le meta, §5.2). La
-//! sentinelle A5 (`u32::MAX` = invisible) est RESERVEE : cette migration ne
-//! la pose jamais. AUCUN filtrage par tenant ici — c'est le jalon 3 ; la
-//! semantique du jalon 2 est : le substrat SAIT a qui appartient chaque
-//! noeud, il ne decide encore rien.
+//!   d'allocation 20 480 o = 512 records exactement, migration 2→3 par
+//!   reecriture de la zone nodes vers un temporaire + rename atomique.
+//!   Chaque noeud existant recoit `tenant_id = 0` — public DECLARE
+//!   (`meta_flags::MONO_TENANT_PUBLIC` pose dans le meta, §5.2). La
+//!   sentinelle A5 (`u32::MAX` = invisible) est RESERVEE : cette migration ne
+//!   la pose jamais. AUCUN filtrage par tenant ici — c'est le jalon 3 ; la
+//!   semantique du jalon 2 est : le substrat SAIT a qui appartient chaque
+//!   noeud, il ne decide encore rien.
 //!
 //! Les fixtures « anciennes » sont fabriquees par DECONVERSION byte-a-byte
 //! d'un store du binaire courant (40 o → 32 o, retrait de la colonne,

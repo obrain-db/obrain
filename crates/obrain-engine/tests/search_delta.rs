@@ -49,10 +49,7 @@ fn search_delta_retourne_les_changements_tries() {
     assert_eq!(ts, ts_sorted, "tri par timestamp croissant");
 
     // since futur → vide.
-    let future = all
-        .last()
-        .map(|e| e.timestamp + 1_000_000)
-        .unwrap_or(u64::MAX);
+    let future = all.last().map_or(u64::MAX, |e| e.timestamp + 1_000_000);
     let empty = db.search_delta(future, false, false).expect("futur");
     assert!(empty.is_empty(), "aucun changement après le dernier");
 
@@ -91,7 +88,7 @@ fn call_search_delta_expose_le_diff() {
                 assert!(
                     s == "create" || s == "update",
                     "mutations initiales = create/update (jamais delete), got {s}"
-                )
+                );
             }
             other => panic!("kind inattendu: {other:?}"),
         }
@@ -165,10 +162,7 @@ fn cdc_recharge_paresseusement_a_la_premiere_lecture() {
     );
     let _ = n3;
     // Early-exit futur : vide (max_timestamp à jour après le load).
-    let future = all
-        .last()
-        .map(|e| e.timestamp + 1_000_000)
-        .unwrap_or(u64::MAX);
+    let future = all.last().map_or(u64::MAX, |e| e.timestamp + 1_000_000);
     assert!(
         db.search_delta(future, false, false)
             .expect("futur")

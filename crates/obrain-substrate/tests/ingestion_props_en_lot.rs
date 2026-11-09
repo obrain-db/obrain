@@ -8,12 +8,15 @@ use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
 use obrain_substrate::SubstrateStore;
 
-/// Le jeu : ce qu'un index de code produit, plus les cas limites du stockage.
-fn jeu() -> (
+/// Étiquettes, arêtes (source, cible, type) et propriétés par nœud du jeu.
+type Jeu = (
     Vec<&'static str>,
     Vec<(u32, u32, &'static str)>,
     Vec<Vec<(String, Value)>>,
-) {
+);
+
+/// Le jeu : ce qu'un index de code produit, plus les cas limites du stockage.
+fn jeu() -> Jeu {
     let n = 300u32;
     let labels: Vec<&str> = (0..n)
         .map(|i| if i % 3 == 0 { "Function" } else { "File" })

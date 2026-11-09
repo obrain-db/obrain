@@ -120,8 +120,8 @@ fn main() {
     );
     println!();
     println!(
-        "  {:<32} {:>10} {:>11} {:>11} {:>8}   {}",
-        "requête", "1er tour", "min", "médiane", "lignes", "verdict"
+        "  {:<32} {:>10} {:>11} {:>11} {:>8}   verdict",
+        "requête", "1er tour", "min", "médiane", "lignes"
     );
 
     let liste: Vec<(String, String)> = match &corpus_fichier {

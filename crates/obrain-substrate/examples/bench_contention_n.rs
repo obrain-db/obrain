@@ -88,7 +88,7 @@ fn balayage(dir: &PathBuf) {
         let aretes = (NOEUDS_PAR_ECRIVAIN - 1) * u64::from(n);
         let ops_s = ((noeuds + aretes) as f64) * 1000.0 / ms;
         let noeuds_s = (noeuds as f64) * 1000.0 / ms;
-        let base = *reference.get_or_insert_with(|| ops_s);
+        let base = *reference.get_or_insert(ops_s);
         println!(
             "║ {:>4} ║ {:>9.0}   ║ {:>9.0}   ║ {:>10.0}  ║ ×{:<16.2} ║",
             n,

@@ -342,7 +342,7 @@ fn lecture_ro_pendant_writer_thread_sans_blocage() {
                 .expect("écriture live");
             ecrits2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             i += 1;
-            if i % 10 == 0 {
+            if i.is_multiple_of(10) {
                 w2.checkpoint().expect("checkpoint live");
             }
         }
@@ -511,11 +511,7 @@ fn import_bulk_400k_1600k_non_regresse() {
         "bulk 400k/1,6M : {:.3} s (repère ≈ 0,26 s)",
         total.as_secs_f64()
     );
-    assert_eq!(
-        (nn as usize, mm as usize),
-        (n as usize, m as usize),
-        "retour bulk exact"
-    );
+    assert_eq!((nn as usize, mm as usize), (n, m), "retour bulk exact");
     // ── LE REPÈRE DE TEMPS EST OPT-IN (doctrine du 2026-09-17) ──────────────
     // Une garde de temps mural dans la porte PAR DÉFAUT est un test qui dépend
     // de l'environnement : mesuré sur cette machine (charge 7,6 pour 16 cœurs,

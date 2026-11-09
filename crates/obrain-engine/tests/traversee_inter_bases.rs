@@ -382,10 +382,7 @@ fn profondeur_variable_traverse_deux_frontieres() {
 #[test]
 fn profondeur_variable_cycle_a_b_a() {
     let (alpha, beta) = deux_bases();
-    let note_id = {
-        use obrain_core::graph::GraphStore;
-        alpha.graph_store().nodes_by_label("Note")[0]
-    };
+    let note_id = { alpha.graph_store().nodes_by_label("Note")[0] };
     beta.attach_bases("beta", None);
     beta.session()
         .execute(&format!(

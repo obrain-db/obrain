@@ -492,13 +492,11 @@ fn use_list_entry(source: &str, node: Node, prefix: &str, out: &mut Vec<Import>)
                 local_name: None,
             });
         }
-        "use_wildcard" => {
-            if !prefix.is_empty() {
-                out.push(Import {
-                    module: prefix.to_string(),
-                    local_name: None,
-                });
-            }
+        "use_wildcard" if !prefix.is_empty() => {
+            out.push(Import {
+                module: prefix.to_string(),
+                local_name: None,
+            });
         }
         _ => {}
     }

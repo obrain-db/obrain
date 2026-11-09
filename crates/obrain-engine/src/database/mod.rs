@@ -206,7 +206,7 @@ pub struct ObrainDB {
     ///   general obligerait a y faire entrer des concepts HNSW : ce serait
     ///   salir l'abstraction pour faire passer des tests. La doc du trait dit
     ///   d'ailleurs depuis avril que les appelants « should dispatch on
-    ///   Arc<SubstrateStore> directly in substrate-mode paths ».
+    ///   `Arc<SubstrateStore>` directly in substrate-mode paths ».
     /// - PAS sur `SubstrateStore`. Le registre appartient a la BASE, qui est
     ///   ce sur quoi `create_vector_index` est une methode ; et le store fait
     ///   7 000 lignes qu'il est inutile de rouvrir pour ca.
@@ -262,6 +262,7 @@ pub struct ObrainDB {
     /// L'empreinte (offset du WAL) à laquelle chaque index texte a été construit
     /// ou chargé : elle porte la validité INTER-SESSIONS (au réveil, l'offset du
     /// store dit si le fichier décrit encore ce store).
+    #[cfg(feature = "text-index")]
     pub(super) index_texte_empreintes: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
     /// L'EPOQUE à laquelle chaque index texte a été construit ou chargé : elle
     /// porte la validité INTRA-SESSION.
@@ -279,6 +280,7 @@ pub struct ObrainDB {
     /// chacun ce qu'il sait : l'époch décide « cet index a-t-il vu une écriture
     /// depuis sa construction ? » (donc : réécrire ou effacer), l'offset décide
     /// « ce fichier décrit-il encore ce store ? » (donc : charger ou reconstruire).
+    #[cfg(feature = "text-index")]
     pub(super) index_texte_epochs: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
     #[cfg(feature = "text-index")]
     pub(super) substrate_text_indexes: parking_lot::RwLock<
@@ -604,6 +606,14 @@ impl ObrainDB {
         Ok(db)
     }
 
+    /// Comme [`Self::open_substrate`], avec le mode de synchronisation du WAL
+    /// choisi par l'appelant : ouvre le store si `substrate.meta` existe sous
+    /// `path`, le crée sinon.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the substrate store cannot be created/opened at
+    /// `path`.
     pub fn open_substrate_with_mode(
         path: impl AsRef<std::path::Path>,
         sync_mode: obrain_substrate::wal_io::SyncMode,
@@ -1279,7 +1289,9 @@ impl ObrainDB {
             substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
             index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "text-index")]
             index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "text-index")]
             index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
             substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
@@ -1373,7 +1385,9 @@ impl ObrainDB {
             substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
             index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "text-index")]
             index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "text-index")]
             index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
             substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
@@ -1657,7 +1671,7 @@ impl ObrainDB {
     }
 
     /// (2026-08-31) Accès au journal CDC (audit trail) — exposé pour la
-    /// prod/monitoring : `nodeHistory`/`changesBetween` via [`CdcLog`].
+    /// prod/monitoring : `nodeHistory`/`changesBetween` via [`CdcLog`](crate::cdc::CdcLog).
     #[cfg(feature = "cdc")]
     #[must_use]
     pub fn cdc_log(&self) -> &Arc<crate::cdc::CdcLog> {
@@ -1907,10 +1921,9 @@ impl ObrainDB {
             rdf_wal.sync()?;
         }
 
-        // T17 final cutover: `is_single_file` is always `false` — substrate
+        // T17 final cutover: there is no single-file mode any more — substrate
         // databases are directory-based, legacy single-file `.obrain` v1/v2
         // was retired (feature `obrain-file` removed in commit `b0f5bd11`).
-        let is_single_file = false;
 
         // Commit WAL records (legacy directory format only).
         //
@@ -1921,7 +1934,7 @@ impl ObrainDB {
         // (The single-file `.obrain` format handles this correctly via
         // `checkpoint_to_file()` which exports a real snapshot first.)
         #[cfg(feature = "wal")]
-        if !is_single_file && let Some(ref wal) = self.wal {
+        if let Some(ref wal) = self.wal {
             // Use the last assigned transaction ID, or create one for the commit
             let commit_tx = self
                 .transaction_manager
@@ -2010,7 +2023,7 @@ impl ObrainDB {
     /// When the database has a WAL, this returns an
     /// [`Arc<WalGraphStore>`](wal_store::WalGraphStore) that logs every mutation
     /// (create/delete nodes & edges, set properties) before delegating to the
-    /// in-memory [`LpgStore`]. Without a WAL, it returns the raw
+    /// in-memory `LpgStore`. Without a WAL, it returns the raw
     /// `Arc<LpgStore>` directly.
     ///
     /// This is the sanctioned entry point for subsystems that need to mutate
@@ -2149,8 +2162,7 @@ impl ObrainDB {
         let lines = self.read_session_journal(session_id, -1, 0, 1);
         lines
             .last()
-            .and_then(|l| Some(crate::journal_zone::session_seq(l)))
-            .unwrap_or(-1)
+            .map_or(-1, |l| crate::journal_zone::session_seq(l))
     }
 
     /// Logs a WAL record if WAL is enabled.

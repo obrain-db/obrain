@@ -82,8 +82,7 @@ fn main() {
                 Instant::now().elapsed().as_nanos(),
                 web_time::SystemTime::now()
                     .duration_since(web_time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
+                    .map_or(0, |d| d.as_nanos())
                     + i as u128
             )
         };

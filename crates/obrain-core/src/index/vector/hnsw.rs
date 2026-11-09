@@ -214,7 +214,7 @@ impl HnswFlatTopology {
         buf
     }
 
-    /// Deserializes a topology from bytes produced by [`to_bytes`].
+    /// Deserializes a topology from bytes produced by [`to_bytes`](Self::to_bytes).
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         let header_size = std::mem::size_of::<HnswFlatHeader>();
         if data.len() < header_size {
@@ -686,7 +686,7 @@ impl HnswIndex {
         }
 
         // Remove bidirectional links
-        for (_, node) in nodes.iter_mut() {
+        for node in nodes.values_mut() {
             for neighbors in &mut node.neighbors {
                 neighbors.retain(|&n| n != id);
             }

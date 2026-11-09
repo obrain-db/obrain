@@ -204,10 +204,8 @@ impl EngramZone {
             )));
         }
         let raw = &slice[start..start + byte_len];
-        let ids: Vec<u32> = raw
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let (chunks, _) = raw.as_chunks::<4>();
+        let ids: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
         Ok(Some(ids))
     }
 

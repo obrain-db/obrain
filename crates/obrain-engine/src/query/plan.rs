@@ -440,7 +440,7 @@ impl LogicalOperator {
         self.mutations_avec(None)
     }
 
-    /// [`has_mutations`] en connaissance du CATALOGUE.
+    /// [`has_mutations`](Self::has_mutations) en connaissance du CATALOGUE.
     ///
     /// ── POURQUOI UN CATALOGUE, ET POURQUOI PAS UN DRAPEAU ────────────
     ///

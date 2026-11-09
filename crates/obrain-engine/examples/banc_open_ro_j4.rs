@@ -10,14 +10,10 @@ use obrain_engine::ObrainDB;
 use web_time::Instant;
 
 fn fds() -> usize {
-    std::fs::read_dir("/proc/self/fd")
-        .map(|d| d.count())
-        .unwrap_or(0)
+    std::fs::read_dir("/proc/self/fd").map_or(0, |d| d.count())
 }
 fn maps() -> usize {
-    std::fs::read_to_string("/proc/self/maps")
-        .map(|s| s.lines().count())
-        .unwrap_or(0)
+    std::fs::read_to_string("/proc/self/maps").map_or(0, |s| s.lines().count())
 }
 
 fn main() {

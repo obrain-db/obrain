@@ -94,7 +94,7 @@ struct SortRow {
 ///
 /// **The output is identical, row for row, to sorting everything and keeping
 /// the first `k`.** That is not a hope, it is a consequence of the tie-break
-/// documented on [`bounded_top_k`]. See `test_limit_matches_full_sort_prefix_*`.
+/// documented on `bounded_top_k`. See `test_limit_matches_full_sort_prefix_*`.
 ///
 /// **This bounds CPU, not memory.** `chunks` still holds every input row: the
 /// child is drained in full before anything is ordered. Only `sorted_rows` is
@@ -147,7 +147,7 @@ impl SortOperator {
     /// produced, and the operator emits at most `limit` rows.
     ///
     /// The output is byte-for-byte what an unbounded sort followed by
-    /// `LIMIT limit` would have produced, ties included — see [`bounded_top_k`].
+    /// `LIMIT limit` would have produced, ties included — see `bounded_top_k`.
     ///
     /// `limit` counts rows EMITTED. With an offset in the plan, pass
     /// `offset + count`, not `count`.

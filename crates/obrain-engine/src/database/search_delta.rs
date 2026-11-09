@@ -11,7 +11,7 @@
 //!
 //! # Surfaces
 //!
-//! - [`ObrainDB::search_delta`] — méthode moteur (pattern `window_query_2d`).
+//! - [`ObrainDB::search_delta`](crate::ObrainDB::search_delta) — méthode moteur (pattern `window_query_2d`).
 //! - `CALL obrain.search_delta(since_ms, {top_k, entity: "node"|"edge"})`
 //!   YIELD entity_id, kind, timestamp, before, after — procédure GQL.
 //!
@@ -89,7 +89,6 @@ fn arg_bool(arguments: &[LogicalExpression], i: usize, name: &str) -> Result<boo
 }
 
 #[cfg(feature = "cdc")]
-#[cfg(feature = "cdc")]
 fn arg_usize(
     arguments: &[LogicalExpression],
     i: usize,
@@ -115,7 +114,7 @@ fn execute_search_delta(
     // Défaut 10 000 = la fenêtre — aucun changement de comportement.
     let limit = arguments
         .get(3)
-        .map(|a| arg_usize(arguments, 3, "limit", 10_000))
+        .map(|_| arg_usize(arguments, 3, "limit", 10_000))
         .transpose()?
         .unwrap_or(10_000);
     // Options optionnelles (position 1 = map booléenne simple : on lit les
@@ -123,12 +122,12 @@ fn execute_search_delta(
     // positionnelle directe pour rester simple et déterministe).
     let only_nodes = arguments
         .get(1)
-        .map(|a| arg_bool(arguments, 1, "only_nodes"))
+        .map(|_| arg_bool(arguments, 1, "only_nodes"))
         .transpose()?
         .unwrap_or(false);
     let only_edges = arguments
         .get(2)
-        .map(|a| arg_bool(arguments, 2, "only_edges"))
+        .map(|_| arg_bool(arguments, 2, "only_edges"))
         .transpose()?
         .unwrap_or(false);
 

@@ -84,11 +84,6 @@ fn fingerprint(row: &[Value]) -> (String, i64, i64, i64) {
     (path, imports, dependents, connections)
 }
 
-/// Returns `(slow_rows, fast_rows)` for the same query — first run
-/// forces the slow path via the `OBRAIN_DISABLE_TYPED_DEGREE_TOPK`
-/// env var, second run lets the rewrite fire.
-// Env-var mutation requires `unsafe` since Rust 2024; scoped to this helper.
-#[allow(unsafe_code)]
 /// Sérialise les appels qui posent `OBRAIN_DISABLE_TYPED_DEGREE_TOPK` : la
 /// variable est GLOBALE au processus, et plusieurs tests de ce binaire passent
 /// par ce helper — sans verrou, un test peut mesurer le réglage posé par un autre.
@@ -100,6 +95,10 @@ fn verrou_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Returns `(slow_rows, fast_rows)` for the same query — first run
+/// forces the slow path via the `OBRAIN_DISABLE_TYPED_DEGREE_TOPK`
+/// env var, second run lets the rewrite fire.
+#[allow(unsafe_code)] // set_var/remove_var sont unsafe en édition 2024 ; `verrou_env` sérialise l'accès
 fn run_twice(
     session: &obrain_engine::Session,
     query: &str,

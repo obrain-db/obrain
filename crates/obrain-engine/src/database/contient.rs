@@ -175,8 +175,10 @@ impl ObrainDB {
         let plafond = std::env::var("OBRAIN_TEXTE_CANDIDATS_MAX")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .map(|pct| total.saturating_mul(pct) / 100)
-            .unwrap_or_else(|| (total / 100).max(256));
+            .map_or_else(
+                || (total / 100).max(256),
+                |pct| total.saturating_mul(pct) / 100,
+            );
 
         let (mut ids, route, examines): (Vec<NodeId>, RouteContient, usize) =
             match store.noeuds_par_predicat_texte(&cle, &predicat) {

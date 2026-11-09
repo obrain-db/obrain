@@ -22,7 +22,7 @@
 //!    for the lifetime of the store, so a migration loop of
 //!    "`set_node_property` per node" does not pay per-write
 //!    `mmap` or `fsync` costs. Durability is batched to
-//!    [`SubstrateStore::flush`].
+//!    [`SubstrateStore::flush`](crate::store::SubstrateStore::flush).
 //! 3. **Read consistency** — reads issued in the same session
 //!    after a `set_node_property` see the most recent value, even
 //!    though the on-disk header hasn't been `sync`'d yet. The
@@ -199,15 +199,13 @@ impl VecColumnRegistry {
             dim,
             dtype: VecDType::F32,
         };
-        match self.by_key.get(&(key.clone(), ek)) {
-            Some(existant) => {
-                let ex = *existant;
-                drop(existant);
-                if ex != spec {
-                    return None;
-                }
+        {
+            let existant = self.by_key.get(&(key.clone(), ek))?;
+            let ex = *existant;
+            drop(existant);
+            if ex != spec {
+                return None;
             }
-            None => return None,
         }
         self.writers.get(&spec).map(|w| w.clone())
     }
@@ -254,15 +252,13 @@ impl VecColumnRegistry {
         };
         // La spec doit etre DEJA enregistree ET identique. Une divergence part
         // au chemin lent, qui rend le message de rejet detaille.
-        match self.by_key.get(&(key.clone(), ek)) {
-            Some(existing) => {
-                let ex = *existing;
-                drop(existing);
-                if ex != spec {
-                    return None;
-                }
+        {
+            let existing = self.by_key.get(&(key.clone(), ek))?;
+            let ex = *existing;
+            drop(existing);
+            if ex != spec {
+                return None;
             }
-            None => return None,
         }
         let writer = self.writers.get(&spec)?.clone();
         let bytes: &[u8] = bytemuck::cast_slice(vector);

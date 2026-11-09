@@ -25,7 +25,7 @@
 //! ## Heap
 //!
 //! [`PropsZone::intern_bytes`] atomically appends a `(u32 len, bytes)`
-//! record to the current heap tail and returns a [`HeapRef`]. Entries are
+//! record to the current heap tail and returns a [`HeapRef`](crate::page::HeapRef). Entries are
 //! never relocated, so refs remain stable for the life of the substrate.
 //!
 //! ## Read path
@@ -1199,7 +1199,7 @@ impl PropsZone {
         Ok(new_idx)
     }
 
-    /// Append a node-owned property entry. See [`append_entry_inner`]
+    /// Append a node-owned property entry. See [`append_entry_inner`](Self::append_entry_inner)
     /// for full semantics.
     #[inline]
     pub fn append_entry_node(
@@ -1211,7 +1211,7 @@ impl PropsZone {
         self.append_entry_inner(node_id, OwnerKind::Node, head, entry)
     }
 
-    /// Append an edge-owned property entry. See [`append_entry_inner`]
+    /// Append an edge-owned property entry. See [`append_entry_inner`](Self::append_entry_inner)
     /// for full semantics.
     #[inline]
     pub fn append_entry_edge(
@@ -1223,7 +1223,7 @@ impl PropsZone {
         self.append_entry_inner(edge_id, OwnerKind::Edge, head, entry)
     }
 
-    /// Back-compat alias for [`append_entry_node`] — preserves the
+    /// Back-compat alias for [`append_entry_node`](Self::append_entry_node) — preserves the
     /// pre-T17f single-owner-kind API used by existing `store.rs`
     /// callsites and tests. New code should prefer the kind-explicit
     /// variants.
@@ -1326,16 +1326,16 @@ impl PropsZone {
     ) -> SubstrateResult<u64> {
         if Self::slots_512_actifs() {
             // Carrier ouvert avec une unité libre ?
-            if let Some((carrier, unite)) = self.carrier_pack_ouvert {
-                if unite <= crate::unite::SLOTS_UTILISABLES_PAR_CARRIER as u8 {
-                    self.ecrire_slot_unite(carrier, unite, owner_id, kind, entry)?;
-                    let suivant = unite + 1;
-                    self.maj_controle_carrier(carrier, suivant)?;
-                    self.carrier_pack_ouvert = Some((carrier, suivant));
-                    return crate::unite::encode_slot(carrier, unite).ok_or_else(|| {
-                        SubstrateError::WalBadFrame("encodage slot impossible".to_string())
-                    });
-                }
+            if let Some((carrier, unite)) = self.carrier_pack_ouvert
+                && unite <= crate::unite::SLOTS_UTILISABLES_PAR_CARRIER as u8
+            {
+                self.ecrire_slot_unite(carrier, unite, owner_id, kind, entry)?;
+                let suivant = unite + 1;
+                self.maj_controle_carrier(carrier, suivant)?;
+                self.carrier_pack_ouvert = Some((carrier, suivant));
+                return crate::unite::encode_slot(carrier, unite).ok_or_else(|| {
+                    SubstrateError::WalBadFrame("encodage slot impossible".to_string())
+                });
             }
             // Nouveau carrier : unité 0 = contrôle, unité 1 = 1re chaîne.
             let carrier = self.next_page_idx;
@@ -1696,7 +1696,7 @@ impl PropsZone {
     // ---- heap API ------------------------------------------------------
 
     /// Intern arbitrary bytes into the heap zone and return a stable
-    /// [`HeapRef`]. The returned ref is valid for the lifetime of the
+    /// [`HeapRef`](crate::page::HeapRef). The returned ref is valid for the lifetime of the
     /// substrate (entries are never relocated — compaction is deferred).
     pub fn intern_bytes(&mut self, bytes: &[u8]) -> SubstrateResult<crate::page::HeapRef> {
         let max_entry = HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>() - 4;
@@ -1754,7 +1754,7 @@ impl PropsZone {
         page.read_at(href.offset)
     }
 
-    /// Read the bytes behind a [`HeapRef`]. Returns `None` if the ref
+    /// Read the bytes behind a [`HeapRef`](crate::page::HeapRef). Returns `None` if the ref
     /// points outside the allocated region or the offset is invalid.
     ///
     /// (O1) Réécrit au-dessus de [`Self::read_heap_view`] : une seule copie

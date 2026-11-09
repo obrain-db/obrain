@@ -55,7 +55,6 @@ pub fn porte_armee() -> bool {
     std::env::var("OBRAIN_PERF_GATE").is_ok_and(|v| v.trim() == "1")
 }
 /// Number of feedback cycles to run per scenario.
-
 const CYCLES: usize = 100;
 
 /// Context size per cycle = `FALLBACK_CAP` from `feedback.rs`.

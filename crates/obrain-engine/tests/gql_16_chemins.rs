@@ -220,7 +220,7 @@ fn fixture_grande() -> ObrainDB {
     let db = ObrainDB::new_in_memory();
     let mut session = db.session();
     session.begin_transaction().unwrap();
-    let mut executer = |r: String| {
+    let executer = |r: String| {
         session
             .execute(&r)
             .unwrap_or_else(|e| panic!("l'écriture `{r}` doit s'exécuter, erreur : {e:?}"));

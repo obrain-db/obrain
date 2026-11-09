@@ -22,7 +22,7 @@
 //!
 //! # Schema-less by construction
 //!
-//! [`ContextBundle`](crate::context_loader::ContextBundle) mixes whatever
+//! [`ContextBundle`] mixes whatever
 //! node types/labels the seeds happen to activate (missions, notes,
 //! axioms, ...) — the formatter groups by label without assuming any fixed
 //! schema, and opportunistically surfaces a text snippet only when a node
@@ -202,7 +202,7 @@ impl Default for SynthesisConfig {
             budget_tokens: 750,
             content_properties: DEFAULT_CONTENT_PROPERTIES
                 .iter()
-                .map(|s| s.to_string())
+                .map(|&s| s.to_string())
                 .collect(),
         }
     }

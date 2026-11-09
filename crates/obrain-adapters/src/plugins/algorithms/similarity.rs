@@ -1345,6 +1345,7 @@ fn execute_with_metric(
 
 macro_rules! procedure_de_similarite {
     ($type:ident, $nom:literal, $metric:literal, $desc:literal) => {
+        #[doc = $desc]
         pub struct $type;
 
         impl GraphAlgorithm for $type {

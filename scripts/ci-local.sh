@@ -38,13 +38,11 @@ run_check() {
 run_check "Format" "cargo fmt --all -- --check"
 
 # 2. Clippy
-run_check "Clippy" "cargo clippy --all-targets --all-features -- -D warnings"
+run_check "Clippy" "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 
-# 3. Documentation : doit se CONSTRUIRE (c'est ce que docs.rs fera). Les liens
-#    intra-doc cassés restent des avertissements : mesuré le 01/11/2026, 156
-#    sur le workspace (tâche V1-RUSTDOC) — un -D warnings ici ne serait qu'un
-#    barrage rouge en permanence, pas un portillon.
-run_check "Docs" "rm -rf target/doc && cargo doc --no-deps --all-features"
+# 3. Documentation : doit se construire SANS avertissement (liens intra-doc
+#    cassés ou privés, HTML non fermé), comme dans la CI.
+run_check "Docs" "rm -rf target/doc && RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features"
 
 # 4. Rust tests
 run_check "Rust Tests" "cargo test --all-features --workspace"

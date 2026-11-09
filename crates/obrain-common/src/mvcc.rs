@@ -440,7 +440,7 @@ impl OptionalEpochId {
 /// # Memory Layout
 /// - `epoch`: 8 bytes
 /// - `arena_epoch`: 8 bytes
-/// - `arena_offset`: 8 bytes (composite: chunk_idx[63:48] | offset[47:0])
+/// - `arena_offset`: 8 bytes (composite: chunk_idx\[63:48\] | offset\[47:0\])
 /// - `created_by`: 8 bytes
 /// - `deleted_epoch`: 4 bytes
 /// - Total: 40 bytes

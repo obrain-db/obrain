@@ -42,13 +42,13 @@ use obrain_substrate::wal_io::{SyncMode, WalReader, WalWriter};
 /// Records écrits par chaque processus dans les sondes de perte.
 const M: u64 = 2000;
 
-/// ── LA PORTE EST-ELLE ARMÉE ? ──────────────────────────────────────────────
-/// Les sondes 1 et 2 encodent une garantie que le code N'A PAS ENCORE : elles
-/// mesurent et IMPRIMENT toujours, mais n'exigent la garantie que si la porte
-/// est armée (`OBRAIN_MW_GATE=1`) — même contrat que `porte_armee()` de
-/// `multi_writer_invariants.rs:410-413` (un test qui échoue selon l'état du
-/// chantier n'apprend rien tant que le chantier n'est pas engagé ; ce qui doit
-/// rester vrai, c'est que le DÉFAUT SE DIT).
+// ── LA PORTE EST-ELLE ARMÉE ? ──────────────────────────────────────────────
+// Les sondes 1 et 2 encodent une garantie que le code N'A PAS ENCORE : elles
+// mesurent et IMPRIMENT toujours, mais n'exigent la garantie que si la porte
+// est armée (`OBRAIN_MW_GATE=1`) — même contrat que `porte_armee()` de
+// `multi_writer_invariants.rs:410-413` (un test qui échoue selon l'état du
+// chantier n'apprend rien tant que le chantier n'est pas engagé ; ce qui doit
+// rester vrai, c'est que le DÉFAUT SE DIT).
 // ---------------------------------------------------------------------------
 // Harnais
 // ---------------------------------------------------------------------------
@@ -78,8 +78,8 @@ fn attendre_fichier(p: &Path, quoi: &str) {
     }
 }
 
-/// Un enfant + son flux de stdout, tenu OUVERT pour toute la vie de l'enfant
-/// (la barrière « PRET » puis « FIN » se lit sur le MÊME descripteur).
+// Un enfant + son flux de stdout, tenu OUVERT pour toute la vie de l'enfant
+// (la barrière « PRET » puis « FIN » se lit sur le MÊME descripteur).
 struct Enfant {
     process: Child,
     lignes: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
@@ -140,7 +140,7 @@ impl Enfant {
     }
 }
 
-/// Record distinct par (tag, seq) — le tag est dans les 8 bits hauts du bitset.
+// Record distinct par (tag, seq) — le tag est dans les 8 bits hauts du bitset.
 fn record(tag: u8, seq: u64) -> WalRecord {
     WalRecord {
         lsn: 0, // écrasé par WalWriter::append
@@ -156,13 +156,6 @@ fn record(tag: u8, seq: u64) -> WalRecord {
 fn tag_de(rec: &WalRecord) -> u8 {
     match &rec.payload {
         WalPayload::NodeInsert { label_bitset, .. } => (label_bitset >> 56) as u8,
-        _ => 0,
-    }
-}
-
-fn seq_de(rec: &WalRecord) -> u64 {
-    match &rec.payload {
-        WalPayload::NodeInsert { label_bitset, .. } => label_bitset & 0x00FF_FFFF_FFFF_FFFF,
         _ => 0,
     }
 }

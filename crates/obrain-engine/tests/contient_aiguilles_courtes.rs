@@ -312,7 +312,7 @@ fn toutes_les_aiguilles_apres_rechauffement_sont_justes_en_lecture_seule() {
         .expect("count");
     match r.rows.first().and_then(|l| l.first()) {
         Some(Value::Int64(c)) => {
-            assert_eq!(*c, attendu("."), "une session neuve sur un handle chaud")
+            assert_eq!(*c, attendu("."), "une session neuve sur un handle chaud");
         }
         autre => panic!("count(n) doit rendre un entier, pas {autre:?}"),
     }

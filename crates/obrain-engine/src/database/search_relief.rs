@@ -4,7 +4,7 @@
 //! relief vectoriel) et construite EXCLUSIVEMENT sur les signaux obrain déjà
 //! existants — pas de sémantique inventée :
 //!
-//! | dim | signal source (existant) | définition normalisée ∈ [0,1] |
+//! | dim | signal source (existant) | définition normalisée ∈ \[0,1\] |
 //! |---|---|---|
 //! | N (nouveauté) | `search_surprise` (z signé ≥ 0) | `max(0, z)/max_z` sur la fenêtre |
 //! | T (fraîcheur) | dernière activité CDC du nœud dans la fenêtre | `(t_last − t_min)/(t_max − t_min)` |
@@ -21,7 +21,7 @@
 //! explicite, anti-déformation).
 //!
 //! Lecture pure : fenêtre CDC (bornée `CDC_RELOAD_CAP`) + degrés substrate.
-//! Surfaces : [`ObrainDB::search_relief`] et
+//! Surfaces : [`ObrainDB::search_relief`](crate::ObrainDB::search_relief) et
 //! `CALL obrain.relief(since_ms, limit) YIELD node_id, relief, novelty,
 //! recency, centrality, conflict` — classée LECTURE.
 
@@ -44,7 +44,7 @@ pub const RELIEF_MAX_LIMIT: usize = 10_000;
 /// Défaut de `limit`.
 pub const RELIEF_DEFAULT_LIMIT: usize = 20;
 
-/// Une ligne de résultat `relief` (dimensions normalisées ∈ [0,1]).
+/// Une ligne de résultat `relief` (dimensions normalisées ∈ \[0,1\]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReliefRow {
     /// Nœud (slot substrate).
@@ -99,11 +99,11 @@ pub fn compute_search_relief(
     {
         use std::collections::HashSet;
         let mut seen: HashSet<u64> = HashSet::new();
-        let mut note = |n: u64,
-                        ts: u64,
-                        last: &mut std::collections::HashMap<u64, u64>,
-                        seen: &mut HashSet<u64>,
-                        act: &mut Vec<u64>| {
+        let note = |n: u64,
+                    ts: u64,
+                    last: &mut std::collections::HashMap<u64, u64>,
+                    seen: &mut HashSet<u64>,
+                    act: &mut Vec<u64>| {
             let e = last.entry(n).or_insert(0);
             if ts > *e {
                 *e = ts;

@@ -8,9 +8,9 @@
 //! Même scénario que la v1 (`vector_latency_scale.rs::
 //! topological_rerank_synthetic_c2` — hybrid seul precision@5 ~0,53 → hybride
 //! + topologie ~0,94), mais consommé via l'API publique
-//! [`ObrainDB::hybrid_search_topological`] avec un résolveur de cluster RÉEL
-//! (`cluster_components_by_edge_type` sur les arêtes CALLS) — aucun oracle
-//! `uid/per` : la structure du graphe départage.
+//!   [`ObrainDB::hybrid_search_topological`] avec un résolveur de cluster RÉEL
+//!   (`cluster_components_by_edge_type` sur les arêtes CALLS) — aucun oracle
+//!   `uid/per` : la structure du graphe départage.
 //!
 //! Le test v1 existant n'est pas modifié (C6) : il reste la preuve du
 //! mécanisme avec oracle parfait ; celui-ci prouve le pipeline consommable.

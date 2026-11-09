@@ -228,13 +228,13 @@ impl Writer {
     /// 1. append `WalPayload::NodeInsert` to WAL (not yet committed),
     /// 2. mutate the mmap,
     /// 3. caller must call [`Writer::commit`] to seal the transaction.
-    /// BULK WRITE zone-direct (RFC §16.1, ingestion native) : écrit les zones
-    /// Nodes/Edges par blocs puis chaîne les listes d'adjacence en UNE passe
-    /// ascendante (invariant `next_from`/`next_to` → arête d'id INFÉRIEUR,
-    /// miroir de `create_edge`) et pose `NodeRecord.first_edge_off` = tête
-    /// (dernier id) de chaque source. PAS de WAL, PAS de degrés — l'appelant
-    /// (store) synchronise compteurs et sidecars. Store supposé NEUF (slots
-    /// 1..=n, 1..=m).
+    ///    BULK WRITE zone-direct (RFC §16.1, ingestion native) : écrit les zones
+    ///    Nodes/Edges par blocs puis chaîne les listes d'adjacence en UNE passe
+    ///    ascendante (invariant `next_from`/`next_to` → arête d'id INFÉRIEUR,
+    ///    miroir de `create_edge`) et pose `NodeRecord.first_edge_off` = tête
+    ///    (dernier id) de chaque source. PAS de WAL, PAS de degrés — l'appelant
+    ///    (store) synchronise compteurs et sidecars. Store supposé NEUF (slots
+    ///    1..=n, 1..=m).
     pub(crate) fn bulk_write(
         &self,
         node_bitsets: &[u64],
@@ -252,10 +252,12 @@ impl Writer {
             let bytes = zf.as_slice_mut();
             for (i, &bits) in node_bitsets.iter().enumerate() {
                 let slot = i as u64 + 1;
-                let mut rec = NodeRecord::default();
-                rec.label_bitset = bits;
-                // (jalon 1) l'ecriture en masse est une ecriture reelle.
-                rec.flags = crate::record::node_flags::ALLOCATED;
+                let rec = NodeRecord {
+                    label_bitset: bits,
+                    // (jalon 1) l'ecriture en masse est une ecriture reelle.
+                    flags: crate::record::node_flags::ALLOCATED,
+                    ..NodeRecord::default()
+                };
                 let off = (slot * NodeRecord::SIZE as u64) as usize;
                 bytes[off..off + NodeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(&rec));
             }
@@ -269,7 +271,7 @@ impl Writer {
             let mut heads_from = vec![0u64; cap];
             let mut last_to = vec![0u64; cap];
             self.with_edge_zone(|zf| {
-                let total = (m as u64 + 1) * EdgeRecord::SIZE as u64;
+                let total = (m + 1) * EdgeRecord::SIZE as u64;
                 ensure_room(zf, total as usize, self.min_headroom)?;
                 let bytes = zf.as_slice_mut();
                 for (i, &(src, dst, ty)) in edges.iter().enumerate() {
@@ -281,19 +283,21 @@ impl Writer {
                             "bulk_write: edge endpoint hors bornes (slots 1..=n)".into(),
                         ));
                     }
-                    let mut rec = EdgeRecord::default();
-                    rec.src = src;
-                    rec.dst = dst;
-                    rec.edge_type = ty;
-                    rec.next_from = if last_from[s] != 0 {
-                        U48::from_u64(last_from[s] * EdgeRecord::SIZE as u64)
-                    } else {
-                        U48::ZERO
-                    };
-                    rec.next_to = if last_to[d] != 0 {
-                        U48::from_u64(last_to[d] * EdgeRecord::SIZE as u64)
-                    } else {
-                        U48::ZERO
+                    let rec = EdgeRecord {
+                        src,
+                        dst,
+                        edge_type: ty,
+                        next_from: if last_from[s] != 0 {
+                            U48::from_u64(last_from[s] * EdgeRecord::SIZE as u64)
+                        } else {
+                            U48::ZERO
+                        },
+                        next_to: if last_to[d] != 0 {
+                            U48::from_u64(last_to[d] * EdgeRecord::SIZE as u64)
+                        } else {
+                            U48::ZERO
+                        },
+                        ..EdgeRecord::default()
                     };
                     let off = (id * EdgeRecord::SIZE as u64) as usize;
                     bytes[off..off + EdgeRecord::SIZE].copy_from_slice(bytemuck::bytes_of(&rec));
@@ -1344,7 +1348,7 @@ impl Writer {
     /// ⚠ Caller must verify that `idx` resolves to a live COACT edge —
     /// this primitive does **not** check `edge_type` (it's a column
     /// operation, not a typed-edge operation). The store-level
-    /// [`crate::store::SubstrateStore::coact_reinforce`] enforces typing.
+    /// `crate::store::SubstrateStore::coact_reinforce` enforces typing.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn coact_reinforce_at(&self, idx: u64, delta_q16: u16) -> SubstrateResult<u16> {
         self.with_edge_zone(|zf| {
@@ -1534,7 +1538,7 @@ impl Writer {
     ///    tombstoned)` per slot.
     /// 2. Scan `Zone::Edges` once to compute out-degree per source slot.
     /// 3. Compute the `old_to_new` permutation via
-    ///    [`compute_hilbert_permutation`]. Nodes with the same community
+    ///    [`compute_hilbert_permutation`](crate::hilbert::compute_hilbert_permutation). Nodes with the same community
     ///    become contiguous; within a community they're ordered by a 2D
     ///    Hilbert curve on `(centrality, degree)`; tombstoned slots move
     ///    to the tail.
@@ -4754,31 +4758,37 @@ mod tests {
 
         // Communauté 1 : 6 nœuds, centralités distinctes.
         let community_id = 1u32;
-        let mut deg_expected = vec![0u32; 7];
-        let mut centr = vec![0u16; 7];
+        let mut deg_expected = [0u32; 7];
+        let mut centr = [0u16; 7];
         for i in 1..=6u32 {
-            let mut rec = NodeRecord::default();
-            rec.label_bitset = 1;
-            rec.community_id = community_id;
-            rec.centrality_cached = (i * 3000) as u16;
+            let rec = NodeRecord {
+                label_bitset: 1,
+                community_id,
+                centrality_cached: (i * 3000) as u16,
+                ..NodeRecord::default()
+            };
             centr[i as usize] = (i * 3000) as u16;
             w.write_node(i, rec).unwrap();
         }
         // Degrés : 1→2, 1→3, 2→3, 4→5 → out: node1=2, node2=1, node4=1.
         let edges: Vec<(u32, u32)> = vec![(1, 2), (1, 3), (2, 3), (4, 5)];
         for (i, &(src, dst)) in edges.iter().enumerate() {
-            let mut rec = EdgeRecord::default();
-            rec.src = src;
-            rec.dst = dst;
-            rec.edge_type = 1;
+            let rec = EdgeRecord {
+                src,
+                dst,
+                edge_type: 1,
+                ..EdgeRecord::default()
+            };
             w.write_edge(i as u64 + 1, rec).unwrap();
             deg_expected[src as usize] += 1;
         }
         // Un nœud d'une autre communauté pour vérifier l'exclusion.
         {
-            let mut rec = NodeRecord::default();
-            rec.label_bitset = 1;
-            rec.community_id = 2;
+            let rec = NodeRecord {
+                label_bitset: 1,
+                community_id: 2,
+                ..NodeRecord::default()
+            };
             w.write_node(7, rec).unwrap();
         }
         w.commit().unwrap();

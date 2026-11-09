@@ -150,7 +150,7 @@ fn execute_gql_with_properties() {
     let result = db
         .execute("MATCH (i:Item) WHERE i.price > 10 RETURN i.name AS name, i.price AS price")
         .unwrap();
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
 }
 
 #[test]
@@ -1039,7 +1039,7 @@ fn builtin_procedures_known_algorithms() {
         "bridges",
     ] {
         assert!(
-            procs.get(&[name.to_string()]).is_some(),
+            procs.get(&[(*name).to_string()]).is_some(),
             "{name} should be registered"
         );
     }
@@ -2148,7 +2148,7 @@ fn query_with_aliased_aggregation() {
         .execute("MATCH (n:WA) WITH sum(n.v) AS total RETURN total")
         .unwrap();
     // WITH aggregation may produce different row counts depending on engine behavior
-    assert!(!result.rows.is_empty());
+    assert_ne!(result.rows.len(), 0);
 }
 
 #[test]

@@ -155,7 +155,7 @@ impl EngramStore {
     /// recall history - which is why callers that only need one field paid for
     /// everything. Anything derived from the store should iterate through here.
     pub fn for_each<F: FnMut(&Engram)>(&self, mut f: F) {
-        for entry in self.cache.iter() {
+        for entry in &self.cache {
             f(entry.value());
         }
     }

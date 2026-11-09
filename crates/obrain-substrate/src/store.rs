@@ -67,14 +67,14 @@
 //!   (same-src chain pointer), `next_to` (same-dst chain pointer), and the
 //!   cognitive fields (`ricci_u8`, `flags`, `engram_tag`).
 //! * **In-memory side** — `edge_type` name (ArcStr) and the property map
-//!   live in [`EdgeInMem`], indexed by [`EdgeId`]. Step 3 persists these
+//!   live in `EdgeInMem`, indexed by [`EdgeId`]. Step 3 persists these
 //!   via the dedicated edge-type registry and property pages.
 //!
 //! **Outgoing chain**: entered at O(1) via `NodeRecord.first_edge_off`,
 //! walked via `EdgeRecord.next_from`.
 //!
 //! **Incoming chain**: the `EdgeRecord.next_to` chain exists on-disk but
-//! the entry point lives in memory only. [`SubstrateStore::incoming_heads`]
+//! the entry point lives in memory only. `SubstrateStore::incoming_heads`
 //! maps `NodeId → EdgeId` for the first incoming edge. This is **rebuilt on
 //! open** by a single O(E) scan over the Edges zone — step 3 may promote
 //! it to a sidecar (`substrate.in_edges`, 6 B × node_count) if the rebuild
@@ -93,18 +93,18 @@
 //! What's *not* yet durable at step 1 or 2:
 //!
 //! * **Label names** (ArcStr → bit position) live in an in-memory
-//!   [`LabelRegistry`]. Step 3 persists this into the dedicated zone.
+//!   `LabelRegistry`. Step 3 persists this into the dedicated zone.
 //! * **Properties** (PropertyKey/Value pairs) for both nodes and edges
 //!   live in in-memory `DashMap`s. Step 3 wires them onto the `Props` +
 //!   `Strings` zones.
 //! * **Edge-type names** (ArcStr ↔ u16) live in an in-memory
-//!   [`EdgeTypeRegistry`]. Step 3 persists this alongside the label
+//!   `EdgeTypeRegistry`. Step 3 persists this alongside the label
 //!   registry.
 //!
 //! Close/reopen parity for labels/properties/edge-types lives in step 3;
 //! step 2's test suite therefore exercises only single-process lifetimes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -257,11 +257,13 @@ pub(crate) fn premier_sidecar_herite_non_vide(dir: &Path) -> Option<&'static str
 /// l'EXCLURE de l'instantané : un `flock` n'est pas des octets de données.
 pub const SUFFIXE_FENCE_DICTIONNAIRE: &str = ".lock";
 
-/// Chemin du fence de publication pour un dictionnaire donné.
-fn chemin_fence_dictionnaire(dict: &Path) -> PathBuf {
+/// Chemin du fence de publication pour un dictionnaire donné (le `flock` n'existe
+/// pas sur wasm32 : seul le natif le pose).
+#[cfg(not(target_arch = "wasm32"))]
+fn chemin_fence_dictionnaire(dict: &Path) -> std::path::PathBuf {
     let mut s = dict.as_os_str().to_os_string();
     s.push(SUFFIXE_FENCE_DICTIONNAIRE);
-    PathBuf::from(s)
+    std::path::PathBuf::from(s)
 }
 
 /// ── LE VERROU DE PUBLICATION DU DICTIONNAIRE (Phase B, pièce 3) ──────────────
@@ -513,7 +515,7 @@ fn amorcer_registres_partages(
 }
 
 /// Property keys that are NOT rehydrated into the in-memory `DashMap`
-/// during [`SubstrateStore::load_properties`].
+/// during `SubstrateStore::load_properties`.
 ///
 /// Rationale (T16 / T17 staging): these properties already have a
 /// mmappable on-disk representation elsewhere and exist in
@@ -734,43 +736,6 @@ impl LabelRegistry {
         self.bit_to_name.push(arc);
     }
 
-    /// ── L'ORDRE RENDU N'EST PAS UNE PROPRIETE DU NOEUD (2026-09-11) ──
-    ///
-    /// La boucle ci-dessous parcourt les bits en ordre CROISSANT, et l'indice
-    /// de bit vient de `bit_to_name.len()` au moment de l'internement : c'est
-    /// le compteur d'arrivee de la BASE ENTIERE, pas quelque chose que porte
-    /// le noeud. L'ordre passe a `create_node(&["Task", "Node"])` n'est nulle
-    /// part conserve — il n'en reste qu'un `u64` ou les bits n'ont pas d'ordre.
-    ///
-    /// CONSEQUENCE : `labels(n)[0]` en GQL rend l'etiquette la PLUS ANCIENNEMENT
-    /// INTERNEE de ce noeud, pas sa « premiere » ni sa « principale ». Deux
-    /// bases contenant les memes noeuds, peuplees dans un ordre d'insertion
-    /// different, rendent des `labels(n)[0]` differents pour le meme noeud.
-    ///
-    /// Un histogramme `MATCH (n) RETURN labels(n)[0], count(n)` ne pose donc
-    /// PAS une question a reponse stable — il range chaque noeud sous celle de
-    /// ses etiquettes que la base a vue en premier. Mesure sur le store vivant :
-    /// 15 noeuds portent `[Task, Node]`, `labels(n)[0]` rend `Node = 4` la ou
-    /// `node_count_by_label("Node")` rend 18. Ce ne sont pas deux approximations
-    /// de la meme quantite, ce sont deux questions, et seule la seconde est
-    /// bien posee.
-    ///
-    /// C'est pourquoi aucun compteur « par etiquette primaire » n'a ete ajoute :
-    /// il donnerait une garantie de vitesse a une semantique qui n'en merite
-    /// pas. Consommateurs concernes : `obrain-rag/src/context.rs`
-    /// (`primary_label`), et les histogrammes de `viz_serve` / `contexte_du_monde`.
-    fn labels_for_bitset(&self, bitset: u64) -> SmallVec<[ArcStr; 2]> {
-        let mut out = SmallVec::new();
-        for bit in 0..64u8 {
-            if bitset & (1u64 << bit) != 0
-                && let Some(name) = self.name_for(bit)
-            {
-                out.push(name);
-            }
-        }
-        out
-    }
-
     /// Dump the label names in dense order for persistence via
     /// [`crate::dict::DictSnapshot`].
     ///
@@ -850,11 +815,6 @@ impl EdgeTypeRegistry {
             .unwrap_or(1)
             .max(self.id_to_name.len())
             .max(1)
-    }
-
-    /// Nombre de types internés (compté, pas déduit d'un rang).
-    fn len(&self) -> usize {
-        self.par_id.len()
     }
 
     /// Inscrit un nom à un id IMPOSÉ — ou au premier id libre si `id` est `None`
@@ -998,11 +958,6 @@ impl PropertyKeyRegistry {
             .unwrap_or(1)
             .max(self.id_to_name.len())
             .max(1)
-    }
-
-    /// Nombre de clés internées (compté, pas déduit d'un rang).
-    fn len(&self) -> usize {
-        self.par_id.len()
     }
 
     /// Inscrit un nom à un id IMPOSÉ — ou au premier id libre si `id` est `None`
@@ -2854,12 +2809,9 @@ impl SubstrateStore {
         // Assez grand pour amortir la prise de verrou, assez petit pour
         // qu un écrivain n attende jamais longtemps.
         const LOT: usize = 1024;
-        let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
-        let mut tomb: FxHashSet<u16> = FxHashSet::default();
         let mut entrees = 0usize;
         let mut noeuds = 0usize;
 
-        let mut recolte: Vec<(PropertyKey, IndexValueKey, NodeId)> = Vec::new();
         // ── PARCOURS PARALLÈLE (2026-09-14, mesuré) ─────────────────────────
         //
         // Cette passe coûtait **1 014 – 1 061 ms** sur le store VIVANT
@@ -2873,10 +2825,12 @@ impl SubstrateStore {
         // et c'est vrai lot par lot — chaque tâche relâche la sienne avant que
         // l'insertion ne commence.
         use rayon::prelude::*;
-        let par_lot: Vec<(usize, Vec<(PropertyKey, IndexValueKey, NodeId)>)> = tetes
+        /// Entrées d'index récoltées par un lot : (clé, valeur indexée, nœud).
+        type Recolte = Vec<(PropertyKey, IndexValueKey, NodeId)>;
+        let par_lot: Vec<(usize, Recolte)> = tetes
             .par_chunks(LOT)
             .map(|lot| {
-                let mut recolte: Vec<(PropertyKey, IndexValueKey, NodeId)> = Vec::new();
+                let mut recolte: Recolte = Vec::new();
                 let mut vus = 0usize;
                 {
                     let pz = pz_lock.read();
@@ -3191,7 +3145,7 @@ impl SubstrateStore {
         // Le corps de la fonction reste intact : le jour où le marqueur existe,
         // il suffit de retirer ce refus, et `etendre_apres_fenetre` (les deux
         // index) reprend son travail.
-        return Ok(());
+        Ok(())
     }
 
     /// Ancien corps, conservé hors service tant que la garde n'est pas prouvable.
@@ -3362,11 +3316,10 @@ impl SubstrateStore {
                 | WalPayload::NodeDelete { node_id }
                 | WalPayload::NodePropHeadUpdate { node_id, .. }
                 | WalPayload::PropSetInline { node_id, .. }
-                | WalPayload::PropRemoveInline { node_id, .. } => {
-                    if vus.insert(node_id) {
+                | WalPayload::PropRemoveInline { node_id, .. }
+                    if vus.insert(node_id) => {
                         slots.push(node_id);
                     }
-                }
                 _ => {}
             }
             off += consomme;
@@ -3535,8 +3488,8 @@ impl SubstrateStore {
     /// * clé bâtie cette session (`index_batis_depuis_v2` posé par
     ///   `batir_index_depuis_v2`) → la DashMap fait autorité ;
     /// * clé couverte par la zone à l'ouverture → zone ∪ delta DashMap.
-    /// Toute autre clé est LAISSÉE DEHORS : l'écrire sous des ancres neuves
-    /// la bénirait comme complète — le faux négatif silencieux interdit.
+    ///   Toute autre clé est LAISSÉE DEHORS : l'écrire sous des ancres neuves
+    ///   la bénirait comme complète — le faux négatif silencieux interdit.
     ///
     /// # Errors
     /// Propage un échec d'écriture ou de `rename` du fichier d'index. Le
@@ -3803,10 +3756,10 @@ impl SubstrateStore {
                 if !rec.is_live() {
                     continue;
                 }
-                if let Some(v) = entree.value().get(&cle_prop) {
-                    if let Some(cle) = encoder_cle(v) {
-                        recolte_inline.push(EntreeIndex::new(cle, slot));
-                    }
+                if let Some(v) = entree.value().get(&cle_prop)
+                    && let Some(cle) = encoder_cle(v)
+                {
+                    recolte_inline.push(EntreeIndex::new(cle, slot));
                 }
             }
             if !recolte_inline.is_empty() {
@@ -5622,7 +5575,7 @@ impl SubstrateStore {
     /// commit — auto-commit compris — est scellé par un `fsync` sous
     /// `EveryCommit`, le garder ici faisait payer un `F_FULLFSYNC` par
     /// statement à des bases jetables (mesuré : `probe_in`, 22 000 INSERT,
-    /// > 60 s au lieu de quelques secondes). Le contrat de durabilité ne
+    /// plus de 60 s au lieu de quelques secondes). Le contrat de durabilité ne
     /// concerne que `open()` sur un chemin.
     pub fn open_tempfile() -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_tempfile()?;
@@ -7217,7 +7170,9 @@ impl SubstrateStore {
         // est nécessaire ou si elle serait un no-op payé à chaque ouverture.
         // L'offset passé est celui du dernier flush (même repli que le rejeu
         // si le WAL a été tronqué depuis).
-        let fenetre_structurelle = store.merge_wal_inline_props(snapshot.wal_offset_at_flush);
+        // Le booléen n'est plus lu : la vérification pleine est systématique
+        // (voir plus bas). L'appel reste indispensable pour ses effets.
+        let _fenetre_structurelle = store.merge_wal_inline_props(snapshot.wal_offset_at_flush);
 
         // Aretes inter-bases (V1) : snapshot sidecar puis fenetre WAL,
         // meme sequence que les proprietes inline. Jamais fatal.
@@ -7316,14 +7271,9 @@ impl SubstrateStore {
         // (IN_MISSION 4660 pour 2347) est nee AVANT le flush et se serait
         // re-endormie sous la garde. Cout mesure du recompte : 17 ms sur
         // 434 000 noeuds — paye a chaque ouverture, compteurs jamais faux.
-        if false && !fenetre_structurelle {
-            tracing::debug!(
-                target: "substrate::counters",
-                ms = t_verif.elapsed().as_millis() as u64,
-                "fenetre WAL post-flush sans record structurel — compteurs d'instantane \
-                 encore exacts, verification pleine sautee (scan O(N+E) non paye)"
-            );
-        } else {
+        // Branche « fenêtre sans record structurel → vérification sautée » retirée :
+        // elle était morte (`false &&`). La vérification pleine tourne toujours.
+        {
             store.verifications_pleines.fetch_add(1, Ordering::Relaxed);
             let avant_n = store.total_live_nodes.load(Ordering::Relaxed);
             let avant_e = store.total_live_edges.load(Ordering::Relaxed);
@@ -7492,7 +7442,6 @@ impl SubstrateStore {
         // agent que le watchdog redemarre. Le moteur les rebatit a la
         // premiere recherche qui les demande.
         {
-            use obrain_core::graph::GraphStoreMut as _;
             let proprietes: Vec<String> = store
                 .declarations_index()
                 .into_iter()
@@ -8406,7 +8355,7 @@ impl SubstrateStore {
 
     /// Persist the dict to `<substrate-dir>/substrate.dict`.
     /// Les octets du dictionnaire courant (registres + compteurs), prêts à être
-    /// transportés. Pendant de [`build_dict_snapshot`](Self::build_dict_snapshot),
+    /// transportés. Pendant de `build_dict_snapshot`,
     /// qui les ÉCRIT : ici on les REND, pour que l'instantané puisse les emporter.
     ///
     /// (2026-09-17) Sans eux, une image restaurait des zones dont plus personne
@@ -9927,7 +9876,7 @@ impl SubstrateStore {
     ///   lecture complet, et la finalisation ÉCHOUE à la moindre divergence.
     ///   « Aucune écriture refusée » prouvait qu'on avait écrit, pas qu'on
     ///   pouvait relire : c'est ainsi que la base `messages` a été perdue le
-    ///   19/08. Voir [`Self::relire_echantillon_v2_noeuds`].
+    ///   19/08. Voir `Self::relire_echantillon_v2_noeuds`.
     /// - The legacy `substrate.props` sidecar is NOT deleted here.
     ///   The caller (`obrain-migrate --finalize-v2`) is responsible
     ///   for that after verifying the migration succeeded.
@@ -10218,7 +10167,7 @@ impl SubstrateStore {
     ///   chain (via `lookup_edge_property_v2`).
     /// - **(2026-08-20) RELECTURE DE CONTRÔLE** — même filet que le jumeau
     ///   nœud, et il manquait plus encore ici : cette fonction n'avait AUCUN
-    ///   critère de succès. Voir [`Self::relire_echantillon_v2_aretes`].
+    ///   critère de succès. Voir `Self::relire_echantillon_v2_aretes`.
     ///
     /// Returns the number of edges touched and scalars re-emitted.
     pub fn finalize_edge_props_v2(&self) -> SubstrateResult<EdgePropsV2FinalizeStats> {
@@ -10621,45 +10570,6 @@ impl SubstrateStore {
         )
     }
 
-    /// L'union de deux jeux de candidats : `None` vaut ∅ (rien à dire), et
-    /// `Some(vide)` aussi (absence prouvée). Le résultat est trié et dédoublonné.
-    ///
-    /// ── POURQUOI `None` RESTE NEUTRE ICI (2026-09-16) ───────────────────────
-    ///
-    /// J'ai voulu rendre `None` ABSORBANT — un silence n'est pas une preuve —
-    /// parce qu'un faux négatif de production venait de cette union. Mesuré :
-    /// rendre `None` absorbant **désactivait le fichier persisté** dès que la
-    /// fenêtre se taisait, et la porte est passée de « aucune régression » à
-    /// **9 régressions sur 18** ✗. Le remède était pire que le mal.
-    ///
-    /// La raison de fond : les deux sources ne couvrent pas la même PLAGE. Le
-    /// fichier décrit `[début, ancre]`, la fenêtre décrit `[ancre, maintenant]`.
-    /// Un silence de la fenêtre ne dit pas « rien ne correspond » — la version
-    /// absorbante avait raison sur ce point — mais il ne dit pas non plus « je ne
-    /// sais rien », puisque la fenêtre SAIT quelles valeurs sont dans sa plage :
-    /// elle pourrait rendre leurs slots. C'est CE chemin-là qu'il faudra écrire
-    /// un jour (une source muette apporte sa PLAGE, pas ∅), et non absorber.
-    ///
-    /// En attendant, la justesse est assurée autrement — et plus sûrement :
-    /// voir `trigrammes_des_la` (construction en mémoire devenue OPT-IN) et le
-    /// refus de servir une intersection vide.
-    fn union_candidats(a: Option<Vec<u32>>, b: Option<Vec<u32>>) -> Option<Vec<u32>> {
-        match (a, b) {
-            (None, None) => None,
-            (Some(mut x), None) | (None, Some(mut x)) => {
-                x.sort_unstable();
-                x.dedup();
-                Some(x)
-            }
-            (Some(mut x), Some(y)) => {
-                x.extend(y);
-                x.sort_unstable();
-                x.dedup();
-                Some(x)
-            }
-        }
-    }
-
     /// Complète le tampon de trigrammes par les valeurs écrites DEPUIS l'ancre
     /// du fichier persisté — la FENÊTRE.
     ///
@@ -11043,12 +10953,12 @@ impl SubstrateStore {
     /// - an I/O or decode error occurs (warned via `tracing::warn!` so
     ///   we degrade to the DashMap path rather than loudly fail the
     ///   read).
-    /// (O1) Vue zero-copy sur une propriété `String` d'un nœud vivant :
-    /// un `&str` emprunté aux pages mmap du substrate, sous garde de
-    /// lecture relâchée au drop de la vue.
+    ///   (O1) Vue zero-copy sur une propriété `String` d'un nœud vivant :
+    ///   un `&str` emprunté aux pages mmap du substrate, sous garde de
+    ///   lecture relâchée au drop de la vue.
     ///
     /// Ordre de résolution IDENTIQUE à
-    /// [`Self::lire_propriete_noeud_vivant`] (colonnes blob → PropsZone v2
+    /// `Self::lire_propriete_noeud_vivant` (colonnes blob → PropsZone v2
     /// avec sémantique LWW/tombstone → DashMap héritée), pour que la vue
     /// dise exactement ce que dirait `get_node_property` — moins les trois
     /// copies (page 4 KiB, `to_vec`, `ArcStr::from`).
@@ -11072,39 +10982,39 @@ impl SubstrateStore {
         // 2) PropsZone v2 — miroir de `lookup_node_property_v2` : l'entrée
         //    (petite, possédée) est résolue d'abord, PUIS la garde est
         //    mappée sur les octets du heap — une seule marche de chaîne.
-        if let Some(pz_lock) = self.props_zone.as_ref() {
-            if let Ok(Some(rec)) = self.writer.read_node(slot) {
-                let tete = match rec.first_prop_off.to_u64() {
-                    0 => None,
-                    v => Some(v),
-                };
-                let pkid = self.prop_keys.read().lookup(key);
-                if let Some(pkid) = pkid {
-                    let guard = pz_lock.read();
-                    match guard.get_latest_for_key_unite(tete, pkid) {
-                        Ok(Some(e)) if e.is_tombstone() => {
-                            // LWW : la tombstone masque aussi la DashMap.
-                            return None;
-                        }
-                        Ok(Some(e)) => {
-                            return match e.value {
-                                crate::page::PropertyValue::StringRef(h) => {
-                                    parking_lot::RwLockReadGuard::try_map(guard, |pz| {
-                                        pz.read_heap_view(h)
-                                            .and_then(|b| std::str::from_utf8(b).ok())
-                                    })
-                                    .ok()
-                                    .map(StrView::Zone)
-                                }
-                                // Valeur présente mais non-String : pas de vue.
-                                _ => None,
-                            };
-                        }
-                        Ok(None) | Err(_) => {
-                            // Rien sur la chaîne v2 (ou zone illisible — même
-                            // politique de repli que `lookup_node_property_v2`) :
-                            // on retombe sur la DashMap héritée.
-                        }
+        if let Some(pz_lock) = self.props_zone.as_ref()
+            && let Ok(Some(rec)) = self.writer.read_node(slot)
+        {
+            let tete = match rec.first_prop_off.to_u64() {
+                0 => None,
+                v => Some(v),
+            };
+            let pkid = self.prop_keys.read().lookup(key);
+            if let Some(pkid) = pkid {
+                let guard = pz_lock.read();
+                match guard.get_latest_for_key_unite(tete, pkid) {
+                    Ok(Some(e)) if e.is_tombstone() => {
+                        // LWW : la tombstone masque aussi la DashMap.
+                        return None;
+                    }
+                    Ok(Some(e)) => {
+                        return match e.value {
+                            crate::page::PropertyValue::StringRef(h) => {
+                                parking_lot::RwLockReadGuard::try_map(guard, |pz| {
+                                    pz.read_heap_view(h)
+                                        .and_then(|b| std::str::from_utf8(b).ok())
+                                })
+                                .ok()
+                                .map(StrView::Zone)
+                            }
+                            // Valeur présente mais non-String : pas de vue.
+                            _ => None,
+                        };
+                    }
+                    Ok(None) | Err(_) => {
+                        // Rien sur la chaîne v2 (ou zone illisible — même
+                        // politique de repli que `lookup_node_property_v2`) :
+                        // on retombe sur la DashMap héritée.
                     }
                 }
             }
@@ -11121,7 +11031,7 @@ impl SubstrateStore {
     /// sur une propriété `String` d'une arête vivante.
     ///
     /// Ordre de résolution IDENTIQUE à
-    /// [`Self::lire_propriete_arete_vivante`] moins les colonnes
+    /// `Self::lire_propriete_arete_vivante` moins les colonnes
     /// vectorielles (une vue str ne s'y pose pas) : colonnes blob
     /// (`EntityKind::Edge`) → chaîne PropsZone v2 de l'arête
     /// (`EdgeRecord.first_prop_off`, sémantique LWW/tombstone) → DashMap
@@ -11148,39 +11058,39 @@ impl SubstrateStore {
         //    `lookup_edge_property_v2` : l'entrée (petite, possédée) est
         //    résolue d'abord, PUIS la garde est mappée sur les octets du
         //    heap — une seule marche de chaîne.
-        if let Some(pz_lock) = self.props_zone.as_ref() {
-            if let Ok(Some(rec)) = self.writer.read_edge(id.0) {
-                let tete = match rec.first_prop_off.to_u64() {
-                    0 => None,
-                    v => Some(v),
-                };
-                let pkid = self.prop_keys.read().lookup(key);
-                if let Some(pkid) = pkid {
-                    let guard = pz_lock.read();
-                    match guard.get_latest_for_key_unite(tete, pkid) {
-                        Ok(Some(e)) if e.is_tombstone() => {
-                            // LWW : la tombstone masque aussi la DashMap.
-                            return None;
-                        }
-                        Ok(Some(e)) => {
-                            return match e.value {
-                                crate::page::PropertyValue::StringRef(h) => {
-                                    parking_lot::RwLockReadGuard::try_map(guard, |pz| {
-                                        pz.read_heap_view(h)
-                                            .and_then(|b| std::str::from_utf8(b).ok())
-                                    })
-                                    .ok()
-                                    .map(StrView::Zone)
-                                }
-                                // Valeur présente mais non-String : pas de vue.
-                                _ => None,
-                            };
-                        }
-                        Ok(None) | Err(_) => {
-                            // Rien sur la chaîne v2 (ou zone illisible — même
-                            // politique de repli que `lookup_edge_property_v2`) :
-                            // on retombe sur la DashMap héritée.
-                        }
+        if let Some(pz_lock) = self.props_zone.as_ref()
+            && let Ok(Some(rec)) = self.writer.read_edge(id.0)
+        {
+            let tete = match rec.first_prop_off.to_u64() {
+                0 => None,
+                v => Some(v),
+            };
+            let pkid = self.prop_keys.read().lookup(key);
+            if let Some(pkid) = pkid {
+                let guard = pz_lock.read();
+                match guard.get_latest_for_key_unite(tete, pkid) {
+                    Ok(Some(e)) if e.is_tombstone() => {
+                        // LWW : la tombstone masque aussi la DashMap.
+                        return None;
+                    }
+                    Ok(Some(e)) => {
+                        return match e.value {
+                            crate::page::PropertyValue::StringRef(h) => {
+                                parking_lot::RwLockReadGuard::try_map(guard, |pz| {
+                                    pz.read_heap_view(h)
+                                        .and_then(|b| std::str::from_utf8(b).ok())
+                                })
+                                .ok()
+                                .map(StrView::Zone)
+                            }
+                            // Valeur présente mais non-String : pas de vue.
+                            _ => None,
+                        };
+                    }
+                    Ok(None) | Err(_) => {
+                        // Rien sur la chaîne v2 (ou zone illisible — même
+                        // politique de repli que `lookup_edge_property_v2`) :
+                        // on retombe sur la DashMap héritée.
                     }
                 }
             }
@@ -11302,15 +11212,14 @@ impl SubstrateStore {
                     match pz.get_latest_for_key_unite(tete, pkid) {
                         Ok(Some(e)) if e.is_tombstone() => {}
                         Ok(Some(e)) => {
-                            if let crate::page::PropertyValue::StringRef(h) = e.value {
-                                if let Some(s) = pz
+                            if let crate::page::PropertyValue::StringRef(h) = e.value
+                                && let Some(s) = pz
                                     .read_heap_view(h)
                                     .and_then(|b| std::str::from_utf8(b).ok())
-                                {
-                                    servies += 1;
-                                    if f(NodeId(u64::from(slot)), s).is_break() {
-                                        return Ok(servies);
-                                    }
+                            {
+                                servies += 1;
+                                if f(NodeId(u64::from(slot)), s).is_break() {
+                                    return Ok(servies);
                                 }
                             }
                         }
@@ -11744,8 +11653,6 @@ impl SubstrateStore {
         snap.persist(&path)
     }
 
-    /// Number of node slots handed out so far (including tombstoned).
-
     /// (feat conversations µs) Id de type d'arête PART_OF (interne).
     fn part_of_type_id(&self) -> u16 {
         self.intern_edge_type("PART_OF").unwrap_or(u16::MAX)
@@ -11795,14 +11702,14 @@ impl SubstrateStore {
 
     /// (feat conversations µs) Arêtes PART_OF entrantes d'une session.
     pub fn messages_de_session(&self, session_slot: u32) -> Vec<u64> {
-        if self.count_messages_de_session(session_slot).is_some() {
-            if let Some(rp) = self.reverse_part_of.read().as_ref() {
-                return rp
-                    .par_session
-                    .get(&session_slot)
-                    .cloned()
-                    .unwrap_or_default();
-            }
+        if self.count_messages_de_session(session_slot).is_some()
+            && let Some(rp) = self.reverse_part_of.read().as_ref()
+        {
+            return rp
+                .par_session
+                .get(&session_slot)
+                .cloned()
+                .unwrap_or_default();
         }
         Vec::new()
     }
@@ -11822,16 +11729,17 @@ impl SubstrateStore {
         if edge_type != self.part_of_type_id() {
             return;
         }
-        if let Some(rp) = self.reverse_part_of.write().as_mut() {
-            if let Some(liste) = rp.par_session.get_mut(&dst) {
-                liste.retain(|&e| e != edge_id);
-                if liste.is_empty() {
-                    rp.par_session.remove(&dst);
-                }
+        if let Some(rp) = self.reverse_part_of.write().as_mut()
+            && let Some(liste) = rp.par_session.get_mut(&dst)
+        {
+            liste.retain(|&e| e != edge_id);
+            if liste.is_empty() {
+                rp.par_session.remove(&dst);
             }
         }
     }
 
+    /// Number of node slots handed out so far (including tombstoned).
     pub fn slot_high_water(&self) -> u32 {
         self.next_node_id.load(Ordering::Acquire)
     }
@@ -12029,7 +11937,7 @@ impl SubstrateStore {
     /// Create a node whose `community_id` is known at insert time
     /// (T11 Step 3 — online community-local allocation).
     ///
-    /// The slot is chosen by [`Self::allocate_node_id_in_community`] so
+    /// The slot is chosen by `Self::allocate_node_id_in_community` so
     /// successive inserts into the same community land in the same 4 KiB
     /// page whenever possible, preserving community contiguity without a
     /// full bulk-sort pass.
@@ -12626,7 +12534,7 @@ impl SubstrateStore {
     /// `None` if that community has never been used in this store).
     /// Exposed for tests and for the CommunityWarden (Step 4).
     ///
-    /// **T17g T1**: routes via [`Self::community_ranges`] which lazy-builds
+    /// **T17g T1**: routes via `Self::community_ranges` which lazy-builds
     /// the range maps on first call.
     pub fn last_slot_for_community(&self, community_id: u32) -> Option<u32> {
         self.community_ranges()
@@ -12645,7 +12553,7 @@ impl SubstrateStore {
     /// compaction: see [`Self::refresh_community_ranges`] and the
     /// `CommunityRanges` struct docs.
     ///
-    /// **T17g T1**: routes via [`Self::community_ranges`] which lazy-builds
+    /// **T17g T1**: routes via `Self::community_ranges` which lazy-builds
     /// the range maps on first call.
     pub fn first_slot_for_community(&self, community_id: u32) -> Option<u32> {
         self.community_ranges()
@@ -12830,6 +12738,7 @@ impl SubstrateStore {
     /// Scan exact sur une plage de slots [first..=last] (contrainte
     /// communaute). Partage entre `window_query_2d` et les replis de la
     /// voie acceleree.
+    #[allow(clippy::too_many_arguments)] // une borne de fenêtre par paramètre, comme `window_query_2d`
     fn window_scan_range_2d(
         &self,
         community_id: u32,
@@ -12906,10 +12815,10 @@ impl SubstrateStore {
         let generation = self.zrows_gen.load(Ordering::Acquire);
         {
             let cache = self.zrows_cache.read();
-            if let Some(cached) = cache.get(&community_id) {
-                if cached.generation == generation {
-                    return Ok(Some(Arc::clone(cached)));
-                }
+            if let Some(cached) = cache.get(&community_id)
+                && cached.generation == generation
+            {
+                return Ok(Some(Arc::clone(cached)));
             }
         }
         let (order, max_degree, mut rows) = {
@@ -13046,7 +12955,7 @@ impl SubstrateStore {
     /// a `CompactCommunity` cycle moves nodes to fresh slots that the
     /// allocator didn't see. Cost: O(node_high_water) Nodes-zone scan.
     ///
-    /// **T17g T1**: routes via [`Self::community_ranges`] to force the
+    /// **T17g T1**: routes via `Self::community_ranges` to force the
     /// lazy build first (in case this is called before any other accessor),
     /// then clears and re-scans into the same DashMaps. The `OnceLock`
     /// stays initialized — only the contents are mutated.
@@ -15550,7 +15459,7 @@ impl SubstrateStore {
         }
     }
 
-    /// Public, idempotent handle to [`Self::clear_hilbert_sorted_flag`]
+    /// Public, idempotent handle to `Self::clear_hilbert_sorted_flag`
     /// used by the [`crate::warden::CommunityWarden`] to force a
     /// `bulk_sort_by_hilbert` re-run after it decides a community is too
     /// fragmented. A no-op if the flag is already clear.
@@ -15789,17 +15698,16 @@ impl SubstrateStore {
                 |g| u16::try_from(g).ok(),
             )?
         };
-        if neuf {
-            if let Err(e) = self
+        if neuf
+            && let Err(e) = self
                 .writer
                 .append_payload(crate::wal::WalPayload::EdgeTypeIntern {
                     type_id: id,
                     name: name.to_string(),
                 })
-            {
-                tracing::warn!(edge_type = %name, error = %e,
+        {
+            tracing::warn!(edge_type = %name, error = %e,
                     "EdgeTypeIntern non journalise — un crash avant flush perdrait ce nom");
-            }
         }
         Ok(id)
     }
@@ -16012,7 +15920,7 @@ impl SubstrateStore {
             want_first_off.insert(*src, *slots.last().unwrap());
         }
         let mut want_next_to: HashMap<u64, u64> = HashMap::new();
-        for (_dst, slots) in &by_dst {
+        for slots in by_dst.values() {
             for i in 0..slots.len() {
                 let prev = if i == 0 { 0 } else { slots[i - 1] };
                 want_next_to.insert(slots[i], prev);
@@ -16057,16 +15965,16 @@ impl SubstrateStore {
         //     mortes, ou dont la tete designait une arete morte / mal-routee.
         let mut first_off_fixed: u64 = 0;
         for nid in 0..node_hw {
-            let Some(mut nr) = self.writer.read_node(nid as u32)? else {
+            let Some(mut nr) = self.writer.read_node(nid)? else {
                 continue;
             };
             let want =
-                Self::edge_slot_to_offset(EdgeId(*want_first_off.get(&(nid as u32)).unwrap_or(&0)));
+                Self::edge_slot_to_offset(EdgeId(*want_first_off.get(&{ nid }).unwrap_or(&0)));
             if nr.first_edge_off != want {
                 nr.first_edge_off = want;
                 first_off_fixed += 1;
                 if !dry_run {
-                    self.writer.update_node(nid as u32, nr)?;
+                    self.writer.update_node(nid, nr)?;
                 }
             }
         }
@@ -16688,16 +16596,16 @@ fn valeur_dans_intervalle(
 /// se désiste dans `candidats_ordonnes` ; ici, sur les VALEURS, elle
 /// s'applique toujours.
 fn comparer_ordonnable(a: &OrderableValue, b: &OrderableValue) -> std::cmp::Ordering {
-    if let (OrderableValue::String(x), OrderableValue::String(y)) = (a, b) {
-        if let (Some(i), Some(j)) = (
+    if let (OrderableValue::String(x), OrderableValue::String(y)) = (a, b)
+        && let (Some(i), Some(j)) = (
             obrain_common::types::value_cmp::instant_de_chaine(x),
             obrain_common::types::value_cmp::instant_de_chaine(y),
-        ) {
-            // Ordre PRODUIT (instant, puis chaîne) — la même règle que
-            // `value_cmp::comparer`, à l'identique : deux écritures
-            // distinctes d'un même instant restent strictement ordonnées.
-            return i.cmp(&j).then_with(|| x.cmp(y));
-        }
+        )
+    {
+        // Ordre PRODUIT (instant, puis chaîne) — la même règle que
+        // `value_cmp::comparer`, à l'identique : deux écritures
+        // distinctes d'un même instant restent strictement ordonnées.
+        return i.cmp(&j).then_with(|| x.cmp(y));
     }
     a.cmp(b)
 }
@@ -16909,7 +16817,7 @@ impl SubstrateStore {
     /// — approximatif ET rembourré à `L2_DIM`. Le recall exige un score cosinus
     /// EXACT en f32 pleine largeur (1024 dim) et des filtres identiques à
     /// aujourd'hui. On lit donc directement le veccol dense via
-    /// [`VecColumnRegistry::read_nonzero`] (qui applique la sentinelle
+    /// `VecColumnRegistry::read_nonzero` (qui applique la sentinelle
     /// all-zero = absent) et on calcule le cosinus exact, parallélisé par rayon.
     ///
     /// DÉTERMINISME. Le tri final est `(similarité desc, node-offset asc)` :
@@ -17595,28 +17503,28 @@ impl SubstrateStore {
                         continue;
                     }
                     let mut tranche_a_repondu = false;
-                    if let (Some(pz), Some(pkid)) = (pz.as_ref(), pkid) {
-                        if tetes[i].to_u64() != 0 {
-                            match pz.get_latest_for_key_unite(Some(tetes[i].to_u64()), pkid) {
-                                // LWW : la pierre tombale gagne, et INTERDIT le
-                                // repli DashMap — exactement `Some(None)`.
-                                Ok(Some(e)) if e.is_tombstone() => tranche_a_repondu = true,
-                                Ok(Some(e)) => match decode_value(pz, &e.value) {
-                                    Ok(v) => {
-                                        out[i] = Some(v);
-                                        tranche_a_repondu = true;
-                                    }
-                                    Err(err) => tracing::warn!(
-                                        node_id = ids[i].0, key = %key, error = %err,
-                                        "props zone v2 decode failed — falling back to DashMap"
-                                    ),
-                                },
-                                Ok(None) => {}
+                    if let (Some(pz), Some(pkid)) = (pz.as_ref(), pkid)
+                        && tetes[i].to_u64() != 0
+                    {
+                        match pz.get_latest_for_key_unite(Some(tetes[i].to_u64()), pkid) {
+                            // LWW : la pierre tombale gagne, et INTERDIT le
+                            // repli DashMap — exactement `Some(None)`.
+                            Ok(Some(e)) if e.is_tombstone() => tranche_a_repondu = true,
+                            Ok(Some(e)) => match decode_value(pz, &e.value) {
+                                Ok(v) => {
+                                    out[i] = Some(v);
+                                    tranche_a_repondu = true;
+                                }
                                 Err(err) => tracing::warn!(
                                     node_id = ids[i].0, key = %key, error = %err,
-                                    "props zone v2 read failed — falling back to DashMap"
+                                    "props zone v2 decode failed — falling back to DashMap"
                                 ),
-                            }
+                            },
+                            Ok(None) => {}
+                            Err(err) => tracing::warn!(
+                                node_id = ids[i].0, key = %key, error = %err,
+                                "props zone v2 read failed — falling back to DashMap"
+                            ),
                         }
                     }
                     if !tranche_a_repondu {
@@ -18422,12 +18330,11 @@ impl GraphStore for SubstrateStore {
                             Ok(Some(e)) => {
                                 repondu = true;
                                 if let crate::page::PropertyValue::StringRef(h) = e.value {
-                                    if let Some(octets) = pz.read_heap_slice(h) {
+                                    {
+                                        let octets = pz.read_heap_slice(h)?;
                                         for (k, predicat) in predicats.iter().enumerate() {
                                             out[k][i] = predicat.verdict(octets);
                                         }
-                                    } else {
-                                        return None;
                                     }
                                 }
                                 // Valeur présente mais NON textuelle : NULL.
@@ -20269,11 +20176,11 @@ impl GraphStore for SubstrateStore {
         for hits in [candidats_v2, candidats_blob].into_iter().flatten() {
             for lot in hits.chunks(LOT_REVERIF) {
                 let valeurs = self.get_node_property_batch(lot, &key);
-                out.extend(lot.iter().zip(valeurs).filter_map(|(id, v)| {
-                    v.as_ref()
-                        .is_some_and(|v| dans_les_bornes(v))
-                        .then_some(*id)
-                }));
+                out.extend(
+                    lot.iter().zip(valeurs).filter_map(|(id, v)| {
+                        v.as_ref().is_some_and(dans_les_bornes).then_some(*id)
+                    }),
+                );
             }
         }
         out.sort_by_key(|n| n.0);
@@ -21726,7 +21633,7 @@ impl SubstrateStore {
     fn reparer_colonne_degres_en_place(&self) -> SubstrateResult<()> {
         let cellule = self.degrees();
         {
-            let mut w = cellule.write();
+            let w = cellule.write();
             let n = w.n_slots();
             for slot in 0..n {
                 let o = w.out_degree(slot);
@@ -21740,7 +21647,7 @@ impl SubstrateStore {
             }
         }
         let edge_hw = self.next_edge_id.load(Ordering::Acquire);
-        let mut incoherent = false;
+        let incoherent = false;
         self.writer.for_each_edge_record(edge_hw, |_slot, rec| {
             if rec.flags & crate::record::edge_flags::TOMBSTONED != 0 {
                 return true;
@@ -24082,13 +23989,6 @@ impl SubstrateStore {
     pub(crate) fn nom_de_cle_prop(&self, id: u16) -> Option<ArcStr> {
         self.prop_keys.read().name_for(id)
     }
-
-    /// Borne haute des slots d'aretes distribues — la meme que
-    /// [`Self::edge_slot_high_water`], exposee ici pour que le scan puisse
-    /// dimensionner ses compteurs sans dependre de l'API publique.
-    pub(crate) fn borne_slots_aretes(&self) -> u64 {
-        self.next_edge_id.load(Ordering::Acquire)
-    }
 }
 
 impl Drop for SubstrateStore {
@@ -24514,12 +24414,12 @@ mod tests {
             for i in 0..20usize {
                 let _ = s.create_edge(lot2[i % 25], lot1[i], "T");
             }
-            for i in 0..10usize {
+            for &n in &lot1[..10] {
                 // Les 10 premiers sont des nœuds « A » seuls.
-                assert!(s.delete_node(lot1[i]));
+                assert!(s.delete_node(n));
             }
-            for i in 0..15usize {
-                assert!(s.delete_edge(aretes1[i]));
+            for &e in &aretes1[..15] {
+                assert!(s.delete_edge(e));
             }
             s.fsync_wal().unwrap();
             s.deverrouiller_pour_simuler_un_kill();
@@ -24765,7 +24665,7 @@ mod tests {
 
         // Chemin unitaire (sémantique de référence) via le trait
         // GraphStoreMut (compteurs labels/types maintenus).
-        let (td, s_u) = store();
+        let (_td, s_u) = store();
         let gm: &dyn obrain_core::graph::traits::GraphStoreMut = &s_u;
         let mut ids: Vec<NodeId> = Vec::new();
         for l in &labels {
@@ -26737,10 +26637,10 @@ mod tests {
                 aretes,
                 "{etape} : total_live_edges contre balayage"
             );
-            for bit in 0..64usize {
+            for (bit, attendu) in par_bit.iter().enumerate() {
                 assert_eq!(
                     s.label_live_counts[bit].load(Ordering::Relaxed),
-                    par_bit[bit],
+                    *attendu,
                     "{etape} : label_live_counts[{bit}] contre balayage"
                 );
             }
@@ -27263,14 +27163,14 @@ mod tests {
         let key = PropertyKey::new("age");
         let res = s.get_node_property_batch(&ids, &key);
         assert_eq!(res.len(), N, "un résultat par identifiant d'entrée");
-        for i in 0..N {
+        for (i, obtenu) in res.iter().enumerate() {
             let attendu = if sans_valeur.contains(&i) || supprimes.contains(&i) {
                 None
             } else {
                 Some(Value::Int64(1000 + i as i64))
             };
             assert_eq!(
-                res[i],
+                *obtenu,
                 attendu,
                 "indice {i} (tranche {}, position {}) — un décalage de tranche \
                  rend ici la valeur d'un autre nœud",
@@ -28146,7 +28046,7 @@ mod tests {
         const THREADS: usize = 4;
         const PAR_THREAD: usize = 60;
         let mut handles = Vec::new();
-        for t in 0..THREADS {
+        for _ in 0..THREADS {
             let store = Arc::clone(&s);
             handles.push(std::thread::spawn(move || {
                 // Chaque thread écrit depuis un nœud source distinct. Le
@@ -30286,16 +30186,16 @@ mod tests {
         let reader = crate::wal_io::WalReader::open(path).expect("open wal");
         let mut total = 0u64;
         for item in reader.iter_from(0) {
-            if let Ok((rec, _, _)) = item {
-                if matches!(
+            if let Ok((rec, _, _)) = item
+                && matches!(
                     rec.payload,
                     WalPayload::PropSetInline { .. }
                         | WalPayload::PropRemoveInline { .. }
                         | WalPayload::EdgePropSetInline { .. }
                         | WalPayload::EdgePropRemoveInline { .. }
-                ) {
-                    total += 1;
-                }
+                )
+            {
+                total += 1;
             }
         }
         total
@@ -30509,7 +30409,7 @@ mod tests {
             // Communautés alternées → la permutation hilbert REGROUPE les
             // communautés par blocs : déplacement massif garanti.
             for i in 0..n {
-                let id = s.create_node_in_community(&["L"], (i % 2) as u32);
+                let id = s.create_node_in_community(&["L"], i % 2);
                 s.set_node_property(id, "p0", Value::Int64(i as i64));
                 s.set_node_property(id, "p1", Value::Int64((i as i64) * 1000));
             }
@@ -30868,7 +30768,7 @@ mod tests {
             s1 = a.0 as u32;
             s2 = b.0 as u32;
             let mut derniere = a;
-            for i in 0..3 {
+            for _ in 0..3 {
                 let m = s.create_node(&["Message"]);
                 let e = s.create_edge(m, a, "PART_OF");
                 part_of.push((e.0, a.0 as u32));
@@ -37316,19 +37216,19 @@ mod tests {
         s2.retirer_declaration_procedure("absent").unwrap();
     }
 
-    /// ═══════════════════════════════════════════════════════════════════════
-    /// LA COLONNE DE DEGRÉS GÉNÉRIQUE PROUVE SA COHÉRENCE (2026-09-12)
-    ///
-    /// Défaut mesuré sur `runtime-dev` : `out_degree` annonçait 48 253 968
-    /// arêtes sortantes pour un nœud qui en compte 28 368, dans un graphe de
-    /// 1 243 111 arêtes. La colonne était INTACTE — magic, version et CRC
-    /// valides — et parfaitement fausse : `DegreeColumn::open` ne vérifie que
-    /// l'intégrité du fichier, jamais sa cohérence avec le graphe. Elle était
-    /// donc servie telle quelle, sans un mot.
-    ///
-    /// Ces tests ancrent les deux faces : une colonne IMPOSSIBLE est détectée
-    /// (et reconstruite à la réouverture), une colonne JUSTE n'est pas touchée.
-    /// ═══════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════
+    // LA COLONNE DE DEGRÉS GÉNÉRIQUE PROUVE SA COHÉRENCE (2026-09-12)
+    //
+    // Défaut mesuré sur `runtime-dev` : `out_degree` annonçait 48 253 968
+    // arêtes sortantes pour un nœud qui en compte 28 368, dans un graphe de
+    // 1 243 111 arêtes. La colonne était INTACTE — magic, version et CRC
+    // valides — et parfaitement fausse : `DegreeColumn::open` ne vérifie que
+    // l'intégrité du fichier, jamais sa cohérence avec le graphe. Elle était
+    // donc servie telle quelle, sans un mot.
+    //
+    // Ces tests ancrent les deux faces : une colonne IMPOSSIBLE est détectée
+    // (et reconstruite à la réouverture), une colonne JUSTE n'est pas touchée.
+    // ═══════════════════════════════════════════════════════════════════════
 
     /// La détection elle-même : une colonne qui ne PEUT PAS être vraie.
     #[test]

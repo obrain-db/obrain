@@ -3,7 +3,7 @@
 //! Une requête peut appeler une fonction que le moteur ne connaît pas :
 //! `obrain.energy(n)`, `mon_algo(x)`, une métrique cognitive branchée par un
 //! embedder. Jusqu'ici, l'évaluateur répondait — en toute honnêteté, mais
-//! sèchement — « fonction inconnue : <nom> », et **rien** ne pouvait étendre le
+//! sèchement — « fonction inconnue : `<nom>` », et **rien** ne pouvait étendre le
 //! vocabulaire : le registre de plugins d'`obrain-adapters`
 //! (`PluginRegistry::register_udf`) existait, était thread-safe, documenté
 //! comme « résolu au moment du planning »… et n'était lu par personne.
@@ -16,7 +16,8 @@
 //! noyau l'appelle avant de conclure à une faute de frappe.
 //!
 //! Le crochet est unique et se pose une fois par processus
-//! ([`installer`] rend `false` si un autre hôte l'a déjà pris) : deux
+//! ([`installer`](crate::execution::fonction_hote::installer) rend `false` si
+//! un autre hôte l'a déjà pris) : deux
 //! résolveurs concurrents rendraient la réponse dépendante de l'ordre
 //! d'initialisation, ce qui est exactement le genre de flottement qu'un
 //! vocabulaire ne doit pas avoir.

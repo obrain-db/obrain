@@ -3,8 +3,8 @@
 //! Captures performance signals from work sessions for kernel adaptation.
 //!
 //! Each session produces a [`SessionMetric`] node in the graph, linked
-//! to the [`KernelParam`]s it measures via `MEASURES` edges. The
-//! [`KernelAdaptation`] loop (T3) uses these metrics to adjust parameters.
+//! to the [`KernelParam`](crate::kernel_params::KernelParam)s it measures via `MEASURES` edges. The
+//! `KernelAdaptation` loop (T3) uses these metrics to adjust parameters.
 //!
 //! ## Metrics Captured
 //!

@@ -91,7 +91,7 @@ pub struct CodeGraph {
     /// par type (Fonction, File…) sans scanner les 1,5 M nœuds du kernel.
     by_kind: HashMap<NodeKind, Vec<usize>>,
     /// colonnes de métriques alignées sur `nodes` (par position) — le
-    /// top-k lit un Vec<i64> sans hash lookup par nœud (238 ms → ~1 ms
+    /// top-k lit un `Vec<i64>` sans hash lookup par nœud (238 ms → ~1 ms
     /// sur les 650 k fonctions du kernel).
     metric_columns: HashMap<&'static str, Vec<i64>>,
     /// top-N pré-triés (kind, métrique) → positions triées desc — construit

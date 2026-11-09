@@ -15,8 +15,7 @@ fn qc(db: &ObrainDB, tag: &str) {
         Ok(r) => r
             .rows
             .first()
-            .map(|row| format!("{:?}", row))
-            .unwrap_or_else(|| "?".into()),
+            .map_or_else(|| "?".into(), |row| format!("{:?}", row)),
         Err(e) => format!("ERR {e:?}"),
     };
     let t_n = t0.elapsed().as_secs_f64();
@@ -25,14 +24,14 @@ fn qc(db: &ObrainDB, tag: &str) {
         Ok(r) => r
             .rows
             .first()
-            .map(|row| format!("{:?}", row))
-            .unwrap_or_else(|| "?".into()),
+            .map_or_else(|| "?".into(), |row| format!("{:?}", row)),
         Err(e) => format!("ERR {e:?}"),
     };
     let t_e = t1.elapsed().as_secs_f64();
     println!("[QC {tag}] count(n)={nodes} ({t_n:.2}s) · count(r)={edges} ({t_e:.2}s)");
 }
 
+#[allow(unsafe_code)] // set_var (unsafe en édition 2024) au démarrage, avant tout fil
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let base = args.first().expect("usage: qcbase <base_dir>");

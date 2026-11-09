@@ -21,6 +21,7 @@
 //!     et la pente donne le coût par version morte.
 
 use obrain_engine::ObrainDB;
+use std::fmt::Write as _;
 use web_time::Instant;
 
 fn pct(sorted: &[u128], p: f64) -> u128 {
@@ -81,7 +82,7 @@ fn main() {
         let session = db.session();
         let mut stmt = String::new();
         for i in 0..5_000 {
-            stmt.push_str(&format!("INSERT (:Filler {{id: 'fill_{i:06}', v: {i}}})\n"));
+            let _ = writeln!(stmt, "INSERT (:Filler {{id: 'fill_{i:06}', v: {i}}})");
             if (i + 1) % 500 == 0 {
                 session.execute(stmt.trim_end()).expect("fill");
                 stmt.clear();
@@ -99,7 +100,7 @@ fn main() {
     // Paliers cumulatifs : chaque étape ajoute des réécritures au MÊME nœud.
     let steps = [1usize, 100, 250, 500, 1000, 2000, 4000, 8000];
     let mut done = 0usize;
-    for &target in steps.iter() {
+    for &target in &steps {
         if target > max_rewrites {
             break;
         }
@@ -108,14 +109,12 @@ fn main() {
         done = target;
 
         // Taille sur disque : révèle l'accumulation append-only.
-        let size: u64 = std::fs::read_dir(dir.path())
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .filter_map(|e| e.metadata().ok())
-                    .map(|m| m.len())
-                    .sum()
-            })
-            .unwrap_or(0);
+        let size: u64 = std::fs::read_dir(dir.path()).map_or(0, |rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum()
+        });
 
         if first_p50.is_none() {
             first_p50 = Some(p50 as f64);

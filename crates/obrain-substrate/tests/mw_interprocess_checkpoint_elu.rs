@@ -91,7 +91,7 @@ fn auditer_wal(wal: &Path) -> (Vec<String>, Option<(u64, u64)>, usize, u64) {
     let mut erreurs = 0usize;
     let mut min = u64::MAX;
     let mut it = r.iter_from(0);
-    while let Some(item) = it.next() {
+    for item in it.by_ref() {
         match item {
             Ok((rec, _, _)) => {
                 min = min.min(rec.lsn);

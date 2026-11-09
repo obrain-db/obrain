@@ -107,7 +107,7 @@
 //!
 //! ## Replay
 //!
-//! [`WalReader::iter_from(offset)`] yields decoded `(record, offset, length)`
+//! `WalReader::iter_from(offset)` yields decoded `(record, offset, length)`
 //! tuples starting at `offset`. Decoding stops at the first frame that fails
 //! CRC or short-reads — that's the crash boundary. A TROU (zero run followed by
 //! data) is a different thing entirely and is reported as an error, not as a
@@ -1083,7 +1083,7 @@ fn publier_ancre_sur(chemin: &Path, ancre: u64, plancher: u64) -> SubstrateResul
 /// Un nom partagé (`<ancre>.tmp`) fait échouer le `rename` du second publieur en
 /// ENOENT — le premier a déjà emporté le fichier. Un temporaire unique par appel
 /// ne peut être emporté que par nous-mêmes.
-/// Pendant de [`chemin_tmp_ancre`] pour les AUTRES publications atomiques
+/// Pendant de `chemin_tmp_ancre` pour les AUTRES publications atomiques
 /// (dictionnaire, propriétés) : tout fichier écrit « tmp + rename » par plusieurs
 /// processus doit porter un temporaire UNIQUE PAR APPEL, sans quoi le `rename` du
 /// perdant échoue en `ENOENT` sur le fichier du gagnant.
@@ -1140,7 +1140,7 @@ pub fn chemin_fence_checkpoint(wal: &Path) -> PathBuf {
 /// ── POURQUOI UNE ÉLECTION, ET PAS SEULEMENT UNE ANCRE ATOMIQUE ──────────────
 /// La publication de l'ancre est atomique (`publier_ancre_sur`, tmp+rename+
 /// fsync), mais un checkpoint n'est PAS une seule opération atomique : c'est
-/// [avancer l'ancre] PUIS [tronquer]. Entre les deux, le fichier et l'ancre sont
+/// \[avancer l'ancre\] PUIS \[tronquer\]. Entre les deux, le fichier et l'ancre sont
 /// désaccordés — c'est précisément la fenêtre pendant laquelle une troncature
 /// concurrente ferait recouvrir les LSN du nouveau segment sur ceux du précédent.
 /// Deux processus qui checkpointent en même temps avancent donc chacun l'ancre de
@@ -2776,10 +2776,10 @@ impl WalWriter {
         // Longueur du tampon POSÉ, relevée AVANT la remise en place (la
         // télémétrie en a besoin, et `tampon` est ensuite rendu au groupe).
         let octets_poses = tampon.len() as u64;
-        if DiagGroupe::actif() {
-            if let Some(t) = t_pose {
-                DiagGroupe::ajouter(&self.diag.pose_ns, t.elapsed());
-            }
+        if DiagGroupe::actif()
+            && let Some(t) = t_pose
+        {
+            DiagGroupe::ajouter(&self.diag.pose_ns, t.elapsed());
         }
         guard.groupe.tampon = tampon;
         match resultat {
@@ -2889,14 +2889,6 @@ impl WalWriter {
             .spawn(move || veiller_la_needle(veille, faible));
     }
 
-    /// Le seuil de temps en vigueur, SANS prendre le verrou d'écriture : c'est
-    /// le miroir atomique [`SEUIL_TEMPS`] publié à l'armement et par le seam
-    /// `forcer_seuil_temps`. Le veilleur en a besoin pour recalculer une échéance
-    /// sans inverser l'ordre des verrous (voir le corps de `veiller_la_needle`).
-    fn seuil_temps_du_veilleur(&self) -> Duration {
-        Duration::from_nanos(self.seuil_temps_ns.load(Ordering::Acquire))
-    }
-
     /// Le group commit est-il armé ?
     pub fn group_commit_actif(&self) -> bool {
         self.group_actif.load(Ordering::Acquire)
@@ -2906,7 +2898,7 @@ impl WalWriter {
     ///
     /// Renvoie une ligne unique et stable (`gc-diag ...`) : c'est ce qui a permis
     /// de localiser la régression ×0,42-0,60 de 2026-10-06 sans deviner (voir
-    /// [`DiagGroupe`]). Zéros si `OBRAIN_GC_DIAG` n'est pas posé — la télémétrie
+    /// `DiagGroupe`). Zéros si `OBRAIN_GC_DIAG` n'est pas posé — la télémétrie
     /// est INERTE par défaut, et le chemin d'écriture ne paie qu'un `load`.
     pub fn diagnostic_group_commit(&self) -> String {
         self.diag.lignes()
@@ -3054,10 +3046,11 @@ impl WalWriter {
     /// RÉSERVÉE par un `compare_exchange`. La garantie est donc PLUS FORTE (elle
     /// ne dépend plus de la discipline de l'appelant ni de la portée d'un
     /// verrou), et elle ne coûte rien.
+    #[allow(clippy::too_many_arguments)] // chemin d'écriture commun : chaque paramètre est un fait distinct du lot
     fn poser_sous_verrou_avec_garde(
         &self,
         guard: &mut WriterInner,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
         records: usize,
         commit_dans_le_tampon: bool,
         prediction: u64,
@@ -3103,17 +3096,18 @@ impl WalWriter {
     ///   est ainsi RÉPARÉE par l'écrivain qui l'a subie, sans verrou chaud et sans
     ///   coordination : c'est le seul endroit du système qui SAIT qu'une frame a
     ///   disparu, parce que c'est le seul qui l'ait vue exister.
-    /// ── UNE SEULE FONCTION D'ÉCRITURE POUR TOUS LES CHEMINS (2026-10-06) ────
-    /// Le lot d'un `append`, le lot d'un `append_batch` et le tampon du group
-    /// commit passent par ICI : les garantir tout-ou-rien, annuler une frame
-    /// courte, détecter une troncature concurrente et ré-estampiller un lot ne
-    /// sont donc écrits qu'une fois. `records` et `commit_dans_le_tampon` sont
-    /// fournis par l'appelant parce que le tampon peut contenir N frames sans que
-    /// cette fonction ait à les décoder.
+    ///   ── UNE SEULE FONCTION D'ÉCRITURE POUR TOUS LES CHEMINS (2026-10-06) ────
+    ///   Le lot d'un `append`, le lot d'un `append_batch` et le tampon du group
+    ///   commit passent par ICI : les garantir tout-ou-rien, annuler une frame
+    ///   courte, détecter une troncature concurrente et ré-estampiller un lot ne
+    ///   sont donc écrits qu'une fois. `records` et `commit_dans_le_tampon` sont
+    ///   fournis par l'appelant parce que le tampon peut contenir N frames sans que
+    ///   cette fonction ait à les décoder.
+    #[allow(clippy::too_many_arguments)] // chemin d'écriture commun : chaque paramètre est un fait distinct du lot (commentés)
     fn poser_sous_verrou(
         &self,
         guard: &mut WriterInner,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
         records: usize,
         commit_dans_le_tampon: bool,
         // Position PRÉDITE hors verrou, sur laquelle le lot a déjà été encodé.
@@ -4287,14 +4281,13 @@ impl WalWriter {
         // checkpoint par 8 Mio, et une seule création.
         if guard.coordination != CoordinationAppend::Aucune
             && matches!(guard.medium, WalMedium::File(_))
+            && let Some(reg) = self.registre(&mut guard)
         {
-            if let Some(reg) = self.registre(&mut guard) {
-                reg.fin_publiee().store(0, Ordering::Release);
-                reg.ancre_partagee().fetch_max(nouvelle, Ordering::AcqRel);
-                let generation = reg.generation().fetch_add(1, Ordering::AcqRel) + 1;
-                self.reg_generation_vue.store(generation, Ordering::Release);
-                self.reg_fin_connue.store(0, Ordering::Release);
-            }
+            reg.fin_publiee().store(0, Ordering::Release);
+            reg.ancre_partagee().fetch_max(nouvelle, Ordering::AcqRel);
+            let generation = reg.generation().fetch_add(1, Ordering::AcqRel) + 1;
+            self.reg_generation_vue.store(generation, Ordering::Release);
+            self.reg_fin_connue.store(0, Ordering::Release);
         }
         Ok(nouvelle)
     }
@@ -5165,7 +5158,7 @@ mod tests {
             .iter_from(0)
             .filter_map(|it| it.ok().map(|(_, at, used)| (at, used)))
             .collect();
-        let (at, used) = bornes
+        let (at, _) = bornes
             .iter()
             .copied()
             .find(|(at, used)| idx >= *at as usize && idx < *at as usize + used)
@@ -5271,7 +5264,7 @@ mod tests {
         let r = WalReader::open(&wal).unwrap();
         let mut it = r.iter_from(0);
         let mut n = 0;
-        while let Some(item) = it.next() {
+        for item in it.by_ref() {
             item.expect("aucun enregistrement corrompu");
             n += 1;
         }
@@ -5335,11 +5328,9 @@ mod tests {
         let mut it = r.iter_from(0);
         let mut fin_du_9e = 0u64;
         let mut lus = 0usize;
-        while let Some(item) = it.next() {
-            if let Ok((_, off, len)) = item {
-                fin_du_9e = off + len as u64;
-                lus += 1;
-            }
+        for (_, off, len) in it.by_ref().flatten() {
+            fin_du_9e = off + len as u64;
+            lus += 1;
         }
         assert_eq!(lus, 9, "la dixième frame est incomplète");
         assert!(it.queue_incomplete());
@@ -5371,7 +5362,7 @@ mod tests {
         let mut n = 0usize;
         let mut last = 0u64;
         let mut dernier_offset = 0u64;
-        while let Some(item) = it.next() {
+        for item in it.by_ref() {
             let (rec, off, len) = item.expect("aucune erreur après réparation");
             assert!(rec.lsn > last, "les LSN sont strictement croissants");
             assert_eq!(rec.lsn, w_lsn_ref(off), "lsn = ancre + position");

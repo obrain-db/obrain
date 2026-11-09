@@ -39,7 +39,6 @@ fn using_base_alias_dans_ref_et_in() {
         .expect("using base + ref(alias)");
     let store = alpha.graph_store();
     {
-        use obrain_core::graph::GraphStore;
         let n = store.nodes_by_label("Note")[0];
         assert!(
             store

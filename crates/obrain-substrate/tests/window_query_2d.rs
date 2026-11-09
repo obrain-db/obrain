@@ -30,6 +30,7 @@ fn create_with_centrality(store: &SubstrateStore, cid: u32, q16: u16) -> u64 {
     node.0
 }
 
+#[allow(clippy::too_many_arguments)] // oracle de force brute : mêmes bornes que la requête testée, une par paramètre
 fn brute(
     facts: &[NodeFact],
     deg: &std::collections::HashMap<u32, u32>,

@@ -15,10 +15,10 @@
 //!    * ZRUNS — one sorted `(zorder_key, idx)` table (built once, timed
 //!      separately), then per window: `zorder_window_ranges` → binary-search
 //!      run bounds → exact predicate re-check on every candidate.
-//!    Window area fractions: 50 %, 10 %, 1 %, 0.1 %, 0.01 % of the grid —
-//!    average over a fixed-seed set of windows per fraction. Prints
-//!    matches/window and runs/window (runs validate the quadtree
-//!    decomposition; matches are asserted equal between the two strategies).
+//!      Window area fractions: 50 %, 10 %, 1 %, 0.1 %, 0.01 % of the grid —
+//!      average over a fixed-seed set of windows per fraction. Prints
+//!      matches/window and runs/window (runs validate the quadtree
+//!      decomposition; matches are asserted equal between the two strategies).
 //!
 //! 3. **B3 — curve locality (physical-order trade-off)**: over the same
 //!    community, the distribution of |curve(p) − curve(q)| between 4-grid

@@ -31,7 +31,7 @@
 //!
 //! ## La difference de fusion, et POURQUOI aucune verification d'ordre
 //!
-//! [`PropsIndexZone::fusionner`] refuse une serie dont `(cle, slot)` n'est pas
+//! [`PropsIndexZone::fusionner`](crate::props_index::PropsIndexZone::fusionner) refuse une serie dont `(cle, slot)` n'est pas
 //! croissant, parce que sa recherche binaire par intervalle en depend. Ici, la
 //! serie est triee par l'appelant selon `comparer_total` (le comparateur EXACT
 //! du SORT du moteur), qui pour deux chaines RFC3339 compare PAR INSTANT et non
@@ -52,7 +52,7 @@
 //! Les chaines de pages sont la source de verite ; cet index n'en est qu'une
 //! projection. Corrompu / perime / d'une autre version : on le JETTE (zone vide
 //! + non fiable) et l'appelant retombe sur le balayage. Fiable UNIQUEMENT apres
-//! confrontation des ancres.
+//!   confrontation des ancres.
 
 #![allow(unsafe_code)]
 

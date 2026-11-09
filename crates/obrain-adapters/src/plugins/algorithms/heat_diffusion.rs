@@ -120,7 +120,6 @@ pub fn calibrate_sigma(
 /// d'un resultat invariant entre deux requetes.
 struct CacheVoisins {
     empreinte: u64,
-    sigma_sq: f32,
     voisins: HashMap<NodeId, Vec<(NodeId, f32)>>,
 }
 
@@ -179,13 +178,13 @@ fn empreinte_features(
     features.dimensions.hash(&mut h);
     features.features.len().hash(&mut h);
     features.raw_facettes.len().hash(&mut h);
-    for w in weights.weights.iter() {
+    for w in &weights.weights {
         w.to_bits().hash(&mut h);
     }
     // Les deux extremes : deterministes quel que soit l'ordre de la table.
     let mut mini: Option<(&NodeId, &Vec<f32>)> = None;
     let mut maxi: Option<(&NodeId, &Vec<f32>)> = None;
-    for (id, v) in features.features.iter() {
+    for (id, v) in &features.features {
         match mini {
             Some((m, _)) if m <= id => {}
             _ => mini = Some((id, v)),
@@ -204,6 +203,13 @@ fn empreinte_features(
     h.finish()
 }
 
+/// Diffuse la chaleur depuis `seeds` sur le graphe de `store`, avec un noyau
+/// gaussien sur la distance de Hilbert pondérée entre voisins (`weights`).
+///
+/// Rend les nœuds de chaleur finale non nulle après `config.iterations` pas,
+/// triés par chaleur décroissante ; vide si `seeds` ou le graphe est vide.
+/// La table des voisins est mise en cache par empreinte des features (voir
+/// `CacheVoisins`).
 pub fn heat_kernel_diffusion(
     store: &dyn GraphStore,
     features: &HilbertFeaturesResult,
@@ -346,7 +352,6 @@ pub fn heat_kernel_diffusion(
                 }
                 w.push(CacheVoisins {
                     empreinte,
-                    sigma_sq,
                     voisins: neighbor_weights.clone(),
                 });
             }

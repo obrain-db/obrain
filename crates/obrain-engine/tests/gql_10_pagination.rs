@@ -26,7 +26,7 @@
 //!   → vert : les cas de défaut ne sont pas même compilés.
 //! * `… --cfg defauts_connus (RUSTFLAGS)`
 //!   → les cas de défaut tournent et ÉCHOUENT, légitimement : ils énoncent ce
-//!     que la spécification exige et que le moteur ne fait pas encore.
+//!   que la spécification exige et que le moteur ne fait pas encore.
 #![cfg(feature = "gql")]
 
 use obrain_common::types::Value;
@@ -349,7 +349,7 @@ fn limit_negatif_est_refuse() {
         r.is_err(),
         "LIMIT -1 est hors grammaire (GQL 14.13 : unsigned integer) et doit \
          être refusé ; obtenu {} ligne(s)",
-        r.map(|r| r.rows.len()).unwrap_or(0)
+        r.map_or(0, |r| r.rows.len())
     );
 }
 
@@ -371,7 +371,7 @@ fn skip_negatif_est_refuse() {
         r.is_err(),
         "SKIP -1 est hors grammaire (GQL 14.12 : unsigned integer) et doit \
          être refusé ; obtenu {} ligne(s)",
-        r.map(|r| r.rows.len()).unwrap_or(0)
+        r.map_or(0, |r| r.rows.len())
     );
 }
 

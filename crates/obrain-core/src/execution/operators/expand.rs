@@ -31,6 +31,8 @@ pub struct ExpandOperator {
     /// pour le pré-filtre typed-degree : `None` = pas encore résolu,
     /// `Some(None)` = aucune correspondance (pré-filtre désactivé),
     /// `Some(Some(name))` = nom canonique du registre.
+    #[allow(clippy::option_option)]
+    // trois états distincts documentés ci-dessus (non résolu / absent / nom)
     typed_prefilter_canonical: Option<Option<String>>,
     /// Chunk capacity.
     chunk_capacity: usize,
@@ -194,44 +196,41 @@ impl ExpandOperator {
         // Aretes inter-bases (V2) : la colonne source peut porter un noeud
         // DISTANT (Value::Map hydratee a la frontiere) ou Null. Sans
         // registre, le contrat historique est inchange : NodeId ou erreur.
-        let source_id = match col.get_node_id(self.current_row) {
-            Some(id) => id,
-            None => {
-                if let Some(reg) = self.session_context.base_registry.clone() {
-                    match col.get_value(self.current_row) {
-                        Some(Value::Map(map)) => {
-                            let slug = match map.get(&PropertyKey::new(base_registry::BASE_KEY)) {
-                                Some(Value::String(s)) => s.clone(),
-                                _ => {
-                                    return Err(OperatorError::Execution(
-                                        "Expected node ID in source column".into(),
-                                    ));
-                                }
-                            };
-                            let id = match map.get(&PropertyKey::new("_id")) {
-                                Some(Value::Int64(i)) => NodeId(*i as u64),
-                                _ => {
-                                    return Err(OperatorError::Execution(
-                                        "Expected node ID in source column".into(),
-                                    ));
-                                }
-                            };
-                            self.expand_remote_source(&reg, slug.as_str(), id);
-                            return Ok(true);
-                        }
-                        // Absent (Null) : zero ligne, jamais une erreur.
-                        Some(Value::Null) | None => return Ok(true),
-                        _ => {
-                            return Err(OperatorError::Execution(
-                                "Expected node ID in source column".into(),
-                            ));
-                        }
+        let Some(source_id) = col.get_node_id(self.current_row) else {
+            if let Some(reg) = self.session_context.base_registry.clone() {
+                match col.get_value(self.current_row) {
+                    Some(Value::Map(map)) => {
+                        let slug = match map.get(&PropertyKey::new(base_registry::BASE_KEY)) {
+                            Some(Value::String(s)) => s.clone(),
+                            _ => {
+                                return Err(OperatorError::Execution(
+                                    "Expected node ID in source column".into(),
+                                ));
+                            }
+                        };
+                        let id = match map.get(&PropertyKey::new("_id")) {
+                            Some(Value::Int64(i)) => NodeId(*i as u64),
+                            _ => {
+                                return Err(OperatorError::Execution(
+                                    "Expected node ID in source column".into(),
+                                ));
+                            }
+                        };
+                        self.expand_remote_source(&reg, slug.as_str(), id);
+                        return Ok(true);
+                    }
+                    // Absent (Null) : zero ligne, jamais une erreur.
+                    Some(Value::Null) | None => return Ok(true),
+                    _ => {
+                        return Err(OperatorError::Execution(
+                            "Expected node ID in source column".into(),
+                        ));
                     }
                 }
-                return Err(OperatorError::Execution(
-                    "Expected node ID in source column".into(),
-                ));
             }
+            return Err(OperatorError::Execution(
+                "Expected node ID in source column".into(),
+            ));
         };
 
         // Get visibility context.  When `read_only` is true we can skip the

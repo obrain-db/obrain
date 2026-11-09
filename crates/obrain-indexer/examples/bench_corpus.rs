@@ -42,13 +42,13 @@ fn main() {
 
     println!("noeuds  : {}", g.node_count());
     let mut nv: Vec<_> = nodes.into_iter().collect();
-    nv.sort_by(|a, b| b.1.cmp(&a.1));
+    nv.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (k, c) in nv.iter().take(10) {
         println!("  noeud   {:<12} {}", k.label(), c);
     }
     println!("aretes  : {}", g.edge_count());
     let mut ev: Vec<_> = edges.into_iter().collect();
-    ev.sort_by(|a, b| b.1.cmp(&a.1));
+    ev.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (k, c) in ev.iter().take(10) {
         println!("  arete   {:<12} {}", k.label(), c);
     }

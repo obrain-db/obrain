@@ -568,7 +568,7 @@ pub trait GraphStore: Send + Sync {
     ///
     /// CONTRAT DE RETOUR (tri-valué, pour ne rien confondre) :
     ///   - `None`               : pas de verdict — l'appelant SUIT son chemin
-    ///                            d'origine (donc aucune divergence possible) ;
+    ///     d'origine (donc aucune divergence possible) ;
     ///   - `Some(v)` avec `v[i]` = `None`     : NULL pour la ligne `i` ;
     ///   - `Some(v)` avec `v[i]` = `Some(b)`  : verdict du prédicat.
     ///
@@ -626,16 +626,16 @@ pub trait GraphStore: Send + Sync {
     ///
     /// CONTRAT DE RETOUR :
     ///   - `None`        : l'implémentation NE SAIT PAS (pas d'index pour cette
-    ///                     propriété, index muet faute de grammes assez rares,
-    ///                     ou index débordé) — l'appelant garde son chemin
-    ///                     d'origine, balayage compris, donc aucune divergence
-    ///                     n'est possible ;
+    ///     propriété, index muet faute de grammes assez rares,
+    ///     ou index débordé) — l'appelant garde son chemin
+    ///     d'origine, balayage compris, donc aucune divergence
+    ///     n'est possible ;
     ///   - `Some(vide)`  : CONCLUSIF — l'index a PROUVÉ qu'aucun nœud ne
-    ///                     satisfait le prédicat ;
+    ///     satisfait le prédicat ;
     ///   - `Some(nœuds)` : les nœuds satisfaisant le prédicat, EXACTEMENT —
-    ///                     l'implémentation revérifie ses candidats, comme le
-    ///                     fait `find_nodes_in_range`. L'appelant n'a donc pas
-    ///                     à réévaluer le prédicat.
+    ///     l'implémentation revérifie ses candidats, comme le
+    ///     fait `find_nodes_in_range`. L'appelant n'a donc pas
+    ///     à réévaluer le prédicat.
     ///
     /// Le défaut rend `None` : toute implémentation sans index de sous-chaînes
     /// (projections, wrappers, magasins en mémoire) garde le chemin d'origine.

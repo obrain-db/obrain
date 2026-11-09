@@ -283,7 +283,7 @@ mod tests {
     fn node_created_event(id: NodeId, labels: &[&str]) -> GraphEvent {
         GraphEvent::NodeCreated {
             id,
-            labels: labels.iter().map(|s| s.to_string()).collect(),
+            labels: labels.iter().map(|&s| s.to_string()).collect(),
             timestamp: 1,
         }
     }

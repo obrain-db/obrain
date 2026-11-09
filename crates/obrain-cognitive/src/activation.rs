@@ -213,6 +213,9 @@ impl ActivationSource for SynapseActivationSource {
         if let Some(sub) = self.store.substrate_ref() {
             let _ = sub.on_node_activated(node_id);
         }
+        // Sans substrat, il n'y a pas de colonne d'activation à notifier.
+        #[cfg(not(feature = "substrate"))]
+        let _ = node_id;
     }
 }
 
@@ -314,6 +317,9 @@ impl ActivationSource for CausalAwareActivationSource {
         if let Some(sub) = self.synapses.substrate_ref() {
             let _ = sub.on_node_activated(node_id);
         }
+        // Sans substrat, il n'y a pas de colonne d'activation à notifier.
+        #[cfg(not(feature = "substrate"))]
+        let _ = node_id;
     }
 
     fn edge_class(&self, from: NodeId, to: NodeId) -> EdgeClass {

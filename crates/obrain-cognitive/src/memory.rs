@@ -21,6 +21,7 @@ use obrain_common::types::NodeId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
