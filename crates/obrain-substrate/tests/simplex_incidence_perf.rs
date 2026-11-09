@@ -247,7 +247,9 @@ fn octets_par_simplexe_mesures() {
         }
         if let Ok(inc) = std::fs::read(sub.path().join("substrate.simplex_incidence")) {
             let entries = inc[64..]
-                .chunks_exact(16)
+                .as_chunks::<16>()
+                .0
+                .iter()
                 .filter(|e| e.iter().any(|&b| b != 0))
                 .count() as u64;
             total += entries * 16;
