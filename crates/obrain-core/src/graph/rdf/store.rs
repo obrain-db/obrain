@@ -942,6 +942,27 @@ impl RdfStore {
             .map_or(0, |ops| ops.len())
     }
 
+    /// Snapshot of a transaction's buffered operations, in execution order.
+    ///
+    /// Each entry is `(true, triple)` for an insert and `(false, triple)` for a
+    /// delete. The buffer is left untouched: the caller journals these
+    /// operations before committing them.
+    #[must_use]
+    pub fn pending_ops(&self, transaction_id: TransactionId) -> Vec<(bool, Triple)> {
+        let buffer = self.tx_buffer.read();
+        buffer
+            .buffers
+            .get(&transaction_id)
+            .map_or_else(Vec::new, |ops| {
+                ops.iter()
+                    .map(|op| match op {
+                        PendingOp::Insert(t) => (true, t.clone()),
+                        PendingOp::Delete(t) => (false, t.clone()),
+                    })
+                    .collect()
+            })
+    }
+
     /// Checks if a transaction has pending operations.
     #[must_use]
     pub fn has_pending_ops(&self, transaction_id: TransactionId) -> bool {
