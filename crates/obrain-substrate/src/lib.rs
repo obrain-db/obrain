@@ -81,6 +81,7 @@ pub mod typed_degree;
 pub mod unite;
 pub mod vec_column;
 pub mod vec_column_registry;
+pub mod vec_projection;
 pub mod view;
 pub mod wal;
 pub mod wal_io;
