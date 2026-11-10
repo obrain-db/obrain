@@ -36,10 +36,13 @@
 
 use crate::error::SubstrateResult;
 use crate::file::{SubstrateFile, Zone};
+pub use crate::tier_persist::EmpreinteStore;
 use crate::tier_persist::{self, TierMagic};
-use crate::tiered_scan::{ScanConfig, TieredQuery, scan_tiered};
+use crate::tiered_scan::{PARALLEL_THRESHOLD, ScanConfig, TieredQuery, scan_tiered};
 use crate::tiers::{L2_DIM, Tier0, Tier0Builder, Tier1, Tier1Builder, Tier2, Tier2Builder};
+use crate::vec_projection::Projection;
 use parking_lot::RwLock;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -54,11 +57,104 @@ use std::sync::Arc;
 pub use obrain_core::index::vector::{NodeOffset, VectorIndex};
 
 // ---------------------------------------------------------------------------
+// Largeurs du cascade et source des vecteurs natifs (rerank exact)
+// ---------------------------------------------------------------------------
+
+/// Largeur par défaut du préfiltre L0 : candidats conservés après le balayage
+/// des empreintes 128 bits.
+///
+/// MESURÉ (spike cascade-768, 10/11/2026, projection PCA 768→384 + rerank
+/// exact) : recall@10 = 0,986 sur les 32 521 vecteurs réels de PO, 0,997 à
+/// 1 M de vecteurs structurés ; à 1 000, respectivement 0,97 et 0,972.
+pub const K0_DEFAUT: usize = 4_000;
+
+/// Largeur par défaut après le re-classement L1 : ce sont ces candidats que
+/// le niveau L2 (f16) classe, puis que le rerank exact départage quand une
+/// [`SourceNative`] est branchée. Coût du rerank : `k1` produits scalaires
+/// en dimension native (≈ 0,3 ms pour 400 vecteurs 768-d lus en mmap).
+pub const K1_DEFAUT: usize = 400;
+
+/// Largeurs du cascade pour une recherche : `k0` candidats gardés après L0,
+/// `k1` après L1. Le scan borne toujours `k ≤ k1 ≤ k0 ≤ n`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LargeursCascade {
+    /// Candidats conservés après le préfiltre L0.
+    pub k0: usize,
+    /// Candidats conservés après L1 — et soumis au rerank exact.
+    pub k1: usize,
+}
+
+impl Default for LargeursCascade {
+    fn default() -> Self {
+        Self {
+            k0: K0_DEFAUT,
+            k1: K1_DEFAUT,
+        }
+    }
+}
+
+impl LargeursCascade {
+    /// Largeurs dérivées d'une seule largeur de candidats — le `ef` des API
+    /// de recherche : `k0 = ef`, `k1 = max(1, ef / 10)` (le rapport des
+    /// défauts 4 000 / 400).
+    pub fn depuis_k0(k0: usize) -> Self {
+        let k0 = k0.max(1);
+        Self {
+            k0,
+            k1: (k0 / 10).max(1),
+        }
+    }
+}
+
+/// Accès aux vecteurs NATIFS (dimension d'entrée, f32) des nœuds indexés,
+/// pour le rerank exact des candidats du cascade.
+///
+/// L'index ne copie jamais ces vecteurs : la colonne (ou toute autre source
+/// de vérité) reste seule détentrice. `lire_natif` remplit `dest` (vidé
+/// d'abord) et rend `false` si le nœud n'a pas de vecteur — le candidat
+/// garde alors son score L2, il n'est pas écarté en silence.
+///
+/// Toute fermeture `Fn(NodeOffset, &mut Vec<f32>) -> bool + Send + Sync`
+/// implémente ce trait.
+pub trait SourceNative: Send + Sync {
+    /// Copie le vecteur natif du nœud `offset` dans `dest`. `false` si absent.
+    fn lire_natif(&self, offset: NodeOffset, dest: &mut Vec<f32>) -> bool;
+}
+
+impl<F> SourceNative for F
+where
+    F: Fn(NodeOffset, &mut Vec<f32>) -> bool + Send + Sync,
+{
+    fn lire_natif(&self, offset: NodeOffset, dest: &mut Vec<f32>) -> bool {
+        self(offset, dest)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SubstrateTieredIndex — in-memory implementation on top of the L0/L1/L2
 // cascade. Mmap'd-backed variant comes in T11 (hilbert page ordering).
 // ---------------------------------------------------------------------------
 
 /// In-memory tiered vector index.
+///
+/// ### Dimension native et projection
+///
+/// Les paliers L0/L1/L2 travaillent en [`L2_DIM`] (384). L'index accepte
+/// néanmoins des vecteurs de n'importe quelle dimension **native** grâce à
+/// une [`Projection`] qu'il possède : identité + rembourrage de zéros pour
+/// `dim ≤ 384` ([`Self::new`]), PCA apprise pour `dim > 384`
+/// ([`Self::avec_projection`]). `insert`, `rebuild` et `search_top_k`
+/// prennent et rendent la dimension native ; la projection est un détail
+/// interne.
+///
+/// ### Rerank exact
+///
+/// Avec une [`SourceNative`] branchée ([`Self::definir_source_native`]), la
+/// recherche demande `k1` candidats au cascade puis les reclasse par cosinus
+/// exact sur les vecteurs natifs ; le score rendu est alors ce cosinus
+/// exact. Sans source, le score est le cosinus L2 (f16, projeté) comme
+/// avant. Les largeurs se règlent par [`Self::definir_largeurs`] ou par
+/// requête via [`Self::chercher`] / [`VectorIndex::search_top_k_ef`].
 ///
 /// Storage layout:
 ///
@@ -85,7 +181,16 @@ pub struct SubstrateTieredIndex {
     b0: Tier0Builder,
     b1: Tier1Builder,
     b2: Tier2Builder,
+    /// Dimension NATIVE acceptée par `insert` / `rebuild` / `search_top_k`
+    /// (= `projection.dim_entree()`). Les paliers, eux, sont en `L2_DIM`.
     dim: usize,
+    /// Projection dimension native → `L2_DIM`, appliquée à l'insertion et à
+    /// la requête.
+    projection: Projection,
+    /// Largeurs par défaut des recherches passant par `search_top_k`.
+    largeurs: RwLock<LargeursCascade>,
+    /// Source des vecteurs natifs pour le rerank exact ; `None` = score L2.
+    source: RwLock<Option<Arc<dyn SourceNative>>>,
     /// Chantier SlotRemappable — epoch de repermutation observé quand les
     /// identifiants de slots de cet index ont été établis.
     ///
@@ -116,19 +221,32 @@ impl SubstrateTieredIndex {
     /// pipeline: the builder seed is the substrate equivalent of an
     /// "index schema version".
     ///
+    /// `dim ≤ L2_DIM` : les vecteurs sont plongés dans les 384 dimensions
+    /// des paliers par rembourrage de zéros (cosinus préservé au bit près).
+    /// Pour une dimension native supérieure (768, 1 024…), passer par
+    /// [`Self::avec_projection`] avec une projection apprise.
+    ///
     /// # Panics
     ///
-    /// Panics if `dim != L2_DIM` (currently 384). The L2 tier uses a
-    /// fixed-length f16 representation tied to the canonical embedding
-    /// width; supporting other widths would require either dimensionality
-    /// reduction (loss of recall) or a ragged L2, both of which break the
-    /// `#[repr(C)]` ABI contract. Callers with a different native width
-    /// should project to L2_DIM before indexing.
+    /// Panics if `dim == 0` or `dim > L2_DIM` (currently 384). The L2 tier
+    /// uses a fixed-length f16 representation tied to the canonical
+    /// embedding width; wider inputs need an explicit, learned projection
+    /// — doing it silently here would change result quality without anyone
+    /// having asked for it.
     pub fn new(dim: usize) -> Self {
-        assert_eq!(
-            dim, L2_DIM,
-            "SubstrateTieredIndex currently only supports dim = L2_DIM = {L2_DIM}; got {dim}"
-        );
+        let projection = Projection::identite(dim).unwrap_or_else(|e| {
+            panic!(
+                "SubstrateTieredIndex::new({dim}) : dimension hors de 1..={L2_DIM} ({e}) ; \
+                 au-dela de {L2_DIM}, utiliser avec_projection(Projection::Apprise(..))"
+            )
+        });
+        Self::avec_projection(projection)
+    }
+
+    /// Index vide dont les vecteurs natifs sont de dimension
+    /// `projection.dim_entree()` et sont projetés en `L2_DIM` par
+    /// `projection` avant d'alimenter les paliers.
+    pub fn avec_projection(projection: Projection) -> Self {
         Self {
             inner: RwLock::new(Inner {
                 offset_to_slot: HashMap::new(),
@@ -137,12 +255,42 @@ impl SubstrateTieredIndex {
                 l1: Vec::new(),
                 l2: Vec::new(),
             }),
-            b0: Tier0Builder::with_default_seed(dim),
-            b1: Tier1Builder::with_default_seed(dim),
+            b0: Tier0Builder::with_default_seed(L2_DIM),
+            b1: Tier1Builder::with_default_seed(L2_DIM),
             b2: Tier2Builder::new(),
-            dim,
+            dim: projection.dim_entree(),
+            projection,
+            largeurs: RwLock::new(LargeursCascade::default()),
+            source: RwLock::new(None),
             slots_epoch_at_load: None,
         }
+    }
+
+    /// La projection dimension native → `L2_DIM` que porte cet index.
+    pub fn projection(&self) -> &Projection {
+        &self.projection
+    }
+
+    /// Largeurs par défaut des recherches (`search_top_k`).
+    pub fn largeurs(&self) -> LargeursCascade {
+        *self.largeurs.read()
+    }
+
+    /// Règle les largeurs par défaut des recherches.
+    pub fn definir_largeurs(&self, largeurs: LargeursCascade) {
+        *self.largeurs.write() = largeurs;
+    }
+
+    /// Branche (ou débranche, avec `None`) la source des vecteurs natifs
+    /// qui active le rerank exact.
+    pub fn definir_source_native(&self, source: Option<Arc<dyn SourceNative>>) {
+        *self.source.write() = source;
+    }
+
+    /// `true` si une source native est branchée (les scores rendus sont
+    /// alors des cosinus exacts en dimension native).
+    pub fn a_source_native(&self) -> bool {
+        self.source.read().is_some()
     }
 
     /// Share the index across threads. Convenience for wiring into the
@@ -179,10 +327,27 @@ impl SubstrateTieredIndex {
         l1: Vec<Tier1>,
         l2: Vec<Tier2>,
     ) -> Self {
-        assert_eq!(
-            dim, L2_DIM,
-            "SubstrateTieredIndex currently only supports dim = L2_DIM = {L2_DIM}; got {dim}"
-        );
+        let projection = Projection::identite(dim).unwrap_or_else(|e| {
+            panic!(
+                "SubstrateTieredIndex::from_parts : dimension {dim} hors de 1..={L2_DIM} ({e}) ; \
+                 au-dela de {L2_DIM}, utiliser from_parts_avec_projection"
+            )
+        });
+        Self::from_parts_avec_projection(projection, slot_to_offset, offset_to_slot, l0, l1, l2)
+    }
+
+    /// Comme [`Self::from_parts`], avec une projection explicite : les
+    /// paliers fournis DOIVENT avoir été calculés avec cette même
+    /// projection (une projection différente rend des résultats faux, pas
+    /// une panique).
+    pub fn from_parts_avec_projection(
+        projection: Projection,
+        slot_to_offset: Vec<NodeOffset>,
+        offset_to_slot: HashMap<NodeOffset, usize>,
+        l0: Vec<Tier0>,
+        l1: Vec<Tier1>,
+        l2: Vec<Tier2>,
+    ) -> Self {
         Self {
             inner: RwLock::new(Inner {
                 offset_to_slot,
@@ -191,10 +356,13 @@ impl SubstrateTieredIndex {
                 l1,
                 l2,
             }),
-            b0: Tier0Builder::with_default_seed(dim),
-            b1: Tier1Builder::with_default_seed(dim),
+            b0: Tier0Builder::with_default_seed(L2_DIM),
+            b1: Tier1Builder::with_default_seed(L2_DIM),
             b2: Tier2Builder::new(),
-            dim,
+            dim: projection.dim_entree(),
+            projection,
+            largeurs: RwLock::new(LargeursCascade::default()),
+            source: RwLock::new(None),
             // Parts fournies par l'appelant, sans base de reference :
             // pas de garde (voir `load_from_zones`, qui estampille).
             slots_epoch_at_load: None,
@@ -345,10 +513,10 @@ impl SubstrateTieredIndex {
     /// that mean we couldn't even touch the zone file (mmap
     /// permission denied, etc).
     pub fn load_from_zones(sub: &SubstrateFile, dim: usize) -> SubstrateResult<Option<Self>> {
-        assert_eq!(
-            dim, L2_DIM,
-            "SubstrateTieredIndex currently only supports dim = L2_DIM = {L2_DIM}; got {dim}"
-        );
+        // `dim` est la dimension native d'un index à projection IDENTITÉ
+        // (≤ L2_DIM) ; `from_parts` panique hors bornes. Le chargement d'un
+        // index à projection apprise (zone `substrate.vecproj.*`) est l'objet
+        // de la persistance branchée au moteur (C3).
 
         // Tier0 — includes slot_to_offset master.
         let zf0 = sub.open_zone(Zone::Tier0)?;
@@ -409,19 +577,372 @@ impl SubstrateTieredIndex {
         ))
     }
 
-    fn project_query(&self, query: &[f32]) -> TieredQuery {
+    // -----------------------------------------------------------------------
+    // Zones NOMMÉES par index (label, propriété) — O-VEC C3
+    //
+    // Les zones `substrate.tier0/1/2` non nommées sont celles de l'index
+    // unique historique de la base (`persist_to_zones` / `load_from_zones`).
+    // Un moteur qui tient PLUSIEURS index vectoriels (un par label et
+    // propriété) les range ici, chacun sous ses quatre zones :
+    // `substrate.tier{0,1,2}.<label>.<prop>` et `substrate.vecproj.<label>.<prop>`
+    // (cette dernière seulement pour une projection apprise). L'en-tête de
+    // chaque palier porte l'epoch de remap et une empreinte du store ; le
+    // chargement exige leur concordance, sinon `Ok(None)` et l'appelant
+    // reconstruit depuis la colonne.
+    // -----------------------------------------------------------------------
+
+    /// Les quatre zones d'un index nommé : paliers 0, 1, 2, puis projection.
+    pub fn noms_de_zones(label: &str, propriete: &str) -> [String; 4] {
+        [
+            crate::file::zone::tier_nomme(0, label, propriete),
+            crate::file::zone::tier_nomme(1, label, propriete),
+            crate::file::zone::tier_nomme(2, label, propriete),
+            Projection::nom_fichier(label, propriete),
+        ]
+    }
+
+    /// Atteste que le contenu de cet index a été bâti APRÈS la dernière
+    /// repermutation de slots de `sub` (pendant de [`Self::new_lie_a_la_base`]
+    /// pour un index construit par `avec_projection` + `rebuild`). Sans cette
+    /// liaison, la persistance refuse d'écrire sur une base déjà repermutée.
+    pub fn lier_a_l_epoch_courant(mut self, sub: &SubstrateFile) -> SubstrateResult<Self> {
+        self.slots_epoch_at_load = Some(crate::slot_remap::current_remap_epoch(sub)?);
+        Ok(self)
+    }
+
+    /// Garde commune aux persistances (voir le long commentaire de
+    /// [`Self::persist_to_zones`]) ; rend l'epoch de remap courant.
+    fn epoch_pour_persister(&self, sub: &SubstrateFile) -> SubstrateResult<u32> {
+        let remap_epoch = crate::slot_remap::current_remap_epoch(sub)?;
+        match self.slots_epoch_at_load {
+            Some(loaded_at) if loaded_at != remap_epoch => {
+                Err(crate::error::SubstrateError::Internal(format!(
+                    "tier index: refus de persister — index charge a l'epoch de remap \
+                     {loaded_at}, base desormais a l'epoch {remap_epoch}. Sa table \
+                     slot_to_offset est PERIMEE et ecraserait la table deja remappee. \
+                     Rechargez l'index (load_from_zones) avant de persister."
+                )))
+            }
+            None if remap_epoch != 0 => Err(crate::error::SubstrateError::Internal(format!(
+                "tier index: refus de persister — index non lie a un epoch de remap \
+                 sur une base qui en est a l'epoch {remap_epoch}. Construisez-le via \
+                 SubstrateTieredIndex::new_lie_a_la_base(&sub, dim) ou liez-le par \
+                 lier_a_l_epoch_courant pour attester qu'il a ete bati APRES la \
+                 derniere repermutation."
+            ))),
+            _ => Ok(remap_epoch),
+        }
+    }
+
+    /// Persiste l'index dans ses zones nommées, estampillées de `empreinte`
+    /// (état du store au moment de l'écriture, fourni par l'appelant qui
+    /// sait quand ses écritures sont stables). Mêmes gardes d'epoch que
+    /// [`Self::persist_to_zones`]. La projection n'est écrite que si elle
+    /// est apprise (l'identité se déduit de la dimension).
+    pub fn persister_nomme(
+        &self,
+        sub: &SubstrateFile,
+        label: &str,
+        propriete: &str,
+        empreinte: EmpreinteStore,
+    ) -> SubstrateResult<()> {
+        let remap_epoch = self.epoch_pour_persister(sub)?;
+        let [n0, n1, n2, _] = Self::noms_de_zones(label, propriete);
+        {
+            let guard = self.inner.read();
+            let n_slots = guard.slot_to_offset.len() as u32;
+            let mut zf0 = sub.open_named_zone(&n0)?;
+            tier_persist::write_tier_zone_estampille::<Tier0>(
+                &mut zf0,
+                TierMagic::Tier0,
+                n_slots,
+                Some(&guard.slot_to_offset),
+                &guard.l0,
+                remap_epoch,
+                Some(empreinte),
+            )?;
+            let mut zf1 = sub.open_named_zone(&n1)?;
+            tier_persist::write_tier_zone_estampille::<Tier1>(
+                &mut zf1,
+                TierMagic::Tier1,
+                n_slots,
+                None,
+                &guard.l1,
+                remap_epoch,
+                Some(empreinte),
+            )?;
+            let mut zf2 = sub.open_named_zone(&n2)?;
+            tier_persist::write_tier_zone_estampille::<Tier2>(
+                &mut zf2,
+                TierMagic::Tier2,
+                n_slots,
+                None,
+                &guard.l2,
+                remap_epoch,
+                Some(empreinte),
+            )?;
+        }
+        if matches!(self.projection, Projection::Apprise(_)) {
+            self.projection.ecrire_zone(sub, label, propriete)?;
+        }
+        Ok(())
+    }
+
+    /// Charge un index nommé si, et seulement si, ses zones décrivent encore
+    /// la base : en-têtes v2 valides (CRC), même `empreinte` sur les trois
+    /// paliers et égale à `empreinte_attendue`, epoch de remap égal à
+    /// l'epoch courant, longueurs concordantes, et — pour `dim_native >
+    /// L2_DIM` — projection présente et de cette dimension. Sinon `Ok(None)` :
+    /// l'appelant reconstruit depuis la colonne. Une zone absente ou
+    /// illisible compte comme absente (`Ok(None)`), jamais comme une erreur.
+    pub fn charger_nomme(
+        sub: &SubstrateFile,
+        label: &str,
+        propriete: &str,
+        dim_native: usize,
+        empreinte_attendue: EmpreinteStore,
+    ) -> SubstrateResult<Option<Self>> {
+        let [n0, n1, n2, _] = Self::noms_de_zones(label, propriete);
+        let Ok(zf0) = sub.open_named_zone_read_only(&n0) else {
+            return Ok(None);
+        };
+        let Some(((n_0, s2o, l0), h0)) =
+            tier_persist::read_tier_zone_avec_entete::<Tier0>(&zf0, TierMagic::Tier0)?
+        else {
+            return Ok(None);
+        };
+        let Some(slot_to_offset) = s2o else {
+            return Ok(None);
+        };
+        if h0.empreinte() != Some(empreinte_attendue) {
+            return Ok(None);
+        }
+        let epoch = crate::slot_remap::current_remap_epoch(sub)?;
+        if h0.remap_epoch != epoch {
+            return Ok(None);
+        }
+        let Ok(zf1) = sub.open_named_zone_read_only(&n1) else {
+            return Ok(None);
+        };
+        let Some(((n_1, _, l1), h1)) =
+            tier_persist::read_tier_zone_avec_entete::<Tier1>(&zf1, TierMagic::Tier1)?
+        else {
+            return Ok(None);
+        };
+        let Ok(zf2) = sub.open_named_zone_read_only(&n2) else {
+            return Ok(None);
+        };
+        let Some(((n_2, _, l2), h2)) =
+            tier_persist::read_tier_zone_avec_entete::<Tier2>(&zf2, TierMagic::Tier2)?
+        else {
+            return Ok(None);
+        };
+        if n_0 != n_1
+            || n_0 != n_2
+            || h1.empreinte() != Some(empreinte_attendue)
+            || h2.empreinte() != Some(empreinte_attendue)
+            || h1.remap_epoch != epoch
+            || h2.remap_epoch != epoch
+        {
+            return Ok(None);
+        }
+        let attendu = n_0 as usize;
+        if slot_to_offset.len() != attendu
+            || l0.len() != attendu
+            || l1.len() != attendu
+            || l2.len() != attendu
+        {
+            return Ok(None);
+        }
+        let projection = if dim_native <= L2_DIM {
+            match Projection::identite(dim_native) {
+                Ok(p) => p,
+                Err(_) => return Ok(None),
+            }
+        } else {
+            match Projection::lire_zone(sub, label, propriete) {
+                Ok(Some(p)) if p.dim_entree() == dim_native => p,
+                Ok(_) => return Ok(None),
+                Err(e) => {
+                    tracing::info!(
+                        erreur = %e, label, propriete,
+                        "projection illisible — index vectoriel a reconstruire"
+                    );
+                    return Ok(None);
+                }
+            }
+        };
+        let mut offset_to_slot = HashMap::with_capacity(attendu);
+        for (slot, &offset) in slot_to_offset.iter().enumerate() {
+            offset_to_slot.insert(offset, slot);
+        }
+        Ok(Some(
+            Self::from_parts_avec_projection(
+                projection,
+                slot_to_offset,
+                offset_to_slot,
+                l0,
+                l1,
+                l2,
+            )
+            .with_slots_epoch(epoch),
+        ))
+    }
+
+    /// Retire les zones nommées d'un index (suppression de l'index, ou index
+    /// jugé périmé à la fermeture). En mode fichier les fichiers sont
+    /// supprimés ; en mode mémoire leur en-tête est effacé (une zone RAM ne
+    /// se retire pas), ce qui suffit à ce que [`Self::charger_nomme`] rende
+    /// `None`. Une zone déjà absente n'est pas une erreur.
+    pub fn supprimer_nomme(
+        sub: &SubstrateFile,
+        label: &str,
+        propriete: &str,
+    ) -> SubstrateResult<()> {
+        for nom in Self::noms_de_zones(label, propriete) {
+            if sub.is_memory() {
+                if let Ok(mut zf) = sub.open_named_zone_read_only(&nom) {
+                    let n = zf.len().min(tier_persist::HEADER_SIZE as u64) as usize;
+                    zf.as_slice_mut()[..n].fill(0);
+                }
+            } else {
+                match std::fs::remove_file(sub.path().join(&nom)) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Projette un vecteur natif en `L2_DIM`. Panique si la longueur n'est
+    /// pas la dimension native de l'index (contrat du trait).
+    fn projeter(&self, v: &[f32]) -> Vec<f32> {
         assert_eq!(
-            query.len(),
+            v.len(),
             self.dim,
-            "query.len() = {} but index dim = {}",
-            query.len(),
+            "embedding.len() = {} but index dim = {}",
+            v.len(),
             self.dim
         );
+        self.projection
+            .projeter(v)
+            .expect("longueur verifiee juste au-dessus : la projection ne peut pas echouer")
+    }
+
+    fn project_query(&self, query: &[f32]) -> TieredQuery {
+        let p = self.projeter(query);
         TieredQuery {
-            l0: self.b0.project(query),
-            l1: self.b1.project(query),
-            l2: self.b2.project(query),
+            l0: self.b0.project(&p),
+            l1: self.b1.project(&p),
+            l2: self.b2.project(&p),
         }
+    }
+
+    /// Recherche avec des largeurs explicites pour cet appel.
+    ///
+    /// Sans source native : le cascade rend directement `k` résultats au
+    /// score L2 (f16, projeté). Avec source native : le cascade rend
+    /// `max(k, k1)` candidats, reclassés par cosinus exact sur les vecteurs
+    /// natifs, puis tronqués à `k`. Le rerank s'exécute HORS du verrou de
+    /// lecture de l'index. Ties : score décroissant puis offset croissant.
+    pub fn chercher(
+        &self,
+        query: &[f32],
+        k: usize,
+        largeurs: LargeursCascade,
+    ) -> Vec<(NodeOffset, f32)> {
+        if k == 0 {
+            return Vec::new();
+        }
+        let q = self.project_query(query);
+        let source = self.source.read().clone();
+        let candidats: Vec<(NodeOffset, f32)> = {
+            let guard = self.inner.read();
+            let n = guard.slot_to_offset.len();
+            if n == 0 {
+                return Vec::new();
+            }
+            // Clamp k to the corpus size — the cascade panics otherwise.
+            let k_eff = k.min(n);
+            let demande = if source.is_some() {
+                k_eff.max(largeurs.k1).min(n)
+            } else {
+                k_eff
+            };
+            let config = ScanConfig {
+                k0: largeurs.k0,
+                k1: largeurs.k1,
+                parallel_threshold: PARALLEL_THRESHOLD,
+            };
+            let hits = scan_tiered(&q, &guard.l0, &guard.l1, &guard.l2, demande, config);
+            hits.into_iter()
+                .map(|h| (guard.slot_to_offset[h.node_offset as usize], h.cosine))
+                .collect()
+        };
+        let mut out = match source {
+            Some(src) => self.rerank(src.as_ref(), query, candidats),
+            None => candidats,
+        };
+        // Translate slot indices back into NodeOffsets. The cascade's
+        // tie-break is `slot` ascending, which aligns with NodeOffset
+        // ascending *iff* insertions happened in offset order. To keep
+        // the trait's contract ("ties broken by ascending NodeOffset")
+        // we do a final stable sort — the working set is ≤ max(k, k1),
+        // so the cost is negligible.
+        out.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.truncate(k);
+        out
+    }
+
+    /// Reclasse `candidats` par cosinus exact entre `query` (natif) et le
+    /// vecteur natif de chaque candidat. Un candidat sans vecteur natif, ou
+    /// de longueur inattendue, garde son score du cascade.
+    fn rerank(
+        &self,
+        source: &dyn SourceNative,
+        query: &[f32],
+        candidats: Vec<(NodeOffset, f32)>,
+    ) -> Vec<(NodeOffset, f32)> {
+        let norme_q = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norme_q <= 0.0 || !norme_q.is_finite() {
+            return candidats;
+        }
+        let mut tampon: Vec<f32> = Vec::with_capacity(self.dim);
+        let mut absents = 0usize;
+        let out: Vec<(NodeOffset, f32)> = candidats
+            .into_iter()
+            .map(|(offset, score_cascade)| {
+                tampon.clear();
+                if !source.lire_natif(offset, &mut tampon) || tampon.len() != query.len() {
+                    absents += 1;
+                    return (offset, score_cascade);
+                }
+                let mut ps = 0f32;
+                let mut nv = 0f32;
+                for (a, b) in query.iter().zip(&tampon) {
+                    ps += a * b;
+                    nv += b * b;
+                }
+                if nv > 0.0 && nv.is_finite() {
+                    (offset, ps / (norme_q * nv.sqrt()))
+                } else {
+                    (offset, score_cascade)
+                }
+            })
+            .collect();
+        if absents > 0 {
+            tracing::debug!(
+                absents,
+                "rerank exact : candidats sans vecteur natif, score du cascade conserve"
+            );
+        }
+        out
     }
 }
 
@@ -442,9 +963,10 @@ impl VectorIndex for SubstrateTieredIndex {
             embedding.len(),
             self.dim
         );
-        let tier0 = self.b0.project(embedding);
-        let tier1 = self.b1.project(embedding);
-        let tier2 = self.b2.project(embedding);
+        let p = self.projeter(embedding);
+        let tier0 = self.b0.project(&p);
+        let tier1 = self.b1.project(&p);
+        let tier2 = self.b2.project(&p);
 
         let mut guard = self.inner.write();
         if let Some(&slot) = guard.offset_to_slot.get(&node_offset) {
@@ -492,23 +1014,39 @@ impl VectorIndex for SubstrateTieredIndex {
         // is the slowest step and shouldn't block readers any longer
         // than necessary.
         let n = pairs.len();
+        // Projection + trois paliers EN PARALLÈLE, par paire : `collect`
+        // préserve l'ordre et chaque paire est traitée par un seul thread,
+        // donc le résultat est identique au bit près quel que soit le nombre
+        // de threads (jamais de fold/reduce flottant ici).
+        let projetes: Vec<(Tier0, Tier1, Tier2)> = pairs
+            .par_iter()
+            .enumerate()
+            .map(|(i, (_, emb))| {
+                assert_eq!(
+                    emb.len(),
+                    self.dim,
+                    "pair {i}: embedding.len() = {} but index dim = {}",
+                    emb.len(),
+                    self.dim
+                );
+                let p = self.projeter(emb);
+                (
+                    self.b0.project(&p),
+                    self.b1.project(&p),
+                    self.b2.project(&p),
+                )
+            })
+            .collect();
         let mut offsets: Vec<NodeOffset> = Vec::with_capacity(n);
         let mut l0: Vec<Tier0> = Vec::with_capacity(n);
         let mut l1: Vec<Tier1> = Vec::with_capacity(n);
         let mut l2: Vec<Tier2> = Vec::with_capacity(n);
         let mut map: HashMap<NodeOffset, usize> = HashMap::with_capacity(n);
-        for (i, (off, emb)) in pairs.iter().enumerate() {
-            assert_eq!(
-                emb.len(),
-                self.dim,
-                "pair {i}: embedding.len() = {} but index dim = {}",
-                emb.len(),
-                self.dim
-            );
+        for (i, ((off, _), (t0, t1, t2))) in pairs.iter().zip(projetes).enumerate() {
             offsets.push(*off);
-            l0.push(self.b0.project(emb));
-            l1.push(self.b1.project(emb));
-            l2.push(self.b2.project(emb));
+            l0.push(t0);
+            l1.push(t1);
+            l2.push(t2);
             map.insert(*off, i);
         }
 
@@ -523,40 +1061,11 @@ impl VectorIndex for SubstrateTieredIndex {
     }
 
     fn search_top_k(&self, query: &[f32], k: usize) -> Vec<(NodeOffset, f32)> {
-        if k == 0 {
-            return Vec::new();
-        }
-        let q = self.project_query(query);
-        let guard = self.inner.read();
-        if guard.slot_to_offset.is_empty() {
-            return Vec::new();
-        }
-        // Clamp k to the corpus size — the cascade panics otherwise.
-        let effective_k = k.min(guard.slot_to_offset.len());
-        let hits = scan_tiered(
-            &q,
-            &guard.l0,
-            &guard.l1,
-            &guard.l2,
-            effective_k,
-            ScanConfig::default(),
-        );
-        // Translate slot indices back into NodeOffsets. The cascade's
-        // tie-break is `slot` ascending, which aligns with NodeOffset
-        // ascending *iff* insertions happened in offset order. To keep
-        // the trait's contract ("ties broken by ascending NodeOffset")
-        // we do a final stable sort — the working set is ≤ k ≤ 1 000,
-        // so the cost is negligible.
-        let mut out: Vec<(NodeOffset, f32)> = hits
-            .into_iter()
-            .map(|h| (guard.slot_to_offset[h.node_offset as usize], h.cosine))
-            .collect();
-        out.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(core::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        out
+        self.chercher(query, k, *self.largeurs.read())
+    }
+
+    fn search_top_k_ef(&self, query: &[f32], k: usize, ef: usize) -> Vec<(NodeOffset, f32)> {
+        self.chercher(query, k, LargeursCascade::depuis_k0(ef))
     }
 }
 
@@ -864,5 +1373,578 @@ mod tests_slot_remap {
             .unwrap()
             .expect("rechargement post-remap");
         frais.persist_to_zones(&sub).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests_rerank {
+    //! C2 (plan O-VEC) — projection possédée par l'index, rerank exact sur
+    //! les vecteurs natifs, largeurs k0/k1. Vecteurs 768-d structurés
+    //! (recette du dépôt), vérité terrain par force brute.
+    use super::*;
+    use crate::vec_projection::{ProjectionApprise, jeux};
+
+    const D: usize = 768;
+    const N: usize = 2_000;
+    const NQ: usize = 100;
+    const K: usize = 10;
+    const CENTRES: usize = 50;
+
+    struct Jeu {
+        corpus: Vec<f32>,
+        requetes: Vec<f32>,
+    }
+
+    /// `N` vecteurs indexés et `NQ` requêtes tirées des MÊMES centres (les
+    /// requêtes ne sont pas dans le corpus : pas d'auto-rappel trivial).
+    fn jeu() -> Jeu {
+        let tout = jeux::structures(N + NQ, CENTRES, D, 2026);
+        let (corpus, requetes) = tout.split_at(N * D);
+        Jeu {
+            corpus: corpus.to_vec(),
+            requetes: requetes.to_vec(),
+        }
+    }
+
+    fn cosinus(a: &[f32], b: &[f32]) -> f32 {
+        let (mut ps, mut na, mut nb) = (0f32, 0f32, 0f32);
+        for (x, y) in a.iter().zip(b) {
+            ps += x * y;
+            na += x * x;
+            nb += y * y;
+        }
+        ps / (na.sqrt() * nb.sqrt())
+    }
+
+    fn vecteur(corpus: &[f32], off: NodeOffset) -> &[f32] {
+        let i = off as usize;
+        &corpus[i * D..(i + 1) * D]
+    }
+
+    fn force_brute(corpus: &[f32], q: &[f32], k: usize) -> Vec<(NodeOffset, f32)> {
+        let mut tous: Vec<(NodeOffset, f32)> = corpus
+            .as_chunks::<D>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, cosinus(q, v)))
+            .collect();
+        tous.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
+        tous.truncate(k);
+        tous
+    }
+
+    fn recall(verite: &[(NodeOffset, f32)], rendu: &[(NodeOffset, f32)]) -> f32 {
+        let trouves = verite
+            .iter()
+            .filter(|(o, _)| rendu.iter().any(|(r, _)| r == o))
+            .count();
+        trouves as f32 / verite.len() as f32
+    }
+
+    fn index(jeu: &Jeu, avec_source: bool) -> SubstrateTieredIndex {
+        let pca = ProjectionApprise::ajuster(&jeu.corpus, D, 7).unwrap();
+        let idx = SubstrateTieredIndex::avec_projection(Projection::Apprise(pca));
+        assert_eq!(idx.dim(), D);
+        let pairs: Vec<(NodeOffset, Vec<f32>)> = jeu
+            .corpus
+            .as_chunks::<D>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, v.to_vec()))
+            .collect();
+        idx.rebuild(&pairs);
+        assert_eq!(idx.len(), N);
+        if avec_source {
+            let corpus = Arc::new(jeu.corpus.clone());
+            idx.definir_source_native(Some(Arc::new(
+                move |off: NodeOffset, dest: &mut Vec<f32>| {
+                    if off as usize >= N {
+                        return false;
+                    }
+                    dest.extend_from_slice(vecteur(&corpus, off));
+                    true
+                },
+            )));
+        }
+        idx
+    }
+
+    fn recall_moyen(idx: &SubstrateTieredIndex, jeu: &Jeu, largeurs: LargeursCascade) -> f32 {
+        let mut total = 0f32;
+        for q in jeu.requetes.as_chunks::<D>().0.iter() {
+            let verite = force_brute(&jeu.corpus, q, K);
+            let rendu = idx.chercher(q, K, largeurs);
+            assert_eq!(rendu.len(), K);
+            total += recall(&verite, &rendu);
+        }
+        total / NQ as f32
+    }
+
+    #[test]
+    fn le_rerank_exact_atteint_la_porte_de_recall_en_768() {
+        let jeu = jeu();
+        let avec = index(&jeu, true);
+        let sans = index(&jeu, false);
+        let largeurs = LargeursCascade::default();
+        let r_avec = recall_moyen(&avec, &jeu, largeurs);
+        let r_sans = recall_moyen(&sans, &jeu, largeurs);
+        println!("recall@10 : avec rerank = {r_avec:.4}, sans rerank (temoin) = {r_sans:.4}");
+        assert!(r_avec >= 0.95, "recall@10 avec rerank = {r_avec:.4} < 0,95");
+        assert!(
+            r_sans < 0.90,
+            "temoin sans rerank = {r_sans:.4} : attendu < 0,90 (MESURE 0,677 le 10/11/2026)"
+        );
+        assert!(
+            r_sans < r_avec,
+            "le temoin sans rerank ({r_sans:.4}) doit rester sous le rerank ({r_avec:.4}) : \
+             la difference prouve l'etage"
+        );
+    }
+
+    #[test]
+    fn les_scores_sont_les_cosinus_exacts_en_dimension_native() {
+        let jeu = jeu();
+        let idx = index(&jeu, true);
+        assert!(idx.a_source_native());
+        for q in jeu.requetes.as_chunks::<D>().0.iter() {
+            for (off, score) in idx.search_top_k(q, K) {
+                let exact = cosinus(q, vecteur(&jeu.corpus, off));
+                assert!(
+                    (score - exact).abs() < 1e-5,
+                    "offset {off} : score {score} vs cosinus exact {exact}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn la_largeur_k0_agit_et_passe_par_le_trait() {
+        let jeu = jeu();
+        let idx = index(&jeu, true);
+        let etroit = recall_moyen(&idx, &jeu, LargeursCascade::depuis_k0(100));
+        let mille = recall_moyen(&idx, &jeu, LargeursCascade::depuis_k0(1_000));
+        let large = recall_moyen(&idx, &jeu, LargeursCascade::depuis_k0(16_000));
+        println!("recall@10 : k0 = 100 -> {etroit:.4}, 1 000 -> {mille:.4}, 16 000 -> {large:.4}");
+        assert!(
+            large >= mille && mille >= etroit,
+            "elargir ne doit jamais faire perdre du recall"
+        );
+        assert!(large >= 0.95);
+        // Le même chemin par le trait (`ef`) : résultats identiques.
+        let q = &jeu.requetes[..D];
+        let via_trait: Arc<dyn VectorIndex> = Arc::new(index(&jeu, true));
+        assert_eq!(
+            via_trait.search_top_k_ef(q, K, 16_000),
+            idx.chercher(q, K, LargeursCascade::depuis_k0(16_000))
+        );
+        // Sans `ef`, les largeurs par défaut de l'index s'appliquent.
+        idx.definir_largeurs(LargeursCascade::depuis_k0(16_000));
+        assert_eq!(
+            idx.search_top_k(q, K),
+            idx.chercher(q, K, LargeursCascade::depuis_k0(16_000))
+        );
+    }
+
+    #[test]
+    fn un_candidat_sans_vecteur_natif_garde_son_score_du_cascade() {
+        let jeu = jeu();
+        let idx = index(&jeu, false);
+        // Source qui ne connaît que les offsets pairs.
+        let corpus = Arc::new(jeu.corpus.clone());
+        idx.definir_source_native(Some(Arc::new(
+            move |off: NodeOffset, dest: &mut Vec<f32>| {
+                if off % 2 == 1 {
+                    return false;
+                }
+                dest.extend_from_slice(vecteur(&corpus, off));
+                true
+            },
+        )));
+        let q = &jeu.requetes[..D];
+        let rendu = idx.search_top_k(q, K);
+        assert_eq!(rendu.len(), K, "aucun candidat n'est ecarte en silence");
+        for (off, score) in &rendu {
+            assert!(score.is_finite());
+            if off % 2 == 0 {
+                let exact = cosinus(q, vecteur(&jeu.corpus, *off));
+                assert!(
+                    (score - exact).abs() < 1e-5,
+                    "offset pair {off} : rerank exact attendu"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rebuild_parallele_et_insert_sequentiel_donnent_le_meme_index() {
+        let jeu = jeu();
+        let par_rebuild = index(&jeu, false);
+        let pca = ProjectionApprise::ajuster(&jeu.corpus, D, 7).unwrap();
+        let par_insert = SubstrateTieredIndex::avec_projection(Projection::Apprise(pca));
+        for (i, v) in jeu.corpus.as_chunks::<D>().0.iter().enumerate() {
+            par_insert.insert(i as u32, v);
+        }
+        for q in jeu.requetes.as_chunks::<D>().0.iter().take(20) {
+            assert_eq!(
+                par_rebuild
+                    .chercher(q, K, LargeursCascade::default())
+                    .iter()
+                    .map(|h| h.0)
+                    .collect::<Vec<_>>(),
+                par_insert
+                    .search_top_k(q, K)
+                    .iter()
+                    .map(|h| h.0)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn new_accepte_une_dimension_inferieure_par_identite() {
+        let idx = SubstrateTieredIndex::new(5);
+        assert_eq!(idx.dim(), 5);
+        let a = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let b = [0.0, 1.0, 0.0, 0.0, 0.0];
+        let c = [0.0, 0.0, 1.0, 0.0, 0.0];
+        idx.insert(1, &a);
+        idx.insert(2, &b);
+        idx.insert(3, &c);
+        let hits = idx.search_top_k(&b, 1);
+        assert_eq!(hits[0].0, 2);
+        assert!(hits[0].1 > 0.99);
+    }
+
+    #[test]
+    #[should_panic(expected = "hors de 1..=384")]
+    fn new_refuse_au_dela_de_l2_dim() {
+        let _ = SubstrateTieredIndex::new(L2_DIM + 1);
+    }
+
+    /// Coût du rerank seul, imprimé (pas de seuil : la charge machine n'est pas
+    /// maîtrisée en test). À lire en `--release` avec `--nocapture`.
+    #[test]
+    fn cout_du_rerank_imprime() {
+        let jeu = jeu();
+        let idx = index(&jeu, false);
+        let mesurer = |largeurs: LargeursCascade| {
+            let debut = std::time::Instant::now();
+            for q in jeu.requetes.as_chunks::<D>().0.iter() {
+                std::hint::black_box(idx.chercher(q, K, largeurs));
+            }
+            debut.elapsed().as_secs_f64() * 1e6 / NQ as f64
+        };
+        let sans_400 = mesurer(LargeursCascade { k0: 4_000, k1: 400 });
+        let corpus = Arc::new(jeu.corpus.clone());
+        idx.definir_source_native(Some(Arc::new(
+            move |off: NodeOffset, dest: &mut Vec<f32>| {
+                dest.extend_from_slice(vecteur(&corpus, off));
+                true
+            },
+        )));
+        let avec_400 = mesurer(LargeursCascade { k0: 4_000, k1: 400 });
+        let avec_1600 = mesurer(LargeursCascade {
+            k0: 4_000,
+            k1: 1_600,
+        });
+        println!(
+            "cout par requete (N = {N}, D = {D}) : sans rerank {sans_400:.0} us ; avec rerank k1 = 400 : {avec_400:.0} us (+{:.0}) ; k1 = 1 600 : {avec_1600:.0} us (+{:.0})",
+            avec_400 - sans_400,
+            avec_1600 - sans_400
+        );
+    }
+
+    #[test]
+    fn depuis_k0_derive_k1_au_dixieme() {
+        assert_eq!(
+            LargeursCascade::depuis_k0(4_000),
+            LargeursCascade { k0: 4_000, k1: 400 }
+        );
+        assert_eq!(
+            LargeursCascade::depuis_k0(5),
+            LargeursCascade { k0: 5, k1: 1 }
+        );
+        assert_eq!(
+            LargeursCascade::depuis_k0(0),
+            LargeursCascade { k0: 1, k1: 1 }
+        );
+        assert_eq!(
+            LargeursCascade::default(),
+            LargeursCascade {
+                k0: K0_DEFAUT,
+                k1: K1_DEFAUT
+            }
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_zones_nommees {
+    //! O-VEC C3 — persistance par index (label, propriété) : zones nommées,
+    //! empreinte du store, epoch de remap, projection apprise.
+    use super::*;
+    use crate::vec_projection::{ProjectionApprise, jeux};
+
+    const D: usize = 768;
+
+    fn emb(seed: u32) -> Vec<f32> {
+        (0..L2_DIM)
+            .map(|i| ((seed as f32 + 1.0) * 0.011 * (i as f32 + 1.0)).sin())
+            .collect()
+    }
+
+    fn empreinte(wal: u64, noeuds: u64) -> EmpreinteStore {
+        EmpreinteStore {
+            wal_offset: wal,
+            noeuds_vivants: noeuds,
+        }
+    }
+
+    fn index_identite(offsets: &[NodeOffset]) -> SubstrateTieredIndex {
+        let idx = SubstrateTieredIndex::new(L2_DIM);
+        for &o in offsets {
+            idx.insert(o, &emb(o));
+        }
+        idx
+    }
+
+    fn index_apprise(n: usize) -> (SubstrateTieredIndex, Vec<f32>) {
+        let corpus = jeux::structures(n, 20, D, 99);
+        let pca = ProjectionApprise::ajuster(&corpus, D, 5).unwrap();
+        let idx = SubstrateTieredIndex::avec_projection(Projection::Apprise(pca));
+        let pairs: Vec<(NodeOffset, Vec<f32>)> = corpus
+            .as_chunks::<D>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, v.to_vec()))
+            .collect();
+        idx.rebuild(&pairs);
+        (idx, corpus)
+    }
+
+    fn memes_resultats(a: &SubstrateTieredIndex, b: &SubstrateTieredIndex, requetes: &[Vec<f32>]) {
+        for q in requetes {
+            assert_eq!(a.search_top_k(q, 5), b.search_top_k(q, 5));
+        }
+    }
+
+    #[test]
+    fn aller_retour_identite_avec_empreinte() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let offsets = [3u32, 8, 21, 55, 144];
+        let src = index_identite(&offsets);
+        src.persister_nomme(&sub, "Note", "embedding", empreinte(1_000, 5))
+            .unwrap();
+
+        let noms = sub.zone_names().unwrap();
+        for n in &SubstrateTieredIndex::noms_de_zones("Note", "embedding")[..3] {
+            assert!(
+                noms.contains(n),
+                "zone {n} absente de zone_names : {noms:?}"
+            );
+        }
+        assert!(
+            !noms.contains(&Projection::nom_fichier("Note", "embedding")),
+            "pas de zone de projection pour l'identité"
+        );
+
+        let charge = SubstrateTieredIndex::charger_nomme(
+            &sub,
+            "Note",
+            "embedding",
+            L2_DIM,
+            empreinte(1_000, 5),
+        )
+        .unwrap()
+        .expect("empreinte identique ⇒ chargement");
+        assert_eq!(charge.len(), 5);
+        let requetes: Vec<Vec<f32>> = offsets.iter().map(|&o| emb(o)).collect();
+        memes_resultats(&src, &charge, &requetes);
+
+        // Empreinte différente (une écriture a eu lieu depuis) ⇒ None.
+        assert!(
+            SubstrateTieredIndex::charger_nomme(
+                &sub,
+                "Note",
+                "embedding",
+                L2_DIM,
+                empreinte(1_001, 5)
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            SubstrateTieredIndex::charger_nomme(
+                &sub,
+                "Note",
+                "embedding",
+                L2_DIM,
+                empreinte(1_000, 6)
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn aller_retour_projection_apprise_768() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let (src, corpus) = index_apprise(300);
+        let e = empreinte(42, 300);
+        src.persister_nomme(&sub, "File", "emb", e).unwrap();
+        let noms = sub.zone_names().unwrap();
+        for n in SubstrateTieredIndex::noms_de_zones("File", "emb") {
+            assert!(noms.contains(&n), "zone {n} absente : {noms:?}");
+        }
+        let charge = SubstrateTieredIndex::charger_nomme(&sub, "File", "emb", D, e)
+            .unwrap()
+            .expect("projection + paliers cohérents ⇒ chargement");
+        assert_eq!(charge.dim(), D);
+        assert_eq!(charge.len(), 300);
+        assert_eq!(charge.projection().dim_entree(), D);
+        let requetes: Vec<Vec<f32>> = corpus.as_chunks::<D>().0[..20]
+            .iter()
+            .map(|v| v.to_vec())
+            .collect();
+        memes_resultats(&src, &charge, &requetes);
+    }
+
+    #[test]
+    fn projection_absente_ou_de_mauvaise_dimension_empeche_le_chargement() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let (src, _) = index_apprise(100);
+        let e = empreinte(7, 100);
+        src.persister_nomme(&sub, "File", "emb", e).unwrap();
+        // Dimension native annoncée différente de celle de la projection.
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "File", "emb", 1_024, e)
+                .unwrap()
+                .is_none()
+        );
+        // Zone de projection effacée.
+        std::fs::remove_file(sub.path().join(Projection::nom_fichier("File", "emb"))).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "File", "emb", D, e)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn un_epoch_de_remap_different_empeche_le_chargement() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let src = index_identite(&[1, 2, 3]);
+        let e = empreinte(1, 3);
+        src.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        crate::slot_remap::commit_remap_epoch(&sub, 1).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none(),
+            "les zones nommées ne sont pas enrôlées dans le remap : epoch différent ⇒ reconstruction"
+        );
+        // Un index non lié ne peut plus persister sur une base repermutée…
+        assert!(src.persister_nomme(&sub, "Note", "embedding", e).is_err());
+        // … un index lié à l'epoch courant, si.
+        let lie = index_identite(&[1, 2, 3])
+            .lier_a_l_epoch_courant(&sub)
+            .unwrap();
+        lie.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn un_crc_corrompu_sur_un_palier_empeche_le_chargement() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let src = index_identite(&[10, 20, 30, 40]);
+        let e = empreinte(5, 4);
+        src.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        {
+            let [_, n1, _, _] = SubstrateTieredIndex::noms_de_zones("Note", "embedding");
+            let mut zf = sub.open_named_zone(&n1).unwrap();
+            zf.as_slice_mut()[tier_persist::HEADER_SIZE + 3] ^= 0xFF;
+            zf.msync().unwrap();
+        }
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn deux_index_coexistent_et_la_suppression_ne_touche_que_le_sien() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let a = index_identite(&[1, 2, 3]);
+        let b = index_identite(&[7, 8, 9, 10, 11]);
+        let e = empreinte(9, 8);
+        a.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        b.persister_nomme(&sub, "File", "embedding", e).unwrap();
+        let ca = SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+            .unwrap()
+            .unwrap();
+        let cb = SubstrateTieredIndex::charger_nomme(&sub, "File", "embedding", L2_DIM, e)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ca.len(), 3);
+        assert_eq!(cb.len(), 5);
+        SubstrateTieredIndex::supprimer_nomme(&sub, "Note", "embedding").unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "File", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_some()
+        );
+        // Supprimer un index absent n'est pas une erreur.
+        SubstrateTieredIndex::supprimer_nomme(&sub, "Note", "embedding").unwrap();
+    }
+
+    #[test]
+    fn en_memoire_la_suppression_efface_l_en_tete() {
+        let sub = SubstrateFile::open_memory().unwrap();
+        let a = index_identite(&[1, 2]);
+        let e = empreinte(1, 2);
+        a.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_some()
+        );
+        SubstrateTieredIndex::supprimer_nomme(&sub, "Note", "embedding").unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn les_zones_non_nommees_restent_intactes() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let historique = index_identite(&[100, 200]);
+        historique.persist_to_zones(&sub).unwrap();
+        let nomme = index_identite(&[1, 2, 3]);
+        nomme
+            .persister_nomme(&sub, "Note", "embedding", empreinte(1, 3))
+            .unwrap();
+        let relu = SubstrateTieredIndex::load_from_zones(&sub, L2_DIM)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            relu.len(),
+            2,
+            "l'index historique de la base n'est pas touché"
+        );
     }
 }

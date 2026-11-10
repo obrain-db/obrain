@@ -78,6 +78,13 @@ pub enum WalKind {
     /// charge du 25/07 : sans lui, le rejeu RESSUSCITAIT une propriete
     /// d arete supprimee apres le dernier snapshot.
     EdgePropRemoveInline = 0x27,
+    /// (2026-11-10, O-VEC C3) MARQUEUR d'écriture dans une colonne de
+    /// vecteurs. Le vecteur lui-même ne va PAS dans le WAL (il vit dans sa
+    /// colonne mmap, `vec_column.rs`) ; sans ce marqueur, réécrire le
+    /// vecteur d'un nœud existant ne déplaçait pas l'offset du WAL, et une
+    /// empreinte « offset + nœuds vivants » validait un index vectoriel
+    /// PÉRIMÉ à la réouverture. Rejeu : aucun effet (la colonne fait foi).
+    VecColumnWrite = 0x28,
     StringIntern = 0x30,
     LabelIntern = 0x31,
     KeyIntern = 0x32,
@@ -165,6 +172,7 @@ impl WalKind {
             0x25 => PropRemoveInline,
             0x26 => EdgePropSetInline,
             0x27 => EdgePropRemoveInline,
+            0x28 => VecColumnWrite,
             0x30 => StringIntern,
             0x31 => LabelIntern,
             0x32 => KeyIntern,
@@ -637,6 +645,16 @@ pub enum WalPayload {
     TxCommit {
         tx: u64,
     },
+    /// (2026-11-10, O-VEC C3) Marqueur d'écriture dans une colonne de
+    /// vecteurs — voir [`WalKind::VecColumnWrite`]. `entity_kind` : 0 nœud,
+    /// 1 arête (`vec_column::EntityKind`) ; `slot` : slot de l'entité ;
+    /// `key_id` : clé de propriété internée. Le vecteur n'est PAS porté.
+    /// EN FIN D'ENUM comme toute variante nouvelle (encodage par indice).
+    VecColumnWrite {
+        entity_kind: u8,
+        slot: u32,
+        key_id: u16,
+    },
 }
 
 impl WalPayload {
@@ -690,6 +708,7 @@ impl WalPayload {
             TxNoeudEnAttente { .. } => K::TxNoeudEnAttente,
             TxAreteEnAttente { .. } => K::TxAreteEnAttente,
             TxCommit { .. } => K::TxCommit,
+            VecColumnWrite { .. } => K::VecColumnWrite,
             Checkpoint { .. } => K::Checkpoint,
             NoOp => K::NoOp,
             EndOfLog => K::EndOfLog,
@@ -1479,6 +1498,11 @@ mod tests {
             WalPayload::NodePropHeadUpdate {
                 node_id: 0,
                 first_prop_off: 0,
+            },
+            WalPayload::VecColumnWrite {
+                entity_kind: 0,
+                slot: 77,
+                key_id: 3,
             },
         ];
         for (i, p) in payloads.into_iter().enumerate() {

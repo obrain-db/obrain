@@ -1799,6 +1799,11 @@ fn apply(
             Ok(Applied::Skipped)
         }
 
+        // (O-VEC C3) Marqueur d'écriture vectorielle : la colonne de
+        // vecteurs fait foi, le rejeu n'a rien à appliquer. Il n'est pas
+        // « non supporté » — il a fait son office en déplaçant l'offset.
+        WalPayload::VecColumnWrite { .. } => Ok(Applied::Yes),
+
         WalPayload::RicciUpdate { .. }
         | WalPayload::Tier0Update { .. }
         | WalPayload::Tier1Update { .. }

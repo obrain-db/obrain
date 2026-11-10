@@ -60,6 +60,9 @@ pub const ECHANTILLON_MAX: usize = 20_000;
 
 const FLAG_IDENTITE: u16 = 1 << 0;
 const PREFIXE_FICHIER: &str = "substrate.vecproj.";
+/// Taille de l'en-tête sérialisé : `magic[8] version:u16 flags:u16 dim_entree:u32
+/// dim_sortie:u32 n_echantillon:u32 graine:u64 trace:f32 crc32:u32`.
+const ENTETE: usize = 8 + 2 + 2 + 4 + 4 + 4 + 8 + 4 + 4;
 
 /// Une projection vers [`L2_DIM`] composantes : identité (dimension d'entrée
 /// ≤ 384) ou PCA apprise (dimension d'entrée > 384).
@@ -154,6 +157,72 @@ impl Projection {
         Ok(())
     }
 
+    /// Écrit la projection dans la ZONE nommée [`Self::nom_fichier`] de `sub`
+    /// (mode fichier ou mémoire : même chemin que les paliers d'un index
+    /// nommé, donc emportée par l'instantané et visible de `zone_names`).
+    /// La zone est écrite en place ; le CRC du payload protège une écriture
+    /// interrompue (relue ⇒ `Err` ⇒ reconstruction).
+    pub fn ecrire_zone(
+        &self,
+        sub: &crate::file::SubstrateFile,
+        label: &str,
+        propriete: &str,
+    ) -> SubstrateResult<()> {
+        let octets = self.en_octets();
+        let mut zf = sub.open_named_zone(&Self::nom_fichier(label, propriete))?;
+        crate::writer::ensure_room(&mut zf, octets.len(), 0)?;
+        zf.as_slice_mut()[..octets.len()].copy_from_slice(&octets);
+        zf.msync()?;
+        zf.fsync()?;
+        Ok(())
+    }
+
+    /// Relit la projection depuis sa zone nommée. `Ok(None)` si la zone est
+    /// absente ou vide ; `Err` si son contenu est invalide (signature,
+    /// version, taille, CRC). La zone peut être plus longue que le contenu
+    /// (`ensure_room` arrondit) : la longueur utile vient de l'en-tête.
+    pub fn lire_zone(
+        sub: &crate::file::SubstrateFile,
+        label: &str,
+        propriete: &str,
+    ) -> SubstrateResult<Option<Self>> {
+        let Ok(zf) = sub.open_named_zone_read_only(&Self::nom_fichier(label, propriete)) else {
+            return Ok(None);
+        };
+        let slice = zf.as_slice();
+        if slice.len() < ENTETE || slice[..8].iter().all(|b| *b == 0) {
+            return Ok(None);
+        }
+        let total = Self::taille_totale_depuis_entete(slice)?;
+        if slice.len() < total {
+            return Err(SubstrateError::Internal(format!(
+                "projection : zone de {} octets, {total} attendus d'après l'en-tête",
+                slice.len()
+            )));
+        }
+        Self::depuis_octets(&slice[..total]).map(Some)
+    }
+
+    /// Longueur totale (en-tête + payload) annoncée par un en-tête valide.
+    fn taille_totale_depuis_entete(octets: &[u8]) -> SubstrateResult<usize> {
+        if octets.len() < ENTETE {
+            return Err(SubstrateError::Internal(format!(
+                "projection : {} octets, en-tête de {ENTETE} attendu",
+                octets.len()
+            )));
+        }
+        if &octets[..8] != MAGIC {
+            return Err(SubstrateError::BadMagic);
+        }
+        let flags = u16::from_le_bytes([octets[10], octets[11]]);
+        if flags & FLAG_IDENTITE != 0 {
+            return Ok(ENTETE);
+        }
+        let d = u32::from_le_bytes([octets[12], octets[13], octets[14], octets[15]]) as usize;
+        let k = u32::from_le_bytes([octets[16], octets[17], octets[18], octets[19]]) as usize;
+        Ok(ENTETE + 4 * (d + k + k * d))
+    }
+
     /// Relit la projection de `dir`. `Ok(None)` si le fichier n'existe pas ;
     /// `Err` si la signature, la version, la taille ou le CRC ne correspondent
     /// pas — l'appelant reconstruit l'index, il n'interprète pas.
@@ -221,7 +290,6 @@ impl Projection {
 
     /// Désérialisation stricte : toute incohérence est une erreur.
     pub fn depuis_octets(octets: &[u8]) -> SubstrateResult<Self> {
-        const ENTETE: usize = 8 + 2 + 2 + 4 + 4 + 4 + 8 + 4 + 4;
         if octets.len() < ENTETE {
             return Err(SubstrateError::Internal(format!(
                 "projection : {} octets, en-tête de {ENTETE} attendu",
@@ -487,7 +555,7 @@ impl ProjectionApprise {
     }
 }
 
-fn normaliser(v: &mut [f32]) {
+pub(crate) fn normaliser(v: &mut [f32]) {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if n > 0.0 && n.is_finite() {
         for x in v.iter_mut() {
@@ -522,10 +590,10 @@ fn gram_schmidt(q: &mut [f32], d: usize, k: usize) {
 
 /// Générateur déterministe (SplitMix64) : pas de dépendance, reproductible
 /// sur toute plateforme — la matrice persistée doit se recalculer à l'identique.
-struct SplitMix(u64);
+pub(crate) struct SplitMix(pub(crate) u64);
 
 impl SplitMix {
-    fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -535,7 +603,7 @@ impl SplitMix {
     fn unit(&mut self) -> f32 {
         ((self.next_u64() >> 11) as f64 / (1u64 << 53) as f64) as f32
     }
-    fn gauss(&mut self) -> f32 {
+    pub(crate) fn gauss(&mut self) -> f32 {
         let u1 = self.unit().max(1e-7);
         let u2 = self.unit();
         (-2.0 * (u1 as f64).ln()).sqrt() as f32 * (2.0 * std::f32::consts::PI * u2).cos()
@@ -546,20 +614,43 @@ impl SplitMix {
 /// reste en `%xx` (octets UTF-8). Injectif, donc deux index distincts ne se
 /// marchent pas dessus.
 fn echapper(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02x}"));
-        }
-    }
-    out
+    crate::file::zone::nom_sur(s)
 }
 
 /// Chemin du fichier de projection d'un index dans `dir`.
 pub fn chemin(dir: &Path, label: &str, propriete: &str) -> PathBuf {
     dir.join(Projection::nom_fichier(label, propriete))
+}
+
+/// Jeux de données synthétiques partagés par les tests du crate (projection,
+/// retrieval) : la recette « centres + 0,25·direction » du dépôt
+/// (`agent_memory_migration.rs`), paramétrée en dimension.
+#[cfg(test)]
+pub(crate) mod jeux {
+    use super::{SplitMix, normaliser};
+
+    /// Direction unitaire tirée au hasard en dimension `dim`.
+    pub(crate) fn direction(rng: &mut SplitMix, dim: usize) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..dim).map(|_| rng.gauss()).collect();
+        normaliser(&mut v);
+        v
+    }
+
+    /// `centres_n` centres unitaires ; le point `i` vaut
+    /// normalise(centre[i % centres_n] + 0,25·direction). `n × dim` f32, ligne-major.
+    pub(crate) fn structures(n: usize, centres_n: usize, dim: usize, graine: u64) -> Vec<f32> {
+        let mut rng = SplitMix(graine);
+        let centres: Vec<Vec<f32>> = (0..centres_n).map(|_| direction(&mut rng, dim)).collect();
+        let mut out = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            let u = direction(&mut rng, dim);
+            let c = &centres[i % centres_n];
+            let mut v: Vec<f32> = (0..dim).map(|k| c[k] + 0.25 * u[k]).collect();
+            normaliser(&mut v);
+            out.extend_from_slice(&v);
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -568,25 +659,8 @@ mod tests {
 
     const D: usize = 768;
 
-    fn direction(rng: &mut SplitMix, dim: usize) -> Vec<f32> {
-        let mut v: Vec<f32> = (0..dim).map(|_| rng.gauss()).collect();
-        normaliser(&mut v);
-        v
-    }
-
-    /// Recette du dépôt : C centres unitaires, point = normalise(centre + 0,25·direction).
     fn structures(n: usize, centres_n: usize, graine: u64) -> Vec<f32> {
-        let mut rng = SplitMix(graine);
-        let centres: Vec<Vec<f32>> = (0..centres_n).map(|_| direction(&mut rng, D)).collect();
-        let mut out = Vec::with_capacity(n * D);
-        for i in 0..n {
-            let u = direction(&mut rng, D);
-            let c = &centres[i % centres_n];
-            let mut v: Vec<f32> = (0..D).map(|k| c[k] + 0.25 * u[k]).collect();
-            normaliser(&mut v);
-            out.extend_from_slice(&v);
-        }
-        out
+        jeux::structures(n, centres_n, D, graine)
     }
 
     fn repertoire_temporaire(nom: &str) -> PathBuf {

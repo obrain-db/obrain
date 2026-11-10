@@ -833,7 +833,7 @@ fn epoch_de_side_car_a_entete(sub: &SubstrateFile, nom: &str) -> Option<u32> {
             bytemuck::try_from_bytes(slice.get(..crate::tier_persist::HEADER_SIZE)?).ok()?;
         // Tier0 porte le magic de sa famille ; on se contente d'exiger
         // qu'il soit non nul, la zone etant nommee sans ambiguite.
-        (h.magic != 0).then_some(h._reserved[0])
+        (h.magic != 0).then_some(h.remap_epoch)
     }
 }
 
@@ -1515,7 +1515,7 @@ pub fn remap_tier0_slot_table(
     else {
         return Ok(Outcome::Absent);
     };
-    if header._reserved[0] >= epoch {
+    if header.remap_epoch >= epoch {
         return Ok(Outcome::AlreadyApplied);
     }
     let Some((n_slots, Some(s2o), records)) =

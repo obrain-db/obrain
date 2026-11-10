@@ -152,7 +152,10 @@ pub use record::{
 };
 pub use replay::{ReplayStats, replay_from};
 pub use result_buf::ResultBuf;
-pub use retrieval::{NodeOffset, SubstrateTieredIndex, VectorIndex};
+pub use retrieval::{
+    EmpreinteStore, K0_DEFAUT, K1_DEFAUT, LargeursCascade, NodeOffset, SourceNative,
+    SubstrateTieredIndex, VectorIndex,
+};
 pub use simplex_incidence::{SIMPLEX_POSTINGS_FILENAME, SimplexIncidenceZone};
 pub use simplex_passes::{
     DispatchConfig, DispatchSpec, MaterialiseStats, OrientationFace, SimplexPassesConfig,

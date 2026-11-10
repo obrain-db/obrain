@@ -16,6 +16,8 @@ use obrain_common::utils::error::Error;
     feature = "hybrid-search"
 ))]
 use obrain_common::utils::error::Result;
+#[cfg(feature = "vector-index")]
+use obrain_substrate::VectorIndex as _;
 
 /// Evalue un filtre a operateurs (`{"$gt": 5}`) contre UNE valeur de propriete.
 ///
@@ -203,7 +205,9 @@ impl super::ObrainDB {
         // `substrate_vector_indexes` et le long commentaire qui explique
         // pourquoi ni le trait ni `SubstrateStore` n'etaient le bon endroit.
         if self.substrate_store.is_some() {
-            let _ = ef; // propre a HNSW ; le cascade L0/L1/L2 n'en a pas besoin
+            // `ef` = largeur de candidats du cascade (k0 ; k1 = k0 / 10),
+            // comme le `ef` d'un HNSW : plus large, plus de recall, plus de
+            // latence. `None` = largeurs par defaut de l'index (4 000 / 400).
             let cle = format!("{label}:{property}");
 
             // Verrou en LECTURE, et l'Arc est clone AVANT de le relacher : la
@@ -267,7 +271,10 @@ impl super::ObrainDB {
             // le meme helper que le chemin HNSW, deja eprouve.
             let permis = self.compute_filter_allowlist(label, filters);
 
-            let bruts = index.search_top_k(query, k_brut);
+            let bruts = match ef {
+                Some(largeur) => index.search_top_k_ef(query, k_brut, largeur),
+                None => index.search_top_k(query, k_brut),
+            };
             let mut out: Vec<(obrain_common::types::NodeId, f32)> = Vec::with_capacity(k);
             for (offset, cosinus) in bruts {
                 let id = obrain_common::types::NodeId(u64::from(offset));
