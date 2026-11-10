@@ -40,14 +40,16 @@ pub trait ConstraintValidator: Send + Sync {
         properties: &[(String, Value)],
     ) -> Result<(), OperatorError>;
 
-    /// Checks UNIQUE constraint for a node property value.
+    /// Checks UNIQUE constraints over the full property tuple of a node.
     ///
-    /// Returns an error if a node with the same label already has this value.
-    fn check_unique_node_property(
+    /// UNIQUE and PRIMARY KEY constraints bind the WHOLE property list: a
+    /// composite constraint on (a, b) must reject a node whose (a, b) tuple
+    /// already exists, never a node sharing a single column. The full resolved
+    /// property set is passed so the check can assemble the tuple.
+    fn check_unique_node_properties(
         &self,
         labels: &[String],
-        key: &str,
-        value: &Value,
+        properties: &[(String, Value)],
     ) -> Result<(), OperatorError>;
 
     /// Validates a single property value for an edge of the given type.
@@ -307,8 +309,10 @@ impl CreateNodeOperator {
         if let Some(ref validator) = self.validator {
             for (name, value) in resolved_props.iter() {
                 validator.validate_node_property(&self.labels, name, value)?;
-                validator.check_unique_node_property(&self.labels, name, value)?;
             }
+            // Uniqueness is checked ONCE over the whole tuple (a composite
+            // constraint binds several properties at once).
+            validator.check_unique_node_properties(&self.labels, resolved_props)?;
             // Phase 2: Validate completeness (NOT NULL checks for missing required properties)
             validator.validate_node_complete(&self.labels, resolved_props)?;
         }
@@ -1534,8 +1538,8 @@ impl Operator for SetPropertyOperator {
                     } else {
                         for (name, value) in &resolved_props {
                             validator.validate_node_property(&self.labels, name, value)?;
-                            validator.check_unique_node_property(&self.labels, name, value)?;
                         }
+                        validator.check_unique_node_properties(&self.labels, &resolved_props)?;
                     }
                 }
 

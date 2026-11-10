@@ -867,11 +867,10 @@ fn test_create_node_with_constraint_validator() {
         ) -> Result<(), OperatorError> {
             Ok(())
         }
-        fn check_unique_node_property(
+        fn check_unique_node_properties(
             &self,
             _labels: &[String],
-            _key: &str,
-            _value: &Value,
+            _properties: &[(String, Value)],
         ) -> Result<(), OperatorError> {
             Ok(())
         }

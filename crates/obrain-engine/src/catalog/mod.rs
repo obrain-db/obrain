@@ -1822,33 +1822,54 @@ impl ConstraintValidator for CatalogConstraintValidator {
         Ok(())
     }
 
-    fn check_unique_node_property(
+    fn check_unique_node_properties(
         &self,
         labels: &[String],
-        key: &str,
-        value: &Value,
+        properties: &[(String, Value)],
     ) -> Result<(), OperatorError> {
-        // Skip uniqueness check for NULL values (NULLs are never duplicates)
-        if *value == Value::Null {
-            return Ok(());
-        }
+        // NULL values are never duplicates: keep only the non-NULL members of
+        // the candidate tuple.
+        let non_null: Vec<(&str, &Value)> = properties
+            .iter()
+            .filter(|(_, v)| !matches!(v, Value::Null))
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+
         for label in labels {
             if let Some(type_def) = self.catalog.resolved_node_type(label) {
                 for constraint in &type_def.constraints {
-                    let is_unique = match constraint {
-                        TypeConstraint::Unique(props) => props.iter().any(|p| p == key),
-                        TypeConstraint::PrimaryKey(props) => props.iter().any(|p| p == key),
-                        _ => false,
+                    let props: &[String] = match constraint {
+                        TypeConstraint::Unique(props) | TypeConstraint::PrimaryKey(props) => props,
+                        _ => continue,
                     };
-                    if is_unique && let Some(ref store) = self.store {
-                        let existing = store.find_nodes_by_property(key, value);
+                    // A UNIQUE/PK constraint binds the WHOLE tuple: it only
+                    // collides when every constrained property is present
+                    // (non-NULL) in the candidate node. A missing/NULL member
+                    // means the tuple cannot be a duplicate.
+                    let mut conditions: Vec<(&str, Value)> = Vec::with_capacity(props.len());
+                    let mut complete = true;
+                    for p in props {
+                        match non_null.iter().find(|(k, _)| *k == p.as_str()) {
+                            Some((_, v)) => conditions.push((p.as_str(), (*v).clone())),
+                            None => {
+                                complete = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !complete {
+                        continue;
+                    }
+                    if let Some(ref store) = self.store {
+                        let existing = store.find_nodes_by_properties(&conditions);
                         for node_id in existing {
                             if let Some(node) = store.get_node(node_id) {
                                 let has_label = node.labels.iter().any(|l| l.as_str() == label);
                                 if has_label {
                                     return Err(OperatorError::ConstraintViolation(format!(
-                                        "UNIQUE constraint violation: property '{key}' \
-                                             with value {value:?} already exists on :{label}"
+                                        "UNIQUE constraint violation: properties {} \
+                                             already exist on :{label}",
+                                        props.join(", ")
                                     )));
                                 }
                             }

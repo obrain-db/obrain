@@ -203,8 +203,8 @@ impl MergeOperator {
                 .collect();
             for (name, value) in &all_props {
                 validator.validate_node_property(&self.config.labels, name, value)?;
-                validator.check_unique_node_property(&self.config.labels, name, value)?;
             }
+            validator.check_unique_node_properties(&self.config.labels, &all_props)?;
             validator.validate_node_complete(&self.config.labels, &all_props)?;
         }
 

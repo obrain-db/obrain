@@ -1552,6 +1552,28 @@ impl Session {
                     }
                 }
 
+                // ── DÉCLARATION DURABLE ──
+                // Une contrainte vit dans le NodeTypeDefinition du catalogue
+                // RAM, mais ce catalogue meurt avec le processus : le
+                // `WalRecord::CreateConstraint` n'est jamais rejoué (même
+                // constat que les types et les procédures). On re-sérialise
+                // donc le type (avec sa contrainte fraîche) dans
+                // `substrate.typecat`, exactement comme `CREATE NODE TYPE` ;
+                // `hydrater_types` le repeuple à l'ouverture. Un échec est
+                // journalisé, jamais fatal.
+                if let Some(sub) = self.substrate_store()
+                    && let Some(def) = self.catalog.get_node_type(&stmt.label)
+                    && let Ok(json) = serde_json::to_string(&def)
+                {
+                    if let Err(e) = sub.declarer_type("node", &stmt.label, &json) {
+                        tracing::error!(
+                            erreur = %e,
+                            label = %stmt.label,
+                            "contrainte NON persistée (substrate.typecat)"
+                        );
+                    }
+                }
+
                 wal_log!(
                     self,
                     WalRecord::CreateConstraint {
