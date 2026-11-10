@@ -47,14 +47,17 @@ fn meilleur(db: &ObrainDB, q: &[f32]) -> Option<(u64, f32)> {
 #[test]
 fn set_gql_puis_recherche_retrouve_le_vecteur() {
     let db = base();
-    db.execute(&format!("CREATE (:Doc {{name: 'x'}})")).unwrap();
+    db.execute("CREATE (:Doc {name: 'x'})").unwrap();
     db.execute(&format!(
         "MATCH (n:Doc) WHERE n.name = 'x' SET n.emb = vector({})",
         litteral(&axe(5))
     ))
     .unwrap();
     let (_, d) = meilleur(&db, &axe(5)).expect("un résultat");
-    assert!(d < 1e-4, "le vecteur SET en GQL doit être retrouvé (distance {d})");
+    assert!(
+        d < 1e-4,
+        "le vecteur SET en GQL doit être retrouvé (distance {d})"
+    );
 }
 
 #[test]
@@ -66,7 +69,10 @@ fn create_gql_avec_vecteur_est_indexe() {
     ))
     .unwrap();
     let (_, d) = meilleur(&db, &axe(6)).expect("un résultat");
-    assert!(d < 1e-4, "CREATE GQL avec vecteur doit être indexé (distance {d})");
+    assert!(
+        d < 1e-4,
+        "CREATE GQL avec vecteur doit être indexé (distance {d})"
+    );
 }
 
 #[test]
@@ -78,7 +84,10 @@ fn merge_gql_avec_vecteur_est_indexe() {
     ))
     .unwrap();
     let (_, d) = meilleur(&db, &axe(7)).expect("un résultat");
-    assert!(d < 1e-4, "MERGE GQL avec vecteur doit être indexé (distance {d})");
+    assert!(
+        d < 1e-4,
+        "MERGE GQL avec vecteur doit être indexé (distance {d})"
+    );
 }
 
 #[test]
@@ -87,8 +96,13 @@ fn remove_node_property_retire_le_vecteur_de_l_index() {
     let id = db.create_node(&["Doc"]);
     db.set_node_property(id, "emb", Value::Vector(axe(3).into()));
     assert!(meilleur(&db, &axe(3)).is_some_and(|(i, _)| i == id.as_u64()));
-    assert!(db.remove_node_property(id, "emb"));
-    let hits = db.vector_search("Doc", "emb", &axe(3), 10, None, None).unwrap();
+    // Le retour est `false` : le store n'efface pas la colonne de vecteurs
+    // (limite documentee, `signaler_colonne_vectorielle_non_effacee`). Ce que T5
+    // garantit : le noeud sort de l'INDEX.
+    let _ = db.remove_node_property(id, "emb");
+    let hits = db
+        .vector_search("Doc", "emb", &axe(3), 10, None, None)
+        .unwrap();
     assert!(
         hits.iter().all(|(i, _)| i.as_u64() != id.as_u64()),
         "un nœud dont le vecteur a été retiré ne doit plus être retrouvé"
@@ -101,7 +115,9 @@ fn delete_node_retire_le_vecteur_de_l_index() {
     let id = db.create_node(&["Doc"]);
     db.set_node_property(id, "emb", Value::Vector(axe(4).into()));
     assert!(db.delete_node(id));
-    let hits = db.vector_search("Doc", "emb", &axe(4), 10, None, None).unwrap();
+    let hits = db
+        .vector_search("Doc", "emb", &axe(4), 10, None, None)
+        .unwrap();
     assert!(
         hits.iter().all(|(i, _)| i.as_u64() != id.as_u64()),
         "un nœud supprimé ne doit plus être retrouvé"
@@ -125,7 +141,9 @@ fn rollback_d_un_set_vecteur_ne_laisse_pas_de_fantome() {
         ))
         .unwrap();
     session.rollback().unwrap();
-    let hits = db.vector_search("Doc", "emb", &axe(2), 10, None, None).unwrap();
+    let hits = db
+        .vector_search("Doc", "emb", &axe(2), 10, None, None)
+        .unwrap();
     assert!(
         hits.iter().all(|(i, _)| i.as_u64() != id.as_u64()),
         "une transaction annulée ne doit pas laisser de vecteur retrouvable"

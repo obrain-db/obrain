@@ -681,17 +681,25 @@ impl super::ObrainDB {
         property: &str,
     ) -> Option<std::sync::Arc<dyn obrain_substrate::SourceNative>> {
         self.substrate_store.as_ref()?;
-        let data = self.data_store();
+        // Reference FAIBLE : l'index vit dans le registre, partage avec l'observateur
+        // que le store detient lui-meme. Une reference forte ferait un cycle
+        // (store -> observateur -> registre -> index -> store) : le store ne
+        // serait jamais libere et le verrou du repertoire resterait pris.
+        let data = std::sync::Arc::downgrade(&self.data_store());
         let cle = obrain_common::types::PropertyKey::new(property);
         Some(std::sync::Arc::new(
-            move |offset: obrain_substrate::NodeOffset, dest: &mut Vec<f32>| match data
-                .get_node_property(obrain_common::types::NodeId(u64::from(offset)), &cle)
-            {
-                Some(obrain_common::types::Value::Vector(v)) => {
-                    dest.extend_from_slice(&v);
-                    true
+            move |offset: obrain_substrate::NodeOffset, dest: &mut Vec<f32>| {
+                let Some(data) = data.upgrade() else {
+                    return false;
+                };
+                match data.get_node_property(obrain_common::types::NodeId(u64::from(offset)), &cle)
+                {
+                    Some(obrain_common::types::Value::Vector(v)) => {
+                        dest.extend_from_slice(&v);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
             },
         ))
     }

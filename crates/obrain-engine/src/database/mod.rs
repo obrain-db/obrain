@@ -223,8 +223,12 @@ pub struct ObrainDB {
     /// de REFUSER une requete de largeur incoherente au lieu de la rembourrer
     /// en silence — sans quoi une requete en 3 dimensions interrogerait
     /// joyeusement un index construit sur des embeddings en 128.
-    pub(super) substrate_vector_indexes: parking_lot::RwLock<
-        std::collections::HashMap<String, (usize, Arc<obrain_substrate::SubstrateTieredIndex>)>,
+    /// Partage (`Arc`) avec l'observateur du store (T5) : il entretient ces index
+    /// pour TOUT chemin d'ecriture, GQL compris.
+    pub(super) substrate_vector_indexes: Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<String, (usize, Arc<obrain_substrate::SubstrateTieredIndex>)>,
+        >,
     >,
     /// (O-VEC C3) Index vectoriels CHARGÉS depuis leurs zones nommées sans
     /// reconstruction, depuis l'ouverture.
@@ -238,7 +242,7 @@ pub struct ObrainDB {
     /// vues par l'entretien des index) ; comparé au compteur du store à la
     /// fermeture avant de persister un index.
     #[cfg(feature = "vector-index")]
-    pub(super) ecritures_vectorielles_vues: std::sync::atomic::AtomicU64,
+    pub(super) ecritures_vectorielles_vues: Arc<std::sync::atomic::AtomicU64>,
     /// (O-VEC C3) Offset du WAL à la dernière synchronisation (chargement ou
     /// persistance) de chaque index vectoriel, par clé `label:prop`.
     #[cfg(feature = "vector-index")]
@@ -828,6 +832,17 @@ impl ObrainDB {
         #[cfg(not(all(feature = "rdf", feature = "wal")))]
         let _ = read_only;
 
+        // (T5) Observateur d'index vectoriels : tout chemin d'ecriture de vecteur,
+        // de suppression de noeud ou de propriete entretient les index, GQL compris.
+        #[cfg(feature = "vector-index")]
+        typed.add_mutation_observer(Arc::new(
+            crate::database::vector_index_persist::ObservateurIndexVectoriel {
+                registre: Arc::clone(&db.substrate_vector_indexes),
+                compteur: Arc::clone(&db.ecritures_vectorielles_vues),
+                store: Arc::downgrade(&typed),
+            },
+        ));
+
         // (2026-08-31) PERSISTANCE CDC — le journal survit au redémarrage.
         // `with_store` construit un `CdcLog` vide ; on y attache le persistor
         // substrate (zone `cdc_journal`) : recharge au boot + append à chaque
@@ -852,7 +867,7 @@ impl ObrainDB {
             let observateur = Arc::new(crate::database::cdc_observer::CdcObserver::new(Arc::clone(
                 &db.cdc_log,
             ))) as Arc<dyn obrain_substrate::StoreMutationObserver>;
-            typed.set_mutation_observer(observateur);
+            typed.add_mutation_observer(observateur);
         }
 
         // T17 Step 3 W1 — wire the cognitive engine to substrate column
@@ -1222,7 +1237,7 @@ impl ObrainDB {
             (Some(engine_dyn), Some(scheduler))
         };
 
-        Ok(Self {
+        let db = Self {
             config,
             store,
             catalog,
@@ -1275,14 +1290,16 @@ impl ObrainDB {
             #[cfg(target_arch = "wasm32")]
             miroir: None,
             base_registry: parking_lot::RwLock::new(None),
-            substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            substrate_vector_indexes: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
             index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
             index_vectoriel_charges: std::sync::atomic::AtomicUsize::new(0),
             index_vectoriel_reconstruits: std::sync::atomic::AtomicUsize::new(0),
             index_vectoriel_persistes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(feature = "vector-index")]
-            ecritures_vectorielles_vues: std::sync::atomic::AtomicU64::new(0),
+            ecritures_vectorielles_vues: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(feature = "vector-index")]
             index_vectoriel_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             ecriture_partagee: false,
@@ -1300,7 +1317,20 @@ impl ObrainDB {
             cognitive_engine,
             #[cfg(feature = "cognitive")]
             _cognitive_scheduler,
-        })
+        };
+        // (T5) Meme observateur d'index vectoriels que le chemin fichier : une base en
+        // memoire doit entretenir ses index pour TOUT chemin d'ecriture (GQL compris).
+        #[cfg(feature = "vector-index")]
+        if let Some(ref typed) = db.substrate_store {
+            typed.add_mutation_observer(Arc::new(
+                crate::database::vector_index_persist::ObservateurIndexVectoriel {
+                    registre: Arc::clone(&db.substrate_vector_indexes),
+                    compteur: Arc::clone(&db.ecritures_vectorielles_vues),
+                    store: Arc::downgrade(typed),
+                },
+            ));
+        }
+        Ok(db)
     }
 
     /// Creates a database backed by a custom [`GraphStoreMut`] implementation.
@@ -1379,14 +1409,16 @@ impl ObrainDB {
             #[cfg(target_arch = "wasm32")]
             miroir: None,
             base_registry: parking_lot::RwLock::new(None),
-            substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            substrate_vector_indexes: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
             index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
             index_vectoriel_charges: std::sync::atomic::AtomicUsize::new(0),
             index_vectoriel_reconstruits: std::sync::atomic::AtomicUsize::new(0),
             index_vectoriel_persistes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(feature = "vector-index")]
-            ecritures_vectorielles_vues: std::sync::atomic::AtomicU64::new(0),
+            ecritures_vectorielles_vues: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(feature = "vector-index")]
             index_vectoriel_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             ecriture_partagee: false,
