@@ -293,8 +293,10 @@ impl Projection {
             )));
         }
         let mut f32s = payload
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c));
         let moyenne: Vec<f32> = f32s.by_ref().take(dim_entree).collect();
         let lambda: Vec<f32> = f32s.by_ref().take(dim_sortie).collect();
         let matrice: Vec<f32> = f32s.collect();
