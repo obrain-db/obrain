@@ -487,7 +487,7 @@ impl ProjectionApprise {
     }
 }
 
-fn normaliser(v: &mut [f32]) {
+pub(crate) fn normaliser(v: &mut [f32]) {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if n > 0.0 && n.is_finite() {
         for x in v.iter_mut() {
@@ -522,10 +522,10 @@ fn gram_schmidt(q: &mut [f32], d: usize, k: usize) {
 
 /// Générateur déterministe (SplitMix64) : pas de dépendance, reproductible
 /// sur toute plateforme — la matrice persistée doit se recalculer à l'identique.
-struct SplitMix(u64);
+pub(crate) struct SplitMix(pub(crate) u64);
 
 impl SplitMix {
-    fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -535,7 +535,7 @@ impl SplitMix {
     fn unit(&mut self) -> f32 {
         ((self.next_u64() >> 11) as f64 / (1u64 << 53) as f64) as f32
     }
-    fn gauss(&mut self) -> f32 {
+    pub(crate) fn gauss(&mut self) -> f32 {
         let u1 = self.unit().max(1e-7);
         let u2 = self.unit();
         (-2.0 * (u1 as f64).ln()).sqrt() as f32 * (2.0 * std::f32::consts::PI * u2).cos()
@@ -562,31 +562,45 @@ pub fn chemin(dir: &Path, label: &str, propriete: &str) -> PathBuf {
     dir.join(Projection::nom_fichier(label, propriete))
 }
 
+/// Jeux de données synthétiques partagés par les tests du crate (projection,
+/// retrieval) : la recette « centres + 0,25·direction » du dépôt
+/// (`agent_memory_migration.rs`), paramétrée en dimension.
+#[cfg(test)]
+pub(crate) mod jeux {
+    use super::{SplitMix, normaliser};
+
+    /// Direction unitaire tirée au hasard en dimension `dim`.
+    pub(crate) fn direction(rng: &mut SplitMix, dim: usize) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..dim).map(|_| rng.gauss()).collect();
+        normaliser(&mut v);
+        v
+    }
+
+    /// `centres_n` centres unitaires ; le point `i` vaut
+    /// normalise(centre[i % centres_n] + 0,25·direction). `n × dim` f32, ligne-major.
+    pub(crate) fn structures(n: usize, centres_n: usize, dim: usize, graine: u64) -> Vec<f32> {
+        let mut rng = SplitMix(graine);
+        let centres: Vec<Vec<f32>> = (0..centres_n).map(|_| direction(&mut rng, dim)).collect();
+        let mut out = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            let u = direction(&mut rng, dim);
+            let c = &centres[i % centres_n];
+            let mut v: Vec<f32> = (0..dim).map(|k| c[k] + 0.25 * u[k]).collect();
+            normaliser(&mut v);
+            out.extend_from_slice(&v);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const D: usize = 768;
 
-    fn direction(rng: &mut SplitMix, dim: usize) -> Vec<f32> {
-        let mut v: Vec<f32> = (0..dim).map(|_| rng.gauss()).collect();
-        normaliser(&mut v);
-        v
-    }
-
-    /// Recette du dépôt : C centres unitaires, point = normalise(centre + 0,25·direction).
     fn structures(n: usize, centres_n: usize, graine: u64) -> Vec<f32> {
-        let mut rng = SplitMix(graine);
-        let centres: Vec<Vec<f32>> = (0..centres_n).map(|_| direction(&mut rng, D)).collect();
-        let mut out = Vec::with_capacity(n * D);
-        for i in 0..n {
-            let u = direction(&mut rng, D);
-            let c = &centres[i % centres_n];
-            let mut v: Vec<f32> = (0..D).map(|k| c[k] + 0.25 * u[k]).collect();
-            normaliser(&mut v);
-            out.extend_from_slice(&v);
-        }
-        out
+        jeux::structures(n, centres_n, D, graine)
     }
 
     fn repertoire_temporaire(nom: &str) -> PathBuf {
