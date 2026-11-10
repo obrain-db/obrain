@@ -126,6 +126,8 @@ impl super::ObrainDB {
                 return None;
             }
         };
+        // Le rerank exact relit les vecteurs natifs dans la colonne (C4).
+        charge.definir_source_native(self.source_native_vectorielle(property));
         self.index_vectoriel_empreintes
             .write()
             .insert(format!("{label}:{property}"), empreinte.wal_offset);
