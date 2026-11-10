@@ -542,6 +542,36 @@ pub mod zone {
     pub const TIER0: &str = "substrate.tier0";
     pub const TIER1: &str = "substrate.tier1";
     pub const TIER2: &str = "substrate.tier2";
+
+    /// Nom sûr pour un fichier de zone dérivé d'un identifiant libre (label,
+    /// propriété) : alphanumériques ASCII, `_` et `-` tels quels, tout le
+    /// reste en `%xx` (octets UTF-8). Injectif : deux identifiants distincts
+    /// donnent deux noms distincts, donc deux index ne se marchent pas dessus.
+    pub fn nom_sur(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02x}"));
+            }
+        }
+        out
+    }
+
+    /// Zone de palier NOMMÉE d'un index vectoriel `(label, propriété)` :
+    /// `substrate.tier<niveau>.<label>.<propriété>`, `niveau` ∈ {0, 1, 2}.
+    /// Les zones non nommées [`TIER0`]..[`TIER2`] restent celles de l'index
+    /// unique historique de la base (`SubstrateStore::load_tier_index`,
+    /// `examples/rebuild_tiers.rs`).
+    pub fn tier_nomme(niveau: u8, label: &str, propriete: &str) -> String {
+        format!(
+            "substrate.tier{niveau}.{}.{}",
+            nom_sur(label),
+            nom_sur(propriete)
+        )
+    }
+
     pub const HILBERT: &str = "substrate.hilbert";
     pub const COMMUNITY: &str = "substrate.community";
     /// Side-column Z-order (Morton) — clé logique u32/slot sur le même plan

@@ -34,7 +34,27 @@ use bytemuck::{Pod, Zeroable};
 
 /// Current on-disk format version. Bump when the header layout, the
 /// Pod tier record layout, or the default SRP seeds change.
-pub const TIER_PERSIST_VERSION: u32 = 1;
+pub const TIER_PERSIST_VERSION: u32 = 2;
+
+/// Première version du format : sans empreinte ni epoch nommé. Encore lue
+/// (les zones écrites par un binaire antérieur se chargent), jamais écrite.
+pub const TIER_PERSIST_VERSION_V1: u32 = 1;
+
+/// Bit 1 des `flags` : l'en-tête porte une [`EmpreinteStore`] valide.
+pub const FLAG_HAS_EMPREINTE: u32 = 1 << 1;
+
+/// Empreinte conservatrice de l'état du store au moment où une zone de
+/// palier a été écrite : offset du WAL et nombre de nœuds vivants. Une
+/// réouverture ne charge l'index que si l'empreinte décrit encore le store ;
+/// toute mutation la change (les écritures de vecteurs aussi, grâce au
+/// marqueur `WalPayload::VecColumnWrite`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct EmpreinteStore {
+    /// `WalWriter::offset()` au moment de l'écriture.
+    pub wal_offset: u64,
+    /// Nombre de nœuds vivants au moment de l'écriture.
+    pub noeuds_vivants: u64,
+}
 
 /// Fixed header size in bytes. Tier records begin at `HEADER_SIZE` (no
 /// slot_to_offset) or at `HEADER_SIZE + 4 * n_slots` (tier0 only).
@@ -94,12 +114,23 @@ pub struct TierPersistHeader {
     /// CRC32 (IEEE polynomial) over the payload region: the
     /// slot_to_offset array (when present) followed by the Pod records.
     pub crc32: u32,
-    /// Bit 0 = [`FLAG_HAS_SLOT_TO_OFFSET`]. Remaining bits reserved.
+    /// Bit 0 = [`FLAG_HAS_SLOT_TO_OFFSET`], bit 1 = [`FLAG_HAS_EMPREINTE`].
+    /// Remaining bits reserved.
     pub flags: u32,
+    /// Epoch de repermutation des slots (chantier SlotRemappable) au moment
+    /// de l'écriture. Mêmes octets que l'ex-`_reserved[0]` des en-têtes v1,
+    /// que `slot_remap` lisait déjà : la v1 se lit donc sans conversion.
+    pub remap_epoch: u32,
+    /// [`EmpreinteStore::wal_offset`] en deux mots petit-boutistes
+    /// `[bas, haut]` (un `u64` imposerait un rembourrage que `Pod` refuse).
+    /// Valide si [`FLAG_HAS_EMPREINTE`] est levé (v2).
+    pub empreinte_wal: [u32; 2],
+    /// [`EmpreinteStore::noeuds_vivants`], même encodage.
+    pub empreinte_noeuds: [u32; 2],
     /// Zero-filled padding to bring the header to 64 B. Never read by
     /// current code; guarantees future versions can extend the header
     /// without reshuffling offsets.
-    pub _reserved: [u32; 10],
+    pub _reserved: [u32; 5],
 }
 
 impl TierPersistHeader {
@@ -117,7 +148,10 @@ impl TierPersistHeader {
             } else {
                 0
             },
-            _reserved: [0u32; 10],
+            remap_epoch: 0,
+            empreinte_wal: [0; 2],
+            empreinte_noeuds: [0; 2],
+            _reserved: [0u32; 5],
         }
     }
 
@@ -125,6 +159,27 @@ impl TierPersistHeader {
     #[inline]
     pub fn has_slot_to_offset(&self) -> bool {
         (self.flags & FLAG_HAS_SLOT_TO_OFFSET) != 0
+    }
+
+    /// Pose l'empreinte et lève [`FLAG_HAS_EMPREINTE`].
+    pub fn poser_empreinte(&mut self, e: EmpreinteStore) {
+        self.empreinte_wal = [e.wal_offset as u32, (e.wal_offset >> 32) as u32];
+        self.empreinte_noeuds = [e.noeuds_vivants as u32, (e.noeuds_vivants >> 32) as u32];
+        self.flags |= FLAG_HAS_EMPREINTE;
+    }
+
+    /// L'empreinte portée, si l'en-tête en a une (v2 avec le drapeau) ;
+    /// `None` pour une zone v1 ou écrite sans empreinte — l'appelant doit
+    /// alors considérer l'index comme non vérifiable et le reconstruire.
+    pub fn empreinte(&self) -> Option<EmpreinteStore> {
+        if self.version < 2 || (self.flags & FLAG_HAS_EMPREINTE) == 0 {
+            return None;
+        }
+        Some(EmpreinteStore {
+            wal_offset: u64::from(self.empreinte_wal[0]) | (u64::from(self.empreinte_wal[1]) << 32),
+            noeuds_vivants: u64::from(self.empreinte_noeuds[0])
+                | (u64::from(self.empreinte_noeuds[1]) << 32),
+        })
     }
 }
 
@@ -176,6 +231,31 @@ pub fn write_tier_zone_with_remap_epoch<T: Pod>(
     slot_to_offset: Option<&[u32]>,
     records: &[T],
     remap_epoch: u32,
+) -> SubstrateResult<()> {
+    write_tier_zone_estampille(
+        zf,
+        magic,
+        n_slots,
+        slot_to_offset,
+        records,
+        remap_epoch,
+        None,
+    )
+}
+
+/// Comme [`write_tier_zone_with_remap_epoch`], avec une [`EmpreinteStore`]
+/// optionnelle dans l'en-tête (zones nommées par index, O-VEC C3) : le
+/// lecteur la compare à l'état courant du store avant de faire confiance
+/// aux paliers.
+#[allow(clippy::too_many_arguments)]
+pub fn write_tier_zone_estampille<T: Pod>(
+    zf: &mut ZoneFile,
+    magic: TierMagic,
+    n_slots: u32,
+    slot_to_offset: Option<&[u32]>,
+    records: &[T],
+    remap_epoch: u32,
+    empreinte: Option<EmpreinteStore>,
 ) -> SubstrateResult<()> {
     // Sanity: dimensions agree.
     if records.len() != n_slots as usize {
@@ -245,7 +325,10 @@ pub fn write_tier_zone_with_remap_epoch<T: Pod>(
     // Write header last.
     let mut header = TierPersistHeader::new(magic, n_slots, has_s2o);
     header.crc32 = crc;
-    header._reserved[0] = remap_epoch;
+    header.remap_epoch = remap_epoch;
+    if let Some(e) = empreinte {
+        header.poser_empreinte(e);
+    }
     {
         let slice = zf.as_slice_mut();
         slice[..HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
@@ -275,6 +358,15 @@ pub fn read_tier_zone<T: Pod + Default + Copy>(
     zf: &ZoneFile,
     expected_magic: TierMagic,
 ) -> SubstrateResult<Option<LoadedTier<T>>> {
+    Ok(read_tier_zone_avec_entete(zf, expected_magic)?.map(|(t, _)| t))
+}
+
+/// Comme [`read_tier_zone`], en rendant aussi l'en-tête lu (epoch de remap,
+/// empreinte v2) pour que l'appelant juge de la fraîcheur des paliers.
+pub fn read_tier_zone_avec_entete<T: Pod + Default + Copy>(
+    zf: &ZoneFile,
+    expected_magic: TierMagic,
+) -> SubstrateResult<Option<(LoadedTier<T>, TierPersistHeader)>> {
     let slice = zf.as_slice();
     if slice.len() < HEADER_SIZE {
         return Ok(None);
@@ -291,7 +383,8 @@ pub fn read_tier_zone<T: Pod + Default + Copy>(
     if header.magic != expected_magic.as_u32() {
         return Ok(None);
     }
-    if header.version != TIER_PERSIST_VERSION {
+    // v1 (sans empreinte) reste lisible ; toute autre version est refusée.
+    if header.version != TIER_PERSIST_VERSION && header.version != TIER_PERSIST_VERSION_V1 {
         return Ok(None);
     }
     if header.record_size != expected_magic.record_size() {
@@ -364,7 +457,7 @@ pub fn read_tier_zone<T: Pod + Default + Copy>(
         out
     };
 
-    Ok(Some((header.n_slots, slot_to_offset, records)))
+    Ok(Some(((header.n_slots, slot_to_offset, records), header)))
 }
 
 // ---------------------------------------------------------------------------
@@ -618,5 +711,146 @@ mod tests {
         assert!(h_with.has_slot_to_offset());
         let h_without = TierPersistHeader::new(TierMagic::Tier1, 10, false);
         assert!(!h_without.has_slot_to_offset());
+    }
+}
+
+#[cfg(test)]
+mod tests_v2 {
+    //! En-tête v2 (O-VEC C3) : empreinte du store et epoch de remap nommé ;
+    //! la v1 reste lisible, sans empreinte.
+    use super::*;
+    use crate::file::{SubstrateFile, Zone};
+    use crate::tiers::Tier0;
+
+    fn t0(i: u32) -> Tier0 {
+        Tier0([u64::from(i), u64::from(i) * 3])
+    }
+
+    #[test]
+    fn l_empreinte_et_l_epoch_font_l_aller_retour() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let n = 9u32;
+        let records: Vec<Tier0> = (0..n).map(t0).collect();
+        let s2o: Vec<u32> = (0..n).map(|i| i * 10).collect();
+        let e = EmpreinteStore {
+            wal_offset: 0x1_2345_6789,
+            noeuds_vivants: 0x9_8765_4321,
+        };
+        {
+            let mut zf = sub.open_zone(Zone::Tier0).unwrap();
+            write_tier_zone_estampille(
+                &mut zf,
+                TierMagic::Tier0,
+                n,
+                Some(&s2o),
+                &records,
+                4,
+                Some(e),
+            )
+            .unwrap();
+        }
+        let zf = sub.open_zone(Zone::Tier0).unwrap();
+        let ((n_lu, s2o_lu, rec_lu), h) =
+            read_tier_zone_avec_entete::<Tier0>(&zf, TierMagic::Tier0)
+                .unwrap()
+                .expect("zone v2 lisible");
+        assert_eq!(n_lu, n);
+        assert_eq!(s2o_lu.as_deref(), Some(&s2o[..]));
+        assert_eq!(rec_lu, records);
+        assert_eq!(h.version, TIER_PERSIST_VERSION);
+        assert_eq!(h.remap_epoch, 4);
+        assert_eq!(
+            h.empreinte(),
+            Some(e),
+            "empreinte 64 bits reconstituée au bit près"
+        );
+        assert_eq!(
+            read_tier_zone::<Tier0>(&zf, TierMagic::Tier0)
+                .unwrap()
+                .unwrap()
+                .0,
+            n
+        );
+    }
+
+    #[test]
+    fn sans_empreinte_le_drapeau_est_bas() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let records: Vec<Tier0> = (0..3).map(t0).collect();
+        let s2o: Vec<u32> = vec![0, 1, 2];
+        {
+            let mut zf = sub.open_zone(Zone::Tier0).unwrap();
+            write_tier_zone_with_remap_epoch(&mut zf, TierMagic::Tier0, 3, Some(&s2o), &records, 7)
+                .unwrap();
+        }
+        let zf = sub.open_zone(Zone::Tier0).unwrap();
+        let (_, h) = read_tier_zone_avec_entete::<Tier0>(&zf, TierMagic::Tier0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(h.remap_epoch, 7);
+        assert_eq!(h.empreinte(), None);
+    }
+
+    #[test]
+    fn une_zone_v1_se_lit_encore_sans_empreinte() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let records: Vec<Tier0> = (0..5).map(t0).collect();
+        let s2o: Vec<u32> = (0..5).collect();
+        let e = EmpreinteStore {
+            wal_offset: 1,
+            noeuds_vivants: 5,
+        };
+        {
+            let mut zf = sub.open_zone(Zone::Tier0).unwrap();
+            write_tier_zone_estampille(
+                &mut zf,
+                TierMagic::Tier0,
+                5,
+                Some(&s2o),
+                &records,
+                2,
+                Some(e),
+            )
+            .unwrap();
+            // Un binaire v1 aurait écrit version = 1 : on rétrograde le champ
+            // (offset 4..8) ; l'epoch v1 vivait déjà dans les mêmes octets.
+            let v1: u32 = TIER_PERSIST_VERSION_V1;
+            zf.as_slice_mut()[4..8].copy_from_slice(&v1.to_le_bytes());
+            zf.msync().unwrap();
+        }
+        let zf = sub.open_zone(Zone::Tier0).unwrap();
+        let ((n, _, rec), h) = read_tier_zone_avec_entete::<Tier0>(&zf, TierMagic::Tier0)
+            .unwrap()
+            .expect("la v1 reste lisible");
+        assert_eq!(n, 5);
+        assert_eq!(rec, records);
+        assert_eq!(
+            h.remap_epoch, 2,
+            "l'epoch v1 (_reserved[0]) se lit dans remap_epoch"
+        );
+        assert_eq!(
+            h.empreinte(),
+            None,
+            "une v1 n'a pas d'empreinte, quel que soit le drapeau"
+        );
+    }
+
+    #[test]
+    fn une_version_inconnue_est_refusee() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let records: Vec<Tier0> = (0..2).map(t0).collect();
+        {
+            let mut zf = sub.open_zone(Zone::Tier0).unwrap();
+            write_tier_zone(&mut zf, TierMagic::Tier0, 2, Some(&[0, 1]), &records).unwrap();
+            let v3: u32 = 3;
+            zf.as_slice_mut()[4..8].copy_from_slice(&v3.to_le_bytes());
+            zf.msync().unwrap();
+        }
+        let zf = sub.open_zone(Zone::Tier0).unwrap();
+        assert!(
+            read_tier_zone_avec_entete::<Tier0>(&zf, TierMagic::Tier0)
+                .unwrap()
+                .is_none()
+        );
     }
 }

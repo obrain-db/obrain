@@ -1723,6 +1723,11 @@ pub struct SubstrateStore {
     /// (`wal_offset_at_flush`) ; `dernier_offset_flush` garde son rôle d'offset
     /// brut pour la détection « WAL immobile ».
     borne_fenetre_rejeu: AtomicU64,
+    /// (O-VEC C3) Nombre d'écritures `Value::Vector` de NŒUDS routées vers
+    /// les colonnes de vecteurs par CE processus (`route_vector_write`).
+    /// Sert au moteur à vérifier qu'un index vectoriel en mémoire a vu
+    /// chaque écriture avant de le persister à la fermeture.
+    ecritures_vectorielles_noeuds: AtomicU64,
     /// Next engram id to allocate. Id 0 is the null-engram sentinel
     /// (see [`crate::engram::MAX_ENGRAM_ID`]); allocation starts at 1.
     /// Persisted via `substrate.dict` v2.
@@ -6670,6 +6675,7 @@ impl SubstrateStore {
             deces_aretes: DashMap::new(),
             dernier_offset_flush: AtomicU64::new(0),
             borne_fenetre_rejeu: AtomicU64::new(0),
+            ecritures_vectorielles_noeuds: AtomicU64::new(0),
             external_edges: DashMap::new(),
             external_inbound: DashMap::new(),
             external_by_id: DashMap::new(),
@@ -11795,6 +11801,12 @@ impl SubstrateStore {
         self.borne_fenetre_rejeu.load(Ordering::Acquire)
     }
 
+    /// (O-VEC C3) Écritures `Value::Vector` de nœuds routées vers les colonnes
+    /// par ce processus depuis l'ouverture — voir `route_vector_write`.
+    pub fn nb_ecritures_vectorielles_noeuds(&self) -> u64 {
+        self.ecritures_vectorielles_noeuds.load(Ordering::Acquire)
+    }
+
     /// Chantier SlotRemappable — SEUL point d'entrée supporté pour une
     /// repermutation Hilbert.
     ///
@@ -14993,6 +15005,31 @@ impl SubstrateStore {
         };
 
         // 2. Chemin rapide : colonne deja creee, aucun besoin du fichier substrat.
+        // (O-VEC C3) MARQUEUR WAL, AVANT la colonne. Le vecteur ne va pas
+        // dans le WAL ; sans cette trame, réécrire le vecteur d'un nœud
+        // existant ne déplaçait pas l'offset, et l'empreinte d'un index
+        // vectoriel persisté (offset + nœuds vivants) validait un index
+        // PÉRIMÉ à la réouverture. Ordre : marqueur d'abord — un marqueur
+        // sans donnée ne coûte qu'une reconstruction ; une donnée sans
+        // marqueur coûterait un résultat faux. L'échec d'append est journalisé
+        // comme les autres écritures best-effort de ce chemin.
+        if let Err(e) = self
+            .writer
+            .append_payload(crate::wal::WalPayload::VecColumnWrite {
+                entity_kind: entity_kind as u8,
+                slot,
+                key_id: prop_key_id,
+            })
+        {
+            tracing::warn!(
+                target: "substrate::vec_columns",
+                "marqueur VecColumnWrite non journalise (key={key:?}, slot={slot}) : {e}"
+            );
+        }
+        if entity_kind == EntityKind::Node {
+            self.ecritures_vectorielles_noeuds
+                .fetch_add(1, Ordering::AcqRel);
+        }
         if let Some(res) =
             self.vec_columns
                 .write_existing(&pk, entity_kind, prop_key_id, slot, vector)

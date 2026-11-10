@@ -60,6 +60,9 @@ pub const ECHANTILLON_MAX: usize = 20_000;
 
 const FLAG_IDENTITE: u16 = 1 << 0;
 const PREFIXE_FICHIER: &str = "substrate.vecproj.";
+/// Taille de l'en-tête sérialisé : `magic[8] version:u16 flags:u16 dim_entree:u32
+/// dim_sortie:u32 n_echantillon:u32 graine:u64 trace:f32 crc32:u32`.
+const ENTETE: usize = 8 + 2 + 2 + 4 + 4 + 4 + 8 + 4 + 4;
 
 /// Une projection vers [`L2_DIM`] composantes : identité (dimension d'entrée
 /// ≤ 384) ou PCA apprise (dimension d'entrée > 384).
@@ -154,6 +157,72 @@ impl Projection {
         Ok(())
     }
 
+    /// Écrit la projection dans la ZONE nommée [`Self::nom_fichier`] de `sub`
+    /// (mode fichier ou mémoire : même chemin que les paliers d'un index
+    /// nommé, donc emportée par l'instantané et visible de `zone_names`).
+    /// La zone est écrite en place ; le CRC du payload protège une écriture
+    /// interrompue (relue ⇒ `Err` ⇒ reconstruction).
+    pub fn ecrire_zone(
+        &self,
+        sub: &crate::file::SubstrateFile,
+        label: &str,
+        propriete: &str,
+    ) -> SubstrateResult<()> {
+        let octets = self.en_octets();
+        let mut zf = sub.open_named_zone(&Self::nom_fichier(label, propriete))?;
+        crate::writer::ensure_room(&mut zf, octets.len(), 0)?;
+        zf.as_slice_mut()[..octets.len()].copy_from_slice(&octets);
+        zf.msync()?;
+        zf.fsync()?;
+        Ok(())
+    }
+
+    /// Relit la projection depuis sa zone nommée. `Ok(None)` si la zone est
+    /// absente ou vide ; `Err` si son contenu est invalide (signature,
+    /// version, taille, CRC). La zone peut être plus longue que le contenu
+    /// (`ensure_room` arrondit) : la longueur utile vient de l'en-tête.
+    pub fn lire_zone(
+        sub: &crate::file::SubstrateFile,
+        label: &str,
+        propriete: &str,
+    ) -> SubstrateResult<Option<Self>> {
+        let Ok(zf) = sub.open_named_zone_read_only(&Self::nom_fichier(label, propriete)) else {
+            return Ok(None);
+        };
+        let slice = zf.as_slice();
+        if slice.len() < ENTETE || slice[..8].iter().all(|b| *b == 0) {
+            return Ok(None);
+        }
+        let total = Self::taille_totale_depuis_entete(slice)?;
+        if slice.len() < total {
+            return Err(SubstrateError::Internal(format!(
+                "projection : zone de {} octets, {total} attendus d'après l'en-tête",
+                slice.len()
+            )));
+        }
+        Self::depuis_octets(&slice[..total]).map(Some)
+    }
+
+    /// Longueur totale (en-tête + payload) annoncée par un en-tête valide.
+    fn taille_totale_depuis_entete(octets: &[u8]) -> SubstrateResult<usize> {
+        if octets.len() < ENTETE {
+            return Err(SubstrateError::Internal(format!(
+                "projection : {} octets, en-tête de {ENTETE} attendu",
+                octets.len()
+            )));
+        }
+        if &octets[..8] != MAGIC {
+            return Err(SubstrateError::BadMagic);
+        }
+        let flags = u16::from_le_bytes([octets[10], octets[11]]);
+        if flags & FLAG_IDENTITE != 0 {
+            return Ok(ENTETE);
+        }
+        let d = u32::from_le_bytes([octets[12], octets[13], octets[14], octets[15]]) as usize;
+        let k = u32::from_le_bytes([octets[16], octets[17], octets[18], octets[19]]) as usize;
+        Ok(ENTETE + 4 * (d + k + k * d))
+    }
+
     /// Relit la projection de `dir`. `Ok(None)` si le fichier n'existe pas ;
     /// `Err` si la signature, la version, la taille ou le CRC ne correspondent
     /// pas — l'appelant reconstruit l'index, il n'interprète pas.
@@ -221,7 +290,6 @@ impl Projection {
 
     /// Désérialisation stricte : toute incohérence est une erreur.
     pub fn depuis_octets(octets: &[u8]) -> SubstrateResult<Self> {
-        const ENTETE: usize = 8 + 2 + 2 + 4 + 4 + 4 + 8 + 4 + 4;
         if octets.len() < ENTETE {
             return Err(SubstrateError::Internal(format!(
                 "projection : {} octets, en-tête de {ENTETE} attendu",
@@ -546,15 +614,7 @@ impl SplitMix {
 /// reste en `%xx` (octets UTF-8). Injectif, donc deux index distincts ne se
 /// marchent pas dessus.
 fn echapper(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02x}"));
-        }
-    }
-    out
+    crate::file::zone::nom_sur(s)
 }
 
 /// Chemin du fichier de projection d'un index dans `dir`.
