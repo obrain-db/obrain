@@ -240,10 +240,29 @@ impl super::ObrainDB {
             use obrain_core::index::vector::VectorIndex as _;
             let index = obrain_substrate::SubstrateTieredIndex::new(obrain_substrate::L2_DIM);
             index.rebuild(&pairs);
+            // (O-VEC C3) Lie a l'epoch de repermutation courant : l'index vient
+            // d'etre bati depuis les donnees VIVANTES, donc APRES toute
+            // repermutation ; sans cette liaison, la persistance refuserait
+            // d'ecrire sur une base deja repermutee.
+            let index = match self.substrate_store.as_ref() {
+                Some(sub) => sub
+                    .avec_substrate(|s| index.lier_a_l_epoch_courant(s))
+                    .map_err(|e| {
+                        obrain_common::utils::error::Error::Internal(format!(
+                            "create_vector_index(:{label}({property})) : epoch de remap illisible : {e}"
+                        ))
+                    })?,
+                None => index,
+            };
+            let index = std::sync::Arc::new(index);
             let key = format!("{label}:{property}");
             self.substrate_vector_indexes
                 .write()
-                .insert(key, (dim, std::sync::Arc::new(index)));
+                .insert(key, (dim, std::sync::Arc::clone(&index)));
+            // (O-VEC C3) Persistance immediate : une base rouverte sans ecriture
+            // rechargera ces zones au lieu de tout rebatir.
+            #[cfg(feature = "vector-index")]
+            self.persister_index_vectoriel(label, property, &index);
 
             // (2026-08-14) DECLARATION DURABLE. L'index lui-meme est une
             // structure derivee — on sait toujours le rebatir depuis les
@@ -382,6 +401,7 @@ impl super::ObrainDB {
                 .write()
                 .remove(&format!("{label}:{property}"))
                 .is_some();
+            self.supprimer_zones_index_vectoriel(label, property);
             // La declaration part MEME si l'index n'etait pas en memoire : sur
             // une base rouverte, il ne l'est justement pas encore, et un
             // `DROP` doit valoir pour de bon.
@@ -654,6 +674,42 @@ impl super::ObrainDB {
             "index declare absent du registre — reconstruction a la demande"
         );
         let ok = match genre {
+            // (O-VEC C3) D'abord les zones persistees : chargees si elles
+            // decrivent encore le store (empreinte, epoch, CRC, projection) ;
+            // sinon reconstruction par balayage, puis reecriture.
+            #[cfg(feature = "vector-index")]
+            "vector" => {
+                // L'index du moteur est TOUJOURS en L2_DIM (il rembourre les
+                // vecteurs lui-meme, `rembourrer_au_cascade`) ; `dim` reste la
+                // dimension NATIVE gardee au registre pour valider les requetes.
+                // (C4 : l'index portera la projection et prendra `dim`.)
+                if let Some(dim) = decl.dimension
+                    && let Some(index) =
+                        self.charger_index_vectoriel(label, property, obrain_substrate::L2_DIM)
+                {
+                    self.substrate_vector_indexes
+                        .write()
+                        .insert(format!("{label}:{property}"), (dim, index));
+                    true
+                } else {
+                    let ok = self
+                        .create_vector_index(
+                            label,
+                            property,
+                            decl.dimension,
+                            decl.metrique.as_deref(),
+                            None,
+                            None,
+                        )
+                        .is_ok();
+                    if ok {
+                        self.index_vectoriel_reconstruits
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    ok
+                }
+            }
+            #[cfg(not(feature = "vector-index"))]
             "vector" => self
                 .create_vector_index(
                     label,

@@ -153,8 +153,8 @@ pub use record::{
 pub use replay::{ReplayStats, replay_from};
 pub use result_buf::ResultBuf;
 pub use retrieval::{
-    K0_DEFAUT, K1_DEFAUT, LargeursCascade, NodeOffset, SourceNative, SubstrateTieredIndex,
-    VectorIndex,
+    EmpreinteStore, K0_DEFAUT, K1_DEFAUT, LargeursCascade, NodeOffset, SourceNative,
+    SubstrateTieredIndex, VectorIndex,
 };
 pub use simplex_incidence::{SIMPLEX_POSTINGS_FILENAME, SimplexIncidenceZone};
 pub use simplex_passes::{

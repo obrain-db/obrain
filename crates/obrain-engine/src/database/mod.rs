@@ -36,6 +36,7 @@ mod schema_catalog;
 /// persistees (`substrate.textidx.<label>.<propriete>`) avec une EMPREINTE du
 /// store, et rechargees a l'ouverture quand elle correspond encore.
 mod text_index_persist;
+mod vector_index_persist;
 // T17 final cutover (2026-04-23): the `persistence`, `mmap_store`,
 // `nocache_reader`, and `native_writer` modules were deleted. They
 // implemented the legacy single-file `.obrain` v1 (bincode snapshot)
@@ -223,11 +224,29 @@ pub struct ObrainDB {
     /// en silence — sans quoi une requete en 3 dimensions interrogerait
     /// joyeusement un index construit sur des embeddings en 128.
     pub(super) substrate_vector_indexes: parking_lot::RwLock<
-        std::collections::HashMap<
-            String,
-            (usize, Arc<dyn obrain_core::index::vector::VectorIndex>),
-        >,
+        std::collections::HashMap<String, (usize, Arc<obrain_substrate::SubstrateTieredIndex>)>,
     >,
+    /// (O-VEC C3) Index vectoriels CHARGÉS depuis leurs zones nommées sans
+    /// reconstruction, depuis l'ouverture.
+    pub(super) index_vectoriel_charges: std::sync::atomic::AtomicUsize,
+    /// (O-VEC C3) Index vectoriels RECONSTRUITS depuis la colonne (déclaration
+    /// présente, zones absentes ou périmées), depuis l'ouverture.
+    pub(super) index_vectoriel_reconstruits: std::sync::atomic::AtomicUsize,
+    /// (O-VEC C3) Persistances d'index vectoriel réussies depuis l'ouverture.
+    pub(super) index_vectoriel_persistes: std::sync::atomic::AtomicUsize,
+    /// (O-VEC C3) Écritures de vecteurs de nœuds effectuées PAR LE MOTEUR (donc
+    /// vues par l'entretien des index) ; comparé au compteur du store à la
+    /// fermeture avant de persister un index.
+    #[cfg(feature = "vector-index")]
+    pub(super) ecritures_vectorielles_vues: std::sync::atomic::AtomicU64,
+    /// (O-VEC C3) Offset du WAL à la dernière synchronisation (chargement ou
+    /// persistance) de chaque index vectoriel, par clé `label:prop`.
+    #[cfg(feature = "vector-index")]
+    pub(super) index_vectoriel_empreintes:
+        parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    /// Base ouverte en écriture PARTAGÉE (`open_shared_write`) : un pair peut
+    /// écrire sans que ce processus le voie.
+    pub(super) ecriture_partagee: bool,
 
     /// Index texte (BM25) du mode SUBSTRAT, cles par `"label:propriete"`.
     ///
@@ -598,7 +617,10 @@ impl ObrainDB {
                 path_ref.display()
             )));
         };
-        let db = Self::with_substrate_store(store, Some(path_ref), false)?;
+        let mut db = Self::with_substrate_store(store, Some(path_ref), false)?;
+        // (O-VEC C3) Un pair peut écrire : la persistance des index vectoriels
+        // à la fermeture applique la règle prudente (WAL immobile).
+        db.ecriture_partagee = true;
         // MP-8 : identifiants de transaction uniques ENTRE processus (voir
         // `TransactionManager::numeroter_pour_processus`).
         db.transaction_manager
@@ -1289,6 +1311,14 @@ impl ObrainDB {
             substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
             index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
+            index_vectoriel_charges: std::sync::atomic::AtomicUsize::new(0),
+            index_vectoriel_reconstruits: std::sync::atomic::AtomicUsize::new(0),
+            index_vectoriel_persistes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "vector-index")]
+            ecritures_vectorielles_vues: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "vector-index")]
+            index_vectoriel_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            ecriture_partagee: false,
             #[cfg(feature = "text-index")]
             index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
@@ -1385,6 +1415,14 @@ impl ObrainDB {
             substrate_vector_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             index_texte_charges: std::sync::atomic::AtomicUsize::new(0),
             index_texte_persistes: std::sync::atomic::AtomicUsize::new(0),
+            index_vectoriel_charges: std::sync::atomic::AtomicUsize::new(0),
+            index_vectoriel_reconstruits: std::sync::atomic::AtomicUsize::new(0),
+            index_vectoriel_persistes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "vector-index")]
+            ecritures_vectorielles_vues: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "vector-index")]
+            index_vectoriel_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            ecriture_partagee: false,
             #[cfg(feature = "text-index")]
             index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
@@ -1977,6 +2015,8 @@ impl ObrainDB {
         // rien vu passer, et EFFACE les autres.
         #[cfg(feature = "text-index")]
         self.repersister_index_textuels();
+        #[cfg(feature = "vector-index")]
+        self.repersister_index_vectoriels();
 
         *is_open = false;
         Ok(())

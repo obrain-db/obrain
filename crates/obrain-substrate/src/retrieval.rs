@@ -36,7 +36,8 @@
 
 use crate::error::SubstrateResult;
 use crate::file::{SubstrateFile, Zone};
-use crate::tier_persist::{self, EmpreinteStore, TierMagic};
+pub use crate::tier_persist::EmpreinteStore;
+use crate::tier_persist::{self, TierMagic};
 use crate::tiered_scan::{PARALLEL_THRESHOLD, ScanConfig, TieredQuery, scan_tiered};
 use crate::tiers::{L2_DIM, Tier0, Tier0Builder, Tier1, Tier1Builder, Tier2, Tier2Builder};
 use crate::vec_projection::Projection;

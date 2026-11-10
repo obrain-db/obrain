@@ -16,6 +16,8 @@ use obrain_common::utils::error::Error;
     feature = "hybrid-search"
 ))]
 use obrain_common::utils::error::Result;
+#[cfg(feature = "vector-index")]
+use obrain_substrate::VectorIndex as _;
 
 /// Evalue un filtre a operateurs (`{"$gt": 5}`) contre UNE valeur de propriete.
 ///

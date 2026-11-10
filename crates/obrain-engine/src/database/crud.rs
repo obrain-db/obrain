@@ -2,6 +2,8 @@
 
 #[cfg(feature = "wal")]
 use obrain_adapters::storage::wal::WalRecord;
+#[cfg(feature = "vector-index")]
+use obrain_substrate::VectorIndex as _;
 
 impl super::ObrainDB {
     /// Indexe un noeud dans TOUS les registres du substrat portant ce label.
@@ -41,7 +43,7 @@ impl super::ObrainDB {
             let entrees: Vec<(
                 String,
                 usize,
-                std::sync::Arc<dyn obrain_core::index::vector::VectorIndex>,
+                std::sync::Arc<obrain_substrate::SubstrateTieredIndex>,
             )> = self
                 .substrate_vector_indexes
                 .read()
@@ -196,6 +198,13 @@ impl super::ObrainDB {
             .collect();
 
         let id = self.data_store().create_node_with_props(labels, &props);
+        #[cfg(feature = "vector-index")]
+        self.compter_ecriture_vectorielle_vue(
+            props
+                .iter()
+                .filter(|(_, v)| matches!(v, obrain_common::types::Value::Vector(_)))
+                .count() as u64,
+        );
 
         // Build CDC snapshot before WAL consumes props
         #[cfg(feature = "cdc")]
@@ -508,6 +517,10 @@ impl super::ObrainDB {
         if let Some(vec) = vector_data
             && let Some(node) = self.data_store().get_node(id)
         {
+            // (O-VEC C3) Une ecriture de vecteur VUE par le moteur : le store
+            // en compte autant de son cote ; l'egalite des deux compteurs a la
+            // fermeture autorise la persistance de l'index.
+            self.compter_ecriture_vectorielle_vue(1);
             for label in &node.labels {
                 if let Some(index) = self.store.get_vector_index(label.as_str(), key) {
                     let accessor =
@@ -1150,6 +1163,9 @@ impl super::ObrainDB {
         // (2026-08-13) Meme entretien pour le substrat. Sans ceci, un lot cree
         // APRES `create_vector_index` restait invisible a la recherche — la
         // base repondait, sans les noeuds du lot, et rien ne le signalait.
+        // (O-VEC C3) Un vecteur par noeud cree, ecrit par le moteur.
+        #[cfg(feature = "vector-index")]
+        self.compter_ecriture_vectorielle_vue(ids.len() as u64);
         for &id in &ids {
             self.substrat_indexer_pour_label(id, label);
         }
