@@ -36,7 +36,7 @@
 
 use crate::error::SubstrateResult;
 use crate::file::{SubstrateFile, Zone};
-use crate::tier_persist::{self, TierMagic};
+use crate::tier_persist::{self, EmpreinteStore, TierMagic};
 use crate::tiered_scan::{PARALLEL_THRESHOLD, ScanConfig, TieredQuery, scan_tiered};
 use crate::tiers::{L2_DIM, Tier0, Tier0Builder, Tier1, Tier1Builder, Tier2, Tier2Builder};
 use crate::vec_projection::Projection;
@@ -574,6 +574,245 @@ impl SubstrateTieredIndex {
             Self::from_parts(dim, slot_to_offset, offset_to_slot, l0, l1, l2)
                 .with_slots_epoch(epoch),
         ))
+    }
+
+    // -----------------------------------------------------------------------
+    // Zones NOMMÉES par index (label, propriété) — O-VEC C3
+    //
+    // Les zones `substrate.tier0/1/2` non nommées sont celles de l'index
+    // unique historique de la base (`persist_to_zones` / `load_from_zones`).
+    // Un moteur qui tient PLUSIEURS index vectoriels (un par label et
+    // propriété) les range ici, chacun sous ses quatre zones :
+    // `substrate.tier{0,1,2}.<label>.<prop>` et `substrate.vecproj.<label>.<prop>`
+    // (cette dernière seulement pour une projection apprise). L'en-tête de
+    // chaque palier porte l'epoch de remap et une empreinte du store ; le
+    // chargement exige leur concordance, sinon `Ok(None)` et l'appelant
+    // reconstruit depuis la colonne.
+    // -----------------------------------------------------------------------
+
+    /// Les quatre zones d'un index nommé : paliers 0, 1, 2, puis projection.
+    pub fn noms_de_zones(label: &str, propriete: &str) -> [String; 4] {
+        [
+            crate::file::zone::tier_nomme(0, label, propriete),
+            crate::file::zone::tier_nomme(1, label, propriete),
+            crate::file::zone::tier_nomme(2, label, propriete),
+            Projection::nom_fichier(label, propriete),
+        ]
+    }
+
+    /// Atteste que le contenu de cet index a été bâti APRÈS la dernière
+    /// repermutation de slots de `sub` (pendant de [`Self::new_lie_a_la_base`]
+    /// pour un index construit par `avec_projection` + `rebuild`). Sans cette
+    /// liaison, la persistance refuse d'écrire sur une base déjà repermutée.
+    pub fn lier_a_l_epoch_courant(mut self, sub: &SubstrateFile) -> SubstrateResult<Self> {
+        self.slots_epoch_at_load = Some(crate::slot_remap::current_remap_epoch(sub)?);
+        Ok(self)
+    }
+
+    /// Garde commune aux persistances (voir le long commentaire de
+    /// [`Self::persist_to_zones`]) ; rend l'epoch de remap courant.
+    fn epoch_pour_persister(&self, sub: &SubstrateFile) -> SubstrateResult<u32> {
+        let remap_epoch = crate::slot_remap::current_remap_epoch(sub)?;
+        match self.slots_epoch_at_load {
+            Some(loaded_at) if loaded_at != remap_epoch => {
+                Err(crate::error::SubstrateError::Internal(format!(
+                    "tier index: refus de persister — index charge a l'epoch de remap \
+                     {loaded_at}, base desormais a l'epoch {remap_epoch}. Sa table \
+                     slot_to_offset est PERIMEE et ecraserait la table deja remappee. \
+                     Rechargez l'index (load_from_zones) avant de persister."
+                )))
+            }
+            None if remap_epoch != 0 => Err(crate::error::SubstrateError::Internal(format!(
+                "tier index: refus de persister — index non lie a un epoch de remap \
+                 sur une base qui en est a l'epoch {remap_epoch}. Construisez-le via \
+                 SubstrateTieredIndex::new_lie_a_la_base(&sub, dim) ou liez-le par \
+                 lier_a_l_epoch_courant pour attester qu'il a ete bati APRES la \
+                 derniere repermutation."
+            ))),
+            _ => Ok(remap_epoch),
+        }
+    }
+
+    /// Persiste l'index dans ses zones nommées, estampillées de `empreinte`
+    /// (état du store au moment de l'écriture, fourni par l'appelant qui
+    /// sait quand ses écritures sont stables). Mêmes gardes d'epoch que
+    /// [`Self::persist_to_zones`]. La projection n'est écrite que si elle
+    /// est apprise (l'identité se déduit de la dimension).
+    pub fn persister_nomme(
+        &self,
+        sub: &SubstrateFile,
+        label: &str,
+        propriete: &str,
+        empreinte: EmpreinteStore,
+    ) -> SubstrateResult<()> {
+        let remap_epoch = self.epoch_pour_persister(sub)?;
+        let [n0, n1, n2, _] = Self::noms_de_zones(label, propriete);
+        {
+            let guard = self.inner.read();
+            let n_slots = guard.slot_to_offset.len() as u32;
+            let mut zf0 = sub.open_named_zone(&n0)?;
+            tier_persist::write_tier_zone_estampille::<Tier0>(
+                &mut zf0,
+                TierMagic::Tier0,
+                n_slots,
+                Some(&guard.slot_to_offset),
+                &guard.l0,
+                remap_epoch,
+                Some(empreinte),
+            )?;
+            let mut zf1 = sub.open_named_zone(&n1)?;
+            tier_persist::write_tier_zone_estampille::<Tier1>(
+                &mut zf1,
+                TierMagic::Tier1,
+                n_slots,
+                None,
+                &guard.l1,
+                remap_epoch,
+                Some(empreinte),
+            )?;
+            let mut zf2 = sub.open_named_zone(&n2)?;
+            tier_persist::write_tier_zone_estampille::<Tier2>(
+                &mut zf2,
+                TierMagic::Tier2,
+                n_slots,
+                None,
+                &guard.l2,
+                remap_epoch,
+                Some(empreinte),
+            )?;
+        }
+        if matches!(self.projection, Projection::Apprise(_)) {
+            self.projection.ecrire_zone(sub, label, propriete)?;
+        }
+        Ok(())
+    }
+
+    /// Charge un index nommé si, et seulement si, ses zones décrivent encore
+    /// la base : en-têtes v2 valides (CRC), même `empreinte` sur les trois
+    /// paliers et égale à `empreinte_attendue`, epoch de remap égal à
+    /// l'epoch courant, longueurs concordantes, et — pour `dim_native >
+    /// L2_DIM` — projection présente et de cette dimension. Sinon `Ok(None)` :
+    /// l'appelant reconstruit depuis la colonne. Une zone absente ou
+    /// illisible compte comme absente (`Ok(None)`), jamais comme une erreur.
+    pub fn charger_nomme(
+        sub: &SubstrateFile,
+        label: &str,
+        propriete: &str,
+        dim_native: usize,
+        empreinte_attendue: EmpreinteStore,
+    ) -> SubstrateResult<Option<Self>> {
+        let [n0, n1, n2, _] = Self::noms_de_zones(label, propriete);
+        let Ok(zf0) = sub.open_named_zone_read_only(&n0) else {
+            return Ok(None);
+        };
+        let Some(((n_0, s2o, l0), h0)) =
+            tier_persist::read_tier_zone_avec_entete::<Tier0>(&zf0, TierMagic::Tier0)?
+        else {
+            return Ok(None);
+        };
+        let Some(slot_to_offset) = s2o else {
+            return Ok(None);
+        };
+        if h0.empreinte() != Some(empreinte_attendue) {
+            return Ok(None);
+        }
+        let epoch = crate::slot_remap::current_remap_epoch(sub)?;
+        if h0.remap_epoch != epoch {
+            return Ok(None);
+        }
+        let Ok(zf1) = sub.open_named_zone_read_only(&n1) else {
+            return Ok(None);
+        };
+        let Some(((n_1, _, l1), h1)) =
+            tier_persist::read_tier_zone_avec_entete::<Tier1>(&zf1, TierMagic::Tier1)?
+        else {
+            return Ok(None);
+        };
+        let Ok(zf2) = sub.open_named_zone_read_only(&n2) else {
+            return Ok(None);
+        };
+        let Some(((n_2, _, l2), h2)) =
+            tier_persist::read_tier_zone_avec_entete::<Tier2>(&zf2, TierMagic::Tier2)?
+        else {
+            return Ok(None);
+        };
+        if n_0 != n_1
+            || n_0 != n_2
+            || h1.empreinte() != Some(empreinte_attendue)
+            || h2.empreinte() != Some(empreinte_attendue)
+            || h1.remap_epoch != epoch
+            || h2.remap_epoch != epoch
+        {
+            return Ok(None);
+        }
+        let attendu = n_0 as usize;
+        if slot_to_offset.len() != attendu
+            || l0.len() != attendu
+            || l1.len() != attendu
+            || l2.len() != attendu
+        {
+            return Ok(None);
+        }
+        let projection = if dim_native <= L2_DIM {
+            match Projection::identite(dim_native) {
+                Ok(p) => p,
+                Err(_) => return Ok(None),
+            }
+        } else {
+            match Projection::lire_zone(sub, label, propriete) {
+                Ok(Some(p)) if p.dim_entree() == dim_native => p,
+                Ok(_) => return Ok(None),
+                Err(e) => {
+                    tracing::info!(
+                        erreur = %e, label, propriete,
+                        "projection illisible — index vectoriel a reconstruire"
+                    );
+                    return Ok(None);
+                }
+            }
+        };
+        let mut offset_to_slot = HashMap::with_capacity(attendu);
+        for (slot, &offset) in slot_to_offset.iter().enumerate() {
+            offset_to_slot.insert(offset, slot);
+        }
+        Ok(Some(
+            Self::from_parts_avec_projection(
+                projection,
+                slot_to_offset,
+                offset_to_slot,
+                l0,
+                l1,
+                l2,
+            )
+            .with_slots_epoch(epoch),
+        ))
+    }
+
+    /// Retire les zones nommées d'un index (suppression de l'index, ou index
+    /// jugé périmé à la fermeture). En mode fichier les fichiers sont
+    /// supprimés ; en mode mémoire leur en-tête est effacé (une zone RAM ne
+    /// se retire pas), ce qui suffit à ce que [`Self::charger_nomme`] rende
+    /// `None`. Une zone déjà absente n'est pas une erreur.
+    pub fn supprimer_nomme(
+        sub: &SubstrateFile,
+        label: &str,
+        propriete: &str,
+    ) -> SubstrateResult<()> {
+        for nom in Self::noms_de_zones(label, propriete) {
+            if sub.is_memory() {
+                if let Ok(mut zf) = sub.open_named_zone_read_only(&nom) {
+                    let n = zf.len().min(tier_persist::HEADER_SIZE as u64) as usize;
+                    zf.as_slice_mut()[..n].fill(0);
+                }
+            } else {
+                match std::fs::remove_file(sub.path().join(&nom)) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Projette un vecteur natif en `L2_DIM`. Panique si la longueur n'est
@@ -1436,6 +1675,275 @@ mod tests_rerank {
                 k0: K0_DEFAUT,
                 k1: K1_DEFAUT
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_zones_nommees {
+    //! O-VEC C3 — persistance par index (label, propriété) : zones nommées,
+    //! empreinte du store, epoch de remap, projection apprise.
+    use super::*;
+    use crate::vec_projection::{ProjectionApprise, jeux};
+
+    const D: usize = 768;
+
+    fn emb(seed: u32) -> Vec<f32> {
+        (0..L2_DIM)
+            .map(|i| ((seed as f32 + 1.0) * 0.011 * (i as f32 + 1.0)).sin())
+            .collect()
+    }
+
+    fn empreinte(wal: u64, noeuds: u64) -> EmpreinteStore {
+        EmpreinteStore {
+            wal_offset: wal,
+            noeuds_vivants: noeuds,
+        }
+    }
+
+    fn index_identite(offsets: &[NodeOffset]) -> SubstrateTieredIndex {
+        let idx = SubstrateTieredIndex::new(L2_DIM);
+        for &o in offsets {
+            idx.insert(o, &emb(o));
+        }
+        idx
+    }
+
+    fn index_apprise(n: usize) -> (SubstrateTieredIndex, Vec<f32>) {
+        let corpus = jeux::structures(n, 20, D, 99);
+        let pca = ProjectionApprise::ajuster(&corpus, D, 5).unwrap();
+        let idx = SubstrateTieredIndex::avec_projection(Projection::Apprise(pca));
+        let pairs: Vec<(NodeOffset, Vec<f32>)> = corpus
+            .as_chunks::<D>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, v.to_vec()))
+            .collect();
+        idx.rebuild(&pairs);
+        (idx, corpus)
+    }
+
+    fn memes_resultats(a: &SubstrateTieredIndex, b: &SubstrateTieredIndex, requetes: &[Vec<f32>]) {
+        for q in requetes {
+            assert_eq!(a.search_top_k(q, 5), b.search_top_k(q, 5));
+        }
+    }
+
+    #[test]
+    fn aller_retour_identite_avec_empreinte() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let offsets = [3u32, 8, 21, 55, 144];
+        let src = index_identite(&offsets);
+        src.persister_nomme(&sub, "Note", "embedding", empreinte(1_000, 5))
+            .unwrap();
+
+        let noms = sub.zone_names().unwrap();
+        for n in &SubstrateTieredIndex::noms_de_zones("Note", "embedding")[..3] {
+            assert!(
+                noms.contains(n),
+                "zone {n} absente de zone_names : {noms:?}"
+            );
+        }
+        assert!(
+            !noms.contains(&Projection::nom_fichier("Note", "embedding")),
+            "pas de zone de projection pour l'identité"
+        );
+
+        let charge = SubstrateTieredIndex::charger_nomme(
+            &sub,
+            "Note",
+            "embedding",
+            L2_DIM,
+            empreinte(1_000, 5),
+        )
+        .unwrap()
+        .expect("empreinte identique ⇒ chargement");
+        assert_eq!(charge.len(), 5);
+        let requetes: Vec<Vec<f32>> = offsets.iter().map(|&o| emb(o)).collect();
+        memes_resultats(&src, &charge, &requetes);
+
+        // Empreinte différente (une écriture a eu lieu depuis) ⇒ None.
+        assert!(
+            SubstrateTieredIndex::charger_nomme(
+                &sub,
+                "Note",
+                "embedding",
+                L2_DIM,
+                empreinte(1_001, 5)
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            SubstrateTieredIndex::charger_nomme(
+                &sub,
+                "Note",
+                "embedding",
+                L2_DIM,
+                empreinte(1_000, 6)
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn aller_retour_projection_apprise_768() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let (src, corpus) = index_apprise(300);
+        let e = empreinte(42, 300);
+        src.persister_nomme(&sub, "File", "emb", e).unwrap();
+        let noms = sub.zone_names().unwrap();
+        for n in SubstrateTieredIndex::noms_de_zones("File", "emb") {
+            assert!(noms.contains(&n), "zone {n} absente : {noms:?}");
+        }
+        let charge = SubstrateTieredIndex::charger_nomme(&sub, "File", "emb", D, e)
+            .unwrap()
+            .expect("projection + paliers cohérents ⇒ chargement");
+        assert_eq!(charge.dim(), D);
+        assert_eq!(charge.len(), 300);
+        assert_eq!(charge.projection().dim_entree(), D);
+        let requetes: Vec<Vec<f32>> = corpus.as_chunks::<D>().0[..20]
+            .iter()
+            .map(|v| v.to_vec())
+            .collect();
+        memes_resultats(&src, &charge, &requetes);
+    }
+
+    #[test]
+    fn projection_absente_ou_de_mauvaise_dimension_empeche_le_chargement() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let (src, _) = index_apprise(100);
+        let e = empreinte(7, 100);
+        src.persister_nomme(&sub, "File", "emb", e).unwrap();
+        // Dimension native annoncée différente de celle de la projection.
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "File", "emb", 1_024, e)
+                .unwrap()
+                .is_none()
+        );
+        // Zone de projection effacée.
+        std::fs::remove_file(sub.path().join(Projection::nom_fichier("File", "emb"))).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "File", "emb", D, e)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn un_epoch_de_remap_different_empeche_le_chargement() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let src = index_identite(&[1, 2, 3]);
+        let e = empreinte(1, 3);
+        src.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        crate::slot_remap::commit_remap_epoch(&sub, 1).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none(),
+            "les zones nommées ne sont pas enrôlées dans le remap : epoch différent ⇒ reconstruction"
+        );
+        // Un index non lié ne peut plus persister sur une base repermutée…
+        assert!(src.persister_nomme(&sub, "Note", "embedding", e).is_err());
+        // … un index lié à l'epoch courant, si.
+        let lie = index_identite(&[1, 2, 3])
+            .lier_a_l_epoch_courant(&sub)
+            .unwrap();
+        lie.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn un_crc_corrompu_sur_un_palier_empeche_le_chargement() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let src = index_identite(&[10, 20, 30, 40]);
+        let e = empreinte(5, 4);
+        src.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        {
+            let [_, n1, _, _] = SubstrateTieredIndex::noms_de_zones("Note", "embedding");
+            let mut zf = sub.open_named_zone(&n1).unwrap();
+            zf.as_slice_mut()[tier_persist::HEADER_SIZE + 3] ^= 0xFF;
+            zf.msync().unwrap();
+        }
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn deux_index_coexistent_et_la_suppression_ne_touche_que_le_sien() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let a = index_identite(&[1, 2, 3]);
+        let b = index_identite(&[7, 8, 9, 10, 11]);
+        let e = empreinte(9, 8);
+        a.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        b.persister_nomme(&sub, "File", "embedding", e).unwrap();
+        let ca = SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+            .unwrap()
+            .unwrap();
+        let cb = SubstrateTieredIndex::charger_nomme(&sub, "File", "embedding", L2_DIM, e)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ca.len(), 3);
+        assert_eq!(cb.len(), 5);
+        SubstrateTieredIndex::supprimer_nomme(&sub, "Note", "embedding").unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "File", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_some()
+        );
+        // Supprimer un index absent n'est pas une erreur.
+        SubstrateTieredIndex::supprimer_nomme(&sub, "Note", "embedding").unwrap();
+    }
+
+    #[test]
+    fn en_memoire_la_suppression_efface_l_en_tete() {
+        let sub = SubstrateFile::open_memory().unwrap();
+        let a = index_identite(&[1, 2]);
+        let e = empreinte(1, 2);
+        a.persister_nomme(&sub, "Note", "embedding", e).unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_some()
+        );
+        SubstrateTieredIndex::supprimer_nomme(&sub, "Note", "embedding").unwrap();
+        assert!(
+            SubstrateTieredIndex::charger_nomme(&sub, "Note", "embedding", L2_DIM, e)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn les_zones_non_nommees_restent_intactes() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let historique = index_identite(&[100, 200]);
+        historique.persist_to_zones(&sub).unwrap();
+        let nomme = index_identite(&[1, 2, 3]);
+        nomme
+            .persister_nomme(&sub, "Note", "embedding", empreinte(1, 3))
+            .unwrap();
+        let relu = SubstrateTieredIndex::load_from_zones(&sub, L2_DIM)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            relu.len(),
+            2,
+            "l'index historique de la base n'est pas touché"
         );
     }
 }
