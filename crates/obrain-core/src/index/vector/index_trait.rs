@@ -64,4 +64,14 @@ pub trait VectorIndex: Send + Sync {
     ///
     /// If `k == 0` or the index is empty, returns an empty Vec.
     fn search_top_k(&self, query: &[f32], k: usize) -> Vec<(NodeOffset, f32)>;
+
+    /// Same as [`Self::search_top_k`], with an explicit **candidate width**:
+    /// the number of candidates the index may examine before settling the
+    /// final top-K (HNSW's `ef`, the tiered cascade's `k0`). A wider search
+    /// trades latency for recall. Implementations without such a knob
+    /// ignore it — the default simply delegates to `search_top_k`.
+    fn search_top_k_ef(&self, query: &[f32], k: usize, ef: usize) -> Vec<(NodeOffset, f32)> {
+        let _ = ef;
+        self.search_top_k(query, k)
+    }
 }
