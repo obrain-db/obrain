@@ -166,6 +166,10 @@ testing-crash-injection = ["obrain-core/testing-crash-injection"]  # Crash injec
 workspace = true
 
 [[bench]]
+name = "contrainte_unique"
+harness = false
+
+[[bench]]
 name = "tri_borne"
 harness = false
 

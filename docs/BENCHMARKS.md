@@ -105,6 +105,45 @@ planification 845 µs → 56 µs, exécution 10 µs → 8 µs. Le coût était d
 lecture à la planification, pas l'exécution. Chiffres **provisoires** (charge
 10–25), bons pour le rapport avant/après, pas pour une plaquette.
 
+### Coût de l'unicité composite (PR #99, `fix/contrainte-composite`) — mesuré le 10/11/2026, machine partagée, charge ~3,5
+
+Bench : `cargo bench -p obrain-engine --features cypher --bench contrainte_unique`
+(10 000 `INSERT (:T {a, b})` par itération, base en mémoire, échantillon réduit
+`sample_size(10)`, warm-up 1 s, mesure 3 s). Temps divisé par 10 000 = µs/insertion.
+
+| Configuration | `main` (avant) | `fix/contrainte-composite` (après) | Écart |
+|---|---|---|---|
+| sans contrainte | 21,8 µs | 21,9 µs | +0,5 % (bruit) |
+| `UNIQUE (a)` simple | 24,6 µs | 24,6 µs | 0 % |
+| `UNIQUE (a, b)`, `a` répète (2 valeurs) | 22,0 µs — **2/10 000 insérées** | 743,8 µs — 10 000/10 000 | — |
+| idem + `create_property_index("a")` | 22,1 µs — 2/10 000 | 747,1 µs — 10 000/10 000 | — |
+| `UNIQUE (b, a)` (colonne sélective d'abord) | — | **25,4 µs** — 10 000/10 000 | — |
+
+Lecture :
+
+- Le correctif **ne régresse pas les chemins communs** : sans contrainte et
+  `UNIQUE` simple sont identiques avant/après (0 à +0,5 %, sous le bruit).
+- Sur le cas composite avec `a` qui se répète, `main` **rejette** dès la 3ᵉ
+  ligne (2/10 000) — c'est le bug. Il n'existe donc pas de « débit avant »
+  comparable : le chiffre de `main` (22 µs) mesure un *rejet précoce*, pas une
+  insertion.
+- Le chemin corrigé coûte **744 µs/insertion** : `find_nodes_by_properties`
+  résout le tuple par la **première** propriété contrainte qui a un index.
+  `a` étant de faible cardinalité (2 valeurs), l'index sur `a` renvoie ~5 000
+  candidats puis filtre sur `b` → O(n). Un index mono-colonne sur `a` n'y
+  change rien (747 ≈ 744 µs).
+- **L'alternative chiffrée** : déclarer la contrainte colonne-sélective-d'abord
+  (`UNIQUE (b, a)`), ou un index de tuple qui résoudrait par `b`, ramène le coût
+  à **25,4 µs/insertion** (≈ O(1), ×29). Il n'y a pas d'index composite dans le
+  store : c'est la seule voie O(1) aujourd'hui.
+
+Commande exacte pour rejouer :
+
+```bash
+cargo bench -p obrain-engine --features cypher --bench contrainte_unique
+```
+
+
 ## Ce qui n'est PAS reproductible depuis ce dépôt
 
 - Le tableau LDBC SNB (Obrain vs Kuzu, FalkorDB, Memgraph, Neo4j, ArangoDB)
