@@ -8,6 +8,11 @@ use parking_lot::RwLock;
 
 use obrain_common::utils::error::Result;
 
+/// (O-VEC C4) Graine de la projection apprise (PCA par iteration de sous-espace,
+/// `vec_projection`) : fixe, pour qu'un `rebuild` sur les memes vecteurs rende
+/// les memes paliers au bit pres.
+const GRAINE_PROJECTION: u64 = 0x0B2A_1A5E_ED00_0001;
+
 impl super::ObrainDB {
     // =========================================================================
     // PROPERTY INDEX API
@@ -201,45 +206,58 @@ impl super::ObrainDB {
                 )));
             }
 
-            // ── DIMENSION : ON PLONGE, ON NE REFUSE PLUS ───────────────────
-            // `SubstrateTieredIndex::new` PANIQUE si dim != L2_DIM (384) : son
-            // tier L2 est un f16 de longueur FIXE. Cette contrainte est reelle
-            // et structurelle — elle tient la largeur des enregistrements, donc
-            // le mmap et le SIMD. On ne la touche pas.
-            //
-            // Mais elle n'oblige pas a REFUSER les dimensions inferieures. Un
-            // espace de dimension d < 384 se plonge EXACTEMENT dans 384 par
-            // rembourrage de zeros : cosinus et euclidienne sont preservees au
-            // bit pres (demonstration dans `rembourrer_au_cascade`). Le
-            // voisinage rendu est identique a celui d'un index natif en d.
-            //
-            // Au-dessus de 384, en revanche, il faudrait une vraie projection,
-            // qui perd de l'information. La, on refuse — et on le dit.
-            if dim > obrain_substrate::L2_DIM {
-                return Err(obrain_common::utils::error::Error::Internal(format!(
-                    "create_vector_index(:{label}({property})) : le cascade du substrat \
-                     indexe au plus {} dimensions (tier L2 en f16 de longueur fixe), \
-                     et cette propriete en porte {}. Les dimensions inferieures sont \
-                     plongees sans perte ; au-dela, il faut une projection explicite \
-                     vers {} — la faire ici en silence changerait la qualite des \
-                     resultats sans que personne l'ait demande.",
-                    obrain_substrate::L2_DIM,
+            // ── DIMENSION NATIVE (O-VEC C4) ─────────────────────────────────
+            // Les paliers travaillent en L2_DIM (384) ; l'index porte la
+            // PROJECTION qui l'y amene : identite + rembourrage pour dim <= 384
+            // (cosinus preserve au bit pres), PCA APPRISE sur un echantillon
+            // (<= ECHANTILLON_MAX vecteurs, graine fixe) au-dela — jamais
+            // re-ajustee hors `rebuild_vector_index`, puisque les paliers
+            // n'ont de sens qu'avec elle. Les vecteurs natifs restent la source
+            // de verite : le rerank exact des candidats les relit dans la
+            // colonne (`source_native_vectorielle`). MESURE (spike cascade-768,
+            // 10/11/2026) : recall@10 0,986 sur les 32 521 vecteurs reels de
+            // PO, 0,997 a 1 M avec k0 = 4 000.
+            let projection = if dim <= obrain_substrate::L2_DIM {
+                obrain_substrate::vec_projection::Projection::identite(dim)
+            } else {
+                if pairs.len() < 2 {
+                    return Err(obrain_common::utils::error::Error::Internal(format!(
+                        "create_vector_index(:{label}({property})) : {} vecteur(s) en {dim} \
+                         dimensions ; apprendre la projection vers {} exige au moins 2 vecteurs.",
+                        pairs.len(),
+                        obrain_substrate::L2_DIM
+                    )));
+                }
+                let n_ech = pairs
+                    .len()
+                    .min(obrain_substrate::vec_projection::ECHANTILLON_MAX);
+                let mut echantillon = Vec::with_capacity(n_ech * dim);
+                for (_, v) in pairs.iter().take(n_ech) {
+                    echantillon.extend_from_slice(v);
+                }
+                obrain_substrate::vec_projection::ProjectionApprise::ajuster(
+                    &echantillon,
                     dim,
-                    obrain_substrate::L2_DIM
-                )));
+                    GRAINE_PROJECTION,
+                )
+                .map(obrain_substrate::vec_projection::Projection::Apprise)
             }
-
-            // Plongement dans la largeur du cascade. `dim` reste la dimension
-            // NATIVE, celle qu'on gardera au registre pour valider les requetes.
-            let pairs: Vec<(u32, Vec<f32>)> = pairs
-                .into_iter()
-                .filter_map(|(id, v)| super::rembourrer_au_cascade(&v).map(|plein| (id, plein)))
-                .collect();
+            .map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "create_vector_index(:{label}({property})) : projection {dim} -> {} \
+                     impossible : {e}",
+                    obrain_substrate::L2_DIM
+                ))
+            })?;
+            // `metric` : le cascade classe par cosinus (sur des vecteurs normalises,
+            // l'ordre euclidien est le meme) ; `m` / `ef_construction` sont
+            // propres a HNSW : acceptes, sans effet (API conservee).
 
             // Le trait doit etre en portee pour que `rebuild` soit visible.
             use obrain_core::index::vector::VectorIndex as _;
-            let index = obrain_substrate::SubstrateTieredIndex::new(obrain_substrate::L2_DIM);
+            let index = obrain_substrate::SubstrateTieredIndex::avec_projection(projection);
             index.rebuild(&pairs);
+            index.definir_source_native(self.source_native_vectorielle(property));
             // (O-VEC C3) Lie a l'epoch de repermutation courant : l'index vient
             // d'etre bati depuis les donnees VIVANTES, donc APRES toute
             // repermutation ; sans cette liaison, la persistance refuserait
@@ -655,6 +673,29 @@ impl super::ObrainDB {
     /// premiere recherche qui en a besoin, et une seule fois.
     ///
     /// Rend `true` si un index a ete rebati.
+    /// (O-VEC C4) Source des vecteurs NATIFS pour le rerank exact d'un index :
+    /// relit la colonne par le chemin public des proprietes (`Value::Vector`,
+    /// `Arc<[f32]>`), sans copie dans l'index. `None` sans substrat.
+    pub(super) fn source_native_vectorielle(
+        &self,
+        property: &str,
+    ) -> Option<std::sync::Arc<dyn obrain_substrate::SourceNative>> {
+        self.substrate_store.as_ref()?;
+        let data = self.data_store();
+        let cle = obrain_common::types::PropertyKey::new(property);
+        Some(std::sync::Arc::new(
+            move |offset: obrain_substrate::NodeOffset, dest: &mut Vec<f32>| match data
+                .get_node_property(obrain_common::types::NodeId(u64::from(offset)), &cle)
+            {
+                Some(obrain_common::types::Value::Vector(v)) => {
+                    dest.extend_from_slice(&v);
+                    true
+                }
+                _ => false,
+            },
+        ))
+    }
+
     #[cfg(any(feature = "vector-index", feature = "text-index"))]
     pub(super) fn rebatir_index_declare(&self, genre: &str, label: &str, property: &str) -> bool {
         let Some(ref sub) = self.substrate_store else {
@@ -679,13 +720,10 @@ impl super::ObrainDB {
             // sinon reconstruction par balayage, puis reecriture.
             #[cfg(feature = "vector-index")]
             "vector" => {
-                // L'index du moteur est TOUJOURS en L2_DIM (il rembourre les
-                // vecteurs lui-meme, `rembourrer_au_cascade`) ; `dim` reste la
-                // dimension NATIVE gardee au registre pour valider les requetes.
-                // (C4 : l'index portera la projection et prendra `dim`.)
+                // `dim` est la dimension NATIVE : l'index porte sa projection
+                // (identite <= 384, PCA apprise relue de sa zone au-dela).
                 if let Some(dim) = decl.dimension
-                    && let Some(index) =
-                        self.charger_index_vectoriel(label, property, obrain_substrate::L2_DIM)
+                    && let Some(index) = self.charger_index_vectoriel(label, property, dim)
                 {
                     self.substrate_vector_indexes
                         .write()

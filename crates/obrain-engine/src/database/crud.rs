@@ -58,9 +58,8 @@ impl super::ObrainDB {
                 let pk = obrain_common::types::PropertyKey::new(propriete);
                 if let Some(obrain_common::types::Value::Vector(v)) = node.properties.get(&pk)
                     && v.len() == dim_native
-                    && let Some(plein) = super::rembourrer_au_cascade(v)
                 {
-                    idx.insert(id.0 as u32, &plein);
+                    idx.insert(id.0 as u32, v);
                 }
             }
         }
@@ -539,15 +538,14 @@ impl super::ObrainDB {
                 for label in &node.labels {
                     let cle = format!("{}:{}", label.as_str(), key);
                     let entree = self.substrate_vector_indexes.read().get(&cle).cloned();
-                    // Comparaison sur la dimension NATIVE de l'index, puis
-                    // plongement dans la largeur du cascade. Un embedding d'une
-                    // autre largeur est ignore — jamais fatal : une base peut
-                    // porter plusieurs modeles sur la meme propriete.
+                    // Comparaison sur la dimension NATIVE de l'index (c'est lui
+                    // qui projette, O-VEC C4). Un embedding d'une autre largeur
+                    // est ignore — jamais fatal : une base peut porter plusieurs
+                    // modeles sur la meme propriete.
                     if let Some((dim_native, idx)) = entree
                         && dim_native == vec.len()
-                        && let Some(plein) = super::rembourrer_au_cascade(&vec)
                     {
-                        idx.insert(id.0 as u32, &plein);
+                        idx.insert(id.0 as u32, &vec);
                     }
                 }
             }

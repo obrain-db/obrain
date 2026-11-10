@@ -249,14 +249,8 @@ impl super::ObrainDB {
                     query.len()
                 )));
             }
-            let query_plein = super::rembourrer_au_cascade(query).ok_or_else(|| {
-                obrain_common::utils::error::Error::Internal(format!(
-                    "Requete de {} dimensions au-dela de la largeur du cascade ({}).",
-                    query.len(),
-                    obrain_substrate::L2_DIM
-                ))
-            })?;
-            let query = query_plein.as_slice();
+            // La requete part en dimension NATIVE : l'index la projette lui-meme
+            // (O-VEC C4) et rerank les candidats sur les vecteurs natifs.
 
             // Avec des filtres, on sur-echantillonne : filtrer APRES un top-k
             // exact rendrait moins de k resultats des qu'un seul voisin est

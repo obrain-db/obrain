@@ -217,9 +217,9 @@ pub struct ObrainDB {
     /// `drop_vector_index` prennent l'ecriture, et jamais pendant une
     /// recherche — la valeur est un `Arc` clone hors verrou.
     ///
-    /// La valeur porte la dimension NATIVE en plus de l'index. Le cascade,
-    /// lui, travaille toujours en `L2_DIM` : les vecteurs plus courts y sont
-    /// plonges par `rembourrer_au_cascade`. Garder la dimension native permet
+    /// La valeur porte la dimension NATIVE en plus de l'index. L'index porte
+    /// lui-meme la projection vers `L2_DIM` (identite + rembourrage en deca,
+    /// PCA apprise au-dela — O-VEC C4). Garder la dimension native permet
     /// de REFUSER une requete de largeur incoherente au lieu de la rembourrer
     /// en silence — sans quoi une requete en 3 dimensions interrogerait
     /// joyeusement un index construit sur des embeddings en 128.
@@ -325,39 +325,6 @@ pub struct ObrainDB {
     /// Reactive scheduler (keeps the background task alive).
     #[cfg(feature = "cognitive")]
     _cognitive_scheduler: Option<obrain_reactive::Scheduler>,
-}
-
-/// Rembourre un embedding a la largeur canonique du cascade du substrat.
-///
-/// LE REMBOURRAGE PAR DES ZEROS N'EST PAS UNE APPROXIMATION — c'est une
-/// isometrie pour les deux metriques que le cascade utilise :
-///
-/// - cosinus : `a.b` ne gagne que des termes `0*0`, et `|a|`, `|b|` que des
-///   `0^2`. Numerateur et denominateur sont inchanges, donc l'angle aussi.
-/// - euclidienne : la somme gagne des `(0-0)^2 = 0`. La distance est
-///   identique au bit pres.
-///
-/// Autrement dit : un espace de dimension d plonge exactement dans un espace
-/// de dimension L2_DIM >= d. Le voisinage rendu est le MEME que celui d'un
-/// index natif en dimension d — ce n'est pas « assez proche », c'est egal.
-///
-/// La seule perte est la quantification f16 du tier L2, qui existait deja et
-/// ne depend pas du rembourrage.
-///
-/// Rend `None` au-dessus de L2_DIM : reduire demanderait une VRAIE projection
-/// (aleatoire, ACP...), qui elle perd de l'information. Une degradation
-/// silencieuse de qualite ne doit pas se cacher derriere un helper.
-pub(super) fn rembourrer_au_cascade(v: &[f32]) -> Option<Vec<f32>> {
-    let large = obrain_substrate::L2_DIM;
-    if v.len() > large {
-        return None;
-    }
-    if v.len() == large {
-        return Some(v.to_vec());
-    }
-    let mut plein = vec![0.0f32; large];
-    plein[..v.len()].copy_from_slice(v);
-    Some(plein)
 }
 
 // ---------------------------------------------------------------------------
