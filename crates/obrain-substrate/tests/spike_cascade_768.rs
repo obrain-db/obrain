@@ -4,18 +4,27 @@
 //! Question : le cascade par paliers (L0 128 bits → L1 512 bits → L2 f16 384)
 //! atteint-il recall@10 ≥ 0,95 sur des embeddings 768-d, une fois corrigés ses
 //! deux défauts connus — l'entrée TRONQUÉE à 384 (au lieu d'une projection) et
-//! l'absence de rerank exact sur les vecteurs pleins — et à quelle latence ?
+//! l'absence de rerank exact sur les vecteurs pleins — et à quelle latence,
+//! et comment la largeur de candidats k0 doit croître avec N ?
 //!
 //! Le test ne modifie rien dans la bibliothèque : il assemble les paliers avec
 //! les builders publics de `tiers`, appelle `scan_tiered` et fait le rerank ici.
 //!
-//! Garde : sans `SPIKE_N` (taille synthétique) ni `SPIKE_DATA` (répertoire des
-//! JSON vecbench), le test écrit une ligne et rend Ok — il n'est pas `#[ignore]`,
-//! il n'a simplement rien à mesurer.
+//! Garde : sans `SPIKE_N` ni `SPIKE_DATA`, le test écrit une ligne et rend Ok —
+//! il n'est pas `#[ignore]`, il n'a simplement rien à mesurer.
+//!
+//! Variables :
+//!   SPIKE_DATA=<dir>   répertoire des JSON vecbench (note_embeddings.json, file_embeddings.json)
+//!   SPIKE_N=<n>        taille du jeu synthétique
+//!   SPIKE_GEN=centres | reel-centres | spectre   (défaut : centres ; les deux derniers exigent SPIKE_DATA)
+//!     centres      : C = max(50, N/200) centres gaussiens unitaires, point = normalise(centre + 0,25·u), u direction unitaire
+//!                    (même recette que agent_memory_migration::recall_sur_vecteurs_structures_2k)
+//!     reel-centres : les vecteurs RÉELS servent de centres (N/32 521 points par centre), même bruit
+//!     spectre      : gaussienne anisotrope au spectre PCA des données réelles (384 composantes + résidu isotrope) — cas dur
 //!
 //! Lancer (release, sinon les latences ne veulent rien dire) :
-//!   SPIKE_N=100000 cargo test -p obrain-substrate --release --test spike_cascade_768 -- --nocapture
-//!   SPIKE_DATA=/chemin/vecbench/data cargo test -p obrain-substrate --release --test spike_cascade_768 -- --nocapture
+//!   SPIKE_DATA=... cargo test -p obrain-substrate --release --test spike_cascade_768 -- --nocapture --test-threads=1
+//!   SPIKE_DATA=... SPIKE_N=1000000 SPIKE_GEN=reel-centres cargo test ... -- --nocapture --test-threads=1
 
 use obrain_substrate::tiered_scan::{scan_tiered, ScanConfig, TieredQuery};
 use obrain_substrate::tiers::{Tier0, Tier0Builder, Tier1, Tier1Builder, Tier2, Tier2Builder, L2_DIM};
@@ -25,6 +34,7 @@ use std::time::Instant;
 const DIM: usize = 768;
 const K: usize = 10;
 const NQ: usize = 100;
+const RHO: f32 = 0.25; // rayon du bruit, en norme (vecteur unitaire × RHO)
 const SEED_L0: u64 = 0x305F_4E49_4152_4240;
 const SEED_L1: u64 = 0x315F_4E49_4152_4240;
 
@@ -47,6 +57,12 @@ impl SplitMix {
         let u2 = self.unit();
         (-2.0 * (u1 as f64).ln()).sqrt() as f32 * (2.0 * std::f32::consts::PI * u2).cos()
     }
+    /// Direction unitaire uniforme sur la sphère (gaussienne normalisée).
+    fn direction(&mut self, dim: usize) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..dim).map(|_| self.gauss()).collect();
+        normalize(&mut v);
+        v
+    }
 }
 
 fn normalize(v: &mut [f32]) {
@@ -62,30 +78,74 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+fn graine(seed: u64, i: usize) -> SplitMix {
+    SplitMix(seed ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+}
+
 // ───────────────────────── jeux de données ─────────────────────────
 
-/// Même recette que `agent_memory_migration::recall_sur_vecteurs_structures_2k`
-/// (centre + 0,25 × bruit, renormalisé), paramétrée : dimension, N, nombre de
-/// centres = max(50, N / 200) pour que la densité de voisins reste réaliste.
-fn synthetique(n: usize, seed: u64) -> Vec<f32> {
+/// point = normalise(centre + RHO · direction unitaire).
+fn autour_des_centres(centres: &[f32], centres_n: usize, n: usize, seed: u64) -> Vec<f32> {
+    (0..n)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let mut r = graine(seed, i);
+            let c = &centres[(i % centres_n) * DIM..(i % centres_n + 1) * DIM];
+            let u = r.direction(DIM);
+            let mut v: Vec<f32> = (0..DIM).map(|d| c[d] + RHO * u[d]).collect();
+            normalize(&mut v);
+            v
+        })
+        .collect()
+}
+
+/// Recette du dépôt : C centres gaussiens unitaires, C = max(50, N/200).
+fn gen_centres(n: usize, seed: u64) -> Vec<f32> {
     let centres_n = (n / 200).max(50);
     let mut rng = SplitMix(seed);
     let mut centres = vec![0f32; centres_n * DIM];
     for c in centres.chunks_mut(DIM) {
-        for x in c.iter_mut() {
-            *x = rng.gauss();
-        }
-        normalize(c);
+        let d = rng.direction(DIM);
+        c.copy_from_slice(&d);
     }
-    // Un flux de graines par vecteur : génération parallèle déterministe.
+    autour_des_centres(&centres, centres_n, n, seed)
+}
+
+/// Les vecteurs réels sont les centres.
+fn gen_reel_centres(reel: &[f32], n: usize, seed: u64) -> Vec<f32> {
+    autour_des_centres(reel, reel.len() / DIM, n, seed)
+}
+
+/// Gaussienne anisotrope au spectre PCA réel : x = m + Σ_k √λ_k z_k q_k + résidu isotrope
+/// (variance résiduelle = trace − Σλ_k, répartie sur le complément orthogonal de Q), normalisée.
+fn gen_spectre(pca: &Pca, n: usize, seed: u64) -> Vec<f32> {
+    let resid_var = (pca.trace - pca.lambda.iter().sum::<f32>()).max(0.0);
+    let resid_sigma = (resid_var / (DIM - L2_DIM) as f32).sqrt();
     (0..n)
         .into_par_iter()
         .flat_map_iter(|i| {
-            let mut r = SplitMix(seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            let c = &centres[(i % centres_n) * DIM..(i % centres_n + 1) * DIM];
-            let mut v: Vec<f32> = (0..DIM).map(|d| c[d] + 0.25 * r.gauss()).collect();
-            normalize(&mut v);
-            v
+            let mut r = graine(seed, i);
+            // Partie principale dans l'espace de Q.
+            let mut x = pca.moyenne.clone();
+            for k in 0..L2_DIM {
+                let z = r.gauss() * pca.lambda[k].max(0.0).sqrt();
+                let q = &pca.qt[k * DIM..(k + 1) * DIM];
+                for d in 0..DIM {
+                    x[d] += z * q[d];
+                }
+            }
+            // Résidu : gaussien isotrope projeté hors de Q.
+            let g: Vec<f32> = (0..DIM).map(|_| r.gauss() * resid_sigma).collect();
+            let coef: Vec<f32> = pca.qt.chunks_exact(DIM).map(|q| dot(q, &g)).collect();
+            for d in 0..DIM {
+                let mut back = 0f32;
+                for k in 0..L2_DIM {
+                    back += coef[k] * pca.qt[k * DIM + d];
+                }
+                x[d] += g[d] - back;
+            }
+            normalize(&mut x);
+            x
         })
         .collect()
 }
@@ -123,11 +183,12 @@ fn tronquer(v: &[f32]) -> Vec<f32> {
     t
 }
 
-/// PCA par itération de sous-espace sur un échantillon : moyenne, covariance,
-/// puis Q ← orth(C·Q) répété. Rend (moyenne, Q^T aplati 384×768).
+/// PCA par itération de sous-espace sur un échantillon.
 struct Pca {
     moyenne: Vec<f32>,
-    qt: Vec<f32>, // L2_DIM lignes × DIM colonnes
+    qt: Vec<f32>,     // L2_DIM lignes × DIM colonnes
+    lambda: Vec<f32>, // valeurs propres des L2_DIM composantes retenues
+    trace: f32,       // trace de la covariance (variance totale)
 }
 
 impl Pca {
@@ -144,7 +205,6 @@ impl Pca {
         for m in moyenne.iter_mut() {
             *m /= ech_n as f32;
         }
-        // Covariance 768×768 (somme parallèle des produits extérieurs).
         let cov: Vec<f32> = ech
             .par_iter()
             .fold(
@@ -167,15 +227,17 @@ impl Pca {
                 }
                 a
             });
-        // Q : 768 × 384, colonnes orthonormées, itération de sous-espace.
+        let cov: Vec<f32> = cov.into_iter().map(|x| x / ech_n as f32).collect();
+        let trace: f32 = (0..DIM).map(|i| cov[i * DIM + i]).sum();
+
         let mut rng = SplitMix(seed);
         let mut q = vec![0f32; DIM * L2_DIM]; // ligne-major : q[i*L2_DIM + k]
         for x in q.iter_mut() {
             *x = rng.gauss();
         }
         gram_schmidt(&mut q);
+        let mut lambda = vec![0f32; L2_DIM];
         for _ in 0..10 {
-            // Z = C · Q
             let qr: &[f32] = &q;
             let z: Vec<f32> = (0..DIM)
                 .into_par_iter()
@@ -184,17 +246,20 @@ impl Pca {
                     (0..L2_DIM).map(move |k| (0..DIM).map(|j| row[j] * qr[j * L2_DIM + k]).sum::<f32>())
                 })
                 .collect();
+            // λ_k = ||C q_k|| (q_k unitaire) avant ré-orthonormalisation.
+            for k in 0..L2_DIM {
+                lambda[k] = (0..DIM).map(|i| z[i * L2_DIM + k] * z[i * L2_DIM + k]).sum::<f32>().sqrt();
+            }
             q = z;
             gram_schmidt(&mut q);
         }
-        // Q^T : 384 × 768
         let mut qt = vec![0f32; L2_DIM * DIM];
         for i in 0..DIM {
             for k in 0..L2_DIM {
                 qt[k * DIM + i] = q[i * L2_DIM + k];
             }
         }
-        Pca { moyenne, qt }
+        Pca { moyenne, qt, lambda, trace }
     }
 
     fn projeter(&self, v: &[f32]) -> Vec<f32> {
@@ -202,6 +267,14 @@ impl Pca {
         let mut p: Vec<f32> = self.qt.chunks_exact(DIM).map(|row| dot(row, &c)).collect();
         normalize(&mut p);
         p
+    }
+
+    fn variance_expliquee(&self) -> f32 {
+        if self.trace > 0.0 {
+            self.lambda.iter().sum::<f32>() / self.trace
+        } else {
+            0.0
+        }
     }
 }
 
@@ -286,7 +359,6 @@ struct Resultat {
     p95_ms: f64,
 }
 
-/// `q_l01` / `q_l2` : transformations de la requête ; `rerank` : sur les vecteurs 768 pleins.
 #[allow(clippy::too_many_arguments)]
 fn mesurer(
     p: &Paliers,
@@ -309,8 +381,6 @@ fn mesurer(
         let a = q_l01(q768);
         let b = q_l2(q768);
         let tq = TieredQuery { l0: p.b0.project(&a), l1: p.b1.project(&a), l2: p.b2.project(&b) };
-        // On demande k1 + 1 résultats (le +1 absorbe l'auto-correspondance) puis on
-        // rerank exactement sur 768 si demandé, sinon on garde l'ordre L2.
         let demande = if rerank { k1 + 1 } else { K + 1 };
         let hits = scan_tiered(&tq, &p.l0, &p.l1, &p.l2, demande.min(n), cfg);
         let mut cand: Vec<(f32, u32)> = hits
@@ -347,52 +417,65 @@ fn charge() -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-fn campagne(nom: &str, corpus: Vec<f32>, n: usize) {
+/// `pca_source` : si fourni, la PCA est ajustée sur ce corpus (les données réelles) plutôt
+/// que sur le corpus mesuré — c'est ce qu'une base ferait (projection apprise une fois).
+fn campagne(nom: &str, corpus: Vec<f32>, n: usize, pca_source: Option<&[f32]>) {
     println!("\n### {nom} — N = {n}, dim = {DIM}, requêtes = {NQ}, k = {K}, threads rayon = {}, charge = {}", rayon::current_num_threads(), charge());
     let mut rng = SplitMix(0xC0FFEE);
     let requetes: Vec<usize> = (0..NQ).map(|_| (rng.next_u64() as usize) % n).collect();
 
-    // Vérité terrain + contrôle brute/brute.
     let t = Instant::now();
     let verite: Vec<Vec<u32>> = requetes.par_iter().map(|&qi| brute_top(&corpus, n, &corpus[qi * DIM..(qi + 1) * DIM], Some(qi), K)).collect();
     let t_brute = t.elapsed().as_secs_f64() * 1000.0 / NQ as f64;
     let ctrl: Vec<Vec<u32>> = requetes.par_iter().map(|&qi| brute_top(&corpus, n, &corpus[qi * DIM..(qi + 1) * DIM], Some(qi), K)).collect();
     println!("contrôle brute/brute recall@{K} = {:.4} ; exact (rayon sur les requêtes) ≈ {t_brute:.2} ms/requête amorti", recall(&verite, &ctrl));
 
-    // Projections.
     let t = Instant::now();
     let tronc: Vec<f32> = (0..n).into_par_iter().flat_map_iter(|i| tronquer(&corpus[i * DIM..(i + 1) * DIM])).collect();
     println!("troncature 768→384 : {:.1} s", t.elapsed().as_secs_f64());
     let t = Instant::now();
-    let pca = Pca::ajuster(&corpus, n, 0x9CA);
+    let pca = match pca_source {
+        Some(src) => Pca::ajuster(src, src.len() / DIM, 0x9CA),
+        None => Pca::ajuster(&corpus, n, 0x9CA),
+    };
     let proj: Vec<f32> = (0..n).into_par_iter().flat_map_iter(|i| pca.projeter(&corpus[i * DIM..(i + 1) * DIM])).collect();
-    println!("PCA 768→384 (échantillon {}, 10 itérations) + projection : {:.1} s", n.min(20_000), t.elapsed().as_secs_f64());
+    println!(
+        "PCA 768→384 ({}; variance expliquée {:.1} %) + projection : {:.1} s",
+        if pca_source.is_some() { "ajustée sur les données réelles" } else { "ajustée sur le corpus" },
+        pca.variance_expliquee() * 100.0,
+        t.elapsed().as_secs_f64()
+    );
 
     println!("\n| variante | L0/L1 sur | L2 sur | k0 | k1 | rerank 768 | recall@10 | p50 ms | p95 ms | build s |");
     println!("|---|---|---|---|---|---|---|---|---|---|");
-    let grille = [(1_000usize, 100usize), (4_000, 400), (16_000, 1_600)];
+    let mut grille = vec![(1_000usize, 100usize), (4_000, 400), (16_000, 1_600)];
+    if n >= 100_000 {
+        grille.push((64_000, 6_400));
+    }
 
-    // A — témoin : troncature partout, défauts, sans rerank (reproduit vecbench).
     let (pa, ba) = construire(&tronc, L2_DIM, &tronc, n);
-    let r = mesurer(&pa, &corpus, n, &requetes, &verite, &|q: &[f32]|tronquer(q), &|q: &[f32]|tronquer(q), 1_000, 100, false);
+    let r = mesurer(&pa, &corpus, n, &requetes, &verite, &|q: &[f32]| tronquer(q), &|q: &[f32]| tronquer(q), 1_000, 100, false);
     println!("| A témoin | tronc 384 | tronc 384 | 1000 | 100 | non | {:.4} | {:.3} | {:.3} | {ba:.1} |", r.recall, r.p50_ms, r.p95_ms);
     drop(pa);
+    drop(tronc);
 
-    // B/C — PCA partout, sans puis avec rerank, grille de largeurs.
     let (pb, bb) = construire(&proj, L2_DIM, &proj, n);
     for &(k0, k1) in &grille {
-        let r = mesurer(&pb, &corpus, n, &requetes, &verite, &|q: &[f32]|pca.projeter(q), &|q: &[f32]|pca.projeter(q), k0, k1, false);
+        let r = mesurer(&pb, &corpus, n, &requetes, &verite, &|q: &[f32]| pca.projeter(q), &|q: &[f32]| pca.projeter(q), k0, k1, false);
         println!("| B pca | pca 384 | pca 384 | {k0} | {k1} | non | {:.4} | {:.3} | {:.3} | {bb:.1} |", r.recall, r.p50_ms, r.p95_ms);
-        let r = mesurer(&pb, &corpus, n, &requetes, &verite, &|q: &[f32]|pca.projeter(q), &|q: &[f32]|pca.projeter(q), k0, k1, true);
+        let r = mesurer(&pb, &corpus, n, &requetes, &verite, &|q: &[f32]| pca.projeter(q), &|q: &[f32]| pca.projeter(q), k0, k1, true);
         println!("| C pca+rerank | pca 384 | pca 384 | {k0} | {k1} | oui | {:.4} | {:.3} | {:.3} | {bb:.1} |", r.recall, r.p50_ms, r.p95_ms);
     }
     drop(pb);
 
-    // D — L0/L1 sur les 768 natifs, L2 sur PCA 384, rerank.
-    let (pd, bd) = construire(&corpus, DIM, &proj, n);
-    for &(k0, k1) in &grille {
-        let r = mesurer(&pd, &corpus, n, &requetes, &verite, &|q: &[f32]|q.to_vec(), &|q: &[f32]|pca.projeter(q), k0, k1, true);
-        println!("| D natif768+rerank | natif 768 | pca 384 | {k0} | {k1} | oui | {:.4} | {:.3} | {:.3} | {bd:.1} |", r.recall, r.p50_ms, r.p95_ms);
+    // D (L0/L1 sur 768 natifs) s'est montré inférieur à C sur les données réelles :
+    // on ne le rejoue qu'en petit, comme témoin.
+    if n < 100_000 {
+        let (pd, bd) = construire(&corpus, DIM, &proj, n);
+        for &(k0, k1) in &grille {
+            let r = mesurer(&pd, &corpus, n, &requetes, &verite, &|q: &[f32]| q.to_vec(), &|q: &[f32]| pca.projeter(q), k0, k1, true);
+            println!("| D natif768+rerank | natif 768 | pca 384 | {k0} | {k1} | oui | {:.4} | {:.3} | {:.3} | {bd:.1} |", r.recall, r.p50_ms, r.p95_ms);
+        }
     }
     println!("charge en fin de campagne = {}", charge());
 }
@@ -401,20 +484,33 @@ fn campagne(nom: &str, corpus: Vec<f32>, n: usize) {
 fn spike_cascade_768() {
     let n_env = std::env::var("SPIKE_N").ok();
     let data_env = std::env::var("SPIKE_DATA").ok();
+    let generateur = std::env::var("SPIKE_GEN").unwrap_or_else(|_| "centres".into());
     if n_env.is_none() && data_env.is_none() {
         println!("spike_cascade_768 : rien à mesurer (ni SPIKE_N ni SPIKE_DATA) — Ok.");
         return;
     }
-    if let Some(dir) = data_env {
-        let corpus = charger_vecbench(&dir);
-        let n = corpus.len() / DIM;
-        campagne("vecbench réel (notes + fichiers PO)", corpus, n);
+    let reel: Option<Vec<f32>> = data_env.as_deref().map(charger_vecbench);
+    if let (Some(r), None) = (&reel, &n_env) {
+        let n = r.len() / DIM;
+        campagne("vecbench réel (notes + fichiers PO)", r.clone(), n, None);
     }
     if let Some(n) = n_env {
         let n: usize = n.parse().expect("SPIKE_N entier");
         let t = Instant::now();
-        let corpus = synthetique(n, 0x5EED);
-        println!("synthétique {n} × {DIM} généré en {:.1} s", t.elapsed().as_secs_f64());
-        campagne("synthétique structuré (centres + 0,25 bruit)", corpus, n);
+        let (corpus, nom, pca_src): (Vec<f32>, String, Option<&[f32]>) = match generateur.as_str() {
+            "centres" => (gen_centres(n, 0x5EED), "synthétique : centres gaussiens + 0,25·direction".into(), None),
+            "reel-centres" => {
+                let r = reel.as_deref().expect("SPIKE_GEN=reel-centres exige SPIKE_DATA");
+                (gen_reel_centres(r, n, 0x5EED), format!("synthétique : {} centres RÉELS + 0,25·direction", r.len() / DIM), Some(r))
+            }
+            "spectre" => {
+                let r = reel.as_deref().expect("SPIKE_GEN=spectre exige SPIKE_DATA");
+                let pca = Pca::ajuster(r, r.len() / DIM, 0x9CA);
+                (gen_spectre(&pca, n, 0x5EED), format!("synthétique : gaussienne au spectre PCA réel (variance expliquée {:.1} %)", pca.variance_expliquee() * 100.0), Some(r))
+            }
+            autre => panic!("SPIKE_GEN inconnu : {autre}"),
+        };
+        println!("{nom} — {n} × {DIM} généré en {:.1} s", t.elapsed().as_secs_f64());
+        campagne(&nom, corpus, n, pca_src);
     }
 }
