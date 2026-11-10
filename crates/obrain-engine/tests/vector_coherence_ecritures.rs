@@ -115,14 +115,16 @@ fn rollback_d_un_set_vecteur_ne_laisse_pas_de_fantome() {
     // le test (et LIMITES-v0.0.1.md) doit l'écrire explicitement.
     let db = base();
     let id = db.create_node(&["Doc"]);
-    let mut tx = db.begin_transaction();
-    tx.execute(&format!(
-        "MATCH (n) WHERE id(n) = {} SET n.emb = vector({})",
-        id.as_u64(),
-        litteral(&axe(2))
-    ))
-    .ok();
-    tx.rollback().ok();
+    let mut session = db.session();
+    session.begin_transaction().unwrap();
+    session
+        .execute(&format!(
+            "MATCH (n) WHERE id(n) = {} SET n.emb = vector({})",
+            id.as_u64(),
+            litteral(&axe(2))
+        ))
+        .unwrap();
+    session.rollback().unwrap();
     let hits = db.vector_search("Doc", "emb", &axe(2), 10, None, None).unwrap();
     assert!(
         hits.iter().all(|(i, _)| i.as_u64() != id.as_u64()),
