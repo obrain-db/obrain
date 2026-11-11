@@ -4,9 +4,9 @@
 //! - `sans_contrainte`            : aucun contrôle d'unicité (plancher) ;
 //! - `unique_simple`              : `UNIQUE (a)`, `a` distinct à chaque ligne ;
 //! - `unique_composite_a_repete`  : `UNIQUE (a, b)`, `a` se répète (2 valeurs),
-//!                                  `b` distingue le tuple — le cas qui coûtait ;
+//!   `b` distingue le tuple — le cas qui coûtait ;
 //! - `unique_composite_indexe`    : idem + `db.create_property_index("a")`
-//!                                  (l'alternative « index » au balayage).
+//!   (l'alternative « index » au balayage).
 //!
 //! 10 000 insertions par itération ; le temps rendu est celui des 10 000,
 //! diviser par 10 000 pour obtenir le coût par insertion. Le nombre
@@ -94,7 +94,7 @@ fn bench_config(c: &mut Criterion, name: &str, config: Config) {
                 black_box(ok);
             },
             BatchSize::PerIteration,
-        )
+        );
     });
 }
 
