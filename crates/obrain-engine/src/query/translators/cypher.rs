@@ -4,9 +4,9 @@
 //! that can be optimized and executed.
 
 use super::common::{
-    AggregateItem, build_left_join_with_predicates, combine_with_and,
-    finalize_aggregate_projection, is_aggregate_function, to_aggregate_function, wrap_distinct,
-    wrap_filter, wrap_limit, wrap_return, wrap_skip, wrap_sort,
+    AggregateItem, VariableKind, build_left_join_with_predicates, combine_with_and,
+    finalize_aggregate_projection, is_aggregate_function, to_aggregate_function, visible_variables,
+    wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp, CallProcedureOp,
@@ -407,53 +407,79 @@ impl CypherTranslator {
         // contrainte : une seconde colonne `f`, et le produit de toutes les
         // arêtes par toutes les arêtes au lieu des seuls commits de CE fichier
         // (résultat faux, sans erreur).
-        let mut bound_vars = input
-            .as_ref()
-            .map(Self::visible_variables)
-            .unwrap_or_default();
+        let mut bound = input.as_ref().map(visible_variables).unwrap_or_default();
 
-        // Premier motif. Chaîné à `input`, il repart de la variable liée
-        // (`translate_path_pattern_with_alias` l'ancre dessus) : le coût est
-        // celui du voisinage des lignes déjà là, pas celui d'un balayage. Le
-        // seul cas où l'ancrage est impossible — la variable liée n'est
-        // joignable qu'à rebours d'un chemin nommé ou de longueur variable,
-        // ou c'est une variable d'ARÊTE — est traduit seul et joint.
-        let shared_with_input = Self::sorted_shared(&pattern_vars[0], &bound_vars);
-        let mut plan = match input {
-            Some(input)
-                if !shared_with_input.is_empty()
-                    && !Self::can_anchor(&patterns[0], &bound_vars) =>
-            {
-                let right = self.translate_pattern(&patterns[0], None)?;
-                Self::join_on_shared(input, right, &shared_with_input)
-            }
-            input => self.translate_pattern(&patterns[0], input)?,
-        };
-        bound_vars.extend(pattern_vars[0].iter().cloned());
-
-        for (index, pattern) in patterns.iter().enumerate().skip(1) {
-            let current_vars = &pattern_vars[index];
-            let shared = Self::sorted_shared(current_vars, &bound_vars);
-
-            if shared.is_empty() {
-                // No shared variables: chain as input (cross product)
-                plan = self.translate_pattern(pattern, Some(plan))?;
-            } else {
-                // Shared variables: translate independently and inner join
-                let right = self.translate_pattern(pattern, None)?;
-                plan = Self::join_on_shared(plan, right, &shared);
-            }
-
-            bound_vars.extend(current_vars.iter().cloned());
+        // Chaque motif : chaîné à ce qui précède s'il peut s'y ANCRER (il
+        // repart d'une variable liée ou s'y ferme : le coût est celui du
+        // voisinage des lignes déjà là, pas celui d'un balayage) ; sinon,
+        // traduit seul et joint sur les variables partagées (variable d'arête
+        // déjà liée, variable liée qui n'est pas un nœud au départ, chemin
+        // nommé ou de longueur variable, ou un nœud à propriétés en ligne qui
+        // vaut mieux par son index). Sans variable partagée : chaîné, produit.
+        let mut plan: Option<LogicalOperator> = input;
+        for (index, pattern) in patterns.iter().enumerate() {
+            let shared = Self::sorted_shared(&pattern_vars[index], &bound);
+            plan = Some(match plan.take() {
+                Some(left) if !shared.is_empty() && !Self::can_anchor(pattern, &bound) => {
+                    let right = self.translate_pattern(pattern, None)?;
+                    Self::join_on_shared(left, right, &shared)
+                }
+                left => self.translate_pattern(pattern, left)?,
+            });
+            bound.extend(Self::pattern_variable_kinds(pattern));
         }
 
-        Ok(plan)
+        Ok(plan.expect("au moins un motif"))
+    }
+
+    /// Variables d'un motif, avec ce qu'elles désignent une fois le motif
+    /// traduit : un nœud, une arête (un saut), ou autre chose (liste d'arêtes
+    /// d'une relation de longueur variable, chemin nommé).
+    fn pattern_variable_kinds(pattern: &ast::Pattern) -> HashMap<String, VariableKind> {
+        let mut kinds = HashMap::new();
+        match pattern {
+            ast::Pattern::Node(node) => {
+                if let Some(v) = &node.variable {
+                    kinds.insert(v.clone(), VariableKind::Node);
+                }
+            }
+            ast::Pattern::Path(path) => {
+                if let Some(v) = &path.start.variable {
+                    kinds.insert(v.clone(), VariableKind::Node);
+                }
+                for rel in &path.chain {
+                    if let Some(v) = &rel.variable {
+                        let kind = if rel.length.is_none() {
+                            VariableKind::Edge
+                        } else {
+                            VariableKind::Other
+                        };
+                        kinds.insert(v.clone(), kind);
+                    }
+                    if let Some(v) = &rel.target.variable {
+                        kinds.insert(v.clone(), VariableKind::Node);
+                    }
+                }
+            }
+            ast::Pattern::NamedPath { name, pattern, .. } => {
+                kinds.extend(Self::pattern_variable_kinds(pattern));
+                kinds.insert(name.clone(), VariableKind::Other);
+            }
+        }
+        kinds
     }
 
     /// Variables communes à un motif et à ce qui est déjà lié, triées (le plan
     /// ne dépend pas de l'ordre d'itération d'un `HashSet`).
-    fn sorted_shared(pattern_vars: &HashSet<String>, bound_vars: &HashSet<String>) -> Vec<String> {
-        let mut shared: Vec<String> = pattern_vars.intersection(bound_vars).cloned().collect();
+    fn sorted_shared(
+        pattern_vars: &HashSet<String>,
+        bound: &HashMap<String, VariableKind>,
+    ) -> Vec<String> {
+        let mut shared: Vec<String> = pattern_vars
+            .iter()
+            .filter(|v| bound.contains_key(*v))
+            .cloned()
+            .collect();
         shared.sort_unstable();
         shared
     }
@@ -482,21 +508,33 @@ impl CypherTranslator {
     /// Vrai si le motif peut être chaîné à un plan qui lie `bound_vars` sans
     /// rien perdre : toute variable liée qu'il reprend est un NŒUD, et le motif
     /// peut repartir de l'un d'eux.
-    fn can_anchor(pattern: &ast::Pattern, bound_vars: &HashSet<String>) -> bool {
+    fn can_anchor(pattern: &ast::Pattern, bound: &HashMap<String, VariableKind>) -> bool {
+        let kind = |node: &ast::NodePattern| node.variable.as_ref().and_then(|v| bound.get(v));
+        // Un départ déjà lié doit être un NŒUD : le planificateur réutilise
+        // sa colonne et l'expansion en part, ce que le lieur refuse pour une
+        // variable d'`UNWIND` ou une colonne d'agrégat (« is not a node »).
+        // Une cible déjà liée, elle, est une fermeture (filtre d'égalité) :
+        // son type n'importe pas.
+        let start_ok =
+            |node: &ast::NodePattern| kind(node).is_none_or(|k| *k == VariableKind::Node);
         match pattern {
-            ast::Pattern::Node(_) => true,
+            ast::Pattern::Node(node) => start_ok(node),
             ast::Pattern::Path(path) => {
-                path.chain.iter().all(|rel| {
-                    rel.variable
-                        .as_ref()
-                        .is_none_or(|v| !bound_vars.contains(v))
-                }) && Self::anchor_index(path, bound_vars, false).is_some()
+                start_ok(&path.start)
+                    && path
+                        .chain
+                        .iter()
+                        .all(|rel| rel.variable.as_ref().is_none_or(|v| !bound.contains_key(v)))
+                    && !Self::prefers_index_join(path, bound)
             }
             ast::Pattern::NamedPath { name, pattern, .. } => {
-                !bound_vars.contains(name)
+                !bound.contains_key(name)
                     && match pattern.as_ref() {
                         ast::Pattern::Path(path) => {
-                            Self::anchor_index(path, bound_vars, true) == Some(0)
+                            start_ok(&path.start)
+                                && path.chain.iter().all(|rel| {
+                                    rel.variable.as_ref().is_none_or(|v| !bound.contains_key(v))
+                                })
                         }
                         _ => false,
                     }
@@ -504,29 +542,63 @@ impl CypherTranslator {
         }
     }
 
+    /// Vrai si le motif porte un nœud NON lié à propriétés en ligne
+    /// (`(c:Commit {sha: 'c3'})`) et retombe sur une variable liée : repartir
+    /// de la variable liée parcourrait son voisinage pour chaque ligne, alors
+    /// que ce nœud se trouve par son index. Traduit seul, le motif part de
+    /// l'index ; la jointure sur la variable partagée fait le reste.
+    fn prefers_index_join(path: &ast::PathPattern, bound: &HashMap<String, VariableKind>) -> bool {
+        let unbound_with_properties = |node: &ast::NodePattern| {
+            !node.properties.is_empty()
+                && node
+                    .variable
+                    .as_ref()
+                    .is_none_or(|v| !bound.contains_key(v))
+        };
+        let shares_a_node = path
+            .chain
+            .iter()
+            .map(|rel| &rel.target)
+            .chain(std::iter::once(&path.start))
+            .any(|node| {
+                node.variable
+                    .as_ref()
+                    .is_some_and(|v| bound.contains_key(v))
+            });
+        shares_a_node
+            && (unbound_with_properties(&path.start)
+                || path
+                    .chain
+                    .iter()
+                    .any(|rel| unbound_with_properties(&rel.target)))
+    }
+
     /// Rang du nœud du chemin d'où repartir : le premier nœud dont la variable
-    /// est déjà liée (0 = le départ, `i` = la cible de `chain[i - 1]`).
+    /// est déjà liée À UN NŒUD (0 = le départ, `i` = la cible de `chain[i - 1]`).
     ///
     /// Repartir d'un nœud qui n'est pas le départ parcourt à REBOURS les
     /// relations qui le précèdent : impossible pour une relation de longueur
     /// variable ou un chemin nommé (`forward_only`), dont l'ordre compte.
     fn anchor_index(
         path: &ast::PathPattern,
-        bound_vars: &HashSet<String>,
+        bound: &HashMap<String, VariableKind>,
         forward_only: bool,
     ) -> Option<usize> {
-        let est_lie = |node: &ast::NodePattern| {
+        let est_noeud_lie = |node: &ast::NodePattern| {
             node.variable
                 .as_ref()
-                .is_some_and(|v| bound_vars.contains(v))
+                .is_some_and(|v| bound.get(v) == Some(&VariableKind::Node))
         };
-        if est_lie(&path.start) {
+        if est_noeud_lie(&path.start) {
             return Some(0);
         }
         if forward_only {
             return None;
         }
-        let rang = path.chain.iter().position(|rel| est_lie(&rel.target))?;
+        let rang = path
+            .chain
+            .iter()
+            .position(|rel| est_noeud_lie(&rel.target))?;
         path.chain[..=rang]
             .iter()
             .all(|rel| rel.length.is_none())
@@ -546,7 +618,7 @@ impl CypherTranslator {
     ) -> Result<LogicalOperator> {
         let rebound_label = match (&node.variable, node.labels.first(), &input) {
             (Some(variable), Some(label), Some(input))
-                if Self::visible_variables(input).contains(variable) =>
+                if visible_variables(input).contains_key(variable) =>
             {
                 Some((variable.clone(), label.clone()))
             }
@@ -595,70 +667,6 @@ impl CypherTranslator {
             plan = wrap_filter(plan, predicate);
         }
         Ok(plan)
-    }
-
-    /// Variables qu'un plan laisse VISIBLES à la clause qui le suit.
-    ///
-    /// Un `WITH` (projection, agrégat) ferme la portée : seules ses colonnes de
-    /// sortie restent liées. Une variable que le `WITH` a fait sortir de la
-    /// portée et que le `MATCH` suivant réemploie est une variable neuve.
-    /// Pour un opérateur que cette fonction ne connaît pas, on prend l'union
-    /// de ses entrées : au pire une variable est dite liée à tort, et la
-    /// jointure échoue bruyamment au lieu de rendre un résultat faux.
-    fn visible_variables(op: &LogicalOperator) -> HashSet<String> {
-        let mut vars = HashSet::new();
-        Self::collect_visible_variables(op, &mut vars);
-        vars
-    }
-
-    fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashSet<String>) {
-        match op {
-            LogicalOperator::NodeScan(scan) => {
-                vars.insert(scan.variable.clone());
-                if let Some(input) = &scan.input {
-                    Self::collect_visible_variables(input, vars);
-                }
-            }
-            LogicalOperator::Expand(expand) => {
-                vars.insert(expand.to_variable.clone());
-                vars.extend(expand.edge_variable.iter().cloned());
-                vars.extend(expand.path_alias.iter().cloned());
-                Self::collect_visible_variables(&expand.input, vars);
-            }
-            LogicalOperator::Unwind(unwind) => {
-                vars.insert(unwind.variable.clone());
-                Self::collect_visible_variables(&unwind.input, vars);
-            }
-            LogicalOperator::Project(project) => {
-                if project.pass_through_input {
-                    Self::collect_visible_variables(&project.input, vars);
-                }
-                for projection in &project.projections {
-                    match (&projection.alias, &projection.expression) {
-                        (Some(alias), _) => {
-                            vars.insert(alias.clone());
-                        }
-                        (None, LogicalExpression::Variable(name)) => {
-                            vars.insert(name.clone());
-                        }
-                        (None, _) => {}
-                    }
-                }
-            }
-            LogicalOperator::Aggregate(aggregate) => {
-                for key in &aggregate.group_by {
-                    if let LogicalExpression::Variable(name) = key {
-                        vars.insert(name.clone());
-                    }
-                }
-                vars.extend(aggregate.aggregates.iter().filter_map(|a| a.alias.clone()));
-            }
-            other => {
-                for child in other.children() {
-                    Self::collect_visible_variables(child, vars);
-                }
-            }
-        }
     }
 
     fn translate_match(
@@ -823,10 +831,7 @@ impl CypherTranslator {
         input: Option<LogicalOperator>,
         path_alias: Option<String>,
     ) -> Result<LogicalOperator> {
-        let mut bound = input
-            .as_ref()
-            .map(Self::visible_variables)
-            .unwrap_or_default();
+        let mut bound = input.as_ref().map(visible_variables).unwrap_or_default();
         let anchor = Self::anchor_index(path, &bound, path_alias.is_some()).unwrap_or(0);
 
         // Le nœud de rang i : le départ, puis la cible de chaque relation.
@@ -851,7 +856,7 @@ impl CypherTranslator {
             self.filter_node_constraints(node, &variable, input)?
         };
         let anchor_variable = Self::get_last_variable_or(&plan, node_at(anchor));
-        bound.insert(anchor_variable.clone());
+        bound.insert(anchor_variable.clone(), VariableKind::Node);
 
         // En avant depuis l'ancre.
         let mut current = anchor_variable.clone();
@@ -1056,7 +1061,7 @@ impl CypherTranslator {
         from_variable: String,
         input: LogicalOperator,
         path_alias: Option<String>,
-        bound: &mut HashSet<String>,
+        bound: &mut HashMap<String, VariableKind>,
     ) -> Result<(LogicalOperator, String)> {
         let (min_hops, max_hops) = if let Some(range) = &rel.length {
             (range.min.unwrap_or(1), range.max)
@@ -1076,7 +1081,11 @@ impl CypherTranslator {
         }
 
         // Fermeture : la cible est déjà liée.
-        let closes_on = to.variable.as_ref().filter(|v| bound.contains(*v)).cloned();
+        let closes_on = to
+            .variable
+            .as_ref()
+            .filter(|v| bound.contains_key(*v))
+            .cloned();
         let to_variable = match (&closes_on, &to.variable) {
             (Some(_), _) | (None, None) => self.next_anon_var(),
             (None, Some(variable)) => variable.clone(),
@@ -1138,7 +1147,7 @@ impl CypherTranslator {
         }
 
         let arrival = closes_on.unwrap_or(to_variable);
-        bound.insert(arrival.clone());
+        bound.insert(arrival.clone(), VariableKind::Node);
         Ok((result, arrival))
     }
 

@@ -162,15 +162,32 @@ impl Binder {
                     self.validate_expression(&projection.expression)?;
                     // Add the projection alias to the context (for WITH clause support)
                     if let Some(ref alias) = projection.alias {
-                        // Determine the type from the expression
-                        let data_type = self.infer_expression_type(&projection.expression);
+                        // `f AS g` : l'alias désigne ce que `f` désigne — un nœud
+                        // reste un nœud (le planificateur type la colonne
+                        // `Node`, et l'expansion suivante en part). Le lieur
+                        // disait `g` « not a node » et refusait `MATCH (c)-->(g)`
+                        // après `WITH f AS g`.
+                        let (data_type, is_node, is_edge) = match &projection.expression {
+                            LogicalExpression::Variable(name) => self
+                                .context
+                                .get(name)
+                                .map(|info| (info.data_type.clone(), info.is_node, info.is_edge))
+                                .unwrap_or_else(|| {
+                                    (
+                                        self.infer_expression_type(&projection.expression),
+                                        false,
+                                        false,
+                                    )
+                                }),
+                            expression => (self.infer_expression_type(expression), false, false),
+                        };
                         self.context.add_variable(
                             alias.clone(),
                             VariableInfo {
                                 name: alias.clone(),
                                 data_type,
-                                is_node: false,
-                                is_edge: false,
+                                is_node,
+                                is_edge,
                             },
                         );
                     }

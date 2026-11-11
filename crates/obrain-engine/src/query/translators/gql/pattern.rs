@@ -3,6 +3,15 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// Comment une arête est parcourue par `expand_edge`.
+struct EdgeWalk<'a> {
+    /// De la cible vers la source (chemin repris à rebours depuis son ancre).
+    reversed: bool,
+    /// Alias du chemin nommé, porté par sa dernière arête.
+    path_alias: Option<&'a str>,
+    path_mode: PathMode,
+}
+
 impl GqlTranslator {
     /// Predicat du motif qualifie par base (V2) : `base(var) = "slug"`.
     pub(super) fn predicat_base(variable: &str, slug: &str) -> LogicalExpression {
@@ -548,6 +557,13 @@ impl GqlTranslator {
             node.labels.first().cloned()
         };
 
+        // Si `input` lie déjà la variable, le planificateur ne rejoue pas le
+        // scan : le label du scan ne serait pas vérifié. Il l'est alors par un
+        // filtre, avec les autres.
+        let deja_liee = input
+            .as_ref()
+            .is_some_and(|input| visible_variables(input).contains_key(&variable));
+
         let mut plan = LogicalOperator::NodeScan(NodeScanOp {
             variable: variable.clone(),
             label,
@@ -558,8 +574,9 @@ impl GqlTranslator {
         // Add hasLabel filters for additional colon-syntax labels (AND semantics).
         // First label is used in NodeScan for scan-time filtering; remaining
         // labels are checked via post-scan Filter.
-        if node.labels.len() > 1 {
-            plan = Self::add_extra_label_filters(plan, &variable, &node.labels[1..]);
+        let premier_verifie = usize::from(!deja_liee).min(node.labels.len());
+        if node.labels.len() > premier_verifie {
+            plan = Self::add_extra_label_filters(plan, &variable, &node.labels[premier_verifie..]);
         }
 
         // Add label expression filter for complex IS expressions
@@ -685,6 +702,18 @@ impl GqlTranslator {
         combine_with_and(predicates)
     }
 
+    /// Traduit un chemin `(n0)-[e1]-(n1)…-[ek]-(nk)`.
+    ///
+    /// Une variable de nœud que `input` lie déjà, ou que le chemin a déjà
+    /// posée, n'est jamais liée une seconde fois :
+    ///
+    /// - le chemin REPART du premier nœud déjà lié à un nœud (`anchor_index`) :
+    ///   les arêtes qui le suivent sont parcourues dans leur sens, celles qui
+    ///   le précèdent à rebours. `MATCH (c2)-[:T]->(f)` avec `f` lié est une
+    ///   expansion depuis `f`, pas un balayage de `c2` suivi d'une jointure ;
+    /// - tout AUTRE nœud déjà lié est une fermeture : l'expansion arrive sur
+    ///   une variable interne, qu'un filtre égale à la variable liée
+    ///   (`expand_edge`). C'est aussi ce qui ferme un cycle `(a)-->(b)-->(a)`.
     pub(super) fn translate_path_pattern_with_alias(
         &self,
         path: &ast::PathPattern,
@@ -692,220 +721,292 @@ impl GqlTranslator {
         path_alias: Option<&str>,
         path_mode: PathMode,
     ) -> Result<LogicalOperator> {
-        // Start with the source node
-        let source_var = path
-            .source
-            .variable
-            .clone()
-            .unwrap_or_else(|| format!("_anon_{}", rand_id()));
+        let bound = input.as_ref().map(visible_variables).unwrap_or_default();
+        let anchor = Self::anchor_index(path, &bound, path_alias.is_some()).unwrap_or(0);
 
-        let source_label = path.source.labels.first().cloned();
+        // Le nœud de rang i : le départ, puis la cible de chaque arête.
+        let node_at = |rang: usize| -> &ast::NodePattern {
+            if rang == 0 {
+                &path.source
+            } else {
+                &path.edges[rang - 1].target
+            }
+        };
 
-        let mut plan = LogicalOperator::NodeScan(NodeScanOp {
-            variable: source_var.clone(),
-            label: source_label,
-            input: input.map(Box::new),
-            pushdown_hint: None,
-        });
+        // Nœud d'ancrage. Au rang 0, c'est le `NodeScan` habituel ; si `input`
+        // lie déjà sa variable, le planificateur réutilise la colonne sans
+        // rejouer le scan, et TOUTES ses contraintes passent en filtres.
+        // Ailleurs, la variable existe déjà : seules ses contraintes s'ajoutent.
+        let (mut plan, anchor_variable) = if anchor == 0 {
+            let source_var = path
+                .source
+                .variable
+                .clone()
+                .unwrap_or_else(|| format!("_anon_{}", rand_id()));
+            let deja_liee = bound.contains_key(&source_var);
+            let plan = LogicalOperator::NodeScan(NodeScanOp {
+                variable: source_var.clone(),
+                label: path.source.labels.first().cloned(),
+                input: input.map(Box::new),
+                pushdown_hint: None,
+            });
+            let plan = self.node_constraints(&path.source, &source_var, plan, !deja_liee)?;
+            (plan, source_var)
+        } else {
+            let node = node_at(anchor);
+            let variable = node.variable.clone().expect("un nœud d'ancrage est nommé");
+            let input = input.expect("un ancrage hors du départ vient de `input`");
+            (
+                self.node_constraints(node, &variable, input, false)?,
+                variable,
+            )
+        };
 
-        // Add hasLabel filters for additional source labels (AND semantics)
-        if path.source.labels.len() > 1 {
-            plan = Self::add_extra_label_filters(plan, &source_var, &path.source.labels[1..]);
+        // Variables de nœud déjà posées — par `input` ou par ce motif. Une
+        // arête qui retombe sur l'une d'elles est une fermeture.
+        let mut seen: HashSet<String> = bound.keys().cloned().collect();
+        seen.insert(anchor_variable.clone());
+
+        // En avant depuis l'ancre.
+        let mut current = anchor_variable.clone();
+        for (idx, edge) in path.edges.iter().enumerate().skip(anchor) {
+            let (next_plan, next) = self.expand_edge(
+                edge,
+                &edge.target,
+                EdgeWalk {
+                    reversed: false,
+                    path_alias: (idx + 1 == path.edges.len())
+                        .then_some(path_alias)
+                        .flatten(),
+                    path_mode,
+                },
+                current,
+                plan,
+                &mut seen,
+            )?;
+            plan = next_plan;
+            current = next;
         }
 
-        // Add filter for source node properties (e.g., {id: 'a'})
-        if !path.source.properties.is_empty() {
-            let predicate = self.build_property_predicate(&source_var, &path.source.properties)?;
+        // À rebours depuis l'ancre, jusqu'au départ.
+        let mut current = anchor_variable;
+        for rang in (0..anchor).rev() {
+            let (next_plan, next) = self.expand_edge(
+                &path.edges[rang],
+                node_at(rang),
+                EdgeWalk {
+                    reversed: true,
+                    path_alias: None,
+                    path_mode,
+                },
+                current,
+                plan,
+                &mut seen,
+            )?;
+            plan = next_plan;
+            current = next;
+        }
+
+        Ok(plan)
+    }
+
+    /// Rang du nœud du chemin d'où repartir : le premier nœud dont la variable
+    /// est déjà liée À UN NŒUD (0 = le départ, `i` = la cible de `edges[i - 1]`).
+    ///
+    /// Repartir d'un nœud qui n'est pas le départ parcourt à REBOURS les arêtes
+    /// qui le précèdent : impossible pour une arête de longueur variable ou
+    /// optionnelle (`->?`), ou pour un chemin nommé (`forward_only`), dont
+    /// l'ordre compte.
+    fn anchor_index(
+        path: &ast::PathPattern,
+        bound: &HashMap<String, VariableKind>,
+        forward_only: bool,
+    ) -> Option<usize> {
+        let est_noeud_lie = |node: &ast::NodePattern| {
+            node.variable
+                .as_ref()
+                .is_some_and(|v| bound.get(v) == Some(&VariableKind::Node))
+        };
+        if est_noeud_lie(&path.source) {
+            return Some(0);
+        }
+        if forward_only {
+            return None;
+        }
+        let rang = path
+            .edges
+            .iter()
+            .position(|edge| est_noeud_lie(&edge.target))?;
+        path.edges[..=rang]
+            .iter()
+            .all(|edge| edge.min_hops.is_none() && edge.max_hops.is_none() && !edge.questioned)
+            .then_some(rang + 1)
+    }
+
+    /// Contraintes qu'un motif de nœud écrit (labels, propriétés, `WHERE`
+    /// d'élément, base), posées en filtres sur une variable qui existe dans
+    /// `plan`. `skip_first_label` : le premier label de la forme `:Label` est
+    /// déjà celui du `NodeScan`.
+    fn node_constraints(
+        &self,
+        node: &ast::NodePattern,
+        variable: &str,
+        mut plan: LogicalOperator,
+        skip_first_label: bool,
+    ) -> Result<LogicalOperator> {
+        if let Some(ref label_expr) = node.label_expression {
+            let predicate = Self::translate_label_expression(variable, label_expr);
+            plan = wrap_filter(plan, predicate);
+        } else {
+            let premier = usize::from(skip_first_label).min(node.labels.len());
+            plan = Self::add_extra_label_filters(plan, variable, &node.labels[premier..]);
+        }
+        if !node.properties.is_empty() {
+            let predicate = self.build_property_predicate(variable, &node.properties)?;
             plan = wrap_filter(plan, predicate);
         }
-
-        // Add element WHERE clause for source node
-        if let Some(ref where_expr) = path.source.where_clause {
+        if let Some(ref where_expr) = node.where_clause {
             let predicate = self.translate_expression(where_expr)?;
             plan = wrap_filter(plan, predicate);
         }
+        if let Some(ref slug) = node.base_qualifier {
+            plan = wrap_filter(plan, Self::predicat_base(variable, slug));
+        }
+        Ok(plan)
+    }
 
-        // Process each edge in the chain
-        // Variables de nœud que CE motif a déjà posées. Un saut qui retombe
-        // sur l'une d'elles (`(a)-->(b)-->(a)`) est une FERMETURE : il arrive
-        // sur une variable interne, qu'un filtre égale à la variable déjà
-        // posée. Sans cela l'`Expand` posait une seconde colonne du même nom,
-        // sans contrainte — un motif de cycle rendait des lignes sur un graphe
-        // sans cycle, ou « Column not found » (voir `gql_17_cycles`).
-        let mut seen: HashSet<String> = HashSet::from([source_var.clone()]);
-        let mut current_source = source_var;
-        let edge_count = path.edges.len();
+    /// Parcourt une arête depuis `from_variable` jusqu'au nœud `to`.
+    ///
+    /// `reversed` : l'arête est parcourue de sa cible vers sa source (le chemin
+    /// repart d'un nœud lié qui n'est pas son départ) ; sa direction est
+    /// inversée, ses contraintes sont les mêmes.
+    ///
+    /// Si la variable de `to` est déjà posée (`seen`), l'expansion arrive sur
+    /// une variable interne et un filtre l'égale à la variable posée : l'arête
+    /// est VÉRIFIÉE entre deux nœuds connus. Rend le plan et le nom de la
+    /// variable du nœud d'arrivée.
+    fn expand_edge(
+        &self,
+        edge: &ast::EdgePattern,
+        to: &ast::NodePattern,
+        walk: EdgeWalk<'_>,
+        from_variable: String,
+        plan: LogicalOperator,
+        seen: &mut HashSet<String>,
+    ) -> Result<(LogicalOperator, String)> {
+        let mut plan = plan;
+        let closes_on = to.variable.as_ref().filter(|v| seen.contains(*v)).cloned();
+        let target_var = match (&closes_on, &to.variable) {
+            (None, Some(variable)) => variable.clone(),
+            _ => format!("_anon_{}", rand_id()),
+        };
 
-        for (idx, edge) in path.edges.iter().enumerate() {
-            let closes_on = edge
-                .target
-                .variable
-                .as_ref()
-                .filter(|v| seen.contains(*v))
-                .cloned();
-            let target_var = match (&closes_on, &edge.target.variable) {
-                (None, Some(variable)) => variable.clone(),
-                _ => format!("_anon_{}", rand_id()),
-            };
+        // Une arête anonyme qui porte des propriétés reçoit une variable :
+        // sans elle, ses propriétés n'étaient pas filtrées du tout.
+        let single_hop = edge.min_hops.is_none() && edge.max_hops.is_none();
+        let edge_var = edge.variable.clone().or_else(|| {
+            (single_hop && !edge.properties.is_empty()).then(|| format!("_anon_edge_{}", rand_id()))
+        });
+        let edge_types = edge.types.clone();
 
-            // Une arête anonyme qui porte des propriétés reçoit une variable :
-            // sans elle, ses propriétés n'étaient pas filtrées du tout.
-            let single_hop = edge.min_hops.is_none() && edge.max_hops.is_none();
-            let edge_var = edge.variable.clone().or_else(|| {
-                (single_hop && !edge.properties.is_empty())
-                    .then(|| format!("_anon_edge_{}", rand_id()))
-            });
-            let edge_types = edge.types.clone();
+        let direction = match (edge.direction, walk.reversed) {
+            (ast::EdgeDirection::Outgoing, false) | (ast::EdgeDirection::Incoming, true) => {
+                ExpandDirection::Outgoing
+            }
+            (ast::EdgeDirection::Incoming, false) | (ast::EdgeDirection::Outgoing, true) => {
+                ExpandDirection::Incoming
+            }
+            (ast::EdgeDirection::Undirected, _) => ExpandDirection::Both,
+        };
 
-            let direction = match edge.direction {
-                ast::EdgeDirection::Outgoing => ExpandDirection::Outgoing,
-                ast::EdgeDirection::Incoming => ExpandDirection::Incoming,
-                ast::EdgeDirection::Undirected => ExpandDirection::Both,
-            };
+        let edge_var_for_filter = edge_var.clone();
+        let expand_path_alias = walk.path_alias.map(String::from);
 
-            let edge_var_for_filter = edge_var.clone();
+        let min_hops = edge.min_hops.unwrap_or(1);
+        let max_hops = if single_hop { Some(1) } else { edge.max_hops };
+        let is_variable_length = min_hops != 1 || max_hops.is_none() || max_hops != Some(1);
 
-            // Set path_alias on the last edge of a named path
-            let expand_path_alias = if idx == edge_count - 1 {
-                path_alias.map(String::from)
-            } else {
-                None
-            };
-
-            let min_hops = edge.min_hops.unwrap_or(1);
-            let max_hops = if edge.min_hops.is_none() && edge.max_hops.is_none() {
-                Some(1)
-            } else {
-                edge.max_hops
-            };
-
-            let is_variable_length = min_hops != 1 || max_hops.is_none() || max_hops != Some(1);
-
-            // For variable-length edges with a named edge variable, auto-generate
-            // a path alias if none exists, so path detail columns are available
-            // for horizontal aggregation (GE09).
-            let expand_path_alias = if is_variable_length
-                && edge_var_for_filter.is_some()
-                && expand_path_alias.is_none()
-            {
+        // For variable-length edges with a named edge variable, auto-generate
+        // a path alias if none exists, so path detail columns are available
+        // for horizontal aggregation (GE09).
+        let expand_path_alias =
+            if is_variable_length && edge_var_for_filter.is_some() && expand_path_alias.is_none() {
                 Some(format!("_auto_path_{}", rand_id()))
             } else {
                 expand_path_alias
             };
 
-            // Track group-list variables for horizontal aggregation detection
-            if is_variable_length
-                && let (Some(ev), Some(pa)) = (&edge_var_for_filter, &expand_path_alias)
-            {
-                self.group_list_variables
-                    .borrow_mut()
-                    .insert(ev.clone(), pa.clone());
-            }
-
-            // For questioned edges (->?), save the plan BEFORE the expand so the
-            // left side of the LeftJoin contains only the required patterns.
-            let pre_expand_plan = if edge.questioned {
-                Some(plan.clone())
-            } else {
-                None
-            };
-
-            plan = LogicalOperator::Expand(ExpandOp {
-                from_variable: current_source,
-                to_variable: target_var.clone(),
-                edge_variable: edge_var,
-                direction,
-                edge_types,
-                min_hops,
-                max_hops,
-                input: Box::new(plan),
-                path_alias: expand_path_alias,
-                path_mode,
-            });
-
-            if let Some(ref bound_variable) = closes_on {
-                plan = wrap_filter(
-                    plan,
-                    LogicalExpression::Binary {
-                        left: Box::new(LogicalExpression::Variable(target_var.clone())),
-                        op: BinaryOp::Eq,
-                        right: Box::new(LogicalExpression::Variable(bound_variable.clone())),
-                    },
-                );
-            }
-
-            // Add filter for edge properties
-            if !edge.properties.is_empty()
-                && let Some(ref ev) = edge_var_for_filter
-            {
-                let predicate = self.build_property_predicate(ev, &edge.properties)?;
-                plan = wrap_filter(plan, predicate);
-            }
-
-            // Add element WHERE clause for edge
-            if let Some(ref where_expr) = edge.where_clause {
-                let predicate = self.translate_expression(where_expr)?;
-                plan = wrap_filter(plan, predicate);
-            }
-
-            // Add filter for target node properties
-            if !edge.target.properties.is_empty() {
-                let predicate =
-                    self.build_property_predicate(&target_var, &edge.target.properties)?;
-                plan = wrap_filter(plan, predicate);
-            }
-
-            // Add filter for target node labels (colon syntax or IS expression)
-            if let Some(ref label_expr) = edge.target.label_expression {
-                let predicate = Self::translate_label_expression(&target_var, label_expr);
-                plan = wrap_filter(plan, predicate);
-            } else if !edge.target.labels.is_empty() {
-                // Filter for ALL target labels (AND semantics per ISO GQL)
-                for target_label in &edge.target.labels {
-                    plan = wrap_filter(
-                        plan,
-                        LogicalExpression::FunctionCall {
-                            name: "hasLabel".into(),
-                            args: vec![
-                                LogicalExpression::Variable(target_var.clone()),
-                                LogicalExpression::Literal(Value::from(target_label.clone())),
-                            ],
-                            distinct: false,
-                        },
-                    );
-                }
-            }
-
-            // Add element WHERE clause for target node
-            if let Some(ref where_expr) = edge.target.where_clause {
-                let predicate = self.translate_expression(where_expr)?;
-                plan = wrap_filter(plan, predicate);
-            }
-
-            // Aretes inter-bases (V2) : cible qualifiee par base.
-            if let Some(ref slug) = edge.target.base_qualifier {
-                plan = wrap_filter(plan, Self::predicat_base(&target_var, slug));
-            }
-
-            // Questioned edge: wrap expand + all filters in a LeftJoin so the
-            // edge is optional (rows without a matching edge are preserved with nulls).
-            if let Some(left) = pre_expand_plan {
-                // Extract only the expand + filter portion (the right side):
-                // plan currently includes the expand on top of the left plan.
-                // We need to rebuild: LeftJoin(left, expand_on_left).
-                // Since expand already includes left as input, we use it as-is
-                // and the LeftJoin semantics handle preserving unmatched rows.
-                plan = LogicalOperator::LeftJoin(LeftJoinOp {
-                    left: Box::new(left),
-                    right: Box::new(plan),
-                    condition: None,
-                });
-            }
-
-            current_source = closes_on.unwrap_or(target_var);
-            seen.insert(current_source.clone());
+        // Track group-list variables for horizontal aggregation detection
+        if is_variable_length
+            && let (Some(ev), Some(pa)) = (&edge_var_for_filter, &expand_path_alias)
+        {
+            self.group_list_variables
+                .borrow_mut()
+                .insert(ev.clone(), pa.clone());
         }
 
-        Ok(plan)
+        // For questioned edges (->?), save the plan BEFORE the expand so the
+        // left side of the LeftJoin contains only the required patterns.
+        let pre_expand_plan = if edge.questioned {
+            Some(plan.clone())
+        } else {
+            None
+        };
+
+        plan = LogicalOperator::Expand(ExpandOp {
+            from_variable,
+            to_variable: target_var.clone(),
+            edge_variable: edge_var,
+            direction,
+            edge_types,
+            min_hops,
+            max_hops,
+            input: Box::new(plan),
+            path_alias: expand_path_alias,
+            path_mode: walk.path_mode,
+        });
+
+        if let Some(ref bound_variable) = closes_on {
+            plan = wrap_filter(
+                plan,
+                LogicalExpression::Binary {
+                    left: Box::new(LogicalExpression::Variable(target_var.clone())),
+                    op: BinaryOp::Eq,
+                    right: Box::new(LogicalExpression::Variable(bound_variable.clone())),
+                },
+            );
+        }
+
+        // Add filter for edge properties
+        if !edge.properties.is_empty()
+            && let Some(ref ev) = edge_var_for_filter
+        {
+            let predicate = self.build_property_predicate(ev, &edge.properties)?;
+            plan = wrap_filter(plan, predicate);
+        }
+
+        // Add element WHERE clause for edge
+        if let Some(ref where_expr) = edge.where_clause {
+            let predicate = self.translate_expression(where_expr)?;
+            plan = wrap_filter(plan, predicate);
+        }
+
+        // Contraintes du nœud d'arrivée (TOUS ses labels, ses propriétés, son
+        // `WHERE`, sa base).
+        plan = self.node_constraints(to, &target_var, plan, false)?;
+
+        // Questioned edge: wrap expand + all filters in a LeftJoin so the
+        // edge is optional (rows without a matching edge are preserved with nulls).
+        if let Some(left) = pre_expand_plan {
+            plan = LogicalOperator::LeftJoin(LeftJoinOp {
+                left: Box::new(left),
+                right: Box::new(plan),
+                condition: None,
+            });
+        }
+
+        let arrival = closes_on.unwrap_or(target_var);
+        seen.insert(arrival.clone());
+        Ok((plan, arrival))
     }
 }

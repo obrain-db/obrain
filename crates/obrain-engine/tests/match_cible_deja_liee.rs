@@ -570,6 +570,139 @@ fn with_order_by_skip_limit(langage: Langage) {
 }
 
 // ============================================================================
+// Ce que le WITH laisse visible : alias, arêtes, variables qui ne sont pas
+// des nœuds
+// ============================================================================
+
+/// La clé de groupement est ALIASÉE : le `MATCH` qui suit retombe sur l'alias
+/// `g`, et `f` n'existe plus. Nombre de commits par fichier (x 3, y 2, z 1),
+/// puis chaque commit du fichier : 6 lignes. Un traducteur qui lisait
+/// l'ENTRÉE de l'agrégat croyait `f` lié et `g` inconnu : 18 lignes.
+fn cle_aliasee_puis_match_sur_l_alias(langage: Langage) {
+    let db = base();
+    let ligne = |f: &str, nb: i64, c: &str| {
+        vec![
+            Value::String(f.into()),
+            Value::Int64(nb),
+            Value::String(c.into()),
+        ]
+    };
+    assert_eq!(
+        lignes(
+            &db,
+            langage,
+            "MATCH (c:Commit)-[:TOUCHES]->(f:File) \
+             WITH f AS g, count(*) AS nb \
+             MATCH (c2:Commit)-[:TOUCHES]->(g) \
+             RETURN g.path, nb, c2.sha",
+        ),
+        vec![
+            ligne("x", 3, "c1"),
+            ligne("x", 3, "c2"),
+            ligne("x", 3, "c3"),
+            ligne("y", 2, "c1"),
+            ligne("y", 2, "c2"),
+            ligne("z", 1, "c1"),
+        ],
+        "{langage:?}"
+    );
+}
+
+/// Une variable d'ARÊTE déjà liée : le second motif la reprend, il ne la
+/// relie pas. Les 6 arêtes `TOUCHES`, une fois chacune.
+fn arete_liee_puis_match_sur_l_arete(langage: Langage) {
+    let db = base();
+    assert_eq!(
+        lignes(
+            &db,
+            langage,
+            "MATCH (a:Commit)-[r:TOUCHES]->(f:File) \
+             WITH r, f \
+             MATCH (b)-[r]->(f) \
+             RETURN count(*)",
+        ),
+        vec![vec![Value::Int64(6)]],
+        "{langage:?}"
+    );
+}
+
+/// La variable liée n'est pas typée nœud par le plan (elle sort d'un
+/// `UNWIND`) : en cible comme au départ du second motif, on obtient les 6
+/// arêtes — sans « Variable 'f' is not a node, cannot expand from it ».
+fn variable_liee_qui_n_est_pas_typee_noeud(langage: Langage) {
+    let db = base();
+    for requete in [
+        "MATCH (f:File) WITH collect(f) AS fs UNWIND fs AS f \
+         MATCH (c:Commit)-[:TOUCHES]->(f) RETURN count(*)",
+        "MATCH (f:File) WITH collect(f) AS fs UNWIND fs AS f \
+         MATCH (f)<-[:TOUCHES]-(c:Commit) RETURN count(*)",
+        "MATCH (c:Commit)-[:TOUCHES]->(f:File) WITH f AS g, count(*) AS nb \
+         MATCH (c2:Commit)-[:TOUCHES]->(g) RETURN count(*)",
+    ] {
+        assert_eq!(
+            lignes(&db, langage, requete),
+            vec![vec![Value::Int64(6)]],
+            "{langage:?} {requete}"
+        );
+    }
+}
+
+/// `WITH DISTINCT … ORDER BY … SKIP` : le `DISTINCT` porte sur la projection,
+/// AVANT le tri et le saut. Chemins distincts triés : x, y, z ; `SKIP 1` : y, z.
+/// Sans `DISTINCT`, un `WITH` non agrégé trie et limite ses 6 lignes
+/// (x, x, x, y, y, z) : `DESC LIMIT 2` : z, y.
+fn with_distinct_puis_order_by_skip(langage: Langage) {
+    let db = base();
+    assert_eq!(
+        lignes(
+            &db,
+            langage,
+            "MATCH (c:Commit)-[:TOUCHES]->(f:File) \
+             WITH DISTINCT f.path AS p ORDER BY p SKIP 1 \
+             RETURN p",
+        ),
+        vec![l(&["y"]), l(&["z"])],
+        "{langage:?}"
+    );
+    let l6 = lignes(
+        &db,
+        langage,
+        "MATCH (c:Commit)-[:TOUCHES]->(f:File) \
+         WITH f.path AS p ORDER BY p DESC LIMIT 2 \
+         RETURN p",
+    );
+    assert_eq!(l6, vec![l(&["y"]), l(&["z"])], "{langage:?}");
+}
+
+/// Le second motif porte un nœud à propriétés en ligne : il se trouve par
+/// son index, et la variable liée est jointe — pas parcourue depuis tous les
+/// fichiers. Seul c3 touche x.
+fn cible_liee_depuis_un_noeud_indexe(langage: Langage) {
+    let db = base();
+    assert_eq!(
+        lignes(
+            &db,
+            langage,
+            "MATCH (f:File) MATCH (c:Commit {sha: 'c3'})-[:TOUCHES]->(f) RETURN f.path",
+        ),
+        vec![l(&["x"])],
+        "{langage:?}"
+    );
+}
+
+/// Le plan de la forme ci-dessus part du nœud indexé et joint sur `f`.
+#[test]
+fn le_noeud_indexe_est_le_depart_du_plan() {
+    let db = base();
+    let p = plan(
+        &db,
+        "MATCH (f:File) MATCH (c:Commit {sha: 'c3'})-[:TOUCHES]->(f) RETURN f.path",
+    );
+    assert!(p.contains("Join"), "{p}");
+    assert!(p.contains("Expand (c)->[:TOUCHES]->(f)"), "{p}");
+}
+
+// ============================================================================
 // Chaque cas, une fois par langage
 // ============================================================================
 
@@ -606,6 +739,11 @@ cas_en!(
         match_apres_with_agrege_ne_multiplie_pas_le_compte,
         where_apres_match_apres_with,
         with_order_by_skip_limit,
+        cle_aliasee_puis_match_sur_l_alias,
+        arete_liee_puis_match_sur_l_arete,
+        variable_liee_qui_n_est_pas_typee_noeud,
+        with_distinct_puis_order_by_skip,
+        cible_liee_depuis_un_noeud_indexe,
     ]
 );
 
@@ -632,5 +770,10 @@ cas_en!(
         match_apres_with_agrege_ne_multiplie_pas_le_compte,
         where_apres_match_apres_with,
         with_order_by_skip_limit,
+        cle_aliasee_puis_match_sur_l_alias,
+        arete_liee_puis_match_sur_l_arete,
+        variable_liee_qui_n_est_pas_typee_noeud,
+        with_distinct_puis_order_by_skip,
+        cible_liee_depuis_un_noeud_indexe,
     ]
 );

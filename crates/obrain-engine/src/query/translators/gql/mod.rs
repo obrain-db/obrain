@@ -9,10 +9,10 @@ mod pattern;
 use std::collections::{HashMap, HashSet};
 
 use super::common::{
-    AggregateItem, build_left_join_with_predicates, combine_with_and,
+    AggregateItem, VariableKind, build_left_join_with_predicates, combine_with_and,
     finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
-    to_aggregate_function, wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip,
-    wrap_sort,
+    to_aggregate_function, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
+    wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     self as plan, AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp,
@@ -1240,65 +1240,115 @@ impl GqlTranslator {
     /// les wrappers (Filter/Project/etc. → input). Les variables d'arêtes
     /// (`_anon_*`, edge_variable) sont exclues : on ne corrèle que sur les
     /// nœuds.
-    fn collect_bound_variables(op: &LogicalOperator, vars: &mut HashSet<String>) {
-        use crate::query::plan::LogicalOperator as LO;
-        match op {
-            LO::NodeScan(n) => {
-                vars.insert(n.variable.clone());
-                if let Some(input) = &n.input {
-                    Self::collect_bound_variables(input, vars);
+    /// Variables d'un motif, avec ce qu'elles désignent une fois le motif
+    /// traduit : un nœud, une arête (un saut), ou autre chose.
+    fn pattern_variable_kinds(pattern: &ast::Pattern) -> HashMap<String, VariableKind> {
+        let mut kinds = HashMap::new();
+        match pattern {
+            ast::Pattern::Node(node) => {
+                if let Some(v) = &node.variable {
+                    kinds.insert(v.clone(), VariableKind::Node);
                 }
             }
-            LO::Expand(e) => {
-                // from_variable est liée par l'input (ou le scan amont) ;
-                // to_variable est produite ici.
-                vars.insert(e.to_variable.clone());
-                Self::collect_bound_variables(&e.input, vars);
-            }
-            LO::EdgeScan(e) => {
-                if let Some(input) = &e.input {
-                    Self::collect_bound_variables(input, vars);
+            ast::Pattern::Path(path) => {
+                if let Some(v) = &path.source.variable {
+                    kinds.insert(v.clone(), VariableKind::Node);
+                }
+                for edge in &path.edges {
+                    if let Some(v) = &edge.variable {
+                        let single_hop = edge.min_hops.is_none() && edge.max_hops.is_none();
+                        kinds.insert(
+                            v.clone(),
+                            if single_hop {
+                                VariableKind::Edge
+                            } else {
+                                VariableKind::Other
+                            },
+                        );
+                    }
+                    if let Some(v) = &edge.target.variable {
+                        kinds.insert(v.clone(), VariableKind::Node);
+                    }
                 }
             }
-            LO::Join(j) => {
-                Self::collect_bound_variables(&j.left, vars);
-                Self::collect_bound_variables(&j.right, vars);
+            ast::Pattern::Quantified {
+                pattern,
+                subpath_var,
+                ..
+            } => {
+                for (v, _) in Self::pattern_variable_kinds(pattern) {
+                    kinds.insert(v, VariableKind::Other);
+                }
+                if let Some(v) = subpath_var {
+                    kinds.insert(v.clone(), VariableKind::Other);
+                }
             }
-            LO::LeftJoin(j) => {
-                Self::collect_bound_variables(&j.left, vars);
-                Self::collect_bound_variables(&j.right, vars);
-            }
-            LO::AntiJoin(j) => {
-                Self::collect_bound_variables(&j.left, vars);
-                Self::collect_bound_variables(&j.right, vars);
-            }
-            LO::Apply(a) => {
-                Self::collect_bound_variables(&a.input, vars);
-                Self::collect_bound_variables(&a.subplan, vars);
-            }
-            LO::Filter(f) => Self::collect_bound_variables(&f.input, vars),
-            LO::Project(p) => Self::collect_bound_variables(&p.input, vars),
-            LO::Aggregate(a) => Self::collect_bound_variables(&a.input, vars),
-            LO::Limit(l) => Self::collect_bound_variables(&l.input, vars),
-            LO::Skip(s) => Self::collect_bound_variables(&s.input, vars),
-            LO::Sort(s) => Self::collect_bound_variables(&s.input, vars),
-            LO::Distinct(d) => Self::collect_bound_variables(&d.input, vars),
-            LO::Return(r) => Self::collect_bound_variables(&r.input, vars),
-            LO::Unwind(u) => {
-                // Unwind produit sa variable ; l'input reste en scope.
-                vars.insert(u.variable.clone());
-                Self::collect_bound_variables(&u.input, vars);
-            }
-            LO::ShortestPath(sp) => Self::collect_bound_variables(&sp.input, vars),
-            LO::ParameterScan(_) | LO::Empty => {}
-            _ => {
-                // Autres opérateurs (mutations, etc.) : on descend dans les
-                // enfants quand c'est possible via children().
-                for child in op.children() {
-                    Self::collect_bound_variables(child, vars);
+            ast::Pattern::Union(alternatives) | ast::Pattern::MultisetUnion(alternatives) => {
+                for alternative in alternatives {
+                    kinds.extend(Self::pattern_variable_kinds(alternative));
                 }
             }
         }
+        kinds
+    }
+
+    /// Vrai si le motif peut être chaîné à un plan qui lie `bound` sans rien
+    /// perdre : son départ, s'il est déjà lié, est un NŒUD (le planificateur
+    /// réutilise la colonne et l'expansion en part — refusé par le lieur pour
+    /// une variable d'`UNWIND` ou d'agrégat) ; aucune de ses variables d'arête
+    /// n'est déjà liée ; et aucun nœud non lié à propriétés en ligne ne vaut
+    /// mieux par son index (voir `prefers_index_join`). Une cible déjà liée
+    /// est une fermeture (filtre d'égalité) : son type n'importe pas.
+    fn can_anchor(pattern: &ast::Pattern, bound: &HashMap<String, VariableKind>) -> bool {
+        let start_ok = |node: &ast::NodePattern| {
+            node.variable
+                .as_ref()
+                .and_then(|v| bound.get(v))
+                .is_none_or(|k| *k == VariableKind::Node)
+        };
+        match pattern {
+            ast::Pattern::Node(node) => start_ok(node),
+            ast::Pattern::Path(path) => {
+                start_ok(&path.source)
+                    && path.edges.iter().all(|edge| {
+                        edge.variable
+                            .as_ref()
+                            .is_none_or(|v| !bound.contains_key(v))
+                    })
+                    && !Self::prefers_index_join(path, bound)
+            }
+            ast::Pattern::Quantified { .. }
+            | ast::Pattern::Union(_)
+            | ast::Pattern::MultisetUnion(_) => false,
+        }
+    }
+
+    /// Vrai si le motif porte un nœud NON lié à propriétés en ligne
+    /// (`(c:Commit {sha: 'c3'})`) et retombe sur une variable liée : repartir
+    /// de la variable liée parcourrait son voisinage pour chaque ligne, alors
+    /// que ce nœud se trouve par son index. Traduit seul, le motif part de
+    /// l'index ; la jointure sur la variable partagée fait le reste.
+    fn prefers_index_join(path: &ast::PathPattern, bound: &HashMap<String, VariableKind>) -> bool {
+        let unbound_with_properties = |node: &ast::NodePattern| {
+            !node.properties.is_empty()
+                && node
+                    .variable
+                    .as_ref()
+                    .is_none_or(|v| !bound.contains_key(v))
+        };
+        let shares_a_node = std::iter::once(&path.source)
+            .chain(path.edges.iter().map(|edge| &edge.target))
+            .any(|node| {
+                node.variable
+                    .as_ref()
+                    .is_some_and(|v| bound.contains_key(v))
+            });
+        shares_a_node
+            && (unbound_with_properties(&path.source)
+                || path
+                    .edges
+                    .iter()
+                    .any(|edge| unbound_with_properties(&edge.target)))
     }
 
     /// Extracts all named variables from a GQL AST pattern.
@@ -1453,6 +1503,13 @@ impl GqlTranslator {
         }
         // WITH * skips projection: all variables pass through unchanged
 
+        // `DISTINCT` porte sur la projection : AVANT le tri, le saut, la
+        // limite et le `WHERE` (posé après eux, `WITH DISTINCT p ORDER BY p
+        // SKIP 1` sautait une ligne parmi les doublons, pas parmi les valeurs).
+        if with_clause.distinct {
+            plan = wrap_distinct(plan);
+        }
+
         // `ORDER BY`, `SKIP`, `LIMIT` du `WITH` : sur sa sortie (ses alias sont
         // visibles), avant son `WHERE`.
         if let Some(order_by) = &with_clause.order_by {
@@ -1506,10 +1563,6 @@ impl GqlTranslator {
             plan = wrap_filter(plan, predicate);
         }
 
-        // Handle DISTINCT
-        if with_clause.distinct {
-            plan = wrap_distinct(plan);
-        }
         Ok(plan)
     }
 
@@ -1552,31 +1605,33 @@ impl GqlTranslator {
             .collect();
 
         let mut plan: Option<LogicalOperator> = initial_input;
-        let mut bound_vars: HashSet<String> = HashSet::new();
-        // (2026-08-31) FIX CORRÉLATION INTER-MATCH (INCIDENT triangle-faux).
-        //
-        // Quand ce MATCH reçoit un input (il suit une clause précédente qui a
-        // déjà lié des variables), `bound_vars` démarrait VIDE : les
-        // variables du pattern partagées avec l'input (ex. `c` et `a` dans
-        // `MATCH (a)→(b)→(c) MATCH (c)→(a)`) n'étaient pas reconnues, le
-        // pattern était re-scanné depuis zéro (NodeScan complet) au lieu
-        // d'être JOINté sur les valeurs déjà liées. Vérifié : un triangle
-        // retournait 10 778 count(a) au lieu de 33 (faux, ×326). On
-        // initialise `bound_vars` avec les variables produites par l'input :
-        // les variables partagées déclenchent alors le Join corrélé (le code
-        // `if !shared.is_empty()` plus bas), qui égalise c et a — le plan
-        // devient correct.
-        if let Some(input) = &plan {
-            Self::collect_bound_variables(input, &mut bound_vars);
-        }
+        // Ce que les clauses précédentes ont déjà lié, et ce que chaque variable
+        // désigne. Lu sur les colonnes de SORTIE du plan (`visible_variables`) :
+        // un `WITH f AS g` lie `g`, pas `f`. (2026-08-31, incident
+        // triangle-faux : un `bound_vars` vide ignorait les variables de
+        // l'input et re-balayait le motif ; `count(a)` d'un triangle rendait
+        // 10 778 au lieu de 33.)
+        let mut bound: HashMap<String, VariableKind> =
+            plan.as_ref().map(visible_variables).unwrap_or_default();
 
         for (index, aliased_pattern) in match_clause.patterns.iter().enumerate() {
-            let current_vars = &pattern_vars[index];
-            let shared: Vec<String> = current_vars.intersection(&bound_vars).cloned().collect();
+            let mut shared: Vec<String> = pattern_vars[index]
+                .iter()
+                .filter(|v| bound.contains_key(*v))
+                .cloned()
+                .collect();
+            shared.sort_unstable();
 
-            // Determine the input for this pattern: if shared variables exist,
-            // translate independently and join; otherwise chain as before.
-            let pattern_input = if shared.is_empty() { plan.take() } else { None };
+            // Un motif qui partage des variables avec ce qui précède est
+            // CHAÎNÉ quand il peut s'y ancrer (la traduction du chemin repart
+            // de la variable liée ou s'y ferme : coût du voisinage, pas d'un
+            // balayage) ; sinon il est traduit seul et joint sur les variables
+            // partagées. Sans variable partagée : chaîné (produit).
+            let chainable = shared.is_empty()
+                || (aliased_pattern.path_function.is_none()
+                    && !use_shortest
+                    && Self::can_anchor(&aliased_pattern.pattern, &bound));
+            let pattern_input = if chainable { plan.take() } else { None };
 
             let pattern_plan = if let Some(path_function) = &aliased_pattern.path_function {
                 self.translate_shortest_path(
@@ -1605,11 +1660,11 @@ impl GqlTranslator {
                 )?
             };
 
-            if !shared.is_empty() {
+            if chainable {
+                plan = Some(pattern_plan);
+            } else {
                 // Join on shared variables
-                let left = plan
-                    .take()
-                    .expect("bound_vars non-empty implies plan exists");
+                let left = plan.take().expect("bound non-empty implies plan exists");
                 let conditions = shared
                     .iter()
                     .map(|var| JoinCondition {
@@ -1623,11 +1678,12 @@ impl GqlTranslator {
                     join_type: JoinType::Inner,
                     conditions,
                 }));
-            } else {
-                plan = Some(pattern_plan);
             }
 
-            bound_vars.extend(current_vars.iter().cloned());
+            bound.extend(Self::pattern_variable_kinds(&aliased_pattern.pattern));
+            if let Some(alias) = &aliased_pattern.alias {
+                bound.insert(alias.clone(), VariableKind::Other);
+            }
         }
 
         plan.ok_or_else(|| {
