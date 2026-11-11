@@ -470,6 +470,14 @@ impl Session {
     fn persister_type_noeud(&self, label: &str) -> Result<()> {
         use obrain_common::utils::error::Error;
         let Some(sub) = self.substrate_store() else {
+            // Base construite sur un store EXTERNE (`ObrainDB::with_store`) :
+            // aucun catalogue durable. La contrainte vaut pour le processus,
+            // et c'est dit — pas un « Created » muet.
+            tracing::warn!(
+                label = %label,
+                "contrainte déclarée sur un store sans catalogue durable \
+                 (ObrainDB::with_store) : elle ne survivra pas au processus"
+            );
             return Ok(());
         };
         let Some(def) = self.catalog.get_node_type(label) else {
@@ -1701,18 +1709,72 @@ impl Session {
                 // promettrait une garantie qui s'évanouit au redémarrage. La
                 // commande ÉCHOUE donc, et le catalogue en mémoire est remis
                 // dans son état d'avant (pas de contrainte fantôme).
-                if let Err(e) = self.persister_type_noeud(&stmt.label) {
-                    match avant {
-                        Some(def) => self.catalog.register_or_replace_node_type(def),
+                let annuler = |session: &Self| {
+                    match &avant {
+                        Some(def) => session.catalog.register_or_replace_node_type(def.clone()),
                         None => {
-                            let _ = self.catalog.drop_node_type(&stmt.label);
+                            let _ = session.catalog.drop_node_type(&stmt.label);
                         }
                     }
-                    self.catalog
+                    session
+                        .catalog
                         .sync_constraint_flags(&stmt.label, &constraints);
-                    return Err(e);
+                };
+
+                // ── LES DONNÉES DÉJÀ PRÉSENTES DOIVENT RESPECTER LA CONTRAINTE ──
+                // Une contrainte déclarée sur des données qui la violent serait
+                // un mensonge : `SHOW CONSTRAINTS` l'afficherait pendant que la
+                // base porte des doublons. On examine les nœuds du label ET ceux
+                // des types qui en HÉRITENT (leurs nœuds sont soumis à la
+                // contrainte du parent) ; la première violation fait échouer la
+                // commande en la nommant. Pour la LISTE COMPLÈTE des violations
+                // d'une contrainte envisagée, voir
+                // `ObrainDB::verifier_contrainte_hypothetique`.
+                //
+                // Limite : la contrainte est déjà en vigueur en mémoire pendant
+                // la passe (les écritures concurrentes y sont soumises), et la
+                // passe elle-même n'est pas un instantané.
+                {
+                    let mut rapport =
+                        crate::database::verification_contraintes::RapportContraintes::default();
+                    let store = self.active_store();
+                    for type_name in self.catalog.all_node_type_names() {
+                        let Some(def) = self.catalog.resolved_node_type(&type_name) else {
+                            continue;
+                        };
+                        if type_name != stmt.label
+                            && !def.constraints.iter().any(|c| constraints.contains(c))
+                        {
+                            continue;
+                        }
+                        crate::database::verification_contraintes::verifier_type(
+                            store.as_ref() as &dyn obrain_core::graph::GraphStore,
+                            &def,
+                            Some(&constraints),
+                            1,
+                            true,
+                            &mut rapport,
+                        );
+                        if !rapport.violations.is_empty() {
+                            break;
+                        }
+                    }
+                    if let Some(violation) = rapport.violations.first() {
+                        annuler(self);
+                        return Err(Error::Query(QueryError::new(
+                            QueryErrorKind::Semantic,
+                            format!(
+                                "Cannot create {kind_str} constraint '{constraint_name}': \
+                                 existing data violates it — {violation}"
+                            ),
+                        )));
+                    }
                 }
 
+                if let Err(e) = self.persister_type_noeud(&stmt.label) {
+                    annuler(self);
+                    return Err(e);
+                }
                 wal_log!(
                     self,
                     WalRecord::CreateConstraint {

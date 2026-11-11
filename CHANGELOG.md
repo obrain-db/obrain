@@ -59,12 +59,27 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   <nom>` (sauf `IF EXISTS`).
 - **Nom par défaut** d'une contrainte sans nom : `<label>_<nature>_<colonnes>` (ex. `T_unique_a_b`),
   le même à la création et à la réparation d'une base ; `EXISTS` et `NOT NULL` ont la nature
-  `not_null`.
+  `not_null`. Si une colonne contient `_`, une empreinte des colonnes est ajoutée
+  (`T_unique_a_b_3f0c1a`) pour que `UNIQUE (a, b)` et `UNIQUE (a_b)` ne partagent pas un nom.
 - **`CREATE CONSTRAINT` qui ne peut pas être persistée échoue** (au lieu de « Created » puis une
   contrainte qui disparaît au redémarrage) ; le DDL est refusé en lecture seule ; un
   `substrate.typecat` illisible fait échouer la déclaration au lieu d'être réécrit.
 - **`CREATE [OR REPLACE] NODE TYPE` conserve les contraintes** du type ; sur un type créé
   implicitement par `CREATE CONSTRAINT`, il le complète.
+- **`CREATE CONSTRAINT` sur des données qui violent déjà la contrainte est refusé**, en nommant
+  un doublon (deux nœuds et leurs valeurs) ou le membre absent ; auparavant « Created » et les
+  doublons restaient. Liste complète des doublons d'une contrainte envisagée :
+  `ObrainDB::verifier_contrainte_hypothetique` ; état de toutes les contraintes déclarées sur les
+  données : `ObrainDB::verifier_contraintes`.
+- **Coût du contrôle d'un tuple indépendant de l'ordre des colonnes** : la recherche par
+  propriétés résout par la condition indexée la plus sélective, plus par la première déclarée
+  (`UNIQUE (a, b)` avec `a` à deux valeurs coûtait 30 fois `UNIQUE (b, a)`).
+- **NON couvert par cette version** (chemins traités par la PR empilée « unicité sur tous les
+  chemins ») : l'ajout de label `SET n:T` n'est pas contrôlé ; l'API directe du store et
+  `bulk_import*` n'appliquent aucune contrainte ; deux `INSERT` concurrents du même tuple peuvent
+  passer tous les deux. `5` puis `5.0` est refusé mais `5.0` puis `5` accepté (clé de l'index
+  d'égalité). Sur une base construite par `ObrainDB::with_store` (store externe), une contrainte
+  n'est pas durable (journalisé). Voir `docs/LIMITES-v0.0.1.md`.
 - **Rupture d'API (crate `obrain-core`)** : le trait public `ConstraintValidator` perd
   `check_unique_node_property(labels, key, value)` au profit de
   `check_unique_node_properties(labels, properties, exclude)` (jeu de propriétés effectivement

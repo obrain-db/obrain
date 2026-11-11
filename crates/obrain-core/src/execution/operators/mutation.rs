@@ -138,8 +138,8 @@ pub(crate) struct MiseAJourNoeud<'a> {
 /// pas créer de doublon (aucune contrainte d'unicité sur ces labels, ou
 /// aucune colonne contrainte touchée).
 ///
-/// Séparé du contrôle lui-même pour que l'appelant ne prenne le
-/// [`VerrouUnicite`] que lorsqu'un contrôle a lieu.
+/// Séparé du contrôle lui-même pour que l'appelant sache, avant de lire quoi
+/// que ce soit sur le nœud, si un contrôle a lieu.
 pub(crate) fn colonnes_uniques_touchees(
     validator: &dyn ConstraintValidator,
     maj: &MiseAJourNoeud<'_>,

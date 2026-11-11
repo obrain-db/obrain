@@ -1,9 +1,10 @@
 //! L'unicité d'un tuple tient aussi sous `SET` et `MERGE … ON MATCH/ON CREATE SET`.
 //!
-//! `main` refusait un `SET` d'une colonne d'un `UNIQUE (a, b)` (trop : il
-//! testait chaque colonne seule). Le correctif du tuple ne devait pas le laisser
-//! passer en silence : le validateur recevait seulement les propriétés du `SET`,
-//! jugeait le tuple INCOMPLET, et ne contrôlait rien. Ces tests fixent le
+//! Sur `main`, un `SET` n'était JAMAIS contrôlé : le planificateur construisait
+//! `SetPropertyOperator` sans labels (`with_labels` n'avait aucun appelant), le
+//! validateur ne trouvait donc aucune contrainte. Trou préexistant, pas une
+//! régression de la PR — mais une PR qui dit « UNIQUE porte sur le tuple » ne
+//! peut pas laisser `SET n.b = 'x'` fabriquer un doublon de tuple en silence. Ces tests fixent le
 //! contrôle sur l'état COMPLET du nœud (les colonnes non écrites sont lues sur
 //! le nœud, le nœud lui-même est exclu de la recherche).
 
@@ -105,8 +106,10 @@ fn set_d_une_colonne_controle_le_tuple_complet() {
 }
 
 /// Réécrire son propre tuple à l'identique n'est pas un doublon de soi-même.
+/// (Vert avant comme après le correctif : fixe un comportement, ne discrimine
+/// pas.)
 #[test]
-fn set_a_l_identique_ne_se_heurte_pas_a_lui_meme() {
+fn comportement_fixe_set_a_l_identique_ne_se_heurte_pas_a_lui_meme() {
     let db = base(&[U_A, U_AB]);
     let s = db.session();
     s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();
@@ -285,8 +288,9 @@ fn set_colonne_par_colonne_ne_fabrique_pas_de_doublon_de_tuple() {
 /// Le tuple composite est réparti entre le motif du `MERGE` et `ON CREATE SET`
 /// : `MERGE (n:T {a: 1}) ON CREATE SET n.b = 'x'` écrit (1,'x'). Le contrôle
 /// doit voir le tuple COMPLET (motif + `ON CREATE`), pas la seule clé du motif.
+/// (Vert avant comme après : fixe un comportement, ne discrimine pas.)
 #[test]
-fn merge_on_create_set_repartit_le_tuple_entre_motif_et_on_create() {
+fn comportement_fixe_merge_on_create_set_repartit_le_tuple_entre_motif_et_on_create() {
     let db = base(&[U_AB]);
     let s = db.session();
     s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();

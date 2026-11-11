@@ -947,3 +947,113 @@ fn drop_constraint_if_exists_dans_les_deux_syntaxes() {
     s.execute("DROP CONSTRAINT IF EXISTS presente").unwrap();
     assert_eq!(copies_en_memoire(&s, "T", "Unique("), 0);
 }
+
+/// LIMITE FIXÉE, pas une garantie : `5` et `5.0` sont égaux (`5 = 5.0` est
+/// vrai), mais l'unicité ne les reconnaît comme doublons que dans UN sens.
+/// `{a: 5}` puis `{a: 5.0}` est refusé (le flottant part au balayage, qui
+/// compare avec l'égalité du langage) ; `{a: 5.0}` puis `{a: 5}` est ACCEPTÉ
+/// (l'entier interroge l'index d'égalité, où le flottant n'a pas été rangé :
+/// `index_value_key` ne projette pas `Float64`). La racine est la clé de
+/// l'index ; sa correction (clé canonique) rendra ce test rouge — c'est
+/// voulu : il faudra alors le retourner en garantie.
+#[test]
+fn limite_entier_flottant_asymetrique_selon_l_ordre_d_insertion() {
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    s.execute("INSERT (:T {a: 5})").unwrap();
+    assert!(
+        s.execute("INSERT (:T {a: 5.0})").is_err(),
+        "entier puis flottant égal : refusé"
+    );
+
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    s.execute("INSERT (:T {a: 5.0})").unwrap();
+    assert!(
+        s.execute("INSERT (:T {a: 5})").is_ok(),
+        "flottant puis entier égal : ACCEPTÉ (limite connue, asymétrique)"
+    );
+    assert_eq!(
+        s.execute("MATCH (n:T) RETURN n.a").unwrap().rows.len(),
+        2,
+        "deux porteurs : le doublon est réel"
+    );
+    // La vérification a posteriori, elle, compare avec l'égalité du langage
+    // et voit le doublon (c'est l'outil pour le trouver après coup).
+    assert_eq!(db.verifier_contraintes().violations_totales, 1);
+}
+
+/// LIMITE FIXÉE : `SET n:T` n'est pas contrôlé ici — un nœud `:U` qui porte
+/// un tuple déjà pris sous `:T` reçoit le label `T` sans erreur. Le contrôle
+/// de l'ajout de label est porté par la PR empilée (chemins d'écriture) ; ce
+/// test rougira alors, c'est voulu.
+#[test]
+fn limite_ajout_de_label_non_controle() {
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    s.execute("INSERT (:T {a: 1})").unwrap();
+    s.execute("INSERT (:U {a: 1})").unwrap();
+    s.execute_cypher("MATCH (m:U) SET m:T")
+        .expect("limite : l'ajout de label passe");
+    assert_eq!(
+        s.execute("MATCH (n:T {a: 1}) RETURN n.a")
+            .unwrap()
+            .rows
+            .len(),
+        2,
+        "deux :T portent a = 1 — doublon par ajout de label (limite connue)"
+    );
+}
+
+/// Une base ouverte en LECTURE SEULE ne répare rien sur disque : un typecat à
+/// copies dupliquées sans nom est fondu en mémoire, mais le fichier reste
+/// octet pour octet celui d'avant (un lecteur sous verrou partagé ne doit pas
+/// écraser le DDL d'un écrivain d'un autre processus). La réouverture en
+/// écriture, elle, répare.
+#[test]
+fn la_reparation_a_l_ouverture_n_ecrit_pas_en_lecture_seule() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = ObrainDB::open_substrate(&chemin).expect("création");
+        db.session()
+            .execute("INSERT (:T {a: 1, b: 'x'})")
+            .expect("donnée initiale");
+    }
+    let copie = r#"{"Unique":["a","b"]}"#;
+    let contenu = format!(
+        "# catalogue de types obrain — genre\tnom\tdefinition(JSON)\n\
+         node\tT\t{{\"name\":\"T\",\"properties\":[],\"constraints\":[{copie},{copie}],\"parent_types\":[]}}\n"
+    );
+    let fichier = chemin.join("substrate.typecat");
+    std::fs::write(&fichier, &contenu).unwrap();
+    let avant = std::fs::read(&fichier).unwrap();
+
+    {
+        let db = ObrainDB::with_config(obrain_engine::Config::read_only(&chemin))
+            .expect("ouverture en lecture seule");
+        // (`SHOW NODE TYPES` est refusé en lecture seule comme tout DDL : la
+        // réparation en mémoire n'est pas observable ici, seul le disque l'est.)
+        db.session()
+            .execute("MATCH (n:T) RETURN n.a")
+            .expect("lecture");
+    }
+    assert_eq!(
+        std::fs::read(&fichier).unwrap(),
+        avant,
+        "en lecture seule, substrate.typecat n'est pas réécrit"
+    );
+
+    drop(ObrainDB::open_substrate(&chemin).expect("réouverture en écriture"));
+    assert_eq!(
+        copies_persistees(&chemin, "T", "Unique"),
+        1,
+        "en écriture, le fichier est réparé"
+    );
+}

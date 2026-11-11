@@ -17282,6 +17282,32 @@ impl SubstrateStore {
         })
     }
 
+    /// Taille BRUTE du jeu de candidats indexés pour `(property, value)` —
+    /// zone persistée (clé couverte) plus delta de session — SANS
+    /// revérification : c'est la taille de l'ensemble qu'`indexed_candidates`
+    /// relirait, pas son contenu. Sert à choisir la condition la plus
+    /// sélective d'un `find_nodes_by_properties` avant d'en matérialiser une.
+    /// `None` exactement quand `indexed_candidates` rendrait `None` (clé non
+    /// enregistrée, valeur non projetable, index globalement vide).
+    fn indexed_candidate_count(&self, property: &str, value: &Value) -> Option<usize> {
+        let key = PropertyKey::new(property);
+        let idx = self.property_indexes.get(&key)?;
+        let ik = index_value_key(value)?;
+        let session = idx.get(&ik).map_or(0, |s| s.len());
+        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value())
+            && let Some(slots) = self
+                .index_egalite
+                .as_ref()
+                .and_then(|z| z.read().candidats(pk, Self::hachage_cle_egalite(&ik)))
+        {
+            return Some(slots.len() + session);
+        }
+        if idx.is_empty() {
+            return None;
+        }
+        Some(session)
+    }
+
     /// Candidats indexés pour `(property, value)`, revérifiés (liveness +
     /// valeur courante), triés. `None` si la clé n'est pas enregistrée ou la
     /// valeur non projetable — l'appelant retombe alors sur le scan.
@@ -20552,7 +20578,31 @@ impl GraphStore for SubstrateStore {
         // T17b : si UNE des conditions porte sur une clé indexée, on prend
         // ses candidats (déjà revérifiés pour elle) et on ne vérifie que les
         // AUTRES conditions dessus — O(candidats) au lieu d'un scan complet.
-        for (prop, expected) in conditions {
+        //
+        // ── LA COLONNE LA PLUS SÉLECTIVE RÉSOUT, PAS LA PREMIÈRE DÉCLARÉE ──
+        // Prendre la première condition indexée faisait dépendre le coût de
+        // l'ORDRE DE DÉCLARATION : `UNIQUE (a, b)` avec `a` à deux valeurs
+        // relisait la moitié du label à chaque insertion (744 µs contre 25 µs
+        // pour `UNIQUE (b, a)`, 10 000 nœuds, et linéaire en N). On compte
+        // d'abord les candidats BRUTS de chaque condition indexée (sans les
+        // revérifier : la taille de l'ensemble, pas son contenu) et on
+        // matérialise le plus petit. Les autres conditions restent éprouvées
+        // sur chaque candidat retenu. En l'absence de décompte, l'ordre
+        // historique sert de repli.
+        let mut ordre: Vec<usize> = (0..conditions.len()).collect();
+        let meilleure = conditions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (prop, expected))| {
+                self.indexed_candidate_count(prop, expected).map(|n| (n, i))
+            })
+            .min();
+        if let Some((_, i)) = meilleure {
+            ordre.retain(|&j| j != i);
+            ordre.insert(0, i);
+        }
+        for i in ordre {
+            let (prop, expected) = &conditions[i];
             if let Some(hits) = self.indexed_candidates(prop, expected) {
                 let owned: Vec<(&str, Value)> =
                     conditions.iter().map(|(k, v)| (*k, v.clone())).collect();

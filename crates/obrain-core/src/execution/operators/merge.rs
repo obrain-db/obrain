@@ -317,8 +317,9 @@ impl MergeOperator {
     /// `ON MATCH SET` écrit sur un nœud existant comme le fait `SET` : il est
     /// soumis au même contrôle d'unicité, jugé sur l'état qu'aura le nœud
     /// (colonnes contraintes non écrites lues sur le nœud, nœud lui-même
-    /// exclu). Le composé MERGE tient déjà le verrou du store
-    /// (`merge_node_for_row`) : rien à reprendre ici.
+    /// exclu). Le contrôle n'est pas atomique vis-à-vis d'un écrivain
+    /// concurrent : `merge_node_for_row` ne tient son verrou que pour le
+    /// composé chercher-puis-créer, pas pour cette écriture.
     fn apply_on_match(
         &self,
         node_id: NodeId,

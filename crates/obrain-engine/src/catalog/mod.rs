@@ -1199,8 +1199,26 @@ fn default_constraint_name(
     properties: &[String],
     taken: impl Fn(&str) -> bool,
 ) -> String {
+    // Les colonnes sont jointes par `_`. Quand l'une d'elles en contient un,
+    // la jointure devient ambiguë (`UNIQUE (a, b)` et `UNIQUE (a_b)` donnent
+    // toutes deux `a_b`) : on y ajoute alors une empreinte des colonnes
+    // elles-mêmes, pour que le nom reste une fonction de la contrainte seule
+    // — jamais de l'ordre dans lequel les contraintes ont été déclarées.
     let base = if properties.is_empty() {
         format!("{label}_{kind}")
+    } else if properties.iter().any(|p| p.contains('_')) {
+        let mut empreinte: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in properties {
+            for octet in p.bytes().chain(std::iter::once(0)) {
+                empreinte ^= u64::from(octet);
+                empreinte = empreinte.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        format!(
+            "{label}_{kind}_{}_{:06x}",
+            properties.join("_"),
+            empreinte & 0xff_ffff
+        )
     } else {
         format!("{label}_{kind}_{}", properties.join("_"))
     };
@@ -3076,5 +3094,29 @@ mod tests {
         crees.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(crees, reparer(contraintes));
         assert_eq!(crees[0].0, "T_not_null_a");
+
+        // Une colonne contenant `_` rend la jointure ambiguë : `UNIQUE (a, b)`
+        // et `UNIQUE (a_b)` reçoivent des noms DISTINCTS, quel que soit l'ordre
+        // de déclaration.
+        let ab = TypeConstraint::Unique(vec!["a".into(), "b".into()]);
+        let a_b = TypeConstraint::Unique(vec!["a_b".into()]);
+        let noms = |premier: &TypeConstraint, second: &TypeConstraint| {
+            let schema = SchemaCatalog::new();
+            schema
+                .declare_constraint("T", None, vec![premier.clone()])
+                .unwrap();
+            schema
+                .declare_constraint("T", None, vec![second.clone()])
+                .unwrap();
+            let def = schema.get_node_type("T").unwrap();
+            (
+                def.constraint_name(&ab).unwrap().to_string(),
+                def.constraint_name(&a_b).unwrap().to_string(),
+            )
+        };
+        let (n_ab, n_a_b) = noms(&ab, &a_b);
+        assert_ne!(n_ab, n_a_b);
+        assert_eq!(n_ab, "T_unique_a_b");
+        assert_eq!(noms(&a_b, &ab), (n_ab, n_a_b), "indépendant de l'ordre");
     }
 }

@@ -37,6 +37,9 @@ mod schema_catalog;
 /// store, et rechargees a l'ouverture quand elle correspond encore.
 mod text_index_persist;
 mod vector_index_persist;
+/// Vérification a posteriori des contraintes déclarées sur les données
+/// (API directe du store, import en masse, `CREATE CONSTRAINT`).
+pub mod verification_contraintes;
 // T17 final cutover (2026-04-23): the `persistence`, `mmap_store`,
 // `nocache_reader`, and `native_writer` modules were deleted. They
 // implemented the legacy single-file `.obrain` v1 (bincode snapshot)
@@ -841,6 +844,14 @@ impl ObrainDB {
         };
         let mut db = Self::with_store(erased, config)?;
         db.substrate_store = Some(Arc::clone(&typed));
+        // ── LE MODE LECTURE SEULE EST POSÉ AVANT TOUTE HYDRATATION ──
+        // `hydrater_types` (plus bas) RÉPARE `substrate.typecat` quand il y
+        // trouve des contraintes dupliquées ou sans nom — sauf en lecture
+        // seule, où il ne touche pas au disque. Il lit ce drapeau : posé
+        // seulement par l'appelant, après le retour, un lecteur sous verrou
+        // partagé réécrivait le fichier et pouvait écraser le DDL d'un
+        // écrivain d'un autre processus.
+        db.read_only = read_only;
 
         // Journal RDF : replay des triplets persistés, puis ouverture en
         // ajout (écriture seule). Sans chemin (substrat temporaire), pas de
