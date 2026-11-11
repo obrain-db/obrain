@@ -113,10 +113,16 @@ fn index_declare_non_couvert_est_prepare_et_la_base_se_referme() {
     let chemin = d.path().join("base");
     {
         let db = ObrainDB::open(&chemin).unwrap();
-        let s = db.session();
-        for i in 0..300 {
-            s.execute(&format!("CREATE (:Ligne {{id: {i}, f: {i}.0}})"))
-                .unwrap();
+        // Au-dessus de `SEUIL_NOEUDS_PASSE_HATIVE` (50 000) : l'ouverture ne
+        // bâtit PAS les index déclarés d'emblée, c'est le fil de préparation
+        // qui doit le faire. En dessous, une passe à l'ouverture le ferait et
+        // le fil n'aurait rien à prouver.
+        let store = db.graph_store_mut();
+        for i in 0..60_001i64 {
+            let n = store.create_node(&["Ligne"]);
+            store.set_node_property(n, "id", Value::Int64(i));
+            #[allow(clippy::cast_precision_loss)]
+            store.set_node_property(n, "f", Value::Float64(i as f64));
         }
         db.create_property_index("id");
         db.create_property_index("f");
@@ -127,6 +133,17 @@ fn index_declare_non_couvert_est_prepare_et_la_base_se_referme() {
     std::fs::remove_file(&zone).unwrap();
     for tour in 0..2 {
         let db = ObrainDB::open(&chemin).unwrap();
+        // Au PREMIER tour il y a quelque chose à préparer et un fil le fait,
+        // AVANT toute requête ; au second, la zone réécrite couvre tout et
+        // rien n'est lancé. Sans ce fil, la première requête reconstruirait à
+        // la demande et `close()` persisterait : le résultat serait le même,
+        // mais pas le chemin (revue 3, M1).
+        let fil = db.attendre_preparation_index();
+        assert_eq!(fil, tour == 0, "tour {tour} : fil de préparation");
+        assert!(
+            !db.index_egalite_a_preparer(),
+            "tour {tour} : plus rien à préparer avant la première requête"
+        );
         assert_eq!(
             un_entier(&db, "MATCH (n:Ligne {id: 123}) RETURN count(n)"),
             1,

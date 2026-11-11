@@ -700,6 +700,28 @@ impl ObrainDB {
             .map_err(|e| obrain_common::utils::error::Error::Internal(e.to_string()))
     }
 
+    /// Attend la fin du fil de PRÉPARATION des index d'égalité lancé à
+    /// l'ouverture (voir `with_substrate_store`). Rend `true` si un tel fil
+    /// existait. Sans effet sur les résultats : il rend seulement observable
+    /// que la préparation a eu lieu hors du chemin des requêtes.
+    pub fn attendre_preparation_index(&self) -> bool {
+        let Some(fil) = self.preparation_index.lock().take() else {
+            return false;
+        };
+        let _ = fil.join();
+        true
+    }
+
+    /// Reste-t-il un index d'égalité à préparer (zone héritée à compléter,
+    /// index déclaré non couvert) ? Passage-through vers le substrat ;
+    /// `false` pour une base en mémoire.
+    #[must_use]
+    pub fn index_egalite_a_preparer(&self) -> bool {
+        self.substrate_store
+            .as_ref()
+            .is_some_and(|s| s.index_egalite_a_preparer())
+    }
+
     /// Explicit WAL fsync passthrough — see [`obrain_substrate::SubstrateStore::fsync_wal`].
     /// No-op (returns `Ok(())`) when the database is not substrate-backed
     /// (e.g. an in-memory `ObrainDB`).
