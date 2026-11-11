@@ -1690,6 +1690,27 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // `ORDER BY`, `SKIP`, `LIMIT` puis `WHERE`, dans cet ordre (comme en
+        // Cypher) : le tri et la limite portent sur la sortie du `WITH`, le
+        // `WHERE` filtre ensuite.
+        let order_by = if self.current.kind == TokenKind::Order {
+            Some(self.parse_order_by()?)
+        } else {
+            None
+        };
+        let skip = if matches!(self.current.kind, TokenKind::Skip | TokenKind::Offset) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        let limit = if self.current.kind == TokenKind::Limit {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
         // Optional WHERE after WITH
         let where_clause = if self.current.kind == TokenKind::Where {
             Some(self.parse_where_clause()?)
@@ -1701,7 +1722,11 @@ impl<'a> Parser<'a> {
             distinct,
             items,
             is_wildcard,
+            order_by,
+            skip,
+            limit,
             where_clause,
+
             let_bindings: Vec::new(),
             span: Some(SourceSpan::new(span_start, self.current.span.end, 1, 1)),
         })

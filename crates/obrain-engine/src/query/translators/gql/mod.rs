@@ -1454,6 +1454,35 @@ impl GqlTranslator {
         }
         // WITH * skips projection: all variables pass through unchanged
 
+        // `ORDER BY`, `SKIP`, `LIMIT` du `WITH` : sur sa sortie (ses alias sont
+        // visibles), avant son `WHERE`.
+        if let Some(order_by) = &with_clause.order_by {
+            let keys = order_by
+                .items
+                .iter()
+                .map(|item| {
+                    Ok(SortKey {
+                        expression: self.translate_expression(&item.expression)?,
+                        order: match item.order {
+                            ast::SortOrder::Asc => SortOrder::Ascending,
+                            ast::SortOrder::Desc => SortOrder::Descending,
+                        },
+                        nulls: item.nulls.map(|n| match n {
+                            ast::NullsOrdering::First => NullsOrdering::First,
+                            ast::NullsOrdering::Last => NullsOrdering::Last,
+                        }),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            plan = wrap_sort(plan, keys);
+        }
+        if let Some(skip_expr) = &with_clause.skip {
+            plan = wrap_skip(plan, self.translate_count_expr(skip_expr, "SKIP")?);
+        }
+        if let Some(limit_expr) = &with_clause.limit {
+            plan = wrap_limit(plan, self.translate_count_expr(limit_expr, "LIMIT")?);
+        }
+
         // Handle LET bindings attached to this WITH clause.
         // LET adds new columns without replacing existing ones.
         if !with_clause.let_bindings.is_empty() {

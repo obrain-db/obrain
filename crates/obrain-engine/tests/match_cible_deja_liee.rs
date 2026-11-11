@@ -544,6 +544,31 @@ fn where_apres_match_apres_with(langage: Langage) {
     );
 }
 
+/// `WITH … ORDER BY … LIMIT` : le tri et la limite portent sur la sortie du
+/// `WITH`. Nombre de commits par fichier : x 3, y 2, z 1. Le plus touché est x ;
+/// le moins touché est z ; avec `SKIP 1`, le deuxième plus touché est y.
+fn with_order_by_skip_limit(langage: Langage) {
+    let db = base();
+    let ligne = |chemin: &str, nb: i64| vec![Value::String(chemin.into()), Value::Int64(nb)];
+    for (fin, attendu) in [
+        ("ORDER BY nb DESC LIMIT 1", vec![ligne("x", 3)]),
+        ("ORDER BY nb ASC LIMIT 1", vec![ligne("z", 1)]),
+        ("ORDER BY nb DESC SKIP 1 LIMIT 1", vec![ligne("y", 2)]),
+        ("ORDER BY nb DESC LIMIT 2 WHERE nb < 3", vec![ligne("y", 2)]),
+    ] {
+        let requete = format!(
+            "MATCH (c:Commit)-[:TOUCHES]->(f:File) \
+             WITH f, count(*) AS nb {fin} \
+             RETURN f.path, nb"
+        );
+        assert_eq!(
+            lignes(&db, langage, &requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+}
+
 // ============================================================================
 // Chaque cas, une fois par langage
 // ============================================================================
@@ -580,6 +605,7 @@ cas_en!(
         cible_liee_apres_with_agrege,
         match_apres_with_agrege_ne_multiplie_pas_le_compte,
         where_apres_match_apres_with,
+        with_order_by_skip_limit,
     ]
 );
 
@@ -605,5 +631,6 @@ cas_en!(
         cible_liee_apres_with_agrege,
         match_apres_with_agrege_ne_multiplie_pas_le_compte,
         where_apres_match_apres_with,
+        with_order_by_skip_limit,
     ]
 );
