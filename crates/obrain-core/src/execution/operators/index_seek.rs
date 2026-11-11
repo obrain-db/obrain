@@ -15,9 +15,11 @@
 //! - cle Bool | Int64 | String → sonde `find_nodes_by_property` (repli
 //!   scan transparent integre cote store si l'index n'existe pas — on ne
 //!   court-circuite PAS sur `has_property_index == false`) ;
-//! - autre type de cle (Float64, temporel, liste…) : `index_value_key` ne
-//!   projette pas ces valeurs, et l'egalite d'index est STRICTE la ou le
-//!   chemin generique coerce Int64 ↔ Float64. Pour ne pas perdre de lignes,
+//! - autre type de cle (Float64, temporel, liste…) : on ne sonde pas
+//!   l'index avec ces valeurs (cote store, la cle d'index est canonique
+//!   vis-a-vis de l'egalite — une sonde Int64(5) TROUVE un Float64(5.0)
+//!   stocke — mais un flottant non entier ou un temporel n'y entre pas).
+//!   Pour ne pas perdre de lignes,
 //!   on retombe sur une comparaison generique coercee sur les candidats du
 //!   label (materialises UNE fois, paresseusement) — jamais un resultat
 //!   vide silencieux ;

@@ -41,10 +41,19 @@
 //!
 //! * l'index doit être un SUR-ENSEMBLE des couples (nœud, valeur) vivants ;
 //! * une série n'est écrite QUE si son contenu est connu COMPLET ;
+//! * la CLÉ hachée doit être CANONIQUE vis-à-vis de l'égalité de
+//!   revérification : deux valeurs que `valeurs_egales_gql` tient pour
+//!   égales DOIVENT partager leur hachage, sinon le porteur de l'une manque
+//!   aux candidats de l'autre. `Float64(5.0)` se range donc sous l'entier 5,
+//!   et deux chaînes datetime RFC3339 d'un même INSTANT sous cet instant
+//!   (version 2 du format — la version 1 hachait la valeur telle quelle et
+//!   perdait ces porteurs) ;
 //! * le DOMAINE de projection doit être EXACTEMENT celui de
-//!   `index_value_key` (Bool / Int64 / String, rien d'autre). C'est pourquoi
+//!   `index_value_key` (Bool, entier ou flottant entier, chaîne ordinaire,
+//!   chaîne datetime — rien d'autre). C'est pourquoi
 //!   ce module n'expose PAS de `hacher(&Value)` : il expose un hachage par
-//!   VARIANTE ([`hachage_bool`], [`hachage_int`], [`hachage_chaine`]) et le
+//!   VARIANTE ([`hachage_bool`], [`hachage_int`], [`hachage_chaine`],
+//!   [`hachage_instant`]) et le
 //!   store hache depuis son `IndexValueKey` déjà projeté — l'équivalence de
 //!   domaine est alors vraie PAR CONSTRUCTION, pas par convention. Un
 //!   `hacher(&Value)` parallèle qui accepterait demain un type que
@@ -56,7 +65,8 @@
 //! ## Le hachage, et son contrat de stabilité
 //!
 //! FNV-1a 64 bits sur `tag ‖ charge canonique` (tag 0x01 Bool, 0x02 Int64
-//! petit-boutiste, 0x03 UTF-8). Il est écrit SUR DISQUE : il doit rendre les
+//! petit-boutiste, 0x03 UTF-8, 0x04 instant en microsecondes
+//! petit-boutiste). Il est écrit SUR DISQUE : il doit rendre les
 //! MÊMES octets d'une version du binaire à l'autre — c'est pourquoi ni
 //! `DefaultHasher` (graine par processus) ni un dépendance externe ne
 //! conviennent. Changer ce hachage impose d'incrémenter [`EQ_VERSION`], et
@@ -99,7 +109,17 @@ pub const EQ_MAGIC_SERIE: u32 = 0xC5DE_1D11;
 
 /// Version du format. Un index d'une autre version est JETÉ, jamais
 /// interprété. Incrémenter si le hachage ou la disposition change.
-pub const EQ_VERSION: u32 = 1;
+///
+/// * 1 — clé hachée = la valeur telle quelle (Bool / Int64 / String).
+/// * 2 — clé CANONIQUE vis-à-vis de l'égalité : un `Float64` entier est
+///   rangé sous l'entier égal (`hachage_int`), une chaîne datetime RFC3339
+///   sous son instant (`hachage_instant`, tag 0x04). La disposition des
+///   octets est INCHANGÉE ; c'est le CONTENU qui change — une zone de
+///   version 1 ne contient ni les flottants entiers ni les instants, la
+///   croire rendrait des faux négatifs. Elle est donc jetée à l'ouverture
+///   (reconstruction par processus, une fois) et réécrite en version 2 par
+///   la fusion suivante.
+pub const EQ_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Hachage — FNV-1a 64, par VARIANTE (voir le pavé de tête : pas de
@@ -138,6 +158,14 @@ pub fn hachage_int(i: i64) -> u64 {
 #[must_use]
 pub fn hachage_chaine(s: &str) -> u64 {
     fnv1a(0x03, s.as_bytes())
+}
+
+/// Hachage d'un `IndexValueKey::Instant` — l'instant, en microsecondes,
+/// d'une chaîne datetime RFC3339. Toutes les écritures d'un même instant
+/// (quel que soit le fuseau) rendent le même hachage.
+#[must_use]
+pub fn hachage_instant(micros: i64) -> u64 {
+    fnv1a(0x04, &micros.to_le_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +855,7 @@ mod tests {
         assert_eq!(hachage_bool(false), fnv1a(0x01, &[0]));
         assert_eq!(hachage_int(0), fnv1a(0x02, &0i64.to_le_bytes()));
         assert_eq!(hachage_chaine(""), fnv1a(0x03, b""));
+        assert_eq!(hachage_instant(0), fnv1a(0x04, &0i64.to_le_bytes()));
         // Témoins figés (calculés une fois, jamais réajustés sans changer
         // EQ_VERSION).
         assert_eq!(hachage_bool(true), 0x082f_2307_b4e8_8e77);
@@ -846,6 +875,8 @@ mod tests {
     #[test]
     fn les_variantes_ne_collisionnent_pas_entre_elles() {
         assert_ne!(hachage_int(1), hachage_bool(true));
+        // L'instant et l'entier de même charge ne se confondent pas.
+        assert_ne!(hachage_instant(1), hachage_int(1));
         assert_ne!(hachage_chaine("\u{1}"), hachage_bool(true));
         assert_ne!(hachage_int(49), hachage_chaine("1"));
     }

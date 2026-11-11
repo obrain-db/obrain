@@ -1167,6 +1167,25 @@ thread_local! {
     static SABOTAGE_REGISTRE_CLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+// SONDES DE TEST de la résolution multi-critères (`find_nodes_by_properties`).
+//
+// `CANDIDATS_REVERIFIES` compte les candidats que `indexed_candidates` relit
+// un par un (une lecture de propriété chacun) : c est le coût que la sélection
+// de la clé la plus sélective doit réduire, et la SEULE observation qui change
+// quand on inverse ce choix — le résultat, lui, reste le même.
+//
+// `APRES_DECOMPTE` s exécute entre le décompte des clés et la matérialisation
+// de la clé élue : il reproduit, sans course, un index désenregistré dans cette
+// fenêtre. Les deux sont `#[cfg(test)]` (absents du binaire de production) et
+// locaux au FIL, pour ne pas contaminer les tests parallèles.
+#[cfg(test)]
+thread_local! {
+    static CANDIDATS_REVERIFIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    #[allow(clippy::type_complexity)]
+    static APRES_DECOMPTE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Échantillon `(entité, clé, valeur)` retenu PENDANT un drain v2 pour être
 /// relu à la fin par le chemin de lecture complet.
 ///
@@ -3497,6 +3516,7 @@ impl SubstrateStore {
             IndexValueKey::Bool(b) => crate::props_eq_index::hachage_bool(*b),
             IndexValueKey::Int(i) => crate::props_eq_index::hachage_int(*i),
             IndexValueKey::Str(s) => crate::props_eq_index::hachage_chaine(s),
+            IndexValueKey::Instant(i) => crate::props_eq_index::hachage_instant(*i),
         }
     }
 
@@ -16595,11 +16615,32 @@ impl SubstrateStore {
 /// que le sous-ensemble sûr, qui couvre les clés chaudes réelles (`id`,
 /// `parent_id` : des chaînes). Une valeur non projetable n'entre pas dans
 /// l'index et son lookup retombe sur le scan historique.
+///
+/// ── LA CLÉ EST CANONIQUE VIS-À-VIS DE L'ÉGALITÉ DE REVÉRIFICATION ──
+///
+/// Un seau d'index sert de jeu de CANDIDATS : il doit donc contenir TOUS les
+/// nœuds que `valeurs_egales_gql` accepterait pour la valeur cherchée. La
+/// règle, tenue par [`index_value_key`] : deux valeurs projetables sont
+/// égales au sens de `valeurs_egales_gql` SI ET SEULEMENT SI elles ont la
+/// même clé, et une valeur projetable n'est jamais égale à une valeur non
+/// projetable. Une clé plus STRICTE que l'égalité (l'état d'avant : `Int64(5)`
+/// et `Float64(5.0)` dans deux mondes, deux écritures d'un même instant dans
+/// deux seaux) donne un index INCOMPLET — un faux négatif muet, et pour une
+/// contrainte d'unicité, un doublon accepté.
+///
+/// Cette clé est aussi ce que hache la zone persistée (`props_eq_index`) :
+/// en changer le sens impose d'incrémenter `EQ_VERSION`.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum IndexValueKey {
     Bool(bool),
+    /// Un entier — `Int64(i)`, ou le `Float64` qui lui est EXACTEMENT égal.
     Int(i64),
+    /// Une chaîne ordinaire, par égalité d'octets.
     Str(String),
+    /// Une chaîne datetime RFC3339, par INSTANT (microsecondes) : toutes les
+    /// écritures d'un même instant, quel que soit le fuseau, partagent ce
+    /// seau — la règle de `value_cmp::egaler` sur deux chaînes datetime.
+    Instant(i64),
 }
 
 /// Le predicat d intervalle, UNIQUE, partage par les DEUX chemins de
@@ -16726,13 +16767,46 @@ fn valeurs_egales_gql(a: &Value, b: &Value) -> bool {
     obrain_common::types::value_cmp::egalite_structurelle(a, b)
 }
 
+/// Clé d'index d'une valeur — CANONIQUE vis-à-vis de `valeurs_egales_gql`
+/// (voir [`IndexValueKey`]). Classe par classe du comparateur canonique :
+///
+/// * Bool : n'égale qu'un Bool.
+/// * Nombres : `Int64(i)` et le `Float64` exactement égal à `i` partagent
+///   `Int(i)` (`-0.0` et `0.0` valent `Int(0)`). Un flottant NON entier, hors
+///   plage `i64`, infini ou NaN n'égale aucun entier : il reste non
+///   projetable (balayage), comme avant.
+/// * Chaînes : deux chaînes datetime RFC3339 sont égales par INSTANT, toute
+///   autre paire par octets — une chaîne datetime n'égale donc jamais une
+///   chaîne ordinaire, et les deux variantes `Instant` / `Str` sont
+///   disjointes.
+/// * Tout le reste (temporels typés, Null, conteneurs…) : non projetable.
 fn index_value_key(v: &Value) -> Option<IndexValueKey> {
     match v {
         Value::Bool(b) => Some(IndexValueKey::Bool(*b)),
         Value::Int64(i) => Some(IndexValueKey::Int(*i)),
-        Value::String(s) => Some(IndexValueKey::Str(s.to_string())),
+        Value::Float64(f) => entier_egal_au_flottant(*f).map(IndexValueKey::Int),
+        Value::String(s) => Some(
+            match obrain_common::types::value_cmp::instant_de_chaine(s) {
+                Some(instant) => IndexValueKey::Instant(instant),
+                None => IndexValueKey::Str(s.to_string()),
+            },
+        ),
         _ => None,
     }
+}
+
+/// L'entier `i` tel que `Int64(i)` ÉGALE `Float64(f)` au sens du comparateur
+/// canonique, s'il existe. Le verdict est rendu par `cmp_i64_f64` lui-même —
+/// la fonction qui tranche `Int64 = Float64` à la revérification — et non par
+/// une règle redéduite ici : la clé ne peut pas diverger de l'égalité.
+fn entier_egal_au_flottant(f: f64) -> Option<i64> {
+    // Conversion SATURANTE (NaN → 0) : elle ne décide de rien, elle ne fait
+    // que proposer le seul candidat possible, que `cmp_i64_f64` confirme ou
+    // rejette (flottant non entier, hors plage, infini, NaN).
+    #[allow(clippy::cast_possible_truncation)]
+    let candidat = f as i64;
+    (obrain_common::types::value_cmp::cmp_i64_f64(candidat, f) == Some(std::cmp::Ordering::Equal))
+        .then_some(candidat)
 }
 
 impl SubstrateStore {
@@ -16835,6 +16909,8 @@ impl SubstrateStore {
             drop(idx);
             candidats.sort_unstable_by_key(|n| n.0);
             candidats.dedup();
+            #[cfg(test)]
+            CANDIDATS_REVERIFIES.with(|c| c.set(c.get() + candidats.len()));
             let mut out: Vec<NodeId> = candidats
                 .into_iter()
                 .filter(|id| self.is_live_on_disk(*id))
@@ -16874,6 +16950,8 @@ impl SubstrateStore {
             None => Vec::new(),
         };
         drop(idx);
+        #[cfg(test)]
+        CANDIDATS_REVERIFIES.with(|c| c.set(c.get() + candidats.len()));
         let mut out: Vec<NodeId> = candidats
             .into_iter()
             .filter(|id| self.is_live_on_disk(*id))
@@ -16893,31 +16971,56 @@ impl SubstrateStore {
     /// propriété par candidat — le coût dominant d'une résolution par index
     /// (PR #99 : ~744 µs pour ~2500 candidats, ~25 µs pour 1).
     ///
-    /// `None` suit exactement la doctrine de `indexed_candidates` : clé non
-    /// enregistrée, valeur non projetable, ou index « globalement vide = je
-    /// ne sais pas ». L'appelant ne doit jamais lire `0` comme « très
-    /// sélectif » sur un index qui n'a pas été bâti — ce serait élire une clé
-    /// qui ne répond pas, et retomber à tort sur le balayage.
+    /// ── `Some(n)` EST UNE AFFIRMATION DE COMPLÉTUDE, PAS SEULEMENT UN NOMBRE ──
+    ///
+    /// L'appelant ÉLIT la clé au plus petit décompte : un index incomplet,
+    /// plus petit par construction, gagnerait d'office — et un décompte de 0
+    /// rendrait une réponse vide et définitive. Cette fonction ne rend donc
+    /// `Some` que si le jeu que `indexed_candidates` matérialiserait contient
+    /// TOUS les porteurs de la valeur. Elle est plus STRICTE que
+    /// `indexed_candidates` (qui garde, lui, son comportement historique) :
+    ///
+    /// * clé non enregistrée, valeur non projetable → `None` ;
+    /// * sous v2, clé dont la marque `index_batis_depuis_v2` n'est pas posée →
+    ///   `None`. La marque n'est posée qu'APRÈS le remplissage
+    ///   (`batir_index_depuis_v2`) : un index en cours de construction, ou
+    ///   enregistré sans avoir jamais été complété depuis les chaînes, n'est
+    ///   pas éligible ;
+    /// * clé COUVERTE par la zone persistée dont la zone ne répond pas (non
+    ///   fiable, série vide ou illisible) → `None` : la carte RAM d'une clé
+    ///   couverte n'est que le DELTA de session, pas un index complet ;
+    /// * index globalement vide → `None` (« je ne sais pas »).
+    ///
+    /// La complétude tient aussi à la clé elle-même : `index_value_key` est
+    /// canonique vis-à-vis de `valeurs_egales_gql`, donc le seau de la valeur
+    /// cherchée contient tous les nœuds que la revérification accepterait.
+    ///
+    /// RÉSIDU, documenté et non couvert ici : une écriture CONCURRENTE en
+    /// cours (`set_node_property` écrit la valeur PUIS met l'index à jour).
+    /// Un lecteur qui passe entre les deux ne voit pas ce nœud par l'index ;
+    /// c'est l'état d'AVANT l'écriture, qui n'a pas encore rendu la main — une
+    /// linéarisation légitime, et non un index incomplet.
     fn indexed_candidate_count(&self, property: &str, value: &Value) -> Option<usize> {
         let key = PropertyKey::new(property);
-        let idx = self.property_indexes.get(&key)?;
         let ik = index_value_key(value)?;
-
-        // Chemin zone persistée : identique à `indexed_candidates` (clé
-        // couverte ET zone qui répond), mais on COMPTE au lieu de revérifier.
-        // Le sur-ensemble disque ∪ RAM peut compter deux fois un nœud présent
-        // des deux côtés — un majorant, sans effet sur la justesse (le jeu
-        // retenu est revérifié intégralement par l'appelant).
-        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value())
-            && let Some(zone) = self.index_egalite.as_ref()
-            && let Some(slots) = zone.read().candidats(pk, Self::hachage_cle_egalite(&ik))
+        if self.props_zone.is_some()
+            && self.next_node_id.load(Ordering::Acquire) > 1
+            && !self.index_batis_depuis_v2.contains_key(&key)
         {
-            let mut total = slots.len();
-            if let Some(set) = idx.get(&ik) {
-                total += set.len();
-            }
-            drop(idx);
-            return Some(total);
+            return None;
+        }
+        let idx = self.property_indexes.get(&key)?;
+
+        // Clé COUVERTE : le jeu complet est zone ∪ delta RAM, et seulement si
+        // la zone répond. Le sur-ensemble peut compter deux fois un nœud
+        // présent des deux côtés — un majorant, sans effet sur la justesse
+        // (le jeu retenu est revérifié intégralement par l'appelant).
+        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value()) {
+            let slots = self
+                .index_egalite
+                .as_ref()
+                .and_then(|z| z.read().candidats(pk, Self::hachage_cle_egalite(&ik)))?;
+            return Some(slots.len() + idx.get(&ik).map_or(0, |set| set.len()));
         }
 
         // Même garde que `indexed_candidates` : un index globalement vide ne
@@ -16925,12 +17028,7 @@ impl SubstrateStore {
         if idx.is_empty() {
             return None;
         }
-        let n = match idx.get(&ik) {
-            Some(set) => set.len(),
-            None => 0,
-        };
-        drop(idx);
-        Some(n)
+        Some(idx.get(&ik).map_or(0, |set| set.len()))
     }
 }
 
@@ -20108,39 +20206,70 @@ impl GraphStore for SubstrateStore {
         // candidats (déjà revérifiés pour elle) et on ne vérifie que les
         // AUTRES conditions dessus — O(candidats) au lieu d'un scan complet.
         //
-        // PR #99 : on choisissait la PREMIÈRE clé indexée, pas la PLUS
-        // SÉLECTIVE. `UNIQUE(a, b)` avec `a` peu sélectif (2 valeurs sur
-        // 5000 lignes) rendait ~2500 candidats à revérifier — une lecture de
-        // propriété par candidat, ~744 µs — là où `b` n'en rend qu'un
-        // (~25 µs). On compte donc les candidats BRUTS de chaque clé indexée
-        // (sans revérification) et on résout par le plus petit ensemble. Le
-        // verdict final reste identique : le jeu retenu est revérifié contre
-        // TOUTES les conditions, la sélectivité ne change que le coût.
-        let mut meilleure: Option<(&str, &Value)> = None;
-        let mut meilleure_taille = usize::MAX;
-        for (prop, expected) in conditions {
-            if let Some(n) = self.indexed_candidate_count(prop, expected)
-                && n < meilleure_taille
-            {
-                meilleure_taille = n;
-                meilleure = Some((prop, expected));
-                // 0 ou 1 candidat : rien ne peut faire mieux. 1 nœud à
-                // revérifier au pire, et une condition SANS porteur rend la
-                // réponse vide quel que soit le jeu retenu — on s'arrête.
+        // ── LAQUELLE : LA PLUS SÉLECTIVE, PARMI LES INDEX PROUVÉS COMPLETS ──
+        //
+        // On choisissait la PREMIÈRE clé indexée (PR #99). `UNIQUE(a, b)`
+        // avec `a` peu sélectif (2 valeurs sur 5000 lignes) rendait ~2500
+        // candidats à revérifier — une lecture de propriété par candidat,
+        // ~744 µs — là où `b` n'en rend qu'un (~25 µs). On compte donc les
+        // candidats BRUTS de chaque clé (sans revérification) et on résout
+        // par le plus petit ensemble.
+        //
+        // L'INVARIANT qui rend ce choix sûr : un ensemble d'index ne sert de
+        // jeu de candidats que s'il contient TOUS les nœuds que la
+        // revérification accepterait. Le plus petit ensemble est aussi celui
+        // qu'un index INCOMPLET fabrique — un décompte de 0 gagne toujours,
+        // et rend une réponse vide et définitive. Deux choses le tiennent :
+        // la clé d'index est canonique vis-à-vis de `valeurs_egales_gql`
+        // (`index_value_key` : un flottant entier et l'entier égal, deux
+        // écritures d'un même instant, partagent leur seau), et
+        // `indexed_candidate_count` ne rend `Some` que pour un index prouvé
+        // complet. Sous cet invariant, le verdict est le même quel que soit
+        // le jeu retenu : la sélectivité ne change que le coût.
+        let mut eligibles: Vec<(usize, usize)> = Vec::new();
+        for (rang, (prop, expected)) in conditions.iter().enumerate() {
+            if let Some(n) = self.indexed_candidate_count(prop, expected) {
+                eligibles.push((n, rang));
+                // 0 ou 1 candidat : rien ne peut faire mieux, inutile de
+                // compter les clés suivantes.
                 if n <= 1 {
                     break;
                 }
             }
         }
-        if let Some((prop, expected)) = meilleure
-            && let Some(hits) = self.indexed_candidates(prop, expected)
-        {
-            let owned: Vec<(&str, Value)> =
-                conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
-            return hits
-                .into_iter()
-                .filter(|id| self.node_matches_all_props(*id, &owned))
-                .collect();
+        // Tri STABLE : à décompte égal, l'ordre des conditions départage.
+        eligibles.sort_by_key(|(n, _)| *n);
+        #[cfg(test)]
+        APRES_DECOMPTE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        // La clé élue peut cesser de répondre entre le décompte et ici (index
+        // désenregistré par un autre fil) : on essaie alors les éligibles
+        // suivantes, par décompte croissant, plutôt que de tomber au balayage.
+        for (_, rang) in &eligibles {
+            let (prop, expected) = &conditions[*rang];
+            if let Some(hits) = self.indexed_candidates(prop, expected) {
+                return hits
+                    .into_iter()
+                    .filter(|id| self.node_matches_all_props(*id, conditions))
+                    .collect();
+            }
+        }
+        // REPLI HISTORIQUE — aucune clé n'est prouvée complète (ou aucune
+        // éligible n'a répondu) : on garde EXACTEMENT le choix d'avant la
+        // sélection, la première clé dont l'index répond. La résolution
+        // sélective ne peut ainsi jamais rendre un résultat que l'ancien
+        // chemin n'aurait pas rendu ; elle ne fait qu'ajouter un chemin plus
+        // court quand elle sait qu'il est sûr.
+        for (prop, expected) in conditions {
+            if let Some(hits) = self.indexed_candidates(prop, expected) {
+                return hits
+                    .into_iter()
+                    .filter(|id| self.node_matches_all_props(*id, conditions))
+                    .collect();
+            }
         }
         // (2026-08-19) Repli v2, meme partage que `find_nodes_by_property` :
         // le balayage de fin parcourt une carte VIDE sous v2, il faut donc
@@ -27230,67 +27359,461 @@ mod tests {
         assert!(none.is_empty(), "résultat attendu vide");
     }
 
-    /// PR #99 — la résolution multi-critères choisit la propriété indexée la
-    /// PLUS SÉLECTIVE et reste correcte dans les deux sens : un vrai doublon
-    /// est rendu (l'appelant rejette), un couple nouveau rend vide (accepté).
+    // ═════════════════════════════════════════════════════════════════════
+    // RÉSOLUTION SÉLECTIVE (PR #101) — justesse d'abord, sélection ensuite
+    //
+    // L'invariant que ces tests tiennent : un ensemble d'index ne sert de
+    // jeu de candidats que s'il contient TOUS les nœuds que l'égalité de
+    // revérification (`valeurs_egales_gql`) accepterait. Tant que la clé
+    // d'index était plus STRICTE que cette égalité (`Int64(5)` ≠ seau de
+    // `Float64(5.0)`, deux écritures d'un même instant dans deux seaux), un
+    // décompte de 0 élisait d'office la clé qui ne voyait pas le porteur.
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// Exécute `f` et rend, avec son résultat, le nombre de candidats que
+    /// `indexed_candidates` a relus un par un pendant ce temps (fil courant).
+    fn candidats_reverifies_pendant<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        CANDIDATS_REVERIFIES.with(|c| c.set(0));
+        let r = f();
+        (r, CANDIDATS_REVERIFIES.with(std::cell::Cell::get))
+    }
+
+    /// CONSTAT 1 (numérique). `Int64(5)` égale `Float64(5.0)` à la
+    /// revérification : le porteur flottant doit sortir, QUEL QUE SOIT
+    /// l'ordre des conditions — sinon une contrainte d'unicité composite
+    /// accepte un doublon.
     #[test]
-    fn t17b_multi_conditions_correct_et_selectif_dans_les_deux_ordres() {
+    fn resolution_selective_entier_trouve_le_flottant_entier_dans_les_deux_ordres() {
         let (_td, s) = store();
         s.create_property_index("a");
         s.create_property_index("b");
-        // `a` et `b` ont chacune 2 valeurs ; (a=0, b=0) est porté DEUX fois.
-        let mut ids = Vec::new();
-        for i in 0..4i64 {
-            let id = s.create_node(&["Pair"]);
-            s.set_node_property(id, "a", Value::Int64(i % 2));
-            s.set_node_property(id, "b", Value::Int64(i % 2));
-            ids.push(id);
-        }
+        let n = s.create_node(&["Pair"]);
+        s.set_node_property(n, "a", Value::Int64(1));
+        s.set_node_property(n, "b", Value::Float64(5.0));
+        // D'autres porteurs ENTIERS de `b` : l'index de `b` n'est pas vide,
+        // il répond donc — et son décompte pour 5 vaut 0 tant que la clé
+        // d'index ignore le flottant.
+        let m = s.create_node(&["Pair"]);
+        s.set_node_property(m, "a", Value::Int64(2));
+        s.set_node_property(m, "b", Value::Int64(7));
+        let k = s.create_node(&["Pair"]);
+        s.set_node_property(k, "a", Value::Int64(1));
+        s.set_node_property(k, "b", Value::Int64(9));
 
-        // Vrai DOUBLON (rejeté par l'appelant) : les DEUX porteurs sortent,
-        // dans les deux ordres.
-        let mut doublon = vec![ids[0], ids[2]];
-        doublon.sort_by_key(|n| n.0);
         assert_eq!(
-            s.find_nodes_by_properties(&[("a", Value::Int64(0)), ("b", Value::Int64(0))]),
-            doublon,
-            "doublon (a=0,b=0) non détecté dans l'ordre (a,b)"
+            s.find_nodes_by_properties(&[("a", Value::Int64(1)), ("b", Value::Int64(5))]),
+            vec![n],
+            "ordre (a, b) : le porteur Float64(5.0) doit sortir pour b = 5"
         );
         assert_eq!(
-            s.find_nodes_by_properties(&[("b", Value::Int64(0)), ("a", Value::Int64(0))]),
-            doublon,
-            "doublon (a=0,b=0) non détecté dans l'ordre (b,a)"
+            s.find_nodes_by_properties(&[("b", Value::Int64(5)), ("a", Value::Int64(1))]),
+            vec![n],
+            "ordre (b, a) : le porteur Float64(5.0) doit sortir pour b = 5"
         );
-
-        // Couple NOUVEAU (accepté) : aucun porteur, dans les deux ordres.
-        assert!(
-            s.find_nodes_by_properties(&[("a", Value::Int64(0)), ("b", Value::Int64(1))])
-                .is_empty(),
-            "couple nouveau (a=0,b=1) ne doit rendre personne"
+        // Le sens inverse : valeur STOCKÉE entière, valeur CHERCHÉE flottante.
+        assert_eq!(
+            s.find_nodes_by_properties(&[("a", Value::Int64(2)), ("b", Value::Float64(7.0))]),
+            vec![m],
+            "ordre (a, b) : b = 7.0 doit trouver le porteur Int64(7)"
         );
+        assert_eq!(
+            s.find_nodes_by_properties(&[("b", Value::Float64(7.0)), ("a", Value::Int64(2))]),
+            vec![m],
+            "ordre (b, a) : b = 7.0 doit trouver le porteur Int64(7)"
+        );
+        // Et un flottant NON entier ne se confond avec aucun entier.
         assert!(
-            s.find_nodes_by_properties(&[("b", Value::Int64(1)), ("a", Value::Int64(0))])
-                .is_empty(),
-            "couple nouveau (b=1,a=0) ne doit rendre personne"
+            s.find_nodes_by_properties(&[("a", Value::Int64(1)), ("b", Value::Float64(5.5))])
+                .is_empty()
         );
     }
 
-    /// L'estimateur de sélectivité compte les candidats BRUTS, pas « premier
-    /// trouvé » : avec `a` peu sélectif (2 valeurs) et `b` unique, `b` rend
-    /// 1 candidat quand `a` en rend la moitié du stock.
+    /// CONSTAT 1 (datetime). Deux chaînes RFC3339 d'un même INSTANT sont
+    /// égales à la revérification : `…T10:00:00Z` et `…T12:00:00+02:00`.
     #[test]
-    fn indexed_candidate_count_compte_les_candidats_bruts() {
+    fn resolution_selective_datetime_trouve_le_meme_instant_dans_les_deux_ordres() {
+        let (_td, s) = store();
+        s.create_property_index("a");
+        s.create_property_index("d");
+        let n = s.create_node(&["Evt"]);
+        s.set_node_property(n, "a", Value::Int64(1));
+        s.set_node_property(n, "d", Value::from("2024-01-01T10:00:00Z"));
+        let m = s.create_node(&["Evt"]);
+        s.set_node_property(m, "a", Value::Int64(2));
+        s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
+        // Une chaîne ordinaire dans la même colonne : elle ne doit ni gêner
+        // ni être confondue.
+        let o = s.create_node(&["Evt"]);
+        s.set_node_property(o, "a", Value::Int64(1));
+        s.set_node_property(o, "d", Value::from("pas une date"));
+
+        let meme_instant = Value::from("2024-01-01T12:00:00+02:00");
+        assert_eq!(
+            s.find_nodes_by_properties(&[("a", Value::Int64(1)), ("d", meme_instant.clone())]),
+            vec![n],
+            "ordre (a, d) : même instant, autre fuseau"
+        );
+        assert_eq!(
+            s.find_nodes_by_properties(&[("d", meme_instant), ("a", Value::Int64(1))]),
+            vec![n],
+            "ordre (d, a) : même instant, autre fuseau"
+        );
+        assert_eq!(
+            s.find_nodes_by_properties(&[
+                ("d", Value::from("pas une date")),
+                ("a", Value::Int64(1))
+            ]),
+            vec![o],
+            "une chaîne ordinaire reste trouvée par égalité exacte"
+        );
+    }
+
+    /// CONSTAT 1, le trou PRÉEXISTANT : la recherche à UNE propriété passait
+    /// déjà par l'index strict et manquait les mêmes porteurs.
+    #[test]
+    fn resolution_selective_une_seule_propriete_voit_flottant_et_instant() {
+        let (_td, s) = store();
+        s.create_property_index("b");
+        s.create_property_index("d");
+        let n = s.create_node(&["Pair"]);
+        s.set_node_property(n, "b", Value::Float64(5.0));
+        s.set_node_property(n, "d", Value::from("2024-01-01T10:00:00Z"));
+        let m = s.create_node(&["Pair"]);
+        s.set_node_property(m, "b", Value::Int64(7));
+        s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
+
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(5)), vec![n]);
+        assert_eq!(s.find_nodes_by_property("b", &Value::Float64(7.0)), vec![m]);
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2024-01-01T12:00:00+02:00")),
+            vec![n]
+        );
+        // Réécriture : l'ancienne valeur flottante SORT de l'index, la
+        // nouvelle y entre — la maintenance suit la même clé canonique.
+        s.set_node_property(n, "b", Value::Float64(6.0));
+        assert!(s.find_nodes_by_property("b", &Value::Int64(5)).is_empty());
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(6)), vec![n]);
+    }
+
+    /// CONSTAT 4 — la SÉLECTION, observée par ce qu'elle coûte. `a` porte 2
+    /// valeurs sur 400 nœuds (200 candidats), `c` 4 valeurs (100), `b` est
+    /// unique (1). Le résultat est le même quel que soit le jeu retenu ; ce
+    /// qui change, c'est le nombre de candidats RELUS : 1 si `b` est élue,
+    /// 100 ou 200 sinon. Résoudre par la PREMIÈRE clé indexée rend 200 ou
+    /// 100 dans les ordres où `b` n'est pas en tête — ce test tombe alors.
+    #[test]
+    fn resolution_selective_elit_le_plus_petit_ensemble_quel_que_soit_l_ordre() {
         let (_td, s) = store();
         s.create_property_index("a");
         s.create_property_index("b");
-        for i in 0..8i64 {
+        s.create_property_index("c");
+        let mut ids = Vec::new();
+        for i in 0..400i64 {
             let id = s.create_node(&["Pair"]);
             s.set_node_property(id, "a", Value::Int64(i % 2));
             s.set_node_property(id, "b", Value::Int64(i));
+            s.set_node_property(id, "c", Value::Int64(i % 4));
+            ids.push(id);
         }
-        assert_eq!(s.indexed_candidate_count("a", &Value::Int64(0)), Some(4));
-        assert_eq!(s.indexed_candidate_count("b", &Value::Int64(4)), Some(1));
-        assert_eq!(s.indexed_candidate_count("c", &Value::Int64(0)), None);
+        let a = ("a", Value::Int64(0));
+        let b = ("b", Value::Int64(8));
+        let c = ("c", Value::Int64(0));
+        let ordres: [[&(&str, Value); 3]; 6] = [
+            [&a, &b, &c],
+            [&a, &c, &b],
+            [&b, &a, &c],
+            [&b, &c, &a],
+            [&c, &a, &b],
+            [&c, &b, &a],
+        ];
+        for ordre in ordres {
+            let conditions: Vec<(&str, Value)> =
+                ordre.iter().map(|(k, v)| (*k, v.clone())).collect();
+            let noms: Vec<&str> = conditions.iter().map(|(k, _)| *k).collect();
+            let (hits, relus) =
+                candidats_reverifies_pendant(|| s.find_nodes_by_properties(&conditions));
+            assert_eq!(hits, vec![ids[8]], "ordre {noms:?} : mauvais résultat");
+            assert_eq!(
+                relus, 1,
+                "ordre {noms:?} : {relus} candidats relus — la clé élue n'est pas `b` (1 candidat)"
+            );
+        }
+        // Sans `b` : c'est `c` (100) qui doit l'emporter sur `a` (200).
+        for conditions in [[a.clone(), c.clone()], [c.clone(), a.clone()]] {
+            let (hits, relus) =
+                candidats_reverifies_pendant(|| s.find_nodes_by_properties(&conditions));
+            assert_eq!(hits.len(), 100);
+            assert_eq!(
+                relus, 100,
+                "`c` (100 candidats) doit être préférée à `a` (200)"
+            );
+        }
+        // Couple NOUVEAU (b = 9 est impair, donc a = 1) : vide, pour 1 relu
+        // au plus, dans les deux ordres.
+        for conditions in [
+            [("a", Value::Int64(0)), ("b", Value::Int64(9))],
+            [("b", Value::Int64(9)), ("a", Value::Int64(0))],
+        ] {
+            let (hits, relus) =
+                candidats_reverifies_pendant(|| s.find_nodes_by_properties(&conditions));
+            assert!(hits.is_empty(), "couple nouveau : personne");
+            assert!(relus <= 1, "couple nouveau : {relus} candidats relus");
+        }
+    }
+
+    /// CONSTAT 2 — un index EN COURS DE CONSTRUCTION (entrée enregistrée,
+    /// remplissage inachevé, marque `index_batis_depuis_v2` pas encore
+    /// posée) est plus petit que les autres : il ne doit PAS être élu. Le
+    /// jeu est MIXTE (une valeur non projetable) pour que la reconstruction
+    /// préalable `assurer_index_bati_depuis_v2` ne joue pas — c'est le cas
+    /// où rien d'autre ne protège.
+    #[test]
+    fn resolution_selective_n_elit_pas_un_index_en_construction() {
+        let (_td, s) = store();
+        let mut ids = Vec::new();
+        for i in 0..40i64 {
+            let id = s.create_node(&["Pair"]);
+            s.set_node_property(id, "a", Value::Int64(i % 2));
+            s.set_node_property(id, "b", Value::Int64(i));
+            s.set_node_property(id, "f", Value::Float64(0.5));
+            ids.push(id);
+        }
+        // `a` : index complet, bâti depuis les chaînes.
+        s.create_property_index("a");
+        // `b` : l'état exact du milieu de `batir_index_depuis_v2` — entrée
+        // enregistrée, UN seul nœud déjà inséré, marque absente.
+        let cle_b = PropertyKey::new("b");
+        s.property_indexes
+            .entry(cle_b.clone())
+            .or_default()
+            .entry(IndexValueKey::Int(3))
+            .or_default()
+            .insert(ids[3]);
+        assert!(!s.index_batis_depuis_v2.contains_key(&cle_b));
+
+        let a = ("a", Value::Int64(0));
+        let b = ("b", Value::Int64(8));
+        let f = ("f", Value::Float64(0.5));
+        for conditions in [
+            [a.clone(), b.clone(), f.clone()],
+            [b.clone(), a.clone(), f.clone()],
+            [f.clone(), b.clone(), a.clone()],
+        ] {
+            let noms: Vec<&str> = conditions.iter().map(|(k, _)| *k).collect();
+            assert_eq!(
+                s.find_nodes_by_properties(&conditions),
+                vec![ids[8]],
+                "ordre {noms:?} : l'index inachevé de `b` a été cru"
+            );
+        }
+    }
+
+    /// CONSTAT 3 — la clé élue est désenregistrée ENTRE le décompte et la
+    /// matérialisation. Il reste d'autres clés indexées et complètes : c'est
+    /// la SUIVANTE par décompte (`c`, 100 candidats) qui doit servir — ni le
+    /// balayage de fin (0 relu), ni la première clé venue (`a`, 200).
+    #[test]
+    fn resolution_selective_essaie_la_cle_suivante_si_l_elue_disparait() {
+        let (_td, s) = store();
+        s.create_property_index("a");
+        s.create_property_index("b");
+        s.create_property_index("c");
+        let mut ids = Vec::new();
+        for i in 0..400i64 {
+            let id = s.create_node(&["Pair"]);
+            s.set_node_property(id, "a", Value::Int64(i % 2));
+            s.set_node_property(id, "b", Value::Int64(i));
+            s.set_node_property(id, "c", Value::Int64(i % 4));
+            ids.push(id);
+        }
+        let conditions = [
+            ("a", Value::Int64(0)),
+            ("c", Value::Int64(0)),
+            ("b", Value::Int64(8)),
+        ];
+        // Tour à blanc : les index sont bâtis, `b` est élue (1 relu).
+        let (hits, relus) =
+            candidats_reverifies_pendant(|| s.find_nodes_by_properties(&conditions));
+        assert_eq!((hits, relus), (vec![ids[8]], 1));
+
+        APRES_DECOMPTE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|s: &SubstrateStore| {
+                s.drop_property_index("b");
+            }));
+        });
+        let (hits, relus) =
+            candidats_reverifies_pendant(|| s.find_nodes_by_properties(&conditions));
+        APRES_DECOMPTE.with(|h| *h.borrow_mut() = None);
+        assert_eq!(hits, vec![ids[8]], "le résultat reste juste");
+        assert_eq!(
+            relus, 100,
+            "l'index de `c` (100 candidats) devait prendre le relais : 0 relu = tombé au \
+             balayage sans essayer, 200 = première clé venue (`a`) au lieu de la suivante"
+        );
+    }
+
+    /// Rend le chemin du fichier d'index d'égalité persisté sous `racine`.
+    fn fichier_index_egalite(racine: &std::path::Path) -> std::path::PathBuf {
+        fn chercher(d: &std::path::Path) -> Option<std::path::PathBuf> {
+            for e in std::fs::read_dir(d).ok()?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if let Some(t) = chercher(&p) {
+                        return Some(t);
+                    }
+                } else if p.file_name().and_then(|n| n.to_str())
+                    == Some(crate::props_eq_index::PROPS_EQ_INDEX_FILENAME)
+                {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        chercher(racine).expect("fichier d'index d'égalité présent après flush")
+    }
+
+    /// Base à deux index persistés (`a`, `b`) dont UN porteur de `b` est un
+    /// flottant entier et un porteur de `d` une chaîne datetime. Rend
+    /// (porteur flottant/datetime, porteur entier).
+    fn base_persistee_a_cle_canonique(racine: &std::path::Path) -> (NodeId, NodeId) {
+        let s = SubstrateStore::create(racine).unwrap();
+        let n = s.create_node(&["Pair"]);
+        s.set_node_property(n, "a", Value::Int64(1));
+        s.set_node_property(n, "b", Value::Float64(5.0));
+        s.set_node_property(n, "d", Value::from("2024-01-01T10:00:00Z"));
+        let m = s.create_node(&["Pair"]);
+        s.set_node_property(m, "a", Value::Int64(2));
+        s.set_node_property(m, "b", Value::Int64(7));
+        s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
+        s.create_property_index("a");
+        s.create_property_index("b");
+        s.create_property_index("d");
+        s.flush().unwrap();
+        (n, m)
+    }
+
+    /// Les requêtes du constat 1, dans les deux ordres, sur un store donné.
+    fn verifier_constat_1(s: &SubstrateStore, n: NodeId, contexte: &str) {
+        assert_eq!(
+            s.find_nodes_by_properties(&[("a", Value::Int64(1)), ("b", Value::Int64(5))]),
+            vec![n],
+            "{contexte} : ordre (a, b)"
+        );
+        assert_eq!(
+            s.find_nodes_by_properties(&[("b", Value::Int64(5)), ("a", Value::Int64(1))]),
+            vec![n],
+            "{contexte} : ordre (b, a)"
+        );
+        let meme_instant = Value::from("2024-01-01T12:00:00+02:00");
+        assert_eq!(
+            s.find_nodes_by_properties(&[("a", Value::Int64(1)), ("d", meme_instant.clone())]),
+            vec![n],
+            "{contexte} : ordre (a, d)"
+        );
+        assert_eq!(
+            s.find_nodes_by_properties(&[("d", meme_instant.clone()), ("a", Value::Int64(1))]),
+            vec![n],
+            "{contexte} : ordre (d, a)"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("b", &Value::Int64(5)),
+            vec![n],
+            "{contexte} : propriété seule, entier contre flottant"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("d", &meme_instant),
+            vec![n],
+            "{contexte} : propriété seule, même instant"
+        );
+    }
+
+    /// CONSTAT 1 À TRAVERS LA ZONE PERSISTÉE. Après réouverture propre, les
+    /// clés sont COUVERTES : aucun index n'est rebâti, les candidats viennent
+    /// des hachages écrits sur disque. La clé canonique doit donc valoir à
+    /// l'ÉCRITURE de la zone comme à sa LECTURE.
+    #[test]
+    #[allow(unsafe_code)]
+    fn resolution_selective_cle_canonique_survit_a_la_reouverture() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, _m) = base_persistee_a_cle_canonique(&racine);
+
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        assert!(
+            s2.index_egalite.as_ref().unwrap().read().fiable(),
+            "précondition : zone fiable à la réouverture"
+        );
+        for cle in ["a", "b", "d"] {
+            assert!(
+                s2.egalite_couverte.contains_key(&PropertyKey::new(cle)),
+                "précondition : `{cle}` couverte par la zone, donc non rebâtie"
+            );
+            assert!(
+                s2.property_indexes
+                    .get(&PropertyKey::new(cle))
+                    .is_some_and(|i| i.is_empty()),
+                "précondition : la carte RAM de `{cle}` est vide — seule la zone répond"
+            );
+        }
+        verifier_constat_1(&s2, n, "zone persistée relue");
+    }
+
+    /// CHANGEMENT DE FORMAT — une zone écrite AVANT la clé canonique
+    /// (`EQ_VERSION` = 1) ne contient ni les flottants entiers ni les
+    /// instants : la croire rendrait les faux négatifs du constat 1 sur
+    /// toute base existante. Elle doit être JETÉE à l'ouverture (index
+    /// rebâtis depuis les chaînes, résultats justes), puis réécrite au
+    /// format courant par le flush suivant — après quoi la réouverture
+    /// redevient « zéro reconstruction ».
+    #[test]
+    #[allow(unsafe_code)]
+    fn resolution_selective_une_zone_d_avant_la_cle_canonique_est_jetee_puis_reecrite() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, _m) = base_persistee_a_cle_canonique(&racine);
+
+        // Le fichier d'une base « existante » : on y repose la version 1.
+        // (La version est lue AVANT le CRC : c'est elle qui fait jeter.)
+        let fichier = fichier_index_egalite(&racine);
+        let mut octets = std::fs::read(&fichier).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
+            crate::props_eq_index::EQ_VERSION,
+            "le champ version est bien aux octets 4..8 de la racine"
+        );
+        octets[4..8].copy_from_slice(&1u32.to_le_bytes());
+        std::fs::write(&fichier, &octets).unwrap();
+
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        assert!(
+            !s2.index_egalite.as_ref().unwrap().read().fiable(),
+            "une zone de version 1 ne doit pas être crue"
+        );
+        assert!(
+            !s2.egalite_couverte.contains_key(&PropertyKey::new("b")),
+            "aucune clé couverte par une zone jetée"
+        );
+        verifier_constat_1(&s2, n, "zone v1 jetée, index rebâtis");
+
+        // Le flush réécrit la zone au format courant…
+        s2.flush().unwrap();
+        drop(s2);
+        let octets = std::fs::read(&fichier).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
+            crate::props_eq_index::EQ_VERSION
+        );
+        // … et la réouverture suivante ne rebâtit plus rien.
+        let s3 = SubstrateStore::open(&racine).unwrap();
+        assert!(s3.index_egalite.as_ref().unwrap().read().fiable());
+        assert!(s3.egalite_couverte.contains_key(&PropertyKey::new("b")));
+        verifier_constat_1(&s3, n, "zone réécrite au format courant");
     }
 
     #[test]

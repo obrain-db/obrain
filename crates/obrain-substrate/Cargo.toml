@@ -179,6 +179,12 @@ harness = false
 name = "zorder_analysis"
 harness = false
 
+# Résolution multi-critères : `find_nodes_by_properties` selon l ordre des
+# conditions (unicité composite). Voir l en-tête du banc.
+[[bench]]
+name = "resolution_selective"
+harness = false
+
 [features]
 default = []
 # Expose legacy read-only LpgStore ingestion (used only by the obrain-migrate binary).
