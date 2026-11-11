@@ -1899,7 +1899,10 @@ impl Writer {
             let mut h = sub.meta_header();
             h.flags |= meta_flags::HILBERT_SORTED;
             h.hilbert_order = order;
-            h.node_count = node_high_water as u64;
+            // ÉCRITURE PARTAGÉE : `h` vient d'être relu sur disque (mmap de la
+            // méta). `node_high_water` peut être périmé si un pair a agrandi le
+            // store depuis notre ouverture : on ne réduit jamais `node_count`.
+            h.node_count = h.node_count.max(node_high_water as u64);
             sub.write_meta_header(&h)?;
         }
         let _ = self.commit()?;
@@ -2437,7 +2440,9 @@ impl Writer {
             let mut sub = self.substrate.lock();
             let mut h = sub.meta_header();
             h.flags &= !meta_flags::HILBERT_SORTED;
-            h.node_count = new_end as u64;
+            // ÉCRITURE PARTAGÉE : même principe que `bulk_sort_by_hilbert`.
+            // `current_node_hw` peut être périmé ; on ne réduit jamais `node_count`.
+            h.node_count = h.node_count.max(new_end as u64);
             sub.write_meta_header(&h)?;
         }
         let _ = self.commit()?;
