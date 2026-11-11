@@ -1621,6 +1621,21 @@ pub trait StoreMutationObserver: Send + Sync {
         dst: obrain_common::types::NodeId,
         epoch: u64,
     );
+
+    /// (T5) Un `Value::Vector` de NŒUD vient d'etre ecrit dans sa colonne.
+    /// Appele par `set_node_property` quelle que soit l'origine de l'ecriture
+    /// (API Rust, GQL `SET` / `CREATE` / `MERGE`) : c'est le point UNIQUE par
+    /// lequel passe toute ecriture de vecteur. Defaut : sans effet.
+    fn vector_written(&self, _id: obrain_common::types::NodeId, _key: &str, _vector: &[f32]) {}
+
+    /// (T5) Un noeud vient d'etre supprime (tombstone pose). Defaut : sans effet.
+    fn node_deleted(&self, _id: obrain_common::types::NodeId) {}
+
+    /// (T5) `remove_node_property` a ete appele sur un noeud vivant. Notifie
+    /// AUSSI pour une propriete vectorielle, dont la colonne n'est pas
+    /// effacee (limite documentee) : l'observateur peut retirer le noeud de
+    /// ses index. Defaut : sans effet.
+    fn node_property_removed(&self, _id: obrain_common::types::NodeId, _key: &str) {}
 }
 
 /// (feat conversations µs) Reverse-adjacence PART_OF : cible (slot de
@@ -2239,7 +2254,7 @@ pub struct SubstrateStore {
     /// de degrés typées exige un store en écriture ; en lecture seule on
     /// se contente de mémoriser les types douteux (fallback pré-filtre).
     read_only: std::sync::atomic::AtomicBool,
-    mutation_observer: parking_lot::RwLock<Option<Arc<dyn StoreMutationObserver>>>,
+    mutation_observer: parking_lot::RwLock<Vec<Arc<dyn StoreMutationObserver>>>,
     /// D3b (RFC zorder-superposition) — cache zruns par communauté :
     /// `Vec<(zkey, slot)>` trié par zkey sur la colonne Zorder, pour
     /// l'accélération des fenêtres 2D. Une entrée porte la génération du
@@ -5359,14 +5374,43 @@ impl SubstrateStore {
 
     /// (2026-09-05) Installe l'observateur de mutations (engine, feature cdc).
     pub fn set_mutation_observer(&self, observer: Arc<dyn StoreMutationObserver>) {
-        *self.mutation_observer.write() = Some(observer);
+        *self.mutation_observer.write() = vec![observer];
+    }
+
+    /// (T5) Ajoute un observateur sans retirer les précédents (CDC et index
+    /// vectoriels coexistent). Notifiés dans l'ordre d'ajout.
+    pub fn add_mutation_observer(&self, observer: Arc<dyn StoreMutationObserver>) {
+        self.mutation_observer.write().push(observer);
+    }
+
+    /// Copie de la liste (clones d'`Arc`) : les observateurs sont appelés HORS
+    /// verrou, donc un observateur peut rappeler le store sans interblocage.
+    fn observateurs(&self) -> Vec<Arc<dyn StoreMutationObserver>> {
+        self.mutation_observer.read().clone()
     }
 
     fn notify_node_created(&self, id: obrain_common::types::NodeId) {
-        let observer = self.mutation_observer.read().clone();
-        if let Some(observer) = observer {
-            let epoch = self.epoque_courante.load(Ordering::Acquire);
+        let epoch = self.epoque_courante.load(Ordering::Acquire);
+        for observer in self.observateurs() {
             observer.node_created(id, epoch);
+        }
+    }
+
+    fn notify_vector_written(&self, id: obrain_common::types::NodeId, key: &str, vector: &[f32]) {
+        for observer in self.observateurs() {
+            observer.vector_written(id, key, vector);
+        }
+    }
+
+    fn notify_node_deleted(&self, id: obrain_common::types::NodeId) {
+        for observer in self.observateurs() {
+            observer.node_deleted(id);
+        }
+    }
+
+    fn notify_node_property_removed(&self, id: obrain_common::types::NodeId, key: &str) {
+        for observer in self.observateurs() {
+            observer.node_property_removed(id, key);
         }
     }
 
@@ -5376,9 +5420,8 @@ impl SubstrateStore {
         src: obrain_common::types::NodeId,
         dst: obrain_common::types::NodeId,
     ) {
-        let observer = self.mutation_observer.read().clone();
-        if let Some(observer) = observer {
-            let epoch = self.epoque_courante.load(Ordering::Acquire);
+        let epoch = self.epoque_courante.load(Ordering::Acquire);
+        for observer in self.observateurs() {
             observer.edge_created(eid, src, dst, epoch);
         }
     }
@@ -6638,7 +6681,7 @@ impl SubstrateStore {
             degrees_health_checked: std::sync::atomic::AtomicBool::new(false),
             props_decode_echecs: std::sync::atomic::AtomicU64::new(0),
             read_only: std::sync::atomic::AtomicBool::new(false),
-            mutation_observer: parking_lot::RwLock::new(None),
+            mutation_observer: parking_lot::RwLock::new(Vec::new()),
             zrows_cache: RwLock::new(std::collections::HashMap::new()),
             zrows_gen: std::sync::atomic::AtomicU64::new(0),
             sorted_feature_snapshot: std::sync::atomic::AtomicU64::new(0),
@@ -22995,6 +23038,7 @@ impl GraphStoreMut for SubstrateStore {
         // T17h T1: live counter decrements.
         self.total_live_nodes.fetch_sub(1, Ordering::Relaxed);
         self.incr_label_counts(label_bitset, -1);
+        self.notify_node_deleted(id);
         true
     }
 
@@ -23149,6 +23193,7 @@ impl GraphStoreMut for SubstrateStore {
         // in-memory path.
         if let Value::Vector(ref v) = value {
             self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
+            self.notify_vector_written(id, key, v);
             return;
         }
         // T16.7 Step 4d: oversized `Value::String` / `Value::Bytes`
@@ -23502,6 +23547,9 @@ impl GraphStoreMut for SubstrateStore {
         if !self.is_live_on_disk(id) {
             return None;
         }
+        // (T5) Notifie AVANT l'effacement : l'index vectoriel doit perdre le noeud
+        // meme si la colonne de vecteurs n'est pas effacee (limite documentee).
+        self.notify_node_property_removed(id, key);
         // (2026-08-19) LA VALEUR RENDUE ÉTAIT AVEUGLE À PropsZone v2 — la
         // réserve que `2482d022` avait consignée en corrigeant l'arête.
         //

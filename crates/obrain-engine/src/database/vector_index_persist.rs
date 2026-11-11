@@ -213,17 +213,6 @@ impl super::ObrainDB {
         }
     }
 
-    /// Compte une écriture de vecteur de nœud effectuée PAR LE MOTEUR (donc
-    /// vue par l'entretien des index). À appeler sur chaque chemin d'API qui
-    /// aboutit à `SubstrateStore::set_node_property` avec un `Value::Vector`.
-    #[cfg(feature = "vector-index")]
-    pub(super) fn compter_ecriture_vectorielle_vue(&self, n: u64) {
-        if n > 0 && self.substrate_store.is_some() {
-            self.ecritures_vectorielles_vues
-                .fetch_add(n, std::sync::atomic::Ordering::AcqRel);
-        }
-    }
-
     /// `true` si la base est ouverte en écriture PARTAGÉE
     /// (`open_shared_write`) : un pair peut écrire sans que ce processus le
     /// voie, ce qui durcit les règles de persistance des index.
@@ -253,5 +242,106 @@ impl super::ObrainDB {
     pub fn nb_index_vectoriel_persistes(&self) -> usize {
         self.index_vectoriel_persistes
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// ── L'OBSERVATEUR D'INDEX VECTORIELS (T5) ───────────────────────────────────
+///
+/// Installé sur le store à l'ouverture (`add_mutation_observer`). Le store le
+/// prévient depuis ses points UNIQUES d'écriture (`set_node_property` pour un
+/// `Value::Vector`, `delete_node`, `remove_node_property`), donc TOUS les
+/// chemins — API Rust, GQL `SET` / `CREATE` / `MERGE` — entretiennent les index,
+/// sans crochet dans les opérateurs.
+///
+/// Il ne détient qu'un `Weak` du store (le store le détient déjà : un `Arc`
+/// ferait un cycle) et partage le registre et le compteur du moteur.
+///
+/// Le compteur `ecritures_vectorielles_vues` s'incrémente ICI, à chaque
+/// écriture vue : il égale donc le compteur du store par construction, et la
+/// règle de persistance à la fermeture ne rejette plus que les index qui ont
+/// réellement manqué une écriture.
+#[cfg(feature = "vector-index")]
+pub(super) struct ObservateurIndexVectoriel {
+    pub(super) registre: Arc<
+        parking_lot::RwLock<std::collections::HashMap<String, (usize, Arc<SubstrateTieredIndex>)>>,
+    >,
+    pub(super) compteur: Arc<std::sync::atomic::AtomicU64>,
+    pub(super) store: std::sync::Weak<obrain_substrate::SubstrateStore>,
+}
+
+#[cfg(feature = "vector-index")]
+impl obrain_substrate::StoreMutationObserver for ObservateurIndexVectoriel {
+    fn node_created(&self, _id: obrain_common::types::NodeId, _epoch: u64) {}
+
+    fn edge_created(
+        &self,
+        _id: obrain_common::types::EdgeId,
+        _src: obrain_common::types::NodeId,
+        _dst: obrain_common::types::NodeId,
+        _epoch: u64,
+    ) {
+    }
+
+    fn vector_written(&self, id: obrain_common::types::NodeId, key: &str, vector: &[f32]) {
+        self.compteur
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        let suffixe = format!(":{key}");
+        // Copie des entrées concernées : l'insertion se fait HORS du verrou du
+        // registre.
+        let concernes: Vec<(String, usize, Arc<SubstrateTieredIndex>)> = self
+            .registre
+            .read()
+            .iter()
+            .filter(|(cle, _)| cle.ends_with(&suffixe))
+            .map(|(cle, (dim, idx))| (cle.clone(), *dim, Arc::clone(idx)))
+            .collect();
+        if concernes.is_empty() {
+            return;
+        }
+        use obrain_core::graph::traits::GraphStore as _;
+        let Some(noeud) = store.get_node(id) else {
+            return;
+        };
+        for (cle, dim_native, idx) in concernes {
+            let Some(label) = cle.strip_suffix(&suffixe) else {
+                continue;
+            };
+            // Un embedding d'une autre largeur est ignoré — jamais fatal : une
+            // base peut porter plusieurs modèles sur la même propriété.
+            if dim_native == vector.len() && noeud.labels.iter().any(|l| l.as_str() == label) {
+                idx.insert(id.0 as u32, vector);
+            }
+        }
+    }
+
+    fn node_deleted(&self, id: obrain_common::types::NodeId) {
+        // `delete` est sans effet si le nœud n'est pas indexé : pas besoin des
+        // labels (déjà tombstonés ici).
+        let indexes: Vec<Arc<SubstrateTieredIndex>> = self
+            .registre
+            .read()
+            .values()
+            .map(|(_, idx)| Arc::clone(idx))
+            .collect();
+        for idx in indexes {
+            idx.delete(id.0 as u32);
+        }
+    }
+
+    fn node_property_removed(&self, id: obrain_common::types::NodeId, key: &str) {
+        let suffixe = format!(":{key}");
+        let indexes: Vec<Arc<SubstrateTieredIndex>> = self
+            .registre
+            .read()
+            .iter()
+            .filter(|(cle, _)| cle.ends_with(&suffixe))
+            .map(|(_, (_, idx))| Arc::clone(idx))
+            .collect();
+        for idx in indexes {
+            idx.delete(id.0 as u32);
+        }
     }
 }

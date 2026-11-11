@@ -219,16 +219,17 @@ fn des_ecritures_par_l_api_rendent_l_index_a_jour_et_persistable() {
 }
 
 #[test]
-fn une_ecriture_qui_contourne_le_moteur_empeche_de_persister_un_index_perime() {
+fn une_ecriture_gql_est_vue_par_l_index_puis_persistee_et_rechargee() {
     let td = tempfile::tempdir().expect("tempdir");
     let dir = td.path().join("base");
     let tout = structures(N + NQ, 7);
     let (corpus, requetes) = tout.split_at(N);
     base_de_depart(&dir, corpus, requetes);
 
-    // GQL `SET` écrit dans le store SANS passer par les crochets d'index du
-    // moteur (défaut connu, T5). Le compteur du store dépasse celui du moteur :
-    // la fermeture ne doit PAS republier l'index périmé.
+    // GQL `SET` n'emprunte pas l'API du moteur (défaut corrigé par T5) : c'est
+    // l'observateur du store qui entretient l'index. Les deux compteurs
+    // coïncident, l'index est persisté À JOUR à la fermeture et rechargé tel
+    // quel — jamais périmé, jamais reconstruit pour rien.
     let cible: Vec<f32> = {
         let mut v = vec![0f32; D];
         v[0] = 1.0;
@@ -254,13 +255,13 @@ fn une_ecriture_qui_contourne_le_moteur_empeche_de_persister_un_index_perime() {
             .unwrap();
         assert_eq!(
             db.nb_index_vectoriel_charges(),
-            0,
-            "un index perime n'a pas ete persiste"
+            1,
+            "l'index a vu l'ecriture GQL : persiste a jour, recharge"
         );
         assert_eq!(
             db.nb_index_vectoriel_reconstruits(),
-            1,
-            "reconstruit depuis la colonne"
+            0,
+            "aucune reconstruction"
         );
         assert_eq!(hits.len(), K);
         for (_, distance) in &hits {
