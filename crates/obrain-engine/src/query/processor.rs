@@ -1043,16 +1043,6 @@ fn substitute_in_operator(op: &mut LogicalOperator, params: &QueryParams) -> Res
             substitute_in_operator(&mut op.input, params)?;
         }
         LogicalOperator::Empty => {}
-        LogicalOperator::VectorScan(scan) => {
-            substitute_in_expression(&mut scan.query_vector, params)?;
-            if let Some(ref mut input) = scan.input {
-                substitute_in_operator(input, params)?;
-            }
-        }
-        LogicalOperator::VectorJoin(join) => {
-            substitute_in_expression(&mut join.query_vector, params)?;
-            substitute_in_operator(&mut join.input, params)?;
-        }
         LogicalOperator::Except(except) => {
             substitute_in_operator(&mut except.left, params)?;
             substitute_in_operator(&mut except.right, params)?;

@@ -557,53 +557,6 @@ impl Binder {
             | LogicalOperator::MoveGraph(_)
             | LogicalOperator::AddGraph(_)
             | LogicalOperator::HorizontalAggregate(_) => Ok(()),
-            LogicalOperator::VectorScan(scan) => {
-                // VectorScan introduces a variable for matched nodes
-                if let Some(ref input) = scan.input {
-                    self.bind_operator(input)?;
-                }
-                self.context.add_variable(
-                    scan.variable.clone(),
-                    VariableInfo {
-                        name: scan.variable.clone(),
-                        data_type: LogicalType::Node,
-                        is_node: true,
-                        is_edge: false,
-                    },
-                );
-                // Validate the query vector expression
-                self.validate_expression(&scan.query_vector)?;
-                Ok(())
-            }
-            LogicalOperator::VectorJoin(join) => {
-                // VectorJoin takes input from left side and produces right-side matches
-                self.bind_operator(&join.input)?;
-                // Add right variable for matched nodes
-                self.context.add_variable(
-                    join.right_variable.clone(),
-                    VariableInfo {
-                        name: join.right_variable.clone(),
-                        data_type: LogicalType::Node,
-                        is_node: true,
-                        is_edge: false,
-                    },
-                );
-                // Optionally add score variable
-                if let Some(ref score_var) = join.score_variable {
-                    self.context.add_variable(
-                        score_var.clone(),
-                        VariableInfo {
-                            name: score_var.clone(),
-                            data_type: LogicalType::Float64,
-                            is_node: false,
-                            is_edge: false,
-                        },
-                    );
-                }
-                // Validate the query vector expression
-                self.validate_expression(&join.query_vector)?;
-                Ok(())
-            }
             LogicalOperator::MapCollect(mc) => {
                 self.bind_operator(&mc.input)?;
                 self.context.add_variable(
@@ -2451,27 +2404,5 @@ mod tests {
             binder.bind(&plan).is_err(),
             "Map values should be validated"
         );
-    }
-
-    #[test]
-    fn test_vector_scan_validates_query_vector() {
-        use crate::query::plan::VectorScanOp;
-
-        let plan = LogicalPlan::new(LogicalOperator::VectorScan(VectorScanOp {
-            variable: "result".to_string(),
-            index_name: None,
-            property: "embedding".to_string(),
-            label: Some("Doc".to_string()),
-            query_vector: LogicalExpression::Variable("undefined_vec".to_string()),
-            k: 10,
-            metric: None,
-            min_similarity: None,
-            max_distance: None,
-            input: None,
-        }));
-
-        let mut binder = Binder::new();
-        let err = binder.bind(&plan).unwrap_err();
-        assert!(err.to_string().contains("undefined_vec"));
     }
 }

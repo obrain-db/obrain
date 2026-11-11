@@ -17,7 +17,7 @@
 use crate::query::plan::{
     AggregateOp, BinaryOp, DistinctOp, ExpandOp, FilterOp, JoinOp, JoinType, LeftJoinOp, LimitOp,
     LogicalExpression, LogicalOperator, MultiWayJoinOp, NodeScanOp, ProjectOp, SkipOp, SortOp,
-    TripleComponent, TripleScanOp, UnaryOp, VectorJoinOp, VectorScanOp,
+    TripleComponent, TripleScanOp, UnaryOp,
 };
 use std::collections::HashMap;
 
@@ -685,8 +685,6 @@ impl CardinalityEstimator {
             LogicalOperator::Skip(skip) => self.estimate_skip(skip),
             LogicalOperator::Return(ret) => self.estimate(&ret.input),
             LogicalOperator::Empty => 0.0,
-            LogicalOperator::VectorScan(scan) => self.estimate_vector_scan(scan),
-            LogicalOperator::VectorJoin(join) => self.estimate_vector_join(join),
             LogicalOperator::MultiWayJoin(mwj) => self.estimate_multi_way_join(mwj),
             LogicalOperator::LeftJoin(lj) => self.estimate_left_join(lj),
             LogicalOperator::TripleScan(scan) => self.estimate_triple_scan(scan),
@@ -904,41 +902,6 @@ impl CardinalityEstimator {
     fn estimate_skip(&self, skip: &SkipOp) -> f64 {
         let input_cardinality = self.estimate(&skip.input);
         (input_cardinality - skip.count.estimate()).max(0.0)
-    }
-
-    /// Estimates vector scan cardinality.
-    ///
-    /// Vector scan returns at most k results (the k nearest neighbors).
-    /// With similarity/distance filters, it may return fewer.
-    fn estimate_vector_scan(&self, scan: &VectorScanOp) -> f64 {
-        let base_k = scan.k as f64;
-
-        // Apply filter selectivity if thresholds are specified
-        let selectivity = if scan.min_similarity.is_some() || scan.max_distance.is_some() {
-            // Assume 70% of results pass threshold filters
-            0.7
-        } else {
-            1.0
-        };
-
-        (base_k * selectivity).max(1.0)
-    }
-
-    /// Estimates vector join cardinality.
-    ///
-    /// Vector join produces up to k results per input row.
-    fn estimate_vector_join(&self, join: &VectorJoinOp) -> f64 {
-        let input_cardinality = self.estimate(&join.input);
-        let k = join.k as f64;
-
-        // Apply filter selectivity if thresholds are specified
-        let selectivity = if join.min_similarity.is_some() || join.max_distance.is_some() {
-            0.7
-        } else {
-            1.0
-        };
-
-        (input_cardinality * k * selectivity).max(1.0)
     }
 
     /// Estimates multi-way join cardinality using the AGM bound heuristic.
