@@ -1842,13 +1842,13 @@ impl SubstrateFile {
     ///
     /// COMMENT IL EST TENU : `substrate.meta`, `substrate.dirlock` et chaque
     /// zone sont ouverts SANS droit d'écriture ; meta et zones sont projetés en
-    /// PRIVÉ (copy-on-write, voir [`ZonePrivee`]). Ce que l'ouverture doit
+    /// PRIVÉ (copy-on-write, voir `ZonePrivee`). Ce que l'ouverture doit
     /// « écrire » pour offrir une vue cohérente (rejeu du WAL, degrés au CRC
     /// périmé) reste dans la mémoire de ce processus. Un fichier absent n'est
     /// pas créé : sa zone vit en mémoire, vide.
     ///
     /// LE VERROU : partagé. Il exclut l'écrivain EXCLUSIF d'un autre processus,
-    /// PAS un écrivain partagé — voir [`acquerir_verrou_repertoire`].
+    /// PAS un écrivain partagé — voir `acquerir_verrou_repertoire`.
     ///
     /// CE QUI EST REFUSÉ ([`SubstrateError::LectureSeuleRefusee`]) plutôt que
     /// servi en écrivant : une base d'un format antérieur (la migration est un
