@@ -185,6 +185,10 @@ harness = false
 name = "resolution_selective"
 harness = false
 
+[[bench]]
+name = "echelle_resolution"
+harness = false
+
 [features]
 default = []
 # Expose legacy read-only LpgStore ingestion (used only by the obrain-migrate binary).

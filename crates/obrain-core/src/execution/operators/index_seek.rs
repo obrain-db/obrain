@@ -12,14 +12,15 @@
 //! - cle NULL ou absente → ZERO ligne pour cette ligne externe (logique
 //!   trivaluee : `b.k = NULL` est UNKNOWN, on ne sonde JAMAIS l'index
 //!   avec Null) ;
-//! - cle Bool | Int64 | String → sonde `find_nodes_by_property` (repli
-//!   scan transparent integre cote store si l'index n'existe pas — on ne
-//!   court-circuite PAS sur `has_property_index == false`) ;
-//! - autre type de cle (Float64, temporel, liste…) : on ne sonde pas
-//!   l'index avec ces valeurs (cote store, la cle d'index est canonique
-//!   vis-a-vis de l'egalite — une sonde Int64(5) TROUVE un Float64(5.0)
-//!   stocke — mais un flottant non entier ou un temporel n'y entre pas).
-//!   Pour ne pas perdre de lignes,
+//! - cle Bool | Int64 | String, ou Float64 ENTIER → sonde
+//!   `find_nodes_by_property` (repli scan transparent integre cote store si
+//!   l'index n'existe pas — on ne court-circuite PAS sur
+//!   `has_property_index == false`). Cote store la cle d'index est canonique
+//!   vis-a-vis de l'egalite : une sonde `Int64(5)` TROUVE un `Float64(5.0)`
+//!   stocke, et une sonde `Float64(5.0)` trouve un `Int64(5)` ;
+//! - autre type de cle (Float64 NON entier, temporel, liste…) : l'index n'a
+//!   pas de seau pour ces valeurs, et le store les chercherait par un
+//!   balayage complet A CHAQUE ligne externe. Pour ne pas perdre de lignes,
 //!   on retombe sur une comparaison generique coercee sur les candidats du
 //!   label (materialises UNE fois, paresseusement) — jamais un resultat
 //!   vide silencieux ;
@@ -45,10 +46,19 @@ fn values_equal_coerced(a: &Value, b: &Value) -> bool {
     obrain_common::types::value_cmp::egaler(a, b) == Some(true)
 }
 
-/// Vrai si la valeur est projetable dans l'index de propriete
-/// (`IndexValueKey` cote substrate : Bool | Int64 | String).
+/// Vrai si le store sait chercher cette valeur PAR SON INDEX d'egalite :
+/// Bool, Int64, String — et un Float64 EXACTEMENT egal a un entier, que la
+/// cle canonique du substrat range avec cet entier
+/// (`value_cmp::entier_egal_au_flottant`, la meme fonction des deux cotes).
+///
+/// Un Float64 non entier, lui, n'a pas de seau : le sonder couterait un
+/// balayage complet par ligne externe, d'ou le chemin generique.
 fn is_index_probe_safe(v: &Value) -> bool {
-    matches!(v, Value::Bool(_) | Value::Int64(_) | Value::String(_))
+    match v {
+        Value::Bool(_) | Value::Int64(_) | Value::String(_) => true,
+        Value::Float64(f) => obrain_common::types::value_cmp::entier_egal_au_flottant(*f).is_some(),
+        _ => false,
+    }
 }
 
 /// Jointure indexee correlee : `outer ⋈ (b:label) ON b.property = key_expr(ligne)`.
@@ -307,5 +317,27 @@ impl Operator for IndexSeekJoinOperator {
 
     fn name(&self) -> &'static str {
         "IndexSeekJoin"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Une clé `Float64` ENTIÈRE se sonde par l'index, comme l'entier
+    /// qu'elle égale ; un flottant non entier, NaN ou infini passe par le
+    /// chemin générique (il n'a pas de seau d'index).
+    #[test]
+    fn une_cle_flottante_entiere_se_sonde_par_l_index() {
+        assert!(is_index_probe_safe(&Value::Int64(5)));
+        assert!(is_index_probe_safe(&Value::Bool(true)));
+        assert!(is_index_probe_safe(&Value::String("x".into())));
+        assert!(is_index_probe_safe(&Value::Float64(5.0)));
+        assert!(is_index_probe_safe(&Value::Float64(-0.0)));
+        assert!(!is_index_probe_safe(&Value::Float64(5.5)));
+        assert!(!is_index_probe_safe(&Value::Float64(f64::NAN)));
+        assert!(!is_index_probe_safe(&Value::Float64(f64::INFINITY)));
+        assert!(!is_index_probe_safe(&Value::Float64(1.0e300)));
+        assert!(!is_index_probe_safe(&Value::Null));
     }
 }

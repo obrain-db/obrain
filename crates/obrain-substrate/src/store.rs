@@ -1162,6 +1162,13 @@ const V2_RELECTURE_EXEMPLES: usize = 8;
 // amener le code SAIN dans cet état — seule une injection le peut. Elle est
 // `#[cfg(test)]`, donc absente du binaire de production, et locale au FIL pour
 // ne pas contaminer les tests parallèles.
+thread_local! {
+    /// VRAI sur le fil qui exécute `preparer_index_egalite` : seule CETTE
+    /// passe est interruptible par `annuler_preparation_index`. Une
+    /// construction demandée par une requête, elle, va toujours au bout.
+    static PREPARATION_EN_ARRIERE_PLAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[cfg(test)]
 thread_local! {
     static SABOTAGE_REGISTRE_CLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -1183,6 +1190,22 @@ thread_local! {
     static CANDIDATS_REVERIFIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     #[allow(clippy::type_complexity)]
     static APRES_DECOMPTE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Entre la persistance d'un index neuf et le marquage de couverture
+    /// (`create_property_index`) : reproduit l'écriture concurrente qui
+    /// faisait diverger les ancres.
+    #[allow(clippy::type_complexity)]
+    static ENTRE_PERSISTANCE_ET_COUVERTURE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Après la PREMIÈRE entrée insérée par le remplissage d'un index
+    /// (régime sans PropsZone v2) : l'index est enregistré et partiel.
+    #[allow(clippy::type_complexity)]
+    static PENDANT_REMPLISSAGE_INDEX: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Dans `set_node_property`, juste après que la valeur est devenue
+    /// LISIBLE : reproduit le lecteur concurrent qui voit la valeur neuve.
+    #[allow(clippy::type_complexity)]
+    static APRES_ECRITURE_VALEUR: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1835,8 +1858,11 @@ pub struct SubstrateStore {
     /// build. Les mutations passent par l'entry/get_mut du DashMap externe
     /// (verrou de shard exclusif), les lectures par `get` (verrou partagé) :
     /// le `HashSet` n'a pas besoin de sa propre synchronisation.
-    property_indexes:
-        DashMap<PropertyKey, DashMap<IndexValueKey, std::collections::HashSet<NodeId>>>,
+    property_indexes: DashMap<
+        PropertyKey,
+        DashMap<IndexValueKey, std::collections::HashSet<NodeId>, IndexHasher>,
+        IndexHasher,
+    >,
     /// Clés dont l'index de propriété a été bâti DEPUIS LES CHAÎNES
     /// PropsZone v2, au moins une fois dans ce processus.
     ///
@@ -1880,7 +1906,7 @@ pub struct SubstrateStore {
     /// VERROUS : lu et écrit par prise-puis-relâche immédiate, jamais en
     /// travers de `props_zone` ni d'un garde de `property_indexes`. Le cycle
     /// trouvé sous gdb (2cbf1668) ne peut pas se reformer par ce chemin.
-    index_batis_depuis_v2: DashMap<PropertyKey, ()>,
+    index_batis_depuis_v2: DashMap<PropertyKey, (), IndexHasher>,
     /// ── ÉTAGE PERSISTÉ de l'index ORDONNÉ (voir `crate::props_index`) ──
     ///
     /// `property_indexes`, juste au-dessus, est un index de HACHAGE : il
@@ -1929,7 +1955,44 @@ pub struct SubstrateStore {
     /// clés, `indexed_candidates` réunit zone ∪ DashMap (delta de session)
     /// — le sur-ensemble reste complet car toute écriture de session passe
     /// par `prop_index_insert`.
-    egalite_couverte: DashMap<PropertyKey, u16>,
+    egalite_couverte: DashMap<PropertyKey, u16, IndexHasher>,
+    /// Clés dont la carte RAM (`property_indexes`) est À ELLE SEULE complète :
+    /// bâties dans cette session par une passe sur les chaînes, ou déclarées
+    /// sur une base vide puis tenues par les écritures. Par opposition, la
+    /// carte d'une clé couverte À L'OUVERTURE n'est que le DELTA de session.
+    /// C'est ce qui permet, si la zone persistée cesse de répondre, de savoir
+    /// quelles clés restent justes sans elle et lesquelles sont à rebâtir —
+    /// voir [`Self::decouvrir_egalite`].
+    index_ram_complets: DashMap<PropertyKey, ()>,
+    /// VRAI tant que la zone persistée est HÉRITÉE (version 1, clé non
+    /// canonique) et que son COMPLÉMENT n'a pas été bâti. Pendant ce temps la
+    /// zone ne sert que ce qu'elle sait servir exactement (Bool, chaînes
+    /// ordinaires) ; les autres recherches attendent le complément. Voir
+    /// [`Self::completer_index_herites`].
+    egalite_heritee: std::sync::atomic::AtomicBool,
+    /// VRAI quand le complément de la zone héritée est bâti dans les cartes RAM
+    /// de CE processus (même si la zone n'a pas pu être réécrite : lecture
+    /// seule). Évite de relancer une passe que les cartes ont déjà absorbée.
+    complement_herite_bati: std::sync::atomic::AtomicBool,
+    /// VRAI dès qu'une entrée a pu entrer dans une carte RAM depuis la
+    /// dernière fusion de la zone d'égalité. Faux, la fusion n'a RIEN à
+    /// réécrire : elle se contente de reposer les ancres (48 octets).
+    egalite_delta_sale: std::sync::atomic::AtomicBool,
+    /// UNE construction d'index à la fois. Deux requêtes simultanées sur une
+    /// clé à bâtir faisaient DEUX passes complètes sur la base ; la seconde
+    /// attend désormais la première et réutilise son résultat. Verrou le plus
+    /// EXTÉRIEUR : pris avant tout autre, jamais sous un garde de zone.
+    construction_index: Mutex<()>,
+    /// Demande d'ARRÊT de la préparation d'index en arrière-plan
+    /// ([`Self::preparer_index_egalite`]) : posée par l'appelant qui ferme la
+    /// base, lue entre deux lots par la passe. Une passe interrompue ne pose
+    /// aucune marque — elle n'a simplement pas eu lieu.
+    preparation_annulee: std::sync::atomic::AtomicBool,
+    /// Nombre de passes COMPLÈTES de construction d'index sur les chaînes
+    /// (`batir_index_depuis_v2`) depuis l'ouverture. Chaque passe coûte un
+    /// parcours de toute la base : ce compteur est ce qui permet de constater
+    /// qu'il n'y en a pas eu, ou qu'il n'y en a eu qu'une.
+    passes_de_construction: AtomicU64,
     /// ── INDEX DE TRIGRAMMES (SOUS-CHAÎNES), construit à la demande ─────
     ///
     /// Les requêtes `n.prop CONTAINS 'terme'` n'ont aucune structure pour les
@@ -2796,6 +2859,15 @@ impl SubstrateStore {
     }
 
     pub(crate) fn batir_index_depuis_v2(&self, proprietes: &[String]) -> bool {
+        self.recolter_index_depuis_v2(proprietes, false)
+    }
+
+    /// Le corps de [`Self::batir_index_depuis_v2`]. `complement_seul` ne
+    /// récolte que les valeurs qu'une zone HÉRITÉE (version 1) ne rangeait
+    /// pas sous leur clé canonique — flottants, chaînes datetime, valeurs non
+    /// projetables — et ne pose AUCUNE marque : c'est
+    /// [`Self::completer_index_herites`] qui conclut.
+    fn recolter_index_depuis_v2(&self, proprietes: &[String], complement_seul: bool) -> bool {
         let Some(pz_lock) = self.props_zone.as_ref() else {
             return false;
         };
@@ -2863,6 +2935,8 @@ impl SubstrateStore {
         // toucher `property_indexes` (le cycle décrit dans `indexed_candidates`),
         // et c'est vrai lot par lot — chaque tâche relâche la sienne avant que
         // l'insertion ne commence.
+        let interruptible = PREPARATION_EN_ARRIERE_PLAN.with(std::cell::Cell::get);
+        let interrompue = || interruptible && self.preparation_annulee.load(Ordering::Acquire);
         use rayon::prelude::*;
         /// Entrées d'index récoltées par un lot : (clé, valeur indexée, nœud).
         type Recolte = Vec<(PropertyKey, IndexValueKey, NodeId)>;
@@ -2871,6 +2945,9 @@ impl SubstrateStore {
             .map(|lot| {
                 let mut recolte: Recolte = Vec::new();
                 let mut vus = 0usize;
+                if interrompue() {
+                    return (vus, recolte);
+                }
                 {
                     let pz = pz_lock.read();
                     let mut live: FxHashMap<u16, crate::page::PropertyEntry> = FxHashMap::default();
@@ -2891,10 +2968,10 @@ impl SubstrateStore {
                             let Ok(v) = crate::props_codec::decode_value(&pz, &e.value) else {
                                 continue;
                             };
-                            let Some(ik) = index_value_key(&v) else {
+                            if complement_seul && rangee_a_l_identique_par_la_zone_heritee(&v) {
                                 continue;
-                            };
-                            recolte.push((cle.clone(), ik, id));
+                            }
+                            recolte.push((cle.clone(), cle_de_rangement(&v), id));
                         }
                     }
                 } // la zone est relâchée ICI, avant toute insertion
@@ -2902,6 +2979,11 @@ impl SubstrateStore {
             })
             .collect();
 
+        if interrompue() {
+            // Passe d'arrière-plan interrompue par la fermeture : rien n'est
+            // inséré, aucune marque n'est posée.
+            return false;
+        }
         let t_collecte = t.elapsed();
         // (T27) Insertion PARALLÈLE : les index sont des tables concurrentes
         // (verrous par fragment). Mesuré séquentiel : 2,2 s pour 3,1 M entrées
@@ -2926,8 +3008,15 @@ impl SubstrateStore {
         // ne connaît pas, dont l'index reste donc à bâtir le jour où elles
         // apparaîtront. Posé APRÈS la boucle, donc hors de toute portée de
         // `props_zone` ou de garde de `property_indexes`.
-        for (cle, _) in &cibles {
-            self.index_batis_depuis_v2.insert(cle.clone(), ());
+        self.egalite_delta_sale.store(true, Ordering::Release);
+        if !complement_seul {
+            self.passes_de_construction.fetch_add(1, Ordering::AcqRel);
+            for (cle, _) in &cibles {
+                // La carte RAM vient d'être remplie depuis TOUTES les chaînes :
+                // elle est complète à elle seule, et l'index répond.
+                self.index_ram_complets.insert(cle.clone(), ());
+                self.index_batis_depuis_v2.insert(cle.clone(), ());
+            }
         }
         if std::env::var("OBRAIN_INDEX_PROF").is_ok() {
             eprintln!(
@@ -2998,7 +3087,192 @@ impl SubstrateStore {
         if manquantes.is_empty() {
             return;
         }
+        // UNE construction à la fois : N requêtes simultanées sur une clé à
+        // bâtir faisaient N passes complètes. Les suivantes attendent ici,
+        // puis constatent que la marque est posée.
+        let _une_seule = self.construction_index.lock();
+        let manquantes: Vec<String> = manquantes
+            .into_iter()
+            .filter(|p| {
+                !self
+                    .index_batis_depuis_v2
+                    .contains_key(&PropertyKey::new(p.as_str()))
+            })
+            .collect();
+        if manquantes.is_empty() {
+            return;
+        }
         self.batir_index_depuis_v2(&manquantes);
+    }
+
+    /// Le geste « compléter l'index AVANT de le croire », pour UNE recherche
+    /// de clé d'index `ik` sur la propriété `key` : bâtit l'index s'il ne
+    /// porte pas la marque de complétude (sous v2), puis s'assure que la zone
+    /// persistée sait servir cette clé ([`Self::assurer_complement_herite`]).
+    ///
+    /// Sur le chemin chaud — index complet, zone canonique — c'est un
+    /// `contains_key` et une lecture atomique.
+    fn assurer_index_pour_recherche(&self, key: &PropertyKey, ik: &IndexValueKey) {
+        if self.props_zone.is_some()
+            && self.next_node_id.load(Ordering::Acquire) > 1
+            && !self.index_batis_depuis_v2.contains_key(key)
+        {
+            self.assurer_index_bati_depuis_v2(&[key.as_str()]);
+        }
+        self.assurer_complement_herite(key, ik);
+    }
+
+    /// Si la zone persistée est HÉRITÉE et ne sait pas servir exactement une
+    /// recherche de `ik` sur cette clé couverte, bâtit son complément — ou
+    /// attend celui qu'un autre fil est en train de bâtir. Une seule passe,
+    /// pour tout le processus.
+    fn assurer_complement_herite(&self, key: &PropertyKey, ik: &IndexValueKey) {
+        if self.egalite_heritee.load(Ordering::Acquire)
+            && !self.zone_sert(ik)
+            && self.egalite_couverte.contains_key(key)
+        {
+            self.completer_index_herites();
+        }
+    }
+
+    /// Bâtit le COMPLÉMENT d'une zone d'égalité HÉRITÉE (version 1) : les
+    /// seules entrées qui lui manquent pour être canonique.
+    ///
+    /// ── POURQUOI UN COMPLÉMENT ET NON UNE RECONSTRUCTION ──
+    ///
+    /// Une zone écrite avant la clé canonique reste EXACTE pour les
+    /// recherches de Bool et de chaîne ordinaire (hachages inchangés, aucun
+    /// porteur manquant) : la jeter obligerait toute base existante à rebâtir
+    /// tous ses index. Il ne lui manque que ce qu'elle ne projetait pas ou
+    /// projetait autrement — flottants (sous l'entier égal, ou le seau
+    /// « autre »), chaînes datetime (sous l'instant), valeurs non
+    /// projetables. Ces entrées sont récoltées ici et rangées dans la carte
+    /// RAM : la recherche réunit déjà zone ∪ carte, donc dès que la marque
+    /// `egalite_heritee` tombe, la zone héritée répond à TOUT, exactement.
+    /// La fusion suivante écrit le tout en version courante.
+    ///
+    /// ── OÙ CE COÛT EST PAYÉ ──
+    ///
+    /// La passe lit toutes les chaînes : elle est proportionnelle à la base.
+    /// Elle n'est donc JAMAIS sur le chemin de l'ouverture. L'appelant
+    /// (`ObrainDB`) la lance en ARRIÈRE-PLAN juste après l'ouverture ;
+    /// pendant ce temps la zone sert ce qu'elle sait servir exactement, et
+    /// une recherche d'entier, d'instant ou d'existence qui arrive avant la
+    /// fin ATTEND cette passe unique (elle ne la refait pas, et ne répond pas
+    /// faux). Un store ouvert sans personne pour lancer la passe la paie à la
+    /// première recherche de ce genre — une fois.
+    ///
+    /// Rend `true` si un complément a été bâti par CET appel.
+    pub fn completer_index_herites(&self) -> bool {
+        if !self.egalite_heritee.load(Ordering::Acquire) {
+            return false;
+        }
+        let une_seule = self.construction_index.lock();
+        if !self.egalite_heritee.load(Ordering::Acquire) {
+            return false; // un autre fil vient de le faire
+        }
+        let t = web_time::Instant::now();
+        let cles: Vec<String> = self
+            .egalite_couverte
+            .iter()
+            .map(|e| e.key().as_str().to_string())
+            .collect();
+        if !cles.is_empty() {
+            self.recolter_index_depuis_v2(&cles, true);
+        }
+        if PREPARATION_EN_ARRIERE_PLAN.with(std::cell::Cell::get)
+            && self.preparation_annulee.load(Ordering::Acquire)
+        {
+            return false; // interrompue : la marque reste, rien n'est conclu
+        }
+        // La marque tombe APRÈS la récolte : jusque-là, les recherches
+        // concernées attendent sur `construction_index`.
+        self.complement_herite_bati.store(true, Ordering::Release);
+        self.egalite_heritee.store(false, Ordering::Release);
+        tracing::info!(
+            proprietes = cles.len(),
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "zone d'égalité héritée (v1) : complément bâti — la zone répond désormais à tout"
+        );
+        drop(une_seule);
+        // Persistance immédiate en version courante : le processus suivant
+        // n'aura plus rien à compléter. Échec non fatal (lecture seule) : le
+        // complément sert CE processus.
+        if let Err(e) = self.fusionner_index_egalite() {
+            tracing::debug!(erreur = %e, "zone d'égalité : complément non persisté");
+        }
+        true
+    }
+
+    /// Prépare les index d'égalité HORS du chemin des requêtes : complète une
+    /// zone héritée, puis bâtit les index DÉCLARÉS que rien ne couvre encore
+    /// (zone absente ou périmée après un arrêt sans flush) et les persiste.
+    ///
+    /// Fait pour être appelée depuis un fil d'ARRIÈRE-PLAN, une fois, après
+    /// l'ouverture. Elle ne change AUCUN résultat : sans elle, la même
+    /// construction a lieu à la première requête qui en a besoin. Avec elle,
+    /// cette requête trouve l'index prêt — ou attend la passe en cours au
+    /// lieu d'en lancer une seconde.
+    pub fn preparer_index_egalite(&self) {
+        PREPARATION_EN_ARRIERE_PLAN.with(|c| c.set(true));
+        self.preparer_index_egalite_interruptible();
+        PREPARATION_EN_ARRIERE_PLAN.with(|c| c.set(false));
+    }
+
+    /// Y a-t-il quelque chose à préparer ? Vrai si la zone persistée est
+    /// héritée (complément à bâtir) ou si un index DÉCLARÉ ne porte pas la
+    /// marque de complétude. L'appelant ne lance un fil que dans ce cas.
+    #[must_use]
+    pub fn index_egalite_a_preparer(&self) -> bool {
+        if self.egalite_heritee.load(Ordering::Acquire) {
+            return true;
+        }
+        if self.props_zone.is_none() || self.next_node_id.load(Ordering::Acquire) <= 1 {
+            return false;
+        }
+        self.declarations_index()
+            .into_iter()
+            .filter(|d| d.genre == "property")
+            .any(|d| {
+                !self
+                    .index_batis_depuis_v2
+                    .contains_key(&PropertyKey::new(d.propriete.as_str()))
+            })
+    }
+
+    /// Demande l'arrêt de la préparation d'arrière-plan (voir
+    /// `preparation_annulee`). À appeler avant de fermer la base, puis
+    /// attendre le fil : il rend la main au lot suivant.
+    pub fn annuler_preparation_index(&self) {
+        self.preparation_annulee.store(true, Ordering::Release);
+    }
+
+    fn preparer_index_egalite_interruptible(&self) {
+        if self.preparation_annulee.load(Ordering::Acquire) {
+            return;
+        }
+        self.completer_index_herites();
+        if self.props_zone.is_none() || self.next_node_id.load(Ordering::Acquire) <= 1 {
+            return;
+        }
+        let declarees: Vec<String> = self
+            .declarations_index()
+            .into_iter()
+            .filter(|d| d.genre == "property")
+            .map(|d| d.propriete)
+            .collect();
+        let cles: Vec<&str> = declarees.iter().map(String::as_str).collect();
+        let avant = cles
+            .iter()
+            .filter(|p| {
+                self.index_batis_depuis_v2
+                    .contains_key(&PropertyKey::new(**p))
+            })
+            .count();
+        self.assurer_index_bati_depuis_v2(&cles);
+        if avant < cles.len() {
+            self.persister_index_apres_construction();
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -3051,7 +3325,42 @@ impl SubstrateStore {
         let mut zone = zone_lock.write();
         zone.confronter_ancres(offset, pages);
         if !zone.fiable() {
+            drop(zone);
+            // La zone ne répond plus : les clés qu'elle couvrait ne doivent
+            // pas continuer à passer pour complètes sur leur seul delta.
+            self.decouvrir_egalite();
             return;
+        }
+        drop(zone);
+        self.marquer_couvertes_par_la_zone();
+    }
+
+    /// Déclare COUVERTES les propriétés que porte la zone persistée, SANS
+    /// confronter ses ancres : l'appelant vient d'établir qu'elle est fiable
+    /// (confrontation à l'ouverture, ou fusion réussie à l'instant).
+    ///
+    /// ── POURQUOI NE PAS RECONFRONTER APRÈS UNE FUSION EN SESSION ──
+    ///
+    /// `create_property_index` persistait puis appelait la confrontation. Une
+    /// écriture CONCURRENTE qui avance le WAL entre les deux faisait diverger
+    /// les ancres : la zone passait non fiable alors que les clés couvertes à
+    /// l'ouverture gardaient leur marque et une carte RAM réduite au delta —
+    /// `find_nodes_by_property` rendait un résultat PARTIEL. Or en session la
+    /// règle n'est pas « les ancres égalent l'état courant » mais « zone ∪
+    /// delta RAM » : toute écriture postérieure à la fusion est dans le
+    /// delta, la zone reste donc juste.
+    fn marquer_couvertes_par_la_zone(&self) {
+        let Some(zone_lock) = self.index_egalite.as_ref() else {
+            return;
+        };
+        let zone = zone_lock.read();
+        if !zone.fiable() {
+            return;
+        }
+        if !zone.canonique() && !self.complement_herite_bati.load(Ordering::Acquire) {
+            // Zone HÉRITÉE : elle ne sert que Bool et chaînes ordinaires tant
+            // que son complément n'est pas bâti.
+            self.egalite_heritee.store(true, Ordering::Release);
         }
         let pkids = zone.proprietes();
         drop(zone);
@@ -3073,6 +3382,27 @@ impl SubstrateStore {
             proprietes = nb,
             "index d'égalité persisté FIABLE — zéro reconstruction par processus"
         );
+    }
+
+    /// La zone persistée a cessé de répondre : retire la marque de couverture
+    /// de toutes les clés, et la marque de complétude de celles dont la carte
+    /// RAM n'est que le DELTA de session (couvertes à l'ouverture, jamais
+    /// rebâties). Ces dernières seront rebâties depuis les chaînes par la
+    /// prochaine recherche (ou par [`Self::preparer_index_egalite`]) ; celles
+    /// dont la carte est complète à elle seule continuent de répondre.
+    fn decouvrir_egalite(&self) {
+        let cles: Vec<PropertyKey> = self
+            .egalite_couverte
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        for cle in cles {
+            self.egalite_couverte.remove(&cle);
+            if !self.index_ram_complets.contains_key(&cle) {
+                self.index_batis_depuis_v2.remove(&cle);
+            }
+        }
+        self.egalite_heritee.store(false, Ordering::Release);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -3492,9 +3822,8 @@ impl SubstrateStore {
         for &pk in cibles {
             let mut v: Vec<crate::props_eq_index::EntreeEgalite> = Vec::new();
             for (slot, carte) in vivants {
-                if let Some(val) = carte.get(&pk)
-                    && let Some(ik) = index_value_key(val)
-                {
+                if let Some(val) = carte.get(&pk) {
+                    let ik = cle_de_rangement(val);
                     v.push(crate::props_eq_index::EntreeEgalite::new(
                         Self::hachage_cle_egalite(&ik),
                         *slot,
@@ -3517,6 +3846,7 @@ impl SubstrateStore {
             IndexValueKey::Int(i) => crate::props_eq_index::hachage_int(*i),
             IndexValueKey::Str(s) => crate::props_eq_index::hachage_chaine(s),
             IndexValueKey::Instant(i) => crate::props_eq_index::hachage_instant(*i),
+            IndexValueKey::Autre => crate::props_eq_index::hachage_autre(),
         }
     }
 
@@ -3546,6 +3876,43 @@ impl SubstrateStore {
         if cles.is_empty() {
             return Ok(());
         }
+        let pages = self
+            .props_zone
+            .as_ref()
+            .map_or(0, |p| p.read().allocated_page_count());
+        let offset = self.writer.wal().offset();
+        // Une zone HÉRITÉE dont le complément n'est pas bâti se réécrit en
+        // version 1 : l'écrire en version courante bénirait comme canonique
+        // un contenu qui ne l'est pas.
+        let canonique = !self.egalite_heritee.load(Ordering::Acquire);
+        // ── RIEN À RÉÉCRIRE ? ON NE REPOSE QUE LES ANCRES ──
+        //
+        // La fusion réécrit TOUT le fichier (zone ∪ cartes RAM) : c'est un
+        // coût proportionnel à l'index, payé à chaque `flush()`. Quand aucune
+        // entrée n'est entrée dans une carte depuis la dernière fusion, que la
+        // zone répond, qu'elle est déjà de la bonne version et qu'elle porte
+        // toutes les clés à écrire, son contenu EST déjà zone ∪ cartes : seules
+        // les ancres ont bougé. On les repose (48 octets), comme le fait
+        // l'adoption de fenêtre.
+        //
+        // Le drapeau est BAISSÉ AVANT la lecture des cartes : une entrée qui
+        // arrive pendant la fusion le relève, et la fusion suivante la verra.
+        let sale = self.egalite_delta_sale.swap(false, Ordering::AcqRel);
+        if !sale {
+            let mut zone = zone_lock.write();
+            let porte_tout = {
+                let presentes = zone.proprietes();
+                let reg = self.prop_keys.read();
+                cles.iter().all(|c| {
+                    reg.lookup(c.as_str())
+                        .is_none_or(|pk| presentes.contains(&pk))
+                })
+            };
+            if zone.fiable() && zone.canonique() == canonique && porte_tout {
+                zone.adopter_ancres(offset, pages);
+                return Ok(());
+            }
+        }
         let mut series: Vec<(u16, Vec<crate::props_eq_index::EntreeEgalite>)> = Vec::new();
         for cle in cles {
             let Some(pk) = self.prop_keys.read().lookup(cle.as_str()) else {
@@ -3573,6 +3940,7 @@ impl SubstrateStore {
             series.push((pk, entrees));
         }
         if series.is_empty() {
+            self.egalite_delta_sale.store(sale, Ordering::Release);
             return Ok(());
         }
         // La racine plafonne à SERIES_MAX séries : au-delà, les clés en trop
@@ -3580,12 +3948,14 @@ impl SubstrateStore {
         // comme aujourd'hui) — jamais un index partiel béni.
         series.sort_unstable_by_key(|(pk, _)| *pk);
         series.truncate(crate::props_index::SERIES_MAX);
-        let pages = self
-            .props_zone
-            .as_ref()
-            .map_or(0, |p| p.read().allocated_page_count());
-        let offset = self.writer.wal().offset();
-        zone_lock.write().fusionner(&series, offset, pages)
+        let r = zone_lock
+            .write()
+            .fusionner_en(&series, offset, pages, canonique);
+        if r.is_err() {
+            // Rien n'a été écrit : le delta reste à fusionner.
+            self.egalite_delta_sale.store(true, Ordering::Release);
+        }
+        r
     }
 
     /// (NS-PARTOUT) Persiste les zones d'index SUR-LE-CHAMP après une
@@ -3597,9 +3967,10 @@ impl SubstrateStore {
     /// session courante, la reconstruction par processus reste le filet
     /// des suivantes. Sur un store ouvert en lecture seule l'écriture
     /// échoue proprement ici (warn), sans toucher au fichier existant.
-    fn persister_index_apres_construction(&self) {
+    fn persister_index_apres_construction(&self) -> bool {
         let t = web_time::Instant::now();
         let r = self.fusionner_index_egalite();
+        let reussi = r.is_ok();
         if std::env::var("OBRAIN_INDEX_PROF").is_ok() {
             eprintln!(
                 "[prof]     index : persistance {:.2}s",
@@ -3611,6 +3982,7 @@ impl SubstrateStore {
                 "persistance immédiate de l'index d'égalité échouée — \
                  il restera en RAM jusqu'au prochain flush");
         }
+        reussi
     }
 
     /// (NS-PARTOUT) Rebâtit depuis les CHAÎNES les index de toutes les
@@ -3638,9 +4010,13 @@ impl SubstrateStore {
             let cle = PropertyKey::new(p);
             self.egalite_couverte.remove(&cle);
             self.index_batis_depuis_v2.remove(&cle);
+            self.index_ram_complets.remove(&cle);
             self.property_indexes.remove(&cle);
         }
-        self.batir_index_depuis_v2(&proprietes);
+        {
+            let _une_seule = self.construction_index.lock();
+            self.batir_index_depuis_v2(&proprietes);
+        }
         self.persister_index_apres_construction();
         // NATIF-J6 : donner sa serie a la zone ordonnee PAR VALEUR aussi —
         // c'est l'acte de maintenance qui rend ORDER BY/min/max instantanes.
@@ -4238,7 +4614,12 @@ impl SubstrateStore {
     ///
     /// ── POURQUOI (2026-08-19) ──
     ///
-    /// `index_value_key` ne projette que Bool / Int64 / String. Le repli v2
+    /// (État du 2026-08-19 ; depuis la PR #101 la clé est CANONIQUE : un
+    /// flottant entier et une chaîne datetime sont projetés aussi — voir
+    /// `index_value_key`. Le raisonnement vaut pour tout ce qui reste non
+    /// projetable : flottant non entier, liste, Null, temporel typé.)
+    ///
+    /// `index_value_key` ne projetait que Bool / Int64 / String. Le repli v2
     /// de `find_nodes_by_property` batissait bien l index depuis les chaines,
     /// mais `indexed_candidates` refusait ensuite la valeur, et l execution
     /// retombait sur le balayage de `node_properties` — VIDE par conception
@@ -4266,6 +4647,12 @@ impl SubstrateStore {
     /// exactement ce que faisait le balayage DashMap d avant migration, donc
     /// le temoin non migre reste le temoin.
     ///
+    /// (PR #101) La canonisation annoncée ici est faite pour ce que
+    /// l'égalité sait ranger : un flottant ENTIER partage la clé de l'entier
+    /// égal (`-0.0` et `0.0` valent 0), NaN et les non-entiers restent hors
+    /// index. Les valeurs sans clé de recherche ont un seau de RANGEMENT
+    /// (`IndexValueKey::Autre`), qui ne sert qu'à l'existence.
+    ///
     /// ── CE QU IL COUTE ──
     ///
     /// Une passe complete sur les chaines, et — contrairement a l index —
@@ -4284,8 +4671,9 @@ impl SubstrateStore {
     /// quelques secondes. NON MESURE sur la base reelle.
     ///
     /// Il n est donc engage QUE lorsque la valeur cherchee n est pas
-    /// projetable ; Bool / Int64 / String continuent de passer par l index,
-    /// en O(candidats).
+    /// projetable ; les valeurs projetables (Bool, entier ou flottant
+    /// entier, chaîne ordinaire ou datetime) continuent de passer par
+    /// l index, en O(candidats).
     ///
     /// ── VERROUS ──
     ///
@@ -4831,17 +5219,22 @@ impl SubstrateStore {
         // ferait disparaitre le noeud de toute requete « a l'epoque
         // courante » alors qu'il est bien vivant.
         self.deces_noeuds.remove(&id);
+        // Index de proprietes : `delete_node` les avait retires. Les entrees
+        // reviennent AVANT que le noeud redevienne vivant — tant qu'il est
+        // mort la reverification les ecarte ; dans l'ordre inverse, un
+        // lecteur verrait le noeud vivant sans le trouver par l'index.
+        if let Some(props) = props.as_ref()
+            && !self.property_indexes.is_empty()
+        {
+            for (k, v) in props.iter() {
+                self.prop_index_insert(k, v, id);
+            }
+        }
         if self.writer.revive_node(id.0 as u32).is_err() {
             tracing::error!(noeud = id.0, "resurrection du noeud impossible");
             return;
         }
-        // Proprietes + index de proprietes : `delete_node` les avait retires.
         if let Some(props) = props {
-            if !self.property_indexes.is_empty() {
-                for (k, v) in props.iter() {
-                    self.prop_index_insert(k, v, id);
-                }
-            }
             self.node_properties.insert(id, props);
         }
         // Compteurs vivants, lus depuis le record — qui a survecu intact.
@@ -6578,8 +6971,8 @@ impl SubstrateStore {
             reverse_part_of: parking_lot::RwLock::new(None),
             node_properties: DashMap::new(),
             edge_properties: DashMap::new(),
-            property_indexes: DashMap::new(),
-            index_batis_depuis_v2: DashMap::new(),
+            property_indexes: DashMap::default(),
+            index_batis_depuis_v2: DashMap::default(),
             index_ordonne: index_ordonne.map(RwLock::new),
             index_ord_valeur: index_ord_valeur.map(RwLock::new),
             index_egalite: index_egalite.map(RwLock::new),
@@ -6666,7 +7059,14 @@ impl SubstrateStore {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2),
-            egalite_couverte: DashMap::new(),
+            egalite_couverte: DashMap::default(),
+            index_ram_complets: DashMap::new(),
+            egalite_heritee: std::sync::atomic::AtomicBool::new(false),
+            complement_herite_bati: std::sync::atomic::AtomicBool::new(false),
+            egalite_delta_sale: std::sync::atomic::AtomicBool::new(false),
+            construction_index: Mutex::new(()),
+            preparation_annulee: std::sync::atomic::AtomicBool::new(false),
+            passes_de_construction: AtomicU64::new(0),
             tampon_ordonne: Mutex::new(std::collections::HashMap::new()),
             ordonnees_declarees: DashMap::new(),
             aucune_ordonnee: std::sync::atomic::AtomicBool::new(true),
@@ -12388,8 +12788,10 @@ impl SubstrateStore {
     ///
     /// CONTRAT : base NEUVE pour ces nœuds (aucune propriété déjà écrite —
     /// on ne chaîne pas sur une tête existante), zone v2 active, aucun index
-    /// ordonné ni de trigrammes déclaré sur ces clés (ils seraient oubliés :
+    /// ORDONNÉ ni de TRIGRAMMES déclaré sur ces clés (ils seraient oubliés :
     /// l'appelant les déclare ensuite, et ils se bâtissent depuis la zone).
+    /// Un index d'ÉGALITÉ déjà déclaré, lui, est TENU par l'import (voir le
+    /// corps) : il n'est jamais laissé partiel et réputé complet.
     /// L'appelant CHECKPOINT à la fin — comme pour `bulk_import_labels_edges`.
     ///
     /// Les valeurs qui ne passent pas par une page (vecteurs, charges au-delà
@@ -12414,6 +12816,45 @@ impl SubstrateStore {
             for (k, _) in liste {
                 if !cles.contains_key(k) {
                     cles.insert(k, self.interner_cle_journalisee(k)?);
+                }
+            }
+        }
+        // ── LES INDEX D'ÉGALITÉ DÉJÀ DÉCLARÉS SONT TENUS, PAS OUBLIÉS ──
+        //
+        // Le contrat d'origine était implicite : « les index se déclarent
+        // APRÈS l'import ». Sur une base qui portait déjà un index d'égalité,
+        // l'import écrivait les pages sans toucher l'index, qui restait
+        // réputé complet (marque posée, zone couvrante) alors qu'il lui
+        // manquait tous les nœuds importés — une recherche rendait un
+        // résultat partiel, sans erreur. C'est le chemin d'une migration de
+        // plusieurs millions de nœuds.
+        //
+        // On inscrit donc les entrées dans l'index, AVANT d'écrire les pages
+        // (même ordre que `set_node_property` : l'index est un sur-ensemble
+        // revérifié, y entrer trop tôt est sans danger). Coût nul sans index
+        // déclaré ; sinon une insertion par valeur d'une clé indexée. Les
+        // valeurs différées (vecteurs, blobs) passent par le chemin unitaire.
+        if !self.property_indexes.is_empty() {
+            let indexees: std::collections::HashMap<&str, PropertyKey> = cles
+                .keys()
+                .filter_map(|k| {
+                    let cle = PropertyKey::new(*k);
+                    self.property_indexes
+                        .contains_key(&cle)
+                        .then_some((*k, cle))
+                })
+                .collect();
+            if !indexees.is_empty() {
+                for (i, liste) in props.iter().enumerate() {
+                    let id = NodeId(u64::from(premier_slot) + i as u64);
+                    for (k, v) in liste {
+                        if let Some(cle) = indexees.get(k)
+                            && !matches!(v, Value::Vector(_))
+                            && encode_blob_payload(v).is_none()
+                        {
+                            self.prop_index_insert(cle, v, id);
+                        }
+                    }
                 }
             }
         }
@@ -16610,6 +17051,15 @@ impl SubstrateStore {
 // T17b — index de propriété : clé de valeur hachable + helpers de maintenance
 // ---------------------------------------------------------------------------
 
+/// Hacheur des cartes d'index, consultées à CHAQUE recherche par égalité.
+///
+/// Le hacheur par défaut (SipHash 1-3, résistant aux collisions adverses)
+/// pesait environ 30 % d'un lookup indexé à 1 M de nœuds (profil par
+/// échantillonnage) : on hache une `PropertyKey` — une courte chaîne interne
+/// au catalogue, pas une entrée d'utilisateur hostile — plusieurs fois par
+/// recherche. `foldhash` est déjà une dépendance du crate.
+type IndexHasher = foldhash::fast::RandomState;
+
 /// Projection hachable d'une [`Value`] scalaire pour l'index de propriété.
 /// `Value` n'implémente ni `Eq` ni `Hash` (Float64, Map…) — on ne projette
 /// que le sous-ensemble sûr, qui couvre les clés chaudes réelles (`id`,
@@ -16637,10 +17087,16 @@ enum IndexValueKey {
     Int(i64),
     /// Une chaîne ordinaire, par égalité d'octets.
     Str(String),
-    /// Une chaîne datetime RFC3339, par INSTANT (microsecondes) : toutes les
-    /// écritures d'un même instant, quel que soit le fuseau, partagent ce
-    /// seau — la règle de `value_cmp::egaler` sur deux chaînes datetime.
-    Instant(i64),
+    /// Une chaîne datetime RFC3339, par INSTANT EXACT (nanosecondes, `i128` :
+    /// ni saturation ni troncature) : toutes les écritures d'un même instant,
+    /// quel que soit le fuseau, partagent ce seau — la règle de
+    /// `value_cmp::egaler` sur deux chaînes datetime.
+    Instant(i128),
+    /// Toute valeur qu'AUCUNE recherche par égalité ne sonde (flottant non
+    /// entier, liste, temporel typé, Null…). Ce seau ne sert pas à trouver une
+    /// valeur : il fait de l'index d'une propriété la liste COMPLÈTE de ses
+    /// porteurs, ce qu'exige `find_nodes_with_property`.
+    Autre,
 }
 
 /// Le predicat d intervalle, UNIQUE, partage par les DEUX chemins de
@@ -16764,59 +17220,85 @@ fn est_nan_ordonnable(o: &OrderableValue) -> bool {
 /// de pousser `= NULL` (UNKNOWN en logique trivaluée) vers le store.
 /// L'ancien `PartialEq` strict était le quatrième dialecte de la campagne.
 fn valeurs_egales_gql(a: &Value, b: &Value) -> bool {
+    // Court-circuit du cas dominant d'une revérification d'index : la valeur
+    // lue est CELLE que l'on cherche. Deux entiers, deux booléens ou deux
+    // chaînes identiques octet pour octet sont égaux pour le comparateur
+    // canonique (deux chaînes identiques ont le même instant, a fortiori) ;
+    // deux entiers ou deux booléens DIFFÉRENTS ne le sont jamais. Les
+    // chaînes différentes, les flottants et tout le reste passent par le
+    // comparateur canonique, qui reste seul juge.
+    match (a, b) {
+        (Value::Int64(x), Value::Int64(y)) => return x == y,
+        (Value::Bool(x), Value::Bool(y)) => return x == y,
+        (Value::String(x), Value::String(y)) if x == y => return true,
+        _ => {}
+    }
     obrain_common::types::value_cmp::egalite_structurelle(a, b)
 }
 
-/// Clé d'index d'une valeur — CANONIQUE vis-à-vis de `valeurs_egales_gql`
-/// (voir [`IndexValueKey`]). Classe par classe du comparateur canonique :
+/// Clé de RECHERCHE d'une valeur — CANONIQUE vis-à-vis de
+/// `valeurs_egales_gql` (voir [`IndexValueKey`]). `None` = aucune recherche
+/// par égalité ne peut passer par l'index pour cette valeur ; l'appelant
+/// prend alors le balayage exact. Classe par classe du comparateur canonique :
 ///
 /// * Bool : n'égale qu'un Bool.
 /// * Nombres : `Int64(i)` et le `Float64` exactement égal à `i` partagent
 ///   `Int(i)` (`-0.0` et `0.0` valent `Int(0)`). Un flottant NON entier, hors
-///   plage `i64`, infini ou NaN n'égale aucun entier : il reste non
-///   projetable (balayage), comme avant.
+///   plage `i64`, infini ou NaN n'égale aucun entier : non projetable.
 /// * Chaînes : deux chaînes datetime RFC3339 sont égales par INSTANT, toute
 ///   autre paire par octets — une chaîne datetime n'égale donc jamais une
 ///   chaîne ordinaire, et les deux variantes `Instant` / `Str` sont
-///   disjointes.
+///   disjointes. Une chaîne assez longue pour être routée en COLONNE BLOB
+///   (`should_route_to_blob`) n'est jamais écrite dans les chaînes de pages
+///   ni dans l'index : sa recherche n'est pas projetable non plus.
 /// * Tout le reste (temporels typés, Null, conteneurs…) : non projetable.
 fn index_value_key(v: &Value) -> Option<IndexValueKey> {
+    use obrain_common::types::value_cmp;
     match v {
         Value::Bool(b) => Some(IndexValueKey::Bool(*b)),
         Value::Int64(i) => Some(IndexValueKey::Int(*i)),
-        Value::Float64(f) => entier_egal_au_flottant(*f).map(IndexValueKey::Int),
-        Value::String(s) => Some(
-            match obrain_common::types::value_cmp::instant_de_chaine(s) {
+        Value::Float64(f) => value_cmp::entier_egal_au_flottant(*f).map(IndexValueKey::Int),
+        Value::String(s) => {
+            if crate::blob_column_registry::should_route_to_blob(v) {
+                return None;
+            }
+            Some(match value_cmp::instant_de_chaine(s) {
                 Some(instant) => IndexValueKey::Instant(instant),
                 None => IndexValueKey::Str(s.to_string()),
-            },
-        ),
+            })
+        }
         _ => None,
     }
 }
 
-/// L'entier `i` tel que `Int64(i)` ÉGALE `Float64(f)` au sens du comparateur
-/// canonique, s'il existe. Le verdict est rendu par `cmp_i64_f64` lui-même —
-/// la fonction qui tranche `Int64 = Float64` à la revérification — et non par
-/// une règle redéduite ici : la clé ne peut pas diverger de l'égalité.
-fn entier_egal_au_flottant(f: f64) -> Option<i64> {
-    // Conversion SATURANTE (NaN → 0) : elle ne décide de rien, elle ne fait
-    // que proposer le seul candidat possible, que `cmp_i64_f64` confirme ou
-    // rejette (flottant non entier, hors plage, infini, NaN).
-    #[allow(clippy::cast_possible_truncation)]
-    let candidat = f as i64;
-    (obrain_common::types::value_cmp::cmp_i64_f64(candidat, f) == Some(std::cmp::Ordering::Equal))
-        .then_some(candidat)
+/// Clé de RANGEMENT d'une valeur écrite : sa clé de recherche si elle en a
+/// une, le seau [`IndexValueKey::Autre`] sinon. TOUTE valeur qui passe par
+/// la maintenance d'index a donc une entrée — c'est ce qui fait de l'index
+/// d'une propriété la liste complète de ses porteurs.
+fn cle_de_rangement(v: &Value) -> IndexValueKey {
+    index_value_key(v).unwrap_or(IndexValueKey::Autre)
+}
+
+/// Vrai si une zone HÉRITÉE (version 1) rangeait cette valeur sous le MÊME
+/// hachage que la clé canonique : Bool, Int64, chaîne ordinaire. Tout le
+/// reste est le COMPLÉMENT qui manque à une zone héritée (flottants,
+/// chaînes datetime, valeurs non projetables).
+fn rangee_a_l_identique_par_la_zone_heritee(v: &Value) -> bool {
+    match v {
+        Value::Bool(_) | Value::Int64(_) => true,
+        Value::String(s) => obrain_common::types::value_cmp::instant_de_chaine(s).is_none(),
+        _ => false,
+    }
 }
 
 impl SubstrateStore {
-    /// Insère `(value → id)` dans l'index de `key`, si `key` est enregistrée
-    /// et la valeur projetable. Idempotent.
+    /// Insère `(value → id)` dans l'index de `key`, si `key` est enregistrée.
+    /// Idempotent. Toute valeur a une clé de rangement (au pire le seau
+    /// « autre »).
     fn prop_index_insert(&self, key: &PropertyKey, value: &Value, id: NodeId) {
-        if let Some(idx) = self.property_indexes.get(key)
-            && let Some(ik) = index_value_key(value)
-        {
-            idx.entry(ik).or_default().insert(id);
+        if let Some(idx) = self.property_indexes.get(key) {
+            idx.entry(cle_de_rangement(value)).or_default().insert(id);
+            self.egalite_delta_sale.store(true, Ordering::Release);
         }
     }
 
@@ -16825,9 +17307,8 @@ impl SubstrateStore {
     /// devenue vide — sinon un flux MERGE à ids uniques laisserait une
     /// entrée morte par valeur disparue.
     fn prop_index_remove(&self, key: &PropertyKey, value: &Value, id: NodeId) {
-        if let Some(idx) = self.property_indexes.get(key)
-            && let Some(ik) = index_value_key(value)
-        {
+        if let Some(idx) = self.property_indexes.get(key) {
+            let ik = cle_de_rangement(value);
             if let Some(mut set) = idx.get_mut(&ik) {
                 set.remove(&id);
                 if !set.is_empty() {
@@ -16843,8 +17324,8 @@ impl SubstrateStore {
     }
 
     /// Vérifie qu'un nœud satisfait TOUTES les égalités demandées, d'après
-    /// l'état COURANT de `node_properties` — c'est la revérification qui rend
-    /// l'index tolérant aux entrées obsolètes.
+    /// l'état COURANT du nœud — c'est la revérification qui rend l'index
+    /// tolérant aux entrées obsolètes.
     fn node_matches_all_props(&self, id: NodeId, conditions: &[(&str, Value)]) -> bool {
         // ── (2026-08-19) LIRE PAR LE CHEMIN COMPLET, PAS PAR LA DASHMAP ──
         //
@@ -16855,10 +17336,6 @@ impl SubstrateStore {
         // `find_nodes_by_property` — réparé la veille — rendait 1752
         // résultats justes pour la MÊME valeur sur la MÊME base.
         //
-        // Mesuré sur `messages` avant correction :
-        //     find_nodes_by_property        : 1752  OK
-        //     find_nodes_by_properties  x1  :    0  ZERO
-        //
         // `get_node_property` applique l ordre de lecture complet
         // (colonnes → blobs → v2 → DashMap) et reste correct sur les deux
         // familles de bases, migrées ou non.
@@ -16868,167 +17345,232 @@ impl SubstrateStore {
         })
     }
 
-    /// Candidats indexés pour `(property, value)`, revérifiés (liveness +
-    /// valeur courante), triés. `None` si la clé n'est pas enregistrée ou la
-    /// valeur non projetable — l'appelant retombe alors sur le scan.
-    fn indexed_candidates(&self, property: &str, value: &Value) -> Option<Vec<NodeId>> {
-        let key = PropertyKey::new(property);
-        let idx = self.property_indexes.get(&key)?;
-        // ── (2026-08-15) UN INDEX GLOBALEMENT VIDE NE REPOND PAS ──
-        //
-        // `Some(vec![])` court-circuite le balayage chez l'appelant
-        // (`find_nodes_by_property` : `if let Some(hits) { return hits }`)
-        // — un index vide MENTAIT donc : « zero resultat », definitif,
-        // sans erreur. C'est l'etage qui a transforme la regression
-        // d'ouverture (index batis avant l'hydratation) en pannes
-        // visibles : WHERE n.id muet, MERGE dupliquant. Vide au global =
-        // « je ne sais pas » -> None -> l'appelant retombe sur le
-        // balayage label-first, correct, juste plus lent. Un index vide
-        // LEGITIME (aucun noeud ne porte la propriete) donne le meme
-        // resultat par le balayage — on perd du temps, jamais la verite.
-        let ik = index_value_key(value)?;
-        // ── (T7) ÉTAGE ZONE PERSISTÉE, AVANT la doctrine du vide ──
-        //
-        // Pour une clé COUVERTE, le sur-ensemble complet est
-        // zone (état à l'ouverture) ∪ DashMap (delta de session) : une
-        // DashMap vide n'est alors PAS une ignorance — elle dit seulement
-        // qu'aucune écriture de session n'a eu lieu, et la zone répond.
-        // `None` de la zone (série vide, page illisible, propriété
-        // manquante) fait retomber sur le chemin historique ci-dessous.
-        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value())
-            && let Some(slots) = self
-                .index_egalite
-                .as_ref()
-                .and_then(|z| z.read().candidats(pk, Self::hachage_cle_egalite(&ik)))
-        {
-            let mut candidats: Vec<NodeId> =
-                slots.into_iter().map(|s| NodeId(u64::from(s))).collect();
-            if let Some(set) = idx.get(&ik) {
-                candidats.extend(set.iter().copied());
-            }
-            drop(idx);
-            candidats.sort_unstable_by_key(|n| n.0);
-            candidats.dedup();
-            #[cfg(test)]
-            CANDIDATS_REVERIFIES.with(|c| c.set(c.get() + candidats.len()));
-            let mut out: Vec<NodeId> = candidats
-                .into_iter()
-                .filter(|id| self.is_live_on_disk(*id))
-                .filter(|id| {
-                    self.get_node_property(*id, &key)
-                        .map(|v| valeurs_egales_gql(&v, value))
-                        .unwrap_or(false)
-                })
-                .collect();
-            out.sort_by_key(|n| n.0);
-            return Some(out);
-        }
-        if idx.is_empty() {
+    /// La zone persistée sait-elle servir EXACTEMENT une recherche de cette
+    /// clé ? Toujours, une fois canonique. HÉRITÉE (version 1) et complément
+    /// pas encore bâti : seulement Bool et chaînes ordinaires, dont le
+    /// hachage n'a pas changé ET dont aucun porteur ne manque. Une recherche
+    /// d'entier manquerait les flottants entiers, une recherche d'instant
+    /// manquerait les autres écritures du même instant, et le seau « autre »
+    /// n'existe pas dans une zone héritée.
+    fn zone_sert(&self, ik: &IndexValueKey) -> bool {
+        !self.egalite_heritee.load(Ordering::Acquire)
+            || matches!(ik, IndexValueKey::Bool(_) | IndexValueKey::Str(_))
+    }
+
+    /// Candidats BRUTS (non revérifiés) de `(key, ik)`, ou `None` si l'index
+    /// ne peut pas PROUVER qu'il les rend tous.
+    ///
+    /// ── `Some` EST UNE AFFIRMATION DE COMPLÉTUDE ──
+    ///
+    /// L'invariant de tout ce chemin : un ensemble d'index ne sert de jeu de
+    /// candidats que s'il contient TOUS les nœuds que la revérification
+    /// accepterait. Un `Some(vec![])` rendu par un index incomplet est une
+    /// réponse vide et DÉFINITIVE — le faux négatif muet. `None` fait
+    /// retomber l'appelant sur le balayage exact. Rend donc `None` :
+    ///
+    /// * clé sans marque de complétude (`index_batis_depuis_v2`, posée APRÈS
+    ///   le remplissage, dans les deux régimes) : index jamais bâti, ou en
+    ///   cours de construction ;
+    /// * clé COUVERTE dont la zone persistée ne répond pas (non fiable, page
+    ///   illisible) ou ne sait pas servir cette clé ([`Self::zone_sert`]) :
+    ///   la carte RAM d'une clé couverte n'est que le DELTA de session.
+    ///
+    /// Une série VIDE de la zone est, elle, une réponse : aucun porteur à la
+    /// fusion, donc le delta de session est tout ce qui existe.
+    ///
+    /// VERROUS : le garde de `property_indexes` est relâché AVANT la zone,
+    /// et rien n'est tenu au retour — l'appelant lit des propriétés ensuite
+    /// (cycle `props_zone` ↔ shard décrit dans `batir_index_depuis_v2`).
+    fn candidats_bruts(&self, key: &PropertyKey, ik: &IndexValueKey) -> Option<Vec<NodeId>> {
+        if !self.index_batis_depuis_v2.contains_key(key) {
             return None;
         }
-        // ── (2026-08-19) RELÂCHER LE GARDE AVANT DE LIRE UNE PROPRIÉTÉ ──
-        //
-        // La revérification appelle `get_node_property`, qui prend
-        // `props_zone`. Tant qu elle s exécutait DANS la portée de `idx`,
-        // ce chemin tenait un garde de shard `property_indexes` puis
-        // réclamait `props_zone` — pendant que `batir_index_depuis_v2`
-        // prenait les deux DANS L ORDRE INVERSE (`props_zone` par lot, puis
-        // l écriture du même shard). Cycle fermé.
-        //
-        // Constaté sous gdb : `indexed_candidates` bloqué en
-        // `lock_shared_slow` via `lire_propriete_noeud_vivant`, et
-        // `batir_index_depuis_v2` bloqué en `lock_exclusive_slow` via
-        // `DashMap::_entry`, les écrivains derrière. Le test à 4 lecteurs +
-        // 4 écrivains ne terminait pas en 120 s ; à 1+1 il passait, ce qui
-        // masquait le défaut.
-        //
-        // On COPIE donc les candidats, on relâche, puis on revérifie. La
-        // copie est bornée par le nombre de candidats, jamais par la
-        // taille de la base.
-        let candidats: Vec<NodeId> = match idx.get(&ik) {
-            Some(set) => set.iter().copied().collect(),
-            None => Vec::new(),
+        let mut out: Vec<NodeId> = {
+            let idx = self.property_indexes.get(key)?;
+            match idx.get(ik) {
+                Some(set) => set.iter().copied().collect(),
+                None => Vec::new(),
+            }
         };
-        drop(idx);
+        if let Some(pk) = self.egalite_couverte.get(key).map(|e| *e.value()) {
+            if !self.zone_sert(ik) {
+                return None;
+            }
+            let zone = self.index_egalite.as_ref()?.read();
+            match zone.sonder(pk, Self::hachage_cle_egalite(ik)) {
+                crate::props_eq_index::SondeZone::Plage(plage) => {
+                    let mut slots: Vec<u32> = Vec::new();
+                    if !zone.slots_de(&plage, &mut slots) {
+                        return None;
+                    }
+                    drop(zone);
+                    if !slots.is_empty() {
+                        out.extend(slots.into_iter().map(|s| NodeId(u64::from(s))));
+                        if out.len() > 1 {
+                            out.sort_unstable_by_key(|n| n.0);
+                            out.dedup();
+                        }
+                    }
+                }
+                crate::props_eq_index::SondeZone::SerieVide => {}
+                crate::props_eq_index::SondeZone::Inconnue => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// Taille du jeu de candidats bruts de `(key, ik)`, PLAFONNÉE, ou `None`
+    /// dans les cas exacts où [`Self::candidats_bruts`] rendrait `None`.
+    /// Rend `(taille, exacte)` : la taille exacte si elle tient sous le
+    /// plafond (toujours, pour une carte RAM seule), sinon un MINORANT
+    /// strictement supérieur au plafond.
+    ///
+    /// C'est l'estimateur de sélectivité de la résolution multi-critères. Il
+    /// ne copie rien : la carte RAM donne sa cardinalité (`HashSet::len`),
+    /// et la zone persistée répond par une sonde puis log₂(plafond)
+    /// lectures (`PropsEqIndexZone::taille_plafonnee`) — savoir qu'un jeu
+    /// DÉPASSE le plafond suffit à l'écarter. Le sur-ensemble zone ∪ RAM peut
+    /// compter deux fois un nœud présent des deux côtés : un majorant, sans
+    /// effet sur la justesse (le jeu retenu est revérifié).
+    fn taille_candidats(
+        &self,
+        key: &PropertyKey,
+        ik: &IndexValueKey,
+        plafond: u64,
+    ) -> Option<(u64, bool)> {
+        if !self.index_batis_depuis_v2.contains_key(key) {
+            return None;
+        }
+        let en_ram = {
+            let idx = self.property_indexes.get(key)?;
+            idx.get(ik).map_or(0, |set| set.len() as u64)
+        };
+        let Some(pk) = self.egalite_couverte.get(key).map(|e| *e.value()) else {
+            return Some((en_ram, true));
+        };
+        if !self.zone_sert(ik) {
+            return None;
+        }
+        let zone = self.index_egalite.as_ref()?.read();
+        match zone.sonder(pk, Self::hachage_cle_egalite(ik)) {
+            crate::props_eq_index::SondeZone::Plage(plage) => zone
+                .taille_plafonnee(&plage, plafond)
+                .map(|n| (n.saturating_add(en_ram), n <= plafond)),
+            crate::props_eq_index::SondeZone::SerieVide => Some((en_ram, true)),
+            crate::props_eq_index::SondeZone::Inconnue => None,
+        }
+    }
+
+    /// Taille du jeu de candidats indexés de `(property, value)` et son
+    /// exactitude — l'estimateur de sélectivité, exposé pour le banc
+    /// d'échelle. Voir `taille_candidats`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn taille_candidats_indexes(
+        &self,
+        property: &str,
+        value: &Value,
+        plafond: u64,
+    ) -> Option<(u64, bool)> {
+        let ik = index_value_key(value)?;
+        self.taille_candidats(&PropertyKey::new(property), &ik, plafond)
+    }
+
+    /// Revérifie des candidats bruts pour UNE clé : nœud vivant, valeur
+    /// courante égale. Rend les rescapés triés.
+    fn reverifier_candidats(
+        &self,
+        candidats: Vec<NodeId>,
+        key: &PropertyKey,
+        value: &Value,
+    ) -> Vec<NodeId> {
         #[cfg(test)]
         CANDIDATS_REVERIFIES.with(|c| c.set(c.get() + candidats.len()));
         let mut out: Vec<NodeId> = candidats
             .into_iter()
-            .filter(|id| self.is_live_on_disk(*id))
             .filter(|id| {
-                self.get_node_property(*id, &key)
-                    .map(|v| valeurs_egales_gql(&v, value))
-                    .unwrap_or(false)
+                self.is_live_on_disk(*id)
+                    && self
+                        .lire_propriete_noeud_vivant(*id, key)
+                        .is_some_and(|v| valeurs_egales_gql(&v, value))
             })
             .collect();
-        out.sort_by_key(|n| n.0);
-        Some(out)
+        if out.len() > 1 {
+            out.sort_unstable_by_key(|n| n.0);
+        }
+        out
     }
 
-    /// Estimateur de sélectivité : nombre de candidats BRUTS (avant la
-    /// revérification liveness + valeur) pour `(property, value)`. C'est le
-    /// décompte que `indexed_candidates` matérialiserait, SANS la lecture de
-    /// propriété par candidat — le coût dominant d'une résolution par index
-    /// (PR #99 : ~744 µs pour ~2500 candidats, ~25 µs pour 1).
+    /// Le nœud satisfait-il TOUTES les conditions, d'après son état courant ?
+    /// Variante de [`Self::node_matches_all_props`] pour le chemin chaud :
+    /// les clés sont déjà construites (une allocation chacune, payée une fois
+    /// par requête et non une fois par candidat) et la vivacité n'est
+    /// contrôlée qu'UNE fois par nœud.
+    fn noeud_satisfait(
+        &self,
+        id: NodeId,
+        cles: &[PropertyKey],
+        conditions: &[(&str, Value)],
+    ) -> bool {
+        self.is_live_on_disk(id)
+            && cles.iter().zip(conditions).all(|(cle, (_, attendu))| {
+                self.lire_propriete_noeud_vivant(id, cle)
+                    .is_some_and(|v| valeurs_egales_gql(&v, attendu))
+            })
+    }
+
+    /// Recherche EXACTE sans index : tout ce que le store porte est
+    /// interrogé, puis revérifié par l'ordre de lecture complet. C'est le
+    /// repli de toute recherche par égalité dont l'index ne répond pas —
+    /// lent (proportionnel à la base), jamais faux.
     ///
-    /// ── `Some(n)` EST UNE AFFIRMATION DE COMPLÉTUDE, PAS SEULEMENT UN NOMBRE ──
-    ///
-    /// L'appelant ÉLIT la clé au plus petit décompte : un index incomplet,
-    /// plus petit par construction, gagnerait d'office — et un décompte de 0
-    /// rendrait une réponse vide et définitive. Cette fonction ne rend donc
-    /// `Some` que si le jeu que `indexed_candidates` matérialiserait contient
-    /// TOUS les porteurs de la valeur. Elle est plus STRICTE que
-    /// `indexed_candidates` (qui garde, lui, son comportement historique) :
-    ///
-    /// * clé non enregistrée, valeur non projetable → `None` ;
-    /// * sous v2, clé dont la marque `index_batis_depuis_v2` n'est pas posée →
-    ///   `None`. La marque n'est posée qu'APRÈS le remplissage
-    ///   (`batir_index_depuis_v2`) : un index en cours de construction, ou
-    ///   enregistré sans avoir jamais été complété depuis les chaînes, n'est
-    ///   pas éligible ;
-    /// * clé COUVERTE par la zone persistée dont la zone ne répond pas (non
-    ///   fiable, série vide ou illisible) → `None` : la carte RAM d'une clé
-    ///   couverte n'est que le DELTA de session, pas un index complet ;
-    /// * index globalement vide → `None` (« je ne sais pas »).
-    ///
-    /// La complétude tient aussi à la clé elle-même : `index_value_key` est
-    /// canonique vis-à-vis de `valeurs_egales_gql`, donc le seau de la valeur
-    /// cherchée contient tous les nœuds que la revérification accepterait.
-    ///
-    /// RÉSIDU, documenté et non couvert ici : une écriture CONCURRENTE en
-    /// cours (`set_node_property` écrit la valeur PUIS met l'index à jour).
-    /// Un lecteur qui passe entre les deux ne voit pas ce nœud par l'index ;
-    /// c'est l'état d'AVANT l'écriture, qui n'a pas encore rendu la main — une
-    /// linéarisation légitime, et non un index incomplet.
-    fn indexed_candidate_count(&self, property: &str, value: &Value) -> Option<usize> {
-        let key = PropertyKey::new(property);
-        let ik = index_value_key(value)?;
+    /// Trois sources, parce que la valeur d'une propriété peut vivre à trois
+    /// endroits :
+    ///  · les chaînes de pages PropsZone v2 (`balayer_v2_par_conditions`) ;
+    ///  · les colonnes BLOB, pour une condition dont la valeur cherchée est
+    ///    assez longue pour y avoir été routée — elle n'est alors NI dans les
+    ///    chaînes NI dans la carte ;
+    ///  · la carte `node_properties` (régime hérité, et écritures de session).
+    fn recherche_exacte_sans_index(&self, conditions: &[(&str, Value)]) -> Vec<NodeId> {
+        let mut candidats: Vec<NodeId> = Vec::new();
         if self.props_zone.is_some()
             && self.next_node_id.load(Ordering::Acquire) > 1
-            && !self.index_batis_depuis_v2.contains_key(&key)
+            && let Some(hits) = self.balayer_v2_par_conditions(conditions)
         {
-            return None;
+            candidats.extend(hits);
         }
-        let idx = self.property_indexes.get(&key)?;
-
-        // Clé COUVERTE : le jeu complet est zone ∪ delta RAM, et seulement si
-        // la zone répond. Le sur-ensemble peut compter deux fois un nœud
-        // présent des deux côtés — un majorant, sans effet sur la justesse
-        // (le jeu retenu est revérifié intégralement par l'appelant).
-        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value()) {
-            let slots = self
-                .index_egalite
-                .as_ref()
-                .and_then(|z| z.read().candidats(pk, Self::hachage_cle_egalite(&ik)))?;
-            return Some(slots.len() + idx.get(&ik).map_or(0, |set| set.len()));
+        for (cle, attendu) in conditions {
+            if encode_blob_payload(attendu).is_some()
+                && let Some(hits) = self.balayer_blob_par_predicat(&PropertyKey::new(*cle), |v| {
+                    valeurs_egales_gql(v, attendu)
+                })
+            {
+                candidats.extend(hits);
+            }
         }
-
-        // Même garde que `indexed_candidates` : un index globalement vide ne
-        // répond pas (None), pour que l'appelant retombe sur le balayage.
-        if idx.is_empty() {
-            return None;
-        }
-        Some(idx.get(&ik).map_or(0, |set| set.len()))
+        let keys: Vec<PropertyKey> = conditions
+            .iter()
+            .map(|(k, _)| PropertyKey::new(*k))
+            .collect();
+        candidats.extend(self.node_properties.iter().filter_map(|e| {
+            let props = e.value();
+            keys.iter()
+                .zip(conditions.iter())
+                .all(|(key, (_, attendu))| {
+                    props
+                        .get(key)
+                        .is_some_and(|v| valeurs_egales_gql(v, attendu))
+                })
+                .then_some(*e.key())
+        }));
+        candidats.sort_unstable_by_key(|n| n.0);
+        candidats.dedup();
+        // Revérification par l'ordre de lecture COMPLET (colonnes → blobs →
+        // v2 → DashMap), et vivacité par la même occasion : une valeur
+        // routée en colonne dense MASQUE la chaîne v2, et un nœud a pu
+        // mourir entre le relevé et maintenant.
+        candidats.retain(|id| self.node_matches_all_props(*id, conditions));
+        candidats
     }
 }
 
@@ -19840,118 +20382,39 @@ impl GraphStore for SubstrateStore {
     // `NodeInMem`. The liveness gate still runs because a node may be
     // tombstoned after its property was set.
     fn find_nodes_by_property(&self, property: &str, value: &Value) -> Vec<NodeId> {
-        // ── (2026-08-19) COMPLÉTER L INDEX AVANT DE LE CROIRE ──
+        // ── COMPLÉTER L'INDEX AVANT DE LE CROIRE (2026-08-19) ──
         //
-        // Réserve laissée ouverte par `79e9e283` : la branche indexée du
-        // repli v2 restait gardée par `node_properties.is_empty()`, garde qui
-        // se referme dès la PREMIÈRE écriture de propriété de la session
-        // (double écriture DashMap + zone, T17c 3b.2b). Sur une base migrée
-        // où une écriture a eu lieu, une recherche dont l index n avait
-        // jamais été bâti rendait un résultat PARTIEL — les valeurs de la
-        // session, pas celles de la zone :
-        //
-        //     find_nodes_by_property("seau", Int64(0))
-        //         rendu    [NodeId(5)]                       ← l écriture
-        //         attendu  [NodeId(1), NodeId(3), NodeId(5)]
-        //
-        // Le critère n est donc plus « la carte est-elle vide » — qui parle
-        // des écritures de session — mais « l index de cette clé a-t-il
-        // jamais été bâti depuis la zone » : voir `index_batis_depuis_v2`.
-        // La construction reste payée UNE fois par clé et par processus,
-        // exactement comme avant ; le chemin chaud garde son O(candidats),
-        // mesuré inchangé (413 µs avant, 374-419 µs apres, sur 200 000 nœuds
-        // et 2 000 résultats), à un `contains_key` de 24 ns près.
-        //
-        // Mesure du cas fautif, meme base, apres UNE ecriture de session :
-        //     avant : 0 resultat en 9,1 µs — instantane et FAUX
-        //     apres : 2 000 resultats, 80 ms au 1er appel puis 429 µs
-        //
-        // Et elle est faite AVANT `indexed_candidates`, non en repli : un
-        // index enregistré par `create_property_index` mais bâti depuis la
-        // seule DashMap répond `Some(partiel)`, donc le repli n était jamais
-        // atteint.
-        if index_value_key(value).is_some() {
-            self.assurer_index_bati_depuis_v2(&[property]);
-        }
-        // T17b : chemin indexé — O(candidats) au lieu d'un scan complet de
-        // `node_properties`. Retombe sur le scan si la clé n'est pas
-        // enregistrée ou la valeur non projetable.
-        if let Some(hits) = self.indexed_candidates(property, value) {
-            return hits;
-        }
-        // ── (2026-08-19) SOUS v2, LE BALAYAGE DE FIN EST AVEUGLE ──
-        //
-        // Le repli parcourt `node_properties`, VIDE par conception des que
-        // PropsZone v2 porte des pages. Il rendait donc zero sur une base
-        // pleine — et zero ressemble a une reponse. On interroge donc les
-        // chaines v2, qui font autorite. DEUX regimes, selon que la valeur
-        // CHERCHEE se projette ou non en cle d index (`index_value_key` :
-        // Bool / Int64 / String, et rien d autre) :
-        //
-        //   · projetable → on batit l index depuis les chaines, puis on
-        //     repasse par le chemin indexe. Le cout est paye UNE fois :
-        //     l index reste en memoire, les requetes suivantes redeviennent
-        //     en O(candidats).
-        //   · non projetable (Float64, List, Null — et demain Bytes, Map…)
-        //     → aucun index ne peut la trancher : on BALAIE les chaines.
-        //     C est le trou que ce correctif bouche. Avant lui la branche
-        //     indexee payait sa passe complete pour RIEN : `index_value_key`
-        //     rendait `None`, donc `indexed_candidates` aussi, et
-        //     l execution finissait sur le balayage vide ci-dessous. Mesure
-        //     sur bases reelles, temoin non migre a gauche : Float64
-        //     `energy` 2 276 → 0, List `conflicts_with` 2 298 → 0, Null
-        //     `link_file` 6 828 → 0.
-        // La branche PROJETABLE a été traitée en amont (`assurer_index_bati
-        // _depuis_v2`) : si on est ici, c est que l index ne tranche pas.
-        // Reste le cas NON projetable, qu aucun index ne peut trancher.
-        let mut candidats_v2: Option<Vec<NodeId>> = None;
-        if index_value_key(value).is_none()
-            && self.props_zone.is_some()
-            && self.next_node_id.load(Ordering::Acquire) > 1
-        {
-            // ── POURQUOI PAS DE GARDE `node_properties.is_empty()` ICI ──
+        // Sur une base v2 dont l'index de cette clé n'a jamais été bâti
+        // depuis la zone, une recherche rendait un résultat PARTIEL — les
+        // seules valeurs de la session. Le critère est « l'index de cette clé
+        // porte-t-il la marque de complétude » (`index_batis_depuis_v2`) ; la
+        // construction est payée UNE fois par clé et par processus, et une
+        // seule à la fois (`construction_index`). Sur le chemin chaud — index
+        // déjà complet — ce n'est qu'un `contains_key`.
+        if let Some(ik) = index_value_key(value) {
+            let key = PropertyKey::new(property);
+            // T17b : chemin indexé — O(candidats). `None` = l'index ne peut
+            // pas prouver qu'il rend TOUS les porteurs (index jamais bâti ou
+            // en construction, zone persistée qui ne répond pas ou ne sait
+            // pas servir cette clé).
             //
-            // `set_node_property` ecrit dans la DashMap EN PLUS de la zone
-            // v2 (double ecriture, T17c 3b.2b). Sur une base migree, la
-            // carte cesse donc d etre vide des la PREMIERE ecriture de
-            // propriete de la session : un tel garde rendrait la recherche a
-            // nouveau aveugle apres un seul `set_node_property`. La branche
-            // indexee y survit parce que son index, une fois bati, PERSISTE
-            // — c est ce que porte desormais `index_batis_depuis_v2` ; un
-            // balayage, lui, est refait a chaque requete et n a rien qui le
-            // porte. On balaie donc des que v2 est actif, et on UNIT au
-            // balayage herite ci-dessous, qui couvre ce que la carte porte
-            // encore.
-            candidats_v2 = self.balayer_v2_par_conditions(&[(property, value.clone())]);
+            // CHEMIN CHAUD D'ABORD : un index complet répond tout de suite,
+            // sans passer par l'assurance. Ce n'est que s'il se tait qu'on le
+            // complète (construction, complément d'une zone héritée) avant de
+            // le réinterroger — puis, s'il se tait encore, le balayage exact.
+            if let Some(bruts) = self.candidats_bruts(&key, &ik) {
+                return self.reverifier_candidats(bruts, &key, value);
+            }
+            self.assurer_index_pour_recherche(&key, &ik);
+            if let Some(bruts) = self.candidats_bruts(&key, &ik) {
+                return self.reverifier_candidats(bruts, &key, value);
+            }
         }
-        let key = PropertyKey::new(property);
-        let mut out: Vec<NodeId> = self
-            .node_properties
-            .iter()
-            .filter_map(|e| {
-                let id = *e.key();
-                if !self.is_live_on_disk(id) {
-                    return None;
-                }
-                match e.value().get(&key) {
-                    Some(v) if valeurs_egales_gql(v, value) => Some(id),
-                    _ => None,
-                }
-            })
-            .collect();
-        if let Some(hits) = candidats_v2 {
-            // Revérifiés par l ordre de lecture COMPLET, comme le fait
-            // `indexed_candidates` : une valeur routée en colonne dense
-            // (blob, vecteur) MASQUE la chaîne v2, et un nœud a pu mourir
-            // entre le relevé des têtes et maintenant.
-            out.extend(hits.into_iter().filter(|id| {
-                self.get_node_property(*id, &key)
-                    .is_some_and(|v| valeurs_egales_gql(&v, value))
-            }));
-        }
-        out.sort_by_key(|n| n.0);
-        out.dedup();
-        out
+        // Valeur non projetable (flottant non entier, liste, Null, chaîne
+        // routée en colonne blob…) ou index muet : balayage exact des chaînes
+        // v2, des colonnes blob et de la carte, revérifié par l'ordre de
+        // lecture complet.
+        self.recherche_exacte_sans_index(&[(property, value.clone())])
     }
 
     /// CONTAINS par l'index de trigrammes — la route indexée, revérifiée.
@@ -20098,49 +20561,56 @@ impl GraphStore for SubstrateStore {
         if !self.property_indexes.contains_key(&key) {
             return None;
         }
-        // Compléter l'index avant de le croire (2026-08-19) : une clé
-        // enregistrée mais bâtie depuis la seule DashMap répondrait un
-        // PARTIEL. No-op quand la clé est couverte ou déjà bâtie.
-        self.assurer_index_bati_depuis_v2(&[property]);
-        // ── TROIS SOURCES, ET LA COUVERTURE DISQUE N'EST PAS UN PRÉALABLE ────
+        // ── LES PORTEURS QUE L'INDEX NE VOIT PAS ──
         //
-        // La version d'origine exigeait `egalite_couverte` (`?`) PUIS une zone
-        // FIABLE, et rendait `None` sinon. Défaut mesuré le 2026-09-16 : une
-        // propriété venait d'être indexée (`create_property_index`) et ses
-        // porteurs étaient dans l'index de SESSION — la fonction rendait « je ne
-        // sais pas » sur une série qu'elle portait à un `extend` de là. Le défaut
-        // n'était PAS visible en isolation : dès que la zone n'était pas encore
-        // fiable (ancres en retard sous charge), la série déclarée disparaissait.
-        //
-        // Chaque source est un SUR-ENSEMBLE, et la revérification de fin
-        // (présence RÉELLE de la propriété + nœud vivant) tranche : inclure plus
-        // de candidats que nécessaire est donc sûr par construction, alors
-        // qu'exclure une source fait disparaître des porteurs réels.
-        let pk = self.egalite_couverte.get(&key).map(|e| *e.value());
-        let mut candidats: Vec<NodeId> = Vec::new();
-        // 1. L'étage DISQUE, quand la clé est couverte ET la zone fiable.
-        if let (Some(pk), Some(zone)) = (pk, self.index_egalite.as_ref()) {
-            let g = zone.read();
-            if g.fiable() {
-                candidats.extend(
-                    g.entrees_serie(pk)
-                        .into_iter()
-                        .map(|e| NodeId(u64::from(e.slot))),
-                );
-            }
+        // Une valeur routée en colonne DENSE (vecteur, chaîne ou octets de
+        // plus de 256 o) ne passe ni par les chaînes de pages ni par la
+        // maintenance d'index : ses porteurs ne sont dans aucune série. Dès
+        // qu'une telle colonne existe pour cette clé, la série n'est pas la
+        // liste complète des porteurs — on se tait, l'appelant balaie.
+        if self.blob_columns.spec_for(&key, EntityKind::Node).is_some()
+            || self.vec_columns.spec_for(&key, EntityKind::Node).is_some()
+        {
+            return None;
         }
-        // 2. L'étage RAM par clé : c'est l'index de SESSION, tenu pour toute clé
-        //    déclarée (`prop_index_insert`) — la même source que la fusion.
+        // Compléter l'index avant de le croire : marque de complétude, et
+        // complément d'une zone héritée (elle n'a pas de seau « autre »).
+        self.assurer_index_pour_recherche(&key, &IndexValueKey::Autre);
+        if !self.index_batis_depuis_v2.contains_key(&key) {
+            return None;
+        }
+        // ── LA SÉRIE EST LA LISTE COMPLÈTE DES PORTEURS ──
+        //
+        // Défaut d'origine : l'index ne rangeait que Bool / Int64 / String.
+        // Un nœud dont la propriété valait un flottant non entier, une liste
+        // ou un temporel n'avait AUCUNE entrée, donc n'était pas candidat —
+        // `n.p IS NOT NULL` le perdait sans erreur. Toute valeur a désormais
+        // une clé de rangement (`cle_de_rangement`, au pire le seau
+        // « autre ») : zone ∪ carte RAM énumère tous les porteurs.
+        let mut candidats: Vec<NodeId> = Vec::new();
+        // 1. L'étage DISQUE, pour une clé couverte. Une zone qui ne répond
+        //    pas, alors que la clé est réputée couverte, laisse la carte RAM
+        //    à l'état de delta : on ne conclut rien.
+        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value()) {
+            let zone = self.index_egalite.as_ref()?.read();
+            if !zone.fiable() || !self.zone_sert(&IndexValueKey::Autre) {
+                return None;
+            }
+            candidats.extend(
+                zone.entrees_serie(pk)
+                    .into_iter()
+                    .map(|e| NodeId(u64::from(e.slot))),
+            );
+        }
+        // 2. L'étage RAM : l'index de SESSION, tenu pour toute clé déclarée.
         if let Some(idx) = self.property_indexes.get(&key) {
             // Boucle explicite : `flat_map` rendrait un itérateur qui emprunte
-            // l'entrée du shard AU-DELÀ de celle-ci (les identifiants sont
-            // copiés, mais l'itérateur, lui, garde la référence).
+            // l'entrée du shard AU-DELÀ de celle-ci.
             for e in idx.iter() {
                 candidats.extend(e.value().iter().copied());
             }
         }
-        // 3. Le delta structurel de la DashMap (régime v1) : la seule source des
-        //    propriétés écrites en session quand les pages ne les portent pas.
+        // 3. Le delta structurel de la DashMap (régime sans v2).
         candidats.extend(
             self.node_properties
                 .iter()
@@ -20150,15 +20620,8 @@ impl GraphStore for SubstrateStore {
         candidats.sort_unstable_by_key(|n| n.0);
         candidats.dedup();
         // ── « PERSONNE NE LA PORTE » SE CONCLUT APRÈS L'UNION, PAS AVANT ────
-        // Défaut mesuré le 2026-09-16 (`existence_par_serie_de_propriete_est_
-        // exacte_et_se_tait_sans_declaration`) : la série vide était conclue sur
-        // la SEULE zone, AVANT que le delta de session soit ajouté. Or
-        // `create_property_index` puis `set_node_property` laissent les porteurs
-        // dans la DashMap tant que la fusion n'a pas eu lieu : la fonction
-        // rendait `None` (« je ne sais pas ») alors que deux porteurs RÉELS
-        // étaient à un `extend` de là. Le contrat « une propriété déclarée rend
-        // exactement ses porteurs » tombait sur une écriture de session
-        // ordinaire — c'est-à-dire tout le temps.
+        // Série vide : ambigu entre « aucun porteur » et « fusion sans
+        // contenu ». On ne tranche pas une ambiguïté par une réponse vide.
         if candidats.is_empty() {
             return None;
         }
@@ -20166,7 +20629,6 @@ impl GraphStore for SubstrateStore {
         // propriété, et nœud vivant.
         let mut out: Vec<NodeId> = candidats
             .into_iter()
-            .filter(|id| self.is_live_on_disk(*id))
             .filter(|id| self.get_node_property(*id, &key).is_some())
             .collect();
         out.sort_by_key(|n| n.0);
@@ -20182,63 +20644,120 @@ impl GraphStore for SubstrateStore {
         if conditions.is_empty() {
             return self.node_ids();
         }
-        // (2026-08-19) MÊME CORRECTION QUE `find_nodes_by_property` : on
-        // complète l index depuis la zone AVANT de l interroger, et le
-        // critère est « jamais bâti depuis v2 », plus « la carte est vide ».
-        // Le garde jumeau `toutes_projetables && node_properties.is_empty()`
-        // se refermait sur la première écriture de session et rendait un
-        // multi-critères PARTIEL : `[NodeId(7)]` au lieu de `[NodeId(1),
-        // NodeId(3), NodeId(7)]`.
+        // ── LES CLÉS, UNE FOIS ──
         //
-        // La condition `toutes_projetables` est CONSERVÉE telle quelle : elle
-        // décide du plan (index ou balayage) et non de la justesse. Un jeu
-        // mixte continue donc de partir au balayage — un seul passage éprouve
-        // toutes les conditions à la fois, ce qu un index ne saurait faire.
-        let toutes_projetables = conditions.iter().all(|(_, v)| index_value_key(v).is_some());
-        if toutes_projetables {
-            // Toutes les clés en UNE passe : une traversée de chaîne rend
-            // toutes les clés du nœud, il serait absurde d en faire une par
-            // clé (voir `batir_index_depuis_v2`).
-            let cles: Vec<&str> = conditions.iter().map(|(k, _)| *k).collect();
-            self.assurer_index_bati_depuis_v2(&cles);
-        }
-        // T17b : si une condition porte sur une clé indexée, on prend ses
-        // candidats (déjà revérifiés pour elle) et on ne vérifie que les
-        // AUTRES conditions dessus — O(candidats) au lieu d'un scan complet.
-        //
+        // Chaque condition projetable est résolue UNE fois (clé de propriété,
+        // clé d'index) et réutilisée par toutes les étapes : la construction
+        // d'une `PropertyKey` alloue, et le chemin d'origine en refaisait une
+        // par étape et par condition.
+        let cles: smallvec::SmallVec<[PropertyKey; 4]> = conditions
+            .iter()
+            .map(|(cle, _)| PropertyKey::new(*cle))
+            .collect();
+        let sondes: smallvec::SmallVec<[(usize, IndexValueKey); 4]> = conditions
+            .iter()
+            .enumerate()
+            .filter_map(|(rang, (_, valeur))| index_value_key(valeur).map(|ik| (rang, ik)))
+            .collect();
+        // (2026-08-19) On complète l'index depuis la zone AVANT de
+        // l'interroger. La condition `toutes_projetables` est CONSERVÉE : elle
+        // décide du plan et non de la justesse. Un jeu mixte ne déclenche
+        // aucune construction — il se sert des index DÉJÀ complets s'il y en
+        // a, et part au balayage sinon (un seul passage éprouve toutes les
+        // conditions à la fois).
+        let toutes_projetables = sondes.len() == conditions.len();
+        // L'assurance n'est PAS payée d'avance : une clé dont l'index est
+        // complet répond tout de suite. Ce n'est que si elle se tait qu'on la
+        // complète, puis qu'on la remesure — voir `taille_assuree`.
+        let taille_assuree = |rang: usize, ik: &IndexValueKey, plafond: u64| {
+            let key = &cles[rang];
+            self.taille_candidats(key, ik, plafond).or_else(|| {
+                if toutes_projetables {
+                    self.assurer_index_pour_recherche(key, ik);
+                } else {
+                    self.assurer_complement_herite(key, ik);
+                }
+                self.taille_candidats(key, ik, plafond)
+            })
+        };
         // ── LAQUELLE : LA PLUS SÉLECTIVE, PARMI LES INDEX PROUVÉS COMPLETS ──
         //
-        // On choisissait la PREMIÈRE clé indexée (PR #99). `UNIQUE(a, b)`
-        // avec `a` peu sélectif (2 valeurs sur 5000 lignes) rendait ~2500
-        // candidats à revérifier — une lecture de propriété par candidat,
-        // ~744 µs — là où `b` n'en rend qu'un (~25 µs). On compte donc les
-        // candidats BRUTS de chaque clé (sans revérification) et on résout
-        // par le plus petit ensemble.
+        // On choisissait la PREMIÈRE clé indexée. `UNIQUE(a, b)` avec `a` peu
+        // sélectif (2 valeurs sur 5 000 lignes) rendait ~2 500 candidats à
+        // revérifier — une lecture de propriété par candidat — là où `b`
+        // n'en rend qu'un. On résout donc par le PLUS PETIT jeu de candidats.
         //
         // L'INVARIANT qui rend ce choix sûr : un ensemble d'index ne sert de
         // jeu de candidats que s'il contient TOUS les nœuds que la
         // revérification accepterait. Le plus petit ensemble est aussi celui
-        // qu'un index INCOMPLET fabrique — un décompte de 0 gagne toujours,
-        // et rend une réponse vide et définitive. Deux choses le tiennent :
-        // la clé d'index est canonique vis-à-vis de `valeurs_egales_gql`
-        // (`index_value_key` : un flottant entier et l'entier égal, deux
-        // écritures d'un même instant, partagent leur seau), et
-        // `indexed_candidate_count` ne rend `Some` que pour un index prouvé
-        // complet. Sous cet invariant, le verdict est le même quel que soit
-        // le jeu retenu : la sélectivité ne change que le coût.
-        let mut eligibles: Vec<(usize, usize)> = Vec::new();
-        for (rang, (prop, expected)) in conditions.iter().enumerate() {
-            if let Some(n) = self.indexed_candidate_count(prop, expected) {
-                eligibles.push((n, rang));
-                // 0 ou 1 candidat : rien ne peut faire mieux, inutile de
-                // compter les clés suivantes.
-                if n <= 1 {
+        // qu'un index INCOMPLET fabrique — un décompte de 0 gagnerait
+        // toujours, et rendrait une réponse vide et définitive. Deux choses le
+        // tiennent : la clé d'index est canonique vis-à-vis de
+        // `valeurs_egales_gql` (`index_value_key`), et ni `taille_candidats`
+        // ni `candidats_bruts` ne répondent pour un index qui ne peut pas
+        // prouver sa complétude. Sous cet invariant le verdict est le même
+        // quel que soit le jeu retenu : la sélectivité ne change que le coût.
+        //
+        // ── CE QUE L'ÉLECTION COÛTE ──
+        //
+        // Rien quand la première clé interrogée est déjà sélective : on lui
+        // demande DIRECTEMENT ses candidats, plafonnés — s'ils sont peu
+        // nombreux on les a, sans avoir compté quoi que ce soit ni regardé les
+        // autres clés. Sinon les tailles se comparent par PALIERS croissants
+        // (`taille_candidats` plafonnée : une lecture de cardinalité pour une
+        // carte RAM, une sonde et quelques lectures pour la zone persistée,
+        // JAMAIS une copie du jeu) : on s'arrête au premier palier où une clé
+        // tient, sans avoir mesuré les jeux plus gros qu'elle.
+        const PETIT: u64 = 8;
+        let mut elue: Option<usize> = None;
+        // Par clé : `None` = non éligible ; `Some((taille, exacte))` — la
+        // taille est exacte, ou un MINORANT strict du plafond de sa mesure.
+        let mut tailles: smallvec::SmallVec<[Option<(u64, bool)>; 4]> = smallvec::SmallVec::new();
+        for (i, (rang, ik)) in sondes.iter().enumerate() {
+            let t = taille_assuree(*rang, ik, PETIT);
+            tailles.push(t);
+            if t.is_some_and(|(n, exacte)| exacte && n <= PETIT) {
+                elue = Some(i);
+                break;
+            }
+        }
+        let mut plafond = PETIT;
+        while elue.is_none() {
+            let plus_petite_exacte = tailles
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| t.filter(|(_, exacte)| *exacte).map(|(n, _)| (n, i)))
+                .min();
+            let plus_petit_minorant = tailles
+                .iter()
+                .filter_map(|t| t.filter(|(_, exacte)| !*exacte).map(|(n, _)| n))
+                .min();
+            match (plus_petite_exacte, plus_petit_minorant) {
+                // Plus rien à mesurer : la plus petite taille exacte gagne
+                // (ou personne n'est éligible).
+                (exacte, None) => {
+                    elue = exacte.map(|(_, i)| i);
                     break;
+                }
+                // Tout jeu encore indécis est au moins aussi gros.
+                (Some((n, i)), Some(minorant)) if minorant >= n => {
+                    elue = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+            // Palier suivant, sans dépasser la plus petite taille exacte déjà
+            // connue : au-delà, savoir « plus gros » suffit.
+            plafond = plafond.saturating_mul(16);
+            if let Some((n, _)) = plus_petite_exacte {
+                plafond = plafond.min(n);
+            }
+            for (i, (rang, ik)) in sondes.iter().enumerate() {
+                if tailles[i].is_some_and(|(_, exacte)| !exacte) {
+                    tailles[i] = self.taille_candidats(&cles[*rang], ik, plafond);
                 }
             }
         }
-        // Tri STABLE : à décompte égal, l'ordre des conditions départage.
-        eligibles.sort_by_key(|(n, _)| *n);
         #[cfg(test)]
         APRES_DECOMPTE.with(|h| {
             if let Some(f) = h.borrow().as_ref() {
@@ -20246,79 +20765,60 @@ impl GraphStore for SubstrateStore {
             }
         });
         // La clé élue peut cesser de répondre entre le décompte et ici (index
-        // désenregistré par un autre fil) : on essaie alors les éligibles
-        // suivantes, par décompte croissant, plutôt que de tomber au balayage.
-        for (_, rang) in &eligibles {
-            let (prop, expected) = &conditions[*rang];
-            if let Some(hits) = self.indexed_candidates(prop, expected) {
-                return hits
+        // désenregistré par un autre fil) : on essaie alors les autres clés
+        // éligibles, par taille connue croissante, plutôt que de tomber au
+        // balayage.
+        // Chemin courant : la clé élue répond, rien d'autre n'est calculé.
+        let suivantes = |elue: Option<usize>| -> smallvec::SmallVec<[usize; 4]> {
+            // Une clé jamais mesurée (l'élection s'est arrêtée avant elle)
+            // reste candidate ; une clé mesurée non éligible ne l'est pas.
+            let mut ordre: smallvec::SmallVec<[usize; 4]> = (0..sondes.len())
+                .filter(|i| Some(*i) != elue && tailles.get(*i).is_none_or(Option::is_some))
+                .collect();
+            ordre.sort_by_key(|i| {
+                tailles
+                    .get(*i)
+                    .copied()
+                    .flatten()
+                    .map_or(u64::MAX, |(n, _)| n)
+            });
+            ordre
+        };
+        let mut a_essayer: smallvec::SmallVec<[usize; 4]> = elue.into_iter().collect();
+        let mut repli_calcule = false;
+        let mut rang = 0usize;
+        loop {
+            if rang == a_essayer.len() {
+                if repli_calcule {
+                    break;
+                }
+                repli_calcule = true;
+                a_essayer.extend(suivantes(elue));
+                continue;
+            }
+            let i = a_essayer[rang];
+            rang += 1;
+            let (rang_cle, ik) = &sondes[i];
+            if let Some(bruts) = self.candidats_bruts(&cles[*rang_cle], ik) {
+                #[cfg(test)]
+                CANDIDATS_REVERIFIES.with(|c| c.set(c.get() + bruts.len()));
+                // UNE lecture par condition et par candidat : la revérification
+                // de la clé élue EST celle de toutes les conditions.
+                let mut out: Vec<NodeId> = bruts
                     .into_iter()
-                    .filter(|id| self.node_matches_all_props(*id, conditions))
+                    .filter(|id| self.noeud_satisfait(*id, &cles, conditions))
                     .collect();
+                if out.len() > 1 {
+                    out.sort_unstable_by_key(|n| n.0);
+                }
+                return out;
             }
         }
-        // REPLI HISTORIQUE — aucune clé n'est prouvée complète (ou aucune
-        // éligible n'a répondu) : on garde EXACTEMENT le choix d'avant la
-        // sélection, la première clé dont l'index répond. La résolution
-        // sélective ne peut ainsi jamais rendre un résultat que l'ancien
-        // chemin n'aurait pas rendu ; elle ne fait qu'ajouter un chemin plus
-        // court quand elle sait qu'il est sûr.
-        for (prop, expected) in conditions {
-            if let Some(hits) = self.indexed_candidates(prop, expected) {
-                return hits
-                    .into_iter()
-                    .filter(|id| self.node_matches_all_props(*id, conditions))
-                    .collect();
-            }
-        }
-        // (2026-08-19) Repli v2, meme partage que `find_nodes_by_property` :
-        // le balayage de fin parcourt une carte VIDE sous v2, il faut donc
-        // interroger les chaines.
-        //
-        // La branche PROJETABLE a été traitée en amont. Reste le cas où au
-        // moins une valeur (Float64, List, Null…) n est pas projetable :
-        // aucun index ne sait la trancher. UN SEUL balayage eprouve TOUTES
-        // les conditions a la fois — inutile d en faire un par cle.
-        let mut candidats_v2: Option<Vec<NodeId>> = None;
-        if !toutes_projetables
-            && self.props_zone.is_some()
-            && self.next_node_id.load(Ordering::Acquire) > 1
-        {
-            candidats_v2 = self.balayer_v2_par_conditions(conditions);
-        }
-        let keys: Vec<PropertyKey> = conditions
-            .iter()
-            .map(|(k, _)| PropertyKey::new(*k))
-            .collect();
-        let mut out: Vec<NodeId> = self
-            .node_properties
-            .iter()
-            .filter_map(|e| {
-                let id = *e.key();
-                if !self.is_live_on_disk(id) {
-                    return None;
-                }
-                let props = e.value();
-                for (key, (_, expected)) in keys.iter().zip(conditions.iter()) {
-                    match props.get(key) {
-                        Some(v) if valeurs_egales_gql(v, expected) => continue,
-                        _ => return None,
-                    }
-                }
-                Some(id)
-            })
-            .collect();
-        if let Some(hits) = candidats_v2 {
-            // Revérification par l ordre de lecture COMPLET (colonnes →
-            // blobs → v2 → DashMap), et vivacité par la même occasion.
-            out.extend(
-                hits.into_iter()
-                    .filter(|id| self.node_matches_all_props(*id, conditions)),
-            );
-        }
-        out.sort_by_key(|n| n.0);
-        out.dedup();
-        out
+        // Aucun index ne prouve sa complétude (clés non déclarées hors v2,
+        // jeu mixte sans index complet, zone qui ne répond pas) : balayage
+        // exact. Jamais le repli sur « la première clé dont l'index répond »,
+        // qui croyait un index enregistré et partiellement rempli.
+        self.recherche_exacte_sans_index(conditions)
     }
 
     fn find_nodes_in_range(
@@ -23425,6 +23925,25 @@ impl GraphStoreMut for SubstrateStore {
         // tout verrou de colonne dès qu'aucune colonne blob n'existe pour
         // cette clé — le cas de l'écrasante majorité des propriétés.
         self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
+        // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
+        //
+        // L'ordre d'origine écrivait la valeur PUIS mettait l'index à jour.
+        // Entre les deux, un lecteur concurrent LISAIT la valeur neuve
+        // (`get_node_property`) mais ne trouvait pas le nœud par l'index :
+        // deux réponses contradictoires sur le même état, et pour une
+        // vérification d'unicité, un doublon accepté.
+        //
+        // L'index est un SUR-ENSEMBLE revérifié : y inscrire le nœud trop tôt
+        // est sans danger (tant que la valeur n'est pas écrite, la
+        // revérification l'écarte), l'y inscrire trop tard ne l'est pas.
+        // L'ordre est donc : (1) l'entrée NEUVE entre, (2) la valeur est
+        // écrite — c'est le SEUL instant qui tranche, pour tous les lecteurs —
+        // (3) l'entrée ANCIENNE sort, en queue de fonction. Aucun verrou :
+        // à tout instant l'index contient le porteur de la valeur lisible.
+        let index_tenus = !self.property_indexes.is_empty();
+        if index_tenus {
+            self.prop_index_insert(&PropertyKey::new(key), &value, id);
+        }
         // T17c Step 3b.2b: dual-write into PropsZone v2 when enabled.
         // Best-effort — if PropsZone fails (e.g. page-size overflow for an
         // exotic value), we log and still fall back to the DashMap sidecar
@@ -23621,16 +24140,30 @@ impl GraphStoreMut for SubstrateStore {
             .entry(id)
             .or_default()
             .insert(pkey, value.clone());
+        #[cfg(test)]
+        APRES_ECRITURE_VALEUR.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         // T17b : maintenir l'index enregistré — l'ancienne valeur sort,
         // la nouvelle entre. Garde `is_empty` pour que le chemin sans index
         // ne paie rien. Les vecteurs/blobs sont sortis plus haut : mêmes
         // limites que le scan que l'index remplace.
         if !self.property_indexes.is_empty() {
             let pkey = PropertyKey::new(key);
-            if let Some(ref old) = prev {
+            // Index déclaré PENDANT cette écriture : l'entrée neuve n'a pas pu
+            // entrer en tête de fonction.
+            if !index_tenus {
+                self.prop_index_insert(&pkey, &value, id);
+            }
+            // L'ancienne valeur sort — SAUF si elle se range sous la même clé
+            // que la neuve : on retirerait l'entrée qu'on vient de poser.
+            if let Some(ref old) = prev
+                && cle_de_rangement(old) != cle_de_rangement(&value)
+            {
                 self.prop_index_remove(&pkey, old, id);
             }
-            self.prop_index_insert(&pkey, &value, id);
         }
     }
 
@@ -23918,13 +24451,24 @@ impl GraphStoreMut for SubstrateStore {
         // immédiate ci-dessous écrit les zones.
         if self.props_zone.is_some() && self.next_node_id.load(Ordering::Acquire) > 1 {
             let une = [property.to_string()];
-            if self.batir_index_depuis_v2(&une) {
+            let bati = {
+                // Une construction à la fois (voir `construction_index`).
+                let _une_seule = self.construction_index.lock();
+                self.batir_index_depuis_v2(&une)
+            };
+            if bati {
                 // (NS-PARTOUT) PERSISTER TOUT DE SUITE : un serveur
                 // long-vivant (MCP) qui ne repasse jamais par `flush()`
                 // laissait cet index en RAM seulement — « status: ok » et
                 // AUCUN fichier `props.eq.idx` sur le store. Constat du
                 // superviseur, 2026-09-13.
-                self.persister_index_apres_construction();
+                let persiste = self.persister_index_apres_construction();
+                #[cfg(test)]
+                ENTRE_PERSISTANCE_ET_COUVERTURE.with(|h| {
+                    if let Some(f) = h.borrow().as_ref() {
+                        f(self);
+                    }
+                });
                 // ── LA CLÉ VIENT D'ÊTRE RENDUE COUVERTE : ON LE MARQUE ──────
                 // Défaut mesuré le 2026-09-16 (`existence_par_serie_de_
                 // propriete_est_exacte_et_se_tait_sans_declaration`) : la
@@ -23938,7 +24482,17 @@ impl GraphStoreMut for SubstrateStore {
                 // `confronter_index_egalite` est le SEUL endroit qui pose la
                 // marque à partir de la zone réellement fiable (il ne marque que
                 // si `zone.fiable()`, donc jamais un index partiel).
-                self.confronter_index_egalite();
+                //
+                // (PR #101) SANS reconfronter les ancres : une écriture
+                // concurrente entre la persistance et la confrontation les
+                // faisait diverger, et la zone passait non fiable sous des
+                // clés encore réputées couvertes. Voir
+                // `marquer_couvertes_par_la_zone`. Si la persistance a échoué,
+                // on ne touche à rien : la carte RAM de cette clé est complète
+                // et répond seule.
+                if persiste {
+                    self.marquer_couvertes_par_la_zone();
+                }
                 return;
             }
             tracing::warn!(
@@ -23963,11 +24517,17 @@ impl GraphStoreMut for SubstrateStore {
             if !self.is_live_on_disk(id) {
                 continue;
             }
-            if let Some(v) = e.value().get(&key)
-                && let Some(ik) = index_value_key(v)
-            {
-                idx.entry(ik).or_default().insert(id);
+            if let Some(v) = e.value().get(&key) {
+                idx.entry(cle_de_rangement(v)).or_default().insert(id);
                 entries += 1;
+                #[cfg(test)]
+                if entries == 1 {
+                    PENDANT_REMPLISSAGE_INDEX.with(|h| {
+                        if let Some(f) = h.borrow().as_ref() {
+                            f(self);
+                        }
+                    });
+                }
             }
         }
         tracing::info!(
@@ -23980,6 +24540,17 @@ impl GraphStoreMut for SubstrateStore {
         // qui reparcourt `property_indexes` : même discipline
         // anti-interblocage qu'`indexed_candidates`.
         drop(idx);
+        // ── LA MARQUE DE COMPLÉTUDE, APRÈS LE REMPLISSAGE ──
+        //
+        // Ce chemin (régime sans PropsZone v2, ou base encore vide) enregistre
+        // l'index AVANT de le remplir, pour que les écrivains concurrents le
+        // tiennent à jour pendant le balayage. Sans marque de fin, un lecteur
+        // qui passait pendant le remplissage lisait un index PARTIEL et le
+        // croyait. La marque est la même que sous v2 : tant qu'elle manque,
+        // `candidats_bruts` ne répond pas et le lecteur balaie.
+        self.egalite_delta_sale.store(true, Ordering::Release);
+        self.index_ram_complets.insert(key.clone(), ());
+        self.index_batis_depuis_v2.insert(key, ());
         self.persister_index_apres_construction();
     }
 
@@ -23991,6 +24562,8 @@ impl GraphStoreMut for SubstrateStore {
         // redéclaré après un `drop` serait reconstruit depuis la seule
         // DashMap et resterait partiel sur une base v2.
         self.index_batis_depuis_v2.remove(&key);
+        self.index_ram_complets.remove(&key);
+        self.egalite_couverte.remove(&key);
         // L'index ORDONNÉ part avec : sa déclaration tombe, et son étage
         // mémoire est jeté. La série sur disque, elle, survit jusqu'à la
         // prochaine fusion, qui l'écartera — sans jamais mentir entre-temps,
@@ -27652,6 +28225,410 @@ mod tests {
         );
     }
 
+    /// REVUE 2, point 2 — jeu MIXTE dont AUCUNE clé n'est prouvée complète :
+    /// le seul index enregistré est partiel. L'ancien repli (« la première
+    /// clé dont l'index répond ») le croyait ; il faut balayer.
+    #[test]
+    fn resolution_selective_jeu_mixte_sans_index_complet_balaie() {
+        let (_td, s) = store();
+        let mut ids = Vec::new();
+        for i in 0..40i64 {
+            let id = s.create_node(&["Pair"]);
+            s.set_node_property(id, "b", Value::Int64(i));
+            s.set_node_property(id, "f", Value::Float64(0.5));
+            ids.push(id);
+        }
+        let cle_b = PropertyKey::new("b");
+        s.property_indexes
+            .entry(cle_b.clone())
+            .or_default()
+            .entry(IndexValueKey::Int(3))
+            .or_default()
+            .insert(ids[3]);
+        assert!(!s.index_batis_depuis_v2.contains_key(&cle_b));
+        let b = ("b", Value::Int64(8));
+        let f = ("f", Value::Float64(0.5));
+        for conditions in [[b.clone(), f.clone()], [f, b]] {
+            assert_eq!(
+                s.find_nodes_by_properties(&conditions),
+                vec![ids[8]],
+                "un index enregistré et partiel a été cru"
+            );
+        }
+    }
+
+    /// La clé d'index, aux BORNES de l'égalité numérique et des classes :
+    /// deux valeurs ont la même clé SI ET SEULEMENT SI `valeurs_egales_gql`
+    /// les tient pour égales.
+    #[test]
+    fn cle_d_index_aux_bornes_de_l_egalite() {
+        let cle = |v: Value| index_value_key(&v);
+        // Zéro signé : -0.0 = 0.0 = 0.
+        assert_eq!(cle(Value::Float64(-0.0)), Some(IndexValueKey::Int(0)));
+        assert_eq!(cle(Value::Float64(0.0)), cle(Value::Int64(0)));
+        // -2^63 est représentable des deux côtés ; 2^63 ne l'est pas en i64.
+        assert_eq!(
+            cle(Value::Float64(-9_223_372_036_854_775_808.0)),
+            Some(IndexValueKey::Int(i64::MIN))
+        );
+        assert_eq!(cle(Value::Float64(9_223_372_036_854_775_808.0)), None);
+        // Au-delà de 2^53 le flottant ne représente que des multiples : il
+        // égale EXACTEMENT un entier, et pas son voisin.
+        let grand = 9_007_199_254_740_992.0_f64; // 2^53
+        assert_eq!(
+            cle(Value::Float64(grand)),
+            Some(IndexValueKey::Int(9_007_199_254_740_992))
+        );
+        assert_ne!(
+            cle(Value::Float64(grand)),
+            cle(Value::Int64(9_007_199_254_740_993))
+        );
+        // Ni entier, ni fini : pas de clé de recherche.
+        for f in [0.5, -1.25, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(cle(Value::Float64(f)), None, "{f}");
+            assert_eq!(cle_de_rangement(&Value::Float64(f)), IndexValueKey::Autre);
+        }
+        // Classes disjointes : un booléen n'est pas un entier, une chaîne de
+        // chiffres n'est pas un nombre.
+        assert_ne!(cle(Value::Bool(true)), cle(Value::Int64(1)));
+        assert_ne!(cle(Value::from("5")), cle(Value::Int64(5)));
+        // Chaque couple ci-dessus, confronté à l'égalité de revérification.
+        let paires = [
+            (Value::Float64(-0.0), Value::Int64(0)),
+            (Value::Float64(5.0), Value::Int64(5)),
+            (Value::Float64(5.5), Value::Int64(5)),
+            (Value::Float64(grand), Value::Int64(9_007_199_254_740_993)),
+            (Value::Bool(true), Value::Int64(1)),
+            (Value::from("5"), Value::Int64(5)),
+            (
+                Value::from("2024-01-01T10:00:00Z"),
+                Value::from("2024-01-01T12:00:00+02:00"),
+            ),
+            (
+                Value::from("3000-01-01T00:00:00Z"),
+                Value::from("9999-12-31T23:59:59Z"),
+            ),
+            (
+                Value::from("2024-01-01T00:00:00.0000001Z"),
+                Value::from("2024-01-01T00:00:00.0000002Z"),
+            ),
+        ];
+        for (x, y) in paires {
+            let memes_cles = cle(x.clone()).is_some() && cle(x.clone()) == cle(y.clone());
+            assert_eq!(
+                memes_cles,
+                valeurs_egales_gql(&x, &y),
+                "clé et égalité divergent pour {x:?} / {y:?}"
+            );
+        }
+    }
+
+    /// Le court-circuit de `valeurs_egales_gql` ne change JAMAIS le verdict du
+    /// comparateur canonique : même réponse sur un échantillon croisé.
+    #[test]
+    fn valeurs_egales_gql_court_circuit_egale_le_comparateur_canonique() {
+        let echantillon = [
+            Value::Int64(0),
+            Value::Int64(5),
+            Value::Int64(i64::MAX),
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Float64(5.0),
+            Value::Float64(5.5),
+            Value::Float64(f64::NAN),
+            Value::from("5"),
+            Value::from("abc"),
+            Value::from("2024-01-01T10:00:00Z"),
+            Value::from("2024-01-01T12:00:00+02:00"),
+            Value::from("3000-01-01T00:00:00Z"),
+            Value::Null,
+        ];
+        for a in &echantillon {
+            for b in &echantillon {
+                assert_eq!(
+                    valeurs_egales_gql(a, b),
+                    obrain_common::types::value_cmp::egalite_structurelle(a, b),
+                    "{a:?} / {b:?}"
+                );
+            }
+        }
+    }
+
+    /// REVUE 2, point 4 — deux dates DISTINCTES ne sont pas « égales » parce
+    /// que leur instant sature (au-delà de 2262) ou se tronque (sous la
+    /// microseconde). Une colonne indexée sous unicité refusait la seconde.
+    #[test]
+    fn resolution_selective_dates_distinctes_restent_distinctes_sous_index() {
+        let (_td, s) = store();
+        s.create_property_index("d");
+        let dates = [
+            "3000-01-01T00:00:00Z",
+            "9999-12-31T23:59:59Z",
+            "1500-06-01T00:00:00Z",
+            "1000-06-01T00:00:00Z",
+            "2024-01-01T00:00:00.0000001Z",
+            "2024-01-01T00:00:00.0000002Z",
+        ];
+        let mut ids = Vec::new();
+        for d in dates {
+            let id = s.create_node(&["Evt"]);
+            s.set_node_property(id, "d", Value::from(d));
+            ids.push(id);
+        }
+        for (d, id) in dates.iter().zip(&ids) {
+            assert_eq!(
+                s.find_nodes_by_property("d", &Value::from(*d)),
+                vec![*id],
+                "`{d}` doit ne trouver que son porteur"
+            );
+        }
+        // Et le même instant, écrit ailleurs, reste trouvé à ces bornes.
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("3000-01-01T02:00:00+02:00")),
+            vec![ids[0]]
+        );
+    }
+
+    /// DÉFAUT 5 — l'existence. La série d'une propriété déclarée doit porter
+    /// TOUS ses porteurs, y compris ceux dont la valeur n'a pas de clé de
+    /// recherche (flottant non entier, temporel typé, Null, petite liste).
+    #[test]
+    fn existence_voit_les_porteurs_de_valeurs_non_projetables() {
+        let (_td, s) = store();
+        s.create_property_index("p");
+        let valeurs = [
+            Value::Int64(1),
+            Value::Float64(0.5),
+            Value::Float64(f64::NAN),
+            Value::Null,
+            Value::List(vec![Value::Int64(1), Value::Int64(2)].into()),
+            Value::from("texte"),
+        ];
+        let mut porteurs = Vec::new();
+        for v in valeurs {
+            let id = s.create_node(&["N"]);
+            s.set_node_property(id, "p", v);
+            porteurs.push(id);
+        }
+        let _sans = s.create_node(&["N"]);
+        assert_eq!(
+            s.find_nodes_with_property("p"),
+            Some(porteurs.clone()),
+            "tout porteur de `p` doit sortir, quelle que soit sa valeur"
+        );
+        // Réécriture d'une valeur non projetable par une autre : le porteur
+        // reste dans le seau « autre » (on ne retire pas l'entrée qu'on vient
+        // de poser).
+        s.set_node_property(porteurs[1], "p", Value::Float64(0.75));
+        assert_eq!(s.find_nodes_with_property("p"), Some(porteurs));
+    }
+
+    /// DÉFAUT 5, suite — une valeur routée en colonne DENSE (chaîne de plus
+    /// de 256 octets) n'entre dans aucune série : l'existence doit SE TAIRE
+    /// (`None`, l'appelant balaie) plutôt que rendre une liste incomplète. Et
+    /// l'ÉGALITÉ sur une telle valeur, qui rendait `[]`, la trouve.
+    #[test]
+    fn valeur_en_colonne_blob_existence_muette_et_egalite_juste() {
+        let (_td, s) = store();
+        s.create_property_index("p");
+        let longue: String = "x".repeat(700);
+        let a = s.create_node(&["N"]);
+        s.set_node_property(a, "p", Value::from(longue.as_str()));
+        let b = s.create_node(&["N"]);
+        s.set_node_property(b, "p", Value::from("courte"));
+        assert_eq!(
+            s.find_nodes_with_property("p"),
+            None,
+            "un porteur vit en colonne blob : la série n'est pas la liste complète"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("p", &Value::from(longue.as_str())),
+            vec![a],
+            "égalité sur une chaîne routée en colonne blob"
+        );
+        assert_eq!(
+            s.find_nodes_by_properties(&[
+                ("p", Value::from(longue.as_str())),
+                ("p", Value::from(longue.as_str()))
+            ]),
+            vec![a]
+        );
+        assert_eq!(
+            s.find_nodes_by_property("p", &Value::from("courte")),
+            vec![b]
+        );
+    }
+
+    /// DÉFAUT 3 — la paire (valeur, entrée d'index) vue par un lecteur. À
+    /// l'instant où la valeur neuve est LISIBLE, l'index doit déjà rendre le
+    /// nœud. La sonde s'exécute à cet instant précis, dans `set_node_property`.
+    #[test]
+    fn ecriture_valeur_lisible_implique_noeud_trouvable_par_l_index() {
+        let (_td, s) = store();
+        s.create_property_index("a");
+        s.create_property_index("b");
+        let n = s.create_node(&["Pair"]);
+        s.set_node_property(n, "a", Value::Int64(1));
+        s.set_node_property(n, "b", Value::Int64(5));
+        let autre = s.create_node(&["Pair"]);
+        s.set_node_property(autre, "a", Value::Int64(1));
+        s.set_node_property(autre, "b", Value::Int64(6));
+        // Tours à blanc : index complets.
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(5)), vec![n]);
+
+        type Releve = Vec<(Option<Value>, Vec<NodeId>, Vec<NodeId>)>;
+        let vus: std::rc::Rc<std::cell::RefCell<Releve>> = std::rc::Rc::default();
+        let vus_sonde = std::rc::Rc::clone(&vus);
+        APRES_ECRITURE_VALEUR.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                vus_sonde.borrow_mut().push((
+                    s.get_node_property(n, &PropertyKey::new("b")),
+                    s.find_nodes_by_property("b", &Value::Int64(9)),
+                    s.find_nodes_by_properties(&[("a", Value::Int64(1)), ("b", Value::Int64(9))]),
+                ));
+            }));
+        });
+        s.set_node_property(n, "b", Value::Int64(9));
+        APRES_ECRITURE_VALEUR.with(|h| *h.borrow_mut() = None);
+        let vus = vus.borrow();
+        assert_eq!(vus.len(), 1, "la sonde a tourné une fois");
+        let (lue, par_index, par_deux) = &vus[0];
+        assert_eq!(lue, &Some(Value::Int64(9)), "la valeur neuve est lisible");
+        assert_eq!(par_index, &vec![n], "… donc l'index doit rendre le nœud");
+        assert_eq!(
+            par_deux,
+            &vec![n],
+            "… et la recherche à deux conditions aussi"
+        );
+        // L'ancienne valeur est sortie de l'index, la neuve y est.
+        assert!(s.find_nodes_by_property("b", &Value::Int64(5)).is_empty());
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(9)), vec![n]);
+    }
+
+    /// DÉFAUT 3, sous VRAIE concurrence : un écrivain pose des valeurs
+    /// uniques, un lecteur vérifie en continu que tout nœud dont il LIT la
+    /// valeur est rendu par l'index pour cette valeur. Aucune sonde, aucun
+    /// ordonnancement imposé.
+    #[test]
+    fn lecteur_concurrent_ne_voit_jamais_une_valeur_sans_son_entree_d_index() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+        let (_td, s) = store();
+        let s = Arc::new(s);
+        s.create_property_index("b");
+        const N: u64 = 4_000;
+        let ids: Vec<NodeId> = (0..N).map(|_| s.create_node(&["Pair"])).collect();
+        let ids = Arc::new(ids);
+        let fini = Arc::new(AtomicBool::new(false));
+        let avancee = Arc::new(AtomicU64::new(0));
+        let ecrivain = {
+            let (s, ids, fini, avancee) = (
+                Arc::clone(&s),
+                Arc::clone(&ids),
+                Arc::clone(&fini),
+                Arc::clone(&avancee),
+            );
+            std::thread::spawn(move || {
+                for (i, id) in ids.iter().enumerate() {
+                    s.set_node_property(*id, "b", Value::Int64(i as i64));
+                    avancee.store(i as u64 + 1, Ordering::Release);
+                }
+                fini.store(true, Ordering::Release);
+            })
+        };
+        let cle = PropertyKey::new("b");
+        let mut controles = 0u64;
+        let mut manques: Vec<u64> = Vec::new();
+        loop {
+            let termine = fini.load(Ordering::Acquire);
+            // On vise le nœud que l'écrivain est EN TRAIN d'écrire, et ses
+            // voisins : c'est là que la fenêtre s'ouvre.
+            let front = avancee.load(Ordering::Acquire);
+            for i in front.saturating_sub(1)..(front + 2).min(N) {
+                let id = ids[i as usize];
+                if s.get_node_property(id, &cle) == Some(Value::Int64(i as i64)) {
+                    controles += 1;
+                    if !s
+                        .find_nodes_by_property("b", &Value::Int64(i as i64))
+                        .contains(&id)
+                    {
+                        manques.push(i);
+                    }
+                }
+            }
+            if termine {
+                break;
+            }
+        }
+        ecrivain.join().unwrap();
+        assert!(controles > 0, "le lecteur a contrôlé des valeurs lues");
+        assert!(
+            manques.is_empty(),
+            "{} valeur(s) LUES sans entrée d'index (ex. {:?}) sur {controles} contrôles",
+            manques.len(),
+            &manques[..manques.len().min(5)]
+        );
+    }
+
+    /// DÉFAUT 2 / REVUE 2, point 1 — régime SANS PropsZone v2. Pendant que
+    /// `create_property_index` remplit l'index (enregistré, une entrée déjà
+    /// posée, marque de fin absente), une recherche concurrente ne doit pas
+    /// le croire : ni seul, ni élu parmi d'autres.
+    #[test]
+    #[allow(unsafe_code)]
+    fn regime_herite_un_index_en_cours_de_remplissage_n_est_pas_cru() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        assert!(s.props_zone.is_none(), "précondition : régime hérité");
+        let mut ids = Vec::new();
+        for i in 0..60i64 {
+            let id = s.create_node(&["Pair"]);
+            s.set_node_property(id, "a", Value::Int64(i % 2));
+            s.set_node_property(id, "b", Value::Int64(i));
+            ids.push(id);
+        }
+        s.create_property_index("a");
+        let attendus: Vec<Vec<NodeId>> = (0..60usize).map(|i| vec![ids[i]]).collect();
+
+        type Releve = Vec<(usize, Vec<NodeId>, Vec<NodeId>, Vec<NodeId>)>;
+        let vus: std::rc::Rc<std::cell::RefCell<Releve>> = std::rc::Rc::default();
+        let vus_sonde = std::rc::Rc::clone(&vus);
+        PENDANT_REMPLISSAGE_INDEX.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                // L'index de `b` porte UNE entrée sur 60. On interroge TOUS
+                // les nœuds : 59 d'entre eux ne sont pas encore dans l'index.
+                for i in 0..60usize {
+                    let (va, vb) = (Value::Int64(i as i64 % 2), Value::Int64(i as i64));
+                    vus_sonde.borrow_mut().push((
+                        i,
+                        s.find_nodes_by_property("b", &vb),
+                        s.find_nodes_by_properties(&[("a", va.clone()), ("b", vb.clone())]),
+                        s.find_nodes_by_properties(&[("b", vb), ("a", va)]),
+                    ));
+                }
+            }));
+        });
+        s.create_property_index("b");
+        PENDANT_REMPLISSAGE_INDEX.with(|h| *h.borrow_mut() = None);
+        let vus = vus.borrow();
+        assert_eq!(vus.len(), 60, "la sonde a tourné pendant le remplissage");
+        for (i, seul, ab, ba) in vus.iter() {
+            assert_eq!(seul, &attendus[*i], "b = {i} seul, index en remplissage");
+            assert_eq!(ab, &attendus[*i], "(a, b = {i}), index en remplissage");
+            assert_eq!(ba, &attendus[*i], "(b = {i}, a), index en remplissage");
+        }
+        // Une fois rempli, l'index répond — et il est élu (1 candidat relu).
+        let (hits, relus) = candidats_reverifies_pendant(|| {
+            s.find_nodes_by_properties(&[("a", Value::Int64(0)), ("b", Value::Int64(8))])
+        });
+        assert_eq!((hits, relus), (vec![ids[8]], 1));
+    }
+
     /// Rend le chemin du fichier d'index d'égalité persisté sous `racine`.
     fn fichier_index_egalite(racine: &std::path::Path) -> std::path::PathBuf {
         fn chercher(d: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -27672,24 +28649,91 @@ mod tests {
         chercher(racine).expect("fichier d'index d'égalité présent après flush")
     }
 
-    /// Base à deux index persistés (`a`, `b`) dont UN porteur de `b` est un
-    /// flottant entier et un porteur de `d` une chaîne datetime. Rend
-    /// (porteur flottant/datetime, porteur entier).
+    const DATE_N: &str = "2024-01-01T10:00:00Z";
+    const DATE_M: &str = "2025-06-01T00:00:00Z";
+
+    /// Base à index persistés (`a`, `b`, `d`, `t`) : `n` porte un flottant
+    /// entier (`b`) et une chaîne datetime (`d`) ; `m` porte un entier et une
+    /// autre date ; `t` est une chaîne ordinaire. Rend (`n`, `m`).
     fn base_persistee_a_cle_canonique(racine: &std::path::Path) -> (NodeId, NodeId) {
         let s = SubstrateStore::create(racine).unwrap();
         let n = s.create_node(&["Pair"]);
         s.set_node_property(n, "a", Value::Int64(1));
         s.set_node_property(n, "b", Value::Float64(5.0));
-        s.set_node_property(n, "d", Value::from("2024-01-01T10:00:00Z"));
+        s.set_node_property(n, "d", Value::from(DATE_N));
+        s.set_node_property(n, "t", Value::from("nord"));
         let m = s.create_node(&["Pair"]);
         s.set_node_property(m, "a", Value::Int64(2));
         s.set_node_property(m, "b", Value::Int64(7));
-        s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
-        s.create_property_index("a");
-        s.create_property_index("b");
-        s.create_property_index("d");
+        s.set_node_property(m, "d", Value::from(DATE_M));
+        s.set_node_property(m, "t", Value::from("sud"));
+        for cle in ["a", "b", "d", "t"] {
+            s.create_property_index(cle);
+        }
         s.flush().unwrap();
         (n, m)
+    }
+
+    /// Réécrit le fichier de zone d'égalité de `racine` tel qu'un binaire
+    /// d'AVANT la clé canonique l'aurait écrit pour la base de
+    /// [`base_persistee_a_cle_canonique`] : VRAI fichier de version 1 (racine
+    /// et pages au CRC valide), dont les séries ne portent que ce que la v1
+    /// projetait — Bool / Int64 / String par valeur brute. Le flottant de `n`
+    /// n'y est pas, et les dates y sont sous le hachage de leur CHAÎNE.
+    fn retrograder_la_zone_en_v1(racine: &std::path::Path, n: NodeId, m: NodeId) {
+        use crate::props_eq_index::{EntreeEgalite, hachage_chaine, hachage_int};
+        let (pk_a, pk_b, pk_d, pk_t) = {
+            let s = SubstrateStore::open(racine).unwrap();
+            let reg = s.prop_keys.read();
+            (
+                reg.lookup("a").unwrap(),
+                reg.lookup("b").unwrap(),
+                reg.lookup("d").unwrap(),
+                reg.lookup("t").unwrap(),
+            )
+        };
+        let (n, m) = (n.0 as u32, m.0 as u32);
+        let trie = |mut v: Vec<EntreeEgalite>| {
+            v.sort_unstable_by_key(EntreeEgalite::ordre);
+            v
+        };
+        let mut series = vec![
+            (
+                pk_a,
+                trie(vec![
+                    EntreeEgalite::new(hachage_int(1), n),
+                    EntreeEgalite::new(hachage_int(2), m),
+                ]),
+            ),
+            (pk_b, trie(vec![EntreeEgalite::new(hachage_int(7), m)])),
+            (
+                pk_d,
+                trie(vec![
+                    EntreeEgalite::new(hachage_chaine(DATE_N), n),
+                    EntreeEgalite::new(hachage_chaine(DATE_M), m),
+                ]),
+            ),
+            (
+                pk_t,
+                trie(vec![
+                    EntreeEgalite::new(hachage_chaine("nord"), n),
+                    EntreeEgalite::new(hachage_chaine("sud"), m),
+                ]),
+            ),
+        ];
+        series.sort_unstable_by_key(|(pk, _)| *pk);
+        let fichier = fichier_index_egalite(racine);
+        let mut zone = crate::props_eq_index::PropsEqIndexZone::ouvrir_fichier_pour_test(&fichier);
+        let (ancre_wal, ancre_pages) = (zone.ancre_wal(), zone.ancre_pages());
+        zone.fusionner_en(&series, ancre_wal, ancre_pages, false)
+            .unwrap();
+        drop(zone);
+        let octets = std::fs::read(&fichier).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
+            crate::props_eq_index::EQ_VERSION_HERITEE,
+            "le fichier est bien de version 1"
+        );
     }
 
     /// Les requêtes du constat 1, dans les deux ordres, sur un store donné.
@@ -27742,10 +28786,10 @@ mod tests {
         let (n, _m) = base_persistee_a_cle_canonique(&racine);
 
         let s2 = SubstrateStore::open(&racine).unwrap();
-        assert!(
-            s2.index_egalite.as_ref().unwrap().read().fiable(),
-            "précondition : zone fiable à la réouverture"
-        );
+        let zone = s2.index_egalite.as_ref().unwrap().read();
+        assert!(zone.fiable(), "précondition : zone fiable à la réouverture");
+        assert!(zone.canonique(), "précondition : zone de version courante");
+        drop(zone);
         for cle in ["a", "b", "d"] {
             assert!(
                 s2.egalite_couverte.contains_key(&PropertyKey::new(cle)),
@@ -27759,61 +28803,304 @@ mod tests {
             );
         }
         verifier_constat_1(&s2, n, "zone persistée relue");
+        // L'élection lit la zone sans la copier, et choisit bien `b`.
+        let (hits, relus) = candidats_reverifies_pendant(|| {
+            s2.find_nodes_by_properties(&[("a", Value::Int64(1)), ("b", Value::Int64(5))])
+        });
+        assert_eq!((hits, relus), (vec![n], 1));
+        assert!(
+            !s2.index_egalite_a_preparer(),
+            "une base à jour n'a rien à préparer en arrière-plan"
+        );
     }
 
-    /// CHANGEMENT DE FORMAT — une zone écrite AVANT la clé canonique
-    /// (`EQ_VERSION` = 1) ne contient ni les flottants entiers ni les
-    /// instants : la croire rendrait les faux négatifs du constat 1 sur
-    /// toute base existante. Elle doit être JETÉE à l'ouverture (index
-    /// rebâtis depuis les chaînes, résultats justes), puis réécrite au
-    /// format courant par le flush suivant — après quoi la réouverture
-    /// redevient « zéro reconstruction ».
+    /// MIGRATION — une zone écrite AVANT la clé canonique (version 1) n'est
+    /// PAS jetée. À l'ouverture rien n'est rebâti ; elle sert tout de suite ce
+    /// qu'elle sait servir exactement (chaîne ordinaire) ; une recherche
+    /// d'entier ou d'instant bâtit le COMPLÉMENT (les seules entrées qui
+    /// manquent), une fois ; et la zone est réécrite en version courante.
     #[test]
     #[allow(unsafe_code)]
-    fn resolution_selective_une_zone_d_avant_la_cle_canonique_est_jetee_puis_reecrite() {
+    fn migration_une_zone_v1_est_servie_puis_completee_sans_reconstruction() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+        retrograder_la_zone_en_v1(&racine, n, m);
+        let fichier = fichier_index_egalite(&racine);
+
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        {
+            let zone = s2.index_egalite.as_ref().unwrap().read();
+            assert!(zone.fiable(), "une zone v1 saine est CRUE, pas jetée");
+            assert!(!zone.canonique(), "… et reconnue héritée");
+        }
+        assert!(s2.egalite_heritee.load(Ordering::Acquire));
+        assert!(
+            s2.index_egalite_a_preparer(),
+            "il y a un complément à bâtir"
+        );
+        for cle in ["a", "b", "d", "t"] {
+            assert!(
+                s2.property_indexes
+                    .get(&PropertyKey::new(cle))
+                    .is_some_and(|i| i.is_empty()),
+                "l'ouverture n'a RIEN rebâti pour `{cle}`"
+            );
+        }
+        // Une chaîne ordinaire : servie par la zone v1, SANS complément.
+        assert_eq!(s2.find_nodes_by_property("t", &Value::from("sud")), vec![m]);
+        assert_eq!(
+            s2.find_nodes_by_properties(&[("t", Value::from("nord")), ("t", Value::from("nord"))]),
+            vec![n]
+        );
+        assert!(
+            s2.egalite_heritee.load(Ordering::Acquire),
+            "une recherche que la zone v1 sert exactement ne déclenche aucune passe"
+        );
+        // Un entier, un instant : la zone v1 seule serait FAUSSE (le flottant
+        // de `n` n'y est pas, la date y est sous une autre clé). Le
+        // complément est bâti, et les réponses sont justes.
+        verifier_constat_1(&s2, n, "zone v1 complétée");
+        assert!(!s2.egalite_heritee.load(Ordering::Acquire));
+        // Le complément ne contient QUE ce qui manquait : `a` (entiers purs)
+        // n'a rien reçu, `b` a reçu le flottant de `n`, `d` les deux instants.
+        let taille_ram = |cle: &str| {
+            s2.property_indexes
+                .get(&PropertyKey::new(cle))
+                .map_or(0, |i| i.iter().map(|e| e.value().len()).sum::<usize>())
+        };
+        assert_eq!(taille_ram("a"), 0, "rien à compléter pour `a`");
+        assert_eq!(taille_ram("t"), 0, "rien à compléter pour `t`");
+        assert_eq!(taille_ram("b"), 1, "le flottant entier de `n`");
+        assert_eq!(taille_ram("d"), 2, "les deux instants");
+        // L'existence aussi répond, complète.
+        assert_eq!(s2.find_nodes_with_property("b"), Some(vec![n, m]));
+        drop(s2);
+
+        // Le complément a été persisté : le fichier est de version courante,
+        // et la réouverture suivante n'a plus rien à faire.
+        let octets = std::fs::read(&fichier).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
+            crate::props_eq_index::EQ_VERSION
+        );
+        let s3 = SubstrateStore::open(&racine).unwrap();
+        assert!(s3.index_egalite.as_ref().unwrap().read().canonique());
+        assert!(!s3.egalite_heritee.load(Ordering::Acquire));
+        assert!(!s3.index_egalite_a_preparer());
+        assert!(
+            s3.property_indexes
+                .get(&PropertyKey::new("b"))
+                .is_some_and(|i| i.is_empty()),
+            "zéro reconstruction après migration"
+        );
+        verifier_constat_1(&s3, n, "zone réécrite en version courante");
+    }
+
+    /// MIGRATION EN ARRIÈRE-PLAN — le complément est bâti par un autre fil
+    /// (`preparer_index_egalite`, ce que fait `ObrainDB` à l'ouverture)
+    /// pendant que des recherches tournent. Aucune réponse ne doit être
+    /// fausse, à aucun moment : avant, pendant, après.
+    #[test]
+    #[allow(unsafe_code)]
+    fn migration_en_arriere_plan_aucune_reponse_fausse_pendant_la_passe() {
+        use std::sync::Arc;
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+        retrograder_la_zone_en_v1(&racine, n, m);
+
+        let s = Arc::new(SubstrateStore::open(&racine).unwrap());
+        assert!(s.egalite_heritee.load(Ordering::Acquire));
+        let fil = {
+            let s = Arc::clone(&s);
+            std::thread::spawn(move || s.preparer_index_egalite())
+        };
+        for _ in 0..200 {
+            verifier_constat_1(&s, n, "pendant la passe d'arrière-plan");
+            assert_eq!(s.find_nodes_by_property("t", &Value::from("sud")), vec![m]);
+            assert_eq!(s.find_nodes_by_property("b", &Value::Float64(7.0)), vec![m]);
+        }
+        fil.join().unwrap();
+        assert!(!s.egalite_heritee.load(Ordering::Acquire));
+        verifier_constat_1(&s, n, "après la passe d'arrière-plan");
+    }
+
+    /// DÉFAUT 1 / REVUE 2, point 3 — `create_property_index` en session,
+    /// avec une écriture qui avance le WAL entre la persistance de l'index
+    /// neuf et le marquage de couverture. La confrontation d'ancres faisait
+    /// alors passer la zone NON FIABLE sous des clés couvertes à l'ouverture
+    /// (carte RAM = delta seul) : `find_nodes_by_property` rendait le delta.
+    #[test]
+    #[allow(unsafe_code)]
+    fn index_cree_en_session_ne_rend_pas_partielles_les_cles_couvertes() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+
+        let s = SubstrateStore::open(&racine).unwrap();
+        assert!(s.egalite_couverte.contains_key(&PropertyKey::new("b")));
+        // Une écriture de session : le delta RAM de `b` n'est plus vide.
+        let x = s.create_node(&["Pair"]);
+        s.set_node_property(x, "a", Value::Int64(3));
+        s.set_node_property(x, "b", Value::Int64(11));
+        s.set_node_property(x, "z", Value::Int64(1));
+        ENTRE_PERSISTANCE_ET_COUVERTURE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|s: &SubstrateStore| {
+                // L'écriture « concurrente » : le WAL avance.
+                let y = s.create_node(&["Pair"]);
+                s.set_node_property(y, "z", Value::Int64(2));
+            }));
+        });
+        s.create_property_index("z");
+        ENTRE_PERSISTANCE_ET_COUVERTURE.with(|h| *h.borrow_mut() = None);
+
+        // `m` (b = 7) et `n` (b = 5.0) ne sont QUE dans la zone persistée.
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(7)), vec![m]);
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(11)), vec![x]);
+        verifier_constat_1(&s, n, "après un index créé en session");
+        assert_eq!(s.find_nodes_by_property("z", &Value::Int64(1)), vec![x]);
+        assert_eq!(s.find_nodes_by_property("z", &Value::Int64(2)).len(), 1);
+    }
+
+    /// DÉFAUT 1, la défense en profondeur : la zone cesse de répondre EN
+    /// SESSION (ancres confrontées après des écritures). Les clés qu'elle
+    /// couvrait ne doivent pas continuer à passer pour complètes sur leur
+    /// delta : elles sont rebâties, et les réponses restent justes.
+    #[test]
+    #[allow(unsafe_code)]
+    fn zone_devenue_non_fiable_en_session_les_cles_couvertes_restent_justes() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+
+        let s = SubstrateStore::open(&racine).unwrap();
+        let x = s.create_node(&["Pair"]);
+        s.set_node_property(x, "a", Value::Int64(3));
+        s.set_node_property(x, "b", Value::Int64(11));
+        // Le WAL a avancé : cette confrontation déclare la zone non fiable.
+        s.confronter_index_egalite();
+        assert!(!s.index_egalite.as_ref().unwrap().read().fiable());
+        assert!(
+            !s.egalite_couverte.contains_key(&PropertyKey::new("b")),
+            "une zone qui ne répond plus ne couvre plus rien"
+        );
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(7)), vec![m]);
+        assert_eq!(s.find_nodes_by_property("b", &Value::Int64(11)), vec![x]);
+        verifier_constat_1(&s, n, "zone devenue non fiable en session");
+        assert_eq!(s.find_nodes_with_property("b"), Some(vec![n, m, x]));
+    }
+
+    /// Le `flush()` d'une base dont AUCUN index n'a bougé ne réécrit pas la
+    /// zone d'égalité : il repose ses ancres. La zone reste fiable à la
+    /// réouverture — sinon chaque ouverture rebâtirait.
+    #[test]
+    #[allow(unsafe_code)]
+    fn flush_sans_ecriture_indexee_ne_reecrit_pas_la_zone() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, _m) = base_persistee_a_cle_canonique(&racine);
-
-        // Le fichier d'une base « existante » : on y repose la version 1.
-        // (La version est lue AVANT le CRC : c'est elle qui fait jeter.)
-        let fichier = fichier_index_egalite(&racine);
-        let mut octets = std::fs::read(&fichier).unwrap();
+        let s = SubstrateStore::open(&racine).unwrap();
+        let generation = s.index_egalite.as_ref().unwrap().read().generation();
+        let taille = std::fs::metadata(fichier_index_egalite(&racine))
+            .unwrap()
+            .len();
+        // Une écriture qui ne touche AUCUNE clé indexée, mais avance le WAL.
+        let y = s.create_node(&["Autre"]);
+        s.set_node_property(y, "hors_index", Value::Int64(1));
+        s.flush().unwrap();
+        let zone = s.index_egalite.as_ref().unwrap().read();
+        assert!(zone.fiable());
         assert_eq!(
-            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
-            crate::props_eq_index::EQ_VERSION,
-            "le champ version est bien aux octets 4..8 de la racine"
+            zone.generation(),
+            generation.wrapping_add(1),
+            "les ancres ont été reposées (une génération), pas la zone réécrite"
         );
-        octets[4..8].copy_from_slice(&1u32.to_le_bytes());
-        std::fs::write(&fichier, &octets).unwrap();
-
+        drop(zone);
+        assert_eq!(
+            std::fs::metadata(fichier_index_egalite(&racine))
+                .unwrap()
+                .len(),
+            taille
+        );
+        drop(s);
         let s2 = SubstrateStore::open(&racine).unwrap();
+        assert!(s2.index_egalite.as_ref().unwrap().read().fiable());
         assert!(
-            !s2.index_egalite.as_ref().unwrap().read().fiable(),
-            "une zone de version 1 ne doit pas être crue"
+            s2.property_indexes
+                .get(&PropertyKey::new("b"))
+                .is_some_and(|i| i.is_empty()),
+            "zéro reconstruction à la réouverture"
         );
-        assert!(
-            !s2.egalite_couverte.contains_key(&PropertyKey::new("b")),
-            "aucune clé couverte par une zone jetée"
-        );
-        verifier_constat_1(&s2, n, "zone v1 jetée, index rebâtis");
-
-        // Le flush réécrit la zone au format courant…
+        verifier_constat_1(&s2, n, "après un flush sans écriture indexée");
+        // Une écriture INDEXÉE, elle, est bien fusionnée.
+        let z = s2.create_node(&["Pair"]);
+        s2.set_node_property(z, "b", Value::Int64(42));
         s2.flush().unwrap();
         drop(s2);
-        let octets = std::fs::read(&fichier).unwrap();
-        assert_eq!(
-            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
-            crate::props_eq_index::EQ_VERSION
-        );
-        // … et la réouverture suivante ne rebâtit plus rien.
         let s3 = SubstrateStore::open(&racine).unwrap();
-        assert!(s3.index_egalite.as_ref().unwrap().read().fiable());
-        assert!(s3.egalite_couverte.contains_key(&PropertyKey::new("b")));
-        verifier_constat_1(&s3, n, "zone réécrite au format courant");
+        assert!(
+            s3.property_indexes
+                .get(&PropertyKey::new("b"))
+                .is_some_and(|i| i.is_empty())
+        );
+        assert_eq!(s3.find_nodes_by_property("b", &Value::Int64(42)), vec![z]);
+    }
+
+    /// UNE construction à la fois : des recherches simultanées sur une clé
+    /// jamais bâtie ne font pas chacune leur passe complète.
+    #[test]
+    #[allow(unsafe_code)]
+    fn recherches_simultanees_sur_une_cle_a_batir_font_une_seule_passe() {
+        use std::sync::Arc;
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        {
+            let s = SubstrateStore::create(&racine).unwrap();
+            for i in 0..3_000i64 {
+                let id = s.create_node(&["Ligne"]);
+                s.set_node_property(id, "b", Value::Int64(i));
+            }
+            s.flush().unwrap();
+        }
+        let s = Arc::new(SubstrateStore::open(&racine).unwrap());
+        let avant = s.passes_de_construction.load(Ordering::Acquire);
+        let barriere = Arc::new(std::sync::Barrier::new(8));
+        let fils: Vec<_> = (0..8i64)
+            .map(|k| {
+                let (s, barriere) = (Arc::clone(&s), Arc::clone(&barriere));
+                std::thread::spawn(move || {
+                    barriere.wait();
+                    s.find_nodes_by_property("b", &Value::Int64(100 + k)).len()
+                })
+            })
+            .collect();
+        for f in fils {
+            assert_eq!(f.join().unwrap(), 1);
+        }
+        assert_eq!(
+            s.passes_de_construction.load(Ordering::Acquire) - avant,
+            1,
+            "8 recherches simultanées, UNE passe sur la base"
+        );
     }
 
     #[test]
@@ -36915,17 +38202,17 @@ mod tests {
     /// CE QUI EST TRAITÉ ICI : l'INTERVALLE, dans les deux régimes, par
     /// `balayer_blob_par_predicat`.
     ///
-    /// CE QUI RESTE OUVERT, ET SCIEMMENT : l'ÉGALITÉ
-    /// (`find_nodes_by_property`) reste aveugle aux colonnes blob, dans les
-    /// deux régimes. Le boucher demande le même balayage côté égalité ; ce
-    /// n'est pas fait ici parce que ce correctif porte sur la famille des
-    /// COMPARAISONS et que toucher `find_nodes_by_property` élargirait le
-    /// diff sur une fonction déjà remaniée le 19/08. Le test le FIGE plutôt
-    /// que de le laisser tacite : il échouera le jour où l'égalité sera
-    /// réparée, ce qui obligera à venir relire ce pavé.
+    /// L'ÉGALITÉ (`find_nodes_by_property`) est restée aveugle aux colonnes
+    /// blob jusqu'à la PR #101 — ce test la FIGEAIT à 0 pour qu'on revienne
+    /// lire ce pavé le jour où elle serait réparée. Elle l'est : une valeur
+    /// cherchée assez longue pour avoir été routée en colonne blob n'est
+    /// jamais dans l'index (`index_value_key` rend `None`), et le balayage
+    /// exact (`recherche_exacte_sans_index`) interroge les colonnes blob par
+    /// le même `balayer_blob_par_predicat` que l'intervalle. Les quatre
+    /// recherches rendent donc 1, dans les deux régimes.
     #[test]
     #[allow(unsafe_code)]
-    fn colonnes_blob_intervalle_corrige_egalite_encore_aveugle() {
+    fn colonnes_blob_intervalle_et_egalite_voient_les_valeurs_longues() {
         use obrain_core::graph::traits::GraphStore;
         let _guard = props_v2_env_lock();
         let court = Value::String("bonjour".into());
@@ -36982,14 +38269,13 @@ mod tests {
 
         assert_eq!(
             av,
-            (1, 0, 1, 1),
-            "régime HÉRITÉ : attendu (égalité courte 1, égalité longue 0 — \
-             trou connu non traité, intervalle court 1, intervalle longue 1 — \
-             corrigé le 20/08) ; obtenu {av:?}"
+            (1, 1, 1, 1),
+            "régime HÉRITÉ : attendu (égalité courte 1, égalité longue 1, \
+             intervalle court 1, intervalle longue 1) ; obtenu {av:?}"
         );
         assert_eq!(
             ap,
-            (1, 0, 1, 1),
+            (1, 1, 1, 1),
             "régime v2 MIGRÉ : mêmes attentes qu'en hérité ; obtenu {ap:?}"
         );
         assert_eq!(
