@@ -699,11 +699,10 @@ impl GqlTranslator {
                         }
                     }
                     ast::QueryClause::ForEach(foreach_clause) => {
-                        // Skip FOREACH here if WITH clauses exist — they'll be
-                        // translated after WITH projection so variables are visible.
-                        if query.with_clauses.is_empty() {
-                            plan = self.translate_foreach_gql(foreach_clause, plan)?;
-                        }
+                        // À sa position : un `WITH` écrit avant est déjà traduit,
+                        // ses variables sont visibles (l'ancien second passage
+                        // « après les WITH » n'a plus lieu d'être).
+                        plan = self.translate_foreach_gql(foreach_clause, plan)?;
                     }
                 }
             }
