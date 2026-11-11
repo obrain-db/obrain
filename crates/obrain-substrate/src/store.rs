@@ -21446,6 +21446,14 @@ impl SubstrateStore {
         // (il les recompte tous depuis les zones) : on la consomme d'abord pour
         // ne pas balayer deux fois, puis on recompte avec les histogrammes.
         self.compteurs_a_verifier.store(false, Ordering::Release);
+        // Point d'injection des tests de course (thread-local : il ne vaut que pour
+        // le fil qui l'arme).
+        #[cfg(test)]
+        AVANT_RECOMPTAGE_DIFFERE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f();
+            }
+        });
         if let Err(e) = self.rebuild_live_counters_from_zones() {
             tracing::warn!(
                 erreur = ?e,
@@ -38077,6 +38085,14 @@ mod coherence_lecteur_ro {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Appelé par `assurer_histogrammes_pairs` juste avant le recomptage différé :
+    /// permet à un test d'immobiliser CE fil exactement à cet endroit.
+    static AVANT_RECOMPTAGE_DIFFERE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Chemins d'écriture PRIVÉS du store, refusés en lecture seule : ils ne sont pas
 /// joignables depuis `tests/`, donc éprouvés ici.
 #[cfg(test)]
@@ -38138,5 +38154,121 @@ mod refus_lecture_seule {
             v
         };
         assert_eq!(avant, apres, "un refus a créé ou supprimé un fichier");
+    }
+}
+
+/// ── LA VÉRIFICATION DIFFÉRÉE DES COMPTEURS NE SE LAISSE PAS DOUBLER ──────────
+///
+/// Défaut relevé par la relecture indépendante de #118 : `assurer_histogrammes_pairs`
+/// remettait le drapeau « compteurs à vérifier » à faux AVANT son recomptage de
+/// plusieurs ms. Un autre fil qui lisait `node_count()` entre-temps trouvait le
+/// drapeau à faux et recevait les compteurs NON vérifiés du dictionnaire
+/// (4 660 pour 300 nœuds) — ce que le commentaire de #118 jurait impossible.
+///
+/// Le test immobilise le fil A EXACTEMENT entre le drapeau et le recomptage (point
+/// d'injection), lance un lecteur B, et exige que B ne reçoive RIEN tant que A n'a
+/// pas fini — puis la bonne valeur. Déterministe : pas de sommeil dont le bon
+/// fonctionnement dépende, seulement un délai d'attente d'une ABSENCE de réponse.
+#[cfg(test)]
+mod course_verification_lecture_seule {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const N: usize = 300;
+    const ITERATIONS: usize = 5;
+
+    /// Dictionnaire menteur : totaux et compteurs par label faux, histogrammes
+    /// de labels pairs absents (le cas qui déclenche le recomptage différé).
+    fn base_au_dictionnaire_menteur(chemin: &Path) {
+        {
+            let s = SubstrateStore::create(chemin).unwrap();
+            let mut prec = None;
+            for _ in 0..N {
+                let id = s.create_node(&["Personne"]);
+                if let Some(p) = prec {
+                    s.create_edge(id, p, "CONNAIT");
+                }
+                prec = Some(id);
+            }
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        let p = chemin.join("substrate.dict");
+        let mut d = crate::dict::DictSnapshot::load(&p).unwrap();
+        let c = d.counters.as_mut().expect("compteurs persistés");
+        c.total_live_nodes = 4660;
+        c.total_live_edges = 4660;
+        for v in c.label_counts.iter_mut() {
+            if *v > 0 {
+                *v *= 2;
+            }
+        }
+        c.edge_type_target_label_counts.clear();
+        c.edge_type_source_label_counts.clear();
+        d.persist(&p).unwrap();
+    }
+
+    #[test]
+    fn un_lecteur_de_compteurs_ne_recoit_rien_de_non_verifie_pendant_le_recomptage_differe() {
+        type Lecteur = fn(&SubstrateStore) -> usize;
+        let lecteurs: [(&str, Lecteur, usize); 3] = [
+            ("node_count", |s| s.node_count(), N),
+            ("edge_count", |s| s.edge_count(), N - 1),
+            (
+                "node_count_by_label",
+                |s| s.node_count_by_label("Personne"),
+                N,
+            ),
+        ];
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("course");
+        base_au_dictionnaire_menteur(&chemin);
+
+        for (nom, lire, attendu) in lecteurs {
+            for tour in 0..ITERATIONS {
+                let s = Arc::new(SubstrateStore::open_read_only(&chemin).unwrap());
+                let (au_point_tx, au_point_rx) = mpsc::channel::<()>();
+                let (lache_tx, lache_rx) = mpsc::channel::<()>();
+
+                // Fil A : déclenche le recomptage différé, immobilisé juste avant.
+                let sa = Arc::clone(&s);
+                let a = std::thread::spawn(move || {
+                    AVANT_RECOMPTAGE_DIFFERE.with(|h| {
+                        *h.borrow_mut() = Some(Box::new(move || {
+                            au_point_tx.send(()).unwrap();
+                            lache_rx.recv().unwrap();
+                        }));
+                    });
+                    sa.edge_target_labels_substrate("CONNAIT").len()
+                });
+                au_point_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("le fil A n'a pas atteint le point d'injection");
+
+                // Fil B : lit un compteur pendant que A est entre le drapeau et
+                // le recomptage.
+                let sb = Arc::clone(&s);
+                let (rtx, rrx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    rtx.send(lire(&sb)).unwrap();
+                });
+                let pendant = rrx.recv_timeout(Duration::from_millis(300)).ok();
+
+                lache_tx.send(()).unwrap();
+                a.join().unwrap();
+
+                if let Some(v) = pendant {
+                    panic!(
+                        "{nom} (tour {tour}) a rendu {v} pendant le recomptage différé : un \
+                         compteur NON vérifié a été servi (attendu {attendu} après vérification)"
+                    );
+                }
+                let v = rrx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("le lecteur B n'a jamais rendu la main");
+                assert_eq!(v, attendu, "{nom} (tour {tour}) après le recomptage");
+            }
+        }
     }
 }
