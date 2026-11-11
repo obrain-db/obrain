@@ -16886,6 +16886,52 @@ impl SubstrateStore {
         out.sort_by_key(|n| n.0);
         Some(out)
     }
+
+    /// Estimateur de sélectivité : nombre de candidats BRUTS (avant la
+    /// revérification liveness + valeur) pour `(property, value)`. C'est le
+    /// décompte que `indexed_candidates` matérialiserait, SANS la lecture de
+    /// propriété par candidat — le coût dominant d'une résolution par index
+    /// (PR #99 : ~744 µs pour ~2500 candidats, ~25 µs pour 1).
+    ///
+    /// `None` suit exactement la doctrine de `indexed_candidates` : clé non
+    /// enregistrée, valeur non projetable, ou index « globalement vide = je
+    /// ne sais pas ». L'appelant ne doit jamais lire `0` comme « très
+    /// sélectif » sur un index qui n'a pas été bâti — ce serait élire une clé
+    /// qui ne répond pas, et retomber à tort sur le balayage.
+    fn indexed_candidate_count(&self, property: &str, value: &Value) -> Option<usize> {
+        let key = PropertyKey::new(property);
+        let idx = self.property_indexes.get(&key)?;
+        let ik = index_value_key(value)?;
+
+        // Chemin zone persistée : identique à `indexed_candidates` (clé
+        // couverte ET zone qui répond), mais on COMPTE au lieu de revérifier.
+        // Le sur-ensemble disque ∪ RAM peut compter deux fois un nœud présent
+        // des deux côtés — un majorant, sans effet sur la justesse (le jeu
+        // retenu est revérifié intégralement par l'appelant).
+        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value())
+            && let Some(zone) = self.index_egalite.as_ref()
+            && let Some(slots) = zone.read().candidats(pk, Self::hachage_cle_egalite(&ik))
+        {
+            let mut total = slots.len();
+            if let Some(set) = idx.get(&ik) {
+                total += set.len();
+            }
+            drop(idx);
+            return Some(total);
+        }
+
+        // Même garde que `indexed_candidates` : un index globalement vide ne
+        // répond pas (None), pour que l'appelant retombe sur le balayage.
+        if idx.is_empty() {
+            return None;
+        }
+        let n = match idx.get(&ik) {
+            Some(set) => set.len(),
+            None => 0,
+        };
+        drop(idx);
+        Some(n)
+    }
 }
 
 impl SubstrateStore {
@@ -20058,18 +20104,43 @@ impl GraphStore for SubstrateStore {
             let cles: Vec<&str> = conditions.iter().map(|(k, _)| *k).collect();
             self.assurer_index_bati_depuis_v2(&cles);
         }
-        // T17b : si UNE des conditions porte sur une clé indexée, on prend
-        // ses candidats (déjà revérifiés pour elle) et on ne vérifie que les
+        // T17b : si une condition porte sur une clé indexée, on prend ses
+        // candidats (déjà revérifiés pour elle) et on ne vérifie que les
         // AUTRES conditions dessus — O(candidats) au lieu d'un scan complet.
+        //
+        // PR #99 : on choisissait la PREMIÈRE clé indexée, pas la PLUS
+        // SÉLECTIVE. `UNIQUE(a, b)` avec `a` peu sélectif (2 valeurs sur
+        // 5000 lignes) rendait ~2500 candidats à revérifier — une lecture de
+        // propriété par candidat, ~744 µs — là où `b` n'en rend qu'un
+        // (~25 µs). On compte donc les candidats BRUTS de chaque clé indexée
+        // (sans revérification) et on résout par le plus petit ensemble. Le
+        // verdict final reste identique : le jeu retenu est revérifié contre
+        // TOUTES les conditions, la sélectivité ne change que le coût.
+        let mut meilleure: Option<(&str, &Value)> = None;
+        let mut meilleure_taille = usize::MAX;
         for (prop, expected) in conditions {
-            if let Some(hits) = self.indexed_candidates(prop, expected) {
-                let owned: Vec<(&str, Value)> =
-                    conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
-                return hits
-                    .into_iter()
-                    .filter(|id| self.node_matches_all_props(*id, &owned))
-                    .collect();
+            if let Some(n) = self.indexed_candidate_count(prop, expected)
+                && n < meilleure_taille
+            {
+                meilleure_taille = n;
+                meilleure = Some((prop, expected));
+                // 0 ou 1 candidat : rien ne peut faire mieux. 1 nœud à
+                // revérifier au pire, et une condition SANS porteur rend la
+                // réponse vide quel que soit le jeu retenu — on s'arrête.
+                if n <= 1 {
+                    break;
+                }
             }
+        }
+        if let Some((prop, expected)) = meilleure
+            && let Some(hits) = self.indexed_candidates(prop, expected)
+        {
+            let owned: Vec<(&str, Value)> =
+                conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
+            return hits
+                .into_iter()
+                .filter(|id| self.node_matches_all_props(*id, &owned))
+                .collect();
         }
         // (2026-08-19) Repli v2, meme partage que `find_nodes_by_property` :
         // le balayage de fin parcourt une carte VIDE sous v2, il faut donc
@@ -27157,6 +27228,69 @@ mod tests {
         let none =
             s.find_nodes_by_properties(&[("id", Value::from("x")), ("kind", Value::from("bad"))]);
         assert!(none.is_empty(), "résultat attendu vide");
+    }
+
+    /// PR #99 — la résolution multi-critères choisit la propriété indexée la
+    /// PLUS SÉLECTIVE et reste correcte dans les deux sens : un vrai doublon
+    /// est rendu (l'appelant rejette), un couple nouveau rend vide (accepté).
+    #[test]
+    fn t17b_multi_conditions_correct_et_selectif_dans_les_deux_ordres() {
+        let (_td, s) = store();
+        s.create_property_index("a");
+        s.create_property_index("b");
+        // `a` et `b` ont chacune 2 valeurs ; (a=0, b=0) est porté DEUX fois.
+        let mut ids = Vec::new();
+        for i in 0..4i64 {
+            let id = s.create_node(&["Pair"]);
+            s.set_node_property(id, "a", Value::Int64(i % 2));
+            s.set_node_property(id, "b", Value::Int64(i % 2));
+            ids.push(id);
+        }
+
+        // Vrai DOUBLON (rejeté par l'appelant) : les DEUX porteurs sortent,
+        // dans les deux ordres.
+        let mut doublon = vec![ids[0], ids[2]];
+        doublon.sort_by_key(|n| n.0);
+        assert_eq!(
+            s.find_nodes_by_properties(&[("a", Value::Int64(0)), ("b", Value::Int64(0))]),
+            doublon,
+            "doublon (a=0,b=0) non détecté dans l'ordre (a,b)"
+        );
+        assert_eq!(
+            s.find_nodes_by_properties(&[("b", Value::Int64(0)), ("a", Value::Int64(0))]),
+            doublon,
+            "doublon (a=0,b=0) non détecté dans l'ordre (b,a)"
+        );
+
+        // Couple NOUVEAU (accepté) : aucun porteur, dans les deux ordres.
+        assert!(
+            s.find_nodes_by_properties(&[("a", Value::Int64(0)), ("b", Value::Int64(1))])
+                .is_empty(),
+            "couple nouveau (a=0,b=1) ne doit rendre personne"
+        );
+        assert!(
+            s.find_nodes_by_properties(&[("b", Value::Int64(1)), ("a", Value::Int64(0))])
+                .is_empty(),
+            "couple nouveau (b=1,a=0) ne doit rendre personne"
+        );
+    }
+
+    /// L'estimateur de sélectivité compte les candidats BRUTS, pas « premier
+    /// trouvé » : avec `a` peu sélectif (2 valeurs) et `b` unique, `b` rend
+    /// 1 candidat quand `a` en rend la moitié du stock.
+    #[test]
+    fn indexed_candidate_count_compte_les_candidats_bruts() {
+        let (_td, s) = store();
+        s.create_property_index("a");
+        s.create_property_index("b");
+        for i in 0..8i64 {
+            let id = s.create_node(&["Pair"]);
+            s.set_node_property(id, "a", Value::Int64(i % 2));
+            s.set_node_property(id, "b", Value::Int64(i));
+        }
+        assert_eq!(s.indexed_candidate_count("a", &Value::Int64(0)), Some(4));
+        assert_eq!(s.indexed_candidate_count("b", &Value::Int64(4)), Some(1));
+        assert_eq!(s.indexed_candidate_count("c", &Value::Int64(0)), None);
     }
 
     #[test]
