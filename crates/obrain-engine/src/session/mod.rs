@@ -1564,14 +1564,13 @@ impl Session {
                 if let Some(sub) = self.substrate_store()
                     && let Some(def) = self.catalog.get_node_type(&stmt.label)
                     && let Ok(json) = serde_json::to_string(&def)
+                    && let Err(e) = sub.declarer_type("node", &stmt.label, &json)
                 {
-                    if let Err(e) = sub.declarer_type("node", &stmt.label, &json) {
-                        tracing::error!(
-                            erreur = %e,
-                            label = %stmt.label,
-                            "contrainte NON persistée (substrate.typecat)"
-                        );
-                    }
+                    tracing::error!(
+                        erreur = %e,
+                        label = %stmt.label,
+                        "contrainte NON persistée (substrate.typecat)"
+                    );
                 }
 
                 wal_log!(
