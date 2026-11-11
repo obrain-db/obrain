@@ -129,21 +129,19 @@ fn verifier_trouve(dir: &Path) {
         1,
         "il est reconstruit depuis la colonne"
     );
-    if visible {
-        assert!(
-            hits[0].1 < 1e-3,
-            "le vecteur du pair est visible dans la colonne mais l'index reconstruit ne le \
-             trouve pas (distance {})",
-            hits[0].1
-        );
-    } else {
-        eprintln!(
-            "LIMITE v0.0.1 (hors C3) : le vecteur ecrit par le pair n'est pas visible par un \
-             troisieme processus via la colonne de vecteurs (garantie multi-ecrivain des \
-             proprietes : v0.0.2) — l'index reconstruit ne peut pas le contenir (distance {})",
-            hits[0].1
-        );
-    }
+    // Garantie écrite : le vecteur du pair doit être visible par un troisième
+    // processus (écriture partagée, fermeture du pair puis du tenant), et l'index
+    // reconstruit doit le trouver. Régression : l'en-tête de colonne écrasait les
+    // slots du pair (n_slots périmé au moment de la fermeture).
+    assert!(
+        visible,
+        "le vecteur écrit par un pair doit être visible à la réouverture"
+    );
+    assert!(
+        hits[0].1 < 1e-3,
+        "le vecteur du pair est visible mais l'index reconstruit ne le trouve pas (distance {})",
+        hits[0].1
+    );
     db.close().expect("close");
 }
 

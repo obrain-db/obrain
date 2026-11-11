@@ -508,6 +508,17 @@ impl VecColumnWriter {
     /// en-tête écrit EN DERNIER (avec le `remap_epoch` courant dans
     /// `_reserved[0]`), puis `msync` + `fsync`.
     fn write_header_crc_durable(&mut self) -> SubstrateResult<()> {
+        // ÉCRITURE PARTAGÉE (multi-processus) : un autre écrivain a pu agrandir
+        // la colonne depuis notre ouverture. Notre `n_slots` en mémoire est alors
+        // PÉRIMÉ ; l'écrire tel quel effacerait les slots de l'autre (mesuré : un
+        // vecteur écrit par un pair devenait invisible). On ne réduit jamais :
+        // le plus grand des deux gagne, et notre cache suit le disque.
+        if let Some(h) = VecColumnHeader::try_read(self.zf.as_slice())
+            && h.validate_against(&self.spec).is_ok()
+            && h.n_slots > self.n_slots
+        {
+            self.n_slots = h.n_slots;
+        }
         let stride = self.spec.slot_stride();
         let payload_bytes = (self.n_slots as usize) * stride;
         let total = HEADER_SIZE + payload_bytes;
