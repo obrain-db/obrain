@@ -303,10 +303,9 @@ pub(super) fn try_plan_reachable_count_pushdown(
 
     // Même nommage de colonne que le chemin générique de `plan_aggregate` :
     // alias explicite ou nom par défaut `"{:?}(...)".to_lowercase()`.
-    let alias = agg_expr
-        .alias
-        .clone()
-        .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase());
+    let alias = agg_expr.alias.clone().unwrap_or_else(|| {
+        crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+    });
     // Colonne scalaire (Int64) : le RETURN au-dessus la passe sans NodeResolve.
     planner.scalar_columns.borrow_mut().insert(alias.clone());
     let op: Box<dyn Operator> = Box::new(ScalarResultOperator::new(

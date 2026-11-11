@@ -4,9 +4,9 @@
 //! that can be optimized and executed.
 
 use super::common::{
-    build_left_join_with_predicates, combine_with_and, is_aggregate_function,
-    to_aggregate_function, wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip,
-    wrap_sort,
+    AggregateItem, build_left_join_with_predicates, combine_with_and,
+    finalize_aggregate_projection, is_aggregate_function, to_aggregate_function, wrap_distinct,
+    wrap_filter, wrap_limit, wrap_return, wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp, CallProcedureOp,
@@ -1327,27 +1327,20 @@ impl CypherTranslator {
     )> {
         let mut aggregates = Vec::new();
         let mut group_by = Vec::new();
-        let mut needs_post_return = false;
-        let mut post_return_items = Vec::new();
+        let mut post_items = Vec::new();
         let mut agg_counter: u32 = 0;
 
         for item in items {
             if let Some(agg_expr) = self.try_extract_aggregate(&item.expression, &item.alias)? {
                 // Direct aggregate (e.g. `count(n) AS cnt`)
-                aggregates.push(agg_expr);
-                // For post-return passthrough: reference the aggregate by its alias
-                let agg_alias = item
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| format!("_agg_{agg_counter}"));
-                post_return_items.push(ReturnItem {
-                    expression: LogicalExpression::Variable(agg_alias),
+                post_items.push(AggregateItem::Direct {
+                    position: aggregates.len(),
                     alias: item.alias.clone(),
                 });
+                aggregates.push(agg_expr);
                 agg_counter += 1;
             } else if contains_aggregate(&item.expression) {
                 // Wrapped aggregate (e.g. `count(n) > 0 AS exists`)
-                needs_post_return = true;
                 let synthetic_alias = format!("_agg_{agg_counter}");
                 agg_counter += 1;
 
@@ -1355,37 +1348,27 @@ impl CypherTranslator {
                 let (agg_expr, substitute) =
                     self.extract_wrapped_aggregate(&item.expression, &synthetic_alias)?;
                 aggregates.push(agg_expr);
-                post_return_items.push(ReturnItem {
+                post_items.push(AggregateItem::Wrapped(ReturnItem {
                     expression: substitute,
                     alias: item.alias.clone(),
-                });
+                }));
             } else {
-                // Non-aggregate expression: group-by key
-                let expr = self.translate_expression(&item.expression)?;
-                group_by.push(expr.clone());
-                // In the post-return, reference the Aggregate's output column
-                // by its generated name. The Aggregate already extracts
-                // property values, so we reference the column, not re-evaluate.
-                let col_name = crate::query::planner::common::expression_to_string(&expr);
-                post_return_items.push(ReturnItem {
-                    expression: LogicalExpression::Variable(col_name),
+                // Non-aggregate expression: group-by key. The post-projection
+                // references the Aggregate's output column (the Aggregate
+                // already evaluated the expression), never re-evaluates it.
+                post_items.push(AggregateItem::GroupKey {
+                    position: group_by.len(),
                     alias: item.alias.clone(),
                 });
+                group_by.push(self.translate_expression(&item.expression)?);
             }
         }
 
-        // Un item aliasé doit sortir sous son alias. L'agrégat nomme ses colonnes
-        // de clé d'après l'expression (`n.city`), pas d'après l'alias (`city`) :
-        // sans post-projection, l'alias d'une clé de groupement n'existe pas en
-        // aval — ni pour l'`ORDER BY` d'un `RETURN`, ni pour la clause qui suit un
-        // `WITH` (« Undefined variable »). La règle vaut pour les deux clauses,
-        // elle est donc ici et non chez l'un des deux appelants.
-        let has_aliases = items.iter().any(|item| item.alias.is_some());
-        if needs_post_return || has_aliases {
-            Ok((aggregates, group_by, Some(post_return_items)))
-        } else {
-            Ok((aggregates, group_by, None))
-        }
+        // La règle qui décide de la projection d'après-agrégat (alias, clés
+        // calculées homonymes, agrégats sans alias) vaut pour `WITH` comme pour
+        // `RETURN`, en Cypher comme en GQL : elle est dans `common`, pas ici.
+        let post_return = finalize_aggregate_projection(&mut aggregates, &group_by, post_items);
+        Ok((aggregates, group_by, post_return))
     }
 
     /// Extracts an aggregate from inside a wrapping expression and returns

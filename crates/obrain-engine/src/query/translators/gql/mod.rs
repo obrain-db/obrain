@@ -9,9 +9,10 @@ mod pattern;
 use std::collections::{HashMap, HashSet};
 
 use super::common::{
-    build_left_join_with_predicates, combine_with_and, is_aggregate_function,
-    is_binary_set_function, to_aggregate_function, wrap_distinct, wrap_filter, wrap_limit,
-    wrap_return, wrap_skip, wrap_sort,
+    AggregateItem, build_left_join_with_predicates, combine_with_and,
+    finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
+    to_aggregate_function, wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip,
+    wrap_sort,
 };
 use crate::query::plan::{
     self as plan, AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp,

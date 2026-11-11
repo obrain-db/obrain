@@ -429,6 +429,165 @@ fn with_groupe_egale_return_groupe(langage: Langage) {
 }
 
 // ============================================================================
+// Clés de groupement calculées
+// ============================================================================
+//
+// Poids des notes : 1, 3 (a) ; 10, 20, 30 (b) ; 7 (c).
+//   poids > 5  : faux, faux, vrai, vrai, vrai, vrai
+//   poids > 15 : faux, faux, faux, vrai, vrai, faux
+// Groupes (> 5, > 15) : (faux, faux) = {1, 3}, (vrai, faux) = {10, 7},
+// (vrai, vrai) = {20, 30} — deux notes chacun.
+
+fn groupes_lourd_tres() -> Vec<Vec<Value>> {
+    vec![
+        vec![Value::Bool(false), Value::Bool(false), Value::Int64(2)],
+        vec![Value::Bool(true), Value::Bool(false), Value::Int64(2)],
+        vec![Value::Bool(true), Value::Bool(true), Value::Int64(2)],
+    ]
+}
+
+/// Deux clés calculées ne sont pas la même colonne : la seconde ne relit pas
+/// la première.
+fn return_deux_cles_calculees(langage: Langage) {
+    let db = base();
+    let l = lignes_triees(
+        &db,
+        langage,
+        "MATCH (n:Note) \
+         RETURN n.weight > 5 AS lourd, n.weight > 15 AS tres, count(*) AS c",
+    );
+    assert_eq!(l, groupes_lourd_tres(), "{langage:?}");
+}
+
+fn with_deux_cles_calculees(langage: Langage) {
+    let db = base();
+    let l = lignes_triees(
+        &db,
+        langage,
+        "MATCH (n:Note) \
+         WITH n.weight > 5 AS lourd, n.weight > 15 AS tres, count(*) AS c \
+         RETURN lourd, tres, c",
+    );
+    assert_eq!(l, groupes_lourd_tres(), "{langage:?}");
+}
+
+/// Sans alias, les deux clés calculées restent deux colonnes distinctes.
+fn return_deux_cles_calculees_sans_alias(langage: Langage) {
+    let db = base();
+    let l = lignes_triees(
+        &db,
+        langage,
+        "MATCH (n:Note) RETURN n.weight > 5, n.weight > 15, count(*)",
+    );
+    assert_eq!(l, groupes_lourd_tres(), "{langage:?}");
+}
+
+/// Deux appels de la même fonction sur deux propriétés : (projet, genre) en
+/// majuscules. Groupes : (A, X) = 2, (B, X) = 1, (B, Y) = 2, (C, X) = 1.
+fn deux_cles_appels_de_fonction(langage: Langage) {
+    let db = base();
+    let attendu = vec![
+        vec![s("A"), s("X"), Value::Int64(2)],
+        vec![s("B"), s("X"), Value::Int64(1)],
+        vec![s("B"), s("Y"), Value::Int64(2)],
+        vec![s("C"), s("X"), Value::Int64(1)],
+    ];
+    for requete in [
+        "MATCH (n:Note) \
+         RETURN toUpper(n.project_id) AS p, toUpper(n.kind) AS k, count(*) AS c",
+        "MATCH (n:Note) \
+         WITH toUpper(n.project_id) AS p, toUpper(n.kind) AS k, count(*) AS c \
+         RETURN p, k, c",
+    ] {
+        assert_eq!(
+            lignes_triees(&db, langage, requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+}
+
+/// Une clé calculée à côté d'un agrégat sur une propriété : la clé rend son
+/// expression (pas la propriété agrégée) et l'agrégat rend sa valeur.
+/// a : poids {1, 3} tous <= 5, moyenne 2 ; b : {10, 20, 30} tous > 5,
+/// moyenne 20 ; c : {7} > 5, moyenne 7.
+fn cle_calculee_et_agregat_sur_propriete(langage: Langage) {
+    let db = base();
+    let attendu = vec![
+        vec![
+            s("a"),
+            Value::Bool(false),
+            Value::Int64(2),
+            Value::Float64(2.0),
+        ],
+        vec![
+            s("b"),
+            Value::Bool(true),
+            Value::Int64(3),
+            Value::Float64(20.0),
+        ],
+        vec![
+            s("c"),
+            Value::Bool(true),
+            Value::Int64(1),
+            Value::Float64(7.0),
+        ],
+    ];
+    for requete in [
+        "MATCH (n:Note) \
+         RETURN n.project_id AS p, n.weight > 5 AS lourd, count(*) AS c, avg(n.weight) AS m",
+        "MATCH (n:Note) \
+         WITH n.project_id AS p, n.weight > 5 AS lourd, count(*) AS c, avg(n.weight) AS m \
+         RETURN p, lourd, c, m",
+    ] {
+        assert_eq!(
+            lignes_triees(&db, langage, requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+}
+
+/// Un agrégat sans alias à côté d'un item aliasé.
+fn agregat_sans_alias_a_cote_d_un_item_aliase(langage: Langage) {
+    let db = base();
+    let l = lignes_triees(
+        &db,
+        langage,
+        "MATCH (n:Note) RETURN n.project_id AS p, count(*)",
+    );
+    assert_eq!(
+        l,
+        vec![
+            vec![s("a"), Value::Int64(2)],
+            vec![s("b"), Value::Int64(3)],
+            vec![s("c"), Value::Int64(1)],
+        ],
+        "{langage:?}"
+    );
+}
+
+/// Deux agrégats sans alias de la même fonction : chacun garde sa valeur.
+/// Somme des poids : a = 4, b = 60, c = 7 ; somme des poids doublés : 8, 120, 14.
+fn deux_agregats_sans_alias_a_cote_d_un_item_aliase(langage: Langage) {
+    let db = base();
+    let l = lignes_triees(
+        &db,
+        langage,
+        "MATCH (n:Note) RETURN n.project_id AS p, sum(n.weight), sum(n.weight * 2)",
+    );
+    assert_eq!(
+        l,
+        vec![
+            vec![s("a"), Value::Int64(4), Value::Int64(8)],
+            vec![s("b"), Value::Int64(60), Value::Int64(120)],
+            vec![s("c"), Value::Int64(7), Value::Int64(14)],
+        ],
+        "{langage:?}"
+    );
+}
+
+// ============================================================================
 // Chaque cas, une fois par langage
 // ============================================================================
 
@@ -461,6 +620,13 @@ cas_en!(
         with_groupe_suivi_d_order_by,
         with_groupe_puis_return_order_by,
         with_groupe_egale_return_groupe,
+        return_deux_cles_calculees,
+        with_deux_cles_calculees,
+        return_deux_cles_calculees_sans_alias,
+        deux_cles_appels_de_fonction,
+        cle_calculee_et_agregat_sur_propriete,
+        agregat_sans_alias_a_cote_d_un_item_aliase,
+        deux_agregats_sans_alias_a_cote_d_un_item_aliase,
     ]
 );
 
@@ -483,5 +649,12 @@ cas_en!(
         with_groupe_variables_nues_suivi_de_where,
         with_groupe_puis_return_order_by,
         with_groupe_egale_return_groupe,
+        return_deux_cles_calculees,
+        with_deux_cles_calculees,
+        return_deux_cles_calculees_sans_alias,
+        deux_cles_appels_de_fonction,
+        cle_calculee_et_agregat_sur_propriete,
+        agregat_sans_alias_a_cote_d_un_item_aliase,
+        deux_agregats_sans_alias_a_cote_d_un_item_aliase,
     ]
 );

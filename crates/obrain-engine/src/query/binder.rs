@@ -1206,8 +1206,7 @@ impl Binder {
 
         // Register group-by output column names so ORDER BY / HAVING
         // can reference them (e.g. "n.city" from Property(n, city)).
-        for expr in &agg.group_by {
-            let col_name = crate::query::planner::common::expression_to_string(expr);
+        for col_name in crate::query::planner::common::group_key_column_names(&agg.group_by) {
             if !self.context.contains(&col_name) {
                 self.context.add_variable(
                     col_name.clone(),

@@ -352,3 +352,64 @@ pub(crate) fn expression_to_string(expr: &LogicalExpression) -> String {
         _ => "expr".to_string(),
     }
 }
+
+/// Noms des colonnes de clé de groupement d'un agrégat, une par clé, dans
+/// l'ordre de `group_by`.
+///
+/// C'est la SEULE source de ces noms : le planificateur nomme les colonnes de
+/// sortie de l'agrégat avec, les traducteurs y lisent le nom que leur
+/// projection d'après-agrégat doit référencer, le lieur y lit ce qu'il déclare.
+///
+/// Une variable ou une propriété garde son nom lisible (`n`, `n.city`) : il est
+/// déjà propre à l'expression, et les clauses suivantes s'en servent. Une clé
+/// CALCULÉE n'a qu'un nom générique (`expr`, `toupper(...)`), que deux clés
+/// différentes partagent : la première le garde, chaque suivante reçoit le
+/// suffixe `#<position>`. Sans cela, deux clés calculées étaient une seule
+/// colonne pour qui les lit par leur nom — la seconde rendait la valeur de la
+/// première. Deux clés d'expression identique partagent leur nom : elles ont la
+/// même valeur.
+pub(crate) fn group_key_column_names(group_by: &[LogicalExpression]) -> Vec<String> {
+    let est_nominale = |expr: &LogicalExpression| {
+        matches!(
+            expr,
+            LogicalExpression::Variable(_) | LogicalExpression::Property { .. }
+        )
+    };
+    // Les noms nominaux sont réservés d'abord : une clé calculée ne prend
+    // jamais le nom d'une variable, quel que soit leur ordre.
+    let mut pris: std::collections::HashSet<String> = group_by
+        .iter()
+        .filter(|expr| est_nominale(expr))
+        .map(expression_to_string)
+        .collect();
+    let mut calculees: Vec<(String, String)> = Vec::new(); // (expression, nom)
+    group_by
+        .iter()
+        .enumerate()
+        .map(|(position, expr)| {
+            let base = expression_to_string(expr);
+            if est_nominale(expr) {
+                return base;
+            }
+            let repr = format!("{expr:?}");
+            if let Some((_, nom)) = calculees.iter().find(|(r, _)| *r == repr) {
+                return nom.clone();
+            }
+            let nom = if pris.contains(&base) {
+                format!("{base}#{position}")
+            } else {
+                base
+            };
+            pris.insert(nom.clone());
+            calculees.push((repr, nom.clone()));
+            nom
+        })
+        .collect()
+}
+
+/// Nom de la colonne de sortie d'un agrégat qui n'a pas d'alias (`count(...)`).
+pub(crate) fn default_aggregate_column_name(
+    function: crate::query::plan::AggregateFunction,
+) -> String {
+    format!("{function:?}(...)").to_lowercase()
+}

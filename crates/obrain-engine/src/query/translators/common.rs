@@ -585,6 +585,96 @@ pub(crate) fn wrap_return(
     })
 }
 
+/// Un item de `RETURN` / `WITH` agrégé, tel que l'extraction le note avant que
+/// la liste complète des clés et des agrégats soit connue.
+pub(crate) enum AggregateItem {
+    /// Clé de groupement : sa position dans `group_by`.
+    GroupKey {
+        position: usize,
+        alias: Option<String>,
+    },
+    /// Agrégat direct (`count(*) AS c`) : sa position dans `aggregates`.
+    Direct {
+        position: usize,
+        alias: Option<String>,
+    },
+    /// Expression qui enveloppe un agrégat (`count(*) > 0 AS x`), déjà réécrite
+    /// sur les colonnes synthétiques des agrégats qu'elle contient.
+    Wrapped(ReturnItem),
+}
+
+/// Décide si un agrégat a besoin d'une projection posée après lui, et la
+/// construit.
+///
+/// L'opérateur `Aggregate` sort ses clés sous le nom de leur expression et ses
+/// agrégats sous leur alias. Une projection d'après-agrégat est nécessaire dès
+/// que cela ne suffit pas à rendre ce que la clause a écrit :
+///
+/// - un item enveloppe un agrégat : l'expression englobante se calcule après ;
+/// - un item porte un alias : il doit sortir sous cet alias, pour la clause qui
+///   suit un `WITH` comme pour l'`ORDER BY` d'un `RETURN` ;
+/// - une clé calculée a reçu un nom distinct (voir
+///   [`group_key_column_names`](crate::query::planner::common::group_key_column_names))
+///   parce qu'une autre clé portait déjà son nom générique : la projection lui
+///   rend son nom visible.
+///
+/// La projection lit chaque colonne par son NOM. Un agrégat direct sans alias
+/// n'a qu'un nom par défaut (`count(...)`), que deux agrégats peuvent partager :
+/// quand la projection existe, il reçoit un alias interne propre, et la
+/// projection lui rend son nom par défaut.
+pub(crate) fn finalize_aggregate_projection(
+    aggregates: &mut [crate::query::plan::AggregateExpr],
+    group_by: &[LogicalExpression],
+    items: Vec<AggregateItem>,
+) -> Option<Vec<ReturnItem>> {
+    use crate::query::planner::common::{
+        default_aggregate_column_name, expression_to_string, group_key_column_names,
+    };
+
+    let noms_des_cles = group_key_column_names(group_by);
+    let necessaire = items.iter().any(|item| match item {
+        AggregateItem::Wrapped(_) => true,
+        AggregateItem::GroupKey { position, alias } => {
+            alias.is_some()
+                || noms_des_cles[*position] != expression_to_string(&group_by[*position])
+        }
+        AggregateItem::Direct { alias, .. } => alias.is_some(),
+    });
+    if !necessaire {
+        return None;
+    }
+
+    Some(
+        items
+            .into_iter()
+            .map(|item| match item {
+                AggregateItem::Wrapped(item) => item,
+                AggregateItem::GroupKey { position, alias } => {
+                    let colonne = noms_des_cles[position].clone();
+                    let visible = expression_to_string(&group_by[position]);
+                    ReturnItem {
+                        alias: alias.or_else(|| (colonne != visible).then_some(visible)),
+                        expression: LogicalExpression::Variable(colonne),
+                    }
+                }
+                AggregateItem::Direct { position, alias } => {
+                    let agregat = &mut aggregates[position];
+                    let visible =
+                        alias.unwrap_or_else(|| default_aggregate_column_name(agregat.function));
+                    let colonne = agregat
+                        .alias
+                        .get_or_insert_with(|| format!("_agg_direct_{position}"))
+                        .clone();
+                    ReturnItem {
+                        expression: LogicalExpression::Variable(colonne),
+                        alias: Some(visible),
+                    }
+                }
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
