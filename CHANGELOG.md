@@ -71,14 +71,19 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   doublons restaient. Liste complète des doublons d'une contrainte envisagée :
   `ObrainDB::verifier_contrainte_hypothetique` ; état de toutes les contraintes déclarées sur les
   données : `ObrainDB::verifier_contraintes`.
+- **L'unicité reconnaît les doublons que le langage tient pour égaux** : `5` et `5.0`, deux chaînes
+  date-heure du même instant dans deux fuseaux, sur une colonne seule comme dans un tuple, dans les
+  deux ordres d'insertion et de déclaration (la recherche n'utilise l'index d'égalité que pour une
+  colonne à clé exacte, et balaie le label sinon : O(label) pour un tuple sans booléen ni chaîne
+  ordinaire). Nouvelle méthode de trait `GraphStore::find_nodes_by_properties_for_label` (défaut :
+  balayage du label).
 - **Coût du contrôle d'un tuple indépendant de l'ordre des colonnes** : la recherche par
   propriétés résout par la condition indexée la plus sélective, plus par la première déclarée
   (`UNIQUE (a, b)` avec `a` à deux valeurs coûtait 30 fois `UNIQUE (b, a)`).
 - **NON couvert par cette version** (chemins traités par la PR empilée « unicité sur tous les
   chemins ») : l'ajout de label `SET n:T` n'est pas contrôlé ; l'API directe du store et
   `bulk_import*` n'appliquent aucune contrainte ; deux `INSERT` concurrents du même tuple peuvent
-  passer tous les deux. `5` puis `5.0` est refusé mais `5.0` puis `5` accepté (clé de l'index
-  d'égalité). Sur une base construite par `ObrainDB::with_store` (store externe), une contrainte
+  passer tous les deux. Sur une base construite par `ObrainDB::with_store` (store externe), une contrainte
   n'est pas durable (journalisé). Voir `docs/LIMITES-v0.0.1.md`.
 - **Rupture d'API (crate `obrain-core`)** : le trait public `ConstraintValidator` perd
   `check_unique_node_property(labels, key, value)` au profit de

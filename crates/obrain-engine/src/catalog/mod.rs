@@ -2289,11 +2289,12 @@ impl ConstraintValidator for CatalogConstraintValidator {
                         continue;
                     }
                     if let Some(ref store) = self.store {
-                        // The lookup goes through the store's equality index
-                        // (never a scan of the label). Each hit is then
-                        // tested for the label alone — the node is not
-                        // materialised.
-                        let existing = store.find_nodes_by_properties(&conditions);
+                        // The lookup is the store's COMPLETE one for this label:
+                        // it uses an index only where the index provably holds
+                        // every language-equal carrier, and scans the label
+                        // otherwise (a uniqueness check that misses a carrier
+                        // accepts a duplicate).
+                        let existing = store.find_nodes_by_properties_for_label(label, &conditions);
                         for node_id in existing {
                             // A node being updated is not its own duplicate.
                             if exclude == Some(node_id) {

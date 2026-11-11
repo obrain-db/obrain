@@ -20562,6 +20562,57 @@ impl GraphStore for SubstrateStore {
         Some(out)
     }
 
+    /// Recherche COMPLÈTE d'une contrainte d'unicité : les porteurs du label
+    /// dont les propriétés sont égales, au sens du langage, à TOUTES les
+    /// conditions.
+    ///
+    /// L'index d'égalité ne range que `Bool`, `Int64` et `String` sous leur
+    /// forme littérale : `5.0` n'y est pas avec `5`, ni `…+02:00` avec `…Z`.
+    /// Un décompte ou des candidats tirés d'une colonne dont la classe
+    /// d'égalité dépasse sa clé d'index NE BORNENT PAS les porteurs (0
+    /// candidat alors qu'un porteur égal existe) : s'y fier laisse passer un
+    /// doublon. Seules servent donc les colonnes à clé EXACTE
+    /// (`cle_index_exacte` : booléen, chaîne qui n'est pas une date-heure) ;
+    /// à défaut, le balayage du label — O(label), toujours juste. Chaque
+    /// candidat est revérifié contre TOUTES les conditions par l'égalité du
+    /// langage.
+    fn find_nodes_by_properties_for_label(
+        &self,
+        label: &str,
+        conditions: &[(&str, Value)],
+    ) -> Vec<NodeId> {
+        let exactes: Vec<usize> = (0..conditions.len())
+            .filter(|&i| cle_index_exacte(&conditions[i].1))
+            .collect();
+        if !exactes.is_empty() {
+            let cles: Vec<&str> = exactes.iter().map(|&i| conditions[i].0).collect();
+            self.assurer_index_bati_depuis_v2(&cles);
+            let meilleure = exactes
+                .iter()
+                .filter_map(|&i| {
+                    self.indexed_candidate_count(conditions[i].0, &conditions[i].1)
+                        .map(|n| (n, i))
+                })
+                .min();
+            if let Some((_, i)) = meilleure
+                && let Some(hits) = self.indexed_candidates(conditions[i].0, &conditions[i].1)
+            {
+                let tous: Vec<(&str, Value)> =
+                    conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
+                return hits
+                    .into_iter()
+                    .filter(|id| self.node_matches_all_props(*id, &tous))
+                    .filter(|id| GraphStore::node_has_label(self, *id, label) == Some(true))
+                    .collect();
+            }
+        }
+        let tous: Vec<(&str, Value)> = conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
+        self.nodes_by_label(label)
+            .into_iter()
+            .filter(|id| self.node_matches_all_props(*id, &tous))
+            .collect()
+    }
+
     fn find_nodes_by_properties(&self, conditions: &[(&str, Value)]) -> Vec<NodeId> {
         // Contract (LpgStore parity): empty conditions match every live
         // node. T17e Phase 2: we must NOT iterate `node_properties` here
@@ -24827,6 +24878,32 @@ impl Drop for SubstrateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cle_index_exacte` : seuls un booléen et une chaîne qui n'est pas une
+    /// date-heure ont une clé d'index qui couvre EXACTEMENT leur classe
+    /// d'égalité. Chaque branche est épinglée : un entier (égal à un flottant
+    /// entier non indexé), un flottant, une date-heure (chaîne ou typée) ne le
+    /// sont pas, et la recherche d'une contrainte les balaie.
+    #[test]
+    fn cle_index_exacte_couvre_exactement_la_classe_d_egalite() {
+        use obrain_common::types::{Date, Timestamp};
+        assert!(cle_index_exacte(&Value::Bool(true)));
+        assert!(cle_index_exacte(&Value::Bool(false)));
+        assert!(cle_index_exacte(&Value::from("ordinaire")));
+        assert!(cle_index_exacte(&Value::from("2026-11-11 10:00")));
+        assert!(!cle_index_exacte(&Value::Int64(5)));
+        assert!(!cle_index_exacte(&Value::Float64(5.0)));
+        assert!(!cle_index_exacte(&Value::Float64(1.5)));
+        assert!(!cle_index_exacte(&Value::from("2026-11-11T10:00:00Z")));
+        assert!(!cle_index_exacte(&Value::from("2026-11-11T12:00:00+02:00")));
+        assert!(!cle_index_exacte(&Value::Timestamp(Timestamp::from_secs(
+            1
+        ))));
+        assert!(!cle_index_exacte(&Value::Date(
+            Date::from_ymd(2026, 1, 1).unwrap()
+        )));
+        assert!(!cle_index_exacte(&Value::Null));
+    }
 
     /// T17k-opt — la sémantique LWW du repli `property_map_depuis_ops` : la
     /// DERNIÈRE opération d'une clef gagne (`None` = tombstone), quel que soit

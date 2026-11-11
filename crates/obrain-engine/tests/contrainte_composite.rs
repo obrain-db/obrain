@@ -948,52 +948,6 @@ fn drop_constraint_if_exists_dans_les_deux_syntaxes() {
     assert_eq!(copies_en_memoire(&s, "T", "Unique("), 0);
 }
 
-/// LIMITE FIXÉE, pas une garantie : `5` et `5.0` sont égaux (`5 = 5.0` est
-/// vrai), mais l'unicité ne les reconnaît comme doublons que dans UN sens.
-/// `{a: 5}` puis `{a: 5.0}` est refusé (le flottant part au balayage, qui
-/// compare avec l'égalité du langage) ; `{a: 5.0}` puis `{a: 5}` est ACCEPTÉ
-/// (l'entier interroge l'index d'égalité, où le flottant n'a pas été rangé :
-/// `index_value_key` ne projette pas `Float64`). La racine est la clé de
-/// l'index ; sa correction (clé canonique) rendra ce test rouge — c'est
-/// voulu : il faudra alors le retourner en garantie.
-///
-/// Le cas composite avec une colonne chaîne (ou booléenne) est, lui, refusé
-/// dans les deux sens : voir
-/// `entier_flottant_composite_avec_colonne_chaine_est_refuse`. La limite ne
-/// subsiste que pour un tuple dont TOUTES les colonnes sont entières ou
-/// date-heure : la recherche y résout par la première colonne indexée, dans
-/// l'ordre de déclaration.
-#[test]
-fn limite_entier_flottant_asymetrique_selon_l_ordre_d_insertion() {
-    let db = ObrainDB::new_in_memory();
-    let s = db.session();
-    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
-        .unwrap();
-    s.execute("INSERT (:T {a: 5})").unwrap();
-    assert!(
-        s.execute("INSERT (:T {a: 5.0})").is_err(),
-        "entier puis flottant égal : refusé"
-    );
-
-    let db = ObrainDB::new_in_memory();
-    let s = db.session();
-    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
-        .unwrap();
-    s.execute("INSERT (:T {a: 5.0})").unwrap();
-    assert!(
-        s.execute("INSERT (:T {a: 5})").is_ok(),
-        "flottant puis entier égal : ACCEPTÉ (limite connue, asymétrique)"
-    );
-    assert_eq!(
-        s.execute("MATCH (n:T) RETURN n.a").unwrap().rows.len(),
-        2,
-        "deux porteurs : le doublon est réel"
-    );
-    // La vérification a posteriori, elle, compare avec l'égalité du langage
-    // et voit le doublon (c'est l'outil pour le trouver après coup).
-    assert_eq!(db.verifier_contraintes().violations_totales, 1);
-}
-
 /// LIMITE FIXÉE : `SET n:T` n'est pas contrôlé ici — un nœud `:U` qui porte
 /// un tuple déjà pris sous `:T` reçoit le label `T` sans erreur. Le contrôle
 /// de l'ajout de label est porté par la PR empilée (chemins d'écriture) ; ce
@@ -1067,12 +1021,8 @@ fn la_reparation_a_l_ouverture_n_ecrit_pas_en_lecture_seule() {
 
 /// Cas COMPOSITE de l'égalité entier/flottant, avec une colonne chaîne
 /// sélective : `UNIQUE (b, a)`, un nœud `{a: 5.0, b: 'x'}`, puis
-/// `{a: 5, b: 'x'}`. Le décompte de la colonne entière (`a = 5` → 0 candidat
-/// indexé, le flottant n'étant rangé nulle part) n'est PAS une borne
-/// supérieure : le retenir comme « plus sélectif » rendait la recherche vide et
-/// laissait passer le doublon. La résolution passe par `b` (chaîne, clé
-/// exacte), qui retrouve le porteur, puis `a` est éprouvé avec l'égalité du
-/// langage : refusé.
+/// `{a: 5, b: 'x'}`. (Régression de 153be091, voir aussi
+/// `contrainte_egalite_tuple.rs` pour les dates-heures et les flottants.)
 #[test]
 fn entier_flottant_composite_avec_colonne_chaine_est_refuse() {
     for contrainte in [
