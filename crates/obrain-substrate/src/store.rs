@@ -1162,6 +1162,48 @@ const V2_RELECTURE_EXEMPLES: usize = 8;
 // amener le code SAIN dans cet état — seule une injection le peut. Elle est
 // `#[cfg(test)]`, donc absente du binaire de production, et locale au FIL pour
 // ne pas contaminer les tests parallèles.
+/// Nombre d'emplacements dont une zone peut manquer sans que l'ouverture en
+/// lecture seule la dise tronquée (slots réservés, pas encore écrits au flush).
+const TOLERANCE_ZONE_TRONQUEE: u64 = 64;
+
+/// Refuse l'ouverture en lecture seule si `substrate.nodes` ou `substrate.edges`
+/// est plus court que ce que le dictionnaire annonce. O(1) : deux `metadata`.
+fn refuser_zone_tronquee(dir: &Path, snapshot: &crate::dict::DictSnapshot) -> SubstrateResult<()> {
+    for (zone, taille_record, annonces, quoi) in [
+        (
+            crate::file::Zone::Nodes,
+            crate::record::NodeRecord::SIZE as u64,
+            snapshot.next_node_id,
+            "nœuds",
+        ),
+        (
+            crate::file::Zone::Edges,
+            crate::record::EdgeRecord::SIZE as u64,
+            snapshot.next_edge_id,
+            "arêtes",
+        ),
+    ] {
+        let nom = zone.filename();
+        let octets = std::fs::metadata(dir.join(nom))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let attendus = annonces.saturating_sub(TOLERANCE_ZONE_TRONQUEE) * taille_record;
+        if octets < attendus {
+            return Err(SubstrateError::LectureSeuleRefusee {
+                raison: format!(
+                    "la zone `{nom}` ne contient que {octets} octets ({} emplacements) alors \
+                     que le dictionnaire annonce {annonces} emplacements de {quoi} alloués : \
+                     fichier tronqué ou restauré partiellement. La servir rendrait une base \
+                     amputée sans erreur. Restaurez la zone depuis une sauvegarde \
+                     avant de rouvrir la base",
+                    octets / taille_record
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! {
     static SABOTAGE_REGISTRE_CLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -6584,6 +6626,20 @@ impl SubstrateStore {
         } else {
             None
         };
+        // ── LECTURE SEULE : UNE ZONE TRONQUÉE SE REFUSE, ELLE NE SE SERT PAS ─────
+        // Un fichier de zone plus court que ce que le dictionnaire annonce a été
+        // tronqué ou restauré partiellement : la lire rendrait une base amputée
+        // SANS ERREUR (mesuré à la relecture de #118 : `substrate.nodes` réduit à
+        // 60 000 octets, 1 499 nœuds rendus sur 2 000). Deux appels `metadata`,
+        // O(1). Tolérance de `TOLERANCE_ZONE_TRONQUEE` emplacements : des slots
+        // réservés mais pas encore écrits au moment du flush. Ce qui n'est PAS
+        // vu, assumé : une troncature de moins de cette tolérance.
+        if lecture_seule {
+            let g = substrate.lock();
+            if !g.is_memory() {
+                refuser_zone_tronquee(g.path(), &snapshot)?;
+            }
+        }
         // La borne ne recule JAMAIS : elle est publiée du dict (`fetch_max`),
         // puis des ZONES (voir `relever_filigranes_des_zones`, appelé juste après
         // la construction). Le dict est un PLANCHER utile — il peut être en avance
@@ -21442,10 +21498,19 @@ impl SubstrateStore {
         if !*differes {
             return;
         }
-        // Le recomptage complet ci-dessous VAUT vérification des compteurs
-        // (il les recompte tous depuis les zones) : on la consomme d'abord pour
-        // ne pas balayer deux fois, puis on recompte avec les histogrammes.
-        self.compteurs_a_verifier.store(false, Ordering::Release);
+        // Le recomptage complet ci-dessous VAUT vérification des compteurs (il les
+        // recompte tous depuis les zones) : inutile de balayer deux fois.
+        //
+        // MAIS le drapeau « compteurs à vérifier » ne tombe qu'APRÈS ce recomptage,
+        // et le verrou de vérification est tenu pendant TOUT son déroulement.
+        // L'ordre inverse (drapeau remis à faux d'abord) laissait un lecteur
+        // concurrent trouver le drapeau à faux et recevoir les compteurs NON
+        // vérifiés du dictionnaire pendant que le recomptage les réécrivait
+        // (défaut prouvé par exécution à la relecture de #118, voir
+        // `course_verification_lecture_seule`). Ordre des verrous : histogrammes
+        // puis vérification ; `assurer_compteurs_verifies` ne prend que le second,
+        // sans jamais prendre le premier.
+        let _seul = self.verrou_verification_compteurs.lock();
         // Point d'injection des tests de course (thread-local : il ne vaut que pour
         // le fil qui l'arme).
         #[cfg(test)]
@@ -21454,11 +21519,14 @@ impl SubstrateStore {
                 f();
             }
         });
-        if let Err(e) = self.rebuild_live_counters_from_zones() {
-            tracing::warn!(
+        match self.rebuild_live_counters_from_zones() {
+            Ok(()) => self.compteurs_a_verifier.store(false, Ordering::Release),
+            // Échec : le drapeau reste levé, la vérification pleine des compteurs
+            // rattrapera au premier lecteur (aucun compteur non vérifié servi).
+            Err(e) => tracing::warn!(
                 erreur = ?e,
                 "lecture seule : reconstruction différée des histogrammes de labels pairs impossible"
-            );
+            ),
         }
         *differes = false;
     }
@@ -21637,11 +21705,22 @@ impl SubstrateStore {
             }
         }
         self.total_live_edges.store(total_edges, Ordering::Relaxed);
-        self.edge_type_live_counts.clear();
-        for (type_id, count) in edge_type_totals {
-            self.edge_type_live_counts
-                .insert(type_id, AtomicU64::new(count));
+        // Mise à jour EN PLACE, jamais `clear()` puis `insert` : un lecteur de
+        // `live_count_by_edge_type` qui a déjà passé la vérification ne doit voir
+        // à aucun instant un type d'arête absent (donc zéro) pendant un recomptage
+        // (l'ouverture en lecture seule recompte au premier lecteur, d'autres fils
+        // lisent déjà). L'état final est identique à celui de l'ancien code.
+        for (&type_id, &count) in &edge_type_totals {
+            match self.edge_type_live_counts.get(&type_id) {
+                Some(a) => a.store(count, Ordering::Relaxed),
+                None => {
+                    self.edge_type_live_counts
+                        .insert(type_id, AtomicU64::new(count));
+                }
+            }
         }
+        self.edge_type_live_counts
+            .retain(|k, _| edge_type_totals.contains_key(k));
         // T17i T2 — install the two histograms atomically (clear + insert).
         //
         // (2026-08-21) SEULEMENT si on les a calculés. Les écraser avec des
@@ -38270,5 +38349,58 @@ mod course_verification_lecture_seule {
                 assert_eq!(v, attendu, "{nom} (tour {tour}) après le recomptage");
             }
         }
+    }
+
+    /// FILET, NON DÉTERMINISTE : un recomptage complet réécrit
+    /// `edge_type_live_counts` EN PLACE. L'ancien `clear()` puis `insert` laissait
+    /// une fenêtre (de l'ordre de la microseconde) où un type d'arête était
+    /// absent, donc compté zéro, pour un lecteur ayant déjà passé la vérification.
+    /// Un lecteur boucle pendant des recomptages : aucune autre valeur que la
+    /// bonne ne doit jamais être vue. Ce test n'a pas été observé rouge sur
+    /// l'ancien code (la fenêtre est trop étroite pour une preuve) : c'est une
+    /// garde de non-régression, pas une preuve.
+    #[test]
+    fn un_recomptage_complet_ne_fait_jamais_disparaitre_un_type_d_arete_pour_un_lecteur() {
+        use std::sync::atomic::{AtomicBool, Ordering as O};
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("en-place");
+        {
+            let s = SubstrateStore::create(&chemin).unwrap();
+            let mut prec = None;
+            for _ in 0..N {
+                let id = s.create_node(&["Personne"]);
+                if let Some(p) = prec {
+                    s.create_edge(id, p, "CONNAIT");
+                }
+                prec = Some(id);
+            }
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        let s = Arc::new(SubstrateStore::open_read_only(&chemin).unwrap());
+        assert_eq!(s.live_count_by_edge_type("CONNAIT"), (N - 1) as u64);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sb, stop_b) = (Arc::clone(&s), Arc::clone(&stop));
+        let lecteur = std::thread::spawn(move || {
+            let mut mauvaises = 0u64;
+            let mut lectures = 0u64;
+            while !stop_b.load(O::Relaxed) {
+                if sb.live_count_by_edge_type("CONNAIT") != (N - 1) as u64 {
+                    mauvaises += 1;
+                }
+                lectures += 1;
+            }
+            (mauvaises, lectures)
+        });
+        for _ in 0..2000 {
+            s.rebuild_live_counters_interne(true).unwrap();
+        }
+        stop.store(true, O::Relaxed);
+        let (mauvaises, lectures) = lecteur.join().unwrap();
+        assert!(lectures > 0);
+        assert_eq!(
+            mauvaises, 0,
+            "{mauvaises} lectures sur {lectures} ont vu un compte faux pendant un recomptage"
+        );
     }
 }

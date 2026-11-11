@@ -204,3 +204,138 @@ fn une_colonne_de_degres_corrompue_est_vue_au_premier_degre_lu() {
         "degrés entrants exacts malgré la colonne corrompue"
     );
 }
+
+/// Base de `n` nœuds en chaîne (`CONNAIT` vers le PRÉCÉDENT), pour les tests de
+/// troncature : assez grande pour que la troncature dépasse la tolérance.
+fn base_de(chemin: &Path, n: usize) {
+    let s = SubstrateStore::create(chemin).expect("création");
+    let mut prec: Option<NodeId> = None;
+    for _ in 0..n {
+        let id = s.create_node(&["Personne"]);
+        if let Some(p) = prec {
+            s.create_edge(id, p, "CONNAIT");
+        }
+        prec = Some(id);
+    }
+    s.flush().expect("flush");
+    s.close().expect("close");
+}
+
+fn lister(chemin: &Path) -> Vec<(String, u64)> {
+    let mut v: Vec<_> = std::fs::read_dir(chemin)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                e.metadata().unwrap().len(),
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// DÉFAUT RELEVÉ À LA RELECTURE DE #118 : `substrate.nodes` réduit à 60 000
+/// octets, la lecture seule rendait 1 499 nœuds sur 2 000 — sans erreur ni
+/// avertissement. Elle refuse désormais, par une erreur nommée, sans rien écrire.
+#[test]
+fn une_zone_de_noeuds_tronquee_fait_echouer_l_ouverture_par_une_erreur_nommee() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("tronquee-noeuds");
+    base_de(&chemin, 2000);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(chemin.join("substrate.nodes"))
+        .unwrap()
+        .set_len(60_000)
+        .unwrap();
+    let avant = lister(&chemin);
+
+    let erreur = match SubstrateStore::open_read_only(&chemin) {
+        Ok(s) => panic!(
+            "ouverture acceptée : {} nœuds rendus sur 2000, sans erreur",
+            s.node_count()
+        ),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        erreur.contains("substrate.nodes") && erreur.contains("tronqué"),
+        "refus non nommé : {erreur}"
+    );
+    assert_eq!(lister(&chemin), avant, "le refus a modifié le dossier");
+}
+
+#[test]
+fn une_zone_d_aretes_tronquee_fait_echouer_l_ouverture_par_une_erreur_nommee() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("tronquee-aretes");
+    base_de(&chemin, 2000);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(chemin.join("substrate.edges"))
+        .unwrap()
+        .set_len(3_600)
+        .unwrap();
+    let avant = lister(&chemin);
+
+    let erreur = match SubstrateStore::open_read_only(&chemin) {
+        Ok(_) => panic!("ouverture acceptée sur une zone d'arêtes tronquée"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        erreur.contains("substrate.edges") && erreur.contains("tronqué"),
+        "refus non nommé : {erreur}"
+    );
+    assert_eq!(lister(&chemin), avant, "le refus a modifié le dossier");
+}
+
+/// Une zone absente alors que le dictionnaire annonce des nœuds : même refus.
+#[test]
+fn une_zone_de_noeuds_absente_fait_echouer_l_ouverture() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("sans-noeuds");
+    base_de(&chemin, 2000);
+    std::fs::remove_file(chemin.join("substrate.nodes")).unwrap();
+    assert!(
+        SubstrateStore::open_read_only(&chemin).is_err(),
+        "ouverture acceptée sans zone de nœuds"
+    );
+}
+
+/// Une base saine, de la taille des tests de troncature, s'ouvre : la garde ne
+/// refuse pas une base légitime.
+#[test]
+fn une_base_saine_de_2000_noeuds_n_est_pas_dite_tronquee() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("saine");
+    base_de(&chemin, 2000);
+    let s = SubstrateStore::open_read_only(&chemin).expect("base saine refusée");
+    assert_eq!(s.node_count(), 2000);
+}
+
+/// (g) `out_degree(NodeId(1)) == 0` n'est pas une régression : les arêtes de la
+/// fabrication pointent du nœud vers le PRÉCÉDENT, donc le premier nœud n'a aucune
+/// arête sortante et une arête entrante.
+#[test]
+fn les_degres_de_la_chaine_sont_ceux_de_la_fabrication() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("chaine");
+    base_de(&chemin, 50);
+    let s = SubstrateStore::open_read_only(&chemin).unwrap();
+    let ids = s.node_ids();
+    let (premier, second, dernier) = (ids[0], ids[1], ids[ids.len() - 1]);
+    assert_eq!(
+        s.out_degree(premier),
+        0,
+        "le premier nœud n'a pas d'arête sortante"
+    );
+    assert_eq!(
+        s.in_degree(premier),
+        1,
+        "…et une arête entrante (du second)"
+    );
+    assert_eq!(s.out_degree(second), 1);
+    assert_eq!(s.out_degree(dernier), 1);
+    assert_eq!(s.in_degree(dernier), 0);
+}
