@@ -1,35 +1,22 @@
 //! T17k T5 — what embedding_model names are used?
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_common::PropertyKey;
 use obrain_common::types::Value;
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "read-only probe"]
 fn probe_embedding_model_names() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    for (name, path, labels) in [
-        (
-            "po",
-            std::path::PathBuf::from(&home).join(".obrain/db/po"),
-            &["File", "Function", "Decision"][..],
-        ),
-        (
-            "wikipedia",
-            std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-            &["Article"][..],
-        ),
-        (
-            "megalaw",
-            std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-            &["Concept"][..],
-        ),
+    for (name, base, labels) in [
+        ("po", Base::Po, &["File", "Function", "Decision"][..]),
+        ("wikipedia", Base::Wikipedia, &["Article"][..]),
+        ("megalaw", Base::Megalaw, &["Concept"][..]),
     ] {
-        if !path.exists() {
+        let Some(path) = base_lecture(base) else {
             continue;
-        }
-        let db = ObrainDB::open(&path).expect("open");
+        };
+        let db = path.ouvrir();
         let store = db.store();
         println!("\n═══ {name} ═══");
         let model_key = PropertyKey::from("embedding_model");

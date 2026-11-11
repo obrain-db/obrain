@@ -12,23 +12,21 @@
 //!
 //! Self-cleaning: uses the same `_BenchSrc`/`_BenchDst`/`_BENCH_REL`
 //! labels as `po_vs_neo4j_bench.rs` (established precedent) and deletes
-//! them at the end. `#[ignore]` — real prod base, run manually.
+//! them at the end. `#[ignore]` — runs on a temp COPY of `OBRAIN_BENCH_DB_PO`.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_copie};
 use web_time::Instant;
 
 use obrain_engine::ObrainDB;
 use obrain_substrate::wal_io::SyncMode;
 
 #[test]
-#[ignore = "touches the real PO base — self-cleaning, run manually"]
+#[ignore = "écrit dans une COPIE de OBRAIN_BENCH_DB_PO — à lancer à la main"]
 fn batch_wal_group_mode_on_real_po() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭  PO not present");
+    let Some(po_path) = base_copie(Base::Po) else {
         return;
-    }
+    };
 
     // --- EveryCommit (current default behaviour) ---
     {

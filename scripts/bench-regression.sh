@@ -14,6 +14,15 @@
 #   scripts/bench-regression.sh open-only     # fast pre-commit check
 #   scripts/bench-regression.sh --no-write    # skip writes on existing DBs
 #
+# Bases réelles : elles se DÉSIGNENT, plus rien n'est deviné sous $HOME
+# (incident du 2026-11-11, docs/BENCHMARKS.md « Bancs sur bases réelles ») :
+#   OBRAIN_BENCH_DB_PO=/chemin/po            (obligatoire : phases 2 à 5)
+#   OBRAIN_BENCH_DB_WIKIPEDIA=/chemin/wiki   (facultatif : phases 2 et 3)
+#   OBRAIN_BENCH_DB_MEGALAW=/chemin/megalaw  (facultatif : phases 2 et 3)
+# La base désignée n'est jamais ouverte : chaque banc travaille sur une COPIE
+# temporaire (clonée si le système de fichiers le permet), en lecture seule
+# pour ceux qui ne font que lire. Chemins ABSOLUS exigés.
+#
 # Output : sauvegarde chaque log dans /tmp/bench-regression-$(date +%s)/
 # + affiche un récap final avec verdicts PASS/FAIL/DIFF.
 #
@@ -61,6 +70,14 @@ run_or_fail "obrain-engine lib (663 tests)" \
     cargo test -p obrain-engine --lib --release
 
 # ── 2. DB open bench ────────────────────────────────────────
+# Sans base désignée, les phases 2 à 5 se sauteraient toutes et le récapitulatif
+# afficherait des PASS qui n'ont rien mesuré : on s'arrête ici, en le disant.
+if [[ -z "${OBRAIN_BENCH_DB_PO:-}" ]]; then
+    echo
+    echo "✗ OBRAIN_BENCH_DB_PO n'est pas définie : les phases 2 à 5 n'ont pas de base à mesurer." >&2
+    echo "  Désigner la base (voir l'en-tête de ce script), puis relancer." >&2
+    exit 2
+fi
 echo
 echo "── Phase 2 : DB open (3 corpora)"
 run_or_fail "t17i_db_open_bench" \

@@ -375,8 +375,8 @@ fn props_aretes_et_wal_intacts_a_travers_la_migration() {
 // ---------------------------------------------------------------------------
 
 /// Preuve sur donnees reelles (critere RFC §3) : pointer
-/// `OBRAIN_TEST_STORE_REEL_DIR` sur la COPIE d'un store de production
-/// (jamais l'original), relever les comptes AVANT avec le binaire qui sait
+/// `OBRAIN_TEST_STORE_REEL_DIR` sur un store de production (chemin absolu),
+/// relever les comptes AVANT avec le binaire qui sait
 /// le lire, puis lancer ce test : il ouvre (donc migre 1→2→3 ou 2→3),
 /// verifie version 3, tenant 0 sur tout vivant, drapeau public pose, et
 /// imprime les comptes a comparer au releve d'avant.
@@ -385,8 +385,12 @@ fn migration_store_reel_par_copie() {
     let Ok(dir) = std::env::var("OBRAIN_TEST_STORE_REEL_DIR") else {
         return;
     };
-    let dir = PathBuf::from(dir);
-    let store = SubstrateStore::open(&dir).expect("open migrant du store reel");
+    // Ce test n'est pas `#[ignore]` et il MIGRE ce qu'il ouvre : si la variable
+    // traine dans l'environnement, un `cargo test` ordinaire reecrirait le
+    // store designe. Il migre donc une copie privee, jamais le chemin recu.
+    let copie = obrain_bases_banc::copie_de(&PathBuf::from(dir), "OBRAIN_TEST_STORE_REEL_DIR");
+    let dir = copie.chemin().to_path_buf();
+    let store = SubstrateStore::open(&dir).expect("open migrant de la copie du store reel");
     assert_eq!(lire_version_meta(&dir).unwrap(), SUBSTRATE_FORMAT_VERSION);
     assert!(zone_nodes_est_v3(&dir).unwrap());
     assert_ne!(drapeaux_meta(&dir) & meta_flags::MONO_TENANT_PUBLIC, 0);

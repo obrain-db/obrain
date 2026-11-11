@@ -9,19 +9,17 @@
 //!     no planner) to isolate parse+plan overhead from everything else.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_copie};
 use web_time::Instant;
 
 use obrain_engine::ObrainDB;
 
 #[test]
-#[ignore = "touches the real PO base — self-cleaning, run manually"]
+#[ignore = "écrit dans une COPIE de OBRAIN_BENCH_DB_PO — à lancer à la main"]
 fn diagnose_cypher_parse_plan_vs_direct_api() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭  PO not present");
+    let Some(po_path) = base_copie(Base::Po) else {
         return;
-    }
+    };
 
     let db = ObrainDB::open_substrate(&po_path).expect("open PO");
     let store = db.graph_store();

@@ -12,14 +12,14 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_copie};
 use obrain_engine::ObrainDB;
 use web_time::Instant;
 
-fn upgrade_and_measure(name: &str, path: std::path::PathBuf) {
-    if !path.exists() {
-        eprintln!("⏭  {name}: not found");
+fn upgrade_and_measure(name: &str, base: Base) {
+    let Some(path) = base_copie(base) else {
         return;
-    }
+    };
 
     // === Phase 1 — first open triggers v5 → v6 rebuild (slow), then
     // a trivial mutation + close forces the dict flush to persist v6.
@@ -69,16 +69,9 @@ fn upgrade_and_measure(name: &str, path: std::path::PathBuf) {
 
 #[test]
 fn upgrade_then_measure_three_corpora() {
-    let home = std::env::var("HOME").unwrap_or_default();
     println!("\n═══ T17i T4 evidence : v5 → v6 upgrade + steady-state ═══");
-    upgrade_and_measure("PO", std::path::PathBuf::from(&home).join(".obrain/db/po"));
-    upgrade_and_measure(
-        "Wikipedia",
-        std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-    );
-    upgrade_and_measure(
-        "Megalaw",
-        std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-    );
+    upgrade_and_measure("PO", Base::Po);
+    upgrade_and_measure("Wikipedia", Base::Wikipedia);
+    upgrade_and_measure("Megalaw", Base::Megalaw);
     println!("═══ END ═══");
 }

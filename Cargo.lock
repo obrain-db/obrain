@@ -2182,6 +2182,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "obrain-bases-banc"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "obrain-engine",
+ "obrain-substrate",
+ "tempfile",
+]
+
+[[package]]
 name = "obrain-cognitive"
 version = "0.0.1"
 dependencies = [
@@ -2193,6 +2203,7 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "obrain-adapters",
+ "obrain-bases-banc",
  "obrain-common",
  "obrain-core",
  "obrain-reactive",
@@ -2284,6 +2295,7 @@ dependencies = [
  "md5",
  "memmap2",
  "obrain-adapters",
+ "obrain-bases-banc",
  "obrain-cognitive",
  "obrain-common",
  "obrain-core",
@@ -2428,6 +2440,7 @@ dependencies = [
  "fs2",
  "libc",
  "memmap2",
+ "obrain-bases-banc",
  "obrain-common",
  "obrain-core",
  "parking_lot",

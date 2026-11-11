@@ -7,18 +7,15 @@
 
 #![cfg(feature = "cypher")]
 
-use obrain_engine::ObrainDB;
+use obrain_bases_banc::{Base, base_lecture};
 
 #[test]
 #[ignore = "ad-hoc search — read-only on prod base"]
 fn search_constellation_bar_fire() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let wiki_path = std::path::PathBuf::from(&home).join(".obrain/db/wikipedia");
-    if !wiki_path.exists() {
-        eprintln!("⏭  Wikipedia not present");
+    let Some(wiki_path) = base_lecture(Base::Wikipedia) else {
         return;
-    }
-    let db = ObrainDB::open(&wiki_path).expect("open Wiki");
+    };
+    let db = wiki_path.ouvrir();
     let store = db.store();
 
     println!("\n=== Wiki stats ===");
