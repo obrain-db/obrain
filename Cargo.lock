@@ -2185,6 +2185,9 @@ dependencies = [
 name = "obrain-bases-banc"
 version = "0.0.1"
 dependencies = [
+ "libc",
+ "obrain-engine",
+ "obrain-substrate",
  "tempfile",
 ]
 

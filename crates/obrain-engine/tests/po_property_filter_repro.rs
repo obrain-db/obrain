@@ -17,7 +17,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "gate on prod base — read-only"]
@@ -25,7 +24,7 @@ fn po_where_property_filter_gate() {
     let Some(po_path) = base_lecture(Base::Po) else {
         return;
     };
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO");
+    let db = po_path.ouvrir();
     let store = db.store();
     let session = db.session();
 

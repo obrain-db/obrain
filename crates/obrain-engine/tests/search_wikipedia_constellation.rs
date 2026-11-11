@@ -8,7 +8,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "ad-hoc search — read-only on prod base"]
@@ -16,7 +15,7 @@ fn search_constellation_bar_fire() {
     let Some(wiki_path) = base_lecture(Base::Wikipedia) else {
         return;
     };
-    let db = ObrainDB::open_read_only(&wiki_path).expect("open Wiki");
+    let db = wiki_path.ouvrir();
     let store = db.store();
 
     println!("\n=== Wiki stats ===");

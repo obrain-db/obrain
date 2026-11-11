@@ -3,7 +3,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "ad-hoc audit — read-only"]
@@ -16,7 +15,7 @@ fn audit_where_po_properties_live() {
         let Some(path) = base_lecture(base) else {
             continue;
         };
-        let db = ObrainDB::open_read_only(&path).expect("open");
+        let db = path.ouvrir();
         let store = db.store();
         println!("\n═══ {name} ═══");
         println!("  total nodes = {}", store.node_count());

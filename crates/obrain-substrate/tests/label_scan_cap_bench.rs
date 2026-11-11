@@ -7,7 +7,6 @@
 
 use obrain_bases_banc::{Base, base_lecture};
 use obrain_core::graph::GraphStore;
-use obrain_substrate::SubstrateStore;
 use web_time::Instant;
 
 #[test]
@@ -16,7 +15,7 @@ fn label_scan_capped_vs_full() {
     let Some(po) = base_lecture(Base::Po) else {
         return;
     };
-    let store = SubstrateStore::open_read_only(&po).expect("open PO");
+    let store = po.ouvrir_substrat();
 
     // Warm-up pass so both measurements see the same page cache.
     let warm = store.nodes_by_label("ChatEvent");

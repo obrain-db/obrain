@@ -10,7 +10,6 @@
 use obrain_bases_banc::{Base, base_lecture};
 use obrain_core::graph::Direction;
 use obrain_core::graph::traits::GraphStore;
-use obrain_engine::ObrainDB;
 use std::sync::Arc;
 use web_time::Instant;
 
@@ -26,7 +25,7 @@ fn bench_megalaw_retrieval_steps() {
 
     // ── Phase 0: DB Open ──
     let start = Instant::now();
-    let db = ObrainDB::open_read_only(&db_path).expect("open megalaw db");
+    let db = db_path.ouvrir();
     let open_ms = start.elapsed().as_secs_f64() * 1000.0;
     println!("  DB open: {:.1}ms", open_ms);
 

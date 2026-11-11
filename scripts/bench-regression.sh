@@ -19,8 +19,9 @@
 #   OBRAIN_BENCH_DB_PO=/chemin/po            (obligatoire : phases 2 à 5)
 #   OBRAIN_BENCH_DB_WIKIPEDIA=/chemin/wiki   (facultatif : phases 2 et 3)
 #   OBRAIN_BENCH_DB_MEGALAW=/chemin/megalaw  (facultatif : phases 2 et 3)
-# Les bancs qui écrivent (ouverture, po_vs_neo4j) travaillent sur une COPIE
-# temporaire ; les autres ouvrent la base désignée en lecture seule.
+# La base désignée n'est jamais ouverte : chaque banc travaille sur une COPIE
+# temporaire (clonée si le système de fichiers le permet), en lecture seule
+# pour ceux qui ne font que lire. Chemins ABSOLUS exigés.
 #
 # Output : sauvegarde chaque log dans /tmp/bench-regression-$(date +%s)/
 # + affiche un récap final avec verdicts PASS/FAIL/DIFF.

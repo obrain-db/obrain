@@ -15,7 +15,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 fn count_duplicated_imports_pairs() {
@@ -23,7 +22,7 @@ fn count_duplicated_imports_pairs() {
         return;
     };
 
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Count pairs (s, t) that have ≥ 2 IMPORTS edges between them.

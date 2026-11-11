@@ -4,7 +4,6 @@
 use obrain_bases_banc::{Base, base_lecture};
 use obrain_common::PropertyKey;
 use obrain_common::types::Value;
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "read-only probe"]
@@ -17,7 +16,7 @@ fn probe_embedding_model_names() {
         let Some(path) = base_lecture(base) else {
             continue;
         };
-        let db = ObrainDB::open_read_only(&path).expect("open");
+        let db = path.ouvrir();
         let store = db.store();
         println!("\n═══ {name} ═══");
         let model_key = PropertyKey::from("embedding_model");

@@ -21,14 +21,13 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 fn audit_imports_source_labels_on_po() {
     let Some(po_path) = base_lecture(Base::Po) else {
         return;
     };
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     println!("\n=== T17j T2 — IMPORTS source labels audit on PO ===");

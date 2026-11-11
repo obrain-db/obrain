@@ -55,7 +55,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn open_po_or_skip() -> Option<ObrainDB> {
     let po_path = base_lecture(Base::Po)?;
-    Some(ObrainDB::open_read_only(&po_path).expect("open PO db"))
+    Some(po_path.ouvrir())
 }
 
 /// T17i T3 — canonical bench query with homogeneous peer labels

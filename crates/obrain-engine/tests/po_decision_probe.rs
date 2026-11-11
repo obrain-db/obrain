@@ -3,7 +3,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "ad-hoc audit — read-only"]
@@ -11,7 +10,7 @@ fn probe_decision_and_vec_columns() {
     let Some(po) = base_lecture(Base::Po) else {
         return;
     };
-    let db = ObrainDB::open_read_only(&po).expect("open");
+    let db = po.ouvrir();
     let store = db.store();
 
     println!("\n=== all_property_keys on PO ===");

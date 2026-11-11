@@ -15,15 +15,13 @@
 use obrain_bases_banc::{Base, base_lecture};
 use web_time::Instant;
 
-use obrain_engine::ObrainDB;
-
 #[test]
 #[ignore = "bench on prod base — read-only"]
 fn bench_property_projection_full_scan() {
     let Some(po_path) = base_lecture(Base::Po) else {
         return;
     };
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Warm-up (page cache) — not timed.

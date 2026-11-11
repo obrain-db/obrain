@@ -14,6 +14,17 @@ publish = false
 
 [dependencies]
 tempfile.workspace = true
+# Le helper OUVRE lui-même les copies (lecture seule) : il ne rend jamais un
+# chemin de base désignée à une cible. D'où ces deux dépendances — un cycle
+# de dev-dépendances (engine/substrate --dev--> ce crate --> engine/substrate),
+# que cargo autorise.
+obrain-engine = { workspace = true, features = ["default"] }
+obrain-substrate.workspace = true
+
+# Nettoyage des copies : `atexit` en fin de processus, `kill(pid, 0)` pour
+# reconnaître les résidus d'un processus mort.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [lints]
 workspace = true

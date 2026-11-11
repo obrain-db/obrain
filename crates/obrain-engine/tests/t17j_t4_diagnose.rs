@@ -14,7 +14,7 @@ fn diagnose_imports_endpoints_on_po() {
     let Some(po_path) = base_lecture(Base::Po) else {
         return;
     };
-    let subs = SubstrateStore::open_read_only(&po_path).expect("open");
+    let subs = po_path.ouvrir_substrat();
 
     // T17j T5 critical diagnostic : walk chains of labelled nodes and
     // verify each edge's rec.src matches the chain owner.

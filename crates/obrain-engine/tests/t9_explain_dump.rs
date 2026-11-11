@@ -13,7 +13,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 fn explain_most_connected_files() {
@@ -21,7 +20,7 @@ fn explain_most_connected_files() {
         return;
     };
 
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     let result = session
@@ -61,7 +60,7 @@ fn explain_single_direction_no_peer_label() {
     let Some(po_path) = base_lecture(Base::Po) else {
         return;
     };
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
     let result = session
         .execute_cypher(
@@ -92,7 +91,7 @@ fn explain_single_direction_variant() {
         return;
     };
 
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Single-direction variant — simpler shape, useful baseline for
@@ -126,7 +125,7 @@ fn explain_simplest_count_pattern() {
         return;
     };
 
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Minimal TopK-ish pattern — no OPTIONAL MATCH.

@@ -11,13 +11,12 @@
 
 use obrain_bases_banc::{Base, base_lecture};
 use obrain_core::graph::GraphStore;
-use obrain_substrate::SubstrateStore;
 
 fn check(name: &str, base: Base) {
     let Some(path) = base_lecture(base) else {
         return;
     };
-    let subs = SubstrateStore::open_read_only(&path).expect("open");
+    let subs = path.ouvrir_substrat();
     println!("\n═══ {name} ═══");
     for label in ["File", "Function", "Article", "Decision", "Concept"] {
         let nodes = subs.nodes_by_label(label);

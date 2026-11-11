@@ -2,7 +2,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "bench on prod bases"]
@@ -16,7 +15,7 @@ fn bench_get_node_bulk_hydrate() {
         let Some(path) = base_lecture(base) else {
             continue;
         };
-        let db = ObrainDB::open_read_only(&path).expect("open");
+        let db = path.ouvrir();
         let store = db.store();
         let nodes = store.nodes_by_label(label);
         if nodes.len() < 10 {

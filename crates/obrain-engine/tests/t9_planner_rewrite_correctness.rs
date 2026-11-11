@@ -55,7 +55,7 @@ const DUAL_QUERY: &str = "MATCH (f:File) \
 
 fn open_po_or_skip() -> Option<ObrainDB> {
     let po_path = base_lecture(Base::Po)?;
-    Some(ObrainDB::open_read_only(&po_path).expect("open PO db"))
+    Some(po_path.ouvrir())
 }
 
 /// Fingerprint a row as a tuple of `(path, imports, dependents,

@@ -7,7 +7,6 @@
 //!   --test po_profiling_bench -- --nocapture
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 use web_time::Instant;
 
 fn measure(name: &str, session: &obrain_engine::Session, query: &str, iters: usize) {
@@ -38,7 +37,7 @@ fn profile_list_project_symbols() {
         return;
     };
 
-    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     println!("\n{}", "═".repeat(80));

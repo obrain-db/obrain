@@ -18,7 +18,6 @@
 #![cfg(feature = "cypher")]
 
 use obrain_bases_banc::{Base, base_lecture};
-use obrain_engine::ObrainDB;
 use web_time::Instant;
 
 fn current_rss_mb() -> f64 {
@@ -40,7 +39,7 @@ fn measure(name: &str, base: Base) {
     };
     let rss_before = current_rss_mb();
     let t0 = Instant::now();
-    let db = ObrainDB::open_read_only(&path).expect("open");
+    let db = path.ouvrir();
     let open_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let rss_after_open = current_rss_mb();
 
