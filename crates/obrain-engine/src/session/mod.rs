@@ -2102,7 +2102,7 @@ impl Session {
     // T17 Step 24 (2026-04-23): `create_vector_index_on_store` and
     // `create_text_index_on_store` were LpgStore-only helpers (they
     // built HNSW / BM25 side-tables and attached them to the
-    // concrete `LpgStore` via `add_vector_index` / `add_text_index`).
+    // concrete `LpgStore` via `add_text_index`; le registre vectoriel du store a été supprimé).
     // The `CREATE VECTOR INDEX` / `CREATE INDEX` GQL statements that
     // called these helpers now return a substrate-era error at
     // dispatch, so the helpers themselves are dead code and have been

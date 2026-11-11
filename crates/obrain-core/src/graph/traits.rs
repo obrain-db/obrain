@@ -801,28 +801,6 @@ pub trait GraphStore: Send + Sync {
         Vec::new()
     }
 
-    /// Returns all registered vector (HNSW) index entries as `(key, index)` pairs.
-    ///
-    /// The key format is `"label:property"`. Default returns empty. `LpgStore`
-    /// overrides; substrate-backed stores expose vector retrieval through their
-    /// native L1 vector store instead.
-    #[cfg(feature = "vector-index")]
-    fn vector_index_entries(&self) -> Vec<(String, Arc<crate::index::vector::HnswIndex>)> {
-        Vec::new()
-    }
-
-    /// Retrieves the vector index for a label+property pair, if any.
-    ///
-    /// Default returns `None`. LpgStore overrides to look up its HNSW registry.
-    #[cfg(feature = "vector-index")]
-    fn get_vector_index(
-        &self,
-        _label: &str,
-        _property: &str,
-    ) -> Option<Arc<crate::index::vector::HnswIndex>> {
-        None
-    }
-
     /// Retrieves the text (BM25) index for a label+property pair, if any.
     ///
     /// Default returns `None`. LpgStore overrides to look up its text-index
@@ -837,25 +815,6 @@ pub trait GraphStore: Send + Sync {
         _property: &str,
     ) -> Option<Arc<parking_lot::RwLock<crate::index::text::InvertedIndex>>> {
         None
-    }
-
-    /// Registers a pre-built vector (HNSW) index for a label+property pair.
-    /// Default no-op — backends without named vector indexes ignore the
-    /// registration.
-    #[cfg(feature = "vector-index")]
-    fn add_vector_index(
-        &self,
-        _label: &str,
-        _property: &str,
-        _index: Arc<crate::index::vector::HnswIndex>,
-    ) {
-    }
-
-    /// Removes the vector index for a label+property pair. Returns `false`
-    /// if none existed. Default returns `false`.
-    #[cfg(feature = "vector-index")]
-    fn remove_vector_index(&self, _label: &str, _property: &str) -> bool {
-        false
     }
 
     /// Registers a pre-built text (BM25) index for a label+property pair.

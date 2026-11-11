@@ -10,8 +10,8 @@ impl super::ObrainDB {
     ///
     /// (2026-08-13) Quatre chemins d'ecriture — `add_node_label`,
     /// `remove_node_label`, `batch_create_nodes`, `delete_node` — entretenaient
-    /// les index par `self.store.get_vector_index()` /
-    /// `vector_index_entries()` / `get_text_index()`. En mode substrat,
+    /// les index par le registre vectoriel du store (supprimé) /
+    /// puis `get_text_index()`. En mode substrat,
     /// `self.store` est le store FANTOCHE : ces appels rendent None ou vide, et
     /// l'entretien ne se faisait tout simplement pas. Un index construit restait
     /// fige des qu'on passait par l'un de ces chemins.
