@@ -72,11 +72,15 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   `ObrainDB::verifier_contrainte_hypothetique` ; état de toutes les contraintes déclarées sur les
   données : `ObrainDB::verifier_contraintes`.
 - **L'unicité reconnaît les doublons que le langage tient pour égaux** : `5` et `5.0`, deux chaînes
-  date-heure du même instant dans deux fuseaux, sur une colonne seule comme dans un tuple, dans les
-  deux ordres d'insertion et de déclaration (la recherche n'utilise l'index d'égalité que pour une
-  colonne à clé exacte, et balaie le label sinon : O(label) pour un tuple sans booléen ni chaîne
-  ordinaire). Nouvelle méthode de trait `GraphStore::find_nodes_by_properties_for_label` (défaut :
-  balayage du label).
+  date-heure du même instant dans deux fuseaux, une chaîne de plus de 256 octets (rangée en colonne
+  blob, jamais dans l'index d'égalité), sur une colonne seule comme dans un tuple, dans les deux
+  ordres d'insertion et de déclaration. La règle est en un seul endroit
+  (`SubstrateStore::index_borne_les_porteurs`) : l'index ne borne les candidats que si la classe
+  d'égalité est la clé, que la valeur est de celles que l'index reçoit, que la clé est enregistrée et
+  que l'index est bâti ; sinon balayage du label (O(label) : mesuré ×800 à 100 000 nœuds pour un tuple
+  tout entiers, voir `docs/LIMITES-v0.0.1.md`). L'import en lot, qui n'alimente pas les index, retire
+  leurs marqueurs : ils sont rebâtis au prochain usage. Nouvelle méthode de trait
+  `GraphStore::find_nodes_by_properties_for_label` (défaut : balayage du label).
 - **Coût du contrôle d'un tuple indépendant de l'ordre des colonnes** : la recherche par
   propriétés résout par la condition indexée la plus sélective, plus par la première déclarée
   (`UNIQUE (a, b)` avec `a` à deux valeurs coûtait 30 fois `UNIQUE (b, a)`).

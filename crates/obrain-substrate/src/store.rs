@@ -12836,6 +12836,15 @@ impl SubstrateStore {
                 t1.elapsed().as_secs_f64()
             );
         }
+        // ── L'IMPORT EN LOT N'ALIMENTE PAS LES INDEX D'ÉGALITÉ ──
+        // Les pages sont posées directement (pas de `prop_index_insert`), et
+        // la zone persistée ne connaît pas ces nœuds. Un index bâti AVANT
+        // l'import ne borne donc plus les porteurs : on retire les marqueurs
+        // « bâti depuis v2 » et « couvert par la zone », et le prochain usage
+        // rebâtit l'index depuis les chaînes (qui, elles, portent tout).
+        // C'est la règle d'`index_borne_les_porteurs`, condition 4.
+        self.index_batis_depuis_v2.clear();
+        self.egalite_couverte.clear();
         Ok(ecrites)
     }
 
@@ -17297,6 +17306,37 @@ impl SubstrateStore {
         })
     }
 
+    /// LA RÈGLE, en un seul endroit : l'index d'égalité de `key` BORNE-t-il
+    /// les porteurs de `value` — tout nœud dont la valeur est égale à `value`
+    /// au sens du langage y figure-t-il ? Sinon, un jeu de candidats vide ou
+    /// partiel tiré de cet index ferait manquer un porteur, et une contrainte
+    /// d'unicité accepterait un doublon. Quatre conditions, toutes
+    /// nécessaires — chacune a eu son doublon prouvé par sonde :
+    ///
+    /// 1. **la classe d'égalité est la clé** (`cle_index_exacte`) : `5.0`
+    ///    n'est pas rangé avec `5`, ni `…+02:00` avec `…Z` ;
+    /// 2. **la valeur est écrite dans l'index quand elle est écrite dans le
+    ///    nœud** : une chaîne (ou des octets) de plus de 256 o part en colonne
+    ///    blob (`encode_blob_payload`), jamais dans l'index — ni à
+    ///    `set_node_property`, ni à l'import en lot, ni à la reconstruction
+    ///    depuis la zone v2 ;
+    /// 3. **la clé est enregistrée** : sans entrée dans `property_indexes`,
+    ///    aucune écriture n'alimente l'index (ni session, ni zone) ;
+    /// 4. **l'index est bâti** : sous zone v2, le marqueur « bâti depuis les
+    ///    chaînes » (posé APRÈS le remplissage, un index en construction n'est
+    ///    pas éligible) ou la couverture par la zone persistée ; l'import en
+    ///    lot, qui n'alimente pas les index, retire ces marqueurs.
+    ///
+    /// Toute autre réponse est « balayer le label » : O(label), toujours juste.
+    pub(crate) fn index_borne_les_porteurs(&self, key: &PropertyKey, value: &Value) -> bool {
+        cle_index_exacte(value)
+            && encode_blob_payload(value).is_none()
+            && self.property_indexes.contains_key(key)
+            && (self.props_zone.is_none()
+                || self.next_node_id.load(Ordering::Acquire) <= 1
+                || self.index_batis_depuis_v2.contains_key(key))
+    }
+
     /// Taille BRUTE du jeu de candidats indexés pour `(property, value)` —
     /// zone persistée (clé couverte) plus delta de session — SANS
     /// revérification : c'est la taille de l'ensemble qu'`indexed_candidates`
@@ -20566,27 +20606,37 @@ impl GraphStore for SubstrateStore {
     /// dont les propriétés sont égales, au sens du langage, à TOUTES les
     /// conditions.
     ///
-    /// L'index d'égalité ne range que `Bool`, `Int64` et `String` sous leur
-    /// forme littérale : `5.0` n'y est pas avec `5`, ni `…+02:00` avec `…Z`.
-    /// Un décompte ou des candidats tirés d'une colonne dont la classe
-    /// d'égalité dépasse sa clé d'index NE BORNENT PAS les porteurs (0
-    /// candidat alors qu'un porteur égal existe) : s'y fier laisse passer un
-    /// doublon. Seules servent donc les colonnes à clé EXACTE
-    /// (`cle_index_exacte` : booléen, chaîne qui n'est pas une date-heure) ;
-    /// à défaut, le balayage du label — O(label), toujours juste. Chaque
-    /// candidat est revérifié contre TOUTES les conditions par l'égalité du
-    /// langage.
+    /// Une colonne ne résout par l'index que si `index_borne_les_porteurs`
+    /// le garantit ; à défaut, le balayage du label — O(label), toujours
+    /// juste. Chaque candidat est revérifié contre TOUTES les conditions par
+    /// l'égalité du langage.
     fn find_nodes_by_properties_for_label(
         &self,
         label: &str,
         conditions: &[(&str, Value)],
     ) -> Vec<NodeId> {
-        let exactes: Vec<usize> = (0..conditions.len())
-            .filter(|&i| cle_index_exacte(&conditions[i].1))
+        // Candidates à la résolution par index : la classe d'égalité doit
+        // être la clé (`cle_index_exacte`) ET la valeur doit être de celles
+        // que l'index reçoit quand on les écrit. On bâtit leur index si
+        // besoin, PUIS on applique la règle complète, qui vérifie que l'index
+        // est effectivement bâti.
+        let eligibles: Vec<usize> = (0..conditions.len())
+            .filter(|&i| {
+                cle_index_exacte(&conditions[i].1)
+                    && encode_blob_payload(&conditions[i].1).is_none()
+            })
+            .collect();
+        if !eligibles.is_empty() {
+            let cles: Vec<&str> = eligibles.iter().map(|&i| conditions[i].0).collect();
+            self.assurer_index_bati_depuis_v2(&cles);
+        }
+        let exactes: Vec<usize> = eligibles
+            .into_iter()
+            .filter(|&i| {
+                self.index_borne_les_porteurs(&PropertyKey::new(conditions[i].0), &conditions[i].1)
+            })
             .collect();
         if !exactes.is_empty() {
-            let cles: Vec<&str> = exactes.iter().map(|&i| conditions[i].0).collect();
-            self.assurer_index_bati_depuis_v2(&cles);
             let meilleure = exactes
                 .iter()
                 .filter_map(|&i| {
@@ -20667,7 +20717,9 @@ impl GraphStore for SubstrateStore {
             // n'est PAS une borne supérieure (0 alors qu'un porteur égal
             // existe), et le retenir rendait vide une recherche qui ne l'est
             // pas — un doublon accepté.
-            .filter(|(_, (_, expected))| cle_index_exacte(expected))
+            .filter(|(_, (prop, expected))| {
+                self.index_borne_les_porteurs(&PropertyKey::new(*prop), expected)
+            })
             .filter_map(|(i, (prop, expected))| {
                 self.indexed_candidate_count(prop, expected).map(|n| (n, i))
             })

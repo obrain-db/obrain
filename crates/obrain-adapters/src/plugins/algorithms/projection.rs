@@ -2918,6 +2918,48 @@ mod tests {
         assert!(found.contains(&n0));
     }
 
+    /// Le DÉFAUT du trait (la projection ne surcharge pas
+    /// `find_nodes_by_properties_for_label`) est juste sur un store sans index
+    /// exploitable : balayage du label et égalité du langage — une chaîne de
+    /// plus de 256 octets (colonne blob, hors index) et `5` face à `5.0` sont
+    /// retrouvés, le label filtre.
+    #[test]
+    fn test_projection_find_nodes_by_properties_for_label_default_scans() {
+        let store = SubstrateStore::open_tempfile().unwrap();
+        let longue = "x".repeat(400);
+        let n0 = store.create_node(&["File"]);
+        store.set_node_property(n0, "body", Value::from(longue.as_str()));
+        store.set_node_property(n0, "n", Value::Float64(5.0));
+        let n1 = store.create_node(&["Note"]);
+        store.set_node_property(n1, "body", Value::from(longue.as_str()));
+        store.set_node_property(n1, "n", Value::Int64(5));
+        let n2 = store.create_node(&["File"]);
+        store.set_node_property(n2, "body", Value::from("court"));
+        store.set_node_property(n2, "n", Value::Int64(5));
+
+        let projection = ProjectionBuilder::new(&store)
+            .with_node_labels(&["File", "Note"])
+            .build();
+        let conditions = [
+            ("body", Value::from(longue.as_str())),
+            ("n", Value::Int64(5)),
+        ];
+        assert_eq!(
+            projection.find_nodes_by_properties_for_label("File", &conditions),
+            vec![n0],
+            "chaîne blob + 5.0 = 5, sous :File"
+        );
+        assert_eq!(
+            projection.find_nodes_by_properties_for_label("Note", &conditions),
+            vec![n1]
+        );
+        assert!(
+            projection
+                .find_nodes_by_properties_for_label("Autre", &conditions)
+                .is_empty()
+        );
+    }
+
     #[test]
     fn test_projection_find_nodes_in_range() {
         let store = SubstrateStore::open_tempfile().unwrap();

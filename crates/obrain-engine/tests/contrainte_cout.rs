@@ -90,3 +90,58 @@ fn le_cout_du_tuple_ne_depend_pas_de_l_ordre_des_colonnes() {
          résout encore au lieu de la plus sélective"
     );
 }
+
+/// CHIFFRÉ, pas borné : un tuple TOUT ENTIERS (`a = i % 2`, `g = i`) n'a
+/// aucune colonne à clé d'index exacte sur cette version (un entier est égal à
+/// un flottant entier que l'index ne range pas) : le contrôle balaie le label,
+/// O(N) par écriture. Mesuré par la relecture à 100 000 nœuds : 25 008 µs par
+/// insertion contre 31 µs sans contrainte (×800). Ce test imprime la mesure
+/// courante ; la clé d'index canonique (PR empilée) ramène ce cas sous la
+/// borne du test précédent.
+#[test]
+fn cout_tout_entiers_chiffre() {
+    const OPS_ENTIERS: i64 = 20;
+    let db = ObrainDB::new_in_memory();
+    {
+        let store = db.graph_store();
+        let (cle_a, cle_g) = (PropertyKey::new("a"), PropertyKey::new("g"));
+        for i in 0..N {
+            store.create_node_with_props(
+                &["T"],
+                &[
+                    (cle_a.clone(), Value::Int64(i % 2)),
+                    (cle_g.clone(), Value::Int64(i)),
+                ],
+            );
+        }
+    }
+    let session = db.session();
+    let sans = {
+        let top = Instant::now();
+        for j in 0..OPS_ENTIERS {
+            let v = N + j;
+            session
+                .execute(&format!("INSERT (:T {{a: {}, g: {v}}})", v % 2))
+                .unwrap();
+        }
+        top.elapsed().as_secs_f64() * 1e6 / OPS_ENTIERS as f64
+    };
+    session
+        .execute_cypher("CREATE CONSTRAINT ag FOR (n:T) REQUIRE (n.a, n.g) IS UNIQUE")
+        .unwrap();
+    let avec = {
+        let top = Instant::now();
+        for j in 0..OPS_ENTIERS {
+            let v = N + OPS_ENTIERS + 1 + j;
+            session
+                .execute(&format!("INSERT (:T {{a: {}, g: {v}}})", v % 2))
+                .unwrap();
+        }
+        top.elapsed().as_secs_f64() * 1e6 / OPS_ENTIERS as f64
+    };
+    eprintln!(
+        "tout entiers, {N} nœuds : {avec:.0} µs/insert sous UNIQUE (a, g) contre {sans:.0} µs sans \
+         (×{:.0}) — O(label), chiffré, non borné sur cette version",
+        avec / sans.max(1.0)
+    );
+}

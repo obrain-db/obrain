@@ -688,6 +688,27 @@ mod tests {
         (WalGraphStore::new(store, wal, ctx), wal_ref)
     }
 
+    /// `find_nodes_by_properties_for_label` est déléguée au store interne, qui
+    /// retrouve une chaîne de plus de 256 octets (colonne blob, hors index).
+    #[test]
+    fn find_nodes_by_properties_for_label_delegates() {
+        let (ws, _wal) = setup();
+        let longue = "x".repeat(400);
+        let a = ws.create_node(&["A"]);
+        ws.set_node_property(a, "texte", Value::from(longue.as_str()));
+        let b = ws.create_node(&["B"]);
+        ws.set_node_property(b, "texte", Value::from(longue.as_str()));
+        let conditions = [("texte", Value::from(longue.as_str()))];
+        assert_eq!(
+            ws.find_nodes_by_properties_for_label("A", &conditions),
+            vec![a]
+        );
+        assert!(
+            ws.find_nodes_by_properties_for_label("C", &conditions)
+                .is_empty()
+        );
+    }
+
     #[test]
     fn create_node_delegates_and_logs() {
         let (ws, wal) = setup();
