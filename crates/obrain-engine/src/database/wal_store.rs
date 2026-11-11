@@ -703,9 +703,10 @@ mod tests {
             ws.find_nodes_by_properties_for_label("A", &conditions),
             vec![a]
         );
-        assert!(
+        assert_eq!(
             ws.find_nodes_by_properties_for_label("C", &conditions)
-                .is_empty()
+                .len(),
+            0
         );
     }
 

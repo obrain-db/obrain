@@ -1453,7 +1453,7 @@ mod cypher_features {
             result.err()
         );
         // Vide tant qu'aucune contrainte n'est déclarée.
-        assert!(result.unwrap().rows.is_empty());
+        assert_eq!(result.unwrap().rows.len(), 0);
 
         // Puis une ligne par contrainte : nom, nature, label, propriétés.
         session

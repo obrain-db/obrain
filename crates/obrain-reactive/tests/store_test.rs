@@ -2005,9 +2005,10 @@ fn find_nodes_by_properties_for_label_delegates_to_inner() {
     let conditions: Vec<(&str, Value)> = vec![("texte", Value::from(longue.as_str()))];
     let trouves = store.find_nodes_by_properties_for_label("A", &conditions);
     assert_eq!(trouves, vec![n1], "le porteur :A, et lui seul");
-    assert!(
+    assert_eq!(
         store
             .find_nodes_by_properties_for_label("C", &conditions)
-            .is_empty()
+            .len(),
+        0
     );
 }

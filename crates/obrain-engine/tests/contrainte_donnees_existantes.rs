@@ -88,7 +88,7 @@ fn create_constraint_refuse_des_donnees_deja_en_double() {
 
     // UNIQUE (a) seul est violé aussi (a = 1 deux fois, a = 7 deux fois).
     assert!(s.execute_cypher(U_A).is_err());
-    assert!(s.execute("SHOW CONSTRAINTS").unwrap().rows.is_empty());
+    assert_eq!(s.execute("SHOW CONSTRAINTS").unwrap().rows.len(), 0);
 
     // Une fois le doublon retiré, la contrainte composite passe et tient.
     s.execute_cypher("MATCH (n:T {m: 2}) DELETE n")
@@ -119,7 +119,7 @@ fn diagnostic_d_une_contrainte_hypothetique_liste_tous_les_doublons() {
     let plafonne = db.verifier_contrainte_hypothetique("T", &["a", "b"], 2);
     assert_eq!(plafonne.violations.len(), 2, "décrites : plafonnées");
     assert_eq!(plafonne.violations_totales, 4, "comptées : toutes");
-    assert!(s.execute("SHOW CONSTRAINTS").unwrap().rows.is_empty());
+    assert_eq!(s.execute("SHOW CONSTRAINTS").unwrap().rows.len(), 0);
 }
 
 /// Un type qui hérite d'un autre est soumis à ses contraintes : `CREATE
@@ -215,7 +215,7 @@ fn comportement_fixe_create_constraint_refuse_ne_reecrit_pas_le_typecat() {
     }
     let db = ObrainDB::open_substrate(&chemin).expect("réouverture");
     let s = db.session();
-    assert!(s.execute("SHOW CONSTRAINTS").unwrap().rows.is_empty());
+    assert_eq!(s.execute("SHOW CONSTRAINTS").unwrap().rows.len(), 0);
     s.execute("INSERT (:T {a: 1, b: 'x'})")
         .expect("aucune contrainte après réouverture");
 }

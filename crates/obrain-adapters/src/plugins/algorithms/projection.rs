@@ -2953,10 +2953,11 @@ mod tests {
             projection.find_nodes_by_properties_for_label("Note", &conditions),
             vec![n1]
         );
-        assert!(
+        assert_eq!(
             projection
                 .find_nodes_by_properties_for_label("Autre", &conditions)
-                .is_empty()
+                .len(),
+            0
         );
     }
 
