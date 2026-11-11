@@ -252,39 +252,48 @@ impl super::ObrainDB {
             // La requete part en dimension NATIVE : l'index la projette lui-meme
             // (O-VEC C4) et rerank les candidats sur les vecteurs natifs.
 
-            // Avec des filtres, on sur-echantillonne : filtrer APRES un top-k
-            // exact rendrait moins de k resultats des qu'un seul voisin est
-            // ecarte. Facteur 4, borne a 1024 pour ne pas degenerer en scan.
-            let k_brut = if filters.is_some() {
-                (k.saturating_mul(4)).min(1024).max(k)
+            // La liste blanche est calculee UNE fois, pas par candidat.
+            let permis = self.compute_filter_allowlist(label, filters);
+
+            // Recherche filtrée EXACTE. Filtrer après un top-k fixe rendait 0
+            // résultat valide dès que les voisins les plus proches étaient tous
+            // hors liste blanche (données groupées : les 40 premiers voisins
+            // étaient tous du groupe 0, filtre sur le groupe 1, mesuré le
+            // 11/11). On élargit donc le top-k par facteur 4 tant qu'il reste
+            // moins de k résultats permis ET que l'index n'est pas épuisé. La
+            // boucle s'arrête dès que k résultats sont trouvés : le coût ne croît
+            // que pour les filtres sélectifs.
+            let total = index.len();
+            let mut k_brut = if permis.is_some() {
+                k.saturating_mul(4).max(k).min(total.max(k))
             } else {
                 k
             };
-
-            // La liste blanche est calculee UNE fois, pas par candidat : c'est
-            // le meme helper que le chemin HNSW, deja eprouve.
-            let permis = self.compute_filter_allowlist(label, filters);
-
-            let bruts = match ef {
-                Some(largeur) => index.search_top_k_ef(query, k_brut, largeur),
-                None => index.search_top_k(query, k_brut),
-            };
-            let mut out: Vec<(obrain_common::types::NodeId, f32)> = Vec::with_capacity(k);
-            for (offset, cosinus) in bruts {
-                let id = obrain_common::types::NodeId(u64::from(offset));
-                if let Some(ref set) = permis
-                    && !set.contains(&id)
-                {
-                    continue;
+            loop {
+                let bruts = match ef {
+                    Some(largeur) => index.search_top_k_ef(query, k_brut, largeur),
+                    None => index.search_top_k(query, k_brut),
+                };
+                let mut out: Vec<(obrain_common::types::NodeId, f32)> = Vec::with_capacity(k);
+                for (offset, cosinus) in bruts {
+                    let id = obrain_common::types::NodeId(u64::from(offset));
+                    if let Some(ref set) = permis
+                        && !set.contains(&id)
+                    {
+                        continue;
+                    }
+                    // Le contrat de cette fonction est une DISTANCE croissante ;
+                    // le cascade rend une similarité cosinus décroissante.
+                    out.push((id, 1.0 - cosinus));
+                    if out.len() == k {
+                        break;
+                    }
                 }
-                // Le contrat de cette fonction est une DISTANCE croissante ;
-                // le cascade rend une similarite cosinus decroissante.
-                out.push((id, 1.0 - cosinus));
-                if out.len() == k {
-                    break;
+                if out.len() == k || permis.is_none() || k_brut >= total {
+                    return Ok(out);
                 }
+                k_brut = k_brut.saturating_mul(4).min(total);
             }
-            return Ok(out);
         }
 
         let index = self.store.get_vector_index(label, property).ok_or_else(|| {
