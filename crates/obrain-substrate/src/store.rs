@@ -1237,6 +1237,16 @@ thread_local! {
     /// `recolter_index_depuis_v2` : clé enregistrée, époque PAS ENCORE
     /// incrémentée (revue 6, N1) — un import qui lit ici doit voir la clé.
     #[allow(clippy::type_complexity)]
+    /// `recolter_index_depuis_v2` : AVANT l'enregistrement de la clé (la
+    /// fenêtre que l'ancien ordre « époque puis enregistrement » ouvrait).
+    #[allow(clippy::type_complexity)]
+    static AVANT_ENREGISTREMENT_CLE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Surcharge PAR FIL de `OBRAIN_PROPS_V2` pour les tests (voir
+    /// `lire_props_v2_env`).
+    static PROPS_V2_SURCHARGE: std::cell::RefCell<Option<Option<String>>> =
+        const { std::cell::RefCell::new(None) };
+    #[allow(clippy::type_complexity)]
     static ENTRE_ENREGISTREMENT_ET_EPOQUE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
         const { std::cell::RefCell::new(None) };
     /// `create_property_index` : la clé est absente, la construction va
@@ -2985,6 +2995,12 @@ impl SubstrateStore {
         if cibles.is_empty() {
             return false;
         }
+        #[cfg(test)]
+        AVANT_ENREGISTREMENT_CLE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         for (k, _) in &cibles {
             self.property_indexes.entry(k.clone()).or_default();
         }
@@ -3260,6 +3276,15 @@ impl SubstrateStore {
             return;
         }
         self.batir_index_depuis_v2(&manquantes);
+    }
+
+    /// Nombre de passes COMPLÈTES de construction d'index depuis l'ouverture
+    /// (une passe lit toute la base) : ce que les tests observent pour
+    /// établir qu'une construction n'est pas refaite à chaque requête.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn passes_de_construction_index(&self) -> u64 {
+        self.passes_de_construction.load(Ordering::Acquire)
     }
 
     /// Le verrou d'écriture du nœud `id` (voir `verrous_ecriture_noeud`).
@@ -5182,6 +5207,14 @@ impl SubstrateStore {
     /// coute moins cher que de gerer un journal incremental, et ne peut pas
     /// diverger.
     fn ecrire_catalogue(&self, decls: &[DeclarationIndex]) -> SubstrateResult<()> {
+        // Un store en LECTURE SEULE ne modifie pas la base qu'il lit (revue 7,
+        // b) : `create_property_index` et `declarer_index` y construisent en
+        // mémoire, sans jamais écrire le catalogue.
+        if self.read_only.load(Ordering::Relaxed) {
+            return Err(SubstrateError::Internal(
+                "catalogue d'index non écrit : store ouvert en lecture seule".into(),
+            ));
+        }
         use std::io::Write as _;
         let chemin = self.chemin_catalogue();
         let temporaire = chemin.with_extension("indexcat.tmp");
@@ -7051,7 +7084,7 @@ impl SubstrateStore {
             //
             // `OBRAIN_PROPS_V2=0` force le comportement hérité, pour pouvoir
             // reproduire un incident sur l ancien chemin.
-            let var = std::env::var("OBRAIN_PROPS_V2").ok();
+            let var = lire_props_v2_env();
             let enable_env = var.as_deref() == Some("1");
             let disable_env = var.as_deref() == Some("0");
             let zone_exists = sub_guard.path().join(PROPS_V2_FILENAME).exists();
@@ -13273,27 +13306,49 @@ impl SubstrateStore {
     /// Même résultat ; sans zone v2 (ou sur base vide), on retombe sur le
     /// chemin unitaire, clé par clé.
     pub fn creer_index_proprietes(&self, proprietes: &[&str]) {
-        // Même verrou que `create_property_index` et le drop (revue 6, N5).
-        let _une_seule = self.construction_index.lock();
-        let a_batir: Vec<String> = proprietes
-            .iter()
-            .filter(|p| {
-                self.declarer_propriete_sans_batir(p);
-                !self.property_indexes.contains_key(&PropertyKey::new(**p))
-            })
-            .map(|p| p.to_string())
-            .collect();
-        if a_batir.is_empty() {
-            return;
+        for p in proprietes {
+            self.declarer_propriete_sans_batir(p);
         }
-        if self.props_zone.is_some()
-            && self.next_node_id.load(Ordering::Acquire) > 1
-            && self.batir_index_depuis_v2(&a_batir)
-        {
-            self.persister_index_apres_construction();
-            return;
-        }
-        for p in &a_batir {
+        // ── LE VERROU N'EST TENU QUE SUR LA BRANCHE v2 (revue 7) ──
+        //
+        // `construction_index` est un `Mutex` NON réentrant. Cette fonction le
+        // tenait d'un bout à l'autre, repli compris, et le repli clé par clé
+        // appelle `create_property_index`, qui le reprend : le fil se bloquait
+        // sur lui-même (base vide, ou clé inconnue du registre). Le verrou est
+        // donc pris autour du test « existe déjà » ET de la construction v2
+        // (revue 6, N5), et RELÂCHÉ avant le repli, dont chaque clé reprend le
+        // verrou et refait son propre test.
+        //
+        // GRAPHE DES VERROUS (les six sites qui prennent `construction_index`) :
+        //   · `assurer_index_bati_depuis_v2`, `completer_index_herites`,
+        //     `rebatir_index_declares`, `create_property_index`,
+        //     `drop_property_index` : chacun le tient puis n'appelle que
+        //     `batir_index_depuis_v2` / `recolter_index_depuis_v2` /
+        //     `persister_index_apres_construction` / la fusion / le catalogue,
+        //     dont AUCUN ne le reprend ;
+        //   · `creer_index_proprietes` : relâché avant d'appeler
+        //     `create_property_index`.
+        // Test : `aucun_interblocage_sur_les_sites_de_construction_index`.
+        let repli: Vec<String> = {
+            let _une_seule = self.construction_index.lock();
+            let a_batir: Vec<String> = proprietes
+                .iter()
+                .filter(|p| !self.property_indexes.contains_key(&PropertyKey::new(**p)))
+                .map(|p| p.to_string())
+                .collect();
+            if a_batir.is_empty() {
+                return;
+            }
+            if self.props_zone.is_some()
+                && self.next_node_id.load(Ordering::Acquire) > 1
+                && self.batir_index_depuis_v2(&a_batir)
+            {
+                self.persister_index_apres_construction();
+                return;
+            }
+            a_batir
+        };
+        for p in &repli {
             <Self as GraphStoreMut>::create_property_index(self, p);
         }
     }
@@ -17335,6 +17390,21 @@ impl SubstrateStore {
 // ---------------------------------------------------------------------------
 // T17b — index de propriété : clé de valeur hachable + helpers de maintenance
 // ---------------------------------------------------------------------------
+
+/// La valeur de `OBRAIN_PROPS_V2` vue par l'ouverture d'un store.
+///
+/// En production : la variable d'environnement. En TEST : une surcharge PAR
+/// FIL d'abord (`PROPS_V2_SURCHARGE`) — libtest lance chaque test sur son
+/// propre fil, donc un test qui pose `=0` n'est plus vu par ses voisins en
+/// parallèle (la course d'environnement de la revue 6, point c : des tests
+/// qui rouvrent une base v2 étaient refusés quand un voisin posait `=0`).
+fn lire_props_v2_env() -> Option<String> {
+    #[cfg(test)]
+    if let Some(surcharge) = PROPS_V2_SURCHARGE.with(|c| c.borrow().clone()) {
+        return surcharge;
+    }
+    std::env::var("OBRAIN_PROPS_V2").ok()
+}
 
 /// Hacheur des cartes d'index, consultées à CHAQUE recherche par égalité.
 ///
@@ -24343,6 +24413,14 @@ impl GraphStoreMut for SubstrateStore {
             // retire donc la complétude de la clé : la recherche suivante la
             // reconstruit, colonne comprise — une fois par processus et par clé
             // qui reçoit sa première colonne.
+            // MÉMOIRE SEULEMENT (revue 7, e) : le retrait de complétude ne
+            // survit pas à la fermeture. Entre cette écriture et la
+            // reconstruction que la recherche suivante déclenche, lecture et
+            // index restent cohérents (la recherche passe par le balayage tant
+            // que la marque manque) ; après un nouveau kill, la clé, à colonne
+            // blob connue du dictionnaire ou non, repasse par la règle R ou par
+            // ce même retrait à la première écriture longue.
+            //
             // Sous v2 seulement : c'est le rebâti à la demande depuis les
             // chaînes (`assurer_index_bati_depuis_v2`) qui rend la complétude.
             // En régime hérité, un index ne voit pas les colonnes blob —
@@ -25892,7 +25970,7 @@ mod tests {
         // préexistante, vue une fois sur trois passes).
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         {
@@ -26796,7 +26874,7 @@ mod tests {
     fn auto_migrates_legacy_vectors_on_load() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         use crate::props_snapshot::PropertiesStreamingWriter;
         use obrain_core::graph::traits::GraphStore;
         use std::sync::Arc;
@@ -26965,7 +27043,7 @@ mod tests {
     fn checkpoint_truncates_the_wal_without_losing_committed_state() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         use crate::props_snapshot::PropertiesStreamingWriter;
         use obrain_core::graph::traits::GraphStore;
         use std::sync::Arc;
@@ -27116,7 +27194,7 @@ mod tests {
         // couverte sans que personne ne le remarque.
         let _garde_env = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
@@ -29123,11 +29201,11 @@ mod tests {
     fn regime_herite_un_index_en_cours_de_remplissage_n_est_pas_cru() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         assert!(s.props_zone.is_none(), "précondition : régime hérité");
         let mut ids = Vec::new();
         for i in 0..60i64 {
@@ -29324,7 +29402,7 @@ mod tests {
     fn resolution_selective_cle_canonique_survit_a_la_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, _m) = base_persistee_a_cle_canonique(&racine);
@@ -29368,7 +29446,7 @@ mod tests {
     fn migration_une_zone_v1_est_servie_puis_completee_sans_reconstruction() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29454,7 +29532,7 @@ mod tests {
         use std::sync::Arc;
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29486,7 +29564,7 @@ mod tests {
     fn index_cree_en_session_ne_rend_pas_partielles_les_cles_couvertes() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29525,7 +29603,7 @@ mod tests {
     fn zone_devenue_non_fiable_en_session_les_cles_couvertes_restent_justes() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29555,7 +29633,7 @@ mod tests {
     fn flush_sans_ecriture_indexee_ne_reecrit_pas_la_zone() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, _m) = base_persistee_a_cle_canonique(&racine);
@@ -29614,7 +29692,7 @@ mod tests {
         use std::sync::Arc;
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         {
@@ -29660,7 +29738,7 @@ mod tests {
     fn b1_un_index_supprime_ne_revient_pas_perime_apres_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (a, n) = {
@@ -29752,7 +29830,7 @@ mod tests {
     fn b2_un_index_declare_pendant_un_import_en_lot_voit_les_noeuds_importes() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         let labels: Vec<&str> = (0..200).map(|_| "L").collect();
         s.bulk_import_labels_edges(&labels, &[]).unwrap();
@@ -29791,7 +29869,7 @@ mod tests {
         // en régime hérité.
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         s.create_property_index("d");
         let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
@@ -29921,7 +29999,7 @@ mod tests {
         use crate::props_eq_index::{hachage_chaine, hachage_instant};
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29987,7 +30065,7 @@ mod tests {
     fn a1_apres_un_kill_l_index_supprime_ne_revient_pas() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         for (scenario, avec_q, avec_set) in [
             ("drop seul, autre index", true, false),
             ("drop + SET en page de tête", true, true),
@@ -30067,7 +30145,7 @@ mod tests {
         // en régime hérité.
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         s.create_property_index("d");
         // La PREMIÈRE colonne blob d'une clé indexée retire sa complétude
@@ -30137,7 +30215,7 @@ mod tests {
     fn a2_la_construction_recolte_les_instants_des_colonnes_blob() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
@@ -30179,7 +30257,7 @@ mod tests {
     fn a3_un_index_supprime_puis_recree_pendant_un_import_voit_les_noeuds_importes() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         s.create_property_index("sl");
         let labels: Vec<&str> = (0..200).map(|_| "L").collect();
@@ -30225,7 +30303,7 @@ mod tests {
     fn b1_une_recolte_blob_annulee_par_une_requete_ne_tronque_pas_l_index() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
         let mut blobs: Vec<(NodeId, String)> = Vec::new();
@@ -30295,7 +30373,7 @@ mod tests {
     fn b2_un_blob_instant_ecrit_apres_le_flush_survit_a_un_kill() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = {
@@ -30347,7 +30425,7 @@ mod tests {
         // en régime hérité.
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         let s = Arc::new(s);
         s.create_property_index("d");
@@ -30399,7 +30477,7 @@ mod tests {
         // en régime hérité.
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         let n = s.create_node(&["Evt"]);
         s.set_node_property(n, "x", Value::Int64(1));
@@ -30433,7 +30511,7 @@ mod tests {
     fn p3_drop_zone_d_abord_un_echec_refuse_le_drop_et_un_kill_entre_deux_est_sur() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let preparer = |racine: &std::path::Path| {
             let s = SubstrateStore::create(racine).unwrap();
             let n = s.create_node(&["R"]);
@@ -30506,7 +30584,7 @@ mod tests {
     fn p4_un_drop_pendant_une_fusion_n_ecrit_pas_une_serie_vide() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let n = {
@@ -30549,7 +30627,7 @@ mod tests {
         // en régime hérité.
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         s.create_property_index("d");
         // Idem : la colonne blob de `d` existe déjà (revue 6, N4).
@@ -30602,92 +30680,6 @@ mod tests {
     // REVUE 6 — N1 à N6
     // ═════════════════════════════════════════════════════════════════════
 
-    /// N1 — un import qui lit l'époque et les clés enregistrées pendant qu'une
-    /// construction s'amorce : il doit voir la clé (inscription de tête) ou
-    /// le changement d'époque (réinscription de queue), jamais aucun des deux.
-    /// Déroulé : (A) la construction s'arrête entre enregistrement et époque ;
-    /// là, l'import démarre, construit ses pages, et attend AVANT de poser
-    /// ses têtes ; (B) la construction relève les têtes (sans les nœuds
-    /// importés) et s'arrête avant ses marques ; l'import pose ses têtes et
-    /// TERMINE (vérification d'époque comprise) ; la construction se marque
-    /// complète.
-    #[test]
-    #[allow(unsafe_code)]
-    fn n1_un_import_qui_demarre_pendant_l_amorce_d_une_construction_n_est_pas_perdu() {
-        use std::sync::{Arc, Mutex, mpsc};
-        let _guard = props_v2_env_lock();
-        // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
-        let td = tempfile::tempdir().unwrap();
-        let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
-        let labels: Vec<&str> = (0..200).map(|_| "L").collect();
-        s.bulk_import_labels_edges(&labels, &[]).unwrap();
-        // Un nœud de plus, qui INTERNE la clé `sl` (sans quoi aucune
-        // construction ne l'enregistre) : slot 201, hors de l'import.
-        let a = s.create_node(&["L"]);
-        s.set_node_property(a, "sl", Value::Int64(-1));
-        let premier = 1u32;
-        let (pages_pretes_tx, pages_pretes_rx) = mpsc::channel::<()>();
-        let (go_tx, go_rx) = mpsc::channel::<()>();
-        let go_rx = Arc::new(Mutex::new(Some(go_rx)));
-        let importeur: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
-        let une_fois = std::cell::Cell::new(true);
-        let (s_imp, imp_sonde) = (Arc::clone(&s), Arc::clone(&importeur));
-        // (A)
-        ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| {
-            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
-                if !une_fois.replace(false) {
-                    return;
-                }
-                let s2 = Arc::clone(&s_imp);
-                let tx = pages_pretes_tx.clone();
-                let go = Arc::clone(&go_rx);
-                *imp_sonde.lock().unwrap() = Some(std::thread::spawn(move || {
-                    let props: Vec<Vec<(&str, Value)>> =
-                        (0..200i64).map(|i| vec![("sl", Value::Int64(i))]).collect();
-                    PENDANT_IMPORT_EN_LOT.with(|h| {
-                        *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
-                            let _ = tx.send(());
-                            if let Some(rx) = go.lock().unwrap().take() {
-                                let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
-                            }
-                        }));
-                    });
-                    s2.bulk_import_node_props(premier, &props).unwrap();
-                    PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
-                }));
-                let _ = pages_pretes_rx.recv_timeout(std::time::Duration::from_secs(5));
-            }));
-        });
-        // (B)
-        let imp_b = Arc::clone(&importeur);
-        let go_b = Mutex::new(Some(go_tx));
-        APRES_RELEVE_DES_TETES.with(|h| {
-            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
-                if let Some(go) = go_b.lock().unwrap().take() {
-                    let _ = go.send(());
-                }
-                if let Some(fil) = imp_b.lock().unwrap().take() {
-                    fil.join().unwrap();
-                }
-            }));
-        });
-        s.create_property_index("sl");
-        ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| *h.borrow_mut() = None);
-        APRES_RELEVE_DES_TETES.with(|h| *h.borrow_mut() = None);
-        if let Some(fil) = importeur.lock().unwrap().take() {
-            fil.join().unwrap();
-        }
-        assert!(s.has_property_index("sl"));
-        for i in [0i64, 77, 199] {
-            assert_eq!(
-                s.find_nodes_by_property("sl", &Value::Int64(i)),
-                vec![NodeId(u64::from(premier) + i as u64)],
-                "sl = {i} importé pendant l'amorce de la construction"
-            );
-        }
-    }
-
     /// N2 — la préparation d'une base dont un index porte sur une clé à
     /// colonne blob ne RÉÉCRIT pas la zone : la série ne serait jamais lue.
     /// Seules les ancres sont reposées (une page), et le fichier garde sa
@@ -30697,7 +30689,7 @@ mod tests {
     fn n2_preparer_une_cle_a_colonne_blob_ne_reecrit_pas_la_zone() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         {
@@ -30760,7 +30752,7 @@ mod tests {
     fn n3_un_store_en_lecture_seule_ne_modifie_ni_zone_ni_catalogue() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = {
@@ -30847,7 +30839,7 @@ mod tests {
     fn n4_une_colonne_blob_orpheline_qui_reapparait_n_est_pas_ignoree_par_l_index() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = {
@@ -30964,7 +30956,7 @@ mod tests {
         // en régime hérité.
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         s.create_property_index("d");
         // La colonne blob de `d` existe déjà (sinon sa première apparition
@@ -31001,6 +30993,378 @@ mod tests {
         s.set_node_property(n, "d", t1.clone());
         s.set_node_property(n, "d", Value::from("x".repeat(300).as_str()));
         assert_eq!(s.taille_candidats_indexes("d", &t1, 8), Some((0, true)));
+    }
+
+    /// Pose `OBRAIN_PROPS_V2` POUR LE FIL COURANT (`None` : variable absente).
+    /// Chaque test tourne sur son propre fil : aucun voisin ne le voit.
+    pub(super) fn fixer_props_v2(valeur: Option<&str>) {
+        PROPS_V2_SURCHARGE.with(|c| *c.borrow_mut() = Some(valeur.map(String::from)));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 7 — interblocage, deux fenêtres N1, lecture seule, environnement
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// Exécute `f` sur un fil et échoue PROPREMENT si elle ne rend pas la main
+    /// en 20 s (un interblocage ne doit pas figer toute la suite).
+    fn avec_delai<T: Send + 'static>(nom: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap_or_else(|_| panic!("{nom} : pas rendu la main en 20 s (interblocage ?)"))
+    }
+
+    /// BLOQUANT de la revue 7 — `creer_index_proprietes` tenait
+    /// `construction_index` (un `Mutex` non réentrant) pendant son repli, qui
+    /// appelle `create_property_index`, qui le reprend. Deux cas : base VIDE
+    /// (le schéma créé avant les données, le cas courant de PO au démarrage) et
+    /// clé INCONNUE du registre (`batir_index_depuis_v2` rend `false`).
+    #[test]
+    #[allow(unsafe_code)]
+    fn creer_index_proprietes_ne_se_bloque_pas_sur_son_propre_verrou() {
+        use std::sync::Arc;
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        // (a) base vide
+        {
+            let td = tempfile::tempdir().unwrap();
+            let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+            let s2 = Arc::clone(&s);
+            avec_delai("base vide", move || s2.creer_index_proprietes(&["a", "b"]));
+            assert!(s.has_property_index("a") && s.has_property_index("b"));
+        }
+        // (b) base peuplée, une clé connue et une INCONNUE du registre
+        {
+            let td = tempfile::tempdir().unwrap();
+            let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "connue", Value::Int64(1));
+            let s2 = Arc::clone(&s);
+            avec_delai("clé inconnue", move || {
+                s2.creer_index_proprietes(&["connue", "jamais_ecrite"]);
+            });
+            assert!(s.has_property_index("connue"));
+            // Une clé inconnue du registre est DÉCLARÉE mais pas construite
+            // (`index de propriété NON construit`, comportement documenté) :
+            // elle se construit à la première recherche, une fois écrite.
+            assert!(
+                s.declarations_index()
+                    .iter()
+                    .any(|d| d.genre == "property" && d.propriete == "jamais_ecrite")
+            );
+            assert_eq!(
+                s.find_nodes_by_property("connue", &Value::Int64(1)),
+                vec![n]
+            );
+            // Écrite APRÈS la déclaration : la recherche la trouve.
+            let m = s.create_node(&["R"]);
+            s.set_node_property(m, "jamais_ecrite", Value::Int64(7));
+            assert_eq!(
+                s.find_nodes_by_property("jamais_ecrite", &Value::Int64(7)),
+                vec![m]
+            );
+        }
+    }
+
+    /// Les six sites qui prennent `construction_index` rendent tous la main,
+    /// sur une base peuplée, et ENCHAÎNÉS (le verrou est relâché entre eux) :
+    /// `assurer_index_bati_depuis_v2` (par une recherche), `create_property_index`,
+    /// `creer_index_proprietes`, `rebatir_index_declares`,
+    /// `completer_index_herites` (zone v1) et `drop_property_index`.
+    #[test]
+    #[allow(unsafe_code)]
+    fn aucun_interblocage_sur_les_sites_de_construction_index() {
+        use std::sync::Arc;
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+        {
+            // Deux propriétés CONNUES du registre, sans index, pour les
+            // créations et suppressions ci-dessous.
+            let s = SubstrateStore::open(&racine).unwrap();
+            s.set_node_property(n, "u", Value::Int64(1));
+            s.set_node_property(n, "w", Value::Int64(2));
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        retrograder_la_zone_en_v1(&racine, n, m);
+        let s = Arc::new(SubstrateStore::open(&racine).unwrap());
+        assert!(
+            s.egalite_heritee.load(Ordering::Acquire),
+            "précondition : zone v1"
+        );
+        let c = |nom: &'static str, s: &Arc<SubstrateStore>, f: fn(&SubstrateStore)| {
+            let s2 = Arc::clone(s);
+            avec_delai(nom, move || f(&s2));
+        };
+        c("completer_index_herites", &s, |s| {
+            assert!(s.completer_index_herites());
+        });
+        c("assurer_index_bati_depuis_v2 (recherche)", &s, |s| {
+            let _ = s.find_nodes_by_property("nouvelle", &Value::Int64(1));
+        });
+        c("create_property_index", &s, |s| {
+            s.create_property_index("u")
+        });
+        c("creer_index_proprietes (branche v2)", &s, |s| {
+            s.creer_index_proprietes(&["w", "a"])
+        });
+        // Toutes les clés INCONNUES du registre : `batir_index_depuis_v2` rend
+        // `false`, c'est le REPLI clé par clé qui s'exécute (le cas du blocage).
+        c("creer_index_proprietes (repli)", &s, |s| {
+            s.creer_index_proprietes(&["inconnue_1", "inconnue_2"])
+        });
+        c("rebatir_index_declares", &s, |s| {
+            let _ = s.rebatir_index_declares();
+        });
+        c("drop_property_index", &s, |s| {
+            assert!(s.drop_property_index("u"));
+        });
+        c("create puis drop puis create", &s, |s| {
+            s.create_property_index("u");
+            assert!(s.drop_property_index("u"));
+            s.create_property_index("u");
+        });
+        assert!(s.has_property_index("u") && s.has_property_index("w"));
+        assert_eq!(
+            s.find_nodes_by_property("u", &Value::Int64(1)),
+            vec![NodeId(1)]
+        );
+    }
+
+    /// N1 (revue 7, a) — les DEUX fenêtres. W0 : AVANT l'enregistrement de la
+    /// clé (celle qu'ouvrait l'ancien ordre « époque puis enregistrement ») ;
+    /// W1 : après l'enregistrement, avant l'époque. Dans les deux, un import
+    /// qui démarre, construit ses pages et pose ses têtes APRÈS le relevé des
+    /// têtes de la construction ne doit pas être perdu.
+    fn scenario_n1(fenetre: u8) {
+        use std::sync::{Arc, Mutex, mpsc};
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let labels: Vec<&str> = (0..200).map(|_| "L").collect();
+        s.bulk_import_labels_edges(&labels, &[]).unwrap();
+        let a = s.create_node(&["L"]);
+        s.set_node_property(a, "sl", Value::Int64(-1));
+        let premier = 1u32;
+        let (pages_pretes_tx, pages_pretes_rx) = mpsc::channel::<()>();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let go_rx = Arc::new(Mutex::new(Some(go_rx)));
+        let importeur: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+        let une_fois = std::cell::Cell::new(true);
+        let (s_imp, imp_sonde) = (Arc::clone(&s), Arc::clone(&importeur));
+        let demarrer_import = move |_: &SubstrateStore| {
+            if !une_fois.replace(false) {
+                return;
+            }
+            let s2 = Arc::clone(&s_imp);
+            let tx = pages_pretes_tx.clone();
+            let go = Arc::clone(&go_rx);
+            *imp_sonde.lock().unwrap() = Some(std::thread::spawn(move || {
+                let props: Vec<Vec<(&str, Value)>> =
+                    (0..200i64).map(|i| vec![("sl", Value::Int64(i))]).collect();
+                PENDANT_IMPORT_EN_LOT.with(|h| {
+                    *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                        let _ = tx.send(());
+                        if let Some(rx) = go.lock().unwrap().take() {
+                            let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                        }
+                    }));
+                });
+                s2.bulk_import_node_props(premier, &props).unwrap();
+                PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
+            }));
+            let _ = pages_pretes_rx.recv_timeout(std::time::Duration::from_secs(5));
+        };
+        let sonde: Box<dyn Fn(&SubstrateStore)> = Box::new(demarrer_import);
+        if fenetre == 0 {
+            AVANT_ENREGISTREMENT_CLE.with(|h| *h.borrow_mut() = Some(sonde));
+        } else {
+            ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| *h.borrow_mut() = Some(sonde));
+        }
+        let imp_b = Arc::clone(&importeur);
+        let go_b = Mutex::new(Some(go_tx));
+        APRES_RELEVE_DES_TETES.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                if let Some(go) = go_b.lock().unwrap().take() {
+                    let _ = go.send(());
+                }
+                if let Some(fil) = imp_b.lock().unwrap().take() {
+                    fil.join().unwrap();
+                }
+            }));
+        });
+        s.create_property_index("sl");
+        AVANT_ENREGISTREMENT_CLE.with(|h| *h.borrow_mut() = None);
+        ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| *h.borrow_mut() = None);
+        APRES_RELEVE_DES_TETES.with(|h| *h.borrow_mut() = None);
+        if let Some(fil) = importeur.lock().unwrap().take() {
+            fil.join().unwrap();
+        }
+        assert!(s.has_property_index("sl"));
+        for i in [0i64, 77, 199] {
+            assert_eq!(
+                s.find_nodes_by_property("sl", &Value::Int64(i)),
+                vec![NodeId(u64::from(premier) + i as u64)],
+                "fenêtre W{fenetre} : sl = {i} importé pendant l'amorce de la construction"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn n1_un_import_n_est_pas_perdu_dans_les_deux_fenetres_de_l_amorce() {
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        scenario_n1(0);
+        scenario_n1(1);
+    }
+
+    /// N3 (revue 7, b) — `create_property_index` et `declarer_index` sur un
+    /// store en LECTURE SEULE n'écrivent ni le catalogue ni la zone :
+    /// `declarer_index` est refusé (erreur nommée), `create_property_index`
+    /// construit en mémoire seulement.
+    #[test]
+    #[allow(unsafe_code)]
+    fn n3b_creer_et_declarer_un_index_en_lecture_seule_n_ecrit_rien() {
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let n = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "d", Value::from("2020-01-01T00:00:00Z"));
+            s.set_node_property(n, "z", Value::Int64(3));
+            s.create_property_index("d");
+            s.flush().unwrap();
+            s.close().unwrap();
+            n
+        };
+        let empreinte = |racine: &std::path::Path| -> Vec<(String, u64, Vec<u8>)> {
+            let mut v: Vec<_> = std::fs::read_dir(racine)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| {
+                    let p = e.path();
+                    let nom = p.file_name().unwrap().to_string_lossy().into_owned();
+                    let octets =
+                        if nom.contains("idx") || nom.contains("cat") || nom.contains("index") {
+                            std::fs::read(&p).unwrap()
+                        } else {
+                            Vec::new()
+                        };
+                    (nom, e.metadata().unwrap().len(), octets)
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let avant = empreinte(&racine);
+        let ro = SubstrateStore::open_read_only(&racine).unwrap();
+        let r = ro.declarer_index(DeclarationIndex {
+            genre: "property".to_string(),
+            label: String::new(),
+            propriete: "z".to_string(),
+            dimension: None,
+            metrique: None,
+        });
+        let message = format!("{:?}", r.expect_err("déclarer en lecture seule est refusé"));
+        assert!(message.contains("lecture seule"), "refus nommé : {message}");
+        ro.create_property_index("z");
+        assert!(
+            ro.has_property_index("z"),
+            "l'index est construit en mémoire"
+        );
+        assert_eq!(ro.find_nodes_by_property("z", &Value::Int64(3)), vec![n]);
+        drop(ro);
+        let apres = empreinte(&racine);
+        let diff: Vec<&String> = avant
+            .iter()
+            .zip(apres.iter())
+            .filter(|(a, b)| a != b)
+            .map(|(a, _)| &a.0)
+            .collect();
+        assert!(
+            diff.is_empty(),
+            "fichiers modifiés par une session en lecture seule : {diff:?}"
+        );
+        assert_eq!(avant.len(), apres.len(), "aucun fichier créé");
+    }
+
+    /// (c) — deux tests parallèles, l'un à `OBRAIN_PROPS_V2=0` l'autre en v2,
+    /// ne se voient pas : chacun ouvre sa base dans le régime qu'il a posé,
+    /// 100 fois, rendez-vous à chaque tour. Avec la variable d'environnement
+    /// GLOBALE (l'ancien mécanisme), ils se marchent dessus.
+    #[test]
+    fn env_props_v2_deux_fils_paralleles_ne_se_voient_pas() {
+        use std::sync::{Arc, Barrier};
+        let barriere = Arc::new(Barrier::new(2));
+        let fil = |valeur: &'static str, attendu_v2: bool| {
+            let b = Arc::clone(&barriere);
+            std::thread::spawn(move || {
+                fixer_props_v2(Some(valeur));
+                let mut ecarts = 0usize;
+                for _ in 0..100 {
+                    b.wait();
+                    let td = tempfile::tempdir().unwrap();
+                    let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+                    if s.props_v2_enabled() != attendu_v2 {
+                        ecarts += 1;
+                    }
+                    b.wait();
+                }
+                ecarts
+            })
+        };
+        let (herite, v2) = (fil("0", false), fil("1", true));
+        assert_eq!(herite.join().unwrap(), 0, "le fil `=0` a vu un store v2");
+        assert_eq!(v2.join().unwrap(), 0, "le fil `=1` a vu un store hérité");
+    }
+
+    /// (f) — une entrée d'index d'une clé à colonne blob ne rend PAS la zone à
+    /// réécrire (sa série n'est jamais écrite) ; celle d'une autre clé, si.
+    #[test]
+    #[allow(unsafe_code)]
+    fn f_une_entree_d_une_cle_a_blob_ne_leve_pas_le_drapeau_de_fusion() {
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let n = s.create_node(&["R"]);
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2000-01-01T00:00:00Z").as_str()),
+        );
+        s.set_node_property(n, "e", Value::Int64(1));
+        s.create_property_index("d");
+        s.create_property_index("e");
+        s.flush().unwrap();
+        assert!(
+            !s.egalite_delta_sale.load(Ordering::Acquire),
+            "précondition : rien à fusionner"
+        );
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2001-01-01T00:00:00Z").as_str()),
+        );
+        let m = s.create_node(&["R"]);
+        s.set_node_property(m, "d", Value::from("2002-02-02T02:02:02Z"));
+        assert!(
+            !s.egalite_delta_sale.load(Ordering::Acquire),
+            "une entrée d'une clé à colonne blob ne rend pas la zone à réécrire"
+        );
+        s.set_node_property(m, "e", Value::Int64(2));
+        assert!(
+            s.egalite_delta_sale.load(Ordering::Acquire),
+            "l'entrée d'une clé SANS colonne blob, si"
+        );
     }
 
     #[test]
@@ -33210,7 +33574,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Aucun drapeau pose : on eprouve le DEFAUT, pas une surcharge.
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -33262,7 +33626,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Aucun drapeau : on éprouve le DÉFAUT, pas une surcharge.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -33348,7 +33712,7 @@ mod tests {
         // propriétés qui n'existent QUE dans `substrate.props`.
         let (a, b);
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(!s.props_v2_enabled(), "mise en place : régime hérité");
@@ -33375,7 +33739,7 @@ mod tests {
 
         // PREMIÈRE ouverture sous v2 — le moment exact du danger.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(
             s.props_v2_enabled(),
@@ -33424,7 +33788,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le troisième bord : une MIGRATION INTERROMPUE. Des pages en v2, un
@@ -33443,7 +33807,7 @@ mod tests {
         let marqueur = root.join(PROPS_V2_MIGRATION_ACHEVEE_FILENAME);
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let a;
         {
             let s = SubstrateStore::create(&root).unwrap();
@@ -33456,7 +33820,7 @@ mod tests {
         // mais on n'appelle PAS `delete_legacy_props_sidecar` — c'est lui, et
         // lui seul, qui a le droit de poser le marqueur.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             s.finalize_props_v2().unwrap();
@@ -33485,7 +33849,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── LE BORD LE PLUS COUPANT : UN DICT EN RETARD D'UNE FENÊTRE WAL ──
@@ -33516,7 +33880,7 @@ mod tests {
         // le sidecar. On tue avant le flush, donc rien n'atteint ni le dict ni
         // le sidecar — tout ne vit que dans le WAL.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let a;
         {
             let s = SubstrateStore::create(&root).unwrap();
@@ -33548,7 +33912,7 @@ mod tests {
         // Réouverture sous v2 : le rejeu du WAL relève le filigrane et
         // repeuple les cartes. Le contrôle doit refuser.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(
             !s.migration_v2_achevee(),
@@ -33564,7 +33928,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le pendant : `OBRAIN_PROPS_V2=0` ramene au regime HERITE, y compris sur
@@ -33576,7 +33940,7 @@ mod tests {
     fn props_zone_v2_desactive_quand_l_env_le_refuse() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -33604,7 +33968,7 @@ mod tests {
         // files and flip `props_v2_enabled()` to true.
         let _guard = props_v2_env_lock();
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -33625,7 +33989,7 @@ mod tests {
 
         // SAFETY: serialised via `props_v2_env_lock`.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -33641,7 +34005,7 @@ mod tests {
         // Phase 1: create + open with the feature on so the zone file
         // lands on disk.
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             s.flush().unwrap();
@@ -33649,7 +34013,7 @@ mod tests {
         }
         // SAFETY: serialised via `props_v2_env_lock`.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         // Phase 2: reopen WITHOUT env — auto-detect must fire.
         assert!(root.join(crate::props_zone::PROPS_V2_FILENAME).exists());
@@ -33669,7 +34033,7 @@ mod tests {
         // entries were appended).
         let _guard = props_v2_env_lock();
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -33682,7 +34046,7 @@ mod tests {
 
         // SAFETY: serialised via `props_v2_env_lock`.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
@@ -33764,7 +34128,7 @@ mod tests {
     fn a_property_written_then_killed_without_flush_survives_reopen_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_a_property_written_then_killed_without_flush_survives_reopen();
     }
 
@@ -33775,7 +34139,7 @@ mod tests {
     fn a_property_written_then_killed_without_flush_survives_reopen_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_a_property_written_then_killed_without_flush_survives_reopen();
     }
 
@@ -33804,7 +34168,7 @@ mod tests {
     fn reecriture_meme_page_de_tete_est_retrouvee_apres_mort_brutale_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let a;
@@ -33893,7 +34257,7 @@ mod tests {
     fn a_node_created_then_killed_with_zero_flush_is_fully_recovered_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_a_node_created_then_killed_with_zero_flush_is_fully_recovered();
     }
 
@@ -33904,7 +34268,7 @@ mod tests {
     fn a_node_created_then_killed_with_zero_flush_is_fully_recovered_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_a_node_created_then_killed_with_zero_flush_is_fully_recovered();
     }
 
@@ -33943,7 +34307,7 @@ mod tests {
     fn wal_replay_is_last_write_wins_over_the_snapshot_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_wal_replay_is_last_write_wins_over_the_snapshot();
     }
 
@@ -33954,7 +34318,7 @@ mod tests {
     fn wal_replay_is_last_write_wins_over_the_snapshot_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_wal_replay_is_last_write_wins_over_the_snapshot();
     }
 
@@ -33993,7 +34357,7 @@ mod tests {
     fn a_delete_after_snapshot_is_not_resurrected_on_reopen_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_a_delete_after_snapshot_is_not_resurrected_on_reopen();
     }
 
@@ -34004,7 +34368,7 @@ mod tests {
     fn a_delete_after_snapshot_is_not_resurrected_on_reopen_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_a_delete_after_snapshot_is_not_resurrected_on_reopen();
     }
 
@@ -34045,7 +34409,7 @@ mod tests {
     fn an_edge_delete_after_snapshot_is_not_resurrected_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_an_edge_delete_after_snapshot_is_not_resurrected();
     }
 
@@ -34056,7 +34420,7 @@ mod tests {
     fn an_edge_delete_after_snapshot_is_not_resurrected_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_an_edge_delete_after_snapshot_is_not_resurrected();
     }
 
@@ -34095,7 +34459,7 @@ mod tests {
     fn an_edge_property_survives_a_kill_without_flush_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_an_edge_property_survives_a_kill_without_flush();
     }
 
@@ -34106,7 +34470,7 @@ mod tests {
     fn an_edge_property_survives_a_kill_without_flush_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_an_edge_property_survives_a_kill_without_flush();
     }
 
@@ -34203,7 +34567,7 @@ mod tests {
     fn prop_v2_sans_record_wal_survit_au_kill_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_prop_v2_sans_record_wal_survit_au_kill();
     }
 
@@ -34214,7 +34578,7 @@ mod tests {
     fn edge_prop_v2_sans_record_wal_survit_au_kill_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let edge_id;
@@ -34280,7 +34644,7 @@ mod tests {
     fn une_prop_ecrite_apres_un_remap_de_slot_ne_perd_pas_la_chaine() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let (s, _x, y) = {
@@ -34342,7 +34706,7 @@ mod tests {
     fn props_preservees_apres_repermuter_par_hilbert() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let n = 320u32;
@@ -34457,7 +34821,7 @@ mod tests {
     fn auto_guerison_restampe_les_chaines_apres_rejeu_remap() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         // Base v2 finalisée (marqueur posé, DashMaps vides) avec 1 nœud
         // portant 2 props — le helper draine puis re-ouvre.
         let (td, s, y) = {
@@ -34526,7 +34890,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe {
-            std::env::set_var("OBRAIN_PROPS_V2", "1");
+            fixer_props_v2(Some("1"));
             std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
         }
         let td = tempfile::tempdir().unwrap();
@@ -34602,7 +34966,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe {
-            std::env::set_var("OBRAIN_PROPS_V2", "1");
+            fixer_props_v2(Some("1"));
             std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
         }
         let td = tempfile::tempdir().unwrap();
@@ -34649,7 +35013,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe {
-            std::env::set_var("OBRAIN_PROPS_V2", "1");
+            fixer_props_v2(Some("1"));
             std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
         }
         let td = tempfile::tempdir().unwrap();
@@ -34878,7 +35242,7 @@ mod tests {
         // as a PropertyEntry on the PropsZone chain AND flip the head
         // pointer on the NodeRecord.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34909,7 +35273,7 @@ mod tests {
         assert_eq!(entries[1].prop_key, count_id, "second append = count");
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Lectures indexées et écritures EN PARALLÈLE sous PropsZone v2.
@@ -34938,7 +35302,7 @@ mod tests {
     fn recherche_indexee_v2_et_ecritures_concurrentes() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock` (même contrat que les tests v2 voisins).
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const NOEUDS: i64 = 2_000;
         const SEAUX: i64 = 10;
@@ -34965,7 +35329,7 @@ mod tests {
         }
 
         // SAFETY: idem — la détection automatique doit suffire à réactiver v2.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -35041,7 +35405,7 @@ mod tests {
         // Write a property with v2 enabled, close the store, reopen,
         // and confirm the PropsZone chain still holds the entry.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -35058,7 +35422,7 @@ mod tests {
 
         // Re-open without env — auto-detection still activates v2.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
 
@@ -35114,7 +35478,7 @@ mod tests {
         // as a PropertyEntry on the edge PropsZone chain AND flip the
         // head pointer on the EdgeRecord (byte offset 24).
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35142,7 +35506,7 @@ mod tests {
         assert_eq!(entries[1].prop_key, since_id, "second append = since");
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -35151,7 +35515,7 @@ mod tests {
         // Three successive set_edge_property calls for the same key —
         // the LWW read path must surface v3, not v1 or v2.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35175,7 +35539,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -35188,7 +35552,7 @@ mod tests {
         // implementation — but here the DashMap is also cleared on
         // remove, so correctness comes from the chain).
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35221,7 +35585,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -35231,7 +35595,7 @@ mod tests {
         // reopen, and confirm the chain still holds the entry and the
         // LWW read still returns the correct value.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -35248,7 +35612,7 @@ mod tests {
         }
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
 
@@ -35271,7 +35635,7 @@ mod tests {
         // 0xE507_5FA6) — a single PropsZone carrying both owner kinds
         // was the whole point of T17f Step 2.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35318,7 +35682,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
@@ -35337,7 +35701,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_lww_same_page() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35360,7 +35724,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// (2026-11-08, C1) LWW sur la MÊME page, par le chemin CIBLÉ par époque :
@@ -35371,7 +35735,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_at_epoch_lww_same_page() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35399,7 +35763,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// (2026-11-08, C1) Le chemin ciblé TRAVERSE le tombstone comme
@@ -35419,7 +35783,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_at_epoch_traverse_le_tombstone_comme_get_node_at_epoch() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         let temoin = s.create_node(&["Doc"]);
         s.set_node_property(temoin, "title", Value::String("témoin".into()));
@@ -35471,7 +35835,7 @@ mod tests {
             "la lecture courante, elle, ne traverse pas le tombstone"
         );
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Tombstone: `set` then `remove` must make `get` return `None`
@@ -35482,7 +35846,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_tombstone_shadows_older_set() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35505,7 +35869,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Tombstone persistence: after a drop/reopen cycle, the tombstone
@@ -35516,7 +35880,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_tombstone_survives_reopen() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -35531,7 +35895,7 @@ mod tests {
         }
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
 
@@ -35549,7 +35913,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Explicitly disable v2 so `set_node_property` writes only to
         // the DashMap — the NodeRecord.first_prop_off stays at 0.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35566,7 +35930,7 @@ mod tests {
         assert_eq!(got, Some(Value::String("legacy".into())));
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── (2026-08-19) CE TEST NOMMAIT LE DÉFAUT COMME CONTRAT ──
@@ -35586,7 +35950,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn load_properties_saute_l_hydratation_quand_la_migration_est_marquee_achevee() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -35608,7 +35972,7 @@ mod tests {
         // Reopen without env — auto-detection on substrate.props.v2
         // existence still activates v2.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
         assert!(
@@ -35645,7 +36009,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Phase 1: write WITHOUT v2 — sidecar gets node entries, v2
         // zone stays empty.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let a_id;
@@ -35661,7 +36025,7 @@ mod tests {
         // Phase 2: reopen WITH v2 enabled. Zone is fresh (no pages)
         // because the prior session had v2 disabled — hydration must
         // still populate the DashMap so the legacy key is readable.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 active on reopen");
         let pz = s.props_zone.as_ref().unwrap().read();
@@ -35680,7 +36044,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// T17c Step 3d — edges always hydrate from the sidecar
@@ -35692,7 +36056,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn load_properties_still_hydrates_edges_when_v2_has_pages() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -35717,7 +36081,7 @@ mod tests {
         }
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
 
         // (2026-08-19) Cette ligne affirmait `len() == 0` — au titre de
@@ -35766,7 +36130,7 @@ mod tests {
         // Phase 1: write legacy sidecar (v2 OFF).
         let a_id;
         let b_id;
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -35785,7 +36149,7 @@ mod tests {
         assert!(sidecar.exists(), "legacy sidecar written");
 
         // Phase 2: reopen with v2 ON and migrate.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert!(s.props_v2_enabled());
@@ -35811,7 +36175,7 @@ mod tests {
         // (no sidecar + v2 pages present). Reads must still return
         // everything via v2 chain.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 auto-detected on reopen");
         assert_eq!(
@@ -35844,7 +36208,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn finalize_props_v2_errors_when_v2_disabled() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35882,7 +36246,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -35896,7 +36260,7 @@ mod tests {
         assert!(sidecar.exists(), "sidecar hérité écrit");
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
         assert!(!s.node_properties.is_empty(), "résultat attendu non vide");
@@ -35953,7 +36317,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -35965,7 +36329,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
         assert!(!s.edge_properties.is_empty(), "sidecar d'arêtes hydraté");
@@ -36002,7 +36366,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             for i in 0..40i64 {
@@ -36015,7 +36379,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         let stats = s.finalize_props_v2().unwrap();
         assert_eq!(stats.scalars_emitted, 120, "40 nœuds x 3 clés");
@@ -36048,7 +36412,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -36057,7 +36421,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         // Entrée héritée pour un slot qui n'existe pas sur disque : c'est ce
         // que laisse une suppression de nœud faite par un binaire antérieur.
@@ -36145,7 +36509,7 @@ mod tests {
         ];
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let n_id;
         {
             let s = SubstrateStore::create(&root).unwrap();
@@ -36158,7 +36522,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         let stats = s.finalize_props_v2().expect(
             "aucun type portable par un sidecar hérité ne doit faire échouer la \
@@ -36180,7 +36544,7 @@ mod tests {
             );
         }
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Multi-page LWW: force a chain spanning two pages and check
@@ -36191,7 +36555,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_lww_across_pages() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -36240,7 +36604,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
@@ -36271,7 +36635,7 @@ mod tests {
         let e2_id;
 
         // Phase 1: legacy sidecar write (v2 OFF) — nodes + edges.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -36300,7 +36664,7 @@ mod tests {
         // Phase 2: reopen with v2, run finalize — both nodes AND
         // edges must be handled. Assert the new edge sidecar
         // appears and the legacy sidecar can be dropped.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert!(s.props_v2_enabled());
@@ -36338,7 +36702,7 @@ mod tests {
         // edges must be hydrated from the NEW edge sidecar. Every
         // edge prop set in Phase 1 must be retrievable.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
         assert_eq!(s.node_properties.len(), 0, "node DashMap empty (v2 gate)");
@@ -36385,7 +36749,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // Build a legacy sidecar carrying edge props.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let a_id;
         let b_id;
         let e_id;
@@ -36406,7 +36770,7 @@ mod tests {
         assert!(legacy_sidecar.exists());
         assert!(!edge_sidecar.exists());
 
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(!s.edge_properties.is_empty(), "résultat attendu non vide");
 
@@ -36438,7 +36802,7 @@ mod tests {
         // Reopen: edge prop must survive.
         drop(s);
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert_eq!(
             s.get_edge_property(e_id, &PropertyKey::new("weight")),
@@ -36461,7 +36825,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
 
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::create(&root).unwrap();
         let a = s.create_node(&["Doc"]);
         s.set_node_property(a, "title", Value::String("solo".into()));
@@ -36481,7 +36845,7 @@ mod tests {
         let _ = s.delete_legacy_props_sidecar();
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // ───────────────────────────────────────────────────────────────
@@ -36531,7 +36895,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         // SAFETY: sérialisé par `props_v2_env_lock`, détenu par l'appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(s.props_v2_enabled(), "v2 doit être actif à la création");
@@ -36552,7 +36916,7 @@ mod tests {
         }
         // SAFETY: idem — la détection du fichier de zone doit suffire à
         // réactiver v2, sans variable d'environnement.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(
             s.props_v2_enabled(),
@@ -36806,7 +37170,7 @@ mod tests {
 
         // Phase 1 — regime HERITE : tout part au sidecar.
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let (n, e) = {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(!s.props_v2_enabled(), "phase 1 doit etre heritee");
@@ -36825,7 +37189,7 @@ mod tests {
         // Phase 2 — MIGRATION EN COURS : la zone s ouvre, le sidecar est
         // encore relu (la migration n est pas marquee achevee).
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "phase 2 doit ouvrir la zone v2");
         assert!(
@@ -36884,7 +37248,7 @@ mod tests {
         );
 
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// `OBRAIN_PROPS_V2=0` NE DOIT PLUS OUVRIR UNE BASE AMPUTEE.
@@ -36907,7 +37271,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let n = {
             let s = SubstrateStore::create(&root).unwrap();
             let n = s.create_node(&["Doc"]);
@@ -36922,7 +37286,7 @@ mod tests {
 
         // Temoin : sans la variable, la base s ouvre et rend sa propriete.
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert_eq!(
@@ -36934,11 +37298,11 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let ouverture = SubstrateStore::open(&root);
         // SAFETY: idem — repose AVANT toute assertion, pour ne pas laisser
         // la variable en place si celle-ci echoue.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let Err(err) = ouverture else {
             panic!(
                 "OBRAIN_PROPS_V2=0 a ouvert une base dont les proprietes ne \
@@ -36956,7 +37320,7 @@ mod tests {
         let td2 = tempfile::tempdir().unwrap();
         let root2 = td2.path().join("kb");
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let m = {
             let s = SubstrateStore::create(&root2).unwrap();
             assert!(!s.props_v2_enabled());
@@ -36972,7 +37336,7 @@ mod tests {
             Some(Value::String("herite".into()))
         );
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Remet la DashMap des NŒUDS en jeu sur une base v2 migree.
@@ -37834,7 +38198,7 @@ mod tests {
     fn balayage_v2_non_projetable_et_ecritures_concurrentes() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`, comme les tests v2 voisins.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const NOEUDS: i64 = 1_500;
         const SEAUX: i64 = 10;
@@ -37861,7 +38225,7 @@ mod tests {
             s.delete_edge_props_sidecar().unwrap();
         }
         // SAFETY: idem — la détection du fichier de zone doit suffire.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -38331,7 +38695,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         // SAFETY: serialise par `props_v2_env_lock`, detenu par l appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(s.props_v2_enabled());
@@ -38476,7 +38840,7 @@ mod tests {
     fn ouverture_apres_ecriture_sans_flush_repond_exactement_apres_reconstruction() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let (anciens, neuf1, neuf2) = scenario_ouverture_apres_ecritures(&root);
@@ -38530,7 +38894,7 @@ mod tests {
     fn une_fenetre_inexpliquee_garde_la_reconstruction_et_l_exactitude() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let (_anciens, neuf1, _neuf2) = scenario_ouverture_apres_ecritures(&root);
@@ -38571,7 +38935,7 @@ mod tests {
     fn une_ouverture_propre_ne_reconstruit_rien() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let s = SubstrateStore::create(&root).unwrap();
@@ -39098,7 +39462,7 @@ mod tests {
     fn recherche_d_arete_par_propriete_et_ecritures_concurrentes() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`, comme les tests v2 voisins.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const ARETES: i64 = 600;
         let td = tempfile::tempdir().unwrap();
@@ -39128,7 +39492,7 @@ mod tests {
             s.delete_edge_props_sidecar().unwrap();
         }
         // SAFETY: idem — la détection du fichier de zone doit suffire.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -39306,7 +39670,7 @@ mod tests {
     fn base_a_migration_interrompue(root: &std::path::Path, n: u32) -> Vec<NodeId> {
         // (1) Régime HÉRITÉ : les propriétés n'existent QUE dans le sidecar.
         // SAFETY: sérialisé par `props_v2_env_lock` chez l'appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let ids: Vec<NodeId> = {
             let s = SubstrateStore::create(root).unwrap();
             let mut ids = Vec::with_capacity(n as usize);
@@ -39330,7 +39694,7 @@ mod tests {
         //     l'état que laisse un `pkill` / une coupure / un disque plein
         //     au milieu du drain.
         // SAFETY: sérialisé par `props_v2_env_lock` chez l'appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(root).unwrap();
             assert!(s.props_v2_enabled(), "phase 2 doit ouvrir la zone v2");
@@ -39406,7 +39770,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le même trou, côté ARÊTES. `skip_edges_legacy` était gardé par le
@@ -39426,7 +39790,7 @@ mod tests {
 
         // (1) Base héritée : deux nœuds, deux arêtes portant des propriétés.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let (a_id, e1_id, e2_id) = {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -39450,7 +39814,7 @@ mod tests {
 
         // (2) Migration de NŒUDS interrompue après une seule paire.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             s.set_node_property(a_id, "titre", Value::String("alpha".into()));
@@ -39484,7 +39848,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// L'AUTRE moitié du contrat, celle qu'il ne faut pas casser en
@@ -39508,7 +39872,7 @@ mod tests {
 
         // (1) Base héritée.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let (a_id, b_id) = {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -39525,7 +39889,7 @@ mod tests {
         //     DashMap restée peuplée — le cas Megalaw, reproduit exprès.
         let sidecar = root.join(crate::props_snapshot::PROPS_FILENAME);
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             s.finalize_props_v2().unwrap();
@@ -39565,7 +39929,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le marqueur ne doit exister QU'À la toute fin. Poser « migration
@@ -39617,7 +39981,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Un drain interrompu doit se REPRENDRE, pas se refaire. Deux raisons,
@@ -39686,7 +40050,7 @@ mod tests {
         }
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// UN DRAIN REPRIS DOIT ÊTRE RELU AUSSI.
@@ -39727,7 +40091,7 @@ mod tests {
         assert_eq!(stats.cles_relues, 2, "stats: {stats:?}");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -39805,7 +40169,7 @@ mod tests {
     fn temoin_herite_intervalle_de_noeuds() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
         assert!(
@@ -39819,7 +40183,7 @@ mod tests {
         assert_eq!(r[2], vec![ids[3], ids[4]], "témoin : rang >= 3");
         assert_eq!(r[3], ids, "témoin : rang sans borne");
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// LA PREUVE. Les mêmes interrogations sur une base RÉELLEMENT migrée.
@@ -39974,7 +40338,7 @@ mod tests {
         use obrain_core::graph::traits::GraphStore;
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const NOEUDS: i64 = 600;
         let td = tempfile::tempdir().unwrap();
@@ -39996,7 +40360,7 @@ mod tests {
             s.delete_edge_props_sidecar().unwrap();
         }
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -40150,7 +40514,7 @@ mod tests {
 
         // ── régime HÉRITÉ ──
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let herite = SubstrateStore::create(td.path().join("kb")).unwrap();
         assert!(
@@ -40161,7 +40525,7 @@ mod tests {
         let av = sonder(&herite);
         drop(herite);
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         // ── régime v2 RÉELLEMENT MIGRÉ ──
         let (_td2, migre) = base_v2_sans_dashmap(peupler);
@@ -40475,7 +40839,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -40533,7 +40897,7 @@ mod tests {
     fn une_carte_qui_deborde_la_page_de_tas_survit_a_la_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         use obrain_core::graph::traits::GraphStore;
 
         let carte = carte_de_test(150);
@@ -40594,7 +40958,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── (2026-08-20) UNE VALEUR BLOB MASQUAIT TOUTE RÉÉCRITURE PLUS
@@ -40618,7 +40982,7 @@ mod tests {
     fn une_valeur_blob_ne_masque_pas_une_reecriture_plus_courte() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         use obrain_core::graph::traits::GraphStore;
 
         let td = tempfile::tempdir().unwrap();
@@ -40668,7 +41032,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── (2026-08-20) `REMOVE n.body` LAISSAIT LE TEXTE LISIBLE ──────────
@@ -40965,7 +41329,7 @@ mod tests {
     fn aucune_variante_a_repli_bincode_ne_se_perd_a_la_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         use obrain_core::graph::traits::GraphStore;
         use std::sync::Arc;
 
@@ -41089,7 +41453,7 @@ mod tests {
         }
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------

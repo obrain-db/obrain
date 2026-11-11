@@ -342,19 +342,25 @@ fn s5_la_reconstruction_d_une_cle_a_blob_est_payee_une_fois_par_processus() {
         s.close().unwrap();
     }
     let s = SubstrateStore::open(&racine).unwrap();
-    let t = std::time::Instant::now();
+    // COMPTEUR, pas temps mural (fragile sous charge) : le nombre de passes
+    // complètes de construction d'index depuis l'ouverture.
+    let avant = s.passes_de_construction_index();
     assert!(
         s.find_nodes_by_property("d", &Value::from(court(100).as_str()))
             .contains(&NodeId(101))
     );
-    let premiere = t.elapsed();
-    let t = std::time::Instant::now();
+    let apres_la_premiere = s.passes_de_construction_index();
+    assert_eq!(
+        apres_la_premiere - avant,
+        1,
+        "la première requête sur une clé à blob bâtit l'index : une passe"
+    );
     for i in 0..200i64 {
         let _ = s.find_nodes_by_property("d", &Value::from(court(i).as_str()));
     }
-    let deux_cents = t.elapsed();
-    assert!(
-        deux_cents < premiere * 4,
-        "200 requêtes ({deux_cents:?}) après la première ({premiere:?}) : la construction est-elle refaite ?"
+    assert_eq!(
+        s.passes_de_construction_index(),
+        apres_la_premiere,
+        "200 requêtes de plus : aucune nouvelle passe de construction"
     );
 }
