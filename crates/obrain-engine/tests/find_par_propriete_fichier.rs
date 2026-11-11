@@ -8,6 +8,7 @@
 //!   les 40 premiers voisins étaient tous du groupe 0, filtre sur le groupe 1,
 //!   résultat vide ; l'ancien sur-échantillonnage fixe ×4 ne suffisait pas).
 
+#[cfg(feature = "vector-index")]
 use std::collections::HashMap;
 
 use obrain_common::types::{NodeId, Value};
@@ -54,6 +55,7 @@ fn find_par_int64_survit_a_une_reouverture() {
 /// d'un centre a pour voisins les plus proches uniquement des points du groupe
 /// de ce centre : le filtre sur l'autre groupe doit quand même rendre k
 /// résultats (la recherche filtrée élargit son top-k jusqu'à trouver k permis).
+#[cfg(feature = "vector-index")]
 #[test]
 fn filtre_exact_sur_donnees_groupees() {
     let dir = tempfile::tempdir().expect("tempdir");
