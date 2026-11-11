@@ -345,25 +345,6 @@ impl super::ObrainDB {
                 .collect::<std::collections::HashMap<String, obrain_common::types::Value>>()
         });
 
-        // Collect matching vector indexes BEFORE deletion removes labels
-        #[cfg(feature = "vector-index")]
-        let indexes_to_clean: Vec<std::sync::Arc<obrain_core::index::vector::HnswIndex>> = self
-            .store
-            .get_node(id)
-            .map(|node| {
-                let mut indexes = Vec::new();
-                for label in &node.labels {
-                    let prefix = format!("{}:", label.as_str());
-                    for (key, index) in self.store.vector_index_entries() {
-                        if key.starts_with(&prefix) {
-                            indexes.push(index);
-                        }
-                    }
-                }
-                indexes
-            })
-            .unwrap_or_default();
-
         // Collect matching text indexes BEFORE deletion removes labels
         #[cfg(feature = "text-index")]
         let text_indexes_to_clean: Vec<
@@ -413,22 +394,11 @@ impl super::ObrainDB {
         self.data_store().delete_node_edges(id);
         let result = self.data_store().delete_node(id);
 
-        // Remove from vector indexes after successful deletion
+        // Désindexation substrat : les labels sont capturés AVANT la suppression
+        // (`labels_avant`), car le nœud n'existe plus après. Les index vectoriels
+        // du substrat sont retirés par l'observateur (T5), pas ici.
         #[cfg(feature = "vector-index")]
         if result {
-            for index in indexes_to_clean {
-                index.remove(id);
-            }
-            // (2026-08-13) DEUX BUGS ICI, pas un.
-            //
-            // 1. `self.store.get_node(id)` : le store FANTOCHE en mode
-            //    substrat. Il rendait None, donc la boucle ne tournait jamais.
-            // 2. L'appel se faisait APRES `delete_node` — le noeud n'existait
-            //    plus, donc meme contre le bon store il n'y avait plus de
-            //    labels a lire.
-            //
-            // Les labels sont donc captures AVANT la suppression (voir
-            // `labels_avant` plus haut), et le nettoyage se fait dessus.
             for label in &labels_avant {
                 self.substrat_desindexer_pour_label(id, label);
             }
@@ -509,13 +479,6 @@ impl super::ObrainDB {
         if let Some(vec) = vector_data
             && let Some(node) = self.data_store().get_node(id)
         {
-            for label in &node.labels {
-                if let Some(index) = self.store.get_vector_index(label.as_str(), key) {
-                    let accessor =
-                        obrain_core::index::vector::PropertyVectorAccessor::new(&*self.store, key);
-                    index.insert(id, &vec, &accessor);
-                }
-            }
             // (2026-08-13, T17b) ENTRETIEN DU REGISTRE SUBSTRAT.
             // Sans ceci, un index construit par `create_vector_index` restait
             // FIGE : l'ecriture d'un nouvel embedding ne l'atteignait pas, et
@@ -608,28 +571,6 @@ impl super::ObrainDB {
                 label: label.to_string(),
             }) {
                 tracing::warn!("Failed to log AddNodeLabel to WAL: {}", e);
-            }
-        }
-
-        // Auto-insert into vector indexes for the newly-added label
-        #[cfg(feature = "vector-index")]
-        if result {
-            let prefix = format!("{label}:");
-            for (key, index) in self.store.vector_index_entries() {
-                if let Some(property) = key.strip_prefix(&prefix)
-                    && let Some(node) = self.data_store().get_node(id)
-                {
-                    let prop_key = obrain_common::types::PropertyKey::new(property);
-                    if let Some(obrain_common::types::Value::Vector(v)) =
-                        node.properties.get(&prop_key)
-                    {
-                        let accessor = obrain_core::index::vector::PropertyVectorAccessor::new(
-                            &*self.store,
-                            property,
-                        );
-                        index.insert(id, v, &accessor);
-                    }
-                }
             }
         }
 
@@ -1131,21 +1072,6 @@ impl super::ObrainDB {
                 id
             })
             .collect();
-
-        // Auto-insert into matching vector index if one exists
-        #[cfg(feature = "vector-index")]
-        if let Some(index) = self.store.get_vector_index(label, property) {
-            let accessor =
-                obrain_core::index::vector::PropertyVectorAccessor::new(&*self.store, property);
-            for &id in &ids {
-                if let Some(node) = self.data_store().get_node(id) {
-                    let pk = obrain_common::types::PropertyKey::new(property);
-                    if let Some(obrain_common::types::Value::Vector(v)) = node.properties.get(&pk) {
-                        index.insert(id, v, &accessor);
-                    }
-                }
-            }
-        }
 
         // (2026-08-13) Meme entretien pour le substrat. Sans ceci, un lot cree
         // APRES `create_vector_index` restait invisible a la recherche — la

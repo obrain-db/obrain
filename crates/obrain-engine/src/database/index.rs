@@ -156,7 +156,6 @@ impl super::ObrainDB {
         ef_construction: Option<usize>,
     ) -> Result<()> {
         use obrain_common::types::{PropertyKey, Value};
-        use obrain_core::index::vector::DistanceMetric;
 
         // T17 W3c slice 5d: the vector-index registry is LpgStore-inherent.
         // Substrate mode exposes retrieval via SubstrateTieredIndex
@@ -298,109 +297,14 @@ impl super::ObrainDB {
             return Ok(());
         }
 
-        let metric = match metric {
-            Some(m) => DistanceMetric::from_str(m).ok_or_else(|| {
-                obrain_common::utils::error::Error::Internal(format!(
-                    "Unknown distance metric '{}'. Use: cosine, euclidean, dot_product, manhattan",
-                    m
-                ))
-            })?,
-            None => DistanceMetric::Cosine,
-        };
-
-        // Pass 1: count vectors + detect dimensions (no cloning).
-        let prop_key = PropertyKey::new(property);
-        let mut found_dims: Option<usize> = dimensions;
-        let mut vector_count = 0usize;
-
-        for node in self.store.nodes_with_label(label) {
-            if let Some(Value::Vector(v)) = node.properties.get(&prop_key) {
-                if let Some(expected) = found_dims {
-                    if v.len() != expected {
-                        return Err(obrain_common::utils::error::Error::Internal(format!(
-                            "Vector dimension mismatch: expected {}, found {} on node {}",
-                            expected,
-                            v.len(),
-                            node.id.0
-                        )));
-                    }
-                } else {
-                    found_dims = Some(v.len());
-                }
-                vector_count += 1;
-            }
-        }
-
-        let Some(dims) = found_dims else {
-            // No vectors found yet: caller must have supplied explicit dimensions
-            // so we can create an empty index that auto-populates via set_node_property.
-            return if let Some(d) = dimensions {
-                #[cfg(feature = "vector-index")]
-                {
-                    use obrain_core::index::vector::{HnswConfig, HnswIndex};
-
-                    let mut config = HnswConfig::new(d, metric);
-                    if let Some(m_val) = m {
-                        config = config.with_m(m_val);
-                    }
-                    if let Some(ef_c) = ef_construction {
-                        config = config.with_ef_construction(ef_c);
-                    }
-
-                    let index = HnswIndex::new(config);
-                    self.store
-                        .add_vector_index(label, property, Arc::new(index));
-                }
-
-                let _ = (m, ef_construction);
-                tracing::info!(
-                    "Empty vector index created: :{label}({property}) - 0 vectors, {d} dimensions, metric={metric_name}",
-                    metric_name = metric.name()
-                );
-                Ok(())
-            } else {
-                Err(obrain_common::utils::error::Error::Internal(format!(
-                    "No vector properties found on :{label}({property}) and no dimensions specified"
-                )))
-            };
-        };
-
-        // Build and populate the HNSW index
-        #[cfg(feature = "vector-index")]
-        {
-            use obrain_core::index::vector::{HnswConfig, HnswIndex};
-
-            let mut config = HnswConfig::new(dims, metric);
-            if let Some(m_val) = m {
-                config = config.with_m(m_val);
-            }
-            if let Some(ef_c) = ef_construction {
-                config = config.with_ef_construction(ef_c);
-            }
-
-            let index = HnswIndex::with_capacity(config, vector_count);
-            let accessor =
-                obrain_core::index::vector::PropertyVectorAccessor::new(&*self.store, property);
-            // Pass 2: iterate nodes again, insert directly without cloning vectors.
-            for node in self.store.nodes_with_label(label) {
-                if let Some(Value::Vector(v)) = node.properties.get(&prop_key) {
-                    index.insert(node.id, v, &accessor);
-                }
-            }
-
-            self.store
-                .add_vector_index(label, property, Arc::new(index));
-        }
-
-        // Suppress unused variable warnings when vector-index is off
-        let _ = (m, ef_construction);
-
-        tracing::info!(
-            "Vector index created: :{label}({property}) - {vector_count} vectors, {dims} dimensions, metric={metric_name}",
-            metric_name = metric.name()
-        );
-
-        Ok(())
+        // Hors substrat (store externe) : aucun registre vectoriel n'existe.
+        // L'ancien chemin HNSW du store, sans aucune implémentation, est
+        // supprimé (O-VEC nettoyage). Refus explicite plutôt qu'un index fantôme.
+        let _ = (metric, m, ef_construction, dimensions);
+        Err(obrain_common::utils::error::Error::Internal(format!(
+            "create_vector_index(:{label}({property})) : index vectoriel indisponible sur un \
+             store externe — seule une base substrat en porte."
+        )))
     }
 
     /// Drops a vector index for the given label and property.
@@ -429,11 +333,8 @@ impl super::ObrainDB {
             }
             return retire;
         }
-        let removed = self.store.remove_vector_index(label, property);
-        if removed {
-            tracing::info!("Vector index dropped: :{label}({property})");
-        }
-        removed
+        // Hors substrat : aucun index vectoriel à retirer.
+        false
     }
 
     /// Drops and recreates a vector index, rescanning all matching nodes.
@@ -459,27 +360,9 @@ impl super::ObrainDB {
                 .remove(&format!("{label}:{property}"));
             return self.create_vector_index(label, property, None, None, None, None);
         }
-        // Preserve config from existing index if available
-        let config = self
-            .store
-            .get_vector_index(label, property)
-            .map(|idx| idx.config().clone());
-
-        self.store.remove_vector_index(label, property);
-
-        if let Some(config) = config {
-            self.create_vector_index(
-                label,
-                property,
-                Some(config.dimensions),
-                Some(config.metric.name()),
-                Some(config.m),
-                Some(config.ef_construction),
-            )
-        } else {
-            // Index was already dropped: infer dimensions from data
-            self.create_vector_index(label, property, None, None, None, None)
-        }
+        // Hors substrat : pas de registre à reconstruire ; la création refusera
+        // explicitement (voir create_vector_index).
+        self.create_vector_index(label, property, None, None, None, None)
     }
 
     // =========================================================================
