@@ -192,3 +192,7 @@ required-features = ["cypher"]
 [[test]]
 name = "duration_between"
 required-features = ["cypher"]
+
+[[test]]
+name = "match_cible_deja_liee"
+required-features = ["cypher"]

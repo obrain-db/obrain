@@ -726,17 +726,35 @@ impl GqlTranslator {
         }
 
         // Process each edge in the chain
+        // Variables de nœud que CE motif a déjà posées. Un saut qui retombe
+        // sur l'une d'elles (`(a)-->(b)-->(a)`) est une FERMETURE : il arrive
+        // sur une variable interne, qu'un filtre égale à la variable déjà
+        // posée. Sans cela l'`Expand` posait une seconde colonne du même nom,
+        // sans contrainte — un motif de cycle rendait des lignes sur un graphe
+        // sans cycle, ou « Column not found » (voir `gql_17_cycles`).
+        let mut seen: HashSet<String> = HashSet::from([source_var.clone()]);
         let mut current_source = source_var;
         let edge_count = path.edges.len();
 
         for (idx, edge) in path.edges.iter().enumerate() {
-            let target_var = edge
+            let closes_on = edge
                 .target
                 .variable
-                .clone()
-                .unwrap_or_else(|| format!("_anon_{}", rand_id()));
+                .as_ref()
+                .filter(|v| seen.contains(*v))
+                .cloned();
+            let target_var = match (&closes_on, &edge.target.variable) {
+                (None, Some(variable)) => variable.clone(),
+                _ => format!("_anon_{}", rand_id()),
+            };
 
-            let edge_var = edge.variable.clone();
+            // Une arête anonyme qui porte des propriétés reçoit une variable :
+            // sans elle, ses propriétés n'étaient pas filtrées du tout.
+            let single_hop = edge.min_hops.is_none() && edge.max_hops.is_none();
+            let edge_var = edge.variable.clone().or_else(|| {
+                (single_hop && !edge.properties.is_empty())
+                    .then(|| format!("_anon_edge_{}", rand_id()))
+            });
             let edge_types = edge.types.clone();
 
             let direction = match edge.direction {
@@ -804,6 +822,17 @@ impl GqlTranslator {
                 path_alias: expand_path_alias,
                 path_mode,
             });
+
+            if let Some(ref bound_variable) = closes_on {
+                plan = wrap_filter(
+                    plan,
+                    LogicalExpression::Binary {
+                        left: Box::new(LogicalExpression::Variable(target_var.clone())),
+                        op: BinaryOp::Eq,
+                        right: Box::new(LogicalExpression::Variable(bound_variable.clone())),
+                    },
+                );
+            }
 
             // Add filter for edge properties
             if !edge.properties.is_empty()
@@ -873,7 +902,8 @@ impl GqlTranslator {
                 });
             }
 
-            current_source = target_var;
+            current_source = closes_on.unwrap_or(target_var);
+            seen.insert(current_source.clone());
         }
 
         Ok(plan)
