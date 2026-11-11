@@ -17,10 +17,12 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   Test : `obrain-engine/tests/blob_hors_wal_kill9.rs` (5 scénarios, rouges avant).
 - Limite qui reste, verrouillée : un lecteur seul ne rejoue pas ces valeurs tant
   qu'un écrivain n'a pas rouvert la base (`docs/LIMITES-v0.0.1.md`).
-- Plafond : une valeur au-delà de 32 Mio n'est pas journalisée (limite verrouillée).
-  Compatibilité : un binaire antérieur qui rouvre une base portant ces trames
-  s'arrête à la première comme sur une frontière de crash (rejeu partiel, même
-  contrat que `VecColumnWrite` 0x28) — ne pas rétrograder après écriture.
+- Plafond : une valeur de plus de 32 Mio n'est pas journalisée, donc perdue au
+  `kill -9` avant flush (limite verrouillée, `docs/LIMITES-v0.0.1.md`).
+- Compatibilité descendante, décision : **pas de bump de version** du format. Un
+  binaire antérieur qui rouvre une base portant les trames 0x29/0x2A s'arrête à
+  la première comme sur une frontière de crash (rejeu partiel, silencieux), même
+  contrat que `VecColumnWrite` 0x28 — ne pas rétrograder après écriture.
 
 ### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
 
