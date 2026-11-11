@@ -101,7 +101,11 @@ fn bench_config(c: &mut Criterion, name: &str, config: Config) {
 fn bench_contrainte_unique(c: &mut Criterion) {
     bench_config(c, "sans_contrainte", Config::SansContrainte);
     bench_config(c, "unique_simple", Config::UniqueSimple);
-    bench_config(c, "unique_composite_a_repete", Config::UniqueCompositeARepete);
+    bench_config(
+        c,
+        "unique_composite_a_repete",
+        Config::UniqueCompositeARepete,
+    );
     bench_config(c, "unique_composite_indexe", Config::UniqueCompositeIndexe);
     bench_config(c, "unique_composite_b_first", Config::UniqueCompositeBFirst);
 }
