@@ -19,6 +19,17 @@ on:
 permissions:
   contents: read
 
+# Un push sur une PR rend le run précédent de CETTE PR sans objet : son verdict
+# porte sur un arbre qui n'est plus la tête. Les 3 runners auto-hébergés
+# restaient sinon occupés par des runs périmés (11/11/2026 : 17 runs en file
+# depuis 2 h, dont 13 sur des commits déjà remplacés, ≈ 150 jobs inutiles).
+# Hors PR (push sur main, appel par release.yml) le groupe est unique par run :
+# rien n'est jamais annulé, et aucun groupe n'entre en collision avec celui de
+# release.yml (`release-<ref>`).
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
