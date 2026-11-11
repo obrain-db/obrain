@@ -113,12 +113,13 @@ fn index_declare_non_couvert_est_prepare_et_la_base_se_referme() {
     let chemin = d.path().join("base");
     {
         let db = ObrainDB::open(&chemin).unwrap();
-        // Au-dessus de `SEUIL_NOEUDS_PASSE_HATIVE` (50 000) : l'ouverture ne
+        // Au-dessus de `SEUIL_NOEUDS_PASSE_HATIVE` : l'ouverture ne
         // bâtit PAS les index déclarés d'emblée, c'est le fil de préparation
         // qui doit le faire. En dessous, une passe à l'ouverture le ferait et
         // le fil n'aurait rien à prouver.
         let store = db.graph_store_mut();
-        for i in 0..60_001i64 {
+        let n = i64::try_from(obrain_substrate::store::SEUIL_NOEUDS_PASSE_HATIVE + 1).unwrap();
+        for i in 0..n {
             let n = store.create_node(&["Ligne"]);
             store.set_node_property(n, "id", Value::Int64(i));
             #[allow(clippy::cast_precision_loss)]

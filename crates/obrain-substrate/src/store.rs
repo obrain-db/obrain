@@ -1565,7 +1565,7 @@ const PLAFOND_DELTA_FENETRE: u64 = 1 << 20; // 1 Mio
 /// Fondé sur le coût mesuré de la passe — ~1 µs par nœud, en parallèle — et sur
 /// le fait que l'ouverture est payée par TOUT processus frais. Au-dessus, on
 /// déclare et on construit à la demande.
-const SEUIL_NOEUDS_PASSE_HATIVE: u64 = 50_000;
+pub const SEUIL_NOEUDS_PASSE_HATIVE: u64 = 50_000;
 
 const FICHIER_CATALOGUE: &str = "substrate.indexcat";
 
@@ -3005,6 +3005,38 @@ impl SubstrateStore {
             return false;
         }
         let t_collecte = t.elapsed();
+        // ── LES INSTANTS DES COLONNES BLOB (revue 4, A2) ──
+        //
+        // Une chaîne datetime de plus de 256 octets ne vit pas dans les
+        // chaînes de pages mais en colonne blob : la passe ci-dessus ne la
+        // voit pas. Pour chaque clé cible qui a une colonne blob, on relit
+        // les slots qui portent un instant (coût : une lecture de colonne par
+        // slot, UNE fois par construction) et on les range sous leur instant.
+        // Sans cela une base écrite avant cette inscription à l'écriture — ou
+        // une zone héritée — aurait un index réputé complet qui les ignore.
+        let mut recolte_blob: Recolte = Vec::new();
+        for (cle, _) in &cibles {
+            let Some(hits) = self.balayer_blob_par_predicat(cle, |v| {
+                matches!(v, Value::String(s)
+                    if obrain_common::types::value_cmp::instant_de_chaine(s).is_some())
+            }) else {
+                continue;
+            };
+            for id in hits {
+                if let Some(v) = self
+                    .blob_columns
+                    .read_value(cle, EntityKind::Node, id.0 as u32)
+                    && let Some(ik) = index_value_key(&v)
+                {
+                    recolte_blob.push((cle.clone(), ik, id));
+                }
+            }
+        }
+        for (cle, ik, id) in recolte_blob {
+            if let Some(idx) = self.property_indexes.get(&cle) {
+                idx.entry(ik).or_default().insert(id);
+            }
+        }
         // (T27) Insertion PARALLÈLE : les index sont des tables concurrentes
         // (verrous par fragment). Mesuré séquentiel : 2,2 s pour 3,1 M entrées
         // sur le noyau Linux.
@@ -3899,7 +3931,12 @@ impl SubstrateStore {
             .iter()
             .map(|e| e.key().clone())
             .collect();
-        if cles.is_empty() {
+        // Plus aucune clé à écrire, mais la zone porte encore des séries :
+        // celles d'index SUPPRIMÉS (revue 4, A1). On réécrit une zone VIDE
+        // plutôt que de les laisser — sans quoi l'index supprimé en dernier
+        // reviendrait à la réouverture.
+        let zone_porte_des_series = !zone_lock.read().proprietes().is_empty();
+        if cles.is_empty() && !zone_porte_des_series {
             return Ok(());
         }
         let pages = self
@@ -3978,6 +4015,13 @@ impl SubstrateStore {
                     }
                     // ── FICHIER DE VERSION 1 : LES CLÉS DE L'ANCIEN BINAIRE ──
                     //
+                    // RÉSIDU (revue 4) : omettre le seau « autre » prive ce
+                    // fichier des porteurs de valeurs non projetables ; le
+                    // NOUVEAU binaire qui le rouvrira le lit comme hérité et
+                    // ne sert l'EXISTENCE (`find_nodes_with_property`)
+                    // qu'après le complément — jusque-là, `None` (balayage),
+                    // jamais une liste incomplète.
+                    //
                     // Un binaire antérieur lit ce fichier (revue 3, C3) : il
                     // cherche une chaîne datetime sous `hachage_chaine`, et ne
                     // connaît pas le seau « autre ». On range donc chaque
@@ -4015,7 +4059,7 @@ impl SubstrateStore {
             entrees.dedup();
             series.push((pk, entrees));
         }
-        if series.is_empty() {
+        if series.is_empty() && !zone_porte_des_series {
             self.egalite_delta_sale.store(sale, Ordering::Release);
             return Ok(());
         }
@@ -13032,9 +13076,13 @@ impl SubstrateStore {
         // importés, et se marque complet. On inscrit donc, après la pose des
         // têtes, les entrées des clés enregistrées depuis le début de
         // l'import (idempotent pour celles déjà inscrites).
-        let deja: Vec<String> = indexees_au_debut.iter().map(|(k, _)| k.clone()).collect();
-        let tardives = self.cles_indexees_parmi(cles.keys().copied(), &deja);
-        self.inscrire_entrees_import(premier_slot, props, &tardives);
+        // TOUTES les clés enregistrées, pas seulement les nouvelles : une clé
+        // présente au début, SUPPRIMÉE puis RECRÉÉE pendant l'import (le drop
+        // jette la carte, le create rebâtit sans les têtes et se marque
+        // complet) serait sinon exclue, et son index durablement faux pour
+        // tous les nœuds importés (revue 4, A3). L'insertion est idempotente.
+        let toutes = self.cles_indexees_parmi(cles.keys().copied(), &[]);
+        self.inscrire_entrees_import(premier_slot, props, &toutes);
         let t_tetes = t0.elapsed() - t_pages;
         let t1 = web_time::Instant::now();
         let n_differees = differees.len();
@@ -17330,15 +17378,17 @@ fn index_value_key(v: &Value) -> Option<IndexValueKey> {
         Value::Bool(b) => Some(IndexValueKey::Bool(*b)),
         Value::Int64(i) => Some(IndexValueKey::Int(*i)),
         Value::Float64(f) => value_cmp::entier_egal_au_flottant(*f).map(IndexValueKey::Int),
-        Value::String(s) => {
-            if crate::blob_column_registry::should_route_to_blob(v) {
-                return None;
-            }
-            Some(match value_cmp::instant_de_chaine(s) {
-                Some(instant) => IndexValueKey::Instant(instant),
-                None => IndexValueKey::Str(s.to_string()),
-            })
-        }
+        Value::String(s) => match value_cmp::instant_de_chaine(s) {
+            // Un instant est projetable QUELLE QUE SOIT la longueur de son
+            // écriture : une chaîne datetime de plus de 256 octets part en
+            // colonne blob, mais `set_node_property` l'inscrit dans l'index
+            // sous son instant avant de la router (revue 4, A2).
+            Some(instant) => Some(IndexValueKey::Instant(instant)),
+            // Une chaîne ordinaire routée en colonne blob n'est dans aucun
+            // index : sa recherche passe par le balayage de la colonne.
+            None if crate::blob_column_registry::should_route_to_blob(v) => None,
+            None => Some(IndexValueKey::Str(s.to_string())),
+        },
         _ => None,
     }
 }
@@ -17396,7 +17446,8 @@ impl SubstrateStore {
     }
 
     /// Parmi `cles`, celles dont un index d'égalité est ENREGISTRÉ, moins
-    /// celles de `deja` — pour `bulk_import_node_props`.
+    /// celles de `deja` — pour `bulk_import_node_props` (qui passe `deja`
+    /// vide : la réinscription doit couvrir TOUTES les clés, voir A3).
     fn cles_indexees_parmi<'a>(
         &self,
         cles: impl Iterator<Item = &'a str>,
@@ -17499,7 +17550,7 @@ impl SubstrateStore {
     /// et rien n'est tenu au retour — l'appelant lit des propriétés ensuite
     /// (cycle `props_zone` ↔ shard décrit dans `batir_index_depuis_v2`).
     fn candidats_bruts(&self, key: &PropertyKey, ik: &IndexValueKey) -> Option<Vec<NodeId>> {
-        if !self.index_batis_depuis_v2.contains_key(key) || self.instant_hors_index(key, ik) {
+        if !self.index_batis_depuis_v2.contains_key(key) {
             return None;
         }
         let mut out: Vec<NodeId> = {
@@ -17536,18 +17587,6 @@ impl SubstrateStore {
         Some(out)
     }
 
-    /// Une recherche d'INSTANT sur une clé qui a une colonne BLOB n'est pas
-    /// servie par l'index (revue 3, C1) : une chaîne datetime de plus de
-    /// 256 octets (fraction à neuf chiffres suivie de zéros) est routée en
-    /// colonne blob, n'entre dans aucun index, et égale pourtant par instant
-    /// une écriture courte. Seul le balayage exact, qui interroge la colonne
-    /// blob, la voit. Les autres clés ne sont pas concernées : une valeur
-    /// blob n'égale jamais un booléen, un entier ni une chaîne courte.
-    fn instant_hors_index(&self, key: &PropertyKey, ik: &IndexValueKey) -> bool {
-        matches!(ik, IndexValueKey::Instant(_))
-            && self.blob_columns.spec_for(key, EntityKind::Node).is_some()
-    }
-
     /// Taille du jeu de candidats bruts de `(key, ik)`, PLAFONNÉE, ou `None`
     /// dans les cas exacts où [`Self::candidats_bruts`] rendrait `None`.
     /// Rend `(taille, exacte)` : la taille exacte si elle tient sous le
@@ -17567,7 +17606,7 @@ impl SubstrateStore {
         ik: &IndexValueKey,
         plafond: u64,
     ) -> Option<(u64, bool)> {
-        if !self.index_batis_depuis_v2.contains_key(key) || self.instant_hors_index(key, ik) {
+        if !self.index_batis_depuis_v2.contains_key(key) {
             return None;
         }
         let en_ram = {
@@ -24037,6 +24076,16 @@ impl GraphStoreMut for SubstrateStore {
         // at the head of the returned buffer lets the reader reconstruct
         // the original `Value` variant byte-exactly on the get side.
         if let Some(tagged) = encode_blob_payload(&value) {
+            // Une chaîne datetime longue est un INSTANT que l'index doit
+            // connaître (revue 4, A2) : l'entrée entre AVANT que la valeur
+            // soit lisible, comme sur le chemin scalaire. Une entrée
+            // périmée (valeur réécrite ensuite) est écartée à la
+            // revérification, comme toute autre.
+            if !self.property_indexes.is_empty()
+                && matches!(index_value_key(&value), Some(IndexValueKey::Instant(_)))
+            {
+                self.prop_index_insert(&PropertyKey::new(key), &value, id);
+            }
             self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
             return;
         }
@@ -24084,7 +24133,11 @@ impl GraphStoreMut for SubstrateStore {
         // sans entrée d'index. Un verrou PAR NŒUD (tranche de 256) tient
         // ensemble l'entrée neuve, l'écriture de la valeur et le retrait de
         // l'ancienne ; deux nœuds différents ne s'attendent pas, et il n'est
-        // jamais pris sous un garde de zone (il est le plus EXTÉRIEUR).
+        // jamais pris sous un garde de zone (il est le plus EXTÉRIEUR). Sous
+        // lui, `remove_node_property` appelle `notify_node_property_removed`,
+        // dont l'observateur d'index vectoriel fait une suppression (E/S) :
+        // pas de cycle (l'observateur ne revient pas vers ce verrou), mais
+        // cette E/S allonge la détention pour CE nœud.
         let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
         let pkey = PropertyKey::new(key);
         // La clé est-elle DÉJÀ enregistrée ? C'est ce qu'il faut retenir, pas
@@ -24762,7 +24815,23 @@ impl GraphStoreMut for SubstrateStore {
             self.aucune_ordonnee
                 .store(true, std::sync::atomic::Ordering::Release);
         }
-        self.property_indexes.remove(&key).is_some()
+        let existait = self.property_indexes.remove(&key).is_some();
+        // ── PERSISTER SUR-LE-CHAMP, SYMÉTRIQUE DE `create_property_index` ──
+        //
+        // Lever le drapeau ne suffit qu'au chemin « flush propre » (revue 4,
+        // A1). Après un KILL, la série supprimée est encore dans la zone, et
+        // ses ancres sont ÉGALES à l'état courant si rien n'a touché le WAL ni
+        // alloué de page — ce qui est le cas d'un drop seul, et aussi d'un SET
+        // qui tient dans la page de tête (aucune trace durable sous v2). La
+        // réouverture déclarait alors la série couverte : l'index revenait,
+        // et SANS les nœuds écrits après le drop. On réécrit donc la zone
+        // maintenant, sans cette série (vide s'il n'en reste aucune). Échec
+        // non fatal (lecture seule) : le drapeau reste levé pour le flush.
+        if existait && let Err(e) = self.fusionner_index_egalite() {
+            tracing::warn!(propriete = property, erreur = %e,
+                "index supprimé : zone d'égalité non réécrite — elle le sera au prochain flush");
+        }
+        existait
     }
 
     fn remove_edge_property(&self, id: EdgeId, key: &str) -> Option<Value> {
@@ -29600,6 +29669,213 @@ mod tests {
             s.find_nodes_by_property("d", &Value::from("2026-03-03T02:00:00+02:00")),
             vec![y]
         );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 4 — A1, A2, A3
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// A1 — après un KILL (aucun flush depuis le drop), l'index supprimé ne
+    /// revient pas : ni seul (ancres égales), ni avec une écriture qui tient
+    /// dans la page de tête (aucune trace durable, ancres égales aussi), ni
+    /// quand il était le dernier index (zone à réécrire VIDE).
+    #[test]
+    #[allow(unsafe_code)]
+    fn a1_apres_un_kill_l_index_supprime_ne_revient_pas() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        for (scenario, avec_q, avec_set) in [
+            ("drop seul, autre index", true, false),
+            ("drop + SET en page de tête", true, true),
+            ("drop du DERNIER index", false, false),
+            ("drop du dernier index + SET", false, true),
+        ] {
+            let td = tempfile::tempdir().unwrap();
+            let racine = td.path().join("kb");
+            let (a, n) = {
+                let s = SubstrateStore::create(&racine).unwrap();
+                let a = s.create_node(&["R"]);
+                s.set_node_property(a, "p", Value::from("avant"));
+                s.set_node_property(a, "q", Value::Int64(1));
+                let n = s.create_node(&["R"]);
+                s.set_node_property(n, "p", Value::from("v0"));
+                s.create_property_index("p");
+                if avec_q {
+                    s.create_property_index("q");
+                }
+                s.flush().unwrap();
+                assert!(s.drop_property_index("p"));
+                if avec_set {
+                    // Réécriture de `n` : tient dans sa page de tête, donc
+                    // ni WAL ni page allouée — les ancres restent égales.
+                    s.set_node_property(n, "p", Value::from("x"));
+                }
+                s.fsync_wal().unwrap();
+                s.deverrouiller_pour_simuler_un_kill();
+                std::mem::forget(s);
+                (a, n)
+            };
+            let s2 = SubstrateStore::open(&racine).unwrap();
+            assert!(
+                !s2.has_property_index("p"),
+                "{scenario} : l'index supprimé est revenu"
+            );
+            assert_eq!(
+                s2.has_property_index("q"),
+                avec_q,
+                "{scenario} : témoin `q`"
+            );
+            let attendu_n = if avec_set { "x" } else { "v0" };
+            assert_eq!(
+                s2.find_nodes_by_property("p", &Value::from(attendu_n)),
+                vec![n],
+                "{scenario} : la valeur courante de `n` doit être trouvée"
+            );
+            assert_eq!(
+                s2.find_nodes_by_property("p", &Value::from("avant")),
+                vec![a],
+                "{scenario}"
+            );
+            if avec_set {
+                assert!(
+                    s2.find_nodes_by_property("p", &Value::from("v0"))
+                        .is_empty(),
+                    "{scenario} : l'ancienne valeur ne doit plus sortir"
+                );
+            }
+            s2.create_property_index("p");
+            assert_eq!(
+                s2.find_nodes_by_property("p", &Value::from(attendu_n)),
+                vec![n],
+                "{scenario} : après redéclaration"
+            );
+        }
+    }
+
+    /// A2 — un instant routé en colonne blob est INDEXÉ : la recherche
+    /// d'instant reste servie par l'index (un candidat relu, pas un
+    /// balayage), avec une colonne blob présente sur la clé.
+    #[test]
+    fn a2_un_instant_en_colonne_blob_est_indexe_et_la_recherche_reste_indexee() {
+        let (_td, s) = store();
+        s.create_property_index("d");
+        let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
+        let n = s.create_node(&["Evt"]);
+        s.set_node_property(n, "d", Value::from(longue.as_str()));
+        for i in 0..2_000i64 {
+            let m = s.create_node(&["Evt"]);
+            s.set_node_property(
+                m,
+                "d",
+                Value::String(format!("2025-01-01T00:00:{:02}Z", i % 60).into()),
+            );
+        }
+        assert!(
+            s.blob_columns
+                .spec_for(&PropertyKey::new("d"), EntityKind::Node)
+                .is_some(),
+            "précondition : une colonne blob existe pour `d`"
+        );
+        let courte = Value::from("2024-01-01T12:00:00+02:00");
+        assert!(
+            s.taille_candidats_indexes("d", &courte, 8).is_some(),
+            "l'index doit RÉPONDRE pour un instant malgré la colonne blob"
+        );
+        let (hits, relus) = candidats_reverifies_pendant(|| s.find_nodes_by_property("d", &courte));
+        assert_eq!(hits, vec![n]);
+        assert_eq!(
+            relus, 1,
+            "un seul candidat relu : chemin indexé, pas un balayage"
+        );
+        let (hits, relus) =
+            candidats_reverifies_pendant(|| s.find_nodes_by_properties(&[("d", courte.clone())]));
+        assert_eq!((hits, relus), (vec![n], 1));
+        // Réécriture par une valeur courte, puis par un autre blob : la
+        // valeur courante est toujours trouvée, l'ancienne jamais.
+        s.set_node_property(n, "d", Value::from("2030-01-01T00:00:00Z"));
+        assert!(s.find_nodes_by_property("d", &courte).is_empty());
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2030-01-01T00:00:00Z")),
+            vec![n]
+        );
+        let longue2 = format!("2031-01-01T00:00:00.{}Z", "0".repeat(300));
+        s.set_node_property(n, "d", Value::from(longue2.as_str()));
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2031-01-01T00:00:00Z")),
+            vec![n]
+        );
+    }
+
+    /// A2 (construction) — un blob-instant écrit AVANT que l'index existe
+    /// doit entrer à la construction (lecture des colonnes blob), et après
+    /// réouverture (zone persistée).
+    #[test]
+    #[allow(unsafe_code)]
+    fn a2_la_construction_recolte_les_instants_des_colonnes_blob() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
+        let courte = Value::from("2024-01-01T10:00:00Z");
+        let n = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["Evt"]);
+            s.set_node_property(n, "d", Value::from(longue.as_str()));
+            let m = s.create_node(&["Evt"]);
+            s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
+            // L'index est déclaré APRÈS l'écriture : construction depuis les
+            // chaînes ET les colonnes blob.
+            s.create_property_index("d");
+            let (hits, relus) =
+                candidats_reverifies_pendant(|| s.find_nodes_by_property("d", &courte));
+            assert_eq!((hits, relus), (vec![n], 1), "après construction");
+            s.flush().unwrap();
+            n
+        };
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        assert!(s2.egalite_couverte.contains_key(&PropertyKey::new("d")));
+        let (hits, relus) =
+            candidats_reverifies_pendant(|| s2.find_nodes_by_property("d", &courte));
+        assert_eq!(
+            (hits, relus),
+            (vec![n], 1),
+            "après réouverture, par la zone"
+        );
+    }
+
+    /// A3 — pendant un import en lot, un index présent au début est SUPPRIMÉ
+    /// puis RECRÉÉ (le create rebâtit sans les têtes) : il doit quand même
+    /// voir tous les nœuds importés.
+    #[test]
+    fn a3_un_index_supprime_puis_recree_pendant_un_import_voit_les_noeuds_importes() {
+        let (_td, s) = store();
+        s.create_property_index("sl");
+        let labels: Vec<&str> = (0..200).map(|_| "L").collect();
+        s.bulk_import_labels_edges(&labels, &[]).unwrap();
+        let props: Vec<Vec<(&str, Value)>> =
+            (0..200i64).map(|i| vec![("sl", Value::Int64(i))]).collect();
+        let une_fois = std::cell::Cell::new(true);
+        PENDANT_IMPORT_EN_LOT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                if une_fois.replace(false) {
+                    assert!(s.drop_property_index("sl"));
+                    s.create_property_index("sl");
+                }
+            }));
+        });
+        s.bulk_import_node_props(1, &props).unwrap();
+        PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
+        assert!(s.has_property_index("sl"));
+        for i in [0i64, 77, 150, 199] {
+            assert_eq!(
+                s.find_nodes_by_property("sl", &Value::Int64(i)),
+                vec![NodeId(i as u64 + 1)],
+                "sl = {i} après drop + create pendant l'import"
+            );
+        }
     }
 
     #[test]
