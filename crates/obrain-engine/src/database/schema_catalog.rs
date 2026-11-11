@@ -63,18 +63,43 @@ impl super::ObrainDB {
             match decl.genre.as_str() {
                 GENRE_NOEUD => {
                     match serde_json::from_str::<NodeTypeDefinition>(&decl.definition) {
-                        Ok(def) => {
+                        Ok(mut def) => {
                             // Remplacement explicite : la définition du fichier
                             // fait autorité, y compris contre une définition
                             // homonyme construite dans ce processus.
                             let nom = def.name.clone();
+                            // RÉPARATION : une base écrite avant que la
+                            // redéclaration soit idempotente porte N copies de
+                            // la même contrainte, et aucune n'a de nom. On les
+                            // fond en une, on leur donne le nom par défaut, et
+                            // on réécrit la ligne — sauf en lecture seule, où
+                            // seule la mémoire est réparée.
+                            let reparee = def.normalize_constraints();
+                            let contraintes = def.constraints.clone();
+                            let json_repare = if reparee && !self.read_only {
+                                serde_json::to_string(&def).ok()
+                            } else {
+                                None
+                            };
                             let _ = self.catalog.drop_node_type(&nom);
                             if let Err(e) = self.catalog.register_node_type(def) {
                                 tracing::warn!(erreur = %e, nom = %nom,
                                     "hydratation de type de nœud échouée — ignorée");
                                 ignorees += 1;
                             } else {
+                                self.catalog.sync_constraint_flags(&nom, &contraintes);
                                 noeuds += 1;
+                                if let Some(json) = json_repare {
+                                    match sub.declarer_type(GENRE_NOEUD, &nom, &json) {
+                                        Ok(()) => tracing::info!(nom = %nom,
+                                            "contraintes du type de nœud réparées \
+                                             (doublons fondus, noms attribués) et \
+                                             réécrites dans substrate.typecat"),
+                                        Err(e) => tracing::warn!(erreur = %e, nom = %nom,
+                                            "contraintes réparées en mémoire mais PAS \
+                                             réécrites (substrate.typecat)"),
+                                    }
+                                }
                             }
                         }
                         Err(e) => {

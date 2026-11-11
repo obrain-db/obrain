@@ -1,12 +1,14 @@
 //! Bench d'unicité : coût par insertion selon la contrainte portée par le nœud.
 //!
-//! Mesure le débit d'insertion (`INSERT (:T {a, b})`) sur quatre configurations :
+//! Mesure le débit d'insertion (`INSERT (:T {a, b})`) sur cinq configurations :
 //! - `sans_contrainte`            : aucun contrôle d'unicité (plancher) ;
 //! - `unique_simple`              : `UNIQUE (a)`, `a` distinct à chaque ligne ;
 //! - `unique_composite_a_repete`  : `UNIQUE (a, b)`, `a` se répète (2 valeurs),
 //!   `b` distingue le tuple — le cas qui coûtait ;
 //! - `unique_composite_indexe`    : idem + `db.create_property_index("a")`
-//!   (l'alternative « index » au balayage).
+//!   (l'alternative « index » au balayage) ;
+//! - `unique_composite_b_first`   : `UNIQUE (b, a)`, mêmes données — la colonne
+//!   sélective (`b`) est déclarée en premier.
 //!
 //! 10 000 insertions par itération ; le temps rendu est celui des 10 000,
 //! diviser par 10 000 pour obtenir le coût par insertion. Le nombre

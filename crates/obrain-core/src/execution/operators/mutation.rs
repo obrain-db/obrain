@@ -46,6 +46,10 @@ pub trait ConstraintValidator: Send + Sync {
     /// composite constraint on (a, b) must reject a node whose (a, b) tuple
     /// already exists, never a node sharing a single column. The full resolved
     /// property set is passed so the check can assemble the tuple.
+    ///
+    /// `properties` must be the values EFFECTIVELY WRITTEN, with at most one
+    /// entry per key: a caller that merges several sources (a `MERGE` pattern
+    /// overridden by `ON CREATE SET`) resolves the overrides before calling.
     fn check_unique_node_properties(
         &self,
         labels: &[String],

@@ -192,34 +192,36 @@ impl MergeOperator {
         resolved_match_props: &[(String, Value)],
         resolved_create_props: &[(String, Value)],
     ) -> Result<NodeId, super::OperatorError> {
+        // The EFFECTIVE property set — the one actually written — is built
+        // FIRST: `ON CREATE SET` may overwrite a pattern property, so a key
+        // can appear in both lists. Validation and the write below must see
+        // the same single value per key; validating the chained lists instead
+        // would check the pattern value (`a = 1`) and write the `ON CREATE`
+        // one (`a = 2`), letting a duplicate through a UNIQUE constraint.
+        let mut effective_props: Vec<(String, Value)> = resolved_match_props.to_vec();
+        for (k, v) in resolved_create_props {
+            if let Some(existing) = effective_props.iter_mut().find(|(key, _)| key == k) {
+                existing.1 = v.clone();
+            } else {
+                effective_props.push((k.clone(), v.clone()));
+            }
+        }
+
         // Validate constraints before creating the node
         if let Some(ref validator) = self.validator {
             validator.validate_node_labels_allowed(&self.config.labels)?;
 
-            let all_props: Vec<(String, Value)> = resolved_match_props
-                .iter()
-                .chain(resolved_create_props.iter())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            for (name, value) in &all_props {
+            for (name, value) in &effective_props {
                 validator.validate_node_property(&self.config.labels, name, value)?;
             }
-            validator.check_unique_node_properties(&self.config.labels, &all_props)?;
-            validator.validate_node_complete(&self.config.labels, &all_props)?;
+            validator.check_unique_node_properties(&self.config.labels, &effective_props)?;
+            validator.validate_node_complete(&self.config.labels, &effective_props)?;
         }
 
-        let mut all_props: Vec<(PropertyKey, Value)> = resolved_match_props
-            .iter()
-            .map(|(k, v)| (PropertyKey::new(k.as_str()), v.clone()))
+        let all_props: Vec<(PropertyKey, Value)> = effective_props
+            .into_iter()
+            .map(|(k, v)| (PropertyKey::new(k.as_str()), v))
             .collect();
-
-        for (k, v) in resolved_create_props {
-            if let Some(existing) = all_props.iter_mut().find(|(key, _)| key.as_str() == k) {
-                existing.1 = v.clone();
-            } else {
-                all_props.push((PropertyKey::new(k.as_str()), v.clone()));
-            }
-        }
 
         let labels: Vec<&str> = self.config.labels.iter().map(String::as_str).collect();
         Ok(self.store.create_node_with_props(&labels, &all_props))

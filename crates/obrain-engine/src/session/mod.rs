@@ -457,6 +457,55 @@ impl Session {
         self.recherche_hybride.as_ref()
     }
 
+    /// Réécrit la ligne du type de nœud `label` dans `substrate.typecat`,
+    /// d'après sa définition courante dans le catalogue en mémoire.
+    ///
+    /// C'est ce qui rend durable une contrainte créée ou retirée : le fichier
+    /// est relu par `hydrater_types` à l'ouverture. Sur une base en mémoire il
+    /// n'y a rien à persister (le catalogue vit et meurt avec le processus,
+    /// c'est le contrat) et l'appel réussit sans rien faire.
+    ///
+    /// CHAQUE branche d'échec est journalisée ET rendue à l'appelant : aucune
+    /// ne passe en silence.
+    fn persister_type_noeud(&self, label: &str) -> Result<()> {
+        use obrain_common::utils::error::Error;
+        let Some(sub) = self.substrate_store() else {
+            return Ok(());
+        };
+        let Some(def) = self.catalog.get_node_type(label) else {
+            tracing::error!(
+                label = %label,
+                "type de nœud introuvable dans le catalogue : rien à persister \
+                 (substrate.typecat)"
+            );
+            return Err(Error::Internal(format!(
+                "node type '{label}' is missing from the catalog: its constraints \
+                 cannot be persisted"
+            )));
+        };
+        let json = serde_json::to_string(&def).map_err(|e| {
+            tracing::error!(
+                erreur = %e,
+                label = %label,
+                "définition de type de nœud non sérialisable (substrate.typecat)"
+            );
+            Error::Serialization(format!(
+                "node type '{label}' cannot be serialized for persistence: {e}"
+            ))
+        })?;
+        sub.declarer_type("node", label, &json).map_err(|e| {
+            tracing::error!(
+                erreur = %e,
+                label = %label,
+                "définition de type de nœud NON persistée (substrate.typecat)"
+            );
+            Error::Internal(format!(
+                "constraints of node type '{label}' could not be persisted \
+                 (substrate.typecat): {e}"
+            ))
+        })
+    }
+
     /// (O1) Vue zero-copy sur une propriété `String` d'un nœud : le `&str`
     /// est EMPRUNTÉ aux pages mmap du substrate — aucune copie, aucune
     /// sérialisation — et vit sous une garde de lecture relâchée au drop
@@ -1276,6 +1325,7 @@ impl Session {
                         })
                         .collect(),
                     constraints: Vec::new(),
+                    constraint_names: Vec::new(),
                     parent_types: stmt.parent_types.clone(),
                 };
                 // ── LA DÉFINITION PART AU CATALOGUE DURABLE AVANT D'ÊTRE DÉPLACÉE ──
@@ -1501,7 +1551,7 @@ impl Session {
                 }
             }
             SchemaStatement::CreateConstraint(stmt) => {
-                use crate::catalog::TypeConstraint;
+                use crate::catalog::{CatalogError, ConstraintDeclaration, TypeConstraint};
                 use obrain_adapters::query::gql::ast::ConstraintKind;
                 let kind_str = match stmt.constraint_kind {
                     ConstraintKind::Unique => "unique",
@@ -1509,68 +1559,86 @@ impl Session {
                     ConstraintKind::NotNull => "not_null",
                     ConstraintKind::Exists => "exists",
                 };
-                let constraint_name = stmt
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("{}_{kind_str}", stmt.label));
-
-                // Register constraint in catalog type definitions
-                match stmt.constraint_kind {
+                let constraints: Vec<TypeConstraint> = match stmt.constraint_kind {
                     ConstraintKind::Unique => {
-                        for prop in &stmt.properties {
-                            let label_id = self.catalog.get_or_create_label(&stmt.label);
-                            let prop_id = self.catalog.get_or_create_property_key(prop);
-                            let _ = self.catalog.add_unique_constraint(label_id, prop_id);
-                        }
-                        let _ = self.catalog.add_constraint_to_type(
-                            &stmt.label,
-                            TypeConstraint::Unique(stmt.properties.clone()),
-                        );
+                        vec![TypeConstraint::Unique(stmt.properties.clone())]
                     }
                     ConstraintKind::NodeKey => {
-                        for prop in &stmt.properties {
-                            let label_id = self.catalog.get_or_create_label(&stmt.label);
-                            let prop_id = self.catalog.get_or_create_property_key(prop);
-                            let _ = self.catalog.add_unique_constraint(label_id, prop_id);
-                            let _ = self.catalog.add_required_property(label_id, prop_id);
-                        }
-                        let _ = self.catalog.add_constraint_to_type(
-                            &stmt.label,
-                            TypeConstraint::PrimaryKey(stmt.properties.clone()),
-                        );
+                        vec![TypeConstraint::PrimaryKey(stmt.properties.clone())]
                     }
-                    ConstraintKind::NotNull | ConstraintKind::Exists => {
-                        for prop in &stmt.properties {
-                            let label_id = self.catalog.get_or_create_label(&stmt.label);
-                            let prop_id = self.catalog.get_or_create_property_key(prop);
-                            let _ = self.catalog.add_required_property(label_id, prop_id);
-                            let _ = self.catalog.add_constraint_to_type(
-                                &stmt.label,
-                                TypeConstraint::NotNull(prop.clone()),
-                            );
-                        }
-                    }
-                }
+                    ConstraintKind::NotNull | ConstraintKind::Exists => stmt
+                        .properties
+                        .iter()
+                        .map(|prop| TypeConstraint::NotNull(prop.clone()))
+                        .collect(),
+                };
 
-                // ── DÉCLARATION DURABLE ──
-                // Une contrainte vit dans le NodeTypeDefinition du catalogue
-                // RAM, mais ce catalogue meurt avec le processus : le
-                // `WalRecord::CreateConstraint` n'est jamais rejoué (même
-                // constat que les types et les procédures). On re-sérialise
-                // donc le type (avec sa contrainte fraîche) dans
-                // `substrate.typecat`, exactement comme `CREATE NODE TYPE` ;
-                // `hydrater_types` le repeuple à l'ouverture. Un échec est
-                // journalisé, jamais fatal.
-                if let Some(sub) = self.substrate_store()
-                    && let Some(def) = self.catalog.get_node_type(&stmt.label)
-                    && let Ok(json) = serde_json::to_string(&def)
-                    && let Err(e) = sub.declarer_type("node", &stmt.label, &json)
-                {
-                    tracing::error!(
-                        erreur = %e,
-                        label = %stmt.label,
-                        "contrainte NON persistée (substrate.typecat)"
-                    );
+                // ── DÉCLARATION IDEMPOTENTE ──
+                // L'identité d'une contrainte est (label, nature, colonnes dans
+                // l'ordre). Une application qui rejoue son schéma à chaque
+                // démarrage ne doit ni empiler une copie en mémoire, ni en
+                // réécrire une sur disque : `declare_constraint` ne touche à
+                // rien quand une contrainte équivalente existe déjà. Sans
+                // `IF NOT EXISTS`, c'est une erreur nommée — la règle de
+                // `CREATE NODE TYPE` sur un type existant.
+                let avant = self.catalog.get_node_type(&stmt.label);
+                let declaration = self.catalog.declare_constraint(
+                    &stmt.label,
+                    stmt.name.as_deref(),
+                    kind_str,
+                    constraints.clone(),
+                );
+                let constraint_name = match declaration {
+                    Ok(ConstraintDeclaration::Created { name }) => name,
+                    Ok(ConstraintDeclaration::AlreadyExists { .. })
+                    | Err(CatalogError::ConstraintNameInUse(_))
+                        if stmt.if_not_exists =>
+                    {
+                        return Ok(QueryResult::status("No change"));
+                    }
+                    Ok(ConstraintDeclaration::AlreadyExists { name }) => {
+                        return Err(Error::Query(QueryError::new(
+                            QueryErrorKind::Semantic,
+                            format!(
+                                "Constraint already exists: an equivalent {kind_str} constraint \
+                                 '{name}' is declared on :{} ({})",
+                                stmt.label,
+                                stmt.properties.join(", ")
+                            ),
+                        )));
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            erreur = %e,
+                            label = %stmt.label,
+                            "contrainte NON déclarée (catalogue)"
+                        );
+                        return Err(Error::Query(QueryError::new(
+                            QueryErrorKind::Semantic,
+                            e.to_string(),
+                        )));
+                    }
+                };
+
+                // ── DÉCLARATION DURABLE, OU PAS DE DÉCLARATION ──
+                // Le `WalRecord::CreateConstraint` n'est jamais rejoué (même
+                // constat que les types et les procédures) : c'est la ligne du
+                // type dans `substrate.typecat` qui fait revenir la contrainte
+                // à l'ouverture. Une contrainte est une garantie d'intégrité :
+                // si elle ne peut pas être rendue durable, répondre « Created »
+                // promettrait une garantie qui s'évanouit au redémarrage. La
+                // commande ÉCHOUE donc, et le catalogue en mémoire est remis
+                // dans son état d'avant (pas de contrainte fantôme).
+                if let Err(e) = self.persister_type_noeud(&stmt.label) {
+                    match avant {
+                        Some(def) => self.catalog.register_or_replace_node_type(def),
+                        None => {
+                            let _ = self.catalog.drop_node_type(&stmt.label);
+                        }
+                    }
+                    self.catalog
+                        .sync_constraint_flags(&stmt.label, &constraints);
+                    return Err(e);
                 }
 
                 wal_log!(
@@ -1587,7 +1655,48 @@ impl Session {
                 )))
             }
             SchemaStatement::DropConstraint { name, if_exists } => {
-                let _ = if_exists;
+                use crate::catalog::CatalogError;
+                // Le retrait porte sur le catalogue en mémoire ET sur la forme
+                // persistée : sans le second, la contrainte reviendrait à
+                // chaque ouverture (`hydrater_types`).
+                let retirees = match self.catalog.drop_constraint(&name) {
+                    Ok(retirees) => retirees,
+                    Err(CatalogError::ConstraintNotFound(_)) if if_exists => {
+                        return Ok(QueryResult::status("No change"));
+                    }
+                    Err(e) => {
+                        return Err(Error::Query(QueryError::new(
+                            QueryErrorKind::Semantic,
+                            e.to_string(),
+                        )));
+                    }
+                };
+                // Même règle que la création : un retrait qui ne peut pas être
+                // rendu durable échoue, et la contrainte reste en vigueur — en
+                // mémoire comme sur disque, les deux disent la même chose.
+                // Les types déjà réécrits sont réécrits dans leur état d'avant.
+                for (rang, retiree) in retirees.iter().enumerate() {
+                    if let Err(e) = self.persister_type_noeud(&retiree.label) {
+                        for (i, r) in retirees.iter().enumerate() {
+                            self.catalog
+                                .register_or_replace_node_type(r.previous.clone());
+                            self.catalog.sync_constraint_flags(&r.label, &r.removed);
+                            if i < rang
+                                && let Err(e2) = self.persister_type_noeud(&r.label)
+                            {
+                                tracing::error!(
+                                    erreur = %e2,
+                                    label = %r.label,
+                                    contrainte = %name,
+                                    "retrait de contrainte annulé en mémoire mais PAS sur \
+                                     disque (substrate.typecat) : la contrainte ne reviendra \
+                                     pas à la réouverture"
+                                );
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
                 wal_log!(self, WalRecord::DropConstraint { name: name.clone() });
                 Ok(QueryResult::status(format!("Dropped constraint '{name}'")))
             }
@@ -1648,6 +1757,7 @@ impl Session {
                                     })
                                     .collect(),
                                 constraints: Vec::new(),
+                                constraint_names: Vec::new(),
                                 parent_types: key_labels.clone(),
                             };
                             // Register or replace so inline defs override existing
@@ -2195,10 +2305,28 @@ impl Session {
         })
     }
 
-    /// Returns a table of all constraints (currently metadata-only).
+    /// Returns a table of all node constraints: one row per constraint, with
+    /// the name `DROP CONSTRAINT` expects.
     fn execute_show_constraints(&self) -> Result<QueryResult> {
-        // Constraints are tracked in WAL but not yet in a queryable catalog.
-        // Return an empty table with the expected schema.
+        let mut type_names = self.catalog.all_node_type_names();
+        type_names.sort();
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for label in type_names {
+            let Some(mut def) = self.catalog.get_node_type(&label) else {
+                continue;
+            };
+            // Copie locale : nomme les contraintes d'un type enregistré sans
+            // nom, sans rien écrire dans le catalogue.
+            def.normalize_constraints();
+            for constraint in &def.constraints {
+                rows.push(vec![
+                    Value::from(def.constraint_name(constraint).unwrap_or_default()),
+                    Value::from(constraint.kind_str()),
+                    Value::from(label.as_str()),
+                    Value::from(constraint.properties().join(", ")),
+                ]);
+            }
+        }
         Ok(QueryResult {
             columns: vec![
                 "name".to_string(),
@@ -2207,7 +2335,7 @@ impl Session {
                 "properties".to_string(),
             ],
             column_types: Vec::new(),
-            rows: Vec::new(),
+            rows,
             ..QueryResult::empty()
         })
     }
