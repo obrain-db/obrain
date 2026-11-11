@@ -2262,6 +2262,12 @@ pub struct SubstrateStore {
     /// par qui ne les lit jamais (mesuré : la moitié de l'ouverture à 1 M nœuds).
     /// Ils sont donc reconstruits au PREMIER lecteur, une fois par session.
     histogrammes_pairs_differes: parking_lot::Mutex<bool>,
+    /// Lecture seule : la vérification des compteurs contre les zones n'a pas
+    /// encore eu lieu (voir `assurer_compteurs_verifies`).
+    compteurs_a_verifier: std::sync::atomic::AtomicBool,
+    /// Sérialise la vérification différée (un seul balayage, même sous
+    /// lecteurs concurrents).
+    verrou_verification_compteurs: parking_lot::Mutex<()>,
     mutation_observer: parking_lot::RwLock<Vec<Arc<dyn StoreMutationObserver>>>,
     /// D3b (RFC zorder-superposition) — cache zruns par communauté :
     /// `Vec<(zkey, slot)>` trié par zkey sur la colonne Zorder, pour
@@ -6755,6 +6761,8 @@ impl SubstrateStore {
             props_decode_echecs: std::sync::atomic::AtomicU64::new(0),
             read_only: std::sync::atomic::AtomicBool::new(lecture_seule),
             histogrammes_pairs_differes: parking_lot::Mutex::new(false),
+            compteurs_a_verifier: std::sync::atomic::AtomicBool::new(false),
+            verrou_verification_compteurs: parking_lot::Mutex::new(()),
             mutation_observer: parking_lot::RwLock::new(Vec::new()),
             zrows_cache: RwLock::new(std::collections::HashMap::new()),
             zrows_gen: std::sync::atomic::AtomicU64::new(0),
@@ -6845,7 +6853,15 @@ impl SubstrateStore {
                 .next_engram_id
                 .fetch_max(engram.min(u64::from(u16::MAX)) as u16, Ordering::AcqRel);
         }
-        store.relever_filigranes_des_zones();
+        // Lecture seule AVEC une borne d'allocation lue : le relevé complet
+        // (balayage arrière depuis la capacité préallouée, jusqu'à 0,5 N
+        // enregistrements vides) est remplacé par une SONDE bornée au-delà du
+        // filigrane connu — voir `relever_filigranes_par_sonde`.
+        if lecture_seule && borne_lue.is_some() {
+            store.relever_filigranes_par_sonde();
+        } else {
+            store.relever_filigranes_des_zones();
+        }
 
         // ── (2026-08-15) LA RECONSTRUCTION DES INDEX A DEMENAGE ──
         //
@@ -7428,50 +7444,22 @@ impl SubstrateStore {
         // Le contrôle n'est donc PAS affaibli : il est rendu inutile là où il
         // ne peut rien trouver, et il tourne — rapide — partout où il peut
         // corriger quelque chose.
-        let t_verif = web_time::Instant::now();
-        // (tronc 2026-09-15) VERIFICATION SYSTEMATIQUE : la garde « fenetre
-        // sans record structurel => verification sautee » supposait des
-        // compteurs justes AU FLUSH — or la derive mesuree en production
-        // (IN_MISSION 4660 pour 2347) est nee AVANT le flush et se serait
-        // re-endormie sous la garde. Cout mesure du recompte : 17 ms sur
-        // 434 000 noeuds — paye a chaque ouverture, compteurs jamais faux.
-        // Branche « fenêtre sans record structurel → vérification sautée » retirée :
-        // elle était morte (`false &&`). La vérification pleine tourne toujours.
-        {
-            store.verifications_pleines.fetch_add(1, Ordering::Relaxed);
-            let avant_n = store.total_live_nodes.load(Ordering::Relaxed);
-            let avant_e = store.total_live_edges.load(Ordering::Relaxed);
-            if let Err(e) = store.rebuild_counts_only() {
-                // Jamais fatal : une base dont les compteurs restent douteux vaut
-                // mieux qu'une base qui refuse de s'ouvrir. Le raccourci de
-                // comptage, lui, se gardera tout seul.
-                tracing::warn!(
-                    target: "substrate::counters",
-                    erreur = ?e,
-                    "verification des compteurs impossible — ils restent ceux de l'instantane"
-                );
-            } else {
-                let apres_n = store.total_live_nodes.load(Ordering::Relaxed);
-                let apres_e = store.total_live_edges.load(Ordering::Relaxed);
-                if avant_n != apres_n || avant_e != apres_e {
-                    // Journalisé en `warn` : une réparation muette ne permet ni de
-                    // constater qu'elle était nécessaire, ni de vérifier qu'elle a
-                    // cessé de l'être.
-                    tracing::warn!(
-                        target: "substrate::counters",
-                        noeuds_avant = avant_n, noeuds_apres = apres_n,
-                        aretes_avant = avant_e, aretes_apres = apres_e,
-                        ms = t_verif.elapsed().as_millis() as u64,
-                        "compteurs d'instantane FAUX, corriges depuis les zones"
-                    );
-                } else {
-                    tracing::debug!(
-                        target: "substrate::counters",
-                        ms = t_verif.elapsed().as_millis() as u64,
-                        "compteurs d'instantane verifies, deja justes"
-                    );
-                }
-            }
+        // ── (2026-11-11) EN LECTURE SEULE, LA VÉRIFICATION EST DUE AU PREMIER
+        //    CONSOMMATEUR, PAS À L'OUVERTURE ──────────────────────────────────
+        // La décision du 2026-09-15 (ci-dessus) tient : des compteurs
+        // d'instantané ne sont JAMAIS servis sans avoir été confrontés aux
+        // zones. Ce qui change en lecture seule, c'est QUAND : au premier appel
+        // qui les lit (`node_count`, `edge_count`, `node_count_by_label`,
+        // `live_count_by_edge_type`, les contrôles de degrés), une fois par
+        // session, au lieu de chaque ouverture. Une session qui ne compte rien
+        // ne paie pas le balayage ; une session qui compte voit des comptes
+        // exacts, exactement comme avant. En lecture seule aucune écriture ne
+        // peut s'entrelacer avec le balayage différé, ce qui le rend sûr ; un
+        // store inscriptible garde la vérification à l'ouverture.
+        if lecture_seule {
+            store.compteurs_a_verifier.store(true, Ordering::Release);
+        } else {
+            store.verifier_compteurs_depuis_les_zones();
         }
 
         // ── (2026-09-12) LE STORE A-T-IL ENCORE DES ENREGISTREMENTS ? ──────
@@ -15536,6 +15524,81 @@ impl SubstrateStore {
 
     /// Balayage arrière d'une zone : rend `max(slot vivant) + 1`, ou `None` si la
     /// zone n'existe pas / est vide (rien à relever : le dict fait foi).
+    /// Relevé des filigranes d'une ouverture en LECTURE SEULE, en O(1).
+    ///
+    /// POURQUOI C'EST EXACT. Le filigrane connu est `max(dictionnaire, borne
+    /// d'allocation)`. Tout slot est RÉSERVÉ dans la borne (`fetch_add` sur le
+    /// `substrate.alloc` partagé) AVANT d'être écrit dans la zone, et la borne
+    /// ne recule jamais (`fetch_max`) : aucun enregistrement vivant ne peut
+    /// exister au-delà d'elle. Le relevé complet n'apprend donc rien de plus à
+    /// un lecteur — il ne sert qu'à l'écrivain, pour REPUBLIER la borne.
+    ///
+    /// CE QUI RESTE DÉTECTÉ. Une borne qui MENT (fichier tronqué, réécrit,
+    /// restauré d'une autre base) laisserait des enregistrements vivants
+    /// au-delà d'elle. La sonde lit les [`TRANCHE_SONDE`] emplacements qui
+    /// suivent le filigrane connu : un seul vivant, et le relevé COMPLET
+    /// reprend, exactement comme avant. Ce que la sonde ne voit pas, assumé :
+    /// une borne en retard de plus d'une tranche ET un trou d'au moins une
+    /// tranche juste après elle — un trou de slots réservés jamais écrits ne
+    /// peut, lui, exister qu'EN DEÇÀ de la borne.
+    fn relever_filigranes_par_sonde(&self) {
+        const TRANCHE_SONDE: u64 = 512;
+        let noeuds = u64::from(self.next_node_id.load(Ordering::Acquire));
+        let aretes = self.next_edge_id.load(Ordering::Acquire);
+        let mentent = [
+            (crate::file::Zone::Nodes, noeuds),
+            (crate::file::Zone::Edges, aretes),
+        ]
+        .into_iter()
+        .any(|(zone, debut)| {
+            self.vivant_dans(zone, debut, debut.saturating_add(TRANCHE_SONDE))
+                .unwrap_or(true)
+        });
+        if mentent {
+            tracing::warn!(
+                target: "substrate::allocation",
+                noeuds,
+                aretes,
+                "lecture seule : des enregistrements vivants existent au-delà de la borne \
+                 d'allocation — borne incohérente, relevé COMPLET des filigranes"
+            );
+            self.relever_filigranes_des_zones();
+        }
+    }
+
+    /// Un enregistrement vivant existe-t-il dans les slots `[debut, fin)` de
+    /// `zone` ? Lecture bornée de la zone, aucune création.
+    fn vivant_dans(&self, zone: crate::file::Zone, debut: u64, fin: u64) -> SubstrateResult<bool> {
+        use crate::file::Zone;
+        let taille_record = match zone {
+            Zone::Nodes => crate::record::NodeRecord::SIZE,
+            Zone::Edges => crate::record::EdgeRecord::SIZE,
+            _ => return Ok(false),
+        };
+        let g = self.substrate.lock();
+        if g.is_memory() || !g.zone_path(zone).exists() {
+            return Ok(false);
+        }
+        let zf = g.open_zone(zone)?;
+        let octets = zf.as_slice();
+        let capacite = (octets.len() / taille_record) as u64;
+        for slot in debut.max(1)..fin.min(capacite) {
+            let off = slot as usize * taille_record;
+            let rec = &octets[off..off + taille_record];
+            let vivant = match zone {
+                Zone::Nodes => bytemuck::from_bytes::<crate::record::NodeRecord>(rec).is_live(),
+                _ => {
+                    let r = bytemuck::from_bytes::<crate::record::EdgeRecord>(rec);
+                    r.flags & crate::record::edge_flags::TOMBSTONED == 0 && r.src != 0
+                }
+            };
+            if vivant {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn relever_filigrane(&self, zone: crate::file::Zone) -> SubstrateResult<Option<u64>> {
         /// Une tranche = une page d'allocation de nœuds (512 records de 40 o) ;
         /// pour les arêtes (36 o) c'est une tranche de même ORDRE, la constante
@@ -19668,6 +19731,7 @@ impl GraphStore for SubstrateStore {
     }
 
     fn node_count(&self) -> usize {
+        self.assurer_compteurs_verifies();
         // (jalon 3) AVEC principal : comptage FILTRE a la demande, O(hw) —
         // choix assume de ce jalon. Les compteurs par tenant entretenus a
         // l'ecriture (matrice tenant × labels d'atomiques, O(1) en lecture)
@@ -19686,11 +19750,13 @@ impl GraphStore for SubstrateStore {
     }
 
     fn edge_count(&self) -> usize {
+        self.assurer_compteurs_verifies();
         // T17h T1: O(1) atomic load (was O(N) scan over live slots).
         self.total_live_edges.load(Ordering::Relaxed) as usize
     }
 
     fn node_count_by_label(&self, label: &str) -> usize {
+        self.assurer_compteurs_verifies();
         // T17h T1: O(1) override of the trait's default O(N) impl.
         // Unknown label (not interned) → 0, which matches a scan result.
         let labels = self.labels.read();
@@ -20772,6 +20838,7 @@ impl SubstrateStore {
     /// T17h T1 accessor — per-edge-type live count, O(1). Returns 0 for
     /// unknown edge-type strings (not yet interned).
     pub fn live_count_by_edge_type(&self, edge_type: &str) -> u64 {
+        self.assurer_compteurs_verifies();
         let registry = self.edge_types.read();
         let Some(id) = registry.id_for(edge_type) else {
             return 0;
@@ -21295,6 +21362,75 @@ impl SubstrateStore {
     /// inconditionnel, donc les compteurs restaient faux. Séparés, la partie
     /// qui décide de la justesse redevient assez bon marché pour être payée à
     /// chaque ouverture.
+    /// La vérification pleine des compteurs d'instantané contre les zones
+    /// (décision du 2026-09-15 : jamais de compteurs servis sans elle).
+    /// Appelée à l'ouverture d'un store inscriptible, au premier consommateur
+    /// d'un store en lecture seule (voir [`Self::assurer_compteurs_verifies`]).
+    fn verifier_compteurs_depuis_les_zones(&self) {
+        let t_verif = web_time::Instant::now();
+        // (tronc 2026-09-15) VERIFICATION SYSTEMATIQUE : la garde « fenetre
+        // sans record structurel => verification sautee » supposait des
+        // compteurs justes AU FLUSH — or la derive mesuree en production
+        // (IN_MISSION 4660 pour 2347) est nee AVANT le flush et se serait
+        // re-endormie sous la garde. Cout mesure du recompte : 17 ms sur
+        // 434 000 noeuds — paye a chaque ouverture, compteurs jamais faux.
+        // Branche « fenêtre sans record structurel → vérification sautée » retirée :
+        // elle était morte (`false &&`). La vérification pleine tourne toujours.
+        {
+            self.verifications_pleines.fetch_add(1, Ordering::Relaxed);
+            let avant_n = self.total_live_nodes.load(Ordering::Relaxed);
+            let avant_e = self.total_live_edges.load(Ordering::Relaxed);
+            if let Err(e) = self.rebuild_counts_only() {
+                // Jamais fatal : une base dont les compteurs restent douteux vaut
+                // mieux qu'une base qui refuse de s'ouvrir. Le raccourci de
+                // comptage, lui, se gardera tout seul.
+                tracing::warn!(
+                    target: "substrate::counters",
+                    erreur = ?e,
+                    "verification des compteurs impossible — ils restent ceux de l'instantane"
+                );
+            } else {
+                let apres_n = self.total_live_nodes.load(Ordering::Relaxed);
+                let apres_e = self.total_live_edges.load(Ordering::Relaxed);
+                if avant_n != apres_n || avant_e != apres_e {
+                    // Journalisé en `warn` : une réparation muette ne permet ni de
+                    // constater qu'elle était nécessaire, ni de vérifier qu'elle a
+                    // cessé de l'être.
+                    tracing::warn!(
+                        target: "substrate::counters",
+                        noeuds_avant = avant_n, noeuds_apres = apres_n,
+                        aretes_avant = avant_e, aretes_apres = apres_e,
+                        ms = t_verif.elapsed().as_millis() as u64,
+                        "compteurs d'instantane FAUX, corriges depuis les zones"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "substrate::counters",
+                        ms = t_verif.elapsed().as_millis() as u64,
+                        "compteurs d'instantane verifies, deja justes"
+                    );
+                }
+            }
+        }
+    }
+
+    /// En lecture seule, la vérification des compteurs est différée au premier
+    /// lecteur : voir le pavé du 2026-11-11 dans `from_substrate_partage`.
+    ///
+    /// Chemin rapide : une lecture atomique (certains appelants sont sur le
+    /// chemin chaud des degrés).
+    fn assurer_compteurs_verifies(&self) {
+        if !self.compteurs_a_verifier.load(Ordering::Acquire) {
+            return;
+        }
+        let _seul = self.verrou_verification_compteurs.lock();
+        if !self.compteurs_a_verifier.load(Ordering::Acquire) {
+            return;
+        }
+        self.verifier_compteurs_depuis_les_zones();
+        self.compteurs_a_verifier.store(false, Ordering::Release);
+    }
+
     /// Reconstruit, une seule fois, les histogrammes de labels pairs dont une
     /// ouverture en lecture seule a différé la reconstruction (voir
     /// `histogrammes_pairs_differes`). No-op dans tous les autres cas.
@@ -21303,6 +21439,10 @@ impl SubstrateStore {
         if !*differes {
             return;
         }
+        // Le recomptage complet ci-dessous VAUT vérification des compteurs
+        // (il les recompte tous depuis les zones) : on la consomme d'abord pour
+        // ne pas balayer deux fois, puis on recompte avec les histogrammes.
+        self.compteurs_a_verifier.store(false, Ordering::Release);
         if let Err(e) = self.rebuild_live_counters_from_zones() {
             tracing::warn!(
                 erreur = ?e,
@@ -21333,7 +21473,8 @@ impl SubstrateStore {
     // (read only par les tests mod tests et le diagnostic ; pas de lecture
     // sur les chemins de production non-test → allow(dead_code)).
     #[allow(dead_code)]
-    pub(crate) fn nb_verifications_pleines(&self) -> u64 {
+    #[doc(hidden)]
+    pub fn nb_verifications_pleines(&self) -> u64 {
         self.verifications_pleines.load(Ordering::Relaxed)
     }
 
@@ -21615,6 +21756,7 @@ impl SubstrateStore {
         &self,
         col: &crate::degree_column::DegreeColumn,
     ) -> Option<String> {
+        self.assurer_compteurs_verifies();
         let aretes = self.total_live_edges.load(Ordering::Relaxed);
         if aretes == 0 {
             return None;
@@ -21823,6 +21965,7 @@ impl SubstrateStore {
     /// Coût : une passe sur les emplacements (~1 ms pour 400 k nœuds), UNE fois.
     /// Un simple `swap` atomique sur le chemin chaud ensuite.
     fn verifier_coherence_degres_une_fois(&self) {
+        self.assurer_compteurs_verifies();
         // ── ON NE CONSOMME LE « UNE FOIS » QUE SI ON PEUT JUGER ────────────
         // Défaut mesuré : à la réouverture, un accès précoce (compteurs pas
         // encore établis, `total_live_edges == 0`) consommait le drapeau, la
@@ -22064,6 +22207,7 @@ impl SubstrateStore {
     /// (le pré-filtre typed-degree saute alors tous les nœuds). Colonne
     /// absente ou non hydratable ⇒ (0,0) ⇒ suspect.
     fn detect_stale_typed_degree_types(&self) -> Vec<u16> {
+        self.assurer_compteurs_verifies();
         let Some(registry) = self.typed_degrees_cell.get() else {
             return Vec::new();
         };
