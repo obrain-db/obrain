@@ -23,8 +23,10 @@ fn simplexes(s: &SubstrateStore) {
     let ids: Vec<NodeId> = (0..NOEUDS_SIMPLEXES)
         .map(|_| s.create_node(&["Function"]))
         .collect();
-    for (g, groupe) in ids.chunks_exact(3).enumerate() {
-        let (a, b, c) = (groupe[0], groupe[1], groupe[2]);
+    // `as_chunks` (stable 1.88, sous la MSRV) : clippy 1.99 refuse
+    // `chunks_exact` à taille constante (`chunks_exact_to_as_chunks`).
+    for (g, [a, b, c]) in ids.as_chunks::<3>().0.iter().enumerate() {
+        let (a, b, c) = (*a, *b, *c);
         let ligne = Value::Int64(i64::try_from(g).unwrap_or(i64::MAX));
         let ab = s.create_edge(a, b, "CALLS");
         let ac = s.create_edge(a, c, "CALLS");
