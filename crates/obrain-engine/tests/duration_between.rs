@@ -36,6 +36,16 @@ fn executer(db: &ObrainDB, langage: Langage, requete: &str) -> Vec<Vec<Value>> {
     }
 }
 
+/// Comme [`executer`], mais rend l'erreur au lieu de paniquer.
+fn essayer(db: &ObrainDB, langage: Langage, requete: &str) -> Result<Vec<Vec<Value>>, String> {
+    let session = db.session();
+    let resultat = match langage {
+        Langage::Cypher => session.execute_cypher(requete),
+        Langage::Gql => session.execute(requete),
+    };
+    resultat.map(|r| r.rows).map_err(|e| e.to_string())
+}
+
 /// Une seule valeur, en une ligne.
 fn valeur(db: &ObrainDB, langage: Langage, requete: &str) -> Value {
     let lignes = executer(db, langage, requete);
@@ -309,19 +319,20 @@ fn fuseau_non_utc_calendrier_local(langage: Langage) {
 
 /// Deux fuseaux différents : le second instant est lu dans le fuseau du
 /// premier. `2024-03-01T00:30Z` est `02:30+02:00` ; depuis le 31 janvier
-/// 23:30+02:00 : un mois (29 février 23:30), puis 3 heures.
+/// 23:30+02:00 : l'heure d'arrivée n'a pas atteint celle du départ, le mois
+/// n'est pas complet (règle de `java.time`) : 0 mois, 29 jours, 3 heures.
 fn fuseaux_differents_lus_dans_celui_du_premier(langage: Langage) {
     let db = vide();
     let d = "duration.between(datetime('2024-01-31T23:30:00+02:00'), \
              datetime('2024-03-01T00:30:00Z'))";
     assert_eq!(
         entier(&db, langage, &format!("RETURN {d}.months")),
-        1,
+        0,
         "{langage:?}"
     );
     assert_eq!(
         entier(&db, langage, &format!("RETURN {d}.days")),
-        0,
+        29,
         "{langage:?}"
     );
     assert_eq!(
@@ -447,6 +458,290 @@ fn set_puis_return_dans_la_meme_requete(langage: Langage) {
     );
 }
 
+// ============================================================================
+// Fins de mois, date contre datetime à fuseau (règles de Neo4j / java.time)
+// ============================================================================
+
+/// Un mois n'est complet que si le jour d'arrivée atteint celui du départ
+/// (Neo4j 5, `duration.between` ; `java.time` `until(MONTHS)`) : le 31 janvier
+/// au 28 février, 28 jours et non un mois.
+fn fins_de_mois_comme_neo4j(langage: Langage) {
+    let db = vide();
+    for (a, b, mois, jours) in [
+        ("2026-01-31", "2026-02-28", 0, 28),
+        ("2026-01-30", "2026-02-28", 0, 29),
+        ("2026-02-28", "2026-01-31", 0, -28),
+        ("2024-03-31", "2024-02-29", -1, 0),
+        ("2024-01-31", "2024-03-01", 1, 1),
+    ] {
+        let d = format!("duration.between(date('{a}'), date('{b}'))");
+        assert_eq!(
+            entier(&db, langage, &format!("RETURN {d}.months")),
+            mois,
+            "{langage:?} {a} -> {b} : mois"
+        );
+        assert_eq!(
+            entier(&db, langage, &format!("RETURN {d}.days")),
+            jours,
+            "{langage:?} {a} -> {b} : jours"
+        );
+    }
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            "RETURN duration.inMonths(date('2026-01-31'), date('2026-02-28')).months",
+        ),
+        0,
+        "{langage:?} inMonths"
+    );
+}
+
+/// Une DATE est minuit DANS le fuseau de l'autre opérande : exemple du manuel
+/// Neo4j, `between(date('1984-10-11'), datetime('1984-10-12T21:40:32.142+01:00'))`
+/// = `P1DT21H40M32.142S` ; et douze heures, pas dix, jusqu'à midi +02:00.
+fn date_contre_datetime_a_fuseau(langage: Langage) {
+    let db = vide();
+    let d = "duration.between(date('1984-10-11'), datetime('1984-10-12T21:40:32.142+01:00'))";
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.days")),
+        1,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.hours")),
+        21,
+        "{langage:?}"
+    );
+    // 21 h 40 min 32,142 s = 78 032 142 ms.
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.milliseconds")),
+        78_032_142,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            "RETURN duration.between(date('2024-01-01'), \
+             datetime('2024-01-01T12:00:00+02:00')).hours",
+        ),
+        12,
+        "{langage:?}"
+    );
+}
+
+/// Deux datetimes de fuseaux différents : `inDays` et `inMonths` lisent le
+/// calendrier dans le fuseau du premier. 31 janv. 23:30+02:00 -> 1er mars
+/// 00:30Z (02:30+02:00) : 29 jours entiers, 0 mois.
+fn in_days_et_in_months_a_fuseaux_differents(langage: Langage) {
+    let db = vide();
+    let (a, b) = (
+        "datetime('2024-01-31T23:30:00+02:00')",
+        "datetime('2024-03-01T00:30:00Z')",
+    );
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            &format!("RETURN duration.inDays({a}, {b}).days")
+        ),
+        29,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            &format!("RETURN duration.inMonths({a}, {b}).months")
+        ),
+        0,
+        "{langage:?}"
+    );
+}
+
+// ============================================================================
+// `datetime('…+02:00')` reste comparable et additionnable (aucune régression)
+// ============================================================================
+
+/// Un datetime à décalage est le même instant que son équivalent UTC : égal,
+/// ordonné, additionnable, filtrable, dédoublonnable.
+fn datetime_a_decalage_reste_un_instant(langage: Langage) {
+    let db = vide();
+    for (requete, attendu) in [
+        (
+            "RETURN datetime('2024-01-01T02:00:00+02:00') = datetime('2024-01-01T00:00:00Z')",
+            Value::Bool(true),
+        ),
+        (
+            "RETURN datetime('2024-01-01T10:00:00+02:00') < datetime('2024-01-01T09:00:00Z')",
+            Value::Bool(true),
+        ),
+        (
+            "RETURN datetime('2024-01-01T10:00:00+02:00') > datetime('2024-01-01T09:00:00Z')",
+            Value::Bool(false),
+        ),
+        (
+            "RETURN (datetime('2024-01-01T10:00:00+02:00') + duration('P1D')) \
+             = datetime('2024-01-02T08:00:00Z')",
+            Value::Bool(true),
+        ),
+        (
+            "RETURN datetime('2024-01-01T10:00:00+02:00') < datetime()",
+            Value::Bool(true),
+        ),
+    ] {
+        assert_eq!(
+            valeur(&db, langage, requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            "UNWIND [1] AS i WITH i \
+             WHERE datetime('2024-01-01T10:00:00+02:00') < datetime('2024-01-01T09:00:00Z') \
+             RETURN count(*)",
+        ),
+        1,
+        "{langage:?} WHERE"
+    );
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            "UNWIND [datetime('2024-01-01T02:00:00+02:00'), datetime('2024-01-01T00:00:00Z')] AS t \
+             RETURN count(DISTINCT t)",
+        ),
+        1,
+        "{langage:?} DISTINCT"
+    );
+}
+
+/// Égalité sur une propriété horodatage, avec et sans index : un nœud écrit en
+/// UTC se retrouve par son équivalent à décalage.
+fn egalite_de_propriete_horodatee(langage: Langage) {
+    for indexee in [false, true] {
+        let db = vide();
+        db.session().create_node_with_props(
+            &["E"],
+            [(
+                "t",
+                Value::Timestamp(horodatage((2024, 1, 1), (0, 0, 0), 0)),
+            )],
+        );
+        if indexee {
+            db.create_property_index("t");
+        }
+        assert_eq!(
+            entier(
+                &db,
+                langage,
+                "MATCH (n:E) WHERE n.t = datetime('2024-01-01T02:00:00+02:00') RETURN count(*)",
+            ),
+            1,
+            "{langage:?} indexée = {indexee}"
+        );
+    }
+}
+
+// ============================================================================
+// Composants : dates, éléments de liste ambigus, noms qualifiés
+// ============================================================================
+
+/// Composants d'une date et d'un datetime (`date(..).year`, `datetime(..).minute`).
+fn composants_de_date_et_de_datetime(langage: Langage) {
+    let db = vide();
+    for (requete, attendu) in [
+        ("RETURN date('2024-03-15').year", 2024),
+        ("RETURN date('2024-03-15').month", 3),
+        ("RETURN date('2024-03-15').day", 15),
+        ("RETURN datetime('2024-03-15T10:20:30Z').hour", 10),
+        ("RETURN datetime('2024-03-15T10:20:30Z').minute", 20),
+        ("RETURN datetime('2024-03-15T10:20:30Z').second", 30),
+    ] {
+        assert_eq!(
+            entier(&db, langage, requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+    // Un composant inconnu est une erreur, pas un NULL.
+    let session = db.session();
+    let resultat = match langage {
+        Langage::Cypher => session.execute_cypher("RETURN date('2024-03-15').quart"),
+        Langage::Gql => session.execute("RETURN date('2024-03-15').quart"),
+    };
+    assert!(resultat.is_err(), "[{langage:?}] composant inconnu");
+}
+
+/// Une ARÊTE sortie d'une liste ne lit jamais la propriété du NŒUD de même
+/// identifiant : les deux séries d'identifiants se recoupent. Le résultat est
+/// la valeur de l'arête, ou une erreur d'ambiguïté — jamais celle du nœud.
+fn arete_en_liste_ne_lit_pas_le_noeud_de_meme_id(langage: Langage) {
+    let db = vide();
+    let session = db.session();
+    let a = session.create_node_with_props(&["N"], [("w", Value::String("NOEUD-a".into()))]);
+    let b = session.create_node_with_props(&["N"], [("w", Value::String("NOEUD-b".into()))]);
+    let arete = session.create_edge(a, b, "R");
+    db.set_edge_property(arete, "w", Value::String("ARETE".into()));
+    for requete in [
+        "MATCH ()-[r:R]->() WITH collect(r) AS rs RETURN rs[0].w",
+        "MATCH ()-[r:R]->() RETURN head(collect(r)).w",
+    ] {
+        match essayer(&db, langage, requete) {
+            Ok(lignes) => assert_eq!(
+                lignes,
+                vec![vec![Value::String("ARETE".into())]],
+                "[{langage:?}] {requete} : valeur du nœud ?"
+            ),
+            Err(erreur) => assert!(
+                erreur.contains("à la fois un nœud et une arête"),
+                "[{langage:?}] {requete} : erreur sans rapport : {erreur}"
+            ),
+        }
+    }
+}
+
+/// Un nom de fonction à trois segments se lit comme un nom de fonction : la
+/// faute est « fonction inconnue : a.b.c », pas une erreur de syntaxe.
+#[test]
+fn nom_de_fonction_a_trois_segments() {
+    let db = vide();
+    let erreur = db
+        .session()
+        .execute_cypher("RETURN a.b.c(1)")
+        .expect_err("fonction inconnue");
+    assert!(erreur.to_string().contains("a.b.c"), "{erreur}");
+}
+
+// ============================================================================
+// Colonnes de passage des mutations : chaque opérateur garde ses valeurs
+// ============================================================================
+
+/// Un flottant traverse chaque opérateur de mutation sans devenir 0 ni NULL :
+/// `CREATE`, `SET`, ajout et retrait de label, `DELETE`.
+fn valeur_scalaire_traverse_les_operateurs_de_mutation(langage: Langage) {
+    let db = vide();
+    db.session()
+        .create_node_with_props(&["F"], [("p", Value::String("x".into()))]);
+    for requete in [
+        "UNWIND [2.5] AS w CREATE (t:Tmp {k: 1}) RETURN w",
+        "UNWIND [2.5] AS w MATCH (f:F) SET f.q = 1 RETURN w",
+        "UNWIND [2.5] AS w MATCH (f:F) SET f:Vu RETURN w",
+        "UNWIND [2.5] AS w MATCH (f:F) REMOVE f:Vu RETURN w",
+        "UNWIND [2.5] AS w MATCH (t:Tmp) DETACH DELETE t RETURN w",
+    ] {
+        assert_eq!(
+            executer(&db, langage, requete),
+            vec![vec![Value::Float64(2.5)]],
+            "{langage:?} {requete}"
+        );
+    }
+}
+
 /// Déclare un module de tests : chaque cas listé y devient un `#[test]` joué
 /// dans le langage donné.
 macro_rules! cas_en {
@@ -481,6 +776,14 @@ les_deux_langages!(
     composant_d_un_noeud_sorti_d_une_liste,
     composant_d_une_valeur_sans_composants_est_une_erreur,
     set_puis_return_dans_la_meme_requete,
+    fins_de_mois_comme_neo4j,
+    date_contre_datetime_a_fuseau,
+    in_days_et_in_months_a_fuseaux_differents,
+    datetime_a_decalage_reste_un_instant,
+    egalite_de_propriete_horodatee,
+    composants_de_date_et_de_datetime,
+    arete_en_liste_ne_lit_pas_le_noeud_de_meme_id,
+    valeur_scalaire_traverse_les_operateurs_de_mutation,
 );
 
 // En GQL, les clauses d'écriture après un `WITH` sont lues et ordonnées par

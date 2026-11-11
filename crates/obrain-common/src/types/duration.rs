@@ -380,56 +380,51 @@ impl fmt::Display for Duration {
 
 /// Durées entre deux instants (`duration.between` & co) et accès aux composants.
 impl Duration {
-    /// Durée calendaire de `from` à `to` : des mois ENTIERS, puis des jours
-    /// entiers, puis le reste en nanosecondes — de sorte que `from` plus le
-    /// résultat redonne `to`.
+    /// Durée calendaire de `from` à `to` : des mois ENTIERS, puis des jours,
+    /// puis le reste en nanosecondes — de sorte que `from` plus le résultat
+    /// redonne `to`. Sémantique de Neo4j, c'est-à-dire de `java.time`
+    /// (`ChronoUnit.MONTHS.between`) :
     ///
-    /// Les mois suivent le calendrier (de `2024-01-31` à `2024-03-01` : un mois
-    /// et un jour, la fin de mois étant ramenée au dernier jour du mois
-    /// d'arrivée). Si `to` précède `from`, le résultat est l'opposé de la durée
-    /// de `to` à `from`.
+    /// - un mois n'est complet que si le JOUR du mois d'arrivée atteint celui
+    ///   du départ (puis l'heure, pour un datetime) : du 31 janvier au 28
+    ///   février, 0 mois et 28 jours — pas un mois (la fin de mois n'est pas
+    ///   ramenée) ;
+    /// - dans l'ordre inverse, le résultat est calculé de même, signé : du 28
+    ///   février au 31 janvier, 0 mois et -28 jours ; du 31 mars au 29 février
+    ///   (2024), -1 mois (31 mars - 1 mois = 29 février : la fin de mois n'est
+    ///   ramenée que pour DÉCALER le départ).
+    ///
+    /// Les jours et le reste se lisent depuis `from` décalé des mois.
     #[must_use]
     pub fn between_timestamps(from: super::Timestamp, to: super::Timestamp) -> Self {
-        let (lo, hi, negate) = if to >= from {
-            (from, to, false)
+        let (from_date, to_date) = (from.to_date(), to.to_date());
+        let (from_time, to_time) = (from.to_time().as_nanos(), to.to_time().as_nanos());
+        // `LocalDateTime.until` : la date d'arrivée recule (ou avance) d'un
+        // jour quand l'heure d'arrivée n'a pas atteint celle du départ.
+        let end_date = if to_date > from_date && to_time < from_time {
+            super::Date::from_days(to_date.as_days() - 1)
+        } else if to_date < from_date && to_time > from_time {
+            super::Date::from_days(to_date.as_days() + 1)
         } else {
-            (to, from, true)
+            to_date
         };
-        let (lo_date, hi_date) = (lo.to_date(), hi.to_date());
-        let mut months = (i64::from(hi_date.year()) - i64::from(lo_date.year())) * 12
-            + (i64::from(hi_date.month()) - i64::from(lo_date.month()));
-        // Le décalage de `months` mois peut dépasser `hi` (jour ou heure du
-        // mois d'arrivée plus petits) : on retire alors un mois.
-        while months > 0 && lo.add_duration(&Self::from_months(months)) > hi {
-            months -= 1;
-        }
-        let shifted = lo.add_duration(&Self::from_months(months));
-        let rest = hi.as_nanos().saturating_sub(shifted.as_nanos());
-        let result = Self::new(months, rest / NANOS_PAR_JOUR, rest % NANOS_PAR_JOUR);
-        if negate { result.neg() } else { result }
+        let months = months_until(from_date, end_date);
+        let shifted = from.add_duration(&Self::from_months(months));
+        let rest = to.as_nanos().saturating_sub(shifted.as_nanos());
+        Self::new(months, rest / NANOS_PAR_JOUR, rest % NANOS_PAR_JOUR)
     }
 
     /// Comme [`between_timestamps`](Self::between_timestamps), pour deux dates
     /// (le reste en nanosecondes est toujours nul).
     #[must_use]
     pub fn between_dates(from: super::Date, to: super::Date) -> Self {
-        let (lo, hi, negate) = if to >= from {
-            (from, to, false)
-        } else {
-            (to, from, true)
-        };
-        let mut months = (i64::from(hi.year()) - i64::from(lo.year())) * 12
-            + (i64::from(hi.month()) - i64::from(lo.month()));
-        while months > 0 && lo.add_duration(&Self::from_months(months)) > hi {
-            months -= 1;
-        }
-        let shifted = lo.add_duration(&Self::from_months(months));
-        let result = Self::new(
+        let months = months_until(from, to);
+        let shifted = from.add_duration(&Self::from_months(months));
+        Self::new(
             months,
-            i64::from(hi.as_days()) - i64::from(shifted.as_days()),
+            i64::from(to.as_days()) - i64::from(shifted.as_days()),
             0,
-        );
-        if negate { result.neg() } else { result }
+        )
     }
 
     /// Un composant de la durée, à la manière de Neo4j.
@@ -475,6 +470,17 @@ impl Duration {
 }
 
 const NANOS_PAR_JOUR: i64 = 86_400_000_000_000;
+
+/// Mois entiers de `from` à `to` (`LocalDate.until(end, MONTHS)` de Java) :
+/// l'écart de mois-calendrier, compté seulement jusqu'au jour du mois de
+/// départ — `(mois * 32 + jour)` des deux dates, divisé par 32 en tronquant
+/// vers zéro. Signé.
+fn months_until(from: super::Date, to: super::Date) -> i64 {
+    let packed = |d: super::Date| {
+        (i64::from(d.year()) * 12 + i64::from(d.month()) - 1) * 32 + i64::from(d.day())
+    };
+    (packed(to) - packed(from)) / 32
+}
 
 #[cfg(test)]
 mod tests {
@@ -635,5 +641,32 @@ mod tests {
         assert_eq!(t.component("milliseconds"), Some(58_390_000));
         assert_eq!(t.component("minutesOfHour"), Some(13));
         assert_eq!(t.component("inconnu"), None);
+    }
+
+    #[test]
+    fn fins_de_mois_comme_java_until() {
+        use crate::types::Date;
+        let d = |y, m, j| Date::from_ymd(y, m, j).unwrap();
+        // Le mois n'est complet que si le jour d'arrivée atteint celui du départ.
+        assert_eq!(
+            Duration::between_dates(d(2026, 1, 31), d(2026, 2, 28)),
+            Duration::new(0, 28, 0)
+        );
+        assert_eq!(
+            Duration::between_dates(d(2026, 1, 30), d(2026, 2, 28)),
+            Duration::new(0, 29, 0)
+        );
+        assert_eq!(
+            Duration::between_dates(d(2026, 2, 28), d(2026, 1, 31)),
+            Duration::new(0, -28, 0)
+        );
+        assert_eq!(
+            Duration::between_dates(d(2024, 3, 31), d(2024, 2, 29)),
+            Duration::new(-1, 0, 0)
+        );
+        assert_eq!(
+            Duration::between_dates(d(2024, 1, 31), d(2024, 3, 1)),
+            Duration::new(1, 1, 0)
+        );
     }
 }

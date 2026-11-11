@@ -26,6 +26,41 @@ fn map_int(m: &BTreeMap<PropertyKey, Value>, key: &str) -> Option<i64> {
     }
 }
 
+/// Composant d'une date ou d'un datetime : `year`, `month`, `day`, `hour`,
+/// `minute`, `second`, `millisecond`, `microsecond`, `nanosecond` (les heures
+/// d'un datetime à fuseau se lisent dans ce fuseau). `None` si le nom n'existe
+/// pas pour ce type.
+fn composant_de_date(
+    nom: &str,
+    date: Option<obrain_common::types::Date>,
+    horodatage: Option<(obrain_common::types::Timestamp, i32)>,
+) -> Option<i64> {
+    let (date, nanos_du_jour) = match (date, horodatage) {
+        (Some(d), _) => (d, None),
+        (None, Some((t, decalage))) => {
+            let local = obrain_common::types::Timestamp::from_nanos(
+                t.as_nanos()
+                    .saturating_add(i64::from(decalage).saturating_mul(1_000_000_000)),
+            );
+            (local.to_date(), Some(local.to_time().as_nanos() as i64))
+        }
+        (None, None) => return None,
+    };
+    let reste = nanos_du_jour.unwrap_or(0);
+    Some(match nom.to_ascii_lowercase().as_str() {
+        "year" => i64::from(date.year()),
+        "month" => i64::from(date.month()),
+        "day" => i64::from(date.day()),
+        "hour" if nanos_du_jour.is_some() => reste / 3_600_000_000_000,
+        "minute" if nanos_du_jour.is_some() => (reste / 60_000_000_000) % 60,
+        "second" if nanos_du_jour.is_some() => (reste / 1_000_000_000) % 60,
+        "millisecond" if nanos_du_jour.is_some() => (reste / 1_000_000) % 1_000,
+        "microsecond" if nanos_du_jour.is_some() => (reste / 1_000) % 1_000_000,
+        "nanosecond" if nanos_du_jour.is_some() => reste % 1_000_000_000,
+        _ => return None,
+    })
+}
+
 const NANOS_PAR_JOUR: i64 = 86_400_000_000_000;
 
 /// `duration.between` et ses variantes `inMonths`, `inDays`, `inSeconds`,
@@ -102,29 +137,37 @@ fn duration_entre(genre: &str, valeurs: &[Value]) -> Option<Value> {
         },
         (Instant::Heure(_), _) | (_, Instant::Heure(_)) => return None,
         (a, b) => {
-            let lire = |i: Instant| match i {
-                Instant::Date(d) => (d.to_timestamp(), 0),
-                Instant::Horodatage(t, decalage) => (t, decalage),
-                Instant::Heure(_) => unreachable!("écarté plus haut"),
+            // Fuseau de référence : celui du premier horodatage rencontré. Une
+            // DATE est minuit DANS ce fuseau (`between(date('2024-01-01'),
+            // datetime('2024-01-01T12:00+02:00'))` : douze heures, pas dix) ;
+            // les horodatages sont lus à l'heure locale de ce fuseau.
+            let decalage_ref = match (&a, &b) {
+                (Instant::Horodatage(_, d), _) | (_, Instant::Horodatage(_, d)) => *d,
+                _ => 0,
             };
-            let ((a, decalage_a), (b, _)) = (lire(a), lire(b));
-            // Les deux instants sont lus dans le fuseau du PREMIER (comme
-            // Neo4j) : même décalage pour les deux, le second est converti.
-            let local = |t: Timestamp| {
-                Timestamp::from_nanos(
-                    t.as_nanos()
-                        .saturating_add(i64::from(decalage_a).saturating_mul(1_000_000_000)),
-                )
+            let decalage_nanos = i64::from(decalage_ref).saturating_mul(1_000_000_000);
+            // (heure locale, instant absolu) en nanosecondes.
+            let lire = |i: Instant| -> (i64, i64) {
+                match i {
+                    Instant::Date(d) => {
+                        let local = i64::from(d.as_days()).saturating_mul(NANOS_PAR_JOUR);
+                        (local, local.saturating_sub(decalage_nanos))
+                    }
+                    Instant::Horodatage(t, _) => {
+                        let absolu = t.as_nanos();
+                        (absolu.saturating_add(decalage_nanos), absolu)
+                    }
+                    Instant::Heure(_) => unreachable!("écarté plus haut"),
+                }
             };
-            let (la, lb) = (local(a), local(b));
+            let ((la, abs_a), (lb, abs_b)) = (lire(a), lire(b));
+            let (la, lb) = (Timestamp::from_nanos(la), Timestamp::from_nanos(lb));
             match genre {
                 "between" => Duration::between_timestamps(la, lb),
                 "inmonths" => Duration::from_months(Duration::between_timestamps(la, lb).months()),
                 "indays" => Duration::from_days((lb.as_nanos() - la.as_nanos()) / NANOS_PAR_JOUR),
                 // Les secondes ne dépendent d'aucun fuseau.
-                "inseconds" | "inmilliseconds" => {
-                    Duration::from_nanos(b.as_nanos().checked_sub(a.as_nanos())?)
-                }
+                "inseconds" | "inmilliseconds" => Duration::from_nanos(abs_b.checked_sub(abs_a)?),
                 _ => return None,
             }
         }
@@ -2903,6 +2946,47 @@ impl ExpressionPredicate {
         }
     }
 
+    /// Évalue un opérande de `duration.*`.
+    ///
+    /// `datetime('2024-01-31T00:30:00+02:00')` rend un `Timestamp` (UTC) : le
+    /// décalage est perdu, et le calendrier — mois, jours — d'une durée se lit
+    /// dans le fuseau de l'opérande (le 31 à Paris, le 30 en UTC). Quand
+    /// l'opérande est un `datetime(<texte>)` dont le texte porte un décalage
+    /// non nul, on le lit ici comme un `ZonedDatetime` ; `datetime()` garde
+    /// ailleurs son résultat historique, de sorte qu'aucune comparaison ni
+    /// aucune arithmétique ne change. (Un horodatage DÉJÀ stocké est UTC : son
+    /// décalage n'a pas été conservé à l'écriture.)
+    fn eval_instant_arg(
+        &self,
+        expr: &FilterExpression,
+        chunk: &DataChunk,
+        row: usize,
+    ) -> Option<Value> {
+        if let FilterExpression::FunctionCall { name, args } = expr
+            && matches!(
+                name.to_ascii_lowercase().as_str(),
+                "datetime" | "todatetime"
+            )
+            && let [argument] = args.as_slice()
+            && let Value::String(texte) = self.eval_expr(argument, chunk, row)?
+            && let Some(position) = texte.find('T')
+            && let (Some(date), Some(heure)) = (
+                obrain_common::types::Date::parse(&texte[..position]),
+                obrain_common::types::Time::parse(&texte[position + 1..]),
+            )
+            && let Some(decalage) = heure.offset_seconds()
+            && decalage != 0
+        {
+            return Some(Value::ZonedDatetime(
+                obrain_common::types::ZonedDatetime::from_timestamp_offset(
+                    obrain_common::types::Timestamp::from_date_time(date, heure),
+                    decalage,
+                ),
+            ));
+        }
+        self.eval_expr(expr, chunk, row)
+    }
+
     fn eval_function(
         &self,
         name: &str,
@@ -4145,25 +4229,14 @@ impl ExpressionPredicate {
                                 obrain_common::types::Date::parse(date_part),
                                 obrain_common::types::Time::parse(time_part),
                             ) {
-                                let ts = obrain_common::types::Timestamp::from_date_time(d, t);
-                                // Un décalage AUTRE que UTC est gardé : la valeur
-                                // est un `ZonedDatetime`, et un calendrier calculé
-                                // dessus (`duration.between`) se lit dans ce fuseau.
-                                // `Z` / `+00:00` / sans décalage : horodatage UTC,
-                                // comme avant.
-                                return Some(match t.offset_seconds() {
-                                    Some(offset) if offset != 0 => Value::ZonedDatetime(
-                                        obrain_common::types::ZonedDatetime::from_timestamp_offset(
-                                            ts, offset,
-                                        ),
-                                    ),
-                                    _ => Value::Timestamp(ts),
-                                });
+                                return Some(Value::Timestamp(
+                                    obrain_common::types::Timestamp::from_date_time(d, t),
+                                ));
                             }
                         }
                         None
                     }
-                    Value::Timestamp(_) | Value::ZonedDatetime(_) => Some(val),
+                    Value::Timestamp(_) => Some(val),
                     Value::Map(m) => {
                         let year = map_int(&m, "year")? as i32;
                         let month = map_int_or(&m, "month", 1) as u32;
@@ -4192,7 +4265,7 @@ impl ExpressionPredicate {
             | "duration.inmilliseconds" => {
                 let valeurs = args
                     .iter()
-                    .map(|a| self.eval_expr(a, chunk, row))
+                    .map(|a| self.eval_instant_arg(a, chunk, row))
                     .collect::<Option<Vec<Value>>>()?;
                 duration_entre(&name.to_lowercase()["duration.".len()..], &valeurs)
             }
@@ -4214,27 +4287,63 @@ impl ExpressionPredicate {
                     // on les résout par le store (nœud d'abord, arête sinon).
                     // Une propriété absente est NULL, comme sur `n.prop`.
                     Value::Int64(id) => {
-                        if let Some(node) = self.resolve_node(NodeId(id as u64)) {
-                            Some(
+                        // Le modèle de valeurs n'a pas de variante nœud / arête :
+                        // les deux voyagent comme un entier, et leurs
+                        // identifiants se recoupent (les deux séries partent de
+                        // 1). Si l'identifiant désigne UN nœud ET UNE arête, on ne
+                        // peut pas savoir lequel est visé : erreur, jamais le
+                        // mauvais. Si un seul existe, c'est lui.
+                        let noeud = self.resolve_node(NodeId(id as u64));
+                        let arete = self.resolve_edge(obrain_common::types::EdgeId(id as u64));
+                        match (noeud, arete) {
+                            (Some(node), None) => Some(
                                 node.get_property(&propriete)
                                     .cloned()
                                     .unwrap_or(Value::Null),
-                            )
-                        } else if let Some(edge) =
-                            self.resolve_edge(obrain_common::types::EdgeId(id as u64))
-                        {
-                            Some(
+                            ),
+                            (None, Some(edge)) => Some(
                                 edge.get_property(&propriete)
                                     .cloned()
                                     .unwrap_or(Value::Null),
-                            )
-                        } else {
-                            self.signale_erreur(format!(
+                            ),
+                            (Some(_), Some(_)) => self.signale_erreur(format!(
+                                "accès à la propriété '{propriete}' d'un élément de liste : \
+                                 l'identifiant {id} désigne à la fois un nœud et une arête, \
+                                 on ne peut pas savoir lequel est visé (utiliser la variable \
+                                 elle-même plutôt que l'élément de liste)"
+                            )),
+                            (None, None) => self.signale_erreur(format!(
                                 "accès à la propriété '{propriete}' d'une valeur qui n'est ni \
-                                 une durée, ni une map, ni un nœud ou une arête connus (id {id})"
-                            ))
+                                 une durée, une date, une map, ni un nœud ou une arête \
+                                 connus (id {id})"
+                            )),
                         }
                     }
+                    Value::Date(d) => composant_de_date(&propriete, Some(d), None)
+                        .map(Value::Int64)
+                        .or_else(|| {
+                            self.signale_erreur(format!(
+                                "composant de date inconnu : '{propriete}'"
+                            ))
+                        }),
+                    Value::Timestamp(t) => composant_de_date(&propriete, None, Some((t, 0)))
+                        .map(Value::Int64)
+                        .or_else(|| {
+                            self.signale_erreur(format!(
+                                "composant de datetime inconnu : '{propriete}'"
+                            ))
+                        }),
+                    Value::ZonedDatetime(z) => composant_de_date(
+                        &propriete,
+                        None,
+                        Some((z.as_timestamp(), z.offset_seconds())),
+                    )
+                    .map(Value::Int64)
+                    .or_else(|| {
+                        self.signale_erreur(format!(
+                            "composant de datetime inconnu : '{propriete}'"
+                        ))
+                    }),
                     Value::Null => Some(Value::Null),
                     autre => self.signale_erreur(format!(
                         "accès à la propriété '{propriete}' d'une valeur de type {} : seuls une \
