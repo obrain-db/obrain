@@ -116,11 +116,15 @@ fn scenario(d: usize) {
     let (requetes, tardif) = reste.split_at(NQ);
 
     let db = ouvrir(&dir);
+    // Index de propriete AVANT les ecritures (sinon find ne voit pas les valeurs).
+    db.create_property_index("grp");
     let corpus: Vec<(NodeId, Vec<f32>)> = vecteurs
         .iter()
-        .map(|v| {
+        .enumerate()
+        .map(|(i, v)| {
             let id = db.create_node(&["Doc"]);
             db.set_node_property(id, "emb", Value::Vector(v.clone().into()));
+            db.set_node_property(id, "grp", Value::Int64((i % 2) as i64));
             (id, v.clone())
         })
         .collect();
@@ -159,6 +163,7 @@ fn scenario(d: usize) {
     );
     assert!(hits[0].1 < 1e-4);
 
+    // ── Filtre sur la base fichier : la liste blanche ne doit rien perdre
     // ── Réouverture : chargé (projection comprise), mêmes identifiants ────
     let attendu: Vec<Vec<NodeId>> = requetes[..10]
         .iter()
