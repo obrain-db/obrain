@@ -2254,6 +2254,14 @@ pub struct SubstrateStore {
     /// de degrés typées exige un store en écriture ; en lecture seule on
     /// se contente de mémoriser les types douteux (fallback pré-filtre).
     read_only: std::sync::atomic::AtomicBool,
+    /// Lecture seule : les histogrammes de labels pairs manquent au dictionnaire
+    /// (base flushée sans eux) et n'ont PAS été reconstruits à l'ouverture.
+    /// L'écrivain les reconstruit puis réécrit le dictionnaire une fois ; un
+    /// lecteur ne peut pas réécrire, et les reconstruire à CHAQUE ouverture en
+    /// faisait un coût en O(N + E) — lectures aléatoires par arête — payé même
+    /// par qui ne les lit jamais (mesuré : la moitié de l'ouverture à 1 M nœuds).
+    /// Ils sont donc reconstruits au PREMIER lecteur, une fois par session.
+    histogrammes_pairs_differes: parking_lot::Mutex<bool>,
     mutation_observer: parking_lot::RwLock<Vec<Arc<dyn StoreMutationObserver>>>,
     /// D3b (RFC zorder-superposition) — cache zruns par communauté :
     /// `Vec<(zkey, slot)>` trié par zkey sur la colonne Zorder, pour
@@ -6746,6 +6754,7 @@ impl SubstrateStore {
             degrees_health_checked: std::sync::atomic::AtomicBool::new(false),
             props_decode_echecs: std::sync::atomic::AtomicU64::new(0),
             read_only: std::sync::atomic::AtomicBool::new(lecture_seule),
+            histogrammes_pairs_differes: parking_lot::Mutex::new(false),
             mutation_observer: parking_lot::RwLock::new(Vec::new()),
             zrows_cache: RwLock::new(std::collections::HashMap::new()),
             zrows_gen: std::sync::atomic::AtomicU64::new(0),
@@ -7080,12 +7089,14 @@ impl SubstrateStore {
                     "T17i T2: v5 dict detected, rebuilding peer-label \
                      histograms (one-shot, persisted to v6 immediately via T17j T3 auto-flush)"
                 );
-                store.rebuild_live_counters_from_zones()?;
-                // Lecture seule : les histogrammes reconstruits restent EN MÉMOIRE.
-                // Le dictionnaire v6 sera écrit par le prochain écrivain, pas ici.
+                // Lecture seule : PAS de reconstruction ici. Elle est DIFFÉRÉE au
+                // premier lecteur des histogrammes (voir le champ), et le
+                // dictionnaire v6 sera écrit par le prochain écrivain.
                 if lecture_seule {
-                    "snapshot+v5-histogram-rebuild-en-memoire"
+                    *store.histogrammes_pairs_differes.lock() = true;
+                    "snapshot+v5-histogram-differe"
                 } else {
+                    store.rebuild_live_counters_from_zones()?;
                     // T17j T3 — auto-flush the upgraded dict now so the
                     // next open reads v6 directly (O(M) histogram restore,
                     // no rebuild scan). Without this, the first post-deploy
@@ -20826,6 +20837,7 @@ impl SubstrateStore {
         &self,
         edge_type: &str,
     ) -> std::collections::HashSet<String> {
+        self.assurer_histogrammes_pairs();
         let registry = self.edge_types.read();
         let Some(type_id) = registry.id_for(edge_type) else {
             return std::collections::HashSet::new();
@@ -20851,6 +20863,7 @@ impl SubstrateStore {
         &self,
         edge_type: &str,
     ) -> std::collections::HashSet<String> {
+        self.assurer_histogrammes_pairs();
         let registry = self.edge_types.read();
         let Some(type_id) = registry.id_for(edge_type) else {
             return std::collections::HashSet::new();
@@ -21274,6 +21287,23 @@ impl SubstrateStore {
     /// inconditionnel, donc les compteurs restaient faux. Séparés, la partie
     /// qui décide de la justesse redevient assez bon marché pour être payée à
     /// chaque ouverture.
+    /// Reconstruit, une seule fois, les histogrammes de labels pairs dont une
+    /// ouverture en lecture seule a différé la reconstruction (voir
+    /// `histogrammes_pairs_differes`). No-op dans tous les autres cas.
+    fn assurer_histogrammes_pairs(&self) {
+        let mut differes = self.histogrammes_pairs_differes.lock();
+        if !*differes {
+            return;
+        }
+        if let Err(e) = self.rebuild_live_counters_from_zones() {
+            tracing::warn!(
+                erreur = ?e,
+                "lecture seule : reconstruction différée des histogrammes de labels pairs impossible"
+            );
+        }
+        *differes = false;
+    }
+
     pub(crate) fn rebuild_live_counters_from_zones(&self) -> SubstrateResult<()> {
         self.rebuild_live_counters_interne(true)
     }
@@ -28156,12 +28186,12 @@ mod tests {
     }
 
     #[test]
-    fn typed_degree_read_only_reports_unreliable_when_stale() {
-        // (2026-09-05) Défense lecture seule : un store RO ne peut pas
-        // écrire la guérison → il MÉMORISE les types douteux et le
-        // pré-filtre typed-degree retombe sur le scan générique (jamais de
-        // 0 silencieux). Le signal consommé par le moteur est
-        // `GraphStore::typed_degree_reliable`.
+    fn typed_degree_read_only_heals_in_memory_when_stale() {
+        // (2026-09-05) Un store RO ne pouvait pas écrire la guérison : il
+        // mémorisait les types douteux et le pré-filtre typed-degree
+        // retombait sur le scan générique. (2026-11-11) Ses colonnes sont
+        // désormais des projections PRIVÉES : la guérison se fait en mémoire,
+        // les degrés typés sont EXACTS, et le fichier n'est pas touché.
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb-ro");
         let (a_id, b_id) = {
@@ -28190,19 +28220,18 @@ mod tests {
         std::fs::write(&col_path, &out).unwrap();
 
         let s = SubstrateStore::open_read_only(&path).unwrap();
-        // RO : pas de guérison possible → colonne déclarée NON fiable.
-        let rel = GraphStore::typed_degree_reliable(&s, "TOUCHES");
         assert!(
-            !rel,
-            "store RO avec sidecar périmé → typed_degree_reliable=false"
+            GraphStore::typed_degree_reliable(&s, "TOUCHES"),
+            "store RO avec sidecar périmé : guéri en mémoire, donc fiable"
         );
-        // La fiabilité est mémorisée (une seule vérification par store).
-        assert!(!GraphStore::typed_degree_reliable(&s, "TOUCHES"));
-        // La colonne physique reste fausse (0) — c'est le pré-filtre qui ne
-        // doit plus la croire ; le chemin générique (scan) reste correct.
-        assert_eq!(s.out_degree_by_type(a_id, "TOUCHES"), 0);
-        assert_eq!(s.in_degree_by_type(b_id, "TOUCHES"), 0);
-        let _ = (a_id, b_id);
+        assert_eq!(s.out_degree_by_type(a_id, "TOUCHES"), 1);
+        assert_eq!(s.in_degree_by_type(b_id, "TOUCHES"), 1);
+        drop(s);
+        assert_eq!(
+            std::fs::read(&col_path).unwrap(),
+            out,
+            "la guérison en lecture seule ne doit pas toucher le fichier"
+        );
     }
 
     #[test]
