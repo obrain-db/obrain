@@ -6,6 +6,7 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+<<<<<<< HEAD
 ### Durabilité des valeurs longues (obrain#120)
 
 - Une valeur de plus de 256 octets (chaîne, octets, routée en colonne blob) n'était
@@ -39,6 +40,38 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   s'arrête à la première comme sur une frontière de crash. Ne pas rétrograder
   après écriture.
 
+||||||| parent of c9e20441 (fix(contraintes): relecture de #99 — SET/ON MATCH contrôlés sur le tuple, DDL sérialisé, types implicites, typecat strict)
+=======
+### Contraintes d'unicité composites (PR #99) — changements visibles
+
+- **`UNIQUE (a, b)` porte sur le tuple**, pas sur chaque colonne (jusqu'ici : « a unique ET b
+  unique », qui refusait des lignes légitimes). `NODE KEY` idem.
+- **Les contraintes sont persistées** (`substrate.typecat`) et rechargées à l'ouverture ; elles
+  ne se rejouaient pas au démarrage. Nouveau champ JSON `constraint_names` (lecture compatible
+  dans les deux sens, voir la description de la PR), nouveau champ `implicit` (idem).
+- **`DROP CONSTRAINT <nom>` retire réellement la contrainte** (c'était un no-op) ; `SHOW
+  CONSTRAINTS` liste les contraintes (nom, nature, label, propriétés) au lieu d'une table vide.
+- **Redéclaration idempotente** ; sans `IF NOT EXISTS`, redéclarer une contrainte équivalente est
+  maintenant une erreur : `Constraint already exists: an equivalent unique constraint '<nom>' is
+  declared on :<label> (<colonnes>)` (auparavant : « Created » et une copie de plus).
+  Le nom d'une contrainte déjà prise par une AUTRE : `Constraint already exists: the name '<nom>'
+  designates another constraint`. `DROP CONSTRAINT` d'un nom inconnu : `Constraint not found:
+  <nom>` (sauf `IF EXISTS`).
+- **Nom par défaut** d'une contrainte sans nom : `<label>_<nature>_<colonnes>` (ex. `T_unique_a_b`),
+  le même à la création et à la réparation d'une base ; `EXISTS` et `NOT NULL` ont la nature
+  `not_null`.
+- **`CREATE CONSTRAINT` qui ne peut pas être persistée échoue** (au lieu de « Created » puis une
+  contrainte qui disparaît au redémarrage) ; le DDL est refusé en lecture seule ; un
+  `substrate.typecat` illisible fait échouer la déclaration au lieu d'être réécrit.
+- **`CREATE [OR REPLACE] NODE TYPE` conserve les contraintes** du type ; sur un type créé
+  implicitement par `CREATE CONSTRAINT`, il le complète.
+- **Rupture d'API (crate `obrain-core`)** : le trait public `ConstraintValidator` perd
+  `check_unique_node_property(labels, key, value)` au profit de
+  `check_unique_node_properties(labels, properties, exclude)` (jeu de propriétés effectivement
+  écrit, nœud mis à jour à exclure) ; nouvelle méthode `unique_constrained_properties(labels)`
+  (défaut : aucune). Tout implémenteur externe doit s'adapter.
+
+>>>>>>> c9e20441 (fix(contraintes): relecture de #99 — SET/ON MATCH contrôlés sur le tuple, DDL sérialisé, types implicites, typecat strict)
 ### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
 
 - Interblocage déterministe de `CALL` cognitif `bootstrap` (`create_synapse_slots_batch`

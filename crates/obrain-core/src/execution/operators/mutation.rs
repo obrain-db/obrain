@@ -50,11 +50,28 @@ pub trait ConstraintValidator: Send + Sync {
     /// `properties` must be the values EFFECTIVELY WRITTEN, with at most one
     /// entry per key: a caller that merges several sources (a `MERGE` pattern
     /// overridden by `ON CREATE SET`) resolves the overrides before calling.
+    ///
+    /// `exclude` is the node being UPDATED, if any: a node is never a
+    /// duplicate of itself, so rewriting its own tuple must not collide.
+    /// `None` when the node is being created.
     fn check_unique_node_properties(
         &self,
         labels: &[String],
         properties: &[(String, Value)],
+        exclude: Option<NodeId>,
     ) -> Result<(), OperatorError>;
+
+    /// Properties bound by a UNIQUE or PRIMARY KEY constraint of any of
+    /// `labels` (each once).
+    ///
+    /// This is what lets an UPDATE be checked at the cost of the constraint,
+    /// not of the node: an update that touches none of these properties
+    /// cannot create a duplicate and is not checked at all; one that does is
+    /// checked against these properties only. A validator without uniqueness
+    /// constraints keeps the default (nothing to check).
+    fn unique_constrained_properties(&self, _labels: &[String]) -> Vec<String> {
+        Vec::new()
+    }
 
     /// Validates a single property value for an edge of the given type.
     fn validate_edge_property(
@@ -99,6 +116,79 @@ pub trait ConstraintValidator: Send + Sync {
     fn inject_defaults(&self, labels: &[String], properties: &mut Vec<(String, Value)>) {
         let _ = (labels, properties);
     }
+}
+
+/// Ce qu'une mise à jour fait aux propriétés d'un nœud EXISTANT.
+pub(crate) struct MiseAJourNoeud<'a> {
+    /// Le nœud mis à jour (exclu de la recherche de doublon : il n'est pas
+    /// son propre doublon).
+    pub(crate) noeud: NodeId,
+    /// Les labels dont les contraintes s'appliquent.
+    pub(crate) labels: &'a [String],
+    /// Propriétés écrites, dans l'ordre ; une valeur `Null` RETIRE la clé.
+    pub(crate) ecrites: &'a [(String, Value)],
+    /// Vrai si toute propriété non écrite est retirée (`SET n = {…}`).
+    pub(crate) remplace_tout: bool,
+    /// Vrai si le nœud ENTRE sous ces labels (ajout de label) : ses
+    /// propriétés, inchangées, deviennent soumises aux contraintes.
+    pub(crate) entre_sous_labels: bool,
+}
+
+/// Propriétés à contrôler pour cette mise à jour, ou `None` si elle ne peut
+/// pas créer de doublon (aucune contrainte d'unicité sur ces labels, ou
+/// aucune colonne contrainte touchée).
+///
+/// Séparé du contrôle lui-même pour que l'appelant ne prenne le
+/// [`VerrouUnicite`] que lorsqu'un contrôle a lieu.
+pub(crate) fn colonnes_uniques_touchees(
+    validator: &dyn ConstraintValidator,
+    maj: &MiseAJourNoeud<'_>,
+) -> Option<Vec<String>> {
+    let contraintes = validator.unique_constrained_properties(maj.labels);
+    if contraintes.is_empty() {
+        return None;
+    }
+    let touchee = maj.entre_sous_labels
+        || maj.remplace_tout
+        || maj
+            .ecrites
+            .iter()
+            .any(|(k, _)| contraintes.iter().any(|c| c == k));
+    touchee.then_some(contraintes)
+}
+
+/// Contrôle l'unicité de l'état qu'AURA le nœud après la mise à jour.
+///
+/// Un `SET` d'une seule colonne d'un `UNIQUE (a, b)` doit être jugé sur le
+/// tuple COMPLET : les colonnes contraintes non écrites sont lues sur le nœud.
+/// Seules les colonnes contraintes sont lues — jamais le nœud entier.
+pub(crate) fn controler_unicite_apres_mise_a_jour(
+    validator: &dyn ConstraintValidator,
+    store: &dyn GraphStore,
+    maj: &MiseAJourNoeud<'_>,
+    colonnes: Vec<String>,
+) -> Result<(), OperatorError> {
+    let etat: Vec<(String, Value)> = colonnes
+        .into_iter()
+        .filter_map(|colonne| {
+            // La DERNIÈRE écriture d'une clé est celle qui reste.
+            let valeur = match maj.ecrites.iter().rev().find(|(k, _)| *k == colonne) {
+                Some((_, v)) => Some(v.clone()),
+                None if maj.remplace_tout => None,
+                None => store.get_node_property(maj.noeud, &PropertyKey::new(colonne.as_str())),
+            }?;
+            (!matches!(valeur, Value::Null)).then_some((colonne, valeur))
+        })
+        .collect();
+    validator.check_unique_node_properties(maj.labels, &etat, Some(maj.noeud))
+}
+
+/// Labels portés par un nœud, pour y chercher les contraintes applicables.
+pub(crate) fn labels_du_noeud(store: &dyn GraphStore, noeud: NodeId) -> Vec<String> {
+    store
+        .get_node_labels(noeud)
+        .map(|ls| ls.iter().map(|l| l.as_str().to_string()).collect())
+        .unwrap_or_default()
 }
 
 /// Operator that creates new nodes.
@@ -316,7 +406,7 @@ impl CreateNodeOperator {
             }
             // Uniqueness is checked ONCE over the whole tuple (a composite
             // constraint binds several properties at once).
-            validator.check_unique_node_properties(&self.labels, resolved_props)?;
+            validator.check_unique_node_properties(&self.labels, resolved_props, None)?;
             // Phase 2: Validate completeness (NOT NULL checks for missing required properties)
             validator.validate_node_complete(&self.labels, resolved_props)?;
         }
@@ -1543,7 +1633,55 @@ impl Operator for SetPropertyOperator {
                         for (name, value) in &resolved_props {
                             validator.validate_node_property(&self.labels, name, value)?;
                         }
-                        validator.check_unique_node_properties(&self.labels, &resolved_props)?;
+                        // ── L'UNICITÉ SE JUGE SUR LES LABELS DU NŒUD ──
+                        // `self.labels` est vide : le planificateur ne connaît
+                        // pas les labels d'un nœud lié par un MATCH. Le
+                        // contrôle d'unicité recevait donc une liste vide, ne
+                        // trouvait aucune contrainte, et un SET n'était JAMAIS
+                        // contrôlé. Les labels sont lus sur le nœud.
+                        //
+                        // `SET n = {…}` et `SET n += {…}` arrivent sous la clé
+                        // `*` avec une carte : elle est dépliée en écritures.
+                        let noeud = NodeId(entity_id);
+                        let store_lecture = self.store.as_ref() as &dyn GraphStore;
+                        let labels = if self.labels.is_empty() {
+                            labels_du_noeud(store_lecture, noeud)
+                        } else {
+                            self.labels.clone()
+                        };
+                        let mut ecrites: Vec<(String, Value)> =
+                            Vec::with_capacity(resolved_props.len());
+                        let mut remplace_tout = false;
+                        for (name, value) in &resolved_props {
+                            match (name.as_str(), value) {
+                                ("*", Value::Map(carte)) => {
+                                    remplace_tout |= self.replace;
+                                    ecrites.extend(
+                                        carte
+                                            .iter()
+                                            .map(|(k, v)| (k.as_str().to_string(), v.clone())),
+                                    );
+                                }
+                                ("*", _) => {}
+                                _ => ecrites.push((name.clone(), value.clone())),
+                            }
+                        }
+                        let maj = MiseAJourNoeud {
+                            noeud,
+                            labels: &labels,
+                            ecrites: &ecrites,
+                            remplace_tout,
+                            entre_sous_labels: false,
+                        };
+                        if let Some(colonnes) = colonnes_uniques_touchees(validator.as_ref(), &maj)
+                        {
+                            controler_unicite_apres_mise_a_jour(
+                                validator.as_ref(),
+                                store_lecture,
+                                &maj,
+                                colonnes,
+                            )?;
+                        }
                     }
                 }
 

@@ -871,6 +871,7 @@ fn test_create_node_with_constraint_validator() {
             &self,
             _labels: &[String],
             _properties: &[(String, Value)],
+            _exclude: Option<NodeId>,
         ) -> Result<(), OperatorError> {
             Ok(())
         }

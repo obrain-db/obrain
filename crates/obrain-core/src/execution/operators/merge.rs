@@ -214,7 +214,7 @@ impl MergeOperator {
             for (name, value) in &effective_props {
                 validator.validate_node_property(&self.config.labels, name, value)?;
             }
-            validator.check_unique_node_properties(&self.config.labels, &effective_props)?;
+            validator.check_unique_node_properties(&self.config.labels, &effective_props, None)?;
             validator.validate_node_complete(&self.config.labels, &effective_props)?;
         }
 
@@ -257,7 +257,7 @@ impl MergeOperator {
         if let Some(existing_id) = self.find_matching_node(&resolved_match) {
             let resolved_on_match =
                 Self::resolve_properties(&self.config.on_match_properties, chunk, row, store_ref)?;
-            self.apply_on_match(existing_id, &resolved_on_match);
+            self.apply_on_match(existing_id, &resolved_on_match)?;
             Ok(existing_id)
         } else {
             let resolved_on_create =
@@ -305,7 +305,7 @@ impl MergeOperator {
                     row,
                     store_ref,
                 )?;
-                self.apply_on_match(survivant, &resolved_on_match);
+                self.apply_on_match(survivant, &resolved_on_match)?;
                 return Ok(survivant);
             }
             Ok(cree)
@@ -313,7 +313,40 @@ impl MergeOperator {
     }
 
     /// Applies ON MATCH properties to an existing node.
-    fn apply_on_match(&self, node_id: NodeId, resolved_on_match: &[(String, Value)]) {
+    ///
+    /// `ON MATCH SET` écrit sur un nœud existant comme le fait `SET` : il est
+    /// soumis au même contrôle d'unicité, jugé sur l'état qu'aura le nœud
+    /// (colonnes contraintes non écrites lues sur le nœud, nœud lui-même
+    /// exclu). Le composé MERGE tient déjà le verrou du store
+    /// (`merge_node_for_row`) : rien à reprendre ici.
+    fn apply_on_match(
+        &self,
+        node_id: NodeId,
+        resolved_on_match: &[(String, Value)],
+    ) -> Result<(), super::OperatorError> {
+        if let Some(ref validator) = self.validator
+            && !resolved_on_match.is_empty()
+        {
+            let store = self.store.as_ref() as &dyn GraphStore;
+            let labels = super::mutation::labels_du_noeud(store, node_id);
+            let maj = super::mutation::MiseAJourNoeud {
+                noeud: node_id,
+                labels: &labels,
+                ecrites: resolved_on_match,
+                remplace_tout: false,
+                entre_sous_labels: false,
+            };
+            if let Some(colonnes) =
+                super::mutation::colonnes_uniques_touchees(validator.as_ref(), &maj)
+            {
+                super::mutation::controler_unicite_apres_mise_a_jour(
+                    validator.as_ref(),
+                    store,
+                    &maj,
+                    colonnes,
+                )?;
+            }
+        }
         for (key, value) in resolved_on_match {
             if let Some(tid) = self.transaction_id {
                 self.store
@@ -323,6 +356,7 @@ impl MergeOperator {
                     .set_node_property(node_id, key.as_str(), value.clone());
             }
         }
+        Ok(())
     }
 }
 

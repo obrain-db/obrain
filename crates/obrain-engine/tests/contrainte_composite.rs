@@ -261,12 +261,12 @@ fn base_polluee_par_des_doublons_se_repare_a_l_ouverture() {
         "le fichier est réparé"
     );
 
-    // Une contrainte héritée sans nom reçoit le nom par défaut `<label>_unique`
+    // Une contrainte héritée sans nom reçoit le nom par défaut `<label>_<nature>_<colonnes>`
     // et peut donc être retirée.
     let db = ObrainDB::open_substrate(&chemin).expect("réouverture");
     let session = db.session();
     session
-        .execute_cypher("DROP CONSTRAINT T_unique")
+        .execute_cypher("DROP CONSTRAINT T_unique_a_b")
         .expect("DROP par le nom par défaut");
     assert_eq!(copies_en_memoire(&session, "T", "Unique("), 0);
 }
@@ -576,4 +576,374 @@ fn not_null_et_node_key_survivent_a_la_reouverture() {
     session
         .execute("INSERT (:R {nom: 'n'})")
         .expect("NOT NULL satisfait");
+}
+
+// ─────────────────── relecture de #99 : DDL, types implicites, modes ───────────────────
+
+/// Nombre de contraintes persistées (tableau `constraints` de la ligne du type).
+fn contraintes_persistees(chemin: &std::path::Path, label: &str) -> usize {
+    let contenu = std::fs::read_to_string(chemin.join("substrate.typecat")).unwrap_or_default();
+    let prefixe = format!("node\t{label}\t");
+    contenu
+        .lines()
+        .filter_map(|l| l.strip_prefix(prefixe.as_str()))
+        .map(|json| {
+            let d: serde_json::Value = serde_json::from_str(json).expect("ligne lisible");
+            d["constraints"].as_array().map_or(0, Vec::len)
+        })
+        .sum()
+}
+
+/// Le type `label` a-t-il une ligne dans `substrate.typecat` ?
+fn type_persiste(chemin: &std::path::Path, label: &str) -> bool {
+    std::fs::read_to_string(chemin.join("substrate.typecat"))
+        .unwrap_or_default()
+        .lines()
+        .any(|l| l.starts_with(&format!("node\t{label}\t")))
+}
+
+/// C1 : deux `CREATE CONSTRAINT` simultanés ne se perdent pas l'un l'autre,
+/// ni sur le même label (l'un écrivait sa définition périmée après l'autre),
+/// ni sur deux labels (lire-modifier-réécrire du fichier entier).
+#[test]
+fn create_constraint_concurrents_ne_se_perdent_pas() {
+    const MANCHES: usize = 60;
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = std::sync::Arc::new(ObrainDB::open_substrate(&chemin).expect("ouverture"));
+        let depart = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut fils = Vec::new();
+        for numero in 0..3usize {
+            let (db, depart) = (std::sync::Arc::clone(&db), std::sync::Arc::clone(&depart));
+            fils.push(std::thread::spawn(move || {
+                let s = db.session();
+                for m in 0..MANCHES {
+                    depart.wait();
+                    // Fils 0 et 1 : deux contraintes du MÊME label ; fils 2 : un
+                    // autre label, en même temps.
+                    let ddl = match numero {
+                        0 => format!("CREATE CONSTRAINT ca{m} FOR (n:L{m}) REQUIRE n.a IS UNIQUE"),
+                        1 => format!("CREATE CONSTRAINT cb{m} FOR (n:L{m}) REQUIRE n.b IS UNIQUE"),
+                        _ => format!("CREATE CONSTRAINT cc{m} FOR (n:M{m}) REQUIRE n.c IS UNIQUE"),
+                    };
+                    s.execute_cypher(&ddl).expect("CREATE CONSTRAINT");
+                }
+            }));
+        }
+        for f in fils {
+            f.join().unwrap();
+        }
+    }
+    for m in 0..MANCHES {
+        assert_eq!(
+            contraintes_persistees(&chemin, &format!("L{m}")),
+            2,
+            "L{m} : les deux contraintes doivent être sur disque"
+        );
+        assert_eq!(contraintes_persistees(&chemin, &format!("M{m}")), 1, "M{m}");
+    }
+    // Et elles reviennent à la réouverture.
+    let db = ObrainDB::open_substrate(&chemin).expect("réouverture");
+    let s = db.session();
+    assert_eq!(copies_en_memoire(&s, "L7", "Unique("), 2);
+}
+
+/// C1 : un `DROP CONSTRAINT` concurrent d'un `CREATE CONSTRAINT` du même label
+/// laisse le disque et la mémoire d'accord.
+#[test]
+fn drop_et_create_concurrents_laissent_memoire_et_disque_d_accord() {
+    const MANCHES: usize = 60;
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = std::sync::Arc::new(ObrainDB::open_substrate(&chemin).expect("ouverture"));
+        for m in 0..MANCHES {
+            db.session()
+                .execute_cypher(&format!(
+                    "CREATE CONSTRAINT ca{m} FOR (n:L{m}) REQUIRE n.a IS UNIQUE"
+                ))
+                .unwrap();
+        }
+        let depart = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (db1, d1) = (std::sync::Arc::clone(&db), std::sync::Arc::clone(&depart));
+        let createur = std::thread::spawn(move || {
+            let s = db1.session();
+            for m in 0..MANCHES {
+                d1.wait();
+                s.execute_cypher(&format!(
+                    "CREATE CONSTRAINT cb{m} FOR (n:L{m}) REQUIRE n.b IS UNIQUE"
+                ))
+                .unwrap();
+            }
+        });
+        let (db2, d2) = (std::sync::Arc::clone(&db), std::sync::Arc::clone(&depart));
+        let retireur = std::thread::spawn(move || {
+            let s = db2.session();
+            for m in 0..MANCHES {
+                d2.wait();
+                s.execute_cypher(&format!("DROP CONSTRAINT ca{m}")).unwrap();
+            }
+        });
+        createur.join().unwrap();
+        retireur.join().unwrap();
+        let s = db.session();
+        for m in 0..MANCHES {
+            assert_eq!(
+                copies_en_memoire(&s, &format!("L{m}"), "Unique("),
+                1,
+                "L{m}"
+            );
+        }
+    }
+    for m in 0..MANCHES {
+        assert_eq!(
+            contraintes_persistees(&chemin, &format!("L{m}")),
+            1,
+            "L{m} : disque et mémoire d'accord (seule cb{m} reste)"
+        );
+    }
+}
+
+/// C2 : `CREATE CONSTRAINT` sur un label sans type crée un type IMPLICITE.
+/// `CREATE NODE TYPE` ensuite le COMPLÈTE (au lieu de « already exists »), et
+/// retirer la dernière contrainte retire le type implicite.
+#[test]
+fn le_type_implicite_est_complete_par_create_node_type_et_retire_au_dernier_drop() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = ObrainDB::open_substrate(&chemin).expect("ouverture");
+        let s = db.session();
+        s.execute_cypher("CREATE CONSTRAINT ca FOR (n:T) REQUIRE n.a IS UNIQUE")
+            .unwrap();
+        assert!(type_persiste(&chemin, "T"));
+
+        // CREATE NODE TYPE complète le type implicite, la contrainte reste.
+        s.execute("CREATE NODE TYPE T (a INTEGER, b STRING)")
+            .expect("CREATE NODE TYPE sur un type implicite");
+        let types = format!("{:?}", s.execute("SHOW NODE TYPES").unwrap().rows);
+        assert!(types.contains("a INT64"), "{types}");
+        assert_eq!(
+            copies_en_memoire(&s, "T", "Unique("),
+            1,
+            "contrainte conservée"
+        );
+        s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();
+        assert!(s.execute("INSERT (:T {a: 1, b: 'y'})").is_err());
+
+        // Le type est maintenant EXPLICITE : DROP de sa dernière contrainte le garde.
+        s.execute_cypher("DROP CONSTRAINT ca").unwrap();
+        assert!(type_persiste(&chemin, "T"), "type explicite : conservé");
+        assert!(
+            s.execute("CREATE NODE TYPE T (a INTEGER)").is_err(),
+            "type explicite : « already exists »"
+        );
+
+        // Un type IMPLICITE disparaît avec sa dernière contrainte.
+        s.execute_cypher("CREATE CONSTRAINT cu FOR (n:U) REQUIRE n.a IS UNIQUE")
+            .unwrap();
+        assert!(type_persiste(&chemin, "U"));
+        s.execute_cypher("DROP CONSTRAINT cu").unwrap();
+        assert!(
+            !type_persiste(&chemin, "U"),
+            "le type vide ne survit pas au DROP"
+        );
+        let types = format!("{:?}", s.execute("SHOW NODE TYPES").unwrap().rows);
+        assert!(!types.contains("\"U\""), "{types}");
+        s.execute("CREATE NODE TYPE U (a INTEGER)")
+            .expect("CREATE CONSTRAINT → DROP → CREATE NODE TYPE");
+        // Avec IF NOT EXISTS, le type implicite est aussi complété (pas un « No change »
+        // qui perdrait les propriétés typées).
+        s.execute_cypher("CREATE CONSTRAINT cv FOR (n:V) REQUIRE n.a IS UNIQUE")
+            .unwrap();
+        s.execute("CREATE NODE TYPE IF NOT EXISTS V (a INTEGER)")
+            .unwrap();
+        let types = format!("{:?}", s.execute("SHOW NODE TYPES").unwrap().rows);
+        assert!(types.contains("a INT64"), "{types}");
+    }
+    // Réouverture : mêmes états.
+    let db = ObrainDB::open_substrate(&chemin).expect("réouverture");
+    let s = db.session();
+    assert_eq!(copies_en_memoire(&s, "V", "Unique("), 1);
+}
+
+/// C3 : `CREATE OR REPLACE NODE TYPE` remplace les propriétés, pas les
+/// contraintes — ni en mémoire ni sur disque.
+#[test]
+fn create_or_replace_node_type_conserve_les_contraintes() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = ObrainDB::open_substrate(&chemin).expect("ouverture");
+        let s = db.session();
+        s.execute("CREATE NODE TYPE T (a INTEGER)").unwrap();
+        s.execute_cypher("CREATE CONSTRAINT ca FOR (n:T) REQUIRE n.a IS UNIQUE")
+            .unwrap();
+        s.execute("CREATE OR REPLACE NODE TYPE T (a INTEGER, b STRING)")
+            .unwrap();
+        assert_eq!(copies_en_memoire(&s, "T", "Unique("), 1, "en mémoire");
+        s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();
+        assert!(s.execute("INSERT (:T {a: 1, b: 'y'})").is_err());
+    }
+    assert_eq!(contraintes_persistees(&chemin, "T"), 1, "sur disque");
+    let db = ObrainDB::open_substrate(&chemin).expect("réouverture");
+    let s = db.session();
+    assert!(
+        s.execute("INSERT (:T {a: 1, b: 'z'})").is_err(),
+        "après réouverture"
+    );
+}
+
+/// C4 : le mode `Config::persistent` (réputé « adossé au WAL ») N'EST PAS un
+/// second moteur : `with_config` y délègue à `open_substrate` (le code du WAL
+/// `LpgWal` n'y est jamais atteint). Les contraintes y sont donc persistées par
+/// le même chemin que partout ailleurs — « Created » tient après réouverture.
+/// Seule la base en mémoire (`new_in_memory`, substrat jetable) n'est pas
+/// durable, par contrat.
+#[test]
+fn le_mode_config_persistent_persiste_les_contraintes() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = ObrainDB::with_config(obrain_engine::Config::persistent(&chemin)).unwrap();
+        let s = db.session();
+        s.execute_cypher("CREATE CONSTRAINT ca FOR (n:T) REQUIRE (n.a, n.b) IS UNIQUE")
+            .unwrap();
+        s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();
+    }
+    assert_eq!(contraintes_persistees(&chemin, "T"), 1, "sur disque");
+    let db = ObrainDB::with_config(obrain_engine::Config::persistent(&chemin)).unwrap();
+    let s = db.session();
+    assert!(
+        s.execute("INSERT (:T {a: 1, b: 'x'})").is_err(),
+        "la contrainte tient après réouverture en mode Config::persistent"
+    );
+    s.execute("INSERT (:T {a: 1, b: 'y'})").expect("tuple neuf");
+}
+
+/// M1 : `IF NOT EXISTS` avec une contrainte équivalente sous un AUTRE nom, ou
+/// avec un nom qui en désigne une autre, ne crée rien (comme Neo4j) — et ne
+/// touche pas aux contraintes existantes.
+#[test]
+fn if_not_exists_avec_un_autre_nom_ne_cree_rien() {
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    s.execute_cypher("CREATE CONSTRAINT premiere FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    let r = s
+        .execute_cypher("CREATE CONSTRAINT autre_nom IF NOT EXISTS FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    assert!(format!("{r:?}").contains("No change"), "{r:?}");
+    // Le nom `premiere` désigne une contrainte DIFFÉRENTE de celle demandée.
+    let r = s
+        .execute_cypher("CREATE CONSTRAINT premiere IF NOT EXISTS FOR (n:T) REQUIRE n.b IS UNIQUE")
+        .unwrap();
+    assert!(format!("{r:?}").contains("No change"), "{r:?}");
+    let rows = s.execute("SHOW CONSTRAINTS").unwrap().rows;
+    assert_eq!(rows.len(), 1, "rien n'a été créé : {rows:?}");
+    assert!(format!("{rows:?}").contains("premiere"));
+}
+
+/// M2 : `NOT NULL (a, b)` est UNE instruction, un nom : le `DROP` retire les
+/// deux contraintes qu'elle a posées.
+#[test]
+fn un_nom_partage_par_plusieurs_contraintes_les_retire_toutes() {
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    s.execute_cypher("CREATE CONSTRAINT requis FOR (n:T) REQUIRE (n.a, n.b) IS NOT NULL")
+        .unwrap();
+    assert_eq!(s.execute("SHOW CONSTRAINTS").unwrap().rows.len(), 2);
+    assert!(s.execute("INSERT (:T {a: 1})").is_err());
+    s.execute_cypher("DROP CONSTRAINT requis").unwrap();
+    assert_eq!(s.execute("SHOW CONSTRAINTS").unwrap().rows.len(), 0);
+    s.execute("INSERT (:T {a: 1})")
+        .expect("les deux NOT NULL sont retirées");
+}
+
+/// M4 : le DDL de contrainte est refusé en lecture seule, nommément, et ne
+/// réécrit pas `substrate.typecat`.
+#[test]
+fn ddl_de_contrainte_refuse_en_lecture_seule() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = ObrainDB::open_substrate(&chemin).expect("ouverture");
+        db.session()
+            .execute_cypher("CREATE CONSTRAINT ca FOR (n:T) REQUIRE n.a IS UNIQUE")
+            .unwrap();
+    }
+    let avant = std::fs::read(chemin.join("substrate.typecat")).unwrap();
+    let db =
+        ObrainDB::with_config(obrain_engine::Config::read_only(&chemin)).expect("lecture seule");
+    let s = db.session();
+    for ddl in [
+        "CREATE CONSTRAINT cb FOR (n:T) REQUIRE n.b IS UNIQUE",
+        "DROP CONSTRAINT ca",
+    ] {
+        let e = s.execute_cypher(ddl).expect_err(ddl);
+        assert!(
+            e.to_string().to_lowercase().contains("read"),
+            "`{ddl}` : erreur nommée « lecture seule » attendue, reçu : {e}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(chemin.join("substrate.typecat")).unwrap(),
+        avant,
+        "le fichier n'a pas été réécrit"
+    );
+}
+
+/// M5 : un `substrate.typecat` illisible fait ÉCHOUER la déclaration au lieu
+/// d'être réécrit avec la seule nouvelle ligne (ce qui effaçait les autres types).
+#[test]
+fn typecat_illisible_fait_echouer_la_declaration_sans_rien_effacer() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    {
+        let db = ObrainDB::open_substrate(&chemin).expect("ouverture");
+        let s = db.session();
+        s.execute("CREATE NODE TYPE Garde (a INTEGER)").unwrap();
+    }
+    let fichier = chemin.join("substrate.typecat");
+    let mut corrompu = std::fs::read_to_string(&fichier).unwrap();
+    corrompu.push_str("ligne sans tabulation\n");
+    std::fs::write(&fichier, &corrompu).unwrap();
+
+    let db = ObrainDB::open_substrate(&chemin).expect("la base s'ouvre malgré la ligne");
+    let s = db.session();
+    let e = s
+        .execute_cypher("CREATE CONSTRAINT ca FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .expect_err("fichier illisible : la contrainte ne peut pas être rendue durable");
+    assert!(e.to_string().contains("typecat"), "{e}");
+    assert_eq!(
+        copies_en_memoire(&s, "T", "Unique("),
+        0,
+        "rien d'actif en mémoire"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fichier).unwrap(),
+        corrompu,
+        "le fichier est intact : le type `Garde` n'est pas effacé"
+    );
+}
+
+/// `DROP CONSTRAINT <nom> IF EXISTS` (Cypher, ce qu'écrit l'application cliente)
+/// et `DROP CONSTRAINT IF EXISTS <nom>` (GQL) sont acceptés par leur parseur.
+#[test]
+fn drop_constraint_if_exists_dans_les_deux_syntaxes() {
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    let r = s
+        .execute_cypher("DROP CONSTRAINT absente IF EXISTS")
+        .expect("Cypher : nom puis IF EXISTS");
+    assert!(format!("{r:?}").contains("No change"), "{r:?}");
+    let r = s
+        .execute("DROP CONSTRAINT IF EXISTS absente")
+        .expect("GQL : IF EXISTS puis nom");
+    assert!(format!("{r:?}").contains("No change"), "{r:?}");
+    s.execute_cypher("CREATE CONSTRAINT presente FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    s.execute("DROP CONSTRAINT IF EXISTS presente").unwrap();
+    assert_eq!(copies_en_memoire(&s, "T", "Unique("), 0);
 }

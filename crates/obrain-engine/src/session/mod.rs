@@ -473,15 +473,19 @@ impl Session {
             return Ok(());
         };
         let Some(def) = self.catalog.get_node_type(label) else {
-            tracing::error!(
-                label = %label,
-                "type de nœud introuvable dans le catalogue : rien à persister \
-                 (substrate.typecat)"
-            );
-            return Err(Error::Internal(format!(
-                "node type '{label}' is missing from the catalog: its constraints \
-                 cannot be persisted"
-            )));
+            // Type implicite dont la dernière contrainte vient d'être retirée :
+            // sa ligne durable disparaît avec lui.
+            return sub.retirer_type("node", label).map_err(|e| {
+                tracing::error!(
+                    erreur = %e,
+                    label = %label,
+                    "retrait de la définition de type NON persisté (substrate.typecat)"
+                );
+                Error::Internal(format!(
+                    "removal of implicit node type '{label}' could not be persisted \
+                     (substrate.typecat): {e}"
+                ))
+            });
         };
         let json = serde_json::to_string(&def).map_err(|e| {
             tracing::error!(
@@ -1301,6 +1305,36 @@ impl Session {
             };
         }
 
+        // ── LE DDL NE S'EXÉCUTE PAS EN LECTURE SEULE ──
+        // Une base ouverte en lecture seule, ou une transaction lecture seule,
+        // refuse de modifier le schéma : sans cette garde, `CREATE`/`DROP
+        // CONSTRAINT` réécrivait `substrate.typecat` sous une base censée ne
+        // rien écrire.
+        let ecrit = !matches!(
+            cmd,
+            SchemaStatement::ShowIndexes
+                | SchemaStatement::ShowConstraints
+                | SchemaStatement::ShowNodeTypes
+                | SchemaStatement::ShowEdgeTypes
+                | SchemaStatement::ShowGraphTypes
+                | SchemaStatement::ShowGraphType(_)
+                | SchemaStatement::ShowCurrentGraphType
+                | SchemaStatement::ShowGraphs
+                | SchemaStatement::ShowSchemas
+        );
+        if ecrit && (self.db_read_only || *self.read_only_tx.lock()) {
+            return Err(Error::Transaction(
+                obrain_common::utils::error::TransactionError::ReadOnly,
+            ));
+        }
+        // ── UN SEUL DDL À LA FOIS ──
+        // Le DDL réécrit la définition d'un type puis sa copie durable : deux
+        // sessions qui le font ensemble perdent la ligne de l'une (relire-
+        // modifier-réécrire), et la restauration après échec écraserait la
+        // modification de l'autre. Le DDL est rare ; les écritures de données
+        // ne prennent jamais ce verrou.
+        let _ddl = self.catalog.ddl_guard();
+
         let result = match cmd {
             SchemaStatement::CreateNodeType(stmt) => {
                 #[cfg(feature = "wal")]
@@ -1309,7 +1343,7 @@ impl Session {
                     .iter()
                     .map(|p| (p.name.clone(), p.data_type.clone(), p.nullable))
                     .collect();
-                let def = NodeTypeDefinition {
+                let mut def = NodeTypeDefinition {
                     name: stmt.name.clone(),
                     properties: stmt
                         .properties
@@ -1327,7 +1361,24 @@ impl Session {
                     constraints: Vec::new(),
                     constraint_names: Vec::new(),
                     parent_types: stmt.parent_types.clone(),
+                    implicit: false,
                 };
+                // ── LES CONTRAINTES SURVIVENT À LA (RE)DÉFINITION DU TYPE ──
+                // `CREATE OR REPLACE NODE TYPE` remplace les PROPRIÉTÉS du
+                // type, jamais ses contraintes : les effacer retirerait en
+                // silence une garantie d'intégrité, en mémoire et sur disque.
+                // Même chose pour `CREATE NODE TYPE` sur un type IMPLICITE
+                // (créé par un `CREATE CONSTRAINT` sur un label sans type) :
+                // il le complète au lieu d'échouer.
+                let precedent = self
+                    .catalog
+                    .get_node_type(&stmt.name)
+                    .filter(|e| stmt.or_replace || e.implicit);
+                let remplace = precedent.is_some() || stmt.or_replace;
+                if let Some(prev) = &precedent {
+                    def.constraints.clone_from(&prev.constraints);
+                    def.constraint_names.clone_from(&prev.constraint_names);
+                }
                 // ── LA DÉFINITION PART AU CATALOGUE DURABLE AVANT D'ÊTRE DÉPLACÉE ──
                 // `CREATE NODE TYPE` écrivait un `WalRecord` que personne ne
                 // rejoue : le type disparaissait au redémarrage (quatre tests de
@@ -1335,7 +1386,7 @@ impl Session {
                 // l'instant où la définition est complète — l'écriture durable
                 // se fait après le succès, plus bas.
                 let definition_json = serde_json::to_string(&def).ok();
-                let result = if stmt.or_replace {
+                let result = if remplace {
                     let _ = self.catalog.drop_node_type(&stmt.name);
                     self.catalog.register_node_type(def)
                 } else {
@@ -1585,15 +1636,36 @@ impl Session {
                 let declaration = self.catalog.declare_constraint(
                     &stmt.label,
                     stmt.name.as_deref(),
-                    kind_str,
                     constraints.clone(),
                 );
                 let constraint_name = match declaration {
                     Ok(ConstraintDeclaration::Created { name }) => name,
-                    Ok(ConstraintDeclaration::AlreadyExists { .. })
-                    | Err(CatalogError::ConstraintNameInUse(_))
-                        if stmt.if_not_exists =>
-                    {
+                    // `IF NOT EXISTS` : aucun changement, comme `CREATE NODE TYPE
+                    // IF NOT EXISTS` — y compris quand une contrainte équivalente
+                    // existe sous un AUTRE nom, ou que le nom demandé en désigne une
+                    // autre. Ce n'est pas muet : l'écart de nom est journalisé.
+                    Ok(ConstraintDeclaration::AlreadyExists { name }) if stmt.if_not_exists => {
+                        if stmt.name.as_deref().is_some_and(|demande| demande != name) {
+                            tracing::warn!(
+                                label = %stmt.label,
+                                demande = ?stmt.name,
+                                existante = %name,
+                                "CREATE CONSTRAINT IF NOT EXISTS : une contrainte équivalente \
+                                 existe déjà sous un autre nom, le nom demandé est ignoré"
+                            );
+                        }
+                        return Ok(QueryResult::status("No change"));
+                    }
+                    Err(CatalogError::ConstraintNameInUse(demande)) if stmt.if_not_exists => {
+                        tracing::warn!(
+                            label = %stmt.label,
+                            demande = %demande,
+                            "CREATE CONSTRAINT IF NOT EXISTS : le nom désigne déjà une AUTRE \
+                             contrainte, rien n'est créé"
+                        );
+                        return Ok(QueryResult::status("No change"));
+                    }
+                    Err(CatalogError::ConstraintNameInUse(_)) if stmt.if_not_exists => {
                         return Ok(QueryResult::status("No change"));
                     }
                     Ok(ConstraintDeclaration::AlreadyExists { name }) => {
@@ -1756,9 +1828,20 @@ impl Session {
                                         default_value: None,
                                     })
                                     .collect(),
-                                constraints: Vec::new(),
-                                constraint_names: Vec::new(),
+                                // Les contraintes déjà déclarées survivent (comme
+                                // `CREATE OR REPLACE NODE TYPE`).
+                                constraints: self
+                                    .catalog
+                                    .get_node_type(name)
+                                    .map(|d| d.constraints)
+                                    .unwrap_or_default(),
+                                constraint_names: self
+                                    .catalog
+                                    .get_node_type(name)
+                                    .map(|d| d.constraint_names)
+                                    .unwrap_or_default(),
                                 parent_types: key_labels.clone(),
+                                implicit: false,
                             };
                             // Register or replace so inline defs override existing
                             self.catalog.register_or_replace_node_type(def);

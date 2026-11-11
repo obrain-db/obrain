@@ -1631,6 +1631,11 @@ const FICHIER_PROCEDURES: &str = "substrate.proccat";
 /// fichier, et rend une liste vide.
 const FICHIER_TYPES: &str = "substrate.typecat";
 
+/// Sérialise lire-modifier-réécrire de `substrate.typecat` dans le processus
+/// (un store par base, plusieurs bases possibles : le verrou est global, le
+/// coût nul — le DDL est rare).
+static VERROU_TYPECAT: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// Chantier SlotRemappable — adaptateur enrôlant la colonne de degrés
 /// totale (`substrate.degrees.node.u32`) détenue par le store dans le
 /// registre de remap du writer. Le handle ouvert porte l'état
@@ -4786,15 +4791,31 @@ impl SubstrateStore {
         self.substrate.lock().path().join(FICHIER_TYPES)
     }
 
-    /// Lit les types persistés. Une base sans fichier rend une liste vide
-    /// (aucune migration) ; une ligne illisible est IGNORÉE plutôt que fatale —
-    /// perdre un type dégrade une vérification de schéma, jamais l'ouverture.
+    /// Lit les types persistés pour l'HYDRATATION. Une base sans fichier rend
+    /// une liste vide (aucune migration) ; une ligne illisible est IGNORÉE
+    /// plutôt que fatale — perdre un type dégrade une vérification de schéma,
+    /// jamais l'ouverture. Pour RÉÉCRIRE le fichier, voir
+    /// [`Self::declarations_type_strict`] : on n'efface jamais ce qu'on n'a pas
+    /// su lire.
     pub fn declarations_type(&self) -> Vec<DeclarationType> {
-        let Ok(contenu) = std::fs::read_to_string(self.chemin_catalogue_types()) else {
-            return Vec::new();
+        self.declarations_type_strict().unwrap_or_else(|e| {
+            tracing::warn!(erreur = %e, "catalogue de types illisible — ignoré");
+            Vec::new()
+        })
+    }
+
+    /// Lit les types persistés ; ÉCHOUE sur un fichier illisible (erreur
+    /// d'E/S autre que « absent », contenu non UTF-8) ou sur une ligne mal
+    /// formée. Seule lecture sûre avant une réécriture : `declarer_type`
+    /// repartant d'une liste vide effacerait tous les autres types.
+    pub fn declarations_type_strict(&self) -> SubstrateResult<Vec<DeclarationType>> {
+        let contenu = match std::fs::read_to_string(self.chemin_catalogue_types()) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
         };
         let mut sorties = Vec::new();
-        for ligne in contenu.lines() {
+        for (n, ligne) in contenu.lines().enumerate() {
             let ligne = ligne.trim();
             if ligne.is_empty() || ligne.starts_with('#') {
                 continue;
@@ -4810,13 +4831,24 @@ impl SubstrateStore {
                         definition: definition.to_string(),
                     });
                 }
-                _ => tracing::warn!("declaration de type illisible — ignoree"),
+                _ => {
+                    return Err(SubstrateError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "substrate.typecat : la ligne {} est illisible — le fichier \
+                             n'est pas réécrit (il perdrait les autres types)",
+                            n + 1
+                        ),
+                    )));
+                }
             }
         }
-        sorties
+        Ok(sorties)
     }
 
-    /// Réécrit le fichier des types en entier, ATOMIQUEMENT (tmp + rename).
+    /// Réécrit le fichier des types en entier, ATOMIQUEMENT (tmp + rename),
+    /// puis fsync du RÉPERTOIRE : sans lui le rename lui-même peut se perdre
+    /// à une coupure, et la contrainte « créée » avec.
     fn ecrire_catalogue_types(&self, decls: &[DeclarationType]) -> SubstrateResult<()> {
         self.exiger_ecriture("l'écriture du catalogue de types")?;
         use std::io::Write as _;
@@ -4834,14 +4866,24 @@ impl SubstrateStore {
             f.sync_all()?;
         }
         std::fs::rename(&temporaire, &chemin)?;
+        #[cfg(unix)]
+        if let Some(dossier) = chemin.parent() {
+            std::fs::File::open(dossier)?.sync_all()?;
+        }
         Ok(())
     }
 
     /// Déclare (ou remplace) un type. Idempotent par `(genre, nom)` : l'ordre du
     /// fichier ne porte pas de sémantique, un `CREATE OR REPLACE` réécrit la
     /// même ligne.
+    ///
+    /// Lire-modifier-réécrire est SÉRIALISÉ (verrou du processus) : deux
+    /// déclarations simultanées ne se perdent pas l'une l'autre. Un fichier
+    /// illisible fait ÉCHOUER la déclaration au lieu d'être réécrit avec la
+    /// seule nouvelle ligne.
     pub fn declarer_type(&self, genre: &str, nom: &str, definition: &str) -> SubstrateResult<()> {
-        let mut decls = self.declarations_type();
+        let _verrou = VERROU_TYPECAT.lock();
+        let mut decls = self.declarations_type_strict()?;
         decls.retain(|d| !(d.genre == genre && d.nom == nom));
         decls.push(DeclarationType {
             genre: genre.to_string(),
@@ -4851,10 +4893,12 @@ impl SubstrateStore {
         self.ecrire_catalogue_types(&decls)
     }
 
-    /// Retire la déclaration d'un type. Idempotent.
+    /// Retire la déclaration d'un type. Idempotent. Même sérialisation et même
+    /// refus d'un fichier illisible que [`Self::declarer_type`].
     pub fn retirer_type(&self, genre: &str, nom: &str) -> SubstrateResult<()> {
         self.exiger_ecriture("le retrait d'un type déclaré")?;
-        let decls = self.declarations_type();
+        let _verrou = VERROU_TYPECAT.lock();
+        let decls = self.declarations_type_strict()?;
         let restantes: Vec<DeclarationType> = decls
             .iter()
             .filter(|d| !(d.genre == genre && d.nom == nom))
