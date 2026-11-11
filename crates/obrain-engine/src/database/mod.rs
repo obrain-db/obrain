@@ -1086,7 +1086,7 @@ impl ObrainDB {
             // ouvrait en exclusif). `open_substrate_read_only` pose le
             // `LOCK_SH` côté substrate.
             let is_read_only = config.access_mode == crate::config::AccessMode::ReadOnly;
-            let mut db = if is_read_only {
+            let db = if is_read_only {
                 Self::open_substrate_read_only(db_path)?
             } else {
                 Self::open_substrate(db_path)?
@@ -1101,9 +1101,9 @@ impl ObrainDB {
             // (~11-22 ms), le seul point où obrain perdait vs cbm sur `open`.
             // En read_only, le close doit juste relâcher le verrou (c'est
             // déjà le comportement du champ `read_only` dans `close()`).
-            if is_read_only {
-                db.read_only = true;
-            }
+            // `read_only` est déjà posé par `with_substrate_store`, avant
+            // l'hydratation (voir là-bas) : rien à reposer ici.
+            debug_assert_eq!(db.read_only, is_read_only);
             return Ok(db);
         }
 

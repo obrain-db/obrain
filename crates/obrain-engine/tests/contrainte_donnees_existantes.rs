@@ -186,3 +186,36 @@ fn create_constraint_node_key_refuse_un_membre_absent() {
         .expect_err("un nœud n'a pas b");
     assert!(e.to_string().contains('b'), "reçu : {e}");
 }
+
+/// Sur une base DISQUE, un `CREATE CONSTRAINT` refusé pour doublons ne
+/// réécrit pas `substrate.typecat` (octets identiques) et ne revient pas à la
+/// réouverture. (Vert avant comme après : fixe un comportement, ne discrimine
+/// pas.)
+#[test]
+fn comportement_fixe_create_constraint_refuse_ne_reecrit_pas_le_typecat() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("c");
+    let fichier = chemin.join("substrate.typecat");
+    {
+        let db = ObrainDB::open_substrate(&chemin).expect("ouverture");
+        let s = db.session();
+        s.execute("CREATE NODE TYPE Garde (a INTEGER)").unwrap();
+        s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();
+        s.execute("INSERT (:T {a: 1, b: 'x'})").unwrap();
+        let avant = std::fs::read(&fichier).unwrap();
+        assert!(
+            s.execute_cypher(U_AB).is_err(),
+            "doublon existant : refus attendu"
+        );
+        assert_eq!(
+            std::fs::read(&fichier).unwrap(),
+            avant,
+            "le refus ne réécrit pas le fichier"
+        );
+    }
+    let db = ObrainDB::open_substrate(&chemin).expect("réouverture");
+    let s = db.session();
+    assert!(s.execute("SHOW CONSTRAINTS").unwrap().rows.is_empty());
+    s.execute("INSERT (:T {a: 1, b: 'x'})")
+        .expect("aucune contrainte après réouverture");
+}

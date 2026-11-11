@@ -17214,6 +17214,21 @@ fn valeurs_egales_gql(a: &Value, b: &Value) -> bool {
     obrain_common::types::value_cmp::egalite_structurelle(a, b)
 }
 
+/// La clé d'index de `v` représente-t-elle EXACTEMENT sa classe d'égalité au
+/// sens du langage (`valeurs_egales_gql`) ? Vrai pour un booléen et pour une
+/// chaîne qui n'est pas une date-heure ; faux pour un entier (égal à un
+/// flottant entier, que l'index ne range pas) et pour une chaîne date-heure
+/// (égale à une autre graphie du même instant). Seul un décompte « exact » est
+/// une borne supérieure des porteurs, donc utilisable pour choisir la
+/// condition qui résout un `find_nodes_by_properties`.
+fn cle_index_exacte(v: &Value) -> bool {
+    match v {
+        Value::Bool(_) => true,
+        Value::String(s) => obrain_common::types::value_cmp::instant_de_chaine(s).is_none(),
+        _ => false,
+    }
+}
+
 fn index_value_key(v: &Value) -> Option<IndexValueKey> {
     match v {
         Value::Bool(b) => Some(IndexValueKey::Bool(*b)),
@@ -20593,6 +20608,15 @@ impl GraphStore for SubstrateStore {
         let meilleure = conditions
             .iter()
             .enumerate()
+            // Seules concourent les conditions dont la clé d'index couvre
+            // EXACTEMENT la classe d'égalité du langage : un booléen, ou une
+            // chaîne qui n'est pas une date-heure. Un entier est égal à un
+            // flottant entier (`5 = 5.0`) que l'index ne range pas, une chaîne
+            // date-heure à une autre graphie du même instant : leur décompte
+            // n'est PAS une borne supérieure (0 alors qu'un porteur égal
+            // existe), et le retenir rendait vide une recherche qui ne l'est
+            // pas — un doublon accepté.
+            .filter(|(_, (_, expected))| cle_index_exacte(expected))
             .filter_map(|(i, (prop, expected))| {
                 self.indexed_candidate_count(prop, expected).map(|n| (n, i))
             })
