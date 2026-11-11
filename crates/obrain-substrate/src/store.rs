@@ -7155,7 +7155,15 @@ impl SubstrateStore {
         // if absent/corrupt. Amortised once per session.
         let t_degrees = web_time::Instant::now();
         let degrees_span = tracing::info_span!("init_degrees").entered();
-        let _ = store.degrees();
+        // Lecture seule : AUCUNE écriture ne peut s'entrelacer avec la
+        // reconstruction (la raison de l'initialisation forcée ci-dessus), et
+        // une colonne au CRC périmé se reconstruirait en mémoire à CHAQUE
+        // ouverture — l'écrivain, lui, la répare une fois sur disque. Mesuré à
+        // 5 M nœuds : 70 ms d'ouverture contre 40. L'initialisation est donc
+        // laissée au premier degré lu, une fois par session.
+        if !lecture_seule {
+            let _ = store.degrees();
+        }
         drop(degrees_span);
         tracing::info!(
             phase = "init_degrees",

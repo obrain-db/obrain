@@ -2,8 +2,8 @@
 //! lecture par identifiant et d'une recherche indexée.
 //!
 //! ```text
-//! banc_lecture_seule fabriquer <dossier> <noeuds> <fenetre>
-//! banc_lecture_seule mesurer   <dossier> <ouvertures> [etiquette]
+//! banc_lecture_seule fabriquer <dossier> <noeuds> <fenetre> [pas]
+//! banc_lecture_seule mesurer   <dossier> <ouvertures> [etiquette] [nommes]
 //! banc_lecture_seule perimer   <dossier>
 //! ```
 //!
@@ -29,12 +29,17 @@ use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
 use obrain_substrate::SubstrateStore;
 use obrain_substrate::wal_io::SyncMode;
 
-fn ecrire(s: &SubstrateStore, debut: u64, n: u64) {
+fn ecrire(s: &SubstrateStore, debut: u64, n: u64, pas: u64) {
     let mut precedent: Option<NodeId> = None;
     for i in debut..debut + n {
         let id = s.create_node(&["Personne"]);
-        s.set_node_property(id, "nom", Value::String(format!("p{i}").into()));
-        s.set_node_property(id, "age", Value::Int64((i % 97) as i64));
+        // Un nœud sur `pas` porte des propriétés (`nom` = p<rang>) : la zone
+        // de propriétés v2 prend une page de 4 Kio par nœud qui en porte,
+        // et c'est elle qui fixe la taille de la base.
+        if i % pas == 0 {
+            s.set_node_property(id, "nom", Value::String(format!("p{}", i / pas).into()));
+            s.set_node_property(id, "age", Value::Int64((i % 97) as i64));
+        }
         if let Some(p) = precedent {
             s.create_edge(id, p, "CONNAIT");
         }
@@ -42,17 +47,17 @@ fn ecrire(s: &SubstrateStore, debut: u64, n: u64) {
     }
 }
 
-fn fabriquer(dossier: &Path, noeuds: u64, fenetre: u64) {
+fn fabriquer(dossier: &Path, noeuds: u64, fenetre: u64, pas: u64) {
     let t = Instant::now();
     let s = SubstrateStore::create_with_mode(dossier, SyncMode::Never).expect("création");
-    ecrire(&s, 0, noeuds);
+    ecrire(&s, 0, noeuds, pas);
     s.create_property_index("nom");
     s.flush().expect("flush");
     if fenetre == 0 {
         s.close().expect("close");
         drop(s);
     } else {
-        ecrire(&s, noeuds, fenetre);
+        ecrire(&s, noeuds, fenetre, pas);
     }
     eprintln!(
         "fabriqué : {noeuds} nœuds + fenêtre {fenetre} en {:.1} s",
@@ -98,7 +103,7 @@ impl Alea {
     }
 }
 
-fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str) {
+fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str, nommes: Option<u64>) {
     // Ouvertures : chacune ouvre, puis ferme.
     let mut durees_ms = Vec::with_capacity(ouvertures);
     for _ in 0..ouvertures {
@@ -141,7 +146,7 @@ fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str) {
     let mut trouves = 0u64;
     for _ in 0..LOTS {
         let valeurs: Vec<Value> = (0..LOT_IDX)
-            .map(|_| Value::String(format!("p{}", alea.suivant() % n).into()))
+            .map(|_| Value::String(format!("p{}", alea.suivant() % nommes.unwrap_or(n)).into()))
             .collect();
         let t = Instant::now();
         for v in &valeurs {
@@ -173,12 +178,14 @@ fn main() {
             Path::new(&args[2]),
             args[3].parse().expect("noeuds"),
             args[4].parse().expect("fenetre"),
+            args.get(5).map_or(1, |p| p.parse().expect("pas")),
         ),
         Some("perimer") => perimer(Path::new(&args[2])),
         Some("mesurer") => mesurer(
             Path::new(&args[2]),
             args[3].parse().expect("ouvertures"),
             args.get(4).map_or("-", String::as_str),
+            args.get(5).map(|m| m.parse().expect("nommes")),
         ),
         _ => {
             eprintln!("{usage}");
