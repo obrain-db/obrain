@@ -29,6 +29,7 @@
 //! `vector_index_deux_processus.rs`.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -107,7 +108,7 @@ fn lire(dir: &Path) {
             Some(Value::String(s)) => s.to_string(),
             autre => format!("<{autre:?}>"),
         };
-        sortie.push_str(&format!("{id}\t{corps}\n"));
+        writeln!(sortie, "{id}\t{corps}").expect("écriture en mémoire");
     }
     db.close().expect("close lecteur");
     let chemin = dir.parent().expect("parent").join("lecture.txt");
