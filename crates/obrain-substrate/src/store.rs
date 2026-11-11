@@ -4561,6 +4561,7 @@ impl SubstrateStore {
         label: &str,
         propriete: &str,
     ) -> SubstrateResult<()> {
+        self.exiger_ecriture("le retrait d'un index déclaré")?;
         let decls = self.declarations_index();
         let restantes: Vec<DeclarationIndex> = decls
             .iter()
@@ -4792,6 +4793,7 @@ impl SubstrateStore {
 
     /// Retire la déclaration d'un type. Idempotent.
     pub fn retirer_type(&self, genre: &str, nom: &str) -> SubstrateResult<()> {
+        self.exiger_ecriture("le retrait d'un type déclaré")?;
         let decls = self.declarations_type();
         let restantes: Vec<DeclarationType> = decls
             .iter()
@@ -4806,6 +4808,7 @@ impl SubstrateStore {
 
     /// Retire la declaration d'une procedure. Idempotent.
     pub fn retirer_declaration_procedure(&self, name: &str) -> SubstrateResult<()> {
+        self.exiger_ecriture("le retrait d'une procédure déclarée")?;
         let decls = self.declarations_procedure();
         let restantes: Vec<DeclarationProcedure> =
             decls.iter().filter(|d| d.name != name).cloned().collect();
@@ -38071,5 +38074,69 @@ mod coherence_lecteur_ro {
         );
         let r = SubstrateStore::open_read_only(&path).unwrap();
         assert_eq!(r.node_count(), 1, "le lecteur suivant voit toujours `a`");
+    }
+}
+
+/// Chemins d'écriture PRIVÉS du store, refusés en lecture seule : ils ne sont pas
+/// joignables depuis `tests/`, donc éprouvés ici.
+#[cfg(test)]
+mod refus_lecture_seule {
+    use super::*;
+
+    #[test]
+    fn les_ecritures_privees_sont_refusees_par_lecture_seule_et_ne_creent_rien() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("ro-prive");
+        {
+            let s = SubstrateStore::create(&path).unwrap();
+            s.create_node(&["A"]);
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        let avant: Vec<_> = {
+            let mut v: Vec<_> = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            v.sort();
+            v
+        };
+        let s = SubstrateStore::open_read_only(&path).unwrap();
+
+        let refus = |nom: &str, r: SubstrateResult<()>| match r {
+            Err(SubstrateError::LectureSeule { .. }) => {}
+            autre => panic!("{nom} : refus LectureSeule attendu, obtenu {autre:?}"),
+        };
+        refus("persist_external_edges", s.persist_external_edges());
+        refus("persist_dict", s.persist_dict());
+        refus("persist_properties", s.persist_properties());
+        refus("ecrire_catalogue", s.ecrire_catalogue(&[]));
+        refus(
+            "ecrire_catalogue_procedures",
+            s.ecrire_catalogue_procedures(&[]),
+        );
+        refus("ecrire_catalogue_types", s.ecrire_catalogue_types(&[]));
+        refus(
+            "marquer_migration_v2_achevee",
+            s.marquer_migration_v2_achevee(),
+        );
+        assert!(matches!(
+            s.delete_legacy_props_sidecar(),
+            Err(SubstrateError::LectureSeule { .. })
+        ));
+        assert!(matches!(
+            s.checkpoint(),
+            Err(SubstrateError::LectureSeule { .. })
+        ));
+
+        let apres: Vec<_> = {
+            let mut v: Vec<_> = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(avant, apres, "un refus a créé ou supprimé un fichier");
     }
 }

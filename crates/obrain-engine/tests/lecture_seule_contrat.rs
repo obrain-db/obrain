@@ -438,3 +438,66 @@ fn les_mutations_d_une_session_en_lecture_seule_sont_refusees_et_n_ecrivent_rien
     drop(d);
     exiger_identique(&avant, &base, "mutations refusées");
 }
+
+/// Colonne de degrés TYPÉE périmée (payload remis à zéro, CRC recalculé valide :
+/// ce que laisse un binaire plus ancien), vue par le moteur. Avant, une session en
+/// lecture seule ne pouvait pas guérir (la guérison écrit) : elle éteignait son
+/// pré-filtre. Ses colonnes sont des projections privées : la guérison se fait en
+/// MÉMOIRE, les requêtes typées sont exactes, et le FICHIER n'est pas touché.
+#[test]
+fn une_colonne_de_degres_typee_perimee_est_guerie_en_memoire_sans_toucher_au_fichier() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("degres-types");
+    {
+        let d = ObrainDB::open(&base).expect("création");
+        let s = d.session();
+        for i in 0..6 {
+            s.execute(&format!("INSERT (:N {{k: {i}}})")).unwrap();
+        }
+        s.execute("MATCH (a:N), (b:N) WHERE b.k = a.k + 1 INSERT (a)-[:TOUCHES]->(b)")
+            .unwrap();
+        d.close().unwrap();
+    }
+    let colonne = base.join(obrain_substrate::typed_degree::filename_for_type("TOUCHES"));
+    let octets = std::fs::read(&colonne).expect("colonne typée présente");
+    let n_slots = u32::from_le_bytes(octets[8..12].try_into().unwrap()) as usize;
+    let charge = n_slots * obrain_substrate::degree_column::DEGREE_RECORD_SIZE;
+    let mut perime = Vec::with_capacity(octets.len());
+    perime.extend_from_slice(&octets[..64]);
+    perime.resize(64 + charge, 0u8);
+    let crc = {
+        let mut h = crc32fast::Hasher::new();
+        h.update(&perime[64..]);
+        h.finalize()
+    };
+    perime[16..20].copy_from_slice(&crc.to_le_bytes());
+    std::fs::write(&colonne, &perime).unwrap();
+    let avant = empreinte(&base);
+    laisser_passer_l_horloge();
+
+    {
+        let d = ObrainDB::open_read_only(&base).expect("ouverture en lecture seule");
+        assert_eq!(
+            entier(&d, "MATCH (:N)-[r:TOUCHES]->(:N) RETURN count(r)"),
+            5,
+            "arêtes typées"
+        );
+        assert_eq!(
+            entier(
+                &d,
+                "MATCH (a:N)-[:TOUCHES]->(b:N) WHERE a.k = 0 RETURN count(b)"
+            ),
+            1
+        );
+        // La colonne vue par le store est guérie (fiable) — en mémoire.
+        let store = d.store();
+        assert!(
+            store.typed_degree_reliable("TOUCHES"),
+            "guérison en mémoire attendue"
+        );
+        d.close().unwrap();
+    }
+
+    exiger_identique(&avant, &base, "colonne de degrés typée périmée");
+    assert_eq!(std::fs::read(&colonne).unwrap(), perime, "colonne réécrite");
+}

@@ -578,6 +578,24 @@ fn graphe_nomme_s_ouvre_lui_aussi_en_lecture_seule() {
         let g = s.named_graph("archives").expect("graphe nommé monté");
         assert_eq!(g.node_count(), archives, "fenêtre WAL de l'enfant rejouée");
         assert_eq!(s.node_count(), 26);
+        // Le graphe nommé est lui aussi en lecture seule : une mutation de
+        // l'ENFANT est refusée avant d'agir (il n'est pas ouvert en écriture).
+        let refus = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            g.create_node(&["Intrus"]);
+        }));
+        let message = match refus {
+            Ok(()) => panic!("create_node accepté par un graphe nommé en lecture seule"),
+            Err(p) => p.downcast_ref::<String>().cloned().unwrap_or_default(),
+        };
+        assert!(
+            message.contains("lecture seule"),
+            "refus non nommé : {message}"
+        );
+        assert_eq!(
+            g.node_count(),
+            archives,
+            "le refus a modifié le graphe nommé"
+        );
         let _ = lire(&s);
         s.close().unwrap();
     }
@@ -805,8 +823,15 @@ fn ancre_du_wal_absente_n_est_pas_republiee() {
 // 9. Dossier qui n'est pas une base
 // ---------------------------------------------------------------------------
 
+/// CE QUE CE TEST PROUVE, ET CE QU'IL NE PROUVE PAS : `SubstrateFile::open_read_only`
+/// (ouverture sans droit d'écriture, sans création) refuse un dossier sans
+/// `substrate.meta` par une erreur NOMMÉE, et ne pose rien. L'échec vient donc de
+/// la couche substrat ; la garde qui empêchait `ObrainDB::open_read_only` de
+/// CRÉER une base vide vit dans le moteur et est éprouvée par
+/// `obrain-engine/tests/lecture_seule_contrat.rs`
+/// (`un_dossier_qui_n_est_pas_une_base_echoue_sans_rien_creer`).
 #[test]
-fn un_dossier_qui_n_est_pas_une_base_echoue_sans_rien_creer() {
+fn le_substrat_refuse_un_dossier_sans_substrate_meta_par_une_erreur_nommee_et_ne_cree_rien() {
     let td = tempfile::tempdir().unwrap();
     let parent = td.path().join("bases");
     std::fs::create_dir(&parent).unwrap();
@@ -817,15 +842,24 @@ fn un_dossier_qui_n_est_pas_une_base_echoue_sans_rien_creer() {
     let avant = empreinte(td.path());
     laisser_passer_l_horloge();
 
-    assert!(
-        SubstrateStore::open_read_only(&vide).is_err(),
-        "dossier vide"
-    );
-    assert!(
-        SubstrateStore::open_read_only(&parent).is_err(),
-        "dossier PARENT de bases"
-    );
-    assert!(SubstrateStore::open_read_only(&absent).is_err(), "absent");
+    for (quoi, chemin, attendu) in [
+        ("dossier vide", &vide, "n'est pas une base obrain"),
+        (
+            "dossier PARENT de bases",
+            &parent,
+            "n'est pas une base obrain",
+        ),
+        ("chemin absent", &absent, "does not exist"),
+    ] {
+        let erreur = match SubstrateStore::open_read_only(chemin) {
+            Ok(_) => panic!("{quoi} : ouvert comme une base"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            erreur.contains(attendu),
+            "{quoi} : erreur non nommée : {erreur}"
+        );
+    }
 
     exiger_identique(&avant, td.path(), "dossiers qui ne sont pas des bases");
     assert!(!absent.exists());
@@ -1001,6 +1035,42 @@ fn les_mutations_sont_refusees_par_une_erreur_nommee_et_n_ecrivent_rien() {
         (
             "fusionner_index_egalite",
             Box::new(|| s.fusionner_index_egalite().map_err(texte)),
+        ),
+        (
+            "fusionner_index_ordonne",
+            Box::new(|| s.fusionner_index_ordonne().map_err(texte)),
+        ),
+        (
+            "fusionner_index_ord_valeur",
+            Box::new(|| s.fusionner_index_ord_valeur().map_err(texte)),
+        ),
+        (
+            "declarer_type",
+            Box::new(|| s.declarer_type("node", "Intrus", "()").map_err(texte)),
+        ),
+        (
+            "retirer_type",
+            Box::new(|| s.retirer_type("node", "Personne").map_err(texte)),
+        ),
+        // ── graphes nommés ──
+        (
+            "drop_named_graph",
+            Box::new(|| ok(s.drop_named_graph("archives"))),
+        ),
+        (
+            "copy_named_graph",
+            Box::new(|| s.copy_named_graph(None, Some("copie"))),
+        ),
+        (
+            "write_meta_header",
+            Box::new(|| {
+                s.avec_substrate(|f| {
+                    let mut f2 =
+                        obrain_substrate::SubstrateFile::open_read_only(f.path()).map_err(texte)?;
+                    let h = f2.meta_header();
+                    f2.write_meta_header(&h).map_err(texte)
+                })
+            }),
         ),
         // ── journal ──
         (
