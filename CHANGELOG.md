@@ -6,6 +6,18 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Durabilité des valeurs longues (obrain#120)
+
+- Une valeur de plus de 256 octets (chaîne, octets, routée en colonne blob) n'était
+  pas couverte par le WAL : un commit acquitté ne la protégeait pas d'un `kill -9`
+  (mesuré : 0/40 relues), et une réécriture non flushée suivie d'un ajout faisait
+  relire à un nœud les octets d'un autre (mesuré : 40/40 contaminés). Corrigé :
+  deux trames WAL `BlobColumnWrite` (valeur comprise) et `BlobColumnClear`,
+  rejouées à la réouverture sur la fenêtre post-flush par un écrivain exclusif.
+  Test : `obrain-engine/tests/blob_hors_wal_kill9.rs` (5 scénarios, rouges avant).
+- Limite qui reste, verrouillée : un lecteur seul ne rejoue pas ces valeurs tant
+  qu'un écrivain n'a pas rouvert la base (`docs/LIMITES-v0.0.1.md`).
+
 ### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
 
 - Interblocage déterministe de `CALL` cognitif `bootstrap` (`create_synapse_slots_batch`

@@ -34,7 +34,8 @@ const LONGUEUR: usize = 585;
 /// Variable de l'enfant : `<tour>:<fermer 0|1>:<maj 0|1>:<répertoire>`.
 /// `fermer = 1` : `close()` propre (flush complet) au lieu d'attendre le kill.
 /// `maj = 1` : au lieu de créer des nœuds, RÉÉCRIT (`SET`) la valeur longue des
-/// nœuds du tour 1 avec celle du tour courant.
+/// nœuds du tour 1 avec celle du tour courant. `maj = 2` : la réécrit longue
+/// PUIS courte (`valeur_courte`), deux commits par nœud.
 const ENV_ENFANT: &str = "OBRAIN_TEST_BLOB_KILL9_ENFANT";
 
 /// Valeur longue propre au nœud `k` du tour `tour` : l'identité du nœud est en
@@ -52,6 +53,11 @@ fn valeur_longue(tour: u8, k: i64) -> String {
     s
 }
 
+/// Valeur COURTE (sous le seuil blob) qui remplace une valeur longue.
+fn valeur_courte(tour: u8, k: i64) -> String {
+    format!("court-t{tour}-k{k}")
+}
+
 fn attendre(marqueur: &Path) {
     let mut tours = 0u32;
     while !marqueur.exists() {
@@ -66,20 +72,15 @@ fn attendre(marqueur: &Path) {
 }
 
 fn lancer_enfant(tour: u8, fermer: bool, dir: &Path) -> std::process::Child {
-    lancer_enfant_mode(tour, fermer, false, dir)
+    lancer_enfant_mode(tour, fermer, 0, dir)
 }
 
-fn lancer_enfant_mode(tour: u8, fermer: bool, maj: bool, dir: &Path) -> std::process::Child {
+fn lancer_enfant_mode(tour: u8, fermer: bool, maj: u8, dir: &Path) -> std::process::Child {
     std::process::Command::new(std::env::current_exe().unwrap())
         .args(["enfant_ecrivain", "--exact", "--nocapture"])
         .env(
             ENV_ENFANT,
-            format!(
-                "{tour}:{}:{}:{}",
-                u8::from(fermer),
-                u8::from(maj),
-                dir.display()
-            ),
+            format!("{tour}:{}:{}:{}", u8::from(fermer), maj, dir.display()),
         )
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -110,18 +111,32 @@ fn enfant_ecrivain() {
     let mut morceaux = spec.splitn(4, ':');
     let tour: u8 = morceaux.next().unwrap().parse().unwrap();
     let fermer = morceaux.next().unwrap() == "1";
-    let maj = morceaux.next().unwrap() == "1";
+    let maj: u8 = morceaux.next().unwrap().parse().unwrap();
     let dir = Path::new(morceaux.next().unwrap());
     let db = ObrainDB::open(dir.join("base")).expect("open enfant");
     let s = db.session();
     for k in 0..N {
         let doc = valeur_longue(tour, k);
-        let requete = if maj {
-            format!("MATCH (n:Doc) WHERE n.tour = 1 AND n.k = {k} SET n.doc = '{doc}'")
-        } else {
-            format!("INSERT (:Doc {{tour: {tour}, k: {k}, court: 'c{tour}-{k}', doc: '{doc}'}})")
-        };
-        s.execute(&requete).expect("écriture acquittée");
+        let cible = format!("MATCH (n:Doc) WHERE n.tour = 1 AND n.k = {k}");
+        match maj {
+            0 => {
+                s.execute(&format!(
+                    "INSERT (:Doc {{tour: {tour}, k: {k}, court: 'c{tour}-{k}', doc: '{doc}'}})"
+                ))
+                .expect("insert acquitté");
+            }
+            1 => {
+                s.execute(&format!("{cible} SET n.doc = '{doc}'"))
+                    .expect("réécriture acquittée");
+            }
+            _ => {
+                s.execute(&format!("{cible} SET n.doc = '{doc}'"))
+                    .expect("réécriture longue acquittée");
+                let court = valeur_courte(tour, k);
+                s.execute(&format!("{cible} SET n.doc = '{court}'"))
+                    .expect("réécriture courte acquittée");
+            }
+        }
     }
     drop(s);
     if fermer {
@@ -156,15 +171,15 @@ fn bilan(db: &ObrainDB, tour: u8) -> Bilan {
 /// Bilan des nœuds du tour `tour`, dont la valeur longue attendue est celle du
 /// tour `tour_valeur` (différent quand un tour ultérieur l'a réécrite).
 fn bilan_attendu(db: &ObrainDB, tour: u8, tour_valeur: u8) -> Bilan {
-    let s = db.session();
-    let r = s
+    let session = db.session();
+    let resultat = session
         .execute(&format!(
             "MATCH (n:Doc) WHERE n.tour = {tour} RETURN n.k, n.court, n.doc"
         ))
         .expect("relecture");
-    let mut b = Bilan::default();
-    for ligne in &r.rows {
-        b.noeuds += 1;
+    let mut bilan = Bilan::default();
+    for ligne in &resultat.rows {
+        bilan.noeuds += 1;
         let k = match ligne.first() {
             Some(Value::Int64(k)) => *k,
             autre => panic!("k inattendu : {autre:?}"),
@@ -172,20 +187,20 @@ fn bilan_attendu(db: &ObrainDB, tour: u8, tour_valeur: u8) -> Bilan {
         if let Some(Value::String(c)) = ligne.get(1)
             && c.as_str() == format!("c{tour}-{k}")
         {
-            b.courts_exacts += 1;
+            bilan.courts_exacts += 1;
         }
         match ligne.get(2) {
             Some(Value::String(d)) if d.as_str() == valeur_longue(tour_valeur, k) => {
-                b.longs_exacts += 1
+                bilan.longs_exacts += 1;
             }
-            Some(Value::String(d)) => b.longs_faux.push(format!(
+            Some(Value::String(d)) => bilan.longs_faux.push(format!(
                 "nœud t{tour}-k{k} (attendu [t{tour_valeur}-k{k:04}]) relit {:?}…",
                 &d.as_str()[..d.len().min(24)]
             )),
-            _ => b.longs_absents += 1,
+            _ => bilan.longs_absents += 1,
         }
     }
-    b
+    bilan
 }
 
 /// PERTE : écrivain tué après N commits acquittés portant une valeur longue.
@@ -314,7 +329,7 @@ fn une_reecriture_tuee_puis_un_ajout_tue_ne_font_relire_a_aucun_noeud_la_valeur_
         "tour 1 (close propre)"
     );
     attendre(&dir.path().join("pret1"));
-    let enfant = lancer_enfant_mode(2, false, true, dir.path());
+    let enfant = lancer_enfant_mode(2, false, 1, dir.path());
     attendre(&dir.path().join("pret2"));
     tuer(enfant);
     let enfant = lancer_enfant(3, false, dir.path());
@@ -337,5 +352,104 @@ fn une_reecriture_tuee_puis_un_ajout_tue_ne_font_relire_a_aucun_noeud_la_valeur_
         (b1.longs_exacts, b3.longs_exacts),
         (N as usize, N as usize),
         "obrain#120 (perte) : tour 1 réécrit {b1:?} ; tour 3 {b3:?}"
+    );
+}
+
+/// PAS DE RÉSURRECTION : dans la même fenêtre non flushée, chaque nœud reçoit
+/// une valeur longue PUIS une valeur courte, et l'écrivain est tué. Le rejeu des
+/// écritures blob ne doit pas remettre la valeur longue par-dessus la courte
+/// (d'où la trame `BlobColumnClear`).
+#[test]
+fn une_valeur_courte_ecrite_apres_une_longue_reste_la_valeur_relue_apres_kill_9() {
+    if std::env::var(ENV_ENFANT).is_ok() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().join("base");
+    let mut enfant = lancer_enfant(1, true, dir.path());
+    assert!(
+        enfant.wait().expect("attente").success(),
+        "tour 1 (close propre)"
+    );
+    attendre(&dir.path().join("pret1"));
+    let enfant = lancer_enfant_mode(2, false, 2, dir.path());
+    attendre(&dir.path().join("pret2"));
+    tuer(enfant);
+
+    let db = ObrainDB::open(&base).expect("réouverture");
+    let r = db
+        .session()
+        .execute("MATCH (n:Doc) WHERE n.tour = 1 RETURN n.k, n.doc")
+        .expect("relecture");
+    let mut ecarts = Vec::new();
+    for ligne in &r.rows {
+        let Some(Value::Int64(k)) = ligne.first() else {
+            panic!("k inattendu : {ligne:?}");
+        };
+        let attendu = valeur_courte(2, *k);
+        match ligne.get(1) {
+            Some(Value::String(d)) if d.as_str() == attendu => {}
+            autre => ecarts.push(format!(
+                "k{k} : attendu {attendu:?}, relu {:?}",
+                autre.map(|v| format!("{v:?}").chars().take(30).collect::<String>())
+            )),
+        }
+    }
+    assert_eq!(r.rows.len(), N as usize, "nœuds du tour 1");
+    assert!(
+        ecarts.is_empty(),
+        "{} nœud(s) ne relisent pas leur valeur courte : {ecarts:?}",
+        ecarts.len()
+    );
+}
+
+/// LIMITE v0.0.1, verrouillée : un LECTEUR (`open_read_only`) ouvert sur la base
+/// laissée par un écrivain tué ne rejoue PAS les valeurs longues de la fenêtre
+/// post-flush (il n'écrit rien, et la colonne blob ne se rejoue qu'en écrivant).
+/// Il ne lit jamais une valeur FAUSSE ; il lit les valeurs ABSENTES jusqu'à ce
+/// qu'un écrivain rouvre la base, qui les rejoue. Ce test rougit le jour où le
+/// lecteur les servira (à mettre alors à jour, avec la ligne de
+/// `docs/LIMITES-v0.0.1.md`).
+#[test]
+fn limite_v0_0_1_un_lecteur_seul_ne_rejoue_pas_les_valeurs_longues_d_un_ecrivain_tue() {
+    if std::env::var(ENV_ENFANT).is_ok() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().join("base");
+    let mut enfant = lancer_enfant(1, true, dir.path());
+    assert!(
+        enfant.wait().expect("attente").success(),
+        "tour 1 (close propre)"
+    );
+    attendre(&dir.path().join("pret1"));
+    let enfant = lancer_enfant(2, false, dir.path());
+    attendre(&dir.path().join("pret2"));
+    tuer(enfant);
+
+    let lecteur = ObrainDB::open_read_only(&base).expect("lecteur");
+    let (l1, l2) = (bilan(&lecteur, 1), bilan(&lecteur, 2));
+    drop(lecteur);
+    assert!(
+        l1.longs_faux.is_empty() && l2.longs_faux.is_empty(),
+        "un lecteur ne doit jamais lire une valeur fausse : {l1:?} ; {l2:?}"
+    );
+    assert_eq!(
+        (
+            l1.longs_exacts,
+            l2.noeuds,
+            l2.longs_exacts,
+            l2.longs_absents
+        ),
+        (N as usize, N as usize, 0, N as usize),
+        "limite mesurée : le lecteur sert le tour flushé, voit les nœuds du tour tué mais pas \
+         leurs valeurs longues — {l1:?} ; {l2:?}"
+    );
+
+    let ecrivain = ObrainDB::open(&base).expect("écrivain");
+    let e2 = bilan(&ecrivain, 2);
+    assert_eq!(
+        e2.longs_exacts, N as usize,
+        "un écrivain qui rouvre rejoue la fenêtre : {e2:?}"
     );
 }

@@ -1803,6 +1803,12 @@ fn apply(
         // vecteurs fait foi, le rejeu n'a rien à appliquer. Il n'est pas
         // « non supporté » — il a fait son office en déplaçant l'offset.
         WalPayload::VecColumnWrite { .. } => Ok(Applied::Yes),
+        // (obrain#120) Les colonnes blob sont rejouées par
+        // `SubstrateStore::merge_wal_inline_props`, qui tient le registre des
+        // colonnes ; ce rejeu-ci ne porte que les zones.
+        WalPayload::BlobColumnWrite { .. } | WalPayload::BlobColumnClear { .. } => {
+            Ok(Applied::Skipped)
+        }
 
         WalPayload::RicciUpdate { .. }
         | WalPayload::Tier0Update { .. }

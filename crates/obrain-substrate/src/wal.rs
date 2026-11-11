@@ -85,6 +85,18 @@ pub enum WalKind {
     /// empreinte « offset + nœuds vivants » validait un index vectoriel
     /// PÉRIMÉ à la réouverture. Rejeu : aucun effet (la colonne fait foi).
     VecColumnWrite = 0x28,
+    /// (2026-11-11, obrain#120) Écriture d'une valeur de plus de
+    /// `BLOB_COLUMN_THRESHOLD_BYTES` dans une colonne blob, VALEUR COMPRISE.
+    /// La colonne n'est durable qu'au `sync` d'un flush complet : sans cette
+    /// trame, une valeur longue acquittée disparaissait au `kill -9`, et une
+    /// réécriture non flushée suivie d'un ajout faisait relire à un nœud les
+    /// octets d'un autre. Rejeu : réécrit la valeur dans sa colonne.
+    BlobColumnWrite = 0x29,
+    /// (2026-11-11, obrain#120) Effacement du slot blob d'une clé (valeur
+    /// réécrite courte, ou propriété retirée). Sans lui, le rejeu d'un
+    /// `BlobColumnWrite` antérieur ressusciterait la valeur longue par-dessus
+    /// la valeur courte écrite ensuite.
+    BlobColumnClear = 0x2A,
     StringIntern = 0x30,
     LabelIntern = 0x31,
     KeyIntern = 0x32,
@@ -173,6 +185,8 @@ impl WalKind {
             0x26 => EdgePropSetInline,
             0x27 => EdgePropRemoveInline,
             0x28 => VecColumnWrite,
+            0x29 => BlobColumnWrite,
+            0x2A => BlobColumnClear,
             0x30 => StringIntern,
             0x31 => LabelIntern,
             0x32 => KeyIntern,
@@ -655,6 +669,24 @@ pub enum WalPayload {
         slot: u32,
         key_id: u16,
     },
+    /// (2026-11-11, obrain#120) Valeur longue écrite en colonne blob — voir
+    /// [`WalKind::BlobColumnWrite`]. `entity_kind` : 0 nœud, 1 arête ;
+    /// `key` : nom de la clé (l'identifiant interné peut naître dans la même
+    /// fenêtre) ; `tagged` : la charge exacte passée à la colonne (octet de
+    /// type + octets bruts, `encode_blob_payload`). EN FIN D'ENUM.
+    BlobColumnWrite {
+        entity_kind: u8,
+        slot: u32,
+        key: String,
+        tagged: Vec<u8>,
+    },
+    /// (2026-11-11, obrain#120) Effacement du slot blob — voir
+    /// [`WalKind::BlobColumnClear`]. EN FIN D'ENUM.
+    BlobColumnClear {
+        entity_kind: u8,
+        slot: u32,
+        key: String,
+    },
 }
 
 impl WalPayload {
@@ -709,6 +741,8 @@ impl WalPayload {
             TxAreteEnAttente { .. } => K::TxAreteEnAttente,
             TxCommit { .. } => K::TxCommit,
             VecColumnWrite { .. } => K::VecColumnWrite,
+            BlobColumnWrite { .. } => K::BlobColumnWrite,
+            BlobColumnClear { .. } => K::BlobColumnClear,
             Checkpoint { .. } => K::Checkpoint,
             NoOp => K::NoOp,
             EndOfLog => K::EndOfLog,
@@ -1503,6 +1537,17 @@ mod tests {
                 entity_kind: 0,
                 slot: 77,
                 key_id: 3,
+            },
+            WalPayload::BlobColumnWrite {
+                entity_kind: 1,
+                slot: 9,
+                key: "doc".into(),
+                tagged: vec![0x01; 600],
+            },
+            WalPayload::BlobColumnClear {
+                entity_kind: 0,
+                slot: 9,
+                key: "doc".into(),
             },
         ];
         for (i, p) in payloads.into_iter().enumerate() {
