@@ -53,6 +53,23 @@ use obrain_substrate::SubstrateStore;
 
 const CLES: [&str; 6] = ["a", "c", "b", "f", "d", "s"];
 
+/// Période des instants écrits en forme LONGUE (> 256 octets, donc routés
+/// en colonne blob) sur la clé `d` : un nœud sur `ECHELLE_BLOBS_D` (0 = aucun).
+/// Ces nœuds portent le MÊME instant qu'en forme courte, la clé `d` a donc une
+/// colonne blob ET des valeurs indexées ordinaires — le cas de la revue 4, A2.
+fn periode_blobs_d() -> i64 {
+    std::env::var("ECHELLE_BLOBS_D")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Écriture LONGUE (fraction de 300 zéros) de l'instant `secondes`.
+fn rfc3339_longue(secondes: i64) -> String {
+    let courte = rfc3339(secondes, 0);
+    format!("{}.{}Z", courte.trim_end_matches('Z'), "0".repeat(300))
+}
+
 fn n_noeuds() -> i64 {
     std::env::var("ECHELLE_N")
         .ok()
@@ -150,7 +167,13 @@ fn construire() {
             s.set_node_property(id, "b", Value::Int64(i));
             #[allow(clippy::cast_precision_loss)]
             s.set_node_property(id, "f", Value::Float64(i as f64));
-            s.set_node_property(id, "d", Value::String(rfc3339(EPOQUE + i, 0).into()));
+            let p = periode_blobs_d();
+            let d = if p > 0 && i % p == 0 {
+                rfc3339_longue(EPOQUE + i)
+            } else {
+                rfc3339(EPOQUE + i, 0)
+            };
+            s.set_node_property(id, "d", Value::String(d.into()));
             s.set_node_property(id, "s", chaine_s(i));
         }
         s.flush().expect("flush");
@@ -517,6 +540,45 @@ fn mesurer() {
                 s.find_nodes_by_properties(&conditions).len()
             },
             1,
+        );
+    }
+    // ── A2 : recherche d'instant dont le porteur vit en COLONNE BLOB ──
+    let p = periode_blobs_d();
+    if p > 0 {
+        mesurer_scenario(
+            "mono d = instant porté par un BLOB",
+            n,
+            max_ops,
+            budget,
+            |i| {
+                let j = i - i % p;
+                s.find_nodes_by_property("d", &Value::String(rfc3339(EPOQUE + j, 2).into()))
+                    .len()
+            },
+            1,
+        );
+    }
+    // ── Coût du DROP (revue 4, A1 : réécriture immédiate de la zone) ──
+    if std::env::var("ECHELLE_DROP").is_ok_and(|v| v == "1") {
+        let t = Instant::now();
+        let existait = s.drop_property_index("s");
+        println!(
+            "[drop] drop_property_index(\"s\") : {:.1} ms (existait={existait})",
+            t.elapsed().as_secs_f64() * 1e3
+        );
+        // Une écriture indexée, puis la fusion suivante (flush).
+        s.set_node_property(obrain_common::types::NodeId(1), "b", Value::Int64(-1));
+        let t = Instant::now();
+        s.flush().expect("flush");
+        println!(
+            "[drop] flush suivant (fusion de la zone, 5 index) : {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
+        let t = Instant::now();
+        s.flush().expect("flush");
+        println!(
+            "[drop] flush sans écriture indexée (ancres seules) : {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
         );
     }
     println!(
