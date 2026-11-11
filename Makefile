@@ -34,7 +34,7 @@ help:
 	@echo "  make bench-v001-compare BASE=x — Comparaison à x, seuil BENCH_SEUIL (10 %)"
 	@echo "  make bench-clean             — Remove target/bench/"
 	@echo ""
-	@echo "Bancs sur bases réelles : docs/BENCHMARKS.md (OBRAIN_BENCH_DB_PO, …)."
+	@echo "Bancs sur bases réelles : docs/BENCHMARKS.md (section « Bancs sur bases réelles »)."
 
 .PHONY: bench-clean
 bench-clean:

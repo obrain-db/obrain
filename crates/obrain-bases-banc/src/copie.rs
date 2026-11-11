@@ -84,6 +84,18 @@ pub(crate) struct Copie {
 /// verrouillé tant qu'il vit (voir `nettoyage`).
 pub(crate) const FICHIER_PROPRIETAIRE: &str = ".proprietaire";
 
+/// Pause, en millisecondes, entre la copie et ses contrôles d'après copie —
+/// posée par les tests de ce dépôt (`essais::pause_apres_copie`) pour y
+/// glisser une course. Zéro hors essai.
+pub(crate) static PAUSE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn pause_d_essai() {
+    let ms = PAUSE_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 /// Copie `source` dans un nouveau répertoire de `TMPDIR`.
 ///
 /// # Errors
@@ -127,6 +139,7 @@ pub(crate) fn copier_base(
         copier_arborescence(source, &chemin, mode)
             .map_err(|e| format!("copie de {} : {e}", source.display()))?;
         let secondes = debut.elapsed().as_secs_f64();
+        pause_d_essai();
 
         if let Some(detenteur) = detenteur(source)? {
             return Err(format!(
@@ -165,38 +178,73 @@ pub(crate) fn copier_base(
 /// Qui tient la base ? Le moteur pose un verrou d'enregistrement POSIX
 /// (`fcntl`) sur `substrate.dirlock` pendant toute la vie d'une ouverture :
 /// exclusif pour un écrivain, partagé pour un lecteur ou un écrivain partagé.
-/// `F_GETLK` demande au noyau s'il existe un verrou incompatible avec un
-/// verrou exclusif — donc N'IMPORTE QUEL verrou d'un autre processus — sans
-/// en poser, sur un descripteur ouvert en LECTURE SEULE : rien n'est écrit.
+/// On demande au noyau s'il existe un verrou incompatible avec un verrou
+/// exclusif — donc N'IMPORTE QUEL verrou — sans en poser, sur un descripteur
+/// ouvert en LECTURE SEULE : rien n'est écrit.
 ///
 /// Un lecteur compte aussi : une ouverture en lecture seule écrit (voir la
 /// documentation du crate).
 ///
-/// Contrainte des verrous `fcntl` : ils tombent dès que le processus ferme un
-/// descripteur du fichier. Fermer le nôtre ne peut donc lâcher qu'un verrou
-/// que CE processus tiendrait sur la base d'origine — ce qui n'arrive jamais,
-/// le helper ne l'ouvrant pas.
+/// ── DEUX PIÈGES DES VERROUS `fcntl`, ET CE QUI LES FERME ──────────────────
+///
+/// 1. `F_GETLK` est AVEUGLE aux verrous du processus appelant : un test qui
+///    tient la base et en demande une copie verrait « personne ». On
+///    interroge donc avec `F_OFD_GETLK` (verrous par description de fichier
+///    ouverte, Linux et macOS) : un verrou POSIX du processus appelant est
+///    alors un conflit comme un autre, et le noyau en rend le pid — le nôtre.
+/// 2. Un verrou `fcntl` TOMBE dès que le processus ferme N'IMPORTE QUEL
+///    descripteur du fichier. Ouvrir `substrate.dirlock` pour l'interroger,
+///    puis le fermer, LÂCHERAIT le verrou exclusif que le moteur de ce
+///    processus tiendrait sur la base (prouvé : un second écrivain, refusé
+///    avant, ouvrait après). Le descripteur d'interrogation n'est donc JAMAIS
+///    fermé : un par base et par processus, gardé jusqu'à la sortie.
+///
+/// Sur un Unix sans `F_OFD_GETLK`, on se rabat sur `F_GETLK`, aveugle au
+/// processus appelant ; la comparaison avant/après la copie reste.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn detenteur(source: &Path) -> Result<Option<String>, String> {
     use std::os::unix::io::AsRawFd;
+    use std::sync::{Mutex, OnceLock};
     let verrou = source.join("substrate.dirlock");
-    let fichier = match File::open(&verrou) {
-        Ok(f) => f,
-        // Pas de fichier de verrou : aucune ouverture ne l'a jamais créé, donc
-        // personne ne tient la base. (Le moteur le crée à sa première ouverture.)
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("lecture de {} : {e}", verrou.display())),
+    if !verrou.exists() {
+        // Le moteur le crée à sa première ouverture : une base sans ce
+        // fichier n'a jamais été ouverte par un moteur qui le pose. Un moteur
+        // ANTÉRIEUR pourrait la tenir sans qu'on puisse le voir : on le dit, et
+        // seule la comparaison avant/après la copie protège.
+        eprintln!(
+            "BANC : {} n'a pas de substrate.dirlock — aucun détenteur ne peut être cherché ; seule \
+             la comparaison de la base avant et après la copie protège",
+            source.display()
+        );
+        return Ok(None);
+    }
+    // Descripteurs d'interrogation, gardés jusqu'à la sortie du processus
+    // (piège 2). Clé : le chemin canonique du fichier de verrou.
+    static DESCRIPTEURS: OnceLock<Mutex<std::collections::HashMap<PathBuf, File>>> =
+        OnceLock::new();
+    let cle = fs::canonicalize(&verrou).unwrap_or_else(|_| verrou.clone());
+    let mut table = DESCRIPTEURS
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fichier = match table.entry(cle) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(e) => e.insert(
+            File::open(&verrou)
+                .map_err(|err| format!("lecture de {} : {err}", verrou.display()))?,
+        ),
     };
     // SAFETY: `libc::flock` est une structure POD, initialisée à zéro puis
-    // remplie ; `F_GETLK` la lit et l'écrit pendant l'appel, sans en garder de
-    // pointeur.
+    // remplie ; `fcntl` la lit et l'écrit pendant l'appel, sans en garder de
+    // pointeur. `l_pid` vaut 0 : exigé par `F_OFD_GETLK`.
     let mut requete: libc::flock = unsafe { std::mem::zeroed() };
     requete.l_type = libc::F_WRLCK as libc::c_short;
     requete.l_whence = libc::SEEK_SET as libc::c_short;
     requete.l_start = 0;
     requete.l_len = 0;
-    let rc = unsafe { libc::fcntl(fichier.as_raw_fd(), libc::F_GETLK, &raw mut requete) };
+    requete.l_pid = 0;
+    let rc = unsafe { libc::fcntl(fichier.as_raw_fd(), COMMANDE_GETLK, &raw mut requete) };
     if rc == -1 {
         return Err(format!(
             "interrogation du verrou {} : {}",
@@ -212,8 +260,25 @@ fn detenteur(source: &Path) -> Result<Option<String>, String> {
     } else {
         "verrou partagé : un lecteur ou un écrivain partagé"
     };
-    Ok(Some(format!("pid {}, {nature}", requete.l_pid)))
+    let pid = requete.l_pid;
+    let qui = if pid != 0 && u32::try_from(pid).is_ok_and(|p| p == std::process::id()) {
+        format!("CE processus, pid {pid} — fermer la base avant d'en demander une copie")
+    } else if pid == -1 {
+        "un verrou par description de fichier, pid inconnu".to_owned()
+    } else {
+        format!("pid {pid}")
+    };
+    Ok(Some(format!("{qui}, {nature}")))
 }
+
+/// `F_OFD_GETLK` quand le système le fournit (piège 1), `F_GETLK` sinon.
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+const COMMANDE_GETLK: libc::c_int = libc::F_OFD_GETLK;
+#[cfg(all(
+    unix,
+    not(any(target_vendor = "apple", target_os = "linux", target_os = "android"))
+))]
+const COMMANDE_GETLK: libc::c_int = libc::F_GETLK;
 
 /// Hors Unix, le moteur verrouille par `LockFileEx` ; ce helper ne l'interroge
 /// pas encore : seule la comparaison avant/après protège (documenté).
@@ -525,4 +590,31 @@ pub(crate) fn decrire(copie: &Copie, source: &Path) -> String {
             ""
         }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `cloner` rend `Ok` avec un clone fidèle, ou `Err` sans laisser de
+    /// fichier partiel — selon ce que le système de fichiers permet (APFS :
+    /// oui ; ext4, tmpfs : non ; Btrfs, XFS avec reflink : oui).
+    #[test]
+    fn cloner_reussit_fidelement_ou_echoue_proprement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let depuis = tmp.path().join("source");
+        let vers = tmp.path().join("clone");
+        fs::write(&depuis, b"contenu a cloner").unwrap();
+        match cloner(&depuis, &vers) {
+            Ok(()) => assert_eq!(fs::read(&vers).unwrap(), b"contenu a cloner"),
+            Err(e) => {
+                eprintln!("clone indisponible ici : {e}");
+                assert!(!vers.exists(), "un fichier partiel est resté après l'échec");
+            }
+        }
+        // APFS sait cloner : on l'exige là où on sait que c'est vrai.
+        if cfg!(target_vendor = "apple") {
+            assert!(vers.is_file());
+        }
+    }
 }

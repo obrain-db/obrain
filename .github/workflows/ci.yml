@@ -155,6 +155,75 @@ jobs:
           ulimit -n 8192
           cargo test -p obrain-engine --test ecriture_multi_processus --no-fail-fast
 
+  # (2026-11-11, suite de #110/#113) BANCS SUR BASES FABRIQUÉES : les cibles
+  # qui exigent une base réelle (`CORPUS_*`, `OBRAIN_SONDE_STORE`,
+  # `OBRAIN_BANC_BASE`) sont `#[ignore]` et ne tournaient nulle part. Ce job
+  # fabrique de PETITES bases jetables, les désigne, et joue ces cibles — qui
+  # n'ouvrent qu'une COPIE de la base désignée. Il rejoue aussi les
+  # reproductions des défauts connus du moteur (`--cfg defauts_connus`), qui
+  # DOIVENT rester rouges tant que le moteur n'est pas corrigé : si elles
+  # passent, c'est que le moteur a changé et que le cfg doit être retiré.
+  bancs-fabriques:
+    name: Bancs sur bases fabriquées (cibles désignées, défauts connus)
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/tests"
+          echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Fabrication des bases jetables
+        run: |
+          B="$RUNNER_TEMP/tests/bases"; mkdir -p "$B"
+          echo "BASES=$B" >> "$GITHUB_ENV"
+          cargo run -p obrain-substrate --example fabrique_bases_banc -- simplexes "$B/a"
+          cargo run -p obrain-substrate --example fabrique_bases_banc -- simplexes "$B/b"
+          cargo run -p obrain-substrate --example fabrique_bases_banc -- simplexes "$B/db"
+          cargo run -p obrain-engine --features cdc --example fabrique_base_cdc -- "$B/cdc" 2000
+          OBRAIN_BANC_BASE="$B/grain" cargo test -p obrain-engine --test fabrique_base -- --ignored
+          mkdir -p "$B/pas-une-base"
+          du -sh "$B"/*
+      # Chaque cible copie la base désignée (clone si le système de fichiers
+      # le permet) et ne l'ouvre jamais elle-même.
+      - name: Cibles converties, sur les bases fabriquées
+        run: |
+          ulimit -n 8192
+          CORPUS_A="$BASES/a" CORPUS_B="$BASES/b" CORPUS_DB="$BASES/db" \
+            cargo test -p obrain-substrate --test simplex_passes_materialisation -- --ignored byte_identical_corpus mesures_corpus --test-threads=1 --nocapture
+          OBRAIN_SONDE_STORE="$BASES/cdc" \
+            cargo test -p obrain-engine --features cdc --test cout_consolidation -- --ignored --nocapture
+          OBRAIN_BANC_BASE="$BASES/grain" \
+            cargo test -p obrain-engine --test banc_surcout -- --ignored --nocapture
+          cargo run -p obrain-engine --example verify_bases -- "$BASES/grain" "$BASES/pas-une-base" | tee verify.txt
+          grep -q 'OK nodes=120000' verify.txt
+          grep -q 'pas-une-base : SAUTÉE' verify.txt
+      # Les bases désignées doivent être restées identiques (les cibles ont
+      # travaillé sur des copies) : on les rouvre en lecture et on compare les
+      # comptes à ceux de la fabrication.
+      - name: Les bases désignées n'ont pas bougé
+        run: |
+          cargo run -p obrain-engine --example verify_bases -- "$BASES/grain" | grep -q 'OK nodes=120000'
+      - name: Défauts connus du moteur — leurs reproductions doivent rester ROUGES
+        env:
+          RUSTFLAGS: --cfg defauts_connus
+        run: |
+          if cargo test -p obrain-engine --test bases_reelles_non_ouvertes -- defaut_moteur; then
+            echo "::error::les reproductions des défauts connus PASSENT : le moteur a changé, retirer le cfg(defauts_connus) de ces tests"
+            exit 1
+          fi
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tests"
+
   tests-all-features:
     name: Tests (toutes features)
     runs-on: [self-hosted, linux, x64, obrain-ci]

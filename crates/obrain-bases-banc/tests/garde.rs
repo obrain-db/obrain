@@ -87,13 +87,12 @@ fn l_empreinte_voit_un_fichier_cree_puis_supprime() {
 /// porte celle de wasm-pack.
 fn est_un_produit_de_build(racine: &Path, dossier: &Path) -> bool {
     let nom = dossier.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if dossier.join("CACHEDIR.TAG").is_file() {
-        return true;
-    }
+    // Un `CACHEDIR.TAG` seul ne suffit pas : un dossier de sources qui en
+    // contiendrait un serait une échappatoire. Il ne vaut que pour un `target`.
     if nom == "target" {
         let parent = dossier.parent().unwrap_or(racine);
         let racine_de_crate = parent.join("Cargo.toml").is_file();
-        if parent == racine || racine_de_crate {
+        if parent == racine || racine_de_crate || dossier.join("CACHEDIR.TAG").is_file() {
             return true;
         }
     }
@@ -135,7 +134,10 @@ fn fichiers_sous(racine: &Path, dossier: &Path, trouves: &mut Vec<PathBuf>) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Famille {
     Rust,
-    Script(Option<&'static str>),
+    /// Un script, un manifeste ou une configuration, avec les préfixes qui y
+    /// ouvrent une ligne de commentaire — PROPRES à cette famille : `::` n'est
+    /// un commentaire que dans un `.bat`, jamais dans du Rust ou un shell.
+    Script(&'static [&'static str]),
 }
 
 /// Famille d'un fichier, ou `None` s'il n'est pas du code ni de la
@@ -146,19 +148,80 @@ fn famille(fichier: &Path) -> Option<Famille> {
     let famille = match extension {
         "rs" => Famille::Rust,
         "sh" | "bash" | "zsh" | "ps1" | "py" | "yml" | "yaml" | "mk" | "toml" | "cfg" | "ini" => {
-            Famille::Script(Some("#"))
+            Famille::Script(&["#"])
         }
-        "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" => Famille::Script(Some("//")),
-        "bat" | "cmd" => Famille::Script(Some("REM ")),
-        "json" => Famille::Script(None),
+        "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" => Famille::Script(&["//"]),
+        "bat" | "cmd" => Famille::Script(&["REM ", "rem ", "::"]),
+        "json" => Famille::Script(&[]),
         _ if matches!(nom, "Makefile" | "makefile" | "justfile" | "Justfile") => {
-            Famille::Script(Some("#"))
+            Famille::Script(&["#"])
         }
         // Script sans extension : reconnu à son shebang.
-        "" if fs::read(fichier).is_ok_and(|o| o.starts_with(b"#!")) => Famille::Script(Some("#")),
+        "" if fs::read(fichier).is_ok_and(|o| o.starts_with(b"#!")) => Famille::Script(&["#"]),
         _ => return None,
     };
     Some(famille)
+}
+
+/// Langages dont un bloc de code de documentation Rust n'est PAS un doctest :
+/// rustdoc ne le compile ni ne l'exécute. Tout autre bloc (sans langage,
+/// `rust`, ou un simple attribut comme `no_run` ou `ignore`) est du Rust que
+/// `cargo test` peut exécuter : il est examiné comme du code.
+const LANGAGES_DE_BLOC_NON_RUST: &[&str] = &[
+    "bash",
+    "sh",
+    "shell",
+    "zsh",
+    "console",
+    "text",
+    "txt",
+    "toml",
+    "json",
+    "yaml",
+    "yml",
+    "python",
+    "py",
+    "js",
+    "javascript",
+    "ts",
+    "typescript",
+    "cypher",
+    "gql",
+    "sparql",
+    "gremlin",
+    "graphql",
+    "sql",
+    "md",
+    "markdown",
+    "html",
+    "xml",
+    "csv",
+    "diff",
+];
+
+/// Un bloc de code de documentation (`/// ```…`) est-il du Rust exécutable
+/// par rustdoc ? `info` est ce qui suit les trois accents.
+fn bloc_de_doc_est_du_rust(info: &str) -> bool {
+    let premier = info
+        .trim()
+        .split([',', ' ', '\t'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !LANGAGES_DE_BLOC_NON_RUST.contains(&premier.as_str())
+}
+
+/// Ce qu'une ligne de documentation Rust (`///` ou `//!`) porte, sans son
+/// préfixe ; `None` si ce n'en est pas une.
+fn contenu_de_doc(code: &str) -> Option<&str> {
+    let reste = code
+        .strip_prefix("///")
+        .or_else(|| code.strip_prefix("//!"))?;
+    // `////` est un commentaire ordinaire, pas de la documentation.
+    if reste.starts_with('/') {
+        return None;
+    }
+    Some(reste.strip_prefix(' ').unwrap_or(reste))
 }
 
 /// Motifs qui, dans du Rust, trahissent un chemin de données deviné. Ce sont
@@ -193,10 +256,19 @@ const MOTIFS_RUST: &[&str] = &[
 ];
 
 /// Motifs équivalents dans les scripts, manifestes, Makefile et workflows.
+/// Le répertoire personnel s'y lit aussi SANS `$` : `os.environ["HOME"]`,
+/// `os.getenv('HOME')`, `process.env.HOME`, `$env:HOME`, `%HOME%`.
 const MOTIFS_SCRIPTS: &[&str] = &[
     "$HOME",
     "${HOME",
     "$(HOME)",
+    "%HOME%",
+    "\"HOME\"",
+    "'HOME'",
+    "env.HOME",
+    "env:HOME",
+    "Env:HOME",
+    "ENV:HOME",
     "%USERPROFILE%",
     "~/",
     "/.obrain",
@@ -206,6 +278,10 @@ const MOTIFS_SCRIPTS: &[&str] = &[
     "Path.home",
     "homedir",
     "getpwuid",
+    // Le nom d'une variable de désignation, dans un script ou un workflow :
+    // seul le helper lit ces variables ; un workflow qui en pose une
+    // désigne une base sur un runner, ce qui se nomme dans EXCEPTIONS.
+    "OBRAIN_BENCH_DB_",
 ];
 
 /// Répertoires d'OUTILS sous le répertoire personnel : y faire référence
@@ -341,6 +417,14 @@ const EXCEPTIONS: &[(&str, &str, &str, usize, &str)] = &[
         1,
         "test unitaire : le dossier PARENT des bases, dans un tempdir, doit être refusé",
     ),
+    (
+        "scripts/bench-regression.sh",
+        "OBRAIN_BENCH_DB_",
+        "if [[ -z \"${OBRAIN_BENCH_DB_PO:-}\" ]]; then",
+        1,
+        "le harnais s'arrête si la base n'est pas désignée : il teste la présence de la variable, \
+         sans en lire le chemin",
+    ),
 ];
 
 /// Les fautes d'une ligne de code.
@@ -357,7 +441,7 @@ fn fautes_de_la_ligne(famille: Famille, code: &str) -> Vec<&'static str> {
             }
             fautes
         }
-        Famille::Script(_) => {
+        Famille::Script(..) => {
             let mut nettoye = code.to_owned();
             for outil in OUTILS_TOLERES {
                 nettoye = nettoye.replace(outil, "");
@@ -402,14 +486,48 @@ fn garder(
                 fichier.display()
             )
         });
-        let commentaire = match famille {
-            Famille::Rust => Some("//"),
+        let commentaires: &[&str] = match famille {
+            Famille::Rust => &["//"],
             Famille::Script(c) => c,
         };
         let relatif = fichier.strip_prefix(racine).unwrap_or(fichier);
+        // Dans un bloc de code de documentation Rust : `Some(true)` s'il est
+        // du Rust (donc un doctest que `cargo test` exécute), `Some(false)`
+        // si c'est un autre langage, `None` hors bloc.
+        let mut bloc_de_doc: Option<bool> = None;
         for (numero, ligne) in texte.lines().enumerate() {
-            let code = ligne.trim();
-            if commentaire.is_some_and(|c| code.starts_with(c) || code.starts_with("::")) {
+            let mut code = ligne.trim();
+            if famille == Famille::Rust {
+                match contenu_de_doc(code) {
+                    Some(doc) => {
+                        let doc = doc.trim();
+                        if let Some(info) = doc.strip_prefix("```") {
+                            bloc_de_doc = match bloc_de_doc {
+                                None => Some(bloc_de_doc_est_du_rust(info)),
+                                Some(_) => None,
+                            };
+                            continue;
+                        }
+                        if bloc_de_doc != Some(true) {
+                            // Prose, ou bloc d'un autre langage : jamais exécuté.
+                            continue;
+                        }
+                        // Une ligne de doctest. `# ` la cache dans la page de
+                        // documentation, mais rustdoc l'exécute comme les autres.
+                        code = doc
+                            .strip_prefix("# ")
+                            .or_else(|| doc.strip_prefix('#').filter(|r| r.is_empty()))
+                            .unwrap_or(doc)
+                            .trim();
+                    }
+                    None => {
+                        // La documentation s'est arrêtée : un bloc ouvert ne
+                        // peut pas continuer sur du code.
+                        bloc_de_doc = None;
+                    }
+                }
+            }
+            if commentaires.iter().any(|c| code.starts_with(c)) {
                 continue;
             }
             for motif in fautes_de_la_ligne(famille, code) {
@@ -566,6 +684,59 @@ fn chaque_contournement_plante_est_refuse() {
             "dir %USERPROFILE%\\donnees\n",
             "%USERPROFILE%",
         ),
+        // ── Les deux contournements de la relecture de #113 (2922f931) ──
+        // Une expression que rustfmt renvoie à la ligne, ouverte par `::` : le
+        // saut `::` (commentaire des `.bat`) ne s'appliquait pas qu'aux `.bat`.
+        (
+            "crates/x/tests/deux_points.rs",
+            "fn f() {\n    let base =\n        ::std::path::PathBuf::from(::std::env::var_os(\"HOME\").unwrap()).join(\".obrain/db/po\");\n}\n",
+            "\"HOME\"",
+        ),
+        // Un doctest : `///` et `//!` étaient sautés comme des commentaires,
+        // mais `cargo test` exécute leurs blocs de code.
+        (
+            "crates/x/src/doctest.rs",
+            "/// ```\n/// let h = std::env::var(\"HOME\").unwrap();\n/// let _ = obrain::ObrainDB::open(format!(\"{h}/.obrain/db/po\"));\n/// ```\npub fn f() {}\n",
+            "\"HOME\"",
+        ),
+        (
+            "crates/y/src/lib.rs",
+            "//! ```\n//! let _ = std::fs::read_dir(std::env::home_dir().unwrap().join(\".obrain\"));\n//! ```\n",
+            "home_dir(",
+        ),
+        // Une ligne cachée de doctest (`# `) est exécutée comme les autres.
+        (
+            "crates/x/src/cachee.rs",
+            "/// ```\n/// # let h = std::env::var(\"HOME\").unwrap();\n/// ```\npub fn g() {}\n",
+            "\"HOME\"",
+        ),
+        // Le répertoire personnel sans `$`, dans les scripts.
+        (
+            "packages/p/a.py",
+            "import os\np = os.path.join(os.environ[\"HOME\"], \".obrain\", \"db\", \"po\")\n",
+            "\"HOME\"",
+        ),
+        (
+            "packages/p/b.py",
+            "import os\np = os.getenv('HOME') + '/' + '.obrain'\n",
+            "'HOME'",
+        ),
+        (
+            "packages/p/c.js",
+            "const p = require('path').join(process.env.HOME, '.obrain', 'db');\n",
+            "env.HOME",
+        ),
+        (
+            "scripts/d.ps1",
+            "Get-ChildItem (Join-Path $env:HOME '.obrain')\n",
+            "env:HOME",
+        ),
+        // Un workflow qui désigne une base sur un runner.
+        (
+            ".github/workflows/w.yml",
+            "      - run: cargo test -- --ignored\n        env:\n          OBRAIN_BENCH_DB_PO: /Users/runner/real/po\n",
+            "OBRAIN_BENCH_DB_",
+        ),
     ];
     for (chemin, contenu, motif) in plantes {
         let tmp = tempfile::tempdir().unwrap();
@@ -604,6 +775,22 @@ fn ce_qui_n_est_pas_une_faute_passe() {
             "crates/x/src/c.rs",
             "// commentaire : ~/.obrain/db et $HOME\n",
         ),
+        // Un bloc de doc dans un autre langage n'est pas un doctest.
+        (
+            "crates/x/src/d.rs",
+            "/// ```bash\n/// OBRAIN_BENCH_DB_PO=/chemin cargo test\n/// ```\npub fn f() {}\n",
+        ),
+        (
+            "crates/x/src/e.rs",
+            "/// ```text\n/// ~/.obrain/db/po\n/// ```\npub fn f() {}\n",
+        ),
+        // La prose d'une documentation nomme ce qu'elle explique.
+        (
+            "crates/x/src/f.rs",
+            "//! Voir `OBRAIN_BENCH_DB_PO` dans docs/BENCHMARKS.md.\n",
+        ),
+        // `::` ouvre bien un commentaire dans un `.bat`.
+        ("scripts/m.bat", ":: commentaire : %HOME%\\.obrain\n"),
     ];
     for (chemin, contenu) in propres {
         let tmp = tempfile::tempdir().unwrap();
@@ -613,6 +800,48 @@ fn ce_qui_n_est_pas_une_faute_passe() {
         let (fautes, _, _) = garder(tmp.path(), &[]);
         assert!(fautes.is_empty(), "faux positif sur {chemin} : {fautes:?}");
     }
+}
+
+/// Un `CACHEDIR.TAG` posé dans un dossier de sources ne le soustrait pas à la
+/// garde : seul un `target` peut en porter un.
+#[test]
+fn un_cachedir_tag_ne_masque_pas_un_dossier_de_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("crates/x/tests/cache");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(
+        cache.join("CACHEDIR.TAG"),
+        b"Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .unwrap();
+    fs::write(
+        cache.join("z.rs"),
+        "fn f() { let _ = std::env::var(\"HOME\"); }\n",
+    )
+    .unwrap();
+    let (fautes, _, _) = garder(tmp.path(), &[]);
+    assert!(
+        fautes.iter().any(|f| f.contains("cache/z.rs")),
+        "le dossier marqué CACHEDIR.TAG a été sauté : {fautes:?}"
+    );
+    // Un vrai `target` de cargo, lui, est sauté.
+    let target = tmp.path().join("crates/x/target");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        target.join("CACHEDIR.TAG"),
+        b"Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .unwrap();
+    fs::write(
+        target.join("z.rs"),
+        "fn f() { let _ = std::env::var(\"HOME\"); }\n",
+    )
+    .unwrap();
+    let (fautes, _, _) = garder(tmp.path(), &[]);
+    assert!(
+        !fautes.iter().any(|f| f.contains("target/z.rs")),
+        "un target de cargo n'est pas du code du dépôt : {fautes:?}"
+    );
 }
 
 /// Une exception ne couvre que le NOMBRE d'occurrences qu'elle annonce.

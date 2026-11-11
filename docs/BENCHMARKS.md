@@ -180,7 +180,7 @@ cargo run --release -p obrain-bases-banc --example cout_copie -- /chemin/absolu/
 ```
 
 **Une copie juste ou pas de copie.** La copie est refusée, nommément, si :
-- un processus **tient** la base : le moteur pose un verrou `fcntl` sur `substrate.dirlock` pendant toute la vie d'une ouverture, que le helper interroge (`F_GETLK`, sur un descripteur ouvert en lecture seule : rien n'est écrit). Un lecteur compte aussi, puisqu'une ouverture en lecture seule écrit (Unix seulement ; ailleurs, seule la comparaison suivante protège) ;
+- un processus **tient** la base : le moteur pose un verrou `fcntl` sur `substrate.dirlock` pendant toute la vie d'une ouverture, que le helper interroge avec `F_OFD_GETLK` (Linux, macOS) sur un descripteur ouvert en lecture seule : rien n'est écrit, et le processus **appelant** est vu comme un autre (`F_GETLK` y serait aveugle). Ce descripteur n'est jamais fermé : fermer un descripteur de ce fichier lâcherait le verrou que le moteur de ce processus tiendrait. Un lecteur compte aussi, puisqu'une ouverture en lecture seule écrit. Une base sans `substrate.dirlock` (jamais ouverte par un moteur qui le pose) : aucun détenteur ne peut être cherché, le helper le dit, et seule la comparaison suivante protège — comme hors Unix ;
 - la base a **changé** pendant la copie : liste des fichiers, tailles et dates comparées avant et après ;
 - elle contient un **lien symbolique** ou un fichier spécial : refusé, jamais suivi (un lien qui boucle ferait déborder la pile, un lien cassé paniquer).
 
@@ -188,7 +188,7 @@ Une base en `0444` (instantané en lecture seule) donne une copie rendue inscrip
 
 **Résidus.** Les copies s'appellent `obrain-banc-<pid>-<base>-*` dans `TMPDIR`. Elles sont supprimées à la fin de la cible ou à la sortie normale du processus. Un processus tué (Ctrl-C, `kill -9`) laisse la sienne ; son propriétaire tenait un verrou exclusif sur `<copie>/.proprietaire`, que le noyau a rendu à sa mort : le prochain banc lancé supprime les copies dont il peut prendre ce verrou (Unix). La preuve de vie est un verrou, pas un PID : un PID peut être recyclé ou appartenir à un autre espace de noms. Sous Windows, supprimer les résidus à la main.
 
-**Exécutions sur bases fabriquées.** `byte_identical_corpus`, `mesures_corpus`, `cout_d_une_consolidation_sur_store_reel` et `banc_surcout` ont été exécutés une fois sur des bases fabriquées (jamais réelles) par `cargo run -p obrain-substrate --example fabrique_bases_banc` et `cargo run -p obrain-engine --features cdc --example fabrique_base_cdc` ; la sonde de consolidation **échoue, nommément, sur une fenêtre CDC vide** au lieu de sortir verte sans rien mesurer.
+**En CI.** Le job « Bancs sur bases fabriquées » de `ci.yml` fabrique de petites bases jetables (`cargo run -p obrain-substrate --example fabrique_bases_banc`, `cargo run -p obrain-engine --features cdc --example fabrique_base_cdc`, `fabrique_base.rs`), les désigne, et joue `byte_identical_corpus`, `mesures_corpus`, `cout_d_une_consolidation_sur_store_reel`, `banc_surcout` et `verify_bases` ; il vérifie ensuite que les bases désignées n'ont pas bougé, et que les reproductions des défauts connus du moteur (`defaut_moteur_*`, sous `--cfg defauts_connus`) sont **toujours rouges** — le jour où elles passent, c'est que le moteur a changé et que le cfg doit être retiré. La sonde de consolidation échoue, nommément, sur une fenêtre CDC vide au lieu de sortir verte sans rien mesurer. Restent manuels : les bancs sur les trois bases réelles (`OBRAIN_BENCH_DB_*`), par construction.
 
 ### Lancer un banc volontairement
 
@@ -207,7 +207,7 @@ OBRAIN_BENCH_DB_PO=/chemin/po scripts/bench-regression.sh
 
 Les cibles marquées `#[ignore]` (audits ponctuels, bancs longs) demandent en plus `-- --ignored`.
 
-Deux tests verrouillent la règle et tournent, eux, à chaque `cargo test` : `crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs` fabrique de vraies bases — dont une sale — dans un faux `HOME` temporaire, joue un banc lecteur et un banc écrivain en sous-processus et exige une empreinte identique à l'octet (liste des fichiers, tailles, dates des fichiers et des répertoires, contenus) ; `crates/obrain-bases-banc/tests/garde.rs` refuse tout fichier du workspace (sources des crates — le helper compris —, tests, bancs, exemples, paquets, scripts avec ou sans extension, manifestes et configurations, Makefile, workflows) qui lirait le répertoire personnel, construirait un chemin `.obrain`, énumérerait l'environnement, ou nommerait une variable `OBRAIN_BENCH_DB_*` hors du helper (dont le nom n'est d'ailleurs pas exporté) — hors exceptions nommées, à la ligne et au nombre d'occurrences près. Un répertoire ou un fichier illisible fait échouer la garde ; chaque contournement connu est planté dans un faux dépôt et doit être refusé.
+Deux tests verrouillent la règle et tournent, eux, à chaque `cargo test` : `crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs` fabrique de vraies bases — dont une sale — dans un faux `HOME` temporaire, joue un banc lecteur et un banc écrivain en sous-processus et exige une empreinte identique à l'octet (liste des fichiers, tailles, dates des fichiers et des répertoires, contenus) ; `crates/obrain-bases-banc/tests/garde.rs` refuse tout fichier du dépôt (sources des crates — le helper compris —, tests, bancs, exemples, paquets, scripts avec ou sans extension, manifestes et configurations, Makefile, workflows) qui lirait le répertoire personnel (`"HOME"`, `os.environ["HOME"]`, `process.env.HOME`, `:HOME`…), construirait un chemin `.obrain`, énumérerait l'environnement, ou nommerait une variable `OBRAIN_BENCH_DB_*` hors du helper (dont le nom n'est d'ailleurs pas exporté) — hors exceptions nommées, à la ligne et au nombre d'occurrences près. Les **blocs de code des commentaires de documentation** (`///`, `//!`) sont examinés comme du code, puisque `cargo test` exécute les doctests ; seule la prose et les blocs d'un autre langage sont sautés. Le préfixe de commentaire est propre à chaque famille (`::` n'en est un que dans un `.bat`). Un répertoire ou un fichier illisible fait échouer la garde ; chaque contournement connu — dont les deux trouvés par la relecture de #113 — est planté dans un faux dépôt et doit être refusé. La garde reste **textuelle** : un nom de variable reconstitué à l'exécution lui échappe ; la barrière de fond est que le helper ne rend jamais que des copies.
 
 ### Ce qui ouvre encore directement le chemin qu'on lui donne
 
@@ -216,7 +216,6 @@ Deux tests verrouillent la règle et tournent, eux, à chaque `cargo test` : `cr
 | Cible | Désignation | Ce qu'elle fait au chemin reçu |
 |---|---|---|
 | `obrain-engine/tests/fabrique_base.rs` (`#[ignore]`) | `OBRAIN_BANC_BASE` | **crée** une base (refuse si le chemin existe) — c'est son objet |
-| `obrain-engine/examples/banc_plan_froid` | argument ou `OBRAIN_BANC_BASE` | ouverture en écriture |
 | maintenance : `add_name_index`, `fix_file_names`, `mig_slots512`, `backfill_tms`, `slots512_qc`, `conv_micros`, `cree_store_melange_j4` (engine) ; `compact_blob_columns`, `strip_skipped_props`, `rebuild_tiers`, `vectorize_list_props`, `checkpoint_cli` (substrate) | argument | modifient la base — c'est leur objet |
 | `banc_ns_j2`, `sim_conversations`, `perf_churn`, `perf_point_lookup`, `bench_texte_gql`, `bench_intention_contient` (engine) ; `inspect`, `replay_bench`, `bench_trigrammes`, `cognitive_quality` (substrate) ; `persist` (indexer, crée la base de sortie) ; `examples/rust/bench_load.rs` | argument | ouverture en écriture (`bench_texte_gql` et `bench_intention_contient` : en lecture seule si `OBRAIN_LECTURE_SEULE=1`) |
 | `banc_get_egalite`, `banc_open_ro_j4`, `sonde_j4`, `sonde_edges_j4`, `bench_agregat_groupe` (engine) ; `position_scan` (cognitive) | argument | `open_read_only` — peut donc y écrire |
@@ -232,6 +231,7 @@ Passent désormais par une copie privée (`obrain_bases_banc::copie_de`, chemin 
 | `obrain/benches/zero_copy.rs` | `OBRAIN_ZC_STORE` |
 | `obrain-engine/tests/cout_consolidation.rs` | `OBRAIN_SONDE_STORE` |
 | `obrain-engine/tests/banc_surcout.rs` | `OBRAIN_BANC_BASE` |
+| `obrain-engine/examples/banc_plan_froid` | argument ou `OBRAIN_BANC_BASE` |
 | `obrain-substrate/tests/simplex_passes_materialisation.rs` | `CORPUS_A`, `CORPUS_B`, `CORPUS_DB` |
 | `obrain-substrate/tests/tenant_colonne.rs::migration_store_reel_par_copie` | `OBRAIN_TEST_STORE_REEL_DIR` |
 | `obrain-engine/examples/verify_bases` | arguments |

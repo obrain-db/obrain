@@ -118,22 +118,31 @@ pub(crate) fn proprietaire_mort(_racine: &Path) -> bool {
 pub(crate) fn balayer_les_residus() {
     static FAIT: Once = Once::new();
     FAIT.call_once(|| {
-        let Ok(entrees) = std::fs::read_dir(std::env::temp_dir()) else {
-            return;
-        };
-        for entree in entrees.flatten() {
-            let nom = entree.file_name();
-            let Some(nom) = nom.to_str() else { continue };
-            if !nom.starts_with(PREFIXE_COPIE) || nom.starts_with(PREFIXE_COPIE_GARDEE) {
-                continue;
-            }
-            if proprietaire_mort(&entree.path()) {
-                eprintln!(
-                    "BANC : résidu d'un processus interrompu supprimé : {}",
-                    entree.path().display()
-                );
-                let _ = std::fs::remove_dir_all(entree.path());
+        let _ = balayer_maintenant();
+    });
+}
+
+/// Le balayage lui-même ; rend les résidus supprimés.
+pub(crate) fn balayer_maintenant() -> Vec<PathBuf> {
+    let mut supprimes = Vec::new();
+    let Ok(entrees) = std::fs::read_dir(std::env::temp_dir()) else {
+        return supprimes;
+    };
+    for entree in entrees.flatten() {
+        let nom = entree.file_name();
+        let Some(nom) = nom.to_str() else { continue };
+        if !nom.starts_with(PREFIXE_COPIE) || nom.starts_with(PREFIXE_COPIE_GARDEE) {
+            continue;
+        }
+        if proprietaire_mort(&entree.path()) {
+            eprintln!(
+                "BANC : résidu d'un processus interrompu supprimé : {}",
+                entree.path().display()
+            );
+            if std::fs::remove_dir_all(entree.path()).is_ok() {
+                supprimes.push(entree.path());
             }
         }
-    });
+    }
+    supprimes
 }

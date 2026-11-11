@@ -61,6 +61,24 @@ mod copie;
 mod empreinte;
 mod nettoyage;
 
+/// Crochets pour les tests de ce dépôt. Ce n'est pas une API : rien ici
+/// n'ouvre ni ne révèle une base, mais rien n'y est stable non plus.
+#[doc(hidden)]
+pub mod essais {
+    /// Pose une pause (ms) entre la copie et ses contrôles d'après copie,
+    /// pour y glisser une course (un écrivain qui ouvre, un fichier qui
+    /// change). Zéro la retire.
+    pub fn pause_apres_copie(ms: u64) {
+        crate::copie::PAUSE_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Balaie maintenant les résidus de copie de `TMPDIR` dont le
+    /// propriétaire est mort ; rend ceux qui ont été supprimés.
+    pub fn balayer_les_residus_maintenant() -> Vec<std::path::PathBuf> {
+        crate::nettoyage::balayer_maintenant()
+    }
+}
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
@@ -766,5 +784,38 @@ mod tests {
         assert_eq!(&octets[..5], b"debut");
         assert_eq!(&octets[40 << 20..(40 << 20) + 6], b"milieu");
         fs::remove_dir_all(&c.racine).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod ordre_de_fermeture {
+    //! Le banc `zero_copy` garde une base et le garde de ses fichiers dans
+    //! une structure : c'est l'ordre de déclaration des champs qui fait
+    //! fermer la base AVANT de supprimer ses fichiers. Ce test fixe la
+    //! garantie du langage sur laquelle il s'appuie.
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct Trace(Rc<RefCell<Vec<&'static str>>>, &'static str);
+    impl Drop for Trace {
+        fn drop(&mut self) {
+            self.0.borrow_mut().push(self.1);
+        }
+    }
+
+    struct Ouvert {
+        _base: Trace,
+        _garde: Trace,
+    }
+
+    #[test]
+    fn les_champs_sont_laches_dans_l_ordre_de_leur_declaration() {
+        let journal = Rc::new(RefCell::new(Vec::new()));
+        drop(Ouvert {
+            _base: Trace(journal.clone(), "base fermée"),
+            _garde: Trace(journal.clone(), "fichiers supprimés"),
+        });
+        assert_eq!(*journal.borrow(), ["base fermée", "fichiers supprimés"]);
     }
 }
