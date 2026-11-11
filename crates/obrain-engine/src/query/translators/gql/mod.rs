@@ -511,6 +511,7 @@ impl GqlTranslator {
                             | ast::QueryClause::Remove(_)
                             | ast::QueryClause::Merge(_)
                             | ast::QueryClause::ForEach(_)
+                            | ast::QueryClause::With(_)
                     )
                 {
                     if let Some(where_clause) = &query.where_clause {
@@ -551,6 +552,13 @@ impl GqlTranslator {
                             let input = std::mem::replace(&mut plan, LogicalOperator::Empty);
                             plan = self.translate_match_with_input(match_clause, Some(input))?;
                         }
+                    }
+                    ast::QueryClause::With(with_clause) => {
+                        plan = self.translate_with_clause(with_clause, plan)?;
+                    }
+                    ast::QueryClause::Where(where_clause) => {
+                        let predicate = self.translate_expression(&where_clause.expression)?;
+                        plan = self.apply_where_with_left_join_awareness(plan, predicate);
                     }
                     ast::QueryClause::Unwind(unwind_clause) => {
                         let expression = self.translate_expression(&unwind_clause.expression)?;
@@ -861,141 +869,6 @@ impl GqlTranslator {
                         remove: true,
                         input: Box::new(plan),
                     });
-                }
-            }
-        }
-
-        // Handle WITH clauses (projection for query chaining)
-        for with_clause in &query.with_clauses {
-            // ── UN AGRÉGAT DANS `WITH` DOIT ÊTRE AGRÉGÉ, PAS ÉVALUÉ ────────
-            // Défaut mesuré le 2026-09-17 : `MATCH (n:WA) WITH sum(n.v) AS
-            // total RETURN total` rendait « fonction inconnue : sum » — cette
-            // boucle traduisait CHAQUE item en projection scalaire, sans jamais
-            // regarder s'il portait un agrégat. Le `RETURN` de GQL le fait
-            // (plus bas, `has_aggregates`), et le traducteur Cypher le fait
-            // depuis toujours pour son `WITH` (`cypher.rs::translate_with`) :
-            // c'est le `WITH` de GQL qui manquait. Un agrégat arrivé intact à
-            // l'évaluateur est une fonction scalaire inconnue — donc une erreur
-            // d'exécution à la place d'un résultat.
-            let has_aggregates = with_clause
-                .items
-                .iter()
-                .any(|item| contains_aggregate(&item.expression));
-            if has_aggregates {
-                let (aggregates, group_by, post_return) =
-                    self.extract_aggregates_and_groups(&with_clause.items, false)?;
-                plan = LogicalOperator::Aggregate(AggregateOp {
-                    group_by,
-                    aggregates,
-                    input: Box::new(plan),
-                    // `HAVING` n'existe pas sur un `WITH` : la condition d'un
-                    // `WITH` est son `WHERE`, appliqué plus bas, APRÈS la
-                    // projection — comme le veut Cypher/GQL.
-                    having: None,
-                });
-                // Les items qui ENVELOPPENT un agrégat (`sum(v) > 10 AS grand`)
-                // sont recalculés après l'agrégat, sur les colonnes
-                // synthétiques — sinon ils seraient évalués avant lui.
-                if let Some(items) = post_return {
-                    plan = LogicalOperator::Project(ProjectOp {
-                        projections: items
-                            .into_iter()
-                            .map(|item| Projection {
-                                expression: item.expression,
-                                alias: item.alias,
-                            })
-                            .collect(),
-                        input: Box::new(plan),
-                        pass_through_input: false,
-                    });
-                }
-            } else if !with_clause.is_wildcard {
-                let projections: Vec<Projection> = with_clause
-                    .items
-                    .iter()
-                    .map(|item| {
-                        Ok(Projection {
-                            expression: self.translate_expression(&item.expression)?,
-                            alias: item.alias.clone(),
-                        })
-                    })
-                    .collect::<Result<_>>()?;
-
-                // Rewrite pattern comprehensions inside WITH projections
-                let has_pattern_comp = projections
-                    .iter()
-                    .any(|p| Self::expr_contains_pattern_comprehension(&p.expression));
-                if has_pattern_comp {
-                    let items: Vec<ReturnItem> = projections
-                        .into_iter()
-                        .map(|p| ReturnItem {
-                            expression: p.expression,
-                            alias: p.alias,
-                        })
-                        .collect();
-                    let (rewritten_plan, rewritten_items) =
-                        self.rewrite_pattern_comprehensions(plan, items)?;
-                    let rewritten_projections = rewritten_items
-                        .into_iter()
-                        .map(|item| Projection {
-                            expression: item.expression,
-                            alias: item.alias,
-                        })
-                        .collect();
-                    plan = LogicalOperator::Project(ProjectOp {
-                        projections: rewritten_projections,
-                        input: Box::new(rewritten_plan),
-                        pass_through_input: false,
-                    });
-                } else {
-                    plan = LogicalOperator::Project(ProjectOp {
-                        projections,
-                        input: Box::new(plan),
-                        pass_through_input: false,
-                    });
-                }
-            }
-            // WITH * skips projection: all variables pass through unchanged
-
-            // Handle LET bindings attached to this WITH clause.
-            // LET adds new columns without replacing existing ones.
-            if !with_clause.let_bindings.is_empty() {
-                let mut let_projections = Vec::new();
-                for (name, expr) in &with_clause.let_bindings {
-                    let logical_expr = self.translate_expression(expr)?;
-                    let_projections.push(Projection {
-                        expression: logical_expr,
-                        alias: Some(name.clone()),
-                    });
-                }
-                plan = LogicalOperator::Project(ProjectOp {
-                    projections: let_projections,
-                    input: Box::new(plan),
-                    pass_through_input: true,
-                });
-            }
-
-            // Apply WHERE filter if present in WITH clause
-            if let Some(where_clause) = &with_clause.where_clause {
-                let predicate = self.translate_expression(&where_clause.expression)?;
-                plan = wrap_filter(plan, predicate);
-            }
-
-            // Handle DISTINCT
-            if with_clause.distinct {
-                plan = wrap_distinct(plan);
-            }
-        }
-
-        // Handle FOREACH clauses that appear after WITH (they were added to
-        // ordered_clauses during parsing but need to be translated AFTER the
-        // WITH projection so that WITH-introduced variables are visible).
-        // We skip ForEach clauses already translated in the ordered_clauses pass
-        // by only processing them here if with_clauses is non-empty.
-        if !query.with_clauses.is_empty() {
-            for clause in &query.ordered_clauses {
-                if let ast::QueryClause::ForEach(foreach_clause) = clause {
-                    plan = self.translate_foreach_gql(foreach_clause, plan)?;
                 }
             }
         }
@@ -1479,6 +1352,139 @@ impl GqlTranslator {
     ///
     /// When multiple comma-separated patterns share variables, creates proper
     /// `JoinOp` operators with equality conditions instead of cross products.
+    /// Traduit un `WITH` sur le plan courant : projection (ou agrégat), `LET`,
+    /// `WHERE`, `DISTINCT`.
+    ///
+    /// Appelée à la POSITION du `WITH` dans la requête (`QueryClause::With`) :
+    /// un `MATCH` écrit après un `WITH` part des colonnes du `WITH`, il ne
+    /// s'exécute pas avant lui. Planifié avant, il multipliait les lignes — et
+    /// les comptes d'un `WITH` agrégé — par le nombre de ses correspondances.
+    fn translate_with_clause(
+        &self,
+        with_clause: &ast::WithClause,
+        mut plan: LogicalOperator,
+    ) -> Result<LogicalOperator> {
+        // ── UN AGRÉGAT DANS `WITH` DOIT ÊTRE AGRÉGÉ, PAS ÉVALUÉ ────────
+        // Défaut mesuré le 2026-09-17 : `MATCH (n:WA) WITH sum(n.v) AS
+        // total RETURN total` rendait « fonction inconnue : sum » — cette
+        // boucle traduisait CHAQUE item en projection scalaire, sans jamais
+        // regarder s'il portait un agrégat. Le `RETURN` de GQL le fait
+        // (plus bas, `has_aggregates`), et le traducteur Cypher le fait
+        // depuis toujours pour son `WITH` (`cypher.rs::translate_with`) :
+        // c'est le `WITH` de GQL qui manquait. Un agrégat arrivé intact à
+        // l'évaluateur est une fonction scalaire inconnue — donc une erreur
+        // d'exécution à la place d'un résultat.
+        let has_aggregates = with_clause
+            .items
+            .iter()
+            .any(|item| contains_aggregate(&item.expression));
+        if has_aggregates {
+            let (aggregates, group_by, post_return) =
+                self.extract_aggregates_and_groups(&with_clause.items, false)?;
+            plan = LogicalOperator::Aggregate(AggregateOp {
+                group_by,
+                aggregates,
+                input: Box::new(plan),
+                // `HAVING` n'existe pas sur un `WITH` : la condition d'un
+                // `WITH` est son `WHERE`, appliqué plus bas, APRÈS la
+                // projection — comme le veut Cypher/GQL.
+                having: None,
+            });
+            // Les items qui ENVELOPPENT un agrégat (`sum(v) > 10 AS grand`)
+            // sont recalculés après l'agrégat, sur les colonnes
+            // synthétiques — sinon ils seraient évalués avant lui.
+            if let Some(items) = post_return {
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections: items
+                        .into_iter()
+                        .map(|item| Projection {
+                            expression: item.expression,
+                            alias: item.alias,
+                        })
+                        .collect(),
+                    input: Box::new(plan),
+                    pass_through_input: false,
+                });
+            }
+        } else if !with_clause.is_wildcard {
+            let projections: Vec<Projection> = with_clause
+                .items
+                .iter()
+                .map(|item| {
+                    Ok(Projection {
+                        expression: self.translate_expression(&item.expression)?,
+                        alias: item.alias.clone(),
+                    })
+                })
+                .collect::<Result<_>>()?;
+
+            // Rewrite pattern comprehensions inside WITH projections
+            let has_pattern_comp = projections
+                .iter()
+                .any(|p| Self::expr_contains_pattern_comprehension(&p.expression));
+            if has_pattern_comp {
+                let items: Vec<ReturnItem> = projections
+                    .into_iter()
+                    .map(|p| ReturnItem {
+                        expression: p.expression,
+                        alias: p.alias,
+                    })
+                    .collect();
+                let (rewritten_plan, rewritten_items) =
+                    self.rewrite_pattern_comprehensions(plan, items)?;
+                let rewritten_projections = rewritten_items
+                    .into_iter()
+                    .map(|item| Projection {
+                        expression: item.expression,
+                        alias: item.alias,
+                    })
+                    .collect();
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections: rewritten_projections,
+                    input: Box::new(rewritten_plan),
+                    pass_through_input: false,
+                });
+            } else {
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections,
+                    input: Box::new(plan),
+                    pass_through_input: false,
+                });
+            }
+        }
+        // WITH * skips projection: all variables pass through unchanged
+
+        // Handle LET bindings attached to this WITH clause.
+        // LET adds new columns without replacing existing ones.
+        if !with_clause.let_bindings.is_empty() {
+            let mut let_projections = Vec::new();
+            for (name, expr) in &with_clause.let_bindings {
+                let logical_expr = self.translate_expression(expr)?;
+                let_projections.push(Projection {
+                    expression: logical_expr,
+                    alias: Some(name.clone()),
+                });
+            }
+            plan = LogicalOperator::Project(ProjectOp {
+                projections: let_projections,
+                input: Box::new(plan),
+                pass_through_input: true,
+            });
+        }
+
+        // Apply WHERE filter if present in WITH clause
+        if let Some(where_clause) = &with_clause.where_clause {
+            let predicate = self.translate_expression(&where_clause.expression)?;
+            plan = wrap_filter(plan, predicate);
+        }
+
+        // Handle DISTINCT
+        if with_clause.distinct {
+            plan = wrap_distinct(plan);
+        }
+        Ok(plan)
+    }
+
     fn translate_match_with_input(
         &self,
         match_clause: &ast::MatchClause,

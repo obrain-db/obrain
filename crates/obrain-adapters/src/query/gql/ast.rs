@@ -207,6 +207,12 @@ pub struct LoadDataClause {
 pub enum QueryClause {
     /// A MATCH clause.
     Match(MatchClause),
+    /// A WITH clause, at its position in the query: a MATCH written after it
+    /// starts from its columns.
+    With(WithClause),
+    /// A WHERE written after a MATCH that follows a WITH: it filters that
+    /// MATCH, at its position.
+    Where(WhereClause),
     /// An UNWIND clause.
     Unwind(UnwindClause),
     /// A FOR clause (desugared to UNWIND).

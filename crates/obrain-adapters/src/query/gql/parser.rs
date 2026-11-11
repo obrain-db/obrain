@@ -802,6 +802,7 @@ impl<'a> Parser<'a> {
                 wc.let_bindings = self.parse_let_clause()?;
             }
 
+            ordered_clauses.push(QueryClause::With(wc.clone()));
             with_clauses.push(wc);
 
             // After WITH (+ optional LET), we can have more clauses
@@ -811,6 +812,13 @@ impl<'a> Parser<'a> {
                         let clause = self.parse_match_clause()?;
                         ordered_clauses.push(QueryClause::Match(clause.clone()));
                         match_clauses.push(clause);
+                        // `WITH … MATCH … WHERE …` : le `WHERE` filtre ce
+                        // `MATCH`, à sa position (il n'y avait de `WHERE` qu'avant
+                        // le premier `WITH`).
+                        if self.current.kind == TokenKind::Where {
+                            let clause = self.parse_where_clause()?;
+                            ordered_clauses.push(QueryClause::Where(clause));
+                        }
                     }
                     TokenKind::Unwind => {
                         let clause = self.parse_unwind_clause()?;

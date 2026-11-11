@@ -583,8 +583,6 @@ cas_en!(
     ]
 );
 
-// GQL planifie un `MATCH` écrit après un `WITH` AVANT ce `WITH` : les formes à
-// `WITH` intermédiaire n'y sont pas jouées (voir le commit suivant).
 cas_en!(
     gql,
     super::Langage::Gql,
@@ -601,5 +599,11 @@ cas_en!(
         tous_les_labels_de_la_cible,
         proprietes_en_ligne_d_une_relation_nommee,
         proprietes_en_ligne_d_une_relation_anonyme,
+        cible_liee_apres_with,
+        cible_liee_apres_with_distinct,
+        variable_sortie_de_portee_par_with_n_est_plus_liee,
+        cible_liee_apres_with_agrege,
+        match_apres_with_agrege_ne_multiplie_pas_le_compte,
+        where_apres_match_apres_with,
     ]
 );
