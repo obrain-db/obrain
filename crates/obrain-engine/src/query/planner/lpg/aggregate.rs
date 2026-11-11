@@ -6,8 +6,9 @@ use super::{
     HashAggregateOperator, HashMap, LazyFactorizedChainOperator, LogicalAggregateFunction,
     LogicalExpression, LogicalOperator, LogicalType, Operator, PhysicalAggregateExpr, ProjectExpr,
     ProjectOperator, Result, ScalarResultOperator, SimpleAggregateOperator, Value,
-    convert_aggregate_function, expression_to_string,
+    convert_aggregate_function,
 };
+use crate::query::planner::common::group_key_column_names;
 use obrain_core::execution::DataChunk;
 use obrain_core::execution::operators::OperatorResult;
 
@@ -152,6 +153,23 @@ impl super::Planner {
             }
         }
 
+        // La projection ci-dessous pose TOUTES les propriétés, puis TOUTES les
+        // expressions calculées. Les indices notés au fil de la collecte
+        // suivaient l'ordre de rencontre : dès qu'une expression calculée était
+        // rencontrée avant une propriété (`n.w > 5` en clé, puis `avg(n.w)`),
+        // chacune lisait la colonne de l'autre — la clé rendait `n.w`, `avg`
+        // agrégeait un booléen et rendait NULL. Les indices sont refaits ici
+        // d'après la disposition réelle.
+        for (rang, (_, _, col_name)) in property_projections.iter().enumerate() {
+            variable_columns.insert(col_name.clone(), input_columns.len() + rang);
+        }
+        for (rang, (_, col_name)) in expression_projections.iter().enumerate() {
+            variable_columns.insert(
+                col_name.clone(),
+                input_columns.len() + property_projections.len() + rang,
+            );
+        }
+
         // If we have property or expression projections, add a projection to materialize them
         if !property_projections.is_empty() || !expression_projections.is_empty() {
             let mut projections = Vec::new();
@@ -245,9 +263,9 @@ impl super::Planner {
         let mut output_columns = Vec::new();
 
         // Add group-by columns
-        for expr in &agg.group_by {
+        for nom in group_key_column_names(&agg.group_by) {
             output_schema.push(LogicalType::Any); // Group-by values can be any type
-            output_columns.push(expression_to_string(expr));
+            output_columns.push(nom);
         }
 
         // Add aggregate result columns
@@ -291,12 +309,9 @@ impl super::Planner {
                 LogicalAggregateFunction::RegrCount => LogicalType::Int64,
             };
             output_schema.push(result_type);
-            output_columns.push(
-                agg_expr
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase()),
-            );
+            output_columns.push(agg_expr.alias.clone().unwrap_or_else(|| {
+                crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+            }));
         }
 
         // Register all aggregate output columns as scalar (group-by values and
@@ -482,10 +497,9 @@ impl super::Planner {
             .aggregates
             .iter()
             .map(|agg_expr| {
-                agg_expr
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase())
+                agg_expr.alias.clone().unwrap_or_else(|| {
+                    crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+                })
             })
             .collect();
 
@@ -676,10 +690,9 @@ impl super::Planner {
             };
 
             if let Some(n) = compte {
-                let alias = agg_expr
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase());
+                let alias = agg_expr.alias.clone().unwrap_or_else(|| {
+                    crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+                });
                 self.scalar_columns.borrow_mut().insert(alias.clone());
                 let op: Box<dyn Operator> = Box::new(ScalarResultOperator::new(
                     vec![Value::Int64(n)],
@@ -707,10 +720,9 @@ impl super::Planner {
                     self.store.node_count() as i64
                 };
 
-                let alias = agg_expr
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase());
+                let alias = agg_expr.alias.clone().unwrap_or_else(|| {
+                    crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+                });
 
                 // Register as scalar column
                 self.scalar_columns.borrow_mut().insert(alias.clone());
@@ -799,10 +811,9 @@ impl super::Planner {
             // Type Any, jamais Int64 : sinon 0 pousse en silence sur une colonne
             // chaine (meme raison qu au chemin generique des agregats).
             schema.push(LogicalType::Any);
-            let alias = agg_expr
-                .alias
-                .clone()
-                .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase());
+            let alias = agg_expr.alias.clone().unwrap_or_else(|| {
+                crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+            });
             self.scalar_columns.borrow_mut().insert(alias.clone());
             colonnes.push(alias);
         }
@@ -1147,11 +1158,10 @@ impl super::Planner {
         // Noms et types de sortie : les MÊMES expressions que le chemin
         // générique, pour que le parent — tri, projection, `HAVING` d'un plan
         // englobant — retrouve ses colonnes sous le même nom.
-        let alias = agg_expr
-            .alias
-            .clone()
-            .unwrap_or_else(|| format!("{:?}(...)", agg_expr.function).to_lowercase());
-        let mut colonnes: Vec<String> = agg.group_by.iter().map(expression_to_string).collect();
+        let alias = agg_expr.alias.clone().unwrap_or_else(|| {
+            crate::query::planner::common::default_aggregate_column_name(agg_expr.function)
+        });
+        let mut colonnes: Vec<String> = group_key_column_names(&agg.group_by);
         colonnes.push(alias);
         for c in &colonnes {
             self.scalar_columns.borrow_mut().insert(c.clone());
