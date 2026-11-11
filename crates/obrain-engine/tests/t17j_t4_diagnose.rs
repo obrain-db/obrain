@@ -96,7 +96,7 @@ fn diagnose_imports_endpoints_on_po() {
 /// T17j T5 — apply repair to Wikipedia + Megalaw. Same as PO test
 /// but larger (Wiki 119M edges / Megalaw 14.68M edges). MUTATES.
 #[test]
-#[ignore = "répare une COPIE de OBRAIN_BENCH_DB_WIKIPEDIA / _MEGALAW — à lancer à la main"]
+#[ignore = "répare une COPIE des bases wikipedia et megalaw désignées (docs/BENCHMARKS.md) — à lancer à la main"]
 fn repair_wiki_and_megalaw_outgoing_chains() {
     for (base, label) in [(Base::Wikipedia, "Article"), (Base::Megalaw, "Concept")] {
         let name = base.nom();
@@ -148,7 +148,7 @@ fn repair_wiki_and_megalaw_outgoing_chains() {
 /// match rec.src. `#[ignore]` by default because it MUTATES PO —
 /// run manually with `cargo test -- repair_po --include-ignored`.
 #[test]
-#[ignore = "répare une COPIE de OBRAIN_BENCH_DB_PO — à lancer à la main"]
+#[ignore = "répare une COPIE de la base po désignée (docs/BENCHMARKS.md) — à lancer à la main"]
 fn repair_po_outgoing_chains() {
     // Répare une COPIE : poser OBRAIN_BENCH_GARDER_COPIE=1 pour la conserver.
     let Some(po_path) = base_copie(Base::Po) else {

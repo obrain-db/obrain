@@ -1,7 +1,10 @@
 //! Banc du CHEMIN NANOSECONDE : mesure, en processus, ce que coute
 //! l'enveloppe GQL par rapport aux primitives qu'elle transporte.
 //!
-//! Store reel exige (lecture seule) :
+//! Store reel exige — chemin ABSOLU d'une base. Le banc n'ouvre jamais ce
+//! chemin : il en prend une COPIE temporaire (clonee sur APFS) et ouvre la
+//! copie en lecture seule. `open_read_only` ecrit sur le disque (rejeu du WAL,
+//! colonnes reconstruites) : voir docs/BENCHMARKS.md, « Bancs sur bases reelles ».
 //!   NANO_STORE=/chemin/store.obrain cargo bench -p obrain-engine --bench chemin_nanoseconde
 //!
 //! Sans `NANO_STORE`, le banc s'abstient plutot que de mesurer un jouet.
@@ -13,11 +16,23 @@ use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
 
 fn store() -> Option<ObrainDB> {
-    let p = std::env::var("NANO_STORE").ok()?;
-    match ObrainDB::open_read_only(&p) {
+    // Une copie pour tout le processus (chaque groupe de mesures rouvre le
+    // store) ; supprimee a la sortie.
+    static COPIE: std::sync::OnceLock<Option<obrain_bases_banc::CopieBase>> =
+        std::sync::OnceLock::new();
+    let copie = COPIE
+        .get_or_init(|| {
+            let p = std::env::var_os("NANO_STORE").filter(|v| !v.is_empty())?;
+            Some(obrain_bases_banc::copie_de(
+                std::path::Path::new(&p),
+                "NANO_STORE",
+            ))
+        })
+        .as_ref()?;
+    match ObrainDB::open_read_only(copie.chemin()) {
         Ok(db) => Some(db),
         Err(e) => {
-            eprintln!("NANO_STORE illisible ({p}) : {e}");
+            eprintln!("copie de NANO_STORE illisible : {e}");
             None
         }
     }

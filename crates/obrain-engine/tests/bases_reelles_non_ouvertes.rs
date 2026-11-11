@@ -31,8 +31,10 @@
 //!
 //! Ils passeront au vert, sans y toucher, le jour où le moteur sera corrigé.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use obrain_bases_banc::{Base, Empreinte, base_copie, base_lecture, empreinte};
 use obrain_common::types::Value;
@@ -54,6 +56,16 @@ fn enfant_joue_un_banc() {
     };
     if role == "salisseur" {
         salir(Path::new(&std::env::var(A_SALIR).expect(A_SALIR)));
+    }
+    if role == "bloque" {
+        // Un enfant qui ne rend jamais la main : celui que le délai doit tuer.
+        loop {
+            std::thread::park();
+        }
+    }
+    if role == "lecteurs_paralleles" {
+        lire_en_parallele();
+        return;
     }
     for base in Base::TOUTES {
         match role.as_str() {
@@ -91,6 +103,38 @@ fn enfant_joue_un_banc() {
             autre => panic!("rôle inconnu : {autre}"),
         }
     }
+}
+
+/// Nombre de lecteurs simultanés de la même copie.
+const LECTEURS: usize = 8;
+
+/// Ce que font les tests d'un même binaire lancés en parallèle par libtest :
+/// [`LECTEURS`] fils ouvrent AU MÊME INSTANT la copie partagée de la `po` et
+/// la lisent. Chacun imprime ce qu'il voit.
+///
+/// La barrière est FRANCHIE avant tout ce qui peut paniquer : un fil qui
+/// paniquerait avant `wait` laisserait les autres attendre pour toujours. Ce
+/// qui suit (copie, ouverture, lecture) peut échouer : la panique termine
+/// l'enfant, et le parent le voit (`lancer_enfant`, borné par [`DELAI_ENFANT`]).
+fn lire_en_parallele() {
+    let depart = std::sync::Barrier::new(LECTEURS);
+    std::thread::scope(|portee| {
+        for _ in 0..LECTEURS {
+            portee.spawn(|| {
+                depart.wait();
+                // Copie demandée par huit fils à la fois : une seule doit être prise.
+                let designee = base_lecture(Base::Po).expect("po désignée");
+                let db = designee.ouvrir();
+                let store = db.store();
+                println!(
+                    "LU noeuds={} aretes={} fichiers={}",
+                    store.node_count(),
+                    store.edge_count(),
+                    store.nodes_by_label("File").len()
+                );
+            });
+        }
+    });
 }
 
 /// L'écrivain interrompu : écrit dans la base (nœuds, arêtes, un graphe
@@ -146,33 +190,104 @@ fn faux_home(racine: &Path) -> PathBuf {
         po.join("graphs/annexe").is_dir(),
         "la base « sale » n'a pas de graphe nommé"
     );
+    stabiliser(&db);
     db
+}
+
+/// Pousse sur le disque les pages que le salisseur a salies par mmap sans les
+/// synchroniser. Sans cela, le noyau peut ne dater un fichier qu'au vidage
+/// différé de ses pages : l'empreinte « avant » verrait alors une date que
+/// l'empreinte « après » ne retrouverait pas, sans que personne ait écrit.
+fn stabiliser(dossier: &Path) {
+    for entree in std::fs::read_dir(dossier).unwrap() {
+        let chemin = entree.unwrap().path();
+        if chemin.is_dir() {
+            stabiliser(&chemin);
+        } else {
+            // Sous Windows, `FlushFileBuffers` exige un accès en écriture ; la base
+            // est une fixture de ce test, l'ouvrir ainsi n'y écrit rien.
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(cfg!(not(unix)))
+                .open(&chemin)
+                .unwrap()
+                .sync_all()
+                .unwrap();
+        }
+    }
 }
 
 /// Relance ce binaire sur le seul test enfant, avec `HOME` = `home`, son
 /// propre `TMPDIR` (`tmp`) et les désignations `designations` — aucune autre.
 fn lancer_enfant(role: &str, home: &Path, tmp: &Path, designations: &[(Base, &Path)]) -> Output {
+    lancer_enfant_avec_delai(role, home, tmp, designations, DELAI_ENFANT)
+        .unwrap_or_else(|echec| panic!("{echec}"))
+}
+
+/// Délai au-delà duquel un enfant est tenu pour bloqué, tué, et nommé.
+const DELAI_ENFANT: Duration = Duration::from_secs(120);
+
+/// Comme [`lancer_enfant`], mais rend l'échec ou le blocage au lieu de
+/// paniquer.
+fn lancer_enfant_avec_delai(
+    role: &str,
+    home: &Path,
+    tmp: &Path,
+    designations: &[(Base, &Path)],
+    delai: Duration,
+) -> Result<Output, String> {
     let mut commande = Command::new(std::env::current_exe().unwrap());
     commande
         .args(["--exact", "enfant_joue_un_banc", "--nocapture"])
         .env(ROLE, role)
         .env("HOME", home)
         .env("TMPDIR", tmp)
-        .env_remove(obrain_bases_banc::VARIABLE_GARDER_COPIE);
-    for base in Base::TOUTES {
-        commande.env_remove(base.variable());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    obrain_bases_banc::designer_pour_un_enfant(&mut commande, designations);
+    let mut enfant = commande.spawn().expect("lancement du sous-processus");
+    // Les sorties sont lues dans des fils : un enfant bavard ne doit pas se
+    // bloquer sur un tube plein pendant qu'on attend sa fin.
+    fn lire<R: Read + Send + 'static>(flux: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut octets = Vec::new();
+            if let Some(mut flux) = flux {
+                let _ = flux.read_to_end(&mut octets);
+            }
+            octets
+        })
     }
-    for (base, chemin) in designations {
-        commande.env(base.variable(), chemin);
+    let stdout = lire(enfant.stdout.take());
+    let stderr = lire(enfant.stderr.take());
+    let debut = Instant::now();
+    let statut = loop {
+        if let Some(statut) = enfant.try_wait().expect("attente de l'enfant") {
+            break statut;
+        }
+        if debut.elapsed() > delai {
+            let _ = enfant.kill();
+            let _ = enfant.wait();
+            return Err(format!(
+                "l'enfant « {role} » est BLOQUÉ : tué après {delai:?}. Sortie :\n{}\n{}",
+                texte(&stdout.join().unwrap()),
+                texte(&stderr.join().unwrap())
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let sortie = Output {
+        status: statut,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    };
+    if !sortie.status.success() {
+        return Err(format!(
+            "l'enfant « {role} » a échoué :\n{}\n{}",
+            texte(&sortie.stdout),
+            texte(&sortie.stderr)
+        ));
     }
-    let sortie = commande.output().expect("lancement du sous-processus");
-    assert!(
-        sortie.status.success(),
-        "l'enfant « {role} » a échoué :\n{}\n{}",
-        texte(&sortie.stdout),
-        texte(&sortie.stderr)
-    );
-    sortie
+    Ok(sortie)
 }
 
 fn texte(octets: &[u8]) -> String {
@@ -248,7 +363,10 @@ fn sans_designation_les_bases_sous_home_ne_sont_ni_ouvertes_ni_modifiees() {
                 base.nom()
             );
             assert!(
-                stderr.contains(&format!("{} n'est pas définie", base.variable())),
+                stderr.contains(&format!(
+                    "n'est pas définie — la base réelle « {} » n'est PAS ouverte",
+                    base.nom()
+                )),
                 "le saut de « {} » n'est pas annoncé :\n{stderr}",
                 base.nom()
             );
@@ -286,9 +404,7 @@ fn designee_une_cible_lectrice_ne_touche_pas_un_octet_de_la_base() {
     assert!(stdout.contains("SAUTE wikipedia") && stdout.contains("SAUTE megalaw"));
     // Deux demandes dans le même binaire, UNE copie.
     assert_eq!(
-        stderr
-            .matches("BANC [enfant_joue_un_banc] : copie de")
-            .count(),
+        stderr.matches("] : copie de ").count(),
         1,
         "la base a été copiée plus d'une fois pour un seul binaire :\n{stderr}"
     );
@@ -392,4 +508,60 @@ fn defaut_moteur_lecture_seule_cree_une_base() {
         ouverture.is_err(),
         "open_read_only d'un répertoire sans substrate.meta doit échouer"
     );
+}
+
+/// Plusieurs tests d'un même binaire partagent la copie de lecture, et
+/// libtest les lance en parallèle : [`LECTEURS`] ouvertures simultanées de la
+/// même copie d'une base SALE (fenêtre WAL non vide). Chaque lecteur doit voir
+/// la même base, et la bonne : les 3 nœuds du checkpoint, les 2 nœuds et les
+/// 2 arêtes que l'écrivain interrompu avait validés.
+#[test]
+fn des_lecteurs_simultanes_de_la_meme_copie_voient_tous_la_meme_base() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bases = faux_home(tmp.path());
+    let home_vide = tempfile::tempdir().unwrap();
+    let tmp_enfant = tempfile::tempdir().unwrap();
+    let po = bases.join("po");
+    let avant = empreinte(&bases).unwrap();
+
+    let sortie = lancer_enfant(
+        "lecteurs_paralleles",
+        home_vide.path(),
+        tmp_enfant.path(),
+        &[(Base::Po, &po)],
+    );
+    let (stdout, stderr) = (texte(&sortie.stdout), texte(&sortie.stderr));
+    let lus: Vec<&str> = stdout.lines().filter(|l| l.starts_with("LU ")).collect();
+    let attendu = format!("LU noeuds={n} aretes=2 fichiers={n}", n = NOEUDS + 2);
+    assert_eq!(lus.len(), LECTEURS, "{stdout}\n{stderr}");
+    assert!(
+        lus.iter().all(|l| *l == attendu),
+        "des lecteurs simultanés de la même copie ne voient pas tous « {attendu} » :\n{}",
+        lus.join("\n")
+    );
+    assert_eq!(
+        stderr.matches("] : copie de ").count(),
+        1,
+        "la base a été copiée plus d'une fois :\n{stderr}"
+    );
+    exiger_identique(&avant, &bases, "des lecteurs ont modifié la base désignée");
+}
+
+/// Un enfant bloqué (un fil qui panique avant une barrière, un verrou jamais
+/// rendu…) ne bloque pas la suite : il est tué au bout du délai, et nommé.
+#[test]
+fn un_enfant_bloque_est_tue_au_bout_du_delai_et_nomme() {
+    let home_vide = tempfile::tempdir().unwrap();
+    let tmp_enfant = tempfile::tempdir().unwrap();
+    let debut = Instant::now();
+    let blocage = lancer_enfant_avec_delai(
+        "bloque",
+        home_vide.path(),
+        tmp_enfant.path(),
+        &[],
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    assert!(blocage.contains("« bloque » est BLOQUÉ"), "{blocage}");
+    assert!(debut.elapsed() < Duration::from_secs(30));
 }

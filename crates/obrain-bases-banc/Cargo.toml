@@ -15,16 +15,28 @@ publish = false
 [dependencies]
 tempfile.workspace = true
 # Le helper OUVRE lui-même les copies (lecture seule) : il ne rend jamais un
-# chemin de base désignée à une cible. D'où ces deux dépendances — un cycle
-# de dev-dépendances (engine/substrate --dev--> ce crate --> engine/substrate),
-# que cargo autorise.
-obrain-engine = { workspace = true, features = ["default"] }
+# chemin de base désignée à une cible lectrice.
+#
+# `obrain-substrate` est toujours là (ouverture au niveau du substrat) : pour
+# les tests du substrat c'est un cycle de dev-dépendances gratuit, le crate est
+# déjà compilé. `obrain-engine`, lui, n'est tiré QUE par la feature `moteur`,
+# que seuls les crates qui dépendent déjà du moteur activent : sans cela,
+# `cargo test -p obrain-substrate` compilerait tout le moteur pour rien.
 obrain-substrate.workspace = true
+# `default-features = false` : sous `--no-default-features`, le cycle de
+# dev-dépendances ne doit pas réactiver les features par défaut du moteur.
+# `ObrainDB::open_read_only` n'en demande aucune (vérifié :
+# `cargo check -p obrain-bases-banc --features moteur`).
+obrain-engine = { workspace = true, default-features = false, optional = true }
 
 # Nettoyage des copies : `atexit` en fin de processus, `kill(pid, 0)` pour
 # reconnaître les résidus d'un processus mort.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+# Ouverture de la copie par le moteur (`BaseLecture::ouvrir`).
+moteur = ["dep:obrain-engine"]
 
 [lints]
 workspace = true

@@ -80,7 +80,7 @@ tempfile.workspace = true
 serde_json = "1"
 # Bases réelles des bancs : désignées par variable, jamais devinées sous $HOME.
 # Chemin SANS version : outil non publié, retiré du manifeste par `cargo publish`.
-obrain-bases-banc = { path = "../obrain-bases-banc" }
+obrain-bases-banc = { path = "../obrain-bases-banc", features = ["moteur"] }
 tokio.workspace = true
 crc32fast.workspace = true
 

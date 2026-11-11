@@ -15,7 +15,7 @@ use web_time::Instant;
 use obrain_engine::ObrainDB;
 
 #[test]
-#[ignore = "écrit dans une COPIE de OBRAIN_BENCH_DB_PO — à lancer à la main"]
+#[ignore = "écrit dans une COPIE de la base po désignée (docs/BENCHMARKS.md) — à lancer à la main"]
 fn diagnose_cypher_parse_plan_vs_direct_api() {
     let Some(po_path) = base_copie(Base::Po) else {
         return;
