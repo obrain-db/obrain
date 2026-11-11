@@ -28,6 +28,7 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
 use web_time::Instant;
@@ -53,13 +54,8 @@ const DUAL_QUERY: &str = "MATCH (f:File) \
     LIMIT 50";
 
 fn open_po_or_skip() -> Option<ObrainDB> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭  ~/.obrain/db/po not present — skipping T9b correctness tests");
-        return None;
-    }
-    Some(ObrainDB::open(&po_path).expect("open PO db"))
+    let po_path = base_lecture(Base::Po)?;
+    Some(ObrainDB::open_read_only(&po_path).expect("open PO db"))
 }
 
 /// Fingerprint a row as a tuple of `(path, imports, dependents,

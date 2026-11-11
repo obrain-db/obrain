@@ -32,7 +32,7 @@ Ordre de publication (chaque crate dépend des précédents) : common → core �
 3. La CI (`.github/workflows/ci.yml`) joue : format ; clippy en `-D warnings` (aucun avertissement toléré) ; `cargo doc` en `RUSTDOCFLAGS=-D warnings` ; tests en features par défaut ; compilation `--all-features` en `RUSTFLAGS=-D warnings` ; MSRV ; `cargo deny` ; métadonnées de publication ; tests d'intégrité sur macOS.
 4. Fusion en *squash* ; une PR = un sujet.
 
-Ce que la CI ne joue pas et qu'il faut lancer à la main avant une version : `cargo test --workspace --all-features`, `cargo test --workspace --release`, les tests `#[ignore]` (`mesures.yml`, à la demande), les benchs (`make bench-v001`, voir `docs/BENCHMARKS.md`).
+Ce que la CI ne joue pas et qu'il faut lancer à la main avant une version : `cargo test --workspace --all-features`, `cargo test --workspace --release`, les tests `#[ignore]` (`mesures.yml`, à la demande), les benchs (`make bench-v001`, voir `docs/BENCHMARKS.md`). Les bancs sur bases réelles (`po`, `wikipedia`, `megalaw`) ne s'activent que si `OBRAIN_BENCH_DB_PO` / `_WIKIPEDIA` / `_MEGALAW` désigne la base — jamais par un chemin deviné sous `$HOME` (`docs/BENCHMARKS.md`, « Bancs sur bases réelles »).
 
 ## Règles du dépôt
 

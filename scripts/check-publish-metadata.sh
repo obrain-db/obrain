@@ -17,7 +17,10 @@ for c in obrain-common obrain-core obrain-substrate obrain-adapters obrain-react
   done
   [ -f "crates/$c/README.md" ] || { echo "$c : README.md absent"; echec=1; }
   [ -f "crates/$c/LICENSE" ] || { echo "$c : LICENSE absent"; echec=1; }
-  if grep -nE '^obrain-[a-z-]+ *= *\{[^}]*path *=' "$m" | grep -v 'version' | grep -q .; then
+  # `obrain-bases-banc` est l'outil de test interne (publish = false), présent
+  # uniquement en dev-dependencies : un chemin SANS version y est voulu, cargo
+  # le retire du manifeste publié. Lui donner une version casserait la publication.
+  if grep -nE '^obrain-[a-z-]+ *= *\{[^}]*path *=' "$m" | grep -v 'version' | grep -vE '^[0-9]+:obrain-bases-banc ' | grep -q .; then
     echo "$c : dépendance interne par chemin sans version"; echec=1
   fi
 done

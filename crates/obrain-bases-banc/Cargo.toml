@@ -1,0 +1,19 @@
+[package]
+name = "obrain-bases-banc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Désignation explicite des bases réelles pour les bancs et audits d'Obrain (outil de test interne, non publié)"
+# Outil de test du dépôt : jamais sur crates.io. Les crates publiés n'en
+# dépendent qu'en `dev-dependencies` par chemin SANS version, que
+# `cargo publish` retire du manifeste publié.
+publish = false
+
+[dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

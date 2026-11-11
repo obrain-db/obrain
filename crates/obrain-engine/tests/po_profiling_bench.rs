@@ -6,6 +6,7 @@
 //! cargo test -p obrain-engine --release --features "cypher,wal,tiered-storage" \
 //!   --test po_profiling_bench -- --nocapture
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 use web_time::Instant;
 
@@ -33,14 +34,11 @@ fn measure(name: &str, session: &obrain_engine::Session, query: &str, iters: usi
 
 #[test]
 fn profile_list_project_symbols() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        println!("  Skipping — ~/.obrain/db/po not found");
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
+    };
 
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
     let session = db.session();
 
     println!("\n{}", "═".repeat(80));

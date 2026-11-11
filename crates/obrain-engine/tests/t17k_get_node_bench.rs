@@ -1,39 +1,22 @@
 //! T17k T3 step 4 — micro-bench get_node bulk-hydrate on prod bases.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "bench on prod bases"]
 fn bench_get_node_bulk_hydrate() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    for (name, path, label) in [
-        (
-            "po",
-            std::path::PathBuf::from(&home).join(".obrain/db/po"),
-            "File",
-        ),
-        (
-            "po",
-            std::path::PathBuf::from(&home).join(".obrain/db/po"),
-            "Decision",
-        ),
-        (
-            "wikipedia",
-            std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-            "Article",
-        ),
-        (
-            "megalaw",
-            std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-            "Concept",
-        ),
+    for (name, base, label) in [
+        ("po", Base::Po, "File"),
+        ("po", Base::Po, "Decision"),
+        ("wikipedia", Base::Wikipedia, "Article"),
+        ("megalaw", Base::Megalaw, "Concept"),
     ] {
-        if !path.exists() {
-            println!("⏭  {name}:{label} not present");
+        let Some(path) = base_lecture(base) else {
             continue;
-        }
-        let db = ObrainDB::open(&path).expect("open");
+        };
+        let db = ObrainDB::open_read_only(&path).expect("open");
         let store = db.store();
         let nodes = store.nodes_by_label(label);
         if nodes.len() < 10 {

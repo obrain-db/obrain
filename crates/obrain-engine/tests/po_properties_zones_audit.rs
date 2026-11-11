@@ -2,28 +2,21 @@
 //! / vec_columns / PropsZone v2. Uses get_node_property probe per zone.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "ad-hoc audit — read-only"]
 fn audit_where_po_properties_live() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    for (name, path) in [
-        ("po", std::path::PathBuf::from(&home).join(".obrain/db/po")),
-        (
-            "wikipedia",
-            std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-        ),
-        (
-            "megalaw",
-            std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-        ),
+    for (name, base) in [
+        ("po", Base::Po),
+        ("wikipedia", Base::Wikipedia),
+        ("megalaw", Base::Megalaw),
     ] {
-        if !path.exists() {
-            eprintln!("⏭  {name}: not present");
+        let Some(path) = base_lecture(base) else {
             continue;
-        }
-        let db = ObrainDB::open(&path).expect("open");
+        };
+        let db = ObrainDB::open_read_only(&path).expect("open");
         let store = db.store();
         println!("\n═══ {name} ═══");
         println!("  total nodes = {}", store.node_count());

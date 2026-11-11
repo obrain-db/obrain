@@ -20,17 +20,15 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 
 #[test]
 fn audit_imports_source_labels_on_po() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭ PO database not present; skipping");
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    };
+    let db = ObrainDB::open_read_only(&po_path).expect("open PO db");
     let session = db.session();
 
     println!("\n=== T17j T2 — IMPORTS source labels audit on PO ===");

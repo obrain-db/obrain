@@ -23,6 +23,7 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_core::execution::operators::{
     reset_typed_degree_rewrite_counter, typed_degree_rewrite_counter,
 };
@@ -37,13 +38,8 @@ use std::sync::Mutex;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn open_po_or_skip() -> Option<ObrainDB> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭  ~/.obrain/db/po not present — skipping T9b variance tests");
-        return None;
-    }
-    Some(ObrainDB::open(&po_path).expect("open PO db"))
+    let po_path = base_lecture(Base::Po)?;
+    Some(ObrainDB::open_read_only(&po_path).expect("open PO db"))
 }
 
 /// Variant 1 — intermediate `WHERE` between OPTIONAL MATCH and WITH.

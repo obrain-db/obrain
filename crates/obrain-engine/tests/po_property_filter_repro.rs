@@ -11,23 +11,21 @@
 //! so it kept "reproducing" an already-fixed bug. Rewritten as a positive
 //! gate on `f.path`.
 //!
-//! GOTCHA (note 5906c9b3): the first File-labelled slots in ~/.obrain/db/po
+//! GOTCHA (note 5906c9b3): the first File-labelled slots in the PO base
 //! are benchmark artifacts (props id/value/_bench_*) with no `path` — we
 //! scan past them to find a real File.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "gate on prod base — read-only"]
 fn po_where_property_filter_gate() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭  PO not present");
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
-    let db = ObrainDB::open(&po_path).expect("open PO");
+    };
+    let db = ObrainDB::open_read_only(&po_path).expect("open PO");
     let store = db.store();
     let session = db.session();
 

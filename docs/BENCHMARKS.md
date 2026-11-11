@@ -120,6 +120,48 @@ lecture à la planification, pas l'exécution. Chiffres **provisoires** (charge
   ≤ 100 ms, p95 ≤ 1 ms, recall ≥ 99 %) comme des faits : requalifiées en
   cibles, non mesurées.
 
+## Bancs sur bases réelles
+
+Une trentaine de cibles de test (`crates/obrain-engine/tests/po_*`, `megalaw_bench`, `t9_*`, `t17*`, `t5_*_po`, `property_index_po_bench`, `search_wikipedia_constellation`, `obrain-substrate/tests/label_scan_cap_bench`, `obrain-cognitive/tests/t17l_hilbert_enricher_on_po`) mesurent ou auditent de **vraies** bases : `po`, `wikipedia`, `megalaw`.
+
+**Elles ne tournent plus par défaut.** Jusqu'au 2026-11-11 elles devinaient `~/.obrain/db/<nom>` à partir de `$HOME` et ne se sautaient que si le dossier manquait. Ce jour-là, un `cargo test -p obrain-engine --features cypher` ordinaire a ouvert en lecture-écriture les bases de travail d'un développeur : `po_vs_neo4j_bench` y a créé puis supprimé des nœuds `_BenchNode` et posé des propriétés `_bench_*` sur des nœuds `File`, et un autre banc a été tué en pleine ouverture. Un test ne doit pas pouvoir faire cela sans qu'on le lui demande.
+
+La règle, portée par le crate interne `obrain-bases-banc` :
+
+- **Sans désignation, rien n'est ouvert.** La cible se saute et l'écrit (`SAUT [<test>] : OBRAIN_BENCH_DB_PO n'est pas définie…` sur la sortie d'erreur, visible avec `--nocapture`). Aucun chemin n'est jamais déduit de `$HOME`.
+- **Une variable par base désigne le répertoire à utiliser** :
+
+  | Base | Variable |
+  |---|---|
+  | `po` | `OBRAIN_BENCH_DB_PO` |
+  | `wikipedia` | `OBRAIN_BENCH_DB_WIKIPEDIA` |
+  | `megalaw` | `OBRAIN_BENCH_DB_MEGALAW` |
+
+  Une variable qui désigne autre chose qu'un répertoire fait échouer la cible : une désignation erronée n'est pas un saut.
+- **Une cible qui ne fait que lire ouvre la base désignée en lecture seule** (`open_read_only`). Les fichiers de données restent identiques à l'octet ; seul `substrate.alloc` (la borne d'allocation partagée, 4 Kio, recalculée à chaque ouverture) est republié par le moteur. Pour une garantie « aucun octet touché », désigner un instantané.
+- **Une cible qui écrit travaille sur une copie** dans un répertoire temporaire, supprimée à la fin : `po_vs_neo4j_bench`, `property_index_po_bench` (crée des index), `t17i_db_open_bench` (mesure l'ouverture en écriture), `t17i_upgrade_then_measure`, `t5_batch_wal_perf_bench_po`, `t5_diagnose_real_bottleneck`, les réparations de `t17j_t4_diagnose`, `t17l_hilbert_enricher_on_po`. La copie prend la place de la base sur le disque de `TMPDIR`, et n'est cohérente que si rien n'écrit dans la base pendant qu'elle est prise. `OBRAIN_BENCH_GARDER_COPIE=1` la conserve (son chemin est imprimé) — c'est ainsi qu'on récupère une base réparée.
+
+Lancer un banc volontairement :
+
+```bash
+OBRAIN_BENCH_DB_PO=/chemin/vers/po \
+  cargo test -p obrain-engine --release --features cypher \
+  --test po_vs_neo4j_bench -- bench_po_vs_neo4j --exact --nocapture
+
+# Les trois corpus, lecture seule
+OBRAIN_BENCH_DB_PO=/chemin/po OBRAIN_BENCH_DB_WIKIPEDIA=/chemin/wikipedia OBRAIN_BENCH_DB_MEGALAW=/chemin/megalaw \
+  cargo test -p obrain-engine --release --features cypher --test t17i_ram_bench -- --nocapture
+
+# La batterie de non-régression (exige OBRAIN_BENCH_DB_PO)
+OBRAIN_BENCH_DB_PO=/chemin/po scripts/bench-regression.sh
+```
+
+Les cibles marquées `#[ignore]` (audits ponctuels, bancs longs) demandent en plus `-- --ignored`.
+
+Deux tests verrouillent la règle et tournent, eux, à chaque `cargo test` : `crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs` fabrique de vraies bases dans un faux `HOME` temporaire, joue un banc en sous-processus et compare l'empreinte des fichiers avant et après ; `crates/obrain-bases-banc/tests/garde.rs` refuse toute cible du workspace qui lirait `HOME` ou construirait un chemin `.obrain/db`.
+
+Les autres bancs à store réel étaient déjà sur désignation explicite et le restent : `NANO_STORE` (`chemin_nanoseconde`), `OBRAIN_ZC_STORE` (`zero_copy`), `OBRAIN_BANC_BASE` (`banc_surcout`, `banc_plan_froid`), `OBRAIN_SONDE_STORE` (`cout_consolidation`), `OBRAIN_TEST_STORE_REEL_DIR` (`tenant_colonne`). Les trois derniers **ouvrent en écriture le chemin qu'on leur donne** : leur passer une copie, jamais l'original.
+
 ## Non-régression
 
 `scripts/bench-v001.sh save <nom>` enregistre une ligne de base Criterion ;

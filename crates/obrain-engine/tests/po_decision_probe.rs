@@ -2,14 +2,16 @@
 //! Also probe whether vec_columns have ANY data on any base.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 
 #[test]
 #[ignore = "ad-hoc audit — read-only"]
 fn probe_decision_and_vec_columns() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    let db = ObrainDB::open(&po).expect("open");
+    let Some(po) = base_lecture(Base::Po) else {
+        return;
+    };
+    let db = ObrainDB::open_read_only(&po).expect("open");
     let store = db.store();
 
     println!("\n=== all_property_keys on PO ===");

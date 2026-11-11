@@ -17,6 +17,7 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_engine::ObrainDB;
 use web_time::Instant;
 
@@ -33,14 +34,13 @@ fn current_rss_mb() -> f64 {
     s.trim().parse::<f64>().map_or(-1.0, |kb| kb / 1024.0)
 }
 
-fn measure(name: &str, path: std::path::PathBuf) {
-    if !path.exists() {
-        eprintln!("⏭  {name} : {} not found", path.display());
+fn measure(name: &str, base: Base) {
+    let Some(path) = base_lecture(base) else {
         return;
-    }
+    };
     let rss_before = current_rss_mb();
     let t0 = Instant::now();
-    let db = ObrainDB::open(&path).expect("open");
+    let db = ObrainDB::open_read_only(&path).expect("open");
     let open_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let rss_after_open = current_rss_mb();
 
@@ -69,17 +69,10 @@ fn measure(name: &str, path: std::path::PathBuf) {
 
 #[test]
 fn bench_ram_three_corpora() {
-    let home = std::env::var("HOME").unwrap_or_default();
     println!("\n=== T17i T4 — RAM bench : DB open + first queries ===");
     println!("(RSS values in MB, process-wide ; delta = increment during that phase)");
-    measure("PO", std::path::PathBuf::from(&home).join(".obrain/db/po"));
-    measure(
-        "Wikipedia",
-        std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-    );
-    measure(
-        "Megalaw",
-        std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-    );
+    measure("PO", Base::Po);
+    measure("Wikipedia", Base::Wikipedia);
+    measure("Megalaw", Base::Megalaw);
     println!("=== END ===");
 }

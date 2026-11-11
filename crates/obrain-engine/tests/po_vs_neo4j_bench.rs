@@ -7,7 +7,9 @@
 //! against the real PO Obrain database, and optionally against a live Neo4j instance.
 //!
 //! Usage:
-//!   # Obrain only (requires ~/.obrain/db/po)
+//!   # Obrain only — the base is DESIGNATED (never guessed under $HOME) and the
+//!   # bench, which writes, works on a temporary COPY of it
+//!   OBRAIN_BENCH_DB_PO=/path/to/po \
 //!   cargo test -p obrain-engine --release --features "cypher,wal,tiered-storage,algos" \
 //!     --test po_vs_neo4j_bench -- --nocapture
 //!
@@ -16,6 +18,7 @@
 //!   cargo test -p obrain-engine --release --features "cypher,wal,tiered-storage,algos" \
 //!     --test po_vs_neo4j_bench -- --nocapture
 
+use obrain_bases_banc::{Base, base_copie};
 use web_time::Instant;
 
 use obrain_core::graph::traits::GraphStore;
@@ -682,18 +685,16 @@ fn bench_api_overhead(
 
 #[test]
 fn bench_po_vs_neo4j() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-
-    if !po_path.exists() {
-        println!("  ⏭  Skipping — ~/.obrain/db/po not found");
-        println!("     Run neo4j2obrain to migrate the PO database first.");
+    let Some(po_path) = base_copie(Base::Po) else {
         return;
-    }
+    };
 
     println!("\n{}", "█".repeat(80));
     println!("  OBRAIN vs NEO4J — PROJECT ORCHESTRATOR BENCHMARK");
-    println!("  Database: ~/.obrain/db/po");
+    println!(
+        "  Database: copie de travail {}",
+        po_path.chemin().display()
+    );
     println!("{}\n", "█".repeat(80));
 
     // ── Phase 0: DB Open ──

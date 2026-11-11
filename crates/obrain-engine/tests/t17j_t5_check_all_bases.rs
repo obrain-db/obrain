@@ -9,15 +9,15 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_core::graph::GraphStore;
 use obrain_substrate::SubstrateStore;
 
-fn check(name: &str, path: std::path::PathBuf) {
-    if !path.exists() {
-        eprintln!("⏭  {name}: not present");
+fn check(name: &str, base: Base) {
+    let Some(path) = base_lecture(base) else {
         return;
-    }
-    let subs = SubstrateStore::open(&path).expect("open");
+    };
+    let subs = SubstrateStore::open_read_only(&path).expect("open");
     println!("\n═══ {name} ═══");
     for label in ["File", "Function", "Article", "Decision", "Concept"] {
         let nodes = subs.nodes_by_label(label);
@@ -46,17 +46,7 @@ fn check(name: &str, path: std::path::PathBuf) {
 
 #[test]
 fn check_chain_consistency_three_corpora() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    check(
-        "PO (repaired)",
-        std::path::PathBuf::from(&home).join(".obrain/db/po"),
-    );
-    check(
-        "Wikipedia",
-        std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-    );
-    check(
-        "Megalaw",
-        std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-    );
+    check("PO (repaired)", Base::Po);
+    check("Wikipedia", Base::Wikipedia);
+    check("Megalaw", Base::Megalaw);
 }

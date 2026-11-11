@@ -2,13 +2,14 @@
 //! PO base and measure (a) computation time, (b) coverage before/after,
 //! (c) RSS delta.
 //!
-//! `#[ignore]` by default — this test MUTATES ~/.obrain/db/po by
+//! `#[ignore]` by default — this test MUTATES the PO base (a temp COPY of `OBRAIN_BENCH_DB_PO`) by
 //! writing `_hilbert_features` on every node. Run manually with
 //! `cargo test -p obrain-cognitive --release --features enrichment
 //! --test t17l_hilbert_enricher_on_po -- --include-ignored --nocapture`.
 
 #![cfg(feature = "enrichment")]
 
+use obrain_bases_banc::{Base, base_copie};
 use std::sync::Arc;
 
 use obrain_cognitive::thinker::{HilbertEnricher, HilbertEnricherConfig, Thinker};
@@ -32,14 +33,11 @@ fn sample_coverage(store: &Arc<SubstrateStore>, key: &PropertyKey, sample_n: usi
 }
 
 #[test]
-#[ignore = "mutates ~/.obrain/db/po — run manually"]
+#[ignore = "long — s'exécute sur une copie de OBRAIN_BENCH_DB_PO, à lancer à la main"]
 fn hilbert_enricher_tick_on_po_base() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭  ~/.obrain/db/po not present — skipping");
+    let Some(po_path) = base_copie(Base::Po) else {
         return;
-    }
+    };
 
     println!("\n=== T17l HilbertEnricher on PO — verification ===");
     let t_open = web_time::Instant::now();

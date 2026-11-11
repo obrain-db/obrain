@@ -6,6 +6,7 @@
 //! Et aussi la clé obsolète `embedding` qui traîne sur PO/Megalaw.
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_common::PropertyKey;
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
@@ -13,7 +14,6 @@ use obrain_engine::ObrainDB;
 #[test]
 #[ignore = "read-only audit on prod bases"]
 fn audit_canonical_features_coverage() {
-    let home = std::env::var("HOME").unwrap_or_default();
     let canonical_keys = [
         "_kernel_embedding", // expected 80d
         "_hilbert_features", // expected 64-72d
@@ -21,27 +21,19 @@ fn audit_canonical_features_coverage() {
     ];
     let legacy_keys = ["embedding"]; // artefact à cartographier
 
-    for (name, path, labels) in [
+    for (name, base, labels) in [
         (
             "po",
-            std::path::PathBuf::from(&home).join(".obrain/db/po"),
+            Base::Po,
             &["File", "Function", "Decision", "Struct", "Note"][..],
         ),
-        (
-            "wikipedia",
-            std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-            &["Article"][..],
-        ),
-        (
-            "megalaw",
-            std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-            &["Concept"][..],
-        ),
+        ("wikipedia", Base::Wikipedia, &["Article"][..]),
+        ("megalaw", Base::Megalaw, &["Concept"][..]),
     ] {
-        if !path.exists() {
+        let Some(path) = base_lecture(base) else {
             continue;
-        }
-        let db = ObrainDB::open(&path).expect("open");
+        };
+        let db = ObrainDB::open_read_only(&path).expect("open");
         let store = db.store();
         println!("\n═══ {name} — {} nodes ═══", store.node_count());
 
