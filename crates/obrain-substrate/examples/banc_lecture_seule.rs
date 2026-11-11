@@ -85,6 +85,9 @@ fn mediane_p99(mut v: Vec<f64>) -> (f64, f64) {
 }
 
 /// Défauts de page mineurs et majeurs du processus (`getrusage`).
+// `ru_minflt` est un `i64` sous Linux et un `i32` sous macOS : le cast est
+// nécessaire sur l'un, superflu sur l'autre.
+#[allow(clippy::unnecessary_cast)]
 fn defauts_de_page() -> (i64, i64) {
     // SAFETY: `rusage` est un POD rempli par l'appel ; aucun pointeur conservé.
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
