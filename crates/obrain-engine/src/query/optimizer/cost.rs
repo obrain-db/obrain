@@ -5,7 +5,6 @@
 use crate::query::plan::{
     AggregateOp, DistinctOp, ExpandDirection, ExpandOp, FilterOp, JoinOp, JoinType, LeftJoinOp,
     LimitOp, LogicalOperator, MultiWayJoinOp, NodeScanOp, ProjectOp, ReturnOp, SkipOp, SortOp,
-    VectorJoinOp, VectorScanOp,
 };
 use std::collections::HashMap;
 
@@ -225,8 +224,6 @@ impl CostModel {
             LogicalOperator::Skip(skip) => self.skip_cost(skip, cardinality),
             LogicalOperator::Return(ret) => self.return_cost(ret, cardinality),
             LogicalOperator::Empty => Cost::zero(),
-            LogicalOperator::VectorScan(scan) => self.vector_scan_cost(scan, cardinality),
-            LogicalOperator::VectorJoin(join) => self.vector_join_cost(join, cardinality),
             LogicalOperator::MultiWayJoin(mwj) => self.multi_way_join_cost(mwj, cardinality),
             LogicalOperator::LeftJoin(lj) => {
                 self.left_join_cost(lj, cardinality, cardinality.sqrt(), cardinality.sqrt())
@@ -421,61 +418,6 @@ impl CostModel {
         Cost::cpu(cardinality * self.cpu_tuple_cost * expr_count)
     }
 
-    /// Estimates the cost of a vector scan operation.
-    ///
-    /// HNSW index search is O(log N) per query, while brute-force is O(N).
-    /// This estimates the HNSW case with ef search parameter.
-    fn vector_scan_cost(&self, scan: &VectorScanOp, cardinality: f64) -> Cost {
-        // k determines output cardinality
-        let k = scan.k as f64;
-
-        // HNSW search cost: O(ef * log(N)) distance computations
-        // Assume ef = 64 (default), N = cardinality
-        let ef = 64.0;
-        let n = cardinality.max(1.0);
-        let search_cost = if scan.index_name.is_some() {
-            // HNSW: O(ef * log N)
-            ef * n.ln() * self.cpu_tuple_cost * 10.0 // Distance computation is ~10x regular tuple
-        } else {
-            // Brute-force: O(N)
-            n * self.cpu_tuple_cost * 10.0
-        };
-
-        // Memory for candidate heap
-        let memory = k * self.avg_tuple_size * 2.0;
-
-        Cost::cpu(search_cost).with_memory(memory)
-    }
-
-    /// Estimates the cost of a vector join operation.
-    ///
-    /// Vector join performs k-NN search for each input row.
-    fn vector_join_cost(&self, join: &VectorJoinOp, cardinality: f64) -> Cost {
-        let k = join.k as f64;
-
-        // Each input row triggers a vector search
-        // Assume brute-force for hybrid queries (no index specified typically)
-        let per_row_search_cost = if join.index_name.is_some() {
-            // HNSW: O(ef * log N)
-            let ef = 64.0;
-            let n = cardinality.max(1.0);
-            ef * n.ln() * self.cpu_tuple_cost * 10.0
-        } else {
-            // Brute-force: O(N) per input row
-            cardinality * self.cpu_tuple_cost * 10.0
-        };
-
-        // Total cost: input_rows * search_cost
-        // For vector join, cardinality is typically input cardinality * k
-        let input_cardinality = (cardinality / k).max(1.0);
-        let total_search_cost = input_cardinality * per_row_search_cost;
-
-        // Memory for results
-        let memory = cardinality * self.avg_tuple_size;
-
-        Cost::cpu(total_search_cost).with_memory(memory)
-    }
-
     /// Estimates the total cost of an operator tree recursively.
     ///
     /// Walks the entire plan tree, computing per-operator cost at each level
@@ -555,11 +497,6 @@ impl CostModel {
             LogicalOperator::Return(ret) => {
                 let child_cost = self.estimate_tree_inner(&ret.input, card_est);
                 child_cost + self.return_cost(ret, cardinality)
-            }
-            LogicalOperator::VectorScan(scan) => self.vector_scan_cost(scan, cardinality),
-            LogicalOperator::VectorJoin(join) => {
-                let child_cost = self.estimate_tree_inner(&join.input, card_est);
-                child_cost + self.vector_join_cost(join, cardinality)
             }
             LogicalOperator::MultiWayJoin(mwj) => {
                 let mut children_cost = Cost::zero();

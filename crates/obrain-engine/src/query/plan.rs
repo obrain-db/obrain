@@ -240,19 +240,6 @@ pub enum LogicalOperator {
     /// Per-row aggregation over a list-valued column (horizontal aggregation, GE09).
     HorizontalAggregate(HorizontalAggregateOp),
 
-    // ==================== Vector Search Operators ====================
-    /// Scan using vector similarity search.
-    VectorScan(VectorScanOp),
-
-    /// Join graph patterns with vector similarity search.
-    ///
-    /// Computes vector distances between entities from the left input and
-    /// a query vector, then joins with similarity scores. Useful for:
-    /// - Filtering graph traversal results by vector similarity
-    /// - Computing aggregated embeddings and finding similar entities
-    /// - Combining multiple vector sources with graph structure
-    VectorJoin(VectorJoinOp),
-
     // ==================== Set Operations ====================
     /// Set difference: rows in left that are not in right.
     Except(ExceptOp),
@@ -537,8 +524,6 @@ impl LogicalOperator {
             Self::NodeScan(_)
             | Self::EdgeScan(_)
             | Self::TripleScan(_)
-            | Self::VectorScan(_)
-            | Self::VectorJoin(_)
             | Self::Expand(_)
             | Self::ShortestPath(_)
             | Self::Filter(_)
@@ -620,7 +605,6 @@ impl LogicalOperator {
             Self::NodeScan(op) => op.input.as_deref().into_iter().collect(),
             Self::EdgeScan(op) => op.input.as_deref().into_iter().collect(),
             Self::TripleScan(op) => op.input.as_deref().into_iter().collect(),
-            Self::VectorScan(op) => op.input.as_deref().into_iter().collect(),
             Self::CreateNode(op) => op.input.as_deref().into_iter().collect(),
             Self::InsertTriple(op) => op.input.as_deref().into_iter().collect(),
             Self::DeleteTriple(op) => op.input.as_deref().into_iter().collect(),
@@ -649,7 +633,6 @@ impl LogicalOperator {
             Self::AddLabel(op) => vec![&*op.input],
             Self::RemoveLabel(op) => vec![&*op.input],
             Self::HorizontalAggregate(op) => vec![&*op.input],
-            Self::VectorJoin(op) => vec![&*op.input],
             Self::Modify(op) => vec![&*op.where_clause],
 
             // Two children (left + right)
@@ -815,8 +798,6 @@ impl LogicalOperator {
             Self::CallProcedure(op) => op.name.join("."),
             Self::LoadData(op) => format!("{} AS {}", op.path, op.variable),
             Self::Apply(_) => String::new(),
-            Self::VectorScan(op) => op.variable.clone(),
-            Self::VectorJoin(op) => op.right_variable.clone(),
             _ => String::new(),
         }
     }
@@ -2083,43 +2064,6 @@ pub struct AddGraphOp {
 
 // ==================== Vector Search Operators ====================
 
-/// Vector similarity scan operation.
-///
-/// Performs approximate nearest neighbor search using a vector index (HNSW)
-/// or brute-force search for small datasets. Returns nodes/edges whose
-/// embeddings are similar to the query vector.
-///
-/// # Example GQL
-///
-/// ```gql
-/// MATCH (m:Movie)
-/// WHERE vector_similarity(m.embedding, $query_vector) > 0.8
-/// RETURN m.title
-/// ```
-#[derive(Debug, Clone)]
-pub struct VectorScanOp {
-    /// Variable name to bind matching entities to.
-    pub variable: String,
-    /// Name of the vector index to use (None = brute-force).
-    pub index_name: Option<String>,
-    /// Property containing the vector embedding.
-    pub property: String,
-    /// Optional label filter (scan only nodes with this label).
-    pub label: Option<String>,
-    /// The query vector expression.
-    pub query_vector: LogicalExpression,
-    /// Number of nearest neighbors to return.
-    pub k: usize,
-    /// Distance metric (None = use index default, typically cosine).
-    pub metric: Option<VectorMetric>,
-    /// Minimum similarity threshold (filters results below this).
-    pub min_similarity: Option<f32>,
-    /// Maximum distance threshold (filters results above this).
-    pub max_distance: Option<f32>,
-    /// Input operator (for hybrid queries combining graph + vector).
-    pub input: Option<Box<LogicalOperator>>,
-}
-
 /// Vector distance/similarity metric for vector scan operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VectorMetric {
@@ -2131,58 +2075,6 @@ pub enum VectorMetric {
     DotProduct,
     /// Manhattan (L1) distance. Less sensitive to outliers.
     Manhattan,
-}
-
-/// Join graph patterns with vector similarity search.
-///
-/// This operator takes entities from the left input and computes vector
-/// similarity against a query vector, outputting (entity, distance) pairs.
-///
-/// # Use Cases
-///
-/// 1. **Hybrid graph + vector queries**: Find similar nodes after graph traversal
-/// 2. **Aggregated embeddings**: Use AVG(embeddings) as query vector
-/// 3. **Filtering by similarity**: Join with threshold-based filtering
-///
-/// # Example
-///
-/// ```gql
-/// // Find movies similar to what the user liked
-/// MATCH (u:User {id: $user_id})-[:LIKED]->(liked:Movie)
-/// WITH avg(liked.embedding) AS user_taste
-/// VECTOR JOIN (m:Movie) ON m.embedding
-/// WHERE vector_similarity(m.embedding, user_taste) > 0.7
-/// RETURN m.title
-/// ```
-#[derive(Debug, Clone)]
-pub struct VectorJoinOp {
-    /// Input operator providing entities to match against.
-    pub input: Box<LogicalOperator>,
-    /// Variable from input to extract vectors from (for entity-to-entity similarity).
-    /// If None, uses `query_vector` directly.
-    pub left_vector_variable: Option<String>,
-    /// Property containing the left vector (used with `left_vector_variable`).
-    pub left_property: Option<String>,
-    /// The query vector expression (constant or computed).
-    pub query_vector: LogicalExpression,
-    /// Variable name to bind the right-side matching entities.
-    pub right_variable: String,
-    /// Property containing the right-side vector embeddings.
-    pub right_property: String,
-    /// Optional label filter for right-side entities.
-    pub right_label: Option<String>,
-    /// Name of vector index on right side (None = brute-force).
-    pub index_name: Option<String>,
-    /// Number of nearest neighbors per left-side entity.
-    pub k: usize,
-    /// Distance metric.
-    pub metric: Option<VectorMetric>,
-    /// Minimum similarity threshold.
-    pub min_similarity: Option<f32>,
-    /// Maximum distance threshold.
-    pub max_distance: Option<f32>,
-    /// Variable to bind the distance/similarity score.
-    pub score_variable: Option<String>,
 }
 
 /// Return results (terminal operator).

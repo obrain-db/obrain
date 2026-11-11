@@ -42,7 +42,6 @@ mod parameter_scan;
 mod project;
 pub mod push;
 mod scan;
-mod scan_vector;
 mod set_ops;
 mod shortest_path;
 pub mod single_row;
@@ -52,7 +51,6 @@ mod union;
 mod unwind;
 pub mod value_utils;
 mod variable_length_expand;
-mod vector_join;
 
 pub use accumulator::{AggregateExpr, AggregateFunction, HashableValue};
 pub use aggregate::{HashAggregateOperator, SimpleAggregateOperator};
@@ -99,7 +97,6 @@ pub use push::{
 #[cfg(feature = "spill")]
 pub use push::{SpillableAggregatePushOperator, SpillableSortPushOperator};
 pub use scan::ScanOperator;
-pub use scan_vector::VectorScanOperator;
 pub use set_ops::{ExceptOperator, IntersectOperator, OtherwiseOperator};
 pub use shortest_path::ShortestPathOperator;
 pub use single_row::{EmptyOperator, NodeListOperator, ScalarResultOperator, SingleRowOperator};
@@ -111,7 +108,6 @@ pub use typed_degree_topk::{
 pub use union::UnionOperator;
 pub use unwind::UnwindOperator;
 pub use variable_length_expand::{PathMode as ExecutionPathMode, VariableLengthExpandOperator};
-pub use vector_join::VectorJoinOperator;
 
 pub use cognitive_boost::{ActivationMap, BoostMode, CognitiveBoostOperator};
 
