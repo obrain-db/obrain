@@ -1246,37 +1246,8 @@ impl CypherTranslator {
                 }
                 ast::ReturnItems::Explicit(items) => items,
             };
-            let (aggregates, group_by, mut post_return) =
+            let (aggregates, group_by, post_return) =
                 self.extract_aggregates_and_groups_from_items(items)?;
-
-            // For RETURN with aliases (e.g. `n.city AS city`), always produce
-            // a post-Return so output column names reflect the aliases.
-            // This is needed for ORDER BY alias resolution and for correct
-            // column naming in results.
-            if post_return.is_none() && items.iter().any(|item| item.alias.is_some()) {
-                let mut return_items = Vec::new();
-                for item in items {
-                    if let Some(agg_expr) =
-                        self.try_extract_aggregate(&item.expression, &item.alias)?
-                    {
-                        let alias = item.alias.clone().unwrap_or_else(|| {
-                            agg_expr.alias.as_deref().unwrap_or("_agg").to_string()
-                        });
-                        return_items.push(ReturnItem {
-                            expression: LogicalExpression::Variable(alias),
-                            alias: item.alias.clone(),
-                        });
-                    } else {
-                        let expr = self.translate_expression(&item.expression)?;
-                        let col_name = crate::query::planner::common::expression_to_string(&expr);
-                        return_items.push(ReturnItem {
-                            expression: LogicalExpression::Variable(col_name),
-                            alias: item.alias.clone(),
-                        });
-                    }
-                }
-                post_return = Some(return_items);
-            }
 
             let agg_op = LogicalOperator::Aggregate(AggregateOp {
                 group_by,
@@ -1403,7 +1374,14 @@ impl CypherTranslator {
             }
         }
 
-        if needs_post_return {
+        // Un item aliasé doit sortir sous son alias. L'agrégat nomme ses colonnes
+        // de clé d'après l'expression (`n.city`), pas d'après l'alias (`city`) :
+        // sans post-projection, l'alias d'une clé de groupement n'existe pas en
+        // aval — ni pour l'`ORDER BY` d'un `RETURN`, ni pour la clause qui suit un
+        // `WITH` (« Undefined variable »). La règle vaut pour les deux clauses,
+        // elle est donc ici et non chez l'un des deux appelants.
+        let has_aliases = items.iter().any(|item| item.alias.is_some());
+        if needs_post_return || has_aliases {
             Ok((aggregates, group_by, Some(post_return_items)))
         } else {
             Ok((aggregates, group_by, None))

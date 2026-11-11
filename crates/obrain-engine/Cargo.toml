@@ -181,3 +181,7 @@ harness = false
 [[bench]]
 name = "chemin_nanoseconde"
 harness = false
+
+[[test]]
+name = "with_agregat_cle_de_groupe"
+required-features = ["cypher"]
