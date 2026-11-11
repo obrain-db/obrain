@@ -378,6 +378,104 @@ impl fmt::Display for Duration {
     }
 }
 
+/// Durées entre deux instants (`duration.between` & co) et accès aux composants.
+impl Duration {
+    /// Durée calendaire de `from` à `to` : des mois ENTIERS, puis des jours
+    /// entiers, puis le reste en nanosecondes — de sorte que `from` plus le
+    /// résultat redonne `to`.
+    ///
+    /// Les mois suivent le calendrier (de `2024-01-31` à `2024-03-01` : un mois
+    /// et un jour, la fin de mois étant ramenée au dernier jour du mois
+    /// d'arrivée). Si `to` précède `from`, le résultat est l'opposé de la durée
+    /// de `to` à `from`.
+    #[must_use]
+    pub fn between_timestamps(from: super::Timestamp, to: super::Timestamp) -> Self {
+        let (lo, hi, negate) = if to >= from {
+            (from, to, false)
+        } else {
+            (to, from, true)
+        };
+        let (lo_date, hi_date) = (lo.to_date(), hi.to_date());
+        let mut months = (i64::from(hi_date.year()) - i64::from(lo_date.year())) * 12
+            + (i64::from(hi_date.month()) - i64::from(lo_date.month()));
+        // Le décalage de `months` mois peut dépasser `hi` (jour ou heure du
+        // mois d'arrivée plus petits) : on retire alors un mois.
+        while months > 0 && lo.add_duration(&Self::from_months(months)) > hi {
+            months -= 1;
+        }
+        let shifted = lo.add_duration(&Self::from_months(months));
+        let rest = hi.as_nanos().saturating_sub(shifted.as_nanos());
+        let result = Self::new(months, rest / NANOS_PAR_JOUR, rest % NANOS_PAR_JOUR);
+        if negate { result.neg() } else { result }
+    }
+
+    /// Comme [`between_timestamps`](Self::between_timestamps), pour deux dates
+    /// (le reste en nanosecondes est toujours nul).
+    #[must_use]
+    pub fn between_dates(from: super::Date, to: super::Date) -> Self {
+        let (lo, hi, negate) = if to >= from {
+            (from, to, false)
+        } else {
+            (to, from, true)
+        };
+        let mut months = (i64::from(hi.year()) - i64::from(lo.year())) * 12
+            + (i64::from(hi.month()) - i64::from(lo.month()));
+        while months > 0 && lo.add_duration(&Self::from_months(months)) > hi {
+            months -= 1;
+        }
+        let shifted = lo.add_duration(&Self::from_months(months));
+        let result = Self::new(
+            months,
+            i64::from(hi.as_days()) - i64::from(shifted.as_days()),
+            0,
+        );
+        if negate { result.neg() } else { result }
+    }
+
+    /// Un composant de la durée, à la manière de Neo4j.
+    ///
+    /// Chaque composant est le TOTAL de son groupe exprimé dans son unité,
+    /// tronqué vers zéro : le groupe des mois donne `years`, `quarters`,
+    /// `months` ; celui des jours `weeks`, `days` ; celui du reste
+    /// `hours`, `minutes`, `seconds`, `milliseconds`, `microseconds`,
+    /// `nanoseconds`. Ainsi `P1Y5M` a `months = 17` et `years = 1`, et
+    /// `PT1H30M` a `minutes = 90`. Les variantes `…Of…` donnent le reste dans
+    /// l'unité englobante (`monthsOfYear`, `minutesOfHour`, …).
+    ///
+    /// Les mois ne se convertissent pas en jours, ni les jours en heures : un
+    /// composant d'un autre groupe n'est pas dérivé (`P1D` a `hours = 0`).
+    /// Rend `None` pour un nom inconnu.
+    #[must_use]
+    pub fn component(&self, name: &str) -> Option<i64> {
+        let (m, d, n) = (self.months, self.days, self.nanos);
+        Some(match name.to_ascii_lowercase().as_str() {
+            "years" => m / 12,
+            "quarters" => m / 3,
+            "months" => m,
+            "quartersofyear" => (m / 3) % 4,
+            "monthsofquarter" => m % 3,
+            "monthsofyear" => m % 12,
+            "weeks" => d / 7,
+            "days" => d,
+            "daysofweek" => d % 7,
+            "hours" => n / 3_600_000_000_000,
+            "minutes" => n / 60_000_000_000,
+            "seconds" => n / 1_000_000_000,
+            "milliseconds" => n / 1_000_000,
+            "microseconds" => n / 1_000,
+            "nanoseconds" => n,
+            "minutesofhour" => (n / 60_000_000_000) % 60,
+            "secondsofminute" => (n / 1_000_000_000) % 60,
+            "millisecondsofsecond" => (n / 1_000_000) % 1_000,
+            "microsecondsofsecond" => (n / 1_000) % 1_000_000,
+            "nanosecondsofsecond" => n % 1_000_000_000,
+            _ => return None,
+        })
+    }
+}
+
+const NANOS_PAR_JOUR: i64 = 86_400_000_000_000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,5 +576,64 @@ mod tests {
         let z = Duration::default();
         assert!(z.is_zero());
         assert_eq!(z.to_string(), "PT0S");
+    }
+
+    #[test]
+    fn between_timestamps_compte_mois_jours_puis_reste() {
+        use crate::types::{Date, Time, Timestamp};
+        let t = |y, m, d, h, mi, s| {
+            Timestamp::from_date_time(
+                Date::from_ymd(y, m, d).unwrap(),
+                Time::from_hms_nano(h, mi, s, 0).unwrap(),
+            )
+        };
+        // 90 minutes.
+        assert_eq!(
+            Duration::between_timestamps(t(2024, 1, 1, 0, 0, 0), t(2024, 1, 1, 1, 30, 0)),
+            Duration::from_nanos(5_400_000_000_000)
+        );
+        // 3 mois, 14 jours, 6 h : le composant `days` ne compte pas les mois.
+        let d = Duration::between_timestamps(t(2024, 1, 10, 0, 0, 0), t(2024, 4, 24, 6, 0, 0));
+        assert_eq!(d, Duration::new(3, 14, 6 * 3_600_000_000_000));
+        assert_eq!(d.component("days"), Some(14));
+        assert_eq!(d.component("months"), Some(3));
+        // Fin de mois : 31 janvier -> 1er mars (2024 bissextile) = 1 mois et 1 jour.
+        assert_eq!(
+            Duration::between_timestamps(t(2024, 1, 31, 0, 0, 0), t(2024, 3, 1, 0, 0, 0)),
+            Duration::new(1, 1, 0)
+        );
+        // Un jour d'arrivée plus petit retire un mois : 15 janv. -> 10 fév. = 26 jours.
+        assert_eq!(
+            Duration::between_timestamps(t(2024, 1, 15, 0, 0, 0), t(2024, 2, 10, 0, 0, 0)),
+            Duration::new(0, 26, 0)
+        );
+        // Sens inverse : l'opposé.
+        assert_eq!(
+            Duration::between_timestamps(t(2024, 4, 24, 6, 0, 0), t(2024, 1, 10, 0, 0, 0)),
+            Duration::new(-3, -14, -6 * 3_600_000_000_000)
+        );
+        assert!(
+            Duration::between_timestamps(t(2024, 1, 1, 0, 0, 0), t(2024, 1, 1, 0, 0, 0)).is_zero()
+        );
+    }
+
+    #[test]
+    fn between_dates_et_composants() {
+        use crate::types::Date;
+        let d = Duration::between_dates(
+            Date::from_ymd(2023, 11, 20).unwrap(),
+            Date::from_ymd(2025, 2, 5).unwrap(),
+        );
+        assert_eq!(d, Duration::new(14, 16, 0));
+        assert_eq!(d.component("years"), Some(1));
+        assert_eq!(d.component("monthsOfYear"), Some(2));
+        assert_eq!(d.component("weeks"), Some(2));
+        let t = Duration::new(0, 0, 58_390_000_000_001);
+        assert_eq!(t.component("hours"), Some(16));
+        assert_eq!(t.component("minutes"), Some(973));
+        assert_eq!(t.component("seconds"), Some(58_390));
+        assert_eq!(t.component("milliseconds"), Some(58_390_000));
+        assert_eq!(t.component("minutesOfHour"), Some(13));
+        assert_eq!(t.component("inconnu"), None);
     }
 }

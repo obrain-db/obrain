@@ -3471,6 +3471,25 @@ impl<'a> Parser<'a> {
                         index: Box::new(index),
                     };
                 }
+                // `<expression>.<propriété>` : composant du résultat d'un appel
+                // (`duration.between(a, b).days`) ou clé d'une map. Les accès
+                // `var.prop` sont déjà consommés par l'expression primaire ; un
+                // `.` qui arrive ici suit donc autre chose qu'un identifiant.
+                // Il devient l'appel `__component(base, 'propriété')`, que
+                // l'évaluateur résout selon le type de la valeur.
+                TokenKind::Dot => {
+                    self.advance();
+                    if !self.is_identifier() {
+                        return Err(self.error("Expected property name"));
+                    }
+                    let property = self.get_identifier_name();
+                    self.advance();
+                    expr = Expression::FunctionCall {
+                        name: "__component".to_string(),
+                        args: vec![expr, Expression::Literal(Literal::String(property))],
+                        distinct: false,
+                    };
+                }
                 // n:Label label-check syntax (compact form of IS LABELED).
                 // Multiple labels (n:Person:Actor) are ANDead together.
                 TokenKind::Colon => {

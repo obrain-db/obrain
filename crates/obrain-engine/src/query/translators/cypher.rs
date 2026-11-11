@@ -1946,10 +1946,17 @@ impl CypherTranslator {
                         property: property.clone(),
                     })
                 } else {
-                    Err(Error::Query(QueryError::new(
-                        QueryErrorKind::Semantic,
-                        "Nested property access not supported",
-                    )))
+                    // `<expression>.<propriété>` : composant d'une durée
+                    // (`duration.between(a, b).days`), clé d'une map. L'évaluateur
+                    // résout la propriété selon le type de la valeur.
+                    Ok(LogicalExpression::FunctionCall {
+                        name: "__component".into(),
+                        args: vec![
+                            self.translate_expression(base)?,
+                            LogicalExpression::Literal(Value::String(property.clone().into())),
+                        ],
+                        distinct: false,
+                    })
                 }
             }
             ast::Expression::IndexAccess { base, index } => {

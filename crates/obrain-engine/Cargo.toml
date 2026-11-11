@@ -185,3 +185,7 @@ harness = false
 [[test]]
 name = "with_agregat_cle_de_groupe"
 required-features = ["cypher"]
+
+[[test]]
+name = "duration_between"
+required-features = ["cypher"]

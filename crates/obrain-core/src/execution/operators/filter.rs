@@ -26,6 +26,96 @@ fn map_int(m: &BTreeMap<PropertyKey, Value>, key: &str) -> Option<i64> {
     }
 }
 
+const NANOS_PAR_JOUR: i64 = 86_400_000_000_000;
+
+/// `duration.between` et ses variantes `inMonths`, `inDays`, `inSeconds`,
+/// `inMilliseconds` (`genre` en minuscules, sans le préfixe `duration.`).
+///
+/// - deux instants (date, heure, datetime, datetime à fuseau) : la durée de
+///   l'un à l'autre. `between` est calendaire (mois entiers, puis jours, puis
+///   reste) ; les `in…` ne rendent que leur unité, en total tronqué. Une date
+///   et un datetime se comparent à minuit UTC ; une heure ne se compare qu'à
+///   une heure ;
+/// - une durée seule, pour `inSeconds` / `inMilliseconds` / `inDays` /
+///   `inMonths` : sa conversion dans l'unité. Les mois ne valant pas un
+///   nombre fixe de jours, une durée qui en porte n'est pas convertible en
+///   jours ou secondes : NULL, jamais une valeur inventée.
+fn duration_entre(genre: &str, valeurs: &[Value]) -> Option<Value> {
+    use obrain_common::types::{Duration, Timestamp};
+
+    if let [Value::Duration(d)] = valeurs {
+        return match genre {
+            "inmonths" => Some(Value::Duration(Duration::from_months(d.months()))),
+            "indays" if d.months() == 0 => Some(Value::Duration(Duration::from_days(
+                d.days().checked_add(d.nanos() / NANOS_PAR_JOUR)?,
+            ))),
+            "inseconds" | "inmilliseconds" if d.months() == 0 => {
+                Some(Value::Duration(Duration::from_nanos(
+                    d.days()
+                        .checked_mul(NANOS_PAR_JOUR)?
+                        .checked_add(d.nanos())?,
+                )))
+            }
+            _ => None,
+        };
+    }
+    let [debut, fin] = valeurs else {
+        return None;
+    };
+
+    enum Instant {
+        Date(obrain_common::types::Date),
+        Heure(i64),
+        Horodatage(Timestamp),
+    }
+    let instant = |v: &Value| -> Option<Instant> {
+        match v {
+            Value::Date(d) => Some(Instant::Date(*d)),
+            Value::Time(t) => Some(Instant::Heure(t.as_nanos() as i64)),
+            Value::Timestamp(ts) => Some(Instant::Horodatage(*ts)),
+            Value::ZonedDatetime(z) => Some(Instant::Horodatage(z.as_timestamp())),
+            _ => None,
+        }
+    };
+
+    let (debut, fin) = (instant(debut)?, instant(fin)?);
+    let duree = match (debut, fin) {
+        (Instant::Date(a), Instant::Date(b)) => match genre {
+            "between" => Duration::between_dates(a, b),
+            "inmonths" => Duration::from_months(Duration::between_dates(a, b).months()),
+            "indays" => Duration::from_days(i64::from(b.as_days()) - i64::from(a.as_days())),
+            "inseconds" | "inmilliseconds" => Duration::from_nanos(
+                (i64::from(b.as_days()) - i64::from(a.as_days())).checked_mul(NANOS_PAR_JOUR)?,
+            ),
+            _ => return None,
+        },
+        (Instant::Heure(a), Instant::Heure(b)) => match genre {
+            "between" | "inseconds" | "inmilliseconds" => Duration::from_nanos(b - a),
+            "inmonths" | "indays" => Duration::default(),
+            _ => return None,
+        },
+        (Instant::Heure(_), _) | (_, Instant::Heure(_)) => return None,
+        (a, b) => {
+            let ts = |i: Instant| match i {
+                Instant::Date(d) => d.to_timestamp(),
+                Instant::Horodatage(t) => t,
+                Instant::Heure(_) => unreachable!("écarté plus haut"),
+            };
+            let (a, b) = (ts(a), ts(b));
+            match genre {
+                "between" => Duration::between_timestamps(a, b),
+                "inmonths" => Duration::from_months(Duration::between_timestamps(a, b).months()),
+                "indays" => Duration::from_days((b.as_nanos() - a.as_nanos()) / NANOS_PAR_JOUR),
+                "inseconds" | "inmilliseconds" => {
+                    Duration::from_nanos(b.as_nanos().checked_sub(a.as_nanos())?)
+                }
+                _ => return None,
+            }
+        }
+    };
+    Some(Value::Duration(duree))
+}
+
 /// Extracts an optional integer field from a temporal constructor map,
 /// returning a default value when the key is absent.
 fn map_int_or(m: &BTreeMap<PropertyKey, Value>, key: &str, default: i64) -> i64 {
@@ -4063,6 +4153,35 @@ impl ExpressionPredicate {
                             obrain_common::types::Timestamp::from_date_time(date, time),
                         ))
                     }
+                    _ => None,
+                }
+            }
+            // `duration.between(a, b)` & co : le nom pointé arrive tel quel du
+            // parseur Cypher (et de GQL).
+            "duration.between"
+            | "duration.inmonths"
+            | "duration.indays"
+            | "duration.inseconds"
+            | "duration.inmilliseconds" => {
+                let valeurs = args
+                    .iter()
+                    .map(|a| self.eval_expr(a, chunk, row))
+                    .collect::<Option<Vec<Value>>>()?;
+                duration_entre(&name.to_lowercase()["duration.".len()..], &valeurs)
+            }
+            // `<expression>.<propriété>` quand la base n'est pas une variable :
+            // `duration.between(a, b).days`, `$map.cle`. Le traducteur pose
+            // cette fonction ; la propriété est un littéral texte.
+            "__component" => {
+                if args.len() != 2 {
+                    return None;
+                }
+                let Value::String(propriete) = self.eval_expr(&args[1], chunk, row)? else {
+                    return None;
+                };
+                match self.eval_expr(&args[0], chunk, row)? {
+                    Value::Duration(d) => d.component(&propriete).map(Value::Int64),
+                    Value::Map(m) => m.get(&PropertyKey::from(propriete.as_str())).cloned(),
                     _ => None,
                 }
             }
