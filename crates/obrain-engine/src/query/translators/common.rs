@@ -611,8 +611,11 @@ pub(crate) enum AggregateItem {
 /// que cela ne suffit pas à rendre ce que la clause a écrit :
 ///
 /// - un item enveloppe un agrégat : l'expression englobante se calcule après ;
-/// - un item porte un alias : il doit sortir sous cet alias, pour la clause qui
-///   suit un `WITH` comme pour l'`ORDER BY` d'un `RETURN` ;
+/// - une clé porte un alias qui n'est pas le nom de sa colonne (`n.city AS
+///   city`) : elle doit sortir sous cet alias, pour la clause qui suit un
+///   `WITH` comme pour l'`ORDER BY` d'un `RETURN` ;
+/// - les items ne sont pas écrits dans l'ordre où l'agrégat sort ses colonnes
+///   (les clés, puis les agrégats) ;
 /// - une clé calculée a reçu un nom distinct (voir
 ///   [`group_key_column_names`](crate::query::planner::common::group_key_column_names))
 ///   parce qu'une autre clé portait déjà son nom générique : la projection lui
@@ -622,24 +625,45 @@ pub(crate) enum AggregateItem {
 /// n'a qu'un nom par défaut (`count(...)`), que deux agrégats peuvent partager :
 /// quand la projection existe, il reçoit un alias interne propre, et la
 /// projection lui rend son nom par défaut.
+///
+/// Quand rien de cela ne s'applique (`WITH f, count(*) AS nb`), l'agrégat sort
+/// déjà exactement ce que la clause a écrit : aucune projection n'est posée,
+/// la requête ne paie pas un opérateur de plus.
+///
+/// `always_project_aliases` garde le comportement historique de `RETURN`, qui
+/// pose la projection dès qu'un item porte un alias.
 pub(crate) fn finalize_aggregate_projection(
     aggregates: &mut [crate::query::plan::AggregateExpr],
     group_by: &[LogicalExpression],
     items: Vec<AggregateItem>,
+    always_project_aliases: bool,
 ) -> Option<Vec<ReturnItem>> {
     use crate::query::planner::common::{
         default_aggregate_column_name, expression_to_string, group_key_column_names,
     };
 
     let noms_des_cles = group_key_column_names(group_by);
-    let necessaire = items.iter().any(|item| match item {
-        AggregateItem::Wrapped(_) => true,
-        AggregateItem::GroupKey { position, alias } => {
-            alias.is_some()
-                || noms_des_cles[*position] != expression_to_string(&group_by[*position])
+    // L'agrégat sort ses clés dans l'ordre, puis ses agrégats dans l'ordre.
+    let mut cles_finies = false;
+    let ordre_naturel = items.iter().all(|item| match item {
+        AggregateItem::GroupKey { .. } => !cles_finies,
+        AggregateItem::Direct { .. } | AggregateItem::Wrapped(_) => {
+            cles_finies = true;
+            true
         }
-        AggregateItem::Direct { alias, .. } => alias.is_some(),
     });
+    let necessaire = !ordre_naturel
+        || items.iter().any(|item| match item {
+            AggregateItem::Wrapped(_) => true,
+            AggregateItem::GroupKey { position, alias } => {
+                let colonne = &noms_des_cles[*position];
+                *colonne != expression_to_string(&group_by[*position])
+                    || alias
+                        .as_ref()
+                        .is_some_and(|a| always_project_aliases || a != colonne)
+            }
+            AggregateItem::Direct { alias, .. } => always_project_aliases && alias.is_some(),
+        });
     if !necessaire {
         return None;
     }

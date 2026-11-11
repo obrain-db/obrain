@@ -587,6 +587,46 @@ fn deux_agregats_sans_alias_a_cote_d_un_item_aliase(langage: Langage) {
     );
 }
 
+/// L'agrégat écrit AVANT la clé : les colonnes sortent dans l'ordre écrit, et
+/// chacune garde sa valeur (a : 2 notes, b : 3, c : 1).
+fn agregat_ecrit_avant_la_cle(langage: Langage) {
+    let db = base();
+    let attendu = vec![
+        vec![Value::Int64(1), s("c")],
+        vec![Value::Int64(2), s("a")],
+        vec![Value::Int64(3), s("b")],
+    ];
+    for requete in [
+        "MATCH (n:Note) RETURN count(*) AS c, n.project_id AS p",
+        "MATCH (n:Note) WITH count(*) AS c, n.project_id AS p RETURN c, p",
+    ] {
+        assert_eq!(
+            lignes_triees(&db, langage, requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+}
+
+/// `WITH f, count(*) AS nb` : l'agrégat sort déjà `f` et `nb`. Aucune
+/// projection n'est posée par-dessus — la forme ne paie pas un opérateur de
+/// plus. Une clé aliasée, elle, en a besoin.
+#[test]
+fn with_a_cles_nues_ne_pose_pas_de_projection() {
+    let db = base();
+    let plan = |requete: &str| {
+        db.session()
+            .execute_cypher(&format!("EXPLAIN {requete}"))
+            .unwrap()
+            .rows[0][0]
+            .to_string()
+    };
+    let nu = plan("MATCH (c:Commit)-[:TOUCHES]->(f:File) WITH f, count(*) AS nb RETURN f.path, nb");
+    assert!(!nu.contains("Project"), "{nu}");
+    let aliase = plan("MATCH (n:Note) WITH n.project_id AS p, count(*) AS c RETURN p, c");
+    assert!(aliase.contains("Project"), "{aliase}");
+}
+
 // ============================================================================
 // Chaque cas, une fois par langage
 // ============================================================================
@@ -627,6 +667,7 @@ cas_en!(
         cle_calculee_et_agregat_sur_propriete,
         agregat_sans_alias_a_cote_d_un_item_aliase,
         deux_agregats_sans_alias_a_cote_d_un_item_aliase,
+        agregat_ecrit_avant_la_cle,
     ]
 );
 
@@ -656,5 +697,6 @@ cas_en!(
         cle_calculee_et_agregat_sur_propriete,
         agregat_sans_alias_a_cote_d_un_item_aliase,
         deux_agregats_sans_alias_a_cote_d_un_item_aliase,
+        agregat_ecrit_avant_la_cle,
     ]
 );
