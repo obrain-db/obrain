@@ -3768,18 +3768,33 @@ mod tests {
     fn test_inter_match_correlation_joins_on_shared_vars() {
         let query = "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) MATCH (c:Person)-[:KNOWS]->(a:Person) RETURN a";
         let plan = translate(query).expect("translate");
-        // Parcourt l'arbre : doit trouver un Join avec conditions (pas Cross vide).
-        fn has_correlated_join(op: &LogicalOperator) -> bool {
+        // Le second MATCH repart de `c` (déjà lié) et se FERME sur `a` par une
+        // égalité : ni jointure non corrélée, ni nouveau balayage de `c` ou `a`.
+        fn has_uncorrelated_join(op: &LogicalOperator) -> bool {
             match op {
-                LogicalOperator::Join(j) => {
-                    !j.conditions.is_empty() && j.join_type == crate::query::plan::JoinType::Inner
-                }
-                _ => op.children().iter().any(|c| has_correlated_join(c)),
+                LogicalOperator::Join(j) if j.conditions.is_empty() => true,
+                _ => op.children().iter().any(|c| has_uncorrelated_join(c)),
             }
         }
-        assert!(
-            has_correlated_join(&plan.root),
-            "inter-MATCH join must correlate shared variables (Inner, non-empty conditions)"
-        );
+        fn count_scans(op: &LogicalOperator, var: &str) -> usize {
+            let here = usize::from(
+                matches!(op, LogicalOperator::NodeScan(s) if s.variable == var && s.input.is_none()),
+            );
+            here + op
+                .children()
+                .iter()
+                .map(|c| count_scans(c, var))
+                .sum::<usize>()
+        }
+        fn has_expand_from(op: &LogicalOperator, var: &str) -> bool {
+            match op {
+                LogicalOperator::Expand(e) if e.from_variable == var => true,
+                _ => op.children().iter().any(|c| has_expand_from(c, var)),
+            }
+        }
+        assert!(!has_uncorrelated_join(&plan.root), "{plan:?}");
+        assert_eq!(count_scans(&plan.root, "a"), 1, "{plan:?}");
+        assert_eq!(count_scans(&plan.root, "c"), 0, "{plan:?}");
+        assert!(has_expand_from(&plan.root, "c"), "{plan:?}");
     }
 }

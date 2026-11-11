@@ -702,6 +702,31 @@ fn le_noeud_indexe_est_le_depart_du_plan() {
     assert!(p.contains("Expand (c)->[:TOUCHES]->(f)"), "{p}");
 }
 
+/// Les clauses d'écriture suivent un `WITH` : `WITH … MERGE … SET … RETURN`
+/// (GQL les refusait : « Expected RETURN, FINISH, or SELECT »). c1 touche 3
+/// fichiers : `n` = 3, écrit sur l'arête créée.
+fn with_puis_merge_set(langage: Langage) {
+    let db = base();
+    assert_eq!(
+        lignes(
+            &db,
+            langage,
+            "MATCH (a:Commit {sha: 'c1'})-[:TOUCHES]->(f:File) \
+             WITH a, count(*) AS n \
+             MERGE (a)-[r:TOUCHE_N]->(a) \
+             SET r.n = n \
+             RETURN count(r)",
+        ),
+        vec![vec![Value::Int64(1)]],
+        "{langage:?}"
+    );
+    assert_eq!(
+        lignes(&db, langage, "MATCH ()-[r:TOUCHE_N]->() RETURN r.n"),
+        vec![vec![Value::Int64(3)]],
+        "{langage:?}"
+    );
+}
+
 // ============================================================================
 // Chaque cas, une fois par langage
 // ============================================================================
@@ -744,6 +769,7 @@ cas_en!(
         variable_liee_qui_n_est_pas_typee_noeud,
         with_distinct_puis_order_by_skip,
         cible_liee_depuis_un_noeud_indexe,
+        with_puis_merge_set,
     ]
 );
 
@@ -775,5 +801,6 @@ cas_en!(
         variable_liee_qui_n_est_pas_typee_noeud,
         with_distinct_puis_order_by_skip,
         cible_liee_depuis_un_noeud_indexe,
+        with_puis_merge_set,
     ]
 );

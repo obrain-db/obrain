@@ -835,6 +835,35 @@ impl<'a> Parser<'a> {
                         ordered_clauses.push(QueryClause::Merge(clause.clone()));
                         merge_clauses.push(clause);
                     }
+                    // `WITH … MERGE … SET …`, `WITH … CREATE …`, `WITH … DELETE …` :
+                    // les clauses d'écriture suivent un `WITH` comme en Cypher
+                    // (« Expected RETURN, FINISH, or SELECT » jusqu'ici). Elles
+                    // sont traduites à leur position, après le `WITH`.
+                    TokenKind::Set => {
+                        let clause = self.parse_set_clause()?;
+                        ordered_clauses.push(QueryClause::Set(clause.clone()));
+                        set_clauses.push(clause);
+                    }
+                    TokenKind::Remove => {
+                        let clause = self.parse_remove_clause()?;
+                        ordered_clauses.push(QueryClause::Remove(clause.clone()));
+                        remove_clauses.push(clause);
+                    }
+                    TokenKind::Create => {
+                        let clause = self.parse_create_clause_in_query()?;
+                        ordered_clauses.push(QueryClause::Create(clause.clone()));
+                        create_clauses.push(clause);
+                    }
+                    TokenKind::Insert => {
+                        let clause = self.parse_insert()?;
+                        ordered_clauses.push(QueryClause::Create(clause.clone()));
+                        create_clauses.push(clause);
+                    }
+                    TokenKind::Delete | TokenKind::Detach | TokenKind::Nodetach => {
+                        let clause = self.parse_delete_clause_in_query()?;
+                        ordered_clauses.push(QueryClause::Delete(clause.clone()));
+                        delete_clauses.push(clause);
+                    }
                     _ if self.is_identifier()
                         && self.get_identifier_name().eq_ignore_ascii_case("FOREACH") =>
                     {

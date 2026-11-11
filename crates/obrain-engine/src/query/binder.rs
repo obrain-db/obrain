@@ -168,17 +168,14 @@ impl Binder {
                         // disait `g` « not a node » et refusait `MATCH (c)-->(g)`
                         // après `WITH f AS g`.
                         let (data_type, is_node, is_edge) = match &projection.expression {
-                            LogicalExpression::Variable(name) => self
-                                .context
-                                .get(name)
-                                .map(|info| (info.data_type.clone(), info.is_node, info.is_edge))
-                                .unwrap_or_else(|| {
-                                    (
-                                        self.infer_expression_type(&projection.expression),
-                                        false,
-                                        false,
-                                    )
-                                }),
+                            LogicalExpression::Variable(name) => match self.context.get(name) {
+                                Some(info) => (info.data_type.clone(), info.is_node, info.is_edge),
+                                None => (
+                                    self.infer_expression_type(&projection.expression),
+                                    false,
+                                    false,
+                                ),
+                            },
                             expression => (self.infer_expression_type(expression), false, false),
                         };
                         self.context.add_variable(
