@@ -162,6 +162,24 @@ const VALID_KINDS: &[u8] = &[
     0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
 ];
 
+/// Borne de plausibilité d'une trame pour les scans RÉSYNCHRONISANTS du WAL
+/// (`merge_wal_inline_props`, `merge_wal_external_edges`) : au-delà, la
+/// longueur lue est tenue pour du bruit et le scan avance d'un octet. Toute
+/// trame qui doit être rejouée par ces scans doit rester SOUS cette borne.
+const BORNE_TRAME_PLAUSIBLE: usize = 64 * 1024 * 1024;
+
+/// (obrain#120) Taille maximale d'une valeur blob (octet de type compris)
+/// journalisée dans le WAL par `BlobColumnWrite`. Au-delà, la valeur est
+/// écrite dans sa colonne mais PAS journalisée : elle ne survit pas à un
+/// `kill -9` avant le prochain flush (limite documentée, verrouillée par
+/// `limite_v0_0_1_une_valeur_au_dela_du_plafond_wal_n_est_pas_journalisee`).
+/// Moitié de [`BORNE_TRAME_PLAUSIBLE`] : une trame journalisée est toujours
+/// rejouable, et une valeur de cette taille double au plus une fois son
+/// écriture disque (le WAL est tronqué au checkpoint suivant, déclenché dès
+/// `OBRAIN_WAL_CHECKPOINT_BYTES`, 8 Mio par défaut).
+pub const BLOB_WAL_MAX_BYTES: usize = 32 * 1024 * 1024;
+const _: () = assert!(BLOB_WAL_MAX_BYTES < BORNE_TRAME_PLAUSIBLE);
+
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::file::SubstrateFile;
 use crate::meta::meta_flags;
@@ -5816,7 +5834,7 @@ impl SubstrateStore {
                 && data[off + 6] == 0
                 && data[off + 7] == 0
                 && off + 28 + ln <= data.len()
-                && ln < 64 * 1024 * 1024;
+                && ln < BORNE_TRAME_PLAUSIBLE;
             if !plausible {
                 off += 1;
                 skipped_bytes += 1;
@@ -6181,7 +6199,7 @@ impl SubstrateStore {
                 && data[off + 6] == 0
                 && data[off + 7] == 0
                 && off + 28 + ln <= data.len()
-                && ln < 64 * 1024 * 1024;
+                && ln < BORNE_TRAME_PLAUSIBLE;
             if !plausible {
                 off += 1;
                 continue;
@@ -15271,6 +15289,17 @@ impl SubstrateStore {
         // perd pas l'écriture en colonne, il retire la garantie de survie au
         // crash pour CETTE entrée, et le dit.
         self.ecrire_blob_sans_journal(entity_kind, slot, key, tagged);
+        if tagged.len() > BLOB_WAL_MAX_BYTES {
+            tracing::error!(
+                target: "substrate::blob_columns",
+                "valeur blob de {} o > plafond WAL {} o (key={key:?}, ek={entity_kind:?}, \
+                 slot={slot}) : NON journalisee — elle ne survivra pas a un kill avant \
+                 le prochain flush",
+                tagged.len(),
+                BLOB_WAL_MAX_BYTES
+            );
+            return;
+        }
         if let Err(e) = self
             .writer
             .append_payload(crate::wal::WalPayload::BlobColumnWrite {

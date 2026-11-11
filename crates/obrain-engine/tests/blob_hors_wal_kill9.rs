@@ -36,6 +36,9 @@ const LONGUEUR: usize = 585;
 /// `maj = 1` : au lieu de créer des nœuds, RÉÉCRIT (`SET`) la valeur longue des
 /// nœuds du tour 1 avec celle du tour courant. `maj = 2` : la réécrit longue
 /// PUIS courte (`valeur_courte`), deux commits par nœud.
+/// `maj = 3` : crée DEUX nœuds `:Gros` par l'API (pas de Cypher), l'un avec une
+/// valeur de 1 Mio (sous le plafond WAL), l'autre juste au-dessus du plafond,
+/// puis `flush_wal`.
 const ENV_ENFANT: &str = "OBRAIN_TEST_BLOB_KILL9_ENFANT";
 
 /// Valeur longue propre au nœud `k` du tour `tour` : l'identité du nœud est en
@@ -51,6 +54,19 @@ fn valeur_longue(tour: u8, k: i64) -> String {
         s.push('.');
     }
     s
+}
+
+/// Deux valeurs énormes, par l'API : `sous` (1 Mio, journalisée) et `dessus`
+/// (plafond WAL + 1, non journalisée). Un `flush_wal` : les deux colonnes sont
+/// écrites, seule la première a sa trame fsyncée.
+fn ecrire_gros(db: &ObrainDB) {
+    let plafond = obrain_substrate::BLOB_WAL_MAX_BYTES;
+    for (nom, taille) in [("sous", 1usize << 20), ("dessus", plafond + 1)] {
+        let id = db.create_node(&["Gros"]);
+        db.set_node_property(id, "nom", Value::String(nom.into()));
+        db.set_node_property(id, "doc", Value::String("g".repeat(taille).into()));
+    }
+    db.flush_wal().expect("flush_wal");
 }
 
 /// Valeur COURTE (sous le seuil blob) qui remplace une valeur longue.
@@ -114,6 +130,11 @@ fn enfant_ecrivain() {
     let maj: u8 = morceaux.next().unwrap().parse().unwrap();
     let dir = Path::new(morceaux.next().unwrap());
     let db = ObrainDB::open(dir.join("base")).expect("open enfant");
+    if maj == 3 {
+        ecrire_gros(&db);
+        std::fs::write(dir.join(format!("pret{tour}")), b"").unwrap();
+        dormir_pour_toujours();
+    }
     let s = db.session();
     for k in 0..N {
         let doc = valeur_longue(tour, k);
@@ -451,5 +472,53 @@ fn limite_v0_0_1_un_lecteur_seul_ne_rejoue_pas_les_valeurs_longues_d_un_ecrivain
     assert_eq!(
         e2.longs_exacts, N as usize,
         "un écrivain qui rouvre rejoue la fenêtre : {e2:?}"
+    );
+}
+
+/// LIMITE v0.0.1, verrouillée : une valeur au-delà de `BLOB_WAL_MAX_BYTES`
+/// (32 Mio) est écrite dans sa colonne mais PAS journalisée ; elle ne survit
+/// pas à un `kill -9` avant le prochain flush, alors qu'une valeur de 1 Mio,
+/// elle, survit. Ce test rougit le jour où le plafond saute (à mettre alors à
+/// jour avec la ligne de `docs/LIMITES-v0.0.1.md`).
+#[test]
+fn limite_v0_0_1_une_valeur_au_dela_du_plafond_wal_n_est_pas_journalisee() {
+    if std::env::var(ENV_ENFANT).is_ok() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().join("base");
+    let enfant = lancer_enfant_mode(1, false, 3, dir.path());
+    attendre(&dir.path().join("pret1"));
+    tuer(enfant);
+
+    let db = ObrainDB::open(&base).expect("réouverture");
+    let r = db
+        .session()
+        .execute("MATCH (n:Gros) RETURN n.nom, size(n.doc)")
+        .expect("relecture");
+    let mut tailles = std::collections::HashMap::new();
+    for ligne in &r.rows {
+        if let Some(Value::String(nom)) = ligne.first() {
+            tailles.insert(nom.to_string(), ligne.get(1).cloned());
+        }
+    }
+    assert_eq!(
+        r.rows.len(),
+        2,
+        "les deux nœuds survivent (WAL) : {tailles:?}"
+    );
+    assert_eq!(
+        tailles.get("sous").cloned().flatten(),
+        Some(Value::Int64(1 << 20)),
+        "1 Mio sous le plafond : journalisée, relue entière"
+    );
+    assert!(
+        !matches!(
+            tailles.get("dessus").cloned().flatten(),
+            Some(Value::Int64(_))
+        ),
+        "limite mesurée : au-delà du plafond, la valeur n'est pas journalisée et ne \
+         survit pas au kill — relu {:?}",
+        tailles.get("dessus")
     );
 }
