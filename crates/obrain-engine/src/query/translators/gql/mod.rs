@@ -883,7 +883,7 @@ impl GqlTranslator {
                 .any(|item| contains_aggregate(&item.expression));
             if has_aggregates {
                 let (aggregates, group_by, post_return) =
-                    self.extract_aggregates_and_groups(&with_clause.items)?;
+                    self.extract_aggregates_and_groups(&with_clause.items, false)?;
                 plan = LogicalOperator::Aggregate(AggregateOp {
                     group_by,
                     aggregates,
@@ -1029,7 +1029,7 @@ impl GqlTranslator {
             //   1. An aggregate (`count(n)` with synthetic alias)
             //   2. A post-aggregate projection (`_agg_0 > 0 AS exists`)
             let (aggregates, auto_group_by, post_return) =
-                self.extract_aggregates_and_groups(&query.return_clause.items)?;
+                self.extract_aggregates_and_groups(&query.return_clause.items, true)?;
 
             // Separate horizontal aggregates (over group-list variables from
             // variable-length paths) from regular aggregates.
@@ -1804,7 +1804,7 @@ impl GqlTranslator {
 
             if has_aggregates {
                 let (aggregates, auto_group_by, post_return) =
-                    self.extract_aggregates_and_groups(&subquery.return_clause.items)?;
+                    self.extract_aggregates_and_groups(&subquery.return_clause.items, true)?;
                 let group_by = if subquery.return_clause.group_by.is_empty() {
                     auto_group_by
                 } else {

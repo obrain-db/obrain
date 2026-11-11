@@ -864,7 +864,7 @@ impl CypherTranslator {
 
         let mut plan = if has_aggregates {
             let (aggregates, group_by, post_return) =
-                self.extract_aggregates_and_groups_from_items(&with_clause.items)?;
+                self.extract_aggregates_and_groups_from_items(&with_clause.items, false)?;
 
             let agg_op = LogicalOperator::Aggregate(AggregateOp {
                 group_by,
@@ -1247,7 +1247,7 @@ impl CypherTranslator {
                 ast::ReturnItems::Explicit(items) => items,
             };
             let (aggregates, group_by, post_return) =
-                self.extract_aggregates_and_groups_from_items(items)?;
+                self.extract_aggregates_and_groups_from_items(items, true)?;
 
             let agg_op = LogicalOperator::Aggregate(AggregateOp {
                 group_by,
@@ -1320,6 +1320,7 @@ impl CypherTranslator {
     fn extract_aggregates_and_groups_from_items(
         &self,
         items: &[ast::ProjectionItem],
+        always_project_aliases: bool,
     ) -> Result<(
         Vec<AggregateExpr>,
         Vec<LogicalExpression>,
@@ -1367,7 +1368,12 @@ impl CypherTranslator {
         // La règle qui décide de la projection d'après-agrégat (alias, clés
         // calculées homonymes, agrégats sans alias) vaut pour `WITH` comme pour
         // `RETURN`, en Cypher comme en GQL : elle est dans `common`, pas ici.
-        let post_return = finalize_aggregate_projection(&mut aggregates, &group_by, post_items);
+        let post_return = finalize_aggregate_projection(
+            &mut aggregates,
+            &group_by,
+            post_items,
+            always_project_aliases,
+        );
         Ok((aggregates, group_by, post_return))
     }
 
