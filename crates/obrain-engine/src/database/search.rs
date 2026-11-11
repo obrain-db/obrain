@@ -287,29 +287,9 @@ impl super::ObrainDB {
             return Ok(out);
         }
 
-        let index = self.store.get_vector_index(label, property).ok_or_else(|| {
-            obrain_common::utils::error::Error::Internal(format!(
-                "No vector index found for :{label}({property}). Call create_vector_index() first."
-            ))
-        })?;
-
-        let accessor =
-            obrain_core::index::vector::PropertyVectorAccessor::new(&*self.store, property);
-
-        let results = match self.compute_filter_allowlist(label, filters) {
-            Some(allowlist) => match ef {
-                Some(ef_val) => {
-                    index.search_with_ef_and_filter(query, k, ef_val, &allowlist, &accessor)
-                }
-                None => index.search_with_filter(query, k, &allowlist, &accessor),
-            },
-            None => match ef {
-                Some(ef_val) => index.search_with_ef(query, k, ef_val, &accessor),
-                None => index.search(query, k, &accessor),
-            },
-        };
-
-        Ok(results)
+        Err(obrain_common::utils::error::Error::Internal(format!(
+            "index vectoriel absent pour :{label}({property}) : registre hors base substrat supprimé (O-VEC nettoyage)"
+        )))
     }
 
     /// Searches for nearest neighbors for multiple query vectors in parallel.
@@ -351,29 +331,9 @@ impl super::ObrainDB {
             return Ok(sorties);
         }
 
-        let index = self.store.get_vector_index(label, property).ok_or_else(|| {
-            obrain_common::utils::error::Error::Internal(format!(
-                "No vector index found for :{label}({property}). Call create_vector_index() first."
-            ))
-        })?;
-
-        let accessor =
-            obrain_core::index::vector::PropertyVectorAccessor::new(&*self.store, property);
-
-        let results = match self.compute_filter_allowlist(label, filters) {
-            Some(allowlist) => match ef {
-                Some(ef_val) => {
-                    index.batch_search_with_ef_and_filter(queries, k, ef_val, &allowlist, &accessor)
-                }
-                None => index.batch_search_with_filter(queries, k, &allowlist, &accessor),
-            },
-            None => match ef {
-                Some(ef_val) => index.batch_search_with_ef(queries, k, ef_val, &accessor),
-                None => index.batch_search(queries, k, &accessor),
-            },
-        };
-
-        Ok(results)
+        Err(obrain_common::utils::error::Error::Internal(format!(
+            "index vectoriel absent pour :{label}({property}) : registre hors base substrat supprimé (O-VEC nettoyage)"
+        )))
     }
 
     /// Searches for diverse nearest neighbors using Maximal Marginal Relevance (MMR).
@@ -455,53 +415,9 @@ impl super::ObrainDB {
             ));
         }
 
-        let index = self.store.get_vector_index(label, property).ok_or_else(|| {
-            obrain_common::utils::error::Error::Internal(format!(
-                "No vector index found for :{label}({property}). Call create_vector_index() first."
-            ))
-        })?;
-
-        let accessor =
-            obrain_core::index::vector::PropertyVectorAccessor::new(&*self.store, property);
-
-        let fetch_k = fetch_k.unwrap_or(k.saturating_mul(4).max(k));
-        let lambda = lambda.unwrap_or(0.5);
-
-        // Step 1: Fetch candidates from HNSW (with optional filter)
-        let initial_results = match self.compute_filter_allowlist(label, filters) {
-            Some(allowlist) => match ef {
-                Some(ef_val) => {
-                    index.search_with_ef_and_filter(query, fetch_k, ef_val, &allowlist, &accessor)
-                }
-                None => index.search_with_filter(query, fetch_k, &allowlist, &accessor),
-            },
-            None => match ef {
-                Some(ef_val) => index.search_with_ef(query, fetch_k, ef_val, &accessor),
-                None => index.search(query, fetch_k, &accessor),
-            },
-        };
-
-        if initial_results.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Step 2: Retrieve stored vectors for MMR pairwise comparison
-        use obrain_core::index::vector::VectorAccessor;
-        let candidates: Vec<(obrain_common::types::NodeId, f32, std::sync::Arc<[f32]>)> =
-            initial_results
-                .into_iter()
-                .filter_map(|(id, dist)| accessor.get_vector(id).map(|vec| (id, dist, vec)))
-                .collect();
-
-        // Step 3: Build slice-based candidates for mmr_select
-        let candidate_refs: Vec<(obrain_common::types::NodeId, f32, &[f32])> = candidates
-            .iter()
-            .map(|(id, dist, vec)| (*id, *dist, vec.as_ref()))
-            .collect();
-
-        // Step 4: Run MMR selection
-        let metric = index.config().metric;
-        Ok(mmr_select(query, &candidate_refs, k, lambda, metric))
+        Err(obrain_common::utils::error::Error::Internal(format!(
+            "index vectoriel absent pour :{label}({property}) : registre hors base substrat supprimé (O-VEC nettoyage)"
+        )))
     }
 
     /// Searches a text index using BM25 scoring.
@@ -744,24 +660,10 @@ impl super::ObrainDB {
             }
         }
 
-        // Vector search (if query vector provided)
-        if let Some(query_vec) = query_vector
-            && let Some(vector_index) = self.store.get_vector_index(label, vector_property)
-        {
-            let accessor = obrain_core::index::vector::PropertyVectorAccessor::new(
-                &*self.store,
-                vector_property,
-            );
-            let vector_results = vector_index.search(query_vec, k * 2, &accessor);
-            if !vector_results.is_empty() {
-                sources.push(
-                    vector_results
-                        .into_iter()
-                        .map(|(id, dist)| (id, f64::from(dist)))
-                        .collect(),
-                );
-            }
-        }
+        // Hors base substrat, il n'existe aucun registre vectoriel : la recherche
+        // hybride se réduit à son volet texte (la voie vectorielle n'a plus de
+        // source hors substrat, voir la garde ci-dessus).
+        let _ = (query_vector, vector_property);
 
         if sources.is_empty() {
             return Ok(Vec::new());
