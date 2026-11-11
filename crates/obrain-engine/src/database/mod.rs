@@ -529,6 +529,19 @@ impl ObrainDB {
                     ))
                 })?
             }
+        } else if read_only {
+            // ── LECTURE SEULE : ON N'INVENTE PAS UNE BASE ────────────────────
+            // « Ouvrir ou créer » est le contrat de `open` ; en lecture seule il
+            // CRÉAIT une base vide dans tout dossier qu'on lui montrait — le
+            // dossier parent des bases, une faute de frappe, un répertoire
+            // quelconque. Un lecteur ne crée rien : sans `substrate.meta`, ce
+            // n'est pas une base, et l'ouverture échoue sans rien poser.
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "{} is not an obrain database (no substrate.meta) — a read-only \
+                 open never creates one; check the path, or open it writable to \
+                 create a new database",
+                path_ref.display()
+            )));
         } else {
             obrain_substrate::SubstrateStore::create(path_ref).map_err(|e| {
                 obrain_common::utils::error::Error::Internal(format!(

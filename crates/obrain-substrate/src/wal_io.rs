@@ -1359,6 +1359,11 @@ fn reconcilier_ouverture(
 #[derive(Debug)]
 pub struct WalWriter {
     path: PathBuf,
+    /// Journal d'une ouverture en LECTURE SEULE (`open_lecture_seule`) : le
+    /// fichier est ouvert sans droit d'écriture, et tout append, toute
+    /// troncature, toute publication d'ancre rend `SubstrateError::LectureSeule`
+    /// AVANT d'agir.
+    lecture_seule: bool,
     /// Chemin du side-car d'ancre (normalement `<wal>.lsn`).
     ancre_path: PathBuf,
     inner: Mutex<WriterInner>,
@@ -1865,6 +1870,53 @@ impl WalWriter {
         sync_mode: SyncMode,
         ancre_repli: u64,
     ) -> SubstrateResult<Self> {
+        Self::ouvrir_interne(path, ancre_path, sync_mode, ancre_repli, false)
+    }
+
+    /// Ouvre le WAL d'une base ouverte en LECTURE SEULE.
+    ///
+    /// Le fichier est ouvert SANS droit d'écriture et n'est PAS créé s'il
+    /// manque (le journal est alors vide). Le side-car d'ancre `<wal>.lsn`
+    /// n'est jamais (re)publié : l'ancre réconciliée ne vit qu'en mémoire. Le
+    /// registre d'append `<wal>.reg` n'est jamais créé. Tout append, toute
+    /// troncature, toute réparation de queue rend
+    /// [`SubstrateError::LectureSeule`].
+    pub fn open_lecture_seule(
+        path: impl AsRef<Path>,
+        sync_mode: SyncMode,
+        ancre_repli: u64,
+    ) -> SubstrateResult<Self> {
+        let path = path.as_ref().to_path_buf();
+        Self::ouvrir_interne(
+            path.clone(),
+            chemin_ancre(&path),
+            sync_mode,
+            ancre_repli,
+            true,
+        )
+    }
+
+    fn refuser_si_lecture_seule(&self, operation: &str) -> SubstrateResult<()> {
+        if self.lecture_seule {
+            return Err(SubstrateError::LectureSeule {
+                operation: operation.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Ce journal appartient-il à une ouverture en lecture seule ?
+    pub fn est_lecture_seule(&self) -> bool {
+        self.lecture_seule
+    }
+
+    fn ouvrir_interne(
+        path: impl AsRef<Path>,
+        ancre_path: impl AsRef<Path>,
+        sync_mode: SyncMode,
+        ancre_repli: u64,
+        lecture_seule: bool,
+    ) -> SubstrateResult<Self> {
         let path = path.as_ref().to_path_buf();
         let ancre_path = ancre_path.as_ref().to_path_buf();
         // ── `append` ET NON `write` : C'EST L'ATOMICITÉ INTER-PROCESSUS ──────
@@ -1875,7 +1927,11 @@ impl WalWriter {
         // `mw_interprocess_probe::p1`). Avec `O_APPEND`, le noyau place chaque
         // écriture à la fin du fichier, atomiquement : aucune écriture ne peut en
         // recouvrir une autre.
-        let file = crate::es::espace().ouvrir_journal(&path)?;
+        let file = if lecture_seule {
+            crate::es::ouvrir_journal_lecture_seule(&path)?
+        } else {
+            crate::es::espace().ouvrir_journal(&path)?
+        };
         let taille = file.taille()?;
         let (ancre, reconciliation, publier) =
             reconcilier_ouverture(&ancre_path, &path, taille, ancre_repli);
@@ -1883,11 +1939,14 @@ impl WalWriter {
         // nominale ne touche donc pas au disque (hors le `open` lui-même), et
         // deux processus qui s'ouvrent en parallèle ne se battent pas pour le
         // réécrire.
-        if publier {
+        // Lecture seule : l'ancre réconciliée reste en mémoire, le side-car
+        // n'est PAS (re)publié — un lecteur ne corrige pas le disque.
+        if publier && !lecture_seule {
             publier_ancre_sur(&ancre_path, ancre, taille)?;
         }
         let poignee_synchro = file.poignee_synchro().ok().flatten().map(PoigneeFsync);
         Ok(Self {
+            lecture_seule,
             path,
             ancre_path,
             inner: Mutex::new(WriterInner {
@@ -1952,6 +2011,7 @@ impl WalWriter {
     /// de départ (défaut : [`ANCRE_INITIALE`]).
     pub fn open_memory(sync_mode: SyncMode, ancre_repli: u64) -> SubstrateResult<Self> {
         Ok(Self {
+            lecture_seule: false,
             path: PathBuf::from("<memoire:obrain>").join(crate::zone::WAL),
             ancre_path: PathBuf::from("<memoire:obrain>").join("substrate.wal.lsn"),
             inner: Mutex::new(WriterInner {
@@ -2336,6 +2396,7 @@ impl WalWriter {
         exige_sync: bool,
         encodeur: impl FnOnce(&mut Vec<u8>, u64) -> SubstrateResult<()>,
     ) -> SubstrateResult<(u64, usize)> {
+        self.refuser_si_lecture_seule("un append au WAL")?;
         if self.group_actif.load(Ordering::Acquire) {
             // `commit || exige_sync` : c'est LA définition d'une frontière de
             // durabilité pour le group commit (voir
@@ -2375,6 +2436,7 @@ impl WalWriter {
     where
         I: IntoIterator<Item = WalRecord>,
     {
+        self.refuser_si_lecture_seule("un append au WAL")?;
         let it = recs.into_iter();
         if self.group_actif.load(Ordering::Acquire) {
             let mut premier: Option<u64> = None;
@@ -2856,6 +2918,11 @@ impl WalWriter {
     /// une référence FAIBLE sur l'écrivain : il ne doit ni le maintenir en vie, ni
     /// survivre à son Drop (le Weak ne s'upgrade plus, la boucle sort).
     pub fn activer_group_commit(self: &Arc<Self>) {
+        // Lecture seule : aucun append n'est possible, donc aucun tampon ni
+        // veilleur à armer.
+        if self.lecture_seule {
+            return;
+        }
         if self.group_actif.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -4186,6 +4253,10 @@ impl WalWriter {
     /// fsync completes; callers that set [`SyncMode::Group`] should invoke this
     /// from a background timer or at explicit commit points.
     pub fn fsync(&self) -> SubstrateResult<()> {
+        // Lecture seule : rien n'a pu être écrit, il n'y a rien à rendre durable.
+        if self.lecture_seule {
+            return Ok(());
+        }
         let mut guard = self.inner.lock();
         // ── SOUS GROUP COMMIT, UN `fsync` DOIT D'ABORD POSER LE TAMPON ───────
         // Sinon les frames en attente ne seraient pas dans le fichier, et le
@@ -4239,6 +4310,7 @@ impl WalWriter {
     /// règle que `fetch_max` sur les filigranes d'allocation : une borne ne recule
     /// pas.
     pub fn truncate(&self) -> SubstrateResult<u64> {
+        self.refuser_si_lecture_seule("la troncature du WAL")?;
         let mut guard = self.inner.lock();
         // ── L'ANCRE COMPTE LA TAILLE RÉELLE : LE TAMPON DOIT Y ÊTRE ──────────
         // `nouvelle = base + taille`. Si des frames attendaient dans le tampon du
@@ -4298,6 +4370,7 @@ impl WalWriter {
     /// rend une troncature étrangère DÉTECTABLE à la réouverture (un fichier plus
     /// court que son plancher a été tronqué par quelqu'un d'autre).
     pub fn sceller_segment(&self) -> SubstrateResult<()> {
+        self.refuser_si_lecture_seule("le scellement du segment WAL")?;
         let mut guard = self.inner.lock();
         if !matches!(guard.medium, WalMedium::File(_)) {
             return Ok(());
@@ -4319,6 +4392,7 @@ impl WalWriter {
     /// trou remonte donc en [`SubstrateError::WalTrou`], une corruption en erreur
     /// de décodage, et l'appelant décide.
     pub fn reparer_queue(&self) -> SubstrateResult<Option<ReparationQueue>> {
+        self.refuser_si_lecture_seule("la réparation de la queue du WAL")?;
         let mut guard = self.inner.lock();
         let taille = guard.taille_reelle()?;
         if taille == 0 || !matches!(guard.medium, WalMedium::File(_)) {
