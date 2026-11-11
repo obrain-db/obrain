@@ -173,7 +173,7 @@ const BORNE_TRAME_PLAUSIBLE: usize = 64 * 1024 * 1024;
 /// écrite dans sa colonne mais PAS journalisée : elle ne survit pas à un
 /// `kill -9` avant le prochain flush (limite documentée, verrouillée par
 /// `limite_v0_0_1_une_valeur_au_dela_du_plafond_wal_n_est_pas_journalisee`).
-/// Moitié de [`BORNE_TRAME_PLAUSIBLE`] : une trame journalisée est toujours
+/// Moitié de `BORNE_TRAME_PLAUSIBLE` (constante privée) : une trame journalisée est toujours
 /// rejouable, et une valeur de cette taille double au plus une fois son
 /// écriture disque (le WAL est tronqué au checkpoint suivant, déclenché dès
 /// `OBRAIN_WAL_CHECKPOINT_BYTES`, 8 Mio par défaut).
