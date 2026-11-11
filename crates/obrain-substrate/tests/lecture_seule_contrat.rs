@@ -672,7 +672,7 @@ fn sidecar_herite_avec_vecteur_a_migrer_fait_echouer_l_ouverture_sans_migrer() {
     let vecteur: std::sync::Arc<[f32]> = (0..16).map(|i| i as f32 * 0.5).collect();
     {
         let mut w =
-            PropertiesStreamingWriter::open(&base.join(obrain_substrate::PROPS_FILENAME)).unwrap();
+            PropertiesStreamingWriter::open(base.join(obrain_substrate::PROPS_FILENAME)).unwrap();
         w.append_node(
             id.0,
             &[
@@ -934,10 +934,19 @@ fn les_mutations_sont_refusees_par_une_erreur_nommee_et_n_ecrivent_rien() {
             Box::new(|| ok(s.batch_create_edges(&[(a, b, "INTRUS")]))),
         ),
         ("delete_node", Box::new(|| ok(s.delete_node(a)))),
-        ("delete_node_edges", Box::new(|| ok(s.delete_node_edges(a)))),
+        (
+            "delete_node_edges",
+            Box::new(|| {
+                s.delete_node_edges(a);
+                Ok(())
+            }),
+        ),
         (
             "set_node_property",
-            Box::new(|| ok(s.set_node_property(a, "nom", Value::String("x".into())))),
+            Box::new(|| {
+                s.set_node_property(a, "nom", Value::String("x".into()));
+                Ok(())
+            }),
         ),
         (
             "remove_node_property",
