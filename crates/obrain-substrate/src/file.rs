@@ -1049,6 +1049,15 @@ impl ZonePrivee {
     /// projection est retirée, pas détruite.
     unsafe fn grandir(&self, new_len: usize) -> SubstrateResult<()> {
         // SAFETY: délégué à l'appelant.
+        unsafe { self.grandir_avec_plafond(new_len, PLAFOND_COPIE_PRIVEE) }
+    }
+
+    /// [`Self::grandir`] avec un plafond explicite (testable sans fichier de 1 Gio).
+    ///
+    /// # Safety
+    /// Même contrat que [`Self::grandir`].
+    unsafe fn grandir_avec_plafond(&self, new_len: usize, plafond: usize) -> SubstrateResult<()> {
+        // SAFETY: délégué à l'appelant.
         let e = unsafe { &mut *self.etat.get() };
         if new_len <= e.len {
             return Ok(());
@@ -1059,7 +1068,7 @@ impl ZonePrivee {
             e.len = new_len;
             return Ok(());
         }
-        if matches!(e.octets, OctetsPrives::Fichier(_)) && e.len > PLAFOND_COPIE_PRIVEE {
+        if matches!(e.octets, OctetsPrives::Fichier(_)) && e.len > plafond {
             return Err(SubstrateError::LectureSeuleRefusee {
                 raison: format!(
                     "la zone {} ({} octets) devrait grandir à {} octets pour rejouer le \
@@ -3513,5 +3522,160 @@ mod tests_memoire {
         // constructible : une base neuve n'a aucun nœud, et la lecture d'un
         // identifiant absent rend `None` au lieu d'échouer.
         assert!(store.get_node(obrain_common::types::NodeId(1)).is_none());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ZONES PRIVÉES (ouverture en lecture seule) — rafraîchissement, croissance,
+//  plafond. Chaque test exige que le FICHIER ne bouge pas d'un octet.
+// ═══════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod tests_zone_privee {
+    use super::*;
+
+    fn fichier_de(dir: &tempfile::TempDir, octets: &[u8]) -> PathBuf {
+        let p = dir.path().join("zone");
+        std::fs::write(&p, octets).unwrap();
+        p
+    }
+
+    /// Une zone privée qui grandit (rejeu d'un WAL au-delà du fichier) le fait EN
+    /// MÉMOIRE : le fichier garde sa taille et son contenu, les octets d'origine
+    /// sont conservés et le complément est zéro-rempli.
+    #[test]
+    fn grandir_une_zone_privee_ne_touche_pas_au_fichier() {
+        let td = tempfile::tempdir().unwrap();
+        let origine = vec![7u8; 8192];
+        let chemin = fichier_de(&td, &origine);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert_eq!(zf.len(), 8192);
+
+        zf.grow_to(20_000).unwrap();
+        assert_eq!(zf.len(), 20_000);
+        assert_eq!(
+            &zf.as_slice()[..8192],
+            &origine[..],
+            "octets d'origine conservés"
+        );
+        assert!(
+            zf.as_slice()[8192..].iter().all(|&b| b == 0),
+            "complément zéro-rempli"
+        );
+        zf.as_slice_mut()[10_000] = 9;
+        zf.ecrire_a(15_000, &[5, 5]).unwrap();
+        zf.msync().unwrap();
+        zf.fsync().unwrap();
+
+        assert_eq!(
+            std::fs::read(&chemin).unwrap(),
+            origine,
+            "le fichier a changé"
+        );
+    }
+
+    /// Croissance dans la réserve : aucune recopie, la même projection sert.
+    #[test]
+    fn grandir_dans_la_reserve_garde_les_octets_ecrits() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[1u8; 4096]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        zf.grow_to(8192).unwrap();
+        zf.as_slice_mut()[6000] = 42;
+        zf.grow_to(12_288).unwrap();
+        assert_eq!(
+            zf.as_slice()[6000],
+            42,
+            "un octet écrit avant la 2ᵉ croissance a disparu"
+        );
+        assert_eq!(zf.len(), 12_288);
+    }
+
+    /// Une zone dont le fichier n'existe pas vit en mémoire : rien n'est créé.
+    #[test]
+    fn une_zone_sans_fichier_vit_en_memoire_et_ne_cree_rien() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("absente");
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert!(zf.is_empty());
+        zf.grow_to(4096).unwrap();
+        zf.as_slice_mut()[0] = 1;
+        assert!(!chemin.exists(), "la lecture seule a créé le fichier");
+    }
+
+    /// `rafraichir` : un écrivain agrandit le fichier, le lecteur reprojette la
+    /// nouvelle taille — en privé, sans écrire. Une zone sortie de son fichier
+    /// (devenue mémoire) n'est plus reprojetée.
+    #[test]
+    fn rafraichir_reprojette_un_fichier_agrandi_sans_l_ecrire() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[3u8; 4096]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert!(!zf.rafraichir().unwrap(), "rien n'a grandi");
+
+        // Un écrivain agrandit le fichier.
+        let mut agrandi = vec![3u8; 4096];
+        agrandi.extend(vec![8u8; 4096]);
+        std::fs::write(&chemin, &agrandi).unwrap();
+        assert!(
+            zf.rafraichir().unwrap(),
+            "la croissance du fichier n'est pas vue"
+        );
+        assert_eq!(zf.len(), 8192);
+        assert_eq!(&zf.as_slice()[4096..], &agrandi[4096..]);
+        assert_eq!(
+            std::fs::read(&chemin).unwrap(),
+            agrandi,
+            "le lecteur a écrit le fichier"
+        );
+
+        // Zone sortie de son fichier : plus de reprojection.
+        zf.grow_to(20_000).unwrap();
+        std::fs::write(&chemin, vec![0u8; 100_000]).unwrap();
+        assert!(!zf.rafraichir().unwrap());
+        assert_eq!(zf.len(), 20_000);
+    }
+
+    /// Plafond : une zone adossée à un fichier plus gros que le plafond ne se
+    /// recopie pas en mémoire pour grandir — refus NOMMÉ, qui dit quoi lancer.
+    #[test]
+    fn au_dela_du_plafond_la_croissance_est_refusee_par_une_erreur_nommee() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[1u8; 16_384]);
+        let zp = ZonePrivee::ouvrir(&chemin).unwrap();
+        // SAFETY: test mono-fil, aucune vue vivante.
+        let r = unsafe { zp.grandir_avec_plafond(32_768, 8192) };
+        match r {
+            Err(SubstrateError::LectureSeuleRefusee { raison }) => {
+                assert!(
+                    raison.contains("consolider"),
+                    "le refus doit dire quoi faire : {raison}"
+                );
+            }
+            autre => panic!("refus nommé attendu, obtenu {autre:?}"),
+        }
+        assert_eq!(zp.len(), 16_384, "la zone a changé malgré le refus");
+        // Sous le plafond, la même croissance passe.
+        // SAFETY: idem.
+        unsafe { zp.grandir_avec_plafond(32_768, 1 << 20) }.unwrap();
+        assert_eq!(zp.len(), 32_768);
+        assert_eq!(std::fs::read(&chemin).unwrap(), vec![1u8; 16_384]);
+    }
+
+    /// `shrink_to` est refusé nommément : rétrécir, c'est `set_len`.
+    #[test]
+    fn retrecir_une_zone_privee_est_refuse_par_lecture_seule() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[1u8; 8192]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert!(matches!(
+            zf.shrink_to(4096),
+            Err(SubstrateError::LectureSeule { .. })
+        ));
+        assert_eq!(std::fs::read(&chemin).unwrap().len(), 8192);
     }
 }
