@@ -706,8 +706,111 @@ pub(crate) enum VariableKind {
     Node,
     /// Une arête (un seul saut).
     Edge,
-    /// Tout le reste : scalaire, liste, chemin, agrégat, variable d'`UNWIND`.
+    /// Une valeur qui n'est PROUVÉEMENT ni un nœud ni une arête : littéral,
+    /// opération, propriété, liste ou map, résultat d'`id()` ou d'un
+    /// agrégat de dénombrement. Un `MATCH` qui la reprend comme nœud est une
+    /// erreur de type (Neo4j : « Type mismatch: expected Node but was
+    /// Integer ») ; sans cela l'entier 1 se joignait au nœud n° 1.
+    Scalar,
+    /// Genre INCONNU : peut porter un nœud (élément d'un `UNWIND` d'une liste
+    /// de nœuds, `head(collect(n))`, `CASE`, paramètre d'un `CALL`).
     Other,
+}
+
+/// Erreur de type si `variable`, liée à ce que `bound` dit, ne peut pas jouer
+/// le rôle `expected` (`Node` ou `Edge`) dans un motif. Un genre inconnu
+/// (`Other`) passe : le moteur ne peut pas le prouver faux.
+pub(crate) fn check_bound_kind(
+    variable: &str,
+    expected: VariableKind,
+    bound: &HashMap<String, VariableKind>,
+) -> Result<()> {
+    let Some(kind) = bound.get(variable) else {
+        return Ok(());
+    };
+    let quoi = |k: VariableKind| match k {
+        VariableKind::Node => "un nœud",
+        VariableKind::Edge => "une arête",
+        VariableKind::Scalar => "une valeur (nombre, texte, liste, map…)",
+        VariableKind::Other => "une valeur de type inconnu",
+    };
+    if *kind == VariableKind::Scalar || (*kind != VariableKind::Other && *kind != expected) {
+        return Err(Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            format!(
+                "Type mismatch: la variable '{variable}' est déjà liée à {}, \
+                 le motif l'attend comme {}",
+                quoi(*kind),
+                quoi(expected)
+            ),
+        )));
+    }
+    Ok(())
+}
+
+/// Genre d'une expression qui produit une valeur de projection.
+fn expression_kind(
+    expression: &LogicalExpression,
+    entree: &HashMap<String, VariableKind>,
+) -> VariableKind {
+    match expression {
+        LogicalExpression::Variable(name) => {
+            entree.get(name).copied().unwrap_or(VariableKind::Other)
+        }
+        // NULL est lié sans être d'aucun genre.
+        LogicalExpression::Literal(obrain_common::types::Value::Null) => VariableKind::Other,
+        LogicalExpression::Literal(_)
+        | LogicalExpression::Property { .. }
+        | LogicalExpression::Binary { .. }
+        | LogicalExpression::Unary { .. }
+        | LogicalExpression::List(_)
+        | LogicalExpression::Map(_)
+        | LogicalExpression::Id(_)
+        | LogicalExpression::Labels(_)
+        | LogicalExpression::Type(_) => VariableKind::Scalar,
+        LogicalExpression::FunctionCall { name, .. } => {
+            const SCALAIRES: &[&str] = &[
+                "id",
+                "elementid",
+                "element_id",
+                "tostring",
+                "tointeger",
+                "tofloat",
+                "toboolean",
+                "size",
+                "length",
+                "abs",
+                "ceil",
+                "floor",
+                "round",
+                "sqrt",
+                "exp",
+                "log",
+                "toupper",
+                "tolower",
+                "trim",
+                "substring",
+                "split",
+                "replace",
+                "labels",
+                "type",
+                "keys",
+                "range",
+                "date",
+                "datetime",
+                "duration",
+                "time",
+                "timestamp",
+                "rand",
+            ];
+            if SCALAIRES.contains(&name.to_ascii_lowercase().as_str()) {
+                VariableKind::Scalar
+            } else {
+                VariableKind::Other
+            }
+        }
+        _ => VariableKind::Other,
+    }
 }
 
 /// Variables qu'un plan laisse VISIBLES à la clause qui le suit, avec ce
@@ -742,12 +845,7 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
                     entree: &HashMap<String, VariableKind>,
                     expression: &LogicalExpression,
                     alias: Option<&String>| {
-        let kind = match expression {
-            LogicalExpression::Variable(name) => {
-                entree.get(name).copied().unwrap_or(VariableKind::Other)
-            }
-            _ => VariableKind::Other,
-        };
+        let kind = expression_kind(expression, entree);
         match (alias, expression) {
             (Some(alias), _) => {
                 vars.insert(alias.clone(), kind);
@@ -792,7 +890,22 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
         }
         LO::Unwind(unwind) => {
             collect_visible_variables(&unwind.input, vars);
-            vars.insert(unwind.variable.clone(), VariableKind::Other);
+            // Les éléments d'une liste LITTÉRALE de constantes sont des
+            // scalaires ; ceux d'une autre liste (`UNWIND nodes AS n`)
+            // peuvent être des nœuds.
+            let elements_scalaires = matches!(
+                &unwind.expression,
+                LogicalExpression::List(items)
+                    if items.iter().all(|i| matches!(i, LogicalExpression::Literal(_)))
+            );
+            vars.insert(
+                unwind.variable.clone(),
+                if elements_scalaires {
+                    VariableKind::Scalar
+                } else {
+                    VariableKind::Other
+                },
+            );
             for extra in [&unwind.ordinality_var, &unwind.offset_var]
                 .into_iter()
                 .flatten()
@@ -833,7 +946,14 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
             }
             for agg in &aggregate.aggregates {
                 if let Some(alias) = &agg.alias {
-                    vars.insert(alias.clone(), VariableKind::Other);
+                    // `min` / `max` / `sample` rendent un élément (un nœud
+                    // possible) ; tous les autres, un nombre, un texte ou une liste.
+                    use crate::query::plan::AggregateFunction as F;
+                    let kind = match agg.function {
+                        F::Min | F::Max | F::Sample => VariableKind::Other,
+                        _ => VariableKind::Scalar,
+                    };
+                    vars.insert(alias.clone(), kind);
                 }
             }
         }

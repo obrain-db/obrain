@@ -172,6 +172,11 @@ impl FactorizedExpandOperator {
         offsets.push(0);
 
         for row_idx in 0..row_count {
+            // Source NULL : aucune ligne (voir `ExpandOperator`).
+            if source_col.is_null(row_idx) {
+                offsets.push(edge_ids.len() as u32);
+                continue;
+            }
             let source_id = source_col.get_node_id(row_idx).ok_or_else(|| {
                 OperatorError::Execution("Expected node ID in source column".into())
             })?;

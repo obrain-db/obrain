@@ -4,9 +4,9 @@
 //! that can be optimized and executed.
 
 use super::common::{
-    AggregateItem, VariableKind, build_left_join_with_predicates, combine_with_and,
-    finalize_aggregate_projection, is_aggregate_function, to_aggregate_function, visible_variables,
-    wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip, wrap_sort,
+    AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
+    combine_with_and, finalize_aggregate_projection, is_aggregate_function, to_aggregate_function,
+    visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp, CallProcedureOp,
@@ -418,6 +418,14 @@ impl CypherTranslator {
         // vaut mieux par son index). Sans variable partagée : chaîné, produit.
         let mut plan: Option<LogicalOperator> = input;
         for (index, pattern) in patterns.iter().enumerate() {
+            // Une variable déjà liée à une valeur qui n'est PAS un nœud (ou une
+            // arête) ne peut pas l'être dans le motif : erreur de type, comme
+            // sous Neo4j — au lieu de joindre l'entier 1 au nœud n° 1.
+            for (variable, kind) in Self::pattern_variable_kinds(pattern) {
+                if kind != VariableKind::Other {
+                    check_bound_kind(&variable, kind, &bound)?;
+                }
+            }
             let shared = Self::sorted_shared(&pattern_vars[index], &bound);
             plan = Some(match plan.take() {
                 Some(left) if !shared.is_empty() && !Self::can_anchor(pattern, &bound) => {
@@ -510,13 +518,16 @@ impl CypherTranslator {
     /// peut repartir de l'un d'eux.
     fn can_anchor(pattern: &ast::Pattern, bound: &HashMap<String, VariableKind>) -> bool {
         let kind = |node: &ast::NodePattern| node.variable.as_ref().and_then(|v| bound.get(v));
-        // Un départ déjà lié doit être un NŒUD : le planificateur réutilise
-        // sa colonne et l'expansion en part, ce que le lieur refuse pour une
-        // variable d'`UNWIND` ou une colonne d'agrégat (« is not a node »).
-        // Une cible déjà liée, elle, est une fermeture (filtre d'égalité) :
-        // son type n'importe pas.
-        let start_ok =
-            |node: &ast::NodePattern| kind(node).is_none_or(|k| *k == VariableKind::Node);
+        // Un départ déjà lié repart de sa colonne : le `NodeScan` du départ la
+        // réutilise et re-déclare la variable nœud pour le lieur, quel que soit
+        // son genre connu (nœud, ou inconnu : élément d'`UNWIND`, paramètre
+        // d'un `CALL` — un `CALL { WITH f MATCH (f)<-… }` doit rester une
+        // expansion, pas un balayage). Une valeur prouvée non-nœud est refusée
+        // plus tôt (`check_bound_kind`). Une cible déjà liée est une fermeture
+        // (filtre d'égalité) : son type n'importe pas.
+        let start_ok = |node: &ast::NodePattern| {
+            kind(node).is_none_or(|k| matches!(k, VariableKind::Node | VariableKind::Other))
+        };
         match pattern {
             ast::Pattern::Node(node) => start_ok(node),
             ast::Pattern::Path(path) => {
@@ -1069,6 +1080,18 @@ impl CypherTranslator {
             (1, Some(1))
         };
         let single_hop = min_hops == 1 && max_hops == Some(1);
+        if !single_hop && !rel.properties.is_empty() {
+            // Les propriétés en ligne d'une relation de longueur variable portent
+            // sur CHAQUE relation du chemin ; elles n'étaient pas filtrées du tout
+            // (le motif rendait des chemins qui ne les respectent pas). Refusées
+            // franchement tant qu'un filtre sur la liste des relations n'existe pas.
+            return Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                "les propriétés en ligne d'une relation de longueur variable ne sont pas \
+                 prises en charge (elles ne seraient pas filtrées) : utiliser \
+                 `WHERE all(r IN <relation> WHERE r.<propriété> = …)`",
+            )));
+        }
 
         // Une relation anonyme qui porte des propriétés a besoin d'une variable
         // pour qu'on puisse les filtrer.
@@ -1291,6 +1314,17 @@ impl CypherTranslator {
         if with_clause.distinct {
             plan = wrap_distinct(plan);
         }
+
+        // Un `WITH` ferme la portée : seules ses colonnes de sortie restent des
+        // arêtes. `edge_variables` est consulté par nom (`SET x.p = …` écrit sur
+        // une arête si `x` en est une) : sans cette remise à jour, `x` lié à une
+        // arête avant le `WITH` puis réemployé comme NŒUD après lui écrivait sur
+        // l'arête n° 1.
+        let aretes = visible_variables(&plan)
+            .into_iter()
+            .filter_map(|(nom, genre)| (genre == VariableKind::Edge).then_some(nom))
+            .collect();
+        *self.edge_variables.borrow_mut() = aretes;
 
         Ok(plan)
     }

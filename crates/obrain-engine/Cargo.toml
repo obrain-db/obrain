@@ -196,3 +196,7 @@ required-features = ["cypher"]
 [[test]]
 name = "match_cible_deja_liee"
 required-features = ["cypher"]
+
+[[test]]
+name = "match_ancrage_et_genres"
+required-features = ["cypher"]

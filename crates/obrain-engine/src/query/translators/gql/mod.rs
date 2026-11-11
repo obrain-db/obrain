@@ -9,8 +9,8 @@ mod pattern;
 use std::collections::{HashMap, HashSet};
 
 use super::common::{
-    AggregateItem, VariableKind, build_left_join_with_predicates, combine_with_and,
-    finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
+    AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
+    combine_with_and, finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
     to_aggregate_function, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
     wrap_skip, wrap_sort,
 };
@@ -1304,7 +1304,7 @@ impl GqlTranslator {
             node.variable
                 .as_ref()
                 .and_then(|v| bound.get(v))
-                .is_none_or(|k| *k == VariableKind::Node)
+                .is_none_or(|k| matches!(k, VariableKind::Node | VariableKind::Other))
         };
         match pattern {
             ast::Pattern::Node(node) => start_ok(node),
@@ -1615,6 +1615,13 @@ impl GqlTranslator {
             plan.as_ref().map(visible_variables).unwrap_or_default();
 
         for (index, aliased_pattern) in match_clause.patterns.iter().enumerate() {
+            // Variable déjà liée à une valeur qui n'est pas un nœud (ou une
+            // arête) : erreur de type, comme sous Neo4j.
+            for (variable, kind) in Self::pattern_variable_kinds(&aliased_pattern.pattern) {
+                if kind != VariableKind::Other {
+                    check_bound_kind(&variable, kind, &bound)?;
+                }
+            }
             let mut shared: Vec<String> = pattern_vars[index]
                 .iter()
                 .filter(|v| bound.contains_key(*v))

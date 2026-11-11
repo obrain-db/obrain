@@ -925,6 +925,14 @@ impl GqlTranslator {
         let min_hops = edge.min_hops.unwrap_or(1);
         let max_hops = if single_hop { Some(1) } else { edge.max_hops };
         let is_variable_length = min_hops != 1 || max_hops.is_none() || max_hops != Some(1);
+        if is_variable_length && !edge.properties.is_empty() {
+            // Voir le traducteur Cypher : refusé franchement plutôt qu'ignoré.
+            return Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                "les propriétés en ligne d'une arête de longueur variable ne sont pas \
+                 prises en charge (elles ne seraient pas filtrées)",
+            )));
+        }
 
         // For variable-length edges with a named edge variable, auto-generate
         // a path alias if none exists, so path detail columns are available
