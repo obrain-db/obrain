@@ -21,6 +21,9 @@
 //! N'utilise que des API présentes avant comme après le correctif de la
 //! lecture seule : le même source se compile sur les deux arbres.
 
+// Un seul bloc `unsafe` : `getrusage`, pour compter les défauts de page.
+#![allow(unsafe_code)]
+
 use std::path::Path;
 use std::time::Instant;
 
@@ -81,6 +84,14 @@ fn mediane_p99(mut v: Vec<f64>) -> (f64, f64) {
     (p(0.5), p(0.99))
 }
 
+/// Défauts de page mineurs et majeurs du processus (`getrusage`).
+fn defauts_de_page() -> (i64, i64) {
+    // SAFETY: `rusage` est un POD rempli par l'appel ; aucun pointeur conservé.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+    (u.ru_minflt as i64, u.ru_majflt as i64)
+}
+
 fn rss_ko() -> u64 {
     let sortie = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
@@ -105,6 +116,7 @@ impl Alea {
 
 fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str, nommes: Option<u64>) {
     // Ouvertures : chacune ouvre, puis ferme.
+    let (min0, maj0) = defauts_de_page();
     let mut durees_ms = Vec::with_capacity(ouvertures);
     for _ in 0..ouvertures {
         let t = Instant::now();
@@ -113,6 +125,9 @@ fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str, nommes: Option<u6
         drop(s);
     }
     let (ouv_med, ouv_p99) = mediane_p99(durees_ms);
+    let (min1, maj1) = defauts_de_page();
+    let min_par_ouv = (min1 - min0) as f64 / ouvertures as f64;
+    let maj_par_ouv = (maj1 - maj0) as f64 / ouvertures as f64;
 
     let s = SubstrateStore::open_read_only(dossier).expect("ouverture en lecture seule");
     let rss_ouvert_mo = rss_ko() as f64 / 1024.0;
@@ -165,7 +180,7 @@ fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str, nommes: Option<u6
     );
     println!(
         "{etiquette}\t{n}\t{ouv_med:.2}\t{ouv_p99:.2}\t{rss_ouvert_mo:.0}\t{rss_fin_mo:.0}\t\
-         {id_med:.0}\t{id_p99:.0}\t{idx_med:.0}\t{idx_p99:.0}\t{index_ms:.1}"
+         {id_med:.0}\t{id_p99:.0}\t{idx_med:.0}\t{idx_p99:.0}\t{index_ms:.1}\t{min_par_ouv:.0}\t{maj_par_ouv:.1}"
     );
 }
 
