@@ -63,6 +63,27 @@ pub enum SubstrateError {
     )]
     BaseHeritee { sidecar: String },
 
+    /// ── LECTURE SEULE : UNE MUTATION EST REFUSÉE, PAS EXÉCUTÉE ──────────────
+    ///
+    /// La base a été ouverte par `open_read_only`. Cette session ne modifie
+    /// aucun octet d'aucun fichier : toute opération qui écrirait (append WAL,
+    /// flush, checkpoint, publication d'un dictionnaire, d'un index, d'un
+    /// catalogue, suppression d'un fichier) rend cette erreur AVANT d'agir.
+    #[error(
+        "base ouverte en lecture seule : {operation} est refusé — cette session ne \
+         modifie aucun fichier ; rouvrez la base en écriture pour le faire"
+    )]
+    LectureSeule { operation: String },
+
+    /// ── LECTURE SEULE : L'OUVERTURE ELLE-MÊME EST REFUSÉE ───────────────────
+    ///
+    /// La base est dans un état qu'une ouverture en lecture seule ne sait pas
+    /// servir SANS ÉCRIRE (format antérieur à migrer, fichier de verrou absent,
+    /// sidecar hérité à migrer, zone à consolider). Plutôt que d'écrire en
+    /// douce, l'ouverture échoue et dit quoi lancer. Rien n'a été modifié.
+    #[error("ouverture en lecture seule refusée : {raison}")]
+    LectureSeuleRefusee { raison: String },
+
     #[error("WAL CRC mismatch: claimed {claimed:#x}, actual {actual:#x}")]
     WalCrcMismatch { claimed: u32, actual: u32 },
 

@@ -168,7 +168,10 @@ impl Writer {
         // la fin RÉELLE du fichier, sinon deux écrivains estampillent le même LSN
         // (la position devient une prédiction). On le DÉCLARE au WAL, qui choisit
         // son chemin en conséquence.
-        let coordination = if substrate.est_ecriture_partagee() {
+        // Une ouverture en LECTURE SEULE n'ajoute jamais : aucune coordination
+        // d'append (donc aucun registre `<wal>.reg` créé), et un journal ouvert
+        // sans droit d'écriture.
+        let coordination = if substrate.est_ecriture_partagee() && !substrate.est_lecture_seule() {
             crate::wal_io::CoordinationAppend::OAppend
         } else {
             crate::wal_io::CoordinationAppend::Aucune
@@ -177,6 +180,13 @@ impl Writer {
         // le journal vit dans un tampon (voir `WalWriter::open_memory`).
         let wal = if substrate.is_memory() {
             Arc::new(WalWriter::open_memory(sync_mode, ancre_de_repli)?)
+        } else if substrate.est_lecture_seule() {
+            let wal_path = substrate.wal_path();
+            Arc::new(WalWriter::open_lecture_seule(
+                &wal_path,
+                sync_mode,
+                ancre_de_repli,
+            )?)
         } else {
             let wal_path = substrate.wal_path();
             Arc::new(WalWriter::open(&wal_path, sync_mode, ancre_de_repli)?)

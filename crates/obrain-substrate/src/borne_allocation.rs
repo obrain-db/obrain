@@ -159,6 +159,33 @@ impl BorneAllocation {
         Ok(borne)
     }
 
+    /// LIT la borne d'un répertoire sans l'ouvrir en écriture, sans la créer et
+    /// sans rien y publier : `(noeud, arete, engram)`, ou `None` si le fichier
+    /// est absent, trop court ou d'une autre magie.
+    ///
+    /// C'est la voie d'une ouverture en LECTURE SEULE : [`Self::ouvrir`] crée le
+    /// fichier, le redimensionne et incrémente son compteur de publications —
+    /// trois écritures qu'un lecteur ne doit pas faire. Un lecteur n'alloue
+    /// rien ; il lui suffit de savoir jusqu'où les pairs ont réservé.
+    #[must_use]
+    pub fn lire(dir: &Path) -> Option<(u64, u64, u64)> {
+        use std::io::Read as _;
+        let mut tampon = [0u8; 32];
+        std::fs::File::open(Self::chemin_pour(dir))
+            .ok()?
+            .read_exact(&mut tampon)
+            .ok()?;
+        let mot = |off: usize| {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&tampon[off..off + 8]);
+            u64::from_ne_bytes(b)
+        };
+        if mot(OFF_MAGIE) != MAGIE {
+            return None;
+        }
+        Some((mot(OFF_NOEUD), mot(OFF_ARETE), mot(OFF_ENGRAM)))
+    }
+
     /// Chemin du fichier.
     #[must_use]
     pub fn chemin(&self) -> &Path {
