@@ -17,7 +17,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use obrain_common::types::Value;
-use obrain_core::graph::traits::GraphStore as _;
 use obrain_engine::ObrainDB;
 
 // ---------------------------------------------------------------------------
