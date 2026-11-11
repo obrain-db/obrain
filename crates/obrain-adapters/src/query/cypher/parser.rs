@@ -1353,9 +1353,24 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     let property = self.expect_identifier()?;
-                    expr = Expression::PropertyAccess {
-                        base: Box::new(expr),
-                        property,
+                    expr = match expr {
+                        Expression::Variable(_) => Expression::PropertyAccess {
+                            base: Box::new(expr),
+                            property,
+                        },
+                        // `<expression>.<propriété>` sur autre chose qu'une
+                        // variable : composant du résultat d'un appel
+                        // (`duration.between(a, b).days`), élément d'une liste
+                        // (`collect(n)[0].sha`), clé d'une map. Désucré ici en
+                        // `__component(base, 'propriété')` (comme en GQL) :
+                        // un agrégat dans la base est alors vu par le
+                        // traducteur, qui ne descend pas dans un
+                        // `PropertyAccess`.
+                        base => Expression::FunctionCall {
+                            name: "__component".to_string(),
+                            distinct: false,
+                            args: vec![base, Expression::Literal(Literal::String(property))],
+                        },
                     };
                 }
                 TokenKind::LBracket => {

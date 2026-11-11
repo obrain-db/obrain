@@ -278,6 +278,175 @@ fn dans_un_case(langage: Langage) {
     );
 }
 
+// ============================================================================
+// Fuseaux : le calendrier se lit dans le fuseau du premier opérande
+// ============================================================================
+
+/// `2024-01-31T00:30+02:00` est le 31 janvier à Paris (le 30, 22:30 en UTC).
+/// Jusqu'au 1er mars 00:30+02:00 : un mois (fin de mois ramenée au 29
+/// février) et un jour — en UTC on aurait lu du 30 janvier au 29 février,
+/// soit un mois tout rond.
+fn fuseau_non_utc_calendrier_local(langage: Langage) {
+    let db = vide();
+    let d = "duration.between(datetime('2024-01-31T00:30:00+02:00'), \
+             datetime('2024-03-01T00:30:00+02:00'))";
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.months")),
+        1,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.days")),
+        1,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.hours")),
+        0,
+        "{langage:?}"
+    );
+}
+
+/// Deux fuseaux différents : le second instant est lu dans le fuseau du
+/// premier. `2024-03-01T00:30Z` est `02:30+02:00` ; depuis le 31 janvier
+/// 23:30+02:00 : un mois (29 février 23:30), puis 3 heures.
+fn fuseaux_differents_lus_dans_celui_du_premier(langage: Langage) {
+    let db = vide();
+    let d = "duration.between(datetime('2024-01-31T23:30:00+02:00'), \
+             datetime('2024-03-01T00:30:00Z'))";
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.months")),
+        1,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.days")),
+        0,
+        "{langage:?}"
+    );
+    assert_eq!(
+        entier(&db, langage, &format!("RETURN {d}.hours")),
+        3,
+        "{langage:?}"
+    );
+    // Les secondes ne dépendent d'aucun fuseau : 00:00+02:00 est 22:00Z la
+    // veille, soit 7200 s avant 00:00Z.
+    assert_eq!(
+        entier(
+            &db,
+            langage,
+            "RETURN duration.inSeconds(datetime('2024-01-01T00:00:00+02:00'), \
+             datetime('2024-01-01T00:00:00Z')).seconds",
+        ),
+        7200,
+        "{langage:?}"
+    );
+}
+
+// ============================================================================
+// Composant d'autre chose qu'une durée
+// ============================================================================
+
+/// Un nœud sorti d'une liste (`collect(n)[0]`, `head(collect(n))`) : sa
+/// propriété se lit (il voyage comme son identifiant, résolu par le store).
+fn composant_d_un_noeud_sorti_d_une_liste(langage: Langage) {
+    let db = vide();
+    db.session()
+        .create_node_with_props(&["Commit"], [("sha", Value::String("c1".into()))]);
+    for requete in [
+        "MATCH (n:Commit) WITH collect(n) AS ns RETURN ns[0].sha",
+        "MATCH (n:Commit) RETURN head(collect(n)).sha",
+        "MATCH (n:Commit) WITH collect(n) AS ns RETURN ns[0].absente",
+    ] {
+        let attendu = if requete.ends_with("absente") {
+            Value::Null
+        } else {
+            Value::String("c1".into())
+        };
+        assert_eq!(
+            valeur(&db, langage, requete),
+            attendu,
+            "{langage:?} {requete}"
+        );
+    }
+}
+
+/// Une valeur qui n'a pas de composants (un texte, un entier qui n'est l'id
+/// d'aucune entité) : une ERREUR, pas un NULL silencieux.
+fn composant_d_une_valeur_sans_composants_est_une_erreur(langage: Langage) {
+    let db = vide();
+    let session = db.session();
+    for requete in ["RETURN 'abc'.len", "RETURN (12345678).sha"] {
+        let resultat = match langage {
+            Langage::Cypher => session.execute_cypher(requete),
+            Langage::Gql => session.execute(requete),
+        };
+        assert!(resultat.is_err(), "[{langage:?}] {requete} devait échouer");
+    }
+}
+
+// ============================================================================
+// WITH … MERGE … SET : la forme d'écriture de la requête de fédération
+// ============================================================================
+
+/// Un agrégat flottant traverse un `MERGE` puis un `SET` : 2000.0, pas 0
+/// (le vecteur de passage déclaré « nœud » perdait la valeur).
+fn with_agrege_puis_merge_set(langage: Langage) {
+    let db = vide();
+    let session = db.session();
+    for fqn in ["x::alpha", "x::beta"] {
+        session.create_node_with_props(&["McpTool"], [("fqn", Value::String(fqn.into()))]);
+    }
+    executer(
+        &db,
+        langage,
+        "UNWIND [2500, 1500] AS ms \
+         MATCH (a:McpTool {fqn: 'x::alpha'}), (b:McpTool {fqn: 'x::beta'}) \
+         WITH a, b, count(*) AS follow_count, avg(ms) AS avg_delta \
+         MERGE (a)-[r:OFTEN_FOLLOWS]->(b) \
+         SET r.count = follow_count, r.avg_delta_ms = avg_delta \
+         RETURN count(r) AS total",
+    );
+    assert_eq!(
+        executer(
+            &db,
+            langage,
+            "MATCH (:McpTool)-[r:OFTEN_FOLLOWS]->(:McpTool) RETURN r.count, r.avg_delta_ms",
+        ),
+        vec![vec![Value::Int64(2), Value::Float64(2000.0)]],
+        "{langage:?}"
+    );
+}
+
+/// `SET` puis `RETURN` dans la MÊME requête relit la valeur écrite, sur une
+/// arête comme sur un nœud (la colonne d'arête traversant le `SET` était
+/// retypée « nœud » : `r.p` relisait le nœud n° id-de-l'arête, NULL).
+fn set_puis_return_dans_la_meme_requete(langage: Langage) {
+    let db = vide();
+    let session = db.session();
+    let a = session.create_node_with_props(&["T"], [("k", Value::String("a".into()))]);
+    let b = session.create_node_with_props(&["T"], [("k", Value::String("b".into()))]);
+    session.create_edge(a, b, "R");
+    assert_eq!(
+        executer(
+            &db,
+            langage,
+            "MATCH (:T)-[r:R]->(:T) SET r.poids = 1.5, r.n = 7 RETURN r.poids, r.n",
+        ),
+        vec![vec![Value::Float64(1.5), Value::Int64(7)]],
+        "{langage:?} arête"
+    );
+    assert_eq!(
+        executer(
+            &db,
+            langage,
+            "MATCH (t:T {k: 'a'}) SET t.poids = 2.5 RETURN t.poids, t.k",
+        ),
+        vec![vec![Value::Float64(2.5), Value::String("a".into())]],
+        "{langage:?} nœud"
+    );
+}
+
 /// Déclare un module de tests : chaque cas listé y devient un `#[test]` joué
 /// dans le langage donné.
 macro_rules! cas_en {
@@ -307,7 +476,19 @@ les_deux_langages!(
     null_et_types_incompatibles,
     dans_un_with_sur_des_proprietes,
     dans_un_case,
+    fuseau_non_utc_calendrier_local,
+    fuseaux_differents_lus_dans_celui_du_premier,
+    composant_d_un_noeud_sorti_d_une_liste,
+    composant_d_une_valeur_sans_composants_est_une_erreur,
+    set_puis_return_dans_la_meme_requete,
 );
+
+// En GQL, les clauses d'écriture après un `WITH` sont lues et ordonnées par
+// la PR « un WITH s'exécute à sa position » ; ici, Cypher seulement.
+#[test]
+fn cypher_with_agrege_puis_merge_set() {
+    with_agrege_puis_merge_set(Langage::Cypher);
+}
 
 // ============================================================================
 // Les requêtes réelles de l'application cliente, telles quelles

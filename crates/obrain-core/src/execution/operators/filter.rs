@@ -63,17 +63,23 @@ fn duration_entre(genre: &str, valeurs: &[Value]) -> Option<Value> {
         return None;
     };
 
+    // Un horodatage porte son décalage (secondes) : le calendrier — mois,
+    // jours — se lit dans le fuseau LOCAL, pas en UTC (`2024-01-31T00:30+02:00`
+    // est encore le 31 à Paris, déjà le 30 en UTC). Une date ou un `datetime`
+    // sans fuseau sont à décalage nul.
     enum Instant {
         Date(obrain_common::types::Date),
         Heure(i64),
-        Horodatage(Timestamp),
+        Horodatage(Timestamp, i32),
     }
     let instant = |v: &Value| -> Option<Instant> {
         match v {
             Value::Date(d) => Some(Instant::Date(*d)),
             Value::Time(t) => Some(Instant::Heure(t.as_nanos() as i64)),
-            Value::Timestamp(ts) => Some(Instant::Horodatage(*ts)),
-            Value::ZonedDatetime(z) => Some(Instant::Horodatage(z.as_timestamp())),
+            Value::Timestamp(ts) => Some(Instant::Horodatage(*ts, 0)),
+            Value::ZonedDatetime(z) => {
+                Some(Instant::Horodatage(z.as_timestamp(), z.offset_seconds()))
+            }
             _ => None,
         }
     };
@@ -96,16 +102,26 @@ fn duration_entre(genre: &str, valeurs: &[Value]) -> Option<Value> {
         },
         (Instant::Heure(_), _) | (_, Instant::Heure(_)) => return None,
         (a, b) => {
-            let ts = |i: Instant| match i {
-                Instant::Date(d) => d.to_timestamp(),
-                Instant::Horodatage(t) => t,
+            let lire = |i: Instant| match i {
+                Instant::Date(d) => (d.to_timestamp(), 0),
+                Instant::Horodatage(t, decalage) => (t, decalage),
                 Instant::Heure(_) => unreachable!("écarté plus haut"),
             };
-            let (a, b) = (ts(a), ts(b));
+            let ((a, decalage_a), (b, _)) = (lire(a), lire(b));
+            // Les deux instants sont lus dans le fuseau du PREMIER (comme
+            // Neo4j) : même décalage pour les deux, le second est converti.
+            let local = |t: Timestamp| {
+                Timestamp::from_nanos(
+                    t.as_nanos()
+                        .saturating_add(i64::from(decalage_a).saturating_mul(1_000_000_000)),
+                )
+            };
+            let (la, lb) = (local(a), local(b));
             match genre {
-                "between" => Duration::between_timestamps(a, b),
-                "inmonths" => Duration::from_months(Duration::between_timestamps(a, b).months()),
-                "indays" => Duration::from_days((b.as_nanos() - a.as_nanos()) / NANOS_PAR_JOUR),
+                "between" => Duration::between_timestamps(la, lb),
+                "inmonths" => Duration::from_months(Duration::between_timestamps(la, lb).months()),
+                "indays" => Duration::from_days((lb.as_nanos() - la.as_nanos()) / NANOS_PAR_JOUR),
+                // Les secondes ne dépendent d'aucun fuseau.
                 "inseconds" | "inmilliseconds" => {
                     Duration::from_nanos(b.as_nanos().checked_sub(a.as_nanos())?)
                 }
@@ -4129,14 +4145,25 @@ impl ExpressionPredicate {
                                 obrain_common::types::Date::parse(date_part),
                                 obrain_common::types::Time::parse(time_part),
                             ) {
-                                return Some(Value::Timestamp(
-                                    obrain_common::types::Timestamp::from_date_time(d, t),
-                                ));
+                                let ts = obrain_common::types::Timestamp::from_date_time(d, t);
+                                // Un décalage AUTRE que UTC est gardé : la valeur
+                                // est un `ZonedDatetime`, et un calendrier calculé
+                                // dessus (`duration.between`) se lit dans ce fuseau.
+                                // `Z` / `+00:00` / sans décalage : horodatage UTC,
+                                // comme avant.
+                                return Some(match t.offset_seconds() {
+                                    Some(offset) if offset != 0 => Value::ZonedDatetime(
+                                        obrain_common::types::ZonedDatetime::from_timestamp_offset(
+                                            ts, offset,
+                                        ),
+                                    ),
+                                    _ => Value::Timestamp(ts),
+                                });
                             }
                         }
                         None
                     }
-                    Value::Timestamp(_) => Some(val),
+                    Value::Timestamp(_) | Value::ZonedDatetime(_) => Some(val),
                     Value::Map(m) => {
                         let year = map_int(&m, "year")? as i32;
                         let month = map_int_or(&m, "month", 1) as u32;
@@ -4182,7 +4209,38 @@ impl ExpressionPredicate {
                 match self.eval_expr(&args[0], chunk, row)? {
                     Value::Duration(d) => d.component(&propriete).map(Value::Int64),
                     Value::Map(m) => m.get(&PropertyKey::from(propriete.as_str())).cloned(),
-                    _ => None,
+                    // Un nœud ou une arête sortis d'une liste (`collect(n)[0]`,
+                    // `head(collect(n))`) voyagent comme leur identifiant :
+                    // on les résout par le store (nœud d'abord, arête sinon).
+                    // Une propriété absente est NULL, comme sur `n.prop`.
+                    Value::Int64(id) => {
+                        if let Some(node) = self.resolve_node(NodeId(id as u64)) {
+                            Some(
+                                node.get_property(&propriete)
+                                    .cloned()
+                                    .unwrap_or(Value::Null),
+                            )
+                        } else if let Some(edge) =
+                            self.resolve_edge(obrain_common::types::EdgeId(id as u64))
+                        {
+                            Some(
+                                edge.get_property(&propriete)
+                                    .cloned()
+                                    .unwrap_or(Value::Null),
+                            )
+                        } else {
+                            self.signale_erreur(format!(
+                                "accès à la propriété '{propriete}' d'une valeur qui n'est ni \
+                                 une durée, ni une map, ni un nœud ou une arête connus (id {id})"
+                            ))
+                        }
+                    }
+                    Value::Null => Some(Value::Null),
+                    autre => self.signale_erreur(format!(
+                        "accès à la propriété '{propriete}' d'une valeur de type {} : seuls une \
+                         durée, une map, un nœud ou une arête ont des composants",
+                        autre.type_name()
+                    )),
                 }
             }
             "duration" | "toduration" => {
