@@ -33,7 +33,7 @@ fn sample_coverage(store: &Arc<SubstrateStore>, key: &PropertyKey, sample_n: usi
 }
 
 #[test]
-#[ignore = "long — s'exécute sur une copie de OBRAIN_BENCH_DB_PO, à lancer à la main"]
+#[ignore = "long — s'exécute sur une copie de la base po désignée (docs/BENCHMARKS.md), à lancer à la main"]
 fn hilbert_enricher_tick_on_po_base() {
     let Some(po_path) = base_copie(Base::Po) else {
         return;

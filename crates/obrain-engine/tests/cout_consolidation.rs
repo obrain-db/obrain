@@ -35,15 +35,23 @@ use web_time::Instant;
 use obrain_engine::ObrainDB;
 
 #[test]
-#[ignore = "sonde — exige OBRAIN_SONDE_STORE (chemin d'une COPIE de store)"]
+#[ignore = "sonde — exige OBRAIN_SONDE_STORE (chemin absolu d'un store ; la sonde en consolide une copie)"]
 fn cout_d_une_consolidation_sur_store_reel() {
-    let Some(chemin) = std::env::var("OBRAIN_SONDE_STORE").ok() else {
-        eprintln!("OBRAIN_SONDE_STORE non posé — sonde ignorée");
+    let Some(chemin) = std::env::var_os("OBRAIN_SONDE_STORE").filter(|v| !v.is_empty()) else {
+        eprintln!(
+            "SAUT [cout_d_une_consolidation_sur_store_reel] : OBRAIN_SONDE_STORE n'est pas définie — \
+             la sonde ne mesure RIEN (fabriquer une base : `cargo run -p obrain-engine --features cdc \
+             --example fabrique_base_cdc -- <dir> <N>`)"
+        );
         return;
     };
 
+    // La sonde CONSOLIDE : elle travaille sur une copie privée, jamais sur le
+    // chemin reçu (qui pourrait être l'original, quoi qu'en dise la consigne).
+    let copie = obrain_bases_banc::copie_de(std::path::Path::new(&chemin), "OBRAIN_SONDE_STORE");
+
     let t0 = Instant::now();
-    let db = ObrainDB::open(&chemin).expect("ouverture du store");
+    let db = ObrainDB::open(copie.chemin()).expect("ouverture de la copie du store");
     let ouverture = t0.elapsed();
     eprintln!("SONDE ouverture : {ouverture:?}");
 
@@ -52,6 +60,14 @@ fn cout_d_une_consolidation_sur_store_reel() {
     let t1 = Instant::now();
     let evenements = db.cdc_log().changes_since_timestamp(0, |_| true);
     let lecture_fenetre = t1.elapsed();
+    // Une fenêtre vide ne mesure rien : la sonde le dit en échouant, au lieu de
+    // sortir verte sur des zéros.
+    assert!(
+        !evenements.is_empty(),
+        "fenêtre CDC VIDE dans la copie de {} : la sonde n'a rien à mesurer (base sans CDC, ou \
+         compactée)",
+        std::path::Path::new(&chemin).display()
+    );
     let mut par_cle: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in &evenements {
         let cle = format!("{:?}|{:?}|{}", e.entity_id, e.epoch, e.timestamp);

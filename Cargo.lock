@@ -2143,6 +2143,7 @@ dependencies = [
  "criterion",
  "mimalloc",
  "obrain-adapters",
+ "obrain-bases-banc",
  "obrain-common",
  "obrain-core",
  "obrain-engine",

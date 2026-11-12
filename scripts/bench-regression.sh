@@ -74,7 +74,7 @@ run_or_fail "obrain-engine lib (663 tests)" \
 # afficherait des PASS qui n'ont rien mesuré : on s'arrête ici, en le disant.
 if [[ -z "${OBRAIN_BENCH_DB_PO:-}" ]]; then
     echo
-    echo "✗ OBRAIN_BENCH_DB_PO n'est pas définie : les phases 2 à 5 n'ont pas de base à mesurer." >&2
+    echo "✗ la base po n'est pas désignée (voir l'en-tête de ce script) : les phases 2 à 5 n'ont pas de base à mesurer." >&2
     echo "  Désigner la base (voir l'en-tête de ce script), puis relancer." >&2
     exit 2
 fi

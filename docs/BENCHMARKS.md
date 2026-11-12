@@ -128,7 +128,7 @@ Une trentaine de cibles de test (`crates/obrain-engine/tests/po_*`, `megalaw_ben
 
 La règle, portée par le crate interne `obrain-bases-banc` :
 
-- **Sans désignation, rien n'est ouvert.** La cible se saute et l'écrit (`SAUT [<test>] : OBRAIN_BENCH_DB_PO n'est pas définie…` sur la sortie d'erreur, visible avec `--nocapture`). Aucun chemin n'est jamais déduit de `$HOME`.
+- **Sans désignation, rien n'est ouvert.** La cible se saute et l'écrit (`SAUT [<test>] : OBRAIN_BENCH_DB_PO n'est pas définie…` — ou `est définie mais vide` — sur la sortie d'erreur, visible avec `--nocapture`). Aucun chemin n'est jamais déduit de `$HOME`.
 - **Une variable par base désigne le répertoire à utiliser** :
 
   | Base | Variable |
@@ -139,7 +139,7 @@ La règle, portée par le crate interne `obrain-bases-banc` :
 
   Le chemin doit être **absolu** et contenir `substrate.meta`. Sinon la cible échoue avant toute ouverture : une désignation erronée n'est pas un saut, et le moteur créerait une base vide dans un répertoire qui n'en est pas une (désigner par erreur le dossier parent `…/.obrain/db` y sèmerait des `substrate.*`).
 - **La base désignée n'est jamais ouverte par le moteur — même en lecture seule.** Elle est copiée dans `TMPDIR` et c'est la copie qu'on ouvre :
-  - cibles **lectrices** : une copie par base et par binaire de test (pas une par test), ouverte en lecture seule, supprimée à la sortie du processus. La cible ne reçoit aucun chemin : seulement de quoi ouvrir la copie en lecture seule ;
+  - cibles **lectrices** : une copie par base et par binaire de test (pas une par test, **pas partagée entre binaires** : chaque binaire lancé par `cargo test` prend la sienne), ouverte en lecture seule, supprimée à la sortie du processus. La cible ne reçoit aucun chemin : seulement de quoi ouvrir la copie en lecture seule. Un refus de copie est mémorisé : les tests suivants du binaire échouent avec le même message, sans retenter ;
   - cibles **écrivaines** : une copie privée par appel, supprimée à la fin de la cible — `po_vs_neo4j_bench`, `property_index_po_bench` (crée des index), `t17i_db_open_bench` (mesure l'ouverture en écriture), `t17i_upgrade_then_measure`, `t5_batch_wal_perf_bench_po`, `t5_diagnose_real_bottleneck`, les réparations de `t17j_t4_diagnose`, `t17l_hilbert_enricher_on_po`. `OBRAIN_BENCH_GARDER_COPIE=1` conserve cette copie (`obrain-banc-gardee-*`, chemin imprimé) — c'est ainsi qu'on récupère une base réparée.
 
 ### Ce que « lecture seule » garantit aujourd'hui — et pourquoi tout le monde copie
@@ -155,19 +155,40 @@ RUSTFLAGS="--cfg defauts_connus" cargo test -p obrain-engine \
 
 Tant qu'il n'est pas corrigé, la seule protection réelle d'une base est de ne pas l'ouvrir : d'où la copie, pour les lecteurs aussi.
 
-### Ce que coûte la copie
+### Ce que coûte la copie — et quand elle est refusée
 
-`std::fs::copy` clone le fichier quand le système de fichiers le permet : `fclonefileat` sur APFS, `copy_file_range` sur Linux (blocs partagés sur Btrfs et XFS avec reflink). Mesuré sur APFS (macOS, poste de développement chargé, 2026-11-11), base factice de 2 Gio de données aléatoires, `TMPDIR` sur le même volume : **0,03 s et 0 Mio de disque** pour le clone, contre 0,55 s et 2 048 Mio pour une copie pleine (`cp`). Un clone ne consomme de disque que pour les blocs que le moteur réécrit ensuite.
+La copie est **clonée** quand le système de fichiers le permet (`clonefile` sur APFS, `FICLONE` sur Btrfs et XFS avec reflink) : les blocs sont partagés avec l'original, rien de neuf sur le disque jusqu'à ce que le moteur en réécrive. Sinon c'est une copie **pleine mais creuse** : un bloc entièrement nul n'est pas écrit, les trous restent des trous. `OBRAIN_BENCH_COPIE_PLEINE=1` interdit le clone (mesure, essais).
 
-Le clone n'existe **qu'à l'intérieur d'un même volume**. Si `TMPDIR` est sur un autre volume que la base, ou sur ext4, la copie est pleine : compter la taille de la base en disque et en temps, par binaire de test lancé. Dans ce cas, pointer `TMPDIR` sur le volume de la base, ou ne lancer que le banc voulu (`--test …`). Pour mesurer avant de se lancer :
+Mesuré sur APFS (macOS, poste de développement chargé, 2026-11-11), bases fabriquées de 1 et 2 millions de nœuds (un `File` avec une propriété et une arête `NEXT` chacun, `TMPDIR` sur le même volume) :
+
+| Base | Taille logique | Taille physique | Clone | Copie pleine |
+|---|---|---|---|---|
+| 1 M nœuds | 4 242 Mio | 4 030 Mio | 0,09 s, 0 Mio neufs | 3,62 s, 4 043 Mio |
+| 2 M nœuds | 9 440 Mio | 8 025 Mio | 0,05 s, 0 Mio neufs | 13,65 s, 8 037 Mio |
+
+À 5 M de nœuds la base ferait ≈ 20 Gio physiques (la taille est linéaire : 4,0 Gio par million) : **non mesuré**, parce que la fabriquer seule dépasse le plafond de 20 Go de disque cumulé fixé pour ces mesures. Le clone resterait à quelques centièmes de seconde ; une copie pleine demanderait ≈ 20 Gio de disque et plusieurs dizaines de secondes.
+
+Le clone n'existe **qu'à l'intérieur d'un même volume**. Hors de là, ou sur un système de fichiers sans copy-on-write, la copie est pleine, et le helper la **refuse** au lieu d'emplir le disque :
+
+- **plafond** : une copie pleine de plus de 64 Gio est refusée (`OBRAIN_BENCH_COPIE_MAX_GO`) ;
+- **marge** : une copie pleine qui laisserait moins de 10 Gio de disque libre est refusée (`OBRAIN_BENCH_MARGE_GO`) ; le clone est contrôlé contre la même marge.
+
+Les deux refus sont nommés et cités avec leur variable. Pour mesurer avant de se lancer :
 
 ```bash
 cargo run --release -p obrain-bases-banc --example cout_copie -- /chemin/absolu/vers/la/base
 ```
 
-La copie n'est cohérente que si rien n'écrit dans la base pendant qu'elle est prise : désigner un instantané, ou arrêter le service qui tient la base.
+**Une copie juste ou pas de copie.** La copie est refusée, nommément, si :
+- un processus **tient** la base : le moteur pose un verrou `fcntl` sur `substrate.dirlock` pendant toute la vie d'une ouverture, que le helper interroge avec `F_OFD_GETLK` (Linux, macOS) sur un descripteur ouvert en lecture seule : rien n'est écrit, et le processus **appelant** est vu comme un autre (`F_GETLK` y serait aveugle). Ce descripteur n'est jamais fermé : fermer un descripteur de ce fichier lâcherait le verrou que le moteur de ce processus tiendrait. Un lecteur compte aussi, puisqu'une ouverture en lecture seule écrit. Une base sans `substrate.dirlock` (jamais ouverte par un moteur qui le pose) : aucun détenteur ne peut être cherché, le helper le dit, et seule la comparaison suivante protège — comme hors Unix ;
+- la base a **changé** pendant la copie : liste des fichiers, tailles et dates comparées avant et après ;
+- elle contient un **lien symbolique** ou un fichier spécial : refusé, jamais suivi (un lien qui boucle ferait déborder la pile, un lien cassé paniquer).
 
-**Résidus.** Les copies s'appellent `obrain-banc-<pid>-<base>-*` dans `TMPDIR`. Elles sont supprimées à la fin de la cible ou à la sortie du processus. Un processus tué (Ctrl-C, `kill -9`) laisse la sienne ; le prochain banc lancé supprime les copies dont le processus n'existe plus (Unix). Sous Windows, ou si l'on ne relance rien, les supprimer à la main.
+Une base en `0444` (instantané en lecture seule) donne une copie rendue inscriptible. Désigner un instantané reste le plus sûr.
+
+**Résidus.** Les copies s'appellent `obrain-banc-<pid>-<base>-*` dans `TMPDIR`. Elles sont supprimées à la fin de la cible ou à la sortie normale du processus. Un processus tué (Ctrl-C, `kill -9`) laisse la sienne ; son propriétaire tenait un verrou exclusif sur `<copie>/.proprietaire`, que le noyau a rendu à sa mort : le prochain banc lancé supprime les copies dont il peut prendre ce verrou (Unix). La preuve de vie est un verrou, pas un PID : un PID peut être recyclé ou appartenir à un autre espace de noms. Sous Windows, supprimer les résidus à la main.
+
+**En CI.** Le job « Bancs sur bases fabriquées » de `ci.yml` fabrique de petites bases jetables (`cargo run -p obrain-substrate --example fabrique_bases_banc`, `cargo run -p obrain-engine --features cdc --example fabrique_base_cdc`, `fabrique_base.rs`), les désigne, et joue `byte_identical_corpus`, `mesures_corpus`, `cout_d_une_consolidation_sur_store_reel`, `banc_surcout` et `verify_bases` ; il vérifie ensuite que les bases désignées n'ont pas bougé, et que les reproductions des défauts connus du moteur (`defaut_moteur_*`, sous `--cfg defauts_connus`) sont **toujours rouges** — le jour où elles passent, c'est que le moteur a changé et que le cfg doit être retiré. La sonde de consolidation échoue, nommément, sur une fenêtre CDC vide au lieu de sortir verte sans rien mesurer. Restent manuels : les bancs sur les trois bases réelles (`OBRAIN_BENCH_DB_*`), par construction.
 
 ### Lancer un banc volontairement
 
@@ -186,23 +207,36 @@ OBRAIN_BENCH_DB_PO=/chemin/po scripts/bench-regression.sh
 
 Les cibles marquées `#[ignore]` (audits ponctuels, bancs longs) demandent en plus `-- --ignored`.
 
-Deux tests verrouillent la règle et tournent, eux, à chaque `cargo test` : `crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs` fabrique de vraies bases — dont une sale — dans un faux `HOME` temporaire, joue un banc lecteur et un banc écrivain en sous-processus et exige une empreinte identique à l'octet (liste des fichiers, tailles, dates des fichiers et des répertoires, contenus) ; `crates/obrain-bases-banc/tests/garde.rs` refuse tout fichier du workspace (sources des crates, tests, bancs, exemples, scripts, Makefile, workflows) qui lirait le répertoire personnel ou construirait un chemin `.obrain/db`, hors exceptions nommées.
+Deux tests verrouillent la règle et tournent, eux, à chaque `cargo test` : `crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs` fabrique de vraies bases — dont une sale — dans un faux `HOME` temporaire, joue un banc lecteur et un banc écrivain en sous-processus et exige une empreinte identique à l'octet (liste des fichiers, tailles, dates des fichiers et des répertoires, contenus) ; `crates/obrain-bases-banc/tests/garde.rs` refuse tout fichier du dépôt (sources des crates — le helper compris —, tests, bancs, exemples, paquets, scripts avec ou sans extension, manifestes et configurations, Makefile, workflows) qui lirait le répertoire personnel (`"HOME"`, `os.environ["HOME"]`, `process.env.HOME`, `:HOME`…), construirait un chemin `.obrain`, énumérerait l'environnement, ou nommerait une variable `OBRAIN_BENCH_DB_*` hors du helper (dont le nom n'est d'ailleurs pas exporté) — hors exceptions nommées, à la ligne et au nombre d'occurrences près. Les **blocs de code des commentaires de documentation** (`///`, `//!`) sont examinés comme du code, puisque `cargo test` exécute les doctests ; seule la prose et les blocs d'un autre langage sont sautés. Le préfixe de commentaire est propre à chaque famille (`::` n'en est un que dans un `.bat`). Un répertoire ou un fichier illisible fait échouer la garde ; chaque contournement connu — dont les deux trouvés par la relecture de #113 — est planté dans un faux dépôt et doit être refusé. La garde reste **textuelle** : un nom de variable reconstitué à l'exécution lui échappe ; la barrière de fond est que le helper ne rend jamais que des copies.
 
-### Cibles qui écrivent encore dans le chemin qu'on leur donne
+### Ce qui ouvre encore directement le chemin qu'on lui donne
 
-Elles ne devinent rien — il faut poser leur variable ou passer un argument — mais **elles ouvrent en écriture ce qu'on leur désigne**. Leur passer une copie, jamais l'original :
+**Règle générale : tout exemple (`cargo run --example …`) et tout outil qui prend un chemin en argument l'ouvre tel quel — en écriture sauf mention contraire, et même « en lecture seule » il peut y écrire (défaut ci-dessus).** Rien n'y est deviné, mais rien n'y est copié non plus : leur passer une copie, jamais une base vivante.
 
-| Cible | Désignation | Ce qu'elle fait |
+| Cible | Désignation | Ce qu'elle fait au chemin reçu |
 |---|---|---|
-| `obrain-engine/tests/banc_surcout.rs`, `examples/banc_plan_froid.rs` | `OBRAIN_BANC_BASE` | ouverture en écriture |
-| `obrain-engine/tests/fabrique_base.rs` (`#[ignore]`) | `OBRAIN_BANC_BASE` | **crée** une base à ce chemin (refuse s'il existe) |
-| `obrain-engine/tests/cout_consolidation.rs` (`#[ignore]`) | `OBRAIN_SONDE_STORE` | ouverture en écriture, consolidation |
-| `obrain-substrate/tests/simplex_passes_materialisation.rs` (`#[ignore]`) | `CORPUS_A`, `CORPUS_B`, `CORPUS_DB` | ouverture en écriture, bases modifiées |
-| exemples de maintenance (`add_name_index`, `fix_file_names`, `compact_blob_columns`, `strip_skipped_props`, `rebuild_tiers`, `vectorize_list_props`, `checkpoint_cli`) | argument | modifient la base, c'est leur objet |
+| `obrain-engine/tests/fabrique_base.rs` (`#[ignore]`) | `OBRAIN_BANC_BASE` | **crée** une base (refuse si le chemin existe) — c'est son objet |
+| maintenance : `add_name_index`, `fix_file_names`, `mig_slots512`, `backfill_tms`, `slots512_qc`, `conv_micros`, `cree_store_melange_j4` (engine) ; `compact_blob_columns`, `strip_skipped_props`, `rebuild_tiers`, `vectorize_list_props`, `checkpoint_cli` (substrate) | argument | modifient la base — c'est leur objet |
+| `banc_ns_j2`, `sim_conversations`, `perf_churn`, `perf_point_lookup`, `bench_texte_gql`, `bench_intention_contient` (engine) ; `inspect`, `replay_bench`, `bench_trigrammes`, `cognitive_quality` (substrate) ; `persist` (indexer, crée la base de sortie) ; `examples/rust/bench_load.rs` | argument | ouverture en écriture (`bench_texte_gql` et `bench_intention_contient` : en lecture seule si `OBRAIN_LECTURE_SEULE=1`) |
+| `banc_get_egalite`, `banc_open_ro_j4`, `sonde_j4`, `sonde_edges_j4`, `bench_agregat_groupe` (engine) ; `position_scan` (cognitive) | argument | `open_read_only` — peut donc y écrire |
+| `audit_props`, `probe_prop_shape` (substrate) | argument | lecture de fichiers, sans passer par le moteur |
+| `bench_corpus`, `bench_index`, `bench_queries`, `queries` (indexer) | argument | lisent un dépôt de sources, pas une base |
+| `bench_checkpoint_elu`, `bench_contention_n` (substrate) | `CHECKPOINT_DIR` (défaut `/tmp/obrain-bench-checkpoint.obrain`) | créent et écrivent leur propre base |
 
-`NANO_STORE` (`chemin_nanoseconde`), `OBRAIN_ZC_STORE` (`zero_copy`) et `examples/verify_bases` ouvrent ce qu'on leur donne avec `open_read_only` — donc, vu le défaut ci-dessus, peuvent y écrire : leur passer une copie aussi.
+Passent désormais par une copie privée (`obrain_bases_banc::copie_de`, chemin absolu contenant `substrate.meta`), au lieu d'ouvrir le chemin reçu :
 
-`obrain-substrate/tests/tenant_colonne.rs::migration_store_reel_par_copie` (`OBRAIN_TEST_STORE_REEL_DIR`), qui n'est pas `#[ignore]` et migrait en écriture le chemin reçu, migre désormais une copie privée.
+| Cible | Désignation |
+|---|---|
+| `obrain-engine/benches/chemin_nanoseconde.rs` | `NANO_STORE` |
+| `obrain/benches/zero_copy.rs` | `OBRAIN_ZC_STORE` |
+| `obrain-engine/tests/cout_consolidation.rs` | `OBRAIN_SONDE_STORE` |
+| `obrain-engine/tests/banc_surcout.rs` | `OBRAIN_BANC_BASE` |
+| `obrain-engine/examples/banc_plan_froid` | argument ou `OBRAIN_BANC_BASE` |
+| `obrain-substrate/tests/simplex_passes_materialisation.rs` | `CORPUS_A`, `CORPUS_B`, `CORPUS_DB` |
+| `obrain-substrate/tests/tenant_colonne.rs::migration_store_reel_par_copie` | `OBRAIN_TEST_STORE_REEL_DIR` |
+| `obrain-engine/examples/verify_bases` | arguments |
+
+Les cibles `bench-baseline*`, `bench-substrate*`, `bench-compare`, `bench-smoke` et `check-substrate` du `Makefile` sont **retirées** : elles lançaient un harnais `bench/substrate` qui n'existe plus, sur des bases désignées par `PO_DB` / `MEGALAW_DB` hors du helper.
 
 ## Non-régression
 

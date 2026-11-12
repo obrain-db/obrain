@@ -46,7 +46,10 @@ const CHAUFFE: usize = 3;
 #[ignore = "banc — lance a la main"]
 fn banc_surcout() {
     let base = std::env::var("OBRAIN_BANC_BASE").expect("OBRAIN_BANC_BASE non definie");
-    let db = ObrainDB::open_substrate(std::path::Path::new(&base)).expect("ouverture");
+    // Le banc ne fait que lire, mais toute ouverture ecrit sur le disque : il
+    // ouvre une copie privee, jamais le chemin recu.
+    let copie = obrain_bases_banc::copie_de(std::path::Path::new(&base), "OBRAIN_BANC_BASE");
+    let db = ObrainDB::open_substrate(copie.chemin()).expect("ouverture de la copie");
 
     for (nom, q) in REQUETES {
         let mut mesures: Vec<Duration> = Vec::with_capacity(REPETITIONS);

@@ -22,7 +22,7 @@ use obrain_engine::ObrainDB;
 use obrain_substrate::wal_io::SyncMode;
 
 #[test]
-#[ignore = "écrit dans une COPIE de OBRAIN_BENCH_DB_PO — à lancer à la main"]
+#[ignore = "écrit dans une COPIE de la base po désignée (docs/BENCHMARKS.md) — à lancer à la main"]
 fn batch_wal_group_mode_on_real_po() {
     let Some(po_path) = base_copie(Base::Po) else {
         return;

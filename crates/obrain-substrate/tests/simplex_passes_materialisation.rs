@@ -649,13 +649,17 @@ const ZONES_SIMPLICIALES: [&str; 4] = [
 /// CORPUS_A=/tmp/a CORPUS_B=/tmp/b cargo test --release -p obrain-substrate \
 ///   --test simplex_passes_materialisation -- --ignored byte_identical_corpus --nocapture
 /// ```
-/// ⚠️ les deux bases sont MODIFIÉES (matérialisation + compaction).
+/// Les deux bases ne sont pas modifiées : le test matérialise et compacte une
+/// COPIE privée de chacune (chemins absolus exigés).
 #[test]
-#[ignore = "byte-identical corpus — CORPUS_A/CORPUS_B requis, bases modifiées"]
+#[ignore = "byte-identical corpus — CORPUS_A/CORPUS_B requis (copiés, non modifiés)"]
 fn byte_identical_corpus() {
     let a = std::env::var("CORPUS_A").expect("CORPUS_A non défini");
     let b = std::env::var("CORPUS_B").expect("CORPUS_B non défini");
     assert_ne!(a, b, "deux chargements DISTINCTS sont attendus");
+    let copie_a = obrain_bases_banc::copie_de(std::path::Path::new(&a), "CORPUS_A");
+    let copie_b = obrain_bases_banc::copie_de(std::path::Path::new(&b), "CORPUS_B");
+    let (a, b) = (copie_a.chemin(), copie_b.chemin());
 
     let spec = SimplexPassesSpec {
         clique_edge_type: "CALLS".into(),
@@ -667,7 +671,7 @@ fn byte_identical_corpus() {
         }),
         maintenance: false,
     };
-    let publier = |chemin: &str| {
+    let publier = |chemin: &std::path::Path| {
         let s = SubstrateStore::open(chemin).unwrap();
         s.configurer_passes_simpliciales(&spec).unwrap();
         let stats = s.materialiser_simplexes().unwrap();
@@ -675,8 +679,8 @@ fn byte_identical_corpus() {
         s.flush().unwrap();
         stats
     };
-    let sa = publier(&a);
-    let sb = publier(&b);
+    let sa = publier(a);
+    let sb = publier(b);
 
     // Prémisse : les deux publications portent bien le corpus attendu —
     // sans quoi comparer des zones vides passerait pour un succès.
@@ -694,8 +698,8 @@ fn byte_identical_corpus() {
     );
 
     for fichier in ZONES_SIMPLICIALES {
-        let oa = std::fs::read(std::path::Path::new(&a).join(fichier)).unwrap();
-        let ob = std::fs::read(std::path::Path::new(&b).join(fichier)).unwrap();
+        let oa = std::fs::read(a.join(fichier)).unwrap();
+        let ob = std::fs::read(b.join(fichier)).unwrap();
         assert_eq!(oa.len(), ob.len(), "{fichier} : longueurs");
         assert_eq!(oa, ob, "{fichier} : octets");
         println!("{fichier} : {} octets identiques", oa.len());
@@ -718,13 +722,15 @@ fn rss_kib() -> u64 {
 /// MESURES CORPUS (rapport T5) — hors suite : exige la base de référence.
 /// `CORPUS_DB=/tmp/t5-mesures-db cargo test --release -p obrain-substrate \
 ///  --test simplex_passes_materialisation -- --ignored mesures_corpus --nocapture`
-/// ⚠️ la base est MODIFIÉE (matérialisation + arêtes d'essai) : travailler
-/// sur un clone.
+/// La base n'est pas modifiée : le test matérialise et écrit ses arêtes d'essai
+/// dans une COPIE privée (chemin absolu exigé).
 #[test]
-#[ignore = "mesures corpus — CORPUS_DB requis, base modifiée"]
+#[ignore = "mesures corpus — CORPUS_DB requis (copié, non modifié)"]
 fn mesures_corpus() {
     let chemin = std::env::var("CORPUS_DB").expect("CORPUS_DB non défini");
-    let s = SubstrateStore::open(&chemin).unwrap();
+    let copie = obrain_bases_banc::copie_de(std::path::Path::new(&chemin), "CORPUS_DB");
+    let chemin = copie.chemin();
+    let s = SubstrateStore::open(chemin).unwrap();
 
     // ── CONTRÔLE : coût de create_edge/delete_edge SANS maintenance
     //    (couche non configurée) — la différence isole le hook. ──
