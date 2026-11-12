@@ -32,7 +32,7 @@ pub struct Transaction {
 impl Transaction {
     /// Execute a GQL query within this transaction.
     #[napi]
-    #[allow(clippy::unused_async)] // async required for napi Promise return
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)] // async required for napi Promise return
     pub async fn execute(
         &self,
         query: String,
@@ -182,7 +182,7 @@ impl Drop for Transaction {
 impl Transaction {
     /// Execute a Cypher query within this transaction.
     #[napi(js_name = "executeCypher")]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn execute_cypher(
         &self,
         query: String,
@@ -197,7 +197,7 @@ impl Transaction {
 impl Transaction {
     /// Execute a SQL/PGQ query (SQL:2023 GRAPH_TABLE) within this transaction.
     #[napi(js_name = "executeSql")]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn execute_sql(
         &self,
         query: String,
@@ -212,7 +212,7 @@ impl Transaction {
 impl Transaction {
     /// Execute a Gremlin query within this transaction.
     #[napi(js_name = "executeGremlin")]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn execute_gremlin(
         &self,
         query: String,
@@ -227,7 +227,7 @@ impl Transaction {
 impl Transaction {
     /// Execute a GraphQL query within this transaction.
     #[napi(js_name = "executeGraphql")]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn execute_graphql(
         &self,
         query: String,
@@ -242,7 +242,7 @@ impl Transaction {
 impl Transaction {
     /// Execute a SPARQL query within this transaction.
     #[napi(js_name = "executeSparql")]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn execute_sparql(
         &self,
         query: String,
