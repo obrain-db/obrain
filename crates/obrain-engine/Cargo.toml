@@ -166,6 +166,14 @@ testing-crash-injection = ["obrain-core/testing-crash-injection"]  # Crash injec
 workspace = true
 
 [[bench]]
+name = "contrainte_unique"
+harness = false
+# Le banc passe par execute_cypher, qui n existe que sous la feature
+# cypher. Sans required-features, cargo test et clippy --all-targets
+# (features par defaut) le construisent et echouent sur E0599.
+required-features = ["cypher"]
+
+[[bench]]
 name = "tri_borne"
 harness = false
 

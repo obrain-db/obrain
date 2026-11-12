@@ -1452,6 +1452,31 @@ mod cypher_features {
             "SHOW CONSTRAINTS should succeed: {:?}",
             result.err()
         );
+        // Vide tant qu'aucune contrainte n'est déclarée.
+        assert_eq!(result.unwrap().rows.len(), 0);
+
+        // Puis une ligne par contrainte : nom, nature, label, propriétés.
+        session
+            .execute_cypher("CREATE CONSTRAINT uniq_ab FOR (n:Person) REQUIRE (n.a, n.b) IS UNIQUE")
+            .unwrap();
+        session
+            .execute_cypher("CREATE CONSTRAINT requis FOR (n:Person) REQUIRE n.name IS NOT NULL")
+            .unwrap();
+        let qr = session.execute_cypher("SHOW CONSTRAINTS").unwrap();
+        assert_eq!(qr.columns, vec!["name", "type", "label", "properties"]);
+        let lignes: Vec<Vec<String>> = qr
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|v| v.to_string()).collect())
+            .collect();
+        assert_eq!(
+            lignes,
+            vec![
+                vec!["uniq_ab", "unique", "Person", "a, b"],
+                vec!["requis", "not_null", "Person", "name"],
+            ],
+            "SHOW CONSTRAINTS doit lister les contraintes déclarées"
+        );
     }
 
     #[test]

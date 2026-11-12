@@ -74,3 +74,6 @@ docs/changelog.md
 site/
 .cache/
 pkg-web
+
+# Bench de mesure local (chemins machine, non versionné)
+run-bench*.sh
