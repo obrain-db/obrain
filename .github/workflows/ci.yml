@@ -49,7 +49,7 @@ env:
 jobs:
   lint:
     name: Format, clippy, doc (zéro avertissement)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -96,7 +96,7 @@ jobs:
 
   test:
     name: Tests (features par défaut)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -137,7 +137,7 @@ jobs:
   # la même branche. Verdict NOMMÉ : la ligne `test result` est le contrat.
   wal-partage:
     name: WAL partagé (inter-processus)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 10
     concurrency:
       group: wal-partage-${{ github.workflow }}-${{ github.ref }}
@@ -345,7 +345,7 @@ jobs:
           "$PY" -m pytest -v -rs crates/bindings/python/integrations/llama_index_obrain/tests
   tests-all-features:
     name: Tests (toutes features)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -381,7 +381,7 @@ jobs:
 
   features:
     name: Toutes les features compilent
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -418,7 +418,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   wasm:
     name: Navigateur (wasm32)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     # La cible wasm32 n'est installée que sur `stable`. Le rustup des runners est
     # en 1.26 : il refuse `rustup default stable --force-non-host` de l'action, et
     # le défaut de la machine reste celui qu'elle avait (1.91.1 sur n2, sans cible
@@ -479,7 +479,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   web-paquet:
     name: Paquet navigateur (obrain-web)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     # Cible wasm32 installée sur stable seulement ; défaut des runners non fiable
     # (rustup 1.26 refuse `rustup default --force-non-host`). Voir #54.
     env:
@@ -553,7 +553,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   persistance-navigateur:
     name: Persistance navigateur (OPFS, Chrome headless)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     continue-on-error: true
     env:
       RUSTUP_TOOLCHAIN: stable
@@ -624,7 +624,7 @@ jobs:
 
   msrv:
     name: MSRV (rust-version du manifeste)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -658,7 +658,7 @@ jobs:
 
   deny:
     name: cargo deny (licences, advisories, sources)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -686,7 +686,7 @@ jobs:
 
   package:
     name: Métadonnées de publication
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────

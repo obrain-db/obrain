@@ -518,6 +518,37 @@ pub trait GraphStore: Send + Sync {
     /// Finds nodes matching multiple property equality conditions.
     fn find_nodes_by_properties(&self, conditions: &[(&str, Value)]) -> Vec<NodeId>;
 
+    /// Nodes carrying `label` whose properties are EQUAL, in the sense of the
+    /// language (`5 = 5.0`, two date-time strings of the same instant), to ALL
+    /// `conditions`. The lookup of a uniqueness constraint.
+    ///
+    /// Unlike [`find_nodes_by_properties`](Self::find_nodes_by_properties) —
+    /// an accelerator for query pushdown, whose index may not hold every
+    /// language-equal carrier — the answer here is COMPLETE: a store that
+    /// cannot prove an index covers the equality class of a value must not
+    /// use it. The default scans the label, which is always correct (O(label));
+    /// a backend overrides it to use the indexes it can prove exact.
+    fn find_nodes_by_properties_for_label(
+        &self,
+        label: &str,
+        conditions: &[(&str, Value)],
+    ) -> Vec<NodeId> {
+        let cles: Vec<PropertyKey> = conditions
+            .iter()
+            .map(|(k, _)| PropertyKey::new(*k))
+            .collect();
+        self.nodes_by_label(label)
+            .into_iter()
+            .filter(|id| {
+                cles.iter().zip(conditions).all(|(cle, (_, attendue))| {
+                    self.get_node_property(*id, cle).is_some_and(|v| {
+                        obrain_common::types::value_cmp::egalite_structurelle(&v, attendue)
+                    })
+                })
+            })
+            .collect()
+    }
+
     /// ── EXISTENCE DE PROPRIÉTÉ : LA SOURCE DE `n.p IS NOT NULL` ──────────
     ///
     /// Rend la liste EXACTE et COMPLÈTE des nœuds vivants qui portent la
@@ -1334,8 +1365,31 @@ pub trait GraphStoreMut: GraphStore {
         properties: &[(PropertyKey, Value)],
     ) -> NodeId {
         let id = self.create_node(labels);
-        for (key, value) in properties {
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (key, value)) in properties.iter().enumerate() {
             self.set_node_property(id, key.as_str(), value.clone());
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
+        }
+        id
+    }
+
+    /// Variante versionnée de [`create_node_with_props`](Self::create_node_with_props) :
+    /// le nœud est daté de `epoch` et, sous une transaction explicite, en
+    /// attente de son commit. Le défaut compose `create_node_versioned` et
+    /// `set_node_property` ; un store durable peut surcharger pour que la
+    /// création (nœud + propriétés) soit une seule unité de rejeu.
+    fn create_node_with_props_versioned(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> NodeId {
+        let id = self.create_node_versioned(labels, epoch, transaction_id);
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (key, value)) in properties.iter().enumerate() {
+            self.set_node_property(id, key.as_str(), value.clone());
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
         }
         id
     }

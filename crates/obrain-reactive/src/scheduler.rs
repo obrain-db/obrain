@@ -62,14 +62,52 @@ impl BatchConfig {
 /// public API for dynamic registration.
 type ListenerList = Arc<RwLock<Vec<Arc<dyn MutationListener>>>>;
 
+/// Compteurs du dispatch (2026-11-12, câblage cognitif) : ce que le
+/// scheduler a effectivement remis aux listeners, et ce qu'il a perdu en
+/// prenant du retard sur le bus (`Lagged`). Avec
+/// [`MutationBus::total_events_published`], ils permettent d'attendre que
+/// tout événement publié ait été traité (`ObrainDB::cognitive_quiesce`),
+/// sans jamais bloquer l'écrivain.
+#[derive(Debug, Default)]
+pub struct CompteursDispatch {
+    /// Événements remis aux listeners, comptés APRÈS le retour de tous les
+    /// listeners du lot (l'effet — énergie, synapse — est alors visible).
+    dispatches: std::sync::atomic::AtomicU64,
+    /// Événements perdus (`RecvError::Lagged`) : le bus a tourné plus vite
+    /// que le dispatch au-delà de la capacité du canal.
+    perdus: std::sync::atomic::AtomicU64,
+}
+
+impl CompteursDispatch {
+    fn ajouter_dispatches(&self, n: u64) {
+        self.dispatches
+            .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn ajouter_perdus(&self, n: u64) {
+        self.perdus
+            .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Événements effectivement traités par tous les listeners.
+    pub fn dispatches(&self) -> u64 {
+        self.dispatches.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Événements perdus par retard du dispatch.
+    pub fn perdus(&self) -> u64 {
+        self.perdus.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 // =============================================================================
 // Native (non-WASM) scheduler — uses tokio tasks
 // =============================================================================
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::{
-        Arc, BatchConfig, Duration, EventContext, ListenerList, MutationBus, MutationEvent,
-        MutationListener, RwLock,
+        Arc, BatchConfig, CompteursDispatch, Duration, EventContext, ListenerList, MutationBus,
+        MutationEvent, MutationListener, RwLock,
     };
     use crate::event::MutationBatch;
     use parking_lot::Mutex;
@@ -95,6 +133,8 @@ mod native {
     pub struct Scheduler {
         /// Registered listeners (shared with the background task).
         listeners: ListenerList,
+        /// Compteurs dispatchés / perdus (partagés avec la tâche de fond).
+        compteurs: Arc<CompteursDispatch>,
         /// Handle to the background dispatch task (lazily spawned).
         task_handle: Mutex<Option<JoinHandle<()>>>,
         /// Shutdown signal sender.
@@ -116,6 +156,7 @@ mod native {
 
             Self {
                 listeners,
+                compteurs: Arc::new(CompteursDispatch::default()),
                 task_handle: Mutex::new(None),
                 shutdown_tx,
                 config,
@@ -148,6 +189,7 @@ mod native {
                     task_listeners,
                     task_config,
                     shutdown_rx,
+                    Arc::clone(&self.compteurs),
                 )));
             }
         }
@@ -177,6 +219,18 @@ mod native {
         /// Returns `true` if the background task has been spawned.
         pub fn is_running(&self) -> bool {
             self.task_handle.lock().is_some()
+        }
+
+        /// Événements effectivement remis aux listeners (comptés après le
+        /// retour de tous les listeners du lot).
+        pub fn events_dispatched(&self) -> u64 {
+            self.compteurs.dispatches()
+        }
+
+        /// Événements perdus parce que le dispatch a pris du retard au-delà
+        /// de la capacité du bus (`RecvError::Lagged`).
+        pub fn events_lost(&self) -> u64 {
+            self.compteurs.perdus()
         }
 
         /// Gracefully shuts down the scheduler.
@@ -219,6 +273,7 @@ mod native {
         listeners: ListenerList,
         config: BatchConfig,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        compteurs: Arc<CompteursDispatch>,
     ) {
         let mut buffer: Vec<MutationEvent> = Vec::with_capacity(config.max_batch_size);
         let mut flush_deadline: Option<tokio::time::Instant> = None;
@@ -261,7 +316,7 @@ mod native {
                         }
                         // Flush any remaining buffer
                         if !buffer.is_empty() {
-                            dispatch_batch(&buffer, &listeners, current_context.as_ref().map(|c| c.as_ref())).await;
+                            dispatch_batch(&buffer, &listeners, current_context.as_ref().map(|c| c.as_ref()), &compteurs).await;
                             buffer.clear();
                         }
                         drop(current_context);
@@ -290,7 +345,7 @@ mod native {
                             while buffer.len() >= config.max_batch_size {
                                 let drain_end = config.max_batch_size.min(buffer.len());
                                 let batch: Vec<MutationEvent> = buffer.drain(..drain_end).collect();
-                                dispatch_batch(&batch, &listeners, current_context.as_ref().map(|c| c.as_ref())).await;
+                                dispatch_batch(&batch, &listeners, current_context.as_ref().map(|c| c.as_ref()), &compteurs).await;
                             }
 
                             // Reset deadline if buffer is now empty
@@ -304,12 +359,17 @@ mod native {
                                 lagged = n,
                                 "scheduler lagged behind bus, some events were dropped"
                             );
+                            // `n` compte des LOTS perdus ; chaque lot publié par
+                            // l'observateur substrat porte un événement. Compté
+                            // comme perdu pour que l'attente de quiescence se
+                            // termine et que la perte soit visible.
+                            compteurs.ajouter_perdus(n);
                             // Continue receiving — we'll get the next available message
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             tracing::info!("bus closed, flushing remaining events");
                             if !buffer.is_empty() {
-                                dispatch_batch(&buffer, &listeners, current_context.as_ref().map(|c| c.as_ref())).await;
+                                dispatch_batch(&buffer, &listeners, current_context.as_ref().map(|c| c.as_ref()), &compteurs).await;
                                 buffer.clear();
                             }
                             drop(current_context);
@@ -321,7 +381,7 @@ mod native {
                 // Timeout: flush incomplete batch
                 () = tokio::time::sleep(timeout), if flush_deadline.is_some() => {
                     if !buffer.is_empty() {
-                        dispatch_batch(&buffer, &listeners, current_context.as_ref().map(|c| c.as_ref())).await;
+                        dispatch_batch(&buffer, &listeners, current_context.as_ref().map(|c| c.as_ref()), &compteurs).await;
                         buffer.clear();
                         current_context = None;
                     }
@@ -343,11 +403,20 @@ mod native {
         events: &[MutationEvent],
         listeners: &ListenerList,
         context: Option<&EventContext>,
+        compteurs: &CompteursDispatch,
     ) {
         if events.is_empty() {
             return;
         }
+        dispatch_batch_aux_listeners(events, listeners, context).await;
+        compteurs.ajouter_dispatches(events.len() as u64);
+    }
 
+    async fn dispatch_batch_aux_listeners(
+        events: &[MutationEvent],
+        listeners: &ListenerList,
+        context: Option<&EventContext>,
+    ) {
         // Snapshot the listener list to avoid holding the lock during async dispatch
         let listener_snapshot: Vec<Arc<dyn MutationListener>> = listeners.read().clone();
 
@@ -441,6 +510,17 @@ mod wasm {
                 "registering mutation listener (wasm sync)"
             );
             self.listeners.write().push(listener);
+        }
+
+        /// Sous wasm le dispatch est manuel et synchrone : aucun compteur
+        /// de tâche de fond. Rend 0 (parité d'API avec le natif).
+        pub fn events_dispatched(&self) -> u64 {
+            0
+        }
+
+        /// Sous wasm rien n'est perdu en retard : rend 0.
+        pub fn events_lost(&self) -> u64 {
+            0
         }
 
         /// Returns the current number of registered listeners.

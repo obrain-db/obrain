@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::{Mutex, RwLock};
 
 use obrain_common::collections::{ObrainConcurrentMap, obrain_concurrent_map};
-use obrain_common::types::{EdgeTypeId, IndexId, LabelId, PropertyKeyId, Value};
+use obrain_common::types::{EdgeTypeId, IndexId, LabelId, NodeId, PropertyKeyId, Value};
 
 /// The database's schema dictionary - maps names to compact internal IDs.
 ///
@@ -37,6 +37,12 @@ pub struct Catalog {
     indexes: IndexCatalog,
     /// Optional schema constraints.
     schema: Option<SchemaCatalog>,
+    /// Serialises DDL that rewrites type definitions and their durable copy
+    /// (`CREATE`/`DROP CONSTRAINT`, `CREATE`/`DROP NODE TYPE`): without it two
+    /// sessions read-modify-write `substrate.typecat` and lose each other's
+    /// line, and a rollback restores a snapshot that overwrites a concurrent
+    /// change. DDL is rare; the lock is never taken by data writes.
+    ddl: parking_lot::Mutex<()>,
 }
 
 impl Catalog {
@@ -49,7 +55,14 @@ impl Catalog {
             edge_types: EdgeTypeCatalog::new(),
             indexes: IndexCatalog::new(),
             schema: Some(SchemaCatalog::new()),
+            ddl: parking_lot::Mutex::new(()),
         }
+    }
+
+    /// Takes the DDL lock (see the `ddl` field): hold the guard across the
+    /// whole read-modify-persist-rollback sequence of a schema statement.
+    pub fn ddl_guard(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.ddl.lock()
     }
 
     /// Creates a new catalog with schema constraints enabled.
@@ -419,6 +432,65 @@ impl Catalog {
         match &self.schema {
             Some(schema) => schema.add_constraint_to_type(label, constraint),
             None => Err(CatalogError::SchemaNotEnabled),
+        }
+    }
+
+    /// Declares the constraints of one `CREATE CONSTRAINT` statement.
+    ///
+    /// See [`SchemaCatalog::declare_constraint`]: redeclaring an equivalent
+    /// constraint changes nothing.
+    pub fn declare_constraint(
+        &self,
+        label: &str,
+        name: Option<&str>,
+        constraints: Vec<TypeConstraint>,
+    ) -> Result<ConstraintDeclaration, CatalogError> {
+        let Some(schema) = &self.schema else {
+            return Err(CatalogError::SchemaNotEnabled);
+        };
+        let touched = constraints.clone();
+        let outcome = schema.declare_constraint(label, name, constraints)?;
+        self.sync_constraint_flags(label, &touched);
+        Ok(outcome)
+    }
+
+    /// Removes every constraint named `name` from the node types.
+    ///
+    /// Also clears the per-property unique/required flags that no remaining
+    /// constraint of the label justifies.
+    pub fn drop_constraint(&self, name: &str) -> Result<Vec<DroppedConstraint>, CatalogError> {
+        let Some(schema) = &self.schema else {
+            return Err(CatalogError::SchemaNotEnabled);
+        };
+        let dropped = schema.drop_constraint(name)?;
+        for d in &dropped {
+            self.sync_constraint_flags(&d.label, &d.removed);
+        }
+        Ok(dropped)
+    }
+
+    /// Re-aligns the per-property unique/required flags of `label` with its
+    /// type definition, for the properties of the constraints in `touched`:
+    /// a flag is set when a current constraint justifies it, cleared otherwise.
+    pub fn sync_constraint_flags(&self, label: &str, touched: &[TypeConstraint]) {
+        let Some(schema) = &self.schema else { return };
+        let current = schema
+            .get_node_type(label)
+            .map(|d| d.constraints)
+            .unwrap_or_default();
+        let label_id = self.get_or_create_label(label);
+        for prop in touched.iter().flat_map(TypeConstraint::properties) {
+            let prop_id = self.get_or_create_property_key(&prop);
+            let unique = current.iter().any(|c| match c {
+                TypeConstraint::Unique(ps) | TypeConstraint::PrimaryKey(ps) => ps.contains(&prop),
+                _ => false,
+            });
+            let required = current.iter().any(|c| match c {
+                TypeConstraint::NotNull(p) => *p == prop,
+                TypeConstraint::PrimaryKey(ps) => ps.contains(&prop),
+                _ => false,
+            });
+            schema.set_constraint_flags(label_id, prop_id, unique, required);
         }
     }
 
@@ -1058,7 +1130,7 @@ pub struct TypedProperty {
 }
 
 /// A constraint on a node or edge type.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TypeConstraint {
     /// Primary key (implies UNIQUE + NOT NULL).
     PrimaryKey(Vec<String>),
@@ -1075,6 +1147,124 @@ pub enum TypeConstraint {
     },
 }
 
+impl TypeConstraint {
+    /// Short keyword naming the constraint kind (`unique`, `node_key`,
+    /// `not_null`, `check`), as used in default constraint names and by
+    /// `SHOW CONSTRAINTS`.
+    #[must_use]
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::PrimaryKey(_) => "node_key",
+            Self::Unique(_) => "unique",
+            Self::NotNull(_) => "not_null",
+            Self::Check { .. } => "check",
+        }
+    }
+
+    /// Properties bound by this constraint, in declaration order.
+    #[must_use]
+    pub fn properties(&self) -> Vec<String> {
+        match self {
+            Self::PrimaryKey(props) | Self::Unique(props) => props.clone(),
+            Self::NotNull(prop) => vec![prop.clone()],
+            Self::Check { .. } => Vec::new(),
+        }
+    }
+}
+
+/// The name under which a constraint was declared.
+///
+/// `DROP CONSTRAINT` designates a constraint by NAME, and [`TypeConstraint`]
+/// carries none. The binding is kept beside the constraint list rather than
+/// inside the enum so the persisted JSON stays readable by engines that only
+/// know `constraints` (they ignore the extra `constraint_names` field).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NamedConstraint {
+    /// Constraint name (explicit, or derived when declared without one).
+    pub name: String,
+    /// The constraint this name designates (always a member of `constraints`).
+    pub constraint: TypeConstraint,
+}
+
+/// Derives the name of a constraint declared without one.
+///
+/// `<label>_<kind>_<properties>`: a pure function of the constraint, so the
+/// same constraint gets the same name whether it is created, reloaded or
+/// repaired, and whatever order the constraints of the type come in. A numeric
+/// suffix is added only when an EXPLICIT name already took the candidate.
+/// `taken` says whether a candidate is already used by another constraint.
+fn default_constraint_name(
+    label: &str,
+    kind: &str,
+    properties: &[String],
+    taken: impl Fn(&str) -> bool,
+) -> String {
+    // Les colonnes sont jointes par `_`. Quand l'une d'elles en contient un,
+    // la jointure devient ambiguë (`UNIQUE (a, b)` et `UNIQUE (a_b)` donnent
+    // toutes deux `a_b`) : on y ajoute alors une empreinte des colonnes
+    // elles-mêmes, pour que le nom reste une fonction de la contrainte seule
+    // — jamais de l'ordre dans lequel les contraintes ont été déclarées.
+    let base = if properties.is_empty() {
+        format!("{label}_{kind}")
+    } else if properties.iter().any(|p| p.contains('_')) {
+        let mut empreinte: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in properties {
+            for octet in p.bytes().chain(std::iter::once(0)) {
+                empreinte ^= u64::from(octet);
+                empreinte = empreinte.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        format!(
+            "{label}_{kind}_{}_{:06x}",
+            properties.join("_"),
+            empreinte & 0xff_ffff
+        )
+    } else {
+        format!("{label}_{kind}_{}", properties.join("_"))
+    };
+    if !taken(&base) {
+        return base;
+    }
+    let mut n = 2usize;
+    loop {
+        let candidate = format!("{base}_{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Outcome of [`Catalog::declare_constraint`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstraintDeclaration {
+    /// The constraint was added under this name.
+    Created {
+        /// Name the constraint is now known by.
+        name: String,
+    },
+    /// An equivalent constraint (same label, same kind, same properties in
+    /// the same order) was already declared: nothing changed.
+    AlreadyExists {
+        /// Name of the existing equivalent constraint.
+        name: String,
+    },
+}
+
+/// One node type touched by [`Catalog::drop_constraint`].
+#[derive(Debug, Clone)]
+pub struct DroppedConstraint {
+    /// Label of the node type the constraint was removed from.
+    pub label: String,
+    /// The type definition as it was BEFORE the removal (for rollback).
+    pub previous: NodeTypeDefinition,
+    /// The constraints that were removed.
+    pub removed: Vec<TypeConstraint>,
+    /// True when the type was implicit and lost its last constraint: it was
+    /// removed from the catalog too.
+    pub type_removed: bool,
+}
+
 /// Definition of a node type (label schema).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeTypeDefinition {
@@ -1084,8 +1274,71 @@ pub struct NodeTypeDefinition {
     pub properties: Vec<TypedProperty>,
     /// Type-level constraints.
     pub constraints: Vec<TypeConstraint>,
+    /// Names of the constraints above (one entry per constraint).
+    ///
+    /// Absent from definitions persisted before constraint names existed:
+    /// `#[serde(default)]` reads them as empty and
+    /// [`NodeTypeDefinition::normalize_constraints`] derives default names.
+    #[serde(default)]
+    pub constraint_names: Vec<NamedConstraint>,
+    /// True for a type auto-created by `CREATE CONSTRAINT` on a label that had
+    /// no `CREATE NODE TYPE`: it only carries constraints. `CREATE NODE TYPE`
+    /// completes it (constraints kept) and dropping its last constraint
+    /// removes it.
+    #[serde(default)]
+    pub implicit: bool,
     /// Parent type names for inheritance (GQL `EXTENDS`).
     pub parent_types: Vec<String>,
+}
+
+impl NodeTypeDefinition {
+    /// Puts the constraint list in canonical form: each constraint appears
+    /// ONCE, and each one has exactly one name.
+    ///
+    /// Repairs definitions persisted by an engine that stacked one copy of
+    /// the constraint per `CREATE CONSTRAINT` replay and stored no name.
+    /// Returns `true` when the definition was changed.
+    pub fn normalize_constraints(&mut self) -> bool {
+        let mut constraints: Vec<TypeConstraint> = Vec::with_capacity(self.constraints.len());
+        for c in &self.constraints {
+            if !constraints.contains(c) {
+                constraints.push(c.clone());
+            }
+        }
+        let mut names: Vec<NamedConstraint> = Vec::with_capacity(constraints.len());
+        for n in &self.constraint_names {
+            if constraints.contains(&n.constraint)
+                && !names.iter().any(|m| m.constraint == n.constraint)
+            {
+                names.push(n.clone());
+            }
+        }
+        for c in &constraints {
+            if names.iter().any(|m| m.constraint == *c) {
+                continue;
+            }
+            let name = default_constraint_name(&self.name, c.kind_str(), &c.properties(), |cand| {
+                names.iter().any(|m| m.name == cand)
+            });
+            names.push(NamedConstraint {
+                name,
+                constraint: c.clone(),
+            });
+        }
+        let changed = constraints != self.constraints || names != self.constraint_names;
+        self.constraints = constraints;
+        self.constraint_names = names;
+        changed
+    }
+
+    /// Name of `constraint` on this type, if it has one.
+    #[must_use]
+    pub fn constraint_name(&self, constraint: &TypeConstraint) -> Option<&str> {
+        self.constraint_names
+            .iter()
+            .find(|n| n.constraint == *constraint)
+            .map(|n| n.name.as_str())
+    }
 }
 
 /// Definition of an edge type (relationship type schema).
@@ -1224,6 +1477,8 @@ impl SchemaCatalog {
             name: base.name.clone(),
             properties: all_properties,
             constraints: all_constraints,
+            constraint_names: base.constraint_names.clone(),
+            implicit: base.implicit,
             parent_types: base.parent_types.clone(),
         })
     }
@@ -1396,22 +1651,160 @@ impl SchemaCatalog {
         label: &str,
         constraint: TypeConstraint,
     ) -> Result<(), CatalogError> {
+        // Idempotent: an equivalent constraint is never stacked a second time.
+        self.declare_constraint(label, None, vec![constraint])
+            .map(|_| ())
+    }
+
+    /// Declares the constraints of one `CREATE CONSTRAINT` statement on
+    /// `label`, creating a minimal type if needed.
+    ///
+    /// The identity of a constraint is (label, kind, properties in order):
+    /// when every constraint of the statement is already carried by the type,
+    /// nothing changes and [`ConstraintDeclaration::AlreadyExists`] is
+    /// returned — neither the list nor the names grow. Otherwise the missing
+    /// constraints are added under `name`, or under a default name derived
+    /// from `kind` when `name` is `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::ConstraintNameInUse`] when `name` is explicit and
+    /// already designates another constraint (on any node type).
+    pub fn declare_constraint(
+        &self,
+        label: &str,
+        name: Option<&str>,
+        constraints: Vec<TypeConstraint>,
+    ) -> Result<ConstraintDeclaration, CatalogError> {
         let mut types = self.node_types.write();
-        if let Some(def) = types.get_mut(label) {
-            def.constraints.push(constraint);
-        } else {
-            // Auto-create a minimal type definition for the label
-            types.insert(
-                label.to_string(),
-                NodeTypeDefinition {
-                    name: label.to_string(),
-                    properties: Vec::new(),
-                    constraints: vec![constraint],
-                    parent_types: Vec::new(),
-                },
-            );
+        for def in types.values_mut() {
+            def.normalize_constraints();
         }
-        Ok(())
+
+        let existing: &[TypeConstraint] = types
+            .get(label)
+            .map_or(&[][..], |d| d.constraints.as_slice());
+        let mut missing: Vec<TypeConstraint> = Vec::new();
+        let mut first_existing: Option<TypeConstraint> = None;
+        for c in constraints {
+            if existing.contains(&c) {
+                first_existing.get_or_insert(c);
+            } else if !missing.contains(&c) {
+                missing.push(c);
+            }
+        }
+        if missing.is_empty() {
+            let name = types
+                .get(label)
+                .zip(first_existing.as_ref())
+                .and_then(|(d, c)| d.constraint_name(c))
+                .unwrap_or_default()
+                .to_string();
+            return Ok(ConstraintDeclaration::AlreadyExists { name });
+        }
+
+        // Names: the explicit one is shared by every constraint of the
+        // statement (`NOT NULL (a, b)` is ONE statement, one name); without
+        // one, each constraint gets the deterministic default of its own.
+        let mut taken_now: Vec<String> = Vec::new();
+        let taken = |candidate: &str, now: &[String]| {
+            now.iter().any(|n| n == candidate)
+                || types
+                    .values()
+                    .any(|d| d.constraint_names.iter().any(|n| n.name == candidate))
+        };
+        if let Some(explicit) = name
+            && taken(explicit, &[])
+        {
+            return Err(CatalogError::ConstraintNameInUse(explicit.to_string()));
+        }
+        let mut named: Vec<(String, TypeConstraint)> = Vec::with_capacity(missing.len());
+        for c in missing {
+            let n = match name {
+                Some(explicit) => explicit.to_string(),
+                None => default_constraint_name(label, c.kind_str(), &c.properties(), |cand| {
+                    taken(cand, &taken_now)
+                }),
+            };
+            taken_now.push(n.clone());
+            named.push((n, c));
+        }
+        let created = {
+            let mut ns: Vec<String> = Vec::new();
+            for (n, _) in &named {
+                if !ns.contains(n) {
+                    ns.push(n.clone());
+                }
+            }
+            ns.join(", ")
+        };
+
+        // Auto-create a minimal type definition for the label. It is marked
+        // IMPLICIT: it exists only to carry constraints, so `CREATE NODE TYPE`
+        // later completes it instead of failing, and dropping its last
+        // constraint removes it.
+        let def = types
+            .entry(label.to_string())
+            .or_insert_with(|| NodeTypeDefinition {
+                name: label.to_string(),
+                properties: Vec::new(),
+                constraints: Vec::new(),
+                constraint_names: Vec::new(),
+                parent_types: Vec::new(),
+                implicit: true,
+            });
+        for (n, c) in named {
+            def.constraint_names.push(NamedConstraint {
+                name: n,
+                constraint: c.clone(),
+            });
+            def.constraints.push(c);
+        }
+        Ok(ConstraintDeclaration::Created { name: created })
+    }
+
+    /// Removes every constraint named `name`, on whichever node type carries
+    /// it, and returns what was removed (with the prior definitions, so the
+    /// caller can roll back if the removal cannot be made durable). An
+    /// IMPLICIT type (auto-created by `CREATE CONSTRAINT`) whose last
+    /// constraint goes is removed with it.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::ConstraintNotFound`] when no constraint has this name.
+    pub fn drop_constraint(&self, name: &str) -> Result<Vec<DroppedConstraint>, CatalogError> {
+        let mut types = self.node_types.write();
+        let mut dropped = Vec::new();
+        for def in types.values_mut() {
+            def.normalize_constraints();
+            let removed: Vec<TypeConstraint> = def
+                .constraint_names
+                .iter()
+                .filter(|n| n.name == name)
+                .map(|n| n.constraint.clone())
+                .collect();
+            if removed.is_empty() {
+                continue;
+            }
+            let previous = def.clone();
+            def.constraints.retain(|c| !removed.contains(c));
+            def.constraint_names.retain(|n| n.name != name);
+            dropped.push(DroppedConstraint {
+                label: def.name.clone(),
+                previous,
+                removed,
+                type_removed: def.implicit && def.constraints.is_empty(),
+            });
+        }
+        if dropped.is_empty() {
+            return Err(CatalogError::ConstraintNotFound(name.to_string()));
+        }
+        for d in &dropped {
+            if d.type_removed {
+                types.remove(&d.label);
+            }
+        }
+        Ok(dropped)
     }
 
     /// Adds a property to an existing node type.
@@ -1629,6 +2022,31 @@ impl SchemaCatalog {
         Ok(())
     }
 
+    /// Sets or clears the unique/required flags of one (label, property).
+    fn set_constraint_flags(
+        &self,
+        label: LabelId,
+        property_key: PropertyKeyId,
+        unique: bool,
+        required: bool,
+    ) {
+        let key = (label, property_key);
+        {
+            let mut uniques = self.unique_constraints.write();
+            if unique {
+                uniques.insert(key);
+            } else {
+                uniques.remove(&key);
+            }
+        }
+        let mut requireds = self.required_properties.write();
+        if required {
+            requireds.insert(key);
+        } else {
+            requireds.remove(&key);
+        }
+    }
+
     fn is_property_required(&self, label: LabelId, property_key: PropertyKeyId) -> bool {
         self.required_properties
             .read()
@@ -1651,6 +2069,10 @@ pub enum CatalogError {
     SchemaNotEnabled,
     /// The constraint already exists.
     ConstraintAlreadyExists,
+    /// A constraint name already designates another constraint.
+    ConstraintNameInUse(String),
+    /// No constraint with this name exists.
+    ConstraintNotFound(String),
     /// The label does not exist.
     LabelNotFound(String),
     /// The property key does not exist.
@@ -1674,6 +2096,11 @@ impl std::fmt::Display for CatalogError {
         match self {
             Self::SchemaNotEnabled => write!(f, "Schema constraints are not enabled"),
             Self::ConstraintAlreadyExists => write!(f, "Constraint already exists"),
+            Self::ConstraintNameInUse(name) => write!(
+                f,
+                "Constraint already exists: the name '{name}' designates another constraint"
+            ),
+            Self::ConstraintNotFound(name) => write!(f, "Constraint not found: {name}"),
             Self::LabelNotFound(name) => write!(f, "Label not found: {name}"),
             Self::PropertyKeyNotFound(name) => write!(f, "Property key not found: {name}"),
             Self::EdgeTypeNotFound(name) => write!(f, "Edge type not found: {name}"),
@@ -1822,35 +2249,68 @@ impl ConstraintValidator for CatalogConstraintValidator {
         Ok(())
     }
 
-    fn check_unique_node_property(
+    fn check_unique_node_properties(
         &self,
         labels: &[String],
-        key: &str,
-        value: &Value,
+        properties: &[(String, Value)],
+        exclude: Option<NodeId>,
     ) -> Result<(), OperatorError> {
-        // Skip uniqueness check for NULL values (NULLs are never duplicates)
-        if *value == Value::Null {
-            return Ok(());
-        }
+        // NULL values are never duplicates: keep only the non-NULL members of
+        // the candidate tuple.
+        let non_null: Vec<(&str, &Value)> = properties
+            .iter()
+            .filter(|(_, v)| !matches!(v, Value::Null))
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+
         for label in labels {
             if let Some(type_def) = self.catalog.resolved_node_type(label) {
                 for constraint in &type_def.constraints {
-                    let is_unique = match constraint {
-                        TypeConstraint::Unique(props) => props.iter().any(|p| p == key),
-                        TypeConstraint::PrimaryKey(props) => props.iter().any(|p| p == key),
-                        _ => false,
+                    let props: &[String] = match constraint {
+                        TypeConstraint::Unique(props) | TypeConstraint::PrimaryKey(props) => props,
+                        _ => continue,
                     };
-                    if is_unique && let Some(ref store) = self.store {
-                        let existing = store.find_nodes_by_property(key, value);
+                    // A UNIQUE/PK constraint binds the WHOLE tuple: it only
+                    // collides when every constrained property is present
+                    // (non-NULL) in the candidate node. A missing/NULL member
+                    // means the tuple cannot be a duplicate.
+                    let mut conditions: Vec<(&str, Value)> = Vec::with_capacity(props.len());
+                    let mut complete = true;
+                    for p in props {
+                        match non_null.iter().find(|(k, _)| *k == p.as_str()) {
+                            Some((_, v)) => conditions.push((p.as_str(), (*v).clone())),
+                            None => {
+                                complete = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !complete {
+                        continue;
+                    }
+                    if let Some(ref store) = self.store {
+                        // The lookup is the store's COMPLETE one for this label:
+                        // it uses an index only where the index provably holds
+                        // every language-equal carrier, and scans the label
+                        // otherwise (a uniqueness check that misses a carrier
+                        // accepts a duplicate).
+                        let existing = store.find_nodes_by_properties_for_label(label, &conditions);
                         for node_id in existing {
-                            if let Some(node) = store.get_node(node_id) {
-                                let has_label = node.labels.iter().any(|l| l.as_str() == label);
-                                if has_label {
-                                    return Err(OperatorError::ConstraintViolation(format!(
-                                        "UNIQUE constraint violation: property '{key}' \
-                                             with value {value:?} already exists on :{label}"
-                                    )));
-                                }
+                            // A node being updated is not its own duplicate.
+                            if exclude == Some(node_id) {
+                                continue;
+                            }
+                            if store.node_has_label(node_id, label) == Some(true) {
+                                let tuple: Vec<String> =
+                                    conditions.iter().map(|(_, v)| format!("{v}")).collect();
+                                return Err(OperatorError::ConstraintViolation(format!(
+                                    "UNIQUE constraint violation: properties {} \
+                                     already exist on :{label} with value ({}) \
+                                     (node {})",
+                                    props.join(", "),
+                                    tuple.join(", "),
+                                    node_id.0
+                                )));
                             }
                         }
                     }
@@ -1858,6 +2318,27 @@ impl ConstraintValidator for CatalogConstraintValidator {
             }
         }
         Ok(())
+    }
+
+    fn unique_constrained_properties(&self, labels: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for label in labels {
+            let Some(type_def) = self.catalog.resolved_node_type(label) else {
+                continue;
+            };
+            for constraint in &type_def.constraints {
+                if let TypeConstraint::Unique(props) | TypeConstraint::PrimaryKey(props) =
+                    constraint
+                {
+                    for p in props {
+                        if !out.contains(p) {
+                            out.push(p.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn validate_edge_property(
@@ -2562,5 +3043,81 @@ mod tests {
             CatalogError::LabelNotFound("X".to_string()),
             CatalogError::LabelNotFound("Y".to_string())
         );
+    }
+
+    /// Le nom par défaut est une fonction de la contrainte seule : le même à la
+    /// création et à la réparation d'une définition sans noms, quel que soit
+    /// l'ordre des contraintes (ou le mot-clé `EXISTS`/`NOT NULL` employé).
+    #[test]
+    fn noms_par_defaut_deterministes_creation_et_reparation() {
+        let contraintes = vec![
+            TypeConstraint::NotNull("b".into()),
+            TypeConstraint::Unique(vec!["a".into(), "b".into()]),
+            TypeConstraint::NotNull("a".into()),
+        ];
+        // Réparation : définition sans noms, dans deux ordres.
+        let reparer = |cs: Vec<TypeConstraint>| {
+            let mut def = NodeTypeDefinition {
+                name: "T".into(),
+                properties: Vec::new(),
+                constraints: cs,
+                constraint_names: Vec::new(),
+                parent_types: Vec::new(),
+                implicit: false,
+            };
+            def.normalize_constraints();
+            let mut v: Vec<(String, TypeConstraint)> = def
+                .constraint_names
+                .into_iter()
+                .map(|n| (n.name, n.constraint))
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v
+        };
+        let mut inverse = contraintes.clone();
+        inverse.reverse();
+        assert_eq!(reparer(contraintes.clone()), reparer(inverse));
+
+        // Création sans nom : mêmes noms que la réparation.
+        let schema = SchemaCatalog::new();
+        for c in &contraintes {
+            schema
+                .declare_constraint("T", None, vec![c.clone()])
+                .unwrap();
+        }
+        let mut crees: Vec<(String, TypeConstraint)> = schema
+            .get_node_type("T")
+            .unwrap()
+            .constraint_names
+            .into_iter()
+            .map(|n| (n.name, n.constraint))
+            .collect();
+        crees.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(crees, reparer(contraintes));
+        assert_eq!(crees[0].0, "T_not_null_a");
+
+        // Une colonne contenant `_` rend la jointure ambiguë : `UNIQUE (a, b)`
+        // et `UNIQUE (a_b)` reçoivent des noms DISTINCTS, quel que soit l'ordre
+        // de déclaration.
+        let ab = TypeConstraint::Unique(vec!["a".into(), "b".into()]);
+        let a_b = TypeConstraint::Unique(vec!["a_b".into()]);
+        let noms = |premier: &TypeConstraint, second: &TypeConstraint| {
+            let schema = SchemaCatalog::new();
+            schema
+                .declare_constraint("T", None, vec![premier.clone()])
+                .unwrap();
+            schema
+                .declare_constraint("T", None, vec![second.clone()])
+                .unwrap();
+            let def = schema.get_node_type("T").unwrap();
+            (
+                def.constraint_name(&ab).unwrap().to_string(),
+                def.constraint_name(&a_b).unwrap().to_string(),
+            )
+        };
+        let (n_ab, n_a_b) = noms(&ab, &a_b);
+        assert_ne!(n_ab, n_a_b);
+        assert_eq!(n_ab, "T_unique_a_b");
+        assert_eq!(noms(&a_b, &ab), (n_ab, n_a_b), "indépendant de l'ordre");
     }
 }

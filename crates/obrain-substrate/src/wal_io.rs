@@ -2795,6 +2795,11 @@ impl WalWriter {
             if pose == PoseTampon::DurableToujours {
                 guard.synchroniser(false)?;
                 self.fsyncs.fetch_add(1, Ordering::Relaxed);
+                // Ce fsync est fait sous `inner` : il couvre tout ce qui est
+                // écrit. Sans cette publication, l'oracle `octets_durables`
+                // restait à 0 en mode `Group` (obrain#120 point 6) : seul le
+                // compteur `fsyncs` bougeait.
+                self.marquer_tout_ecrit_durable();
             }
             return Ok(());
         }

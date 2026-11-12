@@ -1631,6 +1631,11 @@ const FICHIER_PROCEDURES: &str = "substrate.proccat";
 /// fichier, et rend une liste vide.
 const FICHIER_TYPES: &str = "substrate.typecat";
 
+/// Sérialise lire-modifier-réécrire de `substrate.typecat` dans le processus
+/// (un store par base, plusieurs bases possibles : le verrou est global, le
+/// coût nul — le DDL est rare).
+static VERROU_TYPECAT: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// Chantier SlotRemappable — adaptateur enrôlant la colonne de degrés
 /// totale (`substrate.degrees.node.u32`) détenue par le store dans le
 /// registre de remap du writer. Le handle ouvert porte l'état
@@ -1696,6 +1701,39 @@ pub trait StoreMutationObserver: Send + Sync {
     /// effacee (limite documentee) : l'observateur peut retirer le noeud de
     /// ses index. Defaut : sans effet.
     fn node_property_removed(&self, _id: obrain_common::types::NodeId, _key: &str) {}
+
+    /// (2026-11-12, câblage cognitif) Une propriété de NŒUD vient d'être
+    /// écrite, quel que soit son chemin (colonne vectorielle, blob, pages v2,
+    /// DashMap) et quelle que soit l'origine (API Rust, GQL `SET`/`CREATE`/
+    /// `MERGE`). Notifié APRÈS l'écriture ; pour un vecteur, en plus de
+    /// `vector_written`. Défaut : sans effet.
+    fn node_property_set(&self, _id: obrain_common::types::NodeId, _key: &str) {}
+
+    /// (2026-11-12, câblage cognitif) Même événement que `edge_created`, avec
+    /// le TYPE de l'arête : un observateur qui doit ignorer certains types
+    /// (les arêtes `SYNAPSE` que la cognition écrit elle-même) en a besoin.
+    /// Notifié juste après `edge_created`. Défaut : sans effet.
+    fn edge_created_typed(
+        &self,
+        _id: obrain_common::types::EdgeId,
+        _src: obrain_common::types::NodeId,
+        _dst: obrain_common::types::NodeId,
+        _edge_type: &str,
+        _epoch: u64,
+    ) {
+    }
+
+    /// (2026-11-12, câblage cognitif) Une arête VIVANTE vient d'être
+    /// supprimée (tombstone posé), avec ses extrémités et son type tels
+    /// qu'ils étaient avant la suppression. Défaut : sans effet.
+    fn edge_deleted(
+        &self,
+        _id: obrain_common::types::EdgeId,
+        _src: obrain_common::types::NodeId,
+        _dst: obrain_common::types::NodeId,
+        _edge_type: &str,
+    ) {
+    }
 }
 
 /// (feat conversations µs) Reverse-adjacence PART_OF : cible (slot de
@@ -4786,15 +4824,31 @@ impl SubstrateStore {
         self.substrate.lock().path().join(FICHIER_TYPES)
     }
 
-    /// Lit les types persistés. Une base sans fichier rend une liste vide
-    /// (aucune migration) ; une ligne illisible est IGNORÉE plutôt que fatale —
-    /// perdre un type dégrade une vérification de schéma, jamais l'ouverture.
+    /// Lit les types persistés pour l'HYDRATATION. Une base sans fichier rend
+    /// une liste vide (aucune migration) ; une ligne illisible est IGNORÉE
+    /// plutôt que fatale — perdre un type dégrade une vérification de schéma,
+    /// jamais l'ouverture. Pour RÉÉCRIRE le fichier, voir
+    /// [`Self::declarations_type_strict`] : on n'efface jamais ce qu'on n'a pas
+    /// su lire.
     pub fn declarations_type(&self) -> Vec<DeclarationType> {
-        let Ok(contenu) = std::fs::read_to_string(self.chemin_catalogue_types()) else {
-            return Vec::new();
+        self.declarations_type_strict().unwrap_or_else(|e| {
+            tracing::warn!(erreur = %e, "catalogue de types illisible — ignoré");
+            Vec::new()
+        })
+    }
+
+    /// Lit les types persistés ; ÉCHOUE sur un fichier illisible (erreur
+    /// d'E/S autre que « absent », contenu non UTF-8) ou sur une ligne mal
+    /// formée. Seule lecture sûre avant une réécriture : `declarer_type`
+    /// repartant d'une liste vide effacerait tous les autres types.
+    pub fn declarations_type_strict(&self) -> SubstrateResult<Vec<DeclarationType>> {
+        let contenu = match std::fs::read_to_string(self.chemin_catalogue_types()) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
         };
         let mut sorties = Vec::new();
-        for ligne in contenu.lines() {
+        for (n, ligne) in contenu.lines().enumerate() {
             let ligne = ligne.trim();
             if ligne.is_empty() || ligne.starts_with('#') {
                 continue;
@@ -4810,13 +4864,24 @@ impl SubstrateStore {
                         definition: definition.to_string(),
                     });
                 }
-                _ => tracing::warn!("declaration de type illisible — ignoree"),
+                _ => {
+                    return Err(SubstrateError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "substrate.typecat : la ligne {} est illisible — le fichier \
+                             n'est pas réécrit (il perdrait les autres types)",
+                            n + 1
+                        ),
+                    )));
+                }
             }
         }
-        sorties
+        Ok(sorties)
     }
 
-    /// Réécrit le fichier des types en entier, ATOMIQUEMENT (tmp + rename).
+    /// Réécrit le fichier des types en entier, ATOMIQUEMENT (tmp + rename),
+    /// puis fsync du RÉPERTOIRE : sans lui le rename lui-même peut se perdre
+    /// à une coupure, et la contrainte « créée » avec.
     fn ecrire_catalogue_types(&self, decls: &[DeclarationType]) -> SubstrateResult<()> {
         self.exiger_ecriture("l'écriture du catalogue de types")?;
         use std::io::Write as _;
@@ -4834,14 +4899,24 @@ impl SubstrateStore {
             f.sync_all()?;
         }
         std::fs::rename(&temporaire, &chemin)?;
+        #[cfg(unix)]
+        if let Some(dossier) = chemin.parent() {
+            std::fs::File::open(dossier)?.sync_all()?;
+        }
         Ok(())
     }
 
     /// Déclare (ou remplace) un type. Idempotent par `(genre, nom)` : l'ordre du
     /// fichier ne porte pas de sémantique, un `CREATE OR REPLACE` réécrit la
     /// même ligne.
+    ///
+    /// Lire-modifier-réécrire est SÉRIALISÉ (verrou du processus) : deux
+    /// déclarations simultanées ne se perdent pas l'une l'autre. Un fichier
+    /// illisible fait ÉCHOUER la déclaration au lieu d'être réécrit avec la
+    /// seule nouvelle ligne.
     pub fn declarer_type(&self, genre: &str, nom: &str, definition: &str) -> SubstrateResult<()> {
-        let mut decls = self.declarations_type();
+        let _verrou = VERROU_TYPECAT.lock();
+        let mut decls = self.declarations_type_strict()?;
         decls.retain(|d| !(d.genre == genre && d.nom == nom));
         decls.push(DeclarationType {
             genre: genre.to_string(),
@@ -4851,10 +4926,12 @@ impl SubstrateStore {
         self.ecrire_catalogue_types(&decls)
     }
 
-    /// Retire la déclaration d'un type. Idempotent.
+    /// Retire la déclaration d'un type. Idempotent. Même sérialisation et même
+    /// refus d'un fichier illisible que [`Self::declarer_type`].
     pub fn retirer_type(&self, genre: &str, nom: &str) -> SubstrateResult<()> {
         self.exiger_ecriture("le retrait d'un type déclaré")?;
-        let decls = self.declarations_type();
+        let _verrou = VERROU_TYPECAT.lock();
+        let decls = self.declarations_type_strict()?;
         let restantes: Vec<DeclarationType> = decls
             .iter()
             .filter(|d| !(d.genre == genre && d.nom == nom))
@@ -5502,10 +5579,30 @@ impl SubstrateStore {
         eid: obrain_common::types::EdgeId,
         src: obrain_common::types::NodeId,
         dst: obrain_common::types::NodeId,
+        edge_type: &str,
     ) {
         let epoch = self.epoque_courante.load(Ordering::Acquire);
         for observer in self.observateurs() {
             observer.edge_created(eid, src, dst, epoch);
+            observer.edge_created_typed(eid, src, dst, edge_type, epoch);
+        }
+    }
+
+    fn notify_node_property_set(&self, id: obrain_common::types::NodeId, key: &str) {
+        for observer in self.observateurs() {
+            observer.node_property_set(id, key);
+        }
+    }
+
+    fn notify_edge_deleted(
+        &self,
+        eid: obrain_common::types::EdgeId,
+        src: obrain_common::types::NodeId,
+        dst: obrain_common::types::NodeId,
+        edge_type: &str,
+    ) {
+        for observer in self.observateurs() {
+            observer.edge_deleted(eid, src, dst, edge_type);
         }
     }
 
@@ -12792,6 +12889,15 @@ impl SubstrateStore {
                 t1.elapsed().as_secs_f64()
             );
         }
+        // ── L'IMPORT EN LOT N'ALIMENTE PAS LES INDEX D'ÉGALITÉ ──
+        // Les pages sont posées directement (pas de `prop_index_insert`), et
+        // la zone persistée ne connaît pas ces nœuds. Un index bâti AVANT
+        // l'import ne borne donc plus les porteurs : on retire les marqueurs
+        // « bâti depuis v2 » et « couvert par la zone », et le prochain usage
+        // rebâtit l'index depuis les chaînes (qui, elles, portent tout).
+        // C'est la règle d'`index_borne_les_porteurs`, condition 4.
+        self.index_batis_depuis_v2.clear();
+        self.egalite_couverte.clear();
         Ok(ecrites)
     }
 
@@ -17170,6 +17276,21 @@ fn valeurs_egales_gql(a: &Value, b: &Value) -> bool {
     obrain_common::types::value_cmp::egalite_structurelle(a, b)
 }
 
+/// La clé d'index de `v` représente-t-elle EXACTEMENT sa classe d'égalité au
+/// sens du langage (`valeurs_egales_gql`) ? Vrai pour un booléen et pour une
+/// chaîne qui n'est pas une date-heure ; faux pour un entier (égal à un
+/// flottant entier, que l'index ne range pas) et pour une chaîne date-heure
+/// (égale à une autre graphie du même instant). Seul un décompte « exact » est
+/// une borne supérieure des porteurs, donc utilisable pour choisir la
+/// condition qui résout un `find_nodes_by_properties`.
+fn cle_index_exacte(v: &Value) -> bool {
+    match v {
+        Value::Bool(_) => true,
+        Value::String(s) => obrain_common::types::value_cmp::instant_de_chaine(s).is_none(),
+        _ => false,
+    }
+}
+
 fn index_value_key(v: &Value) -> Option<IndexValueKey> {
     match v {
         Value::Bool(b) => Some(IndexValueKey::Bool(*b)),
@@ -17236,6 +17357,63 @@ impl SubstrateStore {
             self.get_node_property(id, &PropertyKey::new(*k))
                 .is_some_and(|v| valeurs_egales_gql(&v, expected))
         })
+    }
+
+    /// LA RÈGLE, en un seul endroit : l'index d'égalité de `key` BORNE-t-il
+    /// les porteurs de `value` — tout nœud dont la valeur est égale à `value`
+    /// au sens du langage y figure-t-il ? Sinon, un jeu de candidats vide ou
+    /// partiel tiré de cet index ferait manquer un porteur, et une contrainte
+    /// d'unicité accepterait un doublon. Quatre conditions, toutes
+    /// nécessaires — chacune a eu son doublon prouvé par sonde :
+    ///
+    /// 1. **la classe d'égalité est la clé** (`cle_index_exacte`) : `5.0`
+    ///    n'est pas rangé avec `5`, ni `…+02:00` avec `…Z` ;
+    /// 2. **la valeur est écrite dans l'index quand elle est écrite dans le
+    ///    nœud** : une chaîne (ou des octets) de plus de 256 o part en colonne
+    ///    blob (`encode_blob_payload`), jamais dans l'index — ni à
+    ///    `set_node_property`, ni à l'import en lot, ni à la reconstruction
+    ///    depuis la zone v2 ;
+    /// 3. **la clé est enregistrée** : sans entrée dans `property_indexes`,
+    ///    aucune écriture n'alimente l'index (ni session, ni zone) ;
+    /// 4. **l'index est bâti** : sous zone v2, le marqueur « bâti depuis les
+    ///    chaînes » (posé APRÈS le remplissage, un index en construction n'est
+    ///    pas éligible) ou la couverture par la zone persistée ; l'import en
+    ///    lot, qui n'alimente pas les index, retire ces marqueurs.
+    ///
+    /// Toute autre réponse est « balayer le label » : O(label), toujours juste.
+    pub(crate) fn index_borne_les_porteurs(&self, key: &PropertyKey, value: &Value) -> bool {
+        cle_index_exacte(value)
+            && encode_blob_payload(value).is_none()
+            && self.property_indexes.contains_key(key)
+            && (self.props_zone.is_none()
+                || self.next_node_id.load(Ordering::Acquire) <= 1
+                || self.index_batis_depuis_v2.contains_key(key))
+    }
+
+    /// Taille BRUTE du jeu de candidats indexés pour `(property, value)` —
+    /// zone persistée (clé couverte) plus delta de session — SANS
+    /// revérification : c'est la taille de l'ensemble qu'`indexed_candidates`
+    /// relirait, pas son contenu. Sert à choisir la condition la plus
+    /// sélective d'un `find_nodes_by_properties` avant d'en matérialiser une.
+    /// `None` exactement quand `indexed_candidates` rendrait `None` (clé non
+    /// enregistrée, valeur non projetable, index globalement vide).
+    fn indexed_candidate_count(&self, property: &str, value: &Value) -> Option<usize> {
+        let key = PropertyKey::new(property);
+        let idx = self.property_indexes.get(&key)?;
+        let ik = index_value_key(value)?;
+        let session = idx.get(&ik).map_or(0, |s| s.len());
+        if let Some(pk) = self.egalite_couverte.get(&key).map(|e| *e.value())
+            && let Some(slots) = self
+                .index_egalite
+                .as_ref()
+                .and_then(|z| z.read().candidats(pk, Self::hachage_cle_egalite(&ik)))
+        {
+            return Some(slots.len() + session);
+        }
+        if idx.is_empty() {
+            return None;
+        }
+        Some(session)
     }
 
     /// Candidats indexés pour `(property, value)`, revérifiés (liveness +
@@ -20477,6 +20655,67 @@ impl GraphStore for SubstrateStore {
         Some(out)
     }
 
+    /// Recherche COMPLÈTE d'une contrainte d'unicité : les porteurs du label
+    /// dont les propriétés sont égales, au sens du langage, à TOUTES les
+    /// conditions.
+    ///
+    /// Une colonne ne résout par l'index que si `index_borne_les_porteurs`
+    /// le garantit ; à défaut, le balayage du label — O(label), toujours
+    /// juste. Chaque candidat est revérifié contre TOUTES les conditions par
+    /// l'égalité du langage.
+    fn find_nodes_by_properties_for_label(
+        &self,
+        label: &str,
+        conditions: &[(&str, Value)],
+    ) -> Vec<NodeId> {
+        // Candidates à la résolution par index : la classe d'égalité doit
+        // être la clé (`cle_index_exacte`) ET la valeur doit être de celles
+        // que l'index reçoit quand on les écrit. On bâtit leur index si
+        // besoin, PUIS on applique la règle complète, qui vérifie que l'index
+        // est effectivement bâti.
+        let eligibles: Vec<usize> = (0..conditions.len())
+            .filter(|&i| {
+                cle_index_exacte(&conditions[i].1)
+                    && encode_blob_payload(&conditions[i].1).is_none()
+            })
+            .collect();
+        if !eligibles.is_empty() {
+            let cles: Vec<&str> = eligibles.iter().map(|&i| conditions[i].0).collect();
+            self.assurer_index_bati_depuis_v2(&cles);
+        }
+        let exactes: Vec<usize> = eligibles
+            .into_iter()
+            .filter(|&i| {
+                self.index_borne_les_porteurs(&PropertyKey::new(conditions[i].0), &conditions[i].1)
+            })
+            .collect();
+        if !exactes.is_empty() {
+            let meilleure = exactes
+                .iter()
+                .filter_map(|&i| {
+                    self.indexed_candidate_count(conditions[i].0, &conditions[i].1)
+                        .map(|n| (n, i))
+                })
+                .min();
+            if let Some((_, i)) = meilleure
+                && let Some(hits) = self.indexed_candidates(conditions[i].0, &conditions[i].1)
+            {
+                let tous: Vec<(&str, Value)> =
+                    conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
+                return hits
+                    .into_iter()
+                    .filter(|id| self.node_matches_all_props(*id, &tous))
+                    .filter(|id| GraphStore::node_has_label(self, *id, label) == Some(true))
+                    .collect();
+            }
+        }
+        let tous: Vec<(&str, Value)> = conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
+        self.nodes_by_label(label)
+            .into_iter()
+            .filter(|id| self.node_matches_all_props(*id, &tous))
+            .collect()
+    }
+
     fn find_nodes_by_properties(&self, conditions: &[(&str, Value)]) -> Vec<NodeId> {
         // Contract (LpgStore parity): empty conditions match every live
         // node. T17e Phase 2: we must NOT iterate `node_properties` here
@@ -20508,7 +20747,42 @@ impl GraphStore for SubstrateStore {
         // T17b : si UNE des conditions porte sur une clé indexée, on prend
         // ses candidats (déjà revérifiés pour elle) et on ne vérifie que les
         // AUTRES conditions dessus — O(candidats) au lieu d'un scan complet.
-        for (prop, expected) in conditions {
+        //
+        // ── LA COLONNE LA PLUS SÉLECTIVE RÉSOUT, PAS LA PREMIÈRE DÉCLARÉE ──
+        // Prendre la première condition indexée faisait dépendre le coût de
+        // l'ORDRE DE DÉCLARATION : `UNIQUE (a, b)` avec `a` à deux valeurs
+        // relisait la moitié du label à chaque insertion (744 µs contre 25 µs
+        // pour `UNIQUE (b, a)`, 10 000 nœuds, et linéaire en N). On compte
+        // d'abord les candidats BRUTS de chaque condition indexée (sans les
+        // revérifier : la taille de l'ensemble, pas son contenu) et on
+        // matérialise le plus petit. Les autres conditions restent éprouvées
+        // sur chaque candidat retenu. En l'absence de décompte, l'ordre
+        // historique sert de repli.
+        let mut ordre: Vec<usize> = (0..conditions.len()).collect();
+        let meilleure = conditions
+            .iter()
+            .enumerate()
+            // Seules concourent les conditions dont la clé d'index couvre
+            // EXACTEMENT la classe d'égalité du langage : un booléen, ou une
+            // chaîne qui n'est pas une date-heure. Un entier est égal à un
+            // flottant entier (`5 = 5.0`) que l'index ne range pas, une chaîne
+            // date-heure à une autre graphie du même instant : leur décompte
+            // n'est PAS une borne supérieure (0 alors qu'un porteur égal
+            // existe), et le retenir rendait vide une recherche qui ne l'est
+            // pas — un doublon accepté.
+            .filter(|(_, (prop, expected))| {
+                self.index_borne_les_porteurs(&PropertyKey::new(*prop), expected)
+            })
+            .filter_map(|(i, (prop, expected))| {
+                self.indexed_candidate_count(prop, expected).map(|n| (n, i))
+            })
+            .min();
+        if let Some((_, i)) = meilleure {
+            ordre.retain(|&j| j != i);
+            ordre.insert(0, i);
+        }
+        for i in ordre {
+            let (prop, expected) = &conditions[i];
             if let Some(hits) = self.indexed_candidates(prop, expected) {
                 let owned: Vec<(&str, Value)> =
                     conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
@@ -23411,30 +23685,43 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Node creation --
     fn create_node(&self, labels: &[&str]) -> NodeId {
-        self.refuser_mutation_en_lecture_seule("create_node");
-        let id = self.allocate_node_id();
-        let bitset = self
-            .intern_labels_to_bitset(labels)
-            .expect("label registry overflow (>64 labels); step 3 lifts this");
-        let rec = NodeRecord {
-            label_bitset: bitset,
-            ..Default::default()
-        };
-        self.writer
-            .write_node(id.0 as u32, rec)
-            .expect("write_node failed — WAL append or mmap grow");
-        // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
-        // registry on demand; no DashMap to populate.
-        // T17h T1: live counter increments (total + per-label).
-        self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
-        self.incr_label_counts(bitset, 1);
-        // Naissance notee ICI, sur le chemin NON transactionnel : la moitie
-        // des appelants — dont `ObrainDB::create_node()` — n'ouvrent aucune
-        // transaction. Ne la noter que dans la variante versionnee laisserait
-        // ces noeuds sans date, donc reputes nes a l'epoque 0, donc visibles
-        // AVANT leur creation.
-        self.note_naissance_noeud(id);
-        self.notify_node_created(id);
+        self.creer_noeud(labels, false)
+    }
+
+    /// Création ATOMIQUE sous `kill -9` (obrain#120 pt 4) : le nœud et ses
+    /// propriétés forment une seule unité de rejeu. Voir `creer_noeud_atomique`.
+    fn create_node_with_props(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+    ) -> NodeId {
+        self.creer_noeud_atomique(labels, properties)
+    }
+
+    fn create_node_with_props_versioned(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> NodeId {
+        if transaction_id != TransactionId::SYSTEM {
+            // Transaction explicite : le nœud est déjà déclaré en attente
+            // (`TxNoeudEnAttente`) ; sans `TxCommit` le rejeu écarte le nœud
+            // ET ses propriétés. Rien à ajouter.
+            let id = self.create_node_versioned(labels, epoch, transaction_id);
+            obrain_common::utils::panne::point_creation_noeud(0);
+            for (rang, (k, v)) in properties.iter().enumerate() {
+                self.set_node_property(id, k.as_str(), v.clone());
+                obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
+            }
+            return id;
+        }
+        let id = self.creer_noeud_atomique(labels, properties);
+        if epoch.0 > 0 {
+            self.naissances_noeuds.insert(id, epoch.0);
+            self.note_mvcc_actif();
+        }
         id
     }
 
@@ -23542,7 +23829,7 @@ impl GraphStoreMut for SubstrateStore {
         // que l'arête (spec §4). Une arête neuve n'a pas encore de
         // propriétés : le volet DISPATCH vit dans les hooks de propriété.
         self.maintenance_arete_ajoutee(src.0 as u32, dst.0 as u32, edge_type_id);
-        self.notify_edge_created(id, src, dst);
+        self.notify_edge_created(id, src, dst, edge_type);
         id
     }
 
@@ -23744,6 +24031,13 @@ impl GraphStoreMut for SubstrateStore {
         // T5 : maintenance simpliciale incrémentale (spec §4) — cliques
         // mortes via l'incidence, bit CYCLIC, groupe DISPATCH recalculé.
         self.maintenance_arete_supprimee(src_slot, dst_slot, edge_type_id, ligne_dispatch);
+        let nom_type = self.resolve_edge_type_by_id(edge_type_id);
+        self.notify_edge_deleted(
+            id,
+            obrain_common::types::NodeId(u64::from(src_slot)),
+            obrain_common::types::NodeId(u64::from(dst_slot)),
+            &nom_type,
+        );
         true
     }
 
@@ -23786,6 +24080,7 @@ impl GraphStoreMut for SubstrateStore {
         if let Value::Vector(ref v) = value {
             self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
             self.notify_vector_written(id, key, v);
+            self.notify_node_property_set(id, key);
             return;
         }
         // T16.7 Step 4d: oversized `Value::String` / `Value::Bytes`
@@ -23796,6 +24091,7 @@ impl GraphStoreMut for SubstrateStore {
         // the original `Value` variant byte-exactly on the get side.
         if let Some(tagged) = encode_blob_payload(&value) {
             self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
+            self.notify_node_property_set(id, key);
             return;
         }
         // (2026-08-20) LA VALEUR NE VA PAS EN COLONNE BLOB — IL FAUT DONC
@@ -24005,6 +24301,7 @@ impl GraphStoreMut for SubstrateStore {
             && !self.dashmap_noeuds_hydratee.load(Ordering::Acquire)
             && self.property_indexes.is_empty()
         {
+            self.notify_node_property_set(id, key);
             return;
         }
         let pkey = PropertyKey::new(key);
@@ -24024,6 +24321,7 @@ impl GraphStoreMut for SubstrateStore {
             }
             self.prop_index_insert(&pkey, &value, id);
         }
+        self.notify_node_property_set(id, key);
     }
 
     fn set_edge_property(&self, id: EdgeId, key: &str, value: Value) {
@@ -24709,6 +25007,32 @@ impl Drop for SubstrateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cle_index_exacte` : seuls un booléen et une chaîne qui n'est pas une
+    /// date-heure ont une clé d'index qui couvre EXACTEMENT leur classe
+    /// d'égalité. Chaque branche est épinglée : un entier (égal à un flottant
+    /// entier non indexé), un flottant, une date-heure (chaîne ou typée) ne le
+    /// sont pas, et la recherche d'une contrainte les balaie.
+    #[test]
+    fn cle_index_exacte_couvre_exactement_la_classe_d_egalite() {
+        use obrain_common::types::{Date, Timestamp};
+        assert!(cle_index_exacte(&Value::Bool(true)));
+        assert!(cle_index_exacte(&Value::Bool(false)));
+        assert!(cle_index_exacte(&Value::from("ordinaire")));
+        assert!(cle_index_exacte(&Value::from("2026-11-11 10:00")));
+        assert!(!cle_index_exacte(&Value::Int64(5)));
+        assert!(!cle_index_exacte(&Value::Float64(5.0)));
+        assert!(!cle_index_exacte(&Value::Float64(1.5)));
+        assert!(!cle_index_exacte(&Value::from("2026-11-11T10:00:00Z")));
+        assert!(!cle_index_exacte(&Value::from("2026-11-11T12:00:00+02:00")));
+        assert!(!cle_index_exacte(&Value::Timestamp(Timestamp::from_secs(
+            1
+        ))));
+        assert!(!cle_index_exacte(&Value::Date(
+            Date::from_ymd(2026, 1, 1).unwrap()
+        )));
+        assert!(!cle_index_exacte(&Value::Null));
+    }
 
     /// T17k-opt — la sémantique LWW du repli `property_map_depuis_ops` : la
     /// DERNIÈRE opération d'une clef gagne (`None` = tombstone), quel que soit
@@ -38126,6 +38450,92 @@ mod sonde_v3_replay {
 }
 
 impl SubstrateStore {
+    fn creer_noeud(&self, labels: &[&str], en_vol: bool) -> NodeId {
+        self.refuser_mutation_en_lecture_seule("create_node");
+        let id = self.allocate_node_id();
+        let bitset = self
+            .intern_labels_to_bitset(labels)
+            .expect("label registry overflow (>64 labels); step 3 lifts this");
+        let rec = NodeRecord {
+            label_bitset: bitset,
+            ..Default::default()
+        };
+        // Déclaré en vol AVANT le `NodeInsert`, dans le même `write` : un arrêt
+        // ne laisse jamais un nœud non déclaré, et le coût est un appel système
+        // de moins qu'une déclaration séparée.
+        if en_vol {
+            self.writer
+                .write_node_precede(
+                    id.0 as u32,
+                    rec,
+                    WalPayload::TxNoeudEnAttente {
+                        tx: Self::tx_creation_auto(id),
+                        node_id: id.0 as u32,
+                    },
+                )
+                .expect("write_node failed — WAL append or mmap grow");
+        } else {
+            self.writer
+                .write_node(id.0 as u32, rec)
+                .expect("write_node failed — WAL append or mmap grow");
+        }
+        // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
+        // registry on demand; no DashMap to populate.
+        // T17h T1: live counter increments (total + per-label).
+        self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
+        self.incr_label_counts(bitset, 1);
+        // Naissance notee ICI, sur le chemin NON transactionnel : la moitie
+        // des appelants — dont `ObrainDB::create_node()` — n'ouvrent aucune
+        // transaction. Ne la noter que dans la variante versionnee laisserait
+        // ces noeuds sans date, donc reputes nes a l'epoque 0, donc visibles
+        // AVANT leur creation.
+        self.note_naissance_noeud(id);
+        self.notify_node_created(id);
+        id
+    }
+
+    /// Identifiant de la « transaction » privée d'une création auto-commit :
+    /// bit de poids fort levé (les `TransactionId` du gestionnaire n'y
+    /// montent jamais) + slot du nœud, donc unique entre pairs vivants.
+    fn tx_creation_auto(id: NodeId) -> u64 {
+        (1u64 << 63) | id.0
+    }
+
+    /// Crée un nœud et pose ses propriétés comme UNE unité de rejeu, sans
+    /// nouveau format disque (obrain#120 pt 4).
+    ///
+    /// Avant : `NodeInsert` puis un record WAL par propriété, liés par rien. Un
+    /// `kill -9` entre deux rejouait un nœud vivant portant une partie de ses
+    /// propriétés. Maintenant : `TxNoeudEnAttente` (déclaré avant le
+    /// `NodeInsert`), le nœud, les propriétés, puis `TxCommit` SANS
+    /// `FLAG_COMMIT` (pas de fsync de plus : la durabilité de l'auto-commit
+    /// reste celle des autres écritures). Le rejeu existant écarte (`NodeDelete`)
+    /// toute déclaration jamais scellée : le nœud existe entier ou pas du tout.
+    /// Sans propriétés il n'y a rien à lier : chemin inchangé.
+    fn creer_noeud_atomique(&self, labels: &[&str], properties: &[(PropertyKey, Value)]) -> NodeId {
+        if properties.is_empty() {
+            return self.creer_noeud(labels, false);
+        }
+        let id = self.creer_noeud(labels, true);
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (k, v)) in properties.iter().enumerate() {
+            self.set_node_property(id, k.as_str(), v.clone());
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
+        }
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: horodatage_micros(),
+            flags: 0,
+            payload: WalPayload::TxCommit {
+                tx: Self::tx_creation_auto(id),
+            },
+        };
+        if let Err(e) = self.writer.wal().append_encoded(&rec) {
+            tracing::error!(error = %e, "WAL : impossible de sceller la création du nœud");
+        }
+        id
+    }
+
     /// (2026-11-01, D-DUR) Déclare au journal qu'une entité appartient à une
     /// transaction encore ouverte. Sans ce record, un processus qui disparaît
     /// avec la transaction ouverte laisse l'entité PUBLIÉE à la réouverture.
