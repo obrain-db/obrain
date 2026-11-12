@@ -331,6 +331,77 @@ export function suite(Base) {
     assert.ok(String(e).length > 0, "message non vide");
   });
 
+  // ───────────── index : suppression et reconstruction ─────────────
+  test("index plein texte : supprimer, puis reconstruire depuis les données", () => {
+    const b = a(); if (!a_la_methode(b, "supprimer_index_texte")) return "ignoré : text-index absent";
+    b.creer_noeud(["Doc"], JSON.stringify({ corps: "le renard brun saute" }));
+    b.creer_index_texte("Doc", "corps");
+    assert.egal(JSON.parse(b.rechercher_texte("Doc", "corps", "renard", 5)).length, 1, "avant suppression");
+    assert.ok(b.supprimer_index_texte("Doc", "corps"), "l'index existait");
+    assert.egal(b.supprimer_index_texte("Doc", "corps"), false, "déjà retiré");
+    assert.leve(() => b.rechercher_texte("Doc", "corps", "renard", 5), "", "recherche sans index");
+    b.reconstruire_index_texte("Doc", "corps");
+    assert.egal(JSON.parse(b.rechercher_texte("Doc", "corps", "renard", 5)).length, 1, "après reconstruction");
+  });
+
+  test("reconstruire un index absent le crée depuis les données (pas d'erreur)", () => {
+    const b = a(); if (!a_la_methode(b, "reconstruire_index_texte")) return "ignoré : text-index absent";
+    b.creer_noeud(["Doc"], JSON.stringify({ corps: "le renard brun saute" }));
+    b.reconstruire_index_texte("Doc", "corps");
+    assert.egal(JSON.parse(b.rechercher_texte("Doc", "corps", "renard", 5)).length, 1, "index créé par la reconstruction");
+    assert.egal(b.supprimer_index_texte("Doc", "corps"), true, "il existe désormais");
+  });
+
+  test("index vectoriel : supprimer, puis reconstruire après changement d'embeddings", () => {
+    const b = a(); if (!a_la_methode(b, "supprimer_index_vectoriel")) return "ignoré : vector-index absent";
+    const id = b.creer_noeud(["V"], "{}"); b.definir_vecteur(id, "emb", new Float32Array([1, 0, 0]));
+    b.creer_index_vectoriel("V", "emb", 3, "cosine");
+    assert.ok(b.supprimer_index_vectoriel("V", "emb"), "l'index existait");
+    assert.egal(b.supprimer_index_vectoriel("V", "emb"), false, "déjà retiré");
+    b.definir_vecteur(id, "emb", new Float32Array([0, 1, 0]));
+    b.reconstruire_index_vectoriel("V", "emb");
+    const r = JSON.parse(b.rechercher_vecteur("V", "emb", new Float32Array([0, 1, 0]), 1));
+    assert.egal(r[0].noeud, id, "le vecteur reconstruit est trouvé");
+  });
+
+  // ───────────── langage avec paramètres, schéma, mémoire, import ─────────────
+  test("executer_langage_avec_parametres : GQL et Cypher, valeurs liées et non interprétées", () => {
+    const b = a(); if (!a_la_methode(b, "executer_langage_avec_parametres")) return "ignoré : cypher absent";
+    b.creer_noeud(["P"], JSON.stringify({ nom: "Alix" }));
+    b.creer_noeud(["P"], JSON.stringify({ nom: "Gus" }));
+    const c = JSON.parse(b.executer_langage_avec_parametres("cypher",
+      "MATCH (p:P) WHERE p.nom = $n RETURN p.nom AS nom", '{"n":"Alix"}'));
+    assert.profond(c.lignes, [["Alix"]], "cypher");
+    const g = JSON.parse(b.executer_langage_avec_parametres("gql",
+      "MATCH (p:P) WHERE p.nom = $n RETURN p.nom AS nom", '{"n":"Gus\' OR 1=1 --"}'));
+    assert.egal(g.lignes.length, 0, "la valeur hostile reste une valeur");
+    assert.leve(() => b.executer_langage_avec_parametres("inconnu", "RETURN 1", "{}"), "", "langage inconnu");
+  });
+
+  test("schema et memoire : JSON exploitable depuis le navigateur", () => {
+    const b = a(); if (!a_la_methode(b, "schema")) return "ignoré : schéma absent";
+    b.creer_noeud(["Personne"], JSON.stringify({ nom: "Alix" }));
+    assert.ok(typeof JSON.parse(b.schema()) === "object", "schéma : objet JSON");
+    assert.ok(typeof JSON.parse(b.memoire()) === "object", "mémoire : objet JSON");
+    b.vider_cache_plans();
+    assert.egal(JSON.parse(b.executer("MATCH (p:Personne) RETURN p.nom AS nom")).lignes[0][0], "Alix", "requête après vidage");
+  });
+
+  test("importer_noeuds : compte, propriétés, puis erreur sans écriture partielle", () => {
+    const b = a();
+    assert.egal(b.importer_noeuds("Personne", '[{"nom":"Alix","age":30},{"nom":"Gus","age":25}]'), 2, "deux nœuds");
+    assert.profond(JSON.parse(b.executer("MATCH (p:Personne) RETURN p.age AS age ORDER BY age")).lignes, [[25], [30]], "propriétés typées");
+    assert.leve(() => b.importer_noeuds("Personne", '[{"nom":"X"}, "pas un objet"]'), "ligne 1", "ligne invalide");
+    assert.egal(b.noeuds(), 2, "rien n'a été écrit par le lot invalide");
+  });
+
+  test("importer_noeuds : entrée non tableau → erreur, pas de trappe", () => {
+    const b = a();
+    assert.leve(() => b.importer_noeuds("Personne", '{"nom":"Alix"}'), "", "objet au lieu d'un tableau");
+    assert.leve(() => b.importer_noeuds("Personne", "[[1,2]"), "", "JSON cassé");
+    assert.egal(b.noeuds(), 0, "la base reste utilisable");
+  });
+
   test("persistance : persister une base en mémoire est une erreur, pas une trappe", () => {
     const b = a();
     if (typeof b.persister !== "function") return "ignoré : persistance absente";

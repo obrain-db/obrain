@@ -159,6 +159,22 @@ impl Base {
         r.map(|r| resultat_json(&r.columns, &r.rows)).map_err(err)
     }
 
+    /// Comme `executer_langage`, avec paramètres : `parametres_json` est un objet
+    /// JSON `{"nom": valeur}`. Les langages sans paramètres lèvent une erreur.
+    pub fn executer_langage_avec_parametres(
+        &self,
+        langage: &str,
+        requete: &str,
+        parametres_json: &str,
+    ) -> Result<String, JsValue> {
+        let p = parametres(parametres_json)?;
+        self.db
+            .session()
+            .execute_language(requete, langage, Some(p))
+            .map(|r| resultat_json(&r.columns, &r.rows))
+            .map_err(err)
+    }
+
     /// Nombre de nœuds.
     pub fn noeuds(&self) -> usize {
         self.db.node_count()
@@ -205,6 +221,25 @@ impl Base {
         self.db.create_text_index(etiquette, propriete).map_err(err)
     }
 
+    /// Retire l'index plein texte. Rend `true` s'il existait.
+    #[cfg(feature = "text-index")]
+    pub fn supprimer_index_texte(&self, etiquette: &str, propriete: &str) -> bool {
+        self.db.drop_text_index(etiquette, propriete)
+    }
+
+    /// Reconstruit l'index plein texte depuis les données vivantes. S'il est absent, il est
+    /// créé (jamais d'erreur pour ce seul motif).
+    #[cfg(feature = "text-index")]
+    pub fn reconstruire_index_texte(
+        &self,
+        etiquette: &str,
+        propriete: &str,
+    ) -> Result<(), JsValue> {
+        self.db
+            .rebuild_text_index(etiquette, propriete)
+            .map_err(err)
+    }
+
     /// Recherche plein texte : `[{"noeud": id, "score": s}]`.
     #[cfg(feature = "text-index")]
     pub fn rechercher_texte(
@@ -244,6 +279,26 @@ impl Base {
                 None,
                 None,
             )
+            .map_err(err)
+    }
+
+    /// Retire l'index vectoriel. Rend `true` s'il existait.
+    #[cfg(feature = "vector-index")]
+    pub fn supprimer_index_vectoriel(&self, etiquette: &str, propriete: &str) -> bool {
+        self.db.drop_vector_index(etiquette, propriete)
+    }
+
+    /// Reconstruit l'index vectoriel. La dimension est relue des données : utile après
+    /// une migration d'embeddings. S'il est absent, il est créé ; erreur si aucun vecteur
+    /// n'existe pour en déduire la dimension.
+    #[cfg(feature = "vector-index")]
+    pub fn reconstruire_index_vectoriel(
+        &self,
+        etiquette: &str,
+        propriete: &str,
+    ) -> Result<(), JsValue> {
+        self.db
+            .rebuild_vector_index(etiquette, propriete)
             .map_err(err)
     }
 
@@ -302,6 +357,50 @@ impl Base {
                 .collect(),
         )
         .to_string())
+    }
+
+    /// Schéma observé (étiquettes, types de relations, index) : JSON.
+    pub fn schema(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.db.schema()).map_err(err)
+    }
+
+    /// Empreinte mémoire détaillée de la base : JSON.
+    pub fn memoire(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.db.memory_usage()).map_err(err)
+    }
+
+    /// Vide le cache des plans de requête. Sans effet sur les résultats.
+    pub fn vider_cache_plans(&self) {
+        self.db.clear_plan_cache();
+    }
+
+    /// Importe un tableau JSON d'objets comme nœuds d'étiquette `etiquette`. Rend le nombre
+    /// de nœuds créés. Le lot entier est validé avant la première écriture : une ligne
+    /// invalide n'écrit rien. Les arêtes s'écrivent en GQL (`MATCH ... CREATE`).
+    pub fn importer_noeuds(&self, etiquette: &str, lignes_json: &str) -> Result<u32, JsValue> {
+        let v: serde_json::Value = serde_json::from_str(lignes_json).map_err(err)?;
+        let serde_json::Value::Array(lignes) = v else {
+            return Err(err("les lignes doivent être un tableau JSON d'objets"));
+        };
+        let mut lots = Vec::with_capacity(lignes.len());
+        for (i, ligne) in lignes.iter().enumerate() {
+            let serde_json::Value::Object(o) = ligne else {
+                return Err(err(format!("ligne {i} : objet JSON attendu")));
+            };
+            lots.push(
+                o.iter()
+                    .map(|(k, v)| (k.clone(), json_vers_valeur(v)))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let n = lots.len();
+        for props in lots {
+            let id = self.db.create_node(&[etiquette]);
+            for (k, v) in props {
+                self.db.set_node_property(id, &k, v);
+            }
+        }
+        u32::try_from(n).map_err(err)
     }
 
     /// Compteurs de requêtes : `{"requetes": n, "erreurs": n}`.
