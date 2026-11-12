@@ -33,7 +33,7 @@ impl ObrainDatabase {
     /// Rend le bail d'écriture s'il est encore tenu (idempotent).
     pub(crate) fn rendre_bail(&self) {
         if let Some(chemin) = self.bail.lock().take() {
-            crate::bail::rendre(&chemin);
+            obrain_bindings_common::bail::rendre(&chemin);
         }
     }
 }

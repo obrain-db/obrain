@@ -134,7 +134,7 @@ pub extern "C" fn obrain_open_write(path: *const c_char) -> *mut ObrainDatabase 
             return std::ptr::null_mut();
         }
     }
-    let bail = match crate::bail::prendre(chemin) {
+    let bail = match obrain_bindings_common::bail::prendre(chemin) {
         Ok(bail) => bail,
         Err(message) => {
             set_last_error(&message);
@@ -144,7 +144,7 @@ pub extern "C" fn obrain_open_write(path: *const c_char) -> *mut ObrainDatabase 
     match ObrainDB::open_shared_write(chemin) {
         Ok(db) => Box::into_raw(Box::new(ObrainDatabase::new(db, Some(bail)))),
         Err(e) => {
-            crate::bail::rendre(&bail);
+            obrain_bindings_common::bail::rendre(&bail);
             set_error(&e);
             std::ptr::null_mut()
         }

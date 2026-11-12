@@ -17,6 +17,9 @@ obrain-common.workspace = true
 
 serde_json.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [features]
 default = ["embedded"]
 gql = ["obrain-engine/gql"]
