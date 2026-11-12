@@ -6,7 +6,6 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
-<<<<<<< HEAD
 ### Durabilité des valeurs longues (obrain#120)
 
 - Une valeur de plus de 256 octets (chaîne, octets, routée en colonne blob) n'était
@@ -40,8 +39,6 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   s'arrête à la première comme sur une frontière de crash. Ne pas rétrograder
   après écriture.
 
-||||||| parent of c9e20441 (fix(contraintes): relecture de #99 — SET/ON MATCH contrôlés sur le tuple, DDL sérialisé, types implicites, typecat strict)
-=======
 ### Contraintes d'unicité composites (PR #99) — changements visibles
 
 - **`UNIQUE (a, b)` porte sur le tuple**, pas sur chaque colonne (jusqu'ici : « a unique ET b
@@ -95,7 +92,6 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   écrit, nœud mis à jour à exclure) ; nouvelle méthode `unique_constrained_properties(labels)`
   (défaut : aucune). Tout implémenteur externe doit s'adapter.
 
->>>>>>> c9e20441 (fix(contraintes): relecture de #99 — SET/ON MATCH contrôlés sur le tuple, DDL sérialisé, types implicites, typecat strict)
 ### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
 
 - Interblocage déterministe de `CALL` cognitif `bootstrap` (`create_synapse_slots_batch`
