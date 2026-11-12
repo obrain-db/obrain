@@ -103,6 +103,14 @@ cargo add obrain --features cognitive       # moteur : énergie, synapses, UDF, 
 cargo add obrain --features cognitive-full  # + detect_gaps, synthesize, engrams, décision
 ```
 
+**Opt-in.** Ouvrir une base (`ObrainDB::open_substrate`, `new_in_memory`) ne lance **aucune** tâche cognitive : énergie et synapses restent à zéro, comme sans la feature. Pour que chaque mutation alimente la couche, ouvrir la base en mode observé :
+
+```rust
+let db = obrain::ObrainDB::open_substrate_observed("./ma_base")?; // ou new_in_memory_observed()
+```
+
+Le mode observé lance un runtime tokio dédié (1 worker) si aucun n'est courant et une tâche de vidage ; la co-activation passe en `edges`. Attention : en mode observé, les écritures de la couche dans le journal (WAL) sont asynchrones et non synchronisées : ne pas l'utiliser pour des données devant survivre à un crash avant la règle de durabilité correspondante.
+
 ```sql
 CALL obrain.cognitive.spread([0], {hops: 2})                 -- activation propagée depuis un nœud
 CALL obrain.cognitive.distill({min_weight: 0.1})             -- connexions synaptiques fortes
@@ -111,7 +119,7 @@ MATCH (n) RETURN obrain.risk(id(n)) AS risk ORDER BY risk DESC LIMIT 10
 MATCH (n:Person {name: 'Alix'}) RETURN obrain.synapses(id(n)) AS connections
 ```
 
-Ces appels sont exécutés par `readme_examples.rs` sous `--features cognitive` (module `cognitif`). Documentation du modèle : `crates/obrain-cognitive`.
+Ces appels sont exécutés par `readme_examples.rs` sous `--features cognitive` (module `cognitif`) ; ce test vérifie qu'ils ne renvoient pas d'erreur, pas leurs valeurs. Documentation du modèle : `crates/obrain-cognitive`.
 
 ## Performance
 
