@@ -146,8 +146,8 @@ impl VectorZoneMap {
 
                 // Bounding box pruning: compute minimum possible distance to bounding box
                 let box_dist = self.min_distance_to_box(query);
-                // `!(a > b)` et non `a <= b` : sur NaN, la garde ne prune pas (comportement inchangé).
-                !(box_dist > threshold)
+                // Élagage seulement si box_dist > threshold ; sur NaN (partial_cmp = None) on ne prune pas.
+                !matches!(box_dist.partial_cmp(&threshold), Some(std::cmp::Ordering::Greater))
             }
             DistanceMetric::Cosine => {
                 // For cosine, we use angular bounds
