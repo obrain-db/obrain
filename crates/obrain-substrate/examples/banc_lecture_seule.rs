@@ -134,7 +134,19 @@ fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str, nommes: Option<u6
 
     let s = SubstrateStore::open_read_only(dossier).expect("ouverture en lecture seule");
     let rss_ouvert_mo = rss_ko() as f64 / 1024.0;
+    // Coût de la PREMIÈRE lecture de compteurs et de degrés : sur la branche qui
+    // diffère les vérifications, c'est ici qu'elles se paient.
+    let t = Instant::now();
     let n = s.node_count() as u64;
+    let premier_compte_ms = t.elapsed().as_secs_f64() * 1e3;
+    let t = Instant::now();
+    let degre_2 = s.out_degree(NodeId(2));
+    let premier_degre_ms = t.elapsed().as_secs_f64() * 1e3;
+    // Les arêtes de la fabrication pointent vers le PRÉCÉDENT : le nœud 1 n'a pas
+    // d'arête sortante et une entrante, le nœud 2 une sortante.
+    assert_eq!(s.out_degree(NodeId(1)), 0, "degré sortant du nœud 1");
+    assert_eq!(s.in_degree(NodeId(1)), 1, "degré entrant du nœud 1");
+    assert_eq!(degre_2, 1, "degré sortant du nœud 2");
 
     const LOT: usize = 1000;
     const LOTS: usize = 400;
@@ -183,7 +195,7 @@ fn mesurer(dossier: &Path, ouvertures: usize, etiquette: &str, nommes: Option<u6
     );
     println!(
         "{etiquette}\t{n}\t{ouv_med:.2}\t{ouv_p99:.2}\t{rss_ouvert_mo:.0}\t{rss_fin_mo:.0}\t\
-         {id_med:.0}\t{id_p99:.0}\t{idx_med:.0}\t{idx_p99:.0}\t{index_ms:.1}\t{min_par_ouv:.0}\t{maj_par_ouv:.1}"
+         {id_med:.0}\t{id_p99:.0}\t{idx_med:.0}\t{idx_p99:.0}\t{index_ms:.1}\t{min_par_ouv:.0}\t{maj_par_ouv:.1}\t{premier_compte_ms:.2}\t{premier_degre_ms:.2}"
     );
 }
 
