@@ -27,11 +27,20 @@ fn flush_wal_en_mode_group_avance_la_ligne_durable() {
     db.flush_wal().unwrap();
     let durable = db.wal_octets_durables().unwrap();
     let fin = taille_wal(&base);
-    eprintln!("MESURE group: durable={durable} fin_wal={fin} fsyncs={}->{}",
-        fsyncs_avant, db.wal_fsyncs().unwrap());
+    eprintln!(
+        "MESURE group: durable={durable} fin_wal={fin} fsyncs={}->{}",
+        fsyncs_avant,
+        db.wal_fsyncs().unwrap()
+    );
     assert!(fin > 0, "des commits ont dû écrire dans le WAL");
-    assert!(db.wal_fsyncs().unwrap() > fsyncs_avant, "flush_wal doit fsyncer");
-    assert!(durable > 0, "oracle muet : durable=0 après flush_wal (fin_wal={fin})");
+    assert!(
+        db.wal_fsyncs().unwrap() > fsyncs_avant,
+        "flush_wal doit fsyncer"
+    );
+    assert!(
+        durable > 0,
+        "oracle muet : durable=0 après flush_wal (fin_wal={fin})"
+    );
     assert!(durable >= fin, "ligne durable {durable} < fin du WAL {fin}");
 
     // Tampon vide : un second flush_wal ne doit pas faire reculer la ligne.
