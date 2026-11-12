@@ -1014,6 +1014,61 @@ impl Session {
         Ok(())
     }
 
+    /// Erreur typée rendue à toute écriture tentée sur une base ouverte en
+    /// lecture seule (`ObrainDB::open_read_only`, `Config::read_only`).
+    fn erreur_lecture_seule() -> obrain_common::utils::error::Error {
+        obrain_common::utils::error::Error::Transaction(
+            obrain_common::utils::error::TransactionError::ReadOnly,
+        )
+    }
+
+    /// GARDE UNIQUE de la lecture seule au niveau plan : refuse, par une erreur
+    /// typée [`TransactionError::ReadOnly`], tout plan qui écrit. La
+    /// classification prend le CATALOGUE en compte (`mutations_avec`), donc une
+    /// procédure de lecture reste permise et une procédure utilisateur ou
+    /// d'écriture est refusée. Ne repose sur aucun filtre lexical.
+    fn refuser_mutation_en_lecture_seule(
+        &self,
+        plan: &crate::query::plan::LogicalPlan,
+    ) -> Result<()> {
+        if *self.read_only_tx.lock() && plan.root.mutations_avec(Some(self.catalog.as_ref())) {
+            return Err(Self::erreur_lecture_seule());
+        }
+        Ok(())
+    }
+
+    /// Garde de lecture seule pour un TEXTE GQL traité hors `execute` (chemin
+    /// avec paramètres, qui délègue directement au processeur) : traduit le
+    /// texte et applique la même garde plan / DDL.
+    fn refuser_texte_gql_en_lecture_seule(&self, query: &str) -> Result<()> {
+        use crate::query::translators::gql;
+        if !*self.read_only_tx.lock() {
+            return Ok(());
+        }
+        match gql::translate_full(query)? {
+            gql::GqlTranslationResult::SchemaCommand(_) => Err(Self::erreur_lecture_seule()),
+            gql::GqlTranslationResult::Plan(plan) => self.refuser_mutation_en_lecture_seule(&plan),
+            gql::GqlTranslationResult::SessionCommand(_) => Ok(()),
+        }
+    }
+
+    /// Même garde pour un texte Cypher (chemin avec paramètres).
+    #[cfg(feature = "cypher")]
+    fn refuser_texte_cypher_en_lecture_seule(&self, query: &str) -> Result<()> {
+        use crate::query::translators::cypher;
+        if !*self.read_only_tx.lock() {
+            return Ok(());
+        }
+        match cypher::translate_full(query)? {
+            cypher::CypherTranslationResult::SchemaCommand(_) => Err(Self::erreur_lecture_seule()),
+            cypher::CypherTranslationResult::Plan(_) => {
+                let plan = cypher::translate(query)?;
+                self.refuser_mutation_en_lecture_seule(&plan)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Executes a session or transaction command, returning an empty result.
     fn execute_session_command(
         &self,
@@ -2812,12 +2867,7 @@ impl Session {
                 return self.execute_schema_command(cmd);
             }
             gql::GqlTranslationResult::Plan(plan) => {
-                // Block mutations in read-only transactions
-                if *self.read_only_tx.lock() && plan.root.has_mutations() {
-                    return Err(obrain_common::utils::error::Error::Transaction(
-                        obrain_common::utils::error::TransactionError::ReadOnly,
-                    ));
-                }
+                self.refuser_mutation_en_lecture_seule(&plan)?;
                 plan
             }
         };
@@ -2851,15 +2901,10 @@ impl Session {
         use crate::query::Executor;
         let active = self.active_store();
 
-        // ── CHEMIN CACHE-HIT : le parse a été sauté, donc le garde-fou
-        //    « mutation en tx read-only » du chemin normal (match Plan)
-        //    n'a pas tourné. On le reproduit ici pour les DEUX chemins
-        //    (sur miss il est redondant avec le match, mais inoffensif).
-        if *self.read_only_tx.lock() && optimized_plan.root.has_mutations() {
-            return Err(obrain_common::utils::error::Error::Transaction(
-                obrain_common::utils::error::TransactionError::ReadOnly,
-            ));
-        }
+        // ── CHEMIN CACHE-HIT : le parse a été sauté, donc la garde du
+        //    chemin normal n'a pas tourné. La garde de lecture seule est
+        //    rejouée ici pour les DEUX chemins (redondante sur miss).
+        self.refuser_mutation_en_lecture_seule(&optimized_plan)?;
 
         // EXPLAIN: annotate pushdown hints and return the plan tree
         if optimized_plan.explain {
@@ -3127,6 +3172,7 @@ impl Session {
         params: std::collections::HashMap<String, Value>,
     ) -> Result<QueryResult> {
         self.require_lpg("GQL")?;
+        self.refuser_texte_gql_en_lecture_seule(query)?;
         self.note_requete_pour_audit(query);
 
         use crate::query::processor::{QueryLanguage, QueryProcessor};
@@ -3189,17 +3235,13 @@ impl Session {
             Executor, binder::Binder, cache::CacheKey, optimizer::Optimizer,
             processor::QueryLanguage, translators::cypher,
         };
-        use obrain_common::utils::error::{Error as ObrainError, QueryError, QueryErrorKind};
 
         // Handle schema DDL and SHOW commands before the normal query path
         let translation = cypher::translate_full(query)?;
         match translation {
             cypher::CypherTranslationResult::SchemaCommand(cmd) => {
                 if *self.read_only_tx.lock() {
-                    return Err(ObrainError::Query(QueryError::new(
-                        QueryErrorKind::Semantic,
-                        "Cannot execute schema DDL in a read-only transaction",
-                    )));
+                    return Err(Self::erreur_lecture_seule());
                 }
                 return self.execute_schema_command(cmd);
             }
@@ -3244,6 +3286,11 @@ impl Session {
 
             plan
         };
+
+        // Garde de lecture seule, avant tout chemin (EXPLAIN compris) : un
+        // plan qui écrit ne doit jamais atteindre le store d'une base ouverte
+        // en lecture seule.
+        self.refuser_mutation_en_lecture_seule(&optimized_plan)?;
 
         // Resolve the active store for query execution
         let active = self.active_store();
@@ -3782,6 +3829,7 @@ impl Session {
                     #[cfg(all(feature = "metrics", not(target_arch = "wasm32")))]
                     let start_time = Instant::now();
 
+                    self.refuser_texte_cypher_en_lecture_seule(query)?;
                     let has_mutations = Self::query_looks_like_mutation(query);
                     let active = self.active_store();
                     let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
