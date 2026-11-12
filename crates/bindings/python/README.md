@@ -38,9 +38,16 @@ ro.close()
 
 | Appel | Mode | Comportement |
 | ----- | ---- | ------------ |
+| `ObrainDB()` | mémoire | base éphémère, lecture et écriture ; pas de fichier, pas de bail |
+| `ObrainDB(path)` | lecture seule | même comportement que `open(path)` ; sans bail |
 | `ObrainDB.open(path)` | lecture seule | erreur si la base n'existe pas ; rien n'est créé ni modifié |
 | `ObrainDB.open_read_only(path)` | lecture seule | synonyme de `open` |
 | `ObrainDB.open_write(path)` | écriture | crée la base si absente ; prend le **bail d'écriture** |
+
+**Lecture seule par défaut :** tout chemin passé au constructeur ou à `open` ouvre
+la base en lecture seule. Une écriture (`execute`, `create_node`, transaction en
+écriture…) lève `RuntimeError` (« read-only »). Pour écrire sur une base persistante,
+ouvrez-la explicitement avec `open_write`.
 
 Le bail : un second `open_write` sur la même base, dans le même processus, lève
 `RuntimeError` (« bail d'écriture déjà tenu ») tant que le premier handle, et
@@ -53,11 +60,10 @@ ses transactions, ne sont pas fermés (`close()`) ou détruits.
   processus, seul le verrou partagé du substrat s'applique ; un seul processus
   écrivain par base relève du déploiement. Voir `crates/bindings/c/README.md`,
   section « Bail ».
-- **Lecture seule par défaut.** `open` et `open_read_only` refusent toute
-  écriture (`OBRAIN-T003`).
-- **`ObrainDB(path)` n'est pas soumis au bail.** Le constructeur avec chemin
-  ouvre en écriture sans bail ; utilisez `open_write` pour écrire avec le bail.
-  (Point ouvert, à trancher : voir la PR.)
+- **Lecture seule par défaut.** `ObrainDB(path)`, `open` et `open_read_only`
+  refusent toute écriture (`OBRAIN-T003`).
+- **Le bail ne concerne que `open_write`.** `ObrainDB(path)` n'en prend pas : il
+  ouvre en lecture seule, comme `open`.
 - **Vecteurs.** Une liste GQL `[1.0, 0.0]` n'est pas un vecteur indexable ; écrivez
   les embeddings avec `create_node` ou `set_node_property`.
 - **`CALL obrain.hybrid_search` (GQL)** dépend de la PR #125, non fusionnée.

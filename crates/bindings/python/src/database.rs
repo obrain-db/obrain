@@ -157,8 +157,9 @@ impl AsyncQueryResultIter {
 
 /// Your connection to a Obrain database.
 ///
-/// Create one with `ObrainDB()` for in-memory storage (fast, temporary) or
-/// `ObrainDB("path/to/db")` for persistent storage (survives restarts).
+/// Create one with `ObrainDB()` for in-memory storage (fast, temporary), or
+/// open an existing store with `ObrainDB.open("path/to/db")` (read-only) or
+/// `ObrainDB.open_write("path/to/db")` (writer, with the write lease).
 /// Then use [`execute()`](Self::execute) to run GQL queries.
 ///
 /// Unlike the Rust API (which uses `db.session()` for query execution),
@@ -203,6 +204,22 @@ impl Drop for WriteLease {
 }
 
 impl PyObrainDB {
+    /// Accès en écriture à la base : refuse en `RuntimeError` typé si le handle
+    /// est en lecture seule (`ObrainDB(path)`, `open`), au lieu de laisser le
+    /// substrat paniquer. Toute méthode qui modifie la base passe par ici.
+    fn ecriture(&self) -> PyResult<parking_lot::RwLockReadGuard<'_, ObrainDB>> {
+        let db = self.inner.read();
+        if db.is_read_only() {
+            return Err(PyObrainError::Database(
+                "read-only database: this handle cannot write; open the store with \
+                 ObrainDB.open_write(path) to modify it"
+                    .to_string(),
+            )
+            .into());
+        }
+        Ok(db)
+    }
+
     /// Converts an optional Python dict of property filters to a Rust HashMap.
     fn convert_filters(
         filters: Option<&Bound<'_, pyo3::types::PyDict>>,
@@ -256,16 +273,22 @@ impl PyObrainDB {
 
 #[pymethods]
 impl PyObrainDB {
-    /// Creates a database. Pass a path for persistence, or omit for in-memory.
+    /// Crée une base en mémoire (sans chemin), ou ouvre une base existante en
+    /// **lecture seule** (avec chemin, décision D4).
+    ///
+    /// Avec un chemin, le constructeur se comporte comme `open` : erreur si la
+    /// base n'existe pas, aucune écriture possible, aucun bail. Pour écrire sur
+    /// une base persistante, utilisez `open_write`.
     ///
     /// Examples:
-    ///     db = ObrainDB()           # In-memory (fast, temporary)
-    ///     db = ObrainDB("./mydb")   # Persistent (survives restarts)
+    ///     db = ObrainDB()                  # En mémoire (rapide, temporaire)
+    ///     db = ObrainDB("./mydb")          # Lecture seule (équivalent à open)
+    ///     db = ObrainDB.open_write("./mydb")  # Écriture, avec bail
     #[new]
     #[pyo3(signature = (path=None))]
     fn new(path: Option<String>) -> PyResult<Self> {
         let config = if let Some(p) = path {
-            Config::persistent(p)
+            Config::read_only(p)
         } else {
             Config::in_memory()
         };
@@ -554,7 +577,7 @@ impl PyObrainDB {
         labels: Vec<String>,
         properties: Option<&Bound<'_, pyo3::types::PyDict>>,
     ) -> PyResult<PyNode> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
 
         // Convert labels from Vec<String> to Vec<&str>
         let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
@@ -599,7 +622,7 @@ impl PyObrainDB {
         edge_type: String,
         properties: Option<&Bound<'_, pyo3::types::PyDict>>,
     ) -> PyResult<PyEdge> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         let src = NodeId(source_id);
         let dst = NodeId(target_id);
 
@@ -899,13 +922,13 @@ impl PyObrainDB {
 
     /// Delete a node by ID.
     fn delete_node(&self, id: u64) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.delete_node(NodeId(id)))
     }
 
     /// Delete an edge by ID.
     fn delete_edge(&self, id: u64) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.delete_edge(EdgeId(id)))
     }
 
@@ -922,7 +945,7 @@ impl PyObrainDB {
         key: &str,
         value: &Bound<'_, pyo3::prelude::PyAny>,
     ) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         let val = PyValue::from_py(value)?;
         db.set_node_property(NodeId(node_id), key, val);
         Ok(())
@@ -939,7 +962,7 @@ impl PyObrainDB {
     /// db.add_node_label(alix.id, "Employee")  # Now has Person and Employee
     /// ```
     fn add_node_label(&self, node_id: u64, label: &str) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.add_node_label(NodeId(node_id), label))
     }
 
@@ -953,7 +976,7 @@ impl PyObrainDB {
     /// db.remove_node_label(alix.id, "Contractor")  # Remove Contractor label
     /// ```
     fn remove_node_label(&self, node_id: u64, label: &str) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.remove_node_label(NodeId(node_id), label))
     }
 
@@ -985,7 +1008,7 @@ impl PyObrainDB {
         key: &str,
         value: &Bound<'_, pyo3::prelude::PyAny>,
     ) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         let val = PyValue::from_py(value)?;
         db.set_edge_property(EdgeId(edge_id), key, val);
         Ok(())
@@ -1001,7 +1024,7 @@ impl PyObrainDB {
     ///     print("Property removed")
     /// ```
     fn remove_node_property(&self, node_id: u64, key: &str) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.remove_node_property(NodeId(node_id), key))
     }
 
@@ -1015,7 +1038,7 @@ impl PyObrainDB {
     ///     print("Property removed")
     /// ```
     fn remove_edge_property(&self, edge_id: u64, key: &str) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.remove_edge_property(EdgeId(edge_id), key))
     }
 
@@ -1038,7 +1061,7 @@ impl PyObrainDB {
     /// nodes = db.find_nodes_by_property("email", "alix@example.com")
     /// ```
     fn create_property_index(&self, property: &str) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         db.create_property_index(property);
         Ok(())
     }
@@ -1068,7 +1091,7 @@ impl PyObrainDB {
         m: Option<usize>,
         ef_construction: Option<usize>,
     ) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         db.create_vector_index(label, property, dimensions, metric, m, ef_construction)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
@@ -1083,9 +1106,9 @@ impl PyObrainDB {
     ///
     /// Example:
     ///     removed = db.drop_vector_index("Doc", "embedding")
-    fn drop_vector_index(&self, label: &str, property: &str) -> bool {
-        let db = self.inner.read();
-        db.drop_vector_index(label, property)
+    fn drop_vector_index(&self, label: &str, property: &str) -> PyResult<bool> {
+        let db = self.ecriture()?;
+        Ok(db.drop_vector_index(label, property))
     }
 
     /// Rebuild a vector index by rescanning all matching nodes.
@@ -1103,7 +1126,7 @@ impl PyObrainDB {
     /// Example:
     ///     db.rebuild_vector_index("Doc", "embedding")
     fn rebuild_vector_index(&self, label: &str, property: &str) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         db.rebuild_vector_index(label, property)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
@@ -1172,7 +1195,7 @@ impl PyObrainDB {
         property: &str,
         vectors: Vec<Vec<f32>>,
     ) -> PyResult<Vec<u64>> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         let ids = db.batch_create_nodes(label, property, vectors);
         Ok(ids.into_iter().map(|id| id.as_u64()).collect())
     }
@@ -1288,7 +1311,7 @@ impl PyObrainDB {
     ///     db.create_text_index("Article", "title")
     #[cfg(feature = "text-index")]
     fn create_text_index(&self, label: &str, property: &str) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         db.create_text_index(label, property)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
@@ -1301,9 +1324,9 @@ impl PyObrainDB {
     ///     label: Node label of the index
     ///     property: Property name of the index
     #[cfg(feature = "text-index")]
-    fn drop_text_index(&self, label: &str, property: &str) -> bool {
-        let db = self.inner.read();
-        db.drop_text_index(label, property)
+    fn drop_text_index(&self, label: &str, property: &str) -> PyResult<bool> {
+        let db = self.ecriture()?;
+        Ok(db.drop_text_index(label, property))
     }
 
     /// Rebuild a text index by rescanning all matching nodes.
@@ -1313,7 +1336,7 @@ impl PyObrainDB {
     ///     property: Property name of the index
     #[cfg(feature = "text-index")]
     fn rebuild_text_index(&self, label: &str, property: &str) -> PyResult<()> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         db.rebuild_text_index(label, property)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
@@ -1528,7 +1551,7 @@ impl PyObrainDB {
     ///     print("Index removed")
     /// ```
     fn drop_property_index(&self, property: &str) -> PyResult<bool> {
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         Ok(db.drop_property_index(property))
     }
 
@@ -2278,7 +2301,7 @@ impl PyObrainDB {
         // Extract columns and rows from pandas or polars DataFrame
         let (columns, rows) = extract_dataframe(py, df)?;
 
-        let db = self.inner.read();
+        let db = self.ecriture()?;
         let mut count: u64 = 0;
 
         match mode {
