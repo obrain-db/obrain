@@ -50,6 +50,8 @@ mod vector_index_persist;
 // 26 feature-gated blocks in this file removed on 2026-04-23.
 #[cfg(feature = "cdc")]
 pub mod cdc_observer;
+#[cfg(feature = "cognitive")]
+pub mod cognitive_observer;
 pub mod contient;
 mod query;
 #[cfg(feature = "rdf")]
@@ -329,7 +331,77 @@ pub struct ObrainDB {
     /// Reactive scheduler (keeps the background task alive).
     #[cfg(feature = "cognitive")]
     _cognitive_scheduler: Option<obrain_reactive::Scheduler>,
+    /// (2026-11-12, câblage cognitif) Le bus sur lequel l'observateur
+    /// substrat (`cognitive_observer::CognitiveObserver`) publie chaque
+    /// mutation. Conservé ici : avant, il était créé puis oublié, et les
+    /// listeners écoutaient un canal que personne n'alimentait.
+    #[cfg(feature = "cognitive")]
+    cognitive_bus: Option<Arc<obrain_reactive::MutationBus>>,
+    /// Runtime tokio DÉDIÉ (1 worker), créé seulement si aucun runtime n'est
+    /// courant à la construction : le `Scheduler` ne lance sa tâche de
+    /// dispatch que sous un runtime (`Handle::try_current`), donc une base
+    /// ouverte depuis du code synchrone (CLI, tests) n'avait aucun listener
+    /// actif. Arrêté par `shutdown_background` (jamais bloquant) à `close()`.
+    #[cfg(feature = "cognitive")]
+    cognitive_runtime: parking_lot::Mutex<Option<RuntimeCognitif>>,
 }
+
+/// Runtime porteur du dispatch cognitif quand l'appelant n'en a pas.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+type RuntimeCognitif = tokio::runtime::Runtime;
+/// Sous wasm32 le scheduler est synchrone : rien à porter.
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+type RuntimeCognitif = ();
+
+/// Crée un runtime dédié SEULEMENT si aucun runtime tokio n'est courant.
+/// Un worker suffit : le dispatch est par lots et ne doit jamais rivaliser
+/// avec le plan chaud (plan b30650e2 : « plan cognitif asynchrone, batché »).
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn runtime_cognitif_dedie() -> Option<RuntimeCognitif> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return None;
+    }
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("obrain-cognitif")
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => Some(rt),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "runtime cognitif dédié impossible : les listeners cognitifs resteront inactifs"
+            );
+            None
+        }
+    }
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn runtime_cognitif_dedie() -> Option<RuntimeCognitif> {
+    None
+}
+
+/// Entre dans le runtime dédié (s'il existe) le temps de construire le
+/// moteur : `Scheduler::register_listener` y trouve alors un runtime courant.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn entrer_runtime_cognitif(rt: &Option<RuntimeCognitif>) -> Option<tokio::runtime::EnterGuard<'_>> {
+    rt.as_ref().map(tokio::runtime::Runtime::enter)
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn entrer_runtime_cognitif(_rt: &Option<RuntimeCognitif>) -> Option<()> {
+    None
+}
+
+/// Arrêt NON bloquant : `Runtime::drop` bloquerait (et paniquerait depuis un
+/// contexte async) en attendant les tâches ; `shutdown_background` les
+/// abandonne et rend la main.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn arreter_runtime_cognitif(rt: RuntimeCognitif) {
+    rt.shutdown_background();
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn arreter_runtime_cognitif(_rt: RuntimeCognitif) {}
 
 // ---------------------------------------------------------------------------
 // (V3, parade p8) Registre PROCESSUS des substrats vivants
@@ -891,7 +963,11 @@ impl ObrainDB {
         // Energy/Synapse stores pick up the column-native constructors.
         #[cfg(feature = "cognitive")]
         {
-            let bus = obrain_reactive::MutationBus::new();
+            // (2026-11-12) Runtime dédié si l'appelant n'en a pas, sinon le
+            // scheduler s'accroche au runtime courant (cas du hub).
+            let runtime = runtime_cognitif_dedie();
+            let garde = entrer_runtime_cognitif(&runtime);
+            let bus = Arc::new(obrain_reactive::MutationBus::new());
             let scheduler =
                 obrain_reactive::Scheduler::new(&bus, obrain_reactive::BatchConfig::default());
             let config = obrain_cognitive::CognitiveConfig::default();
@@ -953,6 +1029,13 @@ impl ObrainDB {
             );
             db.cognitive_engine = Some(engine_dyn);
             db._cognitive_scheduler = Some(scheduler);
+            // (2026-11-12) LE FIL QUI MANQUAIT : chaque mutation du substrat
+            // (sessions GQL, `graph_store_mut()`, import) est publiée sur le
+            // bus que les listeners écoutent. Voir `cognitive_observer`.
+            typed.add_mutation_observer(Arc::new(cognitive_observer::CognitiveObserver::new(&bus)));
+            db.cognitive_bus = Some(bus);
+            drop(garde);
+            *db.cognitive_runtime.lock() = runtime;
         }
 
         // (2026-09-07) CATALOGUE DE PROCEDURES — hydratation au boot.
@@ -1203,8 +1286,12 @@ impl ObrainDB {
         // Creates the reactive bus + scheduler + cognitive engine with default config.
         // Zero-cost: this entire block is compiled out when `cognitive` feature is off.
         #[cfg(feature = "cognitive")]
-        let (cognitive_engine, _cognitive_scheduler) = {
-            let bus = obrain_reactive::MutationBus::new();
+        let (cognitive_engine, _cognitive_scheduler, cognitive_bus, cognitive_runtime) = {
+            // (2026-11-12) Même câblage que `with_substrate_store` : runtime
+            // dédié hors runtime courant, bus conservé, observateur substrat.
+            let runtime = runtime_cognitif_dedie();
+            let garde = entrer_runtime_cognitif(&runtime);
+            let bus = Arc::new(obrain_reactive::MutationBus::new());
             let scheduler =
                 obrain_reactive::Scheduler::new(&bus, obrain_reactive::BatchConfig::default());
             let config = obrain_cognitive::CognitiveConfig::default();
@@ -1247,7 +1334,14 @@ impl ObrainDB {
                 obrain_adapters::plugins::registre_global(),
                 Arc::clone(&engine_dyn),
             );
-            (Some(engine_dyn), Some(scheduler))
+            typed.add_mutation_observer(Arc::new(cognitive_observer::CognitiveObserver::new(&bus)));
+            drop(garde);
+            (
+                Some(engine_dyn),
+                Some(scheduler),
+                Some(bus),
+                parking_lot::Mutex::new(runtime),
+            )
         };
 
         let db = Self {
@@ -1330,6 +1424,10 @@ impl ObrainDB {
             cognitive_engine,
             #[cfg(feature = "cognitive")]
             _cognitive_scheduler,
+            #[cfg(feature = "cognitive")]
+            cognitive_bus,
+            #[cfg(feature = "cognitive")]
+            cognitive_runtime,
         };
         // (T5) Meme observateur d'index vectoriels que le chemin fichier : une base en
         // memoire doit entretenir ses index pour TOUT chemin d'ecriture (GQL compris).
@@ -1449,6 +1547,10 @@ impl ObrainDB {
             cognitive_engine: None,
             #[cfg(feature = "cognitive")]
             _cognitive_scheduler: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_bus: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_runtime: parking_lot::Mutex::new(None),
         })
     }
 
@@ -1720,6 +1822,61 @@ impl ObrainDB {
         self.cognitive_engine.as_ref()
     }
 
+    /// Événements de mutation publiés sur le bus cognitif depuis l'ouverture
+    /// (0 sans moteur cognitif, ou tant qu'aucun listener n'est abonné).
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_events_published(&self) -> u64 {
+        self.cognitive_bus
+            .as_ref()
+            .map_or(0, |b| b.total_events_published())
+    }
+
+    /// Événements effectivement remis aux listeners cognitifs (comptés après
+    /// le retour de tous les listeners du lot : l'effet est visible).
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_events_dispatched(&self) -> u64 {
+        self._cognitive_scheduler
+            .as_ref()
+            .map_or(0, obrain_reactive::Scheduler::events_dispatched)
+    }
+
+    /// Événements perdus parce que le dispatch a pris du retard au-delà de
+    /// la capacité du bus. Non nul = la cognition a manqué des mutations ;
+    /// l'écrivain, lui, n'a jamais attendu.
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_events_lost(&self) -> u64 {
+        self._cognitive_scheduler
+            .as_ref()
+            .map_or(0, obrain_reactive::Scheduler::events_lost)
+    }
+
+    /// Attend (au plus `timeout`) que tout événement publié ait été traité
+    /// ou compté perdu. Rend `true` si la cognition est à jour.
+    ///
+    /// Attente par sondage avec sommeil de 2 ms : prévue pour les tests et
+    /// les imports (après un lot, avant de lire énergie ou synapses), pas
+    /// pour le plan chaud. Depuis une tâche async, l'appeler via
+    /// `spawn_blocking`.
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_quiesce(&self, timeout: std::time::Duration) -> bool {
+        let fin = std::time::Instant::now() + timeout;
+        loop {
+            let publies = self.cognitive_events_published();
+            let traites = self.cognitive_events_dispatched() + self.cognitive_events_lost();
+            if traites >= publies {
+                return true;
+            }
+            if std::time::Instant::now() >= fin {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     /// (2026-08-31) Accès au journal CDC (audit trail) — exposé pour la
     /// prod/monitoring : `nodeHistory`/`changesBetween` via [`CdcLog`](crate::cdc::CdcLog).
     #[cfg(feature = "cdc")]
@@ -1957,6 +2114,14 @@ impl ObrainDB {
         // `open_substrate_inner`) : la rouvrir après `close()` est permis.
         if let Some(ref p) = self.config.path {
             desinscrire_substrat_vivant(p);
+        }
+
+        // (2026-11-12) Runtime cognitif dédié : arrêt non bloquant. Les
+        // événements encore en vol sont abandonnés — la cognition est
+        // « eventually consistent », jamais une condition de fermeture.
+        #[cfg(feature = "cognitive")]
+        if let Some(rt) = self.cognitive_runtime.lock().take() {
+            arreter_runtime_cognitif(rt);
         }
 
         // Read-only databases: just release the shared lock, no checkpointing

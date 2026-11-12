@@ -230,7 +230,13 @@ impl SynapseKey {
 // ---------------------------------------------------------------------------
 
 /// Edge type used for synapse edges in the graph store.
-const SYNAPSE_EDGE_TYPE: &str = "SYNAPSE";
+/// Type des arêtes par lesquelles le substrat persiste les synapses.
+///
+/// Public depuis le câblage cognitif (2026-11-12) : l'observateur substrat →
+/// bus du moteur doit IGNORER ces arêtes, sinon chaque renforcement crée une
+/// arête, qui publie un événement, que le listener Hebbien transforme en
+/// renforcement — une boucle sans fin.
+pub const SYNAPSE_EDGE_TYPE: &str = "SYNAPSE";
 
 /// Thread-safe store for synapses between nodes.
 ///

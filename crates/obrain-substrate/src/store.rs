@@ -1636,6 +1636,39 @@ pub trait StoreMutationObserver: Send + Sync {
     /// effacee (limite documentee) : l'observateur peut retirer le noeud de
     /// ses index. Defaut : sans effet.
     fn node_property_removed(&self, _id: obrain_common::types::NodeId, _key: &str) {}
+
+    /// (2026-11-12, câblage cognitif) Une propriété de NŒUD vient d'être
+    /// écrite, quel que soit son chemin (colonne vectorielle, blob, pages v2,
+    /// DashMap) et quelle que soit l'origine (API Rust, GQL `SET`/`CREATE`/
+    /// `MERGE`). Notifié APRÈS l'écriture ; pour un vecteur, en plus de
+    /// `vector_written`. Défaut : sans effet.
+    fn node_property_set(&self, _id: obrain_common::types::NodeId, _key: &str) {}
+
+    /// (2026-11-12, câblage cognitif) Même événement que `edge_created`, avec
+    /// le TYPE de l'arête : un observateur qui doit ignorer certains types
+    /// (les arêtes `SYNAPSE` que la cognition écrit elle-même) en a besoin.
+    /// Notifié juste après `edge_created`. Défaut : sans effet.
+    fn edge_created_typed(
+        &self,
+        _id: obrain_common::types::EdgeId,
+        _src: obrain_common::types::NodeId,
+        _dst: obrain_common::types::NodeId,
+        _edge_type: &str,
+        _epoch: u64,
+    ) {
+    }
+
+    /// (2026-11-12, câblage cognitif) Une arête VIVANTE vient d'être
+    /// supprimée (tombstone posé), avec ses extrémités et son type tels
+    /// qu'ils étaient avant la suppression. Défaut : sans effet.
+    fn edge_deleted(
+        &self,
+        _id: obrain_common::types::EdgeId,
+        _src: obrain_common::types::NodeId,
+        _dst: obrain_common::types::NodeId,
+        _edge_type: &str,
+    ) {
+    }
 }
 
 /// (feat conversations µs) Reverse-adjacence PART_OF : cible (slot de
@@ -5436,10 +5469,30 @@ impl SubstrateStore {
         eid: obrain_common::types::EdgeId,
         src: obrain_common::types::NodeId,
         dst: obrain_common::types::NodeId,
+        edge_type: &str,
     ) {
         let epoch = self.epoque_courante.load(Ordering::Acquire);
         for observer in self.observateurs() {
             observer.edge_created(eid, src, dst, epoch);
+            observer.edge_created_typed(eid, src, dst, edge_type, epoch);
+        }
+    }
+
+    fn notify_node_property_set(&self, id: obrain_common::types::NodeId, key: &str) {
+        for observer in self.observateurs() {
+            observer.node_property_set(id, key);
+        }
+    }
+
+    fn notify_edge_deleted(
+        &self,
+        eid: obrain_common::types::EdgeId,
+        src: obrain_common::types::NodeId,
+        dst: obrain_common::types::NodeId,
+        edge_type: &str,
+    ) {
+        for observer in self.observateurs() {
+            observer.edge_deleted(eid, src, dst, edge_type);
         }
     }
 
@@ -23153,7 +23206,7 @@ impl GraphStoreMut for SubstrateStore {
         // que l'arête (spec §4). Une arête neuve n'a pas encore de
         // propriétés : le volet DISPATCH vit dans les hooks de propriété.
         self.maintenance_arete_ajoutee(src.0 as u32, dst.0 as u32, edge_type_id);
-        self.notify_edge_created(id, src, dst);
+        self.notify_edge_created(id, src, dst, edge_type);
         id
     }
 
@@ -23355,6 +23408,13 @@ impl GraphStoreMut for SubstrateStore {
         // T5 : maintenance simpliciale incrémentale (spec §4) — cliques
         // mortes via l'incidence, bit CYCLIC, groupe DISPATCH recalculé.
         self.maintenance_arete_supprimee(src_slot, dst_slot, edge_type_id, ligne_dispatch);
+        let nom_type = self.resolve_edge_type_by_id(edge_type_id);
+        self.notify_edge_deleted(
+            id,
+            obrain_common::types::NodeId(u64::from(src_slot)),
+            obrain_common::types::NodeId(u64::from(dst_slot)),
+            &nom_type,
+        );
         true
     }
 
@@ -23397,6 +23457,7 @@ impl GraphStoreMut for SubstrateStore {
         if let Value::Vector(ref v) = value {
             self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
             self.notify_vector_written(id, key, v);
+            self.notify_node_property_set(id, key);
             return;
         }
         // T16.7 Step 4d: oversized `Value::String` / `Value::Bytes`
@@ -23407,6 +23468,7 @@ impl GraphStoreMut for SubstrateStore {
         // the original `Value` variant byte-exactly on the get side.
         if let Some(tagged) = encode_blob_payload(&value) {
             self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
+            self.notify_node_property_set(id, key);
             return;
         }
         // (2026-08-20) LA VALEUR NE VA PAS EN COLONNE BLOB — IL FAUT DONC
@@ -23616,6 +23678,7 @@ impl GraphStoreMut for SubstrateStore {
             && !self.dashmap_noeuds_hydratee.load(Ordering::Acquire)
             && self.property_indexes.is_empty()
         {
+            self.notify_node_property_set(id, key);
             return;
         }
         let pkey = PropertyKey::new(key);
@@ -23635,6 +23698,7 @@ impl GraphStoreMut for SubstrateStore {
             }
             self.prop_index_insert(&pkey, &value, id);
         }
+        self.notify_node_property_set(id, key);
     }
 
     fn set_edge_property(&self, id: EdgeId, key: &str, value: Value) {
