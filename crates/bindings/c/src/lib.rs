@@ -32,7 +32,6 @@
 
 #![allow(unsafe_code)]
 
-mod bail;
 mod database;
 mod error;
 mod types;

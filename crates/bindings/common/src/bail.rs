@@ -25,7 +25,7 @@ static BAUX: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(Has
 ///
 /// Rend le chemin canonique à conserver pour [`rendre`], ou un message si un
 /// autre handle de ce processus tient déjà le bail.
-pub(crate) fn prendre(chemin: &Path) -> Result<PathBuf, String> {
+pub fn prendre(chemin: &Path) -> Result<PathBuf, String> {
     let canonique = chemin
         .canonicalize()
         .map_err(|e| format!("bail d'écriture : chemin {} : {e}", chemin.display()))?;
@@ -36,16 +36,16 @@ pub(crate) fn prendre(chemin: &Path) -> Result<PathBuf, String> {
         Ok(canonique)
     } else {
         Err(format!(
-            "bail d'écriture déjà tenu dans ce processus pour {} : un seul obrain_open_write \
-             par base ; fermez (obrain_close) ou libérez (obrain_free_database) le premier \
-             handle, ou ouvrez le second en lecture seule (obrain_open)",
+            "bail d'écriture déjà tenu dans ce processus pour {} : un seul écrivain \
+             par base ; fermez le premier handle (ou libérez-le), ou ouvrez le second \
+             en lecture seule",
             canonique.display()
         ))
     }
 }
 
 /// Rend un bail pris par [`prendre`]. Sans effet s'il n'est plus tenu.
-pub(crate) fn rendre(canonique: &Path) {
+pub fn rendre(canonique: &Path) {
     let mut baux = BAUX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
