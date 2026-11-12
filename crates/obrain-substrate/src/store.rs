@@ -158,9 +158,27 @@ const TAILLE_BLOC_ALLOCATION: u64 = 256;
 const VALID_KINDS: &[u8] = &[
     // (jalon 2) 0x04/0x05 = NodeInsertV3/NodeUpdateV3 (trames tenant).
     0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
-    0x26, 0x27, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x50, 0x51, 0x52,
-    0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
+    0x26, 0x27, 0x29, 0x2A, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x50,
+    0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
 ];
+
+/// Borne de plausibilité d'une trame pour les scans RÉSYNCHRONISANTS du WAL
+/// (`merge_wal_inline_props`, `merge_wal_external_edges`) : au-delà, la
+/// longueur lue est tenue pour du bruit et le scan avance d'un octet. Toute
+/// trame qui doit être rejouée par ces scans doit rester SOUS cette borne.
+const BORNE_TRAME_PLAUSIBLE: usize = 64 * 1024 * 1024;
+
+/// (obrain#120) Taille maximale d'une valeur blob (octet de type compris)
+/// journalisée dans le WAL par `BlobColumnWrite`. Au-delà, la valeur est
+/// écrite dans sa colonne mais PAS journalisée : elle ne survit pas à un
+/// `kill -9` avant le prochain flush (limite documentée, verrouillée par
+/// `limite_v0_0_1_une_valeur_au_dela_du_plafond_wal_n_est_pas_journalisee`).
+/// Moitié de `BORNE_TRAME_PLAUSIBLE` (constante privée) : une trame journalisée est toujours
+/// rejouable, et une valeur de cette taille double au plus une fois son
+/// écriture disque (le WAL est tronqué au checkpoint suivant, déclenché dès
+/// `OBRAIN_WAL_CHECKPOINT_BYTES`, 8 Mio par défaut).
+pub const BLOB_WAL_MAX_BYTES: usize = 32 * 1024 * 1024;
+const _: () = assert!(BLOB_WAL_MAX_BYTES < BORNE_TRAME_PLAUSIBLE);
 
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::file::SubstrateFile;
@@ -5849,6 +5867,10 @@ impl SubstrateStore {
         // fenêtre contenant uniquement une compaction V2 échapperait à la
         // détection et la vérification des compteurs serait sautée à tort.
         let mut structurel = false;
+        // (obrain#120) Rejeu des colonnes blob : écrivain exclusif seulement
+        // (voir les bras `BlobColumnWrite` / `BlobColumnClear`).
+        let rejouer_blobs = !self.substrate.lock().est_ecriture_partagee();
+        let mut blobs_rejoues = 0u64;
         // RELEVE DES COMPTEURS (2026-07-25, 2e verrou trouve par la preuve
         // kill -9 en production) : next_node_id / next_edge_id vivent dans
         // le dict, persiste au flush SEULEMENT. Apres un kill, la session
@@ -5868,7 +5890,7 @@ impl SubstrateStore {
                 && data[off + 6] == 0
                 && data[off + 7] == 0
                 && off + 28 + ln <= data.len()
-                && ln < 64 * 1024 * 1024;
+                && ln < BORNE_TRAME_PLAUSIBLE;
             if !plausible {
                 off += 1;
                 skipped_bytes += 1;
@@ -5955,6 +5977,48 @@ impl SubstrateStore {
                     }
                     removed += 1;
                 }
+                // (obrain#120) Colonnes blob : rejouées dans l'ordre du WAL
+                // (dernier écrit gagne), UNIQUEMENT dans la fenêtre post-flush
+                // (avant elle, la colonne a été `sync` par le flush et fait
+                // foi) et UNIQUEMENT par un écrivain EXCLUSIF — celui qui
+                // reprend après un crash. Un lecteur (verrou partagé) n'écrit
+                // rien ; un écrivain en mode partagé laisse la colonne à ses
+                // pairs vivants (écriture blob multi-processus : limite
+                // documentée de la v0.0.1).
+                WalPayload::BlobColumnWrite {
+                    entity_kind,
+                    slot,
+                    ref key,
+                    ref tagged,
+                } => {
+                    if entity_kind == EntityKind::Node as u8 {
+                        max_node_slot = max_node_slot.max(slot);
+                    }
+                    if dans_fenetre && rejouer_blobs {
+                        let ek = if entity_kind == EntityKind::Node as u8 {
+                            EntityKind::Node
+                        } else {
+                            EntityKind::Edge
+                        };
+                        self.ecrire_blob_sans_journal(ek, slot, key, tagged);
+                        blobs_rejoues += 1;
+                    }
+                }
+                WalPayload::BlobColumnClear {
+                    entity_kind,
+                    slot,
+                    ref key,
+                } => {
+                    if dans_fenetre && rejouer_blobs {
+                        let ek = if entity_kind == EntityKind::Node as u8 {
+                            EntityKind::Node
+                        } else {
+                            EntityKind::Edge
+                        };
+                        self.effacer_blob_sans_journal(ek, slot, &PropertyKey::new(key));
+                        blobs_rejoues += 1;
+                    }
+                }
                 WalPayload::NodeInsert { node_id, .. }
                 | WalPayload::NodeUpdate { node_id, .. }
                 | WalPayload::NodeInsertV3 { node_id, .. }
@@ -6019,11 +6083,12 @@ impl SubstrateStore {
             self.next_edge_id
                 .fetch_max(max_edge_id + 1, Ordering::AcqRel);
         }
-        if set + removed + edge_set > 0 || skipped_bytes > 0 {
+        if set + removed + edge_set + blobs_rejoues > 0 || skipped_bytes > 0 {
             tracing::info!(
                 set,
                 removed,
                 edge_set,
+                blobs_rejoues,
                 skipped_bytes,
                 "wal inline props merged over snapshot (garantie memoire :                  les ecritures depuis le dernier flush ont survecu)"
             );
@@ -6191,7 +6256,7 @@ impl SubstrateStore {
                 && data[off + 6] == 0
                 && data[off + 7] == 0
                 && off + 28 + ln <= data.len()
-                && ln < 64 * 1024 * 1024;
+                && ln < BORNE_TRAME_PLAUSIBLE;
             if !plausible {
                 off += 1;
                 continue;
@@ -15295,7 +15360,38 @@ impl SubstrateStore {
     /// une dégradation.
     fn effacer_ombre_blob(&self, entity_kind: EntityKind, slot: u32, key: &str) {
         let pk = PropertyKey::new(key);
-        if let Err(e) = self.blob_columns.clear(&pk, entity_kind, slot) {
+        // Même ordre que `route_blob_write` (colonne d'abord, trame ensuite),
+        // pour la même raison : l'offset du flush est capturé avant le `sync`.
+        self.effacer_blob_sans_journal(entity_kind, slot, &pk);
+        // (obrain#120) L'effacement est JOURNALISÉ dès qu'une colonne blob
+        // existe pour la clé : sans cette trame, le rejeu d'un
+        // `BlobColumnWrite` antérieur de la fenêtre ressusciterait la valeur
+        // longue par-dessus la valeur courte qui l'a remplacée. Aucune
+        // colonne pour la clé (l'écrasante majorité des écritures
+        // scalaires) : aucune trame, aucun coût de plus qu'un `get`.
+        if self.blob_columns.spec_for(&pk, entity_kind).is_some()
+            && let Err(e) = self
+                .writer
+                .append_payload(crate::wal::WalPayload::BlobColumnClear {
+                    entity_kind: entity_kind as u8,
+                    slot,
+                    key: key.to_string(),
+                })
+        {
+            tracing::error!(
+                target: "substrate::blob_columns",
+                "BlobColumnClear non journalise (key={key:?}, ek={entity_kind:?}, \
+                 slot={slot}) : {e} — un kill avant le prochain flush peut \
+                 ressusciter l ancienne valeur longue"
+            );
+        }
+    }
+
+    /// Corps de l'effacement, sans trame WAL : partagé par le setter (après
+    /// journalisation) et par le rejeu (qui ne doit rien re-journaliser).
+    fn effacer_blob_sans_journal(&self, entity_kind: EntityKind, slot: u32, pk: &PropertyKey) {
+        let key = pk.as_str();
+        if let Err(e) = self.blob_columns.clear(pk, entity_kind, slot) {
             tracing::error!(
                 target: "substrate::blob_columns",
                 "blob_columns.clear(key={key:?}, ek={entity_kind:?}, slot={slot}) \
@@ -15338,6 +15434,68 @@ impl SubstrateStore {
     }
 
     fn route_blob_write(&self, entity_kind: EntityKind, slot: u32, key: &str, tagged: &[u8]) {
+        // (obrain#120) La valeur part AUSSI au journal. La colonne blob n'est
+        // durable qu'au `sync` d'un flush complet ; le commit, lui, ne fsync
+        // que le WAL. Sans cette trame, une valeur longue ACQUITTÉE
+        // disparaissait au `kill -9` (0/40 mesuré), et une réécriture non
+        // flushée suivie d'un ajout faisait relire à un nœud les octets d'un
+        // autre (40/40 mesuré, `blob_hors_wal_kill9.rs`).
+        //
+        // ORDRE : colonne D'ABORD, trame ENSUITE — l'inverse du marqueur
+        // vectoriel, et pour une raison précise. `flush()` capture l'offset WAL
+        // AVANT `blob_columns.sync_all()`. Trame d'abord, un flush qui
+        // capturerait l'offset entre la trame et l'écriture en colonne
+        // laisserait la trame HORS fenêtre et la valeur hors du `sync` : perdue.
+        // Colonne d'abord, les deux cas sont couverts : ou l'offset est pris
+        // après la trame (la colonne écrite avant est dans le `sync`), ou
+        // avant (la trame est dans la fenêtre, et le rejeu est idempotent). Un
+        // crash entre les deux perd une écriture NON acquittée : le commit qui
+        // l'aurait acquittée fsync le WAL après cette trame.
+        //
+        // Même contrat best-effort que `PropSetInline` : un échec d'append ne
+        // perd pas l'écriture en colonne, il retire la garantie de survie au
+        // crash pour CETTE entrée, et le dit.
+        self.ecrire_blob_sans_journal(entity_kind, slot, key, tagged);
+        if tagged.len() > BLOB_WAL_MAX_BYTES {
+            tracing::error!(
+                target: "substrate::blob_columns",
+                "valeur blob de {} o > plafond WAL {} o (key={key:?}, ek={entity_kind:?}, \
+                 slot={slot}) : NON journalisee — elle ne survivra pas a un kill avant \
+                 le prochain flush",
+                tagged.len(),
+                BLOB_WAL_MAX_BYTES
+            );
+            return;
+        }
+        if let Err(e) = self
+            .writer
+            .append_payload(crate::wal::WalPayload::BlobColumnWrite {
+                entity_kind: entity_kind as u8,
+                slot,
+                key: key.to_string(),
+                tagged: tagged.to_vec(),
+            })
+        {
+            tracing::error!(
+                target: "substrate::blob_columns",
+                "BlobColumnWrite non journalise (key={key:?}, ek={entity_kind:?}, \
+                 slot={slot}, len={}) : {e} — la valeur ne survivra pas a un kill \
+                 avant le prochain flush",
+                tagged.len()
+            );
+        }
+    }
+
+    /// Corps de l'écriture en colonne blob, sans trame WAL : partagé par le
+    /// setter (après journalisation) et par le rejeu (qui ne doit rien
+    /// re-journaliser).
+    fn ecrire_blob_sans_journal(
+        &self,
+        entity_kind: EntityKind,
+        slot: u32,
+        key: &str,
+        tagged: &[u8],
+    ) {
         // L'identifiant vient de la table partagée (Phase B, pièce 3).
         let global = match self.interne_global(crate::registres_partages::Espace::Cles, key) {
             Ok(g) => g,
