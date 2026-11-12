@@ -3,7 +3,7 @@
 //! Functions here are used by multiple translator modules (GQL, Cypher, etc.)
 //! to avoid duplication of identical logic.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(any(feature = "graphql", feature = "gremlin", test))]
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -697,6 +697,327 @@ pub(crate) fn finalize_aggregate_projection(
             })
             .collect(),
     )
+}
+
+/// Ce qu'une variable visible désigne.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VariableKind {
+    /// Un nœud : on peut s'en servir comme source d'une expansion.
+    Node,
+    /// Une arête (un seul saut).
+    Edge,
+    /// Une valeur qui n'est PROUVÉEMENT ni un nœud ni une arête : littéral,
+    /// opération, propriété, liste ou map, résultat d'`id()` ou d'un
+    /// agrégat de dénombrement. Un `MATCH` qui la reprend comme nœud est une
+    /// erreur de type (Neo4j : « Type mismatch: expected Node but was
+    /// Integer ») ; sans cela l'entier 1 se joignait au nœud n° 1.
+    Scalar,
+    /// Genre INCONNU : peut porter un nœud (élément d'un `UNWIND` d'une liste
+    /// de nœuds, `head(collect(n))`, `CASE`, paramètre d'un `CALL`).
+    Other,
+}
+
+/// Erreur de type si `variable`, liée à ce que `bound` dit, ne peut pas jouer
+/// le rôle `expected` (`Node` ou `Edge`) dans un motif. Un genre inconnu
+/// (`Other`) passe : le moteur ne peut pas le prouver faux.
+pub(crate) fn check_bound_kind(
+    variable: &str,
+    expected: VariableKind,
+    bound: &HashMap<String, VariableKind>,
+) -> Result<()> {
+    let Some(kind) = bound.get(variable) else {
+        return Ok(());
+    };
+    let quoi = |k: VariableKind| match k {
+        VariableKind::Node => "un nœud",
+        VariableKind::Edge => "une arête",
+        VariableKind::Scalar => "une valeur (nombre, texte, liste, map…)",
+        VariableKind::Other => "une valeur de type inconnu",
+    };
+    if *kind == VariableKind::Scalar || (*kind != VariableKind::Other && *kind != expected) {
+        return Err(Error::Query(QueryError::new(
+            QueryErrorKind::Semantic,
+            format!(
+                "Type mismatch: la variable '{variable}' est déjà liée à {}, \
+                 le motif l'attend comme {}",
+                quoi(*kind),
+                quoi(expected)
+            ),
+        )));
+    }
+    Ok(())
+}
+
+/// Genre d'une expression qui produit une valeur de projection.
+fn expression_kind(
+    expression: &LogicalExpression,
+    entree: &HashMap<String, VariableKind>,
+) -> VariableKind {
+    match expression {
+        LogicalExpression::Variable(name) => {
+            entree.get(name).copied().unwrap_or(VariableKind::Other)
+        }
+        // NULL est lié sans être d'aucun genre.
+        LogicalExpression::Literal(obrain_common::types::Value::Null) => VariableKind::Other,
+        LogicalExpression::Literal(_)
+        | LogicalExpression::Property { .. }
+        | LogicalExpression::Binary { .. }
+        | LogicalExpression::Unary { .. }
+        | LogicalExpression::List(_)
+        | LogicalExpression::Map(_)
+        | LogicalExpression::Id(_)
+        | LogicalExpression::Labels(_)
+        | LogicalExpression::Type(_) => VariableKind::Scalar,
+        LogicalExpression::FunctionCall { name, .. } => {
+            const SCALAIRES: &[&str] = &[
+                "id",
+                "elementid",
+                "element_id",
+                "tostring",
+                "tointeger",
+                "tofloat",
+                "toboolean",
+                "size",
+                "length",
+                "abs",
+                "ceil",
+                "floor",
+                "round",
+                "sqrt",
+                "exp",
+                "log",
+                "toupper",
+                "tolower",
+                "trim",
+                "substring",
+                "split",
+                "replace",
+                "labels",
+                "type",
+                "keys",
+                "range",
+                "date",
+                "datetime",
+                "duration",
+                "time",
+                "timestamp",
+                "rand",
+            ];
+            if SCALAIRES.contains(&name.to_ascii_lowercase().as_str()) {
+                VariableKind::Scalar
+            } else {
+                VariableKind::Other
+            }
+        }
+        _ => VariableKind::Other,
+    }
+}
+
+/// Variables qu'un plan laisse VISIBLES à la clause qui le suit, avec ce
+/// qu'elles désignent.
+///
+/// Commune aux traducteurs Cypher et GQL : c'est ce qui décide, pour le
+/// `MATCH` qui suit, quelles variables de son motif sont déjà liées (et donc
+/// à fermer ou à prendre comme ancre) et lesquelles sont neuves.
+///
+/// Une projection (`WITH`, `RETURN`) ou un agrégat FERME la portée : seules
+/// leurs colonnes de sortie restent visibles, sous leur alias. Une variable
+/// que le `WITH` a fait sortir et que le `MATCH` suivant réemploie est une
+/// variable neuve. Lire l'entrée de ces opérateurs au lieu de leur sortie
+/// (c'est ce que faisait GQL) croyait liée une variable disparue et ignorait
+/// un alias : `WITH f AS g, count(*) AS nb MATCH (c2)-[:T]->(g)` rendait un
+/// produit cartésien, sans erreur.
+///
+/// Pour un opérateur sans règle propre, on prend l'union de ses enfants : au
+/// pire une variable est dite liée à tort, et la jointure échoue bruyamment au
+/// lieu de rendre un résultat faux.
+pub(crate) fn visible_variables(op: &LogicalOperator) -> HashMap<String, VariableKind> {
+    let mut vars = HashMap::new();
+    collect_visible_variables(op, &mut vars);
+    vars
+}
+
+fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, VariableKind>) {
+    use crate::query::plan::LogicalOperator as LO;
+    // Sortie d'une projection : chaque item sous son alias (ou son nom s'il
+    // est une variable nue), du type de la variable qu'il reprend.
+    let projette = |vars: &mut HashMap<String, VariableKind>,
+                    entree: &HashMap<String, VariableKind>,
+                    expression: &LogicalExpression,
+                    alias: Option<&String>| {
+        let kind = expression_kind(expression, entree);
+        match (alias, expression) {
+            (Some(alias), _) => {
+                vars.insert(alias.clone(), kind);
+            }
+            (None, LogicalExpression::Variable(name)) => {
+                vars.insert(name.clone(), kind);
+            }
+            (None, _) => {}
+        }
+    };
+    match op {
+        LO::NodeScan(scan) => {
+            if let Some(input) = &scan.input {
+                collect_visible_variables(input, vars);
+            }
+            vars.insert(scan.variable.clone(), VariableKind::Node);
+        }
+        LO::EdgeScan(scan) => {
+            if let Some(input) = &scan.input {
+                collect_visible_variables(input, vars);
+            }
+            vars.insert(scan.variable.clone(), VariableKind::Edge);
+        }
+        LO::Expand(expand) => {
+            collect_visible_variables(&expand.input, vars);
+            vars.insert(expand.to_variable.clone(), VariableKind::Node);
+            if let Some(edge) = &expand.edge_variable {
+                // Sur plusieurs sauts, la variable d'arête est une LISTE.
+                let single_hop = expand.min_hops == 1 && expand.max_hops == Some(1);
+                vars.insert(
+                    edge.clone(),
+                    if single_hop {
+                        VariableKind::Edge
+                    } else {
+                        VariableKind::Other
+                    },
+                );
+            }
+            if let Some(alias) = &expand.path_alias {
+                vars.insert(alias.clone(), VariableKind::Other);
+            }
+        }
+        LO::Unwind(unwind) => {
+            collect_visible_variables(&unwind.input, vars);
+            // Les éléments d'une liste LITTÉRALE de constantes sont des
+            // scalaires ; ceux d'une autre liste (`UNWIND nodes AS n`)
+            // peuvent être des nœuds.
+            let elements_scalaires = matches!(
+                &unwind.expression,
+                LogicalExpression::List(items)
+                    if items.iter().all(|i| matches!(i, LogicalExpression::Literal(_)))
+            );
+            vars.insert(
+                unwind.variable.clone(),
+                if elements_scalaires {
+                    VariableKind::Scalar
+                } else {
+                    VariableKind::Other
+                },
+            );
+            for extra in [&unwind.ordinality_var, &unwind.offset_var]
+                .into_iter()
+                .flatten()
+            {
+                vars.insert(extra.clone(), VariableKind::Other);
+            }
+        }
+        LO::Project(project) => {
+            let entree = visible_variables(&project.input);
+            if project.pass_through_input {
+                vars.extend(entree.iter().map(|(k, v)| (k.clone(), *v)));
+            }
+            for projection in &project.projections {
+                projette(
+                    vars,
+                    &entree,
+                    &projection.expression,
+                    projection.alias.as_ref(),
+                );
+            }
+        }
+        LO::Return(ret) => {
+            let entree = visible_variables(&ret.input);
+            for item in &ret.items {
+                if let LogicalExpression::Variable(name) = &item.expression
+                    && name == "*"
+                {
+                    vars.extend(entree.iter().map(|(k, v)| (k.clone(), *v)));
+                    continue;
+                }
+                projette(vars, &entree, &item.expression, item.alias.as_ref());
+            }
+        }
+        LO::Aggregate(aggregate) => {
+            let entree = visible_variables(&aggregate.input);
+            for key in &aggregate.group_by {
+                projette(vars, &entree, key, None);
+            }
+            for agg in &aggregate.aggregates {
+                if let Some(alias) = &agg.alias {
+                    // `min` / `max` / `sample` rendent un élément (un nœud
+                    // possible) ; tous les autres, un nombre, un texte ou une liste.
+                    use crate::query::plan::AggregateFunction as F;
+                    let kind = match agg.function {
+                        F::Min | F::Max | F::Sample => VariableKind::Other,
+                        _ => VariableKind::Scalar,
+                    };
+                    vars.insert(alias.clone(), kind);
+                }
+            }
+        }
+        LO::CreateNode(create) => {
+            if let Some(input) = &create.input {
+                collect_visible_variables(input, vars);
+            }
+            vars.insert(create.variable.clone(), VariableKind::Node);
+        }
+        LO::CreateEdge(create) => {
+            collect_visible_variables(&create.input, vars);
+            if let Some(variable) = &create.variable {
+                vars.insert(variable.clone(), VariableKind::Edge);
+            }
+        }
+        LO::Merge(merge) => {
+            collect_visible_variables(&merge.input, vars);
+            vars.insert(merge.variable.clone(), VariableKind::Node);
+        }
+        LO::MergeRelationship(merge) => {
+            collect_visible_variables(&merge.input, vars);
+            vars.insert(merge.variable.clone(), VariableKind::Edge);
+        }
+        LO::CallProcedure(call) => {
+            for child in op.children() {
+                collect_visible_variables(child, vars);
+            }
+            for item in call.yield_items.iter().flatten() {
+                let name = item
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| item.field_name.clone());
+                vars.insert(name, VariableKind::Other);
+            }
+        }
+        LO::ParameterScan(scan) => {
+            for column in &scan.columns {
+                vars.insert(column.clone(), VariableKind::Other);
+            }
+        }
+        LO::Apply(apply) => {
+            // L'entrée reste visible ; du sous-plan, seules ses colonnes de
+            // SORTIE le sont (celles d'un `RETURN`, d'une projection ou d'un
+            // agrégat en racine) — jamais les variables internes d'un
+            // `EXISTS` ou d'une compréhension de motif.
+            collect_visible_variables(&apply.input, vars);
+            if matches!(
+                apply.subplan.as_ref(),
+                LO::Return(_) | LO::Project(_) | LO::Aggregate(_)
+            ) {
+                collect_visible_variables(&apply.subplan, vars);
+            }
+        }
+        LO::AntiJoin(join) => collect_visible_variables(&join.left, vars),
+        LO::ShortestPath(sp) => {
+            collect_visible_variables(&sp.input, vars);
+            vars.insert(sp.path_alias.clone(), VariableKind::Other);
+        }
+        other => {
+            for child in other.children() {
+                collect_visible_variables(child, vars);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

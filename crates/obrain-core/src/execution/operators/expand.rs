@@ -193,8 +193,14 @@ impl ExpandOperator {
         self.current_external.clear();
         self.current_edge_idx = 0;
 
+        // Une source NULL (une variable d'`OPTIONAL MATCH` sans correspondance)
+        // ne produit AUCUNE ligne — comme sous Neo4j : jamais une erreur.
+        if col.is_null(self.current_row) {
+            return Ok(true);
+        }
+
         // Aretes inter-bases (V2) : la colonne source peut porter un noeud
-        // DISTANT (Value::Map hydratee a la frontiere) ou Null. Sans
+        // DISTANT (Value::Map hydratee a la frontiere). Sans
         // registre, le contrat historique est inchange : NodeId ou erreur.
         let Some(source_id) = col.get_node_id(self.current_row) else {
             if let Some(reg) = self.session_context.base_registry.clone() {
