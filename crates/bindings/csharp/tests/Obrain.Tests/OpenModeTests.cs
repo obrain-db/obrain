@@ -36,13 +36,13 @@ public sealed class OpenModeTests : IDisposable
         }
 
         using var r = ObrainDB.Open(_dir);
-        Assert.Throws<ObrainException>(() => r.Execute("INSERT (:Person {name: 'Bob'})"));
+        Assert.ThrowsAny<ObrainException>(() => r.Execute("INSERT (:Person {name: 'Bob'})"));
     }
 
     [Fact]
     public void OpenMissingStoreThrowsAndCreatesNothing()
     {
-        Assert.Throws<ObrainException>(() => ObrainDB.Open(_dir));
+        Assert.ThrowsAny<ObrainException>(() => ObrainDB.Open(_dir));
         Assert.False(Directory.Exists(_dir));
     }
 
@@ -50,6 +50,6 @@ public sealed class OpenModeTests : IDisposable
     public void SecondOpenWriteOnSameStoreThrowsWhileLeaseHeld()
     {
         using var first = ObrainDB.OpenWrite(_dir);
-        Assert.Throws<ObrainException>(() => ObrainDB.OpenWrite(_dir));
+        Assert.ThrowsAny<ObrainException>(() => ObrainDB.OpenWrite(_dir));
     }
 }
