@@ -82,7 +82,7 @@ fn verifie_energie_et_synapses(db: &ObrainDB) {
 /// Fonction de test SYNCHRONE, sans runtime tokio : la base doit créer le sien.
 #[test]
 fn creation_gql_alimente_energie_et_synapses_sans_runtime_tokio() {
-    let db = ObrainDB::new_in_memory();
+    let db = ObrainDB::new_in_memory_observed();
     verifie_energie_et_synapses(&db);
 }
 
@@ -90,7 +90,7 @@ fn creation_gql_alimente_energie_et_synapses_sans_runtime_tokio() {
 #[test]
 fn creation_gql_alimente_energie_et_synapses_sur_substrat_fichier() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let db = ObrainDB::open_substrate(dir.path().join("base")).expect("open");
+    let db = ObrainDB::open_substrate_observed(dir.path().join("base")).expect("open");
     verifie_energie_et_synapses(&db);
 }
 
@@ -99,7 +99,7 @@ fn creation_gql_alimente_energie_et_synapses_sur_substrat_fichier() {
 /// un contexte async ne doit ni bloquer ni paniquer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn creation_gql_alimente_energie_dans_un_runtime_tokio_existant() {
-    let db = ObrainDB::new_in_memory();
+    let db = ObrainDB::new_in_memory_observed();
     verifie_energie_et_synapses(&db);
     drop(db);
 }
@@ -110,7 +110,7 @@ async fn creation_gql_alimente_energie_dans_un_runtime_tokio_existant() {
 /// contre un dispatch synchrone, pas un bench.
 #[test]
 fn le_commit_n_attend_pas_le_dispatch_des_listeners() {
-    let db = ObrainDB::new_in_memory();
+    let db = ObrainDB::new_in_memory_observed();
     let session = db.session();
     let debut = Instant::now();
     for i in 0..200 {

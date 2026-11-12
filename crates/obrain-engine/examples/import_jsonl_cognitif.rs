@@ -99,7 +99,7 @@ fn main() {
     let a = args();
     let tmp = tempfile::tempdir().expect("tempdir");
     let chemin = a.db.clone().unwrap_or_else(|| tmp.path().join("base"));
-    let db = ObrainDB::open_substrate(&chemin).expect("open_substrate");
+    let db = ObrainDB::open_substrate_observed(&chemin).expect("open_substrate");
     let store = db.graph_store_mut();
 
     // --- Nœuds ---

@@ -57,7 +57,7 @@ fn main() {
     }
     std::fs::create_dir_all(&sortie).expect("sortie");
 
-    let db = ObrainDB::open_substrate(&base).expect("open_substrate");
+    let db = ObrainDB::open_substrate_observed(&base).expect("open_substrate");
     let store = db.graph_store();
 
     // --- identités externes et étiquettes ---
