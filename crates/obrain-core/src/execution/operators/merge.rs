@@ -172,10 +172,18 @@ impl MergeOperator {
                     continue;
                 }
 
+                // Revérification par l'égalité CANONIQUE — celle par laquelle
+                // le store a sélectionné ces candidats. L'ancien `v ==
+                // expected_value` (égalité stricte de `Value`) rejetait un
+                // porteur `5.0` pour un MERGE sur `5`, ou une date écrite dans
+                // un autre fuseau : le MERGE créait alors un DOUBLON d'un nœud
+                // que `MATCH` trouvait.
                 let has_all_props = resolved_match_props.iter().all(|(key, expected_value)| {
                     node.properties
                         .get(&PropertyKey::new(key.as_str()))
-                        .is_some_and(|v| v == expected_value)
+                        .is_some_and(|v| {
+                            obrain_common::types::value_cmp::egalite_structurelle(v, expected_value)
+                        })
                 });
 
                 if has_all_props {

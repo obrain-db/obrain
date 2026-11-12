@@ -224,7 +224,6 @@ pub(crate) fn blob_payload_len(value: &Value) -> Option<usize> {
 /// store's setter fast-path and its `persist_properties` defensive
 /// filter — never instantiated directly for an inline boolean, because
 /// we want a single place for the routing predicate.
-#[cfg(test)]
 pub(crate) fn should_route_to_blob(value: &Value) -> bool {
     blob_payload_len(value)
         .map(|n| n > BLOB_COLUMN_THRESHOLD_BYTES)
