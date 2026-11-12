@@ -349,6 +349,28 @@ impl Writer {
 
     #[tracing::instrument(level = "trace", skip(self, node))]
     pub fn write_node(&self, idx: u32, node: NodeRecord) -> SubstrateResult<()> {
+        self.ecrire_node(idx, node, None)
+    }
+
+    /// Comme [`Writer::write_node`], mais la déclaration `precede` (un record
+    /// écrit AVANT le `NodeInsert`, p. ex. `TxNoeudEnAttente`) part dans le
+    /// MÊME `write` que le `NodeInsert` : un appel système de moins, ordre
+    /// physique préservé (obrain#120 pt 4).
+    pub fn write_node_precede(
+        &self,
+        idx: u32,
+        node: NodeRecord,
+        precede: WalPayload,
+    ) -> SubstrateResult<()> {
+        self.ecrire_node(idx, node, Some(precede))
+    }
+
+    fn ecrire_node(
+        &self,
+        idx: u32,
+        node: NodeRecord,
+        precede: Option<WalPayload>,
+    ) -> SubstrateResult<()> {
         // (jalon 1) TOUT record reellement ecrit porte ALLOCATED — pose ici,
         // au seul point d'ecriture, jamais laisse au choix de l'appelant.
         let node = NodeRecord {
@@ -369,7 +391,20 @@ impl Writer {
                 tenant_id: node.tenant_id,
             },
         };
-        self.wal.append(rec)?;
+        match precede {
+            None => {
+                self.wal.append(rec)?;
+            }
+            Some(payload) => {
+                let decl = WalRecord {
+                    lsn: 0,
+                    timestamp: unix_micros(),
+                    flags: 0,
+                    payload,
+                };
+                self.wal.append_batch([decl, rec])?;
+            }
+        }
 
         // (2) mmap mutation.
         self.with_node_zone(|zf| {

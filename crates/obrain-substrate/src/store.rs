@@ -38142,14 +38142,6 @@ impl SubstrateStore {
     fn creer_noeud(&self, labels: &[&str], en_vol: bool) -> NodeId {
         self.refuser_mutation_en_lecture_seule("create_node");
         let id = self.allocate_node_id();
-        // Déclaré en vol AVANT le `NodeInsert` : un arrêt entre les deux ne
-        // laisse jamais un nœud non déclaré.
-        if en_vol {
-            self.declare_en_vol(WalPayload::TxNoeudEnAttente {
-                tx: Self::tx_creation_auto(id),
-                node_id: id.0 as u32,
-            });
-        }
         let bitset = self
             .intern_labels_to_bitset(labels)
             .expect("label registry overflow (>64 labels); step 3 lifts this");
@@ -38157,9 +38149,25 @@ impl SubstrateStore {
             label_bitset: bitset,
             ..Default::default()
         };
-        self.writer
-            .write_node(id.0 as u32, rec)
-            .expect("write_node failed — WAL append or mmap grow");
+        // Déclaré en vol AVANT le `NodeInsert`, dans le même `write` : un arrêt
+        // ne laisse jamais un nœud non déclaré, et le coût est un appel système
+        // de moins qu'une déclaration séparée.
+        if en_vol {
+            self.writer
+                .write_node_precede(
+                    id.0 as u32,
+                    rec,
+                    WalPayload::TxNoeudEnAttente {
+                        tx: Self::tx_creation_auto(id),
+                        node_id: id.0 as u32,
+                    },
+                )
+                .expect("write_node failed — WAL append or mmap grow");
+        } else {
+            self.writer
+                .write_node(id.0 as u32, rec)
+                .expect("write_node failed — WAL append or mmap grow");
+        }
         // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
         // registry on demand; no DashMap to populate.
         // T17h T1: live counter increments (total + per-label).
