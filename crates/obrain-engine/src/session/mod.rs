@@ -4769,10 +4769,8 @@ impl Session {
         let (epoch, transaction_id) = self.get_transaction_context();
         let tx = transaction_id.unwrap_or(TransactionId::SYSTEM);
         let store = self.active_store();
-        let props: Vec<(obrain_common::types::PropertyKey, Value)> = properties
-            .into_iter()
-            .map(|(k, v)| (k.into(), v))
-            .collect();
+        let props: Vec<(obrain_common::types::PropertyKey, Value)> =
+            properties.into_iter().map(|(k, v)| (k.into(), v)).collect();
         store.create_node_with_props_versioned(labels, &props, epoch, tx)
     }
 
