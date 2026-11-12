@@ -1280,7 +1280,32 @@ mod tests {
         assert_eq!(r.read_slot(2).unwrap(), d.as_slice());
     }
 
-    /// Ouverture d'une colonne synchronisée : la fin d'arène et le CRC de
+    /// Point 6 de la relecture : une entrée d'index AU-DELÀ de `n_slots` (écrite
+    /// sans sync) est protégée par le scan (ses octets ne sont pas écrasés) mais
+    /// pas effacée : quand un slot plus haut est écrit, `n_slots` monte et le
+    /// slot protégé redevient lisible, avec la DERNIÈRE valeur écrite dedans.
+    /// Verrouille ce comportement pour qu'un changement soit voulu.
+    #[test]
+    fn une_entree_au_dela_de_n_slots_ressurgit_avec_sa_derniere_valeur_si_n_slots_monte() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(5);
+        let (a, b, c) = (vec![b'a'; 300], vec![b'b'; 300], vec![b'c'; 300]);
+        {
+            let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+            w.write_slot(0, &a).unwrap();
+            w.sync().unwrap();
+            w.write_slot(5, &b).unwrap(); // au-delà de n_slots=1, sans sync
+        }
+        let mut w2 = BlobColumnWriter::create(&sub, spec).unwrap();
+        assert!(w2.read_slot(5).is_none(), "invisible tant que n_slots=1");
+        w2.write_slot(9, &c).unwrap(); // n_slots monte à 10
+        assert_eq!(w2.read_slot(5).unwrap(), b.as_slice(), "ressurgit, intacte");
+        assert_eq!(w2.read_slot(9).unwrap(), c.as_slice());
+        assert_eq!(w2.read_slot(0).unwrap(), a.as_slice());
+    }
+
+    /// NON-RÉGRESSION seulement (elle passe aussi sans le correctif) : à
+    /// l'ouverture d'une colonne synchronisée, la fin d'arène et le CRC de
     /// l'en-tête sont repris tels quels (pas de recalcul, colonne froide).
     #[test]
     fn une_colonne_synchronisee_rouvre_sans_recalcul() {

@@ -302,7 +302,8 @@ impl BlobColumnRegistry {
     ///
     /// An on-disk header whose magic, version, `prop_key_id` or
     /// `entity_kind` does not match is tolerated — the writer starts
-    /// from `n_slots=0` + `arena_bytes=0` and overwrites on next write,
+    /// from `n_slots=0` and an arena end derived from the index (0 for a
+    /// column that was never written) and overwrites on next write,
     /// the same "degrade to absent then re-emit" policy as the
     /// vec-column registry. The CRCs are NOT checked here, on purpose:
     /// after a stop without `sync` they are always stale, and refusing

@@ -17,11 +17,16 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   post-flush par un écrivain exclusif. Un écrivain en écriture PARTAGÉE ne rejoue
   pas (l'arène est à ses pairs) : une valeur longue qu'il a acquittée se perd
   encore au `kill -9` avant flush (limite, `docs/LIMITES-v0.0.1.md`).
-- **Contamination, corrigée dans tous les modes** : l'écrivain qui rouvre une
+- **Contamination à la REPRISE après un arrêt, corrigée** : l'écrivain qui rouvre une
   colonne recalcule la fin d'arène comme le maximum de `offset + len` de l'index
   (`BlobColumnWriter::create`). Une écriture de colonne restée sans trame — kill
   entre la colonne et la trame, valeur au-delà du plafond, écriture partagée — ne
-  se fait plus écraser par l'ajout suivant. Trouvé par la relecture de #123.
+  se fait plus écraser par l'ajout suivant. Trouvé par la relecture de #123. Ne
+  couvre PAS deux écrivains VIVANTS en écriture partagée, qui gardent chacun leur
+  fin d'arène en cache et s'écrasent toujours (limite ouverte, `docs/LIMITES-v0.0.1.md`,
+  ligne « arène des blobs »). Une entrée d'index écrite au-delà de `n_slots` sans
+  sync est protégée mais pas effacée : si un slot plus haut est écrit, elle
+  redevient lisible avec sa dernière valeur (testé).
 - Tests : `obrain-engine/tests/blob_hors_wal_kill9.rs` (6 scénarios `kill -9` et 2
   limites verrouillées), `blob_column::tests` (arrêt sans sync puis ajout).
 - Plafond : une valeur de plus de 32 Mio n'est pas journalisée, donc perdue au
