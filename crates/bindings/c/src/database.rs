@@ -1804,7 +1804,7 @@ mod tests {
         assert!(!v.is_null());
         // SAFETY: Static string, always valid.
         let version_str = unsafe { std::ffi::CStr::from_ptr(v) }.to_str().unwrap();
-        assert!(!version_str.is_empty());
+        assert_ne!(version_str, "");
     }
 
     // ── Edge property CRUD ──
