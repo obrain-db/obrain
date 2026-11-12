@@ -202,6 +202,39 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/tests"
 
+  # ── Bindings Python (pyo3, crates/bindings/python) ─────────────────────────
+  # Construit la wheel avec maturin ÉPINGLÉ (la même version que [build-system]
+  # de pyproject.toml : changer l'une sans l'autre fait échouer ce job), puis
+  # installe la wheel dans un venv neuf et lance pytest contre elle.
+  bindings-python:
+    name: Bindings Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: maturin (version épinglée dans pyproject.toml)
+        run: |
+          ATTENDUE=1.16.0
+          VERSION=$(sed -n 's/^requires = \["maturin==\(.*\)"\]$/\1/p' crates/bindings/python/pyproject.toml)
+          echo "maturin épinglé dans pyproject.toml : $VERSION"
+          if [ "$VERSION" != "$ATTENDUE" ]; then echo "::error::pyproject.toml épingle maturin $VERSION, ci.yml attend $ATTENDUE : mettre les deux à jour ensemble"; exit 1; fi
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==$ATTENDUE"
+          maturin --version
+      - name: Wheel (release)
+        run: maturin build --release --manifest-path crates/bindings/python/Cargo.toml --out "$RUNNER_TEMP/dist"
+      - name: Venv neuf, installation de la wheel, pytest
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/venv/bin/python" -m pip install "$RUNNER_TEMP"/dist/*.whl "pytest>=9" "networkx>=3"
+          cd crates/bindings/python
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -v -rs
   tests-all-features:
     name: Tests (toutes features)
     runs-on: [self-hosted, linux, x64, obrain-ci]

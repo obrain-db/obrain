@@ -18,6 +18,8 @@ members = [
     # (cdylib + staticlib, en-tête cbindgen) — voir crates/bindings/c/README.md.
     "crates/bindings/common",
     "crates/bindings/c",
+    # Liaison Python (pyo3, module `obrain`) — voir crates/bindings/python/README.md.
+    "crates/bindings/python",
 ]
 
 [workspace.package]
