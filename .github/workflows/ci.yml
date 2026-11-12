@@ -282,7 +282,7 @@ jobs:
         run: cargo test --target wasm32-unknown-unknown -p obrain --no-default-features --features browser,cypher,sparql,gremlin,graphql,sql-pgq,vector-index,text-index,hybrid-search,cdc,algos,cognitive,cognitive-full,metrics,temporal --test navigateur_features
 
   # Paquet navigateur obrain-web : construit le wasm (profil complet), génère les
-  # liaisons JS (nodejs + web) et exécute la batterie partagée de 35 tests sous node.
+  # liaisons JS (nodejs + web) et exécute la batterie partagée de 44 tests sous node.
   # Chrome n'est lancé que si un binaire est présent sur le runner (CHROME_BIN) ;
   # sinon l'étape l'écrit en clair au lieu de passer en silence.
   # Le paquet est publié comme artefact de CI, pas comme version.
@@ -341,12 +341,19 @@ jobs:
           else
             echo "::warning::Chrome absent du runner : batterie navigateur NON exécutée (node seul)"
           fi
+      # Paquet npm @obrain-db/wasm : wasm-pack épinglé (même version que la doc du paquet),
+      # package.json publié, contenu listé par `npm pack --dry-run`. Rien n'est publié.
+      - name: Paquet npm @obrain-db/wasm (wasm-pack 0.13.1, sans publication)
+        run: |
+          cargo install --locked --version 0.13.1 wasm-pack
+          crates/obrain-web/npm/construire.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: obrain-web-pkg
           path: |
             pkg
             pkg-web
+            crates/obrain-web/pkg-npm
           retention-days: 14
 
   # Persistance navigateur (OPFS) : exécutée dans un Chrome HEADLESS épinglé, en

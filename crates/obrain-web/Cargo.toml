@@ -3,6 +3,7 @@ name = "obrain-web"
 version = "0.0.0"
 edition = "2024"
 license.workspace = true
+repository.workspace = true
 publish = false
 description = "Liaison wasm-bindgen d'obrain pour le navigateur (paquet d'essai, non publié)"
 
@@ -46,3 +47,8 @@ algos = ["obrain/algos"]
 cognitive = ["obrain/cognitive"]
 metrics = ["obrain/metrics"]
 temporal = ["obrain/temporal"]
+
+# Paquet npm (crates/obrain-web/npm/construire.sh) : wasm-opt désactivé pour ne rien
+# télécharger hors du lock. Taille non optimisée par binaryen : à revoir avant publication.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

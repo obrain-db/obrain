@@ -1,0 +1,35 @@
+{
+  "name": "@obrain-db/wasm",
+  "version": "0.1.0-essai.0",
+  "description": "Base de graphes obrain dans le navigateur (WebAssembly) : GQL, Cypher, recherche texte et vectorielle, persistance OPFS",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "obrain_web.js",
+  "module": "obrain_web.js",
+  "types": "obrain_web.d.ts",
+  "exports": {
+    ".": {
+      "types": "./obrain_web.d.ts",
+      "default": "./obrain_web.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "obrain_web.js",
+    "obrain_web.d.ts",
+    "obrain_web_bg.wasm",
+    "obrain_web_bg.wasm.d.ts",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": ["graph", "database", "gql", "cypher", "wasm", "webassembly", "opfs"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/obrain-db/obrain",
+    "directory": "crates/obrain-web"
+  },
+  "homepage": "https://github.com/obrain-db/obrain/tree/main/crates/obrain-web",
+  "publishConfig": {
+    "access": "public"
+  }
+}
