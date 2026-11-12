@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llama-index-graph-stores-obrain"
+version = "0.0.1"
+description = "LlamaIndex PropertyGraphStore backed by Obrain"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12"
+keywords = ["llama-index", "graph", "property-graph", "obrain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+# Versions épinglées : une mise à jour se fait ici, avec la matrice de tests.
+dependencies = [
+    "obrain==0.0.1",
+    "llama-index-core==0.14.25",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==9.2.0",
+]
+
+[project.urls]
+Homepage = "https://obrain.dev"
+Repository = "https://github.com/obrain-db/obrain"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llama_index"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
