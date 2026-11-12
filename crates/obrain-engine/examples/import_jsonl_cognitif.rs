@@ -23,9 +23,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use obrain_cognitive::CognitiveEngine as _;
 use obrain_common::types::{NodeId, Value};
-use obrain_core::graph::GraphStore;
 use obrain_engine::ObrainDB;
 
 fn valeur(v: &serde_json::Value) -> Option<Value> {
@@ -40,20 +38,17 @@ fn valeur(v: &serde_json::Value) -> Option<Value> {
     }
 }
 
-fn rss_max_mo() -> f64 {
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: appel système documenté, structure zéro-initialisée valide.
-    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
-    if rc != 0 {
-        return f64::NAN;
-    }
-    let brut = usage.ru_maxrss as f64;
-    // macOS rend des octets, Linux des kibioctets.
-    if cfg!(target_os = "macos") {
-        brut / (1024.0 * 1024.0)
-    } else {
-        brut / 1024.0
-    }
+/// RSS courant du processus en Mo, par `ps` (portable macOS/Linux, sans
+/// `unsafe` — le dépôt interdit `unsafe_code`). NaN si `ps` manque.
+fn rss_mo() -> f64 {
+    let pid = std::process::id().to_string();
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map_or(f64::NAN, |kio| kio / 1024.0)
 }
 
 fn lignes(path: &Path) -> impl Iterator<Item = serde_json::Value> {
@@ -128,7 +123,7 @@ fn main() {
         }
         ids.insert(ext, id);
         n_nodes += 1;
-        if n_nodes % a.lot == 0 {
+        if n_nodes.is_multiple_of(a.lot) {
             print!("\rnœuds : {n_nodes}");
             let _ = std::io::stdout().flush();
         }
@@ -158,7 +153,7 @@ fn main() {
             }
         }
         n_edges += 1;
-        if n_edges % a.lot == 0 {
+        if n_edges.is_multiple_of(a.lot) {
             print!("\rarêtes : {n_edges}");
             let _ = std::io::stdout().flush();
         }
@@ -202,7 +197,7 @@ fn main() {
         "synapses : {} (arêtes importées : {n_edges})",
         synapses.len()
     );
-    println!("RSS max : {:.0} Mo", rss_max_mo());
+    println!("RSS : {:.0} Mo", rss_mo());
     println!(
         "total : {:.1?} (nœuds {:.1?}, arêtes {:.1?}, quiescence {:.1?})",
         t0.elapsed(),

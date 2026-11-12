@@ -25,9 +25,44 @@ use crate::store_trait::{
 // Configuration
 // ---------------------------------------------------------------------------
 
+/// Règle de co-activation Hebbienne appliquée à un lot d'événements
+/// (2026-11-12, plan 808fa9a7 T2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Coactivation {
+    /// Historique : TOUS les nœuds touchés par le même lot (jusqu'à
+    /// `max_batch_size` événements ou 50 ms) sont appariés deux à deux —
+    /// O(n²) par lot. MESURÉ sur le graphe PO (57 591 nœuds, 439 493 arêtes)
+    /// à l'import : 847 719 synapses, précision 0,0000 contre les synapses
+    /// d'usage réel (1 paire commune sur 30 461 paires note–note), 93 % des
+    /// événements perdus par retard du dispatch.
+    #[default]
+    Batch,
+    /// Seule une arête créée ou mise à jour co-active ses deux extrémités :
+    /// une synapse par arête, O(n) par lot, et une synapse qui reflète le
+    /// graphe. Les événements de nœud seuls ne créent rien.
+    EdgeEndpoints,
+}
+
+impl Coactivation {
+    /// Lecture tolérante depuis la configuration TOML : `"batch"` ou
+    /// `"edges"` (alias acceptés : `lot`, `edge_endpoints`, `aretes`).
+    #[must_use]
+    pub fn from_toml_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "batch" | "lot" => Some(Self::Batch),
+            "edges" | "edge_endpoints" | "aretes" | "arêtes" => Some(Self::EdgeEndpoints),
+            _ => None,
+        }
+    }
+}
+
 /// Configuration for the synapse subsystem.
 #[derive(Debug, Clone)]
 pub struct SynapseConfig {
+    /// Règle de co-activation des nœuds d'un lot (défaut : `Batch`, le
+    /// comportement historique ; le changement de défaut se décide sur
+    /// mesure, cf. plan 808fa9a7 T5).
+    pub coactivation: Coactivation,
     /// Default initial weight for a newly created synapse.
     pub initial_weight: f64,
     /// Reinforcement amount when nodes are co-activated.
@@ -53,6 +88,7 @@ pub struct SynapseConfig {
 impl Default for SynapseConfig {
     fn default() -> Self {
         Self {
+            coactivation: Coactivation::Batch,
             initial_weight: 0.1,
             reinforce_amount: 0.2,
             default_half_life: Duration::from_secs(7 * 24 * 3600), // 7 days
@@ -1842,23 +1878,109 @@ impl MutationListener for SynapseListener {
     }
 
     async fn on_batch(&self, events: &[MutationEvent]) {
-        // Collect all unique node IDs touched in this batch
-        let mut touched: HashSet<NodeId> = HashSet::new();
-        for event in events {
-            for nid in Self::node_ids(event) {
-                touched.insert(nid);
-            }
-        }
-
-        // Create/reinforce synapses for all pairs of co-activated nodes
-        let nodes: Vec<NodeId> = touched.into_iter().collect();
         let amount = self.store.config.reinforce_amount;
+        match self.store.config.coactivation {
+            Coactivation::EdgeEndpoints => {
+                // Une arête = une co-activation de ses deux extrémités.
+                for event in events {
+                    let (src, dst) = match event {
+                        MutationEvent::EdgeCreated { edge } => (edge.src, edge.dst),
+                        MutationEvent::EdgeUpdated { after, .. } => (after.src, after.dst),
+                        _ => continue,
+                    };
+                    if src != dst {
+                        self.store.reinforce(src, dst, amount);
+                    }
+                }
+            }
+            Coactivation::Batch => {
+                // Collect all unique node IDs touched in this batch
+                let mut touched: HashSet<NodeId> = HashSet::new();
+                for event in events {
+                    for nid in Self::node_ids(event) {
+                        touched.insert(nid);
+                    }
+                }
 
-        for i in 0..nodes.len() {
-            for j in (i + 1)..nodes.len() {
-                self.store.reinforce(nodes[i], nodes[j], amount);
+                // Create/reinforce synapses for all pairs of co-activated nodes
+                let nodes: Vec<NodeId> = touched.into_iter().collect();
+                for i in 0..nodes.len() {
+                    for j in (i + 1)..nodes.len() {
+                        self.store.reinforce(nodes[i], nodes[j], amount);
+                    }
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod coactivation_tests {
+    use super::*;
+    use obrain_reactive::{EdgeSnapshot, NodeSnapshot};
+
+    fn noeud(id: u64) -> MutationEvent {
+        MutationEvent::NodeCreated {
+            node: NodeSnapshot {
+                id: NodeId(id),
+                labels: Default::default(),
+                properties: Vec::new(),
+            },
+        }
+    }
+
+    fn arete(id: u64, src: u64, dst: u64) -> MutationEvent {
+        MutationEvent::EdgeCreated {
+            edge: EdgeSnapshot {
+                id: obrain_common::types::EdgeId(id),
+                src: NodeId(src),
+                dst: NodeId(dst),
+                edge_type: Default::default(),
+                properties: Vec::new(),
+            },
+        }
+    }
+
+    fn listener(coactivation: Coactivation) -> SynapseListener {
+        SynapseListener::new(Arc::new(SynapseStore::new(SynapseConfig {
+            coactivation,
+            ..Default::default()
+        })))
+    }
+
+    #[tokio::test]
+    async fn trois_noeuds_sans_arete_batch_apparie_tout_edges_rien() {
+        let lot = [noeud(1), noeud(2), noeud(3)];
+        let l = listener(Coactivation::Batch);
+        l.on_batch(&lot).await;
+        assert_eq!(l.store().len(), 3, "C(3,2) paires en mode lot");
+
+        let l = listener(Coactivation::EdgeEndpoints);
+        l.on_batch(&lot).await;
+        assert_eq!(l.store().len(), 0, "aucune arête : aucune synapse");
+    }
+
+    #[tokio::test]
+    async fn une_arete_en_mode_edges_donne_exactement_sa_synapse() {
+        let lot = [noeud(1), noeud(2), noeud(3), arete(10, 1, 2)];
+        let l = listener(Coactivation::EdgeEndpoints);
+        l.on_batch(&lot).await;
+        assert_eq!(l.store().len(), 1);
+        assert!(l.store().get_synapse(NodeId(1), NodeId(2)).is_some());
+        assert!(l.store().get_synapse(NodeId(1), NodeId(3)).is_none());
+    }
+
+    #[test]
+    fn lecture_toml_du_mode() {
+        assert_eq!(
+            Coactivation::from_toml_str("edges"),
+            Some(Coactivation::EdgeEndpoints)
+        );
+        assert_eq!(
+            Coactivation::from_toml_str(" Batch "),
+            Some(Coactivation::Batch)
+        );
+        assert_eq!(Coactivation::from_toml_str("n'importe"), None);
     }
 }
 

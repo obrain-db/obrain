@@ -47,26 +47,114 @@
 use std::sync::{Arc, Weak};
 
 use obrain_common::types::{EdgeId, NodeId};
-use obrain_reactive::{EdgeSnapshot, MutationBus, MutationEvent, NodeSnapshot};
+use obrain_reactive::{EdgeSnapshot, MutationBatch, MutationBus, MutationEvent, NodeSnapshot};
+use parking_lot::Mutex;
+
+/// Au-delà de cette taille, le tampon est publié sans attendre le tic.
+const TAMPON_MAX: usize = 4096;
 
 /// Adaptateur : `SubstrateStore::StoreMutationObserver` → `MutationBus`.
+///
+/// Deux modes. **Direct** (`new`) : chaque mutation est un `publish` — un
+/// lot d'un événement sur le canal broadcast. **Tamponné** (`tamponne`) :
+/// les événements s'accumulent dans un `Vec` sous mutex et partent en un
+/// seul `publish_batch` toutes les `periode` (tâche de vidage) ou dès
+/// `TAMPON_MAX`. MESURÉ à l'import du graphe PO (855 827 événements en
+/// 12 s) : en direct, le canal de 16 384 lots débordait et 42 % (mode
+/// `edges`) à 93 % (mode `batch`) des événements étaient perdus ; tamponné,
+/// un lot porte des milliers d'événements et la capacité n'est plus la
+/// limite.
 pub struct CognitiveObserver {
     bus: Weak<MutationBus>,
+    /// `None` en mode direct.
+    tampon: Option<Mutex<Vec<MutationEvent>>>,
 }
 
 impl CognitiveObserver {
-    /// Crée l'observateur branché sur le bus du moteur cognitif de la base.
+    /// Observateur en mode direct (un `publish` par mutation).
     #[must_use]
     pub fn new(bus: &Arc<MutationBus>) -> Self {
         Self {
             bus: Arc::downgrade(bus),
+            tampon: None,
+        }
+    }
+
+    /// Observateur tamponné, avec sa tâche de vidage périodique sur
+    /// `handle`. Sans runtime (`handle = None`), retombe en mode direct :
+    /// un tampon que personne ne vide perdrait la queue de chaque import.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn tamponne(
+        bus: &Arc<MutationBus>,
+        handle: Option<tokio::runtime::Handle>,
+        periode: std::time::Duration,
+    ) -> (Arc<Self>, Option<tokio::task::JoinHandle<()>>) {
+        let Some(handle) = handle else {
+            return (Arc::new(Self::new(bus)), None);
+        };
+        let obs = Arc::new(Self {
+            bus: Arc::downgrade(bus),
+            tampon: Some(Mutex::new(Vec::new())),
+        });
+        let pour_tache = Arc::downgrade(&obs);
+        let tache = handle.spawn(async move {
+            loop {
+                tokio::time::sleep(periode).await;
+                let Some(obs) = pour_tache.upgrade() else {
+                    break;
+                };
+                obs.vider();
+            }
+        });
+        (obs, Some(tache))
+    }
+
+    /// Nombre d'événements en attente dans le tampon (0 en mode direct).
+    #[must_use]
+    pub fn en_attente(&self) -> usize {
+        self.tampon.as_ref().map_or(0, |t| t.lock().len())
+    }
+
+    /// Publie tout de suite ce que le tampon contient (sans effet en mode
+    /// direct). Appelé par la tâche de vidage et par `cognitive_quiesce`.
+    pub fn vider(&self) {
+        let Some(tampon) = &self.tampon else { return };
+        let lot = std::mem::take(&mut *tampon.lock());
+        self.publier_lot(lot);
+    }
+
+    fn publier_lot(&self, lot: Vec<MutationEvent>) {
+        if lot.is_empty() {
+            return;
+        }
+        if let Some(bus) = self.bus.upgrade() {
+            // `false` = aucun abonné (moteur sans listener) : chemin zéro coût.
+            let _ = bus.publish_batch(MutationBatch::new(lot));
         }
     }
 
     fn publier(&self, event: MutationEvent) {
-        if let Some(bus) = self.bus.upgrade() {
-            // `false` = aucun abonné (moteur sans listener) : chemin zéro coût.
-            let _ = bus.publish(event);
+        match &self.tampon {
+            None => {
+                if let Some(bus) = self.bus.upgrade() {
+                    let _ = bus.publish(event);
+                }
+            }
+            Some(tampon) => {
+                let plein = {
+                    let mut t = tampon.lock();
+                    t.push(event);
+                    if t.len() >= TAMPON_MAX {
+                        Some(std::mem::take(&mut *t))
+                    } else {
+                        None
+                    }
+                };
+                if let Some(lot) = plein {
+                    self.publier_lot(lot);
+                }
+            }
         }
     }
 
@@ -93,6 +181,8 @@ impl std::fmt::Debug for CognitiveObserver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CognitiveObserver")
             .field("bus_vivant", &(self.bus.strong_count() > 0))
+            .field("tamponne", &self.tampon.is_some())
+            .field("en_attente", &self.en_attente())
             .finish()
     }
 }
@@ -127,7 +217,14 @@ impl obrain_substrate::StoreMutationObserver for CognitiveObserver {
     /// `edge_created_typed`, notifié juste après.
     fn edge_created(&self, _id: EdgeId, _src: NodeId, _dst: NodeId, _epoch: u64) {}
 
-    fn edge_created_typed(&self, id: EdgeId, src: NodeId, dst: NodeId, edge_type: &str, _epoch: u64) {
+    fn edge_created_typed(
+        &self,
+        id: EdgeId,
+        src: NodeId,
+        dst: NodeId,
+        edge_type: &str,
+        _epoch: u64,
+    ) {
         if est_interne_arete(edge_type) {
             return;
         }
