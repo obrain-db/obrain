@@ -14,6 +14,11 @@ output: 'lib/src/ffi/bindings.dart'
 headers:
   entry-points:
     - '../c/obrain.h'
+  # Keep only declarations written in obrain.h itself. Without this, the output
+  # depends on the host libc (macOS and glibc headers differ), and the
+  # freshness diff fails on Linux CI.
+  include-directives:
+    - '**/obrain.h'
 # Only the obrain-c surface is generated: without these filters ffigen also
 # emits the system structs pulled in by <stdlib.h> (ucontext, sigaction, ...).
 functions:
