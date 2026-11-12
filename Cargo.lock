@@ -2515,23 +2515,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "obrain-python"
-version = "0.0.1"
-dependencies = [
- "obrain-adapters",
- "obrain-bindings-common",
- "obrain-cognitive",
- "obrain-common",
- "obrain-core",
- "obrain-engine",
- "parking_lot",
- "pyo3",
- "pyo3-async-runtimes",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "obrain-node"
 version = "0.0.1"
 dependencies = [
@@ -2545,6 +2528,23 @@ dependencies = [
  "obrain-engine",
  "parking_lot",
  "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "obrain-python"
+version = "0.0.1"
+dependencies = [
+ "obrain-adapters",
+ "obrain-bindings-common",
+ "obrain-cognitive",
+ "obrain-common",
+ "obrain-core",
+ "obrain-engine",
+ "parking_lot",
+ "pyo3",
+ "pyo3-async-runtimes",
  "thiserror",
  "tokio",
 ]
