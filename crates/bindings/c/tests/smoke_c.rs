@@ -12,25 +12,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn bibliotheque_dynamique() -> PathBuf {
+    // La cdylib est dans `target/<profil>/`, mais l'exécutable de test peut être ailleurs
+    // selon le runner (`out/`, `deps/`) : on remonte l'arborescence jusqu'à la trouver.
     let exe = std::env::current_exe().expect("current_exe");
-    let deps = exe.parent().expect("deps");
-    let profil = deps.parent().expect("profil");
     let nom = format!(
         "{}obrain_c{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    for dir in [profil, deps] {
+    for dir in exe.ancestors().skip(1) {
         let candidat = dir.join(&nom);
         if candidat.is_file() {
             return candidat;
         }
     }
-    panic!(
-        "{nom} introuvable dans {} ni {}",
-        profil.display(),
-        deps.display()
-    );
+    panic!("{nom} introuvable en remontant depuis {}", exe.display());
 }
 
 #[test]
