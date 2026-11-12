@@ -5100,10 +5100,9 @@ impl Session {
     ///
     /// If a transaction is active, the node will be versioned with the transaction ID.
     ///
-    /// T17 Step 24: decomposed into `create_node_versioned` +
-    /// `set_node_property` so this call dispatches entirely through
-    /// `GraphStoreMut` (no LpgStore-inherent
-    /// `create_node_with_props_versioned` required).
+    /// Dispatches through `GraphStoreMut::create_node_with_props_versioned`:
+    /// sur le substrat, nœud + propriétés forment une seule unité de rejeu
+    /// (obrain#120 pt 4), entiers ou absents après un `kill -9`.
     pub fn create_node_with_props<'a>(
         &self,
         labels: &[&str],
@@ -5112,11 +5111,24 @@ impl Session {
         let (epoch, transaction_id) = self.get_transaction_context();
         let tx = transaction_id.unwrap_or(TransactionId::SYSTEM);
         let store = self.active_store();
-        let id = store.create_node_versioned(labels, epoch, tx);
-        for (key, value) in properties {
-            store.set_node_property(id, key, value);
-        }
-        id
+        let props: Vec<(obrain_common::types::PropertyKey, Value)> =
+            properties.into_iter().map(|(k, v)| (k.into(), v)).collect();
+        store.create_node_with_props_versioned(labels, &props, epoch, tx)
+    }
+
+    /// Sets a node property, transactionally (obrain#120 pt 4).
+    ///
+    /// Sous une transaction active, l'ancienne valeur est journalisée : un
+    /// `rollback()` la restaure (ou retire la clé). Hors transaction, l'écriture
+    /// est immédiate, comme `ObrainDB::set_node_property`.
+    pub fn set_node_property(&self, id: NodeId, key: &str, value: Value) {
+        let (_epoch, transaction_id) = self.get_transaction_context();
+        self.active_store().set_node_property_versioned(
+            id,
+            key,
+            value,
+            transaction_id.unwrap_or(TransactionId::SYSTEM),
+        );
     }
 
     /// Creates an edge between two nodes.

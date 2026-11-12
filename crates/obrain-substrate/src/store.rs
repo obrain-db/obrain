@@ -23685,30 +23685,43 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Node creation --
     fn create_node(&self, labels: &[&str]) -> NodeId {
-        self.refuser_mutation_en_lecture_seule("create_node");
-        let id = self.allocate_node_id();
-        let bitset = self
-            .intern_labels_to_bitset(labels)
-            .expect("label registry overflow (>64 labels); step 3 lifts this");
-        let rec = NodeRecord {
-            label_bitset: bitset,
-            ..Default::default()
-        };
-        self.writer
-            .write_node(id.0 as u32, rec)
-            .expect("write_node failed — WAL append or mmap grow");
-        // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
-        // registry on demand; no DashMap to populate.
-        // T17h T1: live counter increments (total + per-label).
-        self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
-        self.incr_label_counts(bitset, 1);
-        // Naissance notee ICI, sur le chemin NON transactionnel : la moitie
-        // des appelants — dont `ObrainDB::create_node()` — n'ouvrent aucune
-        // transaction. Ne la noter que dans la variante versionnee laisserait
-        // ces noeuds sans date, donc reputes nes a l'epoque 0, donc visibles
-        // AVANT leur creation.
-        self.note_naissance_noeud(id);
-        self.notify_node_created(id);
+        self.creer_noeud(labels, false)
+    }
+
+    /// Création ATOMIQUE sous `kill -9` (obrain#120 pt 4) : le nœud et ses
+    /// propriétés forment une seule unité de rejeu. Voir `creer_noeud_atomique`.
+    fn create_node_with_props(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+    ) -> NodeId {
+        self.creer_noeud_atomique(labels, properties)
+    }
+
+    fn create_node_with_props_versioned(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> NodeId {
+        if transaction_id != TransactionId::SYSTEM {
+            // Transaction explicite : le nœud est déjà déclaré en attente
+            // (`TxNoeudEnAttente`) ; sans `TxCommit` le rejeu écarte le nœud
+            // ET ses propriétés. Rien à ajouter.
+            let id = self.create_node_versioned(labels, epoch, transaction_id);
+            obrain_common::utils::panne::point_creation_noeud(0);
+            for (rang, (k, v)) in properties.iter().enumerate() {
+                self.set_node_property(id, k.as_str(), v.clone());
+                obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
+            }
+            return id;
+        }
+        let id = self.creer_noeud_atomique(labels, properties);
+        if epoch.0 > 0 {
+            self.naissances_noeuds.insert(id, epoch.0);
+            self.note_mvcc_actif();
+        }
         id
     }
 
@@ -38437,6 +38450,92 @@ mod sonde_v3_replay {
 }
 
 impl SubstrateStore {
+    fn creer_noeud(&self, labels: &[&str], en_vol: bool) -> NodeId {
+        self.refuser_mutation_en_lecture_seule("create_node");
+        let id = self.allocate_node_id();
+        let bitset = self
+            .intern_labels_to_bitset(labels)
+            .expect("label registry overflow (>64 labels); step 3 lifts this");
+        let rec = NodeRecord {
+            label_bitset: bitset,
+            ..Default::default()
+        };
+        // Déclaré en vol AVANT le `NodeInsert`, dans le même `write` : un arrêt
+        // ne laisse jamais un nœud non déclaré, et le coût est un appel système
+        // de moins qu'une déclaration séparée.
+        if en_vol {
+            self.writer
+                .write_node_precede(
+                    id.0 as u32,
+                    rec,
+                    WalPayload::TxNoeudEnAttente {
+                        tx: Self::tx_creation_auto(id),
+                        node_id: id.0 as u32,
+                    },
+                )
+                .expect("write_node failed — WAL append or mmap grow");
+        } else {
+            self.writer
+                .write_node(id.0 as u32, rec)
+                .expect("write_node failed — WAL append or mmap grow");
+        }
+        // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
+        // registry on demand; no DashMap to populate.
+        // T17h T1: live counter increments (total + per-label).
+        self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
+        self.incr_label_counts(bitset, 1);
+        // Naissance notee ICI, sur le chemin NON transactionnel : la moitie
+        // des appelants — dont `ObrainDB::create_node()` — n'ouvrent aucune
+        // transaction. Ne la noter que dans la variante versionnee laisserait
+        // ces noeuds sans date, donc reputes nes a l'epoque 0, donc visibles
+        // AVANT leur creation.
+        self.note_naissance_noeud(id);
+        self.notify_node_created(id);
+        id
+    }
+
+    /// Identifiant de la « transaction » privée d'une création auto-commit :
+    /// bit de poids fort levé (les `TransactionId` du gestionnaire n'y
+    /// montent jamais) + slot du nœud, donc unique entre pairs vivants.
+    fn tx_creation_auto(id: NodeId) -> u64 {
+        (1u64 << 63) | id.0
+    }
+
+    /// Crée un nœud et pose ses propriétés comme UNE unité de rejeu, sans
+    /// nouveau format disque (obrain#120 pt 4).
+    ///
+    /// Avant : `NodeInsert` puis un record WAL par propriété, liés par rien. Un
+    /// `kill -9` entre deux rejouait un nœud vivant portant une partie de ses
+    /// propriétés. Maintenant : `TxNoeudEnAttente` (déclaré avant le
+    /// `NodeInsert`), le nœud, les propriétés, puis `TxCommit` SANS
+    /// `FLAG_COMMIT` (pas de fsync de plus : la durabilité de l'auto-commit
+    /// reste celle des autres écritures). Le rejeu existant écarte (`NodeDelete`)
+    /// toute déclaration jamais scellée : le nœud existe entier ou pas du tout.
+    /// Sans propriétés il n'y a rien à lier : chemin inchangé.
+    fn creer_noeud_atomique(&self, labels: &[&str], properties: &[(PropertyKey, Value)]) -> NodeId {
+        if properties.is_empty() {
+            return self.creer_noeud(labels, false);
+        }
+        let id = self.creer_noeud(labels, true);
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (k, v)) in properties.iter().enumerate() {
+            self.set_node_property(id, k.as_str(), v.clone());
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
+        }
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: horodatage_micros(),
+            flags: 0,
+            payload: WalPayload::TxCommit {
+                tx: Self::tx_creation_auto(id),
+            },
+        };
+        if let Err(e) = self.writer.wal().append_encoded(&rec) {
+            tracing::error!(error = %e, "WAL : impossible de sceller la création du nœud");
+        }
+        id
+    }
+
     /// (2026-11-01, D-DUR) Déclare au journal qu'une entité appartient à une
     /// transaction encore ouverte. Sans ce record, un processus qui disparaît
     /// avec la transaction ouverte laisse l'entité PUBLIÉE à la réouverture.
