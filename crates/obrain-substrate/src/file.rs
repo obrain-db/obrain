@@ -357,10 +357,30 @@ fn registre_verrous() -> &'static TableVerrous {
 /// même répertoire (lien symbolique, `..`, chemin relatif) doivent tomber sur
 /// la même entrée, sinon le registre croirait à deux répertoires distincts et
 /// le second `flock` échouerait sur le premier.
+///
+/// ── CE QUE LE VERROU GARANTIT, EXACTEMENT ──────────────────────────────────
+/// C'est un verrou CONSULTATIF de PROCESSUS sur `substrate.dirlock` :
+///
+/// * exclusif (`open`) contre partagé (`open_read_only`, `open_shared_write`) :
+///   exclusion mutuelle ENTRE PROCESSUS. Un lecteur seul ne s'ouvre pas tant
+///   qu'un écrivain exclusif vit, et inversement — l'écrivain exclusif étant le
+///   seul à tronquer une zone ou à migrer un format, c'est ce qui rend la
+///   projection d'un lecteur sûre ;
+/// * partagé contre partagé : AUCUNE exclusion. Un lecteur seul coexiste avec
+///   un ou plusieurs écrivains partagés VIVANTS et avec d'autres lecteurs. Le
+///   verrou partagé ne garantit donc PAS l'absence d'écrivain ;
+/// * dans un même processus, les ouvertures PARTAGENT la part : rien n'y est
+///   exclu, sauf une demande exclusive sur une part partagée.
+///
+/// `creer = false` (lecture seule) : le fichier de verrou est ouvert SANS droit
+/// d'écriture et n'est PAS créé. Une base qui ne l'a pas (antérieure au verrou
+/// dédié) ne peut pas être protégée d'un écrivain exclusif : l'ouverture en
+/// lecture seule est refusée, en disant quoi faire.
 pub(crate) fn acquerir_verrou_repertoire(
     chemin: &Path,
     verrou_path: &Path,
     exclusif: bool,
+    creer: bool,
 ) -> SubstrateResult<std::sync::Arc<VerrouRepertoire>> {
     let cle = std::fs::canonicalize(chemin).unwrap_or_else(|_| chemin.to_path_buf());
     let mut table = registre_verrous()
@@ -390,13 +410,32 @@ pub(crate) fn acquerir_verrou_repertoire(
     // `.create(true)` : les stores antérieurs à ce verrou dédié n'ont pas encore
     // `substrate.dirlock` — on le crée au premier accès (fichier vide, contenu
     // jamais lu : seule sa durée de vie compte, pour porter le `flock`).
-    let fichier = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(verrou_path)
-        .map_err(SubstrateError::Io)?;
+    let fichier = if creer {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(verrou_path)
+            .map_err(SubstrateError::Io)?
+    } else {
+        debug_assert!(!exclusif, "une ouverture sans création est un lecteur");
+        match File::open(verrou_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SubstrateError::LectureSeuleRefusee {
+                    raison: format!(
+                        "{} n'a pas de fichier de verrou `{}` (base antérieure au verrou \
+                         dédié) et une ouverture en lecture seule ne le crée pas ; ouvrez \
+                         la base une fois en écriture, puis rouvrez en lecture seule",
+                        chemin.display(),
+                        zone::DIR_LOCK
+                    ),
+                });
+            }
+            Err(e) => return Err(SubstrateError::Io(e)),
+        }
+    };
     let res = verrouiller_fichier(&fichier, exclusif);
     res.map_err(|e| {
         SubstrateError::Io(std::io::Error::new(
@@ -821,6 +860,307 @@ enum ZoneBacking {
     Mmap { file: File, map: Option<MmapMut> },
     /// Zone en mémoire, partagée par le registre de [`RamDir`].
     Ram(std::sync::Arc<RamZone>),
+    /// Zone d'une ouverture en LECTURE SEULE : fichier ouvert sans droit
+    /// d'écriture, projeté en privé (copy-on-write), partagée par le registre
+    /// de [`RegistrePrive`]. Rien de ce qui s'y écrit n'atteint le disque.
+    Privee(std::sync::Arc<ZonePrivee>),
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ZONES D'UNE OUVERTURE EN LECTURE SEULE — privées, jamais écrites sur disque
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Au-delà de cette taille, une zone ADOSSÉE À UN FICHIER n'est pas recopiée en
+/// mémoire pour grandir : l'ouverture en lecture seule est refusée (voir
+/// [`ZonePrivee::grandir`]).
+const PLAFOND_COPIE_PRIVEE: usize = 1 << 30;
+
+/// Réserve d'adresses minimale d'une zone née en mémoire : des pages anonymes
+/// jamais touchées ne coûtent ni RAM ni disque, et tant que la zone grandit
+/// dans sa réserve elle ne DÉMÉNAGE pas.
+const RESERVE_MEMOIRE_MIN: usize = 16 << 20;
+
+/// Les octets d'une [`ZonePrivee`].
+#[derive(Debug)]
+enum OctetsPrives {
+    /// Fichier absent ou vide : aucune projection.
+    Vide,
+    /// Projection PRIVÉE (`MAP_PRIVATE`, copy-on-write) d'un fichier ouvert en
+    /// lecture seule. Une écriture ne modifie que la copie de la page dans CE
+    /// processus ; le fichier et les autres processus ne la voient jamais.
+    Fichier(MmapMut),
+    /// Octets nés en mémoire (fichier absent, ou zone qui a dû grandir au-delà
+    /// de son fichier) : pages anonymes, réservées plus large que `len`.
+    Memoire(MmapMut),
+}
+
+#[derive(Debug)]
+struct EtatPrive {
+    octets: OctetsPrives,
+    /// Longueur LOGIQUE de la zone (≤ taille de la projection).
+    len: usize,
+    /// Projections remplacées (croissance, reprojection). Elles ne sont
+    /// détruites qu'avec la zone : une vue rendue par une AUTRE poignée avant le
+    /// remplacement reste donc valide. Leur nombre est logarithmique (les
+    /// fichiers grandissent ×1,5, les réserves doublent).
+    retraites: Vec<MmapMut>,
+}
+
+/// Une zone vue par une ouverture en LECTURE SEULE.
+///
+/// LE CONTRAT, ET QUI LE TIENT. Ouvrir une base en lecture seule ne doit
+/// modifier aucun octet d'aucun fichier. Ce n'est pas une discipline demandée
+/// au code appelant : le fichier est ouvert SANS droit d'écriture, et il est
+/// projeté en PRIVÉ. Le rejeu du WAL, la reconstruction d'une colonne de
+/// degrés, le restampage d'une chaîne — tout ce que l'ouverture écrivait
+/// autrefois dans les zones — écrit désormais dans des pages copiées à la
+/// première écriture, propres à ce processus. `set_len`, `pwrite` et `fsync`
+/// ne sont jamais appelés ; s'ils l'étaient, le descripteur les refuserait.
+///
+/// CE QUE VOIT LE LECTEUR. Les pages qu'il n'a pas écrites restent celles du
+/// cache de pages : si un écrivain partagé vivant les modifie, le lecteur le
+/// voit (comme avant). Une page qu'il a écrite (rejeu) est figée à sa version.
+///
+/// PARTAGE ENTRE POIGNÉES. Le code s'appuie sur le fait que deux poignées de
+/// la même zone voient les mêmes octets (le rejeu écrit par les siennes, le
+/// `Writer` relit par les siennes). Un `MAP_SHARED` l'offrait gratuitement ;
+/// deux projections privées divergeraient. D'où le [`RegistrePrive`] : une
+/// seule `ZonePrivee` par fichier et par ouverture, partagée par `Arc`.
+pub(crate) struct ZonePrivee {
+    chemin: PathBuf,
+    /// Descripteur en LECTURE SEULE ; `None` si le fichier n'existait pas à
+    /// l'ouverture (il n'est pas créé : la zone vit alors en mémoire).
+    fichier: Option<File>,
+    etat: std::cell::UnsafeCell<EtatPrive>,
+}
+
+// SAFETY: même contrat que `RamZone` et qu'un mmap partagé entre poignées — la
+// sérialisation des écritures vient des verrous du substrat.
+unsafe impl Send for ZonePrivee {}
+unsafe impl Sync for ZonePrivee {}
+
+impl std::fmt::Debug for ZonePrivee {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZonePrivee")
+            .field("chemin", &self.chemin)
+            .field("fichier", &self.fichier.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ZonePrivee {
+    /// Ouvre `chemin` SANS droit d'écriture et SANS le créer.
+    fn ouvrir(chemin: &Path) -> SubstrateResult<Self> {
+        let fichier = match File::open(chemin) {
+            Ok(f) => Some(f),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(SubstrateError::Io(e)),
+        };
+        let (octets, len) = match &fichier {
+            Some(f) => {
+                let len = f.metadata()?.len() as usize;
+                if len == 0 {
+                    (OctetsPrives::Vide, 0)
+                } else {
+                    // SAFETY: projection PRIVÉE d'un fichier en lecture seule ;
+                    // le verrou partagé du répertoire exclut l'écrivain exclusif
+                    // (le seul à pouvoir tronquer une zone).
+                    let m = unsafe { MmapOptions::new().len(len).map_copy(f)? };
+                    (OctetsPrives::Fichier(m), len)
+                }
+            }
+            None => (OctetsPrives::Vide, 0),
+        };
+        Ok(Self {
+            chemin: chemin.to_path_buf(),
+            fichier,
+            etat: std::cell::UnsafeCell::new(EtatPrive {
+                octets,
+                len,
+                retraites: Vec::new(),
+            }),
+        })
+    }
+
+    fn len(&self) -> usize {
+        // SAFETY: lecture d'un entier ; aucune croissance concurrente (contrat).
+        unsafe { (*self.etat.get()).len }
+    }
+
+    fn longueur_disque(&self) -> u64 {
+        match &self.fichier {
+            Some(f) => f
+                .metadata()
+                .map(|m| m.len())
+                .unwrap_or_else(|_| self.len() as u64),
+            None => self.len() as u64,
+        }
+    }
+
+    /// # Safety
+    /// Aucune vue MUTABLE vivante sur la zone (contrat d'un mmap partagé).
+    unsafe fn as_slice(&self) -> &[u8] {
+        // SAFETY: délégué à l'appelant.
+        let e = unsafe { &*self.etat.get() };
+        match &e.octets {
+            OctetsPrives::Vide => &[],
+            OctetsPrives::Fichier(m) | OctetsPrives::Memoire(m) => &m[..e.len],
+        }
+    }
+
+    /// # Safety
+    /// Aucune autre vue vivante sur la zone pendant la durée de celle-ci.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn as_slice_mut(&self) -> &mut [u8] {
+        // SAFETY: délégué à l'appelant.
+        let e = unsafe { &mut *self.etat.get() };
+        let len = e.len;
+        match &mut e.octets {
+            OctetsPrives::Vide => &mut [],
+            OctetsPrives::Fichier(m) | OctetsPrives::Memoire(m) => &mut m[..len],
+        }
+    }
+
+    /// La projection du FICHIER, si la zone en est encore une (conseils noyau).
+    ///
+    /// # Safety
+    /// Aucune vue mutable vivante.
+    unsafe fn projection_fichier(&self) -> Option<&MmapMut> {
+        // SAFETY: délégué à l'appelant.
+        match unsafe { &(*self.etat.get()).octets } {
+            OctetsPrives::Fichier(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Fait grandir la zone EN MÉMOIRE (zéro-remplie), sans toucher au fichier.
+    ///
+    /// * zone née en mémoire, croissance dans la réserve : un entier change ;
+    /// * réserve épuisée : nouvelle réserve double, recopie, ancienne retirée ;
+    /// * zone adossée à un fichier : elle doit quitter son fichier, donc être
+    ///   recopiée. C'est le cas RARE où le rejeu étend une zone au-delà de ce
+    ///   que le disque porte (écrivain tué entre l'append WAL et l'allongement
+    ///   du fichier). Au-delà de [`PLAFOND_COPIE_PRIVEE`] on REFUSE plutôt que
+    ///   de recopier des Go en mémoire anonyme : un écrivain doit consolider.
+    ///
+    /// # Safety
+    /// Aucune vue rendue par la poignée APPELANTE ne survit (elle tient
+    /// `&mut self`). Les vues d'autres poignées restent valides : l'ancienne
+    /// projection est retirée, pas détruite.
+    unsafe fn grandir(&self, new_len: usize) -> SubstrateResult<()> {
+        // SAFETY: délégué à l'appelant.
+        unsafe { self.grandir_avec_plafond(new_len, PLAFOND_COPIE_PRIVEE) }
+    }
+
+    /// [`Self::grandir`] avec un plafond explicite (testable sans fichier de 1 Gio).
+    ///
+    /// # Safety
+    /// Même contrat que [`Self::grandir`].
+    unsafe fn grandir_avec_plafond(&self, new_len: usize, plafond: usize) -> SubstrateResult<()> {
+        // SAFETY: délégué à l'appelant.
+        let e = unsafe { &mut *self.etat.get() };
+        if new_len <= e.len {
+            return Ok(());
+        }
+        if let OctetsPrives::Memoire(m) = &e.octets
+            && new_len <= m.len()
+        {
+            e.len = new_len;
+            return Ok(());
+        }
+        if matches!(e.octets, OctetsPrives::Fichier(_)) && e.len > plafond {
+            return Err(SubstrateError::LectureSeuleRefusee {
+                raison: format!(
+                    "la zone {} ({} octets) devrait grandir à {} octets pour rejouer le \
+                     WAL, ce qu'une ouverture en lecture seule ne peut faire qu'en la \
+                     recopiant en mémoire ; ouvrez la base une fois en écriture \
+                     (`obrain data compact` ou toute ouverture inscriptible) pour \
+                     consolider, puis rouvrez en lecture seule",
+                    self.chemin.display(),
+                    e.len,
+                    new_len
+                ),
+            });
+        }
+        let reserve = new_len
+            .saturating_mul(2)
+            .max(RESERVE_MEMOIRE_MIN)
+            .next_multiple_of(4096);
+        let mut neuf = MmapOptions::new().len(reserve).map_anon()?;
+        let ancien = std::mem::replace(&mut e.octets, OctetsPrives::Vide);
+        match ancien {
+            OctetsPrives::Vide => {}
+            OctetsPrives::Fichier(m) | OctetsPrives::Memoire(m) => {
+                neuf[..e.len].copy_from_slice(&m[..e.len]);
+                e.retraites.push(m);
+            }
+        }
+        e.octets = OctetsPrives::Memoire(neuf);
+        e.len = new_len;
+        Ok(())
+    }
+
+    /// Reprojette EN PRIVÉ un fichier qu'un écrivain a allongé. Rend `true` si
+    /// la zone a grandi.
+    ///
+    /// La nouvelle projection est NEUVE : les pages que ce lecteur avait écrites
+    /// (rejeu de l'ouverture) redeviennent celles du fichier. C'est correct : un
+    /// fichier qui grandit a un écrivain vivant, et cet écrivain a lui-même posé
+    /// dans les zones tout ce que son WAL portait (écriture directe, ou rejeu à
+    /// sa propre ouverture). Une zone qui a quitté son fichier ([`Self::grandir`])
+    /// n'est plus reprojetée.
+    ///
+    /// # Safety
+    /// Même contrat que [`Self::grandir`].
+    unsafe fn rafraichir(&self) -> SubstrateResult<bool> {
+        // SAFETY: délégué à l'appelant.
+        let e = unsafe { &mut *self.etat.get() };
+        let Some(f) = &self.fichier else {
+            return Ok(false);
+        };
+        if matches!(e.octets, OctetsPrives::Memoire(_)) {
+            return Ok(false);
+        }
+        let disque = f.metadata()?.len() as usize;
+        if disque <= e.len {
+            return Ok(false);
+        }
+        // SAFETY: voir `ouvrir`.
+        let m = unsafe { MmapOptions::new().len(disque).map_copy(f)? };
+        if let OctetsPrives::Fichier(ancien) =
+            std::mem::replace(&mut e.octets, OctetsPrives::Fichier(m))
+        {
+            e.retraites.push(ancien);
+        }
+        e.len = disque;
+        Ok(true)
+    }
+}
+
+/// Le registre des zones d'une ouverture en lecture seule : UNE [`ZonePrivee`]
+/// par fichier, rendue à toutes les poignées (voir « PARTAGE ENTRE POIGNÉES »).
+///
+/// Les entrées sont FORTES et vivent autant que l'ouverture : une zone écrite
+/// en privé par le rejeu puis relâchée doit être retrouvée telle quelle par la
+/// poignée suivante.
+#[derive(Debug, Default)]
+struct RegistrePrive {
+    zones: std::sync::Mutex<HashMap<String, std::sync::Arc<ZonePrivee>>>,
+}
+
+impl RegistrePrive {
+    fn zone(&self, dir: &Path, nom: &str) -> SubstrateResult<std::sync::Arc<ZonePrivee>> {
+        let mut garde = self
+            .zones
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(z) = garde.get(nom) {
+            return Ok(z.clone());
+        }
+        let z = std::sync::Arc::new(ZonePrivee::ouvrir(&dir.join(nom))?);
+        garde.insert(nom.to_string(), z.clone());
+        Ok(z)
+    }
 }
 
 /// A read/write memory-mapped file for one zone.
@@ -916,6 +1256,18 @@ impl ZoneFile {
         }
     }
 
+    /// Poignée sur une zone d'une ouverture en LECTURE SEULE (voir
+    /// [`ZonePrivee`]) : aucune E/S d'écriture, jamais.
+    pub(crate) fn open_privee(zone: std::sync::Arc<ZonePrivee>) -> Self {
+        Self {
+            path: zone.chemin.clone(),
+            len: zone.len() as u64,
+            backing: ZoneBacking::Privee(zone),
+            remap_count: 0,
+            lecture_seule: true,
+        }
+    }
+
     /// Number of resize+remap operations performed on this zone since it was
     /// opened. Useful for observability and for verifying the grow policy is
     /// O(log N) in stress tests.
@@ -932,6 +1284,7 @@ impl ZoneFile {
             // `RamZone` EST l'état, et elle est partagée par le registre de
             // `RamDir` — `self.len` en est donc déjà la taille vraie.
             ZoneBacking::Ram(_) => self.len,
+            ZoneBacking::Privee(z) => z.longueur_disque(),
         }
     }
 
@@ -971,6 +1324,19 @@ impl ZoneFile {
             // En mémoire, il n'y a pas de pair qui agrandirait le support :
             // rien à reprojeter. (Le mode RAM est celui du wasm, sans E/S.)
             ZoneBacking::Ram(_) => Ok(false),
+            // Lecture seule : on reprojette EN PRIVÉ la taille que le fichier a
+            // prise chez l'écrivain — sans jamais écrire (voir `ZonePrivee`).
+            ZoneBacking::Privee(z) => {
+                // SAFETY: `&mut self` — aucune vue rendue par cette poignée ne
+                // survit ; l'ancienne projection est RETIRÉE, pas détruite, donc
+                // une vue tenue par une autre poignée reste valide.
+                let grandi = unsafe { z.rafraichir()? };
+                if grandi {
+                    self.len = z.len() as u64;
+                    self.remap_count += 1;
+                }
+                Ok(grandi)
+            }
         }
     }
 
@@ -979,11 +1345,16 @@ impl ZoneFile {
     }
 
     pub fn len(&self) -> u64 {
-        self.len
+        match &self.backing {
+            // La longueur d'une zone privée est PARTAGÉE entre ses poignées :
+            // une croissance faite par l'une (rejeu) est vue par les autres.
+            ZoneBacking::Privee(z) => z.len() as u64,
+            _ => self.len,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len() == 0
     }
 
     /// Borrow the mapped bytes (read-only view).
@@ -1002,6 +1373,9 @@ impl ZoneFile {
                     unsafe { z.as_slice() }
                 }
             }
+            // SAFETY: même contrat qu'un mmap partagé entre poignées — aucune
+            // vue mutable vivante pendant une lecture (le substrat sérialise).
+            ZoneBacking::Privee(z) => unsafe { z.as_slice() },
         }
     }
 
@@ -1022,6 +1396,10 @@ impl ZoneFile {
                     unsafe { z.as_slice_mut() }
                 }
             }
+            // SAFETY: `&mut self` garantit l'unicité de CETTE poignée ; les
+            // octets sont PRIVÉS (copy-on-write ou mémoire) : rien n'atteint le
+            // fichier, quoi qu'on écrive ici.
+            ZoneBacking::Privee(z) => unsafe { z.as_slice_mut() },
         }
     }
 
@@ -1030,13 +1408,14 @@ impl ZoneFile {
     /// This is the low-level primitive; higher-level pre-allocation policies
     /// (exponential ×1.5) live in `SubstrateFile`.
     pub fn grow_to(&mut self, new_len: u64) -> SubstrateResult<()> {
-        if new_len < self.len {
+        let actuelle = self.len();
+        if new_len < actuelle {
             return Err(SubstrateError::WalBadFrame(format!(
                 "grow_to: refuses to shrink ({} → {})",
-                self.len, new_len
+                actuelle, new_len
             )));
         }
-        if new_len == self.len {
+        if new_len == actuelle {
             return Ok(());
         }
         // Drop the previous map before resizing (some platforms disallow resize
@@ -1100,6 +1479,13 @@ impl ZoneFile {
                 unsafe { z.resize(new_len) };
                 self.len = new_len;
             }
+            ZoneBacking::Privee(z) => {
+                // SAFETY: `&mut self` ; croissance EN MÉMOIRE seulement — le
+                // fichier n'est ni allongé ni touché (descripteur sans droit
+                // d'écriture). Voir `ZonePrivee::grandir`.
+                unsafe { z.grandir(new_len as usize)? };
+                self.len = new_len;
+            }
         }
         self.remap_count += 1;
         Ok(())
@@ -1114,6 +1500,11 @@ impl ZoneFile {
     /// ×1.5 pre-allocation, so truncating them reclaims disk without touching
     /// live data. Same mmap-drop-then-resize discipline as `grow_to`.
     pub fn shrink_to(&mut self, new_len: u64) -> SubstrateResult<()> {
+        if matches!(self.backing, ZoneBacking::Privee(_)) {
+            return Err(SubstrateError::LectureSeule {
+                operation: format!("rétrécir la zone {}", self.path.display()),
+            });
+        }
         if new_len > self.len {
             return Err(SubstrateError::WalBadFrame(format!(
                 "shrink_to: refuses to grow ({} → {}) — use grow_to",
@@ -1136,6 +1527,7 @@ impl ZoneFile {
                 // SAFETY: même raisonnement que `grow_to` (cf. commentaire).
                 unsafe { z.resize(new_len) };
             }
+            ZoneBacking::Privee(_) => unreachable!("refusé en tête de fonction"),
         }
         self.len = new_len;
         self.remap_count += 1;
@@ -1154,10 +1546,10 @@ impl ZoneFile {
     /// préalable (`grow_to`) : on n'écrit jamais au-delà de `len`.
     pub fn ecrire_a(&self, offset: u64, octets: &[u8]) -> SubstrateResult<()> {
         let fin = offset + octets.len() as u64;
-        if fin > self.len {
+        if fin > self.len() {
             return Err(SubstrateError::WalBadFrame(format!(
                 "ecrire_a : {fin} au-delà de la zone ({})",
-                self.len
+                self.len()
             )));
         }
         match &self.backing {
@@ -1199,6 +1591,14 @@ impl ZoneFile {
                 }
                 mem[debut..arrondi].copy_from_slice(octets);
             }
+            // Lecture seule : JAMAIS d'appel système d'écriture — la copie va
+            // dans la projection privée, bornée par la garde ci-dessus.
+            ZoneBacking::Privee(z) => {
+                // SAFETY: contrat du substrat (aucune vue vivante sur la zone
+                // pendant une écriture) ; borne vérifiée contre `self.len()`.
+                let mem = unsafe { z.as_slice_mut() };
+                mem[offset as usize..fin as usize].copy_from_slice(octets);
+            }
         }
         Ok(())
     }
@@ -1225,7 +1625,9 @@ impl ZoneFile {
                 }
             }
             // En mémoire, il n'y a rien à « pousser » : les octets SONT l'état.
-            ZoneBacking::Ram(_) => {}
+            // En lecture seule non plus : la projection est privée, et rien ne
+            // doit — ni ne peut — rejoindre le fichier.
+            ZoneBacking::Ram(_) | ZoneBacking::Privee(_) => {}
         }
         Ok(())
     }
@@ -1300,14 +1702,22 @@ impl ZoneFile {
     /// `SubstrateError::Io`. Callers treat the result as best-effort: a
     /// prefetch failure must not abort the activation pipeline.
     pub fn advise_willneed(&self, offset: usize, len: usize) -> SubstrateResult<()> {
-        let ZoneBacking::Mmap { map, .. } = &self.backing else {
+        let m = match &self.backing {
+            ZoneBacking::Mmap { map, .. } => match map.as_ref() {
+                Some(m) => m,
+                None => return Ok(()),
+            },
+            // Lecture seule : la pré-lecture est un conseil au noyau, pas une
+            // écriture — elle vaut aussi pour une projection privée de fichier.
+            // SAFETY: lecture de l'état partagé, aucune vue mutable vivante.
+            ZoneBacking::Privee(z) => match unsafe { z.projection_fichier() } {
+                Some(m) => m,
+                None => return Ok(()),
+            },
             // Mode mémoire : pas de noyau à qui demander une pré-lecture.
-            return Ok(());
+            ZoneBacking::Ram(_) => return Ok(()),
         };
-        let Some(m) = map.as_ref() else {
-            return Ok(());
-        };
-        let total = self.len as usize;
+        let total = (self.len() as usize).min(m.len());
         if total == 0 || offset >= total {
             return Ok(());
         }
@@ -1371,6 +1781,10 @@ pub struct SubstrateFile {
     /// C'est LUI qui garantit que deux poignées de la même zone partagent les
     /// mêmes octets (cf. [`RamZone`]).
     ram: Option<std::sync::Arc<RamDir>>,
+    /// Registre des zones PRIVÉES, pour une ouverture en LECTURE SEULE
+    /// uniquement (`open_read_only`). `Some` = aucune écriture n'atteint le
+    /// disque par cette poignée : toutes les zones passent par [`ZonePrivee`].
+    prive: Option<std::sync::Arc<RegistrePrive>>,
     /// (RFC zorder-superposition, chantier 3) Époque des MUTATIONS de
     /// features (centrality_cached, arêtes/degrés, communautés, tombstones).
     /// Incrémentée par les écritures writer (write_node/write_edge/
@@ -1428,10 +1842,26 @@ impl SubstrateFile {
         Self::open_inner(path.to_path_buf(), None, false)
     }
 
-    /// Open an existing substrate in READ-ONLY mode : verrou PARTAGÉ
-    /// (`LOCK_SH`), plusieurs processus peuvent lire le même store
-    /// simultanément. Toute mutation est refusée par le moteur (session
-    /// read-only) — le verrou partagé garantit l'absence d'écrivain.
+    /// Ouvre un substrat existant en LECTURE SEULE.
+    ///
+    /// LE CONTRAT : cette ouverture, tout ce qu'on lit par elle et sa fermeture
+    /// ne modifient AUCUN octet d'AUCUN fichier de la base, n'en créent aucun
+    /// et n'en suppriment aucun — quel que soit l'état où un écrivain a laissé
+    /// la base, et qu'un écrivain partagé soit vivant ou non.
+    ///
+    /// COMMENT IL EST TENU : `substrate.meta`, `substrate.dirlock` et chaque
+    /// zone sont ouverts SANS droit d'écriture ; meta et zones sont projetés en
+    /// PRIVÉ (copy-on-write, voir `ZonePrivee`). Ce que l'ouverture doit
+    /// « écrire » pour offrir une vue cohérente (rejeu du WAL, degrés au CRC
+    /// périmé) reste dans la mémoire de ce processus. Un fichier absent n'est
+    /// pas créé : sa zone vit en mémoire, vide.
+    ///
+    /// LE VERROU : partagé. Il exclut l'écrivain EXCLUSIF d'un autre processus,
+    /// PAS un écrivain partagé — voir `acquerir_verrou_repertoire`.
+    ///
+    /// CE QUI EST REFUSÉ ([`SubstrateError::LectureSeuleRefusee`]) plutôt que
+    /// servi en écrivant : une base d'un format antérieur (la migration est un
+    /// acte d'écrivain), une base sans `substrate.dirlock`.
     pub fn open_read_only(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let path = path.as_ref();
         if !path.is_dir() {
@@ -1440,7 +1870,90 @@ impl SubstrateFile {
                 format!("substrate directory does not exist: {}", path.display()),
             )));
         }
-        Self::open_inner(path.to_path_buf(), None, false)
+        Self::open_inner_lecture_seule(path.to_path_buf())
+    }
+
+    fn open_inner_lecture_seule(path: PathBuf) -> SubstrateResult<Self> {
+        let meta_path = path.join(zone::META);
+        // SANS droit d'écriture, et sans création : un répertoire qui n'est pas
+        // une base échoue ici, avant que quoi que ce soit n'y soit posé.
+        let meta_file = File::open(&meta_path).map_err(|e| {
+            SubstrateError::Io(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "{} n'est pas une base obrain ({} : {e}) — une ouverture en lecture \
+                     seule ne crée rien",
+                    path.display(),
+                    zone::META
+                ),
+            ))
+        })?;
+        let file_len = meta_file.metadata()?.len();
+        if file_len < META_FILE_SIZE as u64 {
+            return Err(SubstrateError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("meta file too short: {} (< {})", file_len, META_FILE_SIZE),
+            )));
+        }
+        let verrou_path = path.join(zone::DIR_LOCK);
+        let verrou = acquerir_verrou_repertoire(&path, &verrou_path, false, false)?;
+        // SAFETY: projection PRIVÉE d'un fichier ouvert en lecture seule ; le
+        // verrou partagé exclut l'écrivain exclusif. `substrate.meta` n'est
+        // jamais tronqué (un checkpoint le REMPLACE par renommage : cette
+        // projection garde alors l'ancien inode, comme avant).
+        let meta_map = unsafe {
+            MmapOptions::new()
+                .len(META_FILE_SIZE)
+                .map_copy(&meta_file)?
+        };
+        let sf = Self {
+            path,
+            meta: MetaBacking::Mmap {
+                file: meta_file,
+                map: meta_map,
+            },
+            _temp: None,
+            partage: true,
+            _verrou: Some(verrou),
+            ram: None,
+            prive: Some(std::sync::Arc::new(RegistrePrive::default())),
+            feature_epoch: std::sync::atomic::AtomicU64::new(0),
+        };
+        let header = sf.meta_header();
+        if header.is_valid_magic() && header.format_version < SUBSTRATE_FORMAT_VERSION {
+            return Err(SubstrateError::LectureSeuleRefusee {
+                raison: format!(
+                    "{} est au format {} et ce binaire lit le format {} : la migration \
+                     est une écriture, qu'une ouverture en lecture seule ne fait pas. \
+                     Ouvrez la base une fois en écriture (elle migre à l'ouverture), puis \
+                     rouvrez en lecture seule",
+                    sf.path.display(),
+                    header.format_version,
+                    SUBSTRATE_FORMAT_VERSION
+                ),
+            });
+        }
+        sf.validate_header()?;
+        Ok(sf)
+    }
+
+    /// Cette poignée est-elle une ouverture en LECTURE SEULE
+    /// ([`Self::open_read_only`]) ? Si oui, rien de ce qu'elle fait n'atteint le
+    /// disque.
+    pub fn est_lecture_seule(&self) -> bool {
+        self.prive.is_some()
+    }
+
+    /// Refuse `operation` par [`SubstrateError::LectureSeule`] si cette poignée
+    /// est en lecture seule. À appeler en tête de toute écriture qui ne passe
+    /// PAS par une zone (publication de fichier, suppression, marqueur).
+    pub fn exiger_ecriture(&self, operation: &str) -> SubstrateResult<()> {
+        if self.est_lecture_seule() {
+            return Err(SubstrateError::LectureSeule {
+                operation: operation.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Create a fresh substrate at `path`. The directory is created if absent;
@@ -1549,6 +2062,7 @@ impl SubstrateFile {
             // En mémoire il n'y a pas de second processus : pas de partage.
             partage: false,
             ram: Some(dir),
+            prive: None,
             feature_epoch: std::sync::atomic::AtomicU64::new(0),
         };
         sf.validate_header()?;
@@ -1593,14 +2107,14 @@ impl SubstrateFile {
         // (`atomically_write_meta`), ce qui remplaçait l'inode et invalidait
         // le `flock` (deux écrivains sur deux inodes distincts).
         let verrou_path = path.join(zone::DIR_LOCK);
-        let verrou = acquerir_verrou_repertoire(&path, &verrou_path, exclusif)?;
+        let verrou = acquerir_verrou_repertoire(&path, &verrou_path, exclusif, true)?;
 
         // SAFETY: we just opened the file and hold an advisory lock on it for
-        // the lifetime of the returned `SubstrateFile` — exclusif (écriture) ou
-        // partagé (lecture seule, aucun écrivain possible). En mode partagé le
-        // `map_mut` reste inoffensif : aucune écriture ne peut avoir lieu (le
-        // moteur refuse les mutations en read-only). On ne tronque jamais le
-        // fichier meta.
+        // the lifetime of the returned `SubstrateFile` — exclusif (`open`) ou
+        // partagé (`open_shared_write` : d'autres écrivains partagés peuvent
+        // vivre, coordonnés par le WAL et les registres). La lecture seule ne
+        // passe PLUS par ici : voir `open_inner_lecture_seule`, qui projette en
+        // privé. On ne tronque jamais le fichier meta.
         let meta_map = unsafe { MmapOptions::new().len(META_FILE_SIZE).map_mut(&meta_file)? };
 
         let sf = Self {
@@ -1613,6 +2127,7 @@ impl SubstrateFile {
             partage: !exclusif,
             _verrou: Some(verrou),
             ram: None,
+            prive: None,
             feature_epoch: std::sync::atomic::AtomicU64::new(0),
         };
         // (jalon 0 — RFC principal-natif-v2 §3) MIGRATION A L'OUVERTURE.
@@ -1692,6 +2207,7 @@ impl SubstrateFile {
     /// Rewrite the meta header in-place. Caller is responsible for ordering
     /// (the header is typically rewritten only after a successful checkpoint).
     pub fn write_meta_header(&mut self, header: &MetaHeader) -> SubstrateResult<()> {
+        self.exiger_ecriture("réécrire l'en-tête meta")?;
         let n = core::mem::size_of::<MetaHeader>();
         match &mut self.meta {
             MetaBacking::Mmap { file, map } => {
@@ -1796,6 +2312,7 @@ impl SubstrateFile {
     /// Pendant de [`meta_bytes`](Self::meta_bytes) : ce qui a été transporté tel
     /// quel est reposé tel quel.
     pub fn write_meta_from_bytes(&mut self, octets: &[u8]) -> SubstrateResult<()> {
+        self.exiger_ecriture("restaurer l'en-tête meta")?;
         let n = crate::meta::META_FILE_SIZE.min(octets.len());
         match &mut self.meta {
             MetaBacking::Mmap { file, map } => {
@@ -1835,6 +2352,7 @@ impl SubstrateFile {
     /// d'écriture est loggé et NON fatal — l'absence du fichier désactive
     /// seulement l'accélération zruns des fenêtres 2D (repli scan exact).
     pub fn write_zgrid(&self, order: u32, max_degree: u32) -> SubstrateResult<()> {
+        self.exiger_ecriture("écrire la grille de tri (substrate.zgrid)")?;
         use std::io::Write as _;
         const ZGRID_MAGIC: u32 = 0x5A47_5244; // "ZGRD"
         let final_path = self.path.join(zone::ZGRID);
@@ -1894,6 +2412,11 @@ impl SubstrateFile {
                 dir.zone(zone.filename(), 0),
             ));
         }
+        if let Some(reg) = &self.prive {
+            return Ok(ZoneFile::open_privee(
+                reg.zone(&self.path, zone.filename())?,
+            ));
+        }
         ZoneFile::open_or_create(&self.zone_path(zone))
     }
 
@@ -1917,6 +2440,9 @@ impl SubstrateFile {
         );
         if let Some(dir) = &self.ram {
             return Ok(ZoneFile::open_ram(filename, dir.zone(filename, 0)));
+        }
+        if let Some(reg) = &self.prive {
+            return Ok(ZoneFile::open_privee(reg.zone(&self.path, filename)?));
         }
         ZoneFile::open_or_create(&self.path.join(filename))
     }
@@ -1948,6 +2474,11 @@ impl SubstrateFile {
                 format!("zone not found: {}", path.display()),
             )));
         }
+        // Ouverture en lecture seule : la zone passe par le registre privé,
+        // comme toutes les autres (une seule projection par fichier).
+        if let Some(reg) = &self.prive {
+            return Ok(ZoneFile::open_privee(reg.zone(&self.path, filename)?));
+        }
         ZoneFile::open_read_only_zone(&path)
     }
 
@@ -1968,6 +2499,10 @@ impl SubstrateFile {
 
     /// Fsync the meta file. Typically called at the end of a checkpoint.
     pub fn fsync_meta(&self) -> SubstrateResult<()> {
+        // Lecture seule : la projection est privée, il n'y a rien à pousser.
+        if self.est_lecture_seule() {
+            return Ok(());
+        }
         if let MetaBacking::Mmap { file, map } = &self.meta {
             map.flush()?;
             file.sync_all()?;
@@ -2987,5 +3522,160 @@ mod tests_memoire {
         // constructible : une base neuve n'a aucun nœud, et la lecture d'un
         // identifiant absent rend `None` au lieu d'échouer.
         assert!(store.get_node(obrain_common::types::NodeId(1)).is_none());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ZONES PRIVÉES (ouverture en lecture seule) — rafraîchissement, croissance,
+//  plafond. Chaque test exige que le FICHIER ne bouge pas d'un octet.
+// ═══════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod tests_zone_privee {
+    use super::*;
+
+    fn fichier_de(dir: &tempfile::TempDir, octets: &[u8]) -> PathBuf {
+        let p = dir.path().join("zone");
+        std::fs::write(&p, octets).unwrap();
+        p
+    }
+
+    /// Une zone privée qui grandit (rejeu d'un WAL au-delà du fichier) le fait EN
+    /// MÉMOIRE : le fichier garde sa taille et son contenu, les octets d'origine
+    /// sont conservés et le complément est zéro-rempli.
+    #[test]
+    fn grandir_une_zone_privee_ne_touche_pas_au_fichier() {
+        let td = tempfile::tempdir().unwrap();
+        let origine = vec![7u8; 8192];
+        let chemin = fichier_de(&td, &origine);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert_eq!(zf.len(), 8192);
+
+        zf.grow_to(20_000).unwrap();
+        assert_eq!(zf.len(), 20_000);
+        assert_eq!(
+            &zf.as_slice()[..8192],
+            &origine[..],
+            "octets d'origine conservés"
+        );
+        assert!(
+            zf.as_slice()[8192..].iter().all(|&b| b == 0),
+            "complément zéro-rempli"
+        );
+        zf.as_slice_mut()[10_000] = 9;
+        zf.ecrire_a(15_000, &[5, 5]).unwrap();
+        zf.msync().unwrap();
+        zf.fsync().unwrap();
+
+        assert_eq!(
+            std::fs::read(&chemin).unwrap(),
+            origine,
+            "le fichier a changé"
+        );
+    }
+
+    /// Croissance dans la réserve : aucune recopie, la même projection sert.
+    #[test]
+    fn grandir_dans_la_reserve_garde_les_octets_ecrits() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[1u8; 4096]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        zf.grow_to(8192).unwrap();
+        zf.as_slice_mut()[6000] = 42;
+        zf.grow_to(12_288).unwrap();
+        assert_eq!(
+            zf.as_slice()[6000],
+            42,
+            "un octet écrit avant la 2ᵉ croissance a disparu"
+        );
+        assert_eq!(zf.len(), 12_288);
+    }
+
+    /// Une zone dont le fichier n'existe pas vit en mémoire : rien n'est créé.
+    #[test]
+    fn une_zone_sans_fichier_vit_en_memoire_et_ne_cree_rien() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("absente");
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert!(zf.is_empty());
+        zf.grow_to(4096).unwrap();
+        zf.as_slice_mut()[0] = 1;
+        assert!(!chemin.exists(), "la lecture seule a créé le fichier");
+    }
+
+    /// `rafraichir` : un écrivain agrandit le fichier, le lecteur reprojette la
+    /// nouvelle taille — en privé, sans écrire. Une zone sortie de son fichier
+    /// (devenue mémoire) n'est plus reprojetée.
+    #[test]
+    fn rafraichir_reprojette_un_fichier_agrandi_sans_l_ecrire() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[3u8; 4096]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert!(!zf.rafraichir().unwrap(), "rien n'a grandi");
+
+        // Un écrivain agrandit le fichier.
+        let mut agrandi = vec![3u8; 4096];
+        agrandi.extend(vec![8u8; 4096]);
+        std::fs::write(&chemin, &agrandi).unwrap();
+        assert!(
+            zf.rafraichir().unwrap(),
+            "la croissance du fichier n'est pas vue"
+        );
+        assert_eq!(zf.len(), 8192);
+        assert_eq!(&zf.as_slice()[4096..], &agrandi[4096..]);
+        assert_eq!(
+            std::fs::read(&chemin).unwrap(),
+            agrandi,
+            "le lecteur a écrit le fichier"
+        );
+
+        // Zone sortie de son fichier : plus de reprojection.
+        zf.grow_to(20_000).unwrap();
+        std::fs::write(&chemin, vec![0u8; 100_000]).unwrap();
+        assert!(!zf.rafraichir().unwrap());
+        assert_eq!(zf.len(), 20_000);
+    }
+
+    /// Plafond : une zone adossée à un fichier plus gros que le plafond ne se
+    /// recopie pas en mémoire pour grandir — refus NOMMÉ, qui dit quoi lancer.
+    #[test]
+    fn au_dela_du_plafond_la_croissance_est_refusee_par_une_erreur_nommee() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[1u8; 16_384]);
+        let zp = ZonePrivee::ouvrir(&chemin).unwrap();
+        // SAFETY: test mono-fil, aucune vue vivante.
+        let r = unsafe { zp.grandir_avec_plafond(32_768, 8192) };
+        match r {
+            Err(SubstrateError::LectureSeuleRefusee { raison }) => {
+                assert!(
+                    raison.contains("consolider"),
+                    "le refus doit dire quoi faire : {raison}"
+                );
+            }
+            autre => panic!("refus nommé attendu, obtenu {autre:?}"),
+        }
+        assert_eq!(zp.len(), 16_384, "la zone a changé malgré le refus");
+        // Sous le plafond, la même croissance passe.
+        // SAFETY: idem.
+        unsafe { zp.grandir_avec_plafond(32_768, 1 << 20) }.unwrap();
+        assert_eq!(zp.len(), 32_768);
+        assert_eq!(std::fs::read(&chemin).unwrap(), vec![1u8; 16_384]);
+    }
+
+    /// `shrink_to` est refusé nommément : rétrécir, c'est `set_len`.
+    #[test]
+    fn retrecir_une_zone_privee_est_refuse_par_lecture_seule() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[1u8; 8192]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert!(matches!(
+            zf.shrink_to(4096),
+            Err(SubstrateError::LectureSeule { .. })
+        ));
+        assert_eq!(std::fs::read(&chemin).unwrap().len(), 8192);
     }
 }

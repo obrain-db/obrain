@@ -2272,6 +2272,14 @@ pub struct SubstrateStore {
     /// de degrés typées exige un store en écriture ; en lecture seule on
     /// se contente de mémoriser les types douteux (fallback pré-filtre).
     read_only: std::sync::atomic::AtomicBool,
+    /// Lecture seule : les histogrammes de labels pairs manquent au dictionnaire
+    /// (base flushée sans eux) et n'ont PAS été reconstruits à l'ouverture.
+    /// L'écrivain les reconstruit puis réécrit le dictionnaire une fois ; un
+    /// lecteur ne peut pas réécrire, et les reconstruire à CHAQUE ouverture en
+    /// faisait un coût en O(N + E) — lectures aléatoires par arête — payé même
+    /// par qui ne les lit jamais (mesuré : la moitié de l'ouverture à 1 M nœuds).
+    /// Ils sont donc reconstruits au PREMIER lecteur, une fois par session.
+    histogrammes_pairs_differes: parking_lot::Mutex<bool>,
     mutation_observer: parking_lot::RwLock<Vec<Arc<dyn StoreMutationObserver>>>,
     /// D3b (RFC zorder-superposition) — cache zruns par communauté :
     /// `Vec<(zkey, slot)>` trié par zkey sur la colonne Zorder, pour
@@ -3533,6 +3541,7 @@ impl SubstrateStore {
     /// Propage un échec d'écriture ou de `rename` du fichier d'index. Le
     /// fichier PRÉCÉDENT reste alors en place et intact.
     pub fn fusionner_index_egalite(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("la fusion de l'index d'égalité")?;
         let Some(zone_lock) = self.index_egalite.as_ref() else {
             return Ok(());
         };
@@ -3928,6 +3937,7 @@ impl SubstrateStore {
     /// Propage un échec d'écriture ou de `rename` du fichier d'index. Le
     /// fichier PRÉCÉDENT reste alors en place et intact.
     pub fn fusionner_index_ordonne(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("la fusion de l'index ordonné")?;
         let Some(zone_lock) = self.index_ordonne.as_ref() else {
             return Ok(());
         };
@@ -4194,6 +4204,7 @@ impl SubstrateStore {
     /// Propage un echec d'ecriture/`rename` du fichier d'index ; le fichier
     /// precedent reste intact.
     pub fn fusionner_index_ord_valeur(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("la fusion de l'index ordonné par valeur")?;
         let Some(zone_lock) = self.index_ord_valeur.as_ref() else {
             return Ok(());
         };
@@ -4517,6 +4528,7 @@ impl SubstrateStore {
     /// coute moins cher que de gerer un journal incremental, et ne peut pas
     /// diverger.
     fn ecrire_catalogue(&self, decls: &[DeclarationIndex]) -> SubstrateResult<()> {
+        self.exiger_ecriture("l'écriture du catalogue d'index")?;
         use std::io::Write as _;
         let chemin = self.chemin_catalogue();
         let temporaire = chemin.with_extension("indexcat.tmp");
@@ -4561,6 +4573,7 @@ impl SubstrateStore {
         label: &str,
         propriete: &str,
     ) -> SubstrateResult<()> {
+        self.exiger_ecriture("le retrait d'un index déclaré")?;
         let decls = self.declarations_index();
         let restantes: Vec<DeclarationIndex> = decls
             .iter()
@@ -4692,6 +4705,7 @@ impl SubstrateStore {
 
     /// Reecrit le fichier de procedures en entier, ATOMIQUEMENT (tmp + rename).
     fn ecrire_catalogue_procedures(&self, decls: &[DeclarationProcedure]) -> SubstrateResult<()> {
+        self.exiger_ecriture("l'écriture du catalogue de procédures")?;
         use std::io::Write as _;
         let chemin = self.chemin_catalogue_procedures();
         let temporaire = chemin.with_extension("proccat.tmp");
@@ -4756,6 +4770,7 @@ impl SubstrateStore {
 
     /// Réécrit le fichier des types en entier, ATOMIQUEMENT (tmp + rename).
     fn ecrire_catalogue_types(&self, decls: &[DeclarationType]) -> SubstrateResult<()> {
+        self.exiger_ecriture("l'écriture du catalogue de types")?;
         use std::io::Write as _;
         let chemin = self.chemin_catalogue_types();
         let temporaire = chemin.with_extension("typecat.tmp");
@@ -4790,6 +4805,7 @@ impl SubstrateStore {
 
     /// Retire la déclaration d'un type. Idempotent.
     pub fn retirer_type(&self, genre: &str, nom: &str) -> SubstrateResult<()> {
+        self.exiger_ecriture("le retrait d'un type déclaré")?;
         let decls = self.declarations_type();
         let restantes: Vec<DeclarationType> = decls
             .iter()
@@ -4804,6 +4820,7 @@ impl SubstrateStore {
 
     /// Retire la declaration d'une procedure. Idempotent.
     pub fn retirer_declaration_procedure(&self, name: &str) -> SubstrateResult<()> {
+        self.exiger_ecriture("le retrait d'une procédure déclarée")?;
         let decls = self.declarations_procedure();
         let restantes: Vec<DeclarationProcedure> =
             decls.iter().filter(|d| d.name != name).cloned().collect();
@@ -5444,21 +5461,60 @@ impl SubstrateStore {
         }
     }
 
-    /// Open an existing substrate in READ-ONLY mode : verrou PARTAGÉ,
-    /// plusieurs processus peuvent lire le même store simultanément.
-    /// Toute écriture est refusée par le moteur (session read-only).
+    /// Ouvre un substrat existant en LECTURE SEULE.
+    ///
+    /// CONTRAT : l'ouverture, les lectures et la fermeture ne modifient AUCUN
+    /// octet d'AUCUN fichier de la base, n'en créent ni n'en suppriment aucun,
+    /// quel que soit l'état laissé par un écrivain et qu'un écrivain partagé
+    /// soit vivant ou non. Le WAL en attente est rejoué EN MÉMOIRE (projection
+    /// privée des zones) ; un graphe nommé s'ouvre lui aussi en lecture seule ;
+    /// une migration nécessaire fait échouer l'ouverture
+    /// ([`SubstrateError::LectureSeuleRefusee`]). Toute mutation est refusée :
+    /// [`SubstrateError::LectureSeule`] pour les opérations faillibles, panique
+    /// portant le même message pour les mutateurs infaillibles du trait
+    /// `GraphStoreMut` (le moteur, lui, refuse avant d'y arriver).
+    /// Voir [`SubstrateFile::open_read_only`] pour le mécanisme et le verrou.
     pub fn open_read_only(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_read_only(path.as_ref())?;
         // `false` : un lecteur n'interne RIEN, donc il n'a pas besoin de la table
         // partagée — et s'il l'ouvrait, il la créerait VIDE, ce qu'un pair en
         // écriture prendrait pour la vérité (voir `from_substrate_partage`).
         let s = Self::from_substrate_partage(sub, SyncMode::EveryCommit, false)?;
-        // (2026-09-05) Marque le store lecture seule : l'auto-guérison
-        // des colonnes de degrés typées (qui écrit dans les sidecars)
-        // est réservée aux stores en écriture.
-        s.read_only
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Le drapeau `read_only` est posé DANS `from_substrate_partage`, dès la
+        // construction du store (il est lu de `SubstrateFile::est_lecture_seule`) :
+        // toute l'ouverture s'exécute donc déjà en lecture seule.
+        debug_assert!(s.est_lecture_seule());
         Ok(s)
+    }
+
+    /// Ce store est-il ouvert en LECTURE SEULE ([`Self::open_read_only`]) ?
+    pub fn est_lecture_seule(&self) -> bool {
+        self.read_only.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Refuse `operation` par [`SubstrateError::LectureSeule`] si ce store est
+    /// ouvert en lecture seule. Appelé en tête de chaque opération qui écrit
+    /// ailleurs que dans une zone (les zones, elles, sont privées).
+    pub fn exiger_ecriture(&self, operation: &str) -> SubstrateResult<()> {
+        if self.est_lecture_seule() {
+            return Err(SubstrateError::LectureSeule {
+                operation: operation.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Le même refus pour les mutateurs INFAILLIBLES du trait `GraphStoreMut`
+    /// (`create_node` rend un `NodeId`, pas un `Result`) : ils ne peuvent pas
+    /// rendre l'erreur, ils PANIQUENT avec son message, avant toute
+    /// modification — ni allocation de slot, ni compteur, ni octet. Une session
+    /// du moteur n'arrive jamais ici : elle refuse en amont par
+    /// `TransactionError::ReadOnly`.
+    #[track_caller]
+    fn refuser_mutation_en_lecture_seule(&self, operation: &str) {
+        if let Err(e) = self.exiger_ecriture(operation) {
+            panic!("{e}");
+        }
     }
 
     /// Open an existing substrate in SHARED-WRITE mode : verrou PARTAGÉ
@@ -6097,6 +6153,7 @@ impl SubstrateStore {
     /// Atomique (tmp + rename) ; bincode de tuples plats, version 1.
     /// Une base sans arete externe et sans fichier existant ne paie rien.
     fn persist_external_edges(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("la persistance des arêtes externes")?;
         let path = { self.substrate.lock().path().join(EXTEDGES_FILENAME) };
         let mut entries: Vec<(u64, u64, String, Option<String>, String, String)> = Vec::new();
         for r in self.external_edges.iter() {
@@ -6268,6 +6325,13 @@ impl SubstrateStore {
         sync_mode: SyncMode,
         partage: bool,
     ) -> SubstrateResult<Self> {
+        // ── LECTURE SEULE : DÉCIDÉE ICI, AVANT TOUT LE RESTE ─────────────────
+        // Le drapeau vient du `SubstrateFile` (ouvert sans droit d'écriture,
+        // zones privées) et vaut pour TOUTE l'ouverture, pas seulement après.
+        // Chaque geste d'écrivain de cette fonction le consulte : nettoyage de
+        // temporaires, borne d'allocation, graphes nommés, auto-flush, migration
+        // d'un sidecar hérité.
+        let lecture_seule = sub.est_lecture_seule();
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════
         //
         // Deux refus, tous deux places ICI et non sur le resultat du
@@ -6324,7 +6388,10 @@ impl SubstrateStore {
         // jusqu'au remap SUIVANT de la meme colonne. Ils sont sans danger
         // (exclus de l'enumeration du rejeu) mais pas sans cout — la
         // documentation du lot cite 3,8 Go pour `embedding_vec`.
-        crate::slot_remap::nettoyer_temporaires_remap(&sub);
+        // Lecture seule : un lecteur ne supprime rien, pas même un orphelin.
+        if !lecture_seule {
+            crate::slot_remap::nettoyer_temporaires_remap(&sub);
+        }
 
         // T17a — Instrumentation. Each phase emits an `info_span!` scope
         // plus an explicit `elapsed_ms` event so `RUST_LOG=info` gives a
@@ -6561,11 +6628,20 @@ impl SubstrateStore {
         // c'est le contrat de `SubstrateFile::open_memory`).
         let borne_allocation = {
             let g = substrate.lock();
-            if g.is_memory() {
+            // Lecture seule : PAS de borne. L'ouvrir la créerait si elle manque et
+            // la réécrirait à chaque ouverture (compteur de publications) ; un
+            // lecteur n'alloue aucun slot. Ce qu'elle sait (les slots réservés
+            // par les pairs) est LU plus bas, sans rien écrire.
+            if g.is_memory() || lecture_seule {
                 None
             } else {
                 Some(crate::borne_allocation::BorneAllocation::ouvrir(g.path())?)
             }
+        };
+        let borne_lue = if lecture_seule {
+            crate::borne_allocation::BorneAllocation::lire(substrate.lock().path())
+        } else {
+            None
         };
         // La borne ne recule JAMAIS : elle est publiée du dict (`fetch_max`),
         // puis des ZONES (voir `relever_filigranes_des_zones`, appelé juste après
@@ -6745,7 +6821,8 @@ impl SubstrateStore {
             typed_degree_health_checked: std::sync::atomic::AtomicBool::new(false),
             degrees_health_checked: std::sync::atomic::AtomicBool::new(false),
             props_decode_echecs: std::sync::atomic::AtomicU64::new(0),
-            read_only: std::sync::atomic::AtomicBool::new(false),
+            read_only: std::sync::atomic::AtomicBool::new(lecture_seule),
+            histogrammes_pairs_differes: parking_lot::Mutex::new(false),
             mutation_observer: parking_lot::RwLock::new(Vec::new()),
             zrows_cache: RwLock::new(std::collections::HashMap::new()),
             zrows_gen: std::sync::atomic::AtomicU64::new(0),
@@ -6824,6 +6901,17 @@ impl SubstrateStore {
             store
                 .next_engram_id
                 .fetch_max(b.engram().min(u64::from(u16::MAX)) as u16, Ordering::AcqRel);
+        }
+        // Lecture seule : même adoption, depuis la borne LUE (jamais ouverte en
+        // écriture, jamais créée).
+        if let Some((noeud, arete, engram)) = borne_lue {
+            store
+                .next_node_id
+                .fetch_max(noeud.min(u64::from(u32::MAX)) as u32, Ordering::AcqRel);
+            store.next_edge_id.fetch_max(arete, Ordering::AcqRel);
+            store
+                .next_engram_id
+                .fetch_max(engram.min(u64::from(u16::MAX)) as u16, Ordering::AcqRel);
         }
         store.relever_filigranes_des_zones();
 
@@ -6932,6 +7020,13 @@ impl SubstrateStore {
                         "OUVERTURE REFUSEE depuis le rejeu WAL — opcode inconnu : WAL ecrit par une version plus recente");
                     return Err(e);
                 }
+                // Lecture seule : le rejeu EN MÉMOIRE n'a pas pu être mené (zone à
+                // consolider). Ouvrir sur un préfixe serait une vue fausse : refus.
+                Err(e @ SubstrateError::LectureSeuleRefusee { .. }) => {
+                    tracing::error!(error = %e,
+                        "OUVERTURE EN LECTURE SEULE REFUSEE depuis le rejeu WAL");
+                    return Err(e);
+                }
                 Err(e) => tracing::warn!(error = %e,
                     "rejeu WAL impossible a l'ouverture — la base reste utilisable sur son dernier checkpoint"),
             }
@@ -6956,7 +7051,14 @@ impl SubstrateStore {
                     let Some(nom) = chemin.file_name().and_then(|n| n.to_str()) else {
                         continue;
                     };
-                    match SubstrateStore::open_with_mode(&chemin, sync_mode) {
+                    // Lecture seule : l'enfant s'ouvre lui aussi en lecture seule —
+                    // ni verrou exclusif, ni migration, ni tombstones chez lui.
+                    let ouverture = if lecture_seule {
+                        SubstrateStore::open_read_only(&chemin)
+                    } else {
+                        SubstrateStore::open_with_mode(&chemin, sync_mode)
+                    };
+                    match ouverture {
                         Ok(enfant) => {
                             charges.insert(nom.to_string(), Arc::new(enfant));
                         }
@@ -7055,38 +7157,46 @@ impl SubstrateStore {
                     "T17i T2: v5 dict detected, rebuilding peer-label \
                      histograms (one-shot, persisted to v6 immediately via T17j T3 auto-flush)"
                 );
-                store.rebuild_live_counters_from_zones()?;
-                // T17j T3 — auto-flush the upgraded dict now so the
-                // next open reads v6 directly (O(M) histogram restore,
-                // no rebuild scan). Without this, the first post-deploy
-                // open of a large v5 base would re-scan edges until the
-                // user-triggered flush eventually persists v6 — on
-                // Wiki (119M edges) that's ~11 s faulting ~4 GB RSS.
-                //
-                // Graceful failure : a flush error (read-only FS, disk
-                // full) logs a warning and returns Ok — the registry
-                // is correct in RAM, the next flush attempt will
-                // retry. Never panic, never block `from_substrate`.
-                let auto_flush_span = tracing::info_span!("auto_flush_v5_to_v6").entered();
-                let t_flush = web_time::Instant::now();
-                match store.flush() {
-                    Ok(()) => {
-                        tracing::info!(
-                            elapsed_ms = t_flush.elapsed().as_millis() as u64,
-                            "T17j T3: auto-flushed v5→v6 upgrade"
-                        );
+                // Lecture seule : PAS de reconstruction ici. Elle est DIFFÉRÉE au
+                // premier lecteur des histogrammes (voir le champ), et le
+                // dictionnaire v6 sera écrit par le prochain écrivain.
+                if lecture_seule {
+                    *store.histogrammes_pairs_differes.lock() = true;
+                    "snapshot+v5-histogram-differe"
+                } else {
+                    store.rebuild_live_counters_from_zones()?;
+                    // T17j T3 — auto-flush the upgraded dict now so the
+                    // next open reads v6 directly (O(M) histogram restore,
+                    // no rebuild scan). Without this, the first post-deploy
+                    // open of a large v5 base would re-scan edges until the
+                    // user-triggered flush eventually persists v6 — on
+                    // Wiki (119M edges) that's ~11 s faulting ~4 GB RSS.
+                    //
+                    // Graceful failure : a flush error (read-only FS, disk
+                    // full) logs a warning and returns Ok — the registry
+                    // is correct in RAM, the next flush attempt will
+                    // retry. Never panic, never block `from_substrate`.
+                    let auto_flush_span = tracing::info_span!("auto_flush_v5_to_v6").entered();
+                    let t_flush = web_time::Instant::now();
+                    match store.flush() {
+                        Ok(()) => {
+                            tracing::info!(
+                                elapsed_ms = t_flush.elapsed().as_millis() as u64,
+                                "T17j T3: auto-flushed v5→v6 upgrade"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = ?e,
+                                "T17j T3: auto-flush after v5→v6 upgrade failed \
+                                 (non-fatal — registry valid in RAM, next flush \
+                                 will retry)"
+                            );
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = ?e,
-                            "T17j T3: auto-flush after v5→v6 upgrade failed \
-                             (non-fatal — registry valid in RAM, next flush \
-                             will retry)"
-                        );
-                    }
+                    drop(auto_flush_span);
+                    "snapshot+v5-histogram-rebuild-auto-flushed"
                 }
-                drop(auto_flush_span);
-                "snapshot+v5-histogram-rebuild-auto-flushed"
             } else {
                 "snapshot"
             }
@@ -7113,7 +7223,15 @@ impl SubstrateStore {
         // if absent/corrupt. Amortised once per session.
         let t_degrees = web_time::Instant::now();
         let degrees_span = tracing::info_span!("init_degrees").entered();
-        let _ = store.degrees();
+        // Lecture seule : AUCUNE écriture ne peut s'entrelacer avec la
+        // reconstruction (la raison de l'initialisation forcée ci-dessus), et
+        // une colonne au CRC périmé se reconstruirait en mémoire à CHAQUE
+        // ouverture — l'écrivain, lui, la répare une fois sur disque. Mesuré à
+        // 5 M nœuds : 70 ms d'ouverture contre 40. L'initialisation est donc
+        // laissée au premier degré lu, une fois par session.
+        if !lecture_seule {
+            let _ = store.degrees();
+        }
         drop(degrees_span);
         tracing::info!(
             phase = "init_degrees",
@@ -8004,6 +8122,20 @@ impl SubstrateStore {
             // protects us from tombstoned-between-flush-and-reopen
             // nodes — it no-ops in that case, matching the behaviour
             // of the scalar branch below.
+            // Lecture seule : router ces valeurs vers leurs colonnes est une
+            // MIGRATION (fichiers de colonnes créés, écrits). On ne migre pas en
+            // douce : l'ouverture échoue et dit quoi lancer.
+            if self.est_lecture_seule() && (!vectors.is_empty() || !blobs.is_empty()) {
+                return Err(SubstrateError::LectureSeuleRefusee {
+                    raison: format!(
+                        "le sidecar hérité `{}` porte des vecteurs ou des blobs à migrer \
+                         vers leurs colonnes, ce qui est une écriture ; ouvrez la base une \
+                         fois en écriture (ou lancez `obrain-migrate --finalize-v2`), puis \
+                         rouvrez en lecture seule",
+                        path.display()
+                    ),
+                });
+            }
             for (k, v) in vectors {
                 self.set_node_property(nid, &k, v);
                 node_vectors_migrated += 1;
@@ -8109,6 +8241,20 @@ impl SubstrateStore {
                 } else {
                     scalars.push((k, v));
                 }
+            }
+            // Lecture seule : router ces valeurs vers leurs colonnes est une
+            // MIGRATION (fichiers de colonnes créés, écrits). On ne migre pas en
+            // douce : l'ouverture échoue et dit quoi lancer.
+            if self.est_lecture_seule() && (!vectors.is_empty() || !blobs.is_empty()) {
+                return Err(SubstrateError::LectureSeuleRefusee {
+                    raison: format!(
+                        "le sidecar hérité `{}` porte des vecteurs ou des blobs à migrer \
+                         vers leurs colonnes, ce qui est une écriture ; ouvrez la base une \
+                         fois en écriture (ou lancez `obrain-migrate --finalize-v2`), puis \
+                         rouvrez en lecture seule",
+                        path.display()
+                    ),
+                });
             }
             for (k, v) in vectors {
                 self.set_edge_property(eid, &k, v);
@@ -8594,6 +8740,7 @@ impl SubstrateStore {
     }
 
     fn persist_dict_interne(&self, force: bool) -> SubstrateResult<()> {
+        self.exiger_ecriture("la persistance du dictionnaire")?;
         let mut snapshot = self.build_dict_snapshot();
         // ── DIRTY-FLAG DU DICT ────────────────────────────────────────────────
         //
@@ -8824,6 +8971,7 @@ impl SubstrateStore {
     ///    (vec + blob). Done last so any crash before here leaves the
     ///    WAL as source of truth (replay will reconstruct both).
     pub fn flush(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("flush")?;
         // (2026-08-15, dict v7) L'offset se capture AVANT commit/msync :
         // toute entree <= offset sera duree par CE flush ; toute entree
         // arrivee pendant le flush est > offset et sera rejouee a la
@@ -8986,6 +9134,7 @@ impl SubstrateStore {
     /// Propagates any flush error (zone msync/fsync, dict or properties
     /// persist) or checkpoint error (meta rewrite, WAL truncate).
     pub fn checkpoint(&self) -> SubstrateResult<crate::checkpoint::CheckpointStats> {
+        self.exiger_ecriture("checkpoint")?;
         match self.checkpoint_elu()? {
             crate::checkpoint::CheckpointOutcome::Fait(s) => Ok(s),
             crate::checkpoint::CheckpointOutcome::NonElu { fence } => {
@@ -9053,6 +9202,7 @@ impl SubstrateStore {
     /// jamais — c'est tout l'objet de la pièce 1 (la troncature est rendue
     /// récupérable par l'écrivain qui la subit, `wal_io::append_sous_verrou`).
     pub fn checkpoint_elu(&self) -> SubstrateResult<crate::checkpoint::CheckpointOutcome> {
+        self.exiger_ecriture("checkpoint")?;
         use crate::checkpoint::CheckpointOutcome;
         // ── L'ÉLECTION D'ABORD, LE FLUSH ENSUITE ────────────────────────────
         // Le `flush()` ci-dessous est inconditionnel dans `checkpoint()` : ici il
@@ -9143,6 +9293,7 @@ impl SubstrateStore {
     /// already at its live size. Never fatal — a shrink failure leaves the
     /// base fully readable (it only wastes disk).
     pub fn shrink_props_zone(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("le rétrécissement de la zone de propriétés")?;
         let Some(pz_lock) = self.props_zone.as_ref() else {
             return Ok(());
         };
@@ -9184,6 +9335,10 @@ impl SubstrateStore {
     /// Appele depuis le chemin de commit, ou le cout d'une lecture d'offset
     /// est negligeable devant celui d'un fsync deja paye.
     pub fn checkpoint_si_wal_trop_gros(&self) {
+        // Lecture seule : aucun checkpoint, jamais (le WAL n'est pas le nôtre).
+        if self.est_lecture_seule() {
+            return;
+        }
         let seuil = self.seuil_checkpoint();
         if seuil == 0 {
             return;
@@ -9295,6 +9450,7 @@ impl SubstrateStore {
     /// Le contenu est informatif (nombre de pages, horodatage) : seule
     /// l'existence d'un fichier non vide est un signal.
     pub fn marquer_migration_v2_achevee(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("le marqueur de migration v2")?;
         if self.props_zone.is_none() {
             return Err(SubstrateError::Internal(
                 "marquer_migration_v2_achevee appelé sans PropsZone v2 active".to_string(),
@@ -9496,6 +9652,7 @@ impl SubstrateStore {
     /// Does NOT delete `substrate.props.v2` / `substrate.props.heap.v2`
     /// / `substrate.edge_props` — those are the v2 targets.
     pub fn delete_legacy_props_sidecar(&self) -> SubstrateResult<Option<u64>> {
+        self.exiger_ecriture("la suppression du sidecar hérité")?;
         let (legacy_path, edge_path) = {
             let sub = self.substrate.lock();
             let base = sub.path();
@@ -9581,6 +9738,7 @@ impl SubstrateStore {
     /// payloads are routed elsewhere and never land in the DashMap,
     /// but a defensive filter keeps the edge sidecar lean.
     pub fn persist_edge_properties_sidecar(&self) -> SubstrateResult<(usize, usize, u64)> {
+        self.exiger_ecriture("la persistance du sidecar de propriétés d'arêtes")?;
         let is_routed_out = |(_, v): &(String, Value)| {
             if matches!(v, Value::Vector(_)) {
                 return true;
@@ -10000,6 +10158,7 @@ impl SubstrateStore {
     /// sidecar size. Logs one INFO line per completed decade of nodes
     /// for progress visibility on Wikipedia-scale inputs.
     pub fn finalize_props_v2(&self) -> SubstrateResult<PropsV2FinalizeStats> {
+        self.exiger_ecriture("la migration des propriétés vers v2")?;
         if !self.props_v2_enabled() {
             return Err(SubstrateError::Internal(
                 "finalize_props_v2 called without PropsZone v2 enabled \
@@ -10285,6 +10444,7 @@ impl SubstrateStore {
     ///
     /// Returns the number of edges touched and scalars re-emitted.
     pub fn finalize_edge_props_v2(&self) -> SubstrateResult<EdgePropsV2FinalizeStats> {
+        self.exiger_ecriture("la migration des propriétés d'arêtes vers v2")?;
         if !self.props_v2_enabled() {
             return Err(SubstrateError::Internal(
                 "finalize_edge_props_v2 called without PropsZone v2 enabled \
@@ -10381,6 +10541,7 @@ impl SubstrateStore {
     ///
     /// Returns the size of the deleted file (0 when nothing was there).
     pub fn delete_edge_props_sidecar(&self) -> SubstrateResult<Option<u64>> {
+        self.exiger_ecriture("la suppression du sidecar de propriétés d'arêtes")?;
         let path = self.edge_props_sidecar_path();
         if !path.exists() {
             return Ok(None);
@@ -11683,6 +11844,7 @@ impl SubstrateStore {
     /// `get_node_property` won't see the streamed values until the
     /// store is reopened.
     pub fn open_streaming_props_writer(&self) -> SubstrateResult<PropertiesStreamingWriter> {
+        self.exiger_ecriture("l'écriture en flux du sidecar de propriétés")?;
         let path = {
             let sub = self.substrate.lock();
             sub.path().join(PROPS_FILENAME)
@@ -11699,6 +11861,7 @@ impl SubstrateStore {
     /// flush intervals. The T17 property-pages subsystem will replace
     /// this with O(Δ) mmap writes.
     fn persist_properties(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("la persistance des propriétés")?;
         let mut snap = PropertiesSnapshotV1::default();
         // Defensive filter: `Value::Vector` writes are routed to
         // `vec_columns` and never inserted into the DashMap by
@@ -11939,6 +12102,7 @@ impl SubstrateStore {
     /// n'est pas vide : l'encadrement est vérifié, pas seulement
     /// documenté.
     pub fn repermuter_par_hilbert(&self, order: u32, max_degree: u32) -> SubstrateResult<()> {
+        self.exiger_ecriture("la repermutation de Hilbert")?;
         self.flush()?;
         let node_hw = self.slot_high_water();
         let edge_hw = self.edge_slot_high_water();
@@ -12619,6 +12783,7 @@ impl SubstrateStore {
 
     /// Returns the fresh [`NodeId`] (always non-zero; slot 0 is reserved).
     pub fn create_node_in_community(&self, labels: &[&str], community_id: u32) -> NodeId {
+        self.refuser_mutation_en_lecture_seule("create_node_in_community");
         let id = self.allocate_node_id_in_community(community_id);
         let bitset = self
             .intern_labels_to_bitset(labels)
@@ -13872,6 +14037,7 @@ impl SubstrateStore {
     /// Compaction déterministe des zones simpliciales (I4) — maintenance
     /// explicite, jamais sur le chemin du commit.
     pub fn compact_simplexes(&self) -> SubstrateResult<()> {
+        self.exiger_ecriture("la compaction des simplexes")?;
         self.writer.compact_simplexes()
     }
 
@@ -14923,6 +15089,7 @@ impl SubstrateStore {
 
     /// Batch-update centrality for a list of nodes (single WAL record).
     pub fn update_centrality_batch_f32(&self, updates: Vec<(NodeId, f32)>) -> SubstrateResult<()> {
+        self.exiger_ecriture("la mise à jour des centralités")?;
         let encoded: Vec<(u32, u16)> = updates
             .into_iter()
             .map(|(id, v)| {
@@ -20839,6 +21006,7 @@ impl SubstrateStore {
         &self,
         edge_type: &str,
     ) -> std::collections::HashSet<String> {
+        self.assurer_histogrammes_pairs();
         let registry = self.edge_types.read();
         let Some(type_id) = registry.id_for(edge_type) else {
             return std::collections::HashSet::new();
@@ -20864,6 +21032,7 @@ impl SubstrateStore {
         &self,
         edge_type: &str,
     ) -> std::collections::HashSet<String> {
+        self.assurer_histogrammes_pairs();
         let registry = self.edge_types.read();
         let Some(type_id) = registry.id_for(edge_type) else {
             return std::collections::HashSet::new();
@@ -20924,6 +21093,7 @@ impl SubstrateStore {
     ///
     /// Returns `(nodes_reset, edges_rewired)`.
     pub fn repair_outgoing_chains(&self) -> SubstrateResult<(u64, u64)> {
+        self.exiger_ecriture("la réparation des chaînes sortantes")?;
         let node_hw = self.next_node_id.load(Ordering::Acquire);
         let mut nodes_reset = 0u64;
         for slot in 1..node_hw {
@@ -21286,6 +21456,23 @@ impl SubstrateStore {
     /// inconditionnel, donc les compteurs restaient faux. Séparés, la partie
     /// qui décide de la justesse redevient assez bon marché pour être payée à
     /// chaque ouverture.
+    /// Reconstruit, une seule fois, les histogrammes de labels pairs dont une
+    /// ouverture en lecture seule a différé la reconstruction (voir
+    /// `histogrammes_pairs_differes`). No-op dans tous les autres cas.
+    fn assurer_histogrammes_pairs(&self) {
+        let mut differes = self.histogrammes_pairs_differes.lock();
+        if !*differes {
+            return;
+        }
+        if let Err(e) = self.rebuild_live_counters_from_zones() {
+            tracing::warn!(
+                erreur = ?e,
+                "lecture seule : reconstruction différée des histogrammes de labels pairs impossible"
+            );
+        }
+        *differes = false;
+    }
+
     pub(crate) fn rebuild_live_counters_from_zones(&self) -> SubstrateResult<()> {
         self.rebuild_live_counters_interne(true)
     }
@@ -21987,7 +22174,14 @@ impl SubstrateStore {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        if !self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+        // ── LA GUÉRISON VAUT AUSSI EN LECTURE SEULE, ET N'ÉCRIT RIEN ─────────
+        // Jusqu'ici un store en lecture seule ne guérissait pas (la guérison
+        // écrivait dans les sidecars) et se contentait de désactiver son
+        // pré-filtre. Ses colonnes sont désormais des projections PRIVÉES
+        // (`ZonePrivee`) : la reconstruction se fait dans la mémoire de ce
+        // processus, le fichier n'est pas touché, et le lecteur a des degrés
+        // typés EXACTS au lieu d'un pré-filtre éteint.
+        {
             match self.heal_typed_degree_types(&suspects) {
                 Ok(healed) if healed == suspects.len() => {
                     tracing::warn!(
@@ -21998,7 +22192,6 @@ impl SubstrateStore {
                     *guard = Some(Vec::new());
                     self.typed_degree_health_checked
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                    return;
                 }
                 Ok(healed) => {
                     tracing::warn!(
@@ -22009,7 +22202,6 @@ impl SubstrateStore {
                     *guard = Some(suspects);
                     self.typed_degree_health_checked
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                    return;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -22020,17 +22212,9 @@ impl SubstrateStore {
                     *guard = Some(suspects);
                     self.typed_degree_health_checked
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                    return;
                 }
             }
         }
-        tracing::warn!(
-            types = ?suspects,
-            "colonnes de degrés typées périmées (store en lecture seule) — pré-filtre typed-degree désactivé pour ces types"
-        );
-        *guard = Some(suspects);
-        self.typed_degree_health_checked
-            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// (2026-09-05) Détecte les types dont la colonne de degrés typée est
@@ -22141,6 +22325,7 @@ impl SubstrateStore {
     /// fraîches). Idempotent ; nécessite une base SAINE (ouverte
     /// normalement) et un lock exclusif (store fermé ailleurs).
     pub fn rebuild_degree_columns(&self) -> SubstrateResult<usize> {
+        self.exiger_ecriture("la reconstruction des colonnes de degrés")?;
         // ── RÉPARER N'EST PAS SUPPRIMER ─────────────────────────────────────
         // Cette fonction effaçait les fichiers de colonnes en comptant sur le
         // chemin paresseux pour les recréer. Deux défauts mesurés sur une copie :
@@ -22409,6 +22594,7 @@ impl GraphStoreMut for SubstrateStore {
         to_store: &str,
         to_key: &str,
     ) -> Option<EdgeId> {
+        self.refuser_mutation_en_lecture_seule("create_external_edge");
         // Meme contrat permissif que create_edge sur les extremites : la
         // liveness de la source est la responsabilite de l'appelant (le
         // moteur la verifie et enseigne ; ici on n'invente pas un refus
@@ -22441,6 +22627,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn delete_external_edge(&self, id: EdgeId) -> bool {
+        self.refuser_mutation_en_lecture_seule("delete_external_edge");
         if id.0 & EXTERNAL_EDGE_ID_BIT == 0 || !self.external_by_id.contains_key(&id) {
             return false;
         }
@@ -22840,6 +23027,12 @@ impl GraphStoreMut for SubstrateStore {
         &self,
         name: &str,
     ) -> Result<bool, obrain_common::memory::arena::AllocError> {
+        // Lecture seule : créer un graphe nommé crée un répertoire et une base.
+        // Le trait n'offre que `AllocError` : le refus est tracé, nommé.
+        if let Err(e) = self.exiger_ecriture("create_named_graph") {
+            tracing::error!(graphe = name, erreur = %e, "creation de graphe nomme refusee");
+            return Err(obrain_common::memory::arena::AllocError::InsufficientSpace);
+        }
         // Le nom devient un CHEMIN, et il doit rester sous le substrat.
         //
         // Ma premiere version refusait tout `/`. C'etait trop large : la
@@ -22896,6 +23089,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn drop_named_graph(&self, name: &str) -> bool {
+        self.refuser_mutation_en_lecture_seule("drop_named_graph");
         let Some(enfant) = self.named_graphs.write().remove(name) else {
             return false;
         };
@@ -22913,6 +23107,8 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn copy_named_graph(&self, source: Option<&str>, dest: Option<&str>) -> Result<(), String> {
+        self.exiger_ecriture("copy_named_graph")
+            .map_err(|e| e.to_string())?;
         // `None` designe le graphe RACINE — self. On le represente par
         // `Ok(None)` et non par une erreur : confondre « c'est la racine » avec
         // « ce graphe n'existe pas » ferait qu'une copie depuis un graphe
@@ -22984,6 +23180,7 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Node creation --
     fn create_node(&self, labels: &[&str]) -> NodeId {
+        self.refuser_mutation_en_lecture_seule("create_node");
         let id = self.allocate_node_id();
         let bitset = self
             .intern_labels_to_bitset(labels)
@@ -23059,6 +23256,7 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Edge creation (step 2) --
     fn create_edge(&self, src: NodeId, dst: NodeId, edge_type: &str) -> EdgeId {
+        self.refuser_mutation_en_lecture_seule("create_edge");
         // LpgStore is permissive: it does NOT reject edges on missing
         // endpoints — they just become dangling. We match that contract;
         // the caller is responsible for endpoint liveness.
@@ -23142,6 +23340,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn batch_create_edges(&self, edges: &[(NodeId, NodeId, &str)]) -> Vec<EdgeId> {
+        self.refuser_mutation_en_lecture_seule("batch_create_edges");
         edges
             .iter()
             .map(|(s, d, t)| self.create_edge(*s, *d, t))
@@ -23150,6 +23349,7 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Deletion --
     fn delete_node(&self, id: NodeId) -> bool {
+        self.refuser_mutation_en_lecture_seule("delete_node");
         if !self.is_live_on_disk(id) {
             return false;
         }
@@ -23217,6 +23417,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn delete_node_edges(&self, node_id: NodeId) {
+        self.refuser_mutation_en_lecture_seule("delete_node_edges");
         // DETACH DELETE — collect both directions first, then tombstone.
         // We cannot mutate the chains while walking them.
         if !self.is_live_on_disk(node_id) {
@@ -23240,6 +23441,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn delete_edge(&self, id: EdgeId) -> bool {
+        self.refuser_mutation_en_lecture_seule("delete_edge");
         // Aretes inter-bases : le bit haut route vers le registre externe.
         if id.0 & EXTERNAL_EDGE_ID_BIT != 0 {
             return self.delete_external_edge(id);
@@ -23330,6 +23532,7 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Property mutation --
     fn set_node_property(&self, id: NodeId, key: &str, value: Value) {
+        self.refuser_mutation_en_lecture_seule("set_node_property");
         if !self.is_live_on_disk(id) {
             // LpgStore silently no-ops on missing nodes; match that contract.
             return;
@@ -23593,6 +23796,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn set_edge_property(&self, id: EdgeId, key: &str, value: Value) {
+        self.refuser_mutation_en_lecture_seule("set_edge_property");
         if !self.is_live_edge_on_disk(id) {
             // LpgStore silently no-ops on missing edges; match that contract.
             return;
@@ -23702,6 +23906,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn remove_node_property(&self, id: NodeId, key: &str) -> Option<Value> {
+        self.refuser_mutation_en_lecture_seule("remove_node_property");
         if !self.is_live_on_disk(id) {
             return None;
         }
@@ -23968,6 +24173,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn remove_edge_property(&self, id: EdgeId, key: &str) -> Option<Value> {
+        self.refuser_mutation_en_lecture_seule("remove_edge_property");
         if !self.is_live_edge_on_disk(id) {
             return None;
         }
@@ -24057,6 +24263,7 @@ impl GraphStoreMut for SubstrateStore {
     // same bitset that we can now materialise on the fly via
     // `resolve_node_labels_from_bitset`).
     fn add_label(&self, node_id: NodeId, label: &str) -> bool {
+        self.refuser_mutation_en_lecture_seule("add_label");
         if !self.is_live_on_disk(node_id) {
             return false;
         }
@@ -24112,6 +24319,7 @@ impl GraphStoreMut for SubstrateStore {
     }
 
     fn remove_label(&self, node_id: NodeId, label: &str) -> bool {
+        self.refuser_mutation_en_lecture_seule("remove_label");
         if !self.is_live_on_disk(node_id) {
             return false;
         }
@@ -24191,6 +24399,11 @@ impl SubstrateStore {
     /// le seul chemin qui la rend. Apres un `close()` reussi, le `Drop`
     /// n'a plus rien a faire et se tait.
     pub fn close(&self) -> SubstrateResult<()> {
+        // Lecture seule : rien n'a été écrit, il n'y a rien à rendre durable.
+        if self.est_lecture_seule() {
+            self.ferme.store(true, Ordering::Release);
+            return Ok(());
+        }
         let r = self.flush();
         if r.is_ok() {
             self.ferme.store(true, Ordering::Release);
@@ -28142,12 +28355,12 @@ mod tests {
     }
 
     #[test]
-    fn typed_degree_read_only_reports_unreliable_when_stale() {
-        // (2026-09-05) Défense lecture seule : un store RO ne peut pas
-        // écrire la guérison → il MÉMORISE les types douteux et le
-        // pré-filtre typed-degree retombe sur le scan générique (jamais de
-        // 0 silencieux). Le signal consommé par le moteur est
-        // `GraphStore::typed_degree_reliable`.
+    fn typed_degree_read_only_heals_in_memory_when_stale() {
+        // (2026-09-05) Un store RO ne pouvait pas écrire la guérison : il
+        // mémorisait les types douteux et le pré-filtre typed-degree
+        // retombait sur le scan générique. (2026-11-11) Ses colonnes sont
+        // désormais des projections PRIVÉES : la guérison se fait en mémoire,
+        // les degrés typés sont EXACTS, et le fichier n'est pas touché.
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb-ro");
         let (a_id, b_id) = {
@@ -28176,19 +28389,18 @@ mod tests {
         std::fs::write(&col_path, &out).unwrap();
 
         let s = SubstrateStore::open_read_only(&path).unwrap();
-        // RO : pas de guérison possible → colonne déclarée NON fiable.
-        let rel = GraphStore::typed_degree_reliable(&s, "TOUCHES");
         assert!(
-            !rel,
-            "store RO avec sidecar périmé → typed_degree_reliable=false"
+            GraphStore::typed_degree_reliable(&s, "TOUCHES"),
+            "store RO avec sidecar périmé : guéri en mémoire, donc fiable"
         );
-        // La fiabilité est mémorisée (une seule vérification par store).
-        assert!(!GraphStore::typed_degree_reliable(&s, "TOUCHES"));
-        // La colonne physique reste fausse (0) — c'est le pré-filtre qui ne
-        // doit plus la croire ; le chemin générique (scan) reste correct.
-        assert_eq!(s.out_degree_by_type(a_id, "TOUCHES"), 0);
-        assert_eq!(s.in_degree_by_type(b_id, "TOUCHES"), 0);
-        let _ = (a_id, b_id);
+        assert_eq!(s.out_degree_by_type(a_id, "TOUCHES"), 1);
+        assert_eq!(s.in_degree_by_type(b_id, "TOUCHES"), 1);
+        drop(s);
+        assert_eq!(
+            std::fs::read(&col_path).unwrap(),
+            out,
+            "la guérison en lecture seule ne doit pas toucher le fichier"
+        );
     }
 
     #[test]
@@ -37876,5 +38088,69 @@ mod coherence_lecteur_ro {
         );
         let r = SubstrateStore::open_read_only(&path).unwrap();
         assert_eq!(r.node_count(), 1, "le lecteur suivant voit toujours `a`");
+    }
+}
+
+/// Chemins d'écriture PRIVÉS du store, refusés en lecture seule : ils ne sont pas
+/// joignables depuis `tests/`, donc éprouvés ici.
+#[cfg(test)]
+mod refus_lecture_seule {
+    use super::*;
+
+    #[test]
+    fn les_ecritures_privees_sont_refusees_par_lecture_seule_et_ne_creent_rien() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("ro-prive");
+        {
+            let s = SubstrateStore::create(&path).unwrap();
+            s.create_node(&["A"]);
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        let avant: Vec<_> = {
+            let mut v: Vec<_> = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            v.sort();
+            v
+        };
+        let s = SubstrateStore::open_read_only(&path).unwrap();
+
+        let refus = |nom: &str, r: SubstrateResult<()>| match r {
+            Err(SubstrateError::LectureSeule { .. }) => {}
+            autre => panic!("{nom} : refus LectureSeule attendu, obtenu {autre:?}"),
+        };
+        refus("persist_external_edges", s.persist_external_edges());
+        refus("persist_dict", s.persist_dict());
+        refus("persist_properties", s.persist_properties());
+        refus("ecrire_catalogue", s.ecrire_catalogue(&[]));
+        refus(
+            "ecrire_catalogue_procedures",
+            s.ecrire_catalogue_procedures(&[]),
+        );
+        refus("ecrire_catalogue_types", s.ecrire_catalogue_types(&[]));
+        refus(
+            "marquer_migration_v2_achevee",
+            s.marquer_migration_v2_achevee(),
+        );
+        assert!(matches!(
+            s.delete_legacy_props_sidecar(),
+            Err(SubstrateError::LectureSeule { .. })
+        ));
+        assert!(matches!(
+            s.checkpoint(),
+            Err(SubstrateError::LectureSeule { .. })
+        ));
+
+        let apres: Vec<_> = {
+            let mut v: Vec<_> = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(avant, apres, "un refus a créé ou supprimé un fichier");
     }
 }
