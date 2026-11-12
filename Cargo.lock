@@ -2193,6 +2193,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "obrain-bindings-common"
+version = "0.0.1"
+dependencies = [
+ "obrain-common",
+ "obrain-engine",
+ "serde_json",
+]
+
+[[package]]
+name = "obrain-c"
+version = "0.0.1"
+dependencies = [
+ "obrain-bindings-common",
+ "obrain-common",
+ "obrain-core",
+ "obrain-engine",
+ "parking_lot",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "obrain-cognitive"
 version = "0.0.1"
 dependencies = [

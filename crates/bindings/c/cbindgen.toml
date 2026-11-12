@@ -1,0 +1,46 @@
+# Configuration cbindgen de l'ABI C d'Obrain. L'en-tête `obrain.h` commité est
+# produit par cbindgen 0.29.4 (version épinglée dans build.rs et dans la CI) ;
+# le test `header_a_jour` échoue si l'en-tête commité diverge du généré.
+language = "C"
+cpp_compat = true
+include_guard = "OBRAIN_H"
+include_version = false
+style = "both"
+usize_is_size_t = true
+documentation = true
+documentation_style = "c99"
+header = """/* Obrain C API — en-tête GÉNÉRÉ par cbindgen (voir cbindgen.toml), ne pas éditer.
+ *
+ * Lier contre libobrain_c.so (Linux), libobrain_c.dylib (macOS) ou
+ * obrain_c.dll (Windows), ou contre libobrain_c.a (statique).
+ *
+ * Contrat mémoire : voir README.md (qui libère quoi).
+ * Erreurs : les fonctions rendent un ObrainStatus (0 = succès) ou un pointeur
+ * nul ; obrain_last_error() donne le message, propre au thread courant.
+ */"""
+# Les fonctions sous `#[cfg(feature = …)]` ne sont émises que derrière la
+# macro C correspondante : l'en-tête est le même quel que soit le profil de
+# compilation ; le consommateur définit les macros des features qu'il a
+# compilées (voir README.md, « Features »).
+[defines]
+"feature = cypher" = "OBRAIN_FEATURE_CYPHER"
+"feature = gremlin" = "OBRAIN_FEATURE_GREMLIN"
+"feature = graphql" = "OBRAIN_FEATURE_GRAPHQL"
+"feature = sparql" = "OBRAIN_FEATURE_SPARQL"
+"feature = sql-pgq" = "OBRAIN_FEATURE_SQL_PGQ"
+"feature = vector-index" = "OBRAIN_FEATURE_VECTOR_INDEX"
+
+[export]
+include = ["ObrainStatus"]
+# Registre interne du bail d'écriture (src/bail.rs) : pas une surface C.
+exclude = ["BAUX"]
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = true
+
+[fn]
+sort_by = "None"
+
+[parse]
+parse_deps = false
