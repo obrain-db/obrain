@@ -395,7 +395,21 @@ impl<'a> Parser<'a> {
                     // CALL { subquery } RETURN ... : treat as a query
                     self.parse_query().map(Statement::Query)
                 } else {
-                    self.parse_call_statement().map(Statement::Call)
+                    // `CALL proc(...) [YIELD ...]` seul, ou avec son WHERE /
+                    // RETURN propres : un `Statement::Call`. Suivi d'une clause
+                    // de requête (`CALL … YIELD node_id MATCH (n) WHERE
+                    // id(n) = node_id RETURN n.title`) : la procédure devient
+                    // la PREMIÈRE clause d'une requête ordinaire, et la queue
+                    // est consommée par `parse_query` — sinon elle était
+                    // rejetée (« Unexpected token 'MATCH' after the end of
+                    // the statement »).
+                    let call = self.parse_call_statement()?;
+                    if self.debute_une_clause_de_requete() {
+                        self.parse_query_apres(vec![QueryClause::CallProcedure(call)])
+                            .map(Statement::Query)
+                    } else {
+                        Ok(Statement::Call(call))
+                    }
                 }
             }
             _ if self.is_identifier()
@@ -631,7 +645,40 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Le jeton courant ouvre-t-il une clause de requête (MATCH, OPTIONAL,
+    /// UNWIND, FOR, MERGE, CREATE/INSERT, DELETE, CALL, WITH, LET, FOREACH,
+    /// LOAD) ? Sert à enchaîner `CALL … YIELD …` avec la suite d'une requête.
+    fn debute_une_clause_de_requete(&mut self) -> bool {
+        match self.current.kind {
+            TokenKind::Match
+            | TokenKind::Optional
+            | TokenKind::Unwind
+            | TokenKind::For
+            | TokenKind::Merge
+            | TokenKind::Create
+            | TokenKind::Insert
+            | TokenKind::Delete
+            | TokenKind::Detach
+            | TokenKind::Nodetach
+            | TokenKind::Call
+            | TokenKind::With => true,
+            _ if self.is_identifier() => {
+                let nom = self.get_identifier_name();
+                nom.eq_ignore_ascii_case("LET")
+                    || nom.eq_ignore_ascii_case("FOREACH")
+                    || nom.eq_ignore_ascii_case("LOAD")
+            }
+            _ => false,
+        }
+    }
+
     fn parse_query(&mut self) -> Result<QueryStatement> {
+        self.parse_query_apres(Vec::new())
+    }
+
+    /// `parse_query` avec des clauses déjà analysées en tête (le `CALL` d'un
+    /// enchaînement `CALL … YIELD … MATCH …`).
+    fn parse_query_apres(&mut self, prefixe: Vec<QueryClause>) -> Result<QueryStatement> {
         let span_start = self.current.span.start;
 
         let mut match_clauses = Vec::new();
@@ -639,7 +686,7 @@ impl<'a> Parser<'a> {
         let mut merge_clauses = Vec::new();
         let mut create_clauses = Vec::new();
         let mut delete_clauses = Vec::new();
-        let mut ordered_clauses = Vec::new();
+        let mut ordered_clauses = prefixe;
 
         // Parse clauses in source order, preserving sequence for variable scoping.
         // MATCH, OPTIONAL MATCH, UNWIND, FOR, MERGE, CREATE/INSERT, DELETE can appear

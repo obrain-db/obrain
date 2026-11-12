@@ -140,6 +140,10 @@ pub struct QueryProcessor {
     /// resolve in this processor's own planner builds (same pattern).
     #[cfg(feature = "cdc")]
     cdc_log: Option<Arc<crate::cdc::CdcLog>>,
+    /// Poignée de recherche hybride (`CALL obrain.hybrid_search`), même
+    /// câblage que `substrate_store`.
+    #[cfg(feature = "hybrid-search")]
+    recherche_hybride: Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
 }
 
 impl QueryProcessor {
@@ -172,6 +176,8 @@ impl QueryProcessor {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         }
     }
 
@@ -200,6 +206,8 @@ impl QueryProcessor {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         }
     }
 
@@ -229,6 +237,8 @@ impl QueryProcessor {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         })
     }
 
@@ -289,6 +299,18 @@ impl QueryProcessor {
     #[must_use]
     pub fn with_substrate_store(mut self, store: Arc<obrain_substrate::SubstrateStore>) -> Self {
         self.substrate_store = Some(store);
+        self
+    }
+
+    /// Attache la poignée de recherche hybride (`CALL obrain.hybrid_search`).
+    /// Même câblage que [`Self::with_substrate_store`].
+    #[cfg(feature = "hybrid-search")]
+    #[must_use]
+    pub fn with_recherche_hybride(
+        mut self,
+        poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
+    ) -> Self {
+        self.recherche_hybride = Some(poignee);
         self
     }
 
@@ -453,6 +475,12 @@ impl QueryProcessor {
         } else {
             planner
         };
+        #[cfg(feature = "hybrid-search")]
+        let planner = if let Some(ref poignee) = self.recherche_hybride {
+            planner.with_recherche_hybride(Arc::clone(poignee))
+        } else {
+            planner
+        };
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // 6. Execute and collect results
@@ -567,6 +595,8 @@ impl QueryProcessor {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
             // (2026-08-14) CE CHAMP MANQUAIT, et le trou n'etait visible que
             // sous `--all-features --all-targets` : `with_rdf` est
             // `#[cfg(test)]` et exige `rdf`, tandis que `cognitive_engine` est
@@ -1072,8 +1102,15 @@ fn substitute_in_operator(op: &mut LogicalOperator, params: &QueryParams) -> Res
         }
         // DDL operators have no expressions to substitute
         LogicalOperator::CreatePropertyGraph(_) => {}
-        // Procedure calls: arguments could contain parameters but we handle at execution time
-        LogicalOperator::CallProcedure(_) => {}
+        // Procedure calls: les arguments portent des paramètres (`CALL
+        // obrain.hybrid_search(…, $vec)`) ; les familles statiques sont
+        // exécutées à la PLANIFICATION, donc la substitution doit avoir eu
+        // lieu ici, avant le planificateur.
+        LogicalOperator::CallProcedure(call) => {
+            for arg in &mut call.arguments {
+                substitute_in_expression(arg, params)?;
+            }
+        }
         // LoadData: file path is a literal, no parameter substitution needed
         LogicalOperator::LoadData(_) => {}
     }

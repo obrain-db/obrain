@@ -584,100 +584,219 @@ impl super::ObrainDB {
         k: usize,
         fusion: Option<obrain_core::index::text::FusionMethod>,
     ) -> Result<Vec<(NodeId, f64)>> {
+        // (2026-08-13, T17b) LA DERNIERE GARDE — et (2026-11-12) UNE SEULE
+        // FUSION.
+        //
+        // Le contrat de l'API Rust ne change pas : TOLERANTE, elle fusionne
+        // ce qui est disponible (un index absent = une source sautee, comme
+        // en LPG). Mais la fusion elle-meme vit desormais dans la POIGNEE
+        // (`PoigneeRechercheHybride`), la meme que celle qu'interroge
+        // `CALL obrain.hybrid_search` depuis le planificateur : deux chemins,
+        // un seul calcul, un seul endroit ou la fusion peut se tromper.
+        //
+        // Ce que l'API Rust fait EN PLUS de la procedure, et qu'elle seule
+        // peut faire parce qu'elle tient `&self` : la reconstruction a la
+        // demande d'un index declare mais absent du registre (base rouverte),
+        // comme `text_search` et `vector_search`. La procedure, elle, nomme
+        // ce cas au lieu de le sauter.
+        if self.substrate_store.is_some() {
+            let cle_texte = format!("{label}:{text_property}");
+            if !self.substrate_text_indexes.read().contains_key(&cle_texte) {
+                self.rebatir_index_declare("text", label, text_property);
+            }
+            if query_vector.is_some() {
+                let cle_vecteur = format!("{label}:{vector_property}");
+                if !self
+                    .substrate_vector_indexes
+                    .read()
+                    .contains_key(&cle_vecteur)
+                {
+                    self.rebatir_index_declare("vector", label, vector_property);
+                }
+            }
+        }
+
+        self.poignee_recherche_hybride().hybrid_search(
+            label,
+            text_property,
+            vector_property,
+            query_text,
+            query_vector,
+            k,
+            fusion,
+        )
+    }
+
+    /// La poignée de recherche hybride de cette base : des clones `Arc` des
+    /// registres d'index et du store, câblés jusqu'au planificateur par
+    /// `ObrainDB::session()` (voir `database/hybrid_procedure.rs`).
+    #[cfg(feature = "hybrid-search")]
+    pub(crate) fn poignee_recherche_hybride(
+        &self,
+    ) -> std::sync::Arc<dyn super::hybrid_procedure::RechercheHybride> {
+        std::sync::Arc::new(PoigneeRechercheHybride {
+            substrate_store: self.substrate_store.clone(),
+            store: std::sync::Arc::clone(&self.store),
+            textes: std::sync::Arc::clone(&self.substrate_text_indexes),
+            vecteurs: std::sync::Arc::clone(&self.substrate_vector_indexes),
+        })
+    }
+}
+
+/// Ce que `CALL obrain.hybrid_search` et `ObrainDB::hybrid_search` partagent :
+/// les registres d'index (clones `Arc`), le store substrat (pour savoir si un
+/// index absent est tout de même DÉCLARÉ) et le store de repli hors substrat.
+///
+/// Vit sans `ObrainDB` : c'est ce qui permet à une `Session` (qui n'a pas
+/// d'`Arc<ObrainDB>`) de la porter jusqu'au planificateur.
+#[cfg(feature = "hybrid-search")]
+pub(crate) struct PoigneeRechercheHybride {
+    substrate_store: Option<std::sync::Arc<obrain_substrate::SubstrateStore>>,
+    store: std::sync::Arc<dyn obrain_core::graph::GraphStoreMut>,
+    textes: std::sync::Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<
+                String,
+                std::sync::Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+            >,
+        >,
+    >,
+    vecteurs: std::sync::Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<
+                String,
+                (
+                    usize,
+                    std::sync::Arc<obrain_substrate::SubstrateTieredIndex>,
+                ),
+            >,
+        >,
+    >,
+}
+
+#[cfg(feature = "hybrid-search")]
+impl PoigneeRechercheHybride {
+    /// L'index `(genre, label, property)` est-il déclaré dans le catalogue
+    /// durable du substrat ? (Une base en mémoire n'en a pas : `false`.)
+    fn declare(&self, genre: &str, label: &str, property: &str) -> bool {
+        self.substrate_store.as_ref().is_some_and(|sub| {
+            sub.declarations_index()
+                .iter()
+                .any(|d| d.genre == genre && d.label == label && d.propriete == property)
+        })
+    }
+}
+
+#[cfg(feature = "hybrid-search")]
+impl super::hybrid_procedure::RechercheHybride for PoigneeRechercheHybride {
+    fn etat_index_texte(&self, label: &str, property: &str) -> super::hybrid_procedure::EtatIndex {
+        use super::hybrid_procedure::EtatIndex;
+        if self.substrate_store.is_some() {
+            if self.textes.read().contains_key(&format!("{label}:{property}")) {
+                EtatIndex::Charge
+            } else if self.declare("text", label, property) {
+                EtatIndex::DeclareNonCharge
+            } else {
+                EtatIndex::Absent
+            }
+        } else if self.store.get_text_index(label, property).is_some() {
+            EtatIndex::Charge
+        } else {
+            EtatIndex::Absent
+        }
+    }
+
+    fn etat_index_vectoriel(
+        &self,
+        label: &str,
+        property: &str,
+    ) -> super::hybrid_procedure::EtatIndex {
+        use super::hybrid_procedure::EtatIndex;
+        if self.substrate_store.is_none() {
+            // Hors substrat, il n'existe aucun registre vectoriel (O-VEC
+            // nettoyage) : la recherche hybride se réduit à son volet texte.
+            return EtatIndex::Absent;
+        }
+        if self.vecteurs.read().contains_key(&format!("{label}:{property}")) {
+            EtatIndex::Charge
+        } else if self.declare("vector", label, property) {
+            EtatIndex::DeclareNonCharge
+        } else {
+            EtatIndex::Absent
+        }
+    }
+
+    fn hybrid_search(
+        &self,
+        label: &str,
+        text_property: &str,
+        vector_property: &str,
+        query_text: &str,
+        query_vector: Option<&[f32]>,
+        k: usize,
+        fusion: Option<obrain_core::index::text::FusionMethod>,
+    ) -> Result<Vec<(NodeId, f64)>> {
         use obrain_core::index::text::fuse_results;
 
-        // (2026-08-13, T17b) LA DERNIERE GARDE.
-        //
-        // La fusion elle-meme ne change pas : c'est `fuse_results`, le meme
-        // helper que le chemin LpgStore. Seules les deux SOURCES changent, et
-        // elles existent deja — `text_search` et `vector_search` sont branchees
-        // sur les registres du substrat.
-        //
-        // POINT DE SEMANTIQUE, celui qui demandait de la conception plutot que
-        // du cablage. Le chemin LpgStore est TOLERANT : si un index manque, il
-        // saute simplement cette source (`if let Some(index) = ...`). C'est le
-        // contrat de la recherche hybride — fusionner ce qui est disponible —
-        // et non un oubli.
-        //
-        // Mais `text_search` et `vector_search`, elles, RENDENT UNE ERREUR
-        // quand l'index manque : c'est ce qu'on veut quand on les appelle
-        // directement. Les envelopper dans un `.ok()` ici avalerait AUSSI les
-        // vraies pannes — dimension incoherente, requete malformee — et on
-        // passerait la soiree a retirer des succes silencieux pour en
-        // reintroduire un au dernier moment.
-        //
-        // On distingue donc les deux cas EXPLICITEMENT : on regarde d'abord si
-        // le registre porte l'index (absence = source sautee, comme en LPG), et
-        // seulement alors on appelle la recherche — dont l'erreur, si elle
-        // survient, REMONTE.
-        if self.substrate_store.is_some() {
-            let fusion_method = fusion.unwrap_or_default();
-            let mut sources: Vec<Vec<(NodeId, f64)>> = Vec::new();
-            let sur_echantillon = k.saturating_mul(2).max(k);
+        let fusion_method = fusion.unwrap_or_default();
+        let mut sources: Vec<Vec<(NodeId, f64)>> = Vec::new();
+        // Chaque source est sur-échantillonnée (2k) pour que la fusion ait de
+        // quoi reclasser ; `fuse_results` tronque à k.
+        let sur_echantillon = k.saturating_mul(2).max(k);
 
-            let a_index_texte = self
-                .substrate_text_indexes
+        // Texte (BM25). L'Arc est cloné SOUS le verrou de registre, puis le
+        // verrou relâché : la recherche se fait hors verrou.
+        let index_texte = if self.substrate_store.is_some() {
+            self.textes
                 .read()
-                .contains_key(&format!("{label}:{text_property}"));
-            if a_index_texte {
-                let resultats =
-                    self.text_search(label, text_property, query_text, sur_echantillon)?;
+                .get(&format!("{label}:{text_property}"))
+                .cloned()
+        } else {
+            self.store.get_text_index(label, text_property)
+        };
+        if let Some(index) = index_texte {
+            let resultats = index.read().search(query_text, sur_echantillon);
+            if !resultats.is_empty() {
+                sources.push(resultats);
+            }
+        }
+
+        // Vecteur (cosinus par le cascade), substrat seulement.
+        if let Some(query) = query_vector
+            && self.substrate_store.is_some()
+        {
+            let entree = self
+                .vecteurs
+                .read()
+                .get(&format!("{label}:{vector_property}"))
+                .cloned();
+            if let Some((dim_native, index)) = entree {
+                // Même garde que `vector_search` : on valide sur la dimension
+                // NATIVE, jamais en rembourrant.
+                if dim_native != query.len() {
+                    return Err(Error::Internal(format!(
+                        "Dimension incoherente pour :{label}({vector_property}) : l'index est en \
+                         {dim_native} dimensions, la requete en {}.",
+                        query.len()
+                    )));
+                }
+                // SCORE, pas distance : la fusion pondérée normalise des
+                // scores CROISSANTS (min-max), comme ceux de BM25. Le RRF, lui,
+                // ne voit que le rang, identique dans les deux sens.
+                let resultats: Vec<(NodeId, f64)> = index
+                    .search_top_k(query, sur_echantillon)
+                    .into_iter()
+                    .map(|(offset, cosinus)| (NodeId(u64::from(offset)), f64::from(cosinus)))
+                    .collect();
                 if !resultats.is_empty() {
                     sources.push(resultats);
                 }
             }
-
-            if let Some(query_vec) = query_vector {
-                let a_index_vecteur = self
-                    .substrate_vector_indexes
-                    .read()
-                    .contains_key(&format!("{label}:{vector_property}"));
-                if a_index_vecteur {
-                    let resultats = self.vector_search(
-                        label,
-                        vector_property,
-                        query_vec,
-                        sur_echantillon,
-                        None,
-                        None,
-                    )?;
-                    if !resultats.is_empty() {
-                        sources.push(
-                            resultats
-                                .into_iter()
-                                .map(|(id, dist)| (id, f64::from(dist)))
-                                .collect(),
-                        );
-                    }
-                }
-            }
-
-            if sources.is_empty() {
-                return Ok(Vec::new());
-            }
-            return Ok(fuse_results(&sources, &fusion_method, k));
         }
-
-        let fusion_method = fusion.unwrap_or_default();
-        let mut sources: Vec<Vec<(NodeId, f64)>> = Vec::new();
-
-        // Text search
-        if let Some(text_index) = self.store.get_text_index(label, text_property) {
-            let text_results = text_index.read().search(query_text, k * 2);
-            if !text_results.is_empty() {
-                sources.push(text_results);
-            }
-        }
-
-        // Hors base substrat, il n'existe aucun registre vectoriel : la recherche
-        // hybride se réduit à son volet texte (la voie vectorielle n'a plus de
-        // source hors substrat, voir la garde ci-dessus).
-        let _ = (query_vector, vector_property);
 
         if sources.is_empty() {
             return Ok(Vec::new());
         }
-
         Ok(fuse_results(&sources, &fusion_method, k))
     }
 }

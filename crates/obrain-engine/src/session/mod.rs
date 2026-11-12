@@ -152,6 +152,11 @@ pub struct Session {
     /// the cognitive engine above) so substrate-native procedures
     /// (`CALL obrain.window_2d`) can resolve at query-plan time.
     substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// Poignée de recherche hybride (`CALL obrain.hybrid_search`), partagée
+    /// avec la base. Même câblage que `substrate_store` : posée par
+    /// `ObrainDB::session()`, transmise aux `QueryProcessor` par requête.
+    #[cfg(feature = "hybrid-search")]
+    recherche_hybride: Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
     /// WAL for logging schema changes.
     #[cfg(feature = "wal")]
     wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
@@ -336,6 +341,8 @@ impl Session {
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
             substrate_store: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -429,6 +436,25 @@ impl Session {
     /// per-statement `QueryProcessor`s).
     pub(crate) fn substrate_store(&self) -> Option<&Arc<obrain_substrate::SubstrateStore>> {
         self.substrate_store.as_ref()
+    }
+
+    /// Pose la poignée de recherche hybride (`CALL obrain.hybrid_search`).
+    /// Même câblage que [`Self::set_substrate_store`] : `ObrainDB` l'appelle
+    /// juste après avoir construit la session.
+    #[cfg(feature = "hybrid-search")]
+    pub(crate) fn set_recherche_hybride(
+        &mut self,
+        poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
+    ) {
+        self.recherche_hybride = Some(poignee);
+    }
+
+    /// La poignée de recherche hybride de cette session, s'il y en a une.
+    #[cfg(feature = "hybrid-search")]
+    pub(crate) fn recherche_hybride(
+        &self,
+    ) -> Option<&Arc<dyn crate::database::hybrid_procedure::RechercheHybride>> {
+        self.recherche_hybride.as_ref()
     }
 
     /// (O1) Vue zero-copy sur une propriété `String` d'un nœud : le `&str`
@@ -622,6 +648,8 @@ impl Session {
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
             substrate_store: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -2842,6 +2870,12 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "hybrid-search")]
+            let processor = if let Some(poignee) = self.recherche_hybride() {
+                processor.with_recherche_hybride(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
 
@@ -3108,6 +3142,12 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "hybrid-search")]
+            let processor = if let Some(poignee) = self.recherche_hybride() {
+                processor.with_recherche_hybride(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::Gremlin, Some(&params))
@@ -3226,6 +3266,12 @@ impl Session {
             };
             let processor = if let Some(sub) = self.substrate_store() {
                 processor.with_substrate_store(Arc::clone(sub))
+            } else {
+                processor
+            };
+            #[cfg(feature = "hybrid-search")]
+            let processor = if let Some(poignee) = self.recherche_hybride() {
+                processor.with_recherche_hybride(Arc::clone(poignee))
             } else {
                 processor
             };
@@ -3383,6 +3429,12 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "hybrid-search")]
+            let processor = if let Some(poignee) = self.recherche_hybride() {
+                processor.with_recherche_hybride(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::SqlPgq, Some(&params))
@@ -3459,6 +3511,12 @@ impl Session {
                         };
                         let processor = if let Some(sub) = self.substrate_store() {
                             processor.with_substrate_store(Arc::clone(sub))
+                        } else {
+                            processor
+                        };
+                        #[cfg(feature = "hybrid-search")]
+                        let processor = if let Some(poignee) = self.recherche_hybride() {
+                            processor.with_recherche_hybride(Arc::clone(poignee))
                         } else {
                             processor
                         };
@@ -4612,6 +4670,12 @@ impl Session {
         // procedures (`CALL obrain.window_2d`) resolve at plan time.
         if let Some(ref sub) = self.substrate_store {
             planner = planner.with_substrate_store(Arc::clone(sub));
+        }
+        // Poignée de recherche hybride (`CALL obrain.hybrid_search`), même
+        // câblage — c'est CE planificateur que prend `execute()`.
+        #[cfg(feature = "hybrid-search")]
+        if let Some(ref poignee) = self.recherche_hybride {
+            planner = planner.with_recherche_hybride(Arc::clone(poignee));
         }
         #[cfg(feature = "cdc")]
         {

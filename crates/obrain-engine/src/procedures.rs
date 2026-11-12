@@ -378,6 +378,16 @@ pub fn procedures_result(registry: &BuiltinProcedures) -> AlgorithmResult {
             Value::from(columns_desc.as_str()),
         ]);
     }
+    // Procédures hors registre d'algorithmes, mais documentées ici pour que
+    // `obrain.procedures()` dise la vérité sur ce qu'un `CALL` accepte.
+    #[cfg(feature = "hybrid-search")]
+    {
+        result.add_row(crate::database::hybrid_procedure::ligne_procedures());
+        result.rows.sort_by(|a, b| match (&a[0], &b[0]) {
+            (Value::String(x), Value::String(y)) => x.cmp(y),
+            _ => std::cmp::Ordering::Equal,
+        });
+    }
     result
 }
 

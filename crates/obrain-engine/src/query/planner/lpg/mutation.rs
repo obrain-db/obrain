@@ -869,6 +869,23 @@ impl super::Planner {
             return self.plan_static_result(result, &call.yield_items);
         }
 
+        // Recherche hybride (CALL obrain.hybrid_search — BM25 + vecteur,
+        // fusion RRF/pondérée). Les index vivent dans ObrainDB, hors du
+        // store : la poignée `recherche_hybride` est câblée ObrainDB →
+        // Session → QueryProcessor → Planner (même chemin que
+        // substrate_store). Lecture pure ; résultat calculé à la
+        // planification comme les autres familles de recherche.
+        #[cfg(feature = "hybrid-search")]
+        if let Some(result) =
+            crate::database::hybrid_procedure::try_execute_hybrid_search_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.recherche_hybride.as_ref(),
+            )?
+        {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
         // Cognitive procedures (CALL obrain.cognitive.*)
         #[cfg(feature = "cognitive")]
         if let Some(engine) = &self.cognitive_engine

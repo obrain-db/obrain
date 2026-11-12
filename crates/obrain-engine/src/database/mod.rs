@@ -55,6 +55,8 @@ mod query;
 #[cfg(feature = "rdf")]
 mod rdf_ops;
 pub mod reachable_count;
+#[cfg(feature = "hybrid-search")]
+pub mod hybrid_procedure;
 mod search;
 pub mod search_by_role;
 pub mod search_causality;
@@ -305,11 +307,16 @@ pub struct ObrainDB {
     /// « ce fichier décrit-il encore ce store ? » (donc : charger ou reconstruire).
     #[cfg(feature = "text-index")]
     pub(super) index_texte_epochs: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    /// `Arc` (et non `RwLock` nu) : la poignée de recherche hybride
+    /// (`CALL obrain.hybrid_search`) en garde un clone, comme pour le
+    /// registre vectoriel ci-dessus.
     #[cfg(feature = "text-index")]
-    pub(super) substrate_text_indexes: parking_lot::RwLock<
-        std::collections::HashMap<
-            String,
-            Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+    pub(super) substrate_text_indexes: Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<
+                String,
+                Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+            >,
         >,
     >,
     /// Metrics registry shared across all sessions.
@@ -1321,7 +1328,9 @@ impl ObrainDB {
             #[cfg(feature = "text-index")]
             index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
-            substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            substrate_text_indexes: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -1440,7 +1449,9 @@ impl ObrainDB {
             #[cfg(feature = "text-index")]
             index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
-            substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            substrate_text_indexes: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -1603,6 +1614,12 @@ impl ObrainDB {
             if let Some(registry) = self.base_registry.read().clone() {
                 ext_session.set_base_registry(registry);
             }
+            // Recherche hybride (`CALL obrain.hybrid_search`) : les index
+            // texte/vecteur vivent ICI, dans ObrainDB — la poignée en porte
+            // des clones Arc jusqu'au planificateur, même câblage que
+            // substrate_store.
+            #[cfg(feature = "hybrid-search")]
+            ext_session.set_recherche_hybride(self.poignee_recherche_hybride());
             return ext_session;
         }
 
@@ -1627,6 +1644,10 @@ impl ObrainDB {
 
         #[cfg(feature = "cdc")]
         session.set_cdc_log(Arc::clone(&self.cdc_log));
+
+        // Recherche hybride : même câblage que sur le chemin substrat.
+        #[cfg(feature = "hybrid-search")]
+        session.set_recherche_hybride(self.poignee_recherche_hybride());
 
         // Wire the cognitive engine (3 piliers), if this DB has one, so
         // `CALL obrain.cognitive.*` resolves in every session's planner
