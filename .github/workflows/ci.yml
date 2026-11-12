@@ -307,6 +307,42 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -m pip install "$RUNNER_TEMP"/dist/*.whl "pytest>=9" "networkx>=3"
           cd crates/bindings/python
           "$RUNNER_TEMP/venv/bin/python" -m pytest -v -rs
+  # ── Intégrations LangChain / LlamaIndex (crates/bindings/python/integrations) ──
+  # Même binding, construit avec le même maturin épinglé. Les paquets d'intégration
+  # installent leurs versions épinglées (langchain-core, langchain-community,
+  # llama-index-core) et lancent leurs tests : aucun appel réseau, aucune clé,
+  # LLM factices. -rs affiche tout skip nommé.
+  bindings-integrations:
+    name: Bindings LangChain/LlamaIndex
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: maturin (version épinglée dans pyproject.toml)
+        run: |
+          ATTENDUE=1.16.0
+          VERSION=$(sed -n 's/^requires = \["maturin==\(.*\)"\]$/\1/p' crates/bindings/python/pyproject.toml)
+          echo "maturin épinglé dans pyproject.toml : $VERSION"
+          if [ "$VERSION" != "$ATTENDUE" ]; then echo "::error::pyproject.toml épingle maturin $VERSION, ci.yml attend $ATTENDUE : mettre les deux à jour ensemble"; exit 1; fi
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==$ATTENDUE"
+          maturin --version
+      - name: Wheel (release)
+        run: maturin build --release --manifest-path crates/bindings/python/Cargo.toml --out "$RUNNER_TEMP/dist"
+      - name: Venv neuf, wheel, paquets d'intégration (extras test), pytest
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          PY="$RUNNER_TEMP/venv/bin/python"
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install "$RUNNER_TEMP"/dist/*.whl
+          "$PY" -m pip install -e "crates/bindings/python/integrations/langchain_obrain[test]" -e "crates/bindings/python/integrations/llama_index_obrain[test]"
+          "$PY" -m pytest -v -rs crates/bindings/python/integrations/langchain_obrain/tests
+          "$PY" -m pytest -v -rs crates/bindings/python/integrations/llama_index_obrain/tests
   tests-all-features:
     name: Tests (toutes features)
     runs-on: [self-hosted, linux, x64, obrain-ci]
