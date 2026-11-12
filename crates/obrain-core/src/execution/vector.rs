@@ -219,15 +219,15 @@ impl ValueVector {
             (VectorData::EdgeId(vec), Value::Int64(i)) => vec.push(EdgeId::new(*i as u64)),
             (VectorData::Generic(vec), _) => vec.push(value),
             _ => {
-                // Type mismatch - push a default value to maintain vector alignment
-                match &mut self.data {
-                    VectorData::Bool(vec) => vec.push(false),
-                    VectorData::Int64(vec) => vec.push(0),
-                    VectorData::Float64(vec) => vec.push(0.0),
-                    VectorData::String(vec) => vec.push("".into()),
-                    VectorData::NodeId(vec) => vec.push(NodeId::new(0)),
-                    VectorData::EdgeId(vec) => vec.push(EdgeId::new(0)),
-                    VectorData::Generic(vec) => vec.push(value),
+                // Le type de la valeur n'est pas celui du vecteur. Pousser une
+                // valeur par défaut (0, "") PERDAIT la valeur sans avertir :
+                // un `Float64` passé à travers un opérateur qui déclarait sa
+                // colonne `Node` (`WITH …, avg(x) AS m MERGE (a)-[r]->(b)
+                // SET r.p = m`) ressortait `0`. Le vecteur passe à la
+                // représentation générique, qui garde toutes les valeurs.
+                self.promote_to_generic();
+                if let VectorData::Generic(vec) = &mut self.data {
+                    vec.push(value);
                 }
             }
         }
@@ -336,6 +336,18 @@ impl ValueVector {
             VectorData::EdgeId(vec) => vec.get(index).map(|&v| Value::Int64(v.as_u64() as i64)),
             VectorData::Generic(vec) => vec.get(index).cloned(),
         }
+    }
+
+    /// Convertit le stockage en `Generic`, sans perdre une valeur (les lignes
+    /// nulles restent nulles). Sans effet si le vecteur l'est déjà.
+    fn promote_to_generic(&mut self) {
+        if matches!(self.data, VectorData::Generic(_)) {
+            return;
+        }
+        let valeurs: Vec<Value> = (0..self.len)
+            .map(|i| self.get_value(i).unwrap_or(Value::Null))
+            .collect();
+        self.data = VectorData::Generic(valeurs);
     }
 
     /// Alias for get_value.
@@ -553,5 +565,23 @@ mod tests {
 
         assert!(vec.is_empty(), "résultat attendu vide");
         assert_eq!(vec.len(), 0);
+    }
+
+    #[test]
+    fn une_valeur_d_un_autre_type_n_est_pas_perdue() {
+        // Colonne déclarée `Node` : un entier (id) s'y range en NodeId, un
+        // flottant ou un texte ne doivent pas devenir 0.
+        let mut v = ValueVector::with_type(LogicalType::Node);
+        v.push_value(Value::Int64(7));
+        v.push_value(Value::Float64(2000.5));
+        v.push_value(Value::String("x".into()));
+        v.push_value(Value::Null);
+        assert_eq!(v.len(), 4);
+        assert_eq!(v.get_value(0), Some(Value::Int64(7)));
+        assert_eq!(v.get_value(1), Some(Value::Float64(2000.5)));
+        assert_eq!(v.get_value(2), Some(Value::String("x".into())));
+        assert_eq!(v.get_value(3), Some(Value::Null));
+        // Un id déjà rangé reste lisible comme id après la promotion.
+        assert_eq!(v.get_node_id(0), Some(NodeId::new(7)));
     }
 }

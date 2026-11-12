@@ -1353,9 +1353,24 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     let property = self.expect_identifier()?;
-                    expr = Expression::PropertyAccess {
-                        base: Box::new(expr),
-                        property,
+                    expr = match expr {
+                        Expression::Variable(_) => Expression::PropertyAccess {
+                            base: Box::new(expr),
+                            property,
+                        },
+                        // `<expression>.<propriété>` sur autre chose qu'une
+                        // variable : composant du résultat d'un appel
+                        // (`duration.between(a, b).days`), élément d'une liste
+                        // (`collect(n)[0].sha`), clé d'une map. Désucré ici en
+                        // `__component(base, 'propriété')` (comme en GQL) :
+                        // un agrégat dans la base est alors vu par le
+                        // traducteur, qui ne descend pas dans un
+                        // `PropertyAccess`.
+                        base => Expression::FunctionCall {
+                            name: "__component".to_string(),
+                            distinct: false,
+                            args: vec![base, Expression::Literal(Literal::String(property))],
+                        },
                     };
                 }
                 TokenKind::LBracket => {
@@ -1545,6 +1560,24 @@ impl<'a> Parser<'a> {
                 }
 
                 self.advance();
+
+                // Nom de fonction POINTÉ : `duration.between(a, b)`. Un
+                // identifiant suivi de `.segment` (une ou plusieurs fois) puis
+                // de `(` est un nom de fonction qualifié, jamais un accès de
+                // propriété (`n.prop(` n'existe pas). Le regard en avant se
+                // fait sur une COPIE du lexeur (cinq mots) : le cas courant,
+                // `n.prop`, ne clone aucun jeton.
+                let mut name = name;
+                let mut lower = lower;
+                if self.current.kind == TokenKind::Dot && self.dotted_function_ahead() {
+                    while self.current.kind == TokenKind::Dot {
+                        self.advance();
+                        name.push('.');
+                        name.push_str(&self.get_identifier_text());
+                        self.advance();
+                    }
+                    lower = name.to_lowercase();
+                }
 
                 // EXISTS { MATCH ... WHERE ... } subquery form
                 if lower == "exists" && self.current.kind == TokenKind::LBrace {
@@ -1894,11 +1927,31 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Vrai si le jeton courant (un `.`) ouvre `.segment` (`.segment`)* suivi de
+    /// `(` : un nom de fonction qualifié. Regarde sur une copie du lexeur.
+    fn dotted_function_ahead(&self) -> bool {
+        let mut probe = self.lexer.clone();
+        loop {
+            if !Self::kind_can_be_identifier(probe.next_token().kind) {
+                return false;
+            }
+            match probe.next_token().kind {
+                TokenKind::LParen => return true,
+                TokenKind::Dot => {}
+                _ => return false,
+            }
+        }
+    }
+
     /// Check if the current token can be used as an identifier.
     /// This includes true identifiers and contextual keywords that can be used as names.
     fn can_be_identifier(&self) -> bool {
+        Self::kind_can_be_identifier(self.current.kind)
+    }
+
+    fn kind_can_be_identifier(kind: TokenKind) -> bool {
         matches!(
-            self.current.kind,
+            kind,
             TokenKind::Identifier
                 | TokenKind::QuotedIdentifier
                 // Contextual keywords that can be used as identifiers

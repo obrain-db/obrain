@@ -1390,13 +1390,44 @@ impl CypherTranslator {
         synthetic_alias: &str,
     ) -> Result<(AggregateExpr, LogicalExpression)> {
         match expr {
-            ast::Expression::FunctionCall { .. } => {
+            ast::Expression::FunctionCall { name, args, .. } => {
                 // The expression IS an aggregate: extract it directly
-                let agg = self
-                    .try_extract_aggregate(expr, &Some(synthetic_alias.to_string()))?
-                    .expect("contains_aggregate was true but try_extract_aggregate returned None");
-                let substitute = LogicalExpression::Variable(synthetic_alias.to_string());
-                Ok((agg, substitute))
+                if let Some(agg) =
+                    self.try_extract_aggregate(expr, &Some(synthetic_alias.to_string()))?
+                {
+                    let substitute = LogicalExpression::Variable(synthetic_alias.to_string());
+                    return Ok((agg, substitute));
+                }
+                // Une fonction scalaire qui ENVELOPPE l'agrégat (`head(collect(n))`,
+                // `__component(head(collect(n)), 'sha')`) : l'agrégat est extrait
+                // de l'argument qui le porte, les autres sont traduits tels
+                // quels. (Un `expect` plantait le processus sur cette forme.)
+                let mut extracted = None;
+                let mut translated_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    if extracted.is_none() && contains_aggregate(arg) {
+                        let (agg, substitute) =
+                            self.extract_wrapped_aggregate(arg, synthetic_alias)?;
+                        extracted = Some(agg);
+                        translated_args.push(substitute);
+                    } else {
+                        translated_args.push(self.translate_expression(arg)?);
+                    }
+                }
+                let agg = extracted.ok_or_else(|| {
+                    Error::Query(QueryError::new(
+                        QueryErrorKind::Semantic,
+                        format!("contains_aggregate was true but no aggregate found in {name}"),
+                    ))
+                })?;
+                Ok((
+                    agg,
+                    LogicalExpression::FunctionCall {
+                        name: name.clone(),
+                        args: translated_args,
+                        distinct: false,
+                    },
+                ))
             }
             ast::Expression::Binary { left, op, right } => {
                 let binary_op = self.translate_binary_op(*op)?;
@@ -1952,10 +1983,17 @@ impl CypherTranslator {
                         property: property.clone(),
                     })
                 } else {
-                    Err(Error::Query(QueryError::new(
-                        QueryErrorKind::Semantic,
-                        "Nested property access not supported",
-                    )))
+                    // `<expression>.<propriété>` : composant d'une durée
+                    // (`duration.between(a, b).days`), clé d'une map. L'évaluateur
+                    // résout la propriété selon le type de la valeur.
+                    Ok(LogicalExpression::FunctionCall {
+                        name: "__component".into(),
+                        args: vec![
+                            self.translate_expression(base)?,
+                            LogicalExpression::Literal(Value::String(property.clone().into())),
+                        ],
+                        distinct: false,
+                    })
                 }
             }
             ast::Expression::IndexAccess { base, index } => {
