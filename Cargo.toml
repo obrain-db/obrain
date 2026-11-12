@@ -14,6 +14,10 @@ members = [
     # Outil de test interne (non publié) : désignation explicite des bases
     # réelles pour les bancs — voir docs/BENCHMARKS.md.
     "crates/obrain-bases-banc",
+    # Liaisons (décision D1+D2, 2026-11-12) : socle commun publiable et ABI C
+    # (cdylib + staticlib, en-tête cbindgen) — voir crates/bindings/c/README.md.
+    "crates/bindings/common",
+    "crates/bindings/c",
 ]
 
 [workspace.package]
@@ -35,6 +39,7 @@ obrain = { path = "crates/obrain", version = "0.0.1" }
 obrain-reactive = { path = "crates/obrain-reactive", version = "0.0.1" }
 obrain-substrate = { path = "crates/obrain-substrate", version = "0.0.1" }
 obrain-cognitive = { path = "crates/obrain-cognitive", version = "0.0.1", default-features = false }
+obrain-bindings-common = { path = "crates/bindings/common", version = "0.0.1", default-features = false }
 # LA GARDE d'une génération (échéance, budget, répétition, arrêt) — pure, sans
 # dépendance, pour que TOUTES les boucles de modèle du dépôt la partagent au
 # lieu d'en recopier une partie (défaut mesuré le 2026-09-16 : l'arrêt n'existait

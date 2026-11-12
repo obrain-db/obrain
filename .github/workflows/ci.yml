@@ -155,6 +155,53 @@ jobs:
           ulimit -n 8192
           cargo test -p obrain-engine --test ecriture_multi_processus --no-fail-fast
 
+  # (BIND-0, 2026-11-12) ABI C : la bibliothèque `obrain-c` compile contre le
+  # moteur, son en-tête commité est EXACTEMENT celui que cbindgen (version
+  # épinglée, la même que dans crates/bindings/c/build.rs) régénère, et un
+  # programme C réel (tests/smoke.c) ouvre, écrit, relit et libère.
+  bindings-c:
+    name: Bindings C
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/tests"
+          echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Compilateur C du runner
+        run: cc --version
+      # La version est lue dans build.rs (source unique) et DOIT valoir celle
+      # attendue ici : changer l'une sans l'autre fait échouer ce job.
+      - name: cbindgen (version épinglée)
+        run: |
+          ATTENDUE=0.29.4
+          VERSION=$(sed -n 's/^const CBINDGEN_VERSION: &str = "\(.*\)";$/\1/p' crates/bindings/c/build.rs)
+          echo "cbindgen épinglé dans build.rs : $VERSION"
+          if [ "$VERSION" != "$ATTENDUE" ]; then echo "::error::build.rs épingle cbindgen $VERSION, ci.yml attend $ATTENDUE : mettre les deux à jour ensemble"; exit 1; fi
+          cargo install --locked --version "$VERSION" cbindgen
+          cbindgen --version
+      - name: Build (cdylib + staticlib, en-tête régénéré par build.rs)
+        run: cargo build -p obrain-c
+      - name: En-tête commité identique au généré
+        run: git diff --exit-code -- crates/bindings/c/obrain.h
+      - name: Tests (unitaires, header_a_jour, smoke C)
+        run: |
+          ulimit -n 8192
+          cargo test -p obrain-c -p obrain-bindings-common --no-fail-fast
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tests"
+
   tests-all-features:
     name: Tests (toutes features)
     runs-on: [self-hosted, linux, x64, obrain-ci]

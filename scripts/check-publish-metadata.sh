@@ -10,7 +10,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 echec=0
-for c in obrain-common obrain-core obrain-substrate obrain-adapters obrain-reactive obrain-engine obrain-cognitive obrain; do
+for c in obrain-common obrain-core obrain-substrate obrain-adapters obrain-reactive obrain-engine obrain-cognitive obrain bindings/common; do
   m="crates/$c/Cargo.toml"
   for cle in description license readme keywords categories repository rust-version; do
     if ! grep -qE "^$cle(\.workspace)? *=" "$m"; then echo "$c : clé manquante : $cle"; echec=1; fi
@@ -33,5 +33,5 @@ for c in obrain-common obrain-core obrain-substrate obrain-adapters obrain-react
 done
 # Les dépendances internes du workspace portent path + version.
 grep -nE '^obrain-[a-z-]+ *= *\{' Cargo.toml | grep -v 'version *=' | grep -q . && { echo "Cargo.toml : dépendance interne sans version"; echec=1; }
-[ $echec -eq 0 ] && echo "métadonnées de publication : OK (8 crates)"
+[ $echec -eq 0 ] && echo "métadonnées de publication : OK (9 crates)"
 exit $echec
