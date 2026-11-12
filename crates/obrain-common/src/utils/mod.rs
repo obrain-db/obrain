@@ -10,6 +10,7 @@ pub mod cancel;
 pub mod error;
 pub mod gqlstatus;
 pub mod hash;
+pub mod panne;
 pub mod strings;
 
 pub use cancel::{CancelToken, Cancelled};

@@ -1334,8 +1334,10 @@ pub trait GraphStoreMut: GraphStore {
         properties: &[(PropertyKey, Value)],
     ) -> NodeId {
         let id = self.create_node(labels);
-        for (key, value) in properties {
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (key, value)) in properties.iter().enumerate() {
             self.set_node_property(id, key.as_str(), value.clone());
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
         }
         id
     }

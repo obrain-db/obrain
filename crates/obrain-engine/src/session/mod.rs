@@ -4771,8 +4771,10 @@ impl Session {
         let tx = transaction_id.unwrap_or(TransactionId::SYSTEM);
         let store = self.active_store();
         let id = store.create_node_versioned(labels, epoch, tx);
-        for (key, value) in properties {
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (key, value)) in properties.into_iter().enumerate() {
             store.set_node_property(id, key, value);
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
         }
         id
     }
