@@ -50,6 +50,33 @@ def test_open_base_absente_echoue_sans_rien_creer(tmp_path):
     assert not cible.exists()
 
 
+def test_constructeur_avec_chemin_est_lecture_seule(base_path):
+    """D4 : `ObrainDB(path)` ouvre en lecture seule, comme `open`, sans bail."""
+    import pytest
+
+    _peupler(base_path)
+    db = obrain.ObrainDB(base_path)
+    with pytest.raises(RuntimeError, match="read-only"):
+        db.execute("INSERT (:Person {name: 'Gus'})")
+    with pytest.raises(RuntimeError, match="read-only"):
+        db.create_node(["Person"], {"name": "Gus"})
+    with pytest.raises(RuntimeError, match="read-only"):
+        db.set_node_property(0, "name", "Gus")
+    with pytest.raises(RuntimeError, match="read-only"):
+        db.delete_node(0)
+    assert db.node_count == 1
+    db.close()
+
+
+def test_constructeur_avec_chemin_ne_cree_rien(tmp_path):
+    import pytest
+
+    cible = tmp_path / "absente"
+    with pytest.raises(RuntimeError):
+        obrain.ObrainDB(str(cible))
+    assert not cible.exists()
+
+
 def test_lecteur_coexiste_avec_un_ecrivain_du_meme_processus(base_path):
     _peupler(base_path)
     writer = obrain.ObrainDB.open_write(base_path)
