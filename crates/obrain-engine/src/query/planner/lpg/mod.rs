@@ -130,6 +130,14 @@ pub struct Planner {
     /// n'est pas compilé/attaché → la procédure répond "CDC unavailable".
     #[cfg(feature = "cdc")]
     pub(super) cdc_log: Option<Arc<crate::cdc::CdcLog>>,
+    /// Poignée de recherche hybride (`CALL obrain.hybrid_search`, feature
+    /// `hybrid-search`). Les index texte/vecteur vivent dans `ObrainDB`, pas
+    /// dans le store : même câblage que `substrate_store` (ObrainDB → Session
+    /// → QueryProcessor → Planner). `None` → la procédure répond « aucune
+    /// base attachée ».
+    #[cfg(feature = "hybrid-search")]
+    pub(super) recherche_hybride:
+        Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
 }
 
 impl Planner {
@@ -164,6 +172,8 @@ impl Planner {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         }
     }
 
@@ -218,6 +228,8 @@ impl Planner {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         }
     }
 
@@ -257,6 +269,19 @@ impl Planner {
     #[must_use]
     pub fn with_cdc_log(mut self, cdc: Arc<crate::cdc::CdcLog>) -> Self {
         self.cdc_log = Some(cdc);
+        self
+    }
+
+    /// Attache la poignée de recherche hybride pour que
+    /// `CALL obrain.hybrid_search` se résolve à la planification. Même
+    /// câblage que [`Self::with_substrate_store`].
+    #[cfg(feature = "hybrid-search")]
+    #[must_use]
+    pub fn with_recherche_hybride(
+        mut self,
+        poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
+    ) -> Self {
+        self.recherche_hybride = Some(poignee);
         self
     }
 
