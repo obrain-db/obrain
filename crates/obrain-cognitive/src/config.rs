@@ -26,9 +26,9 @@ pub struct EnergyConfigToml {
     pub enabled: bool,
     /// Energy boost applied to nodes touched by a mutation (update, delete).
     pub boost_on_mutation: f64,
-    /// Boost appliqué à une création (nœud ou arête). Défaut : 1.0, comme
-    /// `boost_on_mutation` (plan 808fa9a7 T2).
-    pub boost_on_create: f64,
+    /// Boost appliqué à une création (nœud ou arête). Absent : même valeur que
+    /// `boost_on_mutation` (comportement historique ; plan 808fa9a7 T2).
+    pub boost_on_create: Option<f64>,
     /// Default energy for newly tracked nodes.
     pub default_energy: f64,
     /// Default half-life for energy decay, in seconds.
@@ -49,7 +49,7 @@ impl Default for EnergyConfigToml {
         Self {
             enabled: true,
             boost_on_mutation: 1.0,
-            boost_on_create: 1.0,
+            boost_on_create: None,
             default_energy: 1.0,
             half_life_secs: 24 * 3600,
             min_energy: 0.01,

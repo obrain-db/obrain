@@ -20,7 +20,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use obrain_cognitive::CognitiveEngine as _;
 use obrain_cognitive::activation::{SpreadConfig, SynapseActivationSource, spread};
 use obrain_common::types::{NodeId, PropertyKey};
 use obrain_engine::ObrainDB;

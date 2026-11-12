@@ -36,7 +36,7 @@ pub struct EnergyConfig {
     /// graphe PO, l'énergie « par mutation » corrèle au degré (Spearman
     /// 0,365) et pas à l'usage réel (−0,004). Défaut : égal à
     /// `boost_on_mutation` (comportement historique).
-    pub boost_on_create: f64,
+    pub boost_on_create: Option<f64>,
     /// Default energy for newly tracked nodes.
     pub default_energy: f64,
     /// Default half-life for energy decay.
@@ -58,7 +58,7 @@ impl Default for EnergyConfig {
     fn default() -> Self {
         Self {
             boost_on_mutation: 1.0,
-            boost_on_create: 1.0,
+            boost_on_create: None,
             default_energy: 1.0,
             default_half_life: Duration::from_secs(24 * 3600), // 24 hours
             min_energy: 0.01,
@@ -764,9 +764,11 @@ impl EnergyListener {
     /// `boost_on_mutation`.
     fn boost_pour(&self, event: &MutationEvent) -> f64 {
         match event {
-            MutationEvent::NodeCreated { .. } | MutationEvent::EdgeCreated { .. } => {
-                self.store.config.boost_on_create
-            }
+            MutationEvent::NodeCreated { .. } | MutationEvent::EdgeCreated { .. } => self
+                .store
+                .config
+                .boost_on_create
+                .unwrap_or(self.store.config.boost_on_mutation),
             _ => self.store.config.boost_on_mutation,
         }
     }
@@ -788,7 +790,7 @@ mod boost_par_type_tests {
     #[tokio::test]
     async fn une_creation_booste_moins_qu_une_mise_a_jour() {
         let store = Arc::new(EnergyStore::new(EnergyConfig {
-            boost_on_create: 0.25,
+            boost_on_create: Some(0.25),
             boost_on_mutation: 1.0,
             ..Default::default()
         }));
