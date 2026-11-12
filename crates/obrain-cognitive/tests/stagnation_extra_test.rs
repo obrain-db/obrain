@@ -29,6 +29,7 @@ fn make_energy_store(ids_and_energy: &[(u64, f64)]) -> Arc<EnergyStore> {
 fn make_synapse_store(pairs: &[(u64, u64, f64)]) -> Arc<obrain_cognitive::synapse::SynapseStore> {
     let store = Arc::new(obrain_cognitive::synapse::SynapseStore::new(
         obrain_cognitive::synapse::SynapseConfig {
+            coactivation: obrain_cognitive::synapse::Coactivation::Batch,
             initial_weight: 0.0,
             reinforce_amount: 0.0,
             default_half_life: Duration::from_secs(7 * 24 * 3600),

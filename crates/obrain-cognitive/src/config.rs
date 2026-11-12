@@ -24,8 +24,11 @@ use std::time::Duration;
 pub struct EnergyConfigToml {
     /// Whether the energy subsystem is enabled.
     pub enabled: bool,
-    /// Energy boost applied to nodes touched by a mutation.
+    /// Energy boost applied to nodes touched by a mutation (update, delete).
     pub boost_on_mutation: f64,
+    /// Boost appliqué à une création (nœud ou arête). Absent : même valeur que
+    /// `boost_on_mutation` (comportement historique ; plan 808fa9a7 T2).
+    pub boost_on_create: Option<f64>,
     /// Default energy for newly tracked nodes.
     pub default_energy: f64,
     /// Default half-life for energy decay, in seconds.
@@ -46,6 +49,7 @@ impl Default for EnergyConfigToml {
         Self {
             enabled: true,
             boost_on_mutation: 1.0,
+            boost_on_create: None,
             default_energy: 1.0,
             half_life_secs: 24 * 3600,
             min_energy: 0.01,
@@ -62,6 +66,7 @@ impl EnergyConfigToml {
     pub fn to_runtime(&self) -> crate::energy::EnergyConfig {
         crate::energy::EnergyConfig {
             boost_on_mutation: self.boost_on_mutation,
+            boost_on_create: self.boost_on_create,
             default_energy: self.default_energy,
             default_half_life: Duration::from_secs(self.half_life_secs),
             min_energy: self.min_energy,
@@ -78,6 +83,9 @@ impl EnergyConfigToml {
 pub struct SynapseConfigToml {
     /// Whether the synapse subsystem is enabled.
     pub enabled: bool,
+    /// Règle de co-activation : `"batch"` (historique, tous les nœuds d'un
+    /// lot appariés) ou `"edges"` (une synapse par arête). Plan 808fa9a7 T2.
+    pub coactivation: String,
     /// Default initial weight for a newly created synapse.
     pub initial_weight: f64,
     /// Reinforcement amount when nodes are co-activated.
@@ -96,6 +104,7 @@ impl Default for SynapseConfigToml {
     fn default() -> Self {
         Self {
             enabled: true,
+            coactivation: "batch".to_string(),
             initial_weight: 0.1,
             reinforce_amount: 0.2,
             half_life_secs: 7 * 24 * 3600,
@@ -115,6 +124,8 @@ impl SynapseConfigToml {
         // config). Take the default; the hub may override at construction
         // time if a different cadence is needed for that environment.
         crate::synapse::SynapseConfig {
+            coactivation: crate::synapse::Coactivation::from_toml_str(&self.coactivation)
+                .unwrap_or_default(),
             initial_weight: self.initial_weight,
             reinforce_amount: self.reinforce_amount,
             default_half_life: Duration::from_secs(self.half_life_secs),

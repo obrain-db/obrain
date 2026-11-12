@@ -168,6 +168,7 @@ fn store_snapshot() {
 fn sweep_promotes_high_energy_old_node() {
     let energy_config = EnergyConfig {
         boost_on_mutation: 1.0,
+        boost_on_create: None,
         default_energy: 1.0,
         default_half_life: Duration::from_secs(3600 * 24),
         min_energy: 0.01,

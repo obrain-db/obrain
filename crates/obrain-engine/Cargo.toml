@@ -74,6 +74,14 @@ libc = "0.2.185"
 # Portable clock (std::time::Instant/SystemTime trap on wasm32-unknown-unknown)
 web-time = "1"
 
+# (2026-11-12, câblage cognitif) Runtime tokio DÉDIÉ au dispatch cognitif quand
+# l'appelant n'en fournit pas (CLI, tests synchrones) : sans runtime courant,
+# `Scheduler::register_listener` ne lançait aucune tâche et les listeners
+# restaient sourds. Natif seulement (sous wasm32 le scheduler est synchrone) ;
+# activé par la feature `cognitive`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, optional = true }
+
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
@@ -136,7 +144,7 @@ text-index = ["obrain-core/text-index"]  # BM25 inverted index for full-text sea
 hybrid-search = ["obrain-core/hybrid-search", "text-index", "vector-index"]  # Combined text + vector search
 cdc = []  # Change data capture with history API
 reactive = []  # Reactive mutation event bus (post-commit hook for obrain-reactive)
-cognitive = ["reactive", "dep:obrain-reactive", "dep:obrain-cognitive", "obrain-cognitive/cognitive", "obrain-cognitive/substrate"]  # Cognitive engine (energy + synapses) — substrate routing is the T17 default backing
+cognitive = ["reactive", "dep:obrain-reactive", "dep:obrain-cognitive", "obrain-cognitive/cognitive", "obrain-cognitive/substrate", "dep:tokio"]  # Cognitive engine (energy + synapses) — substrate routing is the T17 default backing
 cognitive-fabric = ["cognitive", "obrain-cognitive/cognitive-fabric"]  # + fabric, co-change, GDS
 decision = ["cognitive", "obrain-cognitive/decision"]  # + CALL obrain.decide / obrain.settle (DEC-P1)
 cognitive-gap-detection = ["cognitive-fabric", "obrain-cognitive/gap-detection"]  # + CALL obrain.cognitive.detect_gaps
@@ -164,6 +172,17 @@ testing-crash-injection = ["obrain-core/testing-crash-injection"]  # Crash injec
 
 [lints]
 workspace = true
+
+# Exemples du câblage cognitif (plan 808fa9a7) : ne se compilent que sous la
+# feature `cognitive`. Déclarés ici pour que `cargo test --examples` des
+# features par défaut les ignore au lieu d'échouer.
+[[example]]
+name = "import_jsonl_cognitif"
+required-features = ["cognitive"]
+
+[[example]]
+name = "banc_spread_cognitif"
+required-features = ["cognitive"]
 
 [[bench]]
 name = "contrainte_unique"
