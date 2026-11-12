@@ -113,3 +113,42 @@ fn persister_une_base_non_ouverte_est_une_erreur() {
         "une base en mémoire n'a pas de journal à publier"
     );
 }
+
+/// Un import de nœuds, publié, survit à la réouverture OPFS (même chemin que `persister`).
+#[wasm_bindgen_test]
+async fn un_import_publie_survit_a_une_reouverture() {
+    let nom = nom_unique("import");
+    {
+        let base = Base::ouvrir(nom.clone()).await.expect("ouverture");
+        let n = base
+            .importer_noeuds("Personne", r#"[{"nom":"a"},{"nom":"b"},{"nom":"c"}]"#)
+            .expect("import");
+        assert_eq!(n, 3, "trois nœuds importés");
+        base.persister().expect("publication");
+    }
+    let base = Base::ouvrir(nom).await.expect("réouverture");
+    assert_eq!(
+        base.noeuds(),
+        3,
+        "les nœuds importés sont revenus depuis OPFS"
+    );
+    let noms = base
+        .executer("MATCH (p:Personne) RETURN p.nom AS nom ORDER BY nom")
+        .expect("requête");
+    assert!(
+        noms.contains("\"b\"") && noms.contains("\"c\""),
+        "propriétés relues : {noms}"
+    );
+}
+
+/// Un import invalide n'écrit rien : la validation précède la première écriture.
+#[wasm_bindgen_test]
+fn un_import_invalide_n_ecrit_rien() {
+    let base = Base::nouvelle();
+    assert!(
+        base.importer_noeuds("Personne", r#"[{"nom":"a"}, 3]"#)
+            .is_err(),
+        "une ligne non objet doit être refusée"
+    );
+    assert_eq!(base.noeuds(), 0, "aucune écriture partielle");
+}
