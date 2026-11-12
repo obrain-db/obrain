@@ -51,6 +51,8 @@ impl Session {
             #[cfg(feature = "cognitive")]
             cognitive_engine: None,
             substrate_store: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
