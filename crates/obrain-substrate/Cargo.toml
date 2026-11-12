@@ -86,6 +86,9 @@ web-time = "1"
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+# Bases réelles des bancs : désignées par variable, jamais devinées sous $HOME.
+# Chemin SANS version : outil non publié, retiré du manifeste par `cargo publish`.
+obrain-bases-banc = { path = "../obrain-bases-banc" }
 rand.workspace = true
 criterion.workspace = true
 

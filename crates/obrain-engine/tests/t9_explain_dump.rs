@@ -12,18 +12,15 @@
 
 #![cfg(feature = "cypher")]
 
-use obrain_engine::ObrainDB;
+use obrain_bases_banc::{Base, base_lecture};
 
 #[test]
 fn explain_most_connected_files() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        println!("⏭ PO database not present; skipping");
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
+    };
 
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     let result = session
@@ -60,12 +57,10 @@ fn explain_most_connected_files() {
 
 #[test]
 fn explain_single_direction_no_peer_label() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    };
+    let db = po_path.ouvrir();
     let session = db.session();
     let result = session
         .execute_cypher(
@@ -92,13 +87,11 @@ fn explain_single_direction_no_peer_label() {
 
 #[test]
 fn explain_single_direction_variant() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
+    };
 
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Single-direction variant — simpler shape, useful baseline for
@@ -128,13 +121,11 @@ fn explain_single_direction_variant() {
 
 #[test]
 fn explain_simplest_count_pattern() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
+    };
 
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Minimal TopK-ish pattern — no OPTIONAL MATCH.

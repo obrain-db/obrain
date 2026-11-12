@@ -5,18 +5,16 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_copie, base_lecture};
 use obrain_core::graph::GraphStore;
 use obrain_substrate::SubstrateStore;
 
 #[test]
 fn diagnose_imports_endpoints_on_po() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        eprintln!("⏭ PO not present");
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
-    let subs = SubstrateStore::open(&po_path).expect("open");
+    };
+    let subs = po_path.ouvrir_substrat();
 
     // T17j T5 critical diagnostic : walk chains of labelled nodes and
     // verify each edge's rec.src matches the chain owner.
@@ -98,15 +96,14 @@ fn diagnose_imports_endpoints_on_po() {
 /// T17j T5 — apply repair to Wikipedia + Megalaw. Same as PO test
 /// but larger (Wiki 119M edges / Megalaw 14.68M edges). MUTATES.
 #[test]
-#[ignore = "mutates Wiki + Megalaw — run manually with --include-ignored"]
+#[ignore = "répare une COPIE de OBRAIN_BENCH_DB_WIKIPEDIA / _MEGALAW — à lancer à la main"]
 fn repair_wiki_and_megalaw_outgoing_chains() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    for (name, label) in [("wikipedia", "Article"), ("megalaw", "Concept")] {
-        let path = std::path::PathBuf::from(&home).join(format!(".obrain/db/{name}"));
-        if !path.exists() {
-            eprintln!("⏭  {name} not present");
+    for (base, label) in [(Base::Wikipedia, "Article"), (Base::Megalaw, "Concept")] {
+        let name = base.nom();
+        // Répare une COPIE : poser OBRAIN_BENCH_GARDER_COPIE=1 pour la conserver.
+        let Some(path) = base_copie(base) else {
             continue;
-        }
+        };
         println!("\n=== {name} ===");
         let subs = SubstrateStore::open(&path).expect("open");
 
@@ -151,13 +148,12 @@ fn repair_wiki_and_megalaw_outgoing_chains() {
 /// match rec.src. `#[ignore]` by default because it MUTATES PO —
 /// run manually with `cargo test -- repair_po --include-ignored`.
 #[test]
-#[ignore = "mutates PO — run manually with --include-ignored"]
+#[ignore = "répare une COPIE de OBRAIN_BENCH_DB_PO — à lancer à la main"]
 fn repair_po_outgoing_chains() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
+    // Répare une COPIE : poser OBRAIN_BENCH_GARDER_COPIE=1 pour la conserver.
+    let Some(po_path) = base_copie(Base::Po) else {
         return;
-    }
+    };
     let subs = SubstrateStore::open(&po_path).expect("open");
 
     println!("\n=== T17j T5 : BEFORE repair ===");

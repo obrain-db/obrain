@@ -12,6 +12,7 @@ impl GqlTranslator {
     pub(super) fn extract_aggregates_and_groups(
         &self,
         items: &[ast::ReturnItem],
+        always_project_aliases: bool,
     ) -> Result<(
         Vec<AggregateExpr>,
         Vec<LogicalExpression>,
@@ -61,7 +62,12 @@ impl GqlTranslator {
 
         // Alias, clés calculées homonymes, agrégats sans alias : la règle de la
         // projection d'après-agrégat est commune à Cypher et à GQL.
-        let post_return = finalize_aggregate_projection(&mut aggregates, &group_by, post_items);
+        let post_return = finalize_aggregate_projection(
+            &mut aggregates,
+            &group_by,
+            post_items,
+            always_project_aliases,
+        );
         Ok((aggregates, group_by, post_return))
     }
 

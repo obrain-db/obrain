@@ -14,18 +14,15 @@
 
 #![cfg(feature = "cypher")]
 
-use obrain_engine::ObrainDB;
+use obrain_bases_banc::{Base, base_lecture};
 
 #[test]
 fn count_duplicated_imports_pairs() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po_path.exists() {
-        println!("⏭ PO database not present; skipping");
+    let Some(po_path) = base_lecture(Base::Po) else {
         return;
-    }
+    };
 
-    let db = ObrainDB::open(&po_path).expect("open PO db");
+    let db = po_path.ouvrir();
     let session = db.session();
 
     // Count pairs (s, t) that have ≥ 2 IMPORTS edges between them.

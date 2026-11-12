@@ -318,7 +318,36 @@ impl DegreeColumn {
     ///
     /// Called by the writer on `create_node` when the allocator pushes
     /// `next_node_id` past the current `n_slots`.
+    /// Relit `n_slots` sur disque et ne garde que le plus grand. En écriture
+    /// partagée, un pair a pu agrandir la colonne depuis notre ouverture : notre
+    /// compteur en mémoire est alors périmé, et l'écrire en tête effacerait ses
+    /// slots (et ferait échouer le CRC à l'ouverture). On ne réduit jamais ; si le
+    /// disque est plus grand, on remappe la colonne à sa taille avant d'adopter.
+    fn reconcilier_avec_disque(&mut self) -> SubstrateResult<()> {
+        let disque = {
+            let slice = self.zf.as_slice();
+            if slice.len() < HEADER_SIZE {
+                return Ok(());
+            }
+            let h: &DegreeHeader = bytemuck::from_bytes(&slice[..HEADER_SIZE]);
+            if h.magic != DEGREE_MAGIC {
+                return Ok(());
+            }
+            h.n_slots
+        };
+        if disque > self.n_slots {
+            ensure_room(
+                &mut self.zf,
+                HEADER_SIZE + (disque as usize) * DEGREE_RECORD_SIZE,
+                0,
+            )?;
+            self.n_slots = disque;
+        }
+        Ok(())
+    }
+
     pub fn ensure_slot(&mut self, slot: u32) -> SubstrateResult<()> {
+        self.reconcilier_avec_disque()?;
         if slot < self.n_slots {
             return Ok(());
         }
@@ -394,6 +423,7 @@ impl DegreeColumn {
     /// plus ⇒ `open` rend `None` ⇒ `rebuild_from_scan` (jamais un
     /// résultat faux).
     pub fn remap_node_slots(&mut self, old_to_new: &[u32], epoch: u32) -> SubstrateResult<()> {
+        self.reconcilier_avec_disque()?;
         if epoch <= self.header_remap_epoch() {
             return Ok(()); // défensif — déjà appliquée
         }
@@ -435,6 +465,12 @@ impl DegreeColumn {
     /// Compute CRC over the payload and patch the header. Call before
     /// `msync` / `fsync` for durability.
     pub fn persist_header_crc(&mut self) {
+        // Écriture partagée : voir `reconcilier_avec_disque`. Un échec de
+        // remappage laisse un CRC incohérent, donc la colonne est rejetée à
+        // l'ouverture et reconstruite depuis le balayage : jamais un résultat faux.
+        if let Err(e) = self.reconcilier_avec_disque() {
+            tracing::error!(erreur = %e, "colonne de degrés : relecture de n_slots sur disque échouée");
+        }
         let payload_bytes = (self.n_slots as usize) * DEGREE_RECORD_SIZE;
         let payload_end = HEADER_SIZE + payload_bytes;
         let mut h = crc32fast::Hasher::new();

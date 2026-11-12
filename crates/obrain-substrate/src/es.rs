@@ -141,6 +141,81 @@ impl FichierJournal for JournalNatif {
     }
 }
 
+/// Le journal d'une base ouverte en LECTURE SEULE : le fichier est ouvert SANS
+/// droit d'écriture (jamais créé s'il manque — le journal est alors vide), et
+/// chaque opération d'écriture est refusée. Le refus est porté deux fois : par
+/// ce type, et par le descripteur lui-même, qui n'a pas le droit d'écrire.
+#[derive(Debug)]
+pub struct JournalLectureSeule {
+    fichier: Option<File>,
+}
+
+fn refus_lecture_seule(quoi: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("journal ouvert en lecture seule : {quoi} refusé"),
+    )
+}
+
+impl FichierJournal for JournalLectureSeule {
+    fn ajouter(&mut self, _buf: &[u8]) -> io::Result<usize> {
+        Err(refus_lecture_seule("ajout"))
+    }
+
+    fn taille(&self) -> io::Result<u64> {
+        match &self.fichier {
+            Some(f) => Ok(f.metadata()?.len()),
+            None => Ok(0),
+        }
+    }
+
+    fn tronquer(&mut self, _longueur: u64) -> io::Result<()> {
+        Err(refus_lecture_seule("troncature"))
+    }
+
+    fn lire_a(&self, debut: u64, buf: &mut [u8]) -> io::Result<()> {
+        let Some(f) = &self.fichier else {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "journal absent : rien à lire",
+            ));
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt as _;
+            f.read_exact_at(buf, debut)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (f, debut, buf);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "lecture à décalage non disponible sur cette cible",
+            ))
+        }
+    }
+
+    fn rembobiner(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Rien n'a pu être écrit : il n'y a rien à rendre durable.
+    fn synchroniser(&mut self, _tout: bool) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Ouvre le journal `chemin` pour une base en LECTURE SEULE : sans droit
+/// d'écriture, sans le créer.
+pub fn ouvrir_journal_lecture_seule(chemin: &Path) -> io::Result<Box<dyn FichierJournal>> {
+    let fichier = match File::open(chemin) {
+        Ok(f) => Some(f),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    Ok(Box::new(JournalLectureSeule { fichier }))
+}
+
 /// Un fichier ouvert en LECTURE-ÉCRITURE à décalage : les réécritures en place
 /// de la migration de format (patch d'un slot, d'un drapeau d'en-tête).
 pub trait FichierDonnees: Send + std::fmt::Debug {

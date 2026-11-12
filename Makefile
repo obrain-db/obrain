@@ -8,8 +8,10 @@
 # Config — override on the command line, e.g.:
 #     make bench-baseline PO_DB=/path/to/po.obrain MEGALAW_DB=/path/to/megalaw.obrain
 # ---------------------------------------------------------------------------
-PO_DB      ?= $(HOME)/.obrain/hub.db
-MEGALAW_DB ?= $(HOME)/.obrain/megalaw.obrain
+# Aucun défaut sous $(HOME) : une base réelle se DÉSIGNE, elle ne se devine pas
+# (incident du 2026-11-11, voir docs/BENCHMARKS.md « Bancs sur bases réelles »).
+PO_DB      ?=
+MEGALAW_DB ?=
 BENCH_DIR  := bench/substrate
 BENCH_OUT  := target/bench
 CARGO      ?= cargo

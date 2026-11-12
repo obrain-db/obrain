@@ -17,14 +17,14 @@
 
 #![cfg(feature = "cypher")]
 
+use obrain_bases_banc::{Base, base_copie};
 use obrain_engine::ObrainDB;
 use web_time::Instant;
 
-fn measure_open(name: &str, path: std::path::PathBuf) {
-    if !path.exists() {
-        eprintln!("⏭  {name} : {} not found — skipping", path.display());
+fn measure_open(name: &str, base: Base) {
+    let Some(path) = base_copie(base) else {
         return;
-    }
+    };
     // 3 warmup opens to prime OS page cache, then 5 measured opens.
     for _ in 0..3 {
         let db = ObrainDB::open(&path).expect("open warmup");
@@ -50,17 +50,10 @@ fn measure_open(name: &str, path: std::path::PathBuf) {
 
 #[test]
 fn bench_db_open_three_corpora() {
-    let home = std::env::var("HOME").unwrap_or_default();
     println!("\n=== T17i T1 — DB open bench (post T17h eager init) ===");
     println!("Baselines T17g : PO 8ms, Wiki 24ms, Megalaw 42ms");
-    measure_open("PO", std::path::PathBuf::from(&home).join(".obrain/db/po"));
-    measure_open(
-        "Wikipedia",
-        std::path::PathBuf::from(&home).join(".obrain/db/wikipedia"),
-    );
-    measure_open(
-        "Megalaw",
-        std::path::PathBuf::from(&home).join(".obrain/db/megalaw"),
-    );
+    measure_open("PO", Base::Po);
+    measure_open("Wikipedia", Base::Wikipedia);
+    measure_open("Megalaw", Base::Megalaw);
     println!("=== END ===");
 }

@@ -11,6 +11,9 @@ members = [
     "crates/obrain-substrate",
     "crates/obrain-cognitive",
     "crates/obrain-indexer",
+    # Outil de test interne (non publié) : désignation explicite des bases
+    # réelles pour les bancs — voir docs/BENCHMARKS.md.
+    "crates/obrain-bases-banc",
 ]
 
 [workspace.package]

@@ -12,6 +12,7 @@
 //! Run with:
 //!   cargo test -p obrain-engine --features "cypher,wal,tiered-storage" --test property_index_po_bench -- --nocapture
 
+use obrain_bases_banc::{Base, base_copie};
 use obrain_engine::ObrainDB;
 use web_time::Instant;
 
@@ -621,19 +622,15 @@ fn test_property_index_mutation_hooks() {
 
 #[test]
 fn bench_on_real_po_database() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po_path = std::path::PathBuf::from(&home).join(".obrain/db/po");
-
-    if !po_path.exists() {
-        println!("  Skipping real PO benchmark — ~/.obrain/db/po not found");
+    let Some(po_path) = base_copie(Base::Po) else {
         return;
-    }
+    };
 
     println!("\n{}", "=".repeat(70));
     println!("REAL PO DATABASE BENCHMARK");
     println!("{}\n", "=".repeat(70));
 
-    // Open normally — we only run reads
+    // Ouverture en écriture, sur la COPIE : le banc crée des index.
     let db = ObrainDB::open(&po_path).expect("open PO db");
     let session = db.session();
 

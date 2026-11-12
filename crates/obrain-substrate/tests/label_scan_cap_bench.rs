@@ -5,20 +5,17 @@
 //! Run: cargo test -p obrain-substrate --test label_scan_cap_bench -- \
 //!        --include-ignored --nocapture
 
+use obrain_bases_banc::{Base, base_lecture};
 use obrain_core::graph::GraphStore;
-use obrain_substrate::SubstrateStore;
 use web_time::Instant;
 
 #[test]
 #[ignore = "bench on prod base — read-only"]
 fn label_scan_capped_vs_full() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let po = std::path::PathBuf::from(&home).join(".obrain/db/po");
-    if !po.exists() {
-        eprintln!("⏭  PO not present");
+    let Some(po) = base_lecture(Base::Po) else {
         return;
-    }
-    let store = SubstrateStore::open(&po).expect("open PO");
+    };
+    let store = po.ouvrir_substrat();
 
     // Warm-up pass so both measurements see the same page cache.
     let warm = store.nodes_by_label("ChatEvent");

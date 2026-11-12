@@ -166,6 +166,9 @@ smallvec.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 obrain-substrate.workspace = true
+# Bases réelles des bancs : désignées par variable, jamais devinées sous $HOME.
+# Chemin SANS version : outil non publié, retiré du manifeste par `cargo publish`.
+obrain-bases-banc = { path = "../obrain-bases-banc" }
 
 [lints]
 workspace = true

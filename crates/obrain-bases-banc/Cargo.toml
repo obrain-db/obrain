@@ -1,0 +1,30 @@
+[package]
+name = "obrain-bases-banc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Désignation explicite des bases réelles pour les bancs et audits d'Obrain (outil de test interne, non publié)"
+# Outil de test du dépôt : jamais sur crates.io. Les crates publiés n'en
+# dépendent qu'en `dev-dependencies` par chemin SANS version, que
+# `cargo publish` retire du manifeste publié.
+publish = false
+
+[dependencies]
+tempfile.workspace = true
+# Le helper OUVRE lui-même les copies (lecture seule) : il ne rend jamais un
+# chemin de base désignée à une cible. D'où ces deux dépendances — un cycle
+# de dev-dépendances (engine/substrate --dev--> ce crate --> engine/substrate),
+# que cargo autorise.
+obrain-engine = { workspace = true, features = ["default"] }
+obrain-substrate.workspace = true
+
+# Nettoyage des copies : `atexit` en fin de processus, `kill(pid, 0)` pour
+# reconnaître les résidus d'un processus mort.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

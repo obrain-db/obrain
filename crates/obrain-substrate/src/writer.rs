@@ -168,7 +168,10 @@ impl Writer {
         // la fin RÉELLE du fichier, sinon deux écrivains estampillent le même LSN
         // (la position devient une prédiction). On le DÉCLARE au WAL, qui choisit
         // son chemin en conséquence.
-        let coordination = if substrate.est_ecriture_partagee() {
+        // Une ouverture en LECTURE SEULE n'ajoute jamais : aucune coordination
+        // d'append (donc aucun registre `<wal>.reg` créé), et un journal ouvert
+        // sans droit d'écriture.
+        let coordination = if substrate.est_ecriture_partagee() && !substrate.est_lecture_seule() {
             crate::wal_io::CoordinationAppend::OAppend
         } else {
             crate::wal_io::CoordinationAppend::Aucune
@@ -177,6 +180,13 @@ impl Writer {
         // le journal vit dans un tampon (voir `WalWriter::open_memory`).
         let wal = if substrate.is_memory() {
             Arc::new(WalWriter::open_memory(sync_mode, ancre_de_repli)?)
+        } else if substrate.est_lecture_seule() {
+            let wal_path = substrate.wal_path();
+            Arc::new(WalWriter::open_lecture_seule(
+                &wal_path,
+                sync_mode,
+                ancre_de_repli,
+            )?)
         } else {
             let wal_path = substrate.wal_path();
             Arc::new(WalWriter::open(&wal_path, sync_mode, ancre_de_repli)?)
@@ -1899,7 +1909,10 @@ impl Writer {
             let mut h = sub.meta_header();
             h.flags |= meta_flags::HILBERT_SORTED;
             h.hilbert_order = order;
-            h.node_count = node_high_water as u64;
+            // ÉCRITURE PARTAGÉE : `h` vient d'être relu sur disque (mmap de la
+            // méta). `node_high_water` peut être périmé si un pair a agrandi le
+            // store depuis notre ouverture : on ne réduit jamais `node_count`.
+            h.node_count = h.node_count.max(node_high_water as u64);
             sub.write_meta_header(&h)?;
         }
         let _ = self.commit()?;
@@ -2437,7 +2450,9 @@ impl Writer {
             let mut sub = self.substrate.lock();
             let mut h = sub.meta_header();
             h.flags &= !meta_flags::HILBERT_SORTED;
-            h.node_count = new_end as u64;
+            // ÉCRITURE PARTAGÉE : même principe que `bulk_sort_by_hilbert`.
+            // `current_node_hw` peut être périmé ; on ne réduit jamais `node_count`.
+            h.node_count = h.node_count.max(new_end as u64);
             sub.write_meta_header(&h)?;
         }
         let _ = self.commit()?;
