@@ -17,19 +17,23 @@
 //!   copie, l'empreinte de la base désignée est identique, `substrate.alloc`
 //!   compris.
 //!
-//! # Le défaut moteur que la copie contourne
+//! # Le défaut moteur, corrigé — et gardé corrigé
 //!
-//! `defaut_moteur_lecture_seule_ecrit_dans_la_base` et
-//! `defaut_moteur_lecture_seule_cree_une_base` sont la reproduction minimale
-//! de « `open_read_only` écrit sur le disque ». Rouges aujourd'hui, ils sont
-//! derrière `cfg(defauts_connus)` (convention du dépôt, voir `Cargo.toml`) :
+//! `open_read_only` écrivait sur le disque : il appelait `open_inner(...)` comme
+//! `open_shared_write`, et `SubstrateStore::open_read_only` ne posait son drapeau
+//! qu'APRÈS `from_substrate_partage`, qui avait déjà rejoué le WAL, relevé les
+//! filigranes dans `substrate.alloc` et rechargé les graphes nommés.
 //!
-//! ```bash
-//! RUSTFLAGS="--cfg defauts_connus" cargo test -p obrain-engine \
-//!   --test bases_reelles_non_ouvertes defaut_moteur -- --nocapture
-//! ```
+//! Les deux reproductions minimales de ce défaut étaient rouges et vivaient
+//! derrière `cfg(defauts_connus)`. **Elles sont passées au vert sans y toucher**
+//! (obrain #115), exactement comme la convention l'annonçait : elles sont
+//! devenues des tests de non-régression ordinaires, et l'étape de CI qui
+//! exigeait leur rouge a perdu son sujet.
 //!
-//! Ils passeront au vert, sans y toucher, le jour où le moteur sera corrigé.
+//! `lecture_seule_n_ecrit_pas_dans_la_base` : l'empreinte du répertoire est
+//! identique après une ouverture en lecture seule, sans aucune requête.
+//! `lecture_seule_ne_cree_pas_une_base` : ouvrir en lecture seule un répertoire
+//! qui n'est pas une base échoue, et n'y écrit pas un octet.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -468,9 +472,8 @@ fn designee_une_cible_ecrivaine_n_ecrit_que_dans_sa_copie() {
 /// pose son drapeau `read_only` qu'APRÈS `from_substrate_partage`, qui a déjà
 /// rejoué le WAL, relevé les filigranes dans `substrate.alloc`, rechargé les
 /// graphes nommés, etc.
-#[cfg(defauts_connus)]
 #[test]
-fn defaut_moteur_lecture_seule_ecrit_dans_la_base() {
+fn lecture_seule_n_ecrit_pas_dans_la_base() {
     let tmp = tempfile::tempdir().unwrap();
     let bases = faux_home(tmp.path());
     let po = bases.join("po");
@@ -485,11 +488,10 @@ fn defaut_moteur_lecture_seule_ecrit_dans_la_base() {
     );
 }
 
-/// DÉFAUT MOTEUR — `ObrainDB::open_read_only` sur un répertoire qui n'est pas
-/// une base y CRÉE une base vide, au lieu d'échouer.
-#[cfg(defauts_connus)]
+/// NON-RÉGRESSION — `ObrainDB::open_read_only` sur un répertoire qui n'est pas
+/// une base doit échouer, et n'y créer aucun fichier (défaut corrigé, #115).
 #[test]
-fn defaut_moteur_lecture_seule_cree_une_base() {
+fn lecture_seule_ne_cree_pas_une_base() {
     let tmp = tempfile::tempdir().unwrap();
     let vide = tmp.path().join("pas-une-base");
     std::fs::create_dir(&vide).unwrap();

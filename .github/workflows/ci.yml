@@ -212,14 +212,17 @@ jobs:
       - name: Les bases désignées n'ont pas bougé
         run: |
           cargo run -p obrain-engine --example verify_bases -- "$BASES/grain" | grep -q 'OK nodes=120000'
-      - name: Défauts connus du moteur — leurs reproductions doivent rester ROUGES
-        env:
-          RUSTFLAGS: --cfg defauts_connus
-        run: |
-          if cargo test -p obrain-engine --test bases_reelles_non_ouvertes -- defaut_moteur; then
-            echo "::error::les reproductions des défauts connus PASSENT : le moteur a changé, retirer le cfg(defauts_connus) de ces tests"
-            exit 1
-          fi
+      # Cette étape exigeait le ROUGE de deux reproductions de « open_read_only
+      # écrit sur le disque ». Elles sont passées au vert sans être touchées
+      # (obrain #115) : elles ont été converties en tests de non-régression
+      # ordinaires — `lecture_seule_n_ecrit_pas_dans_la_base` et
+      # `lecture_seule_ne_cree_pas_une_base` — et tournent désormais dans le job
+      # « Tests (features par défaut) », qui les exécute pour de vrai.
+      #
+      # La garde n'a donc plus de sujet. Si un défaut moteur est un jour
+      # reproduit ici, il se couvre par un test ROUGE ordinaire : un test qui
+      # échoue est déjà un rouge de CI, et il n'a pas besoin d'une convention
+      # pour le dire.
       - name: Nettoyage du répertoire temporaire du job
         if: always()
         run: rm -rf "$RUNNER_TEMP/tests"
