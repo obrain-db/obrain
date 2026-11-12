@@ -11,18 +11,28 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 - Une valeur de plus de 256 octets (chaîne, octets, routée en colonne blob) n'était
   pas couverte par le WAL : un commit acquitté ne la protégeait pas d'un `kill -9`
   (mesuré : 0/40 relues), et une réécriture non flushée suivie d'un ajout faisait
-  relire à un nœud les octets d'un autre (mesuré : 40/40 contaminés). Corrigé :
-  deux trames WAL `BlobColumnWrite` (valeur comprise) et `BlobColumnClear`,
-  rejouées à la réouverture sur la fenêtre post-flush par un écrivain exclusif.
-  Test : `obrain-engine/tests/blob_hors_wal_kill9.rs` (5 scénarios, rouges avant).
-- Limite qui reste, verrouillée : un lecteur seul ne rejoue pas ces valeurs tant
-  qu'un écrivain n'a pas rouvert la base (`docs/LIMITES-v0.0.1.md`).
+  relire à un nœud les octets d'un autre (mesuré : 40/40 contaminés).
+- **Perte, corrigée pour l'écrivain exclusif** : deux trames WAL `BlobColumnWrite`
+  (valeur comprise) et `BlobColumnClear`, rejouées à la réouverture sur la fenêtre
+  post-flush par un écrivain exclusif. Un écrivain en écriture PARTAGÉE ne rejoue
+  pas (l'arène est à ses pairs) : une valeur longue qu'il a acquittée se perd
+  encore au `kill -9` avant flush (limite, `docs/LIMITES-v0.0.1.md`).
+- **Contamination, corrigée dans tous les modes** : l'écrivain qui rouvre une
+  colonne recalcule la fin d'arène comme le maximum de `offset + len` de l'index
+  (`BlobColumnWriter::create`). Une écriture de colonne restée sans trame — kill
+  entre la colonne et la trame, valeur au-delà du plafond, écriture partagée — ne
+  se fait plus écraser par l'ajout suivant. Trouvé par la relecture de #123.
+- Tests : `obrain-engine/tests/blob_hors_wal_kill9.rs` (6 scénarios `kill -9` et 2
+  limites verrouillées), `blob_column::tests` (arrêt sans sync puis ajout).
 - Plafond : une valeur de plus de 32 Mio n'est pas journalisée, donc perdue au
-  `kill -9` avant flush (limite verrouillée, `docs/LIMITES-v0.0.1.md`).
+  `kill -9` avant flush ; elle ne contamine plus aucun autre nœud (limite
+  verrouillée).
 - Compatibilité descendante, décision : **pas de bump de version** du format. Un
-  binaire antérieur qui rouvre une base portant les trames 0x29/0x2A s'arrête à
-  la première comme sur une frontière de crash (rejeu partiel, silencieux), même
-  contrat que `VecColumnWrite` 0x28 — ne pas rétrograder après écriture.
+  binaire qui connaît le refus d'opcode inconnu (depuis be927bd5, 07/11/2026)
+  REFUSE d'ouvrir une base portant des trames 0x29/0x2A en nommant l'opcode
+  (`WalOpcodeInconnu`), sans rien modifier ; un binaire antérieur au 07/11
+  s'arrête à la première comme sur une frontière de crash. Ne pas rétrograder
+  après écriture.
 
 ### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
 

@@ -346,6 +346,47 @@ impl BlobColumnWriter {
                 // courant (même rationale que VecColumnWriter::create).
                 _ => (0, 0, 0, crate::slot_remap::current_remap_epoch(sub)?),
             };
+        // (obrain#120, relecture de #123) LA FIN D'ARÈNE DE L'EN-TÊTE PEUT ÊTRE
+        // PÉRIMÉE. Elle n'est réécrite qu'au `sync` ; une écriture postérieure
+        // (non suivie de sync : processus tué, écriture blob non journalisée
+        // — kill entre la colonne et la trame WAL, valeur au-delà de
+        // `BLOB_WAL_MAX_BYTES`, écrivain en écriture partagée qui ne rejoue
+        // pas) a déjà ajouté ses octets à l'arène ET mis à jour l'entrée
+        // d'index de son slot, toutes deux dans le mmap, donc survivantes.
+        // Reprendre à `arena_bytes` ferait écrire l'ajout suivant PAR-DESSUS
+        // ces octets : l'entrée relirait alors la valeur d'un autre nœud
+        // (contamination). La fin d'arène reprise est donc le maximum de
+        // l'en-tête et de `offset + len` de toute entrée d'index qui tient
+        // dans l'arène. Le parcours porte sur TOUT l'idx, pas seulement
+        // `n_slots` : une entrée au-delà de `n_slots` deviendrait visible le
+        // jour où un slot plus grand fait monter `n_slots`. Coût : 16 o par
+        // slot relus à l'ouverture, plus, seulement quand la fin a bougé (après
+        // un arrêt sans sync), un recalcul du CRC sur l'arène.
+        let (arena_end, arena_crc, dirty) = {
+            let idx_octets = idx.as_slice();
+            let dat_len = dat.as_slice().len() as u64;
+            let mut fin = arena_end;
+            let mut k = BLOB_HEADER_SIZE;
+            while k + BLOB_SLOT_STRIDE <= idx_octets.len() {
+                if let Ok(e) = bytemuck::try_pod_read_unaligned::<BlobSlotEntry>(
+                    &idx_octets[k..k + BLOB_SLOT_STRIDE],
+                ) && e.len > 0
+                {
+                    let bout = e.arena_offset.saturating_add(e.len as u64);
+                    if bout <= dat_len {
+                        fin = fin.max(bout);
+                    }
+                }
+                k += BLOB_SLOT_STRIDE;
+            }
+            if fin > arena_end {
+                let mut h = crc32fast::Hasher::new();
+                h.update(&dat.as_slice()[..fin as usize]);
+                (fin, h.finalize(), true)
+            } else {
+                (arena_end, arena_crc, false)
+            }
+        };
         Ok(Self {
             spec,
             idx,
@@ -353,7 +394,7 @@ impl BlobColumnWriter {
             n_slots,
             arena_end,
             arena_crc,
-            dirty: false,
+            dirty,
             remap_epoch,
         })
     }
@@ -1194,6 +1235,65 @@ mod tests {
             assert_eq!(r.read_slot(slot).unwrap(), expected.as_bytes());
         }
         assert_eq!(r.read_slot(5).unwrap(), b"new entry");
+    }
+
+    /// (obrain#120, relecture de #123) Un écrivain relâché SANS `sync` laisse
+    /// exactement l'état d'un processus tué : en-tête périmé (fin d'arène du
+    /// dernier sync), entrées d'index et octets à jour dans le mmap. Le slot 0
+    /// est réécrit et le slot 1 créé après le sync ; l'écrivain suivant ajoute
+    /// au slot 2 une charge de même taille. Sans le correctif, il repartait de
+    /// la fin d'arène de l'en-tête et écrivait par-dessus les octets du slot 0,
+    /// qui relisait alors la valeur du slot 2 (contamination).
+    #[test]
+    fn un_ajout_apres_un_arret_sans_sync_n_ecrase_pas_les_octets_d_un_autre_slot() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(3);
+        let a = vec![b'A'; 300];
+        let b = vec![b'B'; 300];
+        let c = vec![b'C'; 300];
+        let d = vec![b'D'; 300];
+        {
+            let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+            w.write_slot(0, &a).unwrap();
+            w.sync().unwrap();
+            w.write_slot(0, &b).unwrap();
+            w.write_slot(1, &c).unwrap();
+            // Relâché sans sync : l'en-tête dit encore n_slots=1, arène=300.
+        }
+        let mut w2 = BlobColumnWriter::create(&sub, spec).unwrap();
+        assert_eq!(
+            w2.arena_end(),
+            900,
+            "la fin d'arène reprise couvre les octets des écritures non synchronisées"
+        );
+        w2.write_slot(2, &d).unwrap();
+        assert_eq!(w2.read_slot(0).unwrap(), b.as_slice(), "slot 0 contaminé");
+        assert_eq!(w2.read_slot(1).unwrap(), c.as_slice(), "slot 1 contaminé");
+        assert_eq!(w2.read_slot(2).unwrap(), d.as_slice());
+        w2.sync().unwrap();
+        drop(w2);
+        // Le CRC recalculé à l'ouverture puis prolongé reste valide : un lecteur
+        // frais accepte la colonne et relit les trois valeurs.
+        let r = BlobColumnReader::open(&sub, spec).unwrap().unwrap();
+        assert_eq!(r.read_slot(0).unwrap(), b.as_slice());
+        assert_eq!(r.read_slot(1).unwrap(), c.as_slice());
+        assert_eq!(r.read_slot(2).unwrap(), d.as_slice());
+    }
+
+    /// Ouverture d'une colonne synchronisée : la fin d'arène et le CRC de
+    /// l'en-tête sont repris tels quels (pas de recalcul, colonne froide).
+    #[test]
+    fn une_colonne_synchronisee_rouvre_sans_recalcul() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(4);
+        let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+        w.write_slot(0, &[7u8; 400]).unwrap();
+        w.write_slot(0, &[8u8; 400]).unwrap();
+        w.sync().unwrap();
+        let (fin, crc) = (w.arena_end(), w.arena_crc);
+        drop(w);
+        let w2 = BlobColumnWriter::create(&sub, spec).unwrap();
+        assert_eq!((w2.arena_end(), w2.arena_crc, w2.dirty), (fin, crc, false));
     }
 
     #[test]

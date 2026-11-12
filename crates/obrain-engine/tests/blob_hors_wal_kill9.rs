@@ -1,19 +1,25 @@
-//! obrain#120 — UNE VALEUR DE PLUS DE 256 OCTETS N'EST PAS COUVERTE PAR LE WAL.
+//! obrain#120 — UNE VALEUR DE PLUS DE 256 OCTETS SURVIT À UN `kill -9` ET NE
+//! CONTAMINE AUCUN AUTRE NŒUD.
 //!
-//! Reproduction, sans correctif. Une chaîne de plus de
-//! `BLOB_COLUMN_THRESHOLD_BYTES` (256 o) part en colonne blob
-//! (`substrate.blobcol.*.idx` + `.dat`), dont l'en-tête (n_slots, fin d'arène,
-//! CRC) n'est réécrit qu'au `sync` d'un flush complet. Un `commit()` acquitté
-//! ne fait que le `fsync` du WAL, et le WAL ne porte pas la valeur.
+//! Une chaîne de plus de `BLOB_COLUMN_THRESHOLD_BYTES` (256 o) part en colonne
+//! blob (`substrate.blobcol.*.idx` + `.dat`), dont l'en-tête (n_slots, fin
+//! d'arène, CRC) n'est réécrit qu'au `sync` d'un flush complet. Avant le
+//! correctif, le WAL ne portait pas la valeur : mesuré sur main 28020628,
+//! 0/40 valeurs acquittées relues, et 40/40 nœuds relisant les octets d'un
+//! autre après une réécriture tuée suivie d'un ajout tué. Le correctif journalise
+//! la valeur (`BlobColumnWrite`) et son effacement (`BlobColumnClear`), et
+//! l'écrivain qui rouvre une colonne recalcule la fin d'arène sur l'index
+//! (une écriture de colonne sans trame ne se fait plus écraser).
 //!
-//! Ce que ce fichier mesure, après un `kill -9` sans `close()` ni
+//! Ce que ce fichier vérifie, après un `kill -9` sans `close()` ni
 //! `checkpoint()` :
-//!   1. PERTE : chaque nœud acquitté porte-t-il encore SA valeur longue ? (Les
-//!      valeurs courtes écrites dans les mêmes commits servent de témoin : elles
-//!      passent par le WAL.)
-//!   2. CONTAMINATION : un second écrivain rouvre la base laissée par le
-//!      premier, écrit d'autres valeurs longues, est tué à son tour. Chaque nœud
-//!      doit relire SA valeur, jamais celle d'un autre.
+//!   1. PERTE : chaque nœud acquitté porte encore SA valeur longue (les valeurs
+//!      courtes des mêmes commits servent de témoin : elles passent par le WAL).
+//!   2. CONTAMINATION : des écrivains successifs tués ne font jamais relire à un
+//!      nœud la valeur d'un autre — y compris après une écriture de colonne SANS
+//!      trame (valeur au-delà du plafond WAL).
+//!   3. RÉSURRECTION : une valeur courte écrite après une longue reste la valeur.
+//!   4. LIMITES verrouillées : lecteur seul, plafond de 32 Mio.
 //!
 //! Protocole repris de `durabilite_commit_kill9.rs` : le parent relance SON
 //! propre binaire de test sur le cas enfant (`--exact`), répertoire passé par
@@ -66,6 +72,27 @@ fn ecrire_gros(db: &ObrainDB) {
         db.set_node_property(id, "nom", Value::String(nom.into()));
         db.set_node_property(id, "doc", Value::String("g".repeat(taille).into()));
     }
+    db.flush_wal().expect("flush_wal");
+}
+
+/// Réécrit la valeur longue du nœud t1-k0 avec une valeur AU-DELÀ du plafond
+/// WAL : la colonne est écrite (octets + entrée d'index, dans le mmap), aucune
+/// trame ne l'est. C'est, en production, l'état exact d'un kill tombé entre
+/// l'écriture de colonne et la trame. Puis `flush_wal`, sans flush complet.
+fn reecrire_au_dela_du_plafond(db: &ObrainDB) {
+    let r = db
+        .session()
+        .execute("MATCH (n:Doc) WHERE n.tour = 1 AND n.k = 0 RETURN id(n)")
+        .expect("id de t1-k0");
+    let Some(Value::Int64(id)) = r.rows.first().and_then(|l| l.first()).cloned() else {
+        panic!("t1-k0 introuvable : {:?}", r.rows);
+    };
+    let enorme = "E".repeat(obrain_substrate::BLOB_WAL_MAX_BYTES + 1);
+    db.set_node_property(
+        obrain_common::types::NodeId(id as u64),
+        "doc",
+        Value::String(enorme.into()),
+    );
     db.flush_wal().expect("flush_wal");
 }
 
@@ -130,6 +157,11 @@ fn enfant_ecrivain() {
     let maj: u8 = morceaux.next().unwrap().parse().unwrap();
     let dir = Path::new(morceaux.next().unwrap());
     let db = ObrainDB::open(dir.join("base")).expect("open enfant");
+    if maj == 4 {
+        reecrire_au_dela_du_plafond(&db);
+        std::fs::write(dir.join(format!("pret{tour}")), b"").unwrap();
+        dormir_pour_toujours();
+    }
     if maj == 3 {
         ecrire_gros(&db);
         std::fs::write(dir.join(format!("pret{tour}")), b"").unwrap();
@@ -521,4 +553,63 @@ fn limite_v0_0_1_une_valeur_au_dela_du_plafond_wal_n_est_pas_journalisee() {
          survit pas au kill — relu {:?}",
         tailles.get("dessus")
     );
+}
+
+/// CONTAMINATION APRÈS UNE ÉCRITURE DE COLONNE SANS TRAME (relecture de #123) :
+/// tour 1 fermé proprement ; tour 2 réécrit t1-k0 avec une valeur au-delà du
+/// plafond WAL (colonne écrite, aucune trame) et est tué ; tour 3 crée 40 nœuds
+/// à valeurs longues et est tué. La fin d'arène de l'en-tête est celle du tour
+/// 1 : sans le recalcul à l'ouverture de l'écrivain, le tour 3 ajoutait par-
+/// dessus les octets du tour 2, et t1-k0 relisait la valeur d'un nœud du tour 3.
+/// Attendu : t1-k0 relit SA valeur de tour 1 (la réécriture non journalisée est
+/// perdue : limite documentée) OU la valeur énorme entière, jamais autre chose.
+#[test]
+fn une_ecriture_de_colonne_sans_trame_puis_un_ajout_ne_contaminent_aucun_noeud() {
+    if std::env::var(ENV_ENFANT).is_ok() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().join("base");
+    let mut enfant = lancer_enfant(1, true, dir.path());
+    assert!(
+        enfant.wait().expect("attente").success(),
+        "tour 1 (close propre)"
+    );
+    attendre(&dir.path().join("pret1"));
+    let enfant = lancer_enfant_mode(2, false, 4, dir.path());
+    attendre(&dir.path().join("pret2"));
+    tuer(enfant);
+    let enfant = lancer_enfant(3, false, dir.path());
+    attendre(&dir.path().join("pret3"));
+    tuer(enfant);
+
+    let db = ObrainDB::open(&base).expect("réouverture");
+    let r = db
+        .session()
+        .execute("MATCH (n:Doc) WHERE n.tour = 1 AND n.k = 0 RETURN n.doc")
+        .expect("relecture de t1-k0");
+    let relu = match r.rows.first().and_then(|l| l.first()) {
+        Some(Value::String(d)) => d.to_string(),
+        autre => panic!("t1-k0 : valeur inattendue {autre:?}"),
+    };
+    let enorme_entiere =
+        relu.len() == obrain_substrate::BLOB_WAL_MAX_BYTES + 1 && relu.bytes().all(|b| b == b'E');
+    assert!(
+        relu == valeur_longue(1, 0) || enorme_entiere,
+        "t1-k0 relit ni sa valeur ni la réécriture entière, mais {} o commençant par {:?} \
+         (contamination)",
+        relu.len(),
+        &relu[..relu.len().min(24)]
+    );
+    // Aucun autre nœud n'est touché.
+    let b1 = bilan(&db, 1);
+    let b3 = bilan(&db, 3);
+    let faux: Vec<&String> = b1
+        .longs_faux
+        .iter()
+        .filter(|f| !f.contains("t1-k0 "))
+        .chain(&b3.longs_faux)
+        .collect();
+    assert!(faux.is_empty(), "autres nœuds contaminés : {faux:?}");
+    assert_eq!(b3.longs_exacts, N as usize, "tour 3 : {b3:?}");
 }
