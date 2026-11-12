@@ -49,6 +49,7 @@ env:
 jobs:
   lint:
     name: Format, clippy, doc (zéro avertissement)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,6 +97,7 @@ jobs:
 
   test:
     name: Tests (features par défaut)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -137,6 +139,7 @@ jobs:
   # la même branche. Verdict NOMMÉ : la ligne `test result` est le contrat.
   wal-partage:
     name: WAL partagé (inter-processus)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 10
     concurrency:
@@ -165,6 +168,7 @@ jobs:
   # passent, c'est que le moteur a changé et que le cfg doit être retiré.
   bancs-fabriques:
     name: Bancs sur bases fabriquées (cibles désignées, défauts connus)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: [self-hosted, linux, x64, obrain-ci]
     timeout-minutes: 60
     steps:
@@ -233,6 +237,7 @@ jobs:
   # programme C réel (tests/smoke.c) ouvre, écrit, relit et libère.
   bindings-c:
     name: Bindings C
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: [self-hosted, linux, x64, obrain-ci]
     timeout-minutes: 45
     steps:
@@ -280,6 +285,7 @@ jobs:
   # installe la wheel dans un venv neuf et lance pytest contre elle.
   bindings-python:
     name: Bindings Python
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -309,6 +315,7 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -m pytest -v -rs
   tests-all-features:
     name: Tests (toutes features)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 90
     steps:
@@ -345,6 +352,7 @@ jobs:
 
   features:
     name: Toutes les features compilent
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -382,6 +390,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   wasm:
     name: Navigateur (wasm32)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     # La cible wasm32 n'est installée que sur `stable`. Le rustup des runners est
     # en 1.26 : il refuse `rustup default stable --force-non-host` de l'action, et
@@ -443,6 +452,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   web-paquet:
     name: Paquet navigateur (obrain-web)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     # Cible wasm32 installée sur stable seulement ; défaut des runners non fiable
     # (rustup 1.26 refuse `rustup default --force-non-host`). Voir #54.
@@ -517,6 +527,7 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   persistance-navigateur:
     name: Persistance navigateur (OPFS, Chrome headless)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     continue-on-error: true
     env:
@@ -588,6 +599,7 @@ jobs:
 
   msrv:
     name: MSRV (rust-version du manifeste)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -622,6 +634,7 @@ jobs:
 
   deny:
     name: cargo deny (licences, advisories, sources)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -650,6 +663,7 @@ jobs:
 
   package:
     name: Métadonnées de publication
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
