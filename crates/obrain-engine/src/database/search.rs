@@ -692,7 +692,11 @@ impl super::hybrid_procedure::RechercheHybride for PoigneeRechercheHybride {
     fn etat_index_texte(&self, label: &str, property: &str) -> super::hybrid_procedure::EtatIndex {
         use super::hybrid_procedure::EtatIndex;
         if self.substrate_store.is_some() {
-            if self.textes.read().contains_key(&format!("{label}:{property}")) {
+            if self
+                .textes
+                .read()
+                .contains_key(&format!("{label}:{property}"))
+            {
                 EtatIndex::Charge
             } else if self.declare("text", label, property) {
                 EtatIndex::DeclareNonCharge
@@ -717,7 +721,11 @@ impl super::hybrid_procedure::RechercheHybride for PoigneeRechercheHybride {
             // nettoyage) : la recherche hybride se réduit à son volet texte.
             return EtatIndex::Absent;
         }
-        if self.vecteurs.read().contains_key(&format!("{label}:{property}")) {
+        if self
+            .vecteurs
+            .read()
+            .contains_key(&format!("{label}:{property}"))
+        {
             EtatIndex::Charge
         } else if self.declare("vector", label, property) {
             EtatIndex::DeclareNonCharge

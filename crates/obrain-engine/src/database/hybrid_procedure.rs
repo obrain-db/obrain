@@ -373,7 +373,11 @@ fn entier_positif(v: &Value, nom: &str, zero_admis: bool) -> Result<usize> {
         Value::Int64(n) if *n > 0 || (zero_admis && *n == 0) => Ok(*n as usize),
         autre => Err(Error::Internal(format!(
             "{NOM} : option {nom} doit être un entier {}, reçu {autre:?}",
-            if zero_admis { "positif ou nul" } else { "strictement positif" }
+            if zero_admis {
+                "positif ou nul"
+            } else {
+                "strictement positif"
+            }
         ))),
     }
 }

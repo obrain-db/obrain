@@ -31,11 +31,7 @@ fn trois_docs() -> (ObrainDB, u64, u64, u64) {
     db.set_node_property(n1, "title", Value::String("Rust graph database".into()));
     db.set_node_property(n1, "emb", vec3(1.0, 0.0, 0.0));
     let n2 = db.create_node(&["Doc"]);
-    db.set_node_property(
-        n2,
-        "title",
-        Value::String("Python machine learning".into()),
-    );
+    db.set_node_property(n2, "title", Value::String("Python machine learning".into()));
     db.set_node_property(n2, "emb", vec3(0.0, 1.0, 0.0));
     let n3 = db.create_node(&["Doc"]);
     db.set_node_property(
@@ -96,9 +92,18 @@ fn call_hybrid_search_texte_et_vecteur_ordre_et_scores() {
         vec![n1, n3, n2],
         "n1 (Rust graph, [1,0,0]) > n3 (Rust, [0.9,0.1,0]) > n2 (vecteur seul) ; reçu {lignes:?}"
     );
-    assert!(proche(lignes[0].1, 2.0 / 61.0), "n1 premier des deux sources : {lignes:?}");
-    assert!(proche(lignes[1].1, 2.0 / 62.0), "n3 deuxième des deux sources : {lignes:?}");
-    assert!(proche(lignes[2].1, 1.0 / 63.0), "n2 troisième, vecteur seul : {lignes:?}");
+    assert!(
+        proche(lignes[0].1, 2.0 / 61.0),
+        "n1 premier des deux sources : {lignes:?}"
+    );
+    assert!(
+        proche(lignes[1].1, 2.0 / 62.0),
+        "n3 deuxième des deux sources : {lignes:?}"
+    );
+    assert!(
+        proche(lignes[2].1, 1.0 / 63.0),
+        "n2 troisième, vecteur seul : {lignes:?}"
+    );
 }
 
 // (a') le vecteur peut venir d'un paramètre `$vec`.
@@ -108,7 +113,14 @@ fn call_hybrid_search_vecteur_en_parametre() {
     let s = db.session();
     let params = std::collections::HashMap::from([(
         "vec".to_string(),
-        Value::List(vec![Value::Float64(1.0), Value::Float64(0.0), Value::Float64(0.0)].into()),
+        Value::List(
+            vec![
+                Value::Float64(1.0),
+                Value::Float64(0.0),
+                Value::Float64(0.0),
+            ]
+            .into(),
+        ),
     )]);
     let r = s
         .execute_with_params(
@@ -119,7 +131,11 @@ fn call_hybrid_search_vecteur_en_parametre() {
         .expect("CALL avec $vec");
     let lignes = lignes_id_score(&r);
     let ids: Vec<u64> = lignes.iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids, vec![n1, n3], "k = 2 : les deux premiers ; reçu {lignes:?}");
+    assert_eq!(
+        ids,
+        vec![n1, n3],
+        "k = 2 : les deux premiers ; reçu {lignes:?}"
+    );
     assert!(proche(lignes[0].1, 2.0 / 61.0));
 }
 
@@ -129,14 +145,19 @@ fn call_hybrid_search_texte_seul() {
     let (db, n1, n2, n3) = trois_docs_indexes();
     let s = db.session();
     let r = s
-        .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score")
+        .execute(
+            "CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score",
+        )
         .expect("CALL texte seul");
     let lignes = lignes_id_score(&r);
     let ids: Vec<u64> = lignes.iter().map(|(id, _)| *id).collect();
     // BM25 est en OU : n1 porte les deux termes, n3 un seul, n2 aucun.
     assert_eq!(ids, vec![n1, n3], "ordre BM25 ; reçu {lignes:?}");
     assert!(!ids.contains(&n2));
-    assert!(lignes[0].1 > lignes[1].1, "score BM25 décroissant : {lignes:?}");
+    assert!(
+        lignes[0].1 > lignes[1].1,
+        "score BM25 décroissant : {lignes:?}"
+    );
     assert!(lignes[1].1 > 0.0);
 }
 
@@ -146,7 +167,9 @@ fn call_hybrid_search_sans_index_nomme_les_index_attendus() {
     let (db, _, _, _) = trois_docs();
     let s = db.session();
     let err = s
-        .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score")
+        .execute(
+            "CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score",
+        )
         .expect_err("sans index, la procédure doit refuser");
     let msg = err.to_string();
     assert!(
@@ -226,7 +249,12 @@ fn obrain_procedures_liste_hybrid_search() {
         .rows
         .iter()
         .find(|row| row[0] == Value::String("obrain.hybrid_search".into()))
-        .unwrap_or_else(|| panic!("obrain.hybrid_search absente de obrain.procedures() : {:?}", r.rows));
+        .unwrap_or_else(|| {
+            panic!(
+                "obrain.hybrid_search absente de obrain.procedures() : {:?}",
+                r.rows
+            )
+        });
     assert_eq!(
         ligne[3],
         Value::String("node_id, score".into()),
@@ -234,7 +262,13 @@ fn obrain_procedures_liste_hybrid_search() {
     );
     match &ligne[2] {
         Value::String(p) => {
-            for attendu in ["label", "text_property", "vector_property", "query_text", "query_vector"] {
+            for attendu in [
+                "label",
+                "text_property",
+                "vector_property",
+                "query_text",
+                "query_vector",
+            ] {
                 assert!(p.contains(attendu), "paramètre {attendu} absent de : {p}");
             }
         }
@@ -255,7 +289,10 @@ fn call_hybrid_search_fusion_ponderee() {
         .expect("fusion pondérée");
     let lignes = lignes_id_score(&r);
     assert_eq!(lignes[0].0, n1, "n1 premier des deux sources : {lignes:?}");
-    assert!(proche(lignes[0].1, 1.0), "min-max normalisé : 0.5·1 + 0.5·1 = 1 ; reçu {lignes:?}");
+    assert!(
+        proche(lignes[0].1, 1.0),
+        "min-max normalisé : 0.5·1 + 0.5·1 = 1 ; reçu {lignes:?}"
+    );
 }
 
 // Argument mal typé : erreur explicite, pas une procédure inconnue ni un panic.
@@ -267,10 +304,16 @@ fn call_hybrid_search_argument_invalide() {
         .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 42) YIELD node_id, score")
         .expect_err("query_text doit être une chaîne");
     let msg = err.to_string();
-    assert!(msg.contains("query_text"), "l'erreur nomme l'argument fautif : {msg}");
+    assert!(
+        msg.contains("query_text"),
+        "l'erreur nomme l'argument fautif : {msg}"
+    );
     let err = s
         .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust', [1.0, 0.0, 0.0], {fusion: 'inconnue'}) YIELD node_id, score")
         .expect_err("fusion inconnue");
     let msg = err.to_string();
-    assert!(msg.contains("fusion"), "l'erreur nomme l'option fautive : {msg}");
+    assert!(
+        msg.contains("fusion"),
+        "l'erreur nomme l'option fautive : {msg}"
+    );
 }

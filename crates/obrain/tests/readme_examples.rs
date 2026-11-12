@@ -425,7 +425,11 @@ mod recherche_hybride {
             .session()
             .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score")
             .unwrap();
-        assert_eq!(r.row_count(), 2, "BM25 seul : les deux documents qui parlent de Rust");
+        assert_eq!(
+            r.row_count(),
+            2,
+            "BM25 seul : les deux documents qui parlent de Rust"
+        );
     }
 
     #[test]
@@ -454,7 +458,11 @@ mod recherche_hybride {
                 "CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3, fusion: 'weighted', weights: [0.5, 0.5]}) YIELD node_id, score",
             )
             .unwrap();
-        assert_eq!(r.rows[0][1], Value::Float64(1.0), "premier des deux sources : 0.5 + 0.5");
+        assert_eq!(
+            r.rows[0][1],
+            Value::Float64(1.0),
+            "premier des deux sources : 0.5 + 0.5"
+        );
     }
 
     #[test]

@@ -51,12 +51,12 @@ mod vector_index_persist;
 #[cfg(feature = "cdc")]
 pub mod cdc_observer;
 pub mod contient;
+#[cfg(feature = "hybrid-search")]
+pub mod hybrid_procedure;
 mod query;
 #[cfg(feature = "rdf")]
 mod rdf_ops;
 pub mod reachable_count;
-#[cfg(feature = "hybrid-search")]
-pub mod hybrid_procedure;
 mod search;
 pub mod search_by_role;
 pub mod search_causality;
