@@ -922,8 +922,7 @@ fn heat_step_csr_generic(
             let begin = csr.row_offsets[slot] as usize;
             let end = csr.row_offsets[slot + 1] as usize;
             let mut lap_u = 0.0_f32;
-            for i in begin..end {
-                let (dst, w_u16) = csr.edges[i];
+            for &(dst, w_u16) in &csr.edges[begin..end] {
                 let w = if unweighted {
                     1.0_f32
                 } else {
@@ -1321,8 +1320,7 @@ pub fn geodesic_distance_csr(csr: &CsrAdjacency, src: u32, dst: u32) -> Option<f
         }
         let begin = csr.row_offsets[u as usize] as usize;
         let end = csr.row_offsets[u as usize + 1] as usize;
-        for i in begin..end {
-            let (v, w_u16) = csr.edges[i];
+        for &(v, w_u16) in &csr.edges[begin..end] {
             if (v as usize) >= hw {
                 continue;
             }
@@ -1385,8 +1383,7 @@ fn laplacian_mv_unweighted(csr: &CsrAdjacency, x: &[f32], out: &mut [f32]) {
         let begin = csr.row_offsets[u] as usize;
         let end = csr.row_offsets[u + 1] as usize;
         let mut lap_u = 0.0_f32;
-        for i in begin..end {
-            let (v, _w_u16) = csr.edges[i];
+        for &(v, _w_u16) in &csr.edges[begin..end] {
             if (v as usize) >= hw {
                 continue;
             }
