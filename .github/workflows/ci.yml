@@ -378,6 +378,9 @@ jobs:
       # « toutes les features passent » : les binaires de test sous
       # cfg(feature = "cognitive" | "cypher" | "temporal" | …) n'étaient joués
       # nulle part — un interblocage et une double ouverture s'y cachaient.
+      # smoke_c charge libobrain_c.so produite par `cargo build` (cdylib), que `cargo test` ne fabrique pas.
+      - name: Build cdylib obrain-c (requise par smoke_c)
+        run: cargo build -p obrain-c --all-features
       - name: Test --all-features
         run: |
           ulimit -n 8192
