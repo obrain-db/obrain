@@ -72,7 +72,7 @@ Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus au-delà du p
 - **Langage** : GQL (ISO/IEC 39075) — `INSERT`, `MATCH`, `SET`, `DELETE`, `RETURN`, agrégats, `CALL … YIELD`.
 - **Transactions** : `begin_transaction` / `commit` / `rollback`, savepoints, auto-commit par statement, détection de conflit write-write, isolation par instantané.
 - **Stockage** : en mémoire (`new_in_memory`, défaut) ou persistant (`open`, feature `storage`), format `substrate.*` v3, WAL + checkpoint.
-- **Vecteurs** : `Value::Vector` stocké avec le graphe ; retrieval par paliers L0/L1/L2 (binaire 128 bits → Hamming 512 bits → cosinus f16) ; BM25 ; recherche hybride (feature `hybrid-search`, incluse dans `embedded`).
+- **Vecteurs** : `Value::Vector` stocké avec le graphe ; retrieval par paliers L0/L1/L2 (binaire 128 bits → Hamming 512 bits → cosinus f16) ; BM25 ; recherche hybride (feature `hybrid-search`, incluse dans `embedded`) en Rust (`ObrainDB::hybrid_search`) et en GQL (`CALL obrain.hybrid_search`, voir ci-dessous).
 - **Algorithmes** (`CALL obrain.<nom>(…)`), chacun exécuté par le harnais sur un petit graphe :
 
 | Famille | Procédures |
@@ -93,6 +93,19 @@ CALL obrain.pagerank({damping: 0.85, max_iterations: 20})
 CALL obrain.louvain() YIELD node_id, community_id
 CALL obrain.pagerank() YIELD node_id AS id, score AS rank
 ```
+
+### Recherche hybride (feature `hybrid-search`)
+
+`CALL obrain.hybrid_search` fusionne BM25 (index texte) et cosinus (index vectoriel) — par défaut en Reciprocal Rank Fusion. Il faut un index texte sur `:label(text_property)` (`create_text_index`) et, pour la part vectorielle, un index vectoriel sur `:label(vector_property)` (`create_vector_index`) ; sans index, l'erreur nomme ceux qu'elle attend. Le vecteur de requête est une liste de nombres ou un paramètre (`$vec`) ; sans vecteur, seul BM25 contribue. Les scores RRF sont ceux de la fusion (rang à base 1, `rrf_k` = 60) ; `fusion: 'weighted'` combine les scores normalisés avec `weights`.
+
+```sql
+CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3}) YIELD node_id, score
+CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score
+CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 2}) YIELD node_id MATCH (n) WHERE id(n) = node_id RETURN n.title
+CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3, fusion: 'weighted', weights: [0.5, 0.5]}) YIELD node_id, score
+```
+
+Options (map en dernier argument) : `k` (défaut 10), `fusion` (`'rrf'` défaut, `'weighted'`), `rrf_k` (défaut 60), `weights`. Colonnes : `node_id`, `score`. L'enchaînement `CALL … YIELD … MATCH … RETURN` est exécuté par `readme_examples.rs` (module `recherche_hybride`).
 
 ## Couche cognitive (feature `cognitive`)
 
@@ -137,7 +150,6 @@ MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 Ce qui n'est **pas** dans la v0.0.1 :
 
 - **Bindings** Python, Node.js, Go, C, C#, Dart : aucun code dans ce dépôt. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI. WebAssembly n'a qu'un paquet d'essai, non publié : `crates/obrain-web` (voir son README).
-- **`CALL obrain.hybrid_search`** comme procédure GQL : les index texte/vecteur vivent dans `ObrainDB`, hors de portée du planificateur de `CALL`, et l'enchaînement `CALL … YIELD … MATCH` n'est pas consommé par le parseur. La recherche hybride existe en Rust : `ObrainDB::hybrid_search(label, text_property, vector_property, query_text, query_vector, k, fusion)` (fusion RRF ou pondérée).
 - Serveur HTTP, protocole Bolt, playground, serveur MCP, intégrations LangChain/LlamaIndex : non implémentés dans ce dépôt, hors de cette version.
 - Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
 
