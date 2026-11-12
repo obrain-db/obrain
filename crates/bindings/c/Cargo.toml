@@ -1,0 +1,54 @@
+[package]
+name = "obrain-c"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "C ABI (cdylib + staticlib, cbindgen header) for the Obrain graph database"
+readme = "README.md"
+# L'ABI n'est pas figée : rien n'est publié tant qu'elle ne l'est pas.
+publish = false
+
+[lib]
+# `rlib` en plus de `cdylib`/`staticlib` : les tests d'intégration (en-tête à
+# jour, fumée C) lient le crate comme n'importe quel autre ; les deux
+# artefacts C sont produits par la même invocation de rustc.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+obrain-engine.workspace = true
+obrain-core.workspace = true
+obrain-common.workspace = true
+obrain-bindings-common.workspace = true
+
+serde_json.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = ["embedded"]
+gql = ["obrain-engine/gql", "obrain-bindings-common/gql"]
+cypher = ["obrain-engine/cypher", "obrain-bindings-common/cypher"]
+sparql = ["obrain-engine/sparql", "obrain-engine/rdf", "obrain-bindings-common/sparql"]
+gremlin = ["obrain-engine/gremlin", "obrain-bindings-common/gremlin"]
+graphql = ["obrain-engine/graphql", "obrain-bindings-common/graphql"]
+sql-pgq = ["obrain-engine/sql-pgq", "obrain-bindings-common/sql-pgq"]
+vector-index = ["obrain-engine/vector-index", "obrain-bindings-common/vector-index"]
+text-index = ["obrain-engine/text-index", "obrain-bindings-common/text-index"]
+hybrid-search = ["obrain-engine/hybrid-search", "obrain-bindings-common/hybrid-search"]
+cdc = ["obrain-engine/cdc", "obrain-bindings-common/cdc"]
+algos = ["obrain-engine/algos", "obrain-bindings-common/algos"]
+rdf = ["obrain-engine/rdf", "obrain-bindings-common/rdf"]
+languages = ["gql", "cypher", "sparql", "gremlin", "graphql", "sql-pgq"]
+ai = ["vector-index", "text-index", "hybrid-search", "cdc"]
+storage = ["obrain-engine/storage", "obrain-bindings-common/storage"]
+# Named profiles
+embedded = ["gql", "ai", "algos", "storage", "obrain-engine/parallel", "obrain-engine/regex"]
+full = ["languages", "ai", "algos", "rdf", "storage"]
+
+[lints]
+workspace = true
