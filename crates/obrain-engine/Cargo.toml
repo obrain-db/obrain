@@ -173,6 +173,17 @@ testing-crash-injection = ["obrain-core/testing-crash-injection"]  # Crash injec
 [lints]
 workspace = true
 
+# Exemples du câblage cognitif (plan 808fa9a7) : ne se compilent que sous la
+# feature `cognitive`. Déclarés ici pour que `cargo test --examples` des
+# features par défaut les ignore au lieu d'échouer.
+[[example]]
+name = "import_jsonl_cognitif"
+required-features = ["cognitive"]
+
+[[example]]
+name = "banc_spread_cognitif"
+required-features = ["cognitive"]
+
 [[bench]]
 name = "tri_borne"
 harness = false
