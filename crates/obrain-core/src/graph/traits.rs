@@ -1342,6 +1342,27 @@ pub trait GraphStoreMut: GraphStore {
         id
     }
 
+    /// Variante versionnée de [`create_node_with_props`](Self::create_node_with_props) :
+    /// le nœud est daté de `epoch` et, sous une transaction explicite, en
+    /// attente de son commit. Le défaut compose `create_node_versioned` et
+    /// `set_node_property` ; un store durable peut surcharger pour que la
+    /// création (nœud + propriétés) soit une seule unité de rejeu.
+    fn create_node_with_props_versioned(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+        epoch: EpochId,
+        transaction_id: TransactionId,
+    ) -> NodeId {
+        let id = self.create_node_versioned(labels, epoch, transaction_id);
+        obrain_common::utils::panne::point_creation_noeud(0);
+        for (rang, (key, value)) in properties.iter().enumerate() {
+            self.set_node_property(id, key.as_str(), value.clone());
+            obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
+        }
+        id
+    }
+
     /// Creates a new edge with properties in one call.
     ///
     /// The default implementation calls [`create_edge`](Self::create_edge)
