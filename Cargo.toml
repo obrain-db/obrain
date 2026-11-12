@@ -106,9 +106,10 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 bincode = { version = "2.0", features = ["serde"] }
 
-# Python bindings
-pyo3 = "0.27"
-pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }
+# Python bindings — pyo3 0.30 : RUSTSEC-2026-0177 (PyCFunction::new_closure sans
+# borne Sync) est corrigé à partir de 0.29 ; cargo deny échouait sur 0.27.2.
+pyo3 = "0.30"
+pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "sync", "time", "macros"] }
