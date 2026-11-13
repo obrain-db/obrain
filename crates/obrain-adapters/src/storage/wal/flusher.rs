@@ -15,6 +15,7 @@
 //! of disk speed variations.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -65,6 +66,9 @@ pub struct AdaptiveFlusher {
     shutdown_tx: Option<mpsc::Sender<mpsc::Sender<FlusherStats>>>,
     /// Background thread handle.
     handle: Option<JoinHandle<()>>,
+    /// Flushes réussis jusqu'ici, lisible PENDANT que le flusher tourne
+    /// (`FlusherStats` n'est rendu qu'à l'arrêt).
+    flushes: Arc<AtomicU64>,
 }
 
 impl AdaptiveFlusher {
@@ -84,17 +88,20 @@ impl AdaptiveFlusher {
     pub fn new(wal: Arc<WalManager>, target_interval_ms: u64) -> Result<Self, std::io::Error> {
         let target_interval = Duration::from_millis(target_interval_ms);
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let flushes = Arc::new(AtomicU64::new(0));
+        let flushes_fil = Arc::clone(&flushes);
 
         let handle = thread::Builder::new()
             .name("obrain-wal-flusher".to_string())
             .spawn(move || {
-                Self::flusher_loop(wal, target_interval, shutdown_rx);
+                Self::flusher_loop(wal, target_interval, shutdown_rx, &flushes_fil);
             })?;
 
         Ok(Self {
             target_interval,
             shutdown_tx: Some(shutdown_tx),
             handle: Some(handle),
+            flushes,
         })
     }
 
@@ -102,6 +109,13 @@ impl AdaptiveFlusher {
     #[must_use]
     pub fn target_interval(&self) -> Duration {
         self.target_interval
+    }
+
+    /// Nombre de flushes périodiques réussis depuis le démarrage, lisible
+    /// pendant que le flusher tourne.
+    #[must_use]
+    pub fn flush_count(&self) -> u64 {
+        self.flushes.load(Ordering::Acquire)
     }
 
     /// Gracefully shuts down the flusher, performing a final flush.
@@ -137,6 +151,7 @@ impl AdaptiveFlusher {
         wal: Arc<WalManager>,
         target_interval: Duration,
         shutdown_rx: mpsc::Receiver<mpsc::Sender<FlusherStats>>,
+        flushes: &AtomicU64,
     ) {
         let mut last_flush_duration = Duration::ZERO;
         let mut stats = FlusherStats::default();
@@ -170,6 +185,7 @@ impl AdaptiveFlusher {
 
                     // Update statistics
                     stats.flush_count += 1;
+                    flushes.fetch_add(1, Ordering::Release);
                     let flush_us = last_flush_duration.as_micros() as u64;
                     stats.total_flush_time_us += flush_us;
                     stats.max_flush_time_us = stats.max_flush_time_us.max(flush_us);
@@ -216,16 +232,23 @@ mod tests {
         // Start flusher with 50ms target
         let mut flusher = AdaptiveFlusher::new(Arc::clone(&wal), 50).unwrap();
 
-        // Let it run for a bit (500ms gives plenty of margin for CI)
-        thread::sleep(Duration::from_millis(500));
+        // Ce que le test prouve : le flusher flushe PÉRIODIQUEMENT, sans
+        // qu'on le lui demande. On attend donc deux flushes réels, sans fixer
+        // la durée : un sommeil fixe (500 ms, avant le 13/11/2026) liait le
+        // verdict à la vitesse du `fsync` de la machine (1 seul flush mesuré
+        // sur un runner chargé, CI de obrain#160). L'échéance n'est qu'un
+        // garde-fou contre un flusher arrêté.
+        let echeance = Instant::now() + Duration::from_secs(30);
+        while flusher.flush_count() < 2 && Instant::now() < echeance {
+            thread::sleep(Duration::from_millis(10));
+        }
 
         // Shutdown and get stats
         let stats = flusher.shutdown().unwrap();
 
-        // Should have done at least 2 flushes in 500ms with 50ms target
         assert!(
             stats.flush_count >= 2,
-            "Expected at least 2 flushes, got {}",
+            "Expected at least 2 periodic flushes within 30 s, got {}",
             stats.flush_count
         );
     }
