@@ -63,7 +63,7 @@ obrain-cognitive = { workspace = true, optional = true, default-features = false
 # ONNX Runtime LIÉ STATIQUEMENT par défaut : binaires fournis par pyke (macOS, iOS, Linux).
 # Indispensable pour iOS, où une bibliothèque dynamique ne peut pas être chargée depuis le bundle.
 # `ort-dynamic` garde l'ancien comportement (libonnxruntime chargé à l'exécution, via ORT_DYLIB_PATH).
-ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "ndarray", "download-binaries", "tls-native", "api-24"] }
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "ndarray", "download-binaries", "tls-native", "api-24"] }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 # hf-hub 1.0 -> hf-xet 1.8 -> xet-runtime 1.8 -> sysinfo 0.39 requires Rust 1.95 (> MSRV 1.91.1).
 # Cargo.lock is therefore pinned to hf-xet 1.5.3, xet-client/xet-core-structures/xet-data/xet-runtime 1.5.3,
