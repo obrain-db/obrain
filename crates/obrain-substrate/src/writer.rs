@@ -1007,6 +1007,29 @@ impl Writer {
     /// Write an [`EdgeRecord`] at `idx` and log an `EdgeInsert` record.
     #[tracing::instrument(level = "trace", skip(self, edge))]
     pub fn write_edge(&self, idx: u64, edge: EdgeRecord) -> SubstrateResult<()> {
+        self.ecrire_edge(idx, edge, None)
+    }
+
+    /// Comme [`Writer::write_edge`], mais la déclaration `precede` (un record
+    /// écrit AVANT l'`EdgeInsert`, p. ex. `TxAreteEnAttente`) part dans le
+    /// MÊME `write` que l'`EdgeInsert` : aucun arrêt ne laisse une arête de
+    /// transaction écrite sans sa déclaration. Pendant de
+    /// [`Writer::write_node_precede`].
+    pub fn write_edge_precede(
+        &self,
+        idx: u64,
+        edge: EdgeRecord,
+        precede: WalPayload,
+    ) -> SubstrateResult<()> {
+        self.ecrire_edge(idx, edge, Some(precede))
+    }
+
+    fn ecrire_edge(
+        &self,
+        idx: u64,
+        edge: EdgeRecord,
+        precede: Option<WalPayload>,
+    ) -> SubstrateResult<()> {
         self.note_feature_mutation();
         let rec = WalRecord {
             lsn: 0,
@@ -1020,7 +1043,20 @@ impl Writer {
                 weight_u16: edge.weight_u16,
             },
         };
-        self.wal.append(rec)?;
+        match precede {
+            None => {
+                self.wal.append(rec)?;
+            }
+            Some(payload) => {
+                let decl = WalRecord {
+                    lsn: 0,
+                    timestamp: unix_micros(),
+                    flags: 0,
+                    payload,
+                };
+                self.wal.append_batch([decl, rec])?;
+            }
+        }
 
         self.with_edge_zone(|zf| {
             let offset = idx as usize * EdgeRecord::SIZE;

@@ -12,6 +12,14 @@ updates:
           - "*"
     commit-message:
       prefix: "deps(rust)"
+    # MSRV 1.91.1 (rust-version du workspace) : ces versions exigent un rustc
+    # plus récent (parking_lot 0.13 → 1.95, ort rc.14+ → 1.92). Les monter
+    # revient à relever le MSRV : décision explicite, pas un bump automatique.
+    ignore:
+      - dependency-name: "parking_lot"
+        versions: [">= 0.13"]
+      - dependency-name: "ort"
+        versions: [">= 2.0.0-rc.14"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"

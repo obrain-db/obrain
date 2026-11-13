@@ -1958,6 +1958,14 @@ pub struct SubstrateStore {
     /// `EdgeTypeRegistry` via [`Self::resolve_edge_type_by_id`] and
     /// [`Self::is_live_edge_on_disk`].
     edge_properties: DashMap<EdgeId, PropertyMap>,
+    /// Compteur de génération des cartes de propriétés (nœuds + arêtes) :
+    /// incrémenté à chaque mutation, lu par `persist_properties` pour sauter
+    /// la réécriture complète du sidecar hérité quand rien n'a bougé
+    /// (obrain#120, point 3 : le flush complet est O(base)).
+    props_generation: AtomicU64,
+    /// Génération au dernier `persist_properties` réussi. `u64::MAX` = rien
+    /// encore persisté : le premier flush réécrit toujours le sidecar.
+    derniere_generation_props_persistee: AtomicU64,
     /// (2026-08-17, aretes inter-bases V1) Aretes EXTERNES sortantes par
     /// noeud source : la cible vit dans un AUTRE store, adressee par
     /// (hote, slug, clef). Sidecar DashMap — persiste au flush dans
@@ -5691,6 +5699,7 @@ impl SubstrateStore {
         }
         if let Some(props) = props {
             self.node_properties.insert(id, props);
+            self.noter_props_modifiees();
         }
         // Compteurs vivants, lus depuis le record — qui a survecu intact.
         let label_bitset = self
@@ -5731,6 +5740,7 @@ impl SubstrateStore {
             NodeId(u64::from(src_slot)),
             NodeId(u64::from(dst_slot)),
             edge_type_id,
+            None,
         );
 
         // (2026-08-19) LA TÊTE DE CHAÎNE v2 ÉTAIT PERDUE À LA RÉSURRECTION.
@@ -5771,6 +5781,7 @@ impl SubstrateStore {
 
         if let Some(props) = props {
             self.edge_properties.insert(id, props);
+            self.noter_props_modifiees();
         }
 
         let src_bitset = self
@@ -7566,6 +7577,8 @@ impl SubstrateStore {
             reverse_part_of: parking_lot::RwLock::new(None),
             node_properties: DashMap::new(),
             edge_properties: DashMap::new(),
+            props_generation: AtomicU64::new(0),
+            derniere_generation_props_persistee: AtomicU64::new(u64::MAX),
             property_indexes: DashMap::default(),
             index_batis_depuis_v2: DashMap::default(),
             index_ordonne: index_ordonne.map(RwLock::new),
@@ -12710,6 +12723,13 @@ impl SubstrateStore {
         PropertiesStreamingWriter::open(path)
     }
 
+    /// Incrémente la génération des cartes de propriétés : à appeler à
+    /// CHAQUE mutation de `node_properties` ou `edge_properties`, pour que
+    /// `persist_properties` sache que le sidecar hérité est devenu périmé.
+    fn noter_props_modifiees(&self) {
+        self.props_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Persist the in-memory `self.node_properties` and
     /// `self.edge_properties` maps to a sidecar `substrate.props` file.
     /// See [`crate::props_snapshot`] for rationale and format.
@@ -12720,6 +12740,33 @@ impl SubstrateStore {
     /// this with O(Δ) mmap writes.
     fn persist_properties(&self) -> SubstrateResult<()> {
         self.exiger_ecriture("la persistance des propriétés")?;
+        // (obrain#120, point 3) DIRTY-FLAG DU SIDECAR HÉRITÉ.
+        //
+        // Le sidecar `substrate.props` est une réécriture COMPLÈTE des cartes
+        // `node_properties`/`edge_properties` — O(base). Or une écriture qui
+        // route en colonne blob (> 256 o) ne touche PAS ces cartes : la
+        // réécrire à chaque flush faisait payer le coût O(base) à une écriture
+        // dont le seul effet durable passe par le WAL (`BlobColumnWrite`,
+        // durable depuis #123). On saute donc la réécriture quand AUCUNE carte
+        // n'a bougé depuis le dernier persist réussi — même contrat que
+        // `persist_dict_si_sale` (dirty-flag) et que les colonnes de degrés.
+        //
+        // SÛRETÉ. La génération est lue AVANT la sérialisation et mémorisée
+        // telle quelle : une mutation qui tombe PENDANT la sérialisation
+        // incrémente la génération et force la prochaine réécriture (jamais
+        // d'écrasement d'un sidecar « à jour » par un sidecar périmé). Toute
+        // mutation de ces cartes est par ailleurs journalisée au WAL
+        // (`PropSetInline`/`EdgePropSetInline`/…), donc le WAL couvre la donnée
+        // tant que le sidecar n'est pas réécrit. Le sentinel `u64::MAX` force
+        // la première réécriture après chaque ouverture.
+        let generation = self.props_generation.load(Ordering::Acquire);
+        if self
+            .derniere_generation_props_persistee
+            .load(Ordering::Acquire)
+            == generation
+        {
+            return Ok(());
+        }
         let mut snap = PropertiesSnapshotV1::default();
         // Defensive filter: `Value::Vector` writes are routed to
         // `vec_columns` and never inserted into the DashMap by
@@ -12785,7 +12832,10 @@ impl SubstrateStore {
             let sub = self.substrate.lock();
             sub.path().join(PROPS_FILENAME)
         };
-        snap.persist(&path)
+        snap.persist(&path)?;
+        self.derniere_generation_props_persistee
+            .store(generation, Ordering::Release);
+        Ok(())
     }
 
     /// (feat conversations µs) Id de type d'arête PART_OF (interne).
@@ -17539,6 +17589,7 @@ impl SubstrateStore {
         src: NodeId,
         dst: NodeId,
         edge_type_id: u16,
+        precede: Option<WalPayload>,
     ) -> EdgeRecord {
         // Serialize the head read-modify-write against concurrent splices /
         // unlinks on the same source — prevents edge-chain cycle corruption.
@@ -17578,9 +17629,13 @@ impl SubstrateStore {
         };
 
         // (3) write the edge slot FIRST — initialiser avant de publier.
-        self.writer
-            .write_edge(edge_id.0, edge)
-            .expect("write_edge failed — WAL append or mmap grow");
+        //     Une déclaration `precede` (arête de transaction explicite) part
+        //     dans le MÊME `write`, AVANT l'`EdgeInsert`.
+        match precede {
+            None => self.writer.write_edge(edge_id.0, edge),
+            Some(decl) => self.writer.write_edge_precede(edge_id.0, edge, decl),
+        }
+        .expect("write_edge failed — WAL append or mmap grow");
 
         // (4) update src's first_edge_off — c'est la PUBLICATION : à partir
         //     d'ici un lecteur peut atteindre le slot, et il est complet.
@@ -24716,7 +24771,7 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Node creation --
     fn create_node(&self, labels: &[&str]) -> NodeId {
-        self.creer_noeud(labels, false)
+        self.creer_noeud(labels, DeclarationEnVol::Aucune)
     }
 
     /// Création ATOMIQUE sous `kill -9` (obrain#120 pt 4) : le nœud et ses
@@ -24765,7 +24820,17 @@ impl GraphStoreMut for SubstrateStore {
         // L'epoque du createur prime sur l'epoque courante : une transaction
         // demarree avant un commit concurrent doit dater ses noeuds de SON
         // debut, pas de l'instant ou ils touchent le disque.
-        let id = self.create_node(labels);
+        //
+        // En transaction explicite, la declaration `TxNoeudEnAttente` precede
+        // le `NodeInsert` dans le MEME `write` (`creer_noeud` →
+        // `write_node_precede`). Auparavant elle partait dans un second append
+        // (D-DUR, 2026-11-01) : un `kill -9` entre les deux publiait au rejeu le
+        // noeud d'une transaction jamais validee.
+        let id = if transaction_id != TransactionId::SYSTEM {
+            self.creer_noeud(labels, DeclarationEnVol::Transaction(transaction_id.0))
+        } else {
+            self.create_node(labels)
+        };
         if epoch.0 > 0 {
             self.naissances_noeuds.insert(id, epoch.0);
             self.note_mvcc_actif();
@@ -24791,77 +24856,18 @@ impl GraphStoreMut for SubstrateStore {
         // l'instant ou elle atterrit ; la marquer en attente est un
         // contresens.
         if transaction_id != TransactionId::SYSTEM {
+            obrain_common::utils::panne::point_tx(obrain_common::utils::panne::PointTx::NoeudEcrit);
             self.en_attente_noeuds.insert(id, transaction_id.0);
             self.note_mvcc_actif();
             self.attente_noeuds_active
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.declare_en_vol(WalPayload::TxNoeudEnAttente {
-                tx: transaction_id.0,
-                node_id: id.0 as u32,
-            });
         }
         id
     }
 
     // -- Edge creation (step 2) --
     fn create_edge(&self, src: NodeId, dst: NodeId, edge_type: &str) -> EdgeId {
-        self.refuser_mutation_en_lecture_seule("create_edge");
-        // LpgStore is permissive: it does NOT reject edges on missing
-        // endpoints — they just become dangling. We match that contract;
-        // the caller is responsible for endpoint liveness.
-        let edge_type_id = self
-            .intern_edge_type(edge_type)
-            .expect("edge-type registry overflow (>65535 types); lifted in step 3");
-        // T17i T1 : pre-hydrate the typed-degree registry **before**
-        // `splice_edge_at_head` writes the new edge to the zone. If
-        // this is the first call on a fresh store (or first post-
-        // upgrade), the rebuild scan inside `ensure_initialized` then
-        // iterates the pre-edge state and doesn't observe the new
-        // edge — so our explicit `incr_typed_*_degree` below is the
-        // single source of increment (no double-count).
-        let _ = self.typed_degrees();
-        let id = self.allocate_edge_id();
-        let _rec = self.splice_edge_at_head(id, src, dst, edge_type_id);
-
-        // T17e Phase 3: edge_type resolves from the mmap'd EdgeRecord +
-        // registry on demand; no DashMap to populate.
-        // T17h T1: live counter increments (total + per-edge-type).
-        self.total_live_edges.fetch_add(1, Ordering::Relaxed);
-        self.incr_edge_type_count(edge_type_id, 1);
-        // T17h T5: degree column increments (src.out, dst.in).
-        self.incr_out_degree(src.0 as u32, 1);
-        self.incr_in_degree(dst.0 as u32, 1);
-        // T17h T8: per-edge-type degree column increments.
-        self.incr_typed_out_degree(edge_type_id, src.0 as u32, 1);
-        self.incr_typed_in_degree(edge_type_id, dst.0 as u32, 1);
-        // T17i T2: per-edge-type × target-label / source-label histograms.
-        // Read the endpoints' label bitsets and increment the two
-        // histograms for each set bit. Dangling endpoints (no NodeRecord)
-        // yield bitset=0 → no increment, consistent with the LpgStore
-        // permissive-endpoint contract.
-        let src_bitset = self
-            .writer
-            .read_node(src.0 as u32)
-            .ok()
-            .flatten()
-            .map(|r| r.label_bitset)
-            .unwrap_or(0);
-        let dst_bitset = self
-            .writer
-            .read_node(dst.0 as u32)
-            .ok()
-            .flatten()
-            .map(|r| r.label_bitset)
-            .unwrap_or(0);
-        self.incr_edge_type_source_label(edge_type_id, src_bitset, 1);
-        self.incr_edge_type_target_label(edge_type_id, dst_bitset, 1);
-        self.note_naissance_arete(id);
-        // T5 : maintenance simpliciale incrémentale — même transaction WAL
-        // que l'arête (spec §4). Une arête neuve n'a pas encore de
-        // propriétés : le volet DISPATCH vit dans les hooks de propriété.
-        self.maintenance_arete_ajoutee(src.0 as u32, dst.0 as u32, edge_type_id);
-        self.notify_edge_created(id, src, dst, edge_type);
-        id
+        self.creer_arete(src, dst, edge_type, None)
     }
 
     fn create_edge_versioned(
@@ -24872,18 +24878,21 @@ impl GraphStoreMut for SubstrateStore {
         epoch: EpochId,
         transaction_id: TransactionId,
     ) -> EdgeId {
-        let id = self.create_edge(src, dst, edge_type);
+        // Propriété, pas visibilité (voir le champ) : SYSTEM = auto-commit,
+        // rien à rembobiner jamais. En transaction explicite, la déclaration
+        // `TxAreteEnAttente` précède l'`EdgeInsert` dans le MÊME `write`
+        // (`creer_arete`) : auparavant elle partait dans un second append, et
+        // un `kill -9` entre les deux publiait l'arête au rejeu.
+        let tx_en_vol = (transaction_id != TransactionId::SYSTEM).then_some(transaction_id.0);
+        let id = self.creer_arete(src, dst, edge_type, tx_en_vol);
         if epoch.0 > 0 {
             self.naissances_aretes.insert(id, epoch.0);
         }
-        // Propriété, pas visibilité (voir le champ) : SYSTEM = auto-commit,
-        // rien à rembobiner jamais.
         if transaction_id != TransactionId::SYSTEM {
+            obrain_common::utils::panne::point_tx(
+                obrain_common::utils::panne::PointTx::AreteEcrite,
+            );
             self.aretes_creees_par_tx.insert(id, transaction_id.0);
-            self.declare_en_vol(WalPayload::TxAreteEnAttente {
-                tx: transaction_id.0,
-                edge_id: id.0,
-            });
         }
         id
     }
@@ -24933,6 +24942,7 @@ impl GraphStoreMut for SubstrateStore {
         // `persist_properties` doesn't re-serialise a dead entity on the
         // next flush.
         if let Some((_, props)) = self.node_properties.remove(&id) {
+            self.noter_props_modifiees();
             // T17b : purge de l'index enregistré — la revérification de
             // lecture rendrait l'entrée inoffensive, mais on borne la
             // dérive plutôt que de la laisser s'accumuler.
@@ -25029,6 +25039,7 @@ impl GraphStoreMut for SubstrateStore {
         // T17e Phase 3: the mmap TOMBSTONED flag is authoritative; only
         // the property map needs explicit cleanup here.
         self.edge_properties.remove(&id);
+        self.noter_props_modifiees();
         // T17h T1: live counter decrements.
         self.total_live_edges.fetch_sub(1, Ordering::Relaxed);
         self.incr_edge_type_count(edge_type_id, -1);
@@ -25471,6 +25482,7 @@ impl GraphStoreMut for SubstrateStore {
             .entry(id)
             .or_default()
             .insert(pkey.clone(), value.clone());
+        self.noter_props_modifiees();
         #[cfg(test)]
         APRES_ECRITURE_VALEUR.with(|h| {
             if let Some(f) = h.borrow().as_ref() {
@@ -25612,6 +25624,7 @@ impl GraphStoreMut for SubstrateStore {
             .entry(id)
             .or_default()
             .insert(PropertyKey::new(key), value);
+        self.noter_props_modifiees();
         self.maintenance_apres_prop_dispatch(ctx_dispatch, id, key);
     }
 
@@ -25721,6 +25734,7 @@ impl GraphStoreMut for SubstrateStore {
         // — mais son résultat n'est plus la réponse : `avant` l'est.
         if let Some(mut m) = self.node_properties.get_mut(&id) {
             m.remove(&PropertyKey::new(key));
+            self.noter_props_modifiees();
         }
         // T17b : purge de l'index enregistré — pilotée par `avant`, et non
         // plus par la DashMap. Sous v2 l'index EST peuplé
@@ -26052,6 +26066,7 @@ impl GraphStoreMut for SubstrateStore {
         // — mais son résultat n'est plus la réponse : `avant` l'est.
         if let Some(mut m) = self.edge_properties.get_mut(&id) {
             m.remove(&PropertyKey::new(key));
+            self.noter_props_modifiees();
         }
         // T5 : la clé de groupe DISPATCH vient (peut-être) de disparaître —
         // le groupe de l'ancienne ligne est recalculé.
@@ -32814,6 +32829,63 @@ mod tests {
             dict_avant, dict_apres,
             "un flush propre ne doit pas réécrire substrate.dict"
         );
+    }
+
+    /// obrain#120 point 3 — le dirty-flag du sidecar hérité ne perd rien et ne
+    /// réécrit pas pour rien. Une écriture longue (> 256 o, colonne blob) ne
+    /// touche PAS les cartes `node_properties`/`edge_properties` : le flush qui
+    /// suit SAUTE la réécriture du sidecar. Une écriture courte la refait. La
+    /// réouverture retrouve les deux valeurs, malgré le saut.
+    #[test]
+    #[allow(unsafe_code)]
+    fn persist_properties_skippe_et_reecrit_selon_la_generation() {
+        let _guard = props_v2_env_lock();
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("kb");
+        // SAFETY: sérialisé par `props_v2_env_lock`, détenu ci-dessus.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        let id = {
+            let s = SubstrateStore::create(&path).unwrap();
+            let id = s.create_node(&["File"]);
+            s.set_node_property(id, "i", Value::Int64(1));
+            s.flush().unwrap();
+            let generation = s.props_generation.load(Ordering::Acquire);
+            assert_eq!(
+                s.derniere_generation_props_persistee
+                    .load(Ordering::Acquire),
+                generation,
+                "le premier flush doit persister le sidecar"
+            );
+            // Écriture longue (> 256 o) : ne salit PAS les cartes.
+            s.set_node_property(id, "doc", Value::String("x".repeat(585).into()));
+            s.flush().unwrap();
+            assert_eq!(
+                s.props_generation.load(Ordering::Acquire),
+                generation,
+                "une écriture blob ne salit pas les cartes de propriétés"
+            );
+            // Écriture courte : resalit → le flush suivant réécrit le sidecar.
+            s.set_node_property(id, "i", Value::Int64(2));
+            s.flush().unwrap();
+            assert_eq!(
+                s.derniere_generation_props_persistee
+                    .load(Ordering::Acquire),
+                s.props_generation.load(Ordering::Acquire),
+                "une écriture courte doit forcer la réécriture du sidecar"
+            );
+            id
+        };
+        // SAFETY: idem.
+        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        // Durabilité : la réouverture retrouve la valeur courte (sidecar) et la
+        // longue (colonne blob), malgré le saut du sidecar au flush.
+        let s = SubstrateStore::open(&path).unwrap();
+        assert_eq!(
+            s.get_node_property(id, &PropertyKey::new("i")),
+            Some(Value::Int64(2))
+        );
+        let doc = s.get_node_property(id, &PropertyKey::new("doc"));
+        assert!(matches!(doc, Some(Value::String(ref v)) if v.len() == 585));
     }
 
     /// T17h T8 — typed columns survive close/reopen via the
@@ -40692,8 +40764,11 @@ mod tests {
         };
 
         // (2) Migration COMPLÈTE : drain, flush, suppression du sidecar.
-        //     Puis un flush de plus, qui RECRÉE un sidecar périmé depuis la
-        //     DashMap restée peuplée — le cas Megalaw, reproduit exprès.
+        //     (obrain#120) Le dirty-flag de `persist_properties` fait que le
+        //     flush SUIVANT ne RECRÉE PLUS un sidecar périmé depuis la DashMap
+        //     restée peuplée — c'était « le cas Megalaw » ; il ne peut plus
+        //     naître par ce chemin. On le SIMULE donc ici, à la main, pour
+        //     éprouver quand même le court-circuit à l'ouverture.
         let sidecar = root.join(crate::props_snapshot::PROPS_FILENAME);
         // SAFETY: sérialisé par `props_v2_env_lock`.
         fixer_props_v2(Some("1"));
@@ -40704,7 +40779,23 @@ mod tests {
             s.delete_legacy_props_sidecar().unwrap().expect("présent");
             assert!(!sidecar.exists(), "sidecar supprimé par la migration");
             s.flush().unwrap();
+            assert!(
+                !sidecar.exists(),
+                "un flush qui suit la suppression ne réécrit pas un sidecar \
+                 périmé (dirty-flag obrain#120)"
+            );
         }
+        // Sidecar périmé NON VIDE, posé à la main : c'est l'état que laisserait
+        // un binaire antérieur (ou un pair) qui aurait flushé avant ce correctif.
+        crate::props_snapshot::PropertiesSnapshotV1 {
+            nodes: vec![crate::props_snapshot::PropEntry {
+                id: u64::MAX - 1,
+                props: vec![("fantome".to_string(), Value::String("x".into()))],
+            }],
+            edges: Vec::new(),
+        }
+        .persist(&sidecar)
+        .unwrap();
         assert!(
             sidecar.metadata().map(|m| m.len()).unwrap_or(0) > 0,
             "on veut précisément un sidecar périmé NON VIDE sur le disque — \
@@ -42539,7 +42630,7 @@ mod sonde_v3_replay {
 }
 
 impl SubstrateStore {
-    fn creer_noeud(&self, labels: &[&str], en_vol: bool) -> NodeId {
+    fn creer_noeud(&self, labels: &[&str], en_vol: DeclarationEnVol) -> NodeId {
         self.refuser_mutation_en_lecture_seule("create_node");
         let id = self.allocate_node_id();
         let bitset = self
@@ -42552,22 +42643,23 @@ impl SubstrateStore {
         // Déclaré en vol AVANT le `NodeInsert`, dans le même `write` : un arrêt
         // ne laisse jamais un nœud non déclaré, et le coût est un appel système
         // de moins qu'une déclaration séparée.
-        if en_vol {
-            self.writer
-                .write_node_precede(
-                    id.0 as u32,
-                    rec,
-                    WalPayload::TxNoeudEnAttente {
-                        tx: Self::tx_creation_auto(id),
-                        node_id: id.0 as u32,
-                    },
-                )
-                .expect("write_node failed — WAL append or mmap grow");
-        } else {
-            self.writer
-                .write_node(id.0 as u32, rec)
-                .expect("write_node failed — WAL append or mmap grow");
+        let tx = match en_vol {
+            DeclarationEnVol::Aucune => None,
+            DeclarationEnVol::CreationAuto => Some(Self::tx_creation_auto(id)),
+            DeclarationEnVol::Transaction(tx) => Some(tx),
+        };
+        match tx {
+            Some(tx) => self.writer.write_node_precede(
+                id.0 as u32,
+                rec,
+                WalPayload::TxNoeudEnAttente {
+                    tx,
+                    node_id: id.0 as u32,
+                },
+            ),
+            None => self.writer.write_node(id.0 as u32, rec),
         }
+        .expect("write_node failed — WAL append or mmap grow");
         // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
         // registry on demand; no DashMap to populate.
         // T17h T1: live counter increments (total + per-label).
@@ -42580,6 +42672,77 @@ impl SubstrateStore {
         // AVANT leur creation.
         self.note_naissance_noeud(id);
         self.notify_node_created(id);
+        id
+    }
+
+    /// Crée une arête. `tx_en_vol = Some(tx)` (transaction explicite) : la
+    /// déclaration `TxAreteEnAttente` part AVANT l'`EdgeInsert`, dans le MÊME
+    /// `write` — un arrêt ne laisse jamais une arête de transaction écrite
+    /// sans sa déclaration, donc publiée au rejeu.
+    fn creer_arete(
+        &self,
+        src: NodeId,
+        dst: NodeId,
+        edge_type: &str,
+        tx_en_vol: Option<u64>,
+    ) -> EdgeId {
+        self.refuser_mutation_en_lecture_seule("create_edge");
+        // LpgStore is permissive: it does NOT reject edges on missing
+        // endpoints — they just become dangling. We match that contract;
+        // the caller is responsible for endpoint liveness.
+        let edge_type_id = self
+            .intern_edge_type(edge_type)
+            .expect("edge-type registry overflow (>65535 types); lifted in step 3");
+        // T17i T1 : pre-hydrate the typed-degree registry **before**
+        // `splice_edge_at_head` writes the new edge to the zone. If
+        // this is the first call on a fresh store (or first post-
+        // upgrade), the rebuild scan inside `ensure_initialized` then
+        // iterates the pre-edge state and doesn't observe the new
+        // edge — so our explicit `incr_typed_*_degree` below is the
+        // single source of increment (no double-count).
+        let _ = self.typed_degrees();
+        let id = self.allocate_edge_id();
+        let precede = tx_en_vol.map(|tx| WalPayload::TxAreteEnAttente { tx, edge_id: id.0 });
+        let _rec = self.splice_edge_at_head(id, src, dst, edge_type_id, precede);
+
+        // T17e Phase 3: edge_type resolves from the mmap'd EdgeRecord +
+        // registry on demand; no DashMap to populate.
+        // T17h T1: live counter increments (total + per-edge-type).
+        self.total_live_edges.fetch_add(1, Ordering::Relaxed);
+        self.incr_edge_type_count(edge_type_id, 1);
+        // T17h T5: degree column increments (src.out, dst.in).
+        self.incr_out_degree(src.0 as u32, 1);
+        self.incr_in_degree(dst.0 as u32, 1);
+        // T17h T8: per-edge-type degree column increments.
+        self.incr_typed_out_degree(edge_type_id, src.0 as u32, 1);
+        self.incr_typed_in_degree(edge_type_id, dst.0 as u32, 1);
+        // T17i T2: per-edge-type × target-label / source-label histograms.
+        // Read the endpoints' label bitsets and increment the two
+        // histograms for each set bit. Dangling endpoints (no NodeRecord)
+        // yield bitset=0 → no increment, consistent with the LpgStore
+        // permissive-endpoint contract.
+        let src_bitset = self
+            .writer
+            .read_node(src.0 as u32)
+            .ok()
+            .flatten()
+            .map(|r| r.label_bitset)
+            .unwrap_or(0);
+        let dst_bitset = self
+            .writer
+            .read_node(dst.0 as u32)
+            .ok()
+            .flatten()
+            .map(|r| r.label_bitset)
+            .unwrap_or(0);
+        self.incr_edge_type_source_label(edge_type_id, src_bitset, 1);
+        self.incr_edge_type_target_label(edge_type_id, dst_bitset, 1);
+        self.note_naissance_arete(id);
+        // T5 : maintenance simpliciale incrémentale — même transaction WAL
+        // que l'arête (spec §4). Une arête neuve n'a pas encore de
+        // propriétés : le volet DISPATCH vit dans les hooks de propriété.
+        self.maintenance_arete_ajoutee(src.0 as u32, dst.0 as u32, edge_type_id);
+        self.notify_edge_created(id, src, dst, edge_type);
         id
     }
 
@@ -42603,9 +42766,9 @@ impl SubstrateStore {
     /// Sans propriétés il n'y a rien à lier : chemin inchangé.
     fn creer_noeud_atomique(&self, labels: &[&str], properties: &[(PropertyKey, Value)]) -> NodeId {
         if properties.is_empty() {
-            return self.creer_noeud(labels, false);
+            return self.creer_noeud(labels, DeclarationEnVol::Aucune);
         }
-        let id = self.creer_noeud(labels, true);
+        let id = self.creer_noeud(labels, DeclarationEnVol::CreationAuto);
         obrain_common::utils::panne::point_creation_noeud(0);
         for (rang, (k, v)) in properties.iter().enumerate() {
             self.set_node_property(id, k.as_str(), v.clone());
@@ -42624,24 +42787,19 @@ impl SubstrateStore {
         }
         id
     }
+}
 
-    /// (2026-11-01, D-DUR) Déclare au journal qu'une entité appartient à une
-    /// transaction encore ouverte. Sans ce record, un processus qui disparaît
-    /// avec la transaction ouverte laisse l'entité PUBLIÉE à la réouverture.
-    /// L'échec d'écriture est journalisé, pas propagé : la création a déjà eu
-    /// lieu, et l'appelant n'a pas de chemin d'erreur ici — le commit, lui,
-    /// échouera si le WAL est hors service.
-    fn declare_en_vol(&self, payload: WalPayload) {
-        let rec = WalRecord {
-            lsn: 0,
-            timestamp: horodatage_micros(),
-            flags: 0,
-            payload,
-        };
-        if let Err(e) = self.writer.wal().append_encoded(&rec) {
-            tracing::error!(error = %e, "WAL : impossible de déclarer une entité en vol");
-        }
-    }
+/// Déclaration « en vol » écrite AVANT le `NodeInsert` d'une création, dans
+/// le MÊME `write` (`Writer::write_node_precede`).
+#[derive(Clone, Copy)]
+enum DeclarationEnVol {
+    /// Auto-commit sans propriétés : rien à lier.
+    Aucune,
+    /// Auto-commit avec propriétés : transaction privée (`tx_creation_auto`),
+    /// scellée par `creer_noeud_atomique` (obrain#120 pt 4).
+    CreationAuto,
+    /// Transaction explicite : le nœud reste en vol jusqu'à son `TxCommit`.
+    Transaction(u64),
 }
 
 /// Horodatage des records de transaction (µs depuis l'époque Unix) ; 0 si

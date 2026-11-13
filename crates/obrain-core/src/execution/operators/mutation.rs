@@ -117,6 +117,32 @@ pub trait ConstraintValidator: Send + Sync {
         let _ = (labels, properties);
     }
 }
+/// Verrou tenu le temps d'un « vérifier l'unicité puis écrire ».
+///
+/// Le contrôle d'unicité lit l'index, puis l'écriture le modifie : sans
+/// exclusion mutuelle, deux écrivains du même tuple lisent tous deux « libre »
+/// et écrivent tous deux (167 manches sur 400 mesurées sur deux `INSERT`
+/// concurrents). Le verrou est celui que `MERGE` tient déjà pour son composé
+/// chercher-puis-créer (`GraphStoreMut::merge_guard`, un mutex par store) :
+/// INSERT, SET, ajout de label et MERGE s'excluent donc mutuellement.
+///
+/// Il n'est pris QUE par une écriture soumise à une contrainte d'unicité —
+/// une écriture hors contrainte ne le voit jamais et reste parallèle.
+pub(crate) struct VerrouUnicite(Option<Arc<std::sync::Mutex<()>>>);
+
+impl VerrouUnicite {
+    /// Le verrou du store, s'il en a un.
+    pub(crate) fn du_store(store: &dyn GraphStoreMut) -> Self {
+        Self(store.merge_guard())
+    }
+
+    /// Prend le verrou ; relâché à la fin de vie de la garde rendue.
+    pub(crate) fn tenir(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        self.0
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+}
 
 /// Ce qu'une mise à jour fait aux propriétés d'un nœud EXISTANT.
 pub(crate) struct MiseAJourNoeud<'a> {
@@ -398,6 +424,19 @@ impl CreateNodeOperator {
         if let Some(ref validator) = self.validator {
             validator.inject_defaults(&self.labels, resolved_props);
         }
+
+        // ── VÉRIFIER-PUIS-ÉCRIRE EST ATOMIQUE SOUS CONTRAINTE D'UNICITÉ ──
+        // Le contrôle (Phase 1) lit l'index, l'écriture (Phase 3) le modifie.
+        // Deux INSERT concurrents du même tuple lisaient tous deux « libre »
+        // et écrivaient tous deux. Le verrou couvre donc les deux phases, et
+        // il n'est pris que si ces labels portent une contrainte d'unicité.
+        let verrou = VerrouUnicite::du_store(self.store.as_ref());
+        let _unicite_tenue = self
+            .validator
+            .as_ref()
+            .is_some_and(|v| !v.unique_constrained_properties(&self.labels).is_empty())
+            .then(|| verrou.tenir())
+            .flatten();
 
         // Phase 1: Validate each property value
         if let Some(ref validator) = self.validator {
@@ -1146,6 +1185,9 @@ pub struct AddLabelOperator {
     transaction_id: Option<TransactionId>,
     /// Optional write tracker for conflict detection.
     write_tracker: Option<SharedWriteTracker>,
+    /// Optional constraint validator: a node that RECEIVES a label enters
+    /// under that label's uniqueness constraints.
+    validator: Option<Arc<dyn ConstraintValidator>>,
 }
 
 impl AddLabelOperator {
@@ -1166,6 +1208,7 @@ impl AddLabelOperator {
             viewing_epoch: None,
             transaction_id: None,
             write_tracker: None,
+            validator: None,
         }
     }
 
@@ -1177,6 +1220,12 @@ impl AddLabelOperator {
     ) -> Self {
         self.viewing_epoch = Some(epoch);
         self.transaction_id = transaction_id;
+        self
+    }
+
+    /// Sets the constraint validator for schema enforcement.
+    pub fn with_validator(mut self, validator: Arc<dyn ConstraintValidator>) -> Self {
+        self.validator = Some(validator);
         self
     }
 
@@ -1214,6 +1263,33 @@ impl Operator for AddLabelOperator {
                 // Record write for conflict detection
                 if let (Some(tracker), Some(tid)) = (&self.write_tracker, self.transaction_id) {
                     tracker.record_node_write(tid, node_id)?;
+                }
+
+                // ── LE NŒUD ENTRE SOUS LES CONTRAINTES DES LABELS REÇUS ──
+                // Ses propriétés ne changent pas, mais elles deviennent
+                // soumises aux contraintes d'unicité de ces labels : poser
+                // `:T` sur un nœud qui porte un tuple déjà pris sous `:T`
+                // créait un doublon sans aucun contrôle. Vérifier et poser
+                // le label se font sous le même verrou.
+                let verrou = VerrouUnicite::du_store(self.store.as_ref());
+                let mut _unicite_tenue = None;
+                if let Some(ref validator) = self.validator {
+                    let maj = MiseAJourNoeud {
+                        noeud: node_id,
+                        labels: &self.labels,
+                        ecrites: &[],
+                        remplace_tout: false,
+                        entre_sous_labels: true,
+                    };
+                    if let Some(colonnes) = colonnes_uniques_touchees(validator.as_ref(), &maj) {
+                        _unicite_tenue = verrou.tenir();
+                        controler_unicite_apres_mise_a_jour(
+                            validator.as_ref(),
+                            self.store.as_ref() as &dyn GraphStore,
+                            &maj,
+                            colonnes,
+                        )?;
+                    }
                 }
 
                 // Add all labels
@@ -1622,6 +1698,12 @@ impl Operator for SetPropertyOperator {
                     .collect::<Result<_, OperatorError>>()?;
 
                 // Validate constraints before writing
+                //
+                // Le verrou d'unicité, s'il est pris, est tenu jusqu'à la fin
+                // de l'itération : il couvre le contrôle ET les écritures de
+                // cette ligne.
+                let verrou = VerrouUnicite::du_store(self.store.as_ref());
+                let mut _unicite_tenue = None;
                 if let Some(ref validator) = self.validator {
                     if self.is_edge {
                         if let Some(ref et) = self.edge_type_name {
@@ -1675,6 +1757,7 @@ impl Operator for SetPropertyOperator {
                         };
                         if let Some(colonnes) = colonnes_uniques_touchees(validator.as_ref(), &maj)
                         {
+                            _unicite_tenue = verrou.tenir();
                             controler_unicite_apres_mise_a_jour(
                                 validator.as_ref(),
                                 store_lecture,

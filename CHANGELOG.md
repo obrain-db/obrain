@@ -92,6 +92,60 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   écrit, nœud mis à jour à exclure) ; nouvelle méthode `unique_constrained_properties(labels)`
   (défaut : aucune). Tout implémenteur externe doit s'adapter.
 
+### Contraintes d'unicité composites (PR #99) — changements visibles
+
+- **`UNIQUE (a, b)` porte sur le tuple**, pas sur chaque colonne (jusqu'ici : « a unique ET b
+  unique », qui refusait des lignes légitimes). `NODE KEY` idem.
+- **Les contraintes sont persistées** (`substrate.typecat`) et rechargées à l'ouverture ; elles
+  ne se rejouaient pas au démarrage. Nouveau champ JSON `constraint_names` (lecture compatible
+  dans les deux sens, voir la description de la PR), nouveau champ `implicit` (idem).
+- **`DROP CONSTRAINT <nom>` retire réellement la contrainte** (c'était un no-op) ; `SHOW
+  CONSTRAINTS` liste les contraintes (nom, nature, label, propriétés) au lieu d'une table vide.
+- **Redéclaration idempotente** ; sans `IF NOT EXISTS`, redéclarer une contrainte équivalente est
+  maintenant une erreur : `Constraint already exists: an equivalent unique constraint '<nom>' is
+  declared on :<label> (<colonnes>)` (auparavant : « Created » et une copie de plus).
+  Le nom d'une contrainte déjà prise par une AUTRE : `Constraint already exists: the name '<nom>'
+  designates another constraint`. `DROP CONSTRAINT` d'un nom inconnu : `Constraint not found:
+  <nom>` (sauf `IF EXISTS`).
+- **Nom par défaut** d'une contrainte sans nom : `<label>_<nature>_<colonnes>` (ex. `T_unique_a_b`),
+  le même à la création et à la réparation d'une base ; `EXISTS` et `NOT NULL` ont la nature
+  `not_null`. Si une colonne contient `_`, une empreinte des colonnes est ajoutée
+  (`T_unique_a_b_3f0c1a`) pour que `UNIQUE (a, b)` et `UNIQUE (a_b)` ne partagent pas un nom.
+- **`CREATE CONSTRAINT` qui ne peut pas être persistée échoue** (au lieu de « Created » puis une
+  contrainte qui disparaît au redémarrage) ; le DDL est refusé en lecture seule ; un
+  `substrate.typecat` illisible fait échouer la déclaration au lieu d'être réécrit.
+- **`CREATE [OR REPLACE] NODE TYPE` conserve les contraintes** du type ; sur un type créé
+  implicitement par `CREATE CONSTRAINT`, il le complète.
+- **`CREATE CONSTRAINT` sur des données qui violent déjà la contrainte est refusé**, en nommant
+  un doublon (deux nœuds et leurs valeurs) ou le membre absent ; auparavant « Created » et les
+  doublons restaient. Liste complète des doublons d'une contrainte envisagée :
+  `ObrainDB::verifier_contrainte_hypothetique` ; état de toutes les contraintes déclarées sur les
+  données : `ObrainDB::verifier_contraintes`.
+- **L'unicité reconnaît les doublons que le langage tient pour égaux** : `5` et `5.0`, deux chaînes
+  date-heure du même instant dans deux fuseaux, une chaîne de plus de 256 octets (rangée en colonne
+  blob, jamais dans l'index d'égalité), sur une colonne seule comme dans un tuple, dans les deux
+  ordres d'insertion et de déclaration. La règle est en un seul endroit
+  (`SubstrateStore::index_borne_les_porteurs`) : l'index ne borne les candidats que si la classe
+  d'égalité est la clé, que la valeur est de celles que l'index reçoit, que la clé est enregistrée et
+  que l'index est bâti ; sinon balayage du label (O(label) : mesuré ×800 à 100 000 nœuds pour un tuple
+  tout entiers, voir `docs/LIMITES-v0.0.1.md`). L'import en lot, qui n'alimente pas les index, retire
+  leurs marqueurs : ils sont rebâtis au prochain usage. Nouvelle méthode de trait
+  `GraphStore::find_nodes_by_properties_for_label` (défaut : balayage du label).
+- **Coût du contrôle d'un tuple indépendant de l'ordre des colonnes** : la recherche par
+  propriétés résout par la condition indexée la plus sélective, plus par la première déclarée
+  (`UNIQUE (a, b)` avec `a` à deux valeurs coûtait 30 fois `UNIQUE (b, a)`).
+- **Unicité sur tous les chemins** : l'ajout de label `SET n:T` est contrôlé ; deux `INSERT`
+  concurrents du même tuple ne passent pas tous les deux ; `5` / `5.0` et deux écritures d'un
+  même instant sont le même tuple (clé d'index canonique). L'API directe du store et
+  `bulk_import*` restent hors contrainte par contrat (`ObrainDB::verifier_contraintes()` après
+  coup). Sur une base construite par `ObrainDB::with_store` (store externe), une contrainte n'est
+  pas durable (journalisé). Voir `docs/LIMITES-v0.0.1.md`.
+- **Rupture d'API (crate `obrain-core`)** : le trait public `ConstraintValidator` perd
+  `check_unique_node_property(labels, key, value)` au profit de
+  `check_unique_node_properties(labels, properties, exclude)` (jeu de propriétés effectivement
+  écrit, nœud mis à jour à exclure) ; nouvelle méthode `unique_constrained_properties(labels)`
+  (défaut : aucune). Tout implémenteur externe doit s'adapter.
+
 ### Batterie exhaustive (V1-EXHAUSTIF) — ce que `--all-features` a révélé
 
 - Interblocage déterministe de `CALL` cognitif `bootstrap` (`create_synapse_slots_batch`

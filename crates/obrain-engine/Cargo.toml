@@ -212,6 +212,12 @@ harness = false
 name = "chemin_nanoseconde"
 harness = false
 
+[[bench]]
+name = "unicite_ecritures"
+harness = false
+# Passe par execute_cypher (feature cypher) — voir contrainte_unique.
+required-features = ["cypher"]
+
 [[test]]
 name = "with_agregat_cle_de_groupe"
 required-features = ["cypher"]
