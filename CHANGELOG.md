@@ -6,6 +6,22 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Durabilité des vecteurs (obrain#120)
+
+- Un vecteur acquitté puis perdu dans un `kill -9` avant flush disparaissait,
+  pour le lecteur `open_read_only` comme pour l'écrivain qui rouvre (mesuré :
+  0/39 sur base neuve, 100/139 sur base flushée à 100 nœuds) : le WAL ne portait
+  qu'un marqueur `VecColumnWrite`, et l'en-tête de colonne comme sa spec au
+  dictionnaire ne deviennent durables qu'au flush.
+- **Corrigé** : trame WAL `VecColumnSet` (0x2B, vecteur compris), écrite après la
+  colonne par le chemin unitaire et par `ecrire_vecteurs_en_lot`, rejouée par
+  `merge_wal_inline_props` comme `BlobColumnWrite` (écrivain exclusif ; lecteur
+  dans ses zones privées). Après : 39/39 et 139/139, exacts.
+- Coût mesuré : 4 o × dimension + 53 o + nom de clé par écriture dans le WAL (+120 o en dimension 16, +1 592 o en 384).
+- **Format** : un binaire antérieur s'arrête sur l'opcode 0x2B (refus nommé
+  depuis le 07/11) : checkpoint forcé avec le binaire récent avant tout
+  downgrade.
+
 ### Durabilité des valeurs longues (obrain#120)
 
 - Une valeur de plus de 256 octets (chaîne, octets, routée en colonne blob) n'était

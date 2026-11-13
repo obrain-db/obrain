@@ -97,6 +97,23 @@ pub enum WalKind {
     /// `BlobColumnWrite` antérieur ressusciterait la valeur longue par-dessus
     /// la valeur courte écrite ensuite.
     BlobColumnClear = 0x2A,
+    /// (2026-11-13, obrain#120) Écriture d'un vecteur dans une colonne de
+    /// vecteurs, VECTEUR COMPRIS (clé par son nom, `f32` bruts). La colonne
+    /// n'est durable qu'au `sync` d'un flush complet (en-tête `n_slots` + CRC,
+    /// spec au dictionnaire) : sans cette trame, un vecteur acquitté
+    /// disparaissait au `kill -9` (0/39 mesuré, base neuve,
+    /// `lecture_seule_kill9_blob_vecteur.rs`). Rejeu : réécrit le vecteur dans
+    /// sa colonne (`merge_wal_inline_props`), comme `BlobColumnWrite`. Le
+    /// marqueur `VecColumnWrite` (0x28) reste écrit à côté, inchangé.
+    ///
+    /// COMPATIBILITÉ DU FORMAT (règle des opcodes 0x54 à 0x58) : opcode
+    /// nouveau, variante en FIN d'enum `WalPayload` (encodage bincode par
+    /// indice de variante : aucun record existant ne change d'octets). Un
+    /// binaire antérieur S'ARRÊTE sur l'opcode inconnu — refus nommé
+    /// (`SubstrateError::WalOpcodeInconnu`) depuis le 2026-11-07, frontière de
+    /// crash silencieuse avant. Checkpoint FORCÉ avec le binaire récent (qui
+    /// tronque le WAL) avant tout downgrade.
+    VecColumnSet = 0x2B,
     StringIntern = 0x30,
     LabelIntern = 0x31,
     KeyIntern = 0x32,
@@ -187,6 +204,7 @@ impl WalKind {
             0x28 => VecColumnWrite,
             0x29 => BlobColumnWrite,
             0x2A => BlobColumnClear,
+            0x2B => VecColumnSet,
             0x30 => StringIntern,
             0x31 => LabelIntern,
             0x32 => KeyIntern,
@@ -687,6 +705,17 @@ pub enum WalPayload {
         slot: u32,
         key: String,
     },
+    /// (2026-11-13, obrain#120) Vecteur écrit en colonne — voir
+    /// [`WalKind::VecColumnSet`]. `entity_kind` : 0 nœud, 1 arête ; `key` :
+    /// nom de la clé (l'identifiant interné peut naître dans la même
+    /// fenêtre) ; `vector` : les composantes exactes, dont la dimension fixe
+    /// la spec de la colonne. EN FIN D'ENUM (encodage par indice).
+    VecColumnSet {
+        entity_kind: u8,
+        slot: u32,
+        key: String,
+        vector: Vec<f32>,
+    },
 }
 
 impl WalPayload {
@@ -743,6 +772,7 @@ impl WalPayload {
             VecColumnWrite { .. } => K::VecColumnWrite,
             BlobColumnWrite { .. } => K::BlobColumnWrite,
             BlobColumnClear { .. } => K::BlobColumnClear,
+            VecColumnSet { .. } => K::VecColumnSet,
             Checkpoint { .. } => K::Checkpoint,
             NoOp => K::NoOp,
             EndOfLog => K::EndOfLog,
@@ -1548,6 +1578,12 @@ mod tests {
                 entity_kind: 0,
                 slot: 9,
                 key: "doc".into(),
+            },
+            WalPayload::VecColumnSet {
+                entity_kind: 0,
+                slot: 9,
+                key: "emb".into(),
+                vector: vec![0.5, -1.25, f32::MIN_POSITIVE, 3.0e9],
             },
         ];
         for (i, p) in payloads.into_iter().enumerate() {
