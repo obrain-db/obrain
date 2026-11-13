@@ -305,19 +305,31 @@ fn verifier(qui: &str, b: &Bilan, flushes: usize, acks: usize) {
     );
 }
 
-/// Empreinte de tous les fichiers de la base (nom → octets), pour vérifier que
-/// le lecteur, qui rejoue désormais les valeurs longues, n'écrit rien.
+/// Empreinte de tous les fichiers de la base, sous-dossiers compris (chemin
+/// relatif → octets), pour vérifier que le lecteur, qui rejoue désormais les
+/// valeurs longues, n'écrit rien. Les sous-dossiers existent selon les features
+/// (avec `--all-features`, la base en contient : un `read` à plat y échouait sur
+/// `IsADirectory`). On y descend au lieu de les sauter, pour que le contrôle
+/// couvre aussi leurs fichiers.
 fn empreinte(base: &Path) -> BTreeMap<String, Vec<u8>> {
-    std::fs::read_dir(base)
-        .expect("read_dir")
-        .map(|e| {
-            let e = e.unwrap();
-            (
-                e.file_name().to_string_lossy().into_owned(),
-                std::fs::read(e.path()).unwrap(),
-            )
-        })
-        .collect()
+    fn visiter(racine: &Path, dossier: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+        for e in std::fs::read_dir(dossier).expect("read_dir") {
+            let chemin = e.unwrap().path();
+            if chemin.is_dir() {
+                visiter(racine, &chemin, out);
+            } else {
+                let nom = chemin
+                    .strip_prefix(racine)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                out.insert(nom, std::fs::read(&chemin).unwrap());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    visiter(base, base, &mut out);
+    out
 }
 
 /// Ouvre en lecture seule, rend le bilan, et vérifie qu'aucun octet de la base
