@@ -118,12 +118,15 @@ fn enfant_ecrivain() {
     let db = ObrainDB::open(Path::new(dir).join("base")).expect("open enfant");
     let s = db.session();
     let mut sortie = std::io::stdout().lock();
-    for k in premier.. {
+    // Boucle sans fin VOULUE : l'enfant n'en sort que par le SIGKILL du parent.
+    let mut k = premier;
+    loop {
         s.execute(&insert(k)).expect("insert acquitté");
         // Ligne neuve d'abord : libtest a pu laisser `test enfant_ecrivain ... `
         // sans retour à la ligne.
         writeln!(sortie, "\nACK {k}").unwrap();
         sortie.flush().unwrap();
+        k += 1;
     }
 }
 
