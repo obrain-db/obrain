@@ -26,13 +26,55 @@ cargo bench -p obrain-engine    --bench query_bench        # requêtes GQL élé
 cargo bench -p obrain-engine    --bench phase_a_write_goulot  # chemin d'écriture, commit scellé (D-DUR)
 ```
 
-## Chiffres — `main` e11bdd2a, machine `m4max`, 2026-11-01 15:22–15:29
+## Chiffres — `main` a24632c5, machine `m4max`, 2026-11-13 14:27–14:32
 
-Criterion, `--warm-up-time 1 --measurement-time 5`, profil release. **Charge
-machine pendant la mesure : 3 à 9** (d'autres compilations tournaient) — ces
-chiffres sont donc **provisoires** : bons pour l'ordre de grandeur et la
-non-régression relative, pas pour une plaquette. Les chiffres de référence
-définitifs seront repris à charge < 2.
+Criterion, `--warm-up-time 1 --measurement-time 5`, profil release, une
+mesure à la fois via le gouverneur de ressources (`gate.sh exec`), dans un
+worktree propre à la tête de `origin/main`. **Charge machine (moyenne 1 min,
+`uptime` avant / pendant / après) : 2,31 à 5,40** — au-dessus du seuil de 2,
+ces chiffres restent donc **provisoires**. Ils remplacent ceux de e11bdd2a
+(charge 3 à 9, eux aussi provisoires) ; les chiffres définitifs seront repris
+à charge < 2.
+
+Colonnes « Médiane » et « Intervalle » : valeur centrale et bornes de la
+ligne `time: [basse centrale haute]` de Criterion (intervalle de confiance à
+95 % du temps par itération), comme pour la référence e11bdd2a. Sorties brutes
+non versionnées ; à reproduire avec les commandes ci-dessus.
+
+| Bench | Mesure | Médiane a24632c5 | Intervalle Criterion | e11bdd2a (réf.) | Charge début → fin (max pendant) |
+|---|---|---|---|---|---|
+| `tiered_scan_top10/single_thread/1000000` | retrieval vectoriel par paliers, top-10 sur 10⁶ nœuds, 1 thread | **836,8 µs** (1,195 Gelem/s) | 831,7 – 842,5 µs | 845 µs | 3,43 → 4,27 (5,40) |
+| `tiered_scan_top10/rayon_pool/1000000` | idem, pool rayon | **710,5 µs** (1,408 Gelem/s) | 707,1 – 714,2 µs | 743 µs | 3,43 → 4,27 (5,40) |
+| `wal_append_unitaire/seul_ecrivain` | un record WAL, un écrivain | 1,217 µs (822 Krec/s) | 1,179 – 1,258 µs | 1,22 µs | 4,27 → 4,39 |
+| `wal_append_batch/1024` | lot de 1 024 records | 78,2 µs (13,1 Mrec/s) | 76,4 – 80,7 µs | 77,4 µs | 4,27 → 4,39 |
+| `query_node_lookup_by_property` | `MATCH` par propriété (sans index, 1 000 `Person`) | **47,0 µs** | 46,85 – 47,17 µs | 379 µs (52,5 µs après C1) | 4,39 → 3,28 |
+| `query_1hop_pattern` | motif 1 saut | 49,2 µs | 49,09 – 49,31 µs | 386 µs | 4,39 → 3,28 |
+| `query_2hop_pattern` | motif 2 sauts | 56,3 µs | 56,17 – 56,37 µs | 392 µs | 4,39 → 3,28 |
+| `query_fan_out_expand_1k` | expansion à 1 000 voisins | 717,2 µs | 714,8 – 720,0 µs | 717 µs | 4,39 → 3,28 |
+| `query_count_all` | `MATCH (n) RETURN count(n)` | 1,236 µs | 1,232 – 1,241 µs | 1,28 µs | 4,39 → 3,28 |
+| `query_filter_range` | filtre par plage | 103,4 µs | 103,2 – 103,7 µs | 102 µs | 4,39 → 3,28 |
+| `query_insert_single_node` | `INSERT` d'un nœud, auto-commit, base en mémoire | 15,2 µs | 13,2 – 17,7 µs (6 % de valeurs aberrantes sévères) | 12,6 µs | 4,39 → 3,28 |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 4 sessions concurrentes, `EveryCommit` | **2,134 s** ⚠ | 2,052 – 2,243 s (10 échantillons) | 78,4 ms | 3,28 → 2,31 |
+| `phase_a_write/writer_unique_group_commit/4` | écrivain unique, group commit | 79,2 ms | 78,4 – 80,0 ms | 74,8 ms | 3,28 → 2,31 |
+| `phase_a_write/seq_1_thread_group` | séquentiel, 1 thread, `Group` | 78,8 ms | 78,0 – 79,4 ms | 78,0 ms | 3,28 → 2,31 |
+
+Écarts notables par rapport à e11bdd2a (255 commits plus tard) :
+
+- `query_1hop_pattern` / `query_2hop_pattern` : ÷ 7,8 et ÷ 7,0, cohérent
+  avec le filtre sans hydratation (C1, ci-dessous) qui avait déjà ramené
+  `query_node_lookup_by_property` de 379 à 52,5 µs.
+- ⚠ `phase_a_write/sessions_concurrentes_everycommit/4` : **2,13 s contre
+  78,4 ms** (× 27). Non expliqué à ce jour : le fichier du bench a lui-même
+  changé depuis e11bdd2a (cf0beb14, 4ffa0b0a) et plusieurs correctifs de
+  durabilité ont été fusionnés (#123, #137, #153). Criterion ne détecte
+  aucun changement par rapport à une exécution antérieure du même créneau
+  (+5,6 %, p = 0,06) : la valeur ~2 s est donc stable, pas un accident de
+  charge. À bissecter avant de citer ce chiffre.
+- Les autres mesures sont dans le bruit (≤ ± 6 %) ou légèrement meilleures
+  (`tiered_scan` rayon : − 4 %).
+
+<details>
+<summary>Ancienne référence — <code>main</code> e11bdd2a, 2026-11-01 15:22–15:29, charge 3 à 9 (provisoire)</summary>
 
 | Bench | Mesure | Valeur (médiane) | Charge |
 |---|---|---|---|
@@ -50,8 +92,10 @@ définitifs seront repris à charge < 2.
 | `phase_a_write/writer_unique_group_commit/4` | écrivain unique, group commit | 74,8 ms | 3,3 |
 | `phase_a_write/seq_1_thread_group` | séquentiel, 1 thread, `Group` | 78,0 ms | 3,3 |
 
+</details>
+
 Ce que le README avançait et que ces chiffres ne confirment PAS tels quels :
-« p95 ≤ 1 ms sur 10⁶ nœuds » — la médiane mono-thread est à 845 µs sous
+« p95 ≤ 1 ms sur 10⁶ nœuds » — la médiane mono-thread est à 837 µs sous
 charge, plausible, mais le p95 n'est pas mesuré par ce bench ; « recall
 ≥ 99 % » — aucun bench ne le mesure. Les deux affirmations sont retirées du
 README jusqu'à mesure.
