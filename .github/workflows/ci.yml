@@ -379,6 +379,78 @@ jobs:
       - name: Paquet npm construit (aucune publication)
         run: npm pack --dry-run
 
+
+  # ── Bindings Go / C# / Dart (BIND-4) ───────────────────────────────────────
+  # Les trois liaisons testent la même bibliothèque obrain-c (profil `languages`,
+  # release), pointée par OBRAIN_C_LIB : jamais de chemin codé. SDK épinglés :
+  # Go (go.mod), .NET 8.x, Dart 3.14.0 + ffigen 23.0.0 (pubspec.yaml).
+  bindings-go:
+    name: Bindings Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: crates/bindings/go/go.mod
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Bibliothèque obrain-c (release, profil languages)
+        run: cargo build -p obrain-c --release --features languages
+      - name: go test (contre libobrain_c, OBRAIN_C_LIB)
+        working-directory: crates/bindings/go
+        env:
+          OBRAIN_C_LIB: ${{ github.workspace }}/target/release
+          CGO_LDFLAGS: -L${{ github.workspace }}/target/release
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+        run: go test ./... -v
+
+  bindings-csharp:
+    name: Bindings C#
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Bibliothèque obrain-c (release, profil languages)
+        run: cargo build -p obrain-c --release --features languages
+      - name: dotnet test (contre libobrain_c, OBRAIN_C_LIB)
+        working-directory: crates/bindings/csharp
+        env:
+          OBRAIN_C_LIB: ${{ github.workspace }}/target/release
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+        run: dotnet test Obrain.sln
+
+  bindings-dart:
+    name: Bindings Dart
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: "3.14.0"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Bibliothèque obrain-c (release, profil languages)
+        run: cargo build -p obrain-c --release --features languages
+      - name: Fraîcheur de lib/src/ffi/bindings.dart (ffigen épinglé, diff)
+        working-directory: crates/bindings/dart
+        run: |
+          dart pub get
+          dart run ffigen --config ffigen.yaml
+          git diff --exit-code -- lib/src/ffi/bindings.dart
+      - name: dart test (contre libobrain_c, OBRAIN_C_LIB)
+        working-directory: crates/bindings/dart
+        env:
+          OBRAIN_C_LIB: ${{ github.workspace }}/target/release
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+        run: dart test
+
   tests-all-features:
     name: Tests (toutes features)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
