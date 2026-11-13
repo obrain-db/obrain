@@ -300,6 +300,15 @@ impl<S: GraphStoreMut> GraphStore for InstrumentedStore<S> {
         self.inner.find_nodes_by_properties(conditions)
     }
 
+    fn find_nodes_by_properties_for_label(
+        &self,
+        label: &str,
+        conditions: &[(&str, Value)],
+    ) -> Vec<NodeId> {
+        self.inner
+            .find_nodes_by_properties_for_label(label, conditions)
+    }
+
     fn find_nodes_in_range(
         &self,
         property: &str,

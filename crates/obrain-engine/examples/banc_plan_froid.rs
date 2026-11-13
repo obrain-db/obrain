@@ -69,7 +69,14 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| "AEBCDFGHPQSZ".to_string());
 
-    let db = ObrainDB::open_substrate(std::path::Path::new(&chemin)).expect("ouverture du store");
+    // Jamais le chemin reçu : une copie privée (clonée sur APFS), supprimée à
+    // la fin. Le banc ne fait que lire, mais toute ouverture écrit sur le
+    // disque (docs/BENCHMARKS.md, « Bancs sur bases réelles »).
+    let copie = obrain_bases_banc::copie_de(
+        std::path::Path::new(&chemin),
+        "l'argument ou OBRAIN_BANC_BASE",
+    );
+    let db = ObrainDB::open_substrate(copie.chemin()).expect("ouverture de la copie du store");
     let session = db.session();
     let actives = |c: char| familles.contains(c);
 

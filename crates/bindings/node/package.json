@@ -1,0 +1,59 @@
+{
+  "name": "@obrain-db/js",
+  "version": "0.5.24",
+  "description": "Node.js/TypeScript bindings for Obrain - a high-performance embeddable graph database",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "obrain",
+    "targets": [
+      "x86_64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl"
+    ]
+  },
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "keywords": [
+    "graph",
+    "database",
+    "gql",
+    "cypher",
+    "sparql",
+    "knowledge-graph",
+    "native",
+    "napi",
+    "embedded"
+  ],
+  "author": "S.T. Grond",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/obrain-db/obrain.git",
+    "directory": "crates/bindings/node"
+  },
+  "homepage": "https://obrain.dev",
+  "bugs": {
+    "url": "https://github.com/obrain-db/obrain/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release --features full",
+    "build:debug": "napi build --platform",
+    "pack:dry": "npm pack --dry-run",
+    "test": "vitest run",
+    "version": "napi version"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.10.12",
+    "vitest": "4.0.18"
+  }
+}

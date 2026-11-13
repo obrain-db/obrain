@@ -386,6 +386,12 @@ const PROCEDURES_DE_LECTURE: &[&str] = &[
     // distinctes sur l'adjacence substrate — lecture pure, aucune écriture.
     "obrain.reachable_count",
     "reachable_count",
+    // Recherche hybride (hybrid_search) : BM25 + cosinus sur les registres
+    // d'index de la base, fusion en mémoire — lecture pure. La reconstruction
+    // à la demande d'un index déclaré n'est PAS sur ce chemin (la procédure
+    // refuse explicitement un index non chargé), donc rien n'écrit.
+    "obrain.hybrid_search",
+    "hybrid_search",
 ];
 
 impl LogicalOperator {

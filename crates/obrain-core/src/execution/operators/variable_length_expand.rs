@@ -306,6 +306,10 @@ impl VariableLengthExpandOperator {
                     ))
                 })?;
 
+                // Source NULL : aucune ligne (voir `ExpandOperator`).
+                if col.is_null(row_idx) {
+                    continue;
+                }
                 let source_node = match col.get_node_id(row_idx) {
                     Some(id) => NoeudM { base: 0, id },
                     None => {

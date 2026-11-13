@@ -57,6 +57,7 @@ pub use admin::{
 pub use catalog::{Catalog, CatalogError, IndexDefinition, IndexType};
 pub use config::{AccessMode, Config, ConfigError, DurabilityMode, GraphModel};
 pub use database::ObrainDB;
+pub use database::verification_contraintes::{RapportContraintes, ViolationContrainte};
 pub use memory_usage::MemoryUsage;
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsRegistry, MetricsSnapshot};

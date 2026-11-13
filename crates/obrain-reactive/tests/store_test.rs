@@ -1988,3 +1988,27 @@ async fn concurrent_versioned_property_writes_emit_events() {
     );
     assert!(events.iter().all(|e| e.kind() == "node_updated"));
 }
+
+/// `find_nodes_by_properties_for_label` est déléguée au store interne : une
+/// chaîne de plus de 256 octets (colonne blob, jamais dans l'index d'égalité)
+/// est retrouvée, et le label filtre.
+#[test]
+fn find_nodes_by_properties_for_label_delegates_to_inner() {
+    let store = new_store();
+    let longue = "x".repeat(400);
+    let n1 = store.create_node(&["A"]);
+    store.set_node_property(n1, "texte", Value::from(longue.as_str()));
+    let n2 = store.create_node(&["B"]);
+    store.set_node_property(n2, "texte", Value::from(longue.as_str()));
+    store.drain_pending();
+
+    let conditions: Vec<(&str, Value)> = vec![("texte", Value::from(longue.as_str()))];
+    let trouves = store.find_nodes_by_properties_for_label("A", &conditions);
+    assert_eq!(trouves, vec![n1], "le porteur :A, et lui seul");
+    assert_eq!(
+        store
+            .find_nodes_by_properties_for_label("C", &conditions)
+            .len(),
+        0
+    );
+}

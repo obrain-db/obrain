@@ -37,6 +37,9 @@ mod schema_catalog;
 /// store, et rechargees a l'ouverture quand elle correspond encore.
 mod text_index_persist;
 mod vector_index_persist;
+/// Vérification a posteriori des contraintes déclarées sur les données
+/// (API directe du store, import en masse, `CREATE CONSTRAINT`).
+pub mod verification_contraintes;
 // T17 final cutover (2026-04-23): the `persistence`, `mmap_store`,
 // `nocache_reader`, and `native_writer` modules were deleted. They
 // implemented the legacy single-file `.obrain` v1 (bincode snapshot)
@@ -50,7 +53,11 @@ mod vector_index_persist;
 // 26 feature-gated blocks in this file removed on 2026-04-23.
 #[cfg(feature = "cdc")]
 pub mod cdc_observer;
+#[cfg(feature = "cognitive")]
+pub mod cognitive_observer;
 pub mod contient;
+#[cfg(feature = "hybrid-search")]
+pub mod hybrid_procedure;
 mod query;
 #[cfg(feature = "rdf")]
 mod rdf_ops;
@@ -310,11 +317,16 @@ pub struct ObrainDB {
     /// « ce fichier décrit-il encore ce store ? » (donc : charger ou reconstruire).
     #[cfg(feature = "text-index")]
     pub(super) index_texte_epochs: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    /// `Arc` (et non `RwLock` nu) : la poignée de recherche hybride
+    /// (`CALL obrain.hybrid_search`) en garde un clone, comme pour le
+    /// registre vectoriel ci-dessus.
     #[cfg(feature = "text-index")]
-    pub(super) substrate_text_indexes: parking_lot::RwLock<
-        std::collections::HashMap<
-            String,
-            Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+    pub(super) substrate_text_indexes: Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<
+                String,
+                Arc<parking_lot::RwLock<obrain_core::index::text::InvertedIndex>>,
+            >,
         >,
     >,
     /// Metrics registry shared across all sessions.
@@ -334,7 +346,168 @@ pub struct ObrainDB {
     /// Reactive scheduler (keeps the background task alive).
     #[cfg(feature = "cognitive")]
     _cognitive_scheduler: Option<obrain_reactive::Scheduler>,
+    /// (2026-11-12, câblage cognitif) Le bus sur lequel l'observateur
+    /// substrat (`cognitive_observer::CognitiveObserver`) publie chaque
+    /// mutation. Conservé ici : avant, il était créé puis oublié, et les
+    /// listeners écoutaient un canal que personne n'alimentait.
+    #[cfg(feature = "cognitive")]
+    cognitive_bus: Option<Arc<obrain_reactive::MutationBus>>,
+    /// Runtime tokio DÉDIÉ (1 worker), créé seulement si aucun runtime n'est
+    /// courant à la construction : le `Scheduler` ne lance sa tâche de
+    /// dispatch que sous un runtime (`Handle::try_current`), donc une base
+    /// ouverte depuis du code synchrone (CLI, tests) n'avait aucun listener
+    /// actif. Arrêté par `shutdown_background` (jamais bloquant) à `close()`.
+    #[cfg(feature = "cognitive")]
+    cognitive_runtime: parking_lot::Mutex<Option<RuntimeCognitif>>,
+    /// L'observateur substrat → bus, gardé pour vider son tampon à la
+    /// demande (`cognitive_quiesce`) et compter ce qui attend.
+    #[cfg(feature = "cognitive")]
+    cognitive_observer: Option<Arc<cognitive_observer::CognitiveObserver>>,
+    /// Tâche de vidage périodique du tampon de l'observateur (20 ms) :
+    /// MESURÉ sans tampon, un envoi par mutation perdait 42 à 93 % des
+    /// événements à l'import (canal de 16 384 lots). Annulée à `close()`.
+    #[cfg(feature = "cognitive")]
+    cognitive_flusher: parking_lot::Mutex<Option<FlusherCognitif>>,
 }
+
+/// Poignée de la tâche de vidage (native) — rien sous wasm.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+type FlusherCognitif = tokio::task::JoinHandle<()>;
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+type FlusherCognitif = ();
+
+/// Construit l'observateur substrat → bus : tamponné avec vidage toutes les
+/// 20 ms quand un runtime tokio est courant (le dédié ou celui de
+/// l'appelant), direct sinon.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn observateur_cognitif(
+    bus: &Arc<obrain_reactive::MutationBus>,
+) -> (
+    Arc<cognitive_observer::CognitiveObserver>,
+    Option<FlusherCognitif>,
+) {
+    cognitive_observer::CognitiveObserver::tamponne(
+        bus,
+        tokio::runtime::Handle::try_current().ok(),
+        std::time::Duration::from_millis(20),
+    )
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn observateur_cognitif(
+    bus: &Arc<obrain_reactive::MutationBus>,
+) -> (
+    Arc<cognitive_observer::CognitiveObserver>,
+    Option<FlusherCognitif>,
+) {
+    (
+        Arc::new(cognitive_observer::CognitiveObserver::new(bus)),
+        None,
+    )
+}
+
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn arreter_flusher_cognitif(f: FlusherCognitif) {
+    f.abort();
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn arreter_flusher_cognitif(_f: FlusherCognitif) {}
+
+/// Configuration du moteur cognitif : les défauts, ou le fichier TOML désigné
+/// par `OBRAIN_COGNITIVE_CONFIG` (2026-11-12, plan 808fa9a7). Un fichier
+/// illisible ou invalide est signalé (warn) et laisse les défauts : une
+/// base ne doit jamais refuser de s'ouvrir pour un réglage cognitif.
+#[cfg(feature = "cognitive")]
+fn config_cognitive_pour(observe: bool) -> obrain_cognitive::CognitiveConfig {
+    let mut c = config_cognitive();
+    // Mode observé : la co-activation « lot » est O(n²) par lot ; mesurée sur
+    // le graphe PO elle n'a jamais rattrapé l'import (plan 808fa9a7). On passe
+    // en « edges » (une synapse par arête) sauf réglage explicite contraire.
+    if observe && c.synapse.coactivation == "batch" {
+        c.synapse.coactivation = "edges".to_string();
+    }
+    c
+}
+
+#[cfg(feature = "cognitive")]
+fn config_cognitive() -> obrain_cognitive::CognitiveConfig {
+    let Ok(chemin) = std::env::var("OBRAIN_COGNITIVE_CONFIG") else {
+        return obrain_cognitive::CognitiveConfig::default();
+    };
+    let lu = std::fs::read_to_string(&chemin)
+        .map_err(|e| e.to_string())
+        .and_then(|s| obrain_cognitive::CognitiveConfig::from_toml(&s).map_err(|e| e.to_string()));
+    match lu {
+        Ok(config) => {
+            tracing::info!(chemin, "configuration cognitive chargée");
+            config
+        }
+        Err(erreur) => {
+            tracing::warn!(
+                chemin,
+                erreur,
+                "configuration cognitive illisible : défauts conservés"
+            );
+            obrain_cognitive::CognitiveConfig::default()
+        }
+    }
+}
+
+/// Runtime porteur du dispatch cognitif quand l'appelant n'en a pas.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+type RuntimeCognitif = tokio::runtime::Runtime;
+/// Sous wasm32 le scheduler est synchrone : rien à porter.
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+type RuntimeCognitif = ();
+
+/// Crée un runtime dédié SEULEMENT si aucun runtime tokio n'est courant.
+/// Un worker suffit : le dispatch est par lots et ne doit jamais rivaliser
+/// avec le plan chaud (plan b30650e2 : « plan cognitif asynchrone, batché »).
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn runtime_cognitif_dedie() -> Option<RuntimeCognitif> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return None;
+    }
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("obrain-cognitif")
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => Some(rt),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "runtime cognitif dédié impossible : les listeners cognitifs resteront inactifs"
+            );
+            None
+        }
+    }
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn runtime_cognitif_dedie() -> Option<RuntimeCognitif> {
+    None
+}
+
+/// Entre dans le runtime dédié (s'il existe) le temps de construire le
+/// moteur : `Scheduler::register_listener` y trouve alors un runtime courant.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn entrer_runtime_cognitif(rt: &Option<RuntimeCognitif>) -> Option<tokio::runtime::EnterGuard<'_>> {
+    rt.as_ref().map(tokio::runtime::Runtime::enter)
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn entrer_runtime_cognitif(_rt: &Option<RuntimeCognitif>) -> Option<()> {
+    None
+}
+
+/// Arrêt NON bloquant : `Runtime::drop` bloquerait (et paniquerait depuis un
+/// contexte async) en attendant les tâches ; `shutdown_background` les
+/// abandonne et rend la main.
+#[cfg(all(feature = "cognitive", not(target_arch = "wasm32")))]
+fn arreter_runtime_cognitif(rt: RuntimeCognitif) {
+    rt.shutdown_background();
+}
+#[cfg(all(feature = "cognitive", target_arch = "wasm32"))]
+fn arreter_runtime_cognitif(_rt: RuntimeCognitif) {}
 
 // ---------------------------------------------------------------------------
 // (V3, parade p8) Registre PROCESSUS des substrats vivants
@@ -433,6 +606,16 @@ impl ObrainDB {
         Self::with_config(Config::in_memory()).expect("In-memory database creation should not fail")
     }
 
+    /// Comme [`new_in_memory`](Self::new_in_memory), avec la cognition
+    /// OBSERVÉE : chaque mutation alimente énergie et synapses (runtime
+    /// dédié, observateur, tâche de vidage). Coût nul sinon (plan 808fa9a7).
+    /// ATTENTION : en mode observé, les listeners écrivent dans le WAL de
+    /// façon asynchrone, sans fsync ; voir la note de conception de la PR.
+    pub fn new_in_memory_observed() -> Self {
+        Self::with_config_observed(Config::in_memory())
+            .expect("In-memory database creation should not fail")
+    }
+
     /// Opens a database at the given path, creating it if it doesn't exist.
     ///
     /// If you've used this path before, Obrain recovers your data from the
@@ -478,7 +661,13 @@ impl ObrainDB {
     ///
     /// [`with_store`]: Self::with_store
     pub fn open_substrate(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Self::open_substrate_inner(path, false)
+        Self::open_substrate_inner(path, false, false)
+    }
+
+    /// Comme [`open_substrate`](Self::open_substrate), avec la cognition
+    /// OBSERVÉE (voir [`new_in_memory_observed`](Self::new_in_memory_observed)).
+    pub fn open_substrate_observed(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::open_substrate_inner(path, false, true)
     }
 
     /// Ouvre le store en READ-ONLY (verrou partagé) quand `read_only=true`.
@@ -487,10 +676,14 @@ impl ObrainDB {
     /// store simultanément (contrat promis par `Config::read_only`, tenu
     /// depuis 2026-08-31).
     pub(crate) fn open_substrate_read_only(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Self::open_substrate_inner(path, true)
+        Self::open_substrate_inner(path, true, false)
     }
 
-    fn open_substrate_inner(path: impl AsRef<std::path::Path>, read_only: bool) -> Result<Self> {
+    fn open_substrate_inner(
+        path: impl AsRef<std::path::Path>,
+        read_only: bool,
+        observe: bool,
+    ) -> Result<Self> {
         let path_ref = path.as_ref();
         // ── UNE BASE, UNE INSTANCE PAR PROCESSUS (V1-EXHAUSTIF, 2026-11-01) ──
         // Le verrou de répertoire est PARTAGÉ entre les ouvertures d'un même
@@ -534,6 +727,19 @@ impl ObrainDB {
                     ))
                 })?
             }
+        } else if read_only {
+            // ── LECTURE SEULE : ON N'INVENTE PAS UNE BASE ────────────────────
+            // « Ouvrir ou créer » est le contrat de `open` ; en lecture seule il
+            // CRÉAIT une base vide dans tout dossier qu'on lui montrait — le
+            // dossier parent des bases, une faute de frappe, un répertoire
+            // quelconque. Un lecteur ne crée rien : sans `substrate.meta`, ce
+            // n'est pas une base, et l'ouverture échoue sans rien poser.
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "{} is not an obrain database (no substrate.meta) — a read-only \
+                 open never creates one; check the path, or open it writable to \
+                 create a new database",
+                path_ref.display()
+            )));
         } else {
             obrain_substrate::SubstrateStore::create(path_ref).map_err(|e| {
                 obrain_common::utils::error::Error::Internal(format!(
@@ -542,7 +748,7 @@ impl ObrainDB {
                 ))
             })?
         };
-        Self::with_substrate_store(store, Some(path_ref), read_only)
+        Self::with_substrate_store(store, Some(path_ref), read_only, observe)
     }
 
     /// Opens (or creates) a substrate-backed database with an explicit WAL
@@ -593,7 +799,7 @@ impl ObrainDB {
                 path_ref.display()
             )));
         };
-        let mut db = Self::with_substrate_store(store, Some(path_ref), false)?;
+        let mut db = Self::with_substrate_store(store, Some(path_ref), false, false)?;
         // (O-VEC C3) Un pair peut écrire : la persistance des index vectoriels
         // à la fermeture applique la règle prudente (WAL immobile).
         db.ecriture_partagee = true;
@@ -635,7 +841,7 @@ impl ObrainDB {
                 },
             )?
         };
-        Self::with_substrate_store(store, Some(path_ref), false)
+        Self::with_substrate_store(store, Some(path_ref), false, false)
     }
 
     /// Arme l'ÉCHÉANCE GLOBALE des requêtes sur une base déjà ouverte.
@@ -810,10 +1016,12 @@ impl ObrainDB {
     /// base bien presente sur le disque. Ce n'est pas qu'un test qui rate :
     /// tout code qui s'oriente sur `is_persistent()` ou `path()` prenait la
     /// mauvaise branche, en silence.
+    #[cfg_attr(not(feature = "cognitive"), allow(unused_variables))]
     fn with_substrate_store(
         store: obrain_substrate::SubstrateStore,
         path: Option<&std::path::Path>,
         read_only: bool,
+        observe: bool,
     ) -> Result<Self> {
         // Keep a typed handle in addition to the erased `GraphStoreMut` one:
         // cognitive stores reach for the substrate column APIs (reinforce /
@@ -848,6 +1056,14 @@ impl ObrainDB {
         };
         let mut db = Self::with_store(erased, config)?;
         db.substrate_store = Some(Arc::clone(&typed));
+        // ── LE MODE LECTURE SEULE EST POSÉ AVANT TOUTE HYDRATATION ──
+        // `hydrater_types` (plus bas) RÉPARE `substrate.typecat` quand il y
+        // trouve des contraintes dupliquées ou sans nom — sauf en lecture
+        // seule, où il ne touche pas au disque. Il lit ce drapeau : posé
+        // seulement par l'appelant, après le retour, un lecteur sous verrou
+        // partagé réécrivait le fichier et pouvait écraser le DDL d'un
+        // écrivain d'un autre processus.
+        db.read_only = read_only;
 
         // ── PRÉPARATION DES INDEX D'ÉGALITÉ, HORS DU CHEMIN DES REQUÊTES ──
         //
@@ -934,10 +1150,18 @@ impl ObrainDB {
         // Energy/Synapse stores pick up the column-native constructors.
         #[cfg(feature = "cognitive")]
         {
-            let bus = obrain_reactive::MutationBus::new();
+            // (2026-11-12) Runtime dédié si l'appelant n'en a pas, sinon le
+            // scheduler s'accroche au runtime courant (cas du hub).
+            let runtime = if observe {
+                runtime_cognitif_dedie()
+            } else {
+                None
+            };
+            let garde = entrer_runtime_cognitif(&runtime);
+            let bus = Arc::new(obrain_reactive::MutationBus::new());
             let scheduler =
                 obrain_reactive::Scheduler::new(&bus, obrain_reactive::BatchConfig::default());
-            let config = obrain_cognitive::CognitiveConfig::default();
+            let config = config_cognitive_pour(observe);
             #[allow(unused_mut)]
             let mut builder = obrain_cognitive::CognitiveEngineBuilder::from_config(&config)
                 .with_graph_store(db.graph_store())
@@ -996,6 +1220,20 @@ impl ObrainDB {
             );
             db.cognitive_engine = Some(engine_dyn);
             db._cognitive_scheduler = Some(scheduler);
+            // (2026-11-12) LE FIL QUI MANQUAIT : chaque mutation du substrat
+            // (sessions GQL, `graph_store_mut()`, import) est publiée sur le
+            // bus que les listeners écoutent. Voir `cognitive_observer`.
+            if observe {
+                let (observateur, flusher) = observateur_cognitif(&bus);
+                typed
+                    .add_mutation_observer(Arc::clone(&observateur)
+                        as Arc<dyn obrain_substrate::StoreMutationObserver>);
+                db.cognitive_observer = Some(observateur);
+                *db.cognitive_flusher.lock() = flusher;
+            }
+            db.cognitive_bus = Some(bus);
+            drop(garde);
+            *db.cognitive_runtime.lock() = runtime;
         }
 
         // (2026-09-07) CATALOGUE DE PROCEDURES — hydratation au boot.
@@ -1083,6 +1321,16 @@ impl ObrainDB {
     /// # Ok::<(), obrain_common::utils::error::Error>(())
     /// ```
     pub fn with_config(config: Config) -> Result<Self> {
+        Self::with_config_obs(config, false)
+    }
+
+    /// Comme [`with_config`](Self::with_config), avec la cognition observée.
+    pub fn with_config_observed(config: Config) -> Result<Self> {
+        Self::with_config_obs(config, true)
+    }
+
+    #[cfg_attr(not(feature = "cognitive"), allow(unused_variables))]
+    fn with_config_obs(config: Config, observe: bool) -> Result<Self> {
         // Les DEUX constructeurs branchent le vocabulaire : `new_in_memory()`
         // passe par ici et PAS par `with_store` — l'oublier laissait les bases en
         // mémoire sans UDF (constaté par le test `fonction_hote`, qui échouait
@@ -1111,7 +1359,7 @@ impl ObrainDB {
             // ouvrait en exclusif). `open_substrate_read_only` pose le
             // `LOCK_SH` côté substrate.
             let is_read_only = config.access_mode == crate::config::AccessMode::ReadOnly;
-            let mut db = if is_read_only {
+            let db = if is_read_only {
                 Self::open_substrate_read_only(db_path)?
             } else {
                 Self::open_substrate(db_path)?
@@ -1126,9 +1374,9 @@ impl ObrainDB {
             // (~11-22 ms), le seul point où obrain perdait vs cbm sur `open`.
             // En read_only, le close doit juste relâcher le verrou (c'est
             // déjà le comportement du champ `read_only` dans `close()`).
-            if is_read_only {
-                db.read_only = true;
-            }
+            // `read_only` est déjà posé par `with_substrate_store`, avant
+            // l'hydratation (voir là-bas) : rien à reposer ici.
+            debug_assert_eq!(db.read_only, is_read_only);
             return Ok(db);
         }
 
@@ -1246,11 +1494,26 @@ impl ObrainDB {
         // Creates the reactive bus + scheduler + cognitive engine with default config.
         // Zero-cost: this entire block is compiled out when `cognitive` feature is off.
         #[cfg(feature = "cognitive")]
-        let (cognitive_engine, _cognitive_scheduler) = {
-            let bus = obrain_reactive::MutationBus::new();
+        let (
+            cognitive_engine,
+            _cognitive_scheduler,
+            cognitive_bus,
+            cognitive_runtime,
+            cognitive_observer,
+            cognitive_flusher,
+        ) = {
+            // (2026-11-12) Même câblage que `with_substrate_store` : runtime
+            // dédié hors runtime courant, bus conservé, observateur substrat.
+            let runtime = if observe {
+                runtime_cognitif_dedie()
+            } else {
+                None
+            };
+            let garde = entrer_runtime_cognitif(&runtime);
+            let bus = Arc::new(obrain_reactive::MutationBus::new());
             let scheduler =
                 obrain_reactive::Scheduler::new(&bus, obrain_reactive::BatchConfig::default());
-            let config = obrain_cognitive::CognitiveConfig::default();
+            let config = config_cognitive_pour(observe);
             #[allow(unused_mut)]
             let mut builder = obrain_cognitive::CognitiveEngineBuilder::from_config(&config);
             #[cfg(feature = "kernel")]
@@ -1290,7 +1553,24 @@ impl ObrainDB {
                 obrain_adapters::plugins::registre_global(),
                 Arc::clone(&engine_dyn),
             );
-            (Some(engine_dyn), Some(scheduler))
+            let (observateur, flusher) = if observe {
+                let (o, f) = observateur_cognitif(&bus);
+                typed.add_mutation_observer(
+                    Arc::clone(&o) as Arc<dyn obrain_substrate::StoreMutationObserver>
+                );
+                (Some(o), parking_lot::Mutex::new(f))
+            } else {
+                (None, parking_lot::Mutex::new(None))
+            };
+            drop(garde);
+            (
+                Some(engine_dyn),
+                Some(scheduler),
+                Some(bus),
+                parking_lot::Mutex::new(runtime),
+                observateur,
+                flusher,
+            )
         };
 
         let db = Self {
@@ -1365,7 +1645,9 @@ impl ObrainDB {
             #[cfg(feature = "text-index")]
             index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
-            substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            substrate_text_indexes: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -1374,6 +1656,14 @@ impl ObrainDB {
             cognitive_engine,
             #[cfg(feature = "cognitive")]
             _cognitive_scheduler,
+            #[cfg(feature = "cognitive")]
+            cognitive_bus,
+            #[cfg(feature = "cognitive")]
+            cognitive_runtime,
+            #[cfg(feature = "cognitive")]
+            cognitive_observer,
+            #[cfg(feature = "cognitive")]
+            cognitive_flusher,
         };
         // (T5) Meme observateur d'index vectoriels que le chemin fichier : une base en
         // memoire doit entretenir ses index pour TOUT chemin d'ecriture (GQL compris).
@@ -1485,7 +1775,9 @@ impl ObrainDB {
             #[cfg(feature = "text-index")]
             index_texte_epochs: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "text-index")]
-            substrate_text_indexes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            substrate_text_indexes: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -1494,6 +1786,14 @@ impl ObrainDB {
             cognitive_engine: None,
             #[cfg(feature = "cognitive")]
             _cognitive_scheduler: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_bus: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_runtime: parking_lot::Mutex::new(None),
+            #[cfg(feature = "cognitive")]
+            cognitive_observer: None,
+            #[cfg(feature = "cognitive")]
+            cognitive_flusher: parking_lot::Mutex::new(None),
         })
     }
 
@@ -1648,6 +1948,12 @@ impl ObrainDB {
             if let Some(registry) = self.base_registry.read().clone() {
                 ext_session.set_base_registry(registry);
             }
+            // Recherche hybride (`CALL obrain.hybrid_search`) : les index
+            // texte/vecteur vivent ICI, dans ObrainDB — la poignée en porte
+            // des clones Arc jusqu'au planificateur, même câblage que
+            // substrate_store.
+            #[cfg(feature = "hybrid-search")]
+            ext_session.set_recherche_hybride(self.poignee_recherche_hybride());
             return ext_session;
         }
 
@@ -1672,6 +1978,10 @@ impl ObrainDB {
 
         #[cfg(feature = "cdc")]
         session.set_cdc_log(Arc::clone(&self.cdc_log));
+
+        // Recherche hybride : même câblage que sur le chemin substrat.
+        #[cfg(feature = "hybrid-search")]
+        session.set_recherche_hybride(self.poignee_recherche_hybride());
 
         // Wire the cognitive engine (3 piliers), if this DB has one, so
         // `CALL obrain.cognitive.*` resolves in every session's planner
@@ -1763,6 +2073,65 @@ impl ObrainDB {
     #[must_use]
     pub fn cognitive_engine(&self) -> Option<&Arc<dyn obrain_cognitive::CognitiveEngine>> {
         self.cognitive_engine.as_ref()
+    }
+
+    /// Événements de mutation publiés sur le bus cognitif depuis l'ouverture
+    /// (0 sans moteur cognitif, ou tant qu'aucun listener n'est abonné).
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_events_published(&self) -> u64 {
+        self.cognitive_bus
+            .as_ref()
+            .map_or(0, |b| b.total_events_published())
+    }
+
+    /// Événements effectivement remis aux listeners cognitifs (comptés après
+    /// le retour de tous les listeners du lot : l'effet est visible).
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_events_dispatched(&self) -> u64 {
+        self._cognitive_scheduler
+            .as_ref()
+            .map_or(0, obrain_reactive::Scheduler::events_dispatched)
+    }
+
+    /// Événements perdus parce que le dispatch a pris du retard au-delà de
+    /// la capacité du bus. Non nul = la cognition a manqué des mutations ;
+    /// l'écrivain, lui, n'a jamais attendu.
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_events_lost(&self) -> u64 {
+        self._cognitive_scheduler
+            .as_ref()
+            .map_or(0, obrain_reactive::Scheduler::events_lost)
+    }
+
+    /// Attend (au plus `timeout`) que tout événement publié ait été traité
+    /// ou compté perdu. Rend `true` si la cognition est à jour.
+    ///
+    /// Attente par sondage avec sommeil de 2 ms : prévue pour les tests et
+    /// les imports (après un lot, avant de lire énergie ou synapses), pas
+    /// pour le plan chaud. Depuis une tâche async, l'appeler via
+    /// `spawn_blocking`.
+    #[cfg(feature = "cognitive")]
+    #[must_use]
+    pub fn cognitive_quiesce(&self, timeout: std::time::Duration) -> bool {
+        let fin = std::time::Instant::now() + timeout;
+        loop {
+            // Vide le tampon de l'observateur sans attendre son tic.
+            if let Some(obs) = &self.cognitive_observer {
+                obs.vider();
+            }
+            let publies = self.cognitive_events_published();
+            let traites = self.cognitive_events_dispatched() + self.cognitive_events_lost();
+            if traites >= publies {
+                return true;
+            }
+            if std::time::Instant::now() >= fin {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 
     /// (2026-08-31) Accès au journal CDC (audit trail) — exposé pour la
@@ -2011,6 +2380,18 @@ impl ObrainDB {
         // `open_substrate_inner`) : la rouvrir après `close()` est permis.
         if let Some(ref p) = self.config.path {
             desinscrire_substrat_vivant(p);
+        }
+
+        // (2026-11-12) Runtime cognitif dédié : arrêt non bloquant. Les
+        // événements encore en vol sont abandonnés — la cognition est
+        // « eventually consistent », jamais une condition de fermeture.
+        #[cfg(feature = "cognitive")]
+        if let Some(f) = self.cognitive_flusher.lock().take() {
+            arreter_flusher_cognitif(f);
+        }
+        #[cfg(feature = "cognitive")]
+        if let Some(rt) = self.cognitive_runtime.lock().take() {
+            arreter_runtime_cognitif(rt);
         }
 
         // Read-only databases: just release the shared lock, no checkpointing

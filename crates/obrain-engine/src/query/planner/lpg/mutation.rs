@@ -14,6 +14,28 @@ use super::{
 use super::{CallProcedureOp, GraphStoreMut, StaticResultOperator};
 
 impl super::Planner {
+    /// Schéma de sortie d'un opérateur de mutation qui laisse passer ses
+    /// colonnes d'entrée : chaque colonne garde SON type. Déclarer `Node`
+    /// partout rangeait l'identifiant d'une arête comme un nœud — `MATCH
+    /// ()-[r]->() SET r.p = 1 RETURN r.p` relisait alors la propriété du nœud
+    /// n° id-de-l'arête (NULL) — et perdait toute valeur scalaire de passage.
+    pub(super) fn pass_through_schema(&self, columns: &[String]) -> Vec<LogicalType> {
+        let edges = self.edge_columns.borrow();
+        let scalars = self.scalar_columns.borrow();
+        columns
+            .iter()
+            .map(|column| {
+                if edges.contains(column) {
+                    LogicalType::Edge
+                } else if scalars.contains(column) {
+                    LogicalType::Any
+                } else {
+                    LogicalType::Node
+                }
+            })
+            .collect()
+    }
+
     /// Plans a CREATE NODE operator.
     pub(super) fn plan_create_node(
         &self,
@@ -214,7 +236,7 @@ impl super::Planner {
 
         // Preserve input columns so downstream RETURN/aggregate can reference
         // the deleted variable (e.g., DETACH DELETE n RETURN count(n)).
-        let output_schema: Vec<LogicalType> = columns.iter().map(|_| LogicalType::Node).collect();
+        let output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
         let output_columns = columns.clone();
 
         // Auto-detect edge variables and use the correct operator
@@ -266,7 +288,7 @@ impl super::Planner {
 
         // Preserve input columns so downstream clauses can reference the
         // deleted variable (same pass-through pattern as delete_node).
-        let output_schema: Vec<LogicalType> = columns.iter().map(|_| LogicalType::Node).collect();
+        let output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
         let output_columns = columns.clone();
 
         let mut op = DeleteEdgeOperator::new(
@@ -536,7 +558,7 @@ impl super::Planner {
         columns.push(merge.variable.clone());
 
         // Build output schema
-        let output_schema: Vec<LogicalType> = columns.iter().map(|_| LogicalType::Node).collect();
+        let output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
 
         let mut merge_op = MergeOperator::new(
             Arc::clone(&self.store),
@@ -648,8 +670,7 @@ impl super::Planner {
             .insert(merge_rel.variable.clone());
 
         // Build output schema: input columns + edge column
-        let mut output_schema: Vec<LogicalType> =
-            columns.iter().map(|_| LogicalType::Node).collect();
+        let mut output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
         output_schema[edge_output_column] = LogicalType::Edge;
 
         let config = MergeRelationshipConfig {
@@ -864,6 +885,23 @@ impl super::Planner {
                 &resolved_name,
                 &call.arguments,
                 self.cdc_log.as_ref(),
+            )?
+        {
+            return self.plan_static_result(result, &call.yield_items);
+        }
+
+        // Recherche hybride (CALL obrain.hybrid_search — BM25 + vecteur,
+        // fusion RRF/pondérée). Les index vivent dans ObrainDB, hors du
+        // store : la poignée `recherche_hybride` est câblée ObrainDB →
+        // Session → QueryProcessor → Planner (même chemin que
+        // substrate_store). Lecture pure ; résultat calculé à la
+        // planification comme les autres familles de recherche.
+        #[cfg(feature = "hybrid-search")]
+        if let Some(result) =
+            crate::database::hybrid_procedure::try_execute_hybrid_search_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.recherche_hybride.as_ref(),
             )?
         {
             return self.plan_static_result(result, &call.yield_items);
@@ -1132,7 +1170,7 @@ impl super::Planner {
             })?;
 
         // Output schema preserves input schema (passes through)
-        let output_schema: Vec<LogicalType> = columns.iter().map(|_| LogicalType::Node).collect();
+        let output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
         let output_columns = columns.clone();
 
         let mut op = AddLabelOperator::new(
@@ -1169,7 +1207,7 @@ impl super::Planner {
             })?;
 
         // Output schema preserves input schema (passes through)
-        let output_schema: Vec<LogicalType> = columns.iter().map(|_| LogicalType::Node).collect();
+        let output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
         let output_columns = columns.clone();
 
         let mut op = RemoveLabelOperator::new(
@@ -1216,7 +1254,7 @@ impl super::Planner {
             .collect::<Result<Vec<_>>>()?;
 
         // Output schema preserves input schema (passes through)
-        let output_schema: Vec<LogicalType> = columns.iter().map(|_| LogicalType::Node).collect();
+        let output_schema: Vec<LogicalType> = self.pass_through_schema(&columns);
         let output_columns = columns.clone();
 
         // Determine if this is a node or edge using tracked edge columns

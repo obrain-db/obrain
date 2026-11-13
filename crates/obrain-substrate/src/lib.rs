@@ -166,8 +166,8 @@ pub use simplex_zone::{
     SimplexView, canonicalize_members, key_hash_members,
 };
 pub use store::{
-    DeclarationIndex, DeclarationProcedure, EdgePropsV2FinalizeStats, PropsV2FinalizeStats,
-    SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,
+    BLOB_WAL_MAX_BYTES, DeclarationIndex, DeclarationProcedure, EdgePropsV2FinalizeStats,
+    PropsV2FinalizeStats, SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,
 };
 pub use tiers::{
     L0_BITS, L1_BITS, L2_DIM, Tier0, Tier1, Tier2, f16_to_f32, f32_to_f16, tier0_hamming,

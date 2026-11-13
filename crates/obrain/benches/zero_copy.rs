@@ -6,7 +6,10 @@
 //!   (b) la lecture possédée : `get_node_property` (Value, ArcStr copiés) ;
 //!   (c) la vue zero-copy : `prop_str_view` (&str emprunté aux pages mmap).
 //!
-//! Store réel : OBRAIN_ZC_STORE=<COPIE d'un store — jamais un store vivant>,
+//! Store réel : OBRAIN_ZC_STORE=<chemin ABSOLU d'une base>. Le banc ne l'ouvre
+//! jamais : il en prend une COPIE temporaire (clonée sur APFS), ouverte en
+//! lecture seule — `open_read_only` écrit sur le disque, voir
+//! docs/BENCHMARKS.md, « Bancs sur bases réelles ».
 //! clé OBRAIN_ZC_KEY (défaut "msg"), requête (a) OBRAIN_ZC_QUERY
 //! (défaut `MATCH (n) RETURN n.<cle>`). Sans variable : store synthétique
 //! (1000 faits ~150 o en PropsZone + 200 faits ~600 o en colonne blob).
@@ -15,11 +18,28 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use obrain::{NodeId, ObrainDB, StrViewSource, Value};
 use std::hint::black_box;
 
-fn ouvre_store() -> (ObrainDB, String, Option<tempfile::TempDir>) {
-    if let Ok(p) = std::env::var("OBRAIN_ZC_STORE") {
+/// La base ouverte, sa clé, et le garde de ses fichiers (répertoire temporaire
+/// ou copie). Les champs d'une structure sont lâchés DANS L'ORDRE DE LEUR
+/// DÉCLARATION : la base est fermée avant que ses fichiers disparaissent. (Un
+/// tuple déstructuré en variables locales lâcherait au contraire le garde en
+/// premier, sous une base encore ouverte.)
+struct StoreOuvert {
+    db: ObrainDB,
+    cle: String,
+    _garde: Box<dyn std::any::Any>,
+}
+
+fn ouvre_store() -> StoreOuvert {
+    if let Some(p) = std::env::var_os("OBRAIN_ZC_STORE").filter(|v| !v.is_empty()) {
         let cle = std::env::var("OBRAIN_ZC_KEY").unwrap_or_else(|_| "msg".into());
-        let db = ObrainDB::open_read_only(&p).expect("open_read_only du store copié");
-        return (db, cle, None);
+        // Jamais le chemin reçu : une copie privée, ouverte en lecture seule.
+        let copie = obrain_bases_banc::copie_de(std::path::Path::new(&p), "OBRAIN_ZC_STORE");
+        let db = ObrainDB::open_read_only(copie.chemin()).expect("open_read_only de la copie");
+        return StoreOuvert {
+            db,
+            cle,
+            _garde: Box::new(copie),
+        };
     }
     let tmp = tempfile::tempdir().expect("tempdir");
     let chemin = tmp.path().join("bench.obrain");
@@ -43,7 +63,11 @@ fn ouvre_store() -> (ObrainDB, String, Option<tempfile::TempDir>) {
         }
     }
     let db = ObrainDB::open_read_only(&chemin).expect("réouverture RO");
-    (db, "texte".into(), Some(tmp))
+    StoreOuvert {
+        db,
+        cle: "texte".into(),
+        _garde: Box::new(tmp),
+    }
 }
 
 /// Balaie les identifiants de nœuds et garde ceux qui portent la clé.
@@ -62,16 +86,18 @@ fn collecte_ids(session: &obrain::Session, cle: &str, max: usize, borne: u64) ->
 }
 
 fn bench_pont(c: &mut Criterion) {
-    let (db, cle, _tmp) = ouvre_store();
+    // Garder la structure entière : voir `StoreOuvert`.
+    let ouvert = ouvre_store();
+    let (db, cle) = (&ouvert.db, ouvert.cle.as_str());
     let session = db.session();
-    let ids = collecte_ids(&session, &cle, 1000, 500_000);
+    let ids = collecte_ids(&session, cle, 1000, 500_000);
     assert!(!ids.is_empty(), "aucun nœud porteur de la clé {cle}");
 
     // Répartition des sources — honnêteté du bench : on dit d'où viennent
     // les octets réellement lus.
     let (mut zone, mut blob, mut part) = (0u32, 0u32, 0u32);
     for id in &ids {
-        match session.prop_str_view(*id, &cle).map(|v| v.source()) {
+        match session.prop_str_view(*id, cle).map(|v| v.source()) {
             Some(StrViewSource::Zone) => zone += 1,
             Some(StrViewSource::Blob) => blob += 1,
             Some(StrViewSource::Shared) => part += 1,
@@ -112,7 +138,7 @@ fn bench_pont(c: &mut Criterion) {
         b.iter(|| {
             let id = ids[i % ids.len()];
             i += 1;
-            let v = session.get_node_property(black_box(id), &cle);
+            let v = session.get_node_property(black_box(id), cle);
             black_box(match v {
                 Some(Value::String(s)) => s.len(),
                 _ => 0,
@@ -126,7 +152,7 @@ fn bench_pont(c: &mut Criterion) {
         b.iter(|| {
             let id = ids[i % ids.len()];
             i += 1;
-            let vue = session.prop_str_view(black_box(id), &cle).expect("vue");
+            let vue = session.prop_str_view(black_box(id), cle).expect("vue");
             black_box(vue.len())
         });
     });
@@ -138,7 +164,7 @@ fn bench_pont(c: &mut Criterion) {
         b.iter(|| {
             let id = ids[i % ids.len()];
             i += 1;
-            let vue = session.prop_str_view(black_box(id), &cle).expect("vue");
+            let vue = session.prop_str_view(black_box(id), cle).expect("vue");
             black_box(vue.as_bytes().iter().map(|&b| b as u64).sum::<u64>())
         });
     });

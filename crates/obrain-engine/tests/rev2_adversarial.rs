@@ -9,7 +9,7 @@
 //!   2. Sémantique « null résolu = retrait » de D — copie d'une propriété
 //!      absente, carte avec valeur nulle dynamique.
 //!   3. Refus de queue de C — la tolérance des `;` terminaux ne doit avaler
-//!      aucun autre jeton d'erreur ; WITH…SET refusé franchement ; bords du
+//!      aucun autre jeton d'erreur ; WITH…SET exécuté (plus refusé) ; bords du
 //!      mot-clef optionnel PROPERTY d'ALTER.
 //!
 //! Run : cargo test -p obrain-engine --test rev2_adversarial
@@ -314,19 +314,25 @@ fn queue_deuxieme_instruction_apres_point_virgule_refusee() {
 /// WITH … SET : refus FRANC (message de syntaxe nommant le jeton), pas une
 /// Internal, et surtout pas un succès tronqué.
 #[test]
-fn queue_with_puis_set_refuse_franchement() {
+fn queue_with_puis_set_est_une_clause_executee() {
+    // Ce test exigeait un REFUS franc de `WITH … SET` : le parseur ne lisait
+    // pas de clause d'écriture après un `WITH`, et la seule faute possible
+    // était d'avaler la queue en silence. Les clauses d'écriture suivent
+    // maintenant un `WITH` (comme en Cypher) et sont traduites à leur
+    // position : la propriété exigée devient « le SET agit, rien n'est
+    // avalé ».
     let db = ObrainDB::new_in_memory();
     ecrire(&db, &["INSERT (:Q10 {x: 1})"]);
-    let msg = erreur(&db, "MATCH (n:Q10) WITH n SET n.y = 2 RETURN n");
-    assert!(
-        !msg.to_lowercase().contains("internal"),
-        "WITH…SET doit être une erreur de syntaxe franche, obtenu : {msg}"
-    );
-    // Le SET ne doit pas avoir agi.
+    let lignes = db
+        .session()
+        .execute("MATCH (n:Q10) WITH n SET n.y = 2 RETURN n")
+        .expect("WITH … SET … RETURN est une requête valide")
+        .rows;
+    assert_eq!(lignes.len(), 1, "une ligne par nœud retourné");
     assert_eq!(
         cles(&db, "(n:Q10)"),
-        ens(&["x"]),
-        "le SET d'une requête refusée ne doit laisser AUCUNE trace"
+        ens(&["x", "y"]),
+        "le SET après le WITH a écrit y"
     );
 }
 

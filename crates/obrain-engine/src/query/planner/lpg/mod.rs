@@ -130,6 +130,14 @@ pub struct Planner {
     /// n'est pas compilé/attaché → la procédure répond "CDC unavailable".
     #[cfg(feature = "cdc")]
     pub(super) cdc_log: Option<Arc<crate::cdc::CdcLog>>,
+    /// Poignée de recherche hybride (`CALL obrain.hybrid_search`, feature
+    /// `hybrid-search`). Les index texte/vecteur vivent dans `ObrainDB`, pas
+    /// dans le store : même câblage que `substrate_store` (ObrainDB → Session
+    /// → QueryProcessor → Planner). `None` → la procédure répond « aucune
+    /// base attachée ».
+    #[cfg(feature = "hybrid-search")]
+    pub(super) recherche_hybride:
+        Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
 }
 
 impl Planner {
@@ -164,6 +172,8 @@ impl Planner {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         }
     }
 
@@ -218,6 +228,8 @@ impl Planner {
             substrate_store: None,
             #[cfg(feature = "cdc")]
             cdc_log: None,
+            #[cfg(feature = "hybrid-search")]
+            recherche_hybride: None,
         }
     }
 
@@ -257,6 +269,19 @@ impl Planner {
     #[must_use]
     pub fn with_cdc_log(mut self, cdc: Arc<crate::cdc::CdcLog>) -> Self {
         self.cdc_log = Some(cdc);
+        self
+    }
+
+    /// Attache la poignée de recherche hybride pour que
+    /// `CALL obrain.hybrid_search` se résolve à la planification. Même
+    /// câblage que [`Self::with_substrate_store`].
+    #[cfg(feature = "hybrid-search")]
+    #[must_use]
+    pub fn with_recherche_hybride(
+        mut self,
+        poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
+    ) -> Self {
+        self.recherche_hybride = Some(poignee);
         self
     }
 
@@ -309,15 +334,36 @@ impl Planner {
         self
     }
 
-    /// Counts consecutive single-hop expand operations.
+    /// Vrai si `outer` PROLONGE `inner` : il part du nœud où `inner` arrive.
     ///
-    /// Returns the count and the deepest non-expand operator (the base of the chain).
+    /// C'est la condition d'une chaîne factorisée. Le chemin factorisé
+    /// (`plan_expand_chain`) lit la source de chaque saut à partir du 2ᵉ dans
+    /// la CIBLE du saut précédent, sans regarder `from_variable` : deux
+    /// `Expand` consécutifs qui partent de nœuds différents (`MATCH (a)-->(b)
+    /// MATCH (x)-->(a)` : le second part de `a`, pas de `b`) n'en forment pas
+    /// une, et les traiter comme telle faisait partir le second de `b` —
+    /// résultat faux, sans erreur, alors que le plan affiché était juste.
+    fn continues_chain(outer: &ExpandOp, inner: &ExpandOp) -> bool {
+        outer.from_variable == inner.to_variable
+    }
+
+    /// Counts consecutive single-hop expand operations that form a CHAIN
+    /// (each one starts where the previous one arrives).
+    ///
+    /// Returns the count and the deepest operator of the chain's input (its base).
     fn count_expand_chain(op: &LogicalOperator) -> (usize, &LogicalOperator) {
         match op {
             LogicalOperator::Expand(expand) => {
                 let is_single_hop = expand.min_hops == 1 && expand.max_hops == Some(1);
 
                 if is_single_hop {
+                    if let LogicalOperator::Expand(inner) = expand.input.as_ref()
+                        && !Self::continues_chain(expand, inner)
+                    {
+                        // `expand.input` est le socle de cette chaîne (un autre
+                        // `Expand`, planifié seul).
+                        return (1, &expand.input);
+                    }
                     let (inner_count, base) = Self::count_expand_chain(&expand.input);
                     (inner_count + 1, base)
                 } else {
@@ -342,6 +388,11 @@ impl Planner {
             }
             chain.push(expand);
             current = &expand.input;
+            if let LogicalOperator::Expand(inner) = current
+                && !Self::continues_chain(expand, inner)
+            {
+                break;
+            }
         }
 
         chain.reverse();

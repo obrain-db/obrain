@@ -243,7 +243,10 @@ impl super::ObrainDB {
             );
         }
 
-        // Auto-insert into matching text indexes for the new node
+        // Auto-insert into matching text indexes for the new node. Deux
+        // registres : celui du store (LpgStore) et celui du substrat, que
+        // lit `text_search`. Ne mettre à jour que le premier laissait un
+        // nœud créé après `create_text_index` invisible à la recherche.
         #[cfg(feature = "text-index")]
         if let Some(node) = self.data_store().get_node(id) {
             for label in &node.labels {
@@ -253,6 +256,13 @@ impl super::ObrainDB {
                             self.store.get_text_index(label.as_str(), prop_key.as_ref())
                     {
                         index.write().insert(id, text);
+                    }
+                    if let obrain_common::types::Value::String(text) = prop_val {
+                        let cle = format!("{}:{}", label.as_str(), prop_key.as_ref());
+                        let idx = self.substrate_text_indexes.read().get(&cle).cloned();
+                        if let Some(idx) = idx {
+                            idx.write().insert(id, text);
+                        }
                     }
                 }
             }

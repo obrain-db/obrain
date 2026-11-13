@@ -28,8 +28,15 @@ use crate::store_trait::{
 /// Configuration for the energy subsystem.
 #[derive(Debug, Clone)]
 pub struct EnergyConfig {
-    /// Energy boost applied to nodes touched by a mutation.
+    /// Energy boost applied to nodes touched by a mutation (update, delete).
     pub boost_on_mutation: f64,
+    /// (2026-11-12, plan 808fa9a7 T2) Boost appliqué à une CRÉATION (nœud ou
+    /// arête). Distinct de `boost_on_mutation` pour qu'un import massif ne
+    /// fasse pas de l'énergie un simple compteur de volume : MESURÉ sur le
+    /// graphe PO, l'énergie « par mutation » corrèle au degré (Spearman
+    /// 0,365) et pas à l'usage réel (−0,004). Défaut : égal à
+    /// `boost_on_mutation` (comportement historique).
+    pub boost_on_create: Option<f64>,
     /// Default energy for newly tracked nodes.
     pub default_energy: f64,
     /// Default half-life for energy decay.
@@ -51,6 +58,7 @@ impl Default for EnergyConfig {
     fn default() -> Self {
         Self {
             boost_on_mutation: 1.0,
+            boost_on_create: None,
             default_energy: 1.0,
             default_half_life: Duration::from_secs(24 * 3600), // 24 hours
             min_energy: 0.01,
@@ -735,19 +743,75 @@ impl MutationListener for EnergyListener {
     }
 
     async fn on_event(&self, event: &MutationEvent) {
-        let boost = self.store.config.boost_on_mutation;
+        let boost = self.boost_pour(event);
         for node_id in Self::affected_nodes(event) {
             self.store.boost(node_id, boost);
         }
     }
 
     async fn on_batch(&self, events: &[MutationEvent]) {
-        let boost = self.store.config.boost_on_mutation;
         for event in events {
+            let boost = self.boost_pour(event);
             for node_id in Self::affected_nodes(event) {
                 self.store.boost(node_id, boost);
             }
         }
+    }
+}
+
+impl EnergyListener {
+    /// Création (nœud ou arête) → `boost_on_create` ; le reste →
+    /// `boost_on_mutation`.
+    fn boost_pour(&self, event: &MutationEvent) -> f64 {
+        match event {
+            MutationEvent::NodeCreated { .. } | MutationEvent::EdgeCreated { .. } => self
+                .store
+                .config
+                .boost_on_create
+                .unwrap_or(self.store.config.boost_on_mutation),
+            _ => self.store.config.boost_on_mutation,
+        }
+    }
+}
+
+#[cfg(test)]
+mod boost_par_type_tests {
+    use super::*;
+    use obrain_reactive::NodeSnapshot;
+
+    fn instantane(id: u64) -> NodeSnapshot {
+        NodeSnapshot {
+            id: NodeId(id),
+            labels: Default::default(),
+            properties: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn une_creation_booste_moins_qu_une_mise_a_jour() {
+        let store = Arc::new(EnergyStore::new(EnergyConfig {
+            boost_on_create: Some(0.25),
+            boost_on_mutation: 1.0,
+            ..Default::default()
+        }));
+        let l = EnergyListener::new(Arc::clone(&store));
+        l.on_batch(&[
+            MutationEvent::NodeCreated {
+                node: instantane(1),
+            },
+            MutationEvent::NodeUpdated {
+                before: instantane(2),
+                after: instantane(2),
+            },
+        ])
+        .await;
+        let cree = store.get_energy(NodeId(1));
+        let modifie = store.get_energy(NodeId(2));
+        assert!(
+            modifie > cree,
+            "mise à jour ({modifie}) doit booster plus qu'une création ({cree})"
+        );
+        assert!((modifie - cree - 0.75).abs() < 1e-6, "écart = 1.0 − 0.25");
     }
 }
 

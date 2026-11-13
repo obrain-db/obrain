@@ -395,7 +395,21 @@ impl<'a> Parser<'a> {
                     // CALL { subquery } RETURN ... : treat as a query
                     self.parse_query().map(Statement::Query)
                 } else {
-                    self.parse_call_statement().map(Statement::Call)
+                    // `CALL proc(...) [YIELD ...]` seul, ou avec son WHERE /
+                    // RETURN propres : un `Statement::Call`. Suivi d'une clause
+                    // de requête (`CALL … YIELD node_id MATCH (n) WHERE
+                    // id(n) = node_id RETURN n.title`) : la procédure devient
+                    // la PREMIÈRE clause d'une requête ordinaire, et la queue
+                    // est consommée par `parse_query` — sinon elle était
+                    // rejetée (« Unexpected token 'MATCH' after the end of
+                    // the statement »).
+                    let call = self.parse_call_statement()?;
+                    if self.debute_une_clause_de_requete() {
+                        self.parse_query_apres(vec![QueryClause::CallProcedure(call)])
+                            .map(Statement::Query)
+                    } else {
+                        Ok(Statement::Call(call))
+                    }
                 }
             }
             _ if self.is_identifier()
@@ -631,7 +645,40 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Le jeton courant ouvre-t-il une clause de requête (MATCH, OPTIONAL,
+    /// UNWIND, FOR, MERGE, CREATE/INSERT, DELETE, CALL, WITH, LET, FOREACH,
+    /// LOAD) ? Sert à enchaîner `CALL … YIELD …` avec la suite d'une requête.
+    fn debute_une_clause_de_requete(&mut self) -> bool {
+        match self.current.kind {
+            TokenKind::Match
+            | TokenKind::Optional
+            | TokenKind::Unwind
+            | TokenKind::For
+            | TokenKind::Merge
+            | TokenKind::Create
+            | TokenKind::Insert
+            | TokenKind::Delete
+            | TokenKind::Detach
+            | TokenKind::Nodetach
+            | TokenKind::Call
+            | TokenKind::With => true,
+            _ if self.is_identifier() => {
+                let nom = self.get_identifier_name();
+                nom.eq_ignore_ascii_case("LET")
+                    || nom.eq_ignore_ascii_case("FOREACH")
+                    || nom.eq_ignore_ascii_case("LOAD")
+            }
+            _ => false,
+        }
+    }
+
     fn parse_query(&mut self) -> Result<QueryStatement> {
+        self.parse_query_apres(Vec::new())
+    }
+
+    /// `parse_query` avec des clauses déjà analysées en tête (le `CALL` d'un
+    /// enchaînement `CALL … YIELD … MATCH …`).
+    fn parse_query_apres(&mut self, prefixe: Vec<QueryClause>) -> Result<QueryStatement> {
         let span_start = self.current.span.start;
 
         let mut match_clauses = Vec::new();
@@ -639,7 +686,7 @@ impl<'a> Parser<'a> {
         let mut merge_clauses = Vec::new();
         let mut create_clauses = Vec::new();
         let mut delete_clauses = Vec::new();
-        let mut ordered_clauses = Vec::new();
+        let mut ordered_clauses = prefixe;
 
         // Parse clauses in source order, preserving sequence for variable scoping.
         // MATCH, OPTIONAL MATCH, UNWIND, FOR, MERGE, CREATE/INSERT, DELETE can appear
@@ -802,6 +849,7 @@ impl<'a> Parser<'a> {
                 wc.let_bindings = self.parse_let_clause()?;
             }
 
+            ordered_clauses.push(QueryClause::With(wc.clone()));
             with_clauses.push(wc);
 
             // After WITH (+ optional LET), we can have more clauses
@@ -811,6 +859,13 @@ impl<'a> Parser<'a> {
                         let clause = self.parse_match_clause()?;
                         ordered_clauses.push(QueryClause::Match(clause.clone()));
                         match_clauses.push(clause);
+                        // `WITH … MATCH … WHERE …` : le `WHERE` filtre ce
+                        // `MATCH`, à sa position (il n'y avait de `WHERE` qu'avant
+                        // le premier `WITH`).
+                        if self.current.kind == TokenKind::Where {
+                            let clause = self.parse_where_clause()?;
+                            ordered_clauses.push(QueryClause::Where(clause));
+                        }
                     }
                     TokenKind::Unwind => {
                         let clause = self.parse_unwind_clause()?;
@@ -826,6 +881,35 @@ impl<'a> Parser<'a> {
                         let clause = self.parse_merge_clause()?;
                         ordered_clauses.push(QueryClause::Merge(clause.clone()));
                         merge_clauses.push(clause);
+                    }
+                    // `WITH … MERGE … SET …`, `WITH … CREATE …`, `WITH … DELETE …` :
+                    // les clauses d'écriture suivent un `WITH` comme en Cypher
+                    // (« Expected RETURN, FINISH, or SELECT » jusqu'ici). Elles
+                    // sont traduites à leur position, après le `WITH`.
+                    TokenKind::Set => {
+                        let clause = self.parse_set_clause()?;
+                        ordered_clauses.push(QueryClause::Set(clause.clone()));
+                        set_clauses.push(clause);
+                    }
+                    TokenKind::Remove => {
+                        let clause = self.parse_remove_clause()?;
+                        ordered_clauses.push(QueryClause::Remove(clause.clone()));
+                        remove_clauses.push(clause);
+                    }
+                    TokenKind::Create => {
+                        let clause = self.parse_create_clause_in_query()?;
+                        ordered_clauses.push(QueryClause::Create(clause.clone()));
+                        create_clauses.push(clause);
+                    }
+                    TokenKind::Insert => {
+                        let clause = self.parse_insert()?;
+                        ordered_clauses.push(QueryClause::Create(clause.clone()));
+                        create_clauses.push(clause);
+                    }
+                    TokenKind::Delete | TokenKind::Detach | TokenKind::Nodetach => {
+                        let clause = self.parse_delete_clause_in_query()?;
+                        ordered_clauses.push(QueryClause::Delete(clause.clone()));
+                        delete_clauses.push(clause);
                     }
                     _ if self.is_identifier()
                         && self.get_identifier_name().eq_ignore_ascii_case("FOREACH") =>
@@ -1682,6 +1766,27 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // `ORDER BY`, `SKIP`, `LIMIT` puis `WHERE`, dans cet ordre (comme en
+        // Cypher) : le tri et la limite portent sur la sortie du `WITH`, le
+        // `WHERE` filtre ensuite.
+        let order_by = if self.current.kind == TokenKind::Order {
+            Some(self.parse_order_by()?)
+        } else {
+            None
+        };
+        let skip = if matches!(self.current.kind, TokenKind::Skip | TokenKind::Offset) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        let limit = if self.current.kind == TokenKind::Limit {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
         // Optional WHERE after WITH
         let where_clause = if self.current.kind == TokenKind::Where {
             Some(self.parse_where_clause()?)
@@ -1693,7 +1798,11 @@ impl<'a> Parser<'a> {
             distinct,
             items,
             is_wildcard,
+            order_by,
+            skip,
+            limit,
             where_clause,
+
             let_bindings: Vec::new(),
             span: Some(SourceSpan::new(span_start, self.current.span.end, 1, 1)),
         })
@@ -3469,6 +3578,25 @@ impl<'a> Parser<'a> {
                     expr = Expression::IndexAccess {
                         base: Box::new(expr),
                         index: Box::new(index),
+                    };
+                }
+                // `<expression>.<propriété>` : composant du résultat d'un appel
+                // (`duration.between(a, b).days`) ou clé d'une map. Les accès
+                // `var.prop` sont déjà consommés par l'expression primaire ; un
+                // `.` qui arrive ici suit donc autre chose qu'un identifiant.
+                // Il devient l'appel `__component(base, 'propriété')`, que
+                // l'évaluateur résout selon le type de la valeur.
+                TokenKind::Dot => {
+                    self.advance();
+                    if !self.is_identifier() {
+                        return Err(self.error("Expected property name"));
+                    }
+                    let property = self.get_identifier_name();
+                    self.advance();
+                    expr = Expression::FunctionCall {
+                        name: "__component".to_string(),
+                        args: vec![expr, Expression::Literal(Literal::String(property))],
+                        distinct: false,
                     };
                 }
                 // n:Label label-check syntax (compact form of IS LABELED).

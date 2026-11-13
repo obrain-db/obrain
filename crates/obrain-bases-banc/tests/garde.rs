@@ -1,130 +1,55 @@
 //! Garde de l'incident du 2026-11-11 : une base réelle ne s'ouvre que si une
-//! variable la désigne — jamais parce qu'elle se trouve sous `$HOME`.
+//! variable la désigne — jamais parce qu'elle se trouve sous `$HOME` — et
+//! seul `obrain_bases_banc` lit ces variables.
+//!
+//! C'est une garde TEXTUELLE : elle attrape les formes qu'un développeur écrit
+//! (lecture de `HOME`, chemin `.obrain`, nom d'une variable de désignation,
+//! `env::vars()`), pas un contournement délibéré (nom de variable reconstitué
+//! à l'exécution). La barrière de fond est ailleurs : le nom des variables
+//! n'est pas exporté par le helper, et la base désignée n'est jamais rendue,
+//! seulement sa copie.
 
-use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use obrain_bases_banc::{Base, copier_arborescence, empreinte, resoudre_avec};
+use obrain_bases_banc::{empreinte, essayer_copie_de};
 
-/// Fabrique `<racine>/.obrain/db/{po,wikipedia,megalaw}`, chacune avec un
-/// `substrate.meta` : la disposition exacte que les anciennes cibles
-/// devinaient. (Fichiers factices : ces tests ne passent pas par le moteur.)
-fn faux_home(racine: &Path) {
-    for base in Base::TOUTES {
-        let dossier = racine.join(".obrain/db").join(base.nom());
-        fs::create_dir_all(&dossier).unwrap();
-        fs::write(dossier.join("substrate.meta"), b"en-tete").unwrap();
-        fs::write(dossier.join("substrate.nodes"), b"donnees de l'utilisateur").unwrap();
-    }
-}
-
-fn environnement(paires: &[(&str, &Path)]) -> impl Fn(&str) -> Option<OsString> + use<> {
-    let table: HashMap<String, OsString> = paires
-        .iter()
-        .map(|(cle, valeur)| ((*cle).to_owned(), valeur.as_os_str().to_owned()))
-        .collect();
-    move |cle| table.get(cle).cloned()
-}
-
-#[test]
-fn home_seul_ne_designe_aucune_base() {
-    let tmp = tempfile::tempdir().unwrap();
-    faux_home(tmp.path());
-    let avant = empreinte(tmp.path()).unwrap();
-
-    let env = environnement(&[("HOME", tmp.path()), ("USERPROFILE", tmp.path())]);
-    for base in Base::TOUTES {
-        assert_eq!(
-            resoudre_avec(base, &env),
-            None,
-            "la base « {} » a été résolue sans {} : un chemin a été deviné sous HOME",
-            base.nom(),
-            base.variable()
-        );
-    }
-
-    assert_eq!(
-        avant,
-        empreinte(tmp.path()).unwrap(),
-        "la résolution a touché aux fichiers"
-    );
-}
-
-#[test]
-fn une_variable_vide_ne_designe_rien() {
-    let env = environnement(&[(Base::Po.variable(), Path::new(""))]);
-    assert_eq!(resoudre_avec(Base::Po, &env), None);
-}
-
-#[test]
-fn la_variable_designe_sa_base_et_elle_seule() {
-    let tmp = tempfile::tempdir().unwrap();
-    faux_home(tmp.path());
-    let po = tmp.path().join(".obrain/db/po");
-    let env = environnement(&[(Base::Po.variable(), &po), ("HOME", tmp.path())]);
-
-    assert_eq!(resoudre_avec(Base::Po, &env), Some(po));
-    assert_eq!(resoudre_avec(Base::Wikipedia, &env), None);
-    assert_eq!(resoudre_avec(Base::Megalaw, &env), None);
-}
-
-#[test]
-#[should_panic(expected = "pas de substrate.meta")]
-fn un_chemin_inexistant_echoue_bruyamment() {
-    let env = environnement(&[(Base::Po.variable(), Path::new("/chemin/qui/n/existe/pas"))]);
-    let _ = resoudre_avec(Base::Po, &env);
-}
-
-/// Le piège : `OBRAIN_BENCH_DB_PO=$HOME/.obrain/db` (le PARENT des bases).
-/// Le moteur y créerait une base vide, même ouvert en lecture seule. Le
-/// helper refuse avant toute ouverture, et ne crée rien.
-#[test]
-fn le_dossier_parent_des_bases_est_refuse_sans_rien_creer() {
-    let tmp = tempfile::tempdir().unwrap();
-    faux_home(tmp.path());
-    let parent = tmp.path().join(".obrain/db");
-    let avant = empreinte(tmp.path()).unwrap();
-
-    let env = environnement(&[(Base::Po.variable(), &parent)]);
-    let refus = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        resoudre_avec(Base::Po, &env)
-    }));
-    assert!(
-        refus.is_err(),
-        "le parent des bases a été accepté comme base"
-    );
-    assert_eq!(avant, empreinte(tmp.path()).unwrap());
-}
-
-#[test]
-#[should_panic(expected = "chemin ABSOLU")]
-fn un_chemin_relatif_est_refuse() {
-    let env = environnement(&[(Base::Po.variable(), Path::new("bases/po"))]);
-    let _ = resoudre_avec(Base::Po, &env);
+/// Une fausse base de fichiers factices (ces tests ne passent pas par le
+/// moteur).
+fn fausse_base(racine: &Path) -> PathBuf {
+    let dossier = racine.join("po");
+    fs::create_dir_all(&dossier).unwrap();
+    fs::write(dossier.join("substrate.meta"), b"en-tete").unwrap();
+    fs::write(dossier.join("substrate.nodes"), b"donnees de l'utilisateur").unwrap();
+    dossier
 }
 
 #[test]
 fn ecrire_dans_la_copie_ne_touche_pas_l_original() {
     let tmp = tempfile::tempdir().unwrap();
-    faux_home(tmp.path());
-    let original = tmp.path().join(".obrain/db/po");
+    let original = fausse_base(tmp.path());
     fs::create_dir_all(original.join("sous/dossier")).unwrap();
     fs::write(original.join("sous/dossier/wal"), b"journal").unwrap();
     let avant = empreinte(&original).unwrap();
 
-    let copie = tmp.path().join("copie");
-    copier_arborescence(&original, &copie).unwrap();
+    let copie = essayer_copie_de(&original, "essai").unwrap();
+    let chemin = copie.chemin();
     assert_eq!(
-        avant.keys().collect::<Vec<_>>(),
-        empreinte(&copie).unwrap().keys().collect::<Vec<_>>(),
+        avant
+            .keys()
+            .filter(|k| !k.as_os_str().is_empty())
+            .collect::<Vec<_>>(),
+        empreinte(chemin)
+            .unwrap()
+            .keys()
+            .filter(|k| !k.as_os_str().is_empty())
+            .collect::<Vec<_>>(),
         "la copie n'a pas la même arborescence"
     );
 
-    fs::write(copie.join("substrate.nodes"), b"ecrase par le banc").unwrap();
-    fs::write(copie.join("nouveau"), b"cree par le banc").unwrap();
-    fs::remove_file(copie.join("sous/dossier/wal")).unwrap();
+    fs::write(chemin.join("substrate.nodes"), b"ecrase par le banc").unwrap();
+    fs::write(chemin.join("nouveau"), b"cree par le banc").unwrap();
+    fs::remove_file(chemin.join("sous/dossier/wal")).unwrap();
 
     assert_eq!(avant, empreinte(&original).unwrap());
 }
@@ -134,8 +59,7 @@ fn ecrire_dans_la_copie_ne_touche_pas_l_original() {
 #[test]
 fn l_empreinte_voit_un_fichier_cree_puis_supprime() {
     let tmp = tempfile::tempdir().unwrap();
-    faux_home(tmp.path());
-    let base = tmp.path().join(".obrain/db/po");
+    let base = fausse_base(tmp.path());
     let avant = empreinte(&base).unwrap();
 
     // La date d'un répertoire a une résolution finie : laisser passer un cran.
@@ -154,173 +78,801 @@ fn l_empreinte_voit_un_fichier_cree_puis_supprime() {
     );
 }
 
-// ───────────────────── Garde de source du workspace ─────────────────────────
+// ───────────────────── Garde de source du dépôt ─────────────────────────────
 
-/// Fichiers de `dossier` portant une des `extensions`, récursivement. Les
-/// répertoires de build et de dépendances ne sont pas du code du dépôt.
-fn fichiers_sous(dossier: &Path, extensions: &[&str], trouves: &mut Vec<PathBuf>) {
-    let Ok(entrees) = fs::read_dir(dossier) else {
-        return;
-    };
+/// Un répertoire est-il un produit de build ou un dépôt de dépendances ?
+/// Jamais sur son seul NOM : un dossier de sources nommé `target` ou `pkg`
+/// serait une échappatoire. `target` n'est ignoré qu'à sa place (racine du
+/// dépôt, racine d'un crate) ou s'il porte la marque de cargo ; `pkg` que s'il
+/// porte celle de wasm-pack.
+fn est_un_produit_de_build(racine: &Path, dossier: &Path) -> bool {
+    let nom = dossier.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // Un `CACHEDIR.TAG` seul ne suffit pas : un dossier de sources qui en
+    // contiendrait un serait une échappatoire. Il ne vaut que pour un `target`.
+    if nom == "target" {
+        let parent = dossier.parent().unwrap_or(racine);
+        let racine_de_crate = parent.join("Cargo.toml").is_file();
+        if parent == racine || racine_de_crate || dossier.join("CACHEDIR.TAG").is_file() {
+            return true;
+        }
+    }
+    if nom == "pkg" && fs::read_to_string(dossier.join(".gitignore")).is_ok_and(|g| g.trim() == "*")
+    {
+        return true;
+    }
+    // Dépendances installées, métadonnées git : pas du code du dépôt.
+    matches!(nom, "node_modules" | ".git" | "__pycache__" | ".venv")
+}
+
+/// Tous les fichiers sous `dossier`, récursivement. Un répertoire qu'on ne
+/// peut pas lire n'est pas un répertoire vérifié : la garde échoue.
+fn fichiers_sous(racine: &Path, dossier: &Path, trouves: &mut Vec<PathBuf>) {
+    let entrees = fs::read_dir(dossier).unwrap_or_else(|e| {
+        panic!(
+            "répertoire illisible, donc non vérifié : {} : {e}",
+            dossier.display()
+        )
+    });
     for entree in entrees {
-        let chemin = entree.unwrap().path();
-        let nom = chemin.file_name().unwrap().to_string_lossy().into_owned();
-        if chemin.is_dir() {
-            if !matches!(nom.as_str(), "target" | "node_modules" | ".git" | "pkg") {
-                fichiers_sous(&chemin, extensions, trouves);
+        let chemin = entree
+            .unwrap_or_else(|e| panic!("entrée illisible sous {} : {e}", dossier.display()))
+            .path();
+        let meta = fs::symlink_metadata(&chemin)
+            .unwrap_or_else(|e| panic!("entrée illisible {} : {e}", chemin.display()));
+        if meta.is_dir() {
+            if !est_un_produit_de_build(racine, &chemin) {
+                fichiers_sous(racine, &chemin, trouves);
             }
-        } else if chemin
-            .extension()
-            .is_some_and(|e| extensions.iter().any(|x| e == *x))
-        {
+        } else if meta.is_file() {
             trouves.push(chemin);
         }
     }
 }
 
-/// Motifs qui, dans du Rust, trahissent un chemin de données deviné.
+/// Familles de fichiers : leurs motifs, et le préfixe d'une ligne de
+/// commentaire (`None` : le format n'a pas de commentaire de ligne).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Famille {
+    Rust,
+    /// Un script, un manifeste ou une configuration, avec les préfixes qui y
+    /// ouvrent une ligne de commentaire — PROPRES à cette famille : `::` n'est
+    /// un commentaire que dans un `.bat`, jamais dans du Rust ou un shell.
+    Script(&'static [&'static str]),
+}
+
+/// Famille d'un fichier, ou `None` s'il n'est pas du code ni de la
+/// configuration (documentation, données, images, verrous…).
+fn famille(fichier: &Path) -> Option<Famille> {
+    let nom = fichier.file_name()?.to_str()?;
+    let extension = fichier.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let famille = match extension {
+        "rs" => Famille::Rust,
+        "sh" | "bash" | "zsh" | "ps1" | "py" | "yml" | "yaml" | "mk" | "toml" | "cfg" | "ini" => {
+            Famille::Script(&["#"])
+        }
+        "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" => Famille::Script(&["//"]),
+        "bat" | "cmd" => Famille::Script(&["REM ", "rem ", "::"]),
+        "json" => Famille::Script(&[]),
+        _ if matches!(nom, "Makefile" | "makefile" | "justfile" | "Justfile") => {
+            Famille::Script(&["#"])
+        }
+        // Script sans extension : reconnu à son shebang.
+        "" if fs::read(fichier).is_ok_and(|o| o.starts_with(b"#!")) => Famille::Script(&["#"]),
+        _ => return None,
+    };
+    Some(famille)
+}
+
+/// Langages dont un bloc de code de documentation Rust n'est PAS un doctest :
+/// rustdoc ne le compile ni ne l'exécute. Tout autre bloc (sans langage,
+/// `rust`, ou un simple attribut comme `no_run` ou `ignore`) est du Rust que
+/// `cargo test` peut exécuter : il est examiné comme du code.
+const LANGAGES_DE_BLOC_NON_RUST: &[&str] = &[
+    "bash",
+    "sh",
+    "shell",
+    "zsh",
+    "console",
+    "text",
+    "txt",
+    "toml",
+    "json",
+    "yaml",
+    "yml",
+    "python",
+    "py",
+    "js",
+    "javascript",
+    "ts",
+    "typescript",
+    "cypher",
+    "gql",
+    "sparql",
+    "gremlin",
+    "graphql",
+    "sql",
+    "md",
+    "markdown",
+    "html",
+    "xml",
+    "csv",
+    "diff",
+];
+
+/// Un bloc de code de documentation (`/// ```…`) est-il du Rust exécutable
+/// par rustdoc ? `info` est ce qui suit les trois accents.
+fn bloc_de_doc_est_du_rust(info: &str) -> bool {
+    let premier = info
+        .trim()
+        .split([',', ' ', '\t'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !LANGAGES_DE_BLOC_NON_RUST.contains(&premier.as_str())
+}
+
+/// Ce qu'une ligne de documentation Rust (`///` ou `//!`) porte, sans son
+/// préfixe ; `None` si ce n'en est pas une.
+fn contenu_de_doc(code: &str) -> Option<&str> {
+    let reste = code
+        .strip_prefix("///")
+        .or_else(|| code.strip_prefix("//!"))?;
+    // `////` est un commentaire ordinaire, pas de la documentation.
+    if reste.starts_with('/') {
+        return None;
+    }
+    Some(reste.strip_prefix(' ').unwrap_or(reste))
+}
+
+/// Motifs qui, dans du Rust, trahissent un chemin de données deviné. Ce sont
+/// des formes d'APPEL (`::data_dir(`), pas de simples mots : une variable
+/// locale nommée `data_dir` ou `config_dir` n'est pas une faute.
 const MOTIFS_RUST: &[&str] = &[
     // Le répertoire personnel, par l'environnement…
     "\"HOME\"",
     "\"USERPROFILE\"",
     "\"HOMEPATH\"",
     "\"HOMEDRIVE\"",
-    "env::vars(",
-    "env::vars_os(",
-    // … ou par une bibliothèque.
-    "home_dir",
-    "data_dir",
-    "data_local_dir",
-    "config_dir",
+    // … par la libc…
+    "getpwuid",
+    // … ou par une bibliothèque (`dirs`, `directories`, `home`, `homedir`).
+    "home_dir(",
+    "homedir",
+    "::data_dir(",
+    "::data_local_dir(",
+    "::config_dir(",
     "ProjectDirs",
     "BaseDirs",
     "UserDirs",
     "shellexpand",
     "\"~/",
-    // L'emplacement des bases, sous toutes ses formes.
-    ".obrain/db",
+    // L'emplacement des bases : relatif, composé, ou absolu en dur.
+    "/.obrain",
+    "\".obrain/",
     "join(\".obrain\")",
     "\".obrain\"",
+    // Le nom d'une variable de désignation : seul le helper le connaît.
+    "OBRAIN_BENCH_DB_",
 ];
 
-/// Motifs équivalents dans les scripts, le Makefile et les workflows.
+/// Motifs équivalents dans les scripts, manifestes, Makefile et workflows.
+/// Le répertoire personnel s'y lit aussi SANS `$` : `os.environ["HOME"]`,
+/// `os.getenv('HOME')`, `process.env.HOME`, `$env:HOME`, `%HOME%`.
 const MOTIFS_SCRIPTS: &[&str] = &[
     "$HOME",
     "${HOME",
     "$(HOME)",
+    "%HOME%",
+    "\"HOME\"",
+    "'HOME'",
+    "env.HOME",
+    "env:HOME",
+    "Env:HOME",
+    "ENV:HOME",
+    "%USERPROFILE%",
     "~/",
-    ".obrain/",
+    "/.obrain",
     "USERPROFILE",
     "HOMEPATH",
     "expanduser",
     "Path.home",
+    "homedir",
+    "getpwuid",
+    // Le nom d'une variable de désignation, dans un script ou un workflow :
+    // seul le helper lit ces variables ; un workflow qui en pose une
+    // désigne une base sur un runner, ce qui se nomme dans EXCEPTIONS.
+    "OBRAIN_BENCH_DB_",
 ];
 
-/// Exceptions NOMMÉES : (fin du chemin, motif, justification). Toute autre
-/// occurrence fait échouer la garde.
-const EXCEPTIONS: &[(&str, &str, &str)] = &[
+/// Répertoires d'OUTILS sous le répertoire personnel : y faire référence
+/// (`$HOME/.cargo/bin` dans un workflow, `~/.cargo/advisory-db` dans
+/// `deny.toml`) n'est pas deviner un chemin de données. Retirés de la ligne
+/// avant la recherche des motifs, pour que la garde ne produise pas de faux
+/// positifs qui pousseraient à la désactiver.
+const OUTILS_TOLERES: &[&str] = &[
+    "$HOME/.cargo",
+    "${HOME}/.cargo",
+    "~/.cargo",
+    "$HOME/.rustup",
+    "${HOME}/.rustup",
+    "~/.rustup",
+    "$HOME/.local/bin",
+    "${HOME}/.local/bin",
+    "~/.local/bin",
+];
+
+/// `env::vars()` / `vars_os()` sous TOUTES ses formes : appel qualifié ou non
+/// (`use std::env::vars; vars()`), import renommé (`use std::env::vars as
+/// v`). Énumérer l'environnement, c'est lire une désignation sans la nommer.
+fn enumere_l_environnement(code: &str) -> bool {
+    let mot_entier = |mot: &str| {
+        code.match_indices(mot).any(|(i, _)| {
+            let avant = code[..i].chars().next_back();
+            let apres = code[i + mot.len()..].chars().next();
+            let bord = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            bord(avant) && bord(apres)
+        })
+    };
+    let appel = ["vars(", "vars_os("].iter().any(|appel| {
+        code.match_indices(appel).any(|(i, _)| {
+            code[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+    });
+    let import = code.starts_with("use ")
+        && code.contains("env")
+        && (mot_entier("vars") || mot_entier("vars_os"));
+    appel || import
+}
+
+/// Exceptions NOMMÉES, à l'occurrence près : (fin du chemin, motif, LIGNE
+/// exacte sans son indentation, nombre d'occurrences attendu, justification).
+/// Toute autre occurrence — y compris une répétition de la même ligne
+/// au-delà du nombre attendu — fait échouer la garde.
+const EXCEPTIONS: &[(&str, &str, &str, usize, &str)] = &[
     (
         "crates/obrain-engine/tests/wal_directory.rs",
         "\".obrain\"",
-        "refuse l'EXTENSION `.obrain` sur un chemin de tempdir (`ends_with`) ; ne construit aucun chemin",
+        "!path.to_string_lossy().ends_with(\".obrain\"),",
+        1,
+        "refuse l'EXTENSION `.obrain` sur un chemin de tempdir ; ne construit aucun chemin",
     ),
     (
         "crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs",
         "\"HOME\"",
+        ".env(\"HOME\", home)",
+        1,
         "la preuve de l'incident : pose HOME d'un SOUS-PROCESSUS sur un faux HOME temporaire",
     ),
     (
         "crates/obrain-engine/tests/bases_reelles_non_ouvertes.rs",
-        ".obrain/db",
+        "\".obrain/",
+        "let db = racine.join(\".obrain/db\");",
+        1,
         "la preuve de l'incident : fabrique `.obrain/db` dans un faux HOME temporaire",
+    ),
+    // ── Le helper lui-même : c'est LUI qui lit les désignations. ──
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "OBRAIN_BENCH_DB_",
+        "Self::Po => \"OBRAIN_BENCH_DB_PO\",",
+        1,
+        "la table des variables de désignation, privée au crate",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "OBRAIN_BENCH_DB_",
+        "Self::Wikipedia => \"OBRAIN_BENCH_DB_WIKIPEDIA\",",
+        1,
+        "la table des variables de désignation, privée au crate",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "OBRAIN_BENCH_DB_",
+        "Self::Megalaw => \"OBRAIN_BENCH_DB_MEGALAW\",",
+        1,
+        "la table des variables de désignation, privée au crate",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "\"HOME\"",
+        "let env = environnement(&[(\"HOME\", tmp.path()), (\"USERPROFILE\", tmp.path())]);",
+        1,
+        "test unitaire : un HOME FOURNI (faux) ne désigne aucune base",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "\"USERPROFILE\"",
+        "let env = environnement(&[(\"HOME\", tmp.path()), (\"USERPROFILE\", tmp.path())]);",
+        1,
+        "test unitaire : un USERPROFILE FOURNI (faux) ne désigne aucune base",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "\"HOME\"",
+        "let env = environnement(&[(Base::Po.variable(), &po), (\"HOME\", tmp.path())]);",
+        1,
+        "test unitaire : un HOME FOURNI (faux) ne change pas la base désignée",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "\".obrain/",
+        "let dossier = racine.join(\".obrain/db\").join(base.nom());",
+        1,
+        "test unitaire : fabrique la disposition devinée jadis, dans un tempdir",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "\".obrain/",
+        "let po = tmp.path().join(\".obrain/db/po\");",
+        1,
+        "test unitaire : désigne la fausse base du tempdir",
+    ),
+    (
+        "crates/obrain-bases-banc/src/lib.rs",
+        "\".obrain/",
+        "let parent = tmp.path().join(\".obrain/db\");",
+        1,
+        "test unitaire : le dossier PARENT des bases, dans un tempdir, doit être refusé",
+    ),
+    (
+        "scripts/bench-regression.sh",
+        "OBRAIN_BENCH_DB_",
+        "if [[ -z \"${OBRAIN_BENCH_DB_PO:-}\" ]]; then",
+        1,
+        "le harnais s'arrête si la base n'est pas désignée : il teste la présence de la variable, \
+         sans en lire le chemin",
     ),
 ];
 
-/// Garde de non-régression sur le code lui-même : rien, dans le workspace —
-/// sources des crates (modules `#[cfg(test)]` et `src/bin` compris), tests,
-/// bancs, exemples, scripts, Makefile, workflows — ne lit le répertoire
-/// personnel ni ne construit un chemin `.obrain/db`. Une base réelle passe par
-/// `obrain_bases_banc` ou par un argument explicite.
-#[test]
-fn rien_dans_le_workspace_ne_devine_un_chemin_sous_home() {
-    let racine = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap();
-    let ce_crate = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .canonicalize()
-        .unwrap();
+/// Les fautes d'une ligne de code.
+fn fautes_de_la_ligne(famille: Famille, code: &str) -> Vec<&'static str> {
+    match famille {
+        Famille::Rust => {
+            let mut fautes: Vec<&str> = MOTIFS_RUST
+                .iter()
+                .copied()
+                .filter(|m| code.contains(m))
+                .collect();
+            if enumere_l_environnement(code) {
+                fautes.push("énumération de l'environnement (env::vars)");
+            }
+            fautes
+        }
+        Famille::Script(..) => {
+            let mut nettoye = code.to_owned();
+            for outil in OUTILS_TOLERES {
+                nettoye = nettoye.replace(outil, "");
+            }
+            MOTIFS_SCRIPTS
+                .iter()
+                .copied()
+                .filter(|m| nettoye.contains(m))
+                .collect()
+        }
+    }
+}
 
-    let mut rust = Vec::new();
-    for dossier in ["crates", "examples", "scripts"] {
-        fichiers_sous(&racine.join(dossier), &["rs"], &mut rust);
-    }
-    // Ce crate nomme forcément ce qu'il interdit.
-    rust.retain(|f| !f.starts_with(&ce_crate));
-    let mut scripts = Vec::new();
-    for dossier in ["crates", "examples", "scripts", ".github"] {
-        fichiers_sous(
-            &racine.join(dossier),
-            &["sh", "bash", "zsh", "ps1", "py", "yml", "yaml", "mk"],
-            &mut scripts,
-        );
-    }
-    scripts.push(racine.join("Makefile"));
-    assert!(
-        rust.len() > 400 && scripts.len() > 10,
-        "le parcours n'a trouvé que {} fichiers Rust et {} scripts : la garde ne regarde plus \
-         le workspace",
-        rust.len(),
-        scripts.len()
-    );
+/// Applique la garde à `racine` et rend les fautes (vide = propre), plus le
+/// nombre de fichiers Rust et autres examinés.
+fn garder(
+    racine: &Path,
+    exceptions: &[(&str, &str, &str, usize, &str)],
+) -> (Vec<String>, usize, usize) {
+    let mut fichiers = Vec::new();
+    fichiers_sous(racine, racine, &mut fichiers);
+    // La liste des motifs ci-dessus nomme forcément ce qu'elle interdit.
+    let ce_fichier = Path::new(file!());
+    fichiers.retain(|f| !f.ends_with(ce_fichier));
 
     let mut fautes = Vec::new();
-    let mut exceptions_vues = vec![false; EXCEPTIONS.len()];
-    let lots: [(&[PathBuf], &[&str], &str); 2] =
-        [(&rust, MOTIFS_RUST, "//"), (&scripts, MOTIFS_SCRIPTS, "#")];
-    for (fichiers, motifs, commentaire) in lots {
-        for fichier in fichiers {
-            // Un fichier qu'on ne sait pas lire n'est pas un fichier vérifié.
-            let texte = fs::read_to_string(fichier).unwrap_or_else(|e| {
-                panic!(
-                    "fichier illisible, donc non vérifié : {} : {e}",
-                    fichier.display()
-                )
-            });
-            let relatif = fichier.strip_prefix(&racine).unwrap();
-            for (numero, ligne) in texte.lines().enumerate() {
-                let code = ligne.trim_start();
-                if code.starts_with(commentaire) {
-                    continue;
-                }
-                for motif in motifs.iter().filter(|m| code.contains(**m)) {
-                    let exception = EXCEPTIONS
-                        .iter()
-                        .position(|(fin, m, _)| relatif.ends_with(fin) && m == motif);
-                    if let Some(i) = exception {
-                        exceptions_vues[i] = true;
-                    } else {
-                        fautes.push(format!(
-                            "{}:{} contient {motif} : {code}",
-                            relatif.display(),
-                            numero + 1
-                        ));
+    let mut vues = vec![0usize; exceptions.len()];
+    let (mut rust, mut autres) = (0, 0);
+    for fichier in &fichiers {
+        let Some(famille) = famille(fichier) else {
+            continue;
+        };
+        if famille == Famille::Rust {
+            rust += 1;
+        } else {
+            autres += 1;
+        }
+        // Un fichier qu'on ne sait pas lire n'est pas un fichier vérifié.
+        let texte = fs::read_to_string(fichier).unwrap_or_else(|e| {
+            panic!(
+                "fichier illisible, donc non vérifié : {} : {e}",
+                fichier.display()
+            )
+        });
+        let commentaires: &[&str] = match famille {
+            Famille::Rust => &["//"],
+            Famille::Script(c) => c,
+        };
+        let relatif = fichier.strip_prefix(racine).unwrap_or(fichier);
+        // Dans un bloc de code de documentation Rust : `Some(true)` s'il est
+        // du Rust (donc un doctest que `cargo test` exécute), `Some(false)`
+        // si c'est un autre langage, `None` hors bloc.
+        let mut bloc_de_doc: Option<bool> = None;
+        for (numero, ligne) in texte.lines().enumerate() {
+            let mut code = ligne.trim();
+            if famille == Famille::Rust {
+                match contenu_de_doc(code) {
+                    Some(doc) => {
+                        let doc = doc.trim();
+                        if let Some(info) = doc.strip_prefix("```") {
+                            bloc_de_doc = match bloc_de_doc {
+                                None => Some(bloc_de_doc_est_du_rust(info)),
+                                Some(_) => None,
+                            };
+                            continue;
+                        }
+                        if bloc_de_doc != Some(true) {
+                            // Prose, ou bloc d'un autre langage : jamais exécuté.
+                            continue;
+                        }
+                        // Une ligne de doctest. `# ` la cache dans la page de
+                        // documentation, mais rustdoc l'exécute comme les autres.
+                        code = doc
+                            .strip_prefix("# ")
+                            .or_else(|| doc.strip_prefix('#').filter(|r| r.is_empty()))
+                            .unwrap_or(doc)
+                            .trim();
+                    }
+                    None => {
+                        // La documentation s'est arrêtée : un bloc ouvert ne
+                        // peut pas continuer sur du code.
+                        bloc_de_doc = None;
                     }
                 }
             }
+            if commentaires.iter().any(|c| code.starts_with(c)) {
+                continue;
+            }
+            for motif in fautes_de_la_ligne(famille, code) {
+                let exception = exceptions.iter().position(|(fin, m, exacte, _, _)| {
+                    relatif.ends_with(fin) && *m == motif && *exacte == code
+                });
+                if let Some(i) = exception {
+                    vues[i] += 1;
+                    if vues[i] <= exceptions[i].3 {
+                        continue;
+                    }
+                }
+                fautes.push(format!(
+                    "{}:{} — {motif} : {code}",
+                    relatif.display(),
+                    numero + 1
+                ));
+            }
         }
     }
+    // Une exception qui ne sert plus (ou plus autant) est corrigée, pas gardée
+    // « au cas où ».
+    for (i, (fin, motif, exacte, attendu, _)) in exceptions.iter().enumerate() {
+        if vues[i] < *attendu {
+            fautes.push(format!(
+                "exception périmée : {fin} contient {} fois (au lieu de {attendu}) la ligne « {exacte} » \
+                 ({motif})",
+                vues[i]
+            ));
+        }
+    }
+    (fautes, rust, autres)
+}
+
+fn racine_du_depot() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
+}
+
+/// Garde de non-régression sur le dépôt entier — sources des crates (modules
+/// `#[cfg(test)]` et `src/bin` compris, ce crate compris), tests, bancs,
+/// exemples, paquets, scripts (avec ou sans extension), manifestes et
+/// configurations (`Cargo.toml`, `.cargo/config.toml`, `deny.toml`,
+/// `codecov.yml`, `.pre-commit-config.yaml`, `package.json`…), Makefile,
+/// workflows : rien ne lit le répertoire personnel, ne construit un chemin
+/// `.obrain`, ni ne nomme ou n'énumère une variable de désignation hors du
+/// helper.
+#[test]
+fn rien_dans_le_depot_ne_devine_un_chemin_ni_ne_lit_une_designation() {
+    let racine = racine_du_depot();
+    let (fautes, rust, autres) = garder(&racine, EXCEPTIONS);
+    assert!(
+        rust > 400 && autres > 30,
+        "le parcours n'a trouvé que {rust} fichiers Rust et {autres} scripts ou manifestes : la \
+         garde ne regarde plus le dépôt"
+    );
     assert!(
         fautes.is_empty(),
-        "le workspace devine encore un chemin sous le répertoire personnel — passer par \
-         obrain_bases_banc (OBRAIN_BENCH_DB_*), ou nommer l'exception dans EXCEPTIONS :\n{}",
+        "le dépôt devine un chemin sous le répertoire personnel, ou lit une désignation hors du \
+         helper — passer par obrain_bases_banc (base_lecture, base_copie, copie_de), ou nommer \
+         l'exception, à la ligne et au nombre près, dans EXCEPTIONS :\n{}",
         fautes.join("\n")
     );
-    // Une exception qui ne sert plus est retirée, pas gardée « au cas où ».
-    for (i, (fin, motif, _)) in EXCEPTIONS.iter().enumerate() {
+}
+
+/// Chaque contournement connu, planté dans un faux dépôt, doit être refusé.
+#[test]
+fn chaque_contournement_plante_est_refuse() {
+    let plantes: &[(&str, &str, &str)] = &[
+        // Lecture d'une désignation par un intermédiaire.
+        (
+            "crates/x/tests/a.rs",
+            "const V: &str = \"OBRAIN_BENCH_DB_PO\";\nfn f() { let _ = std::env::var_os(V); }\n",
+            "OBRAIN_BENCH_DB_",
+        ),
+        (
+            "crates/x/tests/b.rs",
+            "fn f() { let v = String::from(\"OBRAIN_BENCH_DB_\") + \"PO\"; }\n",
+            "OBRAIN_BENCH_DB_",
+        ),
+        // Énumération de l'environnement, sous toutes ses formes.
+        (
+            "crates/x/tests/c.rs",
+            "use std::env::{self, vars};\n",
+            "env::vars",
+        ),
+        (
+            "crates/x/tests/d.rs",
+            "fn f() { for _ in vars() {} }\n",
+            "env::vars",
+        ),
+        (
+            "crates/x/tests/e.rs",
+            "use std::env::vars_os as tout;\n",
+            "env::vars",
+        ),
+        (
+            "crates/x/src/f.rs",
+            "fn f() { std::env::vars(); }\n",
+            "env::vars",
+        ),
+        // Répertoire personnel et chemins de bases.
+        (
+            "crates/x/src/target/g.rs",
+            "fn f() { let _ = std::env::var(\"HOME\"); }\n",
+            "\"HOME\"",
+        ),
+        (
+            "crates/x/pkg/h.rs",
+            "fn f() { let _ = \"/Users/x/.obrain/db/po\"; }\n",
+            "/.obrain",
+        ),
+        (
+            "crates/x/src/i.rs",
+            "fn f() { let _ = base.join(\".obrain\").join(\"db\"); }\n",
+            "join(\".obrain\")",
+        ),
+        (
+            "crates/x/src/j.rs",
+            "fn f() { unsafe { libc::getpwuid(0); } }\n",
+            "getpwuid",
+        ),
+        (
+            "crates/x/src/k.rs",
+            "fn f() { let _ = dirs::data_dir(); }\n",
+            "::data_dir(",
+        ),
+        // Scripts, manifestes, configurations.
+        (
+            "packages/p/l.py",
+            "import os\np = os.path.expanduser(\"x\")\n",
+            "expanduser",
+        ),
+        (
+            "packages/p/package.json",
+            "{\"x\": \"$HOME/.obrain/db\"}\n",
+            "$HOME",
+        ),
+        (".cargo/config.toml", "[env]\nX = \"~/.obrain/db\"\n", "~/"),
+        (
+            ".pre-commit-config.yaml",
+            "- run: ls $HOME/donnees\n",
+            "$HOME",
+        ),
+        (
+            "scripts/sans-extension",
+            "#!/bin/sh\nls \"$HOME/donnees\"\n",
+            "$HOME",
+        ),
+        (
+            "scripts/m.bat",
+            "dir %USERPROFILE%\\donnees\n",
+            "%USERPROFILE%",
+        ),
+        // ── Les deux contournements de la relecture de #113 (2922f931) ──
+        // Une expression que rustfmt renvoie à la ligne, ouverte par `::` : le
+        // saut `::` (commentaire des `.bat`) ne s'appliquait pas qu'aux `.bat`.
+        (
+            "crates/x/tests/deux_points.rs",
+            "fn f() {\n    let base =\n        ::std::path::PathBuf::from(::std::env::var_os(\"HOME\").unwrap()).join(\".obrain/db/po\");\n}\n",
+            "\"HOME\"",
+        ),
+        // Un doctest : `///` et `//!` étaient sautés comme des commentaires,
+        // mais `cargo test` exécute leurs blocs de code.
+        (
+            "crates/x/src/doctest.rs",
+            "/// ```\n/// let h = std::env::var(\"HOME\").unwrap();\n/// let _ = obrain::ObrainDB::open(format!(\"{h}/.obrain/db/po\"));\n/// ```\npub fn f() {}\n",
+            "\"HOME\"",
+        ),
+        (
+            "crates/y/src/lib.rs",
+            "//! ```\n//! let _ = std::fs::read_dir(std::env::home_dir().unwrap().join(\".obrain\"));\n//! ```\n",
+            "home_dir(",
+        ),
+        // Une ligne cachée de doctest (`# `) est exécutée comme les autres.
+        (
+            "crates/x/src/cachee.rs",
+            "/// ```\n/// # let h = std::env::var(\"HOME\").unwrap();\n/// ```\npub fn g() {}\n",
+            "\"HOME\"",
+        ),
+        // Le répertoire personnel sans `$`, dans les scripts.
+        (
+            "packages/p/a.py",
+            "import os\np = os.path.join(os.environ[\"HOME\"], \".obrain\", \"db\", \"po\")\n",
+            "\"HOME\"",
+        ),
+        (
+            "packages/p/b.py",
+            "import os\np = os.getenv('HOME') + '/' + '.obrain'\n",
+            "'HOME'",
+        ),
+        (
+            "packages/p/c.js",
+            "const p = require('path').join(process.env.HOME, '.obrain', 'db');\n",
+            "env.HOME",
+        ),
+        (
+            "scripts/d.ps1",
+            "Get-ChildItem (Join-Path $env:HOME '.obrain')\n",
+            "env:HOME",
+        ),
+        // Un workflow qui désigne une base sur un runner.
+        (
+            ".github/workflows/w.yml",
+            "      - run: cargo test -- --ignored\n        env:\n          OBRAIN_BENCH_DB_PO: /Users/runner/real/po\n",
+            "OBRAIN_BENCH_DB_",
+        ),
+    ];
+    for (chemin, contenu, motif) in plantes {
+        let tmp = tempfile::tempdir().unwrap();
+        let fichier = tmp.path().join(chemin);
+        fs::create_dir_all(fichier.parent().unwrap()).unwrap();
+        fs::write(&fichier, contenu).unwrap();
+        let (fautes, _, _) = garder(tmp.path(), &[]);
         assert!(
-            exceptions_vues[i],
-            "exception périmée : {fin} ne contient plus {motif}"
+            fautes
+                .iter()
+                .any(|f| f.contains(chemin) && f.contains(motif)),
+            "contournement NON refusé : {chemin} ({motif}) — fautes : {fautes:?}"
         );
     }
+}
+
+/// Ce qui n'est pas une faute ne doit pas en être une : sans quoi on finit
+/// par désactiver la garde.
+#[test]
+fn ce_qui_n_est_pas_une_faute_passe() {
+    let propres: &[(&str, &str)] = &[
+        (
+            "crates/x/src/a.rs",
+            "fn f(data_dir: &Path, config_dir: &Path) {}\n",
+        ),
+        (
+            "crates/x/src/b.rs",
+            "fn f() { let env_vars = 1; let _ = varsity(); }\n",
+        ),
+        (
+            ".github/workflows/w.yml",
+            "- run: echo \"$HOME/.cargo/bin\" >> $GITHUB_PATH\n",
+        ),
+        ("deny.toml", "db-path = \"~/.cargo/advisory-db\"\n"),
+        (
+            "crates/x/src/c.rs",
+            "// commentaire : ~/.obrain/db et $HOME\n",
+        ),
+        // Un bloc de doc dans un autre langage n'est pas un doctest.
+        (
+            "crates/x/src/d.rs",
+            "/// ```bash\n/// OBRAIN_BENCH_DB_PO=/chemin cargo test\n/// ```\npub fn f() {}\n",
+        ),
+        (
+            "crates/x/src/e.rs",
+            "/// ```text\n/// ~/.obrain/db/po\n/// ```\npub fn f() {}\n",
+        ),
+        // La prose d'une documentation nomme ce qu'elle explique.
+        (
+            "crates/x/src/f.rs",
+            "//! Voir `OBRAIN_BENCH_DB_PO` dans docs/BENCHMARKS.md.\n",
+        ),
+        // `::` ouvre bien un commentaire dans un `.bat`.
+        ("scripts/m.bat", ":: commentaire : %HOME%\\.obrain\n"),
+    ];
+    for (chemin, contenu) in propres {
+        let tmp = tempfile::tempdir().unwrap();
+        let fichier = tmp.path().join(chemin);
+        fs::create_dir_all(fichier.parent().unwrap()).unwrap();
+        fs::write(&fichier, contenu).unwrap();
+        let (fautes, _, _) = garder(tmp.path(), &[]);
+        assert!(fautes.is_empty(), "faux positif sur {chemin} : {fautes:?}");
+    }
+}
+
+/// Un `CACHEDIR.TAG` posé dans un dossier de sources ne le soustrait pas à la
+/// garde : seul un `target` peut en porter un.
+#[test]
+fn un_cachedir_tag_ne_masque_pas_un_dossier_de_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("crates/x/tests/cache");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(
+        cache.join("CACHEDIR.TAG"),
+        b"Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .unwrap();
+    fs::write(
+        cache.join("z.rs"),
+        "fn f() { let _ = std::env::var(\"HOME\"); }\n",
+    )
+    .unwrap();
+    let (fautes, _, _) = garder(tmp.path(), &[]);
+    assert!(
+        fautes.iter().any(|f| f.contains("cache/z.rs")),
+        "le dossier marqué CACHEDIR.TAG a été sauté : {fautes:?}"
+    );
+    // Un vrai `target` de cargo, lui, est sauté.
+    let target = tmp.path().join("crates/x/target");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        target.join("CACHEDIR.TAG"),
+        b"Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .unwrap();
+    fs::write(
+        target.join("z.rs"),
+        "fn f() { let _ = std::env::var(\"HOME\"); }\n",
+    )
+    .unwrap();
+    let (fautes, _, _) = garder(tmp.path(), &[]);
+    assert!(
+        !fautes.iter().any(|f| f.contains("target/z.rs")),
+        "un target de cargo n'est pas du code du dépôt : {fautes:?}"
+    );
+}
+
+/// Une exception ne couvre que le NOMBRE d'occurrences qu'elle annonce.
+#[test]
+fn une_exception_ne_couvre_pas_une_repetition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fichier = tmp.path().join("crates/x/tests/t.rs");
+    fs::create_dir_all(fichier.parent().unwrap()).unwrap();
+    let ligne = "let _ = std::env::var(\"HOME\");";
+    fs::write(&fichier, format!("{ligne}\n{ligne}\n")).unwrap();
+    let exception = [("crates/x/tests/t.rs", "\"HOME\"", ligne, 1, "essai")];
+    let (fautes, _, _) = garder(tmp.path(), &exception);
+    assert_eq!(fautes.len(), 1, "{fautes:?}");
+    assert!(fautes[0].contains(":2 "), "{fautes:?}");
+}
+
+/// Un répertoire illisible n'est pas un répertoire vérifié.
+#[cfg(unix)]
+#[test]
+fn un_repertoire_illisible_fait_echouer_la_garde() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let ferme = tmp.path().join("crates/ferme");
+    fs::create_dir_all(&ferme).unwrap();
+    fs::set_permissions(&ferme, fs::Permissions::from_mode(0o000)).unwrap();
+    let echec = std::panic::catch_unwind(|| garder(tmp.path(), &[]));
+    fs::set_permissions(&ferme, fs::Permissions::from_mode(0o755)).unwrap();
+    let message = echec
+        .expect_err("la garde a sauté un répertoire illisible")
+        .downcast::<String>()
+        .map(|m| *m)
+        .unwrap_or_default();
+    assert!(message.contains("répertoire illisible"), "{message}");
 }

@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Native code→graph indexer (RFC M6) — replaces the external codebase-memory C indexer"
+# Non publiable : la source de vérité d'obrain-indexer est la plateforme privée
+# (obrain-db/obrain-platform). Cette copie est en retard ; crates.io est immuable.
+publish = false
 
 [dependencies]
 obrain-engine = { workspace = true, features = ["gql","storage","parallel","wal","spill","mmap","regex"] }

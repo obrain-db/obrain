@@ -376,3 +376,102 @@ fn stockage_persistant_rouvrir_et_relire() {
         Value::Int64(30)
     );
 }
+
+// ── Recherche hybride (README « Recherche hybride »), mot pour mot ───────────
+
+#[cfg(feature = "hybrid-search")]
+mod recherche_hybride {
+    use obrain::{ObrainDB, Value};
+
+    /// Trois `:Doc` portant `title` et `emb` (3 dimensions) ; les index sont
+    /// créés par `indexes()`.
+    fn docs() -> ObrainDB {
+        let db = ObrainDB::new_in_memory();
+        for (title, emb) in [
+            ("Rust graph database", [1.0_f32, 0.0, 0.0]),
+            ("Python machine learning", [0.0, 1.0, 0.0]),
+            ("Rust systems programming", [0.9, 0.1, 0.0]),
+        ] {
+            let n = db.create_node(&["Doc"]);
+            db.set_node_property(n, "title", Value::String(title.into()));
+            db.set_node_property(n, "emb", Value::Vector(emb.to_vec().into()));
+        }
+        db
+    }
+
+    fn indexes() -> ObrainDB {
+        let db = docs();
+        db.create_text_index("Doc", "title").unwrap();
+        db.create_vector_index("Doc", "emb", Some(3), Some("cosine"), None, None)
+            .unwrap();
+        db
+    }
+
+    #[test]
+    fn hybrid_search_texte_et_vecteur() {
+        let r = indexes()
+            .session()
+            .execute(
+                "CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3}) YIELD node_id, score",
+            )
+            .unwrap();
+        assert_eq!(r.columns, vec!["node_id".to_string(), "score".to_string()]);
+        assert_eq!(r.row_count(), 3, "k = 3 sur trois documents");
+    }
+
+    #[test]
+    fn hybrid_search_texte_seul() {
+        let r = indexes()
+            .session()
+            .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score")
+            .unwrap();
+        assert_eq!(
+            r.row_count(),
+            2,
+            "BM25 seul : les deux documents qui parlent de Rust"
+        );
+    }
+
+    #[test]
+    fn hybrid_search_enchaine_avec_match() {
+        let r = indexes()
+            .session()
+            .execute(
+                "CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 2}) YIELD node_id MATCH (n) WHERE id(n) = node_id RETURN n.title",
+            )
+            .unwrap();
+        let titres: Vec<&Value> = r.rows.iter().map(|row| &row[0]).collect();
+        assert_eq!(
+            titres,
+            vec![
+                &Value::String("Rust graph database".into()),
+                &Value::String("Rust systems programming".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn hybrid_search_fusion_ponderee() {
+        let r = indexes()
+            .session()
+            .execute(
+                "CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3, fusion: 'weighted', weights: [0.5, 0.5]}) YIELD node_id, score",
+            )
+            .unwrap();
+        assert_eq!(
+            r.rows[0][1],
+            Value::Float64(1.0),
+            "premier des deux sources : 0.5 + 0.5"
+        );
+    }
+
+    #[test]
+    fn hybrid_search_sans_index_nomme_les_index_attendus() {
+        let e = docs()
+            .session()
+            .execute("CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph') YIELD node_id, score")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(":Doc(title)") && e.contains(":Doc(emb)"), "{e}");
+    }
+}

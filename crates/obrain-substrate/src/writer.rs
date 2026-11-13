@@ -168,7 +168,10 @@ impl Writer {
         // la fin RÉELLE du fichier, sinon deux écrivains estampillent le même LSN
         // (la position devient une prédiction). On le DÉCLARE au WAL, qui choisit
         // son chemin en conséquence.
-        let coordination = if substrate.est_ecriture_partagee() {
+        // Une ouverture en LECTURE SEULE n'ajoute jamais : aucune coordination
+        // d'append (donc aucun registre `<wal>.reg` créé), et un journal ouvert
+        // sans droit d'écriture.
+        let coordination = if substrate.est_ecriture_partagee() && !substrate.est_lecture_seule() {
             crate::wal_io::CoordinationAppend::OAppend
         } else {
             crate::wal_io::CoordinationAppend::Aucune
@@ -177,6 +180,13 @@ impl Writer {
         // le journal vit dans un tampon (voir `WalWriter::open_memory`).
         let wal = if substrate.is_memory() {
             Arc::new(WalWriter::open_memory(sync_mode, ancre_de_repli)?)
+        } else if substrate.est_lecture_seule() {
+            let wal_path = substrate.wal_path();
+            Arc::new(WalWriter::open_lecture_seule(
+                &wal_path,
+                sync_mode,
+                ancre_de_repli,
+            )?)
         } else {
             let wal_path = substrate.wal_path();
             Arc::new(WalWriter::open(&wal_path, sync_mode, ancre_de_repli)?)
@@ -339,6 +349,28 @@ impl Writer {
 
     #[tracing::instrument(level = "trace", skip(self, node))]
     pub fn write_node(&self, idx: u32, node: NodeRecord) -> SubstrateResult<()> {
+        self.ecrire_node(idx, node, None)
+    }
+
+    /// Comme [`Writer::write_node`], mais la déclaration `precede` (un record
+    /// écrit AVANT le `NodeInsert`, p. ex. `TxNoeudEnAttente`) part dans le
+    /// MÊME `write` que le `NodeInsert` : un appel système de moins, ordre
+    /// physique préservé (obrain#120 pt 4).
+    pub fn write_node_precede(
+        &self,
+        idx: u32,
+        node: NodeRecord,
+        precede: WalPayload,
+    ) -> SubstrateResult<()> {
+        self.ecrire_node(idx, node, Some(precede))
+    }
+
+    fn ecrire_node(
+        &self,
+        idx: u32,
+        node: NodeRecord,
+        precede: Option<WalPayload>,
+    ) -> SubstrateResult<()> {
         // (jalon 1) TOUT record reellement ecrit porte ALLOCATED — pose ici,
         // au seul point d'ecriture, jamais laisse au choix de l'appelant.
         let node = NodeRecord {
@@ -359,7 +391,20 @@ impl Writer {
                 tenant_id: node.tenant_id,
             },
         };
-        self.wal.append(rec)?;
+        match precede {
+            None => {
+                self.wal.append(rec)?;
+            }
+            Some(payload) => {
+                let decl = WalRecord {
+                    lsn: 0,
+                    timestamp: unix_micros(),
+                    flags: 0,
+                    payload,
+                };
+                self.wal.append_batch([decl, rec])?;
+            }
+        }
 
         // (2) mmap mutation.
         self.with_node_zone(|zf| {

@@ -207,6 +207,12 @@ pub struct LoadDataClause {
 pub enum QueryClause {
     /// A MATCH clause.
     Match(MatchClause),
+    /// A WITH clause, at its position in the query: a MATCH written after it
+    /// starts from its columns.
+    With(WithClause),
+    /// A WHERE written after a MATCH that follows a WITH: it filters that
+    /// MATCH, at its position.
+    Where(WhereClause),
     /// An UNWIND clause.
     Unwind(UnwindClause),
     /// A FOR clause (desugared to UNWIND).
@@ -426,6 +432,12 @@ pub struct WithClause {
     pub items: Vec<ReturnItem>,
     /// Whether this is `WITH *` (pass all variables through).
     pub is_wildcard: bool,
+    /// Optional ORDER BY, applied to the WITH output (its aliases are visible).
+    pub order_by: Option<OrderByClause>,
+    /// Optional SKIP.
+    pub skip: Option<Expression>,
+    /// Optional LIMIT.
+    pub limit: Option<Expression>,
     /// Optional WHERE clause after WITH.
     pub where_clause: Option<WhereClause>,
     /// LET bindings attached to this WITH clause (e.g. `WITH n LET x = n.age * 2`).

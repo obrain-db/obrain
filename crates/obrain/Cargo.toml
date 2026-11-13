@@ -89,6 +89,9 @@ serde_json.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
+# Bases réelles des bancs : copiées, jamais ouvertes (docs/BENCHMARKS.md).
+# Chemin SANS version : outil non publié, retiré du manifeste par `cargo publish`.
+obrain-bases-banc = { path = "../obrain-bases-banc" }
 
 [[bench]]
 name = "zero_copy"

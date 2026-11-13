@@ -3,11 +3,11 @@
 //! # Pourquoi ce crate existe
 //!
 //! Le 2026-11-11, un simple `cargo test -p obrain-engine --features cypher` a
-//! ouvert **en lecture-écriture** les bases de travail d'un développeur sous
-//! `~/.obrain/db/` (`po`, `wikipedia`, `megalaw`) : une trentaine de cibles de
-//! test devinaient ce chemin à partir de `$HOME` et ne se sautaient que si le
-//! dossier était absent. L'une d'elles y a créé puis supprimé des nœuds et
-//! posé des propriétés `_bench_*` ; une autre a été tuée en pleine ouverture.
+//! ouvert **en lecture-écriture** les bases de travail d'un développeur
+//! (`po`, `wikipedia`, `megalaw`) : une trentaine de cibles de test devinaient
+//! leur chemin à partir de `$HOME` et ne se sautaient que si le dossier était
+//! absent. L'une d'elles y a créé puis supprimé des nœuds et posé des
+//! propriétés `_bench_*` ; une autre a été tuée en pleine ouverture.
 //!
 //! # La règle
 //!
@@ -15,12 +15,16 @@
 //!   sur la sortie d'erreur. Aucun chemin n'est jamais déduit de `$HOME`.
 //! * Une cible ne s'active que si une variable d'environnement **désigne** la
 //!   base : `OBRAIN_BENCH_DB_PO`, `OBRAIN_BENCH_DB_WIKIPEDIA`,
-//!   `OBRAIN_BENCH_DB_MEGALAW` (voir [`Base::variable`]). Le chemin doit être
-//!   absolu et contenir `substrate.meta` ; sinon la cible échoue avant toute
-//!   ouverture.
+//!   `OBRAIN_BENCH_DB_MEGALAW`. **Seul ce crate lit ces variables** : leur nom
+//!   n'est pas exporté, et la garde du dépôt refuse toute autre lecture. Le
+//!   chemin doit être absolu et contenir `substrate.meta` ; sinon la cible
+//!   échoue avant toute ouverture.
 //! * **La base désignée n'est jamais ouverte par le moteur — pas même en
 //!   lecture seule.** Elle est copiée (clonée quand le système de fichiers le
-//!   permet), fichier par fichier, et c'est la copie qu'on ouvre.
+//!   permet) et c'est la copie qu'on ouvre. La copie est refusée, nommément,
+//!   si un processus tient la base, si elle change pendant la copie, si elle
+//!   contient un lien symbolique, ou si une copie pleine dépasserait le
+//!   plafond ou la marge de disque (voir `copie`).
 //!
 //! # Pourquoi même les lecteurs copient
 //!
@@ -37,29 +41,56 @@
 //! (`defaut_moteur_…`, sous `--cfg defauts_connus`). Tant qu'il n'est pas
 //! corrigé, la seule protection réelle d'une base est de ne pas l'ouvrir.
 //!
-//! # Les deux issues
+//! # Les issues
 //!
 //! * [`base_lecture`] rend une [`BaseLecture`] **opaque** : ses seules issues
-//!   sont [`BaseLecture::ouvrir`] et [`BaseLecture::ouvrir_substrat`], qui
-//!   ouvrent en lecture seule une copie partagée par tout le processus (une
-//!   copie par base et par binaire de test, pas une par test).
-//! * [`base_copie`] rend une [`CopieBase`] privée à la cible, qui peut y
-//!   écrire : son chemin est exposé parce que ce n'est jamais celui de la base
-//!   désignée.
+//!   sont [`BaseLecture::ouvrir`] (feature `moteur`) et
+//!   [`BaseLecture::ouvrir_substrat`], qui ouvrent en lecture seule une copie
+//!   partagée par tout le processus — une copie par base et par binaire de
+//!   test, pas une par test. Elle n'est PAS partagée entre binaires : chaque
+//!   binaire lancé par `cargo test` prend la sienne (gratuite en clone,
+//!   bornée en copie pleine).
+//! * [`base_copie`] et [`copie_de`] rendent une [`CopieBase`] privée à la
+//!   cible, qui peut y écrire : son chemin est exposé parce que ce n'est
+//!   jamais celui de la base désignée.
 //!
 //! Mode d'emploi complet : `docs/BENCHMARKS.md`, section « Bancs sur bases
 //! réelles ».
 
-use std::collections::{BTreeMap, HashMap};
-use std::ffi::OsString;
-use std::fs;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+mod copie;
+mod empreinte;
+mod nettoyage;
 
+/// Crochets pour les tests de ce dépôt. Ce n'est pas une API : rien ici
+/// n'ouvre ni ne révèle une base, mais rien n'y est stable non plus.
+#[doc(hidden)]
+pub mod essais {
+    /// Pose une pause (ms) entre la copie et ses contrôles d'après copie,
+    /// pour y glisser une course (un écrivain qui ouvre, un fichier qui
+    /// change). Zéro la retire.
+    pub fn pause_apres_copie(ms: u64) {
+        crate::copie::PAUSE_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Balaie maintenant les résidus de copie de `TMPDIR` dont le
+    /// propriétaire est mort ; rend ceux qui ont été supprimés.
+    pub fn balayer_les_residus_maintenant() -> Vec<std::path::PathBuf> {
+        crate::nettoyage::balayer_maintenant()
+    }
+}
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+#[cfg(feature = "moteur")]
 use obrain_engine::ObrainDB;
 use obrain_substrate::SubstrateStore;
+
+pub use copie::{VARIABLE_COPIE_MAX_GO, VARIABLE_COPIE_PLEINE, VARIABLE_MARGE_GO};
+pub use empreinte::{Empreinte, EmpreinteFichier, empreinte};
 
 /// Variable qui, posée à `1`, conserve la copie de travail de [`base_copie`]
 /// après la cible (son chemin est imprimé) au lieu de la supprimer.
@@ -68,9 +99,9 @@ pub const VARIABLE_GARDER_COPIE: &str = "OBRAIN_BENCH_GARDER_COPIE";
 /// Fichier dont la présence fait d'un répertoire une base Obrain.
 const FICHIER_META: &str = "substrate.meta";
 
-/// Préfixe des répertoires de copie sous `TMPDIR`. Suivi du PID du processus
-/// propriétaire, pour qu'un lancement ultérieur reconnaisse et supprime les
-/// résidus d'un processus tué (Ctrl-C, `kill -9`).
+/// Préfixe des répertoires de copie sous `TMPDIR` (suivi du PID du
+/// propriétaire, pour les humains ; la preuve de vie est un verrou, voir
+/// `nettoyage`).
 const PREFIXE_COPIE: &str = "obrain-banc-";
 /// Préfixe des copies conservées à la demande : jamais balayées.
 const PREFIXE_COPIE_GARDEE: &str = "obrain-banc-gardee-";
@@ -100,10 +131,10 @@ impl Base {
         }
     }
 
-    /// Variable d'environnement qui désigne cette base. C'est le **seul**
-    /// moyen d'activer une cible : aucun chemin par défaut n'existe.
-    #[must_use]
-    pub const fn variable(self) -> &'static str {
+    /// Variable d'environnement qui désigne cette base. **Non publique** : si
+    /// une cible connaissait le nom, elle pourrait lire la variable et obtenir
+    /// le chemin d'ORIGINE au lieu d'une copie.
+    pub(crate) const fn variable(self) -> &'static str {
         match self {
             Self::Po => "OBRAIN_BENCH_DB_PO",
             Self::Wikipedia => "OBRAIN_BENCH_DB_WIKIPEDIA",
@@ -112,48 +143,82 @@ impl Base {
     }
 }
 
+/// Prépare l'environnement d'un SOUS-PROCESSUS de test : retire toute
+/// désignation héritée, puis désigne `designations` (et elles seules). Écrire
+/// l'environnement d'un enfant ne révèle aucun chemin : l'appelant fournit
+/// les siens.
+pub fn designer_pour_un_enfant(
+    commande: &mut std::process::Command,
+    designations: &[(Base, &Path)],
+) {
+    commande.env_remove(VARIABLE_GARDER_COPIE);
+    for base in Base::TOUTES {
+        commande.env_remove(base.variable());
+    }
+    for (base, chemin) in designations {
+        commande.env(base.variable(), chemin);
+    }
+}
+
 /// Vérifie qu'un chemin désigné est celui d'une base Obrain existante, sans
 /// rien ouvrir.
-///
-/// # Panics
 ///
 /// * chemin relatif : il serait résolu contre le répertoire courant du
 ///   binaire de test (le dossier du crate), pas contre celui de l'appelant ;
 /// * pas de `substrate.meta` : ce n'est pas une base. Le moteur en CRÉERAIT
 ///   une à cet endroit, même ouvert en lecture seule — désigner par erreur le
 ///   dossier parent sèmerait des `substrate.*` dans une arborescence réelle.
-fn exiger_base(chemin: &Path, origine: &str) {
-    assert!(
-        chemin.is_absolute(),
-        "{origine} désigne « {} » : un chemin ABSOLU est exigé (un chemin relatif serait résolu \
-         contre le dossier du crate testé, pas contre le vôtre)",
-        chemin.display()
-    );
-    assert!(
-        chemin.join(FICHIER_META).is_file(),
-        "{origine} désigne « {} », qui n'est pas une base Obrain : pas de {FICHIER_META} dans ce \
-         répertoire. Rien n'est ouvert.",
-        chemin.display()
-    );
+fn verifier_base(chemin: &Path, origine: &str) -> Result<(), String> {
+    if !chemin.is_absolute() {
+        return Err(format!(
+            "{origine} désigne « {} » : un chemin ABSOLU est exigé (un chemin relatif serait \
+             résolu contre le dossier du crate testé, pas contre le vôtre)",
+            chemin.display()
+        ));
+    }
+    if !chemin.join(FICHIER_META).is_file() {
+        return Err(format!(
+            "{origine} désigne « {} », qui n'est pas une base Obrain : pas de {FICHIER_META} dans \
+             ce répertoire. Rien n'est ouvert.",
+            chemin.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Ce que dit l'environnement d'une base.
+#[derive(Debug, PartialEq, Eq)]
+enum Designation {
+    /// La variable n'existe pas.
+    Absente,
+    /// La variable existe mais elle est vide : rien n'est désigné.
+    Vide,
+    /// La variable désigne une base vérifiée (chemin absolu, `substrate.meta`).
+    Base(PathBuf),
 }
 
 /// Résout la désignation de `base` à partir d'un environnement **fourni**
-/// (`env` rend la valeur d'une variable). Fonction pure : c'est elle que les
-/// tests exercent, sans toucher à l'environnement du processus.
+/// (`env` rend la valeur d'une variable). Fonction pure, que les tests de ce
+/// crate exercent sans toucher à l'environnement du processus.
 ///
-/// Rend `None` quand la variable est absente ou vide — jamais un chemin
-/// deviné, quel que soit `HOME`.
+/// **Privée à dessein** : elle rend le chemin de la base D'ORIGINE.
 ///
 /// # Panics
 ///
-/// Si la variable désigne autre chose qu'une base : chemin relatif, ou
-/// répertoire sans `substrate.meta`. Une désignation explicite erronée est une
-/// erreur de l'appelant, pas un saut silencieux.
-pub fn resoudre_avec(base: Base, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    let valeur = env(base.variable()).filter(|v| !v.is_empty())?;
-    let chemin = PathBuf::from(valeur);
-    exiger_base(&chemin, base.variable());
-    Some(chemin)
+/// Si la variable désigne autre chose qu'une base : une désignation explicite
+/// erronée est une erreur de l'appelant, pas un saut silencieux.
+fn resoudre_avec(base: Base, env: impl Fn(&str) -> Option<OsString>) -> Designation {
+    match env(base.variable()) {
+        None => Designation::Absente,
+        Some(valeur) if valeur.is_empty() => Designation::Vide,
+        Some(valeur) => {
+            let chemin = PathBuf::from(valeur);
+            if let Err(refus) = verifier_base(&chemin, base.variable()) {
+                panic!("{refus}");
+            }
+            Designation::Base(chemin)
+        }
+    }
 }
 
 /// Nom de la cible en cours, pour les annonces : libtest nomme le fil
@@ -165,18 +230,20 @@ fn cible() -> String {
 /// Résout `base` dans l'environnement du processus et **annonce** le saut
 /// quand elle n'est pas désignée.
 fn resoudre_ou_annoncer(base: Base) -> Option<PathBuf> {
-    let chemin = resoudre_avec(base, |cle| std::env::var_os(cle));
-    if chemin.is_none() {
-        eprintln!(
-            "SAUT [{}] : {} n'est pas définie — la base réelle « {} » n'est PAS ouverte \
-             (aucun chemin n'est deviné sous $HOME ; voir docs/BENCHMARKS.md, \
-             « Bancs sur bases réelles »)",
-            cible(),
-            base.variable(),
-            base.nom()
-        );
-    }
-    chemin
+    let etat = match resoudre_avec(base, |cle| std::env::var_os(cle)) {
+        Designation::Base(chemin) => return Some(chemin),
+        Designation::Absente => "n'est pas définie",
+        Designation::Vide => "est définie mais vide",
+    };
+    eprintln!(
+        "SAUT [{}] : {} {etat} — la base réelle « {} » n'est PAS ouverte \
+         (aucun chemin n'est deviné sous $HOME ; voir docs/BENCHMARKS.md, \
+         « Bancs sur bases réelles »)",
+        cible(),
+        base.variable(),
+        base.nom()
+    );
+    None
 }
 
 // ───────────────────────────── Lecteurs ─────────────────────────────────────
@@ -188,6 +255,10 @@ fn resoudre_ou_annoncer(base: Base) -> Option<PathBuf> {
 /// qui ouvrent **en lecture seule** une **copie** de la base — jamais la base
 /// désignée. Une cible ne peut donc ni ouvrir l'original, ni l'ouvrir en
 /// écriture, même par inadvertance.
+///
+/// Plusieurs lecteurs peuvent ouvrir la même copie en même temps (huit
+/// ouvertures simultanées d'une copie de base sale, 150 fois de suite, voient
+/// toutes la même base : `bases_reelles_non_ouvertes.rs`).
 #[derive(Debug, Clone)]
 pub struct BaseLecture {
     base: Base,
@@ -195,11 +266,12 @@ pub struct BaseLecture {
 }
 
 impl BaseLecture {
-    /// Ouvre la copie en lecture seule avec le moteur.
+    /// Ouvre la copie en lecture seule avec le moteur (feature `moteur`).
     ///
     /// # Panics
     ///
     /// Si l'ouverture échoue.
+    #[cfg(feature = "moteur")]
     #[must_use]
     pub fn ouvrir(&self) -> ObrainDB {
         ObrainDB::open_read_only(&self.copie).unwrap_or_else(|e| {
@@ -228,11 +300,29 @@ impl BaseLecture {
     }
 }
 
-/// Copies de lecture du processus : une par base, prise à la première
-/// demande, partagée par tous les tests du binaire, supprimée à la sortie.
-fn copies_de_lecture() -> &'static Mutex<HashMap<Base, PathBuf>> {
-    static COPIES: OnceLock<Mutex<HashMap<Base, PathBuf>>> = OnceLock::new();
-    COPIES.get_or_init(|| Mutex::new(HashMap::new()))
+/// Résultat mémorisé d'une copie de lecture : la copie, ou le refus — qu'on
+/// ne retente pas à chaque test.
+type CopieLecture = Arc<OnceLock<Result<PathBuf, String>>>;
+
+/// Une cellule par base : le verrou global n'est tenu que le temps de la
+/// trouver, la copie se fait sous la cellule de SA base (deux bases se copient
+/// en parallèle ; deux demandes de la même base attendent la même copie).
+fn cellule_de_lecture(base: Base) -> CopieLecture {
+    static CELLULES: OnceLock<Mutex<HashMap<Base, CopieLecture>>> = OnceLock::new();
+    CELLULES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(base)
+        .or_default()
+        .clone()
+}
+
+/// Verrous de propriétaire des copies de lecture : tenus jusqu'à la sortie du
+/// processus.
+fn verrous_de_lecture() -> &'static Mutex<Vec<File>> {
+    static VERROUS: OnceLock<Mutex<Vec<File>>> = OnceLock::new();
+    VERROUS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 /// Base désignée pour une cible qui ne fait que **lire** — ou `None`, après
@@ -241,36 +331,54 @@ fn copies_de_lecture() -> &'static Mutex<HashMap<Base, PathBuf>> {
 ///
 /// La base désignée est copiée **une fois par processus** (donc une fois par
 /// binaire de test, quel que soit le nombre de tests qui la demandent) ; la
-/// copie est supprimée à la sortie du processus.
+/// copie est supprimée à la sortie du processus. Un refus de copie est
+/// mémorisé : les tests suivants du binaire échouent avec le même message,
+/// sans retenter.
 ///
 /// # Panics
 ///
-/// Si la variable désigne autre chose qu'une base, ou si la copie échoue.
+/// Si la variable désigne autre chose qu'une base, ou si la copie est refusée
+/// (base tenue par un processus ou modifiée pendant la copie, lien
+/// symbolique, plafond ou marge de disque, erreur d'E/S).
 #[must_use]
 pub fn base_lecture(base: Base) -> Option<BaseLecture> {
     let source = resoudre_ou_annoncer(base)?;
-    // Le verrou est tenu pendant la copie : deux tests du même binaire qui
-    // demandent la même base attendent la même copie au lieu d'en prendre deux.
-    let mut copies = copies_de_lecture()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let copie = copies.entry(base).or_insert_with(|| {
-        let (racine, chemin) = copier_base(&source, base.nom(), false);
-        nettoyage::a_la_sortie(racine);
+    let cellule = cellule_de_lecture(base);
+    let resultat = cellule.get_or_init(|| {
+        let prefixe = format!("{PREFIXE_COPIE}{}-{}-", std::process::id(), base.nom());
+        let copie = copie::copier_base(
+            &source,
+            base.nom(),
+            &prefixe,
+            copie::Limites::depuis_l_environnement(),
+        )?;
+        eprintln!("BANC [{}] : {}", cible(), copie::decrire(&copie, &source));
         eprintln!(
-            "BANC [{}] : base « {} » = COPIE {} de {} (ouverte en lecture seule, partagée par \
-             ce binaire, supprimée à sa sortie)",
+            "BANC [{}] : base « {} » = copie {} (ouverte en lecture seule, partagée par ce \
+             binaire, supprimée à sa sortie)",
             cible(),
             base.nom(),
-            chemin.display(),
-            source.display()
+            copie.chemin.display()
         );
-        chemin
+        nettoyage::a_la_sortie(copie.racine.clone());
+        if let Some(verrou) = copie.verrou {
+            verrous_de_lecture()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(verrou);
+        }
+        Ok(copie.chemin)
     });
-    Some(BaseLecture {
-        base,
-        copie: copie.clone(),
-    })
+    match resultat {
+        Ok(copie) => Some(BaseLecture {
+            base,
+            copie: copie.clone(),
+        }),
+        Err(refus) => panic!(
+            "copie de lecture de « {} » refusée (refus mémorisé pour tout ce binaire) : {refus}",
+            base.nom()
+        ),
+    }
 }
 
 // ───────────────────────────── Écrivains ────────────────────────────────────
@@ -282,6 +390,7 @@ pub fn base_lecture(base: Base) -> Option<BaseLecture> {
 pub struct CopieBase {
     chemin: PathBuf,
     racine: Option<PathBuf>,
+    _verrou: Option<File>,
 }
 
 impl CopieBase {
@@ -302,7 +411,7 @@ impl AsRef<Path> for CopieBase {
 impl Drop for CopieBase {
     fn drop(&mut self) {
         if let Some(racine) = self.racine.take() {
-            let _ = fs::remove_dir_all(&racine);
+            let _ = std::fs::remove_dir_all(&racine);
             nettoyage::oublier(&racine);
         }
     }
@@ -313,40 +422,60 @@ impl Drop for CopieBase {
 /// par fichier ; elle n'est jamais ouverte par le moteur.
 ///
 /// Rend `None`, après l'avoir annoncé, quand la variable n'est pas définie.
-/// La copie n'est cohérente que si rien n'écrit dans la base pendant qu'elle
-/// est prise : désigner un instantané, ou arrêter le service qui la tient.
 ///
 /// # Panics
 ///
-/// Si la variable désigne autre chose qu'une base, ou si la copie échoue
-/// (espace disque, droits).
+/// Si la variable désigne autre chose qu'une base, ou si la copie est refusée
+/// (voir [`base_lecture`]).
 #[must_use]
 pub fn base_copie(base: Base) -> Option<CopieBase> {
     let source = resoudre_ou_annoncer(base)?;
-    Some(copie_privee(&source, base.nom()))
+    Some(copie_de(&source, base.variable()))
 }
 
 /// Copie privée d'une base désignée **par son chemin** — pour les cibles qui
-/// ont leur propre variable (`OBRAIN_TEST_STORE_REEL_DIR`…) et qui écrivent.
+/// ont leur propre variable (`OBRAIN_TEST_STORE_REEL_DIR`…) ou leurs
+/// arguments.
 ///
 /// # Panics
 ///
-/// Si `source` n'est pas un chemin absolu vers une base (`substrate.meta`),
-/// ou si la copie échoue.
+/// Si [`essayer_copie_de`] refuse.
 #[must_use]
 pub fn copie_de(source: &Path, origine: &str) -> CopieBase {
-    exiger_base(source, origine);
-    copie_privee(source, "base")
+    essayer_copie_de(source, origine).unwrap_or_else(|refus| panic!("{refus}"))
 }
 
-fn copie_privee(source: &Path, nom: &str) -> CopieBase {
+/// Comme [`copie_de`], mais rend le refus au lieu de paniquer — pour un outil
+/// qui veut sauter une base et continuer.
+///
+/// La copie n'est prise que si personne ne tient la base (verrou
+/// `substrate.dirlock` du moteur, sous Unix) et qu'elle n'a pas changé entre le
+/// début et la fin de la copie ; elle est refusée nommément sinon.
+///
+/// # Errors
+///
+/// Un message nommé : chemin relatif ou sans `substrate.meta`, base tenue ou
+/// modifiée pendant la copie, lien symbolique, plafond ou marge de disque,
+/// erreur d'E/S.
+pub fn essayer_copie_de(source: &Path, origine: &str) -> Result<CopieBase, String> {
+    verifier_base(source, origine)?;
     let garder = std::env::var_os(VARIABLE_GARDER_COPIE).is_some_and(|v| v == "1");
-    let (racine, chemin) = copier_base(source, nom, garder);
+    let prefixe = if garder {
+        format!("{PREFIXE_COPIE_GARDEE}{}-", std::process::id())
+    } else {
+        format!("{PREFIXE_COPIE}{}-base-", std::process::id())
+    };
+    let copie = copie::copier_base(
+        source,
+        "base",
+        &prefixe,
+        copie::Limites::depuis_l_environnement(),
+    )?;
+    eprintln!("BANC [{}] : {}", cible(), copie::decrire(&copie, source));
     eprintln!(
-        "BANC [{}] : base « {nom} » = COPIE privée {} de {} ({})",
+        "BANC [{}] : copie privée {} ({})",
         cible(),
-        chemin.display(),
-        source.display(),
+        copie.chemin.display(),
         if garder {
             "conservée après la cible : à supprimer à la main"
         } else {
@@ -357,275 +486,336 @@ fn copie_privee(source: &Path, nom: &str) -> CopieBase {
         None
     } else {
         // Filet si la cible sort sans lâcher la valeur (`process::exit`).
-        nettoyage::a_la_sortie(racine.clone());
-        Some(racine)
+        nettoyage::a_la_sortie(copie.racine.clone());
+        Some(copie.racine)
     };
-    CopieBase { chemin, racine }
+    Ok(CopieBase {
+        chemin: copie.chemin,
+        racine,
+        _verrou: copie.verrou,
+    })
 }
 
-/// Copie `source` dans un nouveau répertoire de `TMPDIR`. Rend
-/// `(racine à supprimer, chemin de la base copiée)`.
-fn copier_base(source: &Path, nom: &str, garder: bool) -> (PathBuf, PathBuf) {
-    nettoyage::balayer_les_residus();
-    let prefixe = if garder {
-        format!("{PREFIXE_COPIE_GARDEE}{nom}-")
-    } else {
-        format!("{PREFIXE_COPIE}{}-{nom}-", std::process::id())
-    };
-    // `keep` : la durée de vie est gérée ici (lâcher, sortie du processus,
-    // balayage des résidus), pas par le destructeur de `TempDir`.
-    let racine = tempfile::Builder::new()
-        .prefix(&prefixe)
-        .tempdir()
-        .expect("création du répertoire temporaire de la copie")
-        .keep();
-    let chemin = racine.join(nom);
-    let debut = std::time::Instant::now();
-    let octets = copier_arborescence(source, &chemin).unwrap_or_else(|e| {
-        let _ = fs::remove_dir_all(&racine);
-        panic!(
-            "copie de {} vers {} : {e}",
-            source.display(),
-            chemin.display()
+#[cfg(test)]
+mod tests {
+    //! La résolution, exercée ici parce qu'elle est privée : elle rend le
+    //! chemin de la base d'origine, qu'aucune cible ne doit pouvoir obtenir.
+
+    use super::{Base, Designation, empreinte, resoudre_avec};
+    use crate::copie::{self, Limites, Mode};
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::Path;
+
+    /// Fabrique `<racine>/.obrain/db/{po,wikipedia,megalaw}`, chacune avec un
+    /// `substrate.meta` : la disposition exacte que les anciennes cibles
+    /// devinaient. (Fichiers factices : ces tests ne passent pas par le moteur.)
+    fn faux_home(racine: &Path) {
+        for base in Base::TOUTES {
+            let dossier = racine.join(".obrain/db").join(base.nom());
+            fs::create_dir_all(&dossier).unwrap();
+            fs::write(dossier.join("substrate.meta"), b"en-tete").unwrap();
+            fs::write(dossier.join("substrate.nodes"), b"donnees de l'utilisateur").unwrap();
+        }
+    }
+
+    fn environnement(paires: &[(&str, &Path)]) -> impl Fn(&str) -> Option<OsString> + use<> {
+        let table: HashMap<String, OsString> = paires
+            .iter()
+            .map(|(cle, valeur)| ((*cle).to_owned(), valeur.as_os_str().to_owned()))
+            .collect();
+        move |cle| table.get(cle).cloned()
+    }
+
+    #[test]
+    fn home_seul_ne_designe_aucune_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        faux_home(tmp.path());
+        let avant = empreinte(tmp.path()).unwrap();
+
+        let env = environnement(&[("HOME", tmp.path()), ("USERPROFILE", tmp.path())]);
+        for base in Base::TOUTES {
+            assert_eq!(
+                resoudre_avec(base, &env),
+                Designation::Absente,
+                "la base « {} » a été résolue sans {} : un chemin a été deviné sous HOME",
+                base.nom(),
+                base.variable()
+            );
+        }
+
+        assert_eq!(
+            avant,
+            empreinte(tmp.path()).unwrap(),
+            "la résolution a touché aux fichiers"
+        );
+    }
+
+    #[test]
+    fn une_variable_vide_ne_designe_rien_et_le_dit() {
+        let env = environnement(&[(Base::Po.variable(), Path::new(""))]);
+        assert_eq!(resoudre_avec(Base::Po, &env), Designation::Vide);
+    }
+
+    #[test]
+    fn la_variable_designe_sa_base_et_elle_seule() {
+        let tmp = tempfile::tempdir().unwrap();
+        faux_home(tmp.path());
+        let po = tmp.path().join(".obrain/db/po");
+        let env = environnement(&[(Base::Po.variable(), &po), ("HOME", tmp.path())]);
+
+        assert_eq!(resoudre_avec(Base::Po, &env), Designation::Base(po));
+        assert_eq!(resoudre_avec(Base::Wikipedia, &env), Designation::Absente);
+        assert_eq!(resoudre_avec(Base::Megalaw, &env), Designation::Absente);
+    }
+
+    #[test]
+    #[should_panic(expected = "pas de substrate.meta")]
+    fn un_chemin_inexistant_echoue_bruyamment() {
+        let env = environnement(&[(Base::Po.variable(), Path::new("/chemin/qui/n/existe/pas"))]);
+        let _ = resoudre_avec(Base::Po, &env);
+    }
+
+    /// Le piège : désigner le PARENT des bases. Le moteur y créerait une base
+    /// vide, même ouvert en lecture seule. Refus avant toute ouverture, et
+    /// rien n'est créé.
+    #[test]
+    fn le_dossier_parent_des_bases_est_refuse_sans_rien_creer() {
+        let tmp = tempfile::tempdir().unwrap();
+        faux_home(tmp.path());
+        let parent = tmp.path().join(".obrain/db");
+        let avant = empreinte(tmp.path()).unwrap();
+
+        let env = environnement(&[(Base::Po.variable(), &parent)]);
+        let refus = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resoudre_avec(Base::Po, &env)
+        }));
+        assert!(
+            refus.is_err(),
+            "le parent des bases a été accepté comme base"
+        );
+        assert_eq!(avant, empreinte(tmp.path()).unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "chemin ABSOLU")]
+    fn un_chemin_relatif_est_refuse() {
+        let env = environnement(&[(Base::Po.variable(), Path::new("bases/po"))]);
+        let _ = resoudre_avec(Base::Po, &env);
+    }
+
+    // ─────────────────────── Le moteur de copie ────────────────────────────
+
+    /// Une fausse base de fichiers factices.
+    fn fausse_base(racine: &Path) -> std::path::PathBuf {
+        let base = racine.join("source");
+        fs::create_dir_all(base.join("graphs/annexe")).unwrap();
+        fs::write(base.join("substrate.meta"), b"en-tete").unwrap();
+        fs::write(base.join("substrate.nodes"), vec![7u8; 4096]).unwrap();
+        fs::write(base.join("graphs/annexe/substrate.meta"), b"annexe").unwrap();
+        base
+    }
+
+    fn limites() -> Limites {
+        Limites {
+            copie_max: u64::MAX,
+            marge: 0,
+            forcer_pleine: false,
+        }
+    }
+
+    fn copier(source: &Path, l: Limites) -> Result<copie::Copie, String> {
+        copie::copier_base(source, "base", "obrain-banc-essai-", l)
+    }
+
+    #[test]
+    fn la_copie_reproduit_la_base_et_appartient_au_banc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fausse_base(tmp.path());
+        for forcer_pleine in [false, true] {
+            let c = copier(
+                &source,
+                Limites {
+                    forcer_pleine,
+                    ..limites()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(c.chemin.join("substrate.nodes")).unwrap(),
+                vec![7u8; 4096]
+            );
+            assert_eq!(
+                fs::read(c.chemin.join("graphs/annexe/substrate.meta")).unwrap(),
+                b"annexe"
+            );
+            if forcer_pleine {
+                assert_eq!(c.mode, Mode::Pleine);
+            } else if cfg!(target_vendor = "apple") {
+                assert_eq!(c.mode, Mode::Clone, "APFS sait cloner");
+            }
+            fs::remove_dir_all(&c.racine).unwrap();
+        }
+    }
+
+    /// Un lien qui boucle ferait déborder la pile d'une copie qui suit les
+    /// liens ; un lien cassé la ferait paniquer. Les deux sont refusés,
+    /// nommément, et rien ne reste dans TMPDIR.
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_symbolique_est_refuse_nommement() {
+        for (nom, cible) in [("boucle", "."), ("casse", "/nulle/part/obrain")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let source = fausse_base(tmp.path());
+            std::os::unix::fs::symlink(cible, source.join("graphs").join(nom)).unwrap();
+            let refus = copier(&source, limites()).unwrap_err();
+            assert!(
+                refus.contains("lien symbolique refusé") && refus.contains(nom),
+                "{refus}"
+            );
+        }
+    }
+
+    /// Une base en 0444 (instantané en lecture seule) doit donner une copie
+    /// que le moteur peut ouvrir en écriture.
+    #[cfg(unix)]
+    #[test]
+    fn une_base_en_lecture_seule_donne_une_copie_inscriptible() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fausse_base(tmp.path());
+        for f in [
+            "substrate.meta",
+            "substrate.nodes",
+            "graphs/annexe/substrate.meta",
+        ] {
+            fs::set_permissions(source.join(f), fs::Permissions::from_mode(0o444)).unwrap();
+        }
+        for forcer_pleine in [false, true] {
+            let c = copier(
+                &source,
+                Limites {
+                    forcer_pleine,
+                    ..limites()
+                },
+            )
+            .unwrap();
+            for f in [
+                "substrate.meta",
+                "substrate.nodes",
+                "graphs/annexe/substrate.meta",
+            ] {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(c.chemin.join(f))
+                    .unwrap_or_else(|e| panic!("{f} non inscriptible dans la copie : {e}"));
+            }
+            fs::remove_dir_all(&c.racine).unwrap();
+        }
+    }
+
+    #[test]
+    fn une_copie_pleine_au_dela_du_plafond_est_refusee() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fausse_base(tmp.path());
+        let refus = copier(
+            &source,
+            Limites {
+                copie_max: 0,
+                forcer_pleine: true,
+                ..limites()
+            },
         )
-    });
-    eprintln!(
-        "BANC [{}] : copie de {} — {octets} octets en {:.2} s",
-        cible(),
-        source.display(),
-        debut.elapsed().as_secs_f64()
-    );
-    (racine, chemin)
-}
-
-/// Copie récursive de `source` vers `destination` (créée) ; rend le nombre
-/// d'octets logiques copiés. Les liens symboliques sont suivis : la copie ne
-/// pointe jamais vers l'original.
-///
-/// `std::fs::copy` clone le fichier quand le système de fichiers le permet
-/// (`fclonefileat` sur APFS ; `copy_file_range`, qui partage les blocs sur
-/// Btrfs et XFS avec reflink) : la copie est alors quasi instantanée et ne
-/// consomme de disque que pour les blocs réécrits ensuite. Ailleurs — et dès
-/// que `TMPDIR` n'est pas sur le même volume que la base — c'est une copie
-/// pleine.
-///
-/// # Errors
-///
-/// Toute erreur d'entrée-sortie rencontrée pendant la copie.
-pub fn copier_arborescence(source: &Path, destination: &Path) -> io::Result<u64> {
-    fs::create_dir_all(destination)?;
-    let mut octets = 0;
-    for entree in fs::read_dir(source)? {
-        let entree = entree?;
-        let depuis = entree.path();
-        let vers = destination.join(entree.file_name());
-        if fs::metadata(&depuis)?.is_dir() {
-            octets += copier_arborescence(&depuis, &vers)?;
-        } else {
-            octets += fs::copy(&depuis, &vers)?;
-        }
-    }
-    Ok(octets)
-}
-
-// ───────────────────────────── Nettoyage ────────────────────────────────────
-
-/// Suppression des copies : à la sortie normale du processus (`atexit`), et,
-/// pour les résidus d'un processus tué (Ctrl-C, `kill -9`, panne), au
-/// lancement suivant — le nom du répertoire porte le PID de son propriétaire.
-mod nettoyage {
-    use super::{PREFIXE_COPIE, PREFIXE_COPIE_GARDEE};
-    use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, Once, OnceLock};
-
-    fn registre() -> &'static Mutex<Vec<PathBuf>> {
-        static REGISTRE: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
-        REGISTRE.get_or_init(|| Mutex::new(Vec::new()))
-    }
-
-    /// Inscrit `racine` pour suppression à la sortie du processus.
-    pub(super) fn a_la_sortie(racine: PathBuf) {
-        registre()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(racine);
-        armer();
-    }
-
-    /// Retire `racine` du registre (elle vient d'être supprimée).
-    pub(super) fn oublier(racine: &Path) {
-        registre()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|r| r != racine);
+        .unwrap_err();
+        assert!(refus.contains("au-delà du plafond"), "{refus}");
     }
 
     #[cfg(unix)]
-    extern "C" fn supprimer_tout() {
-        // `try_lock` : on est dans un gestionnaire de sortie, on ne bloque pas.
-        if let Ok(racines) = registre().try_lock() {
-            for racine in racines.iter() {
-                let _ = std::fs::remove_dir_all(racine);
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[allow(unsafe_code)]
-    fn armer() {
-        static ARME: Once = Once::new();
-        ARME.call_once(|| {
-            // SAFETY: `supprimer_tout` est une fonction `extern "C"` sans
-            // argument, valide pour toute la vie du processus ; elle ne
-            // panique pas (erreurs ignorées, `try_lock`).
-            let _ = unsafe { libc::atexit(supprimer_tout) };
-        });
-    }
-
-    #[cfg(not(unix))]
-    fn armer() {
-        // Pas d'`atexit` ici : les copies de lecture restent dans TMPDIR
-        // (documenté dans docs/BENCHMARKS.md).
-        static ARME: Once = Once::new();
-        ARME.call_once(|| {});
-    }
-
-    #[cfg(unix)]
-    #[allow(unsafe_code)]
-    fn processus_vivant(pid: u32) -> bool {
-        let Ok(pid) = libc::pid_t::try_from(pid) else {
-            return true;
-        };
-        // SAFETY: `kill` avec le signal 0 n'envoie rien : il teste seulement
-        // l'existence du processus.
-        let resultat = unsafe { libc::kill(pid, 0) };
-        // Échec autre que « aucun processus » (droits…) : on le tient pour vivant.
-        resultat == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-    }
-
-    #[cfg(not(unix))]
-    fn processus_vivant(_pid: u32) -> bool {
-        true
-    }
-
-    /// Supprime de `TMPDIR` les copies `obrain-banc-<pid>-…` dont le
-    /// propriétaire n'existe plus. Une fois par processus.
-    pub(super) fn balayer_les_residus() {
-        static FAIT: Once = Once::new();
-        FAIT.call_once(|| {
-            let Ok(entrees) = std::fs::read_dir(std::env::temp_dir()) else {
-                return;
-            };
-            for entree in entrees.flatten() {
-                let nom = entree.file_name();
-                let Some(nom) = nom.to_str() else { continue };
-                if nom.starts_with(PREFIXE_COPIE_GARDEE) {
-                    continue;
-                }
-                let Some(pid) = nom
-                    .strip_prefix(PREFIXE_COPIE)
-                    .and_then(|reste| reste.split('-').next())
-                    .and_then(|pid| pid.parse::<u32>().ok())
-                else {
-                    continue;
-                };
-                if !processus_vivant(pid) {
-                    eprintln!(
-                        "BANC : résidu d'un processus interrompu supprimé : {}",
-                        entree.path().display()
-                    );
-                    let _ = std::fs::remove_dir_all(entree.path());
-                }
-            }
-        });
-    }
-}
-
-// ───────────────────────────── Empreinte ────────────────────────────────────
-
-/// État observable d'une entrée : taille, date de modification, condensé du
-/// contenu.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmpreinteFichier {
-    /// Taille en octets (`0` pour un répertoire).
-    pub taille: u64,
-    /// Date de dernière modification. Pour un répertoire, elle bouge dès
-    /// qu'une entrée y est créée, supprimée ou renommée : c'est elle qui
-    /// trahit un fichier créé PUIS supprimé (verrou, temporaire), que la
-    /// seule liste des chemins ne verrait pas.
-    pub modifie: SystemTime,
-    /// Condensé FNV-1a 64 bits du contenu (`0` pour un répertoire).
-    pub condense: u64,
-}
-
-/// Empreinte d'une arborescence : chaque chemin relatif (la racine comprise,
-/// sous le chemin vide) et son état. Deux empreintes égales prouvent que rien
-/// n'a été créé, supprimé, renommé ni modifié — même transitoirement.
-pub type Empreinte = BTreeMap<PathBuf, EmpreinteFichier>;
-
-/// Calcule l'[`Empreinte`] de `racine` (récursive).
-///
-/// # Errors
-///
-/// Toute erreur d'entrée-sortie rencontrée pendant le parcours.
-pub fn empreinte(racine: &Path) -> io::Result<Empreinte> {
-    let mut etat = Empreinte::new();
-    etat.insert(
-        PathBuf::new(),
-        EmpreinteFichier {
-            taille: 0,
-            modifie: fs::metadata(racine)?.modified()?,
-            condense: 0,
-        },
-    );
-    empreinte_dans(racine, racine, &mut etat)?;
-    Ok(etat)
-}
-
-fn empreinte_dans(racine: &Path, dossier: &Path, etat: &mut Empreinte) -> io::Result<()> {
-    for entree in fs::read_dir(dossier)? {
-        let chemin = entree?.path();
-        let relatif = chemin
-            .strip_prefix(racine)
-            .expect("chemin sous la racine")
-            .to_path_buf();
-        let meta = fs::metadata(&chemin)?;
-        if meta.is_dir() {
-            etat.insert(
-                relatif,
-                EmpreinteFichier {
-                    taille: 0,
-                    modifie: meta.modified()?,
-                    condense: 0,
+    #[test]
+    fn une_copie_sans_marge_de_disque_est_refusee() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fausse_base(tmp.path());
+        for forcer_pleine in [false, true] {
+            let refus = copier(
+                &source,
+                Limites {
+                    marge: u64::MAX / 4,
+                    forcer_pleine,
+                    ..limites()
                 },
-            );
-            empreinte_dans(racine, &chemin, etat)?;
-        } else {
-            etat.insert(
-                relatif,
-                EmpreinteFichier {
-                    taille: meta.len(),
-                    modifie: meta.modified()?,
-                    condense: condense_fichier(&chemin)?,
-                },
-            );
+            )
+            .unwrap_err();
+            assert!(refus.contains("place insuffisante"), "{refus}");
         }
     }
-    Ok(())
+
+    /// Un fichier de 64 Mio presque entièrement creux reste creux dans une
+    /// copie pleine.
+    #[cfg(unix)]
+    #[test]
+    fn la_copie_pleine_preserve_les_trous() {
+        use std::io::{Seek, SeekFrom, Write};
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fausse_base(tmp.path());
+        let mut f = fs::File::create(source.join("substrate.edges")).unwrap();
+        f.write_all(b"debut").unwrap();
+        f.seek(SeekFrom::Start(40 << 20)).unwrap();
+        f.write_all(b"milieu").unwrap();
+        f.set_len(64 << 20).unwrap();
+        drop(f);
+        let c = copier(
+            &source,
+            Limites {
+                forcer_pleine: true,
+                ..limites()
+            },
+        )
+        .unwrap();
+        let meta = fs::metadata(c.chemin.join("substrate.edges")).unwrap();
+        assert_eq!(meta.len(), 64 << 20);
+        assert!(
+            meta.blocks() * 512 < 8 << 20,
+            "la copie a rempli les trous : {} octets physiques",
+            meta.blocks() * 512
+        );
+        let octets = fs::read(c.chemin.join("substrate.edges")).unwrap();
+        assert_eq!(&octets[..5], b"debut");
+        assert_eq!(&octets[40 << 20..(40 << 20) + 6], b"milieu");
+        fs::remove_dir_all(&c.racine).unwrap();
+    }
 }
 
-fn condense_fichier(chemin: &Path) -> io::Result<u64> {
-    let mut fichier = fs::File::open(chemin)?;
-    let mut tampon = vec![0u8; 1 << 16];
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    loop {
-        let lus = fichier.read(&mut tampon)?;
-        if lus == 0 {
-            return Ok(h);
+#[cfg(test)]
+mod ordre_de_fermeture {
+    //! Le banc `zero_copy` garde une base et le garde de ses fichiers dans
+    //! une structure : c'est l'ordre de déclaration des champs qui fait
+    //! fermer la base AVANT de supprimer ses fichiers. Ce test fixe la
+    //! garantie du langage sur laquelle il s'appuie.
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct Trace(Rc<RefCell<Vec<&'static str>>>, &'static str);
+    impl Drop for Trace {
+        fn drop(&mut self) {
+            self.0.borrow_mut().push(self.1);
         }
-        for octet in &tampon[..lus] {
-            h ^= u64::from(*octet);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+    }
+
+    struct Ouvert {
+        _base: Trace,
+        _garde: Trace,
+    }
+
+    #[test]
+    fn les_champs_sont_laches_dans_l_ordre_de_leur_declaration() {
+        let journal = Rc::new(RefCell::new(Vec::new()));
+        drop(Ouvert {
+            _base: Trace(journal.clone(), "base fermée"),
+            _garde: Trace(journal.clone(), "fichiers supprimés"),
+        });
+        assert_eq!(*journal.borrow(), ["base fermée", "fichiers supprimés"]);
     }
 }

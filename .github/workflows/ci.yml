@@ -27,6 +27,17 @@ on:
 permissions:
   contents: read
 
+# Un push sur une PR rend le run précédent de CETTE PR sans objet : son verdict
+# porte sur un arbre qui n'est plus la tête. Les 3 runners auto-hébergés
+# restaient sinon occupés par des runs périmés (11/11/2026 : 17 runs en file
+# depuis 2 h, dont 13 sur des commits déjà remplacés, ≈ 150 jobs inutiles).
+# Hors PR (push sur main, appel par release.yml) le groupe est unique par run :
+# rien n'est jamais annulé, et aucun groupe n'entre en collision avec celui de
+# release.yml (`release-<ref>`).
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -46,7 +57,8 @@ env:
 jobs:
   lint:
     name: Format, clippy, doc (zéro avertissement)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -93,7 +105,8 @@ jobs:
 
   test:
     name: Tests (features par défaut)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -134,7 +147,8 @@ jobs:
   # la même branche. Verdict NOMMÉ : la ligne `test result` est le contrat.
   wal-partage:
     name: WAL partagé (inter-processus)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 10
     concurrency:
       group: wal-partage-${{ github.workflow }}-${{ github.ref }}
@@ -152,9 +166,303 @@ jobs:
           ulimit -n 8192
           cargo test -p obrain-engine --test ecriture_multi_processus --no-fail-fast
 
+  # (2026-11-11, suite de #110/#113) BANCS SUR BASES FABRIQUÉES : les cibles
+  # qui exigent une base réelle (`CORPUS_*`, `OBRAIN_SONDE_STORE`,
+  # `OBRAIN_BANC_BASE`) sont `#[ignore]` et ne tournaient nulle part. Ce job
+  # fabrique de PETITES bases jetables, les désigne, et joue ces cibles — qui
+  # n'ouvrent qu'une COPIE de la base désignée. Il rejoue aussi les
+  # reproductions des défauts connus du moteur (`--cfg defauts_connus`), qui
+  # DOIVENT rester rouges tant que le moteur n'est pas corrigé : si elles
+  # passent, c'est que le moteur a changé et que le cfg doit être retiré.
+  bancs-fabriques:
+    name: Bancs sur bases fabriquées (cibles désignées, défauts connus)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/tests"
+          echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Fabrication des bases jetables
+        run: |
+          B="$RUNNER_TEMP/tests/bases"; mkdir -p "$B"
+          echo "BASES=$B" >> "$GITHUB_ENV"
+          cargo run -p obrain-substrate --example fabrique_bases_banc -- simplexes "$B/a"
+          cargo run -p obrain-substrate --example fabrique_bases_banc -- simplexes "$B/b"
+          cargo run -p obrain-substrate --example fabrique_bases_banc -- simplexes "$B/db"
+          cargo run -p obrain-engine --features cdc --example fabrique_base_cdc -- "$B/cdc" 2000
+          OBRAIN_BANC_BASE="$B/grain" cargo test -p obrain-engine --test fabrique_base -- --ignored
+          mkdir -p "$B/pas-une-base"
+          du -sh "$B"/*
+      # Chaque cible copie la base désignée (clone si le système de fichiers
+      # le permet) et ne l'ouvre jamais elle-même.
+      - name: Cibles converties, sur les bases fabriquées
+        run: |
+          ulimit -n 8192
+          CORPUS_A="$BASES/a" CORPUS_B="$BASES/b" CORPUS_DB="$BASES/db" \
+            cargo test -p obrain-substrate --test simplex_passes_materialisation -- --ignored byte_identical_corpus mesures_corpus --test-threads=1 --nocapture
+          OBRAIN_SONDE_STORE="$BASES/cdc" \
+            cargo test -p obrain-engine --features cdc --test cout_consolidation -- --ignored --nocapture
+          OBRAIN_BANC_BASE="$BASES/grain" \
+            cargo test -p obrain-engine --test banc_surcout -- --ignored --nocapture
+          cargo run -p obrain-engine --example verify_bases -- "$BASES/grain" "$BASES/pas-une-base" | tee verify.txt
+          grep -q 'OK nodes=120000' verify.txt
+          grep -q 'pas-une-base : SAUTÉE' verify.txt
+      # Les bases désignées doivent être restées identiques (les cibles ont
+      # travaillé sur des copies) : on les rouvre en lecture et on compare les
+      # comptes à ceux de la fabrication.
+      - name: Les bases désignées n'ont pas bougé
+        run: |
+          cargo run -p obrain-engine --example verify_bases -- "$BASES/grain" | grep -q 'OK nodes=120000'
+      # Cette étape exigeait le ROUGE de deux reproductions de « open_read_only
+      # écrit sur le disque ». Elles sont passées au vert sans être touchées
+      # (obrain #115) : elles ont été converties en tests de non-régression
+      # ordinaires — `lecture_seule_n_ecrit_pas_dans_la_base` et
+      # `lecture_seule_ne_cree_pas_une_base` — et tournent désormais dans le job
+      # « Tests (features par défaut) », qui les exécute pour de vrai.
+      #
+      # La garde n'a donc plus de sujet. Si un défaut moteur est un jour
+      # reproduit ici, il se couvre par un test ROUGE ordinaire : un test qui
+      # échoue est déjà un rouge de CI, et il n'a pas besoin d'une convention
+      # pour le dire.
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tests"
+
+  # (BIND-0, 2026-11-12) ABI C : la bibliothèque `obrain-c` compile contre le
+  # moteur, son en-tête commité est EXACTEMENT celui que cbindgen (version
+  # épinglée, la même que dans crates/bindings/c/build.rs) régénère, et un
+  # programme C réel (tests/smoke.c) ouvre, écrit, relit et libère.
+  bindings-c:
+    name: Bindings C
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: [self-hosted, linux, x64, obrain-ci]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/tests"
+          echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Compilateur C du runner
+        run: cc --version
+      # La version est lue dans build.rs (source unique) et DOIT valoir celle
+      # attendue ici : changer l'une sans l'autre fait échouer ce job.
+      - name: cbindgen (version épinglée)
+        run: |
+          ATTENDUE=0.29.4
+          VERSION=$(sed -n 's/^const CBINDGEN_VERSION: &str = "\(.*\)";$/\1/p' crates/bindings/c/build.rs)
+          echo "cbindgen épinglé dans build.rs : $VERSION"
+          if [ "$VERSION" != "$ATTENDUE" ]; then echo "::error::build.rs épingle cbindgen $VERSION, ci.yml attend $ATTENDUE : mettre les deux à jour ensemble"; exit 1; fi
+          cargo install --locked --version "$VERSION" cbindgen
+          cbindgen --version
+      - name: Build (cdylib + staticlib, en-tête régénéré par build.rs)
+        run: cargo build -p obrain-c
+      - name: En-tête commité identique au généré
+        run: git diff --exit-code -- crates/bindings/c/obrain.h
+      - name: Tests (unitaires, header_a_jour, smoke C)
+        run: |
+          ulimit -n 8192
+          cargo test -p obrain-c -p obrain-bindings-common --no-fail-fast
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tests"
+
+  # ── Bindings Python (pyo3, crates/bindings/python) ─────────────────────────
+  # Construit la wheel avec maturin ÉPINGLÉ (la même version que [build-system]
+  # de pyproject.toml : changer l'une sans l'autre fait échouer ce job), puis
+  # installe la wheel dans un venv neuf et lance pytest contre elle.
+  bindings-python:
+    name: Bindings Python
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: maturin (version épinglée dans pyproject.toml)
+        run: |
+          ATTENDUE=1.16.0
+          VERSION=$(sed -n 's/^requires = \["maturin==\(.*\)"\]$/\1/p' crates/bindings/python/pyproject.toml)
+          echo "maturin épinglé dans pyproject.toml : $VERSION"
+          if [ "$VERSION" != "$ATTENDUE" ]; then echo "::error::pyproject.toml épingle maturin $VERSION, ci.yml attend $ATTENDUE : mettre les deux à jour ensemble"; exit 1; fi
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==$ATTENDUE"
+          maturin --version
+      - name: Wheel (release)
+        run: maturin build --release --manifest-path crates/bindings/python/Cargo.toml --out "$RUNNER_TEMP/dist"
+      - name: Venv neuf, installation de la wheel, pytest
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/venv/bin/python" -m pip install "$RUNNER_TEMP"/dist/*.whl "pytest>=9" "networkx>=3"
+          cd crates/bindings/python
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -v -rs
+  # ── Intégrations LangChain / LlamaIndex (crates/bindings/python/integrations) ──
+  # Même binding, construit avec le même maturin épinglé. Les paquets d'intégration
+  # installent leurs versions épinglées (langchain-core, langchain-community,
+  # llama-index-core) et lancent leurs tests : aucun appel réseau, aucune clé,
+  # LLM factices. -rs affiche tout skip nommé.
+  bindings-integrations:
+    name: Bindings LangChain/LlamaIndex
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: maturin (version épinglée dans pyproject.toml)
+        run: |
+          ATTENDUE=1.16.0
+          VERSION=$(sed -n 's/^requires = \["maturin==\(.*\)"\]$/\1/p' crates/bindings/python/pyproject.toml)
+          echo "maturin épinglé dans pyproject.toml : $VERSION"
+          if [ "$VERSION" != "$ATTENDUE" ]; then echo "::error::pyproject.toml épingle maturin $VERSION, ci.yml attend $ATTENDUE : mettre les deux à jour ensemble"; exit 1; fi
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==$ATTENDUE"
+          maturin --version
+      - name: Wheel (release)
+        run: maturin build --release --manifest-path crates/bindings/python/Cargo.toml --out "$RUNNER_TEMP/dist"
+      - name: Venv neuf, wheel, paquets d'intégration (extras test), pytest
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          PY="$RUNNER_TEMP/venv/bin/python"
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install "$RUNNER_TEMP"/dist/*.whl
+          "$PY" -m pip install -e "crates/bindings/python/integrations/langchain_obrain[test]" -e "crates/bindings/python/integrations/llama_index_obrain[test]"
+          "$PY" -m pytest -v -rs crates/bindings/python/integrations/langchain_obrain/tests
+          "$PY" -m pytest -v -rs crates/bindings/python/integrations/llama_index_obrain/tests
+  # (BIND-2, 2026-11-12) Liaison Node (napi 3) : le binding compile contre
+  # l'engine ; `napi build --release` (CLI épinglé dans package.json)
+  # régénère index.d.ts et index.js, et les versions commitées doivent être
+  # EXACTEMENT celles générées (même principe que obrain.h) ; la suite Node
+  # passe ; le paquet npm se construit sans être publié.
+  bindings-node:
+    name: Bindings Node
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: crates/bindings/node
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Dépendances npm (lockfile)
+        run: npm ci
+      - name: Build release (napi, index.d.ts et index.js régénérés)
+        run: npx napi build --platform --release --features full
+      - name: index.d.ts et index.js commités identiques au généré
+        run: git diff --exit-code -- index.d.ts index.js
+      - name: Tests Node
+        run: npm test
+      - name: Paquet npm construit (aucune publication)
+        run: npm pack --dry-run
+
+
+  # ── Bindings Go / C# / Dart (BIND-4) ───────────────────────────────────────
+  # Les trois liaisons testent la même bibliothèque obrain-c (profil `languages`,
+  # release), pointée par OBRAIN_C_LIB : jamais de chemin codé. SDK épinglés :
+  # Go (go.mod), .NET 8.x, Dart 3.14.0 + ffigen 23.0.0 (pubspec.yaml).
+  bindings-go:
+    name: Bindings Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: crates/bindings/go/go.mod
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Bibliothèque obrain-c (release, profil languages)
+        run: cargo build -p obrain-c --release --features languages
+      - name: go test (contre libobrain_c, OBRAIN_C_LIB)
+        working-directory: crates/bindings/go
+        env:
+          OBRAIN_C_LIB: ${{ github.workspace }}/target/release
+          CGO_LDFLAGS: -L${{ github.workspace }}/target/release
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+        run: go test ./... -v
+
+  bindings-csharp:
+    name: Bindings C#
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Bibliothèque obrain-c (release, profil languages)
+        run: cargo build -p obrain-c --release --features languages
+      - name: dotnet test (contre libobrain_c, OBRAIN_C_LIB)
+        working-directory: crates/bindings/csharp
+        env:
+          OBRAIN_C_LIB: ${{ github.workspace }}/target/release
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+        run: dotnet test Obrain.sln
+
+  bindings-dart:
+    name: Bindings Dart
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: "3.14.0"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Bibliothèque obrain-c (release, profil languages)
+        run: cargo build -p obrain-c --release --features languages
+      - name: Fraîcheur de lib/src/ffi/bindings.dart (ffigen épinglé, diff)
+        working-directory: crates/bindings/dart
+        run: |
+          dart pub get
+          dart run ffigen --config ffigen.yaml
+          git diff --exit-code -- lib/src/ffi/bindings.dart
+      - name: dart test (contre libobrain_c, OBRAIN_C_LIB)
+        working-directory: crates/bindings/dart
+        env:
+          OBRAIN_C_LIB: ${{ github.workspace }}/target/release
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+        run: dart test
+
   tests-all-features:
     name: Tests (toutes features)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -180,6 +488,9 @@ jobs:
       # « toutes les features passent » : les binaires de test sous
       # cfg(feature = "cognitive" | "cypher" | "temporal" | …) n'étaient joués
       # nulle part — un interblocage et une double ouverture s'y cachaient.
+      # smoke_c charge libobrain_c.so produite par `cargo build` (cdylib), que `cargo test` ne fabrique pas.
+      - name: Build cdylib obrain-c (requise par smoke_c)
+        run: cargo build -p obrain-c --all-features
       - name: Test --all-features
         run: |
           ulimit -n 8192
@@ -190,7 +501,8 @@ jobs:
 
   features:
     name: Toutes les features compilent
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -227,7 +539,8 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   wasm:
     name: Navigateur (wasm32)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     # La cible wasm32 n'est installée que sur `stable`. Le rustup des runners est
     # en 1.26 : il refuse `rustup default stable --force-non-host` de l'action, et
     # le défaut de la machine reste celui qu'elle avait (1.91.1 sur n2, sans cible
@@ -279,7 +592,7 @@ jobs:
         run: cargo test --target wasm32-unknown-unknown -p obrain --no-default-features --features browser,cypher,sparql,gremlin,graphql,sql-pgq,vector-index,text-index,hybrid-search,cdc,algos,cognitive,cognitive-full,metrics,temporal --test navigateur_features
 
   # Paquet navigateur obrain-web : construit le wasm (profil complet), génère les
-  # liaisons JS (nodejs + web) et exécute la batterie partagée de 35 tests sous node.
+  # liaisons JS (nodejs + web) et exécute la batterie partagée de 44 tests sous node.
   # Chrome n'est lancé que si un binaire est présent sur le runner (CHROME_BIN) ;
   # sinon l'étape l'écrit en clair au lieu de passer en silence.
   # Le paquet est publié comme artefact de CI, pas comme version.
@@ -288,7 +601,8 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   web-paquet:
     name: Paquet navigateur (obrain-web)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     # Cible wasm32 installée sur stable seulement ; défaut des runners non fiable
     # (rustup 1.26 refuse `rustup default --force-non-host`). Voir #54.
     env:
@@ -338,12 +652,19 @@ jobs:
           else
             echo "::warning::Chrome absent du runner : batterie navigateur NON exécutée (node seul)"
           fi
+      # Paquet npm @obrain-db/wasm : wasm-pack épinglé (même version que la doc du paquet),
+      # package.json publié, contenu listé par `npm pack --dry-run`. Rien n'est publié.
+      - name: Paquet npm @obrain-db/wasm (wasm-pack 0.13.1, sans publication)
+        run: |
+          cargo install --locked --version 0.13.1 wasm-pack
+          crates/obrain-web/npm/construire.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: obrain-web-pkg
           path: |
             pkg
             pkg-web
+            crates/obrain-web/pkg-npm
           retention-days: 14
 
   # Persistance navigateur (OPFS) : exécutée dans un Chrome HEADLESS épinglé, en
@@ -355,7 +676,8 @@ jobs:
         run: rm -rf "$RUNNER_TEMP/tests"
   persistance-navigateur:
     name: Persistance navigateur (OPFS, Chrome headless)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     continue-on-error: true
     env:
       RUSTUP_TOOLCHAIN: stable
@@ -426,7 +748,8 @@ jobs:
 
   msrv:
     name: MSRV (rust-version du manifeste)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -460,7 +783,8 @@ jobs:
 
   deny:
     name: cargo deny (licences, advisories, sources)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -488,7 +812,8 @@ jobs:
 
   package:
     name: Métadonnées de publication
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────

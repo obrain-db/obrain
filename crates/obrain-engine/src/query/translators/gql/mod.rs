@@ -9,10 +9,10 @@ mod pattern;
 use std::collections::{HashMap, HashSet};
 
 use super::common::{
-    AggregateItem, build_left_join_with_predicates, combine_with_and,
-    finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
-    to_aggregate_function, wrap_distinct, wrap_filter, wrap_limit, wrap_return, wrap_skip,
-    wrap_sort,
+    AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
+    combine_with_and, finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
+    to_aggregate_function, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
+    wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     self as plan, AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp,
@@ -511,6 +511,7 @@ impl GqlTranslator {
                             | ast::QueryClause::Remove(_)
                             | ast::QueryClause::Merge(_)
                             | ast::QueryClause::ForEach(_)
+                            | ast::QueryClause::With(_)
                     )
                 {
                     if let Some(where_clause) = &query.where_clause {
@@ -551,6 +552,13 @@ impl GqlTranslator {
                             let input = std::mem::replace(&mut plan, LogicalOperator::Empty);
                             plan = self.translate_match_with_input(match_clause, Some(input))?;
                         }
+                    }
+                    ast::QueryClause::With(with_clause) => {
+                        plan = self.translate_with_clause(with_clause, plan)?;
+                    }
+                    ast::QueryClause::Where(where_clause) => {
+                        let predicate = self.translate_expression(&where_clause.expression)?;
+                        plan = self.apply_where_with_left_join_awareness(plan, predicate);
                     }
                     ast::QueryClause::Unwind(unwind_clause) => {
                         let expression = self.translate_expression(&unwind_clause.expression)?;
@@ -691,11 +699,10 @@ impl GqlTranslator {
                         }
                     }
                     ast::QueryClause::ForEach(foreach_clause) => {
-                        // Skip FOREACH here if WITH clauses exist — they'll be
-                        // translated after WITH projection so variables are visible.
-                        if query.with_clauses.is_empty() {
-                            plan = self.translate_foreach_gql(foreach_clause, plan)?;
-                        }
+                        // À sa position : un `WITH` écrit avant est déjà traduit,
+                        // ses variables sont visibles (l'ancien second passage
+                        // « après les WITH » n'a plus lieu d'être).
+                        plan = self.translate_foreach_gql(foreach_clause, plan)?;
                     }
                 }
             }
@@ -861,141 +868,6 @@ impl GqlTranslator {
                         remove: true,
                         input: Box::new(plan),
                     });
-                }
-            }
-        }
-
-        // Handle WITH clauses (projection for query chaining)
-        for with_clause in &query.with_clauses {
-            // ── UN AGRÉGAT DANS `WITH` DOIT ÊTRE AGRÉGÉ, PAS ÉVALUÉ ────────
-            // Défaut mesuré le 2026-09-17 : `MATCH (n:WA) WITH sum(n.v) AS
-            // total RETURN total` rendait « fonction inconnue : sum » — cette
-            // boucle traduisait CHAQUE item en projection scalaire, sans jamais
-            // regarder s'il portait un agrégat. Le `RETURN` de GQL le fait
-            // (plus bas, `has_aggregates`), et le traducteur Cypher le fait
-            // depuis toujours pour son `WITH` (`cypher.rs::translate_with`) :
-            // c'est le `WITH` de GQL qui manquait. Un agrégat arrivé intact à
-            // l'évaluateur est une fonction scalaire inconnue — donc une erreur
-            // d'exécution à la place d'un résultat.
-            let has_aggregates = with_clause
-                .items
-                .iter()
-                .any(|item| contains_aggregate(&item.expression));
-            if has_aggregates {
-                let (aggregates, group_by, post_return) =
-                    self.extract_aggregates_and_groups(&with_clause.items, false)?;
-                plan = LogicalOperator::Aggregate(AggregateOp {
-                    group_by,
-                    aggregates,
-                    input: Box::new(plan),
-                    // `HAVING` n'existe pas sur un `WITH` : la condition d'un
-                    // `WITH` est son `WHERE`, appliqué plus bas, APRÈS la
-                    // projection — comme le veut Cypher/GQL.
-                    having: None,
-                });
-                // Les items qui ENVELOPPENT un agrégat (`sum(v) > 10 AS grand`)
-                // sont recalculés après l'agrégat, sur les colonnes
-                // synthétiques — sinon ils seraient évalués avant lui.
-                if let Some(items) = post_return {
-                    plan = LogicalOperator::Project(ProjectOp {
-                        projections: items
-                            .into_iter()
-                            .map(|item| Projection {
-                                expression: item.expression,
-                                alias: item.alias,
-                            })
-                            .collect(),
-                        input: Box::new(plan),
-                        pass_through_input: false,
-                    });
-                }
-            } else if !with_clause.is_wildcard {
-                let projections: Vec<Projection> = with_clause
-                    .items
-                    .iter()
-                    .map(|item| {
-                        Ok(Projection {
-                            expression: self.translate_expression(&item.expression)?,
-                            alias: item.alias.clone(),
-                        })
-                    })
-                    .collect::<Result<_>>()?;
-
-                // Rewrite pattern comprehensions inside WITH projections
-                let has_pattern_comp = projections
-                    .iter()
-                    .any(|p| Self::expr_contains_pattern_comprehension(&p.expression));
-                if has_pattern_comp {
-                    let items: Vec<ReturnItem> = projections
-                        .into_iter()
-                        .map(|p| ReturnItem {
-                            expression: p.expression,
-                            alias: p.alias,
-                        })
-                        .collect();
-                    let (rewritten_plan, rewritten_items) =
-                        self.rewrite_pattern_comprehensions(plan, items)?;
-                    let rewritten_projections = rewritten_items
-                        .into_iter()
-                        .map(|item| Projection {
-                            expression: item.expression,
-                            alias: item.alias,
-                        })
-                        .collect();
-                    plan = LogicalOperator::Project(ProjectOp {
-                        projections: rewritten_projections,
-                        input: Box::new(rewritten_plan),
-                        pass_through_input: false,
-                    });
-                } else {
-                    plan = LogicalOperator::Project(ProjectOp {
-                        projections,
-                        input: Box::new(plan),
-                        pass_through_input: false,
-                    });
-                }
-            }
-            // WITH * skips projection: all variables pass through unchanged
-
-            // Handle LET bindings attached to this WITH clause.
-            // LET adds new columns without replacing existing ones.
-            if !with_clause.let_bindings.is_empty() {
-                let mut let_projections = Vec::new();
-                for (name, expr) in &with_clause.let_bindings {
-                    let logical_expr = self.translate_expression(expr)?;
-                    let_projections.push(Projection {
-                        expression: logical_expr,
-                        alias: Some(name.clone()),
-                    });
-                }
-                plan = LogicalOperator::Project(ProjectOp {
-                    projections: let_projections,
-                    input: Box::new(plan),
-                    pass_through_input: true,
-                });
-            }
-
-            // Apply WHERE filter if present in WITH clause
-            if let Some(where_clause) = &with_clause.where_clause {
-                let predicate = self.translate_expression(&where_clause.expression)?;
-                plan = wrap_filter(plan, predicate);
-            }
-
-            // Handle DISTINCT
-            if with_clause.distinct {
-                plan = wrap_distinct(plan);
-            }
-        }
-
-        // Handle FOREACH clauses that appear after WITH (they were added to
-        // ordered_clauses during parsing but need to be translated AFTER the
-        // WITH projection so that WITH-introduced variables are visible).
-        // We skip ForEach clauses already translated in the ordered_clauses pass
-        // by only processing them here if with_clauses is non-empty.
-        if !query.with_clauses.is_empty() {
-            for clause in &query.ordered_clauses {
-                if let ast::QueryClause::ForEach(foreach_clause) = clause {
-                    plan = self.translate_foreach_gql(foreach_clause, plan)?;
                 }
             }
         }
@@ -1368,65 +1240,115 @@ impl GqlTranslator {
     /// les wrappers (Filter/Project/etc. → input). Les variables d'arêtes
     /// (`_anon_*`, edge_variable) sont exclues : on ne corrèle que sur les
     /// nœuds.
-    fn collect_bound_variables(op: &LogicalOperator, vars: &mut HashSet<String>) {
-        use crate::query::plan::LogicalOperator as LO;
-        match op {
-            LO::NodeScan(n) => {
-                vars.insert(n.variable.clone());
-                if let Some(input) = &n.input {
-                    Self::collect_bound_variables(input, vars);
+    /// Variables d'un motif, avec ce qu'elles désignent une fois le motif
+    /// traduit : un nœud, une arête (un saut), ou autre chose.
+    fn pattern_variable_kinds(pattern: &ast::Pattern) -> HashMap<String, VariableKind> {
+        let mut kinds = HashMap::new();
+        match pattern {
+            ast::Pattern::Node(node) => {
+                if let Some(v) = &node.variable {
+                    kinds.insert(v.clone(), VariableKind::Node);
                 }
             }
-            LO::Expand(e) => {
-                // from_variable est liée par l'input (ou le scan amont) ;
-                // to_variable est produite ici.
-                vars.insert(e.to_variable.clone());
-                Self::collect_bound_variables(&e.input, vars);
-            }
-            LO::EdgeScan(e) => {
-                if let Some(input) = &e.input {
-                    Self::collect_bound_variables(input, vars);
+            ast::Pattern::Path(path) => {
+                if let Some(v) = &path.source.variable {
+                    kinds.insert(v.clone(), VariableKind::Node);
+                }
+                for edge in &path.edges {
+                    if let Some(v) = &edge.variable {
+                        let single_hop = edge.min_hops.is_none() && edge.max_hops.is_none();
+                        kinds.insert(
+                            v.clone(),
+                            if single_hop {
+                                VariableKind::Edge
+                            } else {
+                                VariableKind::Other
+                            },
+                        );
+                    }
+                    if let Some(v) = &edge.target.variable {
+                        kinds.insert(v.clone(), VariableKind::Node);
+                    }
                 }
             }
-            LO::Join(j) => {
-                Self::collect_bound_variables(&j.left, vars);
-                Self::collect_bound_variables(&j.right, vars);
+            ast::Pattern::Quantified {
+                pattern,
+                subpath_var,
+                ..
+            } => {
+                for (v, _) in Self::pattern_variable_kinds(pattern) {
+                    kinds.insert(v, VariableKind::Other);
+                }
+                if let Some(v) = subpath_var {
+                    kinds.insert(v.clone(), VariableKind::Other);
+                }
             }
-            LO::LeftJoin(j) => {
-                Self::collect_bound_variables(&j.left, vars);
-                Self::collect_bound_variables(&j.right, vars);
-            }
-            LO::AntiJoin(j) => {
-                Self::collect_bound_variables(&j.left, vars);
-                Self::collect_bound_variables(&j.right, vars);
-            }
-            LO::Apply(a) => {
-                Self::collect_bound_variables(&a.input, vars);
-                Self::collect_bound_variables(&a.subplan, vars);
-            }
-            LO::Filter(f) => Self::collect_bound_variables(&f.input, vars),
-            LO::Project(p) => Self::collect_bound_variables(&p.input, vars),
-            LO::Aggregate(a) => Self::collect_bound_variables(&a.input, vars),
-            LO::Limit(l) => Self::collect_bound_variables(&l.input, vars),
-            LO::Skip(s) => Self::collect_bound_variables(&s.input, vars),
-            LO::Sort(s) => Self::collect_bound_variables(&s.input, vars),
-            LO::Distinct(d) => Self::collect_bound_variables(&d.input, vars),
-            LO::Return(r) => Self::collect_bound_variables(&r.input, vars),
-            LO::Unwind(u) => {
-                // Unwind produit sa variable ; l'input reste en scope.
-                vars.insert(u.variable.clone());
-                Self::collect_bound_variables(&u.input, vars);
-            }
-            LO::ShortestPath(sp) => Self::collect_bound_variables(&sp.input, vars),
-            LO::ParameterScan(_) | LO::Empty => {}
-            _ => {
-                // Autres opérateurs (mutations, etc.) : on descend dans les
-                // enfants quand c'est possible via children().
-                for child in op.children() {
-                    Self::collect_bound_variables(child, vars);
+            ast::Pattern::Union(alternatives) | ast::Pattern::MultisetUnion(alternatives) => {
+                for alternative in alternatives {
+                    kinds.extend(Self::pattern_variable_kinds(alternative));
                 }
             }
         }
+        kinds
+    }
+
+    /// Vrai si le motif peut être chaîné à un plan qui lie `bound` sans rien
+    /// perdre : son départ, s'il est déjà lié, est un NŒUD (le planificateur
+    /// réutilise la colonne et l'expansion en part — refusé par le lieur pour
+    /// une variable d'`UNWIND` ou d'agrégat) ; aucune de ses variables d'arête
+    /// n'est déjà liée ; et aucun nœud non lié à propriétés en ligne ne vaut
+    /// mieux par son index (voir `prefers_index_join`). Une cible déjà liée
+    /// est une fermeture (filtre d'égalité) : son type n'importe pas.
+    fn can_anchor(pattern: &ast::Pattern, bound: &HashMap<String, VariableKind>) -> bool {
+        let start_ok = |node: &ast::NodePattern| {
+            node.variable
+                .as_ref()
+                .and_then(|v| bound.get(v))
+                .is_none_or(|k| matches!(k, VariableKind::Node | VariableKind::Other))
+        };
+        match pattern {
+            ast::Pattern::Node(node) => start_ok(node),
+            ast::Pattern::Path(path) => {
+                start_ok(&path.source)
+                    && path.edges.iter().all(|edge| {
+                        edge.variable
+                            .as_ref()
+                            .is_none_or(|v| !bound.contains_key(v))
+                    })
+                    && !Self::prefers_index_join(path, bound)
+            }
+            ast::Pattern::Quantified { .. }
+            | ast::Pattern::Union(_)
+            | ast::Pattern::MultisetUnion(_) => false,
+        }
+    }
+
+    /// Vrai si le motif porte un nœud NON lié à propriétés en ligne
+    /// (`(c:Commit {sha: 'c3'})`) et retombe sur une variable liée : repartir
+    /// de la variable liée parcourrait son voisinage pour chaque ligne, alors
+    /// que ce nœud se trouve par son index. Traduit seul, le motif part de
+    /// l'index ; la jointure sur la variable partagée fait le reste.
+    fn prefers_index_join(path: &ast::PathPattern, bound: &HashMap<String, VariableKind>) -> bool {
+        let unbound_with_properties = |node: &ast::NodePattern| {
+            !node.properties.is_empty()
+                && node
+                    .variable
+                    .as_ref()
+                    .is_none_or(|v| !bound.contains_key(v))
+        };
+        let shares_a_node = std::iter::once(&path.source)
+            .chain(path.edges.iter().map(|edge| &edge.target))
+            .any(|node| {
+                node.variable
+                    .as_ref()
+                    .is_some_and(|v| bound.contains_key(v))
+            });
+        shares_a_node
+            && (unbound_with_properties(&path.source)
+                || path
+                    .edges
+                    .iter()
+                    .any(|edge| unbound_with_properties(&edge.target)))
     }
 
     /// Extracts all named variables from a GQL AST pattern.
@@ -1479,6 +1401,171 @@ impl GqlTranslator {
     ///
     /// When multiple comma-separated patterns share variables, creates proper
     /// `JoinOp` operators with equality conditions instead of cross products.
+    /// Traduit un `WITH` sur le plan courant : projection (ou agrégat), `LET`,
+    /// `WHERE`, `DISTINCT`.
+    ///
+    /// Appelée à la POSITION du `WITH` dans la requête (`QueryClause::With`) :
+    /// un `MATCH` écrit après un `WITH` part des colonnes du `WITH`, il ne
+    /// s'exécute pas avant lui. Planifié avant, il multipliait les lignes — et
+    /// les comptes d'un `WITH` agrégé — par le nombre de ses correspondances.
+    fn translate_with_clause(
+        &self,
+        with_clause: &ast::WithClause,
+        mut plan: LogicalOperator,
+    ) -> Result<LogicalOperator> {
+        // ── UN AGRÉGAT DANS `WITH` DOIT ÊTRE AGRÉGÉ, PAS ÉVALUÉ ────────
+        // Défaut mesuré le 2026-09-17 : `MATCH (n:WA) WITH sum(n.v) AS
+        // total RETURN total` rendait « fonction inconnue : sum » — cette
+        // boucle traduisait CHAQUE item en projection scalaire, sans jamais
+        // regarder s'il portait un agrégat. Le `RETURN` de GQL le fait
+        // (plus bas, `has_aggregates`), et le traducteur Cypher le fait
+        // depuis toujours pour son `WITH` (`cypher.rs::translate_with`) :
+        // c'est le `WITH` de GQL qui manquait. Un agrégat arrivé intact à
+        // l'évaluateur est une fonction scalaire inconnue — donc une erreur
+        // d'exécution à la place d'un résultat.
+        let has_aggregates = with_clause
+            .items
+            .iter()
+            .any(|item| contains_aggregate(&item.expression));
+        if has_aggregates {
+            let (aggregates, group_by, post_return) =
+                self.extract_aggregates_and_groups(&with_clause.items, false)?;
+            plan = LogicalOperator::Aggregate(AggregateOp {
+                group_by,
+                aggregates,
+                input: Box::new(plan),
+                // `HAVING` n'existe pas sur un `WITH` : la condition d'un
+                // `WITH` est son `WHERE`, appliqué plus bas, APRÈS la
+                // projection — comme le veut Cypher/GQL.
+                having: None,
+            });
+            // Les items qui ENVELOPPENT un agrégat (`sum(v) > 10 AS grand`)
+            // sont recalculés après l'agrégat, sur les colonnes
+            // synthétiques — sinon ils seraient évalués avant lui.
+            if let Some(items) = post_return {
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections: items
+                        .into_iter()
+                        .map(|item| Projection {
+                            expression: item.expression,
+                            alias: item.alias,
+                        })
+                        .collect(),
+                    input: Box::new(plan),
+                    pass_through_input: false,
+                });
+            }
+        } else if !with_clause.is_wildcard {
+            let projections: Vec<Projection> = with_clause
+                .items
+                .iter()
+                .map(|item| {
+                    Ok(Projection {
+                        expression: self.translate_expression(&item.expression)?,
+                        alias: item.alias.clone(),
+                    })
+                })
+                .collect::<Result<_>>()?;
+
+            // Rewrite pattern comprehensions inside WITH projections
+            let has_pattern_comp = projections
+                .iter()
+                .any(|p| Self::expr_contains_pattern_comprehension(&p.expression));
+            if has_pattern_comp {
+                let items: Vec<ReturnItem> = projections
+                    .into_iter()
+                    .map(|p| ReturnItem {
+                        expression: p.expression,
+                        alias: p.alias,
+                    })
+                    .collect();
+                let (rewritten_plan, rewritten_items) =
+                    self.rewrite_pattern_comprehensions(plan, items)?;
+                let rewritten_projections = rewritten_items
+                    .into_iter()
+                    .map(|item| Projection {
+                        expression: item.expression,
+                        alias: item.alias,
+                    })
+                    .collect();
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections: rewritten_projections,
+                    input: Box::new(rewritten_plan),
+                    pass_through_input: false,
+                });
+            } else {
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections,
+                    input: Box::new(plan),
+                    pass_through_input: false,
+                });
+            }
+        }
+        // WITH * skips projection: all variables pass through unchanged
+
+        // `DISTINCT` porte sur la projection : AVANT le tri, le saut, la
+        // limite et le `WHERE` (posé après eux, `WITH DISTINCT p ORDER BY p
+        // SKIP 1` sautait une ligne parmi les doublons, pas parmi les valeurs).
+        if with_clause.distinct {
+            plan = wrap_distinct(plan);
+        }
+
+        // `ORDER BY`, `SKIP`, `LIMIT` du `WITH` : sur sa sortie (ses alias sont
+        // visibles), avant son `WHERE`.
+        if let Some(order_by) = &with_clause.order_by {
+            let keys = order_by
+                .items
+                .iter()
+                .map(|item| {
+                    Ok(SortKey {
+                        expression: self.translate_expression(&item.expression)?,
+                        order: match item.order {
+                            ast::SortOrder::Asc => SortOrder::Ascending,
+                            ast::SortOrder::Desc => SortOrder::Descending,
+                        },
+                        nulls: item.nulls.map(|n| match n {
+                            ast::NullsOrdering::First => NullsOrdering::First,
+                            ast::NullsOrdering::Last => NullsOrdering::Last,
+                        }),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            plan = wrap_sort(plan, keys);
+        }
+        if let Some(skip_expr) = &with_clause.skip {
+            plan = wrap_skip(plan, self.translate_count_expr(skip_expr, "SKIP")?);
+        }
+        if let Some(limit_expr) = &with_clause.limit {
+            plan = wrap_limit(plan, self.translate_count_expr(limit_expr, "LIMIT")?);
+        }
+
+        // Handle LET bindings attached to this WITH clause.
+        // LET adds new columns without replacing existing ones.
+        if !with_clause.let_bindings.is_empty() {
+            let mut let_projections = Vec::new();
+            for (name, expr) in &with_clause.let_bindings {
+                let logical_expr = self.translate_expression(expr)?;
+                let_projections.push(Projection {
+                    expression: logical_expr,
+                    alias: Some(name.clone()),
+                });
+            }
+            plan = LogicalOperator::Project(ProjectOp {
+                projections: let_projections,
+                input: Box::new(plan),
+                pass_through_input: true,
+            });
+        }
+
+        // Apply WHERE filter if present in WITH clause
+        if let Some(where_clause) = &with_clause.where_clause {
+            let predicate = self.translate_expression(&where_clause.expression)?;
+            plan = wrap_filter(plan, predicate);
+        }
+
+        Ok(plan)
+    }
+
     fn translate_match_with_input(
         &self,
         match_clause: &ast::MatchClause,
@@ -1518,31 +1605,40 @@ impl GqlTranslator {
             .collect();
 
         let mut plan: Option<LogicalOperator> = initial_input;
-        let mut bound_vars: HashSet<String> = HashSet::new();
-        // (2026-08-31) FIX CORRÉLATION INTER-MATCH (INCIDENT triangle-faux).
-        //
-        // Quand ce MATCH reçoit un input (il suit une clause précédente qui a
-        // déjà lié des variables), `bound_vars` démarrait VIDE : les
-        // variables du pattern partagées avec l'input (ex. `c` et `a` dans
-        // `MATCH (a)→(b)→(c) MATCH (c)→(a)`) n'étaient pas reconnues, le
-        // pattern était re-scanné depuis zéro (NodeScan complet) au lieu
-        // d'être JOINté sur les valeurs déjà liées. Vérifié : un triangle
-        // retournait 10 778 count(a) au lieu de 33 (faux, ×326). On
-        // initialise `bound_vars` avec les variables produites par l'input :
-        // les variables partagées déclenchent alors le Join corrélé (le code
-        // `if !shared.is_empty()` plus bas), qui égalise c et a — le plan
-        // devient correct.
-        if let Some(input) = &plan {
-            Self::collect_bound_variables(input, &mut bound_vars);
-        }
+        // Ce que les clauses précédentes ont déjà lié, et ce que chaque variable
+        // désigne. Lu sur les colonnes de SORTIE du plan (`visible_variables`) :
+        // un `WITH f AS g` lie `g`, pas `f`. (2026-08-31, incident
+        // triangle-faux : un `bound_vars` vide ignorait les variables de
+        // l'input et re-balayait le motif ; `count(a)` d'un triangle rendait
+        // 10 778 au lieu de 33.)
+        let mut bound: HashMap<String, VariableKind> =
+            plan.as_ref().map(visible_variables).unwrap_or_default();
 
         for (index, aliased_pattern) in match_clause.patterns.iter().enumerate() {
-            let current_vars = &pattern_vars[index];
-            let shared: Vec<String> = current_vars.intersection(&bound_vars).cloned().collect();
+            // Variable déjà liée à une valeur qui n'est pas un nœud (ou une
+            // arête) : erreur de type, comme sous Neo4j.
+            for (variable, kind) in Self::pattern_variable_kinds(&aliased_pattern.pattern) {
+                if kind != VariableKind::Other {
+                    check_bound_kind(&variable, kind, &bound)?;
+                }
+            }
+            let mut shared: Vec<String> = pattern_vars[index]
+                .iter()
+                .filter(|v| bound.contains_key(*v))
+                .cloned()
+                .collect();
+            shared.sort_unstable();
 
-            // Determine the input for this pattern: if shared variables exist,
-            // translate independently and join; otherwise chain as before.
-            let pattern_input = if shared.is_empty() { plan.take() } else { None };
+            // Un motif qui partage des variables avec ce qui précède est
+            // CHAÎNÉ quand il peut s'y ancrer (la traduction du chemin repart
+            // de la variable liée ou s'y ferme : coût du voisinage, pas d'un
+            // balayage) ; sinon il est traduit seul et joint sur les variables
+            // partagées. Sans variable partagée : chaîné (produit).
+            let chainable = shared.is_empty()
+                || (aliased_pattern.path_function.is_none()
+                    && !use_shortest
+                    && Self::can_anchor(&aliased_pattern.pattern, &bound));
+            let pattern_input = if chainable { plan.take() } else { None };
 
             let pattern_plan = if let Some(path_function) = &aliased_pattern.path_function {
                 self.translate_shortest_path(
@@ -1571,11 +1667,11 @@ impl GqlTranslator {
                 )?
             };
 
-            if !shared.is_empty() {
+            if chainable {
+                plan = Some(pattern_plan);
+            } else {
                 // Join on shared variables
-                let left = plan
-                    .take()
-                    .expect("bound_vars non-empty implies plan exists");
+                let left = plan.take().expect("bound non-empty implies plan exists");
                 let conditions = shared
                     .iter()
                     .map(|var| JoinCondition {
@@ -1589,11 +1685,12 @@ impl GqlTranslator {
                     join_type: JoinType::Inner,
                     conditions,
                 }));
-            } else {
-                plan = Some(pattern_plan);
             }
 
-            bound_vars.extend(current_vars.iter().cloned());
+            bound.extend(Self::pattern_variable_kinds(&aliased_pattern.pattern));
+            if let Some(alias) = &aliased_pattern.alias {
+                bound.insert(alias.clone(), VariableKind::Other);
+            }
         }
 
         plan.ok_or_else(|| {
@@ -3678,18 +3775,33 @@ mod tests {
     fn test_inter_match_correlation_joins_on_shared_vars() {
         let query = "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) MATCH (c:Person)-[:KNOWS]->(a:Person) RETURN a";
         let plan = translate(query).expect("translate");
-        // Parcourt l'arbre : doit trouver un Join avec conditions (pas Cross vide).
-        fn has_correlated_join(op: &LogicalOperator) -> bool {
+        // Le second MATCH repart de `c` (déjà lié) et se FERME sur `a` par une
+        // égalité : ni jointure non corrélée, ni nouveau balayage de `c` ou `a`.
+        fn has_uncorrelated_join(op: &LogicalOperator) -> bool {
             match op {
-                LogicalOperator::Join(j) => {
-                    !j.conditions.is_empty() && j.join_type == crate::query::plan::JoinType::Inner
-                }
-                _ => op.children().iter().any(|c| has_correlated_join(c)),
+                LogicalOperator::Join(j) if j.conditions.is_empty() => true,
+                _ => op.children().iter().any(|c| has_uncorrelated_join(c)),
             }
         }
-        assert!(
-            has_correlated_join(&plan.root),
-            "inter-MATCH join must correlate shared variables (Inner, non-empty conditions)"
-        );
+        fn count_scans(op: &LogicalOperator, var: &str) -> usize {
+            let here = usize::from(
+                matches!(op, LogicalOperator::NodeScan(s) if s.variable == var && s.input.is_none()),
+            );
+            here + op
+                .children()
+                .iter()
+                .map(|c| count_scans(c, var))
+                .sum::<usize>()
+        }
+        fn has_expand_from(op: &LogicalOperator, var: &str) -> bool {
+            match op {
+                LogicalOperator::Expand(e) if e.from_variable == var => true,
+                _ => op.children().iter().any(|c| has_expand_from(c, var)),
+            }
+        }
+        assert!(!has_uncorrelated_join(&plan.root), "{plan:?}");
+        assert_eq!(count_scans(&plan.root, "a"), 1, "{plan:?}");
+        assert_eq!(count_scans(&plan.root, "c"), 0, "{plan:?}");
+        assert!(has_expand_from(&plan.root, "c"), "{plan:?}");
     }
 }
