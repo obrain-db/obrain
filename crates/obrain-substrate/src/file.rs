@@ -885,6 +885,20 @@ const RESERVE_MEMOIRE_MIN: usize = 16 << 20;
 enum OctetsPrives {
     /// Fichier absent ou vide : aucune projection.
     Vide,
+    /// Projection PARTAGÉE en lecture seule (`MAP_SHARED`, `PROT_READ`) d'un
+    /// fichier que ce lecteur n'a pas encore écrit : elle suit le cache de
+    /// pages, donc les écritures d'un écrivain partagé vivant. Toute écriture
+    /// la remplace d'abord par une projection [`Self::Fichier`] (voir
+    /// [`ZonePrivee::as_slice_mut`]).
+    ///
+    /// (2026-11-13, #157) Mesuré sous macOS (XNU, Darwin 25.5) : une
+    /// projection `MAP_PRIVATE` est un INSTANTANÉ pris au `mmap`, même pour
+    /// les pages jamais touchées — un `pwrite` ou une écriture `MAP_SHARED`
+    /// faite ensuite par un autre descripteur n'y apparaît jamais. Sous
+    /// Linux, les pages privées non écrites suivent le cache de pages ;
+    /// POSIX laisse ce point non spécifié. Un lecteur projeté en privé ne
+    /// voyait donc, sous macOS, aucune valeur écrite après son ouverture.
+    FichierPartage(MmapMut),
     /// Projection PRIVÉE (`MAP_PRIVATE`, copy-on-write) d'un fichier ouvert en
     /// lecture seule. Une écriture ne modifie que la copie de la page dans CE
     /// processus ; le fichier et les autres processus ne la voient jamais.
@@ -917,9 +931,13 @@ struct EtatPrive {
 /// première écriture, propres à ce processus. `set_len`, `pwrite` et `fsync`
 /// ne sont jamais appelés ; s'ils l'étaient, le descripteur les refuserait.
 ///
-/// CE QUE VOIT LE LECTEUR. Les pages qu'il n'a pas écrites restent celles du
-/// cache de pages : si un écrivain partagé vivant les modifie, le lecteur le
-/// voit (comme avant). Une page qu'il a écrite (rejeu) est figée à sa version.
+/// CE QUE VOIT LE LECTEUR. Tant qu'il n'a rien écrit dans une zone, elle est
+/// projetée en PARTAGÉ et en lecture seule : si un écrivain partagé vivant la
+/// modifie, le lecteur le voit, sur toutes les plateformes. À la première
+/// écriture (rejeu), la zone passe à une projection privée prise à cet
+/// instant : sous Linux, seules les pages écrites sont alors figées ; sous
+/// macOS, une projection privée est un instantané entier (voir
+/// [`OctetsPrives::FichierPartage`]).
 ///
 /// PARTAGE ENTRE POIGNÉES. Le code s'appuie sur le fait que deux poignées de
 /// la même zone voient les mêmes octets (le rejeu écrit par les siennes, le
@@ -962,11 +980,10 @@ impl ZonePrivee {
                 if len == 0 {
                     (OctetsPrives::Vide, 0)
                 } else {
-                    // SAFETY: projection PRIVÉE d'un fichier en lecture seule ;
-                    // le verrou partagé du répertoire exclut l'écrivain exclusif
-                    // (le seul à pouvoir tronquer une zone).
-                    let m = unsafe { MmapOptions::new().len(len).map_copy(f)? };
-                    (OctetsPrives::Fichier(m), len)
+                    // SAFETY: le verrou partagé du répertoire exclut l'écrivain
+                    // exclusif (le seul à pouvoir tronquer une zone).
+                    let m = unsafe { projeter_partage_lecture_seule(f, len)? };
+                    (OctetsPrives::FichierPartage(m), len)
                 }
             }
             None => (OctetsPrives::Vide, 0),
@@ -1004,7 +1021,9 @@ impl ZonePrivee {
         let e = unsafe { &*self.etat.get() };
         match &e.octets {
             OctetsPrives::Vide => &[],
-            OctetsPrives::Fichier(m) | OctetsPrives::Memoire(m) => &m[..e.len],
+            OctetsPrives::FichierPartage(m)
+            | OctetsPrives::Fichier(m)
+            | OctetsPrives::Memoire(m) => &m[..e.len],
         }
     }
 
@@ -1015,8 +1034,33 @@ impl ZonePrivee {
         // SAFETY: délégué à l'appelant.
         let e = unsafe { &mut *self.etat.get() };
         let len = e.len;
+        if matches!(e.octets, OctetsPrives::FichierPartage(_)) {
+            // Première écriture : la projection partagée est en lecture seule
+            // (y écrire serait une faute de segmentation). On la remplace par
+            // une projection PRIVÉE prise maintenant — elle porte donc tout ce
+            // que l'écrivain a posé jusqu'ici. L'ancienne est RETIRÉE, pas
+            // détruite : une vue tenue par une autre poignée reste valide.
+            let f = self
+                .fichier
+                .as_ref()
+                .expect("une projection de fichier a un descripteur");
+            // SAFETY: voir `ouvrir` ; le fichier ne raccourcit jamais sous un
+            // verrou partagé, `len` y tient donc toujours.
+            let prive = unsafe { MmapOptions::new().len(len).map_copy(f) }.unwrap_or_else(|err| {
+                panic!(
+                    "zone {} : projection privée de {len} octets impossible avant écriture : {err}",
+                    self.chemin.display()
+                )
+            });
+            if let OctetsPrives::FichierPartage(ancien) =
+                std::mem::replace(&mut e.octets, OctetsPrives::Fichier(prive))
+            {
+                e.retraites.push(ancien);
+            }
+        }
         match &mut e.octets {
             OctetsPrives::Vide => &mut [],
+            OctetsPrives::FichierPartage(_) => unreachable!("remplacée ci-dessus"),
             OctetsPrives::Fichier(m) | OctetsPrives::Memoire(m) => &mut m[..len],
         }
     }
@@ -1028,7 +1072,7 @@ impl ZonePrivee {
     unsafe fn projection_fichier(&self) -> Option<&MmapMut> {
         // SAFETY: délégué à l'appelant.
         match unsafe { &(*self.etat.get()).octets } {
-            OctetsPrives::Fichier(m) => Some(m),
+            OctetsPrives::FichierPartage(m) | OctetsPrives::Fichier(m) => Some(m),
             _ => None,
         }
     }
@@ -1068,7 +1112,11 @@ impl ZonePrivee {
             e.len = new_len;
             return Ok(());
         }
-        if matches!(e.octets, OctetsPrives::Fichier(_)) && e.len > plafond {
+        if matches!(
+            e.octets,
+            OctetsPrives::FichierPartage(_) | OctetsPrives::Fichier(_)
+        ) && e.len > plafond
+        {
             return Err(SubstrateError::LectureSeuleRefusee {
                 raison: format!(
                     "la zone {} ({} octets) devrait grandir à {} octets pour rejouer le \
@@ -1090,7 +1138,9 @@ impl ZonePrivee {
         let ancien = std::mem::replace(&mut e.octets, OctetsPrives::Vide);
         match ancien {
             OctetsPrives::Vide => {}
-            OctetsPrives::Fichier(m) | OctetsPrives::Memoire(m) => {
+            OctetsPrives::FichierPartage(m)
+            | OctetsPrives::Fichier(m)
+            | OctetsPrives::Memoire(m) => {
                 neuf[..e.len].copy_from_slice(&m[..e.len]);
                 e.retraites.push(m);
             }
@@ -1125,16 +1175,32 @@ impl ZonePrivee {
         if disque <= e.len {
             return Ok(false);
         }
-        // SAFETY: voir `ouvrir`.
-        let m = unsafe { MmapOptions::new().len(disque).map_copy(f)? };
-        if let OctetsPrives::Fichier(ancien) =
-            std::mem::replace(&mut e.octets, OctetsPrives::Fichier(m))
-        {
-            e.retraites.push(ancien);
+        // SAFETY: voir `ouvrir`. Projection neuve, donc PARTAGÉE : elle suit à
+        // nouveau l'écrivain (voir `OctetsPrives::FichierPartage`).
+        let m = unsafe { projeter_partage_lecture_seule(f, disque)? };
+        match std::mem::replace(&mut e.octets, OctetsPrives::FichierPartage(m)) {
+            OctetsPrives::FichierPartage(ancien) | OctetsPrives::Fichier(ancien) => {
+                e.retraites.push(ancien);
+            }
+            OctetsPrives::Vide | OctetsPrives::Memoire(_) => {}
         }
         e.len = disque;
         Ok(true)
     }
+}
+
+/// Projette `len` octets de `f` en PARTAGÉ et en LECTURE SEULE (voir
+/// [`OctetsPrives::FichierPartage`]). Le type rendu est mutable pour loger dans
+/// [`OctetsPrives`] ; la projection n'est jamais écrite.
+///
+/// # Safety
+/// Contrat de `memmap2` : le fichier ne doit pas raccourcir sous la projection.
+unsafe fn projeter_partage_lecture_seule(f: &File, len: usize) -> SubstrateResult<MmapMut> {
+    // SAFETY: délégué à l'appelant ; même transmutation que
+    // `ZoneFile::rafraichir` en lecture seule — projection immuable, jamais
+    // écrite (`ZonePrivee::as_slice_mut` la remplace avant toute écriture).
+    let m: Mmap = unsafe { MmapOptions::new().len(len).map(f)? };
+    Ok(unsafe { std::mem::transmute::<Mmap, MmapMut>(m) })
 }
 
 /// Le registre des zones d'une ouverture en lecture seule : UNE [`ZonePrivee`]
@@ -3637,6 +3703,42 @@ mod tests_zone_privee {
         std::fs::write(&chemin, vec![0u8; 100_000]).unwrap();
         assert!(!zf.rafraichir().unwrap());
         assert_eq!(zf.len(), 20_000);
+    }
+
+    /// (#157) Une zone que le lecteur n'a pas écrite suit les écritures EN
+    /// PLACE d'un écrivain (même taille, donc sans reprojection) — y compris
+    /// sous macOS, où une projection privée est un instantané. Sa première
+    /// écriture reste privée.
+    #[test]
+    #[cfg(unix)]
+    fn zone_privee_suit_l_ecrivain_tant_qu_elle_n_est_pas_ecrite() {
+        use std::os::unix::fs::FileExt;
+        let td = tempfile::tempdir().unwrap();
+        let chemin = fichier_de(&td, &[3u8; 8192]);
+        let mut zf =
+            ZoneFile::open_privee(std::sync::Arc::new(ZonePrivee::ouvrir(&chemin).unwrap()));
+        assert_eq!(zf.as_slice()[4096], 3, "page lue avant l'écriture");
+
+        let ecrivain = OpenOptions::new().write(true).open(&chemin).unwrap();
+        ecrivain.write_all_at(&[9u8; 16], 4096).unwrap();
+        assert_eq!(
+            &zf.as_slice()[4096..4112],
+            &[9u8; 16],
+            "le lecteur ne voit pas une écriture en place de l'écrivain"
+        );
+
+        zf.as_slice_mut()[0] = 7;
+        assert_eq!(zf.as_slice()[0], 7);
+        assert_eq!(
+            zf.as_slice()[4096],
+            9,
+            "la projection privée a perdu l'écrivain"
+        );
+        assert_eq!(
+            std::fs::read(&chemin).unwrap()[0],
+            3,
+            "le lecteur a écrit le fichier"
+        );
     }
 
     /// Plafond : une zone adossée à un fichier plus gros que le plafond ne se

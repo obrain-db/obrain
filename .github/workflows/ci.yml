@@ -876,7 +876,7 @@ jobs:
       - name: Tests sensibles à la plateforme
         run: |
           ulimit -n 8192
-          cargo test -p obrain-substrate --test verrou_apres_drop --test crash_safety --test wal_recovery_reelle --test migration_versionnee --no-fail-fast
+          cargo test -p obrain-substrate --test verrou_apres_drop --test crash_safety --test wal_recovery_reelle --test migration_versionnee --test reprojection_zone --no-fail-fast
           cargo test -p obrain-engine --test durabilite_commit_kill9 --test echec_commit_rembobinage --test format_fige_v3 --no-fail-fast
       - name: Nettoyage du répertoire temporaire du job
         if: always()
