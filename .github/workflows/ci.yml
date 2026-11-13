@@ -11,6 +11,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # ── DÉCLENCHEMENT MANUEL (2026-11-13) ────────────────────────────────────
+  # #141 fait qu'une PR en draft ne lance plus aucun job : une PR draft n'a donc
+  # aucune couverture CI. Ce déclenchement rend la CI lançable à la main sur une
+  # branche, sans changer un seul job :
+  #   gh workflow run CI --ref <branche>
+  workflow_dispatch:
   # Appelée par release.yml sur un tag : la publication n'a lieu que si la CI
   # complète est verte SUR LE COMMIT TAGUÉ (pas sur celui d'une PR antérieure).
   workflow_call:

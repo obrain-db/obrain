@@ -1907,6 +1907,14 @@ pub struct SubstrateStore {
     /// `EdgeTypeRegistry` via [`Self::resolve_edge_type_by_id`] and
     /// [`Self::is_live_edge_on_disk`].
     edge_properties: DashMap<EdgeId, PropertyMap>,
+    /// Compteur de génération des cartes de propriétés (nœuds + arêtes) :
+    /// incrémenté à chaque mutation, lu par `persist_properties` pour sauter
+    /// la réécriture complète du sidecar hérité quand rien n'a bougé
+    /// (obrain#120, point 3 : le flush complet est O(base)).
+    props_generation: AtomicU64,
+    /// Génération au dernier `persist_properties` réussi. `u64::MAX` = rien
+    /// encore persisté : le premier flush réécrit toujours le sidecar.
+    derniere_generation_props_persistee: AtomicU64,
     /// (2026-08-17, aretes inter-bases V1) Aretes EXTERNES sortantes par
     /// noeud source : la cible vit dans un AUTRE store, adressee par
     /// (hote, slug, clef). Sidecar DashMap — persiste au flush dans
@@ -5396,6 +5404,7 @@ impl SubstrateStore {
         }
         if let Some(props) = props {
             self.node_properties.insert(id, props);
+            self.noter_props_modifiees();
         }
         // Compteurs vivants, lus depuis le record — qui a survecu intact.
         let label_bitset = self
@@ -5477,6 +5486,7 @@ impl SubstrateStore {
 
         if let Some(props) = props {
             self.edge_properties.insert(id, props);
+            self.noter_props_modifiees();
         }
 
         let src_bitset = self
@@ -7272,6 +7282,8 @@ impl SubstrateStore {
             reverse_part_of: parking_lot::RwLock::new(None),
             node_properties: DashMap::new(),
             edge_properties: DashMap::new(),
+            props_generation: AtomicU64::new(0),
+            derniere_generation_props_persistee: AtomicU64::new(u64::MAX),
             property_indexes: DashMap::default(),
             index_batis_depuis_v2: DashMap::default(),
             index_ordonne: index_ordonne.map(RwLock::new),
@@ -12414,6 +12426,13 @@ impl SubstrateStore {
         PropertiesStreamingWriter::open(path)
     }
 
+    /// Incrémente la génération des cartes de propriétés : à appeler à
+    /// CHAQUE mutation de `node_properties` ou `edge_properties`, pour que
+    /// `persist_properties` sache que le sidecar hérité est devenu périmé.
+    fn noter_props_modifiees(&self) {
+        self.props_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Persist the in-memory `self.node_properties` and
     /// `self.edge_properties` maps to a sidecar `substrate.props` file.
     /// See [`crate::props_snapshot`] for rationale and format.
@@ -12424,6 +12443,33 @@ impl SubstrateStore {
     /// this with O(Δ) mmap writes.
     fn persist_properties(&self) -> SubstrateResult<()> {
         self.exiger_ecriture("la persistance des propriétés")?;
+        // (obrain#120, point 3) DIRTY-FLAG DU SIDECAR HÉRITÉ.
+        //
+        // Le sidecar `substrate.props` est une réécriture COMPLÈTE des cartes
+        // `node_properties`/`edge_properties` — O(base). Or une écriture qui
+        // route en colonne blob (> 256 o) ne touche PAS ces cartes : la
+        // réécrire à chaque flush faisait payer le coût O(base) à une écriture
+        // dont le seul effet durable passe par le WAL (`BlobColumnWrite`,
+        // durable depuis #123). On saute donc la réécriture quand AUCUNE carte
+        // n'a bougé depuis le dernier persist réussi — même contrat que
+        // `persist_dict_si_sale` (dirty-flag) et que les colonnes de degrés.
+        //
+        // SÛRETÉ. La génération est lue AVANT la sérialisation et mémorisée
+        // telle quelle : une mutation qui tombe PENDANT la sérialisation
+        // incrémente la génération et force la prochaine réécriture (jamais
+        // d'écrasement d'un sidecar « à jour » par un sidecar périmé). Toute
+        // mutation de ces cartes est par ailleurs journalisée au WAL
+        // (`PropSetInline`/`EdgePropSetInline`/…), donc le WAL couvre la donnée
+        // tant que le sidecar n'est pas réécrit. Le sentinel `u64::MAX` force
+        // la première réécriture après chaque ouverture.
+        let generation = self.props_generation.load(Ordering::Acquire);
+        if self
+            .derniere_generation_props_persistee
+            .load(Ordering::Acquire)
+            == generation
+        {
+            return Ok(());
+        }
         let mut snap = PropertiesSnapshotV1::default();
         // Defensive filter: `Value::Vector` writes are routed to
         // `vec_columns` and never inserted into the DashMap by
@@ -12489,7 +12535,10 @@ impl SubstrateStore {
             let sub = self.substrate.lock();
             sub.path().join(PROPS_FILENAME)
         };
-        snap.persist(&path)
+        snap.persist(&path)?;
+        self.derniere_generation_props_persistee
+            .store(generation, Ordering::Release);
+        Ok(())
     }
 
     /// (feat conversations µs) Id de type d'arête PART_OF (interne).
@@ -24438,6 +24487,7 @@ impl GraphStoreMut for SubstrateStore {
         // `persist_properties` doesn't re-serialise a dead entity on the
         // next flush.
         if let Some((_, props)) = self.node_properties.remove(&id) {
+            self.noter_props_modifiees();
             // T17b : purge de l'index enregistré — la revérification de
             // lecture rendrait l'entrée inoffensive, mais on borne la
             // dérive plutôt que de la laisser s'accumuler.
@@ -24534,6 +24584,7 @@ impl GraphStoreMut for SubstrateStore {
         // T17e Phase 3: the mmap TOMBSTONED flag is authoritative; only
         // the property map needs explicit cleanup here.
         self.edge_properties.remove(&id);
+        self.noter_props_modifiees();
         // T17h T1: live counter decrements.
         self.total_live_edges.fetch_sub(1, Ordering::Relaxed);
         self.incr_edge_type_count(edge_type_id, -1);
@@ -24865,6 +24916,7 @@ impl GraphStoreMut for SubstrateStore {
             .entry(id)
             .or_default()
             .insert(pkey, value.clone());
+        self.noter_props_modifiees();
         #[cfg(test)]
         APRES_ECRITURE_VALEUR.with(|h| {
             if let Some(f) = h.borrow().as_ref() {
@@ -25000,6 +25052,7 @@ impl GraphStoreMut for SubstrateStore {
             .entry(id)
             .or_default()
             .insert(PropertyKey::new(key), value);
+        self.noter_props_modifiees();
         self.maintenance_apres_prop_dispatch(ctx_dispatch, id, key);
     }
 
@@ -25106,6 +25159,7 @@ impl GraphStoreMut for SubstrateStore {
         // — mais son résultat n'est plus la réponse : `avant` l'est.
         if let Some(mut m) = self.node_properties.get_mut(&id) {
             m.remove(&PropertyKey::new(key));
+            self.noter_props_modifiees();
         }
         // T17b : purge de l'index enregistré — pilotée par `avant`, et non
         // plus par la DashMap. Sous v2 l'index EST peuplé
@@ -25384,6 +25438,7 @@ impl GraphStoreMut for SubstrateStore {
         // — mais son résultat n'est plus la réponse : `avant` l'est.
         if let Some(mut m) = self.edge_properties.get_mut(&id) {
             m.remove(&PropertyKey::new(key));
+            self.noter_props_modifiees();
         }
         // T5 : la clé de groupe DISPATCH vient (peut-être) de disparaître —
         // le groupe de l'ancienne ligne est recalculé.
@@ -30504,6 +30559,63 @@ mod tests {
             dict_avant, dict_apres,
             "un flush propre ne doit pas réécrire substrate.dict"
         );
+    }
+
+    /// obrain#120 point 3 — le dirty-flag du sidecar hérité ne perd rien et ne
+    /// réécrit pas pour rien. Une écriture longue (> 256 o, colonne blob) ne
+    /// touche PAS les cartes `node_properties`/`edge_properties` : le flush qui
+    /// suit SAUTE la réécriture du sidecar. Une écriture courte la refait. La
+    /// réouverture retrouve les deux valeurs, malgré le saut.
+    #[test]
+    #[allow(unsafe_code)]
+    fn persist_properties_skippe_et_reecrit_selon_la_generation() {
+        let _guard = props_v2_env_lock();
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("kb");
+        // SAFETY: sérialisé par `props_v2_env_lock`, détenu ci-dessus.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        let id = {
+            let s = SubstrateStore::create(&path).unwrap();
+            let id = s.create_node(&["File"]);
+            s.set_node_property(id, "i", Value::Int64(1));
+            s.flush().unwrap();
+            let generation = s.props_generation.load(Ordering::Acquire);
+            assert_eq!(
+                s.derniere_generation_props_persistee
+                    .load(Ordering::Acquire),
+                generation,
+                "le premier flush doit persister le sidecar"
+            );
+            // Écriture longue (> 256 o) : ne salit PAS les cartes.
+            s.set_node_property(id, "doc", Value::String("x".repeat(585).into()));
+            s.flush().unwrap();
+            assert_eq!(
+                s.props_generation.load(Ordering::Acquire),
+                generation,
+                "une écriture blob ne salit pas les cartes de propriétés"
+            );
+            // Écriture courte : resalit → le flush suivant réécrit le sidecar.
+            s.set_node_property(id, "i", Value::Int64(2));
+            s.flush().unwrap();
+            assert_eq!(
+                s.derniere_generation_props_persistee
+                    .load(Ordering::Acquire),
+                s.props_generation.load(Ordering::Acquire),
+                "une écriture courte doit forcer la réécriture du sidecar"
+            );
+            id
+        };
+        // SAFETY: idem.
+        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        // Durabilité : la réouverture retrouve la valeur courte (sidecar) et la
+        // longue (colonne blob), malgré le saut du sidecar au flush.
+        let s = SubstrateStore::open(&path).unwrap();
+        assert_eq!(
+            s.get_node_property(id, &PropertyKey::new("i")),
+            Some(Value::Int64(2))
+        );
+        let doc = s.get_node_property(id, &PropertyKey::new("doc"));
+        assert!(matches!(doc, Some(Value::String(ref v)) if v.len() == 585));
     }
 
     /// T17h T8 — typed columns survive close/reopen via the
@@ -38382,8 +38494,11 @@ mod tests {
         };
 
         // (2) Migration COMPLÈTE : drain, flush, suppression du sidecar.
-        //     Puis un flush de plus, qui RECRÉE un sidecar périmé depuis la
-        //     DashMap restée peuplée — le cas Megalaw, reproduit exprès.
+        //     (obrain#120) Le dirty-flag de `persist_properties` fait que le
+        //     flush SUIVANT ne RECRÉE PLUS un sidecar périmé depuis la DashMap
+        //     restée peuplée — c'était « le cas Megalaw » ; il ne peut plus
+        //     naître par ce chemin. On le SIMULE donc ici, à la main, pour
+        //     éprouver quand même le court-circuit à l'ouverture.
         let sidecar = root.join(crate::props_snapshot::PROPS_FILENAME);
         // SAFETY: sérialisé par `props_v2_env_lock`.
         unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
@@ -38394,7 +38509,23 @@ mod tests {
             s.delete_legacy_props_sidecar().unwrap().expect("présent");
             assert!(!sidecar.exists(), "sidecar supprimé par la migration");
             s.flush().unwrap();
+            assert!(
+                !sidecar.exists(),
+                "un flush qui suit la suppression ne réécrit pas un sidecar \
+                 périmé (dirty-flag obrain#120)"
+            );
         }
+        // Sidecar périmé NON VIDE, posé à la main : c'est l'état que laisserait
+        // un binaire antérieur (ou un pair) qui aurait flushé avant ce correctif.
+        crate::props_snapshot::PropertiesSnapshotV1 {
+            nodes: vec![crate::props_snapshot::PropEntry {
+                id: u64::MAX - 1,
+                props: vec![("fantome".to_string(), Value::String("x".into()))],
+            }],
+            edges: Vec::new(),
+        }
+        .persist(&sidecar)
+        .unwrap();
         assert!(
             sidecar.metadata().map(|m| m.len()).unwrap_or(0) > 0,
             "on veut précisément un sidecar périmé NON VIDE sur le disque — \
