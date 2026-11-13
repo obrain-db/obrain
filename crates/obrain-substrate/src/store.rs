@@ -1180,6 +1180,13 @@ const V2_RELECTURE_EXEMPLES: usize = 8;
 // amener le code SAIN dans cet état — seule une injection le peut. Elle est
 // `#[cfg(test)]`, donc absente du binaire de production, et locale au FIL pour
 // ne pas contaminer les tests parallèles.
+thread_local! {
+    /// VRAI sur le fil qui exécute `preparer_index_egalite` : seule CETTE
+    /// passe est interruptible par `annuler_preparation_index`. Une
+    /// construction demandée par une requête, elle, va toujours au bout.
+    static PREPARATION_EN_ARRIERE_PLAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Nombre d'emplacements dont une zone peut manquer sans que l'ouverture en
 /// lecture seule la dise tronquée (slots réservés, pas encore écrits au flush).
 const TOLERANCE_ZONE_TRONQUEE: u64 = 64;
@@ -1222,13 +1229,6 @@ fn refuser_zone_tronquee(dir: &Path, snapshot: &crate::dict::DictSnapshot) -> Su
     Ok(())
 }
 
-thread_local! {
-    /// VRAI sur le fil qui exécute `preparer_index_egalite` : seule CETTE
-    /// passe est interruptible par `annuler_preparation_index`. Une
-    /// construction demandée par une requête, elle, va toujours au bout.
-    static PREPARATION_EN_ARRIERE_PLAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 #[cfg(test)]
 thread_local! {
     static SABOTAGE_REGISTRE_CLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -1266,6 +1266,57 @@ thread_local! {
     /// LISIBLE : reproduit le lecteur concurrent qui voit la valeur neuve.
     #[allow(clippy::type_complexity)]
     static APRES_ECRITURE_VALEUR: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Dans `set_node_property`, après l'entrée d'index de tête et AVANT
+    /// l'écriture de la valeur : reproduit un index déclaré à cet instant.
+    #[allow(clippy::type_complexity)]
+    static AVANT_ECRITURE_VALEUR: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Dans `set_node_property`, entre l'écriture dans la zone v2 et celle
+    /// dans la carte : reproduit un second écrivain qui s'intercale.
+    #[allow(clippy::type_complexity)]
+    static ENTRE_ZONE_ET_CARTE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Dans `bulk_import_node_props`, pages construites, têtes PAS ENCORE
+    /// posées : reproduit un index bâti pendant l'import.
+    #[allow(clippy::type_complexity)]
+    static PENDANT_IMPORT_EN_LOT: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Dans le chemin BLOB de `set_node_property`, entrée d'index posée,
+    /// AVANT `route_blob_write` : reproduit un second écrivain, ou un index
+    /// déclaré à cet instant.
+    #[allow(clippy::type_complexity)]
+    static AVANT_ROUTAGE_BLOB: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// `fusionner_index_egalite` : `cles` figé, séries pas encore bâties.
+    #[allow(clippy::type_complexity)]
+    static PENDANT_FUSION_EGALITE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// VRAI : `fusionner_index_egalite` échoue (écriture de zone impossible).
+    static ECHEC_FUSION_EGALITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `recolter_index_depuis_v2` : clé enregistrée, époque PAS ENCORE
+    /// incrémentée (revue 6, N1) — un import qui lit ici doit voir la clé.
+    #[allow(clippy::type_complexity)]
+    /// `recolter_index_depuis_v2` : AVANT l'enregistrement de la clé (la
+    /// fenêtre que l'ancien ordre « époque puis enregistrement » ouvrait).
+    #[allow(clippy::type_complexity)]
+    static AVANT_ENREGISTREMENT_CLE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Surcharge PAR FIL de `OBRAIN_PROPS_V2` pour les tests (voir
+    /// `lire_props_v2_env`).
+    static PROPS_V2_SURCHARGE: std::cell::RefCell<Option<Option<String>>> =
+        const { std::cell::RefCell::new(None) };
+    #[allow(clippy::type_complexity)]
+    static ENTRE_ENREGISTREMENT_ET_EPOQUE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// `create_property_index` : la clé est absente, la construction va
+    /// commencer (revue 6, N5).
+    #[allow(clippy::type_complexity)]
+    static AVANT_CONSTRUCTION_INDEX: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// `recolter_index_depuis_v2` : têtes relevées, marques pas encore posées.
+    #[allow(clippy::type_complexity)]
+    static APRES_RELEVE_DES_TETES: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1610,7 +1661,7 @@ const PLAFOND_DELTA_FENETRE: u64 = 1 << 20; // 1 Mio
 /// Fondé sur le coût mesuré de la passe — ~1 µs par nœud, en parallèle — et sur
 /// le fait que l'ouverture est payée par TOUT processus frais. Au-dessus, on
 /// déclare et on construit à la demande.
-const SEUIL_NOEUDS_PASSE_HATIVE: u64 = 50_000;
+pub const SEUIL_NOEUDS_PASSE_HATIVE: u64 = 50_000;
 
 const FICHIER_CATALOGUE: &str = "substrate.indexcat";
 
@@ -1907,6 +1958,14 @@ pub struct SubstrateStore {
     /// `EdgeTypeRegistry` via [`Self::resolve_edge_type_by_id`] and
     /// [`Self::is_live_edge_on_disk`].
     edge_properties: DashMap<EdgeId, PropertyMap>,
+    /// Compteur de génération des cartes de propriétés (nœuds + arêtes) :
+    /// incrémenté à chaque mutation, lu par `persist_properties` pour sauter
+    /// la réécriture complète du sidecar hérité quand rien n'a bougé
+    /// (obrain#120, point 3 : le flush complet est O(base)).
+    props_generation: AtomicU64,
+    /// Génération au dernier `persist_properties` réussi. `u64::MAX` = rien
+    /// encore persisté : le premier flush réécrit toujours le sidecar.
+    derniere_generation_props_persistee: AtomicU64,
     /// (2026-08-17, aretes inter-bases V1) Aretes EXTERNES sortantes par
     /// noeud source : la cible vit dans un AUTRE store, adressee par
     /// (hote, slug, clef). Sidecar DashMap — persiste au flush dans
@@ -2076,6 +2135,17 @@ pub struct SubstrateStore {
     /// dernière fusion de la zone d'égalité. Faux, la fusion n'a RIEN à
     /// réécrire : elle se contente de reposer les ancres (48 octets).
     egalite_delta_sale: std::sync::atomic::AtomicBool,
+    /// Époque des constructions / suppressions d'index d'égalité : incrémentée
+    /// à chaque `create_property_index`, construction depuis les chaînes et
+    /// `drop_property_index`. `bulk_import_node_props` la compare avant /
+    /// après la pose des têtes pour ne réinscrire ses clés que si un index a
+    /// été bâti ou supprimé PENDANT l'import (revue 5).
+    epoque_index: AtomicU64,
+    /// Verrous d'ÉCRITURE par nœud (256 tranches, par identifiant) : un seul
+    /// écrivain à la fois sur un nœud, de l'entrée d'index neuve au retrait
+    /// de l'ancienne. Voir `set_node_property`. Le plus EXTÉRIEUR des
+    /// verrous du chemin d'écriture : jamais pris sous un garde de zone.
+    verrous_ecriture_noeud: Box<[Mutex<()>]>,
     /// UNE construction d'index à la fois. Deux requêtes simultanées sur une
     /// clé à bâtir faisaient DEUX passes complètes sur la base ; la seconde
     /// attend désormais la première et réutilise son résultat. Verrou le plus
@@ -2970,6 +3040,55 @@ impl SubstrateStore {
         Some(out)
     }
 
+    /// Les INSTANTS portés par les colonnes BLOB de `cle` (chaînes datetime de
+    /// plus de 256 octets), pour la construction d'un index.
+    ///
+    /// Séquentielle sur les slots de 1 au filigrane : une lecture d'index de
+    /// colonne par slot (~1 M à 1 M de nœuds), payée UNE fois par processus et
+    /// par clé À COLONNE BLOB seulement. L'en-tête du payload est reniflé
+    /// (tag String, `AAAA-MM-JJT…`) AVANT tout décodage : un long texte qui
+    /// n'est pas un instant ne coûte ni UTF-8 ni parse (revue 5, point 5).
+    ///
+    /// `None` si `interrompue` s'est déclenchée : l'appelant ne pose alors
+    /// AUCUNE marque. Aucun jeton d'annulation de requête n'est consulté.
+    fn recolter_instants_blob(
+        &self,
+        cle: &PropertyKey,
+        interrompue: &dyn Fn() -> bool,
+    ) -> Option<Vec<(IndexValueKey, NodeId)>> {
+        let mut out = Vec::new();
+        if self.blob_columns.spec_for(cle, EntityKind::Node).is_none() {
+            return Some(out);
+        }
+        let hw = self.next_node_id.load(Ordering::Acquire);
+        for slot in 1..hw {
+            if slot % 8192 == 0 && interrompue() {
+                return None;
+            }
+            let Some(brut) = self.blob_columns.read(cle, EntityKind::Node, slot) else {
+                continue;
+            };
+            let [tag, charge @ ..] = &brut[..] else {
+                continue;
+            };
+            if *tag != crate::blob_column_registry::BLOB_TAG_STRING
+                || charge.len() < 16
+                || charge[4] != b'-'
+                || charge[7] != b'-'
+                || (charge[10] != b'T' && charge[10] != b't')
+            {
+                continue;
+            }
+            let Ok(s) = std::str::from_utf8(charge) else {
+                continue;
+            };
+            if let Some(instant) = obrain_common::types::value_cmp::instant_de_chaine(s) {
+                out.push((IndexValueKey::Instant(instant), NodeId(u64::from(slot))));
+            }
+        }
+        Some(out)
+    }
+
     pub(crate) fn batir_index_depuis_v2(&self, proprietes: &[String]) -> bool {
         self.recolter_index_depuis_v2(proprietes, false)
     }
@@ -2996,8 +3115,27 @@ impl SubstrateStore {
         if cibles.is_empty() {
             return false;
         }
+        #[cfg(test)]
+        AVANT_ENREGISTREMENT_CLE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         for (k, _) in &cibles {
             self.property_indexes.entry(k.clone()).or_default();
+        }
+        #[cfg(test)]
+        ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        // L'époque bouge APRÈS l'enregistrement de la clé (revue 6, N1) : un
+        // import qui lit l'époque puis les clés enregistrées voit alors soit
+        // la clé (inscription de tête), soit le changement d'époque
+        // (réinscription de queue) — jamais ni l'un ni l'autre.
+        if !complement_seul {
+            self.epoque_index.fetch_add(1, Ordering::AcqRel);
         }
 
         // ── DÉTENTION DE VERROU BORNÉE (2026-08-19) ──
@@ -3025,6 +3163,12 @@ impl SubstrateStore {
 
         // ── A. relevé des têtes (voir `tetes_de_chaines_v2`) ──
         let tetes = self.tetes_de_chaines_v2();
+        #[cfg(test)]
+        APRES_RELEVE_DES_TETES.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
 
         // ── B. traversée par lots (verrou de zone de props, relâché entre) ──
         //
@@ -3097,6 +3241,31 @@ impl SubstrateStore {
             return false;
         }
         let t_collecte = t.elapsed();
+        // ── LES INSTANTS DES COLONNES BLOB (revue 4, A2) ──
+        //
+        // Une chaîne datetime de plus de 256 octets ne vit pas dans les
+        // chaînes de pages mais en colonne blob : la passe ci-dessus ne la
+        // voit pas. Pour chaque clé cible qui a une colonne blob, on relit
+        // les slots qui portent un instant (coût : une lecture de colonne par
+        // slot, UNE fois par construction) et on les range sous leur instant.
+        // Sans cela une base écrite avant cette inscription à l'écriture — ou
+        // une zone héritée — aurait un index réputé complet qui les ignore.
+        let mut recolte_blob: Recolte = Vec::new();
+        for (cle, _) in &cibles {
+            // NON ANNULABLE par une requête (revue 5, B-1) : la récolte ne
+            // passe plus par `balayer_blob_par_predicat` (qui sort sur le jeton
+            // du fil et rend un partiel) ; seule la préparation d'arrière-plan
+            // peut l'interrompre, et alors AUCUNE marque n'est posée.
+            let Some(instants) = self.recolter_instants_blob(cle, &interrompue) else {
+                return false;
+            };
+            recolte_blob.extend(instants.into_iter().map(|(ik, id)| (cle.clone(), ik, id)));
+        }
+        for (cle, ik, id) in recolte_blob {
+            if let Some(idx) = self.property_indexes.get(&cle) {
+                idx.entry(ik).or_default().insert(id);
+            }
+        }
         // (T27) Insertion PARALLÈLE : les index sont des tables concurrentes
         // (verrous par fragment). Mesuré séquentiel : 2,2 s pour 3,1 M entrées
         // sur le noyau Linux.
@@ -3120,15 +3289,27 @@ impl SubstrateStore {
         // ne connaît pas, dont l'index reste donc à bâtir le jour où elles
         // apparaîtront. Posé APRÈS la boucle, donc hors de toute portée de
         // `props_zone` ou de garde de `property_indexes`.
-        self.egalite_delta_sale.store(true, Ordering::Release);
+        // Une clé à colonne blob n'a pas de série persistée : seules les
+        // autres rendent la zone à réécrire (revue 6, N2).
+        if cibles.iter().any(|(k, _)| !self.cle_a_colonne_blob(k)) {
+            self.egalite_delta_sale.store(true, Ordering::Release);
+        }
         if !complement_seul {
             self.passes_de_construction.fetch_add(1, Ordering::AcqRel);
             for (cle, _) in &cibles {
+                // Une clé SUPPRIMÉE pendant la construction n'a plus de carte
+                // (le drop est sérialisé avec les constructions, mais une
+                // construction hors verrou reste possible) : on ne lui pose pas
+                // de marque (revue 5, point 4).
+                if !self.property_indexes.contains_key(cle) {
+                    continue;
+                }
                 // La carte RAM vient d'être remplie depuis TOUTES les chaînes :
                 // elle est complète à elle seule, et l'index répond.
                 self.index_ram_complets.insert(cle.clone(), ());
                 self.index_batis_depuis_v2.insert(cle.clone(), ());
             }
+            self.epoque_index.fetch_add(1, Ordering::AcqRel);
         }
         if std::env::var("OBRAIN_INDEX_PROF").is_ok() {
             eprintln!(
@@ -3215,6 +3396,21 @@ impl SubstrateStore {
             return;
         }
         self.batir_index_depuis_v2(&manquantes);
+    }
+
+    /// Nombre de passes COMPLÈTES de construction d'index depuis l'ouverture
+    /// (une passe lit toute la base) : ce que les tests observent pour
+    /// établir qu'une construction n'est pas refaite à chaque requête.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn passes_de_construction_index(&self) -> u64 {
+        self.passes_de_construction.load(Ordering::Acquire)
+    }
+
+    /// Le verrou d'écriture du nœud `id` (voir `verrous_ecriture_noeud`).
+    #[inline]
+    fn verrou_ecriture_noeud(&self, id: NodeId) -> &Mutex<()> {
+        &self.verrous_ecriture_noeud[(id.0 % 256) as usize]
     }
 
     /// Le geste « compléter l'index AVANT de le croire », pour UNE recherche
@@ -3486,6 +3682,18 @@ impl SubstrateStore {
         let nb = noms.len();
         for (pk, nom) in noms {
             let cle = PropertyKey::new(&nom);
+            // ── RÈGLE (revue 5, B-2) : UNE CLÉ À COLONNE BLOB N'EST JAMAIS CRUE ──
+            //
+            // Une écriture en colonne blob n'a aucune trace durable (ni WAL ni
+            // page v2 : obrain#120). Un instant écrit en forme longue après la
+            // dernière fusion serait dans la colonne, pas dans la zone, et les
+            // ancres seraient pourtant égales : la zone le manquerait. Une telle
+            // clé n'est donc PAS couverte : elle se reconstruit à la demande
+            // (une fois par processus et par clé concernée), blobs compris.
+            // Les clés sans colonne blob gardent la zone persistée.
+            if self.blob_columns.spec_for(&cle, EntityKind::Node).is_some() {
+                continue;
+            }
             self.property_indexes.entry(cle.clone()).or_default();
             self.index_batis_depuis_v2.insert(cle.clone(), ());
             self.egalite_couverte.insert(cle, pk);
@@ -3977,16 +4185,40 @@ impl SubstrateStore {
     /// Propage un échec d'écriture ou de `rename` du fichier d'index. Le
     /// fichier PRÉCÉDENT reste alors en place et intact.
     pub fn fusionner_index_egalite(&self) -> SubstrateResult<()> {
+        self.fusionner_index_egalite_sans(None)
+    }
+
+    /// Corps de [`Self::fusionner_index_egalite`]. `exclue` retire une clé du
+    /// jeu à écrire : c'est ce que fait `drop_property_index`, qui réécrit la
+    /// zone SANS la série AVANT de toucher au catalogue et à la mémoire.
+    pub(crate) fn fusionner_index_egalite_sans(
+        &self,
+        exclue: Option<&PropertyKey>,
+    ) -> SubstrateResult<()> {
+        #[cfg(test)]
+        if ECHEC_FUSION_EGALITE.with(std::cell::Cell::get) {
+            return Err(SubstrateError::Internal("fusion refusée (test)".into()));
+        }
         self.exiger_ecriture("la fusion de l'index d'égalité")?;
         let Some(zone_lock) = self.index_egalite.as_ref() else {
             return Ok(());
         };
+        // Jamais la série d'une clé à colonne blob : l'ouverture ne la lit
+        // pas (règle R), l'écrire serait réécrire toute la zone à chaque
+        // préparation pour rien (revue 6, N2).
         let cles: Vec<PropertyKey> = self
             .index_batis_depuis_v2
             .iter()
+            .filter(|e| exclue.is_none_or(|x| e.key() != x))
+            .filter(|e| !self.cle_a_colonne_blob(e.key()))
             .map(|e| e.key().clone())
             .collect();
-        if cles.is_empty() {
+        // Plus aucune clé à écrire, mais la zone porte encore des séries :
+        // celles d'index SUPPRIMÉS (revue 4, A1). On réécrit une zone VIDE
+        // plutôt que de les laisser — sans quoi l'index supprimé en dernier
+        // reviendrait à la réouverture.
+        let zone_porte_des_series = !zone_lock.read().proprietes().is_empty();
+        if cles.is_empty() && !zone_porte_des_series {
             return Ok(());
         }
         let pages = self
@@ -4013,21 +4245,40 @@ impl SubstrateStore {
         let sale = self.egalite_delta_sale.swap(false, Ordering::AcqRel);
         if !sale {
             let mut zone = zone_lock.write();
-            let porte_tout = {
-                let presentes = zone.proprietes();
+            // Les jeux doivent être ÉGAUX, pas seulement inclus : une série
+            // de plus dans la zone est celle d'un index SUPPRIMÉ (revue 3,
+            // B1), que seule une réécriture écarte.
+            let memes_cles = {
+                let mut presentes = zone.proprietes();
+                presentes.sort_unstable();
                 let reg = self.prop_keys.read();
-                cles.iter().all(|c| {
-                    reg.lookup(c.as_str())
-                        .is_none_or(|pk| presentes.contains(&pk))
-                })
+                let mut voulues: Vec<u16> =
+                    cles.iter().filter_map(|c| reg.lookup(c.as_str())).collect();
+                voulues.sort_unstable();
+                voulues.dedup();
+                presentes == voulues
             };
-            if zone.fiable() && zone.canonique() == canonique && porte_tout {
+            if zone.fiable() && zone.canonique() == canonique && memes_cles {
                 zone.adopter_ancres(offset, pages);
                 return Ok(());
             }
         }
+        #[cfg(test)]
+        PENDANT_FUSION_EGALITE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         let mut series: Vec<(u16, Vec<crate::props_eq_index::EntreeEgalite>)> = Vec::new();
         for cle in cles {
+            // `cles` a été figé HORS verrou : une clé supprimée entre-temps
+            // n'a plus de carte, et sa série partirait VIDE — que l'ouverture
+            // lirait comme « aucun porteur » (revue 5, point 4).
+            if !self.property_indexes.contains_key(&cle)
+                || !self.index_batis_depuis_v2.contains_key(&cle)
+            {
+                continue;
+            }
             let Some(pk) = self.prop_keys.read().lookup(cle.as_str()) else {
                 continue;
             };
@@ -4041,10 +4292,62 @@ impl SubstrateStore {
             // Étage RAM : l'index de session. Les candidats sont copiés hors
             // du shard avant tout tri — aucun autre verrou n'est tenu ici.
             if let Some(idx) = self.property_indexes.get(&cle) {
-                for e in idx.iter() {
-                    let h = Self::hachage_cle_egalite(e.key());
-                    for id in e.value() {
-                        entrees.push(crate::props_eq_index::EntreeEgalite::new(h, id.0 as u32));
+                // Candidats copiés hors du shard AVANT toute relecture de
+                // propriété (le cycle `props_zone` ↔ shard).
+                let copie: Vec<(IndexValueKey, Vec<NodeId>)> = idx
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().iter().copied().collect()))
+                    .collect();
+                drop(idx);
+                for (ik, ids) in copie {
+                    if canonique {
+                        let h = Self::hachage_cle_egalite(&ik);
+                        entrees.extend(
+                            ids.iter().map(|id| {
+                                crate::props_eq_index::EntreeEgalite::new(h, id.0 as u32)
+                            }),
+                        );
+                        continue;
+                    }
+                    // ── FICHIER DE VERSION 1 : LES CLÉS DE L'ANCIEN BINAIRE ──
+                    //
+                    // RÉSIDU (revue 4) : omettre le seau « autre » prive ce
+                    // fichier des porteurs de valeurs non projetables ; le
+                    // NOUVEAU binaire qui le rouvrira le lit comme hérité et
+                    // ne sert l'EXISTENCE (`find_nodes_with_property`)
+                    // qu'après le complément — jusque-là, `None` (balayage),
+                    // jamais une liste incomplète.
+                    //
+                    // Un binaire antérieur lit ce fichier (revue 3, C3) : il
+                    // cherche une chaîne datetime sous `hachage_chaine`, et ne
+                    // connaît pas le seau « autre ». On range donc chaque
+                    // instant sous le hachage de la CHAÎNE COURANTE du nœud
+                    // (relue : la clé RAM ne garde que l'instant), on omet le
+                    // seau « autre » (le complément de la zone héritée le
+                    // rebâtit), et on garde Bool / Int / Str, identiques dans
+                    // les deux versions (un entier issu d'un flottant est un
+                    // sur-ensemble revérifié, sans danger).
+                    match ik {
+                        IndexValueKey::Instant(_) => {
+                            for id in ids {
+                                if let Some(Value::String(s)) = self.get_node_property(id, &cle)
+                                    && obrain_common::types::value_cmp::instant_de_chaine(&s)
+                                        .is_some()
+                                {
+                                    entrees.push(crate::props_eq_index::EntreeEgalite::new(
+                                        crate::props_eq_index::hachage_chaine(&s),
+                                        id.0 as u32,
+                                    ));
+                                }
+                            }
+                        }
+                        IndexValueKey::Autre => {}
+                        autre => {
+                            let h = Self::hachage_cle_egalite(&autre);
+                            entrees.extend(ids.iter().map(|id| {
+                                crate::props_eq_index::EntreeEgalite::new(h, id.0 as u32)
+                            }));
+                        }
                     }
                 }
             }
@@ -4052,7 +4355,7 @@ impl SubstrateStore {
             entrees.dedup();
             series.push((pk, entrees));
         }
-        if series.is_empty() {
+        if series.is_empty() && !zone_porte_des_series {
             self.egalite_delta_sale.store(sale, Ordering::Release);
             return Ok(());
         }
@@ -5396,6 +5699,7 @@ impl SubstrateStore {
         }
         if let Some(props) = props {
             self.node_properties.insert(id, props);
+            self.noter_props_modifiees();
         }
         // Compteurs vivants, lus depuis le record — qui a survecu intact.
         let label_bitset = self
@@ -5477,6 +5781,7 @@ impl SubstrateStore {
 
         if let Some(props) = props {
             self.edge_properties.insert(id, props);
+            self.noter_props_modifiees();
         }
 
         let src_bitset = self
@@ -7054,7 +7359,7 @@ impl SubstrateStore {
             //
             // `OBRAIN_PROPS_V2=0` force le comportement hérité, pour pouvoir
             // reproduire un incident sur l ancien chemin.
-            let var = std::env::var("OBRAIN_PROPS_V2").ok();
+            let var = lire_props_v2_env();
             let enable_env = var.as_deref() == Some("1");
             let disable_env = var.as_deref() == Some("0");
             let zone_exists = sub_guard.path().join(PROPS_V2_FILENAME).exists();
@@ -7272,6 +7577,8 @@ impl SubstrateStore {
             reverse_part_of: parking_lot::RwLock::new(None),
             node_properties: DashMap::new(),
             edge_properties: DashMap::new(),
+            props_generation: AtomicU64::new(0),
+            derniere_generation_props_persistee: AtomicU64::new(u64::MAX),
             property_indexes: DashMap::default(),
             index_batis_depuis_v2: DashMap::default(),
             index_ordonne: index_ordonne.map(RwLock::new),
@@ -7365,6 +7672,8 @@ impl SubstrateStore {
             egalite_heritee: std::sync::atomic::AtomicBool::new(false),
             complement_herite_bati: std::sync::atomic::AtomicBool::new(false),
             egalite_delta_sale: std::sync::atomic::AtomicBool::new(false),
+            epoque_index: AtomicU64::new(0),
+            verrous_ecriture_noeud: (0..256).map(|_| Mutex::new(())).collect(),
             construction_index: Mutex::new(()),
             preparation_annulee: std::sync::atomic::AtomicBool::new(false),
             passes_de_construction: AtomicU64::new(0),
@@ -12414,6 +12723,13 @@ impl SubstrateStore {
         PropertiesStreamingWriter::open(path)
     }
 
+    /// Incrémente la génération des cartes de propriétés : à appeler à
+    /// CHAQUE mutation de `node_properties` ou `edge_properties`, pour que
+    /// `persist_properties` sache que le sidecar hérité est devenu périmé.
+    fn noter_props_modifiees(&self) {
+        self.props_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Persist the in-memory `self.node_properties` and
     /// `self.edge_properties` maps to a sidecar `substrate.props` file.
     /// See [`crate::props_snapshot`] for rationale and format.
@@ -12424,6 +12740,33 @@ impl SubstrateStore {
     /// this with O(Δ) mmap writes.
     fn persist_properties(&self) -> SubstrateResult<()> {
         self.exiger_ecriture("la persistance des propriétés")?;
+        // (obrain#120, point 3) DIRTY-FLAG DU SIDECAR HÉRITÉ.
+        //
+        // Le sidecar `substrate.props` est une réécriture COMPLÈTE des cartes
+        // `node_properties`/`edge_properties` — O(base). Or une écriture qui
+        // route en colonne blob (> 256 o) ne touche PAS ces cartes : la
+        // réécrire à chaque flush faisait payer le coût O(base) à une écriture
+        // dont le seul effet durable passe par le WAL (`BlobColumnWrite`,
+        // durable depuis #123). On saute donc la réécriture quand AUCUNE carte
+        // n'a bougé depuis le dernier persist réussi — même contrat que
+        // `persist_dict_si_sale` (dirty-flag) et que les colonnes de degrés.
+        //
+        // SÛRETÉ. La génération est lue AVANT la sérialisation et mémorisée
+        // telle quelle : une mutation qui tombe PENDANT la sérialisation
+        // incrémente la génération et force la prochaine réécriture (jamais
+        // d'écrasement d'un sidecar « à jour » par un sidecar périmé). Toute
+        // mutation de ces cartes est par ailleurs journalisée au WAL
+        // (`PropSetInline`/`EdgePropSetInline`/…), donc le WAL couvre la donnée
+        // tant que le sidecar n'est pas réécrit. Le sentinel `u64::MAX` force
+        // la première réécriture après chaque ouverture.
+        let generation = self.props_generation.load(Ordering::Acquire);
+        if self
+            .derniere_generation_props_persistee
+            .load(Ordering::Acquire)
+            == generation
+        {
+            return Ok(());
+        }
         let mut snap = PropertiesSnapshotV1::default();
         // Defensive filter: `Value::Vector` writes are routed to
         // `vec_columns` and never inserted into the DashMap by
@@ -12489,7 +12832,10 @@ impl SubstrateStore {
             let sub = self.substrate.lock();
             sub.path().join(PROPS_FILENAME)
         };
-        snap.persist(&path)
+        snap.persist(&path)?;
+        self.derniere_generation_props_persistee
+            .store(generation, Ordering::Release);
+        Ok(())
     }
 
     /// (feat conversations µs) Id de type d'arête PART_OF (interne).
@@ -13205,30 +13551,9 @@ impl SubstrateStore {
         // revérifié, y entrer trop tôt est sans danger). Coût nul sans index
         // déclaré ; sinon une insertion par valeur d'une clé indexée. Les
         // valeurs différées (vecteurs, blobs) passent par le chemin unitaire.
-        if !self.property_indexes.is_empty() {
-            let indexees: std::collections::HashMap<&str, PropertyKey> = cles
-                .keys()
-                .filter_map(|k| {
-                    let cle = PropertyKey::new(*k);
-                    self.property_indexes
-                        .contains_key(&cle)
-                        .then_some((*k, cle))
-                })
-                .collect();
-            if !indexees.is_empty() {
-                for (i, liste) in props.iter().enumerate() {
-                    let id = NodeId(u64::from(premier_slot) + i as u64);
-                    for (k, v) in liste {
-                        if let Some(cle) = indexees.get(k)
-                            && !matches!(v, Value::Vector(_))
-                            && encode_blob_payload(v).is_none()
-                        {
-                            self.prop_index_insert(cle, v, id);
-                        }
-                    }
-                }
-            }
-        }
+        let epoque_avant = self.epoque_index.load(Ordering::Acquire);
+        let indexees_au_debut = self.cles_indexees_parmi(cles.keys().copied(), &[]);
+        self.inscrire_entrees_import(premier_slot, props, &indexees_au_debut);
         // ── CONSTRUCTION PARALLÈLE (T27) ─────────────────────────────────────
         // Mesuré : la construction séquentielle des pages est du calcul pur
         // (CPU du fil = temps mural, ≈ 5,5 µs par nœud). On la répartit en
@@ -13333,7 +13658,34 @@ impl SubstrateStore {
         tetes.sort_unstable_by_key(|t| t.0);
         let t_pages = t0.elapsed();
         let cpu_pages = crate::compteurs::temps_cpu("thread-self") - cpu0;
+        #[cfg(test)]
+        PENDANT_IMPORT_EN_LOT.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         self.writer.poser_tetes_props_en_lot(&tetes)?;
+        // ── UN INDEX ENREGISTRÉ PENDANT L'IMPORT (revue 3, B2) ──
+        //
+        // L'import dure des secondes ; un `create_property_index` ou la
+        // préparation d'arrière-plan a pu bâtir un index depuis les chaînes
+        // AVANT que les têtes soient posées : il ne voit aucun des nœuds
+        // importés, et se marque complet. On inscrit donc, après la pose des
+        // têtes, les entrées des clés enregistrées depuis le début de
+        // l'import (idempotent pour celles déjà inscrites).
+        // TOUTES les clés enregistrées, pas seulement les nouvelles : une clé
+        // présente au début, SUPPRIMÉE puis RECRÉÉE pendant l'import (le drop
+        // jette la carte, le create rebâtit sans les têtes et se marque
+        // complet) serait sinon exclue, et son index durablement faux pour
+        // tous les nœuds importés (revue 4, A3). L'insertion est idempotente.
+        //
+        // Seulement si un index a été bâti ou supprimé PENDANT l'import
+        // (`epoque_index` a bougé) : sinon l'inscription de tête a suffi, et
+        // la refaire coûterait ~1 s par million de nœuds pour rien.
+        if self.epoque_index.load(Ordering::Acquire) != epoque_avant {
+            let toutes = self.cles_indexees_parmi(cles.keys().copied(), &[]);
+            self.inscrire_entrees_import(premier_slot, props, &toutes);
+        }
         let t_tetes = t0.elapsed() - t_pages;
         let t1 = web_time::Instant::now();
         let n_differees = differees.len();
@@ -13357,7 +13709,8 @@ impl SubstrateStore {
         // l'import ne borne donc plus les porteurs : on retire les marqueurs
         // « bâti depuis v2 » et « couvert par la zone », et le prochain usage
         // rebâtit l'index depuis les chaînes (qui, elles, portent tout).
-        // C'est la règle d'`index_borne_les_porteurs`, condition 4.
+        // C'est l'invariant qu'`index_borne_les_porteurs` portait (main, #99) et que
+        // `candidats_bruts` porte ici : `Some(..)` est une affirmation de complétude.
         self.index_batis_depuis_v2.clear();
         self.egalite_couverte.clear();
         Ok(ecrites)
@@ -13370,25 +13723,49 @@ impl SubstrateStore {
     /// Même résultat ; sans zone v2 (ou sur base vide), on retombe sur le
     /// chemin unitaire, clé par clé.
     pub fn creer_index_proprietes(&self, proprietes: &[&str]) {
-        let a_batir: Vec<String> = proprietes
-            .iter()
-            .filter(|p| {
-                self.declarer_propriete_sans_batir(p);
-                !self.property_indexes.contains_key(&PropertyKey::new(**p))
-            })
-            .map(|p| p.to_string())
-            .collect();
-        if a_batir.is_empty() {
-            return;
+        for p in proprietes {
+            self.declarer_propriete_sans_batir(p);
         }
-        if self.props_zone.is_some()
-            && self.next_node_id.load(Ordering::Acquire) > 1
-            && self.batir_index_depuis_v2(&a_batir)
-        {
-            self.persister_index_apres_construction();
-            return;
-        }
-        for p in &a_batir {
+        // ── LE VERROU N'EST TENU QUE SUR LA BRANCHE v2 (revue 7) ──
+        //
+        // `construction_index` est un `Mutex` NON réentrant. Cette fonction le
+        // tenait d'un bout à l'autre, repli compris, et le repli clé par clé
+        // appelle `create_property_index`, qui le reprend : le fil se bloquait
+        // sur lui-même (base vide, ou clé inconnue du registre). Le verrou est
+        // donc pris autour du test « existe déjà » ET de la construction v2
+        // (revue 6, N5), et RELÂCHÉ avant le repli, dont chaque clé reprend le
+        // verrou et refait son propre test.
+        //
+        // GRAPHE DES VERROUS (les six sites qui prennent `construction_index`) :
+        //   · `assurer_index_bati_depuis_v2`, `completer_index_herites`,
+        //     `rebatir_index_declares`, `create_property_index`,
+        //     `drop_property_index` : chacun le tient puis n'appelle que
+        //     `batir_index_depuis_v2` / `recolter_index_depuis_v2` /
+        //     `persister_index_apres_construction` / la fusion / le catalogue,
+        //     dont AUCUN ne le reprend ;
+        //   · `creer_index_proprietes` : relâché avant d'appeler
+        //     `create_property_index`.
+        // Test : `aucun_interblocage_sur_les_sites_de_construction_index`.
+        let repli: Vec<String> = {
+            let _une_seule = self.construction_index.lock();
+            let a_batir: Vec<String> = proprietes
+                .iter()
+                .filter(|p| !self.property_indexes.contains_key(&PropertyKey::new(**p)))
+                .map(|p| p.to_string())
+                .collect();
+            if a_batir.is_empty() {
+                return;
+            }
+            if self.props_zone.is_some()
+                && self.next_node_id.load(Ordering::Acquire) > 1
+                && self.batir_index_depuis_v2(&a_batir)
+            {
+                self.persister_index_apres_construction();
+                return;
+            }
+            a_batir
+        };
+        for p in &repli {
             <Self as GraphStoreMut>::create_property_index(self, p);
         }
     }
@@ -17607,6 +17984,21 @@ impl SubstrateStore {
 // T17b — index de propriété : clé de valeur hachable + helpers de maintenance
 // ---------------------------------------------------------------------------
 
+/// La valeur de `OBRAIN_PROPS_V2` vue par l'ouverture d'un store.
+///
+/// En production : la variable d'environnement. En TEST : une surcharge PAR
+/// FIL d'abord (`PROPS_V2_SURCHARGE`) — libtest lance chaque test sur son
+/// propre fil, donc un test qui pose `=0` n'est plus vu par ses voisins en
+/// parallèle (la course d'environnement de la revue 6, point c : des tests
+/// qui rouvrent une base v2 étaient refusés quand un voisin posait `=0`).
+fn lire_props_v2_env() -> Option<String> {
+    #[cfg(test)]
+    if let Some(surcharge) = PROPS_V2_SURCHARGE.with(|c| c.borrow().clone()) {
+        return surcharge;
+    }
+    std::env::var("OBRAIN_PROPS_V2").ok()
+}
+
 /// Hacheur des cartes d'index, consultées à CHAQUE recherche par égalité.
 ///
 /// Le hacheur par défaut (SipHash 1-3, résistant aux collisions adverses)
@@ -17814,27 +18206,29 @@ fn index_value_key(v: &Value) -> Option<IndexValueKey> {
         Value::Bool(b) => Some(IndexValueKey::Bool(*b)),
         Value::Int64(i) => Some(IndexValueKey::Int(*i)),
         Value::Float64(f) => value_cmp::entier_egal_au_flottant(*f).map(IndexValueKey::Int),
-        Value::String(s) => {
-            if crate::blob_column_registry::should_route_to_blob(v) {
-                return None;
-            }
-            Some(match value_cmp::instant_de_chaine(s) {
-                Some(instant) => IndexValueKey::Instant(instant),
-                None => IndexValueKey::Str(s.to_string()),
-            })
-        }
+        Value::String(s) => match value_cmp::instant_de_chaine(s) {
+            // Un instant est projetable QUELLE QUE SOIT la longueur de son
+            // écriture : une chaîne datetime de plus de 256 octets part en
+            // colonne blob, mais `set_node_property` l'inscrit dans l'index
+            // sous son instant avant de la router (revue 4, A2).
+            Some(instant) => Some(IndexValueKey::Instant(instant)),
+            // Une chaîne ordinaire routée en colonne blob n'est dans aucun
+            // index : sa recherche passe par le balayage de la colonne.
+            None if crate::blob_column_registry::should_route_to_blob(v) => None,
+            None => Some(IndexValueKey::Str(s.to_string())),
+        },
         _ => None,
     }
 }
 
-/// La clé d'index de `v` couvre-t-elle EXACTEMENT sa classe d'égalité au sens
-/// du langage ? Avec la clé CANONIQUE (`index_value_key` : un flottant entier
-/// rejoint l'entier égal, une chaîne date-heure rejoint son instant), c'est le
-/// cas de toute valeur projetable : booléen, entier, flottant entier, chaîne.
-/// Un flottant non entier, un temporel typé, une liste ne le sont pas : la
-/// recherche d'une contrainte d'unicité les balaie.
-fn cle_index_exacte(v: &Value) -> bool {
-    index_value_key(v).is_some()
+/// La clé d'INSTANT d'une valeur, si c'en est une (chaîne datetime, quelle que
+/// soit la longueur de son écriture) : seule famille qu'un chemin blob inscrit
+/// dans l'index.
+fn cle_instant(v: &Value) -> Option<IndexValueKey> {
+    match index_value_key(v) {
+        Some(k @ IndexValueKey::Instant(_)) => Some(k),
+        _ => None,
+    }
 }
 
 /// Clé de RANGEMENT d'une valeur écrite : sa clé de recherche si elle en a
@@ -17864,8 +18258,21 @@ impl SubstrateStore {
     fn prop_index_insert(&self, key: &PropertyKey, value: &Value, id: NodeId) {
         if let Some(idx) = self.property_indexes.get(key) {
             idx.entry(cle_de_rangement(value)).or_default().insert(id);
-            self.egalite_delta_sale.store(true, Ordering::Release);
+            drop(idx);
+            // Une clé à colonne blob n'a pas de série persistée (revue 6, N2) :
+            // son entrée ne rend pas la zone à réécrire.
+            if !self.cle_a_colonne_blob(key) {
+                self.egalite_delta_sale.store(true, Ordering::Release);
+            }
         }
+    }
+
+    /// La clé possède-t-elle une colonne BLOB (nœuds) ? Une telle clé n'est
+    /// jamais crue depuis la zone persistée (règle R, revue 5) et sa série
+    /// n'y est jamais écrite (revue 6, N2) : l'index se reconstruit à la
+    /// demande, blobs compris.
+    fn cle_a_colonne_blob(&self, key: &PropertyKey) -> bool {
+        self.blob_columns.spec_for(key, EntityKind::Node).is_some()
     }
 
     /// Retire `(value → id)` de l'index de `key`. Sans effet si la clé n'est
@@ -17886,6 +18293,52 @@ impl SubstrateStore {
             // Entrée vide : on la retire. `remove_if` re-vérifie sous verrou
             // exclusif qu'un insert concurrent ne l'a pas repeuplée.
             idx.remove_if(&ik, |_, set| set.is_empty());
+        }
+    }
+
+    /// Parmi `cles`, celles dont un index d'égalité est ENREGISTRÉ, moins
+    /// celles de `deja` — pour `bulk_import_node_props` (qui passe `deja`
+    /// vide : la réinscription doit couvrir TOUTES les clés, voir A3).
+    fn cles_indexees_parmi<'a>(
+        &self,
+        cles: impl Iterator<Item = &'a str>,
+        deja: &[String],
+    ) -> Vec<(String, PropertyKey)> {
+        if self.property_indexes.is_empty() {
+            return Vec::new();
+        }
+        cles.filter(|k| !deja.iter().any(|d| d == k))
+            .filter_map(|k| {
+                let cle = PropertyKey::new(k);
+                self.property_indexes
+                    .contains_key(&cle)
+                    .then(|| (k.to_string(), cle))
+            })
+            .collect()
+    }
+
+    /// Inscrit dans les index de `indexees` les valeurs de `props` (nœuds
+    /// `premier_slot + i`), hors vecteurs et valeurs routées en colonne blob
+    /// (chemin unitaire). Idempotent.
+    fn inscrire_entrees_import(
+        &self,
+        premier_slot: u32,
+        props: &[Vec<(&str, Value)>],
+        indexees: &[(String, PropertyKey)],
+    ) {
+        if indexees.is_empty() {
+            return;
+        }
+        for (i, liste) in props.iter().enumerate() {
+            let id = NodeId(u64::from(premier_slot) + i as u64);
+            for (k, v) in liste {
+                if let Some((_, cle)) = indexees.iter().find(|(nom, _)| nom.as_str() == *k)
+                    && !matches!(v, Value::Vector(_))
+                    && encode_blob_payload(v).is_none()
+                {
+                    self.prop_index_insert(cle, v, id);
+                }
+            }
         }
     }
 
@@ -18106,7 +18559,12 @@ impl SubstrateStore {
             candidats.extend(hits);
         }
         for (cle, attendu) in conditions {
-            if encode_blob_payload(attendu).is_some()
+            // Une valeur blob-sized, ou un INSTANT (une écriture longue du
+            // même instant peut vivre en colonne blob — revue 3, C1).
+            let peut_vivre_en_blob = encode_blob_payload(attendu).is_some()
+                || matches!(attendu, Value::String(s)
+                    if obrain_common::types::value_cmp::instant_de_chaine(s).is_some());
+            if peut_vivre_en_blob
                 && let Some(hits) = self.balayer_blob_par_predicat(&PropertyKey::new(*cle), |v| {
                     valeurs_egales_gql(v, attendu)
                 })
@@ -20939,6 +21397,17 @@ impl GraphStore for SubstrateStore {
         demandes >= self.egalite_des_la
     }
 
+    /// VRAI si un index d'égalité de `property` est TENU EN MÉMOIRE par ce
+    /// processus — pas « déclaré au catalogue » (revue 6, N7, choix
+    /// documenté). Après l'ouverture d'une base de plus de
+    /// `SEUIL_NOEUDS_PASSE_HATIVE` nœuds, un index déclaré n'est tenu qu'à sa
+    /// première requête ou par la préparation d'arrière-plan ; pour une clé à
+    /// colonne blob (jamais couverte par la zone) c'est le cas à CHAQUE
+    /// ouverture. `false` ne veut donc pas dire « pas d'index » : les
+    /// résultats restent justes (balayage), et le planificateur ne doit pas
+    /// court-circuiter dessus (`index_seek` ne le fait pas). La déclaration,
+    /// elle, se lit dans `declarations_index()` (un fichier relu à chaque
+    /// appel : trop cher pour ce chemin).
     fn has_property_index(&self, property: &str) -> bool {
         self.property_indexes
             .contains_key(&PropertyKey::new(property))
@@ -21209,33 +21678,68 @@ impl GraphStore for SubstrateStore {
     /// dont les propriétés sont égales, au sens du langage, à TOUTES les
     /// conditions.
     ///
-    /// Avec la clé CANONIQUE (`index_value_key` : un flottant entier rejoint
-    /// l'entier égal, une chaîne date-heure rejoint son instant), l'index
-    /// d'une valeur projetable contient TOUS ses porteurs égaux, et
-    /// `find_nodes_by_properties` ne résout que par un index prouvé complet,
-    /// puis revérifie chaque candidat contre toutes les conditions : dès
-    /// qu'une condition est projetable, sa réponse est complète. Sans aucune
-    /// condition projetable (flottants non entiers, temporels typés, listes),
-    /// le balayage du label — O(label), toujours juste.
+    /// Une colonne ne résout par l'index que si la clé d'index CANONIQUE est
+    /// projetable ET l'ensemble prouvé complet (`candidats_bruts`) ; à défaut,
+    /// le balayage du label — O(label), toujours juste. Chaque candidat est
+    /// revérifié contre TOUTES les conditions par l'égalité du langage.
     fn find_nodes_by_properties_for_label(
         &self,
         label: &str,
         conditions: &[(&str, Value)],
     ) -> Vec<NodeId> {
-        if conditions.iter().any(|(_, v)| cle_index_exacte(v)) {
-            return self
-                .find_nodes_by_properties(conditions)
-                .into_iter()
-                .filter(|id| GraphStore::node_has_label(self, *id, label) == Some(true))
-                .collect();
-        }
-        let cles: Vec<PropertyKey> = conditions
-            .iter()
-            .map(|(k, _)| PropertyKey::new(*k))
+        // Candidates à la résolution par index : la valeur doit avoir une clé
+        // d'index canonique (projetable) et ne pas partir en colonne blob. On
+        // bâtit leur index si besoin, PUIS on ne retient que les conditions
+        // dont l'index se prouve COMPLET, les seules dont le décompte borne
+        // les porteurs.
+        let eligibles: Vec<usize> = (0..conditions.len())
+            .filter(|&i| {
+                index_value_key(&conditions[i].1).is_some()
+                    && encode_blob_payload(&conditions[i].1).is_none()
+            })
             .collect();
+        if !eligibles.is_empty() {
+            let cles: Vec<&str> = eligibles.iter().map(|&i| conditions[i].0).collect();
+            self.assurer_index_bati_depuis_v2(&cles);
+        }
+        let exactes: Vec<usize> = eligibles
+            .into_iter()
+            .filter(|&i| {
+                let key = PropertyKey::new(conditions[i].0);
+                index_value_key(&conditions[i].1)
+                    .is_some_and(|ik| self.candidats_bruts(&key, &ik).is_some())
+            })
+            .collect();
+        if !exactes.is_empty() {
+            let meilleure = exactes
+                .iter()
+                .filter_map(|&i| {
+                    let key = PropertyKey::new(conditions[i].0);
+                    let ik = index_value_key(&conditions[i].1)?;
+                    self.taille_candidats(&key, &ik, u64::MAX)
+                        .map(|(n, _)| (n, i))
+                })
+                .min();
+            if let Some((_, i)) = meilleure {
+                let key = PropertyKey::new(conditions[i].0);
+                if let Some(hits) = index_value_key(&conditions[i].1)
+                    .and_then(|ik| self.candidats_bruts(&key, &ik))
+                    .map(|c| self.reverifier_candidats(c, &key, &conditions[i].1))
+                {
+                    let tous: Vec<(&str, Value)> =
+                        conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
+                    return hits
+                        .into_iter()
+                        .filter(|id| self.node_matches_all_props(*id, &tous))
+                        .filter(|id| GraphStore::node_has_label(self, *id, label) == Some(true))
+                        .collect();
+                }
+            }
+        }
+        let tous: Vec<(&str, Value)> = conditions.iter().map(|(k, v)| (*k, v.clone())).collect();
         self.nodes_by_label(label)
             .into_iter()
-            .filter(|id| self.noeud_satisfait(*id, &cles, conditions))
+            .filter(|id| self.node_matches_all_props(*id, &tous))
             .collect()
     }
 
@@ -24438,6 +24942,7 @@ impl GraphStoreMut for SubstrateStore {
         // `persist_properties` doesn't re-serialise a dead entity on the
         // next flush.
         if let Some((_, props)) = self.node_properties.remove(&id) {
+            self.noter_props_modifiees();
             // T17b : purge de l'index enregistré — la revérification de
             // lecture rendrait l'entrée inoffensive, mais on borne la
             // dérive plutôt que de la laisser s'accumuler.
@@ -24534,6 +25039,7 @@ impl GraphStoreMut for SubstrateStore {
         // T17e Phase 3: the mmap TOMBSTONED flag is authoritative; only
         // the property map needs explicit cleanup here.
         self.edge_properties.remove(&id);
+        self.noter_props_modifiees();
         // T17h T1: live counter decrements.
         self.total_live_edges.fetch_sub(1, Ordering::Relaxed);
         self.incr_edge_type_count(edge_type_id, -1);
@@ -24625,8 +25131,95 @@ impl GraphStoreMut for SubstrateStore {
         // for short scalars, non-blob variants, etc. The 1-byte type tag
         // at the head of the returned buffer lets the reader reconstruct
         // the original `Value` variant byte-exactly on the get side.
+        // ── UN SEUL ÉCRIVAIN PAR NŒUD, DE L'ENTRÉE NEUVE AU RETRAIT DE L'ANCIENNE ──
+        //
+        // Pris AVANT le routage blob (revue 5, point 1) : le chemin blob
+        // retournait avant ce verrou, et un blob croisé avec un scalaire sur le
+        // même nœud laissait la valeur lisible (le blob, lu en premier) sans
+        // l'entrée que le scalaire venait de retirer.
+        //
+        // Sans verrou, deux écrivains sur le MÊME (nœud, clé) pouvaient se
+        // croiser (revue 3, C2) : W1 écrit A dans la zone, W2 écrit X (la
+        // zone dit X), W2 passe par la carte avant W1 — W1 lit X comme
+        // « ancienne valeur » et RETIRE l'entrée X : la valeur lisible est X,
+        // sans entrée d'index. Un verrou PAR NŒUD (tranche de 256) tient
+        // ensemble l'entrée neuve, l'écriture de la valeur et le retrait de
+        // l'ancienne ; deux nœuds différents ne s'attendent pas, et il n'est
+        // jamais pris sous un garde de zone (il est le plus EXTÉRIEUR). Sous
+        // lui, `remove_node_property` appelle `notify_node_property_removed`,
+        // dont l'observateur d'index vectoriel fait une suppression (E/S) :
+        // pas de cycle (l'observateur ne revient pas vers ce verrou), mais
+        // cette E/S allonge la détention pour CE nœud.
+        let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
+        let pkey = PropertyKey::new(key);
         if let Some(tagged) = encode_blob_payload(&value) {
+            // Une chaîne datetime longue est un INSTANT que l'index doit
+            // connaître (revue 4, A2) : l'entrée entre AVANT que la valeur
+            // soit lisible, comme sur le chemin scalaire.
+            let cle_neuve = cle_instant(&value);
+            let index_tenu = self.property_indexes.contains_key(&pkey);
+            // La valeur qu'on écrase — blob OU scalaire court (revue 6, N6),
+            // par l'ordre de lecture complet : son entrée doit sortir si elle
+            // se range ailleurs (sinon elle s'accumule, et `taille_candidats`
+            // surcompte).
+            let ancienne = if index_tenu {
+                self.lire_propriete_noeud_vivant(id, &pkey)
+            } else {
+                None
+            };
+            let colonne_existait = self.cle_a_colonne_blob(&pkey);
+            if index_tenu && cle_neuve.is_some() {
+                self.prop_index_insert(&pkey, &value, id);
+            }
+            #[cfg(test)]
+            AVANT_ROUTAGE_BLOB.with(|h| {
+                if let Some(f) = h.borrow().as_ref() {
+                    f(self);
+                }
+            });
             self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
+            // Clé enregistrée PENDANT l'écriture (construction qui n'a pas vu le
+            // blob) : l'entrée entre en queue, comme sur le chemin scalaire
+            // (revue 5, point 2). Idempotent si elle y est déjà.
+            if cle_neuve.is_some() && !index_tenu && self.property_indexes.contains_key(&pkey) {
+                self.prop_index_insert(&pkey, &value, id);
+            }
+            if let Some(ancienne) = ancienne
+                && Some(cle_de_rangement(&ancienne)) != cle_neuve
+            {
+                self.prop_index_remove(&pkey, &ancienne, id);
+            }
+            // ── UNE COLONNE BLOB QUI APPARAÎT POUR UNE CLÉ INDEXÉE (revue 6, N4) ──
+            //
+            // La colonne vient d'être créée dans ce processus. Si un processus
+            // antérieur est mort entre `blob_columns.sync_all` et la persistance
+            // du dictionnaire (obrain#120), l'en-tête de colonne était durable
+            // sans que le dictionnaire porte sa spec : la colonne vient d'être
+            // ROUVERTE avec ses anciens slots, et d'anciens blobs redeviennent
+            // lisibles alors que l'index, bâti sans colonne, les ignore. On
+            // retire donc la complétude de la clé : la recherche suivante la
+            // reconstruit, colonne comprise — une fois par processus et par clé
+            // qui reçoit sa première colonne.
+            // MÉMOIRE SEULEMENT (revue 7, e) : le retrait de complétude ne
+            // survit pas à la fermeture. Entre cette écriture et la
+            // reconstruction que la recherche suivante déclenche, lecture et
+            // index restent cohérents (la recherche passe par le balayage tant
+            // que la marque manque) ; après un nouveau kill, la clé, à colonne
+            // blob connue du dictionnaire ou non, repasse par la règle R ou par
+            // ce même retrait à la première écriture longue.
+            //
+            // Sous v2 seulement : c'est le rebâti à la demande depuis les
+            // chaînes (`assurer_index_bati_depuis_v2`) qui rend la complétude.
+            // En régime hérité, un index ne voit pas les colonnes blob —
+            // trou antérieur, inchangé ici (obrain#120).
+            if !colonne_existait
+                && self.props_zone.is_some()
+                && self.property_indexes.contains_key(&pkey)
+            {
+                self.index_batis_depuis_v2.remove(&pkey);
+                self.index_ram_complets.remove(&pkey);
+                self.egalite_couverte.remove(&pkey);
+            }
             self.notify_node_property_set(id, key);
             return;
         }
@@ -24648,6 +25241,14 @@ impl GraphStoreMut for SubstrateStore {
         // COÛT : un `get` de DashMap par écriture scalaire, qui sort avant
         // tout verrou de colonne dès qu'aucune colonne blob n'existe pour
         // cette clé — le cas de l'écrasante majorité des propriétés.
+        // La valeur BLOB que `effacer_ombre_blob` va masquer : son entrée
+        // d'index doit sortir avec elle (revue 5, mineur).
+        let ombre_blob = if self.property_indexes.contains_key(&pkey) {
+            self.blob_columns
+                .read_value(&pkey, EntityKind::Node, id.0 as u32)
+        } else {
+            None
+        };
         self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
         // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
         //
@@ -24664,10 +25265,21 @@ impl GraphStoreMut for SubstrateStore {
         // écrite — c'est le SEUL instant qui tranche, pour tous les lecteurs —
         // (3) l'entrée ANCIENNE sort, en queue de fonction. Aucun verrou :
         // à tout instant l'index contient le porteur de la valeur lisible.
-        let index_tenus = !self.property_indexes.is_empty();
-        if index_tenus {
-            self.prop_index_insert(&PropertyKey::new(key), &value, id);
+        // La clé est-elle DÉJÀ enregistrée ? C'est ce qu'il faut retenir, pas
+        // « existe-t-il un index » : un index de CETTE clé déclaré pendant
+        // l'écriture (par `create_property_index` ou la préparation
+        // d'arrière-plan) bâtit depuis les chaînes, où la valeur n'est pas
+        // encore — et l'entrée doit alors entrer en queue (revue 3, B2).
+        let index_tenu_pour_cle = self.property_indexes.contains_key(&pkey);
+        if index_tenu_pour_cle {
+            self.prop_index_insert(&pkey, &value, id);
         }
+        #[cfg(test)]
+        AVANT_ECRITURE_VALEUR.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         // T17c Step 3b.2b: dual-write into PropsZone v2 when enabled.
         // Best-effort — if PropsZone fails (e.g. page-size overflow for an
         // exotic value), we log and still fall back to the DashMap sidecar
@@ -24705,6 +25317,12 @@ impl GraphStoreMut for SubstrateStore {
                 }
             }
         }
+        #[cfg(test)]
+        ENTRE_ZONE_ET_CARTE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
         // GARANTIE MEMOIRE (2026-07-25) : WAL-first — le contenu de la
         // propriete part au journal AVANT l insertion memoire. Best-effort
         // assume : un echec du WAL (disque plein...) ne perd pas l ecriture
@@ -24859,12 +25477,12 @@ impl GraphStoreMut for SubstrateStore {
             self.notify_node_property_set(id, key);
             return;
         }
-        let pkey = PropertyKey::new(key);
         let prev = self
             .node_properties
             .entry(id)
             .or_default()
-            .insert(pkey, value.clone());
+            .insert(pkey.clone(), value.clone());
+        self.noter_props_modifiees();
         #[cfg(test)]
         APRES_ECRITURE_VALEUR.with(|h| {
             if let Some(f) = h.borrow().as_ref() {
@@ -24876,10 +25494,10 @@ impl GraphStoreMut for SubstrateStore {
         // ne paie rien. Les vecteurs/blobs sont sortis plus haut : mêmes
         // limites que le scan que l'index remplace.
         if !self.property_indexes.is_empty() {
-            let pkey = PropertyKey::new(key);
-            // Index déclaré PENDANT cette écriture : l'entrée neuve n'a pas pu
-            // entrer en tête de fonction.
-            if !index_tenus {
+            // Clé enregistrée PENDANT cette écriture : l'entrée neuve n'a pas
+            // pu entrer en tête de fonction, et la construction a pu passer
+            // sur ce nœud avant la valeur. Idempotent si elle y est déjà.
+            if !index_tenu_pour_cle {
                 self.prop_index_insert(&pkey, &value, id);
             }
             // L'ancienne valeur sort — SAUF si elle se range sous la même clé
@@ -24888,6 +25506,12 @@ impl GraphStoreMut for SubstrateStore {
                 && cle_de_rangement(old) != cle_de_rangement(&value)
             {
                 self.prop_index_remove(&pkey, old, id);
+            }
+            if let Some(ref blob) = ombre_blob
+                && cle_instant(blob).is_some()
+                && cle_instant(blob) != Some(cle_de_rangement(&value))
+            {
+                self.prop_index_remove(&pkey, blob, id);
             }
         }
         self.notify_node_property_set(id, key);
@@ -25000,6 +25624,7 @@ impl GraphStoreMut for SubstrateStore {
             .entry(id)
             .or_default()
             .insert(PropertyKey::new(key), value);
+        self.noter_props_modifiees();
         self.maintenance_apres_prop_dispatch(ctx_dispatch, id, key);
     }
 
@@ -25008,6 +25633,9 @@ impl GraphStoreMut for SubstrateStore {
         if !self.is_live_on_disk(id) {
             return None;
         }
+        // Même verrou que `set_node_property` : le retrait de la valeur et
+        // celui de son entrée d'index ne se croisent pas avec une écriture.
+        let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
         // (T5) Notifie AVANT l'effacement : l'index vectoriel doit perdre le noeud
         // meme si la colonne de vecteurs n'est pas effacee (limite documentee).
         self.notify_node_property_removed(id, key);
@@ -25106,6 +25734,7 @@ impl GraphStoreMut for SubstrateStore {
         // — mais son résultat n'est plus la réponse : `avant` l'est.
         if let Some(mut m) = self.node_properties.get_mut(&id) {
             m.remove(&PropertyKey::new(key));
+            self.noter_props_modifiees();
         }
         // T17b : purge de l'index enregistré — pilotée par `avant`, et non
         // plus par la DashMap. Sous v2 l'index EST peuplé
@@ -25134,10 +25763,21 @@ impl GraphStoreMut for SubstrateStore {
     fn create_property_index(&self, property: &str) {
         let key = PropertyKey::new(property);
         self.declarer_propriete_sans_batir(property);
-
+        // Le test « existe déjà » ET la construction sous le même verrou que
+        // le drop (revue 6, N5) : un drop qui s'intercalait entre les deux
+        // était annulé par la construction qui suivait — index recréé, sans
+        // déclaration.
+        let _une_seule = self.construction_index.lock();
         if self.property_indexes.contains_key(&key) {
             return;
         }
+        #[cfg(test)]
+        AVANT_CONSTRUCTION_INDEX.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        self.epoque_index.fetch_add(1, Ordering::AcqRel);
 
         // ── REFUS DE BATIR UN INDEX VIDE ─────────────────────────────────
         //
@@ -25179,11 +25819,7 @@ impl GraphStoreMut for SubstrateStore {
         // immédiate ci-dessous écrit les zones.
         if self.props_zone.is_some() && self.next_node_id.load(Ordering::Acquire) > 1 {
             let une = [property.to_string()];
-            let bati = {
-                // Une construction à la fois (voir `construction_index`).
-                let _une_seule = self.construction_index.lock();
-                self.batir_index_depuis_v2(&une)
-            };
+            let bati = self.batir_index_depuis_v2(&une);
             if bati {
                 // (NS-PARTOUT) PERSISTER TOUT DE SUITE : un serveur
                 // long-vivant (MCP) qui ne repasse jamais par `flush()`
@@ -25286,6 +25922,51 @@ impl GraphStoreMut for SubstrateStore {
     /// scan. `true` si un index existait.
     fn drop_property_index(&self, property: &str) -> bool {
         let key = PropertyKey::new(property);
+        // ── UN INDEX SUPPRIMÉ NE DOIT REVENIR NI PÉRIMÉ NI NEUF (revue 3 B1, 4 A1, 5) ──
+        //
+        // ORDRE, et il n'est pas cosmétique : ZONE d'abord, CATALOGUE ensuite,
+        // MÉMOIRE enfin. Un kill entre deux gestes laisse alors un état SÛR :
+        //  · avant la zone : tout est comme avant le drop ;
+        //  · zone réécrite sans la série, catalogue encore là : l'index est
+        //    DÉCLARÉ mais non couvert, donc reconstruit à la demande, juste ;
+        //  · zone et catalogue faits : l'index n'existe plus.
+        // L'ordre inverse (catalogue d'abord) laissait, après un kill pendant
+        // la réécriture, une série périmée couverte que plus aucune
+        // déclaration ne rebâtirait. Une réécriture de zone qui ÉCHOUE fait
+        // ÉCHOUER le drop (`false`, rien n'a changé) plutôt que de laisser
+        // la série périmée derrière un index réputé supprimé.
+        //
+        // Sérialisé avec les constructions (`construction_index`) : un drop
+        // concurrent d'une construction ne laisse ni série vide ni marques
+        // sur une clé sans carte.
+        if self.read_only.load(Ordering::Relaxed) {
+            tracing::warn!(
+                propriete = property,
+                "drop_property_index REFUSÉ : store ouvert en lecture seule (revue 6, N3)"
+            );
+            return false;
+        }
+        let _une_seule = self.construction_index.lock();
+        self.epoque_index.fetch_add(1, Ordering::AcqRel);
+        let existait = self.property_indexes.contains_key(&key);
+        let zone_porte_la_serie = self.index_egalite.as_ref().is_some_and(|z| {
+            self.prop_keys
+                .read()
+                .lookup(property)
+                .is_some_and(|pk| z.read().proprietes().contains(&pk))
+        });
+        if (existait || zone_porte_la_serie)
+            && let Err(e) = self.fusionner_index_egalite_sans(Some(&key))
+        {
+            tracing::error!(propriete = property, erreur = %e,
+                "drop REFUSÉ : la zone d'égalité n'a pas pu être réécrite sans cette série");
+            return false;
+        }
+        if let Err(e) = self.retirer_declaration_index("property", "", property) {
+            tracing::warn!(propriete = property, erreur = %e, "déclaration d'index non retirée");
+        }
+        // Le prochain flush réécrit la zone s'il a bâti entre-temps la série.
+        self.egalite_delta_sale.store(true, Ordering::Release);
         // (2026-08-19) Le marqueur part AVEC l index : sans cela, un index
         // redéclaré après un `drop` serait reconstruit depuis la seule
         // DashMap et resterait partiel sur une base v2.
@@ -25307,7 +25988,8 @@ impl GraphStoreMut for SubstrateStore {
             self.aucune_ordonnee
                 .store(true, std::sync::atomic::Ordering::Release);
         }
-        self.property_indexes.remove(&key).is_some()
+        self.property_indexes.remove(&key);
+        existait
     }
 
     fn remove_edge_property(&self, id: EdgeId, key: &str) -> Option<Value> {
@@ -25384,6 +26066,7 @@ impl GraphStoreMut for SubstrateStore {
         // — mais son résultat n'est plus la réponse : `avant` l'est.
         if let Some(mut m) = self.edge_properties.get_mut(&id) {
             m.remove(&PropertyKey::new(key));
+            self.noter_props_modifiees();
         }
         // T5 : la clé de groupe DISPATCH vient (peut-être) de disparaître —
         // le groupe de l'ancienne ligne est recalculé.
@@ -25616,32 +26299,6 @@ impl Drop for SubstrateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `cle_index_exacte` avec la clé CANONIQUE : un booléen, un entier, un
-    /// flottant entier (rangé avec l'entier égal), une chaîne — ordinaire ou
-    /// date-heure (rangée sous son instant) — ont une clé qui couvre EXACTEMENT
-    /// leur classe d'égalité. Un flottant non entier, un temporel typé, Null
-    /// n'en ont pas : la recherche d'une contrainte les balaie.
-    #[test]
-    fn cle_index_exacte_couvre_exactement_la_classe_d_egalite() {
-        use obrain_common::types::{Date, Timestamp};
-        assert!(cle_index_exacte(&Value::Bool(true)));
-        assert!(cle_index_exacte(&Value::Bool(false)));
-        assert!(cle_index_exacte(&Value::from("ordinaire")));
-        assert!(cle_index_exacte(&Value::from("2026-11-11 10:00")));
-        assert!(cle_index_exacte(&Value::Int64(5)));
-        assert!(cle_index_exacte(&Value::Float64(5.0)));
-        assert!(!cle_index_exacte(&Value::Float64(1.5)));
-        assert!(cle_index_exacte(&Value::from("2026-11-11T10:00:00Z")));
-        assert!(cle_index_exacte(&Value::from("2026-11-11T12:00:00+02:00")));
-        assert!(!cle_index_exacte(&Value::Timestamp(Timestamp::from_secs(
-            1
-        ))));
-        assert!(!cle_index_exacte(&Value::Date(
-            Date::from_ymd(2026, 1, 1).unwrap()
-        )));
-        assert!(!cle_index_exacte(&Value::Null));
-    }
 
     /// T17k-opt — la sémantique LWW du repli `property_map_depuis_ops` : la
     /// DERNIÈRE opération d'une clef gagne (`None` = tombstone), quel que soit
@@ -26109,8 +26766,15 @@ mod tests {
     /// après le flush) : les compteurs ne peuvent pas avoir dérivé — la
     /// vérification pleine est sautée, les comptes restent exacts.
     #[test]
+    #[allow(unsafe_code)]
     fn reouverture_fenetre_proprietes_seules_paie_zero_scan_plein() {
         use crate::wal_io::SyncMode;
+        // Rouvre une base v2 : verrou d'environnement, sans quoi un test voisin
+        // posant `OBRAIN_PROPS_V2=0` fait refuser l'ouverture (course
+        // préexistante, vue une fois sur trois passes).
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         {
@@ -27014,7 +27678,7 @@ mod tests {
     fn auto_migrates_legacy_vectors_on_load() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         use crate::props_snapshot::PropertiesStreamingWriter;
         use obrain_core::graph::traits::GraphStore;
         use std::sync::Arc;
@@ -27183,7 +27847,7 @@ mod tests {
     fn checkpoint_truncates_the_wal_without_losing_committed_state() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         use crate::props_snapshot::PropertiesStreamingWriter;
         use obrain_core::graph::traits::GraphStore;
         use std::sync::Arc;
@@ -27334,7 +27998,7 @@ mod tests {
         // couverte sans que personne ne le remarque.
         let _garde_env = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
@@ -29341,11 +30005,11 @@ mod tests {
     fn regime_herite_un_index_en_cours_de_remplissage_n_est_pas_cru() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         assert!(s.props_zone.is_none(), "précondition : régime hérité");
         let mut ids = Vec::new();
         for i in 0..60i64 {
@@ -29542,7 +30206,7 @@ mod tests {
     fn resolution_selective_cle_canonique_survit_a_la_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, _m) = base_persistee_a_cle_canonique(&racine);
@@ -29586,7 +30250,7 @@ mod tests {
     fn migration_une_zone_v1_est_servie_puis_completee_sans_reconstruction() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29672,7 +30336,7 @@ mod tests {
         use std::sync::Arc;
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29704,7 +30368,7 @@ mod tests {
     fn index_cree_en_session_ne_rend_pas_partielles_les_cles_couvertes() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29743,7 +30407,7 @@ mod tests {
     fn zone_devenue_non_fiable_en_session_les_cles_couvertes_restent_justes() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, m) = base_persistee_a_cle_canonique(&racine);
@@ -29773,7 +30437,7 @@ mod tests {
     fn flush_sans_ecriture_indexee_ne_reecrit_pas_la_zone() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         let (n, _m) = base_persistee_a_cle_canonique(&racine);
@@ -29832,7 +30496,7 @@ mod tests {
         use std::sync::Arc;
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let racine = td.path().join("kb");
         {
@@ -29862,6 +30526,1667 @@ mod tests {
             s.passes_de_construction.load(Ordering::Acquire) - avant,
             1,
             "8 recherches simultanées, UNE passe sur la base"
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 3 — B1, B2, C1, C2, C3
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// B1 — un index SUPPRIMÉ ne revient pas après réouverture, ni périmé
+    /// (sa série survivait dans la zone, le raccourci « ancres seules » la
+    /// gardait, l'ouverture la déclarait couverte), ni neuf (sa déclaration
+    /// restait au catalogue).
+    #[test]
+    #[allow(unsafe_code)]
+    fn b1_un_index_supprime_ne_revient_pas_perime_apres_reouverture() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (a, n) = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let a = s.create_node(&["R"]);
+            s.set_node_property(a, "p", Value::from("avant"));
+            s.set_node_property(a, "q", Value::Int64(1));
+            s.create_property_index("p");
+            s.create_property_index("q");
+            s.flush().unwrap();
+            assert!(s.drop_property_index("p"));
+            // Une écriture sur `p` APRÈS le drop, aucune sur `q`.
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "p", Value::from("x"));
+            s.flush().unwrap();
+            (a, n)
+        };
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        assert!(
+            !s2.has_property_index("p"),
+            "l'index supprimé ne doit pas revenir"
+        );
+        assert!(
+            !s2.declarations_index()
+                .iter()
+                .any(|d| d.genre == "property" && d.propriete == "p"),
+            "sa déclaration ne doit pas survivre"
+        );
+        assert!(s2.has_property_index("q"), "témoin : `q` revient");
+        assert_eq!(
+            s2.find_nodes_by_property("p", &Value::from("x")),
+            vec![n],
+            "sans index, le balayage doit voir l'écriture faite après le drop"
+        );
+        assert_eq!(
+            s2.find_nodes_by_property("p", &Value::from("avant")),
+            vec![a]
+        );
+        // Redéclarer `p` doit CONSTRUIRE (pas sortir tôt sur une entrée
+        // fantôme), et répondre juste.
+        s2.create_property_index("p");
+        assert!(s2.has_property_index("p"));
+        assert_eq!(s2.find_nodes_by_property("p", &Value::from("x")), vec![n]);
+        assert_eq!(
+            s2.find_nodes_by_properties(&[("p", Value::from("x"))]),
+            vec![n]
+        );
+    }
+
+    /// B2 (écriture unitaire) — un index de la clé `p` déclaré PENDANT une
+    /// écriture de `p` : la construction passe sur le nœud avant la valeur,
+    /// l'écriture ne doit pas être perdue par l'index.
+    #[test]
+    fn b2_une_ecriture_pendant_la_construction_de_son_index_n_est_pas_perdue() {
+        let (_td, s) = store();
+        s.create_property_index("q");
+        let n = s.create_node(&["R"]);
+        s.set_node_property(n, "q", Value::Int64(1));
+        let m = s.create_node(&["R"]);
+        s.set_node_property(m, "q", Value::Int64(2));
+        s.set_node_property(m, "p", Value::Int64(5));
+        let une_fois = std::cell::Cell::new(true);
+        AVANT_ECRITURE_VALEUR.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                if une_fois.replace(false) {
+                    s.create_property_index("p");
+                }
+            }));
+        });
+        s.set_node_property(n, "p", Value::Int64(7));
+        AVANT_ECRITURE_VALEUR.with(|h| *h.borrow_mut() = None);
+        assert!(
+            s.has_property_index("p"),
+            "l'index a bien été déclaré pendant l'écriture"
+        );
+        assert_eq!(s.find_nodes_by_property("p", &Value::Int64(7)), vec![n]);
+        assert_eq!(s.find_nodes_by_property("p", &Value::Int64(5)), vec![m]);
+        assert_eq!(
+            s.find_nodes_by_properties(&[("q", Value::Int64(1)), ("p", Value::Int64(7))]),
+            vec![n]
+        );
+    }
+
+    /// B2 (import en lot) — un index déclaré pendant l'import, pages
+    /// construites mais têtes pas encore posées : l'index bâti ne voit aucun
+    /// nœud importé et se marque complet ; l'import doit le rattraper.
+    #[test]
+    #[allow(unsafe_code)]
+    fn b2_un_index_declare_pendant_un_import_en_lot_voit_les_noeuds_importes() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        let labels: Vec<&str> = (0..200).map(|_| "L").collect();
+        s.bulk_import_labels_edges(&labels, &[]).unwrap();
+        let props: Vec<Vec<(&str, Value)>> = (0..200i64)
+            .map(|i| vec![("sl", Value::Int64(i)), ("nom", Value::from("x"))])
+            .collect();
+        let une_fois = std::cell::Cell::new(true);
+        PENDANT_IMPORT_EN_LOT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                if une_fois.replace(false) {
+                    s.create_property_index("sl");
+                }
+            }));
+        });
+        s.bulk_import_node_props(1, &props).unwrap();
+        PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
+        assert!(s.has_property_index("sl"));
+        for i in [0i64, 77, 150, 199] {
+            assert_eq!(
+                s.find_nodes_by_property("sl", &Value::Int64(i)),
+                vec![NodeId(i as u64 + 1)],
+                "sl = {i} importé pendant la construction de son index"
+            );
+        }
+    }
+
+    /// C1 — une chaîne datetime de plus de 256 octets (fraction à neuf
+    /// chiffres suivie de zéros) est routée en colonne BLOB : elle n'entre
+    /// dans aucun index, mais égale par instant une écriture courte. La
+    /// recherche par la valeur courte doit la trouver, avec et sans index.
+    #[test]
+    #[allow(unsafe_code)]
+    fn c1_une_datetime_longue_en_colonne_blob_est_trouvee_par_son_instant() {
+        // Les colonnes blob exigent le régime v2 : verrou d'environnement,
+        // sans quoi un test voisin posant `OBRAIN_PROPS_V2=0` crée cette base
+        // en régime hérité.
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        s.create_property_index("d");
+        let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
+        assert!(
+            obrain_common::types::value_cmp::instant_de_chaine(&longue).is_some(),
+            "précondition : la chaîne longue est un instant"
+        );
+        assert!(
+            crate::blob_column_registry::should_route_to_blob(&Value::from(longue.as_str())),
+            "précondition : elle part en colonne blob"
+        );
+        let n = s.create_node(&["Evt"]);
+        s.set_node_property(n, "d", Value::from(longue.as_str()));
+        let m = s.create_node(&["Evt"]);
+        s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
+        let courte = Value::from("2024-01-01T10:00:00Z");
+        let autre_fuseau = Value::from("2024-01-01T12:00:00+02:00");
+        for (contexte, indexe) in [("avec index", true), ("sans index", false)] {
+            if !indexe {
+                assert!(s.drop_property_index("d"));
+            }
+            assert_eq!(
+                s.find_nodes_by_property("d", &courte),
+                vec![n],
+                "{contexte} : courte"
+            );
+            assert_eq!(
+                s.find_nodes_by_property("d", &autre_fuseau),
+                vec![n],
+                "{contexte} : autre fuseau"
+            );
+            assert_eq!(
+                s.find_nodes_by_property("d", &Value::from(longue.as_str())),
+                vec![n],
+                "{contexte} : longue"
+            );
+            assert_eq!(
+                s.find_nodes_by_properties(&[("d", courte.clone())]),
+                vec![n],
+                "{contexte} : multi-critères"
+            );
+            assert_eq!(
+                s.find_nodes_by_property("d", &Value::from("2025-06-01T00:00:00Z")),
+                vec![m],
+                "{contexte} : témoin court"
+            );
+        }
+    }
+
+    /// C2 (déterministe) — deux écrivains sur le même (nœud, clé). W2
+    /// s'intercale entre l'écriture de W1 dans la zone et son passage par la
+    /// carte : la valeur lisible doit TOUJOURS être trouvée par l'index.
+    #[test]
+    fn c2_deux_ecrivains_sur_le_meme_noeud_la_valeur_lisible_est_indexee() {
+        use std::sync::{Arc, Mutex};
+        let (_td, s) = store();
+        let s = Arc::new(s);
+        s.create_property_index("k");
+        let n = s.create_node(&["R"]);
+        s.set_node_property(n, "k", Value::Int64(0));
+        let w2: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+        let une_fois = std::cell::Cell::new(true);
+        let (s_w2, w2_sonde) = (Arc::clone(&s), Arc::clone(&w2));
+        ENTRE_ZONE_ET_CARTE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                if !une_fois.replace(false) {
+                    return;
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                let s2 = Arc::clone(&s_w2);
+                *w2_sonde.lock().unwrap() = Some(std::thread::spawn(move || {
+                    s2.set_node_property(n, "k", Value::Int64(2));
+                    let _ = tx.send(());
+                }));
+                // Sans verrou d'écrivain, W2 termine ICI ; avec, il attend.
+                let _ = rx.recv_timeout(std::time::Duration::from_millis(300));
+            }));
+        });
+        s.set_node_property(n, "k", Value::Int64(1));
+        ENTRE_ZONE_ET_CARTE.with(|h| *h.borrow_mut() = None);
+        if let Some(fil) = w2.lock().unwrap().take() {
+            fil.join().unwrap();
+        }
+        let lisible = s
+            .get_node_property(n, &PropertyKey::new("k"))
+            .expect("une valeur est lisible");
+        assert_eq!(
+            s.find_nodes_by_property("k", &lisible),
+            vec![n],
+            "la valeur lisible {lisible:?} doit être rendue par l'index"
+        );
+    }
+
+    /// C2 (stress) — deux fils alternent des valeurs sur le même nœud ; à la
+    /// fin, la valeur lisible est indexée, et aucune autre ne l'est.
+    #[test]
+    fn c2_stress_deux_ecrivains_concurrents_sur_le_meme_noeud() {
+        use std::sync::Arc;
+        let (_td, s) = store();
+        let s = Arc::new(s);
+        s.create_property_index("k");
+        let n = s.create_node(&["R"]);
+        let fils: Vec<_> = (0..2i64)
+            .map(|f| {
+                let s = Arc::clone(&s);
+                std::thread::spawn(move || {
+                    for i in 0..3_000i64 {
+                        s.set_node_property(n, "k", Value::Int64(f * 10_000 + i));
+                    }
+                })
+            })
+            .collect();
+        for f in fils {
+            f.join().unwrap();
+        }
+        let lisible = s.get_node_property(n, &PropertyKey::new("k")).unwrap();
+        assert_eq!(s.find_nodes_by_property("k", &lisible), vec![n]);
+    }
+
+    /// C3 — zone HÉRITÉE (version 1) dont le complément n'est pas bâti : une
+    /// écriture de datetime en session, puis `flush`, réécrit un fichier de
+    /// version 1. Un binaire ANTÉRIEUR y cherche la chaîne sous
+    /// `hachage_chaine` : c'est là qu'elle doit être, pas sous l'instant.
+    #[test]
+    #[allow(unsafe_code)]
+    fn c3_un_fichier_reecrit_en_version_1_hache_les_dates_comme_l_ancien_binaire() {
+        use crate::props_eq_index::{hachage_chaine, hachage_instant};
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+        retrograder_la_zone_en_v1(&racine, n, m);
+        let date = "2026-03-03T00:00:00Z";
+        let (y, pk_d) = {
+            let s = SubstrateStore::open(&racine).unwrap();
+            assert!(
+                s.egalite_heritee.load(Ordering::Acquire),
+                "précondition : héritée"
+            );
+            let y = s.create_node(&["Pair"]);
+            s.set_node_property(y, "d", Value::from(date));
+            s.flush().unwrap();
+            assert!(
+                s.egalite_heritee.load(Ordering::Acquire),
+                "aucune recherche d'instant : le complément n'a pas été bâti"
+            );
+            let pk = s.prop_keys.read().lookup("d").unwrap();
+            (y, pk)
+        };
+        let fichier = fichier_index_egalite(&racine);
+        let octets = std::fs::read(&fichier).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(octets[4..8].try_into().unwrap()),
+            crate::props_eq_index::EQ_VERSION_HERITEE,
+            "le fichier réécrit reste de version 1"
+        );
+        let mut z = crate::props_eq_index::PropsEqIndexZone::ouvrir_fichier_pour_test(&fichier);
+        let (aw, ap) = (z.ancre_wal(), z.ancre_pages());
+        z.confronter_ancres(aw, ap);
+        let sous_chaine = z.candidats(pk_d, hachage_chaine(date)).unwrap_or_default();
+        assert!(
+            sous_chaine.contains(&(y.0 as u32)),
+            "l'ancien binaire cherche `{date}` sous hachage_chaine : {sous_chaine:?}"
+        );
+        let instant = obrain_common::types::value_cmp::instant_de_chaine(date).unwrap();
+        let sous_instant = z
+            .candidats(pk_d, hachage_instant(instant))
+            .unwrap_or_default();
+        assert!(
+            !sous_instant.contains(&(y.0 as u32)),
+            "un fichier de version 1 ne porte pas de clé canonique"
+        );
+        // Et le nouveau binaire, lui, retrouve `y` par l'instant (complément).
+        let s = SubstrateStore::open(&racine).unwrap();
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2026-03-03T02:00:00+02:00")),
+            vec![y]
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 4 — A1, A2, A3
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// A1 — après un KILL (aucun flush depuis le drop), l'index supprimé ne
+    /// revient pas : ni seul (ancres égales), ni avec une écriture qui tient
+    /// dans la page de tête (aucune trace durable, ancres égales aussi), ni
+    /// quand il était le dernier index (zone à réécrire VIDE).
+    #[test]
+    #[allow(unsafe_code)]
+    fn a1_apres_un_kill_l_index_supprime_ne_revient_pas() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        for (scenario, avec_q, avec_set) in [
+            ("drop seul, autre index", true, false),
+            ("drop + SET en page de tête", true, true),
+            ("drop du DERNIER index", false, false),
+            ("drop du dernier index + SET", false, true),
+        ] {
+            let td = tempfile::tempdir().unwrap();
+            let racine = td.path().join("kb");
+            let (a, n) = {
+                let s = SubstrateStore::create(&racine).unwrap();
+                let a = s.create_node(&["R"]);
+                s.set_node_property(a, "p", Value::from("avant"));
+                s.set_node_property(a, "q", Value::Int64(1));
+                let n = s.create_node(&["R"]);
+                s.set_node_property(n, "p", Value::from("v0"));
+                s.create_property_index("p");
+                if avec_q {
+                    s.create_property_index("q");
+                }
+                s.flush().unwrap();
+                assert!(s.drop_property_index("p"));
+                if avec_set {
+                    // Réécriture de `n` : tient dans sa page de tête, donc
+                    // ni WAL ni page allouée — les ancres restent égales.
+                    s.set_node_property(n, "p", Value::from("x"));
+                }
+                s.fsync_wal().unwrap();
+                s.deverrouiller_pour_simuler_un_kill();
+                std::mem::forget(s);
+                (a, n)
+            };
+            let s2 = SubstrateStore::open(&racine).unwrap();
+            assert!(
+                !s2.has_property_index("p"),
+                "{scenario} : l'index supprimé est revenu"
+            );
+            assert_eq!(
+                s2.has_property_index("q"),
+                avec_q,
+                "{scenario} : témoin `q`"
+            );
+            let attendu_n = if avec_set { "x" } else { "v0" };
+            assert_eq!(
+                s2.find_nodes_by_property("p", &Value::from(attendu_n)),
+                vec![n],
+                "{scenario} : la valeur courante de `n` doit être trouvée"
+            );
+            assert_eq!(
+                s2.find_nodes_by_property("p", &Value::from("avant")),
+                vec![a],
+                "{scenario}"
+            );
+            if avec_set {
+                assert!(
+                    s2.find_nodes_by_property("p", &Value::from("v0"))
+                        .is_empty(),
+                    "{scenario} : l'ancienne valeur ne doit plus sortir"
+                );
+            }
+            s2.create_property_index("p");
+            assert_eq!(
+                s2.find_nodes_by_property("p", &Value::from(attendu_n)),
+                vec![n],
+                "{scenario} : après redéclaration"
+            );
+        }
+    }
+
+    /// A2 — un instant routé en colonne blob est INDEXÉ : la recherche
+    /// d'instant reste servie par l'index (un candidat relu, pas un
+    /// balayage), avec une colonne blob présente sur la clé.
+    #[test]
+    #[allow(unsafe_code)]
+    fn a2_un_instant_en_colonne_blob_est_indexe_et_la_recherche_reste_indexee() {
+        // Les colonnes blob exigent le régime v2 : verrou d'environnement,
+        // sans quoi un test voisin posant `OBRAIN_PROPS_V2=0` crée cette base
+        // en régime hérité.
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        s.create_property_index("d");
+        // La PREMIÈRE colonne blob d'une clé indexée retire sa complétude
+        // (revue 6, N4) : on l'établit ici, et une recherche reconstruit.
+        let temoin = s.create_node(&["Evt"]);
+        s.set_node_property(
+            temoin,
+            "d",
+            Value::from(format!("1999-01-01T00:00:00.{}Z", "0".repeat(300)).as_str()),
+        );
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("1999-01-01T00:00:00Z")),
+            vec![temoin]
+        );
+        let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
+        let n = s.create_node(&["Evt"]);
+        s.set_node_property(n, "d", Value::from(longue.as_str()));
+        for i in 0..2_000i64 {
+            let m = s.create_node(&["Evt"]);
+            s.set_node_property(
+                m,
+                "d",
+                Value::String(format!("2025-01-01T00:00:{:02}Z", i % 60).into()),
+            );
+        }
+        assert!(
+            s.blob_columns
+                .spec_for(&PropertyKey::new("d"), EntityKind::Node)
+                .is_some(),
+            "précondition : une colonne blob existe pour `d`"
+        );
+        let courte = Value::from("2024-01-01T12:00:00+02:00");
+        assert!(
+            s.taille_candidats_indexes("d", &courte, 8).is_some(),
+            "l'index doit RÉPONDRE pour un instant malgré la colonne blob"
+        );
+        let (hits, relus) = candidats_reverifies_pendant(|| s.find_nodes_by_property("d", &courte));
+        assert_eq!(hits, vec![n]);
+        assert_eq!(
+            relus, 1,
+            "un seul candidat relu : chemin indexé, pas un balayage"
+        );
+        let (hits, relus) =
+            candidats_reverifies_pendant(|| s.find_nodes_by_properties(&[("d", courte.clone())]));
+        assert_eq!((hits, relus), (vec![n], 1));
+        // Réécriture par une valeur courte, puis par un autre blob : la
+        // valeur courante est toujours trouvée, l'ancienne jamais.
+        s.set_node_property(n, "d", Value::from("2030-01-01T00:00:00Z"));
+        assert!(s.find_nodes_by_property("d", &courte).is_empty());
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2030-01-01T00:00:00Z")),
+            vec![n]
+        );
+        let longue2 = format!("2031-01-01T00:00:00.{}Z", "0".repeat(300));
+        s.set_node_property(n, "d", Value::from(longue2.as_str()));
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2031-01-01T00:00:00Z")),
+            vec![n]
+        );
+    }
+
+    /// A2 (construction) — un blob-instant écrit AVANT que l'index existe
+    /// doit entrer à la construction (lecture des colonnes blob), et après
+    /// réouverture (zone persistée).
+    #[test]
+    #[allow(unsafe_code)]
+    fn a2_la_construction_recolte_les_instants_des_colonnes_blob() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let longue = format!("2024-01-01T10:00:00.{}Z", "0".repeat(300));
+        let courte = Value::from("2024-01-01T10:00:00Z");
+        let n = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["Evt"]);
+            s.set_node_property(n, "d", Value::from(longue.as_str()));
+            let m = s.create_node(&["Evt"]);
+            s.set_node_property(m, "d", Value::from("2025-06-01T00:00:00Z"));
+            // L'index est déclaré APRÈS l'écriture : construction depuis les
+            // chaînes ET les colonnes blob.
+            s.create_property_index("d");
+            let (hits, relus) =
+                candidats_reverifies_pendant(|| s.find_nodes_by_property("d", &courte));
+            assert_eq!((hits, relus), (vec![n], 1), "après construction");
+            s.flush().unwrap();
+            n
+        };
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        // Clé à colonne blob : jamais couverte par la zone (revue 5, règle R) ;
+        // reconstruite à la demande, blobs compris, et servie par l'index (un
+        // candidat relu), jamais par un balayage.
+        assert!(!s2.egalite_couverte.contains_key(&PropertyKey::new("d")));
+        let (hits, relus) =
+            candidats_reverifies_pendant(|| s2.find_nodes_by_property("d", &courte));
+        assert_eq!(
+            (hits, relus),
+            (vec![n], 1),
+            "après réouverture, reconstruit"
+        );
+    }
+
+    /// A3 — pendant un import en lot, un index présent au début est SUPPRIMÉ
+    /// puis RECRÉÉ (le create rebâtit sans les têtes) : il doit quand même
+    /// voir tous les nœuds importés.
+    #[test]
+    #[allow(unsafe_code)]
+    fn a3_un_index_supprime_puis_recree_pendant_un_import_voit_les_noeuds_importes() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        s.create_property_index("sl");
+        let labels: Vec<&str> = (0..200).map(|_| "L").collect();
+        s.bulk_import_labels_edges(&labels, &[]).unwrap();
+        let props: Vec<Vec<(&str, Value)>> =
+            (0..200i64).map(|i| vec![("sl", Value::Int64(i))]).collect();
+        let une_fois = std::cell::Cell::new(true);
+        PENDANT_IMPORT_EN_LOT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                if une_fois.replace(false) {
+                    assert!(s.drop_property_index("sl"));
+                    s.create_property_index("sl");
+                }
+            }));
+        });
+        s.bulk_import_node_props(1, &props).unwrap();
+        PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
+        assert!(s.has_property_index("sl"));
+        for i in [0i64, 77, 150, 199] {
+            assert_eq!(
+                s.find_nodes_by_property("sl", &Value::Int64(i)),
+                vec![NodeId(i as u64 + 1)],
+                "sl = {i} après drop + create pendant l'import"
+            );
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 5 — B-1, B-2, points 1 à 5, mineurs
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// Écriture LONGUE (> 256 octets, colonne blob) du même instant que `court`.
+    fn longue_de(court: &str) -> String {
+        format!("{}.{}Z", court.trim_end_matches('Z'), "0".repeat(300))
+    }
+
+    /// B-1 — une construction faite sur le fil d'une requête dont le jeton
+    /// d'annulation est ARMÉ ne tronque pas la récolte des blobs-instants :
+    /// l'index marqué complet les contient tous. Et la préparation
+    /// d'arrière-plan, elle, peut être interrompue — alors sans AUCUNE marque.
+    #[test]
+    #[allow(unsafe_code)]
+    fn b1_une_recolte_blob_annulee_par_une_requete_ne_tronque_pas_l_index() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let mut blobs: Vec<(NodeId, String)> = Vec::new();
+        for i in 0..3_000i64 {
+            let court = format!("2024-03-{:02}T10:{:02}:00Z", 1 + i % 28, i % 60);
+            let id = s.create_node(&["Evt"]);
+            if i % 500 == 3 {
+                s.set_node_property(id, "d", Value::from(longue_de(&court).as_str()));
+                blobs.push((id, court));
+            } else {
+                s.set_node_property(
+                    id,
+                    "d",
+                    Value::from(format!("2000-01-01T00:{:02}:00Z", i % 60).as_str()),
+                );
+            }
+        }
+        assert_eq!(blobs.len(), 6);
+        assert!(
+            s.blob_columns
+                .spec_for(&PropertyKey::new("d"), EntityKind::Node)
+                .is_some()
+        );
+        let jeton = obrain_common::utils::cancel::CancelToken::new();
+        jeton.cancel();
+        obrain_common::utils::cancel::scope_en_vigueur(&jeton, || {
+            assert!(
+                obrain_common::utils::cancel::is_cancelled(),
+                "précondition : le jeton est armé sur ce fil"
+            );
+            s.create_property_index("d");
+        });
+        assert!(s.index_batis_depuis_v2.contains_key(&PropertyKey::new("d")));
+        for (id, court) in &blobs {
+            assert!(
+                s.find_nodes_by_property("d", &Value::from(court.as_str()))
+                    .contains(id),
+                "le blob-instant du nœud {id:?} manque à l'index marqué complet"
+            );
+        }
+        // Préparation d'arrière-plan interrompue : aucune marque, aucune passe.
+        assert!(s.drop_property_index("d"));
+        s.declarer_propriete_sans_batir("d");
+        let passes = s.passes_de_construction.load(Ordering::Acquire);
+        s.preparation_annulee.store(true, Ordering::Release);
+        s.preparer_index_egalite();
+        assert!(
+            !s.index_batis_depuis_v2.contains_key(&PropertyKey::new("d")),
+            "une passe interrompue ne pose pas de marque"
+        );
+        assert_eq!(s.passes_de_construction.load(Ordering::Acquire), passes);
+        s.preparation_annulee.store(false, Ordering::Release);
+        let (id, court) = &blobs[5];
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from(court.as_str())),
+            vec![*id],
+            "la requête suivante reconstruit"
+        );
+    }
+
+    /// B-2 — flush, puis SET d'un instant en forme longue (colonne blob : ni
+    /// WAL ni page), kill : les ancres sont égales mais la zone ne connaît pas
+    /// ce nœud. Une clé à colonne blob n'est JAMAIS couverte par la zone : elle
+    /// se reconstruit, blobs compris.
+    #[test]
+    #[allow(unsafe_code)]
+    fn b2_un_blob_instant_ecrit_apres_le_flush_survit_a_un_kill() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["Evt"]);
+            s.set_node_property(n, "d", Value::from("2000-01-01T00:00:00Z"));
+            let m = s.create_node(&["Evt"]);
+            s.set_node_property(
+                m,
+                "d",
+                Value::from(longue_de("2025-02-02T02:02:02Z").as_str()),
+            );
+            s.create_property_index("d");
+            s.flush().unwrap();
+            s.set_node_property(
+                n,
+                "d",
+                Value::from(longue_de("2024-01-01T10:00:00Z").as_str()),
+            );
+            s.fsync_wal().unwrap();
+            s.deverrouiller_pour_simuler_un_kill();
+            std::mem::forget(s);
+            (n, m)
+        };
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        assert!(
+            !s2.egalite_couverte.contains_key(&PropertyKey::new("d")),
+            "une clé à colonne blob n'est pas couverte par la zone"
+        );
+        assert_eq!(
+            s2.find_nodes_by_property("d", &Value::from("2024-01-01T12:00:00+02:00")),
+            vec![n]
+        );
+        assert_eq!(
+            s2.find_nodes_by_property("d", &Value::from("2025-02-02T02:02:02Z")),
+            vec![m]
+        );
+    }
+
+    /// Point 1 — le chemin blob prend le verrou par nœud AVANT le routage : un
+    /// blob (même instant T que la chaîne courte S du nœud) croisé avec un
+    /// scalaire X sur le même nœud laisse une valeur lisible indexée.
+    #[test]
+    #[allow(unsafe_code)]
+    fn p1_blob_et_scalaire_concurrents_sur_le_meme_noeud_la_valeur_lisible_est_indexee() {
+        use std::sync::{Arc, Mutex};
+        // Les colonnes blob exigent le régime v2 : verrou d'environnement,
+        // sans quoi un test voisin posant `OBRAIN_PROPS_V2=0` crée cette base
+        // en régime hérité.
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        let s = Arc::new(s);
+        s.create_property_index("d");
+        let n = s.create_node(&["Evt"]);
+        s.set_node_property(n, "d", Value::from("2024-01-01T10:00:00Z"));
+        let w2: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+        let une_fois = std::cell::Cell::new(true);
+        let (s_w2, w2_sonde) = (Arc::clone(&s), Arc::clone(&w2));
+        AVANT_ROUTAGE_BLOB.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                if !une_fois.replace(false) {
+                    return;
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                let s2 = Arc::clone(&s_w2);
+                *w2_sonde.lock().unwrap() = Some(std::thread::spawn(move || {
+                    s2.set_node_property(n, "d", Value::from("2031-05-05T05:05:05Z"));
+                    let _ = tx.send(());
+                }));
+                let _ = rx.recv_timeout(std::time::Duration::from_millis(300));
+            }));
+        });
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2024-01-01T10:00:00Z").as_str()),
+        );
+        AVANT_ROUTAGE_BLOB.with(|h| *h.borrow_mut() = None);
+        if let Some(fil) = w2.lock().unwrap().take() {
+            fil.join().unwrap();
+        }
+        let lisible = s
+            .get_node_property(n, &PropertyKey::new("d"))
+            .expect("lisible");
+        assert_eq!(
+            s.find_nodes_by_property("d", &lisible),
+            vec![n],
+            "la valeur lisible doit être rendue par l'index"
+        );
+    }
+
+    /// Point 2 — un index de `d` déclaré PENDANT l'écriture d'un blob (la
+    /// récolte ne voit pas encore le blob) : l'entrée entre en queue.
+    #[test]
+    #[allow(unsafe_code)]
+    fn p2_un_index_declare_pendant_une_ecriture_blob_voit_le_blob() {
+        // Les colonnes blob exigent le régime v2 : verrou d'environnement,
+        // sans quoi un test voisin posant `OBRAIN_PROPS_V2=0` crée cette base
+        // en régime hérité.
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        let n = s.create_node(&["Evt"]);
+        s.set_node_property(n, "x", Value::Int64(1));
+        let une_fois = std::cell::Cell::new(true);
+        AVANT_ROUTAGE_BLOB.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                if une_fois.replace(false) {
+                    s.create_property_index("d");
+                }
+            }));
+        });
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2024-01-01T10:00:00Z").as_str()),
+        );
+        AVANT_ROUTAGE_BLOB.with(|h| *h.borrow_mut() = None);
+        assert!(s.has_property_index("d"));
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2024-01-01T12:00:00+02:00")),
+            vec![n]
+        );
+    }
+
+    /// Point 3 — drop : la zone d'abord. (a) la réécriture de zone échoue : le
+    /// drop est REFUSÉ, rien n'a changé ; (b) zone réécrite mais catalogue
+    /// encore là (état d'un kill entre les deux) : l'index est déclaré, non
+    /// couvert, reconstruit juste — écriture faite depuis comprise.
+    #[test]
+    #[allow(unsafe_code)]
+    fn p3_drop_zone_d_abord_un_echec_refuse_le_drop_et_un_kill_entre_deux_est_sur() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let preparer = |racine: &std::path::Path| {
+            let s = SubstrateStore::create(racine).unwrap();
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "p", Value::from("v0"));
+            s.set_node_property(n, "q", Value::Int64(1));
+            s.create_property_index("p");
+            s.create_property_index("q");
+            s.flush().unwrap();
+            (s, n)
+        };
+        let declare = |s: &SubstrateStore| {
+            s.declarations_index()
+                .iter()
+                .any(|d| d.genre == "property" && d.propriete == "p")
+        };
+        // (a) échec de la réécriture de zone
+        {
+            let td = tempfile::tempdir().unwrap();
+            let racine = td.path().join("kb");
+            let (s, n) = preparer(&racine);
+            ECHEC_FUSION_EGALITE.with(|c| c.set(true));
+            let r = s.drop_property_index("p");
+            ECHEC_FUSION_EGALITE.with(|c| c.set(false));
+            assert!(!r, "la réécriture a échoué : le drop est refusé");
+            assert!(s.has_property_index("p"), "l'index existe toujours");
+            assert!(declare(&s), "sa déclaration aussi");
+            s.fsync_wal().unwrap();
+            s.deverrouiller_pour_simuler_un_kill();
+            std::mem::forget(s);
+            let s2 = SubstrateStore::open(&racine).unwrap();
+            assert!(s2.has_property_index("p"));
+            assert_eq!(s2.find_nodes_by_property("p", &Value::from("v0")), vec![n]);
+        }
+        // (b) zone réécrite, catalogue restauré = kill entre les deux
+        {
+            let td = tempfile::tempdir().unwrap();
+            let racine = td.path().join("kb");
+            let (s, n) = preparer(&racine);
+            assert!(s.drop_property_index("p"));
+            s.set_node_property(n, "p", Value::from("x"));
+            s.declarer_index(DeclarationIndex {
+                genre: "property".to_string(),
+                label: String::new(),
+                propriete: "p".to_string(),
+                dimension: None,
+                metrique: None,
+            })
+            .unwrap();
+            s.fsync_wal().unwrap();
+            s.deverrouiller_pour_simuler_un_kill();
+            std::mem::forget(s);
+            let s2 = SubstrateStore::open(&racine).unwrap();
+            assert!(
+                !s2.egalite_couverte.contains_key(&PropertyKey::new("p")),
+                "la zone ne porte plus la série : l'index n'est pas couvert"
+            );
+            assert_eq!(s2.find_nodes_by_property("p", &Value::from("x")), vec![n]);
+            assert!(
+                s2.find_nodes_by_property("p", &Value::from("v0"))
+                    .is_empty()
+            );
+        }
+    }
+
+    /// Point 4 — un drop qui s'intercale entre le gel des clés d'une fusion et
+    /// la construction de ses séries : la fusion n'écrit pas `(p, [])`, que
+    /// l'ouverture lirait comme « aucun porteur ».
+    #[test]
+    #[allow(unsafe_code)]
+    fn p4_un_drop_pendant_une_fusion_n_ecrit_pas_une_serie_vide() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let n = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "p", Value::from("v"));
+            s.set_node_property(n, "q", Value::Int64(1));
+            s.create_property_index("p");
+            s.create_property_index("q");
+            s.flush().unwrap();
+            // Une écriture indexée : le flush réécrit la zone (pas d'ancres seules).
+            s.set_node_property(n, "q", Value::Int64(2));
+            let une_fois = std::cell::Cell::new(true);
+            PENDANT_FUSION_EGALITE.with(|h| {
+                *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                    if une_fois.replace(false) {
+                        s.drop_property_index("p");
+                    }
+                }));
+            });
+            s.flush().unwrap();
+            PENDANT_FUSION_EGALITE.with(|h| *h.borrow_mut() = None);
+            n
+        };
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        assert_eq!(
+            s2.find_nodes_by_property("p", &Value::from("v")),
+            vec![n],
+            "une série vide de `p` ferait répondre « aucun porteur »"
+        );
+    }
+
+    /// Mineur — une entrée blob-instant ne s'accumule pas : réécrire le blob
+    /// par une chaîne courte, ou par un autre blob, retire l'ancienne entrée.
+    #[test]
+    #[allow(unsafe_code)]
+    fn m1_les_entrees_blob_instant_perimees_sont_retirees() {
+        // Les colonnes blob exigent le régime v2 : verrou d'environnement,
+        // sans quoi un test voisin posant `OBRAIN_PROPS_V2=0` crée cette base
+        // en régime hérité.
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        s.create_property_index("d");
+        // Idem : la colonne blob de `d` existe déjà (revue 6, N4).
+        let temoin = s.create_node(&["Evt"]);
+        s.set_node_property(
+            temoin,
+            "d",
+            Value::from(longue_de("1999-01-01T00:00:00Z").as_str()),
+        );
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("1999-01-01T00:00:00Z")),
+            vec![temoin]
+        );
+        let n = s.create_node(&["Evt"]);
+        let t1 = Value::from("2024-01-01T10:00:00Z");
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2024-01-01T10:00:00Z").as_str()),
+        );
+        assert_eq!(s.taille_candidats_indexes("d", &t1, 8), Some((1, true)));
+        s.set_node_property(n, "d", Value::from("2030-01-01T00:00:00Z"));
+        assert_eq!(
+            s.taille_candidats_indexes("d", &t1, 8),
+            Some((0, true)),
+            "blob → chaîne courte : l'entrée du blob sort"
+        );
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2031-01-01T00:00:00Z").as_str()),
+        );
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2032-01-01T00:00:00Z").as_str()),
+        );
+        assert_eq!(
+            s.taille_candidats_indexes("d", &Value::from("2031-01-01T00:00:00Z"), 8),
+            Some((0, true)),
+            "blob → autre blob : l'ancienne entrée sort"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2032-01-01T00:00:00Z")),
+            vec![n]
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 6 — N1 à N6
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// N2 — la préparation d'une base dont un index porte sur une clé à
+    /// colonne blob ne RÉÉCRIT pas la zone : la série ne serait jamais lue.
+    /// Seules les ancres sont reposées (une page), et le fichier garde sa
+    /// taille.
+    #[test]
+    #[allow(unsafe_code)]
+    fn n2_preparer_une_cle_a_colonne_blob_ne_reecrit_pas_la_zone() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        {
+            let s = SubstrateStore::create(&racine).unwrap();
+            for i in 0..2_000i64 {
+                let n = s.create_node(&["Evt"]);
+                let c = format!("2024-01-01T00:{:02}:{:02}Z", (i / 60) % 60, i % 60);
+                if i % 100 == 0 {
+                    s.set_node_property(n, "d", Value::from(longue_de(&c).as_str()));
+                } else {
+                    s.set_node_property(n, "d", Value::from(c.as_str()));
+                }
+                s.set_node_property(n, "e", Value::Int64(i % 50));
+            }
+            s.create_property_index("d");
+            s.create_property_index("e");
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        let fichier = fichier_index_egalite(&racine);
+        let taille_avant = std::fs::metadata(&fichier).unwrap().len();
+        // Sous le seuil de passe hâtive, l'ouverture bâtit `d` elle-même ;
+        // au-dessus, c'est la préparation. Dans les deux cas, ni l'une ni
+        // l'autre ni le flush qui suit ne doivent réécrire la zone pour la
+        // série de `d` — qui ne serait jamais lue.
+        let s = SubstrateStore::open(&racine).unwrap();
+        s.preparer_index_egalite();
+        assert!(
+            s.has_property_index("d"),
+            "`d` est tenu, par l'ouverture ou la préparation"
+        );
+        s.flush().unwrap();
+        let ecrits = s.index_egalite.as_ref().unwrap().read().octets_ecrits();
+        assert!(
+            ecrits <= crate::page::PAGE_SIZE as u64,
+            "ouverture + préparation + flush ont écrit {ecrits} octets de zone (ancres seules attendues)"
+        );
+        assert_eq!(std::fs::metadata(&fichier).unwrap().len(), taille_avant);
+        // Et elle répond, par l'index.
+        let (hits, relus) = candidats_reverifies_pendant(|| {
+            s.find_nodes_by_property("d", &Value::from("2024-01-01T00:01:40Z"))
+        });
+        assert_eq!((hits.len(), relus), (1, 1));
+        assert!(
+            !s.index_egalite
+                .as_ref()
+                .unwrap()
+                .read()
+                .proprietes()
+                .contains(&s.prop_keys.read().lookup("d").unwrap()),
+            "la série d'une clé à blob n'est pas dans la zone"
+        );
+    }
+
+    /// N3 — un store en LECTURE SEULE ne modifie ni la zone ni le catalogue :
+    /// `drop_property_index` est refusé, `preparer_index_egalite` reconstruit
+    /// en mémoire seulement.
+    #[test]
+    #[allow(unsafe_code)]
+    fn n3_un_store_en_lecture_seule_ne_modifie_ni_zone_ni_catalogue() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "d", Value::from("2020-01-01T00:00:00Z"));
+            s.set_node_property(n, "e", Value::from("v"));
+            let m = s.create_node(&["R"]);
+            s.set_node_property(
+                m,
+                "d",
+                Value::from(longue_de("2021-01-01T00:00:00Z").as_str()),
+            );
+            s.create_property_index("d");
+            s.create_property_index("e");
+            s.flush().unwrap();
+            s.close().unwrap();
+            (n, m)
+        };
+        let empreinte = |racine: &std::path::Path| -> Vec<(String, u64, Vec<u8>)> {
+            let mut v: Vec<_> = std::fs::read_dir(racine)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| {
+                    let p = e.path();
+                    let nom = p.file_name().unwrap().to_string_lossy().into_owned();
+                    let octets = if nom.contains("idx")
+                        || nom.contains("catalogue")
+                        || nom.contains("index")
+                    {
+                        std::fs::read(&p).unwrap()
+                    } else {
+                        Vec::new()
+                    };
+                    (nom, e.metadata().unwrap().len(), octets)
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let avant = empreinte(&racine);
+        let ro = SubstrateStore::open_read_only(&racine).unwrap();
+        assert_eq!(
+            ro.find_nodes_by_property("d", &Value::from("2021-01-01T00:00:00Z")),
+            vec![m]
+        );
+        assert_eq!(
+            ro.find_nodes_by_property("d", &Value::from("2020-01-01T00:00:00Z")),
+            vec![n]
+        );
+        assert_eq!(ro.find_nodes_by_property("e", &Value::from("v")), vec![n]);
+        ro.preparer_index_egalite();
+        assert!(!ro.drop_property_index("d"), "drop refusé en lecture seule");
+        assert!(
+            ro.has_property_index("d"),
+            "rien n'a changé en mémoire non plus"
+        );
+        assert_eq!(
+            ro.find_nodes_by_property("d", &Value::from("2021-01-01T00:00:00Z")),
+            vec![m]
+        );
+        drop(ro);
+        let apres = empreinte(&racine);
+        let diff: Vec<&String> = avant
+            .iter()
+            .zip(apres.iter())
+            .filter(|(a, b)| a != b)
+            .map(|(a, _)| &a.0)
+            .collect();
+        assert!(
+            diff.is_empty(),
+            "fichiers modifiés par une session en lecture seule : {diff:?}"
+        );
+    }
+
+    /// N4 — colonne blob ORPHELINE (processus mort entre `sync_all` des
+    /// colonnes et la persistance du dictionnaire) : après réouverture la clé
+    /// est couverte par la zone, sans colonne ; la première écriture longue
+    /// rouvre la colonne et ses anciens blobs redeviennent lisibles. L'index
+    /// doit alors cesser de se croire complet et les retrouver.
+    #[test]
+    #[allow(unsafe_code)]
+    fn n4_une_colonne_blob_orpheline_qui_reapparait_n_est_pas_ignoree_par_l_index() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["Evt"]);
+            s.set_node_property(n, "d", Value::from("2000-01-01T00:00:00Z"));
+            let m = s.create_node(&["Evt"]);
+            s.set_node_property(m, "d", Value::from("2001-01-01T00:00:00Z"));
+            s.create_property_index("d");
+            s.flush().unwrap();
+            // Le blob, puis `sync_all` des colonnes… et la mort AVANT que le
+            // dictionnaire porte la spec.
+            s.set_node_property(
+                n,
+                "d",
+                Value::from(longue_de("2024-06-06T06:06:06Z").as_str()),
+            );
+            s.blob_columns.sync_all().unwrap();
+            s.fsync_wal().unwrap();
+            s.deverrouiller_pour_simuler_un_kill();
+            std::mem::forget(s);
+            (n, m)
+        };
+        let s2 = SubstrateStore::open(&racine).unwrap();
+        // ── CE SCÉNARIO A CHANGÉ DE NATURE APRÈS #123 / #138 (obrain#120) ──
+        //
+        // La revue 6 (N4) construisait une colonne blob dont les blobs étaient
+        // durables mais dont le DICTIONNAIRE ne portait pas la spec (kill entre
+        // `blob_columns.sync_all` et la persistance du dictionnaire) : la
+        // colonne apparaissait « orpheline », d'anciens blobs redevenaient
+        // lisibles et un index bâti sans colonne les ignorait.
+        //
+        // Sur `main`, #123 met la valeur longue au WAL et #138 rend la
+        // création de nœud et ses propriétés atomiques : la colonne et sa spec
+        // sont désormais durables ENSEMBLE, donc l'état « colonne orpheline »
+        // n'est plus atteignable. Mesuré après fusion : `colonne_connue=true`.
+        //
+        // Ce qui reste à garder, et qui est plus fort que la précondition
+        // d'origine : après un kill, la colonne est CONNUE, donc sa clé n'est
+        // pas réputée couverte par la zone persistée (règle R), et l'index
+        // sert les deux valeurs. C'est ce que ce test vérifie maintenant.
+        assert!(
+            s2.cle_a_colonne_blob(&PropertyKey::new("d")),
+            "après le kill, le dictionnaire connaît la colonne (obrain#120 corrigé)"
+        );
+        assert!(
+            !s2.egalite_couverte.contains_key(&PropertyKey::new("d")),
+            "une clé à colonne blob n'est jamais réputée couverte par la zone (règle R)"
+        );
+        // La première écriture longue de ce processus écrit dans la colonne ;
+        // l'ancien blob de `n` est, lui, déjà lisible.
+        s2.set_node_property(
+            m,
+            "d",
+            Value::from(longue_de("2025-07-07T07:07:07Z").as_str()),
+        );
+        let lu = s2.get_node_property(n, &PropertyKey::new("d"));
+        assert_eq!(
+            lu,
+            Some(Value::from(longue_de("2024-06-06T06:06:06Z").as_str())),
+            "l'ancien blob écrit avant le kill est toujours lisible"
+        );
+        assert_eq!(
+            s2.find_nodes_by_property("d", &Value::from("2024-06-06T06:06:06Z")),
+            vec![n],
+            "l'index doit retrouver le blob réapparu"
+        );
+        assert_eq!(
+            s2.find_nodes_by_property("d", &Value::from("2025-07-07T07:07:07Z")),
+            vec![m]
+        );
+        assert!(
+            s2.find_nodes_by_property("d", &Value::from("2000-01-01T00:00:00Z"))
+                .is_empty()
+        );
+    }
+
+    /// N5 — un drop qui s'intercale entre le test « existe déjà » de
+    /// `create_property_index` et sa construction : l'état final est cohérent
+    /// (index tenu ⇔ déclaré), jamais un index recréé sans déclaration.
+    #[test]
+    fn n5_un_drop_intercale_dans_create_property_index_n_est_pas_annule() {
+        use std::sync::{Arc, Mutex};
+        let (_td, s) = store();
+        let s = Arc::new(s);
+        let n = s.create_node(&["R"]);
+        s.set_node_property(n, "p", Value::Int64(1));
+        let w2: Arc<Mutex<Option<std::thread::JoinHandle<bool>>>> = Arc::default();
+        let une_fois = std::cell::Cell::new(true);
+        let (s_w2, w2_sonde) = (Arc::clone(&s), Arc::clone(&w2));
+        AVANT_CONSTRUCTION_INDEX.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                if !une_fois.replace(false) {
+                    return;
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                let s2 = Arc::clone(&s_w2);
+                *w2_sonde.lock().unwrap() = Some(std::thread::spawn(move || {
+                    let r = s2.drop_property_index("p");
+                    let _ = tx.send(());
+                    r
+                }));
+                let _ = rx.recv_timeout(std::time::Duration::from_millis(300));
+            }));
+        });
+        s.create_property_index("p");
+        AVANT_CONSTRUCTION_INDEX.with(|h| *h.borrow_mut() = None);
+        if let Some(fil) = w2.lock().unwrap().take() {
+            fil.join().unwrap();
+        }
+        let declare = s
+            .declarations_index()
+            .iter()
+            .any(|d| d.genre == "property" && d.propriete == "p");
+        assert_eq!(
+            s.has_property_index("p"),
+            declare,
+            "index tenu ({}) et déclaration ({declare}) doivent concorder",
+            s.has_property_index("p")
+        );
+        assert_eq!(s.find_nodes_by_property("p", &Value::Int64(1)), vec![n]);
+    }
+
+    /// N6 — court → blob : l'entrée du scalaire court précédent sort
+    /// (symétrique de blob → court).
+    #[test]
+    #[allow(unsafe_code)]
+    fn n6_l_entree_du_scalaire_court_sort_quand_un_blob_le_remplace() {
+        // Les colonnes blob exigent le régime v2 : verrou d'environnement,
+        // sans quoi un test voisin posant `OBRAIN_PROPS_V2=0` crée cette base
+        // en régime hérité.
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        s.create_property_index("d");
+        // La colonne blob de `d` existe déjà (sinon sa première apparition
+        // retire la complétude — revue 6, N4 — et l'index se reconstruit).
+        let m = s.create_node(&["Evt"]);
+        s.set_node_property(
+            m,
+            "d",
+            Value::from(longue_de("1999-01-01T00:00:00Z").as_str()),
+        );
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("1999-01-01T00:00:00Z")),
+            vec![m]
+        );
+        let n = s.create_node(&["Evt"]);
+        let t1 = Value::from("2024-01-01T10:00:00Z");
+        s.set_node_property(n, "d", t1.clone());
+        assert_eq!(s.taille_candidats_indexes("d", &t1, 8), Some((1, true)));
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2030-01-01T00:00:00Z").as_str()),
+        );
+        assert_eq!(
+            s.taille_candidats_indexes("d", &t1, 8),
+            Some((0, true)),
+            "court → blob : l'entrée du court sort"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("d", &Value::from("2030-01-01T00:00:00Z")),
+            vec![n]
+        );
+        // Court → blob NON instant : l'entrée du court sort aussi.
+        s.set_node_property(n, "d", t1.clone());
+        s.set_node_property(n, "d", Value::from("x".repeat(300).as_str()));
+        assert_eq!(s.taille_candidats_indexes("d", &t1, 8), Some((0, true)));
+    }
+
+    /// Pose `OBRAIN_PROPS_V2` POUR LE FIL COURANT (`None` : variable absente).
+    /// Chaque test tourne sur son propre fil : aucun voisin ne le voit.
+    pub(super) fn fixer_props_v2(valeur: Option<&str>) {
+        PROPS_V2_SURCHARGE.with(|c| *c.borrow_mut() = Some(valeur.map(String::from)));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // REVUE 7 — interblocage, deux fenêtres N1, lecture seule, environnement
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// Exécute `f` sur un fil et échoue PROPREMENT si elle ne rend pas la main
+    /// en 20 s (un interblocage ne doit pas figer toute la suite).
+    fn avec_delai<T: Send + 'static>(nom: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap_or_else(|_| panic!("{nom} : pas rendu la main en 20 s (interblocage ?)"))
+    }
+
+    /// BLOQUANT de la revue 7 — `creer_index_proprietes` tenait
+    /// `construction_index` (un `Mutex` non réentrant) pendant son repli, qui
+    /// appelle `create_property_index`, qui le reprend. Deux cas : base VIDE
+    /// (le schéma créé avant les données, le cas courant de PO au démarrage) et
+    /// clé INCONNUE du registre (`batir_index_depuis_v2` rend `false`).
+    #[test]
+    #[allow(unsafe_code)]
+    fn creer_index_proprietes_ne_se_bloque_pas_sur_son_propre_verrou() {
+        use std::sync::Arc;
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        // (a) base vide
+        {
+            let td = tempfile::tempdir().unwrap();
+            let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+            let s2 = Arc::clone(&s);
+            avec_delai("base vide", move || s2.creer_index_proprietes(&["a", "b"]));
+            assert!(s.has_property_index("a") && s.has_property_index("b"));
+        }
+        // (b) base peuplée, une clé connue et une INCONNUE du registre
+        {
+            let td = tempfile::tempdir().unwrap();
+            let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "connue", Value::Int64(1));
+            let s2 = Arc::clone(&s);
+            avec_delai("clé inconnue", move || {
+                s2.creer_index_proprietes(&["connue", "jamais_ecrite"]);
+            });
+            assert!(s.has_property_index("connue"));
+            // Une clé inconnue du registre est DÉCLARÉE mais pas construite
+            // (`index de propriété NON construit`, comportement documenté) :
+            // elle se construit à la première recherche, une fois écrite.
+            assert!(
+                s.declarations_index()
+                    .iter()
+                    .any(|d| d.genre == "property" && d.propriete == "jamais_ecrite")
+            );
+            assert_eq!(
+                s.find_nodes_by_property("connue", &Value::Int64(1)),
+                vec![n]
+            );
+            // Écrite APRÈS la déclaration : la recherche la trouve.
+            let m = s.create_node(&["R"]);
+            s.set_node_property(m, "jamais_ecrite", Value::Int64(7));
+            assert_eq!(
+                s.find_nodes_by_property("jamais_ecrite", &Value::Int64(7)),
+                vec![m]
+            );
+        }
+    }
+
+    /// Les six sites qui prennent `construction_index` rendent tous la main,
+    /// sur une base peuplée, et ENCHAÎNÉS (le verrou est relâché entre eux) :
+    /// `assurer_index_bati_depuis_v2` (par une recherche), `create_property_index`,
+    /// `creer_index_proprietes`, `rebatir_index_declares`,
+    /// `completer_index_herites` (zone v1) et `drop_property_index`.
+    #[test]
+    #[allow(unsafe_code)]
+    fn aucun_interblocage_sur_les_sites_de_construction_index() {
+        use std::sync::Arc;
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let (n, m) = base_persistee_a_cle_canonique(&racine);
+        {
+            // Deux propriétés CONNUES du registre, sans index, pour les
+            // créations et suppressions ci-dessous.
+            let s = SubstrateStore::open(&racine).unwrap();
+            s.set_node_property(n, "u", Value::Int64(1));
+            s.set_node_property(n, "w", Value::Int64(2));
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+        retrograder_la_zone_en_v1(&racine, n, m);
+        let s = Arc::new(SubstrateStore::open(&racine).unwrap());
+        assert!(
+            s.egalite_heritee.load(Ordering::Acquire),
+            "précondition : zone v1"
+        );
+        let c = |nom: &'static str, s: &Arc<SubstrateStore>, f: fn(&SubstrateStore)| {
+            let s2 = Arc::clone(s);
+            avec_delai(nom, move || f(&s2));
+        };
+        c("completer_index_herites", &s, |s| {
+            assert!(s.completer_index_herites());
+        });
+        c("assurer_index_bati_depuis_v2 (recherche)", &s, |s| {
+            let _ = s.find_nodes_by_property("nouvelle", &Value::Int64(1));
+        });
+        c("create_property_index", &s, |s| {
+            s.create_property_index("u")
+        });
+        c("creer_index_proprietes (branche v2)", &s, |s| {
+            s.creer_index_proprietes(&["w", "a"])
+        });
+        // Toutes les clés INCONNUES du registre : `batir_index_depuis_v2` rend
+        // `false`, c'est le REPLI clé par clé qui s'exécute (le cas du blocage).
+        c("creer_index_proprietes (repli)", &s, |s| {
+            s.creer_index_proprietes(&["inconnue_1", "inconnue_2"])
+        });
+        c("rebatir_index_declares", &s, |s| {
+            let _ = s.rebatir_index_declares();
+        });
+        c("drop_property_index", &s, |s| {
+            assert!(s.drop_property_index("u"));
+        });
+        c("create puis drop puis create", &s, |s| {
+            s.create_property_index("u");
+            assert!(s.drop_property_index("u"));
+            s.create_property_index("u");
+        });
+        assert!(s.has_property_index("u") && s.has_property_index("w"));
+        assert_eq!(
+            s.find_nodes_by_property("u", &Value::Int64(1)),
+            vec![NodeId(1)]
+        );
+    }
+
+    /// N1 (revue 7, a) — les DEUX fenêtres. W0 : AVANT l'enregistrement de la
+    /// clé (celle qu'ouvrait l'ancien ordre « époque puis enregistrement ») ;
+    /// W1 : après l'enregistrement, avant l'époque. Dans les deux, un import
+    /// qui démarre, construit ses pages et pose ses têtes APRÈS le relevé des
+    /// têtes de la construction ne doit pas être perdu.
+    fn scenario_n1(fenetre: u8) {
+        use std::sync::{Arc, Mutex, mpsc};
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let labels: Vec<&str> = (0..200).map(|_| "L").collect();
+        s.bulk_import_labels_edges(&labels, &[]).unwrap();
+        let a = s.create_node(&["L"]);
+        s.set_node_property(a, "sl", Value::Int64(-1));
+        let premier = 1u32;
+        let (pages_pretes_tx, pages_pretes_rx) = mpsc::channel::<()>();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let go_rx = Arc::new(Mutex::new(Some(go_rx)));
+        let importeur: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+        let une_fois = std::cell::Cell::new(true);
+        let (s_imp, imp_sonde) = (Arc::clone(&s), Arc::clone(&importeur));
+        let demarrer_import = move |_: &SubstrateStore| {
+            if !une_fois.replace(false) {
+                return;
+            }
+            let s2 = Arc::clone(&s_imp);
+            let tx = pages_pretes_tx.clone();
+            let go = Arc::clone(&go_rx);
+            *imp_sonde.lock().unwrap() = Some(std::thread::spawn(move || {
+                let props: Vec<Vec<(&str, Value)>> =
+                    (0..200i64).map(|i| vec![("sl", Value::Int64(i))]).collect();
+                PENDANT_IMPORT_EN_LOT.with(|h| {
+                    *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                        let _ = tx.send(());
+                        if let Some(rx) = go.lock().unwrap().take() {
+                            let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                        }
+                    }));
+                });
+                s2.bulk_import_node_props(premier, &props).unwrap();
+                PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
+            }));
+            let _ = pages_pretes_rx.recv_timeout(std::time::Duration::from_secs(5));
+        };
+        let sonde: Box<dyn Fn(&SubstrateStore)> = Box::new(demarrer_import);
+        if fenetre == 0 {
+            AVANT_ENREGISTREMENT_CLE.with(|h| *h.borrow_mut() = Some(sonde));
+        } else {
+            ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| *h.borrow_mut() = Some(sonde));
+        }
+        let imp_b = Arc::clone(&importeur);
+        let go_b = Mutex::new(Some(go_tx));
+        APRES_RELEVE_DES_TETES.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |_: &SubstrateStore| {
+                if let Some(go) = go_b.lock().unwrap().take() {
+                    let _ = go.send(());
+                }
+                if let Some(fil) = imp_b.lock().unwrap().take() {
+                    fil.join().unwrap();
+                }
+            }));
+        });
+        s.create_property_index("sl");
+        AVANT_ENREGISTREMENT_CLE.with(|h| *h.borrow_mut() = None);
+        ENTRE_ENREGISTREMENT_ET_EPOQUE.with(|h| *h.borrow_mut() = None);
+        APRES_RELEVE_DES_TETES.with(|h| *h.borrow_mut() = None);
+        if let Some(fil) = importeur.lock().unwrap().take() {
+            fil.join().unwrap();
+        }
+        assert!(s.has_property_index("sl"));
+        for i in [0i64, 77, 199] {
+            assert_eq!(
+                s.find_nodes_by_property("sl", &Value::Int64(i)),
+                vec![NodeId(u64::from(premier) + i as u64)],
+                "fenêtre W{fenetre} : sl = {i} importé pendant l'amorce de la construction"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn n1_un_import_n_est_pas_perdu_dans_les_deux_fenetres_de_l_amorce() {
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        scenario_n1(0);
+        scenario_n1(1);
+    }
+
+    /// N3 (revue 7, b) — `create_property_index` et `declarer_index` sur un
+    /// store en LECTURE SEULE n'écrivent ni le catalogue ni la zone :
+    /// `declarer_index` est refusé (erreur nommée), `create_property_index`
+    /// construit en mémoire seulement.
+    #[test]
+    #[allow(unsafe_code)]
+    fn n3b_creer_et_declarer_un_index_en_lecture_seule_n_ecrit_rien() {
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let racine = td.path().join("kb");
+        let n = {
+            let s = SubstrateStore::create(&racine).unwrap();
+            let n = s.create_node(&["R"]);
+            s.set_node_property(n, "d", Value::from("2020-01-01T00:00:00Z"));
+            s.set_node_property(n, "z", Value::Int64(3));
+            s.create_property_index("d");
+            s.flush().unwrap();
+            s.close().unwrap();
+            n
+        };
+        let empreinte = |racine: &std::path::Path| -> Vec<(String, u64, Vec<u8>)> {
+            let mut v: Vec<_> = std::fs::read_dir(racine)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| {
+                    let p = e.path();
+                    let nom = p.file_name().unwrap().to_string_lossy().into_owned();
+                    let octets =
+                        if nom.contains("idx") || nom.contains("cat") || nom.contains("index") {
+                            std::fs::read(&p).unwrap()
+                        } else {
+                            Vec::new()
+                        };
+                    (nom, e.metadata().unwrap().len(), octets)
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let avant = empreinte(&racine);
+        let ro = SubstrateStore::open_read_only(&racine).unwrap();
+        let r = ro.declarer_index(DeclarationIndex {
+            genre: "property".to_string(),
+            label: String::new(),
+            propriete: "z".to_string(),
+            dimension: None,
+            metrique: None,
+        });
+        assert!(
+            matches!(r, Err(SubstrateError::LectureSeule { .. })),
+            "déclarer en lecture seule est refusé par l'erreur typée LectureSeule : {r:?}"
+        );
+        ro.create_property_index("z");
+        assert!(
+            ro.has_property_index("z"),
+            "l'index est construit en mémoire"
+        );
+        assert_eq!(ro.find_nodes_by_property("z", &Value::Int64(3)), vec![n]);
+        drop(ro);
+        let apres = empreinte(&racine);
+        let diff: Vec<&String> = avant
+            .iter()
+            .zip(apres.iter())
+            .filter(|(a, b)| a != b)
+            .map(|(a, _)| &a.0)
+            .collect();
+        assert!(
+            diff.is_empty(),
+            "fichiers modifiés par une session en lecture seule : {diff:?}"
+        );
+        assert_eq!(avant.len(), apres.len(), "aucun fichier créé");
+    }
+
+    /// (c) — deux tests parallèles, l'un à `OBRAIN_PROPS_V2=0` l'autre en v2,
+    /// ne se voient pas : chacun ouvre sa base dans le régime qu'il a posé,
+    /// 100 fois, rendez-vous à chaque tour. Avec la variable d'environnement
+    /// GLOBALE (l'ancien mécanisme), ils se marchent dessus.
+    #[test]
+    fn env_props_v2_deux_fils_paralleles_ne_se_voient_pas() {
+        use std::sync::{Arc, Barrier};
+        let barriere = Arc::new(Barrier::new(2));
+        let fil = |valeur: &'static str, attendu_v2: bool| {
+            let b = Arc::clone(&barriere);
+            std::thread::spawn(move || {
+                fixer_props_v2(Some(valeur));
+                let mut ecarts = 0usize;
+                for _ in 0..100 {
+                    b.wait();
+                    let td = tempfile::tempdir().unwrap();
+                    let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+                    if s.props_v2_enabled() != attendu_v2 {
+                        ecarts += 1;
+                    }
+                    b.wait();
+                }
+                ecarts
+            })
+        };
+        let (herite, v2) = (fil("0", false), fil("1", true));
+        assert_eq!(herite.join().unwrap(), 0, "le fil `=0` a vu un store v2");
+        assert_eq!(v2.join().unwrap(), 0, "le fil `=1` a vu un store hérité");
+    }
+
+    /// (f) — une entrée d'index d'une clé à colonne blob ne rend PAS la zone à
+    /// réécrire (sa série n'est jamais écrite) ; celle d'une autre clé, si.
+    #[test]
+    #[allow(unsafe_code)]
+    fn f_une_entree_d_une_cle_a_blob_ne_leve_pas_le_drapeau_de_fusion() {
+        let _guard = props_v2_env_lock();
+        fixer_props_v2(Some("1"));
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let n = s.create_node(&["R"]);
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2000-01-01T00:00:00Z").as_str()),
+        );
+        s.set_node_property(n, "e", Value::Int64(1));
+        s.create_property_index("d");
+        s.create_property_index("e");
+        s.flush().unwrap();
+        assert!(
+            !s.egalite_delta_sale.load(Ordering::Acquire),
+            "précondition : rien à fusionner"
+        );
+        s.set_node_property(
+            n,
+            "d",
+            Value::from(longue_de("2001-01-01T00:00:00Z").as_str()),
+        );
+        let m = s.create_node(&["R"]);
+        s.set_node_property(m, "d", Value::from("2002-02-02T02:02:02Z"));
+        assert!(
+            !s.egalite_delta_sale.load(Ordering::Acquire),
+            "une entrée d'une clé à colonne blob ne rend pas la zone à réécrire"
+        );
+        s.set_node_property(m, "e", Value::Int64(2));
+        assert!(
+            s.egalite_delta_sale.load(Ordering::Acquire),
+            "l'entrée d'une clé SANS colonne blob, si"
         );
     }
 
@@ -30504,6 +32829,63 @@ mod tests {
             dict_avant, dict_apres,
             "un flush propre ne doit pas réécrire substrate.dict"
         );
+    }
+
+    /// obrain#120 point 3 — le dirty-flag du sidecar hérité ne perd rien et ne
+    /// réécrit pas pour rien. Une écriture longue (> 256 o, colonne blob) ne
+    /// touche PAS les cartes `node_properties`/`edge_properties` : le flush qui
+    /// suit SAUTE la réécriture du sidecar. Une écriture courte la refait. La
+    /// réouverture retrouve les deux valeurs, malgré le saut.
+    #[test]
+    #[allow(unsafe_code)]
+    fn persist_properties_skippe_et_reecrit_selon_la_generation() {
+        let _guard = props_v2_env_lock();
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("kb");
+        // SAFETY: sérialisé par `props_v2_env_lock`, détenu ci-dessus.
+        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        let id = {
+            let s = SubstrateStore::create(&path).unwrap();
+            let id = s.create_node(&["File"]);
+            s.set_node_property(id, "i", Value::Int64(1));
+            s.flush().unwrap();
+            let generation = s.props_generation.load(Ordering::Acquire);
+            assert_eq!(
+                s.derniere_generation_props_persistee
+                    .load(Ordering::Acquire),
+                generation,
+                "le premier flush doit persister le sidecar"
+            );
+            // Écriture longue (> 256 o) : ne salit PAS les cartes.
+            s.set_node_property(id, "doc", Value::String("x".repeat(585).into()));
+            s.flush().unwrap();
+            assert_eq!(
+                s.props_generation.load(Ordering::Acquire),
+                generation,
+                "une écriture blob ne salit pas les cartes de propriétés"
+            );
+            // Écriture courte : resalit → le flush suivant réécrit le sidecar.
+            s.set_node_property(id, "i", Value::Int64(2));
+            s.flush().unwrap();
+            assert_eq!(
+                s.derniere_generation_props_persistee
+                    .load(Ordering::Acquire),
+                s.props_generation.load(Ordering::Acquire),
+                "une écriture courte doit forcer la réécriture du sidecar"
+            );
+            id
+        };
+        // SAFETY: idem.
+        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        // Durabilité : la réouverture retrouve la valeur courte (sidecar) et la
+        // longue (colonne blob), malgré le saut du sidecar au flush.
+        let s = SubstrateStore::open(&path).unwrap();
+        assert_eq!(
+            s.get_node_property(id, &PropertyKey::new("i")),
+            Some(Value::Int64(2))
+        );
+        let doc = s.get_node_property(id, &PropertyKey::new("doc"));
+        assert!(matches!(doc, Some(Value::String(ref v)) if v.len() == 585));
     }
 
     /// T17h T8 — typed columns survive close/reopen via the
@@ -32071,7 +34453,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Aucun drapeau pose : on eprouve le DEFAUT, pas une surcharge.
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -32123,7 +34505,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Aucun drapeau : on éprouve le DÉFAUT, pas une surcharge.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -32209,7 +34591,7 @@ mod tests {
         // propriétés qui n'existent QUE dans `substrate.props`.
         let (a, b);
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(!s.props_v2_enabled(), "mise en place : régime hérité");
@@ -32236,7 +34618,7 @@ mod tests {
 
         // PREMIÈRE ouverture sous v2 — le moment exact du danger.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(
             s.props_v2_enabled(),
@@ -32285,7 +34667,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le troisième bord : une MIGRATION INTERROMPUE. Des pages en v2, un
@@ -32304,7 +34686,7 @@ mod tests {
         let marqueur = root.join(PROPS_V2_MIGRATION_ACHEVEE_FILENAME);
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let a;
         {
             let s = SubstrateStore::create(&root).unwrap();
@@ -32317,7 +34699,7 @@ mod tests {
         // mais on n'appelle PAS `delete_legacy_props_sidecar` — c'est lui, et
         // lui seul, qui a le droit de poser le marqueur.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             s.finalize_props_v2().unwrap();
@@ -32346,7 +34728,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── LE BORD LE PLUS COUPANT : UN DICT EN RETARD D'UNE FENÊTRE WAL ──
@@ -32377,7 +34759,7 @@ mod tests {
         // le sidecar. On tue avant le flush, donc rien n'atteint ni le dict ni
         // le sidecar — tout ne vit que dans le WAL.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let a;
         {
             let s = SubstrateStore::create(&root).unwrap();
@@ -32409,7 +34791,7 @@ mod tests {
         // Réouverture sous v2 : le rejeu du WAL relève le filigrane et
         // repeuple les cartes. Le contrôle doit refuser.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(
             !s.migration_v2_achevee(),
@@ -32425,7 +34807,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le pendant : `OBRAIN_PROPS_V2=0` ramene au regime HERITE, y compris sur
@@ -32437,7 +34819,7 @@ mod tests {
     fn props_zone_v2_desactive_quand_l_env_le_refuse() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -32465,7 +34847,7 @@ mod tests {
         // files and flip `props_v2_enabled()` to true.
         let _guard = props_v2_env_lock();
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -32486,7 +34868,7 @@ mod tests {
 
         // SAFETY: serialised via `props_v2_env_lock`.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -32502,7 +34884,7 @@ mod tests {
         // Phase 1: create + open with the feature on so the zone file
         // lands on disk.
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             s.flush().unwrap();
@@ -32510,7 +34892,7 @@ mod tests {
         }
         // SAFETY: serialised via `props_v2_env_lock`.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         // Phase 2: reopen WITHOUT env — auto-detect must fire.
         assert!(root.join(crate::props_zone::PROPS_V2_FILENAME).exists());
@@ -32530,7 +34912,7 @@ mod tests {
         // entries were appended).
         let _guard = props_v2_env_lock();
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -32543,7 +34925,7 @@ mod tests {
 
         // SAFETY: serialised via `props_v2_env_lock`.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
@@ -32625,7 +35007,7 @@ mod tests {
     fn a_property_written_then_killed_without_flush_survives_reopen_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_a_property_written_then_killed_without_flush_survives_reopen();
     }
 
@@ -32636,7 +35018,7 @@ mod tests {
     fn a_property_written_then_killed_without_flush_survives_reopen_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_a_property_written_then_killed_without_flush_survives_reopen();
     }
 
@@ -32665,7 +35047,7 @@ mod tests {
     fn reecriture_meme_page_de_tete_est_retrouvee_apres_mort_brutale_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let a;
@@ -32754,7 +35136,7 @@ mod tests {
     fn a_node_created_then_killed_with_zero_flush_is_fully_recovered_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_a_node_created_then_killed_with_zero_flush_is_fully_recovered();
     }
 
@@ -32765,7 +35147,7 @@ mod tests {
     fn a_node_created_then_killed_with_zero_flush_is_fully_recovered_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_a_node_created_then_killed_with_zero_flush_is_fully_recovered();
     }
 
@@ -32804,7 +35186,7 @@ mod tests {
     fn wal_replay_is_last_write_wins_over_the_snapshot_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_wal_replay_is_last_write_wins_over_the_snapshot();
     }
 
@@ -32815,7 +35197,7 @@ mod tests {
     fn wal_replay_is_last_write_wins_over_the_snapshot_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_wal_replay_is_last_write_wins_over_the_snapshot();
     }
 
@@ -32854,7 +35236,7 @@ mod tests {
     fn a_delete_after_snapshot_is_not_resurrected_on_reopen_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_a_delete_after_snapshot_is_not_resurrected_on_reopen();
     }
 
@@ -32865,7 +35247,7 @@ mod tests {
     fn a_delete_after_snapshot_is_not_resurrected_on_reopen_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_a_delete_after_snapshot_is_not_resurrected_on_reopen();
     }
 
@@ -32906,7 +35288,7 @@ mod tests {
     fn an_edge_delete_after_snapshot_is_not_resurrected_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_an_edge_delete_after_snapshot_is_not_resurrected();
     }
 
@@ -32917,7 +35299,7 @@ mod tests {
     fn an_edge_delete_after_snapshot_is_not_resurrected_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_an_edge_delete_after_snapshot_is_not_resurrected();
     }
 
@@ -32956,7 +35338,7 @@ mod tests {
     fn an_edge_property_survives_a_kill_without_flush_regime_herite() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         scenario_an_edge_property_survives_a_kill_without_flush();
     }
 
@@ -32967,7 +35349,7 @@ mod tests {
     fn an_edge_property_survives_a_kill_without_flush_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_an_edge_property_survives_a_kill_without_flush();
     }
 
@@ -33064,7 +35446,7 @@ mod tests {
     fn prop_v2_sans_record_wal_survit_au_kill_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         scenario_prop_v2_sans_record_wal_survit_au_kill();
     }
 
@@ -33075,7 +35457,7 @@ mod tests {
     fn edge_prop_v2_sans_record_wal_survit_au_kill_regime_v2() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let edge_id;
@@ -33141,7 +35523,7 @@ mod tests {
     fn une_prop_ecrite_apres_un_remap_de_slot_ne_perd_pas_la_chaine() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let (s, _x, y) = {
@@ -33203,7 +35585,7 @@ mod tests {
     fn props_preservees_apres_repermuter_par_hilbert() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("kb");
         let n = 320u32;
@@ -33318,7 +35700,7 @@ mod tests {
     fn auto_guerison_restampe_les_chaines_apres_rejeu_remap() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         // Base v2 finalisée (marqueur posé, DashMaps vides) avec 1 nœud
         // portant 2 props — le helper draine puis re-ouvre.
         let (td, s, y) = {
@@ -33387,7 +35769,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe {
-            std::env::set_var("OBRAIN_PROPS_V2", "1");
+            fixer_props_v2(Some("1"));
             std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
         }
         let td = tempfile::tempdir().unwrap();
@@ -33463,7 +35845,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe {
-            std::env::set_var("OBRAIN_PROPS_V2", "1");
+            fixer_props_v2(Some("1"));
             std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
         }
         let td = tempfile::tempdir().unwrap();
@@ -33510,7 +35892,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
         unsafe {
-            std::env::set_var("OBRAIN_PROPS_V2", "1");
+            fixer_props_v2(Some("1"));
             std::env::set_var("OBRAIN_PROPS_SLOTS_512", "1");
         }
         let td = tempfile::tempdir().unwrap();
@@ -33739,7 +36121,7 @@ mod tests {
         // as a PropertyEntry on the PropsZone chain AND flip the head
         // pointer on the NodeRecord.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -33770,7 +36152,7 @@ mod tests {
         assert_eq!(entries[1].prop_key, count_id, "second append = count");
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Lectures indexées et écritures EN PARALLÈLE sous PropsZone v2.
@@ -33799,7 +36181,7 @@ mod tests {
     fn recherche_indexee_v2_et_ecritures_concurrentes() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock` (même contrat que les tests v2 voisins).
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const NOEUDS: i64 = 2_000;
         const SEAUX: i64 = 10;
@@ -33826,7 +36208,7 @@ mod tests {
         }
 
         // SAFETY: idem — la détection automatique doit suffire à réactiver v2.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -33902,7 +36284,7 @@ mod tests {
         // Write a property with v2 enabled, close the store, reopen,
         // and confirm the PropsZone chain still holds the entry.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -33919,7 +36301,7 @@ mod tests {
 
         // Re-open without env — auto-detection still activates v2.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
 
@@ -33975,7 +36357,7 @@ mod tests {
         // as a PropertyEntry on the edge PropsZone chain AND flip the
         // head pointer on the EdgeRecord (byte offset 24).
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34003,7 +36385,7 @@ mod tests {
         assert_eq!(entries[1].prop_key, since_id, "second append = since");
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -34012,7 +36394,7 @@ mod tests {
         // Three successive set_edge_property calls for the same key —
         // the LWW read path must surface v3, not v1 or v2.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34036,7 +36418,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -34049,7 +36431,7 @@ mod tests {
         // implementation — but here the DashMap is also cleared on
         // remove, so correctness comes from the chain).
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34082,7 +36464,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     #[test]
@@ -34092,7 +36474,7 @@ mod tests {
         // reopen, and confirm the chain still holds the entry and the
         // LWW read still returns the correct value.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -34109,7 +36491,7 @@ mod tests {
         }
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
 
@@ -34132,7 +36514,7 @@ mod tests {
         // 0xE507_5FA6) — a single PropsZone carrying both owner kinds
         // was the whole point of T17f Step 2.
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34179,7 +36561,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
@@ -34198,7 +36580,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_lww_same_page() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34221,7 +36603,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// (2026-11-08, C1) LWW sur la MÊME page, par le chemin CIBLÉ par époque :
@@ -34232,7 +36614,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_at_epoch_lww_same_page() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34260,7 +36642,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// (2026-11-08, C1) Le chemin ciblé TRAVERSE le tombstone comme
@@ -34280,7 +36662,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_at_epoch_traverse_le_tombstone_comme_get_node_at_epoch() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let (_td, s) = store();
         let temoin = s.create_node(&["Doc"]);
         s.set_node_property(temoin, "title", Value::String("témoin".into()));
@@ -34332,7 +36714,7 @@ mod tests {
             "la lecture courante, elle, ne traverse pas le tombstone"
         );
         // SAFETY: serialised via `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Tombstone: `set` then `remove` must make `get` return `None`
@@ -34343,7 +36725,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_tombstone_shadows_older_set() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34366,7 +36748,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Tombstone persistence: after a drop/reopen cycle, the tombstone
@@ -34377,7 +36759,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_tombstone_survives_reopen() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -34392,7 +36774,7 @@ mod tests {
         }
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
 
@@ -34410,7 +36792,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Explicitly disable v2 so `set_node_property` writes only to
         // the DashMap — the NodeRecord.first_prop_off stays at 0.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34427,7 +36809,7 @@ mod tests {
         assert_eq!(got, Some(Value::String("legacy".into())));
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── (2026-08-19) CE TEST NOMMAIT LE DÉFAUT COMME CONTRAT ──
@@ -34447,7 +36829,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn load_properties_saute_l_hydratation_quand_la_migration_est_marquee_achevee() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -34469,7 +36851,7 @@ mod tests {
         // Reopen without env — auto-detection on substrate.props.v2
         // existence still activates v2.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 must auto-enable on reopen");
         assert!(
@@ -34506,7 +36888,7 @@ mod tests {
         let _guard = props_v2_env_lock();
         // Phase 1: write WITHOUT v2 — sidecar gets node entries, v2
         // zone stays empty.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let a_id;
@@ -34522,7 +36904,7 @@ mod tests {
         // Phase 2: reopen WITH v2 enabled. Zone is fresh (no pages)
         // because the prior session had v2 disabled — hydration must
         // still populate the DashMap so the legacy key is readable.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 active on reopen");
         let pz = s.props_zone.as_ref().unwrap().read();
@@ -34541,7 +36923,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// T17c Step 3d — edges always hydrate from the sidecar
@@ -34553,7 +36935,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn load_properties_still_hydrates_edges_when_v2_has_pages() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
@@ -34578,7 +36960,7 @@ mod tests {
         }
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
 
         // (2026-08-19) Cette ligne affirmait `len() == 0` — au titre de
@@ -34627,7 +37009,7 @@ mod tests {
         // Phase 1: write legacy sidecar (v2 OFF).
         let a_id;
         let b_id;
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -34646,7 +37028,7 @@ mod tests {
         assert!(sidecar.exists(), "legacy sidecar written");
 
         // Phase 2: reopen with v2 ON and migrate.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert!(s.props_v2_enabled());
@@ -34672,7 +37054,7 @@ mod tests {
         // (no sidecar + v2 pages present). Reads must still return
         // everything via v2 chain.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "v2 auto-detected on reopen");
         assert_eq!(
@@ -34705,7 +37087,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn finalize_props_v2_errors_when_v2_disabled() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -34743,7 +37125,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -34757,7 +37139,7 @@ mod tests {
         assert!(sidecar.exists(), "sidecar hérité écrit");
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
         assert!(!s.node_properties.is_empty(), "résultat attendu non vide");
@@ -34814,7 +37196,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -34826,7 +37208,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
         assert!(!s.edge_properties.is_empty(), "sidecar d'arêtes hydraté");
@@ -34863,7 +37245,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             for i in 0..40i64 {
@@ -34876,7 +37258,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         let stats = s.finalize_props_v2().unwrap();
         assert_eq!(stats.scalars_emitted, 120, "40 nœuds x 3 clés");
@@ -34909,7 +37291,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -34918,7 +37300,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         // Entrée héritée pour un slot qui n'existe pas sur disque : c'est ce
         // que laisse une suppression de nœud faite par un binaire antérieur.
@@ -35006,7 +37388,7 @@ mod tests {
         ];
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let n_id;
         {
             let s = SubstrateStore::create(&root).unwrap();
@@ -35019,7 +37401,7 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         let stats = s.finalize_props_v2().expect(
             "aucun type portable par un sidecar hérité ne doit faire échouer la \
@@ -35041,7 +37423,7 @@ mod tests {
             );
         }
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Multi-page LWW: force a chain spanning two pages and check
@@ -35052,7 +37434,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn get_node_property_lww_across_pages() {
         let _guard = props_v2_env_lock();
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
@@ -35101,7 +37483,7 @@ mod tests {
         );
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
@@ -35132,7 +37514,7 @@ mod tests {
         let e2_id;
 
         // Phase 1: legacy sidecar write (v2 OFF) — nodes + edges.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -35161,7 +37543,7 @@ mod tests {
         // Phase 2: reopen with v2, run finalize — both nodes AND
         // edges must be handled. Assert the new edge sidecar
         // appears and the legacy sidecar can be dropped.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert!(s.props_v2_enabled());
@@ -35199,7 +37581,7 @@ mod tests {
         // edges must be hydrated from the NEW edge sidecar. Every
         // edge prop set in Phase 1 must be retrievable.
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled());
         assert_eq!(s.node_properties.len(), 0, "node DashMap empty (v2 gate)");
@@ -35246,7 +37628,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // Build a legacy sidecar carrying edge props.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let a_id;
         let b_id;
         let e_id;
@@ -35267,7 +37649,7 @@ mod tests {
         assert!(legacy_sidecar.exists());
         assert!(!edge_sidecar.exists());
 
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(!s.edge_properties.is_empty(), "résultat attendu non vide");
 
@@ -35299,7 +37681,7 @@ mod tests {
         // Reopen: edge prop must survive.
         drop(s);
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert_eq!(
             s.get_edge_property(e_id, &PropertyKey::new("weight")),
@@ -35322,7 +37704,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
 
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::create(&root).unwrap();
         let a = s.create_node(&["Doc"]);
         s.set_node_property(a, "title", Value::String("solo".into()));
@@ -35342,7 +37724,7 @@ mod tests {
         let _ = s.delete_legacy_props_sidecar();
 
         // SAFETY: serialised via `props_v2_env_lock` (meme contrat que les tests v2 voisins).
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // ───────────────────────────────────────────────────────────────
@@ -35392,7 +37774,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         // SAFETY: sérialisé par `props_v2_env_lock`, détenu par l'appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(s.props_v2_enabled(), "v2 doit être actif à la création");
@@ -35413,7 +37795,7 @@ mod tests {
         }
         // SAFETY: idem — la détection du fichier de zone doit suffire à
         // réactiver v2, sans variable d'environnement.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = SubstrateStore::open(&root).unwrap();
         assert!(
             s.props_v2_enabled(),
@@ -35667,7 +38049,7 @@ mod tests {
 
         // Phase 1 — regime HERITE : tout part au sidecar.
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let (n, e) = {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(!s.props_v2_enabled(), "phase 1 doit etre heritee");
@@ -35686,7 +38068,7 @@ mod tests {
         // Phase 2 — MIGRATION EN COURS : la zone s ouvre, le sidecar est
         // encore relu (la migration n est pas marquee achevee).
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let s = SubstrateStore::open(&root).unwrap();
         assert!(s.props_v2_enabled(), "phase 2 doit ouvrir la zone v2");
         assert!(
@@ -35745,7 +38127,7 @@ mod tests {
         );
 
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// `OBRAIN_PROPS_V2=0` NE DOIT PLUS OUVRIR UNE BASE AMPUTEE.
@@ -35768,7 +38150,7 @@ mod tests {
         let root = td.path().join("kb");
 
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let n = {
             let s = SubstrateStore::create(&root).unwrap();
             let n = s.create_node(&["Doc"]);
@@ -35783,7 +38165,7 @@ mod tests {
 
         // Temoin : sans la variable, la base s ouvre et rend sa propriete.
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         {
             let s = SubstrateStore::open(&root).unwrap();
             assert_eq!(
@@ -35795,11 +38177,11 @@ mod tests {
         }
 
         // SAFETY: idem.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let ouverture = SubstrateStore::open(&root);
         // SAFETY: idem — repose AVANT toute assertion, pour ne pas laisser
         // la variable en place si celle-ci echoue.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let Err(err) = ouverture else {
             panic!(
                 "OBRAIN_PROPS_V2=0 a ouvert une base dont les proprietes ne \
@@ -35817,7 +38199,7 @@ mod tests {
         let td2 = tempfile::tempdir().unwrap();
         let root2 = td2.path().join("kb");
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let m = {
             let s = SubstrateStore::create(&root2).unwrap();
             assert!(!s.props_v2_enabled());
@@ -35833,7 +38215,7 @@ mod tests {
             Some(Value::String("herite".into()))
         );
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Remet la DashMap des NŒUDS en jeu sur une base v2 migree.
@@ -36695,7 +39077,7 @@ mod tests {
     fn balayage_v2_non_projetable_et_ecritures_concurrentes() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`, comme les tests v2 voisins.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const NOEUDS: i64 = 1_500;
         const SEAUX: i64 = 10;
@@ -36722,7 +39104,7 @@ mod tests {
             s.delete_edge_props_sidecar().unwrap();
         }
         // SAFETY: idem — la détection du fichier de zone doit suffire.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -37192,7 +39574,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         // SAFETY: serialise par `props_v2_env_lock`, detenu par l appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::create(&root).unwrap();
             assert!(s.props_v2_enabled());
@@ -37337,7 +39719,7 @@ mod tests {
     fn ouverture_apres_ecriture_sans_flush_repond_exactement_apres_reconstruction() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let (anciens, neuf1, neuf2) = scenario_ouverture_apres_ecritures(&root);
@@ -37391,7 +39773,7 @@ mod tests {
     fn une_fenetre_inexpliquee_garde_la_reconstruction_et_l_exactitude() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let (_anciens, neuf1, _neuf2) = scenario_ouverture_apres_ecritures(&root);
@@ -37432,7 +39814,7 @@ mod tests {
     fn une_ouverture_propre_ne_reconstruit_rien() {
         let _guard = props_v2_env_lock();
         // SAFETY: serialise par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         let td = tempfile::tempdir().unwrap();
         let root = td.path().join("kb");
         let s = SubstrateStore::create(&root).unwrap();
@@ -37959,7 +40341,7 @@ mod tests {
     fn recherche_d_arete_par_propriete_et_ecritures_concurrentes() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`, comme les tests v2 voisins.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const ARETES: i64 = 600;
         let td = tempfile::tempdir().unwrap();
@@ -37989,7 +40371,7 @@ mod tests {
             s.delete_edge_props_sidecar().unwrap();
         }
         // SAFETY: idem — la détection du fichier de zone doit suffire.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -38167,7 +40549,7 @@ mod tests {
     fn base_a_migration_interrompue(root: &std::path::Path, n: u32) -> Vec<NodeId> {
         // (1) Régime HÉRITÉ : les propriétés n'existent QUE dans le sidecar.
         // SAFETY: sérialisé par `props_v2_env_lock` chez l'appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let ids: Vec<NodeId> = {
             let s = SubstrateStore::create(root).unwrap();
             let mut ids = Vec::with_capacity(n as usize);
@@ -38191,7 +40573,7 @@ mod tests {
         //     l'état que laisse un `pkill` / une coupure / un disque plein
         //     au milieu du drain.
         // SAFETY: sérialisé par `props_v2_env_lock` chez l'appelant.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(root).unwrap();
             assert!(s.props_v2_enabled(), "phase 2 doit ouvrir la zone v2");
@@ -38267,7 +40649,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le même trou, côté ARÊTES. `skip_edges_legacy` était gardé par le
@@ -38287,7 +40669,7 @@ mod tests {
 
         // (1) Base héritée : deux nœuds, deux arêtes portant des propriétés.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let (a_id, e1_id, e2_id) = {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -38311,7 +40693,7 @@ mod tests {
 
         // (2) Migration de NŒUDS interrompue après une seule paire.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             s.set_node_property(a_id, "titre", Value::String("alpha".into()));
@@ -38345,7 +40727,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// L'AUTRE moitié du contrat, celle qu'il ne faut pas casser en
@@ -38369,7 +40751,7 @@ mod tests {
 
         // (1) Base héritée.
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let (a_id, b_id) = {
             let s = SubstrateStore::create(&root).unwrap();
             let a = s.create_node(&["Doc"]);
@@ -38382,11 +40764,14 @@ mod tests {
         };
 
         // (2) Migration COMPLÈTE : drain, flush, suppression du sidecar.
-        //     Puis un flush de plus, qui RECRÉE un sidecar périmé depuis la
-        //     DashMap restée peuplée — le cas Megalaw, reproduit exprès.
+        //     (obrain#120) Le dirty-flag de `persist_properties` fait que le
+        //     flush SUIVANT ne RECRÉE PLUS un sidecar périmé depuis la DashMap
+        //     restée peuplée — c'était « le cas Megalaw » ; il ne peut plus
+        //     naître par ce chemin. On le SIMULE donc ici, à la main, pour
+        //     éprouver quand même le court-circuit à l'ouverture.
         let sidecar = root.join(crate::props_snapshot::PROPS_FILENAME);
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         {
             let s = SubstrateStore::open(&root).unwrap();
             s.finalize_props_v2().unwrap();
@@ -38394,7 +40779,23 @@ mod tests {
             s.delete_legacy_props_sidecar().unwrap().expect("présent");
             assert!(!sidecar.exists(), "sidecar supprimé par la migration");
             s.flush().unwrap();
+            assert!(
+                !sidecar.exists(),
+                "un flush qui suit la suppression ne réécrit pas un sidecar \
+                 périmé (dirty-flag obrain#120)"
+            );
         }
+        // Sidecar périmé NON VIDE, posé à la main : c'est l'état que laisserait
+        // un binaire antérieur (ou un pair) qui aurait flushé avant ce correctif.
+        crate::props_snapshot::PropertiesSnapshotV1 {
+            nodes: vec![crate::props_snapshot::PropEntry {
+                id: u64::MAX - 1,
+                props: vec![("fantome".to_string(), Value::String("x".into()))],
+            }],
+            edges: Vec::new(),
+        }
+        .persist(&sidecar)
+        .unwrap();
         assert!(
             sidecar.metadata().map(|m| m.len()).unwrap_or(0) > 0,
             "on veut précisément un sidecar périmé NON VIDE sur le disque — \
@@ -38426,7 +40827,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Le marqueur ne doit exister QU'À la toute fin. Poser « migration
@@ -38478,7 +40879,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// Un drain interrompu doit se REPRENDRE, pas se refaire. Deux raisons,
@@ -38547,7 +40948,7 @@ mod tests {
         }
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// UN DRAIN REPRIS DOIT ÊTRE RELU AUSSI.
@@ -38588,7 +40989,7 @@ mod tests {
         assert_eq!(stats.cles_relues, 2, "stats: {stats:?}");
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -38666,7 +41067,7 @@ mod tests {
     fn temoin_herite_intervalle_de_noeuds() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
         assert!(
@@ -38680,7 +41081,7 @@ mod tests {
         assert_eq!(r[2], vec![ids[3], ids[4]], "témoin : rang >= 3");
         assert_eq!(r[3], ids, "témoin : rang sans borne");
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// LA PREUVE. Les mêmes interrogations sur une base RÉELLEMENT migrée.
@@ -38835,7 +41236,7 @@ mod tests {
         use obrain_core::graph::traits::GraphStore;
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
 
         const NOEUDS: i64 = 600;
         let td = tempfile::tempdir().unwrap();
@@ -38857,7 +41258,7 @@ mod tests {
             s.delete_edge_props_sidecar().unwrap();
         }
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
         let s = std::sync::Arc::new(SubstrateStore::open(&root).unwrap());
         assert!(s.props_v2_enabled(), "v2 doit se réactiver seule");
         assert!(
@@ -39011,7 +41412,7 @@ mod tests {
 
         // ── régime HÉRITÉ ──
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "0") };
+        fixer_props_v2(Some("0"));
         let td = tempfile::tempdir().unwrap();
         let herite = SubstrateStore::create(td.path().join("kb")).unwrap();
         assert!(
@@ -39022,7 +41423,7 @@ mod tests {
         let av = sonder(&herite);
         drop(herite);
         // SAFETY: idem.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
 
         // ── régime v2 RÉELLEMENT MIGRÉ ──
         let (_td2, migre) = base_v2_sans_dashmap(peupler);
@@ -39336,7 +41737,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -39394,7 +41795,7 @@ mod tests {
     fn une_carte_qui_deborde_la_page_de_tas_survit_a_la_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         use obrain_core::graph::traits::GraphStore;
 
         let carte = carte_de_test(150);
@@ -39455,7 +41856,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── (2026-08-20) UNE VALEUR BLOB MASQUAIT TOUTE RÉÉCRITURE PLUS
@@ -39479,7 +41880,7 @@ mod tests {
     fn une_valeur_blob_ne_masque_pas_une_reecriture_plus_courte() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         use obrain_core::graph::traits::GraphStore;
 
         let td = tempfile::tempdir().unwrap();
@@ -39529,7 +41930,7 @@ mod tests {
         );
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     /// ── (2026-08-20) `REMOVE n.body` LAISSAIT LE TEXTE LISIBLE ──────────
@@ -39826,7 +42227,7 @@ mod tests {
     fn aucune_variante_a_repli_bincode_ne_se_perd_a_la_reouverture() {
         let _guard = props_v2_env_lock();
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::set_var("OBRAIN_PROPS_V2", "1") };
+        fixer_props_v2(Some("1"));
         use obrain_core::graph::traits::GraphStore;
         use std::sync::Arc;
 
@@ -39950,7 +42351,7 @@ mod tests {
         }
 
         // SAFETY: sérialisé par `props_v2_env_lock`.
-        unsafe { std::env::remove_var("OBRAIN_PROPS_V2") };
+        fixer_props_v2(None);
     }
 
     // -------------------------------------------------------------------
