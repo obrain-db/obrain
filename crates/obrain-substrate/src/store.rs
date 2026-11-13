@@ -19358,6 +19358,68 @@ impl SubstrateStore {
     }
 }
 
+impl SubstrateStore {
+    /// Le balayage de `nodes_by_label_capped` SANS l'index de labels : l'oracle
+    /// des tests d'exactitude de l'index, et le « avant » des mesures. Même
+    /// code que le chemin de repli.
+    #[doc(hidden)]
+    pub fn nodes_by_label_balayage(&self, label: &str) -> Vec<NodeId> {
+        let Some(bit) = self.labels.read().bit_for(label) else {
+            return Vec::new();
+        };
+        let hw = self.next_node_id.load(Ordering::Acquire);
+        self.balayer_label(bit, hw, self.portee_tenant(), usize::MAX)
+    }
+
+    /// Diagnostic de l'index de labels (actif, construit, constructions…).
+    #[doc(hidden)]
+    pub fn diagnostic_index_labels(&self) -> crate::index_labels::DiagnosticIndexLabels {
+        self.writer.diagnostic_index_labels()
+    }
+
+    fn balayer_label(&self, bit: u8, hw: u32, portee: Option<u32>, max: usize) -> Vec<NodeId> {
+        let mask = 1u64 << bit;
+        let mut out: Vec<NodeId> = Vec::new();
+        // Cap the Vec allocation when max is small (avoids over-reserve for
+        // small LIMITs while letting the default uncapped path grow as needed).
+        if max < 4096 {
+            out.reserve(max);
+        }
+        // (2026-08-07) UN SEUL verrou de zone pour tout le scan.
+        //
+        // Cette boucle appelait `writer.read_node(slot)`, qui reprend le
+        // verrou à CHAQUE slot : 216 000 acquisitions pour un seul
+        // `MATCH (n:X)` sur la base `agent`. Mesuré avant correctif : 458 ms
+        // pour 10 000 slots (~46 µs par nœud, pour 32 octets déjà mappés en
+        // mémoire), soit une dizaine de secondes pour un scan complet.
+        //
+        // `for_each_node_record` prend le verrou une fois et lit la zone
+        // directement. La sémantique est identique — mêmes slots, même ordre,
+        // mêmes filtres vivacité (ALLOCATED + tombstone, jalon 1)/label,
+        // même arrêt à `max`.
+        //
+        // (2026-08-24) INTERRUPTIBLE, même raisonnement que `node_ids` : le
+        // résultat partiel est rattrapé par le contrôle que le moteur refait
+        // juste après l'appel (jeton monotone).
+        // (jalon 3) Vivacite + tenant + label, dans LA meme boucle ; le
+        // plafond compte apres le predicat complet (pas de sous-livraison).
+        let _ = self.writer.for_each_node_record_annulable(hw, |slot, rec| {
+            if !rec.est_visible_pour(portee) {
+                return true;
+            }
+            if rec.label_bitset & mask != 0 {
+                out.push(NodeId(slot as u64));
+                if out.len() >= max {
+                    return false;
+                }
+            }
+            true
+        });
+        // Already sorted by construction.
+        out
+    }
+}
+
 impl GraphStore for SubstrateStore {
     // --- Aretes inter-bases (V1) ---
 
@@ -21168,49 +21230,19 @@ impl GraphStore for SubstrateStore {
         let Some(bit) = reg.bit_for(label) else {
             return Vec::new();
         };
-        let mask = 1u64 << bit;
         drop(reg);
 
+        // (obrain#120 pt 5) INDEX DE LABELS : O(porteurs) au lieu de O(slots).
+        // Même prédicat, même borne, même ordre, même plafond que le balayage
+        // (`balayer_label`) — l'index ne fait que désigner les slots à relire (voir
+        // `crate::index_labels`). `None` : index inactif (lecture seule,
+        // écriture partagée) ou indisponible, et l'on balaie.
         let hw = self.next_node_id.load(Ordering::Acquire);
-        let mut out: Vec<NodeId> = Vec::new();
-        // Cap the Vec allocation when max is small (avoids over-reserve for
-        // small LIMITs while letting the default uncapped path grow as needed).
-        if max < 4096 {
-            out.reserve(max);
-        }
-        // (2026-08-07) UN SEUL verrou de zone pour tout le scan.
-        //
-        // Cette boucle appelait `writer.read_node(slot)`, qui reprend le
-        // verrou à CHAQUE slot : 216 000 acquisitions pour un seul
-        // `MATCH (n:X)` sur la base `agent`. Mesuré avant correctif : 458 ms
-        // pour 10 000 slots (~46 µs par nœud, pour 32 octets déjà mappés en
-        // mémoire), soit une dizaine de secondes pour un scan complet.
-        //
-        // `for_each_node_record` prend le verrou une fois et lit la zone
-        // directement. La sémantique est identique — mêmes slots, même ordre,
-        // mêmes filtres vivacité (ALLOCATED + tombstone, jalon 1)/label,
-        // même arrêt à `max`.
-        //
-        // (2026-08-24) INTERRUPTIBLE, même raisonnement que `node_ids` : le
-        // résultat partiel est rattrapé par le contrôle que le moteur refait
-        // juste après l'appel (jeton monotone).
-        // (jalon 3) Vivacite + tenant + label, dans LA meme boucle ; le
-        // plafond compte apres le predicat complet (pas de sous-livraison).
         let portee = self.portee_tenant();
-        let _ = self.writer.for_each_node_record_annulable(hw, |slot, rec| {
-            if !rec.est_visible_pour(portee) {
-                return true;
-            }
-            if rec.label_bitset & mask != 0 {
-                out.push(NodeId(slot as u64));
-                if out.len() >= max {
-                    return false;
-                }
-            }
-            true
-        });
-        // Already sorted by construction.
-        out
+        if let Some(slots) = self.writer.noeuds_par_label_indexes(bit, hw, portee, max) {
+            return slots.into_iter().map(|s| NodeId(u64::from(s))).collect();
+        }
+        self.balayer_label(bit, hw, portee, max)
     }
 
     fn node_count(&self) -> usize {
