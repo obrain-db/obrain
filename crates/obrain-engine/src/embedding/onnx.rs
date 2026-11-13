@@ -62,7 +62,7 @@ impl OnnxEmbeddingModel {
     ) -> Result<Self> {
         let resolved = super::download::resolve(&config)?;
 
-        let mut session = Session::builder(ort_environnement()?)
+        let mut session = Session::builder()
             .map_err(|e| Error::Internal(format!("Failed to create ONNX session builder: {e}")))?
             .with_inter_threads(options.inter_threads)
             .map_err(|e| Error::Internal(format!("Failed to set inter threads: {e}")))?
@@ -103,7 +103,7 @@ impl OnnxEmbeddingModel {
         model_path: impl AsRef<Path>,
         tokenizer_path: impl AsRef<Path>,
     ) -> Result<Self> {
-        let mut session = Session::builder(ort_environnement()?)
+        let mut session = Session::builder()
             .map_err(|e| Error::Internal(format!("Failed to create ONNX session builder: {e}")))?
             .with_inter_threads(1)
             .map_err(|e| Error::Internal(format!("Failed to set inter threads: {e}")))?
@@ -356,17 +356,4 @@ mod tests {
         assert_eq!(vectors[0].len(), 384);
         assert!(vectors[0].iter().any(|x| *x != 0.0));
     }
-}
-
-/// Environnement ONNX (ort rc.15 : `Session::builder` prend désormais un `&Environment`).
-/// Créé une seule fois par processus, comme l'exige la bibliothèque.
-fn ort_environnement() -> Result<&'static ort::environment::Environment> {
-    static ENV: std::sync::OnceLock<ort::environment::Environment> = std::sync::OnceLock::new();
-    if let Some(env) = ENV.get() {
-        return Ok(env);
-    }
-    let env = ort::environment::init()
-        .build()
-        .map_err(|e| Error::Internal(format!("Failed to create ONNX environment: {e}")))?;
-    Ok(ENV.get_or_init(|| env))
 }
