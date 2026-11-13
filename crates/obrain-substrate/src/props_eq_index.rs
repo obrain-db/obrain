@@ -273,6 +273,9 @@ pub struct PropsEqIndexZone {
     /// `true` pour une zone de version courante (clé canonique), `false`
     /// pour une zone HÉRITÉE (version 1) : voir [`EQ_VERSION_HERITEE`].
     canonique: bool,
+    /// Octets écrits sur disque par cette zone depuis son ouverture (fusions
+    /// et adoptions d'ancres) — pour mesurer ce qu'une opération réécrit.
+    octets_ecrits: u64,
     /// `false` tant que les ancres n'ont pas été confrontées à l'état
     /// courant, ou dès qu'elles ont divergé. **Tant que ce champ est faux,
     /// l'index ne répond pas.**
@@ -304,6 +307,7 @@ impl PropsEqIndexZone {
             racine: EnteteRacine::default(),
             series: Vec::new(),
             canonique: true,
+            octets_ecrits: 0,
             fiable: false,
         };
         if !chemin.exists() {
@@ -361,6 +365,7 @@ impl PropsEqIndexZone {
             racine,
             series,
             canonique: racine.version == EQ_VERSION,
+            octets_ecrits: 0,
             fiable: false, // confronté aux ancres par `confronter_ancres`
         }
     }
@@ -398,6 +403,12 @@ impl PropsEqIndexZone {
     #[must_use]
     pub fn canonique(&self) -> bool {
         self.canonique
+    }
+
+    /// Octets écrits sur disque par cette zone depuis son ouverture.
+    #[must_use]
+    pub fn octets_ecrits(&self) -> u64 {
+        self.octets_ecrits
     }
 
     /// ── ADOPTION D'ANCRES : LA FENÊTRE POST-FUSION ÉTAIT SANS EFFET ──────
@@ -459,6 +470,7 @@ impl PropsEqIndexZone {
         if let Some(z) = self.zone.as_ref() {
             match z.ecrire_a(0, &racine) {
                 Ok(()) => {
+                    self.octets_ecrits += racine.len() as u64;
                     // Même ordre que `fusionner` : les pages modifiées d'abord
                     // (`msync`), puis le descripteur (`fsync`). L'écriture passe
                     // par `write_all_at`, donc le mmap du fichier doit être
@@ -973,6 +985,7 @@ impl PropsEqIndexZone {
             }
             f.sync_all()?; // les octets AVANT le rename.
         }
+        self.octets_ecrits += ((1 + pages.len()) * PAGE_SIZE) as u64;
         // La zone doit être relâchée avant que le `rename` ne remplace le
         // fichier sous sa projection.
         self.zone = None;
