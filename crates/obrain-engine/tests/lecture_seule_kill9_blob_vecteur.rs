@@ -31,18 +31,19 @@
 //! l'écarte pas, choix fait quand ses zones étaient partagées. Elles sont
 //! privées depuis #115 : il l'écarte désormais lui aussi.
 //!
-//! CAUSE DU VECTEUR (NON corrigée ici, limite verrouillée) : le WAL ne porte
-//! qu'un marqueur `VecColumnWrite` (entité, slot, clé), PAS le vecteur. La
-//! colonne (`substrate.veccol.*`) reçoit les octets dans son mmap, mais son
-//! en-tête (`n_slots`, CRC) n'est réécrit qu'au `sync` d'un flush complet, et la
-//! spec de la colonne n'entre dans le dictionnaire qu'à ce flush. Mesuré après
-//! le kill : base neuve, les 39 vecteurs sont dans le fichier, l'en-tête est nul
-//! (magic 0, `n_slots` 0) et `substrate.dict` n'existe pas ; base flushée à 100
-//! nœuds, l'en-tête dit toujours `n_slots = 101`. Tout slot au-delà se relit
-//! absent, par le lecteur comme par l'écrivain. Corriger demande de journaliser
-//! le vecteur (nouvelle trame, ~4 o × dimension par écriture, y compris sur le
-//! chemin en lot `ecrire_vecteurs_en_lot`) : changement de format et coût
-//! d'écriture à mesurer, hors de cette PR.
+//! CAUSE DU VECTEUR (corrigée, obrain#120) : le WAL ne portait qu'un marqueur
+//! `VecColumnWrite` (entité, slot, clé), PAS le vecteur. La colonne
+//! (`substrate.veccol.*`) recevait les octets dans son mmap, mais son en-tête
+//! (`n_slots`, CRC) n'est réécrit qu'au `sync` d'un flush complet, et la spec de
+//! la colonne n'entre dans le dictionnaire qu'à ce flush. Mesuré après le kill,
+//! avant correction : base neuve, les 39 vecteurs sont dans le fichier,
+//! l'en-tête est nul (magic 0, `n_slots` 0) et `substrate.dict` n'existe pas ;
+//! base flushée à 100 nœuds, l'en-tête dit toujours `n_slots = 101`. Tout slot
+//! au-delà se relisait absent : 0/39 et 100/139, par le lecteur comme par
+//! l'écrivain. Correction : la trame `VecColumnSet` (0x2B) porte le vecteur,
+//! rejouée par `merge_wal_inline_props` comme `BlobColumnWrite` (écrivain
+//! exclusif, et lecteur dans ses zones privées), chemin unitaire et chemin en
+//! lot (`ecrire_vecteurs_en_lot`).
 //!
 //! Oracle : le lecteur voit EXACTEMENT les nœuds acquittés (plus, au plus, le
 //! nœud en vol dont le commit a pu aboutir sans que l'acquittement ait été
@@ -269,8 +270,8 @@ fn bilan(db: &ObrainDB) -> Bilan {
 /// L'oracle. `flushes` nœuds fermés proprement, puis `acks` acquittés par
 /// l'écrivain tué : la base porte exactement `flushes + acks` nœuds (plus au
 /// plus le nœud en vol, qui doit alors être exact lui aussi), chacun avec SA
-/// valeur longue, rien de faux. Vecteurs : ceux des nœuds flushés exacts,
-/// ceux de la fenêtre tuée ABSENTS (limite verrouillée, voir l'en-tête).
+/// valeur longue ET son vecteur exacts, rien de faux (obrain#120 : les
+/// vecteurs de la fenêtre tuée sont rejoués depuis le WAL, voir l'en-tête).
 fn verifier(qui: &str, b: &Bilan, flushes: usize, acks: usize) {
     assert!(
         b.faux.is_empty(),
@@ -294,12 +295,9 @@ fn verifier(qui: &str, b: &Bilan, flushes: usize, acks: usize) {
     );
     assert_eq!(
         b.ks_vec,
-        (0..flushes).collect::<Vec<_>>(),
-        "LIMITE verrouillée (vecteur hors WAL) — {qui} : attendu les {flushes} vecteurs flushés \
-         exacts et les {} de la fenêtre tuée absents ; relu {}/{vus} exacts, {} absents. Si \
-         les vecteurs de la fenêtre tuée sont désormais relus, la limite est levée : mettre à \
-         jour ce test et `docs/LIMITES-v0.0.1.md`. — {b:?}",
-        vus - flushes,
+        (0..vus).collect::<Vec<_>>(),
+        "obrain#120 {qui} après kill -9 : {flushes} flushés + {acks} acquittés ; vecteurs \
+         {}/{vus} exacts, {} absents (vecteur hors WAL ?) — {b:?}",
         b.vecs_exacts,
         b.vecs_absents
     );
@@ -406,8 +404,8 @@ fn sur_une_base_flushee_lecteur_seul_et_ecrivain_rouvrant_voient_la_meme_chose_a
 /// TÉMOIN (sans kill) : les mêmes écritures sont relues exactes, vecteurs
 /// compris, par l'écrivain vivant, puis après un `close()` propre par un
 /// lecteur seul et par un écrivain. Valide l'écriture (littéral `vector(...)`,
-/// valeur longue) et la lecture du bilan : la perte des vecteurs mesurée plus
-/// haut tient au kill, pas au test.
+/// valeur longue) et la lecture du bilan : une perte de vecteurs mesurée plus
+/// haut tiendrait au kill, pas au test.
 #[test]
 fn temoin_sans_kill_les_memes_ecritures_sont_relues_exactes() {
     if std::env::var(ENV_ENFANT).is_ok() {

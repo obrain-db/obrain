@@ -158,8 +158,8 @@ const TAILLE_BLOC_ALLOCATION: u64 = 256;
 const VALID_KINDS: &[u8] = &[
     // (jalon 2) 0x04/0x05 = NodeInsertV3/NodeUpdateV3 (trames tenant).
     0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
-    0x26, 0x27, 0x29, 0x2A, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x50,
-    0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
+    0x26, 0x27, 0x29, 0x2A, 0x2B, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
+    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
 ];
 
 /// Borne de plausibilité d'une trame pour les scans RÉSYNCHRONISANTS du WAL
@@ -6508,6 +6508,10 @@ impl SubstrateStore {
                 );
                 continue;
             }
+            // (obrain#120) Le vecteur au WAL, APRÈS la colonne, comme le chemin
+            // unitaire (`journaliser_vecteur`) : sans trame, un vecteur écrit
+            // par lot puis acquitté était perdu au `kill -9` avant flush.
+            self.journaliser_vecteur(EntityKind::Node, id.0 as u32, key, v);
             ecrites += 1;
         }
         ecrites
@@ -6744,6 +6748,9 @@ impl SubstrateStore {
             !sub.est_ecriture_partagee() || sub.est_lecture_seule()
         };
         let mut blobs_rejoues = 0u64;
+        // (obrain#120) Trames `VecColumnSet` rejouées — même règle que les
+        // blobs (`rejouer_blobs`).
+        let mut vecteurs_rejoues = 0u64;
         // RELEVE DES COMPTEURS (2026-07-25, 2e verrou trouve par la preuve
         // kill -9 en production) : next_node_id / next_edge_id vivent dans
         // le dict, persiste au flush SEULEMENT. Apres un kill, la session
@@ -6893,6 +6900,29 @@ impl SubstrateStore {
                         blobs_rejoues += 1;
                     }
                 }
+                // (obrain#120) Vecteurs : même règle que les colonnes blob
+                // (fenêtre post-flush, ordre du WAL, écrivain exclusif ou
+                // lecteur dans ses zones privées ; un écrivain partagé laisse
+                // la colonne à ses pairs vivants).
+                WalPayload::VecColumnSet {
+                    entity_kind,
+                    slot,
+                    ref key,
+                    ref vector,
+                } => {
+                    if entity_kind == EntityKind::Node as u8 {
+                        max_node_slot = max_node_slot.max(slot);
+                    }
+                    if dans_fenetre && rejouer_blobs {
+                        let ek = if entity_kind == EntityKind::Node as u8 {
+                            EntityKind::Node
+                        } else {
+                            EntityKind::Edge
+                        };
+                        self.rejouer_vecteur(ek, slot, key, vector);
+                        vecteurs_rejoues += 1;
+                    }
+                }
                 WalPayload::NodeInsert { node_id, .. }
                 | WalPayload::NodeUpdate { node_id, .. }
                 | WalPayload::NodeInsertV3 { node_id, .. }
@@ -6957,12 +6987,13 @@ impl SubstrateStore {
             self.next_edge_id
                 .fetch_max(max_edge_id + 1, Ordering::AcqRel);
         }
-        if set + removed + edge_set + blobs_rejoues > 0 || skipped_bytes > 0 {
+        if set + removed + edge_set + blobs_rejoues + vecteurs_rejoues > 0 || skipped_bytes > 0 {
             tracing::info!(
                 set,
                 removed,
                 edge_set,
                 blobs_rejoues,
+                vecteurs_rejoues,
                 skipped_bytes,
                 "wal inline props merged over snapshot (garantie memoire :                  les ecritures depuis le dernier flush ont survecu)"
             );
@@ -16245,44 +16276,12 @@ impl SubstrateStore {
         // legitimement deux ecritures concurrentes sur la meme colonne.
         let pk = PropertyKey::new(key);
 
-        // 1. Identifiant de clef : lecture d'abord, ecriture seulement sur defaut.
-        //    L'id vient de la table partagee (Phase B, piece 3) : deux ecrivains qui
-        //    posent deux cles differentes recoivent deux identifiants.
-        let prop_key_id = match self.prop_keys.read().lookup(key) {
-            Some(id) => id,
-            None => {
-                let global = match self.interne_global(crate::registres_partages::Espace::Cles, key)
-                {
-                    Ok(g) => g,
-                    Err(e) => {
-                        tracing::error!(
-                            target: "substrate::vec_columns",
-                            "registres partages : intern({key:?}) a echoue : {e} — \
-                             abandon de l'ecriture Value::Vector"
-                        );
-                        return;
-                    }
-                };
-                let mut reg = self.prop_keys.write();
-                match self.inscrire_avec_global(
-                    global,
-                    |i| reg.interner_a(key, i),
-                    |g| u16::try_from(g).ok(),
-                ) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        tracing::error!(
-                            target: "substrate::vec_columns",
-                            "prop_keys.intern({key:?}) failed: {e} — dropping Value::Vector write"
-                        );
-                        return;
-                    }
-                }
-            }
+        // 1. Identifiant de clef (lecture d'abord) : voir `resoudre_cle_vecteur`.
+        let Some(prop_key_id) = self.resoudre_cle_vecteur(key) else {
+            return;
         };
 
-        // 2. Chemin rapide : colonne deja creee, aucun besoin du fichier substrat.
-        // (O-VEC C3) MARQUEUR WAL, AVANT la colonne. Le vecteur ne va pas
+        // 2. (O-VEC C3) MARQUEUR WAL, AVANT la colonne. Le vecteur ne va pas
         // dans le WAL ; sans cette trame, réécrire le vecteur d'un nœud
         // existant ne déplaçait pas l'offset, et l'empreinte d'un index
         // vectoriel persisté (offset + nœuds vivants) validait un index
@@ -16307,9 +16306,73 @@ impl SubstrateStore {
             self.ecritures_vectorielles_noeuds
                 .fetch_add(1, Ordering::AcqRel);
         }
+        // 3. Colonne (chemin rapide ou création), PUIS le vecteur au WAL
+        //    (obrain#120) — voir `journaliser_vecteur` pour l'ordre.
+        if self.ecrire_vecteur_colonne(entity_kind, slot, key, &pk, prop_key_id, vector) {
+            self.journaliser_vecteur(entity_kind, slot, key, vector);
+        }
+    }
+
+    /// (obrain#120) Identifiant de la clé d'un vecteur : lecture du registre
+    /// d'abord, internement (table partagée, Phase B pièce 3) seulement sur
+    /// défaut. `None` (après `error!`) si l'internement échoue : l'écriture
+    /// est abandonnée. Partagé par le setter et par le rejeu de
+    /// `VecColumnSet`.
+    fn resoudre_cle_vecteur(&self, key: &str) -> Option<u16> {
+        // 1. Identifiant de clef : lecture d'abord, ecriture seulement sur defaut.
+        //    L'id vient de la table partagee (Phase B, piece 3) : deux ecrivains qui
+        //    posent deux cles differentes recoivent deux identifiants.
+        match self.prop_keys.read().lookup(key) {
+            Some(id) => Some(id),
+            None => {
+                let global = match self.interne_global(crate::registres_partages::Espace::Cles, key)
+                {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::error!(
+                            target: "substrate::vec_columns",
+                            "registres partages : intern({key:?}) a echoue : {e} — \
+                             abandon de l'ecriture Value::Vector"
+                        );
+                        return None;
+                    }
+                };
+                let mut reg = self.prop_keys.write();
+                match self.inscrire_avec_global(
+                    global,
+                    |i| reg.interner_a(key, i),
+                    |g| u16::try_from(g).ok(),
+                ) {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        tracing::error!(
+                            target: "substrate::vec_columns",
+                            "prop_keys.intern({key:?}) failed: {e} — dropping Value::Vector write"
+                        );
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    /// Corps de l'écriture en colonne de vecteurs, sans trame WAL : partagé
+    /// par le setter (qui journalise ensuite) et par le rejeu de
+    /// `VecColumnSet` (qui ne doit rien re-journaliser). Rend `true` si le
+    /// vecteur est dans la colonne.
+    fn ecrire_vecteur_colonne(
+        &self,
+        entity_kind: EntityKind,
+        slot: u32,
+        key: &str,
+        pk: &PropertyKey,
+        prop_key_id: u16,
+        vector: &[f32],
+    ) -> bool {
+        // Chemin rapide : colonne deja creee, aucun besoin du fichier substrat.
         if let Some(res) =
             self.vec_columns
-                .write_existing(&pk, entity_kind, prop_key_id, slot, vector)
+                .write_existing(pk, entity_kind, prop_key_id, slot, vector)
         {
             if let Err(e) = res {
                 tracing::error!(
@@ -16318,16 +16381,17 @@ impl SubstrateStore {
                      slot={slot}, dim={}) failed: {e} — dropping Value::Vector write",
                     vector.len()
                 );
+                return false;
             }
-            return;
+            return true;
         }
 
-        // 3. Chemin lent : premiere ecriture de cette colonne (ou spec divergente,
-        //    ou vecteur invalide). C'est le seul cas qui exige le verrou global.
+        // Chemin lent : premiere ecriture de cette colonne (ou spec divergente,
+        // ou vecteur invalide). C'est le seul cas qui exige le verrou global.
         let sub = self.substrate.lock();
         if let Err(e) = self
             .vec_columns
-            .write(&sub, &pk, entity_kind, prop_key_id, slot, vector)
+            .write(&sub, pk, entity_kind, prop_key_id, slot, vector)
         {
             tracing::error!(
                 target: "substrate::vec_columns",
@@ -16335,7 +16399,71 @@ impl SubstrateStore {
                  slot={slot}, dim={}) failed: {e} — dropping Value::Vector write",
                 vector.len()
             );
+            return false;
         }
+        true
+    }
+
+    /// (obrain#120) Journalise le VECTEUR écrit (trame `VecColumnSet`), APRÈS
+    /// l'écriture en colonne — même ordre, et même raison, que
+    /// `route_blob_write` : `flush()` capture l'offset WAL AVANT
+    /// `vec_columns.sync_all()`. Trame d'abord, un flush qui capturerait
+    /// l'offset entre la trame et la colonne laisserait la trame HORS fenêtre
+    /// et le vecteur hors du `sync`. Colonne d'abord : ou l'offset est pris
+    /// après la trame (la colonne, écrite avant, est dans le `sync`), ou avant
+    /// (la trame est dans la fenêtre, et le rejeu est idempotent). Un crash
+    /// entre les deux perd une écriture NON acquittée : le commit qui
+    /// l'acquitte fsync le WAL après cette trame.
+    ///
+    /// Sans cette trame, un vecteur acquitté disparaissait au `kill -9` avant
+    /// flush : l'en-tête de colonne (`n_slots`, CRC) et la spec au
+    /// dictionnaire ne deviennent durables qu'au flush (0/39 mesuré sur base
+    /// neuve, `lecture_seule_kill9_blob_vecteur.rs`).
+    ///
+    /// Contrat best-effort de `PropSetInline` / `BlobColumnWrite` : un échec
+    /// d'append ne perd pas l'écriture en colonne, il retire la garantie de
+    /// survie au crash pour CE vecteur, et le dit. Même plafond que les blobs
+    /// ([`BLOB_WAL_MAX_BYTES`]) pour que toute trame journalisée reste
+    /// rejouable par le scan résynchronisant.
+    fn journaliser_vecteur(&self, entity_kind: EntityKind, slot: u32, key: &str, vector: &[f32]) {
+        let octets = std::mem::size_of_val(vector);
+        if octets > BLOB_WAL_MAX_BYTES {
+            tracing::error!(
+                target: "substrate::vec_columns",
+                "vecteur de {octets} o > plafond WAL {BLOB_WAL_MAX_BYTES} o (key={key:?}, \
+                 ek={entity_kind:?}, slot={slot}) : NON journalise — il ne survivra pas a \
+                 un kill avant le prochain flush"
+            );
+            return;
+        }
+        if let Err(e) = self
+            .writer
+            .append_payload(crate::wal::WalPayload::VecColumnSet {
+                entity_kind: entity_kind as u8,
+                slot,
+                key: key.to_string(),
+                vector: vector.to_vec(),
+            })
+        {
+            tracing::error!(
+                target: "substrate::vec_columns",
+                "VecColumnSet non journalise (key={key:?}, ek={entity_kind:?}, \
+                 slot={slot}, dim={}) : {e} — le vecteur ne survivra pas a un kill \
+                 avant le prochain flush",
+                vector.len()
+            );
+        }
+    }
+
+    /// (obrain#120) Rejeu d'une trame `VecColumnSet` : résout la clé, écrit
+    /// la colonne, sans re-journaliser. Appelé par `merge_wal_inline_props`
+    /// (écrivain exclusif, ou lecteur dans ses zones privées).
+    fn rejouer_vecteur(&self, entity_kind: EntityKind, slot: u32, key: &str, vector: &[f32]) {
+        let Some(prop_key_id) = self.resoudre_cle_vecteur(key) else {
+            return;
+        };
+        let pk = PropertyKey::new(key);
+        self.ecrire_vecteur_colonne(entity_kind, slot, key, &pk, prop_key_id, vector);
     }
 
     /// Interior helper: route an oversized `Value::String` or
@@ -36157,6 +36285,73 @@ mod tests {
     fn le_lot_vide_ne_fait_rien() {
         let store = SubstrateStore::open_tempfile().unwrap();
         assert_eq!(store.ecrire_vecteurs_en_lot("v", &[]), 0);
+    }
+
+    /// (obrain#120) Les vecteurs écrits APRÈS le dernier flush — par lot
+    /// (`ecrire_vecteurs_en_lot`, chemin rapide qui écrit la colonne sans
+    /// passer par le setter), par le setter unitaire (réécriture d'un vecteur
+    /// flushé), et sur une ARÊTE — survivent à un kill sans flush : trame
+    /// `VecColumnSet` rejouée par l'écrivain qui rouvre et par un lecteur
+    /// `open_read_only`. Avant la trame, l'en-tête de colonne resté à
+    /// `n_slots` du flush les rendait absents (ou l'ancienne valeur pour la
+    /// réécriture).
+    #[test]
+    fn les_vecteurs_post_flush_survivent_au_kill_lot_unitaire_et_arete() {
+        use crate::wal_io::SyncMode;
+        const DIM: usize = 24;
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("kb");
+        let (ids, arete) = {
+            let s = SubstrateStore::create_with_mode(&path, SyncMode::Group).unwrap();
+            let ids: Vec<NodeId> = (0..30).map(|_| s.create_node(&["N"])).collect();
+            let arete = s.create_edge(ids[0], ids[1], "T");
+            // Colonne créée et rendue durable par un flush (nœud 0 seul).
+            s.set_node_property(ids[0], "v", Value::Vector(vecteur_test(0, DIM)));
+            s.fsync_wal().unwrap();
+            s.flush().unwrap();
+            // Fenêtre post-flush : 29 vecteurs par lot (chemin rapide)…
+            let entrees: Vec<(NodeId, std::sync::Arc<[f32]>)> = ids
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(k, id)| (*id, vecteur_test(k as u32, DIM)))
+                .collect();
+            assert_eq!(s.ecrire_vecteurs_en_lot("v", &entrees), 29);
+            // … la RÉÉCRITURE unitaire du vecteur flushé…
+            s.set_node_property(ids[0], "v", Value::Vector(vecteur_test(1000, DIM)));
+            // … et un vecteur d'arête, colonne jamais flushée.
+            s.set_edge_property(arete, "ve", Value::Vector(vecteur_test(7, 3)));
+            s.fsync_wal().unwrap();
+            s.deverrouiller_pour_simuler_un_kill();
+            std::mem::forget(s);
+            (ids, arete)
+        };
+        let verifier = |qui: &str, st: &SubstrateStore| {
+            let cle = PropertyKey::new("v");
+            for (k, id) in ids.iter().enumerate() {
+                let graine = if k == 0 { 1000 } else { k as u32 };
+                match st.get_node_property(*id, &cle) {
+                    Some(Value::Vector(v)) => assert_eq!(
+                        &v[..],
+                        &vecteur_test(graine, DIM)[..],
+                        "{qui} : nœud {k}, vecteur faux"
+                    ),
+                    autre => panic!("{qui} : nœud {k}, vecteur absent ({autre:?})"),
+                }
+            }
+            match st.get_edge_property(arete, &PropertyKey::new("ve")) {
+                Some(Value::Vector(v)) => {
+                    assert_eq!(&v[..], &vecteur_test(7, 3)[..], "{qui} : arête")
+                }
+                autre => panic!("{qui} : vecteur d'arête absent ({autre:?})"),
+            }
+        };
+        {
+            let lecteur = SubstrateStore::open_read_only(&path).unwrap();
+            verifier("lecteur seul", &lecteur);
+        }
+        let ecrivain = SubstrateStore::open(&path).unwrap();
+        verifier("écrivain rouvrant", &ecrivain);
     }
 
     #[test]

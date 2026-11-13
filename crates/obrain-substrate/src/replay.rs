@@ -1815,6 +1815,9 @@ fn apply(
         WalPayload::BlobColumnWrite { .. } | WalPayload::BlobColumnClear { .. } => {
             Ok(Applied::Skipped)
         }
+        // (obrain#120) Le vecteur journalisé est rejoué, comme les blobs, par
+        // `SubstrateStore::merge_wal_inline_props` (registre des colonnes).
+        WalPayload::VecColumnSet { .. } => Ok(Applied::Skipped),
 
         WalPayload::RicciUpdate { .. }
         | WalPayload::Tier0Update { .. }
