@@ -26,13 +26,144 @@ cargo bench -p obrain-engine    --bench query_bench        # requêtes GQL élé
 cargo bench -p obrain-engine    --bench phase_a_write_goulot  # chemin d'écriture, commit scellé (D-DUR)
 ```
 
-## Chiffres — `main` e11bdd2a, machine `m4max`, 2026-11-01 15:22–15:29
+## Chiffres — `main` a24632c5, machine `m4max`, 2026-11-13 14:27–14:32
 
-Criterion, `--warm-up-time 1 --measurement-time 5`, profil release. **Charge
-machine pendant la mesure : 3 à 9** (d'autres compilations tournaient) — ces
-chiffres sont donc **provisoires** : bons pour l'ordre de grandeur et la
-non-régression relative, pas pour une plaquette. Les chiffres de référence
-définitifs seront repris à charge < 2.
+Criterion, `--warm-up-time 1 --measurement-time 5`, profil release, une
+mesure à la fois via le gouverneur de ressources (`gate.sh exec`), dans un
+worktree propre à la tête de `origin/main`. **Charge machine (moyenne 1 min,
+`uptime` avant / pendant / après) : 2,31 à 5,40** — au-dessus du seuil de 2,
+ces chiffres restent donc **provisoires**. Ils remplacent ceux de e11bdd2a
+(charge 3 à 9, eux aussi provisoires) ; les chiffres définitifs seront repris
+à charge < 2.
+
+Colonnes « Médiane » et « Intervalle » : valeur centrale et bornes de la
+ligne `time: [basse centrale haute]` de Criterion (intervalle de confiance à
+95 % du temps par itération), comme pour la référence e11bdd2a. Sorties brutes
+non versionnées ; à reproduire avec les commandes ci-dessus.
+
+| Bench | Mesure | Médiane a24632c5 | Intervalle Criterion | e11bdd2a (réf.) | Charge début → fin (max pendant) |
+|---|---|---|---|---|---|
+| `tiered_scan_top10/single_thread/1000000` | retrieval vectoriel par paliers, top-10 sur 10⁶ nœuds, 1 thread | **836,8 µs** (1,195 Gelem/s) | 831,7 – 842,5 µs | 845 µs | 3,43 → 4,27 (5,40) |
+| `tiered_scan_top10/rayon_pool/1000000` | idem, pool rayon | **710,5 µs** (1,408 Gelem/s) | 707,1 – 714,2 µs | 743 µs | 3,43 → 4,27 (5,40) |
+| `wal_append_unitaire/seul_ecrivain` | un record WAL, un écrivain | 1,217 µs (822 Krec/s) | 1,179 – 1,258 µs | 1,22 µs | 4,27 → 4,39 |
+| `wal_append_batch/1024` | lot de 1 024 records | 78,2 µs (13,1 Mrec/s) | 76,4 – 80,7 µs | 77,4 µs | 4,27 → 4,39 |
+| `query_node_lookup_by_property` | `MATCH` par propriété (sans index, 1 000 `Person`) | **47,0 µs** | 46,85 – 47,17 µs | 379 µs (52,5 µs après C1) | 4,39 → 3,28 |
+| `query_1hop_pattern` | motif 1 saut | 49,2 µs | 49,09 – 49,31 µs | 386 µs | 4,39 → 3,28 |
+| `query_2hop_pattern` | motif 2 sauts | 56,3 µs | 56,17 – 56,37 µs | 392 µs | 4,39 → 3,28 |
+| `query_fan_out_expand_1k` | expansion à 1 000 voisins | 717,2 µs | 714,8 – 720,0 µs | 717 µs | 4,39 → 3,28 |
+| `query_count_all` | `MATCH (n) RETURN count(n)` | 1,236 µs | 1,232 – 1,241 µs | 1,28 µs | 4,39 → 3,28 |
+| `query_filter_range` | filtre par plage | 103,4 µs | 103,2 – 103,7 µs | 102 µs | 4,39 → 3,28 |
+| `query_insert_single_node` | `INSERT` d'un nœud, auto-commit, base en mémoire | 15,2 µs | 13,2 – 17,7 µs (6 % de valeurs aberrantes sévères) | 12,6 µs | 4,39 → 3,28 |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 4 sessions concurrentes, `EveryCommit` | **2,134 s** (coût durable, voir ci-dessous) | 2,052 – 2,243 s (10 échantillons) | 78,4 ms (commits non `fsync`és) | 3,28 → 2,31 |
+| `phase_a_write/writer_unique_group_commit/4` | écrivain unique, group commit | 79,2 ms | 78,4 – 80,0 ms | 74,8 ms | 3,28 → 2,31 |
+| `phase_a_write/seq_1_thread_group` | séquentiel, 1 thread, `Group` | 78,8 ms | 78,0 – 79,4 ms | 78,0 ms | 3,28 → 2,31 |
+
+Écarts notables par rapport à e11bdd2a (255 commits plus tard) :
+
+- `query_1hop_pattern` / `query_2hop_pattern` : ÷ 7,8 et ÷ 7,0, cohérent
+  avec le filtre sans hydratation (C1, ci-dessous) qui avait déjà ramené
+  `query_node_lookup_by_property` de 379 à 52,5 µs.
+- `phase_a_write/sessions_concurrentes_everycommit/4` : **2,13 s contre
+  78,4 ms** (× 27). Ce n'est pas une régression : les 78,4 ms de e11bdd2a
+  précèdent le commit scellé (D-DUR, PR #22, voir plus bas). À l'époque, un
+  commit acquitté n'était pas `fsync`é. Depuis, chaque commit l'est, et sous
+  macOS un `fsync` est un `F_FULLFSYNC` (3,56 s mesurés), ramené à
+  1,86 – 1,95 s par le `fsync` partagé du 2026-11-08. ~2 s est donc le coût
+  durable actuel sur `m4max`, à comparer à 1,86 – 1,95 s et non à 78,4 ms.
+  La seconde série ci-dessous (2,058 s) et la mesure en alternance sur la
+  même machine (section « Série au repos ») le confirment. Sous Linux
+  (ffs-n2), le même bench ne bouge pas à D-DUR.
+- Les autres mesures sont dans le bruit (≤ ± 6 %) ou légèrement meilleures
+  (`tiered_scan` rayon : − 4 %).
+
+### Seconde série indépendante — `main` a24632c5, `m4max`, 2026-11-13 14:28–14:38
+
+Même commande, même worktree, même gouverneur, benchs lancés l'un après
+l'autre. **Toutes les mesures sont provisoires** (charge 1 min > 2 à chaque
+mesure). Charge = `uptime` relevé juste avant et juste après chaque bench.
+
+| Bench | Médiane | Intervalle Criterion | e11bdd2a (réf.) | Charge début → fin |
+|---|---|---|---|---|
+| `tiered_scan_top10/single_thread/1000000` | 841,72 µs | 839,83 – 843,20 µs | 845 µs | 1,66 → 5,93 |
+| `tiered_scan_top10/rayon_pool/1000000` | 734,53 µs | 731,54 – 738,06 µs | 743 µs | 1,66 → 5,93 |
+| `wal_append_unitaire/seul_ecrivain` | 1,091 µs | 1,081 – 1,103 µs | 1,22 µs | 2,94 → 3,34 |
+| `wal_append_unitaire/partage_oappend` | 1,203 µs | 1,168 – 1,242 µs | — | 2,94 → 3,34 |
+| `wal_append_unitaire/partage_verrou` | 1,108 µs | 1,099 – 1,117 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/1` | 1,180 µs | 1,153 – 1,209 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/8` | 1,770 µs | 1,748 – 1,801 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/64` | 5,997 µs | 5,950 – 6,050 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/256` | 20,40 µs | 20,27 – 20,54 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/1024` | 76,54 µs | 76,20 – 76,91 µs | 77,4 µs | 2,94 → 3,34 |
+| `query_node_lookup_by_property` | 47,37 µs | 47,28 – 47,46 µs | 52,5 µs (après C1) | 2,81 → 2,27 |
+| `query_1hop_pattern` | 49,39 µs | 49,34 – 49,45 µs | 386 µs | 2,81 → 2,27 |
+| `query_2hop_pattern` | 56,67 µs | 56,45 – 56,97 µs | 392 µs | 2,81 → 2,27 |
+| `query_fan_out_expand_1k` | 724,5 µs | 723,4 – 725,9 µs | 717 µs | 2,81 → 2,27 |
+| `query_count_all` | 1,227 µs | 1,224 – 1,231 µs | 1,28 µs | 2,81 → 2,27 |
+| `query_filter_range` | 102,8 µs | 102,7 – 103,0 µs | 102 µs | 2,81 → 2,27 |
+| `query_insert_single_node` | 12,32 µs | 12,18 – 12,48 µs | 12,6 µs | 2,81 → 2,27 |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 2,058 s | 2,038 – 2,077 s | 78,4 ms (avant D-DUR) ; 1,86 – 1,95 s (fsync partagé) | 2,41 → 2,28 |
+| `phase_a_write/writer_unique_group_commit/4` | 71,79 ms | 68,93 – 77,06 ms | 74,8 ms | 2,41 → 2,28 |
+| `phase_a_write/seq_1_thread_group` | 67,32 ms | 65,97 – 68,60 ms | 78,0 ms | 2,41 → 2,28 |
+
+Ce qu'il faut savoir sur cette série :
+
+- `wal_append` : un premier passage (14:34:25 – 14:35:24, charge 2,06 → 2,71)
+  a été **écarté**, car un second `wal_append` tournait au même moment sur
+  un autre créneau du gouverneur (14:34:08 – 14:35:03). Seul le passage
+  14:37:43 – 14:38:36, sans aucun autre bench actif, figure ci-dessus.
+- `query_bench` (14:35:30 – 14:36:25) et `phase_a_write_goulot`
+  (14:36:30 – 14:37:12) ont tourné sans aucun autre bench actif.
+- `tiered_scan` (≈ 14:28) a tourné à peu près en même temps que la série
+  du dessus. Un chevauchement n'est pas exclu.
+- Entre les deux séries, les écarts dépassent le bruit sur
+  `writer_unique_group_commit/4` (71,8 contre 79,2 ms) et
+  `seq_1_thread_group` (67,3 contre 78,8 ms) : le chemin d'écriture groupé
+  varie de 10 à 15 % d'une série à l'autre sous cette charge. Sur toutes
+  les autres lignes, les deux séries s'accordent à quelques % près.
+
+### Série au repos — `sessions_concurrentes_everycommit/4`, ffs-n2 (Linux), 2026-11-13 16:18–16:31
+
+Seule série de ce document mesurée **sous le seuil de charge** : ffs-n2, 16
+cœurs, Linux, rustc système 1.93, Criterion par défaut, profil release. Chaque
+mesure attend qu'aucun job CI ne tourne sur la machine (runner `obrain-ci`) et
+que la charge 1 min soit < 1. Elle est déclarée invalide si un job démarre
+pendant la mesure (sondage toutes les 5 s : aucun cas). Deux passes, la seconde
+dans l'ordre inverse, pour détecter une dérive.
+
+| Commit | Passe 1 | Passe 2 | Charge (avant → après) |
+|---|---|---|---|
+| `06720e83` (parent de D-DUR) | 640,0 ms [629,7 ; 654,6] | 663,5 ms [638,0 ; 697,4] | 0,81 → 0,92 · 0,71 → 0,91 |
+| `a3ae7f3a` (D-DUR) | 630,2 ms [624,5 ; 635,9] | 640,0 ms [628,9 ; 652,8] | 0,92 → 1,09 · 0,94 → 1,18 |
+| `a24632c5` | 339,1 ms [326,8 ; 357,5] | 325,5 ms [323,4 ; 327,8] | 0,66 → 0,86 · 0,74 → 0,94 |
+| `9802e661` (`main`) | 327,9 ms [322,6 ; 335,8] | 324,3 ms [320,4 ; 328,9] | 0,86 → 1,05 · 0,63 → 0,74 |
+
+Lecture : sous Linux, le `fsync` par commit de D-DUR ne change pas ce bench
+(630 contre 640 ms), et `main` est deux fois plus rapide que la référence
+(le `fsync` partagé du 2026-11-08 se trouve entre `a3ae7f3a` et `a24632c5`).
+Le × 27 du tableau ci-dessus est donc propre à macOS, où un `fsync` est un
+`F_FULLFSYNC`.
+
+Même bench sur `m4max` (macOS), 2026-11-13 vers 16:35, commits mesurés en
+alternance par le gouverneur. **Provisoire** : charge 25 à 82, mesure
+interrompue après 4 points pour libérer la machine. Une mesure alternée reste
+comparable entre commits, puisque les trois tournent sous la même charge. Ses
+valeurs absolues, elles, ne valent rien.
+
+| Commit | Passe 1 | Passe 2 (ordre inverse) |
+|---|---|---|
+| `06720e83` (parent de D-DUR) | 116 ms [83 ; 157] | — |
+| `a3ae7f3a` (D-DUR) | 4,35 s [4,10 ; 4,59] | — |
+| `a24632c5` | 3,78 s [3,56 ; 3,96] | 3,37 s [2,92 ; 3,77] |
+
+Lecture : sur macOS, le saut tombe exactement sur D-DUR (× 37 sous cette
+charge), ce qui concorde avec la mesure dédiée plus bas (78,4 ms → 3,56 s,
+`F_FULLFSYNC` par commit). Le `fsync` partagé l'atténue ensuite. C'est le coût
+de la durabilité, pas une régression. Pour écrire vite sans le payer à chaque
+commit : transaction explicite (un seul `fsync`) ou `SyncMode::Group` avec
+`flush_wal()` par lot.
+
+<details>
+<summary>Ancienne référence — <code>main</code> e11bdd2a, 2026-11-01 15:22–15:29, charge 3 à 9 (provisoire)</summary>
 
 | Bench | Mesure | Valeur (médiane) | Charge |
 |---|---|---|---|
@@ -50,8 +181,10 @@ définitifs seront repris à charge < 2.
 | `phase_a_write/writer_unique_group_commit/4` | écrivain unique, group commit | 74,8 ms | 3,3 |
 | `phase_a_write/seq_1_thread_group` | séquentiel, 1 thread, `Group` | 78,0 ms | 3,3 |
 
+</details>
+
 Ce que le README avançait et que ces chiffres ne confirment PAS tels quels :
-« p95 ≤ 1 ms sur 10⁶ nœuds » — la médiane mono-thread est à 845 µs sous
+« p95 ≤ 1 ms sur 10⁶ nœuds » — la médiane mono-thread est à 837 µs sous
 charge, plausible, mais le p95 n'est pas mesuré par ce bench ; « recall
 ≥ 99 % » — aucun bench ne le mesure. Les deux affirmations sont retirées du
 README jusqu'à mesure.

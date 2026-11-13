@@ -157,6 +157,12 @@ pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResu
 /// nœud légitime, et personne ne le republierait. Un lecteur ne sait pas si
 /// l'écrivain est vivant ; il ne doit donc rien écrire dans les zones qu'il
 /// partage.
+///
+/// (13/11/2026) Le store ne l'appelle plus : depuis #115, les zones d'un lecteur
+/// sont PRIVÉES (copy-on-write), et écarter la transaction en vol n'y atteint ni
+/// le disque ni l'écrivain vivant. Ne pas l'écarter faisait servir au lecteur
+/// le nœud d'une transaction jamais scellée après un `kill -9` (obrain#120,
+/// `obrain-engine/tests/lecture_seule_kill9_blob_vecteur.rs`).
 pub fn replay_from_lecteur(
     substrate: &SubstrateFile,
     from_offset: u64,
