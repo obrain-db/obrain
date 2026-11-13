@@ -479,7 +479,11 @@ fn mesurer() {
         |i| {
             usize::from(
                 s.taille_candidats_indexes("a", &Value::Int64(i % 2), 8)
-                    .is_some_and(|(t, exacte)| t > 8 && !exacte || t > 8),
+                    // Le plafond depasse se lit dans la taille rendue : le contrat de
+                    // `taille_candidats` est un MINORANT strictement superieur au plafond
+                    // quand le jeu ne tient pas dessous, et la taille exacte sinon (carte
+                    // RAM seule comprise). `exacte` n'ajoutait donc rien ici.
+                    .is_some_and(|(t, _)| t > 8),
             )
         },
         1,
