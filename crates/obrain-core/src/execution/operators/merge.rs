@@ -172,8 +172,15 @@ impl MergeOperator {
                     continue;
                 }
 
-                // Revérification par l'égalité CANONIQUE — celle par laquelle
-                // le store a sélectionné ces candidats. L'ancien `v ==
+                // Revérification par l'égalité STRUCTURELLE — celle par laquelle
+                // le store a sélectionné ces candidats (`find_nodes_by_properties`).
+                //
+                // CHOIX TRANCHÉ (revue 3, M3) : un motif `MERGE (n {x: v})` est une
+                // CLASSE D'ÉQUIVALENCE de valeurs, comme DISTINCT ou IN — pas le
+                // prédicat `n.x = v`. Deux NaN sont donc le MÊME motif : un MERGE
+                // sur NaN retrouve le porteur NaN au lieu d'en créer un à chaque
+                // appel, et c'est aussi ce que rend le pushdown `MATCH (n {x: v})`
+                // du store. `WHERE n.x = v`, lui, reste IEEE : NaN = NaN est faux. L'ancien `v ==
                 // expected_value` (égalité stricte de `Value`) rejetait un
                 // porteur `5.0` pour un MERGE sur `5`, ou une date écrite dans
                 // un autre fuseau : le MERGE créait alors un DOUBLON d'un nœud

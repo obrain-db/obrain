@@ -53,9 +53,17 @@ fn values_equal_coerced(a: &Value, b: &Value) -> bool {
 ///
 /// Un Float64 non entier, lui, n'a pas de seau : le sonder couterait un
 /// balayage complet par ligne externe, d'ou le chemin generique.
+/// Une chaîne de plus de 256 octets est routée en COLONNE BLOB par le
+/// substrat (`BLOB_COLUMN_THRESHOLD_BYTES`) et n'entre dans aucun index : la
+/// sonder coûterait un balayage par ligne externe (revue 3, M2). Le seuil est
+/// recopié ici parce que `obrain-core` ne dépend pas du substrat ; le test
+/// `une_cle_flottante_entiere_se_sonde_par_l_index` le garde.
+const SEUIL_CHAINE_SONDABLE: usize = 256;
+
 fn is_index_probe_safe(v: &Value) -> bool {
     match v {
-        Value::Bool(_) | Value::Int64(_) | Value::String(_) => true,
+        Value::Bool(_) | Value::Int64(_) => true,
+        Value::String(s) => s.len() <= SEUIL_CHAINE_SONDABLE,
         Value::Float64(f) => obrain_common::types::value_cmp::entier_egal_au_flottant(*f).is_some(),
         _ => false,
     }
@@ -332,6 +340,7 @@ mod tests {
         assert!(is_index_probe_safe(&Value::Int64(5)));
         assert!(is_index_probe_safe(&Value::Bool(true)));
         assert!(is_index_probe_safe(&Value::String("x".into())));
+        assert!(!is_index_probe_safe(&Value::String("x".repeat(300).into())));
         assert!(is_index_probe_safe(&Value::Float64(5.0)));
         assert!(is_index_probe_safe(&Value::Float64(-0.0)));
         assert!(!is_index_probe_safe(&Value::Float64(5.5)));
