@@ -54,7 +54,7 @@ non versionnées ; à reproduire avec les commandes ci-dessus.
 | `query_count_all` | `MATCH (n) RETURN count(n)` | 1,236 µs | 1,232 – 1,241 µs | 1,28 µs | 4,39 → 3,28 |
 | `query_filter_range` | filtre par plage | 103,4 µs | 103,2 – 103,7 µs | 102 µs | 4,39 → 3,28 |
 | `query_insert_single_node` | `INSERT` d'un nœud, auto-commit, base en mémoire | 15,2 µs | 13,2 – 17,7 µs (6 % de valeurs aberrantes sévères) | 12,6 µs | 4,39 → 3,28 |
-| `phase_a_write/sessions_concurrentes_everycommit/4` | 4 sessions concurrentes, `EveryCommit` | **2,134 s** ⚠ | 2,052 – 2,243 s (10 échantillons) | 78,4 ms | 3,28 → 2,31 |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 4 sessions concurrentes, `EveryCommit` | **2,134 s** (coût durable, voir ci-dessous) | 2,052 – 2,243 s (10 échantillons) | 78,4 ms (commits non `fsync`és) | 3,28 → 2,31 |
 | `phase_a_write/writer_unique_group_commit/4` | écrivain unique, group commit | 79,2 ms | 78,4 – 80,0 ms | 74,8 ms | 3,28 → 2,31 |
 | `phase_a_write/seq_1_thread_group` | séquentiel, 1 thread, `Group` | 78,8 ms | 78,0 – 79,4 ms | 78,0 ms | 3,28 → 2,31 |
 
@@ -63,12 +63,16 @@ non versionnées ; à reproduire avec les commandes ci-dessus.
 - `query_1hop_pattern` / `query_2hop_pattern` : ÷ 7,8 et ÷ 7,0, cohérent
   avec le filtre sans hydratation (C1, ci-dessous) qui avait déjà ramené
   `query_node_lookup_by_property` de 379 à 52,5 µs.
-- ⚠ `phase_a_write/sessions_concurrentes_everycommit/4` : **2,13 s contre
-  78,4 ms** (× 27). Attendu : les 78,4 ms de e11bdd2a précèdent le commit
-  scellé (D-DUR, PR #22, voir plus bas), qui `fsync` chaque commit
-  (3,56 s mesurés), puis le `fsync` partagé du 2026-11-08 (1,86 – 1,95 s).
-  ~2 s est donc le coût durable actuel, à comparer à 1,86 – 1,95 s et non à
-  78,4 ms. La seconde série ci-dessous donne 2,058 s, ce qui le confirme.
+- `phase_a_write/sessions_concurrentes_everycommit/4` : **2,13 s contre
+  78,4 ms** (× 27). Ce n'est pas une régression : les 78,4 ms de e11bdd2a
+  précèdent le commit scellé (D-DUR, PR #22, voir plus bas). À l'époque, un
+  commit acquitté n'était pas `fsync`é. Depuis, chaque commit l'est, et sous
+  macOS un `fsync` est un `F_FULLFSYNC` (3,56 s mesurés), ramené à
+  1,86 – 1,95 s par le `fsync` partagé du 2026-11-08. ~2 s est donc le coût
+  durable actuel sur `m4max`, à comparer à 1,86 – 1,95 s et non à 78,4 ms.
+  La seconde série ci-dessous (2,058 s) et la mesure en alternance sur la
+  même machine (section « Série au repos ») le confirment. Sous Linux
+  (ffs-n2), le même bench ne bouge pas à D-DUR.
 - Les autres mesures sont dans le bruit (≤ ± 6 %) ou légèrement meilleures
   (`tiered_scan` rayon : − 4 %).
 
@@ -116,6 +120,47 @@ Ce qu'il faut savoir sur cette série :
   `seq_1_thread_group` (67,3 contre 78,8 ms) : le chemin d'écriture groupé
   varie de 10 à 15 % d'une série à l'autre sous cette charge. Sur toutes
   les autres lignes, les deux séries s'accordent à quelques % près.
+
+### Série au repos — `sessions_concurrentes_everycommit/4`, ffs-n2 (Linux), 2026-11-13 16:18–16:31
+
+Seule série de ce document mesurée **sous le seuil de charge** : ffs-n2, 16
+cœurs, Linux, rustc système 1.93, Criterion par défaut, profil release. Chaque
+mesure attend qu'aucun job CI ne tourne sur la machine (runner `obrain-ci`) et
+que la charge 1 min soit < 1. Elle est déclarée invalide si un job démarre
+pendant la mesure (sondage toutes les 5 s : aucun cas). Deux passes, la seconde
+dans l'ordre inverse, pour détecter une dérive.
+
+| Commit | Passe 1 | Passe 2 | Charge (avant → après) |
+|---|---|---|---|
+| `06720e83` (parent de D-DUR) | 640,0 ms [629,7 ; 654,6] | 663,5 ms [638,0 ; 697,4] | 0,81 → 0,92 · 0,71 → 0,91 |
+| `a3ae7f3a` (D-DUR) | 630,2 ms [624,5 ; 635,9] | 640,0 ms [628,9 ; 652,8] | 0,92 → 1,09 · 0,94 → 1,18 |
+| `a24632c5` | 339,1 ms [326,8 ; 357,5] | 325,5 ms [323,4 ; 327,8] | 0,66 → 0,86 · 0,74 → 0,94 |
+| `9802e661` (`main`) | 327,9 ms [322,6 ; 335,8] | 324,3 ms [320,4 ; 328,9] | 0,86 → 1,05 · 0,63 → 0,74 |
+
+Lecture : sous Linux, le `fsync` par commit de D-DUR ne change pas ce bench
+(630 contre 640 ms), et `main` est deux fois plus rapide que la référence
+(le `fsync` partagé du 2026-11-08 se trouve entre `a3ae7f3a` et `a24632c5`).
+Le × 27 du tableau ci-dessus est donc propre à macOS, où un `fsync` est un
+`F_FULLFSYNC`.
+
+Même bench sur `m4max` (macOS), 2026-11-13 vers 16:35, commits mesurés en
+alternance par le gouverneur. **Provisoire** : charge 25 à 82, mesure
+interrompue après 4 points pour libérer la machine. Une mesure alternée reste
+comparable entre commits, puisque les trois tournent sous la même charge. Ses
+valeurs absolues, elles, ne valent rien.
+
+| Commit | Passe 1 | Passe 2 (ordre inverse) |
+|---|---|---|
+| `06720e83` (parent de D-DUR) | 116 ms [83 ; 157] | — |
+| `a3ae7f3a` (D-DUR) | 4,35 s [4,10 ; 4,59] | — |
+| `a24632c5` | 3,78 s [3,56 ; 3,96] | 3,37 s [2,92 ; 3,77] |
+
+Lecture : sur macOS, le saut tombe exactement sur D-DUR (× 37 sous cette
+charge), ce qui concorde avec la mesure dédiée plus bas (78,4 ms → 3,56 s,
+`F_FULLFSYNC` par commit). Le `fsync` partagé l'atténue ensuite. C'est le coût
+de la durabilité, pas une régression. Pour écrire vite sans le payer à chaque
+commit : transaction explicite (un seul `fsync`) ou `SyncMode::Group` avec
+`flush_wal()` par lot.
 
 <details>
 <summary>Ancienne référence — <code>main</code> e11bdd2a, 2026-11-01 15:22–15:29, charge 3 à 9 (provisoire)</summary>
