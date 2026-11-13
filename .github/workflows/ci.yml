@@ -11,6 +11,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # ── DÉCLENCHEMENT MANUEL (2026-11-13) ────────────────────────────────────
+  # Mesuré : les runs `pull_request` ne sont plus créés sur ce dépôt — ni un
+  # push de branche, ni `synchronize`, ni fermeture/réouverture n'en produisent
+  # (dernier run `pull_request` créé le 13/11 à 01:01Z, aucun depuis, alors
+  # qu'un `push` sur `main` et un `workflow_dispatch` en créent). La CI d'une
+  # PR se déclenche donc à la main tant que cela dure :
+  #   gh workflow run CI --ref <branche>
+  workflow_dispatch:
   # Appelée par release.yml sur un tag : la publication n'a lieu que si la CI
   # complète est verte SUR LE COMMIT TAGUÉ (pas sur celui d'une PR antérieure).
   workflow_call:
