@@ -17,9 +17,12 @@
 //! dictionnaire réécrit n'avait plus la colonne, la valeur devenait illisible.
 //! L'auto-flush est désormais différé à la fin de l'ouverture.
 //!
-//! Mesuré avant correctif (e5648dbf, 8d7e3b09) : perdue dès que l'arête
-//! existe ; sans arête (pas d'histogramme à reconstruire), ou quand A fait
-//! `commit_wal()`, rien n'est perdu.
+//! Mesuré avant correctif (c4b6ada9, e5648dbf, 8d7e3b09) : perdue dès qu'une
+//! arête est arrivée par le seul WAL — y compris quand la valeur longue avait
+//! été rendue durable AVANT par un flush complet (`A-flush-complet-puis-arete`) :
+//! c'est tout le registre des colonnes blob qui disparaît du dictionnaire, pas
+//! la seule valeur rejouée. Sans arête (pas d'histogramme à reconstruire), ou
+//! quand l'arête elle-même est suivie d'un `commit_wal()`, rien n'est perdu.
 #![cfg(feature = "wal")]
 
 use obrain_common::types::Value;
@@ -90,7 +93,13 @@ fn une_valeur_longue_rejouee_puis_fermee_survit_a_une_ouverture_tuee() {
             let n = db.create_node(&["Doc"]);
             db.set_node_property(n, "courte", Value::from("c"));
             db.set_node_property(n, "longue", Value::from(valeur_longue()));
-            if role == "A-arete" {
+            if role == "A-flush-complet-puis-arete" {
+                // La valeur longue rendue durable par un flush COMPLET…
+                db.commit_wal().unwrap();
+            }
+            if role == "A-arete" || role == "A-flush-complet-puis-arete" {
+                // …puis une écriture qui pose une arête, acquittée par le seul
+                // fsync du WAL.
                 let m = db.create_node(&["Autre"]);
                 db.create_edge(m, n, "A");
             }
@@ -104,7 +113,7 @@ fn une_valeur_longue_rejouee_puis_fermee_survit_a_une_ouverture_tuee() {
     }
     let attendu = Some((Some(1), Some(valeur_longue().len())));
     let mut pertes = Vec::new();
-    for a in ["A-sans-arete", "A-arete"] {
+    for a in ["A-sans-arete", "A-arete", "A-flush-complet-puis-arete"] {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("base");
         let mut c = enfant(dir.path(), a);
