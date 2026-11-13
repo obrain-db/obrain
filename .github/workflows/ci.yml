@@ -349,6 +349,36 @@ jobs:
           "$PY" -m pip install -e "crates/bindings/python/integrations/langchain_obrain[test]" -e "crates/bindings/python/integrations/llama_index_obrain[test]"
           "$PY" -m pytest -v -rs crates/bindings/python/integrations/langchain_obrain/tests
           "$PY" -m pytest -v -rs crates/bindings/python/integrations/llama_index_obrain/tests
+  # (BIND-2, 2026-11-12) Liaison Node (napi 3) : le binding compile contre
+  # l'engine ; `napi build --release` (CLI épinglé dans package.json)
+  # régénère index.d.ts et index.js, et les versions commitées doivent être
+  # EXACTEMENT celles générées (même principe que obrain.h) ; la suite Node
+  # passe ; le paquet npm se construit sans être publié.
+  bindings-node:
+    name: Bindings Node
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: crates/bindings/node
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Dépendances npm (lockfile)
+        run: npm ci
+      - name: Build release (napi, index.d.ts et index.js régénérés)
+        run: npx napi build --platform --release --features full
+      - name: index.d.ts et index.js commités identiques au généré
+        run: git diff --exit-code -- index.d.ts index.js
+      - name: Tests Node
+        run: npm test
+      - name: Paquet npm construit (aucune publication)
+        run: npm pack --dry-run
+
   tests-all-features:
     name: Tests (toutes features)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

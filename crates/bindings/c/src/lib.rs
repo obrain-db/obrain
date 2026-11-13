@@ -28,7 +28,8 @@
 //!
 //! `obrain_open` opens READ-ONLY; writing requires the explicit
 //! `obrain_open_write`, which holds the process-wide write lease (« bail »)
-//! kept by the `bail` module and documented in `README.md`.
+//! kept by `obrain_bindings_common::bail` (partagé avec la liaison Node) et
+//! documented in `README.md`.
 
 #![allow(unsafe_code)]
 

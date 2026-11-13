@@ -1,18 +1,18 @@
-//! Bail d'écriture de la bibliothèque : UN SEUL écrivain par base et par
-//! processus (décision D4, 353636bc).
+//! Bail d'écriture des liaisons : UN SEUL écrivain par base et par processus
+//! (décision D4, 353636bc). Partagé par la C-ABI et la liaison Node ; la
+//! liaison Python le reprendra tel quel.
 //!
 //! Pourquoi ici et pas dans le moteur : `ObrainDB::open_shared_write` admet
 //! sciemment plusieurs écrivains sur la même base, dans un même processus
 //! comme entre processus (tests `writer_node_count_partage`,
 //! `vector_index_deux_processus`, `ecriture_multi_processus` — MP-6/MP-8).
-//! Le contrat « un seul écrivain » promis aux consommateurs de l'ABI est donc
-//! tenu par cette bibliothèque : un registre des chemins canoniques ouverts
-//! en écriture, pris par `obrain_open_write`, rendu par `obrain_close` ou
-//! `obrain_free_database`.
+//! Le contrat « un seul écrivain » promis aux consommateurs des liaisons est
+//! donc tenu par ce crate : un registre des chemins canoniques ouverts en
+//! écriture, pris à l'ouverture en écriture, rendu à la fermeture.
 //!
 //! Portée : le registre est propre au processus. Entre processus, c'est le
 //! verrou partagé du substrat qui s'applique (plusieurs écrivains partagés
-//! coexistent avec les lecteurs ; voir README.md, « Bail »).
+//! coexistent avec les lecteurs ; voir crates/bindings/c/README.md, « Bail »).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

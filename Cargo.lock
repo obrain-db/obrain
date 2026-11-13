@@ -546,6 +546,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "convert_case"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1af709f1f33454bf52eadfc8c78b3b9ef9cb26fb54d16dc9cd9a7299f899fd1b"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2011,6 +2020,68 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
+name = "napi"
+version = "3.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567c62b9c2d0fae123713f766686ad66a2c75b45ba3ee01ed8b06a7e99bc435b"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "ctor",
+ "futures",
+ "libc",
+ "napi-build",
+ "napi-sys",
+ "nohash-hasher",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "napi-build"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b899b545d3aa6dca985939059f258c5488d34e4ecf39c274e20009748f4b846d"
+
+[[package]]
+name = "napi-derive"
+version = "3.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94c8098ed9d61a1bbd019519c637817531b0e24023ef4b5678f2f0cbe24bed9c"
+dependencies = [
+ "convert_case",
+ "ctor",
+ "napi-derive-backend",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "napi-derive-backend"
+version = "7.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "314cd6ca42bd978fd8bae84b4137e1322bbf3e83552fca8dbd7d18034188ff3a"
+dependencies = [
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "semver",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "napi-sys"
+version = "3.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d153beb7d5c973f4b9395be8a83054a28968b61188f1dd1a2cc2321af22daea2"
+dependencies = [
+ "libloading",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2041,6 +2112,12 @@ dependencies = [
  "portable-atomic-util",
  "rawpointer",
 ]
+
+[[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
@@ -2435,6 +2512,24 @@ dependencies = [
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
+]
+
+[[package]]
+name = "obrain-node"
+version = "0.0.1"
+dependencies = [
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "obrain-adapters",
+ "obrain-bindings-common",
+ "obrain-common",
+ "obrain-core",
+ "obrain-engine",
+ "parking_lot",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

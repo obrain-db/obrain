@@ -20,6 +20,8 @@ members = [
     "crates/bindings/c",
     # Liaison Python (pyo3, module `obrain`) — voir crates/bindings/python/README.md.
     "crates/bindings/python",
+    # Liaison Node.js (napi 3) : cdylib, paquet npm construit sans publication.
+    "crates/bindings/node",
 ]
 
 [workspace.package]
