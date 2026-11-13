@@ -6436,9 +6436,18 @@ impl SubstrateStore {
         // fenêtre contenant uniquement une compaction V2 échapperait à la
         // détection et la vérification des compteurs serait sautée à tort.
         let mut structurel = false;
-        // (obrain#120) Rejeu des colonnes blob : écrivain exclusif seulement
-        // (voir les bras `BlobColumnWrite` / `BlobColumnClear`).
-        let rejouer_blobs = !self.substrate.lock().est_ecriture_partagee();
+        // (obrain#120) Rejeu des colonnes blob : écrivain exclusif, ou LECTEUR
+        // (voir les bras `BlobColumnWrite` / `BlobColumnClear`). Un lecteur
+        // (`open_read_only`) porte lui aussi un verrou partagé, mais ses zones
+        // sont PRIVÉES (copy-on-write, `ZonePrivee`) : rejouer y écrit des
+        // pages propres à ce processus, jamais le disque — exactement comme le
+        // rejeu des zones nœuds/propriétés qu'il fait déjà. Sans lui, il servait
+        // ABSENTES les valeurs longues acquittées depuis le dernier flush (0/39
+        // mesuré, `lecture_seule_kill9_blob_vecteur.rs`).
+        let rejouer_blobs = {
+            let sub = self.substrate.lock();
+            !sub.est_ecriture_partagee() || sub.est_lecture_seule()
+        };
         let mut blobs_rejoues = 0u64;
         // RELEVE DES COMPTEURS (2026-07-25, 2e verrou trouve par la preuve
         // kill -9 en production) : next_node_id / next_edge_id vivent dans
@@ -6550,10 +6559,11 @@ impl SubstrateStore {
                 // (dernier écrit gagne), UNIQUEMENT dans la fenêtre post-flush
                 // (avant elle, la colonne a été `sync` par le flush et fait
                 // foi) et UNIQUEMENT par un écrivain EXCLUSIF — celui qui
-                // reprend après un crash. Un lecteur (verrou partagé) n'écrit
-                // rien ; un écrivain en mode partagé laisse la colonne à ses
-                // pairs vivants (écriture blob multi-processus : limite
-                // documentée de la v0.0.1).
+                // reprend après un crash — ou par un LECTEUR, qui rejoue dans
+                // ses pages privées sans rien écrire sur disque ; un écrivain
+                // en mode partagé laisse la colonne à ses pairs vivants
+                // (écriture blob multi-processus : limite documentée de la
+                // v0.0.1).
                 WalPayload::BlobColumnWrite {
                     entity_kind,
                     slot,
@@ -7569,13 +7579,16 @@ impl SubstrateStore {
             // si la fenêtre rejouée contient une permutation de slots, les
             // chaînes PropsZone v2 peuvent porter des stamps d'avant-remap
             // (auto-guérison juste avant Ok(store)).
-            // `partage == false` : ouverture LECTEUR. Il ne doit rien écrire
-            // dans les zones d'un écrivain vivant (cf. `replay_from_lecteur`).
-            let rejeu = if partage {
-                crate::replay::replay_from(&guard, debut)
-            } else {
-                crate::replay::replay_from_lecteur(&guard, debut)
-            };
+            // `partage == false` : ouverture LECTEUR. Depuis #115, ses zones
+            // sont PRIVÉES (copy-on-write) : écarter une transaction en vol y
+            // pose des tombstones que lui seul voit, jamais le disque ni
+            // l'écrivain vivant. Il l'écarte donc comme un écrivain qui
+            // reprend : sinon il servait l'entité d'une transaction jamais
+            // scellée (nœud sans propriétés, ou nœud complet que l'écrivain
+            // rouvrant écarte), mesuré 4 fois sur 15 après un `kill -9`
+            // (`lecture_seule_kill9_blob_vecteur.rs`). `replay_from_lecteur`
+            // (#60) datait des zones partagées.
+            let rejeu = crate::replay::replay_from(&guard, debut);
             match rejeu {
                 Ok(st) => {
                     remaps_au_rejeu = st.remaps_appliques;
@@ -40704,8 +40717,18 @@ mod coherence_lecteur_ro {
             "l'ouverture d'un lecteur RO a tombstoné le nœud d'une transaction \
              encore ouverte chez l'écrivain vivant"
         );
+        // Le lecteur, lui, écarte la transaction non scellée dans SES zones
+        // privées : il ne sert pas une entité jamais commitée (obrain#120,
+        // `lecture_seule_kill9_blob_vecteur.rs`). L'écrivain vivant garde `a`.
         let r = SubstrateStore::open_read_only(&path).unwrap();
-        assert_eq!(r.node_count(), 1, "le lecteur suivant voit toujours `a`");
+        assert!(
+            r.get_node(a).is_none(),
+            "le lecteur ne sert pas le nœud d'une transaction non scellée"
+        );
+        assert!(
+            w.get_node(a).is_some(),
+            "l'écart du lecteur n'atteint pas l'écrivain vivant"
+        );
     }
 }
 
