@@ -484,8 +484,8 @@ mod tests {
 
     fn tier2_sample(i: u32) -> Tier2 {
         let mut t = Tier2([0u16; 384]);
-        for k in 0..384 {
-            t.0[k] = (i.wrapping_mul(k as u32 + 1) & 0xFFFF) as u16;
+        for (k, slot) in t.0.iter_mut().enumerate() {
+            *slot = (i.wrapping_mul(k as u32 + 1) & 0xFFFF) as u16;
         }
         t
     }
