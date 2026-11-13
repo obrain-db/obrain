@@ -19,7 +19,8 @@
 //!      nœud la valeur d'un autre — y compris après une écriture de colonne SANS
 //!      trame (valeur au-delà du plafond WAL).
 //!   3. RÉSURRECTION : une valeur courte écrite après une longue reste la valeur.
-//!   4. LIMITES verrouillées : lecteur seul, plafond de 32 Mio.
+//!   4. LECTEUR SEUL : il rejoue les valeurs longues (zones privées) ; LIMITE
+//!      verrouillée : plafond de 32 Mio.
 //!
 //! Protocole repris de `durabilite_commit_kill9.rs` : le parent relance SON
 //! propre binaire de test sur le cas enfant (`--exact`), répertoire passé par
@@ -456,15 +457,15 @@ fn une_valeur_courte_ecrite_apres_une_longue_reste_la_valeur_relue_apres_kill_9(
     );
 }
 
-/// LIMITE v0.0.1, verrouillée : un LECTEUR (`open_read_only`) ouvert sur la base
-/// laissée par un écrivain tué ne rejoue PAS les valeurs longues de la fenêtre
-/// post-flush (il n'écrit rien, et la colonne blob ne se rejoue qu'en écrivant).
-/// Il ne lit jamais une valeur FAUSSE ; il lit les valeurs ABSENTES jusqu'à ce
-/// qu'un écrivain rouvre la base, qui les rejoue. Ce test rougit le jour où le
-/// lecteur les servira (à mettre alors à jour, avec la ligne de
-/// `docs/LIMITES-v0.0.1.md`).
+/// Un LECTEUR (`open_read_only`) ouvert sur la base laissée par un écrivain tué
+/// rejoue les valeurs longues de la fenêtre post-flush dans ses zones PRIVÉES
+/// (copy-on-write) : il les sert exactes sans rien écrire sur disque. Avant le
+/// 13/11/2026, ce test verrouillait la limite inverse (rejeu réservé à
+/// l'écrivain exclusif : 0/40 valeurs servies par le lecteur). Il ne lit
+/// jamais une valeur FAUSSE ; l'écrivain qui rouvre ensuite voit la même chose.
+/// Voir aussi `lecture_seule_kill9_blob_vecteur.rs`.
 #[test]
-fn limite_v0_0_1_un_lecteur_seul_ne_rejoue_pas_les_valeurs_longues_d_un_ecrivain_tue() {
+fn un_lecteur_seul_rejoue_les_valeurs_longues_d_un_ecrivain_tue() {
     if std::env::var(ENV_ENFANT).is_ok() {
         return;
     }
@@ -494,9 +495,9 @@ fn limite_v0_0_1_un_lecteur_seul_ne_rejoue_pas_les_valeurs_longues_d_un_ecrivain
             l2.longs_exacts,
             l2.longs_absents
         ),
-        (N as usize, N as usize, 0, N as usize),
-        "limite mesurée : le lecteur sert le tour flushé, voit les nœuds du tour tué mais pas \
-         leurs valeurs longues — {l1:?} ; {l2:?}"
+        (N as usize, N as usize, N as usize, 0),
+        "le lecteur sert le tour flushé ET les valeurs longues acquittées du tour tué — \
+         {l1:?} ; {l2:?}"
     );
 
     let ecrivain = ObrainDB::open(&base).expect("écrivain");
