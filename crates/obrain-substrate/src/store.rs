@@ -13659,7 +13659,8 @@ impl SubstrateStore {
         // l'import ne borne donc plus les porteurs : on retire les marqueurs
         // « bâti depuis v2 » et « couvert par la zone », et le prochain usage
         // rebâtit l'index depuis les chaînes (qui, elles, portent tout).
-        // C'est la règle d'`index_borne_les_porteurs`, condition 4.
+        // C'est l'invariant qu'`index_borne_les_porteurs` portait (main, #99) et que
+        // `candidats_bruts` porte ici : `Some(..)` est une affirmation de complétude.
         self.index_batis_depuis_v2.clear();
         self.egalite_couverte.clear();
         Ok(ecrites)
@@ -31652,16 +31653,33 @@ mod tests {
             (n, m)
         };
         let s2 = SubstrateStore::open(&racine).unwrap();
+        // ── CE SCÉNARIO A CHANGÉ DE NATURE APRÈS #123 / #138 (obrain#120) ──
+        //
+        // La revue 6 (N4) construisait une colonne blob dont les blobs étaient
+        // durables mais dont le DICTIONNAIRE ne portait pas la spec (kill entre
+        // `blob_columns.sync_all` et la persistance du dictionnaire) : la
+        // colonne apparaissait « orpheline », d'anciens blobs redevenaient
+        // lisibles et un index bâti sans colonne les ignorait.
+        //
+        // Sur `main`, #123 met la valeur longue au WAL et #138 rend la
+        // création de nœud et ses propriétés atomiques : la colonne et sa spec
+        // sont désormais durables ENSEMBLE, donc l'état « colonne orpheline »
+        // n'est plus atteignable. Mesuré après fusion : `colonne_connue=true`.
+        //
+        // Ce qui reste à garder, et qui est plus fort que la précondition
+        // d'origine : après un kill, la colonne est CONNUE, donc sa clé n'est
+        // pas réputée couverte par la zone persistée (règle R), et l'index
+        // sert les deux valeurs. C'est ce que ce test vérifie maintenant.
         assert!(
-            !s2.cle_a_colonne_blob(&PropertyKey::new("d")),
-            "précondition : le dictionnaire ne connaît pas la colonne"
+            s2.cle_a_colonne_blob(&PropertyKey::new("d")),
+            "après le kill, le dictionnaire connaît la colonne (obrain#120 corrigé)"
         );
         assert!(
-            s2.egalite_couverte.contains_key(&PropertyKey::new("d")),
-            "précondition : sans colonne connue, la clé est couverte par la zone"
+            !s2.egalite_couverte.contains_key(&PropertyKey::new("d")),
+            "une clé à colonne blob n'est jamais réputée couverte par la zone (règle R)"
         );
-        // La première écriture longue rouvre la colonne : l'ancien blob de `n`
-        // redevient lisible.
+        // La première écriture longue de ce processus écrit dans la colonne ;
+        // l'ancien blob de `n` est, lui, déjà lisible.
         s2.set_node_property(
             m,
             "d",
@@ -31671,7 +31689,7 @@ mod tests {
         assert_eq!(
             lu,
             Some(Value::from(longue_de("2024-06-06T06:06:06Z").as_str())),
-            "précondition : l'ancien blob est de nouveau lisible"
+            "l'ancien blob écrit avant le kill est toujours lisible"
         );
         assert_eq!(
             s2.find_nodes_by_property("d", &Value::from("2024-06-06T06:06:06Z")),
