@@ -34,6 +34,7 @@ fn batch_wal_group_mode_no_regression() {
         let _ = session_before.execute_cypher(&format!("CREATE (:_BenchSrc {{id: {i}}})"));
         let _ = session_before.execute_cypher(&format!("CREATE (:_BenchDst {{id: {i}}})"));
     }
+    let fsyncs_avant_ec = db_before.wal_fsyncs().expect("compteur fsync");
     let t0 = Instant::now();
     for i in 0..200 {
         session_before
@@ -44,6 +45,7 @@ fn batch_wal_group_mode_no_regression() {
             .unwrap();
     }
     let every_commit_elapsed = t0.elapsed();
+    let fsyncs_every_commit = db_before.wal_fsyncs().expect("compteur fsync") - fsyncs_avant_ec;
 
     // --- Group mode, single flush_wal() at end-of-batch ---
     let td_after = tempfile::tempdir().unwrap();
@@ -54,6 +56,7 @@ fn batch_wal_group_mode_no_regression() {
         let _ = session_after.execute_cypher(&format!("CREATE (:_BenchSrc {{id: {i}}})"));
         let _ = session_after.execute_cypher(&format!("CREATE (:_BenchDst {{id: {i}}})"));
     }
+    let fsyncs_avant_g = db_after.wal_fsyncs().expect("compteur fsync");
     let t0 = Instant::now();
     for i in 0..200 {
         session_after
@@ -65,18 +68,33 @@ fn batch_wal_group_mode_no_regression() {
     }
     db_after.flush_wal().expect("flush_wal");
     let group_elapsed = t0.elapsed();
+    let fsyncs_group = db_after.wal_fsyncs().expect("compteur fsync") - fsyncs_avant_g;
 
-    println!("  EveryCommit (default) : {every_commit_elapsed:?} for 200 relationships");
-    println!("  Group + flush_wal()   : {group_elapsed:?} for 200 relationships");
+    println!(
+        "  EveryCommit (default) : {every_commit_elapsed:?} for 200 relationships, {fsyncs_every_commit} fsync"
+    );
+    println!(
+        "  Group + flush_wal()   : {group_elapsed:?} for 200 relationships, {fsyncs_group} fsync"
+    );
 
-    // Regression gate only: Group must not be SLOWER than EveryCommit (a
-    // generous 1.5× ceiling absorbs machine noise on a workload where the
-    // real dominant cost — Cypher parse+plan — is identical on both sides).
-    // Do NOT assert a speedup multiplier here: measured on real PO the gain
-    // is ~1.1×, not the originally hypothesized 10× (see module doc).
+    // Regression gate on the MECHANISM, not on wall-clock time. Until
+    // 2026-11-13 this asserted `group_elapsed <= 1.5 × every_commit_elapsed`,
+    // two durations measured one after the other: a load shift between the
+    // two phases flipped the verdict (main CI red on 1e98a87e, 11.1 s vs
+    // 1.08 s; 1 failure in 3 locally under load 33-49). What Group must keep
+    // is what makes it cheaper: commits do NOT fsync, only `flush_wal()`
+    // does. Counted, that is deterministic.
     assert!(
-        group_elapsed <= every_commit_elapsed.mul_f64(1.5),
-        "Group mode got SLOWER than EveryCommit ({group_elapsed:?} vs {every_commit_elapsed:?}) \
-         — regression in the WAL fsync path"
+        fsyncs_every_commit >= 200,
+        "EveryCommit must fsync every commit: {fsyncs_every_commit} fsync for 200 commits"
+    );
+    assert!(
+        fsyncs_group >= 1,
+        "flush_wal() must fsync: Group batch left non-durable (0 fsync)"
+    );
+    assert!(
+        fsyncs_group * 10 <= fsyncs_every_commit,
+        "Group mode fsyncs almost as often as EveryCommit ({fsyncs_group} vs \
+         {fsyncs_every_commit}) — regression in the WAL fsync path"
     );
 }
