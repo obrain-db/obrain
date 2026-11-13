@@ -75,10 +75,26 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       # La chaîne ÉPINGLÉE (rust-toolchain.toml, 1.91.1) n'est pas celle que
       # `dtolnay/rust-toolchain` équipe de rustfmt/clippy : sur un runner qui ne
       # l'avait pas encore installée, « cargo-fmt is not installed for the
@@ -99,7 +115,9 @@ jobs:
         run: cargo doc --no-deps --all-features
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   test:
     name: Tests (features par défaut)
@@ -123,8 +141,24 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - name: Build
         run: cargo build --workspace --all-targets
       # Les tests du substrate ouvrent beaucoup de magasins à la fois : la limite
@@ -136,7 +170,9 @@ jobs:
           cargo test --workspace --no-fail-fast
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   # (MP-6, 2026-11-07) WAL PARTAGÉ : les tests INTER-PROCESSUS (le binaire de
   # test se relance lui-même en enfants, `kill -9` compris) jouent dans un job
@@ -155,6 +191,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - name: Substrat — append multi-processus et chaîne CAS
         run: |
           ulimit -n 8192
@@ -189,8 +226,24 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - name: Fabrication des bases jetables
         run: |
           B="$RUNNER_TEMP/tests/bases"; mkdir -p "$B"
@@ -235,7 +288,9 @@ jobs:
       # pour le dire.
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   # (BIND-0, 2026-11-12) ABI C : la bibliothèque `obrain-c` compile contre le
   # moteur, son en-tête commité est EXACTEMENT celui que cbindgen (version
@@ -259,8 +314,24 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - name: Compilateur C du runner
         run: cc --version
       # La version est lue dans build.rs (source unique) et DOIT valoir celle
@@ -283,7 +354,9 @@ jobs:
           cargo test -p obrain-c -p obrain-bindings-common --no-fail-fast
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   # ── Bindings Python (pyo3, crates/bindings/python) ─────────────────────────
   # Construit la wheel avec maturin ÉPINGLÉ (la même version que [build-system]
@@ -480,8 +553,24 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       # (V1-EXHAUSTIF, 2026-11-01) « Toutes les features compilent » n'est pas
       # « toutes les features passent » : les binaires de test sous
       # cfg(feature = "cognitive" | "cypher" | "temporal" | …) n'étaient joués
@@ -495,7 +584,9 @@ jobs:
           cargo test --workspace --all-features --no-fail-fast
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   features:
     name: Toutes les features compilent
@@ -519,8 +610,24 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       # Un avertissement rustc (code mort, import inutile…) fait échouer la PR.
       - name: Check --all-features
         env:
@@ -534,7 +641,9 @@ jobs:
   # EXACTEMENT verrouillée dans Cargo.lock (0.2.130).
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
   wasm:
     name: Navigateur (wasm32)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -564,10 +673,26 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
@@ -596,7 +721,9 @@ jobs:
   # Le paquet est publié comme artefact de CI, pas comme version.
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
   web-paquet:
     name: Paquet navigateur (obrain-web)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -623,10 +750,26 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
@@ -671,7 +814,9 @@ jobs:
   # pas la fusion, le temps de stabiliser le navigateur sur les runners.
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
   persistance-navigateur:
     name: Persistance navigateur (OPFS, Chrome headless)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -698,10 +843,26 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
@@ -742,7 +903,9 @@ jobs:
         run: cargo test --target wasm32-unknown-unknown -p obrain-web --test navigateur
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   msrv:
     name: MSRV (rust-version du manifeste)
@@ -766,6 +929,21 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - name: Lire rust-version
         id: msrv
         run: echo "version=$(grep -E '^rust-version' Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')" >> "$GITHUB_OUTPUT"
@@ -773,11 +951,14 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
       - name: Check avec la MSRV déclarée
         run: cargo check --workspace
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   deny:
     name: cargo deny (licences, advisories, sources)
@@ -801,12 +982,29 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   package:
     name: Métadonnées de publication
@@ -830,6 +1028,21 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       # `cargo package` / `publish --dry-run` exigent que les dépendances
       # internes soient DÉJÀ sur crates.io : impossible avant la publication
@@ -841,7 +1054,9 @@ jobs:
         run: cargo package --no-verify -p obrain-common
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   macos:
     name: macOS — intégrité (durabilité, verrous, reprise)
@@ -868,6 +1083,21 @@ jobs:
           if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
+          # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
+          # Mesuré sur main : rust-cache n'y trouvait jamais rien (« No cache
+          # found », 305 crates recompilées, Build 482 s), et CARGO_BUILD_JOBS=2
+          # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
+          # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
+          # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
+          # Sans sccache installé, rien ne change.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+            {
+              echo "CARGO_BUILD_JOBS=8"
+              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
+              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "SCCACHE_CACHE_SIZE=30G"
+            } >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # La suite complète prend ~12 min sur macOS ; sur PR on ne joue que ce
@@ -880,4 +1110,6 @@ jobs:
           cargo test -p obrain-engine --test durabilite_commit_kill9 --test echec_commit_rembobinage --test format_fige_v3 --no-fail-fast
       - name: Nettoyage du répertoire temporaire du job
         if: always()
-        run: rm -rf "$RUNNER_TEMP/tests"
+        run: |
+          rm -rf "$RUNNER_TEMP/tests"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
