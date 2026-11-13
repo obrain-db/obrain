@@ -1364,6 +1364,13 @@ pub struct WalWriter {
     /// troncature, toute publication d'ancre rend `SubstrateError::LectureSeule`
     /// AVANT d'agir.
     lecture_seule: bool,
+    /// (obrain#164) Journal d'un LECTEUR rendu MUET : ses appends rendent `Ok`
+    /// sans rien écrire. Posé seulement le temps où le lecteur restaure, dans
+    /// ses zones privées, les propriétés d'une transaction jamais commitée
+    /// (`SubstrateStore::annuler_proprietes_en_vol`) : il y emprunte les
+    /// setters ordinaires, qui journalisent, et un lecteur ne doit rien écrire
+    /// sur disque. Sans effet hors lecture seule.
+    muet: std::sync::atomic::AtomicBool,
     /// Chemin du side-car d'ancre (normalement `<wal>.lsn`).
     ancre_path: PathBuf,
     inner: Mutex<WriterInner>,
@@ -1910,6 +1917,18 @@ impl WalWriter {
         self.lecture_seule
     }
 
+    /// (obrain#164) Rend muet (ou non) le journal d'un LECTEUR : voir le champ
+    /// `muet`. Sans effet sur un journal inscriptible, dont les appends
+    /// restent réels.
+    pub(crate) fn rendre_muet_en_lecture_seule(&self, muet: bool) {
+        self.muet.store(muet, Ordering::Release);
+    }
+
+    /// Un append de ce journal est-il à taire ? (lecteur rendu muet).
+    fn est_muet(&self) -> bool {
+        self.lecture_seule && self.muet.load(Ordering::Acquire)
+    }
+
     fn ouvrir_interne(
         path: impl AsRef<Path>,
         ancre_path: impl AsRef<Path>,
@@ -1947,6 +1966,7 @@ impl WalWriter {
         let poignee_synchro = file.poignee_synchro().ok().flatten().map(PoigneeFsync);
         Ok(Self {
             lecture_seule,
+            muet: std::sync::atomic::AtomicBool::new(false),
             path,
             ancre_path,
             inner: Mutex::new(WriterInner {
@@ -2012,6 +2032,7 @@ impl WalWriter {
     pub fn open_memory(sync_mode: SyncMode, ancre_repli: u64) -> SubstrateResult<Self> {
         Ok(Self {
             lecture_seule: false,
+            muet: std::sync::atomic::AtomicBool::new(false),
             path: PathBuf::from("<memoire:obrain>").join(crate::zone::WAL),
             ancre_path: PathBuf::from("<memoire:obrain>").join("substrate.wal.lsn"),
             inner: Mutex::new(WriterInner {
@@ -2396,6 +2417,9 @@ impl WalWriter {
         exige_sync: bool,
         encodeur: impl FnOnce(&mut Vec<u8>, u64) -> SubstrateResult<()>,
     ) -> SubstrateResult<(u64, usize)> {
+        if self.est_muet() {
+            return Ok((self.offset(), 0));
+        }
         self.refuser_si_lecture_seule("un append au WAL")?;
         if self.group_actif.load(Ordering::Acquire) {
             // `commit || exige_sync` : c'est LA définition d'une frontière de
@@ -2436,6 +2460,9 @@ impl WalWriter {
     where
         I: IntoIterator<Item = WalRecord>,
     {
+        if self.est_muet() {
+            return Ok((self.offset(), 0));
+        }
         self.refuser_si_lecture_seule("un append au WAL")?;
         let it = recs.into_iter();
         if self.group_actif.load(Ordering::Acquire) {
@@ -4627,7 +4654,9 @@ impl WalReader {
 
 /// Déclaration en vol NON SCELLÉE : une entité déclarée (`TxNoeudEnAttente` ou
 /// `TxAreteEnAttente`) dont la transaction n'a ni `TxCommit` ni suppression de
-/// l'entité qui la suive, à l'offset `offset` du WAL.
+/// l'entité qui la suive, ou une valeur d'avant (`TxProprieteAvant`,
+/// obrain#164) que ne suivent ni `TxCommit` ni `TxAnnulee`, à l'offset `offset`
+/// du WAL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeclarationEnVol {
     /// Offset OCTET du record de déclaration dans le WAL.
@@ -4645,6 +4674,12 @@ pub struct DeclarationEnVol {
 /// Même automate que le rejeu (`replay_from_avec`) : une déclaration entre dans
 /// l'état « en vol » de sa transaction ; `TxCommit` le retire ; `NodeDelete` /
 /// `EdgeDelete` retirent l'entité (son slot peut être réutilisé).
+///
+/// (obrain#164) Une valeur d'avant (`TxProprieteAvant`) entre aussi dans l'état
+/// « en vol » de sa transaction, que `TxCommit` ou `TxAnnulee` retire : sans
+/// elle, un checkpoint tombé pendant une transaction qui ne fait que des `SET`
+/// tronquait ses valeurs d'avant, et un `kill -9` ensuite laissait servir ses
+/// valeurs jamais commitées.
 ///
 /// `depuis` doit être une frontière de frame (offset rendu par le balayage
 /// précédent, ou 0). S'il dépasse la taille du fichier (troncature étrangère),
@@ -4670,6 +4705,9 @@ pub fn plus_ancienne_declaration_en_vol(
     enum Entite {
         Noeud(u32),
         Arete(u64),
+        /// Valeur d'avant d'une propriété (obrain#164) : aucune suppression ne
+        /// la retire, seule la clôture de sa transaction.
+        ValeurAvant,
     }
     let mut en_vol: std::collections::HashMap<u64, Vec<(u64, Entite)>> =
         std::collections::HashMap::new();
@@ -4691,7 +4729,16 @@ pub fn plus_ancienne_declaration_en_vol(
                     .or_default()
                     .push((absolu, Entite::Arete(edge_id)));
             }
+            WalPayload::TxProprieteAvant { tx, .. } => {
+                en_vol
+                    .entry(tx)
+                    .or_default()
+                    .push((absolu, Entite::ValeurAvant));
+            }
             WalPayload::TxCommit { tx } => {
+                en_vol.remove(&tx);
+            }
+            WalPayload::TxAnnulee { tx } => {
                 en_vol.remove(&tx);
             }
             WalPayload::NodeDelete { node_id } => {

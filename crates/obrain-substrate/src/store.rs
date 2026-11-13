@@ -159,7 +159,11 @@ const VALID_KINDS: &[u8] = &[
     // (jalon 2) 0x04/0x05 = NodeInsertV3/NodeUpdateV3 (trames tenant).
     0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
     0x26, 0x27, 0x29, 0x2A, 0x2B, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
-    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71, 0xF0, 0xFE, 0xFF,
+    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x60, 0x61, 0x62, 0x70, 0x71,
+    // (obrain#164) 0x59 TxProprieteAvant porte une valeur d'avant, longue
+    // parfois : reconnue, la trame est sautée ENTIÈRE au lieu d'être
+    // résynchronisée dans son corps. 0x5A TxAnnulee, son pendant.
+    0x59, 0x5A, 0xF0, 0xFE, 0xFF,
 ];
 
 /// Borne de plausibilité d'une trame pour les scans RÉSYNCHRONISANTS du WAL
@@ -2639,6 +2643,15 @@ pub struct SubstrateStore {
     /// redemarrage. C'est correct — une transaction ouverte au moment d'un
     /// arret n'a rien commite, donc il n'y a rien a defaire au retour.
     tx_undo: RwLock<std::collections::HashMap<TransactionId, Vec<Annulation>>>,
+    /// (obrain#164) Transactions qui ont journalisé au moins une valeur
+    /// d'avant (`TxProprieteAvant`) et ne sont pas encore closes. Leur
+    /// `rollback` pose `TxAnnulee` ; leur commit est scellé par `TxCommit`.
+    tx_avec_valeur_avant: Mutex<std::collections::HashSet<u64>>,
+    /// (obrain#164) Vrai le temps où un LECTEUR restaure, dans ses zones
+    /// privées, les propriétés d'une transaction jamais commitée
+    /// (`annuler_proprietes_en_vol`) : les setters ordinaires y sont permis,
+    /// et le journal est muet (`WalWriter::rendre_muet_en_lecture_seule`).
+    restauration_privee: std::sync::atomic::AtomicBool,
     /// Epoque courante, publiee par le moteur a chaque commit.
     ///
     /// (2026-08-14) `current_epoch()` rendait `EpochId(0)` en dur, avec le
@@ -6196,6 +6209,295 @@ impl SubstrateStore {
         self.tx_undo.write().entry(tx).or_default().push(entree);
     }
 
+    /// (obrain#164) Journalise au WAL la VALEUR D'AVANT d'une propriété que la
+    /// transaction `tx` s'apprête à écrire ou retirer (`TxProprieteAvant`).
+    /// Appelé AVANT l'écriture : un `kill -9` entre les deux laisse une valeur
+    /// d'avant sans écriture, que la restauration réécrit à l'identique.
+    ///
+    /// Pourquoi : un `SET` est écrit EN PLACE (chaîne v2, colonne blob, colonne
+    /// de vecteurs) et ces octets survivent au processus. Le journal
+    /// d'annulation (`tx_undo`) vit en mémoire et meurt avec lui : sans cette
+    /// trame, la réouverture servait la valeur d'une transaction jamais
+    /// commitée (mesuré : 20/20, `atomicite_proprietes_tx_kill9.rs`).
+    ///
+    /// Rien n'est journalisé pour `SYSTEM` (pas de transaction), ni pour une
+    /// entité CRÉÉE par la même transaction : déclarée en vol
+    /// (`TxNoeudEnAttente` / `TxAreteEnAttente`), elle est écartée entière par
+    /// le rejeu, propriétés comprises.
+    fn journaliser_valeur_avant(
+        &self,
+        tx: TransactionId,
+        entity_kind: EntityKind,
+        id: u64,
+        key: &str,
+        avant: Option<&Value>,
+    ) {
+        if tx == TransactionId::SYSTEM {
+            return;
+        }
+        let creee_par_tx = match entity_kind {
+            EntityKind::Node => self
+                .en_attente_noeuds
+                .get(&NodeId(id))
+                .is_some_and(|t| *t.value() == tx.0),
+            EntityKind::Edge => self
+                .aretes_creees_par_tx
+                .get(&EdgeId(id))
+                .is_some_and(|t| *t.value() == tx.0),
+        };
+        if creee_par_tx {
+            return;
+        }
+        let avant = match avant.map(Self::wal_inline_encode_value).transpose() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!(tx = tx.0, id, key = %key, error = %e,
+                    "TxProprieteAvant : valeur d'avant indécodable — un kill -9 avant le \
+                     commit laisserait la valeur de cette transaction");
+                return;
+            }
+        };
+        if avant.as_ref().is_some_and(|a| a.len() > BLOB_WAL_MAX_BYTES) {
+            tracing::error!(tx = tx.0, id, key = %key,
+                "TxProprieteAvant : valeur d'avant au-delà du plafond WAL ({BLOB_WAL_MAX_BYTES} o), \
+                 NON journalisée — un kill -9 avant le commit laisserait la valeur de cette \
+                 transaction (limite v0.0.1)");
+            return;
+        }
+        match self.writer.append_payload(WalPayload::TxProprieteAvant {
+            tx: tx.0,
+            entity_kind: entity_kind as u8,
+            id,
+            key: key.to_string(),
+            avant,
+        }) {
+            Ok(()) => {
+                self.tx_avec_valeur_avant.lock().insert(tx.0);
+            }
+            Err(e) => {
+                tracing::error!(tx = tx.0, id, key = %key, error = %e,
+                    "TxProprieteAvant non journalisée — un kill -9 avant le commit laisserait \
+                     la valeur de cette transaction");
+            }
+        }
+    }
+
+    /// (obrain#164) Clôt sans commit une transaction qui a journalisé des
+    /// valeurs d'avant (`TxAnnulee`), APRÈS que ses propriétés ont été
+    /// réécrites. Sans elle, le rejeu suivant la prendrait pour une transaction
+    /// en vol et restaurerait ses valeurs d'avant PAR-DESSUS les écritures
+    /// commitées depuis.
+    fn clore_transaction_annulee(&self, tx: TransactionId) {
+        if !self.tx_avec_valeur_avant.lock().remove(&tx.0) {
+            return;
+        }
+        if let Err(e) = self
+            .writer
+            .append_payload(WalPayload::TxAnnulee { tx: tx.0 })
+        {
+            tracing::error!(tx = tx.0, error = %e,
+                "TxAnnulee non journalisée — la réouverture restaurera les valeurs d'avant \
+                 de cette transaction annulée, par-dessus ce qui a pu être commité depuis");
+        }
+    }
+
+    /// (obrain#164) À L'OUVERTURE : restaure les propriétés écrites par une
+    /// transaction jamais commitée.
+    ///
+    /// Relit le WAL entier (une transaction ouverte avant le dernier flush a pu
+    /// y déclarer ses valeurs d'avant plus tôt que la fenêtre de rejeu). Une
+    /// transaction est EN VOL si elle a déclaré une valeur d'avant
+    /// (`TxProprieteAvant`) sans `TxCommit` ni `TxAnnulee`. Ses valeurs d'avant
+    /// sont réécrites de la plus RÉCENTE à la plus ancienne (comme
+    /// `rejoue_annulations` : la dernière appliquée est l'originale), par les
+    /// setters ordinaires — qui savent où vit chaque valeur (chaîne v2, colonne
+    /// blob, colonne de vecteurs, carte héritée).
+    ///
+    /// Une valeur d'avant n'est PAS restaurée si une transaction COMMITÉE a
+    /// déclaré la même (entité, clé) plus loin dans le WAL : son écriture est
+    /// postérieure et fait foi. En processus, le premier-écrivain-gagne
+    /// l'interdit tant que la transaction en vol tient l'entité ; le cas reste
+    /// possible entre processus.
+    ///
+    /// Qui restaure : l'écrivain EXCLUSIF (il reprend après un crash ; ses
+    /// réécritures partent au WAL, suivies d'un `TxAnnulee` scellé, et le rejeu
+    /// suivant ne refait rien) et le LECTEUR (dans ses zones privées, journal
+    /// muet : rien n'atteint le disque, il recommence à chaque ouverture tant
+    /// qu'un écrivain ne l'a pas fait). Un écrivain PARTAGÉ s'abstient : la
+    /// transaction peut appartenir à un pair VIVANT (même règle que le rejeu des
+    /// colonnes blob, `merge_wal_inline_props`).
+    fn annuler_proprietes_en_vol(&self) {
+        let (restaurer, lecture_seule, wal_path) = {
+            let sub = self.substrate.lock();
+            (
+                !sub.est_ecriture_partagee() || sub.est_lecture_seule(),
+                sub.est_lecture_seule(),
+                sub.wal_path(),
+            )
+        };
+        if !restaurer || !wal_path.exists() {
+            return;
+        }
+        let reader = match crate::wal_io::WalReader::open(&wal_path) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e,
+                    "annulation des propriétés en vol : WAL illisible, rien n'est restauré");
+                return;
+            }
+        };
+        if reader.is_empty() {
+            return;
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Etat {
+            EnVol,
+            Commitee,
+            Annulee,
+        }
+        struct ValeurAvant {
+            offset: u64,
+            tx: u64,
+            entity_kind: u8,
+            id: u64,
+            key: String,
+            avant: Option<Vec<u8>>,
+            etat: Etat,
+        }
+        // ── LA CLÔTURE EST POSITIONNELLE ─────────────────────────────────────
+        // Les identifiants de transaction RECOMMENCENT à chaque processus
+        // (mesuré : la transaction explicite de l'enfant porte l'identifiant 2,
+        // comme l'auto-commit du processus qui a créé le nœud avant lui). Un
+        // `TxCommit { tx }` ne clôt donc que les déclarations de `tx` qui le
+        // PRÉCÈDENT — même règle que le registre `en_vol` de `replay_from`.
+        let mut declarations: Vec<ValeurAvant> = Vec::new();
+        let mut ouvertes: std::collections::HashMap<u64, Vec<usize>> =
+            std::collections::HashMap::new();
+        for item in reader.iter_from(0) {
+            let Ok((rec, offset, _)) = item else {
+                // Frontière de crash (ou trou) : même arrêt que `replay_from`.
+                break;
+            };
+            match rec.payload {
+                WalPayload::TxProprieteAvant {
+                    tx,
+                    entity_kind,
+                    id,
+                    key,
+                    avant,
+                } => {
+                    ouvertes.entry(tx).or_default().push(declarations.len());
+                    declarations.push(ValeurAvant {
+                        offset,
+                        tx,
+                        entity_kind,
+                        id,
+                        key,
+                        avant,
+                        etat: Etat::EnVol,
+                    });
+                }
+                WalPayload::TxCommit { tx } => {
+                    for i in ouvertes.remove(&tx).unwrap_or_default() {
+                        declarations[i].etat = Etat::Commitee;
+                    }
+                }
+                WalPayload::TxAnnulee { tx } => {
+                    for i in ouvertes.remove(&tx).unwrap_or_default() {
+                        declarations[i].etat = Etat::Annulee;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if ouvertes.is_empty() {
+            return;
+        }
+        // (entité, clé) → offset de la DERNIÈRE déclaration d'une transaction
+        // commitée.
+        let mut dernier_commit: std::collections::HashMap<(u8, u64, &str), u64> =
+            std::collections::HashMap::new();
+        for d in declarations.iter().filter(|d| d.etat == Etat::Commitee) {
+            let o = dernier_commit
+                .entry((d.entity_kind, d.id, d.key.as_str()))
+                .or_insert(d.offset);
+            *o = (*o).max(d.offset);
+        }
+        if lecture_seule {
+            self.writer.wal().rendre_muet_en_lecture_seule(true);
+            self.restauration_privee.store(true, Ordering::Release);
+        }
+        let mut en_vol: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let (mut restaurees, mut sautees) = (0u64, 0u64);
+        for d in declarations.iter().rev().filter(|d| d.etat == Etat::EnVol) {
+            en_vol.insert(d.tx);
+            if dernier_commit
+                .get(&(d.entity_kind, d.id, d.key.as_str()))
+                .is_some_and(|o| *o > d.offset)
+            {
+                sautees += 1;
+                continue;
+            }
+            let avant = match d.avant.as_deref().map(Self::wal_inline_decode_value) {
+                None => None,
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => {
+                    tracing::error!(tx = d.tx, id = d.id, key = %d.key, error = %e,
+                        "valeur d'avant indécodable : propriété NON restaurée");
+                    sautees += 1;
+                    continue;
+                }
+            };
+            if d.entity_kind == EntityKind::Node as u8 {
+                let id = NodeId(d.id);
+                match avant {
+                    Some(v) => self.set_node_property(id, &d.key, v),
+                    None => {
+                        self.remove_node_property(id, &d.key);
+                    }
+                }
+            } else {
+                let id = EdgeId(d.id);
+                match avant {
+                    Some(v) => self.set_edge_property(id, &d.key, v),
+                    None => {
+                        self.remove_edge_property(id, &d.key);
+                    }
+                }
+            }
+            restaurees += 1;
+        }
+        if lecture_seule {
+            self.restauration_privee.store(false, Ordering::Release);
+            self.writer.wal().rendre_muet_en_lecture_seule(false);
+        } else {
+            // Les réécritures sont au WAL ; la clôture les suit, scellée
+            // (`FLAG_COMMIT` : `fsync` sous `EveryCommit`). Un crash avant elle
+            // fait recommencer la restauration à l'identique.
+            for tx in &en_vol {
+                let rec = WalRecord {
+                    lsn: 0,
+                    timestamp: horodatage_micros(),
+                    flags: WalRecord::FLAG_COMMIT,
+                    payload: WalPayload::TxAnnulee { tx: *tx },
+                };
+                if let Err(e) = self.writer.wal().append_encoded(&rec) {
+                    tracing::error!(tx, error = %e,
+                        "TxAnnulee non journalisée après restauration — la prochaine \
+                         ouverture restaurera de nouveau");
+                }
+            }
+        }
+        tracing::warn!(
+            transactions = en_vol.len(),
+            restaurees,
+            sautees,
+            lecteur = lecture_seule,
+            "ouverture : propriétés de transactions EN VOL (jamais commitées) restaurées à leur \
+             valeur d'avant"
+        );
+    }
+
     /// Rejoue les entrees posterieures a `jusqua`, de la plus RECENTE a la plus
     /// ancienne.
     ///
@@ -6376,6 +6678,11 @@ impl SubstrateStore {
     /// `TransactionError::ReadOnly`.
     #[track_caller]
     fn refuser_mutation_en_lecture_seule(&self, operation: &str) {
+        // (obrain#164) Restauration à l'ouverture d'un lecteur : ses zones sont
+        // privées et son journal muet, rien n'atteint le disque.
+        if self.restauration_privee.load(Ordering::Acquire) {
+            return;
+        }
         if let Err(e) = self.exiger_ecriture(operation) {
             panic!("{e}");
         }
@@ -7765,6 +8072,8 @@ impl SubstrateStore {
             splice_lock: Mutex::new(()),
             named_graphs: RwLock::new(std::collections::HashMap::new()),
             tx_undo: RwLock::new(std::collections::HashMap::new()),
+            tx_avec_valeur_avant: Mutex::new(std::collections::HashSet::new()),
+            restauration_privee: std::sync::atomic::AtomicBool::new(false),
             epoque_courante: AtomicU64::new(0),
             seuil_checkpoint: AtomicU64::new(
                 std::env::var("OBRAIN_WAL_CHECKPOINT_BYTES")
@@ -8776,6 +9085,18 @@ impl SubstrateStore {
             "SubstrateStore::from_substrate complete (réel)"
         );
 
+        // (obrain#164) ORDRE CHOISI : RESTAURATION, PUIS FLUSH DIFFÉRÉ (#167).
+        // Le store est ici complet (registres de colonnes hydratés, fenêtre
+        // WAL fusionnée) : c'est la précondition du flush de #167, et celle de
+        // la restauration. Restaurer AVANT le flush fait que les écritures de
+        // restauration sont rendues durables par ce flush (zones msynchées,
+        // `wal_offset_at_flush` posé APRÈS elles) : une ouverture tuée entre
+        // les deux ne laisse ni une restauration à moitié écrite sans sa
+        // clôture, ni une fenêtre de rejeu qui la rejoue sur un état postérieur.
+        // Restaurer APRÈS le flush donnerait l'inverse : la restauration
+        // resterait dans la fenêtre du prochain rejeu.
+        store.annuler_proprietes_en_vol();
+
         // T17j T3 (obrain#167) — the deferred v5→v6 auto-flush, now that the
         // store is whole (column registries hydrated, WAL window merged).
         // Graceful failure : a flush error (read-only FS, disk full) logs a
@@ -8795,7 +9116,6 @@ impl SubstrateStore {
                 ),
             }
         }
-
         // Rien n a ete ecrit PAR NOUS a ce stade : la garde de fermeture
         // part de l offset courant, sinon toute base simplement ouverte se
         // croirait sale et se ferait flusher par son Drop.
@@ -24481,6 +24801,8 @@ impl GraphStoreMut for SubstrateStore {
     fn commit_transaction_properties(&self, transaction_id: TransactionId) {
         // Commit : plus rien a defaire.
         self.tx_undo.write().remove(&transaction_id);
+        // (obrain#164) Le `TxCommit` de `seal_commit` clôt ses valeurs d'avant.
+        self.tx_avec_valeur_avant.lock().remove(&transaction_id.0);
     }
 
     /// Le commit PUBLIE les noeuds de la transaction : ils cessent d'etre en
@@ -24513,6 +24835,9 @@ impl GraphStoreMut for SubstrateStore {
     fn rollback_transaction_properties(&self, transaction_id: TransactionId) {
         self.rejoue_annulations(transaction_id, 0);
         self.tx_undo.write().remove(&transaction_id);
+        // (obrain#164) Les valeurs d'avant sont réécrites (trames ci-dessus) :
+        // la transaction est close, le rejeu ne doit plus les restaurer.
+        self.clore_transaction_annulee(transaction_id);
     }
 
     fn rollback_transaction_properties_to(&self, transaction_id: TransactionId, since: usize) {
@@ -24574,6 +24899,7 @@ impl GraphStoreMut for SubstrateStore {
         transaction_id: TransactionId,
     ) {
         let avant = self.get_node_property(id, &PropertyKey::new(key));
+        self.journaliser_valeur_avant(transaction_id, EntityKind::Node, id.0, key, avant.as_ref());
         self.journalise(
             transaction_id,
             Annulation::ProprieteNoeud {
@@ -24593,6 +24919,7 @@ impl GraphStoreMut for SubstrateStore {
         transaction_id: TransactionId,
     ) {
         let avant = self.get_edge_property(id, &PropertyKey::new(key));
+        self.journaliser_valeur_avant(transaction_id, EntityKind::Edge, id.0, key, avant.as_ref());
         self.journalise(
             transaction_id,
             Annulation::ProprieteArete {
@@ -24610,6 +24937,17 @@ impl GraphStoreMut for SubstrateStore {
         key: &str,
         transaction_id: TransactionId,
     ) -> Option<Value> {
+        // (obrain#164) La valeur d'avant part au WAL AVANT le retrait. Seule
+        // une propriété présente en a une : retirer une absente ne change rien.
+        if let Some(present) = self.get_node_property(id, &PropertyKey::new(key)) {
+            self.journaliser_valeur_avant(
+                transaction_id,
+                EntityKind::Node,
+                id.0,
+                key,
+                Some(&present),
+            );
+        }
         let avant = self.remove_node_property(id, key);
         self.journalise(
             transaction_id,
@@ -24628,6 +24966,16 @@ impl GraphStoreMut for SubstrateStore {
         key: &str,
         transaction_id: TransactionId,
     ) -> Option<Value> {
+        // (obrain#164) Comme `remove_node_property_versioned`.
+        if let Some(present) = self.get_edge_property(id, &PropertyKey::new(key)) {
+            self.journaliser_valeur_avant(
+                transaction_id,
+                EntityKind::Edge,
+                id.0,
+                key,
+                Some(&present),
+            );
+        }
         let avant = self.remove_edge_property(id, key);
         self.journalise(
             transaction_id,

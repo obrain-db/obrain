@@ -174,6 +174,30 @@ pub enum WalKind {
     TxNoeudEnAttente = 0x56,
     TxAreteEnAttente = 0x57,
     TxCommit = 0x58,
+    /// (2026-11-13, obrain#164) VALEUR D'AVANT d'une propriété qu'une
+    /// transaction va écraser ou retirer — voir
+    /// [`WalPayload::TxProprieteAvant`]. Le WAL est physique : un `SET` est
+    /// écrit en place dans la chaîne v2, la colonne blob ou la colonne de
+    /// vecteurs à l'instant où il a lieu, et ces octets survivent à un
+    /// `kill -9` (cache de pages). Sans cette trame, la valeur d'une
+    /// transaction jamais commitée était servie à la réouverture (mesuré :
+    /// 20/20, `obrain-engine/tests/atomicite_proprietes_tx_kill9.rs`, et
+    /// encore servie avec les trames de la transaction RETIRÉES du WAL). Écrite
+    /// AVANT l'écriture de la propriété. À l'ouverture, une transaction qui a
+    /// déclaré des valeurs d'avant sans `TxCommit` ni `TxAnnulee` voit ses
+    /// propriétés RESTAURÉES (`SubstrateStore::annuler_proprietes_en_vol`).
+    ///
+    /// COMPATIBILITÉ DU FORMAT (règle des opcodes 0x54 à 0x58, 0x2B) : opcodes
+    /// nouveaux, variantes en FIN d'enum `WalPayload`. Un binaire antérieur
+    /// REFUSE d'ouvrir un WAL qui les contient (`WalOpcodeInconnu`). Checkpoint
+    /// FORCÉ avec le binaire récent (qui tronque le WAL) avant tout downgrade.
+    TxProprieteAvant = 0x59,
+    /// (2026-11-13, obrain#164) La transaction `tx` est CLOSE SANS COMMIT
+    /// (`rollback`, refus au commit, ou restauration faite à l'ouverture) :
+    /// ses valeurs d'avant ont déjà été réécrites par les trames qui
+    /// précèdent. Le rejeu ne les restaure plus — sans quoi il écraserait les
+    /// écritures commitées APRÈS la clôture.
+    TxAnnulee = 0x5A,
     Checkpoint = 0xF0,
     NoOp = 0xFE,
     EndOfLog = 0xFF,
@@ -233,6 +257,8 @@ impl WalKind {
             0x56 => TxNoeudEnAttente,
             0x57 => TxAreteEnAttente,
             0x58 => TxCommit,
+            0x59 => TxProprieteAvant,
+            0x5A => TxAnnulee,
             0xF0 => Checkpoint,
             0xFE => NoOp,
             0xFF => EndOfLog,
@@ -716,6 +742,25 @@ pub enum WalPayload {
         key: String,
         vector: Vec<f32>,
     },
+    /// (2026-11-13, obrain#164) Valeur d'avant d'une propriété que la
+    /// transaction `tx` va écrire ou retirer — voir
+    /// [`WalKind::TxProprieteAvant`]. `entity_kind` : 0 nœud, 1 arête ; `id` :
+    /// identifiant de l'entité ; `key` : nom de la clé ; `avant` : la valeur
+    /// d'avant encodée comme `PropSetInline` (`None` : la propriété n'existait
+    /// pas, la restaurer c'est la retirer). EN FIN D'ENUM (encodage par
+    /// indice).
+    TxProprieteAvant {
+        tx: u64,
+        entity_kind: u8,
+        id: u64,
+        key: String,
+        avant: Option<Vec<u8>>,
+    },
+    /// (2026-11-13, obrain#164) La transaction `tx` est close sans commit —
+    /// voir [`WalKind::TxAnnulee`]. EN FIN D'ENUM.
+    TxAnnulee {
+        tx: u64,
+    },
 }
 
 impl WalPayload {
@@ -769,6 +814,8 @@ impl WalPayload {
             TxNoeudEnAttente { .. } => K::TxNoeudEnAttente,
             TxAreteEnAttente { .. } => K::TxAreteEnAttente,
             TxCommit { .. } => K::TxCommit,
+            TxProprieteAvant { .. } => K::TxProprieteAvant,
+            TxAnnulee { .. } => K::TxAnnulee,
             VecColumnWrite { .. } => K::VecColumnWrite,
             BlobColumnWrite { .. } => K::BlobColumnWrite,
             BlobColumnClear { .. } => K::BlobColumnClear,
@@ -1233,6 +1280,11 @@ mod tests {
         assert_eq!(WalKind::TxAreteEnAttente as u8, 0x57);
         assert_eq!(WalKind::TxCommit as u8, 0x58);
         assert_eq!(WalKind::from_u8(0x58), Some(WalKind::TxCommit));
+        // (obrain#164) Opcodes additifs, en fin de table.
+        assert_eq!(WalKind::TxProprieteAvant as u8, 0x59);
+        assert_eq!(WalKind::from_u8(0x59), Some(WalKind::TxProprieteAvant));
+        assert_eq!(WalKind::TxAnnulee as u8, 0x5A);
+        assert_eq!(WalKind::from_u8(0x5A), Some(WalKind::TxAnnulee));
     }
 
     /// Chantier SlotRemappable — les variantes V2 font l'aller-retour, et
@@ -1585,6 +1637,21 @@ mod tests {
                 key: "emb".into(),
                 vector: vec![0.5, -1.25, f32::MIN_POSITIVE, 3.0e9],
             },
+            WalPayload::TxProprieteAvant {
+                tx: 7,
+                entity_kind: 0,
+                id: 9,
+                key: "court".into(),
+                avant: Some(vec![0x0C, 1, 2, 3]),
+            },
+            WalPayload::TxProprieteAvant {
+                tx: 7,
+                entity_kind: 1,
+                id: u64::MAX,
+                key: "tag".into(),
+                avant: None,
+            },
+            WalPayload::TxAnnulee { tx: 7 },
         ];
         for (i, p) in payloads.into_iter().enumerate() {
             let rec = WalRecord {

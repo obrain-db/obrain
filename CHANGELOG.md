@@ -6,6 +6,28 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Atomicité des propriétés sous `kill -9` (obrain#164)
+
+- Un `SET` / `REMOVE` sur un nœud ou une arête EXISTANT, fait dans une
+  transaction jamais commitée, réapparaissait après un `kill -9` : valeur courte,
+  valeur longue (blob), vecteur et retrait, servis avec leur valeur non commitée
+  (mesuré : 20/20 par cas sur main, lecteur `open_read_only` et écrivain qui
+  rouvre, base neuve ou flushée). Cause : les octets sont écrits en place dans la
+  chaîne v2 et les colonnes, et survivent au processus ; le journal d'annulation
+  était en mémoire seulement. Le constat de l'issue (rejeu des trames sans
+  `TxCommit`) n'était pas la cause : la valeur reste servie quand on retire ces
+  trames du WAL.
+- **Corrigé** : trame `TxProprieteAvant` (0x59, valeur d'avant) écrite avant
+  l'écriture, `TxAnnulee` (0x5A) au `rollback` ; à l'ouverture, les propriétés
+  d'une transaction en vol sont restaurées (écrivain exclusif, lecteur dans ses
+  zones privées). Le checkpoint ne tronque pas une telle transaction. 0/20 après.
+- Coût : une trame par `SET`/`REMOVE` transactionnel d'une entité préexistante (auto-commit compris : c'est une transaction implicite), qui porte la valeur d'avant ; mesuré au WAL pour un `SET` en auto-commit : valeur courte 40 → 119 o, valeur de 585 o 682 → 1 340 o, vecteur de dimension 16 199 → 334 o. Les créations (`INSERT`) n'en écrivent pas.
+- **Format** : un binaire antérieur refuse un WAL qui contient 0x59/0x5A
+  (`WalOpcodeInconnu`) : checkpoint forcé avec le binaire récent avant tout
+  downgrade.
+- Reste ouvert (mesuré, même famille) : labels ajoutés/retirés et suppressions
+  d'entités préexistantes dans une transaction non commitée survivent au `kill -9`.
+
 ### Durabilité des vecteurs (obrain#120)
 
 - Un vecteur acquitté puis perdu dans un `kill -9` avant flush disparaissait,
