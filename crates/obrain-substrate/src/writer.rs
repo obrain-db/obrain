@@ -102,6 +102,11 @@ pub struct Writer {
     /// simpliciale n'est pas configurée. Mutex FEUILLE : jamais tenu en
     /// travers d'un verrou de zone.
     simplex_passes_cache: Mutex<Option<Option<crate::simplex_passes::SimplexPassesConfig>>>,
+    /// (obrain#120 pt 5) Index label → slots, tenu au point d'écriture des
+    /// records de nœuds. Inactif en lecture seule et en écriture partagée
+    /// (des pairs écrivent la zone sans passer par ce `Writer`). Voir
+    /// [`crate::index_labels`].
+    index_labels: crate::index_labels::IndexLabels,
 }
 
 #[derive(Default)]
@@ -192,6 +197,10 @@ impl Writer {
             Arc::new(WalWriter::open(&wal_path, sync_mode, ancre_de_repli)?)
         };
         wal.coordination(coordination);
+        // Seul écrivain de la zone : verrou exclusif (ou mémoire). Voir
+        // `crate::index_labels`, « Où il est INACTIF ».
+        let index_labels_actif =
+            !substrate.est_ecriture_partagee() && !substrate.est_lecture_seule();
         Ok(Self {
             substrate: Arc::new(Mutex::new(substrate)),
             wal,
@@ -202,6 +211,7 @@ impl Writer {
             wal_baseline: std::sync::atomic::AtomicU64::new(0),
             simplex_index: Mutex::new(None),
             simplex_passes_cache: Mutex::new(None),
+            index_labels: crate::index_labels::IndexLabels::new(index_labels_actif),
         })
     }
 
@@ -255,6 +265,9 @@ impl Writer {
         if n == 0 {
             return Ok((0, m));
         }
+        // Écriture zone-directe de n records : l'index est reconstruit à la
+        // requête suivante plutôt que nourri slot par slot.
+        let _index = self.index_labels.garde_invalidation();
         // Zone Nodes : records contigus (slot 1..=n), slot 0 = sentinelle.
         self.with_node_zone(|zf| {
             let total = (n as u64 + 1) * NodeRecord::SIZE as u64;
@@ -407,13 +420,17 @@ impl Writer {
         }
 
         // (2) mmap mutation.
-        self.with_node_zone(|zf| {
+        let bits = self.with_node_zone(|zf| {
             let offset = idx as usize * NodeRecord::SIZE;
             ensure_room(zf, offset + NodeRecord::SIZE, self.min_headroom)?;
+            let bits = bits_a_noter_sur(zf.as_slice(), offset, &node);
             let bytes = bytemuck::bytes_of(&node);
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
-            Ok(())
-        })
+            Ok(bits)
+        })?;
+        // (3) index de labels, verrou de zone relâché (`crate::index_labels`).
+        self.index_labels.noter(idx, bits);
+        Ok(())
     }
 
     /// Rewrite an existing [`NodeRecord`] at `idx` and log a `NodeUpdate`.
@@ -449,13 +466,16 @@ impl Writer {
         };
         self.wal.append(rec)?;
 
-        self.with_node_zone(|zf| {
+        let bits = self.with_node_zone(|zf| {
             let offset = idx as usize * NodeRecord::SIZE;
             ensure_room(zf, offset + NodeRecord::SIZE, self.min_headroom)?;
+            let bits = bits_a_noter_sur(zf.as_slice(), offset, &node);
             let bytes = bytemuck::bytes_of(&node);
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
-            Ok(())
-        })
+            Ok(bits)
+        })?;
+        self.index_labels.noter(idx, bits);
+        Ok(())
     }
 
     /// Update only the `first_prop_off` head pointer of the node at `idx`
@@ -642,15 +662,20 @@ impl Writer {
         };
         self.wal.append(rec)?;
 
-        self.with_node_zone(|zf| {
+        let ecrit = self.with_node_zone(|zf| {
             let offset = idx as usize * NodeRecord::SIZE;
             if offset + NodeRecord::SIZE > zf.as_slice().len() {
-                return Ok(());
+                return Ok(false);
             }
             let bytes = bytemuck::bytes_of(&updated);
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
-            Ok(())
-        })
+            Ok(true)
+        })?;
+        // Un revenant a pu être compacté hors de ses listes : tous ses bits.
+        if ecrit {
+            self.index_labels.noter(idx, updated.label_bitset);
+        }
+        Ok(())
     }
 
     /// Inverse exact de [`Self::tombstone_edge`]. Meme raisonnement que
@@ -1675,6 +1700,8 @@ impl Writer {
         // enrôlées dans le remap de slots — refus explicite plutôt que
         // corruption silencieuse.
         self.refuser_remap_si_simplexes("bulk_sort_by_hilbert")?;
+        // Permutation de slots : les listes désigneraient les anciens slots.
+        let _index = self.index_labels.garde_invalidation();
         // Early-out idempotency check.
         {
             let sub = self.substrate.lock();
@@ -2231,6 +2258,8 @@ impl Writer {
     ) -> SubstrateResult<CompactionResult> {
         // T4 simplicial : même garde que `bulk_sort_by_hilbert`.
         self.refuser_remap_si_simplexes("compact_community")?;
+        // Permutation de slots : même raison que `bulk_sort_by_hilbert`.
+        let _index = self.index_labels.garde_invalidation();
         if current_node_hw == 0 {
             return Ok(CompactionResult::empty());
         }
@@ -3730,6 +3759,119 @@ pub(crate) fn armer_echec_ensure_room(suffixe: &str, sauts: u32) {
 #[cfg(test)]
 pub(crate) fn echec_ensure_room_a_tire() -> bool {
     ECHEC_ENSURE_ROOM.with(|c| c.borrow().is_none())
+}
+
+/// Bits que l'écriture de `nouveau` à `offset` doit noter dans l'index de
+/// labels, d'après le record qu'elle remplace (zéros au-delà de la zone).
+fn bits_a_noter_sur(octets: &[u8], offset: usize, nouveau: &NodeRecord) -> u64 {
+    match octets.get(offset..offset + NodeRecord::SIZE) {
+        Some(b) => {
+            let ancien = bytemuck::from_bytes::<NodeRecord>(b);
+            crate::index_labels::bits_a_noter(
+                ancien.label_bitset,
+                ancien.is_tombstoned(),
+                nouveau.label_bitset,
+            )
+        }
+        None => nouveau.label_bitset,
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// INDEX DE LABELS (obrain#120 pt 5) — voir `crate::index_labels`
+// ═════════════════════════════════════════════════════════════════════
+impl Writer {
+    /// Slots VISIBLES (`est_visible_pour(portee)`) portant le bit `bit`, dans
+    /// `1..hw`, croissants, au plus `max` — exactement ce que rend le balayage
+    /// de `nodes_by_label_capped`, mais en ne lisant que les candidats de
+    /// l'index.
+    ///
+    /// `None` : index inactif (lecture seule, écriture partagée) ou
+    /// construction impossible — l'appelant balaie.
+    ///
+    /// Interruptible comme le balayage : un jeton armé arrête la vérification
+    /// et rend le résultat partiel, que le moteur rattrape (même contrat que
+    /// `for_each_node_record_annulable`).
+    pub(crate) fn noeuds_par_label_indexes(
+        &self,
+        bit: u8,
+        hw: u32,
+        portee: Option<u32>,
+        max: usize,
+    ) -> Option<Vec<u32>> {
+        let bit = bit as usize;
+        if !self.index_labels.actif() || bit >= crate::index_labels::NB_BITS {
+            return None;
+        }
+        let garde = self.index_labels.lecture_prete(bit, |noter| {
+            // Toute la zone, pas seulement `1..hw` : un slot au-delà du
+            // filigrane (bloc sauté, import en cours) entrera dans `1..hw`
+            // sans forcément être réécrit par ce `Writer`.
+            self.for_each_node_record(u32::MAX, |slot, rec| {
+                if rec.label_bitset != 0 && !rec.is_tombstoned() {
+                    noter(slot, rec.label_bitset);
+                }
+                true
+            })
+            .is_ok()
+        })?;
+        let etat = garde.as_ref()?;
+        let mask = 1u64 << bit;
+        let mut out: Vec<u32> = Vec::new();
+        if max < 4096 {
+            out.reserve(max);
+        }
+        let mut perimes = 0usize;
+        let mut complet = true;
+        let mut vigie = obrain_common::utils::cancel::Vigie::new();
+        let lu = self.with_node_zone_records(|lire| {
+            for &slot in etat.candidats(bit) {
+                if slot >= hw {
+                    break;
+                }
+                if vigie.tick_bool() {
+                    complet = false;
+                    break;
+                }
+                match lire(slot) {
+                    Some(rec) if rec.label_bitset & mask != 0 && !rec.is_tombstoned() => {
+                        if rec.est_visible_pour(portee) {
+                            out.push(slot);
+                            if out.len() >= max {
+                                complet = false;
+                                break;
+                            }
+                        }
+                    }
+                    _ => perimes += 1,
+                }
+            }
+        });
+        drop(garde);
+        crate::compteurs::ajouter_slots_noeuds_lus((out.len() + perimes) as u64);
+        lu.ok()?;
+        if complet && perimes > crate::index_labels::SEUIL_COMPACTION && perimes > out.len() {
+            self.index_labels.compacter(bit, |candidats| {
+                self.with_node_zone_records(|lire| {
+                    candidats
+                        .iter()
+                        .copied()
+                        .filter(|&s| {
+                            lire(s)
+                                .is_some_and(|r| r.label_bitset & mask != 0 && !r.is_tombstoned())
+                        })
+                        .collect()
+                })
+                .ok()
+            });
+        }
+        Some(out)
+    }
+
+    /// Diagnostic de l'index de labels de ce `Writer`.
+    pub(crate) fn diagnostic_index_labels(&self) -> crate::index_labels::DiagnosticIndexLabels {
+        self.index_labels.diagnostic()
+    }
 }
 
 /// Ensure `zf` is at least `needed_end` bytes long, with exponential pre-alloc.
