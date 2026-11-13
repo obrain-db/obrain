@@ -81,12 +81,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -147,12 +147,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -232,12 +232,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -320,12 +320,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -559,12 +559,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -616,12 +616,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -679,12 +679,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -756,12 +756,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -849,12 +849,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -935,12 +935,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -988,12 +988,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -1034,12 +1034,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
@@ -1089,12 +1089,12 @@ jobs:
           # (réglé pour les runners GitHub) bridait des machines à 16 cœurs.
           # Ici : 8 jobs (valeur du .env des runners) et sccache, cache disque
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
-          # Sans sccache installé, rien ne change.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ -x "$HOME/obrain-ci/tools/bin/sccache" ]; then
+          # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
+          # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
             {
               echo "CARGO_BUILD_JOBS=8"
-              echo "RUSTC_WRAPPER=$HOME/obrain-ci/tools/bin/sccache"
-              echo "SCCACHE_DIR=$HOME/obrain-ci/sccache"
+              echo "RUSTC_WRAPPER=sccache"
               echo "SCCACHE_CACHE_SIZE=30G"
             } >> "$GITHUB_ENV"
           fi
