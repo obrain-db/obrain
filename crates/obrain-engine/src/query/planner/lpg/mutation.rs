@@ -1181,6 +1181,9 @@ impl super::Planner {
             output_schema,
         )
         .with_transaction_context(self.viewing_epoch, self.transaction_id);
+        if let Some(ref validator) = self.validator {
+            op = op.with_validator(Arc::clone(validator));
+        }
         if let Some(ref tracker) = self.write_tracker {
             op = op.with_write_tracker(Arc::clone(tracker));
         }

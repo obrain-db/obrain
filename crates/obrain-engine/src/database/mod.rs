@@ -191,6 +191,11 @@ pub struct ObrainDB {
     ///
     /// [`SubstrateStore`]: obrain_substrate::SubstrateStore
     pub(super) substrate_store: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// Fil de PRÉPARATION des index d'égalité, lancé à l'ouverture quand il y
+    /// a quelque chose à préparer (zone héritée à compléter, index déclaré
+    /// non couvert). Attendu par [`Self::close`] : il tient une référence au
+    /// substrat, qui ne doit pas survivre à la fermeture.
+    pub(super) preparation_index: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Miroir du journal OPFS, rempli par `open_browser` (wasm32 seulement).
     /// `persist` y publie l'instantané du store ; absent pour toute autre base.
     #[cfg(target_arch = "wasm32")]
@@ -1038,6 +1043,35 @@ impl ObrainDB {
         // écrivain d'un autre processus.
         db.read_only = read_only;
 
+        // ── PRÉPARATION DES INDEX D'ÉGALITÉ, HORS DU CHEMIN DES REQUÊTES ──
+        //
+        // Une zone d'égalité écrite avant la clé canonique doit recevoir son
+        // complément, et un index déclaré que rien ne couvre (arrêt sans
+        // flush) doit être rebâti : deux passes proportionnelles à la base.
+        // Elles ne sont NI à l'ouverture NI — autant que possible — sur une
+        // requête : un fil les fait ici. Le résultat des requêtes n'en dépend
+        // pas ; celle qui aurait besoin de la passe avant sa fin l'attend au
+        // lieu d'en lancer une seconde. Rien n'est lancé quand il n'y a rien
+        // à préparer (le cas d'une base déjà à jour).
+        #[cfg(not(target_arch = "wasm32"))]
+        // Pas en lecture seule : la passe persiste son résultat, ce qu'un lecteur
+        // ne peut pas faire — elle serait refaite à chaque ouverture. Un lecteur
+        // qui a besoin du complément le bâtit à la demande, une fois par
+        // processus (`completer_index_herites`).
+        if path.is_some() && !read_only && typed.index_egalite_a_preparer() {
+            let substrat = Arc::clone(&typed);
+            match std::thread::Builder::new()
+                .name("obrain-index-egalite".into())
+                .spawn(move || substrat.preparer_index_egalite())
+            {
+                Ok(fil) => *db.preparation_index.lock() = Some(fil),
+                Err(e) => tracing::warn!(
+                    erreur = %e,
+                    "préparation des index d'égalité : fil non lancé — elle se fera à la demande"
+                ),
+            }
+        }
+
         // Journal RDF : replay des triplets persistés, puis ouverture en
         // ajout (écriture seule). Sans chemin (substrat temporaire), pas de
         // journal : l'état RDF n'a pas vocation à survivre.
@@ -1567,6 +1601,7 @@ impl ObrainDB {
             // les tests concernes echouent avec le VRAI motif au lieu d'un message
             // qui envoie chercher au mauvais endroit.
             substrate_store: Some(typed),
+            preparation_index: parking_lot::Mutex::new(None),
             #[cfg(target_arch = "wasm32")]
             miroir: None,
             base_registry: parking_lot::RwLock::new(None),
@@ -1696,6 +1731,7 @@ impl ObrainDB {
             embedding_models: RwLock::new(hashbrown::HashMap::new()),
             external_store: Some(store),
             substrate_store: None,
+            preparation_index: parking_lot::Mutex::new(None),
             #[cfg(target_arch = "wasm32")]
             miroir: None,
             base_registry: parking_lot::RwLock::new(None),
@@ -2308,6 +2344,15 @@ impl ObrainDB {
         let mut is_open = self.is_open.write();
         if !*is_open {
             return Ok(());
+        }
+        // Le fil de préparation des index tient une référence au substrat :
+        // on lui demande de s'arrêter (il rend la main au lot suivant) et on
+        // l'attend, pour que la fermeture relâche réellement la base.
+        if let Some(fil) = self.preparation_index.lock().take() {
+            if let Some(ref substrat) = self.substrate_store {
+                substrat.annuler_preparation_index();
+            }
+            let _ = fil.join();
         }
         // Une base fermée cesse d'être « vivante » pour l'ouvreur (voir
         // `open_substrate_inner`) : la rouvrir après `close()` est permis.

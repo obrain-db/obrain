@@ -299,9 +299,26 @@ const fn rang_de_classe(v: &Value) -> u8 {
     }
 }
 
-/// Instant UTC (en microsecondes) d'une chaîne RFC3339 datetime À DÉCALAGE
-/// EXPLICITE (`2026-01-01T10:00:00Z`, `…+02:00`) — `None` pour toute autre
-/// chaîne.
+/// Instant UTC EXACT (en NANOSECONDES depuis l'époque Unix) d'une chaîne
+/// RFC3339 datetime À DÉCALAGE EXPLICITE (`2026-01-01T10:00:00Z`,
+/// `…+02:00`) — `None` pour toute autre chaîne.
+///
+/// ── EXACT : NI SATURATION, NI TRONCATURE ──
+///
+/// Cet instant décide de l'ÉGALITÉ de deux chaînes datetime ([`egaler`]) et
+/// de leur seau dans l'index d'égalité du substrat : deux dates DISTINCTES ne
+/// doivent jamais rendre le même instant. L'ancienne version passait par
+/// `Timestamp` (nanosecondes sur `i64`, qui SATURE hors de 1677 → 2262) puis
+/// par `as_micros` (qui TRONQUE) : `3000-01-01T00:00:00Z` égalait
+/// `9999-12-31T23:59:59Z`, et `…00.0000001Z` égalait `…00.0000002Z`. On
+/// calcule donc ici sur `i128`, depuis la date et l'heure analysées, sans
+/// passer par un type qui borne.
+///
+/// La précision est la nanoseconde (neuf décimales). Une fraction qui porte
+/// un chiffre NON NUL au-delà de la neuvième décimale n'a pas d'instant
+/// exact ici : la fonction rend `None`, et la chaîne se compare alors comme
+/// une chaîne ordinaire — distincte de toute autre écriture, jamais égale par
+/// arrondi.
 ///
 /// Sert le PLONGEMENT TEMPOREL de l'ordre total : la production stocke des
 /// instants dans des chaînes (`to_rfc3339()`), et une colonne qui mélange
@@ -324,7 +341,7 @@ const fn rang_de_classe(v: &Value) -> u8 {
 /// Le reniflage écarte à coût quasi nul toute chaîne qui n'a pas la forme
 /// `AAAA-MM-JJT…` ; seules les chaînes d'allure datetime paient le parse.
 #[must_use]
-pub fn instant_de_chaine(s: &str) -> Option<i64> {
+pub fn instant_de_chaine(s: &str) -> Option<i128> {
     let b = s.as_bytes();
     if b.len() < 16 || b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b't') {
         return None;
@@ -340,7 +357,50 @@ pub fn instant_de_chaine(s: &str) -> Option<i64> {
     {
         return None;
     }
-    super::ZonedDatetime::parse(s).map(|z| z.as_timestamp().as_micros())
+    let (date, heure) = (&s[..10], &s[11..]);
+    let date = super::Date::parse(date)?;
+    let temps = super::Time::parse(heure)?;
+    // Décalage EXPLICITE exigé (même règle que `ZonedDatetime::parse`).
+    let decalage = temps.offset_seconds()?;
+    if fraction_au_dela_de_la_nanoseconde(heure) {
+        return None;
+    }
+    Some(
+        i128::from(date.as_days()) * 86_400_000_000_000 + i128::from(temps.as_nanos())
+            - i128::from(decalage) * 1_000_000_000,
+    )
+}
+
+/// Vrai si la partie fractionnaire des secondes porte un chiffre non nul
+/// APRÈS la neuvième décimale — une précision que `Time` (nanosecondes) ne
+/// conserve pas.
+fn fraction_au_dela_de_la_nanoseconde(heure: &str) -> bool {
+    let Some(point) = heure.find('.') else {
+        return false;
+    };
+    heure[point + 1..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .skip(9)
+        .any(|c| c != b'0')
+}
+
+/// L'entier `i` tel que `Int64(i)` ÉGALE `Float64(f)` au sens de ce
+/// comparateur, s'il existe (`None` pour un flottant non entier, hors de la
+/// plage `i64`, infini ou NaN ; `-0.0` rend `0`).
+///
+/// C'est la CLASSE D'ÉQUIVALENCE numérique de l'égalité, exposée pour les
+/// structures qui rangent des valeurs par clé (index d'égalité du substrat,
+/// sonde d'index des jointures) : elles doivent ranger `Float64(5.0)` avec
+/// `Int64(5)`. Le verdict est rendu par [`cmp_i64_f64`] lui-même, pas par une
+/// règle redéduite : la clé ne peut pas diverger de l'égalité.
+#[must_use]
+pub fn entier_egal_au_flottant(f: f64) -> Option<i64> {
+    // Conversion SATURANTE (NaN → 0) : elle ne décide de rien, elle propose
+    // le seul candidat possible, que `cmp_i64_f64` confirme ou rejette.
+    #[allow(clippy::cast_possible_truncation)]
+    let candidat = f as i64;
+    (cmp_i64_f64(candidat, f) == Some(Ordering::Equal)).then_some(candidat)
 }
 
 /// Rang effectif d'une valeur dans l'ordre total : celui de sa classe, sauf
@@ -404,11 +464,11 @@ pub fn comparer_total(a: &Value, b: &Value) -> Ordering {
         // Chaîne datetime contre horodatage typé : par instant, dans la même
         // classe de rang 3. Chaîne ordinaire : rang 2 < rang 3.
         (Value::String(s), Value::Timestamp(t)) => match instant_de_chaine(s) {
-            Some(x) => x.cmp(&t.as_micros()),
+            Some(x) => x.cmp(&i128::from(t.as_nanos())),
             None => Ordering::Less,
         },
         (Value::Timestamp(t), Value::String(s)) => match instant_de_chaine(s) {
-            Some(x) => t.as_micros().cmp(&x),
+            Some(x) => i128::from(t.as_nanos()).cmp(&x),
             None => Ordering::Greater,
         },
         (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
@@ -635,5 +695,192 @@ mod tests {
             comparer(&t, &t.clone()),
             Comparaison::Ordonnees(Ordering::Equal)
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // L'INSTANT D'UNE CHAÎNE DATETIME : EXACT, NI SATURÉ NI TRONQUÉ
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn chaine(s: &str) -> Value {
+        Value::String(s.into())
+    }
+
+    /// Deux dates distinctes hors de la plage d'un `Timestamp` (1677 → 2262)
+    /// rendaient le MÊME instant saturé, donc étaient « égales ».
+    #[test]
+    fn deux_dates_hors_plage_timestamp_ne_sont_pas_egales() {
+        for (x, y) in [
+            ("3000-01-01T00:00:00Z", "9999-12-31T23:59:59Z"),
+            ("2262-04-12T00:00:00Z", "2262-04-13T00:00:00Z"),
+            ("1500-06-01T00:00:00Z", "1000-06-01T00:00:00Z"),
+            ("1677-09-20T00:00:00Z", "1677-09-19T00:00:00Z"),
+        ] {
+            let (ix, iy) = (instant_de_chaine(x), instant_de_chaine(y));
+            assert!(ix.is_some() && iy.is_some(), "{x} et {y} sont des instants");
+            assert_ne!(ix, iy, "{x} et {y} : instants distincts");
+            assert_eq!(egaler(&chaine(x), &chaine(y)), Some(false), "{x} = {y}");
+            assert!(!egalite_structurelle(&chaine(x), &chaine(y)));
+            assert_ne!(comparer_total(&chaine(x), &chaine(y)), Ordering::Equal);
+        }
+        // L'ordre reste chronologique à ces bornes.
+        assert_eq!(
+            comparer(
+                &chaine("3000-01-01T00:00:00Z"),
+                &chaine("9999-12-31T23:59:59Z")
+            ),
+            Comparaison::Ordonnees(Ordering::Less)
+        );
+        assert_eq!(
+            comparer_total(
+                &chaine("1000-06-01T00:00:00Z"),
+                &chaine("1500-06-01T00:00:00Z")
+            ),
+            Ordering::Less
+        );
+        // Et le même instant écrit dans un autre fuseau reste ÉGAL, là aussi.
+        assert_eq!(
+            egaler(
+                &chaine("3000-01-01T00:00:00Z"),
+                &chaine("3000-01-01T02:00:00+02:00")
+            ),
+            Some(true)
+        );
+    }
+
+    /// Sous la microseconde : l'ancien `as_micros` tronquait, et deux
+    /// instants distants de 100 ns étaient « égaux ».
+    #[test]
+    fn deux_instants_sous_la_microseconde_ne_sont_pas_egaux() {
+        let (x, y) = (
+            "2024-01-01T00:00:00.0000001Z",
+            "2024-01-01T00:00:00.0000002Z",
+        );
+        assert_eq!(egaler(&chaine(x), &chaine(y)), Some(false));
+        assert_eq!(
+            instant_de_chaine(y).unwrap() - instant_de_chaine(x).unwrap(),
+            100,
+            "100 nanosecondes d'écart"
+        );
+        // La nanoseconde est la précision : deux écritures du même instant
+        // à neuf décimales restent égales.
+        assert_eq!(
+            egaler(
+                &chaine("2024-01-01T00:00:00.000000001Z"),
+                &chaine("2024-01-01T02:00:00.000000001+02:00")
+            ),
+            Some(true)
+        );
+        // Des zéros de queue ne changent pas l'instant.
+        assert_eq!(
+            instant_de_chaine("2024-01-01T00:00:00.5Z"),
+            instant_de_chaine("2024-01-01T00:00:00.500000000000Z")
+        );
+    }
+
+    /// Au-delà de la nanoseconde, pas d'instant exact : la chaîne redevient
+    /// une chaîne ordinaire — distincte de toute autre écriture, jamais
+    /// égale par arrondi.
+    #[test]
+    fn une_fraction_au_dela_de_la_nanoseconde_n_est_pas_arrondie() {
+        let (x, y) = (
+            "2024-01-01T00:00:00.0000000001Z",
+            "2024-01-01T00:00:00.0000000002Z",
+        );
+        assert_eq!(instant_de_chaine(x), None);
+        assert_eq!(egaler(&chaine(x), &chaine(y)), Some(false));
+        assert_eq!(egaler(&chaine(x), &chaine(x)), Some(true));
+        assert_eq!(
+            egaler(&chaine(x), &chaine("2024-01-01T00:00:00Z")),
+            Some(false)
+        );
+    }
+
+    /// L'instant exact de l'époque, et sa cohérence avec `Timestamp` DANS la
+    /// plage que `Timestamp` représente.
+    #[test]
+    fn l_instant_exact_concorde_avec_timestamp_dans_sa_plage() {
+        assert_eq!(instant_de_chaine("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            instant_de_chaine("1970-01-01T00:00:01+00:00"),
+            Some(1_000_000_000)
+        );
+        assert_eq!(
+            instant_de_chaine("1969-12-31T23:59:59Z"),
+            Some(-1_000_000_000)
+        );
+        for s in [
+            "2024-01-01T10:00:00Z",
+            "2026-06-15T10:30:00.123456+05:30",
+            "1999-12-31T23:59:59-08:00",
+        ] {
+            let typé = crate::types::ZonedDatetime::parse(s).unwrap();
+            assert_eq!(
+                instant_de_chaine(s),
+                Some(i128::from(typé.as_timestamp().as_nanos())),
+                "{s}"
+            );
+            // Chaîne datetime et horodatage typé du même instant : Equal au tri.
+            assert_eq!(
+                comparer_total(&chaine(s), &Value::Timestamp(typé.as_timestamp())),
+                Ordering::Equal
+            );
+        }
+    }
+
+    /// `entier_egal_au_flottant` aux bornes : il rend `i` exactement quand
+    /// `Int64(i) = Float64(f)` est vrai.
+    #[test]
+    fn entier_egal_au_flottant_aux_bornes() {
+        assert_eq!(entier_egal_au_flottant(0.0), Some(0));
+        assert_eq!(entier_egal_au_flottant(-0.0), Some(0));
+        assert_eq!(entier_egal_au_flottant(5.0), Some(5));
+        assert_eq!(entier_egal_au_flottant(-5.0), Some(-5));
+        assert_eq!(entier_egal_au_flottant(5.5), None);
+        assert_eq!(entier_egal_au_flottant(f64::NAN), None);
+        assert_eq!(entier_egal_au_flottant(f64::INFINITY), None);
+        assert_eq!(entier_egal_au_flottant(f64::NEG_INFINITY), None);
+        // -2^63 est un i64 ; 2^63 ne l'est pas.
+        assert_eq!(
+            entier_egal_au_flottant(-9_223_372_036_854_775_808.0),
+            Some(i64::MIN)
+        );
+        assert_eq!(entier_egal_au_flottant(9_223_372_036_854_775_808.0), None);
+        assert_eq!(entier_egal_au_flottant(1.0e300), None);
+        // Au-delà de 2^53 : le flottant est un entier exact, pas son voisin.
+        assert_eq!(
+            entier_egal_au_flottant(9_007_199_254_740_992.0),
+            Some(9_007_199_254_740_992)
+        );
+        // Cohérence avec l'égalité, sur tout l'échantillon.
+        for f in [
+            0.0,
+            -0.0,
+            5.0,
+            5.5,
+            1.0e18,
+            -1.0e18,
+            9_007_199_254_740_992.0,
+            9_223_372_036_854_775_808.0,
+            -9_223_372_036_854_775_808.0,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            match entier_egal_au_flottant(f) {
+                Some(i) => assert_eq!(
+                    egaler(&Value::Int64(i), &Value::Float64(f)),
+                    Some(true),
+                    "{f}"
+                ),
+                None => {
+                    for i in [0i64, 5, i64::MAX, i64::MIN, 9_007_199_254_740_993] {
+                        assert_ne!(
+                            egaler(&Value::Int64(i), &Value::Float64(f)),
+                            Some(true),
+                            "{f} n'égale aucun entier, donc pas {i}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

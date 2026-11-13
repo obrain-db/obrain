@@ -299,3 +299,69 @@ provisoire ne ressemble jamais à une ligne de base propre. La compilation de
 chaque bench a lieu avant la boucle mesurée, et une commande cargo en échec
 arrête le script (sortie 1). Les lignes de base vivent dans `target/criterion` :
 elles ne se comparent qu'entre arbres partageant le même `CARGO_TARGET_DIR`.
+
+### Coût de l'unicité sur tous les chemins d'écriture (PR « unicité sur tous les chemins ») — mesuré le 11/11/2026
+
+Banc : `UNICITE_N=<N> cargo bench -p obrain-engine --features cypher --bench unicite_ecritures`
+(base substrate sur disque semée par l'API directe, WAL sans fsync — ce coût est
+le même avec ou sans contrainte —, 2 000 instructions par cellule, µs par
+instruction, parse + plan compris, machine partagée très chargée : comparer
+chaque ligne à `sans_contrainte` DU MÊME bloc, pas d'un bloc à l'autre).
+Colonnes : `a` et `b` uniques, `g` à deux valeurs.
+
+| N | configuration | INSERT | SET col. contrainte | SET col. libre | MERGE trouve | MERGE crée |
+|---|---|---|---|---|---|---|
+| 100 k | sans contrainte | 25,3 | 16,6 | 15,6 | 15,8 | 25,4 |
+| 100 k | `UNIQUE (a)` | 27,9 | 16,8 | 14,9 | 15,8 | 26,7 |
+| 100 k | `UNIQUE (b, g)` | 27,5 | 18,3 | 15,6 | 17,7 | 28,3 |
+| 1 M | sans contrainte | 45,3 | 34,6 | 34,7 | 49,7 | 101,0 |
+| 1 M | `UNIQUE (a)` | 67,4 | 38,1 | 41,1 | 39,3 | 84,2 |
+| 1 M | `UNIQUE (b, g)` | 58,3 | 35,1 | 34,6 | 40,6 | 67,3 |
+| 5 M | sans contrainte | 37,5 | 24,4 | 21,6 | 21,8 | 36,5 |
+| 5 M | `UNIQUE (a)` | 46,9 | 24,5 | 21,1 | 23,1 | 37,7 |
+| 5 M | `UNIQUE (b, g)` | 41,9 | 20,3 | 17,8 | 19,6 | 30,8 |
+
+Lecture :
+
+- **Le coût du contrôle ne dépend pas de N** quand la colonne de tête du tuple
+  est sélective (`UNIQUE (a)`, `UNIQUE (b, g)`) : de 100 000 à 5 000 000 nœuds il
+  reste de l'ordre de quelques µs par écriture, dans le bruit de la machine. Le
+  `SET` d'une colonne contrainte ne coûte pas plus qu'un `SET` libre : il lit
+  les seules colonnes contraintes du nœud, jamais le nœud entier.
+- **Avant** (tête de #99, mêmes bancs) : `SET` et `MERGE … ON MATCH SET` n'étaient
+  pas contrôlés du tout (leur coût plat ne mesure aucun contrôle).
+- **Cas qui croît avec N — non corrigé ici** : `UNIQUE (g, b)` (colonne à deux
+  valeurs EN TÊTE). `find_nodes_by_properties` résout par la première colonne
+  indexée, donc relit la moitié du label : 27 ms/op à 100 k, 430 ms à 1 M,
+  1,4 s à 5 M (même ordre qu'avant cette PR pour l'INSERT : 43 ms, 548 ms,
+  2,4 s). Le correctif est la PR #101 (résolution par l'ensemble indexé le plus
+  petit) ; en attendant, déclarer la colonne sélective en premier. **Mesuré avec
+  #101 fusionnée dans un arbre jetable, 1 M nœuds : `UNIQUE (g, b)` = 39,6 µs
+  INSERT, 25,2 SET, 16,4 MERGE trouve, 34,1 MERGE crée** (contre 433 000 µs sans
+  #101) : le coût ne dépend plus de N, et les six tests de
+  `unicite_valeurs_egales.rs` passent au vert.
+- **`CREATE CONSTRAINT` sur données existantes** (passe de vérification, une fois) :
+  210 ms (`UNIQUE (a)`) et 350 ms (`UNIQUE (b, g)`) à 1 M nœuds ; 755 ms et
+  1,4 s à 5 M. C'est la même passe que `ObrainDB::verifier_contraintes` :
+  linéaire, une table de hachage de tuples, aucune recherche d'index.
+
+#### Compléments (relecture) : colonne flottante, écrivains parallèles — 11/11/2026
+
+Mêmes conditions (base disque, µs par instruction), branche contenant la résolution par l'ensemble indexé le plus petit :
+
+| N | config | INSERT | SET col. contrainte | MERGE trouve | MERGE crée |
+|---|---|---|---|---|---|
+| 100 k | `UNIQUE (g, b)` | 34,8 | 16,2 | 13,0 | 23,3 |
+| 100 k | **`UNIQUE (f)`, `f` flottant non entier** | **26 499** | **26 000** | **25 980** | **24 789** |
+| 1 M | `UNIQUE (g, b)` | 39,1 | 18,9 | 14,9 | 29,1 |
+| 1 M | **`UNIQUE (f)`, `f` flottant non entier** | **236 521** | **227 396** | **241 680** | **232 096** |
+
+- **Une contrainte sur une colonne flottante non entière coûte O(taille du label) par écriture** (26 ms à 100 k, 237 ms à 1 M) : l'index d'égalité ne projette pas ces valeurs (seuls Bool, Int64, String, flottants entiers et instants-chaînes le sont), la recherche retombe sur un balayage. C'est la même cause pour les `Timestamp`/`Date`/`ZonedDatetime` typés, les listes et les octets. **Non corrigé** : il faut une clé d'index pour ces valeurs (voir `docs/LIMITES-v0.0.1.md`).
+- **Écrivains parallèles, WAL durable** (fsync à chaque commit, 300 `CREATE` par fil, débit total en `CREATE`/s) :
+
+| config | 1 fil | 4 fils | 8 fils |
+|---|---|---|---|
+| sans contrainte | 227 | 460 | 878 |
+| `UNIQUE (a)` | 217 | 426 | 903 |
+
+  Le verrou d'unicité (un mutex du processus, `GraphStoreMut::merge_guard`) ne se voit pas : le débit suit celui du fsync et croît avec le nombre de fils, avec ou sans contrainte (à 8 fils, 903 contre 878 : dans le bruit). Il n'est pas tenu pendant le fsync du commit.

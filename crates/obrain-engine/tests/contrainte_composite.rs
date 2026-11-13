@@ -948,30 +948,6 @@ fn drop_constraint_if_exists_dans_les_deux_syntaxes() {
     assert_eq!(copies_en_memoire(&s, "T", "Unique("), 0);
 }
 
-/// LIMITE FIXÉE : `SET n:T` n'est pas contrôlé ici — un nœud `:U` qui porte
-/// un tuple déjà pris sous `:T` reçoit le label `T` sans erreur. Le contrôle
-/// de l'ajout de label est porté par la PR empilée (chemins d'écriture) ; ce
-/// test rougira alors, c'est voulu.
-#[test]
-fn limite_ajout_de_label_non_controle() {
-    let db = ObrainDB::new_in_memory();
-    let s = db.session();
-    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
-        .unwrap();
-    s.execute("INSERT (:T {a: 1})").unwrap();
-    s.execute("INSERT (:U {a: 1})").unwrap();
-    s.execute_cypher("MATCH (m:U) SET m:T")
-        .expect("limite : l'ajout de label passe");
-    assert_eq!(
-        s.execute("MATCH (n:T {a: 1}) RETURN n.a")
-            .unwrap()
-            .rows
-            .len(),
-        2,
-        "deux :T portent a = 1 — doublon par ajout de label (limite connue)"
-    );
-}
-
 /// Une base ouverte en LECTURE SEULE ne répare rien sur disque : un typecat à
 /// copies dupliquées sans nom est fondu en mémoire, mais le fichier reste
 /// octet pour octet celui d'avant (un lecteur sous verrou partagé ne doit pas
@@ -1043,4 +1019,29 @@ fn entier_flottant_composite_avec_colonne_chaine_est_refuse() {
         );
         assert_eq!(db.verifier_contraintes().violations_totales, 0);
     }
+}
+
+/// Ajout de label contrôlé : `SET m:T` fait entrer le nœud sous les contraintes
+/// de `T`. Ce test portait la LIMITE (l'ajout de label passait sans contrôle) ;
+/// il vérifie désormais le contrôle. `unicite_chemins.rs` couvre le cas complet.
+#[test]
+fn ajout_de_label_controle_sur_le_tuple() {
+    let db = ObrainDB::new_in_memory();
+    let s = db.session();
+    s.execute_cypher("CREATE CONSTRAINT ua FOR (n:T) REQUIRE n.a IS UNIQUE")
+        .unwrap();
+    s.execute("INSERT (:T {a: 1})").unwrap();
+    s.execute("INSERT (:U {a: 1})").unwrap();
+    assert!(
+        s.execute_cypher("MATCH (m:U) SET m:T").is_err(),
+        "un :U dont le tuple est déjà pris sous :T ne doit pas recevoir :T"
+    );
+    assert_eq!(
+        s.execute("MATCH (n:T {a: 1}) RETURN n.a")
+            .unwrap()
+            .rows
+            .len(),
+        1,
+        "un seul :T porte a = 1"
+    );
 }

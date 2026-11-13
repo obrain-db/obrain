@@ -245,3 +245,67 @@ fn le_vidage_par_blocs_du_tas_ne_perd_rien() {
         }
     }
 }
+
+/// Un import en lot sur une base qui porte DÉJÀ un index d'égalité : l'index
+/// est tenu, jamais laissé partiel et réputé complet.
+///
+/// Le contrat d'origine était implicite (« les index se déclarent après
+/// l'import ») : un index déclaré entre deux paquets restait marqué complet
+/// alors qu'il ignorait tout le second paquet, et une recherche rendait `[]`
+/// pour un nœud bien présent.
+#[test]
+fn un_import_en_lot_tient_un_index_d_egalite_deja_declare() {
+    let (labels, aretes, props) = jeu();
+    let b = tempfile::tempdir().unwrap();
+    let verifier = |s: &SubstrateStore, contexte: &str| {
+        for i in [10i64, 149, 150, 250, 299] {
+            let attendu = vec![NodeId(i as u64 + 1)];
+            assert_eq!(
+                s.find_nodes_by_property("start_line", &Value::Int64(i)),
+                attendu,
+                "{contexte} : start_line = {i}"
+            );
+            assert_eq!(
+                s.find_nodes_by_property(
+                    "qualified_name",
+                    &Value::String(format!("mod::f{i}").into())
+                ),
+                attendu,
+                "{contexte} : qualified_name de {i}"
+            );
+            assert_eq!(
+                s.find_nodes_by_properties(&[
+                    ("is_exported", Value::Bool(i % 2 == 0)),
+                    ("start_line", Value::Int64(i)),
+                ]),
+                attendu,
+                "{contexte} : deux conditions pour {i}"
+            );
+        }
+    };
+    {
+        let s = SubstrateStore::create(b.path()).unwrap();
+        s.bulk_import_labels_edges(&labels, &aretes).unwrap();
+        let refs: Vec<Vec<(&str, Value)>> = props
+            .iter()
+            .map(|l| l.iter().map(|(k, v)| (k.as_str(), v.clone())).collect())
+            .collect();
+        let n = refs.len();
+        s.bulk_import_node_props(1, &refs[..n / 2]).unwrap();
+        // Index déclarés ENTRE les deux paquets : bâtis, complets pour le
+        // premier paquet, et marqués comme tels.
+        for cle in ["start_line", "qualified_name", "is_exported"] {
+            s.create_property_index(cle);
+        }
+        assert_eq!(
+            s.find_nodes_by_property("start_line", &Value::Int64(10)),
+            vec![NodeId(11)]
+        );
+        s.bulk_import_node_props(1 + (n / 2) as u32, &refs[n / 2..])
+            .unwrap();
+        verifier(&s, "dans la session de l'import");
+        s.checkpoint().unwrap();
+    }
+    let s = SubstrateStore::open(b.path()).unwrap();
+    verifier(&s, "après réouverture");
+}
