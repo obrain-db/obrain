@@ -64,14 +64,58 @@ non versionnées ; à reproduire avec les commandes ci-dessus.
   avec le filtre sans hydratation (C1, ci-dessous) qui avait déjà ramené
   `query_node_lookup_by_property` de 379 à 52,5 µs.
 - ⚠ `phase_a_write/sessions_concurrentes_everycommit/4` : **2,13 s contre
-  78,4 ms** (× 27). Non expliqué à ce jour : le fichier du bench a lui-même
-  changé depuis e11bdd2a (cf0beb14, 4ffa0b0a) et plusieurs correctifs de
-  durabilité ont été fusionnés (#123, #137, #153). Criterion ne détecte
-  aucun changement par rapport à une exécution antérieure du même créneau
-  (+5,6 %, p = 0,06) : la valeur ~2 s est donc stable, pas un accident de
-  charge. À bissecter avant de citer ce chiffre.
+  78,4 ms** (× 27). Attendu : les 78,4 ms de e11bdd2a précèdent le commit
+  scellé (D-DUR, PR #22, voir plus bas), qui `fsync` chaque commit
+  (3,56 s mesurés), puis le `fsync` partagé du 2026-11-08 (1,86 – 1,95 s).
+  ~2 s est donc le coût durable actuel, à comparer à 1,86 – 1,95 s et non à
+  78,4 ms. La seconde série ci-dessous donne 2,058 s, ce qui le confirme.
 - Les autres mesures sont dans le bruit (≤ ± 6 %) ou légèrement meilleures
   (`tiered_scan` rayon : − 4 %).
+
+### Seconde série indépendante — `main` a24632c5, `m4max`, 2026-11-13 14:28–14:38
+
+Même commande, même worktree, même gouverneur, benchs lancés l'un après
+l'autre. **Toutes les mesures sont provisoires** (charge 1 min > 2 à chaque
+mesure). Charge = `uptime` relevé juste avant et juste après chaque bench.
+
+| Bench | Médiane | Intervalle Criterion | e11bdd2a (réf.) | Charge début → fin |
+|---|---|---|---|---|
+| `tiered_scan_top10/single_thread/1000000` | 841,72 µs | 839,83 – 843,20 µs | 845 µs | 1,66 → 5,93 |
+| `tiered_scan_top10/rayon_pool/1000000` | 734,53 µs | 731,54 – 738,06 µs | 743 µs | 1,66 → 5,93 |
+| `wal_append_unitaire/seul_ecrivain` | 1,091 µs | 1,081 – 1,103 µs | 1,22 µs | 2,94 → 3,34 |
+| `wal_append_unitaire/partage_oappend` | 1,203 µs | 1,168 – 1,242 µs | — | 2,94 → 3,34 |
+| `wal_append_unitaire/partage_verrou` | 1,108 µs | 1,099 – 1,117 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/1` | 1,180 µs | 1,153 – 1,209 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/8` | 1,770 µs | 1,748 – 1,801 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/64` | 5,997 µs | 5,950 – 6,050 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/256` | 20,40 µs | 20,27 – 20,54 µs | — | 2,94 → 3,34 |
+| `wal_append_batch/1024` | 76,54 µs | 76,20 – 76,91 µs | 77,4 µs | 2,94 → 3,34 |
+| `query_node_lookup_by_property` | 47,37 µs | 47,28 – 47,46 µs | 52,5 µs (après C1) | 2,81 → 2,27 |
+| `query_1hop_pattern` | 49,39 µs | 49,34 – 49,45 µs | 386 µs | 2,81 → 2,27 |
+| `query_2hop_pattern` | 56,67 µs | 56,45 – 56,97 µs | 392 µs | 2,81 → 2,27 |
+| `query_fan_out_expand_1k` | 724,5 µs | 723,4 – 725,9 µs | 717 µs | 2,81 → 2,27 |
+| `query_count_all` | 1,227 µs | 1,224 – 1,231 µs | 1,28 µs | 2,81 → 2,27 |
+| `query_filter_range` | 102,8 µs | 102,7 – 103,0 µs | 102 µs | 2,81 → 2,27 |
+| `query_insert_single_node` | 12,32 µs | 12,18 – 12,48 µs | 12,6 µs | 2,81 → 2,27 |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 2,058 s | 2,038 – 2,077 s | 78,4 ms (avant D-DUR) ; 1,86 – 1,95 s (fsync partagé) | 2,41 → 2,28 |
+| `phase_a_write/writer_unique_group_commit/4` | 71,79 ms | 68,93 – 77,06 ms | 74,8 ms | 2,41 → 2,28 |
+| `phase_a_write/seq_1_thread_group` | 67,32 ms | 65,97 – 68,60 ms | 78,0 ms | 2,41 → 2,28 |
+
+Ce qu'il faut savoir sur cette série :
+
+- `wal_append` : un premier passage (14:34:25 – 14:35:24, charge 2,06 → 2,71)
+  a été **écarté**, car un second `wal_append` tournait au même moment sur
+  un autre créneau du gouverneur (14:34:08 – 14:35:03). Seul le passage
+  14:37:43 – 14:38:36, sans aucun autre bench actif, figure ci-dessus.
+- `query_bench` (14:35:30 – 14:36:25) et `phase_a_write_goulot`
+  (14:36:30 – 14:37:12) ont tourné sans aucun autre bench actif.
+- `tiered_scan` (≈ 14:28) a tourné à peu près en même temps que la série
+  du dessus. Un chevauchement n'est pas exclu.
+- Entre les deux séries, les écarts dépassent le bruit sur
+  `writer_unique_group_commit/4` (71,8 contre 79,2 ms) et
+  `seq_1_thread_group` (67,3 contre 78,8 ms) : le chemin d'écriture groupé
+  varie de 10 à 15 % d'une série à l'autre sous cette charge. Sur toutes
+  les autres lignes, les deux séries s'accordent à quelques % près.
 
 <details>
 <summary>Ancienne référence — <code>main</code> e11bdd2a, 2026-11-01 15:22–15:29, charge 3 à 9 (provisoire)</summary>
