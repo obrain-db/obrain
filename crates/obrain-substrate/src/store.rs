@@ -5023,6 +5023,7 @@ impl SubstrateStore {
             NodeId(u64::from(src_slot)),
             NodeId(u64::from(dst_slot)),
             edge_type_id,
+            None,
         );
 
         // (2026-08-19) LA TÊTE DE CHAÎNE v2 ÉTAIT PERDUE À LA RÉSURRECTION.
@@ -16750,6 +16751,7 @@ impl SubstrateStore {
         src: NodeId,
         dst: NodeId,
         edge_type_id: u16,
+        precede: Option<WalPayload>,
     ) -> EdgeRecord {
         // Serialize the head read-modify-write against concurrent splices /
         // unlinks on the same source — prevents edge-chain cycle corruption.
@@ -16789,9 +16791,13 @@ impl SubstrateStore {
         };
 
         // (3) write the edge slot FIRST — initialiser avant de publier.
-        self.writer
-            .write_edge(edge_id.0, edge)
-            .expect("write_edge failed — WAL append or mmap grow");
+        //     Une déclaration `precede` (arête de transaction explicite) part
+        //     dans le MÊME `write`, AVANT l'`EdgeInsert`.
+        match precede {
+            None => self.writer.write_edge(edge_id.0, edge),
+            Some(decl) => self.writer.write_edge_precede(edge_id.0, edge, decl),
+        }
+        .expect("write_edge failed — WAL append or mmap grow");
 
         // (4) update src's first_edge_off — c'est la PUBLICATION : à partir
         //     d'ici un lecteur peut atteindre le slot, et il est complet.
@@ -23685,7 +23691,7 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Node creation --
     fn create_node(&self, labels: &[&str]) -> NodeId {
-        self.creer_noeud(labels, false)
+        self.creer_noeud(labels, DeclarationEnVol::Aucune)
     }
 
     /// Création ATOMIQUE sous `kill -9` (obrain#120 pt 4) : le nœud et ses
@@ -23734,7 +23740,17 @@ impl GraphStoreMut for SubstrateStore {
         // L'epoque du createur prime sur l'epoque courante : une transaction
         // demarree avant un commit concurrent doit dater ses noeuds de SON
         // debut, pas de l'instant ou ils touchent le disque.
-        let id = self.create_node(labels);
+        //
+        // En transaction explicite, la declaration `TxNoeudEnAttente` precede
+        // le `NodeInsert` dans le MEME `write` (`creer_noeud` →
+        // `write_node_precede`). Auparavant elle partait dans un second append
+        // (D-DUR, 2026-11-01) : un `kill -9` entre les deux publiait au rejeu le
+        // noeud d'une transaction jamais validee.
+        let id = if transaction_id != TransactionId::SYSTEM {
+            self.creer_noeud(labels, DeclarationEnVol::Transaction(transaction_id.0))
+        } else {
+            self.create_node(labels)
+        };
         if epoch.0 > 0 {
             self.naissances_noeuds.insert(id, epoch.0);
             self.note_mvcc_actif();
@@ -23760,77 +23776,18 @@ impl GraphStoreMut for SubstrateStore {
         // l'instant ou elle atterrit ; la marquer en attente est un
         // contresens.
         if transaction_id != TransactionId::SYSTEM {
+            obrain_common::utils::panne::point_tx(obrain_common::utils::panne::PointTx::NoeudEcrit);
             self.en_attente_noeuds.insert(id, transaction_id.0);
             self.note_mvcc_actif();
             self.attente_noeuds_active
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.declare_en_vol(WalPayload::TxNoeudEnAttente {
-                tx: transaction_id.0,
-                node_id: id.0 as u32,
-            });
         }
         id
     }
 
     // -- Edge creation (step 2) --
     fn create_edge(&self, src: NodeId, dst: NodeId, edge_type: &str) -> EdgeId {
-        self.refuser_mutation_en_lecture_seule("create_edge");
-        // LpgStore is permissive: it does NOT reject edges on missing
-        // endpoints — they just become dangling. We match that contract;
-        // the caller is responsible for endpoint liveness.
-        let edge_type_id = self
-            .intern_edge_type(edge_type)
-            .expect("edge-type registry overflow (>65535 types); lifted in step 3");
-        // T17i T1 : pre-hydrate the typed-degree registry **before**
-        // `splice_edge_at_head` writes the new edge to the zone. If
-        // this is the first call on a fresh store (or first post-
-        // upgrade), the rebuild scan inside `ensure_initialized` then
-        // iterates the pre-edge state and doesn't observe the new
-        // edge — so our explicit `incr_typed_*_degree` below is the
-        // single source of increment (no double-count).
-        let _ = self.typed_degrees();
-        let id = self.allocate_edge_id();
-        let _rec = self.splice_edge_at_head(id, src, dst, edge_type_id);
-
-        // T17e Phase 3: edge_type resolves from the mmap'd EdgeRecord +
-        // registry on demand; no DashMap to populate.
-        // T17h T1: live counter increments (total + per-edge-type).
-        self.total_live_edges.fetch_add(1, Ordering::Relaxed);
-        self.incr_edge_type_count(edge_type_id, 1);
-        // T17h T5: degree column increments (src.out, dst.in).
-        self.incr_out_degree(src.0 as u32, 1);
-        self.incr_in_degree(dst.0 as u32, 1);
-        // T17h T8: per-edge-type degree column increments.
-        self.incr_typed_out_degree(edge_type_id, src.0 as u32, 1);
-        self.incr_typed_in_degree(edge_type_id, dst.0 as u32, 1);
-        // T17i T2: per-edge-type × target-label / source-label histograms.
-        // Read the endpoints' label bitsets and increment the two
-        // histograms for each set bit. Dangling endpoints (no NodeRecord)
-        // yield bitset=0 → no increment, consistent with the LpgStore
-        // permissive-endpoint contract.
-        let src_bitset = self
-            .writer
-            .read_node(src.0 as u32)
-            .ok()
-            .flatten()
-            .map(|r| r.label_bitset)
-            .unwrap_or(0);
-        let dst_bitset = self
-            .writer
-            .read_node(dst.0 as u32)
-            .ok()
-            .flatten()
-            .map(|r| r.label_bitset)
-            .unwrap_or(0);
-        self.incr_edge_type_source_label(edge_type_id, src_bitset, 1);
-        self.incr_edge_type_target_label(edge_type_id, dst_bitset, 1);
-        self.note_naissance_arete(id);
-        // T5 : maintenance simpliciale incrémentale — même transaction WAL
-        // que l'arête (spec §4). Une arête neuve n'a pas encore de
-        // propriétés : le volet DISPATCH vit dans les hooks de propriété.
-        self.maintenance_arete_ajoutee(src.0 as u32, dst.0 as u32, edge_type_id);
-        self.notify_edge_created(id, src, dst, edge_type);
-        id
+        self.creer_arete(src, dst, edge_type, None)
     }
 
     fn create_edge_versioned(
@@ -23841,18 +23798,21 @@ impl GraphStoreMut for SubstrateStore {
         epoch: EpochId,
         transaction_id: TransactionId,
     ) -> EdgeId {
-        let id = self.create_edge(src, dst, edge_type);
+        // Propriété, pas visibilité (voir le champ) : SYSTEM = auto-commit,
+        // rien à rembobiner jamais. En transaction explicite, la déclaration
+        // `TxAreteEnAttente` précède l'`EdgeInsert` dans le MÊME `write`
+        // (`creer_arete`) : auparavant elle partait dans un second append, et
+        // un `kill -9` entre les deux publiait l'arête au rejeu.
+        let tx_en_vol = (transaction_id != TransactionId::SYSTEM).then_some(transaction_id.0);
+        let id = self.creer_arete(src, dst, edge_type, tx_en_vol);
         if epoch.0 > 0 {
             self.naissances_aretes.insert(id, epoch.0);
         }
-        // Propriété, pas visibilité (voir le champ) : SYSTEM = auto-commit,
-        // rien à rembobiner jamais.
         if transaction_id != TransactionId::SYSTEM {
+            obrain_common::utils::panne::point_tx(
+                obrain_common::utils::panne::PointTx::AreteEcrite,
+            );
             self.aretes_creees_par_tx.insert(id, transaction_id.0);
-            self.declare_en_vol(WalPayload::TxAreteEnAttente {
-                tx: transaction_id.0,
-                edge_id: id.0,
-            });
         }
         id
     }
@@ -38450,7 +38410,7 @@ mod sonde_v3_replay {
 }
 
 impl SubstrateStore {
-    fn creer_noeud(&self, labels: &[&str], en_vol: bool) -> NodeId {
+    fn creer_noeud(&self, labels: &[&str], en_vol: DeclarationEnVol) -> NodeId {
         self.refuser_mutation_en_lecture_seule("create_node");
         let id = self.allocate_node_id();
         let bitset = self
@@ -38463,22 +38423,23 @@ impl SubstrateStore {
         // Déclaré en vol AVANT le `NodeInsert`, dans le même `write` : un arrêt
         // ne laisse jamais un nœud non déclaré, et le coût est un appel système
         // de moins qu'une déclaration séparée.
-        if en_vol {
-            self.writer
-                .write_node_precede(
-                    id.0 as u32,
-                    rec,
-                    WalPayload::TxNoeudEnAttente {
-                        tx: Self::tx_creation_auto(id),
-                        node_id: id.0 as u32,
-                    },
-                )
-                .expect("write_node failed — WAL append or mmap grow");
-        } else {
-            self.writer
-                .write_node(id.0 as u32, rec)
-                .expect("write_node failed — WAL append or mmap grow");
+        let tx = match en_vol {
+            DeclarationEnVol::Aucune => None,
+            DeclarationEnVol::CreationAuto => Some(Self::tx_creation_auto(id)),
+            DeclarationEnVol::Transaction(tx) => Some(tx),
+        };
+        match tx {
+            Some(tx) => self.writer.write_node_precede(
+                id.0 as u32,
+                rec,
+                WalPayload::TxNoeudEnAttente {
+                    tx,
+                    node_id: id.0 as u32,
+                },
+            ),
+            None => self.writer.write_node(id.0 as u32, rec),
         }
+        .expect("write_node failed — WAL append or mmap grow");
         // T17e Phase 3: labels resolve from the mmap'd NodeRecord +
         // registry on demand; no DashMap to populate.
         // T17h T1: live counter increments (total + per-label).
@@ -38491,6 +38452,77 @@ impl SubstrateStore {
         // AVANT leur creation.
         self.note_naissance_noeud(id);
         self.notify_node_created(id);
+        id
+    }
+
+    /// Crée une arête. `tx_en_vol = Some(tx)` (transaction explicite) : la
+    /// déclaration `TxAreteEnAttente` part AVANT l'`EdgeInsert`, dans le MÊME
+    /// `write` — un arrêt ne laisse jamais une arête de transaction écrite
+    /// sans sa déclaration, donc publiée au rejeu.
+    fn creer_arete(
+        &self,
+        src: NodeId,
+        dst: NodeId,
+        edge_type: &str,
+        tx_en_vol: Option<u64>,
+    ) -> EdgeId {
+        self.refuser_mutation_en_lecture_seule("create_edge");
+        // LpgStore is permissive: it does NOT reject edges on missing
+        // endpoints — they just become dangling. We match that contract;
+        // the caller is responsible for endpoint liveness.
+        let edge_type_id = self
+            .intern_edge_type(edge_type)
+            .expect("edge-type registry overflow (>65535 types); lifted in step 3");
+        // T17i T1 : pre-hydrate the typed-degree registry **before**
+        // `splice_edge_at_head` writes the new edge to the zone. If
+        // this is the first call on a fresh store (or first post-
+        // upgrade), the rebuild scan inside `ensure_initialized` then
+        // iterates the pre-edge state and doesn't observe the new
+        // edge — so our explicit `incr_typed_*_degree` below is the
+        // single source of increment (no double-count).
+        let _ = self.typed_degrees();
+        let id = self.allocate_edge_id();
+        let precede = tx_en_vol.map(|tx| WalPayload::TxAreteEnAttente { tx, edge_id: id.0 });
+        let _rec = self.splice_edge_at_head(id, src, dst, edge_type_id, precede);
+
+        // T17e Phase 3: edge_type resolves from the mmap'd EdgeRecord +
+        // registry on demand; no DashMap to populate.
+        // T17h T1: live counter increments (total + per-edge-type).
+        self.total_live_edges.fetch_add(1, Ordering::Relaxed);
+        self.incr_edge_type_count(edge_type_id, 1);
+        // T17h T5: degree column increments (src.out, dst.in).
+        self.incr_out_degree(src.0 as u32, 1);
+        self.incr_in_degree(dst.0 as u32, 1);
+        // T17h T8: per-edge-type degree column increments.
+        self.incr_typed_out_degree(edge_type_id, src.0 as u32, 1);
+        self.incr_typed_in_degree(edge_type_id, dst.0 as u32, 1);
+        // T17i T2: per-edge-type × target-label / source-label histograms.
+        // Read the endpoints' label bitsets and increment the two
+        // histograms for each set bit. Dangling endpoints (no NodeRecord)
+        // yield bitset=0 → no increment, consistent with the LpgStore
+        // permissive-endpoint contract.
+        let src_bitset = self
+            .writer
+            .read_node(src.0 as u32)
+            .ok()
+            .flatten()
+            .map(|r| r.label_bitset)
+            .unwrap_or(0);
+        let dst_bitset = self
+            .writer
+            .read_node(dst.0 as u32)
+            .ok()
+            .flatten()
+            .map(|r| r.label_bitset)
+            .unwrap_or(0);
+        self.incr_edge_type_source_label(edge_type_id, src_bitset, 1);
+        self.incr_edge_type_target_label(edge_type_id, dst_bitset, 1);
+        self.note_naissance_arete(id);
+        // T5 : maintenance simpliciale incrémentale — même transaction WAL
+        // que l'arête (spec §4). Une arête neuve n'a pas encore de
+        // propriétés : le volet DISPATCH vit dans les hooks de propriété.
+        self.maintenance_arete_ajoutee(src.0 as u32, dst.0 as u32, edge_type_id);
+        self.notify_edge_created(id, src, dst, edge_type);
         id
     }
 
@@ -38514,9 +38546,9 @@ impl SubstrateStore {
     /// Sans propriétés il n'y a rien à lier : chemin inchangé.
     fn creer_noeud_atomique(&self, labels: &[&str], properties: &[(PropertyKey, Value)]) -> NodeId {
         if properties.is_empty() {
-            return self.creer_noeud(labels, false);
+            return self.creer_noeud(labels, DeclarationEnVol::Aucune);
         }
-        let id = self.creer_noeud(labels, true);
+        let id = self.creer_noeud(labels, DeclarationEnVol::CreationAuto);
         obrain_common::utils::panne::point_creation_noeud(0);
         for (rang, (k, v)) in properties.iter().enumerate() {
             self.set_node_property(id, k.as_str(), v.clone());
@@ -38535,24 +38567,19 @@ impl SubstrateStore {
         }
         id
     }
+}
 
-    /// (2026-11-01, D-DUR) Déclare au journal qu'une entité appartient à une
-    /// transaction encore ouverte. Sans ce record, un processus qui disparaît
-    /// avec la transaction ouverte laisse l'entité PUBLIÉE à la réouverture.
-    /// L'échec d'écriture est journalisé, pas propagé : la création a déjà eu
-    /// lieu, et l'appelant n'a pas de chemin d'erreur ici — le commit, lui,
-    /// échouera si le WAL est hors service.
-    fn declare_en_vol(&self, payload: WalPayload) {
-        let rec = WalRecord {
-            lsn: 0,
-            timestamp: horodatage_micros(),
-            flags: 0,
-            payload,
-        };
-        if let Err(e) = self.writer.wal().append_encoded(&rec) {
-            tracing::error!(error = %e, "WAL : impossible de déclarer une entité en vol");
-        }
-    }
+/// Déclaration « en vol » écrite AVANT le `NodeInsert` d'une création, dans
+/// le MÊME `write` (`Writer::write_node_precede`).
+#[derive(Clone, Copy)]
+enum DeclarationEnVol {
+    /// Auto-commit sans propriétés : rien à lier.
+    Aucune,
+    /// Auto-commit avec propriétés : transaction privée (`tx_creation_auto`),
+    /// scellée par `creer_noeud_atomique` (obrain#120 pt 4).
+    CreationAuto,
+    /// Transaction explicite : le nœud reste en vol jusqu'à son `TxCommit`.
+    Transaction(u64),
 }
 
 /// Horodatage des records de transaction (µs depuis l'époque Unix) ; 0 si
