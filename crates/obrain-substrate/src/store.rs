@@ -26097,19 +26097,19 @@ impl GraphStoreMut for SubstrateStore {
         // longer than necessary. L'indice vient de la table partagée
         // (Phase B, pièce 3) : deux écrivains ne peuvent plus nommer deux
         // libellés au même bit.
-        let global = self
-            .interne_global(crate::registres_partages::Espace::Labels, label)
-            .expect("registres partagés : intern d'un label");
-        let bit = {
-            let mut reg = self.labels.write();
-            self.inscrire_avec_global(
-                global,
-                |i| reg.interner_a(label, i),
-                |g| u8::try_from(g).ok().filter(|b| *b < 64),
-            )
-            .expect("label registry overflow")
-        };
-        let mask = 1u64 << bit;
+        //
+        // (obrain#120 pt 5, constaté par le test lecteur de l'index de labels)
+        // Le MÊME internement que la création — `intern_labels_to_bitset` —
+        // et non une copie qui ne journalisait pas : un label introduit par
+        // `add_label` (`SET n:Neuf`) n'avait AUCUN `LabelIntern` au WAL. Un
+        // lecteur (qui rejoue le WAL), ou une réouverture après `kill -9` avant
+        // flush, voyait le bit posé mais sans nom : `MATCH (n:Neuf)` rendait 0
+        // ligne pour un `SET` acquitté. Même registre partagé, même indice,
+        // seul le `LabelIntern` (déjà rejoué par `merge_wal_inline_props`)
+        // s'ajoute, et seulement pour un nom neuf dans ce processus.
+        let mask = self
+            .intern_labels_to_bitset(&[label])
+            .expect("label registry overflow");
         if old.label_bitset & mask != 0 {
             // Label already set: idempotent no-op, matches LpgStore.
             return false;
