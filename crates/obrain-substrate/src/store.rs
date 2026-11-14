@@ -6426,21 +6426,43 @@ impl SubstrateStore {
     /// réécritures partent au WAL, suivies d'un `TxAnnulee` scellé, et le rejeu
     /// suivant ne refait rien) et le LECTEUR (dans ses zones privées, journal
     /// muet : rien n'atteint le disque, il recommence à chaque ouverture tant
-    /// qu'un écrivain ne l'a pas fait). Un écrivain PARTAGÉ s'abstient : la
-    /// transaction peut appartenir à un pair VIVANT (même règle que le rejeu des
-    /// colonnes blob, `merge_wal_inline_props`).
+    /// qu'un écrivain ne l'a pas fait) ; et l'écrivain PARTAGÉ (obrain#171),
+    /// sous `VerrouRestauration`. Il ne s'abstient plus : une déclaration en vol
+    /// ne peut appartenir qu'à un exclusif MORT (voir le commentaire de la
+    /// fonction). Une transaction d'un pair VIVANT n'a jamais de déclaration.
     fn annuler_proprietes_en_vol(&self) {
-        let (restaurer, lecture_seule, wal_path) = {
+        let (lecture_seule, partage, wal_path, base) = {
             let sub = self.substrate.lock();
             (
-                !sub.est_ecriture_partagee() || sub.est_lecture_seule(),
                 sub.est_lecture_seule(),
+                sub.est_ecriture_partagee(),
                 sub.wal_path(),
+                sub.path().to_path_buf(),
             )
         };
-        if !restaurer || !wal_path.exists() {
+        if !wal_path.exists() {
             return;
         }
+        // (obrain#171) Un écrivain PARTAGÉ restaure aussi, sous verrou de
+        // restauration (`VerrouRestauration`), jusqu'à la clôture TxAnnulee. Pourquoi
+        // c'est sûr : une déclaration en vol ne peut venir que d'un ÉCRIVAIN
+        // EXCLUSIF (les partagés ne journalisent aucune valeur d'avant), et un
+        // exclusif ne vit jamais pendant qu'un partagé est ouvert (`flock` sur
+        // `substrate.dirlock`, ou refus intra-processus d'`acquerir_verrou_repertoire`).
+        // Toute déclaration vue ici appartient donc à un processus MORT.
+        let _verrou_restauration = if partage && !lecture_seule {
+            match VerrouRestauration::prendre(&base) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(error = %e,
+                        "annulation des propriétés en vol : verrou de restauration \
+                         indisponible, rien n'est restauré (le checkpoint restera différé)");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let reader = match crate::wal_io::WalReader::open(&wal_path) {
             Ok(r) => r,
             Err(e) => {
@@ -44132,5 +44154,37 @@ mod wal_erreur_memorisee {
         s.fsync_wal().unwrap();
         s.flush().unwrap();
         s.fsync_wal().unwrap();
+    }
+}
+
+/// (obrain#171) Verrou de restauration d'un écrivain PARTAGÉ : exclusion entre
+/// les partagés OUVERTS DANS CE PROCESSUS (un `Mutex` statique) et ENTRE
+/// PROCESSUS (`flock` bloquant sur `substrate.restauration.lock`). Sans lui, deux
+/// partagés qui relisent la même déclaration orpheline la restaureraient deux
+/// fois, et la seconde restauration écraserait une écriture faite entre-temps.
+struct VerrouRestauration {
+    _intra: std::sync::MutexGuard<'static, ()>,
+    _fichier: std::fs::File,
+}
+
+impl VerrouRestauration {
+    fn prendre(base: &Path) -> std::io::Result<Self> {
+        static INTRA: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let intra = INTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fichier = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(base.join(crate::file::zone::RESTAURATION_LOCK))?;
+        // Bloquant : l'attente est bornée par la restauration d'un autre partagé.
+        #[cfg(unix)]
+        crate::file::verrouiller_fichier_bloquant(&fichier)?;
+        Ok(Self {
+            _intra: intra,
+            _fichier: fichier,
+        })
     }
 }
