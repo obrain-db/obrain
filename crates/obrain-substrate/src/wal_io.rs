@@ -4729,7 +4729,11 @@ pub fn plus_ancienne_declaration_en_vol(
                     .or_default()
                     .push((absolu, Entite::Arete(edge_id)));
             }
-            WalPayload::TxProprieteAvant { tx, .. } => {
+            // Un marqueur d'écriture HORS transaction (`tx == SYSTEM`) n'est pas
+            // une transaction en vol.
+            WalPayload::TxProprieteAvant { tx, .. }
+                if tx != obrain_common::types::TransactionId::SYSTEM.0 =>
+            {
                 en_vol
                     .entry(tx)
                     .or_default()

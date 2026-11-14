@@ -25,6 +25,12 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 - **Format** : un binaire antérieur refuse un WAL qui contient 0x59/0x5A
   (`WalOpcodeInconnu`) : checkpoint forcé avec le binaire récent avant tout
   downgrade.
+- Corrigé après relecture (rouge puis vert) : une écriture hors transaction
+  acquittée pendant une transaction en vol n'est plus défaite à l'ouverture
+  (marqueur `TxProprieteAvant` de la transaction `SYSTEM`) ; un scellement de
+  commit échoué laisse la transaction suivie ; un écrivain partagé ne déclare
+  plus de valeur d'avant (il bloquait le checkpoint des pairs). Mode `Group` :
+  voir `docs/LIMITES-v0.0.1.md`.
 - Reste ouvert (mesuré, même famille) : labels ajoutés/retirés et suppressions
   d'entités préexistantes dans une transaction non commitée survivent au `kill -9`.
 

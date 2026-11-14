@@ -241,7 +241,8 @@ fn dormir_pour_toujours() -> ! {
 
 /// Enfant. `cas` : `kill` (transaction laissée ouverte), `rollback`
 /// (`rollback()` explicite), `commit` (témoin), `tiers` (transaction ouverte,
-/// puis commit acquitté d'une autre session), `checkpoint` (comme `tiers`,
+/// puis commit acquitté d'une autre session), `hors_tx` (transaction ouverte,
+/// puis écritures hors transaction sur les mêmes clés), `checkpoint` (comme `tiers`,
 /// checkpoint automatique à chaque commit), `rollback_puis_ecriture`
 /// (`rollback()` puis écritures hors transaction), `reprise` (rouvre une base
 /// laissée par `kill`, vérifie la restauration, puis écrit de nouvelles
@@ -297,6 +298,12 @@ fn enfant_transaction() {
     }
     match cas.as_str() {
         "kill" => {}
+        "hors_tx" => {
+            // Écriture HORS transaction, acquittée APRÈS la déclaration des
+            // valeurs d'avant de la transaction ouverte (même entité, mêmes
+            // clés) : la restauration ne doit pas la défaire.
+            ecrire_hors_transaction(&db);
+        }
         "tiers" | "checkpoint" => {
             // Commit acquitté d'une autre session APRÈS les trames non
             // commitées : son fsync les rend durables elles aussi. Pour
@@ -539,5 +546,18 @@ fn les_valeurs_ecrites_apres_un_rollback_survivent_a_un_kill() {
     }
     for flushee in [false, true] {
         verifier("rollback_puis_ecriture", flushee, &etat_reprise());
+    }
+}
+
+/// obrain#164 (relecture de #169) : une écriture hors transaction, acquittée
+/// pendant qu'une transaction ouverte a déclaré ses valeurs d'avant sur la même
+/// (entité, clé), survit au `kill -9`.
+#[test]
+fn une_ecriture_hors_transaction_acquittee_pendant_une_tx_ouverte_survit_au_kill() {
+    if std::env::var(ENV_ENFANT).is_ok() {
+        return;
+    }
+    for flushee in [false, true] {
+        verifier("hors_tx", flushee, &etat_reprise());
     }
 }

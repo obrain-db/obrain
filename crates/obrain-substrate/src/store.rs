@@ -1590,6 +1590,63 @@ enum Annulation {
     },
 }
 
+thread_local! {
+    /// (obrain#164) Vrai pendant qu'un setter est appelé PAR le store au nom
+    /// d'une transaction (`set_*_property_versioned`, annulation, restauration) :
+    /// ces écritures ne sont pas des écritures hors transaction.
+    static ECRITURE_INTERNE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Garde de [`ECRITURE_INTERNE`] : rétablit la valeur précédente en sortie.
+struct EcritureInterne(bool);
+
+impl EcritureInterne {
+    fn entrer() -> Self {
+        Self(ECRITURE_INTERNE.with(|c| c.replace(true)))
+    }
+}
+
+impl Drop for EcritureInterne {
+    fn drop(&mut self) {
+        ECRITURE_INTERNE.with(|c| c.set(self.0));
+    }
+}
+
+/// Voir [`SubstrateStore::marquer_ecriture_hors_transaction`]. Le marqueur part
+/// à la SORTIE du setter, par quelque chemin qu'il sorte (retours anticipés
+/// compris), sauf en cas de panique.
+struct MarqueurHorsTransaction<'a> {
+    store: &'a SubstrateStore,
+    entity_kind: EntityKind,
+    id: u64,
+    key: &'a str,
+    actif: bool,
+}
+
+impl Drop for MarqueurHorsTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.actif || std::thread::panicking() {
+            return;
+        }
+        if let Err(e) = self
+            .store
+            .writer
+            .append_payload(WalPayload::TxProprieteAvant {
+                tx: TransactionId::SYSTEM.0,
+                entity_kind: self.entity_kind as u8,
+                id: self.id,
+                key: self.key.to_string(),
+                avant: None,
+            })
+        {
+            tracing::error!(id = self.id, key = %self.key, error = %e,
+                "marqueur d'écriture hors transaction non journalisé — un kill -9 avant le \
+                 commit de la transaction en vol laisserait la restauration défaire cette \
+                 écriture");
+        }
+    }
+}
+
 /// Un type déclaré, tel qu'il est persisté : `genre` (`node`|`edge`), son nom,
 /// et sa DÉFINITION complète en JSON (les structures du moteur savent déjà se
 /// sérialiser — inventer un second format serait une seconde source de vérité).
@@ -2652,6 +2709,9 @@ pub struct SubstrateStore {
     /// (`annuler_proprietes_en_vol`) : les setters ordinaires y sont permis,
     /// et le journal est muet (`WalWriter::rendre_muet_en_lecture_seule`).
     restauration_privee: std::sync::atomic::AtomicBool,
+    /// (obrain#164) Store ouvert en écriture PARTAGÉE (`open_shared_write`) :
+    /// il ne déclare pas de valeur d'avant (voir `journaliser_valeur_avant`).
+    ecriture_partagee: bool,
     /// Epoque courante, publiee par le moteur a chaque commit.
     ///
     /// (2026-08-14) `current_epoch()` rendait `EpochId(0)` en dur, avec le
@@ -6205,6 +6265,36 @@ impl SubstrateStore {
         naissance <= epoque && deces.is_none_or(|d| d > epoque)
     }
 
+    /// (obrain#164) Un `SET` / `REMOVE` HORS transaction, acquitté alors qu'une
+    /// transaction de CE processus a déclaré des valeurs d'avant
+    /// (`tx_avec_valeur_avant` non vide), laisse une trame `TxProprieteAvant`
+    /// de la transaction `SYSTEM` (valeur d'avant `None`) APRÈS son écriture :
+    /// la restauration à l'ouverture (`annuler_proprietes_en_vol`) ne défait
+    /// pas une valeur d'une transaction en vol quand une écriture hors
+    /// transaction plus récente existe sur la même (entité, clé).
+    ///
+    /// Posée APRÈS l'écriture : un kill entre les deux laisse une écriture non
+    /// acquittée, que la restauration peut défaire. Rien n'est écrit quand
+    /// aucune transaction n'est en vol (cas courant : un test d'atomicité du
+    /// WAL le verrouille), ni pour les écritures que le store fait lui-même au
+    /// nom d'une transaction (`EcritureInterne`).
+    fn marquer_ecriture_hors_transaction<'a>(
+        &'a self,
+        entity_kind: EntityKind,
+        id: u64,
+        key: &'a str,
+    ) -> MarqueurHorsTransaction<'a> {
+        let actif = !ECRITURE_INTERNE.with(std::cell::Cell::get)
+            && !self.tx_avec_valeur_avant.lock().is_empty();
+        MarqueurHorsTransaction {
+            store: self,
+            entity_kind,
+            id,
+            key,
+            actif,
+        }
+    }
+
     fn journalise(&self, tx: TransactionId, entree: Annulation) {
         self.tx_undo.write().entry(tx).or_default().push(entree);
     }
@@ -6233,6 +6323,16 @@ impl SubstrateStore {
         avant: Option<&Value>,
     ) {
         if tx == TransactionId::SYSTEM {
+            return;
+        }
+        // (obrain#164, relecture de #169) Écrivain PARTAGÉ : aucune valeur
+        // d'avant. Seule une ouverture exclusive restaure et clôt
+        // (`annuler_proprietes_en_vol`) ; un pair partagé tué en plein `SET`
+        // laisserait une déclaration que personne ne ferme, et le checkpoint de
+        // TOUS les pairs serait différé sans borne. Même périmètre qu'avant
+        // #169 : propriétés transactionnelles d'une écriture partagée hors
+        // garantie v0.0.1 (`docs/LIMITES-v0.0.1.md`).
+        if self.ecriture_partagee {
             return;
         }
         let creee_par_tx = match entity_kind {
@@ -6317,7 +6417,10 @@ impl SubstrateStore {
     /// déclaré la même (entité, clé) plus loin dans le WAL : son écriture est
     /// postérieure et fait foi. En processus, le premier-écrivain-gagne
     /// l'interdit tant que la transaction en vol tient l'entité ; le cas reste
-    /// possible entre processus.
+    /// possible entre processus. Il en va de même d'une écriture HORS
+    /// transaction (marqueur `SYSTEM`) postérieure : `ObrainDB::set_node_property`
+    /// ne passe pas par le gestionnaire de transactions, donc rien ne l'interdit
+    /// en processus (relecture de #169).
     ///
     /// Qui restaure : l'écrivain EXCLUSIF (il reprend après un crash ; ses
     /// réécritures partent au WAL, suivies d'un `TxAnnulee` scellé, et le rejeu
@@ -6386,7 +6489,14 @@ impl SubstrateStore {
                     key,
                     avant,
                 } => {
-                    ouvertes.entry(tx).or_default().push(declarations.len());
+                    // `SYSTEM` : marqueur d'une écriture HORS transaction
+                    // (`marquer_ecriture_hors_transaction`), acquittée à cet
+                    // offset. Elle fait foi sur toute valeur d'avant plus
+                    // ancienne de la même (entité, clé), comme un commit.
+                    let hors_tx = tx == TransactionId::SYSTEM.0;
+                    if !hors_tx {
+                        ouvertes.entry(tx).or_default().push(declarations.len());
+                    }
                     declarations.push(ValeurAvant {
                         offset,
                         tx,
@@ -6394,7 +6504,7 @@ impl SubstrateStore {
                         id,
                         key,
                         avant,
-                        etat: Etat::EnVol,
+                        etat: if hors_tx { Etat::Commitee } else { Etat::EnVol },
                     });
                 }
                 WalPayload::TxCommit { tx } => {
@@ -6423,6 +6533,7 @@ impl SubstrateStore {
                 .or_insert(d.offset);
             *o = (*o).max(d.offset);
         }
+        let _interne = EcritureInterne::entrer();
         if lecture_seule {
             self.writer.wal().rendre_muet_en_lecture_seule(true);
             self.restauration_privee.store(true, Ordering::Release);
@@ -6507,6 +6618,9 @@ impl SubstrateStore {
     /// restaurerait une valeur intermediaire. A l'envers, la derniere appliquee
     /// est la premiere enregistree — l'originale.
     fn rejoue_annulations(&self, tx: TransactionId, jusqua: usize) {
+        // (obrain#164) Les réécritures d'un rollback ne sont pas des écritures
+        // hors transaction.
+        let _interne = EcritureInterne::entrer();
         let entrees = {
             let mut journal = self.tx_undo.write();
             let Some(v) = journal.get_mut(&tx) else {
@@ -7544,6 +7658,8 @@ impl SubstrateStore {
         // temporaires, borne d'allocation, graphes nommés, auto-flush, migration
         // d'un sidecar hérité.
         let lecture_seule = sub.est_lecture_seule();
+        // (obrain#164) Écriture partagée : décidée ici, comme la lecture seule.
+        let ecriture_partagee = sub.est_ecriture_partagee() && !lecture_seule;
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════
         //
         // Deux refus, tous deux places ICI et non sur le resultat du
@@ -8074,6 +8190,7 @@ impl SubstrateStore {
             tx_undo: RwLock::new(std::collections::HashMap::new()),
             tx_avec_valeur_avant: Mutex::new(std::collections::HashSet::new()),
             restauration_privee: std::sync::atomic::AtomicBool::new(false),
+            ecriture_partagee,
             epoque_courante: AtomicU64::new(0),
             seuil_checkpoint: AtomicU64::new(
                 std::env::var("OBRAIN_WAL_CHECKPOINT_BYTES")
@@ -24773,7 +24890,10 @@ impl GraphStoreMut for SubstrateStore {
                 obrain_common::utils::error::Error::Internal(format!(
                     "scellement du commit dans le WAL : {e}"
                 ))
-            })
+            })?;
+        // (obrain#164) `TxCommit` écrit : la transaction est close.
+        self.tx_avec_valeur_avant.lock().remove(&transaction_id.0);
+        Ok(())
     }
 
     // ── TRANSACTIONS : JOURNAL D'ANNULATION DES PROPRIETES ET LABELS ─
@@ -24801,8 +24921,11 @@ impl GraphStoreMut for SubstrateStore {
     fn commit_transaction_properties(&self, transaction_id: TransactionId) {
         // Commit : plus rien a defaire.
         self.tx_undo.write().remove(&transaction_id);
-        // (obrain#164) Le `TxCommit` de `seal_commit` clôt ses valeurs d'avant.
-        self.tx_avec_valeur_avant.lock().remove(&transaction_id.0);
+        // (obrain#164) PAS de retrait de `tx_avec_valeur_avant` ici : la
+        // transaction n'est close qu'une fois son `TxCommit` écrit
+        // (`seal_commit`). Si le scellement échoue, elle reste en vol au WAL et
+        // doit rester suivie, pour que les écritures hors transaction suivantes
+        // laissent leur marqueur.
     }
 
     /// Le commit PUBLIE les noeuds de la transaction : ils cessent d'etre en
@@ -24908,6 +25031,8 @@ impl GraphStoreMut for SubstrateStore {
                 avant,
             },
         );
+        // `SYSTEM` = pas de transaction : une écriture hors transaction.
+        let _interne = (transaction_id != TransactionId::SYSTEM).then(EcritureInterne::entrer);
         self.set_node_property(id, key, value);
     }
 
@@ -24928,6 +25053,7 @@ impl GraphStoreMut for SubstrateStore {
                 avant,
             },
         );
+        let _interne = (transaction_id != TransactionId::SYSTEM).then(EcritureInterne::entrer);
         self.set_edge_property(id, key, value);
     }
 
@@ -24948,6 +25074,7 @@ impl GraphStoreMut for SubstrateStore {
                 Some(&present),
             );
         }
+        let _interne = (transaction_id != TransactionId::SYSTEM).then(EcritureInterne::entrer);
         let avant = self.remove_node_property(id, key);
         self.journalise(
             transaction_id,
@@ -24976,6 +25103,7 @@ impl GraphStoreMut for SubstrateStore {
                 Some(&present),
             );
         }
+        let _interne = (transaction_id != TransactionId::SYSTEM).then(EcritureInterne::entrer);
         let avant = self.remove_edge_property(id, key);
         self.journalise(
             transaction_id,
@@ -25625,6 +25753,7 @@ impl GraphStoreMut for SubstrateStore {
     // -- Property mutation --
     fn set_node_property(&self, id: NodeId, key: &str, value: Value) {
         self.refuser_mutation_en_lecture_seule("set_node_property");
+        let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Node, id.0, key);
         if !self.is_live_on_disk(id) {
             // LpgStore silently no-ops on missing nodes; match that contract.
             return;
@@ -26044,6 +26173,7 @@ impl GraphStoreMut for SubstrateStore {
 
     fn set_edge_property(&self, id: EdgeId, key: &str, value: Value) {
         self.refuser_mutation_en_lecture_seule("set_edge_property");
+        let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Edge, id.0, key);
         if !self.is_live_edge_on_disk(id) {
             // LpgStore silently no-ops on missing edges; match that contract.
             return;
@@ -26155,6 +26285,7 @@ impl GraphStoreMut for SubstrateStore {
 
     fn remove_node_property(&self, id: NodeId, key: &str) -> Option<Value> {
         self.refuser_mutation_en_lecture_seule("remove_node_property");
+        let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Node, id.0, key);
         if !self.is_live_on_disk(id) {
             return None;
         }
@@ -26519,6 +26650,7 @@ impl GraphStoreMut for SubstrateStore {
 
     fn remove_edge_property(&self, id: EdgeId, key: &str) -> Option<Value> {
         self.refuser_mutation_en_lecture_seule("remove_edge_property");
+        let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Edge, id.0, key);
         if !self.is_live_edge_on_disk(id) {
             return None;
         }
