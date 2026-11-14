@@ -19,6 +19,11 @@ pub enum SubstrateError {
     #[error("WAL encode failed: {0}")]
     WalEncode(String),
 
+    /// Un append WAL a échoué (la trame n'est pas au journal) et l'erreur n'a
+    /// pas encore été levée par un flush complet réussi : durabilité refusée.
+    #[error("échec d'append WAL non réparé — un flush complet doit réussir : {0}")]
+    EchecAppendWal(String),
+
     #[error("WAL decode failed: {0}")]
     WalDecode(String),
 
