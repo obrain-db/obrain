@@ -1750,6 +1750,11 @@ fn apply(
         WalPayload::TxNoeudEnAttente { .. }
         | WalPayload::TxAreteEnAttente { .. }
         | WalPayload::TxCommit { .. } => Ok(Applied::Yes),
+        // (2026-11-13, obrain#164) Valeurs d'avant et clôture sans commit :
+        // lues par `SubstrateStore::annuler_proprietes_en_vol`, qui tient le
+        // routage des propriétés (chaîne v2, colonnes blob et vecteurs).
+        // Rien à appliquer aux zones ici.
+        WalPayload::TxProprieteAvant { .. } | WalPayload::TxAnnulee { .. } => Ok(Applied::Yes),
 
         // ── VARIANTES DELIBEREMENT NON REJOUEES ──────────────────────────
         //
