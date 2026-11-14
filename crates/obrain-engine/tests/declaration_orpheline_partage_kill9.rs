@@ -96,17 +96,32 @@ fn enfant_tue(dir: &Path) {
     let _ = enfant.wait();
 }
 
+/// Crée `dir/base` avec un `:Cible {court: 'ancien'}` commité.
+fn preparer_dans(dir: &Path) -> PathBuf {
+    let base = dir.join("base");
+    let db = ObrainDB::open(&base).expect("open initial");
+    db.session()
+        .execute("INSERT (:Cible {court: 'ancien'})")
+        .expect("insert");
+    db.close().expect("close initial");
+    base
+}
+
 fn preparer() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let base = dir.path().join("base");
-    {
-        let db = ObrainDB::open(&base).expect("open initial");
-        db.session()
-            .execute("INSERT (:Cible {court: 'ancien'})")
-            .expect("insert");
-        db.close().expect("close initial");
-    }
+    let base = preparer_dans(dir.path());
     (dir, base)
+}
+
+/// Nombre de trames `TxAnnulee` du WAL : une par transaction orpheline fermée.
+fn compter_annulations(base: &Path) -> usize {
+    let reader = obrain_substrate::wal_io::WalReader::open(base.join("substrate.wal"))
+        .expect("lecture du WAL");
+    reader
+        .iter_from(0)
+        .filter_map(Result::ok)
+        .filter(|(rec, _, _)| matches!(rec.payload, obrain_substrate::WalPayload::TxAnnulee { .. }))
+        .count()
 }
 
 /// Les deux effets, mesurés et affichés pour le rapport.
@@ -237,4 +252,140 @@ fn partage_refuse_de_rejoindre_un_exclusif_vivant_du_meme_processus() {
         "un écrivain partagé a rejoint un exclusif vivant du même processus"
     );
     excl.close().expect("close");
+}
+
+const ENV_FIXTURE_ECRIT: &str = "OBRAIN_TEST_FIXTURE_ECRITURE";
+const ENV_FIXTURE_LIT: &str = "OBRAIN_TEST_FIXTURE_LECTURE";
+
+/// Rétro-compatibilité, côté ÉCRITURE : produit, avec le binaire courant, deux
+/// bases à rejouer par un AUTRE binaire. Inactif sans la variable d'environnement.
+/// `orpheline/base` : un exclusif tué pendant un SET ; `propre/base` : un SET commité
+/// puis fermé proprement.
+#[test]
+fn fixture_ecrit_par_le_binaire_courant() {
+    let Ok(racine) = std::env::var(ENV_FIXTURE_ECRIT) else {
+        return;
+    };
+    let racine = PathBuf::from(racine);
+    let orph = racine.join("orpheline");
+    std::fs::create_dir_all(&orph).unwrap();
+    preparer_dans(&orph);
+    enfant_tue(&orph);
+
+    let propre = racine.join("propre");
+    std::fs::create_dir_all(&propre).unwrap();
+    let db = ObrainDB::open(propre.join("base")).expect("open propre");
+    db.session()
+        .execute("INSERT (:Cible {court: 'ancien'})")
+        .expect("insert");
+    db.session()
+        .execute("MATCH (n:Cible) SET n.court = 'nouveau'")
+        .expect("set commité");
+    db.close().expect("close propre");
+}
+
+/// Rétro-compatibilité, côté LECTURE : rejoue, avec le binaire courant, les
+/// bases produites par `fixture_ecrit_par_le_binaire_courant` (copies de travail
+/// fournies par le harnais). Attendu : `propre` = `nouveau` (commit) et
+/// `orpheline` = `ancien`. Inactif sans la variable d'environnement.
+#[test]
+fn fixture_relue_par_le_binaire_courant() {
+    let Ok(racine) = std::env::var(ENV_FIXTURE_LIT) else {
+        return;
+    };
+    let racine = PathBuf::from(racine);
+
+    let db = ObrainDB::open_shared_write(racine.join("propre/base")).expect("open propre");
+    let propre = lire_court(&db);
+    db.close().expect("close propre");
+    drop(db);
+
+    let base = racine.join("orpheline/base");
+    let db = ObrainDB::open_shared_write(&base).expect("open orpheline");
+    let orpheline = lire_court(&db);
+    db.close().expect("close orpheline");
+    drop(db);
+    let db = ObrainDB::open(&base).expect("reouverture exclusive");
+    let apres = lire_court(&db);
+    db.close().expect("close");
+
+    eprintln!("RESULTAT propre={propre:?} orpheline={orpheline:?} apres_exclusif={apres:?}");
+    assert_eq!(propre.as_deref(), Some("nouveau"), "base propre");
+    assert_eq!(
+        orpheline.as_deref(),
+        Some("ancien"),
+        "base orpheline (partagé)"
+    );
+    assert_eq!(
+        apres.as_deref(),
+        Some("ancien"),
+        "base orpheline (exclusif)"
+    );
+}
+
+const ENV_COURSE: &str = "OBRAIN_TEST_COURSE_ENFANT";
+const NB_COURSE: usize = 6;
+
+/// Enfant de la course : attend le signal, ouvre en partagé, ferme.
+#[test]
+fn enfant_ouvre_partage_au_signal() {
+    let Ok(dir) = std::env::var(ENV_COURSE) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let depart = std::time::Instant::now();
+    while !dir.join("go").exists() {
+        assert!(depart.elapsed() < Duration::from_secs(30), "pas de signal");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let db = ObrainDB::open_shared_write(dir.join("base")).expect("open partagé de l'enfant");
+    db.close().expect("close de l'enfant");
+    drop(db);
+    std::fs::write(dir.join(format!("fini-{}", std::process::id())), b"ok").unwrap();
+}
+
+/// Course : six écrivains partagés ouvrent ENSEMBLE une base dont une
+/// déclaration orpheline attend. Une seule restauration doit avoir lieu : une
+/// seule trame `TxAnnulee` dans le WAL, et la valeur d'avant. Sans le verrou de
+/// restauration, deux partagés peuvent restaurer et clore chacun la même orpheline.
+#[test]
+fn course_entre_partages_restaure_une_seule_fois() {
+    let (dir, base) = preparer();
+    enfant_tue(dir.path());
+    let mut enfants = Vec::new();
+    for _ in 0..NB_COURSE {
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["enfant_ouvre_partage_au_signal", "--exact", "--nocapture"])
+            .env(ENV_COURSE, dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        enfants.push(cmd.spawn().expect("spawn enfant de course"));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    std::fs::write(dir.path().join("go"), b"1").unwrap();
+    for mut e in enfants {
+        let statut = e.wait().expect("attente enfant");
+        assert!(
+            statut.success(),
+            "un partagé de la course a échoué : {statut:?}"
+        );
+    }
+    let fini = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("fini-"))
+        })
+        .count();
+    assert_eq!(fini, NB_COURSE, "tous les partagés doivent avoir fini");
+
+    let annulations = compter_annulations(&base);
+    eprintln!("MESURE course : TxAnnulee = {annulations} sur {NB_COURSE} partagés");
+    assert_eq!(
+        annulations, 1,
+        "l'orpheline a été restaurée et close {annulations} fois au lieu d'une"
+    );
+    let db = ObrainDB::open(&base).expect("reouverture exclusive");
+    assert_eq!(lire_court(&db).as_deref(), Some("ancien"));
+    db.close().expect("close");
 }
