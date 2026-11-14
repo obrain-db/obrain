@@ -114,6 +114,22 @@ pub(crate) struct VerrouRepertoire {
 /// de fichier : le store est mono-instance en mémoire, et les ouvertures de
 /// fichiers échouent de toute façon sans filesystem. Le no-op est donc
 /// sémantiquement correct. Hors unix et wasm32 (Windows), `fs2` (`LockFileEx`).
+/// (obrain#171) Verrou `flock` EXCLUSIF BLOQUANT, pour la restauration d'un
+/// écrivain partagé (`substrate.restauration.lock`). Unix seulement : sur les
+/// autres cibles le verrou de restauration est inter-processus sans effet, et le
+/// mutex intra-processus reste en place.
+#[cfg(unix)]
+pub(crate) fn verrouiller_fichier_bloquant(fichier: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `flock` reçoit un descripteur ouvert par l'appelant et ne conserve
+    // aucun pointeur.
+    let rc = unsafe { libc::flock(fichier.as_raw_fd(), libc::LOCK_EX) };
+    if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 pub(crate) fn verrouiller_fichier(fichier: &File, exclusif: bool) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
@@ -392,6 +408,23 @@ pub(crate) fn acquerir_verrou_repertoire(
             // Même processus : on partage — SAUF demande exclusive sur une
             // part partagée existante (un écrivain à côté de lecteurs = viol).
             if !exclusif || part.exclusif {
+                // (obrain#171) Un ÉCRIVAIN PARTAGÉ ne rejoint pas une part
+                // EXCLUSIVE vivante du même processus : le verrou inter-processus
+                // l'interdit déjà (`flock` exclusif contre partagé), et sans cette
+                // règle le partagé lirait les écritures en vol de l'exclusif
+                // (mesuré : `sonde_meme_processus.rs`) et pourrait restaurer ses
+                // déclarations. Les lecteurs (`creer = false`) restent permis.
+                if !exclusif && creer && part.exclusif {
+                    return Err(SubstrateError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "substrate {} is already open for writing (exclusive) in this \
+                             process — a shared-write handle cannot join it. Close the \
+                             exclusive handle first.",
+                            chemin.display()
+                        ),
+                    )));
+                }
                 return Ok(part);
             }
             return Err(SubstrateError::Io(std::io::Error::new(
@@ -639,6 +672,13 @@ pub mod zone {
     /// prenait un `flock` frais sur le nouvel inode → deux écrivains coexistants
     /// → WAL corrompu → messages perdus au replay (invariant mono-écrivain violé).
     pub const DIR_LOCK: &str = "substrate.dirlock";
+
+    /// (obrain#171) Verrou de RESTAURATION des déclarations orphelines par un
+    /// écrivain PARTAGÉ (`open_shared_write`), tenu entre le relevé du WAL et
+    /// l'écriture de sa clôture. Deux partagés qui ouvrent ensemble ne doivent
+    /// pas restaurer deux fois : le second écraserait une écriture du premier.
+    /// Fichier créé au premier usage (écrivain partagé seulement).
+    pub const RESTAURATION_LOCK: &str = "substrate.restauration.lock";
 
     pub const ALL_MMAPPED: &[&str] = &[
         NODES,
