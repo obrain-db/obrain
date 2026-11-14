@@ -3180,7 +3180,16 @@ impl Writer {
     /// commit. Cheap no-op-equivalent under `EveryCommit` (already synced
     /// per commit) and `Never` (intentionally not durable).
     pub fn fsync_wal(&self) -> SubstrateResult<()> {
-        self.wal.fsync()
+        self.wal.fsync()?;
+        // Une trame n'a pas atteint le WAL : rien de ce qui précède n'est
+        // acquittable comme durable tant qu'un flush complet ne l'a pas levé.
+        // Seul ce point PUBLIC (flush_wal) le dit : les `fsync` internes
+        // (checkpoint, tri, compaction) restent inchangés pour que la réparation
+        // par `flush()` ne soit pas bloquée par sa propre erreur.
+        if let Some(message) = self.wal.echec_append_en_attente() {
+            return Err(SubstrateError::EchecAppendWal(message));
+        }
+        Ok(())
     }
 
     /// Msync all live zone mmaps. Call at end-of-checkpoint.

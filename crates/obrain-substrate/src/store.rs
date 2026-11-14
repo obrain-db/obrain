@@ -9891,6 +9891,9 @@ impl SubstrateStore {
     ///    WAL as source of truth (replay will reconstruct both).
     pub fn flush(&self) -> SubstrateResult<()> {
         self.exiger_ecriture("flush")?;
+        // Numéro des échecs d'append connus AVANT ce flush : seuls ceux-là sont
+        // couverts par les zones persistées ci-dessous (voir `lever_echecs_append_jusqua`).
+        let echecs_avant_flush = self.writer.wal().compteur_echecs_append();
         // (2026-08-15, dict v7) L'offset se capture AVANT commit/msync :
         // toute entree <= offset sera duree par CE flush ; toute entree
         // arrivee pendant le flush est > offset et sera rejouee a la
@@ -9957,6 +9960,14 @@ impl SubstrateStore {
         self.persist_dict_si_sale()?;
         self.persist_properties()?;
         self.persist_external_edges()?;
+        // ── ISSUE #161 : LA RÉPARATION ─────────────────────────────────────
+        // Les écritures dont la trame a échoué sont désormais dans les zones,
+        // le registre des clés, `substrate.props` et les colonnes blob, tous
+        // persistés ci-dessus. Le flush complet lève donc l'erreur mémorisée
+        // pour les échecs antérieurs à ce flush, et seulement ceux-là.
+        self.writer
+            .wal()
+            .lever_echecs_append_jusqua(echecs_avant_flush);
 
         // Surveillance du WAL, EN DERNIER : tout est durable a ce point, donc
         // un checkpoint declenche ici ne peut rien perdre. Le drapeau de
@@ -43471,5 +43482,175 @@ mod course_verification_lecture_seule {
             mauvaises, 0,
             "{mauvaises} lectures sur {lectures} ont vu un compte faux pendant un recomptage"
         );
+    }
+}
+
+/// Erreur d'append WAL mémorisée sur le writer (« sticky error »).
+///
+/// Une écriture dont la trame n'a pas atteint le WAL est pourtant visible en
+/// mémoire et dans les zones : sans cette mémoire, `fsync_wal` / `flush_wal`
+/// rendaient Ok et l'appelant acquittait une valeur qui ne survit pas à un
+/// `kill -9`. Ces tests fixent le contrat : le flush WAL suivant rend Err, la
+/// mémoire n'est levée que par un `flush()` complet, et le chemin sain est
+/// inchangé.
+#[cfg(test)]
+mod wal_erreur_memorisee {
+    use super::*;
+    use crate::blob_column_registry::BLOB_COLUMN_THRESHOLD_BYTES;
+
+    fn valeur_longue() -> Value {
+        let s = "x".repeat(BLOB_COLUMN_THRESHOLD_BYTES + 1);
+        Value::String(s.as_str().into())
+    }
+
+    fn injecter_echecs(n: u32) {
+        crate::wal_io::ECHECS_APPEND_INJECTES.with(|c| c.set(n));
+    }
+
+    fn echecs_restants() -> u32 {
+        crate::wal_io::ECHECS_APPEND_INJECTES.with(|c| c.get())
+    }
+
+    /// Une trame blob qui échoue à l'append est avalée par le store (la
+    /// méthode rend normalement), donc `flush_wal` doit rendre Err : sans
+    /// mémoire, il rendait Ok (le défaut de l'issue #161).
+    #[test]
+    fn echec_append_blob_remonte_au_flush_wal() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let n = s.create_node(&["A"]);
+        s.fsync_wal().unwrap();
+
+        injecter_echecs(1);
+        s.set_node_property(n, "corps", valeur_longue());
+        assert_eq!(
+            echecs_restants(),
+            0,
+            "l'échec injecté doit avoir été consommé"
+        );
+
+        assert!(
+            s.fsync_wal().is_err(),
+            "un append WAL échoué doit faire rendre Err au fsync_wal suivant"
+        );
+    }
+
+    /// (a) L'erreur reste mémorisée : deux flush WAL de suite rendent Err.
+    #[test]
+    fn erreur_memorisee_persiste_entre_deux_flush_wal() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let n = s.create_node(&["A"]);
+
+        injecter_echecs(1);
+        s.set_node_property(n, "corps", valeur_longue());
+        assert!(s.fsync_wal().is_err());
+        assert!(
+            s.fsync_wal().is_err(),
+            "l'erreur ne doit pas être levée par un simple fsync WAL"
+        );
+    }
+
+    /// (b) Réparation : un `flush()` complet réussi lève l'erreur ; une
+    /// écriture réussie ensuite rend Ok — l'ancienne erreur ne bloque pas.
+    #[test]
+    fn flush_complet_leve_lerreur_et_ecriture_suivante_est_ok() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("kb");
+        let s = SubstrateStore::create(&path).unwrap();
+        let n = s.create_node(&["A"]);
+
+        injecter_echecs(1);
+        s.set_node_property(n, "corps", valeur_longue());
+        assert!(s.fsync_wal().is_err());
+
+        s.flush()
+            .expect("le flush complet ne doit pas être bloqué par l'erreur mémorisée");
+        s.fsync_wal()
+            .expect("après un flush complet réussi, le fsync WAL redevient Ok");
+
+        let m = s.create_node(&["B"]);
+        s.set_node_property(m, "k", Value::Int64(7));
+        s.fsync_wal()
+            .expect("une écriture réussie après réparation ne doit pas être bloquée");
+    }
+
+    /// (d) Durabilité de la réparation : une valeur dont la trame a échoué,
+    /// suivie d'un flush complet réussi, survit à un kill et se relit.
+    #[test]
+    fn apres_reparation_la_valeur_survit_au_kill() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("kb");
+        let n;
+        {
+            let s = SubstrateStore::create(&path).unwrap();
+            n = s.create_node(&["A"]);
+            injecter_echecs(1);
+            s.set_node_property(n, "corps", valeur_longue());
+            assert!(s.fsync_wal().is_err());
+            s.flush().unwrap();
+            s.deverrouiller_pour_simuler_un_kill();
+            std::mem::forget(s);
+        }
+        let s = SubstrateStore::open(&path).unwrap();
+        let attendu = "x".repeat(BLOB_COLUMN_THRESHOLD_BYTES + 1);
+        match s.get_node_property(n, &PropertyKey::new("corps")) {
+            Some(Value::String(v)) => assert_eq!(v.as_str(), attendu),
+            autre => panic!("valeur relue après kill : {autre:?}"),
+        }
+    }
+
+    /// (e) Propriété scalaire : l'écriture avalée par `PropSetInline` est
+    /// mémorisée comme les blobs.
+    #[test]
+    fn echec_append_scalaire_remonte_au_flush_wal() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let n = s.create_node(&["A"]);
+        s.fsync_wal().unwrap();
+
+        injecter_echecs(1);
+        s.set_node_property(n, "age", Value::Int64(42));
+        assert_eq!(
+            echecs_restants(),
+            0,
+            "l'échec injecté doit avoir été consommé"
+        );
+        assert!(s.fsync_wal().is_err());
+        s.flush().unwrap();
+        s.fsync_wal().unwrap();
+    }
+
+    /// (f) Commit de transaction : l'échec de la trame de commit remonte
+    /// (`Writer::commit` rend Err), et le flush WAL suivant aussi. Un commit
+    /// sain ensuite ne doit pas être bloqué par cette erreur une fois réparée.
+    #[test]
+    fn echec_commit_remonte_et_reste_memorise() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        s.create_node(&["A"]);
+        s.fsync_wal().unwrap();
+
+        injecter_echecs(1);
+        assert!(
+            s.writer.commit().is_err(),
+            "la trame de commit refusée doit remonter à l'appelant"
+        );
+        assert!(s.fsync_wal().is_err());
+        s.flush().unwrap();
+        s.writer.commit().unwrap();
+        s.fsync_wal().unwrap();
+    }
+
+    /// (c) Chemin sain : sans injection, rien ne change.
+    #[test]
+    fn chemin_sain_inchange() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let n = s.create_node(&["A"]);
+        s.set_node_property(n, "corps", valeur_longue());
+        s.fsync_wal().unwrap();
+        s.flush().unwrap();
+        s.fsync_wal().unwrap();
     }
 }

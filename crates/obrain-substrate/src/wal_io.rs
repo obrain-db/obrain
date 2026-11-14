@@ -126,6 +126,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
+// POINT D'INJECTION DE TEST : nombre d'appends de trame à faire échouer
+// (disque plein simulé). `#[cfg(test)]` : absent du binaire de production.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ECHECS_APPEND_INJECTES: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// WAL durability policy.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum SyncMode {
@@ -1357,6 +1365,23 @@ fn reconcilier_ouverture(
 /// The writer owns its own `Mutex<WriterInner>` so it is `Send + Sync`; multiple
 /// producers can share a `&WalWriter` safely.
 #[derive(Debug)]
+/// Mémoire des échecs d'append WAL (issue #161).
+///
+/// Un append qui échoue (ou une écriture groupée qui échoue) laisse une
+/// écriture hors du WAL : elle est visible en mémoire et dans les zones, mais
+/// un `kill -9` la perd tant qu'un flush complet ne l'a pas rendue durable. Le
+/// store avale souvent cette erreur (best-effort). Ici elle est mémorisée, et
+/// `Writer::fsync_wal` la rend tant qu'un flush complet réussi ne l'a pas levée.
+///
+/// `compteur` numérote tous les échecs depuis l'ouverture ; `en_attente` ne
+/// garde que le DERNIER échec non levé, avec son numéro. Lever jusqu'à un numéro
+/// `n` suffit donc : si le dernier échec est `<= n`, tous les précédents le sont.
+#[derive(Default)]
+struct EtatEchecsAppend {
+    compteur: u64,
+    en_attente: Option<(u64, String)>,
+}
+
 pub struct WalWriter {
     path: PathBuf,
     /// Journal d'une ouverture en LECTURE SEULE (`open_lecture_seule`) : le
@@ -1388,6 +1413,8 @@ pub struct WalWriter {
     /// inter-processus, lui, tranche par RELECTURE (`lsn == ancre + position`),
     /// frame par frame. Ce compteur dit s'il y a lieu de regarder.
     courses_suspectees: AtomicU64,
+    /// Échecs d'append mémorisés (voir [`EtatEchecsAppend`]).
+    echecs_append: Mutex<EtatEchecsAppend>,
     /// ── PUBLICATIONS DEVANCÉES (MP-1, 2026-11-07) ──────────────────────────
     /// Appends dont la fin a été PUBLIÉE PAR UN AUTRE avant nous : à notre
     /// publication, `fin_publiee >= position + len`. Notre frame est pourtant à
@@ -1964,6 +1991,7 @@ impl WalWriter {
             sync_mode,
             recalages: AtomicU64::new(0),
             courses_suspectees: AtomicU64::new(0),
+            echecs_append: Mutex::new(EtatEchecsAppend::default()),
             publications_devancees: AtomicU64::new(0),
             records_ecrits: AtomicU64::new(0),
             troncatures_subies: AtomicU64::new(0),
@@ -2029,6 +2057,7 @@ impl WalWriter {
             sync_mode,
             recalages: AtomicU64::new(0),
             courses_suspectees: AtomicU64::new(0),
+            echecs_append: Mutex::new(EtatEchecsAppend::default()),
             publications_devancees: AtomicU64::new(0),
             records_ecrits: AtomicU64::new(0),
             troncatures_subies: AtomicU64::new(0),
@@ -2381,6 +2410,47 @@ impl WalWriter {
         })
     }
 
+    /// Mémorise un échec d'append (ou d'écriture du tampon). Sans effet sur une
+    /// ouverture en lecture seule : rien ne peut y être écrit.
+    fn memoriser_echec_append(&self, e: &SubstrateError) {
+        if self.lecture_seule {
+            return;
+        }
+        let mut etat = self.echecs_append.lock();
+        etat.compteur += 1;
+        etat.en_attente = Some((etat.compteur, e.to_string()));
+        tracing::error!(
+            target: "substrate::wal",
+            erreur = %e,
+            "échec d'écriture WAL mémorisé : la trame n'est pas au journal, \
+             fsync_wal/flush_wal rendront Err jusqu'à un flush complet réussi"
+        );
+    }
+
+    /// Nombre d'échecs enregistrés depuis l'ouverture. Un flush le lit AVANT de
+    /// persister, puis lève jusqu'à cette valeur (voir [`Self::lever_echecs_append_jusqua`]).
+    pub(crate) fn compteur_echecs_append(&self) -> u64 {
+        self.echecs_append.lock().compteur
+    }
+
+    /// Le dernier échec non levé, s'il existe.
+    pub(crate) fn echec_append_en_attente(&self) -> Option<String> {
+        self.echecs_append
+            .lock()
+            .en_attente
+            .as_ref()
+            .map(|(_, message)| message.clone())
+    }
+
+    /// Lève l'erreur mémorisée si tous les échecs jusqu'au numéro `numero` sont
+    /// couverts par un flush complet réussi. Un échec plus récent reste en place.
+    pub(crate) fn lever_echecs_append_jusqua(&self, numero: u64) {
+        let mut etat = self.echecs_append.lock();
+        if etat.en_attente.as_ref().is_some_and(|(n, _)| *n <= numero) {
+            etat.en_attente = None;
+        }
+    }
+
     /// ── LE TRONC COMMUN DES APPENDS D'UNE FRAME ─────────────────────────────
     /// Tout ce qui distingue deux appels, c'est la façon d'écrire le PAYLOAD —
     /// le reste (prédiction de LSN, buffer thread-local, mutex, needle, pose) est
@@ -2397,6 +2467,31 @@ impl WalWriter {
         encodeur: impl FnOnce(&mut Vec<u8>, u64) -> SubstrateResult<()>,
     ) -> SubstrateResult<(u64, usize)> {
         self.refuser_si_lecture_seule("un append au WAL")?;
+        let resultat = self.append_frame_brut(commit, exige_sync, encodeur);
+        if let Err(e) = &resultat {
+            self.memoriser_echec_append(e);
+        }
+        resultat
+    }
+
+    /// Corps de [`Self::append_frame`], sans la mémoire d'échec. L'injection de
+    /// test est ici, pour passer par la même mémorisation qu'un vrai échec.
+    fn append_frame_brut(
+        &self,
+        commit: bool,
+        exige_sync: bool,
+        encodeur: impl FnOnce(&mut Vec<u8>, u64) -> SubstrateResult<()>,
+    ) -> SubstrateResult<(u64, usize)> {
+        #[cfg(test)]
+        if ECHECS_APPEND_INJECTES.with(|c| {
+            let n = c.get();
+            c.set(n.saturating_sub(1));
+            n > 0
+        }) {
+            return Err(SubstrateError::Io(std::io::Error::other(
+                "injection de test : append WAL refuse (disque plein simule)",
+            )));
+        }
         if self.group_actif.load(Ordering::Acquire) {
             // `commit || exige_sync` : c'est LA définition d'une frontière de
             // durabilité pour le group commit (voir
@@ -2437,6 +2532,18 @@ impl WalWriter {
         I: IntoIterator<Item = WalRecord>,
     {
         self.refuser_si_lecture_seule("un append au WAL")?;
+        let resultat = self.append_batch_brut(recs);
+        if let Err(e) = &resultat {
+            self.memoriser_echec_append(e);
+        }
+        resultat
+    }
+
+    /// Corps de [`Self::append_batch`], sans la mémoire d'échec.
+    fn append_batch_brut<I>(&self, recs: I) -> SubstrateResult<(u64, usize)>
+    where
+        I: IntoIterator<Item = WalRecord>,
+    {
         let it = recs.into_iter();
         if self.group_actif.load(Ordering::Acquire) {
             let mut premier: Option<u64> = None;
@@ -2785,7 +2892,21 @@ impl WalWriter {
     /// le prochain flush réessaiera les mêmes frames au même offset. Vider le
     /// tampon sur un échec les perdrait DÉFINITIVEMENT — et sans que personne ne
     /// puisse le dire, puisque `append` les a déjà acceptés.
+    /// Pose le tampon groupé dans le fichier. Un échec laisse des frames
+    /// acquittées hors du WAL : il est mémorisé (voir [`EtatEchecsAppend`]).
     fn poser_le_tampon(&self, guard: &mut WriterInner, pose: PoseTampon) -> SubstrateResult<()> {
+        let resultat = self.poser_le_tampon_brut(guard, pose);
+        if let Err(e) = &resultat {
+            self.memoriser_echec_append(e);
+        }
+        resultat
+    }
+
+    fn poser_le_tampon_brut(
+        &self,
+        guard: &mut WriterInner,
+        pose: PoseTampon,
+    ) -> SubstrateResult<()> {
         let fsync = matches!(pose, PoseTampon::Durable | PoseTampon::DurableToujours);
         if guard.groupe.vide() {
             // Rien de neuf à poser. Un `fsync()` EXPLICITE fsynce quand même
