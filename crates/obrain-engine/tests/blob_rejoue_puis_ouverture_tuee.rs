@@ -1,28 +1,18 @@
-//! UNE VALEUR LONGUE REJOUÉE DEPUIS LE WAL, PUIS FERMÉE PROPREMENT, DISPARAÎT
-//! QUAND UN PROCESSUS SUIVANT OUVRE LA BASE ET MEURT.
+//! obrain#167 : UNE VALEUR LONGUE REJOUÉE DEPUIS LE WAL, PUIS FERMÉE PROPREMENT,
+//! NE DOIT PAS DISPARAÎTRE QUAND UN PROCESSUS SUIVANT OUVRE LA BASE ET MEURT.
 //!
 //! Séquence, trois processus, rien d'autre que l'API Rust :
 //!   1. l'écrivain A crée un nœud `Doc` (une valeur courte, une valeur de
-//!      800 o, donc en colonne blob), une arête vers un autre nœud, puis
-//!      `flush_wal()` ; il est tué (`kill -9`) ;
+//!      800 o, donc en colonne blob), optionnellement une arête vers un autre
+//!      nœud, puis acquitte par `flush_wal()` ou `commit_wal()` ; il est tué
+//!      (`kill -9`) ;
 //!   2. le parent rouvre (rejeu WAL : la valeur longue revient), relit,
-//!      `close()` (flush complet) ;
+//!      `close()` ;
 //!   3. le processus B ouvre la base, n'écrit RIEN, est tué ;
 //!   4. le parent rouvre : la valeur longue doit être là.
 //!
-//! CAUSE (obrain#167) : le dictionnaire que le `close()` du parent écrit porte
-//! des compteurs d'arêtes sans les histogrammes de labels (forme « v5 ») ; B,
-//! en l'ouvrant, détecte ce v5 et faisait son auto-flush v5→v6 AU MILIEU de
-//! l'ouverture, AVANT d'hydrater les registres de colonnes blob : le
-//! dictionnaire réécrit n'avait plus la colonne, la valeur devenait illisible.
-//! L'auto-flush est désormais différé à la fin de l'ouverture.
-//!
-//! Mesuré avant correctif (c4b6ada9, e5648dbf, 8d7e3b09) : perdue dès qu'une
-//! arête est arrivée par le seul WAL — y compris quand la valeur longue avait
-//! été rendue durable AVANT par un flush complet (`A-flush-complet-puis-arete`) :
-//! c'est tout le registre des colonnes blob qui disparaît du dictionnaire, pas
-//! la seule valeur rejouée. Sans arête (pas d'histogramme à reconstruire), ou
-//! quand l'arête elle-même est suivie d'un `commit_wal()`, rien n'est perdu.
+//! Quatre cas : {flush_wal, commit_wal} x {sans arête, avec arête}. Le parent
+//! échoue si l'un d'eux perd la valeur longue acquittée.
 #![cfg(feature = "wal")]
 
 use obrain_common::types::Value;
@@ -93,17 +83,15 @@ fn une_valeur_longue_rejouee_puis_fermee_survit_a_une_ouverture_tuee() {
             let n = db.create_node(&["Doc"]);
             db.set_node_property(n, "courte", Value::from("c"));
             db.set_node_property(n, "longue", Value::from(valeur_longue()));
-            if role == "A-flush-complet-puis-arete" {
-                // La valeur longue rendue durable par un flush COMPLET…
-                db.commit_wal().unwrap();
-            }
-            if role == "A-arete" || role == "A-flush-complet-puis-arete" {
-                // …puis une écriture qui pose une arête, acquittée par le seul
-                // fsync du WAL.
+            if role.contains("avec-arete") {
                 let m = db.create_node(&["Autre"]);
                 db.create_edge(m, n, "A");
             }
-            db.flush_wal().unwrap();
+            if role.starts_with("A-commit") {
+                db.commit_wal().unwrap();
+            } else {
+                db.flush_wal().unwrap();
+            }
         }
         std::fs::write(dir.join("pret.tmp"), "x").unwrap();
         std::fs::rename(dir.join("pret.tmp"), dir.join("pret")).unwrap();
@@ -113,7 +101,12 @@ fn une_valeur_longue_rejouee_puis_fermee_survit_a_une_ouverture_tuee() {
     }
     let attendu = Some((Some(1), Some(valeur_longue().len())));
     let mut pertes = Vec::new();
-    for a in ["A-sans-arete", "A-arete", "A-flush-complet-puis-arete"] {
+    for a in [
+        "A-flush-sans-arete",
+        "A-flush-avec-arete",
+        "A-commit-sans-arete",
+        "A-commit-avec-arete",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("base");
         let mut c = enfant(dir.path(), a);
