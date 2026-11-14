@@ -990,7 +990,7 @@ jobs:
           # LOCAL partagé par les trois runners de ffs-n1, borné (LRU, 30 Go).
           # Sans sccache installé, rien ne change. sccache vit dans le CARGO_HOME de
           # chaque runner (déjà sur PATH) ; son cache par défaut est partagé.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1; then
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && command -v sccache >/dev/null 2>&1 && [ "${GITHUB_JOB:-}" != "deny" ]; then
             {
               echo "CARGO_BUILD_JOBS=8"
               echo "RUSTC_WRAPPER=sccache"
