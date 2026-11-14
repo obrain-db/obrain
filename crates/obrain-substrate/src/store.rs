@@ -8082,6 +8082,8 @@ impl SubstrateStore {
         // flush (v5 bump takes effect).
         let t_counters = web_time::Instant::now();
         let counters_span = tracing::info_span!("restore_counters").entered();
+        // obrain#167: the v5→v6 auto-flush is deferred to the end of the open.
+        let mut flush_v6_differe = false;
         let counters_source = if let Some(ref persisted) = snapshot.counters {
             store.restore_counters_from_snapshot(persisted);
             // T17i T2 : a v5 dict (loaded from a pre-T17i base) has empty
@@ -8108,37 +8110,19 @@ impl SubstrateStore {
                     "snapshot+v5-histogram-differe"
                 } else {
                     store.rebuild_live_counters_from_zones()?;
-                    // T17j T3 — auto-flush the upgraded dict now so the
-                    // next open reads v6 directly (O(M) histogram restore,
-                    // no rebuild scan). Without this, the first post-deploy
-                    // open of a large v5 base would re-scan edges until the
-                    // user-triggered flush eventually persists v6 — on
-                    // Wiki (119M edges) that's ~11 s faulting ~4 GB RSS.
-                    //
-                    // Graceful failure : a flush error (read-only FS, disk
-                    // full) logs a warning and returns Ok — the registry
-                    // is correct in RAM, the next flush attempt will
-                    // retry. Never panic, never block `from_substrate`.
-                    let auto_flush_span = tracing::info_span!("auto_flush_v5_to_v6").entered();
-                    let t_flush = web_time::Instant::now();
-                    match store.flush() {
-                        Ok(()) => {
-                            tracing::info!(
-                                elapsed_ms = t_flush.elapsed().as_millis() as u64,
-                                "T17j T3: auto-flushed v5→v6 upgrade"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = ?e,
-                                "T17j T3: auto-flush after v5→v6 upgrade failed \
-                                 (non-fatal — registry valid in RAM, next flush \
-                                 will retry)"
-                            );
-                        }
-                    }
-                    drop(auto_flush_span);
-                    "snapshot+v5-histogram-rebuild-auto-flushed"
+                    // T17j T3 — the upgraded dict is flushed so the next open
+                    // reads v6 directly (no rebuild scan) — but at the END of
+                    // the open, not here (obrain#167). Here the store is still
+                    // half-built: the vec / blob column registries are not
+                    // hydrated yet (step 3), the WAL window is not merged yet
+                    // (`merge_wal_inline_props`). A flush at this point wrote
+                    // a dict WITHOUT the blob columns: a long value acquitted,
+                    // replayed and closed was then lost as soon as such an open
+                    // was killed (measured: 800-byte value, 3 processes,
+                    // `blob_rejoue_puis_ouverture_tuee.rs`). It would also move
+                    // `wal_offset_at_flush` past frames not merged yet.
+                    flush_v6_differe = true;
+                    "snapshot+v5-histogram-rebuild-flush-differe"
                 }
             } else {
                 "snapshot"
@@ -8791,6 +8775,26 @@ impl SubstrateStore {
             elapsed_ms = t_total.elapsed().as_millis() as u64,
             "SubstrateStore::from_substrate complete (réel)"
         );
+
+        // T17j T3 (obrain#167) — the deferred v5→v6 auto-flush, now that the
+        // store is whole (column registries hydrated, WAL window merged).
+        // Graceful failure : a flush error (read-only FS, disk full) logs a
+        // warning — the registry is correct in RAM, the next flush retries.
+        if flush_v6_differe {
+            let _auto_flush_span = tracing::info_span!("auto_flush_v5_to_v6").entered();
+            let t_flush = web_time::Instant::now();
+            match store.flush() {
+                Ok(()) => tracing::info!(
+                    elapsed_ms = t_flush.elapsed().as_millis() as u64,
+                    "T17j T3: auto-flushed v5→v6 upgrade (end of open)"
+                ),
+                Err(e) => tracing::warn!(
+                    error = ?e,
+                    "T17j T3: auto-flush after v5→v6 upgrade failed \
+                     (non-fatal — registry valid in RAM, next flush will retry)"
+                ),
+            }
+        }
 
         // Rien n a ete ecrit PAR NOUS a ce stade : la garde de fermeture
         // part de l offset courant, sinon toute base simplement ouverte se
