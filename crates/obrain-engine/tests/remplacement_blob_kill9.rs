@@ -151,7 +151,9 @@ fn enfant_remplacement() {
             let mut i = 0u64;
             loop {
                 i += 1;
-                let path = long("d", &format!("-{i}"));
+                // Chemin unique par processus enfant : un tour suivant ne recrée JAMAIS le
+                // chemin d'un nœud déjà écrit (sinon la lecture par chemin écrase une ligne).
+                let path = long("d", &format!("-{}-{i}", std::process::id()));
                 let id = db.create_node(&["File"]);
                 noter(&dir, &format!("N\t{path}\t{}", id.0));
                 db.set_node_property(id, "path", Value::String(path.clone().into()));
