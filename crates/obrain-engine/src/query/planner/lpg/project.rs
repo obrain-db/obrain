@@ -975,8 +975,13 @@ impl super::Planner {
             }
 
             // Detect cognitive UDF calls (e.g., obrain.energy(n)) and project them
+            // Une fonction ORDINAIRE (`coalesce`, `count`…) est déjà projetée
+            // par le Return augmenté (`cle_de_tri_expression`) : ne pas la
+            // projeter une seconde fois ici, où un agrégat ne s'évalue pas.
             #[cfg(feature = "cognitive")]
-            if let LogicalExpression::FunctionCall { name, .. } = &key.expression {
+            if let LogicalExpression::FunctionCall { name, .. } = &key.expression
+                && !cle_de_tri_expression(&key.expression)
+            {
                 let col_name = name.replace('.', "_");
                 if !variable_columns.contains_key(&col_name) {
                     cognitive_projections.push((col_name.clone(), key.expression.clone()));
@@ -1185,11 +1190,26 @@ impl super::Planner {
 }
 
 /// Une clé de tri qui est une EXPRESSION à évaluer (`ORDER BY 0 - n.v`,
-/// `ORDER BY n.v + 1`, CASE…) — par opposition aux formes résolues par nom
-/// (`Variable`, `Property`, `FunctionCall` cognitif). Ces clés sont projetées
-/// en colonne supplémentaire via le Return augmenté de `plan_sort`.
+/// `ORDER BY n.v + 1`, CASE, `coalesce(n.v, 0)`, `toLower(n.s)`, `count(*)`…)
+/// — par opposition aux formes résolues par nom (`Variable`, `Property`,
+/// UDF cognitive `obrain.xxx(...)`). Ces clés sont projetées en colonne
+/// supplémentaire via le Return augmenté de `plan_sort`.
+///
+/// Un appel de fonction ORDINAIRE (nom sans point) est une expression comme
+/// une autre : le Return sait l'évaluer. Pour un agrégat (`ORDER BY count(*)`)
+/// cela ne vaut qu'en GQL, où l'agrégation vit dans le Return ; en Cypher
+/// l'agrégat passe par un `Aggregate` séparé et la clé n'y est pas rattachée
+/// (reste consigné, test `cypher_order_by_agregat` ignoré). Avant ce
+/// correctif, toute fonction était cherchée PAR NOM parmi les colonnes projetées, et
+/// `ORDER BY coalesce(t.priority, 0) DESC` (forme de Project Orchestrator)
+/// mourait en erreur interne « Function column 'coalesce' not found ». Les
+/// UDF cognitives (`obrain.energy(n)`) gardent leur chemin : projetées sous
+/// leur nom par `plan_sort` quand la feature `cognitive` est active.
 fn cle_de_tri_expression(expr: &LogicalExpression) -> bool {
     matches!(
+        expr,
+        LogicalExpression::FunctionCall { name, .. } if !name.contains('.')
+    ) || matches!(
         expr,
         LogicalExpression::Binary { .. }
             | LogicalExpression::Unary { .. }
