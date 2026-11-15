@@ -1192,6 +1192,40 @@ thread_local! {
 }
 
 /// Nombre d'emplacements dont une zone peut manquer sans que l'ouverture en
+
+/// (obrain#172) POINT DE CRASH POUR LES TESTS — compilé seulement avec la
+/// feature `points-de-crash` (jamais en production : la fonction est alors
+/// vide et inlinée). `OBRAIN_SUBSTRATE_POINT_DE_CRASH=<nom>:<marqueur>` :
+/// quand le store atteint le point `<nom>`, il écrit le fichier `<marqueur>`
+/// (son pid) et S'ENDORT pour toujours ; le test parent, qui attend le
+/// marqueur, le tue -9. Ce qui est sur le disque à cet instant est exactement
+/// ce qu'un `kill -9` laisse là. Les points sont nommés par leur POSITION
+/// entre les deux gestes d'un remplacement (`avant_tout`, `entre_les_deux`,
+/// `apres_tout`), pas par le geste : un correctif qui réordonne les gestes
+/// garde les mêmes noms, et le même test mesure avant et après.
+#[cfg(feature = "points-de-crash")]
+fn point_de_crash(nom: &str) {
+    static CONSIGNE: std::sync::OnceLock<Option<(String, std::path::PathBuf)>> =
+        std::sync::OnceLock::new();
+    let consigne = CONSIGNE.get_or_init(|| {
+        let v = std::env::var("OBRAIN_SUBSTRATE_POINT_DE_CRASH").ok()?;
+        // Le nom porte des `:` ; le marqueur (dernier champ) n'en porte pas.
+        let (n, m) = v.rsplit_once(':')?;
+        Some((n.to_string(), std::path::PathBuf::from(m)))
+    });
+    if let Some((n, marqueur)) = consigne
+        && n == nom
+    {
+        let _ = std::fs::write(marqueur, std::process::id().to_string());
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    }
+}
+#[cfg(not(feature = "points-de-crash"))]
+#[inline(always)]
+fn point_de_crash(_nom: &str) {}
+
 /// lecture seule la dise tronquée (slots réservés, pas encore écrits au flush).
 const TOLERANCE_ZONE_TRONQUEE: u64 = 64;
 
@@ -25864,7 +25898,9 @@ impl GraphStoreMut for SubstrateStore {
                     f(self);
                 }
             });
+            point_de_crash("noeud:blob:avant_route");
             self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
+            point_de_crash("noeud:blob:apres_route");
             // Clé enregistrée PENDANT l'écriture (construction qui n'a pas vu le
             // blob) : l'entrée entre en queue, comme sur le chemin scalaire
             // (revue 5, point 2). Idempotent si elle y est déjà.
@@ -25936,7 +25972,9 @@ impl GraphStoreMut for SubstrateStore {
         } else {
             None
         };
+        point_de_crash("noeud:remplacement_inline:avant_tout");
         self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
+        point_de_crash("noeud:remplacement_inline:entre_les_deux");
         // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
         //
         // L'ordre d'origine écrivait la valeur PUIS mettait l'index à jour.
@@ -26049,6 +26087,7 @@ impl GraphStoreMut for SubstrateStore {
                 }
             }
         }
+        point_de_crash("noeud:remplacement_inline:apres_tout");
         // ── (2026-08-19) RECENSEMENT DES LECTEURS DE LA DASHMAP ─────────
         //
         // Retirer l ecriture double REVEILLE tout chemin qui ne lit QUE ces
@@ -26234,13 +26273,17 @@ impl GraphStoreMut for SubstrateStore {
         }
         if let Some(tagged) = encode_blob_payload(&value) {
             let slot = id.0 as u32;
+            point_de_crash("arete:blob:avant_route");
             self.route_blob_write(EntityKind::Edge, slot, key, &tagged);
+            point_de_crash("arete:blob:apres_route");
             self.maintenance_apres_prop_dispatch(ctx_dispatch, id, key);
             return;
         }
         // (2026-08-20) Voir le pavé du jumeau nœud : sans cet effacement, une
         // valeur blob ancienne masque la valeur v2 qu'on écrit ici.
+        point_de_crash("arete:remplacement_inline:avant_tout");
         self.effacer_ombre_blob(EntityKind::Edge, id.0 as u32, key);
+        point_de_crash("arete:remplacement_inline:entre_les_deux");
         // T17f Step 4: dual-write into PropsZone v2 (edge-owner chain)
         // when enabled. Mirrors the node path at `set_node_property`;
         // best-effort, a PropsZone failure downgrades to DashMap-only
@@ -26290,6 +26333,7 @@ impl GraphStoreMut for SubstrateStore {
             tracing::warn!(edge_id = id.0, key = %key, error = %e,
                     "EdgePropSetInline WAL append failed — write is memory-only until next flush");
         }
+        point_de_crash("arete:remplacement_inline:apres_tout");
         // (2026-08-19) Voir le pave de `set_node_property` : quand la chaine
         // v2 de l ARETE a pris l ecriture, la redoubler ici n a plus de
         // lecteur. Sur un refus v2, la DashMap reste le filet anti-perte.
