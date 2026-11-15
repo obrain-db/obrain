@@ -25954,6 +25954,21 @@ impl GraphStoreMut for SubstrateStore {
         // masque indéfiniment. Mesuré avant correctif : `SET n.body = <300 o>`
         // puis `SET n.body = "court"` rend les 300 octets.
         //
+        // (obrain#172) MAIS L'EFFACEMENT VIENT APRÈS L'ÉCRITURE DE LA NOUVELLE
+        // VALEUR, PAS AVANT. `clear_slot` met l'entrée d'index de la colonne à
+        // zéro EN PLACE : l'ancienne valeur est illisible aussitôt, et la page
+        // mmap survit au processus. Effacer d'abord, écrire ensuite, c'est
+        // laisser une fenêtre où un `kill -9` ne laisse NI l'ancienne NI la
+        // nouvelle — mesuré : un `hash` long acquitté, remplacé par un court,
+        // rouvrait absent (`remplacement_blob_kill9.rs`, point
+        // `entre_les_deux` : 20/20 sans ce réordonnancement). Une écriture hors
+        // transaction ne déclare aucune valeur d'avant : rien ne la restaure.
+        // Écrire d'abord, effacer ensuite : entre les deux, la lecture rend
+        // l'ANCIENNE (le blob gagne), après, la NOUVELLE — jamais rien. Ce que
+        // l'ordre perd : une écriture NON acquittée tuée entre les deux reste
+        // masquée par l'ancienne jusqu'au prochain `SET` de la clé ; c'est
+        // l'issue permise (une transaction dont le commit n'est pas franchi).
+        //
         // Le défaut est ANTÉRIEUR — il porte déjà sur `String`, `Bytes` et les
         // listes routées le 19/08. Il est traité ICI parce que router les
         // cartes vers les blobs, ce que fait ce commit, y exposerait une
@@ -25973,8 +25988,6 @@ impl GraphStoreMut for SubstrateStore {
             None
         };
         point_de_crash("noeud:remplacement_inline:avant_tout");
-        self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
-        point_de_crash("noeud:remplacement_inline:entre_les_deux");
         // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
         //
         // L'ordre d'origine écrivait la valeur PUIS mettait l'index à jour.
@@ -26087,6 +26100,10 @@ impl GraphStoreMut for SubstrateStore {
                 }
             }
         }
+        point_de_crash("noeud:remplacement_inline:entre_les_deux");
+        // (obrain#172) La nouvelle valeur est écrite (zone v2 ou trame) : l'ancienne
+        // peut partir. Voir le commentaire de tête de cette branche.
+        self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
         point_de_crash("noeud:remplacement_inline:apres_tout");
         // ── (2026-08-19) RECENSEMENT DES LECTEURS DE LA DASHMAP ─────────
         //
@@ -26281,9 +26298,9 @@ impl GraphStoreMut for SubstrateStore {
         }
         // (2026-08-20) Voir le pavé du jumeau nœud : sans cet effacement, une
         // valeur blob ancienne masque la valeur v2 qu'on écrit ici.
+        // (obrain#172) Même ordre que pour un nœud : la nouvelle valeur d'abord,
+        // l'effacement du slot blob ensuite — voir `set_node_property`.
         point_de_crash("arete:remplacement_inline:avant_tout");
-        self.effacer_ombre_blob(EntityKind::Edge, id.0 as u32, key);
-        point_de_crash("arete:remplacement_inline:entre_les_deux");
         // T17f Step 4: dual-write into PropsZone v2 (edge-owner chain)
         // when enabled. Mirrors the node path at `set_node_property`;
         // best-effort, a PropsZone failure downgrades to DashMap-only
@@ -26333,6 +26350,8 @@ impl GraphStoreMut for SubstrateStore {
             tracing::warn!(edge_id = id.0, key = %key, error = %e,
                     "EdgePropSetInline WAL append failed — write is memory-only until next flush");
         }
+        point_de_crash("arete:remplacement_inline:entre_les_deux");
+        self.effacer_ombre_blob(EntityKind::Edge, id.0 as u32, key);
         point_de_crash("arete:remplacement_inline:apres_tout");
         // (2026-08-19) Voir le pave de `set_node_property` : quand la chaine
         // v2 de l ARETE a pris l ecriture, la redoubler ici n a plus de
