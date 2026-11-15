@@ -1191,6 +1191,39 @@ thread_local! {
     static PREPARATION_EN_ARRIERE_PLAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// (obrain#172) POINT DE CRASH POUR LES TESTS — compilé seulement avec la
+/// feature `points-de-crash` (jamais en production : la fonction est alors
+/// vide et inlinée). `OBRAIN_SUBSTRATE_POINT_DE_CRASH=<nom>:<marqueur>` :
+/// quand le store atteint le point `<nom>`, il écrit le fichier `<marqueur>`
+/// (son pid) et S'ENDORT pour toujours ; le test parent, qui attend le
+/// marqueur, le tue -9. Ce qui est sur le disque à cet instant est exactement
+/// ce qu'un `kill -9` laisse là. Les points sont nommés par leur POSITION
+/// entre les deux gestes d'un remplacement (`avant_tout`, `entre_les_deux`,
+/// `apres_tout`), pas par le geste : un correctif qui réordonne les gestes
+/// garde les mêmes noms, et le même test mesure avant et après.
+#[cfg(feature = "points-de-crash")]
+fn point_de_crash(nom: &str) {
+    static CONSIGNE: std::sync::OnceLock<Option<(String, std::path::PathBuf)>> =
+        std::sync::OnceLock::new();
+    let consigne = CONSIGNE.get_or_init(|| {
+        let v = std::env::var("OBRAIN_SUBSTRATE_POINT_DE_CRASH").ok()?;
+        // Le nom porte des `:` ; le marqueur (dernier champ) n'en porte pas.
+        let (n, m) = v.rsplit_once(':')?;
+        Some((n.to_string(), std::path::PathBuf::from(m)))
+    });
+    if let Some((n, marqueur)) = consigne
+        && n == nom
+    {
+        let _ = std::fs::write(marqueur, std::process::id().to_string());
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    }
+}
+#[cfg(not(feature = "points-de-crash"))]
+#[inline(always)]
+fn point_de_crash(_nom: &str) {}
+
 /// Nombre d'emplacements dont une zone peut manquer sans que l'ouverture en
 /// lecture seule la dise tronquée (slots réservés, pas encore écrits au flush).
 const TOLERANCE_ZONE_TRONQUEE: u64 = 64;
@@ -1280,6 +1313,12 @@ thread_local! {
     /// dans la carte : reproduit un second écrivain qui s'intercale.
     #[allow(clippy::type_complexity)]
     static ENTRE_ZONE_ET_CARTE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// (obrain#172) Dans `set_node_property`, la nouvelle valeur est écrite et
+    /// l'ancienne colonne blob n'est pas encore effacée : la fenêtre où deux
+    /// valeurs sont lisibles dans le stockage.
+    #[allow(clippy::type_complexity)]
+    static AVANT_EFFACEMENT_OMBRE: std::cell::RefCell<Option<Box<dyn Fn(&SubstrateStore)>>> =
         const { std::cell::RefCell::new(None) };
     /// Dans `bulk_import_node_props`, pages construites, têtes PAS ENCORE
     /// posées : reproduit un index bâti pendant l'import.
@@ -25864,7 +25903,9 @@ impl GraphStoreMut for SubstrateStore {
                     f(self);
                 }
             });
+            point_de_crash("noeud:blob:avant_route");
             self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
+            point_de_crash("noeud:blob:apres_route");
             // Clé enregistrée PENDANT l'écriture (construction qui n'a pas vu le
             // blob) : l'entrée entre en queue, comme sur le chemin scalaire
             // (revue 5, point 2). Idempotent si elle y est déjà.
@@ -25918,6 +25959,21 @@ impl GraphStoreMut for SubstrateStore {
         // masque indéfiniment. Mesuré avant correctif : `SET n.body = <300 o>`
         // puis `SET n.body = "court"` rend les 300 octets.
         //
+        // (obrain#172) MAIS L'EFFACEMENT VIENT APRÈS L'ÉCRITURE DE LA NOUVELLE
+        // VALEUR, PAS AVANT. `clear_slot` met l'entrée d'index de la colonne à
+        // zéro EN PLACE : l'ancienne valeur est illisible aussitôt, et la page
+        // mmap survit au processus. Effacer d'abord, écrire ensuite, c'est
+        // laisser une fenêtre où un `kill -9` ne laisse NI l'ancienne NI la
+        // nouvelle — mesuré : un `hash` long acquitté, remplacé par un court,
+        // rouvrait absent (`remplacement_blob_kill9.rs`, point
+        // `entre_les_deux` : 20/20 sans ce réordonnancement). Une écriture hors
+        // transaction ne déclare aucune valeur d'avant : rien ne la restaure.
+        // Écrire d'abord, effacer ensuite : entre les deux, la lecture rend
+        // l'ANCIENNE (le blob gagne), après, la NOUVELLE — jamais rien. Ce que
+        // l'ordre perd : une écriture NON acquittée tuée entre les deux reste
+        // masquée par l'ancienne jusqu'au prochain `SET` de la clé ; c'est
+        // l'issue permise (une transaction dont le commit n'est pas franchi).
+        //
         // Le défaut est ANTÉRIEUR — il porte déjà sur `String`, `Bytes` et les
         // listes routées le 19/08. Il est traité ICI parce que router les
         // cartes vers les blobs, ce que fait ce commit, y exposerait une
@@ -25936,7 +25992,7 @@ impl GraphStoreMut for SubstrateStore {
         } else {
             None
         };
-        self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
+        point_de_crash("noeud:remplacement_inline:avant_tout");
         // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
         //
         // L'ordre d'origine écrivait la valeur PUIS mettait l'index à jour.
@@ -26049,6 +26105,17 @@ impl GraphStoreMut for SubstrateStore {
                 }
             }
         }
+        point_de_crash("noeud:remplacement_inline:entre_les_deux");
+        // (obrain#172) La nouvelle valeur est écrite (zone v2 ou trame) : l'ancienne
+        // peut partir. Voir le commentaire de tête de cette branche.
+        #[cfg(test)]
+        AVANT_EFFACEMENT_OMBRE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
+        point_de_crash("noeud:remplacement_inline:apres_tout");
         // ── (2026-08-19) RECENSEMENT DES LECTEURS DE LA DASHMAP ─────────
         //
         // Retirer l ecriture double REVEILLE tout chemin qui ne lit QUE ces
@@ -26234,13 +26301,17 @@ impl GraphStoreMut for SubstrateStore {
         }
         if let Some(tagged) = encode_blob_payload(&value) {
             let slot = id.0 as u32;
+            point_de_crash("arete:blob:avant_route");
             self.route_blob_write(EntityKind::Edge, slot, key, &tagged);
+            point_de_crash("arete:blob:apres_route");
             self.maintenance_apres_prop_dispatch(ctx_dispatch, id, key);
             return;
         }
         // (2026-08-20) Voir le pavé du jumeau nœud : sans cet effacement, une
         // valeur blob ancienne masque la valeur v2 qu'on écrit ici.
-        self.effacer_ombre_blob(EntityKind::Edge, id.0 as u32, key);
+        // (obrain#172) Même ordre que pour un nœud : la nouvelle valeur d'abord,
+        // l'effacement du slot blob ensuite — voir `set_node_property`.
+        point_de_crash("arete:remplacement_inline:avant_tout");
         // T17f Step 4: dual-write into PropsZone v2 (edge-owner chain)
         // when enabled. Mirrors the node path at `set_node_property`;
         // best-effort, a PropsZone failure downgrades to DashMap-only
@@ -26290,6 +26361,9 @@ impl GraphStoreMut for SubstrateStore {
             tracing::warn!(edge_id = id.0, key = %key, error = %e,
                     "EdgePropSetInline WAL append failed — write is memory-only until next flush");
         }
+        point_de_crash("arete:remplacement_inline:entre_les_deux");
+        self.effacer_ombre_blob(EntityKind::Edge, id.0 as u32, key);
+        point_de_crash("arete:remplacement_inline:apres_tout");
         // (2026-08-19) Voir le pave de `set_node_property` : quand la chaine
         // v2 de l ARETE a pris l ecriture, la redoubler ici n a plus de
         // lecteur. Sur un refus v2, la DashMap reste le filet anti-perte.
@@ -44186,5 +44260,71 @@ impl VerrouRestauration {
             _intra: intra,
             _fichier: fichier,
         })
+    }
+}
+
+#[cfg(test)]
+mod fenetre_remplacement_blob {
+    use super::*;
+
+    /// (obrain#172) Deux valeurs dans la fenêtre d'un remplacement blob → inline :
+    /// la nouvelle est écrite (zone v2), l'ancienne est encore dans la colonne
+    /// blob. La LECTURE départage : le blob gagne (ordre vec → blob → v2), donc
+    /// on lit l'ancienne ; après l'effacement du slot, on lit la nouvelle. Jamais
+    /// les deux, jamais rien.
+    #[test]
+    fn deux_valeurs_lisibles_dans_la_fenetre_la_lecture_rend_l_ancienne_puis_la_nouvelle() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let a = s.create_node(&["File"]);
+        let longue = "h".repeat(340);
+        let cle = PropertyKey::new("hash");
+        s.set_node_property(a, "hash", Value::String(longue.clone().into()));
+        s.flush().unwrap();
+
+        // Observé à l'instant exact : la nouvelle valeur est écrite, l'effacement
+        // du slot blob n'a pas encore eu lieu.
+        type Lu = (Option<Value>, Option<Value>);
+        let fenetre: std::rc::Rc<std::cell::RefCell<Option<Lu>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let copie = fenetre.clone();
+        let cle_hook = cle.clone();
+        AVANT_EFFACEMENT_OMBRE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |st: &SubstrateStore| {
+                let lu = st.get_node_property(a, &cle_hook);
+                let blob = st
+                    .blob_columns
+                    .read_value(&cle_hook, EntityKind::Node, a.0 as u32);
+                *copie.borrow_mut() = Some((lu, blob));
+            }));
+        });
+        s.set_node_property(a, "hash", Value::String("court".into()));
+        AVANT_EFFACEMENT_OMBRE.with(|h| *h.borrow_mut() = None);
+
+        let (dans_la_fenetre, blob_dans_la_fenetre) = fenetre
+            .borrow()
+            .clone()
+            .expect("le point de fenêtre a été atteint");
+        assert_eq!(
+            dans_la_fenetre,
+            Some(Value::String(longue.clone().into())),
+            "dans la fenêtre : la lecture rend l'ancienne (le blob gagne)"
+        );
+        assert_eq!(
+            blob_dans_la_fenetre,
+            Some(Value::String(longue.clone().into())),
+            "dans la fenêtre : la colonne blob porte encore l'ancienne valeur"
+        );
+        // Après l'effacement : la nouvelle, et plus rien du blob.
+        assert_eq!(
+            s.get_node_property(a, &cle),
+            Some(Value::String("court".into())),
+            "après l'effacement : la nouvelle valeur est lisible (elle était écrite)"
+        );
+        assert!(
+            s.blob_columns
+                .read_value(&cle, EntityKind::Node, a.0 as u32)
+                .is_none()
+        );
     }
 }

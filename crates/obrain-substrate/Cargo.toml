@@ -193,3 +193,6 @@ harness = false
 default = []
 # Expose legacy read-only LpgStore ingestion (used only by the obrain-migrate binary).
 legacy-reader = []
+# (obrain#172) Points de crash pour les tests kill -9 (`point_de_crash`) : un store
+# atteint un point nommé, pose un marqueur et dort ; le test le tue -9. Jamais en production.
+points-de-crash = []
