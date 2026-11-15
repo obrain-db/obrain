@@ -46,6 +46,25 @@ const ENV_ENFANT: &str = "OBRAIN_TEST_REMPLACEMENT_BLOB_ENFANT";
 /// `<nom du point>:<fichier marqueur>`.
 const ENV_POINT: &str = "OBRAIN_SUBSTRATE_POINT_DE_CRASH";
 
+/// Affichage seulement (jamais l'oracle) : préfixe d'au plus 12 octets, reculé
+/// jusqu'à une frontière de caractère. Ne panique jamais, quelle que soit la longueur.
+fn abrege(s: &str) -> &str {
+    let mut n = s.len().min(12);
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    &s[..n]
+}
+
+/// Queue d'un chemin, pour l'affichage (même garantie que `abrege`).
+fn queue(s: &str) -> &str {
+    let mut debut = s.len().saturating_sub(8);
+    while !s.is_char_boundary(debut) {
+        debut += 1;
+    }
+    &s[debut..]
+}
+
 fn long(prefixe: &str, graine: &str) -> String {
     format!("{}{graine}", prefixe.repeat(340))
 }
@@ -256,7 +275,7 @@ fn un_remplacement_tue_a_chaque_point_laisse_l_ancienne_ou_la_nouvelle_valeur() 
             "{point}: après kill -9, {cle} durable = {verdict}{}",
             durable
                 .as_deref()
-                .map(|v| format!(" [{}…, {} o]", &v[..v.len().min(12)], v.len()))
+                .map(|v| format!(" [{}…, {} o]", abrege(v), v.len()))
                 .unwrap_or_default()
         );
         if verdict == "AUCUNE" || verdict == "AUTRE" {
@@ -370,12 +389,37 @@ fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
                 ok,
                 "tour {tour}: {} → la valeur durable {:?} n'est ni l'acquittée {} ni \
                  l'intention {:?}",
-                &p[p.len() - 8..],
-                d.as_deref().map(|v| &v[..v.len().min(12)]),
-                &ack[..12],
-                intentions.get(p).map(|v| &v[..v.len().min(12)])
+                queue(p),
+                d.as_deref().map(abrege),
+                abrege(ack),
+                intentions.get(p).map(|v| abrege(v))
             );
         }
         db.close().expect("close");
+    }
+}
+
+#[cfg(test)]
+mod affichage {
+    use super::{abrege, queue};
+
+    #[test]
+    fn l_affichage_ne_panique_jamais_quelle_que_soit_la_longueur() {
+        for n in 0..=40 {
+            let ascii = "a".repeat(n);
+            assert!(abrege(&ascii).len() <= 12 && ascii.starts_with(abrege(&ascii)));
+            assert!(queue(&ascii).len() <= 8 && ascii.ends_with(queue(&ascii)));
+            // multi-octets : 'é' = 2 octets ; une coupure à 12 peut tomber au milieu.
+            let mb = format!("x{}", "é".repeat(n));
+            assert!(abrege(&mb).len() <= 12 && mb.starts_with(abrege(&mb)));
+            assert!(mb.ends_with(queue(&mb)));
+        }
+        assert_eq!(
+            abrege("court-2"),
+            "court-2",
+            "chaîne de 7 octets : rendue entière"
+        );
+        assert_eq!(abrege(""), "");
+        assert_eq!(abrege("hhhhhhhhhhhhhhhhhhhhhhhh"), "hhhhhhhhhhhh");
     }
 }
