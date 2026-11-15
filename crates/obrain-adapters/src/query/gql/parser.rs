@@ -178,6 +178,23 @@ impl<'a> Parser<'a> {
         ) || self.is_contextual_keyword()
     }
 
+    /// Le jeton courant peut nommer une PROPRIÉTÉ : après `.` (`s.order`),
+    /// dans `SET`/`REMOVE`, ou comme clé d'une map (`{order: 1}`). La
+    /// position lève toute ambiguïté avec le mot-clé, donc tout jeton lexé
+    /// depuis un mot (`[A-Za-z_][A-Za-z0-9_]*`) convient — identifiant,
+    /// mot-clé contextuel ou réservé. Neo4j accepte `s.order`, `s.limit`,
+    /// `{match: 1}` sans échappement ; Project Orchestrator stocke `Step.order`
+    /// (obrain-db/obrain#177). `get_identifier_name` rend le texte brut d'un
+    /// mot-clé, il convient tel quel.
+    fn is_property_name(&self) -> bool {
+        if self.is_identifier() {
+            return true;
+        }
+        let mut chars = self.current.text.chars();
+        matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
     /// Checks if the current token is a keyword that can be used as an identifier in context.
     /// In GQL/Cypher, many keywords can be used as variable names or labels.
     fn is_contextual_keyword(&self) -> bool {
@@ -1082,7 +1099,7 @@ impl<'a> Parser<'a> {
                 // Property assignment: SET n.prop = value
                 self.advance();
 
-                if !self.is_label_or_type_name() {
+                if !self.is_property_name() {
                     return Err(self.error("Expected property name in SET"));
                 }
                 let property = self.current.text.clone();
@@ -1167,7 +1184,7 @@ impl<'a> Parser<'a> {
                 // Property removal: REMOVE n.prop
                 self.advance();
 
-                if !self.is_label_or_type_name() {
+                if !self.is_property_name() {
                     return Err(self.error("Expected property name in REMOVE"));
                 }
                 let property = self.current.text.clone();
@@ -3588,7 +3605,7 @@ impl<'a> Parser<'a> {
                 // l'évaluateur résout selon le type de la valeur.
                 TokenKind::Dot => {
                     self.advance();
-                    if !self.is_identifier() {
+                    if !self.is_property_name() {
                         return Err(self.error("Expected property name"));
                     }
                     let property = self.get_identifier_name();
@@ -4033,7 +4050,7 @@ impl<'a> Parser<'a> {
 
                 if self.current.kind == TokenKind::Dot {
                     self.advance();
-                    if !self.is_identifier() {
+                    if !self.is_property_name() {
                         return Err(self.error("Expected property name"));
                     }
                     let property = self.get_identifier_name();
@@ -4524,7 +4541,7 @@ impl<'a> Parser<'a> {
 
         if self.current.kind != TokenKind::RBrace {
             loop {
-                if !self.is_identifier() {
+                if !self.is_property_name() {
                     return Err(self.error("Expected property name"));
                 }
                 let key = self.get_identifier_name();

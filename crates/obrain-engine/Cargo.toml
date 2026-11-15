@@ -229,6 +229,14 @@ name = "duration_between"
 required-features = ["cypher"]
 
 [[test]]
+name = "parametre_nom_mot_cle"
+required-features = ["cypher"]
+
+[[test]]
+name = "order_by_fonction"
+required-features = ["cypher"]
+
+[[test]]
 name = "match_cible_deja_liee"
 required-features = ["cypher"]
 

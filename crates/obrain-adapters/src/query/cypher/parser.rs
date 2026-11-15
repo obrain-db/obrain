@@ -662,7 +662,7 @@ impl<'a> Parser<'a> {
         if self.current.kind == TokenKind::Dot {
             // n.prop = value
             self.advance();
-            let property = self.expect_identifier()?;
+            let property = self.expect_property_name()?;
             self.expect(TokenKind::Eq)?;
             let value = self.parse_expression()?;
             Ok(SetItem::Property {
@@ -717,7 +717,7 @@ impl<'a> Parser<'a> {
         if self.current.kind == TokenKind::Dot {
             // n.prop
             self.advance();
-            let property = self.expect_identifier()?;
+            let property = self.expect_property_name()?;
             Ok(RemoveItem::Property { variable, property })
         } else if self.current.kind == TokenKind::Colon {
             // n:Label1:Label2
@@ -1119,7 +1119,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_property_pair(&mut self) -> Result<(String, Expression)> {
-        let key = self.expect_identifier()?;
+        let key = self.expect_property_name()?;
         self.expect(TokenKind::Colon)?;
         let value = self.parse_expression()?;
         Ok((key, value))
@@ -1352,7 +1352,7 @@ impl<'a> Parser<'a> {
             match self.current.kind {
                 TokenKind::Dot => {
                     self.advance();
-                    let property = self.expect_identifier()?;
+                    let property = self.expect_property_name()?;
                     expr = match expr {
                         Expression::Variable(_) => Expression::PropertyAccess {
                             base: Box::new(expr),
@@ -1502,7 +1502,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Dollar => {
                 self.advance();
-                let name = self.expect_identifier()?;
+                let name = self.expect_parameter_name()?;
                 Ok(Expression::Parameter(name))
             }
             _ if self.can_be_identifier() => {
@@ -1801,14 +1801,14 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut pairs = Vec::new();
                 if self.current.kind != TokenKind::RBrace {
-                    let key = self.expect_identifier()?;
+                    let key = self.expect_property_name()?;
                     self.expect(TokenKind::Colon)?;
                     let value = self.parse_expression()?;
                     pairs.push((key, value));
 
                     while self.current.kind == TokenKind::Comma {
                         self.advance();
-                        let key = self.expect_identifier()?;
+                        let key = self.expect_property_name()?;
                         self.expect(TokenKind::Colon)?;
                         let value = self.parse_expression()?;
                         pairs.push((key, value));
@@ -1925,6 +1925,60 @@ impl<'a> Parser<'a> {
         } else {
             Err(self.error("Expected identifier"))
         }
+    }
+
+    /// Nom de paramètre après `$`. Un paramètre n'est pas un identifiant du
+    /// langage : rien ne peut le confondre avec un mot-clé, puisqu'il est
+    /// toujours précédé de `$`. Neo4j accepte donc `$limit`, `$skip`,
+    /// `$match`, `$null`… et Project Orchestrator pagine partout avec
+    /// `SKIP $offset LIMIT $limit`. Avant ce correctif, `expect_identifier`
+    /// refusait tout mot-clé réservé (« Expected identifier » sur `$limit`),
+    /// alors que `$offset` ou `$count` passaient : la réponse dépendait du
+    /// NOM choisi par l'appelant, pas de la requête.
+    ///
+    /// Accepté : tout identifiant (quoté compris), tout mot-clé lexé depuis
+    /// un mot (`[A-Za-z_][A-Za-z0-9_]*`), et un entier (`$0`, `$1` sont des
+    /// noms de paramètres valides en openCypher).
+    fn expect_parameter_name(&mut self) -> Result<String> {
+        if self.can_be_identifier() {
+            return self.expect_identifier();
+        }
+        let entier = self.current.kind == TokenKind::Integer;
+        if self.jeton_courant_est_un_mot() || entier {
+            let text = self.current.text.clone();
+            self.advance();
+            Ok(text)
+        } else {
+            Err(self.error("Expected parameter name after '$'"))
+        }
+    }
+
+    /// Nom de propriété après `.` (`s.order`), dans `SET`/`REMOVE`
+    /// (`SET s.order = 2`) ou comme clé de map (`{order: 1}`). Même raison
+    /// que pour les paramètres : la position lève toute ambiguïté, et Neo4j
+    /// accepte `s.order`, `s.limit`, `{match: 1}` sans échappement. Project
+    /// Orchestrator stocke `Step.order`, refusé avant ce correctif
+    /// (« Expected identifier » sur `.order`, accepté seulement en `` `order` ``).
+    fn expect_property_name(&mut self) -> Result<String> {
+        if self.can_be_identifier() {
+            return self.expect_identifier();
+        }
+        if self.jeton_courant_est_un_mot() {
+            let text = self.current.text.clone();
+            self.advance();
+            Ok(text)
+        } else {
+            Err(self.error("Expected property name"))
+        }
+    }
+
+    /// Le jeton courant a été lexé depuis un mot (`[A-Za-z_][A-Za-z0-9_]*`) :
+    /// un identifiant ou un mot-clé, par opposition à un signe, un littéral
+    /// ou la fin de l'entrée.
+    fn jeton_courant_est_un_mot(&self) -> bool {
+        let mut chars = self.current.text.chars();
+        matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
     /// Vrai si le jeton courant (un `.`) ouvre `.segment` (`.segment`)* suivi de
