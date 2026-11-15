@@ -518,6 +518,30 @@ impl Writer {
         })
     }
 
+    /// Jumeau arête de [`Self::poser_tetes_props_en_lot`] : pose les têtes de
+    /// chaîne de propriétés d'arêtes d'une ingestion EN LOT, en une passe sur
+    /// la zone arêtes, sans WAL par arête (même contrat : base neuve, le
+    /// checkpoint de l'appelant rend l'état durable). Le champ écrit est
+    /// `first_prop_off` (décalage [`EdgeRecord::FIRST_PROP_OFF_BYTES`]).
+    pub fn poser_tetes_props_arete_en_lot(&self, tetes: &[(u32, U48)]) -> SubstrateResult<()> {
+        if tetes.is_empty() {
+            return Ok(());
+        }
+        self.with_edge_zone(|zf| {
+            let octets = zf.as_slice_mut();
+            for &(idx, tete) in tetes {
+                let champ = idx as usize * EdgeRecord::SIZE + EdgeRecord::FIRST_PROP_OFF_BYTES;
+                if champ + 6 > octets.len() {
+                    return Err(SubstrateError::Internal(format!(
+                        "poser_tetes_props_arete_en_lot : slot {idx} hors de la zone arêtes"
+                    )));
+                }
+                octets[champ..champ + 6].copy_from_slice(&tete.0);
+            }
+            Ok(())
+        })
+    }
+
     pub fn update_node_first_prop_off(&self, idx: u32, new_head: U48) -> SubstrateResult<()> {
         // (1) WAL first.
         let rec = WalRecord {

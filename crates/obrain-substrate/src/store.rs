@@ -13825,12 +13825,13 @@ impl SubstrateStore {
         premier_slot: u32,
         props: &'v [Vec<(&'v str, Value)>],
         cles: &std::collections::HashMap<&str, u16>,
+        proprietaire: crate::page::OwnerKind,
     ) -> SubstrateResult<(
         Vec<(u32, crate::record::U48)>,
         Vec<(u32, &'v str, &'v Value)>,
         u64,
     )> {
-        use crate::page::{OwnerKind, PropertyEntry as E, PropertyPage as P, PropertyValue as PV};
+        use crate::page::{PropertyEntry as E, PropertyPage as P, PropertyValue as PV};
         use rayon::prelude::*;
         const UTILE_TAS: usize =
             crate::heap::HEAP_PAGE_SIZE - core::mem::size_of::<crate::heap::HeapPageHeader>();
@@ -13943,7 +13944,7 @@ impl SubstrateStore {
                 let mut page_tas: Option<(u32, crate::heap::HeapPage)> = None;
                 for (j, liste) in sp.iter().enumerate() {
                     let slot = slot0 + j as u32;
-                    let mut page = P::with_owner(slot, OwnerKind::Node);
+                    let mut page = P::with_owner(slot, proprietaire);
                     let (mut vide, mut precedente) = (true, None::<u32>);
                     for (k, v) in liste {
                         let pv = match genre(v) {
@@ -13992,7 +13993,7 @@ impl SubstrateStore {
                             page.seal_crc32();
                             o_pages.extend_from_slice(bytemuck::bytes_of(&page));
                             precedente = Some(idx);
-                            page = P::with_owner(slot, OwnerKind::Node);
+                            page = P::with_owner(slot, proprietaire);
                             page.append_entry(&entree).map_err(|e| {
                                 SubstrateError::Internal(format!(
                                     "entrée refusée sur page vide : {e:?}"
@@ -14210,7 +14211,13 @@ impl SubstrateStore {
             }
             (tetes, differees, ecrites)
         } else {
-            self.construire_pages_en_parallele(pz_lock, premier_slot, props, &cles)?
+            self.construire_pages_en_parallele(
+                pz_lock,
+                premier_slot,
+                props,
+                &cles,
+                crate::page::OwnerKind::Node,
+            )?
         };
         tetes.sort_unstable_by_key(|t| t.0);
         let t_pages = t0.elapsed();
@@ -14271,6 +14278,149 @@ impl SubstrateStore {
         self.index_batis_depuis_v2.clear();
         self.egalite_couverte.clear();
         Ok(ecrites)
+    }
+
+    /// INGESTION NATIVE DES PROPRIÉTÉS D'ARÊTES — jumeau de
+    /// [`Self::bulk_import_node_props`].
+    ///
+    /// `props[i]` porte les propriétés de l'arête de slot `premier_slot + i`,
+    /// DANS L'ORDRE où `set_edge_property` les aurait écrites. Le chemin
+    /// unitaire paie, PAR VALEUR, le marqueur d'écriture hors transaction, la
+    /// vérification de vivacité, l'interning journalisé, le routage et la
+    /// maintenance DISPATCH. Ici chacun se fait UNE fois par lot ; les pages
+    /// sont construites comme pour les nœuds (même disposition sur disque, donc
+    /// même lecture) et les têtes posées en une passe sans WAL.
+    ///
+    /// CONTRAT : base NEUVE pour ces arêtes, zone v2 active, l'appelant
+    /// CHECKPOINTE à la fin.
+    /// - Une arête absente (`is_live_edge_on_disk` faux) ne reçoit rien, comme
+    ///   le chemin unitaire.
+    /// - Une arête qui porte DÉJÀ une tête de chaîne prend le chemin unitaire,
+    ///   qui chaîne sur cette tête : poser une nouvelle tête la perdrait.
+    /// - Vecteurs, blobs, valeurs hors page et clé de groupe DISPATCH (T5)
+    ///   prennent le chemin unitaire, exactement comme pour un nœud : leur
+    ///   routage et leur maintenance restent ceux de `set_edge_property`.
+    /// - Aucun index de propriété d'arête n'existe (les index d'égalité sont
+    ///   indexés par nœud) : rien à tenir de ce côté.
+    /// - Si une transaction a des valeurs d'avant en vol (`tx_avec_valeur_avant`)
+    ///   ou si `OBRAIN_PROPS_SLOTS_512` est actif, tout le lot prend le chemin
+    ///   unitaire, qui sait journaliser l'avant et poser la disposition 512.
+    ///
+    /// Rend le nombre de valeurs écrites sur des arêtes vivantes.
+    pub fn bulk_import_edge_props(
+        &self,
+        premier_slot: u32,
+        props: &[Vec<(&str, Value)>],
+    ) -> SubstrateResult<u64> {
+        self.refuser_mutation_en_lecture_seule("bulk_import_edge_props");
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "bulk_import_edge_props : zone de propriétés v2 inactive".into(),
+            ));
+        };
+        let tout_unitaire = crate::props_zone::PropsZone::slots_512_actifs()
+            || !self.tx_avec_valeur_avant.lock().is_empty();
+        // Clé de groupe DISPATCH (T5) : ses valeurs déclenchent une maintenance.
+        let cle_dispatch: Option<String> = self
+            .config_maintenance_active()
+            .and_then(|c| c.dispatch)
+            .and_then(|d| self.prop_keys.read().name_for(d.group_prop_key))
+            .map(|n| n.as_str().to_owned());
+
+        // Partage : valeurs à écrire en pages, et valeurs pour le chemin unitaire.
+        let mut retenues: Vec<Vec<(&str, Value)>> = vec![Vec::new(); props.len()];
+        let mut unitaires: Vec<(EdgeId, &str, &Value)> = Vec::new();
+        for (i, liste) in props.iter().enumerate() {
+            if liste.is_empty() {
+                continue;
+            }
+            let id = EdgeId(u64::from(premier_slot) + i as u64);
+            if !self.is_live_edge_on_disk(id) {
+                continue;
+            }
+            let tete_existante = self
+                .writer
+                .read_edge(id.0)?
+                .is_some_and(|r| r.first_prop_off.to_u64() != 0);
+            if tout_unitaire || tete_existante {
+                for (k, v) in liste {
+                    unitaires.push((id, *k, v));
+                }
+                continue;
+            }
+            for (k, v) in liste {
+                let dispatch = cle_dispatch.as_deref() == Some(*k);
+                if dispatch || matches!(v, Value::Vector(_)) || encode_blob_payload(v).is_some() {
+                    unitaires.push((id, *k, v));
+                } else {
+                    retenues[i].push((*k, v.clone()));
+                }
+            }
+        }
+
+        // Interning UNE fois par clé retenue (le chemin unitaire le fait par valeur).
+        let mut cles: std::collections::HashMap<&str, u16> = std::collections::HashMap::new();
+        for liste in &retenues {
+            for (k, _) in liste {
+                if !cles.contains_key(k) {
+                    cles.insert(k, self.interner_cle_journalisee(k)?);
+                }
+            }
+        }
+
+        // Pages et têtes : même construction parallèle que pour les nœuds, sur
+        // le genre de propriétaire « arête ».
+        let (mut tetes, differees, ecrites) = self.construire_pages_en_parallele(
+            pz_lock,
+            premier_slot,
+            &retenues,
+            &cles,
+            crate::page::OwnerKind::Edge,
+        )?;
+        tetes.sort_unstable_by_key(|t| t.0);
+        self.writer.poser_tetes_props_arete_en_lot(&tetes)?;
+
+        // Ombre blob : une clé qui a une colonne blob doit voir sa valeur
+        // longue effacée, comme le fait `set_edge_property` par valeur.
+        let ombrees: Vec<&str> = cles
+            .keys()
+            .copied()
+            .filter(|k| {
+                self.blob_columns
+                    .spec_for(&PropertyKey::new(*k), EntityKind::Edge)
+                    .is_some()
+            })
+            .collect();
+        // Miroir de la DashMap pendant l'hydratation (même garde que l'unitaire).
+        let miroir = self.dashmap_aretes_hydratee.load(Ordering::Acquire);
+        for (i, liste) in retenues.iter().enumerate() {
+            let slot = premier_slot + i as u32;
+            for (k, v) in liste {
+                if ombrees.contains(k) {
+                    self.effacer_ombre_blob(EntityKind::Edge, slot, k);
+                }
+                if miroir {
+                    self.edge_properties
+                        .entry(EdgeId(u64::from(slot)))
+                        .or_default()
+                        .insert(PropertyKey::new(*k), v.clone());
+                }
+            }
+        }
+        if ecrites > 0 {
+            self.noter_props_modifiees();
+        }
+
+        // Valeurs routées autrement : le chemin unitaire, après la pose des
+        // têtes (il relit la tête pour chaîner).
+        let nb_unitaires = (unitaires.len() + differees.len()) as u64;
+        for (id, k, v) in unitaires {
+            <Self as GraphStoreMut>::set_edge_property(self, id, k, v.clone());
+        }
+        for (slot, k, v) in differees {
+            <Self as GraphStoreMut>::set_edge_property(self, EdgeId(u64::from(slot)), k, v.clone());
+        }
+        Ok(ecrites + nb_unitaires)
     }
 
     /// (T27) Déclare et bâtit PLUSIEURS index d'égalité en UNE passe sur la
