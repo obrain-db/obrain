@@ -153,6 +153,7 @@ fn enfant_remplacement() {
                 i += 1;
                 let path = long("d", &format!("-{i}"));
                 let id = db.create_node(&["File"]);
+                noter(&dir, &format!("N\t{path}\t{}", id.0));
                 db.set_node_property(id, "path", Value::String(path.clone().into()));
                 db.set_node_property(
                     id,
@@ -300,12 +301,111 @@ fn un_remplacement_tue_a_chaque_point_laisse_l_ancienne_ou_la_nouvelle_valeur() 
 /// Garde non déterministe, protocole de PO : l'enfant enchaîne création longue
 /// puis remplacement court, le parent tue au hasard après un nombre IMPAIR de
 /// retours (le geste en vol est alors un remplacement). Même oracle.
+/// Graine du test au hasard : fixe le délai de kill et le nombre de retours avant
+/// le kill. `OBRAIN_TEST_GRAINE=<u64>` la rejoue ; sinon elle vient de l'horloge.
+/// Imprimée dans le message d'échec : une occurrence se rejoue avec la même graine.
+fn graine_du_test() -> u64 {
+    std::env::var("OBRAIN_TEST_GRAINE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1)
+        })
+}
+
+/// Diagnostic d'une divergence, lu JUSTE APRÈS la réouverture : le journal du chemin,
+/// la queue du WAL (offsets, enregistrements), et le slot de la colonne blob du nœud
+/// (entrée d'index : offset d'arène et longueur ; en-tête brut, les 16 premiers octets).
+fn diagnostic(
+    base: &Path,
+    graine: u64,
+    tour: u64,
+    chemin: &str,
+    id: Option<u64>,
+    lignes: &[(String, String, String)],
+    durable: Option<&str>,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "DIAG graine={graine} tour={tour} chemin={} node_id={id:?} durable={durable:?}",
+        queue(chemin)
+    );
+    for (q, p, v) in lignes.iter().filter(|(_, p, _)| p == chemin) {
+        let _ = writeln!(out, "  journal {q} {} {}", queue(p), abrege(v));
+    }
+    match obrain_substrate::wal_io::WalReader::open(base.join("substrate.wal")) {
+        Ok(reader) => {
+            let mut queue_wal: std::collections::VecDeque<String> = Default::default();
+            for item in reader.iter_from(0) {
+                match item {
+                    Ok((rec, offset, _)) => {
+                        let texte: String =
+                            format!("off={offset} lsn={} {:?}", rec.lsn, rec.payload)
+                                .chars()
+                                .take(220)
+                                .collect();
+                        queue_wal.push_back(texte);
+                        if queue_wal.len() > 14 {
+                            queue_wal.pop_front();
+                        }
+                    }
+                    Err(e) => {
+                        queue_wal.push_back(format!("ARRÊT: {e:?}"));
+                        break;
+                    }
+                }
+            }
+            for t in queue_wal {
+                let _ = writeln!(out, "  wal {t}");
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(out, "  wal illisible: {e:?}");
+        }
+    }
+    if let Some(id) = id {
+        let slot = id as usize;
+        if let Ok(entrees) = std::fs::read_dir(base) {
+            let mut noms: Vec<_> = entrees
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with("substrate.blobcol.") && n.ends_with(".idx"))
+                .collect();
+            noms.sort();
+            for nom in noms {
+                let octets = std::fs::read(base.join(&nom)).unwrap_or_default();
+                let entree = 64 + slot * 16;
+                let _ = write!(out, "  blob {nom} taille={} ", octets.len());
+                if octets.len() >= entree + 16 {
+                    let arena = u64::from_le_bytes(octets[entree..entree + 8].try_into().unwrap());
+                    let len =
+                        u32::from_le_bytes(octets[entree + 8..entree + 12].try_into().unwrap());
+                    let _ = write!(out, "slot[{slot}]=arena_offset:{arena} len:{len} ");
+                } else {
+                    let _ = write!(out, "slot[{slot}] hors fichier ");
+                }
+                let entete: Vec<String> =
+                    octets.iter().take(16).map(|b| format!("{b:02x}")).collect();
+                let _ = writeln!(out, "entete16={}", entete.join(" "));
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
     if std::env::var(ENV_ENFANT).is_ok() {
         return;
     }
     const TOURS: u64 = 6;
+    let graine = graine_du_test();
+    eprintln!("GRAINE {graine} (OBRAIN_TEST_GRAINE={graine} pour rejouer)");
     let dir = tempfile::tempdir().expect("tempdir");
     let base = dir.path().join("base");
     let journal = dir.path().join("journal");
@@ -330,34 +430,45 @@ fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
             .count()
     };
     for tour in 0..TOURS {
+        // Timing dérivé de la graine : seuil de retours et délai de kill variés.
+        let melange = graine
+            .wrapping_add(tour.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        let seuil = 3 + (melange >> 40) as usize % 4;
+        let delai = Duration::from_micros((melange >> 17) % 30_000);
         let avant = retours();
         let mut enfant = lancer("boucle", dir.path(), None);
         for _ in 0..2400 {
-            if retours() >= avant + 3 {
+            if retours() >= avant + seuil {
                 break;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
         assert!(
-            retours() >= avant + 3,
+            retours() >= avant + seuil,
             "tour {tour}: aucun acquittement en 60 s"
         );
-        std::thread::sleep(Duration::from_micros(1_500 * (tour % 9 + 1)));
+        std::thread::sleep(delai);
         if let Ok(Some(s)) = enfant.try_wait() {
             panic!("tour {tour}: l'enfant s'est arrêté seul ({s:?})");
         }
         enfant.kill().expect("kill -9");
         let _ = enfant.wait();
 
+        let lus = lignes();
         let mut acquittes: std::collections::HashMap<String, String> = Default::default();
         let mut intentions: std::collections::HashMap<String, String> = Default::default();
-        for (q, p, v) in lignes() {
+        let mut ids: std::collections::HashMap<String, u64> = Default::default();
+        for (q, p, v) in &lus {
             match q.as_str() {
                 "A" | "R" => {
-                    acquittes.insert(p, v);
+                    acquittes.insert(p.clone(), v.clone());
                 }
                 "I" => {
-                    intentions.insert(p, v);
+                    intentions.insert(p.clone(), v.clone());
+                }
+                "N" => {
+                    ids.insert(p.clone(), v.parse().unwrap_or(0));
                 }
                 _ => {}
             }
@@ -385,15 +496,27 @@ fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
                 || intentions
                     .get(p)
                     .is_some_and(|i| d.as_deref() == Some(i.as_str()));
-            assert!(
-                ok,
-                "tour {tour}: {} → la valeur durable {:?} n'est ni l'acquittée {} ni \
-                 l'intention {:?}",
-                queue(p),
-                d.as_deref().map(abrege),
-                abrege(ack),
-                intentions.get(p).map(|v| abrege(v))
-            );
+            if !ok {
+                // Diagnostic lu après réouverture, imprimé dans le message d'échec.
+                let diag = diagnostic(
+                    &base,
+                    graine,
+                    tour,
+                    p,
+                    ids.get(p).copied(),
+                    &lus,
+                    d.as_deref(),
+                );
+                eprintln!("{diag}");
+                panic!(
+                    "{diag}tour {tour}: {} → la valeur durable {:?} n'est ni l'acquittée {} ni \
+                     l'intention {:?} (GRAINE {graine})",
+                    queue(p),
+                    d.as_deref().map(abrege),
+                    abrege(ack),
+                    intentions.get(p).map(|v| abrege(v))
+                );
+            }
         }
         db.close().expect("close");
     }
