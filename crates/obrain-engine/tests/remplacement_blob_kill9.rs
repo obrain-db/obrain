@@ -507,6 +507,43 @@ fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
                     &lus,
                     d.as_deref(),
                 );
+                // Toutes les lignes File de ce chemin (un chemin peut porter plusieurs
+                // nœuds si l'enfant l'a recréé dans un tour suivant).
+                let toutes: Vec<Option<String>> = r
+                    .rows
+                    .iter()
+                    .filter(|l| matches!(l.first(), Some(Value::String(q)) if q.as_str() == p))
+                    .map(|l| match l.get(1) {
+                        Some(Value::String(h)) => Some(abrege(h).to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                // Identifiants réels des nœuds File du chemin, lus au même instant.
+                let ids_lus = db
+                    .session()
+                    .execute("MATCH (f:File) RETURN id(f), f.path, f.hash")
+                    .map(|rr| {
+                        rr.rows
+                            .iter()
+                            .filter(
+                                |l| matches!(l.get(1), Some(Value::String(q)) if q.as_str() == p),
+                            )
+                            .map(|l| {
+                                format!(
+                                    "{:?} hash={:?}",
+                                    l.first(),
+                                    l.get(2).map(|v| format!("{v:?}")
+                                        .chars()
+                                        .take(30)
+                                        .collect::<String>())
+                                )
+                            })
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_else(|e| vec![format!("requête id(f) refusée: {e:?}")]);
+                let diag = format!(
+                    "{diag}  lignes File du chemin : {toutes:?}\n  id(f) lus: {ids_lus:?}\n"
+                );
                 eprintln!("{diag}");
                 panic!(
                     "{diag}tour {tour}: {} → la valeur durable {:?} n'est ni l'acquittée {} ni \
