@@ -313,8 +313,7 @@ fn graine_du_test() -> u64 {
         .unwrap_or_else(|| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(1)
+                .map_or(1, |d| d.as_nanos() as u64)
         })
 }
 
@@ -376,7 +375,12 @@ fn diagnostic(
             let mut noms: Vec<_> = entrees
                 .filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with("substrate.blobcol.") && n.ends_with(".idx"))
+                .filter(|n| {
+                    n.starts_with("substrate.blobcol.")
+                        && std::path::Path::new(n)
+                            .extension()
+                            .is_some_and(|e| e == "idx")
+                })
                 .collect();
             noms.sort();
             for nom in noms {
@@ -524,8 +528,10 @@ fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
                 let ids_lus = db
                     .session()
                     .execute("MATCH (f:File) RETURN id(f), f.path, f.hash")
-                    .map(|rr| {
-                        rr.rows
+                    .map_or_else(
+                        |e| vec![format!("requête id(f) refusée: {e:?}")],
+                        |rr| {
+                            rr.rows
                             .iter()
                             .filter(
                                 |l| matches!(l.get(1), Some(Value::String(q)) if q.as_str() == p),
@@ -541,8 +547,8 @@ fn des_remplacements_tues_au_hasard_ne_perdent_aucune_valeur_acquittee() {
                                 )
                             })
                             .collect::<Vec<String>>()
-                    })
-                    .unwrap_or_else(|e| vec![format!("requête id(f) refusée: {e:?}")]);
+                        },
+                    );
                 let diag = format!(
                     "{diag}  lignes File du chemin : {toutes:?}\n  id(f) lus: {ids_lus:?}\n"
                 );
