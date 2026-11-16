@@ -666,6 +666,32 @@ enum GroupKeyPart {
     ///   clé restituée reste exactement la valeur d'entrée du groupe.
     Float64Bits(u64),
     String(ArcStr),
+    /// Valeur composite (carte, liste, …) : regroupée par son empreinte textuelle
+    /// canonique, mais RESTITUÉE telle quelle. Avant, elle était réduite à sa
+    /// chaîne Debug et ressortait en texte (obrain#185).
+    Valeur(ValeurDeGroupe),
+}
+
+/// Une valeur de groupe non scalaire : l'égalité et le hachage passent par
+/// l'empreinte (deux valeurs égales ont la même), la restitution par la valeur.
+#[derive(Debug, Clone)]
+struct ValeurDeGroupe {
+    empreinte: ArcStr,
+    valeur: Value,
+}
+
+impl PartialEq for ValeurDeGroupe {
+    fn eq(&self, autre: &Self) -> bool {
+        self.empreinte == autre.empreinte
+    }
+}
+
+impl Eq for ValeurDeGroupe {}
+
+impl std::hash::Hash for ValeurDeGroupe {
+    fn hash<H: std::hash::Hasher>(&self, etat: &mut H) {
+        self.empreinte.hash(etat);
+    }
 }
 
 impl GroupKey {
@@ -683,7 +709,10 @@ impl GroupKey {
                         Value::Int64(i) => GroupKeyPart::Int64(i),
                         Value::Float64(f) => GroupKeyPart::Float64Bits(f.to_bits()),
                         Value::String(s) => GroupKeyPart::String(s.clone()),
-                        _ => GroupKeyPart::String(ArcStr::from(format!("{v:?}"))),
+                        autre => GroupKeyPart::Valeur(ValeurDeGroupe {
+                            empreinte: ArcStr::from(format!("{autre:?}")),
+                            valeur: autre,
+                        }),
                     })
             })
             .collect();
@@ -700,6 +729,7 @@ impl GroupKey {
                 GroupKeyPart::Int64(i) => Value::Int64(*i),
                 GroupKeyPart::Float64Bits(bits) => Value::Float64(f64::from_bits(*bits)),
                 GroupKeyPart::String(s) => Value::String(s.clone()),
+                GroupKeyPart::Valeur(v) => v.valeur.clone(),
             })
             .collect()
     }

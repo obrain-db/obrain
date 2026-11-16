@@ -241,6 +241,10 @@ name = "optional_match_tete_179"
 required-features = ["cypher"]
 
 [[test]]
+name = "cle_groupement_composite_185"
+required-features = ["cypher"]
+
+[[test]]
 name = "match_cible_deja_liee"
 required-features = ["cypher"]
 
