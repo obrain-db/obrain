@@ -693,13 +693,10 @@ impl CypherTranslator {
         match_clause: &ast::MatchClause,
         input: Option<LogicalOperator>,
     ) -> Result<LogicalOperator> {
-        // OPTIONAL MATCH uses LEFT JOIN semantics
-        let input = input.ok_or_else(|| {
-            Error::Query(QueryError::new(
-                QueryErrorKind::Semantic,
-                "OPTIONAL MATCH requires input",
-            ))
-        })?;
+        // OPTIONAL MATCH uses LEFT JOIN semantics. En tête de requête, la clause
+        // a une ligne d'entrée implicite (une ligne vide), comme Neo4j : sans
+        // correspondance elle rend une ligne à NULL (obrain#179).
+        let input = input.unwrap_or(LogicalOperator::Empty);
 
         // Build the right side with proper shared variable joins
         let right = self.translate_comma_patterns(&match_clause.patterns, None)?;
