@@ -251,3 +251,7 @@ required-features = ["cypher"]
 [[test]]
 name = "match_ancrage_et_genres"
 required-features = ["cypher"]
+
+[[test]]
+name = "sum_zero_ligne_196"
+required-features = ["cypher"]
