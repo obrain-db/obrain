@@ -245,8 +245,6 @@ name = "cle_groupement_composite_185"
 required-features = ["cypher"]
 
 [[test]]
-
-[[test]]
 name = "unicite_relations_motif"
 required-features = ["cypher"]
 

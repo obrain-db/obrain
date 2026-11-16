@@ -124,10 +124,17 @@ fn reachable_count_marche_sur_les_deux_hop_extremes() {
         .iter()
         .map(|r| (r.hop_count, r.distinct_count))
         .collect();
+    // Le noyau compte des MARCHES (arêtes réutilisables) : 6 à 4 sauts.
     assert_eq!(pairs, vec![(1, 8), (2, 7), (3, 6), (4, 6)]);
-    // Le MATCH à 4 sauts existe aussi (motif a→b→c→e→d) — parité.
+    // Le MATCH, lui, applique l'isomorphisme de relations de Neo4j (une arête
+    // ne sert qu'une fois dans un motif, obrain#182). Calcul à la main, chemins
+    // de 4 sauts sans arête répétée (arêtes 1→2, 2→3, 3→1, 2→4, 4→5, 5→6) :
+    // depuis 1 : 1→2→4→5→6 (d=6) ; 1→2→3→1→2 réutilise 1→2, exclu.
+    // depuis 2 : 2→3→1→2→4 (d=4) ; 2→4→5→6 n'a que 3 sauts.
+    // depuis 3 : 3→1→2→4→5 (d=5).
+    // Sommets d'arrivée distincts : {4, 5, 6} = 3, et non les 6 marches.
     let matched = match_distinct_endpoints(&db, 4);
-    assert_eq!(matched, 6);
+    assert_eq!(matched, 3);
 }
 
 // ===========================================================================
@@ -218,9 +225,17 @@ fn pushdown_chain_homogene_egale_oracle_et_noyau() {
         let kernel =
             db.reachable_count("L", "T", k, k).expect("reachable_count")[0].distinct_count as i64;
         assert_eq!(matched, oracle, "k={k}: pushdown vs énumération");
-        assert_eq!(matched, kernel, "k={k}: pushdown vs noyau");
-        // Valeurs connues du graphe : 8, 7, 6, 6.
-        let connu: i64 = [8, 7, 6, 6][k - 1];
+        // Le noyau est une sémantique de MARCHE ; le MATCH applique l'isomorphisme
+        // de relations (obrain#182). Ils ne coïncident que si aucune arête ne peut
+        // se répéter dans un chemin de k sauts (k ≤ 3 sur ce graphe).
+        if k <= 3 {
+            assert_eq!(
+                matched, kernel,
+                "k={k}: pushdown vs noyau (sans répétition)"
+            );
+        }
+        // Valeurs connues, isomorphisme de relations : 8, 7, 6, 3.
+        let connu: i64 = [8, 7, 6, 3][k - 1];
         assert_eq!(matched, connu, "k={k}: valeur connue");
     }
 }
