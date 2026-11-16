@@ -276,3 +276,7 @@ required-features = ["cypher"]
 [[test]]
 name = "with_order_by_variable_195"
 required-features = ["cypher"]
+
+[[test]]
+name = "vle_relation_anonyme"
+required-features = ["cypher"]

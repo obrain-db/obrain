@@ -153,6 +153,17 @@ impl VarGen {
 ///
 /// Returns an error if the input is empty. Used by `build_property_predicate`
 /// in multiple translators.
+/// Une clause MATCH a-t-elle au moins une paire de relations à confronter
+/// pour l'unicité (#182) ? Les filtres posés sont : relation simple contre
+/// relation simple, et relation simple contre chaque arête d'une relation à
+/// longueur variable. Sans paire, nommer les relations anonymes ne poserait
+/// aucun filtre et ferait seulement matérialiser la liste d'arêtes d'une
+/// relation variable (mesuré, banc `aretes_inter_bases_bench`,
+/// `-[:DOCUMENTS*1..2]->` seul : p50 intra 1,16 ms → 1,97 ms).
+pub(crate) fn unicite_a_confronter(simples: &[String], longues: &[String]) -> bool {
+    simples.len() >= 2 || (!simples.is_empty() && !longues.is_empty())
+}
+
 pub(crate) fn combine_with_and(predicates: Vec<LogicalExpression>) -> Result<LogicalExpression> {
     predicates
         .into_iter()
