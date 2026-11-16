@@ -237,6 +237,10 @@ name = "order_by_fonction"
 required-features = ["cypher"]
 
 [[test]]
+name = "optional_match_tete_179"
+required-features = ["cypher"]
+
+[[test]]
 name = "match_cible_deja_liee"
 required-features = ["cypher"]
 
