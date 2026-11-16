@@ -971,7 +971,14 @@ impl GqlTranslator {
             max_hops,
             input: Box::new(plan),
             path_alias: expand_path_alias,
-            path_mode: walk.path_mode,
+            // Un saut simple en Trail est un Walk (une seule arête) : le
+            // ramener à Walk garde les raccourcis du planificateur qui
+            // l'exigent. Simple / Acyclic gardent leur sens (boucle sur soi).
+            path_mode: if single_hop && walk.path_mode == PathMode::Trail {
+                PathMode::Walk
+            } else {
+                walk.path_mode
+            },
         });
 
         if let Some(ref bound_variable) = closes_on {
