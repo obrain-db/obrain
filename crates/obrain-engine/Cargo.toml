@@ -268,3 +268,7 @@ required-features = ["cypher"]
 [[test]]
 name = "motif_predicat_195"
 required-features = ["cypher"]
+
+[[test]]
+name = "sens_arete_creation"
+required-features = ["cypher"]

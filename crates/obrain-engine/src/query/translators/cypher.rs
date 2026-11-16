@@ -2308,10 +2308,17 @@ impl CypherTranslator {
                         .map(|(k, v)| Ok((k.clone(), self.translate_expression(v)?)))
                         .collect::<Result<_>>()?;
 
+                    // Sens de l'arête : `(a)<-[:R]-(b)` crée b -> a. Sans ce choix,
+                    // la flèche gauche était ignorée et l'arête allait toujours de la
+                    // gauche vers la droite (obrain : bug d'écriture, direction inversée).
+                    let (source, cible) = match rel.direction {
+                        ast::Direction::Incoming => (to_variable.clone(), from_variable),
+                        _ => (from_variable, to_variable.clone()),
+                    };
                     current = LogicalOperator::CreateEdge(CreateEdgeOp {
                         variable: rel.variable.clone(),
-                        from_variable,
-                        to_variable: to_variable.clone(),
+                        from_variable: source,
+                        to_variable: cible,
                         edge_type,
                         properties: edge_props,
                         input: Box::new(current),
