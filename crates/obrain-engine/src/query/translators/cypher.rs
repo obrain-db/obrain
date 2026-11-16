@@ -171,14 +171,98 @@ impl CypherTranslator {
     fn translate_query(&self, query: &ast::Query) -> Result<LogicalPlan> {
         let mut plan: Option<LogicalOperator> = None;
 
-        for clause in &query.clauses {
-            plan = Some(self.translate_clause(clause, plan)?);
+        let clauses = &query.clauses;
+        let mut i = 0;
+        while i < clauses.len() {
+            // `WITH f, co ORDER BY r.count` : le tri porte sur une variable que le
+            // WITH ne projette pas. Neo4j l'accepte (le tri voit la portée d'AVANT
+            // le WITH, tant qu'il n'y a ni agrégat ni DISTINCT). On trie donc
+            // d'abord, puis on projette : même résultat, l'ordre survit à la
+            // projection (obrain#195, famille 7).
+            if let ast::Clause::With(with) = &clauses[i]
+                && let Some(ast::Clause::OrderBy(ordre)) = clauses.get(i + 1)
+                && self.tri_avant_projection(with, ordre, plan.as_ref())
+            {
+                let triee = self.translate_order_by(ordre, plan.take())?;
+                plan = Some(self.translate_with(with, Some(triee))?);
+                i += 2;
+                continue;
+            }
+            plan = Some(self.translate_clause(&clauses[i], plan)?);
+            i += 1;
         }
 
         let root = plan.ok_or_else(|| {
             Error::Query(QueryError::new(QueryErrorKind::Semantic, "Empty query"))
         })?;
         Ok(LogicalPlan::new(root))
+    }
+
+    /// Variables nommées par une expression Cypher. `None` si l'expression
+    /// contient une forme que cette fonction ne sait pas parcourir : l'appelant
+    /// garde alors le comportement historique (aucun réordonnancement).
+    fn variables_referencees(expr: &ast::Expression, out: &mut HashSet<String>) -> Option<()> {
+        match expr {
+            ast::Expression::Literal(_) | ast::Expression::Parameter(_) => Some(()),
+            ast::Expression::Variable(v) => {
+                out.insert(v.clone());
+                Some(())
+            }
+            ast::Expression::PropertyAccess { base, .. } => Self::variables_referencees(base, out),
+            ast::Expression::Binary { left, right, .. } => {
+                Self::variables_referencees(left, out)?;
+                Self::variables_referencees(right, out)
+            }
+            ast::Expression::Unary { operand, .. } => Self::variables_referencees(operand, out),
+            ast::Expression::FunctionCall { args, .. } => {
+                for a in args {
+                    Self::variables_referencees(a, out)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    /// Le `ORDER BY` qui suit ce `WITH` doit-il s'appliquer AVANT la projection ?
+    /// Oui quand il ne référence que des variables de la portée d'avant, qu'aucune
+    /// n'est une colonne de sortie du `WITH`, et que celui-ci ne regroupe rien
+    /// (ni agrégat, ni `DISTINCT`, ni `*`).
+    fn tri_avant_projection(
+        &self,
+        with: &ast::WithClause,
+        ordre: &ast::OrderByClause,
+        plan: Option<&LogicalOperator>,
+    ) -> bool {
+        let Some(plan) = plan else { return false };
+        if with.is_wildcard
+            || with.distinct
+            || with.items.iter().any(|i| contains_aggregate(&i.expression))
+        {
+            return false;
+        }
+        let sorties: HashSet<String> = with
+            .items
+            .iter()
+            .filter_map(|i| match (&i.alias, &i.expression) {
+                (Some(a), _) => Some(a.clone()),
+                (None, ast::Expression::Variable(v)) => Some(v.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut referencees = HashSet::new();
+        for item in &ordre.items {
+            if Self::variables_referencees(&item.expression, &mut referencees).is_none() {
+                return false;
+            }
+        }
+        if referencees.is_empty() {
+            return false;
+        }
+        let visibles = visible_variables(plan);
+        referencees
+            .iter()
+            .all(|v| !sorties.contains(v) && visibles.contains_key(v))
     }
 
     fn translate_clause(
