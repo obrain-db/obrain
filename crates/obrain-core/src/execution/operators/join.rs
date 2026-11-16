@@ -317,8 +317,10 @@ impl HashJoinOperator {
                 .column_mut(col_idx)
                 .ok_or_else(|| OperatorError::ColumnNotFound(format!("output column {col_idx}")))?;
 
-            if let Some(value) = src_col.get_value(probe_row) {
-                dst_col.push_value(value);
+            // Copie TYPÉE : un identifiant (nœud, arête) reste un identifiant.
+            // Passer par `get_value` le transformait en `Int64` (obrain#184).
+            if src_col.get_value(probe_row).is_some() {
+                src_col.copy_row_to(probe_row, dst_col);
             } else {
                 dst_col.push_value(Value::Null);
             }
@@ -341,8 +343,8 @@ impl HashJoinOperator {
                                 ))
                             })?;
 
-                    if let Some(value) = src_col.get_value(row) {
-                        dst_col.push_value(value);
+                    if src_col.get_value(row).is_some() {
+                        src_col.copy_row_to(row, dst_col);
                     } else {
                         dst_col.push_value(Value::Null);
                     }
