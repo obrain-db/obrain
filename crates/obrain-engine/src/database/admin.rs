@@ -103,6 +103,27 @@ impl super::ObrainDB {
             })
     }
 
+    /// INGESTION NATIVE DES PROPRIÉTÉS D'ARÊTES — jumeau de
+    /// [`Self::bulk_import_props`] : `props[i]` = propriétés de l'arête de slot
+    /// `premier_slot + i`. Même contrat (base neuve, checkpoint à la fin) ;
+    /// voir `SubstrateStore::bulk_import_edge_props`.
+    pub fn bulk_import_edge_props(
+        &self,
+        premier_slot: u32,
+        props: &[Vec<(&str, obrain_common::types::Value)>],
+    ) -> Result<u64> {
+        let Some(store) = self.substrate_store.as_ref() else {
+            return Err(obrain_common::utils::error::Error::Internal(
+                "bulk_import_edge_props requires a substrate-backed database".into(),
+            ));
+        };
+        store
+            .bulk_import_edge_props(premier_slot, props)
+            .map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!("bulk_import_edge_props: {e}"))
+            })
+    }
+
     /// (T27) Plusieurs index d'égalité en une passe — voir
     /// `SubstrateStore::creer_index_proprietes`. Sans substrat : clé par clé.
     pub fn create_property_indexes(&self, proprietes: &[&str]) {
