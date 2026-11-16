@@ -1005,7 +1005,7 @@ impl super::Planner {
             }
         }
 
-        let output_schema = self.derive_schema_from_columns(&output_columns);
+        let output_schema = self.derive_schema_joint(&output_columns);
 
         let join_type = if is_negated {
             PhysicalJoinType::Anti
@@ -1174,7 +1174,7 @@ impl super::Planner {
             }
         }
 
-        let output_schema = self.derive_schema_from_columns(&output_columns);
+        let output_schema = self.derive_schema_joint(&output_columns);
         let join_type = if is_negated {
             PhysicalJoinType::Anti
         } else {

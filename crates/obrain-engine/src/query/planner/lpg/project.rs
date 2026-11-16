@@ -1187,6 +1187,30 @@ impl super::Planner {
     pub(super) fn derive_schema_from_columns(&self, columns: &[String]) -> Vec<LogicalType> {
         columns.iter().map(|_| LogicalType::Any).collect()
     }
+
+    /// Schéma d'une sortie de JOINTURE : une colonne d'ARÊTE garde le type
+    /// `Edge` (identifiant d'arête typé), et non `Any`.
+    ///
+    /// Avec `Any`, la copie du join stockait l'identifiant d'arête comme un
+    /// `Int64` dans une colonne générique ; la lecture de propriété testait
+    /// alors d'abord « est-ce un nœud ? » (un `Int64` en est un) et cherchait
+    /// la propriété sur le mauvais nœud : `r.c * 2` rendait NULL après un
+    /// `WHERE EXISTS { … }` (obrain#184). Les listes de longueur variable
+    /// restent `Any` : leur colonne n'est pas un identifiant unique.
+    pub(super) fn derive_schema_joint(&self, columns: &[String]) -> Vec<LogicalType> {
+        let aretes = self.edge_columns.borrow();
+        let listes = self.group_list_variables.borrow();
+        columns
+            .iter()
+            .map(|c| {
+                if aretes.contains(c) && !listes.contains(c) {
+                    LogicalType::Edge
+                } else {
+                    LogicalType::Any
+                }
+            })
+            .collect()
+    }
 }
 
 /// Une clé de tri qui est une EXPRESSION à évaluer (`ORDER BY 0 - n.v`,
