@@ -1,4 +1,3 @@
-#![cfg(feature = "algos")]
 //! `obrain.search_by_role` — « qui joue le même rôle structurel, ailleurs » :
 //! (1) méthode `ObrainDB::search_by_role` ; (2) procédure CALL ; (3) filtre
 //! `label` ; (4) lecture pure (read-only) ; (5) erreurs (nœud hors registre).
@@ -8,6 +7,7 @@
 //! Le hub d'un K5 doit retrouver les hubs de l'autre K5 à distance ≈ 0
 //! (rôle identique, contenu différent), et être éloigné du centre de
 //! l'étoile (rôle différent).
+#![cfg(feature = "algos")]
 
 use obrain_engine::ObrainDB;
 

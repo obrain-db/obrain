@@ -1,4 +1,3 @@
-#![cfg(all(feature = "cdc", feature = "algos"))]
 //! DÉMONSTRATEUR — le « tissage EdgeBasis^* » (ontologie de topologie : claims,
 //! preuves, causalité, contradictions, saillance, jumeaux structurels) EST
 //! déjà exécutable sur obrain, sans aucune extension moteur : on instancie les
@@ -13,6 +12,7 @@
 //!
 //! Ce test est aussi une régression de COHÉRENCE entre les formes : chaque
 //! motif du scénario est détecté par la forme qui lui correspond.
+#![cfg(all(feature = "cdc", feature = "algos"))]
 
 use std::time::Duration;
 use web_time::SystemTime;

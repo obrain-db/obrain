@@ -1,8 +1,8 @@
-#![cfg(feature = "algos")]
 //! `obrain.reachable_count` — comptage ensembliste d'extrémités à k sauts :
 //! parité avec les requêtes `MATCH … RETURN count(DISTINCT d)` explicites du
 //! moteur (formes positionnelle ET map), sur un petit graphe connu
 //! (cycle + branche + chaîne détachée + puits).
+#![cfg(feature = "algos")]
 
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;

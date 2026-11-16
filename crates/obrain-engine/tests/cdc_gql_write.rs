@@ -1,9 +1,9 @@
-#![cfg(all(feature = "cdc", feature = "algos"))]
 //! CDC×GQL (2026-09-05) : les mutations GQL/executor (CREATE/MERGE — le chemin
 //! réel du runtime via `session.execute`/import_events) doivent être
 //! journalisées dans le CDC via l'observateur substrate, et :
 //! (1) `search_delta` les retourne ; (2) `search_surprise` voit l'activité ;
 //! (3) l'API `crud` ne produit PAS de doublon (anti-doublon activé).
+#![cfg(all(feature = "cdc", feature = "algos"))]
 
 use obrain_engine::ObrainDB;
 

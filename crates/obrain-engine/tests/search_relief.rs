@@ -1,4 +1,3 @@
-#![cfg(all(feature = "cdc", feature = "algos"))]
 //! `obrain.relief` — projection contextuelle R_q sur les signaux existants :
 //! (1) méthode `ObrainDB::search_relief` ; (2) procédure CALL ;
 //! (3) pénalité des contradictions ; (4) fenêtre vide ; (5) bornes des dims.
@@ -7,6 +6,7 @@
 //! (nouveauté + fraîcheur élevées) ; un claim C subit un flip A→B→A
 //! (contradiction → pénalité). H doit dominer le relief ; C doit porter une
 //! dimension `conflict > 0` et un relief inférieur.
+#![cfg(all(feature = "cdc", feature = "algos"))]
 
 use std::time::Duration;
 use web_time::SystemTime;

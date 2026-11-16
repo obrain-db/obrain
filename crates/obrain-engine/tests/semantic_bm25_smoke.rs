@@ -1,7 +1,7 @@
-#![cfg(feature = "text-index")]
 //! Premier repère SÉMANTIQUE (RFC §14, axe S) : BM25 engine sur un corpus
 //! texte réel (extraits des docs obrain). Qualité qualitative top-k + latence.
 //! Étape suivante (formalisation recall@k) : labels BEIR sur corpus plus grand.
+#![cfg(feature = "text-index")]
 
 use obrain_engine::database::ObrainDB;
 
