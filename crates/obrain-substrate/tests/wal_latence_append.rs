@@ -61,13 +61,43 @@ fn latence_append_mono_ecrivain() {
         w.offset(),
     );
 
-    // Borne LARGE, volontairement : ce test n'est pas un bench (il ne prétend pas
-    // mesurer des %, il refuse une RÉGRESSION CATASTROPHIQUE). Le chiffre daté,
-    // lui, vit dans `benches/wal_append.rs` et dans le rapport.
+    // Référence RELATIVE, dans la même exécution (obrain-db/obrain#188) : un seuil
+    // absolu échouait sur une machine chargée sans que le code ait changé. On
+    // compare donc l'append à l'écriture brute du même volume (un `write` par
+    // record de taille comparable, sans fsync) mesurée ici, au même moment, sur
+    // le même disque. Un fsync par record ferait exploser ce rapport de plusieurs
+    // ordres de grandeur ; la charge de la machine, elle, touche les deux mesures.
+    let fichier_brut = dir.path().join("brut.bin");
+    let mut brut = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&fichier_brut)
+        .unwrap();
+    let octets = vec![0xABu8; 64];
+    use std::io::Write;
+    for _ in 0..20_000u64 {
+        brut.write_all(&octets).unwrap();
+    }
+    let debut_brut = std::time::Instant::now();
+    for _ in 0..n {
+        brut.write_all(black_box(&octets)).unwrap();
+    }
+    let brut_ns = debut_brut.elapsed().as_nanos() as f64 / n as f64;
+    let rapport = par_record_ns / brut_ns;
+
+    eprintln!(
+        "LATENCE append : {par_record_ns:.0} ns/record ; écriture brute de même \
+         volume dans la même exécution : {brut_ns:.0} ns/record ; rapport {rapport:.1}×"
+    );
+
+    // Borne RELATIVE, volontairement large : l'append fait plus qu'un write (lecture
+    // de fin sous mutex, encodage). Un ratio au-delà de 20× signale une dépendance
+    // structurelle ajoutée au chemin chaud (fsync par record, verrou inter-processus,
+    // balayage du fichier).
     assert!(
-        par_record_ns < 20_000.0,
-        "l'append mono-écrivain est à {par_record_ns:.0} ns/record : quelque chose \
-         de structurel s'est ajouté au chemin chaud (fsync par record ? verrou \
-         inter-processus ? balayage ?)"
+        rapport < 20.0,
+        "l'append est à {rapport:.1}× l'écriture brute mesurée dans la même exécution \
+         ({par_record_ns:.0} contre {brut_ns:.0} ns/record) : quelque chose de structurel \
+         s'est ajouté au chemin chaud"
     );
 }
