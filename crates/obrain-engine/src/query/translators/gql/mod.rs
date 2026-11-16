@@ -1571,8 +1571,13 @@ impl GqlTranslator {
         match_clause: &ast::MatchClause,
         initial_input: Option<LogicalOperator>,
     ) -> Result<LogicalOperator> {
+        // Sans mode explicite, la clause est en DIFFERENT EDGES (docs/gql/
+        // patterns.md : REPEATABLE ELEMENTS « relâche » l'unicité par défaut) :
+        // aucune arête répétée dans un chemin (obrain#182). Les sauts simples
+        // sont ramenés à Walk dans la traduction du motif (équivalent).
         let mut path_mode = match match_clause.path_mode {
-            Some(ast::PathMode::Walk) | None => PathMode::Walk,
+            Some(ast::PathMode::Walk) => PathMode::Walk,
+            None => PathMode::Trail,
             Some(ast::PathMode::Trail) => PathMode::Trail,
             Some(ast::PathMode::Simple) => PathMode::Simple,
             Some(ast::PathMode::Acyclic) => PathMode::Acyclic,
@@ -1597,9 +1602,21 @@ impl GqlTranslator {
             )
         );
 
+        // Isomorphisme des relations DANS cette clause (obrain#182) : deux
+        // relations à un saut d'un même MATCH sont distinctes, sauf mode
+        // REPEATABLE ELEMENTS. Les anonymes reçoivent un nom pour être comparées.
+        let repetables = matches!(
+            match_clause.match_mode,
+            Some(ast::MatchMode::RepeatableElements)
+        );
+        let (patterns, relations, longues) = if repetables {
+            (match_clause.patterns.clone(), Vec::new(), Vec::new())
+        } else {
+            self.unicite_des_relations_gql(&match_clause.patterns)
+        };
+
         // Collect variables for each pattern to detect shared variables
-        let pattern_vars: Vec<HashSet<String>> = match_clause
-            .patterns
+        let pattern_vars: Vec<HashSet<String>> = patterns
             .iter()
             .map(|ap| Self::pattern_variables(&ap.pattern))
             .collect();
@@ -1614,7 +1631,7 @@ impl GqlTranslator {
         let mut bound: HashMap<String, VariableKind> =
             plan.as_ref().map(visible_variables).unwrap_or_default();
 
-        for (index, aliased_pattern) in match_clause.patterns.iter().enumerate() {
+        for (index, aliased_pattern) in patterns.iter().enumerate() {
             // Variable déjà liée à une valeur qui n'est pas un nœud (ou une
             // arête) : erreur de type, comme sous Neo4j.
             for (variable, kind) in Self::pattern_variable_kinds(&aliased_pattern.pattern) {
@@ -1692,6 +1709,41 @@ impl GqlTranslator {
                 bound.insert(alias.clone(), VariableKind::Other);
             }
         }
+
+        let plan = plan.map(|plan| {
+            let mut differences = Vec::new();
+            for i in 0..relations.len() {
+                for j in (i + 1)..relations.len() {
+                    differences.push(LogicalExpression::Binary {
+                        left: Box::new(LogicalExpression::Variable(relations[i].clone())),
+                        op: BinaryOp::Ne,
+                        right: Box::new(LogicalExpression::Variable(relations[j].clone())),
+                    });
+                }
+            }
+            for r in &relations {
+                for l in &longues {
+                    let variable = format!("_arete_{}", rand_id());
+                    differences.push(LogicalExpression::ListPredicate {
+                        kind: plan::ListPredicateKind::All,
+                        variable: variable.clone(),
+                        list_expr: Box::new(LogicalExpression::Variable(l.clone())),
+                        predicate: Box::new(LogicalExpression::Binary {
+                            left: Box::new(LogicalExpression::Variable(variable)),
+                            op: BinaryOp::Ne,
+                            right: Box::new(LogicalExpression::Variable(r.clone())),
+                        }),
+                    });
+                }
+            }
+            if differences.is_empty() {
+                return plan;
+            }
+            match combine_with_and(differences) {
+                Ok(predicat) => wrap_filter(plan, predicat),
+                Err(_) => plan,
+            }
+        });
 
         plan.ok_or_else(|| {
             Error::Query(QueryError::new(
@@ -1955,6 +2007,47 @@ impl GqlTranslator {
             // No outer input: just use the inner plan directly
             Ok(inner_plan)
         }
+    }
+
+    /// Nomme les relations à un saut anonymes d'une clause MATCH et renvoie,
+    /// avec les motifs réécrits, les variables de relation à différencier.
+    /// Les motifs `shortestPath`, les quantifiés et les relations de longueur
+    /// variable ne sont pas concernés. Une variable répétée désigne la même
+    /// relation (jointure) : elle n'est comparée à aucune autre.
+    fn unicite_des_relations_gql(
+        &self,
+        patterns: &[ast::AliasedPattern],
+    ) -> (Vec<ast::AliasedPattern>, Vec<String>, Vec<String>) {
+        let mut reecrits = patterns.to_vec();
+        let (mut simples, mut longues): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+        for aliased in &mut reecrits {
+            if aliased.path_function.is_some() {
+                continue;
+            }
+            if let ast::Pattern::Path(path) = &mut aliased.pattern {
+                for edge in &mut path.edges {
+                    if edge.questioned {
+                        continue;
+                    }
+                    let single_hop = edge.min_hops.is_none() && edge.max_hops.is_none();
+                    if edge.variable.is_none() {
+                        edge.variable = Some(format!("_arete_{}", rand_id()));
+                    }
+                    let Some(v) = edge.variable.clone() else {
+                        continue;
+                    };
+                    let liste = if single_hop {
+                        &mut simples
+                    } else {
+                        &mut longues
+                    };
+                    if !liste.contains(&v) {
+                        liste.push(v);
+                    }
+                }
+            }
+        }
+        (reecrits, simples, longues)
     }
 
     fn translate_match(&self, match_clause: &ast::MatchClause) -> Result<LogicalOperator> {

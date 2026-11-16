@@ -385,6 +385,65 @@ impl CypherTranslator {
     /// The variables `input` already binds count as bound too: a pattern that
     /// comes back on one of them anywhere but at its start is joined on it,
     /// exactly like a later comma pattern (see `visible_variables`).
+    /// Unicité des relations DANS une même clause MATCH (isomorphisme de
+    /// relations, openCypher / Neo4j) : deux relations à un saut d'un même
+    /// motif désignent toujours deux relations distinctes.
+    /// `(a)-[r1:R]->(b)<-[r2:R]-(a)` ne rend donc rien sur `a -R-> b` seul.
+    /// Deux clauses MATCH distinctes, elles, peuvent réemprunter la même
+    /// relation : seules les relations introduites par CETTE clause sont
+    /// comparées (`bound` vient des clauses précédentes et n'est pas touché).
+    ///
+    /// Une relation anonyme n'a pas de colonne d'arête ; on lui donne un nom
+    /// interne pour la comparer. Les variables répétées dans la clause
+    /// désignent la MÊME relation (jointure), elles ne sont pas comparées
+    /// entre elles. Retourne les motifs réécrits et les paires à différencier.
+    fn unicite_des_relations(
+        patterns: &[ast::Pattern],
+        nommer: &dyn Fn() -> String,
+    ) -> (Vec<ast::Pattern>, Vec<String>, Vec<String>) {
+        fn nommer_chaine(
+            pattern: &mut ast::Pattern,
+            nommer: &dyn Fn() -> String,
+            simples: &mut Vec<String>,
+            longues: &mut Vec<String>,
+        ) {
+            match pattern {
+                ast::Pattern::Path(path) => {
+                    for rel in &mut path.chain {
+                        if rel.variable.is_none() {
+                            rel.variable = Some(nommer());
+                        }
+                        let Some(v) = rel.variable.clone() else {
+                            continue;
+                        };
+                        let liste = if rel.length.is_none() {
+                            &mut *simples
+                        } else {
+                            &mut *longues
+                        };
+                        if !liste.contains(&v) {
+                            liste.push(v);
+                        }
+                    }
+                }
+                ast::Pattern::NamedPath {
+                    path_function: None,
+                    pattern,
+                    ..
+                } => nommer_chaine(pattern, nommer, simples, longues),
+                // shortestPath / allShortestPaths : pas de relations à différencier ici.
+                _ => {}
+            }
+        }
+
+        let mut reecrits = patterns.to_vec();
+        let (mut simples, mut longues) = (Vec::new(), Vec::new());
+        for pattern in &mut reecrits {
+            nommer_chaine(pattern, nommer, &mut simples, &mut longues);
+        }
+        (reecrits, simples, longues)
+    }
+
     fn translate_comma_patterns(
         &self,
         patterns: &[ast::Pattern],
@@ -395,6 +454,15 @@ impl CypherTranslator {
                 QueryErrorKind::Semantic,
                 "Empty MATCH pattern",
             )));
+        }
+
+        // Relations à un saut de CETTE clause : nommées si anonymes, puis
+        // différenciées deux à deux (voir `unicite_des_relations`).
+        let (reecrits, relations, longues) =
+            Self::unicite_des_relations(patterns, &|| self.next_anon_var());
+        let patterns: &[ast::Pattern] = &reecrits;
+        for relation in relations.iter().chain(longues.iter()) {
+            self.register_edge_variable(relation);
         }
 
         let pattern_vars: Vec<HashSet<String>> =
@@ -437,7 +505,40 @@ impl CypherTranslator {
             bound.extend(Self::pattern_variable_kinds(pattern));
         }
 
-        Ok(plan.expect("au moins un motif"))
+        let mut plan = plan.expect("au moins un motif");
+
+        // Isomorphisme : chaque paire de relations distinctes de la clause.
+        let mut differences = Vec::new();
+        for i in 0..relations.len() {
+            for j in (i + 1)..relations.len() {
+                differences.push(LogicalExpression::Binary {
+                    left: Box::new(LogicalExpression::Variable(relations[i].clone())),
+                    op: BinaryOp::Ne,
+                    right: Box::new(LogicalExpression::Variable(relations[j].clone())),
+                });
+            }
+        }
+        // Relation à un saut contre relation de longueur variable : aucune
+        // arête du chemin n'est la relation à un saut (all(x IN L WHERE x <> r)).
+        for r in &relations {
+            for l in &longues {
+                let variable = self.next_anon_var();
+                differences.push(LogicalExpression::ListPredicate {
+                    kind: crate::query::plan::ListPredicateKind::All,
+                    variable: variable.clone(),
+                    list_expr: Box::new(LogicalExpression::Variable(l.clone())),
+                    predicate: Box::new(LogicalExpression::Binary {
+                        left: Box::new(LogicalExpression::Variable(variable)),
+                        op: BinaryOp::Ne,
+                        right: Box::new(LogicalExpression::Variable(r.clone())),
+                    }),
+                });
+            }
+        }
+        if !differences.is_empty() {
+            plan = wrap_filter(plan, combine_with_and(differences)?);
+        }
+        Ok(plan)
     }
 
     /// Variables d'un motif, avec ce qu'elles désignent une fois le motif
@@ -1131,7 +1232,15 @@ impl CypherTranslator {
             max_hops,
             input: Box::new(input),
             path_alias,
-            path_mode: PathMode::Walk,
+            // Isomorphisme de relations (obrain#182) : dans un chemin de
+            // longueur variable, une relation ne sert qu'une fois (Neo4j). Un
+            // saut simple reste en Walk : une seule arête, c'est équivalent, et
+            // les raccourcis du planificateur (comptages, pushdown) l'exigent.
+            path_mode: if rel.length.is_some() {
+                PathMode::Trail
+            } else {
+                PathMode::Walk
+            },
         });
 
         if let Some(bound_variable) = &closes_on {
