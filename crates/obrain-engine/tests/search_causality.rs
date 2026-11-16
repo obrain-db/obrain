@@ -1,7 +1,7 @@
-#![cfg(feature = "algos")]
 //! `obrain.search_causes` / `obrain.search_effects` — spread directionnel
 //! causal (BFS amorti) : (1) chaîne A→B→C directionnelle ; (2) étoile ;
 //! (3) cycle → terminaison ; (4) depth/limit ; (5) CALL ; (6) read-only.
+#![cfg(feature = "algos")]
 
 use obrain_common::types::NodeId;
 use obrain_engine::ObrainDB;

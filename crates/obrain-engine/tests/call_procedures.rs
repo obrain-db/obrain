@@ -1,7 +1,7 @@
-#![cfg(feature = "algos")]
 //! Integration tests for CALL procedure support.
 //!
 //! Tests CALL statement parsing + execution across GQL, Cypher, and SQL/PGQ.
+#![cfg(feature = "algos")]
 
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;

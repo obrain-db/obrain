@@ -1,7 +1,10 @@
 //! RFC §14 axe S — latence HNSW/vector à l'échelle (20 k vecteurs) + sanité top-1.
+#[cfg(feature = "vector-index")]
 use obrain_common::types::Value;
+#[cfg(feature = "vector-index")]
 use obrain_engine::database::ObrainDB;
 
+#[cfg(feature = "vector-index")]
 fn emb(base: usize, k: usize) -> Value {
     // vecteur 64-d quasi-orthogonal par cluster : spike sur (cluster, slot)
     let mut v = vec![0.0f32; 64];

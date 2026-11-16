@@ -1,4 +1,3 @@
-#![cfg(all(feature = "cdc", feature = "algos"))]
 //! `obrain.search_surprise` — « ce qui s'active contre les attentes » :
 //! (1) méthode `ObrainDB::search_surprise` ; (2) procédure CALL ; (3) tri
 //! signé/absolu et limite ; (4) lecture pure (read-only).
@@ -8,6 +7,7 @@
 //! rafale d'arêtes (activité ≫ attente → surprise positive) et C une seule
 //! (activité ≪ attente → surprise négative) ; les nœuds feuilles ont une
 //! activité anecdotique (~zéro de surprise).
+#![cfg(all(feature = "cdc", feature = "algos"))]
 
 use std::time::Duration;
 use web_time::SystemTime;

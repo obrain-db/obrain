@@ -1,7 +1,7 @@
-#![cfg(all(feature = "cdc", feature = "algos"))]
 //! `obrain.search_conflicts` — dissonance temporelle d'états (A→B→A…) :
 //! (1) méthode `ObrainDB::search_conflicts` ; (2) procédure CALL ;
 //! (3) lecture pure (read-only) ; (4) monotonie → 0 ; (5) fenêtre vide.
+#![cfg(all(feature = "cdc", feature = "algos"))]
 
 use std::time::Duration;
 use web_time::SystemTime;

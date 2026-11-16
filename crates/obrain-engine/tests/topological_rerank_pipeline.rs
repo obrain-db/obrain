@@ -1,3 +1,5 @@
+//! Pipeline de reclassement topologique (CALL + méthode), sous les features
+//! `vector-index`, `text-index` et `hybrid-search`.
 #![cfg(all(
     feature = "vector-index",
     feature = "text-index",

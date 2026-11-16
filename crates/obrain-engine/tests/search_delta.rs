@@ -1,10 +1,10 @@
-#![cfg(all(feature = "cdc", feature = "algos"))]
 //! `obrain.search_delta` — diff CDC graphe « ce qui a changé depuis ma
 //! dernière vue » (méthode ObrainDB + procédure CALL).
 //!
 //! Vérifie : (1) la méthode `ObrainDB::search_delta(since_ms)` retourne les
 //! changements depuis un instant ; (2) la procédure CALL expose les mêmes ;
 //! (3) le filtre node/edge fonctionne ; (4) lecture pure (read-only).
+#![cfg(all(feature = "cdc", feature = "algos"))]
 
 use obrain_engine::ObrainDB;
 
