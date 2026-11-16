@@ -47,6 +47,19 @@ fn composant_de_date(
         (None, None) => return None,
     };
     let reste = nanos_du_jour.unwrap_or(0);
+    // Époque : instant UTC, indépendant du fuseau (Neo4j `epochSeconds` /
+    // `epochMillis`, obrain#183). `horodatage` porte l'instant UTC.
+    if let Some((instant, _)) = horodatage {
+        match nom.to_ascii_lowercase().as_str() {
+            "epochseconds" => {
+                return Some(instant.as_nanos().div_euclid(1_000_000_000));
+            }
+            "epochmillis" => {
+                return Some(instant.as_nanos().div_euclid(1_000_000));
+            }
+            _ => {}
+        }
+    }
     Some(match nom.to_ascii_lowercase().as_str() {
         "year" => i64::from(date.year()),
         "month" => i64::from(date.month()),
@@ -3154,6 +3167,11 @@ impl ExpressionPredicate {
                     Value::Int64(i) => i.to_string(),
                     Value::Float64(f) => f.to_string(),
                     Value::Bool(b) => b.to_string(),
+                    // ISO 8601, pas le rendu Debug (obrain#183).
+                    Value::ZonedDatetime(z) => z.to_string(),
+                    Value::Timestamp(t) => t.to_string(),
+                    Value::Date(d) => d.to_string(),
+                    Value::Time(t) => t.to_string(),
                     Value::Null => return Some(Value::Null),
                     _ => format!("{val:?}"),
                 };
