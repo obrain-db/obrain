@@ -259,3 +259,7 @@ required-features = ["cypher"]
 [[test]]
 name = "sum_zero_ligne_196"
 required-features = ["cypher"]
+
+[[test]]
+name = "alias_mot_cle_195"
+required-features = ["cypher"]
