@@ -1715,6 +1715,28 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::LParen => {
+                // Prédicat de motif en position d'expression : `NOT (n)-[:R]->()`.
+                // Un motif avec au moins une relation est un test d'existence :
+                // on le rend comme `EXISTS { (n)-[:R]->() }` (obrain#195, famille 5).
+                // Sinon, retour arrière : c'est une expression parenthésée.
+                let saved = (
+                    self.lexer.clone(),
+                    self.current.clone(),
+                    self.previous.clone(),
+                );
+                if let Ok(motif) = self.parse_pattern()
+                    && let Pattern::Path(chemin) = &motif
+                    && !chemin.chain.is_empty()
+                {
+                    return Ok(Expression::Exists(Box::new(Query {
+                        clauses: vec![Clause::Match(MatchClause {
+                            patterns: vec![motif],
+                            span: None,
+                        })],
+                        span: None,
+                    })));
+                }
+                (self.lexer, self.current, self.previous) = saved;
                 self.advance();
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::RParen)?;
