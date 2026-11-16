@@ -2932,7 +2932,9 @@ impl<'a> Parser<'a> {
 
         let alias = if self.current.kind == TokenKind::As {
             self.advance();
-            if !self.is_identifier() {
+            // Après `AS`, tout mot est un alias (obrain#195) : même règle que les
+            // noms de propriétés, la position lève l'ambiguïté avec un mot-clé.
+            if !self.is_property_name() {
                 return Err(self.error("Expected alias name"));
             }
             let name = self.get_identifier_name();

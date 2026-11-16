@@ -448,7 +448,7 @@ impl<'a> Parser<'a> {
         let field_name = self.expect_identifier()?;
         let alias = if self.current.kind == TokenKind::As {
             self.advance();
-            Some(self.expect_identifier()?)
+            Some(self.expect_alias_name()?)
         } else {
             None
         };
@@ -777,7 +777,7 @@ impl<'a> Parser<'a> {
         let expression = self.parse_expression()?;
         let alias = if self.current.kind == TokenKind::As {
             self.advance();
-            Some(self.expect_identifier()?)
+            Some(self.expect_alias_name()?)
         } else {
             None
         };
@@ -1959,6 +1959,12 @@ impl<'a> Parser<'a> {
     /// accepte `s.order`, `s.limit`, `{match: 1}` sans échappement. Project
     /// Orchestrator stocke `Step.order`, refusé avant ce correctif
     /// (« Expected identifier » sur `.order`, accepté seulement en `` `order` ``).
+    /// Nom d'alias après `AS` (`RETURN s.id AS order`). Position sans ambiguïté :
+    /// tout mot est accepté, mot-clé compris (Neo4j : `AS order` passe). obrain#195.
+    fn expect_alias_name(&mut self) -> Result<String> {
+        self.expect_property_name()
+    }
+
     fn expect_property_name(&mut self) -> Result<String> {
         if self.can_be_identifier() {
             return self.expect_identifier();
