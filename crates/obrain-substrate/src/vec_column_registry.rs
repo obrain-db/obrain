@@ -377,6 +377,24 @@ impl VecColumnRegistry {
         Some(Arc::from(data))
     }
 
+    /// (obrain#196) `true` si `slot` existe dans la colonne de `(key, ek)` et
+    /// n'y porte que des zéros : un emplacement réservé par la densité de la
+    /// colonne, jamais écrit — ou écrit tout à zéro, ce que le format ne
+    /// distingue pas. Les lectures du store le rendent ABSENT ; cette sonde
+    /// sert aux diagnostics qui veulent compter ces emplacements.
+    pub(crate) fn slot_is_zero(&self, key: &PropertyKey, ek: EntityKind, slot: u32) -> bool {
+        let Some(spec) = self.spec_for(key, ek) else {
+            return false;
+        };
+        let Some(writer) = self.writers.get(&spec).map(|w| w.clone()) else {
+            return false;
+        };
+        let guard = writer.read();
+        guard
+            .read_slot_f32(slot)
+            .is_some_and(|data| data.iter().all(|x| *x == 0.0))
+    }
+
     /// T17k — bulk iteration of every registered vec column whose
     /// `EntityKind` matches `ek`, yielding the `(PropertyKey, vector)`
     /// pair when `slot` has a meaningful value on that column.

@@ -19943,6 +19943,18 @@ impl SubstrateStore {
         out
     }
 
+    /// (obrain#196) `true` si la propriété `key` du nœud `id` est routée en
+    /// colonne vectorielle dense et que l'emplacement du nœud n'y porte que
+    /// des zéros. Depuis #196, `get_node_property` rend un tel emplacement
+    /// ABSENT (sémantique Neo4j) ; cette sonde permet aux diagnostics — le
+    /// compteur `skipped_zero` du fournisseur de positions — de distinguer
+    /// encore « jamais écrit dans une colonne existante » de « aucune
+    /// colonne ». Elle ne lit rien d'autre que la colonne.
+    pub fn emplacement_vectoriel_nul(&self, id: NodeId, key: &PropertyKey) -> bool {
+        self.vec_columns
+            .slot_is_zero(key, EntityKind::Node, id.0 as u32)
+    }
+
     pub(crate) fn lire_propriete_noeud_vivant(
         &self,
         id: NodeId,
