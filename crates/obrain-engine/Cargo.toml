@@ -280,3 +280,7 @@ required-features = ["cypher"]
 [[test]]
 name = "vle_relation_anonyme"
 required-features = ["cypher"]
+
+[[test]]
+name = "datetime_zone_neo4j_183"
+required-features = ["cypher"]

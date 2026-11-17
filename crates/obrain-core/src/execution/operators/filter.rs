@@ -2624,6 +2624,10 @@ impl ExpressionPredicate {
                     | (Value::Duration(dur), Value::Timestamp(ts)) => {
                         Some(Value::Timestamp(ts.add_duration(dur)))
                     }
+                    (Value::ZonedDatetime(z), Value::Duration(dur))
+                    | (Value::Duration(dur), Value::ZonedDatetime(z)) => {
+                        Some(Value::ZonedDatetime(z.add_duration(dur)))
+                    }
                     (Value::Duration(a), Value::Duration(b)) => Some(Value::Duration(a.add(*b))),
                     _ => self.eval_arithmetic(left, right, ArithGardee::Add),
                 }
@@ -2636,6 +2640,9 @@ impl ExpressionPredicate {
                 }
                 (Value::Timestamp(a), Value::Duration(dur)) => {
                     Some(Value::Timestamp(a.add_duration(&dur.neg())))
+                }
+                (Value::ZonedDatetime(a), Value::Duration(dur)) => {
+                    Some(Value::ZonedDatetime(a.add_duration(&dur.neg())))
                 }
                 (Value::Date(a), Value::Date(b)) => {
                     let days = a.as_days() as i64 - b.as_days() as i64;
@@ -2651,6 +2658,14 @@ impl ExpressionPredicate {
                 }
                 (Value::Timestamp(a), Value::Timestamp(b)) => {
                     let micros = a.duration_since(*b);
+                    Some(Value::Duration(obrain_common::types::Duration::from_nanos(
+                        micros * 1000,
+                    )))
+                }
+                // Même règle que deux `Timestamp` (que `datetime()` rendait
+                // avant obrain#183) : l'écart entre les instants.
+                (Value::ZonedDatetime(a), Value::ZonedDatetime(b)) => {
+                    let micros = a.as_timestamp().duration_since(b.as_timestamp());
                     Some(Value::Duration(obrain_common::types::Duration::from_nanos(
                         micros * 1000,
                     )))
@@ -2961,14 +2976,13 @@ impl ExpressionPredicate {
 
     /// Évalue un opérande de `duration.*`.
     ///
-    /// `datetime('2024-01-31T00:30:00+02:00')` rend un `Timestamp` (UTC) : le
-    /// décalage est perdu, et le calendrier — mois, jours — d'une durée se lit
-    /// dans le fuseau de l'opérande (le 31 à Paris, le 30 en UTC). Quand
-    /// l'opérande est un `datetime(<texte>)` dont le texte porte un décalage
-    /// non nul, on le lit ici comme un `ZonedDatetime` ; `datetime()` garde
-    /// ailleurs son résultat historique, de sorte qu'aucune comparaison ni
-    /// aucune arithmétique ne change. (Un horodatage DÉJÀ stocké est UTC : son
-    /// décalage n'a pas été conservé à l'écriture.)
+    /// Le calendrier — mois, jours — d'une durée se lit dans le fuseau de
+    /// l'opérande (le 31 à Paris, le 30 en UTC). `datetime(<texte>)` rend
+    /// déjà une `ZonedDatetime` qui garde son décalage (obrain#183) ;
+    /// `toDatetime(<texte>)` rend un `Timestamp` (UTC) qui le perd : quand
+    /// son texte porte un décalage non nul, on le lit ici comme un
+    /// `ZonedDatetime`. (Un horodatage DÉJÀ stocké en `Timestamp` est UTC :
+    /// son décalage n'a pas été conservé à l'écriture.)
     fn eval_instant_arg(
         &self,
         expr: &FilterExpression,
@@ -4198,6 +4212,8 @@ impl ExpressionPredicate {
                 match val {
                     Value::String(s) => obrain_common::types::Date::parse(&s).map(Value::Date),
                     Value::Timestamp(ts) => Some(Value::Date(ts.to_date())),
+                    // `date(datetime())` : la date du fuseau de la valeur.
+                    Value::ZonedDatetime(z) => Some(Value::Date(z.to_local_date())),
                     Value::Date(_) => Some(val),
                     Value::Map(m) => {
                         let year = map_int(&m, "year")? as i32;
@@ -4216,6 +4232,7 @@ impl ExpressionPredicate {
                 match val {
                     Value::String(s) => obrain_common::types::Time::parse(&s).map(Value::Time),
                     Value::Timestamp(ts) => Some(Value::Time(ts.to_time())),
+                    Value::ZonedDatetime(z) => Some(Value::Time(z.to_local_time())),
                     Value::Time(_) => Some(val),
                     Value::Map(m) => {
                         let hour = map_int_or(&m, "hour", 0) as u32;
@@ -4228,7 +4245,60 @@ impl ExpressionPredicate {
                     _ => None,
                 }
             }
-            "datetime" | "localdatetime" | "local_datetime" | "todatetime" => {
+            // `datetime` est TOUJOURS zoné, comme dans Neo4j (obrain#183) :
+            // décalage conservé, UTC s'il est absent. Une valeur zonée se
+            // compare alors par instant à une `ZonedDatetime` stockée.
+            // `localdatetime` (et `toDatetime`, cible du `CAST … AS DATETIME`
+            // GQL) restent sans fuseau, ci-dessous.
+            "datetime" => {
+                use obrain_common::types::{Timestamp, ZonedDatetime};
+                let Some(argument) = args.first() else {
+                    return Some(Value::ZonedDatetime(ZonedDatetime::from_timestamp_offset(
+                        Timestamp::now(),
+                        0,
+                    )));
+                };
+                match self.eval_expr(argument, chunk, row)? {
+                    Value::String(s) => {
+                        ZonedDatetime::parse_utc_by_default(&s).map(Value::ZonedDatetime)
+                    }
+                    // Un horodatage sans fuseau est lu en UTC.
+                    Value::Timestamp(ts) => Some(Value::ZonedDatetime(
+                        ZonedDatetime::from_timestamp_offset(ts, 0),
+                    )),
+                    val @ Value::ZonedDatetime(_) => Some(val),
+                    Value::Map(m) => {
+                        let date = obrain_common::types::Date::from_ymd(
+                            map_int(&m, "year")? as i32,
+                            map_int_or(&m, "month", 1) as u32,
+                            map_int_or(&m, "day", 1) as u32,
+                        )?;
+                        let heure = obrain_common::types::Time::from_hms_nano(
+                            map_int_or(&m, "hour", 0) as u32,
+                            map_int_or(&m, "minute", 0) as u32,
+                            map_int_or(&m, "second", 0) as u32,
+                            map_int_or(&m, "nanosecond", 0) as u32,
+                        )?;
+                        // `timezone` : un décalage (`'Z'`, `'+02:00'`) ; un
+                        // fuseau nommé n'est pas pris en charge et rend NULL
+                        // plutôt qu'un instant faux.
+                        let decalage = match m.get(&PropertyKey::from("timezone")) {
+                            None | Some(Value::Null) => 0,
+                            Some(Value::String(tz)) => {
+                                obrain_common::types::Time::parse(&format!("00:00:00{tz}"))?
+                                    .offset_seconds()?
+                            }
+                            Some(_) => return None,
+                        };
+                        Some(Value::ZonedDatetime(ZonedDatetime::from_timestamp_offset(
+                            Timestamp::from_date_time(date, heure.with_offset(decalage)),
+                            decalage,
+                        )))
+                    }
+                    _ => None,
+                }
+            }
+            "localdatetime" | "local_datetime" | "todatetime" => {
                 if args.is_empty() {
                     return Some(Value::Timestamp(obrain_common::types::Timestamp::now()));
                 }
@@ -4255,6 +4325,14 @@ impl ExpressionPredicate {
                         None
                     }
                     Value::Timestamp(_) => Some(val),
+                    // `localdatetime(datetime())` : l'heure murale du fuseau.
+                    Value::ZonedDatetime(z) => Some(Value::Timestamp(
+                        obrain_common::types::Timestamp::from_micros(
+                            z.as_timestamp()
+                                .as_micros()
+                                .saturating_add(i64::from(z.offset_seconds()) * 1_000_000),
+                        ),
+                    )),
                     Value::Map(m) => {
                         let year = map_int(&m, "year")? as i32;
                         let month = map_int_or(&m, "month", 1) as u32;

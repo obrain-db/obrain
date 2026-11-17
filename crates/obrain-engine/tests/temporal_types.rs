@@ -77,6 +77,9 @@ fn cypher_time_function() {
     assert_eq!(t.second(), 59);
 }
 
+// Décision PO b09d2c91 (datetime() suit Neo4j) : datetime() rend une
+// ZonedDatetime (décalage conservé, UTC par défaut), et non plus un Timestamp.
+// Le test lit l'instant UTC de cette valeur ; les assertions sont inchangées.
 #[test]
 #[cfg(feature = "cypher")]
 fn cypher_datetime_function() {
@@ -85,7 +88,10 @@ fn cypher_datetime_function() {
         .execute_cypher("RETURN datetime('2024-03-15T14:30:00Z') AS dt")
         .unwrap();
     let row = &result.rows[0];
-    let ts = row[0].as_timestamp().expect("expected Timestamp value");
+    let ts = row[0]
+        .as_zoned_datetime()
+        .expect("expected ZonedDatetime value")
+        .as_timestamp();
     let date = ts.to_date();
     assert_eq!(date.year(), 2024);
     assert_eq!(date.month(), 3);
@@ -402,6 +408,8 @@ fn cypher_time_map_constructor() {
     assert_eq!(t.second(), 45);
 }
 
+// Décision PO b09d2c91 (datetime() suit Neo4j) : la map sans `timezone` donne
+// une ZonedDatetime en UTC (et non plus un Timestamp) ; l'heure lue reste 14:30.
 #[test]
 #[cfg(feature = "cypher")]
 fn cypher_datetime_map_constructor() {
@@ -412,8 +420,9 @@ fn cypher_datetime_map_constructor() {
         )
         .unwrap();
     let ts = result.rows[0][0]
-        .as_timestamp()
-        .expect("expected Timestamp value");
+        .as_zoned_datetime()
+        .expect("expected ZonedDatetime value")
+        .as_timestamp();
     let d = ts.to_date();
     assert_eq!(d.year(), 2024);
     assert_eq!(d.month(), 3);

@@ -125,6 +125,56 @@ impl ZonedDatetime {
         time.offset_seconds()?;
         Self::from_date_time(date, time)
     }
+
+    /// Adds a duration, keeping the offset.
+    ///
+    /// Months and days are added on the local (offset-adjusted) calendar,
+    /// as Neo4j does: `2024-01-31T00:30+02:00 + P1M` lands on February 29
+    /// in that zone, not on the UTC day.
+    #[must_use]
+    pub fn add_duration(&self, dur: &super::Duration) -> Self {
+        let decalage_micros = self.offset_seconds as i64 * 1_000_000;
+        let local = Timestamp::from_micros(self.utc_micros.saturating_add(decalage_micros));
+        Self {
+            utc_micros: local
+                .add_duration(dur)
+                .as_micros()
+                .saturating_sub(decalage_micros),
+            offset_seconds: self.offset_seconds,
+        }
+    }
+
+    /// Parses an ISO 8601 date or datetime the way Cypher's `datetime(<text>)`
+    /// does (Neo4j semantics): the offset is kept when present, and a text
+    /// without one is read in UTC.
+    ///
+    /// Accepted formats:
+    /// - `YYYY-MM-DD` (midnight UTC)
+    /// - `YYYY-MM-DDTHH:MM[:SS[.fff]]` (UTC)
+    /// - `YYYY-MM-DDTHH:MM[:SS[.fff]](Z|+HH:MM|-HH:MM)`
+    ///
+    /// ```
+    /// use obrain_common::types::ZonedDatetime;
+    ///
+    /// let z = ZonedDatetime::parse_utc_by_default("2020-01-02T03:04:05+02:00").unwrap();
+    /// assert_eq!(z.offset_seconds(), 7200);
+    /// let u = ZonedDatetime::parse_utc_by_default("2020-01-02T03:04:05").unwrap();
+    /// assert_eq!(u.offset_seconds(), 0);
+    /// ```
+    #[must_use]
+    pub fn parse_utc_by_default(s: &str) -> Option<Self> {
+        let Some(pos) = s.find('T').or_else(|| s.find('t')) else {
+            let date = Date::parse(s)?;
+            return Some(Self::from_timestamp_offset(date.to_timestamp(), 0));
+        };
+        let date = Date::parse(&s[..pos])?;
+        let time = Time::parse(&s[pos + 1..])?;
+        let offset = time.offset_seconds().unwrap_or(0);
+        Some(Self::from_timestamp_offset(
+            Timestamp::from_date_time(date, time),
+            offset,
+        ))
+    }
 }
 
 impl PartialEq for ZonedDatetime {

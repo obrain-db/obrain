@@ -33,6 +33,11 @@ enum KeyPart {
     /// vague 3 comme le poste dominant du DISTINCT sur colonnes chaîne
     /// (banc_comparateurs, 100k lignes). Mêmes Eq/Hash (par contenu).
     String(ArcStr),
+    /// `ZonedDatetime` par son instant UTC (microsecondes) : deux écritures
+    /// du même instant (`…02:00+02:00`, `…00:00Z`) sont UNE valeur, comme
+    /// le disent `ZonedDatetime::eq` et `value_cmp::egalite_structurelle`
+    /// (obrain#183 : `datetime()` rend désormais une valeur zonée).
+    ZonedInstant(i64),
 }
 
 impl RowKey {
@@ -50,6 +55,9 @@ impl RowKey {
                         Value::Int64(i) => KeyPart::Int64(i),
                         Value::Float64(f) => KeyPart::Float64Bits(f.to_bits()),
                         Value::String(s) => KeyPart::String(s.clone()),
+                        Value::ZonedDatetime(z) => {
+                            KeyPart::ZonedInstant(z.as_timestamp().as_micros())
+                        }
                         _ => KeyPart::String(ArcStr::from(format!("{v:?}"))),
                     })
             })

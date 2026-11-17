@@ -620,8 +620,10 @@ fn datetime_a_decalage_reste_un_instant(langage: Langage) {
     );
 }
 
-/// Égalité sur une propriété horodatage, avec et sans index : un nœud écrit en
-/// UTC se retrouve par son équivalent à décalage.
+/// Décision PO b09d2c91 (datetime() suit Neo4j) : `datetime(…)` est zoné, et une
+/// propriété stockée en `Timestamp` (type de `localdatetime`) n'est PAS égale à
+/// un `DateTime` zoné : NULL, donc 0 ligne, avec et sans index (comme Neo4j).
+/// Seul l'attendu change (1 → 0) ; la requête et le nœud sont inchangés.
 fn egalite_de_propriete_horodatee(langage: Langage) {
     for indexee in [false, true] {
         let db = vide();
@@ -641,7 +643,7 @@ fn egalite_de_propriete_horodatee(langage: Langage) {
                 langage,
                 "MATCH (n:E) WHERE n.t = datetime('2024-01-01T02:00:00+02:00') RETURN count(*)",
             ),
-            1,
+            0,
             "{langage:?} indexée = {indexee}"
         );
     }
