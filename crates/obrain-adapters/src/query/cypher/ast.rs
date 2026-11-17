@@ -85,7 +85,7 @@ pub enum Clause {
     Call(CallClause),
     /// CALL { subquery } (inline subquery).
     CallSubquery(Query),
-    /// CALL { subquery UNION [ALL] subquery ... } (inline subquery, several branches).
+    /// CALL { subquery UNION \[ALL\] subquery ... } (inline subquery, several branches).
     CallSubqueryUnion {
         /// The branches, in source order.
         branches: Vec<Query>,
