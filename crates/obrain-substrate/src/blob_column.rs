@@ -280,6 +280,10 @@ const _: [(); 1] = [(); (core::mem::size_of::<BlobSlotEntry>() == BLOB_SLOT_STRI
 /// extent, which the reader will either truncate to or reject
 /// depending on CRC state. In the worst case the last few writes
 /// since the last sync are lost; no corruption of earlier data.
+/// Bloc de zéros partagé pour la préallocation de l'arène (#205) : statique,
+/// donc jamais sur la pile, et jamais réalloué.
+static ZEROS_MI: [u8; 1 << 20] = [0u8; 1 << 20];
+
 #[derive(Debug)]
 pub struct BlobColumnWriter {
     spec: BlobColSpec,
@@ -289,6 +293,10 @@ pub struct BlobColumnWriter {
     n_slots: u32,
     /// Bytes written into the arena so far. Monotonic.
     arena_end: u64,
+    /// (#205) Borne haute déjà allouée physiquement dans l'arène. Écrire
+    /// dans un fichier creux paie une allocation par page ; on zérofille
+    /// donc par paliers, en avance sur l'append.
+    arena_preallouee: u64,
     /// Running CRC32 over `dat[..arena_end]`, maintained INCRÉMENTALEMENT.
     ///
     /// (2026-08-17, mission perf DB) `sync` recalculait ce CRC sur toute
@@ -393,10 +401,30 @@ impl BlobColumnWriter {
             dat,
             n_slots,
             arena_end,
+            arena_preallouee: arena_end,
             arena_crc,
             dirty,
             remap_epoch,
         })
+    }
+
+    /// (#205) Zérofille l'arène jusqu'à `jusqua`, par blocs de 1 MiB, pour que
+    /// les payloads suivants tombent dans des blocs DÉJÀ ALLOUÉS. `ecrire_a`
+    /// passe par `write_all_at`, donc l'allocation se fait sur une écriture de
+    /// 1 MiB et non page par page.
+    fn preallouer_arene(&mut self, jusqua: u64) -> SubstrateResult<()> {
+        if jusqua <= self.arena_preallouee {
+            return Ok(());
+        }
+        let cible = jusqua.min(self.dat.len());
+        let mut off = self.arena_preallouee;
+        while off < cible {
+            let n = ((cible - off) as usize).min(ZEROS_MI.len());
+            self.dat.ecrire_a(off, &ZEROS_MI[..n])?;
+            off += n as u64;
+        }
+        self.arena_preallouee = off;
+        Ok(())
     }
 
     /// Append `bytes` as a new payload and record the `(offset, len)`
@@ -424,7 +452,15 @@ impl BlobColumnWriter {
 
         // (1) Append to arena.
         let arena_needed_end = (offset as usize) + (len as usize);
-        ensure_room(&mut self.dat, arena_needed_end, 0)?;
+        // (#205) La colonne est un append PUR : chaque octet préalloué sera
+        // écrit, et un palier de 1 MiB couvre ~350 payloads. Sans cela, chaque
+        // page nouvellement touchée paie une allocation au fil de l'eau —
+        // mesuré sur ce disque : 29 Mo/s dans un fichier creux contre
+        // 2 100 Mo/s sur une plage déjà allouée (facteur 72, A/B alterné).
+        const PALIER_ARENE: u64 = 1 << 20;
+        let palier = ((arena_needed_end as u64).div_ceil(PALIER_ARENE)) * PALIER_ARENE;
+        ensure_room(&mut self.dat, palier as usize, 0)?;
+        self.preallouer_arene(palier)?;
         {
             let region = self.dat.as_slice_mut();
             region[offset as usize..arena_needed_end].copy_from_slice(bytes);
@@ -811,6 +847,7 @@ pub fn remap_node_file_for_replay(
         dat,
         n_slots: header.n_slots,
         arena_end: header.arena_bytes,
+        arena_preallouee: header.arena_bytes,
         arena_crc: header.arena_crc32,
         dirty: false,
         remap_epoch: header._reserved[0],
