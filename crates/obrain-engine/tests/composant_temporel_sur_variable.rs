@@ -11,6 +11,8 @@
 //! cargo test -p obrain-engine --features cypher --test composant_temporel_sur_variable
 //! ```
 
+#![cfg(feature = "cypher")]
+
 use obrain_common::types::{Timestamp, Value, ZonedDatetime};
 use obrain_engine::ObrainDB;
 
