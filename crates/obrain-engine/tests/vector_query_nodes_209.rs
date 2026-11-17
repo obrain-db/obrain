@@ -351,7 +351,11 @@ fn erreurs_explicites() {
     .expect_err("index retiré")
     .to_string();
     assert!(e.contains("'note_embeddings'"), "{e}");
-    assert!(db.vector_index_names().is_empty());
+    assert_eq!(
+        db.vector_index_names(),
+        Vec::<(String, String, String)>::new(),
+        "le nom part avec l'index retiré"
+    );
 }
 
 fn ouvrir(dir: &Path) -> ObrainDB {
@@ -426,8 +430,9 @@ fn catalogue_ancien_relu() {
 
     {
         let db = ouvrir(tmp.path());
-        assert!(
-            db.vector_index_names().is_empty(),
+        assert_eq!(
+            db.vector_index_names(),
+            Vec::<(String, String, String)>::new(),
             "un ancien catalogue n'a pas de nom"
         );
         // Les déclarations d'avant se relisent : l'index vectoriel répond…
