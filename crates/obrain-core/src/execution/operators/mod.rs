@@ -98,6 +98,7 @@ pub use push::{
 #[cfg(feature = "spill")]
 pub use push::{SpillableAggregatePushOperator, SpillableSortPushOperator};
 pub use scan::ScanOperator;
+pub use semantique_agregat::{AggregateSemantics, valeur_sur_ensemble_vide};
 pub use set_ops::{ExceptOperator, IntersectOperator, OtherwiseOperator};
 pub use shortest_path::ShortestPathOperator;
 pub use single_row::{EmptyOperator, NodeListOperator, ScalarResultOperator, SingleRowOperator};

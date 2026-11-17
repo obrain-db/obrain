@@ -6,6 +6,7 @@ mod aggregate;
 mod expression;
 mod pattern;
 
+use obrain_core::execution::operators::AggregateSemantics;
 use std::collections::{HashMap, HashSet};
 
 use super::common::{
@@ -203,6 +204,7 @@ impl GqlTranslator {
                 let rewritten_subplan = Self::replace_anchor_with_parameter_scan(*subplan, &anchor);
 
                 let inner_plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::Gql,
                     group_by: vec![],
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Collect,
@@ -916,6 +918,7 @@ impl GqlTranslator {
                         format!("{:?}_{}", agg_expr.function, property).to_lowercase()
                     });
                     plan = LogicalOperator::HorizontalAggregate(HorizontalAggregateOp {
+                        semantics: AggregateSemantics::Gql,
                         list_column: format!("_path_edges_{}", path_alias),
                         entity_kind: EntityKind::Edge,
                         function: agg_expr.function,
@@ -953,6 +956,7 @@ impl GqlTranslator {
                 plan
             } else {
                 LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::Gql,
                     group_by,
                     aggregates: regular_aggregates,
                     input: Box::new(plan),
@@ -1522,6 +1526,7 @@ impl GqlTranslator {
             let (aggregates, group_by, post_return) =
                 self.extract_aggregates_and_groups(&with_clause.items, false)?;
             plan = LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::Gql,
                 group_by,
                 aggregates,
                 input: Box::new(plan),
@@ -2056,6 +2061,7 @@ impl GqlTranslator {
                         .collect::<Result<Vec<_>>>()?
                 };
                 let agg_op = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::Gql,
                     group_by,
                     aggregates,
                     input: Box::new(plan),

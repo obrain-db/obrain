@@ -12,6 +12,7 @@ use crate::query::plan::{
 use obrain_adapters::query::gremlin::{self, ast};
 use obrain_common::types::Value;
 use obrain_common::utils::error::{Error, QueryError, QueryErrorKind, Result};
+use obrain_core::execution::operators::AggregateSemantics;
 
 /// Translates a Gremlin query string to a logical plan.
 ///
@@ -824,6 +825,7 @@ impl GremlinTranslator {
             ast::Step::Count => {
                 let alias = "count".to_string();
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: Vec::new(),
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Count,
@@ -843,6 +845,7 @@ impl GremlinTranslator {
             ast::Step::Sum => {
                 let alias = "sum".to_string();
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: Vec::new(),
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Sum,
@@ -861,6 +864,7 @@ impl GremlinTranslator {
             ast::Step::Mean => {
                 let alias = "mean".to_string();
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: Vec::new(),
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Avg,
@@ -879,6 +883,7 @@ impl GremlinTranslator {
             ast::Step::Min => {
                 let alias = "min".to_string();
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: Vec::new(),
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Min,
@@ -897,6 +902,7 @@ impl GremlinTranslator {
             ast::Step::Max => {
                 let alias = "max".to_string();
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: Vec::new(),
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Max,
@@ -915,6 +921,7 @@ impl GremlinTranslator {
             ast::Step::Fold => {
                 let alias = "fold".to_string();
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: Vec::new(),
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Collect,
@@ -1143,6 +1150,7 @@ impl GremlinTranslator {
             ast::Step::GroupCount(_label) => {
                 // GroupCount groups by current_var and counts
                 let plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::TinkerPop,
                     group_by: vec![LogicalExpression::Variable(current_var.to_string())],
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Count,

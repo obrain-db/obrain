@@ -7,6 +7,7 @@
 use std::fmt;
 
 use obrain_common::types::Value;
+use obrain_core::execution::operators::AggregateSemantics;
 
 /// A count expression for SKIP/LIMIT: either a resolved literal or an unresolved parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1349,6 +1350,11 @@ pub struct AggregateOp {
     pub input: Box<LogicalOperator>,
     /// HAVING clause filter (applied after aggregation).
     pub having: Option<LogicalExpression>,
+    /// Profil de spécification du dialecte d'entrée (obrain#196, D4) : décide
+    /// la valeur de `sum` / `avg` sur ensemble vide. Chaque traducteur
+    /// renseigne le sien ; il n'y a volontairement pas de `Default` pour que
+    /// l'oubli soit une erreur de compilation, jamais un profil silencieux.
+    pub semantics: AggregateSemantics,
 }
 
 /// Whether a horizontal aggregate operates on edges or nodes.
@@ -1376,6 +1382,8 @@ pub struct HorizontalAggregateOp {
     pub property: String,
     /// Output alias for the result column.
     pub alias: String,
+    /// Profil de spécification du dialecte d'entrée (obrain#196, D4).
+    pub semantics: AggregateSemantics,
     /// Input operator.
     pub input: Box<LogicalOperator>,
 }

@@ -14,6 +14,7 @@ use arcstr::ArcStr;
 use obrain_common::types::{LogicalType, Value};
 
 use super::accumulator::{AggregateExpr, AggregateFunction, HashableValue};
+use super::semantique_agregat::{AggregateSemantics, valeur_sur_ensemble_vide};
 use super::{Operator, OperatorError, OperatorResult};
 use crate::execution::DataChunk;
 use crate::execution::chunk::DataChunkBuilder;
@@ -422,14 +423,18 @@ impl AggregateState {
     }
 
     /// Finalizes the state and returns the result value.
-    pub(crate) fn finalize(&self) -> Value {
+    ///
+    /// `sem` décide la valeur de `sum` / `avg` sur ensemble vide : c'est le
+    /// profil de la requête (obrain#196, D4), consulté via
+    /// [`valeur_sur_ensemble_vide`] — le moteur ne décide plus en dur ici.
+    pub(crate) fn finalize(&self, sem: AggregateSemantics) -> Value {
         match self {
             AggregateState::Count(count) | AggregateState::CountDistinct(count, _) => {
                 Value::Int64(*count)
             }
             AggregateState::SumInt(sum, count) | AggregateState::SumIntDistinct(sum, count, _) => {
                 if *count == 0 {
-                    Value::Null
+                    valeur_sur_ensemble_vide(AggregateFunction::Sum, sem)
                 } else {
                     Value::Int64(*sum)
                 }
@@ -437,14 +442,14 @@ impl AggregateState {
             AggregateState::SumFloat(sum, count)
             | AggregateState::SumFloatDistinct(sum, count, _) => {
                 if *count == 0 {
-                    Value::Null
+                    valeur_sur_ensemble_vide(AggregateFunction::Sum, sem)
                 } else {
                     Value::Float64(*sum)
                 }
             }
             AggregateState::Avg(sum, count) | AggregateState::AvgDistinct(sum, count, _) => {
                 if *count == 0 {
-                    Value::Null
+                    valeur_sur_ensemble_vide(AggregateFunction::Avg, sem)
                 } else {
                     Value::Float64(*sum / *count as f64)
                 }
@@ -763,6 +768,8 @@ pub struct HashAggregateOperator {
     aggregation_complete: bool,
     /// Results iterator.
     results: Option<std::vec::IntoIter<(GroupKey, Vec<AggregateState>)>>,
+    /// Profil de spécification de la requête (obrain#196, D4).
+    semantics: AggregateSemantics,
 }
 
 impl HashAggregateOperator {
@@ -787,7 +794,15 @@ impl HashAggregateOperator {
             groups: IndexMap::new(),
             aggregation_complete: false,
             results: None,
+            semantics: AggregateSemantics::default(),
         }
+    }
+
+    /// Fixe le profil de spécification (le dialecte de la requête).
+    #[must_use]
+    pub fn with_semantics(mut self, semantics: AggregateSemantics) -> Self {
+        self.semantics = semantics;
+        self
     }
 
     /// Performs the aggregation.
@@ -892,7 +907,7 @@ impl Operator for HashAggregateOperator {
                     agg.percentile,
                     agg.separator.as_deref(),
                 );
-                let value = state.finalize();
+                let value = state.finalize(self.semantics);
                 if let Some(col) = builder.column_mut(self.group_columns.len()) {
                     col.push_value(value);
                 }
@@ -922,7 +937,7 @@ impl Operator for HashAggregateOperator {
             for (i, state) in states.iter().enumerate() {
                 let col_idx = self.group_columns.len() + i;
                 if let Some(col) = builder.column_mut(col_idx) {
-                    col.push_value(state.finalize());
+                    col.push_value(state.finalize(self.semantics));
                 }
             }
 
@@ -966,6 +981,8 @@ pub struct SimpleAggregateOperator {
     states: Vec<AggregateState>,
     /// Whether aggregation is complete.
     done: bool,
+    /// Profil de spécification de la requête (obrain#196, D4).
+    semantics: AggregateSemantics,
 }
 
 impl SimpleAggregateOperator {
@@ -993,7 +1010,15 @@ impl SimpleAggregateOperator {
             output_schema,
             states,
             done: false,
+            semantics: AggregateSemantics::default(),
         }
+    }
+
+    /// Fixe le profil de spécification (le dialecte de la requête).
+    #[must_use]
+    pub fn with_semantics(mut self, semantics: AggregateSemantics) -> Self {
+        self.semantics = semantics;
+        self
     }
 }
 
@@ -1061,7 +1086,7 @@ impl Operator for SimpleAggregateOperator {
 
         for (i, state) in self.states.iter().enumerate() {
             if let Some(col) = builder.column_mut(i) {
-                col.push_value(state.finalize());
+                col.push_value(state.finalize(self.semantics));
             }
         }
         builder.advance_row();
@@ -1766,9 +1791,54 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_aggregation() {
-        // No input rows: COUNT should be 0, SUM/AVG/MIN/MAX should be NULL
-        // (ISO/IEC 39075 Section 20.9)
+    fn test_empty_aggregation_profil_gql() {
+        // Profil GQL — aucune ligne : COUNT vaut 0, SUM/AVG/MIN/MAX valent NULL
+        // (ISO/IEC 39075 Section 20.9).
+        let mock = MockOperator::new(vec![]);
+
+        let mut agg = SimpleAggregateOperator::new(
+            Box::new(mock),
+            vec![
+                AggregateExpr::count_star(),
+                AggregateExpr::sum(0),
+                AggregateExpr::avg(0),
+                AggregateExpr::min(0),
+                AggregateExpr::max(0),
+            ],
+            vec![
+                LogicalType::Int64,
+                LogicalType::Int64,
+                LogicalType::Float64,
+                LogicalType::Int64,
+                LogicalType::Int64,
+            ],
+        )
+        .with_semantics(AggregateSemantics::Gql);
+
+        let result = agg.next().unwrap().unwrap();
+        assert_eq!(result.column(0).unwrap().get_int64(0), Some(0)); // COUNT
+        assert!(matches!(
+            result.column(1).unwrap().get_value(0),
+            Some(Value::Null)
+        )); // SUM
+        assert!(matches!(
+            result.column(2).unwrap().get_value(0),
+            Some(Value::Null)
+        )); // AVG
+        assert!(matches!(
+            result.column(3).unwrap().get_value(0),
+            Some(Value::Null)
+        )); // MIN
+        assert!(matches!(
+            result.column(4).unwrap().get_value(0),
+            Some(Value::Null)
+        )); // MAX
+    }
+
+    #[test]
+    fn test_empty_aggregation_profil_open_cypher() {
+        // Profil openCypher (le défaut) — aucune ligne : SUM vaut 0 (Neo4j),
+        // COUNT 0 ; AVG/MIN/MAX restent NULL. obrain#196, D4.
         let mock = MockOperator::new(vec![]);
 
         let mut agg = SimpleAggregateOperator::new(
@@ -1791,22 +1861,16 @@ mod tests {
 
         let result = agg.next().unwrap().unwrap();
         assert_eq!(result.column(0).unwrap().get_int64(0), Some(0)); // COUNT
-        assert!(matches!(
+        assert_eq!(
             result.column(1).unwrap().get_value(0),
-            Some(Value::Null)
-        )); // SUM
-        assert!(matches!(
-            result.column(2).unwrap().get_value(0),
-            Some(Value::Null)
-        )); // AVG
-        assert!(matches!(
-            result.column(3).unwrap().get_value(0),
-            Some(Value::Null)
-        )); // MIN
-        assert!(matches!(
-            result.column(4).unwrap().get_value(0),
-            Some(Value::Null)
-        )); // MAX
+            Some(Value::Int64(0))
+        ); // SUM
+        for col in 2..=4 {
+            assert!(matches!(
+                result.column(col).unwrap().get_value(0),
+                Some(Value::Null)
+            )); // AVG, MIN, MAX
+        }
     }
 
     #[test]

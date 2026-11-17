@@ -4,7 +4,9 @@
 //! Neo4j rend 0 ; obrain rendait NULL dans les deux langages. Un compteur qui
 //! passe de 0 à NULL casse les expressions qui s'en servent (`total + x`).
 //! La norme SQL / ISO GQL dit NULL, et `gql_07_agregats` le garde : la
-//! différence se fait donc dans le traducteur Cypher seul.
+//! différence vient du profil `AggregateSemantics` porté par la requête
+//! (`AggregateOp::semantics`) — OpenCypher pour la porte Cypher, Gql pour la
+//! porte GQL — et non d'un correctif propre au traducteur.
 //!
 //! ```bash
 //! cargo test -p obrain-engine --features cypher --test sum_zero_ligne_196

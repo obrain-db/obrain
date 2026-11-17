@@ -11,6 +11,7 @@ use obrain_common::types::{EdgeId, LogicalType, NodeId, PropertyKey, Value};
 
 use super::accumulator::AggregateFunction;
 use super::aggregate::AggregateState;
+use super::semantique_agregat::AggregateSemantics;
 use super::{Operator, OperatorResult};
 use crate::execution::DataChunk;
 use crate::execution::vector::ValueVector;
@@ -47,6 +48,8 @@ pub struct HorizontalAggregateOperator {
     store: Arc<dyn GraphStore>,
     /// Number of input columns (to know where to append the result).
     input_column_count: usize,
+    /// Profil de spécification de la requête (obrain#196, D4).
+    semantics: AggregateSemantics,
 }
 
 impl HorizontalAggregateOperator {
@@ -68,7 +71,15 @@ impl HorizontalAggregateOperator {
             property,
             store,
             input_column_count,
+            semantics: AggregateSemantics::default(),
         }
+    }
+
+    /// Fixe le profil de spécification (le dialecte de la requête).
+    #[must_use]
+    pub fn with_semantics(mut self, semantics: AggregateSemantics) -> Self {
+        self.semantics = semantics;
+        self
     }
 
     /// Looks up a property value for an entity ID.
@@ -132,7 +143,7 @@ impl Operator for HorizontalAggregateOperator {
                         state.update(prop_val)?;
                     }
                 }
-                state.finalize()
+                state.finalize(self.semantics)
             } else {
                 Value::Null
             };

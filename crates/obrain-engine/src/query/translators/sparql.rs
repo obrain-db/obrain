@@ -13,6 +13,7 @@ use crate::query::plan::{
 use obrain_adapters::query::sparql::{self, ast};
 use obrain_common::types::Value;
 use obrain_common::utils::error::{Error, QueryError, QueryErrorKind, Result};
+use obrain_core::execution::operators::AggregateSemantics;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -124,6 +125,7 @@ impl SparqlTranslator {
             };
 
             plan = LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::Sparql,
                 group_by: group_by_exprs,
                 aggregates,
                 input: Box::new(plan),

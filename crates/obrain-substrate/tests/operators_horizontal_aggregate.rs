@@ -20,7 +20,8 @@
 use obrain_common::types::{LogicalType, Value};
 use obrain_core::execution::chunk::{DataChunk, DataChunkBuilder};
 use obrain_core::execution::operators::{
-    AggregateFunction, EntityKind, HorizontalAggregateOperator, Operator, OperatorResult,
+    AggregateFunction, AggregateSemantics, EntityKind, HorizontalAggregateOperator, Operator,
+    OperatorResult,
 };
 use obrain_core::graph::GraphStore;
 use obrain_core::graph::traits::GraphStoreMut;
@@ -275,16 +276,48 @@ fn test_horizontal_empty_list_returns_null() {
         "weight".to_string(),
         store,
         1,
-    );
+    )
+    .with_semantics(AggregateSemantics::Gql);
 
     let result = op.next().unwrap().unwrap();
     assert_eq!(result.row_count(), 1);
-    // Empty list sum should finalize to NULL (ISO/IEC 39075 Section 20.9)
+    // Profil GQL (l'agrégation horizontale est une construction GQL, GE09) :
+    // somme d'une liste vide = NULL (ISO/IEC 39075 Section 20.9)
     let agg_val = result.column(1).unwrap().get_value(0);
     assert!(
         matches!(agg_val, Some(Value::Null)),
         "Expected Null, got {agg_val:?}"
     );
+}
+
+#[test]
+fn test_horizontal_empty_list_sum_profil_open_cypher() {
+    let store: Arc<dyn GraphStore> = Arc::new(SubstrateStore::open_tempfile().unwrap());
+
+    let mut builder = DataChunkBuilder::new(&[LogicalType::Any]);
+    builder
+        .column_mut(0)
+        .unwrap()
+        .push_value(Value::List(vec![].into()));
+    builder.advance_row();
+    let chunk = builder.finish();
+
+    let mock = MockOperator::new(vec![chunk]);
+    let mut op = HorizontalAggregateOperator::new(
+        Box::new(mock),
+        0,
+        EntityKind::Edge,
+        AggregateFunction::Sum,
+        "weight".to_string(),
+        store,
+        1,
+    );
+
+    let result = op.next().unwrap().unwrap();
+    assert_eq!(result.row_count(), 1);
+    // Profil openCypher (le défaut) : somme d'un ensemble vide = 0 (obrain#196, D4)
+    let agg_val = result.column(1).unwrap().get_value(0);
+    assert_eq!(agg_val, Some(Value::Int64(0)));
 }
 
 #[test]

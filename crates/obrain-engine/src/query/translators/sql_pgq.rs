@@ -17,6 +17,7 @@ use crate::query::plan::{
 use obrain_adapters::query::sql_pgq::{self, ast};
 use obrain_common::types::Value;
 use obrain_common::utils::error::{Error, QueryError, QueryErrorKind, Result};
+use obrain_core::execution::operators::AggregateSemantics;
 
 /// Translates a SQL/PGQ query string to a logical plan.
 pub fn translate(query: &str) -> Result<LogicalPlan> {
@@ -169,6 +170,7 @@ impl SqlPgqTranslator {
                 }
 
                 plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::Gql,
                     group_by,
                     aggregates,
                     input: Box::new(plan),

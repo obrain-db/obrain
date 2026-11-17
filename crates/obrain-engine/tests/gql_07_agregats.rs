@@ -18,8 +18,11 @@
 //! Le test `somme_nulle_et_ensemble_vide_ne_se_confondent_pas` les oppose
 //! explicitement : sans lui, toute assertion `== 0` ne prouve rien.
 //!
+//! Les deux tests `*_profil_cypher` / `*_deux_profils` exigent la feature
+//! `cypher` (la porte Cypher n'est pas compilée par défaut).
+//!
 //! ```bash
-//! cargo test -p obrain-engine --test gql_07_agregats
+//! cargo test -p obrain-engine --features cypher --test gql_07_agregats
 //! ```
 
 use obrain_common::types::Value;
@@ -193,22 +196,58 @@ fn count_sur_ensemble_vide_vaut_zero() {
     );
 }
 
-/// `sum` sur ensemble vide rend NULL, pas 0.
+/// Profil **GQL** : `sum` sur ensemble vide rend NULL, pas 0.
 ///
-/// AMBIGUÏTÉ ASSUMÉE — les deux familles de spécifications divergent :
-///   * SQL / ISO GQL : `SUM` sur ensemble vide vaut NULL ;
-///   * openCypher : `sum()` sur ensemble vide vaut 0.
-///     Ce fichier teste la conformité **GQL**, donc NULL. Si le projet tranchait
-///     un jour pour la lecture openCypher, ce test devrait être retourné
-///     sciemment — et non « corrigé » parce qu'il rougit.
+/// Retourné SCIEMMENT (obrain#196, D4). Ce test verrouillait jadis le choix GQL
+/// pour TOUS les dialectes, parce que `AggregateState::finalize` décidait en dur
+/// sans notion de dialecte. Le profil voyage désormais depuis la requête
+/// jusqu'à l'opérateur (`AggregateOp::semantics`) : ce fichier ne teste plus
+/// que le profil de la porte GQL — `SUM` sur ensemble vide vaut NULL (SQL / ISO
+/// GQL). La lecture openCypher (0) a son propre test, ci-dessous, sur la porte
+/// Cypher : les deux ne se contredisent pas, elles décrivent deux dialectes.
 #[test]
-fn sum_sur_ensemble_vide_rend_null_et_non_zero() {
+fn sum_sur_ensemble_vide_rend_null_dans_le_profil_gql() {
     let db = base_avec_nulls();
     assert_eq!(
         scalaire(&db, "MATCH (t:Inexistant) RETURN sum(t.x)"),
         Value::Null,
-        "SUM sur ensemble vide vaut NULL en SQL/GQL — 0 serait la lecture openCypher"
+        "SUM sur ensemble vide vaut NULL en SQL/GQL — 0 est la lecture openCypher, \
+         servie par la porte Cypher"
     );
+}
+
+/// Profil **openCypher** : `sum()` sur zéro ligne vaut `0` — ce que fait Neo4j
+/// et ce que PO attend (`total + x` en aval ne doit pas devenir NULL).
+#[cfg(feature = "cypher")]
+#[test]
+fn sum_sur_ensemble_vide_rend_zero_dans_le_profil_cypher() {
+    let db = base_avec_nulls();
+    let r = db
+        .session()
+        .execute_cypher("MATCH (t:Inexistant) RETURN sum(t.x)")
+        .expect("la requête Cypher doit réussir");
+    assert_eq!(r.rows.len(), 1, "un agrégat scalaire rend UNE ligne");
+    assert_eq!(
+        r.rows[0][0],
+        Value::Int64(0),
+        "sum() sur ensemble vide vaut 0 en openCypher (Neo4j)"
+    );
+}
+
+/// Garde-fou : sur un ensemble NON vide, la somme ne dépend pas du profil.
+#[cfg(feature = "cypher")]
+#[test]
+fn sum_sur_ensemble_non_vide_est_identique_dans_les_deux_profils() {
+    let db = base_avec_nulls();
+    let gql = scalaire(&db, "MATCH (t:T) RETURN sum(t.x)");
+    let cy = db
+        .session()
+        .execute_cypher("MATCH (t:T) RETURN sum(t.x)")
+        .unwrap()
+        .rows[0][0]
+        .clone();
+    assert_eq!(gql, Value::Int64(6));
+    assert_eq!(cy, Value::Int64(6));
 }
 
 /// `avg` sur ensemble vide rend NULL : il n'y a pas de division par zéro, donc
