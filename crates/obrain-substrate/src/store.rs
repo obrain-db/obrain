@@ -11347,7 +11347,7 @@ impl SubstrateStore {
             // Clause 2 — une source qui survivra au sidecar hérité.
             let en_colonne = self
                 .vec_columns
-                .read(&key, EntityKind::Node, nid.0 as u32)
+                .read_nonzero(&key, EntityKind::Node, nid.0 as u32)
                 .is_some()
                 || self
                     .blob_columns
@@ -11483,7 +11483,7 @@ impl SubstrateStore {
             }
             let en_colonne = self
                 .vec_columns
-                .read(&key, EntityKind::Edge, eid.0 as u32)
+                .read_nonzero(&key, EntityKind::Edge, eid.0 as u32)
                 .is_some()
                 || self
                     .blob_columns
@@ -17355,16 +17355,17 @@ impl SubstrateStore {
     ///
     /// (2026-08-20) `clear_slot` ne répond PAS à ce cas : `VecColumnRegistry`
     /// n'a aucune primitive d'effacement, et son format n'a pas de sentinelle
-    /// d'absence exploitable ici. La convention « tout à zéro = absent »
-    /// n'existe que dans `read_nonzero`, que le chemin de lecture UNITAIRE
-    /// ([`Self::lire_propriete_noeud_vivant`] → `vec_columns.read`) n'emprunte
-    /// pas — écrire un vecteur nul n'effacerait donc même pas la valeur.
+    /// d'absence autre que la convention « tout à zéro = absent ».
     ///
-    /// Fermer ce trou demande soit une sentinelle dans le format de colonne,
-    /// relu par tout le parc, soit basculer la lecture unitaire sur la
-    /// convention du zéro, ce qui rendrait INVISIBLE tout vecteur légitimement
-    /// nul. Deux décisions à part entière, sur une famille dont le retrait est
-    /// rare — là où les ~30 colonnes blob de PO sont du texte qu'on retire
+    /// (obrain#196) La lecture UNITAIRE ([`Self::lire_propriete_noeud_vivant`])
+    /// suit désormais cette convention (`read_nonzero`) : un emplacement jamais
+    /// écrit se lit NULL. Le retrait, lui, n'écrit toujours pas de zéros —
+    /// c'est un geste d'écriture, journalisé, à décider à part ; le chemin
+    /// est maintenant ouvert. Le reste de la note d'origine : fermer ce trou
+    /// demandait soit une sentinelle dans le format de colonne, relu par tout
+    /// le parc, soit la convention du zéro — retenue par #196, qui rend
+    /// INVISIBLE un vecteur écrit tout à zéro. Le retrait vectoriel est rare,
+    /// là où les ~30 colonnes blob de PO sont du texte qu'on retire
     /// vraiment. En attendant, le silence devient bruyant : c'est la « voie
     /// 3 » de `3ee40aa4`, le filet et non le remède. Mesuré et figé par
     /// `le_retrait_n_efface_pas_encore_les_colonnes_vectorielles_denses`.
@@ -19942,6 +19943,18 @@ impl SubstrateStore {
         out
     }
 
+    /// (obrain#196) `true` si la propriété `key` du nœud `id` est routée en
+    /// colonne vectorielle dense et que l'emplacement du nœud n'y porte que
+    /// des zéros. Depuis #196, `get_node_property` rend un tel emplacement
+    /// ABSENT (sémantique Neo4j) ; cette sonde permet aux diagnostics — le
+    /// compteur `skipped_zero` du fournisseur de positions — de distinguer
+    /// encore « jamais écrit dans une colonne existante » de « aucune
+    /// colonne ». Elle ne lit rien d'autre que la colonne.
+    pub fn emplacement_vectoriel_nul(&self, id: NodeId, key: &PropertyKey) -> bool {
+        self.vec_columns
+            .slot_is_zero(key, EntityKind::Node, id.0 as u32)
+    }
+
     pub(crate) fn lire_propriete_noeud_vivant(
         &self,
         id: NodeId,
@@ -19950,7 +19963,24 @@ impl SubstrateStore {
         // T16.7: vector-typed properties live in their own mmap zone.
         // Check the registry first so reads after a fresh open resolve
         // without waiting for a `set_node_property` in this session.
-        if let Some(arc) = self.vec_columns.read(key, EntityKind::Node, id.0 as u32) {
+        //
+        // (obrain#196, D2) UN EMPLACEMENT NUL EST UNE ABSENCE. La colonne est
+        // dense : écrire l'emplacement N réserve, à zéro, tous ceux qui le
+        // précèdent. La lecture unitaire rendait ces octets nuls comme une
+        // valeur — `n.embedding` d'une note SANS embedding valait
+        // `[0.0, …]` et `n.embedding IS NULL` était faux (mesuré sur PO :
+        // `list_notes_without_embedding` rendait 1 ligne au lieu de 50).
+        // `read_nonzero` applique la convention du format (« tout à zéro =
+        // absent », `vec_column.rs`), celle que l'hydratation complète
+        // (`iter_props_for_entity`) appliquait déjà : `RETURN n` et `n.p`
+        // disent désormais la même chose. Un emplacement nul passe aux zones
+        // suivantes, qui rendent la valeur si elle vit ailleurs, NULL sinon.
+        // Prix assumé : un vecteur écrit tout à zéro se lit absent — il
+        // l'était déjà pour `RETURN n`.
+        if let Some(arc) = self
+            .vec_columns
+            .read_nonzero(key, EntityKind::Node, id.0 as u32)
+        {
             return Some(Value::Vector(arc));
         }
         // T16.7 Step 4d: blob-routed String/Bytes live in their own
@@ -19995,7 +20025,12 @@ impl SubstrateStore {
         id: EdgeId,
         key: &PropertyKey,
     ) -> Option<Value> {
-        if let Some(arc) = self.vec_columns.read(key, EntityKind::Edge, id.0 as u32) {
+        // (obrain#196, D2) Même convention que le nœud : un emplacement nul
+        // de la colonne dense est une absence, pas un vecteur de zéros.
+        if let Some(arc) = self
+            .vec_columns
+            .read_nonzero(key, EntityKind::Edge, id.0 as u32)
+        {
             return Some(Value::Vector(arc));
         }
         if let Some(v) = self
@@ -43285,10 +43320,9 @@ mod tests {
     /// Le trou de la suppression existe AUSSI pour les colonnes VECTORIELLES
     /// denses, et `clear_slot` n'y répond pas : `VecColumnRegistry` n'a
     /// AUCUNE primitive d'effacement, et son format n'a pas de sentinelle
-    /// d'absence utilisable ici. La convention « tout à zéro = absent »
-    /// n'existe que dans `read_nonzero`, que le chemin de lecture unitaire
-    /// (`lire_propriete_noeud_vivant` → `vec_columns.read`) n'emprunte PAS :
-    /// écrire un vecteur nul ne l'effacerait donc même pas.
+    /// d'absence autre que la convention « tout à zéro = absent » — que la
+    /// lecture unitaire suit depuis obrain#196 (`read_nonzero`), mais que le
+    /// retrait n'écrit pas : il ne pose aucun zéro.
     ///
     /// Le fermer demande soit une sentinelle dans le format de colonne — donc
     /// une extension relue par tout le parc — soit basculer le chemin de

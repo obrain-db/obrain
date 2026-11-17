@@ -11,11 +11,13 @@
 //! # The zero-vector convention
 //!
 //! `Value::Vector` properties live in the dense `substrate.veccol.*` column since
-//! T16.7. Slots that were grown but never written read back as **all-zero**
-//! vectors, which is not the same as "position is the origin". Those are skipped,
-//! exactly like the existing `try_load_hilbert_features_from_store` does, and
-//! counted in [`SubstratePositionProvider::skipped_zero`] so the caller can tell
-//! the difference between "absent" and "origin".
+//! T16.7. Slots that were grown but never written hold **all-zero** vectors,
+//! which is not the same as "position is the origin". Since obrain#196 the
+//! store itself reads them as absent; they are still skipped here (the check
+//! below stays as a guard) and counted in
+//! [`SubstratePositionProvider::skipped_zero`], read from the column through
+//! `SubstrateStore::emplacement_vectoriel_nul`, so the caller can tell the
+//! difference between "absent" and "origin".
 //!
 //! # Freshness
 //!
@@ -162,6 +164,12 @@ impl SubstratePositionProvider {
 
         for nid in node_ids {
             let Some(Value::Vector(v)) = store.get_node_property(nid, &property) else {
+                // (obrain#196) Le store rend désormais ABSENT un emplacement
+                // tout à zéro de la colonne dense : le compteur le retrouve
+                // dans la colonne elle-même.
+                if store.emplacement_vectoriel_nul(nid, &property) {
+                    skipped_zero += 1;
+                }
                 continue;
             };
             if v.is_empty() {

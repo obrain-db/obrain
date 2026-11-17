@@ -340,6 +340,11 @@ impl VecColumnRegistry {
     /// if the slot is past the writer's high-water mark, or if the
     /// dtype is not F32. Other dtypes are not surfaced to
     /// `Value::Vector` today (it is `Arc<[f32]>`).
+    ///
+    /// (obrain#196) Test-only: every store read path goes through
+    /// [`Self::read_nonzero`], because a dense slot that was grown past but
+    /// never written reads as zeros and must surface as an ABSENT property.
+    #[cfg(test)]
     pub(crate) fn read(&self, key: &PropertyKey, ek: EntityKind, slot: u32) -> Option<Arc<[f32]>> {
         let spec = self.spec_for(key, ek)?;
         let writer = self.writers.get(&spec)?.clone();
@@ -370,6 +375,24 @@ impl VecColumnRegistry {
             return None;
         }
         Some(Arc::from(data))
+    }
+
+    /// (obrain#196) `true` si `slot` existe dans la colonne de `(key, ek)` et
+    /// n'y porte que des zéros : un emplacement réservé par la densité de la
+    /// colonne, jamais écrit — ou écrit tout à zéro, ce que le format ne
+    /// distingue pas. Les lectures du store le rendent ABSENT ; cette sonde
+    /// sert aux diagnostics qui veulent compter ces emplacements.
+    pub(crate) fn slot_is_zero(&self, key: &PropertyKey, ek: EntityKind, slot: u32) -> bool {
+        let Some(spec) = self.spec_for(key, ek) else {
+            return false;
+        };
+        let Some(writer) = self.writers.get(&spec).map(|w| w.clone()) else {
+            return false;
+        };
+        let guard = writer.read();
+        guard
+            .read_slot_f32(slot)
+            .is_some_and(|data| data.iter().all(|x| *x == 0.0))
     }
 
     /// T17k — bulk iteration of every registered vec column whose

@@ -84,6 +84,13 @@ pub struct Planner {
     /// Variables that hold edge IDs (from MATCH edge patterns).
     /// Used by plan_return to emit `EdgeResolve` instead of `NodeResolve`.
     pub(super) edge_columns: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// (obrain#196, D1) Colonnes qui portent une LISTE d'identifiants de nœuds
+    /// (`collect(n)` sur une variable de nœud). Elles restent scalaires dans
+    /// la requête — `UNWIND` puis `MATCH` lisent les identifiants — et seul
+    /// le RETURN final résout chaque élément (`NodeListResolve`).
+    pub(super) node_list_columns: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Jumeau arête de `node_list_columns` (`collect(r)`, `EdgeListResolve`).
+    pub(super) edge_list_columns: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Optional constraint validator for schema enforcement during mutations.
     pub(super) validator: Option<Arc<dyn ConstraintValidator>>,
     /// Catalog for user-defined procedure lookup.
@@ -157,6 +164,8 @@ impl Planner {
             factorized_execution: true,
             scalar_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
             edge_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
+            node_list_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
+            edge_list_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
             validator: None,
             catalog: None,
             correlated_param_state: std::cell::RefCell::new(None),
@@ -213,6 +222,8 @@ impl Planner {
             factorized_execution: true,
             scalar_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
             edge_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
+            node_list_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
+            edge_list_columns: std::cell::RefCell::new(std::collections::HashSet::new()),
             validator: None,
             catalog: None,
             correlated_param_state: std::cell::RefCell::new(None),
