@@ -323,10 +323,17 @@ impl Operator for ProjectOperator {
                                     edge.and_then(|e| e.get_property(property).cloned())
                                 })
                                 .unwrap_or(Value::Null)
-                        } else if let Some(Value::Map(map)) = input_col.get_value(row) {
-                            map.get(&prop_key).cloned().unwrap_or(Value::Null)
                         } else {
-                            Value::Null
+                            match input_col.get_value(row) {
+                                Some(Value::Map(map)) => {
+                                    map.get(&prop_key).cloned().unwrap_or(Value::Null)
+                                }
+                                // Valeur temporelle liée à une variable
+                                // (`WITH datetime(..) AS t RETURN t.year`, #213).
+                                Some(v) => super::filter::composant_temporel(&v, property)
+                                    .map_or(Value::Null, Value::Int64),
+                                None => Value::Null,
+                            }
                         };
                         output_col.push_value(value);
                     }
