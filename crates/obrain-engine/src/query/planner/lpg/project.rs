@@ -102,8 +102,12 @@ impl super::Planner {
                         let col_idx = *variable_columns.get(name).ok_or_else(|| {
                             Error::Internal(format!("Variable '{}' not found in input", name))
                         })?;
+                        // (obrain#196) `collect(n)` d'entités : résoudre chaque élément.
+                        if let Some(p) = self.resolution_liste_entites(name, col_idx) {
+                            projections.push(p);
+                            output_types.push(LogicalType::Any);
                         // Path detail variables and UNWIND/FOR scalar variables pass through as-is
-                        if name.starts_with("_path_nodes_")
+                        } else if name.starts_with("_path_nodes_")
                             || name.starts_with("_path_edges_")
                             || name.starts_with("_path_length_")
                             || self.scalar_columns.borrow().contains(name)
@@ -289,7 +293,7 @@ impl super::Planner {
                 .with_session_context(self.session_context.clone()),
             );
 
-            Ok((operator, columns))
+            Ok((self.resoudre_items_entites(items, operator), columns))
         } else {
             // Simple case: all return items are bare variables
             // Emit resolve variants for entity variables
@@ -301,7 +305,11 @@ impl super::Planner {
                     let col_idx = *variable_columns.get(name).ok_or_else(|| {
                         Error::Internal(format!("Variable '{}' not found in input", name))
                     })?;
-                    if self.scalar_columns.borrow().contains(name) {
+                    if let Some(p) = self.resolution_liste_entites(name, col_idx) {
+                        // (obrain#196) `collect(n)` d'entités : chaque élément.
+                        projections.push(p);
+                        output_types.push(LogicalType::Any);
+                    } else if self.scalar_columns.borrow().contains(name) {
                         projections.push(ProjectExpr::Column(col_idx));
                         output_types.push(LogicalType::Any);
                     } else if self.edge_columns.borrow().contains(name) {
@@ -433,6 +441,18 @@ impl super::Planner {
                     } else if self.edge_columns.borrow().contains(name) {
                         self.edge_columns.borrow_mut().insert(col_name.clone());
                     }
+                    // (obrain#196) ... et le statut « liste d'entités ».
+                    let liste_noeuds = self.node_list_columns.borrow().contains(name);
+                    let liste_aretes = self.edge_list_columns.borrow().contains(name);
+                    if *name != col_name {
+                        self.oublier_liste_entites(&col_name);
+                        if liste_noeuds {
+                            self.node_list_columns.borrow_mut().insert(col_name.clone());
+                        }
+                        if liste_aretes {
+                            self.edge_list_columns.borrow_mut().insert(col_name.clone());
+                        }
+                    }
                 }
                 LogicalExpression::Property { variable, property } => {
                     let col_idx = *variable_columns.get(variable).ok_or_else(|| {
@@ -445,12 +465,14 @@ impl super::Planner {
                     output_types.push(LogicalType::Any);
                     // Property access produces a scalar value
                     self.scalar_columns.borrow_mut().insert(col_name.clone());
+                    self.oublier_liste_entites(&col_name);
                 }
                 LogicalExpression::Literal(value) => {
                     projections.push(ProjectExpr::Constant(value.clone()));
                     output_types.push(value_to_logical_type(value));
                     // Literals are scalar values
                     self.scalar_columns.borrow_mut().insert(col_name.clone());
+                    self.oublier_liste_entites(&col_name);
                 }
                 _ => {
                     // For complex expressions, use full expression evaluation
@@ -462,6 +484,19 @@ impl super::Planner {
                     output_types.push(LogicalType::Any);
                     // Expression results are scalar values
                     self.scalar_columns.borrow_mut().insert(col_name.clone());
+                    // (obrain#196) ... mais une tranche, un filtre ou une
+                    // concaténation de listes d'entités en reste une.
+                    let genre = self.genre_liste_entites(&projection.expression);
+                    self.oublier_liste_entites(&col_name);
+                    match genre {
+                        Some(true) => {
+                            self.edge_list_columns.borrow_mut().insert(col_name.clone());
+                        }
+                        Some(false) => {
+                            self.node_list_columns.borrow_mut().insert(col_name.clone());
+                        }
+                        None => {}
+                    }
                 }
             }
 
@@ -1181,6 +1216,128 @@ impl super::Planner {
                 expr
             ))),
         }
+    }
+
+    /// (obrain#196, D1) Projection de sortie d'une colonne `collect(n)` /
+    /// `collect(r)` d'entités : chaque identifiant de la liste est résolu en
+    /// nœud ou en arête, comme `RETURN n` le fait hors agrégation. `None` pour
+    /// toute autre colonne.
+    fn resolution_liste_entites(&self, name: &str, column: usize) -> Option<ProjectExpr> {
+        if self.node_list_columns.borrow().contains(name) {
+            Some(ProjectExpr::NodeListResolve { column })
+        } else if self.edge_list_columns.borrow().contains(name) {
+            Some(ProjectExpr::EdgeListResolve { column })
+        } else {
+            None
+        }
+    }
+
+    /// (obrain#196, D1) Genre de l'expression si elle rend une LISTE
+    /// d'identifiants d'entités : `Some(false)` nœuds, `Some(true)` arêtes.
+    ///
+    /// Formes reconnues, celles des requêtes de PO : la colonne d'un
+    /// `collect` d'entités, sa tranche (`l[0..3]`), un filtre qui garde les
+    /// éléments (`[x IN l WHERE …]`) et la concaténation de deux listes du
+    /// même genre (`a + b`). Toute autre forme rend `None` : sa valeur sort
+    /// telle quelle, comme avant.
+    pub(super) fn genre_liste_entites(&self, expr: &LogicalExpression) -> Option<bool> {
+        match expr {
+            LogicalExpression::Variable(v) => {
+                if self.node_list_columns.borrow().contains(v) {
+                    Some(false)
+                } else if self.edge_list_columns.borrow().contains(v) {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            LogicalExpression::SliceAccess { base, .. } => self.genre_liste_entites(base),
+            LogicalExpression::ListComprehension {
+                variable,
+                list_expr,
+                map_expr,
+                ..
+            } if matches!(map_expr.as_ref(), LogicalExpression::Variable(m) if m == variable) => {
+                self.genre_liste_entites(list_expr)
+            }
+            LogicalExpression::Binary {
+                left,
+                op: super::BinaryOp::Add | super::BinaryOp::Concat,
+                right,
+            } => {
+                let g = self.genre_liste_entites(left)?;
+                (self.genre_liste_entites(right)? == g).then_some(g)
+            }
+            _ => None,
+        }
+    }
+
+    /// (obrain#196, D1) Genre de l'expression si elle rend UN élément d'une
+    /// liste d'entités : `l[i]`, `head(l)`, `last(l)`.
+    fn genre_element_entite(&self, expr: &LogicalExpression) -> Option<bool> {
+        match expr {
+            LogicalExpression::IndexAccess { base, .. } => self.genre_liste_entites(base),
+            LogicalExpression::FunctionCall { name, args, .. }
+                if args.len() == 1
+                    && (name.eq_ignore_ascii_case("head") || name.eq_ignore_ascii_case("last")) =>
+            {
+                self.genre_liste_entites(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// (obrain#196, D1) Résolution, APRÈS la projection du RETURN, des items
+    /// calculés qui rendent des identifiants d'entités (tranche, filtre,
+    /// concaténation, élément d'un `collect` d'entités). Les items qui sont
+    /// des variables sont déjà résolus dans la projection elle-même. Rend
+    /// l'opérateur inchangé quand aucun item n'est concerné.
+    fn resoudre_items_entites(
+        &self,
+        items: &[crate::query::plan::ReturnItem],
+        operator: Box<dyn Operator>,
+    ) -> Box<dyn Operator> {
+        let mut concerne = false;
+        let projections: Vec<ProjectExpr> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                if matches!(item.expression, LogicalExpression::Variable(_)) {
+                    return ProjectExpr::Column(i);
+                }
+                if let Some(arete) = self.genre_liste_entites(&item.expression) {
+                    concerne = true;
+                    return if arete {
+                        ProjectExpr::EdgeListResolve { column: i }
+                    } else {
+                        ProjectExpr::NodeListResolve { column: i }
+                    };
+                }
+                if let Some(arete) = self.genre_element_entite(&item.expression) {
+                    concerne = true;
+                    return if arete {
+                        ProjectExpr::EdgeResolve { column: i }
+                    } else {
+                        ProjectExpr::NodeResolve { column: i }
+                    };
+                }
+                ProjectExpr::Column(i)
+            })
+            .collect();
+        if !concerne {
+            return operator;
+        }
+        let types = vec![LogicalType::Any; projections.len()];
+        Box::new(
+            ProjectOperator::with_store(
+                operator,
+                projections,
+                types,
+                Arc::clone(&self.store) as Arc<dyn GraphStore>,
+            )
+            .with_transaction_context(self.viewing_epoch, self.transaction_id)
+            .with_session_context(self.session_context.clone()),
+        )
     }
 
     /// Derives a schema from column names (uses Any type to handle all value types).

@@ -261,6 +261,10 @@ name = "sum_zero_ligne_196"
 required-features = ["cypher"]
 
 [[test]]
+name = "divergences_po_196"
+required-features = ["cypher"]
+
+[[test]]
 name = "alias_mot_cle_195"
 required-features = ["cypher"]
 

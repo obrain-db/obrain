@@ -44,6 +44,23 @@ pub enum ProjectExpr {
         /// The column containing the edge ID.
         column: usize,
     },
+    /// Resolve each element of a LIST of node IDs (the output of
+    /// `collect(n)` on a node variable) to a full node map.
+    ///
+    /// (obrain#196, D1) Inside the query the collected list keeps the
+    /// identifiers — `UNWIND` then `MATCH` need them — and only the final
+    /// projection resolves them. An element that is already a map (a remote
+    /// node materialised at a cross-base boundary) passes through as is, and
+    /// so does any value that is not a list.
+    NodeListResolve {
+        /// The column containing the list of node IDs.
+        column: usize,
+    },
+    /// Edge counterpart of [`ProjectExpr::NodeListResolve`] (`collect(r)`).
+    EdgeListResolve {
+        /// The column containing the list of edge IDs.
+        column: usize,
+    },
 }
 
 /// A project operator that selects and transforms columns.
@@ -460,6 +477,63 @@ impl Operator for ProjectOperator {
                             deja
                         } else {
                             Value::Null
+                        };
+                        output_col.push_value(value);
+                    }
+                }
+                ProjectExpr::NodeListResolve { column }
+                | ProjectExpr::EdgeListResolve { column } => {
+                    let aretes = matches!(proj, ProjectExpr::EdgeListResolve { .. });
+                    let input_col = input
+                        .column(*column)
+                        .ok_or_else(|| OperatorError::ColumnNotFound(format!("Column {column}")))?;
+
+                    let output_col = output
+                        .column_mut(i)
+                        .expect("column exists: index matches projection schema");
+
+                    let store = self.store.as_ref().ok_or_else(|| {
+                        OperatorError::Execution("Store required for list resolution".to_string())
+                    })?;
+
+                    let epoch = self.viewing_epoch;
+                    let tx_id = self.transaction_id;
+                    let resoudre = |element: &Value| -> Value {
+                        let Value::Int64(brut) = element else {
+                            // Null, carte déjà matérialisée (inter-bases) :
+                            // telle quelle.
+                            return element.clone();
+                        };
+                        let brut = *brut as u64;
+                        if aretes {
+                            let id = obrain_common::types::EdgeId::new(brut);
+                            let edge = if let (Some(ep), Some(tx)) = (epoch, tx_id) {
+                                store.get_edge_versioned(id, ep, tx)
+                            } else if let Some(ep) = epoch {
+                                store.get_edge_at_epoch(id, ep)
+                            } else {
+                                store.get_edge(id)
+                            };
+                            edge.map_or(Value::Null, |e| edge_to_map(&e))
+                        } else {
+                            let id = obrain_common::types::NodeId::new(brut);
+                            let node = if let (Some(ep), Some(tx)) = (epoch, tx_id) {
+                                store.get_node_versioned(id, ep, tx)
+                            } else if let Some(ep) = epoch {
+                                store.get_node_at_epoch(id, ep)
+                            } else {
+                                store.get_node(id)
+                            };
+                            node.map_or(Value::Null, |n| node_to_map(&n))
+                        }
+                    };
+                    for row in input.selected_indices() {
+                        let value = match input_col.get_value(row) {
+                            Some(Value::List(liste)) => {
+                                Value::List(liste.iter().map(&resoudre).collect())
+                            }
+                            Some(autre) => autre,
+                            None => Value::Null,
                         };
                         output_col.push_value(value);
                     }

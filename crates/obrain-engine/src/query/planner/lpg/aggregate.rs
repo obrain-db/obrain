@@ -314,10 +314,61 @@ impl super::Planner {
             }));
         }
 
-        // Register all aggregate output columns as scalar (group-by values and
-        // aggregate results are materialized scalar values, not entity references)
+        // Register the aggregate output columns as scalar (aggregate results
+        // are materialized scalar values, not entity references)...
+        //
+        // ── (obrain#196, D1) ...SAUF UNE CLÉ DE GROUPE QUI EST UNE ENTITÉ ──
+        //
+        // Toutes les colonnes de sortie, clés de groupe comprises, étaient
+        // marquées scalaires. Une clé `fg` qui est un nœud sortait donc du
+        // RETURN sans `NodeResolve` : `RETURN fg, count(e)` rendait
+        // l'identifiant interne (entier) — erreur dure côté PO
+        // (`row.get::<Node>`). La clé porte pourtant toujours l'identifiant,
+        // comme avant l'agrégation : elle garde son statut de nœud ou
+        // d'arête, et le RETURN la résout comme hors agrégation.
+        //
+        // `collect(x)` sur une entité, lui, reste une liste d'IDENTIFIANTS
+        // dans la requête — `UNWIND` puis `MATCH` en ont besoin, et une liste
+        // de cartes casserait les chaînes inter-bases (cartes `_id` d'une
+        // AUTRE base, voir #196) — et la colonne est notée « liste
+        // d'entités » : seul le RETURN final résout ses éléments.
+        let group_names = group_key_column_names(&agg.group_by);
+        let cles_entites: Vec<&String> = agg
+            .group_by
+            .iter()
+            .zip(&group_names)
+            .filter_map(|(expr, nom)| match expr {
+                LogicalExpression::Variable(v) if v == nom && self.genre_entite(v).is_some() => {
+                    Some(nom)
+                }
+                _ => None,
+            })
+            .collect();
+        let listes_entites: Vec<(String, bool)> = agg
+            .aggregates
+            .iter()
+            .zip(&output_columns[group_names.len()..])
+            .filter_map(
+                |(agg_expr, nom)| match (&agg_expr.function, &agg_expr.expression) {
+                    (LogicalAggregateFunction::Collect, Some(LogicalExpression::Variable(v))) => {
+                        self.genre_entite(v).map(|arete| (nom.clone(), arete))
+                    }
+                    _ => None,
+                },
+            )
+            .collect();
         for col in &output_columns {
-            self.scalar_columns.borrow_mut().insert(col.clone());
+            self.oublier_liste_entites(col);
+            if !cles_entites.contains(&col) {
+                self.scalar_columns.borrow_mut().insert(col.clone());
+            }
+        }
+        for (nom, arete) in listes_entites {
+            if arete {
+                self.edge_list_columns.borrow_mut().insert(nom);
+            } else {
+                self.node_list_columns.borrow_mut().insert(nom);
+            }
         }
 
         // Choose operator based on whether there are group-by columns
@@ -357,6 +408,29 @@ impl super::Planner {
         }
 
         Ok((operator, output_columns))
+    }
+
+    /// (obrain#196) Genre de la variable `nom` si elle porte un identifiant
+    /// d'ENTITÉ unique : `Some(true)` pour une arête, `Some(false)` pour un
+    /// nœud, `None` pour tout le reste — scalaire (UNWIND, propriété,
+    /// agrégat, sous-requête), liste d'arêtes d'un motif de longueur variable,
+    /// colonnes internes de chemin. Même convention que `plan_return` : ni
+    /// scalaire ni arête ⇒ nœud.
+    pub(super) fn genre_entite(&self, nom: &str) -> Option<bool> {
+        if self.scalar_columns.borrow().contains(nom)
+            || self.group_list_variables.borrow().contains(nom)
+            || nom.starts_with("_path_")
+        {
+            return None;
+        }
+        Some(self.edge_columns.borrow().contains(nom))
+    }
+
+    /// (obrain#196) La colonne `nom` est (re)définie par autre chose qu'un
+    /// `collect` d'entités : elle ne porte plus une liste d'identifiants.
+    pub(super) fn oublier_liste_entites(&self, nom: &str) {
+        self.node_list_columns.borrow_mut().remove(nom);
+        self.edge_list_columns.borrow_mut().remove(nom);
     }
 
     /// Checks if an aggregate is simple enough for factorized execution.

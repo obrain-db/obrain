@@ -340,6 +340,11 @@ impl VecColumnRegistry {
     /// if the slot is past the writer's high-water mark, or if the
     /// dtype is not F32. Other dtypes are not surfaced to
     /// `Value::Vector` today (it is `Arc<[f32]>`).
+    ///
+    /// (obrain#196) Test-only: every store read path goes through
+    /// [`Self::read_nonzero`], because a dense slot that was grown past but
+    /// never written reads as zeros and must surface as an ABSENT property.
+    #[cfg(test)]
     pub(crate) fn read(&self, key: &PropertyKey, ek: EntityKind, slot: u32) -> Option<Arc<[f32]>> {
         let spec = self.spec_for(key, ek)?;
         let writer = self.writers.get(&spec)?.clone();
