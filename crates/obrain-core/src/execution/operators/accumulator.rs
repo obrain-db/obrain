@@ -291,6 +291,10 @@ pub enum HashableValue {
     Float64Bits(u64),
     /// String value.
     String(String),
+    /// Zoned datetime, keyed by its UTC instant (microseconds) only: two
+    /// writings of the same instant (`…02:00+02:00`, `…00:00Z`) are one
+    /// value, as `ZonedDatetime`'s own `Eq` / `Hash` say.
+    ZonedInstant(i64),
     /// Fallback for other types (uses Debug representation).
     Other(String),
 }
@@ -303,6 +307,7 @@ impl From<&Value> for HashableValue {
             Value::Int64(i) => HashableValue::Int64(*i),
             Value::Float64(f) => HashableValue::Float64Bits(f.to_bits()),
             Value::String(s) => HashableValue::String(s.to_string()),
+            Value::ZonedDatetime(z) => HashableValue::ZonedInstant(z.as_timestamp().as_micros()),
             other => HashableValue::Other(format!("{other:?}")),
         }
     }

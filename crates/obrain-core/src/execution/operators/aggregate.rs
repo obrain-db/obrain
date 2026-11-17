@@ -709,6 +709,16 @@ impl GroupKey {
                         Value::Int64(i) => GroupKeyPart::Int64(i),
                         Value::Float64(f) => GroupKeyPart::Float64Bits(f.to_bits()),
                         Value::String(s) => GroupKeyPart::String(s.clone()),
+                        // Regroupée par son instant UTC (le décalage n'en fait
+                        // pas une autre valeur : `ZonedDatetime::eq`), restituée
+                        // telle que le groupe l'a vue la première fois.
+                        Value::ZonedDatetime(z) => GroupKeyPart::Valeur(ValeurDeGroupe {
+                            empreinte: ArcStr::from(format!(
+                                "ZonedDatetime@{}",
+                                z.as_timestamp().as_micros()
+                            )),
+                            valeur: v,
+                        }),
                         autre => GroupKeyPart::Valeur(ValeurDeGroupe {
                             empreinte: ArcStr::from(format!("{autre:?}")),
                             valeur: autre,

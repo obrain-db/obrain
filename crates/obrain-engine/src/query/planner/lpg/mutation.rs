@@ -1468,7 +1468,21 @@ impl super::Planner {
                             .unwrap_or(std::time::Duration::ZERO);
                         Some(Value::Int64(duration.as_millis() as i64))
                     }
-                    "datetime" | "localdatetime" | "local_datetime" | "todatetime" => {
+                    // Zoné comme au runtime (obrain#183) : décalage conservé,
+                    // UTC s'il est absent.
+                    "datetime" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        match Self::try_fold_expression(&args[0])? {
+                            Value::String(s) => {
+                                obrain_common::types::ZonedDatetime::parse_utc_by_default(&s)
+                                    .map(Value::ZonedDatetime)
+                            }
+                            _ => None,
+                        }
+                    }
+                    "localdatetime" | "local_datetime" | "todatetime" => {
                         if args.len() != 1 {
                             return None;
                         }
