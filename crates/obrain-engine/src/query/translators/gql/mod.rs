@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use super::common::{
     AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
     combine_with_and, finalize_aggregate_projection, is_aggregate_function, is_binary_set_function,
-    to_aggregate_function, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
-    wrap_skip, wrap_sort,
+    to_aggregate_function, unicite_a_confronter, visible_variables, wrap_distinct, wrap_filter,
+    wrap_limit, wrap_return, wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     self as plan, AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp,
@@ -1408,6 +1408,68 @@ impl GqlTranslator {
     /// un `MATCH` écrit après un `WITH` part des colonnes du `WITH`, il ne
     /// s'exécute pas avant lui. Planifié avant, il multipliait les lignes — et
     /// les comptes d'un `WITH` agrégé — par le nombre de ses correspondances.
+    /// Variables nommées par une expression GQL. `None` si elle contient une
+    /// forme que cette fonction ne parcourt pas : aucun réordonnancement alors.
+    fn variables_referencees(expr: &ast::Expression, out: &mut HashSet<String>) -> Option<()> {
+        match expr {
+            ast::Expression::Literal(_) | ast::Expression::Parameter(_) => Some(()),
+            ast::Expression::Variable(v) => {
+                out.insert(v.clone());
+                Some(())
+            }
+            ast::Expression::PropertyAccess { variable, .. } => {
+                out.insert(variable.clone());
+                Some(())
+            }
+            ast::Expression::Binary { left, right, .. } => {
+                Self::variables_referencees(left, out)?;
+                Self::variables_referencees(right, out)
+            }
+            ast::Expression::Unary { operand, .. } => Self::variables_referencees(operand, out),
+            ast::Expression::FunctionCall { args, .. } => {
+                for a in args {
+                    Self::variables_referencees(a, out)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    /// Le `ORDER BY` de ce `WITH` doit-il s'appliquer AVANT la projection ? Oui
+    /// quand il ne référence que des variables de la portée d'avant, qu'aucune
+    /// n'est une colonne de sortie du `WITH`, et que celui-ci ne regroupe rien.
+    fn tri_avant_projection(&self, with: &ast::WithClause, plan: &LogicalOperator) -> bool {
+        let Some(ordre) = &with.order_by else {
+            return false;
+        };
+        if with.is_wildcard || with.distinct || !with.let_bindings.is_empty() {
+            return false;
+        }
+        let sorties: HashSet<String> = with
+            .items
+            .iter()
+            .filter_map(|i| match (&i.alias, &i.expression) {
+                (Some(a), _) => Some(a.clone()),
+                (None, ast::Expression::Variable(v)) => Some(v.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut referencees = HashSet::new();
+        for item in &ordre.items {
+            if Self::variables_referencees(&item.expression, &mut referencees).is_none() {
+                return false;
+            }
+        }
+        if referencees.is_empty() {
+            return false;
+        }
+        let visibles = visible_variables(plan);
+        referencees
+            .iter()
+            .all(|v| !sorties.contains(v) && visibles.contains_key(v))
+    }
+
     fn translate_with_clause(
         &self,
         with_clause: &ast::WithClause,
@@ -1427,6 +1489,35 @@ impl GqlTranslator {
             .items
             .iter()
             .any(|item| contains_aggregate(&item.expression));
+
+        // `WITH f, co ORDER BY r.count` : le tri porte sur une variable que le WITH
+        // ne projette pas. Il s'applique alors à la portée d'AVANT (Neo4j), donc
+        // AVANT la projection ; l'ordre survit à la projection (obrain#195,
+        // famille 7). Même règle que le traducteur Cypher.
+        let tri_deja_pose = !has_aggregates
+            && self.tri_avant_projection(with_clause, &plan)
+            && with_clause.order_by.is_some();
+        if tri_deja_pose && let Some(order_by) = &with_clause.order_by {
+            let keys = order_by
+                .items
+                .iter()
+                .map(|item| {
+                    Ok(SortKey {
+                        expression: self.translate_expression(&item.expression)?,
+                        order: match item.order {
+                            ast::SortOrder::Asc => SortOrder::Ascending,
+                            ast::SortOrder::Desc => SortOrder::Descending,
+                        },
+                        nulls: item.nulls.map(|n| match n {
+                            ast::NullsOrdering::First => NullsOrdering::First,
+                            ast::NullsOrdering::Last => NullsOrdering::Last,
+                        }),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            plan = wrap_sort(plan, keys);
+        }
+
         if has_aggregates {
             let (aggregates, group_by, post_return) =
                 self.extract_aggregates_and_groups(&with_clause.items, false)?;
@@ -1512,7 +1603,7 @@ impl GqlTranslator {
 
         // `ORDER BY`, `SKIP`, `LIMIT` du `WITH` : sur sa sortie (ses alias sont
         // visibles), avant son `WHERE`.
-        if let Some(order_by) = &with_clause.order_by {
+        if !tri_deja_pose && let Some(order_by) = &with_clause.order_by {
             let keys = order_by
                 .items
                 .iter()
@@ -2046,6 +2137,10 @@ impl GqlTranslator {
                     }
                 }
             }
+        }
+        if !unicite_a_confronter(&simples, &longues) {
+            // Aucune paire à confronter : voir `unicite_a_confronter`.
+            return (patterns.to_vec(), Vec::new(), Vec::new());
         }
         (reecrits, simples, longues)
     }
