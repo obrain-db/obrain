@@ -14319,8 +14319,15 @@ impl SubstrateStore {
                 // exactement en lot serait recopier `set_node_property` : ces
                 // clés-là gardent le chemin unitaire (peu nombreuses, souvent
                 // des identifiants). Un index déclaré PENDANT l'import est
-                // couvert par `index_batis_depuis_v2.clear()` plus bas : il se
-                // rebâtit depuis les chaînes ET les colonnes.
+                // couvert par `index_batis_depuis_v2.clear()` plus bas, mais
+                // SEULEMENT pour les datetimes longs : `recolter_instants_blob`
+                // ne relit des colonnes blob que les chaînes datetime, et la
+                // passe scalaire ne voit aucune valeur blob. Un index d'égalité
+                // sur une clé dont les valeurs sont des blobs NON datetime
+                // rendrait donc des faux négatifs silencieux — cas étroit
+                // (indexer en égalité une charge de plus de 256 o), même
+                // résultat qu'avec le chemin unitaire après réouverture, et
+                // absent du corpus visé ici.
                 let etat = *etat_cles_blob.entry(k).or_insert_with(|| {
                     (!self.property_indexes.contains_key(&pkey)).then_some(false)
                 });
