@@ -14069,15 +14069,26 @@ impl SubstrateStore {
     /// corps) : il n'est jamais laissé partiel et réputé complet.
     /// L'appelant CHECKPOINT à la fin — comme pour `bulk_import_labels_edges`.
     ///
-    /// Les valeurs qui ne passent pas par une page (vecteurs, charges au-delà
-    /// du seuil des colonnes blob, entrées plus grandes qu'une page) prennent
-    /// le chemin unitaire `set_node_property`, qui les route exactement comme
+    /// Les VECTEURS (#205) vont droit à la colonne dense, sans trame WAL par
+    /// vecteur : une seule trame `VecColumnWrite` par clé et par appel déplace
+    /// l'offset du WAL, pour qu'un index vectoriel persisté ne soit pas validé
+    /// à tort (O-VEC C3). Conséquence sur la durabilité : avant le checkpoint
+    /// de l'appelant, une coupure peut laisser les scalaires du lot lisibles
+    /// et ses vecteurs absents. Un import interrompu se REFAIT (c'est ce que
+    /// fait `ingestion_native`, qui ne prend ce chemin que sur base vide).
+    /// Avec une transaction à valeur d'avant en vol, les vecteurs reprennent
+    /// le chemin unitaire, comme tout `bulk_import_edge_props`.
+    ///
+    /// Les autres valeurs qui ne passent pas par une page (charges au-delà du
+    /// seuil des colonnes blob, entrées plus grandes qu'une page) prennent le
+    /// chemin unitaire `set_node_property`, qui les route exactement comme
     /// d'habitude. Rend le nombre de propriétés écrites.
     pub fn bulk_import_node_props(
         &self,
         premier_slot: u32,
         props: &[Vec<(&str, Value)>],
     ) -> SubstrateResult<u64> {
+        self.refuser_mutation_en_lecture_seule("bulk_import_node_props");
         let Some(pz_lock) = self.props_zone.as_ref() else {
             return Err(SubstrateError::Internal(
                 "bulk_import_node_props : zone de propriétés v2 inactive".into(),
@@ -14256,19 +14267,57 @@ impl SubstrateStore {
         // Hors verrou de zone : le chemin unitaire le reprend lui-même.
         //
         // (#205) Les VECTEURS passent par le lot : même colonne dense, mêmes
-        // notifications (index vectoriel, propriété posée), mais SANS trame WAL
-        // par vecteur. C'est le même contrat que `bulk_import_edge_props` : base
-        // neuve, et le checkpoint final (`checkpoint_elu` → `flush`) synchronise
-        // `vec_columns` avant de persister le dictionnaire. Une coupure avant ce
-        // checkpoint perd l'import entier, pas une valeur acquittée.
+        // notifications (index vectoriel, propriété posée), mais SANS les deux
+        // trames WAL par vecteur (`VecColumnWrite`, puis `VecColumnSet` qui porte
+        // le vecteur entier, ~3 Ko à 768 dimensions). Le checkpoint final
+        // (`checkpoint_elu` → `flush`) synchronise `vec_columns` avant de
+        // persister le dictionnaire. Une coupure AVANT ce checkpoint peut laisser
+        // les scalaires lisibles et les vecteurs absents : l'import se refait
+        // (voir la doc de la fonction).
+        //
+        // Ce qui est gardé du chemin unitaire :
+        // - UNE trame `VecColumnWrite` par clé et par appel, avant la première
+        //   écriture : elle déplace l'offset du WAL, donc l'empreinte d'un index
+        //   vectoriel persisté (offset + nœuds vivants) ne le valide plus à tort
+        //   après un kill -9 (O-VEC C3). Le rejeu la traite comme un marqueur ;
+        // - la vivacité : un slot mort ne reçoit rien (`set_node_property`
+        //   l'ignore en silence) ;
+        // - une transaction à valeur d'avant en vol : tout le chemin unitaire,
+        //   qui pose le marqueur hors transaction (même repli que
+        //   `bulk_import_edge_props`).
         // Les blobs et les valeurs hors page gardent le chemin unitaire.
+        let vecteurs_en_lot = self.tx_avec_valeur_avant.lock().is_empty();
         let mut ids_cles_vecteur: std::collections::HashMap<&str, Option<u16>> =
             std::collections::HashMap::new();
         for (slot, k, v) in differees {
-            if let Value::Vector(vecteur) = v {
-                let prop_key_id = *ids_cles_vecteur
-                    .entry(k)
-                    .or_insert_with(|| self.resoudre_cle_vecteur(k));
+            if vecteurs_en_lot && let Value::Vector(vecteur) = v {
+                let id = NodeId(u64::from(slot));
+                if !self.is_live_on_disk(id) {
+                    continue;
+                }
+                let prop_key_id = match ids_cles_vecteur.get(k) {
+                    Some(p) => *p,
+                    None => {
+                        let p = self.resoudre_cle_vecteur(k);
+                        if let Some(key_id) = p
+                            && let Err(e) =
+                                self.writer
+                                    .append_payload(crate::wal::WalPayload::VecColumnWrite {
+                                        entity_kind: EntityKind::Node as u8,
+                                        slot,
+                                        key_id,
+                                    })
+                        {
+                            tracing::warn!(
+                                target: "substrate::vec_columns",
+                                "marqueur VecColumnWrite du lot non journalise \
+                                 (key={k:?}, premier slot={slot}) : {e}"
+                            );
+                        }
+                        ids_cles_vecteur.insert(k, p);
+                        p
+                    }
+                };
                 if let Some(prop_key_id) = prop_key_id {
                     let pk = PropertyKey::new(k);
                     if self.ecrire_vecteur_colonne(
@@ -14281,7 +14330,6 @@ impl SubstrateStore {
                     ) {
                         self.ecritures_vectorielles_noeuds
                             .fetch_add(1, Ordering::AcqRel);
-                        let id = NodeId(u64::from(slot));
                         self.notify_vector_written(id, k, vecteur);
                         self.notify_node_property_set(id, k);
                     }

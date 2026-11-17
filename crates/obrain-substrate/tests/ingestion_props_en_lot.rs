@@ -7,6 +7,8 @@
 use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
 use obrain_substrate::SubstrateStore;
+use obrain_substrate::wal::WalPayload;
+use obrain_substrate::wal_io::WalReader;
 
 /// Étiquettes, arêtes (source, cible, type) et propriétés par nœud du jeu.
 type Jeu = (
@@ -321,4 +323,97 @@ fn un_import_en_lot_tient_un_index_d_egalite_deja_declare() {
     }
     let s = SubstrateStore::open(b.path()).unwrap();
     verifier(&s, "après réouverture");
+}
+
+/// Trames vectorielles présentes au WAL : (`VecColumnWrite`, `VecColumnSet`).
+fn trames_vectorielles(dir: &std::path::Path) -> (usize, usize) {
+    let mut n = (0, 0);
+    for (rec, _, _) in WalReader::open(dir.join("substrate.wal"))
+        .expect("relire le WAL")
+        .iter_from(0)
+        .filter_map(Result::ok)
+    {
+        match rec.payload {
+            WalPayload::VecColumnWrite { .. } => n.0 += 1,
+            WalPayload::VecColumnSet { .. } => n.1 += 1,
+            _ => {}
+        }
+    }
+    n
+}
+
+fn refs_du_jeu(props: &[Vec<(String, Value)>]) -> Vec<Vec<(&str, Value)>> {
+    props
+        .iter()
+        .map(|l| l.iter().map(|(k, v)| (k.as_str(), v.clone())).collect())
+        .collect()
+}
+
+/// (#205) Le gain du lot vient de là : AUCUNE trame `VecColumnSet` (le vecteur
+/// complet, ~3 Ko à 768 dimensions) et UNE SEULE trame `VecColumnWrite` par clé
+/// et par appel — celle qui déplace l'offset du WAL pour qu'un index vectoriel
+/// persisté ne soit pas validé à tort (O-VEC C3). Le témoin unitaire, sur les
+/// mêmes vecteurs, journalise chaque vecteur : sans lui, un WAL tronqué ou relu
+/// au mauvais endroit rendrait aussi zéro et le test ne prouverait rien.
+#[test]
+fn le_lot_n_ecrit_qu_un_marqueur_vectoriel_par_cle_au_wal() {
+    let (labels, aretes, props) = jeu();
+    let vecteurs = props
+        .iter()
+        .flatten()
+        .filter(|(_, v)| matches!(v, Value::Vector(_)))
+        .count();
+    assert_eq!(vecteurs, 75, "le jeu porte 75 vecteurs");
+
+    // Témoin : le chemin unitaire journalise chaque vecteur.
+    let a = tempfile::tempdir().unwrap();
+    {
+        let s = SubstrateStore::create(a.path()).unwrap();
+        let ids: Vec<NodeId> = labels.iter().map(|l| s.create_node(&[l])).collect();
+        for (i, l) in props.iter().enumerate() {
+            for (k, v) in l {
+                if matches!(v, Value::Vector(_)) {
+                    s.set_node_property(ids[i], k, v.clone());
+                }
+            }
+        }
+        s.flush().unwrap();
+    }
+    let (marqueurs, vecteurs_au_wal) = trames_vectorielles(a.path());
+    assert_eq!(
+        (marqueurs, vecteurs_au_wal),
+        (vecteurs, vecteurs),
+        "témoin : le chemin unitaire écrit un marqueur et un vecteur par vecteur"
+    );
+
+    // Lot : un seul appel, une seule clé vectorielle → un marqueur, aucun vecteur.
+    let b = tempfile::tempdir().unwrap();
+    {
+        let s = SubstrateStore::create(b.path()).unwrap();
+        s.bulk_import_labels_edges(&labels, &aretes).unwrap();
+        s.bulk_import_node_props(1, &refs_du_jeu(&props)).unwrap();
+        s.flush().unwrap();
+    }
+    assert_eq!(
+        trames_vectorielles(b.path()),
+        (1, 0),
+        "le lot écrit un marqueur VecColumnWrite par clé, et aucun vecteur au WAL"
+    );
+}
+
+/// (#205, revue de #208) Les vecteurs ne passent plus par `set_node_property`,
+/// qui refusait l'écriture en lecture seule : le lot doit refuser lui-même,
+/// comme `bulk_import_edge_props`, plutôt que d'écrire dans la colonne.
+#[test]
+#[should_panic(expected = "bulk_import_node_props")]
+fn le_lot_refuse_une_base_ouverte_en_lecture_seule() {
+    let (labels, aretes, props) = jeu();
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = SubstrateStore::create(d.path()).unwrap();
+        s.bulk_import_labels_edges(&labels, &aretes).unwrap();
+        s.checkpoint().unwrap();
+    }
+    let s = SubstrateStore::open_read_only(d.path()).unwrap();
+    let _ = s.bulk_import_node_props(1, &refs_du_jeu(&props));
 }
