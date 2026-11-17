@@ -14254,7 +14254,40 @@ impl SubstrateStore {
         let t1 = web_time::Instant::now();
         let n_differees = differees.len();
         // Hors verrou de zone : le chemin unitaire le reprend lui-même.
+        //
+        // (#205) Les VECTEURS passent par le lot : même colonne dense, mêmes
+        // notifications (index vectoriel, propriété posée), mais SANS trame WAL
+        // par vecteur. C'est le même contrat que `bulk_import_edge_props` : base
+        // neuve, et le checkpoint final (`checkpoint_elu` → `flush`) synchronise
+        // `vec_columns` avant de persister le dictionnaire. Une coupure avant ce
+        // checkpoint perd l'import entier, pas une valeur acquittée.
+        // Les blobs et les valeurs hors page gardent le chemin unitaire.
+        let mut ids_cles_vecteur: std::collections::HashMap<&str, Option<u16>> =
+            std::collections::HashMap::new();
         for (slot, k, v) in differees {
+            if let Value::Vector(vecteur) = v {
+                let prop_key_id = *ids_cles_vecteur
+                    .entry(k)
+                    .or_insert_with(|| self.resoudre_cle_vecteur(k));
+                if let Some(prop_key_id) = prop_key_id {
+                    let pk = PropertyKey::new(k);
+                    if self.ecrire_vecteur_colonne(
+                        EntityKind::Node,
+                        slot,
+                        k,
+                        &pk,
+                        prop_key_id,
+                        vecteur,
+                    ) {
+                        self.ecritures_vectorielles_noeuds
+                            .fetch_add(1, Ordering::AcqRel);
+                        let id = NodeId(u64::from(slot));
+                        self.notify_vector_written(id, k, vecteur);
+                        self.notify_node_property_set(id, k);
+                    }
+                }
+                continue;
+            }
             <Self as GraphStoreMut>::set_node_property(self, NodeId(u64::from(slot)), k, v.clone());
         }
         if prof {

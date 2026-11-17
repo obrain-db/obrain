@@ -52,6 +52,12 @@ fn jeu() -> Jeu {
                 ));
             }
         }
+        // (#205) Un embedding sur un nœud sur quatre : le chemin lot des
+        // vecteurs doit rendre exactement ce que rend le chemin unitaire.
+        if i % 4 == 1 {
+            let v: Vec<f32> = (0..8).map(|d| (i * 8 + d) as f32 / 3.0).collect();
+            l.push(("embedding".into(), Value::Vector(v.into())));
+        }
         props.push(l);
     }
     (labels, aretes, props)
@@ -72,7 +78,8 @@ fn unitaire(dir: &std::path::Path) {
     s.checkpoint().unwrap();
 }
 
-fn en_lot(dir: &std::path::Path) {
+/// Rend le nombre de vecteurs de nœud écrits (#205 : doit valoir 75 sur le jeu).
+fn en_lot(dir: &std::path::Path) -> u64 {
     let (labels, aretes, props) = jeu();
     let s = SubstrateStore::create(dir).unwrap();
     s.bulk_import_labels_edges(&labels, &aretes).unwrap();
@@ -86,13 +93,19 @@ fn en_lot(dir: &std::path::Path) {
     s.bulk_import_node_props(1 + (n / 2) as u32, &refs[n / 2..])
         .unwrap();
     s.checkpoint().unwrap();
+    s.nb_ecritures_vectorielles_noeuds()
 }
 
 #[test]
 fn le_lot_relit_exactement_comme_l_unitaire_apres_reouverture() {
     let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     unitaire(a.path());
-    en_lot(b.path());
+    let vecteurs_ecrits = en_lot(b.path());
+    // 300 nœuds, un embedding sur quatre (i % 4 == 1) : 75 vecteurs, ni plus ni moins.
+    assert_eq!(
+        vecteurs_ecrits, 75,
+        "chaque vecteur du lot est écrit une fois"
+    );
     let (sa, sb) = (
         SubstrateStore::open(a.path()).unwrap(),
         SubstrateStore::open(b.path()).unwrap(),
