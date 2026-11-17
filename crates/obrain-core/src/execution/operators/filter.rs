@@ -26,6 +26,23 @@ fn map_int(m: &BTreeMap<PropertyKey, Value>, key: &str) -> Option<i64> {
     }
 }
 
+/// Composant d'une valeur temporelle (date, datetime, datetime à fuseau,
+/// durée) lue par son nom. `None` si la valeur n'est pas temporelle ou si le
+/// composant n'existe pas pour ce type. Utilisé par l'accès
+/// `variable.propriété` quand la variable porte une valeur temporelle et non
+/// un nœud ou une arête (#213) ; même décomposeur que `__component`.
+pub(crate) fn composant_temporel(valeur: &Value, nom: &str) -> Option<i64> {
+    match valeur {
+        Value::Duration(d) => d.component(nom),
+        Value::Date(d) => composant_de_date(nom, Some(*d), None),
+        Value::Timestamp(t) => composant_de_date(nom, None, Some((*t, 0))),
+        Value::ZonedDatetime(z) => {
+            composant_de_date(nom, None, Some((z.as_timestamp(), z.offset_seconds())))
+        }
+        _ => None,
+    }
+}
+
 /// Composant d'une date ou d'un datetime : `year`, `month`, `day`, `hour`,
 /// `minute`, `second`, `millisecond`, `microsecond`, `nanosecond` (les heures
 /// d'un datetime à fuseau se lisent dans ce fuseau). `None` si le nom n'existe
@@ -1759,8 +1776,12 @@ impl ExpressionPredicate {
                     return None;
                 }
                 // Try as map value (e.g. from UNWIND with map elements)
-                if let Some(Value::Map(map)) = col.get_value(row) {
-                    return map.get(&key).cloned();
+                match col.get_value(row) {
+                    Some(Value::Map(map)) => return map.get(&key).cloned(),
+                    // Valeur temporelle liée à une variable (`WITH datetime(..)
+                    // AS t … t.year`) : même décomposeur que `__component`.
+                    Some(v) => return composant_temporel(&v, property).map(Value::Int64),
+                    None => {}
                 }
                 None
             }
