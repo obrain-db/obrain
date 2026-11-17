@@ -1021,6 +1021,10 @@ mod tests {
             }],
             input: Box::new(plan),
             having: None,
+            // `count` vaut 0 sur ensemble vide dans tous les dialectes : le
+            // profil n'influe pas sur ce raccourci, on pose celui de Cypher,
+            // langage d'origine de la réécriture.
+            semantics: obrain_core::execution::operators::AggregateSemantics::OpenCypher,
         }
     }
 
