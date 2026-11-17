@@ -192,7 +192,7 @@ impl FactorizedExpandOperator {
         }
 
         // Build column names
-        let mut column_names: Vec<String> = if self.input_column_names.is_empty() {
+        let column_names: Vec<String> = if self.input_column_names.is_empty() {
             (0..input.column_count())
                 .map(|i| format!("col_{}", i))
                 .collect()
@@ -201,19 +201,19 @@ impl FactorizedExpandOperator {
         };
 
         // Create the factorized chunk starting from the flat input
-        let mut chunk = FactorizedChunk::from_flat(&input, column_names.clone());
+        let mut chunk = FactorizedChunk::from_flat(&input, column_names);
 
-        // Add the expansion level if there are any edges
-        if !edge_ids.is_empty() {
-            column_names.push("_edge".to_string());
-            column_names.push("_target".to_string());
-
-            chunk.add_level(
-                vec![edge_ids, target_ids],
-                vec!["_edge".to_string(), "_target".to_string()],
-                &offsets,
-            );
-        }
+        // Le niveau est ajouté même sans aucune arête (obrain#196, réserve 1
+        // de la PR #219). L'omettre rendait la chunk du niveau précédent avec
+        // SES lignes : `g.V().out().out().count()` comptait 1 sur un graphe à
+        // un seul arc, `sum()` sommait le nœud intermédiaire, et la projection
+        // plate cherchait des colonnes absentes. Un niveau vide porte zéro
+        // ligne logique, ce qui est la réponse juste.
+        chunk.add_level(
+            vec![edge_ids, target_ids],
+            vec!["_edge".to_string(), "_target".to_string()],
+            &offsets,
+        );
 
         Ok(chunk)
     }
@@ -444,13 +444,14 @@ impl FactorizedExpandChain {
             .level(deepest_level)
             .ok_or_else(|| OperatorError::Execution("No levels in factorized chunk".into()))?;
 
-        // Check if the source column exists in this level
-        // If not, it means the previous expansion produced no edges (no level 1 was added)
-        // In that case, there's nothing to expand further
+        // Garde-fou : la colonne source doit exister au niveau le plus
+        // profond. Depuis obrain#196 une expansion sans arête ajoute tout de
+        // même son niveau (vide), donc ce cas ne vient plus d'une expansion
+        // précédente omise ; il ne reste qu'une erreur de plan.
         let Some(source_col) = level.column(source_column) else {
-            // No source column means previous expand had no results
-            // This is valid - just means no paths exist through this expansion
-            return Ok(());
+            return Err(OperatorError::ColumnNotFound(format!(
+                "Column {source_column} not found in deepest factorized level"
+            )));
         };
 
         // Collect all edges for all source nodes in the deepest level
@@ -510,14 +511,12 @@ impl FactorizedExpandChain {
             offsets.push(edge_ids.len() as u32);
         }
 
-        // Add the new level if there are any edges
-        if !edge_ids.is_empty() {
-            chunk.add_level(
-                vec![edge_ids, target_ids],
-                vec!["_edge".to_string(), "_target".to_string()],
-                &offsets,
-            );
-        }
+        // Niveau ajouté même vide : voir `process_chunk` (obrain#196).
+        chunk.add_level(
+            vec![edge_ids, target_ids],
+            vec!["_edge".to_string(), "_target".to_string()],
+            &offsets,
+        );
 
         Ok(())
     }
