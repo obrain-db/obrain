@@ -14079,10 +14079,21 @@ impl SubstrateStore {
     /// Avec une transaction à valeur d'avant en vol, les vecteurs reprennent
     /// le chemin unitaire, comme tout `bulk_import_edge_props`.
     ///
-    /// Les autres valeurs qui ne passent pas par une page (charges au-delà du
-    /// seuil des colonnes blob, entrées plus grandes qu'une page) prennent le
-    /// chemin unitaire `set_node_property`, qui les route exactement comme
-    /// d'habitude. Rend le nombre de propriétés écrites.
+    /// Les BLOBS (#205 : chaînes, `Bytes`, listes et cartes au-delà de
+    /// [`BLOB_COLUMN_THRESHOLD_BYTES`]) vont de même droit à leur colonne, sans
+    /// la trame `BlobColumnWrite` par valeur (qui porte la valeur entière : 87 %
+    /// du temps d'une grosse valeur est ce `write()`). Une seule trame par clé
+    /// et par appel, portant la première valeur vivante de la clé, déplace
+    /// l'offset du WAL ; le rejeu la réécrit à l'identique. Durabilité : celle
+    /// des vecteurs — base NEUVE, `checkpoint_elu` → `flush` synchronise
+    /// `blob_columns` avant de persister le dictionnaire ; un import coupé avant
+    /// ce checkpoint se REFAIT. Restent unitaires : les blobs d'une clé qui porte
+    /// un index d'égalité enregistré, et tout le chemin quand une transaction à
+    /// valeur d'avant est en vol.
+    ///
+    /// Les autres valeurs qui ne passent pas par une page (entrées plus grandes
+    /// qu'une page) prennent le chemin unitaire `set_node_property`, qui les
+    /// route exactement comme d'habitude. Rend le nombre de propriétés écrites.
     pub fn bulk_import_node_props(
         &self,
         premier_slot: u32,
@@ -14285,11 +14296,74 @@ impl SubstrateStore {
         // - une transaction à valeur d'avant en vol : tout le chemin unitaire,
         //   qui pose le marqueur hors transaction (même repli que
         //   `bulk_import_edge_props`).
-        // Les blobs et les valeurs hors page gardent le chemin unitaire.
+        // Les valeurs hors page (entrée plus grande qu'une page) gardent le chemin
+        // unitaire ; les blobs : voir `etat_cles_blob` plus bas.
         let vecteurs_en_lot = self.tx_avec_valeur_avant.lock().is_empty();
         let mut ids_cles_vecteur: std::collections::HashMap<&str, Option<u16>> =
             std::collections::HashMap::new();
+        // (#205) Les BLOBS (chaînes, `Bytes`, listes et cartes au-delà de 256 o)
+        // passent aussi par le lot — voir la doc de la fonction. État par clé :
+        // `None` = la clé porte un index d'égalité enregistré (chemin unitaire),
+        // `Some(marqueur_pose)` = lot, avec ou sans la trame de la clé.
+        let mut etat_cles_blob: std::collections::HashMap<&str, Option<bool>> =
+            std::collections::HashMap::new();
         for (slot, k, v) in differees {
+            if vecteurs_en_lot && let Some(tagged) = encode_blob_payload(v) {
+                let id = NodeId(u64::from(slot));
+                let pkey = PropertyKey::new(k);
+                // ── CE QUE LE CHEMIN UNITAIRE FAIT ET QUE LE LOT NE REPRODUIT PAS ──
+                // Une clé à index d'égalité enregistré : retrait de l'ancienne
+                // valeur, entrée d'instant pour les datetimes longs, retrait de
+                // complétude à l'apparition de la colonne. Rien de cela n'est
+                // nécessaire sur une base neuve SANS index, mais le reproduire
+                // exactement en lot serait recopier `set_node_property` : ces
+                // clés-là gardent le chemin unitaire (peu nombreuses, souvent
+                // des identifiants). Un index déclaré PENDANT l'import est
+                // couvert par `index_batis_depuis_v2.clear()` plus bas, mais
+                // SEULEMENT pour les datetimes longs : `recolter_instants_blob`
+                // ne relit des colonnes blob que les chaînes datetime, et la
+                // passe scalaire ne voit aucune valeur blob. Un index d'égalité
+                // sur une clé dont les valeurs sont des blobs NON datetime
+                // rendrait donc des faux négatifs silencieux — cas étroit
+                // (indexer en égalité une charge de plus de 256 o), même
+                // résultat qu'avec le chemin unitaire après réouverture, et
+                // absent du corpus visé ici.
+                let etat = *etat_cles_blob.entry(k).or_insert_with(|| {
+                    (!self.property_indexes.contains_key(&pkey)).then_some(false)
+                });
+                if let Some(marqueur_pose) = etat {
+                    if !self.is_live_on_disk(id) {
+                        continue;
+                    }
+                    // Même verrou par nœud que `set_node_property` : l'écriture
+                    // d'un blob ne croise pas un écrivain concurrent du nœud.
+                    let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
+                    point_de_crash("noeud:blob:avant_route");
+                    if marqueur_pose {
+                        self.ecrire_blob_sans_journal(EntityKind::Node, slot, k, &tagged);
+                    } else {
+                        // ── LE MARQUEUR DE LA CLÉ : UNE TRAME `BlobColumnWrite` ──
+                        // Sert à déplacer l'offset du WAL (même rôle que le
+                        // `VecColumnWrite` de #208 : une structure persistée
+                        // validée par l'offset ne doit pas se croire à jour après
+                        // un kill -9). Pas de marqueur « sans payload » pour les
+                        // blobs : `BlobColumnWrite` est la seule trame blob, et
+                        // le rejeu (`merge_wal_inline_props`) la REJOUE — une
+                        // valeur triviale écraserait donc, au rejeu, la vraie
+                        // valeur du slot visé. On y met la VRAIE première valeur
+                        // de la clé : le rejeu la réécrit à l'identique
+                        // (idempotent, aucune sémantique neuve, aucun format
+                        // nouveau). Coût : une valeur journalisée par clé et par
+                        // appel. `route_blob_write` écrit la colonne D'ABORD puis
+                        // la trame, l'ordre documenté pour la fenêtre du flush.
+                        self.route_blob_write(EntityKind::Node, slot, k, &tagged);
+                        etat_cles_blob.insert(k, Some(true));
+                    }
+                    point_de_crash("noeud:blob:apres_route");
+                    self.notify_node_property_set(id, k);
+                    continue;
+                }
+            }
             if vecteurs_en_lot && let Value::Vector(vecteur) = v {
                 let id = NodeId(u64::from(slot));
                 if !self.is_live_on_disk(id) {
