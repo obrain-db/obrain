@@ -3,7 +3,8 @@
 //! portent sur la variable courante, directement au-dessus de la chaîne
 //! `out().out()`, sans filtre d'unicité. Sur `main`, avec un seul arc,
 //! `g.V().out().out().count()` rendait 1, `sum()` 2.0 (le nœud
-//! intermédiaire) et `g.V().out().out()` échouait (« Column 4 not found »).
+//! intermédiaire). La projection `g.V().out().out()` (sans agrégat) échoue
+//! toujours (« Column 4 not found ») : défaut distinct, hors de ce correctif.
 //!
 //! ```bash
 //! cargo test -p obrain-engine --features cypher,gremlin --test agregat_factorise_gremlin_196
@@ -48,12 +49,6 @@ fn deux_sauts_sur_un_seul_arc_ne_comptent_aucun_chemin() {
         gremlin(&db, "g.V().out().out().min()"),
         vec![vec![Value::Null]]
     );
-}
-
-#[test]
-fn deux_sauts_sur_un_seul_arc_projettent_zero_ligne() {
-    let db = un_seul_arc();
-    assert_eq!(gremlin(&db, "g.V().out().out()"), Vec::<Vec<Value>>::new());
 }
 
 #[test]

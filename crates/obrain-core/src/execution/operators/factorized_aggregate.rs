@@ -289,6 +289,10 @@ impl FactorizedAggregateOperator {
 
     /// Executes the aggregation on factorized input.
     fn execute(&mut self) -> OperatorResult {
+        // Niveaux attendus d'une chaîne complète : la source plus une étape par
+        // expansion. Une étape sans arête n'ajoute pas son niveau ; la chaîne
+        // rendrait alors les lignes du niveau précédent, pas zéro (obrain#196).
+        let niveaux_attendus = self.input.expansion_count() + 1;
         // Get the factorized result WITHOUT flattening
         let mut factorized = match self.input.next_factorized() {
             Ok(Some(chunk)) => chunk,
@@ -301,7 +305,7 @@ impl FactorizedAggregateOperator {
 
         // Ensemble vide (chaîne sans aucun chemin complet) : même décision que
         // le chemin général, prise par le profil et nulle part ailleurs.
-        if factorized.logical_row_count() == 0 {
+        if factorized.level_count() < niveaux_attendus || factorized.logical_row_count() == 0 {
             return Ok(Some(self.create_empty_result()));
         }
 
