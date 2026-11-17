@@ -240,6 +240,36 @@ fn pushdown_chain_homogene_egale_oracle_et_noyau() {
     }
 }
 
+/// (c) DAG ACYCLIQUE — le raccourci se réactive (sur un DAG, marche == trail :
+/// aucune arête ne peut se répéter) et le résultat reste EXACT, égal à
+/// l'oracle énumératif, saut par saut. Un mauvais déclenchement rendrait un
+/// compte différent de `RETURN DISTINCT d`.
+#[test]
+fn pushdown_dag_acyclique_reecrit_et_reste_exact() {
+    let (db, _td) = fresh_db();
+    // Chaîne linéaire 1→2→3→4→5 (DAG), tous label L.
+    for _ in 0..5 {
+        node(&db, "L");
+    }
+    edge_typed(&db, 1, 2, "T");
+    edge_typed(&db, 2, 3, "T");
+    edge_typed(&db, 3, 4, "T");
+    edge_typed(&db, 4, 5, "T");
+
+    // Extrémités distinctes à k sauts depuis TOUS les nœuds L : 4, 3, 2, 1.
+    let attendu = [4i64, 3, 2, 1];
+    for k in 1..=4usize {
+        let pattern = homogeneous_pattern(k, "L", "T");
+        let matched = scalar_i64(
+            &db,
+            &format!("MATCH {pattern} RETURN count(DISTINCT d) AS n"),
+        );
+        let oracle = oracle_distinct_rows(&db, &pattern);
+        assert_eq!(matched, oracle, "k={k} : pushdown (DAG) vs énumération");
+        assert_eq!(matched, attendu[k - 1], "k={k} : extrémités du DAG");
+    }
+}
+
 /// (b1) REFUSÉ — labels hétérogènes `(a:L)-[:T]->(b:M)-[:T]->(c:M)` :
 /// le MATCH suit l'ancien chemin (1 extrémité distincte `{c=M}`), alors que
 /// le noyau depuis L rendrait 0 (b:M filtré dès le 1er saut).
