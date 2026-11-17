@@ -288,3 +288,13 @@ required-features = ["cypher"]
 [[test]]
 name = "datetime_zone_neo4j_183"
 required-features = ["cypher"]
+
+# #209 : CALL db.index.vector.queryNodes (forme Neo4j de vector_search). Le
+# dispatch CALL vit sous `algos`, la requete PO est en Cypher.
+[[test]]
+name = "vector_query_nodes_209"
+required-features = ["cypher", "vector-index", "algos"]
+
+[[test]]
+name = "vector_query_nodes_209_rouge"
+required-features = ["cypher", "vector-index", "algos"]

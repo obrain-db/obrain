@@ -157,6 +157,11 @@ pub struct Session {
     /// `ObrainDB::session()`, transmise aux `QueryProcessor` par requête.
     #[cfg(feature = "hybrid-search")]
     recherche_hybride: Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
+    /// Poignée des index vectoriels nommés (`CALL db.index.vector.queryNodes`,
+    /// #209), partagée avec la base. Même câblage que `recherche_hybride`.
+    #[cfg(feature = "vector-index")]
+    index_vectoriels_nommes:
+        Option<Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>>,
     /// WAL for logging schema changes.
     #[cfg(feature = "wal")]
     wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
@@ -343,6 +348,8 @@ impl Session {
             substrate_store: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -455,6 +462,25 @@ impl Session {
         &self,
     ) -> Option<&Arc<dyn crate::database::hybrid_procedure::RechercheHybride>> {
         self.recherche_hybride.as_ref()
+    }
+
+    /// Pose la poignée des index vectoriels nommés (`CALL
+    /// db.index.vector.queryNodes`, #209). `ObrainDB` l'appelle juste après
+    /// avoir construit la session.
+    #[cfg(feature = "vector-index")]
+    pub(crate) fn set_index_vectoriels_nommes(
+        &mut self,
+        poignee: Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>,
+    ) {
+        self.index_vectoriels_nommes = Some(poignee);
+    }
+
+    /// La poignée des index vectoriels nommés de cette session, s'il y en a une.
+    #[cfg(feature = "vector-index")]
+    pub(crate) fn index_vectoriels_nommes(
+        &self,
+    ) -> Option<&Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>> {
+        self.index_vectoriels_nommes.as_ref()
     }
 
     /// Réécrit la ligne du type de nœud `label` dans `substrate.typecat`,
@@ -711,6 +737,8 @@ impl Session {
             substrate_store: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
             #[cfg(feature = "wal")]
             wal: None,
             #[cfg(feature = "wal")]
@@ -3216,6 +3244,12 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "vector-index")]
+            let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
+                processor.with_index_vectoriels_nommes(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
 
@@ -3489,6 +3523,12 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "vector-index")]
+            let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
+                processor.with_index_vectoriels_nommes(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::Gremlin, Some(&params))
@@ -3613,6 +3653,12 @@ impl Session {
             #[cfg(feature = "hybrid-search")]
             let processor = if let Some(poignee) = self.recherche_hybride() {
                 processor.with_recherche_hybride(Arc::clone(poignee))
+            } else {
+                processor
+            };
+            #[cfg(feature = "vector-index")]
+            let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
+                processor.with_index_vectoriels_nommes(Arc::clone(poignee))
             } else {
                 processor
             };
@@ -3776,6 +3822,12 @@ impl Session {
             } else {
                 processor
             };
+            #[cfg(feature = "vector-index")]
+            let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
+                processor.with_index_vectoriels_nommes(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::SqlPgq, Some(&params))
@@ -3859,6 +3911,12 @@ impl Session {
                         #[cfg(feature = "hybrid-search")]
                         let processor = if let Some(poignee) = self.recherche_hybride() {
                             processor.with_recherche_hybride(Arc::clone(poignee))
+                        } else {
+                            processor
+                        };
+                        #[cfg(feature = "vector-index")]
+                        let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
+                            processor.with_index_vectoriels_nommes(Arc::clone(poignee))
                         } else {
                             processor
                         };
@@ -5018,6 +5076,10 @@ impl Session {
         #[cfg(feature = "hybrid-search")]
         if let Some(ref poignee) = self.recherche_hybride {
             planner = planner.with_recherche_hybride(Arc::clone(poignee));
+        }
+        #[cfg(feature = "vector-index")]
+        if let Some(ref poignee) = self.index_vectoriels_nommes {
+            planner = planner.with_index_vectoriels_nommes(Arc::clone(poignee));
         }
         #[cfg(feature = "cdc")]
         {

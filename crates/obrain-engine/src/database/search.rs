@@ -224,76 +224,24 @@ impl super::ObrainDB {
             if absent {
                 self.rebatir_index_declare("vector", label, property);
             }
-            let (dim_native, index) = {
-                let registre = self.substrate_vector_indexes.read();
-                match registre.get(&cle) {
-                    Some((d, i)) => (*d, std::sync::Arc::clone(i)),
-                    None => {
-                        return Err(obrain_common::utils::error::Error::Internal(format!(
-                            "Aucun index vectoriel pour :{label}({property}). \
-                             Appelle create_vector_index() d'abord."
-                        )));
-                    }
-                }
-            };
-
-            // On valide sur la dimension NATIVE, pas sur celle du cascade.
-            // Rembourrer une requete de largeur quelconque jusqu'a 384
-            // « marcherait » toujours — et interrogerait un index construit sur
-            // de tout autres embeddings sans le dire. C'est exactement le genre
-            // de succes silencieux qu'on passe la soiree a retirer.
-            if dim_native != query.len() {
-                return Err(obrain_common::utils::error::Error::Internal(format!(
-                    "Dimension incoherente pour :{label}({property}) : l'index est en \
-                     {dim_native} dimensions, la requete en {}.",
-                    query.len()
-                )));
-            }
-            // La requete part en dimension NATIVE : l'index la projette lui-meme
-            // (O-VEC C4) et rerank les candidats sur les vecteurs natifs.
-
-            // La liste blanche est calculee UNE fois, pas par candidat.
-            let permis = self.compute_filter_allowlist(label, filters);
-
-            // Recherche filtrée EXACTE. Filtrer après un top-k fixe rendait 0
-            // résultat valide dès que les voisins les plus proches étaient tous
-            // hors liste blanche (données groupées : les 40 premiers voisins
-            // étaient tous du groupe 0, filtre sur le groupe 1, mesuré le
-            // 11/11). On élargit donc le top-k par facteur 4 tant qu'il reste
-            // moins de k résultats permis ET que l'index n'est pas épuisé. La
-            // boucle s'arrête dès que k résultats sont trouvés : le coût ne croît
-            // que pour les filtres sélectifs.
-            let total = index.len();
-            let mut k_brut = if permis.is_some() {
-                k.saturating_mul(4).max(k).min(total.max(k))
-            } else {
-                k
-            };
-            loop {
-                let bruts = match ef {
-                    Some(largeur) => index.search_top_k_ef(query, k_brut, largeur),
-                    None => index.search_top_k(query, k_brut),
-                };
-                let mut out: Vec<(obrain_common::types::NodeId, f32)> = Vec::with_capacity(k);
-                for (offset, cosinus) in bruts {
-                    let id = obrain_common::types::NodeId(u64::from(offset));
-                    if let Some(ref set) = permis
-                        && !set.contains(&id)
-                    {
-                        continue;
-                    }
-                    // Le contrat de cette fonction est une DISTANCE croissante ;
-                    // le cascade rend une similarité cosinus décroissante.
-                    out.push((id, 1.0 - cosinus));
-                    if out.len() == k {
-                        break;
-                    }
-                }
-                if out.len() == k || permis.is_none() || k_brut >= total {
-                    return Ok(out);
-                }
-                k_brut = k_brut.saturating_mul(4).min(total);
-            }
+            // (#209) Le calcul lui-meme vit dans `chercher_top_k`, partage avec
+            // `CALL db.index.vector.queryNodes` : une seule recherche, deux
+            // portes d'entree, aucun ecart possible entre elles.
+            return chercher_top_k(
+                &self.substrate_vector_indexes,
+                label,
+                property,
+                query,
+                k,
+                ef,
+                || self.compute_filter_allowlist(label, filters),
+            )?
+            .ok_or_else(|| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "Aucun index vectoriel pour :{label}({property}). \
+                     Appelle create_vector_index() d'abord."
+                ))
+            });
         }
 
         Err(obrain_common::utils::error::Error::Internal(format!(
@@ -806,5 +754,180 @@ impl super::hybrid_procedure::RechercheHybride for PoigneeRechercheHybride {
             return Ok(Vec::new());
         }
         Ok(fuse_results(&sources, &fusion_method, k))
+    }
+}
+
+/// Le registre des index vectoriels substrat d'une base, clé `label:propriété`
+/// → (dimension native, index). Le même `Arc` que `ObrainDB::substrate_vector_indexes`.
+#[cfg(feature = "vector-index")]
+pub(crate) type RegistreVectoriel = std::sync::Arc<
+    parking_lot::RwLock<
+        std::collections::HashMap<
+            String,
+            (
+                usize,
+                std::sync::Arc<obrain_substrate::SubstrateTieredIndex>,
+            ),
+        >,
+    >,
+>;
+
+/// LA recherche k-NN sur un index du registre — celle de
+/// `ObrainDB::vector_search` ET de `CALL db.index.vector.queryNodes` (#209).
+///
+/// Rend `Ok(None)` si aucun index n'est chargé pour `:label(property)` (à
+/// l'appelant de dire pourquoi), sinon `(nœud, distance = 1 - cosinus)` par
+/// distance croissante. `permis` n'est évalué qu'une fois l'index trouvé et la
+/// dimension validée (la liste blanche d'un filtre coûte un parcours du label).
+#[cfg(feature = "vector-index")]
+pub(crate) fn chercher_top_k(
+    registre: &RegistreVectoriel,
+    label: &str,
+    property: &str,
+    query: &[f32],
+    k: usize,
+    ef: Option<usize>,
+    permis: impl FnOnce() -> Option<std::collections::HashSet<NodeId>>,
+) -> Result<Option<Vec<(NodeId, f32)>>> {
+    let cle = format!("{label}:{property}");
+    // Verrou en LECTURE, et l'Arc est clone AVANT de le relacher : la
+    // recherche elle-meme se fait hors verrou, donc N recherches
+    // concurrentes sur le meme index ne se serialisent pas, et une
+    // creation d'index concurrente ne les bloque pas non plus.
+    let (dim_native, index) = {
+        let registre = registre.read();
+        match registre.get(&cle) {
+            Some((d, i)) => (*d, std::sync::Arc::clone(i)),
+            None => return Ok(None),
+        }
+    };
+
+    // On valide sur la dimension NATIVE, pas sur celle du cascade.
+    // Rembourrer une requete de largeur quelconque jusqu'a 384
+    // « marcherait » toujours — et interrogerait un index construit sur
+    // de tout autres embeddings sans le dire. C'est exactement le genre
+    // de succes silencieux qu'on passe la soiree a retirer.
+    if dim_native != query.len() {
+        return Err(obrain_common::utils::error::Error::Internal(format!(
+            "Dimension incoherente pour :{label}({property}) : l'index est en \
+             {dim_native} dimensions, la requete en {}.",
+            query.len()
+        )));
+    }
+    // La requete part en dimension NATIVE : l'index la projette lui-meme
+    // (O-VEC C4) et rerank les candidats sur les vecteurs natifs.
+
+    // La liste blanche est calculee UNE fois, pas par candidat.
+    let permis = permis();
+
+    // Recherche filtrée EXACTE. Filtrer après un top-k fixe rendait 0
+    // résultat valide dès que les voisins les plus proches étaient tous
+    // hors liste blanche (données groupées : les 40 premiers voisins
+    // étaient tous du groupe 0, filtre sur le groupe 1, mesuré le
+    // 11/11). On élargit donc le top-k par facteur 4 tant qu'il reste
+    // moins de k résultats permis ET que l'index n'est pas épuisé. La
+    // boucle s'arrête dès que k résultats sont trouvés : le coût ne croît
+    // que pour les filtres sélectifs.
+    let total = index.len();
+    let mut k_brut = if permis.is_some() {
+        k.saturating_mul(4).max(k).min(total.max(k))
+    } else {
+        k
+    };
+    loop {
+        let bruts = match ef {
+            Some(largeur) => index.search_top_k_ef(query, k_brut, largeur),
+            None => index.search_top_k(query, k_brut),
+        };
+        let mut out: Vec<(NodeId, f32)> = Vec::with_capacity(k);
+        for (offset, cosinus) in bruts {
+            let id = NodeId(u64::from(offset));
+            if let Some(ref set) = permis
+                && !set.contains(&id)
+            {
+                continue;
+            }
+            // Le contrat de cette fonction est une DISTANCE croissante ;
+            // le cascade rend une similarité cosinus décroissante.
+            out.push((id, 1.0 - cosinus));
+            if out.len() == k {
+                break;
+            }
+        }
+        if out.len() == k || permis.is_none() || k_brut >= total {
+            return Ok(Some(out));
+        }
+        k_brut = k_brut.saturating_mul(4).min(total);
+    }
+}
+
+/// Les noms d'index vectoriels (#209) : nom → `(label, propriété)`.
+#[cfg(feature = "vector-index")]
+pub(crate) type NomsVectoriels =
+    std::sync::Arc<parking_lot::RwLock<std::collections::HashMap<String, (String, String)>>>;
+
+/// Ce que `CALL db.index.vector.queryNodes` reçoit de la base : les noms, le
+/// registre (clones `Arc`) et le store substrat (pour relire le catalogue
+/// durable quand un nom manque — un pair en écriture partagée a pu le poser).
+///
+/// Vit sans `ObrainDB`, comme `PoigneeRechercheHybride` : c'est ce qui permet
+/// à une `Session` de la porter jusqu'au planificateur.
+#[cfg(feature = "vector-index")]
+pub(crate) struct PoigneeIndexVectoriels {
+    pub(crate) substrate_store: Option<std::sync::Arc<obrain_substrate::SubstrateStore>>,
+    pub(crate) noms: NomsVectoriels,
+    pub(crate) vecteurs: RegistreVectoriel,
+    /// Le drapeau « index nommés chargés » de la base : remis à `false` quand
+    /// un nom n'est trouvé qu'au catalogue, pour que la session suivante le
+    /// charge.
+    pub(crate) prets: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "vector-index")]
+impl super::vector_query_nodes::IndexVectorielsNommes for PoigneeIndexVectoriels {
+    fn chercher_par_nom(&self, nom: &str, query: &[f32], k: usize) -> Result<Vec<(NodeId, f32)>> {
+        use super::vector_query_nodes::NOM;
+        use obrain_common::utils::error::Error;
+
+        let cible = self.noms.read().get(nom).cloned();
+        let cible = match cible {
+            Some(c) => Some(c),
+            // Absent du cache : le catalogue durable fait foi (nom posé par un
+            // autre processus depuis notre ouverture). Coût d'une lecture de
+            // fichier, sur le seul chemin d'erreur.
+            None => {
+                let au_catalogue = self.substrate_store.as_ref().and_then(|sub| {
+                    sub.noms_index()
+                        .into_iter()
+                        .find(|(n, d)| n == nom && d.genre == "vector")
+                        .map(|(_, d)| (d.label, d.propriete))
+                });
+                if au_catalogue.is_some() {
+                    self.prets
+                        .store(false, std::sync::atomic::Ordering::Release);
+                }
+                au_catalogue
+            }
+        };
+        let Some((label, property)) = cible else {
+            let mut connus: Vec<String> = self.noms.read().keys().cloned().collect();
+            connus.sort();
+            return Err(Error::Internal(format!(
+                "{NOM} : aucun index vectoriel nommé '{nom}' (index nommés connus : [{}]). \
+                 Nomme un index existant avec ObrainDB::name_vector_index('{nom}', label, \
+                 propriété), ou crée-le avec ObrainDB::create_named_vector_index.",
+                connus.join(", ")
+            )));
+        };
+        chercher_top_k(&self.vecteurs, &label, &property, query, k, None, || None)?.ok_or_else(
+            || {
+                Error::Internal(format!(
+                    "{NOM} : l'index vectoriel '{nom}' (:{label}({property})) est déclaré mais \
+                     n'est pas chargé dans ce processus (reconstruction échouée, ou nom posé \
+                     par un autre processus) — ouvre une nouvelle session, ou appelle \
+                     ObrainDB::vector_search('{label}', '{property}', …) une fois."
+                ))
+            },
+        )
     }
 }

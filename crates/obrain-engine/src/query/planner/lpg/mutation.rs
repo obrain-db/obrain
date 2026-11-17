@@ -907,6 +907,27 @@ impl super::Planner {
             return self.plan_static_result(result, &call.yield_items);
         }
 
+        // Recherche vectorielle par NOM d'index, forme Neo4j (CALL
+        // db.index.vector.queryNodes — #209). Délégation au chemin natif
+        // (`search::chercher_top_k`, celui de `ObrainDB::vector_search`) par la
+        // poignée `index_vectoriels_nommes`, câblée comme `recherche_hybride`.
+        // La colonne `node` porte un NŒUD, pas un scalaire : `YIELD node AS n
+        // WHERE n.status = …` y lit des propriétés.
+        #[cfg(feature = "vector-index")]
+        if let Some(result) =
+            crate::database::vector_query_nodes::try_execute_query_nodes_procedure(
+                &resolved_name,
+                &call.arguments,
+                self.index_vectoriels_nommes.as_ref(),
+            )?
+        {
+            return self.plan_static_result_avec_noeuds(
+                result,
+                &call.yield_items,
+                &crate::database::vector_query_nodes::COLONNES_NOEUD,
+            );
+        }
+
         // Cognitive procedures (CALL obrain.cognitive.*)
         #[cfg(feature = "cognitive")]
         if let Some(engine) = &self.cognitive_engine
@@ -989,6 +1010,21 @@ impl super::Planner {
         result: obrain_adapters::plugins::AlgorithmResult,
         yield_items: &Option<Vec<crate::query::plan::ProcedureYield>>,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        self.plan_static_result_avec_noeuds(result, yield_items, &[])
+    }
+
+    /// Comme [`Self::plan_static_result`], mais les colonnes de résultat
+    /// nommées dans `colonnes_noeud` portent des identifiants de NŒUDS : leur
+    /// colonne de sortie (alias de `YIELD` compris) n'est pas déclarée
+    /// scalaire, et le planificateur la traite comme la variable d'un `MATCH`
+    /// (propriétés, résolution du nœud au `RETURN`).
+    #[cfg(feature = "algos")]
+    pub(super) fn plan_static_result_avec_noeuds(
+        &self,
+        result: obrain_adapters::plugins::AlgorithmResult,
+        yield_items: &Option<Vec<crate::query::plan::ProcedureYield>>,
+        colonnes_noeud: &[&str],
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         // Determine output columns and column indices
         let (output_columns, column_indices) = if let Some(items) = yield_items {
             let mut cols = Vec::new();
@@ -1018,16 +1054,25 @@ impl super::Planner {
             (result.columns.clone(), indices)
         };
 
+        // Static result outputs are scalar values, not node/edge IDs — sauf
+        // les colonnes que l'appelant déclare porter des nœuds.
+        for (col, &src) in output_columns.iter().zip(&column_indices) {
+            let est_noeud = result
+                .columns
+                .get(src)
+                .is_some_and(|c| colonnes_noeud.contains(&c.as_str()));
+            if est_noeud {
+                self.scalar_columns.borrow_mut().remove(col);
+            } else {
+                self.scalar_columns.borrow_mut().insert(col.clone());
+            }
+        }
+
         let operator = Box::new(StaticResultOperator {
             rows: result.rows,
             column_indices,
             row_index: 0,
         });
-
-        // Static result outputs are scalar values, not node/edge IDs
-        for col in &output_columns {
-            self.scalar_columns.borrow_mut().insert(col.clone());
-        }
 
         Ok((operator, output_columns))
     }

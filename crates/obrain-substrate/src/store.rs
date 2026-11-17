@@ -5402,6 +5402,19 @@ impl SubstrateStore {
     }
 
     pub fn declarations_index(&self) -> Vec<DeclarationIndex> {
+        self.lire_catalogue().into_iter().map(|(d, _)| d).collect()
+    }
+
+    /// Lit le catalogue avec le NOM facultatif de chaque declaration
+    /// (6e colonne, #209).
+    ///
+    /// RETROCOMPATIBLE PAR CONSTRUCTION : un catalogue ecrit avant #209 n'a
+    /// que cinq colonnes (ou moins) ; `champs.get(5)` y rend `None` et la
+    /// declaration se relit a l'identique, sans nom. Dans l'autre sens, un
+    /// binaire d'avant #209 ne lit que les colonnes 0 a 4 et ignore la
+    /// sixieme : il relit le catalogue sans erreur (il perdrait seulement les
+    /// noms s'il le reecrivait).
+    fn lire_catalogue(&self) -> Vec<(DeclarationIndex, Option<String>)> {
         let Ok(contenu) = std::fs::read_to_string(self.chemin_catalogue()) else {
             return Vec::new();
         };
@@ -5415,16 +5428,22 @@ impl SubstrateStore {
                 tracing::warn!(ligne, "declaration d'index illisible — ignoree");
                 continue;
             }
-            sorties.push(DeclarationIndex {
-                genre: champs[0].to_string(),
-                label: champs[1].to_string(),
-                propriete: champs[2].to_string(),
-                dimension: champs.get(3).and_then(|d| d.parse().ok()),
-                metrique: champs
-                    .get(4)
-                    .filter(|m| !m.is_empty())
-                    .map(|m| (*m).to_string()),
-            });
+            sorties.push((
+                DeclarationIndex {
+                    genre: champs[0].to_string(),
+                    label: champs[1].to_string(),
+                    propriete: champs[2].to_string(),
+                    dimension: champs.get(3).and_then(|d| d.parse().ok()),
+                    metrique: champs
+                        .get(4)
+                        .filter(|m| !m.is_empty())
+                        .map(|m| (*m).to_string()),
+                },
+                champs
+                    .get(5)
+                    .filter(|n| !n.is_empty())
+                    .map(|n| (*n).to_string()),
+            ));
         }
         sorties
     }
@@ -5436,23 +5455,35 @@ impl SubstrateStore {
     /// tronque. Le catalogue compte quelques lignes ; le reecrire en entier
     /// coute moins cher que de gerer un journal incremental, et ne peut pas
     /// diverger.
-    fn ecrire_catalogue(&self, decls: &[DeclarationIndex]) -> SubstrateResult<()> {
+    ///
+    /// (#209) Une declaration SANS nom s'ecrit sur cinq colonnes, exactement
+    /// comme avant : un catalogue qui n'utilise pas les noms reste
+    /// octet pour octet celui d'avant (hors ligne d'en-tete).
+    fn ecrire_catalogue(
+        &self,
+        decls: &[(DeclarationIndex, Option<String>)],
+    ) -> SubstrateResult<()> {
         self.exiger_ecriture("l'écriture du catalogue d'index")?;
         use std::io::Write as _;
         let chemin = self.chemin_catalogue();
         let temporaire = chemin.with_extension("indexcat.tmp");
         let mut texte = String::from(
-            "# catalogue d'index obrain — genre\tlabel\tpropriete\tdimension\tmetrique\n",
+            "# catalogue d'index obrain — genre\tlabel\tpropriete\tdimension\tmetrique[\tnom]\n",
         );
-        for d in decls {
+        for (d, nom) in decls {
             texte.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}",
                 d.genre,
                 d.label,
                 d.propriete,
                 d.dimension.map(|v| v.to_string()).unwrap_or_default(),
                 d.metrique.clone().unwrap_or_default(),
             ));
+            if let Some(nom) = nom {
+                texte.push('\t');
+                texte.push_str(nom);
+            }
+            texte.push('\n');
         }
         {
             let mut f = std::fs::File::create(&temporaire)?;
@@ -5465,17 +5496,18 @@ impl SubstrateStore {
 
     /// Declare un index comme devant exister. Idempotent.
     pub fn declarer_index(&self, decl: DeclarationIndex) -> SubstrateResult<()> {
-        let mut decls = self.declarations_index();
-        if decls.iter().any(|d| {
+        let mut decls = self.lire_catalogue();
+        if decls.iter().any(|(d, _)| {
             d.genre == decl.genre && d.label == decl.label && d.propriete == decl.propriete
         }) {
             return Ok(());
         }
-        decls.push(decl);
+        decls.push((decl, None));
         self.ecrire_catalogue(&decls)
     }
 
-    /// Retire une declaration. Idempotent.
+    /// Retire une declaration. Idempotent. Son nom, s'il en avait un, part
+    /// avec elle (#209) : un nom ne survit jamais a son index.
     pub fn retirer_declaration_index(
         &self,
         genre: &str,
@@ -5483,16 +5515,77 @@ impl SubstrateStore {
         propriete: &str,
     ) -> SubstrateResult<()> {
         self.exiger_ecriture("le retrait d'un index déclaré")?;
-        let decls = self.declarations_index();
-        let restantes: Vec<DeclarationIndex> = decls
+        let decls = self.lire_catalogue();
+        let restantes: Vec<(DeclarationIndex, Option<String>)> = decls
             .iter()
-            .filter(|d| !(d.genre == genre && d.label == label && d.propriete == propriete))
+            .filter(|(d, _)| !(d.genre == genre && d.label == label && d.propriete == propriete))
             .cloned()
             .collect();
         if restantes.len() == decls.len() {
             return Ok(());
         }
         self.ecrire_catalogue(&restantes)
+    }
+
+    /// Les declarations NOMMEES (#209) : `(nom, declaration)`.
+    ///
+    /// Un nom est ce que `CREATE VECTOR INDEX note_embeddings FOR (n:Note) ON
+    /// (n.embedding)` donne a un index, et ce que `CALL
+    /// db.index.vector.queryNodes('note_embeddings', …)` utilise pour le
+    /// retrouver. Les declarations sans nom (toutes celles d'avant #209) n'y
+    /// figurent pas.
+    pub fn noms_index(&self) -> Vec<(String, DeclarationIndex)> {
+        self.lire_catalogue()
+            .into_iter()
+            .filter_map(|(d, nom)| nom.map(|n| (n, d)))
+            .collect()
+    }
+
+    /// Donne un NOM a une declaration existante (#209), durablement.
+    ///
+    /// Idempotent si la declaration porte deja ce nom. Refuse, sans rien
+    /// ecrire : un nom vide ou contenant une tabulation ou un saut de ligne
+    /// (il casserait le format), une declaration absente (un nom ne designe
+    /// jamais un index qui n'existe pas), un nom deja porte par une AUTRE
+    /// declaration du meme genre (deux index sous un meme nom rendraient la
+    /// resolution ambigue). Une declaration deja nommee autrement est
+    /// RENOMMEE : un index a au plus un nom.
+    pub fn nommer_index(
+        &self,
+        genre: &str,
+        label: &str,
+        propriete: &str,
+        nom: &str,
+    ) -> SubstrateResult<()> {
+        if nom.is_empty() || nom.contains(['\t', '\n', '\r']) {
+            return Err(SubstrateError::Internal(format!(
+                "nom d'index invalide {nom:?} : vide, ou contient une tabulation ou un saut de ligne"
+            )));
+        }
+        let mut decls = self.lire_catalogue();
+        if let Some((autre, _)) = decls.iter().find(|(d, n)| {
+            d.genre == genre
+                && n.as_deref() == Some(nom)
+                && !(d.label == label && d.propriete == propriete)
+        }) {
+            return Err(SubstrateError::Internal(format!(
+                "le nom d'index '{nom}' designe deja l'index {genre} :{}({})",
+                autre.label, autre.propriete
+            )));
+        }
+        let Some(entree) = decls
+            .iter_mut()
+            .find(|(d, _)| d.genre == genre && d.label == label && d.propriete == propriete)
+        else {
+            return Err(SubstrateError::Internal(format!(
+                "aucun index {genre} declare sur :{label}({propriete}) — impossible de le nommer '{nom}'"
+            )));
+        };
+        if entree.1.as_deref() == Some(nom) {
+            return Ok(());
+        }
+        entree.1 = Some(nom.to_string());
+        self.ecrire_catalogue(&decls)
     }
 
     /// Chemin du fichier de declaration des procedures.

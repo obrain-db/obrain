@@ -392,6 +392,11 @@ const PROCEDURES_DE_LECTURE: &[&str] = &[
     // refuse explicitement un index non chargé), donc rien n'écrit.
     "obrain.hybrid_search",
     "hybrid_search",
+    // Recherche vectorielle par nom d'index, forme Neo4j (#209) : k-NN sur le
+    // registre d'index de la base, en mémoire — lecture pure. Comme pour
+    // hybrid_search, aucune reconstruction sur ce chemin (le préchargement des
+    // index nommés se fait à la création de la session, hors plan).
+    "db.index.vector.queryNodes",
 ];
 
 impl LogicalOperator {

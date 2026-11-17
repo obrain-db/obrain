@@ -145,6 +145,12 @@ pub struct Planner {
     #[cfg(feature = "hybrid-search")]
     pub(super) recherche_hybride:
         Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
+    /// Poignée des index vectoriels nommés (`CALL db.index.vector.queryNodes`,
+    /// #209). Même câblage que `recherche_hybride` ; `None` → la procédure
+    /// répond « aucune base attachée ».
+    #[cfg(feature = "vector-index")]
+    pub(super) index_vectoriels_nommes:
+        Option<Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>>,
 }
 
 impl Planner {
@@ -183,6 +189,8 @@ impl Planner {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
         }
     }
 
@@ -241,6 +249,8 @@ impl Planner {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
         }
     }
 
@@ -293,6 +303,18 @@ impl Planner {
         poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
     ) -> Self {
         self.recherche_hybride = Some(poignee);
+        self
+    }
+
+    /// Attache la poignée des index vectoriels nommés pour que `CALL
+    /// db.index.vector.queryNodes` se résolve à la planification (#209).
+    #[cfg(feature = "vector-index")]
+    #[must_use]
+    pub fn with_index_vectoriels_nommes(
+        mut self,
+        poignee: Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>,
+    ) -> Self {
+        self.index_vectoriels_nommes = Some(poignee);
         self
     }
 

@@ -74,6 +74,8 @@ pub mod search_relief;
 #[cfg(feature = "cdc")]
 pub mod search_surprise;
 pub mod topological;
+#[cfg(feature = "vector-index")]
+pub mod vector_query_nodes;
 #[cfg(feature = "wal")]
 pub mod wal_store;
 mod window;
@@ -260,6 +262,24 @@ pub struct ObrainDB {
     #[cfg(feature = "vector-index")]
     pub(super) index_vectoriel_empreintes:
         parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    /// (#209) Noms des index vectoriels (`CREATE VECTOR INDEX <nom> …`,
+    /// `CALL db.index.vector.queryNodes('<nom>', …)`) : nom → `(label,
+    /// propriété)`. CACHE du catalogue durable (`substrate.indexcat`, 6e
+    /// colonne), rempli à la première session ; partagé (`Arc`) avec la
+    /// poignée que porte chaque session jusqu'au planificateur.
+    #[cfg(feature = "vector-index")]
+    pub(super) noms_index_vectoriels: crate::database::search::NomsVectoriels,
+    /// (#209) `true` une fois les index NOMMÉS chargés (ou tentés) dans ce
+    /// processus. Remis à `false` par la poignée quand elle découvre au
+    /// catalogue un nom posé par un autre processus : la session suivante le
+    /// charge.
+    #[cfg(feature = "vector-index")]
+    pub(super) noms_vectoriels_prets: Arc<std::sync::atomic::AtomicBool>,
+    /// (#209) Sérialise le préchargement des index nommés : deux premières
+    /// sessions concurrentes n'en rebâtissent pas deux fois le même, et la
+    /// seconde attend le premier au lieu de voir un index « pas encore chargé ».
+    #[cfg(feature = "vector-index")]
+    pub(super) prechargement_noms_vectoriels: parking_lot::Mutex<()>,
     /// Base ouverte en écriture PARTAGÉE (`open_shared_write`) : un pair peut
     /// écrire sans que ce processus le voie.
     pub(super) ecriture_partagee: bool,
@@ -1639,6 +1659,14 @@ impl ObrainDB {
             ecritures_vectorielles_vues: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(feature = "vector-index")]
             index_vectoriel_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "vector-index")]
+            noms_index_vectoriels: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            #[cfg(feature = "vector-index")]
+            noms_vectoriels_prets: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(feature = "vector-index")]
+            prechargement_noms_vectoriels: parking_lot::Mutex::new(()),
             ecriture_partagee: false,
             #[cfg(feature = "text-index")]
             index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
@@ -1769,6 +1797,14 @@ impl ObrainDB {
             ecritures_vectorielles_vues: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(feature = "vector-index")]
             index_vectoriel_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "vector-index")]
+            noms_index_vectoriels: Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            #[cfg(feature = "vector-index")]
+            noms_vectoriels_prets: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(feature = "vector-index")]
+            prechargement_noms_vectoriels: parking_lot::Mutex::new(()),
             ecriture_partagee: false,
             #[cfg(feature = "text-index")]
             index_texte_empreintes: parking_lot::RwLock::new(std::collections::HashMap::new()),
@@ -1954,6 +1990,9 @@ impl ObrainDB {
             // substrate_store.
             #[cfg(feature = "hybrid-search")]
             ext_session.set_recherche_hybride(self.poignee_recherche_hybride());
+            // Index vectoriels nommés (`CALL db.index.vector.queryNodes`, #209).
+            #[cfg(feature = "vector-index")]
+            ext_session.set_index_vectoriels_nommes(self.poignee_index_vectoriels());
             return ext_session;
         }
 
@@ -1982,6 +2021,8 @@ impl ObrainDB {
         // Recherche hybride : même câblage que sur le chemin substrat.
         #[cfg(feature = "hybrid-search")]
         session.set_recherche_hybride(self.poignee_recherche_hybride());
+        #[cfg(feature = "vector-index")]
+        session.set_index_vectoriels_nommes(self.poignee_index_vectoriels());
 
         // Wire the cognitive engine (3 piliers), if this DB has one, so
         // `CALL obrain.cognitive.*` resolves in every session's planner
