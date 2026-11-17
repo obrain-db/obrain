@@ -19950,7 +19950,17 @@ impl SubstrateStore {
         // T16.7: vector-typed properties live in their own mmap zone.
         // Check the registry first so reads after a fresh open resolve
         // without waiting for a `set_node_property` in this session.
-        if let Some(arc) = self.vec_columns.read(key, EntityKind::Node, id.0 as u32) {
+        // (obrain#196 D2) `read` rend le contenu brut du slot : une colonne
+        // dense alloue tous les slots jusqu'a son plus haut ecrit, et les slots
+        // jamais ecrits valent zero. Lire `read` faisait donc apparaitre une
+        // propriete ABSENTE comme un vecteur de zeros — PO ne voyait plus ses
+        // notes a reindexer (`n.embedding IS NULL` rendait 1 ligne sur 50).
+        // `read_nonzero` applique la sentinelle de presence du format
+        // (« all-zero slot == absent », cf. vec_column.rs).
+        if let Some(arc) = self
+            .vec_columns
+            .read_nonzero(key, EntityKind::Node, id.0 as u32)
+        {
             return Some(Value::Vector(arc));
         }
         // T16.7 Step 4d: blob-routed String/Bytes live in their own
@@ -19995,7 +20005,12 @@ impl SubstrateStore {
         id: EdgeId,
         key: &PropertyKey,
     ) -> Option<Value> {
-        if let Some(arc) = self.vec_columns.read(key, EntityKind::Edge, id.0 as u32) {
+        // (obrain#196 D2) meme raison que pour les noeuds : lire le slot brut
+        // rend des zeros pour une propriete absente.
+        if let Some(arc) = self
+            .vec_columns
+            .read_nonzero(key, EntityKind::Edge, id.0 as u32)
+        {
             return Some(Value::Vector(arc));
         }
         if let Some(v) = self
