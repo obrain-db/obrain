@@ -1008,6 +1008,7 @@ mod tests {
         terminal: &str,
     ) -> AggregateOp {
         AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![AggregateExpr {
                 function: LogicalAggregateFunction::CountNonNull,
