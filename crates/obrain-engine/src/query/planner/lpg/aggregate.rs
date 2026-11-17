@@ -373,18 +373,20 @@ impl super::Planner {
 
         // Choose operator based on whether there are group-by columns
         let mut operator: Box<dyn Operator> = if group_columns.is_empty() {
-            Box::new(SimpleAggregateOperator::new(
-                input_op,
-                physical_aggregates,
-                output_schema,
-            ))
+            Box::new(
+                SimpleAggregateOperator::new(input_op, physical_aggregates, output_schema)
+                    .with_semantics(agg.semantics),
+            )
         } else {
-            Box::new(HashAggregateOperator::new(
-                input_op,
-                group_columns,
-                physical_aggregates,
-                output_schema,
-            ))
+            Box::new(
+                HashAggregateOperator::new(
+                    input_op,
+                    group_columns,
+                    physical_aggregates,
+                    output_schema,
+                )
+                .with_semantics(agg.semantics),
+            )
         };
 
         // Apply HAVING clause filter if present

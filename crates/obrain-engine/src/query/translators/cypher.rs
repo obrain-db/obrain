@@ -20,6 +20,7 @@ use crate::query::plan::{
 use obrain_adapters::query::cypher::{self, ast};
 use obrain_common::types::Value;
 use obrain_common::utils::error::{Error, QueryError, QueryErrorKind, Result};
+use obrain_core::execution::operators::AggregateSemantics;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
@@ -1434,6 +1435,7 @@ impl CypherTranslator {
                 self.extract_aggregates_and_groups_from_items(&with_clause.items, false)?;
 
             let agg_op = LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::OpenCypher,
                 group_by,
                 aggregates,
                 input: Box::new(input),
@@ -1828,6 +1830,7 @@ impl CypherTranslator {
                 self.extract_aggregates_and_groups_from_items(items, true)?;
 
             let agg_op = LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::OpenCypher,
                 group_by,
                 aggregates,
                 input: Box::new(input),
@@ -1910,33 +1913,6 @@ impl CypherTranslator {
         let mut agg_counter: u32 = 0;
 
         for item in items {
-            // Un `sum(...)` DIRECT passe par le chemin « agrégat enveloppé » pour
-            // recevoir son `coalesce(…, 0)` (voir `extract_wrapped_aggregate`).
-            // Il garde le nom de colonne qu'il avait : son alias, sinon le nom
-            // par défaut d'un agrégat (`sum(...)`).
-            let somme_directe = matches!(
-                &item.expression,
-                ast::Expression::FunctionCall { name, .. } if name.eq_ignore_ascii_case("sum")
-            );
-            if somme_directe {
-                let synthetic_alias = format!("_agg_{agg_counter}");
-                agg_counter += 1;
-                let (agg_expr, substitute) =
-                    self.extract_wrapped_aggregate(&item.expression, &synthetic_alias)?;
-                let alias = item.alias.clone().or_else(|| {
-                    Some(
-                        crate::query::planner::common::default_aggregate_column_name(
-                            agg_expr.function,
-                        ),
-                    )
-                });
-                aggregates.push(agg_expr);
-                post_items.push(AggregateItem::Wrapped(ReturnItem {
-                    expression: substitute,
-                    alias,
-                }));
-                continue;
-            }
             if let Some(agg_expr) = self.try_extract_aggregate(&item.expression, &item.alias)? {
                 // Direct aggregate (e.g. `count(n) AS cnt`)
                 post_items.push(AggregateItem::Direct {
@@ -2000,20 +1976,10 @@ impl CypherTranslator {
                 if let Some(agg) =
                     self.try_extract_aggregate(expr, &Some(synthetic_alias.to_string()))?
                 {
-                    let variable = LogicalExpression::Variable(synthetic_alias.to_string());
-                    // openCypher : `sum()` sur un ensemble vide vaut 0 (obrain#196
-                    // D4). L'agrégat commun rend NULL — c'est la règle SQL / ISO
-                    // GQL, gardée par gql_07 — donc la différence se fait ICI,
-                    // dans le traducteur Cypher seul : `coalesce(sum(x), 0)`.
-                    let substitute = if agg.function == AggregateFunction::Sum {
-                        LogicalExpression::FunctionCall {
-                            name: "coalesce".into(),
-                            args: vec![variable, LogicalExpression::Literal(Value::Int64(0))],
-                            distinct: false,
-                        }
-                    } else {
-                        variable
-                    };
+                    // La valeur de `sum()` sur ensemble vide n'est PAS décidée ici :
+                    // elle vient du profil de la requête (`AggregateOp::semantics`,
+                    // obrain#196 D4), porté jusqu'à l'opérateur.
+                    let substitute = LogicalExpression::Variable(synthetic_alias.to_string());
                     return Ok((agg, substitute));
                 }
                 // Une fonction scalaire qui ENVELOPPE l'agrégat (`head(collect(n))`,
@@ -3116,6 +3082,7 @@ impl CypherTranslator {
 
                 // 3. Wrap in Aggregate(collect(projection) AS alias)
                 let inner_plan = LogicalOperator::Aggregate(AggregateOp {
+                    semantics: AggregateSemantics::OpenCypher,
                     group_by: vec![],
                     aggregates: vec![AggregateExpr {
                         function: AggregateFunction::Collect,

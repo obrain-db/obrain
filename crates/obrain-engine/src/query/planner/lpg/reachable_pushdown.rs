@@ -318,6 +318,7 @@ pub(super) fn try_plan_reachable_count_pushdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obrain_core::execution::operators::AggregateSemantics;
     use std::sync::Arc;
 
     use obrain_common::types::NodeId;
@@ -410,6 +411,7 @@ mod tests {
 
     fn aggregate_over(plan: LogicalOperator, distinct: bool, alias: &str) -> AggregateOp {
         AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![AggregateExpr {
                 function: LogicalAggregateFunction::CountNonNull,

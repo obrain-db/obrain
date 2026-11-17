@@ -1227,6 +1227,7 @@ mod tests {
         ReturnItem, ReturnOp, SkipOp, SortKey, SortOp, SortOrder, UnaryOp,
     };
     use obrain_common::types::Value;
+    use obrain_core::execution::operators::AggregateSemantics;
 
     #[test]
     fn test_optimizer_filter_pushdown_simple() {
@@ -1699,6 +1700,7 @@ mod tests {
             },
             pushdown_hint: None,
             input: Box::new(LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::OpenCypher,
                 group_by: vec![],
                 aggregates: vec![AggregateExpr {
                     function: AggregateFunction::Count,

@@ -646,6 +646,7 @@ mod tests {
         AggregateExpr, AggregateFunction, ExpandDirection, JoinCondition, LogicalExpression,
         PathMode, Projection, ReturnItem, SortOrder,
     };
+    use obrain_core::execution::operators::AggregateSemantics;
 
     #[test]
     fn test_cost_addition() {
@@ -947,6 +948,7 @@ mod tests {
     fn test_cost_model_aggregate() {
         let model = CostModel::new();
         let agg = AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![
                 AggregateExpr {
