@@ -144,6 +144,10 @@ pub struct QueryProcessor {
     /// câblage que `substrate_store`.
     #[cfg(feature = "hybrid-search")]
     recherche_hybride: Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
+    /// Poignée des index vectoriels nommés (`CALL db.index.vector.queryNodes`).
+    #[cfg(feature = "vector-index")]
+    index_vectoriels_nommes:
+        Option<Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>>,
 }
 
 impl QueryProcessor {
@@ -178,6 +182,8 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
         }
     }
 
@@ -208,6 +214,8 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
         }
     }
 
@@ -239,6 +247,8 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
         })
     }
 
@@ -311,6 +321,19 @@ impl QueryProcessor {
         poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
     ) -> Self {
         self.recherche_hybride = Some(poignee);
+        self
+    }
+
+    /// Attache la poignée des index vectoriels nommés (`CALL
+    /// db.index.vector.queryNodes`, #209). Même câblage que
+    /// [`Self::with_recherche_hybride`].
+    #[cfg(feature = "vector-index")]
+    #[must_use]
+    pub fn with_index_vectoriels_nommes(
+        mut self,
+        poignee: Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>,
+    ) -> Self {
+        self.index_vectoriels_nommes = Some(poignee);
         self
     }
 
@@ -481,6 +504,12 @@ impl QueryProcessor {
         } else {
             planner
         };
+        #[cfg(feature = "vector-index")]
+        let planner = if let Some(ref poignee) = self.index_vectoriels_nommes {
+            planner.with_index_vectoriels_nommes(Arc::clone(poignee))
+        } else {
+            planner
+        };
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // 6. Execute and collect results
@@ -597,6 +626,8 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            #[cfg(feature = "vector-index")]
+            index_vectoriels_nommes: None,
             // (2026-08-14) CE CHAMP MANQUAIT, et le trou n'etait visible que
             // sous `--all-features --all-targets` : `with_rdf` est
             // `#[cfg(test)]` et exige `rdf`, tandis que `cognitive_engine` est

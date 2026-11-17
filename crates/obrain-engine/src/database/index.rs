@@ -328,6 +328,11 @@ impl super::ObrainDB {
             // une base rouverte, il ne l'est justement pas encore, et un
             // `DROP` doit valoir pour de bon.
             self.retirer_declaration_substrat("vector", label, property);
+            // (#209) Le nom part avec sa declaration (catalogue) : le cache
+            // suit, sans quoi `queryNodes` resoudrait un nom orphelin.
+            self.noms_index_vectoriels
+                .write()
+                .retain(|_, (l, p)| !(l == label && p == property));
             if retire {
                 tracing::info!("Index vectoriel (substrat) retire : :{label}({property})");
             }
@@ -672,5 +677,171 @@ impl super::ObrainDB {
             );
         }
         ok
+    }
+}
+
+/// (#209) Index vectoriels NOMMES — la resolution `nom -> (label, propriete)`
+/// qu'utilise `CALL db.index.vector.queryNodes`.
+///
+/// Le nom vit dans le catalogue durable (`substrate.indexcat`, 6e colonne
+/// facultative) : il survit a la fermeture, suit toute copie du repertoire et
+/// disparait avec la declaration (`drop_vector_index`). Un catalogue ecrit
+/// avant #209 se relit tel quel, sans nom.
+#[cfg(feature = "vector-index")]
+impl super::ObrainDB {
+    /// Creates a vector index (see [`create_vector_index`](Self::create_vector_index))
+    /// and gives it a durable `name`, the one `CALL db.index.vector.queryNodes(name, k, vector)`
+    /// resolves — the equivalent of Neo4j's
+    /// `CREATE VECTOR INDEX name FOR (n:Label) ON (n.property)`.
+    ///
+    /// # Errors
+    ///
+    /// Same as `create_vector_index`, plus: invalid name, or `name` already
+    /// designating the vector index of another `(label, property)` (checked
+    /// BEFORE anything is built).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_named_vector_index(
+        &self,
+        name: &str,
+        label: &str,
+        property: &str,
+        dimensions: Option<usize>,
+        metric: Option<&str>,
+        m: Option<usize>,
+        ef_construction: Option<usize>,
+    ) -> Result<()> {
+        if let Some((l, p)) = self.resoudre_nom_vectoriel_catalogue(name)
+            && !(l == label && p == property)
+        {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "create_named_vector_index('{name}') : ce nom designe deja l'index vectoriel \
+                 :{l}({p})"
+            )));
+        }
+        self.create_vector_index(label, property, dimensions, metric, m, ef_construction)?;
+        self.name_vector_index(name, label, property)
+    }
+
+    /// Gives a durable `name` to the existing vector index on `:label(property)`
+    /// — typically one created by a migration with
+    /// [`create_vector_index`](Self::create_vector_index), which has no name.
+    /// No rebuild if the index is loaded; a declared-but-unloaded index (reopened
+    /// database) is loaded here, once, so the next `queryNodes` finds it.
+    ///
+    /// Idempotent. An index carries at most one name: naming it again renames it.
+    ///
+    /// # Errors
+    ///
+    /// No vector index declared on `:label(property)`, invalid name (empty, or
+    /// containing a tab or newline), name already used by another vector index,
+    /// read-only database, or a database without substrate.
+    pub fn name_vector_index(&self, name: &str, label: &str, property: &str) -> Result<()> {
+        let Some(ref sub) = self.substrate_store else {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "name_vector_index('{name}') : index vectoriel indisponible sur un store \
+                 externe — seule une base substrat en porte."
+            )));
+        };
+        sub.nommer_index("vector", label, property, name)
+            .map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "name_vector_index('{name}', :{label}({property})) : {e}"
+                ))
+            })?;
+        {
+            let mut noms = self.noms_index_vectoriels.write();
+            noms.retain(|_, (l, p)| !(l == label && p == property));
+            noms.insert(name.to_string(), (label.to_string(), property.to_string()));
+        }
+        if !self
+            .substrate_vector_indexes
+            .read()
+            .contains_key(&format!("{label}:{property}"))
+        {
+            self.rebatir_index_declare("vector", label, property);
+        }
+        Ok(())
+    }
+
+    /// The named vector indexes, as `(name, label, property)`, sorted by name.
+    /// Read from the durable catalog.
+    #[must_use]
+    pub fn vector_index_names(&self) -> Vec<(String, String, String)> {
+        let Some(ref sub) = self.substrate_store else {
+            return Vec::new();
+        };
+        let mut noms: Vec<(String, String, String)> = sub
+            .noms_index()
+            .into_iter()
+            .filter(|(_, d)| d.genre == "vector")
+            .map(|(n, d)| (n, d.label, d.propriete))
+            .collect();
+        noms.sort();
+        noms
+    }
+
+    /// `(label, propriete)` du nom d'index vectoriel, lu au catalogue durable.
+    fn resoudre_nom_vectoriel_catalogue(&self, name: &str) -> Option<(String, String)> {
+        self.vector_index_names()
+            .into_iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, l, p)| (l, p))
+    }
+
+    /// Charge les index NOMMES une fois par processus, a la premiere session.
+    ///
+    /// POURQUOI ICI ET PAS DANS LA PROCEDURE : la poignee qu'emporte une
+    /// session n'a pas `&ObrainDB`, donc ne sait pas rebatir un index declare.
+    /// Sans ce prechargement, `queryNodes` echouerait sur toute base ROUVERTE
+    /// (registre vide) — c'est-a-dire a chaque redemarrage de PO.
+    ///
+    /// POURQUOI CE N'EST PAS UNE REGRESSION DE L'OUVERTURE PARESSEUSE : seuls
+    /// les index NOMMES sont concernes, et un nom n'existe que si quelqu'un l'a
+    /// pose pour `queryNodes`, qui en aura besoin a sa premiere requete. Une
+    /// base sans nom (toutes celles d'avant #209) ne paie qu'une lecture du
+    /// catalogue, une fois ; ensuite chaque session ne paie qu'une lecture
+    /// atomique.
+    fn precharger_index_vectoriels_nommes(&self) {
+        use std::sync::atomic::Ordering;
+        if self.noms_vectoriels_prets.load(Ordering::Acquire) {
+            return;
+        }
+        let _garde = self.prechargement_noms_vectoriels.lock();
+        if self.noms_vectoriels_prets.load(Ordering::Acquire) {
+            return;
+        }
+        let noms: std::collections::HashMap<String, (String, String)> = self
+            .vector_index_names()
+            .into_iter()
+            .map(|(n, l, p)| (n, (l, p)))
+            .collect();
+        for (label, property) in noms.values() {
+            if !self
+                .substrate_vector_indexes
+                .read()
+                .contains_key(&format!("{label}:{property}"))
+            {
+                // Echec = journalise par `rebatir_index_declare` ; la procedure
+                // nommera l'index « declare mais pas charge » au lieu de
+                // rendre vide.
+                self.rebatir_index_declare("vector", label, property);
+            }
+        }
+        *self.noms_index_vectoriels.write() = noms;
+        self.noms_vectoriels_prets.store(true, Ordering::Release);
+    }
+
+    /// La poignee `CALL db.index.vector.queryNodes` de cette base (clones
+    /// `Arc`), cablee jusqu'au planificateur par `ObrainDB::session()`.
+    pub(crate) fn poignee_index_vectoriels(
+        &self,
+    ) -> std::sync::Arc<dyn super::vector_query_nodes::IndexVectorielsNommes> {
+        self.precharger_index_vectoriels_nommes();
+        std::sync::Arc::new(super::search::PoigneeIndexVectoriels {
+            substrate_store: self.substrate_store.clone(),
+            noms: std::sync::Arc::clone(&self.noms_index_vectoriels),
+            vecteurs: std::sync::Arc::clone(&self.substrate_vector_indexes),
+            prets: std::sync::Arc::clone(&self.noms_vectoriels_prets),
+        })
     }
 }

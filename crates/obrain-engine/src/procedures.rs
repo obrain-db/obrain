@@ -381,13 +381,15 @@ pub fn procedures_result(registry: &BuiltinProcedures) -> AlgorithmResult {
     // Procédures hors registre d'algorithmes, mais documentées ici pour que
     // `obrain.procedures()` dise la vérité sur ce qu'un `CALL` accepte.
     #[cfg(feature = "hybrid-search")]
-    {
-        result.add_row(crate::database::hybrid_procedure::ligne_procedures());
-        result.rows.sort_by(|a, b| match (&a[0], &b[0]) {
-            (Value::String(x), Value::String(y)) => x.cmp(y),
-            _ => std::cmp::Ordering::Equal,
-        });
-    }
+    result.add_row(crate::database::hybrid_procedure::ligne_procedures());
+    // (#209) `db.index.vector.queryNodes`, forme Neo4j de `vector_search`.
+    #[cfg(feature = "vector-index")]
+    result.add_row(crate::database::vector_query_nodes::ligne_procedures());
+    #[cfg(any(feature = "hybrid-search", feature = "vector-index"))]
+    result.rows.sort_by(|a, b| match (&a[0], &b[0]) {
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        _ => std::cmp::Ordering::Equal,
+    });
     result
 }
 
