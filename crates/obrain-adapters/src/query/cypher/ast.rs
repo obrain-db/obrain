@@ -85,6 +85,13 @@ pub enum Clause {
     Call(CallClause),
     /// CALL { subquery } (inline subquery).
     CallSubquery(Query),
+    /// CALL { subquery UNION [ALL] subquery ... } (inline subquery, several branches).
+    CallSubqueryUnion {
+        /// The branches, in source order.
+        branches: Vec<Query>,
+        /// True for `UNION ALL`; all branches share the same setting.
+        all: bool,
+    },
     /// FOREACH (variable IN list | update_clauses).
     ForEach(ForEachClause),
     /// LOAD CSV clause.
