@@ -81,7 +81,10 @@ use super::{
     AggregateOp, ExpandDirection, LogicalAggregateFunction, LogicalExpression, LogicalOperator,
     PathMode, Planner, Result, ScalarResultOperator,
 };
-use crate::database::reachable_count::{REACHABLE_MAX_HOPS, compute_reachable_counts};
+use crate::database::reachable_count::{
+    REACHABLE_MAX_HOPS, compute_reachable_counts, subgraph_has_cycle,
+};
+use crate::query::plan::BinaryOp;
 
 /// Compteur de réécritures `reachable_count` effectivement déclenchées.
 pub(super) static REACHABLE_PUSHDOWN_FIRED: AtomicU64 = AtomicU64::new(0);
@@ -96,6 +99,9 @@ struct HomogeneousChain {
     hops: usize,
     /// Variable liée au nœud terminal (l'extrémité comptée).
     terminal_var: String,
+    /// Variables d'arête des k sauts (pour reconnaître le filtre d'isomorphisme
+    /// de relations émis par le traducteur, obrain#182).
+    edge_variables: Vec<String>,
 }
 
 /// Décode un prédicat `hasLabel(v, "L")` littéral (forme exacte émise par le
@@ -113,6 +119,35 @@ fn parse_has_label(pred: &LogicalExpression) -> Option<(&str, &str)> {
         return None;
     };
     Some((v.as_str(), l.as_str()))
+}
+
+/// Reconnaît le filtre d'isomorphisme de relations émis par le traducteur
+/// (obrain#182) : une conjonction (And) de comparaisons v_i <> v_j entre deux
+/// VARIABLES. Remplit `vars` avec les variables comparées et rend `true` si
+/// toute l'expression est de cette forme (y compris une seule comparaison).
+/// Toute autre forme (prédicat sur nœuds, OR, NOT, comparaison à une
+/// constante…) rend `false` : le filtre n'est pas ignoré.
+fn parse_relation_uniqueness(pred: &LogicalExpression, vars: &mut HashSet<String>) -> bool {
+    match pred {
+        LogicalExpression::Binary {
+            left,
+            op: BinaryOp::Ne,
+            right,
+        } => match (left.as_ref(), right.as_ref()) {
+            (LogicalExpression::Variable(a), LogicalExpression::Variable(b)) => {
+                vars.insert(a.clone());
+                vars.insert(b.clone());
+                true
+            }
+            _ => false,
+        },
+        LogicalExpression::Binary {
+            left,
+            op: BinaryOp::And,
+            right,
+        } => parse_relation_uniqueness(left, vars) && parse_relation_uniqueness(right, vars),
+        _ => false,
+    }
 }
 
 /// Parcourt le sous-arbre d'entrée de l'agrégat et reconnaît la chaîne
@@ -137,6 +172,8 @@ fn parse_homogeneous_chain(agg_input: &LogicalOperator) -> Option<HomogeneousCha
     // Variables déjà liées par la chaîne (refus des nœuds réutilisés).
     let mut bound: HashSet<&str> = HashSet::new();
     let mut hops: usize = 0;
+    // Variables d'arête des sauts (reconnaissance du filtre d'isomorphisme).
+    let mut edge_variables: Vec<String> = Vec::new();
     // Après une expansion, la variable source doit être contrainte par un
     // `hasLabel` AVANT la prochaine expansion (les nœuds intermédiaires du
     // motif doivent tous porter le label commun — le noyau l'exige à chaque
@@ -202,6 +239,11 @@ fn parse_homogeneous_chain(agg_input: &LogicalOperator) -> Option<HomogeneousCha
                     return None;
                 }
                 hops += 1;
+                // Variable d'arête du saut (le traducteur nomme les relations
+                // anonymes pour le filtre d'isomorphisme, obrain#182).
+                if let Some(ev) = &expand.edge_variable {
+                    edge_variables.push(ev.clone());
+                }
                 cur_var = Some(expand.from_variable.as_str());
                 // La variable source de cette expansion (nœud intermédiaire,
                 // sauf si c'est la base) doit être contrainte par un hasLabel
@@ -235,6 +277,7 @@ fn parse_homogeneous_chain(agg_input: &LogicalOperator) -> Option<HomogeneousCha
                     edge_type: edge_type?.to_string(),
                     hops,
                     terminal_var: terminal.to_string(),
+                    edge_variables,
                 });
             }
             // Tout autre opérateur dans la chaîne (WHERE, LIMIT, …) → refus.
@@ -278,13 +321,51 @@ pub(super) fn try_plan_reachable_count_pushdown(
     };
 
     // ── Reconnaissance de la chaîne homogène ───────────────────────────────
-    let chain = parse_homogeneous_chain(&agg.input)?;
+    // Le traducteur (obrain#182) ajoute, pour un motif de k ≥ 2 sauts, un
+    // filtre d'isomorphisme de relations r_0 <> r_1 <> … (conjonction de Ne
+    // entre variables d'arête) AU-DESSUS de la chaîne. On le reconnaît — pour
+    // ne pas le confondre avec un prédicat utilisateur — puis on le retire de
+    // la descente de détection de chaîne.
+    let (chain_input, relation_vars) = match agg.input.as_ref() {
+        LogicalOperator::Filter(f) => {
+            let mut vars = HashSet::new();
+            if parse_relation_uniqueness(&f.predicate, &mut vars) {
+                (f.input.as_ref(), Some(vars))
+            } else {
+                (agg.input.as_ref(), None)
+            }
+        }
+        _ => (agg.input.as_ref(), None),
+    };
+
+    let chain = parse_homogeneous_chain(chain_input)?;
     if counted.as_str() != chain.terminal_var.as_str() {
         return None;
     }
 
-    // ── Exécution ensembliste (noyau reachable_count, k = min = max) ──────
     let substrate = planner.substrate_store.as_ref().expect("gardé plus haut");
+
+    // Le filtre d'isomorphisme impose la sémantique TRAIL (arêtes deux à deux
+    // distinctes) ; le noyau compte des MARCHES. Les deux ne coïncident que sur
+    // un sous-graphe ACYCLIQUE (aucune arête ne peut s'y répéter). Sinon on
+    // refuse : le chemin générique énumère et applique le filtre, exactement.
+    if let Some(relation_vars) = relation_vars {
+        // Le filtre reconnu ne doit porter QUE sur les variables d'arête de la
+        // chaîne : un prédicat a <> b entre nœuds n'est pas un filtre
+        // d'isomorphisme et ne doit jamais être ignoré.
+        let chain_edges: HashSet<&str> = chain.edge_variables.iter().map(String::as_str).collect();
+        if relation_vars
+            .iter()
+            .any(|v| !chain_edges.contains(v.as_str()))
+        {
+            return None;
+        }
+        if subgraph_has_cycle(substrate, &chain.from_label, &chain.edge_type) {
+            return None;
+        }
+    }
+
+    // ── Exécution ensembliste (noyau reachable_count, k = min = max) ──────
     let rows = compute_reachable_counts(
         substrate,
         &chain.from_label,
@@ -318,6 +399,7 @@ pub(super) fn try_plan_reachable_count_pushdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obrain_core::execution::operators::AggregateSemantics;
     use std::sync::Arc;
 
     use obrain_common::types::NodeId;
@@ -410,6 +492,7 @@ mod tests {
 
     fn aggregate_over(plan: LogicalOperator, distinct: bool, alias: &str) -> AggregateOp {
         AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![AggregateExpr {
                 function: LogicalAggregateFunction::CountNonNull,
@@ -860,5 +943,128 @@ mod tests {
         let (distinct, fired) = run_count(&planner, count_distinct_plan(2));
         assert_eq!(distinct, 1, "1 extrémité distincte");
         assert_eq!(fired, 1);
+    }
+
+    /// Expansion à un saut avec une variable d'arête nommée (ce que produit le
+    /// traducteur depuis obrain#182 pour les relations anonymes).
+    fn expand_with_edge(
+        from: &str,
+        to: &str,
+        edge_type: &str,
+        edge_var: &str,
+        input: LogicalOperator,
+    ) -> LogicalOperator {
+        LogicalOperator::Expand(ExpandOp {
+            from_variable: from.to_string(),
+            to_variable: to.to_string(),
+            edge_variable: Some(edge_var.to_string()),
+            direction: ExpandDirection::Outgoing,
+            edge_types: vec![edge_type.to_string()],
+            min_hops: 1,
+            max_hops: Some(1),
+            input: Box::new(input),
+            path_alias: None,
+            path_mode: PathMode::Walk,
+        })
+    }
+
+    /// Construit le plan de `MATCH (v0:L)-[:E]->…-[:E]->(vk:L)` avec des
+    /// variables d'arête r0..r{k-1} et le filtre d'isomorphisme de relations
+    /// `r_i <> r_j` AU-DESSUS de la chaîne (forme exacte du traducteur).
+    fn trail_chain_plan(k: usize, label: &str, edge: &str) -> LogicalOperator {
+        let vars: Vec<String> = (0..=k).map(|i| format!("v{i}")).collect();
+        let mut plan = scan(&vars[0], label);
+        for i in 1..=k {
+            let edge_var = format!("r{}", i - 1);
+            let inner = expand_with_edge(&vars[i - 1], &vars[i], edge, &edge_var, plan);
+            plan = filter(has_label(&vars[i], label), inner);
+        }
+        let mut diffs: Vec<LogicalExpression> = Vec::new();
+        for i in 0..k {
+            for j in (i + 1)..k {
+                diffs.push(LogicalExpression::Binary {
+                    left: Box::new(LogicalExpression::Variable(format!("r{i}"))),
+                    op: BinaryOp::Ne,
+                    right: Box::new(LogicalExpression::Variable(format!("r{j}"))),
+                });
+            }
+        }
+        let predicate = diffs
+            .into_iter()
+            .reduce(|acc, p| LogicalExpression::Binary {
+                left: Box::new(acc),
+                op: BinaryOp::And,
+                right: Box::new(p),
+            })
+            .expect("au moins une paire pour k ≥ 2");
+        filter(predicate, plan)
+    }
+
+    /// Agrégat `count(DISTINCT terminal)` sur un plan de chaîne, alias `alias`.
+    fn aggregate_over_terminal(
+        plan: LogicalOperator,
+        distinct: bool,
+        alias: &str,
+        terminal: &str,
+    ) -> AggregateOp {
+        AggregateOp {
+            group_by: vec![],
+            aggregates: vec![AggregateExpr {
+                function: LogicalAggregateFunction::CountNonNull,
+                expression: Some(LogicalExpression::Variable(terminal.to_string())),
+                expression2: None,
+                distinct,
+                alias: Some(alias.to_string()),
+                percentile: None,
+                separator: None,
+            }],
+            input: Box::new(plan),
+            having: None,
+            // `count` vaut 0 sur ensemble vide dans tous les dialectes : le
+            // profil n'influe pas sur ce raccourci, on pose celui de Cypher,
+            // langage d'origine de la réécriture.
+            semantics: obrain_core::execution::operators::AggregateSemantics::OpenCypher,
+        }
+    }
+
+    /// Le raccourci n'est repris QUE là où il est prouvablement exact : le
+    /// filtre d'isomorphisme (TRAIL) est refusé sur un graphe cyclique (le
+    /// résultat reste celui du chemin lent, sémantique Neo4j), et accepté sur
+    /// un DAG (où marche == trail). C'est le test qui discrimine : sans le
+    /// garde-fou d'acyclicité, le cas cyclique rendrait 6 (marches) au lieu de
+    /// 3 et le compteur bougerait.
+    #[test]
+    fn reecriture_trail_refusee_sur_cycle_acceptee_sur_dag() {
+        let _guard = FIRE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Graphe CYCLIQUE connu (cycle 1→2→3→1 + branche 2→4→5→6 + chaîne
+        // 7→8→9) : à k=4, le MATCH (isomorphisme) rend 3, la marche rend 6.
+        let store = Arc::new(SubstrateStore::open_tempfile().expect("temp"));
+        build_graph(&store);
+        let planner = substrate_planner(&store);
+        let plan = trail_chain_plan(4, "L", "T");
+        let (got, fired) = run_count(&planner, aggregate_over_terminal(plan, true, "d", "v4"));
+        assert_eq!(got, 3, "k=4 cyclique : isomorphisme (3), pas la marche (6)");
+        assert_eq!(fired, 0, "cycle → la réécriture ne doit pas se déclencher");
+
+        // Graphe ACYCLIQUE (chaîne 1→2→3→4→5) : à k=4, marche == trail == {5}.
+        let store_dag = Arc::new(SubstrateStore::open_tempfile().expect("temp"));
+        for _ in 1..=5 {
+            store_dag.create_node(&["L"]);
+        }
+        edge(&store_dag, 1, 2);
+        edge(&store_dag, 2, 3);
+        edge(&store_dag, 3, 4);
+        edge(&store_dag, 4, 5);
+        let planner_dag = substrate_planner(&store_dag);
+        let plan_dag = trail_chain_plan(4, "L", "T");
+        let (got_dag, fired_dag) = run_count(
+            &planner_dag,
+            aggregate_over_terminal(plan_dag, true, "d", "v4"),
+        );
+        assert_eq!(got_dag, 1, "k=4 DAG : seule l'extrémité {{5}} est atteinte");
+        assert_eq!(fired_dag, 1, "DAG → la réécriture doit se déclencher");
     }
 }

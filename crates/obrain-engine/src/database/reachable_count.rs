@@ -171,6 +171,73 @@ pub fn compute_reachable_counts(
     Ok(out)
 }
 
+/// Détecte un cycle orienté dans le sous-graphe induit par les nœuds du label
+/// `from_label` et les arêtes sortantes de type `edge_type` (le même sous-graphe
+/// que traverse compute_reachable_counts).
+///
+/// Une marche de longueur k ne peut réutiliser une arête que si ce sous-graphe
+/// contient un cycle orienté de longueur ≤ k - 1. Sur un sous-graphe ACYCLIQUE
+/// aucune arête ne peut donc être revisitée : la sémantique de MARCHE du noyau
+/// coïncide exactement avec la sémantique de TRAIL que le MATCH impose via le
+/// filtre d'isomorphisme de relations (r_i <> r_j, obrain#182). Le planificateur
+/// pushdown s'en sert pour ne réactiver le raccourci que là où il est
+/// PROUVABLEMENT exact.
+///
+/// Coût : O(V + E) sur un DAG (DFS complet), sortie immédiate sur la première
+/// arête de retour d'un graphe cyclique. DFS itératif (pas de récursion : pas
+/// de débordement de pile sur un DAG très profond).
+pub fn subgraph_has_cycle(substrate: &SubstrateStore, from_label: &str, edge_type: &str) -> bool {
+    // 0 = blanc (non visité), 1 = gris (sur le chemin DFS courant), 2 = noir (fini).
+    let mut color: hashbrown::HashMap<u64, u8> = hashbrown::HashMap::new();
+
+    // Voisins DANS le sous-graphe : arêtes sortantes du bon type vers des nœuds
+    // portant from_label (le même filtre que le noyau, saut par saut).
+    let neighbors = |u: u64| -> Vec<u64> {
+        let mut out = Vec::new();
+        for (v, eid) in substrate.edges_from(obrain_common::types::NodeId(u), Direction::Outgoing) {
+            if matches!(substrate.edge_type(eid), Some(t) if t.as_str() == edge_type)
+                && substrate.node_has_label(v, from_label) == Some(true)
+            {
+                out.push(v.0);
+            }
+        }
+        out
+    };
+
+    let starts: Vec<u64> = substrate
+        .nodes_by_label(from_label)
+        .into_iter()
+        .map(|n| n.0)
+        .collect();
+    for start in starts {
+        if color.contains_key(&start) {
+            continue;
+        }
+        color.insert(start, 1);
+        let mut stack: Vec<(u64, Vec<u64>, usize)> = vec![(start, neighbors(start), 0)];
+        while !stack.is_empty() {
+            let top = stack.len() - 1;
+            if stack[top].2 < stack[top].1.len() {
+                let v = stack[top].1[stack[top].2];
+                stack[top].2 += 1;
+                match color.get(&v).copied() {
+                    Some(1) => return true, // arête de retour → cycle
+                    Some(2) => {}           // déjà terminé
+                    _ => {
+                        color.insert(v, 1);
+                        let nv = neighbors(v);
+                        stack.push((v, nv, 0));
+                    }
+                }
+            } else {
+                let (u, _, _) = stack.pop().expect("pile non vide");
+                color.insert(u, 2);
+            }
+        }
+    }
+    false
+}
+
 impl super::ObrainDB {
     /// (2026-09-08) Nombre de nœuds distincts de `from_label` extrémités de
     /// marches de longueur `hop ∈ [min_hops, max_hops]` le long d'arêtes

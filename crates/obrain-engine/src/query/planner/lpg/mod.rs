@@ -831,15 +831,18 @@ impl Planner {
         let function = convert_aggregate_function(ha.function);
         let input_column_count = child_columns.len();
 
-        let operator: Box<dyn Operator> = Box::new(HorizontalAggregateOperator::new(
-            child_op,
-            list_col_idx,
-            entity_kind,
-            function,
-            ha.property.clone(),
-            Arc::clone(&self.store) as Arc<dyn GraphStore>,
-            input_column_count,
-        ));
+        let operator: Box<dyn Operator> = Box::new(
+            HorizontalAggregateOperator::new(
+                child_op,
+                list_col_idx,
+                entity_kind,
+                function,
+                ha.property.clone(),
+                Arc::clone(&self.store) as Arc<dyn GraphStore>,
+                input_column_count,
+            )
+            .with_semantics(ha.semantics),
+        );
 
         let mut columns = child_columns;
         columns.push(ha.alias.clone());
@@ -935,6 +938,7 @@ mod tests {
     };
     use obrain_common::types::Value;
     use obrain_core::execution::operators::AggregateFunction as PhysicalAggregateFunction;
+    use obrain_core::execution::operators::AggregateSemantics;
     use obrain_core::graph::GraphStoreMut;
     use obrain_substrate::SubstrateStore;
 
@@ -1568,6 +1572,7 @@ mod tests {
             }],
             distinct: false,
             input: Box::new(LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::OpenCypher,
                 group_by: vec![],
                 aggregates: vec![LogicalAggregateExpr {
                     function: LogicalAggregateFunction::Count,
@@ -1599,6 +1604,7 @@ mod tests {
 
         // MATCH (n:Person) RETURN n.city, count(n) GROUP BY n.city
         let logical = LogicalPlan::new(LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![LogicalExpression::Property {
                 variable: "n".to_string(),
                 property: "city".to_string(),
@@ -1632,6 +1638,7 @@ mod tests {
 
         // SUM(n.value)
         let logical = LogicalPlan::new(LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![LogicalAggregateExpr {
                 function: LogicalAggregateFunction::Sum,
@@ -1665,6 +1672,7 @@ mod tests {
 
         // AVG(n.score)
         let logical = LogicalPlan::new(LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![LogicalAggregateExpr {
                 function: LogicalAggregateFunction::Avg,
@@ -1698,6 +1706,7 @@ mod tests {
 
         // MIN(n.age), MAX(n.age)
         let logical = LogicalPlan::new(LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![
                 LogicalAggregateExpr {
@@ -2179,6 +2188,7 @@ mod tests {
         let planner = Planner::new(store);
 
         let logical = LogicalPlan::new(LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![LogicalAggregateExpr {
                 function: LogicalAggregateFunction::Count,

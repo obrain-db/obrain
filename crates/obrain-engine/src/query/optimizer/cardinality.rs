@@ -1145,6 +1145,7 @@ mod tests {
         ProjectOp, Projection, ReturnItem, ReturnOp, SkipOp, SortKey, SortOp, SortOrder,
     };
     use obrain_common::types::Value;
+    use obrain_core::execution::operators::AggregateSemantics;
 
     #[test]
     fn test_node_scan_with_stats() {
@@ -1254,6 +1255,7 @@ mod tests {
 
         // Global aggregation
         let global_agg = LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![],
             aggregates: vec![],
             input: Box::new(LogicalOperator::NodeScan(NodeScanOp {
@@ -1270,6 +1272,7 @@ mod tests {
 
         // Group by aggregation
         let group_agg = LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![LogicalExpression::Property {
                 variable: "n".to_string(),
                 property: "city".to_string(),
@@ -1935,6 +1938,7 @@ mod tests {
         estimator.add_table_stats("Person", TableStats::new(10000));
 
         let single_group = LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![LogicalExpression::Property {
                 variable: "n".to_string(),
                 property: "city".to_string(),
@@ -1950,6 +1954,7 @@ mod tests {
         });
 
         let multi_group = LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
             group_by: vec![
                 LogicalExpression::Property {
                     variable: "n".to_string(),
