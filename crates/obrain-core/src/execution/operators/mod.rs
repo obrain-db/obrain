@@ -42,6 +42,7 @@ mod parameter_scan;
 mod project;
 pub mod push;
 mod scan;
+pub mod semantique_agregat;
 mod set_ops;
 mod shortest_path;
 pub mod single_row;
