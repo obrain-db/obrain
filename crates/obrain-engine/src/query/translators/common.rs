@@ -726,6 +726,38 @@ pub(crate) enum VariableKind {
     /// Genre INCONNU : peut porter un nœud (élément d'un `UNWIND` d'une liste
     /// de nœuds, `head(collect(n))`, `CASE`, paramètre d'un `CALL`).
     Other,
+    /// Une liste PROUVÉE de nœuds : `nodes(p)`, `collect(n)` d'un nœud.
+    ///
+    /// Nœuds et arêtes voyagent dans une liste comme leur identifiant entier,
+    /// et les deux séries d'identifiants se recoupent : savoir que la liste
+    /// porte des nœuds est ce qui permet de lire `nodes(p)[0].id` sans
+    /// ambiguïté (obrain-db/obrain#229). Comme `Scalar`, ce n'est ni un nœud
+    /// ni une arête pour un motif.
+    NodeList,
+    /// Une liste PROUVÉE d'arêtes : `relationships(p)`, `collect(r)` d'une
+    /// arête.
+    EdgeList,
+}
+
+impl VariableKind {
+    /// Genre des éléments d'une liste de ce genre.
+    pub(crate) fn element(self) -> Self {
+        match self {
+            Self::NodeList => Self::Node,
+            Self::EdgeList => Self::Edge,
+            _ => Self::Other,
+        }
+    }
+
+    /// Genre de la liste qui collecte des valeurs de ce genre.
+    pub(crate) fn list_of(self) -> Self {
+        match self {
+            Self::Node => Self::NodeList,
+            Self::Edge => Self::EdgeList,
+            // Une liste n'est jamais un nœud, même de contenu inconnu.
+            _ => Self::Scalar,
+        }
+    }
 }
 
 /// Erreur de type si `variable`, liée à ce que `bound` dit, ne peut pas jouer
@@ -744,6 +776,8 @@ pub(crate) fn check_bound_kind(
         VariableKind::Edge => "une arête",
         VariableKind::Scalar => "une valeur (nombre, texte, liste, map…)",
         VariableKind::Other => "une valeur de type inconnu",
+        VariableKind::NodeList => "une liste de nœuds",
+        VariableKind::EdgeList => "une liste d'arêtes",
     };
     if *kind == VariableKind::Scalar || (*kind != VariableKind::Other && *kind != expected) {
         return Err(Error::Query(QueryError::new(
@@ -760,7 +794,7 @@ pub(crate) fn check_bound_kind(
 }
 
 /// Genre d'une expression qui produit une valeur de projection.
-fn expression_kind(
+pub(crate) fn expression_kind(
     expression: &LogicalExpression,
     entree: &HashMap<String, VariableKind>,
 ) -> VariableKind {
@@ -779,6 +813,43 @@ fn expression_kind(
         | LogicalExpression::Id(_)
         | LogicalExpression::Labels(_)
         | LogicalExpression::Type(_) => VariableKind::Scalar,
+        // Extraire d'une liste prouvée : un élément de son genre ; découper :
+        // une liste du même genre.
+        LogicalExpression::IndexAccess { base, .. } => expression_kind(base, entree).element(),
+        LogicalExpression::SliceAccess { base, .. } => {
+            match expression_kind(base, entree) {
+                k @ (VariableKind::NodeList | VariableKind::EdgeList) => k,
+                _ => VariableKind::Other,
+            }
+        }
+        LogicalExpression::FunctionCall { name, args, .. }
+            if matches!(name.to_ascii_lowercase().as_str(), "nodes") && args.len() == 1 =>
+        {
+            VariableKind::NodeList
+        }
+        LogicalExpression::FunctionCall { name, args, .. }
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "relationships" | "edges"
+            ) && args.len() == 1 =>
+        {
+            VariableKind::EdgeList
+        }
+        LogicalExpression::FunctionCall { name, args, .. }
+            if matches!(name.to_ascii_lowercase().as_str(), "head" | "last")
+                && args.len() == 1 =>
+        {
+            expression_kind(&args[0], entree).element()
+        }
+        LogicalExpression::FunctionCall { name, args, .. }
+            if matches!(name.to_ascii_lowercase().as_str(), "tail" | "reverse")
+                && args.len() == 1 =>
+        {
+            match expression_kind(&args[0], entree) {
+                k @ (VariableKind::NodeList | VariableKind::EdgeList) => k,
+                _ => VariableKind::Other,
+            }
+        }
         LogicalExpression::FunctionCall { name, .. } => {
             const SCALAIRES: &[&str] = &[
                 "id",
@@ -891,6 +962,8 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
                     if single_hop {
                         VariableKind::Edge
                     } else {
+                        // Une liste d'arêtes en Cypher, mais la colonne porte
+                        // aujourd'hui la DERNIÈRE arête : genre non prouvé.
                         VariableKind::Other
                     },
                 );
@@ -962,6 +1035,13 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
                     use crate::query::plan::AggregateFunction as F;
                     let kind = match agg.function {
                         F::Min | F::Max | F::Sample => VariableKind::Other,
+                        // `collect(n)` d'un nœud : une liste de nœuds.
+                        F::Collect => agg
+                            .expression
+                            .as_ref()
+                            .map_or(VariableKind::Scalar, |e| {
+                                expression_kind(e, &entree).list_of()
+                            }),
                         _ => VariableKind::Scalar,
                     };
                     vars.insert(alias.clone(), kind);

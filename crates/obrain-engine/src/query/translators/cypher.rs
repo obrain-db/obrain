@@ -5,7 +5,8 @@
 
 use super::common::{
     AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
-    combine_with_and, finalize_aggregate_projection, is_aggregate_function, to_aggregate_function,
+    combine_with_and, expression_kind, finalize_aggregate_projection, is_aggregate_function,
+    to_aggregate_function,
     unicite_a_confronter, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
     wrap_skip, wrap_sort,
 };
@@ -66,6 +67,13 @@ struct CypherTranslator {
     /// Alias-to-output-column-name mapping from the most recent RETURN/WITH clause.
     /// Used by ORDER BY to resolve alias references to actual output column names.
     return_aliases: RefCell<HashMap<String, String>>,
+    /// Genre des variables visibles de la clause en cours de traduction.
+    ///
+    /// Sert à typer `<expression>.<propriété>` quand la base est un élément
+    /// de liste (`rels[0].k`, `startNode(rels[0]).id`) : nœuds et arêtes y
+    /// voyagent comme leur identifiant, et les deux séries se recoupent
+    /// (obrain-db/obrain#229).
+    scope_kinds: RefCell<HashMap<String, VariableKind>>,
 }
 
 impl CypherTranslator {
@@ -74,6 +82,27 @@ impl CypherTranslator {
             edge_variables: RefCell::new(HashSet::new()),
             anon_counter: Cell::new(0),
             return_aliases: RefCell::new(HashMap::new()),
+            scope_kinds: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Genre d'élément (nœud ou arête) prouvé pour la base d'un
+    /// `<expression>.<propriété>`, `None` s'il n'est pas prouvé.
+    fn element_hint(&self, base: &LogicalExpression) -> Option<&'static str> {
+        let kind = match base {
+            // `startNode(r)` / `endNode(r)` rendent un nœud, quel que soit r.
+            LogicalExpression::FunctionCall { name, args, .. }
+                if args.len() == 1
+                    && matches!(name.to_ascii_lowercase().as_str(), "startnode" | "endnode") =>
+            {
+                VariableKind::Node
+            }
+            _ => expression_kind(base, &self.scope_kinds.borrow()),
+        };
+        match kind {
+            VariableKind::Node => Some("node"),
+            VariableKind::Edge => Some("edge"),
+            _ => None,
         }
     }
 
@@ -268,6 +297,20 @@ impl CypherTranslator {
     }
 
     fn translate_clause(
+        &self,
+        clause: &ast::Clause,
+        input: Option<LogicalOperator>,
+    ) -> Result<LogicalOperator> {
+        // La portée de la clause est ce que son entrée laisse visible ; celle
+        // d'avant est rendue au retour (sous-requêtes imbriquées).
+        let portee = input.as_ref().map(visible_variables).unwrap_or_default();
+        let avant = self.scope_kinds.replace(portee);
+        let plan = self.translate_clause_in_scope(clause, input);
+        *self.scope_kinds.borrow_mut() = avant;
+        plan
+    }
+
+    fn translate_clause_in_scope(
         &self,
         clause: &ast::Clause,
         input: Option<LogicalOperator>,
@@ -1561,6 +1604,8 @@ impl CypherTranslator {
         };
 
         if let Some(where_clause) = &with_clause.where_clause {
+            // Le `WHERE` d'un `WITH` voit les colonnes du `WITH`.
+            *self.scope_kinds.borrow_mut() = visible_variables(&plan);
             let predicate = self.translate_expression(&where_clause.predicate)?;
             plan = wrap_filter(plan, predicate);
         }
@@ -2631,6 +2676,34 @@ impl CypherTranslator {
     }
 
     fn translate_expression(&self, expr: &ast::Expression) -> Result<LogicalExpression> {
+        self.translate_expression_raw(expr)
+            .map(|e| self.with_element_hint(e))
+    }
+
+    /// `__component(base, 'prop')` dont la base est prouvée nœud ou arête
+    /// reçoit ce genre en troisième argument : sans lui, un identifiant commun
+    /// à un nœud et à une arête est ambigu à l'évaluation (obrain-db/obrain#229).
+    fn with_element_hint(&self, expr: LogicalExpression) -> LogicalExpression {
+        match expr {
+            LogicalExpression::FunctionCall {
+                name,
+                mut args,
+                distinct,
+            } if name == "__component" && args.len() == 2 => {
+                if let Some(genre) = self.element_hint(&args[0]) {
+                    args.push(LogicalExpression::Literal(Value::String(genre.into())));
+                }
+                LogicalExpression::FunctionCall {
+                    name,
+                    args,
+                    distinct,
+                }
+            }
+            autre => autre,
+        }
+    }
+
+    fn translate_expression_raw(&self, expr: &ast::Expression) -> Result<LogicalExpression> {
         match expr {
             ast::Expression::Literal(lit) => self.translate_literal(lit),
             ast::Expression::Variable(name) => Ok(LogicalExpression::Variable(name.clone())),
@@ -2644,7 +2717,9 @@ impl CypherTranslator {
                 } else {
                     // `<expression>.<propriété>` : composant d'une durée
                     // (`duration.between(a, b).days`), clé d'une map. L'évaluateur
-                    // résout la propriété selon le type de la valeur.
+                    // résout la propriété selon le type de la valeur. Quand la
+                    // base est prouvée nœud ou arête (`rels[0]`, `startNode(r)`),
+                    // un troisième argument le dit (`with_element_hint`).
                     Ok(LogicalExpression::FunctionCall {
                         name: "__component".into(),
                         args: vec![

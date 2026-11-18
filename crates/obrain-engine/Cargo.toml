@@ -306,3 +306,7 @@ required-features = ["cypher", "vector-index", "algos"]
 [[test]]
 name = "parametres_filtres_227"
 required-features = ["cypher"]
+
+[[test]]
+name = "identifiant_noeud_arete_229"
+required-features = ["cypher"]
