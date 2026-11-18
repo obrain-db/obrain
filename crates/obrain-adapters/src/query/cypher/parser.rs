@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
             let mut labels = Vec::new();
             while self.current.kind == TokenKind::Colon {
                 self.advance();
-                labels.push(self.expect_identifier()?);
+                labels.push(self.expect_label_name()?);
             }
             Ok(SetItem::Labels { variable, labels })
         } else {
@@ -764,7 +764,7 @@ impl<'a> Parser<'a> {
             let mut labels = Vec::new();
             while self.current.kind == TokenKind::Colon {
                 self.advance();
-                labels.push(self.expect_identifier()?);
+                labels.push(self.expect_label_name()?);
             }
             Ok(RemoveItem::Labels { variable, labels })
         } else {
@@ -945,7 +945,7 @@ impl<'a> Parser<'a> {
         let mut labels = Vec::new();
         while self.current.kind == TokenKind::Colon {
             self.advance();
-            labels.push(self.expect_identifier()?);
+            labels.push(self.expect_label_name()?);
         }
 
         let properties = if self.current.kind == TokenKind::LBrace {
@@ -1050,11 +1050,11 @@ impl<'a> Parser<'a> {
                 let mut rel_types = Vec::new();
                 while self.current.kind == TokenKind::Colon {
                     self.advance();
-                    rel_types.push(self.expect_identifier()?);
+                    rel_types.push(self.expect_label_name()?);
                     // Handle type alternatives with |
                     while self.current.kind == TokenKind::Pipe {
                         self.advance();
-                        rel_types.push(self.expect_identifier()?);
+                        rel_types.push(self.expect_label_name()?);
                     }
                 }
 
@@ -1463,7 +1463,7 @@ impl<'a> Parser<'a> {
                     let mut combined: Option<Expression> = None;
                     while self.current.kind == TokenKind::Colon {
                         self.advance();
-                        let label = self.expect_identifier()?;
+                        let label = self.expect_label_name()?;
                         let check = Expression::FunctionCall {
                             name: "hasLabel".to_string(),
                             distinct: false,
@@ -2025,6 +2025,14 @@ impl<'a> Parser<'a> {
     /// tout mot est accepté, mot-clé compris (Neo4j : `AS order` passe). obrain#195.
     fn expect_alias_name(&mut self) -> Result<String> {
         self.expect_property_name()
+    }
+
+    /// Label ou type de relation après `:` (`(n:Order)`, `[:IN]`, `n:Match`).
+    /// Position sans ambiguïté : Neo4j accepte tout mot, mot-clé compris.
+    /// `[:IN]` était refusé (« Expected identifier »).
+    fn expect_label_name(&mut self) -> Result<String> {
+        self.expect_property_name()
+            .map_err(|_| self.error("Expected label or relationship type"))
     }
 
     fn expect_property_name(&mut self) -> Result<String> {

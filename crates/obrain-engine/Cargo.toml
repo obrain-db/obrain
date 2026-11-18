@@ -318,3 +318,7 @@ required-features = ["cypher"]
 [[test]]
 name = "comprehension_motif_where_195"
 required-features = ["cypher"]
+
+[[test]]
+name = "label_mot_cle"
+required-features = ["cypher"]
