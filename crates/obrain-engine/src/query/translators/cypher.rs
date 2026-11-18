@@ -2758,8 +2758,31 @@ impl CypherTranslator {
             }
             ast::Expression::Binary { left, op, right } => {
                 let left_expr = self.translate_expression(left)?;
-                let right_expr = self.translate_expression(right)?;
+                let mut right_expr = self.translate_expression(right)?;
                 let binary_op = self.translate_binary_op(*op)?;
+
+                // Cypher : `s =~ r` vrai si r couvre TOUTE la chaîne (Neo4j,
+                // `String.matches`). L'opérateur partagé cherche une
+                // occurrence (sémantique du `regex()` de Gremlin) : on ancre
+                // le motif ici. `'f100' =~ 'f1[0-9]'` rendait vrai (#228,
+                // `topo_04`).
+                if *op == ast::BinaryOp::RegexMatch {
+                    let texte = |t: &str| LogicalExpression::Literal(Value::String(t.into()));
+                    right_expr = match right_expr {
+                        LogicalExpression::Literal(Value::String(motif)) => {
+                            texte(&format!("^(?:{motif})$"))
+                        }
+                        autre => LogicalExpression::Binary {
+                            left: Box::new(LogicalExpression::Binary {
+                                left: Box::new(texte("^(?:")),
+                                op: BinaryOp::Concat,
+                                right: Box::new(autre),
+                            }),
+                            op: BinaryOp::Concat,
+                            right: Box::new(texte(")$")),
+                        },
+                    };
+                }
 
                 Ok(LogicalExpression::Binary {
                     left: Box::new(left_expr),

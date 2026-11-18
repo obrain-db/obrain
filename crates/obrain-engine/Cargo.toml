@@ -310,3 +310,7 @@ required-features = ["cypher"]
 [[test]]
 name = "identifiant_noeud_arete_229"
 required-features = ["cypher"]
+
+[[test]]
+name = "produit_cartesien_228"
+required-features = ["cypher"]
