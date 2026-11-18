@@ -588,7 +588,8 @@ impl super::Planner {
         }
 
         // Create the factorized aggregate operator
-        let factorized_agg_op = FactorizedAggregateOperator::new(lazy_op, factorized_aggs);
+        let factorized_agg_op =
+            FactorizedAggregateOperator::new(lazy_op, factorized_aggs, agg.semantics);
 
         Ok((Box::new(factorized_agg_op), output_columns))
     }
