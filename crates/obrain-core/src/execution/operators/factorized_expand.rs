@@ -602,6 +602,14 @@ pub struct LazyFactorizedChainOperator {
 }
 
 impl LazyFactorizedChainOperator {
+    /// Nombre d'étapes d'expansion de la chaîne. Une chaîne complète de `k`
+    /// étapes produit `k + 1` niveaux (la source, puis un niveau par étape) ;
+    /// une étape sans arête n'en ajoute pas (obrain#196, réserve 1 de #219).
+    #[must_use]
+    pub fn expansion_count(&self) -> usize {
+        self.steps.len()
+    }
+
     /// Creates a new lazy factorized chain operator.
     pub fn new(
         store: Arc<dyn GraphStore>,

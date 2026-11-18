@@ -14,7 +14,10 @@
 
 use std::sync::Arc;
 
-use super::{FactorizedResult, LazyFactorizedChainOperator, Operator, OperatorResult};
+use super::{
+    AggregateFunction, AggregateSemantics, FactorizedResult, LazyFactorizedChainOperator, Operator,
+    OperatorResult, valeur_sur_ensemble_vide,
+};
 use crate::execution::DataChunk;
 use crate::execution::factorized_chunk::FactorizedChunk;
 use crate::execution::vector::ValueVector;
@@ -202,6 +205,20 @@ impl FactorizedAggregate {
         }
     }
 
+    /// Fonction d'agrégat générale correspondante, pour consulter le profil
+    /// de dialecte (`valeur_sur_ensemble_vide`) au même endroit que le chemin
+    /// général (obrain#196, D4).
+    #[must_use]
+    pub fn function(&self) -> AggregateFunction {
+        match self {
+            Self::Count | Self::CountColumn { .. } => AggregateFunction::Count,
+            Self::Sum { .. } => AggregateFunction::Sum,
+            Self::Avg { .. } => AggregateFunction::Avg,
+            Self::Min { .. } => AggregateFunction::Min,
+            Self::Max { .. } => AggregateFunction::Max,
+        }
+    }
+
     /// Returns the output type for this aggregate.
     #[must_use]
     pub fn output_type(&self) -> LogicalType {
@@ -224,12 +241,16 @@ impl FactorizedAggregate {
 ///
 /// ```no_run
 /// # use obrain_core::execution::operators::{
-/// #     FactorizedAggregateOperator, FactorizedAggregate,
+/// #     AggregateSemantics, FactorizedAggregateOperator, FactorizedAggregate,
 /// #     LazyFactorizedChainOperator,
 /// # };
 /// # fn example(expand_chain: LazyFactorizedChainOperator) {
 /// // Query: MATCH (a)->(b)->(c) RETURN COUNT(*)
-/// let agg = FactorizedAggregateOperator::new(expand_chain, vec![FactorizedAggregate::count()]);
+/// let agg = FactorizedAggregateOperator::new(
+///     expand_chain,
+///     vec![FactorizedAggregate::count()],
+///     AggregateSemantics::OpenCypher,
+/// );
 /// // Returns a single row with the count, computed in O(n) instead of O(n^2)
 /// # }
 /// ```
@@ -238,6 +259,9 @@ pub struct FactorizedAggregateOperator {
     input: LazyFactorizedChainOperator,
     /// The aggregates to compute.
     aggregates: Vec<FactorizedAggregate>,
+    /// Profil de dialecte : valeur de `sum` / `avg` sur ensemble vide
+    /// (obrain#196, D4). Obligatoire, comme sur `AggregateOperator`.
+    semantics: AggregateSemantics,
     /// Whether the operator has been executed.
     executed: bool,
 }
@@ -249,16 +273,26 @@ impl FactorizedAggregateOperator {
     ///
     /// * `input` - The input operator (typically a `LazyFactorizedChainOperator`)
     /// * `aggregates` - The aggregates to compute
-    pub fn new(input: LazyFactorizedChainOperator, aggregates: Vec<FactorizedAggregate>) -> Self {
+    /// * `semantics` - Profil de dialecte porté par la requête
+    pub fn new(
+        input: LazyFactorizedChainOperator,
+        aggregates: Vec<FactorizedAggregate>,
+        semantics: AggregateSemantics,
+    ) -> Self {
         Self {
             input,
             aggregates,
+            semantics,
             executed: false,
         }
     }
 
     /// Executes the aggregation on factorized input.
     fn execute(&mut self) -> OperatorResult {
+        // Niveaux attendus d'une chaîne complète : la source plus une étape par
+        // expansion. Une étape sans arête n'ajoute pas son niveau ; la chaîne
+        // rendrait alors les lignes du niveau précédent, pas zéro (obrain#196).
+        let niveaux_attendus = self.input.expansion_count() + 1;
         // Get the factorized result WITHOUT flattening
         let mut factorized = match self.input.next_factorized() {
             Ok(Some(chunk)) => chunk,
@@ -268,6 +302,12 @@ impl FactorizedAggregateOperator {
             }
             Err(e) => return Err(e),
         };
+
+        // Ensemble vide (chaîne sans aucun chemin complet) : même décision que
+        // le chemin général, prise par le profil et nulle part ailleurs.
+        if factorized.level_count() < niveaux_attendus || factorized.logical_row_count() == 0 {
+            return Ok(Some(self.create_empty_result()));
+        }
 
         // Compute multiplicities once for all aggregates (cached internally)
         // This is the key optimization: O(levels) once instead of O(levels * num_aggregates)
@@ -292,20 +332,17 @@ impl FactorizedAggregateOperator {
     }
 
     /// Creates an empty result (for when input is empty).
+    ///
+    /// La valeur de chaque agrégat vient de `valeur_sur_ensemble_vide` et du
+    /// profil de la requête : `count` 0 partout, `sum` 0 ou NULL selon le
+    /// dialecte, `avg` / `min` / `max` NULL (obrain#196, D4).
     fn create_empty_result(&self) -> DataChunk {
         let cols: Vec<ValueVector> = self
             .aggregates
             .iter()
             .map(|agg| {
                 let mut col = ValueVector::with_type(agg.output_type());
-                match agg {
-                    FactorizedAggregate::Count | FactorizedAggregate::CountColumn { .. } => {
-                        col.push_value(Value::Int64(0));
-                    }
-                    _ => {
-                        col.push_value(Value::Null);
-                    }
-                }
+                col.push_value(valeur_sur_ensemble_vide(agg.function(), self.semantics));
                 col
             })
             .collect();
