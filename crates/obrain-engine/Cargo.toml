@@ -302,3 +302,7 @@ required-features = ["cypher", "vector-index", "algos"]
 [[test]]
 name = "vector_query_nodes_209_rouge"
 required-features = ["cypher", "vector-index", "algos"]
+
+[[test]]
+name = "parametres_filtres_227"
+required-features = ["cypher"]
