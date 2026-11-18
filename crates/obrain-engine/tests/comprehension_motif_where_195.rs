@@ -114,3 +114,25 @@ fn correlee_ailleurs_qu_au_premier_noeud_refusee() {
         .to_string();
     assert!(err.contains("'n'"), "{err}");
 }
+
+/// Non corrélée : calculée UNE fois (produit avec une ligne), pas rejouée par
+/// un Apply à chaque ligne externe. Sur le graphe de code d'obrain (33 k
+/// nœuds), la forme Apply ne finissait pas.
+#[test]
+fn non_correlee_calculee_une_fois() {
+    let db = base();
+    let plan = match &db
+        .execute_cypher_with_params(
+            "EXPLAIN MATCH (n:Note) \
+             WHERE n.project_id IN [(w:Workspace {slug: $s})<-[:BELONGS_TO_WORKSPACE]-(p:Project) | p.id] \
+             RETURN n.id",
+            HashMap::from([("s".to_string(), Value::from("w1"))]),
+        )
+        .unwrap()
+        .rows[0][0]
+    {
+        Value::String(s) => s.to_string(),
+        autre => panic!("{autre:?}"),
+    };
+    assert!(!plan.contains("Apply"), "{plan}");
+}

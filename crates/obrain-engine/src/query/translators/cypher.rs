@@ -3323,24 +3323,36 @@ impl CypherTranslator {
                 ),
             )));
         }
-        let (subplan, shared_variables) = if correlee {
-            (
-                Self::replace_anchor_with_parameter_scan(subplan, &anchor),
-                vec![anchor],
-            )
-        } else {
-            (subplan, Vec::new())
-        };
-        Ok(LogicalOperator::Apply(ApplyOp {
-            input: Box::new(input),
-            subplan: Box::new(LogicalOperator::Aggregate(AggregateOp {
+        let resume = |subplan| {
+            LogicalOperator::Aggregate(AggregateOp {
                 semantics: AggregateSemantics::OpenCypher,
                 group_by: vec![],
                 aggregates: vec![agregat],
                 input: Box::new(subplan),
                 having: None,
-            })),
-            shared_variables,
+            })
+        };
+        if !correlee {
+            // Non corrélée : une seule ligne, la même pour toutes les lignes
+            // externes. Un produit avec cette ligne la calcule UNE fois (la
+            // jointure matérialise son côté droit) ; un Apply rejouait le
+            // sous-plan à chaque ligne — sur le graphe de code d'obrain
+            // (33 k nœuds), `WHERE m.name IN [(t)-[:CALLS]->(x {name: 'v'}) |
+            // t.name]` ne finissait pas. Un sous-plan de motif ne contient
+            // aucune écriture : le calculer une fois ne change rien d'autre.
+            return Ok(LogicalOperator::Join(JoinOp {
+                left: Box::new(input),
+                right: Box::new(resume(subplan)),
+                join_type: JoinType::Cross,
+                conditions: Vec::new(),
+            }));
+        }
+        Ok(LogicalOperator::Apply(ApplyOp {
+            input: Box::new(input),
+            subplan: Box::new(resume(Self::replace_anchor_with_parameter_scan(
+                subplan, &anchor,
+            ))),
+            shared_variables: vec![anchor],
             optional: false,
         }))
     }
