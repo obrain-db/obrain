@@ -1487,7 +1487,7 @@ impl CypherTranslator {
         // `RETURN` (Apply + collect), le filtre lit sa colonne (#195,
         // famille 2). Pas sous un `OPTIONAL MATCH` : l'Apply masquerait la
         // jointure externe que la suite classe.
-        let input = if Self::expr_contains_pattern_comprehension(&predicate)
+        let input = if Self::expr_contains_pc_only(&predicate)
             && !matches!(input, LogicalOperator::LeftJoin(_))
         {
             let alias = self.next_anon_var();
@@ -1623,7 +1623,7 @@ impl CypherTranslator {
             // Le `WHERE` d'un `WITH` voit les colonnes du `WITH`.
             *self.scope_kinds.borrow_mut() = visible_variables(&plan);
             let mut predicate = self.translate_expression(&where_clause.predicate)?;
-            if Self::expr_contains_pattern_comprehension(&predicate) {
+            if Self::expr_contains_pc_only(&predicate) {
                 let alias = self.next_anon_var();
                 let (reecrit_plan, reecrit) =
                     self.rewrite_expr_pattern_comprehension(plan, predicate, &alias)?;
@@ -2728,6 +2728,15 @@ impl CypherTranslator {
 
     fn translate_expression_raw(&self, expr: &ast::Expression) -> Result<LogicalExpression> {
         match expr {
+            // `exists((n)-[:R]->())` : la forme fonction du prédicat de motif,
+            // dont l'argument est déjà un `EXISTS { … }`.
+            ast::Expression::FunctionCall { name, args, .. }
+                if name.eq_ignore_ascii_case("exists")
+                    && args.len() == 1
+                    && matches!(args[0], ast::Expression::Exists(_)) =>
+            {
+                self.translate_expression(&args[0])
+            }
             ast::Expression::Literal(lit) => self.translate_literal(lit),
             ast::Expression::Variable(name) => Ok(LogicalExpression::Variable(name.clone())),
             ast::Expression::Parameter(name) => Ok(LogicalExpression::Parameter(name.clone())),
@@ -3231,6 +3240,11 @@ impl CypherTranslator {
     fn expr_contains_pattern_comprehension(expr: &LogicalExpression) -> bool {
         match expr {
             LogicalExpression::PatternComprehension { .. } => true,
+            // En projection, `EXISTS { … }` n'a pas d'évaluation directe, et
+            // `COUNT { … }` n'en a que pour le motif nu à un saut : les autres
+            // sont relevés en Apply + count(*) (#195).
+            LogicalExpression::ExistsSubquery(_) => true,
+            LogicalExpression::CountSubquery(sub) => !Self::sous_requete_simple(sub),
             LogicalExpression::FunctionCall { args, .. } => {
                 args.iter().any(Self::expr_contains_pattern_comprehension)
             }
@@ -3242,6 +3256,104 @@ impl CypherTranslator {
                 Self::expr_contains_pattern_comprehension(operand)
             }
             _ => false,
+        }
+    }
+
+    /// Contient une compréhension de motif (et seulement cela compte) : dans un
+    /// `WHERE`, `EXISTS` et `COUNT` ont déjà leur semi-jointure.
+    fn expr_contains_pc_only(expr: &LogicalExpression) -> bool {
+        match expr {
+            LogicalExpression::PatternComprehension { .. } => true,
+            LogicalExpression::FunctionCall { args, .. } => {
+                args.iter().any(Self::expr_contains_pc_only)
+            }
+            LogicalExpression::Binary { left, right, .. } => {
+                Self::expr_contains_pc_only(left) || Self::expr_contains_pc_only(right)
+            }
+            LogicalExpression::Unary { operand, .. } => Self::expr_contains_pc_only(operand),
+            _ => false,
+        }
+    }
+
+    /// Le motif nu à un saut `(n)-[:T]->()` que le chemin rapide de
+    /// `COUNT { }` sait compter sans sous-plan.
+    fn sous_requete_simple(sub: &LogicalOperator) -> bool {
+        matches!(
+            sub,
+            LogicalOperator::Expand(e) if matches!(e.input.as_ref(), LogicalOperator::NodeScan(_))
+        )
+    }
+
+    /// Relève un sous-plan de motif en `Apply` sur `input` : corrélé par son
+    /// premier nœud s'il est lié dehors, joué tel quel sinon ; `agregat`
+    /// résume ses lignes en une colonne.
+    fn relever_sous_plan(
+        input: LogicalOperator,
+        subplan: LogicalOperator,
+        agregat: AggregateExpr,
+    ) -> Result<LogicalOperator> {
+        let anchor = Self::extract_anchor_variable(&subplan).ok_or_else(|| {
+            Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                "Pattern comprehension must start with a node pattern",
+            ))
+        })?;
+        // Corrélée par son premier nœud s'il est lié dehors : ce nœud devient
+        // un ParameterScan. Sinon la compréhension ne dépend pas de la ligne
+        // (`n.p IN [(w:W {slug: $s})<--(x) | x.id]`, PO `note_09`) : son
+        // sous-plan est joué tel quel — remplacer `w` par un ParameterScan
+        // cherchait une colonne absente (obrain-db/obrain#195, famille 2).
+        let portee = visible_variables(&input);
+        let correlee = portee.contains_key(&anchor);
+        if !correlee
+            && let Some(autre) = visible_variables(&subplan)
+                .into_keys()
+                .filter(|v| v != &anchor && portee.contains_key(v))
+                .min()
+        {
+            // Lié dehors ailleurs qu'au premier nœud : le sous-plan le
+            // relierait comme une variable neuve, et rendrait le motif de
+            // TOUTES les lignes.
+            return Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                format!(
+                    "sous-requête de motif corrélée par '{autre}', qui n'est pas son \
+                     premier nœud : non prise en charge. Écrire le motif en partant \
+                     de '{autre}'."
+                ),
+            )));
+        }
+        let (subplan, shared_variables) = if correlee {
+            (
+                Self::replace_anchor_with_parameter_scan(subplan, &anchor),
+                vec![anchor],
+            )
+        } else {
+            (subplan, Vec::new())
+        };
+        Ok(LogicalOperator::Apply(ApplyOp {
+            input: Box::new(input),
+            subplan: Box::new(LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::OpenCypher,
+                group_by: vec![],
+                aggregates: vec![agregat],
+                input: Box::new(subplan),
+                having: None,
+            })),
+            shared_variables,
+            optional: false,
+        }))
+    }
+
+    fn agregat(function: AggregateFunction, expression: Option<LogicalExpression>, alias: &str) -> AggregateExpr {
+        AggregateExpr {
+            function,
+            expression,
+            expression2: None,
+            distinct: false,
+            alias: Some(alias.to_string()),
+            percentile: None,
+            separator: None,
         }
     }
 
@@ -3258,76 +3370,30 @@ impl CypherTranslator {
                 subplan,
                 projection,
             } => {
-                // 1. Extract anchor variable
-                let anchor = Self::extract_anchor_variable(&subplan).ok_or_else(|| {
-                    Error::Query(QueryError::new(
-                        QueryErrorKind::Semantic,
-                        "Pattern comprehension must start with a node pattern",
-                    ))
-                })?;
-
-                // 2. Corrélée par son premier nœud s'il est lié dehors : ce
-                // nœud devient un ParameterScan. Sinon la compréhension ne
-                // dépend pas de la ligne (`n.p IN [(w:W {slug: $s})<--(x) |
-                // x.id]`, PO `note_09`) : son sous-plan est joué tel quel —
-                // remplacer `w` par un ParameterScan cherchait une colonne
-                // absente (obrain-db/obrain#195, famille 2).
-                let portee = visible_variables(&input);
-                let correlee = portee.contains_key(&anchor);
-                if !correlee
-                    && let Some(autre) = visible_variables(&subplan)
-                        .into_keys()
-                        .filter(|v| v != &anchor && portee.contains_key(v))
-                        .min()
-                {
-                    // Lié dehors ailleurs qu'au premier nœud : le sous-plan
-                    // le relierait comme une variable neuve, et la
-                    // compréhension rendrait le motif de TOUTES les lignes.
-                    return Err(Error::Query(QueryError::new(
-                        QueryErrorKind::Semantic,
-                        format!(
-                            "compréhension de motif corrélée par '{autre}', qui n'est pas son \
-                             premier nœud : non prise en charge. Écrire le motif en partant \
-                             de '{autre}'."
-                        ),
-                    )));
-                }
-                let (rewritten_subplan, shared_variables) = if correlee {
-                    (
-                        Self::replace_anchor_with_parameter_scan(*subplan, &anchor),
-                        vec![anchor],
-                    )
-                } else {
-                    (*subplan, Vec::new())
-                };
-
-                // 3. Wrap in Aggregate(collect(projection) AS alias)
-                let inner_plan = LogicalOperator::Aggregate(AggregateOp {
-                    semantics: AggregateSemantics::OpenCypher,
-                    group_by: vec![],
-                    aggregates: vec![AggregateExpr {
-                        function: AggregateFunction::Collect,
-                        expression: Some(*projection),
-                        expression2: None,
-                        distinct: false,
-                        alias: Some(alias.to_string()),
-                        percentile: None,
-                        separator: None,
-                    }],
-                    input: Box::new(rewritten_subplan),
-                    having: None,
-                });
-
-                // 4. Wrap outer input in Apply
-                let new_input = LogicalOperator::Apply(ApplyOp {
-                    input: Box::new(input),
-                    subplan: Box::new(inner_plan),
-                    shared_variables,
-                    optional: false,
-                });
-
-                // 5. Replace expression with Variable reference
+                let agregat =
+                    Self::agregat(AggregateFunction::Collect, Some(*projection), alias);
+                let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
                 Ok((new_input, LogicalExpression::Variable(alias.to_string())))
+            }
+            LogicalExpression::CountSubquery(subplan)
+                if !Self::sous_requete_simple(&subplan) =>
+            {
+                let agregat = Self::agregat(AggregateFunction::Count, None, alias);
+                let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
+                Ok((new_input, LogicalExpression::Variable(alias.to_string())))
+            }
+            // `EXISTS { … }` en projection : au moins une ligne du sous-plan.
+            LogicalExpression::ExistsSubquery(subplan) => {
+                let agregat = Self::agregat(AggregateFunction::Count, None, alias);
+                let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
+                Ok((
+                    new_input,
+                    LogicalExpression::Binary {
+                        left: Box::new(LogicalExpression::Variable(alias.to_string())),
+                        op: BinaryOp::Gt,
+                        right: Box::new(LogicalExpression::Literal(Value::Int64(0))),
+                    },
+                ))
             }
             LogicalExpression::FunctionCall {
                 name,
