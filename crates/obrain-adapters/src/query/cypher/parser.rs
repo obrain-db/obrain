@@ -219,8 +219,14 @@ impl<'a> Parser<'a> {
                         self.advance(); // consume CALL
                         self.advance(); // consume {
                         let inner = self.parse_subquery_body()?;
-                        self.expect(TokenKind::RBrace)?;
-                        clauses.push(Clause::CallSubquery(inner));
+                        if self.current.kind == TokenKind::Union {
+                            let (branches, all) = self.parse_subquery_union_branches(inner)?;
+                            self.expect(TokenKind::RBrace)?;
+                            clauses.push(Clause::CallSubqueryUnion { branches, all });
+                        } else {
+                            self.expect(TokenKind::RBrace)?;
+                            clauses.push(Clause::CallSubquery(inner));
+                        }
                     } else {
                         clauses.push(Clause::Call(self.parse_call_clause()?));
                     }
@@ -397,6 +403,29 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parses the `UNION [ALL] { ... }` branches that follow the first body of a
+    /// `CALL { ... }`. Positioned on the first `UNION`. Mixing `UNION` and
+    /// `UNION ALL` is rejected, as Neo4j does.
+    fn parse_subquery_union_branches(&mut self, first: Query) -> Result<(Vec<Query>, bool)> {
+        let mut branches = vec![first];
+        let mut all: Option<bool> = None;
+        while self.current.kind == TokenKind::Union {
+            self.advance(); // consume UNION
+            let branche_all = self.current.kind == TokenKind::All;
+            if branche_all {
+                self.advance(); // consume ALL
+            }
+            match all {
+                Some(precedent) if precedent != branche_all => {
+                    return Err(self.error("Invalid combination of UNION and UNION ALL"));
+                }
+                _ => all = Some(branche_all),
+            }
+            branches.push(self.parse_subquery_body()?);
+        }
+        Ok((branches, all.unwrap_or(false)))
+    }
+
     /// Parses the body of an inline subquery (CALL { ... } or COUNT { ... }).
     ///
     /// Expects to be positioned after the opening `{`.
@@ -430,6 +459,17 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Set => {
                     clauses.push(Clause::Set(self.parse_set_clause()?));
+                }
+                TokenKind::Order => {
+                    clauses.push(Clause::OrderBy(self.parse_order_by_clause()?));
+                }
+                TokenKind::Skip => {
+                    self.advance();
+                    clauses.push(Clause::Skip(self.parse_expression()?));
+                }
+                TokenKind::Limit => {
+                    self.advance();
+                    clauses.push(Clause::Limit(self.parse_expression()?));
                 }
                 _ => break,
             }

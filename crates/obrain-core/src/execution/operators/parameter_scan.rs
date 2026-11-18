@@ -45,9 +45,15 @@ impl ParameterState {
         *self.values.lock() = None;
     }
 
-    /// Takes the current parameter values.
-    fn take_values(&self) -> Option<Vec<Value>> {
-        self.values.lock().take()
+    /// Reads the current parameter values without consuming them.
+    ///
+    /// Plusieurs `ParameterScan` peuvent lire la même ligne externe (les
+    /// branches d'un `UNION` dans un `CALL { }`) : une lecture destructive
+    /// vidait l'état pour la branche suivante, qui ne rendait rien. Chaque
+    /// opérateur n'émet qu'une fois par `reset()`, et `Apply` pose les valeurs
+    /// avant chaque `reset()`.
+    fn current_values(&self) -> Option<Vec<Value>> {
+        self.values.lock().clone()
     }
 }
 
@@ -85,7 +91,7 @@ impl Operator for ParameterScanOperator {
         }
         self.emitted = true;
 
-        let Some(values) = self.state.take_values() else {
+        let Some(values) = self.state.current_values() else {
             return Ok(None);
         };
 

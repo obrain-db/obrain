@@ -295,6 +295,9 @@ impl CypherTranslator {
             ast::Clause::CallSubquery(inner_query) => {
                 self.translate_call_subquery(inner_query, input)
             }
+            ast::Clause::CallSubqueryUnion { branches, all } => {
+                self.translate_call_subquery_union(branches, *all, input)
+            }
             ast::Clause::ForEach(foreach) => self.translate_foreach(foreach, input),
             ast::Clause::LoadCsv(load_csv) => self.translate_load_csv(load_csv),
         }
@@ -349,6 +352,53 @@ impl CypherTranslator {
         inner: &ast::Query,
         input: Option<LogicalOperator>,
     ) -> Result<LogicalOperator> {
+        let (shared_variables, inner_plan) =
+            self.translate_subquery_branch(inner, input.is_some())?;
+        Self::appliquer_sous_requete(shared_variables, inner_plan, input)
+    }
+
+    /// `CALL { ... UNION [ALL] ... }` : chaque branche est traduite comme un
+    /// sous-plan à part (son `WITH` d'import compris), l'union est posée dans le
+    /// sous-plan de l'`Apply`, donc évaluée pour chaque ligne externe. `UNION`
+    /// simple déduplique à l'intérieur de cette évaluation, comme au niveau
+    /// supérieur. Toutes les branches doivent importer les mêmes variables : le
+    /// moteur ne porte qu'un seul état de paramètres par `Apply`.
+    fn translate_call_subquery_union(
+        &self,
+        branches: &[ast::Query],
+        all: bool,
+        input: Option<LogicalOperator>,
+    ) -> Result<LogicalOperator> {
+        let has_input = input.is_some();
+        let mut shared_variables: Option<Vec<String>> = None;
+        let mut plans = Vec::with_capacity(branches.len());
+        for branche in branches {
+            let (variables, plan) = self.translate_subquery_branch(branche, has_input)?;
+            match &shared_variables {
+                None => shared_variables = Some(variables),
+                Some(premieres) if *premieres != variables => {
+                    return Err(Error::Query(QueryError::new(
+                        QueryErrorKind::Semantic,
+                        "les branches d'un UNION dans CALL doivent importer les mêmes variables",
+                    )));
+                }
+                Some(_) => {}
+            }
+            plans.push(plan);
+        }
+        let union = LogicalOperator::Union(UnionOp { inputs: plans });
+        let subplan = if all { union } else { wrap_distinct(union) };
+        Self::appliquer_sous_requete(shared_variables.unwrap_or_default(), subplan, input)
+    }
+
+    /// Traduit une branche de sous-requête. Un `WITH` d'import en tête (avec
+    /// une liaison, sur une entrée externe) est remplacé par un `ParameterScan`.
+    /// Renvoie les variables importées et le sous-plan.
+    fn translate_subquery_branch(
+        &self,
+        inner: &ast::Query,
+        has_input: bool,
+    ) -> Result<(Vec<String>, LogicalOperator)> {
         // Detect importing WITH: if the first clause is WITH and we have outer input,
         // extract the imported variable names and start the inner plan from a
         // ParameterScan instead of Empty.
@@ -356,9 +406,7 @@ impl CypherTranslator {
         let mut inner_plan: Option<LogicalOperator> = None;
         let mut clauses_iter = inner.clauses.iter();
 
-        if input.is_some()
-            && let Some(ast::Clause::With(with_clause)) = inner.clauses.first()
-        {
+        if has_input && let Some(ast::Clause::With(with_clause)) = inner.clauses.first() {
             if with_clause.is_wildcard {
                 // WITH * imports all outer variables
                 shared_variables.push("*".to_string());
@@ -389,7 +437,16 @@ impl CypherTranslator {
                 "CALL subquery requires at least one clause",
             ))
         })?;
+        Ok((shared_variables, inner_plan))
+    }
 
+    /// Lie le sous-plan à la ligne externe par un `Apply` corrélé, ou le
+    /// renvoie tel quel sans entrée externe.
+    fn appliquer_sous_requete(
+        shared_variables: Vec<String>,
+        inner_plan: LogicalOperator,
+        input: Option<LogicalOperator>,
+    ) -> Result<LogicalOperator> {
         match input {
             Some(outer) => Ok(LogicalOperator::Apply(ApplyOp {
                 input: Box::new(outer),
