@@ -76,6 +76,15 @@ impl super::Planner {
             // distante — voir VariableLengthExpandOperator.
             .with_session_context(self.session_context.clone());
 
+            // (obrain#189) Une variable d'arete de longueur variable lie la
+            // LISTE des aretes du chemin : le filtre d'unicite
+            // `all(x IN rs WHERE x <> r)` (#182) et `size(rs)` / `RETURN rs`
+            // la lisent comme telle. Sans cela la colonne portait la seule
+            // derniere arete et tout motif mixte rendait zero ligne.
+            if is_variable_length && expand.edge_variable.is_some() {
+                expand_op = expand_op.with_edge_list_output();
+            }
+
             // If a path alias is set, enable path length and detail output
             if needs_path_details {
                 expand_op = expand_op
@@ -116,6 +125,13 @@ impl super::Planner {
             self.group_list_variables
                 .borrow_mut()
                 .insert(edge_col_name.clone());
+            if expand.edge_variable.is_some() {
+                // Liste d'identifiants d'aretes : `RETURN rs` resout chaque
+                // element (EdgeListResolve), comme `collect(r)`.
+                self.edge_list_columns
+                    .borrow_mut()
+                    .insert(edge_col_name.clone());
+            }
         }
         columns.push(edge_col_name);
 

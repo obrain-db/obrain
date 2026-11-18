@@ -2045,7 +2045,7 @@ impl ExpressionPredicate {
                         // Simplified: evaluate filter with item as context
                         // This works for simple cases like x > 5
                         matches!(
-                            self.eval_comprehension_expr(filter, item, variable),
+                            self.eval_comprehension_expr(filter, item, variable, (chunk, row)),
                             Some(Value::Bool(true))
                         )
                     } else {
@@ -2054,7 +2054,8 @@ impl ExpressionPredicate {
 
                     if passes_filter {
                         // Apply the mapping expression
-                        if let Some(mapped) = self.eval_comprehension_expr(map_expr, item, variable)
+                        if let Some(mapped) =
+                            self.eval_comprehension_expr(map_expr, item, variable, (chunk, row))
                         {
                             result.push(mapped);
                         }
@@ -2084,7 +2085,8 @@ impl ExpressionPredicate {
 
                 let mut match_count: u32 = 0;
                 for item in &items {
-                    let result = self.eval_comprehension_expr(predicate, item, variable);
+                    let result =
+                        self.eval_comprehension_expr(predicate, item, variable, (chunk, row));
                     if matches!(result, Some(Value::Bool(true))) {
                         match_count += 1;
                     }
@@ -2448,20 +2450,29 @@ impl ExpressionPredicate {
 
     /// Evaluates an expression in the context of a list comprehension.
     /// The `item` is the current iteration value bound to `variable`.
+    ///
+    /// `ctx` est la ligne courante `(chunk, row)` : toute variable qui n'est
+    /// pas celle de l'itération (une colonne du motif, `r` dans
+    /// `all(x IN rs WHERE x <> r)`) s'y résout. Sans cela le prédicat
+    /// rendait `None` et le filtre d'unicité entre relation simple et
+    /// relation de longueur variable éliminait TOUTES les lignes
+    /// (obrain-db/obrain#189).
     fn eval_comprehension_expr(
         &self,
         expr: &FilterExpression,
         item: &Value,
         variable: &str,
+        ctx: (&DataChunk, usize),
     ) -> Option<Value> {
         match expr {
             FilterExpression::Variable(name) if name == variable => Some(item.clone()),
+            FilterExpression::Variable(_) => self.eval_expr(expr, ctx.0, ctx.1),
             FilterExpression::Literal(v) => Some(v.clone()),
             FilterExpression::Binary { left, op, right } => {
                 // IN operator needs special handling: right side is a list
                 if *op == BinaryFilterOp::In {
-                    let left_val = self.eval_comprehension_expr(left, item, variable)?;
-                    let right_val = self.eval_comprehension_expr(right, item, variable)?;
+                    let left_val = self.eval_comprehension_expr(left, item, variable, ctx)?;
+                    let right_val = self.eval_comprehension_expr(right, item, variable, ctx)?;
                     return match right_val {
                         Value::List(items) => {
                             if left_val.is_null() {
@@ -2484,12 +2495,12 @@ impl ExpressionPredicate {
                         _ => None,
                     };
                 }
-                let left_val = self.eval_comprehension_expr(left, item, variable)?;
-                let right_val = self.eval_comprehension_expr(right, item, variable)?;
+                let left_val = self.eval_comprehension_expr(left, item, variable, ctx)?;
+                let right_val = self.eval_comprehension_expr(right, item, variable, ctx)?;
                 self.eval_binary_op(&left_val, *op, &right_val)
             }
             FilterExpression::Unary { op, operand } => {
-                let val = self.eval_comprehension_expr(operand, item, variable);
+                let val = self.eval_comprehension_expr(operand, item, variable, ctx);
                 self.eval_unary_op(*op, val)
             }
             FilterExpression::Property {
@@ -2507,7 +2518,7 @@ impl ExpressionPredicate {
             FilterExpression::List(items) => {
                 let values: Vec<Value> = items
                     .iter()
-                    .filter_map(|i| self.eval_comprehension_expr(i, item, variable))
+                    .filter_map(|i| self.eval_comprehension_expr(i, item, variable, ctx))
                     .collect();
                 Some(Value::List(values.into()))
             }
@@ -2521,9 +2532,12 @@ impl ExpressionPredicate {
                 else_clause.as_deref(),
                 item,
                 variable,
+                ctx,
             ),
-            // For other expression types, return None (unsupported in comprehension)
-            _ => None,
+            // Toute autre forme (fonction, propriété d'une variable extérieure…)
+            // s'évalue sur la ligne courante ; une référence à la variable
+            // d'itération y reste non résolue (None), comme avant.
+            _ => self.eval_expr(expr, ctx.0, ctx.1),
         }
     }
 
@@ -2535,32 +2549,33 @@ impl ExpressionPredicate {
         else_clause: Option<&FilterExpression>,
         item: &Value,
         variable: &str,
+        ctx: (&DataChunk, usize),
     ) -> Option<Value> {
         if let Some(test_expr) = operand {
             let test_val = self
-                .eval_comprehension_expr(test_expr, item, variable)
+                .eval_comprehension_expr(test_expr, item, variable, ctx)
                 .unwrap_or(Value::Null);
             for (when_expr, then_expr) in when_clauses {
                 let when_val = self
-                    .eval_comprehension_expr(when_expr, item, variable)
+                    .eval_comprehension_expr(when_expr, item, variable, ctx)
                     .unwrap_or(Value::Null);
                 if !test_val.is_null()
                     && !when_val.is_null()
                     && Self::values_equal(&test_val, &when_val)
                 {
-                    return self.eval_comprehension_expr(then_expr, item, variable);
+                    return self.eval_comprehension_expr(then_expr, item, variable, ctx);
                 }
             }
         } else {
             for (when_expr, then_expr) in when_clauses {
-                let when_val = self.eval_comprehension_expr(when_expr, item, variable)?;
+                let when_val = self.eval_comprehension_expr(when_expr, item, variable, ctx)?;
                 if when_val.as_bool() == Some(true) {
-                    return self.eval_comprehension_expr(then_expr, item, variable);
+                    return self.eval_comprehension_expr(then_expr, item, variable, ctx);
                 }
             }
         }
         if let Some(else_expr) = else_clause {
-            self.eval_comprehension_expr(else_expr, item, variable)
+            self.eval_comprehension_expr(else_expr, item, variable, ctx)
         } else {
             Some(Value::Null)
         }
