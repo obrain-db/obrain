@@ -2843,6 +2843,35 @@ impl ExpressionPredicate {
                         s.push_str(&b);
                         Some(Value::String(s.into()))
                     }
+                    // Concaténation de listes (sémantique Neo4j) : liste + liste
+                    // concatène, liste + élément ajoute en queue, élément + liste
+                    // ajoute en tête. Sans cela `collect(a) + collect(b)` — la
+                    // forme même de la famille 1 d'obrain#195 — rendait Null au
+                    // lieu d'une liste, et le défaut se lisait comme un problème
+                    // d'agrégation alors qu'il était dans l'opérateur.
+                    (Value::List(a), Value::List(b)) => {
+                        let mut v: Vec<Value> = Vec::with_capacity(a.len() + b.len());
+                        v.extend(a.iter().cloned());
+                        v.extend(b.iter().cloned());
+                        Some(Value::List(v.into()))
+                    }
+                    (Value::List(a), autre) => match autre {
+                        Value::Null => Some(Value::Null),
+                        _ => {
+                            let mut v: Vec<Value> = a.iter().cloned().collect();
+                            v.push(autre.clone());
+                            Some(Value::List(v.into()))
+                        }
+                    },
+                    (autre, Value::List(b)) => match autre {
+                        Value::Null => Some(Value::Null),
+                        _ => {
+                            let mut v: Vec<Value> = Vec::with_capacity(b.len() + 1);
+                            v.push(autre.clone());
+                            v.extend(b.iter().cloned());
+                            Some(Value::List(v.into()))
+                        }
+                    },
                     // Temporal addition
                     (Value::Date(d), Value::Duration(dur))
                     | (Value::Duration(dur), Value::Date(d)) => {

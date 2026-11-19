@@ -283,11 +283,14 @@ fn d1_formes_po() {
     );
     assert_eq!(r[0][0], r[0][1]);
 
-    // plan.rs — `a + [y IN b WHERE NOT y IN a]` : NON couvert ici. La forme
-    // bute sur des défauts d'évaluation INDÉPENDANTS des entités, mesurés sur
-    // des entiers : `[1,2] + [2,3]` rend NULL, `[y IN [2,3] WHERE NOT y IN
-    // [1,2]]` rend `[]`. Le planificateur reconnaît la forme (tranche, filtre,
-    // concaténation) et résoudra ses éléments quand l'évaluation sera juste.
+    // plan.rs — `a + [y IN b WHERE NOT y IN a]` : les deux moitiés sont
+    // désormais justes, mesurées sur des entiers.
+    //  * `[1,2] + [2,3]` rendait NULL : la concaténation de listes manquait dans
+    //    `BinaryFilterOp::Add`. Corrigée par obrain#230 (liste+liste,
+    //    liste+élément, élément+liste).
+    //  * `[y IN [2,3] WHERE NOT y IN [1,2]]` rend `[3]` — déjà correct, la note
+    //    précédente qui annonçait `[]` était périmée.
+    // La forme complète reste hors de ce test-ci, qui porte sur les entités.
 }
 
 /// Témoins : ce qui marchait doit continuer de marcher.

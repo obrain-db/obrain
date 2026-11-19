@@ -1979,14 +1979,17 @@ impl CypherTranslator {
                 aggregates.push(agg_expr);
                 agg_counter += 1;
             } else if contains_aggregate(&item.expression) {
-                // Wrapped aggregate (e.g. `count(n) > 0 AS exists`)
-                let synthetic_alias = format!("_agg_{agg_counter}");
-                agg_counter += 1;
-
-                // Extract the innermost aggregate and build a substitute expression
-                let (agg_expr, substitute) =
-                    self.extract_wrapped_aggregate(&item.expression, &synthetic_alias)?;
-                aggregates.push(agg_expr);
+                // Agrégat(s) enveloppé(s) : `count(n) > 0`, `collect(a) + collect(b)`,
+                // `[x IN collect(..) + collect(..) WHERE ..]`. On hisse d'abord CHAQUE
+                // agrégat vers une variable `_agg_N`, puis on traduit l'expression
+                // réécrite. N'en extraire qu'un laissait les autres dans l'arbre, où
+                // l'évaluateur les prenait pour des fonctions scalaires et répondait
+                // « fonction inconnue : collect » (obrain#195, famille 1).
+                let mut hoisted: Vec<AggregateExpr> = Vec::new();
+                let rewritten =
+                    self.hoist_aggregates(&item.expression, &mut agg_counter, &mut hoisted)?;
+                aggregates.extend(hoisted);
+                let substitute = self.translate_expression(&rewritten)?;
                 post_items.push(AggregateItem::Wrapped(ReturnItem {
                     expression: substitute,
                     alias: item.alias.clone(),
@@ -2014,148 +2017,156 @@ impl CypherTranslator {
         );
         Ok((aggregates, group_by, post_return))
     }
-
-    /// Extracts an aggregate from inside a wrapping expression and returns
-    /// both the aggregate and a substitute expression that references the
-    /// aggregate result by `synthetic_alias`.
+    /// Hisse **chaque** agrégat contenu dans `expr` vers une variable `_agg_N`,
+    /// rend l'expression réécrite — donc traduisible normalement — et empile les
+    /// agrégats extraits dans `found`.
     ///
-    /// For `count(n) > 0`, returns:
-    /// - aggregate: `count(n)` with alias `synthetic_alias`
-    /// - substitute: `Variable(synthetic_alias) > Literal(0)`
-    fn extract_wrapped_aggregate(
+    /// Remplace l'ancien `extract_wrapped_aggregate`, qui n'en extrayait qu'un
+    /// seul : sur `collect(a) + collect(b)` le côté gauche restait dans l'arbre et
+    /// atteignait l'évaluateur d'expressions, qui répondait « fonction inconnue :
+    /// collect » (obrain#195, famille 1). Il n'avait non plus aucun bras pour la
+    /// compréhension de liste, qui tombait sur « Unsupported expression wrapping an
+    /// aggregate ». En travaillant sur l'AST plutôt que sur le plan logique, cette
+    /// passe couvre d'un coup toutes les formes d'imbrication.
+    fn hoist_aggregates(
         &self,
         expr: &ast::Expression,
-        synthetic_alias: &str,
-    ) -> Result<(AggregateExpr, LogicalExpression)> {
-        match expr {
-            ast::Expression::FunctionCall { name, args, .. } => {
-                // The expression IS an aggregate: extract it directly
-                if let Some(agg) =
-                    self.try_extract_aggregate(expr, &Some(synthetic_alias.to_string()))?
-                {
-                    // La valeur de `sum()` sur ensemble vide n'est PAS décidée ici :
-                    // elle vient du profil de la requête (`AggregateOp::semantics`,
-                    // obrain#196 D4), porté jusqu'à l'opérateur.
-                    let substitute = LogicalExpression::Variable(synthetic_alias.to_string());
-                    return Ok((agg, substitute));
-                }
-                // Une fonction scalaire qui ENVELOPPE l'agrégat (`head(collect(n))`,
-                // `__component(head(collect(n)), 'sha')`) : l'agrégat est extrait
-                // de l'argument qui le porte, les autres sont traduits tels
-                // quels. (Un `expect` plantait le processus sur cette forme.)
-                let mut extracted = None;
-                let mut translated_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    if extracted.is_none() && contains_aggregate(arg) {
-                        let (agg, substitute) =
-                            self.extract_wrapped_aggregate(arg, synthetic_alias)?;
-                        extracted = Some(agg);
-                        translated_args.push(substitute);
-                    } else {
-                        translated_args.push(self.translate_expression(arg)?);
-                    }
-                }
-                let agg = extracted.ok_or_else(|| {
+        agg_counter: &mut u32,
+        found: &mut Vec<AggregateExpr>,
+    ) -> Result<ast::Expression> {
+        // L'agrégat lui-même : extrait, remplacé par son alias synthétique.
+        if let ast::Expression::FunctionCall { name, .. } = expr
+            && is_aggregate_function(name)
+        {
+            let alias = format!("_agg_{}", *agg_counter);
+            *agg_counter += 1;
+            let agg = self
+                .try_extract_aggregate(expr, &Some(alias.clone()))?
+                .ok_or_else(|| {
                     Error::Query(QueryError::new(
                         QueryErrorKind::Semantic,
-                        format!("contains_aggregate was true but no aggregate found in {name}"),
+                        format!("agrégat reconnu mais non extrait : {name}"),
                     ))
                 })?;
-                Ok((
-                    agg,
-                    LogicalExpression::FunctionCall {
-                        name: name.clone(),
-                        args: translated_args,
-                        distinct: false,
-                    },
-                ))
+            found.push(agg);
+            return Ok(ast::Expression::Variable(alias));
+        }
+
+        // Sinon : recopier le nud en hissant ses sous-expressions.
+        let mut out = expr.clone();
+        match &mut out {
+            ast::Expression::PropertyAccess { base, .. } => {
+                let h = self.hoist_aggregates(base, agg_counter, found)?;
+                **base = h;
             }
-            ast::Expression::Binary { left, op, right } => {
-                let binary_op = self.translate_binary_op(*op)?;
-                if contains_aggregate(left) {
-                    let (agg, left_sub) = self.extract_wrapped_aggregate(left, synthetic_alias)?;
-                    let right_expr = self.translate_expression(right)?;
-                    Ok((
-                        agg,
-                        LogicalExpression::Binary {
-                            left: Box::new(left_sub),
-                            op: binary_op,
-                            right: Box::new(right_expr),
-                        },
-                    ))
-                } else {
-                    let (agg, right_sub) =
-                        self.extract_wrapped_aggregate(right, synthetic_alias)?;
-                    let left_expr = self.translate_expression(left)?;
-                    Ok((
-                        agg,
-                        LogicalExpression::Binary {
-                            left: Box::new(left_expr),
-                            op: binary_op,
-                            right: Box::new(right_sub),
-                        },
-                    ))
+            ast::Expression::IndexAccess { base, index } => {
+                let hb = self.hoist_aggregates(base, agg_counter, found)?;
+                **base = hb;
+                let hi = self.hoist_aggregates(index, agg_counter, found)?;
+                **index = hi;
+            }
+            ast::Expression::SliceAccess { base, start, end } => {
+                let hb = self.hoist_aggregates(base, agg_counter, found)?;
+                **base = hb;
+                if let Some(s) = start {
+                    let hs = self.hoist_aggregates(s, agg_counter, found)?;
+                    **s = hs;
+                }
+                if let Some(e) = end {
+                    let he = self.hoist_aggregates(e, agg_counter, found)?;
+                    **e = he;
                 }
             }
-            ast::Expression::Unary { op, operand } => {
-                let (agg, sub) = self.extract_wrapped_aggregate(operand, synthetic_alias)?;
-                // Unary positive is identity: just return the operand
-                if *op == ast::UnaryOp::Pos {
-                    return Ok((agg, sub));
+            ast::Expression::Binary { left, right, .. } => {
+                let hl = self.hoist_aggregates(left, agg_counter, found)?;
+                **left = hl;
+                let hr = self.hoist_aggregates(right, agg_counter, found)?;
+                **right = hr;
+            }
+            ast::Expression::Unary { operand, .. } => {
+                let h = self.hoist_aggregates(operand, agg_counter, found)?;
+                **operand = h;
+            }
+            ast::Expression::FunctionCall { args, .. } => {
+                for arg in args.iter_mut() {
+                    let h = self.hoist_aggregates(arg, agg_counter, found)?;
+                    *arg = h;
                 }
-                let unary_op = self.translate_unary_op(*op)?;
-                Ok((
-                    agg,
-                    LogicalExpression::Unary {
-                        op: unary_op,
-                        operand: Box::new(sub),
-                    },
-                ))
+            }
+            ast::Expression::List(items) => {
+                for it in items.iter_mut() {
+                    let h = self.hoist_aggregates(it, agg_counter, found)?;
+                    *it = h;
+                }
+            }
+            ast::Expression::Map(entries) => {
+                for (_, v) in entries.iter_mut() {
+                    let h = self.hoist_aggregates(v, agg_counter, found)?;
+                    *v = h;
+                }
+            }
+            ast::Expression::ListComprehension {
+                list,
+                filter,
+                projection,
+                ..
+            } => {
+                let hl = self.hoist_aggregates(list, agg_counter, found)?;
+                **list = hl;
+                if let Some(f) = filter {
+                    let hf = self.hoist_aggregates(f, agg_counter, found)?;
+                    **f = hf;
+                }
+                if let Some(p) = projection {
+                    let hp = self.hoist_aggregates(p, agg_counter, found)?;
+                    **p = hp;
+                }
+            }
+            ast::Expression::PatternComprehension {
+                where_clause,
+                projection,
+                ..
+            } => {
+                if let Some(w) = where_clause {
+                    let hw = self.hoist_aggregates(w, agg_counter, found)?;
+                    **w = hw;
+                }
+                let hp = self.hoist_aggregates(projection, agg_counter, found)?;
+                **projection = hp;
             }
             ast::Expression::Case {
                 input,
                 whens,
                 else_clause,
             } => {
-                // Find the first aggregate inside the CASE branches and extract it.
-                // The aggregate is replaced by a variable reference; the rest of
-                // the CASE is translated normally.
-                for (cond, then) in whens {
-                    if contains_aggregate(cond) {
-                        let (agg, _) = self.extract_wrapped_aggregate(cond, synthetic_alias)?;
-                        let full_case = self.translate_expression(expr)?;
-                        return Ok((agg, full_case));
-                    }
-                    if contains_aggregate(then) {
-                        let (agg, _) = self.extract_wrapped_aggregate(then, synthetic_alias)?;
-                        let full_case = self.translate_expression(expr)?;
-                        return Ok((agg, full_case));
-                    }
+                if let Some(i) = input {
+                    let hi = self.hoist_aggregates(i, agg_counter, found)?;
+                    **i = hi;
                 }
-                if let Some(el) = else_clause
-                    && contains_aggregate(el)
-                {
-                    let (agg, _) = self.extract_wrapped_aggregate(el, synthetic_alias)?;
-                    let full_case = self.translate_expression(expr)?;
-                    return Ok((agg, full_case));
+                for (cond, then) in whens.iter_mut() {
+                    let hc = self.hoist_aggregates(cond, agg_counter, found)?;
+                    *cond = hc;
+                    let ht = self.hoist_aggregates(then, agg_counter, found)?;
+                    *then = ht;
                 }
-                if let Some(inp) = input
-                    && contains_aggregate(inp)
-                {
-                    let (agg, _) = self.extract_wrapped_aggregate(inp, synthetic_alias)?;
-                    let full_case = self.translate_expression(expr)?;
-                    return Ok((agg, full_case));
+                if let Some(e) = else_clause {
+                    let he = self.hoist_aggregates(e, agg_counter, found)?;
+                    **e = he;
                 }
-                Err(Error::Query(QueryError::new(
-                    QueryErrorKind::Semantic,
-                    "Unsupported expression wrapping an aggregate",
-                )))
             }
-            _ => Err(Error::Query(QueryError::new(
-                QueryErrorKind::Semantic,
-                "Unsupported expression wrapping an aggregate",
-            ))),
+            ast::Expression::ListPredicate {
+                list, predicate, ..
+            } => {
+                let hl = self.hoist_aggregates(list, agg_counter, found)?;
+                **list = hl;
+                let hp = self.hoist_aggregates(predicate, agg_counter, found)?;
+                **predicate = hp;
+            }
+            // Littéraux, variables, paramètres, sous-requêtes et projections de
+            // carte ne portent pas d'agrégat hissable ici.
+            _ => {}
         }
+        Ok(out)
     }
 
     /// Tries to extract an aggregate expression from an AST expression.
@@ -3258,11 +3269,44 @@ fn contains_aggregate(expr: &ast::Expression) -> bool {
                 || else_clause.as_deref().is_some_and(contains_aggregate)
         }
         ast::Expression::List(items) => items.iter().any(contains_aggregate),
+        // La LISTE parcourue porte l'expression : `[x IN collect(a) + collect(b)
+        // WHERE ..]`. L'oublier faisait déclarer « pas d'agrégat » une projection
+        // qui en contenait deux ; le hissage n'était alors jamais déclenché et
+        // l'agrégat atteignait l'évaluateur, d'où « fonction inconnue : collect »
+        // (obrain#195, famille 1).
         ast::Expression::ListComprehension {
-            filter, projection, ..
+            list,
+            filter,
+            projection,
+            ..
         } => {
-            filter.as_deref().is_some_and(contains_aggregate)
+            contains_aggregate(list)
+                || filter.as_deref().is_some_and(contains_aggregate)
                 || projection.as_deref().is_some_and(contains_aggregate)
+        }
+        ast::Expression::ListPredicate {
+            list, predicate, ..
+        } => contains_aggregate(list) || contains_aggregate(predicate),
+        ast::Expression::Map(entries) => entries.iter().any(|(_, v)| contains_aggregate(v)),
+        ast::Expression::PropertyAccess { base, .. } => contains_aggregate(base),
+        ast::Expression::IndexAccess { base, index } => {
+            contains_aggregate(base) || contains_aggregate(index)
+        }
+        ast::Expression::SliceAccess { base, start, end } => {
+            contains_aggregate(base)
+                || start.as_deref().is_some_and(contains_aggregate)
+                || end.as_deref().is_some_and(contains_aggregate)
+        }
+        ast::Expression::PatternComprehension {
+            where_clause,
+            projection,
+            ..
+        } => {
+            where_clause.as_deref().is_some_and(contains_aggregate)
+                || contains_aggregate(projection)
+        }
+        ast::Expression::Reduce { initial, list, .. } => {
+            contains_aggregate(initial) || contains_aggregate(list)
         }
         _ => false,
     }
