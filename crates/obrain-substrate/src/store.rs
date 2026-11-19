@@ -36138,9 +36138,16 @@ mod tests {
     /// decoded entries in chain order (newest → oldest).
     fn collect_node_props_v2(s: &SubstrateStore, slot: u32) -> Vec<crate::page::PropertyEntry> {
         let rec = s.writer.read_node(slot).unwrap().unwrap();
-        let head = crate::props_zone::decode_page_id(rec.first_prop_off);
         let pz = s.props_zone.as_ref().expect("v2 enabled").read();
-        pz.collect_entries(head).unwrap()
+        // Adresse BRUTE (U48), pas `decode_page_id` : celui-ci tronque en u32
+        // et detruit l'offset de slot du format packe (obrain#249). Le chemin
+        // unite-aware lit les deux dispositions, page legacy et slot 512.
+        let mut entries = Vec::new();
+        pz.walk_chain_unite(Some(rec.first_prop_off.to_u64()), |entree| {
+            entries.push(entree.clone());
+        })
+        .unwrap();
+        entries
     }
 
     /// ═══ GARANTIE MEMOIRE (2026-07-25, operateur : « je veux la garantie
@@ -37591,9 +37598,16 @@ mod tests {
     /// [`collect_edge_props_v2_raw`].
     fn collect_edge_props_v2(s: &SubstrateStore, slot: u64) -> Vec<crate::page::PropertyEntry> {
         let rec = s.writer.read_edge(slot).unwrap().unwrap();
-        let head = crate::props_zone::decode_page_id(rec.first_prop_off);
         let pz = s.props_zone.as_ref().expect("v2 enabled").read();
-        pz.collect_entries(head).unwrap()
+        // Adresse BRUTE (U48), pas `decode_page_id` : celui-ci tronque en u32
+        // et detruit l'offset de slot du format packe (obrain#249). Le chemin
+        // unite-aware lit les deux dispositions, page legacy et slot 512.
+        let mut entries = Vec::new();
+        pz.walk_chain_unite(Some(rec.first_prop_off.to_u64()), |entree| {
+            entries.push(entree.clone());
+        })
+        .unwrap();
+        entries
     }
 
     /// Helper: tombstone-inclusive walk of the PropsZone edge chain. Used
