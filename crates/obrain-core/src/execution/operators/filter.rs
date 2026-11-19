@@ -385,6 +385,38 @@ mod trace_filtre {
     }
 }
 
+/// Genre des éléments d'une liste, lu sur l'EXPRESSION qui la produit.
+///
+/// `nodes(p)` rend des identifiants de nœuds, `relationships(p)` des
+/// identifiants d'arêtes — et les deux séries se recoupent (elles partent
+/// de 1). Un `Int64` seul ne dit donc pas ce qu'il désigne ; le seul endroit
+/// qui le sache est l'expression source. C'est elle qu'on interroge, jamais
+/// la valeur : deviner produirait soit le mauvais nœud, soit une erreur
+/// d'ambiguïté sur TOUS les chemins (obrain-db/obrain#189).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenreElement {
+    Noeud,
+    Arete,
+    Inconnu,
+}
+
+/// Genre des éléments de la liste produite par `list_expr`.
+fn genre_element(list_expr: &FilterExpression) -> GenreElement {
+    match list_expr {
+        FilterExpression::FunctionCall { name, args } => match name.to_ascii_lowercase().as_str() {
+            "nodes" => GenreElement::Noeud,
+            "relationships" | "edges" => GenreElement::Arete,
+            // `tail(relationships(p))`, `head(…)`, `reverse(…)` : le genre
+            // est celui de la liste d'origine.
+            "tail" | "head" | "reverse" => {
+                args.first().map_or(GenreElement::Inconnu, genre_element)
+            }
+            _ => GenreElement::Inconnu,
+        },
+        _ => GenreElement::Inconnu,
+    }
+}
+
 /// Rassemble les couples (variable, propriété) référencés par une expression.
 ///
 /// CONSERVATEUR À DESSEIN : un variant non traité (ou ajouté plus tard) n'est
@@ -1632,6 +1664,74 @@ impl ExpressionPredicate {
         }
     }
 
+    /// Propriété d'un élément de liste dont le GENRE est connu.
+    fn propriete_d_un_element(
+        &self,
+        id: i64,
+        propriete: &str,
+        genre: GenreElement,
+    ) -> Option<Value> {
+        match genre {
+            GenreElement::Noeud => self
+                .resolve_node(NodeId(id as u64))
+                .and_then(|n| n.get_property(propriete).cloned())
+                .or(Some(Value::Null)),
+            GenreElement::Arete => self
+                .resolve_edge(obrain_common::types::EdgeId(id as u64))
+                .and_then(|a| a.get_property(propriete).cloned())
+                .or(Some(Value::Null)),
+            // Sans source connue, règle stricte inchangée : nœud d'abord,
+            // erreur si les deux existent (jamais le mauvais).
+            GenreElement::Inconnu => self.propriete_d_un_identifiant(id, propriete),
+        }
+    }
+
+    /// Type d'une arête désignée par son identifiant.
+    fn type_d_un_identifiant(&self, id: i64, genre: GenreElement) -> Option<Value> {
+        if genre == GenreElement::Noeud {
+            return self.signale_erreur(format!(
+                "type() attend une relation : l'identifiant {id} désigne un nœud"
+            ));
+        }
+        match self.resolve_edge(obrain_common::types::EdgeId(id as u64)) {
+            Some(arete) => Some(Value::String(arete.edge_type.clone())),
+            None => self.signale_erreur(format!(
+                "type() attend une relation : l'identifiant {id} n'en désigne aucune"
+            )),
+        }
+    }
+
+    /// Propriété d'un élément de liste qui voyage comme son IDENTIFIANT.
+    ///
+    /// Le modèle de valeurs n'a pas de variante nœud / arête : les deux
+    /// voyagent comme un entier, et leurs identifiants se recoupent (les deux
+    /// séries partent de 1). Si l'identifiant désigne UN nœud ET UNE arête, on
+    /// ne peut pas savoir lequel est visé : erreur, jamais le mauvais. Si un
+    /// seul existe, c'est lui. Une propriété absente est NULL, comme `n.prop`.
+    fn propriete_d_un_identifiant(&self, id: i64, propriete: &str) -> Option<Value> {
+        let noeud = self.resolve_node(NodeId(id as u64));
+        let arete = self.resolve_edge(obrain_common::types::EdgeId(id as u64));
+        match (noeud, arete) {
+            (Some(node), None) => {
+                Some(node.get_property(propriete).cloned().unwrap_or(Value::Null))
+            }
+            (None, Some(edge)) => {
+                Some(edge.get_property(propriete).cloned().unwrap_or(Value::Null))
+            }
+            (Some(_), Some(_)) => self.signale_erreur(format!(
+                "accès à la propriété '{propriete}' d'un élément de liste : \
+                 l'identifiant {id} désigne à la fois un nœud et une arête, \
+                 on ne peut pas savoir lequel est visé (utiliser la variable \
+                 elle-même plutôt que l'élément de liste)"
+            )),
+            (None, None) => self.signale_erreur(format!(
+                "accès à la propriété '{propriete}' d'une valeur qui n'est ni \
+                 une durée, une date, une map, ni un nœud ou une arête \
+                 connus (id {id})"
+            )),
+        }
+    }
+
     /// Evaluates the expression for a specific row in a chunk, returning the result value.
     /// This is useful for evaluating expressions in contexts like RETURN clauses.
     pub fn eval_at(&self, chunk: &DataChunk, row: usize) -> Option<Value> {
@@ -2021,6 +2121,8 @@ impl ExpressionPredicate {
                 filter_expr,
                 map_expr,
             } => {
+                // Genre des éléments, lu sur la SOURCE (voir `genre_element`).
+                let genre = genre_element(list_expr);
                 // Evaluate the source list (accept both List and Vector)
                 let list_val = self.eval_expr(list_expr, chunk, row)?;
                 let owned_items: Vec<Value>;
@@ -2045,7 +2147,13 @@ impl ExpressionPredicate {
                         // Simplified: evaluate filter with item as context
                         // This works for simple cases like x > 5
                         matches!(
-                            self.eval_comprehension_expr(filter, item, variable),
+                            self.eval_comprehension_expr(
+                                filter,
+                                item,
+                                variable,
+                                (chunk, row),
+                                genre
+                            ),
                             Some(Value::Bool(true))
                         )
                     } else {
@@ -2054,8 +2162,13 @@ impl ExpressionPredicate {
 
                     if passes_filter {
                         // Apply the mapping expression
-                        if let Some(mapped) = self.eval_comprehension_expr(map_expr, item, variable)
-                        {
+                        if let Some(mapped) = self.eval_comprehension_expr(
+                            map_expr,
+                            item,
+                            variable,
+                            (chunk, row),
+                            genre,
+                        ) {
                             result.push(mapped);
                         }
                     }
@@ -2069,6 +2182,7 @@ impl ExpressionPredicate {
                 list_expr,
                 predicate,
             } => {
+                let genre = genre_element(list_expr);
                 let list_val = self.eval_expr(list_expr, chunk, row)?;
                 // Accept both List and Vector as iterable sequences
                 // `vec_items` doit survivre à `items`, qui peut l'emprunter.
@@ -2084,7 +2198,13 @@ impl ExpressionPredicate {
 
                 let mut match_count: u32 = 0;
                 for item in &items {
-                    let result = self.eval_comprehension_expr(predicate, item, variable);
+                    let result = self.eval_comprehension_expr(
+                        predicate,
+                        item,
+                        variable,
+                        (chunk, row),
+                        genre,
+                    );
                     if matches!(result, Some(Value::Bool(true))) {
                         match_count += 1;
                     }
@@ -2188,6 +2308,7 @@ impl ExpressionPredicate {
                 list,
                 expression,
             } => {
+                let genre = genre_element(list);
                 let init_val = self.eval_expr(initial, chunk, row)?;
                 let list_val = self.eval_expr(list, chunk, row)?;
                 let owned_items: Vec<Value>;
@@ -2208,6 +2329,7 @@ impl ExpressionPredicate {
                         item,
                         variable,
                         (chunk, row),
+                        genre,
                     )?;
                 }
                 Some(acc)
@@ -2300,6 +2422,9 @@ impl ExpressionPredicate {
     /// Both the accumulator variable and the iteration variable are bound.
     /// The `ctx` parameter provides chunk context `(chunk, row)` for resolving
     /// outer-scope variables (variables not bound by reduce).
+    // item, variable d'itération, ligne courante et genre d'élément voyagent
+    // ensemble : les séparer n'ajouterait qu'un emballage.
+    #[allow(clippy::too_many_arguments)]
     fn eval_reduce_expr(
         &self,
         expr: &FilterExpression,
@@ -2308,9 +2433,11 @@ impl ExpressionPredicate {
         item_val: &Value,
         item_name: &str,
         ctx: (&DataChunk, usize),
+        genre: GenreElement,
     ) -> Option<Value> {
         // Closure for recursive calls with all bindings
-        let recurse = |e| self.eval_reduce_expr(e, acc_val, acc_name, item_val, item_name, ctx);
+        let recurse =
+            |e| self.eval_reduce_expr(e, acc_val, acc_name, item_val, item_name, ctx, genre);
         match expr {
             FilterExpression::Variable(name) if name == acc_name => Some(acc_val.clone()),
             FilterExpression::Variable(name) if name == item_name => Some(item_val.clone()),
@@ -2353,16 +2480,40 @@ impl ExpressionPredicate {
             FilterExpression::Property {
                 variable: var,
                 property,
-            } if var == item_name => {
-                if let Value::Map(map) = item_val {
-                    Some(
-                        map.iter()
-                            .find(|(k, _)| k.as_str() == property)
-                            .map_or(Value::Null, |(_, v)| v.clone()),
-                    )
-                } else {
-                    None
+            } if var == item_name => match item_val {
+                Value::Map(map) => Some(
+                    map.iter()
+                        .find(|(k, _)| k.as_str() == property)
+                        .map_or(Value::Null, |(_, v)| v.clone()),
+                ),
+                // `reduce(s = 0.0, n IN nodes(p) | s + coalesce(n.pagerank, 0.05))` :
+                // même résolution que dans une compréhension.
+                Value::Int64(id) => self.propriete_d_un_element(*id, property, genre),
+                _ => None,
+            },
+            FilterExpression::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("type") && args.len() == 1 =>
+            {
+                match recurse(&args[0])? {
+                    Value::Int64(id) => self.type_d_un_identifiant(id, genre),
+                    _ => None,
                 }
+            }
+            FilterExpression::Type(var) if var == item_name => match item_val {
+                Value::Int64(id) => self.type_d_un_identifiant(*id, genre),
+                _ => None,
+            },
+            FilterExpression::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("coalesce") =>
+            {
+                for a in args {
+                    if let Some(v) = recurse(a)
+                        && !v.is_null()
+                    {
+                        return Some(v);
+                    }
+                }
+                Some(Value::Null)
             }
             FilterExpression::Property {
                 variable: var,
@@ -2448,20 +2599,35 @@ impl ExpressionPredicate {
 
     /// Evaluates an expression in the context of a list comprehension.
     /// The `item` is the current iteration value bound to `variable`.
+    ///
+    /// `ctx` est la ligne courante `(chunk, row)` : toute variable qui n'est
+    /// pas celle de l'itération (une colonne du motif, `r` dans
+    /// `all(x IN rs WHERE x <> r)`) s'y résout. Sans cela le prédicat
+    /// rendait `None` et le filtre d'unicité entre relation simple et
+    /// relation de longueur variable éliminait TOUTES les lignes
+    /// (obrain-db/obrain#189).
+    // item, variable d'itération, ligne courante et genre d'élément voyagent
+    // ensemble : les séparer n'ajouterait qu'un emballage.
+    #[allow(clippy::too_many_arguments)]
     fn eval_comprehension_expr(
         &self,
         expr: &FilterExpression,
         item: &Value,
         variable: &str,
+        ctx: (&DataChunk, usize),
+        genre: GenreElement,
     ) -> Option<Value> {
         match expr {
             FilterExpression::Variable(name) if name == variable => Some(item.clone()),
+            FilterExpression::Variable(_) => self.eval_expr(expr, ctx.0, ctx.1),
             FilterExpression::Literal(v) => Some(v.clone()),
             FilterExpression::Binary { left, op, right } => {
                 // IN operator needs special handling: right side is a list
                 if *op == BinaryFilterOp::In {
-                    let left_val = self.eval_comprehension_expr(left, item, variable)?;
-                    let right_val = self.eval_comprehension_expr(right, item, variable)?;
+                    let left_val =
+                        self.eval_comprehension_expr(left, item, variable, ctx, genre)?;
+                    let right_val =
+                        self.eval_comprehension_expr(right, item, variable, ctx, genre)?;
                     return match right_val {
                         Value::List(items) => {
                             if left_val.is_null() {
@@ -2484,12 +2650,12 @@ impl ExpressionPredicate {
                         _ => None,
                     };
                 }
-                let left_val = self.eval_comprehension_expr(left, item, variable)?;
-                let right_val = self.eval_comprehension_expr(right, item, variable)?;
+                let left_val = self.eval_comprehension_expr(left, item, variable, ctx, genre)?;
+                let right_val = self.eval_comprehension_expr(right, item, variable, ctx, genre)?;
                 self.eval_binary_op(&left_val, *op, &right_val)
             }
             FilterExpression::Unary { op, operand } => {
-                let val = self.eval_comprehension_expr(operand, item, variable);
+                let val = self.eval_comprehension_expr(operand, item, variable, ctx, genre);
                 self.eval_unary_op(*op, val)
             }
             FilterExpression::Property {
@@ -2497,17 +2663,53 @@ impl ExpressionPredicate {
                 property,
             } if var == variable => {
                 // Property access on the iteration variable
-                if let Value::Map(m) = item {
-                    let key = PropertyKey::new(property.as_str());
-                    m.get(&key).cloned()
-                } else {
-                    None
+                match item {
+                    Value::Map(m) => {
+                        let key = PropertyKey::new(property.as_str());
+                        m.get(&key).cloned()
+                    }
+                    // `[n IN nodes(p) | n.id]`, `[r IN relationships(p) | r.weight]` :
+                    // l'élément d'une liste de nœuds / d'arêtes voyage comme son
+                    // identifiant et n'a pas de type propre — même résolution que
+                    // la variable elle-même (`__component`, `n.prop`).
+                    Value::Int64(id) => self.propriete_d_un_element(*id, property, genre),
+                    _ => None,
                 }
+            }
+            // `[r IN relationships(p) | type(r)]` — le traducteur en fait
+            // une FONCTION `type(...)`, pas le variant `Type`.
+            FilterExpression::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("type") && args.len() == 1 =>
+            {
+                match self.eval_comprehension_expr(&args[0], item, variable, ctx, genre)? {
+                    Value::Int64(id) => self.type_d_un_identifiant(id, genre),
+                    _ => None,
+                }
+            }
+            FilterExpression::Type(var) if var == variable => match item {
+                Value::Int64(id) => self.type_d_un_identifiant(*id, genre),
+                _ => None,
+            },
+            // `coalesce(a, b, …)` dont les arguments référencent l'élément
+            // (`coalesce(node.name, node.path, node.id)` dans PO) : la chute
+            // vers `eval_expr` ne connaît pas la variable d'itération et
+            // perdait TOUS les arguments.
+            FilterExpression::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("coalesce") =>
+            {
+                for a in args {
+                    if let Some(v) = self.eval_comprehension_expr(a, item, variable, ctx, genre)
+                        && !v.is_null()
+                    {
+                        return Some(v);
+                    }
+                }
+                Some(Value::Null)
             }
             FilterExpression::List(items) => {
                 let values: Vec<Value> = items
                     .iter()
-                    .filter_map(|i| self.eval_comprehension_expr(i, item, variable))
+                    .filter_map(|i| self.eval_comprehension_expr(i, item, variable, ctx, genre))
                     .collect();
                 Some(Value::List(values.into()))
             }
@@ -2521,13 +2723,19 @@ impl ExpressionPredicate {
                 else_clause.as_deref(),
                 item,
                 variable,
+                ctx,
+                genre,
             ),
-            // For other expression types, return None (unsupported in comprehension)
-            _ => None,
+            // Toute autre forme (fonction, propriété d'une variable extérieure…)
+            // s'évalue sur la ligne courante ; une référence à la variable
+            // d'itération y reste non résolue (None), comme avant.
+            _ => self.eval_expr(expr, ctx.0, ctx.1),
         }
     }
 
     /// Evaluates a CASE expression inside a list comprehension or predicate context.
+    // Mêmes quatre faits que `eval_comprehension_expr`, qu'il rappelle.
+    #[allow(clippy::too_many_arguments)]
     fn eval_case_in_comprehension(
         &self,
         operand: Option<&FilterExpression>,
@@ -2535,32 +2743,35 @@ impl ExpressionPredicate {
         else_clause: Option<&FilterExpression>,
         item: &Value,
         variable: &str,
+        ctx: (&DataChunk, usize),
+        genre: GenreElement,
     ) -> Option<Value> {
         if let Some(test_expr) = operand {
             let test_val = self
-                .eval_comprehension_expr(test_expr, item, variable)
+                .eval_comprehension_expr(test_expr, item, variable, ctx, genre)
                 .unwrap_or(Value::Null);
             for (when_expr, then_expr) in when_clauses {
                 let when_val = self
-                    .eval_comprehension_expr(when_expr, item, variable)
+                    .eval_comprehension_expr(when_expr, item, variable, ctx, genre)
                     .unwrap_or(Value::Null);
                 if !test_val.is_null()
                     && !when_val.is_null()
                     && Self::values_equal(&test_val, &when_val)
                 {
-                    return self.eval_comprehension_expr(then_expr, item, variable);
+                    return self.eval_comprehension_expr(then_expr, item, variable, ctx, genre);
                 }
             }
         } else {
             for (when_expr, then_expr) in when_clauses {
-                let when_val = self.eval_comprehension_expr(when_expr, item, variable)?;
+                let when_val =
+                    self.eval_comprehension_expr(when_expr, item, variable, ctx, genre)?;
                 if when_val.as_bool() == Some(true) {
-                    return self.eval_comprehension_expr(then_expr, item, variable);
+                    return self.eval_comprehension_expr(then_expr, item, variable, ctx, genre);
                 }
             }
         }
         if let Some(else_expr) = else_clause {
-            self.eval_comprehension_expr(else_expr, item, variable)
+            self.eval_comprehension_expr(else_expr, item, variable, ctx, genre)
         } else {
             Some(Value::Null)
         }
@@ -4432,39 +4643,9 @@ impl ExpressionPredicate {
                     // `head(collect(n))`) voyagent comme leur identifiant :
                     // on les résout par le store (nœud d'abord, arête sinon).
                     // Une propriété absente est NULL, comme sur `n.prop`.
-                    Value::Int64(id) => {
-                        // Le modèle de valeurs n'a pas de variante nœud / arête :
-                        // les deux voyagent comme un entier, et leurs
-                        // identifiants se recoupent (les deux séries partent de
-                        // 1). Si l'identifiant désigne UN nœud ET UNE arête, on ne
-                        // peut pas savoir lequel est visé : erreur, jamais le
-                        // mauvais. Si un seul existe, c'est lui.
-                        let noeud = self.resolve_node(NodeId(id as u64));
-                        let arete = self.resolve_edge(obrain_common::types::EdgeId(id as u64));
-                        match (noeud, arete) {
-                            (Some(node), None) => Some(
-                                node.get_property(&propriete)
-                                    .cloned()
-                                    .unwrap_or(Value::Null),
-                            ),
-                            (None, Some(edge)) => Some(
-                                edge.get_property(&propriete)
-                                    .cloned()
-                                    .unwrap_or(Value::Null),
-                            ),
-                            (Some(_), Some(_)) => self.signale_erreur(format!(
-                                "accès à la propriété '{propriete}' d'un élément de liste : \
-                                 l'identifiant {id} désigne à la fois un nœud et une arête, \
-                                 on ne peut pas savoir lequel est visé (utiliser la variable \
-                                 elle-même plutôt que l'élément de liste)"
-                            )),
-                            (None, None) => self.signale_erreur(format!(
-                                "accès à la propriété '{propriete}' d'une valeur qui n'est ni \
-                                 une durée, une date, une map, ni un nœud ou une arête \
-                                 connus (id {id})"
-                            )),
-                        }
-                    }
+                    // Même résolution que la compréhension (voir
+                    // `propriete_d_un_identifiant`).
+                    Value::Int64(id) => self.propriete_d_un_identifiant(id, &propriete),
                     Value::Date(d) => composant_de_date(&propriete, Some(d), None)
                         .map(Value::Int64)
                         .or_else(|| {

@@ -74,6 +74,13 @@ pub struct VariableLengthExpandOperator {
     viewing_epoch: Option<EpochId>,
     /// When true, skip versioned MVCC lookups (fast path for read-only queries).
     read_only: bool,
+    /// (obrain#189) La colonne « arete » porte la LISTE des aretes du chemin
+    /// (`Value::List` d'identifiants) au lieu de la seule derniere arete.
+    /// C'est ce que lie une variable d'arete de longueur variable
+    /// (`-[rs:T*1..3]->`) : `all(x IN rs WHERE …)`, `size(rs)`, `RETURN rs`.
+    /// Sans ce drapeau, le filtre d'unicite entre relation simple et
+    /// longueur variable recevait un EdgeId et eliminait toutes les lignes.
+    output_edge_list: bool,
     /// Contexte de session — registre multi-store (aretes inter-bases V2).
     session_context: SessionContext,
     /// (V4) Bases internees du parcours : indice 0 = primaire. VIDE tant
@@ -225,6 +232,7 @@ impl VariableLengthExpandOperator {
             transaction_id: None,
             viewing_epoch: None,
             read_only: false,
+            output_edge_list: false,
             session_context: SessionContext::default(),
             bases: parking_lot::Mutex::new(Vec::new()),
             input_rows: None,
@@ -246,6 +254,14 @@ impl VariableLengthExpandOperator {
     /// Enables path length output as an additional column.
     pub fn with_path_length_output(mut self) -> Self {
         self.output_path_length = true;
+        self
+    }
+
+    /// Emits the edge column as the list of the path's edges (see
+    /// `output_edge_list`). Implies path tracking.
+    #[must_use]
+    pub fn with_edge_list_output(mut self) -> Self {
+        self.output_edge_list = true;
         self
     }
 
@@ -560,7 +576,9 @@ impl VariableLengthExpandOperator {
     /// Process one input row, generating all reachable outputs.
     fn process_input_row(&self, input_idx: usize, source_node: NoeudM) -> Vec<OutputRow> {
         let mut results = Vec::new();
-        let needs_tracking = self.output_path_detail || self.path_mode != PathMode::Walk;
+        let needs_tracking =
+            self.output_path_detail || self.output_edge_list || self.path_mode != PathMode::Walk;
+        let needs_edges = self.output_path_detail || self.output_edge_list;
 
         // `*0..n` : le chemin de longueur 0 (source = cible, aucune arete)
         // existe dans tous les modes — un chemin vide ne repete ni noeud ni
@@ -573,7 +591,7 @@ impl VariableLengthExpandOperator {
                 target_id: source_node,
                 path_length: 0,
                 path_nodes: self.output_path_detail.then(|| vec![source_node.id]),
-                path_edges: self.output_path_detail.then(Vec::new),
+                path_edges: needs_edges.then(Vec::new),
             });
         }
 
@@ -624,7 +642,7 @@ impl VariableLengthExpandOperator {
                         } else {
                             None
                         },
-                        path_edges: if self.output_path_detail {
+                        path_edges: if needs_edges {
                             Some(segment.collect_edges(depth))
                         } else {
                             None
@@ -763,6 +781,9 @@ impl Operator for VariableLengthExpandOperator {
         if self.session_context.base_registry.is_some() {
             schema.push(LogicalType::Any);
             schema.push(LogicalType::Any);
+        } else if self.output_edge_list {
+            schema.push(LogicalType::Any); // liste des aretes du chemin
+            schema.push(LogicalType::Node);
         } else {
             schema.push(LogicalType::Edge);
             schema.push(LogicalType::Node);
@@ -799,22 +820,35 @@ impl Operator for VariableLengthExpandOperator {
             // Add edge column. (V4) Une arete d'une base distante s'emet
             // en Map minimale {_id, _base} — son id nu serait ambigu.
             if let Some(col) = chunk.column_mut(num_input_cols) {
-                match out_row.edge_id {
-                    // Chemin de longueur 0 : pas d'arete (bitmap de validite).
-                    None => col.push_value(Value::Null),
-                    Some(edge_id) if edge_id.base == 0 => col.push_edge_id(edge_id.id),
-                    Some(edge_id) => {
-                        let (slug, _) = self.base_de(edge_id.base);
-                        let mut map = std::collections::BTreeMap::new();
-                        map.insert(
-                            PropertyKey::new("_id"),
-                            Value::Int64(edge_id.id.as_u64() as i64),
-                        );
-                        map.insert(
-                            PropertyKey::new(base_registry::BASE_KEY),
-                            Value::String(slug.into()),
-                        );
-                        col.push_value(Value::Map(Arc::new(map)));
+                if self.output_edge_list {
+                    // Liste des aretes du chemin (ids bruts, base primaire —
+                    // meme limitation documentee que `path_edges` en V4).
+                    let liste: Vec<Value> = out_row
+                        .path_edges
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|id| Value::Int64(id.0 as i64))
+                        .collect();
+                    col.push_value(Value::List(liste.into()));
+                } else {
+                    match out_row.edge_id {
+                        // Chemin de longueur 0 : pas d'arete (bitmap de validite).
+                        None => col.push_value(Value::Null),
+                        Some(edge_id) if edge_id.base == 0 => col.push_edge_id(edge_id.id),
+                        Some(edge_id) => {
+                            let (slug, _) = self.base_de(edge_id.base);
+                            let mut map = std::collections::BTreeMap::new();
+                            map.insert(
+                                PropertyKey::new("_id"),
+                                Value::Int64(edge_id.id.as_u64() as i64),
+                            );
+                            map.insert(
+                                PropertyKey::new(base_registry::BASE_KEY),
+                                Value::String(slug.into()),
+                            );
+                            col.push_value(Value::Map(Arc::new(map)));
+                        }
                     }
                 }
             }
