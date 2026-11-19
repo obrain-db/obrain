@@ -3459,14 +3459,31 @@ impl Writer {
         f: impl FnOnce(&mut SimplexZones<'_>) -> SubstrateResult<R>,
     ) -> SubstrateResult<R> {
         let mut zones = self.zones.write();
-        if zones.simplex_dir.is_none() {
+        // TOUT OU RIEN. Les quatre zones s'ouvrent dans des locales et ne sont
+        // publiées qu'une fois les quatre obtenues.
+        //
+        // La version précédente posait `simplex_dir` puis ouvrait les trois
+        // autres : si l'une des ouvertures échouait (`?`), le cache restait avec
+        // `simplex_dir = Some` et les autres à `None`. L'appel suivant sautait
+        // alors le bloc — la condition ne testait que `simplex_dir` — et mourait
+        // sur `heap.as_mut().unwrap()`. En parallèle, l'échec est intermittent,
+        // d'où une panique qui tombait sur un test différent à chaque exécution
+        // (obrain#238).
+        if zones.simplex_dir.is_none()
+            || zones.simplex_heap.is_none()
+            || zones.simplex_incidence.is_none()
+            || zones.simplex_postings.is_none()
+        {
             let sub = self.substrate.lock();
-            zones.simplex_dir = Some(sub.open_zone(Zone::SimplexDir)?);
-            zones.simplex_heap =
-                Some(sub.open_named_zone(crate::simplex_zone::SIMPLEX_HEAP_FILENAME)?);
-            zones.simplex_incidence = Some(sub.open_zone(Zone::SimplexIncidence)?);
-            zones.simplex_postings =
-                Some(sub.open_named_zone(crate::simplex_incidence::SIMPLEX_POSTINGS_FILENAME)?);
+            let dir = sub.open_zone(Zone::SimplexDir)?;
+            let heap = sub.open_named_zone(crate::simplex_zone::SIMPLEX_HEAP_FILENAME)?;
+            let incidence = sub.open_zone(Zone::SimplexIncidence)?;
+            let postings =
+                sub.open_named_zone(crate::simplex_incidence::SIMPLEX_POSTINGS_FILENAME)?;
+            zones.simplex_dir = Some(dir);
+            zones.simplex_heap = Some(heap);
+            zones.simplex_incidence = Some(incidence);
+            zones.simplex_postings = Some(postings);
         }
         // Déstructuration : quatre emprunts disjoints du même cache.
         let ZoneCache {
