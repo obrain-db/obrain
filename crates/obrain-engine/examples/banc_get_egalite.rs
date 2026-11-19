@@ -93,6 +93,12 @@ fn main() {
             "le banc doit rendre le MEME nombre de lignes a chaque tour"
         );
     }
+    // Le PLAN APRÈS rodage : l'index est tenu en mémoire, l'annotation
+    // `[index: …]` du filtre dit que la poussée a eu lieu (#248).
+    match session.execute(&format!("EXPLAIN {q}")) {
+        Ok(r) => println!("\nPLAN après rodage :\n{}", r.rows[0][0]),
+        Err(e) => println!("\nEXPLAIN refusé : {e}"),
+    }
     tries.sort_unstable();
     let somme: u128 = tries.iter().sum();
     println!(

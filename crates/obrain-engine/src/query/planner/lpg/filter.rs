@@ -2094,9 +2094,23 @@ impl super::Planner {
         }
 
         // Check if at least one condition has an index
-        let has_indexed_condition = conditions
-            .iter()
-            .any(|(prop, _)| self.store.has_property_index(prop));
+        //
+        // ── LA PORTE EST `has_property_index` OU `peut_indexer_propriete` (#248) ──
+        //
+        // `has_property_index` n'est vrai que d'un index DÉJÀ tenu en mémoire :
+        // sur une base ouverte à froid il est faux pour toute clé, le
+        // planificateur choisissait le balayage, et le balayage ne rebâtit
+        // jamais l'index — cercle vicieux (3,9 M nœuds : 377 ms au p50 pour un
+        // GET par clé). `peut_indexer_propriete` est la question que le
+        // contrat du trait réserve au planificateur : « le substrat sait-il
+        // répondre par index, même à construire ? ». Elle est évaluée APRÈS
+        // `has_property_index` (court-circuit : aucun effet de bord quand
+        // l'index existe) ; le substrat la compte par propriété et ne
+        // construit qu'à la Nième demande (2 par défaut) — la première
+        // requête d'un processus jetable balaie comme avant.
+        let has_indexed_condition = conditions.iter().any(|(prop, _)| {
+            self.store.has_property_index(prop) || self.store.peut_indexer_propriete(prop)
+        });
 
         // Without an index we can still optimize when there's a label constraint:
         // label-first scan + property check avoids DataChunk/expression overhead.
