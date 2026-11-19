@@ -52,7 +52,7 @@ fn exists_bloc_avec_parametre() {
     let q = "MATCH (n:N) WHERE EXISTS { MATCH (n)-[:INSIDE]->(x:P) WHERE x.id = $p } RETURN n.id";
     assert_eq!(ids(&db, q, "p1"), ["n1"]);
     assert_eq!(ids(&db, q, "p2"), ["n2"]);
-    assert!(ids(&db, q, "absent").is_empty());
+    assert_eq!(ids(&db, q, "absent"), Vec::<String>::new());
 }
 
 #[test]
