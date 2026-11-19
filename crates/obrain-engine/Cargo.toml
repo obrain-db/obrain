@@ -179,6 +179,10 @@ workspace = true
 # feature `cognitive`. Déclarés ici pour que `cargo test --examples` des
 # features par défaut les ignore au lieu d'échouer.
 [[example]]
+name = "mesure_traversee"
+required-features = ["cypher"]
+
+[[example]]
 name = "import_jsonl_cognitif"
 required-features = ["cognitive"]
 
