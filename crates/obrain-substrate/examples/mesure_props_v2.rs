@@ -43,7 +43,11 @@ fn main() {
         for i in 0..n {
             let id = s.create_node(&["Task"]);
             for (k, v) in props {
-                let v = if k == "id" { format!("t{i:07}") } else { v.to_string() };
+                let v = if k == "id" {
+                    format!("t{i:07}")
+                } else {
+                    v.to_string()
+                };
                 utiles += k.len() + v.len();
                 s.set_node_property(id, k, Value::String(v.into()));
             }
