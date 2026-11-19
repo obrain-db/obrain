@@ -68,6 +68,7 @@ fn ligne(plan: &str, motif: &str) -> usize {
 /// `a` descend sous le scan de `b` : le garde voit 1 × n, et la requête passe
 /// même sous un plafond inférieur à n².
 #[test]
+#[allow(unsafe_code)] // set_var est unsafe en édition 2024 ; le plafond n'est lu qu'à la planification
 fn code_44_cles_des_deux_cotes() {
     // SAFETY du test : le plafond est lu à la planification ; aucun autre test
     // de ce binaire ne dépend de sa valeur par défaut.
