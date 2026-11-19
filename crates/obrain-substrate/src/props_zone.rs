@@ -253,7 +253,14 @@ impl PropsZone {
             debug_assert!(mid >= 1 && mid < total_slots);
             let slot = &bytes[mid as usize * PAGE_SIZE..(mid as usize + 1) * PAGE_SIZE];
             let magic = u32::from_le_bytes(slot[0..4].try_into().unwrap());
-            if magic == PROP_PAGE_MAGIC_NODE || magic == PROP_PAGE_MAGIC_EDGE {
+            // Un carrier packé (slots 512) porte `CARRIER_PACKED_MAGIC` en
+            // tête de son unité 0 : c'est une page VIVANTE. Sans ce magic, la
+            // frontière est sous-estimée à la réouverture et les carriers
+            // existants sont réalloués puis écrasés (#249).
+            if magic == PROP_PAGE_MAGIC_NODE
+                || magic == PROP_PAGE_MAGIC_EDGE
+                || magic == crate::unite::CARRIER_PACKED_MAGIC
+            {
                 lo = mid;
             } else {
                 hi = mid;
