@@ -44,6 +44,26 @@ fn entier(db: &ObrainDB, requete: &str) -> i64 {
     }
 }
 
+/// La requête du ticket **telle quelle** : la liste est projetée, pas consommée
+/// par `size()`. Cette forme a son propre chemin de projection — la version
+/// enveloppée passait alors que celle-ci échouait encore au moment du diagnostic,
+/// d'où ce test séparé.
+#[test]
+fn forme_verbatim_du_ticket() {
+    let db = base();
+    let l = lignes(
+        &db,
+        "MATCH (t:Task) WITH t LIMIT 5 \
+         RETURN [x IN collect(DISTINCT t.id) + collect(DISTINCT t.status) \
+                 WHERE x IS NOT NULL] AS xs",
+    );
+    assert_eq!(l.len(), 1, "une agrégation globale rend une seule ligne");
+    match &l[0][0] {
+        Value::List(v) => assert_eq!(v.len(), 5, "3 identifiants distincts + 2 statuts distincts"),
+        autre => panic!("liste attendue, reçu {autre:?}"),
+    }
+}
+
 /// La requête minimale du ticket : deux `collect` dans une compréhension de liste.
 #[test]
 fn deux_collect_dans_une_comprehension() {
