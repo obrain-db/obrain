@@ -117,8 +117,9 @@ enum ColumnValue {
 struct OutputRow {
     /// Index into input_rows for the source row.
     input_idx: usize,
-    /// The final edge in the path.
-    edge_id: AreteM,
+    /// The final edge in the path. `None` for a zero-length path (`*0..n`) :
+    /// the target is the source itself and no edge was taken.
+    edge_id: Option<AreteM>,
     /// The target node.
     target_id: NoeudM,
     /// The path length (number of edges/hops).
@@ -561,6 +562,21 @@ impl VariableLengthExpandOperator {
         let mut results = Vec::new();
         let needs_tracking = self.output_path_detail || self.path_mode != PathMode::Walk;
 
+        // `*0..n` : le chemin de longueur 0 (source = cible, aucune arete)
+        // existe dans tous les modes — un chemin vide ne repete ni noeud ni
+        // arete. Il etait perdu : la BFS n'emet qu'a partir de la
+        // profondeur 1 (obrain-db/obrain#189, `*0..3` vers un projet).
+        if self.min_hops == 0 {
+            results.push(OutputRow {
+                input_idx,
+                edge_id: None,
+                target_id: source_node,
+                path_length: 0,
+                path_nodes: self.output_path_detail.then(|| vec![source_node.id]),
+                path_edges: self.output_path_detail.then(Vec::new),
+            });
+        }
+
         if needs_tracking {
             // BFS with shared-prefix path tracking via Rc<PathSegment>.
             // Required for path detail output or non-Walk path modes.
@@ -600,7 +616,7 @@ impl VariableLengthExpandOperator {
                 if depth >= self.min_hops && depth <= self.max_hops {
                     results.push(OutputRow {
                         input_idx,
-                        edge_id,
+                        edge_id: Some(edge_id),
                         target_id: current_node,
                         path_length: depth,
                         path_nodes: if self.output_path_detail {
@@ -652,7 +668,7 @@ impl VariableLengthExpandOperator {
                 if depth >= self.min_hops && depth <= self.max_hops {
                     results.push(OutputRow {
                         input_idx,
-                        edge_id,
+                        edge_id: Some(edge_id),
                         target_id: current_node,
                         path_length: depth,
                         path_nodes: None,
@@ -783,20 +799,23 @@ impl Operator for VariableLengthExpandOperator {
             // Add edge column. (V4) Une arete d'une base distante s'emet
             // en Map minimale {_id, _base} — son id nu serait ambigu.
             if let Some(col) = chunk.column_mut(num_input_cols) {
-                if out_row.edge_id.base == 0 {
-                    col.push_edge_id(out_row.edge_id.id);
-                } else {
-                    let (slug, _) = self.base_de(out_row.edge_id.base);
-                    let mut map = std::collections::BTreeMap::new();
-                    map.insert(
-                        PropertyKey::new("_id"),
-                        Value::Int64(out_row.edge_id.id.as_u64() as i64),
-                    );
-                    map.insert(
-                        PropertyKey::new(base_registry::BASE_KEY),
-                        Value::String(slug.into()),
-                    );
-                    col.push_value(Value::Map(Arc::new(map)));
+                match out_row.edge_id {
+                    // Chemin de longueur 0 : pas d'arete (bitmap de validite).
+                    None => col.push_value(Value::Null),
+                    Some(edge_id) if edge_id.base == 0 => col.push_edge_id(edge_id.id),
+                    Some(edge_id) => {
+                        let (slug, _) = self.base_de(edge_id.base);
+                        let mut map = std::collections::BTreeMap::new();
+                        map.insert(
+                            PropertyKey::new("_id"),
+                            Value::Int64(edge_id.id.as_u64() as i64),
+                        );
+                        map.insert(
+                            PropertyKey::new(base_registry::BASE_KEY),
+                            Value::String(slug.into()),
+                        );
+                        col.push_value(Value::Map(Arc::new(map)));
+                    }
                 }
             }
 

@@ -18,7 +18,7 @@
 //! cargo test -p obrain-substrate --test operators_variable_length_expand
 //! ```
 
-use obrain_common::types::NodeId;
+use obrain_common::types::{NodeId, Value};
 use obrain_core::execution::operators::{
     ExecutionPathMode as PathMode, Operator, ScanOperator, VariableLengthExpandOperator,
 };
@@ -487,4 +487,101 @@ fn test_acyclic_mode_no_repeated_nodes() {
     let a_results: Vec<_> = results.iter().filter(|(s, _)| *s == a).collect();
     assert_eq!(a_results.len(), 1, "Acyclic from a: only a->b");
     assert_eq!(a_results[0].1, b);
+}
+
+/// `*0..n` : le chemin de longueur 0 existe (obrain-db/obrain#189). Depuis
+/// `a` de degré 2 (`a -> b`, `a -> c`), `*0..1` rend trois chemins : `a`
+/// lui-même (longueur 0, arête NULL, `nodes = [a]`, `edges = []`), puis `b`
+/// et `c`. `*0..0` rend exactement `a`. Les modes Trail et Acyclic aussi :
+/// un chemin vide ne répète rien.
+#[test]
+fn test_zero_hop_path_is_emitted() {
+    let store = new_store();
+    let a = store.create_node(&["Start"]);
+    let b = store.create_node(&["Node"]);
+    let c = store.create_node(&["Node"]);
+    store.create_edge(a, b, "NEXT");
+    store.create_edge(a, c, "NEXT");
+
+    let collect = |min: u32, max: u32, mode: PathMode| {
+        let scan = Box::new(ScanOperator::with_label(
+            Arc::clone(&store) as Arc<dyn GraphStore>,
+            "Start",
+        ));
+        let mut expand = VariableLengthExpandOperator::new(
+            Arc::clone(&store) as Arc<dyn GraphStore>,
+            scan,
+            0,
+            Direction::Outgoing,
+            vec!["NEXT".to_string()],
+            min,
+            max,
+        )
+        .with_path_mode(mode)
+        .with_path_length_output()
+        .with_path_detail_output();
+        // Schéma : [source, edge, target, path_length, path_nodes, path_edges, path]
+        let mut rows = Vec::new();
+        while let Ok(Some(chunk)) = expand.next() {
+            for i in 0..chunk.row_count() {
+                let edge = chunk.column(1).unwrap().get_edge_id(i);
+                let target = chunk.column(2).unwrap().get_node_id(i).unwrap();
+                let length = chunk.column(3).unwrap().get_value(i);
+                let nodes = chunk.column(4).unwrap().get_value(i);
+                let edges = chunk.column(5).unwrap().get_value(i);
+                rows.push((edge, target, length, nodes, edges));
+            }
+        }
+        rows
+    };
+
+    for mode in [PathMode::Walk, PathMode::Trail, PathMode::Acyclic] {
+        let rows = collect(0, 1, mode);
+        assert_eq!(rows.len(), 3, "*0..1 en {mode:?} : a lui-même, b, c");
+        let zero: Vec<_> = rows.iter().filter(|r| r.1 == a).collect();
+        assert_eq!(
+            zero.len(),
+            1,
+            "exactement un chemin de longueur 0 ({mode:?})"
+        );
+        let (edge, _, length, nodes, edges) = zero[0];
+        assert!(edge.is_none(), "l'arête du chemin vide est NULL ({mode:?})");
+        assert!(
+            matches!(length, Some(Value::Int64(0))),
+            "length = 0 ({mode:?}) : {length:?}"
+        );
+        match nodes {
+            Some(Value::List(items)) => assert_eq!(
+                items.as_ref(),
+                &[Value::Int64(a.0 as i64)],
+                "nodes(p) = [a] ({mode:?})"
+            ),
+            autre => panic!("nodes(p) doit être une liste ({mode:?}) : {autre:?}"),
+        }
+        match edges {
+            Some(Value::List(items)) => {
+                assert!(items.is_empty(), "relationships(p) = [] ({mode:?})");
+            }
+            autre => panic!("relationships(p) doit être une liste ({mode:?}) : {autre:?}"),
+        }
+        let mut reached: Vec<NodeId> = rows.iter().filter(|r| r.1 != a).map(|r| r.1).collect();
+        reached.sort();
+        let mut attendu = vec![b, c];
+        attendu.sort();
+        assert_eq!(
+            reached, attendu,
+            "les voisins à 1 saut restent là ({mode:?})"
+        );
+    }
+
+    let rows = collect(0, 0, PathMode::Walk);
+    assert_eq!(rows.len(), 1, "*0..0 rend exactement le nœud lui-même");
+    assert_eq!(rows[0].1, a);
+
+    let rows = collect(1, 1, PathMode::Walk);
+    assert_eq!(
+        rows.len(),
+        2,
+        "*1..1 : pas de chemin vide quand min_hops = 1"
+    );
 }
