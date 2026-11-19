@@ -11,7 +11,9 @@
 //!
 //! | `ulimit -n` | exécutions en échec |
 //! |---|---|
-//! | 256 (défaut macOS) | **5 sur 10** |
+//! | 256 (défaut macOS) | **12 sur 15** |
+//! | 512 | **0 sur 15** |
+//! | 1024 (runner de CI) | **0 sur 15** |
 //! | 4096 | **0 sur 10** |
 //!
 //! Le symptôme est trompeur : il tombe sur un test différent à chaque exécution,
@@ -22,13 +24,14 @@
 //! conditions qui produiront un flake, et dit quoi faire.
 #![cfg(unix)]
 
-/// En dessous, la suite épuise les descripteurs : mesuré 5 échecs sur 10 à 256.
-/// Le runner de CI est à 1024, d'où ce plancher : il doit passer.
-const LIMITE_PLANCHER: u64 = 1024;
+/// Plus basse valeur mesurée sans aucun échec (0 sur 15). À 256, la même suite
+/// échoue 12 fois sur 15 — sans aucune panique du writer, donc c'est bien la
+/// limite et pas autre chose.
+const LIMITE_PLANCHER: u64 = 512;
 
-/// À partir d'ici, aucune exécution en échec n'a été mesurée. Entre les deux,
-/// on avertit sans faire échouer : la CI tourne à 1024 et doit rester verte.
-const LIMITE_CONFORT: u64 = 4096;
+/// Marge confortable, et valeur du runner de CI. Entre les deux, on avertit
+/// sans faire échouer : 512 est mesuré propre, 1024 est ce que la CI utilise.
+const LIMITE_CONFORT: u64 = 1024;
 
 fn limite_actuelle() -> Option<u64> {
     let sortie = std::process::Command::new("sh")
