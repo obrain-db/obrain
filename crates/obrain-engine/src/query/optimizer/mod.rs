@@ -966,6 +966,68 @@ impl Optimizer {
                 input: Box::new(LogicalOperator::Aggregate(agg)),
             }),
 
+            // ── SCAN IMBRIQUÉ : `MATCH (a), (b)` (obrain-db/obrain#228) ──────
+            //
+            // Un `NodeScan` AVEC entrée est un produit cartésien : il balaie
+            // toute sa population pour chaque ligne de l'entrée. Un conjoint
+            // qui ne cite pas la variable du scan ne dépend que de l'entrée :
+            // il y descend, et le produit part d'une entrée déjà filtrée.
+            // Sans cela, `MATCH (a), (b) WHERE a.id = $x AND b.id = $y` était
+            // refusé par le garde d'explosion (n × n paires), et
+            // `MATCH (s:File), (t:File) WHERE s.path =~ $r …` calculait les
+            // n² paires avant d'évaluer la regex. Ce qui cite la variable du
+            // scan reste au-dessus, comme avant.
+            LogicalOperator::NodeScan(mut scan) if scan.input.is_some() => {
+                let (dessous, dessus) = self.separer_pour_scan_imbrique(&predicate, &scan.variable);
+                if dessous.is_empty() {
+                    return LogicalOperator::Filter(FilterOp {
+                        predicate,
+                        pushdown_hint: None,
+                        input: Box::new(LogicalOperator::NodeScan(scan)),
+                    });
+                }
+                let a_pousser = Self::conjonction(dessous).expect("non vide");
+                let entree = scan.input.take().expect("garde `is_some`");
+                scan.input = Some(Box::new(self.try_push_filter_into(a_pousser, *entree)));
+                match Self::conjonction(dessus) {
+                    Some(reste) => LogicalOperator::Filter(FilterOp {
+                        predicate: reste,
+                        pushdown_hint: None,
+                        input: Box::new(LogicalOperator::NodeScan(scan)),
+                    }),
+                    None => LogicalOperator::NodeScan(scan),
+                }
+            }
+
+            // Un filtre déjà posé sur un scan imbriqué (`(t:File {k: $v})`
+            // donne `Filter(t.k) → NodeScan(t, entrée)`) : on le laisse collé
+            // à son scan (le planificateur y lit l'index), et seuls les
+            // conjoints destinés à l'ENTRÉE du scan le traversent (#228).
+            LogicalOperator::Filter(mut inner)
+                if matches!(
+                    inner.input.as_ref(),
+                    LogicalOperator::NodeScan(scan) if scan.input.is_some()
+                ) =>
+            {
+                let LogicalOperator::NodeScan(scan) = inner.input.as_mut() else {
+                    unreachable!("garde du bras");
+                };
+                let (dessous, dessus) = self.separer_pour_scan_imbrique(&predicate, &scan.variable);
+                if let Some(a_pousser) = Self::conjonction(dessous) {
+                    let entree = scan.input.take().expect("garde du bras");
+                    scan.input = Some(Box::new(self.try_push_filter_into(a_pousser, *entree)));
+                }
+                let filtre = LogicalOperator::Filter(inner);
+                match Self::conjonction(dessus) {
+                    Some(reste) => LogicalOperator::Filter(FilterOp {
+                        predicate: reste,
+                        pushdown_hint: None,
+                        input: Box::new(filtre),
+                    }),
+                    None => filtre,
+                }
+            }
+
             // For NodeScan, we've reached the bottom - keep filter on top
             LogicalOperator::NodeScan(scan) => LogicalOperator::Filter(FilterOp {
                 predicate,
@@ -1046,6 +1108,54 @@ impl Optimizer {
                 Self::collect_output_variables_recursive(&distinct.input, vars);
             }
             _ => {}
+        }
+    }
+
+    /// Sépare un prédicat posé sur un scan imbriqué de `variable` : les
+    /// conjoints qui peuvent descendre dans l'entrée du scan (ils ne la citent
+    /// pas, et toutes leurs variables sont visibles), puis le reste.
+    fn separer_pour_scan_imbrique(
+        &self,
+        predicate: &LogicalExpression,
+        variable: &str,
+    ) -> (Vec<LogicalExpression>, Vec<LogicalExpression>) {
+        let mut dessous = Vec::new();
+        let mut dessus = Vec::new();
+        for conjoint in Self::conjonctions(predicate) {
+            let vars = self.extract_variables(&conjoint);
+            if !vars.is_empty() && !vars.contains(variable) && Self::expression_simple(&conjoint) {
+                dessous.push(conjoint);
+            } else {
+                dessus.push(conjoint);
+            }
+        }
+        (dessous, dessus)
+    }
+
+    /// Vrai si l'expression n'est faite que de formes dont `collect_variables`
+    /// voit TOUTES les variables. Une sous-requête (`EXISTS { (b)--() }`), une
+    /// compréhension ou un `reduce` peuvent citer une variable sans qu'elle
+    /// soit relevée : un tel conjoint ne doit pas être déplacé.
+    fn expression_simple(expr: &LogicalExpression) -> bool {
+        match expr {
+            LogicalExpression::Variable(_)
+            | LogicalExpression::Property { .. }
+            | LogicalExpression::Literal(_)
+            | LogicalExpression::Parameter(_)
+            | LogicalExpression::Id(_)
+            | LogicalExpression::Labels(_)
+            | LogicalExpression::Type(_) => true,
+            LogicalExpression::Binary { left, right, .. } => {
+                Self::expression_simple(left) && Self::expression_simple(right)
+            }
+            LogicalExpression::Unary { operand, .. } => Self::expression_simple(operand),
+            LogicalExpression::FunctionCall { args, .. } | LogicalExpression::List(args) => {
+                args.iter().all(Self::expression_simple)
+            }
+            LogicalExpression::IndexAccess { base, index } => {
+                Self::expression_simple(base) && Self::expression_simple(index)
+            }
+            _ => false,
         }
     }
 

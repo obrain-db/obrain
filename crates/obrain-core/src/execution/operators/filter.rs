@@ -4630,9 +4630,16 @@ impl ExpressionPredicate {
             // `duration.between(a, b).days`, `$map.cle`. Le traducteur pose
             // cette fonction ; la propriété est un littéral texte.
             "__component" => {
-                if args.len() != 2 {
+                // Troisième argument facultatif : le genre prouvé de la base
+                // (`"node"` / `"edge"`), posé par le traducteur quand il le
+                // connaît (#229).
+                if args.len() != 2 && args.len() != 3 {
                     return None;
                 }
+                let genre = match args.get(2) {
+                    Some(FilterExpression::Literal(Value::String(g))) => Some(g.to_string()),
+                    _ => None,
+                };
                 let Value::String(propriete) = self.eval_expr(&args[1], chunk, row)? else {
                     return None;
                 };
@@ -4643,9 +4650,19 @@ impl ExpressionPredicate {
                     // `head(collect(n))`) voyagent comme leur identifiant :
                     // on les résout par le store (nœud d'abord, arête sinon).
                     // Une propriété absente est NULL, comme sur `n.prop`.
-                    // Même résolution que la compréhension (voir
-                    // `propriete_d_un_identifiant`).
-                    Value::Int64(id) => self.propriete_d_un_identifiant(id, &propriete),
+                    // Le genre prouvé par le traducteur (3ᵉ argument) tranche
+                    // entre les deux séries ; sans lui, la règle stricte de
+                    // `propriete_d_un_identifiant` (nœud d'abord, erreur si les
+                    // deux existent) s'applique.
+                    Value::Int64(id) => self.propriete_d_un_element(
+                        id,
+                        &propriete,
+                        match genre.as_deref() {
+                            Some("node") => GenreElement::Noeud,
+                            Some("edge") => GenreElement::Arete,
+                            _ => GenreElement::Inconnu,
+                        },
+                    ),
                     Value::Date(d) => composant_de_date(&propriete, Some(d), None)
                         .map(Value::Int64)
                         .or_else(|| {

@@ -1272,12 +1272,22 @@ fn substitute_in_expression(expr: &mut LogicalExpression, params: &QueryParams) 
             substitute_in_expression(list_expr, params)?;
             substitute_in_expression(predicate, params)?;
         }
-        LogicalExpression::ExistsSubquery(_)
-        | LogicalExpression::CountSubquery(_)
-        | LogicalExpression::ValueSubquery(_) => {
-            // Subqueries would need recursive parameter substitution
+        // Sous-requêtes (`EXISTS { … }`, prédicat de motif `(n)-[:T]->(:L
+        // {k: $p})`, `NOT (motif)`, `COUNT { … }`, sous-requête de valeur) :
+        // leur plan porte ses propres filtres et cartes de propriétés, qui
+        // peuvent citer un paramètre. Sans cette descente, le `$p` arrivait
+        // tel quel au planificateur (« Parameters not yet supported in
+        // filters », obrain-db/obrain#227 et #184).
+        LogicalExpression::ExistsSubquery(sub)
+        | LogicalExpression::CountSubquery(sub)
+        | LogicalExpression::ValueSubquery(sub) => {
+            substitute_in_operator(sub, params)?;
         }
-        LogicalExpression::PatternComprehension { projection, .. } => {
+        LogicalExpression::PatternComprehension {
+            subplan,
+            projection,
+        } => {
+            substitute_in_operator(subplan, params)?;
             substitute_in_expression(projection, params)?;
         }
         LogicalExpression::MapProjection { entries, .. } => {

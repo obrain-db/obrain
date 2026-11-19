@@ -5,9 +5,9 @@
 
 use super::common::{
     AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
-    combine_with_and, finalize_aggregate_projection, is_aggregate_function, to_aggregate_function,
-    unicite_a_confronter, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
-    wrap_skip, wrap_sort,
+    combine_with_and, expression_kind, finalize_aggregate_projection, is_aggregate_function,
+    to_aggregate_function, unicite_a_confronter, visible_variables, wrap_distinct, wrap_filter,
+    wrap_limit, wrap_return, wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp, CallProcedureOp,
@@ -66,6 +66,13 @@ struct CypherTranslator {
     /// Alias-to-output-column-name mapping from the most recent RETURN/WITH clause.
     /// Used by ORDER BY to resolve alias references to actual output column names.
     return_aliases: RefCell<HashMap<String, String>>,
+    /// Genre des variables visibles de la clause en cours de traduction.
+    ///
+    /// Sert à typer `<expression>.<propriété>` quand la base est un élément
+    /// de liste (`rels[0].k`, `startNode(rels[0]).id`) : nœuds et arêtes y
+    /// voyagent comme leur identifiant, et les deux séries se recoupent
+    /// (obrain-db/obrain#229).
+    scope_kinds: RefCell<HashMap<String, VariableKind>>,
 }
 
 impl CypherTranslator {
@@ -74,6 +81,27 @@ impl CypherTranslator {
             edge_variables: RefCell::new(HashSet::new()),
             anon_counter: Cell::new(0),
             return_aliases: RefCell::new(HashMap::new()),
+            scope_kinds: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Genre d'élément (nœud ou arête) prouvé pour la base d'un
+    /// `<expression>.<propriété>`, `None` s'il n'est pas prouvé.
+    fn element_hint(&self, base: &LogicalExpression) -> Option<&'static str> {
+        let kind = match base {
+            // `startNode(r)` / `endNode(r)` rendent un nœud, quel que soit r.
+            LogicalExpression::FunctionCall { name, args, .. }
+                if args.len() == 1
+                    && matches!(name.to_ascii_lowercase().as_str(), "startnode" | "endnode") =>
+            {
+                VariableKind::Node
+            }
+            _ => expression_kind(base, &self.scope_kinds.borrow()),
+        };
+        match kind {
+            VariableKind::Node => Some("node"),
+            VariableKind::Edge => Some("edge"),
+            _ => None,
         }
     }
 
@@ -268,6 +296,20 @@ impl CypherTranslator {
     }
 
     fn translate_clause(
+        &self,
+        clause: &ast::Clause,
+        input: Option<LogicalOperator>,
+    ) -> Result<LogicalOperator> {
+        // La portée de la clause est ce que son entrée laisse visible ; celle
+        // d'avant est rendue au retour (sous-requêtes imbriquées).
+        let portee = input.as_ref().map(visible_variables).unwrap_or_default();
+        let avant = self.scope_kinds.replace(portee);
+        let plan = self.translate_clause_in_scope(clause, input);
+        *self.scope_kinds.borrow_mut() = avant;
+        plan
+    }
+
+    fn translate_clause_in_scope(
         &self,
         clause: &ast::Clause,
         input: Option<LogicalOperator>,
@@ -1438,7 +1480,23 @@ impl CypherTranslator {
                 "WHERE requires input",
             ))
         })?;
-        let predicate = self.translate_expression(&where_clause.predicate)?;
+        let mut predicate = self.translate_expression(&where_clause.predicate)?;
+
+        // Compréhension de motif dans le prédicat : réécrite comme dans un
+        // `RETURN` (Apply + collect), le filtre lit sa colonne (#195,
+        // famille 2). Pas sous un `OPTIONAL MATCH` : l'Apply masquerait la
+        // jointure externe que la suite classe.
+        let input = if Self::expr_contains_pc_only(&predicate)
+            && !matches!(input, LogicalOperator::LeftJoin(_))
+        {
+            let alias = self.next_anon_var();
+            let (input, reecrit) =
+                self.rewrite_expr_pattern_comprehension(input, predicate, &alias)?;
+            predicate = reecrit;
+            input
+        } else {
+            input
+        };
 
         // When the input is a LeftJoin (from OPTIONAL MATCH), classify the
         // predicate so right-side references become join conditions rather
@@ -1561,7 +1619,16 @@ impl CypherTranslator {
         };
 
         if let Some(where_clause) = &with_clause.where_clause {
-            let predicate = self.translate_expression(&where_clause.predicate)?;
+            // Le `WHERE` d'un `WITH` voit les colonnes du `WITH`.
+            *self.scope_kinds.borrow_mut() = visible_variables(&plan);
+            let mut predicate = self.translate_expression(&where_clause.predicate)?;
+            if Self::expr_contains_pc_only(&predicate) {
+                let alias = self.next_anon_var();
+                let (reecrit_plan, reecrit) =
+                    self.rewrite_expr_pattern_comprehension(plan, predicate, &alias)?;
+                plan = reecrit_plan;
+                predicate = reecrit;
+            }
             plan = wrap_filter(plan, predicate);
         }
 
@@ -2631,7 +2698,44 @@ impl CypherTranslator {
     }
 
     fn translate_expression(&self, expr: &ast::Expression) -> Result<LogicalExpression> {
+        self.translate_expression_raw(expr)
+            .map(|e| self.with_element_hint(e))
+    }
+
+    /// `__component(base, 'prop')` dont la base est prouvée nœud ou arête
+    /// reçoit ce genre en troisième argument : sans lui, un identifiant commun
+    /// à un nœud et à une arête est ambigu à l'évaluation (obrain-db/obrain#229).
+    fn with_element_hint(&self, expr: LogicalExpression) -> LogicalExpression {
         match expr {
+            LogicalExpression::FunctionCall {
+                name,
+                mut args,
+                distinct,
+            } if name == "__component" && args.len() == 2 => {
+                if let Some(genre) = self.element_hint(&args[0]) {
+                    args.push(LogicalExpression::Literal(Value::String(genre.into())));
+                }
+                LogicalExpression::FunctionCall {
+                    name,
+                    args,
+                    distinct,
+                }
+            }
+            autre => autre,
+        }
+    }
+
+    fn translate_expression_raw(&self, expr: &ast::Expression) -> Result<LogicalExpression> {
+        match expr {
+            // `exists((n)-[:R]->())` : la forme fonction du prédicat de motif,
+            // dont l'argument est déjà un `EXISTS { … }`.
+            ast::Expression::FunctionCall { name, args, .. }
+                if name.eq_ignore_ascii_case("exists")
+                    && args.len() == 1
+                    && matches!(args[0], ast::Expression::Exists(_)) =>
+            {
+                self.translate_expression(&args[0])
+            }
             ast::Expression::Literal(lit) => self.translate_literal(lit),
             ast::Expression::Variable(name) => Ok(LogicalExpression::Variable(name.clone())),
             ast::Expression::Parameter(name) => Ok(LogicalExpression::Parameter(name.clone())),
@@ -2644,7 +2748,9 @@ impl CypherTranslator {
                 } else {
                     // `<expression>.<propriété>` : composant d'une durée
                     // (`duration.between(a, b).days`), clé d'une map. L'évaluateur
-                    // résout la propriété selon le type de la valeur.
+                    // résout la propriété selon le type de la valeur. Quand la
+                    // base est prouvée nœud ou arête (`rels[0]`, `startNode(r)`),
+                    // un troisième argument le dit (`with_element_hint`).
                     Ok(LogicalExpression::FunctionCall {
                         name: "__component".into(),
                         args: vec![
@@ -2683,8 +2789,31 @@ impl CypherTranslator {
             }
             ast::Expression::Binary { left, op, right } => {
                 let left_expr = self.translate_expression(left)?;
-                let right_expr = self.translate_expression(right)?;
+                let mut right_expr = self.translate_expression(right)?;
                 let binary_op = self.translate_binary_op(*op)?;
+
+                // Cypher : `s =~ r` vrai si r couvre TOUTE la chaîne (Neo4j,
+                // `String.matches`). L'opérateur partagé cherche une
+                // occurrence (sémantique du `regex()` de Gremlin) : on ancre
+                // le motif ici. `'f100' =~ 'f1[0-9]'` rendait vrai (#228,
+                // `topo_04`).
+                if *op == ast::BinaryOp::RegexMatch {
+                    let texte = |t: &str| LogicalExpression::Literal(Value::String(t.into()));
+                    right_expr = match right_expr {
+                        LogicalExpression::Literal(Value::String(motif)) => {
+                            texte(&format!("^(?:{motif})$"))
+                        }
+                        autre => LogicalExpression::Binary {
+                            left: Box::new(LogicalExpression::Binary {
+                                left: Box::new(texte("^(?:")),
+                                op: BinaryOp::Concat,
+                                right: Box::new(autre),
+                            }),
+                            op: BinaryOp::Concat,
+                            right: Box::new(texte(")$")),
+                        },
+                    };
+                }
 
                 Ok(LogicalExpression::Binary {
                     left: Box::new(left_expr),
@@ -3110,6 +3239,11 @@ impl CypherTranslator {
     fn expr_contains_pattern_comprehension(expr: &LogicalExpression) -> bool {
         match expr {
             LogicalExpression::PatternComprehension { .. } => true,
+            // En projection, `EXISTS { … }` n'a pas d'évaluation directe, et
+            // `COUNT { … }` n'en a que pour le motif nu à un saut : les autres
+            // sont relevés en Apply + count(*) (#195).
+            LogicalExpression::ExistsSubquery(_) => true,
+            LogicalExpression::CountSubquery(sub) => !Self::sous_requete_simple(sub),
             LogicalExpression::FunctionCall { args, .. } => {
                 args.iter().any(Self::expr_contains_pattern_comprehension)
             }
@@ -3121,6 +3255,120 @@ impl CypherTranslator {
                 Self::expr_contains_pattern_comprehension(operand)
             }
             _ => false,
+        }
+    }
+
+    /// Contient une compréhension de motif (et seulement cela compte) : dans un
+    /// `WHERE`, `EXISTS` et `COUNT` ont déjà leur semi-jointure.
+    fn expr_contains_pc_only(expr: &LogicalExpression) -> bool {
+        match expr {
+            LogicalExpression::PatternComprehension { .. } => true,
+            LogicalExpression::FunctionCall { args, .. } => {
+                args.iter().any(Self::expr_contains_pc_only)
+            }
+            LogicalExpression::Binary { left, right, .. } => {
+                Self::expr_contains_pc_only(left) || Self::expr_contains_pc_only(right)
+            }
+            LogicalExpression::Unary { operand, .. } => Self::expr_contains_pc_only(operand),
+            _ => false,
+        }
+    }
+
+    /// Le motif nu à un saut `(n)-[:T]->()` que le chemin rapide de
+    /// `COUNT { }` sait compter sans sous-plan.
+    fn sous_requete_simple(sub: &LogicalOperator) -> bool {
+        matches!(
+            sub,
+            LogicalOperator::Expand(e) if matches!(e.input.as_ref(), LogicalOperator::NodeScan(_))
+        )
+    }
+
+    /// Relève un sous-plan de motif en `Apply` sur `input` : corrélé par son
+    /// premier nœud s'il est lié dehors, joué tel quel sinon ; `agregat`
+    /// résume ses lignes en une colonne.
+    fn relever_sous_plan(
+        input: LogicalOperator,
+        subplan: LogicalOperator,
+        agregat: AggregateExpr,
+    ) -> Result<LogicalOperator> {
+        let anchor = Self::extract_anchor_variable(&subplan).ok_or_else(|| {
+            Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                "Pattern comprehension must start with a node pattern",
+            ))
+        })?;
+        // Corrélée par son premier nœud s'il est lié dehors : ce nœud devient
+        // un ParameterScan. Sinon la compréhension ne dépend pas de la ligne
+        // (`n.p IN [(w:W {slug: $s})<--(x) | x.id]`, PO `note_09`) : son
+        // sous-plan est joué tel quel — remplacer `w` par un ParameterScan
+        // cherchait une colonne absente (obrain-db/obrain#195, famille 2).
+        let portee = visible_variables(&input);
+        let correlee = portee.contains_key(&anchor);
+        if !correlee
+            && let Some(autre) = visible_variables(&subplan)
+                .into_keys()
+                .filter(|v| v != &anchor && portee.contains_key(v))
+                .min()
+        {
+            // Lié dehors ailleurs qu'au premier nœud : le sous-plan le
+            // relierait comme une variable neuve, et rendrait le motif de
+            // TOUTES les lignes.
+            return Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                format!(
+                    "sous-requête de motif corrélée par '{autre}', qui n'est pas son \
+                     premier nœud : non prise en charge. Écrire le motif en partant \
+                     de '{autre}'."
+                ),
+            )));
+        }
+        let resume = |subplan| {
+            LogicalOperator::Aggregate(AggregateOp {
+                semantics: AggregateSemantics::OpenCypher,
+                group_by: vec![],
+                aggregates: vec![agregat],
+                input: Box::new(subplan),
+                having: None,
+            })
+        };
+        if !correlee {
+            // Non corrélée : une seule ligne, la même pour toutes les lignes
+            // externes. Un produit avec cette ligne la calcule UNE fois (la
+            // jointure matérialise son côté droit) ; un Apply rejouait le
+            // sous-plan à chaque ligne — sur le graphe de code d'obrain
+            // (33 k nœuds), `WHERE m.name IN [(t)-[:CALLS]->(x {name: 'v'}) |
+            // t.name]` ne finissait pas. Un sous-plan de motif ne contient
+            // aucune écriture : le calculer une fois ne change rien d'autre.
+            return Ok(LogicalOperator::Join(JoinOp {
+                left: Box::new(input),
+                right: Box::new(resume(subplan)),
+                join_type: JoinType::Cross,
+                conditions: Vec::new(),
+            }));
+        }
+        Ok(LogicalOperator::Apply(ApplyOp {
+            input: Box::new(input),
+            subplan: Box::new(resume(Self::replace_anchor_with_parameter_scan(
+                subplan, &anchor,
+            ))),
+            shared_variables: vec![anchor],
+            optional: false,
+        }))
+    }
+
+    fn agregat(
+        function: AggregateFunction,
+        expression: Option<LogicalExpression>,
+        alias: &str,
+    ) -> AggregateExpr {
+        AggregateExpr {
+            function,
+            expression,
+            expression2: None,
+            distinct: false,
+            alias: Some(alias.to_string()),
+            percentile: None,
+            separator: None,
         }
     }
 
@@ -3137,44 +3385,27 @@ impl CypherTranslator {
                 subplan,
                 projection,
             } => {
-                // 1. Extract anchor variable
-                let anchor = Self::extract_anchor_variable(&subplan).ok_or_else(|| {
-                    Error::Query(QueryError::new(
-                        QueryErrorKind::Semantic,
-                        "Pattern comprehension must start with a node pattern",
-                    ))
-                })?;
-
-                // 2. Replace anchor NodeScan with ParameterScan
-                let rewritten_subplan = Self::replace_anchor_with_parameter_scan(*subplan, &anchor);
-
-                // 3. Wrap in Aggregate(collect(projection) AS alias)
-                let inner_plan = LogicalOperator::Aggregate(AggregateOp {
-                    semantics: AggregateSemantics::OpenCypher,
-                    group_by: vec![],
-                    aggregates: vec![AggregateExpr {
-                        function: AggregateFunction::Collect,
-                        expression: Some(*projection),
-                        expression2: None,
-                        distinct: false,
-                        alias: Some(alias.to_string()),
-                        percentile: None,
-                        separator: None,
-                    }],
-                    input: Box::new(rewritten_subplan),
-                    having: None,
-                });
-
-                // 4. Wrap outer input in Apply
-                let new_input = LogicalOperator::Apply(ApplyOp {
-                    input: Box::new(input),
-                    subplan: Box::new(inner_plan),
-                    shared_variables: vec![anchor],
-                    optional: false,
-                });
-
-                // 5. Replace expression with Variable reference
+                let agregat = Self::agregat(AggregateFunction::Collect, Some(*projection), alias);
+                let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
                 Ok((new_input, LogicalExpression::Variable(alias.to_string())))
+            }
+            LogicalExpression::CountSubquery(subplan) if !Self::sous_requete_simple(&subplan) => {
+                let agregat = Self::agregat(AggregateFunction::Count, None, alias);
+                let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
+                Ok((new_input, LogicalExpression::Variable(alias.to_string())))
+            }
+            // `EXISTS { … }` en projection : au moins une ligne du sous-plan.
+            LogicalExpression::ExistsSubquery(subplan) => {
+                let agregat = Self::agregat(AggregateFunction::Count, None, alias);
+                let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
+                Ok((
+                    new_input,
+                    LogicalExpression::Binary {
+                        left: Box::new(LogicalExpression::Variable(alias.to_string())),
+                        op: BinaryOp::Gt,
+                        right: Box::new(LogicalExpression::Literal(Value::Int64(0))),
+                    },
+                ))
             }
             LogicalExpression::FunctionCall {
                 name,
