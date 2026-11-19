@@ -670,9 +670,30 @@ impl super::Planner {
         }
 
         // The expression must be None (COUNT(*)) or a Variable matching the scan variable
-        let count_var = match &agg_expr.expression {
-            None => None, // COUNT(*)
-            Some(LogicalExpression::Variable(var)) => Some(var.as_str()),
+        // `count(DISTINCT type(r))` compte des VALEURS DISTINCTES d'une cle de
+        // dictionnaire, pas des lignes : `type(r)` est un `u16`, sa cardinalite
+        // s'obtient en lisant `edge_counts_by_type` (O(nb_types)), pas en
+        // balayant les aretes (O(nb_aretes)).
+        //
+        // Mesure sur l'export PO du 17/11 (3 901 829 noeuds, 6 013 429 aretes) :
+        // `count(DISTINCT type(r))` coutait 20 134 ms, contre 502 ms a Neo4j sur
+        // le meme graphe — le seul ecart majeur releve face a lui (obrain#191).
+        let (count_var, compte_types_distincts) = match &agg_expr.expression {
+            None => (None, false), // COUNT(*)
+            Some(LogicalExpression::Variable(var)) => (Some(var.as_str()), false),
+            Some(LogicalExpression::Type(var)) if agg_expr.distinct => (Some(var.as_str()), true),
+            // Sur ce store, le traducteur émet `FunctionCall { name: "type" }` et
+            // non `Type` (cf. le diagnostic du raccourci groupé, plus bas).
+            Some(LogicalExpression::FunctionCall {
+                name,
+                args,
+                distinct: false,
+            }) if agg_expr.distinct && name.eq_ignore_ascii_case("type") && args.len() == 1 => {
+                match &args[0] {
+                    LogicalExpression::Variable(var) => (Some(var.as_str()), true),
+                    _ => return None,
+                }
+            }
             _ => return None, // COUNT(n.prop) etc. — can't shortcut
         };
 
@@ -749,7 +770,21 @@ impl super::Planner {
             && scan.label.is_none()
             && scan.input.is_none()
         {
-            let compte: Option<i64> = if exp.edge_types.is_empty() {
+            let compte: Option<i64> = if compte_types_distincts {
+                // Cardinal des types PRESENTS (degre > 0). Un type au dictionnaire
+                // mais sans arete ne doit pas compter : c'est le piege que le
+                // raccourci de comptage signale plus haut.
+                self.store.edge_counts_by_type().map(|par_type| {
+                    if exp.edge_types.is_empty() {
+                        par_type.values().filter(|n| **n > 0).count() as i64
+                    } else {
+                        exp.edge_types
+                            .iter()
+                            .filter(|t| par_type.get(*t).copied().unwrap_or(0) > 0)
+                            .count() as i64
+                    }
+                })
+            } else if exp.edge_types.is_empty() {
                 Some(self.store.edge_count() as i64)
             } else {
                 // Les `edge_type` sont DISJOINTS — un `u16` par enregistrement —
