@@ -678,10 +678,18 @@ impl super::Planner {
         // Mesure sur l'export PO du 17/11 (3 901 829 noeuds, 6 013 429 aretes) :
         // `count(DISTINCT type(r))` coutait 20 134 ms, contre 502 ms a Neo4j sur
         // le meme graphe — le seul ecart majeur releve face a lui (obrain#191).
-        let (count_var, compte_types_distincts) = match &agg_expr.expression {
-            None => (None, false), // COUNT(*)
-            Some(LogicalExpression::Variable(var)) => (Some(var.as_str()), false),
-            Some(LogicalExpression::Type(var)) if agg_expr.distinct => (Some(var.as_str()), true),
+        //
+        // `count(DISTINCT labels(n)[0])` est la même question côté nœuds : le
+        // nombre de PREMIERS labels présents, lu dans
+        // `node_counts_by_first_label` (un parcours de zone sur le bitset)
+        // plutôt que balayé, projeté puis haché nœud par nœud. Mesuré sur le
+        // même export : 1 870 ms, contre 389 ms à Neo4j.
+        let (count_var, quoi) = match &agg_expr.expression {
+            None => (None, CeQuOnCompte::Lignes), // COUNT(*)
+            Some(LogicalExpression::Variable(var)) => (Some(var.as_str()), CeQuOnCompte::Lignes),
+            Some(LogicalExpression::Type(var)) if agg_expr.distinct => {
+                (Some(var.as_str()), CeQuOnCompte::TypesDistincts)
+            }
             // Sur ce store, le traducteur émet `FunctionCall { name: "type" }` et
             // non `Type` (cf. le diagnostic du raccourci groupé, plus bas).
             Some(LogicalExpression::FunctionCall {
@@ -690,10 +698,16 @@ impl super::Planner {
                 distinct: false,
             }) if agg_expr.distinct && name.eq_ignore_ascii_case("type") && args.len() == 1 => {
                 match &args[0] {
-                    LogicalExpression::Variable(var) => (Some(var.as_str()), true),
+                    LogicalExpression::Variable(var) => {
+                        (Some(var.as_str()), CeQuOnCompte::TypesDistincts)
+                    }
                     _ => return None,
                 }
             }
+            Some(expr @ LogicalExpression::IndexAccess { .. }) if agg_expr.distinct => (
+                Some(variable_de_premier_label(expr)?),
+                CeQuOnCompte::PremiersLabelsDistincts,
+            ),
             _ => return None, // COUNT(n.prop) etc. — can't shortcut
         };
 
@@ -757,7 +771,8 @@ impl super::Planner {
         // Le test de parité `compteurs_et_balayage_s_accordent_apres_reouverture`
         // (obrain-substrate) garde la porte : il rougira si les compteurs
         // redeviennent indignes de confiance.
-        if limit_ok_pour_raccourci_arete(self.store.as_ref())
+        if quoi != CeQuOnCompte::PremiersLabelsDistincts
+            && limit_ok_pour_raccourci_arete(self.store.as_ref())
             && let LogicalOperator::Expand(exp) = agg.input.as_ref()
             && let Some(var_arete) = exp.edge_variable.as_deref()
             && count_var.is_none_or(|v| v == var_arete)
@@ -770,7 +785,7 @@ impl super::Planner {
             && scan.label.is_none()
             && scan.input.is_none()
         {
-            let compte: Option<i64> = if compte_types_distincts {
+            let compte: Option<i64> = if quoi == CeQuOnCompte::TypesDistincts {
                 // Cardinal des types PRESENTS (degre > 0). Un type au dictionnaire
                 // mais sans arete ne doit pas compter : c'est le piege que le
                 // raccourci de comptage signale plus haut.
@@ -824,12 +839,43 @@ impl super::Planner {
                     return None;
                 }
 
-                let count = if let Some(label) = &scan.label {
-                    // MATCH (n:Label) RETURN count(n) → O(1) label count
-                    self.store.node_count_by_label(label) as i64
-                } else {
-                    // MATCH (n) RETURN count(n) → node_count()
-                    self.store.node_count() as i64
+                let count = match quoi {
+                    // `type(n)` sur un NŒUD n'a pas de valeur : ce n'est pas la
+                    // question à laquelle `node_count` répond. On renonce, le
+                    // chemin générique dira ce que vaut la forme.
+                    CeQuOnCompte::TypesDistincts => return None,
+                    CeQuOnCompte::PremiersLabelsDistincts => {
+                        // `MATCH (n:L)` restreint aux nœuds qui PORTENT `L`, dont
+                        // le premier label peut être un autre : le compteur par
+                        // premier label ne connaît pas ce sous-ensemble.
+                        if scan.label.is_some() {
+                            return None;
+                        }
+                        // Le parcours de zone lit l'état COMMITÉ COURANT : mêmes
+                        // gardes que le raccourci groupé, qui lit la même source.
+                        if self.transaction_id.is_some()
+                            || self.viewing_epoch != self.store.current_epoch()
+                        {
+                            return None;
+                        }
+                        // `null` (nœuds sans label) n'est pas une valeur pour
+                        // `count(DISTINCT ...)` : seules les clés `Some` comptent.
+                        // `None` du magasin = « ne sait pas », jamais zéro.
+                        self.store
+                            .node_counts_by_first_label()?
+                            .iter()
+                            .filter(|(label, n)| label.is_some() && *n > 0)
+                            .count() as i64
+                    }
+                    CeQuOnCompte::Lignes => {
+                        if let Some(label) = &scan.label {
+                            // MATCH (n:Label) RETURN count(n) → O(1) label count
+                            self.store.node_count_by_label(label) as i64
+                        } else {
+                            // MATCH (n) RETURN count(n) → node_count()
+                            self.store.node_count() as i64
+                        }
+                    }
                 };
 
                 let alias = agg_expr.alias.clone().unwrap_or_else(|| {
@@ -1156,26 +1202,9 @@ impl super::Planner {
                 LogicalExpression::Variable(v) => (true, v.as_str()),
                 _ => return None,
             },
-            LogicalExpression::IndexAccess { base, index } => {
-                // Seulement `[0]` : `labels(n)[1]` n'est pas la clé `null` des
-                // nœuds sans label, c'est une AUTRE question.
-                if !matches!(index.as_ref(), LogicalExpression::Literal(Value::Int64(0))) {
-                    return None;
-                }
-                let v = match base.as_ref() {
-                    LogicalExpression::Labels(v) => v.as_str(),
-                    LogicalExpression::FunctionCall {
-                        name,
-                        args,
-                        distinct: false,
-                    } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => match &args[0] {
-                        LogicalExpression::Variable(v) => v.as_str(),
-                        _ => return None,
-                    },
-                    _ => return None,
-                };
-                (false, v)
-            }
+            // Seulement `[0]` : `labels(n)[1]` n'est pas la clé `null` des
+            // nœuds sans label, c'est une AUTRE question.
+            LogicalExpression::IndexAccess { .. } => (false, variable_de_premier_label(cle)?),
             _ => return None,
         };
 
@@ -1363,4 +1392,40 @@ impl Operator for GroupedCountsOperator {
 /// que la question qu'il évite de mal répondre.
 fn limit_ok_pour_raccourci_arete(store: &dyn GraphStore) -> bool {
     store.external_edge_count() == 0
+}
+
+/// Ce que compte le raccourci de [`super::Planner::try_plan_count_shortcut`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CeQuOnCompte {
+    /// `count(*)`, `count(n)`, `count(r)` : des lignes.
+    Lignes,
+    /// `count(DISTINCT type(r))` : les types d'arête de degré > 0.
+    TypesDistincts,
+    /// `count(DISTINCT labels(n)[0])` : les premiers labels portés par au
+    /// moins un nœud — `null` (nœud sans label) exclu, comme tout `DISTINCT`.
+    PremiersLabelsDistincts,
+}
+
+/// Reconnaît `labels(v)[0]` — sous ses deux formes, `Labels(v)` ou
+/// `FunctionCall { name: "labels" }` — et rend `v`. Seulement l'indice
+/// littéral `0` : `labels(n)[1]` est une autre question.
+fn variable_de_premier_label(expr: &LogicalExpression) -> Option<&str> {
+    let LogicalExpression::IndexAccess { base, index } = expr else {
+        return None;
+    };
+    if !matches!(index.as_ref(), LogicalExpression::Literal(Value::Int64(0))) {
+        return None;
+    }
+    match base.as_ref() {
+        LogicalExpression::Labels(v) => Some(v.as_str()),
+        LogicalExpression::FunctionCall {
+            name,
+            args,
+            distinct: false,
+        } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => match &args[0] {
+            LogicalExpression::Variable(v) => Some(v.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
