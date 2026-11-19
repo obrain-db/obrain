@@ -1044,9 +1044,18 @@ impl super::Planner {
             // Then add property access projections
             for (variable, property, col_name) in &property_projections {
                 let source_col = *variable_columns.get(variable).ok_or_else(|| {
-                    Error::Internal(format!(
-                        "Variable '{}' not found for ORDER BY property projection",
-                        variable
+                    // `variable` a été consommée par une agrégation : ce n'est pas
+                    // un défaut du moteur mais une requête qui demande de trier sur
+                    // une variable hors de portée. Erreur SÉMANTIQUE, jamais
+                    // interne — un client doit pouvoir la distinguer d'un bug.
+                    Error::Query(obrain_common::utils::error::QueryError::new(
+                        obrain_common::utils::error::QueryErrorKind::Semantic,
+                        format!(
+                            "ORDER BY porte sur '{variable}.{property}', mais '{variable}' \
+                             n'est plus en portée : une agrégation ne garde que ses clés de \
+                             groupe et ses résultats. Trier sur l'agrégat lui-même, ou \
+                             projeter la variable avant d'agréger."
+                        ),
                     ))
                 })?;
                 projections.push(ProjectExpr::PropertyAccess {
