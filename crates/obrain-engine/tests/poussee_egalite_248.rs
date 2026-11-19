@@ -59,21 +59,21 @@ fn base() -> (tempfile::TempDir, ObrainDB) {
     let d = tempfile::tempdir().unwrap();
     let db = ObrainDB::open(d.path().join("base")).unwrap();
     let cas: Vec<Value> = vec![
-        Value::Int64(5),                                    // 0
-        Value::Float64(5.0),                                // 1
-        Value::String("5".into()),                          // 2  la chaîne n'est pas le nombre
-        Value::Float64(5.5),                                // 3
-        Value::Float64(-0.0),                               // 4
-        Value::Float64(0.0),                                // 5
-        Value::Int64(0),                                    // 6
-        Value::Float64(f64::NAN),                           // 7  n'égale rien
-        liste(vec![Value::Int64(1), Value::Int64(2)]),      // 8
+        Value::Int64(5),                                                   // 0
+        Value::Float64(5.0),                                               // 1
+        Value::String("5".into()), // 2  la chaîne n'est pas le nombre
+        Value::Float64(5.5),       // 3
+        Value::Float64(-0.0),      // 4
+        Value::Float64(0.0),       // 5
+        Value::Int64(0),           // 6
+        Value::Float64(f64::NAN),  // 7  n'égale rien
+        liste(vec![Value::Int64(1), Value::Int64(2)]), // 8
         liste(vec![Value::Float64(1.0), Value::Float64(2.0)]), // 9
         liste(vec![Value::String("1".into()), Value::String("2".into())]), // 10
-        Value::String("abc".into()),                        // 11
-        Value::String("5.0".into()),                        // 12
-        Value::Bool(true),                                  // 13
-        Value::Int64(1),                                    // 14  `true` n'est pas 1
+        Value::String("abc".into()), // 11
+        Value::String("5.0".into()), // 12
+        Value::Bool(true),         // 13
+        Value::Int64(1),           // 14  `true` n'est pas 1
     ];
     {
         let store = db.graph_store_mut();
