@@ -816,12 +816,10 @@ pub(crate) fn expression_kind(
         // Extraire d'une liste prouvée : un élément de son genre ; découper :
         // une liste du même genre.
         LogicalExpression::IndexAccess { base, .. } => expression_kind(base, entree).element(),
-        LogicalExpression::SliceAccess { base, .. } => {
-            match expression_kind(base, entree) {
-                k @ (VariableKind::NodeList | VariableKind::EdgeList) => k,
-                _ => VariableKind::Other,
-            }
-        }
+        LogicalExpression::SliceAccess { base, .. } => match expression_kind(base, entree) {
+            k @ (VariableKind::NodeList | VariableKind::EdgeList) => k,
+            _ => VariableKind::Other,
+        },
         LogicalExpression::FunctionCall { name, args, .. }
             if matches!(name.to_ascii_lowercase().as_str(), "nodes") && args.len() == 1 =>
         {
@@ -836,8 +834,7 @@ pub(crate) fn expression_kind(
             VariableKind::EdgeList
         }
         LogicalExpression::FunctionCall { name, args, .. }
-            if matches!(name.to_ascii_lowercase().as_str(), "head" | "last")
-                && args.len() == 1 =>
+            if matches!(name.to_ascii_lowercase().as_str(), "head" | "last") && args.len() == 1 =>
         {
             expression_kind(&args[0], entree).element()
         }
@@ -1036,12 +1033,9 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
                     let kind = match agg.function {
                         F::Min | F::Max | F::Sample => VariableKind::Other,
                         // `collect(n)` d'un nœud : une liste de nœuds.
-                        F::Collect => agg
-                            .expression
-                            .as_ref()
-                            .map_or(VariableKind::Scalar, |e| {
-                                expression_kind(e, &entree).list_of()
-                            }),
+                        F::Collect => agg.expression.as_ref().map_or(VariableKind::Scalar, |e| {
+                            expression_kind(e, &entree).list_of()
+                        }),
                         _ => VariableKind::Scalar,
                     };
                     vars.insert(alias.clone(), kind);

@@ -27,7 +27,10 @@ fn type_de_relation_mot_cle() {
     let db = ObrainDB::new_in_memory();
     db.execute_cypher("CREATE (:Note)-[:IN]->(:Order)-[:MATCH]->(:Order)")
         .unwrap();
-    assert_eq!(compte(&db, "MATCH (:Note)-[:IN]->(o:Order) RETURN count(o)"), 1);
+    assert_eq!(
+        compte(&db, "MATCH (:Note)-[:IN]->(o:Order) RETURN count(o)"),
+        1
+    );
     assert_eq!(compte(&db, "MATCH ()-[r:IN|MATCH]->() RETURN count(r)"), 2);
     assert_eq!(compte(&db, "MATCH (n) WHERE n:Order RETURN count(n)"), 2);
     db.execute_cypher("MATCH (n:Note) SET n:Limit").unwrap();

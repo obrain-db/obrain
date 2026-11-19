@@ -124,7 +124,9 @@ fn conjoints_non_deplacables() {
 fn regex_couvre_toute_la_chaine() {
     let db = base();
     let un = |q: &str| {
-        db.execute_cypher_with_params(q, params()).unwrap_or_else(|e| panic!("{q}\n{e}")).rows[0][0]
+        db.execute_cypher_with_params(q, params())
+            .unwrap_or_else(|e| panic!("{q}\n{e}"))
+            .rows[0][0]
             .clone()
     };
     assert_eq!(un("RETURN 'f100' =~ 'f1[0-9]'"), Value::Bool(false));

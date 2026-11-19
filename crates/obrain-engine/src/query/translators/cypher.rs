@@ -6,9 +6,8 @@
 use super::common::{
     AggregateItem, VariableKind, build_left_join_with_predicates, check_bound_kind,
     combine_with_and, expression_kind, finalize_aggregate_projection, is_aggregate_function,
-    to_aggregate_function,
-    unicite_a_confronter, visible_variables, wrap_distinct, wrap_filter, wrap_limit, wrap_return,
-    wrap_skip, wrap_sort,
+    to_aggregate_function, unicite_a_confronter, visible_variables, wrap_distinct, wrap_filter,
+    wrap_limit, wrap_return, wrap_skip, wrap_sort,
 };
 use crate::query::plan::{
     AddLabelOp, AggregateExpr, AggregateFunction, AggregateOp, ApplyOp, BinaryOp, CallProcedureOp,
@@ -3357,7 +3356,11 @@ impl CypherTranslator {
         }))
     }
 
-    fn agregat(function: AggregateFunction, expression: Option<LogicalExpression>, alias: &str) -> AggregateExpr {
+    fn agregat(
+        function: AggregateFunction,
+        expression: Option<LogicalExpression>,
+        alias: &str,
+    ) -> AggregateExpr {
         AggregateExpr {
             function,
             expression,
@@ -3382,14 +3385,11 @@ impl CypherTranslator {
                 subplan,
                 projection,
             } => {
-                let agregat =
-                    Self::agregat(AggregateFunction::Collect, Some(*projection), alias);
+                let agregat = Self::agregat(AggregateFunction::Collect, Some(*projection), alias);
                 let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
                 Ok((new_input, LogicalExpression::Variable(alias.to_string())))
             }
-            LogicalExpression::CountSubquery(subplan)
-                if !Self::sous_requete_simple(&subplan) =>
-            {
+            LogicalExpression::CountSubquery(subplan) if !Self::sous_requete_simple(&subplan) => {
                 let agregat = Self::agregat(AggregateFunction::Count, None, alias);
                 let new_input = Self::relever_sous_plan(input, *subplan, agregat)?;
                 Ok((new_input, LogicalExpression::Variable(alias.to_string())))

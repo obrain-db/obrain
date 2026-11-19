@@ -46,7 +46,10 @@ fn paire(id: &str, v: Value) -> Vec<Value> {
 fn count_en_projection_avec_label_et_filtre() {
     let db = base();
     assert_eq!(
-        lignes(&db, "MATCH (n:N) RETURN n.id, COUNT { (n)-[:R]->(:P) } AS c"),
+        lignes(
+            &db,
+            "MATCH (n:N) RETURN n.id, COUNT { (n)-[:R]->(:P) } AS c"
+        ),
         vec![
             paire("n1", Value::Int64(2)),
             paire("n2", Value::Int64(1)),
@@ -79,7 +82,10 @@ fn count_en_projection_avec_label_et_filtre() {
 fn exists_en_projection() {
     let db = base();
     assert_eq!(
-        lignes(&db, "MATCH (n:N) RETURN n.id, EXISTS { (n)-[:R]->(:Q) } AS e"),
+        lignes(
+            &db,
+            "MATCH (n:N) RETURN n.id, EXISTS { (n)-[:R]->(:Q) } AS e"
+        ),
         vec![
             paire("n1", Value::Bool(true)),
             paire("n2", Value::Bool(false)),
@@ -87,7 +93,10 @@ fn exists_en_projection() {
         ]
     );
     assert_eq!(
-        lignes(&db, "MATCH (n:N) WITH n, EXISTS { (n)-[:R]->() } AS e WHERE e RETURN n.id"),
+        lignes(
+            &db,
+            "MATCH (n:N) WITH n, EXISTS { (n)-[:R]->() } AS e WHERE e RETURN n.id"
+        ),
         vec![vec![Value::from("n1")], vec![Value::from("n2")]]
     );
 }
@@ -96,11 +105,17 @@ fn exists_en_projection() {
 fn exists_forme_fonction() {
     let db = base();
     assert_eq!(
-        lignes(&db, "MATCH (n:N) WHERE exists((n)-[:R]->(:P {id: 'p3'})) RETURN n.id"),
+        lignes(
+            &db,
+            "MATCH (n:N) WHERE exists((n)-[:R]->(:P {id: 'p3'})) RETURN n.id"
+        ),
         vec![vec![Value::from("n2")]]
     );
     assert_eq!(
-        lignes(&db, "MATCH (n:N) WHERE NOT exists((n)-[:R]->(:P)) RETURN n.id"),
+        lignes(
+            &db,
+            "MATCH (n:N) WHERE NOT exists((n)-[:R]->(:P)) RETURN n.id"
+        ),
         vec![vec![Value::from("n3")]]
     );
 }

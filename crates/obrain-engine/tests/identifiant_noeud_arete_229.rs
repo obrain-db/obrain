@@ -54,7 +54,10 @@ fn les_identifiants_se_recoupent() {
     let db = base();
     let noeuds = lignes(&db, "MATCH (n) RETURN id(n)");
     let aretes = lignes(&db, "MATCH ()-[e]->() RETURN id(e)");
-    assert!(aretes.iter().all(|a| noeuds.contains(a)), "{noeuds:?} {aretes:?}");
+    assert!(
+        aretes.iter().all(|a| noeuds.contains(a)),
+        "{noeuds:?} {aretes:?}"
+    );
 }
 
 /// La requête de Project Orchestrator (`chat_11_get_session_tree`).
@@ -89,7 +92,10 @@ fn element_de_liste_d_aretes_et_de_noeuds() {
          RETURN rels[0].k, last(rels).k, endNode(rels[0]).id, \
                 head(nodes(path)).id, nodes(path)[1].id",
     );
-    assert_eq!(rows, vec![vec![s("e1"), s("e2"), s("root"), s("root"), s("c1")]]);
+    assert_eq!(
+        rows,
+        vec![vec![s("e1"), s("e2"), s("root"), s("root"), s("c1")]]
+    );
 }
 
 /// `collect` d'une arête puis d'un nœud, élément relu après un `WITH`.
@@ -104,7 +110,6 @@ fn collect_puis_element() {
     );
     assert_eq!(rows, vec![vec![s("e1"), s("c1")]]);
 }
-
 
 /// `*0..n` rend la correspondance de longueur nulle (la source elle-même),
 /// et seulement si elle satisfait le label de la cible.
