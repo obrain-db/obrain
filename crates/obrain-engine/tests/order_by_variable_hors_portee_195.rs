@@ -51,7 +51,7 @@ fn order_by_sur_variable_absorbe_par_l_agregat_est_une_erreur_semantique() {
         "erreur interne pour une requête utilisateur : {message}"
     );
     assert!(
-        message.contains("r"),
+        message.contains('r'),
         "le message doit nommer la variable fautive : {message}"
     );
 }
