@@ -187,6 +187,10 @@ name = "bench_compare"
 required-features = ["cypher"]
 
 [[example]]
+name = "mesure_traversee"
+required-features = ["cypher"]
+
+[[example]]
 name = "import_jsonl_cognitif"
 required-features = ["cognitive"]
 
