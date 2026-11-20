@@ -323,6 +323,10 @@ pub struct BlobColumnWriter {
     /// TOUTES les colonnes à chaque checkpoint, y compris celles que
     /// personne n'avait touchées. Une colonne froide est désormais gratuite.
     dirty: bool,
+    /// (obrain#264) `arena_end` / `arena_crc` / `dirty` ont-ils été corrigés
+    /// par le balayage de l'idx ? Paresseux : fait au premier écrivain, au
+    /// premier `sync` ou au remap, jamais à l'ouverture.
+    arene_reprise: bool,
     /// Epoch de la dernière repermutation de slots appliquée à cette
     /// colonne (chantier SlotRemappable). Persisté dans
     /// `header._reserved[0]` par chaque écriture d'en-tête, hérité au
@@ -368,33 +372,13 @@ impl BlobColumnWriter {
         // dans l'arène. Le parcours porte sur TOUT l'idx, pas seulement
         // `n_slots` : une entrée au-delà de `n_slots` deviendrait visible le
         // jour où un slot plus grand fait monter `n_slots`. Coût : 16 o par
-        // slot relus à l'ouverture, plus, seulement quand la fin a bougé (après
-        // un arrêt sans sync), un recalcul du CRC sur l'arène.
-        let (arena_end, arena_crc, dirty) = {
-            let idx_octets = idx.as_slice();
-            let dat_len = dat.as_slice().len() as u64;
-            let mut fin = arena_end;
-            let mut k = BLOB_HEADER_SIZE;
-            while k + BLOB_SLOT_STRIDE <= idx_octets.len() {
-                if let Ok(e) = bytemuck::try_pod_read_unaligned::<BlobSlotEntry>(
-                    &idx_octets[k..k + BLOB_SLOT_STRIDE],
-                ) && e.len > 0
-                {
-                    let bout = e.arena_offset.saturating_add(e.len as u64);
-                    if bout <= dat_len {
-                        fin = fin.max(bout);
-                    }
-                }
-                k += BLOB_SLOT_STRIDE;
-            }
-            if fin > arena_end {
-                let mut h = crc32fast::Hasher::new();
-                h.update(&dat.as_slice()[..fin as usize]);
-                (fin, h.finalize(), true)
-            } else {
-                (arena_end, arena_crc, false)
-            }
-        };
+        // slot relus, plus, seulement quand la fin a bougé (après un arrêt
+        // sans sync), un recalcul du CRC sur l'arène.
+        //
+        // (obrain#264) CE BALAYAGE N'EST PLUS FAIT ICI. Il était payé à chaque
+        // ouverture, par colonne, alors que seuls un écrivain, un `sync` ou un
+        // remap en ont besoin : voir [`Self::reprendre_arene`]. Les lectures
+        // n'utilisent ni `arena_end` ni `arena_crc`.
         Ok(Self {
             spec,
             idx,
@@ -403,9 +387,60 @@ impl BlobColumnWriter {
             arena_end,
             arena_preallouee: arena_end,
             arena_crc,
-            dirty,
+            dirty: false,
+            arene_reprise: false,
             remap_epoch,
         })
+    }
+
+    /// (obrain#264) Fin d'arène réelle, CRC et propreté, d'après un balayage
+    /// de TOUT l'idx — voir le long commentaire de [`Self::create`] (obrain#120).
+    /// Fonction pure : ne modifie pas le writer.
+    ///
+    /// MESURÉ : ce balayage lit 16 o par slot d'idx. Sur la base PO (3,9 M
+    /// nœuds, 53 colonnes blob) il coûtait ~650-740 ms à CHAQUE ouverture,
+    /// l'essentiel des 276 ms+ de l'issue #264 — alors qu'il ne sert qu'à un
+    /// ÉCRIVAIN (où ajouter) ou à la réparation d'en-tête au `sync`. Les
+    /// lectures (`read_slot`) n'ont besoin ni de `arena_end` ni du CRC.
+    fn balayer_fin_arene(&self) -> (u64, u32, bool) {
+        let idx_octets = self.idx.as_slice();
+        let dat_len = self.dat.as_slice().len() as u64;
+        let mut fin = self.arena_end;
+        let mut k = BLOB_HEADER_SIZE;
+        while k + BLOB_SLOT_STRIDE <= idx_octets.len() {
+            if let Ok(e) = bytemuck::try_pod_read_unaligned::<BlobSlotEntry>(
+                &idx_octets[k..k + BLOB_SLOT_STRIDE],
+            ) && e.len > 0
+            {
+                let bout = e.arena_offset.saturating_add(e.len as u64);
+                if bout <= dat_len {
+                    fin = fin.max(bout);
+                }
+            }
+            k += BLOB_SLOT_STRIDE;
+        }
+        if fin > self.arena_end {
+            let mut h = crc32fast::Hasher::new();
+            h.update(&self.dat.as_slice()[..fin as usize]);
+            (fin, h.finalize(), true)
+        } else {
+            (self.arena_end, self.arena_crc, false)
+        }
+    }
+
+    /// (obrain#264) Applique la reprise de fin d'arène, une seule fois. Doit
+    /// précéder toute lecture de `arena_end` / `arena_crc` / `dirty` par un
+    /// chemin d'ÉCRITURE (`write_slot`, `sync`, `remap_node_slots`).
+    fn reprendre_arene(&mut self) {
+        if self.arene_reprise {
+            return;
+        }
+        let (fin, crc, sale) = self.balayer_fin_arene();
+        self.arena_end = fin;
+        self.arena_preallouee = fin;
+        self.arena_crc = crc;
+        self.dirty |= sale;
+        self.arene_reprise = true;
     }
 
     /// (#205) Zérofille l'arène jusqu'à `jusqua`, par blocs de 1 MiB, pour que
@@ -447,6 +482,7 @@ impl BlobColumnWriter {
             )));
         }
 
+        self.reprendre_arene();
         let offset = self.arena_end;
         let len = bytes.len() as u32;
 
@@ -585,6 +621,16 @@ impl BlobColumnWriter {
     /// stays alive so subsequent `write_slot`s can extend the column.
     /// Called from `SubstrateStore::flush`.
     pub fn sync(&mut self) -> SubstrateResult<()> {
+        // (obrain#264) Colonne propre ET jamais balayée : aucune écriture dans
+        // cette session, donc rien à rendre durable — et surtout PAS de
+        // balayage ici. Mesuré : le déplacer du `open` vers ce `sync` rendait
+        // l'ouverture rapide mais le `drop` (checkpoint) plus lent d'autant,
+        // soit un coût déplacé et non supprimé. La réparation d'un en-tête
+        // périmé (arrêt sans sync) a lieu au premier écrivain de la colonne.
+        if !self.dirty && !self.arene_reprise {
+            return Ok(());
+        }
+        self.reprendre_arene();
         // Colonne froide : rien n'a bougé depuis le dernier sync réussi, donc
         // l'en-tête sur disque est déjà exact. On ne paie ni CRC, ni msync,
         // ni fsync. `sync_all()` balaie TOUTES les colonnes de la base à
@@ -645,6 +691,14 @@ impl BlobColumnWriter {
         self.sync()
     }
 
+    /// (obrain#264) Le balayage de reprise de fin d'arène a-t-il eu lieu ?
+    /// `false` après `create` tant qu'aucun écrivain, `sync` ou remap ne l'a
+    /// exigé.
+    #[cfg(test)]
+    pub(crate) fn arene_reprise(&self) -> bool {
+        self.arene_reprise
+    }
+
     /// Current high-water mark (number of slots written so far).
     pub fn n_slots(&self) -> u32 {
         self.n_slots
@@ -652,7 +706,11 @@ impl BlobColumnWriter {
 
     /// Current high-water mark of the arena (bytes written so far).
     pub fn arena_end(&self) -> u64 {
-        self.arena_end
+        if self.arene_reprise {
+            self.arena_end
+        } else {
+            self.balayer_fin_arene().0
+        }
     }
 
     /// The spec this writer targets.
@@ -707,6 +765,7 @@ impl BlobColumnWriter {
         // et l'arene doit etre rendue durable AVANT la bascule du
         // repertoire, sinon un idx neuf pourrait pointer dans une arene
         // dont la queue n'est pas sur disque.
+        self.reprendre_arene();
         self.sync()?;
 
         let idx_end = BLOB_HEADER_SIZE + (self.n_slots as usize) * BLOB_SLOT_STRIDE;
@@ -850,6 +909,9 @@ pub fn remap_node_file_for_replay(
         arena_preallouee: header.arena_bytes,
         arena_crc: header.arena_crc32,
         dirty: false,
+        // Chemin rejeu : en-tête CRC-validé ci-dessus, aucun balayage voulu
+        // (comportement inchangé).
+        arene_reprise: true,
         remap_epoch: header._reserved[0],
     };
     writer.remap_node_slots(sub, old_to_new, epoch)?;
@@ -1315,6 +1377,66 @@ mod tests {
         assert_eq!(r.read_slot(0).unwrap(), b.as_slice());
         assert_eq!(r.read_slot(1).unwrap(), c.as_slice());
         assert_eq!(r.read_slot(2).unwrap(), d.as_slice());
+    }
+
+    /// (obrain#264) La réouverture d'une colonne ne balaie PAS l'idx : les
+    /// lectures n'en ont pas besoin. Le balayage a lieu au premier écrivain
+    /// ou au premier `sync`, et les garanties d'obrain#120 tiennent.
+    #[test]
+    fn la_reouverture_ne_balaie_pas_l_idx_avant_un_ecrivain() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let spec = sample_spec(5);
+        let a = vec![b'A'; 300];
+        let b = vec![b'B'; 300];
+        {
+            let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+            w.write_slot(0, &a).unwrap();
+            w.sync().unwrap();
+            w.write_slot(1, &b).unwrap();
+            // Relâché sans sync : en-tête périmé (arène=300, n_slots=1).
+        }
+        // Lecture seule : pas de balayage, lecture correcte du slot synchronisé.
+        let w = BlobColumnWriter::create(&sub, spec).unwrap();
+        assert!(
+            !w.arene_reprise(),
+            "create ne doit pas balayer l'idx (coût O(slots) à chaque ouverture)"
+        );
+        assert_eq!(w.read_slot(0).unwrap(), a.as_slice());
+        assert!(
+            !w.arene_reprise(),
+            "une lecture ne déclenche pas le balayage"
+        );
+        drop(w);
+
+        // Un écrivain déclenche le balayage et n'écrase pas le slot 1.
+        let mut w = BlobColumnWriter::create(&sub, spec).unwrap();
+        w.write_slot(2, &a).unwrap();
+        assert!(w.arene_reprise());
+        assert_eq!(w.arena_end(), 900);
+        drop(w);
+
+        // Un `sync` sans écriture ne balaie pas non plus (le coût ne doit pas
+        // migrer de l'ouverture vers le `drop`) ; le premier écrivain répare
+        // l'en-tête périmé.
+        let sub2 = SubstrateFile::open_tempfile().unwrap();
+        {
+            let mut w = BlobColumnWriter::create(&sub2, spec).unwrap();
+            w.write_slot(0, &a).unwrap();
+            w.sync().unwrap();
+            w.write_slot(1, &b).unwrap();
+        }
+        let mut w = BlobColumnWriter::create(&sub2, spec).unwrap();
+        w.sync().unwrap();
+        assert!(!w.arene_reprise(), "sync sans écriture : pas de balayage");
+        w.write_slot(2, &a).unwrap();
+        w.sync().unwrap();
+        drop(w);
+        let r = BlobColumnReader::open(&sub2, spec).unwrap().unwrap();
+        assert_eq!(
+            r.arena_bytes(),
+            900,
+            "le premier écrivain répare la fin d'arène"
+        );
     }
 
     /// Point 6 de la relecture : une entrée d'index AU-DELÀ de `n_slots` (écrite
