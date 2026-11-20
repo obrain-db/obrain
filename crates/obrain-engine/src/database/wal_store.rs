@@ -397,6 +397,14 @@ impl GraphStore for WalGraphStore {
         self.inner.edge_counts_by_type()
     }
 
+    fn nb_types_distincts(&self) -> Option<usize> {
+        self.inner.nb_types_distincts()
+    }
+
+    fn nb_premiers_labels_distincts(&self) -> Option<usize> {
+        self.inner.nb_premiers_labels_distincts()
+    }
+
     fn is_node_visible_at_epoch(&self, id: NodeId, epoch: EpochId) -> bool {
         self.inner.is_node_visible_at_epoch(id, epoch)
     }

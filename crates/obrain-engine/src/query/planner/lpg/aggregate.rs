@@ -785,36 +785,50 @@ impl super::Planner {
             && scan.label.is_none()
             && scan.input.is_none()
         {
-            let compte: Option<i64> = if quoi == CeQuOnCompte::TypesDistincts {
-                // Cardinal des types PRESENTS (degre > 0). Un type au dictionnaire
-                // mais sans arete ne doit pas compter : c'est le piege que le
-                // raccourci de comptage signale plus haut.
-                self.store.edge_counts_by_type().map(|par_type| {
-                    if exp.edge_types.is_empty() {
-                        par_type.values().filter(|n| **n > 0).count() as i64
-                    } else {
+            let compte: Option<i64> =
+                if quoi == CeQuOnCompte::TypesDistincts && exp.edge_types.is_empty() {
+                    // (#254) Cardinalité seule : le scalaire maintenu à l'écriture
+                    // (208 ns) au lieu d'une `HashMap` de 80 entrées construite
+                    // pour n'en lire que la taille (7,7 µs). `None` = le magasin ne
+                    // sait pas : on retombe sur la carte, jamais sur un zéro.
+                    self.store
+                        .nb_types_distincts()
+                        .map(|n| n as i64)
+                        .or_else(|| {
+                            self.store.edge_counts_by_type().map(|par_type| {
+                                par_type.values().filter(|n| **n > 0).count() as i64
+                            })
+                        })
+                } else if quoi == CeQuOnCompte::TypesDistincts {
+                    // Cardinal des types PRESENTS (degre > 0). Un type au dictionnaire
+                    // mais sans arete ne doit pas compter : c'est le piege que le
+                    // raccourci de comptage signale plus haut.
+                    self.store.edge_counts_by_type().map(|par_type| {
+                        if exp.edge_types.is_empty() {
+                            par_type.values().filter(|n| **n > 0).count() as i64
+                        } else {
+                            exp.edge_types
+                                .iter()
+                                .filter(|t| par_type.get(*t).copied().unwrap_or(0) > 0)
+                                .count() as i64
+                        }
+                    })
+                } else if exp.edge_types.is_empty() {
+                    Some(self.store.edge_count() as i64)
+                } else {
+                    // Les `edge_type` sont DISJOINTS — un `u16` par enregistrement —
+                    // donc la somme est exacte, sans double compte.
+                    //
+                    // `None` signifie « ce magasin ne sait pas compter par type » et
+                    // NON « zéro » : on renonce alors au raccourci plutôt que
+                    // d'inventer. C'est le contrat explicite d'`edge_counts_by_type`.
+                    self.store.edge_counts_by_type().map(|par_type| {
                         exp.edge_types
                             .iter()
-                            .filter(|t| par_type.get(*t).copied().unwrap_or(0) > 0)
-                            .count() as i64
-                    }
-                })
-            } else if exp.edge_types.is_empty() {
-                Some(self.store.edge_count() as i64)
-            } else {
-                // Les `edge_type` sont DISJOINTS — un `u16` par enregistrement —
-                // donc la somme est exacte, sans double compte.
-                //
-                // `None` signifie « ce magasin ne sait pas compter par type » et
-                // NON « zéro » : on renonce alors au raccourci plutôt que
-                // d'inventer. C'est le contrat explicite d'`edge_counts_by_type`.
-                self.store.edge_counts_by_type().map(|par_type| {
-                    exp.edge_types
-                        .iter()
-                        .map(|t| par_type.get(t).copied().unwrap_or(0) as i64)
-                        .sum()
-                })
-            };
+                            .map(|t| par_type.get(t).copied().unwrap_or(0) as i64)
+                            .sum()
+                    })
+                };
 
             if let Some(n) = compte {
                 let alias = agg_expr.alias.clone().unwrap_or_else(|| {
@@ -858,14 +872,11 @@ impl super::Planner {
                         {
                             return None;
                         }
-                        // `null` (nœuds sans label) n'est pas une valeur pour
-                        // `count(DISTINCT ...)` : seules les clés `Some` comptent.
-                        // `None` du magasin = « ne sait pas », jamais zéro.
-                        self.store
-                            .node_counts_by_first_label()?
-                            .iter()
-                            .filter(|(label, n)| label.is_some() && *n > 0)
-                            .count() as i64
+                        // (#254) Cardinal lu en O(1) sur le scalaire maintenu à
+                        // l'écriture (1,24 ns), qui exclut déjà le groupe `null`
+                        // (nœuds sans label) — comme `count(DISTINCT ...)` ignore
+                        // les `null`. `None` du magasin = « ne sait pas », jamais zéro.
+                        self.store.nb_premiers_labels_distincts()? as i64
                     }
                     CeQuOnCompte::Lignes => {
                         if let Some(label) = &scan.label {
