@@ -167,11 +167,25 @@ fn bench_correlated_multi_match_index_seek() {
         before_not.0 / after_not.0
     );
 
-    // Garde-fou : le seek doit battre nettement le produit cartesien.
-    assert!(
-        after_join.0 < before_join.0,
-        "le seek indexe doit battre le produit cartesien"
-    );
+    // ── PAS DE GARDE DE TEMPS ICI (doctrine OBRAIN_PERF_GATE) ────────────────
+    // L'ancienne garde `after_join < before_join` comparait deux durées ÉGALES
+    // et tirait à pile ou face. Mesuré le 2026-11-20 : à n = 1 000 comme à
+    // n = 5 000, le « seek indexé » et le chemin sans index rendent le même
+    // temps (speedup 1× — 0,6 ms → 0,6 ms à n = 1 000). La cause : le chemin
+    // SANS index de la jointure corrélée n'est plus le produit cartésien
+    // O(n²) que supposait la garde (le #95 d'origine) — il est déjà O(n). À
+    // cette échelle les trois stratégies (join sans index, seek, produit
+    // cartésien) coûtent toutes ~0,6 ms : un test de temps ne peut pas les
+    // distinguer, il ne mesure que la charge de la machine.
+    //
+    // La MÉCANIQUE que la garde voulait prouver — « la jointure corrélée sur
+    // propriété indexée produit un IndexSeekJoin, pas un produit cartésien » —
+    // est épinglée de façon déterministe, SANS horloge, dans
+    // `query/planner/lpg/mod.rs::test_correlated_index_seek_plan_shape`.
+    //
+    // Restent ici les assertions de CORRECTION (mêmes lignes avec et sans
+    // index), qui, elles, ne dépendent pas du temps. Le speedup est mesuré et
+    // imprimé ci-dessus à titre d'information, sans décider du sort du build.
 }
 
 fn print_bench(label: &str, stats: (f64, f64, f64, f64), row_count: usize) {

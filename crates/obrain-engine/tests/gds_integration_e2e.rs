@@ -19,6 +19,15 @@ use obrain_adapters::plugins::algorithms::{
 };
 use obrain_core::graph::GraphStore;
 
+/// La porte de performance est-elle ARMÉE ? Déarmée (défaut), la mesure se
+/// fait et se DIT ; armée (`OBRAIN_PERF_GATE=1`), le repère est exigé. Un
+/// seuil de temps mural mesure la machine autant que le code (même contrat
+/// que multi_writer_invariants / index_concurrency / feedback_baseline).
+#[must_use]
+pub fn porte_armee() -> bool {
+    std::env::var("OBRAIN_PERF_GATE").is_ok_and(|v| v.trim() == "1")
+}
+
 /// Builds a realistic PO-style graph with ~1000 nodes:
 /// - File nodes (~100), Function nodes (~400), Note nodes (~500)
 /// - Relations: IMPORTS (File→File), CALLS (Function→Function), SYNAPSE (Note→Note)
@@ -237,11 +246,18 @@ fn pipeline_perf() {
         "GDS pipeline on 1000 nodes completed in {:?} ({} communities detected)",
         elapsed, leiden_result.num_communities
     );
-    assert!(
-        elapsed.as_millis() < 5000,
-        "Pipeline too slow: {:?} (expected < 5s in debug mode)",
-        elapsed
-    );
+    if porte_armee() {
+        assert!(
+            elapsed.as_millis() < 5000,
+            "Pipeline too slow: {:?} (expected < 5s in debug mode)",
+            elapsed
+        );
+    } else {
+        eprintln!(
+            "  ⚠ repère TEMPS non armé (OBRAIN_PERF_GATE=1 pour l'exiger) — \
+             pipeline GDS 1000 nœuds : {elapsed:?}"
+        );
+    }
 }
 
 /// Verifies that the pipeline output format is compatible with PO's SubGraphNode/RawNodeData.

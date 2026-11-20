@@ -9,6 +9,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// La porte de performance est-elle ARMÉE ? Déarmée (défaut), la mesure se
+/// fait et se DIT ; armée (`OBRAIN_PERF_GATE=1`), le repère est exigé. Un
+/// seuil de temps mural mesure la machine autant que le code (même contrat
+/// que multi_writer_invariants / index_concurrency / feedback_baseline).
+#[must_use]
+pub fn porte_armee() -> bool {
+    std::env::var("OBRAIN_PERF_GATE").is_ok_and(|v| v.trim() == "1")
+}
+
 struct MockGraph {
     adjacency: HashMap<NodeId, Vec<(NodeId, f64)>>,
 }
@@ -234,11 +243,18 @@ fn spread_benchmark_10k_nodes() {
     }
     let per_spread = start.elapsed() / iterations as u32;
 
-    assert!(
-        per_spread.as_millis() < 50,
-        "spread took {:?} per call, expected < 50ms",
-        per_spread
-    );
+    if porte_armee() {
+        assert!(
+            per_spread.as_millis() < 50,
+            "spread took {:?} per call, expected < 50ms",
+            per_spread
+        );
+    } else {
+        eprintln!(
+            "  ⚠ repère TEMPS non armé (OBRAIN_PERF_GATE=1 pour l'exiger) — \
+             spread : {per_spread:?} par appel"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

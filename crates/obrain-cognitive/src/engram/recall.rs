@@ -691,6 +691,12 @@ mod tests {
     use super::*;
     use crate::engram::traits::InMemoryVectorIndex;
 
+    /// La porte de performance est-elle ARMÉE ? (même contrat que les tests
+    /// d'intégration : déarmée par défaut, la mesure se fait et se dit.)
+    fn porte_armee() -> bool {
+        std::env::var("OBRAIN_PERF_GATE").is_ok_and(|v| v.trim() == "1")
+    }
+
     fn make_store_and_index() -> (EngramStore, InMemoryVectorIndex, SpectralEncoder) {
         let store = EngramStore::new(None);
         let index = InMemoryVectorIndex::new();
@@ -910,12 +916,21 @@ mod tests {
             WarmupSelector::select_warmup_engrams(&store, &cues, &index, &spectral, &config);
         let elapsed = start.elapsed();
 
-        // Performance: must be < 50ms.
-        assert!(
-            elapsed.as_millis() < 50,
-            "Warmup pipeline took {}ms, expected < 50ms",
-            elapsed.as_millis()
-        );
+        // Performance : garde de temps mural OPT-IN (OBRAIN_PERF_GATE) —
+        // un seuil absolu mesure la machine autant que le code.
+        if porte_armee() {
+            assert!(
+                elapsed.as_millis() < 50,
+                "Warmup pipeline took {}ms, expected < 50ms",
+                elapsed.as_millis()
+            );
+        } else {
+            eprintln!(
+                "  ⚠ repère TEMPS non armé (OBRAIN_PERF_GATE=1 pour l'exiger) — \
+                 warmup pipeline : {}ms",
+                elapsed.as_millis()
+            );
+        }
 
         // Budget: at most 3 results.
         assert!(

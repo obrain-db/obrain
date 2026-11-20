@@ -283,6 +283,12 @@ mod tests {
     use obrain_core::graph::GraphStoreMut;
     use std::sync::Arc;
 
+    /// La porte de performance est-elle ARMÉE ? (même contrat que les tests
+    /// d'intégration : déarmée par défaut, la mesure se fait et se dit.)
+    fn porte_armee() -> bool {
+        std::env::var("OBRAIN_PERF_GATE").is_ok_and(|v| v.trim() == "1")
+    }
+
     fn store_with_positions(dim: usize, nodes: usize) -> (SubstrateStore, Vec<NodeId>) {
         let store = SubstrateStore::open_tempfile().unwrap();
         let mut ids = Vec::new();
@@ -448,10 +454,17 @@ mod tests {
         let dt = t.elapsed();
         assert!(p.is_empty(), "colonne absente => provider vide");
         assert_eq!(p.dim(), 0);
-        assert!(
-            dt.as_millis() < 500,
-            "le sondage doit court-circuiter, pas balayer 700 nœuds : {dt:?}"
-        );
+        if porte_armee() {
+            assert!(
+                dt.as_millis() < 500,
+                "le sondage doit court-circuiter, pas balayer 700 nœuds : {dt:?}"
+            );
+        } else {
+            eprintln!(
+                "  ⚠ repère TEMPS non armé (OBRAIN_PERF_GATE=1 pour l'exiger) — \
+                 sondage colonne absente : {dt:?}"
+            );
+        }
 
         // même taille, colonne présente sur 50 % : le sondage laisse passer, et
         // le chargement est complet (pas seulement les nœuds sondés).

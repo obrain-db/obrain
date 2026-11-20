@@ -2248,6 +2248,12 @@ mod tests {
         );
     }
 
+    /// La porte de performance est-elle ARMÉE ? (même contrat que les tests
+    /// d'intégration : déarmée par défaut, la mesure se fait et se dit.)
+    fn porte_armee() -> bool {
+        std::env::var("OBRAIN_PERF_GATE").is_ok_and(|v| v.trim() == "1")
+    }
+
     #[test]
     fn test_hilbert_features_perf_1000_nodes() {
         // Build a random-ish graph with 1000 nodes
@@ -2279,11 +2285,19 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(result.features.len(), 1000);
-        assert!(
-            elapsed.as_millis() < 5000,
-            "hilbert_features on 1000 nodes took {}ms (should be <5s)",
-            elapsed.as_millis()
-        );
+        if porte_armee() {
+            assert!(
+                elapsed.as_millis() < 5000,
+                "hilbert_features on 1000 nodes took {}ms (should be <5s)",
+                elapsed.as_millis()
+            );
+        } else {
+            eprintln!(
+                "  ⚠ repère TEMPS non armé (OBRAIN_PERF_GATE=1 pour l'exiger) — \
+                 hilbert_features 1000 nœuds : {}ms",
+                elapsed.as_millis()
+            );
+        }
         eprintln!("hilbert_features(1000 nodes): {}ms", elapsed.as_millis());
     }
 
