@@ -23,6 +23,9 @@ tempfile.workspace = true
 # que seuls les crates qui dépendent déjà du moteur activent : sans cela,
 # `cargo test -p obrain-substrate` compilerait tout le moteur pour rien.
 obrain-substrate.workspace = true
+# Pour `GraphStore` (trait des méthodes `edge_counts_by_type` /
+# `node_counts_by_first_label`) mesurées par l'exemple `mesure_compteurs`.
+obrain-core = { workspace = true, default-features = false }
 # `default-features = false` : sous `--no-default-features`, le cycle de
 # dev-dépendances ne doit pas réactiver les features par défaut du moteur.
 # `ObrainDB::open_read_only` n'en demande aucune (vérifié :

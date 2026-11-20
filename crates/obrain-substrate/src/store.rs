@@ -2530,6 +2530,18 @@ pub struct SubstrateStore {
     /// `NodeRecord.label_bitset`. Fixed-size array (64 entries) because
     /// the bitset width is hard-capped at u64 — cache-friendly, no hash.
     label_live_counts: [AtomicU64; 64],
+    /// T254 — per-first-label live counts. Index `i` counts live nodes whose
+    /// LOWEST set label bit is `i` — i.e. the node's `labels(n)[0]` resolves
+    /// to bit `i`. Fixed-size array (64 entries), same width as the bitset.
+    /// Maintained by the same write paths as `label_live_counts` (create /
+    /// delete / add_label / remove_label / ressuscite / bulk import), and
+    /// rebuilt — NOT persisted — by the open-time full scan, exactly like
+    /// every counter predating the v5 dict block.
+    first_label_live_counts: [AtomicU64; 64],
+    /// T254 — live nodes with no label at all (`label_bitset == 0`). Their
+    /// `labels(n)[0]` is `null`, a REAL row of the aggregate — distinct from
+    /// "no node", and from "this store cannot count" (`None`).
+    unlabeled_live_nodes: AtomicU64,
     /// (2026-09-09, P1 ouverture rapide) Nombre de vérifications PLEINES
     /// (scan `1..next_node_id` + `1..next_edge_id`) exécutées sur ce store
     /// depuis son ouverture. La vérification d'ouverture est sautée quand la
@@ -5915,6 +5927,7 @@ impl SubstrateStore {
             .map_or(0, |r| r.label_bitset);
         self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
         self.incr_label_counts(label_bitset, 1);
+        self.incr_first_label_count(label_bitset, 1);
     }
 
     /// Miroir exact de `delete_edge` — et il y a bien plus a defaire que pour
@@ -8318,6 +8331,8 @@ impl SubstrateStore {
             total_live_nodes: AtomicU64::new(0),
             total_live_edges: AtomicU64::new(0),
             label_live_counts: std::array::from_fn(|_| AtomicU64::new(0)),
+            first_label_live_counts: std::array::from_fn(|_| AtomicU64::new(0)),
+            unlabeled_live_nodes: AtomicU64::new(0),
             verifications_pleines: AtomicU64::new(0),
             edge_type_live_counts: DashMap::new(),
             edge_type_target_label_counts: DashMap::new(),
@@ -13894,6 +13909,9 @@ impl SubstrateStore {
                     self.label_live_counts[bit as usize].fetch_add(n, Ordering::Relaxed);
                 }
             }
+            // T254 — l'import est mono-label : le premier label d'un nœud est
+            // son unique bit (ou `None` pour un nœud sans label).
+            self.incr_first_label_count(bits, n as i64);
         }
         let mut par_type: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
         for &(_, _, ty) in &edges_typed {
@@ -14756,6 +14774,7 @@ impl SubstrateStore {
         // compteur SOUS zero (`fetch_sub` sur un AtomicU64 : repli a u64::MAX).
         self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
         self.incr_label_counts(bitset, 1);
+        self.incr_first_label_count(bitset, 1);
         id
     }
 
@@ -22374,83 +22393,50 @@ impl GraphStore for SubstrateStore {
         }
     }
 
-    /// (2026-09-14) LE PENDANT NŒUD D'`edge_counts_by_type` : un seul balayage,
-    /// groupé par PREMIER label.
+    /// (T254) LE PENDANT NŒUD D'`edge_counts_by_type`, EN O(1).
     ///
-    /// ── POURQUOI PAS LES COMPTEURS, ALORS QU'ILS EXISTENT ──
+    /// ── POURQUOI IL FALLAIT AUTRE CHOSE QUE `label_live_counts` ──
     ///
     /// `label_live_counts` répond en O(1) par label, mais il compte les nœuds
     /// qui PORTENT le label. `RETURN labels(n)[0], count(n)` compte chaque nœud
-    /// UNE fois, sous son premier label. Les 15 nœuds à deux labels mesurés sur
-    /// `runtime-dev` rendraient donc deux lignes au lieu d'une, et la somme des
-    /// groupes (422 831) dépasserait `count(n)` (422 816).
+    /// UNE fois, sous son PREMIER label. Un compteur par label ne peut pas
+    /// répondre à cette question : il ne connaît pas l'ORDRE des labels d'un
+    /// nœud (la somme des groupes dépasserait `count(n)` sur tout nœud
+    /// multi-label).
     ///
-    /// Un compteur par label ne peut pas répondre à cette question, quelle que
-    /// soit sa fraîcheur : il ne connaît pas l'ORDRE des labels d'un nœud. Ce
-    /// n'est pas un problème de justesse du registre, c'est un problème de
-    /// PROJECTION — la donnée dont la requête a besoin n'y est pas.
+    /// ── LE COMPTEUR `first_label_live_counts` ───────────────────────────
     ///
-    /// ── LA DISCIPLINE DU BALAYAGE ──
+    /// Le premier label d'un nœud est son PREMIER BIT ALLUMÉ (le plus petit),
+    /// ce qui est exactement `labels(n)[0]` : chaque bit posé par ce store a
+    /// été interné — donc nommé — avant d'être posé (voir
+    /// [`Self::premier_bit_allume`]). Le compteur est maintenu aux MÊMES points
+    /// que `label_live_counts` (create / delete / add_label / remove_label /
+    /// ressuscite / import en bloc), et reconstruit par le balayage
+    /// d'ouverture — jamais persisté, jamais recalculé à la requête.
     ///
-    /// Identique à `edge_counts_by_type`, pour les mêmes raisons :
+    /// Les nœuds SANS label (`label_bitset == 0`) vivent dans un bucket séparé
+    /// (`unlabeled_live_nodes`) : leur `labels(n)[0]` vaut `null`, une vraie
+    /// LIGNE du résultat, distincte de « pas de nœud ».
     ///
-    ///   · UN SEUL verrou de zone (`for_each_node_record_annulable`) — le motif
-    ///     « 119 M acquisitions deviennent une seule » du 2026-08-07 ;
-    ///   · ANNULABLE, et l'annulation rend `None` : un comptage partiel est un
-    ///     chiffre FAUX, pas un chiffre incomplet ;
-    ///   · l'agrégation se fait sur le BITSET pendant le parcours, la résolution
-    ///     des noms APRÈS — tenir `self.labels` sous le verrou de zone
-    ///     imbriquerait deux verrous du substrat dans un ordre que rien ne
-    ///     garantit ailleurs.
-    ///
-    /// Grouper par bitset plutôt que par bit est ce qui permet la résolution
-    /// différée, et c'est BORNÉ : le nombre de combinaisons de labels
-    /// distinctes est de l'ordre du nombre de labels (39 sur `runtime-dev`,
-    /// plus une poignée de paires), pas du nombre de nœuds.
-    ///
-    /// MÊMES FILTRES QUE LE PARCOURS GÉNÉRIQUE : tombstoned exclu, rien
-    /// d'autre. `node_ids()` — le chemin générique — exclut les tombstoned, et
-    /// c'est la seule exclusion qu'il fasse.
+    /// `None` garde le contrat du trait : « ce magasin ne sait pas ». Ici il
+    /// n'est rendu que dans le cas multi-process où un bit allumé n'a AUCUN nom
+    /// local (un pair a interné après notre ouverture) — renoncer au raccourci
+    /// plutôt que d'inventer un nom. En processus unique il n'arrive jamais.
     fn node_counts_by_first_label(&self) -> Option<Vec<(Option<String>, usize)>> {
-        let borne = self.next_node_id.load(Ordering::Acquire);
-        let mut par_bitset: FxHashMap<u64, usize> = FxHashMap::default();
-        let mut annule = false;
-        let mut vigie = obrain_common::utils::cancel::Vigie::new();
-        let r = self
-            .writer
-            .for_each_node_record_annulable(borne, |_slot, rec| {
-                if vigie.tick_bool() {
-                    annule = true;
-                    return false;
-                }
-                if rec.flags & crate::record::node_flags::TOMBSTONED != 0 {
-                    return true;
-                }
-                *par_bitset.entry(rec.label_bitset).or_insert(0) += 1;
-                true
-            });
-        if annule || matches!(r, Err(crate::error::SubstrateError::Cancelled)) {
-            return None;
-        }
-
-        // Résolution APRÈS le parcours, sous le verrou du registre seulement.
-        // Le premier label est le premier bit allumé QUI A UN NOM — c'est la
-        // définition de `labels_for_bitset(...).first()`, donc de
-        // `labels(n)[0]`. Un bit hors registre est sauté, exactement comme là-bas.
+        self.assurer_compteurs_verifies();
         let reg = self.labels.read();
         let mut par_nom: FxHashMap<Option<String>, usize> = FxHashMap::default();
-        for (bitset, n) in par_bitset {
-            let mut bits = bitset;
-            let mut premier: Option<String> = None;
-            while bits != 0 {
-                let bit = bits.trailing_zeros() as usize;
-                if let Some(nom) = reg.bit_to_name.get(bit) {
-                    premier = Some(nom.to_string());
-                    break;
-                }
-                bits &= bits - 1;
+        for bit in 0..64usize {
+            let n = self.first_label_live_counts[bit].load(Ordering::Relaxed) as usize;
+            if n == 0 {
+                continue;
             }
-            *par_nom.entry(premier).or_insert(0) += n;
+            let nom = reg.bit_to_name.get(bit)?;
+            *par_nom.entry(Some(nom.to_string())).or_insert(0) += n;
+        }
+        let sans = self.unlabeled_live_nodes.load(Ordering::Relaxed) as usize;
+        if sans > 0 {
+            *par_nom.entry(None).or_insert(0) += sans;
         }
         drop(reg);
         Some(par_nom.into_iter().collect())
@@ -23285,88 +23271,38 @@ impl GraphStore for SubstrateStore {
             .collect()
     }
 
-    /// UN SEUL BALAYAGE (2026-08-14).
+    /// (T254) COMPTES PAR TYPE D'ARÊTE, EN O(1) DEPUIS `edge_type_live_counts`.
     ///
-    /// Le substrat n'a pas d'index par type d'arete — seulement
-    /// `label_live_counts` du cote des noeuds. Compter par type demande donc
-    /// de parcourir les slots. On le fait UNE fois et on agrege, au lieu de
-    /// relancer un balayage complet par type demande.
-    /// (2026-08-21) LE BALAYAGE EST CONSERVÉ, APRÈS UN ALLER-RETOUR.
+    /// ── L'HISTOIRE D'UN ALLER-RETOUR, POUR NE PAS LE REFAIRE ────────────
     ///
-    /// Cette fonction a répondu, le temps d'un commit, depuis
-    /// `edge_type_live_counts` — un compteur maintenu aux trois mêmes points
-    /// que `total_live_edges`, donc réputé d'une fiabilité identique. Mesuré
-    /// sur une copie de la base `agent` : `IN_MISSION` annonçait **4 660**
-    /// pour **2 347** arêtes réelles, et six types sur neuf divergeaient, dans
-    /// les deux sens.
+    /// Cette fonction a répondu depuis `edge_type_live_counts` « le temps d'un
+    /// commit » en 2026-08, puis a été REVERTIE au balayage : mesuré sur une
+    /// copie de la base `agent`, `IN_MISSION` annonçait 4 660 pour 2 347
+    /// arêtes réelles, six types sur neuf divergeaient dans les deux sens. La
+    /// cause était un défaut de MAINTENANCE/PERSISTANCE du compteur, pas le
+    /// principe. Depuis, la réconciliation d'ouverture est systématique
+    /// (`verifier_compteurs_depuis_les_zones`, décision du 2026-09-15) et le
+    /// test de parité `compteurs_et_balayage_s_accordent_apres_reouverture`
+    /// garde la porte : un compteur faux ne survit plus à une réouverture.
     ///
-    /// Le balayage, lui, n'a jamais menti — c'est ce qui rend la dérive
-    /// détectable, et c'est la raison d'être de cette fonction telle que la
-    /// raconte le commentaire ci-dessus. Un compteur rapide qui se trompe d'un
-    /// facteur deux ne remplace pas un parcours lent qui dit vrai.
+    /// Le compteur est maintenu aux MÊMES points que `total_live_edges`
+    /// (create / delete / ressuscite / import en bloc), avec la MÊME exclusion
+    /// que le balayage qu'il remplace : arête tombstonée exclue, extrémité au
+    /// créneau nul exclue (non traversable par aucun plan). Un type sans arête
+    /// vivante est OMIS, exactement comme le faisait le balayage.
     ///
-    /// Le coût est réel — O(#arêtes), 15 338 989 ms sur 59 h en production —
-    /// et il sera récupéré le jour où les compteurs seront démontrés justes
-    /// sur une base ROUVERTE, pas seulement réparables. Le test de parité
-    /// `compteurs_et_balayage_s_accordent_apres_reouverture` garde la porte.
+    /// `None` n'est plus rendu ici (le raccourci est toujours disponible une
+    /// fois les compteurs vérifiés) ; le contrat du trait reste honoré par les
+    /// implémentations qui ne savent pas compter.
     fn edge_counts_by_type(&self) -> Option<std::collections::HashMap<String, usize>> {
-        let borne = self.next_edge_id.load(Ordering::Acquire);
-        // (2026-08-24) INTERRUPTIBLE, ET SOUS UN SEUL VERROU.
-        //
-        // Deux corrections d'un même geste, parce qu'elles portent sur la
-        // même ligne :
-        //
-        //   · `read_edge(slot)` REPREND le verrou de zone à chaque arête.
-        //     C'est le motif exact que `for_each_edge_record` a supprimé
-        //     partout ailleurs le 2026-08-07 (« 119 M acquisitions
-        //     deviennent une seule »). Ce balayage-ci l'avait conservé, et
-        //     c'est lui qui pèse 15 338 989 ms sur 59 h d'après le pavé
-        //     ci-dessus.
-        //
-        //   · le balayage est désormais annulable. C'est un COMPTAGE : un
-        //     total partiel serait un chiffre FAUX, pas un chiffre
-        //     incomplet. On rend donc `None` — « je ne sais pas » — la
-        //     seule réponse honnête, et celle que l'appelant sait déjà
-        //     traiter (c'est le défaut du trait).
-        //
-        // SÉMANTIQUE INCHANGÉE : mêmes slots, mêmes filtres (tombstone,
-        // extrémité nulle), mêmes noms. L'agrégation se fait sur l'identifiant
-        // de type (u16) PENDANT le balayage et la résolution nom par nom
-        // APRÈS — `resolve_edge_type_by_id` prend `self.edge_types`, et le
-        // rappeler sous le verrou de zone imbriquerait deux verrous du
-        // substrat pour rien.
-        let mut par_id: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
-        let mut annule = false;
-        let mut vigie = obrain_common::utils::cancel::Vigie::new();
-        let r = self
-            .writer
-            .for_each_edge_record_annulable(borne, |_slot, rec| {
-                if vigie.tick_bool() {
-                    annule = true;
-                    return false;
-                }
-                if rec.flags & edge_flags::TOMBSTONED != 0 {
-                    return true;
-                }
-                // (2026-08-21) MÊME EXCLUSION QUE LES COMPTEURS : une arête dont
-                // une extrémité porte le créneau nul n'est traversable par aucun
-                // plan. La compter ici et pas dans `total_live_edges` — ou
-                // l'inverse — ferait diverger deux réponses à la même question.
-                // Voir le pavé de `rebuild_live_counters_interne`.
-                if rec.src == 0 || rec.dst == 0 {
-                    return true;
-                }
-                *par_id.entry(rec.edge_type).or_insert(0) += 1;
-                true
-            });
-        if annule || matches!(r, Err(crate::error::SubstrateError::Cancelled)) {
-            return None;
-        }
+        self.assurer_compteurs_verifies();
         let mut compte: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for (id, n) in par_id {
-            *compte
-                .entry(self.resolve_edge_type_by_id(id).to_string())
-                .or_insert(0) += n;
+        for e in self.edge_type_live_counts.iter() {
+            let n = e.value().load(Ordering::Relaxed) as usize;
+            if n == 0 {
+                continue;
+            }
+            compte.insert(self.resolve_edge_type_by_id(*e.key()).to_string(), n);
         }
         Some(compte)
     }
@@ -23514,6 +23450,41 @@ impl SubstrateStore {
             Self::apply_counter_delta(&self.label_live_counts[bit], delta);
             bits &= bits - 1;
         }
+    }
+
+    /// T254 — the bit index of `labels(n)[0]` for a node whose label bitset
+    /// is `bitset`, or `None` when the node carries no label.
+    ///
+    /// ── POURQUOI « PREMIER BIT ALLUMÉ » == « PREMIER LABEL NOMMÉ » ──
+    /// `node_counts_by_first_label` définit le premier label comme le
+    /// PREMIER BIT ALLUMÉ QUI A UN NOM dans le registre. Chaque bit posé par
+    /// CE store a été interné (donc nommé localement) AVANT d'être posé —
+    /// `intern_labels_to_bitset` interner avant de rendre le bitset. Le
+    /// registre est append-only (un nom n'est jamais retiré), et les nouveaux
+    /// labels reçoivent des bits MONOTONES croissants. Donc, en processus
+    /// unique, tout bit allumé est nommé : le plus petit bit allumé EST le
+    /// premier label nommé. (Le cas multi-process — un pair nomme un bit
+    /// après notre ouverture — est traité au moment de la LECTURE, qui
+    /// renonce au raccourci plutôt que d'inventer.)
+    #[inline]
+    fn premier_bit_allume(bitset: u64) -> Option<usize> {
+        (bitset != 0).then(|| bitset.trailing_zeros() as usize)
+    }
+
+    /// T254 — apply a ±1 delta to the first-label bucket `premier`
+    /// (`None` = the unlabeled bucket).
+    #[inline]
+    fn appliquer_delta_premier_label(&self, premier: Option<usize>, delta: i64) {
+        match premier {
+            Some(bit) => Self::apply_counter_delta(&self.first_label_live_counts[bit], delta),
+            None => Self::apply_counter_delta(&self.unlabeled_live_nodes, delta),
+        }
+    }
+
+    /// T254 — increment/decrement the first-label counter for a node whose
+    /// label bitset is `bitset`. Create/delete/resurrect/import paths.
+    pub(crate) fn incr_first_label_count(&self, bitset: u64, delta: i64) {
+        self.appliquer_delta_premier_label(Self::premier_bit_allume(bitset), delta);
     }
 
     /// Increment/decrement per-edge-type counter via DashMap. Fast path
@@ -24220,6 +24191,8 @@ impl SubstrateStore {
         let node_hw = self.next_node_id.load(Ordering::Acquire);
         let mut total_nodes: u64 = 0;
         let mut label_totals: [u64; 64] = [0; 64];
+        let mut first_label_totals: [u64; 64] = [0; 64];
+        let mut unlabeled_total: u64 = 0;
         self.writer.for_each_node_record(node_hw, |_slot, rec| {
             if !rec.is_live() {
                 return true;
@@ -24234,6 +24207,10 @@ impl SubstrateStore {
                 return true;
             }
             total_nodes += 1;
+            match Self::premier_bit_allume(rec.label_bitset) {
+                Some(bit) => first_label_totals[bit] += 1,
+                None => unlabeled_total += 1,
+            }
             let mut bits = rec.label_bitset;
             while bits != 0 {
                 let bit = bits.trailing_zeros() as usize;
@@ -24246,6 +24223,11 @@ impl SubstrateStore {
         for (bit, &count) in label_totals.iter().enumerate() {
             self.label_live_counts[bit].store(count, Ordering::Relaxed);
         }
+        for (bit, &count) in first_label_totals.iter().enumerate() {
+            self.first_label_live_counts[bit].store(count, Ordering::Relaxed);
+        }
+        self.unlabeled_live_nodes
+            .store(unlabeled_total, Ordering::Relaxed);
 
         let edge_hw = self.next_edge_id.load(Ordering::Acquire);
         let mut total_edges: u64 = 0;
@@ -26113,6 +26095,7 @@ impl GraphStoreMut for SubstrateStore {
         // T17h T1: live counter decrements.
         self.total_live_nodes.fetch_sub(1, Ordering::Relaxed);
         self.incr_label_counts(label_bitset, -1);
+        self.incr_first_label_count(label_bitset, -1);
         self.notify_node_deleted(id);
         true
     }
@@ -27333,6 +27316,16 @@ impl GraphStoreMut for SubstrateStore {
         // `incr_label_counts` parcourt les bits posés du masque ; `mask` n'en
         // porte qu'un, celui du label ajouté.
         self.incr_label_counts(mask, 1);
+        // T254 — le PREMIER label peut changer : poser un bit PLUS BAS que
+        // l'actuel premier (ajouter un label déjà interné à bit inférieur).
+        // Décrémenter l'ancien bucket, incrémenter le nouveau — no-op net
+        // quand le premier bit ne change pas.
+        let ancien_premier = Self::premier_bit_allume(old.label_bitset);
+        let nouveau_premier = Self::premier_bit_allume(updated.label_bitset);
+        if ancien_premier != nouveau_premier {
+            self.appliquer_delta_premier_label(ancien_premier, -1);
+            self.appliquer_delta_premier_label(nouveau_premier, 1);
+        }
         true
     }
 
@@ -27364,6 +27357,14 @@ impl GraphStoreMut for SubstrateStore {
         // Symétrique d'`add_label` : sans ce décrément, un label retiré
         // resterait compté indéfiniment, et le compteur ne saurait que croître.
         self.incr_label_counts(mask, -1);
+        // T254 — retirer l'actuel premier label fait monter le premier bit au
+        // suivant allumé. Même discipline qu'`add_label`, dans l'autre sens.
+        let ancien_premier = Self::premier_bit_allume(old.label_bitset);
+        let nouveau_premier = Self::premier_bit_allume(updated.label_bitset);
+        if ancien_premier != nouveau_premier {
+            self.appliquer_delta_premier_label(ancien_premier, -1);
+            self.appliquer_delta_premier_label(nouveau_premier, 1);
+        }
         true
     }
 }
@@ -30334,6 +30335,261 @@ mod tests {
             ecarts.is_empty(),
             "aucun écart ne doit subsister après réouverture : {ecarts:?}"
         );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // T254 — COMPTEURS DE CARDINALITÉ MAINTENUS À L'ÉCRITURE
+    //
+    // L'oracle de chaque test est le BALAYAGE : c'est le seul contrôle qui
+    // attraperait un incrément faux ou un double compte — le défaut mesuré en
+    // production (`IN_MISSION` 4 660 pour 2 347, un label 1 220 pour 1 840).
+    // Les compteurs O(1) n'ont de valeur que s'ils rendent exactement ce que
+    // le balayage rend, après CHAQUE scénario : création, suppression,
+    // changement de label, réouverture, annulation de transaction, écritures
+    // concurrentes.
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// Le BALAYAGE, oracle de tous les tests qui suivent : recompte les nœuds
+    /// VIVANTS (`is_live()` — ALLOCATED sans TOMBSTONED, donc jamais les trous
+    /// de slots) groupés par PREMIER label (le plus petit bit allumé qui a un
+    /// nom). C'est la définition de `labels(n)[0]`, réimplémentée sans les
+    /// compteurs.
+    fn balayer_premier_label(s: &SubstrateStore) -> Vec<(Option<String>, usize)> {
+        let hw = s.next_node_id.load(Ordering::Acquire);
+        let reg = s.labels.read();
+        let mut par_nom: std::collections::BTreeMap<Option<String>, usize> = Default::default();
+        for slot in 1..hw {
+            let Some(rec) = s.writer.read_node(slot).ok().flatten() else {
+                continue;
+            };
+            if !rec.is_live() {
+                continue;
+            }
+            let mut bits = rec.label_bitset;
+            let mut premier = None;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                if let Some(nom) = reg.bit_to_name.get(bit) {
+                    premier = Some(nom.to_string());
+                    break;
+                }
+                bits &= bits - 1;
+            }
+            *par_nom.entry(premier).or_insert(0) += 1;
+        }
+        drop(reg);
+        par_nom.into_iter().collect()
+    }
+
+    /// Le BALAYAGE des types d'arêtes — mêmes filtres que le compteur qu'il
+    /// remplace : tombstone exclu, extrémité au créneau nul exclue.
+    fn balayer_types_aretes(s: &SubstrateStore) -> std::collections::HashMap<String, usize> {
+        let borne = s.next_edge_id.load(Ordering::Acquire);
+        let mut par_type: std::collections::HashMap<String, usize> = Default::default();
+        for slot in 1..borne {
+            let Ok(Some(rec)) = s.writer.read_edge(slot) else {
+                continue;
+            };
+            if rec.flags & crate::record::edge_flags::TOMBSTONED != 0 {
+                continue;
+            }
+            if rec.src == 0 || rec.dst == 0 {
+                continue;
+            }
+            *par_type
+                .entry(s.resolve_edge_type_by_id(rec.edge_type).to_string())
+                .or_insert(0) += 1;
+        }
+        par_type
+    }
+
+    /// Confronte les DEUX compteurs O(1) au balayage. Appelé après chaque
+    /// scénario — c'est l'oracle de sûreté du correctif.
+    fn asserter_compteurs_egalent_balayage(s: &SubstrateStore) {
+        let attendu = balayer_premier_label(s);
+        let mut obtenu = s.node_counts_by_first_label().expect("sait compter");
+        obtenu.sort_unstable();
+        assert_eq!(obtenu, attendu, "compteur par premier label != balayage");
+
+        assert_eq!(
+            s.edge_counts_by_type().expect("sait compter"),
+            balayer_types_aretes(s),
+            "compteur par type d'arête != balayage"
+        );
+    }
+
+    /// Création multi-label : chaque nœud est compté UNE fois sous son
+    /// PREMIER label, et le nœud sans label vit dans le bucket `null`.
+    #[test]
+    fn compteur_premier_label_egale_le_balayage() {
+        let (_td, s) = store();
+        // Ordre d'internement contrôlé : A -> bit 0, B -> bit 1, C -> bit 2.
+        s.create_node(&["A"]);
+        s.create_node(&["B"]);
+        s.create_node(&["A", "B"]); // premier = A (bit 0)
+        s.create_node(&["B", "A"]); // premier = A, l'ordre des arguments ne change rien
+        s.create_node(&[]); // sans label -> null
+        s.create_node(&["C"]);
+
+        let mut attendu = balayer_premier_label(&s);
+        let mut obtenu = s.node_counts_by_first_label().expect("sait compter");
+        obtenu.sort_unstable();
+        attendu.sort_unstable();
+        assert_eq!(obtenu, attendu);
+        // A : nœuds 1, 3, 4 = 3 ; B : nœud 2 = 1 ; C : 1 ; null : 1.
+        let par_nom: std::collections::BTreeMap<Option<String>, usize> =
+            obtenu.into_iter().collect();
+        assert_eq!(par_nom.get(&Some("A".into())), Some(&3));
+        assert_eq!(par_nom.get(&Some("B".into())), Some(&1));
+        assert_eq!(par_nom.get(&Some("C".into())), Some(&1));
+        assert_eq!(par_nom.get(&None), Some(&1));
+
+        asserter_compteurs_egalent_balayage(&s);
+    }
+
+    /// Le PREMIER label change quand on pose un label EXISTANT à bit plus bas :
+    /// `SET n:A` sur un nœud `[:B]` fait passer son premier label de B à A.
+    #[test]
+    fn premier_label_suit_ajout_d_un_label_inferieur() {
+        let (_td, s) = store();
+        s.create_node(&["A"]); // interne A -> bit 0
+        let b = s.create_node(&["B"]); // interne B -> bit 1
+        let c = s.create_node(&["B"]); // premier = B
+        asserter_compteurs_egalent_balayage(&s); // A=1, B=2
+
+        // Ajouter un label SUPÉRIEUR (C, bit 2) ne change PAS le premier.
+        assert!(s.add_label(c, "C"));
+        asserter_compteurs_egalent_balayage(&s); // A=1, B=2 (c reste [:B,C])
+
+        // Ajouter un label INFÉRIEUR (A, bit 0) fait passer c de B à A.
+        assert!(s.add_label(c, "A"));
+        asserter_compteurs_egalent_balayage(&s);
+        let par_nom: std::collections::BTreeMap<Option<String>, usize> = s
+            .node_counts_by_first_label()
+            .expect("sait compter")
+            .into_iter()
+            .collect();
+        assert_eq!(
+            par_nom.get(&Some("A".into())),
+            Some(&2),
+            "nœud 1 + c sous A"
+        );
+        assert_eq!(
+            par_nom.get(&Some("B".into())),
+            Some(&1),
+            "il ne reste que b"
+        );
+    }
+
+    /// Retirer l'actuel premier label fait monter le premier bit au suivant
+    /// allumé.
+    #[test]
+    fn premier_label_suit_le_retrait_du_premier() {
+        let (_td, s) = store();
+        s.create_node(&["A"]); // bit 0
+        s.create_node(&["B"]); // bit 1
+        let c = s.create_node(&["A", "B"]); // premier = A
+        asserter_compteurs_egalent_balayage(&s);
+        assert!(s.remove_label(c, "A"));
+        asserter_compteurs_egalent_balayage(&s);
+        let par_nom: std::collections::BTreeMap<Option<String>, usize> = s
+            .node_counts_by_first_label()
+            .expect("sait compter")
+            .into_iter()
+            .collect();
+        assert_eq!(
+            par_nom.get(&Some("A".into())),
+            Some(&1),
+            "il ne reste que le nœud 1"
+        );
+        assert_eq!(
+            par_nom.get(&Some("B".into())),
+            Some(&2),
+            "b et c (désormais [:B])"
+        );
+    }
+
+    /// RÉOUVERTURE : le compteur est reconstruit par le balayage d'ouverture,
+    /// donc il survit au flush sans être persisté.
+    #[test]
+    fn compteur_premier_label_reste_juste_apres_reouverture() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        {
+            let s = SubstrateStore::create(&chemin).unwrap();
+            s.create_node(&["A"]);
+            s.create_node(&["B"]);
+            s.create_node(&["A", "B"]);
+            s.create_node(&[]);
+            let a = s.create_node(&["A"]);
+            let b = s.create_node(&["B"]);
+            s.create_edge(a, b, "LIE");
+            let mort = s.create_edge(b, a, "EPHEMERE");
+            s.delete_edge(mort);
+            s.flush().expect("flush");
+        }
+        let s = SubstrateStore::open(&chemin).expect("réouverture");
+        asserter_compteurs_egalent_balayage(&s);
+        // Le recomptage ne doit RIEN corriger : compteurs et zones s'accordent.
+        assert!(
+            s.recount_live_counters().expect("recount").is_empty(),
+            "aucun écart après réouverture"
+        );
+    }
+
+    /// TRANSACTION ANNULÉE : la suppression versionnée d'un nœud et d'une
+    /// arête, puis son annulation, doit laisser les DEUX compteurs exacts.
+    #[test]
+    fn compteurs_justes_apres_annulation_de_transaction() {
+        let (_td, s) = store();
+        let a = s.create_node(&["A"]);
+        let b = s.create_node(&["B"]);
+        let e = s.create_edge(a, b, "LIE");
+        asserter_compteurs_egalent_balayage(&s);
+
+        let tx = TransactionId(1);
+        assert!(s.delete_node_versioned(a, EpochId(0), tx));
+        assert!(s.delete_edge_versioned(e, EpochId(0), tx));
+        // pendant la transaction : A=0, B=1, LIE=0
+        asserter_compteurs_egalent_balayage(&s);
+
+        s.rollback_transaction_properties(tx);
+        // après annulation : A=1, B=1, LIE=1 — la résurrection a recompté.
+        asserter_compteurs_egalent_balayage(&s);
+        let par_nom: std::collections::BTreeMap<Option<String>, usize> = s
+            .node_counts_by_first_label()
+            .expect("sait compter")
+            .into_iter()
+            .collect();
+        assert_eq!(par_nom.get(&Some("A".into())), Some(&1));
+        assert_eq!(par_nom.get(&Some("B".into())), Some(&1));
+        assert_eq!(
+            s.edge_counts_by_type().expect("sait compter").get("LIE"),
+            Some(&1)
+        );
+    }
+
+    /// ÉCRITURES CONCURRENTES : ni incrément perdu, ni double compte. Les
+    /// compteurs sont des atomiques (et le compteur de types un DashMap) :
+    /// après la jointure, ils doivent égaler le balayage.
+    #[test]
+    fn compteurs_justes_sous_ecritures_concurrentes() {
+        let (_td, s) = store();
+        let s = &s;
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(move || {
+                    for _ in 0..120 {
+                        let a = s.create_node(&["N"]);
+                        let b = s.create_node(&["N"]);
+                        s.create_edge(a, b, "LIE");
+                    }
+                });
+            }
+        });
+        asserter_compteurs_egalent_balayage(s);
+        assert_eq!(s.node_count_by_label("N"), 8 * 120 * 2);
+        assert_eq!(s.edge_count(), 8 * 120);
     }
 
     #[test]
@@ -43942,6 +44198,7 @@ impl SubstrateStore {
         // T17h T1: live counter increments (total + per-label).
         self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
         self.incr_label_counts(bitset, 1);
+        self.incr_first_label_count(bitset, 1);
         // Naissance notee ICI, sur le chemin NON transactionnel : la moitie
         // des appelants — dont `ObrainDB::create_node()` — n'ouvrent aucune
         // transaction. Ne la noter que dans la variante versionnee laisserait
