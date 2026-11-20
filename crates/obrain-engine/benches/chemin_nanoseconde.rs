@@ -247,4 +247,60 @@ fn enveloppe_rw_contre_ro(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(complements, histogramme_nomme, enveloppe_rw_contre_ro);
+// ── 7. (#254) CARDINAUX DISTINCTS : scalaire contre carte ───────────────
+// Les trois répondent à une question de cardinalité ; les deux premiers
+// construisaient une `HashMap` pour n'en lire que la taille.
+fn cardinaux_distincts(c: &mut Criterion) {
+    let Some(db) = store() else { return };
+    let st = db.graph_store();
+    let sess = db.session();
+    // Les valeurs d'abord : un banc qui ne vérifie pas ce qu'il chronomètre.
+    let par_type = st
+        .edge_counts_by_type()
+        .map(|m| m.values().filter(|n| **n > 0).count());
+    let par_label = st
+        .node_counts_by_first_label()
+        .map(|v| v.iter().filter(|(l, n)| l.is_some() && *n > 0).count());
+    assert_eq!(st.nb_types_distincts(), par_type, "scalaire types != carte");
+    assert_eq!(
+        st.nb_premiers_labels_distincts(),
+        par_label,
+        "scalaire labels != carte"
+    );
+    eprintln!("cardinaux: types={par_type:?} premiers_labels={par_label:?}");
+
+    let mut g = c.benchmark_group("cardinaux_distincts");
+    g.bench_function("node_count", |b| b.iter(|| black_box(st.node_count())));
+    g.bench_function("edge_counts_by_type_carte", |b| {
+        b.iter(|| black_box(st.edge_counts_by_type()));
+    });
+    g.bench_function("node_counts_by_first_label_carte", |b| {
+        b.iter(|| black_box(st.node_counts_by_first_label()));
+    });
+    g.bench_function("nb_types_distincts_scalaire", |b| {
+        b.iter(|| black_box(st.nb_types_distincts()));
+    });
+    g.bench_function("nb_premiers_labels_distincts_scalaire", |b| {
+        b.iter(|| black_box(st.nb_premiers_labels_distincts()));
+    });
+    let q1 = "MATCH ()-[r]->() RETURN count(DISTINCT type(r))";
+    let q2 = "MATCH (n) RETURN count(DISTINCT labels(n)[0])";
+    for (nom, q) in [
+        ("gql_types_distincts", q1),
+        ("gql_premiers_labels_distincts", q2),
+    ] {
+        let r = sess.execute(q).unwrap();
+        eprintln!("{nom}: {:?}", r.rows);
+        g.bench_function(nom, |b| {
+            b.iter(|| black_box(sess.execute(black_box(q)).unwrap()));
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    complements,
+    histogramme_nomme,
+    enveloppe_rw_contre_ro,
+    cardinaux_distincts
+);

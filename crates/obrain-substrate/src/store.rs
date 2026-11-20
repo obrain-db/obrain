@@ -107,7 +107,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use arcstr::ArcStr;
 use dashmap::DashMap;
@@ -2541,6 +2541,24 @@ pub struct SubstrateStore {
     /// `labels(n)[0]` is `null`, a REAL row of the aggregate — distinct from
     /// "no node", and from "this store cannot count" (`None`).
     unlabeled_live_nodes: AtomicU64,
+    /// (#254) Nombre de PREMIERS LABELS NOMMÉS dont le compteur
+    /// `first_label_live_counts[bit]` est > 0 — la cardinalité de
+    /// `node_counts_by_first_label()` SANS le groupe `null` (les nœuds sans
+    /// label), que `count(DISTINCT labels(n)[0])` ignore comme tout `null`.
+    ///
+    /// Maintenu par TRANSITION de zéro dans `appliquer_delta_premier_label` —
+    /// le point de passage unique de tous les chemins d'écriture (create,
+    /// delete, add_label, remove_label, ressuscite, import) — et recalculé
+    /// d'un bloc, une fois, par la reconstruction/restauration d'ouverture.
+    /// `AtomicI64` : sous écritures concurrentes, la transition +1 d'un fil et
+    /// la transition −1 d'un autre peuvent s'appliquer dans l'ordre inverse de
+    /// leur survenue ; la somme est exacte au repos, et un `u64` ferait
+    /// déborder ce transitoire en valeur gigantesque. La lecture borne à 0.
+    nb_premiers_labels_distincts: AtomicI64,
+    /// (#254) Nombre de types d'arête de compteur > 0 — la cardinalité de
+    /// `edge_counts_by_type()`. Même maintenance, par transition, dans
+    /// `incr_edge_type_count`.
+    nb_types_distincts: AtomicI64,
     /// (2026-09-09, P1 ouverture rapide) Nombre de vérifications PLEINES
     /// (scan `1..next_node_id` + `1..next_edge_id`) exécutées sur ce store
     /// depuis son ouverture. La vérification d'ouverture est sautée quand la
@@ -8332,6 +8350,8 @@ impl SubstrateStore {
             label_live_counts: std::array::from_fn(|_| AtomicU64::new(0)),
             first_label_live_counts: std::array::from_fn(|_| AtomicU64::new(0)),
             unlabeled_live_nodes: AtomicU64::new(0),
+            nb_premiers_labels_distincts: AtomicI64::new(0),
+            nb_types_distincts: AtomicI64::new(0),
             verifications_pleines: AtomicU64::new(0),
             edge_type_live_counts: DashMap::new(),
             edge_type_target_label_counts: DashMap::new(),
@@ -13877,10 +13897,9 @@ impl SubstrateStore {
             *par_type.entry(ty).or_default() += 1;
         }
         for (ty, n) in par_type {
-            self.edge_type_live_counts
-                .entry(ty)
-                .or_default()
-                .fetch_add(n, Ordering::Relaxed);
+            // (#254) via le point de passage unique, pour que la transition
+            // 0→n du type alimente `nb_types_distincts`.
+            self.incr_edge_type_count(ty, n as i64);
         }
         Ok((n, mw))
     }
@@ -22401,6 +22420,32 @@ impl GraphStore for SubstrateStore {
         Some(par_nom.into_iter().collect())
     }
 
+    /// (#254) Cardinal de `edge_counts_by_type()` en O(1) : le nombre de types
+    /// d'arête de degré > 0, maintenu à l'écriture (voir
+    /// `nb_types_distincts`). Même verdict que
+    /// `edge_counts_by_type().map(|m| m.len())`.
+    fn nb_types_distincts(&self) -> Option<usize> {
+        self.assurer_compteurs_verifies();
+        if self.portee_tenant().is_some() {
+            return None; // compteurs globaux : ils ne savent pas filtrer par tenant
+        }
+        Some(self.nb_types_distincts.load(Ordering::Relaxed).max(0) as usize)
+    }
+
+    /// (#254) Cardinal des premiers labels NOMMÉS de `node_counts_by_first_label()`
+    /// (le groupe `null` exclu), en O(1).
+    fn nb_premiers_labels_distincts(&self) -> Option<usize> {
+        self.assurer_compteurs_verifies();
+        if self.portee_tenant().is_some() {
+            return None;
+        }
+        Some(
+            self.nb_premiers_labels_distincts
+                .load(Ordering::Relaxed)
+                .max(0) as usize,
+        )
+    }
+
     // -- Entity metadata --
     fn edge_type(&self, id: EdgeId) -> Option<ArcStr> {
         // (2026-09-11) UNE SEULE lecture au lieu de deux — exactement la
@@ -23399,6 +23444,58 @@ impl SubstrateStore {
         }
     }
 
+    /// (#254) `apply_counter_delta`, plus la maintenance du scalaire de
+    /// cardinalité : applique `delta` à `atomic` et, si l'atome a franchi ZÉRO
+    /// (0→n ou n→0), ajuste `distincts` de ±1.
+    ///
+    /// La transition est lue sur la valeur RENDUE par `fetch_add`/`fetch_sub`,
+    /// donc linéarisée par l'atome lui-même : deux fils concurrents ne peuvent
+    /// pas observer tous deux « 0→1 » sur le même atome. Le critère est
+    /// « différent de zéro » — le MÊME que le filtre `count > 0` du balayage
+    /// qui sert d'oracle, y compris dans le cas dégénéré d'un débordement.
+    #[inline]
+    fn appliquer_delta_avec_cardinal(atomic: &AtomicU64, delta: i64, distincts: &AtomicI64) {
+        let (avant, apres) = if delta >= 0 {
+            let d = delta as u64;
+            let avant = atomic.fetch_add(d, Ordering::Relaxed);
+            (avant, avant.wrapping_add(d))
+        } else {
+            let d = delta.unsigned_abs();
+            let avant = atomic.fetch_sub(d, Ordering::Relaxed);
+            (avant, avant.wrapping_sub(d))
+        };
+        match (avant != 0, apres != 0) {
+            (false, true) => {
+                distincts.fetch_add(1, Ordering::Relaxed);
+            }
+            (true, false) => {
+                distincts.fetch_sub(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
+    /// (#254) Recalcule d'un bloc les deux scalaires depuis les compteurs
+    /// détaillés. Appelé UNIQUEMENT par les chemins qui réécrivent les
+    /// compteurs en masse (reconstruction depuis les zones, restauration
+    /// depuis l'instantané) : O(types + 64), une fois à l'ouverture, jamais à
+    /// la requête. Les chemins incrémentaux passent par la transition.
+    fn recalculer_cardinaux_distincts(&self) {
+        let premiers = self
+            .first_label_live_counts
+            .iter()
+            .filter(|c| c.load(Ordering::Relaxed) != 0)
+            .count() as i64;
+        self.nb_premiers_labels_distincts
+            .store(premiers, Ordering::Relaxed);
+        let types = self
+            .edge_type_live_counts
+            .iter()
+            .filter(|e| e.value().load(Ordering::Relaxed) != 0)
+            .count() as i64;
+        self.nb_types_distincts.store(types, Ordering::Relaxed);
+    }
+
     /// Increment/decrement label counters for every bit set in `bitset`.
     /// Walks each set bit via `trailing_zeros` + clear-lowest-bit trick
     /// (compiles to TZCNT/BLSR on x86_64 with BMI1, or CTZ/AND on ARM64).
@@ -23435,7 +23532,11 @@ impl SubstrateStore {
     #[inline]
     fn appliquer_delta_premier_label(&self, premier: Option<usize>, delta: i64) {
         match premier {
-            Some(bit) => Self::apply_counter_delta(&self.first_label_live_counts[bit], delta),
+            Some(bit) => Self::appliquer_delta_avec_cardinal(
+                &self.first_label_live_counts[bit],
+                delta,
+                &self.nb_premiers_labels_distincts,
+            ),
             None => Self::apply_counter_delta(&self.unlabeled_live_nodes, delta),
         }
     }
@@ -23451,14 +23552,14 @@ impl SubstrateStore {
     /// the atomic op.
     pub(crate) fn incr_edge_type_count(&self, edge_type_id: u16, delta: i64) {
         if let Some(atomic) = self.edge_type_live_counts.get(&edge_type_id) {
-            Self::apply_counter_delta(&atomic, delta);
+            Self::appliquer_delta_avec_cardinal(&atomic, delta, &self.nb_types_distincts);
             return;
         }
         let entry = self
             .edge_type_live_counts
             .entry(edge_type_id)
             .or_insert_with(|| AtomicU64::new(0));
-        Self::apply_counter_delta(&entry, delta);
+        Self::appliquer_delta_avec_cardinal(&entry, delta, &self.nb_types_distincts);
     }
 
     /// T17h T1 accessor — per-edge-type live count, O(1). Returns 0 for
@@ -24299,6 +24400,9 @@ impl SubstrateStore {
         }
         self.edge_type_live_counts
             .retain(|k, _| edge_type_totals.contains_key(k));
+        // (#254) Les compteurs détaillés viennent d'être réécrits en bloc :
+        // les scalaires de cardinalité sont recalculés ICI, une fois.
+        self.recalculer_cardinaux_distincts();
         // T17i T2 — install the two histograms atomically (clear + insert).
         //
         // (2026-08-21) SEULEMENT si on les a calculés. Les écraser avec des
@@ -24357,6 +24461,8 @@ impl SubstrateStore {
                 }
             }
         }
+        // (#254) compteurs réécrits en bloc : scalaires recalculés une fois.
+        self.recalculer_cardinaux_distincts();
     }
 
     /// T17h T5 — degree column accessor with lazy build.
@@ -30072,6 +30178,8 @@ mod tests {
 
         /// Confronte les quatre familles de compteurs au balayage.
         fn confronter(s: &SubstrateStore, etape: &str) {
+            // (#254) cartes ET scalaires de cardinalité, à chaque étape.
+            asserter_compteurs_egalent_balayage(s);
             let (noeuds, par_bit, aretes, par_type) = balayer(s);
 
             assert_eq!(
@@ -30375,6 +30483,105 @@ mod tests {
             balayer_types_aretes(s),
             "compteur par type d'arête != balayage"
         );
+
+        // (#254) LES DEUX SCALAIRES contre le balayage — l'oracle, jamais
+        // les cartes qu'ils remplacent : `count > 0` sur le balayage brut.
+        let types_balayes = balayer_types_aretes(s).values().filter(|n| **n > 0).count();
+        assert_eq!(
+            s.nb_types_distincts().expect("sait compter"),
+            types_balayes,
+            "nb_types_distincts != cardinal du balayage"
+        );
+        let premiers_balayes = balayer_premier_label(s)
+            .iter()
+            .filter(|(nom, n)| nom.is_some() && *n > 0)
+            .count();
+        assert_eq!(
+            s.nb_premiers_labels_distincts().expect("sait compter"),
+            premiers_balayes,
+            "nb_premiers_labels_distincts != cardinal du balayage (groupe null exclu)"
+        );
+    }
+
+    /// (#254) Les transitions de zéro, dans les deux sens et plusieurs fois :
+    /// un type qui disparaît (1→0) puis revient (0→1), un premier label dont
+    /// le seul porteur change de premier label (le seau se vide, un autre se
+    /// remplit), un nœud supprimé, un nœud sans label (jamais compté).
+    #[test]
+    fn scalaires_de_cardinalite_suivent_les_transitions_de_zero() {
+        let (_td, s) = store();
+        asserter_compteurs_egalent_balayage(&s);
+        assert_eq!(s.nb_types_distincts(), Some(0));
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(0));
+
+        let sans = s.create_node(&[]);
+        assert_eq!(
+            s.nb_premiers_labels_distincts(),
+            Some(0),
+            "null jamais compté"
+        );
+        let a = s.create_node(&["A"]); // A = bit 0
+        let b = s.create_node(&["B"]); // B = bit 1
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(2));
+        let e1 = s.create_edge(a, b, "T1");
+        let e2 = s.create_edge(b, a, "T1");
+        let e3 = s.create_edge(a, sans, "T2");
+        assert_eq!(s.nb_types_distincts(), Some(2), "T1 compté une seule fois");
+        asserter_compteurs_egalent_balayage(&s);
+
+        // T1 : 2 -> 1 : toujours présent ; 1 -> 0 : disparaît.
+        s.delete_edge(e1);
+        assert_eq!(s.nb_types_distincts(), Some(2));
+        s.delete_edge(e2);
+        assert_eq!(s.nb_types_distincts(), Some(1));
+        asserter_compteurs_egalent_balayage(&s);
+        // 0 -> 1 : revient.
+        let e4 = s.create_edge(a, b, "T1");
+        assert_eq!(s.nb_types_distincts(), Some(2));
+        asserter_compteurs_egalent_balayage(&s);
+        s.delete_edge(e4);
+        s.delete_edge(e3);
+        assert_eq!(s.nb_types_distincts(), Some(0));
+        asserter_compteurs_egalent_balayage(&s);
+
+        // Le premier label de `b` passe de B à A : le seau B se vide.
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(2));
+        assert!(s.add_label(b, "A"));
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(1), "B vidé");
+        asserter_compteurs_egalent_balayage(&s);
+        // Retrait de A : b retombe sur B (le seau B se remplit).
+        assert!(s.remove_label(b, "A"));
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(2));
+        asserter_compteurs_egalent_balayage(&s);
+        // Retrait du dernier label : b devient sans label (null, non compté).
+        assert!(s.remove_label(b, "B"));
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(1));
+        asserter_compteurs_egalent_balayage(&s);
+        // Suppression du dernier porteur de A.
+        s.delete_node(a);
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(0));
+        asserter_compteurs_egalent_balayage(&s);
+    }
+
+    /// (#254) Un recomptage complet (la réparation) laisse les scalaires
+    /// égaux au balayage, y compris quand il corrige des compteurs détaillés
+    /// délibérément faussés : les scalaires sont recalculés d'un bloc.
+    #[test]
+    fn scalaires_de_cardinalite_survivent_a_la_reconstruction() {
+        let (_td, s) = store();
+        let a = s.create_node(&["A"]);
+        let b = s.create_node(&["B"]);
+        s.create_edge(a, b, "T1");
+        s.create_edge(a, b, "T2");
+        // Corruption simulée : détail et scalaire faux, volontairement.
+        s.edge_type_live_counts.clear();
+        s.nb_types_distincts.store(7, Ordering::Relaxed);
+        s.nb_premiers_labels_distincts.store(9, Ordering::Relaxed);
+        let ecarts = s.recount_live_counters().expect("recount");
+        assert!(!ecarts.is_empty(), "la corruption doit être constatée");
+        asserter_compteurs_egalent_balayage(&s);
+        assert_eq!(s.nb_types_distincts(), Some(2));
+        assert_eq!(s.nb_premiers_labels_distincts(), Some(2));
     }
 
     /// Création multi-label : chaque nœud est compté UNE fois sous son

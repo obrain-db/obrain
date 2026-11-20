@@ -1006,6 +1006,22 @@ pub trait GraphStore: Send + Sync {
         None
     }
 
+    /// (#254) NOMBRE de types d'arête de degré > 0 — la cardinalité de
+    /// [`GraphStore::edge_counts_by_type`], sans construire la carte. Réponse à
+    /// `count(DISTINCT type(r))`. `None` = « ce magasin ne sait pas » (jamais
+    /// zéro) ; l'appelant retombe sur `edge_counts_by_type`.
+    fn nb_types_distincts(&self) -> Option<usize> {
+        None
+    }
+
+    /// (#254) NOMBRE de premiers labels distincts NOMMÉS — la cardinalité de
+    /// [`GraphStore::node_counts_by_first_label`] SANS le groupe `null` (les
+    /// nœuds sans label), comme `count(DISTINCT labels(n)[0])` qui ignore les
+    /// `null`. `None` = « ce magasin ne sait pas ».
+    fn nb_premiers_labels_distincts(&self) -> Option<usize> {
+        None
+    }
+
     // --- Visibility checks (fast path, avoids building full entities) ---
 
     /// Vrai quand des écritures transactionnelles NON COMMITÉES sont en
