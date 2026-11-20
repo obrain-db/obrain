@@ -110,7 +110,18 @@ pub struct VariableLengthExpandOperator {
     /// Distances (en sauts, sens inverse) de chaque noeud a une cible, par
     /// cible distincte. Calculees paresseusement, bornees par `max_hops`.
     reach_cache: HashMap<NodeId, Arc<HashMap<NodeId, u32>>>,
+    /// (obrain#189) Chemins deja enumeres, par `(base, source, cible guide)`.
+    /// L'expansion d'une ligne ne depend QUE de la source et de la cible :
+    /// quand plusieurs lignes d'entree partagent la meme source (des milliers
+    /// de notes liees au meme noeud), la BFS n'est faite qu'une fois et les
+    /// lignes suivantes copient le resultat avec leur propre `input_idx`.
+    chemins_par_source: HashMap<(u16, NodeId, Option<NodeId>), Vec<OutputRow>>,
+    /// Nombre de lignes retenues dans `chemins_par_source` (borne la memoire).
+    lignes_en_cache: usize,
 }
+
+/// Plafond de lignes de chemins gardees pour les sources deja parcourues.
+const LIGNES_CACHE_MAX: usize = 500_000;
 
 thread_local! {
     /// (obrain#189) Nombre de chemins ENUMERES (emis par l'expansion avant
@@ -142,6 +153,7 @@ enum ColumnValue {
 }
 
 /// A ready output row.
+#[derive(Clone)]
 struct OutputRow {
     /// Index into input_rows for the source row.
     input_idx: usize,
@@ -265,6 +277,8 @@ impl VariableLengthExpandOperator {
             path_mode: PathMode::Walk,
             target_column: None,
             reach_cache: HashMap::new(),
+            chemins_par_source: HashMap::new(),
+            lignes_en_cache: 0,
         }
     }
 
@@ -849,11 +863,32 @@ impl VariableLengthExpandOperator {
                 (row.source_node, target)
             };
             let reach = target.and_then(|t| self.reach_for(t).map(|r| (t, r)));
+            let cle = (
+                source_node.base,
+                source_node.id,
+                reach.as_ref().map(|(t, _)| *t),
+            );
+            if let Some(modele) = self.chemins_par_source.get(&cle) {
+                let copies = modele.iter().map(|r| OutputRow {
+                    input_idx: idx,
+                    ..r.clone()
+                });
+                self.output_buffer.extend(copies);
+                self.current_input_idx += 1;
+                continue;
+            }
             let results = self.process_input_row(
                 idx,
                 source_node,
                 reach.as_ref().map(|(t, r)| (*t, r.as_ref())),
             );
+            // Une BFS interrompue rend un partiel : jamais memorise.
+            if !obrain_common::utils::cancel::is_cancelled()
+                && self.lignes_en_cache + results.len() <= LIGNES_CACHE_MAX
+            {
+                self.lignes_en_cache += results.len();
+                self.chemins_par_source.insert(cle, results.clone());
+            }
             self.output_buffer.extend(results);
             self.current_input_idx += 1;
         }
@@ -1072,6 +1107,8 @@ impl Operator for VariableLengthExpandOperator {
         self.input_rows = None;
         self.current_input_idx = 0;
         self.output_buffer.clear();
+        self.chemins_par_source.clear();
+        self.lignes_en_cache = 0;
         self.exhausted = false;
     }
 

@@ -1664,6 +1664,27 @@ impl ExpressionPredicate {
         }
     }
 
+    /// UNE propriété d'un nœud, sans hydrater le nœud.
+    ///
+    /// `resolve_node(id).get_property(p)` construit le `Node` entier (libellés
+    /// et TOUTES les propriétés, blobs compris : le `content` d'une note pèse
+    /// des ko) pour n'en lire qu'une. Dans `[n IN nodes(path) | n.name]`, c'est
+    /// payé par élément ET par ligne (obrain-db/obrain#189 : 84 % du temps de
+    /// `get_propagated_notes` sur la copie PO). Les lecteurs ciblés du store
+    /// ont, par contrat, la sémantique EXACTE de `get_node_*` + `get_property`
+    /// (visibilité d'époque et de transaction comprises).
+    fn propriete_de_noeud(&self, id: NodeId, propriete: &str) -> Option<Value> {
+        let cle = obrain_common::types::PropertyKey::new(propriete);
+        if let (Some(ep), Some(tx)) = (self.viewing_epoch, self.transaction_id) {
+            self.store.get_node_property_versioned(id, &cle, ep, tx)
+        } else if let Some(ep) = self.viewing_epoch {
+            self.store.get_node_property_at_epoch(id, &cle, ep)
+        } else {
+            self.resolve_node(id)
+                .and_then(|n| n.get_property(propriete).cloned())
+        }
+    }
+
     /// Propriété d'un élément de liste dont le GENRE est connu.
     fn propriete_d_un_element(
         &self,
@@ -1673,8 +1694,7 @@ impl ExpressionPredicate {
     ) -> Option<Value> {
         match genre {
             GenreElement::Noeud => self
-                .resolve_node(NodeId(id as u64))
-                .and_then(|n| n.get_property(propriete).cloned())
+                .propriete_de_noeud(NodeId(id as u64), propriete)
                 .or(Some(Value::Null)),
             GenreElement::Arete => self
                 .resolve_edge(obrain_common::types::EdgeId(id as u64))
