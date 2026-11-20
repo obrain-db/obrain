@@ -2424,6 +2424,7 @@ dependencies = [
  "tokenizers",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "web-time",
 ]
 
