@@ -148,7 +148,9 @@ impl DegreeColumn {
         let mut zf = sub.open_named_zone(filename)?;
         let payload_bytes = (n_slots as usize) * DEGREE_RECORD_SIZE;
         let total_bytes = HEADER_SIZE + payload_bytes;
-        ensure_room(&mut zf, total_bytes, 1 << 20)?;
+        // Une page de respiration, pas un mégaoctet (obrain-db/obrain#266) :
+        // une base de 400 nœuds demandait 4 Kio utiles et obtenait 1 Mio.
+        ensure_room(&mut zf, total_bytes, 4096)?;
         // ── LA MISE À ZÉRO EST EXPLICITE, ET ELLE A COÛTÉ CHER (2026-09-12) ──
         //
         // Le commentaire précédent disait : « zero-init payload (the underlying
@@ -356,7 +358,12 @@ impl DegreeColumn {
         let new_n_slots = std::cmp::max(self.n_slots.saturating_mul(2), slot + 1);
         let payload_bytes = (new_n_slots as usize) * DEGREE_RECORD_SIZE;
         let total_bytes = HEADER_SIZE + payload_bytes;
-        ensure_room(&mut self.zf, total_bytes, 1 << 20)?;
+        // La marge de croissance était de 1 Mio : une base de 400 nœuds (512
+        // slots, 4 Kio utiles) obtenait une zone de 1 Mio — 256× ses besoins
+        // (obrain-db/obrain#266). L'amortissement est déjà porté par le
+        // doublement de `n_slots` ci-dessus et par le ×3/2 de `ensure_room` ;
+        // une marge d'une page suffit, et la zone reste alignée sur 4 Kio.
+        ensure_room(&mut self.zf, total_bytes, 4096)?;
         // New payload region is zero-filled by ensure_room (grow_to
         // zeroes new pages). Update header + n_slots. L'epoch de remap
         // courant de l'en-tête est PRÉSERVÉ (chantier SlotRemappable).
