@@ -203,13 +203,21 @@ fn bench_correlated_multi_match_index_seek() {
     // cela qu'on asserte, plus les resultats identiques (deja verifies
     // ci-dessus), plus une borne de non-degradation volontairement large.
     let plan_join = plan(&db, q_join);
+    // Ce que le plan imprime REELLEMENT (sonde du 20/11 sur ce jeu) :
+    //   sans index  : Filter (b.k Eq a.fk) [label-first]
+    //   avec index  : Filter (b.k Eq a.fk) [index: k]
+    //   cartesien nu : aucun Filter, `NodeScan (b:B) > NodeScan (a:A)`
+    // L'ancienne assertion negative sur `NestedLoopJoin` a ete retiree : le
+    // printer n'emet JAMAIS ce nom, elle ne pouvait donc pas echouer — une
+    // garde qui ne peut pas mordre est pire que pas de garde.
     assert!(
         plan_join.contains("[index: k]"),
         "l'egalite b.k = a.fk doit etre servie par l'index :\n{plan_join}"
     );
     assert!(
-        !plan_join.contains("NestedLoopJoin"),
-        "produit cartesien revenu dans le plan :\n{plan_join}"
+        plan_join.contains("Eq a.fk"),
+        "l'egalite doit rester un predicat du plan (un produit cartesien nu \
+         n'a aucun Filter) :\n{plan_join}"
     );
 
     let plafond = before_join.0 * 3.0 + 1.0;
