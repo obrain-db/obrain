@@ -30527,10 +30527,7 @@ mod tests {
 
         // (#254) LES DEUX SCALAIRES contre le balayage — l'oracle, jamais
         // les cartes qu'ils remplacent : `count > 0` sur le balayage brut.
-        let types_balayes = balayer_types_aretes(s)
-            .values()
-            .filter(|n| **n > 0)
-            .count();
+        let types_balayes = balayer_types_aretes(s).values().filter(|n| **n > 0).count();
         assert_eq!(
             s.nb_types_distincts().expect("sait compter"),
             types_balayes,
@@ -30559,7 +30556,11 @@ mod tests {
         assert_eq!(s.nb_premiers_labels_distincts(), Some(0));
 
         let sans = s.create_node(&[]);
-        assert_eq!(s.nb_premiers_labels_distincts(), Some(0), "null jamais compté");
+        assert_eq!(
+            s.nb_premiers_labels_distincts(),
+            Some(0),
+            "null jamais compté"
+        );
         let a = s.create_node(&["A"]); // A = bit 0
         let b = s.create_node(&["B"]); // B = bit 1
         assert_eq!(s.nb_premiers_labels_distincts(), Some(2));

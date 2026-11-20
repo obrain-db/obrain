@@ -695,12 +695,10 @@ impl super::Planner {
                         name,
                         args,
                         distinct: false,
-                    } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => {
-                        match &args[0] {
-                            LogicalExpression::Variable(v) => v.as_str(),
-                            _ => return None,
-                        }
-                    }
+                    } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => match &args[0] {
+                        LogicalExpression::Variable(v) => v.as_str(),
+                        _ => return None,
+                    },
                     _ => return None,
                 };
                 compte_labels_distincts = true;
@@ -799,11 +797,14 @@ impl super::Planner {
                 // (208 ns) au lieu d'une `HashMap` de 80 entrées construite
                 // pour n'en lire que la taille (7,7 µs). `None` = le magasin ne
                 // sait pas : on retombe sur la carte, jamais sur un zéro.
-                self.store.nb_types_distincts().map(|n| n as i64).or_else(|| {
-                    self.store
-                        .edge_counts_by_type()
-                        .map(|par_type| par_type.values().filter(|n| **n > 0).count() as i64)
-                })
+                self.store
+                    .nb_types_distincts()
+                    .map(|n| n as i64)
+                    .or_else(|| {
+                        self.store
+                            .edge_counts_by_type()
+                            .map(|par_type| par_type.values().filter(|n| **n > 0).count() as i64)
+                    })
             } else if compte_types_distincts {
                 // Cardinal des types PRESENTS (degre > 0). Un type au dictionnaire
                 // mais sans arete ne doit pas compter : c'est le piege que le
