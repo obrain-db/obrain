@@ -1,5 +1,8 @@
 //! Ouvre une base obrain en lecture seule et imprime sa taille réelle.
 //!
+//! Les deux ouvertures (le store brut, puis `ObrainDB` pour la requête
+//! optionnelle) sont en lecture seule : l'outil n'écrit jamais dans la base.
+//!
 //! ```bash
 //! cargo run -p obrain-engine --release --features cypher --example inspecte_base -- /chemin/vers/base
 //! ```
@@ -44,7 +47,8 @@ fn main() {
     // base réelle sans écrire un exemple à chaque fois.
     if let Some(requete) = std::env::args().nth(2) {
         use std::time::Instant;
-        let db = obrain_engine::ObrainDB::open(repertoire).expect("ouverture");
+        let db = obrain_engine::ObrainDB::open_read_only(repertoire)
+            .expect("ouverture en lecture seule");
         let session = db.session();
         let depart = Instant::now();
         match session.execute_cypher(&requete) {

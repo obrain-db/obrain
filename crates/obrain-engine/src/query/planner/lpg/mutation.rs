@@ -410,6 +410,10 @@ impl super::Planner {
                 | LogicalExpression::Literal(Value::List(_))
                 | LogicalExpression::Literal(Value::Vector(_))
                 | LogicalExpression::Property { .. }
+                // Appel de fonction (`labels(n)`, `keys(n)`, `range(..)`) : sans
+                // cette branche on retombait sur le repli « colonne 0 », qui
+                // est le nœud `n` et non la liste -> UNWIND ne rendait rien.
+                | LogicalExpression::FunctionCall { .. }
         ) {
             // Wrap input in a ProjectOperator that adds the list as an extra column
             let literal_list = self.convert_expression(&unwind.expression)?;

@@ -31,6 +31,18 @@ fn measure<F: FnMut() -> R, R>(mut f: F, iterations: usize) -> (f64, f64, f64, f
     (mean, variance.sqrt(), min, max)
 }
 
+/// Plan logique d'une requete, tel que `EXPLAIN` le rend.
+fn plan(db: &ObrainDB, requete: &str) -> String {
+    match &db
+        .execute_cypher(&format!("EXPLAIN {requete}"))
+        .unwrap()
+        .rows[0][0]
+    {
+        obrain_common::types::Value::String(s) => s.to_string(),
+        autre => panic!("plan attendu, recu {autre:?}"),
+    }
+}
+
 /// Mesure p50/mean sur N iterations.
 fn measure_p50<F: FnMut() -> R, R>(mut f: F, iterations: usize) -> (f64, f64) {
     let mut times = Vec::with_capacity(iterations);
@@ -114,6 +126,8 @@ fn bench_correlated_multi_match_index_seek() {
 
     // ---- AVANT : sans index (= ancien plan, produit cartesien) ----
     println!("--- AVANT : sans index (produit cartesien) ---");
+    let plan_avant = plan(&db, q_join);
+    println!("PLAN AVANT:\n{plan_avant}");
     let before_join = measure_p50(|| session.execute_cypher(q_join).unwrap(), 5);
     println!(
         "  {:<52} p50 {:>9.1}ms (mean {:.1}ms)",
@@ -128,6 +142,8 @@ fn bench_correlated_multi_match_index_seek() {
     // ---- APRES : avec index (seek) ----
     db.create_property_index("k");
     println!("\n--- APRES : index sur B.k (IndexSeekJoin) ---");
+    let plan_apres = plan(&db, q_join);
+    println!("PLAN APRES:\n{plan_apres}");
     let after_join = measure_p50(|| session.execute_cypher(q_join).unwrap(), 20);
     println!(
         "  {:<52} p50 {:>9.1}ms (mean {:.1}ms)",
@@ -167,10 +183,51 @@ fn bench_correlated_multi_match_index_seek() {
         before_not.0 / after_not.0
     );
 
-    // Garde-fou : le seek doit battre nettement le produit cartesien.
+    // GARDE-FOU — ce qu'il peut affirmer, et ce qu'il ne peut plus.
+    //
+    // Il affirmait « le seek indexe doit battre le produit cartesien » par un
+    // `after < before` STRICT. Ce que montrent les deux plans imprimes
+    // ci-dessus, mesures sur `7a0c8ab9` : ils sont IDENTIQUES avant et apres
+    // `create_property_index("k")` —
+    //
+    //   Aggregate > Filter (b.k Eq a.fk) [index: k] > NodeScan (b:B) > NodeScan (a:A)
+    //
+    // — donc les deux series de temps mesurent la MEME execution, et l'ecart
+    // observe (1,0 ms contre 1,1 ms) est du bruit machine. Sur un runner
+    // partage il tombe du mauvais cote une fois sur deux : `main` est devenu
+    // rouge sur `7a0c8ab9` precisement la. Meme principe que #224 : un test
+    // qui assure un rapport de temps mesure la machine, pas l'algorithme.
+    //
+    // Le contrat de #95 est STRUCTUREL et se verifie sur le plan : l'egalite
+    // est servie par un index, et aucun produit cartesien n'apparait. C'est
+    // cela qu'on asserte, plus les resultats identiques (deja verifies
+    // ci-dessus), plus une borne de non-degradation volontairement large.
+    let plan_join = plan(&db, q_join);
+    // Ce que le plan imprime REELLEMENT (sonde du 20/11 sur ce jeu) :
+    //   sans index  : Filter (b.k Eq a.fk) [label-first]
+    //   avec index  : Filter (b.k Eq a.fk) [index: k]
+    //   cartesien nu : aucun Filter, `NodeScan (b:B) > NodeScan (a:A)`
+    // L'ancienne assertion negative sur `NestedLoopJoin` a ete retiree : le
+    // printer n'emet JAMAIS ce nom, elle ne pouvait donc pas echouer — une
+    // garde qui ne peut pas mordre est pire que pas de garde.
     assert!(
-        after_join.0 < before_join.0,
-        "le seek indexe doit battre le produit cartesien"
+        plan_join.contains("[index: k]"),
+        "l'egalite b.k = a.fk doit etre servie par l'index :\n{plan_join}"
+    );
+    assert!(
+        plan_join.contains("Eq a.fk"),
+        "l'egalite doit rester un predicat du plan (un produit cartesien nu \
+         n'a aucun Filter) :\n{plan_join}"
+    );
+
+    let plafond = before_join.0 * 3.0 + 1.0;
+    assert!(
+        after_join.0 <= plafond,
+        "l'index degrade l'execution : p50 {:.3}ms contre {:.3}ms sans index \
+         (plafond {:.3}ms)",
+        after_join.0,
+        before_join.0,
+        plafond
     );
 }
 
