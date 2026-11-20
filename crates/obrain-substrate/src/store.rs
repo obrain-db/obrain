@@ -22426,8 +22426,8 @@ impl GraphStore for SubstrateStore {
         self.assurer_compteurs_verifies();
         let reg = self.labels.read();
         let mut par_nom: FxHashMap<Option<String>, usize> = FxHashMap::default();
-        for bit in 0..64usize {
-            let n = self.first_label_live_counts[bit].load(Ordering::Relaxed) as usize;
+        for (bit, compteur) in self.first_label_live_counts.iter().enumerate() {
+            let n = compteur.load(Ordering::Relaxed) as usize;
             if n == 0 {
                 continue;
             }
@@ -30453,7 +30453,7 @@ mod tests {
     fn premier_label_suit_ajout_d_un_label_inferieur() {
         let (_td, s) = store();
         s.create_node(&["A"]); // interne A -> bit 0
-        let b = s.create_node(&["B"]); // interne B -> bit 1
+        let _b = s.create_node(&["B"]); // interne B -> bit 1 (créé pour son effet : B = bit 1)
         let c = s.create_node(&["B"]); // premier = B
         asserter_compteurs_egalent_balayage(&s); // A=1, B=2
 
