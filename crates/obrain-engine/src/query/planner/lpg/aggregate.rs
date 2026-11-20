@@ -678,10 +678,34 @@ impl super::Planner {
         // Mesure sur l'export PO du 17/11 (3 901 829 noeuds, 6 013 429 aretes) :
         // `count(DISTINCT type(r))` coutait 20 134 ms, contre 502 ms a Neo4j sur
         // le meme graphe — le seul ecart majeur releve face a lui (obrain#191).
+        let mut compte_labels_distincts = false;
         let (count_var, compte_types_distincts) = match &agg_expr.expression {
             None => (None, false), // COUNT(*)
             Some(LogicalExpression::Variable(var)) => (Some(var.as_str()), false),
             Some(LogicalExpression::Type(var)) if agg_expr.distinct => (Some(var.as_str()), true),
+            // (#254) `count(DISTINCT labels(n)[0])` : cardinal des premiers
+            // labels NOMMÉS (un `null` n'est jamais compté par un DISTINCT).
+            Some(LogicalExpression::IndexAccess { base, index })
+                if agg_expr.distinct
+                    && matches!(index.as_ref(), LogicalExpression::Literal(Value::Int64(0))) =>
+            {
+                let var = match base.as_ref() {
+                    LogicalExpression::Labels(v) => v.as_str(),
+                    LogicalExpression::FunctionCall {
+                        name,
+                        args,
+                        distinct: false,
+                    } if name.eq_ignore_ascii_case("labels") && args.len() == 1 => {
+                        match &args[0] {
+                            LogicalExpression::Variable(v) => v.as_str(),
+                            _ => return None,
+                        }
+                    }
+                    _ => return None,
+                };
+                compte_labels_distincts = true;
+                (Some(var), false)
+            }
             // Sur ce store, le traducteur émet `FunctionCall { name: "type" }` et
             // non `Type` (cf. le diagnostic du raccourci groupé, plus bas).
             Some(LogicalExpression::FunctionCall {
@@ -770,7 +794,17 @@ impl super::Planner {
             && scan.label.is_none()
             && scan.input.is_none()
         {
-            let compte: Option<i64> = if compte_types_distincts {
+            let compte: Option<i64> = if compte_types_distincts && exp.edge_types.is_empty() {
+                // (#254) Cardinalité seule : le scalaire maintenu à l'écriture
+                // (208 ns) au lieu d'une `HashMap` de 80 entrées construite
+                // pour n'en lire que la taille (7,7 µs). `None` = le magasin ne
+                // sait pas : on retombe sur la carte, jamais sur un zéro.
+                self.store.nb_types_distincts().map(|n| n as i64).or_else(|| {
+                    self.store
+                        .edge_counts_by_type()
+                        .map(|par_type| par_type.values().filter(|n| **n > 0).count() as i64)
+                })
+            } else if compte_types_distincts {
                 // Cardinal des types PRESENTS (degre > 0). Un type au dictionnaire
                 // mais sans arete ne doit pas compter : c'est le piege que le
                 // raccourci de comptage signale plus haut.
@@ -824,7 +858,19 @@ impl super::Planner {
                     return None;
                 }
 
-                let count = if let Some(label) = &scan.label {
+                let count = if compte_labels_distincts {
+                    // (#254) Un label restreint changerait la question ; une
+                    // transaction ou une époque épinglée verrait un sous-ensemble
+                    // que le compteur global ne sait pas reproduire — mêmes
+                    // gardes que le raccourci d'agrégat groupé.
+                    if scan.label.is_some()
+                        || self.transaction_id.is_some()
+                        || self.viewing_epoch != self.store.current_epoch()
+                    {
+                        return None;
+                    }
+                    self.store.nb_premiers_labels_distincts()? as i64
+                } else if let Some(label) = &scan.label {
                     // MATCH (n:Label) RETURN count(n) → O(1) label count
                     self.store.node_count_by_label(label) as i64
                 } else {

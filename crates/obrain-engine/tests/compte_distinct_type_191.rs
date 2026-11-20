@@ -98,3 +98,47 @@ fn distinct_sur_propriete_non_raccourci() {
     let db = base();
     assert_eq!(entier(&db, "MATCH (n) RETURN count(DISTINCT n.k) AS c"), 3);
 }
+
+// ── obrain#254 : les mêmes réponses, lues dans un scalaire maintenu ─────────
+// Chaque réponse est comparée à un chemin qui ne peut PAS emprunter le
+// raccourci (un label restreint force le balayage) — l'oracle est le balayage.
+
+/// `count(DISTINCT labels(n)[0])` : trois premiers labels (A, B, C) ; le nœud
+/// sans label n'est jamais compté (un DISTINCT ignore `null`).
+#[test]
+fn compte_les_premiers_labels_distincts() {
+    let db = base();
+    db.session().execute_cypher("CREATE (:Z), ()").unwrap();
+    let attendu = entier(
+        &db,
+        "MATCH (n) WITH labels(n)[0] AS l WHERE l IS NOT NULL RETURN count(DISTINCT l) AS c",
+    );
+    assert_eq!(
+        entier(&db, "MATCH (n) RETURN count(DISTINCT labels(n)[0]) AS c"),
+        attendu
+    );
+    assert_eq!(attendu, 4, "A, B, C, Z");
+}
+
+/// Le scalaire suit une écriture : un type qui disparaît, un premier label qui
+/// disparaît avec son dernier porteur.
+#[test]
+fn les_scalaires_suivent_les_ecritures() {
+    let db = base();
+    let types = "MATCH ()-[r]->() RETURN count(DISTINCT type(r)) AS c";
+    let labels = "MATCH (n) RETURN count(DISTINCT labels(n)[0]) AS c";
+    assert_eq!(entier(&db, types), 2);
+    assert_eq!(entier(&db, labels), 3);
+    db.session()
+        .execute_cypher("MATCH ()-[r:S]->() DELETE r")
+        .unwrap();
+    assert_eq!(entier(&db, types), 1, "S n'a plus d'arête");
+    db.session()
+        .execute_cypher("MATCH (c:C) DETACH DELETE c")
+        .unwrap();
+    assert_eq!(entier(&db, labels), 2, "C n'a plus de porteur");
+    db.session()
+        .execute_cypher("MATCH (a:A) CREATE (a)-[:NEUF]->(a)")
+        .unwrap();
+    assert_eq!(entier(&db, types), 2);
+}
