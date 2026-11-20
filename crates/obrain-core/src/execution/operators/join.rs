@@ -460,6 +460,27 @@ impl Operator for HashJoinOperator {
     fn next(&mut self) -> OperatorResult {
         // Phase 1: Build hash table
         if !self.build_complete {
+            // (obrain#189, F2) Sonder d'abord : pour Inner/Left/Semi/Anti, une
+            // sonde vide donne un résultat vide quel que soit le côté construit.
+            // On ne bâtit donc la table qu'une fois une ligne de sonde vue (les
+            // lots vides de tête ne portent aucune ligne et sont sautés).
+            // Right/Full doivent rendre les lignes construites non appariées :
+            // ils construisent toujours.
+            if !matches!(self.join_type, JoinType::Right | JoinType::Full) {
+                loop {
+                    if !self.get_next_probe_chunk()? {
+                        self.build_complete = true;
+                        return Ok(None);
+                    }
+                    let vide = self
+                        .current_probe_chunk
+                        .as_ref()
+                        .is_none_or(|c| c.selected_indices().next().is_none());
+                    if !vide {
+                        break;
+                    }
+                }
+            }
             self.build_hash_table()?;
         }
 
@@ -1176,5 +1197,114 @@ mod tests {
 
         results.sort_unstable();
         assert_eq!(results, vec![1, 3]);
+    }
+
+    /// Côté construit qui compte ses appels à `next` (obrain#189, F2).
+    struct CompteurOperator {
+        inner: MockOperator,
+        appels: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Operator for CompteurOperator {
+        fn next(&mut self) -> OperatorResult {
+            self.appels
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.next()
+        }
+
+        fn reset(&mut self) {
+            self.inner.reset();
+        }
+
+        fn name(&self) -> &'static str {
+            "Compteur"
+        }
+    }
+
+    fn joindre_gauche_vide(join_type: JoinType, gauche: Vec<DataChunk>) -> (usize, usize) {
+        let appels = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let droite = CompteurOperator {
+            inner: MockOperator::new(vec![create_int_chunk(&[1, 2, 3])]),
+            appels: appels.clone(),
+        };
+        let schema = if matches!(join_type, JoinType::Semi | JoinType::Anti) {
+            vec![LogicalType::Int64]
+        } else {
+            vec![LogicalType::Int64, LogicalType::Int64]
+        };
+        let mut join = HashJoinOperator::new(
+            Box::new(MockOperator::new(gauche)),
+            Box::new(droite),
+            vec![0],
+            vec![0],
+            join_type,
+            schema,
+        );
+        let mut lignes = 0;
+        while let Some(chunk) = join.next().unwrap() {
+            lignes += chunk.selected_indices().count();
+        }
+        (lignes, appels.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[test]
+    fn test_hash_join_sonde_vide_ne_construit_pas() {
+        for jt in [
+            JoinType::Inner,
+            JoinType::Left,
+            JoinType::Semi,
+            JoinType::Anti,
+        ] {
+            // Gauche sans aucun lot, puis gauche dont les lots sont vides.
+            for gauche in [vec![], vec![create_int_chunk(&[]), create_int_chunk(&[])]] {
+                let (lignes, appels) = joindre_gauche_vide(jt, gauche);
+                assert_eq!(lignes, 0, "{jt:?}");
+                assert_eq!(appels, 0, "{jt:?} : côté construit lu pour une sonde vide");
+            }
+        }
+    }
+
+    #[test]
+    fn test_hash_join_sonde_vide_droite_et_complete_rendent_la_droite() {
+        for jt in [JoinType::Right, JoinType::Full] {
+            let (lignes, appels) = joindre_gauche_vide(jt, vec![]);
+            assert_eq!(
+                lignes, 3,
+                "{jt:?} : les lignes de droite non appariées sont dues"
+            );
+            assert!(appels > 0);
+        }
+    }
+
+    #[test]
+    fn test_hash_join_premier_lot_vide_puis_plein() {
+        // Les lots vides en tête de sonde ne doivent pas faire perdre les suivants.
+        let appels = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let droite = CompteurOperator {
+            inner: MockOperator::new(vec![create_int_chunk(&[2, 3])]),
+            appels: appels.clone(),
+        };
+        let mut join = HashJoinOperator::new(
+            Box::new(MockOperator::new(vec![
+                create_int_chunk(&[]),
+                create_int_chunk(&[1, 2, 3]),
+            ])),
+            Box::new(droite),
+            vec![0],
+            vec![0],
+            JoinType::Left,
+            vec![LogicalType::Int64, LogicalType::Int64],
+        );
+        let mut results = Vec::new();
+        while let Some(chunk) = join.next().unwrap() {
+            for row in chunk.selected_indices() {
+                results.push((
+                    chunk.column(0).unwrap().get_int64(row).unwrap(),
+                    chunk.column(1).unwrap().get_int64(row),
+                ));
+            }
+        }
+        results.sort_by_key(|(l, _)| *l);
+        assert_eq!(results, vec![(1, None), (2, Some(2)), (3, Some(3))]);
     }
 }
