@@ -447,6 +447,25 @@ impl PropsZone {
         self.read_page(page_idx).ok()?.owner_kind()
     }
 
+    /// Variante unité-aware de [`Self::owner_kind_at`] : `addr` est l'adresse
+    /// BRUTE d'une tête de chaîne (U48 de `first_prop_off`) — page legacy OU
+    /// slot packé. Rend le type de propriétaire (Node/Edge) lu dans le magic
+    /// de l'unité, ou `None` pour une adresse nulle / hors zone / magic
+    /// invalide. (obrain#249 : `decode_page_id` tronque un slot en u32.)
+    pub fn owner_kind_at_addr(&self, addr: u64) -> Option<OwnerKind> {
+        match crate::unite::decode_unite(addr) {
+            crate::unite::UniteAddr::Aucune => None,
+            crate::unite::UniteAddr::Legacy(idx) => self.owner_kind_at(idx),
+            crate::unite::UniteAddr::Slot { carrier, unite } => {
+                let base = self.page_slice(carrier)?;
+                let debut = usize::from(unite) * crate::unite::UNITE_SIZE;
+                let slot: &crate::unite::SlotPage =
+                    bytemuck::from_bytes(base.get(debut..debut + crate::unite::UNITE_SIZE)?);
+                OwnerKind::from_magic(slot.header.magic)
+            }
+        }
+    }
+
     /// Read the raw [`PropertyPage`] at `page_idx` — test-only public
     /// accessor that allows integration tests to observe tombstones on
     /// the chain (which [`collect_entries`] transparently filters). The
@@ -741,7 +760,7 @@ impl PropsZone {
     pub fn slots_512_actifs() -> bool {
         std::env::var("OBRAIN_PROPS_SLOTS_512")
             .map(|v| v == "1")
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 
     /// (feat/slots512-wiring, étape 2a) Écrit un DÉBUT de chaîne packé :
@@ -1500,6 +1519,35 @@ impl PropsZone {
                 if !e.is_tombstone() {
                     visit(&e);
                 }
+            }
+            cur = if next == 0 { None } else { Some(next) };
+        }
+        Ok(())
+    }
+
+    /// Comme [`Self::walk_chain_unite`] mais SANS filtrer les tombstones
+    /// (état physique de la chaîne : observation / outillage / tests).
+    #[allow(dead_code)]
+    pub(crate) fn walk_chain_unite_avec_tombstones<F>(
+        &self,
+        head: Option<u64>,
+        mut visit: F,
+    ) -> SubstrateResult<()>
+    where
+        F: FnMut(&PropertyEntry),
+    {
+        let mut cur = head;
+        while let Some(addr) = cur {
+            let Some((cursor, next)) = self.unite_cursor(addr)? else {
+                break;
+            };
+            for entry in cursor {
+                let e = entry.map_err(|e| {
+                    SubstrateError::WalBadFrame(format!(
+                        "walk_chain_unite_avec_tombstones: decode error on unit {addr:#x}: {e}"
+                    ))
+                })?;
+                visit(&e);
             }
             cur = if next == 0 { None } else { Some(next) };
         }
