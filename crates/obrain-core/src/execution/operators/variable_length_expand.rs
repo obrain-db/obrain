@@ -8,7 +8,8 @@ use crate::graph::GraphStore;
 use obrain_common::types::{
     EdgeId, EpochId, LogicalType, NodeId, PropertyKey, TransactionId, Value,
 };
-use std::collections::VecDeque;
+use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -102,6 +103,26 @@ pub struct VariableLengthExpandOperator {
     output_path_detail: bool,
     /// Path traversal mode (WALK, TRAIL, SIMPLE, ACYCLIC).
     path_mode: PathMode,
+    /// (obrain#189) Colonne d'entree qui porte la CIBLE exacte du motif
+    /// (`...-[*0..2]->(target)` avec `target` deja lie). Quand elle est
+    /// posee, l'expansion est guidee par la cible : voir `with_target_column`.
+    target_column: Option<usize>,
+    /// Distances (en sauts, sens inverse) de chaque noeud a une cible, par
+    /// cible distincte. Calculees paresseusement, bornees par `max_hops`.
+    reach_cache: HashMap<NodeId, Arc<HashMap<NodeId, u32>>>,
+}
+
+thread_local! {
+    /// (obrain#189) Nombre de chemins ENUMERES (emis par l'expansion avant
+    /// tout filtre aval), sur ce thread. Observabilite des tests : c'est la
+    /// quantite que le guidage par la cible doit faire tomber.
+    static CHEMINS_ENUMERES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Chemins enumeres par les expansions de longueur variable de CE thread
+/// depuis sa creation (compteur monotone ; comparer deux lectures).
+pub fn chemins_enumeres() -> u64 {
+    CHEMINS_ENUMERES.with(Cell::get)
 }
 
 /// A materialized input row.
@@ -242,7 +263,29 @@ impl VariableLengthExpandOperator {
             output_path_length: false,
             output_path_detail: false,
             path_mode: PathMode::Walk,
+            target_column: None,
+            reach_cache: HashMap::new(),
         }
+    }
+
+    /// (obrain#189) Guide l'expansion par la cible exacte portee par la
+    /// colonne `column` de l'entree.
+    ///
+    /// Le motif `(a)-[*0..k]->(t)` avec `t` deja lie ne garde que les chemins
+    /// qui FINISSENT sur `t`. Enumerer tous les chemins de `a` avant de
+    /// filtrer coute la taille du `k`-voisinage de CHAQUE source (exponentiel
+    /// en `k`, sans borne memoire). On calcule donc une fois par cible
+    /// l'ensemble des noeuds qui l'atteignent en au plus `max_hops` sauts
+    /// (BFS en sens inverse), et l'on n'avance que vers un noeud pour lequel
+    /// `profondeur + distance <= max_hops`. L'ensemble des chemins emis est
+    /// exactement celui des chemins qui finissent sur la cible : le filtre
+    /// d'egalite en aval reste correct et devient une no-op.
+    ///
+    /// Sans effet en direction `Both` ni avec un registre multi-bases.
+    #[must_use]
+    pub fn with_target_column(mut self, column: usize) -> Self {
+        self.target_column = Some(column);
+        self
     }
 
     /// Sets the path traversal mode.
@@ -515,12 +558,17 @@ impl VariableLengthExpandOperator {
 
     /// Gets edges from a node, respecting filters and visibility.
     fn get_edges(&self, node_id: NodeId) -> Vec<(NodeId, EdgeId)> {
+        self.get_edges_dir(node_id, self.direction)
+    }
+
+    /// Comme `get_edges`, dans la direction donnee.
+    fn get_edges_dir(&self, node_id: NodeId, direction: Direction) -> Vec<(NodeId, EdgeId)> {
         let epoch = self.viewing_epoch;
         let transaction_id = self.transaction_id;
         let use_versioned = !self.read_only;
 
         self.store
-            .edges_from(node_id, self.direction)
+            .edges_from(node_id, direction)
             .into_iter()
             .filter(|(target_id, edge_id)| {
                 // Filter by edge type if specified
@@ -573,9 +621,67 @@ impl VariableLengthExpandOperator {
         }
     }
 
+    /// Distances inverses vers `target`, bornees par `max_hops` (BFS).
+    /// `None` quand le guidage ne s'applique pas (voir `with_target_column`).
+    fn reach_for(&mut self, target: NodeId) -> Option<Arc<HashMap<NodeId, u32>>> {
+        let reverse = match self.direction {
+            Direction::Outgoing => Direction::Incoming,
+            Direction::Incoming => Direction::Outgoing,
+            Direction::Both => return None,
+        };
+        if self.session_context.base_registry.is_some() {
+            return None;
+        }
+        if let Some(cached) = self.reach_cache.get(&target) {
+            return Some(Arc::clone(cached));
+        }
+        let mut dist: HashMap<NodeId, u32> = HashMap::new();
+        dist.insert(target, 0);
+        let mut frontier = vec![target];
+        for depth in 1..=self.max_hops {
+            let mut next = Vec::new();
+            for node in frontier {
+                for (pred, _) in self.get_edges_dir(node, reverse) {
+                    if let std::collections::hash_map::Entry::Vacant(v) = dist.entry(pred) {
+                        v.insert(depth);
+                        next.push(pred);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        let dist = Arc::new(dist);
+        self.reach_cache.insert(target, Arc::clone(&dist));
+        Some(dist)
+    }
+
     /// Process one input row, generating all reachable outputs.
-    fn process_input_row(&self, input_idx: usize, source_node: NoeudM) -> Vec<OutputRow> {
+    ///
+    /// `guide` : `(cible, distances inverses)` quand l'expansion est guidee
+    /// par la cible — seuls les chemins qui finissent sur elle sont emis, et
+    /// l'on n'avance que vers les noeuds qui peuvent encore l'atteindre.
+    fn process_input_row(
+        &self,
+        input_idx: usize,
+        source_node: NoeudM,
+        guide: Option<(NodeId, &HashMap<NodeId, u32>)>,
+    ) -> Vec<OutputRow> {
+        // Peut-on encore atteindre la cible depuis `node`, arrive en `depth` sauts ?
+        let peut_atteindre = |node: NoeudM, depth: u32| -> bool {
+            guide.is_none_or(|(_, reach)| {
+                reach
+                    .get(&node.id)
+                    .is_some_and(|d| depth.saturating_add(*d) <= self.max_hops)
+            })
+        };
+        let est_cible = |node: NoeudM| guide.is_none_or(|(t, _)| node.id == t);
         let mut results = Vec::new();
+        if !peut_atteindre(source_node, 0) {
+            return results;
+        }
         let needs_tracking =
             self.output_path_detail || self.output_edge_list || self.path_mode != PathMode::Walk;
         let needs_edges = self.output_path_detail || self.output_edge_list;
@@ -584,7 +690,7 @@ impl VariableLengthExpandOperator {
         // existe dans tous les modes — un chemin vide ne repete ni noeud ni
         // arete. Il etait perdu : la BFS n'emet qu'a partir de la
         // profondeur 1 (obrain-db/obrain#189, `*0..3` vers un projet).
-        if self.min_hops == 0 {
+        if self.min_hops == 0 && est_cible(source_node) {
             results.push(OutputRow {
                 input_idx,
                 edge_id: None,
@@ -607,7 +713,9 @@ impl VariableLengthExpandOperator {
             });
 
             for (target, edge_id) in self.get_edges_multi(source_node) {
-                if !self.is_expansion_allowed(&root, target, edge_id, source_node) {
+                if !peut_atteindre(target, 1)
+                    || !self.is_expansion_allowed(&root, target, edge_id, source_node)
+                {
                     continue;
                 }
                 let segment = Rc::new(PathSegment {
@@ -631,7 +739,7 @@ impl VariableLengthExpandOperator {
                 if vigie.tick_bool() {
                     break;
                 }
-                if depth >= self.min_hops && depth <= self.max_hops {
+                if depth >= self.min_hops && depth <= self.max_hops && est_cible(current_node) {
                     results.push(OutputRow {
                         input_idx,
                         edge_id: Some(edge_id),
@@ -652,7 +760,14 @@ impl VariableLengthExpandOperator {
 
                 if depth < self.max_hops {
                     for (target, next_edge_id) in self.get_edges_multi(current_node) {
-                        if !self.is_expansion_allowed(&segment, target, next_edge_id, source_node) {
+                        if !peut_atteindre(target, depth + 1)
+                            || !self.is_expansion_allowed(
+                                &segment,
+                                target,
+                                next_edge_id,
+                                source_node,
+                            )
+                        {
                             continue;
                         }
                         let new_segment = Rc::new(PathSegment {
@@ -669,7 +784,9 @@ impl VariableLengthExpandOperator {
             let mut frontier: VecDeque<(NoeudM, u32, AreteM)> = VecDeque::new();
 
             for (target, edge_id) in self.get_edges_multi(source_node) {
-                frontier.push_back((target, 1, edge_id));
+                if peut_atteindre(target, 1) {
+                    frontier.push_back((target, 1, edge_id));
+                }
             }
 
             // Meme raisonnement que la variante avec segments ci-dessus.
@@ -683,7 +800,7 @@ impl VariableLengthExpandOperator {
                 if vigie.tick_bool() {
                     break;
                 }
-                if depth >= self.min_hops && depth <= self.max_hops {
+                if depth >= self.min_hops && depth <= self.max_hops && est_cible(current_node) {
                     results.push(OutputRow {
                         input_idx,
                         edge_id: Some(edge_id),
@@ -696,29 +813,47 @@ impl VariableLengthExpandOperator {
 
                 if depth < self.max_hops {
                     for (target, next_edge_id) in self.get_edges_multi(current_node) {
-                        frontier.push_back((target, depth + 1, next_edge_id));
+                        if peut_atteindre(target, depth + 1) {
+                            frontier.push_back((target, depth + 1, next_edge_id));
+                        }
                     }
                 }
             }
         }
 
+        CHEMINS_ENUMERES.with(|c| c.set(c.get() + results.len() as u64));
         results
     }
 
     /// Fill the output buffer with results from the next input row.
     fn fill_output_buffer(&mut self) {
-        let Some(input_rows) = &self.input_rows else {
-            return;
-        };
-
-        while self.output_buffer.is_empty() && self.current_input_idx < input_rows.len() {
+        while self.output_buffer.is_empty()
+            && self
+                .input_rows
+                .as_ref()
+                .is_some_and(|rows| self.current_input_idx < rows.len())
+        {
             // Une ligne d entree = une BFS complete. Sur une entree de
             // 100 000 lignes, cette boucle est le vrai moteur du cout.
             if obrain_common::utils::cancel::is_cancelled() {
                 break;
             }
-            let source_node = input_rows[self.current_input_idx].source_node;
-            let results = self.process_input_row(self.current_input_idx, source_node);
+            let idx = self.current_input_idx;
+            let (source_node, target) = {
+                let row = &self.input_rows.as_ref().expect("teste ci-dessus").get(idx);
+                let row = row.expect("idx < len");
+                let target = self.target_column.and_then(|c| match row.columns.get(c) {
+                    Some(ColumnValue::NodeId(id)) => Some(*id),
+                    _ => None,
+                });
+                (row.source_node, target)
+            };
+            let reach = target.and_then(|t| self.reach_for(t).map(|r| (t, r)));
+            let results = self.process_input_row(
+                idx,
+                source_node,
+                reach.as_ref().map(|(t, r)| (*t, r.as_ref())),
+            );
             self.output_buffer.extend(results);
             self.current_input_idx += 1;
         }

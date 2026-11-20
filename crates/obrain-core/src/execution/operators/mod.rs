@@ -109,7 +109,9 @@ pub use typed_degree_topk::{
 };
 pub use union::UnionOperator;
 pub use unwind::UnwindOperator;
-pub use variable_length_expand::{PathMode as ExecutionPathMode, VariableLengthExpandOperator};
+pub use variable_length_expand::{
+    PathMode as ExecutionPathMode, VariableLengthExpandOperator, chemins_enumeres,
+};
 
 pub use cognitive_boost::{ActivationMap, BoostMode, CognitiveBoostOperator};
 
