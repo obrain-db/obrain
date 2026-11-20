@@ -1102,19 +1102,34 @@ impl super::Planner {
     ///
     /// Returns `Some(vars)` when the plan contains a `ParameterScan` node
     /// (indicating a correlated subquery from the translator).
+    ///
+    /// (F1) Cherché dans TOUT le sous-plan : une forme que l'optimiseur a
+    /// réécrite ne doit pas faire planifier un sous-plan corrélé comme une
+    /// jointure par hachage (son `ParameterScan` lirait un autre état).
     fn extract_parameter_scan_vars(plan: &LogicalOperator) -> Option<Vec<String>> {
-        match plan {
-            LogicalOperator::ParameterScan(ps) => Some(ps.columns.clone()),
-            LogicalOperator::Filter(f) => Self::extract_parameter_scan_vars(&f.input),
-            LogicalOperator::Join(j) => Self::extract_parameter_scan_vars(&j.left)
-                .or_else(|| Self::extract_parameter_scan_vars(&j.right)),
-            LogicalOperator::NodeScan(s) => s
-                .input
-                .as_ref()
-                .and_then(|i| Self::extract_parameter_scan_vars(i)),
-            LogicalOperator::Expand(e) => Self::extract_parameter_scan_vars(&e.input),
-            _ => None,
-        }
+        Self::parameter_scan_columns(plan)
+    }
+
+    /// (F1) `Apply` en mode EXISTS (semi-jointure, ou anti-jointure si
+    /// `is_negated`) de `subquery`, corrélé sur `param_vars`, sur une gauche
+    /// déjà planifiée. Le sous-plan est rejoué pour chaque ligne de gauche et
+    /// s'arrête à sa première ligne.
+    fn apply_correlated_exists(
+        &self,
+        left_op: Box<dyn Operator>,
+        left_columns: &[String],
+        subquery: &LogicalOperator,
+        param_vars: &[String],
+        is_negated: bool,
+    ) -> Result<Box<dyn Operator>> {
+        let (param_state, param_col_indices) = self.correlated_state(param_vars, left_columns)?;
+        let (inner_op, _inner_columns) =
+            self.plan_under_correlated_state(subquery, &param_state)?;
+        Ok(Box::new(
+            ApplyOperator::new_correlated(left_op, inner_op, param_state, param_col_indices)
+                .with_exists_mode(!is_negated)
+                .with_typed_passthrough(),
+        ))
     }
 
     /// Plans a correlated EXISTS/NOT EXISTS using `ApplyOperator` with EXISTS mode.
@@ -1133,27 +1148,20 @@ impl super::Planner {
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         let (left_op, left_columns) = self.plan_operator(outer_input)?;
 
-        // Set up ParameterState for correlated variables
-        let param_state = std::sync::Arc::new(
-            obrain_core::execution::operators::ParameterState::new(param_vars.to_vec()),
-        );
-        let param_col_indices: Vec<usize> = param_vars
-            .iter()
-            .map(|var| left_columns.iter().position(|c| c == var).unwrap_or(0))
-            .collect();
+        // Apply with EXISTS mode (semi or anti join)
+        let result =
+            self.apply_correlated_exists(left_op, &left_columns, subquery, param_vars, is_negated)?;
+        self.plan_remaining_exists_predicate(result, left_columns, remaining_predicate)
+    }
 
-        // Plan inner subquery with correlated context
-        *self.correlated_param_state.borrow_mut() = Some(std::sync::Arc::clone(&param_state));
-        let (inner_op, _inner_columns) = self.plan_operator(subquery)?;
-        *self.correlated_param_state.borrow_mut() = None;
-
-        // Create Apply with EXISTS mode (semi or anti join)
-        let op = ApplyOperator::new_correlated(left_op, inner_op, param_state, param_col_indices)
-            .with_exists_mode(!is_negated);
-
-        let output_columns = left_columns;
-        let mut result: Box<dyn Operator> = Box::new(op);
-
+    /// Reste du prédicat (découpage des AND) au-dessus d'une semi-jointure
+    /// corrélée : un autre EXISTS est planifié à son tour, le reste filtre.
+    fn plan_remaining_exists_predicate(
+        &self,
+        mut result: Box<dyn Operator>,
+        output_columns: Vec<String>,
+        remaining_predicate: Option<LogicalExpression>,
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         // Handle remaining predicate (from AND splitting)
         if let Some(ref remaining) = remaining_predicate {
             let outer_vars: HashSet<String> = output_columns.iter().cloned().collect();
@@ -1200,6 +1208,21 @@ impl super::Planner {
         is_negated: bool,
         remaining_predicate: Option<LogicalExpression>,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // (F1) Sous-requête corrélée : semi-jointure pilotée par la ligne.
+        if let Some(param_vars) = Self::extract_parameter_scan_vars(subquery) {
+            let result = self.apply_correlated_exists(
+                left_op,
+                left_columns,
+                subquery,
+                &param_vars,
+                is_negated,
+            )?;
+            return self.plan_remaining_exists_predicate(
+                result,
+                left_columns.to_vec(),
+                remaining_predicate,
+            );
+        }
         let (right_op, right_columns) = self.plan_operator(subquery)?;
 
         let output_columns = left_columns.to_vec();

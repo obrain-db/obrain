@@ -1,14 +1,14 @@
 //! Mutation planning (CREATE, DELETE, SET, MERGE, CALL, labels).
 
 use super::{
-    AddLabelOp, AddLabelOperator, AntiJoinOp, Arc, CreateEdgeOp, CreateEdgeOperator, CreateNodeOp,
-    CreateNodeOperator, DeleteEdgeOp, DeleteEdgeOperator, DeleteNodeOp, DeleteNodeOperator,
-    Direction, Error, ExpandDirection, ExpressionPredicate, GraphStore, HashMap, LeftJoinOp,
-    LogicalExpression, LogicalOperator, LogicalType, MergeConfig, MergeOp, MergeOperator,
-    MergeRelationshipConfig, MergeRelationshipOp, MergeRelationshipOperator, Operator, ProjectExpr,
-    ProjectOperator, PropertySource, RemoveLabelOp, RemoveLabelOperator, Result, SetPropertyOp,
-    SetPropertyOperator, ShortestPathOp, ShortestPathOperator, UnaryOp, UnwindOp, UnwindOperator,
-    Value,
+    AddLabelOp, AddLabelOperator, AntiJoinOp, ApplyOperator, Arc, CreateEdgeOp, CreateEdgeOperator,
+    CreateNodeOp, CreateNodeOperator, DeleteEdgeOp, DeleteEdgeOperator, DeleteNodeOp,
+    DeleteNodeOperator, Direction, Error, ExpandDirection, ExpressionPredicate, GraphStore,
+    HashMap, LeftJoinOp, LogicalExpression, LogicalOperator, LogicalType, MergeConfig, MergeOp,
+    MergeOperator, MergeRelationshipConfig, MergeRelationshipOp, MergeRelationshipOperator,
+    Operator, ProjectExpr, ProjectOperator, PropertySource, RemoveLabelOp, RemoveLabelOperator,
+    Result, SetPropertyOp, SetPropertyOperator, ShortestPathOp, ShortestPathOperator, UnaryOp,
+    UnwindOp, UnwindOperator, Value,
 };
 #[cfg(feature = "algos")]
 use super::{CallProcedureOp, GraphStoreMut, StaticResultOperator};
@@ -306,10 +306,37 @@ impl super::Planner {
     }
 
     /// Plans a LEFT JOIN operator (for OPTIONAL MATCH).
+    ///
+    /// (F1) Un côté droit qui part d'un `ParameterScan` (traduit corrélé à la
+    /// gauche, voir `translate_correlated_patterns`) devient un `Apply`
+    /// optionnel : il est rejoué pour CHAQUE ligne de gauche, depuis ses
+    /// nœuds, au lieu d'être construit une fois sur tout le graphe pour une
+    /// jointure par hachage. Sans correspondance, la ligne de gauche sort avec
+    /// des NULL ; plusieurs correspondances, plusieurs lignes.
     pub(super) fn plan_left_join(
         &self,
         left_join: &LeftJoinOp,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        if !matches!(left_join.left.as_ref(), LogicalOperator::Empty)
+            && let Some(variables) = Self::parameter_scan_columns(&left_join.right)
+        {
+            let (left_op, left_columns) = self.plan_operator(&left_join.left)?;
+            let (state, indices) = self.correlated_state(&variables, &left_columns)?;
+            let (right_op, right_columns) =
+                self.plan_under_correlated_state(&left_join.right, &state)?;
+            let mut join_columns = left_columns.clone();
+            join_columns.extend(right_columns.iter().cloned());
+            let join_types = self.derive_schema_joint(&join_columns);
+            let apply = ApplyOperator::new_correlated(left_op, right_op, state, indices)
+                .with_optional(right_columns.len())
+                .with_typed_passthrough();
+            return Ok(super::common::keep_left_then_new_right(
+                Box::new(apply),
+                &left_columns,
+                &right_columns,
+                &join_types,
+            ));
+        }
         // Handle Empty left input (OPTIONAL MATCH as first clause):
         // substitute a SingleRowOperator so the left side produces one row.
         let (left_op, left_columns): (Box<dyn Operator>, Vec<String>) =

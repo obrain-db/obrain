@@ -584,7 +584,12 @@ pub struct LazyFactorizedChainOperator {
     /// The graph store.
     store: Arc<dyn GraphStore>,
     /// The source operator (filter, scan, etc).
-    source: Option<Box<dyn Operator>>,
+    ///
+    /// (F1) Partagé avec la chaîne qui le lit, pour que `reset` puisse le
+    /// rembobiner : un `Apply` rejoue son sous-plan pour chaque ligne
+    /// externe (et le remet à zéro AVANT la première). Une source consommée
+    /// une fois pour toutes rendait ce sous-plan vide dès la première ligne.
+    source: Arc<parking_lot::Mutex<Box<dyn Operator>>>,
     /// The expand steps to execute.
     steps: Vec<ExpandStep>,
     /// Transaction ID for MVCC visibility.
@@ -618,7 +623,7 @@ impl LazyFactorizedChainOperator {
     ) -> Self {
         Self {
             store,
-            source: Some(source),
+            source: Arc::new(parking_lot::Mutex::new(source)),
             steps,
             transaction_id: None,
             viewing_epoch: None,
@@ -652,9 +657,7 @@ impl LazyFactorizedChainOperator {
     /// factorized chunk without flattening, allowing O(n) aggregation instead
     /// of O(n²) or worse.
     fn execute_factorized(&mut self) -> Result<Option<FactorizedChunk>, OperatorError> {
-        let Some(source) = self.source.take() else {
-            return Ok(None);
-        };
+        let source: Box<dyn Operator> = Box::new(SourcePartagee(Arc::clone(&self.source)));
 
         // Build and execute the chain
         let mut chain = FactorizedExpandChain::new(Arc::clone(&self.store), source)
@@ -716,14 +719,34 @@ impl Operator for LazyFactorizedChainOperator {
     }
 
     fn reset(&mut self) {
-        // Cannot reset - source has been consumed
+        // (F1) Rembobine la source : la chaîne est recalculée au prochain
+        // `next`, sur ce que la source rend alors.
+        self.source.lock().reset();
         self.result = None;
         self.factorized_result = None;
-        self.executed = true;
+        self.executed = false;
     }
 
     fn name(&self) -> &'static str {
         "LazyFactorizedChain"
+    }
+}
+
+/// Source d'une chaîne factorisée, partagée avec l'opérateur qui la porte
+/// (voir `LazyFactorizedChainOperator::source`).
+struct SourcePartagee(Arc<parking_lot::Mutex<Box<dyn Operator>>>);
+
+impl Operator for SourcePartagee {
+    fn next(&mut self) -> OperatorResult {
+        self.0.lock().next()
+    }
+
+    fn reset(&mut self) {
+        self.0.lock().reset();
+    }
+
+    fn name(&self) -> &'static str {
+        "SourcePartagee"
     }
 }
 

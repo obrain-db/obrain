@@ -355,6 +355,71 @@ impl super::Planner {
         Ok(common::build_otherwise(left_op, right_op, columns))
     }
 
+    /// (F1) État de paramètres d'un sous-plan CORRÉLÉ (côté droit d'un
+    /// `OPTIONAL MATCH`, sous-requête `EXISTS`) : les variables de son
+    /// `ParameterScan` qui sont des colonnes de `outer_columns`, avec leur rang.
+    ///
+    /// Une variable absente de la ligne externe n'est pas injectée : le
+    /// sous-plan la lie lui-même, comme le faisait la jointure par hachage
+    /// (aucune clé sur une colonne que la gauche n'a pas).
+    pub(super) fn correlated_state(
+        &self,
+        variables: &[String],
+        outer_columns: &[String],
+    ) -> Result<(
+        std::sync::Arc<obrain_core::execution::operators::ParameterState>,
+        Vec<usize>,
+    )> {
+        let (columns, indices): (Vec<String>, Vec<usize>) = variables
+            .iter()
+            .filter_map(|v| {
+                outer_columns
+                    .iter()
+                    .position(|c| c == v)
+                    .map(|i| (v.clone(), i))
+            })
+            .unzip();
+        if columns.is_empty() {
+            return Err(Error::Internal(format!(
+                "sous-plan corrélé sans aucune variable de la ligne externe \
+                 (variables {variables:?}, colonnes {outer_columns:?})"
+            )));
+        }
+        Ok((
+            std::sync::Arc::new(obrain_core::execution::operators::ParameterState::new(
+                columns,
+            )),
+            indices,
+        ))
+    }
+
+    /// (F1) Planifie `subplan` sous l'état corrélé `state`, puis rend l'état
+    /// d'avant (un sous-plan corrélé peut être imbriqué dans un autre : `EXISTS`
+    /// dans le côté droit d'un `OPTIONAL MATCH`, dans un `CALL { WITH … }`).
+    pub(super) fn plan_under_correlated_state(
+        &self,
+        subplan: &LogicalOperator,
+        state: &std::sync::Arc<obrain_core::execution::operators::ParameterState>,
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        let avant = self
+            .correlated_param_state
+            .replace(Some(std::sync::Arc::clone(state)));
+        let planned = self.plan_operator(subplan);
+        *self.correlated_param_state.borrow_mut() = avant;
+        planned
+    }
+
+    /// (F1) Colonnes du `ParameterScan` d'un sous-plan corrélé, s'il en a un.
+    pub(super) fn parameter_scan_columns(plan: &LogicalOperator) -> Option<Vec<String>> {
+        match plan {
+            LogicalOperator::ParameterScan(scan) => Some(scan.columns.clone()),
+            other => other
+                .children()
+                .into_iter()
+                .find_map(Self::parameter_scan_columns),
+        }
+    }
+
     /// Plans an APPLY (lateral join) operator.
     ///
     /// When `shared_variables` is non-empty, creates a correlated Apply that

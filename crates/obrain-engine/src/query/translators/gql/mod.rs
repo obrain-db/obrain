@@ -2166,8 +2166,12 @@ impl GqlTranslator {
         predicate: LogicalExpression,
     ) -> LogicalOperator {
         if let LogicalOperator::LeftJoin(left_join) = plan {
-            let (join, post_filter) =
-                build_left_join_with_predicates(*left_join.left, *left_join.right, Some(predicate));
+            let (join, post_filter) = build_left_join_with_predicates(
+                *left_join.left,
+                *left_join.right,
+                Some(predicate),
+                false,
+            );
             if let Some(pf) = post_filter {
                 wrap_filter(join, pf)
             } else {

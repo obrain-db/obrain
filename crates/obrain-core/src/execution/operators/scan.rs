@@ -4,7 +4,21 @@ use super::{Operator, OperatorResult};
 use crate::execution::DataChunk;
 use crate::graph::GraphStore;
 use obrain_common::types::{EpochId, LogicalType, NodeId, TransactionId};
+use std::cell::Cell;
 use std::sync::Arc;
+
+thread_local! {
+    /// (F1) Nœuds émis par les balayages (`ScanOperator`) de CE thread.
+    /// Observabilité des tests : un `OPTIONAL MATCH` ou un `EXISTS` corrélé
+    /// à un nœud lié ne doit balayer aucun nœud du graphe.
+    static NOEUDS_BALAYES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Nœuds émis par les balayages de CE thread depuis sa création (compteur
+/// monotone ; comparer deux lectures).
+pub fn noeuds_balayes() -> u64 {
+    NOEUDS_BALAYES.with(Cell::get)
+}
 
 /// A scan operator that reads nodes from storage.
 pub struct ScanOperator {
@@ -250,6 +264,7 @@ impl Operator for ScanOperator {
 
         chunk.set_count(count);
         self.position = end;
+        NOEUDS_BALAYES.with(|c| c.set(c.get() + count as u64));
 
         Ok(Some(chunk))
     }

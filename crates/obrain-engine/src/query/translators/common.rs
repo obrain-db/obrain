@@ -385,6 +385,73 @@ pub(crate) fn classify_optional_predicates(
     }
 }
 
+/// (F1) Classement du `WHERE` d'un `OPTIONAL MATCH` dont le côté droit est
+/// CORRÉLÉ : il reçoit toute la ligne de gauche, donc un conjoint qui cite
+/// une variable propre à l'optionnel — y compris dans une sous-requête
+/// `EXISTS` / `COUNT` — y est évalué, même s'il cite aussi la gauche
+/// (`m.x = n.x`) : il ne retire pas la ligne de gauche, il rend NULL, comme
+/// Neo4j. Un conjoint qui ne cite que la gauche (ou rien) reste au-dessus de
+/// la jointure, comme sur la voie par hachage.
+pub(crate) fn classify_correlated_optional_predicates(
+    predicate: LogicalExpression,
+    left_vars: &HashSet<String>,
+    right_vars: &HashSet<String>,
+) -> ClassifiedPredicates {
+    let mut post_filters = Vec::new();
+    let mut right_filters = Vec::new();
+    for conjunct in split_conjuncts(predicate) {
+        let mut referenced = HashSet::new();
+        collect_expression_variables(&conjunct, &mut referenced);
+        collect_subquery_variables(&conjunct, &mut referenced);
+        if referenced
+            .iter()
+            .any(|v| right_vars.contains(v) && !left_vars.contains(v))
+        {
+            right_filters.push(conjunct);
+        } else {
+            post_filters.push(conjunct);
+        }
+    }
+    ClassifiedPredicates {
+        post_filters,
+        right_filters,
+    }
+}
+
+/// Variables des motifs des sous-requêtes `EXISTS` / `COUNT` d'une
+/// expression (que `collect_expression_variables` ne voit pas).
+fn collect_subquery_variables(expr: &LogicalExpression, vars: &mut HashSet<String>) {
+    match expr {
+        LogicalExpression::ExistsSubquery(plan) | LogicalExpression::CountSubquery(plan) => {
+            collect_operator_variables(plan, vars);
+        }
+        LogicalExpression::Binary { left, right, .. } => {
+            collect_subquery_variables(left, vars);
+            collect_subquery_variables(right, vars);
+        }
+        LogicalExpression::Unary { operand, .. } => collect_subquery_variables(operand, vars),
+        LogicalExpression::FunctionCall { args, .. } | LogicalExpression::List(args) => {
+            for arg in args {
+                collect_subquery_variables(arg, vars);
+            }
+        }
+        LogicalExpression::Case {
+            operand,
+            when_clauses,
+            else_clause,
+        } => {
+            for e in operand.iter().chain(else_clause.iter()) {
+                collect_subquery_variables(e, vars);
+            }
+            for (cond, result) in when_clauses {
+                collect_subquery_variables(cond, vars);
+                collect_subquery_variables(result, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Collects all variables produced by a logical operator's subtree.
 pub(crate) fn collect_operator_variables(op: &LogicalOperator, vars: &mut HashSet<String>) {
     match op {
@@ -473,10 +540,14 @@ pub(crate) fn collect_operator_variables(op: &LogicalOperator, vars: &mut HashSe
 /// 3. Pushes right-only predicates as a Filter on the right input
 /// 4. Stores cross-side predicates in `LeftJoinOp.condition`
 /// 5. Returns the LeftJoin and any remaining post-filters to apply above
+///
+/// (F1) `correlated` : le côté droit reçoit la ligne de gauche (voir
+/// [`classify_correlated_optional_predicates`]).
 pub(crate) fn build_left_join_with_predicates(
     left: LogicalOperator,
     right: LogicalOperator,
     predicate: Option<LogicalExpression>,
+    correlated: bool,
 ) -> (LogicalOperator, Option<LogicalExpression>) {
     let Some(predicate) = predicate else {
         let join = LogicalOperator::LeftJoin(LeftJoinOp {
@@ -494,7 +565,11 @@ pub(crate) fn build_left_join_with_predicates(
     collect_operator_variables(&right, &mut right_vars);
 
     // Classify
-    let classified = classify_optional_predicates(predicate, &left_vars, &right_vars);
+    let classified = if correlated {
+        classify_correlated_optional_predicates(predicate, &left_vars, &right_vars)
+    } else {
+        classify_optional_predicates(predicate, &left_vars, &right_vars)
+    };
 
     // Build right input with right-only filters pushed down
     let filtered_right = if classified.right_filters.is_empty() {
@@ -1075,8 +1150,10 @@ fn collect_visible_variables(op: &LogicalOperator, vars: &mut HashMap<String, Va
             }
         }
         LO::ParameterScan(scan) => {
+            // Une variable déjà connue (gauche d'un `OPTIONAL MATCH` corrélé,
+            // visitée avant son côté droit) garde son genre.
             for column in &scan.columns {
-                vars.insert(column.clone(), VariableKind::Other);
+                vars.entry(column.clone()).or_insert(VariableKind::Other);
             }
         }
         LO::Apply(apply) => {

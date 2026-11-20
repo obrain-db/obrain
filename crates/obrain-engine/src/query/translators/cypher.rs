@@ -73,6 +73,12 @@ struct CypherTranslator {
     /// voyagent comme leur identifiant, et les deux séries se recoupent
     /// (obrain-db/obrain#229).
     scope_kinds: RefCell<HashMap<String, VariableKind>>,
+    /// (F1) Variables qu'un `EXISTS { … }` en cours de traduction peut
+    /// reprendre de la ligne externe, avec leur genre. Posé par un `WHERE`
+    /// pendant la traduction de son prédicat, et seulement quand chacune de
+    /// ces variables est une colonne PHYSIQUE à l'endroit où le filtre sera
+    /// planifié (voir `translate_where`). `None` : sous-requête non corrélée.
+    exists_scope: RefCell<Option<HashMap<String, VariableKind>>>,
 }
 
 impl CypherTranslator {
@@ -82,6 +88,7 @@ impl CypherTranslator {
             anon_counter: Cell::new(0),
             return_aliases: RefCell::new(HashMap::new()),
             scope_kinds: RefCell::new(HashMap::new()),
+            exists_scope: RefCell::new(None),
         }
     }
 
@@ -988,14 +995,122 @@ impl CypherTranslator {
         // correspondance elle rend une ligne à NULL (obrain#179).
         let input = input.unwrap_or(LogicalOperator::Empty);
 
-        // Build the right side with proper shared variable joins
-        let right = self.translate_comma_patterns(&match_clause.patterns, None)?;
+        // (F1) Côté droit CORRÉLÉ quand le motif repart d'un nœud que la
+        // ligne de gauche lie déjà : il part d'un `ParameterScan` qui reçoit
+        // la ligne externe, et le planificateur en fait un `Apply` optionnel
+        // (O(voisinage) par ligne). Sinon, côté droit indépendant joint par
+        // hachage sur les variables partagées.
+        let correlated = match &input {
+            LogicalOperator::Empty => None,
+            outer => self
+                .translate_correlated_patterns(&match_clause.patterns, &visible_variables(outer)),
+        };
+        let right = match correlated {
+            Some(right) => right,
+            None => self.translate_comma_patterns(&match_clause.patterns, None)?,
+        };
 
         Ok(LogicalOperator::LeftJoin(LeftJoinOp {
             left: Box::new(input),
             right: Box::new(right),
             condition: None,
         }))
+    }
+
+    /// (F1) Traduit `patterns` comme côté droit CORRÉLÉ à une ligne externe
+    /// qui lie `bound`, ou `None` quand ce n'est pas possible ou pas rentable.
+    ///
+    /// Le côté droit part de [`Self::correlated_input`] : un `ParameterScan`
+    /// portant TOUTES les variables de `bound` (une sous-requête
+    /// `EXISTS` ou un prédicat du `WHERE` de l'optionnel peut en citer une
+    /// qui n'est pas dans le motif), et un `NodeScan` de reprise pour chaque
+    /// nœud partagé, d'où le motif repart (`anchor_index`).
+    ///
+    /// Refusé, avec repli sur la jointure par hachage :
+    /// - aucune variable partagée (le côté droit ne dépend pas de la ligne) ;
+    /// - une variable partagée qui n'est pas un nœud des deux côtés (arête,
+    ///   scalaire, chemin nommé) ;
+    /// - un motif qui ne se laisse pas atteindre depuis les nœuds partagés
+    ///   ([`Self::is_driven_by_parameter_scan`]) : le balayage serait rejoué
+    ///   pour chaque ligne de gauche, pire que la jointure par hachage ;
+    /// - une erreur de traduction : la voie historique décide.
+    fn translate_correlated_patterns(
+        &self,
+        patterns: &[ast::Pattern],
+        bound: &HashMap<String, VariableKind>,
+    ) -> Option<LogicalOperator> {
+        let shared = Self::correlable_shared_nodes(patterns, bound)?;
+        let right = self
+            .translate_comma_patterns(patterns, Some(Self::correlated_input(bound, &shared)))
+            .ok()?;
+        Self::is_driven_by_parameter_scan(&right).then_some(right)
+    }
+
+    /// (F1) Nœuds que `patterns` reprend de `bound`, triés ; `None` s'il n'y
+    /// en a aucun ou si une variable partagée n'est pas un nœud des deux
+    /// côtés (genre `Node`, ou `Other` côté externe : élément d'`UNWIND`,
+    /// paramètre d'un `CALL`).
+    fn correlable_shared_nodes(
+        patterns: &[ast::Pattern],
+        bound: &HashMap<String, VariableKind>,
+    ) -> Option<Vec<String>> {
+        let mut shared = Vec::new();
+        for pattern in patterns {
+            for (variable, kind) in Self::pattern_variable_kinds(pattern) {
+                let Some(outer_kind) = bound.get(&variable) else {
+                    continue;
+                };
+                let outer_node = matches!(outer_kind, VariableKind::Node | VariableKind::Other);
+                if kind != VariableKind::Node || !outer_node {
+                    return None;
+                }
+                shared.push(variable);
+            }
+        }
+        shared.sort_unstable();
+        shared.dedup();
+        (!shared.is_empty()).then_some(shared)
+    }
+
+    /// (F1) Entrée d'un côté droit corrélé : `ParameterScan(variables de
+    /// bound)` puis un `NodeScan` de reprise par nœud partagé. Le
+    /// planificateur ne rejoue pas un `NodeScan` dont la variable est déjà
+    /// une colonne de son entrée ; il sert ici à déclarer la variable comme
+    /// NŒUD pour l'ancrage du motif.
+    fn correlated_input(
+        bound: &HashMap<String, VariableKind>,
+        shared_nodes: &[String],
+    ) -> LogicalOperator {
+        let mut columns: Vec<String> = bound.keys().cloned().collect();
+        columns.sort_unstable();
+        let mut plan = LogicalOperator::ParameterScan(ParameterScanOp { columns });
+        for variable in shared_nodes {
+            plan = LogicalOperator::NodeScan(NodeScanOp {
+                variable: variable.clone(),
+                label: None,
+                input: Some(Box::new(plan)),
+                pushdown_hint: None,
+            });
+        }
+        plan
+    }
+
+    /// (F1) Vrai si tout le plan est piloté par son `ParameterScan` : rien
+    /// que des expansions, des filtres et des reprises de variables déjà
+    /// liées. Un vrai balayage (`NodeScan` d'une variable neuve), une
+    /// jointure ou tout autre opérateur rendrait le coût par ligne externe
+    /// indépendant de son voisinage.
+    fn is_driven_by_parameter_scan(plan: &LogicalOperator) -> bool {
+        match plan {
+            LogicalOperator::ParameterScan(_) => true,
+            LogicalOperator::NodeScan(scan) => scan.input.as_deref().is_some_and(|input| {
+                visible_variables(input).contains_key(&scan.variable)
+                    && Self::is_driven_by_parameter_scan(input)
+            }),
+            LogicalOperator::Expand(expand) => Self::is_driven_by_parameter_scan(&expand.input),
+            LogicalOperator::Filter(filter) => Self::is_driven_by_parameter_scan(&filter.input),
+            _ => false,
+        }
     }
 
     fn translate_pattern(
@@ -1480,7 +1595,21 @@ impl CypherTranslator {
                 "WHERE requires input",
             ))
         })?;
-        let mut predicate = self.translate_expression(&where_clause.predicate)?;
+        // (F1) Un `EXISTS { … }` du prédicat peut repartir des variables de
+        // `input` : elles sont des colonnes là où le filtre sera planifié —
+        // au-dessus de `input`, ou dans le côté droit d'un `OPTIONAL MATCH`
+        // CORRÉLÉ, qui reçoit toute la ligne de gauche. Pas sous un côté droit
+        // indépendant (jointure par hachage) : il ne porte pas la gauche.
+        let exists_scope = match &input {
+            LogicalOperator::LeftJoin(join) if !Self::is_driven_by_parameter_scan(&join.right) => {
+                None
+            }
+            other => Some(visible_variables(other)),
+        };
+        let avant = self.exists_scope.replace(exists_scope);
+        let predicate = self.translate_expression(&where_clause.predicate);
+        *self.exists_scope.borrow_mut() = avant;
+        let mut predicate = predicate?;
 
         // Compréhension de motif dans le prédicat : réécrite comme dans un
         // `RETURN` (Apply + collect), le filtre lit sa colonne (#195,
@@ -1502,8 +1631,13 @@ impl CypherTranslator {
         // predicate so right-side references become join conditions rather
         // than post-filters (which would incorrectly eliminate NULL rows).
         if let LogicalOperator::LeftJoin(left_join) = input {
-            let (join, post_filter) =
-                build_left_join_with_predicates(*left_join.left, *left_join.right, Some(predicate));
+            let correlated = Self::is_driven_by_parameter_scan(&left_join.right);
+            let (join, post_filter) = build_left_join_with_predicates(
+                *left_join.left,
+                *left_join.right,
+                Some(predicate),
+                correlated,
+            );
             if let Some(pf) = post_filter {
                 Ok(wrap_filter(join, pf))
             } else {
@@ -3009,21 +3143,55 @@ impl CypherTranslator {
                 expression: Box::new(self.translate_expression(expression)?),
             }),
             ast::Expression::Exists(inner_query) => {
-                let inner_plan = self.translate_exists_subquery(inner_query)?;
+                let inner_plan = self.translate_exists_subquery(inner_query, true)?;
                 Ok(LogicalExpression::ExistsSubquery(Box::new(inner_plan)))
             }
             ast::Expression::CountSubquery(inner_query) => {
-                let inner_plan = self.translate_exists_subquery(inner_query)?;
+                let inner_plan = self.translate_exists_subquery(inner_query, false)?;
                 Ok(LogicalExpression::CountSubquery(Box::new(inner_plan)))
             }
         }
     }
 
     /// Translates the inner query of an EXISTS subquery to a `LogicalOperator`.
-    fn translate_exists_subquery(&self, query: &ast::Query) -> Result<LogicalOperator> {
-        let mut plan: Option<LogicalOperator> = None;
+    ///
+    /// (F1) Avec `correlate` et une portée posée par le `WHERE` englobant
+    /// (`exists_scope`), le premier `MATCH` repart des nœuds qu'il partage
+    /// avec la ligne externe ([`Self::translate_correlated_patterns`]) : le
+    /// planificateur en fait une semi-jointure pilotée par la ligne (`Apply`
+    /// en mode EXISTS), au lieu d'un côté droit construit sur tout le graphe.
+    fn translate_exists_subquery(
+        &self,
+        query: &ast::Query,
+        correlate: bool,
+    ) -> Result<LogicalOperator> {
+        let scope = if correlate {
+            self.exists_scope.borrow().clone()
+        } else {
+            None
+        };
+        if let Some(scope) = scope
+            && let Some(ast::Clause::Match(m)) = query.clauses.first()
+            && let Some(start) = self.translate_correlated_patterns(&m.patterns, &scope)
+        {
+            // Les clauses suivantes s'enchaînent au plan corrélé ; s'il cesse
+            // d'être piloté par la ligne externe, voie historique.
+            if let Ok(plan) = self.translate_exists_clauses(&query.clauses[1..], Some(start))
+                && Self::is_driven_by_parameter_scan(&plan)
+            {
+                return Ok(plan);
+            }
+        }
+        self.translate_exists_clauses(&query.clauses, None)
+    }
 
-        for clause in &query.clauses {
+    /// Clauses d'une sous-requête `EXISTS`, enchaînées à `plan`.
+    fn translate_exists_clauses(
+        &self,
+        clauses: &[ast::Clause],
+        mut plan: Option<LogicalOperator>,
+    ) -> Result<LogicalOperator> {
+        for clause in clauses {
             match clause {
                 ast::Clause::Match(m) => {
                     plan = Some(self.translate_match(m, plan)?);

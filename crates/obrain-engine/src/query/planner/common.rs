@@ -297,9 +297,22 @@ pub(crate) fn build_left_join(
         probe_keys,
         build_keys,
         PhysicalJoinType::Left,
-        join_schema,
+        join_schema.clone(),
     ));
+    keep_left_then_new_right(join_op, left_columns, right_columns, &join_schema)
+}
 
+/// Sortie d'une jointure `gauche ++ droite` réduite aux colonnes de gauche
+/// suivies des colonnes de droite absentes à gauche (une variable partagée
+/// n'apparaît qu'une fois, avec sa valeur de gauche). `join_types` : type
+/// de chaque colonne de la jointure, gardé par la projection.
+pub(crate) fn keep_left_then_new_right(
+    join_op: Box<dyn Operator>,
+    left_columns: &[String],
+    right_columns: &[String],
+    join_types: &[LogicalType],
+) -> (Box<dyn Operator>, Vec<String>) {
+    let join_len = left_columns.len() + right_columns.len();
     // Deduplicate: keep left columns, then only right columns not already on the left
     let left_set: std::collections::HashSet<&str> =
         left_columns.iter().map(String::as_str).collect();
@@ -313,12 +326,15 @@ pub(crate) fn build_left_join(
     }
 
     // If there are duplicates, add a ProjectOperator to strip them
-    if keep_indices.len() < join_columns.len() {
+    if keep_indices.len() < join_len {
         let proj_exprs: Vec<ProjectExpr> = keep_indices
             .iter()
             .map(|&i| ProjectExpr::Column(i))
             .collect();
-        let proj_types: Vec<LogicalType> = keep_indices.iter().map(|_| LogicalType::Any).collect();
+        let proj_types: Vec<LogicalType> = keep_indices
+            .iter()
+            .map(|&i| join_types.get(i).cloned().unwrap_or(LogicalType::Any))
+            .collect();
         let operator = Box::new(ProjectOperator::new(join_op, proj_exprs, proj_types));
         (operator, output_columns)
     } else {

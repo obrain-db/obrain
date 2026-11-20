@@ -40,6 +40,14 @@ pub struct ApplyOperator {
     /// Some(false) = anti-join (keep if inner has NO rows).
     /// Inner columns are NOT appended in EXISTS mode.
     exists_mode: Option<bool>,
+    /// (F1) Garder le type des colonnes d'identifiants (nœud, arête) de la
+    /// sortie, relevé sur les blocs reçus. Sans lui, un identifiant d'arête
+    /// sort comme un `Int64` générique, qu'une lecture de propriété prend
+    /// pour un nœud (même défaut que obrain#184 pour la jointure par hachage).
+    typed_passthrough: bool,
+    /// Types relevés sur le premier bloc externe, puis interne.
+    outer_types: Option<Vec<LogicalType>>,
+    inner_types: Option<Vec<LogicalType>>,
     /// Buffered outer rows waiting to be combined with inner results.
     state: ApplyState,
 }
@@ -70,6 +78,9 @@ impl ApplyOperator {
             optional: false,
             inner_column_count: 0,
             exists_mode: None,
+            typed_passthrough: false,
+            outer_types: None,
+            inner_types: None,
             state: ApplyState::Init,
         }
     }
@@ -92,6 +103,9 @@ impl ApplyOperator {
             optional: false,
             inner_column_count: 0,
             exists_mode: None,
+            typed_passthrough: false,
+            outer_types: None,
+            inner_types: None,
             state: ApplyState::Init,
         }
     }
@@ -113,6 +127,47 @@ impl ApplyOperator {
         self
     }
 
+    /// (F1) Sortie typée : une colonne qui arrive en identifiants de nœud
+    /// ou d'arête sort en identifiants du même genre (voir
+    /// `typed_passthrough`).
+    pub fn with_typed_passthrough(mut self) -> Self {
+        self.typed_passthrough = true;
+        self
+    }
+
+    /// Type de sortie d'une colonne reçue : celui d'un vecteur
+    /// d'identifiants, `Any` pour tout le reste.
+    fn column_types(chunk: &DataChunk) -> Vec<LogicalType> {
+        (0..chunk.num_columns())
+            .map(|i| match chunk.column(i).map(ValueVector::data_type) {
+                Some(LogicalType::Node) => LogicalType::Node,
+                Some(LogicalType::Edge) => LogicalType::Edge,
+                _ => LogicalType::Any,
+            })
+            .collect()
+    }
+
+    /// Types des colonnes de sortie, `None` hors sortie typée.
+    fn output_types(
+        typed_passthrough: bool,
+        exists_mode: Option<bool>,
+        outer_types: Option<&Vec<LogicalType>>,
+        inner_types: Option<&Vec<LogicalType>>,
+        inner_column_count: usize,
+    ) -> Option<Vec<LogicalType>> {
+        if !typed_passthrough {
+            return None;
+        }
+        let mut types = outer_types.cloned().unwrap_or_default();
+        if exists_mode.is_none() {
+            match inner_types {
+                Some(inner) => types.extend(inner.iter().cloned()),
+                None => types.extend(std::iter::repeat_n(LogicalType::Any, inner_column_count)),
+            }
+        }
+        Some(types)
+    }
+
     /// Extracts all values from a single row of a DataChunk.
     fn extract_row(chunk: &DataChunk, row: usize) -> Vec<Value> {
         let mut values = Vec::with_capacity(chunk.num_columns());
@@ -127,13 +182,19 @@ impl ApplyOperator {
     }
 
     /// Builds a DataChunk from accumulated rows.
-    fn build_chunk(rows: &[Vec<Value>]) -> DataChunk {
+    fn build_chunk(rows: &[Vec<Value>], types: Option<&[LogicalType]>) -> DataChunk {
         if rows.is_empty() {
             return DataChunk::empty();
         }
         let num_cols = rows[0].len();
         let mut columns: Vec<ValueVector> = (0..num_cols)
-            .map(|_| ValueVector::with_capacity(LogicalType::Any, rows.len()))
+            .map(|i| {
+                let ty = types
+                    .and_then(|t| t.get(i))
+                    .cloned()
+                    .unwrap_or(LogicalType::Any);
+                ValueVector::with_capacity(ty, rows.len())
+            })
             .collect();
 
         for row in rows {
@@ -154,6 +215,9 @@ impl Operator for ApplyOperator {
             match &mut self.state {
                 ApplyState::Init => match self.outer.next()? {
                     Some(chunk) => {
+                        if self.typed_passthrough && self.outer_types.is_none() {
+                            self.outer_types = Some(Self::column_types(&chunk));
+                        }
                         self.state = ApplyState::Processing {
                             outer_chunk: chunk,
                             outer_row: 0,
@@ -190,13 +254,24 @@ impl Operator for ApplyOperator {
 
                         // EXISTS mode: check for row existence without appending inner columns
                         if let Some(keep_matches) = self.exists_mode {
-                            let has_results = self.inner.next()?.is_some();
+                            // Un bloc VIDE n'est pas une correspondance : lire
+                            // jusqu'à la première ligne ou la fin.
+                            let mut has_results = false;
+                            while let Some(inner_chunk) = self.inner.next()? {
+                                if inner_chunk.selected_indices().next().is_some() {
+                                    has_results = true;
+                                    break;
+                                }
+                            }
                             if has_results == keep_matches {
                                 output.push(outer_values);
                             }
                         } else {
                             let pre_len = output.len();
                             while let Some(inner_chunk) = self.inner.next()? {
+                                if self.typed_passthrough && self.inner_types.is_none() {
+                                    self.inner_types = Some(Self::column_types(&inner_chunk));
+                                }
                                 for inner_row in inner_chunk.selected_indices() {
                                     let inner_values = Self::extract_row(&inner_chunk, inner_row);
                                     let mut combined = outer_values.clone();
@@ -220,7 +295,17 @@ impl Operator for ApplyOperator {
 
                         // Flush when we have enough rows
                         if output.len() >= 1024 {
-                            let chunk = Self::build_chunk(output);
+                            let chunk = Self::build_chunk(
+                                output,
+                                Self::output_types(
+                                    self.typed_passthrough,
+                                    self.exists_mode,
+                                    self.outer_types.as_ref(),
+                                    self.inner_types.as_ref(),
+                                    self.inner_column_count,
+                                )
+                                .as_deref(),
+                            );
                             output.clear();
                             return Ok(Some(chunk));
                         }
@@ -228,7 +313,17 @@ impl Operator for ApplyOperator {
 
                     // Finished this outer chunk; flush any remaining output
                     if !output.is_empty() {
-                        let chunk = Self::build_chunk(output);
+                        let chunk = Self::build_chunk(
+                            output,
+                            Self::output_types(
+                                self.typed_passthrough,
+                                self.exists_mode,
+                                self.outer_types.as_ref(),
+                                self.inner_types.as_ref(),
+                                self.inner_column_count,
+                            )
+                            .as_deref(),
+                        );
                         output.clear();
                         self.state = ApplyState::Init;
                         return Ok(Some(chunk));
