@@ -2963,6 +2963,19 @@ pub struct EdgeChainRebuildStats {
     pub first_edge_off_fixed: u64,
 }
 
+thread_local! {
+    /// (obrain#189) Noeuds HYDRATES en entier (libelles + toutes les
+    /// proprietes, blobs compris) par ce thread. Observabilite des tests :
+    /// lire UNE propriete d'un noeud ne doit pas en payer l'hydratation.
+    static NOEUDS_HYDRATES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Noeuds hydrates en entier par CE thread depuis sa creation (compteur
+/// monotone ; comparer deux lectures).
+pub fn noeuds_hydrates() -> u64 {
+    NOEUDS_HYDRATES.with(std::cell::Cell::get)
+}
+
 impl SubstrateStore {
     /// Chemin du catalogue d'index.
     fn chemin_catalogue(&self) -> std::path::PathBuf {
@@ -6208,6 +6221,7 @@ impl SubstrateStore {
             return None;
         }
         let rec = self.writer.read_node(id.0 as u32).ok().flatten()?;
+        NOEUDS_HYDRATES.with(|c| c.set(c.get() + 1));
         let mut n = Node::new(id);
         n.labels = self.resolve_node_labels_from_bitset(rec.label_bitset);
         // (2026-08-19) La lecture BRUTE ne lisait que la DashMap, alors que
