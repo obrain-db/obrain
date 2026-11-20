@@ -22409,7 +22409,7 @@ impl GraphStore for SubstrateStore {
     /// Le premier label d'un nœud est son PREMIER BIT ALLUMÉ (le plus petit),
     /// ce qui est exactement `labels(n)[0]` : chaque bit posé par ce store a
     /// été interné — donc nommé — avant d'être posé (voir
-    /// [`Self::premier_bit_allume`]). Le compteur est maintenu aux MÊMES points
+    /// `Self::premier_bit_allume`). Le compteur est maintenu aux MÊMES points
     /// que `label_live_counts` (create / delete / add_label / remove_label /
     /// ressuscite / import en bloc), et reconstruit par le balayage
     /// d'ouverture — jamais persisté, jamais recalculé à la requête.
