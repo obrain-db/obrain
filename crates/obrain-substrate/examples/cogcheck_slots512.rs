@@ -168,14 +168,16 @@ fn main() {
             // « taille inchangée » y est donc faux par construction ; ce qui
             // reste vérifiable, c'est qu'elle vaut ce que son en-tête annonce,
             // à la page et au doublement près (obrain-db/obrain#266).
-            Some(w) if k.starts_with("substrate.degrees") => match utile_degrees(dir, k) {
-                Some(utile) => assert!(
-                    *w >= utile && *w <= utile * 2 + 4096,
-                    "zone de degrés {k} : {w} octets pour {utile} utiles (sur-allocation \
-                     ou en-tête ment)"
-                ),
-                None => {} // format non reconnu : on n'affirme rien
-            },
+            Some(w) if k.starts_with("substrate.degrees") => {
+                // Format non reconnu (degrés typés) : on n'affirme rien.
+                if let Some(utile) = utile_degrees(dir, k) {
+                    assert!(
+                        *w >= utile && *w <= utile * 2 + 4096,
+                        "zone de degrés {k} : {w} octets pour {utile} utiles \
+                         (sur-allocation ou en-tête qui ment)"
+                    );
+                }
+            }
             Some(w) => assert_eq!(*w, *v, "taille CHANGÉE sur la zone cognitive {k}"),
             None => panic!("zone cognitive {k} disparue"),
         }

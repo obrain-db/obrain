@@ -80,7 +80,7 @@ fn la_zone_des_degres_fait_exactement_64_plus_8_par_slot() {
     // L'espace de slots doit couvrir les nœuds vivants…
     let hw = s.slot_high_water();
     assert!(
-        n_slots >= hw + 1,
+        n_slots > hw,
         "n_slots={n_slots} ne couvre pas le high-water {hw}"
     );
     // …sans dépasser le double de ce qu'il sert, borne du doublement amorti.
