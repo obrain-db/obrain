@@ -199,8 +199,7 @@ use crate::props_snapshot::{
     PropertiesStreamingWriter, entries_to_map, map_to_entries,
 };
 use crate::props_zone::{
-    PROPS_V2_FILENAME, PROPS_V2_MIGRATION_ACHEVEE_FILENAME, PropsZone, decode_page_id,
-    encode_page_id,
+    PROPS_V2_FILENAME, PROPS_V2_MIGRATION_ACHEVEE_FILENAME, PropsZone, encode_page_id,
 };
 use crate::record::{
     EdgeRecord, NODES_PER_PAGE, NodeRecord, PackedScarUtilAff, SIMPLEX_HYPEREDGE_MAX_MEMBERS,
@@ -5985,7 +5984,7 @@ impl SubstrateStore {
         // remet aussi à zéro `weight_u16`, `ricci_u8` et `engram_tag`. Ce
         // sont des champs de record, pas des propriétés ; hors du périmètre
         // de ce correctif, mais la perte est réelle.
-        if decode_page_id(rec.first_prop_off).is_some()
+        if rec.first_prop_off.to_u64() != 0
             && let Err(e) = self
                 .writer
                 .update_edge_first_prop_off(id.0 as u32, rec.first_prop_off)
@@ -11762,7 +11761,7 @@ impl SubstrateStore {
                 .read_node(nid.0 as u32)
                 .ok()
                 .flatten()
-                .map(|rec| decode_page_id(rec.first_prop_off).is_some())
+                .map(|rec| rec.first_prop_off.to_u64() != 0)
                 .unwrap_or(false);
             for (k, v) in pairs {
                 // Rang d'EXAMEN : il avance aussi pour les paires sautées, ce
@@ -12221,7 +12220,6 @@ impl SubstrateStore {
                 )));
             }
         };
-        let current_head = decode_page_id(node_rec.first_prop_off);
 
         // 3/4. (feat slots512-wiring, étape 2) Encode + append : chemin
         //    legacy inchangé par défaut ; sous `OBRAIN_PROPS_SLOTS_512=1`,
@@ -12233,21 +12231,12 @@ impl SubstrateStore {
             let mut pz = pz_lock.write();
             let pv = encode_value(&mut pz, value)?;
             let entry = PropertyEntry::new(prop_key_id, pv);
-            if crate::props_zone::PropsZone::slots_512_actifs() {
-                let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
-                    None
-                } else {
-                    Some(node_rec.first_prop_off.to_u64())
-                };
-                pz.append_entree_sur_chainee(
-                    slot,
-                    crate::page::OwnerKind::Node,
-                    tete_brute,
-                    &entry,
-                )?
+            let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
+                None
             } else {
-                u64::from(pz.append_entry(slot, current_head, &entry)?)
-            }
+                Some(node_rec.first_prop_off.to_u64())
+            };
+            pz.append_entree_sur_chainee(slot, crate::page::OwnerKind::Node, tete_brute, &entry)?
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != node_rec.first_prop_off {
@@ -12712,7 +12701,6 @@ impl SubstrateStore {
                 )));
             }
         };
-        let current_head = decode_page_id(node_rec.first_prop_off);
 
         // (feat slots512-wiring, étape 3) Suppression : tombstone sur la
         // chaîne — variante brute sous env (tête slot packée possible),
@@ -12720,21 +12708,12 @@ impl SubstrateStore {
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
             let entry = PropertyEntry::tombstone(prop_key_id, crate::page::ValueTag::Null);
-            if crate::props_zone::PropsZone::slots_512_actifs() {
-                let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
-                    None
-                } else {
-                    Some(node_rec.first_prop_off.to_u64())
-                };
-                pz.append_entree_sur_chainee(
-                    slot,
-                    crate::page::OwnerKind::Node,
-                    tete_brute,
-                    &entry,
-                )?
+            let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
+                None
             } else {
-                u64::from(pz.append_entry(slot, current_head, &entry)?)
-            }
+                Some(node_rec.first_prop_off.to_u64())
+            };
+            pz.append_entree_sur_chainee(slot, crate::page::OwnerKind::Node, tete_brute, &entry)?
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != node_rec.first_prop_off {
@@ -13232,7 +13211,6 @@ impl SubstrateStore {
                 )));
             }
         };
-        let current_head = decode_page_id(edge_rec.first_prop_off);
 
         // 3/4. (feat slots512-wiring) Variante brute sous env ; chemin
         //    legacy inchangé par défaut.
@@ -13240,21 +13218,12 @@ impl SubstrateStore {
             let mut pz = pz_lock.write();
             let pv = encode_value(&mut pz, value)?;
             let entry = PropertyEntry::new(prop_key_id, pv);
-            if crate::props_zone::PropsZone::slots_512_actifs() {
-                let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
-                    None
-                } else {
-                    Some(edge_rec.first_prop_off.to_u64())
-                };
-                pz.append_entree_sur_chainee(
-                    slot,
-                    crate::page::OwnerKind::Edge,
-                    tete_brute,
-                    &entry,
-                )?
+            let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
+                None
             } else {
-                u64::from(pz.append_entry_edge(slot, current_head, &entry)?)
-            }
+                Some(edge_rec.first_prop_off.to_u64())
+            };
+            pz.append_entree_sur_chainee(slot, crate::page::OwnerKind::Edge, tete_brute, &entry)?
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != edge_rec.first_prop_off {
@@ -13284,27 +13253,17 @@ impl SubstrateStore {
                 )));
             }
         };
-        let current_head = decode_page_id(edge_rec.first_prop_off);
 
         // (feat slots512-wiring) Suppression arête : variante brute sous env.
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
             let entry = PropertyEntry::tombstone(prop_key_id, crate::page::ValueTag::Null);
-            if crate::props_zone::PropsZone::slots_512_actifs() {
-                let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
-                    None
-                } else {
-                    Some(edge_rec.first_prop_off.to_u64())
-                };
-                pz.append_entree_sur_chainee(
-                    slot,
-                    crate::page::OwnerKind::Edge,
-                    tete_brute,
-                    &entry,
-                )?
+            let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
+                None
             } else {
-                u64::from(pz.append_entry_edge(slot, current_head, &entry)?)
-            }
+                Some(edge_rec.first_prop_off.to_u64())
+            };
+            pz.append_entree_sur_chainee(slot, crate::page::OwnerKind::Edge, tete_brute, &entry)?
         };
         let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
         if nouvelle_tete_u48 != edge_rec.first_prop_off {
@@ -37871,16 +37830,11 @@ mod tests {
     /// state (live entries AND tombstones) that `collect_entries` hides.
     fn collect_edge_props_v2_raw(s: &SubstrateStore, slot: u64) -> Vec<crate::page::PropertyEntry> {
         let rec = s.writer.read_edge(slot).unwrap().unwrap();
-        let mut cur = crate::props_zone::decode_page_id(rec.first_prop_off);
         let pz = s.props_zone.as_ref().expect("v2 enabled").read();
         let mut out = Vec::new();
-        while let Some(idx) = cur {
-            let page = pz.read_page_for_test(idx).unwrap();
-            for entry in page.cursor() {
-                out.push(entry.unwrap());
-            }
-            cur = crate::props_zone::decode_page_id(page.header.next_page);
-        }
+        let tete = rec.first_prop_off.to_u64();
+        pz.walk_chain_unite_avec_tombstones((tete != 0).then_some(tete), |e| out.push(e.clone()))
+            .unwrap();
         out
     }
 
@@ -38073,10 +38027,10 @@ mod tests {
         // head is an edge-magic page.
         let node_rec = s.writer.read_node(a.0 as u32).unwrap().unwrap();
         let edge_rec = s.writer.read_edge(e.0).unwrap().unwrap();
-        let node_head = crate::props_zone::decode_page_id(node_rec.first_prop_off)
-            .expect("node chain head allocated");
-        let edge_head = crate::props_zone::decode_page_id(edge_rec.first_prop_off)
-            .expect("edge chain head allocated");
+        let node_head = node_rec.first_prop_off.to_u64();
+        let edge_head = edge_rec.first_prop_off.to_u64();
+        assert_ne!(node_head, 0, "node chain head allocated");
+        assert_ne!(edge_head, 0, "edge chain head allocated");
         assert_ne!(
             node_head, edge_head,
             "node and edge chain heads must live on distinct pages"
@@ -38084,12 +38038,12 @@ mod tests {
 
         let pz = s.props_zone.as_ref().unwrap().read();
         assert_eq!(
-            pz.owner_kind_at(node_head),
+            pz.owner_kind_at_addr(node_head),
             Some(crate::page::OwnerKind::Node),
             "node chain head page must carry node magic",
         );
         assert_eq!(
-            pz.owner_kind_at(edge_head),
+            pz.owner_kind_at_addr(edge_head),
             Some(crate::page::OwnerKind::Edge),
             "edge chain head page must carry edge magic",
         );
@@ -38976,13 +38930,13 @@ mod tests {
 
         // First write: short key "K", lands on head page 1.
         s.set_node_property(a, "K", Value::String("oldest".into()));
-        let head_after_first = decode_page_id(
-            s.writer
-                .read_node(a.0 as u32)
-                .unwrap()
-                .unwrap()
-                .first_prop_off,
-        );
+        let head_after_first = s
+            .writer
+            .read_node(a.0 as u32)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
 
         // Fill the page with filler entries until a fresh head page
         // gets allocated.
@@ -38992,13 +38946,13 @@ mod tests {
             let key = format!("filler_{filler}");
             s.set_node_property(a, &key, Value::Int64(filler as i64));
             filler += 1;
-            let cur_head = decode_page_id(
-                s.writer
-                    .read_node(a.0 as u32)
-                    .unwrap()
-                    .unwrap()
-                    .first_prop_off,
-            );
+            let cur_head = s
+                .writer
+                .read_node(a.0 as u32)
+                .unwrap()
+                .unwrap()
+                .first_prop_off
+                .to_u64();
             if cur_head != original_head {
                 break; // New head page allocated.
             }

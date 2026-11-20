@@ -106,10 +106,17 @@ fn main() {
                 Some(Value::Int64(i as i64))
             );
         }
+        // Une base réelle peut déjà porter 64 labels (limite de `label_bitset`) :
+        // on réutilise alors un label EXISTANT plutôt qu'en créer de nouveaux.
+        let etiquette: String = nodes
+            .first()
+            .and_then(|&id| s.get_node(id))
+            .and_then(|n| n.labels.first().map(|l| l.to_string()))
+            .unwrap_or_else(|| "CogNew".to_string());
         for i in 0..25u64 {
-            let a = s.create_node(&["CogNew"]);
+            let a = s.create_node(&[etiquette.as_str()]);
             s.set_node_property(a, "x", Value::Int64(i as i64));
-            let b = s.create_node(&["CogNew2"]);
+            let b = s.create_node(&[etiquette.as_str()]);
             let e = s.create_edge(a, b, "COG");
             s.set_edge_property(e, "w", Value::Int64(i as i64));
         }
