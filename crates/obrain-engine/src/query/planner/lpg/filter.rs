@@ -355,8 +355,21 @@ impl super::Planner {
         {
             return Ok(result);
         }
-        // Plan the input operator first
-        let (input_op, columns) = self.plan_operator(&filter.input)?;
+        // (obrain#189) Fermeture sur une cible exacte : `Filter(to = t)` au-dessus
+        // d'une expansion de longueur variable dont `t` est deja lie. Le filtre
+        // reste (semantique inchangee) ; l'expansion cesse d'enumerer les
+        // chemins qui ne finissent pas sur `t`.
+        let (input_op, columns) = match filter.input.as_ref() {
+            LogicalOperator::Expand(expand)
+                if expand.min_hops != 1 || expand.max_hops != Some(1) =>
+            {
+                match Self::variable_de_fermeture(&filter.predicate, &expand.to_variable) {
+                    Some(cible) => self.plan_expand_guided(expand, Some(&cible))?,
+                    None => self.plan_operator(&filter.input)?,
+                }
+            }
+            _ => self.plan_operator(&filter.input)?,
+        };
 
         // Build variable to column index mapping
         let variable_columns: HashMap<String, usize> = columns
@@ -381,6 +394,32 @@ impl super::Planner {
         let operator = Box::new(FilterOperator::new(input_op, Box::new(predicate)));
 
         Ok((operator, columns))
+    }
+
+    /// Variable `t` telle qu'un conjoint du predicat dise `to = t` (ou `t = to`).
+    fn variable_de_fermeture(predicate: &LogicalExpression, to: &str) -> Option<String> {
+        match predicate {
+            LogicalExpression::Binary {
+                left,
+                op: BinaryOp::Eq,
+                right,
+            } => match (left.as_ref(), right.as_ref()) {
+                (LogicalExpression::Variable(a), LogicalExpression::Variable(b)) if a == to => {
+                    Some(b.clone())
+                }
+                (LogicalExpression::Variable(a), LogicalExpression::Variable(b)) if b == to => {
+                    Some(a.clone())
+                }
+                _ => None,
+            },
+            LogicalExpression::Binary {
+                left,
+                op: BinaryOp::And,
+                right,
+            } => Self::variable_de_fermeture(left, to)
+                .or_else(|| Self::variable_de_fermeture(right, to)),
+            _ => None,
+        }
     }
 
     // ── RETOURNER LE MOTIF QUAND L'IDENTIFIANT DE LA CIBLE EST CONTRAINT ─────

@@ -12,6 +12,18 @@ impl super::Planner {
         &self,
         expand: &ExpandOp,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        self.plan_expand_guided(expand, None)
+    }
+
+    /// Planifie une expansion. `target_variable` : variable DEJA liee dans
+    /// l'entree qu'un filtre d'egalite pose sur la cible de l'expansion
+    /// (fermeture `...-[*0..2]->(t)`, obrain#189) — l'expansion de longueur
+    /// variable en est guidee (voir `VariableLengthExpandOperator::with_target_column`).
+    pub(super) fn plan_expand_guided(
+        &self,
+        expand: &ExpandOp,
+        target_variable: Option<&str>,
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         // Plan the input operator first
         let (input_op, input_columns) = self.plan_operator(&expand.input)?;
 
@@ -41,6 +53,7 @@ impl super::Planner {
         // needs path detail columns (length, nodes, edges)
         let needs_path_details = expand.path_alias.is_some();
 
+        let columns_before = input_columns.clone();
         let operator: Box<dyn Operator> = if is_variable_length || needs_path_details {
             // Use VariableLengthExpandOperator for multi-hop paths or named paths
             let min_hops = if is_variable_length {
@@ -75,6 +88,15 @@ impl super::Planner {
             // Aretes inter-bases (V2) : contrat trivalue sur source
             // distante — voir VariableLengthExpandOperator.
             .with_session_context(self.session_context.clone());
+
+            // (obrain#189) Cible exacte deja liee : on guide l'expansion.
+            if is_variable_length
+                && !matches!(direction, Direction::Both)
+                && let Some(column) =
+                    target_variable.and_then(|v| columns_before.iter().position(|c| c == v))
+            {
+                expand_op = expand_op.with_target_column(column);
+            }
 
             // (obrain#189) Une variable d'arete de longueur variable lie la
             // LISTE des aretes du chemin : le filtre d'unicite
