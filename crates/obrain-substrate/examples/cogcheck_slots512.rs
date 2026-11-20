@@ -62,6 +62,21 @@ fn tailles_zones(dir: &Path) -> BTreeMap<String, u64> {
     m
 }
 
+/// Taille UTILE d'une colonne de degrés, lue dans son en-tête : `64 + 8 ×
+/// n_slots` (`degree_column.rs`). `None` si l'en-tête n'est pas reconnu (zone
+/// de degrés typée, format distinct) — on n'affirme alors rien.
+fn utile_degrees(dir: &Path, nom: &str) -> Option<u64> {
+    let octets = std::fs::read(dir.join(nom)).ok()?;
+    if octets.len() < 16 {
+        return None;
+    }
+    let u = |o: usize| u32::from_le_bytes([octets[o], octets[o + 1], octets[o + 2], octets[o + 3]]);
+    if u(0) != u32::from_le_bytes(*b"DEGR") {
+        return None;
+    }
+    Some(64 + 8 * u64::from(u(8)))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let base = args.first().expect("usage: cogcheck_slots512 <base_dir>");
@@ -148,6 +163,19 @@ fn main() {
     let mut ajouts = 0usize;
     for (k, v) in &zones0 {
         match zones1.get(k) {
+            // Une colonne de degrés est indexée par SLOT : sa taille suit
+            // l'espace de slots, que la migration matérialise. L'invariant
+            // « taille inchangée » y est donc faux par construction ; ce qui
+            // reste vérifiable, c'est qu'elle vaut ce que son en-tête annonce,
+            // à la page et au doublement près (obrain-db/obrain#266).
+            Some(w) if k.starts_with("substrate.degrees") => match utile_degrees(dir, k) {
+                Some(utile) => assert!(
+                    *w >= utile && *w <= utile * 2 + 4096,
+                    "zone de degrés {k} : {w} octets pour {utile} utiles (sur-allocation \
+                     ou en-tête ment)"
+                ),
+                None => {} // format non reconnu : on n'affirme rien
+            },
             Some(w) => assert_eq!(*w, *v, "taille CHANGÉE sur la zone cognitive {k}"),
             None => panic!("zone cognitive {k} disparue"),
         }
