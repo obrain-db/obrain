@@ -174,6 +174,97 @@ jobs:
           rm -rf "$RUNNER_TEMP/tests"
           if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
+  # ── COUVERTURE (2026-11-21) ──────────────────────────────────────────────
+  # Cible du projet : 95 % des lignes. Mesuré sur main le 21/11/2026 : 85,81 %
+  # sur le périmètre ci-dessous (83,23 % sur tout le workspace, bindings
+  # compris). Un seuil global de 95 % bloquerait donc toute PR dès le premier
+  # jour ; deux contrôles obligatoires à la place :
+  #   1. CODE NEUF : les lignes modifiées par la PR sont couvertes à 95 %
+  #      (diff-cover sur le rapport lcov, aucune dépendance à un service externe).
+  #   2. PLANCHER GLOBAL : un cliquet (COUVERTURE_PLANCHER) fixé juste sous le
+  #      niveau mesuré. On le RELÈVE quand la couverture monte, jamais on ne le
+  #      baisse ; objectif final 95.
+  # Périmètre : les bindings (C, Node, Python) et obrain-web sont testés par
+  # leurs propres jobs (maturin/pytest, npm, navigateur), pas par `cargo test` :
+  # les compter ici les afficherait à 0 %. Tests, bancs et exemples ne comptent
+  # pas dans la couverture qu'ils produisent.
+  # Les verdicts réussite/échec des tests restent ceux du job « Tests » : ici
+  # `--ignore-run-fail`, car des tests de latence échouent sous instrumentation
+  # (mesuré : cognitive position::scale_tests, index_concurrency,
+  # annulation_bout_en_bout, wal_group_commit_needle) sans rien dire du code.
+  couverture:
+    name: Couverture (code neuf ≥ 95 %, plancher global)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    env:
+      COUVERTURE_PLANCHER: "85"
+      COUVERTURE_CODE_NEUF: "95"
+      COUVERTURE_EXCLUS: '(/bindings/|/obrain-web/|/tests/|/benches/|/examples/)'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # diff-cover compare le rapport au diff contre la branche de base.
+          fetch-depth: 0
+      - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
+        run: |
+          if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+            find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
+          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/couverture"
+          echo "TMPDIR=$RUNNER_TEMP/couverture" >> "$GITHUB_ENV"
+          # Pas de sccache ici : le rustflags d'instrumentation change à chaque
+          # compilation et les artefacts ne se partagent pas avec les autres jobs.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
+            echo "CARGO_BUILD_JOBS=8" >> "$GITHUB_ENV"
+          fi
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
+      - name: Outils (cargo-llvm-cov, diff-cover — versions épinglées)
+        run: |
+          cargo install cargo-llvm-cov --locked --version 0.8.5
+          python3 -m pip install --user 'diff-cover==11.0.4'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Mesure (tests instrumentés, rapport lcov)
+        run: |
+          ulimit -n 8192
+          cargo llvm-cov --workspace --ignore-run-fail \
+            --ignore-filename-regex "$COUVERTURE_EXCLUS" \
+            --lcov --output-path "$RUNNER_TEMP/couverture/lcov.info"
+      - name: Résumé
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$COUVERTURE_EXCLUS" --summary-only | tee "$RUNNER_TEMP/couverture/resume.txt"
+          total=$(awk '/^TOTAL/ {print $10}' "$RUNNER_TEMP/couverture/resume.txt")
+          {
+            echo "### Couverture"
+            echo ""
+            echo "Lignes couvertes : **${total}** — plancher ${COUVERTURE_PLANCHER} %, cible 95 %."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Plancher global (cliquet)
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$COUVERTURE_EXCLUS" \
+            --fail-under-lines "$COUVERTURE_PLANCHER"
+      - name: Code neuf couvert à 95 % (lignes modifiées par la PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          diff-cover "$RUNNER_TEMP/couverture/lcov.info" \
+            --compare-branch="origin/${{ github.base_ref }}" \
+            --fail-under="$COUVERTURE_CODE_NEUF" \
+            --markdown-report "$RUNNER_TEMP/couverture/code-neuf.md"
+        # Le détail des lignes non couvertes va dans le résumé du run.
+      - name: Détail du code neuf non couvert
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          [ -f "$RUNNER_TEMP/couverture/code-neuf.md" ] && cat "$RUNNER_TEMP/couverture/code-neuf.md" >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Nettoyage du répertoire temporaire du job
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/couverture"
+
   # (MP-6, 2026-11-07) WAL PARTAGÉ : les tests INTER-PROCESSUS (le binaire de
   # test se relance lui-même en enfants, `kill -9` compris) jouent dans un job
   # à part, un seul à la fois par branche (`concurrency`) : ils mesurent des
