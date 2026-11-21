@@ -19,9 +19,9 @@
 pub mod adjacency;
 pub mod geo;
 pub mod hash;
-pub mod spatial;
 #[cfg(feature = "ring-index")]
 pub mod ring;
+pub mod spatial;
 #[cfg(feature = "text-index")]
 pub mod text;
 pub mod trie;
