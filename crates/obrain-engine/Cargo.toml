@@ -191,6 +191,10 @@ name = "mesure_traversee"
 required-features = ["cypher"]
 
 [[example]]
+name = "profil_open"
+required-features = ["cypher"]
+
+[[example]]
 name = "import_jsonl_cognitif"
 required-features = ["cognitive"]
 
