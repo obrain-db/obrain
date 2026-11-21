@@ -166,3 +166,15 @@ fn lidentifiant_dun_index_declare_reste_accepte() {
         .expect("identifiant d'un index déclaré");
     assert!(!r.rows.is_empty());
 }
+
+#[test]
+fn regression_geofence_pres_frontiere_arrondi_f32() {
+    let db = ObrainDB::new_in_memory();
+    db.create_node_with_props(&["Lieu"], [("pos", point(179.999_992_5, 0.0))]);
+    let requete = "MATCH (n:Lieu) WHERE distance(n.pos, point(179.9999922, 0.0)) <= 0.1 RETURN n";
+    let avant = db.execute(requete).expect("balayage").rows.len();
+    creer_index(&db);
+    let apres = db.execute(requete).expect("index").rows.len();
+    assert_eq!(avant, 1);
+    assert_eq!(apres, avant, "un index ne doit pas modifier le résultat");
+}

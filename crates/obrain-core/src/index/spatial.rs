@@ -398,3 +398,42 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod regression_revue_282 {
+    use super::*;
+
+    #[test]
+    fn plage_f64_bord_arrondi_f32() {
+        let index = SpatialIndex::build(vec![(1, 179.999_992_5, 0.0)]);
+        let distance = haversine_m(179.999_992_2, 0.0, 179.999_992_5, 0.0);
+        assert!(distance < 0.1);
+        assert_eq!(index.dans_rayon(179.999_992_2, 0.0, 0.1).len(), 1);
+    }
+
+    #[test]
+    fn nearest_apres_plus_de_huit_suppressions() {
+        let mut index =
+            SpatialIndex::build((0..20).map(|i| (i, f64::from(i) * 0.001, 0.0)).collect());
+        for id in 0..9 {
+            assert!(index.retirer(id));
+        }
+        let r = index.plus_proches(0.0, 0.0, 1);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, 9);
+    }
+
+    #[test]
+    fn nearest_discrimine_les_points_confondus_en_f32() {
+        let points = (0..20)
+            .map(|i| (i, 180.0 + if i == 1 { 0.000_000_1 } else { 0.000_001 }, 0.0))
+            .collect();
+        let index = SpatialIndex::build(points);
+        let r = index.plus_proches(180.0, 0.0, 1);
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            r[0].0, 1,
+            "le point réellement le plus proche doit gagner en f64"
+        );
+    }
+}
