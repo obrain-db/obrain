@@ -139,6 +139,21 @@ impl super::Planner {
                     _ => None,
                 };
                 if let Some(colonne) = prefixe {
+                    // Multi-bases : les listes de chemin portent des identifiants BRUTS
+                    // (sans base). La déduplication TRAIL / SIMPLE / ACYCLIC entre segments
+                    // confondrait deux éléments de bases distinctes de même identifiant.
+                    // Refus explicite plutôt que résultat faux. WALK n'est pas concerné.
+                    if self.session_context.base_registry.is_some()
+                        && expand.path_mode != PathMode::Walk
+                    {
+                        use obrain_common::utils::error::{QueryError, QueryErrorKind};
+                        return Err(QueryError::new(
+                            QueryErrorKind::Semantic,
+                            "chemin nommé composé en mode TRAIL/SIMPLE/ACYCLIC : non pris en charge \
+                             avec un registre multi-bases (les identifiants de chemin ne portent pas la base)",
+                        )
+                        .into());
+                    }
                     expand_op = expand_op.with_path_prefix(colonne);
                 }
             }
