@@ -414,8 +414,11 @@ impl<T: Clone> VpTree<T> {
             results.push((node.data.clone(), dist));
         }
 
-        // Prune using triangle inequality
-        if dist - radius < node.radius && node.left != NULL {
+        // Prune using triangle inequality. Left bound is NON-strict: when `build`
+        // leaves ties at the median, left holds points at distance == node.radius,
+        // so a match exactly on the boundary (dist - radius == node.radius) must
+        // still be explored, or those points are dropped (quantized geo data).
+        if dist - radius <= node.radius && node.left != NULL {
             self.range_search_recursive(node.left, query, radius, distance_fn, results);
         }
         if dist + radius >= node.radius && node.right != NULL {
