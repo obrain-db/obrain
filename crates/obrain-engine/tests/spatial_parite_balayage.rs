@@ -330,3 +330,79 @@ fn api_rust_ne_batit_pas_dindex_non_declare() {
     );
     assert_eq!(db.spatial_index_names(), Vec::new());
 }
+
+// ── Rollback : l'index suit l'état restauré ────────────────────────────────
+
+#[test]
+fn rollback_dune_suppression_de_noeud_remet_le_point() {
+    let db = ObrainDB::new_in_memory();
+    db.create_node_with_props(&["Lieu"], [("pos", point(2.0, 48.0))]);
+    creer_index(&db);
+    let mut session = db.session();
+    session.begin_transaction().expect("begin");
+    session
+        .execute("MATCH (n:Lieu) DETACH DELETE n")
+        .expect("delete");
+    session.rollback().expect("rollback");
+    assert_eq!(compte(&db, SCAN_100), Ok(1), "le rollback restaure le nœud");
+    assert_eq!(compte(&db, INDEX_100), Ok(1), "l'index doit le réapprendre");
+}
+
+#[test]
+fn rollback_dun_ajout_de_label_retire_le_point() {
+    let db = ObrainDB::new_in_memory();
+    db.create_node_with_props(&["Autre"], [("pos", point(2.0, 48.0))]);
+    creer_index(&db);
+    let mut session = db.session();
+    session.begin_transaction().expect("begin");
+    session
+        .execute("MATCH (n:Autre) SET n:Lieu")
+        .expect("SET label");
+    session.rollback().expect("rollback");
+    assert_eq!(compte(&db, SCAN_100), Ok(0));
+    assert_eq!(compte(&db, INDEX_100), Ok(0));
+}
+
+#[test]
+fn rollback_dun_retrait_de_label_remet_le_point() {
+    let db = ObrainDB::new_in_memory();
+    db.create_node_with_props(&["Lieu"], [("pos", point(2.0, 48.0))]);
+    creer_index(&db);
+    let mut session = db.session();
+    session.begin_transaction().expect("begin");
+    session
+        .execute("MATCH (n:Lieu) REMOVE n:Lieu")
+        .expect("REMOVE label");
+    session.rollback().expect("rollback");
+    assert_eq!(compte(&db, SCAN_100), Ok(1));
+    assert_eq!(compte(&db, INDEX_100), Ok(1));
+}
+
+// ── DROP durable ───────────────────────────────────────────────────────────
+
+#[test]
+fn drop_dun_index_non_charge_vaut_apres_reouverture() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let chemin = tmp.path().join("base");
+    {
+        let db = ObrainDB::open(&chemin).expect("ouverture");
+        db.create_node_with_props(&["Lieu"], [("pos", point(2.0, 48.0))]);
+        creer_index(&db);
+    }
+    {
+        // Rouverte : l'index est DÉCLARÉ mais pas chargé en mémoire.
+        let db = ObrainDB::open(&chemin).expect("réouverture");
+        assert_eq!(db.spatial_index_names().len(), 1);
+        db.execute("DROP INDEX geo")
+            .expect("DROP d'un index non chargé");
+        assert_eq!(db.spatial_index_names(), Vec::new());
+    }
+    let db = ObrainDB::open(&chemin).expect("seconde réouverture");
+    assert_eq!(
+        db.spatial_index_names(),
+        Vec::new(),
+        "la déclaration ne doit pas revenir"
+    );
+    assert!(db.spatial_search("geo", 2.0, 48.0, 1.0).is_err());
+    assert_eq!(compte(&db, INDEX_100), Ok(1), "le balayage sert");
+}

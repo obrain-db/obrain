@@ -542,6 +542,9 @@ impl super::ObrainDB {
         }
     }
 
+    // Plus d'appelant spatial (DROP spatial : `supprimer_index`, qui PROPAGE
+    // l'échec) ; restent le vectoriel et le textuel, sous leurs features.
+    #[cfg(any(feature = "vector-index", feature = "text-index"))]
     pub(super) fn retirer_declaration_substrat(&self, genre: &str, label: &str, propriete: &str) {
         let Some(ref sub) = self.substrate_store else {
             return;
@@ -680,18 +683,21 @@ impl super::ObrainDB {
         resultat
     }
 
-    /// Retire l'index spatial et sa déclaration. Rend `true` s'il existait.
-    pub fn drop_spatial_index(&self, label: &str, property: &str) -> bool {
-        if self.substrate_store.is_none() {
-            return false;
-        }
-        let retire = self
-            .substrate_spatial_indexes
-            .retirer(&format!("{label}:{property}"));
-        // La déclaration part MÊME si l'index n'était pas en mémoire : sur une
-        // base rouverte il ne l'est pas encore, et un DROP doit valoir.
-        self.retirer_declaration_substrat("spatial", label, property);
-        retire
+    /// Retire l'index spatial et sa déclaration DURABLE. Rend `true` s'il
+    /// était déclaré ou chargé.
+    ///
+    /// # Errors
+    ///
+    /// Le retrait durable de la déclaration a échoué : RIEN n'a été modifié,
+    /// l'index reste en mémoire et au catalogue (avant : l'échec était
+    /// seulement journalisé et l'index revenait à la réouverture).
+    pub fn drop_spatial_index(&self, label: &str, property: &str) -> Result<bool> {
+        super::spatial_procedure::supprimer_index(
+            &self.substrate_spatial_indexes,
+            self.substrate_store.as_deref(),
+            label,
+            property,
+        )
     }
 
     /// Reconstruit l'index par un rescan complet.
@@ -703,8 +709,9 @@ impl super::ObrainDB {
     ///
     /// Création impossible (base sans substrat).
     pub fn rebuild_spatial_index(&self, label: &str, property: &str) -> Result<usize> {
-        self.substrate_spatial_indexes
-            .retirer(&format!("{label}:{property}"));
+        // Pas de retrait préalable : la construction REMPLACE l'index sous le
+        // verrou du registre (`rebatir_sous_verrou`), sans fenêtre où le
+        // couple ne serait plus suivi.
         self.create_spatial_index(label, property)
     }
 

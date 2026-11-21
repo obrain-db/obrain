@@ -16,7 +16,7 @@
 //! frontière décorative — et la frontière EST le sujet : la session ne peut
 //! toucher que ce qu'un index spatial sait faire.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use obrain_common::types::{NodeId, PropertyKey, Value};
@@ -42,6 +42,20 @@ use obrain_core::index::spatial::SpatialIndex;
 pub(crate) struct RegistreSpatial {
     index: RwLock<HashMap<String, Arc<RwLock<SpatialIndex>>>>,
     noms: RwLock<Option<Vec<(String, String, String)>>>,
+    /// Couples `(label, propriété)` SUIVIS : chargés, ou en cours de
+    /// construction. L'observateur le consulte AVANT le verrou `index` : une
+    /// écriture qui ne concerne aucun couple suivi n'attend jamais une
+    /// construction (revue de #282 : sans lui, toute écriture de propriété de
+    /// la base attendait, en tenant son verrou de nœud). Un couple entre ici
+    /// AVANT le balayage, ce qui garde la construction exacte (voir
+    /// [`Self::sous_verrou`]).
+    suivis: RwLock<HashSet<(String, String)>>,
+}
+
+/// `label:propriété` → `(label, propriété)`.
+fn couple(cle: &str) -> Option<(String, String)> {
+    cle.split_once(':')
+        .map(|(l, p)| (l.to_string(), p.to_string()))
 }
 
 impl RegistreSpatial {
@@ -81,46 +95,89 @@ impl RegistreSpatial {
     ///
     /// Construire hors verrou, puis publier, laisse une fenêtre : une mutation
     /// dont le balayage a lu l'ANCIENNE valeur, et dont la notification arrive
-    /// AVANT la publication, ne trouve aucun index à mettre à jour
-    /// (`tous_avec_cle()` ne le voit pas encore). L'index publié porte alors
-    /// l'ancienne valeur, jusqu'au prochain rebâti.
+    /// AVANT la publication, ne trouve aucun index à mettre à jour. L'index
+    /// publié porte alors l'ancienne valeur, jusqu'au prochain rebâti (vu
+    /// rouge : `une_mutation_pendant_la_construction_nest_pas_perdue`).
     ///
-    /// Le substrat appelle ses observateurs HORS de ses propres verrous, après
-    /// l'écriture (`SubstrateStore::observateurs`). Tenir ce verrou pendant la
-    /// construction ne peut donc pas interbloquer : la mutation s'écrit, puis
-    /// sa notification ATTEND la publication, puis relit la valeur vivante et
-    /// l'applique. Si la notification a lu le registre avant notre prise du
-    /// verrou, l'écriture la précède, donc notre balayage (postérieur à la
-    /// prise) la voit. Dans les deux cas l'index publié est au niveau du
-    /// store. Test : `une_mutation_pendant_la_construction_nest_pas_perdue`.
+    /// ── ORDRE DES VERROUS (relu dans le code le 21/11, pas prouvé) ────────
     ///
-    /// Coût assumé : pendant la construction (648 ms à 10⁶ points au banc),
-    /// toute requête spatiale et toute notification de mutation attendent.
-    /// C'est le prix d'un DDL ou d'une première lecture après réouverture, pas
-    /// d'une requête ordinaire.
+    /// | Verrou | Où |
+    /// |---|---|
+    /// | `V(n)` | `verrou_ecriture_noeud` du substrat, `Mutex`, 256 tranches ; tenu par `set_node_property` (scalaire, blob), `remove_node_property` et l'import en lot (blob) PENDANT leurs notifications |
+    /// | `S` | `suivis` ci-dessus |
+    /// | `R` | `index` ci-dessus (ce verrou) |
+    /// | `I(k)` | le verrou de CHAQUE index |
+    /// | `Z` | les verrous internes de LECTURE du substrat (`get_node_property`, `node_has_label`, `nodes_by_label`), pris et rendus dans l'appel |
+    ///
+    /// Chemins, dans l'ordre où chacun prend ses verrous :
+    /// - écrivain de propriété : `V(n)` → `S` (lecture, rendu) → `R` (lecture,
+    ///   rendu) → `I(k)` (écriture) → `Z` ;
+    /// - écrivain de label, suppression, résurrection : pas de `V` ; `S` → `R`
+    ///   → `I(k)` → `Z` ;
+    /// - construction (ici) : `S` (écriture, rendu) → `R` (écriture, TENU) →
+    ///   `Z` ; jamais `V`, jamais `I` ;
+    /// - requête : `R` (lecture, rendu) → `I(k)` (lecture, rendu) → `Z`.
+    ///
+    /// Aucun chemin ne prend `V` après un autre verrou, ni `R` en tenant un
+    /// `I` : la relecture n'a pas trouvé de cycle. C'est une DÉDUCTION sur
+    /// les gardes relues (motif `let … = ….lock()/write()/read()`), pas une
+    /// preuve — d'où les tests bornés `aucun_interblocage_pendant_*`,
+    /// qui fait tourner chaque chemin pendant qu'une construction tient `R`.
+    ///
+    /// Coût : pendant une construction (648 ms à 10⁶ points au banc), les
+    /// requêtes spatiales et les écritures qui concernent un couple SUIVI
+    /// attendent — chaque écrivain de propriété en tenant son `V(n)`, donc
+    /// aussi les écritures sur les autres nœuds de sa tranche. Les écritures
+    /// sans rapport ne prennent jamais `R` (grâce à `S`).
     fn sous_verrou(
         &self,
         cle: &str,
         remplacer: bool,
         construire: impl FnOnce() -> SpatialIndex,
     ) -> Arc<RwLock<SpatialIndex>> {
+        // Le couple est suivi AVANT le balayage : une écriture qui a vu le
+        // couple non suivi a eu lieu avant cette insertion, donc avant le
+        // balayage, qui la voit.
+        if let Some(c) = couple(cle) {
+            self.suivis.write().insert(c);
+        }
         let mut index = self.index.write();
         if !remplacer && let Some(existant) = index.get(cle) {
             // Un autre constructeur a pu passer pendant qu'on attendait.
             return Arc::clone(existant);
         }
+        #[cfg(test)]
+        declencher(&CROCHET_AVANT_BALAYAGE, cle);
         let construit = Arc::new(RwLock::new(construire()));
         #[cfg(test)]
-        crochet_avant_publication(cle);
+        declencher(&CROCHET_AVANT_PUBLICATION, cle);
         index.insert(cle.to_string(), Arc::clone(&construit));
         drop(index);
         self.invalider_noms();
         construit
     }
 
+    /// Une propriété fait-elle partie d'un couple suivi ?
+    pub(crate) fn suit_propriete(&self, propriete: &str) -> bool {
+        self.suivis.read().iter().any(|(_, p)| p == propriete)
+    }
+
+    /// Un label fait-il partie d'un couple suivi ?
+    pub(crate) fn suit_label(&self, label: &str) -> bool {
+        self.suivis.read().iter().any(|(l, _)| l == label)
+    }
+
+    /// Au moins un couple est-il suivi ?
+    pub(crate) fn suit_quelque_chose(&self) -> bool {
+        !self.suivis.read().is_empty()
+    }
+
     /// Retire l'index d'une clé. Rend `true` s'il était chargé.
     pub(crate) fn retirer(&self, cle: &str) -> bool {
         let retire = self.index.write().remove(cle).is_some();
+        if let Some(c) = couple(cle) {
+            self.suivis.write().remove(&c);
+        }
         self.invalider_noms();
         retire
     }
@@ -143,11 +200,6 @@ impl RegistreSpatial {
             .iter()
             .map(|(cle, i)| (cle.clone(), Arc::clone(i)))
             .collect()
-    }
-
-    /// Tous les index chargés (copie des `Arc`).
-    pub(crate) fn tous(&self) -> Vec<Arc<RwLock<SpatialIndex>>> {
-        self.index.read().values().map(Arc::clone).collect()
     }
 
     /// Les noms d'index spatiaux, `(nom, label, propriété)`, triés.
@@ -318,19 +370,29 @@ fn appliquer_valeur(index: &mut SpatialIndex, id: u32, valeur: Option<&Value>) {
     }
 }
 
-/// Crochet de test : appelé par `RegistreSpatial::sous_verrou` entre la
-/// construction et la publication, verrou tenu. Le test qui en a besoin le
-/// pose pour UNE clé ; les autres clés ne le déclenchent pas (les tests
-/// tournent en parallèle dans le même binaire).
+/// Crochets de test de `RegistreSpatial::sous_verrou`, verrou du registre
+/// TENU : avant le balayage, et entre la construction et la publication. Un
+/// test en pose un pour UNE clé ; les autres clés ne le déclenchent pas (les
+/// tests tournent en parallèle dans le même binaire).
 #[cfg(test)]
 #[allow(clippy::type_complexity)]
-static CROCHET_AVANT_PUBLICATION: parking_lot::Mutex<Option<(String, Box<dyn FnOnce() + Send>)>> =
+type Crochet = parking_lot::Mutex<Option<(String, Box<dyn FnOnce() + Send>)>>;
+
+#[cfg(test)]
+static CROCHET_AVANT_BALAYAGE: Crochet = parking_lot::Mutex::new(None);
+
+#[cfg(test)]
+static CROCHET_AVANT_PUBLICATION: Crochet = parking_lot::Mutex::new(None);
+
+/// Injection d'échec du retrait DURABLE d'une déclaration, pour une clé.
+#[cfg(test)]
+static ECHEC_RETRAIT_DECLARATION: parking_lot::Mutex<Option<String>> =
     parking_lot::Mutex::new(None);
 
 #[cfg(test)]
-fn crochet_avant_publication(cle: &str) {
+fn declencher(crochet: &Crochet, cle: &str) {
     let pris = {
-        let mut slot = CROCHET_AVANT_PUBLICATION.lock();
+        let mut slot = crochet.lock();
         match slot.as_ref() {
             Some((c, _)) if c == cle => slot.take(),
             _ => None,
@@ -339,6 +401,55 @@ fn crochet_avant_publication(cle: &str) {
     if let Some((_, f)) = pris {
         f();
     }
+}
+
+/// Retire un index spatial : la DÉCLARATION DURABLE d'abord, la mémoire
+/// ensuite (revue de #282, 21/11 soir).
+///
+/// AVANT : la mémoire partait d'abord, et un échec du retrait durable n'était
+/// que journalisé, avec un succès annoncé — l'index disparaissait de la
+/// session et revenait à la réouverture. Maintenant un échec durable est une
+/// ERREUR, et rien n'a changé : ni la mémoire, ni le catalogue. Le retrait
+/// mémoire, lui, ne peut pas échouer.
+///
+/// Un index déclaré mais non chargé (base rouverte) se retire aussi ; un
+/// couple ni déclaré ni chargé rend `Ok(false)`.
+pub(crate) fn supprimer_index(
+    registre: &RegistreSpatial,
+    sub: Option<&obrain_substrate::SubstrateStore>,
+    label: &str,
+    propriete: &str,
+) -> Result<bool> {
+    let cle = format!("{label}:{propriete}");
+    let declare = sub.is_some_and(|s| {
+        s.declarations_index()
+            .iter()
+            .any(|d| d.genre == "spatial" && d.label == label && d.propriete == propriete)
+    });
+    let charge = registre.get(&cle).is_some();
+    if !declare && !charge {
+        return Ok(false);
+    }
+    if let Some(sub) = sub
+        && declare
+    {
+        #[cfg(test)]
+        if ECHEC_RETRAIT_DECLARATION.lock().as_deref() == Some(cle.as_str()) {
+            return Err(Error::Internal(format!(
+                "DROP INDEX :{label}({propriete}) : la déclaration durable n'a pas pu être \
+                 retirée (échec injecté) — rien n'a été modifié"
+            )));
+        }
+        sub.retirer_declaration_index("spatial", label, propriete)
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "DROP INDEX :{label}({propriete}) : la déclaration durable n'a pas pu être \
+                     retirée ({e}) — rien n'a été modifié"
+                ))
+            })?;
+    }
+    registre.retirer(&cle);
+    Ok(true)
 }
 
 /// La poignée elle-même : les `Arc` de la base, sans la base.
@@ -422,15 +533,12 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
 
     fn supprimer(&self, nom_ou_ident: &str) -> Result<bool> {
         let (label, propriete) = self.resoudre(nom_ou_ident)?;
-        let retire = self.spatiaux.retirer(&format!("{label}:{propriete}"));
-        if let Some(ref sub) = self.substrate_store {
-            // La déclaration part MÊME si l'index n'était pas en mémoire : sur
-            // une base rouverte il ne l'est pas encore, et un DROP doit valoir.
-            if let Err(e) = sub.retirer_declaration_index("spatial", &label, &propriete) {
-                tracing::warn!(erreur = %e, "DROP INDEX : retrait de déclaration non persisté");
-            }
-        }
-        Ok(retire)
+        supprimer_index(
+            &self.spatiaux,
+            self.substrate_store.as_deref(),
+            &label,
+            &propriete,
+        )
     }
 
     fn rayon(
@@ -540,8 +648,12 @@ impl ObservateurIndexSpatial {
         }
     }
 
-    /// Les index concernés par la propriété `key` : `(label, index)`.
+    /// Les index concernés par la propriété `key` : `(label, index)`. Ne
+    /// touche pas le verrou du registre si aucun couple suivi ne porte `key`.
     fn concernes_par_propriete(&self, key: &str) -> Vec<(String, Arc<RwLock<SpatialIndex>>)> {
+        if !self.registre.suit_propriete(key) {
+            return Vec::new();
+        }
         let suffixe = format!(":{key}");
         self.registre
             .tous_avec_cle()
@@ -554,28 +666,85 @@ impl ObservateurIndexSpatial {
             .collect()
     }
 
-    /// Met à jour l'index pour `(id, propriété)` depuis la valeur VIVANTE.
+    /// Une propriété a changé (posée ou retirée) : resynchronise ses index.
     fn rafraichir(&self, id: obrain_common::types::NodeId, key: &str) {
-        let Some(store) = self.store.upgrade() else {
-            return;
-        };
         let concernes = self.concernes_par_propriete(key);
         if concernes.is_empty() {
             return;
         }
-        let Some(noeud) = store.get_node(id) else {
+        let Some(store) = self.store.upgrade() else {
             return;
         };
-        let valeur = store.get_node_property(id, &PropertyKey::new(key));
         for (label, idx) in concernes {
-            // Le nœud doit porter le LABEL de l'index : `:Lieu(pos)` ne doit pas
-            // recevoir un `:Batiment(pos)` simplement parce que la propriété
-            // s'appelle pareil.
-            if !noeud.labels.iter().any(|l| l.as_str() == label) {
-                continue;
-            }
-            appliquer_valeur(&mut idx.write(), id.0 as u32, valeur.as_ref());
+            resynchroniser(&store, &idx, id, &label, key);
         }
+    }
+
+    /// Resynchronise `id` dans TOUS les index chargés (suppression,
+    /// résurrection : tous les labels du nœud peuvent avoir changé).
+    fn rafraichir_partout(&self, id: obrain_common::types::NodeId) {
+        if !self.registre.suit_quelque_chose() {
+            return;
+        }
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        for (cle, idx) in self.registre.tous_avec_cle() {
+            if let Some((label, propriete)) = cle.split_once(':') {
+                resynchroniser(&store, &idx, id, label, propriete);
+            }
+        }
+    }
+
+    /// Un label a changé (ajouté ou retiré) : resynchronise ses index.
+    fn rafraichir_label(&self, id: obrain_common::types::NodeId, label: &str) {
+        if !self.registre.suit_label(label) {
+            return;
+        }
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        for (cle, idx) in self.registre.pour_label(&format!("{label}:")) {
+            if let Some((_, propriete)) = cle.split_once(':') {
+                resynchroniser(&store, &idx, id, label, propriete);
+            }
+        }
+    }
+}
+
+/// Remet l'entrée de `id` dans un index au niveau de l'état FAISANT AUTORITÉ :
+/// le nœud porte-t-il le label, et quelle valeur porte-t-il sur la propriété.
+///
+/// ── UNE NOTIFICATION EST UN SIGNAL, PAS UN ORDRE (revue de #282) ───────────
+///
+/// L'observateur obéissait au TYPE de l'événement : « label retiré » →
+/// retirer, « label ajouté » → insérer. Les écritures de label ne tiennent
+/// aucun verrou commun, leurs notifications peuvent donc arriver dans le
+/// désordre : un retrait notifié APRÈS un ajout ultérieur effaçait un point
+/// dont le label est présent ; l'inverse réinsérait un point sans label (vu
+/// rouge, émulé). Chaque notification dit maintenant seulement « `id` a pu
+/// changer » ; on relit l'état et on l'applique.
+///
+/// La relecture se fait SOUS le verrou d'écriture de l'index : les
+/// appliquants sont sérialisés, et chacun lit l'état au moment où il
+/// applique. Le dernier à appliquer lit donc un état postérieur à toutes les
+/// écritures dont la notification l'a précédé, et toute écriture plus tardive
+/// sera suivie de sa propre notification. À l'arrêt des écritures, l'index
+/// est au niveau du store. Entre-temps, une requête peut lire un état en
+/// retard d'une notification, comme pour tout index maintenu après écriture.
+fn resynchroniser(
+    store: &obrain_substrate::SubstrateStore,
+    idx: &RwLock<SpatialIndex>,
+    id: obrain_common::types::NodeId,
+    label: &str,
+    propriete: &str,
+) {
+    let mut garde = idx.write();
+    if store.node_has_label(id, label).unwrap_or(false) {
+        let valeur = store.get_node_property(id, &PropertyKey::new(propriete));
+        appliquer_valeur(&mut garde, id.0 as u32, valeur.as_ref());
+    } else {
+        garde.retirer(id.0 as u32);
     }
 }
 
@@ -596,39 +765,29 @@ impl obrain_substrate::StoreMutationObserver for ObservateurIndexSpatial {
     }
 
     fn node_property_removed(&self, id: obrain_common::types::NodeId, key: &str) {
-        for (_, idx) in self.concernes_par_propriete(key) {
-            idx.write().retirer(id.0 as u32);
-        }
+        self.rafraichir(id, key);
     }
 
     fn node_deleted(&self, id: obrain_common::types::NodeId) {
-        for idx in self.registre.tous() {
-            idx.write().retirer(id.0 as u32);
-        }
+        self.rafraichir_partout(id);
+    }
+
+    /// Rollback d'une suppression : le nœud revient avec ses labels et ses
+    /// propriétés (vu rouge avant : l'index ne le réapprenait jamais).
+    fn node_revived(&self, id: obrain_common::types::NodeId) {
+        self.rafraichir_partout(id);
     }
 
     /// `SET n:Lieu` sur un nœud qui porte déjà `pos` : il entre dans
-    /// `:Lieu(pos)` avec la valeur qu'il porte (revue de #282 : l'index
-    /// l'ignorait, le balayage le rendait).
+    /// `:Lieu(pos)` avec la valeur qu'il porte.
     fn node_label_added(&self, id: obrain_common::types::NodeId, label: &str) {
-        let Some(store) = self.store.upgrade() else {
-            return;
-        };
-        for (cle, idx) in self.registre.pour_label(&format!("{label}:")) {
-            let Some((_, propriete)) = cle.split_once(':') else {
-                continue;
-            };
-            let valeur = store.get_node_property(id, &PropertyKey::new(propriete));
-            appliquer_valeur(&mut idx.write(), id.0 as u32, valeur.as_ref());
-        }
+        self.rafraichir_label(id, label);
     }
 
-    /// `REMOVE n:Lieu` : le nœud sort des index de ce label, quelle que soit
-    /// sa position.
+    /// `REMOVE n:Lieu` : le nœud sort des index de ce label — sauf si l'état
+    /// relu dit qu'il le porte à nouveau.
     fn node_label_removed(&self, id: obrain_common::types::NodeId, label: &str) {
-        for (_, idx) in self.registre.pour_label(&format!("{label}:")) {
-            idx.write().retirer(id.0 as u32);
-        }
+        self.rafraichir_label(id, label);
     }
 }
 
@@ -804,6 +963,7 @@ mod tests {
     //! #282), rendue DÉTERMINISTE par `CROCHET_AVANT_PUBLICATION`.
     use super::*;
     use crate::ObrainDB;
+    use obrain_substrate::StoreMutationObserver as _;
 
     fn point(lon: f64, lat: f64) -> Value {
         Value::List(vec![Value::Float64(lon), Value::Float64(lat)].into())
@@ -879,5 +1039,386 @@ mod tests {
             0,
             "l'ancienne position ne doit plus être servie"
         );
+    }
+
+    // ── Ordre des notifications (revue de #282, 21/11 soir) ────────────────
+    //
+    // Les écritures de label ne tiennent aucun verrou commun : leurs
+    // notifications peuvent arriver dans un autre ordre que les écritures.
+    // On ÉMULE une notification tardive en la rejouant après coup sur
+    // l'observateur, l'état du store étant l'état faisant autorité. C'est une
+    // émulation de l'entrelacement, pas une course réelle : la course réelle
+    // exigerait une barrière DANS le substrat, entre écriture et notification.
+
+    fn base_tardive(
+        label_initial: &str,
+        cle: &str,
+    ) -> (
+        ObrainDB,
+        NodeId,
+        Arc<obrain_substrate::SubstrateStore>,
+        ObservateurIndexSpatial,
+    ) {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node_with_props(&[label_initial], [("pos", point(2.0, 48.0))]);
+        let (label, _) = cle.split_once(':').expect("clé");
+        db.execute(&format!(
+            "CREATE INDEX idx_{} FOR (n:{label}) ON (n.pos) USING SPATIAL",
+            label.to_lowercase()
+        ))
+        .expect("DDL");
+        let sub = db.substrate_store.clone().expect("substrat");
+        let obs = ObservateurIndexSpatial::nouveau(Arc::clone(&db.substrate_spatial_indexes), &sub);
+        (db, id, sub, obs)
+    }
+
+    fn servis(db: &ObrainDB, label: &str) -> usize {
+        db.spatial_search(&format!("idx_{}", label.to_lowercase()), 2.0, 48.0, 1.0)
+            .expect("index")
+            .len()
+    }
+
+    fn a_le_label(sub: &obrain_substrate::SubstrateStore, id: NodeId, label: &str) -> bool {
+        use obrain_core::graph::GraphStore as _;
+        sub.node_has_label(id, label).unwrap_or(false)
+    }
+
+    #[test]
+    fn retrait_de_label_notifie_en_retard_ne_defait_pas_letat() {
+        use obrain_core::graph::GraphStoreMut as _;
+        let (db, id, sub, obs) = base_tardive("LieuT1", "LieuT1:pos");
+        assert!(sub.remove_label(id, "LieuT1"));
+        assert!(sub.add_label(id, "LieuT1"));
+        obs.node_label_removed(id, "LieuT1"); // la notification du retrait, en retard
+        assert!(
+            a_le_label(&sub, id, "LieuT1"),
+            "état faisant autorité : label présent"
+        );
+        assert_eq!(
+            servis(&db, "LieuT1"),
+            1,
+            "le retrait tardif a effacé un point dont le label est présent"
+        );
+    }
+
+    #[test]
+    fn ajout_de_label_notifie_en_retard_ne_reinsere_pas_sans_label() {
+        use obrain_core::graph::GraphStoreMut as _;
+        let (db, id, sub, obs) = base_tardive("AutreT2", "LieuT2:pos");
+        assert!(sub.add_label(id, "LieuT2"));
+        assert!(sub.remove_label(id, "LieuT2"));
+        obs.node_label_added(id, "LieuT2"); // la notification de l'ajout, en retard
+        assert!(
+            !a_le_label(&sub, id, "LieuT2"),
+            "état faisant autorité : label absent"
+        );
+        assert_eq!(
+            servis(&db, "LieuT2"),
+            0,
+            "l'ajout tardif a réinséré un point sans label"
+        );
+    }
+
+    #[test]
+    fn suppression_notifiee_en_retard_ne_retire_pas_un_noeud_vivant() {
+        let (db, id, sub, obs) = base_tardive("LieuT3", "LieuT3:pos");
+        obs.node_deleted(id); // notification d'une suppression annulée depuis
+        assert!(a_le_label(&sub, id, "LieuT3"));
+        assert_eq!(
+            servis(&db, "LieuT3"),
+            1,
+            "le nœud est vivant et porte son point"
+        );
+    }
+
+    #[test]
+    fn retrait_de_propriete_notifie_en_retard_ne_retire_pas_une_valeur_presente() {
+        let (db, id, _sub, obs) = base_tardive("LieuT4", "LieuT4:pos");
+        obs.node_property_removed(id, "pos");
+        assert_eq!(servis(&db, "LieuT4"), 1, "la propriété est présente");
+    }
+
+    // ── Pas d'attente globale pendant une construction ─────────────────────
+
+    /// Pendant qu'un DDL tient le registre (construction en pause par le
+    /// crochet), une écriture d'une propriété SANS RAPPORT avec l'index doit
+    /// aboutir. Sinon, toute la base attend la construction (648 ms à 10⁶
+    /// points), chaque écrivain tenant son verrou de nœud.
+    #[test]
+    fn une_ecriture_sans_rapport_nattend_pas_la_construction() {
+        let db = Arc::new(ObrainDB::new_in_memory());
+        db.create_node_with_props(&["LieuAttente"], [("pos", point(2.0, 48.0))]);
+        let y = db.create_node_with_props(&["Autre"], [("nom", Value::from("a"))]);
+        let resultat: Arc<parking_lot::Mutex<Option<bool>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        {
+            let db = Arc::clone(&db);
+            let resultat = Arc::clone(&resultat);
+            *CROCHET_AVANT_PUBLICATION.lock() = Some((
+                "LieuAttente:pos".to_string(),
+                Box::new(move || {
+                    let (tx, rx) = std::sync::mpsc::channel::<()>();
+                    let db2 = Arc::clone(&db);
+                    std::thread::spawn(move || {
+                        db2.set_node_property(y, "nom", Value::from("b"));
+                        let _ = tx.send(());
+                    });
+                    let fini = rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+                    *resultat.lock() = Some(fini);
+                }),
+            ));
+        }
+        db.execute("CREATE INDEX attente_pos FOR (n:LieuAttente) ON (n.pos) USING SPATIAL")
+            .expect("DDL");
+        assert_eq!(
+            *resultat.lock(),
+            Some(true),
+            "une écriture sans rapport avec l'index a attendu la construction"
+        );
+    }
+
+    // ── DROP : la déclaration durable d'abord ──────────────────────────────
+
+    #[test]
+    fn drop_dont_le_retrait_durable_echoue_est_une_erreur_et_ne_change_rien() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let chemin = tmp.path().join("base");
+        let q = "MATCH (n:LieuEchec) WHERE distance(n.pos, point(2.0, 48.0)) <= 1 RETURN n";
+        {
+            let db = ObrainDB::open(&chemin).expect("ouverture");
+            db.create_node_with_props(&["LieuEchec"], [("pos", point(2.0, 48.0))]);
+            db.execute("CREATE INDEX echec_pos FOR (n:LieuEchec) ON (n.pos) USING SPATIAL")
+                .expect("DDL");
+            *ECHEC_RETRAIT_DECLARATION.lock() = Some("LieuEchec:pos".to_string());
+            for ddl in ["DROP INDEX echec_pos", "DROP INDEX IF EXISTS echec_pos"] {
+                let e = db
+                    .execute(ddl)
+                    .expect_err("le retrait durable a échoué : pas de succès");
+                assert!(
+                    format!("{e:?}").contains("rien n'a été modifié"),
+                    "{ddl} : {e:?}"
+                );
+            }
+            let e = db
+                .drop_spatial_index("LieuEchec", "pos")
+                .expect_err("même règle pour l'API Rust");
+            assert!(format!("{e:?}").contains("déclaration durable"), "{e:?}");
+            *ECHEC_RETRAIT_DECLARATION.lock() = None;
+            // Rien n'a changé : nom, index chargé, couple suivi, route.
+            assert_eq!(db.spatial_index_names().len(), 1);
+            assert!(db.substrate_spatial_indexes.get("LieuEchec:pos").is_some());
+            assert!(db.substrate_spatial_indexes.suit_propriete("pos"));
+            assert_eq!(db.execute(q).expect("requête").rows.len(), 1);
+        }
+        let db = ObrainDB::open(&chemin).expect("réouverture");
+        assert_eq!(
+            db.spatial_index_names().len(),
+            1,
+            "après un DROP en échec, la déclaration est toujours là — et c'est cohérent"
+        );
+        // Sans injection, le même DROP passe, et vaut à la réouverture.
+        db.execute("DROP INDEX echec_pos").expect("DROP");
+        drop(db);
+        let db = ObrainDB::open(&chemin).expect("seconde réouverture");
+        assert_eq!(db.spatial_index_names(), Vec::new());
+    }
+
+    // ── Non-interblocage, borné ────────────────────────────────────────────
+
+    /// Ce que le scénario a observé : chaque fil a-t-il fini dans le délai ?
+    struct Issue {
+        sans_rapport_pendant_la_pause: Option<bool>,
+        concernes_apres: Vec<(&'static str, bool)>,
+    }
+
+    /// Pendant qu'une construction tient le verrou du registre, en pause
+    /// AVANT son balayage :
+    /// - un écrivain scalaire déplace `x` ; on attend que sa valeur soit dans
+    ///   le store : il est alors dans sa notification, en tenant `V(x)` —
+    ///   et le balayage qui suit doit LIRE `x` ;
+    /// - un écrivain blob (> 256 octets, `BLOB_COLUMN_THRESHOLD_BYTES`) écrit
+    ///   une valeur non point sur `w` (chemin blob : `V(w)` tenu) ;
+    /// - un ajout de label met `y` dans le label indexé ;
+    /// - une écriture SANS RAPPORT sur `y` doit finir PENDANT la pause.
+    ///
+    /// Puis la construction reprend. Tout fil doit finir dans un délai borné
+    /// (10 s) : un interblocage fait échouer le test au lieu de le pendre.
+    fn construction_sous_ecritures(
+        db: &Arc<ObrainDB>,
+        cle: &str,
+        noeud_x: NodeId,
+        noeud_w: NodeId,
+        noeud_y: NodeId,
+        declencher_construction: impl FnOnce(),
+    ) -> Issue {
+        let (label, _) = cle.split_once(':').expect("clé");
+        let label = label.to_string();
+        let issue = Arc::new(parking_lot::Mutex::new(None::<bool>));
+        let fils: Arc<parking_lot::Mutex<Vec<(&'static str, std::sync::mpsc::Receiver<()>)>>> =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+        {
+            let db = Arc::clone(db);
+            let issue = Arc::clone(&issue);
+            let fils = Arc::clone(&fils);
+            *CROCHET_AVANT_BALAYAGE.lock() = Some((
+                cle.to_string(),
+                Box::new(move || {
+                    let lancer = |nom: &'static str, f: Box<dyn FnOnce() + Send>| {
+                        let (tx, rx) = std::sync::mpsc::channel::<()>();
+                        std::thread::spawn(move || {
+                            f();
+                            let _ = tx.send(());
+                        });
+                        fils.lock().push((nom, rx));
+                    };
+                    let d = Arc::clone(&db);
+                    lancer(
+                        "scalaire",
+                        Box::new(move || d.set_node_property(noeud_x, "pos", point(3.0, 49.0))),
+                    );
+                    let pk = PropertyKey::new("pos");
+                    let mut vu = false;
+                    for _ in 0..500 {
+                        if db
+                            .data_store()
+                            .get_node_property(noeud_x, &pk)
+                            .as_ref()
+                            .and_then(point_lon_lat)
+                            == Some((3.0, 49.0))
+                        {
+                            vu = true;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    assert!(vu, "l'écriture scalaire n'est pas arrivée dans le store");
+                    let d = Arc::clone(&db);
+                    lancer(
+                        "blob",
+                        Box::new(move || {
+                            d.set_node_property(noeud_w, "pos", Value::from("x".repeat(300)));
+                        }),
+                    );
+                    let sub = db.substrate_store.clone().expect("substrat");
+                    let l = label.clone();
+                    lancer(
+                        "label",
+                        Box::new(move || {
+                            use obrain_core::graph::GraphStoreMut as _;
+                            sub.add_label(noeud_y, &l);
+                        }),
+                    );
+                    let (tx, rx) = std::sync::mpsc::channel::<()>();
+                    let d = Arc::clone(&db);
+                    std::thread::spawn(move || {
+                        d.set_node_property(noeud_y, "nom", Value::from("b"));
+                        let _ = tx.send(());
+                    });
+                    *issue.lock() =
+                        Some(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok());
+                }),
+            ));
+        }
+        declencher_construction();
+        let concernes_apres = fils
+            .lock()
+            .drain(..)
+            .map(|(nom, rx)| {
+                (
+                    nom,
+                    rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
+                )
+            })
+            .collect();
+        let sans_rapport = *issue.lock();
+        Issue {
+            sans_rapport_pendant_la_pause: sans_rapport,
+            concernes_apres,
+        }
+    }
+
+    fn verifier(issue: &Issue, db: &ObrainDB, nom_index: &str, cle: &str, x: NodeId) {
+        assert_eq!(
+            issue.sans_rapport_pendant_la_pause,
+            Some(true),
+            "une écriture sans rapport a attendu la construction"
+        );
+        assert_eq!(
+            issue.concernes_apres.len(),
+            3,
+            "les trois écrivains concernés ont été lancés"
+        );
+        for (nom, fini) in &issue.concernes_apres {
+            assert!(
+                *fini,
+                "l'écrivain « {nom} » n'a pas fini en 10 s : interblocage ?"
+            );
+        }
+        // État final au niveau du store : x déplacé, w non point.
+        let r = db.spatial_search(nom_index, 3.0, 49.0, 1.0).expect("index");
+        assert_eq!(r.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![x]);
+        let idx = db.substrate_spatial_indexes.get(cle).expect("index chargé");
+        assert_eq!(
+            idx.read().nombre_non_points(),
+            1,
+            "le blob non point est compté"
+        );
+        assert_eq!(idx.read().anomalies(), 0);
+    }
+
+    fn noeuds(db: &ObrainDB, label: &str) -> (NodeId, NodeId, NodeId) {
+        let x = db.create_node_with_props(&[label], [("pos", point(2.0, 48.0))]);
+        let w = db.create_node_with_props(&[label], [("pos", point(2.5, 48.5))]);
+        let y = db.create_node_with_props(&["Autre"], [("nom", Value::from("a"))]);
+        (x, w, y)
+    }
+
+    #[test]
+    fn aucun_interblocage_pendant_une_construction_par_ddl() {
+        let db = Arc::new(ObrainDB::new_in_memory());
+        let (x, w, y) = noeuds(&db, "LieuV1");
+        let d = Arc::clone(&db);
+        let issue = construction_sous_ecritures(&db, "LieuV1:pos", x, w, y, move || {
+            d.execute("CREATE INDEX v1_pos FOR (n:LieuV1) ON (n.pos) USING SPATIAL")
+                .expect("DDL");
+        });
+        verifier(&issue, &db, "v1_pos", "LieuV1:pos", x);
+    }
+
+    #[test]
+    fn aucun_interblocage_pendant_une_reconstruction() {
+        let db = Arc::new(ObrainDB::new_in_memory());
+        let (x, w, y) = noeuds(&db, "LieuV2");
+        db.execute("CREATE INDEX v2_pos FOR (n:LieuV2) ON (n.pos) USING SPATIAL")
+            .expect("DDL");
+        let d = Arc::clone(&db);
+        let issue = construction_sous_ecritures(&db, "LieuV2:pos", x, w, y, move || {
+            d.rebuild_spatial_index("LieuV2", "pos").expect("rebuild");
+        });
+        verifier(&issue, &db, "v2_pos", "LieuV2:pos", x);
+    }
+
+    #[test]
+    fn aucun_interblocage_pendant_une_construction_paresseuse_apres_reouverture() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let chemin = tmp.path().join("base");
+        let (x, w, y) = {
+            let db = ObrainDB::open(&chemin).expect("ouverture");
+            let n = noeuds(&db, "LieuV3");
+            db.execute("CREATE INDEX v3_pos FOR (n:LieuV3) ON (n.pos) USING SPATIAL")
+                .expect("DDL");
+            n
+        };
+        let db = Arc::new(ObrainDB::open(&chemin).expect("réouverture"));
+        assert!(
+            db.substrate_spatial_indexes.get("LieuV3:pos").is_none(),
+            "non chargé"
+        );
+        let d = Arc::clone(&db);
+        let issue = construction_sous_ecritures(&db, "LieuV3:pos", x, w, y, move || {
+            d.spatial_search("v3_pos", 2.0, 48.0, 1.0)
+                .expect("construction paresseuse");
+        });
+        verifier(&issue, &db, "v3_pos", "LieuV3:pos", x);
     }
 }

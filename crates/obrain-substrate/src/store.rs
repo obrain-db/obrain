@@ -1913,6 +1913,13 @@ pub trait StoreMutationObserver: Send + Sync {
     /// Défaut : sans effet.
     fn node_label_removed(&self, _id: obrain_common::types::NodeId, _label: &str) {}
 
+    /// (2026-11-21, index spatial) Un nœud SUPPRIMÉ vient d'être ressuscité
+    /// par l'annulation d'une transaction (`Annulation::NoeudSupprime`), avec
+    /// ses labels et ses propriétés d'avant. Aucune autre notification ne le
+    /// dit : sans elle, un index qui a retiré le nœud à la suppression ne le
+    /// réapprend jamais (revue de #282, test vu rouge). Défaut : sans effet.
+    fn node_revived(&self, _id: obrain_common::types::NodeId) {}
+
     /// (2026-11-12, câblage cognitif) Même événement que `edge_created`, avec
     /// le TYPE de l'arête : un observateur qui doit ignorer certains types
     /// (les arêtes `SYNAPSE` que la cognition écrit elle-même) en a besoin.
@@ -5970,6 +5977,9 @@ impl SubstrateStore {
         self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
         self.incr_label_counts(label_bitset, 1);
         self.incr_first_label_count(label_bitset, 1);
+        // Après l'écriture complète (labels, propriétés, compteurs), sans
+        // verrou tenu : les index par label le réapprennent.
+        self.notify_node_revived(id);
     }
 
     /// Miroir exact de `delete_edge` — et il y a bien plus a defaire que pour
@@ -6948,6 +6958,12 @@ impl SubstrateStore {
     fn notify_node_label_removed(&self, id: obrain_common::types::NodeId, label: &str) {
         for observer in self.observateurs() {
             observer.node_label_removed(id, label);
+        }
+    }
+
+    fn notify_node_revived(&self, id: obrain_common::types::NodeId) {
+        for observer in self.observateurs() {
+            observer.node_revived(id);
         }
     }
 
