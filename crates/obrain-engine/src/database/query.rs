@@ -12,7 +12,8 @@ impl super::ObrainDB {
     where
         F: FnOnce(&crate::session::Session) -> Result<QueryResult>,
     {
-        let session = self.session();
+        let session =
+            crate::query::phases::mesure(crate::query::phases::Phase::Session, || self.session());
         let result = func(&session);
         // Sync graph state back, even on error (USE GRAPH may have succeeded
         // before a subsequent query failed in the same session).

@@ -398,19 +398,22 @@ impl QueryProcessor {
         let start_time = web_time::Instant::now();
 
         // 1. Parse and translate to logical plan
-        let mut logical_plan = self.translate_lpg(query, language)?;
+        use crate::query::phases::{Phase, mesure};
+        let mut logical_plan = mesure(Phase::Parse, || self.translate_lpg(query, language))?;
 
         // 2. Substitute parameters if provided
         if let Some(params) = params {
-            substitute_params(&mut logical_plan, params)?;
+            mesure(Phase::Parametres, || {
+                substitute_params(&mut logical_plan, params)
+            })?;
         }
 
         // 3. Semantic validation
         let mut binder = Binder::new();
-        let _binding_context = binder.bind(&logical_plan)?;
+        let _binding_context = mesure(Phase::Liaison, || binder.bind(&logical_plan))?;
 
         // 4. Optimize the plan
-        let optimized_plan = self.optimizer.optimize(logical_plan)?;
+        let optimized_plan = mesure(Phase::Optimisation, || self.optimizer.optimize(logical_plan))?;
 
         // 4a. EXPLAIN: annotate pushdown hints and return the plan tree
         if optimized_plan.explain {
@@ -512,16 +515,24 @@ impl QueryProcessor {
         };
         // PROFILE sur le chemin avec paramètres : même instrumentation par
         // opérateur que la session (sans elle, le mot-clé était ignoré).
-        let (mut physical_plan, profile_entries) = if optimized_plan.profile {
-            let (physical, entries) = planner.plan_profiled(&optimized_plan)?;
-            (physical, Some(entries))
-        } else {
-            (planner.plan(&optimized_plan)?, None)
-        };
+        let (mut physical_plan, profile_entries) = mesure(Phase::PlanPhysique, || {
+            Ok::<_, Error>(if optimized_plan.profile {
+                let (physical, entries) = planner.plan_profiled(&optimized_plan)?;
+                (physical, Some(entries))
+            } else {
+                (planner.plan(&optimized_plan)?, None)
+            })
+        })?;
 
         // 6. Execute and collect results
         let executor = Executor::with_columns(physical_plan.columns.clone());
-        let mut result = executor.execute(physical_plan.operator.as_mut())?;
+        let resultat = mesure(Phase::Execution, || {
+            executor.execute(physical_plan.operator.as_mut())
+        });
+        // Explicit drop, measured: the operator tree may own large state
+        // (expansion memo, hash tables).
+        mesure(Phase::Liberation, || drop(physical_plan));
+        let mut result = resultat?;
 
         if let Some(entries) = profile_entries {
             #[cfg(not(target_arch = "wasm32"))]

@@ -3884,7 +3884,9 @@ impl Session {
                     self.refuser_texte_cypher_en_lecture_seule(query)?;
                     let has_mutations = Self::query_looks_like_mutation(query);
                     let active = self.active_store();
+                    let debut_auto_commit = web_time::Instant::now();
                     let result = self.with_auto_commit(Nature::Texte(has_mutations), || {
+                        let debut_preparation = web_time::Instant::now();
                         let processor = QueryProcessor::for_graph_store_with_transaction(
                             Arc::clone(&active),
                             Arc::clone(&self.transaction_manager),
@@ -3922,8 +3924,16 @@ impl Session {
                         };
                         #[cfg(feature = "cdc")]
                         let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
+                        crate::query::phases::ajoute(
+                            crate::query::phases::Phase::Preparation,
+                            debut_preparation.elapsed().as_nanos() as u64,
+                        );
                         processor.process(query, QueryLanguage::Cypher, Some(&p))
                     });
+                    crate::query::phases::ajoute(
+                        crate::query::phases::Phase::AutoCommit,
+                        debut_auto_commit.elapsed().as_nanos() as u64,
+                    );
 
                     #[cfg(feature = "metrics")]
                     {

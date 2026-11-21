@@ -16,6 +16,7 @@ pub mod binder;
 pub mod cache;
 pub mod executor;
 pub mod optimizer;
+pub mod phases;
 pub mod plan;
 pub mod planner;
 pub mod processor;
