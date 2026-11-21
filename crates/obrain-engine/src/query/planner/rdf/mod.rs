@@ -190,7 +190,7 @@ impl RdfPlanner {
         if self.profiling.get() {
             let (physical, columns) = result?;
             let (entry, stats) =
-                crate::query::profile::ProfileEntry::new(physical.name(), op.display_label());
+                crate::query::profile::ProfileEntry::new(op, physical.name(), op.display_label());
             let profiled = obrain_core::execution::ProfiledOperator::new(physical, stats);
             self.profile_entries.borrow_mut().push(entry);
             Ok((Box::new(profiled), columns))

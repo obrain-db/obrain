@@ -4,6 +4,7 @@
 //! [`ProfileNode`] tree that mirrors the physical operator tree, annotated
 //! with actual row counts, timing, and call counts.
 
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -25,10 +26,18 @@ pub struct ProfileNode {
     pub stats: SharedProfileStats,
     /// Child nodes.
     pub children: Vec<ProfileNode>,
+    /// `false` when no physical operator carries a counter for this logical
+    /// node: the planner fused it into its parent (filter absorbed into an
+    /// expansion, label filter absorbed into a scan, ...). Its rows are not
+    /// measured on their own.
+    pub mesure: bool,
 }
 
 /// An entry collected during physical planning, used to build the profile tree.
 pub struct ProfileEntry {
+    /// Identity of the logical operator (its address in the plan tree), see
+    /// [`logical_key`].
+    pub key: usize,
     /// Operator name from `Operator::name()`.
     pub name: String,
     /// Human-readable label from the logical operator.
@@ -38,10 +47,17 @@ pub struct ProfileEntry {
 }
 
 impl ProfileEntry {
-    /// Creates a new profile entry with fresh (empty) stats.
-    pub fn new(name: &str, label: String) -> (Self, SharedProfileStats) {
+    /// Creates a new profile entry with fresh (empty) stats, for the logical
+    /// operator `logical` (which must belong to the plan later given to
+    /// [`build_profile_tree`]).
+    pub fn new(
+        logical: &LogicalOperator,
+        name: &str,
+        label: String,
+    ) -> (Self, SharedProfileStats) {
         let stats = Arc::new(Mutex::new(ProfileStats::default()));
         let entry = Self {
+            key: logical_key(logical),
             name: name.to_string(),
             label,
             stats: Arc::clone(&stats),
@@ -50,32 +66,57 @@ impl ProfileEntry {
     }
 }
 
-/// Builds a `ProfileNode` tree from the logical plan and a list of
-/// [`ProfileEntry`] items collected during physical planning.
+/// Identity of a logical operator inside its plan tree: its address.
 ///
-/// The entries must be in **post-order** (children before parents),
-/// matching the order in which `plan_operator()` processes operators.
+/// The planner and [`build_profile_tree`] both walk the same tree, so an
+/// operator keeps its address between planning and tree building.
+pub fn logical_key(logical: &LogicalOperator) -> usize {
+    logical as *const LogicalOperator as usize
+}
+
+/// Builds a `ProfileNode` tree from the logical plan and the [`ProfileEntry`]
+/// items collected during physical planning.
+///
+/// Entries are matched to logical operators by identity (see
+/// [`logical_key`]), not by position: a logical operator that the planner
+/// fused into its parent has no entry and is reported with `mesure == false`
+/// instead of breaking the count.
 pub fn build_profile_tree(
     logical: &LogicalOperator,
-    entries: &mut impl Iterator<Item = ProfileEntry>,
+    entries: impl IntoIterator<Item = ProfileEntry>,
 ) -> ProfileNode {
-    // Recurse into children first (post-order)
+    let mut par_cle: HashMap<usize, ProfileEntry> = HashMap::new();
+    for entry in entries {
+        par_cle.entry(entry.key).or_insert(entry);
+    }
+    construit_noeud(logical, &mut par_cle)
+}
+
+fn construit_noeud(
+    logical: &LogicalOperator,
+    par_cle: &mut HashMap<usize, ProfileEntry>,
+) -> ProfileNode {
     let children: Vec<ProfileNode> = logical
         .children()
         .into_iter()
-        .map(|child| build_profile_tree(child, entries))
+        .map(|child| construit_noeud(child, par_cle))
         .collect();
 
-    // Consume the entry for this node
-    let entry = entries
-        .next()
-        .expect("profile entry count must match logical operator count");
-
-    ProfileNode {
-        name: entry.name,
-        label: entry.label,
-        stats: entry.stats,
-        children,
+    match par_cle.remove(&logical_key(logical)) {
+        Some(entry) => ProfileNode {
+            name: entry.name,
+            label: entry.label,
+            stats: entry.stats,
+            children,
+            mesure: true,
+        },
+        None => ProfileNode {
+            name: "fusionné".to_string(),
+            label: logical.display_label(),
+            stats: Arc::new(Mutex::new(ProfileStats::default())),
+            children,
+            mesure: false,
+        },
     }
 }
 
@@ -106,16 +147,24 @@ fn format_node(out: &mut String, node: &ProfileNode, depth: usize) {
     let self_time_ns = self_time_ns(node);
     let self_time_ms = self_time_ns as f64 / 1_000_000.0;
 
-    let rows_out = node.stats.lock().rows_out;
-
-    let _ = writeln!(
-        out,
-        "{indent}{name} ({label})  rows={rows}  time={time:.2}ms",
-        name = node.name,
-        label = node.label,
-        rows = rows_out,
-        time = self_time_ms,
-    );
+    if node.mesure {
+        let rows_out = node.stats.lock().rows_out;
+        let _ = writeln!(
+            out,
+            "{indent}{name} ({label})  rows={rows}  time={time:.2}ms",
+            name = node.name,
+            label = node.label,
+            rows = rows_out,
+            time = self_time_ms,
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "{indent}{name} ({label})  rows=non mesuré (fusionné dans l'opérateur parent)",
+            name = node.name,
+            label = node.label,
+        );
+    }
 
     for child in &node.children {
         format_node(out, child, depth + 1);

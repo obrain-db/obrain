@@ -510,11 +510,30 @@ impl QueryProcessor {
         } else {
             planner
         };
-        let mut physical_plan = planner.plan(&optimized_plan)?;
+        // PROFILE sur le chemin avec paramètres : même instrumentation par
+        // opérateur que la session (sans elle, le mot-clé était ignoré).
+        let (mut physical_plan, profile_entries) = if optimized_plan.profile {
+            let (physical, entries) = planner.plan_profiled(&optimized_plan)?;
+            (physical, Some(entries))
+        } else {
+            (planner.plan(&optimized_plan)?, None)
+        };
 
         // 6. Execute and collect results
         let executor = Executor::with_columns(physical_plan.columns.clone());
         let mut result = executor.execute(physical_plan.operator.as_mut())?;
+
+        if let Some(entries) = profile_entries {
+            #[cfg(not(target_arch = "wasm32"))]
+            let total_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+            #[cfg(target_arch = "wasm32")]
+            let total_ms = 0.0;
+            let tree = crate::query::profile::build_profile_tree(
+                &optimized_plan.root,
+                entries,
+            );
+            return Ok(crate::query::profile::profile_result(&tree, total_ms));
+        }
 
         // Add execution metrics
         let rows_scanned = result.rows.len() as u64; // Approximate: rows returned

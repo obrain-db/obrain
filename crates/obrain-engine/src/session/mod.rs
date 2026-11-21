@@ -2966,7 +2966,7 @@ impl Session {
 
                 let profile_tree = crate::query::profile::build_profile_tree(
                     &optimized_plan.root,
-                    &mut entries.into_iter(),
+                    entries,
                 );
                 Ok(crate::query::profile::profile_result(
                     &profile_tree,
@@ -3365,7 +3365,7 @@ impl Session {
 
                 let profile_tree = crate::query::profile::build_profile_tree(
                     &optimized_plan.root,
-                    &mut entries.into_iter(),
+                    entries,
                 );
                 Ok(crate::query::profile::profile_result(
                     &profile_tree,
