@@ -1,6 +1,7 @@
 [![CI](https://github.com/obrain-db/obrain/actions/workflows/ci.yml/badge.svg)](https://github.com/obrain-db/obrain/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.91.1-blue)](Cargo.toml)
+[![Couverture : cible 95 %](https://img.shields.io/badge/couverture-cible%2095%20%25-orange)](#couverture-de-code)
 
 # Obrain — base de données graphe embarquée, en Rust
 
@@ -153,6 +154,40 @@ MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
 
 `examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate-v2` (le nom du binaire contient un tiret).
 
+## Couverture de code
+
+**Cible : 95 % des lignes.** Mesuré le 21/11/2026 sur `main` (`cabaf56b`) : **85,8 %** des lignes sur le périmètre de la CI (83,2 % sur tout le workspace, bindings compris). L'écart à la cible est de 9,2 points ; il se referme par le code neuf (voir les deux contrôles) et par les crates les plus bas du tableau.
+
+| Crate | Lignes | Couvert |
+|---|---:|---:|
+| `obrain-engine` | 41 470 | 78,5 % |
+| `obrain-core` | 36 955 | 82,5 % |
+| `obrain-common` | 6 379 | 85,8 % |
+| `obrain-indexer` | 8 283 | 87,8 % |
+| `obrain-cognitive` | 10 261 | 88,5 % |
+| `obrain-reactive` | 1 082 | 89,4 % |
+| `obrain-adapters` | 24 463 | 89,6 % |
+| `obrain-substrate` | 56 696 | 90,8 % |
+| `obrain-bases-banc` | 841 | 91,8 % |
+
+Hors périmètre, car testés par leurs propres jobs (`maturin`/`pytest`, `npm`, navigateur) et non par `cargo test` : `bindings/c` (39,4 %), `bindings/node` et `bindings/python` (0 % côté Rust), `obrain-web` (0 %).
+
+**Deux contrôles obligatoires dans la CI** (job « Couverture », `.github/workflows/ci.yml`) :
+
+1. **Code neuf ≥ 95 %** : les lignes qu'une PR modifie doivent être couvertes à 95 % (`diff-cover` sur le rapport lcov). Le détail des lignes non couvertes s'affiche dans le résumé du run.
+2. **Plancher global** : la couverture globale ne descend pas sous `COUVERTURE_PLANCHER` (85 % aujourd'hui, juste sous le niveau mesuré). On relève ce plancher quand la couverture monte, jamais on ne le baisse ; l'objectif final est 95.
+
+Les verdicts réussite/échec des tests restent ceux du job « Tests » : le job de couverture ignore les échecs de tests, car quatre cibles de tests de latence échouent sous instrumentation (`obrain-cognitive` `position::scale_tests`, `index_concurrency`, `annulation_bout_en_bout`, `wal_group_commit_needle`).
+
+Reproduire la mesure :
+
+```sh
+cargo install cargo-llvm-cov --locked --version 0.8.5
+cargo llvm-cov --workspace --ignore-run-fail \
+  --ignore-filename-regex '(/bindings/|/obrain-web/|/tests/|/benches/|/examples/)' \
+  --summary-only
+```
+
 ## Roadmap
 
 Ce qui n'est **pas** dans la v0.0.1 :
@@ -171,7 +206,7 @@ Ce qui n'est **pas** dans la v0.0.1 :
 
 ## Contribuer
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy et rustdoc sans aucun avertissement (`-D warnings`), tests, compilation `--all-features` (`-D warnings`), MSRV, `cargo deny`, vérification des manifestes de publication et `cargo package` du premier crate de l'ordre de publication, les jobs navigateur (wasm32, `obrain-web`, persistance OPFS sous Chrome headless), et les tests d'intégrité sur macOS (job conditionné à la variable de dépôt `CI_MACOS`, sinon « skipped »).
+Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy et rustdoc sans aucun avertissement (`-D warnings`), tests, couverture de code (code neuf ≥ 95 %, plancher global — voir [Couverture de code](#couverture-de-code)), compilation `--all-features` (`-D warnings`), MSRV, `cargo deny`, vérification des manifestes de publication et `cargo package` du premier crate de l'ordre de publication, les jobs navigateur (wasm32, `obrain-web`, persistance OPFS sous Chrome headless), et les tests d'intégrité sur macOS (job conditionné à la variable de dépôt `CI_MACOS`, sinon « skipped »).
 
 ## Remerciements
 
