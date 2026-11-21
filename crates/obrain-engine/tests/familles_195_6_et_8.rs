@@ -80,7 +80,7 @@ fn famille_6_rels_indexee_puis_start_node() {
         let ligne = r
             .rows
             .iter()
-            .find(|l| matches!(l.first(), Some(Value::String(s)) if s.as_ref() == enfant))
+            .find(|l| matches!(l.first(), Some(Value::String(s)) if s.as_str() == enfant))
             .unwrap_or_else(|| panic!("enfant {enfant} absent des lignes : {:?}", r.rows));
         let vu = match ligne.get(1) {
             Some(Value::Null) | None => None,
