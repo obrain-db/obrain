@@ -90,7 +90,8 @@ fn range_search_equivaut_au_balayage_sur_une_grille_quantifiee() {
                 let attendu = balayage(&points, q, r);
                 let obtenu = rendus(tree.range_search(q, r, euclid));
                 assert_eq!(
-                    attendu, obtenu,
+                    attendu,
+                    obtenu,
                     "graine {seed}, requête {i}, rayon {r} : {} attendus, {} rendus",
                     attendu.len(),
                     obtenu.len()
@@ -104,20 +105,21 @@ fn range_search_equivaut_au_balayage_sur_une_grille_quantifiee() {
 /// (même adresse, même cellule de quantification). Un rayon nul doit toutes les rendre.
 #[test]
 fn duplicatas_a_la_meme_position_sont_tous_rendus() {
-    let mut points: Vec<(u32, Vec<f32>)> = (0..60u32)
-        .map(|i| (i, vec![48.856, 2.352]))
-        .collect();
+    let mut points: Vec<(u32, Vec<f32>)> = (0..60u32).map(|i| (i, vec![48.856, 2.352])).collect();
     let mut s = 7u64;
     for i in 60..120u32 {
         points.push((i, vec![48.80 + lcg(&mut s) * 0.1, 2.20 + lcg(&mut s) * 0.2]));
     }
     let tree = VpTree::build(points.clone(), euclid);
 
-    for id in 0..60u32 {
-        let q = vec![48.856, 2.352];
-        assert_eq!(balayage(&points, &q, 0.0), rendus(tree.range_search(&q, 0.0, euclid)));
-        let _ = id;
-    }
+    // Une seule assertion : la requête est identique à chaque itération, la boucle
+    // d'origine ne testait rien de plus (elle répétait le même assert 60 fois).
+    let q = vec![48.856, 2.352];
+    assert_eq!(
+        balayage(&points, &q, 0.0),
+        rendus(tree.range_search(&q, 0.0, euclid)),
+        "rayon 0 sur 60 points à la même coordonnée : tous doivent être rendus"
+    );
 }
 
 /// Rayon posé exactement sur une distance réelle, série large : si l'élagage perd
