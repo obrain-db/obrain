@@ -32,6 +32,11 @@ pub struct ScanOperator {
     batch: Vec<NodeId>,
     /// Whether the scan is exhausted.
     exhausted: bool,
+    /// (LIMIT-croissant) Vrai quand le dernier `load_batch` a été PLAFONNÉ
+    /// (`max_rows`) et a pu rendre exactement le plafond — il peut donc
+    /// rester des nœuds au-delà. `next()` fait alors CROÎTRE le plafond au
+    /// lieu de rendre `None`, pour ne jamais sous-livrer.
+    capped: bool,
     /// Chunk capacity.
     chunk_capacity: usize,
     /// Optional row cap. When set, the scan uses the LIMIT-aware
@@ -55,6 +60,7 @@ impl ScanOperator {
             position: 0,
             batch: Vec::new(),
             exhausted: false,
+            capped: false,
             chunk_capacity: 2048,
             max_rows: None,
             transaction_id: None,
@@ -70,6 +76,7 @@ impl ScanOperator {
             position: 0,
             batch: Vec::new(),
             exhausted: false,
+            capped: false,
             chunk_capacity: 2048,
             max_rows: None,
             transaction_id: None,
@@ -119,7 +126,7 @@ impl ScanOperator {
         // no transaction context (no MVCC filter that could drop rows),
         // ask the store for AT MOST that many node IDs. Saves an O(N)
         // scan on big labels (681K ChatEvents → microseconds).
-        let all_ids = match &self.label {
+        let (all_ids, hit_cap) = match &self.label {
             Some(label) => {
                 // Use the capped variant when we have a row cap AND there is
                 // no active transaction. `viewing_epoch=Some(EpochId(0))` is
@@ -132,12 +139,14 @@ impl ScanOperator {
                 // MVCC transaction where visibility might drop matches.
                 if let Some(max) = self.max_rows {
                     if self.transaction_id.is_none() {
-                        self.store.nodes_by_label_capped(label, max)
+                        let ids = self.store.nodes_by_label_capped(label, max);
+                        let hc = ids.len() == max;
+                        (ids, hc)
                     } else {
-                        self.store.nodes_by_label(label)
+                        (self.store.nodes_by_label(label), false)
                     }
                 } else {
-                    self.store.nodes_by_label(label)
+                    (self.store.nodes_by_label(label), false)
                 }
             }
             // ── PLAFOND SANS ETIQUETTE (2026-09-11) ───────────────────
@@ -183,11 +192,16 @@ impl ScanOperator {
                 let max = self
                     .max_rows
                     .expect("max_rows is_some : teste par la garde du bras");
-                self.store.node_ids_capped(max)
+                let ids = self.store.node_ids_capped(max);
+                let hc = ids.len() == max;
+                (ids, hc)
             }
-            None if self.viewing_epoch.is_some() => self.store.all_node_ids(),
-            None => self.store.node_ids(),
+            None if self.viewing_epoch.is_some() => (self.store.all_node_ids(), false),
+            None => (self.store.node_ids(), false),
         };
+        // (LIMIT-croissant) `batch` peut être plafonné : on retient si le
+        // balayage brut a buté sur le plafond (donc s'il peut rester des nœuds).
+        self.capped = hit_cap;
 
         // Filter by visibility if we have tx context.
         // Uses batch methods that hold a single lock for all IDs instead of
@@ -241,6 +255,25 @@ impl Operator for ScanOperator {
         self.load_batch();
         super::verifier_annulation()?;
 
+        // (LIMIT-croissant) Le batch a été plafonné et on l'a épuisé : on
+        // AGRANDIT le plafond et on recharge, tant qu'il reste des nœuds.
+        // On ne rend `None` qu'à l'épuisement RÉEL — jamais de sous-livraison.
+        while self.position >= self.batch.len() && !self.exhausted && self.capped {
+            let ancien = self.batch.len();
+            let nouveau = match self.max_rows {
+                Some(m) => m.saturating_mul(4),
+                None => ancien.saturating_add(self.chunk_capacity.saturating_mul(4)),
+            };
+            self.max_rows = Some(nouveau);
+            self.batch.clear();
+            self.exhausted = false;
+            self.load_batch();
+            super::verifier_annulation()?;
+            if self.batch.len() <= ancien {
+                self.exhausted = true;
+            }
+        }
+
         if self.exhausted || self.position >= self.batch.len() {
             return Ok(None);
         }
@@ -273,6 +306,7 @@ impl Operator for ScanOperator {
         self.position = 0;
         self.batch.clear();
         self.exhausted = false;
+        self.capped = false;
     }
 
     fn name(&self) -> &'static str {

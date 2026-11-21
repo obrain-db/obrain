@@ -110,6 +110,12 @@ pub struct Planner {
     /// `NodeListOperator` au lieu du balayage complet), remis a `None` apres.
     pub(super) restriction_scan:
         std::cell::RefCell<Option<(String, Vec<obrain_common::types::NodeId>)>>,
+    /// (LIMIT-croissant) Plafond du prochain NodeScan NU d'une variable, posé
+    /// par `plan_limit` quand la forme est `Limit -> [Return|Project] ->
+    /// Expand -> NodeScan`. `plan_node_scan` le consomme (`with_max_rows`) ;
+    /// le scan fait CROÎTRE ce plafond tant que le consommateur n'a pas ses
+    /// lignes, donc jamais de sous-livraison. Remis à `None` après.
+    pub(super) limit_scan_cap: std::cell::RefCell<Option<(String, usize)>>,
     /// When true, each physical operator is wrapped in `ProfiledOperator`.
     profiling: std::cell::Cell<bool>,
     /// Profile entries collected during planning (post-order).
@@ -177,6 +183,7 @@ impl Planner {
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
             restriction_scan: std::cell::RefCell::new(None),
+            limit_scan_cap: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
             write_tracker: None,
@@ -237,6 +244,7 @@ impl Planner {
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
             restriction_scan: std::cell::RefCell::new(None),
+            limit_scan_cap: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
             write_tracker,

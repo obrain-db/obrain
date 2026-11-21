@@ -690,7 +690,18 @@ impl super::Planner {
             ));
         }
 
-        let (input_op, columns) = self.plan_operator(&limit.input)?;
+        // (LIMIT-croissant) `Limit -> [Return|Project] -> Expand -> NodeScan` :
+        // pose un plafond sur le scan source. Le scan le fait croître tant que
+        // le consommateur n'a pas `limit` lignes (jamais de sous-livraison) —
+        // un `LIMIT k` sur une expansion cesse de balayer tous les nœuds.
+        if limit.count.value() > 0
+            && let Some(var) = Self::cap_expand_scan_variable(&limit.input)
+        {
+            *self.limit_scan_cap.borrow_mut() = Some((var, limit.count.value()));
+        }
+        let planned = self.plan_operator(&limit.input);
+        *self.limit_scan_cap.borrow_mut() = None;
+        let (input_op, columns) = planned?;
         let schema = self.derive_schema_from_columns(&columns);
         Ok(crate::query::planner::common::build_limit(
             input_op,
@@ -698,6 +709,29 @@ impl super::Planner {
             limit.count.value(),
             schema,
         ))
+    }
+
+    /// (LIMIT-croissant) Variable du `NodeScan` NU atteint par
+    /// `Limit -> [Return|Project] -> Expand(1 saut) -> NodeScan`, ou `None`.
+    /// Sert à poser un plafond croissant sur ce scan pour un `LIMIT k`.
+    fn cap_expand_scan_variable(op: &crate::query::plan::LogicalOperator) -> Option<String> {
+        let mut cur = op;
+        loop {
+            match cur {
+                crate::query::plan::LogicalOperator::Return(r) => cur = r.input.as_ref(),
+                crate::query::plan::LogicalOperator::Project(p) => cur = p.input.as_ref(),
+                _ => break,
+            }
+        }
+        if let crate::query::plan::LogicalOperator::Expand(exp) = cur
+            && exp.min_hops == 1
+            && exp.max_hops == Some(1)
+            && let crate::query::plan::LogicalOperator::NodeScan(scan) = exp.input.as_ref()
+            && scan.input.is_none()
+        {
+            return Some(scan.variable.clone());
+        }
+        None
     }
 
     /// (NATIF-J6) Route `ORDER BY n.<prop> [ASC|DESC] LIMIT k` via l'index

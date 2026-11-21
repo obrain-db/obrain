@@ -26,11 +26,18 @@ impl super::Planner {
             );
             return Ok((op, vec![scan.variable.clone()]));
         }
-        let scan_op = if let Some(label) = &scan.label {
+        let mut scan_op = if let Some(label) = &scan.label {
             ScanOperator::with_label(Arc::clone(&self.store) as Arc<dyn GraphStore>, label)
         } else {
             ScanOperator::new(Arc::clone(&self.store) as Arc<dyn GraphStore>)
         };
+        // (LIMIT-croissant) Plafond posé par `plan_limit` pour ce scan NU.
+        if scan.input.is_none()
+            && let Some((var, cap)) = self.limit_scan_cap.borrow().as_ref()
+            && var == &scan.variable
+        {
+            scan_op = scan_op.with_max_rows(*cap);
+        }
 
         // Apply MVCC context if available
         let scan_operator: Box<dyn Operator> =
