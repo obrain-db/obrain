@@ -8,13 +8,28 @@
 //!
 //! - `spatial_api_rayon` : `ObrainDB::spatial_search` — l'index, le vrai coût
 //!   de la structure seule (microsecondes attendues) ;
-//! - `spatial_gql_balayage` : la MÊME question posée en GQL sans index — le
-//!   prédicat `distance()` évalué sur chaque nœud. C'est la référence contre
-//!   laquelle l'index doit gagner, et ce qu'un utilisateur paie aujourd'hui ;
+//! - `spatial_gql_indexe` : la même question en GQL, servie par l'index (le
+//!   planificateur route le prédicat de distance) — c'est ce qu'un utilisateur
+//!   paie ;
+//! - `spatial_gql_balayage` : la même question en GQL SANS index — le prédicat
+//!   `distance()` évalué sur chaque nœud. C'est la référence ;
 //! - `spatial_construction` : le coût unique de la construction de l'arbre.
 //!
 //! Le jeu de points est celui de la vraie donnée : une grille quantifiée à
 //! 0,001° (≈ 73 m × 111 m à nos latitudes), donc pleine d'ex æquo de distance.
+//!
+//! Mesuré sur dgx (2026-11-21), médianes criterion, GQL `RETURN n` :
+//! 10⁵ points, 300 m (33 lignes) : 31,9 µs indexé contre 28,56 ms au
+//! balayage (895×) ; 1 600 m (~1 000 lignes) : 843 µs contre 29,63 ms (35×).
+//! Au-delà de quelques centaines de lignes, c'est la matérialisation de
+//! `RETURN n` (~0,8 µs par ligne) qui domine, plus l'index.
+//!
+//! PIÈGE QUI A FAUSSÉ UNE PREMIÈRE MESURE : tant que la poignée acceptait un
+//! identifiant `label:propriété` non déclaré, le planificateur bâtissait un
+//! index IMPLICITE sur la base « sans index » au premier appel — le balayage
+//! semblait alors aussi rapide que l'index (32 µs). La référence n'est une
+//! référence que si l'on a vérifié qu'elle balaie (cf. le test
+//! `une_lecture_spatiale_ne_batit_aucun_index_implicite`).
 
 use std::hint::black_box;
 
@@ -78,6 +93,16 @@ fn banc_spatial(c: &mut Criterion) {
                                 .unwrap(),
                         )
                     });
+                },
+            );
+            // LA comparaison qui compte : la MÊME requête GQL, servie par
+            // l'index d'un côté et par un balayage de l'autre.
+            groupe.bench_with_input(
+                BenchmarkId::new("gql_indexe", format!("r{rayon}")),
+                &rayon,
+                |b, &rayon| {
+                    let q = requete_gql(rayon);
+                    b.iter(|| black_box(avec.execute(&q).unwrap().rows.len()));
                 },
             );
             groupe.bench_with_input(

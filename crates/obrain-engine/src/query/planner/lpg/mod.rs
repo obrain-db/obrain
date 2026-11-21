@@ -13,6 +13,7 @@ mod prefix_range;
 mod project;
 mod reachable_pushdown;
 mod scan;
+mod spatial_filter;
 mod typed_degree_rewrite;
 
 #[cfg(feature = "algos")]

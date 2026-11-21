@@ -5189,6 +5189,13 @@ impl Session {
         if let Some(ref poignee) = self.index_vectoriels_nommes {
             planner = planner.with_index_vectoriels_nommes(Arc::clone(poignee));
         }
+        // Index SPATIAUX : c'est CE planificateur que prend `execute()` (chemin
+        // ordinaire, cache-hit comme cache-miss). Sans cette ligne, le prédicat
+        // de distance retombe sur un balayage — mesuré de bout en bout en GQL à
+        // 100 000 points, rayon 300 m : 28,56 ms contre 31,9 µs (benches/spatial_bench.rs).
+        if let Some(ref poignee) = self.index_spatiaux {
+            planner = planner.with_index_spatiaux(Arc::clone(poignee));
+        }
         #[cfg(feature = "cdc")]
         {
             planner = planner.with_cdc_log(Arc::clone(self.cdc_log()));

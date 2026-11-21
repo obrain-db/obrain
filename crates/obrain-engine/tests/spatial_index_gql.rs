@@ -220,3 +220,54 @@ fn le_ddl_refuse_deux_proprietes_et_le_dit() {
         "l'erreur doit être explicite : {err}"
     );
 }
+
+// ── G3 : le planificateur route le prédicat vers l'index ───────────────────
+
+/// Les positions rendues par une requête, triées — identité d'un nœud sans
+/// dépendre de son identifiant (la grille a des positions uniques).
+fn positions(db: &ObrainDB, q: &str) -> Vec<String> {
+    let mut v: Vec<String> = db
+        .execute(q)
+        .unwrap_or_else(|e| panic!("{q} : {e}"))
+        .rows
+        .iter()
+        .map(|l| format!("{:?}", l.first()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn la_requete_gql_rend_les_memes_lignes_avec_et_sans_index() {
+    let avec = ObrainDB::new_in_memory();
+    peupler(&avec, "Lieu");
+    creer_index(&avec);
+
+    let sans = ObrainDB::new_in_memory();
+    peupler(&sans, "Lieu");
+
+    // `<=` inclusif, puis `<` strict : la frontière du rayon est l'endroit où
+    // un index peut mentir (il rend `d == r`, le prédicat strict l'exclut).
+    for rayon in [0.0_f64, 150.0, 700.0, 5_000.0] {
+        let q = format!(
+            "MATCH (n:Lieu) WHERE distance(n.pos, point(2.012, 48.010)) <= {rayon} \
+             RETURN n.pos AS p"
+        );
+        assert_eq!(
+            positions(&avec, &q),
+            positions(&sans, &q),
+            "rayon inclusif {rayon} : l'index et le balayage divergent"
+        );
+    }
+    for rayon in [150.0_f64, 700.0, 5_000.0] {
+        let q = format!(
+            "MATCH (n:Lieu) WHERE distance(n.pos, point(2.012, 48.010)) < {rayon} \
+             RETURN n.pos AS p"
+        );
+        assert_eq!(
+            positions(&avec, &q),
+            positions(&sans, &q),
+            "rayon STRICT {rayon} : d == r doit être exclu des deux côtés"
+        );
+    }
+}

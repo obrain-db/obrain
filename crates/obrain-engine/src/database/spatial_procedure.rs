@@ -19,10 +19,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use obrain_common::types::{NodeId, PropertyKey};
+use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_common::utils::error::{Error, Result};
 use parking_lot::RwLock;
 
+use crate::query::plan::LogicalExpression;
 use obrain_core::graph::GraphStore as _;
 use obrain_core::index::geo::point_lon_lat;
 use obrain_core::index::spatial::SpatialIndex;
@@ -176,7 +177,7 @@ pub trait IndexSpatiaux: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Ni un nom connu ni un identifiant lisible.
+    /// Ni un nom connu ni l'identifiant d'un index déclaré.
     fn resoudre(&self, nom_ou_ident: &str) -> Result<(String, String)>;
 }
 
@@ -251,12 +252,8 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
                 "CREATE INDEX '{nom}' : ce nom désigne déjà l'index spatial :{l}({p})"
             )));
         }
-        let points = collecter_points(&*self.store, label, propriete);
-        let n = points.len();
-        self.spatiaux.inserer(
-            format!("{label}:{propriete}"),
-            Arc::new(RwLock::new(SpatialIndex::build(points))),
-        );
+        // Refuser AVANT de poser quoi que ce soit en mémoire : un refus qui
+        // laisse un index chargé n'est pas un refus.
         let Some(ref sub) = self.substrate_store else {
             return Err(Error::Internal(
                 "CREATE INDEX ... SPATIAL : un index n'existe que sur une base substrat \
@@ -264,6 +261,12 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
                     .to_string(),
             ));
         };
+        let points = collecter_points(&*self.store, label, propriete);
+        let n = points.len();
+        self.spatiaux.inserer(
+            format!("{label}:{propriete}"),
+            Arc::new(RwLock::new(SpatialIndex::build(points))),
+        );
         // Déclaration DURABLE, puis NOM : l'ordre compte — `nommer_index` refuse
         // un nom sur une déclaration absente, et c'est ce qu'on veut (un nom ne
         // désigne jamais un index qui n'existe pas).
@@ -335,9 +338,23 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
         if let Some((_, l, p)) = self.noms().into_iter().find(|(n, _, _)| n == nom_ou_ident) {
             return Ok((l, p));
         }
+        // ── UN IDENTIFIANT N'EST ACCEPTÉ QUE S'IL EST DÉCLARÉ (2026-11-21) ──
+        //
+        // AVANT : tout `label:propriété` lisible était accepté, et `index()`
+        // bâtissait alors un index en mémoire, silencieusement, au premier
+        // appel. Le planificateur interroge par identifiant : un simple
+        // `WHERE distance(n.pos, point(..)) <= r` sur une base SANS
+        // `CREATE INDEX` bâtissait donc un index implicite (136 ms mesurés à
+        // 10⁵ nœuds), non durable, invisible de `SHOW INDEXES`, et faussait
+        // toute mesure « sans index » (30 µs au lieu de 28 ms). Un index
+        // existe parce qu'un DDL l'a déclaré, jamais parce qu'une lecture
+        // l'a frôlé. La construction paresseuse reste légitime pour UN cas :
+        // un index déclaré mais pas encore chargé (réouverture).
         if let Some((l, p)) = nom_ou_ident.split_once(':')
-            && !l.is_empty()
-            && !p.is_empty()
+            && self
+                .noms()
+                .into_iter()
+                .any(|(_, dl, dp)| dl == l && dp == p)
         {
             return Ok((l.to_string(), p.to_string()));
         }
@@ -462,4 +479,170 @@ impl obrain_substrate::StoreMutationObserver for ObservateurIndexSpatial {
             idx.write().retirer(id.0 as u32);
         }
     }
+}
+
+// ── PROCÉDURES `CALL` ──────────────────────────────────────────────────────
+//
+// Deux procédures, pas une : l'index sait faire deux choses, et les cacher
+// derrière un argument optionnel obligerait l'appelant à se souvenir de l'ordre
+// des paramètres pour dire laquelle. `YIELD node, distance` dans les deux cas —
+// `distance` est en MÈTRES, jamais un score : un utilisateur peut la vérifier
+// à la règle sur une carte.
+
+/// `CALL obrain.spatial.nearest(index, lon, lat, k) YIELD node, distance`.
+pub const NOM_NEAREST: &str = "obrain.spatial.nearest";
+
+/// `CALL obrain.spatial.within(index, lon, lat, rayon_m) YIELD node, distance`.
+pub const NOM_WITHIN: &str = "obrain.spatial.within";
+
+/// Colonnes de sortie : `node` (un nœud) et `distance` (Float64, en mètres).
+pub const COLONNES: [&str; 2] = ["node", "distance"];
+
+/// Colonnes qui portent un NŒUD (et non un scalaire) : `YIELD node AS n
+/// WHERE n.status = …` doit y lire des propriétés.
+pub const COLONNES_NOEUD: [&str; 1] = ["node"];
+
+/// Ce nom désigne-t-il une de nos procédures, avec ou sans le préfixe
+/// `obrain.` ? Correspondance EXACTE, comme `db.index.vector.queryNodes`.
+#[must_use]
+pub fn est_procedure_spatiale(resolved_name: &str) -> bool {
+    resolved_name == NOM_NEAREST
+        || resolved_name == NOM_WITHIN
+        || resolved_name == "spatial.nearest"
+        || resolved_name == "spatial.within"
+}
+
+/// Exécute `CALL obrain.spatial.{nearest,within}(...)` si le nom matche.
+///
+/// `Ok(None)` si le nom n'est pas une des deux.
+///
+/// # Errors
+///
+/// Poignée absente, arguments mal formés ou en mauvais nombre, index inconnu
+/// (erreur qui le nomme), ou point invalide.
+pub fn try_execute_spatial_procedure(
+    resolved_name: &str,
+    arguments: &[LogicalExpression],
+    poignee: Option<&Arc<dyn IndexSpatiaux>>,
+) -> Result<Option<obrain_adapters::plugins::AlgorithmResult>> {
+    use obrain_adapters::plugins::AlgorithmResult;
+
+    let fenetre = resolved_name.ends_with("within");
+    let nom = if fenetre { NOM_WITHIN } else { NOM_NEAREST };
+    if !est_procedure_spatiale(resolved_name) {
+        return Ok(None);
+    }
+    let Some(poignee) = poignee else {
+        return Err(Error::Internal(format!(
+            "{nom} : aucune base attachée à cette session (poignée d'index spatiaux absente)"
+        )));
+    };
+    if arguments.len() != 4 {
+        return Err(Error::Internal(format!(
+            "{nom} attend 4 arguments : (index_name, lon, lat, {}), reçu {}",
+            if fenetre { "rayon_m" } else { "k" },
+            arguments.len()
+        )));
+    }
+    let valeurs = arguments
+        .iter()
+        .map(|a| constante(nom, a))
+        .collect::<Result<Vec<Value>>>()?;
+    let index = match &valeurs[0] {
+        Value::String(s) => s.to_string(),
+        autre => {
+            return Err(Error::Internal(format!(
+                "{nom} : argument 0 (index_name) doit être une chaîne, reçu {autre:?}"
+            )));
+        }
+    };
+    let lon = nombre(nom, &valeurs[1], "lon")?;
+    let lat = nombre(nom, &valeurs[2], "lat")?;
+    if !obrain_core::index::geo::latitude_valide(lat) {
+        return Err(Error::Internal(format!(
+            "{nom} : latitude {lat} hors de [-90, 90]"
+        )));
+    }
+    let dernier = nombre(nom, &valeurs[3], if fenetre { "rayon_m" } else { "k" })?;
+
+    let lignes = if fenetre {
+        poignee.rayon(&index, lon, lat, dernier)?
+    } else {
+        if dernier < 0.0 || dernier.fract() != 0.0 {
+            return Err(Error::Internal(format!(
+                "{nom} : k doit être un entier positif, reçu {dernier}"
+            )));
+        }
+        poignee.plus_proches(&index, lon, lat, dernier as usize)?
+    };
+
+    let mut result = AlgorithmResult::new(COLONNES.iter().map(|c| (*c).to_string()).collect());
+    for (id, distance) in lignes {
+        result.add_row(vec![Value::Int64(id.0 as i64), Value::Float64(distance)]);
+    }
+    Ok(Some(result))
+}
+
+/// Les lignes de `obrain.procedures()` pour les deux procédures.
+#[must_use]
+pub fn lignes_procedures() -> Vec<Vec<Value>> {
+    vec![
+        vec![
+            Value::from(NOM_NEAREST),
+            Value::from(
+                "Spatial kNN: the k nearest nodes of a point in the named spatial index, by \
+                 great-circle distance (metres, ascending)",
+            ),
+            Value::from("index_name (String), lon (Float64), lat (Float64), k (Int64)"),
+            Value::from("node, distance"),
+        ],
+        vec![
+            Value::from(NOM_WITHIN),
+            Value::from(
+                "Spatial window: every node within radius_m metres of a point in the named \
+                 spatial index (great-circle distance, metres, ascending)",
+            ),
+            Value::from("index_name (String), lon (Float64), lat (Float64), rayon_m (Float64)"),
+            Value::from("node, distance"),
+        ],
+    ]
+}
+
+/// Évalue un argument constant (les paramètres `$x` sont déjà substitués).
+///
+/// On n'appelle PAS `eval_constant_expression` du planificateur : il est gaté
+/// sur une feature absente de cette compilation, et les arguments d'une
+/// procédure spatiale sont des littéraux (nom, deux coordonnées, un nombre).
+/// Un argument plus exotique rend une erreur qui dit quoi écrire, pas un
+/// « fonction inconnue » à trois couches de distance.
+fn constante(nom: &str, expr: &LogicalExpression) -> Result<Value> {
+    match expr {
+        LogicalExpression::Literal(v) => Ok(v.clone()),
+        LogicalExpression::Unary {
+            op: crate::query::plan::UnaryOp::Neg,
+            operand,
+        } => match constante(nom, operand)? {
+            Value::Float64(f) => Ok(Value::Float64(-f)),
+            Value::Int64(i) => Ok(Value::Int64(-i)),
+            autre => Err(Error::Internal(format!(
+                "{nom} : un moins unaire ne s'applique pas à {autre:?}"
+            ))),
+        },
+        LogicalExpression::Parameter(p) => Err(Error::Internal(format!(
+            "{nom} : paramètre ${p} non fourni"
+        ))),
+        autre => Err(Error::Internal(format!(
+            "{nom} : les arguments doivent être des constantes littérales \
+             (index_name, lon, lat, k|rayon_m), reçu {autre:?}"
+        ))),
+    }
+}
+
+/// Un argument numérique, avec un message qui nomme le paramètre fautif.
+fn nombre(nom: &str, v: &Value, quel: &str) -> Result<f64> {
+    obrain_core::index::geo::nombre_f64(v).ok_or_else(|| {
+        Error::Internal(format!(
+            "{nom} : argument « {quel} » doit être un nombre, reçu {v:?}"
+        ))
+    })
 }
