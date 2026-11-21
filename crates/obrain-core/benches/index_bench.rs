@@ -2,14 +2,14 @@
 
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use obrain_common::types::{EdgeId, NodeId};
 use obrain_core::index::adjacency::ChunkedAdjacency;
 use obrain_core::index::hash::HashIndex;
 use obrain_core::index::vector::{
-    DistanceMetric, HnswConfig, HnswIndex, ProductQuantizer, ScalarQuantizer, brute_force_knn,
-    compute_distance,
+    brute_force_knn, compute_distance, DistanceMetric, HnswConfig, HnswIndex, ProductQuantizer,
+    ScalarQuantizer,
 };
 
 fn bench_adjacency_insert(c: &mut Criterion) {
@@ -327,6 +327,118 @@ fn bench_vp_tree_knn(c: &mut Criterion) {
     group.finish();
 }
 
+// ── VP-Tree range_search 2D géo ──────────────────────────────────
+// Le banc en 64d uniforme (ci-dessus) est le PIRE cas d'un VP-Tree et ne peut
+// pas révéler le comportement sur de la donnée géo quantifiée (ex æquo). Ici on
+// mesure range_search vs balayage sur trois distributions 2D, pour trancher
+// « à partir de quel n et de quelle sélectivité l'index gagne ».
+
+fn euclidean_2d(a: &[f32], b: &[f32]) -> f32 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Uniforme sur [0,1]².
+fn gen_2d_uniform(n: usize) -> Vec<(u32, Vec<f32>)> {
+    let mut rng: u64 = 42;
+    (0..n)
+        .map(|i| (i as u32, vec![lcg_f32(&mut rng), lcg_f32(&mut rng)]))
+        .collect()
+}
+
+/// Quantifiée à 3 décimales (comme le pont d'appareil arrondit lat/lon) :
+/// équidistances et ex æquo en masse.
+fn gen_2d_quantized(n: usize) -> Vec<(u32, Vec<f32>)> {
+    let mut rng: u64 = 7;
+    (0..n)
+        .map(|i| {
+            let x = (lcg_f32(&mut rng) * 1000.0).round() / 1000.0;
+            let y = (lcg_f32(&mut rng) * 1000.0).round() / 1000.0;
+            (i as u32, vec![x, y])
+        })
+        .collect()
+}
+
+/// Duplicatas massifs : la moitié des points à la même coordonnée (même adresse).
+fn gen_2d_duplicates(n: usize) -> Vec<(u32, Vec<f32>)> {
+    let mut rng: u64 = 13;
+    (0..n)
+        .map(|i| {
+            if i % 2 == 0 {
+                (i as u32, vec![0.5, 0.5])
+            } else {
+                (i as u32, vec![lcg_f32(&mut rng), lcg_f32(&mut rng)])
+            }
+        })
+        .collect()
+}
+
+fn gen_2d(dist: &str, n: usize) -> Vec<(u32, Vec<f32>)> {
+    match dist {
+        "uniform" => gen_2d_uniform(n),
+        "quantized" => gen_2d_quantized(n),
+        "duplicates" => gen_2d_duplicates(n),
+        _ => unreachable!(),
+    }
+}
+
+const RADII_2D: [f32; 3] = [0.01, 0.05, 0.15];
+const SIZES_2D: [usize; 4] = [1_000, 10_000, 100_000, 1_000_000];
+const DISTS_2D: [&str; 3] = ["uniform", "quantized", "duplicates"];
+
+fn bench_vp_tree_range_2d(c: &mut Criterion) {
+    let query = vec![0.5_f32, 0.5_f32];
+    for dist in DISTS_2D {
+        for &size in &SIZES_2D {
+            let points = gen_2d(dist, size);
+            let tree = VpTree::build(points, euclidean_2d);
+            for &r in &RADII_2D {
+                c.bench_function(&format!("vp_tree_range_2d/{dist}/{size}/{r}"), |b| {
+                    b.iter(|| {
+                        black_box(tree.range_search(&query, r, euclidean_2d));
+                    });
+                });
+            }
+        }
+    }
+}
+
+fn bench_balayage_2d(c: &mut Criterion) {
+    let query = vec![0.5_f32, 0.5_f32];
+    for dist in DISTS_2D {
+        for &size in &SIZES_2D {
+            let points = gen_2d(dist, size);
+            for &r in &RADII_2D {
+                c.bench_function(&format!("balayage_2d/{dist}/{size}/{r}"), |b| {
+                    b.iter(|| {
+                        let mut count = 0usize;
+                        for (_, p) in &points {
+                            if euclidean_2d(&query, p) <= r {
+                                count += 1;
+                            }
+                        }
+                        black_box(count);
+                    });
+                });
+            }
+        }
+    }
+}
+
+fn bench_vp_tree_build_2d(c: &mut Criterion) {
+    for dist in DISTS_2D {
+        for &size in &SIZES_2D {
+            let points = gen_2d(dist, size);
+            c.bench_function(&format!("vp_tree_build_2d/{dist}/{size}"), |b| {
+                b.iter(|| {
+                    black_box(VpTree::build(points.clone(), euclidean_2d));
+                });
+            });
+        }
+    }
+}
+
 criterion_group!(
     benches,
     bench_adjacency_insert,
@@ -341,6 +453,9 @@ criterion_group!(
     bench_product_quantization,
     bench_vp_tree_build,
     bench_vp_tree_knn,
+    bench_vp_tree_range_2d,
+    bench_balayage_2d,
+    bench_vp_tree_build_2d,
 );
 
 criterion_main!(benches);
