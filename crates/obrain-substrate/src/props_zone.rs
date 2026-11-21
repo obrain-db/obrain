@@ -530,7 +530,7 @@ impl PropsZone {
     /// fin_tas)`, sans trou : la fin de zone se retrouve à la réouverture par
     /// dichotomie sur les pages vivantes, qui suppose la contiguïté.
     pub(crate) fn ecrire_blocs_en_lot(
-        &mut self,
+        &self,
         props: &[(u32, Vec<u8>)],
         tas: &[(u32, Vec<u8>)],
         debut_props: u32,
@@ -563,12 +563,10 @@ impl PropsZone {
                 "ecrire_blocs_en_lot : blocs non contigus — refus d'écrire une zone trouée".into(),
             ));
         }
-        if fin_props > self.next_page_idx {
-            self.ensure_page_addressable(fin_props - 1)?;
-        }
-        if fin_tas > self.next_heap_page_idx {
-            self.ensure_heap_page_addressable(fin_tas - 1)?;
-        }
+        // (MULTI-ÉCRIVAIN, sans verrou) La zone a déjà été grossie jusqu'à
+        // `fin-1` par `reserver_et_avancer` sous verrou d'écriture ; plus besoin
+        // de `&mut self` ici. L'écriture est un `pwrite` (`ecrire_a(&self)`) sur
+        // une plage DISJOINTE par rédacteur → plusieurs écrivains en parallèle.
         let (zp, zh) = (&self.props, &self.heap);
         let r1: SubstrateResult<()> = props
             .par_iter()
