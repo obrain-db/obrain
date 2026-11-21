@@ -22,8 +22,8 @@ pub use cost::{Cost, CostModel};
 pub use join_order::{BitSet, DPccp, JoinGraph, JoinGraphBuilder, JoinPlan};
 
 use crate::query::plan::{
-    BinaryOp, FilterOp, JoinCondition, LogicalExpression, LogicalOperator, LogicalPlan,
-    MultiWayJoinOp,
+    BinaryOp, FilterOp, JoinCondition, JoinType, LogicalExpression, LogicalOperator, LogicalPlan,
+    MultiWayJoinOp, UnaryOp,
 };
 use obrain_common::utils::error::Result;
 use std::collections::HashSet;
@@ -941,11 +941,27 @@ impl Optimizer {
                 let uses_left = predicate_vars.iter().any(|v| left_vars.contains(v));
                 let uses_right = predicate_vars.iter().any(|v| right_vars.contains(v));
 
-                if uses_left && !uses_right {
+                // (#189, F4) Le côté qui « préserve » ses lignes d'une jointure
+                // externe ne reçoit pas de filtre de l'autre : filtrer le côté
+                // optionnel transformerait une ligne rejetée en ligne NULL.
+                let gauche_ok = matches!(
+                    join.join_type,
+                    JoinType::Inner
+                        | JoinType::Cross
+                        | JoinType::Left
+                        | JoinType::Semi
+                        | JoinType::Anti
+                );
+                let droite_ok = matches!(
+                    join.join_type,
+                    JoinType::Inner | JoinType::Cross | JoinType::Right
+                );
+
+                if uses_left && !uses_right && gauche_ok {
                     // Push to left side
                     join.left = Box::new(self.try_push_filter_into(predicate, *join.left));
                     LogicalOperator::Join(join)
-                } else if uses_right && !uses_left {
+                } else if uses_right && !uses_left && droite_ok {
                     // Push to right side
                     join.right = Box::new(self.try_push_filter_into(predicate, *join.right));
                     LogicalOperator::Join(join)
@@ -1017,6 +1033,56 @@ impl Optimizer {
                     let entree = scan.input.take().expect("garde du bras");
                     scan.input = Some(Box::new(self.try_push_filter_into(a_pousser, *entree)));
                 }
+                let filtre = LogicalOperator::Filter(inner);
+                match Self::conjonction(dessus) {
+                    Some(reste) => LogicalOperator::Filter(FilterOp {
+                        predicate: reste,
+                        pushdown_hint: None,
+                        input: Box::new(filtre),
+                    }),
+                    None => filtre,
+                }
+            }
+
+            // ── FILTRES EMPILÉS (obrain-db/obrain#189, F4) ─────────────────
+            //
+            // `Filter(p1, Filter(p2, X))` : sans ce bras, `p1` restait collé
+            // au-dessus de `p2`, même quand `p2` n'est là que parce qu'il
+            // cite une variable introduite par l'expansion `X` (cible d'un
+            // chemin, unicité Trail). C'est la forme de topo_03 de PO
+            // (`f.path =~ $r` au-dessus de `Filter(_anon = f)` au-dessus du
+            // VLE `IMPORTS*2..6` : 34 516 sources au lieu de ~50) et des
+            // `note_*` (`n.status = 'active'` au-dessus de trois filtres et
+            // de deux expansions). Les conjoints DÉPLAÇABLES traversent le
+            // filtre interne et reprennent la descente (les autres bras
+            // gardent leurs interdits : agrégat, LIMIT/SKIP, UNWIND,
+            // jointure gauche, variable introduite) ; le reste ne bouge pas.
+            //
+            // Filtre interne posé directement sur un scan sans entrée : on le
+            // laisse collé à son scan (le planificateur y lit l'index ou la
+            // stratégie label-first) et rien ne descend plus bas.
+            LogicalOperator::Filter(mut inner)
+                if !matches!(inner.input.as_ref(), LogicalOperator::NodeScan(_)) =>
+            {
+                let mut dessous = Vec::new();
+                let mut dessus = Vec::new();
+                for conjoint in Self::conjonctions(&predicate) {
+                    if !self.extract_variables(&conjoint).is_empty()
+                        && Self::conjoint_deplacable(&conjoint)
+                    {
+                        dessous.push(conjoint);
+                    } else {
+                        dessus.push(conjoint);
+                    }
+                }
+                let Some(a_pousser) = Self::conjonction(dessous) else {
+                    return LogicalOperator::Filter(FilterOp {
+                        predicate,
+                        pushdown_hint: None,
+                        input: Box::new(LogicalOperator::Filter(inner)),
+                    });
+                };
+                inner.input = Box::new(self.try_push_filter_into(a_pousser, *inner.input));
                 let filtre = LogicalOperator::Filter(inner);
                 match Self::conjonction(dessus) {
                     Some(reste) => LogicalOperator::Filter(FilterOp {
@@ -1155,6 +1221,61 @@ impl Optimizer {
             LogicalExpression::IndexAccess { base, index } => {
                 Self::expression_simple(base) && Self::expression_simple(index)
             }
+            _ => false,
+        }
+    }
+
+    /// (#189, F4) Vrai si le conjoint peut être évalué PLUS TÔT (sous un
+    /// autre filtre) sans changer le résultat : déterministe, sans effet de
+    /// bord, et incapable de lever une erreur que le filtre franchi aurait
+    /// évitée. Liste BLANCHE, volontairement étroite :
+    /// - pas d'arithmétique (`/ 0`, débordement d'`i64` refusent la requête :
+    ///   `WHERE x <> 0 WITH x WHERE 10 / x > 1` doit rester gardé) ;
+    /// - fonctions : `coalesce` seule (`rand()`, `timestamp()`… exclues) ;
+    /// - ni sous-requête, ni compréhension, ni `reduce` (variables que
+    ///   `collect_variables` ne voit pas toutes).
+    fn conjoint_deplacable(expr: &LogicalExpression) -> bool {
+        match expr {
+            LogicalExpression::Variable(_)
+            | LogicalExpression::Property { .. }
+            | LogicalExpression::Literal(_)
+            | LogicalExpression::Parameter(_)
+            | LogicalExpression::Labels(_) => true,
+            LogicalExpression::Binary { left, op, right } => {
+                matches!(
+                    op,
+                    BinaryOp::Eq
+                        | BinaryOp::Ne
+                        | BinaryOp::Lt
+                        | BinaryOp::Le
+                        | BinaryOp::Gt
+                        | BinaryOp::Ge
+                        | BinaryOp::And
+                        | BinaryOp::Or
+                        | BinaryOp::Xor
+                        | BinaryOp::Concat
+                        | BinaryOp::StartsWith
+                        | BinaryOp::EndsWith
+                        | BinaryOp::Contains
+                        | BinaryOp::In
+                        | BinaryOp::Regex
+                ) && Self::conjoint_deplacable(left)
+                    && Self::conjoint_deplacable(right)
+            }
+            LogicalExpression::Unary { op, operand } => {
+                matches!(op, UnaryOp::Not | UnaryOp::IsNull | UnaryOp::IsNotNull)
+                    && Self::conjoint_deplacable(operand)
+            }
+            LogicalExpression::FunctionCall {
+                name,
+                args,
+                distinct,
+            } => {
+                !*distinct
+                    && name.eq_ignore_ascii_case("coalesce")
+                    && args.iter().all(Self::conjoint_deplacable)
+            }
+            LogicalExpression::List(items) => items.iter().all(Self::conjoint_deplacable),
             _ => false,
         }
     }
@@ -2473,6 +2594,363 @@ mod tests {
         assert!(
             !has_multi_way_join(&optimized.root),
             "Acyclic join should NOT produce MultiWayJoin"
+        );
+    }
+}
+
+/// (obrain-db/obrain#189, F4) Poussée de prédicat à travers des filtres
+/// empilés, et ses interdits.
+#[cfg(test)]
+mod tests_filtres_empiles {
+    use super::*;
+    use crate::query::plan::{
+        AggregateExpr, AggregateFunction, AggregateOp, ExpandDirection, ExpandOp, JoinOp,
+        LeftJoinOp, LimitOp, NodeScanOp, PathMode, SkipOp, UnwindOp,
+    };
+    use obrain_common::types::Value;
+    use obrain_core::execution::operators::AggregateSemantics;
+
+    fn prop(v: &str, p: &str) -> LogicalExpression {
+        LogicalExpression::Property {
+            variable: v.into(),
+            property: p.into(),
+        }
+    }
+    fn var(v: &str) -> LogicalExpression {
+        LogicalExpression::Variable(v.into())
+    }
+    fn lit(s: &str) -> LogicalExpression {
+        LogicalExpression::Literal(Value::String(s.into()))
+    }
+    fn bin(l: LogicalExpression, op: BinaryOp, r: LogicalExpression) -> LogicalExpression {
+        LogicalExpression::Binary {
+            left: Box::new(l),
+            op,
+            right: Box::new(r),
+        }
+    }
+    fn et(l: LogicalExpression, r: LogicalExpression) -> LogicalExpression {
+        bin(l, BinaryOp::And, r)
+    }
+    fn filtre(p: LogicalExpression, input: LogicalOperator) -> LogicalOperator {
+        LogicalOperator::Filter(FilterOp {
+            predicate: p,
+            pushdown_hint: None,
+            input: Box::new(input),
+        })
+    }
+    fn scan(v: &str, label: Option<&str>, input: Option<LogicalOperator>) -> LogicalOperator {
+        LogicalOperator::NodeScan(NodeScanOp {
+            variable: v.into(),
+            label: label.map(Into::into),
+            input: input.map(Box::new),
+            pushdown_hint: None,
+        })
+    }
+    fn expand(de: &str, vers: &str, min: u32, max: u32, input: LogicalOperator) -> LogicalOperator {
+        LogicalOperator::Expand(ExpandOp {
+            from_variable: de.into(),
+            to_variable: vers.into(),
+            edge_variable: None,
+            direction: ExpandDirection::Outgoing,
+            edge_types: vec!["IMPORTS".into()],
+            min_hops: min,
+            max_hops: Some(max),
+            input: Box::new(input),
+            path_alias: (min != 1 || max != 1).then(|| "path".to_string()),
+            path_mode: PathMode::Walk,
+        })
+    }
+
+    /// Forme compacte : `Filter[vars triées]`, `Expand[de->vers]`, …
+    fn forme(op: &LogicalOperator) -> String {
+        match op {
+            LogicalOperator::Filter(f) => {
+                let mut v: Vec<String> = Optimizer::new()
+                    .extract_variables(&f.predicate)
+                    .into_iter()
+                    .collect();
+                v.sort();
+                format!("Filter[{}] > {}", v.join(","), forme(&f.input))
+            }
+            LogicalOperator::Expand(e) => format!(
+                "Expand[{}->{}] > {}",
+                e.from_variable,
+                e.to_variable,
+                forme(&e.input)
+            ),
+            LogicalOperator::NodeScan(s) => match &s.input {
+                Some(i) => format!("NodeScan[{}] > {}", s.variable, forme(i)),
+                None => format!("NodeScan[{}]", s.variable),
+            },
+            LogicalOperator::Limit(l) => format!("Limit > {}", forme(&l.input)),
+            LogicalOperator::Skip(l) => format!("Skip > {}", forme(&l.input)),
+            LogicalOperator::Aggregate(a) => format!("Aggregate > {}", forme(&a.input)),
+            LogicalOperator::Unwind(u) => format!("Unwind[{}] > {}", u.variable, forme(&u.input)),
+            LogicalOperator::LeftJoin(j) => {
+                format!("LeftJoin({} | {})", forme(&j.left), forme(&j.right))
+            }
+            LogicalOperator::Join(j) => {
+                format!("Join({} | {})", forme(&j.left), forme(&j.right))
+            }
+            autre => format!("{autre:?}").chars().take(20).collect(),
+        }
+    }
+
+    fn pousser(op: LogicalOperator) -> String {
+        forme(&Optimizer::new().push_filters_down(op))
+    }
+
+    /// topo_03 : `f.path =~ r` au-dessus de `Filter(_a = f)` au-dessus du VLE.
+    #[test]
+    fn la_regex_traverse_le_filtre_de_cible_et_le_vle() {
+        let plan = filtre(
+            bin(prop("f", "path"), BinaryOp::Regex, lit("^a.*")),
+            filtre(
+                bin(var("_a"), BinaryOp::Eq, var("f")),
+                expand(
+                    "f",
+                    "_a",
+                    2,
+                    6,
+                    filtre(
+                        bin(prop("f", "project_id"), BinaryOp::Eq, lit("p")),
+                        scan("f", Some("File"), None),
+                    ),
+                ),
+            ),
+        );
+        assert_eq!(
+            pousser(plan),
+            "Filter[_a,f] > Expand[f->_a] > Filter[f] > Filter[f] > NodeScan[f]"
+        );
+    }
+
+    /// note_* : le filtre sur `n` traverse trois filtres et deux expansions
+    /// et se pose sur le scan imbriqué de `n`.
+    #[test]
+    fn le_filtre_de_la_note_descend_jusqu_a_son_scan() {
+        let cible = filtre(
+            bin(prop("t", "id"), BinaryOp::Eq, lit("x")),
+            scan("t", Some("Project"), None),
+        );
+        let statut = et(
+            bin(prop("n", "status"), BinaryOp::Eq, lit("active")),
+            bin(
+                LogicalExpression::FunctionCall {
+                    name: "coalesce".into(),
+                    args: vec![prop("n", "project_id"), lit("")],
+                    distinct: false,
+                },
+                BinaryOp::In,
+                LogicalExpression::List(vec![lit(""), lit("p")]),
+            ),
+        );
+        let plan = filtre(
+            statut,
+            filtre(
+                bin(var("_b"), BinaryOp::Eq, var("t")),
+                expand(
+                    "s",
+                    "_b",
+                    0,
+                    3,
+                    expand("n", "s", 1, 1, scan("n", Some("Note"), Some(cible))),
+                ),
+            ),
+        );
+        assert_eq!(
+            pousser(plan),
+            "Filter[_b,t] > Expand[s->_b] > Expand[n->s] > Filter[n] > NodeScan[n] > Filter[t] > NodeScan[t]"
+        );
+    }
+
+    /// Un conjoint qui cite la cible de l'expansion franchit le filtre
+    /// interne mais reste AU-DESSUS de l'expansion ; l'autre conjoint du même
+    /// prédicat descend quand même.
+    #[test]
+    fn variable_introduite_ne_passe_pas_l_expansion() {
+        let plan = filtre(
+            et(
+                bin(prop("b", "x"), BinaryOp::Eq, lit("1")),
+                bin(prop("a", "y"), BinaryOp::Eq, lit("2")),
+            ),
+            filtre(
+                bin(var("b"), BinaryOp::Ne, var("a")),
+                expand("a", "b", 1, 1, scan("a", None, None)),
+            ),
+        );
+        assert_eq!(
+            pousser(plan),
+            "Filter[a,b] > Filter[b] > Expand[a->b] > Filter[a] > NodeScan[a]"
+        );
+    }
+
+    /// Non déterministe (`rand()`), arithmétique (peut lever `/ 0`),
+    /// sous-requête : rien ne bouge.
+    #[test]
+    fn conjoints_non_deplacables_restent_en_place() {
+        let rand = bin(
+            LogicalExpression::FunctionCall {
+                name: "rand".into(),
+                args: vec![],
+                distinct: false,
+            },
+            BinaryOp::Lt,
+            LogicalExpression::Literal(Value::Float64(0.5)),
+        );
+        // `a.k < rand()` : cite `a`, serait poussé sans la liste blanche.
+        let rand_a = bin(prop("a", "k"), BinaryOp::Lt, rand);
+        let division = bin(
+            bin(
+                LogicalExpression::Literal(Value::Int64(10)),
+                BinaryOp::Div,
+                prop("a", "v"),
+            ),
+            BinaryOp::Gt,
+            LogicalExpression::Literal(Value::Int64(1)),
+        );
+        for (nom, p, attendu) in [
+            (
+                "rand",
+                rand_a,
+                "Filter[a] > Filter[b] > Expand[a->b] > NodeScan[a]",
+            ),
+            (
+                "division",
+                division,
+                "Filter[a] > Filter[b] > Expand[a->b] > NodeScan[a]",
+            ),
+        ] {
+            let plan = filtre(
+                p,
+                filtre(
+                    bin(prop("b", "x"), BinaryOp::Eq, lit("1")),
+                    expand("a", "b", 1, 1, scan("a", None, None)),
+                ),
+            );
+            assert_eq!(pousser(plan), attendu, "{nom}");
+        }
+    }
+
+    fn sous_filtre(input: LogicalOperator) -> LogicalOperator {
+        filtre(
+            bin(prop("a", "y"), BinaryOp::Eq, lit("2")),
+            filtre(bin(prop("a", "x"), BinaryOp::Eq, lit("1")), input),
+        )
+    }
+
+    /// LIMIT / SKIP : les deux filtres restent au-dessus.
+    #[test]
+    fn ne_traverse_ni_limit_ni_skip() {
+        let limit = LogicalOperator::Limit(LimitOp {
+            count: 5.into(),
+            input: Box::new(scan("a", None, None)),
+        });
+        assert_eq!(
+            pousser(sous_filtre(limit)),
+            "Filter[a] > Filter[a] > Limit > NodeScan[a]"
+        );
+        let skip = LogicalOperator::Skip(SkipOp {
+            count: 5.into(),
+            input: Box::new(scan("a", None, None)),
+        });
+        assert_eq!(
+            pousser(sous_filtre(skip)),
+            "Filter[a] > Filter[a] > Skip > NodeScan[a]"
+        );
+    }
+
+    /// Agrégation : un filtre sur une clé de groupement ne la traverse pas.
+    #[test]
+    fn ne_traverse_pas_une_agregation() {
+        let agg = LogicalOperator::Aggregate(AggregateOp {
+            semantics: AggregateSemantics::OpenCypher,
+            group_by: vec![var("a")],
+            aggregates: vec![AggregateExpr {
+                function: AggregateFunction::Count,
+                expression: None,
+                expression2: None,
+                distinct: false,
+                alias: Some("c".into()),
+                percentile: None,
+                separator: None,
+            }],
+            input: Box::new(expand("a", "b", 1, 1, scan("a", None, None))),
+            having: None,
+        });
+        assert_eq!(
+            pousser(sous_filtre(agg)),
+            "Filter[a] > Filter[a] > Aggregate > Expand[a->b] > NodeScan[a]"
+        );
+    }
+
+    /// UNWIND : la portée change (la variable déroulée n'existe qu'au-dessus).
+    #[test]
+    fn ne_traverse_pas_un_unwind() {
+        let unwind = LogicalOperator::Unwind(UnwindOp {
+            expression: prop("a", "liste"),
+            variable: "x".into(),
+            ordinality_var: None,
+            offset_var: None,
+            input: Box::new(scan("a", None, None)),
+        });
+        let plan = filtre(
+            et(
+                bin(var("x"), BinaryOp::Eq, lit("1")),
+                bin(prop("a", "y"), BinaryOp::Eq, lit("2")),
+            ),
+            filtre(bin(var("x"), BinaryOp::Ne, lit("0")), unwind),
+        );
+        assert_eq!(
+            pousser(plan),
+            "Filter[x] > Filter[a,x] > Unwind[x] > NodeScan[a]"
+        );
+    }
+
+    /// OPTIONAL MATCH (`LeftJoin`) : rien ne descend dans le côté optionnel ni
+    /// à travers la jointure.
+    #[test]
+    fn ne_traverse_pas_un_optional_match() {
+        let lj = LogicalOperator::LeftJoin(LeftJoinOp {
+            left: Box::new(scan("a", None, None)),
+            right: Box::new(expand("a", "b", 1, 1, scan("a", None, None))),
+            condition: None,
+        });
+        let plan = filtre(
+            bin(prop("b", "x"), BinaryOp::Eq, lit("1")),
+            filtre(bin(prop("a", "y"), BinaryOp::Eq, lit("2")), lj),
+        );
+        assert_eq!(
+            pousser(plan),
+            "Filter[a] > Filter[b] > LeftJoin(NodeScan[a] | Expand[a->b] > NodeScan[a])"
+        );
+    }
+
+    /// Jointure externe logique : le côté optionnel ne reçoit pas de filtre.
+    #[test]
+    fn jointure_gauche_logique_cote_optionnel_intact() {
+        let join = |jt| {
+            LogicalOperator::Join(JoinOp {
+                left: Box::new(scan("a", None, None)),
+                right: Box::new(scan("b", None, None)),
+                join_type: jt,
+                conditions: vec![],
+            })
+        };
+        let plan = |jt| {
+            filtre(
+                bin(prop("b", "x"), BinaryOp::Eq, lit("1")),
+                filtre(bin(prop("a", "y"), BinaryOp::Eq, lit("2")), join(jt)),
+            )
+        };
+        assert_eq!(
+            pousser(plan(JoinType::Left)),
+            "Filter[b] > Join(Filter[a] > NodeScan[a] | NodeScan[b])"
+        );
+        assert_eq!(
+            pousser(plan(JoinType::Inner)),
+            "Join(Filter[a] > NodeScan[a] | Filter[b] > NodeScan[b])"
         );
     }
 }
