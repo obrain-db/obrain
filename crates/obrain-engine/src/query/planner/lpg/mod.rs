@@ -157,6 +157,9 @@ pub struct Planner {
     #[cfg(feature = "vector-index")]
     pub(super) index_vectoriels_nommes:
         Option<Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>>,
+    /// Poignée des index spatiaux : `Some` quand la base en porte, et c'est
+    /// elle qui décide de router un prédicat de distance vers un scan d'index.
+    pub(super) index_spatiaux: Option<Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>>,
 }
 
 impl Planner {
@@ -196,6 +199,7 @@ impl Planner {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
         }
@@ -257,6 +261,7 @@ impl Planner {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
         }
@@ -311,6 +316,17 @@ impl Planner {
         poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
     ) -> Self {
         self.recherche_hybride = Some(poignee);
+        self
+    }
+
+    /// Pose la poignée des index spatiaux : c'est elle qui fait router un
+    /// prédicat de distance vers un scan d'index au lieu d'un balayage.
+    #[must_use]
+    pub fn with_index_spatiaux(
+        mut self,
+        poignee: Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>,
+    ) -> Self {
+        self.index_spatiaux = Some(poignee);
         self
     }
 

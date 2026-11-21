@@ -6,6 +6,7 @@ use crate::graph::Direction;
 use crate::graph::GraphStore;
 use crate::graph::lpg::{Edge, Node};
 use crate::graph::traits::PredicatTexte;
+use crate::index::geo::{nombre_f64, point_lon_lat};
 use obrain_common::types::{
     EpochId, HashableValue, NodeId, PropertyKey, TransactionId, Value, value_cmp,
 };
@@ -18,24 +19,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// Extracts a required integer field from a temporal constructor map.
-/// Un nombre GQL (entier ou flottant) en `f64`. `None` pour tout autre type.
-fn nombre_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Float64(f) => Some(*f),
-        Value::Int64(i) => Some(*i as f64),
-        _ => None,
-    }
-}
-
-/// `(lon, lat)` d'un point tel que `point()` le produit : une liste de deux
-/// nombres. `None` si la valeur n'en est pas un.
-fn point_lon_lat(v: &Value) -> Option<(f64, f64)> {
-    match v {
-        Value::List(l) if l.len() == 2 => Some((nombre_f64(&l[0])?, nombre_f64(&l[1])?)),
-        _ => None,
-    }
-}
-
 fn map_int(m: &BTreeMap<PropertyKey, Value>, key: &str) -> Option<i64> {
     match m.get(&PropertyKey::from(key))? {
         Value::Int64(v) => Some(*v),

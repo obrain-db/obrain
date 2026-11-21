@@ -86,6 +86,32 @@ impl super::ObrainDB {
                 }
             }
         }
+
+        // Index spatiaux du label. La valeur peut avoir changé de NATURE : un
+        // nœud dont la propriété cesse d'être un point doit SORTIR de l'index,
+        // sinon il resterait à son ancienne position — pire qu'absent,
+        // puisqu'il répondrait à une requête sur un lieu où il n'est plus.
+        {
+            let entrees = self.substrate_spatial_indexes.pour_label(&prefixe);
+            for (cle, idx) in entrees {
+                let Some(propriete) = cle.strip_prefix(&prefixe) else {
+                    continue;
+                };
+                let pk = obrain_common::types::PropertyKey::new(propriete);
+                match node.properties.get(&pk) {
+                    Some(v) => {
+                        if let Some((lon, lat)) = obrain_core::index::geo::point_lon_lat(v) {
+                            idx.write().inserer(id.0 as u32, lon, lat);
+                        } else {
+                            idx.write().retirer(id.0 as u32);
+                        }
+                    }
+                    None => {
+                        idx.write().retirer(id.0 as u32);
+                    }
+                }
+            }
+        }
     }
 
     /// Retire un noeud de tous les registres du substrat portant ce label.
@@ -130,6 +156,20 @@ impl super::ObrainDB {
                 .collect();
             for idx in entrees {
                 idx.write().remove(id);
+            }
+        }
+
+        // Index spatiaux du label : le nœud sort, quel que soit l'état de sa
+        // propriété (elle peut déjà avoir disparu avec lui).
+        {
+            let entrees: Vec<_> = self
+                .substrate_spatial_indexes
+                .pour_label(&prefixe)
+                .into_iter()
+                .map(|(_, i)| i)
+                .collect();
+            for idx in entrees {
+                idx.write().retirer(id.0 as u32);
             }
         }
     }

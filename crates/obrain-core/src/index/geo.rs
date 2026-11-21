@@ -17,6 +17,8 @@
 //! une vraie métrique sur la sphère (inégalité triangulaire), donc un VP-Tree
 //! l'élague correctement.
 
+use obrain_common::types::Value;
+
 /// Rayon moyen de la Terre, en mètres (valeur IUGG, 6 371 008,8 m).
 pub const RAYON_TERRE_M: f64 = 6_371_008.8;
 
@@ -43,6 +45,31 @@ pub fn haversine_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let a = sin_dphi * sin_dphi + phi1.cos() * phi2.cos() * sin_dlambda * sin_dlambda;
     let c = 2.0 * a.clamp(0.0, 1.0).sqrt().asin();
     RAYON_TERRE_M * c
+}
+
+/// Un nombre GQL (entier ou flottant) en `f64`. `None` pour tout autre type.
+#[must_use]
+pub fn nombre_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float64(f) => Some(*f),
+        Value::Int64(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// `(lon, lat)` d'un point tel que `point()` le produit : une liste de deux
+/// nombres. `None` si la valeur n'en est pas un.
+///
+/// C'est LA définition de ce qu'est un point dans obrain — partagée par la
+/// fonction GQL `distance()`, par l'index spatial et par les procédures
+/// `CALL`. Deux définitions divergeraient sur ce qu'est une coordonnée, et
+/// l'index indexerait alors autre chose que ce que la requête interroge.
+#[must_use]
+pub fn point_lon_lat(v: &Value) -> Option<(f64, f64)> {
+    match v {
+        Value::List(l) if l.len() == 2 => Some((nombre_f64(&l[0])?, nombre_f64(&l[1])?)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

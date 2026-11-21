@@ -144,6 +144,9 @@ pub struct QueryProcessor {
     /// câblage que `substrate_store`.
     #[cfg(feature = "hybrid-search")]
     recherche_hybride: Option<Arc<dyn crate::database::hybrid_procedure::RechercheHybride>>,
+    /// Poignée des index spatiaux : le planificateur en a besoin pour router
+    /// `WHERE distance(a, b) < r` vers un scan d'index au lieu d'un balayage.
+    index_spatiaux: Option<Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>>,
     /// Poignée des index vectoriels nommés (`CALL db.index.vector.queryNodes`).
     #[cfg(feature = "vector-index")]
     index_vectoriels_nommes:
@@ -182,6 +185,7 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
         }
@@ -214,6 +218,7 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
         }
@@ -247,6 +252,7 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
         })
@@ -321,6 +327,19 @@ impl QueryProcessor {
         poignee: Arc<dyn crate::database::hybrid_procedure::RechercheHybride>,
     ) -> Self {
         self.recherche_hybride = Some(poignee);
+        self
+    }
+
+    /// Pose la poignée des index spatiaux, transmise au planificateur.
+    ///
+    /// `mut` + retour `Self` comme les autres `with_*` : la poignée voyage avec
+    /// le processeur jusqu'au planificateur, qui route le prédicat de distance.
+    #[must_use]
+    pub fn with_index_spatiaux(
+        mut self,
+        poignee: Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>,
+    ) -> Self {
+        self.index_spatiaux = Some(poignee);
         self
     }
 
@@ -510,6 +529,11 @@ impl QueryProcessor {
         } else {
             planner
         };
+        let planner = if let Some(ref poignee) = self.index_spatiaux {
+            planner.with_index_spatiaux(Arc::clone(poignee))
+        } else {
+            planner
+        };
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // 6. Execute and collect results
@@ -626,6 +650,7 @@ impl QueryProcessor {
             cdc_log: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
             // (2026-08-14) CE CHAMP MANQUAIT, et le trou n'etait visible que

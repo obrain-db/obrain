@@ -53,6 +53,7 @@ impl Session {
             substrate_store: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
             #[cfg(feature = "wal")]

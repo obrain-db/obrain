@@ -220,6 +220,10 @@ name = "plage_prefixe"
 harness = false
 
 [[bench]]
+name = "spatial_bench"
+harness = false
+
+[[bench]]
 name = "query_bench"
 harness = false
 
