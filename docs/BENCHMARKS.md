@@ -498,3 +498,28 @@ Mêmes conditions (base disque, µs par instruction), branche contenant la réso
 | `UNIQUE (a)` | 217 | 426 | 903 |
 
   Le verrou d'unicité (un mutex du processus, `GraphStoreMut::merge_guard`) ne se voit pas : le débit suit celui du fsync et croît avec le nombre de fils, avec ou sans contrainte (à 8 fils, 903 contre 878 : dans le bruit). Il n'est pas tenu pendant le fsync du commit.
+
+### VP-Tree `range_search` vs balayage, 2D géo — machine `dgx` (aarch64 GB10, 20 cœurs), 2026-11-21 13:26–13:44, base `52f093c9` + test/fix/bench
+
+But : trancher « à partir de quel n et de quelle sélectivité un index VP-Tree pour un géofence bat un balayage ». Banc `index_bench` (`vp_tree_range_2d`, `balayage_2d`, `vp_tree_build_2d`), lancé par `cargo bench -p obrain-core --bench index_bench --features vector-index -- _2d`.
+
+Trois distributions 2D sur [0,1]² : `uniform` (référence), `quantized` (coordonnées arrondies à 3 décimales — la donnée du pont d'appareil), `duplicates` (50 % des points à la même coordonnée). Rayons 0,01 / 0,05 / 0,15 ; pour une distribution uniforme ils couvrent ≈ 0,03 % / 0,8 % / 7 % des points. Requête au centre (0,5 ; 0,5). **Machine `dgx`** (aarch64 GB10, 20 cœurs), charge début **2,11** → fin **3,92** ; lancé à la main sur dgx parce que le `m4max` était saturé (load ~136) et le swap bloqué à 98 %. `dgx` a cloné `main` (`52f093c9`) et appliqué les 3 commits (test / fix / bench) — mêmes binaires qu'au dépôt, machine différente.
+
+**Lecture du rapport** : `balayage / range_search` (> 1 = le VP-Tree gagne). Distribution **quantized** (le cas réel d'un géofence) :
+
+| n | r=0,01 (≈0,03 %) | r=0,05 (≈0,8 %) | r=0,15 (≈7 %) |
+|---|---|---|---|
+| 10³ | 17,2× | 3,5× | 0,85× (balayage) |
+| 10⁴ | 114,5× | 10,2× | 2,0× |
+| 10⁵ | 182× | 27,8× | 4,1× |
+| 10⁶ | **894×** | 58× | 5,7× |
+
+Distribution **uniform** (référence) : mêmes ordres de grandeur — 10⁶/0,01 : **953×**, 10⁶/0,05 : 70×, 10⁶/0,15 : 5,9×.
+
+Distribution **duplicates** (pire cas d'un VP-Tree) : l'arbre dégénère (l'élagage ne coupe rien), le balayage gagne partout — 0,26× à 1,10× selon n.
+
+Coût de construction (`vp_tree_build_2d`, quantized) : 10³ **197 µs**, 10⁴ **2,88 ms**, 10⁵ **41,3 ms**, 10⁶ **648 ms**.
+
+**Conclusions.** (1) L'optimisation affirmée tient pour un géofence sélectif : à 10⁶ points et 0,03 % de sélectivité, l'index bat le balayage de **~900×** (1,82 µs contre 1,625 ms). (2) La bascule est à la sélectivité et à n : pour n ≥ 10⁴ l'index gagne jusqu'à ~7 % ; à n = 10³ le balayage gagne au-delà de ~7 % (607 ns contre 518 ns). (3) Sur des données dégénérées (duplicatas massifs) l'index ne sert à rien et coûte plus cher qu'un balayage. (4) Le coût de construction (648 ms pour 10⁶) s'amortit : à 0,03 % de sélectivité, chaque requête économise ~1,62 ms, donc ~400 requêtes suffisent à le résorber.
+
+**Réserve.** Les chiffres sont `dgx`, pas `m4max` (le plan visait m4max). La comparaison *relative* (index/balayage, par n et sélectivité) est valable ; l'absolu est propre à dgx. Voir `crates/obrain-core/tests/vp_tree_range.rs` pour le verrou de correction (défaut d'élagage aux ex æquo, corrigé) qui garantit que ces mesures ne portent pas sur un `range_search` faux.
