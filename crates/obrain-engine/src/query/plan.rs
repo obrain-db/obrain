@@ -76,6 +76,11 @@ pub struct LogicalPlan {
     pub explain: bool,
     /// When true, execute the query and return per-operator runtime metrics.
     pub profile: bool,
+    /// (obrain#189) Marqueur des colonnes INTERNES de segment d'un chemin nomme
+    /// compose (voir [`marqueur_segment_pour`]). `None` : aucune colonne
+    /// interne. Le planificateur s'en sert pour masquer ces colonnes dans
+    /// `RETURN *` / `WITH *` et pour retrouver le segment precedent.
+    pub marqueur_segment: Option<String>,
 }
 
 impl LogicalPlan {
@@ -85,6 +90,7 @@ impl LogicalPlan {
             root,
             explain: false,
             profile: false,
+            marqueur_segment: None,
         }
     }
 
@@ -94,6 +100,7 @@ impl LogicalPlan {
             root,
             explain: true,
             profile: false,
+            marqueur_segment: None,
         }
     }
 
@@ -103,6 +110,7 @@ impl LogicalPlan {
             root,
             explain: false,
             profile: true,
+            marqueur_segment: None,
         }
     }
 }
@@ -1249,6 +1257,33 @@ pub enum PathMode {
     Simple,
     /// No repeated nodes at all.
     Acyclic,
+}
+
+/// (obrain#189) Marqueur des colonnes internes de segment d'un chemin nomme compose.
+///
+/// Renvoie la plus petite chaine `\u{1}seg{k}\u{1}` qui n'apparait PAS dans le
+/// texte de la requete. Preuve que cela suffit a exclure toute collision avec
+/// un identifiant utilisateur : un identifiant entre accents graves est une
+/// sous-chaine du texte, ou ses `` doubles ont ete reduits a un accent grave ;
+/// le marqueur ne contient aucun accent grave, donc un identifiant qui le
+/// contiendrait ferait apparaitre le marqueur dans le texte, ce qui est exclu.
+/// Aucun identifiant accepte, U+0001 compris, n'est donc refuse.
+#[must_use]
+pub fn marqueur_segment_pour(texte_requete: &str) -> String {
+    let mut k = 0usize;
+    loop {
+        let marqueur = format!("\u{1}seg{k}\u{1}");
+        if !texte_requete.contains(&marqueur) {
+            return marqueur;
+        }
+        k += 1;
+    }
+}
+
+/// Alias interne du segment de rang `rang` d'un chemin nomme `base`.
+#[must_use]
+pub fn alias_segment(base: &str, rang: usize, marqueur: &str) -> String {
+    format!("{base}{marqueur}{rang}")
 }
 
 /// Expand from nodes to their neighbors.

@@ -107,6 +107,10 @@ pub struct VariableLengthExpandOperator {
     /// (`...-[*0..2]->(target)` avec `target` deja lie). Quand elle est
     /// posee, l'expansion est guidee par la cible : voir `with_target_column`.
     target_column: Option<usize>,
+    /// (obrain#189) Colonne portant le chemin deja parcouru (`Value::Path`)
+    /// par les expansions precedentes du meme motif nomme : voir
+    /// `with_path_prefix`.
+    path_prefix_column: Option<usize>,
     /// Distances (en sauts, sens inverse) de chaque noeud a une cible, par
     /// cible distincte. Calculees paresseusement, bornees par `max_hops`.
     reach_cache: HashMap<NodeId, Arc<HashMap<NodeId, u32>>>,
@@ -122,6 +126,14 @@ pub struct VariableLengthExpandOperator {
 
 /// Plafond de lignes de chemins gardees pour les sources deja parcourues.
 const LIGNES_CACHE_MAX: usize = 500_000;
+
+/// Identifiant entier d'un element de chemin (noeud ou arete, base primaire).
+fn entier_de(valeur: &Value) -> Option<u64> {
+    match valeur {
+        Value::Int64(i) => Some(*i as u64),
+        _ => None,
+    }
+}
 
 thread_local! {
     /// (obrain#189) Nombre de chemins ENUMERES (emis par l'expansion avant
@@ -276,6 +288,7 @@ impl VariableLengthExpandOperator {
             output_path_detail: false,
             path_mode: PathMode::Walk,
             target_column: None,
+            path_prefix_column: None,
             reach_cache: HashMap::new(),
             chemins_par_source: HashMap::new(),
             lignes_en_cache: 0,
@@ -299,6 +312,22 @@ impl VariableLengthExpandOperator {
     #[must_use]
     pub fn with_target_column(mut self, column: usize) -> Self {
         self.target_column = Some(column);
+        self
+    }
+
+    /// (obrain#189) Colonne d'entree qui porte le CHEMIN DEJA PARCOURU
+    /// (`Value::Path`) par les expansions precedentes d'un meme motif nomme :
+    /// `MATCH p = (n)-[:A]->(s)-[:B*0..k]->(t)` enchaine deux expansions. La
+    /// sortie de la seconde est alors `prefixe ++ segment` (noeuds sans le
+    /// premier, aretes concatenees, longueur additionnee), au lieu du seul
+    /// segment : sans cela `length(p)`, `nodes(p)` et `relationships(p)`
+    /// ignoraient tout ce qui precede le `*`.
+    ///
+    /// Le prefixe est applique a l'emission de chaque ligne, pas dans le cache
+    /// des chemins par source : celui-ci reste valable pour toute ligne.
+    #[must_use]
+    pub fn with_path_prefix(mut self, column: usize) -> Self {
+        self.path_prefix_column = Some(column);
         self
     }
 
@@ -839,6 +868,75 @@ impl VariableLengthExpandOperator {
         results
     }
 
+    /// (obrain#189) Le chemin COMPOSE (prefixe ++ segment) respecte-t-il le mode
+    /// de parcours ? Chaque segment est verifie seul par `is_expansion_allowed` ;
+    /// une violation qui traverse la frontiere entre deux segments (meme noeud
+    /// revisite en ACYCLIC, meme arete reprise en TRAIL) ne l'est pas. Ce test
+    /// porte sur le chemin entier, donc il est exact sans toucher la BFS.
+    fn chemin_compose_respecte_mode(&self, input_row: &InputRow, rang: &OutputRow) -> bool {
+        let Some(colonne) = self.path_prefix_column else {
+            return true;
+        };
+        let Some(ColumnValue::Value(Value::Path {
+            nodes: prefixe_noeuds,
+            edges: prefixe_aretes,
+        })) = input_row.columns.get(colonne)
+        else {
+            return true;
+        };
+        // Le noeud source du segment est le dernier du prefixe : on ne le repete pas.
+        let mut noeuds: Vec<u64> = prefixe_noeuds.iter().filter_map(entier_de).collect();
+        noeuds.extend(
+            rang.path_nodes
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .skip(1)
+                .map(|n| n.0),
+        );
+        let mut aretes: Vec<u64> = prefixe_aretes.iter().filter_map(entier_de).collect();
+        aretes.extend(
+            rang.path_edges
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|a| a.0),
+        );
+        let sans_doublon = |v: &[u64]| {
+            let mut vus = std::collections::HashSet::with_capacity(v.len());
+            v.iter().all(|x| vus.insert(*x))
+        };
+        match self.path_mode {
+            PathMode::Walk => true,
+            PathMode::Trail => sans_doublon(&aretes),
+            PathMode::Acyclic => sans_doublon(&noeuds),
+            // Simple : un noeud ne se répète pas, sauf un cycle qui revient à sa source.
+            PathMode::Simple => {
+                let corps = if noeuds.len() > 1 && noeuds.first() == noeuds.last() {
+                    &noeuds[..noeuds.len() - 1]
+                } else {
+                    &noeuds[..]
+                };
+                sans_doublon(corps)
+            }
+        }
+    }
+
+    /// Filtre les chemins d'une ligne d'entree selon le mode, quand un prefixe
+    /// compose est configure. Sans prefixe ou en WALK : identite (aucun cout).
+    fn filtrer_par_mode(&self, idx: usize, rangs: Vec<OutputRow>) -> Vec<OutputRow> {
+        if self.path_prefix_column.is_none() || self.path_mode == PathMode::Walk {
+            return rangs;
+        }
+        let Some(input_row) = self.input_rows.as_ref().and_then(|r| r.get(idx)) else {
+            return rangs;
+        };
+        rangs
+            .into_iter()
+            .filter(|r| self.chemin_compose_respecte_mode(input_row, r))
+            .collect()
+    }
+
     /// Fill the output buffer with results from the next input row.
     fn fill_output_buffer(&mut self) {
         while self.output_buffer.is_empty()
@@ -869,10 +967,14 @@ impl VariableLengthExpandOperator {
                 reach.as_ref().map(|(t, _)| *t),
             );
             if let Some(modele) = self.chemins_par_source.get(&cle) {
-                let copies = modele.iter().map(|r| OutputRow {
-                    input_idx: idx,
-                    ..r.clone()
-                });
+                let copies: Vec<OutputRow> = modele
+                    .iter()
+                    .map(|r| OutputRow {
+                        input_idx: idx,
+                        ..r.clone()
+                    })
+                    .collect();
+                let copies = self.filtrer_par_mode(idx, copies);
                 self.output_buffer.extend(copies);
                 self.current_input_idx += 1;
                 continue;
@@ -889,6 +991,7 @@ impl VariableLengthExpandOperator {
                 self.lignes_en_cache += results.len();
                 self.chemins_par_source.insert(cle, results.clone());
             }
+            let results = self.filtrer_par_mode(idx, results);
             self.output_buffer.extend(results);
             self.current_input_idx += 1;
         }
@@ -1037,63 +1140,85 @@ impl Operator for VariableLengthExpandOperator {
                 }
             }
 
+            // (obrain#189) Chemin deja parcouru par les expansions precedentes
+            // du motif nomme (vide si aucun prefixe n'est configure) : sa
+            // longueur s'ajoute, ses noeuds/aretes precedent ceux du segment.
+            let prefixe = self
+                .path_prefix_column
+                .and_then(|c| match input_row.columns.get(c) {
+                    Some(ColumnValue::Value(obrain_common::types::Value::Path {
+                        nodes,
+                        edges,
+                    })) => Some((nodes, edges)),
+                    _ => None,
+                });
+
             // Add path length column if requested
             if self.output_path_length
                 && let Some(col) = chunk.column_mut(num_input_cols + 2)
             {
-                col.push_value(obrain_common::types::Value::Int64(i64::from(
-                    out_row.path_length,
-                )));
+                let prefixe_aretes = prefixe.map_or(0, |(_, aretes)| aretes.len());
+                col.push_value(obrain_common::types::Value::Int64(
+                    i64::from(out_row.path_length) + prefixe_aretes as i64,
+                ));
             }
 
             // Add path detail columns if requested
             if self.output_path_detail {
                 let base = num_input_cols + 2 + usize::from(self.output_path_length);
+                let noeuds_segment = out_row.path_nodes.as_deref().unwrap_or(&[]);
+                let aretes_segment = out_row.path_edges.as_deref().unwrap_or(&[]);
+
+                // Le segment part de la source, qui est le dernier noeud du
+                // prefixe : on ne la repete pas.
+                let nodes: Vec<obrain_common::types::Value> = match prefixe {
+                    Some((prefixe_noeuds, _)) => prefixe_noeuds
+                        .iter()
+                        .cloned()
+                        .chain(
+                            noeuds_segment
+                                .iter()
+                                .skip(1)
+                                .map(|id| obrain_common::types::Value::Int64(id.0 as i64)),
+                        )
+                        .collect(),
+                    None => noeuds_segment
+                        .iter()
+                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
+                        .collect(),
+                };
+                let edges: Vec<obrain_common::types::Value> = match prefixe {
+                    Some((_, prefixe_aretes)) => prefixe_aretes
+                        .iter()
+                        .cloned()
+                        .chain(
+                            aretes_segment
+                                .iter()
+                                .map(|id| obrain_common::types::Value::Int64(id.0 as i64)),
+                        )
+                        .collect(),
+                    None => aretes_segment
+                        .iter()
+                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
+                        .collect(),
+                };
+
+                let nodes: Arc<[obrain_common::types::Value]> = nodes.into();
+                let edges: Arc<[obrain_common::types::Value]> = edges.into();
 
                 // Path nodes column
                 if let Some(col) = chunk.column_mut(base) {
-                    let nodes_list: Vec<obrain_common::types::Value> = out_row
-                        .path_nodes
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
-                        .collect();
-                    col.push_value(obrain_common::types::Value::List(nodes_list.into()));
+                    col.push_value(obrain_common::types::Value::List(Arc::clone(&nodes)));
                 }
 
                 // Path edges column
                 if let Some(col) = chunk.column_mut(base + 1) {
-                    let edges_list: Vec<obrain_common::types::Value> = out_row
-                        .path_edges
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
-                        .collect();
-                    col.push_value(obrain_common::types::Value::List(edges_list.into()));
+                    col.push_value(obrain_common::types::Value::List(Arc::clone(&edges)));
                 }
 
                 // Value::Path column (first-class path value)
                 if let Some(col) = chunk.column_mut(base + 2) {
-                    let nodes: Vec<obrain_common::types::Value> = out_row
-                        .path_nodes
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
-                        .collect();
-                    let edges: Vec<obrain_common::types::Value> = out_row
-                        .path_edges
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
-                        .collect();
-                    col.push_value(obrain_common::types::Value::Path {
-                        nodes: nodes.into(),
-                        edges: edges.into(),
-                    });
+                    col.push_value(obrain_common::types::Value::Path { nodes, edges });
                 }
             }
         }

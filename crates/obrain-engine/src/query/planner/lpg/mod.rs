@@ -116,6 +116,9 @@ pub struct Planner {
     /// le scan fait CROÎTRE ce plafond tant que le consommateur n'a pas ses
     /// lignes, donc jamais de sous-livraison. Remis à `None` après.
     pub(super) limit_scan_cap: std::cell::RefCell<Option<(String, usize)>>,
+    /// (obrain#189) Marqueur des colonnes internes de segment de la requete en
+    /// cours (`LogicalPlan::marqueur_segment`), armé à chaque entrée de planification.
+    pub(super) marqueur_segment: std::cell::RefCell<Option<String>>,
     /// When true, each physical operator is wrapped in `ProfiledOperator`.
     profiling: std::cell::Cell<bool>,
     /// Profile entries collected during planning (post-order).
@@ -183,6 +186,7 @@ impl Planner {
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
             restriction_scan: std::cell::RefCell::new(None),
+            marqueur_segment: std::cell::RefCell::new(None),
             limit_scan_cap: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
@@ -244,6 +248,7 @@ impl Planner {
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
             restriction_scan: std::cell::RefCell::new(None),
+            marqueur_segment: std::cell::RefCell::new(None),
             limit_scan_cap: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
@@ -395,7 +400,12 @@ impl Planner {
     fn count_expand_chain(op: &LogicalOperator) -> (usize, &LogicalOperator) {
         match op {
             LogicalOperator::Expand(expand) => {
-                let is_single_hop = expand.min_hops == 1 && expand.max_hops == Some(1);
+                // (obrain#189) Une expansion nommee (chemin de motif) n'entre
+                // jamais dans une chaine factorisee : elle porte son propre
+                // chemin, que la chaine ignore.
+                let is_single_hop = expand.min_hops == 1
+                    && expand.max_hops == Some(1)
+                    && expand.path_alias.is_none();
 
                 if is_single_hop {
                     if let LogicalOperator::Expand(inner) = expand.input.as_ref()
@@ -423,7 +433,9 @@ impl Planner {
         let mut current = op;
 
         while let LogicalOperator::Expand(expand) = current {
-            let is_single_hop = expand.min_hops == 1 && expand.max_hops == Some(1);
+            // (obrain#189) Une expansion nommee n'appartient pas a la chaine.
+            let is_single_hop =
+                expand.min_hops == 1 && expand.max_hops == Some(1) && expand.path_alias.is_none();
             if !is_single_hop {
                 break;
             }
@@ -440,9 +452,26 @@ impl Planner {
         chain
     }
 
+    /// (obrain#189) Arme le marqueur des colonnes internes pour la requete planifiee.
+    fn armer_marqueur(&self, logical_plan: &LogicalPlan) {
+        self.marqueur_segment
+            .borrow_mut()
+            .clone_from(&logical_plan.marqueur_segment);
+    }
+
+    /// (obrain#189) Vrai si `nom` est une colonne INTERNE de segment de la requete
+    /// en cours : elle porte le marqueur, que le texte de la requete ne contient pas.
+    pub(super) fn est_colonne_interne(&self, nom: &str) -> bool {
+        self.marqueur_segment
+            .borrow()
+            .as_deref()
+            .is_some_and(|m| nom.contains(m))
+    }
+
     /// Plans a logical plan into a physical operator.
     pub fn plan(&self, logical_plan: &LogicalPlan) -> Result<PhysicalPlan> {
         let _span = tracing::debug_span!("obrain::query::plan").entered();
+        self.armer_marqueur(logical_plan);
         let (operator, columns) = self.plan_operator(&logical_plan.root)?;
         Ok(PhysicalPlan {
             operator,
@@ -460,6 +489,7 @@ impl Planner {
         &self,
         logical_plan: &LogicalPlan,
     ) -> Result<(PhysicalPlan, Vec<crate::query::profile::ProfileEntry>)> {
+        self.armer_marqueur(logical_plan);
         self.profiling.set(true);
         self.profile_entries.borrow_mut().clear();
 
@@ -481,6 +511,7 @@ impl Planner {
 
     /// Plans a logical plan with adaptive execution support.
     pub fn plan_adaptive(&self, logical_plan: &LogicalPlan) -> Result<PhysicalPlan> {
+        self.armer_marqueur(logical_plan);
         let (operator, columns) = self.plan_operator(&logical_plan.root)?;
 
         let mut adaptive_context = AdaptiveContext::new();

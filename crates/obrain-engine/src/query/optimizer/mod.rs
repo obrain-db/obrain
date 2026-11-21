@@ -231,6 +231,7 @@ impl Optimizer {
             root,
             explain: plan.explain,
             profile: plan.profile,
+            marqueur_segment: plan.marqueur_segment.clone(),
         })
     }
 
