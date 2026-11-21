@@ -612,14 +612,13 @@ impl super::ObrainDB {
                  sur un store externe — seule une base substrat en porte."
             )));
         }
-        let points =
-            super::spatial_procedure::collecter_points(&*self.data_store(), label, property);
-        let n = points.len();
-        let index = Arc::new(RwLock::new(
-            obrain_core::index::spatial::SpatialIndex::build(points),
-        ));
-        self.substrate_spatial_indexes
-            .inserer(format!("{label}:{property}"), index);
+        let store = self.data_store();
+        let index = self
+            .substrate_spatial_indexes
+            .rebatir_sous_verrou(&format!("{label}:{property}"), || {
+                super::spatial_procedure::construire_index(&*store, label, property)
+            });
+        let n = index.read().len();
         // DÉCLARATION DURABLE : l'arbre se rebâtit depuis les propriétés, mais
         // le FAIT qu'il doive exister ne se rebâtit pas. Sans cette ligne,
         // l'index disparaîtrait à la fermeture (même leçon que le vectoriel).
@@ -737,9 +736,15 @@ impl super::ObrainDB {
         if let Some(paire) = self.resoudre_index_spatial_catalogue(nom_ou_ident) {
             return Ok(paire);
         }
+        // Un identifiant `label:propriété` n'est accepté que s'il est DÉCLARÉ
+        // (même règle que `PoigneeIndexSpatiaux::resoudre`, revue de #282) :
+        // sinon l'API Rust bâtissait un index implicite, non durable,
+        // invisible de SHOW INDEXES.
         if let Some((l, p)) = nom_ou_ident.split_once(':')
-            && !l.is_empty()
-            && !p.is_empty()
+            && self
+                .spatial_index_names()
+                .iter()
+                .any(|(_, dl, dp)| dl == l && dp == p)
         {
             return Ok((l.to_string(), p.to_string()));
         }
@@ -761,7 +766,7 @@ impl super::ObrainDB {
     ///
     /// # Errors
     ///
-    /// Nom inconnu, ou index déclaré mais aucun nœud ne porte de point valide.
+    /// Nom inconnu.
     pub(super) fn index_spatial(
         &self,
         nom_ou_ident: &str,
@@ -774,21 +779,12 @@ impl super::ObrainDB {
         // Reconstruction DIRECTE, sans passer par `rebatir_index_declare` :
         // ce dernier est gaté sur les features `vector-index`/`text-index`,
         // alors qu'un index spatial n'a aucune feature à demander.
-        let points =
-            super::spatial_procedure::collecter_points(&*self.data_store(), &label, &property);
-        self.substrate_spatial_indexes.inserer(
-            cle.clone(),
-            Arc::new(RwLock::new(
-                obrain_core::index::spatial::SpatialIndex::build(points),
-            )),
-        );
-        self.substrate_spatial_indexes.get(&cle).ok_or_else(|| {
-            obrain_common::utils::error::Error::Internal(format!(
-                "index spatial '{nom_ou_ident}' (:{} ({})) déclaré mais non reconstructible \
-                     — aucun nœud ne porte de point valide sur cette propriété.",
-                label, property
-            ))
-        })
+        let store = self.data_store();
+        Ok(self
+            .substrate_spatial_indexes
+            .construire_sous_verrou(&cle, || {
+                super::spatial_procedure::construire_index(&*store, &label, &property)
+            }))
     }
 
     /// Les nœuds à moins de `rayon_m` mètres de `(lon, lat)`, triés par
@@ -796,7 +792,7 @@ impl super::ObrainDB {
     ///
     /// # Errors
     ///
-    /// Index inconnu (voir [`Self::resoudre_index_spatial`]).
+    /// Index inconnu (voir `resoudre_index_spatial`).
     pub fn spatial_search(
         &self,
         nom_ou_ident: &str,
@@ -817,7 +813,7 @@ impl super::ObrainDB {
     ///
     /// # Errors
     ///
-    /// Index inconnu (voir [`Self::resoudre_index_spatial`]).
+    /// Index inconnu (voir `resoudre_index_spatial`).
     pub fn spatial_knn(
         &self,
         nom_ou_ident: &str,

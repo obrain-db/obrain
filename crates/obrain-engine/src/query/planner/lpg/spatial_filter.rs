@@ -13,8 +13,9 @@
 //! Le plan rendu NE RÉAPPLIQUE PAS le filtre : il doit donc être exact, et il
 //! l'est pour trois raisons vérifiables.
 //!
-//! 1. L'index lui-même rend des distances EXACTES (`dans_rayon` élargit la
-//!    requête de la marge du `f32`, puis RETRANCHE en `f64`).
+//! 1. L'index lui-même rend les points du balayage (`dans_rayon` élargit la
+//!    requête d'une borne DÉRIVÉE de l'arrondi `f32`, puis filtre en `f64` —
+//!    voir `obrain-core/index/spatial.rs`, hypothèse libm comprise).
 //! 2. La fonction `distance()` de GQL et l'index appellent la MÊME
 //!    `haversine_m` (`obrain-core/index/geo.rs`) : deux formules divergeraient
 //!    sur la frontière du rayon.
@@ -27,7 +28,14 @@
 //!   label ;
 //! * point et rayon LITTÉRAUX : un paramètre lié à l'exécution ne peut pas
 //!   choisir un plan. On retombe alors sur le balayage, qui reste correct ;
-//! * aucune index déclaré pour ce couple → `None`, jamais `Some(vec![])` ;
+//! * aucun index déclaré pour ce couple → `None`, jamais `Some(vec![])` ;
+//! * PARITÉ DES ERREURS avec le balayage (revue de #282) : `point()` à
+//!   latitude hors [-90, 90] ou longitude non finie → `None` (le balayage
+//!   refuse, avec son texte) ; un nœud du label dont la propriété porte une
+//!   valeur non nulle qui n'est pas un point → `None` (idem : le balayage
+//!   refuse `distance()`). Les formes `[lon, lat]` littérales ne sont PAS
+//!   validées par le balayage non plus : elles sont servies telles quelles,
+//!   et `dans_rayon` balaie exactement hors du domaine de l'arbre ;
 //! * visibilité MVCC et appartenance au label revérifiées, comme le fait
 //!   déjà `plan_range_filter`.
 
@@ -54,7 +62,15 @@ fn point_fixe(expr: &LogicalExpression) -> Option<(f64, f64)> {
         LogicalExpression::FunctionCall { name, args, .. }
             if name.eq_ignore_ascii_case("point") && args.len() == 2 =>
         {
-            Some((nombre(&args[0])?, nombre(&args[1])?))
+            let (lon, lat) = (nombre(&args[0])?, nombre(&args[1])?);
+            // La fonction `point()` du balayage REFUSE une longitude non finie
+            // ou une latitude hors [-90, 90] (revue de #282 : l'index servait
+            // 0 ligne là où le balayage refuse). `None` → balayage → même
+            // erreur, même texte.
+            if !lon.is_finite() || !obrain_core::index::geo::latitude_valide(lat) {
+                return None;
+            }
+            Some((lon, lat))
         }
         LogicalExpression::Literal(v) => obrain_core::index::geo::point_lon_lat(v),
         LogicalExpression::List(items) if items.len() == 2 => {
@@ -130,6 +146,16 @@ impl super::Planner {
 
         // 3. L'index : `None` (aucun index pour ce couple) → balayage.
         let cle = format!("{label}:{property}");
+        // PARITÉ DES ERREURS (revue de #282) : si un nœud du label porte sur
+        // cette propriété une valeur non nulle qui n'est pas un point, le
+        // balayage REFUSE la requête (`distance() attend deux points`). L'index
+        // ne peut pas la refuser à sa place avec le même texte : il se replie
+        // sur le balayage, qui refusera. Le résultat est alors une erreur, pas
+        // un résultat lent — rien n'est perdu en se repliant.
+        match poignee.non_points(&cle) {
+            Ok(0) => {}
+            Ok(_) | Err(_) => return Ok(None),
+        }
         let Ok(hits) = poignee.rayon(&cle, lon, lat, rayon) else {
             return Ok(None);
         };

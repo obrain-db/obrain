@@ -27,6 +27,9 @@
 //! - `hors_domaine` : les points construits hors de [-180, 180] × [-90, 90],
 //!   où l'erreur d'arrondi `f32` n'est plus bornée. Le balayage GQL les voit ;
 //!   l'index les balaie donc exactement au lieu de les écarter.
+//! - `non_points` : les identifiants dont la valeur n'est pas un point. Le
+//!   balayage GQL REFUSE la requête dessus ; l'index les compte pour que le
+//!   planificateur se replie sur le balayage (parité des erreurs).
 //!
 //! [`SpatialIndex::doit_etre_rebati`] dit quand la surcouche a assez grossi
 //! pour qu'une reconstruction vaille son coût (648 ms à 10⁶ au banc) : en deçà
@@ -187,6 +190,13 @@ pub struct SpatialIndex {
     /// Identifiants supprimés de l'arbre (toujours un sous-ensemble de
     /// `par_id`, jamais dans `surcouche`).
     tombes: HashSet<u32>,
+    /// Identifiants dont la propriété porte une valeur NON NULLE qui n'est
+    /// PAS un point (`"oops"`, une liste de trois nombres…). Le balayage GQL
+    /// REFUSE la requête sur une telle valeur (`distance() attend deux
+    /// points`) ; l'index ne peut pas la refuser avec le même texte, il la
+    /// COMPTE pour que le planificateur se replie sur le balayage tant qu'il
+    /// en reste. Jamais visible : marquer retire le point.
+    non_points: HashSet<u32>,
     /// Nombre de points visibles, tenu à jour à chaque écriture : `len()` en
     /// O(1). Chaque écriture compare la visibilité de l'identifiant avant et
     /// après — un déplacement ne compte jamais deux fois.
@@ -248,6 +258,7 @@ impl SpatialIndex {
             hors_domaine,
             surcouche: HashMap::new(),
             tombes: HashSet::new(),
+            non_points: HashSet::new(),
             vivants,
         }
     }
@@ -303,6 +314,7 @@ impl SpatialIndex {
             return false;
         }
         let avant = self.visible(id);
+        self.non_points.remove(&id);
         self.tombes.remove(&id);
         // La surcouche prime sur l'arbre et sur `hors_domaine` ; indexée par
         // identifiant, une réécriture remplace, elle n'empile pas.
@@ -314,12 +326,29 @@ impl SpatialIndex {
     /// Retire un point. Rend `true` s'il était présent.
     pub fn retirer(&mut self, id: u32) -> bool {
         let avant = self.visible(id);
+        self.non_points.remove(&id);
         let dans_surcouche = self.surcouche.remove(&id).is_some();
         let dans_hors = self.hors_domaine.remove(&id).is_some();
         let dans_base = self.par_id.contains_key(&id);
         let base_vivante = dans_base && self.tombes.insert(id);
         self.compter(id, avant);
         dans_surcouche || dans_hors || base_vivante
+    }
+
+    /// Marque `id` comme porteur d'une valeur non nulle qui n'est pas un
+    /// point : il sort de l'index (comme un retrait) et compte dans
+    /// [`SpatialIndex::nombre_non_points`].
+    pub fn marquer_non_point(&mut self, id: u32) {
+        self.retirer(id);
+        self.non_points.insert(id);
+    }
+
+    /// Nombre de nœuds dont la propriété n'est pas un point. Tant qu'il n'est
+    /// pas nul, un prédicat `distance()` sur cette propriété doit être laissé
+    /// au balayage, qui le refusera.
+    #[must_use]
+    pub fn nombre_non_points(&self) -> usize {
+        self.non_points.len()
     }
 
     /// Une reconstruction vaut-elle son coût ?
@@ -476,10 +505,17 @@ impl SpatialIndex {
     /// vivant » et rend le nombre d'anomalies. Sert aux tests et au diagnostic.
     #[must_use]
     pub fn anomalies(&self) -> usize {
-        self.tombes
+        let tombes_fausses = self
+            .tombes
             .iter()
             .filter(|id| self.surcouche.contains_key(id) || !self.par_id.contains_key(id))
-            .count()
+            .count();
+        let non_points_visibles = self
+            .non_points
+            .iter()
+            .filter(|id| self.visible(**id))
+            .count();
+        tombes_fausses + non_points_visibles
     }
 }
 
@@ -621,6 +657,28 @@ mod tests {
                 "rayon {rayon} : distances non monotones"
             );
         }
+    }
+
+    #[test]
+    fn non_point_sort_de_lindex_et_se_compte() {
+        let mut idx = SpatialIndex::build(vec![(1, 2.35, 48.85), (2, 2.36, 48.85)]);
+        idx.marquer_non_point(1);
+        assert_eq!(idx.nombre_non_points(), 1);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(
+            idx.dans_rayon(2.35, 48.85, 1.0),
+            Vec::new(),
+            "un non-point n'est pas rendu"
+        );
+        // Une valeur redevenue point sort du compte.
+        assert!(idx.inserer(1, 2.35, 48.85));
+        assert_eq!(idx.nombre_non_points(), 0);
+        assert_eq!(idx.len(), 2);
+        // Un retrait aussi.
+        idx.marquer_non_point(2);
+        assert!(!idx.retirer(2), "un non-point n'était pas visible");
+        assert_eq!(idx.nombre_non_points(), 0);
+        assert_eq!(idx.anomalies(), 0);
     }
 
     #[test]

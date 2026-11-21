@@ -1901,6 +1901,18 @@ pub trait StoreMutationObserver: Send + Sync {
     /// `vector_written`. Défaut : sans effet.
     fn node_property_set(&self, _id: obrain_common::types::NodeId, _key: &str) {}
 
+    /// (2026-11-21, index spatial) Un LABEL vient d'être ajouté à un nœud
+    /// vivant (`SET n:Label`, API `add_label`, annulation d'un `REMOVE`).
+    /// Notifié APRÈS l'écriture, seulement si le label n'y était pas. Un index
+    /// par label doit l'apprendre : un nœud qui devient `:Lieu` et porte déjà
+    /// `pos` entre dans `:Lieu(pos)` à cet instant. Défaut : sans effet.
+    fn node_label_added(&self, _id: obrain_common::types::NodeId, _label: &str) {}
+
+    /// (2026-11-21, index spatial) Miroir : un label vient d'être retiré d'un
+    /// nœud vivant. Notifié APRÈS l'écriture, seulement s'il y était.
+    /// Défaut : sans effet.
+    fn node_label_removed(&self, _id: obrain_common::types::NodeId, _label: &str) {}
+
     /// (2026-11-12, câblage cognitif) Même événement que `edge_created`, avec
     /// le TYPE de l'arête : un observateur qui doit ignorer certains types
     /// (les arêtes `SYNAPSE` que la cognition écrit elle-même) en a besoin.
@@ -6924,6 +6936,18 @@ impl SubstrateStore {
     fn notify_node_property_set(&self, id: obrain_common::types::NodeId, key: &str) {
         for observer in self.observateurs() {
             observer.node_property_set(id, key);
+        }
+    }
+
+    fn notify_node_label_added(&self, id: obrain_common::types::NodeId, label: &str) {
+        for observer in self.observateurs() {
+            observer.node_label_added(id, label);
+        }
+    }
+
+    fn notify_node_label_removed(&self, id: obrain_common::types::NodeId, label: &str) {
+        for observer in self.observateurs() {
+            observer.node_label_removed(id, label);
         }
     }
 
@@ -27420,6 +27444,10 @@ impl GraphStoreMut for SubstrateStore {
             self.appliquer_delta_premier_label(ancien_premier, -1);
             self.appliquer_delta_premier_label(nouveau_premier, 1);
         }
+        // Après l'écriture, hors verrou, seulement si le label est NEUF sur
+        // ce nœud (les no-op ci-dessus sont sortis plus tôt) : les index par
+        // label (spatial) apprennent qu'un nœud vient d'entrer dans le label.
+        self.notify_node_label_added(node_id, label);
         true
     }
 
@@ -27459,6 +27487,8 @@ impl GraphStoreMut for SubstrateStore {
             self.appliquer_delta_premier_label(ancien_premier, -1);
             self.appliquer_delta_premier_label(nouveau_premier, 1);
         }
+        // Miroir d'`add_label` : le nœud sort des index de ce label.
+        self.notify_node_label_removed(node_id, label);
         true
     }
 }

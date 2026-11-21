@@ -1705,6 +1705,19 @@ impl Session {
                 ))
             }
             SchemaStatement::DropIndex { name, if_exists } => {
+                // (2026-11-21) Les index SPATIAUX ont un nom durable et se
+                // suppriment : `CREATE INDEX ... USING SPATIAL` sans son `DROP`
+                // serait une porte sans sortie (revue de #282 : `DROP INDEX geo`
+                // refusait, et `IF EXISTS` disait « No change » en laissant
+                // l'index en place).
+                if let Some(poignee) = self.index_spatiaux.as_ref()
+                    && poignee.noms().iter().any(|(n, _, _)| n == &name)
+                {
+                    poignee.supprimer(&name)?;
+                    return Ok(QueryResult::status(format!(
+                        "Dropped spatial index '{name}'"
+                    )));
+                }
                 // T17 Step 24 (2026-04-23): `DROP INDEX` was an
                 // LpgStore-era API. Substrate's tiered storage does
                 // not expose named per-property indexes. Returns Ok

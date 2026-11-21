@@ -54,10 +54,68 @@ impl RegistreSpatial {
         self.index.read().get(cle).cloned()
     }
 
-    /// Pose (ou remplace) l'index d'une clé. Invalide le cache de noms.
-    pub(crate) fn inserer(&self, cle: String, index: Arc<RwLock<SpatialIndex>>) {
-        self.index.write().insert(cle, index);
+    /// L'index d'une clé, construit par `construire` s'il n'est pas chargé.
+    /// Voir [`Self::sous_verrou`].
+    pub(crate) fn construire_sous_verrou(
+        &self,
+        cle: &str,
+        construire: impl FnOnce() -> SpatialIndex,
+    ) -> Arc<RwLock<SpatialIndex>> {
+        self.sous_verrou(cle, false, construire)
+    }
+
+    /// Construit par `construire` et REMPLACE l'index d'une clé (un
+    /// `CREATE INDEX` explicite rebâtit). Voir [`Self::sous_verrou`].
+    pub(crate) fn rebatir_sous_verrou(
+        &self,
+        cle: &str,
+        construire: impl FnOnce() -> SpatialIndex,
+    ) -> Arc<RwLock<SpatialIndex>> {
+        self.sous_verrou(cle, true, construire)
+    }
+
+    /// Construction et publication SOUS LE VERROU D'ÉCRITURE du registre, du
+    /// balayage à la publication.
+    ///
+    /// ── POURQUOI SOUS VERROU (revue de #282, 21/11/2026) ──────────────────
+    ///
+    /// Construire hors verrou, puis publier, laisse une fenêtre : une mutation
+    /// dont le balayage a lu l'ANCIENNE valeur, et dont la notification arrive
+    /// AVANT la publication, ne trouve aucun index à mettre à jour
+    /// (`tous_avec_cle()` ne le voit pas encore). L'index publié porte alors
+    /// l'ancienne valeur, jusqu'au prochain rebâti.
+    ///
+    /// Le substrat appelle ses observateurs HORS de ses propres verrous, après
+    /// l'écriture (`SubstrateStore::observateurs`). Tenir ce verrou pendant la
+    /// construction ne peut donc pas interbloquer : la mutation s'écrit, puis
+    /// sa notification ATTEND la publication, puis relit la valeur vivante et
+    /// l'applique. Si la notification a lu le registre avant notre prise du
+    /// verrou, l'écriture la précède, donc notre balayage (postérieur à la
+    /// prise) la voit. Dans les deux cas l'index publié est au niveau du
+    /// store. Test : `une_mutation_pendant_la_construction_nest_pas_perdue`.
+    ///
+    /// Coût assumé : pendant la construction (648 ms à 10⁶ points au banc),
+    /// toute requête spatiale et toute notification de mutation attendent.
+    /// C'est le prix d'un DDL ou d'une première lecture après réouverture, pas
+    /// d'une requête ordinaire.
+    fn sous_verrou(
+        &self,
+        cle: &str,
+        remplacer: bool,
+        construire: impl FnOnce() -> SpatialIndex,
+    ) -> Arc<RwLock<SpatialIndex>> {
+        let mut index = self.index.write();
+        if !remplacer && let Some(existant) = index.get(cle) {
+            // Un autre constructeur a pu passer pendant qu'on attendait.
+            return Arc::clone(existant);
+        }
+        let construit = Arc::new(RwLock::new(construire()));
+        #[cfg(test)]
+        crochet_avant_publication(cle);
+        index.insert(cle.to_string(), Arc::clone(&construit));
+        drop(index);
         self.invalider_noms();
+        construit
     }
 
     /// Retire l'index d'une clé. Rend `true` s'il était chargé.
@@ -170,6 +228,15 @@ pub trait IndexSpatiaux: Send + Sync {
         k: usize,
     ) -> Result<Vec<(NodeId, f64)>>;
 
+    /// Nombre de nœuds du label dont la propriété porte une valeur non nulle
+    /// qui N'EST PAS un point. Tant qu'il n'est pas nul, le balayage GQL
+    /// refuserait `distance()` : le planificateur doit se replier sur lui.
+    ///
+    /// # Errors
+    ///
+    /// Index inconnu.
+    fn non_points(&self, nom_ou_ident: &str) -> Result<usize>;
+
     /// Les index nommés, `(nom, label, propriété)`, triés par nom.
     fn noms(&self) -> Vec<(String, String, String)>;
 
@@ -181,28 +248,97 @@ pub trait IndexSpatiaux: Send + Sync {
     fn resoudre(&self, nom_ou_ident: &str) -> Result<(String, String)>;
 }
 
-/// Les `(id, lon, lat)` d'un label sur une propriété point.
+/// Ce qu'un balayage du label trouve sur la propriété : les points, et les
+/// identifiants dont la valeur n'est PAS un point.
+pub(crate) struct Collecte {
+    pub(crate) points: Vec<(u32, f64, f64)>,
+    /// Valeur NON NULLE qui n'est pas un point (`"oops"`, trois nombres…).
+    /// Le balayage GQL refuse `distance()` dessus ; l'index doit le savoir.
+    pub(crate) non_points: Vec<u32>,
+}
+
+/// Balaie un label sur une propriété.
 ///
 /// UNE seule définition, utilisée par la base ET par la poignée : deux scans
 /// divergeraient sur ce qu'est un point indexable, et l'index contiendrait
-/// alors autre chose que ce que la requête interroge.
+/// alors autre chose que ce que la requête interroge. `Null` et l'absence ne
+/// sont ni un point ni une faute (le balayage les écarte en silence) ; toute
+/// autre valeur non point est une faute que le balayage REFUSE.
 pub(crate) fn collecter_points(
     store: &dyn obrain_core::graph::GraphStoreMut,
     label: &str,
     property: &str,
-) -> Vec<(u32, f64, f64)> {
+) -> Collecte {
     let pk = PropertyKey::new(property);
     let mut points: Vec<(u32, f64, f64)> = Vec::new();
+    let mut non_points: Vec<u32> = Vec::new();
     for &node_id in &store.nodes_by_label(label) {
         let Some(v) = store.get_node_property(node_id, &pk) else {
             continue;
         };
-        let Some((lon, lat)) = point_lon_lat(&v) else {
+        if matches!(v, Value::Null) {
             continue;
-        };
-        points.push((node_id.0 as u32, lon, lat));
+        }
+        match point_lon_lat(&v) {
+            Some((lon, lat)) => points.push((node_id.0 as u32, lon, lat)),
+            None => non_points.push(node_id.0 as u32),
+        }
     }
-    points
+    Collecte { points, non_points }
+}
+
+/// Construit l'index d'un label sur une propriété, non-points compris.
+pub(crate) fn construire_index(
+    store: &dyn obrain_core::graph::GraphStoreMut,
+    label: &str,
+    property: &str,
+) -> SpatialIndex {
+    let Collecte { points, non_points } = collecter_points(store, label, property);
+    let mut index = SpatialIndex::build(points);
+    for id in non_points {
+        index.marquer_non_point(id);
+    }
+    index
+}
+
+/// Applique la valeur VIVANTE d'une propriété à un index : point → inséré ;
+/// absent ou `Null` → retiré (le balayage l'écarte en silence) ; toute autre
+/// valeur → marquée non-point (le balayage la REFUSE, l'index doit le savoir).
+fn appliquer_valeur(index: &mut SpatialIndex, id: u32, valeur: Option<&Value>) {
+    match valeur {
+        None | Some(Value::Null) => {
+            index.retirer(id);
+        }
+        Some(v) => match point_lon_lat(v) {
+            Some((lon, lat)) => {
+                index.inserer(id, lon, lat);
+            }
+            None => index.marquer_non_point(id),
+        },
+    }
+}
+
+/// Crochet de test : appelé par `RegistreSpatial::sous_verrou` entre la
+/// construction et la publication, verrou tenu. Le test qui en a besoin le
+/// pose pour UNE clé ; les autres clés ne le déclenchent pas (les tests
+/// tournent en parallèle dans le même binaire).
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static CROCHET_AVANT_PUBLICATION: parking_lot::Mutex<Option<(String, Box<dyn FnOnce() + Send>)>> =
+    parking_lot::Mutex::new(None);
+
+#[cfg(test)]
+fn crochet_avant_publication(cle: &str) {
+    let pris = {
+        let mut slot = CROCHET_AVANT_PUBLICATION.lock();
+        match slot.as_ref() {
+            Some((c, _)) if c == cle => slot.take(),
+            _ => None,
+        }
+    };
+    if let Some((_, f)) = pris {
+        f();
+    }
 }
 
 /// La poignée elle-même : les `Arc` de la base, sans la base.
@@ -232,10 +368,9 @@ impl PoigneeIndexSpatiaux {
         if let Some(idx) = self.spatiaux.get(&cle) {
             return Ok(idx);
         }
-        let points = collecter_points(&*self.store, &label, &propriete);
-        let idx = Arc::new(RwLock::new(SpatialIndex::build(points)));
-        self.spatiaux.inserer(cle, Arc::clone(&idx));
-        Ok(idx)
+        Ok(self
+            .spatiaux
+            .construire_sous_verrou(&cle, || construire_index(&*self.store, &label, &propriete)))
     }
 }
 
@@ -261,12 +396,12 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
                     .to_string(),
             ));
         };
-        let points = collecter_points(&*self.store, label, propriete);
-        let n = points.len();
-        self.spatiaux.inserer(
-            format!("{label}:{propriete}"),
-            Arc::new(RwLock::new(SpatialIndex::build(points))),
-        );
+        let idx = self
+            .spatiaux
+            .rebatir_sous_verrou(&format!("{label}:{propriete}"), || {
+                construire_index(&*self.store, label, propriete)
+            });
+        let n = idx.read().len();
         // Déclaration DURABLE, puis NOM : l'ordre compte — `nommer_index` refuse
         // un nom sur une déclaration absente, et c'est ce qu'on veut (un nom ne
         // désigne jamais un index qui n'existe pas).
@@ -328,6 +463,10 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
             .into_iter()
             .map(|(id, d)| (NodeId(u64::from(id)), d))
             .collect())
+    }
+
+    fn non_points(&self, nom_ou_ident: &str) -> Result<usize> {
+        Ok(self.index(nom_ou_ident)?.read().nombre_non_points())
     }
 
     fn noms(&self) -> Vec<(String, String, String)> {
@@ -427,11 +566,7 @@ impl ObservateurIndexSpatial {
         let Some(noeud) = store.get_node(id) else {
             return;
         };
-        let pk = PropertyKey::new(key);
-        let point = store
-            .get_node_property(id, &pk)
-            .as_ref()
-            .and_then(point_lon_lat);
+        let valeur = store.get_node_property(id, &PropertyKey::new(key));
         for (label, idx) in concernes {
             // Le nœud doit porter le LABEL de l'index : `:Lieu(pos)` ne doit pas
             // recevoir un `:Batiment(pos)` simplement parce que la propriété
@@ -439,15 +574,7 @@ impl ObservateurIndexSpatial {
             if !noeud.labels.iter().any(|l| l.as_str() == label) {
                 continue;
             }
-            let mut garde = idx.write();
-            match point {
-                Some((lon, lat)) => {
-                    garde.inserer(id.0 as u32, lon, lat);
-                }
-                None => {
-                    garde.retirer(id.0 as u32);
-                }
-            }
+            appliquer_valeur(&mut idx.write(), id.0 as u32, valeur.as_ref());
         }
     }
 }
@@ -476,6 +603,30 @@ impl obrain_substrate::StoreMutationObserver for ObservateurIndexSpatial {
 
     fn node_deleted(&self, id: obrain_common::types::NodeId) {
         for idx in self.registre.tous() {
+            idx.write().retirer(id.0 as u32);
+        }
+    }
+
+    /// `SET n:Lieu` sur un nœud qui porte déjà `pos` : il entre dans
+    /// `:Lieu(pos)` avec la valeur qu'il porte (revue de #282 : l'index
+    /// l'ignorait, le balayage le rendait).
+    fn node_label_added(&self, id: obrain_common::types::NodeId, label: &str) {
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        for (cle, idx) in self.registre.pour_label(&format!("{label}:")) {
+            let Some((_, propriete)) = cle.split_once(':') else {
+                continue;
+            };
+            let valeur = store.get_node_property(id, &PropertyKey::new(propriete));
+            appliquer_valeur(&mut idx.write(), id.0 as u32, valeur.as_ref());
+        }
+    }
+
+    /// `REMOVE n:Lieu` : le nœud sort des index de ce label, quelle que soit
+    /// sa position.
+    fn node_label_removed(&self, id: obrain_common::types::NodeId, label: &str) {
+        for (_, idx) in self.registre.pour_label(&format!("{label}:")) {
             idx.write().retirer(id.0 as u32);
         }
     }
@@ -645,4 +796,88 @@ fn nombre(nom: &str, v: &Value, quel: &str) -> Result<f64> {
             "{nom} : argument « {quel} » doit être un nombre, reçu {v:?}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! La course « balayage, puis publication » (hypothèse de la revue de
+    //! #282), rendue DÉTERMINISTE par `CROCHET_AVANT_PUBLICATION`.
+    use super::*;
+    use crate::ObrainDB;
+
+    fn point(lon: f64, lat: f64) -> Value {
+        Value::List(vec![Value::Float64(lon), Value::Float64(lat)].into())
+    }
+
+    /// Scénario : le DDL a balayé (ancienne position), tient le verrou du
+    /// registre, et n'a pas encore publié. Un écrivain déplace le nœud à cet
+    /// instant. Sa notification doit ATTENDRE la publication, puis
+    /// s'appliquer : l'index publié rend la NOUVELLE position. Sans le verrou,
+    /// la notification ne trouvait aucun index et l'ancienne position restait
+    /// (vu rouge sur la variante « construire hors verrou »).
+    #[test]
+    fn une_mutation_pendant_la_construction_nest_pas_perdue() {
+        let db = Arc::new(ObrainDB::new_in_memory());
+        let id = db.create_node_with_props(&["LieuCourse"], [("pos", point(2.0, 48.0))]);
+        let (tx, rx) = std::sync::mpsc::channel::<std::thread::JoinHandle<()>>();
+        {
+            let db = Arc::clone(&db);
+            *CROCHET_AVANT_PUBLICATION.lock() = Some((
+                "LieuCourse:pos".to_string(),
+                Box::new(move || {
+                    // L'écrivain : il écrit (le substrat n'est pas verrouillé),
+                    // puis sa notification bloque sur le registre jusqu'à la
+                    // publication. On ne le JOINT pas ici : ce serait
+                    // l'interblocage que le verrou rend impossible à ignorer.
+                    let ecrivain = {
+                        let db = Arc::clone(&db);
+                        std::thread::spawn(move || {
+                            db.set_node_property(id, "pos", point(3.0, 49.0));
+                        })
+                    };
+                    // Attendre que l'ÉCRITURE soit visible dans le store : dès
+                    // lors, l'écrivain est au plus tard dans sa notification,
+                    // et le balayage du DDL (déjà fait) a lu l'ancienne valeur.
+                    let pk = PropertyKey::new("pos");
+                    for _ in 0..1_000_000 {
+                        let vivante = db
+                            .data_store()
+                            .get_node_property(id, &pk)
+                            .as_ref()
+                            .and_then(point_lon_lat);
+                        if vivante == Some((3.0, 49.0)) {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                    tx.send(ecrivain).expect("canal");
+                }),
+            ));
+        }
+        db.execute("CREATE INDEX course_pos FOR (n:LieuCourse) ON (n.pos) USING SPATIAL")
+            .expect("DDL");
+        let ecrivain = rx.recv().expect("le crochet a tourné");
+        ecrivain.join().expect("écrivain");
+        // La vérité : le balayage (point en premier n'est pas routé).
+        let scan = db
+            .execute("MATCH (n:LieuCourse) WHERE distance(point(3.0, 49.0), n.pos) <= 1 RETURN n")
+            .expect("balayage");
+        let index = db
+            .execute("MATCH (n:LieuCourse) WHERE distance(n.pos, point(3.0, 49.0)) <= 1 RETURN n")
+            .expect("index");
+        assert_eq!(scan.rows.len(), 1);
+        assert_eq!(
+            index.rows.len(),
+            1,
+            "la position écrite pendant la construction est perdue"
+        );
+        let ancienne = db
+            .execute("MATCH (n:LieuCourse) WHERE distance(n.pos, point(2.0, 48.0)) <= 1 RETURN n")
+            .expect("index");
+        assert_eq!(
+            ancienne.rows.len(),
+            0,
+            "l'ancienne position ne doit plus être servie"
+        );
+    }
 }
