@@ -164,7 +164,10 @@ fn lidentifiant_dun_index_declare_reste_accepte() {
             "CALL obrain.spatial.within('Lieu:pos', 2.020, 48.012, 300) YIELD node RETURN node",
         )
         .expect("identifiant d'un index déclaré");
-    assert!(!r.rows.is_empty());
+    assert!(
+        !r.rows.is_empty(),
+        "l'identifiant d'un index déclaré doit rendre ses points"
+    );
 }
 
 #[test]
