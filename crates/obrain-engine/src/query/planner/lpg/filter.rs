@@ -2741,8 +2741,9 @@ impl super::Planner {
     /// materialisait |externe| x |label| paires puis filtrait par ligne.
     ///
     /// Garde-fous :
-    /// - propriete NON indexee → `Ok(None)` (une sonde non indexee serait un
-    ///   scan complet PAR LIGNE externe, pire que le produit croise) ;
+    /// - propriete NON indexee et que le substrat ne sait pas (encore)
+    ///   indexer → `Ok(None)` (une sonde non indexee serait un scan complet
+    ///   PAR LIGNE externe, pire que le produit croise) ;
     /// - `expr` sans variable (litteral, dont NULL) → `Ok(None)`, le chemin
     ///   par litteral et la logique trivaluee du chemin generique s'en
     ///   chargent ;
@@ -2771,16 +2772,28 @@ impl super::Planner {
             return Ok(None);
         };
 
-        if !self.store.has_property_index(&property) {
-            return Ok(None);
-        }
-
         // La cle doit etre correlee : au moins une variable, et rien que des
         // variables externes. Un litteral pur (zero variable) appartient au
         // chemin d'index par litteral.
         let mut key_vars: HashSet<String> = HashSet::new();
         Self::collect_expression_variables(&key_logical, &mut key_vars);
         if key_vars.is_empty() {
+            return Ok(None);
+        }
+
+        // ── MÊME PORTE QUE LE CHEMIN LITTÉRAL (#248, puis #189 F3) ──
+        //
+        // `has_property_index` seul n'est vrai que d'un index DÉJÀ en
+        // mémoire : ce chemin ne le demandait jamais, donc le substrat ne le
+        // bâtissait jamais pour lui, et `UNWIND $paths AS p MATCH (n {path:
+        // p})` restait un produit croisé |paths| × V à chaque appel (code_46
+        // de PO : 12 à 59 s). `peut_indexer_propriete` (évaluée APRÈS, et
+        // après la garde de corrélation ci-dessus : elle compte la demande)
+        // laisse le substrat bâtir l'index à la Nième demande, comme pour
+        // `try_plan_filter_with_property_index`.
+        if !(self.store.has_property_index(&property)
+            || self.store.peut_indexer_propriete(&property))
+        {
             return Ok(None);
         }
 
