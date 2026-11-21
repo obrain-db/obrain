@@ -11,7 +11,9 @@
 //! géographique elle-même. L'arbre travaille en `f32` : son élagage est
 //! rendu CONSERVATIF par une borne dérivée (voir « Borne d'élagage »), puis
 //! chaque candidat est filtré en `f64` par la fonction du balayage. Le
-//! résultat est celui du balayage, au bit près.
+//! résultat est celui du balayage, au bit près — SOUS l'hypothèse libm
+//! énoncée dans « Borne d'élagage », vérifiée sur des cas mesurés, pas
+//! démontrée.
 //!
 //! # Trois étages
 //!
@@ -69,8 +71,20 @@ use crate::index::vp_tree::VpTree;
 //
 // HYPOTHÈSE, la seule qui ne soit pas garantie par IEEE 754 : `sin`, `cos`
 // et `asin` de la libm de la plateforme sont exactes à 1 ulp près (`sqrt` et
-// les quatre opérations sont correctement arrondies par la norme). Elle est
-// VÉRIFIÉE, pas démontrée, par `erreur_haversine_bornee_contre_atan2`.
+// les quatre opérations sont correctement arrondies par la norme).
+//
+// Ce qu'on en sait, et ses limites :
+// - `erreur_haversine_bornee_contre_atan2` la VÉRIFIE sur 200 000 cas
+//   adverses (écart max observé 0,217 m, borne 1,687 m). Des cas mesurés
+//   valident ces cas-là ; ils ne démontrent pas l'hypothèse.
+// - La libm dépend de la cible : macOS, glibc, musl et le port Rust de
+//   wasm32 n'ont pas la même implémentation. La vérification ne vaut que là
+//   où ce test tourne.
+// - Le « ≈ 32 arrondis » de `a` (majoré à 64) est un décompte d'opérations
+//   fait à la main, pas une preuve vérifiée par machine.
+// Si l'hypothèse tombe, l'index peut à nouveau différer du balayage près de
+// la frontière du rayon ; la marge de 7,8× entre l'observé et la borne est
+// ce qui protège, pas une garantie.
 
 /// Arrondi unitaire du `f32` : 2⁻²⁴.
 const U_F32: f64 = 1.0 / 16_777_216.0;
@@ -146,10 +160,11 @@ fn trier(v: &mut [(u32, f64)]) {
 /// Un index spatial en mémoire : `(node id → (lon, lat))`, interrogeable par
 /// rayon et par k plus proches.
 ///
-/// Contrat : [`SpatialIndex::dans_rayon`] rend EXACTEMENT les points que
-/// rendrait un balayage par [`haversine_m`] (`h ≤ rayon`), et
-/// [`SpatialIndex::plus_proches`] les `k` premiers dans l'ordre
-/// (distance, identifiant).
+/// Contrat, SOUS l'hypothèse libm de « Borne d'élagage » :
+/// [`SpatialIndex::dans_rayon`] rend les points que rendrait un balayage par
+/// [`haversine_m`] (`h ≤ rayon`), et [`SpatialIndex::plus_proches`] les `k`
+/// premiers dans l'ordre (distance, identifiant). Les points dont la
+/// distance est NaN ne sont jamais rendus.
 pub struct SpatialIndex {
     /// L'arbre, dont la valeur est l'indice COMPACT dans `positions`
     /// (`u32` pour ne pas payer la taille d'un `NodeId` par point).
@@ -172,6 +187,10 @@ pub struct SpatialIndex {
     /// Identifiants supprimés de l'arbre (toujours un sous-ensemble de
     /// `par_id`, jamais dans `surcouche`).
     tombes: HashSet<u32>,
+    /// Nombre de points visibles, tenu à jour à chaque écriture : `len()` en
+    /// O(1). Chaque écriture compare la visibilité de l'identifiant avant et
+    /// après — un déplacement ne compte jamais deux fois.
+    vivants: usize,
 }
 
 impl SpatialIndex {
@@ -220,6 +239,7 @@ impl SpatialIndex {
             })
             .collect();
         let arbre = VpTree::build(bruts, haversine_f32);
+        let vivants = ids.len() + hors_domaine.len();
         Self {
             arbre,
             ids,
@@ -228,6 +248,23 @@ impl SpatialIndex {
             hors_domaine,
             surcouche: HashMap::new(),
             tombes: HashSet::new(),
+            vivants,
+        }
+    }
+
+    /// L'identifiant est-il visible d'une requête ?
+    fn visible(&self, id: u32) -> bool {
+        self.surcouche.contains_key(&id)
+            || self.hors_domaine.contains_key(&id)
+            || (self.par_id.contains_key(&id) && !self.tombes.contains(&id))
+    }
+
+    /// Ajuste `vivants` après une écriture sur `id`, visible `avant` ou non.
+    fn compter(&mut self, id: u32, avant: bool) {
+        match (avant, self.visible(id)) {
+            (false, true) => self.vivants += 1,
+            (true, false) => self.vivants -= 1,
+            _ => {}
         }
     }
 
@@ -236,20 +273,10 @@ impl SpatialIndex {
         self.surcouche.contains_key(&id) || self.tombes.contains(&id)
     }
 
-    /// Nombre de points interrogeables.
+    /// Nombre de points interrogeables, en O(1).
     #[must_use]
     pub fn len(&self) -> usize {
-        let base_vivante = self
-            .ids
-            .iter()
-            .filter(|&&id| !self.base_masquee(id))
-            .count();
-        let hors_vivants = self
-            .hors_domaine
-            .keys()
-            .filter(|id| !self.surcouche.contains_key(id))
-            .count();
-        base_vivante + hors_vivants + self.surcouche.len()
+        self.vivants
     }
 
     /// L'index est-il vide ?
@@ -275,19 +302,23 @@ impl SpatialIndex {
             self.retirer(id);
             return false;
         }
+        let avant = self.visible(id);
         self.tombes.remove(&id);
         // La surcouche prime sur l'arbre et sur `hors_domaine` ; indexée par
         // identifiant, une réécriture remplace, elle n'empile pas.
         self.surcouche.insert(id, [lon, lat]);
+        self.compter(id, avant);
         true
     }
 
     /// Retire un point. Rend `true` s'il était présent.
     pub fn retirer(&mut self, id: u32) -> bool {
+        let avant = self.visible(id);
         let dans_surcouche = self.surcouche.remove(&id).is_some();
         let dans_hors = self.hors_domaine.remove(&id).is_some();
         let dans_base = self.par_id.contains_key(&id);
         let base_vivante = dans_base && self.tombes.insert(id);
+        self.compter(id, avant);
         dans_surcouche || dans_hors || base_vivante
     }
 
@@ -322,8 +353,8 @@ impl SpatialIndex {
     }
 
     /// Les points à `h ≤ rayon_m` mètres, triés par (distance, identifiant),
-    /// avec leur distance EXACTE en `f64` — exactement ce que rendrait le
-    /// balayage.
+    /// avec leur distance en `f64` — ce que rendrait le balayage, sous
+    /// l'hypothèse libm de « Borne d'élagage ».
     ///
     /// Un rayon négatif ou NaN rend une liste vide (le balayage aussi :
     /// `d ≤ NaN` est faux).
@@ -382,7 +413,9 @@ impl SpatialIndex {
     /// jamais du résultat, et les tombes ne peuvent pas l'épuiser : la
     /// demande double tant qu'elle ne rend pas `k` vivants.
     ///
-    /// `k == 0` rend une liste vide.
+    /// Un point dont la distance à la requête n'est pas un nombre n'est
+    /// jamais rendu (même contrat que [`SpatialIndex::dans_rayon`] et que le
+    /// balayage). `k == 0` rend une liste vide.
     #[must_use]
     pub fn plus_proches(&self, lon: f64, lat: f64, k: usize) -> Vec<(u32, f64)> {
         if k == 0 || !lon.is_finite() || !lat.is_finite() {
@@ -421,6 +454,12 @@ impl SpatialIndex {
                     .map(|(_, p)| haversine_m(lon, lat, p[0], p[1])),
             );
         }
+        // Distance NaN (seul cas : `lon2 − lon1` déborde en infini) : le
+        // balayage ne rend jamais un tel point (`NaN <= r` est faux), le kNN
+        // ne le classe donc pas — et surtout, il ne doit pas devenir la borne
+        // (`total_cmp` le range en dernier ; pris comme borne, il viderait la
+        // réponse).
+        distances.retain(|d| !d.is_nan());
         if distances.is_empty() {
             return Vec::new();
         }
@@ -717,6 +756,7 @@ mod exactitude {
         let mut v: Vec<(u32, f64)> = pts
             .iter()
             .map(|(&id, p)| (id, haversine_m(lon, lat, p[0], p[1])))
+            .filter(|(_, d)| !d.is_nan())
             .collect();
         trier(&mut v);
         v.truncate(k);
@@ -750,6 +790,8 @@ mod exactitude {
                     verite.insert(id, [lon, lat]);
                 }
             }
+            assert_eq!(idx.len(), idx.recompter(), "compteur après l'écriture {i}");
+            assert_eq!(idx.len(), verite.len(), "len après l'écriture {i}");
         }
         assert_eq!(idx.anomalies(), 0);
         assert_eq!(idx.len(), verite.len());
@@ -842,6 +884,97 @@ mod exactitude {
             pire <= borne,
             "écart observé {pire} m au-delà de la borne {borne} m"
         );
+    }
+
+    /// Revue du 21/11 (complément) : `lon2 − lon1` déborde en infini,
+    /// `haversine_m` rend NaN pour le second point. Le balayage GQL ne le rend
+    /// jamais (`NaN <= r` est faux) ; l'index ne doit ni le classer, ni perdre
+    /// pour autant le point à distance 0.
+    #[test]
+    fn knn_distance_non_finie_ne_perd_pas_le_point_a_zero() {
+        assert!(haversine_m(-f64::MAX, 0.0, f64::MAX, 0.0).is_nan());
+        let idx = SpatialIndex::build(vec![(1, -f64::MAX, 0.0), (2, f64::MAX, 0.0)]);
+        assert_eq!(idx.plus_proches(-f64::MAX, 0.0, 2), vec![(1, 0.0)]);
+        assert_eq!(
+            idx.dans_rayon(-f64::MAX, 0.0, f64::INFINITY),
+            vec![(1, 0.0)]
+        );
+    }
+
+    impl SpatialIndex {
+        /// Recompte en O(n) ce que `vivants` tient en O(1).
+        fn recompter(&self) -> usize {
+            let ids: HashSet<u32> = self
+                .ids
+                .iter()
+                .copied()
+                .chain(self.hors_domaine.keys().copied())
+                .chain(self.surcouche.keys().copied())
+                .collect();
+            ids.into_iter().filter(|&id| self.visible(id)).count()
+        }
+    }
+
+    /// Grandes magnitudes finies : hors domaine, donc balayées exactement par
+    /// la même fonction que le balayage GQL — y compris quand elle rend NaN.
+    #[test]
+    fn grandes_magnitudes_egal_balayage_et_nan_seulement_au_debordement() {
+        let mut g = Lcg(0xB16_F64);
+        let magnitude = |g: &mut Lcg| -> f64 {
+            let signe = if g.suivant() < 0.5 { -1.0 } else { 1.0 };
+            match (g.suivant() * 4.0) as u32 {
+                0 => signe * f64::MAX,
+                1 => signe * f64::MAX * g.entre(0.4, 0.6),
+                2 => signe * 10f64.powf(g.entre(0.0, 308.0)),
+                _ => g.entre(-180.0, 180.0),
+            }
+        };
+        let mut pts: Vec<(u32, f64, f64)> = Vec::new();
+        for i in 0..300u32 {
+            let lon = magnitude(&mut g);
+            let lat = if i % 3 == 0 {
+                magnitude(&mut g)
+            } else {
+                g.entre(-90.0, 90.0)
+            };
+            pts.push((i, lon, lat));
+        }
+        let idx = SpatialIndex::build(pts.clone());
+        let verite: HashMap<u32, [f64; 2]> = pts.iter().map(|&(id, a, b)| (id, [a, b])).collect();
+        assert_eq!(idx.len(), verite.len());
+        for _ in 0..60 {
+            let (lon, lat) = (
+                magnitude(&mut g),
+                if g.suivant() < 0.5 {
+                    magnitude(&mut g)
+                } else {
+                    g.entre(-90.0, 90.0)
+                },
+            );
+            for p in verite.values() {
+                let d = haversine_m(lon, lat, p[0], p[1]);
+                let deborde = (p[0] - lon).is_infinite();
+                assert_eq!(
+                    d.is_nan(),
+                    deborde,
+                    "NaN seulement au débordement : ({lon}, {lat}) → {p:?}"
+                );
+            }
+            for r in [0.0, 1e3, 1e7, f64::INFINITY] {
+                assert_eq!(
+                    idx.dans_rayon(lon, lat, r),
+                    balayage(&verite, lon, lat, r),
+                    "rayon ({lon}, {lat}, {r})"
+                );
+            }
+            for k in [1usize, 5, 400] {
+                assert_eq!(
+                    idx.plus_proches(lon, lat, k),
+                    plus_proches_balayage(&verite, lon, lat, k),
+                    "knn ({lon}, {lat}, {k})"
+                );
+            }
+        }
     }
 
     #[test]

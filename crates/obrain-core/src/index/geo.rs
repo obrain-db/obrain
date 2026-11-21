@@ -32,9 +32,20 @@ pub fn latitude_valide(lat: f64) -> bool {
 ///
 /// Symétrique au bit près : `d(a, b) == d(b, a)` (les seules opérations qui
 /// dépendent de l'ordre sont des carrés de sinus et un produit commutatif).
-/// Rend exactement `0.0` pour deux points identiques. Ne rend jamais NaN pour
-/// des entrées finies : `a` est ramené dans [0, 1] avant l'`asin`, car des
-/// antipodes peuvent produire `1.0000000000000002`.
+/// Rend exactement `0.0` pour deux points identiques. `a` est ramené dans
+/// [0, 1] avant l'`asin`, car des antipodes peuvent produire
+/// `1.0000000000000002`.
+///
+/// NaN : rendu pour toute entrée non finie, ET pour des entrées finies dont la
+/// différence de longitudes DÉBORDE (`lon2 − lon1` hors de `±f64::MAX`, par
+/// exemple `-f64::MAX` et `f64::MAX`) : `sin(∞)` vaut NaN. C'est le seul cas
+/// pour des entrées finies — `to_radians` multiplie par π/180 < 1, et la
+/// différence des latitudes en radians ne peut pas déborder. Le prédicat GQL
+/// `distance(..) <= r` est alors faux, et l'index spatial suit ce contrat.
+///
+/// Grandes magnitudes finies : la fonction reste définie, mais la réduction
+/// d'argument de `sin`/`cos` sur des angles énormes n'a plus de sens
+/// géographique. Le résultat est celui de cette formule, rien de plus.
 #[must_use]
 pub fn haversine_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let (phi1, phi2) = (lat1.to_radians(), lat2.to_radians());
