@@ -14010,7 +14010,15 @@ impl SubstrateStore {
             })
             .collect();
 
-        let (debut_pages, debut_tas) = pz_lock.read().fins();
+        // (MULTI-ÉCRIVAIN mono-store) Réserver ATOMIQUEMENT la plage auprès du
+        // curseur global, SOUS le verrou d'écriture : deux écrivains obtiennent
+        // des plages disjointes au lieu de lire la même fin et de se chevaucher
+        // (ce qui produisait « blocs non contigus — zone trouée »).
+        let total_pages: u32 = comptes.iter().map(|(p, _)| *p).sum();
+        let total_tas: u32 = comptes.iter().map(|(_, t)| *t).sum();
+        let (debut_pages, debut_tas) = pz_lock
+            .write()
+            .reserver_et_avancer(total_pages, total_tas)?;
         let mut bases = Vec::with_capacity(sous.len());
         let (mut bp, mut bt) = (debut_pages, debut_tas);
         for &(p, t) in &comptes {
@@ -14142,9 +14150,14 @@ impl SubstrateStore {
             differees.extend(di);
             ecrites += ec;
         }
-        pz_lock
-            .write()
-            .ecrire_blocs_en_lot(&blocs_p, &blocs_t, fin_pages, fin_tas)?;
+        pz_lock.write().ecrire_blocs_en_lot(
+            &blocs_p,
+            &blocs_t,
+            debut_pages,
+            debut_tas,
+            fin_pages,
+            fin_tas,
+        )?;
         Ok((tetes, differees, ecrites))
     }
 

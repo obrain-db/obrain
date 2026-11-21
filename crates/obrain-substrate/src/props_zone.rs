@@ -533,6 +533,8 @@ impl PropsZone {
         &mut self,
         props: &[(u32, Vec<u8>)],
         tas: &[(u32, Vec<u8>)],
+        debut_props: u32,
+        debut_tas: u32,
         fin_props: u32,
         fin_tas: u32,
     ) -> SubstrateResult<()> {
@@ -550,8 +552,12 @@ impl PropsZone {
             }
             attendu == fin
         };
-        if !contigu(props, self.next_page_idx, fin_props, PAGE_SIZE)
-            || !contigu(tas, self.next_heap_page_idx, fin_tas, HEAP_PAGE_SIZE)
+        // On valide depuis la plage RÉSERVÉE PAR CE RÉDACTEUR (debut_*), pas le
+        // curseur global : le curseur a déjà avancé (réservation), et d'autres
+        // écrivains peuvent avoir réservé au-delà. La contiguïté locale suffit ;
+        // l'absence de trou GLOBAL est garantie par la réservation disjointe.
+        if !contigu(props, debut_props, fin_props, PAGE_SIZE)
+            || !contigu(tas, debut_tas, fin_tas, HEAP_PAGE_SIZE)
         {
             return Err(SubstrateError::Internal(
                 "ecrire_blocs_en_lot : blocs non contigus — refus d'écrire une zone trouée".into(),
@@ -572,8 +578,8 @@ impl PropsZone {
             .par_iter()
             .try_for_each(|(d, o)| zh.ecrire_a(u64::from(*d) * HEAP_PAGE_SIZE as u64, o));
         r2?;
-        self.next_page_idx = fin_props;
-        self.next_heap_page_idx = fin_tas;
+        // Le curseur a été avancé par `reserver_et_avancer` : on ne le rebouge
+        // PAS ici (sinon un rédacteur plus lent ferait RECULER la fin globale).
         Ok(())
     }
 
@@ -594,6 +600,29 @@ impl PropsZone {
             )?;
         }
         Ok(())
+    }
+
+    /// (MULTI-ÉCRIVAIN mono-store) Réserve ATOMIQUEMENT `pages_props` pages de
+    /// propriétés et `pages_tas` pages de tas au-delà de la fin courante, avance
+    /// le curseur SOUS le verrou d'écriture, et rend l'ancienne fin (= début de
+    /// la plage réservée). Deux écrivains concurrents obtiennent ainsi des
+    /// plages DISJOINTES ; la contiguïté « depuis 0 » à la réouverture reste
+    /// vraie une fois que TOUS ont écrit (le désordre n'est que temporel).
+    pub(crate) fn reserver_et_avancer(
+        &mut self,
+        pages_props: u32,
+        pages_tas: u32,
+    ) -> SubstrateResult<(u32, u32)> {
+        let (debut_pages, debut_tas) = self.fins();
+        if pages_props > 0 {
+            self.ensure_page_addressable(debut_pages.saturating_add(pages_props - 1))?;
+        }
+        if pages_tas > 0 {
+            self.ensure_heap_page_addressable(debut_tas.saturating_add(pages_tas - 1))?;
+        }
+        self.next_page_idx = debut_pages.saturating_add(pages_props);
+        self.next_heap_page_idx = debut_tas.saturating_add(pages_tas);
+        Ok((debut_pages, debut_tas))
     }
 
     /// Pose une page de propriétés DÉJÀ REMPLIE : alloue son index, la chaîne
