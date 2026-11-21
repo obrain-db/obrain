@@ -14150,7 +14150,9 @@ impl SubstrateStore {
             differees.extend(di);
             ecrites += ec;
         }
-        pz_lock.write().ecrire_blocs_en_lot(
+        // Verrou de LECTURE : l'écriture est un pwrite sur plage disjointe,
+        // déjà grossie par la réservation → les rédacteurs écrivent en parallèle.
+        pz_lock.read().ecrire_blocs_en_lot(
             &blocs_p,
             &blocs_t,
             debut_pages,
