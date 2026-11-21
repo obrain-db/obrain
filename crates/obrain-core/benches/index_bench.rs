@@ -2,14 +2,14 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use obrain_common::types::{EdgeId, NodeId};
 use obrain_core::index::adjacency::ChunkedAdjacency;
 use obrain_core::index::hash::HashIndex;
 use obrain_core::index::vector::{
-    brute_force_knn, compute_distance, DistanceMetric, HnswConfig, HnswIndex, ProductQuantizer,
-    ScalarQuantizer,
+    DistanceMetric, HnswConfig, HnswIndex, ProductQuantizer, ScalarQuantizer, brute_force_knn,
+    compute_distance,
 };
 
 fn bench_adjacency_insert(c: &mut Criterion) {
