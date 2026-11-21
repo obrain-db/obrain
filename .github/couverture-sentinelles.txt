@@ -1,0 +1,15 @@
+# Sentinelles de périmètre du job « Couverture ».
+# Un fichier listé ici est ENTIÈREMENT sous une feature Cargo inactive par défaut :
+# il n'apparaît dans le rapport lcov que si le profil `--all-features` l'a mesuré.
+# S'il manque, le job échoue : un profil a cessé de mesurer cette feature, et le
+# contrôle du code neuf redeviendrait aveugle dessus.
+# Un fichier mixte (gaté en partie seulement) n'est PAS une sentinelle : il est
+# mesuré par le profil par défaut et ne prouve rien.
+# Format : un chemin (relatif à la racine du dépôt) par ligne, `#` commence un commentaire.
+crates/obrain-adapters/src/query/cypher/parser.rs # feature cypher
+crates/obrain-adapters/src/query/sparql/parser.rs # feature sparql
+crates/obrain-adapters/src/query/gremlin/parser.rs # feature gremlin
+crates/obrain-adapters/src/query/graphql/parser.rs # feature graphql
+crates/obrain-adapters/src/query/sql_pgq/parser.rs # feature sql-pgq
+crates/obrain-engine/src/database/rdf_ops.rs # feature rdf
+crates/obrain-engine/src/database/embed.rs # feature embed

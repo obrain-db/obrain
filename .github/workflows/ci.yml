@@ -175,36 +175,55 @@ jobs:
           if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats || true; fi
 
   # ── COUVERTURE (2026-11-21) ──────────────────────────────────────────────
-  # Cible du projet : 95 % des lignes. Mesuré sur main le 21/11/2026 : 85,81 %
-  # sur le périmètre ci-dessous (83,23 % sur tout le workspace, bindings
-  # compris). Un seuil global de 95 % bloquerait donc toute PR dès le premier
-  # jour ; deux contrôles obligatoires à la place :
-  #   1. CODE NEUF : les lignes modifiées par la PR sont couvertes à 95 %
-  #      (diff-cover sur le rapport lcov, aucune dépendance à un service externe).
-  #   2. PLANCHER GLOBAL : un cliquet (COUVERTURE_PLANCHER) fixé juste sous le
-  #      niveau mesuré. On le RELÈVE quand la couverture monte, jamais on ne le
-  #      baisse ; objectif final 95.
-  # Périmètre : les bindings (C, Node, Python) et obrain-web sont testés par
-  # leurs propres jobs (maturin/pytest, npm, navigateur), pas par `cargo test` :
-  # les compter ici les afficherait à 0 %. Tests, bancs et exemples ne comptent
-  # pas dans la couverture qu'ils produisent.
-  # Les verdicts réussite/échec des tests restent ceux du job « Tests » : ici
-  # `--ignore-run-fail`, car des tests de latence échouent sous instrumentation
+  # CIBLE DU PROJET : 95 % des lignes. Ce job est une ÉTAPE VERS cette cible, pas
+  # la cible : il n'y a pas de seuil global de 95 % ici, et il ne faut pas le
+  # présenter comme tel. Deux contrôles obligatoires, de nature différente :
+  #   1. CODE NEUF (scripts/couverture_code_neuf.py) : les lignes qu'une PR ajoute
+  #      et que la mesure connaît sont couvertes à 95 %. Une fonction neuve que la
+  #      mesure ne voit pas (feature ou plateforme inactive) FAIT ÉCHOUER le
+  #      contrôle au lieu de passer à 100 % — voir l'en-tête du script et ses tests.
+  #   2. PLANCHER GLOBAL (COUVERTURE_PLANCHER) : cliquet fixé sous le niveau mesuré
+  #      sur main. On le RELÈVE quand la couverture monte, jamais on ne le baisse.
+  #      Objectif final : 95.
+  # MESURE = DEUX PROFILS FUSIONNÉS. `cargo llvm-cov --workspace` seul compile les
+  # features par défaut : cypher, sparql, gremlin, graphql, sql-pgq, temporal,
+  # tiered-storage, rdf, cognitive-full… n'existaient pas dans le rapport (32 000
+  # lignes de parseurs absentes, mesuré le 21/11/2026). On joue donc :
+  #   a) les features par défaut (chemins `cfg(not(feature = …))` compris) ;
+  #   b) `--all-features` (comme le job « Tests (toutes features) »).
+  # puis `cargo llvm-cov report` fusionne les deux (une ligne couverte dans l'un
+  # des profils l'est). Les sentinelles (.github/couverture-sentinelles.txt) font
+  # échouer le job si un profil cesse de mesurer un fichier gaté qu'il doit voir.
+  # PÉRIMÈTRE GARANTI : crates/<crate>/src/**/*.rs, hors bindings, obrain-web,
+  # tests, benches, exemples. Les bindings (C, Node, Python) et obrain-web sont
+  # testés par leurs propres jobs (maturin/pytest, npm, navigateur), pas par
+  # `cargo test` : les compter ici les afficherait à 0 %.
+  # NON GARANTI (voir le script) : du code exécutable ajouté dans une fonction déjà
+  # mesurée sous un cfg inactif (plateforme, wasm) est compté et signalé en
+  # avertissement, jamais bloquant ; la revue humaine reste le contrôle de ce cas.
+  # `--ignore-run-fail` : des tests de latence échouent sous instrumentation
   # (mesuré : cognitive position::scale_tests, index_concurrency,
-  # annulation_bout_en_bout, wal_group_commit_needle) sans rien dire du code.
+  # annulation_bout_en_bout, wal_group_commit_needle) sans rien dire du code ;
+  # les verdicts réussite/échec restent ceux des jobs « Tests ».
   couverture:
     name: Couverture (code neuf ≥ 95 %, plancher global)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    timeout-minutes: 180
     env:
-      COUVERTURE_PLANCHER: "85"
+      # PROVISOIRE (21/11/2026) : 85 mesuré sur le seul profil par défaut ; le profil
+      # fusionné (défaut + toutes features) n'a pas encore de chiffre CI. À fixer
+      # juste sous la mesure du premier run, puis à ne plus baisser.
+      COUVERTURE_PLANCHER: "70"
       COUVERTURE_CODE_NEUF: "95"
       COUVERTURE_EXCLUS: '(/bindings/|/obrain-web/|/tests/|/benches/|/examples/)'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # diff-cover compare le rapport au diff contre la branche de base.
+          # Le script compare le rapport au diff contre la branche de base.
           fetch-depth: 0
+      - name: Le contrôle du code neuf est lui-même testé (cas négatifs compris)
+        run: python3 scripts/test_couverture_code_neuf.py
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
@@ -225,39 +244,52 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
-      - name: Outils (cargo-llvm-cov, diff-cover — versions épinglées)
-        run: |
-          cargo install cargo-llvm-cov --locked --version 0.8.5
-          python3 -m pip install --user 'diff-cover==11.0.4'
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Mesure (tests instrumentés, rapport lcov)
+      - name: Outil (cargo-llvm-cov, version épinglée)
+        run: cargo install cargo-llvm-cov --locked --version 0.8.5
+      - name: Mesure, profil 1/2 — features par défaut
         run: |
           ulimit -n 8192
-          cargo llvm-cov --workspace --ignore-run-fail \
-            --ignore-filename-regex "$COUVERTURE_EXCLUS" \
+          cargo llvm-cov --no-report --workspace --ignore-run-fail
+      - name: Mesure, profil 2/2 — toutes les features
+        run: |
+          ulimit -n 8192
+          cargo llvm-cov --no-report --workspace --all-features --ignore-run-fail
+      - name: Rapport fusionné (lcov)
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$COUVERTURE_EXCLUS" \
             --lcov --output-path "$RUNNER_TEMP/couverture/lcov.info"
+      - name: Sentinelles de périmètre (un fichier gaté par feature doit être mesuré)
+        run: |
+          manque=0
+          while read -r chemin _; do
+            case "$chemin" in ''|'#'*) continue;; esac
+            if ! grep -q "^SF:.*/$chemin\$" "$RUNNER_TEMP/couverture/lcov.info"; then
+              echo "::error::sentinelle absente du rapport : $chemin (un profil ne mesure plus cette feature ?)"
+              manque=1
+            fi
+          done < .github/couverture-sentinelles.txt
+          exit $manque
       - name: Résumé
         run: |
           cargo llvm-cov report --ignore-filename-regex "$COUVERTURE_EXCLUS" --summary-only | tee "$RUNNER_TEMP/couverture/resume.txt"
           total=$(awk '/^TOTAL/ {print $10}' "$RUNNER_TEMP/couverture/resume.txt")
           {
-            echo "### Couverture"
+            echo "### Couverture (profils fusionnés : défaut + toutes features)"
             echo ""
-            echo "Lignes couvertes : **${total}** — plancher ${COUVERTURE_PLANCHER} %, cible 95 %."
+            echo "Lignes couvertes : **${total}** — plancher ${COUVERTURE_PLANCHER} %, cible du projet 95 %."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Plancher global (cliquet)
         run: |
           cargo llvm-cov report --ignore-filename-regex "$COUVERTURE_EXCLUS" \
             --fail-under-lines "$COUVERTURE_PLANCHER"
-      - name: Code neuf couvert à 95 % (lignes modifiées par la PR)
+      - name: Code neuf — couverture des lignes ajoutées, fonctions non mesurées refusées
         if: github.event_name == 'pull_request'
         run: |
-          diff-cover "$RUNNER_TEMP/couverture/lcov.info" \
-            --compare-branch="origin/${{ github.base_ref }}" \
-            --fail-under="$COUVERTURE_CODE_NEUF" \
+          python3 scripts/couverture_code_neuf.py "$RUNNER_TEMP/couverture/lcov.info" \
+            --base "origin/${{ github.base_ref }}" \
+            --fail-under "$COUVERTURE_CODE_NEUF" \
             --markdown-report "$RUNNER_TEMP/couverture/code-neuf.md"
-        # Le détail des lignes non couvertes va dans le résumé du run.
-      - name: Détail du code neuf non couvert
+      - name: Détail du code neuf
         if: always() && github.event_name == 'pull_request'
         run: |
           [ -f "$RUNNER_TEMP/couverture/code-neuf.md" ] && cat "$RUNNER_TEMP/couverture/code-neuf.md" >> "$GITHUB_STEP_SUMMARY" || true
