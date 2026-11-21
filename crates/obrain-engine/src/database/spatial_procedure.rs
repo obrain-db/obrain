@@ -49,7 +49,49 @@ pub(crate) struct RegistreSpatial {
     /// la base attendait, en tenant son verrou de nœud). Un couple entre ici
     /// AVANT le balayage, ce qui garde la construction exacte (voir
     /// [`Self::sous_verrou`]).
+    ///
+    /// ── INVARIANT (revue de #282, 21/11 nuit) ─────────────────────────────
+    ///
+    /// Quand `index` n'est pas tenu en écriture, `suivis` contient EXACTEMENT
+    /// les couples des index chargés. Pour cela, tout ajout et tout retrait de
+    /// couple se fait SOUS le verrou d'écriture de `index` (ordre `index` puis
+    /// `suivis`, jamais l'inverse) : construction, publication, échec de
+    /// construction, retrait. Hors de ces sites, `suivis` n'est tenu qu'en
+    /// lecture, en feuille, et relâché avant de prendre `index`.
+    ///
+    /// AVANT : `retirer` retirait l'index, relâchait le verrou, puis retirait le
+    /// couple ; une construction pouvait publier entre les deux, et le retrait
+    /// effaçait alors le couple d'un index chargé (vu rouge, par barrière
+    /// déterministe : `drop_concurrent_dune_reconstruction_garde_lindex_suivi`).
+    /// Un échec de construction laissait de même un couple sans index.
     suivis: RwLock<HashSet<(String, String)>>,
+}
+
+/// Le verrou d'écriture du registre pendant une construction, et le nettoyage
+/// du couple si elle n'a rien publié.
+///
+/// `Drop::drop` s'exécute AVANT la libération de `index` : le nettoyage se fait
+/// donc sous `R`, comme tout retrait de couple (invariant de
+/// [`RegistreSpatial::suivis`]). Il couvre le retour anticipé (un index existe
+/// déjà : on garde son couple), la réussite (l'index vient d'être publié : on
+/// le garde) et l'échec par panique (rien de publié : le couple posé pour la
+/// construction partirait sinon orphelin, et toute écriture de la propriété
+/// attendrait pour rien).
+struct SousVerrou<'a> {
+    index: parking_lot::RwLockWriteGuard<'a, HashMap<String, Arc<RwLock<SpatialIndex>>>>,
+    suivis: &'a RwLock<HashSet<(String, String)>>,
+    cle: &'a str,
+    couple: Option<(String, String)>,
+}
+
+impl Drop for SousVerrou<'_> {
+    fn drop(&mut self) {
+        if let Some(c) = &self.couple
+            && !self.index.contains_key(self.cle)
+        {
+            self.suivis.write().remove(c);
+        }
+    }
 }
 
 /// `label:propriété` → `(label, propriété)`.
@@ -104,7 +146,7 @@ impl RegistreSpatial {
     /// | Verrou | Où |
     /// |---|---|
     /// | `V(n)` | `verrou_ecriture_noeud` du substrat, `Mutex`, 256 tranches ; tenu par `set_node_property` (scalaire, blob), `remove_node_property` et l'import en lot (blob) PENDANT leurs notifications |
-    /// | `S` | `suivis` ci-dessus |
+    /// | `S` | `suivis` ci-dessus ; écrit seulement sous `R` (invariant ci-dessus) |
     /// | `R` | `index` ci-dessus (ce verrou) |
     /// | `I(k)` | le verrou de CHAQUE index |
     /// | `Z` | les verrous internes de LECTURE du substrat (`get_node_property`, `node_has_label`, `nodes_by_label`), pris et rendus dans l'appel |
@@ -114,12 +156,15 @@ impl RegistreSpatial {
     ///   rendu) → `I(k)` (écriture) → `Z` ;
     /// - écrivain de label, suppression, résurrection : pas de `V` ; `S` → `R`
     ///   → `I(k)` → `Z` ;
-    /// - construction (ici) : `S` (écriture, rendu) → `R` (écriture, TENU) →
-    ///   `Z` ; jamais `V`, jamais `I` ;
+    /// - construction (ici) : `R` (écriture, TENU) → `S` (écriture, bref,
+    ///   imbriqué) → `Z` ; jamais `V`, jamais `I` ;
+    /// - retrait (`retirer`) : `R` (écriture, TENU) → `S` (écriture, bref,
+    ///   imbriqué) ;
     /// - requête : `R` (lecture, rendu) → `I(k)` (lecture, rendu) → `Z`.
     ///
     /// Aucun chemin ne prend `V` après un autre verrou, ni `R` en tenant un
-    /// `I` : la relecture n'a pas trouvé de cycle. C'est une DÉDUCTION sur
+    /// `I`, ni `R` en tenant `S` : `S` est une feuille, `R` puis `S` est le
+    /// seul ordre imbriqué. La relecture n'a pas trouvé de cycle. C'est une DÉDUCTION sur
     /// les gardes relues (motif `let … = ….lock()/write()/read()`), pas une
     /// preuve — d'où les tests bornés `aucun_interblocage_pendant_*`,
     /// qui fait tourner chaque chemin pendant qu'une construction tient `R`.
@@ -135,26 +180,57 @@ impl RegistreSpatial {
         remplacer: bool,
         construire: impl FnOnce() -> SpatialIndex,
     ) -> Arc<RwLock<SpatialIndex>> {
-        // Le couple est suivi AVANT le balayage : une écriture qui a vu le
-        // couple non suivi a eu lieu avant cette insertion, donc avant le
-        // balayage, qui la voit.
-        if let Some(c) = couple(cle) {
-            self.suivis.write().insert(c);
-        }
-        let mut index = self.index.write();
-        if !remplacer && let Some(existant) = index.get(cle) {
-            // Un autre constructeur a pu passer pendant qu'on attendait.
+        // `R` d'abord : tout ajout et tout retrait de couple se fait sous lui
+        // (invariant de `suivis`). Le couple est posé AVANT le balayage : une
+        // écriture dont la notification a vu le couple non suivi a eu lieu
+        // avant cette pose, donc avant le balayage, qui la voit ; une écriture
+        // postérieure voit le couple, et sa notification attend la
+        // publication. Personne ne peut le retirer tant que `R` est tenu.
+        let mut etat = SousVerrou {
+            index: self.index.write(),
+            suivis: &self.suivis,
+            cle,
+            couple: couple(cle),
+        };
+        if !remplacer && let Some(existant) = etat.index.get(cle) {
+            // Un autre constructeur a pu passer pendant qu'on attendait : son
+            // index est chargé, donc son couple l'est aussi.
             return Arc::clone(existant);
+        }
+        if let Some(c) = &etat.couple {
+            self.suivis.write().insert(c.clone());
         }
         #[cfg(test)]
         declencher(&CROCHET_AVANT_BALAYAGE, cle);
         let construit = Arc::new(RwLock::new(construire()));
         #[cfg(test)]
         declencher(&CROCHET_AVANT_PUBLICATION, cle);
-        index.insert(cle.to_string(), Arc::clone(&construit));
-        drop(index);
+        etat.index.insert(cle.to_string(), Arc::clone(&construit));
+        drop(etat);
         self.invalider_noms();
         construit
+    }
+
+    /// Écarts entre les index chargés et les couples suivis. Vide = cohérent.
+    /// Ordre des verrous : registre, puis couples.
+    #[cfg(test)]
+    pub(crate) fn incoherences(&self) -> Vec<String> {
+        let index = self.index.read();
+        let suivis = self.suivis.read();
+        let mut ecarts = Vec::new();
+        for cle in index.keys() {
+            if let Some(c) = couple(cle)
+                && !suivis.contains(&c)
+            {
+                ecarts.push(format!("index chargé mais non suivi : {cle}"));
+            }
+        }
+        for (l, p) in suivis.iter() {
+            if !index.contains_key(&format!("{l}:{p}")) {
+                ecarts.push(format!("couple suivi sans index : {l}:{p}"));
+            }
+        }
+        ecarts
     }
 
     /// Une propriété fait-elle partie d'un couple suivi ?
@@ -174,10 +250,16 @@ impl RegistreSpatial {
 
     /// Retire l'index d'une clé. Rend `true` s'il était chargé.
     pub(crate) fn retirer(&self, cle: &str) -> bool {
-        let retire = self.index.write().remove(cle).is_some();
+        // L'index ET son couple partent sous le MÊME verrou d'écriture : une
+        // construction ne peut pas publier entre les deux.
+        let mut index = self.index.write();
+        let retire = index.remove(cle).is_some();
         if let Some(c) = couple(cle) {
+            #[cfg(test)]
+            declencher(&CROCHET_RETIRER, cle);
             self.suivis.write().remove(&c);
         }
+        drop(index);
         self.invalider_noms();
         retire
     }
@@ -383,6 +465,10 @@ static CROCHET_AVANT_BALAYAGE: Crochet = parking_lot::Mutex::new(None);
 
 #[cfg(test)]
 static CROCHET_AVANT_PUBLICATION: Crochet = parking_lot::Mutex::new(None);
+
+/// Entre le retrait de l'index et le retrait de son couple, dans `retirer`.
+#[cfg(test)]
+static CROCHET_RETIRER: Crochet = parking_lot::Mutex::new(None);
 
 /// Injection d'échec du retrait DURABLE d'une déclaration, pour une clé.
 #[cfg(test)]
@@ -1420,5 +1506,239 @@ mod tests {
                 .expect("construction paresseuse");
         });
         verifier(&issue, &db, "v3_pos", "LieuV3:pos", x);
+    }
+
+    // ── Invariant index ⇔ couple suivi (revue de #282, 21/11 nuit) ─────────
+
+    /// DROP concurrent d'une reconstruction. Le crochet arrête `retirer` ENTRE
+    /// le retrait de l'index et celui du couple ; la reconstruction est lancée
+    /// à cet instant. Si elle peut publier pendant la pause, le retrait qui
+    /// suit efface le couple d'un index pourtant chargé : les écritures
+    /// suivantes ne le notifient plus.
+    #[test]
+    fn drop_concurrent_dune_reconstruction_garde_lindex_suivi() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let db = Arc::new(ObrainDB::new_in_memory());
+        let id = db.create_node_with_props(&["LieuCourseDrop"], [("pos", point(2.0, 48.0))]);
+        db.execute("CREATE INDEX cd_pos FOR (n:LieuCourseDrop) ON (n.pos) USING SPATIAL")
+            .expect("DDL");
+        let reconstruction_finie = Arc::new(AtomicBool::new(false));
+        let finie_dans_la_pause = Arc::new(AtomicBool::new(false));
+        {
+            let db = Arc::clone(&db);
+            let finie = Arc::clone(&reconstruction_finie);
+            let dans_la_pause = Arc::clone(&finie_dans_la_pause);
+            *CROCHET_RETIRER.lock() = Some((
+                "LieuCourseDrop:pos".to_string(),
+                Box::new(move || {
+                    let db2 = Arc::clone(&db);
+                    let finie2 = Arc::clone(&finie);
+                    std::thread::spawn(move || {
+                        db2.rebuild_spatial_index("LieuCourseDrop", "pos")
+                            .expect("rebuild");
+                        finie2.store(true, Ordering::SeqCst);
+                    });
+                    // Pause bornée : le constructeur publie-t-il pendant que
+                    // `retirer` est entre ses deux retraits ?
+                    for _ in 0..30 {
+                        if finie.load(Ordering::SeqCst) {
+                            dans_la_pause.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }),
+            ));
+        }
+        db.substrate_spatial_indexes.retirer("LieuCourseDrop:pos");
+        for _ in 0..1000 {
+            if reconstruction_finie.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            reconstruction_finie.load(Ordering::SeqCst),
+            "la reconstruction n'a pas fini en 10 s"
+        );
+        assert!(
+            db.substrate_spatial_indexes
+                .get("LieuCourseDrop:pos")
+                .is_some(),
+            "l'index a été publié"
+        );
+        assert_eq!(
+            db.substrate_spatial_indexes.incoherences(),
+            Vec::<String>::new()
+        );
+        assert!(
+            db.substrate_spatial_indexes.suit_propriete("pos"),
+            "l'index chargé n'est plus suivi : les écritures ne le notifieront plus"
+        );
+        db.set_node_property(id, "pos", point(3.0, 49.0));
+        let rendus = db
+            .spatial_search("LieuCourseDrop:pos", 3.0, 49.0, 1.0)
+            .expect("index");
+        assert_eq!(
+            rendus.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec![id],
+            "l'écriture faite après la course n'est pas arrivée dans l'index"
+        );
+        assert!(
+            !finie_dans_la_pause.load(Ordering::SeqCst),
+            "la reconstruction a publié PENDANT que `retirer` était entre ses deux retraits"
+        );
+    }
+
+    /// Une construction qui échoue ne laisse pas de couple orphelin.
+    #[test]
+    fn construction_en_echec_ne_laisse_pas_de_couple_orphelin() {
+        let registre = RegistreSpatial::nouveau();
+        let issue = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            registre.construire_sous_verrou("LieuEchecC:pos", || {
+                panic!("échec de construction injecté")
+            })
+        }));
+        assert!(issue.is_err());
+        assert!(registre.get("LieuEchecC:pos").is_none());
+        assert!(
+            !registre.suit_propriete("pos"),
+            "un couple suivi sans index reste : toute écriture de `pos` attendrait pour rien"
+        );
+        assert_eq!(registre.incoherences(), Vec::<String>::new());
+        // Le registre reste utilisable (parking_lot n'empoisonne pas).
+        let idx = registre.construire_sous_verrou("LieuEchecC:pos", || {
+            SpatialIndex::build(vec![(1, 2.0, 48.0)])
+        });
+        assert_eq!(idx.read().len(), 1);
+        assert!(registre.suit_propriete("pos"));
+        assert_eq!(registre.incoherences(), Vec::<String>::new());
+    }
+
+    /// Une reconstruction qui échoue sur un index chargé le laisse chargé et suivi.
+    #[test]
+    fn reconstruction_en_echec_garde_lancien_index_suivi() {
+        let registre = RegistreSpatial::nouveau();
+        let ancien = registre.construire_sous_verrou("LieuEchecR:pos", || {
+            SpatialIndex::build(vec![(1, 2.0, 48.0)])
+        });
+        let issue = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            registre.rebatir_sous_verrou("LieuEchecR:pos", || {
+                panic!("échec de reconstruction injecté")
+            })
+        }));
+        assert!(issue.is_err());
+        let encore = registre
+            .get("LieuEchecR:pos")
+            .expect("l'ancien index reste");
+        assert!(Arc::ptr_eq(&ancien, &encore));
+        assert!(registre.suit_propriete("pos"));
+        assert_eq!(registre.incoherences(), Vec::<String>::new());
+    }
+
+    /// Plusieurs constructeurs de la même clé : un seul construit ; tous
+    /// reçoivent le même index.
+    #[test]
+    fn plusieurs_constructeurs_de_la_meme_cle_ne_construisent_quune_fois() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let registre = Arc::new(RegistreSpatial::nouveau());
+        let constructions = Arc::new(AtomicUsize::new(0));
+        let depart = Arc::new(std::sync::Barrier::new(8));
+        let fils: Vec<_> = (0..8)
+            .map(|_| {
+                let (registre, constructions, depart) = (
+                    Arc::clone(&registre),
+                    Arc::clone(&constructions),
+                    Arc::clone(&depart),
+                );
+                std::thread::spawn(move || {
+                    depart.wait();
+                    registre.construire_sous_verrou("LieuMulti:pos", || {
+                        constructions.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        SpatialIndex::build(vec![(1, 2.0, 48.0)])
+                    })
+                })
+            })
+            .collect();
+        let rendus: Vec<_> = fils
+            .into_iter()
+            .map(|f| f.join().expect("constructeur"))
+            .collect();
+        assert_eq!(
+            constructions.load(Ordering::SeqCst),
+            1,
+            "un seul constructeur doit construire"
+        );
+        let publie = registre.get("LieuMulti:pos").expect("publié");
+        assert!(rendus.iter().all(|r| Arc::ptr_eq(r, &publie)));
+        assert_eq!(registre.incoherences(), Vec::<String>::new());
+    }
+
+    /// Entrelacement non déterministe, BORNÉ : reconstructeurs, DROP et
+    /// écrivain en même temps, puis l'invariant et une notification. Ne PROUVE
+    /// rien (il peut passer sur du code faux) ; il cherche.
+    #[test]
+    fn rafale_de_drop_reconstruction_et_ecritures_garde_linvariant() {
+        let db = Arc::new(ObrainDB::new_in_memory());
+        let id = db.create_node_with_props(&["LieuRafale"], [("pos", point(2.0, 48.0))]);
+        db.execute("CREATE INDEX rafale_pos FOR (n:LieuRafale) ON (n.pos) USING SPATIAL")
+            .expect("DDL");
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        let mut nombre = 0;
+        for _ in 0..2 {
+            let (db, tx) = (Arc::clone(&db), tx.clone());
+            nombre += 1;
+            std::thread::spawn(move || {
+                for _ in 0..25 {
+                    db.rebuild_spatial_index("LieuRafale", "pos")
+                        .expect("rebuild");
+                }
+                let _ = tx.send("reconstructeur");
+            });
+        }
+        for _ in 0..2 {
+            let (db, tx) = (Arc::clone(&db), tx.clone());
+            nombre += 1;
+            std::thread::spawn(move || {
+                for _ in 0..60 {
+                    db.substrate_spatial_indexes.retirer("LieuRafale:pos");
+                    std::thread::yield_now();
+                }
+                let _ = tx.send("drop");
+            });
+        }
+        {
+            let (db, tx) = (Arc::clone(&db), tx.clone());
+            nombre += 1;
+            std::thread::spawn(move || {
+                for i in 0..200u32 {
+                    db.set_node_property(id, "pos", point(2.0 + f64::from(i % 7) * 0.001, 48.0));
+                }
+                let _ = tx.send("écrivain");
+            });
+        }
+        for _ in 0..nombre {
+            rx.recv_timeout(std::time::Duration::from_secs(60))
+                .expect("un fil n'a pas fini en 60 s : blocage ?");
+        }
+        let ecarts = db.substrate_spatial_indexes.incoherences();
+        assert_eq!(
+            ecarts,
+            Vec::<String>::new(),
+            "invariant index ⇔ couple suivi rompu"
+        );
+        // Quel que soit l'état final de la rafale, l'index doit suivre les écritures.
+        db.rebuild_spatial_index("LieuRafale", "pos")
+            .expect("rebuild final");
+        db.set_node_property(id, "pos", point(3.0, 49.0));
+        let rendus = db
+            .spatial_search("LieuRafale:pos", 3.0, 49.0, 1.0)
+            .expect("index");
+        assert_eq!(
+            rendus.len(),
+            1,
+            "l'écriture finale n'est pas arrivée dans l'index"
+        );
     }
 }
