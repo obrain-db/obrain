@@ -15,8 +15,8 @@
 use obrain_common::types::Value;
 use obrain_core::execution::operators::{chemins_enumeres, noeuds_balayes};
 use obrain_engine::ObrainDB;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
