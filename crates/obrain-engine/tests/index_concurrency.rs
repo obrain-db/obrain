@@ -243,10 +243,39 @@ fn creer_un_index_ne_bloque_pas_les_recherches_en_cours() {
             "aucune recherche n'a abouti pendant la creation d'index : les \
              lecteurs etaient bloques ({avant} avant, {apres} apres)"
         );
+
+        // ── LA BORNE EST RELATIVE, ET C'EST DÉLIBÉRÉ ──────────────────────
+        // Un seuil absolu (« < 10 s ») mesurait la vitesse de la MACHINE, pas
+        // la propriété testée : sous `cargo llvm-cov` l'instrumentation
+        // multiplie les temps par 3 à 10, et le runner est partagé entre
+        // plusieurs jobs. Le test devenait rouge sans qu'aucun verrou ne soit
+        // tenu — mesuré : 15,07 s et 14,63 s sur deux profils de couverture,
+        // alors que `apres > avant` prouvait que les lecteurs n'avaient jamais
+        // cessé d'avancer.
+        //
+        // On mesure donc la MÊME création sur une base identique, SANS
+        // lecteurs, dans le même processus et le même run : le rapport entre
+        // les deux durées ne dépend plus de la charge de la machine.
+        let db_reference = base_indexee("Doc", 3_000);
+        for i in 0..3_000u64 {
+            let id = db_reference.create_node(&["Autre"]);
+            db_reference.set_node_property(id, "emb", vecteur(100_000 + i));
+        }
+        let debut_reference = Instant::now();
+        db_reference
+            .create_vector_index("Autre", "emb", Some(DIM), Some("cosine"), None, None)
+            .expect("creation de reference");
+        let duree_reference = debut_reference.elapsed();
+
+        // Marge ×3 plus une seconde : le travail concurrent ne peut pas
+        // légitimement coûter plus que le triple d'une création seule. Sans
+        // cette marge, un simple hoquet d'ordonnanceur ferait échouer le test.
+        let borne = duree_reference * 3 + Duration::from_secs(1);
         assert!(
-            duree_creation < Duration::from_secs(10),
-            "la creation d'index a mis {duree_creation:?} alors que des \
-             recherches tournaient — signe qu'elle attendait leur fin"
+            duree_creation < borne,
+            "la creation d'index a mis {duree_creation:?} avec des recherches \
+             actives, contre {duree_reference:?} sans lecteur (borne {borne:?}) \
+             — signe qu'elle attendait leur fin"
         );
     });
 }

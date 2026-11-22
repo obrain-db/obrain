@@ -1147,9 +1147,33 @@ mod tests {
                 // p50 reste asserté : c'est lui qui traduit la vitesse ressentie, et
                 // il garde trois ordres de grandeur de marge. p99 reste imprimé
                 // ci-dessus pour la mesure, sans décider du sort d'un build.
+                // ── L'INSTRUMENTATION DE COUVERTURE N'EST PAS LA CHARGE ────
+                // `cargo llvm-cov` insère un compteur sur chaque arête du
+                // graphe de flot : ce test y ralentit de ×2,4 à ×3,5 (mesuré
+                // en CI : p50 = 3676 µs puis 5194 µs pour un budget de
+                // 1500 µs, sur les deux profils). Ce n'est ni une préemption
+                // ni une régression de l'algorithme, c'est le prix de la
+                // mesure elle-même.
+                //
+                // On ÉLARGIT la borne au lieu d'ignorer le test (`search.rs`
+                // porte le précédent `#[ignore = "perf threshold unreliable on
+                // CI shared runners with coverage instrumentation"]`) : la
+                // mesure reste publiée à chaque run, et la borne continue de
+                // détecter une vraie régression dans le profil de couverture.
+                let sous_instrumentation = std::env::var_os("LLVM_PROFILE_FILE").is_some();
+                let budget = if sous_instrumentation {
+                    budget * 5.0
+                } else {
+                    budget
+                };
                 assert!(
                     p50 < budget,
-                    "p50 = {p50:.2} µs à n={n_engrams} ({regime}) : budget {what} ({budget} µs) dépassé"
+                    "p50 = {p50:.2} µs à n={n_engrams} ({regime}) : budget {what} ({budget} µs{}) dépassé",
+                    if sous_instrumentation {
+                        ", déjà élargi ×5 pour l'instrumentation de couverture"
+                    } else {
+                        ""
+                    }
                 );
             }
         }

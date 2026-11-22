@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn bibliotheque_dynamique() -> PathBuf {
+fn bibliotheque_dynamique() -> Option<PathBuf> {
     // La cdylib est dans `target/<profil>/`, mais l'exécutable de test peut être ailleurs
     // selon le runner (`out/`, `deps/`) : on remonte l'arborescence jusqu'à la trouver.
     let exe = std::env::current_exe().expect("current_exe");
@@ -23,16 +23,38 @@ fn bibliotheque_dynamique() -> PathBuf {
     for dir in exe.ancestors().skip(1) {
         let candidat = dir.join(&nom);
         if candidat.is_file() {
-            return candidat;
+            return Some(candidat);
         }
     }
-    panic!("{nom} introuvable en remontant depuis {}", exe.display());
+    None
 }
 
 #[test]
 fn smoke_c() {
     let manifeste = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let lib = bibliotheque_dynamique();
+    // ── SOUS `cargo llvm-cov`, LA CDYLIB N'EST PAS CONSTRUITE ───────────────
+    // `cargo test` ne produit que la `rlib` des bindings ; le job
+    // `Bindings C` construit et teste la vraie bibliothèque partagée. Sous
+    // instrumentation de couverture, l'artefact manque donc légitimement, et
+    // ce test échouait à chaque run des DEUX profils (« libobrain_c.so
+    // introuvable en remontant depuis …/target/ »).
+    //
+    // On ne masque pas l'absence pour autant : hors instrumentation, la
+    // bibliothèque DOIT être là, et son absence reste une erreur.
+    let Some(lib) = bibliotheque_dynamique() else {
+        if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+            eprintln!(
+                "smoke_c : cdylib absente sous instrumentation de couverture — \
+                 le job « Bindings C » couvre ce cas ; test non exécuté ici"
+            );
+            return;
+        }
+        panic!(
+            "{}obrain_c{} introuvable alors que la bibliothèque devrait être construite",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        );
+    };
     let lib_dir = lib.parent().expect("dossier de la bibliothèque");
     let sortie = tempfile::tempdir().expect("tempdir");
     let binaire = sortie.path().join("smoke");
