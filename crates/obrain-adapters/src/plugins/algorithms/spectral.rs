@@ -178,6 +178,7 @@ fn spectral_eigenvectors(adj: &[Vec<(usize, f64)>], k: usize) -> Vec<Vec<f64>> {
 /// mapped to 0 and can no longer dominate), deflated against the trivial
 /// vector. A block handles multiple eigenvalues (rings) that a sequential
 /// deflation with a fixed iteration budget cannot.
+#[allow(clippy::many_single_char_names)] // notation matricielle : i, j, w (indices et poids de l'arête)
 fn spectral_eigenpairs(
     adj: &[Vec<(usize, f64)>],
     k: usize,
@@ -188,7 +189,9 @@ fn spectral_eigenpairs(
     let mut ws: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_all];
     for (i, row) in adj.iter().enumerate() {
         for &(j, w) in row {
-            if i == j || !(w > 0.0) {
+            // `!(w > 0.0)` écarte NaN ; on l'écrit explicitement plutôt que de
+            // retourner la comparaison, qui laisserait NaN passer.
+            if i == j || !w.is_finite() || w <= 0.0 {
                 continue;
             }
             ws[i].push((j, w / 2.0));
@@ -289,7 +292,7 @@ fn spectral_eigenpairs(
         if delta < 1e-13 && ritz_prev[0].is_finite() {
             break;
         }
-        ritz_prev = ritz_vals.clone();
+        ritz_prev.clone_from(&ritz_vals);
     }
 
     // Eigenvalue of M from the lazy one: λ_M = 2·λ_lazy − 1.
@@ -349,6 +352,7 @@ fn orthonormalize(block: &mut [Vec<f64>], against: &[f64]) {
 /// Cyclic Jacobi eigen-decomposition of a small symmetric matrix.
 /// Returns eigenvalues sorted descending and `vecs[row][col]` where column
 /// `col` is the eigenvector of the `col`-th eigenvalue.
+#[allow(clippy::many_single_char_names)] // notation matricielle : a, v, n (matrice, vecteurs, taille)
 fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n = a.len();
     let mut v = vec![vec![0.0; n]; n];
