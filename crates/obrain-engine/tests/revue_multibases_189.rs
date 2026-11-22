@@ -19,7 +19,7 @@ fn trois_bases() -> (ObrainDB, ObrainDB, ObrainDB) {
         .execute("INSERT (:Doc {id: 'g1', name: 'third'})")
         .expect("gamma g1");
     beta.session()
-        .execute("INSERT (:Doc {id: 'doc_1', name: 'remote', _base: 'forged', _id: 42})")
+        .execute("INSERT (:Doc {id: 'doc_1', name: 'remote'})")
         .expect("beta doc_1");
     beta.attach_bases("beta", None);
     beta.attach_base("gamma", &gamma).expect("beta -> gamma");
@@ -190,37 +190,34 @@ fn reduce_et_type_sur_chemin_primaire() {
 // ── 3. Métadonnées non falsifiables par les propriétés utilisateur ────────────────
 
 #[test]
-fn proprietes_utilisateur_ne_falsifient_pas_les_metadonnees() {
+fn proprietes_reservees_refusees_sur_element_distant() {
+    // Une propriété utilisateur `_base` sur un élément distant est une clé RÉSERVÉE :
+    // le chemin est refusé explicitement (aucune métadonnée falsifiée, aucune donnée modifiée).
     let (alpha, beta, _gamma) = trois_bases();
-    let id_doc = match &beta
+    beta.session()
+        .execute("INSERT (:Doc {id: 'doc_forge', name: 'forge', _base: 'forged'})")
+        .expect("insertion beta");
+    beta.session()
+        .execute("MATCH (h:Doc {id: 'doc_1'}), (f:Doc {id: 'doc_forge'}) CREATE (h)-[:Y]->(f)")
+        .expect("arete beta Y");
+    let refus = alpha
         .session()
-        .execute("MATCH (d:Doc {id: 'doc_1'}) RETURN id(d)")
-        .unwrap()
-        .rows[0][0]
-    {
-        Value::Int64(i) => *i,
-        autre => panic!("{autre:?}"),
+        .execute("MATCH WALK p = (n:Note)-[:L]->(h:Hub)-[:T]->(d)-[:Y]->(f) RETURN length(p)");
+    let msg = match refus {
+        Ok(_) => panic!("élément portant une clé réservée : refus attendu"),
+        Err(e) => format!("{e}"),
     };
-    let r = alpha
-        .session()
-        .execute(
-            "MATCH WALK p = (n:Note)-[:L]->(h:Hub)-[:T]->(d) \
-             RETURN [x IN nodes(p) | x._base], [x IN nodes(p) | x._id], [x IN nodes(p) | x.name]",
-        )
-        .expect("métadonnées");
-    let bases = liste_textes(&r.rows[0][0]);
-    assert_eq!(
-        bases[2].as_deref(),
-        Some("beta"),
-        "_base : slug réel, pas 'forged'"
+    assert!(
+        msg.contains("_base") && msg.contains("réservée"),
+        "message : {msg}"
     );
-    let ids = match &r.rows[0][1] {
-        Value::List(items) => items
-            .iter()
-            .map(|v| if let Value::Int64(i) = v { *i } else { -1 })
-            .collect::<Vec<_>>(),
-        autre => panic!("{autre:?}"),
-    };
-    assert_eq!(ids[2], id_doc, "_id : identifiant réel, pas 42");
-    assert_eq!(liste_textes(&r.rows[0][2])[2].as_deref(), Some("remote"));
+    let lu = beta
+        .session()
+        .execute("MATCH (f:Doc {id: 'doc_forge'}) RETURN f._base")
+        .expect("lecture beta");
+    assert_eq!(
+        lu.rows[0][0],
+        Value::String("forged".into()),
+        "donnée inchangée"
+    );
 }
