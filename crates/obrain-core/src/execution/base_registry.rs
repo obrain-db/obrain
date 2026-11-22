@@ -365,6 +365,30 @@ pub fn remote_node_value(slug: &str, store: &dyn GraphStore, id: NodeId) -> Opti
     Some(Value::Map(Arc::new(map)))
 }
 
+/// Clés RÉSERVÉES du modèle d'élément distant : écrites par le moteur dans la `Map`
+/// (identité, libellés, type, extrémités). Une propriété utilisateur de même nom ne
+/// peut pas coexister avec la métadonnée sans altérer l'une des deux valeurs : un
+/// élément qui la porte est REFUSÉ explicitement au franchissement (aucune donnée
+/// modifiée, aucune valeur inventée).
+pub const METADONNEES_RESERVEES: [&str; 6] =
+    ["_id", "_labels", "_base", "_type", "_source", "_target"];
+
+/// Première clé utilisateur réservée parmi `props`, si elle existe.
+#[must_use]
+pub fn cle_reservee<'a, I>(props: I) -> Option<&'static str>
+where
+    I: IntoIterator<Item = (&'a PropertyKey, &'a Value)>,
+{
+    for (cle, _) in props {
+        for r in METADONNEES_RESERVEES {
+            if *cle == PropertyKey::new(r) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
 /// Materialise une arete DISTANTE d'un chemin en `Value::Map` HYDRATEE : les cles de
 /// `remote_edge_value` (`_id`, `_type`, `_base`, `_source`, `_target`) plus les
 /// proprietes de l'arete, pour que `r.prop` lise la valeur de l'arete traversee.

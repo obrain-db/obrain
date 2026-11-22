@@ -3,7 +3,8 @@
 use super::{Operator, OperatorError, OperatorResult, SessionContext};
 use crate::execution::DataChunk;
 use crate::execution::base_registry::{
-    self, external_edge_value, remote_edge_hydratee, remote_node_value, resolve_node_key,
+    self, cle_reservee, external_edge_value, remote_edge_hydratee, remote_node_value,
+    resolve_node_key,
 };
 use crate::graph::Direction;
 use crate::graph::GraphStore;
@@ -906,21 +907,35 @@ impl VariableLengthExpandOperator {
     }
 
     /// Valeur émise d'un nœud de chemin : primaire = `Int64` ; distant = `Map`
-    /// hydratée (`remote_node_value`, convention V4). Absent du store : `Null`.
-    fn valeur_noeud(&self, n: NoeudM) -> Value {
+    /// hydratée. Une propriété utilisateur RÉSERVÉE sur un élément distant est refusée
+    /// (erreur explicite, jamais une métadonnée falsifiée).
+    fn valeur_noeud(&self, n: NoeudM) -> Result<Value, OperatorError> {
         if n.base == 0 {
-            return Value::Int64(n.id.0 as i64);
+            return Ok(Value::Int64(n.id.0 as i64));
         }
         let (slug, store) = self.base_de(n.base);
-        remote_node_value(&slug, store.as_ref(), n.id).unwrap_or(Value::Null)
+        let Some(noeud) = store.get_node(n.id) else {
+            return Ok(Value::Null);
+        };
+        if let Some(r) = cle_reservee(&noeud.properties) {
+            return Err(OperatorError::Execution(format!(
+                "chemin refusé : le noeud distant {slug}/{} porte la propriété utilisateur « {r} », réservée aux métadonnées d'élément distant",
+                n.id.0
+            )));
+        }
+        Ok(remote_node_value(&slug, store.as_ref(), n.id).unwrap_or(Value::Null))
     }
 
-    /// Valeur émise d'une arête de chemin : primaire = `Int64` ; distante = `Map`
-    /// hydratée (`remote_edge_hydratee`). Absente du store : `Null`.
-    fn valeur_arete(&self, a: AreteM, avant: Option<NoeudM>, apres: Option<NoeudM>) -> Value {
-        // Arête EXTERNE : absente de `get_edge` (sidecar `external_edges`). Elle est
-        // lue dans le store de sa base SOURCE, par son noeud de départ (avant/après
-        // dans le chemin). Introuvable : `Null` (jamais une valeur fabriquée).
+    /// Valeur émise d'une arête de chemin : primaire = `Int64` ; externe = métadonnées
+    /// de la base SOURCE ; distante = `Map` hydratée (propriétés réservées refusées).
+    fn valeur_arete(
+        &self,
+        a: AreteM,
+        avant: Option<NoeudM>,
+        apres: Option<NoeudM>,
+    ) -> Result<Value, OperatorError> {
+        // Arête EXTERNE : absente de `get_edge` (sidecar). Lue dans le store de sa base
+        // SOURCE, par son noeud de départ. Introuvable : `Null` (jamais une valeur inventée).
         if a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT != 0 {
             let (slug, store) = self.base_de(a.base);
             for n in [avant, apres].into_iter().flatten() {
@@ -932,16 +947,43 @@ impl VariableLengthExpandOperator {
                     .into_iter()
                     .find(|e| e.id == a.id)
                 {
-                    return external_edge_value(&e, &slug);
+                    return Ok(external_edge_value(&e, &slug));
                 }
             }
-            return Value::Null;
+            return Ok(Value::Null);
         }
         if a.base == 0 {
-            return Value::Int64(a.id.0 as i64);
+            return Ok(Value::Int64(a.id.0 as i64));
         }
         let (slug, store) = self.base_de(a.base);
-        remote_edge_hydratee(&slug, store.as_ref(), a.id).unwrap_or(Value::Null)
+        let Some(arete) = store.get_edge(a.id) else {
+            return Ok(Value::Null);
+        };
+        if let Some(r) = cle_reservee(&arete.properties) {
+            return Err(OperatorError::Execution(format!(
+                "chemin refusé : l'arête distante {slug}/{} porte la propriété utilisateur « {r} », réservée aux métadonnées d'élément distant",
+                a.id.0
+            )));
+        }
+        Ok(remote_edge_hydratee(&slug, store.as_ref(), a.id).unwrap_or(Value::Null))
+    }
+
+    /// Valeur d'une arête dans la liste `rs` d'une relation de longueur variable :
+    /// MÊME représentation que la colonne d'arête unique (primaire = `Int64`,
+    /// distante = `Map {_id, _base}`), pour que `x <> r` compare des valeurs
+    /// de même nature et que l'unicité porte sur la base.
+    fn arete_liste_valeur(&self, a: AreteM) -> Value {
+        if a.base == 0 && a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT == 0 {
+            return Value::Int64(a.id.0 as i64);
+        }
+        let (slug, _) = self.base_de(a.base);
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(PropertyKey::new("_id"), Value::Int64(a.id.0 as i64));
+        map.insert(
+            PropertyKey::new(base_registry::BASE_KEY),
+            Value::String(slug.into()),
+        );
+        Value::Map(Arc::new(map))
     }
 
     /// (obrain#189) Le chemin COMPOSE (prefixe ++ segment) respecte-t-il le mode
@@ -1180,14 +1222,19 @@ impl Operator for VariableLengthExpandOperator {
                         .as_deref()
                         .unwrap_or(&[])
                         .iter()
-                        .map(|a| Value::Int64(a.id.0 as i64))
+                        .map(|a| self.arete_liste_valeur(*a))
                         .collect();
                     col.push_value(Value::List(liste.into()));
                 } else {
                     match out_row.edge_id {
                         // Chemin de longueur 0 : pas d'arete (bitmap de validite).
                         None => col.push_value(Value::Null),
-                        Some(edge_id) if edge_id.base == 0 => col.push_edge_id(edge_id.id),
+                        Some(edge_id)
+                            if edge_id.base == 0
+                                && edge_id.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT == 0 =>
+                        {
+                            col.push_edge_id(edge_id.id)
+                        }
                         Some(edge_id) => {
                             let (slug, _) = self.base_de(edge_id.base);
                             let mut map = std::collections::BTreeMap::new();
@@ -1250,41 +1297,25 @@ impl Operator for VariableLengthExpandOperator {
 
                 // Le segment part de la source, qui est le dernier noeud du prefixe :
                 // on ne la repete pas. Distant = Map hydratée, primaire = Int64.
-                let nodes: Vec<obrain_common::types::Value> = match prefixe {
-                    Some((prefixe_noeuds, _)) => prefixe_noeuds
-                        .iter()
-                        .cloned()
-                        .chain(noeuds_segment.iter().skip(1).map(|n| self.valeur_noeud(*n)))
-                        .collect(),
-                    None => noeuds_segment
-                        .iter()
-                        .map(|n| self.valeur_noeud(*n))
-                        .collect(),
+                let mut nodes: Vec<obrain_common::types::Value> = match prefixe {
+                    Some((prefixe_noeuds, _)) => prefixe_noeuds.iter().cloned().collect(),
+                    None => Vec::with_capacity(noeuds_segment.len()),
                 };
-                let edges: Vec<obrain_common::types::Value> = match prefixe {
-                    Some((_, prefixe_aretes)) => prefixe_aretes
-                        .iter()
-                        .cloned()
-                        .chain(aretes_segment.iter().enumerate().map(|(k, a)| {
-                            self.valeur_arete(
-                                *a,
-                                noeuds_segment.get(k).copied(),
-                                noeuds_segment.get(k + 1).copied(),
-                            )
-                        }))
-                        .collect(),
-                    None => aretes_segment
-                        .iter()
-                        .enumerate()
-                        .map(|(k, a)| {
-                            self.valeur_arete(
-                                *a,
-                                noeuds_segment.get(k).copied(),
-                                noeuds_segment.get(k + 1).copied(),
-                            )
-                        })
-                        .collect(),
+                let debut_noeuds = if prefixe.is_some() { 1 } else { 0 };
+                for n in noeuds_segment.iter().skip(debut_noeuds) {
+                    nodes.push(self.valeur_noeud(*n)?);
+                }
+                let mut edges: Vec<obrain_common::types::Value> = match prefixe {
+                    Some((_, prefixe_aretes)) => prefixe_aretes.iter().cloned().collect(),
+                    None => Vec::with_capacity(aretes_segment.len()),
                 };
+                for (k, a) in aretes_segment.iter().enumerate() {
+                    edges.push(self.valeur_arete(
+                        *a,
+                        noeuds_segment.get(k).copied(),
+                        noeuds_segment.get(k + 1).copied(),
+                    )?);
+                }
 
                 let nodes: Arc<[obrain_common::types::Value]> = nodes.into();
                 let edges: Arc<[obrain_common::types::Value]> = edges.into();

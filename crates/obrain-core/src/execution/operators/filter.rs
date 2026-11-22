@@ -2553,7 +2553,25 @@ impl ExpressionPredicate {
             {
                 match recurse(&args[0])? {
                     Value::Int64(id) => self.type_d_un_identifiant(id, genre),
+                    // Arête distante / externe : Map hydratée (`_type`).
+                    autre @ Value::Map(_) => self.fonction_element_sur_valeur("type", &autre),
                     _ => None,
+                }
+            }
+            // `id(x)` et `labels(x)` sur l'élément de `reduce` : même règle que dans
+            // une compréhension (`labels` d'un entier seulement pour un NŒUD).
+            FilterExpression::FunctionCall { name, args }
+                if args.len() == 1
+                    && (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("labels")) =>
+            {
+                let valeur = recurse(&args[0])?;
+                let nom = name.to_ascii_lowercase();
+                match (nom.as_str(), &valeur, genre) {
+                    ("labels", Value::Int64(_), GenreElement::Noeud) => {
+                        self.fonction_element_sur_valeur("labels", &valeur)
+                    }
+                    ("labels", Value::Int64(_), _) => None,
+                    _ => self.fonction_element_sur_valeur(&nom, &valeur),
                 }
             }
             FilterExpression::Type(var) if var == item_name => match item_val {
