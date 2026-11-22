@@ -41,14 +41,20 @@
 //! graphs", 2011, Theorem 2 specialised to simple graphs):
 //!
 //! ```text
-//! κ̂(u, v) = 1/|N(u)| + 1/|N(v)| − 1 + T(u,v) / min(|N(u)|, |N(v)|)
+//! κ̂ =  T/max(d_u,d_v)
+//!       − (1 − 1/d_u − 1/d_v − T/min(d_u,d_v))₊
+//!       − (1 − 1/d_u − 1/d_v − T/max(d_u,d_v))₊
 //! ```
 //!
-//! where `T(u, v) = |N(u) ∩ N(v) \ {u, v}|` is the number of common
-//! neighbours (triangles through the edge u-v). The expression is:
+//! (`(·)₊` = partie positive, `d_x = |N(x)|`), where
+//! `T(u, v) = |N(u) ∩ N(v) \ {u, v}|` is the number of common
+//! neighbours (triangles through the edge u-v). Measures are uniform on
+//! `N(x)`, not lazy (α = 0). The expression is:
 //!
 //! * `O(deg(u) + deg(v))` per edge — fits the 10⁶-edge budget,
-//! * a provable lower bound on the true κ (never overshoots positive),
+//! * a lower bound on the true κ for that definition (Jost–Liu, Thm 3).
+//!   The previous formula `1/d_u + 1/d_v − 1 + T/min` was NOT one: on the
+//!   centre–leaf edge of K₁,₃ it gave +1/3 where κ = 0 (#293),
 //! * tight on the trefoil test fixture (bridges → κ̂ < 0, triangle
 //!   interior → κ̂ > 0, verified in the inline test).
 //!
@@ -114,6 +120,23 @@ fn neighborhood(store: &SubstrateStore, node: NodeId) -> HashSet<NodeId> {
     set
 }
 
+/// Jost–Liu lower bound (Thm 3, uniform non-lazy measures) from the two
+/// open-neighbourhood sizes and the triangle count `t`.
+///
+/// κ ≥ t/max − (1 − 1/d_u − 1/d_v − t/min)₊ − (1 − 1/d_u − 1/d_v − t/max)₊
+///
+/// Callers guarantee `d_u, d_v ≥ 1`. Result clamped to `[-1, 1]`.
+fn jost_liu_lower_bound(d_u: usize, d_v: usize, t: usize) -> f32 {
+    let inv_u = 1.0_f32 / d_u as f32;
+    let inv_v = 1.0_f32 / d_v as f32;
+    let (mn, mx) = (d_u.min(d_v) as f32, d_u.max(d_v) as f32);
+    let t = t as f32;
+    let base = 1.0 - inv_u - inv_v;
+    let neg1 = (base - t / mn).max(0.0);
+    let neg2 = (base - t / mx).max(0.0);
+    (t / mx - neg1 - neg2).clamp(-1.0, 1.0)
+}
+
 /// Jost–Liu lower bound on Ollivier-Ricci curvature for the edge
 /// `(src, dst)`.
 ///
@@ -177,13 +200,7 @@ pub fn compute_ricci_fast(store: &SubstrateStore, src: NodeId, dst: NodeId) -> f
         .filter(|n| **n != src && **n != dst && big.contains(n))
         .count();
 
-    // Jost-Liu lower bound specialised to simple graphs:
-    //   κ̂ = 1/|N(u)| + 1/|N(v)| − 1 + T(u,v) / min(|N(u)|, |N(v)|)
-    let inv_u = 1.0_f32 / n_u as f32;
-    let inv_v = 1.0_f32 / n_v as f32;
-    let t_frac = t as f32 / n_u.min(n_v) as f32;
-
-    (inv_u + inv_v - 1.0 + t_frac).clamp(-1.0, 1.0)
+    jost_liu_lower_bound(n_u, n_v, t)
 }
 
 /// Read the edge at `edge_id`, compute its curvature, and return it
@@ -612,11 +629,7 @@ fn compute_ricci_from_neighbourhoods(
         .filter(|n| **n != src && **n != dst && big.contains(n))
         .count();
 
-    let inv_u = 1.0_f32 / n_u as f32;
-    let inv_v = 1.0_f32 / n_v as f32;
-    let t_frac = t as f32 / n_u.min(n_v) as f32;
-
-    ((inv_u + inv_v - 1.0 + t_frac).clamp(-1.0, 1.0), false)
+    (jost_liu_lower_bound(n_u, n_v, t), false)
 }
 
 // ---------------------------------------------------------------------------
@@ -2799,5 +2812,61 @@ mod tests {
         let n1 = s.create_node_in_community(&["N"], 1);
         link(&s, n0, n1);
         assert!(effective_resistance(&s, n0, n0).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // #293 — Ricci : la formule rendue ne doit jamais dépasser le κ exact
+    // (mesures uniformes sur N(x), sans paresse). Valeurs exactes calculées
+    // à la main par transport optimal (témoin dual 1-Lipschitz).
+    // -----------------------------------------------------------------
+
+    fn star(s: &SubstrateStore, leaves: usize) -> (NodeId, Vec<NodeId>) {
+        let c = s.create_node_in_community(&["N"], 1);
+        let l: Vec<NodeId> = (0..leaves)
+            .map(|_| s.create_node_in_community(&["N"], 1))
+            .collect();
+        for &x in &l {
+            link(s, c, x);
+        }
+        (c, l)
+    }
+
+    /// K₁,₃, arête centre–feuille : μ_centre uniforme sur 3 feuilles,
+    /// μ_feuille = δ_centre → W₁ = 1, κ = 0. L'ancienne formule rendait +1/3.
+    #[test]
+    fn ricci_k13_centre_feuille_vaut_0_et_pas_un_tiers() {
+        let (_td, s) = store();
+        let (c, l) = star(&s, 3);
+        for (a, b) in [(c, l[0]), (l[0], c)] {
+            let k = compute_ricci_fast(&s, a, b);
+            assert!(k.abs() < 1e-6, "κ(K1,3 centre-feuille) doit valoir 0, obtenu {k}");
+        }
+        let mut nb: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+        nb.insert(c, l.iter().copied().collect());
+        for &x in &l {
+            nb.insert(x, [c].into_iter().collect());
+        }
+        let (k, _) = compute_ricci_from_neighbourhoods(&nb, c, l[0]);
+        assert!(k.abs() < 1e-6, "chemin batch : attendu 0, obtenu {k}");
+    }
+
+    /// Valeurs exactes connues : K₂ → 0, K₃ → 1/2, K₄ → 2/3, milieu de P₄ → 0.
+    #[test]
+    fn ricci_valeurs_exactes_sur_graphes_elementaires() {
+        for (n, attendu) in [(2usize, 0.0f32), (3, 0.5), (4, 2.0 / 3.0)] {
+            let (_td, s) = store();
+            let v: Vec<NodeId> = (0..n).map(|_| s.create_node_in_community(&["N"], 1)).collect();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    link(&s, v[i], v[j]);
+                }
+            }
+            let k = compute_ricci_fast(&s, v[0], v[1]);
+            assert!((k - attendu).abs() < 1e-5, "K{n}: attendu {attendu}, obtenu {k}");
+        }
+        let (_td, s) = store();
+        let p = build_chain(&s, 4);
+        let k = compute_ricci_fast(&s, p[1], p[2]);
+        assert!(k.abs() < 1e-6, "milieu de P4: attendu 0, obtenu {k}");
     }
 }
