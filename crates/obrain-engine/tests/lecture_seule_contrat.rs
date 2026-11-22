@@ -209,10 +209,18 @@ fn enfant() {
         vue.iter().map(i64::to_string).collect::<Vec<_>>().join(" ")
     );
     std::io::stdout().flush().ok();
+    // Le parent nous tue dès qu'il a lu `PRET`. 60 s suffisent largement et,
+    // si le parent meurt avant, un orphelin ne survit pas une heure en tenant
+    // sa base et son tube de sortie.
     loop {
-        std::thread::sleep(Duration::from_secs(3600));
+        std::thread::sleep(Duration::from_secs(60));
     }
 }
+
+/// Échéance d'attente de l'annonce du fils. Large (le fils ouvre une base, la
+/// peuple, écrit dix nœuds et checkpointe) mais FINIE : c'est le point du
+/// harnais, une attente sans borne transforme un incident en suite figée.
+const DELAI_ANNONCE: Duration = Duration::from_secs(120);
 
 /// Lance l'écrivain, attend qu'il ait écrit, le tue (`kill -9`), rend sa vue.
 fn base_d_un_ecrivain_tue(base: &Path) -> Vec<i64> {
@@ -225,17 +233,60 @@ fn base_d_un_ecrivain_tue(base: &Path) -> Vec<i64> {
         .spawn()
         .expect("lancer l'enfant");
     let sortie = enfant.stdout.take().expect("stdout");
-    let mut vue = None;
-    for ligne in std::io::BufReader::new(sortie).lines() {
-        let ligne = ligne.expect("lire l'enfant");
-        if let Some(reste) = ligne.strip_prefix("PRET ") {
-            vue = Some(
-                reste
-                    .split_whitespace()
-                    .map(|v| v.parse::<i64>().expect("entier"))
-                    .collect::<Vec<_>>(),
-            );
-            break;
+    // La lecture passe par un fil : `lines()` sur le tube est BLOQUANT et sans
+    // échéance. Un fils qui reste muet figeait donc la suite entière, sans fin
+    // ni message — observé deux fois (23 min et 29 min, processus fils à 0 % de
+    // CPU), et un orphelin survivait une heure. Ici, l'échéance est explicite :
+    // on tue le fils et on échoue avec un message qui dit combien de temps on a
+    // attendu, au lieu d'attendre indéfiniment.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for ligne in std::io::BufReader::new(sortie).lines() {
+            match ligne {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    // Assignée une seule fois, sur le chemin qui `break` : la valeur initiale
+    // `None` ne serait jamais lue (clippy `unused_assignments`).
+    let vue;
+    let debut = std::time::Instant::now();
+    loop {
+        let reste = DELAI_ANNONCE.saturating_sub(debut.elapsed());
+        match rx.recv_timeout(reste) {
+            Ok(ligne) => {
+                if let Some(reste) = ligne.strip_prefix("PRET ") {
+                    vue = Some(
+                        reste
+                            .split_whitespace()
+                            .map(|v| v.parse::<i64>().expect("entier"))
+                            .collect::<Vec<_>>(),
+                    );
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = enfant.kill();
+                let _ = enfant.wait();
+                panic!(
+                    "l'écrivain n'a pas annoncé sa vue en {} s : fils tué. \
+                     Le harnais n'attend pas indéfiniment un processus muet.",
+                    DELAI_ANNONCE.as_secs()
+                );
+            }
+            // Le tube est fermé sans avoir rien annoncé : le fils a échoué, ce
+            // n'est pas une attente trop courte, et le message doit le dire.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = enfant.wait();
+                panic!(
+                    "l'enfant s'est terminé sans annoncer sa vue (échec du fils, pas dépassement d'échéance)"
+                );
+            }
         }
     }
     enfant.kill().expect("kill -9");
