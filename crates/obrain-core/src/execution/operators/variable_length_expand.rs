@@ -3,7 +3,7 @@
 use super::{Operator, OperatorError, OperatorResult, SessionContext};
 use crate::execution::DataChunk;
 use crate::execution::base_registry::{
-    self, remote_edge_hydratee, remote_node_value, resolve_node_key,
+    self, external_edge_value, remote_edge_hydratee, remote_node_value, resolve_node_key,
 };
 use crate::graph::Direction;
 use crate::graph::GraphStore;
@@ -891,8 +891,13 @@ impl VariableLengthExpandOperator {
         }
     }
 
-    /// Clé d'identité (base, id) d'une arête du chemin (base 0 = primaire).
+    /// Clé d'identité (base, id) d'une arête du chemin. Une arête EXTERNE (bit haut,
+    /// portée par la base SOURCE) porte la clé de sa base source, quelle qu'elle soit :
+    /// même clé que la `Map` émise (`_base` = slug source, `_id`).
     fn cle_arete(&self, a: AreteM) -> (String, u64) {
+        if a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT != 0 {
+            return (self.base_de(a.base).0, a.id.0);
+        }
         if a.base == 0 {
             (String::new(), a.id.0)
         } else {
@@ -912,7 +917,26 @@ impl VariableLengthExpandOperator {
 
     /// Valeur émise d'une arête de chemin : primaire = `Int64` ; distante = `Map`
     /// hydratée (`remote_edge_hydratee`). Absente du store : `Null`.
-    fn valeur_arete(&self, a: AreteM) -> Value {
+    fn valeur_arete(&self, a: AreteM, avant: Option<NoeudM>, apres: Option<NoeudM>) -> Value {
+        // Arête EXTERNE : absente de `get_edge` (sidecar `external_edges`). Elle est
+        // lue dans le store de sa base SOURCE, par son noeud de départ (avant/après
+        // dans le chemin). Introuvable : `Null` (jamais une valeur fabriquée).
+        if a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT != 0 {
+            let (slug, store) = self.base_de(a.base);
+            for n in [avant, apres].into_iter().flatten() {
+                if n.base != a.base {
+                    continue;
+                }
+                if let Some(e) = store
+                    .external_edges_from(n.id)
+                    .into_iter()
+                    .find(|e| e.id == a.id)
+                {
+                    return external_edge_value(&e, &slug);
+                }
+            }
+            return Value::Null;
+        }
         if a.base == 0 {
             return Value::Int64(a.id.0 as i64);
         }
@@ -1241,11 +1265,24 @@ impl Operator for VariableLengthExpandOperator {
                     Some((_, prefixe_aretes)) => prefixe_aretes
                         .iter()
                         .cloned()
-                        .chain(aretes_segment.iter().map(|a| self.valeur_arete(*a)))
+                        .chain(aretes_segment.iter().enumerate().map(|(k, a)| {
+                            self.valeur_arete(
+                                *a,
+                                noeuds_segment.get(k).copied(),
+                                noeuds_segment.get(k + 1).copied(),
+                            )
+                        }))
                         .collect(),
                     None => aretes_segment
                         .iter()
-                        .map(|a| self.valeur_arete(*a))
+                        .enumerate()
+                        .map(|(k, a)| {
+                            self.valeur_arete(
+                                *a,
+                                noeuds_segment.get(k).copied(),
+                                noeuds_segment.get(k + 1).copied(),
+                            )
+                        })
                         .collect(),
                 };
 

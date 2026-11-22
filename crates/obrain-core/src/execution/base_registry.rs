@@ -346,20 +346,22 @@ pub fn resolve_node_key(store: &dyn GraphStore, key: &str) -> Option<NodeId> {
 pub fn remote_node_value(slug: &str, store: &dyn GraphStore, id: NodeId) -> Option<Value> {
     let node = store.get_node(id)?;
     let mut map = BTreeMap::new();
-    map.insert(
-        PropertyKey::new("_id"),
-        Value::Int64(node.id.as_u64() as i64),
-    );
+    // Propriétés utilisateur d'abord : les métadonnées écrites ensuite les
+    // remplacent, une propriété `_id`/`_base`/`_labels` ne peut pas les falsifier.
+    for (key, value) in &node.properties {
+        map.insert(key.clone(), value.clone());
+    }
     let labels: Vec<Value> = node
         .labels
         .iter()
         .map(|l| Value::String(l.clone()))
         .collect();
+    map.insert(
+        PropertyKey::new("_id"),
+        Value::Int64(node.id.as_u64() as i64),
+    );
     map.insert(PropertyKey::new("_labels"), Value::List(labels.into()));
     map.insert(PropertyKey::new(BASE_KEY), Value::String(slug.into()));
-    for (key, value) in &node.properties {
-        map.insert(key.clone(), value.clone());
-    }
     Some(Value::Map(Arc::new(map)))
 }
 
@@ -371,6 +373,10 @@ pub fn remote_node_value(slug: &str, store: &dyn GraphStore, id: NodeId) -> Opti
 pub fn remote_edge_hydratee(slug: &str, store: &dyn GraphStore, id: EdgeId) -> Option<Value> {
     let edge = store.get_edge(id)?;
     let mut map = BTreeMap::new();
+    // Propriétés d'abord, métadonnées ensuite (ne peuvent pas être falsifiées).
+    for (key, value) in &edge.properties {
+        map.insert(key.clone(), value.clone());
+    }
     map.insert(
         PropertyKey::new("_id"),
         Value::Int64(edge.id.as_u64() as i64),
@@ -388,9 +394,6 @@ pub fn remote_edge_hydratee(slug: &str, store: &dyn GraphStore, id: EdgeId) -> O
         PropertyKey::new("_target"),
         Value::Int64(edge.dst.as_u64() as i64),
     );
-    for (key, value) in &edge.properties {
-        map.insert(key.clone(), value.clone());
-    }
     Some(Value::Map(Arc::new(map)))
 }
 
