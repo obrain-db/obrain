@@ -30,6 +30,70 @@ fn base_sans_substrat() -> (tempfile::TempDir, ObrainDB) {
     (td, db)
 }
 
+#[test]
+fn le_ddl_spatial_exige_exactement_une_propriete() {
+    let db = ObrainDB::new_in_memory();
+    let err = db
+        .execute("CREATE INDEX lieux FOR (n:Lieu) ON (n.pos, n.autre) USING SPATIAL")
+        .expect_err("deux propriétés pour un point");
+    let message = err.to_string();
+    assert!(
+        message.contains("UNE propriété"),
+        "le refus dit la règle : {message}"
+    );
+    assert!(
+        message.contains("2 ont été données"),
+        "le refus dit ce qui a été reçu : {message}"
+    );
+}
+
+#[test]
+fn une_valeur_non_point_replie_sur_le_balayage_qui_refuse() {
+    let db = ObrainDB::new_in_memory();
+    db.create_node_with_props(&["Lieu"], [("pos", point(2.0, 48.0))]);
+    db.execute("CREATE INDEX lieux_pos FOR (n:Lieu) ON (n.pos) USING SPATIAL")
+        .expect("DDL");
+    // Un nœud du label porte sur la propriété indexée une valeur qui n'est pas
+    // un point. L'index ne peut pas rendre le même refus que le balayage : il
+    // se replie sur lui, et c'est le balayage qui refuse. Une erreur, jamais un
+    // résultat partiel.
+    db.create_node_with_props(&["Lieu"], [("pos", Value::from("pas un point"))]);
+    let err = db
+        .execute("MATCH (n:Lieu) WHERE distance(n.pos, point(2.0, 48.0)) <= 100 RETURN n")
+        .expect_err("le balayage refuse une valeur non-point");
+    assert!(
+        err.to_string().contains("point"),
+        "le refus parle du point attendu : {err}"
+    );
+}
+
+#[test]
+fn un_rayon_negatif_rend_zero_ligne_et_reste_au_balayage() {
+    let db = ObrainDB::new_in_memory();
+    db.create_node_with_props(&["Lieu"], [("pos", point(2.0, 48.0))]);
+    db.execute("CREATE INDEX lieux_pos FOR (n:Lieu) ON (n.pos) USING SPATIAL")
+        .expect("DDL");
+    // Un rayon négatif n'a pas de sens géométrique : le planificateur laisse la
+    // requête au balayage, qui ne rend rien. Ce qui compte, c'est qu'il ne
+    // l'envoie PAS à l'index avec un rayon que celui-ci interpréterait.
+    assert_eq!(
+        lignes(
+            &db,
+            "MATCH (n:Lieu) WHERE distance(n.pos, point(2.0, 48.0)) <= -1 RETURN n"
+        ),
+        0,
+        "un rayon négatif ne rend aucune ligne"
+    );
+    assert_eq!(
+        lignes(
+            &db,
+            "MATCH (n:Lieu) WHERE distance(n.pos, point(2.0, 48.0)) <= 100 RETURN n"
+        ),
+        1,
+        "le rayon valide, lui, rend bien le point"
+    );
+}
+
 fn lignes(db: &ObrainDB, q: &str) -> usize {
     db.execute(q)
         .unwrap_or_else(|e| panic!("requête refusée : {q} — {e}"))
