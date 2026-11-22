@@ -1519,3 +1519,381 @@ mod tests {
         assert!(vars.is_empty(), "résultat attendu vide");
     }
 }
+
+/// Tests des helpers de `common` qui n'étaient exercés que par les traducteurs
+/// (lot de couverture : fermetures de portée, genres de valeurs, projections
+/// d'après-agrégat).
+#[cfg(test)]
+mod tests_couverture_helpers {
+    use super::*;
+    use crate::query::plan::{AggregateExpr, AggregateFunction, NodeScanOp};
+    use obrain_common::types::Value;
+
+    fn var(name: &str) -> LogicalExpression {
+        LogicalExpression::Variable(name.into())
+    }
+
+    fn int(n: i64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Int64(n))
+    }
+
+    fn call(name: &str, args: Vec<LogicalExpression>) -> LogicalExpression {
+        LogicalExpression::FunctionCall {
+            name: name.into(),
+            args,
+            distinct: false,
+        }
+    }
+
+    fn scan(variable: &str) -> LogicalOperator {
+        LogicalOperator::NodeScan(NodeScanOp {
+            variable: variable.into(),
+            label: None,
+            input: None,
+            pushdown_hint: None,
+        })
+    }
+
+    fn genres(pairs: &[(&str, VariableKind)]) -> HashMap<String, VariableKind> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    }
+
+    fn aggregat(alias: Option<&str>) -> AggregateExpr {
+        AggregateExpr {
+            function: AggregateFunction::Count,
+            expression: None,
+            expression2: None,
+            distinct: false,
+            alias: alias.map(str::to_string),
+            percentile: None,
+            separator: None,
+        }
+    }
+
+    // --- unicite_a_confronter ---
+
+    #[test]
+    fn unicite_sans_relation_ne_filtre_rien() {
+        assert!(!unicite_a_confronter(&[], &[]));
+        assert!(!unicite_a_confronter(&["a".into()], &[]));
+        assert!(!unicite_a_confronter(&[], &["r".into()]));
+    }
+
+    #[test]
+    fn unicite_deux_relations_simples_ou_simple_contre_longue() {
+        assert!(unicite_a_confronter(&["a".into(), "b".into()], &[]));
+        assert!(unicite_a_confronter(&["a".into()], &["r".into()]));
+    }
+
+    // --- VarGen ---
+
+    #[test]
+    fn var_gen_current_suit_next_sans_incrementer() {
+        let vg = VarGen::new();
+        assert_eq!(vg.current(), 0);
+        assert_eq!(vg.next(), "_v0");
+        assert_eq!(vg.current(), 1);
+        assert_eq!(vg.current(), 1, "current ne doit pas incrémenter");
+    }
+
+    // --- VariableKind : genre des éléments et des listes ---
+
+    #[test]
+    fn genre_des_elements_d_une_liste_prouvee() {
+        assert_eq!(VariableKind::NodeList.element(), VariableKind::Node);
+        assert_eq!(VariableKind::EdgeList.element(), VariableKind::Edge);
+        assert_eq!(VariableKind::Node.element(), VariableKind::Other);
+        assert_eq!(VariableKind::Scalar.element(), VariableKind::Other);
+    }
+
+    #[test]
+    fn genre_de_la_liste_qui_collecte() {
+        assert_eq!(VariableKind::Node.list_of(), VariableKind::NodeList);
+        assert_eq!(VariableKind::Edge.list_of(), VariableKind::EdgeList);
+        assert_eq!(VariableKind::NodeList.list_of(), VariableKind::Scalar);
+        assert_eq!(VariableKind::Other.list_of(), VariableKind::Scalar);
+    }
+
+    // --- check_bound_kind ---
+
+    #[test]
+    fn check_bound_kind_variable_non_liee_passe() {
+        let bound = HashMap::new();
+        assert!(check_bound_kind("n", VariableKind::Node, &bound).is_ok());
+    }
+
+    #[test]
+    fn check_bound_kind_genre_compatible_ou_inconnu_passe() {
+        let bound = genres(&[("n", VariableKind::Node), ("x", VariableKind::Other)]);
+        assert!(check_bound_kind("n", VariableKind::Node, &bound).is_ok());
+        assert!(check_bound_kind("x", VariableKind::Edge, &bound).is_ok());
+    }
+
+    #[test]
+    fn check_bound_kind_refuse_scalaire_et_genre_different() {
+        let bound = genres(&[
+            ("s", VariableKind::Scalar),
+            ("n", VariableKind::Node),
+            ("liste", VariableKind::NodeList),
+        ]);
+        for (variable, attendu) in [
+            ("s", VariableKind::Node),
+            ("n", VariableKind::Edge),
+            ("liste", VariableKind::Node),
+        ] {
+            let err = check_bound_kind(variable, attendu, &bound)
+                .expect_err("un genre incompatible doit être refusé");
+            assert!(
+                format!("{err:?}").contains("Type mismatch"),
+                "message inattendu pour {variable}: {err:?}"
+            );
+        }
+    }
+
+    // --- expression_kind ---
+
+    #[test]
+    fn expression_kind_variable_selon_la_portee() {
+        let entree = genres(&[("n", VariableKind::Node)]);
+        assert_eq!(expression_kind(&var("n"), &entree), VariableKind::Node);
+        assert_eq!(
+            expression_kind(&var("inconnue"), &entree),
+            VariableKind::Other
+        );
+    }
+
+    #[test]
+    fn expression_kind_litteraux_et_valeurs_calculees() {
+        let entree = HashMap::new();
+        assert_eq!(
+            expression_kind(&LogicalExpression::Literal(Value::Null), &entree),
+            VariableKind::Other,
+            "NULL n'a pas de genre"
+        );
+        assert_eq!(expression_kind(&int(1), &entree), VariableKind::Scalar);
+        assert_eq!(
+            expression_kind(
+                &LogicalExpression::Property {
+                    variable: "n".into(),
+                    property: "age".into(),
+                },
+                &entree
+            ),
+            VariableKind::Scalar
+        );
+        assert_eq!(
+            expression_kind(&LogicalExpression::List(vec![int(1)]), &entree),
+            VariableKind::Scalar
+        );
+    }
+
+    #[test]
+    fn expression_kind_fonctions_de_chemin_et_de_liste() {
+        let entree = genres(&[("p", VariableKind::NodeList), ("r", VariableKind::EdgeList)]);
+        assert_eq!(
+            expression_kind(&call("nodes", vec![var("p")]), &entree),
+            VariableKind::NodeList
+        );
+        assert_eq!(
+            expression_kind(&call("RELATIONSHIPS", vec![var("p")]), &entree),
+            VariableKind::EdgeList
+        );
+        assert_eq!(
+            expression_kind(&call("head", vec![var("p")]), &entree),
+            VariableKind::Node
+        );
+        assert_eq!(
+            expression_kind(&call("last", vec![var("r")]), &entree),
+            VariableKind::Edge
+        );
+        assert_eq!(
+            expression_kind(&call("tail", vec![var("p")]), &entree),
+            VariableKind::NodeList
+        );
+        assert_eq!(
+            expression_kind(&call("reverse", vec![var("inconnue")]), &entree),
+            VariableKind::Other
+        );
+        assert_eq!(
+            expression_kind(&call("id", vec![var("p")]), &entree),
+            VariableKind::Scalar
+        );
+        assert_eq!(
+            expression_kind(&call("fonction_inconnue", vec![]), &entree),
+            VariableKind::Other
+        );
+    }
+
+    #[test]
+    fn expression_kind_acces_par_index_et_tranche() {
+        let entree = genres(&[("p", VariableKind::NodeList)]);
+        let index = LogicalExpression::IndexAccess {
+            base: Box::new(var("p")),
+            index: Box::new(int(0)),
+        };
+        assert_eq!(expression_kind(&index, &entree), VariableKind::Node);
+
+        let tranche = LogicalExpression::SliceAccess {
+            base: Box::new(var("p")),
+            start: None,
+            end: Some(Box::new(int(2))),
+        };
+        assert_eq!(expression_kind(&tranche, &entree), VariableKind::NodeList);
+
+        let tranche_sur_scalaire = LogicalExpression::SliceAccess {
+            base: Box::new(int(1)),
+            start: None,
+            end: None,
+        };
+        assert_eq!(
+            expression_kind(&tranche_sur_scalaire, &entree),
+            VariableKind::Other
+        );
+    }
+
+    // --- wrap_* : chaque enveloppe porte la bonne variante ---
+
+    #[test]
+    fn wrap_filter_sort_skip_limit_distinct_return() {
+        assert!(matches!(
+            wrap_filter(scan("n"), int(1)),
+            LogicalOperator::Filter(FilterOp {
+                pushdown_hint: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            wrap_sort(scan("n"), vec![]),
+            LogicalOperator::Sort(SortOp { .. })
+        ));
+        assert!(matches!(
+            wrap_skip(scan("n"), 3usize),
+            LogicalOperator::Skip(SkipOp {
+                count: CountExpr::Literal(3),
+                ..
+            })
+        ));
+        assert!(matches!(
+            wrap_limit(scan("n"), 7usize),
+            LogicalOperator::Limit(LimitOp {
+                count: CountExpr::Literal(7),
+                ..
+            })
+        ));
+        assert!(matches!(
+            wrap_distinct(scan("n")),
+            LogicalOperator::Distinct(DistinctOp { columns: None, .. })
+        ));
+        assert!(matches!(
+            wrap_return(scan("n"), vec![], true),
+            LogicalOperator::Return(ReturnOp { distinct: true, .. })
+        ));
+    }
+
+    // --- visible_variables ---
+
+    #[test]
+    fn visible_variables_node_scan_donne_un_noeud() {
+        let vars = visible_variables(&scan("n"));
+        assert_eq!(vars.get("n"), Some(&VariableKind::Node));
+        assert_eq!(vars.len(), 1);
+    }
+
+    // --- finalize_aggregate_projection ---
+
+    #[test]
+    fn projection_absente_si_l_agregat_sort_deja_la_clause() {
+        let mut aggs = vec![aggregat(None)];
+        let group_by = vec![var("n")];
+        let items = vec![
+            AggregateItem::GroupKey {
+                position: 0,
+                alias: None,
+            },
+            AggregateItem::Direct {
+                position: 0,
+                alias: None,
+            },
+        ];
+        assert!(finalize_aggregate_projection(&mut aggs, &group_by, items, false).is_none());
+    }
+
+    #[test]
+    fn projection_alias_direct_pose_une_colonne_interne() {
+        let mut aggs = vec![aggregat(None)];
+        let items = vec![AggregateItem::Direct {
+            position: 0,
+            alias: Some("c".into()),
+        }];
+        let post = finalize_aggregate_projection(&mut aggs, &[], items, true)
+            .expect("always_project_aliases doit poser la projection");
+        assert_eq!(post.len(), 1);
+        assert_eq!(aggs[0].alias.as_deref(), Some("_agg_direct_0"));
+        assert!(matches!(
+            &post[0].expression,
+            LogicalExpression::Variable(v) if v == "_agg_direct_0"
+        ));
+        assert_eq!(post[0].alias.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn projection_garde_l_alias_interne_existant() {
+        let mut aggs = vec![aggregat(Some("deja"))];
+        // Un GroupKey placé après l'agrégat rend l'ordre non naturel : la
+        // projection est posée, et l'alias existant de l'agrégat est gardé.
+        let group_by = vec![var("n")];
+        let items = vec![
+            AggregateItem::Direct {
+                position: 0,
+                alias: None,
+            },
+            AggregateItem::GroupKey {
+                position: 0,
+                alias: None,
+            },
+        ];
+        let post = finalize_aggregate_projection(&mut aggs, &group_by, items, false)
+            .expect("ordre non naturel doit poser la projection");
+        assert_eq!(
+            aggs[0].alias.as_deref(),
+            Some("deja"),
+            "alias existant gardé"
+        );
+        assert_eq!(post.len(), 2);
+    }
+
+    #[test]
+    fn projection_cle_avec_alias_different_de_sa_colonne() {
+        let mut aggs = vec![];
+        let group_by = vec![var("n")];
+        let items = vec![AggregateItem::GroupKey {
+            position: 0,
+            alias: Some("city".into()),
+        }];
+        let post = finalize_aggregate_projection(&mut aggs, &group_by, items, false)
+            .expect("alias de clé différent de la colonne doit poser la projection");
+        assert_eq!(post[0].alias.as_deref(), Some("city"));
+        assert!(matches!(
+            &post[0].expression,
+            LogicalExpression::Variable(v) if v == "n"
+        ));
+    }
+
+    #[test]
+    fn projection_item_enveloppant_un_agregat_est_repris_tel_quel() {
+        let mut aggs = vec![];
+        let enveloppe = ReturnItem {
+            expression: call("abs", vec![var("x")]),
+            alias: Some("x".into()),
+        };
+        let post = finalize_aggregate_projection(
+            &mut aggs,
+            &[],
+            vec![AggregateItem::Wrapped(enveloppe)],
+            false,
+        )
+        .expect("un item enveloppant un agrégat pose toujours la projection");
+        assert_eq!(post.len(), 1);
+        assert_eq!(post[0].alias.as_deref(), Some("x"));
+    }
+}
