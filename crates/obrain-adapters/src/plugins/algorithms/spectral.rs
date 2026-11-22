@@ -11,8 +11,9 @@
 //! matrix. The eigenvectors corresponding to the smallest eigenvalues capture
 //! the global connectivity structure of the graph.
 //!
-//! Uses power iteration with deflation on the *similarity matrix*
-//! `M = D^{-1/2} W D^{-1/2}` (whose largest eigenvectors = smallest of `L_norm`).
+//! Uses a block subspace iteration with Rayleigh–Ritz on the lazy operator
+//! `(I + M)/2`, `M = D^{-1/2} W_s D^{-1/2}`, `W_s = (W + Wᵀ)/2` (whose largest
+//! non-trivial eigenvectors = smallest of `L_norm`). Graph read as undirected.
 //!
 //! ## Usage
 //!
@@ -70,7 +71,7 @@ pub struct SpectralEmbeddingResult {
 ///
 /// # Complexity
 ///
-/// O(iterations × (V + E)) per eigenvector, with `iterations` ≤ 200.
+/// O(iterations × (k+3) × (V + E)), `iterations` ≤ 3000, stops on Ritz-value convergence.
 pub fn spectral_embedding(
     store: &dyn GraphStore,
     dimensions: usize,
@@ -140,132 +141,277 @@ pub fn spectral_embedding(
 
 /// Extract `k` smallest non-trivial eigenvectors of the normalized Laplacian.
 ///
-/// Works on the similarity matrix M = D^{-1/2} W D^{-1/2} and finds its
-/// largest eigenvectors (excluding the trivial one), which correspond to
-/// the smallest non-trivial eigenvectors of L_norm = I - M.
+/// Works on the similarity matrix `M = D^{-1/2} W_s D^{-1/2}` with
+/// `W_s = (W + Wᵀ)/2` (the graph is read as undirected: the former code
+/// iterated the *transpose* of the directed `W`, and a node without
+/// outgoing edge turned every embedding into a constant). Nodes of degree 0
+/// in `W_s` are set aside and receive the neutral value 0.5 — only them.
 ///
-/// Returns `k` vectors, each normalized to [0, 1].
+/// Returns `k` vectors (length `adj.len()`), each normalized to [0, 1].
 fn spectral_eigenvectors(adj: &[Vec<(usize, f64)>], k: usize) -> Vec<Vec<f64>> {
     let n = adj.len();
-    if n <= 1 {
-        return vec![vec![0.5; n]; k];
-    }
-
-    // Compute weighted degree: D_ii = Σ_j W_ij
-    let degrees: Vec<f64> = adj
-        .iter()
-        .map(|neighbors| neighbors.iter().map(|&(_, w)| w).sum::<f64>())
-        .collect();
-
-    // Check for isolated nodes
-    let min_deg = degrees.iter().copied().fold(f64::INFINITY, f64::min);
-    if min_deg < 1e-10 {
-        return vec![vec![0.5; n]; k];
-    }
-
-    // D^{-1/2}
-    let d_inv_sqrt: Vec<f64> = degrees.iter().map(|&d| 1.0 / d.sqrt()).collect();
-
-    // Matrix-vector product: M * v = D^{-1/2} W D^{-1/2} v
-    let matvec = |v: &[f64]| -> Vec<f64> {
-        let mut result = vec![0.0f64; n];
-        for i in 0..n {
-            let wi = d_inv_sqrt[i] * v[i];
-            for &(j, w) in &adj[i] {
-                result[j] += d_inv_sqrt[j] * wi * w;
+    let (_values, vectors, active) = spectral_eigenpairs(adj, k);
+    let mut out = Vec::with_capacity(k);
+    for c in 0..k {
+        let mut full = vec![0.5; n];
+        if let Some(v) = vectors.get(c) {
+            let unit = normalize_to_unit(v);
+            for (a, &idx) in active.iter().enumerate() {
+                full[idx] = unit[a];
             }
         }
-        result
-    };
-
-    // Trivial eigenvector: D^{1/2} * 1 (normalized)
-    let trivial: Vec<f64> = degrees.iter().map(|&d| d.sqrt()).collect();
-    let trivial_norm = vec_norm(&trivial);
-    let trivial_unit: Vec<f64> = trivial.iter().map(|&x| x / trivial_norm).collect();
-
-    // Extract k eigenvectors via successive deflation
-    let mut deflate_vecs: Vec<Vec<f64>> = vec![trivial_unit];
-    let mut eigenvectors = Vec::with_capacity(k);
-
-    for _ in 0..k {
-        let refs: Vec<&[f64]> = deflate_vecs.iter().map(|v| v.as_slice()).collect();
-        let ev = power_iteration_deflated(&matvec, &refs, n, 200);
-        let normalized = normalize_to_unit(&ev);
-        let ev_norm = vec_norm(&ev);
-        let ev_unit: Vec<f64> = ev.iter().map(|&x| x / ev_norm.max(1e-12)).collect();
-        deflate_vecs.push(ev_unit);
-        eigenvectors.push(normalized);
+        out.push(full);
     }
-
-    eigenvectors
+    out
 }
 
-/// Power iteration with deflation against given orthogonal vectors.
-fn power_iteration_deflated(
-    matvec: &dyn Fn(&[f64]) -> Vec<f64>,
-    deflate_against: &[&[f64]],
-    n: usize,
-    max_iters: usize,
-) -> Vec<f64> {
-    // Deterministic pseudo-random initial vector (golden ratio based)
-    let mut v: Vec<f64> = (0..n)
-        .map(|i| {
-            let x = (i as f64 + 1.0) * 0.618033988749895;
-            x - x.floor() - 0.5
+/// Eigenpairs of `M = D^{-1/2} W_s D^{-1/2}` beyond the trivial one
+/// (eigenvalue 1, vector ∝ `D^{1/2}·1`), largest first.
+///
+/// Returns `(values, vectors, active)`: `vectors[c]` is a unit vector over
+/// the `active` nodes (those with symmetrised degree > 0); `values[c]` its
+/// eigenvalue of `M` (`λ(L_norm) = 1 − value`). Fewer than `k` pairs are
+/// returned when the active graph is too small.
+///
+/// The solver is a block subspace iteration with Rayleigh–Ritz on the lazy
+/// operator `(I + M)/2` (spectrum in [0, 1], so bipartite graphs' `−1` is
+/// mapped to 0 and can no longer dominate), deflated against the trivial
+/// vector. A block handles multiple eigenvalues (rings) that a sequential
+/// deflation with a fixed iteration budget cannot.
+#[allow(clippy::many_single_char_names)] // notation matricielle : i, j, w (indices et poids de l'arête)
+fn spectral_eigenpairs(
+    adj: &[Vec<(usize, f64)>],
+    k: usize,
+) -> (Vec<f64>, Vec<Vec<f64>>, Vec<usize>) {
+    let n_all = adj.len();
+
+    // Symmetrise: W_s = (W + Wᵀ)/2, over all nodes.
+    let mut ws: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_all];
+    for (i, row) in adj.iter().enumerate() {
+        for &(j, w) in row {
+            // Équivalent EXACT de `!(w > 0.0)` : `w <= 0.0` retourné laisserait
+            // NaN passer (toute comparaison avec NaN est fausse), donc on isole
+            // le cas NaN au lieu de changer la sémantique pour l'infini.
+            if i == j || w.is_nan() || w <= 0.0 {
+                continue;
+            }
+            ws[i].push((j, w / 2.0));
+            ws[j].push((i, w / 2.0));
+        }
+    }
+
+    // Set aside degree-0 nodes; dense re-indexing of the others.
+    let deg_all: Vec<f64> = ws
+        .iter()
+        .map(|r| r.iter().map(|&(_, w)| w).sum::<f64>())
+        .collect();
+    let active: Vec<usize> = (0..n_all).filter(|&i| deg_all[i] > 1e-12).collect();
+    let n = active.len();
+    if n < 2 || k == 0 {
+        return (Vec::new(), Vec::new(), active);
+    }
+    let mut pos = vec![usize::MAX; n_all];
+    for (a, &i) in active.iter().enumerate() {
+        pos[i] = a;
+    }
+    let rows: Vec<Vec<(usize, f64)>> = active
+        .iter()
+        .map(|&i| ws[i].iter().map(|&(j, w)| (pos[j], w)).collect())
+        .collect();
+    let d_inv_sqrt: Vec<f64> = active.iter().map(|&i| 1.0 / deg_all[i].sqrt()).collect();
+
+    // Lazy operator: (I + M)/2 · v
+    let lazy = |v: &[f64]| -> Vec<f64> {
+        let mut r = vec![0.0f64; n];
+        for i in 0..n {
+            let mut acc = 0.0;
+            for &(j, w) in &rows[i] {
+                acc += w * d_inv_sqrt[j] * v[j];
+            }
+            r[i] = f64::midpoint(v[i], d_inv_sqrt[i] * acc);
+        }
+        r
+    };
+
+    // Trivial eigenvector D^{1/2}·1 (unit).
+    let mut trivial: Vec<f64> = active.iter().map(|&i| deg_all[i].sqrt()).collect();
+    let tn = vec_norm(&trivial);
+    for x in &mut trivial {
+        *x /= tn;
+    }
+
+    // Block size: k wanted + oversampling, at most n − 1 (trivial excluded).
+    let want = k.min(n - 1);
+    let q = (want + 3).min(n - 1);
+
+    // Deterministic starting block (golden-ratio sequences, one per column).
+    let mut x: Vec<Vec<f64>> = (0..q)
+        .map(|c| {
+            (0..n)
+                .map(|i| {
+                    let t =
+                        (i as f64 + 1.0) * 0.618033988749895 * (c as f64 + 1.0) + 0.377 * c as f64;
+                    t - t.floor() - 0.5
+                })
+                .collect()
         })
         .collect();
+    orthonormalize(&mut x, &trivial);
 
-    // Deflate initial vector
-    for &u in deflate_against {
-        let proj = dot(&v, u);
-        for i in 0..n {
-            v[i] -= proj * u[i];
-        }
-    }
+    let mut ritz_prev = vec![f64::NAN; q];
+    let mut ritz_vals = vec![0.0; q];
+    for _ in 0..3000 {
+        let mut y: Vec<Vec<f64>> = x.iter().map(|v| lazy(v)).collect();
+        orthonormalize(&mut y, &trivial);
 
-    let norm = vec_norm(&v);
-    if norm < 1e-12 {
-        return vec![0.0; n];
-    }
-    for x in &mut v {
-        *x /= norm;
-    }
-
-    for _ in 0..max_iters {
-        let mut mv = matvec(&v);
-
-        // Deflate
-        for &u in deflate_against {
-            let proj = dot(&mv, u);
-            for i in 0..n {
-                mv[i] -= proj * u[i];
+        // Rayleigh–Ritz: H = Yᵀ A Y (q×q), then rotate Y by its eigenvectors.
+        let ay: Vec<Vec<f64>> = y.iter().map(|v| lazy(v)).collect();
+        let mut h = vec![vec![0.0; q]; q];
+        for a in 0..q {
+            for b in 0..q {
+                h[a][b] = dot(&y[a], &ay[b]);
             }
         }
-
-        let norm = vec_norm(&mv);
-        if norm < 1e-12 {
-            break;
+        let (vals, vecs) = jacobi_eigen(h); // sorted descending
+        let mut rotated: Vec<Vec<f64>> = vec![vec![0.0; n]; q];
+        for (r, rv) in rotated.iter_mut().enumerate() {
+            for (b, yb) in y.iter().enumerate() {
+                let c = vecs[b][r];
+                for i in 0..n {
+                    rv[i] += c * yb[i];
+                }
+            }
         }
-        for x in &mut mv {
-            *x /= norm;
-        }
-
-        // Convergence check: |v - mv| < epsilon
-        let diff: f64 = v
+        x = rotated;
+        ritz_vals = vals;
+        let delta = ritz_vals
             .iter()
-            .zip(mv.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f64>()
-            .sqrt();
-
-        v = mv;
-
-        if diff < 1e-10 {
+            .zip(ritz_prev.iter())
+            .take(want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        if delta < 1e-13 && ritz_prev[0].is_finite() {
             break;
         }
+        ritz_prev.clone_from(&ritz_vals);
     }
 
-    v
+    // Eigenvalue of M from the lazy one: λ_M = 2·λ_lazy − 1.
+    let values: Vec<f64> = ritz_vals
+        .iter()
+        .take(want)
+        .map(|&l| 2.0 * l - 1.0)
+        .collect();
+    let vectors: Vec<Vec<f64>> = x.into_iter().take(want).collect();
+    (values, vectors, active)
+}
+
+/// Orthogonalise `block` against `against` (unit), then orthonormalise it
+/// (modified Gram–Schmidt, twice). A column that collapses is replaced by a
+/// deterministic fallback vector.
+fn orthonormalize(block: &mut [Vec<f64>], against: &[f64]) {
+    let n = against.len();
+    for c in 0..block.len() {
+        for _pass in 0..2 {
+            let p = dot(&block[c], against);
+            for i in 0..n {
+                block[c][i] -= p * against[i];
+            }
+            for b in 0..c {
+                let (head, tail) = block.split_at_mut(c);
+                let p = dot(&tail[0], &head[b]);
+                for i in 0..n {
+                    tail[0][i] -= p * head[b][i];
+                }
+            }
+        }
+        let mut nrm = vec_norm(&block[c]);
+        if nrm < 1e-12 {
+            // Deterministic replacement, re-orthogonalised once.
+            for i in 0..n {
+                block[c][i] = (((i * 2654435761 + c * 40503 + 1) % 1000) as f64) / 1000.0 - 0.5;
+            }
+            let p = dot(&block[c], against);
+            for i in 0..n {
+                block[c][i] -= p * against[i];
+            }
+            for b in 0..c {
+                let (head, tail) = block.split_at_mut(c);
+                let p = dot(&tail[0], &head[b]);
+                for i in 0..n {
+                    tail[0][i] -= p * head[b][i];
+                }
+            }
+            nrm = vec_norm(&block[c]).max(1e-12);
+        }
+        for x in &mut block[c] {
+            *x /= nrm;
+        }
+    }
+}
+
+/// Cyclic Jacobi eigen-decomposition of a small symmetric matrix.
+/// Returns eigenvalues sorted descending and `vecs[row][col]` where column
+/// `col` is the eigenvector of the `col`-th eigenvalue.
+#[allow(clippy::many_single_char_names)] // notation matricielle : a, v, n (matrice, vecteurs, taille)
+fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let n = a.len();
+    let mut v = vec![vec![0.0; n]; n];
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
+    for _sweep in 0..100 {
+        let mut off = 0.0;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                off += a[p][q] * a[p][q];
+            }
+        }
+        if off < 1e-30 {
+            break;
+        }
+        for p in 0..n {
+            for q in (p + 1)..n {
+                if a[p][q].abs() < 1e-300 {
+                    continue;
+                }
+                let theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let t = if theta == 0.0 { 1.0 } else { t };
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                for r in 0..n {
+                    let (arp, arq) = (a[r][p], a[r][q]);
+                    a[r][p] = c * arp - s * arq;
+                    a[r][q] = s * arp + c * arq;
+                }
+                for r in 0..n {
+                    let (apr, aqr) = (a[p][r], a[q][r]);
+                    a[p][r] = c * apr - s * aqr;
+                    a[q][r] = s * apr + c * aqr;
+                }
+                for r in 0..n {
+                    let (vrp, vrq) = (v[r][p], v[r][q]);
+                    v[r][p] = c * vrp - s * vrq;
+                    v[r][q] = s * vrp + c * vrq;
+                }
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| {
+        a[j][j]
+            .partial_cmp(&a[i][i])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let vals: Vec<f64> = order.iter().map(|&i| a[i][i]).collect();
+    let mut vecs = vec![vec![0.0; n]; n];
+    for (newc, &oldc) in order.iter().enumerate() {
+        for r in 0..n {
+            vecs[r][newc] = v[r][oldc];
+        }
+    }
+    (vals, vecs)
 }
 
 /// Dot product of two vectors.
@@ -505,5 +651,140 @@ mod tests {
         let result = algo.execute(&store, &params).unwrap();
         assert_eq!(result.columns, vec!["node_id", "embedding"]);
         assert_eq!(result.rows.len(), 5);
+    }
+
+    // -----------------------------------------------------------------
+    // #289 — oracles spectraux (sans store : liste d'adjacence dirigée).
+    // -----------------------------------------------------------------
+
+    /// Adjacence dirigée → W_s = (W + Wᵀ)/2 sous forme de liste de listes.
+    fn sym(adj: &[Vec<(usize, f64)>]) -> Vec<Vec<(usize, f64)>> {
+        let mut out = vec![Vec::new(); adj.len()];
+        for (i, row) in adj.iter().enumerate() {
+            for &(j, w) in row {
+                out[i].push((j, w / 2.0));
+                out[j].push((i, w / 2.0));
+            }
+        }
+        out
+    }
+
+    /// Retrouve le vecteur propre brut (avant `normalize_to_unit`, affine)
+    /// grâce à l'orthogonalité avec D^{1/2}·1, puis rend son quotient de
+    /// Rayleigh pour M = D^{-1/2} W_s D^{-1/2}, restreint aux `actifs`.
+    fn rayleigh(adj: &[Vec<(usize, f64)>], x: &[f64], actifs: &[usize]) -> f64 {
+        let ws = sym(adj);
+        let deg: Vec<f64> = ws.iter().map(|r| r.iter().map(|&(_, w)| w).sum()).collect();
+        let sq: Vec<f64> = deg.iter().map(|d| d.sqrt()).collect();
+        let c = actifs.iter().map(|&i| sq[i] * x[i]).sum::<f64>()
+            / actifs.iter().map(|&i| sq[i]).sum::<f64>();
+        let mut v = vec![0.0; adj.len()];
+        for &i in actifs {
+            v[i] = x[i] - c;
+        }
+        let mut num = 0.0;
+        for &i in actifs {
+            for &(j, w) in &ws[i] {
+                num += v[i] * w * v[j] / (sq[i] * sq[j]);
+            }
+        }
+        num / v.iter().map(|a| a * a).sum::<f64>()
+    }
+
+    fn ring_adj(n: usize) -> Vec<Vec<(usize, f64)>> {
+        (0..n)
+            .map(|i| vec![((i + 1) % n, 1.0), ((i + n - 1) % n, 1.0)])
+            .collect()
+    }
+
+    /// Anneau pair (biparti) : λ(M) = −1 existe, l'itération non décalée la
+    /// choisissait. Les deux premiers non triviaux valent cos(2π/10) (mult. 2).
+    #[test]
+    fn spectral_anneau_10_donne_les_vecteurs_de_fiedler() {
+        let adj = ring_adj(10);
+        let evs = spectral_eigenvectors(&adj, 2);
+        let tous: Vec<usize> = (0..10).collect();
+        let attendu = (2.0 * std::f64::consts::PI / 10.0).cos();
+        for (d, ev) in evs.iter().enumerate() {
+            let r = rayleigh(&adj, ev, &tous);
+            assert!(
+                (r - attendu).abs() < 1e-3,
+                "dim {d}: Rayleigh = {r}, attendu cos(2π/10) = {attendu}"
+            );
+        }
+    }
+
+    #[test]
+    fn spectral_anneau_11_donne_le_vecteur_de_fiedler() {
+        let adj = ring_adj(11);
+        let evs = spectral_eigenvectors(&adj, 1);
+        let tous: Vec<usize> = (0..11).collect();
+        let attendu = (2.0 * std::f64::consts::PI / 11.0).cos();
+        let r = rayleigh(&adj, &evs[0], &tous);
+        assert!(
+            (r - attendu).abs() < 1e-3,
+            "Rayleigh = {r}, attendu {attendu}"
+        );
+    }
+
+    /// Deux K4 reliés par un pont orienté a→b, plus un puits `s` (aucune
+    /// arête sortante, une entrante). Avant : un seul puits rendait tout
+    /// constant. Après : le signe du vecteur de Fiedler sépare les cliques.
+    #[test]
+    fn spectral_un_puits_ne_rend_pas_tout_constant() {
+        let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); 9];
+        for base in [0usize, 4] {
+            for i in 0..4 {
+                for j in 0..4 {
+                    if i != j {
+                        adj[base + i].push((base + j, 1.0));
+                    }
+                }
+            }
+        }
+        adj[3].push((4, 1.0)); // pont orienté
+        adj[0].push((8, 1.0)); // 8 = puits
+        let evs = spectral_eigenvectors(&adj, 1);
+        let ev = &evs[0];
+        assert!(ev.iter().all(|x| x.is_finite()));
+        let actifs: Vec<usize> = (0..8).collect();
+        let ws = sym(&adj);
+        let sq: Vec<f64> = ws
+            .iter()
+            .map(|r| r.iter().map(|&(_, w)| w).sum::<f64>().sqrt())
+            .collect();
+        let tous: Vec<usize> = (0..9).collect();
+        let c = tous.iter().map(|&i| sq[i] * ev[i]).sum::<f64>()
+            / tous.iter().map(|&i| sq[i]).sum::<f64>();
+        let signe = |i: usize| (ev[i] - c) > 0.0;
+        assert!(
+            ev.iter().any(|&x| (x - ev[0]).abs() > 1e-3),
+            "plongement constant"
+        );
+        assert!(
+            (0..4).all(|i| signe(i) == signe(0)),
+            "clique A non homogène"
+        );
+        assert!(
+            (4..8).all(|i| signe(i) == signe(4)),
+            "clique B non homogène"
+        );
+        assert_ne!(signe(0), signe(4), "le signe doit séparer les deux cliques");
+        let _ = actifs;
+    }
+
+    /// Valeurs propres de M (convention : λ(L_norm) = 1 − λ(M)) : sur C₁₀ les
+    /// deux premières valent cos(2π/10) (multiplicité 2), pas cos(4π/10).
+    #[test]
+    fn spectral_valeurs_propres_anneau_10_multiplicite_deux() {
+        let (vals, vecs, active) = spectral_eigenpairs(&ring_adj(10), 4);
+        assert_eq!(active.len(), 10);
+        assert_eq!(vecs.len(), 4);
+        let l1 = (2.0 * std::f64::consts::PI / 10.0).cos();
+        let l2 = (4.0 * std::f64::consts::PI / 10.0).cos();
+        assert!((vals[0] - l1).abs() < 1e-8, "{vals:?}");
+        assert!((vals[1] - l1).abs() < 1e-8, "{vals:?}");
+        assert!((vals[2] - l2).abs() < 1e-8, "{vals:?}");
+        assert!((vals[3] - l2).abs() < 1e-8, "{vals:?}");
     }
 }
