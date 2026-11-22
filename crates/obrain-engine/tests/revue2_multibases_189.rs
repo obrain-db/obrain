@@ -216,12 +216,43 @@ fn where_exclut_noeud_distant_refuse_sans_echec_global() {
 #[test]
 fn liste_aretes_trail_unicite_sur_la_liste() {
     let (alpha, _beta) = bases();
+    // TRAIL : 2 hops parmi L, T, M depuis Note. Les deux seuls chemins sont
+    // Note-[L]->Hub-[T]->doc_1 et Note-[L]->Hub-[M]->Zed (TB et TX ne sont
+    // pas dans le filtre). Vérifie la taille ET les cibles distinctes.
     let r = alpha
         .session()
-        .execute("MATCH TRAIL (n:Note)-[rs:L|T|M*2..2]->(x) RETURN size(rs)")
+        .execute(
+            "MATCH TRAIL (n:Note)-[rs:L|T|M*2..2]->(x) \
+             RETURN size(rs), x.name ORDER BY x.name",
+        )
         .expect("trail");
-    assert_eq!(r.rows.len(), 2, "{:?}", r.rows);
-    assert!(r.rows.iter().all(|l| entier(&l[0]) == 2));
+    assert_eq!(r.rows.len(), 2, "attendu 2 chemins TRAIL : {:?}", r.rows);
+    assert!(
+        r.rows.iter().all(|l| entier(&l[0]) == 2),
+        "chaque chemin a 2 arêtes"
+    );
+    // Les cibles sont distinctes (Zed local et doc_1 distant) : TRAIL ne
+    // filtre rien ici car les deux chemins n'ont aucune arête en commun.
+    let mut noms: Vec<Option<String>> = r
+        .rows
+        .iter()
+        .map(|l| match &l[1] {
+            Value::String(s) => Some(s.to_string()),
+            Value::Map(m) => m
+                .get(&obrain_common::types::PropertyKey::new("name"))
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.to_string()),
+                    _ => None,
+                }),
+            _ => None,
+        })
+        .collect();
+    noms.sort();
+    assert_eq!(
+        noms,
+        vec![Some("local-z".to_string()), Some("remote".to_string())],
+        "cibles TRAIL : Zed (local) et doc_1 (distant)"
+    );
 }
 
 #[test]
@@ -254,4 +285,72 @@ fn proprietes_d_aretes_locale_externe_distante_exactes() {
         ],
         "types des arêtes"
     );
+}
+
+// ── 6. ExpandOperator (simple hop) : écrasement silencieux (limite connue) ───
+
+#[test]
+fn expand_simple_hop_ecrasement_silencieux_limite_connue() {
+    // (#189 revue finding 1, option C) L'ExpandOperator NE refuse PAS les
+    // clés réservées : un refus global avant le WHERE empêcherait les
+    // requêtes avec prédicat d'exclure le noeud fautif. Conséquence :
+    // `d._id` rend l'identifiant INTERNE (écrasé par `remote_node_value`),
+    // pas la propriété utilisateur `7`. C'est une limite connue.
+    let (alpha, _beta) = bases();
+    let r = alpha
+        .session()
+        .execute("MATCH (h:Hub)-[:TB]->(d) RETURN d._id")
+        .expect("pas de refus en expansion simple");
+    assert_eq!(r.rows.len(), 1, "un résultat");
+    // La valeur est l'id interne de beta, PAS 7 (écrasement).
+    let id = entier(&r.rows[0][0]);
+    assert_ne!(id, 7, "l'id interne a écrasé la propriété utilisateur (limite connue)");
+}
+
+#[test]
+fn expand_simple_hop_noeud_distant_sans_cle_reservee_ok() {
+    // Le même chemin vers un noeud propre (doc_1) ne doit pas échouer.
+    let (alpha, _beta) = bases();
+    let r = alpha
+        .session()
+        .execute("MATCH (h:Hub)-[:T]->(d) RETURN d.name")
+        .expect("doc_1 sans clé réservée");
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0][0], Value::String("remote".into()));
+}
+
+// ── 7. Split clés réservées : un noeud avec `_type` n'est PAS refusé ────────
+
+#[test]
+fn noeud_distant_avec_propriete_type_pas_refuse() {
+    // `_type` est réservé pour les ARÊTES, pas pour les nœuds.
+    // Avant le split (`cle_reservee` unique → `cle_reservee_noeud` / `cle_reservee_arete`),
+    // un noeud avec `_type` était faussement rejeté.
+    let alpha = ObrainDB::new_in_memory();
+    let gamma = ObrainDB::new_in_memory();
+    gamma
+        .session()
+        .execute("INSERT (:Item {id: 'gadget', name: 'gadget', _type: 'custom'})")
+        .expect("item");
+    alpha.session().execute("INSERT (:Start)").expect("start");
+    alpha
+        .session()
+        .execute("MATCH (s:Start) CREATE (s)-[:LINK]->(ref(\"gamma\", \"gadget\"))")
+        .expect("link");
+    alpha.attach_bases("alpha", None);
+    alpha.attach_base("gamma", &gamma).expect("attach gamma");
+    // Via ExpandOperator (simple hop) :
+    let r = alpha
+        .session()
+        .execute("MATCH (s:Start)-[:LINK]->(i) RETURN i.name, i._type")
+        .expect("_type sur noeud ne devrait pas être refusé");
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0][0], Value::String("gadget".into()));
+    assert_eq!(r.rows[0][1], Value::String("custom".into()));
+    // Via VLE (chemin) :
+    let r2 = alpha
+        .session()
+        .execute("MATCH WALK p = (s:Start)-[:LINK*1..1]->(i) RETURN [x IN nodes(p) | x.name]")
+        .expect("_type sur noeud VLE ne devrait pas être refusé");
+    assert_eq!(r2.rows.len(), 1);
 }

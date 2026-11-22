@@ -3,8 +3,8 @@
 use super::{Operator, OperatorError, OperatorResult, SessionContext};
 use crate::execution::DataChunk;
 use crate::execution::base_registry::{
-    self, cle_reservee, external_edge_value, remote_edge_hydratee, remote_node_value,
-    resolve_node_key,
+    self, cle_reservee_arete, cle_reservee_noeud, external_edge_value, remote_edge_hydratee,
+    remote_node_value, resolve_node_key,
 };
 use crate::graph::Direction;
 use crate::graph::GraphStore;
@@ -743,9 +743,12 @@ impl VariableLengthExpandOperator {
         let needs_tracking =
             self.output_path_detail || self.output_edge_list || self.path_mode != PathMode::Walk;
         let needs_edges = self.output_path_detail || self.output_edge_list;
-        // Les extrémités d'une arête externe ne se lisent que dans le segment : la liste
-        // d'arêtes en a besoin même sans détail de chemin (#189, revue 3).
-        let needs_nodes = self.output_path_detail || self.output_edge_list;
+        // Les nœuds du segment servent au détail de chemin ET à la résolution
+        // des arêtes externes dans la liste (extrémités nécessaires, #189
+        // revue 3). En mono-base, aucune arête externe ne peut apparaître :
+        // inutile de collecter les nœuds pour la seule liste d'arêtes.
+        let needs_nodes = self.output_path_detail
+            || (self.output_edge_list && self.session_context.base_registry.is_some());
 
         // `*0..n` : le chemin de longueur 0 (source = cible, aucune arete)
         // existe dans tous les modes — un chemin vide ne repete ni noeud ni
@@ -920,9 +923,9 @@ impl VariableLengthExpandOperator {
         let Some(noeud) = store.get_node(n.id) else {
             return Ok(Value::Null);
         };
-        if let Some(r) = cle_reservee(&noeud.properties) {
+        if let Some(r) = cle_reservee_noeud(&noeud.properties) {
             return Err(OperatorError::Execution(format!(
-                "chemin refusé : le noeud distant {slug}/{} porte la propriété utilisateur « {r} », réservée aux métadonnées d'élément distant",
+                "chemin refusé : le noeud distant {slug}/{} porte la propriété utilisateur « {r} », réservée aux métadonnées de noeud distant",
                 n.id.0
             )));
         }
@@ -938,7 +941,7 @@ impl VariableLengthExpandOperator {
         apres: Option<NoeudM>,
     ) -> Result<Value, OperatorError> {
         // Arête EXTERNE : absente de `get_edge` (sidecar). Lue dans le store de sa base
-        // SOURCE, par son noeud de départ. Introuvable : `Null` (jamais une valeur inventée).
+        // SOURCE, par son noeud de départ. Introuvable : erreur explicite.
         if a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT != 0 {
             let (slug, store) = self.base_de(a.base);
             for n in [avant, apres].into_iter().flatten() {
@@ -965,9 +968,9 @@ impl VariableLengthExpandOperator {
         let Some(arete) = store.get_edge(a.id) else {
             return Ok(Value::Null);
         };
-        if let Some(r) = cle_reservee(&arete.properties) {
+        if let Some(r) = cle_reservee_arete(&arete.properties) {
             return Err(OperatorError::Execution(format!(
-                "chemin refusé : l'arête distante {slug}/{} porte la propriété utilisateur « {r} », réservée aux métadonnées d'élément distant",
+                "chemin refusé : l'arête distante {slug}/{} porte la propriété utilisateur « {r} », réservée aux métadonnées d'arête distante",
                 a.id.0
             )));
         }
@@ -1103,15 +1106,24 @@ impl VariableLengthExpandOperator {
                 reach.as_ref().map(|(t, _)| *t),
             );
             if let Some(modele) = self.chemins_par_source.get(&cle) {
-                let copies: Vec<OutputRow> = modele
-                    .iter()
-                    .map(|r| OutputRow {
+                // (#189 revue 4) Chemin chaud : pas de Vec intermédiaire
+                // quand le filtrage par mode est un no-op (pas de préfixe ou Walk).
+                if self.path_prefix_column.is_none() || self.path_mode == PathMode::Walk {
+                    self.output_buffer.extend(modele.iter().map(|r| OutputRow {
                         input_idx: idx,
                         ..r.clone()
-                    })
-                    .collect();
-                let copies = self.filtrer_par_mode(idx, copies);
-                self.output_buffer.extend(copies);
+                    }));
+                } else {
+                    let copies: Vec<OutputRow> = modele
+                        .iter()
+                        .map(|r| OutputRow {
+                            input_idx: idx,
+                            ..r.clone()
+                        })
+                        .collect();
+                    let copies = self.filtrer_par_mode(idx, copies);
+                    self.output_buffer.extend(copies);
+                }
                 self.current_input_idx += 1;
                 continue;
             }
@@ -1269,12 +1281,24 @@ impl Operator for VariableLengthExpandOperator {
             }
 
             // Add target node column. (V4) Cible distante : hydratation
-            // frontiere (Map _base + proprietes), comme ExpandOperator.
+            // frontière (Map _base + propriétés), comme ExpandOperator.
+            // (#189 revue) Vérifie `cle_reservee_noeud` : un noeud distant
+            // dont une propriété utilisateur a le même nom qu'une métadonnée
+            // (`_id`, `_labels`, `_base`) rendrait une valeur silencieusement
+            // fausse dans la Map — refus explicite comme `valeur_noeud`.
             if let Some(col) = chunk.column_mut(num_input_cols + 1) {
                 if out_row.target_id.base == 0 {
                     col.push_node_id(out_row.target_id.id);
                 } else {
                     let (slug, store) = self.base_de(out_row.target_id.base);
+                    if let Some(noeud) = store.get_node(out_row.target_id.id)
+                        && let Some(r) = cle_reservee_noeud(&noeud.properties)
+                    {
+                        return Err(OperatorError::Execution(format!(
+                            "noeud distant {slug}/{} : propriété utilisateur « {r} » réservée aux métadonnées de noeud distant",
+                            out_row.target_id.id.0
+                        )));
+                    }
                     match remote_node_value(&slug, &*store, out_row.target_id.id) {
                         Some(v) => col.push_value(v),
                         None => col.push_value(Value::Null),
