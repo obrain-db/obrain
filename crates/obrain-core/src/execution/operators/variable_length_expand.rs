@@ -743,6 +743,9 @@ impl VariableLengthExpandOperator {
         let needs_tracking =
             self.output_path_detail || self.output_edge_list || self.path_mode != PathMode::Walk;
         let needs_edges = self.output_path_detail || self.output_edge_list;
+        // Les extrémités d'une arête externe ne se lisent que dans le segment : la liste
+        // d'arêtes en a besoin même sans détail de chemin (#189, revue 3).
+        let needs_nodes = self.output_path_detail || self.output_edge_list;
 
         // `*0..n` : le chemin de longueur 0 (source = cible, aucune arete)
         // existe dans tous les modes — un chemin vide ne repete ni noeud ni
@@ -754,7 +757,7 @@ impl VariableLengthExpandOperator {
                 edge_id: None,
                 target_id: source_node,
                 path_length: 0,
-                path_nodes: self.output_path_detail.then(|| vec![source_node]),
+                path_nodes: needs_nodes.then(|| vec![source_node]),
                 path_edges: needs_edges.then(Vec::new),
             });
         }
@@ -803,7 +806,7 @@ impl VariableLengthExpandOperator {
                         edge_id: Some(edge_id),
                         target_id: current_node,
                         path_length: depth,
-                        path_nodes: if self.output_path_detail {
+                        path_nodes: if needs_nodes {
                             Some(segment.collect_nodes(depth))
                         } else {
                             None
@@ -950,7 +953,10 @@ impl VariableLengthExpandOperator {
                     return Ok(external_edge_value(&e, &slug));
                 }
             }
-            return Ok(Value::Null);
+            return Err(OperatorError::Execution(format!(
+                "chemin refusé : l'arête externe {slug}/{} est introuvable depuis ses extrémités du chemin",
+                a.id.0 & !crate::graph::EXTERNAL_EDGE_ID_BIT
+            )));
         }
         if a.base == 0 {
             return Ok(Value::Int64(a.id.0 as i64));
@@ -969,21 +975,30 @@ impl VariableLengthExpandOperator {
     }
 
     /// Valeur d'une arête dans la liste `rs` d'une relation de longueur variable :
-    /// MÊME représentation que la colonne d'arête unique (primaire = `Int64`,
-    /// distante = `Map {_id, _base}`), pour que `x <> r` compare des valeurs
-    /// de même nature et que l'unicité porte sur la base.
-    fn arete_liste_valeur(&self, a: AreteM) -> Value {
+    /// MÊME représentation que la colonne d'arête unique (`valeur_arete`) : primaire =
+    /// `Int64`, externe et distante = Map hydratée (`_type`, `_source`, `_target`…).
+    /// `[e IN rs | type(e)]` rend ainsi le type exact, et `x <> r` compare deux
+    /// valeurs de même nature. `noeuds` = nœuds du segment ; l'arête `k` est entre
+    /// `noeuds[k]` et `noeuds[k+1]`. Extrémités absentes pour une arête externe :
+    /// erreur explicite (jamais de `Null` silencieux).
+    fn arete_liste_valeur(
+        &self,
+        a: AreteM,
+        noeuds: Option<&[NoeudM]>,
+        k: usize,
+    ) -> Result<Value, OperatorError> {
+        let avant = noeuds.and_then(|n| n.get(k).copied());
+        let apres = noeuds.and_then(|n| n.get(k + 1).copied());
         if a.base == 0 && a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT == 0 {
-            return Value::Int64(a.id.0 as i64);
+            return Ok(Value::Int64(a.id.0 as i64));
         }
-        let (slug, _) = self.base_de(a.base);
-        let mut map = std::collections::BTreeMap::new();
-        map.insert(PropertyKey::new("_id"), Value::Int64(a.id.0 as i64));
-        map.insert(
-            PropertyKey::new(base_registry::BASE_KEY),
-            Value::String(slug.into()),
-        );
-        Value::Map(Arc::new(map))
+        if a.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT != 0 && avant.is_none() && apres.is_none() {
+            return Err(OperatorError::Execution(
+                "chemin refusé : extrémités de l'arête externe inconnues dans la liste d'arêtes"
+                    .into(),
+            ));
+        }
+        self.valeur_arete(a, avant, apres)
     }
 
     /// (obrain#189) Le chemin COMPOSE (prefixe ++ segment) respecte-t-il le mode
@@ -1222,8 +1237,9 @@ impl Operator for VariableLengthExpandOperator {
                         .as_deref()
                         .unwrap_or(&[])
                         .iter()
-                        .map(|a| self.arete_liste_valeur(*a))
-                        .collect();
+                        .enumerate()
+                        .map(|(k, a)| self.arete_liste_valeur(*a, out_row.path_nodes.as_deref(), k))
+                        .collect::<Result<Vec<Value>, OperatorError>>()?;
                     col.push_value(Value::List(liste.into()));
                 } else {
                     match out_row.edge_id {
@@ -1233,7 +1249,7 @@ impl Operator for VariableLengthExpandOperator {
                             if edge_id.base == 0
                                 && edge_id.id.0 & crate::graph::EXTERNAL_EDGE_ID_BIT == 0 =>
                         {
-                            col.push_edge_id(edge_id.id)
+                            col.push_edge_id(edge_id.id);
                         }
                         Some(edge_id) => {
                             let (slug, _) = self.base_de(edge_id.base);
@@ -1301,7 +1317,7 @@ impl Operator for VariableLengthExpandOperator {
                     Some((prefixe_noeuds, _)) => prefixe_noeuds.iter().cloned().collect(),
                     None => Vec::with_capacity(noeuds_segment.len()),
                 };
-                let debut_noeuds = if prefixe.is_some() { 1 } else { 0 };
+                let debut_noeuds = usize::from(prefixe.is_some());
                 for n in noeuds_segment.iter().skip(debut_noeuds) {
                     nodes.push(self.valeur_noeud(*n)?);
                 }
