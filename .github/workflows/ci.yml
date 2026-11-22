@@ -225,7 +225,7 @@ jobs:
     # 109 min, contre 26 min sur le pool (8 jobs) ; la 2e mesure ne tient pas dans les
     # 180 min. Les 20 autres jobs tournent sur des runners hébergés, donc ne
     # monopolisent plus le pool.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'obrain-k8s' }}
     timeout-minutes: 180
     env:
       # PROVISOIRE (21/11/2026) : 85 mesuré sur le seul profil par défaut ; le profil
