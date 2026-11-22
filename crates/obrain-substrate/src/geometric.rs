@@ -1129,10 +1129,12 @@ pub fn bottleneck_nodes(store: &SubstrateStore, threshold: f32) -> Vec<(NodeId, 
 // # What it captures
 //
 // For each node `u`, HKS(u, t) = h(t, u, u) = diagonal entry of the
-// heat kernel at time t, initialised from the Dirac δ_u. Computed via
-// `k` explicit-Euler steps on the CSR snapshot, where
-// `k = round(t / dt)` with `dt = 0.125` (CFL-safe on unweighted
-// bounded-degree graphs).
+// heat kernel at time t, initialised from the Dirac δ_u. Computed as
+// exp(−t·L_sym)·v by a Chebyshev expansion of the symmetrised,
+// degree-normalised Laplacian `L_sym = I − D^{-1/2} A D^{-1/2}`
+// (spectrum in [0, 2], so stable whatever the maximum degree — the
+// former explicit-Euler scheme with a fixed dt = 0.125 diverged as soon
+// as a node had ≥ 15 neighbours, #288). Edges are read as undirected.
 //
 // Two nodes with close HKS across all three scales are **structurally
 // similar** — they sit in analogous neighbourhoods even if their
@@ -1154,6 +1156,9 @@ pub fn bottleneck_nodes(store: &SubstrateStore, threshold: f32) -> Vec<(NodeId, 
 pub const HKS_T_LOCAL: f32 = 0.1;
 pub const HKS_T_MESO: f32 = 1.0;
 pub const HKS_T_GLOBAL: f32 = 10.0;
+/// Former fixed Euler step. No longer used by the HKS (see #288: explicit
+/// Euler is only stable for `dt·λ_max ≤ 2`, i.e. degree ≤ 14 at this dt);
+/// kept so that existing callers of the constant still compile.
 pub const HKS_DT: f32 = 0.125;
 
 /// Diagonal heat-kernel signature for every live node at `t`, returned
@@ -1173,26 +1178,169 @@ pub fn heat_kernel_signature(store: &SubstrateStore, t: f32) -> SubstrateResult<
 /// within ±0.18 with K=32.
 pub const HKS_HUTCHINSON_PROBES: usize = 32;
 
-/// Fast path: diagonal HKS against a prebuilt CSR snapshot. Useful when
-/// computing multiple `t` values from a single Dreamer tick.
+/// Symmetrised, degree-normalised adjacency `Â = D^{-1/2} A D^{-1/2}`
+/// built from a [`CsrAdjacency`] (edges read as undirected, parallel
+/// edges and self-loops collapsed). `L_sym = I − Â` has its spectrum in
+/// `[0, 2]`. Nodes of degree 0 are flagged by `inv_sqrt_deg == 0`.
+struct SymNormAdjacency {
+    row_offsets: Vec<u32>,
+    cols: Vec<u32>,
+    inv_sqrt_deg: Vec<f64>,
+}
+
+impl SymNormAdjacency {
+    fn from_csr(csr: &CsrAdjacency) -> Self {
+        let hw = csr.slot_high_water as usize;
+        let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(csr.edges.len() * 2);
+        for u in 1..hw {
+            let (b, e) = (csr.row_offsets[u] as usize, csr.row_offsets[u + 1] as usize);
+            for &(v, _) in &csr.edges[b..e] {
+                if (v as usize) < hw && v as usize != u && v != 0 {
+                    pairs.push((u as u32, v));
+                    pairs.push((v, u as u32));
+                }
+            }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        let mut row_offsets = vec![0u32; hw + 1];
+        for &(u, _) in &pairs {
+            row_offsets[u as usize + 1] += 1;
+        }
+        for i in 0..hw {
+            row_offsets[i + 1] += row_offsets[i];
+        }
+        let cols: Vec<u32> = pairs.iter().map(|&(_, v)| v).collect();
+        let inv_sqrt_deg = (0..hw)
+            .map(|u| {
+                let d = (row_offsets[u + 1] - row_offsets[u]) as f64;
+                if d > 0.0 { 1.0 / d.sqrt() } else { 0.0 }
+            })
+            .collect();
+        Self {
+            row_offsets,
+            cols,
+            inv_sqrt_deg,
+        }
+    }
+
+    /// `out = Â · x` (rayon over rows; each output depends only on `x`,
+    /// so the result is deterministic).
+    fn apply(&self, x: &[f64], out: &mut [f64]) {
+        out.par_iter_mut().enumerate().for_each(|(u, o)| {
+            let (b, e) = (
+                self.row_offsets[u] as usize,
+                self.row_offsets[u + 1] as usize,
+            );
+            let mut acc = 0.0;
+            for &v in &self.cols[b..e] {
+                acc += self.inv_sqrt_deg[v as usize] * x[v as usize];
+            }
+            *o = self.inv_sqrt_deg[u] * acc;
+        });
+    }
+
+    fn is_isolated(&self, u: usize) -> bool {
+        self.inv_sqrt_deg[u] == 0.0
+    }
+}
+
+/// `e^{-t}·I_k(t)` for `k = 0..=kmax` (modified Bessel functions, scaled),
+/// by the power series — exact in f64 for the `t ≤ ~50` used here.
+fn scaled_bessel_i(t: f64, kmax: usize) -> Vec<f64> {
+    let half = t / 2.0;
+    (0..=kmax)
+        .map(|k| {
+            // I_k(t) = Σ_m (t/2)^{2m+k} / (m! (m+k)!)
+            let mut term = 1.0;
+            for i in 1..=k {
+                term *= half / i as f64;
+            }
+            let mut sum = term;
+            for m in 1..400 {
+                term *= half * half / (m as f64 * (m + k) as f64);
+                sum += term;
+                if term < sum * 1e-17 {
+                    break;
+                }
+            }
+            sum * (-t).exp()
+        })
+        .collect()
+}
+
+/// Chebyshev degree needed for `exp(-t·L_sym)` to absolute error ≲ 1e-9
+/// (coefficients `2·e^{-t}·I_k(t)` decay super-exponentially past `k ≈ t`).
+fn cheb_degree(t: f64) -> usize {
+    let kmax = (t.ceil() as usize) * 2 + 40;
+    let c = scaled_bessel_i(t, kmax);
+    let mut k = (t.ceil() as usize).max(1);
+    while k < kmax && 2.0 * c[k] > 1e-10 {
+        k += 1;
+    }
+    k
+}
+
+/// `exp(−t · L_sym) · v` for several `t` at once, sharing a single sequence
+/// of Chebyshev vectors `T_k(Â) v`.
 ///
-/// Diagonal extraction via the Hutchinson stochastic estimator: for K
-/// Rademacher vectors `v_k` (entries ±1 uniform), the unbiased estimator
-/// is `diag(M)[u] ≈ (1/K) Σ_k v_k[u] · (M v_k)[u]`. Expectation is exact
-/// because `E[v_i · v_j] = δ_{ij}`; variance shrinks as O(1/K).
-///
-/// We use K = [`HKS_HUTCHINSON_PROBES`]. The PRNG is seeded deterministically
-/// from the graph's slot_high_water so tests are reproducible across runs.
-pub fn heat_kernel_signature_with_csr(csr: &CsrAdjacency, t: f32) -> SubstrateResult<Vec<f32>> {
+/// `exp(−t L) = e^{−t} e^{t Â} = e^{−t}[I_0(t) + 2 Σ_k I_k(t) T_k(Â)]`
+/// with `Â` of spectrum in `[−1, 1]`: no step-size condition, whatever the
+/// degree. Isolated nodes (degree 0) are decoupled: they keep their value.
+fn heat_apply_chebyshev(adj: &SymNormAdjacency, v: &[f64], ts: &[f64]) -> Vec<Vec<f64>> {
+    let n = v.len();
+    let degs: Vec<usize> = ts.iter().map(|&t| cheb_degree(t)).collect();
+    let kmax = degs.iter().copied().max().unwrap_or(0);
+    let coefs: Vec<Vec<f64>> = ts.iter().map(|&t| scaled_bessel_i(t, kmax)).collect();
+
+    let mut outs: Vec<Vec<f64>> = coefs
+        .iter()
+        .map(|c| v.iter().map(|&x| c[0] * x).collect())
+        .collect();
+    let mut t_prev = v.to_vec();
+    let mut t_cur = vec![0.0; n];
+    adj.apply(v, &mut t_cur);
+    let mut t_next = vec![0.0; n];
+    for k in 1..=kmax {
+        for (o, (c, &dg)) in outs.iter_mut().zip(coefs.iter().zip(degs.iter())) {
+            if k <= dg {
+                let ck = 2.0 * c[k];
+                for i in 0..n {
+                    o[i] += ck * t_cur[i];
+                }
+            }
+        }
+        if k == kmax {
+            break;
+        }
+        adj.apply(&t_cur, &mut t_next);
+        for i in 0..n {
+            t_next[i] = 2.0 * t_next[i] - t_prev[i];
+        }
+        std::mem::swap(&mut t_prev, &mut t_cur);
+        std::mem::swap(&mut t_cur, &mut t_next);
+    }
+    for o in outs.iter_mut() {
+        for (u, x) in o.iter_mut().enumerate() {
+            if u < n && adj.is_isolated(u) {
+                *x = v[u];
+            }
+        }
+    }
+    outs
+}
+
+/// Diagonal HKS at several timescales from ONE set of Hutchinson probes
+/// and ONE Chebyshev sequence per probe (shared across the `ts`).
+fn heat_kernel_signatures_multi(csr: &CsrAdjacency, ts: &[f32]) -> Vec<Vec<f32>> {
     let hw = csr.slot_high_water as usize;
     if hw == 0 {
-        return Ok(Vec::new());
+        return ts.iter().map(|_| Vec::new()).collect();
     }
-    let n_steps = ((t / HKS_DT).ceil() as usize).max(1);
-
-    let mut out: Vec<f32> = vec![0.0; hw];
-    // Deterministic Xorshift so tests are reproducible. The specific
-    // numeric choices here are not cryptographic — just spread the bits.
+    let adj = SymNormAdjacency::from_csr(csr);
+    let ts64: Vec<f64> = ts.iter().map(|&t| t as f64).collect();
+    let mut out: Vec<Vec<f64>> = ts.iter().map(|_| vec![0.0; hw]).collect();
+    // Deterministic Xorshift so tests are reproducible.
     let mut rng_state: u64 = 0x9E37_79B9_7F4A_7C15 ^ (hw as u64).wrapping_mul(0x100_0193);
     let mut next = || {
         rng_state ^= rng_state << 13;
@@ -1200,51 +1348,57 @@ pub fn heat_kernel_signature_with_csr(csr: &CsrAdjacency, t: f32) -> SubstrateRe
         rng_state ^= rng_state << 17;
         rng_state
     };
-
     for _ in 0..HKS_HUTCHINSON_PROBES {
-        // Rademacher probe: each slot independently +1 or -1. Slot 0
-        // is the sentinel (edge_id 0 = none), so we pin it to 0.
-        let mut v: Vec<f32> = vec![0.0; hw];
+        // Rademacher probe; slot 0 is the sentinel, pinned to 0.
+        let mut v = vec![0.0f64; hw];
         for slot in v.iter_mut().skip(1) {
             *slot = if (next() & 1) == 0 { 1.0 } else { -1.0 };
         }
-
-        // Diffuse a COPY so v is preserved for the inner-product.
-        let mut state = v.clone();
-        for _ in 0..n_steps {
-            heat_step_unweighted_csr(csr, &mut state, HKS_DT)?;
-        }
-
-        // Accumulate v[i] * state[i] per-slot — the Hutchinson
-        // diagonal estimator row.
-        for i in 0..hw {
-            out[i] += v[i] * state[i];
+        let states = heat_apply_chebyshev(&adj, &v, &ts64);
+        for (o, st) in out.iter_mut().zip(states.iter()) {
+            for i in 0..hw {
+                o[i] += v[i] * st[i];
+            }
         }
     }
+    let inv_k = 1.0 / HKS_HUTCHINSON_PROBES as f64;
+    out.into_iter()
+        .map(|o| {
+            let mut r: Vec<f32> = o.iter().map(|&x| (x * inv_k) as f32).collect();
+            r[0] = 0.0;
+            r
+        })
+        .collect()
+}
 
-    let inv_k = 1.0 / (HKS_HUTCHINSON_PROBES as f32);
-    for x in out.iter_mut() {
-        *x *= inv_k;
-    }
-    out[0] = 0.0;
-    Ok(out)
+/// Fast path: diagonal HKS against a prebuilt CSR snapshot. Useful when
+/// computing multiple `t` values from a single Dreamer tick.
+///
+/// Diagonal extraction via the Hutchinson stochastic estimator: for K
+/// Rademacher vectors `v_k` (entries ±1 uniform), the unbiased estimator
+/// is `diag(M)[u] ≈ (1/K) Σ_k v_k[u] · (M v_k)[u]`, with
+/// `M = exp(−t L_sym)` applied by a Chebyshev expansion (see
+/// [`heat_apply_chebyshev`]) — stable for any degree.
+///
+/// We use K = [`HKS_HUTCHINSON_PROBES`]. The PRNG is seeded deterministically
+/// from the graph's slot_high_water so tests are reproducible across runs.
+pub fn heat_kernel_signature_with_csr(csr: &CsrAdjacency, t: f32) -> SubstrateResult<Vec<f32>> {
+    Ok(heat_kernel_signatures_multi(csr, &[t]).remove(0))
 }
 
 /// 3-scale HKS descriptor for every node. Returns a `Vec<[f32; 3]>`
 /// where entry `i` is `[h(t_local), h(t_meso), h(t_global)]` for
 /// slot `i`. Slot 0 is `[0, 0, 0]` (sentinel).
 ///
-/// One CSR build, three heat diffusions. The largest `t_global=10.0`
-/// dominates the runtime (~80 steps of 1.4 ms = ~112 ms on 10⁶).
+/// One CSR build, one shared Chebyshev sequence per probe evaluated at the
+/// three timescales (the largest, `t_global = 10`, sets the degree ≈ 45).
 pub fn compute_hks_descriptors(store: &SubstrateStore) -> SubstrateResult<Vec<[f32; 3]>> {
     let csr = CsrAdjacency::build(store);
-    let h_local = heat_kernel_signature_with_csr(&csr, HKS_T_LOCAL)?;
-    let h_meso = heat_kernel_signature_with_csr(&csr, HKS_T_MESO)?;
-    let h_global = heat_kernel_signature_with_csr(&csr, HKS_T_GLOBAL)?;
+    let hs = heat_kernel_signatures_multi(&csr, &[HKS_T_LOCAL, HKS_T_MESO, HKS_T_GLOBAL]);
     let hw = csr.slot_high_water as usize;
     let mut out = vec![[0.0_f32; 3]; hw];
     for i in 1..hw {
-        out[i] = [h_local[i], h_meso[i], h_global[i]];
+        out[i] = [hs[0][i], hs[1][i], hs[2][i]];
     }
     Ok(out)
 }
@@ -2839,7 +2993,10 @@ mod tests {
         let (c, l) = star(&s, 3);
         for (a, b) in [(c, l[0]), (l[0], c)] {
             let k = compute_ricci_fast(&s, a, b);
-            assert!(k.abs() < 1e-6, "κ(K1,3 centre-feuille) doit valoir 0, obtenu {k}");
+            assert!(
+                k.abs() < 1e-6,
+                "κ(K1,3 centre-feuille) doit valoir 0, obtenu {k}"
+            );
         }
         let mut nb: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
         nb.insert(c, l.iter().copied().collect());
@@ -2855,18 +3012,149 @@ mod tests {
     fn ricci_valeurs_exactes_sur_graphes_elementaires() {
         for (n, attendu) in [(2usize, 0.0f32), (3, 0.5), (4, 2.0 / 3.0)] {
             let (_td, s) = store();
-            let v: Vec<NodeId> = (0..n).map(|_| s.create_node_in_community(&["N"], 1)).collect();
+            let v: Vec<NodeId> = (0..n)
+                .map(|_| s.create_node_in_community(&["N"], 1))
+                .collect();
             for i in 0..n {
                 for j in (i + 1)..n {
                     link(&s, v[i], v[j]);
                 }
             }
             let k = compute_ricci_fast(&s, v[0], v[1]);
-            assert!((k - attendu).abs() < 1e-5, "K{n}: attendu {attendu}, obtenu {k}");
+            assert!(
+                (k - attendu).abs() < 1e-5,
+                "K{n}: attendu {attendu}, obtenu {k}"
+            );
         }
         let (_td, s) = store();
         let p = build_chain(&s, 4);
         let k = compute_ricci_fast(&s, p[1], p[2]);
         assert!(k.abs() < 1e-6, "milieu de P4: attendu 0, obtenu {k}");
+    }
+
+    // -----------------------------------------------------------------
+    // #288 — HKS : le schéma ne doit pas diverger sur un hub de fort degré.
+    // -----------------------------------------------------------------
+
+    /// Étoile à k feuilles (arêtes dans les deux sens) : le HKS de chaque
+    /// nœud reste fini et dans un intervalle plausible, à toutes les échelles.
+    /// Garde sans tolérance fine : l'ancien Euler (dt = 0,125 fixe) donnait
+    /// 1,16e4 à k = 16 et `inf` à k = 40.
+    #[test]
+    fn hks_hub_reste_fini_et_borne_quelle_que_soit_la_taille() {
+        for k in [8usize, 15, 16, 40] {
+            let (_td, s) = store();
+            let (_c, _l) = star(&s, k);
+            let csr = CsrAdjacency::build(&s);
+            for t in [HKS_T_LOCAL, HKS_T_MESO, HKS_T_GLOBAL] {
+                let h = heat_kernel_signature_with_csr(&csr, t).unwrap();
+                for (i, x) in h.iter().enumerate() {
+                    assert!(
+                        x.is_finite() && x.abs() <= 2.0,
+                        "k={k} t={t} slot={i}: HKS = {x} (divergence)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// exp(−t·L_sym) dense (mise à l'échelle + Taylor + carrés), f64.
+    fn expm_dense(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        let n = a.len();
+        let norm = a
+            .iter()
+            .map(|r| r.iter().map(|x| x.abs()).sum::<f64>())
+            .fold(0.0, f64::max);
+        let sq = ((norm / 0.5).log2().ceil().max(0.0)) as u32;
+        let sc = 2f64.powi(sq as i32);
+        let a: Vec<Vec<f64>> = a
+            .iter()
+            .map(|r| r.iter().map(|x| x / sc).collect())
+            .collect();
+        let mul = |x: &Vec<Vec<f64>>, y: &Vec<Vec<f64>>| {
+            let mut z = vec![vec![0.0; n]; n];
+            for i in 0..n {
+                for k in 0..n {
+                    let xik = x[i][k];
+                    if xik != 0.0 {
+                        for j in 0..n {
+                            z[i][j] += xik * y[k][j];
+                        }
+                    }
+                }
+            }
+            z
+        };
+        let mut res = vec![vec![0.0; n]; n];
+        let mut term = vec![vec![0.0; n]; n];
+        for i in 0..n {
+            res[i][i] = 1.0;
+            term[i][i] = 1.0;
+        }
+        for k in 1..30 {
+            term = mul(&term, &a);
+            for i in 0..n {
+                for j in 0..n {
+                    res[i][j] += term[i][j] / (1..=k).map(|x| x as f64).product::<f64>();
+                }
+            }
+        }
+        for _ in 0..sq {
+            res = mul(&res, &res);
+        }
+        res
+    }
+
+    /// Opérateur seul, sans aléa (#288) : heat_apply_chebyshev = expm dense de
+    /// L_sym sur un vecteur fixé, à 1e-6, étoile à 40 feuilles + un nœud isolé,
+    /// aux trois échelles. Distingue « le schéma diverge » du bruit de Hutchinson.
+    #[test]
+    fn hks_operateur_chebyshev_egal_expm_dense_sur_etoile_40() {
+        let (_td, s) = store();
+        let (_c, _l) = star(&s, 40);
+        let _iso = s.create_node_in_community(&["N"], 1);
+        let csr = CsrAdjacency::build(&s);
+        let adj = SymNormAdjacency::from_csr(&csr);
+        let hw = csr.slot_high_water as usize;
+        // L_sym dense (nœud isolé : ligne nulle, découplé).
+        let mut l = vec![vec![0.0f64; hw]; hw];
+        for u in 1..hw {
+            if adj.is_isolated(u) {
+                continue;
+            }
+            l[u][u] = 1.0;
+            let (b, e) = (adj.row_offsets[u] as usize, adj.row_offsets[u + 1] as usize);
+            for &v in &adj.cols[b..e] {
+                l[u][v as usize] -= adj.inv_sqrt_deg[u] * adj.inv_sqrt_deg[v as usize];
+            }
+        }
+        let v: Vec<f64> = (0..hw)
+            .map(|i| {
+                if i == 0 {
+                    0.0
+                } else {
+                    ((i * 7919) % 13) as f64 - 6.0
+                }
+            })
+            .collect();
+        for t in [0.1f64, 1.0, 10.0] {
+            let a: Vec<Vec<f64>> = l
+                .iter()
+                .map(|r| r.iter().map(|x| -t * x).collect())
+                .collect();
+            let e = expm_dense(&a);
+            let attendu: Vec<f64> = (0..hw)
+                .map(|i| (0..hw).map(|j| e[i][j] * v[j]).sum())
+                .collect();
+            let obtenu = &heat_apply_chebyshev(&adj, &v, &[t])[0];
+            for i in 1..hw {
+                assert!(
+                    (obtenu[i] - attendu[i]).abs() < 1e-6,
+                    "t={t} slot={i}: Chebyshev {} vs expm {}",
+                    obtenu[i],
+                    attendu[i]
+                );
+            }
+        }
     }
 }
