@@ -36,7 +36,7 @@ env:
 jobs:
   mesures:
     name: Tests de temps, débit et performance (--ignored, informatif)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +78,7 @@ jobs:
 
   bench-v001:
     name: Benchs de référence v0.0.1 (Criterion, informatif — un runner partagé ne mesure pas)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
