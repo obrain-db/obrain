@@ -52,7 +52,8 @@ pub fn translate(query: &str) -> Result<LogicalPlan> {
 /// Translates a Cypher query, returning either a plan or a schema command.
 pub fn translate_full(query: &str) -> Result<CypherTranslationResult> {
     let statement = cypher::parse(query)?;
-    let translator = CypherTranslator::new();
+    let marqueur = crate::query::plan::marqueur_segment_pour(query);
+    let translator = CypherTranslator::new(marqueur);
     translator.translate_statement_full(&statement)
 }
 
@@ -73,15 +74,19 @@ struct CypherTranslator {
     /// voyagent comme leur identifiant, et les deux séries se recoupent
     /// (obrain-db/obrain#229).
     scope_kinds: RefCell<HashMap<String, VariableKind>>,
+    /// (obrain#189) Marqueur des alias internes de segment : absent du texte de
+    /// la requete (voir `marqueur_segment_pour`).
+    marqueur_segment: String,
 }
 
 impl CypherTranslator {
-    fn new() -> Self {
+    fn new(marqueur_segment: String) -> Self {
         Self {
             edge_variables: RefCell::new(HashSet::new()),
             anon_counter: Cell::new(0),
             return_aliases: RefCell::new(HashMap::new()),
             scope_kinds: RefCell::new(HashMap::new()),
+            marqueur_segment,
         }
     }
 
@@ -1157,15 +1162,28 @@ impl CypherTranslator {
         bound.insert(anchor_variable.clone(), VariableKind::Node);
 
         // En avant depuis l'ancre.
+        // (obrain#189) Un motif nomme compose a un alias PAR SEGMENT : `p` + marqueur + `i`
+        // pour chaque relation sauf la derniere, qui porte `p`. Le planificateur
+        // enchaine le chemin de chaque segment sur le precedent (voir
+        // marqueur de la requete) ; avec un alias commun, chaque expansion ecrasait
+        // les colonnes de la precedente et `p` ne gardait que le dernier saut.
+        let dernier_rang = path.chain.len().saturating_sub(1);
         let mut current = anchor_variable.clone();
-        for rel in &path.chain[anchor..] {
+        for (rang, rel) in path.chain.iter().enumerate().skip(anchor) {
+            let alias_segment = path_alias.as_ref().map(|alias| {
+                if rang == dernier_rang {
+                    alias.clone()
+                } else {
+                    crate::query::plan::alias_segment(alias, rang, &self.marqueur_segment)
+                }
+            });
             let (next_plan, next) = self.expand_relationship(
                 rel,
                 &rel.target,
                 false,
                 current,
                 plan,
-                path_alias.clone(),
+                alias_segment,
                 &mut bound,
             )?;
             plan = next_plan;
@@ -4046,7 +4064,7 @@ mod tests {
 
     #[test]
     fn test_translate_binary_op_all() {
-        let translator = CypherTranslator::new();
+        let translator = CypherTranslator::new(String::from("\u{1}t\u{1}"));
 
         // Test all supported binary ops
         assert_eq!(
@@ -4109,7 +4127,7 @@ mod tests {
 
     #[test]
     fn test_translate_unary_op_all() {
-        let translator = CypherTranslator::new();
+        let translator = CypherTranslator::new(String::from("\u{1}t\u{1}"));
 
         assert_eq!(
             translator.translate_unary_op(ast::UnaryOp::Not).unwrap(),
@@ -4133,7 +4151,7 @@ mod tests {
 
     #[test]
     fn test_translate_literal_types() {
-        let translator = CypherTranslator::new();
+        let translator = CypherTranslator::new(String::from("\u{1}t\u{1}"));
 
         // Test all literal types
         let null_lit = translator.translate_literal(&ast::Literal::Null).unwrap();

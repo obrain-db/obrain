@@ -117,6 +117,9 @@ pub struct Planner {
     /// le scan fait CROÎTRE ce plafond tant que le consommateur n'a pas ses
     /// lignes, donc jamais de sous-livraison. Remis à `None` après.
     pub(super) limit_scan_cap: std::cell::RefCell<Option<(String, usize)>>,
+    /// (obrain#189) Marqueur des colonnes internes de segment de la requête en
+    /// cours, transmis par le point d'appel (voir `avec_marqueur_segment`).
+    pub(super) marqueur_segment: std::cell::RefCell<Option<String>>,
     /// When true, each physical operator is wrapped in `ProfiledOperator`.
     profiling: std::cell::Cell<bool>,
     /// Profile entries collected during planning (post-order).
@@ -187,6 +190,7 @@ impl Planner {
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
             restriction_scan: std::cell::RefCell::new(None),
+            marqueur_segment: std::cell::RefCell::new(None),
             limit_scan_cap: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
@@ -249,6 +253,7 @@ impl Planner {
             correlated_param_state: std::cell::RefCell::new(None),
             group_list_variables: std::cell::RefCell::new(std::collections::HashSet::new()),
             restriction_scan: std::cell::RefCell::new(None),
+            marqueur_segment: std::cell::RefCell::new(None),
             limit_scan_cap: std::cell::RefCell::new(None),
             profiling: std::cell::Cell::new(false),
             profile_entries: std::cell::RefCell::new(Vec::new()),
@@ -412,7 +417,12 @@ impl Planner {
     fn count_expand_chain(op: &LogicalOperator) -> (usize, &LogicalOperator) {
         match op {
             LogicalOperator::Expand(expand) => {
-                let is_single_hop = expand.min_hops == 1 && expand.max_hops == Some(1);
+                // (obrain#189) Une expansion nommee (chemin de motif) n'entre
+                // jamais dans une chaine factorisee : elle porte son propre
+                // chemin, que la chaine ignore.
+                let is_single_hop = expand.min_hops == 1
+                    && expand.max_hops == Some(1)
+                    && expand.path_alias.is_none();
 
                 if is_single_hop {
                     if let LogicalOperator::Expand(inner) = expand.input.as_ref()
@@ -440,7 +450,9 @@ impl Planner {
         let mut current = op;
 
         while let LogicalOperator::Expand(expand) = current {
-            let is_single_hop = expand.min_hops == 1 && expand.max_hops == Some(1);
+            // (obrain#189) Une expansion nommee n'appartient pas a la chaine.
+            let is_single_hop =
+                expand.min_hops == 1 && expand.max_hops == Some(1) && expand.path_alias.is_none();
             if !is_single_hop {
                 break;
             }
@@ -455,6 +467,24 @@ impl Planner {
 
         chain.reverse();
         chain
+    }
+
+    /// (obrain#189) Transmet le marqueur des colonnes internes de la requête
+    /// planifiée. Le point d'appel le calcule à partir du texte de la requête
+    /// (`plan::marqueur_segment_pour`), comme le traducteur : pas de champ
+    /// dans `LogicalPlan`, donc aucune rupture de sa forme publique.
+    pub(crate) fn avec_marqueur_segment(self, marqueur: String) -> Self {
+        *self.marqueur_segment.borrow_mut() = Some(marqueur);
+        self
+    }
+
+    /// (obrain#189) Vrai si `nom` est une colonne INTERNE de segment de la requete
+    /// en cours : elle porte le marqueur, que le texte de la requete ne contient pas.
+    pub(super) fn est_colonne_interne(&self, nom: &str) -> bool {
+        self.marqueur_segment
+            .borrow()
+            .as_deref()
+            .is_some_and(|m| nom.contains(m))
     }
 
     /// Plans a logical plan into a physical operator.

@@ -2926,6 +2926,7 @@ impl Session {
     pub fn execute(&self, query: &str) -> Result<QueryResult> {
         self.require_lpg("GQL")?;
         self.note_requete_pour_audit(query);
+        let marqueur = crate::query::plan::marqueur_segment_pour(query);
 
         use crate::query::{
             binder::Binder, cache::CacheKey, optimizer::Optimizer, processor::QueryLanguage,
@@ -2957,7 +2958,7 @@ impl Session {
         // `Plan`, donc sauter la translation est sûr.
         let cache_key = CacheKey::with_graph(query, QueryLanguage::Gql, self.current_graph());
         if let Some(plan_cache) = self.query_cache.get_optimized(&cache_key) {
-            return self.execute_optimized_plan(plan_cache, start_time);
+            return self.execute_optimized_plan(plan_cache, start_time, marqueur.clone());
         }
 
         // Parse and translate, checking for session/schema commands first
@@ -3014,7 +3015,7 @@ impl Session {
         self.query_cache.put_optimized(cache_key, plan.clone());
 
         // Execute the optimized plan (shared tail with the cache-hit path).
-        self.execute_optimized_plan(plan, start_time)
+        self.execute_optimized_plan(plan, start_time, marqueur)
     }
 
     /// Exécute un plan optimisé (chemin commun cache-hit et cache-miss).
@@ -3026,6 +3027,7 @@ impl Session {
         &self,
         optimized_plan: crate::query::plan::LogicalPlan,
         start_time: Option<web_time::Instant>,
+        marqueur: String,
     ) -> Result<QueryResult> {
         use crate::query::Executor;
         let active = self.active_store();
@@ -3053,6 +3055,7 @@ impl Session {
                     viewing_epoch,
                     transaction_id,
                 );
+                let planner = planner.avec_marqueur_segment(marqueur.clone());
                 let (mut physical_plan, entries) = planner.plan_profiled(&optimized_plan)?;
 
                 let executor = Executor::with_columns(physical_plan.columns.clone())
@@ -3160,6 +3163,7 @@ impl Session {
             // on optimise à l'aveugle.
             #[cfg(not(target_arch = "wasm32"))]
             let t_plan = web_time::Instant::now();
+            let planner = planner.avec_marqueur_segment(marqueur.clone());
             let mut physical_plan = planner.plan(&plan_annote)?;
             #[cfg(not(target_arch = "wasm32"))]
             let us_plan = t_plan.elapsed().as_secs_f64() * 1e6;
@@ -3370,6 +3374,7 @@ impl Session {
     /// Returns an error if the query fails to parse or execute.
     #[cfg(feature = "cypher")]
     pub fn execute_cypher(&self, query: &str) -> Result<QueryResult> {
+        let marqueur = crate::query::plan::marqueur_segment_pour(query);
         self.note_requete_pour_audit(query);
         use crate::query::{
             Executor, binder::Binder, cache::CacheKey, optimizer::Optimizer,
@@ -3453,6 +3458,7 @@ impl Session {
                     viewing_epoch,
                     transaction_id,
                 );
+                let planner = planner.avec_marqueur_segment(marqueur.clone());
                 let (mut physical_plan, entries) = planner.plan_profiled(&optimized_plan)?;
 
                 let executor = Executor::with_columns(physical_plan.columns.clone())
@@ -3489,6 +3495,7 @@ impl Session {
             // Convert to physical plan with transaction context
             let planner =
                 self.create_planner_for_store(Arc::clone(&active), viewing_epoch, transaction_id);
+            let planner = planner.avec_marqueur_segment(marqueur.clone());
             let mut physical_plan = planner.plan(&optimized_plan)?;
 
             // Execute the plan

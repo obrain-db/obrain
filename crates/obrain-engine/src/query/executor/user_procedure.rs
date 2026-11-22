@@ -138,7 +138,8 @@ impl UserProcedureOperator {
             p
         }
         // Aretes inter-bases (V2) : le corps voit les bases attachees.
-        .with_session_context(self.session_context.clone());
+        .with_session_context(self.session_context.clone())
+        .avec_marqueur_segment(crate::query::plan::marqueur_segment_pour(&body));
 
         let physical = planner
             .plan(&logical_plan)

@@ -12,7 +12,7 @@
 //! closure (`StoreOpener`) : obrain-core ne connait pas obrain-substrate.
 
 use crate::graph::{ExternalEdge, GraphStore};
-use obrain_common::types::{NodeId, PropertyKey, Value};
+use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -327,7 +327,7 @@ impl AccessContext {
 ///   Regle de survie pour l'outillage : des clefs applicatives JAMAIS
 ///   entierement numeriques (prefixe type, ex. "note_...").
 #[must_use]
-pub fn resolve_node_key(store: &dyn GraphStore, key: &str) -> Option<NodeId> {
+pub(crate) fn resolve_node_key(store: &dyn GraphStore, key: &str) -> Option<NodeId> {
     if !key.is_empty() && key.bytes().all(|b| b.is_ascii_digit()) {
         let id = NodeId(key.parse().ok()?);
         return store.get_node_labels(id).map(|_| id);
@@ -343,30 +343,112 @@ pub fn resolve_node_key(store: &dyn GraphStore, key: &str) -> Option<NodeId> {
 /// que l'aval (WHERE, projections) lise sans repasser par le store.
 /// `None` si le noeud n'existe pas/plus (absent trivalue).
 #[must_use]
-pub fn remote_node_value(slug: &str, store: &dyn GraphStore, id: NodeId) -> Option<Value> {
+pub(crate) fn remote_node_value(slug: &str, store: &dyn GraphStore, id: NodeId) -> Option<Value> {
     let node = store.get_node(id)?;
     let mut map = BTreeMap::new();
-    map.insert(
-        PropertyKey::new("_id"),
-        Value::Int64(node.id.as_u64() as i64),
-    );
+    // Propriétés utilisateur d'abord : les métadonnées écrites ensuite les
+    // remplacent, une propriété `_id`/`_base`/`_labels` ne peut pas les falsifier.
+    for (key, value) in &node.properties {
+        map.insert(key.clone(), value.clone());
+    }
     let labels: Vec<Value> = node
         .labels
         .iter()
         .map(|l| Value::String(l.clone()))
         .collect();
+    map.insert(
+        PropertyKey::new("_id"),
+        Value::Int64(node.id.as_u64() as i64),
+    );
     map.insert(PropertyKey::new("_labels"), Value::List(labels.into()));
     map.insert(PropertyKey::new(BASE_KEY), Value::String(slug.into()));
-    for (key, value) in &node.properties {
+    Some(Value::Map(Arc::new(map)))
+}
+
+/// Clés RÉSERVÉES du modèle d'élément distant : écrites par le moteur dans la `Map`
+/// (identité, libellés, type, extrémités). Une propriété utilisateur de même nom ne
+/// peut pas coexister avec la métadonnée sans altérer l'une des deux valeurs : un
+/// élément qui la porte est REFUSÉ explicitement au franchissement (aucune donnée
+/// modifiée, aucune valeur inventée).
+/// Sous-ensemble NOEUD : les clés que `remote_node_value` écrit.
+pub(crate) const METADONNEES_NOEUD_RESERVEES: [&str; 3] = ["_id", "_labels", "_base"];
+
+/// Sous-ensemble ARÊTE : les clés que `remote_edge_hydratee` / `external_edge_value` écrivent.
+pub(crate) const METADONNEES_ARETE_RESERVEES: [&str; 5] =
+    ["_id", "_type", "_base", "_source", "_target"];
+
+/// Première clé utilisateur réservée pour un NOEUD (`_id`, `_labels`, `_base`).
+#[must_use]
+pub(crate) fn cle_reservee_noeud<'a, I>(props: I) -> Option<&'static str>
+where
+    I: IntoIterator<Item = (&'a PropertyKey, &'a Value)>,
+{
+    for (cle, _) in props {
+        for r in METADONNEES_NOEUD_RESERVEES {
+            if *cle == PropertyKey::new(r) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+/// Première clé utilisateur réservée pour une ARÊTE (`_id`, `_type`, `_base`, `_source`, `_target`).
+#[must_use]
+pub(crate) fn cle_reservee_arete<'a, I>(props: I) -> Option<&'static str>
+where
+    I: IntoIterator<Item = (&'a PropertyKey, &'a Value)>,
+{
+    for (cle, _) in props {
+        for r in METADONNEES_ARETE_RESERVEES {
+            if *cle == PropertyKey::new(r) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+/// Materialise une arete DISTANTE d'un chemin en `Value::Map` HYDRATEE : les cles de
+/// `remote_edge_value` (`_id`, `_type`, `_base`, `_source`, `_target`) plus les
+/// proprietes de l'arete, pour que `r.prop` lise la valeur de l'arete traversee.
+/// `None` si l'arete n'existe plus dans ce store.
+#[must_use]
+pub(crate) fn remote_edge_hydratee(
+    slug: &str,
+    store: &dyn GraphStore,
+    id: EdgeId,
+) -> Option<Value> {
+    let edge = store.get_edge(id)?;
+    let mut map = BTreeMap::new();
+    // Propriétés d'abord, métadonnées ensuite (ne peuvent pas être falsifiées).
+    for (key, value) in &edge.properties {
         map.insert(key.clone(), value.clone());
     }
+    map.insert(
+        PropertyKey::new("_id"),
+        Value::Int64(edge.id.as_u64() as i64),
+    );
+    map.insert(
+        PropertyKey::new("_type"),
+        Value::String(edge.edge_type.clone()),
+    );
+    map.insert(PropertyKey::new(BASE_KEY), Value::String(slug.into()));
+    map.insert(
+        PropertyKey::new("_source"),
+        Value::Int64(edge.src.as_u64() as i64),
+    );
+    map.insert(
+        PropertyKey::new("_target"),
+        Value::Int64(edge.dst.as_u64() as i64),
+    );
     Some(Value::Map(Arc::new(map)))
 }
 
 /// Materialise une arete EXTERNE en `Value::Map` (`_id`, `_type`, `_base`
 /// = slug de la base SOURCE qui la porte, `_to_store`, `_to_key`).
 #[must_use]
-pub fn external_edge_value(edge: &ExternalEdge, source_slug: &str) -> Value {
+pub(crate) fn external_edge_value(edge: &ExternalEdge, source_slug: &str) -> Value {
     let mut map = BTreeMap::new();
     map.insert(
         PropertyKey::new("_id"),
@@ -400,7 +482,7 @@ pub fn external_edge_value(edge: &ExternalEdge, source_slug: &str) -> Value {
 /// Materialise une arete INTERNE d'un store DISTANT en `Value::Map`
 /// (`_id`, `_type`, `_base`, `_source`, `_target`).
 #[must_use]
-pub fn remote_edge_value(
+pub(crate) fn remote_edge_value(
     slug: &str,
     store: &dyn GraphStore,
     edge_id: obrain_common::types::EdgeId,

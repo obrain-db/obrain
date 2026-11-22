@@ -123,11 +123,9 @@ fn cas_po_notes_propagees_vers_une_cible_liee() {
          MATCH path = (n:Note)-[:LINKED_TO]->(source)-[:T*0..2]->(target) \
          RETURN n.id, length(path) ORDER BY length(path)",
     );
-    // Longueur 0 (source = target) et longueur 2 (a -> b -> a).
+    // Source = cible : le seul saut LINKED_TO, longueur 1 (et non 0 : le saut
+    // fixe fait partie du chemin nomme, obrain#189). Puis LINKED_TO + a -> b -> a,
+    // longueur 3.
     let longueurs: Vec<i64> = r.iter().map(|l| entier(&l[1])).collect();
-    assert!(!r.is_empty(), "la note doit être trouvée");
-    assert!(
-        longueurs.contains(&0),
-        "chemin de longueur 0 attendu : {r:?}"
-    );
+    assert_eq!(longueurs, vec![1, 3], "longueurs du chemin compose : {r:?}");
 }

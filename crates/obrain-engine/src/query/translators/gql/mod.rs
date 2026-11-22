@@ -70,7 +70,8 @@ pub fn translate(query: &str) -> Result<LogicalPlan> {
 /// Returns an error if the query cannot be parsed or translated.
 pub fn translate_full(query: &str) -> Result<GqlTranslationResult> {
     let statement = gql::parse(query)?;
-    let translator = GqlTranslator::new();
+    let marqueur = crate::query::plan::marqueur_segment_pour(query);
+    let translator = GqlTranslator::new(marqueur);
     translator.translate_statement_full(&statement)
 }
 
@@ -81,13 +82,17 @@ struct GqlTranslator {
     group_list_variables: std::cell::RefCell<HashMap<String, String>>,
     /// Counter for generating unique anonymous variable names.
     anon_counter: std::cell::Cell<usize>,
+    /// (obrain#189) Marqueur des alias internes de segment : absent du texte de
+    /// la requete (voir `marqueur_segment_pour`).
+    marqueur_segment: String,
 }
 
 impl GqlTranslator {
-    fn new() -> Self {
+    fn new(marqueur_segment: String) -> Self {
         Self {
             group_list_variables: std::cell::RefCell::new(HashMap::new()),
             anon_counter: std::cell::Cell::new(0),
+            marqueur_segment,
         }
     }
 
@@ -3206,7 +3211,7 @@ mod tests {
     #[test]
     fn test_translate_set() {
         // SET is not a standalone statement in GQL, test the translator method directly
-        let translator = GqlTranslator::new();
+        let translator = GqlTranslator::new(String::from("\u{1}t\u{1}"));
         let set_stmt = ast::SetStatement {
             assignments: vec![ast::PropertyAssignment {
                 variable: "n".to_string(),
@@ -3268,7 +3273,7 @@ mod tests {
     #[test]
     fn test_translate_empty_delete_error() {
         // Create translator directly to test empty delete
-        let translator = GqlTranslator::new();
+        let translator = GqlTranslator::new(String::from("\u{1}t\u{1}"));
         let delete = ast::DeleteStatement {
             targets: vec![],
             detach: false,
@@ -3280,7 +3285,7 @@ mod tests {
 
     #[test]
     fn test_translate_empty_set_error() {
-        let translator = GqlTranslator::new();
+        let translator = GqlTranslator::new(String::from("\u{1}t\u{1}"));
         let set = ast::SetStatement {
             assignments: vec![],
             span: None,
@@ -3291,7 +3296,7 @@ mod tests {
 
     #[test]
     fn test_translate_empty_insert_error() {
-        let translator = GqlTranslator::new();
+        let translator = GqlTranslator::new(String::from("\u{1}t\u{1}"));
         let insert = ast::InsertStatement {
             patterns: vec![],
             span: None,
@@ -3354,7 +3359,7 @@ mod tests {
 
     #[test]
     fn test_binary_op_translation() {
-        let translator = GqlTranslator::new();
+        let translator = GqlTranslator::new(String::from("\u{1}t\u{1}"));
 
         assert_eq!(
             translator.translate_binary_op(ast::BinaryOp::Eq),
@@ -3420,7 +3425,7 @@ mod tests {
 
     #[test]
     fn test_unary_op_translation() {
-        let translator = GqlTranslator::new();
+        let translator = GqlTranslator::new(String::from("\u{1}t\u{1}"));
 
         assert_eq!(
             translator.translate_unary_op(ast::UnaryOp::Not),
