@@ -748,10 +748,7 @@ impl super::ObrainDB {
         // sinon l'API Rust bâtissait un index implicite, non durable,
         // invisible de SHOW INDEXES.
         if let Some((l, p)) = nom_ou_ident.split_once(':')
-            && self
-                .spatial_index_names()
-                .iter()
-                .any(|(_, dl, dp)| dl == l && dp == p)
+            && super::spatial_procedure::declaration_spatiale(self.substrate_store.as_deref(), l, p)
         {
             return Ok((l.to_string(), p.to_string()));
         }

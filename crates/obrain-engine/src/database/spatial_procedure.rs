@@ -495,6 +495,27 @@ fn declencher(crochet: &Crochet, cle: &str) {
     }
 }
 
+/// Le couple `:label(propriété)` porte-t-il une DÉCLARATION spatiale durable ?
+///
+/// C'est la source de vérité de l'existence d'un index : la réouverture rebâtit
+/// depuis elle, et un identifiant `label:propriété` n'est résolu que si elle
+/// existe. Un NOM est facultatif : `ObrainDB::create_spatial_index` déclare
+/// sans nommer, et l'index qu'il crée doit rester interrogeable (avant le
+/// 22/11, les résolveurs ne regardaient que les index nommés, et un index créé
+/// par l'API Rust n'était atteignable ni par `spatial_search` ni par le
+/// planificateur, qui se repliait en silence sur le balayage).
+pub(crate) fn declaration_spatiale(
+    sub: Option<&obrain_substrate::SubstrateStore>,
+    label: &str,
+    propriete: &str,
+) -> bool {
+    sub.is_some_and(|s| {
+        s.declarations_index()
+            .iter()
+            .any(|d| d.genre == "spatial" && d.label == label && d.propriete == propriete)
+    })
+}
+
 /// Retire un index spatial : la DÉCLARATION DURABLE d'abord, la mémoire
 /// ensuite (revue de #282, 21/11 soir).
 ///
@@ -513,11 +534,7 @@ pub(crate) fn supprimer_index(
     propriete: &str,
 ) -> Result<bool> {
     let cle = format!("{label}:{propriete}");
-    let declare = sub.is_some_and(|s| {
-        s.declarations_index()
-            .iter()
-            .any(|d| d.genre == "spatial" && d.label == label && d.propriete == propriete)
-    });
+    let declare = declaration_spatiale(sub, label, propriete);
     let charge = registre.get(&cle).is_some();
     if !declare && !charge {
         return Ok(false);
@@ -690,10 +707,7 @@ impl IndexSpatiaux for PoigneeIndexSpatiaux {
         // l'a frôlé. La construction paresseuse reste légitime pour UN cas :
         // un index déclaré mais pas encore chargé (réouverture).
         if let Some((l, p)) = nom_ou_ident.split_once(':')
-            && self
-                .noms()
-                .into_iter()
-                .any(|(_, dl, dp)| dl == l && dp == p)
+            && declaration_spatiale(self.substrate_store.as_deref(), l, p)
         {
             return Ok((l.to_string(), p.to_string()));
         }
