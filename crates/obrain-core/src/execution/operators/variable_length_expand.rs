@@ -2,7 +2,9 @@
 
 use super::{Operator, OperatorError, OperatorResult, SessionContext};
 use crate::execution::DataChunk;
-use crate::execution::base_registry::{self, remote_node_value, resolve_node_key};
+use crate::execution::base_registry::{
+    self, remote_edge_hydratee, remote_node_value, resolve_node_key,
+};
 use crate::graph::Direction;
 use crate::graph::GraphStore;
 use obrain_common::types::{
@@ -127,10 +129,22 @@ pub struct VariableLengthExpandOperator {
 /// Plafond de lignes de chemins gardees pour les sources deja parcourues.
 const LIGNES_CACHE_MAX: usize = 500_000;
 
-/// Identifiant entier d'un element de chemin (noeud ou arete, base primaire).
-fn entier_de(valeur: &Value) -> Option<u64> {
+/// Clé d'identité (base, id) d'un élément de chemin déjà émis en `Value` :
+/// primaire = `Int64` (base vide), distant = `Map` avec `_base` et `_id`.
+/// `None` pour une valeur sans identité (ex. `Null`, absent) : non comparée.
+fn cle_valeur(valeur: &Value) -> Option<(String, u64)> {
     match valeur {
-        Value::Int64(i) => Some(*i as u64),
+        Value::Int64(i) => Some((String::new(), *i as u64)),
+        Value::Map(map) => {
+            let slug = match map.get(&PropertyKey::new(base_registry::BASE_KEY)) {
+                Some(Value::String(s)) => s.to_string(),
+                _ => return None,
+            };
+            match map.get(&PropertyKey::new("_id")) {
+                Some(Value::Int64(i)) => Some((slug, *i as u64)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -177,11 +191,11 @@ struct OutputRow {
     /// The path length (number of edges/hops).
     path_length: u32,
     /// All nodes along the path (source through target), populated when
-    /// tracking. NB multi-bases : les listes de detail portent les ids
-    /// BRUTS sans qualification de base (limitation documentee V4).
-    path_nodes: Option<Vec<NodeId>>,
+    /// tracking. Identites (base, id) conservees : la sortie les convertit en
+    /// Value (primaire = Int64, distant = Map hydratee).
+    path_nodes: Option<Vec<NoeudM>>,
     /// All edges along the path, populated when tracking.
-    path_edges: Option<Vec<EdgeId>>,
+    path_edges: Option<Vec<AreteM>>,
 }
 
 /// A shared-prefix path segment for efficient BFS path tracking.
@@ -200,33 +214,33 @@ struct PathSegment {
 }
 
 impl PathSegment {
-    /// Materializes the full node path from root to this segment.
-    fn collect_nodes(&self, depth: u32) -> Vec<NodeId> {
+    /// Materializes the full node path from root to this segment (identites (base, id)).
+    fn collect_nodes(&self, depth: u32) -> Vec<NoeudM> {
         let mut nodes = Vec::with_capacity(depth as usize + 1);
         self.collect_nodes_into(&mut nodes);
         nodes
     }
 
-    fn collect_nodes_into(&self, nodes: &mut Vec<NodeId>) {
+    fn collect_nodes_into(&self, nodes: &mut Vec<NoeudM>) {
         if let Some(parent) = &self.parent {
             parent.collect_nodes_into(nodes);
         }
-        nodes.push(self.node.id);
+        nodes.push(self.node);
     }
 
-    /// Materializes the full edge path from root to this segment.
-    fn collect_edges(&self, depth: u32) -> Vec<EdgeId> {
+    /// Materializes the full edge path from root to this segment (identites (base, id)).
+    fn collect_edges(&self, depth: u32) -> Vec<AreteM> {
         let mut edges = Vec::with_capacity(depth as usize);
         self.collect_edges_into(&mut edges);
         edges
     }
 
-    fn collect_edges_into(&self, edges: &mut Vec<EdgeId>) {
+    fn collect_edges_into(&self, edges: &mut Vec<AreteM>) {
         if let Some(parent) = &self.parent {
             parent.collect_edges_into(edges);
         }
         if let Some(edge) = self.edge {
-            edges.push(edge.id);
+            edges.push(edge);
         }
     }
 
@@ -739,7 +753,7 @@ impl VariableLengthExpandOperator {
                 edge_id: None,
                 target_id: source_node,
                 path_length: 0,
-                path_nodes: self.output_path_detail.then(|| vec![source_node.id]),
+                path_nodes: self.output_path_detail.then(|| vec![source_node]),
                 path_edges: needs_edges.then(Vec::new),
             });
         }
@@ -868,11 +882,50 @@ impl VariableLengthExpandOperator {
         results
     }
 
+    /// Clé d'identité (base, id) d'un nœud du chemin (base 0 = primaire).
+    fn cle_noeud(&self, n: NoeudM) -> (String, u64) {
+        if n.base == 0 {
+            (String::new(), n.id.0)
+        } else {
+            (self.base_de(n.base).0, n.id.0)
+        }
+    }
+
+    /// Clé d'identité (base, id) d'une arête du chemin (base 0 = primaire).
+    fn cle_arete(&self, a: AreteM) -> (String, u64) {
+        if a.base == 0 {
+            (String::new(), a.id.0)
+        } else {
+            (self.base_de(a.base).0, a.id.0)
+        }
+    }
+
+    /// Valeur émise d'un nœud de chemin : primaire = `Int64` ; distant = `Map`
+    /// hydratée (`remote_node_value`, convention V4). Absent du store : `Null`.
+    fn valeur_noeud(&self, n: NoeudM) -> Value {
+        if n.base == 0 {
+            return Value::Int64(n.id.0 as i64);
+        }
+        let (slug, store) = self.base_de(n.base);
+        remote_node_value(&slug, store.as_ref(), n.id).unwrap_or(Value::Null)
+    }
+
+    /// Valeur émise d'une arête de chemin : primaire = `Int64` ; distante = `Map`
+    /// hydratée (`remote_edge_hydratee`). Absente du store : `Null`.
+    fn valeur_arete(&self, a: AreteM) -> Value {
+        if a.base == 0 {
+            return Value::Int64(a.id.0 as i64);
+        }
+        let (slug, store) = self.base_de(a.base);
+        remote_edge_hydratee(&slug, store.as_ref(), a.id).unwrap_or(Value::Null)
+    }
+
     /// (obrain#189) Le chemin COMPOSE (prefixe ++ segment) respecte-t-il le mode
     /// de parcours ? Chaque segment est verifie seul par `is_expansion_allowed` ;
-    /// une violation qui traverse la frontiere entre deux segments (meme noeud
-    /// revisite en ACYCLIC, meme arete reprise en TRAIL) ne l'est pas. Ce test
-    /// porte sur le chemin entier, donc il est exact sans toucher la BFS.
+    /// une violation entre deux segments (noeud revisite en ACYCLIC, arete reprise
+    /// en TRAIL) ne l'est pas. Le contrôle porte sur les CLÉS (base, id) de tout le
+    /// chemin : deux éléments de bases distinctes de même identifiant brut ne sont
+    /// jamais confondus. Une clé absente (`Null`) n'est pas comparée.
     fn chemin_compose_respecte_mode(&self, input_row: &InputRow, rang: &OutputRow) -> bool {
         let Some(colonne) = self.path_prefix_column else {
             return true;
@@ -885,26 +938,28 @@ impl VariableLengthExpandOperator {
             return true;
         };
         // Le noeud source du segment est le dernier du prefixe : on ne le repete pas.
-        let mut noeuds: Vec<u64> = prefixe_noeuds.iter().filter_map(entier_de).collect();
+        let mut noeuds: Vec<Option<(String, u64)>> =
+            prefixe_noeuds.iter().map(cle_valeur).collect();
         noeuds.extend(
             rang.path_nodes
                 .as_deref()
                 .unwrap_or(&[])
                 .iter()
                 .skip(1)
-                .map(|n| n.0),
+                .map(|n| Some(self.cle_noeud(*n))),
         );
-        let mut aretes: Vec<u64> = prefixe_aretes.iter().filter_map(entier_de).collect();
+        let mut aretes: Vec<Option<(String, u64)>> =
+            prefixe_aretes.iter().map(cle_valeur).collect();
         aretes.extend(
             rang.path_edges
                 .as_deref()
                 .unwrap_or(&[])
                 .iter()
-                .map(|a| a.0),
+                .map(|a| Some(self.cle_arete(*a))),
         );
-        let sans_doublon = |v: &[u64]| {
-            let mut vus = std::collections::HashSet::with_capacity(v.len());
-            v.iter().all(|x| vus.insert(*x))
+        let sans_doublon = |v: &[Option<(String, u64)>]| {
+            let mut vus = std::collections::HashSet::new();
+            v.iter().flatten().all(|cle| vus.insert(cle))
         };
         match self.path_mode {
             PathMode::Walk => true,
@@ -1101,7 +1156,7 @@ impl Operator for VariableLengthExpandOperator {
                         .as_deref()
                         .unwrap_or(&[])
                         .iter()
-                        .map(|id| Value::Int64(id.0 as i64))
+                        .map(|a| Value::Int64(a.id.0 as i64))
                         .collect();
                     col.push_value(Value::List(liste.into()));
                 } else {
@@ -1169,37 +1224,28 @@ impl Operator for VariableLengthExpandOperator {
                 let noeuds_segment = out_row.path_nodes.as_deref().unwrap_or(&[]);
                 let aretes_segment = out_row.path_edges.as_deref().unwrap_or(&[]);
 
-                // Le segment part de la source, qui est le dernier noeud du
-                // prefixe : on ne la repete pas.
+                // Le segment part de la source, qui est le dernier noeud du prefixe :
+                // on ne la repete pas. Distant = Map hydratée, primaire = Int64.
                 let nodes: Vec<obrain_common::types::Value> = match prefixe {
                     Some((prefixe_noeuds, _)) => prefixe_noeuds
                         .iter()
                         .cloned()
-                        .chain(
-                            noeuds_segment
-                                .iter()
-                                .skip(1)
-                                .map(|id| obrain_common::types::Value::Int64(id.0 as i64)),
-                        )
+                        .chain(noeuds_segment.iter().skip(1).map(|n| self.valeur_noeud(*n)))
                         .collect(),
                     None => noeuds_segment
                         .iter()
-                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
+                        .map(|n| self.valeur_noeud(*n))
                         .collect(),
                 };
                 let edges: Vec<obrain_common::types::Value> = match prefixe {
                     Some((_, prefixe_aretes)) => prefixe_aretes
                         .iter()
                         .cloned()
-                        .chain(
-                            aretes_segment
-                                .iter()
-                                .map(|id| obrain_common::types::Value::Int64(id.0 as i64)),
-                        )
+                        .chain(aretes_segment.iter().map(|a| self.valeur_arete(*a)))
                         .collect(),
                     None => aretes_segment
                         .iter()
-                        .map(|id| obrain_common::types::Value::Int64(id.0 as i64))
+                        .map(|a| self.valeur_arete(*a))
                         .collect(),
                 };
 

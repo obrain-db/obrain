@@ -76,11 +76,6 @@ pub struct LogicalPlan {
     pub explain: bool,
     /// When true, execute the query and return per-operator runtime metrics.
     pub profile: bool,
-    /// (obrain#189) Marqueur des colonnes INTERNES de segment d'un chemin nomme
-    /// compose (voir [`marqueur_segment_pour`]). `None` : aucune colonne
-    /// interne. Le planificateur s'en sert pour masquer ces colonnes dans
-    /// `RETURN *` / `WITH *` et pour retrouver le segment precedent.
-    pub marqueur_segment: Option<String>,
 }
 
 impl LogicalPlan {
@@ -90,7 +85,6 @@ impl LogicalPlan {
             root,
             explain: false,
             profile: false,
-            marqueur_segment: None,
         }
     }
 
@@ -100,7 +94,6 @@ impl LogicalPlan {
             root,
             explain: true,
             profile: false,
-            marqueur_segment: None,
         }
     }
 
@@ -110,7 +103,6 @@ impl LogicalPlan {
             root,
             explain: false,
             profile: true,
-            marqueur_segment: None,
         }
     }
 }

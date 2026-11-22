@@ -136,25 +136,20 @@ impl super::Planner {
                             .max()
                             .map(|(_, idx)| idx)
                     }
-                    _ => None,
-                };
-                if let Some(colonne) = prefixe {
-                    // Multi-bases : les listes de chemin portent des identifiants BRUTS
-                    // (sans base). Leur projection (`[n IN nodes(p) | n.x]`) résout un
-                    // identifiant dans le store PRIMAIRE, et la déduplication entre segments
-                    // confond des éléments de bases distinctes. Garde conservatrice : refus
-                    // explicite de tout chemin composé dès qu'un registre est attaché, quel
-                    // que soit le mode et même si le graphe reste dans la base primaire.
-                    // Les chemins à un segment ne sont pas concernés par cette garde.
-                    if self.session_context.base_registry.is_some() {
+                    // Sans marqueur, un alias portant la forme réservée (U+0001) ne peut
+                    // venir que d'un point d'appel sans texte : refus explicite, jamais une
+                    // composition silencieuse.
+                    (Some(alias), None) if alias.contains('\u{1}') => {
                         use obrain_common::utils::error::{QueryError, QueryErrorKind};
                         return Err(QueryError::new(
                             QueryErrorKind::Semantic,
-                            "chemin nommé composé en mode TRAIL/SIMPLE/ACYCLIC : non pris en charge \
-                             avec un registre multi-bases (les identifiants de chemin ne portent pas la base)",
+                            "chemin nommé composé sans marqueur de requête : planification refusée",
                         )
                         .into());
                     }
+                    _ => None,
+                };
+                if let Some(colonne) = prefixe {
                     expand_op = expand_op.with_path_prefix(colonne);
                 }
             }

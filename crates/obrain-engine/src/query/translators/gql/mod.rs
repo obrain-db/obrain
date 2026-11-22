@@ -71,12 +71,8 @@ pub fn translate(query: &str) -> Result<LogicalPlan> {
 pub fn translate_full(query: &str) -> Result<GqlTranslationResult> {
     let statement = gql::parse(query)?;
     let marqueur = crate::query::plan::marqueur_segment_pour(query);
-    let translator = GqlTranslator::new(marqueur.clone());
-    let mut resultat = translator.translate_statement_full(&statement)?;
-    if let GqlTranslationResult::Plan(plan) = &mut resultat {
-        plan.marqueur_segment = Some(marqueur);
-    }
-    Ok(resultat)
+    let translator = GqlTranslator::new(marqueur);
+    translator.translate_statement_full(&statement)
 }
 
 /// Translator from GQL AST to LogicalPlan.

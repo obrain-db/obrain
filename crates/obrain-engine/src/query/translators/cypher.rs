@@ -53,12 +53,8 @@ pub fn translate(query: &str) -> Result<LogicalPlan> {
 pub fn translate_full(query: &str) -> Result<CypherTranslationResult> {
     let statement = cypher::parse(query)?;
     let marqueur = crate::query::plan::marqueur_segment_pour(query);
-    let translator = CypherTranslator::new(marqueur.clone());
-    let mut resultat = translator.translate_statement_full(&statement)?;
-    if let CypherTranslationResult::Plan(plan) = &mut resultat {
-        plan.marqueur_segment = Some(marqueur);
-    }
-    Ok(resultat)
+    let translator = CypherTranslator::new(marqueur);
+    translator.translate_statement_full(&statement)
 }
 
 /// Cypher AST to logical plan translator.

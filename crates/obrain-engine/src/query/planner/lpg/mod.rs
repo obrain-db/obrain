@@ -116,8 +116,8 @@ pub struct Planner {
     /// le scan fait CROÎTRE ce plafond tant que le consommateur n'a pas ses
     /// lignes, donc jamais de sous-livraison. Remis à `None` après.
     pub(super) limit_scan_cap: std::cell::RefCell<Option<(String, usize)>>,
-    /// (obrain#189) Marqueur des colonnes internes de segment de la requete en
-    /// cours (`LogicalPlan::marqueur_segment`), armé à chaque entrée de planification.
+    /// (obrain#189) Marqueur des colonnes internes de segment de la requête en
+    /// cours, transmis par le point d'appel (voir `avec_marqueur_segment`).
     pub(super) marqueur_segment: std::cell::RefCell<Option<String>>,
     /// When true, each physical operator is wrapped in `ProfiledOperator`.
     profiling: std::cell::Cell<bool>,
@@ -452,11 +452,13 @@ impl Planner {
         chain
     }
 
-    /// (obrain#189) Arme le marqueur des colonnes internes pour la requete planifiee.
-    fn armer_marqueur(&self, logical_plan: &LogicalPlan) {
-        self.marqueur_segment
-            .borrow_mut()
-            .clone_from(&logical_plan.marqueur_segment);
+    /// (obrain#189) Transmet le marqueur des colonnes internes de la requête
+    /// planifiée. Le point d'appel le calcule à partir du texte de la requête
+    /// (`plan::marqueur_segment_pour`), comme le traducteur : pas de champ
+    /// dans `LogicalPlan`, donc aucune rupture de sa forme publique.
+    pub(crate) fn avec_marqueur_segment(self, marqueur: String) -> Self {
+        *self.marqueur_segment.borrow_mut() = Some(marqueur);
+        self
     }
 
     /// (obrain#189) Vrai si `nom` est une colonne INTERNE de segment de la requete
@@ -471,7 +473,6 @@ impl Planner {
     /// Plans a logical plan into a physical operator.
     pub fn plan(&self, logical_plan: &LogicalPlan) -> Result<PhysicalPlan> {
         let _span = tracing::debug_span!("obrain::query::plan").entered();
-        self.armer_marqueur(logical_plan);
         let (operator, columns) = self.plan_operator(&logical_plan.root)?;
         Ok(PhysicalPlan {
             operator,
@@ -489,7 +490,6 @@ impl Planner {
         &self,
         logical_plan: &LogicalPlan,
     ) -> Result<(PhysicalPlan, Vec<crate::query::profile::ProfileEntry>)> {
-        self.armer_marqueur(logical_plan);
         self.profiling.set(true);
         self.profile_entries.borrow_mut().clear();
 
@@ -511,7 +511,6 @@ impl Planner {
 
     /// Plans a logical plan with adaptive execution support.
     pub fn plan_adaptive(&self, logical_plan: &LogicalPlan) -> Result<PhysicalPlan> {
-        self.armer_marqueur(logical_plan);
         let (operator, columns) = self.plan_operator(&logical_plan.root)?;
 
         let mut adaptive_context = AdaptiveContext::new();

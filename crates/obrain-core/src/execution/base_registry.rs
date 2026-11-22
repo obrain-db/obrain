@@ -12,7 +12,7 @@
 //! closure (`StoreOpener`) : obrain-core ne connait pas obrain-substrate.
 
 use crate::graph::{ExternalEdge, GraphStore};
-use obrain_common::types::{NodeId, PropertyKey, Value};
+use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -358,6 +358,37 @@ pub fn remote_node_value(slug: &str, store: &dyn GraphStore, id: NodeId) -> Opti
     map.insert(PropertyKey::new("_labels"), Value::List(labels.into()));
     map.insert(PropertyKey::new(BASE_KEY), Value::String(slug.into()));
     for (key, value) in &node.properties {
+        map.insert(key.clone(), value.clone());
+    }
+    Some(Value::Map(Arc::new(map)))
+}
+
+/// Materialise une arete DISTANTE d'un chemin en `Value::Map` HYDRATEE : les cles de
+/// `remote_edge_value` (`_id`, `_type`, `_base`, `_source`, `_target`) plus les
+/// proprietes de l'arete, pour que `r.prop` lise la valeur de l'arete traversee.
+/// `None` si l'arete n'existe plus dans ce store.
+#[must_use]
+pub fn remote_edge_hydratee(slug: &str, store: &dyn GraphStore, id: EdgeId) -> Option<Value> {
+    let edge = store.get_edge(id)?;
+    let mut map = BTreeMap::new();
+    map.insert(
+        PropertyKey::new("_id"),
+        Value::Int64(edge.id.as_u64() as i64),
+    );
+    map.insert(
+        PropertyKey::new("_type"),
+        Value::String(edge.edge_type.clone()),
+    );
+    map.insert(PropertyKey::new(BASE_KEY), Value::String(slug.into()));
+    map.insert(
+        PropertyKey::new("_source"),
+        Value::Int64(edge.src.as_u64() as i64),
+    );
+    map.insert(
+        PropertyKey::new("_target"),
+        Value::Int64(edge.dst.as_u64() as i64),
+    );
+    for (key, value) in &edge.properties {
         map.insert(key.clone(), value.clone());
     }
     Some(Value::Map(Arc::new(map)))
