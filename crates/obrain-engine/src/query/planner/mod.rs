@@ -413,3 +413,549 @@ pub(crate) fn eval_constant_expression(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::query::plan::{ListPredicateKind, LogicalOperator, MapProjectionEntry, NodeScanOp};
+    use obrain_common::types::{Date, Duration, Time, Timestamp, Value, ZonedDatetime};
+    use obrain_core::execution::operators::EmptyOperator;
+    use obrain_core::execution::operators::ListPredicateKind as PhysicalListPredicateKind;
+
+    fn var(name: &str) -> LogicalExpression {
+        LogicalExpression::Variable(name.into())
+    }
+
+    fn int(n: i64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Int64(n))
+    }
+
+    fn scan(variable: &str) -> Box<LogicalOperator> {
+        Box::new(LogicalOperator::NodeScan(NodeScanOp {
+            variable: variable.into(),
+            label: None,
+            input: None,
+            pushdown_hint: None,
+        }))
+    }
+
+    fn convertit(expr: &LogicalExpression) -> FilterExpression {
+        convert_filter_expression(expr).expect("conversion attendue sans erreur")
+    }
+
+    // --- PhysicalPlan ---
+
+    #[test]
+    fn physical_plan_expose_colonnes_et_contexte_adaptatif() {
+        let mut plan = PhysicalPlan {
+            operator: Box::new(EmptyOperator::new(vec![])),
+            columns: vec!["a".into(), "b".into()],
+            adaptive_context: Some(AdaptiveContext::new()),
+        };
+        assert_eq!(plan.columns(), ["a".to_string(), "b".to_string()]);
+        assert!(plan.adaptive_context().is_some());
+        assert!(plan.take_adaptive_context().is_some());
+        assert!(
+            plan.adaptive_context().is_none(),
+            "take_adaptive_context doit consommer le contexte"
+        );
+        assert!(plan.take_adaptive_context().is_none());
+        let operateur = plan.into_operator();
+        assert_ne!(operateur.name(), "");
+    }
+
+    #[test]
+    fn physical_plan_sans_contexte_adaptatif() {
+        let plan = PhysicalPlan {
+            operator: Box::new(EmptyOperator::new(vec![])),
+            columns: vec![],
+            adaptive_context: None,
+        };
+        assert_eq!(plan.columns().len(), 0);
+        assert!(plan.adaptive_context().is_none());
+    }
+
+    // --- convert_binary_op / convert_unary_op ---
+
+    #[test]
+    fn convert_binary_op_couvre_toutes_les_variantes() {
+        let cas = [
+            (BinaryOp::Eq, BinaryFilterOp::Eq),
+            (BinaryOp::Ne, BinaryFilterOp::Ne),
+            (BinaryOp::Lt, BinaryFilterOp::Lt),
+            (BinaryOp::Le, BinaryFilterOp::Le),
+            (BinaryOp::Gt, BinaryFilterOp::Gt),
+            (BinaryOp::Ge, BinaryFilterOp::Ge),
+            (BinaryOp::And, BinaryFilterOp::And),
+            (BinaryOp::Or, BinaryFilterOp::Or),
+            (BinaryOp::Xor, BinaryFilterOp::Xor),
+            (BinaryOp::Add, BinaryFilterOp::Add),
+            (BinaryOp::Sub, BinaryFilterOp::Sub),
+            (BinaryOp::Mul, BinaryFilterOp::Mul),
+            (BinaryOp::Div, BinaryFilterOp::Div),
+            (BinaryOp::Mod, BinaryFilterOp::Mod),
+            (BinaryOp::StartsWith, BinaryFilterOp::StartsWith),
+            (BinaryOp::EndsWith, BinaryFilterOp::EndsWith),
+            (BinaryOp::Contains, BinaryFilterOp::Contains),
+            (BinaryOp::In, BinaryFilterOp::In),
+            (BinaryOp::Regex, BinaryFilterOp::Regex),
+            (BinaryOp::Pow, BinaryFilterOp::Pow),
+            (BinaryOp::Concat, BinaryFilterOp::Concat),
+            (BinaryOp::Like, BinaryFilterOp::Like),
+        ];
+        for (logique, physique) in cas {
+            assert_eq!(
+                convert_binary_op(logique).expect("conversion"),
+                physique,
+                "{logique:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn convert_unary_op_couvre_toutes_les_variantes() {
+        let cas = [
+            (UnaryOp::Not, UnaryFilterOp::Not),
+            (UnaryOp::IsNull, UnaryFilterOp::IsNull),
+            (UnaryOp::IsNotNull, UnaryFilterOp::IsNotNull),
+            (UnaryOp::Neg, UnaryFilterOp::Neg),
+        ];
+        for (logique, physique) in cas {
+            assert_eq!(
+                convert_unary_op(logique).expect("conversion"),
+                physique,
+                "{logique:?}"
+            );
+        }
+    }
+
+    // --- convert_aggregate_function ---
+
+    #[test]
+    fn convert_aggregate_function_couvre_toutes_les_variantes() {
+        use LogicalAggregateFunction as L;
+        use PhysicalAggregateFunction as P;
+        let cas = [
+            (L::Count, P::Count),
+            (L::CountNonNull, P::CountNonNull),
+            (L::Sum, P::Sum),
+            (L::Avg, P::Avg),
+            (L::Min, P::Min),
+            (L::Max, P::Max),
+            (L::Collect, P::Collect),
+            (L::StdDev, P::StdDev),
+            (L::StdDevPop, P::StdDevPop),
+            (L::Variance, P::Variance),
+            (L::VariancePop, P::VariancePop),
+            (L::PercentileDisc, P::PercentileDisc),
+            (L::PercentileCont, P::PercentileCont),
+            (L::GroupConcat, P::GroupConcat),
+            (L::Sample, P::Sample),
+            (L::CovarSamp, P::CovarSamp),
+            (L::CovarPop, P::CovarPop),
+            (L::Corr, P::Corr),
+            (L::RegrSlope, P::RegrSlope),
+            (L::RegrIntercept, P::RegrIntercept),
+            (L::RegrR2, P::RegrR2),
+            (L::RegrCount, P::RegrCount),
+            (L::RegrSxx, P::RegrSxx),
+            (L::RegrSyy, P::RegrSyy),
+            (L::RegrSxy, P::RegrSxy),
+            (L::RegrAvgx, P::RegrAvgx),
+            (L::RegrAvgy, P::RegrAvgy),
+        ];
+        for (logique, physique) in cas {
+            assert_eq!(convert_aggregate_function(logique), physique, "{logique:?}");
+        }
+    }
+
+    // --- convert_filter_expression : feuilles ---
+
+    #[test]
+    fn filter_feuilles_litteral_variable_propriete_et_accesseurs() {
+        assert!(matches!(
+            convertit(&int(7)),
+            FilterExpression::Literal(Value::Int64(7))
+        ));
+        assert!(matches!(
+            convertit(&var("n")),
+            FilterExpression::Variable(v) if v == "n"
+        ));
+        assert!(matches!(
+            convertit(&LogicalExpression::Property {
+                variable: "n".into(),
+                property: "age".into(),
+            }),
+            FilterExpression::Property { variable, property }
+                if variable == "n" && property == "age"
+        ));
+        assert!(matches!(
+            convertit(&LogicalExpression::Labels("n".into())),
+            FilterExpression::Labels(v) if v == "n"
+        ));
+        assert!(matches!(
+            convertit(&LogicalExpression::Type("r".into())),
+            FilterExpression::Type(v) if v == "r"
+        ));
+        assert!(matches!(
+            convertit(&LogicalExpression::Id("n".into())),
+            FilterExpression::Id(v) if v == "n"
+        ));
+    }
+
+    #[test]
+    fn filter_binaire_et_unaire_convertissent_les_operateurs() {
+        let binaire = LogicalExpression::Binary {
+            left: Box::new(var("a")),
+            op: BinaryOp::Gt,
+            right: Box::new(int(3)),
+        };
+        assert!(matches!(
+            convertit(&binaire),
+            FilterExpression::Binary { op: BinaryFilterOp::Gt, left, right }
+                if matches!(*left, FilterExpression::Variable(_))
+                    && matches!(*right, FilterExpression::Literal(_))
+        ));
+
+        let unaire = LogicalExpression::Unary {
+            op: UnaryOp::IsNull,
+            operand: Box::new(var("a")),
+        };
+        assert!(matches!(
+            convertit(&unaire),
+            FilterExpression::Unary {
+                op: UnaryFilterOp::IsNull,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn filter_appel_de_fonction_liste_et_map() {
+        let appel = LogicalExpression::FunctionCall {
+            name: "size".into(),
+            args: vec![var("l"), int(1)],
+            distinct: true,
+        };
+        assert!(matches!(
+            convertit(&appel),
+            FilterExpression::FunctionCall { name, args } if name == "size" && args.len() == 2
+        ));
+
+        let liste = LogicalExpression::List(vec![int(1), int(2), int(3)]);
+        assert!(matches!(
+            convertit(&liste),
+            FilterExpression::List(items) if items.len() == 3
+        ));
+
+        let map = LogicalExpression::Map(vec![("k".into(), int(1)), ("j".into(), var("x"))]);
+        assert!(matches!(
+            convertit(&map),
+            FilterExpression::Map(paires)
+                if paires.len() == 2 && paires[0].0 == "k" && paires[1].0 == "j"
+        ));
+    }
+
+    #[test]
+    fn filter_acces_par_index_et_tranche() {
+        let index = LogicalExpression::IndexAccess {
+            base: Box::new(var("l")),
+            index: Box::new(int(0)),
+        };
+        assert!(matches!(
+            convertit(&index),
+            FilterExpression::IndexAccess { .. }
+        ));
+
+        let tranche_complete = LogicalExpression::SliceAccess {
+            base: Box::new(var("l")),
+            start: Some(Box::new(int(1))),
+            end: Some(Box::new(int(2))),
+        };
+        assert!(matches!(
+            convertit(&tranche_complete),
+            FilterExpression::SliceAccess {
+                start: Some(_),
+                end: Some(_),
+                ..
+            }
+        ));
+
+        let tranche_ouverte = LogicalExpression::SliceAccess {
+            base: Box::new(var("l")),
+            start: None,
+            end: None,
+        };
+        assert!(matches!(
+            convertit(&tranche_ouverte),
+            FilterExpression::SliceAccess {
+                start: None,
+                end: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn filter_case_avec_et_sans_operande() {
+        let simple = LogicalExpression::Case {
+            operand: Some(Box::new(var("x"))),
+            when_clauses: vec![(int(1), var("un")), (int(2), var("deux"))],
+            else_clause: Some(Box::new(var("autre"))),
+        };
+        assert!(matches!(
+            convertit(&simple),
+            FilterExpression::Case { operand: Some(_), when_clauses, else_clause: Some(_) }
+                if when_clauses.len() == 2
+        ));
+
+        let recherche = LogicalExpression::Case {
+            operand: None,
+            when_clauses: vec![(var("c"), int(1))],
+            else_clause: None,
+        };
+        assert!(matches!(
+            convertit(&recherche),
+            FilterExpression::Case { operand: None, when_clauses, else_clause: None }
+                if when_clauses.len() == 1
+        ));
+    }
+
+    #[test]
+    fn filter_comprehension_et_predicat_de_liste() {
+        let comprehension = LogicalExpression::ListComprehension {
+            variable: "x".into(),
+            list_expr: Box::new(var("l")),
+            filter_expr: Some(Box::new(var("x"))),
+            map_expr: Box::new(var("x")),
+        };
+        assert!(matches!(
+            convertit(&comprehension),
+            FilterExpression::ListComprehension { variable, filter_expr: Some(_), .. }
+                if variable == "x"
+        ));
+
+        let sans_filtre = LogicalExpression::ListComprehension {
+            variable: "x".into(),
+            list_expr: Box::new(var("l")),
+            filter_expr: None,
+            map_expr: Box::new(var("x")),
+        };
+        assert!(matches!(
+            convertit(&sans_filtre),
+            FilterExpression::ListComprehension {
+                filter_expr: None,
+                ..
+            }
+        ));
+
+        for (logique, physique) in [
+            (ListPredicateKind::All, PhysicalListPredicateKind::All),
+            (ListPredicateKind::Any, PhysicalListPredicateKind::Any),
+            (ListPredicateKind::None, PhysicalListPredicateKind::None),
+            (ListPredicateKind::Single, PhysicalListPredicateKind::Single),
+        ] {
+            let predicat = LogicalExpression::ListPredicate {
+                kind: logique.clone(),
+                variable: "x".into(),
+                list_expr: Box::new(var("l")),
+                predicate: Box::new(var("x")),
+            };
+            match convertit(&predicat) {
+                FilterExpression::ListPredicate { kind, variable, .. } => {
+                    assert_eq!(kind, physique, "{logique:?}");
+                    assert_eq!(variable, "x");
+                }
+                autre => panic!("ListPredicate attendu, obtenu {autre:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn filter_map_projection_rend_une_map_de_trois_formes() {
+        let projection = LogicalExpression::MapProjection {
+            base: "n".into(),
+            entries: vec![
+                MapProjectionEntry::PropertySelector("name".into()),
+                MapProjectionEntry::LiteralEntry("k".into(), int(1)),
+                MapProjectionEntry::AllProperties,
+            ],
+        };
+        let FilterExpression::Map(entrees) = convertit(&projection) else {
+            panic!("Map attendue");
+        };
+        assert_eq!(entrees.len(), 3);
+        assert_eq!(entrees[0].0, "name");
+        assert!(matches!(
+            &entrees[0].1,
+            FilterExpression::Property { variable, property }
+                if variable == "n" && property == "name"
+        ));
+        assert_eq!(entrees[1].0, "k");
+        assert!(matches!(&entrees[1].1, FilterExpression::Literal(_)));
+        assert_eq!(entrees[2].0, "*");
+        assert!(matches!(
+            &entrees[2].1,
+            FilterExpression::FunctionCall { name, args }
+                if name == "properties" && args.len() == 1
+        ));
+    }
+
+    #[test]
+    fn filter_reduce_et_pattern_comprehension() {
+        let reduce = LogicalExpression::Reduce {
+            accumulator: "acc".into(),
+            initial: Box::new(int(0)),
+            variable: "x".into(),
+            list: Box::new(var("l")),
+            expression: Box::new(var("acc")),
+        };
+        assert!(matches!(
+            convertit(&reduce),
+            FilterExpression::Reduce { accumulator, variable, .. }
+                if accumulator == "acc" && variable == "x"
+        ));
+
+        let motif = LogicalExpression::PatternComprehension {
+            subplan: scan("m"),
+            projection: Box::new(var("m")),
+        };
+        assert!(matches!(
+            convertit(&motif),
+            FilterExpression::FunctionCall { name, args } if name == "collect" && args.len() == 1
+        ));
+    }
+
+    #[test]
+    fn filter_refuse_parametre_et_sous_requetes() {
+        let parametre = LogicalExpression::Parameter("p".into());
+        let err = convert_filter_expression(&parametre).expect_err("paramètre refusé");
+        assert!(format!("{err:?}").contains("Parameters"), "{err:?}");
+
+        for sous_requete in [
+            LogicalExpression::ExistsSubquery(scan("m")),
+            LogicalExpression::CountSubquery(scan("m")),
+            LogicalExpression::ValueSubquery(scan("m")),
+        ] {
+            let err = convert_filter_expression(&sous_requete).expect_err("sous-requête refusée");
+            assert!(format!("{err:?}").contains("semi-join"), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn filter_propage_l_erreur_d_un_enfant() {
+        let parametre_enfoui = LogicalExpression::Binary {
+            left: Box::new(var("a")),
+            op: BinaryOp::Eq,
+            right: Box::new(LogicalExpression::Parameter("p".into())),
+        };
+        assert!(convert_filter_expression(&parametre_enfoui).is_err());
+
+        let dans_une_liste =
+            LogicalExpression::List(vec![LogicalExpression::Parameter("p".into())]);
+        assert!(convert_filter_expression(&dans_une_liste).is_err());
+    }
+
+    // --- value_to_logical_type ---
+
+    #[test]
+    fn value_to_logical_type_couvre_toutes_les_variantes() {
+        let cas: Vec<(Value, LogicalType)> = vec![
+            (Value::Null, LogicalType::String),
+            (Value::Bool(true), LogicalType::Bool),
+            (Value::Int64(1), LogicalType::Int64),
+            (Value::Float64(1.5), LogicalType::Float64),
+            (Value::String("s".into()), LogicalType::String),
+            (Value::Bytes(Arc::from(vec![1u8, 2])), LogicalType::String),
+            (
+                Value::Timestamp(Timestamp::from_secs(0)),
+                LogicalType::Timestamp,
+            ),
+            (Value::Date(Date::from_days(0)), LogicalType::Date),
+            (
+                Value::Time(Time::from_hms(1, 2, 3).expect("heure valide")),
+                LogicalType::Time,
+            ),
+            (
+                Value::Duration(Duration::from_days(1)),
+                LogicalType::Duration,
+            ),
+            (
+                Value::ZonedDatetime(ZonedDatetime::from_timestamp_offset(
+                    Timestamp::from_secs(0),
+                    3600,
+                )),
+                LogicalType::ZonedDatetime,
+            ),
+            (
+                Value::List(Arc::from(vec![Value::Int64(1)])),
+                LogicalType::String,
+            ),
+            (Value::Map(Arc::new(BTreeMap::new())), LogicalType::String),
+            (
+                Value::Vector(Arc::from(vec![1.0f32, 2.0, 3.0])),
+                LogicalType::Vector(3),
+            ),
+            (
+                Value::Path {
+                    nodes: Arc::from(Vec::<Value>::new()),
+                    edges: Arc::from(Vec::<Value>::new()),
+                },
+                LogicalType::Any,
+            ),
+        ];
+        for (valeur, attendu) in cas {
+            assert_eq!(value_to_logical_type(&valeur), attendu, "{valeur:?}");
+        }
+    }
+
+    // --- eval_constant_expression (feature algos) ---
+
+    #[cfg(feature = "algos")]
+    #[test]
+    fn eval_constant_litteral_et_negation_numerique() {
+        assert_eq!(
+            eval_constant_expression(&int(5)).expect("littéral"),
+            Value::Int64(5)
+        );
+        let moins_cinq = LogicalExpression::Unary {
+            op: UnaryOp::Neg,
+            operand: Box::new(int(5)),
+        };
+        assert_eq!(
+            eval_constant_expression(&moins_cinq).expect("négation"),
+            Value::Int64(-5)
+        );
+        let moins_flottant = LogicalExpression::Unary {
+            op: UnaryOp::Neg,
+            operand: Box::new(LogicalExpression::Literal(Value::Float64(2.5))),
+        };
+        assert_eq!(
+            eval_constant_expression(&moins_flottant).expect("négation"),
+            Value::Float64(-2.5)
+        );
+    }
+
+    #[cfg(feature = "algos")]
+    #[test]
+    fn eval_constant_refuse_non_numerique_et_non_constant() {
+        let moins_texte = LogicalExpression::Unary {
+            op: UnaryOp::Neg,
+            operand: Box::new(LogicalExpression::Literal(Value::String("x".into()))),
+        };
+        let err = eval_constant_expression(&moins_texte).expect_err("négation d'un texte");
+        assert!(format!("{err:?}").contains("non-numeric"), "{err:?}");
+
+        let err = eval_constant_expression(&var("n")).expect_err("variable non constante");
+        assert!(format!("{err:?}").contains("constant"), "{err:?}");
+
+        let non_negation = LogicalExpression::Unary {
+            op: UnaryOp::Not,
+            operand: Box::new(int(1)),
+        };
+        assert!(eval_constant_expression(&non_negation).is_err());
+    }
+}
