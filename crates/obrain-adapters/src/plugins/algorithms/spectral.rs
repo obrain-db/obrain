@@ -228,7 +228,7 @@ fn spectral_eigenpairs(
             for &(j, w) in &rows[i] {
                 acc += w * d_inv_sqrt[j] * v[j];
             }
-            r[i] = 0.5 * (v[i] + d_inv_sqrt[i] * acc);
+            r[i] = f64::midpoint(v[i], d_inv_sqrt[i] * acc);
         }
         r
     };
