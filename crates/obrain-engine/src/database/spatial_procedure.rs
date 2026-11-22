@@ -456,19 +456,25 @@ fn appliquer_valeur(index: &mut SpatialIndex, id: u32, valeur: Option<&Value>) {
 /// TENU : avant le balayage, et entre la construction et la publication. Un
 /// test en pose un pour UNE clé ; les autres clés ne le déclenchent pas (les
 /// tests tournent en parallèle dans le même binaire).
+///
+/// Une LISTE par clé, pas un emplacement unique : avec `Option`, deux tests
+/// qui posaient chacun leur crochet en parallèle s'écrasaient, et le crochet
+/// perdu ne tournait jamais (mesuré le 22/11 : 9 rouges sur 40 passages de
+/// `spatial_procedure::tests`, alternativement sur les deux tests qui posent
+/// `CROCHET_AVANT_PUBLICATION`).
 #[cfg(test)]
 #[allow(clippy::type_complexity)]
-type Crochet = parking_lot::Mutex<Option<(String, Box<dyn FnOnce() + Send>)>>;
+type Crochet = parking_lot::Mutex<Vec<(String, Box<dyn FnOnce() + Send>)>>;
 
 #[cfg(test)]
-static CROCHET_AVANT_BALAYAGE: Crochet = parking_lot::Mutex::new(None);
+static CROCHET_AVANT_BALAYAGE: Crochet = parking_lot::Mutex::new(Vec::new());
 
 #[cfg(test)]
-static CROCHET_AVANT_PUBLICATION: Crochet = parking_lot::Mutex::new(None);
+static CROCHET_AVANT_PUBLICATION: Crochet = parking_lot::Mutex::new(Vec::new());
 
 /// Entre le retrait de l'index et le retrait de son couple, dans `retirer`.
 #[cfg(test)]
-static CROCHET_RETIRER: Crochet = parking_lot::Mutex::new(None);
+static CROCHET_RETIRER: Crochet = parking_lot::Mutex::new(Vec::new());
 
 /// Injection d'échec du retrait DURABLE d'une déclaration, pour une clé.
 #[cfg(test)]
@@ -478,11 +484,11 @@ static ECHEC_RETRAIT_DECLARATION: parking_lot::Mutex<Option<String>> =
 #[cfg(test)]
 fn declencher(crochet: &Crochet, cle: &str) {
     let pris = {
-        let mut slot = crochet.lock();
-        match slot.as_ref() {
-            Some((c, _)) if c == cle => slot.take(),
-            _ => None,
-        }
+        let mut poses = crochet.lock();
+        poses
+            .iter()
+            .position(|(c, _)| c == cle)
+            .map(|i| poses.swap_remove(i))
     };
     if let Some((_, f)) = pris {
         f();
@@ -1068,7 +1074,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<std::thread::JoinHandle<()>>();
         {
             let db = Arc::clone(&db);
-            *CROCHET_AVANT_PUBLICATION.lock() = Some((
+            CROCHET_AVANT_PUBLICATION.lock().push((
                 "LieuCourse:pos".to_string(),
                 Box::new(move || {
                     // L'écrivain : il écrit (le substrat n'est pas verrouillé),
@@ -1240,7 +1246,7 @@ mod tests {
         {
             let db = Arc::clone(&db);
             let resultat = Arc::clone(&resultat);
-            *CROCHET_AVANT_PUBLICATION.lock() = Some((
+            CROCHET_AVANT_PUBLICATION.lock().push((
                 "LieuAttente:pos".to_string(),
                 Box::new(move || {
                     let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -1346,7 +1352,7 @@ mod tests {
             let db = Arc::clone(db);
             let issue = Arc::clone(&issue);
             let fils = Arc::clone(&fils);
-            *CROCHET_AVANT_BALAYAGE.lock() = Some((
+            CROCHET_AVANT_BALAYAGE.lock().push((
                 cle.to_string(),
                 Box::new(move || {
                     let lancer = |nom: &'static str, f: Box<dyn FnOnce() + Send>| {
@@ -1528,7 +1534,7 @@ mod tests {
             let db = Arc::clone(&db);
             let finie = Arc::clone(&reconstruction_finie);
             let dans_la_pause = Arc::clone(&finie_dans_la_pause);
-            *CROCHET_RETIRER.lock() = Some((
+            CROCHET_RETIRER.lock().push((
                 "LieuCourseDrop:pos".to_string(),
                 Box::new(move || {
                     let db2 = Arc::clone(&db);
