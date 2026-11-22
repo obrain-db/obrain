@@ -1107,6 +1107,15 @@ impl Writer {
             }
         }
 
+        // Test de l'ordre de publication : la sonde est liée à l'écriture
+        // EFFECTIVE, même si l'appelant déplace la publication de la tête.
+        #[cfg(test)]
+        AVANT_ECRITURE_SLOT_ARETE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f();
+            }
+        });
+
         self.with_edge_zone(|zf| {
             let offset = idx as usize * EdgeRecord::SIZE;
             ensure_room(zf, offset + EdgeRecord::SIZE, self.min_headroom)?;
@@ -3766,6 +3775,13 @@ impl CompactionResult {
 // de repermutation (l'ANNONCE, avant les mutations, puis la
 // CONFIRMATION, apres la barriere), et ces deux echecs appellent des
 // reprises OPPOSEES.
+#[cfg(test)]
+thread_local! {
+    #[allow(clippy::type_complexity)]
+    pub(crate) static AVANT_ECRITURE_SLOT_ARETE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[cfg(test)]
 thread_local! {
     pub(crate) static ECHEC_ENSURE_ROOM: std::cell::RefCell<Option<(String, u32)>> =
