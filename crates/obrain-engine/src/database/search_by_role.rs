@@ -57,7 +57,10 @@ static HKS_CACHE: std::sync::Mutex<Option<(usize, u64, std::sync::Arc<Vec<[f32; 
 
 /// Nom du sidecar de cache des descripteurs HKS (persistance froide).
 const HKS_CACHE_FILENAME: &str = "substrate.hks_cache";
-const HKS_CACHE_MAGIC: &[u8; 4] = b"HKS1";
+/// "HKS2" : l'intégrateur HKS est passé d'Euler explicite à Tchebychev
+/// sur le laplacien normalisé symétrisé (#288) ; un sidecar "HKS1" contient
+/// des valeurs d'un autre opérateur et est ignoré (donc recalculé).
+const HKS_CACHE_MAGIC: &[u8; 4] = b"HKS2";
 
 /// Chemin du store (répertoire substrate).
 fn store_dir(substrate: &SubstrateStore) -> std::path::PathBuf {
