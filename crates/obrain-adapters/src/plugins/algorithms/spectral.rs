@@ -189,9 +189,10 @@ fn spectral_eigenpairs(
     let mut ws: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_all];
     for (i, row) in adj.iter().enumerate() {
         for &(j, w) in row {
-            // `!(w > 0.0)` écarte NaN ; on l'écrit explicitement plutôt que de
-            // retourner la comparaison, qui laisserait NaN passer.
-            if i == j || !w.is_finite() || w <= 0.0 {
+            // Équivalent EXACT de `!(w > 0.0)` : `w <= 0.0` retourné laisserait
+            // NaN passer (toute comparaison avec NaN est fausse), donc on isole
+            // le cas NaN au lieu de changer la sémantique pour l'infini.
+            if i == j || w.is_nan() || w <= 0.0 {
                 continue;
             }
             ws[i].push((j, w / 2.0));

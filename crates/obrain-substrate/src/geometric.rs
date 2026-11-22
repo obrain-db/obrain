@@ -1377,8 +1377,8 @@ fn heat_kernel_signatures_multi(csr: &CsrAdjacency, ts: &[f32]) -> Vec<Vec<f32>>
 /// Diagonal extraction via the Hutchinson stochastic estimator: for K
 /// Rademacher vectors `v_k` (entries ±1 uniform), the unbiased estimator
 /// is `diag(M)[u] ≈ (1/K) Σ_k v_k[u] · (M v_k)[u]`, with
-/// `M = exp(−t L_sym)` applied by a Chebyshev expansion (see
-/// [`heat_apply_chebyshev`]) — stable for any degree.
+/// `M = exp(−t L_sym)` applied by a Chebyshev expansion (see the private
+/// `heat_apply_chebyshev`) — stable for any degree.
 ///
 /// We use K = [`HKS_HUTCHINSON_PROBES`]. The PRNG is seeded deterministically
 /// from the graph's slot_high_water so tests are reproducible across runs.
