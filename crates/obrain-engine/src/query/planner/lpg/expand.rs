@@ -140,12 +140,13 @@ impl super::Planner {
                 };
                 if let Some(colonne) = prefixe {
                     // Multi-bases : les listes de chemin portent des identifiants BRUTS
-                    // (sans base). La déduplication TRAIL / SIMPLE / ACYCLIC entre segments
-                    // confondrait deux éléments de bases distinctes de même identifiant.
-                    // Refus explicite plutôt que résultat faux. WALK n'est pas concerné.
-                    if self.session_context.base_registry.is_some()
-                        && expand.path_mode != PathMode::Walk
-                    {
+                    // (sans base). Leur projection (`[n IN nodes(p) | n.x]`) résout un
+                    // identifiant dans le store PRIMAIRE, et la déduplication entre segments
+                    // confond des éléments de bases distinctes. Garde conservatrice : refus
+                    // explicite de tout chemin composé dès qu'un registre est attaché, quel
+                    // que soit le mode et même si le graphe reste dans la base primaire.
+                    // Les chemins à un segment ne sont pas concernés par cette garde.
+                    if self.session_context.base_registry.is_some() {
                         use obrain_common::utils::error::{QueryError, QueryErrorKind};
                         return Err(QueryError::new(
                             QueryErrorKind::Semantic,
