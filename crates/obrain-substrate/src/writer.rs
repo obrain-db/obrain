@@ -1188,7 +1188,12 @@ impl Writer {
     pub fn read_edge(&self, idx: u64) -> SubstrateResult<Option<EdgeRecord>> {
         // (2026-08-07) Lecture PARTAGÉE — voir `with_node_zone_read`.
         self.with_edge_zone_read(|zf| {
-            let offset = idx as usize * EdgeRecord::SIZE;
+            // Débordement (identifiant d'arête externe au bit haut) : hors zone,
+            // donc « absent ». Sans ce contrôle, la multiplication déborde (panique
+            // en debug, lecture d'un autre emplacement en release).
+            let Some(offset) = (idx as usize).checked_mul(EdgeRecord::SIZE) else {
+                return Ok(None);
+            };
             if offset + EdgeRecord::SIZE > zf.as_slice().len() {
                 return Ok(None);
             }
