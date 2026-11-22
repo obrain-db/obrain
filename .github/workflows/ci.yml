@@ -244,8 +244,11 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
+      # ≥ 0.8.6 obligatoire : cargo 1.100 range les binaires de test sous
+      # debug/build/<pkg>/<hash>/out (nouveau build-dir) ; 0.8.5 ne cherchait que
+      # debug/deps et échouait sur « not found object files » (runner n1, 22/11/2026).
       - name: Outil (cargo-llvm-cov, version épinglée)
-        run: cargo install cargo-llvm-cov --locked --version 0.8.5
+        run: cargo install cargo-llvm-cov --locked --version 0.9.1
       - name: Mesure, profil 1/2 — features par défaut
         run: |
           ulimit -n 8192
