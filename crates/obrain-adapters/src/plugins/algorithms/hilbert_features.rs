@@ -1406,7 +1406,7 @@ pub struct FacetteWeights {
     /// One weight per facette. Length = number of facettes (8 or 9).
     pub weights: Vec<f32>,
     /// Pre-computed flag: true if all weights are 1.0 (enables fast path).
-    is_uniform: bool,
+    pub(super) is_uniform: bool,
 }
 
 impl FacetteWeights {
