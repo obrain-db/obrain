@@ -49,7 +49,7 @@ env:
 jobs:
   verifier:
     name: Tag, version, CHANGELOG
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -104,7 +104,7 @@ jobs:
   publier:
     name: Publication crates.io
     needs: [verifier, ci]
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     environment: crates-io
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,7 +134,7 @@ jobs:
   release:
     name: GitHub Release
     needs: [verifier, publier]
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
