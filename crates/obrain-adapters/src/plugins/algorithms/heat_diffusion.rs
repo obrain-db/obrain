@@ -213,6 +213,27 @@ pub fn heat_kernel_diffusion(
     weights: &FacetteWeights,
     config: &HeatKernelConfig,
 ) -> Vec<(NodeId, f32)> {
+    let cache = CACHE_VOISINS.get_or_init(|| std::sync::RwLock::new(Vec::new()));
+    heat_kernel_diffusion_avec_cache(
+        store,
+        features,
+        seeds,
+        weights,
+        config,
+        cache,
+        &CACHE_EN_CONSTRUCTION,
+    )
+}
+
+fn heat_kernel_diffusion_avec_cache(
+    store: &dyn GraphStore,
+    features: &HilbertFeaturesResult,
+    seeds: &[NodeId],
+    weights: &FacetteWeights,
+    config: &HeatKernelConfig,
+    cache: &std::sync::RwLock<Vec<CacheVoisins>>,
+    cache_en_construction: &std::sync::atomic::AtomicBool,
+) -> Vec<(NodeId, f32)> {
     if seeds.is_empty() {
         return Vec::new();
     }
@@ -258,7 +279,6 @@ pub fn heat_kernel_diffusion(
     // graphe => meme table. Lecture BREVE sous verrou partage, puis on rend
     // la main. Si la clef correspond, on saute les 480 000 reconstructions.
     let empreinte = empreinte_features(store, &node_ids, features, weights, levels, sigma_sq);
-    let cache = CACHE_VOISINS.get_or_init(|| std::sync::RwLock::new(Vec::new()));
     {
         let lu = match cache.read() {
             Ok(g) => g,
@@ -322,14 +342,44 @@ pub fn heat_kernel_diffusion(
     // UN SEUL DEPOSANT : les autres viennent de recalculer la meme chose,
     // les faire attendre n'apporterait rien. Ils repartent avec leur propre
     // table — correct, simplement pas mis en cache.
-    if CACHE_EN_CONSTRUCTION
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-        )
-        .is_ok()
+    mettre_en_cache(cache, cache_en_construction, empreinte, &neighbor_weights);
+    let _ = sigma_sq;
+
+    let t_diff = web_time::Instant::now();
+    let r = diffuser(&node_ids, seeds, &neighbor_weights, config);
+    if chrono {
+        tracing::info!(
+            target: "obrain_tmn::exochrono",
+            "CHRONO CHALEUR (cache FROID) ids={}ms sigma={}ms table={}ms diffusion={}ms total={}ms",
+            ms_ids, ms_sigma,
+            t_ids.elapsed().as_millis() as u64 - ms_ids - ms_sigma
+                - t_diff.elapsed().as_millis() as u64,
+            t_diff.elapsed().as_millis() as u64,
+            t_ids.elapsed().as_millis() as u64
+        );
+    }
+    r
+}
+
+/// Ne publie pas une table construite sous une annulation : le substrat peut
+/// alors renvoyer des listes d'arêtes partielles.
+fn mettre_en_cache(
+    cache: &std::sync::RwLock<Vec<CacheVoisins>>,
+    cache_en_construction: &std::sync::atomic::AtomicBool,
+    empreinte: u64,
+    neighbor_weights: &HashMap<NodeId, Vec<(NodeId, f32)>>,
+) {
+    // Une annulation peut faire rendre des listes d'arêtes partielles par le
+    // magasin ; elles ne doivent jamais survivre dans le cache global.
+    if !obrain_common::utils::cancel::is_cancelled()
+        && cache_en_construction
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
     {
         {
             let mut w = match cache.write() {
@@ -352,24 +402,8 @@ pub fn heat_kernel_diffusion(
                 });
             }
         }
-        CACHE_EN_CONSTRUCTION.store(false, std::sync::atomic::Ordering::SeqCst);
+        cache_en_construction.store(false, std::sync::atomic::Ordering::SeqCst);
     }
-    let _ = sigma_sq;
-
-    let t_diff = web_time::Instant::now();
-    let r = diffuser(&node_ids, seeds, &neighbor_weights, config);
-    if chrono {
-        tracing::info!(
-            target: "obrain_tmn::exochrono",
-            "CHRONO CHALEUR (cache FROID) ids={}ms sigma={}ms table={}ms diffusion={}ms total={}ms",
-            ms_ids, ms_sigma,
-            t_ids.elapsed().as_millis() as u64 - ms_ids - ms_sigma
-                - t_diff.elapsed().as_millis() as u64,
-            t_diff.elapsed().as_millis() as u64,
-            t_ids.elapsed().as_millis() as u64
-        );
-    }
-    r
 }
 
 /// La diffusion proprement dite — extraite pour etre partagee entre le
@@ -557,6 +591,7 @@ mod tests {
     use super::*;
     use obrain_core::graph::GraphStoreMut;
     use obrain_substrate::SubstrateStore;
+    use std::sync::{RwLock, atomic::AtomicBool};
 
     /// Build a 5-node line graph: A - B - C - D - E (bidirectional edges).
     fn make_line_graph() -> (SubstrateStore, Vec<NodeId>) {
@@ -619,19 +654,44 @@ mod tests {
     fn cache_ne_reutilise_pas_les_poids_dun_autre_sigma() {
         let (store, nodes) = make_line_graph();
         let (features, weights) = compute_features(&store);
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
         let config = HeatKernelConfig {
             iterations: 3,
             alpha: 0.5,
             sigma_sq: Some(0.01),
         };
-        let _ = heat_kernel_diffusion(&store, &features, &[nodes[0]], &weights, &config);
+        let avant = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        );
+        assert_eq!(cache.read().unwrap().len(), 1);
         let autre = HeatKernelConfig {
             sigma_sq: Some(1.0),
             ..config
         };
-        let obtenu = heat_kernel_diffusion(&store, &features, &[nodes[0]], &weights, &autre);
+        let obtenu = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &autre,
+            &cache,
+            &en_construction,
+        );
+        assert_eq!(cache.read().unwrap().len(), 2);
 
         let attendu = diffuser_sans_cache(&store, &features, &weights, &nodes, &autre);
+        assert_ne!(
+            trier_ids(avant),
+            trier_ids(attendu.clone()),
+            "le scénario doit distinguer les deux sigma"
+        );
         assert_eq!(
             trier_ids(obtenu),
             trier_ids(attendu),
@@ -674,26 +734,34 @@ mod tests {
     fn cache_suit_une_arete_ajoutee_et_une_feature_intermediaire_modifiee() {
         let (store, nodes) = make_line_graph();
         let (mut features, weights) = compute_features(&store);
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
         let config = HeatKernelConfig {
             iterations: 3,
             alpha: 0.5,
             sigma_sq: Some(1.0),
         };
-        let avant = trier_ids(heat_kernel_diffusion(
+        let avant = trier_ids(heat_kernel_diffusion_avec_cache(
             &store,
             &features,
             &[nodes[0]],
             &weights,
             &config,
+            &cache,
+            &en_construction,
         ));
+        assert_eq!(cache.read().unwrap().len(), 1);
         store.create_edge(nodes[0], nodes[4], "LINK");
-        let apres_arete = trier_ids(heat_kernel_diffusion(
+        let apres_arete = trier_ids(heat_kernel_diffusion_avec_cache(
             &store,
             &features,
             &[nodes[0]],
             &weights,
             &config,
+            &cache,
+            &en_construction,
         ));
+        assert_eq!(cache.read().unwrap().len(), 2);
         let reference_arete = trier_ids(diffuser_sans_cache(
             &store, &features, &weights, &nodes, &config,
         ));
@@ -707,13 +775,16 @@ mod tests {
         );
 
         features.features.get_mut(&nodes[2]).unwrap()[0] += 0.5;
-        let apres_feature = trier_ids(heat_kernel_diffusion(
+        let apres_feature = trier_ids(heat_kernel_diffusion_avec_cache(
             &store,
             &features,
             &[nodes[0]],
             &weights,
             &config,
+            &cache,
+            &en_construction,
         ));
+        assert_eq!(cache.read().unwrap().len(), 3);
         let reference_feature = trier_ids(diffuser_sans_cache(
             &store, &features, &weights, &nodes, &config,
         ));
@@ -725,6 +796,68 @@ mod tests {
             apres_feature, reference_feature,
             "table périmée après changement de feature"
         );
+    }
+
+    #[test]
+    fn un_second_appel_de_meme_empreinte_sert_bien_le_cache() {
+        let (store, nodes) = make_line_graph();
+        let (features, weights) = compute_features(&store);
+        let config = HeatKernelConfig {
+            iterations: 3,
+            alpha: 0.5,
+            sigma_sq: Some(1.0),
+        };
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
+        let froid = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        );
+        // Un marqueur volontairement faux permet de prouver que le second
+        // appel lit l'entrée, et pas simplement qu'il recalcule le même résultat.
+        let vide = HashMap::new();
+        {
+            let mut garde = cache.write().unwrap();
+            assert_eq!(garde.len(), 1);
+            garde[0].voisins = vide;
+        }
+        let chaud = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        );
+        let attendu = diffuser(&store.node_ids(), &[nodes[0]], &HashMap::new(), &config);
+        assert_ne!(trier_ids(froid), trier_ids(attendu.clone()));
+        assert_eq!(
+            trier_ids(chaud),
+            trier_ids(attendu),
+            "le cache n'a pas été utilisé"
+        );
+    }
+
+    #[test]
+    fn une_table_partielle_annulee_n_est_pas_mise_en_cache() {
+        use obrain_common::utils::cancel::{self, CancelToken};
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
+        let jeton = CancelToken::new();
+        let table = HashMap::new();
+        cancel::scope_en_vigueur(&jeton, || {
+            jeton.cancel();
+            mettre_en_cache(&cache, &en_construction, 42, &table);
+        });
+        assert!(cache.read().unwrap().is_empty());
+        mettre_en_cache(&cache, &en_construction, 42, &table);
+        assert_eq!(cache.read().unwrap().len(), 1);
     }
 
     /// LE CHEMIN CHAUD REND LE MEME RESULTAT QUE LE CHEMIN FROID.
