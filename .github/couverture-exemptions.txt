@@ -1,0 +1,7 @@
+# Exemptions du contrôle « code neuf » (scripts/couverture_code_neuf.py).
+# Un fichier listé ici est dispensé des contrôles « fichier non mesuré » et
+# « fonction neuve non mesurée » ; le seuil de 95 % reste appliqué aux lignes que
+# le rapport connaît. Format : `chemin  # raison`. Chaque ligne est relue en PR :
+# une exemption sans raison précise (quelle plateforme, quelle feature, pourquoi
+# aucun profil ne peut la mesurer) est refusée.
+# Vide aujourd'hui : aucun fichier connu ne résiste aux deux profils fusionnés.

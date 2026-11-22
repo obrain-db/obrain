@@ -196,6 +196,10 @@ name = "profil_open"
 required-features = ["cypher"]
 
 [[example]]
+name = "mesure_propagees"
+required-features = ["cypher"]
+
+[[example]]
 name = "import_jsonl_cognitif"
 required-features = ["cognitive"]
 
