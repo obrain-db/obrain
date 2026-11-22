@@ -177,6 +177,45 @@ class ControleCodeNeuf(unittest.TestCase):
         self.assertEqual(r.returncode, 0, self.sortie(r))
         self.assertIn("5/5 lignes couvertes", r.stdout)
 
+    # ── 5. signature sur plusieurs lignes (rustfmt) ───────────────────────────
+    # Cas d'origine (#282, 22/11/2026) : deux méthodes de trait SANS corps,
+    # coupées par rustfmt, étaient prises pour des fonctions non mesurées ; le
+    # `;` qui en fait une déclaration est sur la dernière ligne, pas sur `fn`.
+    def test_declaration_de_trait_sur_plusieurs_lignes_n_est_pas_une_fonction(self):
+        apres = BASE + textwrap.dedent(
+            """\
+
+            pub trait Index {
+                fn rayon(
+                    &self,
+                    lon: f64,
+                ) -> Vec<f64>;
+            }
+            """
+        )
+        d = self.depot(apres=apres)
+        r = d.controle(d.lcov({1: 1, 2: 1, 3: 1}, fn=[1]))
+        self.assertNotIn("fonctions ajoutées absentes du rapport", r.stdout, self.sortie(r))
+        self.assertEqual(r.returncode, 0, self.sortie(r))
+
+    def test_fonction_a_corps_sur_plusieurs_lignes_non_mesuree_echoue(self):
+        apres = BASE + textwrap.dedent(
+            """\
+
+            #[cfg(feature = "cypher")]
+            pub fn nouvelle_longue(
+                n: u32,
+            ) -> u32 {
+                n + 1
+            }
+            """
+        )
+        d = self.depot(apres=apres)
+        r = d.controle(d.lcov({1: 1, 2: 1, 3: 1}, fn=[1]))
+        self.assertNotEqual(r.returncode, 0, self.sortie(r))
+        self.assertIn("fonctions ajoutées absentes du rapport", r.stdout)
+        self.assertIn("nouvelle_longue", r.stdout)
+
     # ── 5. ce qui ne doit PAS faire échouer à tort ───────────────────────────
     def test_lignes_non_executables_sans_donnee_ne_font_pas_echouer(self):
         # Dans un fichier mesuré : import, constante, type, champs, variantes, `}`.

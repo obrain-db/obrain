@@ -161,6 +161,20 @@ def definit_une_fonction_a_corps(texte: str) -> bool:
     return bool(FN_DEF.search(texte)) and not texte.endswith(";")
 
 
+def declaration_sans_corps(lignes: list[str], n: int) -> bool:
+    """La signature qui commence à la ligne `n` (à partir de 1) se termine-t-elle
+    par `;` avant tout `{` ? Couvre les déclarations que rustfmt coupe sur
+    plusieurs lignes (méthode de trait sans corps, `extern`) : le `;` qui les
+    distingue d'une fonction à corps n'est pas sur la ligne `fn`."""
+    for brute in lignes[n - 1 : n - 1 + 64]:
+        texte = brute.split("//", 1)[0].strip()
+        if "{" in texte:
+            return False
+        if texte.endswith(";"):
+            return True
+    return False
+
+
 def ressemble_a_du_code_executable(texte: str) -> bool:
     return not any(p.match(texte) for p in NON_EXECUTABLE) and not definit_une_fonction_a_corps(texte)
 
@@ -209,8 +223,15 @@ def main() -> int:
             except OSError:
                 pass
             continue
+        try:
+            with open(f, encoding="utf-8") as fh:
+                lignes_fichier = fh.read().splitlines()
+        except OSError:
+            lignes_fichier = []
         for n, texte in ajoutees:
-            est_fn = definit_une_fonction_a_corps(texte)
+            est_fn = definit_une_fonction_a_corps(texte) and not declaration_sans_corps(
+                lignes_fichier, n
+            )
             if est_fn and f not in exemptes and n not in rapport.fn[f]:
                 fonctions_non_mesurees.append((f, n, texte))
             # La ligne de signature compte aussi dans le seuil quand elle a une donnée.
