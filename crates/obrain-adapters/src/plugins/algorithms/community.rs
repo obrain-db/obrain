@@ -1109,6 +1109,53 @@ mod tests {
     }
 
     #[test]
+    /// Louvain symétrise-t-il réellement ? Sur un graphe en étoile, inverser
+    /// TOUTES les arêtes ne doit rien changer à la partition : chaque arête est
+    /// lue depuis sa source puis ajoutée dans les deux sens (l.190), donc la
+    /// matrice de poids est identique. Ce test fige la propriété — et si un jour
+    /// le sens des arêtes devient porteur (#296), c'est lui qui tombera.
+    #[test]
+    fn louvain_ignore_le_sens_des_aretes() {
+        fn etoile(centre_vers_feuilles: bool) -> (tempfile::TempDir, SubstrateStore) {
+            let td = tempfile::tempdir().expect("tempdir");
+            let s = SubstrateStore::create(td.path()).expect("create");
+            let centre = s.create_node(&["N"]);
+            let mut feuilles = Vec::new();
+            for _ in 0..6 {
+                feuilles.push(s.create_node(&["N"]));
+            }
+            for f in &feuilles {
+                if centre_vers_feuilles {
+                    s.create_edge(centre, *f, "R");
+                } else {
+                    s.create_edge(*f, centre, "R");
+                }
+            }
+            (td, s)
+        }
+
+        let (_ta, sortant) = etoile(true);
+        let (_tb, entrant) = etoile(false);
+        let pa = louvain(&sortant, 1.0);
+        let pb = louvain(&entrant, 1.0);
+
+        // Comparaison par PAIRES : deux nœuds ensemble ou non, indépendamment
+        // de l'identifiant de communauté attribué.
+        let ids: Vec<_> = pa.communities.keys().copied().collect();
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                let (a, b) = (ids[i], ids[j]);
+                let ensemble_a = pa.communities.get(&a) == pa.communities.get(&b);
+                let ensemble_b = pb.communities.get(&a) == pb.communities.get(&b);
+                assert_eq!(
+                    ensemble_a, ensemble_b,
+                    "l'inversion des arêtes change la partition pour ({a:?}, {b:?}) : \
+                     Louvain n'est plus symétrique, la propriété de #296 a changé de camp"
+                );
+            }
+        }
+    }
+
     fn test_louvain_basic() {
         let store = create_simple_graph();
         let result = louvain(&store, 1.0);
