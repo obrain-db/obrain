@@ -3118,14 +3118,14 @@ mod tests {
         let hw = csr.slot_high_water as usize;
         // L_sym dense (nœud isolé : ligne nulle, découplé).
         let mut l = vec![vec![0.0f64; hw]; hw];
-        for u in 1..hw {
+        for (u, ligne) in l.iter_mut().enumerate().skip(1) {
             if adj.is_isolated(u) {
                 continue;
             }
-            l[u][u] = 1.0;
+            ligne[u] = 1.0;
             let (b, e) = (adj.row_offsets[u] as usize, adj.row_offsets[u + 1] as usize);
             for &v in &adj.cols[b..e] {
-                l[u][v as usize] -= adj.inv_sqrt_deg[u] * adj.inv_sqrt_deg[v as usize];
+                ligne[v as usize] -= adj.inv_sqrt_deg[u] * adj.inv_sqrt_deg[v as usize];
             }
         }
         let v: Vec<f64> = (0..hw)
