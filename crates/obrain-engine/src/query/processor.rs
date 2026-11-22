@@ -510,6 +510,8 @@ impl QueryProcessor {
         } else {
             planner
         };
+        let planner =
+            planner.avec_marqueur_segment(crate::query::plan::marqueur_segment_pour(query));
         let mut physical_plan = planner.plan(&optimized_plan)?;
 
         // 6. Execute and collect results
