@@ -42196,56 +42196,143 @@ mod tests {
     ///     après : min = 200,           0 lecture  tronquée
     #[test]
     fn enumeration_d_aretes_ne_tronque_pas_sous_insertion_concurrente() {
+        use std::sync::{Arc, Barrier, mpsc};
+        use std::time::{Duration, Instant};
+
+        // Si une régression bloque un lecteur ou un écrivain, le parent peut
+        // tuer et attendre TOUT le processus enfant (pas de fil orphelin).
+        const ROLE: &str = "OBRAIN_TEST_ENUMERATION_BORNEE_189";
+        const MARQUEUR: &str = "OBRAIN_TEST_ENUMERATION_BORNEE_MARQUEUR";
+        if std::env::var_os(ROLE).is_none() {
+            let dir = tempfile::tempdir().expect("répertoire du marqueur");
+            let marqueur = dir.path().join("enfant-a-verifie");
+            struct Enfant(std::process::Child);
+            impl Drop for Enfant {
+                fn drop(&mut self) {
+                    if !matches!(self.0.try_wait(), Ok(Some(_))) {
+                        let _ = self.0.kill();
+                        let _ = self.0.wait();
+                    }
+                }
+            }
+            let mut enfant = Enfant(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "store::tests::enumeration_d_aretes_ne_tronque_pas_sous_insertion_concurrente",
+                        "--nocapture",
+                    ])
+                    .env(ROLE, "enfant")
+                    .env(MARQUEUR, &marqueur)
+                    .spawn()
+                    .expect("démarrage du test enfant"),
+            );
+            let debut = Instant::now();
+            loop {
+                if let Some(code) = enfant.0.try_wait().unwrap() {
+                    assert!(code.success(), "échec du test enfant : {code}");
+                    assert_eq!(
+                        std::fs::read(&marqueur)
+                            .expect("marqueur absent : test enfant non exécuté"),
+                        b"ok",
+                        "le test enfant n'a pas été exécuté jusqu'au bout"
+                    );
+                    return;
+                }
+                assert!(
+                    debut.elapsed() < Duration::from_secs(120),
+                    "test enfant bloqué après 120 s"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
         let (_td, s) = store();
-        let s = std::sync::Arc::new(s);
+        let s = Arc::new(s);
         let (src, dst) = make_pair(&s);
         const BASE: usize = 200;
+        const LECTURES: usize = 512;
+        const AJOUTS: usize = 256;
         for _ in 0..BASE {
             s.create_edge(src, dst, "R");
         }
         assert_eq!(s.edges_from(src, Direction::Outgoing).len(), BASE);
 
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Scénario déterministe : l'écrivain est suspendu dans create_edge,
+        // juste avant d'écrire le nouveau slot. Le lecteur s'intercale avant
+        // la publication ; avec l'ordre historique inversé, il voit un slot
+        // vide, perd les anciennes arêtes et trouve un fantôme.
+        let (pret_tx, pret_rx) = mpsc::channel();
+        let (reprendre_tx, reprendre_rx) = mpsc::channel();
+        let sw = Arc::clone(&s);
+        let ecrivain = std::thread::spawn(move || {
+            crate::writer::AVANT_ECRITURE_SLOT_ARETE.with(|h| {
+                *h.borrow_mut() = Some(Box::new(move || {
+                    pret_tx.send(()).unwrap();
+                    reprendre_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                }));
+            });
+            sw.create_edge(src, dst, "R")
+        });
+        pret_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("écrivain non arrivé");
+        let pendant = s.edges_from(src, Direction::Outgoing);
+        reprendre_tx.send(()).unwrap();
+        ecrivain.join().unwrap();
+        assert!(
+            pendant.len() >= BASE,
+            "arêtes préexistantes perdues pendant une insertion"
+        );
+        assert!(
+            pendant.iter().all(|(t, _)| t.0 != 0),
+            "arête fantôme pendant une insertion"
+        );
+        assert_eq!(s.edges_from(src, Direction::Outgoing).len(), BASE + 1);
+
+        // Stress borné à 512 nouvelles arêtes et 512 lectures : plus de
+        // croissance couplée sans fin entre les écrivains et les scans.
+        let depart = Arc::new(Barrier::new(3));
         let mut ecrivains = Vec::new();
         for _ in 0..2 {
-            let s = std::sync::Arc::clone(&s);
-            let stop = std::sync::Arc::clone(&stop);
+            let s = Arc::clone(&s);
+            let depart = Arc::clone(&depart);
             ecrivains.push(std::thread::spawn(move || {
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                depart.wait();
+                for _ in 0..AJOUTS {
                     s.create_edge(src, dst, "R");
                 }
             }));
         }
-
+        depart.wait();
         let mut mini = usize::MAX;
         let mut tronquees = 0usize;
         let mut fantomes = 0usize;
-        for _ in 0..3_000 {
+        for _ in 0..LECTURES {
             let vues = s.edges_from(src, Direction::Outgoing);
             if vues.len() < BASE {
                 tronquees += 1;
             }
             mini = mini.min(vues.len());
-            // Le maillon non écrit se présente aussi comme une arête FANTÔME :
-            // `dst = 0`, `flags = 0` donc réputée vivante.
             fantomes += vues.iter().filter(|(t, _)| t.0 == 0).count();
         }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
         for e in ecrivains {
             e.join().unwrap();
         }
-
         assert_eq!(
             tronquees, 0,
-            "{tronquees} lectures sur 3 000 ont perdu des arêtes préexistantes \
-             (minimum vu : {mini} au lieu de {BASE}) — la tête de chaîne est \
-             publiée avant l'écriture du slot"
+            "{tronquees} lectures tronquées ; minimum {mini}, attendu au moins {BASE}"
         );
+        assert_eq!(fantomes, 0, "{fantomes} arêtes fantômes (dst = 0)");
         assert_eq!(
-            fantomes, 0,
-            "{fantomes} arêtes FANTÔMES (dst = 0) rendues par l'énumération : \
-             un slot non encore écrit a été lu comme une arête vivante"
+            s.edges_from(src, Direction::Outgoing).len(),
+            BASE + 1 + 2 * AJOUTS
         );
+        std::fs::write(
+            std::env::var_os(MARQUEUR).expect("chemin du marqueur"),
+            b"ok",
+        )
+        .expect("écriture du marqueur après les assertions");
     }
 
     // ═══════════════════════════════════════════════════════════════════
