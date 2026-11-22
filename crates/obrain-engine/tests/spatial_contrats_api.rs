@@ -82,11 +82,10 @@ fn recevoir_le_label_indexe_insere_un_point_et_ignore_le_reste() {
     let avec_point = db.create_node_with_props(&["Brouillon"], [("pos", point(2.0, 48.0))]);
     let pas_un_point = db.create_node_with_props(&["Brouillon"], [("pos", Value::from("Paris"))]);
     let sans_pos = db.create_node_with_props(&["Brouillon"], [("nom", Value::from("x"))]);
-    assert!(
-        db.spatial_search("lieux_pos", 2.0, 48.0, 10.0)
-            .expect("index")
-            .is_empty()
-    );
+    let vides = db
+        .spatial_search("lieux_pos", 2.0, 48.0, 10.0)
+        .expect("index");
+    assert_eq!(vides.len(), 0, "aucun nœud n'a encore de point indexé");
 
     assert!(db.add_node_label(avec_point, "Lieu"));
     assert!(db.add_node_label(pas_un_point, "Lieu"));
