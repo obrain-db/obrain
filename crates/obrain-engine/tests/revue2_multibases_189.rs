@@ -36,16 +36,15 @@ fn bases() -> (ObrainDB, ObrainDB) {
         .expect("T");
     sa.execute("MATCH (h:Hub) CREATE (h)-[:TB]->(ref(\"beta\", \"doc_bad\"))")
         .expect("T bad");
+    // Même type d'arête vers un voisin valide et un voisin refusé : le WHERE doit
+    // exclure doc_bad SANS que sa matérialisation fasse échouer la requête.
+    sa.execute("MATCH (h:Hub) CREATE (h)-[:TX]->(ref(\"beta\", \"doc_ok\"))")
+        .expect("TX ok");
+    sa.execute("MATCH (h:Hub) CREATE (h)-[:TX]->(ref(\"beta\", \"doc_bad\"))")
+        .expect("TX bad");
     alpha.attach_bases("alpha", None);
     alpha.attach_base("beta", &beta).expect("attach beta");
     (alpha, beta)
-}
-
-fn texte(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.to_string()),
-        _ => None,
-    }
 }
 
 fn entier(v: &Value) -> i64 {
@@ -182,32 +181,36 @@ fn reduce_id_labels_type_sur_noeuds_et_aretes_distants() {
 // ── 3. liste d'arêtes qualifiée et unicité ───────────────────────────────────────
 
 #[test]
-fn liste_aretes_qualifiee_locale_resolue_externe_limite_declaree() {
-    // Établi : l'arête LOCALE M se résout dans la liste (`type(e)` = "M").
-    // LIMITE DÉCLARÉE : l'arête EXTERNE T (identifiant à bit 63) dans une liste
-    // `[e IN rs | type(e)]` rend Null au lieu de "T". C'est une perte silencieuse,
-    // pas une valeur fabriquée : la résolution de type dans la compréhension
-    // ne consulte pas le registre des bases. Le test verrouille les deux faits.
+fn liste_aretes_qualifiee_type_exact_locale_et_externe() {
+    // Attendu exact : l'arête LOCALE M rend "M", l'arête EXTERNE T rend "T".
     let (alpha, _beta) = bases();
     let r = alpha
         .session()
         .execute("MATCH WALK (n:Note)-[rs:L|T|M*2..2]->(x) RETURN [e IN rs | type(e)]")
         .expect("rs");
     assert_eq!(r.rows.len(), 2, "{:?}", r.rows);
-    let lignes: Vec<Vec<Option<String>>> = r.rows.iter().map(|l| textes(&l[0])).collect();
-    assert!(
-        lignes
-            .iter()
-            .any(|l| l[0].as_deref() == Some("L") && l[1].as_deref() == Some("M")),
-        "ligne L-M locale attendue : {lignes:?}"
+    let mut lignes: Vec<Vec<Option<String>>> = r.rows.iter().map(|l| textes(&l[0])).collect();
+    lignes.sort();
+    assert_eq!(
+        lignes,
+        vec![
+            vec![Some("L".into()), Some("M".into())],
+            vec![Some("L".into()), Some("T".into())],
+        ],
+        "type(e) exact attendu, jamais Null"
     );
-    assert!(
-        lignes
-            .iter()
-            .any(|l| l[0].as_deref() == Some("L")
-                && (l[1].is_none() || l[1].as_deref() == Some("T"))),
-        "ligne L-T : jamais une autre valeur que T ou Null : {lignes:?}"
-    );
+}
+
+#[test]
+fn where_exclut_noeud_distant_refuse_sans_echec_global() {
+    // doc_bad (refusé à la matérialisation) doit être écarté par le WHERE :
+    // la requête rend doc_ok, elle n'échoue pas.
+    let (alpha, _beta) = bases();
+    let r = alpha
+        .session()
+        .execute("MATCH (h:Hub)-[:TX]->(d) WHERE d.name = 'ok' RETURN d.name")
+        .expect("un refus global avant filtrage est une régression");
+    assert_eq!(r.rows, vec![vec![Value::String("ok".into())]]);
 }
 
 #[test]
