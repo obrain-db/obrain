@@ -2782,3 +2782,709 @@ mod verrou_structurel {
         );
     }
 }
+
+/// Tests de couverture des accesseurs du plan logique : `CountExpr`, les
+/// constructeurs de `LogicalPlan`, `children`, `has_mutations`,
+/// `display_label` et `explain_tree`, qui n'étaient exercés que par les tests
+/// d'intégration (mesuré : 510 lignes sur 743 jamais touchées par les tests
+/// `--lib`).
+#[cfg(test)]
+mod tests_couverture_plan {
+    use super::*;
+
+    fn var(name: &str) -> LogicalExpression {
+        LogicalExpression::Variable(name.into())
+    }
+
+    fn int(n: i64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Int64(n))
+    }
+
+    fn prop(variable: &str, property: &str) -> LogicalExpression {
+        LogicalExpression::Property {
+            variable: variable.into(),
+            property: property.into(),
+        }
+    }
+
+    fn scan(variable: &str, label: Option<&str>) -> LogicalOperator {
+        LogicalOperator::NodeScan(NodeScanOp {
+            variable: variable.into(),
+            label: label.map(str::to_string),
+            input: None,
+            pushdown_hint: None,
+        })
+    }
+
+    fn boxed_scan(variable: &str) -> Box<LogicalOperator> {
+        Box::new(scan(variable, None))
+    }
+
+    fn filter(predicate: LogicalExpression, hint: Option<PushdownHint>) -> LogicalOperator {
+        LogicalOperator::Filter(FilterOp {
+            predicate,
+            input: boxed_scan("n"),
+            pushdown_hint: hint,
+        })
+    }
+
+    fn expand(
+        direction: ExpandDirection,
+        types: &[&str],
+        min: u32,
+        max: Option<u32>,
+    ) -> LogicalOperator {
+        LogicalOperator::Expand(ExpandOp {
+            from_variable: "a".into(),
+            to_variable: "b".into(),
+            edge_variable: None,
+            direction,
+            edge_types: types.iter().map(|t| (*t).to_string()).collect(),
+            min_hops: min,
+            max_hops: max,
+            input: boxed_scan("a"),
+            path_alias: None,
+            path_mode: PathMode::Walk,
+        })
+    }
+
+    fn create_node(
+        variable: &str,
+        labels: &[&str],
+        input: Option<Box<LogicalOperator>>,
+    ) -> LogicalOperator {
+        LogicalOperator::CreateNode(CreateNodeOp {
+            variable: variable.into(),
+            labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            properties: vec![],
+            input,
+        })
+    }
+
+    fn delete_node(variable: &str) -> LogicalOperator {
+        LogicalOperator::DeleteNode(DeleteNodeOp {
+            variable: variable.into(),
+            detach: false,
+            input: boxed_scan(variable),
+        })
+    }
+
+    fn set_property(variable: &str, properties: &[&str]) -> LogicalOperator {
+        LogicalOperator::SetProperty(SetPropertyOp {
+            variable: variable.into(),
+            properties: properties
+                .iter()
+                .map(|p| ((*p).to_string(), int(1)))
+                .collect(),
+            replace: false,
+            is_edge: false,
+            remove: false,
+            input: boxed_scan(variable),
+        })
+    }
+
+    fn aggregat(function: AggregateFunction, alias: Option<&str>) -> AggregateExpr {
+        AggregateExpr {
+            function,
+            expression: None,
+            expression2: None,
+            distinct: false,
+            alias: alias.map(str::to_string),
+            percentile: None,
+            separator: None,
+        }
+    }
+
+    fn join(join_type: JoinType) -> LogicalOperator {
+        LogicalOperator::Join(JoinOp {
+            left: boxed_scan("a"),
+            right: boxed_scan("b"),
+            join_type,
+            conditions: vec![],
+        })
+    }
+
+    // --- CountExpr ---
+
+    #[test]
+    fn count_expr_litteral_rend_sa_valeur_partout() {
+        let c = CountExpr::from(7usize);
+        assert_eq!(c, CountExpr::Literal(7));
+        assert_eq!(c.value(), 7);
+        assert_eq!(c.try_value(), Ok(7));
+        assert!((c.estimate() - 7.0).abs() < f64::EPSILON);
+        assert_eq!(c.to_string(), "7");
+        assert_eq!(c, 7usize);
+        assert_ne!(c, 8usize);
+    }
+
+    #[test]
+    fn count_expr_parametre_non_resolu() {
+        let p = CountExpr::Parameter("limite".into());
+        assert_eq!(
+            p.try_value(),
+            Err("Unresolved SKIP/LIMIT parameter: $limite".to_string())
+        );
+        assert!(
+            (p.estimate() - 10.0).abs() < f64::EPSILON,
+            "défaut raisonnable"
+        );
+        assert_eq!(p.to_string(), "$limite");
+        assert_ne!(p, 10usize, "un paramètre n'est jamais égal à un entier");
+    }
+
+    #[test]
+    #[should_panic(expected = "Unresolved parameter: $limite")]
+    fn count_expr_value_sur_parametre_panique() {
+        let _ = CountExpr::Parameter("limite".into()).value();
+    }
+
+    // --- LogicalPlan ---
+
+    #[test]
+    fn logical_plan_constructeurs_posent_les_drapeaux() {
+        let normal = LogicalPlan::new(scan("n", None));
+        assert!(!normal.explain && !normal.profile);
+        let explain = LogicalPlan::explain(scan("n", None));
+        assert!(explain.explain && !explain.profile);
+        let profile = LogicalPlan::profile(scan("n", None));
+        assert!(!profile.explain && profile.profile);
+    }
+
+    // --- has_mutations / children ---
+
+    #[test]
+    fn has_mutations_lecture_seule_contre_ecriture() {
+        assert!(!scan("n", None).has_mutations());
+        assert!(!filter(var("n"), None).has_mutations());
+        assert!(!LogicalOperator::Empty.has_mutations());
+        assert!(create_node("n", &["A"], None).has_mutations());
+        assert!(delete_node("n").has_mutations());
+        assert!(set_property("n", &["age"]).has_mutations());
+    }
+
+    #[test]
+    fn has_mutations_remonte_depuis_un_enfant() {
+        let lecture_sur_ecriture = LogicalOperator::Return(ReturnOp {
+            items: vec![],
+            distinct: false,
+            input: Box::new(LogicalOperator::Limit(LimitOp {
+                count: 1usize.into(),
+                input: Box::new(delete_node("n")),
+            })),
+        });
+        assert!(lecture_sur_ecriture.has_mutations());
+    }
+
+    #[test]
+    fn children_selon_la_forme_de_l_operateur() {
+        assert_eq!(scan("n", None).children().len(), 0, "feuille sans entrée");
+        assert_eq!(LogicalOperator::Empty.children().len(), 0);
+
+        let scan_chaine = LogicalOperator::NodeScan(NodeScanOp {
+            variable: "m".into(),
+            label: None,
+            input: Some(boxed_scan("n")),
+            pushdown_hint: None,
+        });
+        assert_eq!(
+            scan_chaine.children().len(),
+            1,
+            "entrée optionnelle présente"
+        );
+        assert_eq!(
+            create_node("n", &[], Some(boxed_scan("m")))
+                .children()
+                .len(),
+            1
+        );
+        assert_eq!(
+            filter(var("n"), None).children().len(),
+            1,
+            "entrée obligatoire"
+        );
+        assert_eq!(join(JoinType::Inner).children().len(), 2, "gauche + droite");
+
+        let apply = LogicalOperator::Apply(ApplyOp {
+            input: boxed_scan("a"),
+            subplan: boxed_scan("b"),
+            shared_variables: vec![],
+            optional: false,
+        });
+        assert_eq!(apply.children().len(), 2, "entrée + sous-plan");
+
+        let union = LogicalOperator::Union(UnionOp {
+            inputs: vec![scan("a", None), scan("b", None), scan("c", None)],
+        });
+        assert_eq!(union.children().len(), 3);
+    }
+
+    // --- display_label ---
+
+    #[test]
+    fn display_label_scans_et_expand() {
+        assert_eq!(scan("n", Some("Person")).display_label(), "n:Person");
+        assert_eq!(scan("n", None).display_label(), "n:*");
+
+        let sans_type = LogicalOperator::EdgeScan(EdgeScanOp {
+            variable: "r".into(),
+            edge_types: vec![],
+            input: None,
+        });
+        assert_eq!(sans_type.display_label(), "r:*");
+        let deux_types = LogicalOperator::EdgeScan(EdgeScanOp {
+            variable: "r".into(),
+            edge_types: vec!["A".into(), "B".into()],
+            input: None,
+        });
+        assert_eq!(deux_types.display_label(), "r:A|B");
+
+        assert_eq!(
+            expand(ExpandDirection::Outgoing, &["KNOWS"], 1, Some(1)).display_label(),
+            "(a)->[:KNOWS]->(b)"
+        );
+        assert_eq!(
+            expand(ExpandDirection::Incoming, &[], 1, Some(1)).display_label(),
+            "(a)<-[:*]<-(b)"
+        );
+        assert_eq!(
+            expand(ExpandDirection::Both, &["A", "B"], 1, Some(1)).display_label(),
+            "(a)--[:A|B]--(b)"
+        );
+    }
+
+    #[test]
+    fn display_label_filter_avec_chaque_indice_de_pushdown() {
+        let pred = || LogicalExpression::Binary {
+            left: Box::new(prop("n", "age")),
+            op: BinaryOp::Gt,
+            right: Box::new(int(30)),
+        };
+        assert_eq!(filter(pred(), None).display_label(), "n.age Gt 30");
+        assert_eq!(
+            filter(
+                pred(),
+                Some(PushdownHint::IndexLookup {
+                    property: "age".into()
+                })
+            )
+            .display_label(),
+            "n.age Gt 30 [index: age]"
+        );
+        assert_eq!(
+            filter(
+                pred(),
+                Some(PushdownHint::RangeScan {
+                    property: "age".into()
+                })
+            )
+            .display_label(),
+            "n.age Gt 30 [range: age]"
+        );
+        assert_eq!(
+            filter(pred(), Some(PushdownHint::LabelFirst)).display_label(),
+            "n.age Gt 30 [label-first]"
+        );
+        assert_eq!(
+            filter(pred(), Some(PushdownHint::SourceCap { count: 5 })).display_label(),
+            "n.age Gt 30 [cap: 5]"
+        );
+    }
+
+    #[test]
+    fn display_label_projections_tri_et_pagination() {
+        let project = LogicalOperator::Project(ProjectOp {
+            projections: vec![
+                Projection {
+                    expression: prop("n", "name"),
+                    alias: Some("nom".into()),
+                },
+                Projection {
+                    expression: prop("n", "age"),
+                    alias: None,
+                },
+            ],
+            input: boxed_scan("n"),
+            pass_through_input: false,
+        });
+        assert_eq!(project.display_label(), "nom, n.age");
+
+        let retour = LogicalOperator::Return(ReturnOp {
+            items: vec![
+                ReturnItem {
+                    expression: var("n"),
+                    alias: Some("x".into()),
+                },
+                ReturnItem {
+                    expression: LogicalExpression::FunctionCall {
+                        name: "count".into(),
+                        args: vec![var("n")],
+                        distinct: false,
+                    },
+                    alias: None,
+                },
+            ],
+            distinct: false,
+            input: boxed_scan("n"),
+        });
+        assert_eq!(retour.display_label(), "x, count(n)");
+
+        let tri = LogicalOperator::Sort(SortOp {
+            keys: vec![
+                SortKey {
+                    expression: prop("n", "age"),
+                    order: SortOrder::Ascending,
+                    nulls: None,
+                },
+                SortKey {
+                    expression: prop("n", "name"),
+                    order: SortOrder::Descending,
+                    nulls: None,
+                },
+            ],
+            input: boxed_scan("n"),
+        });
+        assert_eq!(tri.display_label(), "n.age ASC, n.name DESC");
+
+        let limite = LogicalOperator::Limit(LimitOp {
+            count: 10usize.into(),
+            input: boxed_scan("n"),
+        });
+        assert_eq!(limite.display_label(), "10");
+        let saut = LogicalOperator::Skip(SkipOp {
+            count: CountExpr::Parameter("p".into()),
+            input: boxed_scan("n"),
+        });
+        assert_eq!(saut.display_label(), "$p");
+        let distinct = LogicalOperator::Distinct(DistinctOp {
+            input: boxed_scan("n"),
+            columns: None,
+        });
+        assert_eq!(distinct.display_label(), "");
+    }
+
+    #[test]
+    fn display_label_jointures_agregat_et_union() {
+        assert_eq!(join(JoinType::Inner).display_label(), "Inner");
+        assert_eq!(join(JoinType::Cross).display_label(), "Cross");
+
+        let agregat = LogicalOperator::Aggregate(AggregateOp {
+            group_by: vec![prop("n", "city"), var("k")],
+            aggregates: vec![aggregat(AggregateFunction::Count, Some("c"))],
+            input: boxed_scan("n"),
+            having: None,
+            semantics: AggregateSemantics::default(),
+        });
+        assert_eq!(agregat.display_label(), "group: [n.city, k]");
+
+        let union = LogicalOperator::Union(UnionOp {
+            inputs: vec![scan("a", None), scan("b", None), scan("c", None)],
+        });
+        assert_eq!(union.display_label(), "3 branches");
+
+        let gauche = LogicalOperator::LeftJoin(LeftJoinOp {
+            left: boxed_scan("a"),
+            right: boxed_scan("b"),
+            condition: None,
+        });
+        assert_eq!(gauche.display_label(), "");
+    }
+
+    #[test]
+    fn display_label_mutations_et_feuilles() {
+        assert_eq!(create_node("n", &["A", "B"], None).display_label(), "n:A:B");
+        assert_eq!(delete_node("n").display_label(), "n");
+        assert_eq!(set_property("n", &["age"]).display_label(), "n");
+
+        let arete_anonyme = LogicalOperator::CreateEdge(CreateEdgeOp {
+            variable: None,
+            from_variable: "a".into(),
+            to_variable: "b".into(),
+            edge_type: "KNOWS".into(),
+            properties: vec![],
+            input: boxed_scan("a"),
+        });
+        assert_eq!(arete_anonyme.display_label(), "[?:KNOWS]");
+        let arete_nommee = LogicalOperator::CreateEdge(CreateEdgeOp {
+            variable: Some("r".into()),
+            from_variable: "a".into(),
+            to_variable: "b".into(),
+            edge_type: "KNOWS".into(),
+            properties: vec![],
+            input: boxed_scan("a"),
+        });
+        assert_eq!(arete_nommee.display_label(), "[r:KNOWS]");
+
+        let etiquette = LogicalOperator::AddLabel(AddLabelOp {
+            variable: "n".into(),
+            labels: vec!["A".into()],
+            input: boxed_scan("n"),
+        });
+        assert_eq!(etiquette.display_label(), "n:A");
+
+        let unwind = LogicalOperator::Unwind(UnwindOp {
+            expression: LogicalExpression::List(vec![int(1)]),
+            variable: "x".into(),
+            ordinality_var: None,
+            offset_var: None,
+            input: boxed_scan("n"),
+        });
+        assert_eq!(unwind.display_label(), "x");
+
+        assert_eq!(
+            LogicalOperator::Empty.display_label(),
+            "",
+            "bras par défaut"
+        );
+    }
+
+    // --- explain_tree ---
+
+    #[test]
+    fn explain_tree_indente_la_chaine_et_formate_chaque_operateur() {
+        let arbre = LogicalOperator::Return(ReturnOp {
+            items: vec![ReturnItem {
+                expression: prop("n", "name"),
+                alias: Some("nom".into()),
+            }],
+            distinct: true,
+            input: Box::new(LogicalOperator::Limit(LimitOp {
+                count: 10usize.into(),
+                input: Box::new(LogicalOperator::Sort(SortOp {
+                    keys: vec![SortKey {
+                        expression: prop("n", "age"),
+                        order: SortOrder::Descending,
+                        nulls: None,
+                    }],
+                    input: Box::new(LogicalOperator::Filter(FilterOp {
+                        predicate: LogicalExpression::Unary {
+                            op: UnaryOp::Not,
+                            operand: Box::new(var("x")),
+                        },
+                        pushdown_hint: Some(PushdownHint::IndexLookup {
+                            property: "age".into(),
+                        }),
+                        input: Box::new(LogicalOperator::Expand(ExpandOp {
+                            from_variable: "n".into(),
+                            to_variable: "m".into(),
+                            edge_variable: None,
+                            direction: ExpandDirection::Outgoing,
+                            edge_types: vec!["KNOWS".into()],
+                            min_hops: 1,
+                            max_hops: Some(3),
+                            input: Box::new(scan("n", Some("Person"))),
+                            path_alias: None,
+                            path_mode: PathMode::Walk,
+                        })),
+                    })),
+                })),
+            })),
+        });
+        let attendu = "Return DISTINCT (n.name AS nom)\n\
+                       \x20 Limit (10)\n\
+                       \x20   Sort (n.age DESC)\n\
+                       \x20     Filter (Not x) [index: age]\n\
+                       \x20       Expand (n)->[:KNOWS*1..3]->(m)\n\
+                       \x20         NodeScan (n:Person)\n";
+        assert_eq!(arbre.explain_tree(), attendu);
+    }
+
+    #[test]
+    fn explain_tree_sauts_de_l_expand() {
+        // Sur une arête typée : le suffixe de sauts suit le type. (Sans type,
+        // le joker `*` et le `*n` des sauts se collent en `[:**2]` ; rendu
+        // existant, non modifié par ce lot de tests.)
+        let ligne = |min, max| {
+            expand(ExpandDirection::Both, &["T"], min, max)
+                .explain_tree()
+                .lines()
+                .next()
+                .expect("une ligne")
+                .to_string()
+        };
+        assert_eq!(ligne(1, Some(1)), "Expand (a)--[:T]--(b)");
+        assert_eq!(ligne(2, Some(2)), "Expand (a)--[:T*2]--(b)");
+        assert_eq!(ligne(1, Some(3)), "Expand (a)--[:T*1..3]--(b)");
+        assert_eq!(ligne(2, None), "Expand (a)--[:T*2..]--(b)");
+    }
+
+    #[test]
+    fn explain_tree_agregat_projection_jointure_union() {
+        let agregat = LogicalOperator::Aggregate(AggregateOp {
+            group_by: vec![prop("n", "city")],
+            aggregates: vec![
+                aggregat(AggregateFunction::Count, Some("c")),
+                aggregat(AggregateFunction::Sum, None),
+            ],
+            input: boxed_scan("n"),
+            having: None,
+            semantics: AggregateSemantics::default(),
+        });
+        assert_eq!(
+            agregat.explain_tree(),
+            "Aggregate (group: [n.city], aggs: [count(...) AS c, sum(...)])\n  NodeScan (n:*)\n"
+        );
+
+        let project = LogicalOperator::Project(ProjectOp {
+            projections: vec![
+                Projection {
+                    expression: prop("n", "name"),
+                    alias: Some("x".into()),
+                },
+                Projection {
+                    expression: int(1),
+                    alias: None,
+                },
+            ],
+            input: boxed_scan("n"),
+            pass_through_input: false,
+        });
+        assert_eq!(
+            project.explain_tree(),
+            "Project (n.name AS x, 1)\n  NodeScan (n:*)\n"
+        );
+
+        assert_eq!(
+            join(JoinType::Inner).explain_tree(),
+            "Join (Inner)\n  NodeScan (a:*)\n  NodeScan (b:*)\n"
+        );
+
+        let union = LogicalOperator::Union(UnionOp {
+            inputs: vec![scan("a", None), scan("b", None)],
+        });
+        assert_eq!(
+            union.explain_tree(),
+            "Union (2 branches)\n  NodeScan (a:*)\n  NodeScan (b:*)\n"
+        );
+
+        let gauche_sans = LogicalOperator::LeftJoin(LeftJoinOp {
+            left: boxed_scan("a"),
+            right: boxed_scan("b"),
+            condition: None,
+        });
+        assert!(gauche_sans.explain_tree().starts_with("LeftJoin\n"));
+        let gauche_avec = LogicalOperator::LeftJoin(LeftJoinOp {
+            left: boxed_scan("a"),
+            right: boxed_scan("b"),
+            condition: Some(var("c")),
+        });
+        assert!(
+            gauche_avec
+                .explain_tree()
+                .starts_with("LeftJoin (condition: ")
+        );
+
+        let apply = LogicalOperator::Apply(ApplyOp {
+            input: boxed_scan("a"),
+            subplan: boxed_scan("b"),
+            shared_variables: vec![],
+            optional: false,
+        });
+        assert_eq!(
+            apply.explain_tree(),
+            "Apply\n  NodeScan (a:*)\n  NodeScan (b:*)\n"
+        );
+    }
+
+    #[test]
+    fn explain_tree_pagination_distinct_unwind_et_scan_d_aretes() {
+        let saut = LogicalOperator::Skip(SkipOp {
+            count: CountExpr::Parameter("s".into()),
+            input: Box::new(LogicalOperator::Distinct(DistinctOp {
+                input: Box::new(LogicalOperator::Unwind(UnwindOp {
+                    expression: var("l"),
+                    variable: "x".into(),
+                    ordinality_var: None,
+                    offset_var: None,
+                    input: Box::new(LogicalOperator::EdgeScan(EdgeScanOp {
+                        variable: "r".into(),
+                        edge_types: vec!["A".into(), "B".into()],
+                        input: None,
+                    })),
+                })),
+                columns: None,
+            })),
+        });
+        assert_eq!(
+            saut.explain_tree(),
+            "Skip ($s)\n  Distinct\n    Unwind (x)\n      EdgeScan (r:A|B)\n"
+        );
+    }
+
+    #[test]
+    fn explain_tree_mutations() {
+        assert_eq!(
+            create_node("n", &["A", "B"], None).explain_tree(),
+            "CreateNode (n:A:B)\n"
+        );
+        assert_eq!(
+            create_node("n", &["A"], Some(boxed_scan("m"))).explain_tree(),
+            "CreateNode (n:A)\n  NodeScan (m:*)\n"
+        );
+        assert_eq!(
+            delete_node("n").explain_tree(),
+            "DeleteNode (n)\n  NodeScan (n:*)\n"
+        );
+        assert_eq!(
+            set_property("n", &["age", "name"]).explain_tree(),
+            "SetProperty (n.age, n.name)\n  NodeScan (n:*)\n"
+        );
+        let etiquette = LogicalOperator::AddLabel(AddLabelOp {
+            variable: "n".into(),
+            labels: vec!["A".into(), "B".into()],
+            input: boxed_scan("n"),
+        });
+        assert_eq!(
+            etiquette.explain_tree(),
+            "AddLabel (n:A:B)\n  NodeScan (n:*)\n"
+        );
+
+        let arete = LogicalOperator::CreateEdge(CreateEdgeOp {
+            variable: None,
+            from_variable: "a".into(),
+            to_variable: "b".into(),
+            edge_type: "KNOWS".into(),
+            properties: vec![],
+            input: boxed_scan("a"),
+        });
+        assert_eq!(
+            arete.explain_tree(),
+            "CreateEdge (a)-[?:KNOWS]->(b)\n  NodeScan (a:*)\n"
+        );
+        assert_eq!(LogicalOperator::Empty.explain_tree(), "Empty\n");
+    }
+
+    #[test]
+    fn fmt_expr_couvre_les_formes_lisibles_et_le_repli_debug() {
+        assert_eq!(fmt_expr(&var("n")), "n");
+        assert_eq!(fmt_expr(&prop("n", "age")), "n.age");
+        assert_eq!(fmt_expr(&int(30)), "30");
+        assert_eq!(
+            fmt_expr(&LogicalExpression::Binary {
+                left: Box::new(var("a")),
+                op: BinaryOp::Add,
+                right: Box::new(int(1)),
+            }),
+            "a Add 1"
+        );
+        assert_eq!(
+            fmt_expr(&LogicalExpression::Unary {
+                op: UnaryOp::Neg,
+                operand: Box::new(var("a")),
+            }),
+            "Neg a"
+        );
+        assert_eq!(
+            fmt_expr(&LogicalExpression::FunctionCall {
+                name: "size".into(),
+                args: vec![var("l"), int(2)],
+                distinct: false,
+            }),
+            "size(l, 2)"
+        );
+        assert!(
+            fmt_expr(&LogicalExpression::List(vec![int(1)])).starts_with("List("),
+            "repli sur Debug pour les autres formes"
+        );
+    }
+}
