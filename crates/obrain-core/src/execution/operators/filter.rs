@@ -1685,6 +1685,43 @@ impl ExpressionPredicate {
         }
     }
 
+    /// `id`, `labels`, `type` sur une VALEUR évaluée. Primaire = `Int64` (nœud :
+    /// labels du store ; arête : type résolu) ; distant = `Map` (`_id`, `_labels`,
+    /// `_type`). Autre forme : `None`, jamais une valeur inventée.
+    fn fonction_element_sur_valeur(&self, nom: &str, valeur: &Value) -> Option<Value> {
+        match (nom, valeur) {
+            ("id", Value::Int64(i)) => Some(Value::Int64(*i)),
+            ("id", Value::Map(m)) => Some(
+                m.get(&PropertyKey::new("_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            ),
+            ("labels", Value::Map(m)) => Some(match m.get(&PropertyKey::new("_labels")) {
+                Some(l @ Value::List(_)) => l.clone(),
+                _ => Value::Null,
+            }),
+            ("labels", Value::Int64(i)) => {
+                self.store.get_node_labels(NodeId(*i as u64)).map(|ls| {
+                    Value::List(
+                        ls.iter()
+                            .map(|l| Value::String(l.clone()))
+                            .collect::<Vec<_>>()
+                            .into(),
+                    )
+                })
+            }
+            ("type", Value::Map(m)) => Some(
+                m.get(&PropertyKey::new("_type"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            ),
+            ("type", Value::Int64(i)) => self
+                .resolve_edge(obrain_common::types::EdgeId(*i as u64))
+                .map(|e| Value::String(e.edge_type.clone())),
+            _ => None,
+        }
+    }
+
     /// Propriété d'un élément de liste dont le GENRE est connu.
     fn propriete_d_un_element(
         &self,
@@ -2516,7 +2553,25 @@ impl ExpressionPredicate {
             {
                 match recurse(&args[0])? {
                     Value::Int64(id) => self.type_d_un_identifiant(id, genre),
+                    // Arête distante / externe : Map hydratée (`_type`).
+                    autre @ Value::Map(_) => self.fonction_element_sur_valeur("type", &autre),
                     _ => None,
+                }
+            }
+            // `id(x)` et `labels(x)` sur l'élément de `reduce` : même règle que dans
+            // une compréhension (`labels` d'un entier seulement pour un NŒUD).
+            FilterExpression::FunctionCall { name, args }
+                if args.len() == 1
+                    && (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("labels")) =>
+            {
+                let valeur = recurse(&args[0])?;
+                let nom = name.to_ascii_lowercase();
+                match (nom.as_str(), &valeur, genre) {
+                    ("labels", Value::Int64(_), GenreElement::Noeud) => {
+                        self.fonction_element_sur_valeur("labels", &valeur)
+                    }
+                    ("labels", Value::Int64(_), _) => None,
+                    _ => self.fonction_element_sur_valeur(&nom, &valeur),
                 }
             }
             FilterExpression::Type(var) if var == item_name => match item_val {
@@ -2686,7 +2741,9 @@ impl ExpressionPredicate {
                 match item {
                     Value::Map(m) => {
                         let key = PropertyKey::new(property.as_str());
-                        m.get(&key).cloned()
+                        // Clé absente d'une Map : Null (sémantique Cypher), jamais un
+                        // élément écarté en silence de la liste.
+                        Some(m.get(&key).cloned().unwrap_or(Value::Null))
                     }
                     // `[n IN nodes(p) | n.id]`, `[r IN relationships(p) | r.weight]` :
                     // l'élément d'une liste de nœuds / d'arêtes voyage comme son
@@ -2703,7 +2760,26 @@ impl ExpressionPredicate {
             {
                 match self.eval_comprehension_expr(&args[0], item, variable, ctx, genre)? {
                     Value::Int64(id) => self.type_d_un_identifiant(id, genre),
+                    // Arête distante / externe : Map hydratée (`_type`).
+                    autre @ Value::Map(_) => self.fonction_element_sur_valeur("type", &autre),
                     _ => None,
+                }
+            }
+            // `id(x)` et `labels(x)` sur l'élément d'itération : l'identifiant d'un
+            // élément primaire est un entier ; `labels` d'un entier n'est résolu que
+            // pour un NŒUD (un identifiant d'arête n'a pas de libellés).
+            FilterExpression::FunctionCall { name, args }
+                if args.len() == 1
+                    && (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("labels")) =>
+            {
+                let valeur = self.eval_comprehension_expr(&args[0], item, variable, ctx, genre)?;
+                let nom = name.to_ascii_lowercase();
+                match (nom.as_str(), &valeur, genre) {
+                    ("labels", Value::Int64(_), GenreElement::Noeud) => {
+                        self.fonction_element_sur_valeur("labels", &valeur)
+                    }
+                    ("labels", Value::Int64(_), _) => None,
+                    _ => self.fonction_element_sur_valeur(&nom, &valeur),
                 }
             }
             FilterExpression::Type(var) if var == variable => match item {

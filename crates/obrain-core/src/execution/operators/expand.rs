@@ -222,7 +222,7 @@ impl ExpandOperator {
                                 ));
                             }
                         };
-                        self.expand_remote_source(&reg, slug.as_str(), id);
+                        self.expand_remote_source(&reg, slug.as_str(), id)?;
                         return Ok(true);
                     }
                     // Absent (Null) : zero ligne, jamais une erreur.
@@ -353,7 +353,7 @@ impl ExpandOperator {
         // simplement absente (trivalue).
         if let Some(reg) = self.session_context.base_registry.clone() {
             let primary = Arc::clone(&self.store);
-            self.charger_aretes_externes(&reg, None, &*primary, source_id);
+            self.charger_aretes_externes(&reg, None, &*primary, source_id)?;
         }
         Ok(true)
     }
@@ -362,7 +362,12 @@ impl ExpandOperator {
     /// internes (dans SON store) puis ses aretes externes. Tout est emis
     /// en valeurs (Map / Int64-primaire) — le store primaire n'est jamais
     /// scanne. Store cible inaccessible = zero ligne.
-    fn expand_remote_source(&mut self, reg: &Arc<BaseRegistry>, slug: &str, source_id: NodeId) {
+    fn expand_remote_source(
+        &mut self,
+        reg: &Arc<BaseRegistry>,
+        slug: &str,
+        source_id: NodeId,
+    ) -> Result<(), OperatorError> {
         // (V3) Franchissement : les droits du lecteur s'evaluent sur le
         // store cible — un refus rend la suite du motif ABSENTE. Le
         // comptage (denied/dangling) vit dans store_for_reader.
@@ -372,7 +377,7 @@ impl ExpandOperator {
             slug,
             "",
         ) else {
-            return;
+            return Ok(());
         };
         // Aretes internes du store distant. Lectures NON versionnees :
         // les epoques/transactions de la base primaire n'ont aucun sens
@@ -388,6 +393,12 @@ impl ExpandOperator {
                     continue;
                 }
             }
+            // NB: on ne vérifie PAS `cle_reservee_noeud` ici : un refus global
+            // avant le WHERE empêcherait les requêtes avec prédicat d'exclure
+            // le noeud fautif (#189, option C). `remote_node_value` écrase les
+            // métadonnées ; le franchissement en chemin (VLE) refuse, l'expansion
+            // simple laisse le WHERE filtrer. Limite connue : `d._id` rend la
+            // valeur interne si le noeud porte une propriété `_id` utilisateur.
             let Some(target_val) = remote_node_value(slug, &*store, target_id) else {
                 continue; // cible morte : absent
             };
@@ -396,7 +407,8 @@ impl ExpandOperator {
         }
         // Aretes externes du noeud distant (cycle A -> B -> A compris).
         let reg = Arc::clone(reg);
-        self.charger_aretes_externes(&reg, Some(slug), &*store, source_id);
+        self.charger_aretes_externes(&reg, Some(slug), &*store, source_id)?;
+        Ok(())
     }
 
     /// Charge les aretes EXTERNES sortantes de `source_id` (portees par
@@ -416,9 +428,9 @@ impl ExpandOperator {
         source_slug: Option<&str>,
         source_store: &dyn GraphStore,
         source_id: NodeId,
-    ) {
+    ) -> Result<(), OperatorError> {
         if matches!(self.direction, Direction::Incoming) {
-            return;
+            return Ok(());
         }
         for e in source_store.external_edges_from(source_id) {
             if !self.edge_types.is_empty()
@@ -448,6 +460,8 @@ impl ExpandOperator {
             let target_val = if reg.is_primary(e.to_host.as_deref(), &e.to_store) {
                 Value::Int64(target_id.as_u64() as i64)
             } else {
+                // Même raisonnement que ci-dessus : pas de `cle_reservee_noeud`
+                // avant le WHERE, l'écrasement est une limite connue.
                 match remote_node_value(&e.to_store, &*target_store, target_id) {
                     Some(v) => v,
                     None => {
@@ -458,6 +472,7 @@ impl ExpandOperator {
             };
             self.current_external.push((edge_val, target_val));
         }
+        Ok(())
     }
 }
 
