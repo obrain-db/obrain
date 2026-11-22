@@ -464,7 +464,7 @@ mod tests {
         );
         assert!(plan.take_adaptive_context().is_none());
         let operateur = plan.into_operator();
-        assert!(!operateur.name().is_empty());
+        assert_ne!(operateur.name(), "");
     }
 
     #[test]
@@ -474,7 +474,7 @@ mod tests {
             columns: vec![],
             adaptive_context: None,
         };
-        assert!(plan.columns().is_empty());
+        assert_eq!(plan.columns().len(), 0);
         assert!(plan.adaptive_context().is_none());
     }
 
