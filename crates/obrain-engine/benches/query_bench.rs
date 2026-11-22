@@ -24,6 +24,7 @@ use {
 /// Sets up a small social graph for benchmarking.
 /// Returns the database instance ready for queries.
 fn setup_social_graph(node_count: usize, edge_multiplier: usize) -> ObrainDB {
+    assert!(node_count > 1 && edge_multiplier < node_count);
     let db = ObrainDB::new_in_memory();
     let session = db.session();
 
@@ -38,19 +39,22 @@ fn setup_social_graph(node_count: usize, edge_multiplier: usize) -> ObrainDB {
         session.execute(&query).unwrap();
     }
 
-    // Create KNOWS edges using CREATE (not INSERT - INSERT doesn't work after MATCH in GQL)
+    // Create distinct destinations per source, excluding self-loops.
     let edge_count = node_count * edge_multiplier;
     for i in 0..edge_count {
         let src = i % node_count;
-        let dst = (i * 7 + 13) % node_count;
-        if src != dst {
-            let query = format!(
-                "MATCH (a:Person {{id: {}}}), (b:Person {{id: {}}}) CREATE (a)-[:KNOWS]->(b)",
-                src, dst
-            );
-            let _ = session.execute(&query);
-        }
+        let dst = (src + 1 + i / node_count) % node_count;
+        let query = format!(
+            "MATCH (a:Person {{id: {}}}), (b:Person {{id: {}}}) CREATE (a)-[:KNOWS]->(b)",
+            src, dst
+        );
+        session.execute(&query).expect("création d'une arête KNOWS");
     }
+    let result = session
+        .execute("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN COUNT(b)")
+        .expect("vérification du nombre d'arêtes KNOWS");
+    let observed = result.iter().next().unwrap()[0].as_int64().unwrap();
+    assert_eq!(observed as usize, edge_count, "graphe du banc incomplet");
 
     db
 }
