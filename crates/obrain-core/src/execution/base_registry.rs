@@ -414,7 +414,11 @@ where
 /// proprietes de l'arete, pour que `r.prop` lise la valeur de l'arete traversee.
 /// `None` si l'arete n'existe plus dans ce store.
 #[must_use]
-pub(crate) fn remote_edge_hydratee(slug: &str, store: &dyn GraphStore, id: EdgeId) -> Option<Value> {
+pub(crate) fn remote_edge_hydratee(
+    slug: &str,
+    store: &dyn GraphStore,
+    id: EdgeId,
+) -> Option<Value> {
     let edge = store.get_edge(id)?;
     let mut map = BTreeMap::new();
     // Propriétés d'abord, métadonnées ensuite (ne peuvent pas être falsifiées).

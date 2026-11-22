@@ -304,7 +304,10 @@ fn expand_simple_hop_ecrasement_silencieux_limite_connue() {
     assert_eq!(r.rows.len(), 1, "un résultat");
     // La valeur est l'id interne de beta, PAS 7 (écrasement).
     let id = entier(&r.rows[0][0]);
-    assert_ne!(id, 7, "l'id interne a écrasé la propriété utilisateur (limite connue)");
+    assert_ne!(
+        id, 7,
+        "l'id interne a écrasé la propriété utilisateur (limite connue)"
+    );
 }
 
 #[test]
