@@ -3918,3 +3918,42 @@ mod tests_zone_privee {
         assert_eq!(std::fs::read(&chemin).unwrap().len(), 8192);
     }
 }
+
+/// Verrou de rejeu (`verrou_rejeu_bloquant`, #322) : le chemin d'erreur que le
+/// reste de la suite n'exerce pas.
+#[cfg(test)]
+mod tests_verrou_rejeu {
+    use super::*;
+
+    /// Un `flock` refusé par le noyau remonte l'erreur du système, telle quelle :
+    /// ni avalée, ni changée en succès. Sous Linux, un descripteur ouvert en
+    /// `O_PATH` refuse `flock` (`EBADF`) : c'est un vrai refus, pas une doublure.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_flock_refuse_remonte_l_erreur_du_systeme() {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("cible");
+        std::fs::write(&chemin, b"x").unwrap();
+        let c = std::ffi::CString::new(chemin.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c` est une chaîne C valide qui vit pendant l'appel.
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        assert!(
+            fd >= 0,
+            "open(O_PATH) : {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: `fd` vient d'être ouvert et n'appartient à personne d'autre ;
+        // `File` le ferme au `drop`.
+        let fichier = unsafe { File::from_raw_fd(fd) };
+
+        let e = verrouiller_bloquant_exclusif(&fichier).expect_err("flock sur O_PATH doit échouer");
+        assert_eq!(
+            e.raw_os_error(),
+            Some(libc::EBADF),
+            "erreur inattendue : {e}"
+        );
+    }
+}
