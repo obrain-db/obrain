@@ -1206,7 +1206,31 @@ impl super::Planner {
         };
         let mut operator: Box<dyn Operator> = Box::new(tri);
 
-        // Strip extra sort-key columns that were injected for ORDER BY resolution
+        // Strip extra sort-key columns that were injected for ORDER BY resolution.
+        //
+        // Deux sources de colonnes de tri ajoutées, toutes deux EN QUEUE de
+        // `output_columns` :
+        // 1. `sort_extra_count` : clés injectées dans le Return augmenté (variable
+        //    NON projetée : `RETURN e.name ORDER BY e.seq`) ;
+        // 2. `property_projections` (+ UDF cognitives) : clés matérialisées APRÈS
+        //    coup quand la variable EST projetée (`RETURN e ORDER BY e.seq`, où
+        //    `needs_pre_return` vaut `false`). Avant #353, cette seconde source
+        //    n'était jamais retirée et la clé `e_seq` sortait comme colonne du
+        //    résultat — là où Neo4j n'en rend qu'une.
+        //
+        // On ne retire que lorsque l'entrée du tri est un RETURN : c'est là que
+        // l'ensemble des colonnes visibles est celui que l'utilisateur a demandé.
+        let colonnes_de_tri_apres_return =
+            if matches!(sort.input.as_ref(), LogicalOperator::Return(_)) {
+                #[cfg(feature = "cognitive")]
+                let udf = cognitive_projections.len();
+                #[cfg(not(feature = "cognitive"))]
+                let udf = 0_usize;
+                property_projections.len() + udf
+            } else {
+                0
+            };
+        let sort_extra_count = sort_extra_count + colonnes_de_tri_apres_return;
         if sort_extra_count > 0 {
             let keep_count = output_columns.len() - sort_extra_count;
             let strip_projections: Vec<ProjectExpr> =
