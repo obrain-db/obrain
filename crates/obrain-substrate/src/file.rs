@@ -3923,6 +3923,10 @@ mod tests_zone_privee {
 /// reste de la suite n'exerce pas.
 #[cfg(test)]
 mod tests_verrou_rejeu {
+    // Le module ne contient qu'un test Linux : sans ce `cfg`, l'import devient
+    // inutilisé sur macOS et `clippy -D warnings` échoue — donc un développeur
+    // macOS ne peut pas vérifier localement ce que la CI vérifie sur Linux.
+    #[cfg(target_os = "linux")]
     use super::*;
 
     /// Un `flock` refusé par le noyau remonte l'erreur du système, telle quelle :
